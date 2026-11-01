@@ -35,47 +35,79 @@ var ErrRecoveryClaimed = errors.New("the window's recovery run was already claim
 // is no longer the issue's current window, or no longer refuses a run.
 var ErrRecoveryWindowLifted = errors.New("the window's refusal no longer applies")
 
-// EnqueueBudgetRecoveryRun enqueues the window's one recovery run for the
-// issue's current assignee (the blocked step's handler, after the move). The
-// claim and the task commit together; a second claim in the same window returns
+// BudgetRecoveryRun is a recovery run read ahead of the transaction that
+// commits it. Reads that use the pool happen in PrepareBudgetRecoveryRun, so
+// Claim runs in a caller's transaction without taking a second connection.
+type BudgetRecoveryRun struct {
+	svc               *TaskService
+	issue             db.Issue
+	params            db.CreateAgentTaskParams
+	txCtx             context.Context
+	notifyAfterCommit func()
+	task              db.AgentTaskQueue
+}
+
+// PrepareBudgetRecoveryRun reads what the recovery run for the issue's current
+// assignee needs. It writes nothing.
+func (s *TaskService) PrepareBudgetRecoveryRun(ctx context.Context, issue db.Issue) (*BudgetRecoveryRun, error) {
+	params, _, err := s.prepareIssueTaskWithQueriesAndOverlay(readOnlyRunBudget(ctx), s.Queries, issue, pgtype.UUID{}, nil, false, "", pgtype.UUID{}, pgtype.UUID{}, pgtype.Timestamptz{}, OriginBudgetRecovery, nil)
+	if err != nil {
+		return nil, err
+	}
+	txCtx, notifyAfterCommit := deferEnqueuedTaskHook(ctx)
+	return &BudgetRecoveryRun{svc: s, issue: issue, params: params, txCtx: txCtx, notifyAfterCommit: notifyAfterCommit}, nil
+}
+
+// Claim claims the window's one recovery run and inserts its task, in the
+// caller's transaction: a second claim in the same window returns
 // ErrRecoveryClaimed. A recovery run bypasses the exhaustion refusal, so the
 // claim revalidates the window under the budget lock: a top-up or grant that
-// landed since the refusal returns ErrRecoveryWindowLifted and no task.
+// landed since the refusal returns ErrRecoveryWindowLifted and no task. The run
+// exists only when the caller's transaction commits; Published follows it.
+func (r *BudgetRecoveryRun) Claim(ctx context.Context, qtx *db.Queries, since time.Time) error {
+	if _, err := qtx.ClaimRunBudgetNotice(ctx, db.ClaimRunBudgetNoticeParams{
+		ID: dbid.NewV7(), WorkspaceID: r.issue.WorkspaceID, IssueID: r.issue.ID,
+		WindowID: runBudgetWindowID(since), Kind: RunBudgetKindRecovery,
+	}); errors.Is(err, pgx.ErrNoRows) {
+		return ErrRecoveryClaimed
+	} else if err != nil {
+		return err
+	}
+	if _, err := qtx.LockIssueRunBudget(ctx, r.issue.ID); err != nil {
+		return err
+	}
+	if still, err := RunBudgetStillRefuses(ctx, qtx, r.issue.ID, since); err != nil {
+		return err
+	} else if !still {
+		return ErrRecoveryWindowLifted
+	}
+	task, err := r.svc.insertPreparedIssueTask(r.txCtx, qtx, r.issue, r.params, pgtype.Timestamptz{}, OriginBudgetRecovery)
+	if err != nil {
+		return err
+	}
+	r.task = task
+	return qtx.MarkBudgetRecoveryTask(ctx, task.ID)
+}
+
+// Published announces the run after the transaction that claimed it committed.
+func (r *BudgetRecoveryRun) Published(ctx context.Context) {
+	r.notifyAfterCommit()
+	r.svc.PublishTaskEnqueued(ctx, r.task)
+}
+
+// EnqueueBudgetRecoveryRun enqueues the window's one recovery run for the
+// issue's current assignee (the blocked step's handler, after the move) in its
+// own transaction; see BudgetRecoveryRun.Claim.
 func (s *TaskService) EnqueueBudgetRecoveryRun(ctx context.Context, issue db.Issue, since time.Time) (db.AgentTaskQueue, error) {
-	params, _, err := s.prepareIssueTaskWithQueriesAndOverlay(readOnlyRunBudget(ctx), s.Queries, issue, pgtype.UUID{}, nil, false, "", pgtype.UUID{}, pgtype.UUID{}, pgtype.Timestamptz{}, OriginBudgetRecovery, nil)
+	run, err := s.PrepareBudgetRecoveryRun(ctx, issue)
 	if err != nil {
 		return db.AgentTaskQueue{}, err
 	}
-	var task db.AgentTaskQueue
-	txCtx, notifyAfterCommit := deferEnqueuedTaskHook(ctx)
-	err = s.runInTx(ctx, func(qtx *db.Queries) error {
-		if _, err := qtx.ClaimRunBudgetNotice(ctx, db.ClaimRunBudgetNoticeParams{
-			ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID,
-			WindowID: runBudgetWindowID(since), Kind: RunBudgetKindRecovery,
-		}); errors.Is(err, pgx.ErrNoRows) {
-			return ErrRecoveryClaimed
-		} else if err != nil {
-			return err
-		}
-		if _, err := qtx.LockIssueRunBudget(ctx, issue.ID); err != nil {
-			return err
-		}
-		if still, err := RunBudgetStillRefuses(ctx, qtx, issue.ID, since); err != nil {
-			return err
-		} else if !still {
-			return ErrRecoveryWindowLifted
-		}
-		task, err = s.insertPreparedIssueTask(txCtx, qtx, issue, params, pgtype.Timestamptz{}, OriginBudgetRecovery)
-		if err != nil {
-			return err
-		}
-		return qtx.MarkBudgetRecoveryTask(ctx, task.ID)
-	})
-	if err == nil {
-		notifyAfterCommit()
-		s.PublishTaskEnqueued(ctx, task)
+	if err := s.runInTx(ctx, func(qtx *db.Queries) error { return run.Claim(ctx, qtx, since) }); err != nil {
+		return run.task, err
 	}
-	return task, err
+	run.Published(ctx)
+	return run.task, nil
 }
 
 // CancelExpiredBudgetRecoveryRuns cancels recovery runs past the wall-clock

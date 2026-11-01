@@ -15,7 +15,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
-	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 // The workflow edge engine (CHE-2152). A trigger on issue.status keeps one
@@ -246,7 +245,6 @@ func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetE
 	var issue db.Issue
 	var refused string
 	moved := false
-	var claim pgtype.UUID
 	// Another writer (the 80% warning's comment, a person) can bump the issue's
 	// revision between the read and the block. The block then loses, so it
 	// reads the issue again and retries while the revision keeps moving.
@@ -254,17 +252,6 @@ func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetE
 		var ok bool
 		if issue, ok = h.exhaustedIssue(ctx, e); !ok {
 			return
-		}
-		// One callback per window owns the block, the recovery run and the
-		// notice, so no other callback words a notice the owner's recovery
-		// debit then outdates. The owner is the first whose refusal still
-		// holds; it gives the claim back when it is done, so a later refusal in
-		// the same window (the issue moved back to work) is handled again.
-		if !claim.Valid {
-			if claim = h.claimExhaustionHandling(ctx, issue, e); !claim.Valid {
-				return
-			}
-			defer h.releaseExhaustionHandling(ctx, claim)
 		}
 		refused = h.runBudgetRefusedRun(ctx, e)
 		var lifted bool
@@ -278,73 +265,43 @@ func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetE
 			break
 		}
 	}
-	// The recovery run debits the ledger, so it comes before anything that
-	// states the balance. The command is priced from the ledger as it stands
-	// then: in the notice, under the budget lock its transaction takes.
+	// The recovery run debits the ledger, so it commits with the notice that
+	// states the balance, in the notice's transaction: whichever callback
+	// writes the notice also gives the run, and a callback that exits after the
+	// block leaves both for the next one. The command is priced under the
+	// budget lock that transaction takes.
 	ref := issueBudgetRef(h.getIssuePrefix(ctx, issue.WorkspaceID), issue)
 	if moved {
 		runBudgetBeforeRecovery()
-		h.enqueueBudgetRecovery(ctx, e)
-		h.recordBudgetBlock(ctx, issue, e, ref, refused)
 	}
 	h.writeRunBudgetNoticeFrom(ctx, service.RunBudgetEvent{IssueID: e.IssueID, Kind: service.RunBudgetKindExhausted, Runs: e.Runs, Max: e.Max, Since: e.Since},
+		h.prepareBudgetRecovery(ctx, e),
 		func(ctx context.Context, q *db.Queries) string {
 			raise := runBudgetRaiseCommand(ctx, q, issue.ID, ref, e)
 			return exhaustedNoticeText(refused, raise.command, raise.leaves, e, moved)
 		})
-}
-
-// claimExhaustionHandling claims the window's exhaustion handling for this
-// callback; the claim is invalid when another callback holds it. A claim older
-// than runBudgetHandlingLease belongs to an owner that exited or could not
-// release it, and is taken over. A failed claim counts as lost: the holder, or
-// a later refusal, handles the window.
-func (h *Handler) claimExhaustionHandling(ctx context.Context, issue db.Issue, e service.RunBudgetExhausted) pgtype.UUID {
-	window := e.Since.UTC().Format(time.RFC3339Nano)
-	id, err := h.Queries.ClaimRunBudgetNotice(ctx, db.ClaimRunBudgetNoticeParams{
-		ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, WindowID: window, Kind: runBudgetKindHandling,
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		id, err = h.Queries.TakeOverRunBudgetNotice(ctx, db.TakeOverRunBudgetNoticeParams{
-			ID: dbid.NewV7(), IssueID: issue.ID, WindowID: window, Kind: runBudgetKindHandling,
-			LeaseSeconds: runBudgetHandlingLease.Seconds(),
-		})
-	}
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		slog.Warn("run budget: claim exhaustion handling failed", "err", err, "issue_id", uuidToString(issue.ID))
-	}
-	return id
-}
-
-func (h *Handler) releaseExhaustionHandling(ctx context.Context, claim pgtype.UUID) {
-	if err := h.Queries.ReleaseRunBudgetNotice(context.WithoutCancel(ctx), claim); err != nil {
-		slog.Warn("run budget: release exhaustion handling failed", "err", err)
+	if moved {
+		h.recordBudgetBlock(ctx, issue, e, ref, refused)
 	}
 }
 
-// runBudgetKindHandling keys the claim of a window's exhaustion handling. It
-// shares the claim table with the notices but writes no notice.
-const runBudgetKindHandling = "handling"
-
-// runBudgetHandlingLease is how long a handling claim holds before another
-// callback may take it over. The handling is a few queries and one
-// transaction, so a claim this old has no live owner.
-const runBudgetHandlingLease = 2 * time.Minute
-
-// enqueueBudgetRecovery gives the blocked step's handler its one recovery run
-// for the window. Only an agent handler gets one; a second claim in the window
-// is refused.
-func (h *Handler) enqueueBudgetRecovery(ctx context.Context, e service.RunBudgetExhausted) {
+// prepareBudgetRecovery reads the blocked step's handler's recovery run for
+// the notice's transaction to claim. Only an agent handler gets one, and the
+// claim allows one per window. It returns nil when the issue is owed none.
+func (h *Handler) prepareBudgetRecovery(ctx context.Context, e service.RunBudgetExhausted) *service.BudgetRecoveryRun {
 	issue, err := h.Queries.GetIssue(ctx, e.IssueID)
 	if err != nil || issue.Status != issuestatus.Blocked || issue.AssigneeType.String != "agent" || !issue.AssigneeID.Valid {
-		return
+		return nil
 	}
 	if id, ok := h.blockedAgentHandler(ctx, issue); !ok || id != uuidToString(issue.AssigneeID) {
-		return
+		return nil
 	}
-	if _, err := h.TaskService.EnqueueBudgetRecoveryRun(ctx, issue, e.Since); err != nil && !errors.Is(err, service.ErrRecoveryClaimed) && !errors.Is(err, service.ErrRecoveryWindowLifted) {
-		slog.Warn("run budget: recovery run not enqueued", "err", err, "issue_id", uuidToString(issue.ID))
+	run, err := h.TaskService.PrepareBudgetRecoveryRun(ctx, issue)
+	if err != nil {
+		slog.Warn("run budget: recovery run not prepared", "err", err, "issue_id", uuidToString(issue.ID))
+		return nil
 	}
+	return run
 }
 
 // blockedAgentHandler returns the agent that handles the workflow's blocked
@@ -393,7 +350,8 @@ func (h *Handler) exhaustedIssue(ctx context.Context, e service.RunBudgetExhaust
 }
 
 // runBudgetBeforeRecovery runs after the block commits and before the recovery
-// run is claimed. Tests use it to land a budget write in that window.
+// run is claimed, which happens in the notice transaction. Tests use it to land
+// a budget write in that window.
 var runBudgetBeforeRecovery = func() {}
 
 // runBudgetBeforeBlock runs between the callback's reads and its block write.

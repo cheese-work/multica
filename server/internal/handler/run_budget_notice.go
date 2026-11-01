@@ -114,12 +114,13 @@ func (h *Handler) admissionTxFinished(ctx context.Context, e service.RunBudgetEv
 var runBudgetBeforeNotice = func() {}
 
 func (h *Handler) writeRunBudgetNotice(ctx context.Context, e service.RunBudgetEvent, text string) {
-	h.writeRunBudgetNoticeFrom(ctx, e, func(context.Context, *db.Queries) string { return text })
+	h.writeRunBudgetNoticeFrom(ctx, e, nil, func(context.Context, *db.Queries) string { return text })
 }
 
 // writeRunBudgetNoticeFrom is writeRunBudgetNotice with the text worded inside
-// the transaction, under the budget lock, by a function of the transaction's queries.
-func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBudgetEvent, text func(context.Context, *db.Queries) string) {
+// the transaction, under the budget lock, by a function of the transaction's
+// queries. A non-nil recovery run is claimed in the same transaction.
+func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBudgetEvent, recovery *service.BudgetRecoveryRun, text func(context.Context, *db.Queries) string) {
 	issue, err := h.Queries.GetIssue(ctx, e.IssueID)
 	if err != nil {
 		slog.Warn("run budget: load issue for notice failed", "err", err, "issue_id", uuidToString(e.IssueID))
@@ -132,6 +133,7 @@ func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBud
 	var revision int64
 	var items []db.InboxItem
 	var decisions []decisionRequestResult
+	recovered := false
 	err = h.withTx(ctx, func(qtx *db.Queries) error {
 		noticeID, err := qtx.ClaimRunBudgetNotice(ctx, db.ClaimRunBudgetNoticeParams{
 			ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID,
@@ -162,6 +164,19 @@ func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBud
 		if e.Kind == service.RunBudgetKindExhausted {
 			if err := runBudgetRefusalStillHolds(ctx, qtx, e); err != nil {
 				return err
+			}
+		}
+		// The recovery run debits the ledger, so it commits with the notice
+		// that states the balance: both or neither.
+		if recovery != nil && e.Kind == service.RunBudgetKindExhausted {
+			switch err := recovery.Claim(ctx, qtx, e.Since); {
+			case err == nil:
+				recovered = true
+			case errors.Is(err, service.ErrRecoveryClaimed):
+			case errors.Is(err, service.ErrRecoveryWindowLifted):
+				return errRefusalLifted
+			default:
+				return fmt.Errorf("recovery run: %w", err)
 			}
 		}
 		// Worded under the budget lock, so a command in it describes the ledger
@@ -205,6 +220,9 @@ func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBud
 	if err != nil {
 		slog.Warn("run budget: write notice failed", "err", err, "issue_id", uuidToString(issue.ID), "kind", e.Kind)
 		return
+	}
+	if recovered {
+		recovery.Published(ctx)
 	}
 	if !comment.ID.Valid {
 		return

@@ -68,17 +68,6 @@ func (q *Queries) ListWorkspaceOwnerUserIDs(ctx context.Context, workspaceID pgt
 	return items, nil
 }
 
-const releaseRunBudgetNotice = `-- name: ReleaseRunBudgetNotice :exec
-DELETE FROM run_budget_notice WHERE id = $1
-`
-
-// Gives a claim back. Only the claim of a window's exhaustion handling is
-// released: it orders concurrent callbacks, not notices.
-func (q *Queries) ReleaseRunBudgetNotice(ctx context.Context, id pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, releaseRunBudgetNotice, id)
-	return err
-}
-
 const setRunBudgetNoticeComment = `-- name: SetRunBudgetNoticeComment :exec
 UPDATE run_budget_notice SET comment_id = $2 WHERE id = $1
 `
@@ -91,35 +80,4 @@ type SetRunBudgetNoticeCommentParams struct {
 func (q *Queries) SetRunBudgetNoticeComment(ctx context.Context, arg SetRunBudgetNoticeCommentParams) error {
 	_, err := q.db.Exec(ctx, setRunBudgetNoticeComment, arg.ID, arg.CommentID)
 	return err
-}
-
-const takeOverRunBudgetNotice = `-- name: TakeOverRunBudgetNotice :one
-UPDATE run_budget_notice SET id = $1, created_at = now()
-WHERE issue_id = $2 AND window_id = $3 AND kind = $4
-  AND created_at < now() - make_interval(secs => $5::float8)
-RETURNING id
-`
-
-type TakeOverRunBudgetNoticeParams struct {
-	ID           pgtype.UUID `json:"id"`
-	IssueID      pgtype.UUID `json:"issue_id"`
-	WindowID     string      `json:"window_id"`
-	Kind         string      `json:"kind"`
-	LeaseSeconds float64     `json:"lease_seconds"`
-}
-
-// Takes a claim whose holder is presumed gone: older than the lease. The new
-// id makes the old holder's release match nothing. No row means the claim is
-// fresh or absent (pgx.ErrNoRows).
-func (q *Queries) TakeOverRunBudgetNotice(ctx context.Context, arg TakeOverRunBudgetNoticeParams) (pgtype.UUID, error) {
-	row := q.db.QueryRow(ctx, takeOverRunBudgetNotice,
-		arg.ID,
-		arg.IssueID,
-		arg.WindowID,
-		arg.Kind,
-		arg.LeaseSeconds,
-	)
-	var id pgtype.UUID
-	err := row.Scan(&id)
-	return id, err
 }
