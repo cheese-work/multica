@@ -87,16 +87,20 @@ func pinnedSHA(p *string) (pgtype.Text, bool) {
 	return pgtype.Text{String: *p, Valid: true}, grantSHA.MatchString(*p)
 }
 
-// requireHumanIssueAdmin loads the issue of the {id} route param for a person who
-// owns or administers its workspace. Any agent credential gets 403 before the
-// issue is read.
-func (h *Handler) requireHumanIssueAdmin(w http.ResponseWriter, r *http.Request, machineMsg string) (db.Issue, db.Member, bool) {
+// requireHumanIssue loads the issue of the {id} route param for a person. Any
+// agent credential gets 403 before the issue is read.
+func (h *Handler) requireHumanIssue(w http.ResponseWriter, r *http.Request, machineMsg string) (db.Issue, bool) {
 	actorType, _ := h.resolveActor(r, requestUserID(r), h.resolveWorkspaceID(r))
 	if isGovernedFieldMachineActor(r, actorType) {
 		writeError(w, http.StatusForbidden, machineMsg)
-		return db.Issue{}, db.Member{}, false
+		return db.Issue{}, false
 	}
-	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
+	return h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
+}
+
+// requireHumanIssueAdmin is requireHumanIssue for a person who owns or administers its workspace.
+func (h *Handler) requireHumanIssueAdmin(w http.ResponseWriter, r *http.Request, machineMsg string) (db.Issue, db.Member, bool) {
+	issue, ok := h.requireHumanIssue(w, r, machineMsg)
 	if !ok {
 		return db.Issue{}, db.Member{}, false
 	}
@@ -162,6 +166,10 @@ func (h *Handler) CreateRunCapabilityGrant(w http.ResponseWriter, r *http.Reques
 	headSHA, headOK := pinnedSHA(req.PinnedHeadSHA)
 	if !baseOK || !headOK {
 		writeError(w, http.StatusBadRequest, "pinned SHAs must be 40 lowercase hex characters")
+		return
+	}
+
+	if req.ApproveCurrentComments && !h.requireCanRouteIssue(w, r, issue, member.UserID) {
 		return
 	}
 

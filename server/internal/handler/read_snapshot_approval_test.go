@@ -13,6 +13,25 @@ import (
 // exact bytes of one object for one issue. T29 (CI log) and T17 (i) (Multica body
 // written by an external_read task) read this record to decide stub or full text.
 
+// routedIssue is an issue in a project where the test user holds a route grant,
+// assigned to a ready agent: the can_route boundary the plan sets for approvers.
+func routedIssue(t *testing.T, title string) string {
+	t.Helper()
+	issueID := dbfx.Issue(t, title)
+	project := dbfx.Project(t, title)
+	dbfx.Exec(t, `UPDATE issue SET project_id = $1, assignee_type = 'agent', assignee_id = $2 WHERE id = $3`, project, seededReadyAgentID(t), issueID)
+	grantRoute(t, project, testUserID)
+	return issueID
+}
+
+func grantRoute(t *testing.T, project, userID string) {
+	t.Helper()
+	dbfx.Exec(t, `INSERT INTO github_route_grant (project_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, project, userID)
+	t.Cleanup(func() {
+		dbfx.Exec(t, `DELETE FROM github_route_grant WHERE project_id = $1 AND user_id = $2`, project, userID)
+	})
+}
+
 func postReadApproval(t *testing.T, issueID string, body map[string]any, tweak func(*http.Request)) *testutil.Response {
 	t.Helper()
 	req := withURLParam(newRequest("POST", "/api/issues/"+issueID+"/read-approvals", body), "id", issueID)
@@ -32,7 +51,7 @@ func approved(t *testing.T, issueID, kind, objectID, hash string) bool {
 }
 
 func TestReadSnapshotApprovalIsScopedToIssueObjectAndExactBytes(t *testing.T) {
-	issueID := dbfx.Issue(t, "read approval target")
+	issueID := routedIssue(t, "read approval target")
 	otherIssue := dbfx.Issue(t, "read approval other")
 	log := sha256Hex("ci log bytes")
 	postReadApproval(t, issueID, map[string]any{"object_kind": "ci_log", "object_id": "run-77", "body_hash": log}, nil).Want(http.StatusCreated)
@@ -63,7 +82,7 @@ func TestReadSnapshotApprovalIsScopedToIssueObjectAndExactBytes(t *testing.T) {
 }
 
 func TestReadSnapshotApprovalRefusesMachinesAndPlainMembers(t *testing.T) {
-	issueID := dbfx.Issue(t, "read approval refusals")
+	issueID := routedIssue(t, "read approval refusals")
 	body := map[string]any{"object_kind": "pr_body", "object_id": "PR_1", "body_hash": sha256Hex("x")}
 	agentID := seededReadyAgentID(t)
 	taskID := createHandlerTestTaskForAgent(t, agentID)
@@ -84,7 +103,7 @@ func TestReadSnapshotApprovalRefusesMachinesAndPlainMembers(t *testing.T) {
 }
 
 func TestReadSnapshotApprovalValidation(t *testing.T) {
-	issueID := dbfx.Issue(t, "read approval validation")
+	issueID := routedIssue(t, "read approval validation")
 	good := func() map[string]any {
 		return map[string]any{"object_kind": "commit_message", "object_id": "abc", "body_hash": sha256Hex("m")}
 	}
@@ -106,7 +125,7 @@ func TestReadSnapshotApprovalValidation(t *testing.T) {
 // T29 (CI log) and T17 (i): a grant created with approve_current_comments approves the
 // issue's comments as they are now, by body hash. A later comment or an edited body is not covered.
 func TestGrantCanApproveCurrentCommentSet(t *testing.T) {
-	issueID := dbfx.Issue(t, "grant comment set")
+	issueID := routedIssue(t, "grant comment set")
 	first := dbfx.Comment(t, issueID, "first comment")
 	body := validGrantBody()
 	body["approve_current_comments"] = true
@@ -130,5 +149,66 @@ func TestGrantWithoutFlagApprovesNothing(t *testing.T) {
 	postGrant(t, issueID, validGrantBody(), nil).Want(http.StatusCreated)
 	if n := dbfx.Count(t, `SELECT count(*) FROM read_snapshot_approval WHERE issue_id = $1`, issueID); n != 0 {
 		t.Fatalf("rows = %d, want 0", n)
+	}
+}
+
+// can_route boundary (plan 3.4): the approver passes the route check for the
+// issue's agent. Workspace role alone neither grants nor denies.
+func TestReadSnapshotApprovalFollowsCanRoute(t *testing.T) {
+	body := map[string]any{"object_kind": "pr_body", "object_id": "PR_1", "body_hash": sha256Hex("body")}
+
+	// An owner without a project route grant is refused.
+	noRoute := dbfx.Issue(t, "read approval no route")
+	dbfx.Exec(t, `UPDATE issue SET project_id = $1, assignee_type = 'agent', assignee_id = $2 WHERE id = $3`, dbfx.Project(t, "no route"), seededReadyAgentID(t), noRoute)
+	postReadApproval(t, noRoute, body, nil).Want(http.StatusForbidden)
+
+	// A plain member with a route grant is allowed.
+	issueID := dbfx.Issue(t, "read approval plain member")
+	project := dbfx.Project(t, "plain member")
+	dbfx.Exec(t, `UPDATE issue SET project_id = $1, assignee_type = 'agent', assignee_id = $2 WHERE id = $3`, project, seededReadyAgentID(t), issueID)
+	userID := dbfx.User(t, "Routed Member", "routed-member-read-approval@example.com")
+	dbfx.Member(t, testWorkspaceID, userID, "member")
+	grantRoute(t, project, userID)
+	postReadApproval(t, issueID, body, func(r *http.Request) { r.Header.Set("X-User-ID", userID) }).Want(http.StatusCreated)
+
+	// An issue with no agent assignee has no agent to route to.
+	unassigned := dbfx.Issue(t, "read approval unassigned")
+	postReadApproval(t, unassigned, body, nil).Want(http.StatusConflict)
+
+	if n := dbfx.Count(t, `SELECT count(*) FROM read_snapshot_approval WHERE issue_id IN ($1, $2)`, noRoute, unassigned); n != 0 {
+		t.Fatalf("refused writes left %d rows", n)
+	}
+}
+
+func TestGrantCommentSetApprovalFollowsCanRoute(t *testing.T) {
+	issueID := dbfx.Issue(t, "grant comment set no route")
+	dbfx.Exec(t, `UPDATE issue SET project_id = $1, assignee_type = 'agent', assignee_id = $2 WHERE id = $3`, dbfx.Project(t, "grant no route"), seededReadyAgentID(t), issueID)
+	dbfx.Comment(t, issueID, "a comment")
+	body := validGrantBody()
+	body["approve_current_comments"] = true
+	postGrant(t, issueID, body, nil).Want(http.StatusForbidden)
+	if n := grantRows(t, issueID); n != 0 {
+		t.Fatalf("refused grant left %d rows", n)
+	}
+}
+
+func TestWorkspaceTeardownRemovesReadSnapshotApprovals(t *testing.T) {
+	ctx := context.Background()
+	hash := sha256Hex("body")
+	user := dbfx.User(t, "Approval Teardown", "approval-teardown@multica.ai")
+	doomed, neighbor := dbfx.Workspace(t, "Approval teardown", "approval-teardown"), dbfx.Workspace(t, "Approval neighbor", "approval-neighbor")
+	for _, workspace := range []string{doomed, neighbor} {
+		dbfx.Exec(t, `INSERT INTO read_snapshot_approval (workspace_id, issue_id, object_kind, object_id, body_hash, approver_user_id) VALUES ($1, gen_random_uuid(), 'ci_log', 'run-1', $2, $3)`, workspace, hash, user)
+		workspace := workspace
+		t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM read_snapshot_approval WHERE workspace_id = $1`, workspace) })
+	}
+	if err := testHandler.Queries.DeleteWorkspaceLeafData(ctx, parseUUID(doomed)); err != nil {
+		t.Fatal(err)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM read_snapshot_approval WHERE workspace_id = $1`, doomed); n != 0 {
+		t.Fatalf("approvals left after workspace teardown = %d, want 0", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM read_snapshot_approval WHERE workspace_id = $1`, neighbor); n != 1 {
+		t.Fatalf("neighbor workspace approvals = %d, want 1", n)
 	}
 }

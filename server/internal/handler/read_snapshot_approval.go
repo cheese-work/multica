@@ -32,11 +32,38 @@ type readSnapshotApprovalRequest struct {
 	BodyHash   string `json:"body_hash"`
 }
 
-// ApproveReadSnapshot approves one object's body hash for one issue. Human
-// owner/admin only, like a grant: any agent credential gets 403.
+// requireCanRouteIssue writes 403 unless the person passes can_route (plan 3.4)
+// for the agent the issue is assigned to; 409 when no agent is assigned, 503 when a lookup fails.
+func (h *Handler) requireCanRouteIssue(w http.ResponseWriter, r *http.Request, issue db.Issue, userID pgtype.UUID) bool {
+	if !issue.AssigneeType.Valid || issue.AssigneeType.String != "agent" || !issue.AssigneeID.Valid {
+		writeError(w, http.StatusConflict, "the issue has no agent assignee to route to")
+		return false
+	}
+	agent, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{ID: issue.AssigneeID, WorkspaceID: issue.WorkspaceID})
+	if err != nil {
+		writeError(w, http.StatusConflict, "the issue's agent assignee was not found")
+		return false
+	}
+	switch h.canRouteMember(r.Context(), userID, issue, agent).Verdict {
+	case routeAllowed:
+		return true
+	case routeDeferred:
+		writeError(w, http.StatusServiceUnavailable, "could not check route permission; retry")
+	default:
+		writeError(w, http.StatusForbidden, "you may not route work on this issue")
+	}
+	return false
+}
+
+// ApproveReadSnapshot approves one object's body hash for one issue. A person
+// who passes can_route for the issue's agent only: any agent credential gets 403.
 func (h *Handler) ApproveReadSnapshot(w http.ResponseWriter, r *http.Request) {
-	issue, member, ok := h.requireHumanIssueAdmin(w, r, "only a person can approve a read")
+	issue, ok := h.requireHumanIssue(w, r, "only a person can approve a read")
 	if !ok {
+		return
+	}
+	member, ok := h.requireWorkspaceMember(w, r, uuidToString(issue.WorkspaceID), "workspace not found")
+	if !ok || !h.requireCanRouteIssue(w, r, issue, member.UserID) {
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 4<<10))
