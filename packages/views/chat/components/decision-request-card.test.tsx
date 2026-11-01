@@ -31,6 +31,7 @@ vi.mock("@multica/core/api", async (importActual) => ({
 // a textarea that exposes the props the card wires up.
 type EditorProps = {
   value?: string;
+  defaultValue?: string;
   ariaLabel?: string;
   ariaDescribedBy?: string;
   onUpdate?: (markdown: string) => void;
@@ -46,14 +47,14 @@ vi.mock("../../editor", async () => ({
   useEditorUpload: (await vi.importActual<typeof import("../../editor/use-editor-upload")>("../../editor/use-editor-upload")).useEditorUpload,
   ContentEditor: forwardRef(function MockEditor(props: EditorProps, ref) {
     editor.props = props;
-    const handle = { hasActiveUploads: () => editor.hasActiveUploads, getMarkdown: () => editor.live ?? props.value ?? "" };
+    const handle = { hasActiveUploads: () => editor.hasActiveUploads, getMarkdown: () => editor.live ?? props.defaultValue ?? "" };
     if (typeof ref === "function") ref(handle as never);
     else if (ref) (ref as { current: unknown }).current = handle;
     return (
       <textarea
         aria-label={props.ariaLabel}
         aria-describedby={props.ariaDescribedBy}
-        value={props.value ?? ""}
+        defaultValue={props.defaultValue ?? ""}
         onChange={(event) => props.onUpdate?.(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey) {
@@ -263,6 +264,24 @@ describe("DecisionRequestCard answering", () => {
     uploadFile.mockReset();
     editor.hasActiveUploads = false;
     editor.live = undefined;
+  });
+
+  it("never feeds its draft back into the editor, so a late echo cannot overwrite newer typing", async () => {
+    renderCard();
+    expect(editorProps()).not.toHaveProperty("value");
+    await userEvent.setup().type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "before ");
+    expect(editorProps()).not.toHaveProperty("value");
+  });
+
+  it("empties the editor after a successful send while the card is still open", async () => {
+    renderCard({ ...card, options: undefined });
+    const user = userEvent.setup();
+    const box = screen.getByRole("textbox", { name: "Write an answer" });
+    await user.type(box, "Ship it");
+    editor.live = "Ship it";
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(screen.getByRole("textbox", { name: "Write an answer" })).toHaveValue(""));
   });
 
   it("sends the selected option on Send, and only once chosen", async () => {

@@ -118,7 +118,7 @@ function DecisionAnswerForm({
       <div className="rounded-lg border border-surface-border px-2 py-1.5 focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-ring">
         <ContentEditor
           ref={editorRef}
-          value={text}
+          defaultValue={text}
           ariaLabel={card.options?.length ? t(($) => $.decision.answer_note) : t(($) => $.decision.answer_text)}
           ariaDescribedBy={`${textId}-hint`}
           onUpdate={setText}
@@ -214,6 +214,8 @@ export function DecisionRequestCard({ card }: { card: RequestCard }) {
   const issueHref = paths.issueDetail(card.issue_id);
   const [draft, setDraft] = useState<AnswerDraft>(EMPTY_DRAFT);
   const [refused, setRefused] = useState(false);
+  // Remounting the form empties the editor after a send: the editor takes its draft once at mount.
+  const [formKey, setFormKey] = useState(0);
   const answer = useAnswerDecisionRequest(card.issue_id);
   const sendAnswer = (text: string) => {
     // Keep what is sent as the draft, so a refused send shows back the same text.
@@ -221,7 +223,10 @@ export function DecisionRequestCard({ card }: { card: RequestCard }) {
     answer.mutate(
       { requestId: card.id, option: draft.option || undefined, text: text.trim() || undefined },
       {
-        onSuccess: () => setDraft(EMPTY_DRAFT),
+        onSuccess: () => {
+          setDraft(EMPTY_DRAFT);
+          setFormKey((key) => key + 1);
+        },
         onError: (error) => isConflict(error) && setRefused(true),
       },
     );
@@ -300,7 +305,7 @@ export function DecisionRequestCard({ card }: { card: RequestCard }) {
           <KeptDraft draft={draft} onDiscard={discardDraft} />
         ) : (
           card.state === "open" && (
-            <DecisionAnswerForm card={card} draft={draft} answer={answer} onDraftChange={setDraft} onSend={sendAnswer} />
+            <DecisionAnswerForm key={formKey} card={card} draft={draft} answer={answer} onDraftChange={setDraft} onSend={sendAnswer} />
           )
         )}
         {shown === "picked_up" && card.answer?.run && (
