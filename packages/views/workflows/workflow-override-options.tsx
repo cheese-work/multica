@@ -9,8 +9,8 @@ import { useT } from "../i18n";
 /**
  * The choice of workflow for one issue: follow its project's, or any workspace
  * workflow (CHE-1986). Shared by the issue's flow card and the create dialogs
- * so the two cannot offer different choices. `projectId` null hides "follow
- * project", which an issue outside a project has nothing to follow.
+ * so the two cannot offer different choices. The reset is always offered, so a
+ * choice stays reversible: "follow project" inside a project, "default" outside.
  */
 export function WorkflowOverrideOptions({
   workflowId,
@@ -30,12 +30,10 @@ export function WorkflowOverrideOptions({
   return (
     <>
       <p className="px-2 py-1 text-caption text-muted-foreground">{t(($) => $.workflows.detail.override_title)}</p>
-      {projectId && (
-        <Button variant="ghost" size="sm" className="w-full justify-start" disabled={pending} onClick={() => onChoose(null)}>
-          {mark(!workflowId)}
-          {t(($) => $.workflows.detail.override_follow_project)}
-        </Button>
-      )}
+      <Button variant="ghost" size="sm" className="w-full justify-start" disabled={pending} onClick={() => onChoose(null)}>
+        {mark(!workflowId)}
+        {projectId ? t(($) => $.workflows.detail.override_follow_project) : t(($) => $.workflows.detail.override_default)}
+      </Button>
       {workflows.map((w) => (
         <Button
           key={w.id}

@@ -533,14 +533,19 @@ vi.mock("../issues/components/pickers/custom-property-picker", () => ({
 
 vi.mock("../projects/components/project-picker", () => ({
   ProjectPicker: ({ projectId, onUpdate }: any) => (
-    <button
-      type="button"
-      data-testid="project-picker"
-      data-project-id={projectId ?? "none"}
-      onClick={() => onUpdate({ project_id: "proj-1" })}
-    >
-      Project {projectId ?? "none"}
-    </button>
+    <>
+      <button
+        type="button"
+        data-testid="project-picker"
+        data-project-id={projectId ?? "none"}
+        onClick={() => onUpdate({ project_id: "proj-1" })}
+      >
+        Project {projectId ?? "none"}
+      </button>
+      <button type="button" data-testid="project-clear" onClick={() => onUpdate({ project_id: null })}>
+        Clear project
+      </button>
+    </>
   ),
 }));
 
@@ -2394,6 +2399,40 @@ describe("CreateIssueModal", () => {
       await chooseReviewFlow(user);
       await user.click(await screen.findByRole("button", { name: /Review flow/ }));
       await user.click(await screen.findByRole("button", { name: "Follow the project’s workflow" }));
+
+      await waitFor(() => expect(screen.getByTestId("status-picker")).toHaveAttribute("data-workflow-id", ""));
+      fireEvent.change(screen.getByPlaceholderText("Issue title"), { target: { value: "Flow issue" } });
+      await user.click(screen.getByRole("button", { name: "Create Issue" }));
+
+      await waitFor(() => expect(mockCreateIssue).toHaveBeenCalled());
+      expect(mockCreateIssue.mock.calls[0]![0].workflow_id).toBeUndefined();
+    });
+
+    // No project means nothing to follow, but the choice must stay reversible.
+    it("goes back to the default with no project, sending no workflow", async () => {
+      const user = userEvent.setup();
+      renderPanel();
+      await chooseReviewFlow(user);
+      await waitFor(() => expect(screen.getByTestId("status-picker")).toHaveAttribute("data-workflow-id", "wf-review"));
+      await user.click(await screen.findByRole("button", { name: /Review flow/ }));
+      await user.click(await screen.findByRole("button", { name: "Default workflow" }));
+
+      await waitFor(() => expect(screen.getByTestId("status-picker")).toHaveAttribute("data-workflow-id", ""));
+      fireEvent.change(screen.getByPlaceholderText("Issue title"), { target: { value: "Flow issue" } });
+      await user.click(screen.getByRole("button", { name: "Create Issue" }));
+
+      await waitFor(() => expect(mockCreateIssue).toHaveBeenCalled());
+      expect(mockCreateIssue.mock.calls[0]![0].workflow_id).toBeUndefined();
+    });
+
+    it("can still reset the choice after the project is cleared", async () => {
+      mockListProjects.mockResolvedValue({ projects: [{ id: "proj-1", workflow_id: null }], total: 1 });
+      const user = userEvent.setup();
+      renderPanel({ project_id: "proj-1" });
+      await chooseReviewFlow(user);
+      await user.click(screen.getByTestId("project-clear"));
+      await user.click(await screen.findByRole("button", { name: /Review flow/ }));
+      await user.click(await screen.findByRole("button", { name: "Default workflow" }));
 
       await waitFor(() => expect(screen.getByTestId("status-picker")).toHaveAttribute("data-workflow-id", ""));
       fireEvent.change(screen.getByPlaceholderText("Issue title"), { target: { value: "Flow issue" } });

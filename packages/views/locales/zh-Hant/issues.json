@@ -1687,6 +1687,7 @@
       "follows_override": "（此議題單獨設置）",
       "override_title": "此議題的工作流",
       "override_follow_project": "跟隨項目的工作流",
+      "override_default": "預設工作流",
       "override_error": "無法更改工作流",
       "no_workflow": "無工作流",
       "flowchart": "流程圖"
