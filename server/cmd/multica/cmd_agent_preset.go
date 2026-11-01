@@ -47,12 +47,13 @@ var agentPresetDeleteCmd = &cobra.Command{
 }
 
 var agentPresetUseCmd = &cobra.Command{
-	Use:   "use <agent> [name|base]",
+	Use:   "use <agent> [name|base|reset]",
 	Short: "Make a preset the agent default (--default) or pin it on an issue (--issue)",
 	Long: `Make a preset the agent default, or pin it on one issue.
 
   multica agent preset use <agent> fast --default      agent default (base clears it)
   multica agent preset use <agent> fast --issue <id>   issue label preset:fast
+  multica agent preset use <agent> reset --issue <id>  remove the issue's preset (same as --clear)
   multica agent preset use <agent> --issue <id> --clear`,
 	Args:              cobra.RangeArgs(1, 2),
 	RunE:              runAgentPresetUse,
@@ -81,9 +82,8 @@ func addPresetSettingFlags(cmd *cobra.Command) {
 }
 
 // completePresetNames completes `<agent> <TAB>`. stored=false (use) offers what
-// the agent can run: its usable presets plus base, from the invoke-gated
-// completions endpoint without `reset`, a DM keyword `use` cannot execute.
-// stored=true (update, delete) offers every stored preset, stale ones too, from
+// the agent can run: its usable presets, base and reset, from the invoke-gated
+// completions endpoint. stored=true (update, delete) offers every stored preset, stale ones too, from
 // the list endpoint, which a manager without invoke access can read.
 func completePresetNames(stored bool) func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 	return func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -123,7 +123,7 @@ func completePresetNames(stored bool) func(*cobra.Command, []string, string) ([]
 		}
 		var out []string
 		for _, n := range names {
-			if (stored || n != "reset") && strings.HasPrefix(n, toComplete) {
+			if strings.HasPrefix(n, toComplete) {
 				out = append(out, n)
 			}
 		}
@@ -263,9 +263,15 @@ func runAgentPresetUse(cmd *cobra.Command, args []string) error {
 	}
 	defer cancel()
 
+	// reset, like /preset reset, hands the target back: no issue preset, or no
+	// agent default (the same as base, since nothing sits below the default).
+	reset := len(args) > 1 && args[1] == "reset"
+	if reset && asDefault {
+		args[1] = "base"
+	}
 	var result any
 	switch {
-	case clear:
+	case clear || (reset && issue != ""):
 		err = client.DeleteJSONResponse(ctx, "/api/issues/"+issue+"/preset", &result)
 	case issue != "":
 		err = client.PutJSON(ctx, "/api/issues/"+issue+"/preset", map[string]any{"name": args[1]}, &result)

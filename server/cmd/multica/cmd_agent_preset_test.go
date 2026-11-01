@@ -51,15 +51,15 @@ func presetFlagsCmd() *cobra.Command {
 }
 
 // Cheese: `multica agent preset use <agent> <TAB>` offers the agent's usable
-// presets and base. reset is a DM keyword only: `use` cannot run it (the API
-// rejects the reserved name), so offering it would suggest a command that fails.
-func TestPresetCompletion_UseOffersPresetsAndBase(t *testing.T) {
+// presets, base and reset, exactly what /preset offers in a DM. It checks the
+// completion function wired on the real command.
+func TestPresetCompletion_UseOffersPresetsBaseAndReset(t *testing.T) {
 	calls, stop := presetServer(t, `{"names":["base","reset","big","fast"]}`)
 	defer stop()
 
-	got, _ := completePresetNames(false)(presetFlagsCmd(), []string{presetAgentID}, "")
+	got, _ := agentPresetUseCmd.ValidArgsFunction(agentPresetUseCmd, []string{presetAgentID}, "")
 
-	want := []string{"base", "big", "fast"}
+	want := []string{"base", "reset", "big", "fast"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("completions = %v, want %v", got, want)
 	}
@@ -177,6 +177,9 @@ func TestPresetUseRoutes(t *testing.T) {
 		{"default", map[string]string{"default": "true"}, []string{presetAgentID, "fast"}, "PUT", "/api/agents/" + presetAgentID + "/presets/default", map[string]any{"name": "fast"}},
 		{"default base", map[string]string{"default": "true"}, []string{presetAgentID, "base"}, "PUT", "/api/agents/" + presetAgentID + "/presets/default", map[string]any{"name": "base"}},
 		{"issue", map[string]string{"issue": "issue-1"}, []string{presetAgentID, "fast"}, "PUT", "/api/issues/issue-1/preset", map[string]any{"name": "fast"}},
+		// reset, the keyword the completion offers, hands the target back.
+		{"default reset", map[string]string{"default": "true"}, []string{presetAgentID, "reset"}, "PUT", "/api/agents/" + presetAgentID + "/presets/default", map[string]any{"name": "base"}},
+		{"issue reset", map[string]string{"issue": "issue-1"}, []string{presetAgentID, "reset"}, "DELETE", "/api/issues/issue-1/preset", nil},
 		{"issue clear", map[string]string{"issue": "issue-1", "clear": "true"}, []string{presetAgentID}, "DELETE", "/api/issues/issue-1/preset", nil},
 	}
 	for _, tc := range cases {

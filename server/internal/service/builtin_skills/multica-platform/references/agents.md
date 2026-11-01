@@ -375,7 +375,7 @@ multica agent preset create <agent> fast --thinking-level low --context-arg --au
 multica agent preset update <agent> fast --model <model> --reset thinking_level
 multica agent preset use <agent> fast --default       # agent default; `base` clears it
 multica agent preset use <agent> fast --issue <id>    # swaps the issue's preset:* label
-multica agent preset use <agent> --issue <id> --clear
+multica agent preset use <agent> --issue <id> --clear   # or: use <agent> reset --issue <id>
 multica agent preset delete <agent> fast
 ```
 
@@ -385,7 +385,9 @@ null (inherit). In a DM, `/preset`, `/preset <name>`, `/preset base` and
 starts no run. `PUT /api/agents/{id}/presets/default`, `GET .../presets/usage`
 (per-preset tasks and tokens) and `GET .../presets/completions` (names the
 caller may use, plus `base` and `reset`) back the CLI and composer. Shell
-completion fills `<name>` for `use`, `update` and `delete`.
+completion fills `<name>` for `use` (presets, `base`, `reset`; `reset` removes the
+issue's preset, or clears the default like `base`), and for `update` and `delete`
+(every stored preset, stale ones too).
 
 ## Side effects needing approval
 
