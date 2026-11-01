@@ -156,3 +156,19 @@ func TestIssueSearch_ExactDiacriticsRankAcrossNonContiguousTerms(t *testing.T) {
 		t.Fatalf("got %+v, want exact %s before folded-only %s", got, exact, foldedOnly)
 	}
 }
+
+// The newest matching comment is the snippet, but an older exact comment still
+// earns the issue its exact-diacritic rank (CHE-2943 second review, terra).
+func TestIssueSearch_ExactDiacriticsRankCountsEveryMatchingComment(t *testing.T) {
+	f := newDiacriticWorkspace(t)
+	exact := dbfx.Issue(t, "Alpha", testutil.Cols{"workspace_id": f.workspaceID})
+	dbfx.Comment(t, exact, "Đã sửa lỗi đăng nhập", testutil.Cols{"workspace_id": f.workspaceID})
+	dbfx.Comment(t, exact, "Kiểm tra dang nhap lại", testutil.Cols{"workspace_id": f.workspaceID})
+	foldedOnly := dbfx.Issue(t, "Beta", testutil.Cols{"workspace_id": f.workspaceID})
+	dbfx.Comment(t, foldedOnly, "Kiểm tra dang nhap lại", testutil.Cols{"workspace_id": f.workspaceID})
+
+	got := f.search(t, "đăng nhập")
+	if len(got) != 2 || got[0].ID != exact || got[1].ID != foldedOnly {
+		t.Fatalf("got %+v, want exact %s before folded-only %s", got, exact, foldedOnly)
+	}
+}

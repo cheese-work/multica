@@ -1093,6 +1093,13 @@ func buildFoldedSearchQuery(lowerPhrase string, lowerTerms []string, phrase stri
 		commentSnippetPredicate,
 	))
 
+	if exactDiacritics {
+		// Ids only, not content: the exact-diacritic rank reads the matching
+		// comments by primary key once the candidate set is known.
+		commentFlagColumns = append(commentFlagColumns, fmt.Sprintf(
+			"ARRAY_AGG(c.id) FILTER (WHERE %s) AS matching_comment_ids", commentSnippetPredicate))
+	}
+
 	// PostgreSQL otherwise inlines this scalar LATERAL subquery and recomputes
 	// the folded c.content for every flag. OFFSET 0 is the intentional planner fence
 	// that keeps the long comment body lowercased once per row. Future indexable
@@ -1119,17 +1126,15 @@ func buildFoldedSearchQuery(lowerPhrase string, lowerTerms []string, phrase stri
 	)
 
 	// Exact diacritics rank a match above one that only agrees after folding,
-	// across all three sources. The comment side checks only the snippet comment
-	// (the newest match, the one the user sees) by primary key: a per-comment flag
-	// would normalize every comment in the workspace a second time.
-	// ponytail: an older exact comment behind a newer fold-only one does not
-	// count; aggregate the matching ids if that ever matters.
+	// across all three sources. The comment side reads every matching comment
+	// by primary key: a per-comment flag in the aggregate would normalize each
+	// comment in the workspace a second time.
 	diacriticRank := "0"
-	snippetCommentJoin := ""
 	if exactDiacritics {
-		diacriticRank = "CASE WHEN im.title_cased OR im.description_cased OR COALESCE(" +
-			casedMatch("LOWER(sc.content)") + ", FALSE) THEN 0 ELSE 1 END"
-		snippetCommentJoin = "LEFT JOIN comment sc ON sc.id = cm.snippet_comment_id\n\t\t"
+		diacriticRank = `CASE WHEN im.title_cased OR im.description_cased OR EXISTS (
+				SELECT 1 FROM comment sc
+				WHERE sc.id = ANY(cm.matching_comment_ids) AND ` + casedMatch("LOWER(sc.content)") + `
+			) THEN 0 ELSE 1 END`
 	}
 
 	// Stage two combines the two narrow sources, applies the legacy eligibility
@@ -1235,8 +1240,8 @@ func buildFoldedSearchQuery(lowerPhrase string, lowerTerms []string, phrase stri
 			%s AS match_source
 		FROM issue_matches im
 		LEFT JOIN comment_matches cm ON cm.issue_id = im.issue_id
-		%sWHERE %s
-	)`, cancelledRank, rankExpr, statusRank, diacriticRank, matchSourceExpr, snippetCommentJoin, eligibleExpr)
+		WHERE %s
+	)`, cancelledRank, rankExpr, statusRank, diacriticRank, matchSourceExpr, eligibleExpr)
 
 	pageCandidatesCTE := fmt.Sprintf(`page_candidates AS MATERIALIZED (
 		SELECT issue_id, updated_at, snippet_comment_id, cancelled_rank, relevance_rank, status_rank, diacritic_rank, match_source
