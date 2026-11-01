@@ -222,6 +222,10 @@ export default function WorkspaceLayout() {
           options={SHEET_OPTIONS}
         />
         <Stack.Screen
+          name="issue/[id]/picker/workflow"
+          options={SHEET_OPTIONS}
+        />
+        <Stack.Screen
           name="issue/[id]/picker/due-date"
           options={SHEET_OPTIONS}
         />
