@@ -5,11 +5,14 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // A window nobody opened still holds credit or debt: the runs counted in it
@@ -389,5 +392,49 @@ func TestRunBudgetExhaustionBlockDoesNotWaitForTheBoundaryLock(t *testing.T) {
 	}()
 	if stillRunning(done) {
 		t.Fatal("the exhaustion block waited for the window boundary lock")
+	}
+}
+
+// Many requests for one issue queue on its boundary lock. A request that
+// waits holds no pooled connection, so the one that holds the lock can still
+// get the connections it needs to finish, even when the pool is small.
+func TestRunBudgetBoundaryWaitersDoNotExhaustTheConnectionPool(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	c, _ := budgetedAt(t, 40, 38)
+	recordMemberMovesOf(t, c.issueID)
+
+	cfg := testPool.Config().Copy()
+	cfg.MaxConns = 4
+	small, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer small.Close()
+	realQueries, realTx, realDB := testHandler.Queries, testHandler.TxStarter, testHandler.DB
+	testHandler.Queries, testHandler.TxStarter, testHandler.DB = db.New(small), small, small
+	defer func() { testHandler.Queries, testHandler.TxStarter, testHandler.DB = realQueries, realTx, realDB }()
+
+	const racers = 20
+	codes := make([]int, racers)
+	var wg sync.WaitGroup
+	for i := range codes {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := withURLParam(newRequest(http.MethodPatch, "/api/issues/"+c.issueID, map[string]any{"status": "in_review", "suppress_run": true}), "id", c.issueID)
+			ctx, cancel := context.WithTimeout(req.Context(), 20*time.Second)
+			defer cancel()
+			w := httptest.NewRecorder()
+			testHandler.UpdateIssue(w, req.WithContext(ctx))
+			codes[i] = w.Code
+		}()
+	}
+	wg.Wait()
+	for i, code := range codes {
+		if code != http.StatusOK {
+			t.Fatalf("request %d = %d, want 200: %d concurrent moves on a pool of 4 connections must all finish", i, code, racers)
+		}
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -215,17 +216,69 @@ func (h *Handler) openRunBudgetWindow(ctx context.Context, issue db.Issue) error
 	return tx.Commit(ctx)
 }
 
+// boundaryQueue orders the requests of this process that want one issue's
+// boundary lock. The database lock lives in a transaction, which holds a pooled
+// connection while it waits: if every waiter held one, the request that holds
+// the lock could not get the connections it needs to finish. Only the head of
+// the queue waits in the database.
+var boundaryQueue = struct {
+	sync.Mutex
+	turns map[pgtype.UUID]*boundaryTurn
+}{turns: map[pgtype.UUID]*boundaryTurn{}}
+
+type boundaryTurn struct {
+	held    chan struct{} // holds one token while a request has the turn
+	waiting int
+}
+
+func takeBoundaryTurn(ctx context.Context, issueID pgtype.UUID) (give func(), err error) {
+	boundaryQueue.Lock()
+	turn := boundaryQueue.turns[issueID]
+	if turn == nil {
+		turn = &boundaryTurn{held: make(chan struct{}, 1)}
+		boundaryQueue.turns[issueID] = turn
+	}
+	turn.waiting++
+	boundaryQueue.Unlock()
+
+	leave := func() {
+		boundaryQueue.Lock()
+		if turn.waiting--; turn.waiting == 0 {
+			delete(boundaryQueue.turns, issueID)
+		}
+		boundaryQueue.Unlock()
+	}
+	select {
+	case turn.held <- struct{}{}:
+	case <-ctx.Done():
+		leave()
+		return nil, ctx.Err()
+	}
+	return sync.OnceFunc(func() {
+		<-turn.held
+		leave()
+	}), nil
+}
+
 // lockRunBudgetBoundary holds the issue's boundary lock until release runs;
 // release is safe to call more than once. An agent's or the platform's status
 // write takes it around the write and its grant. A person's move reads the
 // status under the lock to decide whether it ends a window, so a write that
 // could land between that read and the move's own write has to wait.
 func (h *Handler) lockRunBudgetBoundary(ctx context.Context, issueID pgtype.UUID) (release func(), err error) {
-	tx, err := h.TxStarter.Begin(ctx)
+	giveTurn, err := takeBoundaryTurn(ctx, issueID)
 	if err != nil {
 		return nil, err
 	}
-	release = func() { _ = tx.Rollback(ctx) }
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		giveTurn()
+		return nil, err
+	}
+	release = sync.OnceFunc(func() {
+		_ = tx.Rollback(ctx)
+		giveTurn()
+	})
 	if err := h.Queries.WithTx(tx).LockIssueRunBudgetBoundary(ctx, issueID); err != nil {
 		release()
 		return nil, err
