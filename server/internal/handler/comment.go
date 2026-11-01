@@ -1807,6 +1807,12 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Same promise as above: a mention of an agent the author cannot reach is
+	// refused before the insert, so nothing is saved, published or enqueued.
+	if h.rejectInvalidAgentMentions(r.Context(), w, issue, req.Content, authorType, authorID, h.invokeOriginatorFromRequest(r, authorType, authorID), nil) {
+		return
+	}
+
 	// sourceTaskID captures the agent's currently-executing task when it posts
 	// via the CLI (X-Task-ID header). Stamping it on the comment row keeps the
 	// originator inheritance chain (resolveOriginatorFromTriggerComment →
@@ -4011,6 +4017,14 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.rejectMissingRequiredSourceLink(w, r, actorType, true, issueForSource, req.Content, "content") {
 		return
+	}
+	// Only agents this edit adds are checked: an old mention whose agent was
+	// archived since must not block an unrelated edit.
+	if existing.Content != req.Content {
+		triggerType, triggerID := commentTriggerActor(existing, actorType, actorID)
+		if h.rejectInvalidAgentMentions(r.Context(), w, issueForSource, req.Content, triggerType, triggerID, h.invokeOriginatorFromRequest(r, triggerType, triggerID), agentMentionIDs(existing.Content)) {
+			return
+		}
 	}
 	if req.ExpectedRevision != nil {
 		if *req.ExpectedRevision < 1 {
