@@ -56,7 +56,7 @@ type AgentResponse struct {
 	// update left unable to run (CHE-2249 E5).
 	StalePresets []stalePreset `json:"stale_presets,omitempty"`
 	ID           string        `json:"id"`
-	WorkspaceID  string        `json:"workspace_id"`
+	WorkspaceID string `json:"workspace_id"`
 	// RuntimeID is the empty string when the agent is unbound — it kept its
 	// configuration and history when its runtime was deleted, and needs a new
 	// runtime before it can run again (MUL-5559). The wire type stays a string
