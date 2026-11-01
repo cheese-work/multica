@@ -96,3 +96,13 @@ func TestBuildFenceVariants(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildZeroBudgetIsABudget(t *testing.T) {
+	m := parts(Build(Input{Brief: brief, Prompt: "12345", Budgets: map[Part]int{PartTask: 0, PartSeed: 0}}))
+	if got := m[PartTask].Notes; len(got) != 1 || got[0] != "over budget by 2 est. tokens" {
+		t.Errorf("task notes = %q", got)
+	}
+	if len(m[PartSeed].Notes) != 0 || len(m[PartTools].Notes) != 0 {
+		t.Error("empty part or unbudgeted part got a note")
+	}
+}

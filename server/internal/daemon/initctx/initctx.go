@@ -37,7 +37,7 @@ type Input struct {
 	Brief   string
 	Prompt  string
 	Seed    string       // resumed-session seed; empty when absent
-	Budgets map[Part]int // est. tokens per part; missing or <=0 = no budget
+	Budgets map[Part]int // est. tokens per part; a missing key = no budget, 0 = nothing allowed
 }
 
 type PartReport struct {
@@ -80,7 +80,7 @@ func Build(in Input) Report {
 	for _, p := range AllParts {
 		s := text[p].String()
 		pr := PartReport{Part: p, Bytes: len(s), Tokens: EstimateTokens(s), Budget: max(in.Budgets[p], 0)}
-		if pr.Budget > 0 && pr.Tokens > pr.Budget {
+		if _, ok := in.Budgets[p]; ok && pr.Tokens > pr.Budget {
 			pr.Notes = append(pr.Notes, fmt.Sprintf("over budget by %d est. tokens", pr.Tokens-pr.Budget))
 		}
 		r.Parts = append(r.Parts, pr)
