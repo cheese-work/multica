@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -94,11 +93,18 @@ func assertNoDeliveryEffect(test *testing.T, issueID, before string, records ...
 
 func assertWithdrawnForCard(test *testing.T, record decisionRecordResult) {
 	test.Helper()
+	assertAnswerWithdrawn(test, record, "open")
+}
+
+// assertAnswerWithdrawn checks the card_required withdrawal and the state the
+// request is left in: open for an asked request, cancelled for an unprompted record.
+func assertAnswerWithdrawn(test *testing.T, record decisionRecordResult, requestStatus string) {
+	test.Helper()
 	if count := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE id = $1 AND disclaimed_at IS NOT NULL AND disclaim_reason = 'card_required' AND disclaimed_by_user_id IS NULL AND disclaimed_by_agent_id IS NULL`, record.Answer.ID); count != 1 {
 		test.Fatal("forbidden answer was not withdrawn with card_required")
 	}
-	if count := dbfx.Count(test, `SELECT count(*) FROM decision_request WHERE id = $1 AND status = 'open'`, record.Request.ID); count != 1 {
-		test.Fatal("forbidden answer's request was not reopened")
+	if count := dbfx.Count(test, `SELECT count(*) FROM decision_request WHERE id = $1 AND status = $2`, record.Request.ID, requestStatus); count != 1 {
+		test.Fatalf("forbidden answer's request is not %s", requestStatus)
 	}
 	var content string
 	dbfx.QueryRow(test, `SELECT content FROM comment WHERE decision_answer_id = $1 AND decision_comment_kind = 'disclaim'`, record.Answer.ID).Scan(&content)
@@ -199,9 +205,10 @@ func TestDecisionDeliveryMixedGroupRecoversOnCard(test *testing.T) {
 	}
 }
 
-// An unprompted record has no card, so its request is reopened with the lane
-// link and the agent posts the replacement request that the person answers.
-func TestDecisionDeliveryRefusedUnpromptedRecordTakesReplacementCard(test *testing.T) {
+// An unprompted record has no card, so a refusal cancels its request and tells
+// the agent to post a new one. Nothing stays open: the issue can complete and
+// the lane can be archived.
+func TestDecisionDeliveryRefusedUnpromptedRecordIsCancelled(test *testing.T) {
 	resetDecisionLease(test)
 	handler, _ := newDecisionRunnerFixture(test)
 	fixture := newCardFixture(test)
@@ -221,46 +228,18 @@ func TestDecisionDeliveryRefusedUnpromptedRecordTakesReplacementCard(test *testi
 		test.Fatal(err)
 	}
 	assertNoDeliveryEffect(test, fixture.issueID, before, recorded)
-	assertWithdrawnForCard(test, recorded)
-
-	// The agent reads the withdrawal in a new turn and posts the replacement.
-	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'running' WHERE id = $1`, fixture.taskID)
-	replacementInput := fixture.input()
-	replacementInput.Ask, replacementInput.EscalationClass, replacementInput.HumanUserID = "Replacement for the refused record", "spend", parseUUID(fixture.humanID)
-	replacementInput.Options = []decisiontx.AskOption{{Label: "Option A", WhatHappens: "A happens"}}
-	replacement, err := testHandler.createDecisionRequest(fixture.request(), fixture.issue, replacementInput)
-	if err != nil || replacement.Request.Origin != "asked" || !replacement.Request.PingMessageID.Valid {
-		test.Fatalf("replacement request has no card: %+v %v", replacement.Request, err)
-	}
-	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, fixture.taskID)
-	onReplacement := fixture
-	onReplacement.decision = replacement.Request
-	card, err := onReplacement.answerOnCard(decisionCardAnswerInput{Option: "Option A"})
-	if err != nil {
-		test.Fatal(err)
-	}
-	dbfx.Exec(test, `UPDATE decision_answer SET wake_at = clock_timestamp() WHERE id = $1`, card.Answer.ID)
-	if err := deliverDecisionForTest(handler, onReplacement); err != nil {
-		test.Fatal(err)
-	}
-	if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'running') AND (trigger_comment_id = $3 OR $3 = ANY(coalesced_comment_ids))`, fixture.issueID, fixture.agentID, card.Comment.ID); count != 1 {
-		test.Fatalf("replacement card answer runs = %d, want 1", count)
+	assertAnswerWithdrawn(test, recorded, "cancelled")
+	if count := dbfx.Count(test, `SELECT count(*) FROM decision_request WHERE id = $1 AND cancel_reason = 'record_disclaimed'`, recorded.Request.ID); count != 1 {
+		test.Fatal("refused unprompted record was not cancelled as record_disclaimed")
 	}
 
-	// The replacement's answer settles the refused original: it neither blocks
-	// the agent from completing the issue nor the lane from being archived.
-	var status, reason string
-	dbfx.QueryRow(test, `SELECT status, COALESCE(cancel_reason, '') FROM decision_request WHERE id = $1`, uuidToString(recorded.Request.ID)).Scan(&status, &reason)
-	if status != "cancelled" || reason != "card_replaced" {
-		test.Fatalf("refused original = %s/%s, want cancelled/card_replaced", status, reason)
-	}
-	// Settle the fixture's own card request, so only the original can block.
+	// Settle the fixture's own card request, so only the original could block.
 	dbfx.Exec(test, `UPDATE decision_request SET status = 'cancelled', cancel_reason = 'human_removed' WHERE id = $1`, fixture.decision.ID)
 	completion := context.WithValue(context.Background(), wakeupActorKey{}, wakeupActor{kind: "agent", id: fixture.agentID})
 	if err := guardAgentIssueStatus(completion, testHandler.Queries, db.UpdateIssueParams{ID: parseUUID(fixture.issueID), Status: pgtype.Text{String: "done", Valid: true}}); err != nil {
-		test.Fatalf("completion still blocked: %v", err)
+		test.Fatalf("completion blocked: %v", err)
 	}
 	if open, err := testHandler.Queries.DecisionOpenLaneExists(context.Background(), db.DecisionOpenLaneExistsParams{WorkspaceID: recorded.Request.WorkspaceID, SessionID: recorded.Request.ChatSessionID}); err != nil || open {
-		test.Fatalf("lane archive still blocked: open=%v err=%v", open, err)
+		test.Fatalf("lane archive blocked: open=%v err=%v", open, err)
 	}
 }

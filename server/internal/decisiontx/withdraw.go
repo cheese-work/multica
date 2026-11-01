@@ -46,8 +46,9 @@ func Withdraw(ctx context.Context, queries *db.Queries, request db.DecisionReque
 	return withdraw(ctx, queries, request, answer, sessionStatus, reason, userID, nil, false, "")
 }
 
-// WithdrawForCard withdraws an agent-recorded answer that the card must replace
-// and reopens its request; the withdrawal comment links the card.
+// WithdrawForCard withdraws an agent-recorded answer that the card must replace.
+// An asked request reopens and the comment links its card; an unprompted record
+// has no card, so its request is cancelled and the comment links the lane.
 func WithdrawForCard(ctx context.Context, queries *db.Queries, request db.DecisionRequest, answer db.DecisionAnswer, sessionStatus, cardLink string) (Withdrawal, error) {
 	return withdraw(ctx, queries, request, answer, sessionStatus, CardRequired, pgtype.UUID{}, nil, false, cardLink)
 }
@@ -103,7 +104,7 @@ func withdraw(ctx context.Context, queries *db.Queries, request db.DecisionReque
 	cancelReason := ""
 	if reason == ClassNeedsOwner {
 		cancelReason = ClassNeedsOwner
-	} else if request.Origin == "unprompted" && reason != CardRequired {
+	} else if request.Origin == "unprompted" {
 		cancelReason = "record_disclaimed"
 		if veto != nil {
 			cancelReason = "record_vetoed"
