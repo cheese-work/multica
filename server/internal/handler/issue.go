@@ -1327,7 +1327,7 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 	}
 	// Typo tolerance is a fallback: a query with any normal hit never pays for it.
 	if shouldRunFuzzyFallback(q, hasNum, offset, len(results)) {
-		fuzzyQuery, fuzzyArgs := buildFuzzySearchQuery(foldSearchText(q), includeClosed, terminalStatusKeys)
+		fuzzyQuery, fuzzyArgs := buildFuzzySearchQuery(foldDiacritics(q), includeClosed, terminalStatusKeys)
 		fuzzyArgs[1] = wsUUID
 		fuzzyArgs[len(fuzzyArgs)-2] = limit
 		fuzzyArgs[len(fuzzyArgs)-1] = offset

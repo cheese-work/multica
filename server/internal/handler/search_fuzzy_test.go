@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -168,23 +167,4 @@ func indexOfID(ids []string, id string) int {
 		}
 	}
 	return -1
-}
-
-// The Go fold folds the query and the SQL fold folds the column, so a drift
-// between them silently breaks matching for the drifting letter.
-func TestFoldSearchText_MatchesSQLFold(t *testing.T) {
-	var letters string
-	for _, group := range foldGroups {
-		letters += group.letters + strings.ToUpper(group.letters)
-	}
-	letters += "Lỗi đăng nhập plain ASCII 123"
-
-	var fromSQL string
-	dbfx.QueryRow(t, "SELECT "+foldSQL("$1::text"), letters).Scan(&fromSQL)
-	if got := foldSearchText(letters); got != fromSQL {
-		t.Fatalf("Go fold = %q, SQL fold = %q", got, fromSQL)
-	}
-	if got := foldSearchText("ĐĂNG NHẬP"); got != "dang nhap" {
-		t.Fatalf("foldSearchText(ĐĂNG NHẬP) = %q, want %q", got, "dang nhap")
-	}
 }

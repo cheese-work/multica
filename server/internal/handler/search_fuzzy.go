@@ -2,7 +2,6 @@ package handler
 
 import (
 	"fmt"
-	"strings"
 	"unicode/utf8"
 )
 
@@ -20,56 +19,19 @@ const fuzzySearchThreshold = 0.4
 // letters share too few trigrams to score meaningfully.
 const fuzzySearchMinRunes = 3
 
-// fuzzyDescriptionRunes caps how much of each description is scored.
-// word_similarity cost grows with text length; scoring whole descriptions took
-// 6.4 s over 8,000 issues averaging 2,100 characters, scoring the first 200
-// runes keeps the fallback under the 1 s budget (CHE-2944).
+// fuzzyDescriptionRunes is how much of each description the fallback scores:
+// the first 200 runes. A typo in text past that window is not found by the
+// fallback; the normal query still searches the whole description. Scoring
+// whole descriptions took 4.6-10 s over 8,003 issues averaging 2,970 characters
+// (GIN trigram index included); the 200-rune window took 684-703 ms over 8,000
+// issues averaging 2,104 characters (CHE-2944). Widen it only with a new measurement.
 const fuzzyDescriptionRunes = 200
-
-// foldGroups is the single source for the diacritic fold: every rune in a
-// group's letters folds to its base. The Go fold and the SQL translate() are
-// both generated from it.
-var foldGroups = []struct{ base, letters string }{
-	{"a", "àáảãạăằắẳẵặâầấẩẫậ"},
-	{"e", "èéẻẽẹêềếểễệ"},
-	{"i", "ìíỉĩị"},
-	{"o", "òóỏõọôồốổỗộơờớởỡợ"},
-	{"u", "ùúủũụưừứửữự"},
-	{"y", "ỳýỷỹỵ"},
-	{"d", "đ"},
-}
-
-var foldReplacer, foldSQLFrom, foldSQLTo = buildFold()
-
-func buildFold() (*strings.Replacer, string, string) {
-	var pairs []string
-	var from, to strings.Builder
-	for _, group := range foldGroups {
-		for _, r := range group.letters {
-			pairs = append(pairs, string(r), group.base)
-			from.WriteRune(r)
-			to.WriteString(group.base)
-		}
-	}
-	return strings.NewReplacer(pairs...), from.String(), to.String()
-}
-
-// foldSearchText lowercases s and folds Vietnamese diacritics to base letters.
-func foldSearchText(s string) string {
-	return foldReplacer.Replace(strings.ToLower(s))
-}
-
-// foldSQL returns the SQL expression equivalent to foldSearchText(expr). The
-// mapping strings are generated from foldGroups and contain no quotes.
-func foldSQL(expr string) string {
-	return fmt.Sprintf("translate(LOWER(%s), '%s', '%s')", expr, foldSQLFrom, foldSQLTo)
-}
 
 // shouldRunFuzzyFallback reports whether a search that found nothing should be
 // retried with typo tolerance.
 func shouldRunFuzzyFallback(query string, hasNum bool, offset, normalResults int) bool {
 	return normalResults == 0 && offset == 0 && !hasNum &&
-		utf8.RuneCountInString(foldSearchText(query)) >= fuzzySearchMinRunes
+		utf8.RuneCountInString(foldDiacritics(query)) >= fuzzySearchMinRunes
 }
 
 // buildFuzzySearchQuery scores folded title and description against the folded
