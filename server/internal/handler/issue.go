@@ -4307,7 +4307,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if actorType == "member" && (req.Status != nil || params.Status.Valid) {
+	if actorType == "member" && params.Status.Valid && params.Status.String != prevIssue.Status {
 		release, ok := h.beginRunBudgetMove(w, r, prevIssue)
 		if !ok {
 			return
@@ -5228,7 +5228,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		releaseMove := func() {}
-		if actorType == "member" && (req.Updates.Status != nil || params.Status.Valid) {
+		if actorType == "member" && params.Status.Valid && params.Status.String != prevIssue.Status {
 			release, err := h.lockRunBudgetMove(r.Context(), prevIssue)
 			if err != nil {
 				slog.Warn("batch update issue: run budget", "issue_id", issueID, "error", err)
