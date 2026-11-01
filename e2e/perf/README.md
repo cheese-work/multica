@@ -51,6 +51,33 @@ an in-flight upload alive, shows messages received while closed on reopen, and
 survives an interrupted exit. It also checks that the message list's ancestor
 is never scaled. HTTP and WebSocket traffic is synthetic; no backend is needed.
 
+## Page-load baseline (CHE-2976)
+
+Cold load of five routes (issue list, issue detail, chat, inbox, projects) on
+two fixed profiles, one Playwright project each: `desktop` (1440×900, no touch)
+and `phone` (`devices["Pixel 7"]`, touch). Both throttle the CPU 4x; `phone`
+also emulates 150 ms RTT and 1.6 Mbps down. Each sample is a fresh browser
+context: TTFB, LCP, total long-task time and JS transferred, 5 samples, median.
+
+```bash
+pnpm exec turbo build --filter=@multica/web
+REMOTE_API_URL=http://127.0.0.1:1 PORT=3931 pnpm --filter @multica/web start &
+for p in desktop phone; do
+  PERF_PROFILE=1 PERF_REPORT_DIR=perf-report PLAYWRIGHT_BASE_URL=http://127.0.0.1:3931 \
+    pnpm exec playwright test --config=playwright.perf.config.ts --project=$p
+done
+node scripts/page-load-report.mjs perf-report/page-load-desktop.json perf-report/page-load-phone.json
+```
+
+`PERF_SAMPLES` changes the sample count. `PERF_PROFILE=1` adds one extra load per
+route under the CPU profiler; its time-by-file evidence is written to the JSON
+and never joins the medians. A sample whose page never showed its data, or that
+made an unmocked request or threw a page error, fails the run instead of
+reading as fast. The phone run takes about 10 minutes.
+
+Not emulated: the document's transfer time on `phone` (only its RTT), and
+bandwidth for the synthetic API responses beyond RTT plus transfer time.
+
 ## When to run it
 
 Nothing runs this automatically. The routine guard is the component test from
