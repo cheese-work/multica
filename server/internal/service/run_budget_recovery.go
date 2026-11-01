@@ -31,10 +31,16 @@ const (
 // claimed.
 var ErrRecoveryClaimed = errors.New("the window's recovery run was already claimed")
 
+// ErrRecoveryWindowLifted is returned when the window the recovery run was for
+// is no longer the issue's current window, or no longer refuses a run.
+var ErrRecoveryWindowLifted = errors.New("the window's refusal no longer applies")
+
 // EnqueueBudgetRecoveryRun enqueues the window's one recovery run for the
 // issue's current assignee (the blocked step's handler, after the move). The
 // claim and the task commit together; a second claim in the same window returns
-// ErrRecoveryClaimed.
+// ErrRecoveryClaimed. A recovery run bypasses the exhaustion refusal, so the
+// claim revalidates the window under the budget lock: a top-up or grant that
+// landed since the refusal returns ErrRecoveryWindowLifted and no task.
 func (s *TaskService) EnqueueBudgetRecoveryRun(ctx context.Context, issue db.Issue, since time.Time) (db.AgentTaskQueue, error) {
 	params, _, err := s.prepareIssueTaskWithQueriesAndOverlay(readOnlyRunBudget(ctx), s.Queries, issue, pgtype.UUID{}, nil, false, "", pgtype.UUID{}, pgtype.UUID{}, pgtype.Timestamptz{}, OriginBudgetRecovery, nil)
 	if err != nil {
@@ -50,6 +56,14 @@ func (s *TaskService) EnqueueBudgetRecoveryRun(ctx context.Context, issue db.Iss
 			return ErrRecoveryClaimed
 		} else if err != nil {
 			return err
+		}
+		if _, err := qtx.LockIssueRunBudget(ctx, issue.ID); err != nil {
+			return err
+		}
+		if still, err := RunBudgetStillRefuses(ctx, qtx, issue.ID, since); err != nil {
+			return err
+		} else if !still {
+			return ErrRecoveryWindowLifted
 		}
 		task, err = s.insertPreparedIssueTask(txCtx, qtx, issue, params, pgtype.Timestamptz{}, OriginBudgetRecovery)
 		if err != nil {
