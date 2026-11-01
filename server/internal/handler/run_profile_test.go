@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"reflect"
 	"testing"
 
@@ -157,4 +158,34 @@ func TestProtectedPathPatternsFallsBackToInitialPolicy(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(got, initialProtectedPaths) || len(got) != 10 {
 		t.Fatalf("patterns = %v, err = %v", got, err)
 	}
+}
+
+// The daemon reads the admin-written policy live, per push (A3b).
+
+func daemonPolicyRead(t *testing.T, tokenWorkspace, name string) *testutil.Response {
+	t.Helper()
+	req := newDaemonTokenRequest("GET", "/api/daemon/workspaces/"+testWorkspaceID+"/protected-path-policies/"+url.PathEscape(name), nil, tokenWorkspace, "test-daemon-mdt")
+	req = withURLParams(req, "workspaceId", testWorkspaceID, "name", name)
+	return testutil.Call(t, testHandler.GetDaemonProtectedPathPolicy, req)
+}
+
+func TestDaemonReadsProtectedPathPolicy(t *testing.T) {
+	name := "d" + dbfx.Issue(t, "daemon policy")[:8]
+	var got struct {
+		Patterns []string `json:"patterns"`
+	}
+	daemonPolicyRead(t, testWorkspaceID, name).Want(http.StatusOK).JSON(&got)
+	if !reflect.DeepEqual(got.Patterns, initialProtectedPaths) {
+		t.Fatalf("unwritten policy = %v, want the initial one", got.Patterns)
+	}
+	putPolicy(t, name, map[string]any{"patterns": []string{"secret/**"}}, nil).Want(http.StatusOK)
+	daemonPolicyRead(t, testWorkspaceID, name).Want(http.StatusOK).JSON(&got)
+	if !reflect.DeepEqual(got.Patterns, []string{"secret/**"}) {
+		t.Fatalf("edited policy = %v, want the admin edit", got.Patterns)
+	}
+}
+
+func TestDaemonPolicyReadRefusesOtherWorkspaceAndBadName(t *testing.T) {
+	daemonPolicyRead(t, "00000000-0000-0000-0000-000000000000", "default").Want(http.StatusNotFound)
+	daemonPolicyRead(t, testWorkspaceID, "a b").Want(http.StatusBadRequest)
 }

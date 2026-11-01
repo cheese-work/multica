@@ -226,6 +226,11 @@ type AgentTaskQueue struct {
 	ReplacementReleasedAt     pgtype.Timestamptz `json:"replacement_released_at"`
 	StopHoldIssueWide         bool               `json:"stop_hold_issue_wide"`
 	TaintIds                  []string           `json:"taint_ids"`
+	AppliedModel              pgtype.Text        `json:"applied_model"`
+	AppliedThinkingLevel      pgtype.Text        `json:"applied_thinking_level"`
+	AppliedServiceTier        pgtype.Text        `json:"applied_service_tier"`
+	AppliedContextArgs        []byte             `json:"applied_context_args"`
+	AppliedReportedAt         pgtype.Timestamptz `json:"applied_reported_at"`
 	ExternalRead              bool               `json:"external_read"`
 }
 
@@ -1176,6 +1181,23 @@ type GithubRouteGrant struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+type GithubSnapshotApproval struct {
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	RevisionID     pgtype.UUID        `json:"revision_id"`
+	ApproverUserID pgtype.UUID        `json:"approver_user_id"`
+	SnapshotHash   string             `json:"snapshot_hash"`
+	ObjectKind     string             `json:"object_kind"`
+	ObjectID       int64              `json:"object_id"`
+	AuthorID       int64              `json:"author_id"`
+	BodyHash       string             `json:"body_hash"`
+	ReviewState    string             `json:"review_state"`
+	EditorType     string             `json:"editor_type"`
+	EditorID       int64              `json:"editor_id"`
+	LastEditedAt   pgtype.Timestamptz `json:"last_edited_at"`
+	ReadAt         pgtype.Timestamptz `json:"read_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
 type GithubWebhookDispatch struct {
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
 	ObjectKind  string             `json:"object_kind"`
@@ -1535,6 +1557,15 @@ type GovernedVoteRecord struct {
 	DecisionVerdict    pgtype.Text        `json:"decision_verdict"`
 	CommitmentSha256   pgtype.Text        `json:"commitment_sha256"`
 	DecisionSequence   pgtype.Int8        `json:"decision_sequence"`
+}
+
+type HostSample struct {
+	DaemonID    string             `json:"daemon_id"`
+	SampledAt   pgtype.Timestamptz `json:"sampled_at"`
+	MountPath   string             `json:"mount_path"`
+	CpuPercent  pgtype.Float4      `json:"cpu_percent"`
+	RamPercent  pgtype.Float4      `json:"ram_percent"`
+	DiskPercent pgtype.Float4      `json:"disk_percent"`
 }
 
 type InboxItem struct {
@@ -2373,6 +2404,19 @@ type QuickAction struct {
 	CreatedByID   pgtype.UUID        `json:"created_by_id"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
+type RecoveryClaim struct {
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	FailedTaskID      pgtype.UUID        `json:"failed_task_id"`
+	LineageRootTaskID pgtype.UUID        `json:"lineage_root_task_id"`
+	Mode              string             `json:"mode"`
+	State             string             `json:"state"`
+	SuccessorTaskID   pgtype.UUID        `json:"successor_task_id"`
+	ClaimedAt         pgtype.Timestamptz `json:"claimed_at"`
+	SettledAt         pgtype.Timestamptz `json:"settled_at"`
 }
 
 type RunBudgetNotice struct {
