@@ -44,6 +44,18 @@ type Pin struct {
 	Bases  []string `json:"-"`
 	// Deadline bounds one operation; zero means 10 minutes.
 	Deadline time.Duration `json:"-"`
+	Task     string        `json:"-"` // task ID, written into every receipt
+	// Policy returns the workspace protected-path patterns, read from the server
+	// on every push so an admin edit applies at once. An error or an empty list
+	// refuses the push: no policy is never "no protected paths".
+	Policy func(context.Context) ([]string, error) `json:"-"`
+	// ReceiptLog, when set, is a JSON-lines file each receipt is appended to.
+	ReceiptLog string `json:"-"`
+	// MaxCommits caps the commits one push may add; zero means the default.
+	MaxCommits int `json:"-"`
+	// MaxPaths caps the paths one push may change, and so the work the
+	// protected-path check does; zero means the default.
+	MaxPaths int `json:"-"`
 }
 
 // gitEnv keeps host git config, hooks and prompts out of broker git runs.
@@ -66,6 +78,9 @@ type Broker struct {
 	opsMu  sync.Mutex         // guards closed and ops.Add against Close
 	closed bool
 	ops    sync.WaitGroup // requests in flight, including their token revoke
+
+	rmu      sync.Mutex
+	receipts []Receipt
 }
 
 // New starts a broker listening on socket (mode 0600).
@@ -148,6 +163,8 @@ func (p Pin) validate() error {
 		if !slugRE.MatchString(p.Slug) || len(p.Bases) == 0 {
 			return errors.New("broker: pin needs an owner/repo slug and at least one base branch for GitHub access")
 		}
+	case p.Policy == nil:
+		return errors.New("broker: pin has no protected-path policy source")
 	}
 	return nil
 }
@@ -176,7 +193,7 @@ func (b *Broker) handlePin(w http.ResponseWriter, _ *http.Request) {
 func (b *Broker) handlePush(w http.ResponseWriter, r *http.Request) {
 	began := time.Now()
 	sha, status, err := b.push(r)
-	b.log.Info("broker push", "repo", b.pin.Repo, "ref", b.pin.Ref, "sha", sha, "status", status, "elapsed", time.Since(began), "error", err)
+	b.log.Info("broker push", "task", b.pin.Task, "repo", b.pin.Repo, "ref", b.pin.Ref, "sha", sha, "status", status, "elapsed", time.Since(began), "error", err)
 	if err != nil {
 		http.Error(w, err.Error(), status)
 		return
@@ -185,8 +202,9 @@ func (b *Broker) handlePush(w http.ResponseWriter, r *http.Request) {
 }
 
 // push runs the pin checks, unpacks the bundle in a scratch repository and
-// pushes the one pinned ref without force. It returns an HTTP status for a
-// refusal or failure.
+// pushes the one pinned ref. It forces only with a lease: the "lease" query
+// value is the remote tip the caller expects to replace. It returns an HTTP
+// status for a refusal or failure.
 func (b *Broker) push(r *http.Request) (sha string, status int, err error) {
 	q := r.URL.Query()
 	if q.Get("ref") != b.pin.Ref {
@@ -195,9 +213,44 @@ func (b *Broker) push(r *http.Request) (sha string, status int, err error) {
 	if repo := q.Get("repo"); repo != "" && repo != b.pin.Repo {
 		return "", http.StatusForbidden, errors.New("repository is not this run's repository")
 	}
+	lease := q.Get("lease")
+	if lease != "" && !validOID(lease) {
+		return "", http.StatusBadRequest, errors.New("lease must be a full commit ID")
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	ctx := r.Context()
+	patterns, err := b.pin.Policy(ctx)
+	if err != nil || len(patterns) == 0 {
+		b.log.Error("broker protected-path policy unavailable", "task", b.pin.Task, "error", err)
+		return "", http.StatusServiceUnavailable, errors.New("protected-path policy unavailable; push refused")
+	}
+	// The token covers every network step: the default-branch lookup, the
+	// protected-path fetch and the push. The deadline starts once it is live.
+	var auth []string
+	if b.pin.Tokens != nil {
+		g, status, err := b.mint(ctx, false)
+		if err != nil {
+			return "", status, err
+		}
+		defer b.revoke(g)
+		auth = basicAuthEnv(g.token)
+	}
+	ctx, cancel := context.WithTimeout(ctx, b.pin.deadline())
+	defer cancel()
+	expired := func(sha string) (string, int, error) {
+		return sha, http.StatusGatewayTimeout, fmt.Errorf("push: operation deadline of %v passed", b.pin.deadline())
+	}
+	defRef, err := b.defaultBranch(ctx, auth)
+	if ctx.Err() == context.DeadlineExceeded {
+		return expired("")
+	}
+	if err != nil {
+		return "", http.StatusServiceUnavailable, err
+	}
+	if defRef == b.pin.Ref {
+		return "", http.StatusForbidden, errors.New("the task branch is the repository default branch")
+	}
 	scratch, err := os.MkdirTemp("", "multica-broker-")
 	if err != nil {
 		return "", http.StatusInternalServerError, err
@@ -227,25 +280,32 @@ func (b *Broker) push(r *http.Request) (sha string, status int, err error) {
 	}
 	sha = heads[0].sha
 	if out, err := b.git(ctx, work, nil, "-c", "transfer.fsckObjects=true", "bundle", "unbundle", bundle); err != nil {
-		return "", http.StatusBadRequest, fmt.Errorf("unbundle: %s", firstLine(out))
+		return "", http.StatusBadRequest, fmt.Errorf("unbundle: %s", b.scrub(firstLine(out)))
 	}
-	var auth []string
-	if b.pin.Tokens != nil {
-		g, status, err := b.mint(ctx, false)
-		if err != nil {
-			return sha, status, err
-		}
-		defer b.revoke(g)
-		auth = basicAuthEnv(g.token)
-	}
-	ctx, cancel := context.WithTimeout(ctx, b.pin.deadline())
-	defer cancel()
-	if out, err := b.git(ctx, work, auth, "push", b.pin.RemoteURL, sha+":"+b.pin.Ref); err != nil {
+	if status, err := b.checkProtected(ctx, work, defRef, sha, patterns, auth); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return sha, http.StatusGatewayTimeout, fmt.Errorf("push: operation deadline of %v passed", b.pin.deadline())
+			return expired(sha)
 		}
-		return sha, http.StatusConflict, fmt.Errorf("push: %s", strings.ReplaceAll(pushReason(out), b.pin.RemoteURL, "<remote>"))
+		return sha, status, err
 	}
+	commits, err := b.commitReceipts(ctx, work, sha)
+	if errors.Is(err, errTooManyCommits) {
+		return sha, http.StatusRequestEntityTooLarge, err
+	}
+	if err != nil {
+		return sha, http.StatusInternalServerError, err
+	}
+	args := []string{"push", b.pin.RemoteURL, sha + ":" + b.pin.Ref}
+	if lease != "" {
+		args = []string{"push", "--force-with-lease=" + b.pin.Ref + ":" + lease, b.pin.RemoteURL, sha + ":" + b.pin.Ref}
+	}
+	if out, err := b.git(ctx, work, auth, args...); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return expired(sha)
+		}
+		return sha, http.StatusConflict, fmt.Errorf("push: %s", b.scrub(pushReason(out)))
+	}
+	b.record(Receipt{Task: b.pin.Task, Repo: b.pin.Repo, Ref: b.pin.Ref, Time: time.Now().UTC(), Forced: lease != "", Commits: commits})
 	return sha, http.StatusOK, nil
 }
 

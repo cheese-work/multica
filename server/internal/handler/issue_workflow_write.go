@@ -65,6 +65,10 @@ type workflowWrite struct {
 	stopPrevious bool
 	stopRuns     []db.AgentTaskQueue
 	stopFrom     service.TaskAssignee
+	// system marks a move the platform makes by itself (edge, CI, run budget).
+	// Step entry gates bind explicit status writes only.
+	system bool
+	entry  entryWrite
 }
 
 // decideIssueWorkflow applies the project's workflow to params, like
@@ -154,6 +158,9 @@ func (w *workflowWrite) verify(ctx context.Context, h *Handler, q *db.Queries, l
 			!sameOptional(w.preview.HandlerID, uuidToString(params.AssigneeID)) {
 			return errHandoffPreviewStale
 		}
+	}
+	if err := w.checkEntry(ctx, h, q, locked, params); err != nil {
+		return err
 	}
 	w.stopRuns, w.stopFrom = nil, service.TaskAssignee{}
 	if w.stopPrevious && handoff != nil &&
