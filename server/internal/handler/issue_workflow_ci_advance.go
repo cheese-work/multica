@@ -102,6 +102,13 @@ func (h *Handler) moveIssueOnEdge(ctx context.Context, issue db.Issue, to, sourc
 // tryMoveIssueOnEdge is moveIssueOnEdge for a caller that needs the reason a
 // move did not happen: pgx.ErrNoRows means a concurrent writer won.
 func (h *Handler) tryMoveIssueOnEdge(ctx context.Context, issue db.Issue, to, source string, extra map[string]any, startHandler bool) (moved, ranHandler bool, err error) {
+	// The lock holds through the grant, so a person's move cannot read this
+	// issue's status between this write and the grant.
+	release, err := h.lockRunBudgetBoundary(ctx, issue.ID)
+	if err != nil {
+		return false, false, fmt.Errorf("run budget boundary: %w", err)
+	}
+	defer release()
 	params := db.UpdateIssueParams{
 		ID:               issue.ID,
 		ExpectedRevision: pgtype.Int8{Int64: issue.Revision, Valid: true},
@@ -158,6 +165,7 @@ func (h *Handler) tryMoveIssueOnEdge(ctx context.Context, issue db.Issue, to, so
 	if source != "run_budget" {
 		h.grantRunBudgetStep(ctx, updated, issue.Status)
 	}
+	release()
 	if willRun {
 		h.IssueService.CancelStaleStepRuns(ctx, updated, trigger.AgentID)
 		ranHandler = h.dispatchIssueRun(ctx, updated, trigger, "system", "", "")

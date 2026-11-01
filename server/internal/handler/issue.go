@@ -4307,12 +4307,14 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if actorType == "member" && params.Status.Valid {
-		release, ok := h.beginRunBudgetMove(w, r, prevIssue, params.Status.String)
+	releaseMove := func() {}
+	if params.Status.Valid {
+		release, ok := h.beginRunBudgetMove(w, r, actorType, prevIssue, params.Status.String)
 		if !ok {
 			return
 		}
-		defer release()
+		releaseMove = release
+		defer releaseMove()
 	}
 	// Status history is written in the status transaction. A workflow handoff
 	// and a duplicate mark keep the listener's richer row until they migrate.
@@ -4449,6 +4451,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	} else if statusChanged && actorType == "agent" {
 		h.grantRunBudgetStep(r.Context(), issue, prevIssue.Status)
 	}
+	releaseMove()
 	if attachmentsChanged {
 		// The full owner snapshot must be admitted before an auxiliary event at
 		// the same revision. Otherwise clients advance only the revision here and
@@ -5228,8 +5231,14 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		releaseMove := func() {}
-		if actorType == "member" && params.Status.Valid {
-			release, err := h.lockRunBudgetMove(r.Context(), prevIssue, params.Status.String)
+		if params.Status.Valid {
+			var release func()
+			var err error
+			if actorType == "member" {
+				release, err = h.lockRunBudgetMove(r.Context(), prevIssue, params.Status.String)
+			} else {
+				release, err = h.lockRunBudgetBoundary(r.Context(), prevIssue.ID)
+			}
 			if err != nil {
 				slog.Warn("batch update issue: run budget", "issue_id", issueID, "error", err)
 				continue

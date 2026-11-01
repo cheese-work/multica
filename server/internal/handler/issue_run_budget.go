@@ -215,6 +215,24 @@ func (h *Handler) openRunBudgetWindow(ctx context.Context, issue db.Issue) error
 	return tx.Commit(ctx)
 }
 
+// lockRunBudgetBoundary holds the issue's boundary lock until release runs;
+// release is safe to call more than once. An agent's or the platform's status
+// write takes it around the write and its grant. A person's move reads the
+// status under the lock to decide whether it ends a window, so a write that
+// could land between that read and the move's own write has to wait.
+func (h *Handler) lockRunBudgetBoundary(ctx context.Context, issueID pgtype.UUID) (release func(), err error) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	release = func() { _ = tx.Rollback(ctx) }
+	if err := h.Queries.WithTx(tx).LockIssueRunBudgetBoundary(ctx, issueID); err != nil {
+		release()
+		return nil, err
+	}
+	return release, nil
+}
+
 // lockRunBudgetMove readies a person's status write, which starts the issue's
 // next run-budget window when it changes the status: it takes the boundary
 // lock, then writes the window the move is about to end. Whether the write
@@ -225,16 +243,11 @@ func (h *Handler) openRunBudgetWindow(ctx context.Context, issue db.Issue) error
 // first one's window written. An error means nothing was written and the
 // caller must not write the move.
 func (h *Handler) lockRunBudgetMove(ctx context.Context, issue db.Issue, requestedStatus string) (release func(), err error) {
-	tx, err := h.TxStarter.Begin(ctx)
+	release, err = h.lockRunBudgetBoundary(ctx, issue.ID)
 	if err != nil {
 		return nil, err
 	}
-	release = func() { _ = tx.Rollback(ctx) }
-	if err := h.Queries.WithTx(tx).LockIssueRunBudgetBoundary(ctx, issue.ID); err != nil {
-		release()
-		return nil, err
-	}
-	current, err := h.Queries.WithTx(tx).GetIssue(ctx, issue.ID)
+	current, err := h.Queries.GetIssue(ctx, issue.ID)
 	if err != nil {
 		release()
 		return nil, err
@@ -249,8 +262,13 @@ func (h *Handler) lockRunBudgetMove(ctx context.Context, issue db.Issue, request
 	return release, nil
 }
 
-func (h *Handler) beginRunBudgetMove(w http.ResponseWriter, r *http.Request, issue db.Issue, requestedStatus string) (release func(), ok bool) {
-	release, err := h.lockRunBudgetMove(r.Context(), issue, requestedStatus)
+func (h *Handler) beginRunBudgetMove(w http.ResponseWriter, r *http.Request, actorType string, issue db.Issue, requestedStatus string) (release func(), ok bool) {
+	var err error
+	if actorType == "member" {
+		release, err = h.lockRunBudgetMove(r.Context(), issue, requestedStatus)
+	} else {
+		release, err = h.lockRunBudgetBoundary(r.Context(), issue.ID)
+	}
 	if err != nil {
 		slog.Warn("run budget: prepare status move", "issue_id", uuidToString(issue.ID), "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to update issue")

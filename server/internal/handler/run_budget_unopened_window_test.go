@@ -293,3 +293,75 @@ func TestRunBudgetTopUpStartsItsWindowAfterAMoveItWaitedFor(t *testing.T) {
 		t.Fatalf("latest window boundary = %q, want the top-up", latest)
 	}
 }
+
+// A person's request reads the status under the boundary lock, so an agent's
+// or the platform's status write has to wait for that lock: one that landed
+// between the read and the person's own write could be undone by it with no
+// window written for the status it set.
+func TestRunBudgetAgentStatusWriteWaitsForAMoveInFlight(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	c := newEdgeCase(t, 2885901, recoverySteps(seededReadyAgentID(t)))
+	spendBudget(t, c, 38, "in_progress")
+	if _, err := testPool.Exec(context.Background(), `UPDATE issue_workflow SET max_runs_per_issue=40 WHERE id=$1`, c.workflowID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(context.Background(), `DELETE FROM issue_run_budget_entry WHERE issue_id=$1`, c.issueID); err != nil {
+		t.Fatal(err)
+	}
+	as := agentCaller(t, c, false)
+	release := holdRunBudgetBoundary(t, c.issueID)
+	defer release()
+
+	done := make(chan struct{})
+	var code int
+	var body string
+	go func() {
+		defer close(done)
+		req := as(withURLParam(newRequest(http.MethodPut, "/api/issues/"+c.issueID, map[string]any{"status": "in_review"}), "id", c.issueID))
+		w := httptest.NewRecorder()
+		testHandler.UpdateIssue(w, req)
+		code = w.Code
+		body = w.Body.String()
+	}()
+	if !stillRunning(done) {
+		t.Fatalf("the agent's write finished while a window boundary was in flight (code %d: %s)", code, body)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM issue WHERE id=$1 AND status='in_review'`, c.issueID); n != 0 {
+		t.Fatal("the agent's write landed while a window boundary was in flight")
+	}
+	release()
+	<-done
+	if code != http.StatusOK {
+		t.Fatalf("agent write = %d: %s", code, body)
+	}
+}
+
+func TestRunBudgetWorkflowEdgeMoveWaitsForAMoveInFlight(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	c, _ := budgetedAt(t, 40, 38)
+	issue, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(c.issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := holdRunBudgetBoundary(t, c.issueID)
+	defer release()
+
+	done := make(chan struct{})
+	var moved bool
+	go func() {
+		defer close(done)
+		moved, _ = testHandler.moveIssueOnEdge(context.Background(), issue, "in_review", "ci_green_advance", nil, false)
+	}()
+	if !stillRunning(done) {
+		t.Fatal("the edge move finished while a window boundary was in flight")
+	}
+	release()
+	<-done
+	if !moved {
+		t.Fatal("the edge move did not happen after the boundary was released")
+	}
+}
