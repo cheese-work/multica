@@ -90,7 +90,7 @@ func TestSearchIssues_FuzzyFallbackFindsTypoInDescription(t *testing.T) {
 		"description": "the importer crashes when the spreadsheet contains duplicate columns",
 	})
 
-	ids, _ := searchIssueIDs(t, "q="+url.QueryEscape("spreadsheat duplcate"))
+	ids, _ := searchIssueIDs(t, "q="+url.QueryEscape("spreadsheat duplcate")) //nolint:misspell // intentional typo
 	if !containsID(ids, id) {
 		t.Fatalf("typo in description query did not find the issue; got %v", ids)
 	}
