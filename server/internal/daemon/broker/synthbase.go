@@ -258,8 +258,25 @@ func IsSyntheticBase(ctx context.Context, dest, sha, branch string) bool {
 	if remotes, err := gitOut(ctx, nil, dest, "remote"); err != nil || remotes != "" {
 		return false
 	}
-	roots, err := gitOut(ctx, nil, dest, "rev-list", "--max-parents=0", "refs/heads/"+branch)
+	// Every ref and reflog entry must lead back to one root, and the object
+	// store must hold no commit outside them: upstream history left in a
+	// pre-existing repository would stay readable (git log --all, cat-file).
+	if refs, err := gitOut(ctx, nil, dest, "for-each-ref", "--format=%(refname)", "refs/remotes", "refs/replace"); err != nil || refs != "" {
+		return false
+	}
+	if _, err := gitOut(ctx, nil, dest, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch); err != nil {
+		return false
+	}
+	roots, err := gitOut(ctx, nil, dest, "rev-list", "--max-parents=0", "--all", "--reflog")
 	if err != nil || roots == "" || strings.Contains(roots, "\n") {
+		return false
+	}
+	reachable, err := gitOut(ctx, nil, dest, "rev-list", "--all", "--reflog")
+	if err != nil {
+		return false
+	}
+	stored, err := gitOut(ctx, nil, dest, "cat-file", "--batch-all-objects", "--batch-check=%(objecttype)")
+	if err != nil || strings.Count(stored, "commit") != len(strings.Split(reachable, "\n")) {
 		return false
 	}
 	meta, err := gitOut(ctx, nil, dest, "log", "-1", "--format=%an%x00%s", roots)

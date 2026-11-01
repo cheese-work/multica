@@ -416,3 +416,71 @@ func TestIsSyntheticBase(t *testing.T) {
 		}
 	})
 }
+
+// A matching synthetic branch does not prove the rest of a pre-existing
+// repository is free of upstream history (review round 3).
+func TestIsSyntheticBaseRejectsUpstreamHistory(t *testing.T) {
+	u := newUpstream(t)
+	foreignWithSyntheticBranch := func(t *testing.T) string {
+		safe := filepath.Join(t.TempDir(), "safe")
+		if _, err := MaterializeSyntheticBase(context.Background(), u.cache, u.c2, safe, "agent/x"); err != nil {
+			t.Fatal(err)
+		}
+		foreign := filepath.Join(t.TempDir(), "foreign")
+		git(t, "", "clone", "-q", u.cache, foreign)
+		git(t, foreign, "remote", "remove", "origin")
+		git(t, foreign, "fetch", "-q", safe, "refs/heads/agent/x:refs/heads/agent/x")
+		git(t, foreign, "checkout", "-q", "agent/x")
+		return foreign
+	}
+	t.Run("upstream branches and tags remain", func(t *testing.T) {
+		foreign := foreignWithSyntheticBranch(t)
+		if !strings.Contains(git(t, foreign, "log", "--all", "--format=%B"), upstreamMsg) {
+			t.Fatal("invalid fixture: upstream history missing")
+		}
+		if IsSyntheticBase(context.Background(), foreign, u.c2, "agent/x") {
+			t.Fatal("accepted upstream refs next to a synthetic branch")
+		}
+	})
+	t.Run("upstream refs deleted, objects remain", func(t *testing.T) {
+		foreign := foreignWithSyntheticBranch(t)
+		git(t, foreign, "branch", "-D", "main")
+		git(t, foreign, "tag", "-d", "upstream-tag")
+		git(t, foreign, "reflog", "expire", "--expire=now", "--all")
+		if strings.Contains(git(t, foreign, "log", "--all", "--format=%B"), upstreamMsg) {
+			t.Fatal("invalid fixture: upstream still reachable")
+		}
+		if IsSyntheticBase(context.Background(), foreign, u.c2, "agent/x") {
+			t.Fatal("accepted an object store that still holds upstream commits")
+		}
+	})
+	t.Run("replace ref", func(t *testing.T) {
+		dest := filepath.Join(t.TempDir(), "repo")
+		if _, err := MaterializeSyntheticBase(context.Background(), u.cache, u.c2, dest, "agent/x"); err != nil {
+			t.Fatal(err)
+		}
+		root := git(t, dest, "rev-parse", "HEAD")
+		git(t, dest, "update-ref", "refs/replace/"+root, root)
+		if IsSyntheticBase(context.Background(), dest, u.c2, "agent/x") {
+			t.Fatal("accepted a repository with a replace ref")
+		}
+	})
+	t.Run("local branch and amended commit are fine", func(t *testing.T) {
+		dest := filepath.Join(t.TempDir(), "repo")
+		if _, err := MaterializeSyntheticBase(context.Background(), u.cache, u.c2, dest, "agent/x"); err != nil {
+			t.Fatal(err)
+		}
+		cfg := []string{"-c", "user.name=a", "-c", "user.email=a@a"}
+		git(t, dest, "checkout", "-q", "-b", "scratch")
+		if err := os.WriteFile(filepath.Join(dest, "n.txt"), []byte("n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		git(t, dest, "add", "-A")
+		git(t, dest, append(cfg, "commit", "-m", "one")...)
+		git(t, dest, append(cfg, "commit", "--amend", "-m", "two")...)
+		git(t, dest, "tag", "mine")
+		if !IsSyntheticBase(context.Background(), dest, u.c2, "agent/x") {
+			t.Fatal("legitimate local branches, tags and amended commits were refused")
+		}
+	})
+}
