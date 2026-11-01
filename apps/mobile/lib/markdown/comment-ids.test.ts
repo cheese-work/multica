@@ -92,6 +92,30 @@ describe("linkifyCommentIds", () => {
     const text = `\`${ID}\``;
     expect(linkifyCommentIds(text, resolved(preview()), CTX)).toBe(text);
   });
+
+  it.each([
+    ["double-backtick span", `see \`\`${ID}\`\` now`],
+    ["span with a single backtick inside", `\`\`a \` ${ID}\`\``],
+    ["triple-backtick inline span", `x \`\`\`${ID}\`\`\` y`],
+    ["multi-line span", `\`\`a\n${ID}\`\``],
+    ["quoted fence", `> \`\`\`\n> ${ID}\n> \`\`\``],
+    ["list-nested fence", `- item\n  \`\`\`js\n  ${ID}\n  \`\`\`\n- next`],
+    ["tilde fence in a list", `1. step\n   ~~~\n   ${ID}\n   ~~~`],
+    ["unclosed nested fence", `> \`\`\`\n> ${ID}`],
+  ])("leaves a %s byte-identical", (_name, text) => {
+    expect(findCommentIds(text, CTX)).toEqual([]);
+    expect(linkifyCommentIds(text, resolved(preview()), CTX)).toBe(text);
+  });
+
+  it("still rewrites prose around, and after, a double-backtick span", () => {
+    const out = linkifyCommentIds(`\`\`${ID}\`\` then ${ID}`, resolved(preview()), CTX);
+    expect(out.startsWith(`\`\`${ID}\`\` then [CHE-2120`)).toBe(true);
+  });
+
+  it("does not let a lone backtick or an unclosed span swallow later ids", () => {
+    const out = linkifyCommentIds(`it\`s ${ID}\n\n\`\`open ${ID}`, resolved(preview()), CTX);
+    expect(out.match(/\[CHE-2120/g)).toHaveLength(2);
+  });
 });
 
 describe("parseCommentMention", () => {

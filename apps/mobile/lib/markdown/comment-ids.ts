@@ -25,10 +25,11 @@ export interface CommentLinkContext {
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 
 // Alternation order matters: spans we must not touch win over the UUID group.
-// Groups: 1 code, 2 labeled-link URL, 3 bare URL, 4 bare UUID.
+// `code` is a nested fenced block (quote/list `splitMarkdown` leaves in prose)
+// or an N-backtick code span closed by a run of exactly N backticks.
 const SCAN_RE = new RegExp(
-  `(\`[^\`\\n]*\`)|\\[[^\\]]*\\]\\(([^)]*)\\)|(https?://[^\\s<>()]*[^\\s<>().,;:!?])|(?<![A-Za-z0-9_-])(${UUID})(?![A-Za-z0-9_-])`,
-  "g",
+  String.raw`(?<code>^[ \t>]*(?:(?:[-*+]|\d+[.)])[ \t]+)*(?<fence>[\`~]{3,})[^\`\n]*(?:\n[\s\S]*?)?(?:\n[ \t>]*\k<fence>[\`~]*[ \t]*(?=\n|$)|(?![\s\S]))|(?<!\`)(?<tick>\`+)(?!\`)(?:(?!\n[ \t]*\n)[\s\S])*?(?<!\`)\k<tick>(?!\`))|\[[^\]]*\]\((?<url>[^)]*)\)|(?<bare>https?://[^\s<>()]*[^\s<>().,;:!?])|(?<![A-Za-z0-9_-])(?<uuid>${UUID})(?![A-Za-z0-9_-])`,
+  "gm",
 );
 const MENTION_RE = new RegExp(`^mention://comment/(${UUID})\\?issue=([^&#]+)$`);
 const ANCHOR_PATH_RE = new RegExp(`^/([^/?#]+)/issues/[^/?#]+#comment-(${UUID})$`);
@@ -53,7 +54,7 @@ function matchedId(
 export function findCommentIds(text: string, ctx: CommentLinkContext): string[] {
   const ids = new Set<string>();
   for (const m of text.matchAll(SCAN_RE)) {
-    const id = matchedId({ url: m[2], bare: m[3], uuid: m[4] }, ctx);
+    const id = matchedId(m.groups ?? {}, ctx);
     if (id) ids.add(id);
   }
   return [...ids];
@@ -66,17 +67,15 @@ export function linkifyCommentIds(
   resolved: ReadonlyMap<string, CommentPreview>,
   ctx: CommentLinkContext,
 ): string {
-  return text.replace(
-    SCAN_RE,
-    (whole, _code, url?: string, bare?: string, uuid?: string) => {
-      const id = matchedId({ url, bare, uuid }, ctx);
-      const p = id ? resolved.get(id) : undefined;
-      if (!p) return whole;
-      const who = p.author_name ? `${p.author_name}: ` : "";
-      const label = escapeLabel(`${p.issue_identifier} · ${who}${p.preview}`.trim());
-      return `[${label}](mention://comment/${p.comment_id}?issue=${p.issue_id})`;
-    },
-  );
+  return text.replace(SCAN_RE, (...args) => {
+    const whole: string = args[0];
+    const id = matchedId(args.at(-1), ctx);
+    const p = id ? resolved.get(id) : undefined;
+    if (!p) return whole;
+    const who = p.author_name ? `${p.author_name}: ` : "";
+    const label = escapeLabel(`${p.issue_identifier} · ${who}${p.preview}`.trim());
+    return `[${label}](mention://comment/${p.comment_id}?issue=${p.issue_id})`;
+  });
 }
 
 export function findSegmentCommentIds(

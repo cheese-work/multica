@@ -178,31 +178,43 @@ export function Markdown({
   });
   // Native prose cannot pin a chip's width, so the UUID -> chip swap would
   // visibly reflow. Hide prose that holds a still-loading id until it settles,
-  // but never longer than COMMENT_CHIP_WAIT_MS (slow network: show the id).
-  const [waited, setWaited] = useState(false);
-  const anyLoading = loadingComments.size > 0;
+  // but never longer than COMMENT_CHIP_WAIT_MS. An id we gave up on stays as
+  // written for this mount: a late response must not rewrite visible text.
+  const [gaveUp, setGaveUp] = useState<ReadonlySet<string>>(() => new Set());
+  const pendingKey = [...loadingComments].filter((id) => !gaveUp.has(id)).join(",");
   useEffect(() => {
-    if (!anyLoading) return;
-    const t = setTimeout(() => setWaited(true), COMMENT_CHIP_WAIT_MS);
+    if (!pendingKey) return;
+    const t = setTimeout(
+      () => setGaveUp((prev) => new Set([...prev, ...pendingKey.split(",")])),
+      COMMENT_CHIP_WAIT_MS,
+    );
     return () => clearTimeout(t);
-  }, [anyLoading]);
+  }, [pendingKey]);
 
+  const chipPreviews = useMemo(
+    () =>
+      gaveUp.size === 0
+        ? resolvedComments
+        : new Map([...resolvedComments].filter(([id]) => !gaveUp.has(id))),
+    [resolvedComments, gaveUp],
+  );
   const segments = useMemo(
     () =>
       emphasizeSelfMentionSegments(
-        linkifySegments(split, resolvedComments, linkCtx),
+        linkifySegments(split, chipPreviews, linkCtx),
         viewerId,
       ),
-    [split, resolvedComments, linkCtx, viewerId],
+    [split, chipPreviews, linkCtx, viewerId],
   );
   // Same indices as `split`: linkify and emphasize map segments one to one.
   const holdBack = (i: number) => {
     const seg = split[i];
     return (
-      !waited &&
-      anyLoading &&
+      pendingKey !== "" &&
       seg?.type === "prose" &&
-      findCommentIds(seg.content, linkCtx).some((id) => loadingComments.has(id))
+      findCommentIds(seg.content, linkCtx).some((id) =>
+        pendingKey.split(",").includes(id),
+      )
     );
   };
 

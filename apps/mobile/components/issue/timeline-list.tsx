@@ -65,10 +65,13 @@ interface Props {
 
 /** How long the flash stays "claimed" before we let a new highlight take
  *  over. The fade-out itself is driven by the Reanimated sequence inside
- *  CommentCard; this is just the upstream gate. 5s gives the user time
- *  to land at the bottom, realise the target is an older comment, and
- *  scroll up to it — the overlay still fires when the row mounts. */
+ *  CommentCard; this is just the upstream gate. 5s covers the scroll to the
+ *  target plus the time to see the flash. */
 const HIGHLIGHT_HOLD_MS = 5000;
+
+/** Delay before scrolling to a deep-link target: the list was just remounted
+ *  (see `flashListKey`) and needs a frame to lay out before it can scroll. */
+const JUMP_DELAY_MS = 100;
 
 /** Pixel slack at the bottom edge — inside this band we treat the user as
  *  "already at bottom" so the new-comment chip doesn't fire for entries
@@ -157,18 +160,6 @@ export function TimelineList({
   }, [data, lastViewedSnapshot]);
   const dividerScrolledPastRef = useRef(false);
 
-  useEffect(() => {
-    if (!highlightCommentId || data.length === 0) return;
-    const stamp = `${highlightCommentId}:${highlightNonce ?? ""}`;
-    if (lastStampRef.current === stamp) return;
-    lastStampRef.current = stamp;
-
-    setHighlightedId(highlightCommentId);
-
-    const fade = setTimeout(() => setHighlightedId(null), HIGHLIGHT_HOLD_MS);
-    return () => clearTimeout(fade);
-  }, [highlightCommentId, highlightNonce, data.length]);
-
   // ── New-comment-while-reading chip ────────────────────────────────────
   // After landing, if WS appends new entries while the user is NOT at the
   // bottom, surface a floating "↓ N new" chip instead of silently shifting
@@ -246,6 +237,30 @@ export function TimelineList({
     },
     [dataWithDivider],
   );
+
+  // The effect must not re-fire when only `jumpToComment` changes (a WS append
+  // rebuilds it); the stamp gate below makes it one-shot per (id, nonce).
+  const jumpRef = useRef(jumpToComment);
+  useEffect(() => {
+    jumpRef.current = jumpToComment;
+  }, [jumpToComment]);
+  useEffect(() => {
+    if (!highlightCommentId || data.length === 0) return;
+    const stamp = `${highlightCommentId}:${highlightNonce ?? ""}`;
+    if (lastStampRef.current === stamp) return;
+    lastStampRef.current = stamp;
+
+    setHighlightedId(highlightCommentId);
+    // The list remounts on every deep link and starts at the bottom, so an old
+    // target is off-screen. Jump once the fresh list has laid out its rows.
+    const jump = setTimeout(() => jumpRef.current(highlightCommentId), JUMP_DELAY_MS);
+
+    const fade = setTimeout(() => setHighlightedId(null), HIGHLIGHT_HOLD_MS);
+    return () => {
+      clearTimeout(jump);
+      clearTimeout(fade);
+    };
+  }, [highlightCommentId, highlightNonce, data.length]);
 
   // Mark "scrolled past" once the divider row leaves the viewport — used
   // by the unmount effect below to decide whether to bump last-viewed.
