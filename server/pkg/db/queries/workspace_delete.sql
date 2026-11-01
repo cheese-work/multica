@@ -418,6 +418,13 @@ deleted_task_elevations AS (
 deleted_elevated_ops AS (
     DELETE FROM elevated_op WHERE workspace_id = $1
 ),
+-- CHE-2514 issue taint and its clear audit: workspace-owned leaves, no FK.
+deleted_issue_taints AS (
+    DELETE FROM issue_taint WHERE workspace_id = $1
+),
+deleted_issue_taint_clears AS (
+    DELETE FROM issue_taint_clear WHERE workspace_id = $1
+),
 deleted_issue_checkpoints AS (
     DELETE FROM issue_checkpoint WHERE workspace_id = $1
 ),
