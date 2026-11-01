@@ -41,3 +41,19 @@ WHERE workspace_id = $1 AND agent_id = $2;
 UPDATE chat_session SET preset_name = $2
 WHERE id = $1
 RETURNING *;
+
+-- name: AgentPresetUsage :many
+-- Tokens and cost of one agent's runs grouped by the preset each run was
+-- claimed under. A run with several (provider, model) usage rows counts once.
+SELECT t.preset_name::text AS preset_name,
+       COUNT(DISTINCT t.id)::bigint AS tasks,
+       COALESCE(SUM(u.input_tokens), 0)::bigint AS input_tokens,
+       COALESCE(SUM(u.output_tokens), 0)::bigint AS output_tokens,
+       COALESCE(SUM(u.cache_read_tokens), 0)::bigint AS cache_read_tokens,
+       COALESCE(SUM(u.cache_write_tokens), 0)::bigint AS cache_write_tokens,
+       COALESCE(SUM(u.cost_usd_ticks), 0)::bigint AS cost_usd_ticks
+FROM agent_task_queue t
+JOIN task_usage u ON u.task_id = t.id
+WHERE t.agent_id = $1 AND t.preset_name IS NOT NULL
+GROUP BY t.preset_name
+ORDER BY t.preset_name;
