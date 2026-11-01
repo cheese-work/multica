@@ -114,13 +114,20 @@ func (h *Handler) admissionTxFinished(ctx context.Context, e service.RunBudgetEv
 var runBudgetBeforeNotice = func() {}
 
 func (h *Handler) writeRunBudgetNotice(ctx context.Context, e service.RunBudgetEvent, text string) {
+	h.writeRunBudgetNoticeFrom(ctx, e, func(context.Context, *db.Queries) string { return text })
+}
+
+// writeRunBudgetNoticeFrom is writeRunBudgetNotice with the text worded inside
+// the transaction, under the budget lock, by a function of the transaction's queries.
+func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBudgetEvent, text func(context.Context, *db.Queries) string) {
 	issue, err := h.Queries.GetIssue(ctx, e.IssueID)
 	if err != nil {
 		slog.Warn("run budget: load issue for notice failed", "err", err, "issue_id", uuidToString(e.IssueID))
 		return
 	}
-	content, title := h.runBudgetNoticeText(ctx, issue, e, text)
+	usage := h.runBudgetUsageNote(ctx, issue)
 	runBudgetBeforeNotice()
+	var content, title string
 	var comment db.Comment
 	var revision int64
 	var items []db.InboxItem
@@ -157,6 +164,9 @@ func (h *Handler) writeRunBudgetNotice(ctx context.Context, e service.RunBudgetE
 				return err
 			}
 		}
+		// Worded under the budget lock, so a command in it describes the ledger
+		// this transaction commits against.
+		content, title = runBudgetNoticeText(usage, e, text(ctx, qtx))
 		created, err := qtx.CreateComment(ctx, db.CreateCommentParams{
 			ID: dbid.NewV7(), IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
 			AuthorType: "system", AuthorID: pgtype.UUID{Valid: true}, Content: content, Type: "system",
@@ -242,15 +252,20 @@ func runBudgetRecipients(ctx context.Context, q *db.Queries, issue db.Issue) ([]
 	return q.ListWorkspaceOwnerUserIDs(ctx, issue.WorkspaceID)
 }
 
-// runBudgetNoticeText appends the token figure to the notice text, best-effort:
-// a failed read leaves it as "unknown" rather than losing the notice.
-func (h *Handler) runBudgetNoticeText(ctx context.Context, issue db.Issue, e service.RunBudgetEvent, text string) (content, title string) {
-	tokens := "unknown"
-	if u, err := h.Queries.GetIssueUsageSummary(ctx, issue.ID); err == nil {
-		tokens = fmt.Sprintf("%d (%d runs have not reported usage)", u.TotalInputTokens+u.TotalOutputTokens, u.UnreportedTaskCount)
-	} else {
+// runBudgetUsageNote is the token figure a notice carries, best-effort: a
+// failed read leaves it as "unknown" rather than losing the notice. It reads on
+// the pool, so it runs before the notice's transaction opens.
+func (h *Handler) runBudgetUsageNote(ctx context.Context, issue db.Issue) string {
+	u, err := h.Queries.GetIssueUsageSummary(ctx, issue.ID)
+	if err != nil {
 		slog.Warn("run budget: usage summary failed", "err", err, "issue_id", uuidToString(issue.ID))
+		return "unknown"
 	}
+	return fmt.Sprintf("%d (%d runs have not reported usage)", u.TotalInputTokens+u.TotalOutputTokens, u.UnreportedTaskCount)
+}
+
+// runBudgetNoticeText appends the token figure to the notice text.
+func runBudgetNoticeText(tokens string, e service.RunBudgetEvent, text string) (content, title string) {
 	content = fmt.Sprintf("%s Tokens used so far (input and output): %s.", text, tokens)
 	switch e.Kind {
 	case service.RunBudgetKindWarn80:

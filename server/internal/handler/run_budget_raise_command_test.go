@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -158,11 +159,13 @@ func TestExhaustionNoticeShowsTheSnapshotRaiseAndBalance(t *testing.T) {
 
 // noticeRaise returns the raise command the exhaustion activity recorded and
 // the notice text, so a test can hold them against the snapshot.
-func noticeRaise(t *testing.T, c edgeCase) (command, notice string) {
+func noticeRaise(t *testing.T, c edgeCase, withActivity bool) (command, notice string) {
 	t.Helper()
 	ctx := context.Background()
-	if err := testPool.QueryRow(ctx, `SELECT details->>'raise_command' FROM activity_log WHERE issue_id=$1 AND action='run_budget_exhausted' ORDER BY created_at DESC LIMIT 1`, c.issueID).Scan(&command); err != nil {
-		t.Fatal(err)
+	if withActivity {
+		if err := testPool.QueryRow(ctx, `SELECT details->>'raise_command' FROM activity_log WHERE issue_id=$1 AND action='run_budget_exhausted' ORDER BY created_at DESC LIMIT 1`, c.issueID).Scan(&command); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := testPool.QueryRow(ctx, `SELECT content FROM comment WHERE issue_id=$1 AND type='system' AND content LIKE '%budget raise%' ORDER BY created_at DESC LIMIT 1`, c.issueID).Scan(&notice); err != nil {
 		t.Fatal(err)
@@ -172,14 +175,14 @@ func noticeRaise(t *testing.T, c edgeCase) (command, notice string) {
 
 // wantNoticeMatchesSnapshot holds the activity's command and the notice's
 // command and balance against the snapshot's raise preview.
-func wantNoticeMatchesSnapshot(t *testing.T, c edgeCase) service.RunBudgetPreview {
+func wantNoticeMatchesSnapshot(t *testing.T, c edgeCase, withActivity bool) service.RunBudgetPreview {
 	t.Helper()
 	p := visibleSnapshot(t, c).RaisePreview
 	if p == nil {
 		t.Fatal("snapshot shows no raise")
 	}
-	command, notice := noticeRaise(t, c)
-	if want := fmt.Sprintf(" --runs %d", p.LimitAfter); !strings.HasSuffix(command, want) {
+	command, notice := noticeRaise(t, c, withActivity)
+	if want := fmt.Sprintf(" --runs %d", p.LimitAfter); withActivity && !strings.HasSuffix(command, want) {
 		t.Fatalf("activity raise command %q, want one ending %q (the snapshot's)", command, want)
 	}
 	if want, left := fmt.Sprintf("--runs %d`", p.LimitAfter), fmt.Sprintf("leaves %d runs", p.BalanceAfter); !strings.Contains(notice, want) || !strings.Contains(notice, left) {
@@ -203,7 +206,7 @@ func TestExhaustionNoticeCountsTheRecoveryRunItGives(t *testing.T) {
 	}
 	finishRuns(t, c.edgeCase)
 	c.enter(t, "in_progress")
-	p := wantNoticeMatchesSnapshot(t, c.edgeCase)
+	p := wantNoticeMatchesSnapshot(t, c.edgeCase, true)
 	if p.BalanceAfter != 10 {
 		t.Fatalf("promised balance = %d, want 10", p.BalanceAfter)
 	}
@@ -252,7 +255,7 @@ func TestExhaustionNoticeFollowsABalanceThatMovedAfterTheRefusal(t *testing.T) {
 				t.Fatalf("balance = %d, want -1 (the named run's debit)", got)
 			}
 			c.enter(t, "in_progress")
-			p := wantNoticeMatchesSnapshot(t, c.edgeCase)
+			p := wantNoticeMatchesSnapshot(t, c.edgeCase, true)
 			if p.LimitAfter != 13 || p.BalanceAfter != 10 {
 				t.Fatalf("preview = %+v, want a cap of 13 leaving 10 (cap 2 + 1 debt + 10)", p)
 			}
@@ -262,4 +265,82 @@ func TestExhaustionNoticeFollowsABalanceThatMovedAfterTheRefusal(t *testing.T) {
 			wantAdmitted(t, c.edgeCase, p.BalanceAfter)
 		})
 	}
+}
+
+// raiseAndAdmit applies the preview and counts the runs admission then allows.
+func raiseAndAdmit(t *testing.T, c edgeCase, p service.RunBudgetPreview) {
+	t.Helper()
+	if w := raiseBudget(t, c.issueID, map[string]any{"runs": p.LimitAfter}, nil); w.Code != http.StatusOK {
+		t.Fatalf("raise to %d = %d: %s", p.LimitAfter, w.Code, w.Body.String())
+	}
+	wantAdmitted(t, c, p.BalanceAfter)
+}
+
+// An issue that is already blocked gets the notice alone: no move, so no
+// recovery run follows it. The notice must not count one.
+func TestNoticeOnAnAlreadyBlockedIssueCountsNoRecoveryRun(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	c := newBudgetCase(t, 2886103, recoverySteps(seededReadyAgentID(t)), 2)
+	e := refusedEventAfter(t, c, func() { c.enter(t, "blocked") })
+	testHandler.onRunBudgetExhausted(context.Background(), e)
+	if n := recoveryRuns(t, c.edgeCase); n != 0 {
+		t.Fatalf("recovery runs = %d, want 0 (nothing moved)", n)
+	}
+	c.enter(t, "in_progress")
+	p := wantNoticeMatchesSnapshot(t, c.edgeCase, false)
+	if p.LimitAfter != 12 || p.BalanceAfter != 10 {
+		t.Fatalf("preview = %+v, want a cap of 12 leaving 10", p)
+	}
+	raiseAndAdmit(t, c.edgeCase, p)
+}
+
+// A recovery run that is not enqueued (the window's claim is taken) debits
+// nothing, so the activity and the notice count none.
+func TestNoticeCountsNoRecoveryRunThatWasNotEnqueued(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	c := newBudgetCase(t, 2886104, recoverySteps(seededReadyAgentID(t)), 2)
+	e := refusedEvent(t, c)
+	if _, err := testPool.Exec(context.Background(), `INSERT INTO run_budget_notice (id, workspace_id, issue_id, window_id, kind)
+		SELECT gen_random_uuid(), workspace_id, id, $2, 'recovery' FROM issue WHERE id=$1`, c.issueID, e.Since.UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	testHandler.onRunBudgetExhausted(context.Background(), e)
+	if got := c.status(t); got != "blocked" {
+		t.Fatalf("issue is %s, want blocked", got)
+	}
+	if n := recoveryRuns(t, c.edgeCase); n != 0 {
+		t.Fatalf("recovery runs = %d, want 0 (the claim was taken)", n)
+	}
+	c.enter(t, "in_progress")
+	p := wantNoticeMatchesSnapshot(t, c.edgeCase, true)
+	if p.LimitAfter != 12 || p.BalanceAfter != 10 {
+		t.Fatalf("preview = %+v, want a cap of 12 leaving 10", p)
+	}
+	raiseAndAdmit(t, c.edgeCase, p)
+}
+
+// A person's named run can land between the block and the notice's
+// transaction while the refusal still holds. The notice is worded under the
+// lock, so it describes the ledger it commits against.
+func TestNoticeFollowsABalanceThatMovedBeforeTheNoticeTransaction(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	c := newBudgetCase(t, 2886105, mergeEdgeSteps, 2)
+	e := refusedEvent(t, c)
+	landBeforeNotice(t, func() { namedRun(t, c.edgeCase) })
+	testHandler.onRunBudgetExhausted(context.Background(), e)
+	if got := ledgerBalance(t, c.issueID); got != -1 {
+		t.Fatalf("balance = %d, want -1 (the named run's debit)", got)
+	}
+	c.enter(t, "in_progress")
+	p := wantNoticeMatchesSnapshot(t, c.edgeCase, false)
+	if p.LimitAfter != 13 || p.BalanceAfter != 10 {
+		t.Fatalf("preview = %+v, want a cap of 13 leaving 10 (cap 2 + 1 debt + 10)", p)
+	}
+	raiseAndAdmit(t, c.edgeCase, p)
 }

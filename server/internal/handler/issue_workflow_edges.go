@@ -244,7 +244,6 @@ func (h *Handler) guardedIssueStatuses(ctx context.Context, q *db.Queries, works
 func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetExhausted) {
 	var issue db.Issue
 	var refused string
-	var raise budgetRaise
 	moved := false
 	// Another writer (the 80% warning's comment, a person) can bump the issue's
 	// revision between the read and the block. The block then loses, so it
@@ -254,12 +253,9 @@ func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetE
 		if issue, ok = h.exhaustedIssue(ctx, e); !ok {
 			return
 		}
-		if !e.TokensSpent {
-			raise = h.runBudgetRaiseCommand(ctx, h.Queries, issue, e)
-		}
 		refused = h.runBudgetRefusedRun(ctx, e)
 		var lifted bool
-		if moved, lifted = h.blockExhaustedIssue(ctx, issue, e, refused, &raise); lifted {
+		if moved, lifted = h.blockExhaustedIssue(ctx, issue, e, refused); lifted {
 			return
 		}
 		if moved || issue.Status == issuestatus.Blocked {
@@ -269,11 +265,20 @@ func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetE
 			break
 		}
 	}
-	h.writeRunBudgetNotice(ctx, service.RunBudgetEvent{IssueID: e.IssueID, Kind: service.RunBudgetKindExhausted, Runs: e.Runs, Max: e.Max, Since: e.Since},
-		exhaustedNoticeText(refused, raise.command, raise.leaves, e, moved))
+	// The recovery run debits the ledger, so it comes before anything that
+	// states the balance. The command is priced from the ledger as it stands
+	// then: in the notice, under the budget lock its transaction takes.
+	ref := issueBudgetRef(h.getIssuePrefix(ctx, issue.WorkspaceID), issue)
 	if moved {
+		runBudgetBeforeRecovery()
 		h.enqueueBudgetRecovery(ctx, e)
+		h.recordBudgetBlock(ctx, issue, e, ref, refused)
 	}
+	h.writeRunBudgetNoticeFrom(ctx, service.RunBudgetEvent{IssueID: e.IssueID, Kind: service.RunBudgetKindExhausted, Runs: e.Runs, Max: e.Max, Since: e.Since},
+		func(ctx context.Context, q *db.Queries) string {
+			raise := runBudgetRaiseCommand(ctx, q, issue.ID, ref, e)
+			return exhaustedNoticeText(refused, raise.command, raise.leaves, e, moved)
+		})
 }
 
 // enqueueBudgetRecovery gives the blocked step's handler its one recovery run
@@ -337,6 +342,10 @@ func (h *Handler) exhaustedIssue(ctx context.Context, e service.RunBudgetExhaust
 	return issue, true
 }
 
+// runBudgetBeforeRecovery runs after the block commits and before the recovery
+// run is claimed. Tests use it to land a budget write in that window.
+var runBudgetBeforeRecovery = func() {}
+
 // runBudgetBeforeBlock runs between the callback's reads and its block write.
 // Tests use it to land a budget write in that window.
 var runBudgetBeforeBlock = func() {}
@@ -354,7 +363,7 @@ var errRefusalLifted = fmt.Errorf("run budget: the refusal no longer applies: %w
 // commits before the check and the block is dropped, or waits for the block's
 // commit and is judged on the blocked issue. A write that changes no issue
 // field (a head grant) cannot be caught by the expected revision alone.
-func (h *Handler) blockExhaustedIssue(ctx context.Context, issue db.Issue, e service.RunBudgetExhausted, refused string, raise *budgetRaise) (moved, lifted bool) {
+func (h *Handler) blockExhaustedIssue(ctx context.Context, issue db.Issue, e service.RunBudgetExhausted, refused string) (moved, lifted bool) {
 	if issue.Status == issuestatus.Blocked {
 		return false, false
 	}
@@ -366,7 +375,7 @@ func (h *Handler) blockExhaustedIssue(ctx context.Context, issue db.Issue, e ser
 	}
 	details := map[string]any{
 		"reason": issueworkflow.BlockedReasonRunBudget, "max_runs": e.Max, "runs": e.Runs,
-		"refused_run": refused, "raise_command": raise.command,
+		"refused_run": refused,
 	}
 	stillRefused := func(ctx context.Context, q *db.Queries, _ *db.UpdateIssueParams) error {
 		if _, err := q.LockIssueRunBudget(ctx, issue.ID); err != nil {
@@ -377,12 +386,6 @@ func (h *Handler) blockExhaustedIssue(ctx context.Context, issue db.Issue, e ser
 				err = errRefusalLifted
 			}
 			return err
-		}
-		// The balance can move between the callback's read and this lock; the
-		// command the block records is priced from the one the lock holds.
-		if !e.TokensSpent {
-			*raise = h.runBudgetRaiseCommand(ctx, q, issue, e)
-			details["raise_command"] = raise.command
 		}
 		return nil
 	}
@@ -400,6 +403,18 @@ func (h *Handler) blockExhaustedIssue(ctx context.Context, issue db.Issue, e ser
 	if _, err := h.Queries.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{Key: "blocked_reason", Value: reason, ID: issue.ID, WorkspaceID: issue.WorkspaceID}); err != nil {
 		slog.Warn("run budget: set blocked_reason failed", "err", err, "issue_id", uuidToString(issue.ID))
 	}
+	return true, false
+}
+
+// recordBudgetBlock logs the exhaustion block with the command that lifts it.
+// It runs after the recovery run is enqueued, so the command counts that run.
+func (h *Handler) recordBudgetBlock(ctx context.Context, issue db.Issue, e service.RunBudgetExhausted, ref, refused string) {
+	details := map[string]any{
+		"reason": issueworkflow.BlockedReasonRunBudget, "max_runs": e.Max, "runs": e.Runs, "refused_run": refused, "raise_command": "",
+	}
+	if !e.TokensSpent {
+		details["raise_command"] = runBudgetRaiseCommand(ctx, h.Queries, issue.ID, ref, e).command
+	}
 	body, _ := json.Marshal(details)
 	if _, err := h.Queries.CreateActivity(ctx, db.CreateActivityParams{
 		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, ActorType: pgtype.Text{String: "system", Valid: true},
@@ -407,7 +422,6 @@ func (h *Handler) blockExhaustedIssue(ctx context.Context, issue db.Issue, e ser
 	}); err != nil {
 		slog.Warn("run budget: activity failed", "err", err, "issue_id", uuidToString(issue.ID))
 	}
-	return true, false
 }
 
 // exhaustedNoticeText is the exhaustion comment: what was refused, whether the
@@ -478,37 +492,20 @@ type budgetRaise struct {
 }
 
 // runBudgetRaiseCommand is the command that lifts this issue's cap to leave
-// 10 runs after the balance is paid off, and the runs it leaves, using the
-// issue's identifier when the workspace prefix is known. It prices the raise
-// from the ledger as q reads it now, less the one run the blocked step's
-// handler is about to be given, so applying it leaves what it says once that
-// run is spent. The refusal's own balance is the fallback when the ledger
-// cannot be read. The command is empty when the platform maximum leaves no
-// valid raise.
-func (h *Handler) runBudgetRaiseCommand(ctx context.Context, q *db.Queries, issue db.Issue, e service.RunBudgetExhausted) budgetRaise {
-	max, balance, err := service.CurrentRunBudget(ctx, q, issue.ID)
+// 10 runs after the balance is paid off, and the runs it leaves, naming the
+// issue by ref (see issueBudgetRef). It reads only through q, so it can run
+// inside the notice's transaction without a second pool connection. It prices the raise
+// from the ledger as q reads it now, not from the balance the refusal saw. The
+// refusal's own balance is the fallback when the ledger cannot be read. The
+// command is empty when the platform maximum leaves no valid raise.
+func runBudgetRaiseCommand(ctx context.Context, q *db.Queries, issueID pgtype.UUID, ref string, e service.RunBudgetExhausted) budgetRaise {
+	max, balance, err := service.CurrentRunBudget(ctx, q, issueID)
 	if err != nil {
 		max, balance = e.Max, e.Balance
-	}
-	if h.recoveryRunAhead(ctx, q, issue, e) {
-		balance--
 	}
 	target, leaves := service.SuggestedRaiseForBalance(max, balance)
 	if target == 0 {
 		return budgetRaise{}
 	}
-	ref := issueBudgetRef(h.getIssuePrefix(ctx, issue.WorkspaceID), issue)
 	return budgetRaise{command: fmt.Sprintf("multica issue budget raise %s --runs %d", ref, target), leaves: leaves}
-}
-
-// recoveryRunAhead reports whether the exhaustion move will give the blocked
-// step's handler its recovery run: the run debits the ledger after the notice
-// is written. The handler is the issue's assignee once the move has run.
-func (h *Handler) recoveryRunAhead(ctx context.Context, q *db.Queries, issue db.Issue, e service.RunBudgetExhausted) bool {
-	id, ok := h.blockedAgentHandler(ctx, issue)
-	if !ok || (issue.Status == issuestatus.Blocked && id != uuidToString(issue.AssigneeID)) {
-		return false
-	}
-	claimed, err := service.RecoveryRunClaimed(ctx, q, issue.ID, e.Since)
-	return err == nil && !claimed
 }
