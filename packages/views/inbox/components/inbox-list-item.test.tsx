@@ -354,7 +354,7 @@ describe("InboxListItem direct messages", () => {
 
   it("marks a DM row with a chat glyph and shows the DM title", () => {
     const { container } = renderRow({ item: dm(), view: "inbox" });
-    const glyph = container.querySelector(".lucide-message-square");
+    const glyph = container.querySelector(".icon-message-square");
     expect(glyph).not.toBeNull();
     expect(glyph!.getAttribute("aria-hidden")).toBe("true");
     expect(screen.getByText("Deploy plan")).toBeTruthy();
@@ -362,7 +362,7 @@ describe("InboxListItem direct messages", () => {
 
   it("leaves an issue row without the chat glyph", () => {
     const { container } = renderRow({ item: item(), view: "inbox" });
-    expect(container.querySelector(".lucide-message-square")).toBeNull();
+    expect(container.querySelector(".icon-message-square")).toBeNull();
   });
 
   it("shows when the last reply arrived, not when the record was created", () => {
