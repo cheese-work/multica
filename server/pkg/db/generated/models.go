@@ -48,13 +48,15 @@ type Agent struct {
 	// Composio toolkit slugs this agent is allowed to mount as MCP. NULL or empty array = no MCP overlay. Mounted for any run that passes the agent invocation-permission gate (MUL-3963); the overlay uses the agent OWNER's active Composio connection, so sharing the agent (public_to) shares these apps with whoever may invoke it. No longer gated on originator == owner. Stored as TEXT[] so the dispatch path can intersect against the owner's active connections with a single SQL ANY() filter.
 	ComposioToolkitAllowlist []string `json:"composio_toolkit_allowlist"`
 	// Agent invocation permission mode (MUL-3963). private = owner only; public_to = allow-list in agent_invocation_target. Replaces visibility as the authorization source for triggering runs; visibility is now a derived legacy field. Default private = deny-by-default.
-	PermissionMode        string      `json:"permission_mode"`
-	Kind                  string      `json:"kind"`
-	SystemKey             pgtype.Text `json:"system_key"`
-	DisabledRuntimeSkills []byte      `json:"disabled_runtime_skills"`
-	ServiceTier           pgtype.Text `json:"service_tier"`
-	ConversationStarters  []byte      `json:"conversation_starters"`
-	CustomEnvVersion      int64       `json:"custom_env_version"`
+	PermissionMode        string             `json:"permission_mode"`
+	Kind                  string             `json:"kind"`
+	SystemKey             pgtype.Text        `json:"system_key"`
+	DisabledRuntimeSkills []byte             `json:"disabled_runtime_skills"`
+	ServiceTier           pgtype.Text        `json:"service_tier"`
+	ConversationStarters  []byte             `json:"conversation_starters"`
+	CustomEnvVersion      int64              `json:"custom_env_version"`
+	SchedulingPausedAt    pgtype.Timestamptz `json:"scheduling_paused_at"`
+	SchedulingPausedBy    pgtype.UUID        `json:"scheduling_paused_by"`
 }
 
 type AgentBuilderDraft struct {
@@ -3083,7 +3085,9 @@ type Workspace struct {
 	// CHE-766: redaction mode for CHE-755 provenance export. Only "small" is implemented and enforced server-side; "strict" is stored for forward compatibility but is rejected fail-closed by the export handler until it ships.
 	ExportRedactionMode string `json:"export_redaction_mode"`
 	// CHE-766: days a provenance_export_log row is kept before scheduled deletion. Default 90.
-	ExportManifestRetentionDays int32 `json:"export_manifest_retention_days"`
+	ExportManifestRetentionDays int32              `json:"export_manifest_retention_days"`
+	SchedulingPausedAt          pgtype.Timestamptz `json:"scheduling_paused_at"`
+	SchedulingPausedBy          pgtype.UUID        `json:"scheduling_paused_by"`
 }
 
 type WorkspaceInvitation struct {
