@@ -204,6 +204,7 @@ export function useUpdateIssue() {
         stop_previous_assignee_runs: _stopPreviousAssigneeRuns,
         handoff_preview: _handoffPreview,
         enter_workflow_step: _enterWorkflowStep,
+        entry_gate_override_reason: _entryGateOverrideReason,
         duplicate_of_issue_id: _duplicateOfIssueId,
         description: _description,
         description_base: _descriptionBase,
@@ -319,6 +320,7 @@ export function useUpdateIssue() {
         stop_previous_assignee_runs: _stopPreviousAssigneeRuns,
         handoff_preview: _handoffPreview,
         enter_workflow_step: _enterWorkflowStep,
+        entry_gate_override_reason: _entryGateOverrideReason,
         duplicate_of_issue_id: _duplicateOfIssueId,
         description_base: _descriptionBase,
         move_intent: _moveIntent,
@@ -547,6 +549,7 @@ export function useBatchUpdateIssues() {
         stop_previous_assignee_runs: _stopPreviousAssigneeRuns,
         handoff_preview: _handoffPreview,
         enter_workflow_step: _enterWorkflowStep,
+        entry_gate_override_reason: _entryGateOverrideReason,
         description: _description,
         description_base: _descriptionBase,
         ...patch

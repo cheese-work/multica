@@ -389,6 +389,7 @@ type AgentTaskResponse struct {
 	RequireCredentialIsolation bool                    `json:"require_credential_isolation,omitempty"`
 	CredentialExecutionBinding *credentialexec.Binding `json:"credential_execution_binding,omitempty"`
 	StartClaimSupported        bool                    `json:"start_claim_supported,omitempty"`
+	AppliedSettingsSupported   bool                    `json:"applied_settings_supported,omitempty"`
 	CancelledByCommentChange   bool                    `json:"cancelled_by_comment_change,omitempty"`
 	CancelledBy                *TaskCancellationActor  `json:"cancelled_by,omitempty"`
 	// ClaimedModel is the model the daemon was told to run when it claimed this

@@ -211,6 +211,7 @@ func daemonCommonCapabilities() []string {
 		protocol.DaemonCapabilityCheckoutKeepsWorkV1,
 		protocol.DaemonCapabilityJoinedWakeupsV1,
 		protocol.DaemonCapabilityCLICommentSteerV1,
+		protocol.DaemonCapabilityAppliedSettingsV1,
 	}
 }
 
@@ -575,6 +576,35 @@ func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...strin
 	return negotiated, nil
 }
 
+// AppliedSettings is the launch selection the daemon resolved for one claim.
+type AppliedSettings struct {
+	Model, ThinkingLevel, ServiceTier string
+	ContextArgs                       []string
+}
+
+// ReportAppliedSettings records the launch selection against the claim
+// generation. One bounded attempt: the report is advisory, so callers log and
+// carry on when it fails.
+func (c *Client) ReportAppliedSettings(ctx context.Context, task Task, applied AppliedSettings) error {
+	if task.RuntimeID == "" || task.DispatchedAt == "" {
+		return fmt.Errorf("report applied settings: claim is missing runtime_id or dispatched_at")
+	}
+	contextArgs := applied.ContextArgs
+	if contextArgs == nil {
+		contextArgs = []string{}
+	}
+	ctx, cancel := context.WithTimeout(ctx, startTaskTimeout)
+	defer cancel()
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/applied-settings", task.ID), map[string]any{
+		"runtime_id":             task.RuntimeID,
+		"dispatched_at":          task.DispatchedAt,
+		"applied_model":          applied.Model,
+		"applied_thinking_level": applied.ThinkingLevel,
+		"applied_service_tier":   applied.ServiceTier,
+		"applied_context_args":   contextArgs,
+	}, nil)
+}
+
 // MarkTaskWaitingLocalDirectory parks a freshly-dispatched task in the
 // waiting_local_directory state on the server. The daemon calls this after
 // it has claimed a task whose project carries a local_directory resource
@@ -794,6 +824,25 @@ func (c *Client) GetTaskStatus(ctx context.Context, taskID string) (string, erro
 		return "", err
 	}
 	return resp.Status, nil
+}
+
+// BrokerPolicyName is the server policy record the push broker enforces.
+const BrokerPolicyName = "default"
+
+// BrokerPolicy returns the push broker's Policy: it reads the workspace's
+// protected-path record from the server on every call, so an admin edit applies
+// to the next push and a failed read is an error the broker refuses on.
+func (c *Client) BrokerPolicy(workspaceID string) func(context.Context) ([]string, error) {
+	path := fmt.Sprintf("/api/daemon/workspaces/%s/protected-path-policies/%s", workspaceID, BrokerPolicyName)
+	return func(ctx context.Context) ([]string, error) {
+		var resp struct {
+			Patterns []string `json:"patterns"`
+		}
+		if err := c.getJSON(ctx, path, &resp); err != nil {
+			return nil, err
+		}
+		return resp.Patterns, nil
+	}
 }
 
 // HeartbeatResponse, PendingUpdate, etc. alias the wire types so HTTP and WS

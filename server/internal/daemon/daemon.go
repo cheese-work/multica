@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,6 +28,7 @@ import (
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/multica-ai/multica/server/internal/agentpreset"
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
@@ -7604,6 +7606,25 @@ type taskModelSelection struct {
 	ThinkingLevelWarning string
 }
 
+// launchContextArgs lists the context-window args every launch input carries, in
+// argv order: the runtime's launch prefix, the daemon's default args, then the
+// agent's custom args.
+func launchContextArgs(provider string, prefix, defaults, custom []string) []string {
+	return agentpreset.ContextArgsOf(provider, slices.Concat(prefix, defaults, custom))
+}
+
+// reportAppliedSettings tells the server what this launch will use (CHE-2248). It
+// runs only for a claim the server marked as supporting it, and a failure is
+// logged and dropped: the applied columns stay NULL and the task still runs.
+func (d *Daemon) reportAppliedSettings(ctx context.Context, task Task, provider string, applied AppliedSettings, log *slog.Logger) {
+	if !task.AppliedSettingsSupported {
+		return
+	}
+	if err := d.client.ReportAppliedSettings(ctx, task, applied); err != nil {
+		log.Warn("report applied settings failed; continuing", "provider", provider, "error", err)
+	}
+}
+
 // resolveTaskModelSelection settles the model selector and its capability
 // overrides against the runtime's own model catalog, reading that catalog at
 // most once per task — and not at all when nothing needs it.
@@ -8895,6 +8916,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	selection := resolveTaskModelSelection(ctx, provider, agent.NewCommand(entry.Path, profileFixedArgs),
 		taskModelSelection{Model: model, ThinkingLevel: thinkingLevel, ServiceTier: serviceTier}, taskLog)
 	model, thinkingLevel, serviceTier = selection.Model, selection.ThinkingLevel, selection.ServiceTier
+	d.reportAppliedSettings(ctx, task, provider, AppliedSettings{
+		Model: model, ThinkingLevel: thinkingLevel, ServiceTier: serviceTier,
+		ContextArgs: launchContextArgs(provider, profileFixedArgs, extraArgs, customArgs),
+	}, taskLog)
 
 	var idleWatchdogTimeout time.Duration
 	if provider == "opencode" || provider == "codearts" {

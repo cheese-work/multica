@@ -38,6 +38,8 @@ export interface IssueWorkflowStep {
   advance_on_ci_green?: boolean;
   /** Guarded exits; the first whose guard holds is taken. */
   edges?: IssueWorkflowEdge[];
+  /** Conditions a status write must meet to put an issue into this step (CHE-2531). */
+  entry?: IssueWorkflowEntryGate[];
   /** Entering the step starts a child issue on another workflow; a `children_done` edge joins. */
   sub_workflow?: IssueWorkflowSubWorkflow;
 }
@@ -45,6 +47,16 @@ export interface IssueWorkflowStep {
 export interface IssueWorkflowSubWorkflow {
   workflow_id: string;
   stage?: number;
+}
+
+export type IssueWorkflowEntryMode = "off" | "warn" | "block";
+
+/** One entry condition of a step, e.g. `{ guard: "pr.ready", mode: "block", member_override: true }`. */
+export interface IssueWorkflowEntryGate {
+  guard: string;
+  mode: IssueWorkflowEntryMode;
+  /** Whether a person may pass a failed block gate with a reason. Default true. */
+  member_override?: boolean;
 }
 
 /** One exit of a step, e.g. `{ to: "done", guard: "pr.merged", timeout: "72h" }`. */
