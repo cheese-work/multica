@@ -471,4 +471,3 @@ func (h *Handler) AgentPresetUsage(w http.ResponseWriter, r *http.Request) {
 func presetNameOK(name string) bool {
 	return name == agentpreset.BaseName || agentpreset.ValidateName(name) == nil
 }
-
