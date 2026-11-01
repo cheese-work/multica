@@ -6,8 +6,20 @@ set -euo pipefail
 # WEBHOOK_URL (ntfy-style: the JSON body carries `message` and `click`).
 # Best effort: the approval gate does not depend on this notice, so no webhook
 # or a failed POST only warns.
+#
+# SOURCE_SHA comes from the workflow_run payload. A manual dispatch has none, so
+# INPUT_REF (a branch, tag or commit SHA) is fetched and peeled to its commit:
+# an annotated tag's FETCH_HEAD is the tag object, not the version to deploy.
 
-: "${SOURCE_SHA:?}" "${RUN_URL:?}"
+: "${RUN_URL:?}"
+
+if [ -z "${SOURCE_SHA:-}" ]; then
+  if ! { git fetch --quiet --depth=1 origin "${INPUT_REF:?SOURCE_SHA or INPUT_REF}" \
+         && SOURCE_SHA="$(git rev-parse --verify "FETCH_HEAD^{commit}")"; }; then
+    echo "::warning title=C00 approval notice::cannot resolve ref '$INPUT_REF' to a commit; no notice sent. Approve at $RUN_URL"
+    exit 0
+  fi
+fi
 
 if [ -z "${WEBHOOK_URL:-}" ]; then
   echo "::notice title=C00 approval notice::C00_APPROVAL_WEBHOOK_URL is not set; no notice sent. Approve at $RUN_URL"

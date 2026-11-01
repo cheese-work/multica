@@ -47,4 +47,41 @@ output="$(WEBHOOK_URL= run)" || { echo "unset: want exit 0" >&2; exit 1; }
 [[ "$output" == *"::notice"* ]] || { echo "unset: no notice: $output" >&2; exit 1; }
 [ ! -e "$work_dir/curl-args" ] || { echo "unset: curl was called" >&2; exit 1; }
 
+# A manual run has no workflow_run payload: SOURCE_SHA comes from INPUT_REF.
+# Review round 2: an annotated tag must resolve to its commit, not the tag
+# object. Covers branch, annotated tag, lightweight tag and a full commit SHA.
+git_quiet() { git -c user.name=t -c user.email=t@example.com "$@"; }
+origin="$work_dir/origin.git"
+src="$work_dir/src"
+git init -q --bare "$origin"
+git -C "$origin" config uploadpack.allowAnySHA1InWant true
+git init -q -b main "$src"
+git_quiet -C "$src" commit -q --allow-empty -m one
+git_quiet -C "$src" tag -a v-annotated -m "annotated"
+git_quiet -C "$src" tag v-light
+git_quiet -C "$src" branch topic
+git_quiet -C "$src" push -q "file://$origin" --all
+git_quiet -C "$src" push -q "file://$origin" --tags
+commit="$(git -C "$src" rev-parse HEAD)"
+tag_object="$(git -C "$src" rev-parse v-annotated)"
+[ "$tag_object" != "$commit" ] || { echo "fixture: annotated tag must differ from its commit" >&2; exit 1; }
+clone="$work_dir/clone"
+git init -q "$clone"
+git -C "$clone" remote add origin "file://$origin"
+
+for ref in main topic v-annotated v-light "$commit"; do
+  rm -f "$work_dir/curl-args" "$work_dir/curl-body"
+  output="$(cd "$clone" && SOURCE_SHA= INPUT_REF="$ref" bash "$root_dir/deploy/cd/notify-approval.sh" 2>&1)" \
+    || { echo "INPUT_REF=$ref: want exit 0" >&2; echo "$output" >&2; exit 1; }
+  body="$(cat "$work_dir/curl-body")"
+  [[ "$body" == *"${commit:0:12}"* ]] || { echo "INPUT_REF=$ref: want commit ${commit:0:12} in body: $body" >&2; exit 1; }
+done
+
+# An unresolvable ref warns and sends nothing; it never fails the job.
+rm -f "$work_dir/curl-args"
+output="$(cd "$clone" && SOURCE_SHA= INPUT_REF=no-such-ref bash "$root_dir/deploy/cd/notify-approval.sh" 2>&1)" \
+  || { echo "bad ref: want exit 0" >&2; echo "$output" >&2; exit 1; }
+[[ "$output" == *"::warning"* ]] || { echo "bad ref: no warning: $output" >&2; exit 1; }
+[ ! -e "$work_dir/curl-args" ] || { echo "bad ref: curl was called" >&2; exit 1; }
+
 echo "test-notify-approval.sh: PASS"

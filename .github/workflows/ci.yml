@@ -604,6 +604,9 @@ jobs:
       - name: Verify per-package test database wrapper
         run: bash scripts/go-test-db-exec.test.sh
 
+      - name: Verify handler test sharding
+        run: bash scripts/go-test-handler-shards.test.sh
+
       - name: Verify integration database startup policy
         run: bash server/cmd/server/integration_startup.test.sh
 

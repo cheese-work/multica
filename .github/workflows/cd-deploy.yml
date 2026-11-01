@@ -117,13 +117,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           WEBHOOK_URL: ${{ secrets.C00_APPROVAL_WEBHOOK_URL }}
         run: |
-          SOURCE_SHA="$HEAD_SHA"
-          if [ -z "$SOURCE_SHA" ]; then
-            git fetch --quiet --depth=1 origin "$INPUT_REF"
-            SOURCE_SHA="$(git rev-parse FETCH_HEAD)"
-          fi
-          export SOURCE_SHA
-          bash deploy/cd/notify-approval.sh
+          SOURCE_SHA="$HEAD_SHA" bash deploy/cd/notify-approval.sh
 
   candidate-preflight:
     if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
