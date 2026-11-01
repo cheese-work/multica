@@ -920,6 +920,8 @@ WHERE id = @task_id
 -- queue so another poll can retry immediately instead of waiting for stale
 -- dispatch recovery. The dispatched_at CAS prevents an old handler from
 -- rolling back a newer reclaim.
+-- Writes one requeue_claim_failure agent_task_event row for the ops page.
+WITH upd AS (
 UPDATE agent_task_queue
 SET status = 'queued',
     dispatched_at = NULL,
@@ -930,12 +932,19 @@ SET status = 'queued',
     applied_service_tier = NULL, applied_context_args = NULL, applied_reported_at = NULL,
     prepare_lease_expires_at = NULL,
     delivered_comment_ids = '{}'
-WHERE id = @task_id
-  AND runtime_id = @runtime_id
-  AND status = 'dispatched'
-  AND started_at IS NULL
-  AND dispatched_at = @dispatched_at
-RETURNING *;
+WHERE agent_task_queue.id = @task_id
+  AND agent_task_queue.runtime_id = @runtime_id
+  AND agent_task_queue.status = 'dispatched'
+  AND agent_task_queue.started_at IS NULL
+  AND agent_task_queue.dispatched_at = @dispatched_at
+RETURNING *
+),
+ev AS (
+    INSERT INTO agent_task_event (workspace_id, task_id, runtime_id, kind)
+    SELECT r.workspace_id, upd.id, upd.runtime_id, 'requeue_claim_failure'
+    FROM upd JOIN agent_runtime r ON r.id = upd.runtime_id
+)
+SELECT * FROM upd;
 
 -- name: ReclaimStaleDispatchedTaskForRuntime :one
 -- Re-delivers a task whose previous claim likely succeeded server-side but
@@ -943,6 +952,8 @@ RETURNING *;
 -- with no `started_at`, so the daemon has not acknowledged it via StartTask.
 -- Refresh dispatched_at so the server-side dispatch timeout measures from the
 -- recovered delivery attempt.
+-- Writes one stale_reclaim agent_task_event row for the ops page.
+WITH upd AS (
 UPDATE agent_task_queue
 SET dispatched_at = now(),
     preset_name = NULL, preset_source = NULL, preset_skips = NULL,
@@ -986,7 +997,14 @@ WHERE id = (
     LIMIT 1
     FOR UPDATE SKIP LOCKED
 )
-RETURNING *;
+RETURNING *
+),
+ev AS (
+    INSERT INTO agent_task_event (workspace_id, task_id, runtime_id, kind)
+    SELECT r.workspace_id, upd.id, upd.runtime_id, 'stale_reclaim'
+    FROM upd JOIN agent_runtime r ON r.id = upd.runtime_id
+)
+SELECT * FROM upd;
 
 -- name: ReclaimStaleDispatchedTasksForRuntimes :many
 -- Batch variant of ReclaimStaleDispatchedTaskForRuntime (MUL-4257): re-delivers
@@ -997,7 +1015,7 @@ RETURNING *;
 -- prepare lease) and the same dispatched_at refresh; only the runtime filter
 -- (= ANY) and the LIMIT (max_tasks instead of 1) differ.
 -- MATERIALIZED pins the candidate set so nested-loop rescans cannot exceed
--- max_tasks.
+-- max_tasks. Writes one stale_reclaim agent_task_event row per task.
 WITH candidates AS MATERIALIZED (
     SELECT atq.id FROM agent_task_queue atq
     WHERE atq.runtime_id = ANY(@runtime_ids::uuid[])
@@ -1032,7 +1050,8 @@ WITH candidates AS MATERIALIZED (
     ORDER BY atq.priority DESC, atq.dispatched_at ASC
     LIMIT @max_tasks::int
     FOR UPDATE SKIP LOCKED
-)
+),
+upd AS (
 UPDATE agent_task_queue
 SET dispatched_at = now(),
     preset_name = NULL, preset_source = NULL, preset_skips = NULL,
@@ -1042,7 +1061,14 @@ SET dispatched_at = now(),
     applied_service_tier = NULL, applied_context_args = NULL, applied_reported_at = NULL,
     prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision)
 WHERE id IN (SELECT id FROM candidates)
-RETURNING *;
+RETURNING *
+),
+ev AS (
+    INSERT INTO agent_task_event (workspace_id, task_id, runtime_id, kind)
+    SELECT r.workspace_id, upd.id, upd.runtime_id, 'stale_reclaim'
+    FROM upd JOIN agent_runtime r ON r.id = upd.runtime_id
+)
+SELECT * FROM upd;
 
 -- name: ExtendAgentTaskPrepareLease :one
 -- Keeps a dispatched task protected while the daemon resolves/cache/materializes

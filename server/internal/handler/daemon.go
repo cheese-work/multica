@@ -563,6 +563,10 @@ var errRuntimeOwnedByAnotherUser = errors.New("runtime is registered to another 
 
 const runtimeOwnedByAnotherUserMessage = "this daemon's runtimes are registered to another user; remove them from the workspace or sign the daemon in as their owner"
 
+func isReservedDaemonID(id string) bool {
+	return len(id) >= 4 && strings.HasPrefix(id, "__") && strings.HasSuffix(id, "__")
+}
+
 func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 	var req DaemonRegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -576,6 +580,13 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 
 	if req.DaemonID == "" {
 		writeError(w, http.StatusBadRequest, "daemon_id is required")
+		return
+	}
+	// The ops page groups machines by daemon_id and uses __cloud__, __unbound__
+	// and __unknown__ for machines without one, so a real id of that shape would
+	// merge into a synthetic group.
+	if isReservedDaemonID(req.DaemonID) {
+		writeError(w, http.StatusBadRequest, "daemon_id must not start and end with __")
 		return
 	}
 	if req.WorkspaceID == "" {
