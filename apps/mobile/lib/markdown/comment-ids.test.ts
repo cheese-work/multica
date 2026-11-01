@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { CommentPreview } from "@multica/core/types";
 import {
@@ -145,5 +146,26 @@ describe("segments", () => {
     expect(out[0]).toMatchObject({ type: "prose" });
     expect((out[0] as { content: string }).content).toContain("mention://comment/");
     expect(out[1]).toEqual({ type: "code", lang: undefined, code: ID });
+  });
+});
+
+// CHE-2922 native run: on the Android dev client (Hermes) no comment-preview
+// request left the app, so `findCommentIds` found nothing. 4e9e72bb3 (numbered
+// groups) was the last scan regex seen working on a device; f617b0142 moved it
+// to named groups, named backreferences and `m.groups`. Keep the scan to
+// numbered groups until Hermes is proven to handle the named form.
+describe("comment-id scan regex stays Hermes-safe", () => {
+  const source = readFileSync(new URL("./comment-ids.ts", import.meta.url), "utf8");
+
+  it("uses no named capture groups", () => {
+    expect(source).not.toMatch(/\(\?<[A-Za-z_]/);
+  });
+
+  it("uses no named backreferences", () => {
+    expect(source).not.toMatch(/\\k</);
+  });
+
+  it("does not read named groups off a match", () => {
+    expect(source).not.toMatch(/\.groups\b/);
   });
 });

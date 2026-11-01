@@ -25,10 +25,13 @@ export interface CommentLinkContext {
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 
 // Alternation order matters: spans we must not touch win over the UUID group.
+// Numbered groups only (no named groups or named backreferences): the Android dev client
+// (Hermes) found no ids with the named form. Groups: 1 code, 2 fence, 3 tick,
+// 4 labeled-link URL, 5 bare URL, 6 bare UUID.
 // `code` is a nested fenced block (quote/list `splitMarkdown` leaves in prose)
 // or an N-backtick code span closed by a run of exactly N backticks.
 const SCAN_RE = new RegExp(
-  String.raw`(?<code>^[ \t>]*(?:(?:[-*+]|\d+[.)])[ \t]+)*(?<fence>[\`~]{3,})[^\`\n]*(?:\n[\s\S]*?)?(?:\n[ \t>]*\k<fence>[\`~]*[ \t]*(?=\n|$)|(?![\s\S]))|(?<!\`)(?<tick>\`+)(?!\`)(?:(?!\n[ \t]*\n)[\s\S])*?(?<!\`)\k<tick>(?!\`))|\[[^\]]*\]\((?<url>[^)]*)\)|(?<bare>https?://[^\s<>()]*[^\s<>().,;:!?])|(?<![A-Za-z0-9_-])(?<uuid>${UUID})(?![A-Za-z0-9_-])`,
+  String.raw`(^[ \t>]*(?:(?:[-*+]|\d+[.)])[ \t]+)*([\`~]{3,})[^\`\n]*(?:\n[\s\S]*?)?(?:\n[ \t>]*\2[\`~]*[ \t]*(?=\n|$)|(?![\s\S]))|(?<!\`)(\`+)(?!\`)(?:(?!\n[ \t]*\n)[\s\S])*?(?<!\`)\3(?!\`))|\[[^\]]*\]\(([^)]*)\)|(https?://[^\s<>()]*[^\s<>().,;:!?])|(?<![A-Za-z0-9_-])(${UUID})(?![A-Za-z0-9_-])`,
   "gm",
 );
 const MENTION_RE = new RegExp(`^mention://comment/(${UUID})\\?issue=([^&#]+)$`);
@@ -54,7 +57,7 @@ function matchedId(
 export function findCommentIds(text: string, ctx: CommentLinkContext): string[] {
   const ids = new Set<string>();
   for (const m of text.matchAll(SCAN_RE)) {
-    const id = matchedId(m.groups ?? {}, ctx);
+    const id = matchedId({ url: m[4], bare: m[5], uuid: m[6] }, ctx);
     if (id) ids.add(id);
   }
   return [...ids];
@@ -67,9 +70,8 @@ export function linkifyCommentIds(
   resolved: ReadonlyMap<string, CommentPreview>,
   ctx: CommentLinkContext,
 ): string {
-  return text.replace(SCAN_RE, (...args) => {
-    const whole: string = args[0];
-    const id = matchedId(args.at(-1), ctx);
+  return text.replace(SCAN_RE, (whole, _code, _fence, _tick, url?: string, bare?: string, uuid?: string) => {
+    const id = matchedId({ url, bare, uuid }, ctx);
     const p = id ? resolved.get(id) : undefined;
     if (!p) return whole;
     const who = p.author_name ? `${p.author_name}: ` : "";
