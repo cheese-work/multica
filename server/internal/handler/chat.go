@@ -2122,6 +2122,9 @@ type ChatSessionResponse struct {
 	// Pinned marks a chat the user has stuck to the top of the list. Populated
 	// by list endpoints and by the pin/unpin + single-session responses.
 	Pinned bool `json:"pinned"`
+	// PresetName is the DM's explicit preset choice: null = inherit, "base" or
+	// a preset name = chosen.
+	PresetName *string `json:"preset_name"`
 	// ChannelSource is present only for Chats created from an external channel.
 	// IsCurrentChannelRoute distinguishes the active route generation from an
 	// older Chat that remains readable and writable in Multica.
@@ -2303,6 +2306,7 @@ func chatSessionToResponse(s db.ChatSession) ChatSessionResponse {
 		Title:                  s.Title,
 		Status:                 s.Status,
 		Pinned:                 s.PinnedAt.Valid,
+		PresetName:             textToPtr(s.PresetName),
 		CreatedAt:              timestampToString(s.CreatedAt),
 		UpdatedAt:              timestampToString(s.UpdatedAt),
 	}

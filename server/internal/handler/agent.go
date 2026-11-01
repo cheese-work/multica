@@ -388,6 +388,36 @@ type TaskCancellationActor struct {
 	Name string `json:"name,omitempty"`
 }
 
+// TaskPresetSettings are one tier of a run's settings. A null field = unset,
+// "" = an empty string was stored.
+type TaskPresetSettings struct {
+	Model         *string  `json:"model"`
+	ThinkingLevel *string  `json:"thinking_level"`
+	ServiceTier   *string  `json:"service_tier"`
+	ContextArgs   []string `json:"context_args"`
+}
+
+type TaskPresetApplied struct {
+	TaskPresetSettings
+	ReportedAt string `json:"reported_at"`
+}
+
+type TaskPresetSkip struct {
+	Level  string `json:"level"`
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
+}
+
+// TaskPresetRun separates what the claim asked for (Claimed) from what the
+// daemon reported running (Applied, null until it reports).
+type TaskPresetRun struct {
+	Name    string             `json:"name"`
+	Source  string             `json:"source"`
+	Skips   []TaskPresetSkip   `json:"skips"`
+	Claimed TaskPresetSettings `json:"claimed"`
+	Applied *TaskPresetApplied `json:"applied"`
+}
+
 type AgentTaskResponse struct {
 	RequireCredentialIsolation bool                    `json:"require_credential_isolation,omitempty"`
 	CredentialExecutionBinding *credentialexec.Binding `json:"credential_execution_binding,omitempty"`
@@ -402,6 +432,8 @@ type AgentTaskResponse struct {
 	// missing key means a server that predates the field. It attests the claim,
 	// not the upstream model that actually served the run.
 	ClaimedModel *string `json:"claimed_model"`
+	// PresetRun is present only when the claim recorded a preset selection.
+	PresetRun *TaskPresetRun `json:"preset_run,omitempty"`
 
 	ID                   string                 `json:"id"`
 	AgentID              string                 `json:"agent_id"`
@@ -938,6 +970,7 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		WorkspaceID:            workspaceID,
 		Status:                 t.Status,
 		ClaimedModel:           textToPtr(t.ClaimedModel),
+		PresetRun:              taskPresetRun(t),
 		Priority:               t.Priority,
 		DispatchedAt:           timestampToPtr(t.DispatchedAt),
 		StartedAt:              timestampToPtr(t.StartedAt),
@@ -3410,4 +3443,43 @@ func (h *Handler) ListWorkspaceAgentTaskSnapshot(w http.ResponseWriter, r *http.
 	h.hydrateTaskAttributions(r.Context(), attributionsOf(resp))
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func jsonStrings(b []byte) []string {
+	out := []string{}
+	_ = json.Unmarshal(b, &out)
+	return out
+}
+
+// taskPresetRun reads the preset snapshot columns. A malformed stored JSON
+// column degrades to empty rather than failing the task response.
+func taskPresetRun(t db.AgentTaskQueue) *TaskPresetRun {
+	if !t.PresetName.Valid {
+		return nil
+	}
+	skips := []TaskPresetSkip{}
+	_ = json.Unmarshal(t.PresetSkips, &skips)
+	run := &TaskPresetRun{
+		Name:   t.PresetName.String,
+		Source: t.PresetSource.String,
+		Skips:  skips,
+		Claimed: TaskPresetSettings{
+			Model:         textToPtr(t.ClaimedModel),
+			ThinkingLevel: textToPtr(t.ClaimedThinkingLevel),
+			ServiceTier:   textToPtr(t.ClaimedServiceTier),
+			ContextArgs:   jsonStrings(t.ClaimedContextArgs),
+		},
+	}
+	if t.AppliedReportedAt.Valid {
+		run.Applied = &TaskPresetApplied{
+			TaskPresetSettings: TaskPresetSettings{
+				Model:         textToPtr(t.AppliedModel),
+				ThinkingLevel: textToPtr(t.AppliedThinkingLevel),
+				ServiceTier:   textToPtr(t.AppliedServiceTier),
+				ContextArgs:   jsonStrings(t.AppliedContextArgs),
+			},
+			ReportedAt: timestampToString(t.AppliedReportedAt),
+		}
+	}
+	return run
 }
