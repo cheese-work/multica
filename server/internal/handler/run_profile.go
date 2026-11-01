@@ -36,6 +36,10 @@ type runProfile struct {
 	Scopes   []string
 	Epoch    int64
 	TaintIDs []string
+	// PinnedBaseSHA and PinnedHeadSHA seed the elevated run's synthetic base
+	// (plan 3.5); empty when no grant pins one.
+	PinnedBaseSHA string
+	PinnedHeadSHA string
 }
 
 // resolveRunProfile elevates only when an active grant exists and nothing
@@ -107,6 +111,7 @@ func (h *Handler) runProfileForTask(ctx context.Context, workspaceID, issueID, t
 		}
 	}
 	rp.Scopes, rp.Epoch = te.Scopes, te.Epoch
+	rp.PinnedBaseSHA, rp.PinnedHeadSHA = grantPins(grants, te.GrantIds)
 	return rp
 }
 
@@ -223,4 +228,31 @@ func (h *Handler) intakePinForTask(ctx context.Context, workspaceID, taskID pgty
 		return true, "", ""
 	}
 	return true, pin.Branch, strings.ToLower(host + "/" + pin.RepoOwner + "/" + pin.RepoName)
+}
+
+// grantPins is the pinned commit pair of the grants that elevated a task:
+// only the frozen grants when the task's elevation is already recorded. A
+// field with two different values, or no value, resolves empty and the daemon
+// then refuses the elevated checkout.
+func grantPins(grants []db.RunCapabilityGrant, frozen []pgtype.UUID) (base, head string) {
+	bases, heads := map[string]bool{}, map[string]bool{}
+	for _, g := range grants {
+		if frozen != nil && !slices.Contains(frozen, g.ID) {
+			continue
+		}
+		if g.PinnedBaseSha.Valid {
+			bases[g.PinnedBaseSha.String] = true
+		}
+		if g.PinnedHeadSha.Valid {
+			heads[g.PinnedHeadSha.String] = true
+		}
+	}
+	if len(bases) > 1 || len(heads) > 1 {
+		return "", ""
+	}
+	for base = range bases {
+	}
+	for head = range heads {
+	}
+	return base, head
 }
