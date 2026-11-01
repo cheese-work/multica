@@ -344,3 +344,27 @@ func TestNoticeFollowsABalanceThatMovedBeforeTheNoticeTransaction(t *testing.T) 
 	}
 	raiseAndAdmit(t, c.edgeCase, p)
 }
+
+// Two refusals of one window run their callbacks at once. The first blocks the
+// issue and pauses before its recovery run; the second runs to the end. The
+// second must not post a notice that the first's recovery debit then
+// outdates: one notice, worded after the debit.
+func TestConcurrentRefusalNoticeCountsTheRecoveryRunTheOtherCallbackGives(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	c := newBudgetCase(t, 2886106, recoverySteps(seededReadyAgentID(t)), 2)
+	e := refusedEvent(t, c)
+	landBeforeRecovery(t, func() { testHandler.onRunBudgetExhausted(context.Background(), e) })
+	testHandler.onRunBudgetExhausted(context.Background(), e)
+	if n := recoveryRuns(t, c.edgeCase); n != 1 {
+		t.Fatalf("recovery runs = %d, want 1", n)
+	}
+	finishRuns(t, c.edgeCase)
+	c.enter(t, "in_progress")
+	p := wantNoticeMatchesSnapshot(t, c.edgeCase, true)
+	if p.BalanceAfter != 10 {
+		t.Fatalf("promised balance = %d, want 10", p.BalanceAfter)
+	}
+	raiseAndAdmit(t, c.edgeCase, p)
+}

@@ -7,6 +7,11 @@ VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (issue_id, window_id, kind) DO NOTHING
 RETURNING id;
 
+-- name: ReleaseRunBudgetNotice :exec
+-- Gives a claim back. Only the claim of a window's exhaustion handling is
+-- released: it orders concurrent callbacks, not notices.
+DELETE FROM run_budget_notice WHERE id = $1;
+
 -- name: SetRunBudgetNoticeComment :exec
 UPDATE run_budget_notice SET comment_id = $2 WHERE id = $1;
 

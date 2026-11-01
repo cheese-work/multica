@@ -15,6 +15,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 // The workflow edge engine (CHE-2152). A trigger on issue.status keeps one
@@ -245,6 +246,7 @@ func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetE
 	var issue db.Issue
 	var refused string
 	moved := false
+	var claim pgtype.UUID
 	// Another writer (the 80% warning's comment, a person) can bump the issue's
 	// revision between the read and the block. The block then loses, so it
 	// reads the issue again and retries while the revision keeps moving.
@@ -252,6 +254,17 @@ func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetE
 		var ok bool
 		if issue, ok = h.exhaustedIssue(ctx, e); !ok {
 			return
+		}
+		// One callback per window owns the block, the recovery run and the
+		// notice, so no other callback words a notice the owner's recovery
+		// debit then outdates. The owner is the first whose refusal still
+		// holds; it gives the claim back when it is done, so a later refusal in
+		// the same window (the issue moved back to work) is handled again.
+		if !claim.Valid {
+			if claim = h.claimExhaustionHandling(ctx, issue, e); !claim.Valid {
+				return
+			}
+			defer h.releaseExhaustionHandling(ctx, claim)
 		}
 		refused = h.runBudgetRefusedRun(ctx, e)
 		var lifted bool
@@ -280,6 +293,30 @@ func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetE
 			return exhaustedNoticeText(refused, raise.command, raise.leaves, e, moved)
 		})
 }
+
+// claimExhaustionHandling claims the window's exhaustion handling for this
+// callback; the claim is invalid when another callback holds it. A failed
+// claim counts as lost: the holder, or a later refusal, handles the window.
+func (h *Handler) claimExhaustionHandling(ctx context.Context, issue db.Issue, e service.RunBudgetExhausted) pgtype.UUID {
+	id, err := h.Queries.ClaimRunBudgetNotice(ctx, db.ClaimRunBudgetNoticeParams{
+		ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID,
+		WindowID: e.Since.UTC().Format(time.RFC3339Nano), Kind: runBudgetKindHandling,
+	})
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		slog.Warn("run budget: claim exhaustion handling failed", "err", err, "issue_id", uuidToString(issue.ID))
+	}
+	return id
+}
+
+func (h *Handler) releaseExhaustionHandling(ctx context.Context, claim pgtype.UUID) {
+	if err := h.Queries.ReleaseRunBudgetNotice(context.WithoutCancel(ctx), claim); err != nil {
+		slog.Warn("run budget: release exhaustion handling failed", "err", err)
+	}
+}
+
+// runBudgetKindHandling keys the claim of a window's exhaustion handling. It
+// shares the claim table with the notices but writes no notice.
+const runBudgetKindHandling = "handling"
 
 // enqueueBudgetRecovery gives the blocked step's handler its one recovery run
 // for the window. Only an agent handler gets one; a second claim in the window

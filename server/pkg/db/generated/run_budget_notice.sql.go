@@ -68,6 +68,17 @@ func (q *Queries) ListWorkspaceOwnerUserIDs(ctx context.Context, workspaceID pgt
 	return items, nil
 }
 
+const releaseRunBudgetNotice = `-- name: ReleaseRunBudgetNotice :exec
+DELETE FROM run_budget_notice WHERE id = $1
+`
+
+// Gives a claim back. Only the claim of a window's exhaustion handling is
+// released: it orders concurrent callbacks, not notices.
+func (q *Queries) ReleaseRunBudgetNotice(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, releaseRunBudgetNotice, id)
+	return err
+}
+
 const setRunBudgetNoticeComment = `-- name: SetRunBudgetNoticeComment :exec
 UPDATE run_budget_notice SET comment_id = $2 WHERE id = $1
 `
