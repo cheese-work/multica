@@ -94,7 +94,7 @@ func TestCHE2199DecisionRelayReplay(test *testing.T) {
 	assignee := createHandlerTestAgent(test, "decision-current-assignee", []byte("[]"))
 	dbfx.Exec(test, `UPDATE issue SET assignee_id = $1 WHERE id = $2`, assignee, fixture.issueID)
 	input := fixture.recordInput()
-	input.ParentID, input.EscalationClass = parseUUID(parent), "product_direction"
+	input.ParentID, input.EscalationClass = parseUUID(parent), "reversible"
 	recorded, err := testHandler.createAskedDecisionRecord(request, fixture.issue, input)
 	if err != nil {
 		test.Fatal(err)
@@ -127,6 +127,8 @@ func TestCHE2199DecisionRelayReplay(test *testing.T) {
 	if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'`, fixture.issueID, asker); count != ownerRuns {
 		test.Fatalf("retry admitted %d owner runs, previously %d", count, ownerRuns)
 	}
+	// The shared runtime is seeded once per package run; a long run ages it past the claim freshness fence.
+	dbfx.Exec(test, `UPDATE agent_runtime SET last_seen_at = now() WHERE id = $1`, handlerTestRuntimeID(test))
 	claimed, body := claimTaskByRuntimeForTest(test, handlerTestRuntimeID(test))
 	if claimed == nil {
 		test.Fatalf("owner run was not claimable: %s", body)

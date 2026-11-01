@@ -18,7 +18,14 @@ const ClassNeedsOwner = "class_needs_owner"
 // OwnerRequiredNotice tells the asking agent where a refused decision goes next.
 const OwnerRequiredNotice = "This decision concerns the workspace owner. Post a fresh --decision-intent that names the owner, then ping in a new request."
 
-func withdrawalContent(reason string) string {
+// CardRequired is the reason for an agent-recorded answer to a gated-class
+// decision: only an answer given on the card may wake the asker.
+const CardRequired = "card_required"
+
+func withdrawalContent(reason, cardLink string) string {
+	if reason == CardRequired {
+		return "Decision withdrawn: " + reason + ". This decision needs an answer on the card: [open the card](" + cardLink + ")"
+	}
 	if reason == ClassNeedsOwner {
 		return "Decision withdrawn: " + reason + ". " + OwnerRequiredNotice
 	}
@@ -33,14 +40,20 @@ type Withdrawal struct {
 }
 
 func Withdraw(ctx context.Context, queries *db.Queries, request db.DecisionRequest, answer db.DecisionAnswer, sessionStatus, reason string, userID pgtype.UUID) (Withdrawal, error) {
-	return withdraw(ctx, queries, request, answer, sessionStatus, reason, userID, nil, false)
+	return withdraw(ctx, queries, request, answer, sessionStatus, reason, userID, nil, false, "")
+}
+
+// WithdrawForCard withdraws an agent-recorded answer that the card must replace
+// and reopens its request; the withdrawal comment links the card.
+func WithdrawForCard(ctx context.Context, queries *db.Queries, request db.DecisionRequest, answer db.DecisionAnswer, sessionStatus, cardLink string) (Withdrawal, error) {
+	return withdraw(ctx, queries, request, answer, sessionStatus, CardRequired, pgtype.UUID{}, nil, false, cardLink)
 }
 
 func WithdrawByAgent(ctx context.Context, queries *db.Queries, request db.DecisionRequest, answer db.DecisionAnswer, sessionStatus, reason string, comment db.Comment, suppress bool) (Withdrawal, error) {
-	return withdraw(ctx, queries, request, answer, sessionStatus, reason, pgtype.UUID{}, &comment, suppress)
+	return withdraw(ctx, queries, request, answer, sessionStatus, reason, pgtype.UUID{}, &comment, suppress, "")
 }
 
-func withdraw(ctx context.Context, queries *db.Queries, request db.DecisionRequest, answer db.DecisionAnswer, sessionStatus, reason string, userID pgtype.UUID, veto *db.Comment, suppress bool) (Withdrawal, error) {
+func withdraw(ctx context.Context, queries *db.Queries, request db.DecisionRequest, answer db.DecisionAnswer, sessionStatus, reason string, userID pgtype.UUID, veto *db.Comment, suppress bool, cardLink string) (Withdrawal, error) {
 	result := Withdrawal{Request: request, Answer: answer}
 	if answer.DecisionRequestID != request.ID {
 		return Withdrawal{}, fmt.Errorf("withdrawal answer belongs to another request")
@@ -60,7 +73,7 @@ func withdraw(ctx context.Context, queries *db.Queries, request db.DecisionReque
 	var err error
 	params := db.WithdrawDecisionAnswerParams{WorkspaceID: request.WorkspaceID, ID: answer.ID, DisclaimReason: pgtype.Text{String: reason, Valid: true}, DisclaimedByUserID: userID}
 	if veto == nil {
-		created, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: dbid.NewV7(), WorkspaceID: request.WorkspaceID, IssueID: request.IssueID, ParentID: parentID, AuthorType: "agent", AuthorID: request.AskingAgentID, Type: "comment", Content: withdrawalContent(reason), DecisionAnswerID: answer.ID, DecisionCommentKind: pgtype.Text{String: "disclaim", Valid: true}})
+		created, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: dbid.NewV7(), WorkspaceID: request.WorkspaceID, IssueID: request.IssueID, ParentID: parentID, AuthorType: "agent", AuthorID: request.AskingAgentID, Type: "comment", Content: withdrawalContent(reason, cardLink), DecisionAnswerID: answer.ID, DecisionCommentKind: pgtype.Text{String: "disclaim", Valid: true}})
 		if err != nil {
 			return Withdrawal{}, err
 		}
