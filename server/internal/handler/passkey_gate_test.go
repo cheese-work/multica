@@ -488,6 +488,38 @@ func TestJoiningAWorkspaceWaitsOutAGateCheckInFlight(test *testing.T) {
 	}
 }
 
+// Creating a workspace adds the creator's owner membership, so it waits for a
+// gate check in flight too; otherwise the new workspace could be switched to
+// block before that check commits.
+func TestCreatingAWorkspaceWaitsOutAGateCheckInFlight(test *testing.T) {
+	userID := dbfx.User(test, "Gate Creator", "gate-create-"+uuid.NewString()+"@multica.ai")
+	slug := "gate-create-" + uuid.NewString()
+	test.Cleanup(func() {
+		dbfx.Exec(test, `DELETE FROM member WHERE user_id = $1`, userID)
+		dbfx.Exec(test, `DELETE FROM workspace WHERE slug = $1`, slug)
+	})
+	release := holdRowLock(test, `SELECT id FROM "user" WHERE id = $1 FOR SHARE`, userID)
+
+	created := make(chan struct{})
+	go func() {
+		defer close(created)
+		req := newRequest("POST", "/api/workspaces", map[string]string{"name": "Gate Create", "slug": slug})
+		req.Header.Set("X-User-ID", userID)
+		testutil.Call(test, testHandler.CreateWorkspace, req).Want(http.StatusCreated)
+	}()
+	select {
+	case <-created:
+		test.Fatal("the workspace was created while a gate check held the user")
+	case <-time.After(500 * time.Millisecond):
+	}
+	release()
+	select {
+	case <-created:
+	case <-time.After(10 * time.Second):
+		test.Fatal("the workspace was never created after the gate check ended")
+	}
+}
+
 func TestEnablingTheGateWaitsOutAPasskeyRemovalInFlight(test *testing.T) {
 	f := newGateFixture(test, 2)
 	assertion := f.sign(0, f.issue("block"))
