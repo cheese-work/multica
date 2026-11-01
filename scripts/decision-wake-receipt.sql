@@ -1,4 +1,4 @@
--- Rollout receipt for migration 869_decision_wake_policy: non-reversible
+-- Rollout receipt for migration 870_decision_wake_policy: non-reversible
 -- agent_record answers woken in the 24 h before the migration. They stay as they
 -- are; a person reads the list. Run it just before the migration:
 --   psql "$DATABASE_URL" -f scripts/decision-wake-receipt.sql
