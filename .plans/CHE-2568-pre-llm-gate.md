@@ -1,52 +1,56 @@
 # CHE-2568: server-side gate for runs that need no LLM
 
-Plan only. No code. Parent: CHE-2566 (stage 3, option C). Stage 1 (B, CHE-2567) is live and measured (CHE-2581).
+Revision 2 (1 Nov 2026, 23:30 ICT). Changed since revision 1: run output is now read from authored comments (revision 1 read incoming-comment receipts, which was wrong); gate estimates apply each gate's own eligibility rule and report false positives; only G1 survives; G3's shared-sender fallback is removed; the fetch pipeline is complete and frozen; the scripts have unit tests.
+
+Plan only. No gate code. Parent: CHE-2566 (stage 3, option C). Stage 1 (B, CHE-2567) is live and measured (CHE-2581).
 
 ## Problem
 
-The parent premise says about 80% of x99-claude-sonnet and Tofu runs post no comment and no PR. Each run pays a boot write plus 0.2–1.3M cache-read tokens. One week of run history shows the premise holds for comments and PRs but the avoidable share is much smaller than 80%. The measured ceiling for deterministic server gates is about 3–5% of tokens. See "Finding" below.
+The parent premise says about 80% of x99-claude-sonnet and Tofu runs post no comment and no PR. Each run pays a boot write plus 0.2–1.3M cache-read tokens. The premise is wrong: 93% of runs author a comment. The better question is how many runs change nothing, and how many of those a server can decide without an LLM.
 
 ## Measurement
 
-Window: runs created 25 Oct 2026 to 1 Nov 2026 (ICT 07:00 start), x99-claude-sonnet and Tofu, status `completed` (7,807 runs, 7,981 Mtok, USD 3,832 at the CHE-2567 list-price model). Source: `multica agent tasks <id> --output json` (all pages) plus `multica issue timeline <id> --activity-only` for 908 issues. Scripts are in `.plans/CHE-2568-scripts/` (`fetch.py` rebuilds the 44 MB timeline cache and the run rows; `strict_ids.json` lists the strict no-op run ids).
+Window: runs with `created_at` in [25 Oct 2026 00:00Z, 1 Nov 2026 15:00Z) (25 Oct 07:00 ICT to 1 Nov 22:00 ICT), x99-claude-sonnet and Tofu, status `completed`: 7,767 runs, 7,964 Mtok, USD 3,822 at the CHE-2567 list-price model. Inputs: `multica agent tasks <id>` (all pages) and `multica issue timeline <issue>` (activity and comments) for 954 issues. `.plans/CHE-2568-scripts/fetch.py` fetches both for the fixed window and writes `manifest.json` (sha256 of `tasks.json` and each timeline). The frozen manifest from this revision has `tasks.json` sha256 `689fab043129d30f…` and `manifest.json` sha256 `b7f17069b5a62c33…` (first 16 hex digits). No timeline was truncated.
 
-Definitions, in widening order:
+Run classes (`lib.run_class`, covered by unit tests):
 
-| Set | Rule | Runs | Share of runs | Mtok | USD |
-| --- | --- | --- | --- | --- | --- |
-| No output | no delivered comment and no `pr_url` | 5,714 | 73% | n/a | n/a |
-| Inert | no output, and no status/assignee change by the run's agent during the run | 2,964 | 38% | n/a | 1,138 |
-| Strict no-op | inert, and the final message states nothing was done (regex on the first 300 chars, no action verb) | 688 | 8.8% | 250.6 | 170 |
+| Class | Rule | Runs | Mtok | USD |
+| --- | --- | --- | --- | --- |
+| substantive | the run has a `pr_url`, or changed status, assignee, wakeup or description, or authored a comment that does not say "nothing changed" | 6,120 | 7,190 | 3,405 |
+| ceremonial | changed nothing; every authored comment says nothing changed (regex on the first 400 chars, no action verb) | 1,125 | 524 | 303 |
+| silent | changed nothing; authored no comment | 376 | 125 | 114 |
+| not scored | chat (58) and autopilot (88) runs have no issue timeline | 146 | n/a | n/a |
+
+No-change runs (ceremonial plus silent): 1,501 of 7,621 issue-bound runs (19.7%), USD 417 (10.9% of cost), 650 Mtok (8.2% of tokens).
 
 Caveats:
 
-- "Inert" over-counts waste. Hand sampling shows many inert runs did real work with no comment: reran CI, merged `main` into a branch, fixed a PR title, set a wakeup, opened a decision request.
-- "Strict no-op" is a text heuristic. A hand read of 18 random hits found about 15 true no-ops. Three also set a wakeup or posted a status comment. Treat USD figures as +/-20%.
-- Chat (58) and autopilot (89) runs never show state change here. They are not gate targets.
-- Cost uses list prices from `analyze.py` in CHE-2566; it ignores the 1 h cache-write premium already measured there.
+- "Authored a comment" uses `source_task_id` on the timeline comment. `delivered_comment_ids` lists comments delivered TO the agent and is not output. Revision 1 used it, which made the 73% and 38% figures wrong.
+- `result.pr_url` is empty on every run in the window, so PR output is not observable. A run that only pushed or opened a PR and posted no comment counts as `silent`. Treat `silent` as an upper bound.
+- `ceremonial` is a text heuristic. A hand read of 16 random ceremonial runs found 10 that changed nothing and 6 that did work (a CI re-run, a code fix, a filed issue, an opened decision request). Precision is about 60% (n = 16, wide interval). Treat the no-change figure as USD 114 (silent only) to USD 417 (all).
+- Cost uses list prices from `analyze.py` in CHE-2566.
 
 ### By trigger class
 
-| Class | Runs | No output | Inert | Strict no-op | Strict USD |
-| --- | --- | --- | --- | --- | --- |
-| Workflow step / assignment hand-off | 3,052 | 3,050 | 979 | 206 | 44 |
-| Time wakeup (`time.due`) | 734 | 578 | 442 | 38 | 13 |
-| `pr.event` (needs-attention) | 480 | 480 | 455 | 194 | 35 |
-| `pr.checks_failed` | 347 | 347 | 320 | 77 | 25 |
-| `pr.merged` | 273 | 273 | 226 | 123 | 46 |
-| Condition wakeup (`condition.met`) | 567 | 493 | 297 | 37 | 5 |
-| Wakeup timeout | 133 | 118 | 79 | 4 | 1 |
-| `pr.mergeability` | 96 | 96 | 85 | 2 | 1 |
-| Comment mention | 1,810 | 0 | 0 | 0 | 0 |
-| Autopilot, chat | 147 | 147 | 0 | 0 | 0 |
-
-Comment-triggered runs always produce output. The waste sits in PR-event wakeups, polling wakeups and hand-off steps.
+| Class | Runs | Substantive | Ceremonial | Silent | No-change USD | No-change Mtok |
+| --- | --- | --- | --- | --- | --- | --- |
+| Comment mention | 1,804 | 1,438 | 215 | 151 | 106 | 172 |
+| Workflow step / assignment hand-off | 3,044 | 2,720 | 272 | 52 | 77 | 133 |
+| `pr.merged` | 271 | 84 | 131 | 56 | 73 | 78 |
+| Time wakeup (`time.due`) | 727 | 579 | 42 | 106 | 48 | 58 |
+| `pr.event` (needs attention) | 470 | 235 | 233 | 2 | 46 | 78 |
+| `pr.checks_failed` | 347 | 246 | 98 | 3 | 35 | 72 |
+| Condition wakeup (`condition.met`) | 563 | 473 | 87 | 3 | 14 | 30 |
+| `pr.mergeability` | 96 | 83 | 13 | 0 | 7 | 14 |
+| Other wakeups, delegated failure | 249 | 242 | 34 | 3 | 11 | 15 |
 
 ## Finding
 
-1. Strict no-op runs are 8.8% of runs and 3.1% of tokens. They are cheaper than average (0.36 Mtok against 1.02 Mtok for all runs).
-2. The largest cost is not wasted runs. It is run size: the average run reads about 1 Mtok of cache. That is a separate lever (resume size, boot prefix) and is out of scope here. Raise it as a follow-up.
-3. Deterministic gates can remove about USD 100–180 of USD 3,832 (2.6–4.7%) and about 8% of runs (660 gated runs at the high end). The parent success criterion "share of no-output runs falls from ~80%" is not reachable with gates alone. Restate it as "strict no-op runs fall by at least half, no missed hand-off".
+1. 19.7% of issue-bound runs change nothing (USD 417, 10.9% of cost). The parent's "about 80%" is not a measured quantity: 93% of runs author a comment, and 15% of runs author only a "nothing changed" comment.
+2. A server can decide without an LLM only when it holds the deciding fact at dispatch. Measured against that rule, one gate survives: G1 (`pr_merged` on a Done issue), about USD 41 per week, 1.1% of cost.
+3. Four proposed gates do not survive their own eligibility rule. The wakeups they would suppress mostly did real work (see the table below). G4 has no matching run in the week.
+4. The larger part of the USD 417 is agent behaviour (a run that reads state and says "nothing to do") that a server cannot see without the agent's read. That is a design lever, not a gate: the plan lists it under "Not planned" with the opt-in `skip_if_unchanged` idea.
+5. The parent success criterion cannot be met with gates. Restate it, with Cheese's agreement, as: "G1 ships with zero dropped hand-offs and removes about 110 runs per week; any wider cut needs the opt-in design in Open question 3".
 
 ## Approach
 
@@ -67,122 +71,78 @@ flowchart LR
   R --> M[Shadow compare: run output vs decision]
 ```
 
-## Gates, ranked by estimated saving
+## Gates
 
-Estimates are per week. Low = strict no-op subset of the gated runs. High = all gated runs that the gate rule would catch, measured from the same data. Mtok is cache read + write + input + output.
+Each predicate uses only facts the server holds at dispatch. `matched` = runs the predicate would suppress. `saved` = matched runs that changed nothing. `fp` = matched runs that did real work: each would have been a dropped hand-off. A gate may enforce only with `fp` explained and zero false positives in shadow.
 
-| Rank | Gate | Class | Gated runs | Mtok (low–high) | USD (low–high) |
-| --- | --- | --- | --- | --- | --- |
-| 1 | G1: `pr_merged` when issue is already Done | `pr.merged` | 155 | 33–61 | 36–60 |
-| 2 | G4: `pr_checks_failed` for a head that is stale or no longer failing | `pr.checks_failed` | 77 | 49–66 | 25–29 |
-| 3 | G6: no handler run when the mover is the handler and a decision request is open | hand-off to `need_decision` | 116 | 23–61 | 11–31 |
-| 4 | G5: skip a polling wakeup when watched state is unchanged | `time.due`, `condition.met`, timeout | 139 | 25–60 | 18–31 |
-| 5 | G3: `head_changed` caused by the agent's own push | `pr.event` | 89 | 26–80 | 14–39 |
-| 6 | G2: `merged`, `ready`, `draft` events as next-turn context | `pr.event` | 84 | 10–24 | 4–16 |
+| Gate | Predicate | Matched | Saved | fp | Saved USD | Saved Mtok | Verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| G1 | `pr.merged`, issue status Done, `layer_delivered` false | 122 | 110 | 12 | 41 | 43 | Build (shadow first) |
+| G6 | entered `need_decision`, mover = this agent | 79 | 36 | 43 | 4 | 11 | Drop: more fp than saved; open-request fact not in the data |
+| G5 | polling wakeup, no issue activity since the agent's last run | 770 | 180 | 590 | 39 | 60 | Drop as a default: polls watch external state. Opt-in only |
+| G2 | `pr.event` kind `merged`, `ready` or `draft` | 192 | 88 | 104 | 19 | 30 | Drop: more fp than saved |
+| G4 | `pr.checks_failed` on a head a newer head had already replaced at dispatch | 0 | 0 | 0 | 0 | 0 | Drop: no match; 38 heads were replaced only after dispatch |
+| G3 | `pr.event` `head_changed` caused by the agent's own push | 186 | 102 | 84 | 18 | 33 | Dropped: see below |
 
-Total: about USD 108–206 (low end 2.8%, high end 5.4% of cost); the plan quotes USD 100–180 after removing overlap between G1 and G2 (26 `pr.event merged` runs fire within 30 min of a `pr_merged` run on the same issue).
+Only G1 is viable, so the planned saving is about USD 41 per week (1.1% of cost). Up to USD 6 more if the 12 G1 false positives move server-side (see G1). For scale, the saved sets of all five rows with matches add to USD 121 (G3 included) before removing overlap, and four of those rows fail on false positives.
 
 ### G1: `pr_merged` on an issue that is already Done
 
-Evidence: 155 of 273 `pr_merged` runs started on an issue whose status was already `done`. `systemWakeupIssueActive` treats only the `closed` category as inactive for PR wakeups (`server/internal/service/issue_wakeup_system.go:957`), so Done issues still wake. 97 of the 155 say "no follow-up needed".
+Evidence: 122 `pr_merged` runs started on an issue already `done` with `layer_delivered` false. 110 changed nothing. The 12 false positives all resolved the issue's agent-only comment threads, which the "Linked PR Merge Wakeup" rule requires. They did real work with no state change visible on the timeline.
 
-Change: in `dispatchSystem` (`issue_wakeup_system.go:971`), for rule `pr_merged`, record outcome `suppressed: issue_done` and spawn nothing when the issue status category is Done and the merge is not a stack layer (`layer_delivered` false in the receipt payload built at `:373`).
+Change: in `dispatchSystem` (`server/internal/service/issue_wakeup_system.go:971`), for rule `pr_merged`, record outcome `suppressed: issue_done` and spawn nothing when all hold: the issue status category is Done, the merge is not a stack layer (`layer_delivered` false in the receipt payload built at `:373`), no other linked PR is open, and no agent-only comment thread is unresolved. A run with an unresolved thread still spawns. Resolving threads server-side is a possible follow-up, not part of this plan.
+
+Eligibility not measurable from the data: "other linked PR open" and "unresolved thread". The shadow run records both, and the compare treats every `would_suppress` run that changed state or resolved a thread as a false positive.
 
 Negative controls (must still spawn):
 
 - Issue Done, PR base is not the default branch (`layer_delivered` true): successor PR may need a new base.
 - Issue Done and another linked PR is open: a later layer still needs the merge facts.
+- Issue Done and an agent-only comment thread is unresolved: the thread resolution still needs a run.
 - Issue `merged` (Code Accepted): agent sets `done`; never suppress.
 - Issue `in_review`, `blocked`, `in_progress`: never suppress.
+- Issue status unknown or the receipt payload incomplete: fail open.
 
-### G4: `pr_checks_failed` for a stale head
+### G3: dropped
 
-Evidence: 65 of 347 runs say the failure was for an old head, already fixed, or a false alarm. Largest-token class (330 Mtok, 0.95 Mtok per run).
+Revision 1 allowed the webhook `sender` plus the run window as proof of an own push. All agents share the same GitHub bot login, so another agent that pushes during the target agent's run would be suppressed, and a real hand-off would be lost. G3 needs task-attributed SHA evidence (a record of the SHAs a run pushed). The server holds none today. G3 is out of this plan until that record exists. If it is built, the negative controls must include the shared-login case: agent B pushes to agent A's PR while A's run is active; A must still wake.
 
-Change: at dispatch, read the PR snapshot (`github_snapshot.sql`, `GetGitHubPullRequestByID`). Suppress when the event `head_sha` differs from the snapshot head, or the check rollup on that head is no longer failing. Record the head and rollup in the outcome.
+### G5: opt-in only
 
-Negative controls:
-
-- Failure on the current head with a failing rollup: must spawn.
-- Snapshot older than the event, or missing: must spawn (fail open).
-- Failure on a head, then a new head with a different failure: the second must spawn.
-- Required check failed and an optional check passed: must spawn.
-
-### G6: hand-off to `need_decision` when the mover is the handler
-
-Evidence: 139 runs started on entry to `need_decision`; 116 were inert, 54 say "request still open, nothing to do". Workflow step 9 opens the decision request first, then moves the issue, so the entry run only restates it.
-
-Change: in `IssueService.WillEnqueueRun` (`server/internal/service/issue_trigger.go:109`), when `EnteredHandoffStep` is set, the handler equals the acting agent, the target status is `need_decision`, and an open (unanswered) decision request exists on the issue, return no run and record `suppressed: own_decision_open`. The decision-answered event must wake the handler (verify it does; see open questions).
-
-Negative controls:
-
-- `need_decision` entered by a different agent: must spawn.
-- Entered by the handler with no open decision request: must spawn (the run must open one).
-- Entered by a human: must spawn.
-- Decision answered: handler must wake.
-
-### G5: polling wakeup with unchanged watched state
-
-Evidence: 139 inert `time.due`, `condition.met` and timeout runs had no issue activity since the same agent's previous run on the issue. Upper bound if every inert poll were skippable is 818 runs and USD 326, not a credible target because external state (PR checks, deploys) is not in the timeline.
-
-Change: opt-in field on the wakeup, `skip_if_unchanged`. Compute a fingerprint of issue revision, status, assignee, comment count, linked-PR head and check rollup, child statuses, and open decision state. At `dispatch` (`server/internal/service/issue_wakeup.go:1009`, before `CreateWakeupTask` at `:1561`), skip when the fingerprint equals the one stored at the previous fire. Never skip a wakeup with a deadline or an absolute `fire_at` instruction.
-
-Negative controls:
-
-- Deadline wakeup ("apply default at 20:35 ICT") with unchanged state: must spawn.
-- PR checks turn green between fires, no issue activity: must spawn.
-- New comment from anyone: must spawn.
-- First fire of a wakeup: must spawn.
-- Wakeup without `skip_if_unchanged`: unchanged behaviour.
-
-### G3: `head_changed` caused by the agent's own push
-
-Evidence: 188 runs; 33 say the wake was the agent's own push; 89 are strict no-ops.
-
-Change: in `bridgePREvent` (`server/internal/service/wakeup_pr_event_queue.go:109`), queue the event as next-turn context instead of spawning when the new head SHA was pushed during an active or just-ended run of the target agent on this issue. Needs a record of pushed SHAs (see open questions).
-
-Negative controls:
-
-- Head changed by another actor (force-push, bot, another agent): must spawn.
-- Head changed with no run of the target agent in the window: must spawn.
-- Head changed and conflict or failing checks attached to the new head: must spawn.
-
-### G2: `merged`, `ready` and `draft` events as next-turn context
-
-Change: in `bridgePREvent`, kinds `merged` (covered by the `pr_merged` rule), `ready` and `draft` queue as next-turn context only. Keep `closed`, `conflict`, `checks_failed` and `head_changed` as wake triggers.
-
-Negative controls:
-
-- `merged` with no `pr_merged` rule enabled on the issue: must spawn.
-- `ready` when the issue is waiting on that PR (a condition wakeup `--until-pr` is set): the condition wakeup, not this path, must still fire.
-- `closed` without merge: must spawn.
+A default rule is not viable (590 of 770 matched runs did real work: CI state, PR state, deploys are not in the issue timeline). An opt-in field `skip_if_unchanged` set by the wakeup creator, who declares that the instruction depends only on issue state, is safe by default. Nothing is planned until a creator needs it (Open question 3).
 
 ## Not planned
 
 | Item | Reason |
 | --- | --- |
-| Skip `blocked` entry runs (371 inert-ish, USD 124) | Most set a wakeup or open a request; all 6 sampled did real work. No safe deterministic rule. |
+| Skip `blocked` entry runs | Most set a wakeup or open a request; all 6 sampled did real work. No safe deterministic rule. |
 | Suppress leader runs on workflow-routed issues | 18 runs, USD 6 per week. Not worth a gate. |
 | Server-native `pr_merged` completion for status `merged` | Deterministic, but 21 runs, USD 12. Revisit after G1. |
 | Todo-pull meta-cap precheck (CHE-2816) | 133 runs, USD 40, rule ends 10 Nov 2026. Expires first. |
 | Cut boot prefix, resume size | Separate lever (about 1 Mtok per run). Follow-up issue. |
 
+| G2, G4, G6 | Fail their eligibility rule (table above). Revisit only with a new predicate and a re-measurement. |
+| Agents that post "nothing changed" comments (1,125 ceremonial runs, USD 303) | Agent behaviour, not a server decision. Follow-up: a skill rule to end a no-change run with `wakeup checkin` instead of a comment. |
+
 ## Steps
 
 1. Review this plan cross-lab (agent_review). Done when a different-lab reviewer signs PASS on the exact head.
-2. One implementation issue per gate, in rank order. Each starts with a failing test per control below, red then green recorded in its PR.
-3. Each gate ships shadow first (log only), then enforce after 48 h with zero false positives.
-4. Each enforced gate gets a 48 h before/after read on the same agents: strict no-op share, runs per merged PR, review PASS rate.
-5. After G1, G4, G6 are enforced, re-run this plan's measurement and decide whether G5, G3, G2 are still worth building.
+2. Cheese agrees the restated target (Finding 5) before any gate ships.
+3. One implementation issue for G1. It starts with a failing test per negative control, red then green recorded in its PR.
+4. G1 ships shadow first (log only), then enforces after 48 h with zero false positives.
+5. G1 gets a 48 h before/after read on the same agents: `pr_merged` runs, no-change share, review PASS rate.
+6. Re-run this measurement (`fetch.py`, `classify.py`, `est.py`, `gates.py`) after G1 and decide on the opt-in and comment follow-ups.
 
 ## Tests
 
-Go, targeted: `internal/service` wakeup and trigger tests (`issue_wakeup_system_test.go`, `issue_wakeup_test.go`, `wakeup_pr_event_coalesce_test.go`, `issue_trigger` tests). Each gate has one positive test (suppressed) and one test per negative control (spawns). Shadow mode has a test that the run still starts and the outcome is recorded.
+The measurement scripts have unit tests: `python3 -m unittest discover -s tests` in `.plans/CHE-2568-scripts/`. Observed red (8 of 13 failing before `run_class`, 3 of 5 before `is_output`) and green (13 of 13) are in the PR body.
+
+Gate code tests (not run, no gate code in this PR): Go, targeted, `internal/service` wakeup and trigger tests (`issue_wakeup_system_test.go`, `issue_wakeup_test.go`). G1 has one positive test (suppressed), one test per negative control (spawns), and a shadow-mode test that the run still starts and the outcome is recorded.
 
 ## Open questions
 
-1. G6: confirm that a decision-answered event wakes the handler on the Default workflow. If not, G6 needs that wake first.
-2. G3: does the server see which SHAs an agent pushed? If not, use the GitHub webhook `sender` plus the agent's run window, or drop G3.
-3. G5: which wakeup creators set `skip_if_unchanged`? Default off is safe. A default-on rule for polling instructions needs a Cheese decision.
-4. Restating the parent success criterion (see Finding 3) needs Cheese's agreement before any gate ships.
-5. Multica `multica issue wakeup checkin` already ends a scheduled check silently for every/cron runs. It cuts output tokens, not boot cost. Not a substitute for gating.
+1. Is "no other linked PR open" and "unresolved agent-only thread" readable at dispatch in `dispatchSystem`? If not, G1 needs that read first.
+2. Does the server record which SHAs a run pushed? Without it G3 stays out.
+3. Which wakeup creators would set `skip_if_unchanged`? Default off is safe. A default-on rule needs a Cheese decision.
+4. Restating the parent success criterion (Finding 5) needs Cheese's agreement before any gate ships.
+5. `multica issue wakeup checkin` already ends a scheduled check silently. It cuts output tokens, not boot cost. It is the lever for the ceremonial-comment follow-up, not a substitute for gating.

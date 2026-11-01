@@ -1,4 +1,5 @@
 import json,collections,re,os
+from lib import run_class
 from datetime import datetime
 d=json.load(open('tasks.json'))
 P={'opus':(4,8,0.2,20),'sonnet':(2,4,0.2,10)}
@@ -19,12 +20,6 @@ def tl(i):
         f=f'tl/{i}.json'
         TL[i]=json.load(open(f)) if os.path.exists(f) else None
     return TL[i]
-STATE={'status_changed','assignee_changed'}
-def changed(r):
-    t=tl(r['issue_id']) if r.get('issue_id') else None
-    if t is None: return None
-    a,b=ts(r['started_at']),ts(r['completed_at'])
-    return any(e.get('action') in STATE and a<=ts(e['created_at'])<=b and e.get('actor_id')==r['agent_id'] for e in t)
 def cls(r):
     ev=(r.get('attribution') or {}).get('evidence',{}).get('kind')
     h=r.get('handoff_note') or ''
@@ -40,9 +35,8 @@ for n,rs in d.items():
     for r in rs:
         if r['status']!='completed' or not r.get('completed_at'): continue
         t=toks(r)
-        out=bool(r.get('delivered_comment_ids')) or bool((r.get('result') or {}).get('pr_url'))
-        ch=None if out else changed(r)
-        rows.append(dict(agent=n,id=r['id'],issue=r.get('issue_id'),cls=cls(r),out=out,state=ch,usd=usd(r),**t,
+        rc=run_class(r,tl(r['issue_id']) if r.get('issue_id') else None)
+        rows.append(dict(agent=n,agent_id=r['agent_id'],created=r['created_at'],id=r['id'],issue=r.get('issue_id'),cls=cls(r),rc=rc,usd=usd(r),**t,
           kind=r['kind'],started=r['started_at'],done=r['completed_at'],
           text=((r.get('result') or {}).get('output') or '')[:3000], note=(r.get('handoff_note') or '')[:4000],
           wk=r.get('wakeup_id'),rule=r.get('wakeup_system_rule')))
