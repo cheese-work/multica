@@ -642,6 +642,23 @@ type ChatSession struct {
 	DecisionTopicID        pgtype.UUID        `json:"decision_topic_id"`
 }
 
+type ChatTaskSupplement struct {
+	MessageID          pgtype.UUID        `json:"message_id"`
+	TaskID             pgtype.UUID        `json:"task_id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	ChatSessionID      pgtype.UUID        `json:"chat_session_id"`
+	AuthorID           pgtype.UUID        `json:"author_id"`
+	Status             string             `json:"status"`
+	FailureReason      pgtype.Text        `json:"failure_reason"`
+	AttemptCount       int32              `json:"attempt_count"`
+	ResentTaskID       pgtype.UUID        `json:"resent_task_id"`
+	ResentUncertain    bool               `json:"resent_uncertain"`
+	AckedAfterResendAt pgtype.Timestamptz `json:"acked_after_resend_at"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	DeliveredAt        pgtype.Timestamptz `json:"delivered_at"`
+}
+
 type ChatWakeup struct {
 	ID              pgtype.UUID        `json:"id"`
 	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
@@ -2743,11 +2760,12 @@ type TaskSupplement struct {
 }
 
 type TaskSupplementCapability struct {
-	TaskID      pgtype.UUID        `json:"task_id"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	IssueID     pgtype.UUID        `json:"issue_id"`
-	Capability  string             `json:"capability"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	TaskID        pgtype.UUID        `json:"task_id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	Capability    string             `json:"capability"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
 }
 
 type TaskToken struct {

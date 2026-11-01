@@ -119,6 +119,18 @@ Human message:
 %s`, strconv.Quote(authorName), content)
 }
 
+// taskSupplementCapabilities lists the mid-run capabilities a supported
+// provider offers for this task.
+func taskSupplementCapabilities(task Task) []string {
+	if task.IssueID != "" {
+		return []string{protocol.DaemonCapabilityTaskSupplementV1, protocol.DaemonCapabilityTaskSupplementPREventV1}
+	}
+	if task.ChatSessionID != "" {
+		return []string{protocol.DaemonCapabilityTaskSupplementV1, protocol.DaemonCapabilityTaskSupplementChatV1}
+	}
+	return nil
+}
+
 func taskSupplementEndpointUnsupported(err error) bool {
 	var reqErr *requestError
 	return errors.As(err, &reqErr) && (reqErr.StatusCode == http.StatusNotFound || reqErr.StatusCode == http.StatusPreconditionFailed)
