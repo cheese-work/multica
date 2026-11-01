@@ -103,6 +103,24 @@ describe("comment on an agent reply in a DM", () => {
     expect(await screen.findByRole("button", { name: "Add comment" })).toBeInTheDocument();
   });
 
+  it.each(["answered", "withdrawn"] as const)("drops a saved comment on a decision card once it is %s, so later sends stay normal", async (state) => {
+    const card = (cardState: "open" | typeof state) => ({
+      ...messages[1]!, id: "ping-1", message_kind: "decision_request" as const,
+      decision_request: { id: "request-1", issue_id: "issue-1", issue_identifier: "CHE-2161", ask: "C. CHE-2161", state: cardState, created_at: messages[1]!.created_at },
+    });
+    useCommentDraftStore.getState().addAnnotation(key, {
+      id: "a1", sourceCommentId: "decision-request:request-1", sourceActorName: "Terra", quote: "C. CHE-2161",
+      note: "1", start: 0, prefix: "", suffix: "",
+    });
+    const view = renderHarness({ items: [card("open")] });
+    expect(useCommentDraftStore.getState().getAnnotations(key)).toHaveLength(1);
+    const ui = (items: ChatMessage[]) => (
+      <QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><Harness items={items} /></WorkspaceSlugProvider></QueryClientProvider>
+    );
+    view.rerender(ui([card(state)]));
+    await waitFor(() => expect(useCommentDraftStore.getState().getAnnotations(key)).toHaveLength(0));
+  });
+
   it("selects text, adds a comment, and lands it in the DM draft with a marker in reading order", async () => {
     const user = userEvent.setup();
     renderHarness();
