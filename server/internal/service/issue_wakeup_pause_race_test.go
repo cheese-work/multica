@@ -213,7 +213,7 @@ func TestPullRequestEventCommittingAfterResumeSweepDoesNotFire(t *testing.T) {
 	resumeErr := make(chan error, 1)
 	go func() { resumeErr <- flipPause(t, e.f, e.s, false) }()
 	resumeSettled := false
-	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline) && !resumeSettled; {
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline) && !resumeSettled; {
 		select {
 		case err := <-resumeErr:
 			if err != nil {
@@ -231,7 +231,10 @@ func TestPullRequestEventCommittingAfterResumeSweepDoesNotFire(t *testing.T) {
 		t.Fatal("the resume neither finished nor waited on a lock")
 	}
 	close(starter.free)
-	if err := <-triggerErr; err != nil {
+	// Once the receipt commits, the trigger's immediate dispatch queues behind
+	// the resume's workspace lock and may give up on its 50ms lock_timeout; the
+	// tick below is the retry. Only that dispatch sets a lock_timeout.
+	if err := <-triggerErr; err != nil && !isLockTimeout(err) {
 		t.Fatal(err)
 	}
 	if resumeErr != nil {

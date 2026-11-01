@@ -61,7 +61,11 @@ func (h *Handler) observeGovernanceReceipt(r *http.Request, issue db.Issue, comm
 	}
 	// One work deadline for the whole hook, taken before any DB acquisition so
 	// the control-lock wait and the evaluation share receipt.Budget.
-	deadline := time.Now().Add(receipt.Budget)
+	budget := receipt.Budget
+	if h.governanceBudget > 0 {
+		budget = h.governanceBudget
+	}
+	deadline := time.Now().Add(budget)
 	// A machine-authored comment type (status_change, system) never carries
 	// a next-work request a human or agent needs routed to them — observing
 	// it would only burn the cap-1 slot and a budget window on input the
