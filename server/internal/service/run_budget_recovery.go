@@ -35,6 +35,11 @@ var ErrRecoveryClaimed = errors.New("the window's recovery run was already claim
 // is no longer the issue's current window, or no longer refuses a run.
 var ErrRecoveryWindowLifted = errors.New("the window's refusal no longer applies")
 
+// RecoveryRunClaimed reports whether the window's recovery run was claimed.
+func RecoveryRunClaimed(ctx context.Context, q *db.Queries, issueID pgtype.UUID, since time.Time) (bool, error) {
+	return q.HasRunBudgetNotice(ctx, db.HasRunBudgetNoticeParams{IssueID: issueID, WindowID: runBudgetWindowID(since), Kind: RunBudgetKindRecovery})
+}
+
 // EnqueueBudgetRecoveryRun enqueues the window's one recovery run for the
 // issue's current assignee (the blocked step's handler, after the move). The
 // claim and the task commit together; a second claim in the same window returns
