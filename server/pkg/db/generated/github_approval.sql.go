@@ -129,10 +129,10 @@ func (q *Queries) GetGitHubWebhookRevisionForUpdate(ctx context.Context, arg Get
 const hasAdmittedGitHubRevision = `-- name: HasAdmittedGitHubRevision :one
 SELECT EXISTS (
     SELECT 1 FROM github_webhook_revision r
-    JOIN issue_pull_request l ON l.pull_request_id = r.pull_request_id AND l.issue_id = $2
+    JOIN github_webhook_dispatch d ON d.workspace_id = r.workspace_id AND d.revision_id = r.id AND d.issue_id = $2
     WHERE r.workspace_id = $1 AND r.object_kind = $3 AND r.object_id = $4
       AND r.body_hash = $5 AND r.author_id = $6 AND r.review_state = $7
-      AND r.state IN ('dispatched', 'projected')
+      AND d.state IN ('dispatched', 'projected')
 )
 `
 
@@ -146,8 +146,9 @@ type HasAdmittedGitHubRevisionParams struct {
 	ReviewState string      `json:"review_state"`
 }
 
-// An admitted intake revision (dispatched, or projected while gate G is closed)
-// of this exact object read, on a PR linked to the issue.
+// An intake revision of this exact object read that intake admitted for this
+// issue: its per-issue receipt is dispatched, or projected while gate G is
+// closed. A PR link alone is not authorization; the receipt is the decision.
 func (q *Queries) HasAdmittedGitHubRevision(ctx context.Context, arg HasAdmittedGitHubRevisionParams) (bool, error) {
 	row := q.db.QueryRow(ctx, hasAdmittedGitHubRevision,
 		arg.WorkspaceID,
@@ -166,9 +167,9 @@ func (q *Queries) HasAdmittedGitHubRevision(ctx context.Context, arg HasAdmitted
 const hasGitHubSnapshotApproval = `-- name: HasGitHubSnapshotApproval :one
 SELECT EXISTS (
     SELECT 1 FROM github_snapshot_approval a
-    JOIN github_webhook_revision r ON r.workspace_id = a.workspace_id AND r.id = a.revision_id
-    JOIN issue_pull_request l ON l.pull_request_id = r.pull_request_id AND l.issue_id = $2
+    JOIN github_webhook_dispatch d ON d.workspace_id = a.workspace_id AND d.revision_id = a.revision_id AND d.issue_id = $2
     WHERE a.workspace_id = $1 AND a.snapshot_hash = $3
+      AND d.state IN ('dispatched', 'projected')
 )
 `
 
@@ -178,8 +179,8 @@ type HasGitHubSnapshotApprovalParams struct {
 	SnapshotHash string      `json:"snapshot_hash"`
 }
 
-// An exact-snapshot approval (the hash covers editor and last edit time) for a
-// revision on a PR linked to the issue.
+// An exact-snapshot approval (the hash covers editor and last edit time) whose
+// revision intake routed to this issue, so the approver could route it.
 func (q *Queries) HasGitHubSnapshotApproval(ctx context.Context, arg HasGitHubSnapshotApprovalParams) (bool, error) {
 	row := q.db.QueryRow(ctx, hasGitHubSnapshotApproval, arg.WorkspaceID, arg.IssueID, arg.SnapshotHash)
 	var exists bool

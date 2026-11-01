@@ -34,6 +34,7 @@ func newRevisionCheckFixture(t *testing.T) revisionCheckFixture {
 	f.pullID = f.linkPull(t, f.issueID)
 	t.Cleanup(func() {
 		ctx := context.Background()
+		_, _ = testPool.Exec(ctx, `DELETE FROM github_webhook_dispatch WHERE workspace_id=$1 AND object_id=$2`, testWorkspaceID, f.objectID)
 		_, _ = testPool.Exec(ctx, `DELETE FROM github_snapshot_approval WHERE workspace_id=$1 AND object_id=$2`, testWorkspaceID, f.objectID)
 		_, _ = testPool.Exec(ctx, `DELETE FROM github_webhook_revision WHERE workspace_id=$1 AND object_id=$2`, testWorkspaceID, f.objectID)
 	})
@@ -74,6 +75,22 @@ func (f revisionCheckFixture) revision(t *testing.T, pull pgtype.UUID, action, b
 		VALUES ($1, 2507001, 9001, $2, 1, 'issue_comment', $3, $4, 'issue_comment', $5, $6, $6, 'trusted', 'User', 'head', '', $7, 'test')
 		RETURNING id`, testWorkspaceID, pull, f.objectID, bodyHash(body), action, trustedAuthor, state).Scan(&id)
 	return id
+}
+
+// route records the intake's per-issue decision for a revision (the receipt the
+// worker writes for each issue linked to the PR).
+func (f revisionCheckFixture) route(t *testing.T, revisionID, issueID, state string) {
+	t.Helper()
+	comment, task := "NULL", "NULL"
+	if state != "denied" {
+		comment = "gen_random_uuid()"
+	}
+	if state == "dispatched" {
+		task = "gen_random_uuid()"
+	}
+	dbfx.Exec(t, `INSERT INTO github_webhook_dispatch (workspace_id, object_kind, object_id, body_hash, issue_id, comment_id, task_id, revision_id, state, reason)
+		SELECT workspace_id, object_kind, object_id, body_hash, $2, `+comment+`, `+task+`, id, $3, 'test'
+		FROM github_webhook_revision WHERE id = $1`, revisionID, issueID, state)
 }
 
 type revisionRead struct {
@@ -128,7 +145,7 @@ func requireStub(t *testing.T, f revisionCheckFixture, read revisionRead, why st
 
 func TestRevisionCheckAdmitsAnAdmittedInitialRevisionOfThisIssue(t *testing.T) {
 	f := newRevisionCheckFixture(t)
-	f.revision(t, f.pullID, "created", "original", "dispatched")
+	f.route(t, f.revision(t, f.pullID, "created", "original", "dispatched"), f.issueID, "dispatched")
 	if ok, via := f.admitted(t, revisionRead{body: "original"}); !ok || via != "revision" {
 		t.Fatalf("admitted = %v via %q, want revision", ok, via)
 	}
@@ -138,7 +155,7 @@ func TestRevisionCheckAdmitsAnAdmittedInitialRevisionOfThisIssue(t *testing.T) {
 // A projected revision is admitted too: gate G closed only stops the dispatch.
 func TestRevisionCheckAdmitsAProjectedRevision(t *testing.T) {
 	f := newRevisionCheckFixture(t)
-	f.revision(t, f.pullID, "created", "original", "projected")
+	f.route(t, f.revision(t, f.pullID, "created", "original", "projected"), f.issueID, "projected")
 	if ok, _ := f.admitted(t, revisionRead{body: "original"}); !ok {
 		t.Fatal("projected revision not admitted")
 	}
@@ -148,7 +165,7 @@ func TestRevisionCheckAdmitsAProjectedRevision(t *testing.T) {
 // when that user restored an admitted body.
 func TestRevisionCheckT26TrustedAuthorForeignEditorIsAStub(t *testing.T) {
 	f := newRevisionCheckFixture(t)
-	f.revision(t, f.pullID, "created", "original", "dispatched")
+	f.route(t, f.revision(t, f.pullID, "created", "original", "dispatched"), f.issueID, "dispatched")
 	edited := time.Now().Add(-time.Minute).UTC()
 	requireStub(t, f, revisionRead{body: "changed by someone else", editorID: foreignEditor, lastEditedAt: &edited}, "foreign edit")
 	requireStub(t, f, revisionRead{body: "original", editorID: foreignEditor, lastEditedAt: &edited}, "foreign editor restored an admitted body")
@@ -158,16 +175,17 @@ func TestRevisionCheckT26TrustedAuthorForeignEditorIsAStub(t *testing.T) {
 // a stub, including a self-edit whose signed edited event has not arrived.
 func TestRevisionCheckT27UnadmittedBodyIsAStub(t *testing.T) {
 	f := newRevisionCheckFixture(t)
-	f.revision(t, f.pullID, "created", "original", "dispatched")
+	f.route(t, f.revision(t, f.pullID, "created", "original", "dispatched"), f.issueID, "dispatched")
 	edited := time.Now().Add(-time.Minute).UTC()
 	selfEdit := revisionRead{body: "self edit", editorID: trustedAuthor, lastEditedAt: &edited}
 	requireStub(t, f, selfEdit, "self-edit before its signed edited event")
 	for _, state := range []string{"unsigned", "quarantined", "denied", "deferred"} {
 		id := f.revision(t, f.pullID, "edited", "self edit", state)
+		f.route(t, id, f.issueID, "denied")
 		requireStub(t, f, selfEdit, "self-edit revision in state "+state)
 		dbfx.Exec(t, `DELETE FROM github_webhook_revision WHERE id=$1`, id)
 	}
-	f.revision(t, f.pullID, "edited", "self edit", "dispatched")
+	f.route(t, f.revision(t, f.pullID, "edited", "self edit", "dispatched"), f.issueID, "dispatched")
 	if ok, via := f.admitted(t, selfEdit); !ok || via != "revision" {
 		t.Fatalf("self-edit after its admitted edited event: admitted = %v via %q", ok, via)
 	}
@@ -179,6 +197,7 @@ func TestRevisionCheckAdmitsAnExactSnapshotApproval(t *testing.T) {
 	foreign := revisionRead{body: "someone else's words", editorID: foreignEditor, lastEditedAt: &edited}
 	id := f.revision(t, f.pullID, "created", "original", "quarantined")
 	f.approve(t, f.pullID, id, foreign)
+	f.route(t, id, f.issueID, "dispatched")
 	if ok, via := f.admitted(t, foreign); !ok || via != "approval" {
 		t.Fatalf("approved snapshot: admitted = %v via %q, want approval", ok, via)
 	}
@@ -189,18 +208,56 @@ func TestRevisionCheckAdmitsAnExactSnapshotApproval(t *testing.T) {
 
 func TestRevisionCheckIgnoresAnotherIssuesRevisionsAndApprovals(t *testing.T) {
 	f := newRevisionCheckFixture(t)
-	other := f.linkPull(t, dbfx.Issue(t, "revision check other issue"))
-	f.revision(t, other, "created", "original", "dispatched")
+	otherIssue := dbfx.Issue(t, "revision check other issue")
+	other := f.linkPull(t, otherIssue)
+	f.route(t, f.revision(t, other, "created", "original", "dispatched"), otherIssue, "dispatched")
 	edited := time.Now().Add(-time.Minute).UTC()
 	foreign := revisionRead{body: "foreign", editorID: foreignEditor, lastEditedAt: &edited}
-	f.approve(t, other, f.revision(t, other, "created", "foreign", "quarantined"), foreign)
+	approved := f.revision(t, other, "created", "foreign", "quarantined")
+	f.approve(t, other, approved, foreign)
+	f.route(t, approved, otherIssue, "dispatched")
 	requireStub(t, f, revisionRead{body: "original"}, "admitted revision of another issue's PR")
 	requireStub(t, f, foreign, "approval for another issue")
 }
 
+// linkAllowedIssue links a second issue to the fixture's PR, standing for the
+// issue intake admitted while this fixture's issue was denied.
+func (f revisionCheckFixture) linkAllowedIssue(t *testing.T) string {
+	t.Helper()
+	issueID := dbfx.Issue(t, "revision check allowed issue")
+	if _, err := testHandler.Queries.LinkIssueToPullRequest(context.Background(), db.LinkIssueToPullRequestParams{IssueID: parseUUID(issueID), PullRequestID: f.pullID}); err != nil {
+		t.Fatalf("LinkIssueToPullRequest: %v", err)
+	}
+	return issueID
+}
+
+// One PR can link several issues. Intake decides per issue, so a revision denied
+// for this issue stays a stub here even when the PR's other issue was admitted.
+func TestRevisionCheckRevisionBindsToThisIssuesOwnIntakeDecision(t *testing.T) {
+	f := newRevisionCheckFixture(t)
+	allowedIssue := f.linkAllowedIssue(t)
+	id := f.revision(t, f.pullID, "created", "original", "projected")
+	f.route(t, id, allowedIssue, "projected")
+	f.route(t, id, f.issueID, "denied")
+	requireStub(t, f, revisionRead{body: "original"}, "revision denied for this issue, admitted for the PR's other issue")
+}
+
+// An approval opens the read only for the issues its approver could route.
+func TestRevisionCheckApprovalBindsToThisIssuesOwnIntakeDecision(t *testing.T) {
+	f := newRevisionCheckFixture(t)
+	allowedIssue := f.linkAllowedIssue(t)
+	edited := time.Now().Add(-time.Minute).UTC()
+	foreign := revisionRead{body: "foreign", editorID: foreignEditor, lastEditedAt: &edited}
+	id := f.revision(t, f.pullID, "created", "foreign", "dispatched")
+	f.approve(t, f.pullID, id, foreign)
+	f.route(t, id, allowedIssue, "dispatched")
+	f.route(t, id, f.issueID, "denied")
+	requireStub(t, f, foreign, "approval whose approver could not route this issue")
+}
+
 func TestRevisionCheckRefusesATaskThatIsNotElevated(t *testing.T) {
 	f := newRevisionCheckFixture(t)
-	f.revision(t, f.pullID, "created", "original", "dispatched")
+	f.route(t, f.revision(t, f.pullID, "created", "original", "dispatched"), f.issueID, "dispatched")
 	read := revisionRead{body: "original"}
 
 	dbfx.Exec(t, `UPDATE task_elevation SET state='fencing', epoch=epoch+1 WHERE task_id=$1`, f.taskID)
