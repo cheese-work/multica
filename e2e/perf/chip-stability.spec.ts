@@ -22,7 +22,7 @@ test.use({ locale: "en-US", serviceWorkers: "block" });
 /**
  * Raw layout-shift sums per profile, frozen from runs on `main`.
  *
- * R2 is red on both profiles: the limit is half of the lowest value seen over 10 runs
+ * R2 is red on both profiles: the limit is half of the lowest value seen on `main` over every run
  * (desktop 0.0048-0.0110, phone 0.2928-0.3666).
  *
  * R1 is not red on either profile. Measured after the streaming block has mounted,
