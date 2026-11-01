@@ -43,7 +43,7 @@ export function IssueDecisionBanner({ issueId, status, ownerAgentId }: { issueId
       </section>
     );
   }
-  if (isError && !data && status === "need_decision") {
+  if (isError && status === "need_decision") {
     return (
       <section aria-label={t(($) => $.decision_banner.title)} role="alert" className="mb-4 rounded-xl border border-warning/40 bg-warning/5 p-3 text-caption">
         <h2 className="text-label font-semibold">{t(($) => $.decision_banner.title)}</h2>

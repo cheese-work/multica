@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
@@ -113,6 +113,19 @@ describe("IssueDecisionBanner", () => {
     expect(alert).toHaveTextContent("Could not load open asks.");
     await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByText("Ask r1")).toBeInTheDocument();
+  });
+
+  it("keeps the retryable error when a refresh fails after an empty success", async () => {
+    api.listOpenDecisionRequests.mockResolvedValueOnce([]).mockRejectedValueOnce(new Error("boom"));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderWithI18n(
+      <QueryClientProvider client={client}>
+        <WorkspaceSlugProvider slug="acme"><IssueDecisionBanner issueId="issue" status="need_decision" ownerAgentId="owner" /></WorkspaceSlugProvider>
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText(/has not sent the decision card yet/)).toBeInTheDocument();
+    await act(() => client.refetchQueries({ queryKey: ["chat", "ws", "open-decisions"] }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load open asks.");
   });
 
   it("renders nothing for answered or withdrawn requests", async () => {
