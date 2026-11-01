@@ -95,6 +95,15 @@ expect_calls "--only regular" "$regular_call"
 PATH="$BIN_DIR:$PATH" bash "$SCRIPT_DIR/test-go.sh" --only agent --race
 expect_calls "--only agent" "$agent_call"
 
+# CHE-2418: per-package databases lift the -p 1 limit. Opt-in, so local and
+# release runs keep the serial default.
+parallel_call="test -race -p 4 -exec $SCRIPT_DIR/go-test-db-exec.sh github.com/multica-ai/multica/server github.com/multica-ai/multica/server/internal/daemon"
+MULTICA_TEST_DB_PER_PACKAGE=1 PATH="$BIN_DIR:$PATH" bash "$SCRIPT_DIR/test-go.sh" --race --only regular
+expect_calls "MULTICA_TEST_DB_PER_PACKAGE" "$parallel_call"
+
+MULTICA_TEST_DB_PER_PACKAGE=1 PATH="$BIN_DIR:$PATH" bash "$SCRIPT_DIR/test-go.sh" --only agent --race
+expect_calls "per-package databases leave pkg/agent alone" "$agent_call"
+
 expect_usage_failure "unknown option" --unknown
 expect_usage_failure "unknown --only scope" --only everything
 expect_usage_failure "missing --only scope" --only

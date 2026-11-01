@@ -54,7 +54,14 @@ if [ "$only" != agent ]; then
   # packages' fixtures against each other and produced cross-package lock
   # waits and timeouts. -p 1 runs packages one at a time; tests within a
   # package keep the default -parallel.
-  "$GUARD_SCRIPT" -- go "${go_test_args[@]}" -p 1 "${regular_packages[@]}"
+  # CHE-2418: MULTICA_TEST_DB_PER_PACKAGE=1 (CI) removes the sharing instead:
+  # go-test-db-exec.sh clones the migrated DATABASE_URL database per package,
+  # so -p 4 is safe. Unset, the serial behavior above stands.
+  package_parallelism=(-p 1)
+  if [ "${MULTICA_TEST_DB_PER_PACKAGE:-}" = 1 ]; then
+    package_parallelism=(-p 4 -exec "$SCRIPT_DIR/go-test-db-exec.sh")
+  fi
+  "$GUARD_SCRIPT" -- go "${go_test_args[@]}" "${package_parallelism[@]}" "${regular_packages[@]}"
 fi
 
 if [ "$only" != regular ]; then
