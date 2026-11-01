@@ -40,12 +40,12 @@ function SignatureTag({ signed, testId, children }: { signed: boolean; testId?: 
   );
 }
 
-function DiffView({ artifact, diff, expanded }: { artifact: DecisionArtifact; diff: DecisionArtifactDiff; expanded: boolean }) {
+function DiffView({ diff, artifact }: { artifact: DecisionArtifact; diff: DecisionArtifactDiff }) {
   const { t } = useT("chat");
   const { added, removed } = countDiffLines(diff.hunks);
   const previous = artifact.supersedes_signed_by;
   return (
-    <div className="grid gap-2">
+    <div className="flex min-h-0 flex-1 flex-col gap-2">
       <p className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-caption">
         <SignatureTag signed={!!previous}>
           {previous
@@ -61,7 +61,7 @@ function DiffView({ artifact, diff, expanded }: { artifact: DecisionArtifact; di
           role="region"
           tabIndex={0}
           aria-label={t(($) => $.decision.artifacts.diff_region, { previous: diff.previous_filename })}
-          className={cn("overflow-auto rounded-lg border border-surface-border bg-surface font-mono text-caption leading-6 focus-visible:outline-2 focus-visible:outline-ring", !expanded && "max-h-72")}
+          className="min-h-0 flex-1 overflow-auto rounded-lg border border-surface-border bg-surface font-mono text-caption leading-6 focus-visible:outline-2 focus-visible:outline-ring"
         >
           {diff.hunks.map((hunk, index) => {
             const previous = diff.hunks[index - 1];
@@ -103,7 +103,7 @@ function DiffView({ artifact, diff, expanded }: { artifact: DecisionArtifact; di
   );
 }
 
-function PreviewView({ artifact, expanded }: { artifact: DecisionArtifact; expanded: boolean }) {
+function PreviewView({ artifact }: { artifact: DecisionArtifact }) {
   const { t } = useT("chat");
   const attachmentId = artifact.attachment!.id;
   const name = artifact.attachment!.filename;
@@ -131,12 +131,12 @@ function PreviewView({ artifact, expanded }: { artifact: DecisionArtifact; expan
   }
   const lineCount = preview.data.text.replace(/\n$/, "").split("\n").length;
   return (
-    <div className="grid gap-1.5">
+    <div className="flex min-h-0 flex-1 flex-col gap-1.5">
       <div
         role="region"
         tabIndex={0}
         aria-label={t(($) => $.decision.artifacts.preview_region, { name })}
-        className={cn("overflow-auto rounded-lg border border-surface-border bg-surface px-3 py-2.5 focus-visible:outline-2 focus-visible:outline-ring", !expanded && "max-h-60")}
+        className="min-h-0 flex-1 overflow-auto rounded-lg border border-surface-border bg-surface px-3 py-2.5 focus-visible:outline-2 focus-visible:outline-ring"
       >
         <RichContent content={preview.data.text} density="compact" phase="settled" />
       </div>
@@ -150,79 +150,86 @@ const viewerTabs = (artifact: DecisionArtifact): TabKey[] => [
   ...(isMarkdown(artifact) ? (["preview"] as const) : []),
 ];
 
-// One tabbed viewer. Inline it starts closed and selecting the open tab closes it; in the dialog
-// (`expanded`) the first tab starts open and one tab is always open.
-function ArtifactViewer({ artifact, onRetryChanges, expanded = false }: { artifact: DecisionArtifact; onRetryChanges: () => void; expanded?: boolean }) {
+// The fullscreen viewer (design `you-are-approving-card` direction B, CHE-2810). Phone: header on top,
+// one open view, a bottom bar with the view tabs and Download. From `sm`: a left rail with the file
+// facts, the view tabs and Download beside the open view. One tab is always open.
+function ArtifactDialogContent({ artifact, attachment, onRetryChanges }: { artifact: DecisionArtifact; attachment: NonNullable<DecisionArtifact["attachment"]>; onRetryChanges: () => void }) {
   const { t } = useT("chat");
   const id = useId();
   const tabs = viewerTabs(artifact);
-  const [open, setOpen] = useState<TabKey | null>(expanded ? (tabs[0] ?? null) : null);
-  const [focused, setFocused] = useState<TabKey | undefined>(tabs[0]);
+  const [open, setOpen] = useState<TabKey>(tabs[0]!);
+  const [focused, setFocused] = useState<TabKey>(tabs[0]!);
   const refs = useRef<Partial<Record<TabKey, HTMLButtonElement | null>>>({});
-  if (tabs.length === 0) return null;
 
-  const move = (key: TabKey) => {
-    setFocused(key);
-    refs.current[key]?.focus();
-  };
   const onKeyDown = (event: KeyboardEvent, key: TabKey) => {
     const index = tabs.indexOf(key);
     const target =
-      event.key === "ArrowRight" ? tabs[(index + 1) % tabs.length]
-      : event.key === "ArrowLeft" ? tabs[(index - 1 + tabs.length) % tabs.length]
+      event.key === "ArrowRight" || event.key === "ArrowDown" ? tabs[(index + 1) % tabs.length]
+      : event.key === "ArrowLeft" || event.key === "ArrowUp" ? tabs[(index - 1 + tabs.length) % tabs.length]
       : event.key === "Home" ? tabs[0]
       : event.key === "End" ? tabs[tabs.length - 1]
       : undefined;
     if (!target) return;
     event.preventDefault();
-    move(target);
+    setFocused(target);
+    refs.current[target]?.focus();
   };
   const diff = artifact.diff;
   const counts = diff ? countDiffLines(diff.hunks) : undefined;
   const tabId = (key: TabKey) => `${id}-tab-${key}`;
-  const panelId = (key: TabKey) => `${id}-panel-${key}`;
 
   return (
-    <div data-testid="decision-artifact-viewer" className="overflow-hidden rounded-lg border border-surface-border bg-surface">
-      <div role="tablist" aria-label={t(($) => $.decision.artifacts.viewer_label)} className="flex gap-0.5 overflow-x-auto border-b border-surface-border px-1">
-        {tabs.map((key) => (
-          <button
-            key={key}
-            ref={(node) => { refs.current[key] = node; }}
-            type="button"
-            role="tab"
-            id={tabId(key)}
-            aria-selected={open === key}
-            aria-controls={open === key ? panelId(key) : undefined}
-            tabIndex={focused === key ? 0 : -1}
-            onFocus={() => setFocused(key)}
-            onKeyDown={(event) => onKeyDown(event, key)}
-            onClick={() => setOpen(open === key && !expanded ? null : key)}
-            className={cn(
-              "inline-flex min-h-11 items-center gap-1.5 whitespace-nowrap border-b-[3px] px-2.5 text-label font-semibold focus-visible:outline-2 focus-visible:outline-ring",
-              open === key ? "border-primary text-foreground" : "border-transparent text-muted-foreground",
-            )}
-          >
-            {key === "changes" ? t(($) => $.decision.artifacts.tab_changes, { previous: diff?.previous_filename }) : t(($) => $.decision.artifacts.tab_preview)}
-            {key === "changes" && counts && (
-              <span className="text-caption font-normal text-muted-foreground">+{counts.added} −{counts.removed}</span>
-            )}
-          </button>
-        ))}
-      </div>
-      {open ? (
-        <div role="tabpanel" id={panelId(open)} aria-labelledby={tabId(open)} className="grid gap-2 px-3 py-2.5">
-          {open === "changes" && diff && (
-            diff.problem
-              ? <RetryBanner message={t(($) => $.decision.artifacts.changes_failed)} onRetry={onRetryChanges} />
-              : <DiffView artifact={artifact} diff={diff} expanded={expanded} />
-          )}
-          {open === "preview" && <PreviewView artifact={artifact} expanded={expanded} />}
+    <DialogContent className="h-dvh max-h-none w-full max-w-none grid-rows-[auto_minmax(0,1fr)_auto] gap-0 rounded-none p-0 sm:h-[85dvh] sm:max-w-4xl sm:grid-cols-[17rem_minmax(0,1fr)] sm:grid-rows-[auto_minmax(0,1fr)] sm:rounded-xl">
+      <DialogHeader className="p-4 pr-12 sm:col-start-1 sm:row-start-1 sm:border-r sm:border-surface-border sm:pr-4">
+        <DialogTitle className="sr-only">{artifact.label}</DialogTitle>
+        <div className="flex items-start gap-2.5">
+          <ArtifactSummary artifact={artifact} />
         </div>
-      ) : (
-        <p className="px-3 py-2 text-caption text-muted-foreground">{t(($) => $.decision.artifacts.viewer_hint)}</p>
-      )}
-    </div>
+      </DialogHeader>
+      <div
+        role="tabpanel"
+        id={`${id}-panel`}
+        aria-labelledby={tabId(open)}
+        data-testid="decision-artifact-viewer"
+        className="flex min-h-0 flex-col border-y border-surface-border p-4 sm:col-start-2 sm:row-span-2 sm:row-start-1 sm:border-y-0"
+      >
+        {open === "changes" && diff && (
+          diff.problem
+            ? <RetryBanner message={t(($) => $.decision.artifacts.changes_failed)} onRetry={onRetryChanges} />
+            : <DiffView artifact={artifact} diff={diff} />
+        )}
+        {open === "preview" && <PreviewView artifact={artifact} />}
+      </div>
+      <div className="flex items-center gap-1 p-2 sm:col-start-1 sm:row-start-2 sm:flex-col sm:items-stretch sm:self-start sm:border-r sm:border-surface-border sm:p-4">
+        <div role="tablist" aria-label={t(($) => $.decision.artifacts.viewer_label)} className="flex min-w-0 flex-1 gap-0.5 overflow-x-auto sm:flex-none sm:flex-col">
+          {tabs.map((key) => (
+            <button
+              key={key}
+              ref={(node) => { refs.current[key] = node; }}
+              type="button"
+              role="tab"
+              id={tabId(key)}
+              aria-selected={open === key}
+              aria-controls={open === key ? `${id}-panel` : undefined}
+              tabIndex={focused === key ? 0 : -1}
+              onFocus={() => setFocused(key)}
+              onKeyDown={(event) => onKeyDown(event, key)}
+              onClick={() => setOpen(key)}
+              className={cn(
+                "inline-flex min-h-14 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-3 text-label font-semibold focus-visible:outline-2 focus-visible:outline-ring sm:min-h-11 sm:flex-none sm:justify-start",
+                open === key ? "bg-primary/10 text-foreground" : "text-muted-foreground hover:bg-muted",
+              )}
+            >
+              {key === "changes" ? t(($) => $.decision.artifacts.tab_changes) : t(($) => $.decision.artifacts.tab_preview)}
+              {key === "changes" && counts && (
+                <span className="text-caption font-normal text-muted-foreground">+{counts.added} −{counts.removed}</span>
+              )}
+            </button>
+          ))}
+        </div>
+        <DownloadButton attachment={attachment} />
+      </div>
+    </DialogContent>
   );
 }
 
@@ -244,10 +251,14 @@ function DownloadButton({ attachment }: { attachment: NonNullable<DecisionArtifa
 }
 
 // Spans only: the card wraps this in a button when the file can be opened.
-function ArtifactSummary({ artifact }: { artifact: DecisionArtifact }) {
+function ArtifactSummary({ artifact, showViews = false }: { artifact: DecisionArtifact; showViews?: boolean }) {
   const { t } = useT("chat");
   const { attachment } = artifact;
   const signed = artifact.signed_by;
+  const counts = artifact.diff && countDiffLines(artifact.diff.hunks);
+  const views = viewerTabs(artifact).map((key) =>
+    key === "changes" && counts ? `${t(($) => $.decision.artifacts.tab_changes)} +${counts.added} −${counts.removed}` : t(($) => $.decision.artifacts.tab_preview),
+  );
   return (
     <>
       <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
@@ -270,6 +281,7 @@ function ArtifactSummary({ artifact }: { artifact: DecisionArtifact }) {
                 ? t(($) => $.decision.artifacts.signed_by, { label: artifact.label, reviewer: signed.reviewer })
                 : t(($) => $.decision.artifacts.not_signed, { label: artifact.label })}
             </SignatureTag>
+            {showViews && <span className="text-caption font-semibold text-primary">{views.join(" · ")}</span>}
           </>
         ) : (
           <span className="text-caption text-muted-foreground">{t(($) => $.decision.artifacts.file_missing)}</span>
@@ -284,46 +296,32 @@ function ArtifactFile({ artifact, onRetryChanges }: { artifact: DecisionArtifact
   const { attachment } = artifact;
   const openable = !!attachment && viewerTabs(artifact).length > 0;
   return (
-    <div data-testid="decision-artifact-file" className="grid gap-2">
-      <div className="flex flex-wrap items-start gap-2.5">
-        {openable ? (
-          <Dialog>
-            <DialogTrigger
-              aria-label={t(($) => $.decision.artifacts.open_label, { name: attachment.filename })}
-              className="-m-1 flex min-w-0 flex-1 basis-48 items-start gap-2.5 rounded-lg p-1 text-left hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring"
-            >
-              <ArtifactSummary artifact={artifact} />
-            </DialogTrigger>
-            <DialogContent className="h-dvh max-h-none w-full max-w-none content-start rounded-none sm:h-[85dvh] sm:max-w-4xl sm:rounded-xl">
-              <DialogHeader className="pr-8">
-                <DialogTitle className="sr-only">{artifact.label}</DialogTitle>
-                <div className="flex items-start gap-2.5">
-                  <ArtifactSummary artifact={artifact} />
-                </div>
-              </DialogHeader>
-              <div className="flex justify-start">
-                <DownloadButton attachment={attachment} />
-              </div>
-              <ArtifactViewer artifact={artifact} onRetryChanges={onRetryChanges} expanded />
-            </DialogContent>
-          </Dialog>
-        ) : (
-          <div className="flex min-w-0 flex-1 basis-48 items-start gap-2.5">
-            <ArtifactSummary artifact={artifact} />
-          </div>
-        )}
-        {attachment && <DownloadButton attachment={attachment} />}
-      </div>
-      <ArtifactViewer artifact={artifact} onRetryChanges={onRetryChanges} />
+    <div data-testid="decision-artifact-file" className="flex flex-wrap items-start gap-2.5">
+      {openable ? (
+        <Dialog>
+          <DialogTrigger
+            aria-label={t(($) => $.decision.artifacts.open_label, { name: attachment.filename })}
+            className="-m-1 flex min-w-0 flex-1 basis-48 items-start gap-2.5 rounded-lg p-1 text-left hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring"
+          >
+            <ArtifactSummary artifact={artifact} showViews />
+          </DialogTrigger>
+          <ArtifactDialogContent artifact={artifact} attachment={attachment} onRetryChanges={onRetryChanges} />
+        </Dialog>
+      ) : (
+        <div className="flex min-w-0 flex-1 basis-48 items-start gap-2.5">
+          <ArtifactSummary artifact={artifact} />
+        </div>
+      )}
+      {attachment && <DownloadButton attachment={attachment} />}
     </div>
   );
 }
 
 /**
  * The first section of a decision card that approves files (design
- * `you-are-approving-card` direction B): one file card per artifact, then a
- * tabbed viewer for the changes since the previous revision and a rendered
- * Markdown preview. An ask without files renders nothing.
+ * `you-are-approving-card` direction B): one file card per artifact. Tapping
+ * the file opens a fullscreen viewer with the changes since the previous
+ * revision and a rendered Markdown preview. An ask without files renders nothing.
  */
 export function DecisionArtifacts({ requestId, answered }: { requestId: string; answered: boolean }) {
   const { t } = useT("chat");
