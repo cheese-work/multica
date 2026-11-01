@@ -138,3 +138,66 @@ func TestDecisionAnswerKeepsAReadinessSetDuringTheWait(test *testing.T) {
 		test.Fatalf("readiness = %q, want the value set during the wait (ready)", readiness)
 	}
 }
+
+func TestDecisionWaitGuardRestoresPastAnEarlierAnsweredRequest(test *testing.T) {
+	fixture := newParkFixture(test)
+	if _, err := testHandler.createDecisionRequest(fixture.request(), fixture.issue, fixture.input()); err != nil {
+		test.Fatal(err)
+	}
+	dbfx.Exec(test, `UPDATE decision_request SET status = 'answered' WHERE issue_id = $1`, fixture.issueID)
+	parked, _ := testHandler.Queries.GetIssue(context.Background(), parseUUID(fixture.issueID))
+	if err := testHandler.checkDecisionWait(context.Background(), parked); err != nil {
+		test.Fatal(err)
+	}
+	if status, _, from := fixture.state(test); status != "in_progress" || from != "" {
+		test.Fatalf("status=%q parked_from=%q: an answered request with no answer awaiting delivery must not hold the park", status, from)
+	}
+}
+
+func TestDecisionWaitGuardKeepsTheParkWhileAnAnswerAwaitsDelivery(test *testing.T) {
+	resetDecisionLease(test)
+	ensureParkCatalog(test)
+	fixture := newCardFixture(test)
+	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "Option A"}); err != nil {
+		test.Fatal(err)
+	}
+	parked, _ := testHandler.Queries.GetIssue(context.Background(), parseUUID(fixture.issueID))
+	if err := testHandler.checkDecisionWait(context.Background(), parked); err != nil {
+		test.Fatal(err)
+	}
+	var status string
+	dbfx.QueryRow(test, `SELECT status FROM issue WHERE id = $1`, fixture.issueID).Scan(&status)
+	if status != "need_decision" {
+		test.Fatalf("status = %q, want the park kept until the answer is delivered", status)
+	}
+}
+
+func TestDecisionWorkerPassRestoresABlockedFallbackPark(test *testing.T) {
+	var kept int
+	dbfx.QueryRow(test, `SELECT count(*) FROM issue_status WHERE workspace_id = $1 AND key = 'need_decision'`, testWorkspaceID).Scan(&kept)
+	dbfx.Exec(test, `DELETE FROM issue_status WHERE workspace_id = $1 AND key = 'need_decision'`, testWorkspaceID)
+	if kept > 0 {
+		test.Cleanup(func() {
+			dbfx.Insert(test, "issue_status", testutil.Cols{"workspace_id": testWorkspaceID, "key": "need_decision", "name": "Need Decision", "category": "started", "color": "#112233"})
+		})
+	}
+	fixture := newRequestCoreFixture(test, false)
+	dbfx.Exec(test, `UPDATE issue SET status = 'in_progress' WHERE id = $1`, fixture.issueID)
+	fixture.issue, _ = testHandler.Queries.GetIssue(context.Background(), parseUUID(fixture.issueID))
+	if _, err := testHandler.createDecisionRequest(fixture.request(), fixture.issue, fixture.input()); err != nil {
+		test.Fatal(err)
+	}
+	var status string
+	dbfx.QueryRow(test, `SELECT status FROM issue WHERE id = $1`, fixture.issueID).Scan(&status)
+	if status != "blocked" {
+		test.Fatalf("after the ask: status = %q, want the blocked fallback", status)
+	}
+	dbfx.Exec(test, `UPDATE decision_request SET status = 'cancelled', cancel_reason = 'lane_archived' WHERE issue_id = $1`, fixture.issueID)
+	if err := testHandler.checkDecisionWaits(context.Background()); err != nil {
+		test.Log(err)
+	}
+	dbfx.QueryRow(test, `SELECT status FROM issue WHERE id = $1`, fixture.issueID).Scan(&status)
+	if status != "in_progress" {
+		test.Fatalf("after the cancellation: status = %q, want in_progress", status)
+	}
+}

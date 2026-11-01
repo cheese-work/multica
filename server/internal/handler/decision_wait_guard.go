@@ -71,21 +71,24 @@ func (handler *Handler) checkDecisionWait(ctx context.Context, candidate db.Issu
 	if err := json.Unmarshal(workspace.Settings, &settings); err != nil {
 		return fmt.Errorf("decision wait settings: %w", err)
 	}
-	eligible, err := decisionWaitEligible(ctx, queries, issue)
-	if err != nil {
-		return err
-	}
 	requests, err := queries.ListDecisionRequestsByIssue(ctx, db.ListDecisionRequestsByIssueParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID})
 	if err != nil {
 		return err
 	}
-	closed := true
+	closed, hasOpen := true, false
 	for _, request := range requests {
 		if request.Status == "open" {
-			eligible = false
+			closed, hasOpen = false, true
 		}
-		if request.Status == "open" || request.Status == "answered" {
-			closed = false
+		if request.Status == "answered" {
+			// An answered request holds the park only until its answer is delivered.
+			answer, err := queries.LockDecisionLiveAnswer(ctx, db.LockDecisionLiveAnswerParams{WorkspaceID: issue.WorkspaceID, ID: request.ID})
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return err
+			}
+			if err == nil && !answer.WokenAt.Valid {
+				closed = false
+			}
 		}
 	}
 	// A request cancelled outside the answer path (lane archived, recipient
@@ -101,7 +104,11 @@ func (handler *Handler) checkDecisionWait(ctx context.Context, candidate db.Issu
 			return nil
 		}
 	}
-	if settings.Guard.Enabled != nil && !*settings.Guard.Enabled {
+	eligible, err := decisionWaitEligible(ctx, queries, issue)
+	if err != nil {
+		return err
+	}
+	if hasOpen || settings.Guard.Enabled != nil && !*settings.Guard.Enabled {
 		eligible = false
 	}
 	if !eligible {
@@ -222,6 +229,10 @@ func decisionWaitEligible(ctx context.Context, queries *db.Queries, issue db.Iss
 		return false, nil
 	}
 	category, err := issuestatus.CategoryWithError(ctx, queries, issue.WorkspaceID, issue.Status)
+	// The scan also selects parked issues, which can sit in a status the catalog no longer lists.
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
 	if err != nil || category == issuestatus.CategoryDone || category == issuestatus.CategoryClosed {
 		return false, err
 	}
