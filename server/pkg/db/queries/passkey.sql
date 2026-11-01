@@ -122,3 +122,20 @@ RETURNING *;
 
 -- name: InsertPasskeyEvent :exec
 INSERT INTO passkey_event (user_id, action, details) VALUES ($1, $2, $3);
+
+-- Decision passkey gate (CHE-2798 P6).
+
+-- name: LockWorkspaceDecisionGate :one
+SELECT id, decision_passkey_gate, policy_revision FROM workspace WHERE id = $1 FOR UPDATE;
+
+-- name: SetWorkspaceDecisionGate :one
+UPDATE workspace SET decision_passkey_gate = $2, policy_revision = policy_revision + 1, updated_at = now()
+WHERE id = $1
+RETURNING decision_passkey_gate, policy_revision;
+
+-- The gate is on for a person when any workspace they belong to is in block.
+-- name: UserUnderDecisionGate :one
+SELECT EXISTS (
+    SELECT 1 FROM member m JOIN workspace w ON w.id = m.workspace_id
+    WHERE m.user_id = $1 AND w.decision_passkey_gate = 'block'
+)::boolean;

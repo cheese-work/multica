@@ -50,6 +50,9 @@ type Started struct {
 	CeremonyID pgtype.UUID
 	Options    json.RawMessage
 	ExpiresAt  time.Time
+	// Assertion is set when the decision gate blocks and the user already has a
+	// passkey: an existing one must sign the finish.
+	Assertion *Issued
 }
 
 func (service *Service) deliverable() bool {
@@ -122,7 +125,11 @@ func (service *Service) StartEnrollment(ctx context.Context, userID pgtype.UUID,
 	if err != nil {
 		return Started{}, err
 	}
-	return Started{CeremonyID: row.ID, Options: options, ExpiresAt: row.ExpiresAt.Time}, nil
+	assertion, err := service.issueEnrollAssertion(ctx, userID, row.ID)
+	if err != nil {
+		return Started{}, err
+	}
+	return Started{CeremonyID: row.ID, Options: options, ExpiresAt: row.ExpiresAt.Time, Assertion: assertion}, nil
 }
 
 const (
@@ -206,7 +213,7 @@ func conflict(message string) Refusal { return Refusal{Status: http.StatusConfli
 // both hold, stores the credential for the ceremony's user. A wrong code or a
 // rejected attestation spends one of the ceremony's five attempts, and that
 // spend commits even though the call fails.
-func (service *Service) FinishEnrollment(ctx context.Context, userID, ceremonyID pgtype.UUID, code string, attestation []byte, email string) error {
+func (service *Service) FinishEnrollment(ctx context.Context, userID, ceremonyID pgtype.UUID, code string, attestation []byte, assertion json.RawMessage, email string) error {
 	if !service.deliverable() {
 		return ErrDeliveryUnavailable
 	}
@@ -253,6 +260,10 @@ func (service *Service) FinishEnrollment(ctx context.Context, userID, ceremonyID
 	credential, err := service.WebAuthn.CreateCredential(newWebAuthnUser(userID, nil), session, parsed)
 	if err != nil {
 		return reject(forbidden("attestation_rejected: the passkey response was refused"))
+	}
+
+	if err := service.requireEnrollAssertion(ctx, tx, queries, userID, ceremony.ID, assertion); err != nil {
+		return err
 	}
 
 	transports := make([]string, len(credential.Transport))

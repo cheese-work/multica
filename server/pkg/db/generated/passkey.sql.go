@@ -546,6 +546,25 @@ func (q *Queries) LockPasskeysNowait(ctx context.Context, ids []pgtype.UUID) ([]
 	return items, nil
 }
 
+const lockWorkspaceDecisionGate = `-- name: LockWorkspaceDecisionGate :one
+
+SELECT id, decision_passkey_gate, policy_revision FROM workspace WHERE id = $1 FOR UPDATE
+`
+
+type LockWorkspaceDecisionGateRow struct {
+	ID                  pgtype.UUID `json:"id"`
+	DecisionPasskeyGate string      `json:"decision_passkey_gate"`
+	PolicyRevision      int32       `json:"policy_revision"`
+}
+
+// Decision passkey gate (CHE-2798 P6).
+func (q *Queries) LockWorkspaceDecisionGate(ctx context.Context, id pgtype.UUID) (LockWorkspaceDecisionGateRow, error) {
+	row := q.db.QueryRow(ctx, lockWorkspaceDecisionGate, id)
+	var i LockWorkspaceDecisionGateRow
+	err := row.Scan(&i.ID, &i.DecisionPasskeyGate, &i.PolicyRevision)
+	return i, err
+}
+
 const markPasskeySuspect = `-- name: MarkPasskeySuspect :exec
 UPDATE user_passkey SET suspect_at = now() WHERE id = $1 AND suspect_at IS NULL
 `
@@ -562,6 +581,29 @@ UPDATE user_passkey SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL
 func (q *Queries) RevokePasskey(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, revokePasskey, id)
 	return err
+}
+
+const setWorkspaceDecisionGate = `-- name: SetWorkspaceDecisionGate :one
+UPDATE workspace SET decision_passkey_gate = $2, policy_revision = policy_revision + 1, updated_at = now()
+WHERE id = $1
+RETURNING decision_passkey_gate, policy_revision
+`
+
+type SetWorkspaceDecisionGateParams struct {
+	ID                  pgtype.UUID `json:"id"`
+	DecisionPasskeyGate string      `json:"decision_passkey_gate"`
+}
+
+type SetWorkspaceDecisionGateRow struct {
+	DecisionPasskeyGate string `json:"decision_passkey_gate"`
+	PolicyRevision      int32  `json:"policy_revision"`
+}
+
+func (q *Queries) SetWorkspaceDecisionGate(ctx context.Context, arg SetWorkspaceDecisionGateParams) (SetWorkspaceDecisionGateRow, error) {
+	row := q.db.QueryRow(ctx, setWorkspaceDecisionGate, arg.ID, arg.DecisionPasskeyGate)
+	var i SetWorkspaceDecisionGateRow
+	err := row.Scan(&i.DecisionPasskeyGate, &i.PolicyRevision)
+	return i, err
 }
 
 const supersedePasskeyChallenge = `-- name: SupersedePasskeyChallenge :exec
@@ -586,6 +628,21 @@ SELECT pg_try_advisory_xact_lock(hashtextextended($1::uuid::text || ':passkey_ch
 // index. This per-user advisory lock is taken first and never waits.
 func (q *Queries) TryLockPasskeyChallengeIssue(ctx context.Context, userID pgtype.UUID) (bool, error) {
 	row := q.db.QueryRow(ctx, tryLockPasskeyChallengeIssue, userID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const userUnderDecisionGate = `-- name: UserUnderDecisionGate :one
+SELECT EXISTS (
+    SELECT 1 FROM member m JOIN workspace w ON w.id = m.workspace_id
+    WHERE m.user_id = $1 AND w.decision_passkey_gate = 'block'
+)::boolean
+`
+
+// The gate is on for a person when any workspace they belong to is in block.
+func (q *Queries) UserUnderDecisionGate(ctx context.Context, userID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, userUnderDecisionGate, userID)
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err

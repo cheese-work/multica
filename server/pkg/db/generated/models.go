@@ -2870,6 +2870,7 @@ type User struct {
 	// User-preferred IANA timezone for report rendering (Viewing tz). NULL means "use the browser-detected tz at render time". Affects dashboards, charts, and any "today" label shown to this user. Does not affect data materialisation — all rollups remain in UTC.
 	Timezone          pgtype.Text `json:"timezone"`
 	SessionGeneration int32       `json:"session_generation"`
+	PasskeyState      string      `json:"passkey_state"`
 }
 
 type UserComposioConnection struct {
@@ -3083,7 +3084,9 @@ type Workspace struct {
 	// CHE-766: redaction mode for CHE-755 provenance export. Only "small" is implemented and enforced server-side; "strict" is stored for forward compatibility but is rejected fail-closed by the export handler until it ships.
 	ExportRedactionMode string `json:"export_redaction_mode"`
 	// CHE-766: days a provenance_export_log row is kept before scheduled deletion. Default 90.
-	ExportManifestRetentionDays int32 `json:"export_manifest_retention_days"`
+	ExportManifestRetentionDays int32  `json:"export_manifest_retention_days"`
+	DecisionPasskeyGate         string `json:"decision_passkey_gate"`
+	PolicyRevision              int32  `json:"policy_revision"`
 }
 
 type WorkspaceInvitation struct {
