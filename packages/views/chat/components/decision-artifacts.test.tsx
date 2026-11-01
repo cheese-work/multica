@@ -82,10 +82,11 @@ describe("DecisionArtifacts", () => {
   it("carries the element ids the admit sheet names", async () => {
     renderArtifacts([artifact()]);
     const section = await screen.findByTestId("decision-request-artifacts");
-    for (const id of ["decision-artifact-file", "decision-artifact-signature", "decision-artifact-download"]) {
+    for (const id of ["decision-artifact-file", "decision-artifact-open", "decision-artifact-signature", "decision-artifact-download"]) {
       expect(within(section).getByTestId(id)).toBeInTheDocument();
     }
     const dialog = await openViewer();
+    expect(dialog).toHaveAttribute("data-testid", "decision-artifact-dialog");
     expect(within(dialog).getByTestId("decision-artifact-viewer")).toBeInTheDocument();
   });
 

@@ -199,7 +199,7 @@ function ArtifactDialogContent({ artifact, attachment, onRetryChanges }: { artif
   const tabId = (key: TabKey) => `${id}-tab-${key}`;
 
   return (
-    <DialogContent className="h-dvh max-h-none w-full max-w-none grid-rows-[auto_minmax(0,1fr)_auto] gap-0 rounded-none p-0 sm:h-[85dvh] sm:max-w-4xl sm:grid-cols-[17rem_minmax(0,1fr)] sm:grid-rows-[auto_minmax(0,1fr)] sm:rounded-xl">
+    <DialogContent data-testid="decision-artifact-dialog" className="h-dvh max-h-none w-full max-w-none grid-rows-[auto_minmax(0,1fr)_auto] gap-0 rounded-none p-0 sm:h-[85dvh] sm:max-w-4xl sm:grid-cols-[17rem_minmax(0,1fr)] sm:grid-rows-[auto_minmax(0,1fr)] sm:rounded-xl">
       <DialogHeader className="p-4 pr-12 sm:col-start-1 sm:row-start-1 sm:border-r sm:border-surface-border sm:pr-4">
         <DialogTitle className="sr-only">{artifact.label}</DialogTitle>
         <div className="flex items-start gap-2.5">
@@ -323,6 +323,7 @@ function ArtifactFile({ artifact, onRetryChanges }: { artifact: DecisionArtifact
       {openable ? (
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger
+            data-testid="decision-artifact-open"
             aria-label={t(($) => $.decision.artifacts.open_label, { name: attachment.filename })}
             className="-m-1 flex min-w-0 flex-1 basis-48 items-start gap-2.5 rounded-lg p-1 text-left hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring"
           >
