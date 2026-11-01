@@ -1,4 +1,11 @@
 {
+  "decision_banner": {
+    "title": "Décision requise",
+    "waiting": "L’agent n’a pas encore envoyé la carte de décision.",
+    "queued_since": "En file depuis {{time}}",
+    "running_since": "En cours depuis {{time}}",
+    "no_run": "Aucune exécution active."
+  },
   "needs_you": {
     "title": "À vous de décider",
     "loading": "Chargement des demandes…",

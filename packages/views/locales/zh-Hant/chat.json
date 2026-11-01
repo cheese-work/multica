@@ -1,4 +1,11 @@
 {
+  "decision_banner": {
+    "title": "需要你做決定",
+    "waiting": "代理尚未傳送決策卡片。",
+    "queued_since": "自 {{time}} 起排隊中",
+    "running_since": "自 {{time}} 起執行中",
+    "no_run": "沒有進行中的執行。"
+  },
   "needs_you": {
     "title": "待你決定",
     "loading": "正在載入待處理請求…",

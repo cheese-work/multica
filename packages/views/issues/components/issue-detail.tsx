@@ -57,6 +57,7 @@ import { useWakeupText } from "./wakeup-presentation";
 import type { ImageSequenceBlock } from "@multica/core/attachments/image-sequence";
 import { DescriptionDisclosure } from "./description-disclosure";
 import { StatusSummary, statusSummaryOf } from "./status-summary";
+import { IssueDecisionBanner } from "./issue-decision-banner";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
 import {
   Tooltip,
@@ -4173,6 +4174,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               )
             }
           />
+          <IssueDecisionBanner issueId={id} status={issue.status} />
           {titleLazy.active && (
             <div id={`find-title-${id}`} className={titleLazy.ready ? undefined : "hidden"}>
               <TitleEditor

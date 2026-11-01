@@ -1,4 +1,11 @@
 {
+  "decision_banner": {
+    "title": "決定が必要です",
+    "waiting": "エージェントはまだ決定カードを送信していません。",
+    "queued_since": "{{time}} から待機中",
+    "running_since": "{{time}} から実行中",
+    "no_run": "実行中のランはありません。"
+  },
   "needs_you": {
     "title": "あなたの判断待ち",
     "loading": "未回答の依頼を読み込み中…",

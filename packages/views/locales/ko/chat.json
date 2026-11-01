@@ -1,4 +1,11 @@
 {
+  "decision_banner": {
+    "title": "결정이 필요합니다",
+    "waiting": "에이전트가 아직 결정 카드를 보내지 않았습니다.",
+    "queued_since": "{{time}}부터 대기 중",
+    "running_since": "{{time}}부터 실행 중",
+    "no_run": "활성 실행 없음."
+  },
   "needs_you": {
     "title": "내 결정이 필요해요",
     "loading": "미응답 요청을 불러오는 중…",

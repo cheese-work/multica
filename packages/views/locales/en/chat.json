@@ -1,4 +1,11 @@
 {
+  "decision_banner": {
+    "title": "Decision needed",
+    "waiting": "The agent has not sent the decision card yet.",
+    "queued_since": "Queued since {{time}}",
+    "running_since": "Running since {{time}}",
+    "no_run": "No active run."
+  },
   "needs_you": {
     "title": "Needs you",
     "loading": "Loading open asks…",

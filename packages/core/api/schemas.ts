@@ -1101,6 +1101,11 @@ export const OpenDecisionRequestListSchema = z.array(z.object({
   created_at: z.string(),
   chat_session_id: z.string(),
   message_id: z.string().nullable().catch(null),
+  source_comment_id: z.string().nullable().catch(null),
+  options: z.array(z.object({
+    label: z.string(),
+    what_happens: z.string().optional().catch(undefined),
+  }).loose()).catch([]),
 }).loose());
 
 export const ChatMessageSchema = z.object({
