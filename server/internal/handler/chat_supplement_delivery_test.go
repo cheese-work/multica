@@ -20,11 +20,21 @@ import (
 // real daemon client, authenticated as the runtime owner.
 func newChatSupplementDaemonClient(t *testing.T) *daemon.Client {
 	t.Helper()
+	return newObservedChatSupplementDaemonClient(t, nil)
+}
+
+// newObservedChatSupplementDaemonClient also hands every request to observe
+// before the handler reads it.
+func newObservedChatSupplementDaemonClient(t *testing.T, observe func(*http.Request)) *daemon.Client {
+	t.Helper()
 	r := chi.NewRouter()
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			req.Header.Set("X-User-ID", testUserID)
 			req.Header.Set("X-Workspace-ID", testWorkspaceID)
+			if observe != nil {
+				observe(req)
+			}
 			next.ServeHTTP(w, req)
 		})
 	})
@@ -257,6 +267,72 @@ func TestChatSupplementResendFailedReceipt(t *testing.T) {
 	if claimed.Task == nil || !strings.Contains(claimed.Task.ChatMessage, "steer me") ||
 		strings.Contains(claimed.Task.ChatMessage, service.ChatSupplementResentUncertainNotes) {
 		t.Fatalf("resend claim = %+v", claimed.Task)
+	}
+}
+
+// Steering a resent message is a new request: it joins the run that is active
+// now, and never replays the receipt the resend consumed.
+func TestSteerResentMessageJoinsCurrentRun(t *testing.T) {
+	f := steeredFixture(t)
+	endChatTurn(t, f.runningID)
+	runB := sendDirectChat(t, context.Background(), f.agentID, f.sessionID, "second turn")
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'dispatched', dispatched_at = now() WHERE id = $1`, runB)
+	startChatTask(t, runB, protocol.DaemonCapabilityTaskSupplementV1, protocol.DaemonCapabilityTaskSupplementChatV1)
+	var resent ResendChatSupplementResponse
+	resendChat(t, f, testUserID, false).Want(http.StatusOK).JSON(&resent)
+
+	var receipt ChatSupplementResponse
+	steerChat(t, f.sessionID, resent.TaskID, testUserID).Want(http.StatusOK).JSON(&receipt)
+	if receipt.TaskID != runB || receipt.Status != "pending" {
+		t.Fatalf("steer of resent task = %+v, want a pending receipt for run %s", receipt, runB)
+	}
+	if got := chatTaskStatus(t, resent.TaskID); got != "cancelled" {
+		t.Fatalf("resent task status = %q, want cancelled", got)
+	}
+	if row := readChatReceipt(t, f); row.status != "failed" || row.resentTaskID != resent.TaskID {
+		t.Fatalf("consumed receipt changed: %+v", row)
+	}
+	var replay ChatSupplementResponse
+	steerChat(t, f.sessionID, resent.TaskID, testUserID).Want(http.StatusOK).JSON(&replay)
+	if replay.TaskID != runB {
+		t.Fatalf("replayed steer = %+v", replay)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM chat_task_supplement WHERE message_id = $1`, f.messageID); n != 2 {
+		t.Fatalf("receipts = %d, want 2", n)
+	}
+
+	req := withURLParam(newRequest(http.MethodGet, "/api/chat/sessions/"+f.sessionID+"/messages", nil), "sessionId", f.sessionID)
+	var messages []ChatMessageResponse
+	testutil.Call(t, testHandler.ListChatMessages, chatPendingCtxAs(t, req, testUserID)).Want(http.StatusOK).JSON(&messages)
+	for _, m := range messages {
+		if m.ID == f.messageID && (m.Supplement == nil || m.Supplement.TaskID != runB || m.Supplement.Status != "pending") {
+			t.Fatalf("bubble receipt = %+v, want the run %s receipt", m.Supplement, runB)
+		}
+	}
+	sup, err := newChatSupplementDaemonClient(t).ClaimTaskSupplement(context.Background(), runB)
+	if err != nil || sup == nil || sup.CommentID != f.messageID {
+		t.Fatalf("run B claim = %+v, %v", sup, err)
+	}
+}
+
+// A confirmed resend of an uncertain receipt can queue behind the same run that
+// may already hold the message; steering it back into that run is refused.
+func TestSteerResentMessageRefusesSameRun(t *testing.T) {
+	f := steeredFixture(t)
+	client := newChatSupplementDaemonClient(t)
+	claimSteer(t, client, f)
+	if err := client.AckTaskSupplement(context.Background(), f.runningID, f.messageID, false, protocol.TaskSupplementFailureTimeout); err != nil {
+		t.Fatalf("negative ack: %v", err)
+	}
+	var resent ResendChatSupplementResponse
+	resendChat(t, f, testUserID, true).Want(http.StatusOK).JSON(&resent)
+
+	wantConflictCode(t, steerChat(t, f.sessionID, resent.TaskID, testUserID), "supplement_not_resendable")
+	if got := chatTaskStatus(t, resent.TaskID); got != "queued" {
+		t.Fatalf("refused steer changed the resent task to %q", got)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM chat_task_supplement WHERE message_id = $1`, f.messageID); n != 1 {
+		t.Fatalf("receipts = %d, want 1", n)
 	}
 }
 

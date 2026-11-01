@@ -103,15 +103,19 @@ func (s *TaskService) SteerChatTask(ctx context.Context, session db.ChatSession,
 			return chatSupplementConflict(ChatSupplementTaskNoLongerQueued)
 		}
 		message := input[0]
+		// Only a resend moves the message to a new task, and it marks the
+		// receipt it consumed. A latest receipt that is not resent therefore
+		// came from this same queued task: a repeat steer replays it. A
+		// resent one is history, and steering the resent task is a new request.
 		existing, err := qtx.GetLatestChatTaskSupplement(ctx, db.GetLatestChatTaskSupplementParams{
 			ChatSessionID: session.ID, MessageID: message.ID,
 		})
-		if err == nil {
+		if err == nil && !existing.ResentTaskID.Valid {
 			out.Receipt = existing
 			out.RunningTask, err = qtx.GetAgentTask(ctx, existing.TaskID)
 			return err
 		}
-		if !errors.Is(err, pgx.ErrNoRows) {
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("load chat supplement: %w", err)
 		}
 		if queued.Status != "queued" {
@@ -144,6 +148,11 @@ func (s *TaskService) SteerChatTask(ctx context.Context, session db.ChatSession,
 			MessageID: message.ID, TaskID: running.ID, WorkspaceID: session.WorkspaceID,
 			ChatSessionID: session.ID, AuthorID: authorID,
 		})
+		// A confirmed resend of an uncertain receipt can queue behind the run
+		// that may already hold the message. One receipt per run and message.
+		if isUniqueViolation(err) {
+			return chatSupplementConflict(ChatSupplementNotResendable)
+		}
 		if err != nil {
 			return fmt.Errorf("create chat supplement: %w", err)
 		}
