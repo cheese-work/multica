@@ -154,6 +154,47 @@ describe("DecisionArtifacts", () => {
     expect(row).toHaveFocus();
   });
 
+  it("previews a plain-text file as text, not Markdown, and opens it on Preview", async () => {
+    getAttachmentTextContent.mockResolvedValue({ text: "# not a heading\nline two\n", originalContentType: "text/plain" });
+    renderArtifacts([artifact({
+      supersedes_attachment_id: undefined, supersedes_signed_by: undefined, diff: undefined,
+      attachment: { id: "att-5", filename: "notes.txt", content_type: "text/plain", size_bytes: 30, download_url: "/api/attachments/att-5/download" },
+    })]);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Open notes.txt" }));
+    const dialog = await screen.findByRole("dialog", { name: "Design revision 5" });
+    expect(within(dialog).getByRole("tab", { name: "Preview" })).toHaveAttribute("aria-selected", "true");
+    expect(await within(dialog).findByText(/# not a heading/)).toBeInTheDocument();
+    expect(within(dialog).queryByRole("heading", { name: "not a heading" })).toBeNull();
+  });
+
+  it("offers Preview next to Changes for a plain-text revision", async () => {
+    getAttachmentTextContent.mockResolvedValue({ text: "body\n", originalContentType: "text/plain" });
+    const user = userEvent.setup();
+    renderArtifacts([artifact({
+      attachment: { id: "att-5", filename: "notes.txt", content_type: "text/plain", size_bytes: 30, download_url: "/api/attachments/att-5/download" },
+    })]);
+    await user.click(await screen.findByRole("button", { name: "Open notes.txt" }));
+    const dialog = await screen.findByRole("dialog", { name: "Design revision 5" });
+    expect(within(dialog).getByRole("tab", { name: "Preview" })).toBeInTheDocument();
+  });
+
+  it("closes on browser Back instead of leaving the page, and a normal close leaves no history entry", async () => {
+    const user = userEvent.setup();
+    renderArtifacts([artifact()]);
+    const row = await screen.findByRole("button", { name: "Open design-rev5.md" });
+    await openViewer(user);
+    expect(window.history.state?.artifactViewer).toBe(true);
+    window.history.back();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(window.history.state?.artifactViewer).toBeFalsy();
+    expect(row).toHaveFocus();
+    await openViewer(user);
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(window.history.state?.artifactViewer).toBeFalsy());
+  });
+
   it("offers no dialog for a file that cannot be previewed or diffed", async () => {
     renderArtifacts([artifact({
       supersedes_attachment_id: undefined, diff: undefined,

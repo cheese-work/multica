@@ -1,4 +1,4 @@
-import { useId, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Check, Download, FileText, Loader2 } from "@multica/ui/icons";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@multica/ui/components/ui/dialog";
@@ -15,6 +15,24 @@ type TabKey = "changes" | "preview";
 
 const isMarkdown = ({ attachment }: DecisionArtifact) =>
   !!attachment && (attachment.content_type.startsWith("text/markdown") || /\.(md|markdown)$/i.test(attachment.filename));
+const isText = ({ attachment }: DecisionArtifact) =>
+  !!attachment && (attachment.content_type.startsWith("text/") || /\.(txt|log)$/i.test(attachment.filename));
+
+// Browser Back closes the open viewer instead of leaving the page: one history entry while open, kept
+// on top of the current state so the router still recognises it. A normal close pops that entry.
+function useBackToClose(open: boolean, close: () => void) {
+  useEffect(() => {
+    if (!open) return;
+    window.history.pushState({ ...window.history.state, artifactViewer: true }, "");
+    let popped = false;
+    const onPop = () => { popped = true; close(); };
+    window.addEventListener("popstate", onPop);
+    return () => {
+      window.removeEventListener("popstate", onPop);
+      if (!popped && window.history.state?.artifactViewer) window.history.back();
+    };
+  }, [open, close]);
+}
 
 // New-side line count of a hunk: context and added lines, not removed ones.
 const newSideLines = (lines: string[]) => lines.filter((line) => !line.startsWith("-")).length;
@@ -138,7 +156,9 @@ function PreviewView({ artifact }: { artifact: DecisionArtifact }) {
         aria-label={t(($) => $.decision.artifacts.preview_region, { name })}
         className="min-h-0 flex-1 overflow-auto rounded-lg border border-surface-border bg-surface px-3 py-2.5 focus-visible:outline-2 focus-visible:outline-ring"
       >
-        <RichContent content={preview.data.text} density="compact" phase="settled" />
+        {isMarkdown(artifact)
+          ? <RichContent content={preview.data.text} density="compact" phase="settled" />
+          : <pre className="whitespace-pre-wrap break-words font-mono text-caption">{preview.data.text}</pre>}
       </div>
       <p className="text-caption text-muted-foreground">{t(($) => $.decision.artifacts.preview_footer, { name, count: lineCount })}</p>
     </div>
@@ -147,7 +167,7 @@ function PreviewView({ artifact }: { artifact: DecisionArtifact }) {
 
 const viewerTabs = (artifact: DecisionArtifact): TabKey[] => [
   ...(artifact.diff ? (["changes"] as const) : []),
-  ...(isMarkdown(artifact) ? (["preview"] as const) : []),
+  ...(isMarkdown(artifact) || isText(artifact) ? (["preview"] as const) : []),
 ];
 
 // The fullscreen viewer (design `you-are-approving-card` direction B, CHE-2810). Phone: header on top,
@@ -295,10 +315,13 @@ function ArtifactFile({ artifact, onRetryChanges }: { artifact: DecisionArtifact
   const { t } = useT("chat");
   const { attachment } = artifact;
   const openable = !!attachment && viewerTabs(artifact).length > 0;
+  const [open, setOpen] = useState(false);
+  const close = useCallback(() => setOpen(false), []);
+  useBackToClose(open, close);
   return (
     <div data-testid="decision-artifact-file" className="flex flex-wrap items-start gap-2.5">
       {openable ? (
-        <Dialog>
+        <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger
             aria-label={t(($) => $.decision.artifacts.open_label, { name: attachment.filename })}
             className="-m-1 flex min-w-0 flex-1 basis-48 items-start gap-2.5 rounded-lg p-1 text-left hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring"
