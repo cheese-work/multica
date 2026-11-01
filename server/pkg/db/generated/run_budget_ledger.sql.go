@@ -346,6 +346,19 @@ func (q *Queries) SumIssueRunBudgetCap(ctx context.Context, arg SumIssueRunBudge
 	return column_1, err
 }
 
+const sumIssueRunBudgetRuns = `-- name: SumIssueRunBudgetRuns :one
+SELECT COALESCE(SUM(runs_delta), 0)::bigint FROM issue_run_budget_entry
+WHERE issue_id = $1::uuid
+`
+
+// The issue's run balance: every run entry, in any window.
+func (q *Queries) SumIssueRunBudgetRuns(ctx context.Context, issueID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, sumIssueRunBudgetRuns, issueID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const sumIssueRunBudgetTaskTokens = `-- name: SumIssueRunBudgetTaskTokens :one
 SELECT COALESCE(SUM(tokens_delta), 0)::bigint AS charged, COUNT(*)::bigint AS entries
 FROM issue_run_budget_entry
@@ -378,23 +391,6 @@ WHERE issue_id = $1::uuid
 // The issue's token balance: every token entry, in any window.
 func (q *Queries) SumIssueRunBudgetTokens(ctx context.Context, issueID pgtype.UUID) (int64, error) {
 	row := q.db.QueryRow(ctx, sumIssueRunBudgetTokens, issueID)
-	var column_1 int64
-	err := row.Scan(&column_1)
-	return column_1, err
-}
-
-const sumIssueRunBudgetWindow = `-- name: SumIssueRunBudgetWindow :one
-SELECT COALESCE(SUM(runs_delta), 0)::bigint FROM issue_run_budget_entry
-WHERE issue_id = $1::uuid AND window_id = $2::text
-`
-
-type SumIssueRunBudgetWindowParams struct {
-	IssueID  pgtype.UUID `json:"issue_id"`
-	WindowID string      `json:"window_id"`
-}
-
-func (q *Queries) SumIssueRunBudgetWindow(ctx context.Context, arg SumIssueRunBudgetWindowParams) (int64, error) {
-	row := q.db.QueryRow(ctx, sumIssueRunBudgetWindow, arg.IssueID, arg.WindowID)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err

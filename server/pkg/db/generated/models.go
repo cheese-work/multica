@@ -240,6 +240,7 @@ type AgentTaskQueue struct {
 	AppliedServiceTier        pgtype.Text        `json:"applied_service_tier"`
 	AppliedContextArgs        []byte             `json:"applied_context_args"`
 	AppliedReportedAt         pgtype.Timestamptz `json:"applied_reported_at"`
+	ExternalRead              bool               `json:"external_read"`
 }
 
 type AgentToLabel struct {
@@ -264,6 +265,7 @@ type Attachment struct {
 	ChatMessageID   pgtype.UUID        `json:"chat_message_id"`
 	TaskID          pgtype.UUID        `json:"task_id"`
 	SourceContextID pgtype.UUID        `json:"source_context_id"`
+	ExternalRead    bool               `json:"external_read"`
 }
 
 type Autopilot struct {
@@ -719,6 +721,7 @@ type Comment struct {
 	DecisionCommentKind pgtype.Text        `json:"decision_comment_kind"`
 	GithubNotifyOnly    bool               `json:"github_notify_only"`
 	TaintIds            []string           `json:"taint_ids"`
+	ExternalRead        bool               `json:"external_read"`
 }
 
 type CommentReaction struct {
@@ -1608,39 +1611,40 @@ type InstanceTelemetryState struct {
 }
 
 type Issue struct {
-	ID                 pgtype.UUID        `json:"id"`
-	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
-	Title              string             `json:"title"`
-	Description        pgtype.Text        `json:"description"`
-	Status             string             `json:"status"`
-	Priority           string             `json:"priority"`
-	AssigneeType       pgtype.Text        `json:"assignee_type"`
-	AssigneeID         pgtype.UUID        `json:"assignee_id"`
-	CreatorType        string             `json:"creator_type"`
-	CreatorID          pgtype.UUID        `json:"creator_id"`
-	ParentIssueID      pgtype.UUID        `json:"parent_issue_id"`
-	AcceptanceCriteria []byte             `json:"acceptance_criteria"`
-	ContextRefs        []byte             `json:"context_refs"`
-	Position           float64            `json:"position"`
-	DueDate            pgtype.Date        `json:"due_date"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
-	Number             int32              `json:"number"`
-	ProjectID          pgtype.UUID        `json:"project_id"`
-	OriginType         pgtype.Text        `json:"origin_type"`
-	OriginID           pgtype.UUID        `json:"origin_id"`
-	FirstExecutedAt    pgtype.Timestamptz `json:"first_executed_at"`
-	StartDate          pgtype.Date        `json:"start_date"`
-	Metadata           []byte             `json:"metadata"`
-	Stage              pgtype.Int4        `json:"stage"`
-	Properties         []byte             `json:"properties"`
-	Revision           int64              `json:"revision"`
-	LastActivityAt     pgtype.Timestamptz `json:"last_activity_at"`
-	TriageState        pgtype.Text        `json:"triage_state"`
-	DuplicateOfIssueID pgtype.UUID        `json:"duplicate_of_issue_id"`
-	WorkflowID         pgtype.UUID        `json:"workflow_id"`
-	RequestedByID      pgtype.UUID        `json:"requested_by_id"`
-	MaxRunsOverride    pgtype.Int4        `json:"max_runs_override"`
+	ID                      pgtype.UUID        `json:"id"`
+	WorkspaceID             pgtype.UUID        `json:"workspace_id"`
+	Title                   string             `json:"title"`
+	Description             pgtype.Text        `json:"description"`
+	Status                  string             `json:"status"`
+	Priority                string             `json:"priority"`
+	AssigneeType            pgtype.Text        `json:"assignee_type"`
+	AssigneeID              pgtype.UUID        `json:"assignee_id"`
+	CreatorType             string             `json:"creator_type"`
+	CreatorID               pgtype.UUID        `json:"creator_id"`
+	ParentIssueID           pgtype.UUID        `json:"parent_issue_id"`
+	AcceptanceCriteria      []byte             `json:"acceptance_criteria"`
+	ContextRefs             []byte             `json:"context_refs"`
+	Position                float64            `json:"position"`
+	DueDate                 pgtype.Date        `json:"due_date"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
+	Number                  int32              `json:"number"`
+	ProjectID               pgtype.UUID        `json:"project_id"`
+	OriginType              pgtype.Text        `json:"origin_type"`
+	OriginID                pgtype.UUID        `json:"origin_id"`
+	FirstExecutedAt         pgtype.Timestamptz `json:"first_executed_at"`
+	StartDate               pgtype.Date        `json:"start_date"`
+	Metadata                []byte             `json:"metadata"`
+	Stage                   pgtype.Int4        `json:"stage"`
+	Properties              []byte             `json:"properties"`
+	Revision                int64              `json:"revision"`
+	LastActivityAt          pgtype.Timestamptz `json:"last_activity_at"`
+	TriageState             pgtype.Text        `json:"triage_state"`
+	DuplicateOfIssueID      pgtype.UUID        `json:"duplicate_of_issue_id"`
+	WorkflowID              pgtype.UUID        `json:"workflow_id"`
+	RequestedByID           pgtype.UUID        `json:"requested_by_id"`
+	MaxRunsOverride         pgtype.Int4        `json:"max_runs_override"`
+	DescriptionExternalRead bool               `json:"description_external_read"`
 }
 
 type IssueCheckpoint struct {
@@ -1842,6 +1846,22 @@ type IssueSubscriber struct {
 	OptOutScope    pgtype.Text        `json:"opt_out_scope"`
 }
 
+type IssueTaint struct {
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	TaintIds    []string           `json:"taint_ids"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+type IssueTaintClear struct {
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	TaintIds          []string           `json:"taint_ids"`
+	ClearedByMemberID pgtype.UUID        `json:"cleared_by_member_id"`
+	ClearedAt         pgtype.Timestamptz `json:"cleared_at"`
+}
+
 type IssueToLabel struct {
 	IssueID pgtype.UUID `json:"issue_id"`
 	LabelID pgtype.UUID `json:"label_id"`
@@ -1928,22 +1948,30 @@ type IssueWakeup struct {
 	AggregateBlockedScopeKind pgtype.Text        `json:"aggregate_blocked_scope_kind"`
 	AggregateBlockedScopeID   pgtype.UUID        `json:"aggregate_blocked_scope_id"`
 	AggregateRetryAt          pgtype.Timestamptz `json:"aggregate_retry_at"`
+	ContentRevision           int64              `json:"content_revision"`
 	WorkflowStep              pgtype.Text        `json:"workflow_step"`
 }
 
 type IssueWakeupDefinition struct {
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	ScopeKind   string             `json:"scope_kind"`
-	ScopeID     pgtype.UUID        `json:"scope_id"`
-	RuleKey     string             `json:"rule_key"`
-	Root        bool               `json:"root"`
-	Config      []byte             `json:"config"`
-	Revision    int64              `json:"revision"`
-	CreatedBy   pgtype.UUID        `json:"created_by"`
-	UpdatedBy   pgtype.UUID        `json:"updated_by"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
-	EventTypes  []string           `json:"event_types"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	ScopeKind     string             `json:"scope_kind"`
+	ScopeID       pgtype.UUID        `json:"scope_id"`
+	RuleKey       string             `json:"rule_key"`
+	Root          bool               `json:"root"`
+	Config        []byte             `json:"config"`
+	Revision      int64              `json:"revision"`
+	CreatedBy     pgtype.UUID        `json:"created_by"`
+	UpdatedBy     pgtype.UUID        `json:"updated_by"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	EventTypes    []string           `json:"event_types"`
+	SweepRevision int64              `json:"sweep_revision"`
+	SweepCursor   pgtype.UUID        `json:"sweep_cursor"`
+	SweepDone     bool               `json:"sweep_done"`
+	SweepBaseline bool               `json:"sweep_baseline"`
+	SweepAttempts int32              `json:"sweep_attempts"`
+	SweepRetryAt  pgtype.Timestamptz `json:"sweep_retry_at"`
+	SweepError    pgtype.Text        `json:"sweep_error"`
 }
 
 type IssueWakeupPrEvent struct {
@@ -2840,7 +2868,8 @@ type User struct {
 	Language                pgtype.Text        `json:"language"`
 	ProfileDescription      string             `json:"profile_description"`
 	// User-preferred IANA timezone for report rendering (Viewing tz). NULL means "use the browser-detected tz at render time". Affects dashboards, charts, and any "today" label shown to this user. Does not affect data materialisation — all rollups remain in UTC.
-	Timezone pgtype.Text `json:"timezone"`
+	Timezone          pgtype.Text `json:"timezone"`
+	SessionGeneration int32       `json:"session_generation"`
 }
 
 type UserComposioConnection struct {

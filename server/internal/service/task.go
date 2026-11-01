@@ -1481,15 +1481,25 @@ func actingTask(ctx context.Context) pgtype.UUID {
 // ActingTaskTaint is the taint of the task WithActingTask names, nil when ctx
 // names none. Fail closed: a task that cannot be read cannot be shown clean.
 func ActingTaskTaint(ctx context.Context, q *db.Queries) ([]string, error) {
-	acting := actingTask(ctx)
-	if !acting.Valid {
-		return nil, nil
-	}
-	actor, err := q.GetAgentTask(ctx, acting)
-	if err != nil {
-		return nil, fmt.Errorf("read acting task taint: %w", err)
+	actor, ok, err := ActingTask(ctx, q)
+	if err != nil || !ok {
+		return nil, err
 	}
 	return actor.TaintIds, nil
+}
+
+// ActingTask is the task WithActingTask names; ok is false when ctx names none.
+// Fail closed: a task that cannot be read is an error, never "clean".
+func ActingTask(ctx context.Context, q *db.Queries) (task db.AgentTaskQueue, ok bool, err error) {
+	acting := actingTask(ctx)
+	if !acting.Valid {
+		return db.AgentTaskQueue{}, false, nil
+	}
+	task, err = q.GetAgentTask(ctx, acting)
+	if err != nil {
+		return db.AgentTaskQueue{}, false, fmt.Errorf("read acting task: %w", err)
+	}
+	return task, true, nil
 }
 
 // issueReviewHead is GetIssueReviewHeadSha unless ctx pins a PR (WithReviewPR).
