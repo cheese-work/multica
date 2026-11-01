@@ -368,3 +368,104 @@ func TestConcurrentRefusalNoticeCountsTheRecoveryRunTheOtherCallbackGives(t *tes
 	}
 	raiseAndAdmit(t, c.edgeCase, p)
 }
+
+// strandHandlingClaim leaves the window's handling claim behind, as a server
+// exit before the owner's release does, claimed age ago.
+func strandHandlingClaim(t *testing.T, c budgetCase, e service.RunBudgetExhausted, age string) {
+	t.Helper()
+	if _, err := testPool.Exec(context.Background(), `INSERT INTO run_budget_notice (id, workspace_id, issue_id, window_id, kind, created_at)
+		SELECT gen_random_uuid(), workspace_id, id, $2, 'handling', now() - $3::interval FROM issue WHERE id=$1`,
+		c.issueID, e.Since.UTC().Format(time.RFC3339Nano), age); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func handlingClaims(t *testing.T, c budgetCase) int {
+	t.Helper()
+	var n int
+	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM run_budget_notice WHERE issue_id=$1 AND kind='handling'`, c.issueID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// A claim left behind by a callback that never released it (a server exit, a
+// failed delete) must not suppress the window's block, recovery run and notice
+// for good: a callback takes it over once the lease has passed.
+func TestStrandedHandlingClaimIsTakenOverAfterTheLease(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	c := newBudgetCase(t, 2886107, recoverySteps(seededReadyAgentID(t)), 2)
+	e := refusedEvent(t, c)
+	strandHandlingClaim(t, c, e, "1 hour")
+	testHandler.onRunBudgetExhausted(context.Background(), e)
+	if got := c.status(t); got != "blocked" {
+		t.Fatalf("issue is %s, want blocked (the stranded claim was not taken over)", got)
+	}
+	if n := recoveryRuns(t, c.edgeCase); n != 1 {
+		t.Fatalf("recovery runs = %d, want 1", n)
+	}
+	if n := handlingClaims(t, c); n != 0 {
+		t.Fatalf("handling claims left = %d, want 0 (the new owner released its claim)", n)
+	}
+	finishRuns(t, c.edgeCase)
+	c.enter(t, "in_progress")
+	p := wantNoticeMatchesSnapshot(t, c.edgeCase, true)
+	if p.BalanceAfter != 10 {
+		t.Fatalf("promised balance = %d, want 10", p.BalanceAfter)
+	}
+	raiseAndAdmit(t, c.edgeCase, p)
+}
+
+// Inside the lease the claim still orders concurrent callbacks: a fresh claim
+// is not taken over.
+func TestFreshHandlingClaimIsNotTakenOver(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	c := newBudgetCase(t, 2886108, recoverySteps(seededReadyAgentID(t)), 2)
+	e := refusedEvent(t, c)
+	strandHandlingClaim(t, c, e, "0 seconds")
+	testHandler.onRunBudgetExhausted(context.Background(), e)
+	if got := c.status(t); got != "in_progress" {
+		t.Fatalf("issue is %s, want in_progress kept (another callback holds the claim)", got)
+	}
+	if n := handlingClaims(t, c); n != 1 {
+		t.Fatalf("handling claims = %d, want the holder's 1 kept", n)
+	}
+}
+
+// The owner that lost its claim to a takeover (it ran past the lease) must not
+// release the new owner's claim.
+func TestReleaseByAnOwnerThatLostItsClaimKeepsTheNewOwnersClaim(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	ctx := context.Background()
+	c := newBudgetCase(t, 2886109, recoverySteps(seededReadyAgentID(t)), 2)
+	e := refusedEvent(t, c)
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(c.issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	slow := testHandler.claimExhaustionHandling(ctx, issue, e)
+	if !slow.Valid {
+		t.Fatal("first claim refused")
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE run_budget_notice SET created_at = now() - interval '1 hour' WHERE issue_id=$1 AND kind='handling'`, c.issueID); err != nil {
+		t.Fatal(err)
+	}
+	next := testHandler.claimExhaustionHandling(ctx, issue, e)
+	if !next.Valid {
+		t.Fatal("stale claim was not taken over")
+	}
+	testHandler.releaseExhaustionHandling(ctx, slow)
+	if n := handlingClaims(t, c); n != 1 {
+		t.Fatalf("handling claims = %d after the slow owner's release, want the new owner's 1", n)
+	}
+	testHandler.releaseExhaustionHandling(ctx, next)
+	if n := handlingClaims(t, c); n != 0 {
+		t.Fatalf("handling claims = %d after the new owner's release, want 0", n)
+	}
+}

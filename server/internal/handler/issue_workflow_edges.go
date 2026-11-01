@@ -295,13 +295,21 @@ func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetE
 }
 
 // claimExhaustionHandling claims the window's exhaustion handling for this
-// callback; the claim is invalid when another callback holds it. A failed
-// claim counts as lost: the holder, or a later refusal, handles the window.
+// callback; the claim is invalid when another callback holds it. A claim older
+// than runBudgetHandlingLease belongs to an owner that exited or could not
+// release it, and is taken over. A failed claim counts as lost: the holder, or
+// a later refusal, handles the window.
 func (h *Handler) claimExhaustionHandling(ctx context.Context, issue db.Issue, e service.RunBudgetExhausted) pgtype.UUID {
+	window := e.Since.UTC().Format(time.RFC3339Nano)
 	id, err := h.Queries.ClaimRunBudgetNotice(ctx, db.ClaimRunBudgetNoticeParams{
-		ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID,
-		WindowID: e.Since.UTC().Format(time.RFC3339Nano), Kind: runBudgetKindHandling,
+		ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, WindowID: window, Kind: runBudgetKindHandling,
 	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		id, err = h.Queries.TakeOverRunBudgetNotice(ctx, db.TakeOverRunBudgetNoticeParams{
+			ID: dbid.NewV7(), IssueID: issue.ID, WindowID: window, Kind: runBudgetKindHandling,
+			LeaseSeconds: runBudgetHandlingLease.Seconds(),
+		})
+	}
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		slog.Warn("run budget: claim exhaustion handling failed", "err", err, "issue_id", uuidToString(issue.ID))
 	}
@@ -317,6 +325,11 @@ func (h *Handler) releaseExhaustionHandling(ctx context.Context, claim pgtype.UU
 // runBudgetKindHandling keys the claim of a window's exhaustion handling. It
 // shares the claim table with the notices but writes no notice.
 const runBudgetKindHandling = "handling"
+
+// runBudgetHandlingLease is how long a handling claim holds before another
+// callback may take it over. The handling is a few queries and one
+// transaction, so a claim this old has no live owner.
+const runBudgetHandlingLease = 2 * time.Minute
 
 // enqueueBudgetRecovery gives the blocked step's handler its one recovery run
 // for the window. Only an agent handler gets one; a second claim in the window
