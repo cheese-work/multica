@@ -325,6 +325,42 @@ func TestNoticeCountsNoRecoveryRunThatWasNotEnqueued(t *testing.T) {
 	raiseAndAdmit(t, c.edgeCase, p)
 }
 
+// A recovery run that cannot be inserted (the blocked handler already has a
+// pending run on the issue) must not cost the notice: the notice still states
+// the command, priced without a debit that never committed, and the window's
+// recovery claim is left free.
+func TestNoticeSurvivesARecoveryRunThatCannotBeInserted(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	agentID := seededReadyAgentID(t)
+	c := newBudgetCase(t, 2886106, recoverySteps(agentID), 2)
+	e := refusedEvent(t, c)
+	landBeforeNotice(t, func() {
+		if _, err := testPool.Exec(context.Background(), `INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority, issue_id)
+			SELECT $2, runtime_id, 'queued', 0, $1 FROM agent WHERE id=$2`, c.issueID, agentID); err != nil {
+			t.Fatal(err)
+		}
+	})
+	testHandler.onRunBudgetExhausted(context.Background(), e)
+	if n := recoveryRuns(t, c.edgeCase); n != 0 {
+		t.Fatalf("recovery runs = %d, want 0 (the pending run holds the slot)", n)
+	}
+	if n := raiseNotices(t, c); n != 1 {
+		t.Fatalf("notices = %d, want 1 (a failed recovery run must not cost the notice)", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM run_budget_notice WHERE issue_id=$1 AND kind='recovery'`, c.issueID); n != 0 {
+		t.Fatalf("recovery claims = %d, want 0 (the claim rolls back with the failed insert)", n)
+	}
+	c.enter(t, "in_progress")
+	p := wantNoticeMatchesSnapshot(t, c.edgeCase, true)
+	if p.LimitAfter != 12 || p.BalanceAfter != 10 {
+		t.Fatalf("preview = %+v, want a cap of 12 leaving 10", p)
+	}
+	finishRuns(t, c.edgeCase)
+	raiseAndAdmit(t, c.edgeCase, p)
+}
+
 // A person's named run can land between the block and the notice's
 // transaction while the refusal still holds. The notice is worded under the
 // lock, so it describes the ledger it commits against.

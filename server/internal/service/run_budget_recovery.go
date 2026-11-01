@@ -64,7 +64,17 @@ func (s *TaskService) PrepareBudgetRecoveryRun(ctx context.Context, issue db.Iss
 // claim revalidates the window under the budget lock: a top-up or grant that
 // landed since the refusal returns ErrRecoveryWindowLifted and no task. The run
 // exists only when the caller's transaction commits; Published follows it.
-func (r *BudgetRecoveryRun) Claim(ctx context.Context, qtx *db.Queries, since time.Time) error {
+//
+// Claim works in a savepoint, so a failed claim or insert (the handler's pending
+// slot is taken, say) undoes only itself: the caller's transaction stays usable,
+// and the window's claim stays free for a later refusal.
+func (r *BudgetRecoveryRun) Claim(ctx context.Context, tx pgx.Tx, since time.Time) error {
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer sp.Rollback(ctx)
+	qtx := r.svc.Queries.WithTx(sp)
 	if _, err := qtx.ClaimRunBudgetNotice(ctx, db.ClaimRunBudgetNoticeParams{
 		ID: dbid.NewV7(), WorkspaceID: r.issue.WorkspaceID, IssueID: r.issue.ID,
 		WindowID: runBudgetWindowID(since), Kind: RunBudgetKindRecovery,
@@ -85,8 +95,14 @@ func (r *BudgetRecoveryRun) Claim(ctx context.Context, qtx *db.Queries, since ti
 	if err != nil {
 		return err
 	}
+	if err := qtx.MarkBudgetRecoveryTask(ctx, task.ID); err != nil {
+		return err
+	}
+	if err := sp.Commit(ctx); err != nil {
+		return err
+	}
 	r.task = task
-	return qtx.MarkBudgetRecoveryTask(ctx, task.ID)
+	return nil
 }
 
 // Published announces the run after the transaction that claimed it committed.
@@ -103,8 +119,16 @@ func (s *TaskService) EnqueueBudgetRecoveryRun(ctx context.Context, issue db.Iss
 	if err != nil {
 		return db.AgentTaskQueue{}, err
 	}
-	if err := s.runInTx(ctx, func(qtx *db.Queries) error { return run.Claim(ctx, qtx, since) }); err != nil {
-		return run.task, err
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return db.AgentTaskQueue{}, err
+	}
+	defer tx.Rollback(ctx)
+	if err := run.Claim(ctx, tx, since); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return db.AgentTaskQueue{}, err
 	}
 	run.Published(ctx)
 	return run.task, nil

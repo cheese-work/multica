@@ -134,7 +134,8 @@ func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBud
 	var items []db.InboxItem
 	var decisions []decisionRequestResult
 	recovered := false
-	err = h.withTx(ctx, func(qtx *db.Queries) error {
+	err = h.withPgxTx(ctx, func(tx pgx.Tx) error {
+		qtx := h.Queries.WithTx(tx)
 		noticeID, err := qtx.ClaimRunBudgetNotice(ctx, db.ClaimRunBudgetNoticeParams{
 			ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID,
 			WindowID: e.Since.UTC().Format(time.RFC3339Nano), Kind: e.Kind,
@@ -167,16 +168,19 @@ func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBud
 			}
 		}
 		// The recovery run debits the ledger, so it commits with the notice
-		// that states the balance: both or neither.
+		// that states the balance: both or neither. A run that cannot be
+		// inserted undoes only itself (Claim's savepoint): the notice still
+		// goes out, worded without a debit that did not commit, and the
+		// window's claim stays free for a later refusal.
 		if recovery != nil && e.Kind == service.RunBudgetKindExhausted {
-			switch err := recovery.Claim(ctx, qtx, e.Since); {
+			switch err := recovery.Claim(ctx, tx, e.Since); {
 			case err == nil:
 				recovered = true
 			case errors.Is(err, service.ErrRecoveryClaimed):
 			case errors.Is(err, service.ErrRecoveryWindowLifted):
 				return errRefusalLifted
 			default:
-				return fmt.Errorf("recovery run: %w", err)
+				slog.Warn("run budget: recovery run not enqueued", "err", err, "issue_id", uuidToString(issue.ID))
 			}
 		}
 		// Worded under the budget lock, so a command in it describes the ledger
