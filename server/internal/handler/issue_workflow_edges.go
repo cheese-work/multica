@@ -243,7 +243,8 @@ func (h *Handler) guardedIssueStatuses(ctx context.Context, q *db.Queries, works
 // review status is blocked only by a refusal of its reviewer.
 func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetExhausted) {
 	var issue db.Issue
-	var raise, refused string
+	var raise int
+	var refused string
 	moved := false
 	// Another writer (the 80% warning's comment, a person) can bump the issue's
 	// revision between the read and the block. The block then loses, so it
@@ -254,7 +255,7 @@ func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetE
 			return
 		}
 		if !e.TokensSpent {
-			raise = h.runBudgetRaiseCommand(ctx, issue, e.Max, int(e.Runs))
+			raise = service.SuggestedRaiseTarget(e.Max, int(e.Runs))
 		}
 		refused = h.runBudgetRefusedRun(ctx, e)
 		if moved = h.blockExhaustedIssue(ctx, issue, e, refused, raise); moved || issue.Status == issuestatus.Blocked {
@@ -320,7 +321,7 @@ func (h *Handler) exhaustedIssue(ctx context.Context, e service.RunBudgetExhaust
 
 // blockExhaustedIssue moves the issue to blocked and records why, and reports
 // whether this call moved it.
-func (h *Handler) blockExhaustedIssue(ctx context.Context, issue db.Issue, e service.RunBudgetExhausted, refused, raise string) bool {
+func (h *Handler) blockExhaustedIssue(ctx context.Context, issue db.Issue, e service.RunBudgetExhausted, refused string, raise int) bool {
 	if issue.Status == issuestatus.Blocked {
 		return false
 	}
@@ -331,7 +332,7 @@ func (h *Handler) blockExhaustedIssue(ctx context.Context, issue db.Issue, e ser
 	}
 	details := map[string]any{
 		"reason": issueworkflow.BlockedReasonRunBudget, "max_runs": e.Max, "runs": e.Runs,
-		"refused_run": refused, "raise_command": raise,
+		"refused_run": refused, "raise_target": raise,
 	}
 	if moved, _ := h.moveIssueOnEdge(ctx, issue, issuestatus.Blocked, "run_budget", details, false); !moved {
 		return false
@@ -352,7 +353,7 @@ func (h *Handler) blockExhaustedIssue(ctx context.Context, issue db.Issue, e ser
 
 // exhaustedNoticeText is the exhaustion comment: what was refused, whether the
 // issue was blocked by it, and the command that lifts the cap.
-func exhaustedNoticeText(refused, raise string, e service.RunBudgetExhausted, blocked bool) string {
+func exhaustedNoticeText(refused string, raise int, e service.RunBudgetExhausted, blocked bool) string {
 	lead := "Run budget used up"
 	if blocked {
 		lead = "Blocked"
@@ -366,21 +367,22 @@ func exhaustedNoticeText(refused, raise string, e service.RunBudgetExhausted, bl
 }
 
 // runBudgetBlockedMessage is the system comment for a budget block.
-func runBudgetBlockedMessage(refused string, runs, max int, raise string) string {
+func runBudgetBlockedMessage(refused string, runs, max, raise int) string {
 	return runBudgetNoticeMessage("Blocked", refused, runs, max, raise)
 }
 
-// runBudgetNoticeMessage words a budget notice. Without a raise command (the
-// platform maximum leaves no valid raise) it names the maximum and the
-// recovery a person has instead.
-func runBudgetNoticeMessage(lead, refused string, runs, max int, raise string) string {
-	if raise == "" {
+// runBudgetNoticeMessage words a budget notice. A raise is approved in the web
+// app, never by a command an agent host could run. Without a valid raise target
+// (the platform maximum is reached) it names the maximum and the recovery a
+// person has instead.
+func runBudgetNoticeMessage(lead, refused string, runs, max, raise int) string {
+	if raise == 0 {
 		return fmt.Sprintf(
 			"%s: %s was refused because the issue used %d of %d runs. The platform maximum of %d runs is reached, so no raise is possible. A person moves the issue's status to open a new run window.",
 			lead, refused, runs, max, issueworkflow.MaxRunsPerIssueLimit)
 	}
 	return fmt.Sprintf(
-		"%s: %s was refused because the issue used %d of %d runs. To allow more runs, a person runs `%s`.",
+		"%s: %s was refused because the issue used %d of %d runs. To allow more runs, a person approves a raise to %d runs in the web app. Until then, a person moves the issue's status in the web app.",
 		lead, refused, runs, max, raise)
 }
 
@@ -399,27 +401,4 @@ func (h *Handler) runBudgetRefusedRun(ctx context.Context, e service.RunBudgetEx
 		trigger = "derived"
 	}
 	return fmt.Sprintf("a run for %s (trigger: %s) while the issue was %s", who, trigger, e.Status)
-}
-
-// issueBudgetRef names an issue in a budget command: its identifier, else its id.
-// It takes the prefix so a caller inside a transaction needs no second pool
-// connection to look it up.
-func issueBudgetRef(prefix string, issue db.Issue) string {
-	if prefix != "" {
-		return fmt.Sprintf("%s-%d", prefix, issue.Number)
-	}
-	return uuidToString(issue.ID)
-}
-
-// runBudgetRaiseCommand is the command that lifts this issue's cap to leave
-// 10 runs after the ones already used, using the issue's identifier when the
-// workspace prefix is known. It is empty when the platform maximum leaves no
-// valid raise.
-func (h *Handler) runBudgetRaiseCommand(ctx context.Context, issue db.Issue, max, used int) string {
-	ref := issueBudgetRef(h.getIssuePrefix(ctx, issue.WorkspaceID), issue)
-	target := service.SuggestedRaiseTarget(max, used)
-	if target == 0 {
-		return ""
-	}
-	return fmt.Sprintf("multica issue budget raise %s --runs %d", ref, target)
 }

@@ -60,7 +60,7 @@ func TestRunBudgetExhaustionOpensOneDecisionRequest(t *testing.T) {
 	if err := json.Unmarshal(askJSON, &parsed); err != nil || !strings.Contains(strings.ToLower(parsed.DefaultIfNoReply), "no action") {
 		t.Fatalf("default_if_no_reply = %q (%v), want a default of no action", parsed.DefaultIfNoReply, err)
 	}
-	if !strings.Contains(ask, "multica issue budget top-up") {
+	if !strings.Contains(ask, "approve a top-up in the web app") {
 		t.Fatalf("ask does not name the top-up: %s", ask)
 	}
 	if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND status IN ('queued','dispatched','running')`, c.issueID); n != 0 {
