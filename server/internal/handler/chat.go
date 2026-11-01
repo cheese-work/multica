@@ -957,6 +957,15 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// /preset needs the same permission as any send, so it comes after the gate.
+	if arg, isPreset := parsePresetCommand(req.Content); isPreset {
+		if len(attachmentIDs) > 0 || decisionRequestID.Valid {
+			writeError(w, http.StatusBadRequest, "/preset cannot carry attachments or a decision reply")
+			return
+		}
+		h.runPresetCommand(w, r, session, agent, workspaceID, userID, arg)
+		return
+	}
 
 	// Detect whether this is the very first human message in the session,
 	// BEFORE we insert the new row. This scopes LLM auto-titling (MUL-4295) to
@@ -1340,6 +1349,7 @@ func (h *Handler) chatMessageResponses(ctx context.Context, workspaceID string, 
 			resp[i].DecisionRef = &card
 		}
 	}
+	markCarriedReplies(resp, h.chatTaskSessions(ctx, messages))
 	return resp
 }
 
@@ -2263,6 +2273,9 @@ type ChatMessageResponse struct {
 	// ScheduledWakeup is set on the user message a fired DM wakeup sent, so
 	// clients can render it as an event row. content stays the model-facing text.
 	ScheduledWakeup *ScheduledWakeupResponse `json:"scheduled_wakeup,omitempty"`
+	// CarriedFromSessionID names the earlier DM a reply's run ran in, set only
+	// when a rollover wrote that reply into this DM (CHE-2119). Nil otherwise.
+	CarriedFromSessionID *string `json:"carried_from_session_id,omitempty"`
 }
 
 type ScheduledWakeupResponse struct {

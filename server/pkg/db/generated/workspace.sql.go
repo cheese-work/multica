@@ -147,6 +147,15 @@ cleared_quick_actions AS (
 cleared_daemon_pauses AS (
     DELETE FROM daemon_pause WHERE workspace_id = $1
 ),
+cleared_ops_snapshots AS (
+    DELETE FROM ops_snapshot WHERE workspace_id = $1
+),
+cleared_ops_snapshots_5m AS (
+    DELETE FROM ops_snapshot_5m WHERE workspace_id = $1
+),
+cleared_agent_task_events AS (
+    DELETE FROM agent_task_event WHERE workspace_id = $1
+),
 ws_mcp_servers AS (
     SELECT id FROM workspace_mcp_server WHERE workspace_id = $1
 ),

@@ -118,14 +118,15 @@ type reviewProvenance struct {
 	Body         *string         `json:"body"`
 	Editor       json.RawMessage `json:"editor"`
 	LastEditedAt json.RawMessage `json:"lastEditedAt"`
+	Author       json.RawMessage `json:"author"`
 	State        *string         `json:"state"`
 }
 
 func (client *Client) reviewProvenance(ctx context.Context, installationID int64, nodeID string) (reviewProvenance, error) {
 	const query = `query($id: ID!) { node(id: $id) { id __typename
-... on IssueComment { databaseId: fullDatabaseId body lastEditedAt editor { __typename ... on User { databaseId } } }
-... on PullRequestReviewComment { databaseId: fullDatabaseId body lastEditedAt editor { __typename ... on User { databaseId } } }
-... on PullRequestReview { databaseId: fullDatabaseId body state lastEditedAt editor { __typename ... on User { databaseId } } }
+... on IssueComment { databaseId: fullDatabaseId body lastEditedAt author { __typename ... on User { databaseId } } editor { __typename ... on User { databaseId } } }
+... on PullRequestReviewComment { databaseId: fullDatabaseId body lastEditedAt author { __typename ... on User { databaseId } } editor { __typename ... on User { databaseId } } }
+... on PullRequestReview { databaseId: fullDatabaseId body state lastEditedAt author { __typename ... on User { databaseId } } editor { __typename ... on User { databaseId } } }
 } }`
 	var node reviewProvenance
 	token, err := client.installationToken(ctx, installationID)

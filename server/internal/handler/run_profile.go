@@ -36,6 +36,10 @@ type runProfile struct {
 	Scopes   []string
 	Epoch    int64
 	TaintIDs []string
+	// PinnedBaseSHA and PinnedHeadSHA seed the elevated run's synthetic base
+	// (plan 3.5); empty when no grant pins one.
+	PinnedBaseSHA string
+	PinnedHeadSHA string
 }
 
 // resolveRunProfile elevates only when an active grant exists and nothing
@@ -58,8 +62,8 @@ func resolveRunProfile(grants []db.RunCapabilityGrant, taintIDs []string, issueT
 // runProfileForTask resolves the profile of a task on one issue and records the
 // task's first elevated claim (task_elevation), whose scopes and epoch then stay
 // frozen for the task. A task whose row left `elevated` is fenced for good. The
-// task's taint IDs come from its row; issue-level taint has no storage yet
-// (B5b). Any read or write error resolves restricted.
+// task's taint IDs come from its row; the issue's from issue_taint, which only a
+// member clear empties. Any read or write error resolves restricted.
 func (h *Handler) runProfileForTask(ctx context.Context, workspaceID, issueID, taskID pgtype.UUID, taintIDs []string) runProfile {
 	restricted := resolveRunProfile(nil, nil, false, false)
 	grants, err := h.Queries.ListActiveRunCapabilityGrants(ctx, db.ListActiveRunCapabilityGrantsParams{WorkspaceID: workspaceID, IssueID: issueID})
@@ -67,21 +71,27 @@ func (h *Handler) runProfileForTask(ctx context.Context, workspaceID, issueID, t
 		slog.Warn("run profile grant read failed; resolving restricted", "issue_id", uuidToString(issueID), "error", err)
 		return restricted
 	}
+	issueTaint, err := h.Queries.GetIssueTaintIDs(ctx, issueID)
+	if err != nil {
+		slog.Warn("issue taint read failed; resolving restricted", "issue_id", uuidToString(issueID), "error", err)
+		return restricted
+	}
+	issueTainted := len(issueTaint) > 0
 	te, err := h.Queries.GetTaskElevation(ctx, taskID)
 	known := err == nil
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		slog.Warn("task elevation read failed; resolving restricted", "task_id", uuidToString(taskID), "error", err)
 		return restricted
 	}
-	if known && len(taintIDs) > 0 && te.State == elevationElevated {
+	if known && (len(taintIDs) > 0 || issueTainted) && te.State == elevationElevated {
 		// Taint grew after the elevation was recorded (a resumed session, a
-		// late assignment): the stored row must not stay usable. Authorization
+		// late assignment, tainted material on the issue): the stored row must not stay usable. Authorization
 		// refuses tainted tasks on its own; a failed fence here is swept later.
 		if _, err := h.Queries.FenceTaintedTaskElevations(ctx, taskID); err != nil {
 			slog.Warn("tainted task elevation fence failed", "task_id", uuidToString(taskID), "error", err)
 		}
 	}
-	rp := resolveRunProfile(grants, taintIDs, false, known && te.State != elevationElevated)
+	rp := resolveRunProfile(grants, taintIDs, issueTainted, known && te.State != elevationElevated)
 	if rp.Profile != runProfileElevated {
 		return rp
 	}
@@ -107,6 +117,7 @@ func (h *Handler) runProfileForTask(ctx context.Context, workspaceID, issueID, t
 		}
 	}
 	rp.Scopes, rp.Epoch = te.Scopes, te.Epoch
+	rp.PinnedBaseSHA, rp.PinnedHeadSHA = grantPins(grants, te.GrantIds)
 	return rp
 }
 
@@ -130,6 +141,26 @@ func (h *Handler) protectedPathPatterns(ctx context.Context, workspaceID pgtype.
 		return nil, err
 	}
 	return row.Patterns, nil
+}
+
+// GetDaemonProtectedPathPolicy returns one named policy to the daemon push
+// broker, which reads it live on every push.
+func (h *Handler) GetDaemonProtectedPathPolicy(w http.ResponseWriter, r *http.Request) {
+	workspaceID := strings.TrimSpace(chi.URLParam(r, "workspaceId"))
+	if !h.requireDaemonWorkspaceAccess(w, r, workspaceID) {
+		return
+	}
+	name := chi.URLParam(r, "name")
+	if !policyName.MatchString(name) {
+		writeError(w, http.StatusBadRequest, "invalid policy name")
+		return
+	}
+	patterns, err := h.protectedPathPatterns(r.Context(), parseUUID(workspaceID), name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read the policy")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"name": name, "patterns": patterns})
 }
 
 func validPolicyPattern(p string) bool {
@@ -203,4 +234,31 @@ func (h *Handler) intakePinForTask(ctx context.Context, workspaceID, taskID pgty
 		return true, "", ""
 	}
 	return true, pin.Branch, strings.ToLower(host + "/" + pin.RepoOwner + "/" + pin.RepoName)
+}
+
+// grantPins is the pinned commit pair of the grants that elevated a task:
+// only the frozen grants when the task's elevation is already recorded. A
+// field with two different values, or no value, resolves empty and the daemon
+// then refuses the elevated checkout.
+func grantPins(grants []db.RunCapabilityGrant, frozen []pgtype.UUID) (base, head string) {
+	bases, heads := map[string]bool{}, map[string]bool{}
+	for _, g := range grants {
+		if frozen != nil && !slices.Contains(frozen, g.ID) {
+			continue
+		}
+		if g.PinnedBaseSha.Valid {
+			bases[g.PinnedBaseSha.String] = true
+		}
+		if g.PinnedHeadSha.Valid {
+			heads[g.PinnedHeadSha.String] = true
+		}
+	}
+	if len(bases) > 1 || len(heads) > 1 {
+		return "", ""
+	}
+	for base = range bases {
+	}
+	for head = range heads {
+	}
+	return base, head
 }

@@ -1,0 +1,32 @@
+# Hierarchy minimap in the issue sidebar and its canvas dialog (CHE-2765), web and desktop.
+# Design gate: Cheese picked direction A (Tree) in CHE-2749 (comment 01a19285-0f08-7cbb-8cd6-8c5d8330ad16) and accepted dialog frames D5 and D6 (receipt 01a19293-4843-7853-8c95-9828c2a9c610). Lock PR #712 is merged.
+# UX verdicts (x99-agy-gemini-ux) are in the lock's LOCK.json at the pinned SHA. Reference files are deleted by this PR, the topic's last implementing PR; read them at the pinned SHA.
+# Locales: machine-drafted fr, ja, ko, zh-Hans and zh-Hant ship now. Native review is NOT-RUN.
+issue: CHE-2765
+design: design/hierarchy-minimap/approved/tree-minimap-states.html @ 5f47069e175dca73d4e5ea0d78942d679cd67793
+pages:
+  - id: issue-detail-sidebar
+    url: /<workspace-slug>/issues/<issue-id>   # right sidebar at 320 px and at its 260 px minimum, light and dark
+    keep:
+      - issue-detail-sidebar
+      - issue-properties
+      - issue-quick-actions
+    change:
+      - issue-hierarchy: "new Hierarchy minimap at the top of the sidebar: parent card, siblings leaf and current issue ('you are here', ring) on one row, children leaf below, 'N wakes' footer; titles clamp to 2 lines; root issue shows no parent, leaf issue no children group"
+      - issue-hierarchy-expand: "new Expand hierarchy icon button in the minimap header; disabled while loading"
+      - issue-hierarchy-skeleton: "new loading skeleton with the loaded footprint while the target's relations load; pulse only when motion is allowed"
+    remove:
+      - issue-relations-button: "Relations graph button and its dialog"
+      - issue-parent-section: "Parent issue section (the parent is now the top card; Remove parent stays in the issue actions menu)"
+  - id: issue-hierarchy-dialog
+    url: /<workspace-slug>/issues/<issue-id>   # Expand hierarchy; dialog up to 72 rem wide and 90 % high
+    keep: []
+    change:
+      - hierarchy-canvas: "new pannable canvas; wheel or +/- zoom at the pointer, drag or arrow keys pan, 20 % to 200 %; focus lands on the canvas on open"
+      - hierarchy-groups: "below 70 % zoom each group is one block with total, status bar, up to 3 named issues and a remainder; the current issue stays a full card"
+      - hierarchy-cards: "from 70 % zoom groups split into single issue cards under labels with totals ('Siblings · 21 (showing 8)'); 60 cards per group at most"
+      - hierarchy-toolbar: "zoom out, zoom level, zoom in, Fit, Me; chips for Hierarchy, Wakes and Mentions (Mentions loads on first use)"
+      - hierarchy-overview: "new thumbnail with the visible window outlined; cards outside it are highlighted and counted"
+      - hierarchy-collapse: "opening an issue from a card collapses the dialog into that issue's minimap; the minimap heading takes focus; modifier clicks open as a link; reduced motion swaps instantly"
+    remove:
+      - relations-depth-selector: "Depth 1 / 2 select"

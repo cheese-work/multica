@@ -1,0 +1,60 @@
+# Pre-merge security gate (CHE-2671). Copy of cheese-work/multica-dotfiles .github/workflows/security-gate.yml.
+#
+# Sets the `security-gate` commit status on the PR's exact head SHA. Register `security-gate` as a required status
+# check only through the rollout in cheese-work/multica-dotfiles docs/cheese-work/SECURITY-GATE.md; this file alone blocks nothing.
+#
+# SECURITY — same boundary as mechanical-tier.yml: `pull_request_target` and `issue_comment` both run this
+# definition from the default branch. The job checks out the DEFAULT branch (never the PR's base: a PR can target an
+# unprotected branch that carries a modified gate script) and only FETCHES head objects for a diff read. Nothing from
+# the head is executed. Do not add a head checkout or a secret here.
+# `issue_comment` (created, edited, deleted) is the path by which a verdict comment flips or revokes the status; `edited`
+# on the PR covers a retarget. The script re-reads the live head SHA and base ref.
+
+name: security-gate
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+  issue_comment:
+    types: [created, edited, deleted]
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+
+concurrency:
+  group: security-gate-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  security-gate:
+    # Job name differs from the status context on purpose: the context is posted by the script, not by this job.
+    name: security-gate-eval
+    if: github.event_name == 'pull_request_target' || github.event.issue.pull_request
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    timeout-minutes: 10
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+      GH_TOKEN: ${{ github.token }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - name: Discard a reused workspace
+        run: |
+          find "$GITHUB_WORKSPACE" -mindepth 1 -delete
+      - name: Check out the protected default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch the head objects without checking them out
+        run: |
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/head"
+      - name: Evaluate the verdict and post the status
+        run: |
+          python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" \
+            --default-branch "$DEFAULT_BRANCH" \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --post

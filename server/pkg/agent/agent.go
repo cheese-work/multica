@@ -30,7 +30,9 @@ type ExecOptions struct {
 	// capability handshake enabled additional messages.
 	EnableTaskSupplement bool
 	Cwd                  string
-	Model                string
+	// StableCwd, when set, is the cwd the process sees instead of Cwd (Claude only; see wrapStableCwd).
+	StableCwd string
+	Model     string
 	// SystemPrompt carries the Multica runtime brief for the few providers
 	// that cannot pick it up from disk. The daemon leaves it empty for every
 	// other provider (see daemon.providerNeedsInlineSystemPrompt), because the
