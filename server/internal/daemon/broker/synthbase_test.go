@@ -342,3 +342,77 @@ func TestSyntheticBaseCopyFailureDoesNotHang(t *testing.T) {
 		t.Fatalf("copy hung until the context expired (%v)", time.Since(start))
 	}
 }
+
+func TestIsSyntheticBase(t *testing.T) {
+	u := newUpstream(t)
+	build := func(t *testing.T) string {
+		dest := filepath.Join(t.TempDir(), "repo")
+		if _, err := MaterializeSyntheticBase(context.Background(), u.cache, u.c2, dest, "agent/x"); err != nil {
+			t.Fatal(err)
+		}
+		return dest
+	}
+	check := func(t *testing.T, dest, sha, branch string) bool {
+		return IsSyntheticBase(context.Background(), dest, sha, branch)
+	}
+	t.Run("built here, with local work on top", func(t *testing.T) {
+		dest := build(t)
+		if err := os.WriteFile(filepath.Join(dest, "local.txt"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		git(t, dest, "add", "-A")
+		git(t, dest, "-c", "user.name=a", "-c", "user.email=a@a", "commit", "-m", "local")
+		if !check(t, dest, u.c2, "agent/x") {
+			t.Fatal("a synthetic base with local commits was not recognised")
+		}
+	})
+	t.Run("other sha or branch", func(t *testing.T) {
+		dest := build(t)
+		if check(t, dest, u.c3, "agent/x") || check(t, dest, u.c2, "agent/y") {
+			t.Fatal("a mismatching pin or branch was accepted")
+		}
+	})
+	t.Run("missing or empty destination", func(t *testing.T) {
+		if check(t, filepath.Join(t.TempDir(), "none"), u.c2, "agent/x") || check(t, t.TempDir(), u.c2, "agent/x") {
+			t.Fatal("a missing or empty destination was accepted")
+		}
+	})
+	t.Run("a clone of the upstream", func(t *testing.T) {
+		dest := filepath.Join(t.TempDir(), "clone")
+		git(t, "", "clone", "-q", "-b", "main", u.cache, dest)
+		git(t, dest, "branch", "agent/x", u.c2)
+		if check(t, dest, u.c2, "agent/x") {
+			t.Fatal("an upstream clone was accepted")
+		}
+	})
+	t.Run("a remote", func(t *testing.T) {
+		dest := build(t)
+		git(t, dest, "remote", "add", "origin", u.cache)
+		if check(t, dest, u.c2, "agent/x") {
+			t.Fatal("a repository with a remote was accepted")
+		}
+	})
+	t.Run("alternates", func(t *testing.T) {
+		dest := build(t)
+		alt := filepath.Join(dest, ".git", "objects", "info", "alternates")
+		if err := os.WriteFile(alt, []byte(filepath.Join(u.cache, "objects")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if check(t, dest, u.c2, "agent/x") {
+			t.Fatal("a repository with alternates was accepted")
+		}
+	})
+	t.Run(".git pointer file", func(t *testing.T) {
+		dest := build(t)
+		other := build(t)
+		if err := os.RemoveAll(filepath.Join(dest, ".git")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dest, ".git"), []byte("gitdir: "+filepath.Join(other, ".git")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if check(t, dest, u.c2, "agent/x") {
+			t.Fatal("a gitdir pointer was accepted")
+		}
+	})
+}

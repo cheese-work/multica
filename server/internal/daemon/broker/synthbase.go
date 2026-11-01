@@ -238,3 +238,30 @@ func DiskUsage(dir string) (int64, error) {
 	})
 	return total, err
 }
+
+// IsSyntheticBase reports whether dest is a repository MaterializeSyntheticBase
+// built for sha and branch: its own .git directory, no alternates, no remote,
+// the branch present, and a single root commit by multica-broker with message
+// "base <sha>". Commits and files the run added on top do not matter.
+func IsSyntheticBase(ctx context.Context, dest, sha, branch string) bool {
+	if !pinnedSHA.MatchString(sha) || branch == "" || strings.HasPrefix(branch, "-") || !validRef("refs/heads/"+branch) {
+		return false
+	}
+	// A real .git directory: a gitdir pointer file or symlink could send git
+	// to a repository this code did not build.
+	if fi, err := os.Lstat(filepath.Join(dest, ".git")); err != nil || !fi.IsDir() {
+		return false
+	}
+	if _, err := os.Lstat(filepath.Join(dest, ".git", "objects", "info", "alternates")); err == nil || !os.IsNotExist(err) {
+		return false
+	}
+	if remotes, err := gitOut(ctx, nil, dest, "remote"); err != nil || remotes != "" {
+		return false
+	}
+	roots, err := gitOut(ctx, nil, dest, "rev-list", "--max-parents=0", "refs/heads/"+branch)
+	if err != nil || roots == "" || strings.Contains(roots, "\n") {
+		return false
+	}
+	meta, err := gitOut(ctx, nil, dest, "log", "-1", "--format=%an%x00%s", roots)
+	return err == nil && meta == "multica-broker\x00base "+sha
+}

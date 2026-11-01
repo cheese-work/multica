@@ -158,3 +158,62 @@ func TestNewActiveRepoCheckoutTaskCarriesTheClaimPins(t *testing.T) {
 		t.Fatalf("claim without a profile registered as elevated: %+v", got)
 	}
 }
+
+func TestElevatedRepoCheckoutRepeatReusesTheCheckoutAndKeepsLocalWork(t *testing.T) {
+	t.Parallel()
+	const ws, repoURL = "ws-checkout", "https://github.com/org/repo.git"
+	cachePath, c1, c2 := bareWithTwoCommits(t)
+	cache := &recordingRepoCache{lookupPath: cachePath}
+	workDir := t.TempDir()
+	d := newRepoCheckoutTestDaemon(t, ws, repoURL, workDir, cache)
+	d.registerActiveRepoCheckoutTask("mat_repo_checkout_test", elevatedTask(workDir, c1, c2))
+
+	first := checkoutRequest(t, d, ws, repoURL, workDir)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first: expected 200, got %d: %s", first.Code, first.Body.String())
+	}
+	var res repocache.WorktreeResult
+	if err := json.Unmarshal(first.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	local := filepath.Join(res.Path, "local.txt")
+	if err := os.WriteFile(local, []byte("agent work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	second := checkoutRequest(t, d, ws, repoURL, workDir)
+	if second.Code != http.StatusOK {
+		t.Fatalf("repeat: expected 200, got %d: %s", second.Code, second.Body.String())
+	}
+	if second.Body.String() != first.Body.String() {
+		t.Fatalf("repeat answered %s, first answered %s", second.Body.String(), first.Body.String())
+	}
+	if b, err := os.ReadFile(local); err != nil || string(b) != "agent work\n" {
+		t.Fatalf("repeat checkout lost local work: %q, %v", b, err)
+	}
+}
+
+func TestElevatedRepoCheckoutRefusesANonEmptyDestinationItDidNotBuild(t *testing.T) {
+	t.Parallel()
+	const ws, repoURL = "ws-checkout", "https://github.com/org/repo.git"
+	cachePath, c1, c2 := bareWithTwoCommits(t)
+	cache := &recordingRepoCache{lookupPath: cachePath}
+	workDir := t.TempDir()
+	d := newRepoCheckoutTestDaemon(t, ws, repoURL, workDir, cache)
+	d.registerActiveRepoCheckoutTask("mat_repo_checkout_test", elevatedTask(workDir, c1, c2))
+	foreign := filepath.Join(workDir, "repo")
+	if err := os.MkdirAll(foreign, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(foreign, "x"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := checkoutRequest(t, d, ws, repoURL, workDir)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("a foreign non-empty destination was accepted: %s", rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(foreign, "x")); err != nil {
+		t.Fatalf("refusal touched the foreign file: %v", err)
+	}
+}

@@ -24,6 +24,11 @@ func (d *Daemon) serveElevatedCheckout(w http.ResponseWriter, ctx context.Contex
 	branch := repocache.TaskBranchName(task.AgentName, task.IssueIdentifier, task.TaskID)
 	sha := broker.PinnedSource(task.PinnedBaseSHA, task.PinnedHeadSHA)
 	err := d.repoCache.WithRepoLock(barePath, func() error {
+		// A repeat request for the same pin reuses the checkout the run
+		// already works in; its local commits and files stay untouched.
+		if broker.IsSyntheticBase(ctx, dest, sha, branch) {
+			return nil
+		}
 		_, err := broker.MaterializeSyntheticBase(ctx, barePath, sha, dest, branch)
 		return err
 	})
@@ -36,7 +41,9 @@ func (d *Daemon) serveElevatedCheckout(w http.ResponseWriter, ctx context.Contex
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(&repocache.WorktreeResult{Path: dest, BranchName: branch})
+	if err := json.NewEncoder(w).Encode(&repocache.WorktreeResult{Path: dest, BranchName: branch}); err != nil {
+		d.logger.Warn("elevated repo checkout: write response failed", "task_id", task.TaskID, "error", err)
+	}
 }
 
 // newActiveRepoCheckoutTask binds a claimed task's checkout identity and pins.
