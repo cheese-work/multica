@@ -297,11 +297,16 @@ func (h *Handler) enqueueBudgetRecovery(ctx context.Context, e service.RunBudget
 const runBudgetBlockTries = 3
 
 // exhaustedIssue reads the issue a refusal is about and reports whether the
-// refusal still applies: not finished, and still in the status that was
-// refused unless it is already blocked.
+// refusal still applies: not finished, its window still current and still
+// spent, and still in the status that was refused unless it is already blocked.
 func (h *Handler) exhaustedIssue(ctx context.Context, e service.RunBudgetExhausted) (db.Issue, bool) {
 	issue, err := h.Queries.GetIssue(ctx, e.IssueID)
 	if err != nil || service.IsFinishedStatus(ctx, h.Queries, issue.WorkspaceID, issue.Status) {
+		return issue, false
+	}
+	// Read after the issue, so a top-up that commits after this point moves the
+	// revision the block is conditional on, and the retry reads it again.
+	if refuses, err := service.RunBudgetStillRefuses(ctx, h.Queries, e.IssueID, e.Since); err != nil || !refuses {
 		return issue, false
 	}
 	if issue.Status == issuestatus.Blocked {

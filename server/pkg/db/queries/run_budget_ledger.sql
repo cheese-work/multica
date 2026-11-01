@@ -3,6 +3,11 @@
 -- caller's transaction, so the balance read and the debit cannot interleave.
 SELECT id FROM issue WHERE id = sqlc.arg('issue_id')::uuid FOR NO KEY UPDATE;
 
+-- name: BumpIssueRevision :exec
+-- A budget write that changes no issue field (a member top-up) still moves the
+-- revision, so a status write read before it loses its expected-revision check.
+UPDATE issue SET revision = revision + 1 WHERE id = sqlc.arg('issue_id')::uuid;
+
 -- name: CountIssueRunsSinceExcept :one
 -- CountIssueRunsSince without one task: the window credit must not count the
 -- run its own debit pays for.
