@@ -127,9 +127,9 @@ func guardIssueProjectRebinding(ctx context.Context, q *db.Queries, params db.Up
 }
 
 // projectSwitchWidensBudget compares the workflow a project uses now with the
-// one it would use after the switch (nil target is Default). It reads the
-// project-level binding, so an issue's own max_runs_override is not applied:
-// a switch that widens for an issue without an override is refused for everyone.
+// one it would use after the switch (nil target is Default). The issue that
+// gains most is the one with the smallest max_runs_override among those that
+// follow the project, so that override is applied on both sides.
 func projectSwitchWidensBudget(ctx context.Context, q *db.Queries, project db.Project, target *issueworkflow.Definition) (bool, error) {
 	current, err := issueworkflow.ForProjectRow(ctx, q, project)
 	if err != nil {
@@ -143,7 +143,12 @@ func projectSwitchWidensBudget(ctx context.Context, q *db.Queries, project db.Pr
 		}
 		next = &def
 	}
-	return budgetWidens(workflowBinding(current, pgtype.Int4{}), workflowBinding(next, pgtype.Int4{})), nil
+	least, err := q.MinInheritedRunsOverrideForProject(ctx, db.MinInheritedRunsOverrideForProjectParams{WorkspaceID: project.WorkspaceID, ProjectID: project.ID})
+	if err != nil {
+		return false, err
+	}
+	override := pgtype.Int4{Int32: least, Valid: least > 0}
+	return budgetWidens(workflowBinding(current, override), workflowBinding(next, override)), nil
 }
 
 // workflowDeleteWidensBudget covers a delete that would strand references:

@@ -1501,6 +1501,22 @@ func (h *Handler) saveHandoffOnProjectCopy(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "failed to save handoff")
 		return
 	}
+	if !isInteractiveRequest(r) {
+		def, err := issueworkflow.Decode(row)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to save handoff")
+			return
+		}
+		widens, err := projectSwitchWidensBudget(ctx, qtx, project, &def)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to save handoff")
+			return
+		}
+		if widens {
+			writeBudgetRebindingRefused(w)
+			return
+		}
+	}
 	updated, err := qtx.SetProjectWorkflow(ctx, db.SetProjectWorkflowParams{ID: project.ID, WorkspaceID: source.WorkspaceID, WorkflowID: row.ID})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save handoff")

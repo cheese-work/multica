@@ -2,6 +2,9 @@ package handler
 
 import (
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -294,5 +297,111 @@ func TestBudgetBindingQueriesAreAllMapped(t *testing.T) {
 		if !seen[name] {
 			t.Errorf("mapped query %s no longer rewrites a budget binding; drop it from the map", name)
 		}
+	}
+}
+
+// Saving a handoff as a project copy creates a fresh workflow, which starts a
+// new budget window, and switches the project to it.
+// Cloud PATs and task tokens are stopped earlier, by the route's own gates.
+func TestBudgetRebindingHandoffCopyRefusedForNonInteractive(t *testing.T) {
+	for i, source := range []string{"pat", "cli_jwt"} {
+		t.Run(source, func(t *testing.T) {
+			f := newRebindFixture(t, int64(2830900+i))
+			body := handToAgent(seededReadyAgentID(t), "Keep this handoff")
+			body["copy_for_project_id"] = f.narrowProj
+			req := withURLParams(withActorSource(workflowRequest("PUT", "/api/issue-workflows/"+f.narrow+"/handoffs/in_progress", body), source), "id", f.narrow, "status", "in_progress")
+			res := testutil.Call(t, RequireHumanOrTaskToken(http.HandlerFunc(testHandler.SetIssueWorkflowHandoff)).ServeHTTP, req)
+			res.Want(http.StatusForbidden)
+			if !strings.Contains(res.Text(), budgetRebindingCode) {
+				t.Fatalf("body %q does not carry %s", res.Text(), budgetRebindingCode)
+			}
+			var workflow string
+			dbfx.QueryRow(t, `SELECT workflow_id::text FROM project WHERE id=$1`, f.narrowProj).Scan(&workflow)
+			if workflow != f.narrow {
+				t.Fatalf("project workflow changed to %s despite the refusal", workflow)
+			}
+		})
+	}
+}
+
+// An issue override above both caps keeps its effective cap, so the switch
+// does not widen that issue.
+func TestBudgetRebindingNeutralProjectSwitchWithIssueOverride(t *testing.T) {
+	f := newRebindFixture(t, 2830910)
+	dbfx.Exec(t, `UPDATE issue SET max_runs_override=100 WHERE id=$1`, f.c.issueID)
+	dbfx.Exec(t, `UPDATE issue_workflow SET run_budget_since=(SELECT run_budget_since FROM issue_workflow WHERE id=$2) WHERE id=$1`, f.wide, f.narrow)
+	req := withURLParam(withActorSource(workflowRequest("POST", "/api/projects/"+f.narrowProj+"/workflow", map[string]any{"workflow_id": f.wide}), "pat"), "id", f.narrowProj)
+	testutil.Call(t, testHandler.SetProjectWorkflow, req).Want(http.StatusOK)
+}
+
+// budgetGuardFor lists, per rewriting query, the guard its caller must invoke.
+// The query inventory above cannot see a second caller of the same query.
+var budgetGuardFor = map[string][]string{
+	"SetProjectWorkflow":  {"projectSwitchWidensBudget"},
+	"SetIssueWorkflow":    {"issueBinding"},
+	"DeleteIssueWorkflow": {"workflowDeleteWidensBudget"},
+	"UpdateIssue":         {"guardIssueProjectRebinding"},
+}
+
+// budgetGuardExempt names callers that cannot change a binding.
+var budgetGuardExempt = map[string]string{
+	"MoveIssue":     "delegates to the UpdateIssue handler, which sets the actor for the guard",
+	"UpdateContent": "re-sends the issue's own project_id; title and description only",
+}
+
+func TestBudgetBindingCallersAreGuarded(t *testing.T) {
+	fset := token.NewFileSet()
+	var seen int
+	for _, dir := range []string{".", "../service"} {
+		files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, file := range files {
+			if strings.HasSuffix(file, "_test.go") {
+				continue
+			}
+			parsed, err := parser.ParseFile(fset, file, nil, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, decl := range parsed.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok || fn.Body == nil {
+					continue
+				}
+				calls := map[string]bool{}
+				ast.Inspect(fn.Body, func(n ast.Node) bool {
+					if call, ok := n.(*ast.CallExpr); ok {
+						switch f := call.Fun.(type) {
+						case *ast.SelectorExpr:
+							calls[f.Sel.Name] = true
+						case *ast.Ident:
+							calls[f.Name] = true
+						}
+					}
+					return true
+				})
+				for query, guards := range budgetGuardFor {
+					if !calls[query] {
+						continue
+					}
+					seen++
+					if _, ok := budgetGuardExempt[fn.Name.Name]; ok {
+						continue
+					}
+					guarded := false
+					for _, g := range guards {
+						guarded = guarded || calls[g]
+					}
+					if !guarded {
+						t.Errorf("%s: %s calls %s without %v", file, fn.Name.Name, query, guards)
+					}
+				}
+			}
+		}
+	}
+	if seen == 0 {
+		t.Fatal("found no caller of a budget-binding query; the scan is broken")
 	}
 }
