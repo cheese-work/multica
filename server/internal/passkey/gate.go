@@ -176,9 +176,13 @@ func lockUsablePasskeys(ctx context.Context, queries *db.Queries, userID pgtype.
 
 // userGated reports whether any workspace of the user blocks. It also pins
 // every one of those gates until the caller's transaction ends, so a flip
-// cannot slip in between the check and the commit. A flip in flight answers
-// ErrBusy.
+// cannot slip in between the check and the commit, and the user's row, so a
+// membership addition (which takes it first) cannot either. A flip or a join
+// in flight answers ErrBusy.
 func userGated(ctx context.Context, queries *db.Queries, userID pgtype.UUID) (bool, error) {
+	if err := queries.LockUserForGateCheck(ctx, userID); err != nil {
+		return false, busyOr(err)
+	}
 	states, err := queries.LockUserWorkspaceGates(ctx, userID)
 	if err != nil {
 		return false, busyOr(err)

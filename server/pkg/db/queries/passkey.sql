@@ -133,6 +133,17 @@ UPDATE workspace SET decision_passkey_gate = $2, policy_revision = policy_revisi
 WHERE id = $1
 RETURNING decision_passkey_gate, policy_revision;
 
+-- The person's row is the stable per-user lock that orders gate checks against
+-- membership additions: a check holds it FOR SHARE (NOWAIT, so a join in flight
+-- answers busy), a join holds it FOR NO KEY UPDATE until it commits. Without it
+-- a join could add a blocking workspace the check's membership read never saw.
+
+-- name: LockUserForGateCheck :exec
+SELECT id FROM "user" WHERE id = $1 FOR SHARE NOWAIT;
+
+-- name: LockUserForMembershipChange :exec
+SELECT id FROM "user" WHERE id = $1 FOR NO KEY UPDATE;
+
 -- A key share on every workspace the person belongs to: a gate flip, which
 -- takes the row FOR UPDATE, cannot commit between this read and the caller's
 -- commit. NOWAIT, so a flip in flight answers busy and nothing waits.

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/internal/passkey/passkeytest"
@@ -419,6 +420,71 @@ func TestEmailCodeRevocationConfirmWaitsOutAGateChangeInFlight(test *testing.T) 
 	mustContain(test, f.confirmRevokeByCode(f.keyIDs[2], started.CeremonyID, http.StatusConflict), "busy_retry")
 	if f.revoked(f.keyIDs[2]) {
 		test.Fatal("a passkey was revoked while the gate was changing")
+	}
+}
+
+// A membership change in flight (the joining user's row is held until its
+// transaction commits) could add a blocking workspace the check never saw.
+func TestEnrollmentFinishWaitsOutAMembershipChangeInFlight(test *testing.T) {
+	f := newGateFixture(test, 2)
+	started := f.startEnroll()
+	holdRowLock(test, `SELECT id FROM "user" WHERE id = $1 FOR NO KEY UPDATE`, f.owner)
+	mustContain(test, f.finishEnroll(started, nil, http.StatusConflict), "busy_retry")
+	if credentialCount(test, f.owner) != 2 {
+		test.Fatal("a passkey was enrolled while a membership was changing")
+	}
+}
+
+func TestEmailCodeRevocationConfirmWaitsOutAMembershipChangeInFlight(test *testing.T) {
+	f := newGateFixture(test, 3)
+	var started struct {
+		CeremonyID string `json:"ceremony_id"`
+	}
+	decodeJSON(test, f.revokeByCode(f.keyIDs[2], http.StatusOK), &started)
+	holdRowLock(test, `SELECT id FROM "user" WHERE id = $1 FOR NO KEY UPDATE`, f.owner)
+	mustContain(test, f.confirmRevokeByCode(f.keyIDs[2], started.CeremonyID, http.StatusConflict), "busy_retry")
+	if f.revoked(f.keyIDs[2]) {
+		test.Fatal("a passkey was revoked while a membership was changing")
+	}
+}
+
+// The other side of the same lock: a join waits for a gate check in flight, so
+// the check's membership read stays true until it commits.
+func TestJoiningAWorkspaceWaitsOutAGateCheckInFlight(test *testing.T) {
+	email := "gate-join-" + uuid.NewString() + "@multica.ai"
+	userID := dbfx.User(test, "Gate Join Invitee", email)
+	invitationID := dbfx.Insert(test, "workspace_invitation", testutil.Cols{
+		"workspace_id":    testWorkspaceID,
+		"inviter_id":      testUserID,
+		"invitee_email":   email,
+		"invitee_user_id": userID,
+		"role":            "member",
+		"status":          "pending",
+		"expires_at":      testutil.Raw("now() + interval '1 day'"),
+	})
+	test.Cleanup(func() {
+		dbfx.Exec(test, `DELETE FROM member WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, userID)
+	})
+	release := holdRowLock(test, `SELECT id FROM "user" WHERE id = $1 FOR SHARE`, userID)
+
+	joined := make(chan struct{})
+	go func() {
+		defer close(joined)
+		req := newRequest("POST", "/api/invitations/"+invitationID+"/accept", nil)
+		req.Header.Set("X-User-ID", userID)
+		req = withURLParam(req, "id", invitationID)
+		testutil.Call(test, testHandler.AcceptInvitation, req).Want(http.StatusOK)
+	}()
+	select {
+	case <-joined:
+		test.Fatal("the join committed while a gate check held the user")
+	case <-time.After(500 * time.Millisecond):
+	}
+	release()
+	select {
+	case <-joined:
+	case <-time.After(10 * time.Second):
+		test.Fatal("the join never finished after the gate check ended")
 	}
 }
 

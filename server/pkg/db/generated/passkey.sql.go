@@ -560,6 +560,29 @@ func (q *Queries) LockPasskeysNowait(ctx context.Context, ids []pgtype.UUID) ([]
 	return items, nil
 }
 
+const lockUserForGateCheck = `-- name: LockUserForGateCheck :exec
+
+SELECT id FROM "user" WHERE id = $1 FOR SHARE NOWAIT
+`
+
+// The person's row is the stable per-user lock that orders gate checks against
+// membership additions: a check holds it FOR SHARE (NOWAIT, so a join in flight
+// answers busy), a join holds it FOR NO KEY UPDATE until it commits. Without it
+// a join could add a blocking workspace the check's membership read never saw.
+func (q *Queries) LockUserForGateCheck(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockUserForGateCheck, id)
+	return err
+}
+
+const lockUserForMembershipChange = `-- name: LockUserForMembershipChange :exec
+SELECT id FROM "user" WHERE id = $1 FOR NO KEY UPDATE
+`
+
+func (q *Queries) LockUserForMembershipChange(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockUserForMembershipChange, id)
+	return err
+}
+
 const lockUserWorkspaceGates = `-- name: LockUserWorkspaceGates :many
 
 SELECT w.decision_passkey_gate::text FROM member m JOIN workspace w ON w.id = m.workspace_id
