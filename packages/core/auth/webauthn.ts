@@ -1,3 +1,5 @@
+import type { PasskeyAssertionEnvelope, PasskeyChallenge } from "../api/passkey-schema";
+
 const ALPHABET = /^[A-Za-z0-9_-]*$/;
 
 export function base64urlToBytes(text: string): Uint8Array {
@@ -72,4 +74,9 @@ export async function getPasskeyAssertion(options: Options) {
     signature: bytesToBase64url(response.signature),
     ...(response.userHandle && { userHandle: bytesToBase64url(response.userHandle) }),
   });
+}
+
+/** Signs a server challenge and wraps the credential in the envelope that revoke and approve post. */
+export async function signPasskeyChallenge(challenge: PasskeyChallenge): Promise<PasskeyAssertionEnvelope> {
+  return { challenge_id: challenge.challenge_id, credential: await getPasskeyAssertion(challenge.options) };
 }

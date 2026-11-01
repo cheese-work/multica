@@ -273,7 +273,7 @@ import { parseWithFallback } from "./schema";
 import {
   PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
   PasskeyRevokedSchema, parsePasskeyResponse,
-  type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart,
+  type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart,
 } from "./passkey-schema";
 import {
   RuntimeProfileSchema,
@@ -4101,7 +4101,7 @@ export class ApiClient {
     return this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke/challenge`, PasskeyChallengeSchema);
   }
 
-  async revokePasskey(passkeyId: string, assertion: unknown): Promise<void> {
+  async revokePasskey(passkeyId: string, assertion: PasskeyAssertionEnvelope): Promise<void> {
     await this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke`, PasskeyRevokedSchema, { assertion });
   }
 
@@ -4111,7 +4111,7 @@ export class ApiClient {
 
   approveDecisionAction(
     actionId: string,
-    input: { payload_sha256: string; assertion: unknown; secrets?: Record<string, string> },
+    input: { payload_sha256: string; assertion: PasskeyAssertionEnvelope; secrets?: Record<string, string> },
   ): Promise<PasskeyDecisionOutcome> {
     return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/approve`, PasskeyDecisionOutcomeSchema, input);
   }

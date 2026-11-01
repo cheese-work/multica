@@ -4,6 +4,7 @@ import { ApiClient } from "./client";
 afterEach(() => vi.unstubAllGlobals());
 
 const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+const envelope = { challenge_id: "ch", credential: { id: "a" } };
 const options = { publicKey: { challenge: "AQ" } };
 
 function client(body: unknown) {
@@ -31,9 +32,9 @@ describe("ApiClient passkeys", () => {
     expect(challenge.call().url).toBe("https://api.example.test/api/passkeys/p%2F1/revoke/challenge");
 
     const revoke = client({ revoked: true });
-    await revoke.api.revokePasskey("p1", { id: "a" });
+    await revoke.api.revokePasskey("p1", envelope);
     expect(revoke.call().url).toBe("https://api.example.test/api/passkeys/p1/revoke");
-    expect(JSON.parse(revoke.call().init.body)).toEqual({ assertion: { id: "a" } });
+    expect(JSON.parse(revoke.call().init.body)).toEqual({ assertion: envelope });
   });
 
   it("challenges, approves and reads the outcome of a decision action", async () => {
@@ -42,9 +43,9 @@ describe("ApiClient passkeys", () => {
     expect(challenge.call().url).toBe("https://api.example.test/api/decision-actions/a1/challenge");
 
     const approve = client({ id: "a1", state: "executed" });
-    await approve.api.approveDecisionAction("a1", { payload_sha256: "h", assertion: { id: "a" } });
+    await approve.api.approveDecisionAction("a1", { payload_sha256: "h", assertion: envelope });
     expect(approve.call().url).toBe("https://api.example.test/api/decision-actions/a1/approve");
-    expect(JSON.parse(approve.call().init.body)).toEqual({ payload_sha256: "h", assertion: { id: "a" } });
+    expect(JSON.parse(approve.call().init.body)).toEqual({ payload_sha256: "h", assertion: envelope });
 
     const outcome = client({ id: "a1", state: "pending" });
     expect((await outcome.api.getDecisionActionOutcome("a1")).state).toBe("pending");
@@ -52,7 +53,8 @@ describe("ApiClient passkeys", () => {
   });
 
   it("throws instead of reporting success on a malformed response", async () => {
-    await expect(client({ revoked: "yes" }).api.revokePasskey("p1", {})).rejects.toThrow(/unexpected/);
-    await expect(client({}).api.approveDecisionAction("a1", { payload_sha256: "h", assertion: {} })).rejects.toThrow(/unexpected/);
+    await expect(client({ revoked: "yes" }).api.revokePasskey("p1", envelope)).rejects.toThrow(/unexpected/);
+    await expect(client({ revoked: false }).api.revokePasskey("p1", envelope)).rejects.toThrow(/unexpected/);
+    await expect(client({}).api.approveDecisionAction("a1", { payload_sha256: "h", assertion: envelope })).rejects.toThrow(/unexpected/);
   });
 });

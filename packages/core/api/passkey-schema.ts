@@ -7,8 +7,8 @@ const OptionsSchema = z.object({ publicKey: z.record(z.string(), z.unknown()) })
 
 export const PasskeyEnrollStartSchema = z.object({ ceremony_id: z.string(), options: OptionsSchema, expires_at: z.string() });
 export const PasskeyChallengeSchema = z.object({ challenge_id: z.string(), options: OptionsSchema, expires_at: z.string() });
-export const PasskeyEnrolledSchema = z.object({ enrolled: z.boolean() });
-export const PasskeyRevokedSchema = z.object({ revoked: z.boolean() });
+export const PasskeyEnrolledSchema = z.object({ enrolled: z.literal(true) });
+export const PasskeyRevokedSchema = z.object({ revoked: z.literal(true) });
 export const PasskeyDecisionOutcomeSchema = z.object({
   id: z.string(),
   state: z.string(),
@@ -17,6 +17,8 @@ export const PasskeyDecisionOutcomeSchema = z.object({
   error_message: z.string().optional(),
 });
 
+/** What the server verifies for revoke and approve: the challenge it answers plus the WebAuthn credential. */
+export type PasskeyAssertionEnvelope = { challenge_id: string; credential: unknown };
 export type PasskeyEnrollStart = z.infer<typeof PasskeyEnrollStartSchema>;
 export type PasskeyChallenge = z.infer<typeof PasskeyChallengeSchema>;
 export type PasskeyDecisionOutcome = z.infer<typeof PasskeyDecisionOutcomeSchema>;

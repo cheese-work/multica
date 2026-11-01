@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { base64urlToBytes, bytesToBase64url, createPasskey, getPasskeyAssertion } from "./webauthn";
+import { base64urlToBytes, bytesToBase64url, createPasskey, getPasskeyAssertion, signPasskeyChallenge } from "./webauthn";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -63,5 +63,20 @@ describe("ceremonies", () => {
     await expect(getPasskeyAssertion({ publicKey: { challenge: "AQ" } })).rejects.toThrow(/not supported/);
     vi.stubGlobal("navigator", { credentials: { get: vi.fn().mockResolvedValue(null) } });
     await expect(getPasskeyAssertion({ publicKey: { challenge: "AQ" } })).rejects.toThrow(/cancel/);
+  });
+});
+
+describe("signPasskeyChallenge", () => {
+  it("wraps the credential with the challenge id, the envelope the server verifies", async () => {
+    const get = vi.fn().mockResolvedValue({
+      id: "cred", rawId: bytes(1), type: "public-key",
+      response: { authenticatorData: bytes(2), clientDataJSON: bytes(3), signature: bytes(4), userHandle: null },
+      getClientExtensionResults: () => ({}),
+    });
+    vi.stubGlobal("navigator", { credentials: { get } });
+    const signed = await signPasskeyChallenge({ challenge_id: "ch1", options: { publicKey: { challenge: "AQ" } }, expires_at: "t" });
+    expect(Object.keys(signed).sort()).toEqual(["challenge_id", "credential"]);
+    expect(signed.challenge_id).toBe("ch1");
+    expect(signed.credential).toMatchObject({ id: "cred", response: { signature: "BA" } });
   });
 });

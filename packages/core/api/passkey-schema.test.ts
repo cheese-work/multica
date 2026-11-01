@@ -12,8 +12,8 @@ const cases = [
     [null, {}, { ceremony_id: "c", options: {}, expires_at: "t" }, { ceremony_id: 1, options, expires_at: "t" }]],
   ["challenge", PasskeyChallengeSchema, { challenge_id: "c", options, expires_at: "t" },
     [null, {}, { challenge_id: "c", options: "x", expires_at: "t" }, { challenge_id: "c", options, expires_at: 5 }]],
-  ["enrolled", PasskeyEnrolledSchema, { enrolled: true }, [null, {}, { enrolled: "yes" }]],
-  ["revoked", PasskeyRevokedSchema, { revoked: true }, [null, {}, { revoked: "yes" }]],
+  ["enrolled", PasskeyEnrolledSchema, { enrolled: true }, [null, {}, { enrolled: "yes" }, { enrolled: false }]],
+  ["revoked", PasskeyRevokedSchema, { revoked: true }, [null, {}, { revoked: "yes" }, { revoked: false }]],
   ["decision outcome", PasskeyDecisionOutcomeSchema, { id: "a", state: "executed" },
     [null, {}, { id: "a" }, { id: "a", state: 3 }, { id: "a", state: "x", error_code: 5 }]],
 ] as const;
