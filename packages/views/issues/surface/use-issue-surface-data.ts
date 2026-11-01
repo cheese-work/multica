@@ -377,7 +377,11 @@ export function useIssueSurfaceData({
   const catalog = useIssueStatuses(wsId);
   // Columns follow the project's workflow, or Default outside a project.
   // (MUL-7420)
-  const { workflow: projectWorkflow } = useColumnWorkflow(wsId, projectId, statusFilters.length > 0);
+  const { workflow: projectWorkflow } = useColumnWorkflow(
+    wsId,
+    projectId,
+    statusFilters.length > 0 || workflowFilters.length > 0,
+  );
   const { workflow: scopeWorkflow } = useColumnWorkflow(wsId, projectId, false);
 
   const visibleStatuses = useMemo<IssueStatus[]>(() => {
