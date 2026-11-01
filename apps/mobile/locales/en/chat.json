@@ -172,6 +172,8 @@
   "picker.title": "Choose an agent",
   "no_response": "The agent finished this turn without a text reply.",
   "continuation_summary": "Conversation summary",
+  "compaction_divider": "Compacted at {{time}} ICT",
+  "compaction_divider_untimed": "Compacted",
   "failure_reason": {
     "default": "Run failed",
     "queued_expired": "Expired in queue",

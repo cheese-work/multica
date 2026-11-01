@@ -314,7 +314,7 @@ export const ChatMessageSchema: z.ZodType<ChatMessage> = z.object({
   failure_reason: z.string().nullable().optional(),
   elapsed_ms: z.number().nullable().optional(),
   message_kind: z
-    .enum(["message", "no_response", "continuation_summary"])
+    .enum(["message", "no_response", "continuation_summary", "compaction_summary"])
     .catch("message")
     .optional(),
   // One malformed optional suggestion must not erase an otherwise valid

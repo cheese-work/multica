@@ -141,4 +141,18 @@ describe("ChatMessageSchema", () => {
 
     expect(parsed.message_kind).toBe("continuation_summary");
   });
+
+  // CHE-2169 M1: an in-place compaction row must stay identifiable on mobile
+  // so the list renders a divider, not a plain assistant bubble.
+  it("keeps the compaction_summary kind", () => {
+    const parsed = ChatMessageSchema.parse({
+      id: "message-2",
+      chat_session_id: "session-1",
+      role: "assistant",
+      content: "Summary",
+      message_kind: "compaction_summary",
+    });
+
+    expect(parsed.message_kind).toBe("compaction_summary");
+  });
 });

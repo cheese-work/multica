@@ -107,6 +107,8 @@
   "picker.title": "選擇智慧體",
   "no_response": "本輪已結束，智慧體沒有返回文字回覆。",
   "continuation_summary": "對話摘要",
+  "compaction_divider": "於 {{time}} ICT 壓縮",
+  "compaction_divider_untimed": "已壓縮",
   "failure_reason": {
     "default": "執行失敗",
     "queued_expired": "排隊已過期",
