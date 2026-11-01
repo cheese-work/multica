@@ -266,12 +266,17 @@ RETURNING installation_id, repo_owner, repo_name, pr_number;
 -- name: InvalidateGitHubPRMergeState :exec
 -- CHE-2796: a base-branch swap (pull_request.edited with changes.base) makes the
 -- stored API merge verdict describe the old base, so it is cleared for the
--- caller's refresh to decide again.
-UPDATE github_pull_request
+-- caller's refresh to decide again. Workspaces that turned GitHub off are
+-- skipped: the refresh pipeline excludes them, so a cleared row could never be
+-- decided again.
+UPDATE github_pull_request gpr
 SET api_mergeable          = NULL,
     api_merge_state_status = NULL,
     updated_at             = now()
-WHERE installation_id = sqlc.arg('installation_id')
-  AND repo_owner = sqlc.arg('repo_owner')
-  AND repo_name = sqlc.arg('repo_name')
-  AND pr_number = sqlc.arg('pr_number');
+FROM workspace w
+WHERE w.id = gpr.workspace_id
+  AND (w.settings ->> 'github_enabled') IS DISTINCT FROM 'false'
+  AND gpr.installation_id = sqlc.arg('installation_id')
+  AND gpr.repo_owner = sqlc.arg('repo_owner')
+  AND gpr.repo_name = sqlc.arg('repo_name')
+  AND gpr.pr_number = sqlc.arg('pr_number');

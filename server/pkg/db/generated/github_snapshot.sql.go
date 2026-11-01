@@ -202,14 +202,17 @@ func (q *Queries) InsertGitHubPRCheckRun(ctx context.Context, arg InsertGitHubPR
 }
 
 const invalidateGitHubPRMergeState = `-- name: InvalidateGitHubPRMergeState :exec
-UPDATE github_pull_request
+UPDATE github_pull_request gpr
 SET api_mergeable          = NULL,
     api_merge_state_status = NULL,
     updated_at             = now()
-WHERE installation_id = $1
-  AND repo_owner = $2
-  AND repo_name = $3
-  AND pr_number = $4
+FROM workspace w
+WHERE w.id = gpr.workspace_id
+  AND (w.settings ->> 'github_enabled') IS DISTINCT FROM 'false'
+  AND gpr.installation_id = $1
+  AND gpr.repo_owner = $2
+  AND gpr.repo_name = $3
+  AND gpr.pr_number = $4
 `
 
 type InvalidateGitHubPRMergeStateParams struct {
@@ -221,7 +224,9 @@ type InvalidateGitHubPRMergeStateParams struct {
 
 // CHE-2796: a base-branch swap (pull_request.edited with changes.base) makes the
 // stored API merge verdict describe the old base, so it is cleared for the
-// caller's refresh to decide again.
+// caller's refresh to decide again. Workspaces that turned GitHub off are
+// skipped: the refresh pipeline excludes them, so a cleared row could never be
+// decided again.
 func (q *Queries) InvalidateGitHubPRMergeState(ctx context.Context, arg InvalidateGitHubPRMergeStateParams) error {
 	_, err := q.db.Exec(ctx, invalidateGitHubPRMergeState,
 		arg.InstallationID,

@@ -19,11 +19,11 @@ import (
 // decided CLEAN snapshot when the parent merges, because the merge handler only
 // invalidated PRs on the merged PR's own base. GitHub then retargets the child
 // to the default branch and it can turn CONFLICTING with no snapshot refresh.
-func seedDecidedCleanPR(t *testing.T, installationID int64, number int32, baseRef string) pgtype.UUID {
+func seedDecidedCleanPR(t *testing.T, workspaceID pgtype.UUID, installationID int64, number int32, baseRef string) pgtype.UUID {
 	t.Helper()
 	now := time.Now().UTC()
 	pr, err := testHandler.Queries.UpsertGitHubPullRequest(context.Background(), db.UpsertGitHubPullRequestParams{
-		WorkspaceID: parseUUID(testWorkspaceID), InstallationID: installationID,
+		WorkspaceID: workspaceID, InstallationID: installationID,
 		RepoOwner: "acme", RepoName: "widget", PrNumber: number, Title: "stack child", State: "open",
 		HtmlUrl:     fmt.Sprintf("https://github.com/acme/widget/pull/%d", number),
 		PrCreatedAt: pgtype.Timestamptz{Time: now, Valid: true}, PrUpdatedAt: pgtype.Timestamptz{Time: now, Valid: true},
@@ -83,7 +83,7 @@ func TestParentMergeInvalidatesStackChildSnapshot(t *testing.T) {
 	const installationID int64 = 2796001
 	fx := newPRMergeWebhookFixture(t, installationID)
 	enableRefreshWithFailingFetch(t)
-	child := seedDecidedCleanPR(t, installationID, 2796301, "fix/ship-it")
+	child := seedDecidedCleanPR(t, parseUUID(testWorkspaceID), installationID, 2796301, "fix/ship-it")
 
 	payload := buildMergedPRWebhookBody(fx.child.Identifier, 2796300, "acme", "widget", installationID)
 	payload["pull_request"].(map[string]any)["base"] = map[string]any{"ref": "main"}
@@ -101,7 +101,7 @@ func TestRetargetEditInvalidatesAPIMergeState(t *testing.T) {
 	const installationID int64 = 2796002
 	fx := newPRMergeWebhookFixture(t, installationID)
 	enableRefreshWithFailingFetch(t)
-	child := seedDecidedCleanPR(t, installationID, 2796302, "fix/ship-it")
+	child := seedDecidedCleanPR(t, parseUUID(testWorkspaceID), installationID, 2796302, "fix/ship-it")
 
 	payload := buildMergedPRWebhookBody(fx.child.Identifier, 2796302, "acme", "widget", installationID)
 	payload["action"] = "edited"
@@ -114,5 +114,39 @@ func TestRetargetEditInvalidatesAPIMergeState(t *testing.T) {
 
 	if state := storedMergeState(t, child); state.Valid {
 		t.Fatalf("retargeted PR kept merge state %q", state.String)
+	}
+}
+
+// A GitHub-disabled workspace sharing the installation keeps its stored verdict:
+// the refresh pipeline excludes it, so a cleared row could never be repaired.
+func TestRetargetEditSkipsGitHubDisabledWorkspace(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	const installationID int64 = 2796003
+	disabled := bindSecondWorkspaceForTest(t, "che2796-disabled", "C96", installationID)
+	fx := newPRMergeWebhookFixture(t, installationID)
+	enableRefreshWithFailingFetch(t)
+	if _, err := testPool.Exec(context.Background(), `UPDATE workspace SET settings = '{"github_enabled": false}' WHERE id = $1`, disabled); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM github_pull_request WHERE workspace_id = $1`, disabled) })
+	enabledPR := seedDecidedCleanPR(t, parseUUID(testWorkspaceID), installationID, 2796303, "fix/ship-it")
+	disabledPR := seedDecidedCleanPR(t, disabled, installationID, 2796303, "fix/ship-it")
+
+	payload := buildMergedPRWebhookBody(fx.child.Identifier, 2796303, "acme", "widget", installationID)
+	payload["action"] = "edited"
+	pr := payload["pull_request"].(map[string]any)
+	pr["state"], pr["merged"], pr["merged_at"], pr["closed_at"] = "open", false, nil, nil
+	pr["updated_at"] = time.Now().UTC().Add(time.Minute).Format(time.RFC3339)
+	pr["base"] = map[string]any{"ref": "main"}
+	payload["changes"] = map[string]any{"base": map[string]any{"ref": map[string]any{"from": "fix/ship-it"}}}
+	postSignedGitHubWebhook(t, fx.secret, payload, "che2796-retarget-disabled")
+
+	if state := storedMergeState(t, enabledPR); state.Valid {
+		t.Fatalf("enabled workspace kept merge state %q", state.String)
+	}
+	if state := storedMergeState(t, disabledPR); state.String != "CLEAN" {
+		t.Fatalf("GitHub-disabled workspace merge state = %q, want CLEAN", state.String)
 	}
 }
