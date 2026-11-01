@@ -30,14 +30,9 @@ func (handler *Handler) refuseGatedAgentRecords(ctx context.Context, transaction
 			if err != nil {
 				return false, err
 			}
-			// An unprompted record has no card; its request is cancelled and the
-			// asker is told to ask again, so there is no link to give.
-			link := ""
-			if request.Origin != "unprompted" {
-				link = weblink.Chat(workspace.Slug, uuidToString(session.ID))
-				if absolute := weblink.Build(handler.cfg.AppURL, link); absolute != "" {
-					link = absolute
-				}
+			link := weblink.Chat(workspace.Slug, uuidToString(session.ID))
+			if absolute := weblink.Build(handler.cfg.AppURL, link); absolute != "" {
+				link = absolute
 			}
 			if len(withdrawals) == 0 {
 				// The refusal commits, so the withdrawal comment must not capture a wakeup.

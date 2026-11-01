@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -130,7 +131,74 @@ func TestDecisionDeliveryReplayKeepsWokenAnswer(test *testing.T) {
 	}
 }
 
-func TestDecisionDeliveryRefusedUnpromptedRecordTakesCardAnswer(test *testing.T) {
+// A real card answer is a card answer: it is stamped by the production path,
+// never rewritten, and it wakes exactly once.
+func TestDecisionDeliveryWakesRealCardAnswerOnce(test *testing.T) {
+	resetDecisionLease(test)
+	handler, _ := newDecisionRunnerFixture(test)
+	fixture := newCardFixture(test)
+	defer dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'cancelled' WHERE status IN ('queued', 'running') AND issue_id = $1`, fixture.issueID)
+	dbfx.Exec(test, `UPDATE decision_request SET escalation_class = 'spend' WHERE id = $1`, fixture.decision.ID)
+	card, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "Option A"})
+	if err != nil {
+		test.Fatal(err)
+	}
+	if card.Answer.AnswerSource != "card" || card.Answer.AnsweredByUserID != parseUUID(fixture.humanID) || card.Answer.AnsweredByTaskID.Valid {
+		test.Fatalf("card answer not stamped as a card: %+v", card.Answer)
+	}
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, fixture.taskID, fixture.chatTaskID)
+	dbfx.Exec(test, `UPDATE decision_answer SET wake_at = clock_timestamp() WHERE id = $1`, card.Answer.ID)
+	for range 2 {
+		if err := deliverDecisionForTest(handler, fixture); err != nil {
+			test.Fatal(err)
+		}
+	}
+	if count := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE id = $1 AND woken_at IS NOT NULL AND disclaimed_at IS NULL`, card.Answer.ID); count != 1 {
+		test.Fatal("real card answer was refused or not delivered")
+	}
+	if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND status IN ('queued', 'running') AND (trigger_comment_id = $2 OR $2 = ANY(coalesced_comment_ids))`, fixture.issueID, card.Comment.ID); count != 1 {
+		test.Fatalf("card answer runs = %d, want 1", count)
+	}
+}
+
+// Refusal of one member, then the person answers that member on its card: the
+// whole group delivers once, with no provenance rewrite.
+func TestDecisionDeliveryMixedGroupRecoversOnCard(test *testing.T) {
+	resetDecisionLease(test)
+	handler, _ := newDecisionRunnerFixture(test)
+	group := readyDecisionDeliveryGroup(test)
+	issueID := group.core.issueID
+	defer dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'cancelled' WHERE status IN ('queued', 'running') AND issue_id = $1`, issueID)
+	forbidden, permitted := group.records[0], group.records[1]
+	dbfx.Exec(test, `UPDATE decision_request SET escalation_class = 'spend' WHERE id = $1`, forbidden.Request.ID)
+	dbfx.Exec(test, `UPDATE decision_answer SET wake_at = clock_timestamp() WHERE id = ANY($1)`, []string{uuidToString(forbidden.Answer.ID), uuidToString(permitted.Answer.ID)})
+	if err := deliverDecisionForTest(handler, group.members[0]); err != nil {
+		test.Fatal(err)
+	}
+	assertWithdrawnForCard(test, forbidden)
+	card, err := group.members[0].answerOnCard(decisionCardAnswerInput{Text: "go ahead"})
+	if err != nil {
+		test.Fatal(err)
+	}
+	dbfx.Exec(test, `UPDATE decision_answer SET wake_at = clock_timestamp() WHERE id = $1`, card.Answer.ID)
+	for range 2 {
+		if err := deliverDecisionForTest(handler, group.members[0]); err != nil {
+			test.Fatal(err)
+		}
+	}
+	for _, answerID := range []any{card.Answer.ID, permitted.Answer.ID} {
+		if count := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE id = $1 AND woken_at IS NOT NULL AND disclaimed_at IS NULL`, answerID); count != 1 {
+			test.Fatal("group member was not delivered after the card answer")
+		}
+	}
+	if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND status IN ('queued', 'running')`, issueID); count != 1 {
+		test.Fatalf("group runs = %d, want 1", count)
+	}
+}
+
+// An unprompted record has no card, so its request is reopened with the lane
+// link and the agent posts the replacement request that the person answers.
+func TestDecisionDeliveryRefusedUnpromptedRecordTakesReplacementCard(test *testing.T) {
 	resetDecisionLease(test)
 	handler, _ := newDecisionRunnerFixture(test)
 	fixture := newCardFixture(test)
@@ -150,27 +218,29 @@ func TestDecisionDeliveryRefusedUnpromptedRecordTakesCardAnswer(test *testing.T)
 		test.Fatal(err)
 	}
 	assertNoDeliveryEffect(test, fixture.issueID, before, recorded)
-	if count := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE id = $1 AND disclaim_reason = 'card_required'`, recorded.Answer.ID); count != 1 {
-		test.Fatal("unprompted agent record was not withdrawn with card_required")
+	assertWithdrawnForCard(test, recorded)
+
+	// The agent reads the withdrawal in a new turn and posts the replacement.
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'running' WHERE id = $1`, fixture.taskID)
+	replacementInput := fixture.input()
+	replacementInput.Ask, replacementInput.EscalationClass, replacementInput.HumanUserID = "Replacement for the refused record", "spend", parseUUID(fixture.humanID)
+	replacementInput.Options = []decisiontx.AskOption{{Label: "Option A", WhatHappens: "A happens"}}
+	replacement, err := testHandler.createDecisionRequest(fixture.request(), fixture.issue, replacementInput)
+	if err != nil || replacement.Request.Origin != "asked" || !replacement.Request.PingMessageID.Valid {
+		test.Fatalf("replacement request has no card: %+v %v", replacement.Request, err)
 	}
-	var content string
-	dbfx.QueryRow(test, `SELECT content FROM comment WHERE decision_answer_id = $1 AND decision_comment_kind = 'disclaim'`, recorded.Answer.ID).Scan(&content)
-	if !strings.Contains(content, "new decision request") {
-		test.Fatalf("withdrawal comment does not tell the agent to ask again: %q", content)
-	}
-	// The replacement is a fresh asked request, answered on its card.
-	dbfx.Exec(test, `UPDATE decision_request SET escalation_class = 'spend' WHERE id = $1`, fixture.decision.ID)
-	card, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "Option A"})
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, fixture.taskID)
+	onReplacement := fixture
+	onReplacement.decision = replacement.Request
+	card, err := onReplacement.answerOnCard(decisionCardAnswerInput{Option: "Option A"})
 	if err != nil {
 		test.Fatal(err)
 	}
-	// Stamp the answer as the card's own, as a card click records it.
-	dbfx.Exec(test, `UPDATE decision_answer SET answer_source = 'card', answered_by_user_id = $2, answered_by_task_id = NULL, source_chat_session_id = NULL, source_comment_id = NULL,
-		chat_message_ids = '{}', wake_at = clock_timestamp() WHERE id = $1`, card.Answer.ID, fixture.humanID)
-	if err := deliverDecisionForTest(handler, fixture); err != nil {
+	dbfx.Exec(test, `UPDATE decision_answer SET wake_at = clock_timestamp() WHERE id = $1`, card.Answer.ID)
+	if err := deliverDecisionForTest(handler, onReplacement); err != nil {
 		test.Fatal(err)
 	}
 	if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'running') AND (trigger_comment_id = $3 OR $3 = ANY(coalesced_comment_ids))`, fixture.issueID, fixture.agentID, card.Comment.ID); count != 1 {
-		test.Fatalf("card answer runs = %d, want 1", count)
+		test.Fatalf("replacement card answer runs = %d, want 1", count)
 	}
 }

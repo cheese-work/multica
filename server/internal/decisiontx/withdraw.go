@@ -22,9 +22,9 @@ const OwnerRequiredNotice = "This decision concerns the workspace owner. Post a 
 // decision: only an answer given on the card may wake the asker.
 const CardRequired = "card_required"
 
-func withdrawalContent(reason, cardLink string) string {
-	if reason == CardRequired && cardLink == "" {
-		return "Decision withdrawn: " + reason + ". This decision needs an answer on the card. Post a new decision request for it; the person answers on that card."
+func withdrawalContent(reason, origin, cardLink string) string {
+	if reason == CardRequired && origin == "unprompted" {
+		return "Decision withdrawn: " + reason + ". An unprompted record has no card. Post a new decision request for it; the person answers on that card: [open the lane](" + cardLink + ")"
 	}
 	if reason == CardRequired {
 		return "Decision withdrawn: " + reason + ". This decision needs an answer on the card: [open the card](" + cardLink + ")"
@@ -76,7 +76,7 @@ func withdraw(ctx context.Context, queries *db.Queries, request db.DecisionReque
 	var err error
 	params := db.WithdrawDecisionAnswerParams{WorkspaceID: request.WorkspaceID, ID: answer.ID, DisclaimReason: pgtype.Text{String: reason, Valid: true}, DisclaimedByUserID: userID}
 	if veto == nil {
-		created, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: dbid.NewV7(), WorkspaceID: request.WorkspaceID, IssueID: request.IssueID, ParentID: parentID, AuthorType: "agent", AuthorID: request.AskingAgentID, Type: "comment", Content: withdrawalContent(reason, cardLink), DecisionAnswerID: answer.ID, DecisionCommentKind: pgtype.Text{String: "disclaim", Valid: true}})
+		created, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: dbid.NewV7(), WorkspaceID: request.WorkspaceID, IssueID: request.IssueID, ParentID: parentID, AuthorType: "agent", AuthorID: request.AskingAgentID, Type: "comment", Content: withdrawalContent(reason, request.Origin, cardLink), DecisionAnswerID: answer.ID, DecisionCommentKind: pgtype.Text{String: "disclaim", Valid: true}})
 		if err != nil {
 			return Withdrawal{}, err
 		}
@@ -103,7 +103,7 @@ func withdraw(ctx context.Context, queries *db.Queries, request db.DecisionReque
 	cancelReason := ""
 	if reason == ClassNeedsOwner {
 		cancelReason = ClassNeedsOwner
-	} else if request.Origin == "unprompted" {
+	} else if request.Origin == "unprompted" && reason != CardRequired {
 		cancelReason = "record_disclaimed"
 		if veto != nil {
 			cancelReason = "record_vetoed"
