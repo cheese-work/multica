@@ -214,10 +214,15 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	} else if expired {
 		return empty, errActionExpired
 	}
+	targetKind := actionTargetKind(action)
 	// A committed issue close or asking-agent archive wins over a stale open
 	// row: the sweeper that records it runs later, so check it under the locks.
 	if reason, err := queries.DecisionLifecycleReason(ctx, db.DecisionLifecycleReasonParams{WorkspaceID: caller.workspaceID, ID: current.ID}); err != nil {
 		return empty, err
+	} else if reason == decisionClassNeedsOwner && targetKind != decisionaction.TargetAgent {
+		// The sweeper would cancel this request, but an issue or workflow action
+		// answers a non-owner approver with the owner refusal, not a stale row.
+		return empty, errNeedsOwner
 	} else if reason != "" {
 		return empty, errNotPending
 	}
@@ -225,7 +230,6 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	// issue-target executor runs under it once params.issue_id is that issue.
 	var targetAgent db.Agent
 	var workflow db.IssueWorkflow
-	targetKind := actionTargetKind(action)
 	switch targetKind {
 	case decisionaction.TargetIssue:
 		if err := checkIssueTarget(action.Params, current.IssueID, http.StatusConflict); err != nil {

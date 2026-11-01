@@ -175,10 +175,16 @@ func TestApproveWorkflowTargetNeedsAnOwner(test *testing.T) {
 		}
 		refused(test, action, withVerifier(demote), http.StatusForbidden, "class_needs_owner")
 	})
-	test.Run("agent-opened request of a demoted owner is no longer pending", func(test *testing.T) {
+	test.Run("agent-opened, owner demoted between propose and approve", func(test *testing.T) {
 		action, _ := newPendingWorkflowAction(test, workflowNoopAction)
+		makeApproverOwner(test, action, "owner")
 		makeApproverOwner(test, action, "admin")
-		refused(test, action, withVerifier(acceptingVerifier), http.StatusConflict, "not_pending")
+		refused(test, action, withVerifier(acceptingVerifier), http.StatusForbidden, "class_needs_owner")
+	})
+	test.Run("agent-opened, non-owner approver", func(test *testing.T) {
+		action, _ := newPendingWorkflowAction(test, workflowNoopAction)
+		makeApproverOwner(test, action, "member")
+		refused(test, action, withVerifier(acceptingVerifier), http.StatusForbidden, "class_needs_owner")
 	})
 }
 
