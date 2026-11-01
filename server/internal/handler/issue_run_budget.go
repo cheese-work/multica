@@ -158,13 +158,9 @@ func (h *Handler) TopUpIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
-	if _, err := qtx.CreateActivity(r.Context(), db.CreateActivityParams{
-		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, ActorType: pgtype.Text{String: actorType, Valid: true},
-		ActorID: parseUUID(actorID), Action: "run_budget_top_up", Details: []byte("{}"),
-	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to record the run budget top-up")
-		return
-	}
+	// The activity row below starts the next window. Writing the current one
+	// first keeps its credit or debt in the ledger; the lock it takes holds to
+	// the commit.
 	max, err := service.OpenRunBudgetWindow(r.Context(), qtx, issue.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to top up the run budget")
@@ -174,6 +170,17 @@ func (h *Handler) TopUpIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "the issue has no workflow run budget to top up")
 		return
 	}
+	if _, err := qtx.CreateActivity(r.Context(), db.CreateActivityParams{
+		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, ActorType: pgtype.Text{String: actorType, Valid: true},
+		ActorID: parseUUID(actorID), Action: "run_budget_top_up", Details: []byte("{}"),
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record the run budget top-up")
+		return
+	}
+	if _, err := service.OpenRunBudgetWindow(r.Context(), qtx, issue.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to top up the run budget")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to top up the run budget")
 		return
@@ -181,12 +188,13 @@ func (h *Handler) TopUpIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"max_runs": max})
 }
 
-// openRunBudgetWindowForMove opens the run-budget window a person's status move
-// started, so its token allowance is claimed when the move is recorded rather
-// than at the next admission or report. It runs after the event is published:
-// the activity listener has written the move by then, and the window begins at
-// that row. A failure is logged; the next admission or report claims the same
-// allowance.
+// openRunBudgetWindowForMove opens a run-budget window around a person's status
+// move. Called before the event is published, the move is not yet in the log,
+// so it writes the window the move is about to end. Called after, the listener
+// has written the move and the window begins at that row, so its token
+// allowance is claimed when the move is recorded rather than at the next
+// admission or report. A failure is logged; the next admission or report
+// claims the same allowance.
 func (h *Handler) openRunBudgetWindowForMove(ctx context.Context, issue db.Issue) {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
