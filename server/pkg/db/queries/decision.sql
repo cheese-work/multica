@@ -48,9 +48,14 @@ LEFT JOIN agent_task_queue task ON task.id = intent.task_id
 WHERE intent.workspace_id = sqlc.arg('workspace_id') AND intent.id = sqlc.arg('id');
 
 -- name: CreateDecisionRequest :one
-INSERT INTO decision_request (workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, origin, decision_intent_id, source_comment_id, source_content_snapshot, request_fingerprint, options, ask_identity, ask_json, project_id)
-VALUES (sqlc.arg('workspace_id'), sqlc.arg('issue_id'), sqlc.arg('asking_agent_id'), sqlc.arg('human_user_id'), sqlc.arg('chat_session_id'), sqlc.narg('ping_message_id'), sqlc.narg('issue_comment_id'), sqlc.arg('ask'), sqlc.arg('escalation_class'), sqlc.arg('origin'), sqlc.narg('decision_intent_id'), sqlc.narg('source_comment_id'), sqlc.arg('source_content_snapshot'), sqlc.arg('request_fingerprint'), COALESCE(sqlc.narg('options')::jsonb, '[]'::jsonb), sqlc.arg('ask_identity'), sqlc.narg('ask_json')::jsonb, sqlc.narg('project_id'))
+INSERT INTO decision_request (workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, origin, decision_intent_id, source_comment_id, source_content_snapshot, request_fingerprint, options, ask_identity, ask_json, project_id, proposal_fingerprint)
+VALUES (sqlc.arg('workspace_id'), sqlc.arg('issue_id'), sqlc.arg('asking_agent_id'), sqlc.arg('human_user_id'), sqlc.arg('chat_session_id'), sqlc.narg('ping_message_id'), sqlc.narg('issue_comment_id'), sqlc.arg('ask'), sqlc.arg('escalation_class'), sqlc.arg('origin'), sqlc.narg('decision_intent_id'), sqlc.narg('source_comment_id'), sqlc.arg('source_content_snapshot'), sqlc.arg('request_fingerprint'), COALESCE(sqlc.narg('options')::jsonb, '[]'::jsonb), sqlc.arg('ask_identity'), sqlc.narg('ask_json')::jsonb, sqlc.narg('project_id'), sqlc.narg('proposal_fingerprint'))
+ON CONFLICT (workspace_id, proposal_fingerprint) WHERE status = 'open' DO NOTHING
 RETURNING *;
+
+-- name: FindOpenProposal :one
+SELECT * FROM decision_request
+WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND proposal_fingerprint = sqlc.arg('fingerprint') AND status = 'open';
 
 -- name: CreateDecisionAnswer :one
 INSERT INTO decision_answer (decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, source_comment_id, content_snapshot, effective_at, issue_comment_id, wake_at, chosen_option_index, reply_text, context_message_id, excerpted, answered_label)

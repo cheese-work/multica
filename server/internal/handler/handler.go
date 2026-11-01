@@ -253,6 +253,8 @@ type Handler struct {
 	// ApprovalVerifier proves a human approved a decision action. Nil until
 	// the passkey verifier is wired; approve then fails closed.
 	ApprovalVerifier ApprovalVerifier
+	// ProposalGuard admits agent action proposals. Nil refuses them all (C2).
+	ProposalGuard ProposalGuard
 	// Passkeys issues and verifies approval challenges. Nil leaves passkeys
 	// off (MULTICA_WEBAUTHN_* unset).
 	Passkeys              *passkey.Service

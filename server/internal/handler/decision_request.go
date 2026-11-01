@@ -44,6 +44,8 @@ type decisionRequestInput struct {
 	// AskJSON is the decoded structured Ask, stored whole for the card to render.
 	// It stays out of the legacy fingerprint, which is pinned.
 	AskJSON []byte `json:"-"`
+	// Proposal is set only by the action proposal route.
+	Proposal *proposalRequest `json:"-"`
 }
 
 type decisionRequestResult struct {
@@ -85,17 +87,10 @@ func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Is
 		return empty, decisionIntentRefusal{http.StatusBadRequest, "invalid escalation class"}
 	}
 	if input.HumanUserID.Valid {
-		member, err := handler.Queries.GetMemberByUserAndWorkspace(request.Context(), db.GetMemberByUserAndWorkspaceParams{UserID: input.HumanUserID, WorkspaceID: issue.WorkspaceID})
-		if errors.Is(err, pgx.ErrNoRows) {
-			member, err = handler.Queries.GetMember(request.Context(), input.HumanUserID)
-		}
-		if errors.Is(err, pgx.ErrNoRows) || err == nil && member.WorkspaceID != issue.WorkspaceID {
-			return empty, decisionIntentRefusal{http.StatusBadRequest, "named person is not an active workspace member: " + uuidToString(input.HumanUserID)}
-		}
-		if err != nil {
+		var err error
+		if input.HumanUserID, err = handler.resolveDecisionRecipient(request.Context(), issue, input.HumanUserID); err != nil {
 			return empty, err
 		}
-		input.HumanUserID = member.UserID
 	}
 	if input.SourceCommentID.Valid {
 		task, err := handler.Queries.GetAgentTask(request.Context(), taskID)
@@ -145,6 +140,18 @@ func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Is
 	return finish(func() (decisionRequestResult, error) {
 		return handler.createSingleCallDecisionTx(request, issue, input, agentID)
 	})
+}
+
+// resolveDecisionRecipient maps the named id to the active member's user id.
+func (handler *Handler) resolveDecisionRecipient(ctx context.Context, issue db.Issue, id pgtype.UUID) (pgtype.UUID, error) {
+	member, err := handler.Queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: id, WorkspaceID: issue.WorkspaceID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		member, err = handler.Queries.GetMember(ctx, id)
+	}
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && member.WorkspaceID != issue.WorkspaceID {
+		return id, decisionIntentRefusal{http.StatusBadRequest, "named person is not an active workspace member: " + uuidToString(id)}
+	}
+	return member.UserID, err
 }
 
 // fingerprints returns the retry key of this call and the pre-D1d key. A caller
@@ -472,7 +479,10 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 		return empty, err
 	}
 	messageID := dbid.NewV7()
-	created, err := queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: intent.AgentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, PingMessageID: messageID, IssueCommentID: commentID, Ask: input.Ask, Options: options, AskJson: input.AskJSON, EscalationClass: input.EscalationClass, Origin: "asked", DecisionIntentID: intent.ID, SourceCommentID: input.SourceCommentID, SourceContentSnapshot: sourceSnapshot, RequestFingerprint: input.Fingerprint, AskIdentity: askIdentity, ProjectID: issue.ProjectID})
+	created, err := queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: intent.AgentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, PingMessageID: messageID, IssueCommentID: commentID, Ask: input.Ask, Options: options, AskJson: input.AskJSON, EscalationClass: input.EscalationClass, Origin: "asked", DecisionIntentID: intent.ID, SourceCommentID: input.SourceCommentID, SourceContentSnapshot: sourceSnapshot, RequestFingerprint: input.Fingerprint, AskIdentity: askIdentity, ProjectID: issue.ProjectID, ProposalFingerprint: input.Proposal.fingerprintText()})
+	if errors.Is(err, pgx.ErrNoRows) && input.Proposal != nil {
+		return empty, errProposalRaced
+	}
 	if err != nil {
 		return empty, err
 	}
@@ -567,7 +577,7 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 			return empty, err
 		}
 	} else if session, reuse, err = topicLane(ctx, queries, issue, topic, input.HumanUserID, agentID); err != nil {
-		return empty, err
+		return empty, input.Proposal.laneError(err)
 	}
 	root, err := commentguard.LockThreadForReplyAndLoadRoot(ctx, queries, issue.WorkspaceID, input.ParentID)
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && root != nil && root.IssueID != issue.ID {
@@ -583,16 +593,26 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 	if prior, err := findDecisionRequestRetry(ctx, queries, issue, agentID, task.ID, input); err != nil || prior.Request.ID.Valid {
 		return prior, err
 	}
+	if input.Proposal != nil && reuse {
+		// A new DM has no open proposal yet. Replay comes first: re-asking
+		// guards would refuse the identical open ask.
+		if prior, err := handler.replayProposal(request, queries, issue, agent, input, session); err != nil || prior.Request.ID.Valid {
+			return prior, err
+		}
+	}
 	if agent.Kind == "system" {
 		return empty, deny
 	}
-	if err := requireNoRecentReask(ctx, queries, issue, agentID, input.HumanUserID, input.Ask); err != nil {
+	authorityStatus := http.StatusConflict
+	if input.Proposal != nil {
+		authorityStatus = http.StatusForbidden // D3's guard owns the re-ask rule
+	} else if err := requireNoRecentReask(ctx, queries, issue, agentID, input.HumanUserID, input.Ask); err != nil {
 		return empty, err
 	}
 	if err := handler.checkDecisionTarget(request, queries, issue, agent, input.HumanUserID); err != nil {
 		return empty, err
 	}
-	if err := requireDecisionAuthority(ctx, queries, issue, input.HumanUserID, input.EscalationClass, http.StatusConflict); err != nil {
+	if err := requireDecisionAuthority(ctx, queries, issue, input.HumanUserID, input.EscalationClass, authorityStatus); err != nil {
 		return empty, err
 	}
 	if _, err := queries.LockDecisionMember(ctx, db.LockDecisionMemberParams{WorkspaceID: issue.WorkspaceID, UserID: input.HumanUserID}); err != nil {
@@ -612,6 +632,11 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 			return empty, err
 		}
 		createdSession = &session
+	}
+	if input.Proposal != nil {
+		if input.Proposal, err = handler.admitProposal(ctx, queries, issue, agent, session, input); err != nil {
+			return empty, err
+		}
 	}
 	if err := supersedeDecisionIntent(ctx, queries, issue, task.ID); err != nil {
 		return empty, err

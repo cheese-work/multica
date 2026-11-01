@@ -1015,6 +1015,7 @@ type DecisionRequest struct {
 	AskJson               []byte             `json:"ask_json"`
 	Authority             string             `json:"authority"`
 	ProjectID             pgtype.UUID        `json:"project_id"`
+	ProposalFingerprint   pgtype.Text        `json:"proposal_fingerprint"`
 }
 
 type DecisionWorkerLease struct {
