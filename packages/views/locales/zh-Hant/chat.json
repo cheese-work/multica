@@ -366,6 +366,7 @@
       "approved": "你已批准",
       "download": "下載",
       "download_label": "下載 {{name}}",
+      "open_label": "開啟 {{name}}",
       "hash_verified": "雜湊已驗證",
       "sha": "SHA",
       "viewer_label": "閱讀檔案",

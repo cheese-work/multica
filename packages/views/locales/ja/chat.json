@@ -401,6 +401,7 @@
       "approved": "承認したファイル",
       "download": "ダウンロード",
       "download_label": "{{name}} をダウンロード",
+      "open_label": "{{name}} を開く",
       "hash_verified": "ハッシュ確認済み",
       "sha": "SHA",
       "viewer_label": "ファイルを読む",

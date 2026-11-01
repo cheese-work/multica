@@ -401,6 +401,7 @@
       "approved": "승인한 파일",
       "download": "다운로드",
       "download_label": "{{name}} 다운로드",
+      "open_label": "{{name}} 열기",
       "hash_verified": "해시 확인됨",
       "sha": "SHA",
       "viewer_label": "파일 읽기",

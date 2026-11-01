@@ -401,6 +401,7 @@
       "approved": "你已批准",
       "download": "下载",
       "download_label": "下载 {{name}}",
+      "open_label": "打开 {{name}}",
       "hash_verified": "哈希已验证",
       "sha": "SHA",
       "viewer_label": "阅读文件",

@@ -1,6 +1,7 @@
 import { useId, useRef, useState, type KeyboardEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Check, Download, FileText, Loader2 } from "@multica/ui/icons";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@multica/ui/components/ui/dialog";
 import { api, PreviewTooLargeError } from "@multica/core/api";
 import { countDiffLines, useDecisionArtifacts } from "@multica/core/issues/decision-artifacts";
 import type { DecisionArtifact, DecisionArtifactDiff } from "@multica/core/types";
@@ -39,7 +40,7 @@ function SignatureTag({ signed, testId, children }: { signed: boolean; testId?: 
   );
 }
 
-function DiffView({ artifact, diff }: { artifact: DecisionArtifact; diff: DecisionArtifactDiff }) {
+function DiffView({ artifact, diff, expanded }: { artifact: DecisionArtifact; diff: DecisionArtifactDiff; expanded: boolean }) {
   const { t } = useT("chat");
   const { added, removed } = countDiffLines(diff.hunks);
   const previous = artifact.supersedes_signed_by;
@@ -60,7 +61,7 @@ function DiffView({ artifact, diff }: { artifact: DecisionArtifact; diff: Decisi
           role="region"
           tabIndex={0}
           aria-label={t(($) => $.decision.artifacts.diff_region, { previous: diff.previous_filename })}
-          className="max-h-72 overflow-auto rounded-lg border border-surface-border bg-surface font-mono text-caption leading-6 focus-visible:outline-2 focus-visible:outline-ring"
+          className={cn("overflow-auto rounded-lg border border-surface-border bg-surface font-mono text-caption leading-6 focus-visible:outline-2 focus-visible:outline-ring", !expanded && "max-h-72")}
         >
           {diff.hunks.map((hunk, index) => {
             const previous = diff.hunks[index - 1];
@@ -102,7 +103,7 @@ function DiffView({ artifact, diff }: { artifact: DecisionArtifact; diff: Decisi
   );
 }
 
-function PreviewView({ artifact }: { artifact: DecisionArtifact }) {
+function PreviewView({ artifact, expanded }: { artifact: DecisionArtifact; expanded: boolean }) {
   const { t } = useT("chat");
   const attachmentId = artifact.attachment!.id;
   const name = artifact.attachment!.filename;
@@ -135,7 +136,7 @@ function PreviewView({ artifact }: { artifact: DecisionArtifact }) {
         role="region"
         tabIndex={0}
         aria-label={t(($) => $.decision.artifacts.preview_region, { name })}
-        className="max-h-60 overflow-auto rounded-lg border border-surface-border bg-surface px-3 py-2.5 focus-visible:outline-2 focus-visible:outline-ring"
+        className={cn("overflow-auto rounded-lg border border-surface-border bg-surface px-3 py-2.5 focus-visible:outline-2 focus-visible:outline-ring", !expanded && "max-h-60")}
       >
         <RichContent content={preview.data.text} density="compact" phase="settled" />
       </div>
@@ -144,15 +145,18 @@ function PreviewView({ artifact }: { artifact: DecisionArtifact }) {
   );
 }
 
-// One tabbed viewer: closed by default; selecting a tab opens it, selecting the open tab closes it.
-function ArtifactViewer({ artifact, onRetryChanges }: { artifact: DecisionArtifact; onRetryChanges: () => void }) {
+const viewerTabs = (artifact: DecisionArtifact): TabKey[] => [
+  ...(artifact.diff ? (["changes"] as const) : []),
+  ...(isMarkdown(artifact) ? (["preview"] as const) : []),
+];
+
+// One tabbed viewer. Inline it starts closed and selecting the open tab closes it; in the dialog
+// (`expanded`) the first tab starts open and one tab is always open.
+function ArtifactViewer({ artifact, onRetryChanges, expanded = false }: { artifact: DecisionArtifact; onRetryChanges: () => void; expanded?: boolean }) {
   const { t } = useT("chat");
   const id = useId();
-  const [open, setOpen] = useState<TabKey | null>(null);
-  const tabs: TabKey[] = [
-    ...(artifact.diff ? (["changes"] as const) : []),
-    ...(isMarkdown(artifact) ? (["preview"] as const) : []),
-  ];
+  const tabs = viewerTabs(artifact);
+  const [open, setOpen] = useState<TabKey | null>(expanded ? (tabs[0] ?? null) : null);
   const [focused, setFocused] = useState<TabKey | undefined>(tabs[0]);
   const refs = useRef<Partial<Record<TabKey, HTMLButtonElement | null>>>({});
   if (tabs.length === 0) return null;
@@ -193,7 +197,7 @@ function ArtifactViewer({ artifact, onRetryChanges }: { artifact: DecisionArtifa
             tabIndex={focused === key ? 0 : -1}
             onFocus={() => setFocused(key)}
             onKeyDown={(event) => onKeyDown(event, key)}
-            onClick={() => setOpen(open === key ? null : key)}
+            onClick={() => setOpen(open === key && !expanded ? null : key)}
             className={cn(
               "inline-flex min-h-11 items-center gap-1.5 whitespace-nowrap border-b-[3px] px-2.5 text-label font-semibold focus-visible:outline-2 focus-visible:outline-ring",
               open === key ? "border-primary text-foreground" : "border-transparent text-muted-foreground",
@@ -211,9 +215,9 @@ function ArtifactViewer({ artifact, onRetryChanges }: { artifact: DecisionArtifa
           {open === "changes" && diff && (
             diff.problem
               ? <RetryBanner message={t(($) => $.decision.artifacts.changes_failed)} onRetry={onRetryChanges} />
-              : <DiffView artifact={artifact} diff={diff} />
+              : <DiffView artifact={artifact} diff={diff} expanded={expanded} />
           )}
-          {open === "preview" && <PreviewView artifact={artifact} />}
+          {open === "preview" && <PreviewView artifact={artifact} expanded={expanded} />}
         </div>
       ) : (
         <p className="px-3 py-2 text-caption text-muted-foreground">{t(($) => $.decision.artifacts.viewer_hint)}</p>
@@ -222,51 +226,93 @@ function ArtifactViewer({ artifact, onRetryChanges }: { artifact: DecisionArtifa
   );
 }
 
+function DownloadButton({ attachment }: { attachment: NonNullable<DecisionArtifact["attachment"]> }) {
+  const { t } = useT("chat");
+  const download = useDownloadAttachment();
+  return (
+    <button
+      type="button"
+      data-testid="decision-artifact-download"
+      onClick={() => void download(attachment.id)}
+      aria-label={t(($) => $.decision.artifacts.download_label, { name: attachment.filename })}
+      className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-surface-border bg-surface px-3.5 text-label font-semibold hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring"
+    >
+      <Download className="size-4" aria-hidden />
+      {t(($) => $.decision.artifacts.download)}
+    </button>
+  );
+}
+
+// Spans only: the card wraps this in a button when the file can be opened.
+function ArtifactSummary({ artifact }: { artifact: DecisionArtifact }) {
+  const { t } = useT("chat");
+  const { attachment } = artifact;
+  const signed = artifact.signed_by;
+  return (
+    <>
+      <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
+        <FileText className="size-[18px]" aria-hidden />
+      </span>
+      <span className="grid min-w-36 flex-1 justify-items-start gap-0.5 text-left">
+        <b className="text-body">{artifact.label}</b>
+        {attachment ? (
+          <>
+            <span className="text-caption text-muted-foreground">{attachment.filename} · {formatBytes(attachment.size_bytes)}</span>
+            <span className="text-caption text-muted-foreground">
+              {t(($) => $.decision.artifacts.sha)} <code className="font-mono">{artifact.sha256.slice(0, 7)}</code> ·{" "}
+              <em className="inline-flex items-center gap-0.5 font-semibold not-italic text-success">
+                <Check className="size-3" aria-hidden />
+                {t(($) => $.decision.artifacts.hash_verified)}
+              </em>
+            </span>
+            <SignatureTag signed={!!signed} testId="decision-artifact-signature">
+              {signed
+                ? t(($) => $.decision.artifacts.signed_by, { label: artifact.label, reviewer: signed.reviewer })
+                : t(($) => $.decision.artifacts.not_signed, { label: artifact.label })}
+            </SignatureTag>
+          </>
+        ) : (
+          <span className="text-caption text-muted-foreground">{t(($) => $.decision.artifacts.file_missing)}</span>
+        )}
+      </span>
+    </>
+  );
+}
+
 function ArtifactFile({ artifact, onRetryChanges }: { artifact: DecisionArtifact; onRetryChanges: () => void }) {
   const { t } = useT("chat");
   const { attachment } = artifact;
-  const download = useDownloadAttachment();
-  const signed = artifact.signed_by;
+  const openable = !!attachment && viewerTabs(artifact).length > 0;
   return (
     <div data-testid="decision-artifact-file" className="grid gap-2">
       <div className="flex flex-wrap items-start gap-2.5">
-        <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
-          <FileText className="size-[18px]" aria-hidden />
-        </span>
-        <div className="grid min-w-36 flex-1 justify-items-start gap-0.5">
-          <b className="text-body">{artifact.label}</b>
-          {attachment ? (
-            <>
-              <span className="text-caption text-muted-foreground">{attachment.filename} · {formatBytes(attachment.size_bytes)}</span>
-              <span className="text-caption text-muted-foreground">
-                {t(($) => $.decision.artifacts.sha)} <code className="font-mono">{artifact.sha256.slice(0, 7)}</code> ·{" "}
-                <em className="inline-flex items-center gap-0.5 font-semibold not-italic text-success">
-                  <Check className="size-3" aria-hidden />
-                  {t(($) => $.decision.artifacts.hash_verified)}
-                </em>
-              </span>
-              <SignatureTag signed={!!signed} testId="decision-artifact-signature">
-                {signed
-                  ? t(($) => $.decision.artifacts.signed_by, { label: artifact.label, reviewer: signed.reviewer })
-                  : t(($) => $.decision.artifacts.not_signed, { label: artifact.label })}
-              </SignatureTag>
-            </>
-          ) : (
-            <span className="text-caption text-muted-foreground">{t(($) => $.decision.artifacts.file_missing)}</span>
-          )}
-        </div>
-        {attachment && (
-          <button
-            type="button"
-            data-testid="decision-artifact-download"
-            onClick={() => void download(attachment.id)}
-            aria-label={t(($) => $.decision.artifacts.download_label, { name: attachment.filename })}
-            className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-surface-border bg-surface px-3.5 text-label font-semibold hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring"
-          >
-            <Download className="size-4" aria-hidden />
-            {t(($) => $.decision.artifacts.download)}
-          </button>
+        {openable ? (
+          <Dialog>
+            <DialogTrigger
+              aria-label={t(($) => $.decision.artifacts.open_label, { name: attachment.filename })}
+              className="-m-1 flex min-w-0 flex-1 basis-48 items-start gap-2.5 rounded-lg p-1 text-left hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring"
+            >
+              <ArtifactSummary artifact={artifact} />
+            </DialogTrigger>
+            <DialogContent className="h-dvh max-h-none w-full max-w-none content-start rounded-none sm:h-[85dvh] sm:max-w-4xl sm:rounded-xl">
+              <DialogHeader className="pr-8">
+                <DialogTitle className="sr-only">{artifact.label}</DialogTitle>
+                <div className="flex items-start gap-2.5">
+                  <ArtifactSummary artifact={artifact} />
+                </div>
+              </DialogHeader>
+              <div className="flex justify-start">
+                <DownloadButton attachment={attachment} />
+              </div>
+              <ArtifactViewer artifact={artifact} onRetryChanges={onRetryChanges} expanded />
+            </DialogContent>
+          </Dialog>
+        ) : (
+          <div className="flex min-w-0 flex-1 basis-48 items-start gap-2.5">
+            <ArtifactSummary artifact={artifact} />
+          </div>
         )}
+        {attachment && <DownloadButton attachment={attachment} />}
       </div>
       <ArtifactViewer artifact={artifact} onRetryChanges={onRetryChanges} />
     </div>

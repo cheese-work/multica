@@ -409,6 +409,7 @@
       "approved": "You approved",
       "download": "Download",
       "download_label": "Download {{name}}",
+      "open_label": "Open {{name}}",
       "hash_verified": "Hash verified",
       "sha": "SHA",
       "viewer_label": "Read the file",

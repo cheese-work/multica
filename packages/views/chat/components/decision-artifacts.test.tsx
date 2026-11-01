@@ -184,6 +184,58 @@ describe("DecisionArtifacts", () => {
     expect(within(screen.getByRole("tabpanel")).getByText("No signature recorded for design-rev4.md")).toBeInTheDocument();
   });
 
+  describe("fullscreen viewer", () => {
+    it("opens a dialog from the file row with the card header, both tabs and a download", async () => {
+      getAttachmentTextContent.mockResolvedValue({ text: "# Decision card\n", originalContentType: "text/markdown" });
+      renderArtifacts([artifact()]);
+      const user = userEvent.setup();
+      await user.click(await screen.findByRole("button", { name: "Open design-rev5.md" }));
+      const dialog = await screen.findByRole("dialog", { name: "Design revision 5" });
+      expect(within(dialog).getByText(/design-rev5\.md/)).toHaveTextContent("18 KB");
+      expect(within(dialog).getByText("3f9a2c1")).toBeInTheDocument();
+      expect(within(dialog).getByText("Hash verified")).toBeInTheDocument();
+      expect(within(dialog).getByText("Design revision 5 signed by Sol")).toBeInTheDocument();
+      // The first tab is already open: nothing to select before reading.
+      const changes = within(dialog).getByRole("tab", { name: /Changes since design-rev4\.md/ });
+      expect(changes).toHaveAttribute("aria-selected", "true");
+      expect(within(dialog).getByRole("region", { name: /Text changes since design-rev4\.md/ })).toBeInTheDocument();
+      await user.click(within(dialog).getByRole("tab", { name: "Preview" }));
+      expect(await within(dialog).findByRole("heading", { name: "Decision card" })).toBeInTheDocument();
+      await user.click(within(dialog).getByRole("button", { name: "Download design-rev5.md" }));
+      expect(downloadAttachment).toHaveBeenCalledWith("att-5");
+    });
+
+    it("opens on Preview for a first revision", async () => {
+      getAttachmentTextContent.mockResolvedValue({ text: "# First\n", originalContentType: "text/markdown" });
+      renderArtifacts([artifact({ supersedes_attachment_id: undefined, diff: undefined })]);
+      const user = userEvent.setup();
+      await user.click(await screen.findByRole("button", { name: "Open design-rev5.md" }));
+      const dialog = await screen.findByRole("dialog");
+      expect(within(dialog).getByRole("tab", { name: "Preview" })).toHaveAttribute("aria-selected", "true");
+      expect(await within(dialog).findByRole("heading", { name: "First" })).toBeInTheDocument();
+    });
+
+    it("closes on Escape and returns focus to the file row", async () => {
+      renderArtifacts([artifact()]);
+      const user = userEvent.setup();
+      const row = await screen.findByRole("button", { name: "Open design-rev5.md" });
+      await user.click(row);
+      await screen.findByRole("dialog");
+      await user.keyboard("{Escape}");
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(row).toHaveFocus();
+    });
+
+    it("offers no dialog for a file that cannot be previewed or diffed", async () => {
+      renderArtifacts([artifact({
+        supersedes_attachment_id: undefined, diff: undefined,
+        attachment: { id: "att-5", filename: "mock.png", content_type: "image/png", size_bytes: 10, download_url: "https://files.test/x" },
+      })]);
+      await screen.findByRole("region", { name: "You are approving" });
+      expect(screen.queryByRole("button", { name: /^Open / })).toBeNull();
+    });
+  });
+
   it("offers only Preview for a first revision", async () => {
     renderArtifacts([artifact({ supersedes_attachment_id: undefined, diff: undefined })]);
     expect(await screen.findByRole("tab", { name: "Preview" })).toBeInTheDocument();
