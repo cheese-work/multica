@@ -1507,6 +1507,35 @@ func (h *Handler) MarkChatSessionRead(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// MarkChatSessionUnread moves the read cursor just before the latest assistant
+// message so the session shows unread again, and broadcasts chat:session_read
+// so other devices refetch their badges. Creator-only; a session without an
+// assistant message is a 204 no-op.
+func (h *Handler) MarkChatSessionUnread(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	workspaceID := ctxWorkspaceID(r.Context())
+	sessionID := chi.URLParam(r, "sessionId")
+
+	session, ok := h.gatePublicChatSessionForUser(w, r, userID, workspaceID, sessionID)
+	if !ok {
+		return
+	}
+	if err := h.Queries.MarkChatSessionUnread(r.Context(), session.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to mark session unread")
+		return
+	}
+
+	resolvedSessionID := uuidToString(session.ID)
+	h.publishChat(protocol.EventChatSessionRead, workspaceID, "member", userID, resolvedSessionID, protocol.ChatSessionReadPayload{
+		ChatSessionID: resolvedSessionID,
+	})
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // Deferred-cancellation draft restores (#5219)
 
 // ChatDraftRestoreResponse is one recoverable composer draft: a deferred
