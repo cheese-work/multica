@@ -19,7 +19,7 @@ func (handler *Handler) refuseGatedAgentRecords(ctx context.Context, transaction
 	var withdrawals []decisiontx.Withdrawal
 	for _, answer := range snapshot.answers {
 		for _, request := range snapshot.requests {
-			if request.ID != answer.DecisionRequestID || request.EscalationClass == "reversible" || answer.AnswerSource != "agent_record" || answer.DisclaimedAt.Valid {
+			if request.ID != answer.DecisionRequestID || request.EscalationClass == "reversible" || answer.AnswerSource != "agent_record" || answer.DisclaimedAt.Valid || answer.WokenAt.Valid {
 				continue
 			}
 			session, err := queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{WorkspaceID: request.WorkspaceID, ID: request.ChatSessionID})
@@ -30,9 +30,20 @@ func (handler *Handler) refuseGatedAgentRecords(ctx context.Context, transaction
 			if err != nil {
 				return false, err
 			}
-			link := weblink.Chat(workspace.Slug, uuidToString(session.ID))
-			if absolute := weblink.Build(handler.cfg.AppURL, link); absolute != "" {
-				link = absolute
+			// An unprompted record has no card; its request is cancelled and the
+			// asker is told to ask again, so there is no link to give.
+			link := ""
+			if request.Origin != "unprompted" {
+				link = weblink.Chat(workspace.Slug, uuidToString(session.ID))
+				if absolute := weblink.Build(handler.cfg.AppURL, link); absolute != "" {
+					link = absolute
+				}
+			}
+			if len(withdrawals) == 0 {
+				// The refusal commits, so the withdrawal comment must not capture a wakeup.
+				if _, err := transaction.Exec(ctx, `SELECT set_config('multica.skip_comment_wakeup', 'on', true)`); err != nil {
+					return false, err
+				}
 			}
 			withdrawal, err := decisiontx.WithdrawForCard(ctx, queries, request, answer, session.Status, link)
 			if err != nil {

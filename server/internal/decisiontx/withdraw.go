@@ -23,6 +23,9 @@ const OwnerRequiredNotice = "This decision concerns the workspace owner. Post a 
 const CardRequired = "card_required"
 
 func withdrawalContent(reason, cardLink string) string {
+	if reason == CardRequired && cardLink == "" {
+		return "Decision withdrawn: " + reason + ". This decision needs an answer on the card. Post a new decision request for it; the person answers on that card."
+	}
 	if reason == CardRequired {
 		return "Decision withdrawn: " + reason + ". This decision needs an answer on the card: [open the card](" + cardLink + ")"
 	}
