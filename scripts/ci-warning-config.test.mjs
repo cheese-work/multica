@@ -67,3 +67,9 @@ test("runner pinning preserves historical probe and floating-image cache comment
   assert.match(source, /runs Linux 6\.6\.141, GitHub-hosted ubuntu-latest runs 6\.17\.0/)
   assert.match(source, /when ubuntu-latest moves to a new/)
 })
+
+test("a CI job that is new on a PR has a zero warning baseline until main runs it", () => {
+  const budget = readFileSync(new URL("./warning-budget.mjs", import.meta.url), "utf8")
+  const zero = budget.match(/zeroBaselineJobs = new Set\(\[([^\]]*)\]\)/)?.[1] ?? ""
+  assert.match(zero, /"locale-parity"/)
+})

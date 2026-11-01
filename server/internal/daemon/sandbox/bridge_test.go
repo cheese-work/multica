@@ -11,10 +11,10 @@ import (
 	"time"
 )
 
-// TestMain lets the test binary double as the in-sandbox bridge helper.
+// TestMain lets the test binary double as the in-sandbox bridge, probe and fake MCP helper.
 func TestMain(m *testing.M) {
-	if len(os.Args) > 1 && os.Args[1] == BridgeHelperArg {
-		os.Exit(BridgeMain(os.Args[2:]))
+	if code, ok := helperMain(); ok {
+		os.Exit(code)
 	}
 	os.Exit(m.Run())
 }
@@ -255,4 +255,31 @@ func (l layout) bash(script string) Spec {
 	s := l.spec("")
 	s.Argv = []string{"/bin/bash", "-c", script}
 	return s
+}
+
+// T17 (f): with enforcement on, the netns has no route and no resolver. A
+// direct TCP connect to a public address, a UDP "DNS" socket to a public
+// resolver, and a name lookup all fail inside the sandbox.
+func TestEgressNoDirectTCPNoDNSInNetns(t *testing.T) {
+	l := bridgeLauncher()
+	requireSandbox(t, l)
+	sock, _ := fakeEgress(t)
+	ly := newLayout(t)
+	spec := ly.bash(`
+getent hosts localhost >/dev/null && echo getent=works
+(exec 3<>/dev/tcp/203.0.113.10/443) 2>/dev/null && echo tcp=REACHED || echo tcp=refused
+(exec 3<>/dev/udp/203.0.113.53/53) 2>/dev/null && echo udp=REACHED || echo udp=refused
+if getent ahosts api.github.com >/dev/null 2>&1; then echo dns=RESOLVED; else echo dns=refused; fi
+if getent ahosts example.com >/dev/null 2>&1; then echo dns2=RESOLVED; else echo dns2=refused; fi`)
+	spec.EgressSocket = sock
+	out, _ := runSandbox(t, l, spec)
+	// getent=works guards against a missing tool passing the lookups vacuously
+	for _, want := range []string{"getent=works", "tcp=refused", "udp=refused", "dns=refused", "dns2=refused"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in sandbox output:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "REACHED") || strings.Contains(out, "RESOLVED") {
+		t.Errorf("sandbox reached the network directly:\n%s", out)
+	}
 }

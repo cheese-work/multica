@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   AppConfigSchema,
-  JevCredentialPresenceSchema,
   WecomInstallationSchema,
   ListWecomInstallationsResponseSchema,
   RedeemWecomBindingTokenResponseSchema,
@@ -2481,26 +2480,5 @@ describe("AgentActivityBucketListSchema duration", () => {
     expect(parsed[0]?.task_count).toBe(201);
     expect(parsed[0]?.duration_ms).toBeUndefined();
     expect(parsed[0]?.duration_count).toBeUndefined();
-  });
-});
-
-describe("JevCredentialPresenceSchema", () => {
-  it("carries the storage capability the server reports", () => {
-    expect(JevCredentialPresenceSchema.parse({ present: false, configurable: false })).toEqual({
-      present: false,
-      configurable: false,
-    });
-    expect(JevCredentialPresenceSchema.parse({ present: true, configurable: true })).toEqual({
-      present: true,
-      configurable: true,
-    });
-  });
-
-  it("assumes a server that omits the capability can store a key", () => {
-    expect(JevCredentialPresenceSchema.parse({ present: false })).toEqual({ present: false, configurable: true });
-  });
-
-  it("rejects a response without the presence flag", () => {
-    expect(JevCredentialPresenceSchema.safeParse({ configurable: true }).success).toBe(false);
   });
 });

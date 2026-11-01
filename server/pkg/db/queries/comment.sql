@@ -587,6 +587,9 @@ WITH locked_issue AS MATERIALIZED (
     UPDATE comment SET
         content = $2,
         source_task_id = sqlc.narg(source_task_id)::uuid,
+        -- Text written by a marked task keeps the mark even when the edit clears
+        -- source_task_id (admin or member edit). Grow-only: never clears.
+        external_read = comment.external_read OR COALESCE(sqlc.narg('mark_external_read')::boolean, false),
         -- New text re-decides which agents it must not start, under the same
         -- revision check as the text itself.
         suppressed_agent_ids = CASE WHEN target.content IS DISTINCT FROM $2

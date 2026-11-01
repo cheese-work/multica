@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS recovery_claim_workspace_issue_idx;

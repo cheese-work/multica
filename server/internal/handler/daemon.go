@@ -563,6 +563,10 @@ var errRuntimeOwnedByAnotherUser = errors.New("runtime is registered to another 
 
 const runtimeOwnedByAnotherUserMessage = "this daemon's runtimes are registered to another user; remove them from the workspace or sign the daemon in as their owner"
 
+func isReservedDaemonID(id string) bool {
+	return len(id) >= 4 && strings.HasPrefix(id, "__") && strings.HasSuffix(id, "__")
+}
+
 func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 	var req DaemonRegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -576,6 +580,13 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 
 	if req.DaemonID == "" {
 		writeError(w, http.StatusBadRequest, "daemon_id is required")
+		return
+	}
+	// The ops page groups machines by daemon_id and uses __cloud__, __unbound__
+	// and __unknown__ for machines without one, so a real id of that shape would
+	// merge into a synthetic group.
+	if isReservedDaemonID(req.DaemonID) {
+		writeError(w, http.StatusBadRequest, "daemon_id must not start and end with __")
 		return
 	}
 	if req.WorkspaceID == "" {
@@ -1414,12 +1425,6 @@ func (h *Handler) DaemonDeregister(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-type DaemonHeartbeatRequest struct {
-	RuntimeID           string `json:"runtime_id"`
-	SupportsBatchImport bool   `json:"supports_batch_import,omitempty"`
-	InFlightTasks       *int   `json:"in_flight_tasks,omitempty"`
-}
-
 // heartbeatHasPendingTimeout bounds the cheap HasPending probe on the
 // heartbeat hot path. Probes are read-only (ZCARD in Redis) so a timeout is
 // ack-safe: the worst case is "we didn't find out if anything was queued this
@@ -1496,7 +1501,7 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	decodeStart := time.Now()
-	var req DaemonHeartbeatRequest
+	var req protocol.DaemonHeartbeatRequestPayload
 	decodeErr := json.NewDecoder(r.Body).Decode(&req)
 	decodeMs = time.Since(decodeStart).Milliseconds()
 	if decodeErr != nil {
@@ -1558,6 +1563,7 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	updateMs = time.Since(updateStart).Milliseconds()
+	h.ingestHostSample(r.Context(), rt.DaemonID.String, req.HostSample)
 
 	ack, m, err := h.processHeartbeat(r.Context(), runtimeID, req.SupportsBatchImport, req.InFlightTasks)
 	probeModelMs = m.ProbeModelMs
@@ -1606,7 +1612,8 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 // captured each runtime's liveness state in a connection lease, so the hot
 // path never reads agent_runtime. HTTP heartbeat remains the stateless lookup
 // fallback for a daemon that stops receiving WebSocket acknowledgements.
-func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws.ClientIdentity, runtimeID string, supportsBatchImport bool, inFlightTasks *int) (*protocol.DaemonHeartbeatAckPayload, error) {
+func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws.ClientIdentity, req protocol.DaemonHeartbeatRequestPayload) (*protocol.DaemonHeartbeatAckPayload, error) {
+	runtimeID := req.RuntimeID
 	lease := identity.RuntimeLeases[runtimeID]
 	if lease == nil {
 		return nil, fmt.Errorf("runtime not in connection lease")
@@ -1626,7 +1633,8 @@ func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws
 		}
 		return nil, err
 	}
-	ack, _, err := h.processHeartbeat(ctx, runtimeID, supportsBatchImport, inFlightTasks)
+	h.ingestHostSample(ctx, identity.DaemonID, req.HostSample)
+	ack, _, err := h.processHeartbeat(ctx, runtimeID, req.SupportsBatchImport, req.InFlightTasks)
 	return ack, err
 }
 
@@ -2886,6 +2894,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		generation := task.DispatchedAt.Time.UTC().Format(time.RFC3339Nano)
 		resp.DispatchedAt = &generation
 		resp.StartClaimSupported = true
+		resp.AppliedSettingsSupported = requestHasClientCapability(r, protocol.DaemonCapabilityAppliedSettingsV1)
 	}
 	var issueNumber int32
 	// Claim-only capability: this server resolves the squad-leader role on the
@@ -2900,6 +2909,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	applyRunProfile := func() {
 		rp := h.runProfileForTask(r.Context(), parseUUID(runtimeWorkspaceID), task.IssueID, task.ID, task.TaintIds)
 		resp.Profile, resp.Scopes, resp.Epoch, resp.TaintIDs = rp.Profile, rp.Scopes, rp.Epoch, rp.TaintIDs
+		resp.PinnedBaseSHA, resp.PinnedHeadSHA = rp.PinnedBaseSHA, rp.PinnedHeadSHA
 	}
 	applyRunProfile()
 	resp.IntakeRun, resp.PinnedBranch, resp.PinnedRepo = h.intakePinForTask(r.Context(), parseUUID(runtimeWorkspaceID), task.ID)
@@ -7337,4 +7347,21 @@ func (h *Handler) inheritSessionTaint(ctx context.Context, task *db.AgentTaskQue
 	}
 	task.TaintIds = taint
 	return true
+}
+
+// MarkTaskExternalRead records that the run contacted a host other than the
+// Multica server and the provider API, or used a GitHub read token (CHE-2216
+// plan 3.7). Comments, description edits and attachments it writes from now on
+// store the mark. The mark only grows, so a repeat report is a no-op.
+func (h *Handler) MarkTaskExternalRead(w http.ResponseWriter, r *http.Request) {
+	task, ok := h.requireDaemonTaskAccess(w, r, chi.URLParam(r, "taskId"))
+	if !ok {
+		return
+	}
+	if err := h.Queries.MarkTaskExternalRead(r.Context(), task.ID); err != nil {
+		slog.Error("mark task external_read failed", "task_id", uuidToString(task.ID), "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to mark task")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

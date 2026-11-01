@@ -198,7 +198,7 @@ func TestValidateCSRF_SurvivesSessionRenewal(t *testing.T) {
 
 	// ...the session is renewed on another tab's GET, producing a different
 	// auth token for the same session...
-	renewed, _, err := RenewSessionToken(claims)
+	renewed, _, err := RenewSessionToken(claims, 0)
 	if err != nil {
 		t.Fatalf("RenewSessionToken: %v", err)
 	}
@@ -294,7 +294,7 @@ func TestSetAuthCookies_KeepsTokenBindingForRollback(t *testing.T) {
 func TestSetAuthCookies_TokenBindingTracksRenewal(t *testing.T) {
 	sid, _ := NewSessionID()
 	claims := sessionClaims(t, time.Now().Add(20*24*time.Hour), sid)
-	renewed, _, err := RenewSessionToken(claims)
+	renewed, _, err := RenewSessionToken(claims, 0)
 	if err != nil {
 		t.Fatalf("RenewSessionToken: %v", err)
 	}
@@ -325,7 +325,7 @@ func TestValidateCSRF_AcceptsEitherCookieValueInTheOneHeader(t *testing.T) {
 
 	// After a renewal the token-bound value from BEFORE it is stale, and the
 	// session-bound one is not — which is the whole reason clients prefer it.
-	renewed, _, err := RenewSessionToken(sessionClaims(t, time.Now().Add(20*24*time.Hour), sid))
+	renewed, _, err := RenewSessionToken(sessionClaims(t, time.Now().Add(20*24*time.Hour), sid), 0)
 	if err != nil {
 		t.Fatalf("RenewSessionToken: %v", err)
 	}

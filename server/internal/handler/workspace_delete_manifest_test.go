@@ -46,7 +46,10 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"agent_preset":                       workspaceDelete,
 	"agent_runtime":                      workspaceDelete,
 	"agent_skill":                        workspaceDelete,
+	"agent_task_event":                   workspaceDelete,
 	"agent_task_queue":                   workspaceDelete,
+	"ops_snapshot":                       workspaceDelete,
+	"ops_snapshot_5m":                    workspaceDelete,
 	"agent_to_label":                     workspaceDelete,
 	"attachment":                         workspaceDelete,
 	"autopilot":                          workspaceDelete,
@@ -113,6 +116,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"github_workflow_job":                workspaceDelete, // CHE-2147 webhook-fed run/job mirror; workspace-owned leaf.
 	"github_workflow_run":                workspaceDelete, // CHE-2147 webhook-fed run/job mirror; workspace-owned leaf.
 	"github_webhook_intake":              workspaceDeleteKeep,
+	"github_snapshot_approval":           workspaceDelete,
+	"read_snapshot_approval":             workspaceDelete, // CHE-2509 elevated-read approvals; workspace-owned leaf.
 	"github_webhook_dispatch":            workspaceDelete,
 	"github_webhook_revision":            workspaceDelete,
 	"governed_vote_record":               workspaceDelete, // CHE-1862 vote-gate ledger; workspace-owned leaf.
@@ -172,6 +177,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"maintenance_job":                    workspaceDeleteKeep, // Global maintenance audit history, not workspace-owned.
 	"member":                             workspaceDelete,
 	"member_delegation_day":              workspaceDeleteKeep, // user-scoped telemetry ledger, no workspace_id
+	"host_sample":                        workspaceDeleteKeep, // host telemetry keyed by daemon_id, no workspace_id; outlives workspaces by design
 	"agent_mcp_server":                   workspaceDelete,
 	"wakeup_aggregate_budget":            workspaceDelete,
 	"wakeup_aggregate_reservation":       workspaceDelete,
@@ -198,6 +204,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"protocol_lint_run":                  workspaceDeleteKeep, // Cross-workspace protocol-lint audit/reporting data (CHE-552), not workspace-owned.
 	"provenance_export_log":              workspaceDelete,     // CHE-755 provenance export audit rows; workspace-owned leaf.
 	"provider_failure_recovery":          workspaceDeleteKeep,
+	"recovery_claim":                     workspaceDelete,     // CHE-1126 gateway-recovery claim ledger; workspace_id FK ON DELETE CASCADE plus explicit teardown.
 	"push_delivery":                      workspaceDeleteKeep, // Outbox rows of inbox items; the push worker drops the ones whose item is gone (CHE-1795).
 	"push_session_end":                   workspaceDeleteKeep, // Ended login sessions, account-level, expire with the session lifetime (CHE-1795).
 	"push_subscription":                  workspaceDeleteKeep, // A user's device across all workspaces, not workspace-owned (CHE-1795).
@@ -207,6 +214,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"protected_path_policy":              workspaceDelete,
 	"task_elevation":                     workspaceDelete,
 	"elevated_op":                        workspaceDelete,
+	"issue_taint":                        workspaceDelete,
+	"issue_taint_clear":                  workspaceDelete,
 	"runtime_profile":                    workspaceDelete,
 	"schema_migrations":                  workspaceDeleteKeep,
 	"search_index_change":                workspaceDelete,

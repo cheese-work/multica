@@ -21,7 +21,7 @@ vi.mock("./chat-session-stats-dialog", () => ({
 
 import { useDmSessionSurface } from "./use-dm-session-surface";
 
-const active = { id: "s1", status: "active", pinned: false, title: "Plan" } as ChatSession;
+const active = { id: "s1", agent_id: "agent-A", status: "active", pinned: false, title: "Plan" } as ChatSession;
 const archived = { ...active, status: "archived" } as ChatSession;
 
 function setup(session: ChatSession | null) {
@@ -80,6 +80,12 @@ describe("useDmSessionSurface", () => {
     expect(input.onRename).toBeUndefined();
     expect(input.onFork).toBeUndefined();
     expect(input.sessionArchived).toBe(true);
+  });
+
+  it("completes /preset for the open DM's agent, and for no agent outside an active DM", () => {
+    expect(setup(active).result.current.inputProps.presetAgentId).toBe("agent-A");
+    expect(setup(archived).result.current.inputProps.presetAgentId).toBeUndefined();
+    expect(setup(null).result.current.inputProps.presetAgentId).toBeUndefined();
   });
 
   it("wires nothing for a chat that does not exist yet", () => {

@@ -167,6 +167,7 @@
       "compact": "Summarize this DM and continue in a new one",
       "rename": "Rename this DM without starting an agent turn",
       "fork": "Copy this DM into a new one; optional message is sent there",
+      "preset": "Choose which preset this DM uses",
       "statistic": "Show usage and cost for this DM",
       "archive": "Archive this DM without starting an agent turn",
       "pin": "Pin or unpin this DM",
