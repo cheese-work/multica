@@ -395,9 +395,10 @@ func TestRunBudgetExhaustionBlockDoesNotWaitForTheBoundaryLock(t *testing.T) {
 	}
 }
 
-// withSmallPool points the handler at a pool of n connections until the test
-// ends: a lock holder that needs a connection must still find one.
-func withSmallPool(t *testing.T, n int32) {
+// withSmallPool returns a copy of the test handler on a pool of n connections:
+// a lock holder that needs a connection must still find one. The shared
+// handler stays untouched, because goroutines of earlier tests still read it.
+func withSmallPool(t *testing.T, n int32) *Handler {
 	t.Helper()
 	cfg := testPool.Config().Copy()
 	cfg.MaxConns = n
@@ -405,12 +406,10 @@ func withSmallPool(t *testing.T, n int32) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	realQueries, realTx, realDB := testHandler.Queries, testHandler.TxStarter, testHandler.DB
-	testHandler.Queries, testHandler.TxStarter, testHandler.DB = db.New(small), small, small
-	t.Cleanup(func() {
-		testHandler.Queries, testHandler.TxStarter, testHandler.DB = realQueries, realTx, realDB
-		small.Close()
-	})
+	t.Cleanup(small.Close)
+	h := *testHandler
+	h.Queries, h.TxStarter, h.DB = db.New(small), small, small
+	return &h
 }
 
 // requireAllFinish runs the requests at once and fails unless each returns 200
@@ -451,13 +450,13 @@ func TestRunBudgetBoundaryWaitersDoNotExhaustTheConnectionPool(t *testing.T) {
 	}
 	c, _ := budgetedAt(t, 40, 38)
 	recordMemberMovesOf(t, c.issueID)
-	withSmallPool(t, 4)
+	h := withSmallPool(t, 4)
 
 	reqs := make([]*http.Request, 20)
 	for i := range reqs {
 		reqs[i] = memberMoveRequest(c.issueID)
 	}
-	requireAllFinish(t, "moves on one issue", reqs, testHandler.UpdateIssue)
+	requireAllFinish(t, "moves on one issue", reqs, h.UpdateIssue)
 }
 
 // Lock holders of different issues each hold a connection and need another to
@@ -472,8 +471,8 @@ func TestRunBudgetLockHoldersOfDifferentIssuesDoNotExhaustTheConnectionPool(t *t
 		recordMemberMovesOf(t, c.issueID)
 		reqs[i] = memberMoveRequest(c.issueID)
 	}
-	withSmallPool(t, 4)
-	requireAllFinish(t, "moves on different issues", reqs, testHandler.UpdateIssue)
+	h := withSmallPool(t, 4)
+	requireAllFinish(t, "moves on different issues", reqs, h.UpdateIssue)
 }
 
 // A top-up waits for the boundary lock like a move does, so it queues in the
@@ -487,7 +486,7 @@ func TestRunBudgetATopUpBehindAMoveDoesNotHoldTheMovesConnection(t *testing.T) {
 	}
 	c, _ := budgetedAt(t, 40, 38)
 	recordMemberMovesOf(t, c.issueID)
-	withSmallPool(t, 2)
+	h := withSmallPool(t, 2)
 	release := holdRunBudgetBoundary(t, c.issueID)
 	defer release()
 
@@ -500,7 +499,7 @@ func TestRunBudgetATopUpBehindAMoveDoesNotHoldTheMovesConnection(t *testing.T) {
 	moved, toppedUp := httptest.NewRecorder(), httptest.NewRecorder()
 	go func() {
 		defer close(moveDone)
-		testHandler.UpdateIssue(moved, within(memberMoveRequest(c.issueID)))
+		h.UpdateIssue(moved, within(memberMoveRequest(c.issueID)))
 	}()
 	if !stillRunning(moveDone) {
 		t.Fatal("the move finished while another request held the boundary lock")
@@ -508,7 +507,7 @@ func TestRunBudgetATopUpBehindAMoveDoesNotHoldTheMovesConnection(t *testing.T) {
 	go func() {
 		defer close(topUpDone)
 		req := withURLParam(newRequest(http.MethodPost, "/api/issues/"+c.issueID+"/run-budget/top-up", nil), "id", c.issueID)
-		testHandler.TopUpIssueRunBudget(toppedUp, within(req))
+		h.TopUpIssueRunBudget(toppedUp, within(req))
 	}()
 	if !stillRunning(topUpDone) {
 		t.Fatal("the top-up finished while another request held the boundary lock")

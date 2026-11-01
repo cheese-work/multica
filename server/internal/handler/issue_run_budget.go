@@ -244,18 +244,24 @@ type boundaryTurn struct {
 // of different issues could otherwise take the whole pool between them. A
 // quarter of the pool leaves each holder room for the connections of its
 // write, its publish and the lock of the issue a listener moves next.
-var boundarySlots sync.Map // txStarter -> chan struct{}
+var boundarySlots = struct {
+	sync.Mutex
+	byPool map[txStarter]chan struct{}
+}{byPool: map[txStarter]chan struct{}{}}
 
 func boundarySlotsOf(starter txStarter) chan struct{} {
-	if slots, ok := boundarySlots.Load(starter); ok {
-		return slots.(chan struct{})
+	boundarySlots.Lock()
+	defer boundarySlots.Unlock()
+	slots, ok := boundarySlots.byPool[starter]
+	if !ok {
+		poolSize := int32(4)
+		if pool, isPool := starter.(interface{ Stat() *pgxpool.Stat }); isPool {
+			poolSize = pool.Stat().MaxConns()
+		}
+		slots = make(chan struct{}, max(1, poolSize/4))
+		boundarySlots.byPool[starter] = slots
 	}
-	poolSize := int32(4)
-	if pool, ok := starter.(interface{ Stat() *pgxpool.Stat }); ok {
-		poolSize = pool.Stat().MaxConns()
-	}
-	slots, _ := boundarySlots.LoadOrStore(starter, make(chan struct{}, max(1, poolSize/4)))
-	return slots.(chan struct{})
+	return slots
 }
 
 // enterRunBudgetBoundary waits, holding no connection, for the issue's turn
