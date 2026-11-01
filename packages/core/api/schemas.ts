@@ -2249,6 +2249,58 @@ const TaskUsageSchema = z.object({
   cost_usd_ticks: z.number().optional(),
 }).loose();
 
+const NullableStringSchema = z.string().nullable().catch(null);
+
+const TaskPresetSettingsShape = {
+  model: NullableStringSchema,
+  thinking_level: NullableStringSchema,
+  service_tier: NullableStringSchema,
+  context_args: z.array(z.string()).catch([]),
+};
+
+export const TaskPresetRunSchema = z.object({
+  name: z.string(),
+  source: z.string().catch(""),
+  skips: z
+    .array(
+      z.object({
+        level: z.string().catch(""),
+        name: z.string().catch(""),
+        reason: z.string().catch(""),
+      }),
+    )
+    .catch([]),
+  claimed: z.object(TaskPresetSettingsShape).catch({
+    model: null,
+    thinking_level: null,
+    service_tier: null,
+    context_args: [],
+  }),
+  applied: z
+    .object({ ...TaskPresetSettingsShape, reported_at: z.string().catch("") })
+    .nullable()
+    .catch(null),
+});
+
+// Stale reasons are an open set, so `stale` stays a plain string.
+export const AgentPresetListSchema = z.array(
+  z.object({
+    name: z.string(),
+    model: NullableStringSchema,
+    thinking_level: NullableStringSchema,
+    service_tier: NullableStringSchema,
+    context_args: z.array(z.string()).nullable().catch(null),
+    is_default: z.boolean().catch(false),
+    stale: z.string().catch(""),
+    created_at: z.string().catch(""),
+    updated_at: z.string().catch(""),
+  }).loose(),
+);
+
+export const PresetCompletionsSchema = z.object({
+  names: z.array(z.string()).catch([]),
+}).loose();
+
 export const AgentTaskSchema = z.object({
   wakeup_id: z.string().optional().catch(undefined),
   cancelled_by_comment_change: z.boolean().optional().catch(undefined),
@@ -2293,6 +2345,7 @@ export const AgentTaskSchema = z.object({
   // `.catch(undefined)` collapses a bad array to "no usage recorded", which
   // the UI already renders as an em dash.
   usage: z.array(TaskUsageSchema).optional().catch(undefined),
+  preset_run: TaskPresetRunSchema.optional().catch(undefined),
 }).loose();
 
 // Outcome counts are required: every backend that serves this endpoint
@@ -2401,6 +2454,7 @@ export const ChatSessionSchema: z.ZodType<ChatSession> = z.object({
   unread_count: z.number().optional(),
   last_message: ChatLastMessageSchema.nullable().optional().catch(undefined),
   pinned: z.boolean().optional(),
+  preset_name: z.string().nullable().optional().catch(undefined),
   channel_source: ChatChannelSourceSchema.optional().catch(undefined),
   compacting: z.boolean().optional().catch(undefined),
   context_tokens: z.number().nullable().optional().catch(undefined),

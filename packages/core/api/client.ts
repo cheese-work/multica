@@ -36,6 +36,7 @@ import type {
   IssueTableRowsRequest,
   IssueTableRowsResponse,
   Agent,
+  AgentPreset,
   MikaBootstrapResponse,
   CreateAgentRequest,
   AgentBuilderRuntimeSwitch,
@@ -487,6 +488,8 @@ import {
   MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
   SkillSchema,
   EMPTY_SKILL,
+  AgentPresetListSchema,
+  PresetCompletionsSchema,
   SkillSummaryListSchema,
   EMPTY_SKILL_SUMMARY_LIST,
   SkillImportResultSchema,
@@ -3834,6 +3837,21 @@ export class ApiClient {
     return parseWithFallback(raw, SkillSchema, EMPTY_SKILL, {
       endpoint: "POST /api/skills/:id/refresh",
     });
+  }
+
+  async listAgentPresets(agentId: string): Promise<AgentPreset[]> {
+    const raw = await this.fetch<unknown>(`/api/agents/${agentId}/presets`);
+    return parseWithFallback<AgentPreset[]>(raw, AgentPresetListSchema, [], {
+      endpoint: "GET /api/agents/:id/presets",
+    });
+  }
+
+  /** `/preset <TAB>` source: `base`, `reset`, then the presets that can run now. */
+  async getAgentPresetCompletions(agentId: string): Promise<string[]> {
+    const raw = await this.fetch<unknown>(`/api/agents/${agentId}/presets/completions`);
+    return parseWithFallback(raw, PresetCompletionsSchema, { names: [] }, {
+      endpoint: "GET /api/agents/:id/presets/completions",
+    }).names;
   }
 
   async listAgentSkills(agentId: string): Promise<SkillSummary[]> {
