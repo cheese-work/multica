@@ -2159,32 +2159,25 @@ func TestCodexRequestFailsImmediatelyAfterProcessExit(t *testing.T) {
 func TestCodexRequestPrefersContextCancellationOverProcessExit(t *testing.T) {
 	t.Parallel()
 
-	c, fs, _ := newTestCodexClient(t)
-	processExitMarked := make(chan error, 1)
+	// Cancel and mark the exit before request reaches its select, so the
+	// context, processDone and the pending error are all ready at once. The
+	// result must not depend on which ready case select picks.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	go func() {
-		deadline := time.Now().Add(2 * time.Second)
-		for {
-			if len(fs.Lines()) >= 1 {
-				cancel()
-				c.markProcessExited(errCodexProcessExited)
-				processExitMarked <- nil
-				return
-			}
-			if time.Now().After(deadline) {
-				processExitMarked <- fmt.Errorf("timed out waiting for request write")
-				return
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
-	}()
+	var c *codexClient
+	fs := &fakeStdinWithHook{}
+	fs.afterWrite = func() {
+		cancel()
+		c.markProcessExited(errCodexProcessExited)
+	}
+	c = &codexClient{
+		cfg:         Config{Logger: slog.Default()},
+		stdin:       fs,
+		pending:     make(map[int]*pendingRPC),
+		processDone: make(chan struct{}),
+	}
 
 	_, err := c.request(ctx, "thread/start", map[string]any{})
-	if markErr := <-processExitMarked; markErr != nil {
-		t.Fatal(markErr)
-	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("request error = %v, want context.Canceled", err)
 	}

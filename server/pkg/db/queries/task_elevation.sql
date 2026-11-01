@@ -45,13 +45,23 @@ WHERE te.state = 'fencing'
 RETURNING te.task_id;
 
 -- name: FenceTaintedTaskElevations :many
--- A task whose taint grew after its elevation was recorded stops being
--- elevated. task_id narrows it to one task (the claim); NULL sweeps them all.
+-- A task, or its issue, whose taint grew after its elevation was recorded stops
+-- being elevated. task_id narrows it to one task (the claim); NULL sweeps them all.
 UPDATE task_elevation te SET state = 'fencing', epoch = te.epoch + 1, updated_at = clock_timestamp()
 FROM agent_task_queue t
-WHERE t.id = te.task_id AND te.state = 'elevated' AND cardinality(t.taint_ids) > 0
+WHERE t.id = te.task_id AND te.state = 'elevated'
+  AND (cardinality(t.taint_ids) > 0
+       OR EXISTS (SELECT 1 FROM issue_taint it WHERE it.issue_id = te.issue_id AND cardinality(it.taint_ids) > 0))
   AND (sqlc.narg('task_id')::uuid IS NULL OR te.task_id = sqlc.narg('task_id')::uuid)
 RETURNING te.task_id;
+
+-- name: FenceIssueTaskElevations :many
+-- A member clearing the issue's taint fences every elevation still live on it
+-- first, so the taint cannot vanish before the sweep saw it. Same update as the
+-- sweep; it runs before the issue lock (task_elevation, then issue, as authorize).
+UPDATE task_elevation SET state = 'fencing', epoch = epoch + 1, updated_at = clock_timestamp()
+WHERE issue_id = $1 AND state = 'elevated'
+RETURNING task_id;
 
 -- name: LockTaskTaintIDs :one
 -- Share lock: a taint writer updates the task row, so it waits for an

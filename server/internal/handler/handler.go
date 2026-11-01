@@ -271,6 +271,10 @@ type Handler struct {
 	// still-blocked delivery wires a live Jev client (see CHE-685 scope:
 	// this delivery never sets Provider to anything but a fake in tests).
 	GovernanceReceipts *receipt.Observer
+	// governanceBudget, when positive, replaces receipt.Budget as the
+	// observation hook's deadline. Tests only: a loaded test database can
+	// spend 50ms on the control snapshot alone.
+	governanceBudget time.Duration
 	// IssueStatusCatalog reads the workspace status catalog. Defaults to
 	// Queries; a test can substitute a counting wrapper to assert HOW MANY
 	// catalog reads a request performs, which is the only property that
@@ -474,6 +478,8 @@ type Handler struct {
 	// fetchPullRequestJSON overrides the REST pull request read of
 	// RepairUnverifiedHeadPullRequests; nil uses PRRefresh.
 	fetchPullRequestJSON func(ctx context.Context, installationID int64, owner, repo string, number int32) (json.RawMessage, error)
+	// readApprovalSnapshot overrides the snapshot read of the R3 approval action; nil uses PRRefresh.
+	readApprovalSnapshot githubSnapshotReader
 	cfg                  Config
 }
 

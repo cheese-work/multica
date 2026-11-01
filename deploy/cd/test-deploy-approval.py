@@ -50,6 +50,25 @@ class DeployApprovalTests(unittest.TestCase):
         gated = [n for n, j in self.jobs.items() if j.get("environment") == PROTECTED]
         self.assertEqual(gated, [GATE])
 
+    def test_waiting_approval_notifies_without_gating_it(self):
+        # CHE-2418 B5: the notice rides next to the gate, never in front of it.
+        notify = self.jobs["notify-approval"]
+        self.assertEqual(needs(notify), needs(self.jobs[GATE]))
+        self.assertIsNone(notify.get("environment"))
+        self.assertNotIn("notify-approval", self.ancestors(GATE))
+        self.assertNotIn("notify-approval", self.ancestors("deploy"))
+        self.assertIn("notify-approval.sh", json.dumps(notify["steps"]))
+
+    def test_notice_covers_every_path_that_waits_for_approval(self):
+        # Review round 1: the manual (workflow_dispatch) path skips the
+        # preflight, so a notice gated on it alone never fires there.
+        notify, gate = self.jobs["notify-approval"], self.jobs[GATE]
+        self.assertEqual(notify["if"], gate["if"])
+        steps = json.dumps(notify["steps"])
+        # A manual run has no workflow_run payload: the candidate comes from inputs.ref.
+        self.assertIn("inputs.ref", steps)
+        self.assertIn("workflow_run.head_sha", steps)
+
     def test_protected_environment_is_never_given_up(self):
         # Removing its reviewer would leave old runs and downstream-job reruns,
         # which still use the old workflow, with no approval at all.

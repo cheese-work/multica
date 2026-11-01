@@ -37,7 +37,9 @@ describe("ApiClient decision cards", () => {
     };
     const fetchMock = vi.fn().mockResolvedValue(json([row]));
     vi.stubGlobal("fetch", fetchMock);
-    expect(await new ApiClient("https://api.example.test").listOpenDecisionRequests()).toEqual([row]);
+    expect(await new ApiClient("https://api.example.test").listOpenDecisionRequests()).toEqual([
+      { ...row, options: [], source_comment_id: null },
+    ]);
     expect(fetchMock.mock.calls[0]![0]).toBe("https://api.example.test/api/decisions/open");
   });
 
@@ -46,6 +48,20 @@ describe("ApiClient decision cards", () => {
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json(body)));
       expect(await new ApiClient("https://api.example.test").listOpenDecisionRequests()).toEqual([]);
     }
+  });
+
+  it("keeps options and the source comment, and drops malformed options", async () => {
+    const row = {
+      id: "ask", issue_id: "issue", issue_identifier: "CHE-1", asking_agent_id: "agent", ask: "Approve?",
+      escalation_class: "spend", created_at: "2026-10-29T04:00:00Z", chat_session_id: "dm", source_comment_id: "c1",
+    };
+    const options = [{ label: "Ship it", what_happens: "Merges" }, { label: "Hold" }];
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json([{ ...row, options }])));
+    expect(await new ApiClient("https://api.example.test").listOpenDecisionRequests()).toMatchObject([
+      { source_comment_id: "c1", options },
+    ]);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json([{ ...row, options: "nope" }])));
+    expect(await new ApiClient("https://api.example.test").listOpenDecisionRequests()).toMatchObject([{ options: [] }]);
   });
 
   it("keeps asks with missing optional jump metadata", async () => {

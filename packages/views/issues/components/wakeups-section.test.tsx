@@ -3,6 +3,8 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import type { IssueWakeup, SystemWakeup } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
 import { WakeupsSection } from "./wakeups-section";
+const toastError = vi.fn();
+vi.mock("sonner", () => ({ toast: { error: (...args: unknown[]) => toastError(...args), success: vi.fn() } }));
 const mutate = vi.fn();
 const enable = vi.fn();
 const updateSystem = vi.fn();
@@ -82,6 +84,7 @@ beforeEach(() => {
   updateSystem.mockReset().mockResolvedValue(undefined);
   systemRules = [];
   enable.mockReset().mockResolvedValue(undefined);
+  toastError.mockReset();
   pending = false;
   status = "queued";
   viewTZ = "UTC";
@@ -565,4 +568,31 @@ describe("conditions, limits and history", () => {
     expect(screen.queryByRole("button", { name: "Wake now" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
   });
+});
+
+// A default-derived instance runs what its definitions resolve to; the server
+// refuses to enable it as a local wakeup (403), so the control must not offer it.
+it("does not offer to enable a default-derived wakeup", () => {
+  wakeup.enabled = false;
+  wakeup.disabled_at = "2026-09-16T00:00:00Z";
+  wakeup.default_rule_key = "9c2d7a4e-5b61-4f08-8d3a-1e7f6b2c0a01";
+  status = "completed";
+  renderWithI18n(<WakeupsSection issueId="issue" />);
+  fireEvent.click(screen.getByRole("button", { name: "Wakeup history · 1" }));
+  const toggle = screen.getByRole("switch", { name: "Wakeup for Emacs" });
+  expect(toggle).toHaveAttribute("aria-disabled", "true");
+  fireEvent.click(toggle);
+  expect(enable).not.toHaveBeenCalled();
+});
+it("shows a clear message when enabling is refused, without flipping the switch", async () => {
+  wakeup.enabled = false;
+  wakeup.disabled_at = "2026-09-16T00:00:00Z";
+  status = "completed";
+  enable.mockRejectedValue(Object.assign(new Error("forbidden"), { status: 403 }));
+  renderWithI18n(<WakeupsSection issueId="issue" />);
+  fireEvent.click(screen.getByRole("button", { name: "Wakeup history · 1" }));
+  const toggle = screen.getByRole("switch", { name: "Wakeup for Emacs" });
+  fireEvent.click(toggle);
+  await waitFor(() => expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/manage/i)));
+  expect(toggle).not.toBeChecked();
 });

@@ -1682,6 +1682,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Get("/update/binary", daemonUpdate.Binary)
 		r.Get("/workspaces/{workspaceId}/repos", h.GetDaemonWorkspaceRepos)
 		r.Get("/workspaces/{workspaceId}/runtime-profiles", h.DaemonListRuntimeProfiles)
+		r.Get("/workspaces/{workspaceId}/protected-path-policies/{name}", h.GetDaemonProtectedPathPolicy)
 
 		// Agent-triggered plugin hooks. The daemon's local MCP server calls
 		// this when an agent picks one of its tools; the server makes the
@@ -1707,16 +1708,19 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 		r.Get("/tasks/{taskId}/status", h.GetTaskStatus)
 		r.Post("/tasks/{taskId}/start", h.StartTask)
+		r.Post("/tasks/{taskId}/applied-settings", h.ReportAppliedSettings)
 		r.Post("/tasks/{taskId}/supplements/claim", h.ClaimTaskSupplement)
 		r.Post("/tasks/{taskId}/supplements/{commentId}/ack", h.AckTaskSupplement)
 		r.Post("/tasks/{taskId}/pr-events/claim", h.ClaimTaskPREvent)
 		r.Post("/tasks/{taskId}/pr-events/{eventId}/ack", h.AckTaskPREvent)
 		r.Post("/tasks/{taskId}/wait-local-directory", h.MarkTaskWaitingLocalDirectory)
 		r.Post("/tasks/{taskId}/progress", h.ReportTaskProgress)
+		r.Post("/tasks/{taskId}/external-read", h.MarkTaskExternalRead)
 		r.Post("/tasks/{taskId}/complete", h.CompleteTask)
 		r.Post("/tasks/{taskId}/fail", h.FailTask)
 		r.Post("/tasks/{taskId}/elevation/authorize", h.AuthorizeElevatedOp)
 		r.Post("/tasks/{taskId}/elevation/ops/{opId}/complete", h.CompleteElevatedOp)
+		r.Post("/tasks/{taskId}/elevation/revision-check", h.CheckElevatedRevision)
 		r.Post("/tasks/{taskId}/usage", h.ReportTaskUsage)
 		r.Post("/tasks/{taskId}/messages", h.ReportTaskMessages)
 		r.Get("/tasks/{taskId}/messages", h.ListTaskMessages)
@@ -2160,9 +2164,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// Assignee frequency
 			r.Get("/api/assignee-frequency", h.GetAssigneeFrequency)
 
+			// R3 exact-snapshot approval (CHE-2126 plan 5.3): the handler checks can_route per issue.
+			r.Get("/api/github/intake/revisions/{id}/snapshot", h.GetGitHubRevisionSnapshot)
+			r.Post("/api/github/intake/revisions/{id}/approve", h.ApproveGitHubRevisionSnapshot)
+
 			// GitHub dispatch kill switch (CHE-2220): any member reads; owner/admin writes.
 			r.Get("/api/github/dispatch-halt", h.GetGitHubDispatchHalt)
 			r.With(middleware.RequireWorkspaceRole(queries, "owner", "admin")).Put("/api/github/dispatch-halt", h.SetGitHubDispatchHalt)
+			// GitHub intake delivery metadata (CHE-2669): read-only, any member.
+			r.Get("/api/github/intake", h.ListGitHubIntake)
 
 			// Local search index sync for Web/Desktop (MUL-7754). Human clients
 			// only: agents search through /api/issues/search.
@@ -2218,6 +2228,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.With(handler.RequireHumanActor).Post("/run-budget/top-up", h.TopUpIssueRunBudget)
 					// CHE-2489: a person widens one issue's runs; machine credentials never reach the handler.
 					r.With(handler.RequireHumanActor).Post("/capability-grants", h.CreateRunCapabilityGrant)
+					// CHE-2514: a person clears the taint that keeps one issue's runs restricted.
+					r.With(handler.RequireHumanActor).Post("/taint/clear", h.ClearIssueTaint)
+					r.With(handler.RequireHumanActor).Post("/read-approvals", h.ApproveReadSnapshot)
 					r.Put("/workflow", h.SetIssueWorkflow)
 					r.Get("/subscribers", h.ListIssueSubscribers)
 					r.Post("/subscribe", h.SubscribeToIssue)
@@ -2260,6 +2273,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/labels", h.ListLabelsForIssue)
 					r.Post("/labels", h.AttachLabel)
 					r.Delete("/labels/{labelId}", h.DetachLabel)
+					r.Put("/preset", h.SetIssuePreset)
+					r.Delete("/preset", h.ClearIssuePreset)
 					r.Get("/metadata", h.ListIssueMetadata)
 					r.Put("/metadata/{key}", h.SetIssueMetadataKey)
 					r.Delete("/metadata/{key}", h.DeleteIssueMetadataKey)
@@ -2503,6 +2518,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/skills", h.ListAgentSkills)
 					r.Put("/skills", h.SetAgentSkills)
 					r.Post("/skills/add", h.AddAgentSkills)
+					// Agent presets (CHE-2249). The fixed names register before
+					// {name}; chi matches them first.
+					r.Get("/presets", h.ListAgentPresets)
+					r.Post("/presets", h.CreateAgentPreset)
+					r.Get("/presets/completions", h.AgentPresetCompletions)
+					r.Get("/presets/usage", h.AgentPresetUsage)
+					r.Put("/presets/default", h.SetAgentDefaultPreset)
+					r.Patch("/presets/{name}", h.UpdateAgentPreset)
+					r.Delete("/presets/{name}", h.DeleteAgentPreset)
 					r.Get("/labels", h.ListLabelsForAgent)
 					r.Post("/labels", h.AttachLabelToAgent)
 					r.Delete("/labels/{labelId}", h.DetachLabelFromAgent)
@@ -2573,6 +2597,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/failures/daily", h.GetDashboardFailuresDaily)
 				r.Get("/failures/by-agent", h.GetDashboardFailuresByAgent)
 			})
+
+			// Ops — queue and machine health for operators (CHE-2586 L1).
+			r.With(middleware.RequireWorkspaceRole(queries, "owner", "admin")).Get("/api/ops", h.GetOps)
 
 			// Runtimes
 			r.Route("/api/runtimes", func(r chi.Router) {
@@ -2942,6 +2969,11 @@ func (pr *patResolver) ResolveToken(ctx context.Context, token string) (string, 
 	go pr.queries.UpdatePersonalAccessTokenLastUsed(context.Background(), pat.ID)
 
 	return userID, true
+}
+
+// GetUserSessionGeneration lets the WebSocket handshake refuse revoked JWTs.
+func (pr *patResolver) GetUserSessionGeneration(ctx context.Context, id pgtype.UUID) (int32, error) {
+	return pr.queries.GetUserSessionGeneration(ctx, id)
 }
 
 // parseUUID is a thin alias for util.MustParseUUID. Call sites here are all

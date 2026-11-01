@@ -201,6 +201,42 @@ func (q *Queries) InsertGitHubPRCheckRun(ctx context.Context, arg InsertGitHubPR
 	return err
 }
 
+const invalidateGitHubPRMergeState = `-- name: InvalidateGitHubPRMergeState :exec
+UPDATE github_pull_request gpr
+SET api_mergeable          = NULL,
+    api_merge_state_status = NULL,
+    updated_at             = now()
+FROM workspace w
+WHERE w.id = gpr.workspace_id
+  AND (w.settings ->> 'github_enabled') IS DISTINCT FROM 'false'
+  AND gpr.installation_id = $1
+  AND gpr.repo_owner = $2
+  AND gpr.repo_name = $3
+  AND gpr.pr_number = $4
+`
+
+type InvalidateGitHubPRMergeStateParams struct {
+	InstallationID int64  `json:"installation_id"`
+	RepoOwner      string `json:"repo_owner"`
+	RepoName       string `json:"repo_name"`
+	PrNumber       int32  `json:"pr_number"`
+}
+
+// CHE-2796: a base-branch swap (pull_request.edited with changes.base) makes the
+// stored API merge verdict describe the old base, so it is cleared for the
+// caller's refresh to decide again. Workspaces that turned GitHub off are
+// skipped: the refresh pipeline excludes them, so a cleared row could never be
+// decided again.
+func (q *Queries) InvalidateGitHubPRMergeState(ctx context.Context, arg InvalidateGitHubPRMergeStateParams) error {
+	_, err := q.db.Exec(ctx, invalidateGitHubPRMergeState,
+		arg.InstallationID,
+		arg.RepoOwner,
+		arg.RepoName,
+		arg.PrNumber,
+	)
+	return err
+}
+
 const invalidateOpenGitHubPRMergeStateOnBase = `-- name: InvalidateOpenGitHubPRMergeStateOnBase :many
 UPDATE github_pull_request
 SET api_mergeable          = NULL,
@@ -211,7 +247,7 @@ WHERE installation_id = $1
   AND repo_name = $3
   AND state IN ('open', 'draft')
   AND pr_number <> $4
-  AND (snapshot_base_ref = $5 OR snapshot_base_ref IS NULL)
+  AND (snapshot_base_ref = $5 OR snapshot_base_ref = $6 OR snapshot_base_ref IS NULL)
 RETURNING installation_id, repo_owner, repo_name, pr_number
 `
 
@@ -221,6 +257,7 @@ type InvalidateOpenGitHubPRMergeStateOnBaseParams struct {
 	RepoName       string      `json:"repo_name"`
 	MergedPrNumber int32       `json:"merged_pr_number"`
 	BaseRef        pgtype.Text `json:"base_ref"`
+	HeadRef        pgtype.Text `json:"head_ref"`
 }
 
 type InvalidateOpenGitHubPRMergeStateOnBaseRow struct {
@@ -236,6 +273,8 @@ type InvalidateOpenGitHubPRMergeStateOnBaseRow struct {
 // merge handler refreshes the returned PRs, and one the refresh queue drops is
 // undecided, so ListStaleUndecidedGitHubPRs picks it up. A row whose base is
 // not known yet (no snapshot since the column was added) is included.
+// CHE-2796: a stack child is based on the merged PR's head branch, which GitHub
+// retargets to the base when the parent merges, so it is included as well.
 func (q *Queries) InvalidateOpenGitHubPRMergeStateOnBase(ctx context.Context, arg InvalidateOpenGitHubPRMergeStateOnBaseParams) ([]InvalidateOpenGitHubPRMergeStateOnBaseRow, error) {
 	rows, err := q.db.Query(ctx, invalidateOpenGitHubPRMergeStateOnBase,
 		arg.InstallationID,
@@ -243,6 +282,7 @@ func (q *Queries) InvalidateOpenGitHubPRMergeStateOnBase(ctx context.Context, ar
 		arg.RepoName,
 		arg.MergedPrNumber,
 		arg.BaseRef,
+		arg.HeadRef,
 	)
 	if err != nil {
 		return nil, err
