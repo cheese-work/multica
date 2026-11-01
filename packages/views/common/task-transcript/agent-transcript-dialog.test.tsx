@@ -9,6 +9,7 @@ import type { SupportedLocale } from "@multica/core/i18n";
 import type { AgentRuntime, AgentTask } from "@multica/core/types/agent";
 import { useTranscriptViewStore } from "@multica/core/agents/stores";
 import { renderWithI18n } from "../../test/i18n";
+import enAgents from "../../locales/en/agents.json";
 import { AgentTranscriptDialog } from "./agent-transcript-dialog";
 import type { TimelineItem } from "./build-timeline";
 
@@ -1163,5 +1164,24 @@ describe("tool output completeness", () => {
 
     expect(screen.queryByText(/only the beginning was kept/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/cannot be confirmed|completeness/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("AgentTranscriptDialog preset run", () => {
+  it("shows the run's preset in the run details", async () => {
+    renderDialog([], {
+      task: {
+        ...baseTask,
+        preset_run: {
+          name: "fast",
+          source: "dm",
+          skips: [],
+          claimed: { model: "gpt-6.1-sol", thinking_level: null, service_tier: null, context_args: [] },
+          applied: null,
+        },
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: enAgents.transcript.run_info }));
+    expect(await screen.findByText("fast · dm")).toBeInTheDocument();
   });
 });

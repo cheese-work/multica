@@ -420,7 +420,7 @@ func TestTryJevSquadRouting_FastPathAndFallback(t *testing.T) {
 	issueID := dbid.NewV7()
 	_, err = testPool.Exec(ctx, `
 		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
-		VALUES ($1, $2, 'Implement fast go routing', 'Needs Go backend specialist', 'backlog', 'high', 'squad', $3, 'member', $4, 1, 1001)
+		VALUES ($1, $2, 'Implement fast go routing', 'Needs Go backend specialist', 'backlog', 'high', 'squad', $3, 'member', $4, 1, (SELECT COALESCE(MAX(number), 0) + 10000 FROM issue WHERE workspace_id = $2))
 	`, issueID, wsUUID, squadID, testUserID)
 	if err != nil {
 		t.Fatalf("insert issue: %v", err)
@@ -494,7 +494,7 @@ func TestTryJevSquadRouting_FastPathAndFallback(t *testing.T) {
 	fallbackIssueID := dbid.NewV7()
 	_, err = testPool.Exec(ctx, `
 		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
-		VALUES ($1, $2, 'Ambiguous triage task', 'Not sure who should do this', 'backlog', 'high', 'squad', $3, 'member', $4, 1, 1002)
+		VALUES ($1, $2, 'Ambiguous triage task', 'Not sure who should do this', 'backlog', 'high', 'squad', $3, 'member', $4, 1, (SELECT COALESCE(MAX(number), 0) + 10000 FROM issue WHERE workspace_id = $2))
 	`, fallbackIssueID, wsUUID, squadID, testUserID)
 	if err != nil {
 		t.Fatalf("insert fallback issue: %v", err)
@@ -524,7 +524,7 @@ func TestTryJevSquadRouting_FastPathAndFallback(t *testing.T) {
 	concurrencyIssueID := dbid.NewV7()
 	_, err = testPool.Exec(ctx, `
 		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
-		VALUES ($1, $2, 'Concurrent routing task', 'Check revision locking', 'backlog', 'high', 'squad', $3, 'member', $4, 1, 1003)
+		VALUES ($1, $2, 'Concurrent routing task', 'Check revision locking', 'backlog', 'high', 'squad', $3, 'member', $4, 1, (SELECT COALESCE(MAX(number), 0) + 10000 FROM issue WHERE workspace_id = $2))
 	`, concurrencyIssueID, wsUUID, squadID, testUserID)
 	if err != nil {
 		t.Fatalf("insert concurrency issue: %v", err)
@@ -835,7 +835,7 @@ func TestTryJevSquadRouting_EnqueueFailureAdvisory(t *testing.T) {
 	issueID := dbid.NewV7()
 	_, _ = testPool.Exec(ctx, `
 		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
-		VALUES ($1, $2, 'Task with enqueue failure', 'Tests advisory formatting on failure', 'backlog', 'high', 'squad', $3, 'member', $4, 1, 3001)
+		VALUES ($1, $2, 'Task with enqueue failure', 'Tests advisory formatting on failure', 'backlog', 'high', 'squad', $3, 'member', $4, 1, (SELECT COALESCE(MAX(number), 0) + 10000 FROM issue WHERE workspace_id = $2))
 	`, issueID, wsUUID, squadID, testUserID)
 	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
 
@@ -994,7 +994,7 @@ func TestTryJevSquadRouting_CommentWindowing(t *testing.T) {
 	issueID := dbid.NewV7()
 	_, _ = testPool.Exec(ctx, `
 		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
-		VALUES ($1, $2, 'Windowing Issue', 'Testing comment windowing newest first', 'backlog', 'high', 'squad', $3, 'member', $4, 1, 4001)
+		VALUES ($1, $2, 'Windowing Issue', 'Testing comment windowing newest first', 'backlog', 'high', 'squad', $3, 'member', $4, 1, (SELECT COALESCE(MAX(number), 0) + 10000 FROM issue WHERE workspace_id = $2))
 	`, issueID, wsUUID, squadID, testUserID)
 	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
 
@@ -1157,7 +1157,7 @@ func TestTryJevSquadRouting_WorkerCanInvokeAgentDenial(t *testing.T) {
 	issueID := dbid.NewV7()
 	_, _ = testPool.Exec(ctx, `
 		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
-		VALUES ($1, $2, 'Invoke Denial Issue', 'Tests canInvokeAgent failure', 'backlog', 'high', 'squad', $3, 'member', $4, 1, 4002)
+		VALUES ($1, $2, 'Invoke Denial Issue', 'Tests canInvokeAgent failure', 'backlog', 'high', 'squad', $3, 'member', $4, 1, (SELECT COALESCE(MAX(number), 0) + 10000 FROM issue WHERE workspace_id = $2))
 	`, issueID, wsUUID, squadID, testUserID)
 	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
 
@@ -1259,7 +1259,7 @@ func TestTryJevSquadRouting_WorkerPendingDedup(t *testing.T) {
 	issueID := dbid.NewV7()
 	_, _ = testPool.Exec(ctx, `
 		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
-		VALUES ($1, $2, 'Pending Dedup Issue', 'Tests pending task dedup', 'backlog', 'high', 'squad', $3, 'member', $4, 1, 4003)
+		VALUES ($1, $2, 'Pending Dedup Issue', 'Tests pending task dedup', 'backlog', 'high', 'squad', $3, 'member', $4, 1, (SELECT COALESCE(MAX(number), 0) + 10000 FROM issue WHERE workspace_id = $2))
 	`, issueID, wsUUID, squadID, testUserID)
 	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
 
@@ -1389,7 +1389,7 @@ func TestTryJevSquadRouting_SpendGateDenial(t *testing.T) {
 	issueID := dbid.NewV7()
 	_, _ = testPool.Exec(ctx, `
 		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
-		VALUES ($1, $2, 'Gate Denial Issue', 'Tests spend gate denial before network', 'backlog', 'high', 'squad', $3, 'member', $4, 1, 4004)
+		VALUES ($1, $2, 'Gate Denial Issue', 'Tests spend gate denial before network', 'backlog', 'high', 'squad', $3, 'member', $4, 1, (SELECT COALESCE(MAX(number), 0) + 10000 FROM issue WHERE workspace_id = $2))
 	`, issueID, wsUUID, squadID, testUserID)
 	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
 
@@ -1498,7 +1498,7 @@ func TestTryJevSquadRouting_LatestHumanOutsideWindow(t *testing.T) {
 	issueID := dbid.NewV7()
 	_, _ = testPool.Exec(ctx, `
 		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
-		VALUES ($1, $2, 'Window Test Issue', 'Issue testing human outside 20 window', 'backlog', 'high', 'squad', $3, 'member', $4, 1, 4005)
+		VALUES ($1, $2, 'Window Test Issue', 'Issue testing human outside 20 window', 'backlog', 'high', 'squad', $3, 'member', $4, 1, (SELECT COALESCE(MAX(number), 0) + 10000 FROM issue WHERE workspace_id = $2))
 	`, issueID, wsUUID, squadID, testUserID)
 	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
 
@@ -1633,7 +1633,7 @@ func TestTryJevSquadRouting_StateBuilderPreservesLatestHumanCommentUnderBudgetPr
 	issueID := dbid.NewV7()
 	_, _ = testPool.Exec(ctx, `
 		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
-		VALUES ($1, $2, 'Pressure Test Issue', $3, 'backlog', 'high', 'squad', $4, 'member', $5, 1, 4006)
+		VALUES ($1, $2, 'Pressure Test Issue', $3, 'backlog', 'high', 'squad', $4, 'member', $5, 1, (SELECT COALESCE(MAX(number), 0) + 10000 FROM issue WHERE workspace_id = $2))
 	`, issueID, wsUUID, cjkDesc, squadID, testUserID)
 	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
 
@@ -1734,7 +1734,7 @@ func TestTryJevSquadRouting_MandatorySectionCannotFitFailsClosed(t *testing.T) {
 	issueID := dbid.NewV7()
 	_, _ = testPool.Exec(ctx, `
 		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
-		VALUES ($1, $2, 'Overflow Test Issue', 'Issue testing budget overflow', 'backlog', 'high', 'squad', $3, 'member', $4, 1, 4007)
+		VALUES ($1, $2, 'Overflow Test Issue', 'Issue testing budget overflow', 'backlog', 'high', 'squad', $3, 'member', $4, 1, (SELECT COALESCE(MAX(number), 0) + 10000 FROM issue WHERE workspace_id = $2))
 	`, issueID, wsUUID, squadID, testUserID)
 	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
 
@@ -1852,7 +1852,7 @@ func TestCreateComment_AgentMentionDoesNotRouteThroughJev(t *testing.T) {
 	issueID := dbid.NewV7()
 	_, _ = testPool.Exec(ctx, `
 		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
-		VALUES ($1, $2, 'Worker Done Issue', 'Issue testing worker report return', 'in_progress', 'high', 'squad', $3, 'member', $4, 1, 4010)
+		VALUES ($1, $2, 'Worker Done Issue', 'Issue testing worker report return', 'in_progress', 'high', 'squad', $3, 'member', $4, 1, (SELECT COALESCE(MAX(number), 0) + 10000 FROM issue WHERE workspace_id = $2))
 	`, issueID, wsUUID, squadID, testUserID)
 	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
 
@@ -1970,7 +1970,7 @@ func TestTryJevSquadRouting_DBFallbackErrorFailsClosed(t *testing.T) {
 	issueID := dbid.NewV7()
 	_, _ = testPool.Exec(ctx, `
 		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
-		VALUES ($1, $2, 'Fallback Error Issue', 'Testing DB fallback query fail closed', 'backlog', 'high', 'squad', $3, 'member', $4, 1, 4011)
+		VALUES ($1, $2, 'Fallback Error Issue', 'Testing DB fallback query fail closed', 'backlog', 'high', 'squad', $3, 'member', $4, 1, (SELECT COALESCE(MAX(number), 0) + 10000 FROM issue WHERE workspace_id = $2))
 	`, issueID, wsUUID, squadID, testUserID)
 	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
 
@@ -2064,7 +2064,7 @@ func TestTryJevSquadRouting_EvaluationTimeout(t *testing.T) {
 	issueID := dbid.NewV7()
 	_, _ = testPool.Exec(ctx, `
 		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
-		VALUES ($1, $2, 'Timeout Issue', 'Testing 5s timeout bounds synchronous path', 'backlog', 'high', 'squad', $3, 'member', $4, 1, 4012)
+		VALUES ($1, $2, 'Timeout Issue', 'Testing 5s timeout bounds synchronous path', 'backlog', 'high', 'squad', $3, 'member', $4, 1, (SELECT COALESCE(MAX(number), 0) + 10000 FROM issue WHERE workspace_id = $2))
 	`, issueID, wsUUID, squadID, testUserID)
 	defer testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
 
@@ -2166,7 +2166,7 @@ func TestEnqueueSingleCommentTrigger_UnknownCommentAuthorDoesNotRouteThroughJev_
 	issueID := dbid.NewV7()
 	_, err = testPool.Exec(ctx, `
 		INSERT INTO issue (id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, revision, number)
-		VALUES ($1, $2, 'Unknown Author Issue', 'Testing unknown comment author', 'todo', 'high', 'squad', $3, 'member', $4, 1, 4016)
+		VALUES ($1, $2, 'Unknown Author Issue', 'Testing unknown comment author', 'todo', 'high', 'squad', $3, 'member', $4, 1, (SELECT COALESCE(MAX(number), 0) + 10000 FROM issue WHERE workspace_id = $2))
 	`, issueID, wsUUID, squadID, testUserID)
 	if err != nil {
 		t.Fatalf("insert issue: %v", err)

@@ -2228,6 +2228,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.With(handler.RequireHumanActor).Post("/run-budget/top-up", h.TopUpIssueRunBudget)
 					// CHE-2489: a person widens one issue's runs; machine credentials never reach the handler.
 					r.With(handler.RequireHumanActor).Post("/capability-grants", h.CreateRunCapabilityGrant)
+					// CHE-2514: a person clears the taint that keeps one issue's runs restricted.
+					r.With(handler.RequireHumanActor).Post("/taint/clear", h.ClearIssueTaint)
 					r.With(handler.RequireHumanActor).Post("/read-approvals", h.ApproveReadSnapshot)
 					r.Put("/workflow", h.SetIssueWorkflow)
 					r.Get("/subscribers", h.ListIssueSubscribers)
@@ -2967,6 +2969,11 @@ func (pr *patResolver) ResolveToken(ctx context.Context, token string) (string, 
 	go pr.queries.UpdatePersonalAccessTokenLastUsed(context.Background(), pat.ID)
 
 	return userID, true
+}
+
+// GetUserSessionGeneration lets the WebSocket handshake refuse revoked JWTs.
+func (pr *patResolver) GetUserSessionGeneration(ctx context.Context, id pgtype.UUID) (int32, error) {
+	return pr.queries.GetUserSessionGeneration(ctx, id)
 }
 
 // parseUUID is a thin alias for util.MustParseUUID. Call sites here are all

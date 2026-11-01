@@ -816,3 +816,44 @@ func TestActivityLeftoverDuplicatePointer(t *testing.T) {
 		wantStatusMove(t, duplicateID, "cancelled", "todo")
 	})
 }
+
+// A migrated producer already committed the status row and names it in the
+// event; the listener must not write a second one. An unmigrated producer
+// (TestActivityIssueUpdated_StatusChanged) sends no activity_id and still gets
+// exactly one row.
+func TestActivityIssueUpdated_StatusChangedWithActivityIDWritesNoRow(t *testing.T) {
+	queries := db.New(testPool)
+	bus := events.New()
+	registerActivityListeners(bus, queries)
+
+	issueID := createTestIssue(t, testWorkspaceID, testUserID)
+	t.Cleanup(func() {
+		cleanupActivities(t, issueID)
+		cleanupTestIssue(t, issueID)
+	})
+
+	bus.Publish(events.Event{
+		Type:        protocol.EventIssueUpdated,
+		WorkspaceID: testWorkspaceID,
+		ActorType:   "member",
+		ActorID:     testUserID,
+		Payload: map[string]any{
+			"issue": handler.IssueResponse{
+				ID:          issueID,
+				WorkspaceID: testWorkspaceID,
+				Title:       "activity test issue",
+				Status:      "in_progress",
+				Priority:    "medium",
+				CreatorType: "member",
+				CreatorID:   testUserID,
+			},
+			"status_changed": true,
+			"prev_status":    "todo",
+			"activity_id":    "01a195b3-21ec-766f-9a13-ae84925a341e",
+		},
+	})
+
+	if n := len(listActivitiesForIssue(t, queries, issueID)); n != 0 {
+		t.Fatalf("expected 0 listener rows when activity_id is present, got %d", n)
+	}
+}

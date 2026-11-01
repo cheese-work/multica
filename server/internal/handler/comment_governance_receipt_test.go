@@ -249,6 +249,18 @@ func (s slowGovernanceStore) InsertGovernanceReceipt(ctx context.Context, arg db
 	return s.inner.InsertGovernanceReceipt(ctx, arg)
 }
 
+// gatedGovernanceStore holds every receipt write until open is closed, then
+// writes it without the writer's deadline so only the store's own checks decide.
+type gatedGovernanceStore struct {
+	inner receipt.Store
+	open  <-chan struct{}
+}
+
+func (s gatedGovernanceStore) InsertGovernanceReceipt(ctx context.Context, arg db.InsertGovernanceReceiptParams) (db.GovernanceReceipt, error) {
+	<-s.open
+	return s.inner.InsertGovernanceReceipt(context.WithoutCancel(ctx), arg)
+}
+
 func governanceReceiptCountForComment(t *testing.T, commentID string) int {
 	t.Helper()
 	var n int
@@ -393,22 +405,40 @@ func TestGovernanceDisableFencesReceiptAfterAdmittedEvaluation(t *testing.T) {
 	}
 	requireGovernanceConfigTables(t)
 	issueID := createCommentTriggerPreviewIssue(t, "governance disable race", "member", testUserID)
-	withGovernanceFlag(t, true)
+	useCompleteGovernanceConfigFixture(t)
+	// A private handler copy: the request goroutine below can outlive a failed
+	// assertion, so this test never swaps fields on the shared testHandler.
+	h := *testHandler
+	flags := featureflag.NewStaticProvider()
+	flags.LoadRules(map[string]featureflag.Rule{featureflags.JevReceipts: {Default: true}})
+	h.FeatureFlags = featureflag.NewService(flags)
+	// The control snapshot must not race receipt.Budget on a loaded database.
+	h.governanceBudget = time.Minute
 	provider := &blockingGovernanceProvider{entered: make(chan struct{}), release: make(chan struct{})}
-	t.Cleanup(func() {
-		select {
-		case <-provider.release:
-		default:
-			close(provider.release)
-		}
-	})
-	withGovernanceObserver(t, provider, testHandler.Queries)
+	// Receipt writes wait until the disable committed, so the fence, not the
+	// 50ms evaluation clamp, decides whether a row lands.
+	writesOpen := make(chan struct{})
+	h.GovernanceReceipts = &receipt.Observer{
+		Provider: provider, Store: gatedGovernanceStore{inner: testHandler.Queries, open: writesOpen},
+		BudgetAdmission: handlerTestBudgetAdmission{},
+		BudgetPolicy:    &governance.DeploymentBudgetPolicy{Version: "test-v1", Provider: "jev", Model: "test-model"},
+	}
 	recorder := httptest.NewRecorder()
 	request := withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": "observe while disable races"}), "id", issueID)
 	observed := make(chan struct{})
+	t.Cleanup(func() {
+		for _, gate := range []chan struct{}{provider.release, writesOpen} {
+			select {
+			case <-gate:
+			default:
+				close(gate)
+			}
+		}
+		<-observed
+	})
 	go func() {
-		testHandler.CreateComment(recorder, request)
-		close(observed)
+		defer close(observed)
+		h.CreateComment(recorder, request)
 	}()
 	select {
 	case <-provider.entered:
@@ -436,11 +466,12 @@ func TestGovernanceDisableFencesReceiptAfterAdmittedEvaluation(t *testing.T) {
 	expectedVersion := int64(1)
 	disabled := false
 	requestID := uuid.New()
-	if _, err := testHandler.writeGovernanceConfig(context.Background(), workspaceID, actorID, requestID, strings.Repeat("0", 64), governanceConfigPatch{
+	if _, err := h.writeGovernanceConfig(context.Background(), workspaceID, actorID, requestID, strings.Repeat("0", 64), governanceConfigPatch{
 		RequestID: requestID.String(), ExpectedVersion: &expectedVersion, JevGovernanceEnabled: &disabled,
 	}); err != nil {
 		t.Fatalf("master disable after reservation: %v", err)
 	}
+	close(writesOpen)
 	close(provider.release)
 	select {
 	case <-observed:
@@ -454,7 +485,7 @@ func TestGovernanceDisableFencesReceiptAfterAdmittedEvaluation(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || response.ID == "" {
 		t.Fatalf("decode observed comment response id=%q err=%v: %s", response.ID, err, recorder.Body.String())
 	}
-	testHandler.GovernanceReceipts.WaitForIdle()
+	h.GovernanceReceipts.WaitForIdle()
 	config, err := loadGovernanceControl(context.Background(), testPool, workspaceID)
 	if err != nil {
 		t.Fatal(err)
@@ -467,7 +498,7 @@ func TestGovernanceDisableFencesReceiptAfterAdmittedEvaluation(t *testing.T) {
 	}
 	second := httptest.NewRecorder()
 	secondRequest := withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": "after disable acknowledgement"}), "id", issueID)
-	testHandler.CreateComment(second, secondRequest)
+	h.CreateComment(second, secondRequest)
 	if second.Code != http.StatusCreated {
 		t.Fatalf("post-disable comment = %d: %s", second.Code, second.Body.String())
 	}
@@ -475,7 +506,7 @@ func TestGovernanceDisableFencesReceiptAfterAdmittedEvaluation(t *testing.T) {
 	if err := json.Unmarshal(second.Body.Bytes(), &secondResponse); err != nil {
 		t.Fatalf("decode post-disable comment: %v", err)
 	}
-	testHandler.GovernanceReceipts.WaitForIdle()
+	h.GovernanceReceipts.WaitForIdle()
 	if got := governanceReceiptCountForComment(t, secondResponse.ID); got != 0 {
 		t.Fatalf("post-disable governance receipts = %d, want 0", got)
 	}

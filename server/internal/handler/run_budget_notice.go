@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -16,10 +17,14 @@ import (
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
+// runBudgetCommitWait bounds how long a warning waits, after its transaction
+// has committed, for the committed run count to show the admission. Atomic:
+// tests shorten it while hook goroutines from earlier admissions still read it.
+var runBudgetCommitWait atomic.Int64
+
+func init() { runBudgetCommitWait.Store(int64(10 * time.Second)) }
+
 var (
-	// runBudgetCommitWait bounds how long a warning waits, after its transaction
-	// has committed, for the committed run count to show the admission.
-	runBudgetCommitWait = 10 * time.Second
 	// runBudgetTxWait is a safety cap on following an admission's open
 	// transaction; a transaction open this long is a leak, not a slow commit.
 	runBudgetTxWait = 10 * time.Minute
@@ -62,7 +67,7 @@ func (h *Handler) admissionCommitted(ctx context.Context, e service.RunBudgetEve
 		return false
 	}
 	since := pgtype.Timestamptz{Time: e.Since, Valid: true}
-	deadline := time.Now().Add(runBudgetCommitWait)
+	deadline := time.Now().Add(time.Duration(runBudgetCommitWait.Load()))
 	for {
 		runs, err := h.Queries.CountIssueRunsSince(ctx, db.CountIssueRunsSinceParams{IssueID: e.IssueID, Since: since})
 		if err != nil {
