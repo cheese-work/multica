@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { presentSteer, steerQueuedTask } from "./chat-steer";
+import {
+  FOLLOW_UP_MAX_VISIBLE_ROWS,
+  FOLLOW_UP_ROW_HEIGHT,
+  followUpListMaxHeight,
+  presentSteer,
+  steerQueuedTask,
+} from "./chat-steer";
 
 describe("presentSteer", () => {
   it.each(["dispatched", "running", "waiting_local_directory"])(
@@ -74,5 +80,19 @@ describe("steerQueuedTask", () => {
     await expect(steerQueuedTask("s1", "optimistic-optimistic-1", d)).resolves.toBe("failed");
 
     expect(d.steer).not.toHaveBeenCalled();
+  });
+});
+
+describe("followUpListMaxHeight", () => {
+  const cap = FOLLOW_UP_MAX_VISIBLE_ROWS * FOLLOW_UP_ROW_HEIGHT;
+
+  it("fits a short queue exactly", () => {
+    expect(followUpListMaxHeight(1)).toBe(FOLLOW_UP_ROW_HEIGHT);
+    expect(followUpListMaxHeight(FOLLOW_UP_MAX_VISIBLE_ROWS)).toBe(cap);
+  });
+
+  it("caps a long queue so the composer stays on screen", () => {
+    expect(followUpListMaxHeight(FOLLOW_UP_MAX_VISIBLE_ROWS + 1)).toBe(cap);
+    expect(followUpListMaxHeight(200)).toBe(cap);
   });
 });

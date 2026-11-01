@@ -63,3 +63,14 @@ export async function steerQueuedTask(
     refresh(sessionId);
   }
 }
+
+export const FOLLOW_UP_ROW_HEIGHT = 32;
+export const FOLLOW_UP_MAX_VISIBLE_ROWS = 3;
+
+/**
+ * Height cap for the queued follow-up list. The list sits above the composer,
+ * outside the message scroller, so it must scroll instead of growing.
+ */
+export function followUpListMaxHeight(taskCount: number): number {
+  return Math.min(taskCount, FOLLOW_UP_MAX_VISIBLE_ROWS) * FOLLOW_UP_ROW_HEIGHT;
+}
