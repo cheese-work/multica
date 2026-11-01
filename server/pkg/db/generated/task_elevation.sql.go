@@ -91,6 +91,35 @@ func (q *Queries) CreateElevatedOp(ctx context.Context, arg CreateElevatedOpPara
 	return i, err
 }
 
+const fenceIssueTaskElevations = `-- name: FenceIssueTaskElevations :many
+UPDATE task_elevation SET state = 'fencing', epoch = epoch + 1, updated_at = clock_timestamp()
+WHERE issue_id = $1 AND state = 'elevated'
+RETURNING task_id
+`
+
+// A member clearing the issue's taint fences every elevation still live on it
+// first, so the taint cannot vanish before the sweep saw it. Same update as the
+// sweep; it runs before the issue lock (task_elevation, then issue, as authorize).
+func (q *Queries) FenceIssueTaskElevations(ctx context.Context, issueID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, fenceIssueTaskElevations, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var task_id pgtype.UUID
+		if err := rows.Scan(&task_id); err != nil {
+			return nil, err
+		}
+		items = append(items, task_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const fenceLapsedTaskElevations = `-- name: FenceLapsedTaskElevations :many
 UPDATE task_elevation te SET state = 'fencing', epoch = te.epoch + 1, updated_at = clock_timestamp()
 WHERE te.state = 'elevated' AND (
@@ -123,13 +152,15 @@ func (q *Queries) FenceLapsedTaskElevations(ctx context.Context) ([]pgtype.UUID,
 const fenceTaintedTaskElevations = `-- name: FenceTaintedTaskElevations :many
 UPDATE task_elevation te SET state = 'fencing', epoch = te.epoch + 1, updated_at = clock_timestamp()
 FROM agent_task_queue t
-WHERE t.id = te.task_id AND te.state = 'elevated' AND cardinality(t.taint_ids) > 0
+WHERE t.id = te.task_id AND te.state = 'elevated'
+  AND (cardinality(t.taint_ids) > 0
+       OR EXISTS (SELECT 1 FROM issue_taint it WHERE it.issue_id = te.issue_id AND cardinality(it.taint_ids) > 0))
   AND ($1::uuid IS NULL OR te.task_id = $1::uuid)
 RETURNING te.task_id
 `
 
-// A task whose taint grew after its elevation was recorded stops being
-// elevated. task_id narrows it to one task (the claim); NULL sweeps them all.
+// A task, or its issue, whose taint grew after its elevation was recorded stops
+// being elevated. task_id narrows it to one task (the claim); NULL sweeps them all.
 func (q *Queries) FenceTaintedTaskElevations(ctx context.Context, taskID pgtype.UUID) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, fenceTaintedTaskElevations, taskID)
 	if err != nil {
