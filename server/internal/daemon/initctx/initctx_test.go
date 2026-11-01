@@ -82,3 +82,17 @@ func TestBuildOverBudgetNote(t *testing.T) {
 		t.Error("report-only: part must not be trimmed")
 	}
 }
+
+func TestBuildFenceVariants(t *testing.T) {
+	for name, fence := range map[string][2]string{
+		"tilde":    {"~~~", "~~~"},
+		"indented": {"  ```", "  ```"},
+		"long":     {"````", "````"},
+	} {
+		b := "## Skills\n\n" + fence[0] + "\n## Project Context\n```\n" + fence[1] + "\n"
+		m := parts(Build(Input{Brief: b}))
+		if m[PartProject].Bytes != 0 || m[PartSkills].Bytes != len(b) {
+			t.Errorf("%s: fenced heading split the section: %+v", name, m)
+		}
+	}
+}

@@ -59,11 +59,13 @@ func Build(in Input) Report {
 	for _, p := range AllParts {
 		text[p] = &strings.Builder{}
 	}
-	cur, fenced := PartInstructions, false
+	cur, open := PartInstructions, fence{}
 	for _, line := range strings.SplitAfter(in.Brief, "\n") {
-		if strings.HasPrefix(line, "```") {
-			fenced = !fenced
-		} else if title, ok := strings.CutPrefix(line, "## "); ok && !fenced {
+		if f, ok := parseFence(line); ok && open.n == 0 {
+			open = f
+		} else if ok && f.char == open.char && f.n >= open.n && f.bare {
+			open = fence{}
+		} else if title, ok := strings.CutPrefix(line, "## "); ok && open.n == 0 {
 			cur = PartInstructions
 			if p, known := headingParts[strings.TrimSpace(title)]; known {
 				cur = p
@@ -84,4 +86,21 @@ func Build(in Input) Report {
 		r.Parts = append(r.Parts, pr)
 	}
 	return r
+}
+
+// fence is a CommonMark code fence line: up to 3 spaces, then 3+ backticks or tildes.
+type fence struct {
+	char byte
+	n    int
+	bare bool // nothing but whitespace after the run, so it can close a fence
+}
+
+func parseFence(line string) (fence, bool) {
+	rest := strings.TrimLeft(line, " ")
+	if len(line)-len(rest) > 3 || rest == "" || (rest[0] != '`' && rest[0] != '~') {
+		return fence{}, false
+	}
+	after := strings.TrimLeft(rest, rest[:1])
+	n := len(rest) - len(after)
+	return fence{rest[0], n, strings.TrimSpace(after) == ""}, n >= 3
 }
