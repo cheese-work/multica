@@ -241,7 +241,9 @@ WITH wakeup_source AS MATERIALIZED (SELECT set_config('multica.source_task_id', 
         sqlc.narg('start_date')::date AS next_start_date,
         sqlc.narg('due_date')::date AS next_due_date,
         sqlc.narg('parent_issue_id')::uuid AS next_parent_issue_id,
-        sqlc.narg('project_id')::uuid AS next_project_id,
+        -- preserve_project keeps the locked row's project, for a content write
+        -- built from a snapshot that a concurrent move may have outdated.
+        CASE WHEN COALESCE(sqlc.narg('preserve_project')::boolean, false) THEN i.project_id ELSE sqlc.narg('project_id')::uuid END AS next_project_id,
         sqlc.narg('stage')::integer AS next_stage,
         -- A supplied pointer marks the issue (the handler also sets cancelled).
         -- Otherwise a mark only survives a write that leaves an already

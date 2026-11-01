@@ -19,11 +19,11 @@ import {
   subscribeToWorkspaceRehydration,
 } from "@multica/core/platform";
 import { useChatStore } from "@multica/core/chat";
-import { chatQuickActionsPendingOptions } from "@multica/core/chat/queries";
+import { chatKeys, chatQuickActionsPendingOptions } from "@multica/core/chat/queries";
 import { useRegenerateChatQuickActions } from "@multica/core/chat/mutations";
 import { useQuickActionsPendingTimeout } from "@multica/core/chat/use-quick-actions-pending-timeout";
 import { useQuickActionsFailureToast } from "./components/use-quick-actions-failure-toast";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Agent, ChatSearchHit, ChatSession } from "@multica/core/types";
 import { PageHeader } from "../layout/page-header";
 import { useBackOrReplace, useNavigation } from "../navigation";
@@ -81,6 +81,7 @@ export function ChatPage() {
   const workspaceSlug = useRequiredWorkspaceSlug();
   const wsPaths = useWorkspacePaths();
   const workspace = useCurrentWorkspace();
+  const qc = useQueryClient();
   // App Router can retain this page after navigation. Once the URL belongs
   // to another route, this instance must stop reconciling shared chat state.
   // Also check the live workspace mirror in each effect: the incoming layout
@@ -425,6 +426,12 @@ export function ChatPage() {
           renameRequest={renameRequest}
           autoCompactThresholdPct={autoCompactThresholdPct}
           onCompact={() => void c.handleSend("/compact")}
+          onSetPreset={(name) =>
+            // The server answers /preset without a session event: refetch so the picker shows the new choice.
+            void c.handleSend(`/preset ${name}`).then((sent) => {
+              if (sent && workspace) void qc.invalidateQueries({ queryKey: chatKeys.sessions(workspace.id) });
+            })
+          }
         />
       )}
       {c.showSkeleton ? (
