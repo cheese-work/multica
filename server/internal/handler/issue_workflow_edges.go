@@ -401,15 +401,22 @@ func (h *Handler) runBudgetRefusedRun(ctx context.Context, e service.RunBudgetEx
 	return fmt.Sprintf("a run for %s (trigger: %s) while the issue was %s", who, trigger, e.Status)
 }
 
+// issueBudgetRef names an issue in a budget command: its identifier, else its id.
+// It takes the prefix so a caller inside a transaction needs no second pool
+// connection to look it up.
+func issueBudgetRef(prefix string, issue db.Issue) string {
+	if prefix != "" {
+		return fmt.Sprintf("%s-%d", prefix, issue.Number)
+	}
+	return uuidToString(issue.ID)
+}
+
 // runBudgetRaiseCommand is the command that lifts this issue's cap to leave
 // 10 runs after the ones already used, using the issue's identifier when the
 // workspace prefix is known. It is empty when the platform maximum leaves no
 // valid raise.
 func (h *Handler) runBudgetRaiseCommand(ctx context.Context, issue db.Issue, max, used int) string {
-	ref := uuidToString(issue.ID)
-	if prefix := h.getIssuePrefix(ctx, issue.WorkspaceID); prefix != "" {
-		ref = fmt.Sprintf("%s-%d", prefix, issue.Number)
-	}
+	ref := issueBudgetRef(h.getIssuePrefix(ctx, issue.WorkspaceID), issue)
 	target := service.SuggestedRaiseTarget(max, used)
 	if target == 0 {
 		return ""
