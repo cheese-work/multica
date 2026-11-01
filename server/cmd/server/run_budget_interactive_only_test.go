@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/realtime"
+	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // TestRunBudgetRoutesInteractiveOnly sends every credential kind through the
@@ -23,7 +26,20 @@ func TestRunBudgetRoutesInteractiveOnly(t *testing.T) {
 		t.Skip("no database connection")
 	}
 	ctx := context.Background()
-	issueID := workspaceFixture(t).Issue(t, "Budget auth matrix", nil)
+	fx := workspaceFixture(t)
+
+	// Each request gets its own issue on a two-run workflow: a raise to 5 only
+	// succeeds once, and a successful write must be seen to land.
+	budgetedIssue := func(t *testing.T) string {
+		t.Helper()
+		workflowID := fx.Insert(t, "issue_workflow", testutil.Cols{
+			"workspace_id": testWorkspaceID, "name": fmt.Sprintf("che-2824 budget %d", time.Now().UnixNano()),
+			"initial_status_key": "todo", "steps": `[{"status_key":"todo"}]`, "max_runs_per_issue": 2,
+		})
+		issueID := fx.Issue(t, "Budget auth matrix", testutil.Cols{"workflow_id": workflowID})
+		fx.Cleanup(t, `DELETE FROM activity_log WHERE issue_id = $1`, issueID)
+		return issueID
+	}
 
 	var agentID string
 	if err := testPool.QueryRow(ctx, `SELECT id::text FROM agent WHERE workspace_id = $1 ORDER BY created_at LIMIT 1`, testWorkspaceID).Scan(&agentID); err != nil {
@@ -107,6 +123,7 @@ func TestRunBudgetRoutesInteractiveOnly(t *testing.T) {
 	for _, route := range []string{"/run-budget", "/run-budget/top-up"} {
 		for _, c := range credentials {
 			t.Run(route+"/"+c.name, func(t *testing.T) {
+				issueID := budgetedIssue(t)
 				req, err := http.NewRequest(http.MethodPost, c.server+"/api/issues/"+issueID+route, bytes.NewReader([]byte(`{"runs": 5}`)))
 				if err != nil {
 					t.Fatal(err)
@@ -119,12 +136,27 @@ func TestRunBudgetRoutesInteractiveOnly(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer resp.Body.Close()
-				refused := resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusUnauthorized
-				if c.allowed && refused {
-					t.Fatalf("interactive caller refused: status %d", resp.StatusCode)
+				action, wrote := "run_budget_raised", 0
+				if route == "/run-budget/top-up" {
+					action = "run_budget_top_up"
 				}
-				if !c.allowed && resp.StatusCode != http.StatusForbidden {
-					t.Fatalf("status = %d, want 403", resp.StatusCode)
+				if err := testPool.QueryRow(ctx, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = $2`, issueID, action).Scan(&wrote); err != nil {
+					t.Fatal(err)
+				}
+				if !c.allowed {
+					if resp.StatusCode != http.StatusForbidden || wrote != 0 {
+						t.Fatalf("status = %d, %s rows %d; want 403 and 0", resp.StatusCode, action, wrote)
+					}
+					return
+				}
+				if resp.StatusCode != http.StatusOK || wrote != 1 {
+					t.Fatalf("interactive caller: status %d, %s rows %d; want 200 and 1", resp.StatusCode, action, wrote)
+				}
+				if route == "/run-budget" {
+					var cap int
+					if err := testPool.QueryRow(ctx, `SELECT COALESCE(max_runs_override, 0) FROM issue WHERE id = $1`, issueID).Scan(&cap); err != nil || cap != 5 {
+						t.Fatalf("max_runs_override = %d (err %v), want 5", cap, err)
+					}
 				}
 			})
 		}
