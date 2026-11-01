@@ -8,7 +8,7 @@ The parent premise says about 80% of x99-claude-sonnet and Tofu runs post no com
 
 ## Measurement
 
-Window: runs created 25 Oct 2026 to 1 Nov 2026 (ICT 07:00 start), x99-claude-sonnet and Tofu, status `completed` (7,807 runs, 7,981 Mtok, USD 3,832 at the CHE-2567 list-price model). Source: `multica agent tasks <id> --output json` (all pages) plus `multica issue timeline <id> --activity-only` for 908 issues. Scripts and rows are attached to the issue.
+Window: runs created 25 Oct 2026 to 1 Nov 2026 (ICT 07:00 start), x99-claude-sonnet and Tofu, status `completed` (7,807 runs, 7,981 Mtok, USD 3,832 at the CHE-2567 list-price model). Source: `multica agent tasks <id> --output json` (all pages) plus `multica issue timeline <id> --activity-only` for 908 issues. Scripts are in `.plans/CHE-2568-scripts/` (`fetch.py` rebuilds the 44 MB timeline cache and the run rows; `strict_ids.json` lists the strict no-op run ids).
 
 Definitions, in widening order:
 
