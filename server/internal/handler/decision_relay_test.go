@@ -94,7 +94,7 @@ func TestCHE2199DecisionRelayReplay(test *testing.T) {
 	assignee := createHandlerTestAgent(test, "decision-current-assignee", []byte("[]"))
 	dbfx.Exec(test, `UPDATE issue SET assignee_id = $1 WHERE id = $2`, assignee, fixture.issueID)
 	input := fixture.recordInput()
-	input.ParentID, input.EscalationClass = parseUUID(parent), "product_direction"
+	input.ParentID, input.EscalationClass = parseUUID(parent), "reversible"
 	recorded, err := testHandler.createAskedDecisionRecord(request, fixture.issue, input)
 	if err != nil {
 		test.Fatal(err)

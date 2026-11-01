@@ -50,7 +50,14 @@ issue (status or a wakeup on the answer) and end the run; do not poll.
 
 ## Recording the answer
 
-When the person answers in a DM, record it on the issue:
+Only a `reversible` answer is recorded this way. For every other class
+(`spend`, `deploy`, `publish`, `irreversible`, `product_direction`) the person
+answers on the decision card. The server refuses `--decision-record` for them,
+whether the source is a DM message or a member comment, and whether the record
+is asked or unprompted. The error carries the card URL when a card exists. Do
+not retry with another class: a record cannot change the request's class.
+
+When the person answers a `reversible` ask in a DM, record it on the issue:
 
 ```bash
 multica issue comment add <issue> --decision-record \
@@ -75,8 +82,8 @@ multica issue comment add <issue> --decision-record \
 ## Record states
 
 A record is pending until the agent is woken, then effective, or disclaimed
-by the person. `reversible` records wake at once. Every other class waits 10
-minutes. The person can disclaim while it is pending and after it is
+by the person. `reversible` records wake at once. No other class has a record
+(see above), so there is no 10-minute wait to plan for. The person can disclaim while it is pending and after it is
 effective; an effective record sends the agent a retraction. A disclaim
 reopens a live asked request, and cancels the request of an unprompted record
 or an archived DM. Times shown to people
