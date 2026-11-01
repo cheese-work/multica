@@ -39,7 +39,7 @@ export function IssueDecisionBanner({ issueId, status, ownerAgentId }: { issueId
           {t(($) => $.decision_banner.title)}
           {cards.length > 1 && <span className="rounded-full bg-warning/10 px-2 text-micro tabular-nums text-warning">{cards.length}</span>}
         </h2>
-        {cards.map((card) => <DecisionRequestCard key={card.id} card={card} />)}
+        {cards.map((card) => <DecisionRequestCard key={card.id} card={card} inIssue />)}
       </section>
     );
   }

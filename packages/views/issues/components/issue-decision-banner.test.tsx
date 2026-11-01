@@ -67,6 +67,13 @@ describe("IssueDecisionBanner", () => {
     await waitFor(() => expect(api.answerDecisionRequest).toHaveBeenCalledWith("r1", { option: "Hold" }));
   });
 
+  it("does not tell the reader about the DM message box on the issue page", async () => {
+    api.listOpenDecisionRequests.mockResolvedValue([open("r1", "issue")]);
+    show();
+    expect(await screen.findByText("Send posts your answer to CHE-1.")).toBeInTheDocument();
+    expect(screen.queryByText(/DM agent/)).toBeNull();
+  });
+
   it("lists several open requests under one banner with a count", async () => {
     api.listOpenDecisionRequests.mockResolvedValue([open("r1", "issue"), open("r2", "issue")]);
     show();
