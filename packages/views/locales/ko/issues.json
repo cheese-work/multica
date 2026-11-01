@@ -201,6 +201,7 @@
     "chip_op_after": "{{value}} 이후",
     "section_project": "프로젝트",
     "section_project_status": "프로젝트 상태",
+    "section_workflow": "워크플로",
     "section_label": "라벨",
     "section_date": "날짜",
     "date_field": "필드",

@@ -372,6 +372,8 @@ export interface IssueTableFilters {
    *  `project_ids` (AND across the two); an issue with no project never
    *  matches. */
   project_statuses?: ProjectStatus[];
+  /** Workflow ids matched against an issue's own override (`workflow_id`). */
+  workflow_ids?: string[];
   label_ids?: string[];
   /** Same shape as `ListIssuesParams.properties`: bare strings are exact
    *  equality / "No value", operator objects narrow scalar matches. */

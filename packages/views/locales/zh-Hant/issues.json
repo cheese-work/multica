@@ -170,6 +170,7 @@
     "chip_op_after": "晚於 {{value}}",
     "section_project": "專案",
     "section_project_status": "專案狀態",
+    "section_workflow": "工作流程",
     "section_label": "標籤",
     "section_date": "日期",
     "date_field": "欄位",

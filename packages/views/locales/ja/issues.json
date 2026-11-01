@@ -201,6 +201,7 @@
     "chip_op_after": "{{value}} より後",
     "section_project": "プロジェクト",
     "section_project_status": "プロジェクトステータス",
+    "section_workflow": "ワークフロー",
     "section_label": "ラベル",
     "section_date": "日付",
     "date_field": "項目",

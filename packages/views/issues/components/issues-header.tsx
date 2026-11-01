@@ -10,6 +10,7 @@ import {
   Columns3,
   Filter,
   FolderKanban,
+  Workflow,
   FolderMinus,
   List,
   Rows3,
@@ -62,6 +63,7 @@ import {
 import { StatusIcon, PriorityIcon } from ".";
 import { useQuery } from "@tanstack/react-query";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { useIssueWorkflows } from "@multica/core/issue-workflows";
 import { memberListOptions, agentListOptions, squadListOptions } from "@multica/core/workspace/queries";
 import { projectListOptions } from "@multica/core/projects/queries";
 import { PROJECT_STATUS_CONFIG, PROJECT_STATUS_ORDER } from "@multica/core/projects/config";
@@ -146,6 +148,7 @@ function getActiveFilterCount(
     projectFilters: string[];
     includeNoProject: boolean;
     projectStatusFilters: ProjectStatus[];
+    workflowFilters: string[];
     labelFilters: string[];
     propertyFilters?: Record<string, PropertyFilterValue[]>;
     dateFilter?: IssueDateFilter | null;
@@ -169,6 +172,7 @@ function getActiveFilterCount(
     (state.includeNoProject && !(baseline?.includeNoProject ?? false));
   if (projectDelta) count++;
   if (delta(state.projectStatusFilters, baseline?.projectStatus) > 0) count++;
+  if (delta(state.workflowFilters, baseline?.workflow) > 0) count++;
   if (delta(state.labelFilters, baseline?.label) > 0) count++;
   for (const [id, selected] of Object.entries(state.propertyFilters ?? {})) {
     // Property members can be operator objects — compare through their
@@ -625,6 +629,45 @@ function ProjectStatusSubContent({
               className={`size-2 rounded-full ${PROJECT_STATUS_CONFIG[status].dotColor}`}
             />
             {statusLabels[status]}
+          </DropdownMenuCheckboxItem>
+        );
+      })}
+    </div>
+  );
+}
+
+// Workflow sub-menu content: the workspace's workflows, matched against an
+// issue's own override (an issue that follows its project never matches).
+function WorkflowSubContent({
+  wsId,
+  selected,
+  onToggle,
+  fixedIds,
+  fixedTitle,
+}: {
+  wsId: string;
+  selected: string[];
+  onToggle: (workflowId: string) => void;
+  fixedIds?: Set<string>;
+  fixedTitle?: string;
+}) {
+  const { workflows } = useIssueWorkflows(wsId);
+  return (
+    <div className="p-1">
+      {workflows.map((workflow) => {
+        const checked = selected.includes(workflow.id);
+        const fixed = fixedIds?.has(workflow.id) === true;
+        return (
+          <DropdownMenuCheckboxItem
+            key={workflow.id}
+            checked={checked}
+            disabled={fixed}
+            title={fixed ? fixedTitle : undefined}
+            onCheckedChange={() => onToggle(workflow.id)}
+            className={FILTER_ITEM_CLASS}
+          >
+            <HoverCheck checked={checked} />
+            {workflow.name}
           </DropdownMenuCheckboxItem>
         );
       })}
@@ -1468,6 +1511,7 @@ export function IssueFilterMenu({
   const projectFilters = useViewStore((s) => s.projectFilters);
   const includeNoProject = useViewStore((s) => s.includeNoProject);
   const projectStatusFilters = useViewStore((s) => s.projectStatusFilters);
+  const workflowFilters = useViewStore((s) => s.workflowFilters);
   const labelFilters = useViewStore((s) => s.labelFilters);
   const propertyFilters = useViewStore((s) => s.propertyFilters);
   const viewStoreApi = useViewStoreApi();
@@ -1503,6 +1547,7 @@ export function IssueFilterMenu({
         projectFilters,
         includeNoProject,
         projectStatusFilters,
+        workflowFilters,
         labelFilters,
         dateFilter: showDateFilter ? dateFilter : null,
       },
@@ -1776,6 +1821,28 @@ export function IssueFilterMenu({
               </DropdownMenuSubContent>
             </DropdownMenuSub>
 
+            {/* Workflow — issues that override their project's workflow */}
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                <Workflow className="size-3.5" />
+                <span className="flex-1">{t(($) => $.filters.section_workflow)}</span>
+                {workflowFilters.length > 0 && (
+                  <span className="text-caption text-primary font-medium">
+                    {workflowFilters.length}
+                  </span>
+                )}
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="w-auto min-w-52 p-0">
+                <WorkflowSubContent
+                  wsId={wsId}
+                  selected={workflowFilters}
+                  onToggle={act.toggleWorkflowFilter}
+                  fixedIds={viewBaseline?.workflow}
+                  fixedTitle={fixedTitle}
+                />
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+
             {/* Label */}
             <DropdownMenuSub
               onOpenChange={(open) =>
@@ -1914,6 +1981,7 @@ export function IssueDisplayControls({
   const projectFilters = useViewStore((s) => s.projectFilters);
   const includeNoProject = useViewStore((s) => s.includeNoProject);
   const projectStatusFilters = useViewStore((s) => s.projectStatusFilters);
+  const workflowFilters = useViewStore((s) => s.workflowFilters);
   const labelFilters = useViewStore((s) => s.labelFilters);
   const propertyFilters = useViewStore((s) => s.propertyFilters);
   const cardPropertyIds = useViewStore((s) => s.cardPropertyIds);
@@ -1989,6 +2057,7 @@ export function IssueDisplayControls({
       projectFilters,
       includeNoProject,
       projectStatusFilters,
+      workflowFilters,
       labelFilters,
       dateFilter: showDateFilter ? dateFilter : null,
     },
