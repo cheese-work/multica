@@ -44,6 +44,9 @@ type createRunCapabilityGrantRequest struct {
 	Reason        string   `json:"reason"`
 	PinnedBaseSHA *string  `json:"pinned_base_sha"`
 	PinnedHeadSHA *string  `json:"pinned_head_sha"`
+	// ApproveCurrentComments also approves the issue's comments as they are now
+	// (plan 3.7, B3), so an elevated run reads them without a downgrade.
+	ApproveCurrentComments bool `json:"approve_current_comments"`
 }
 
 type runCapabilityGrantResponse struct {
@@ -84,20 +87,28 @@ func pinnedSHA(p *string) (pgtype.Text, bool) {
 	return pgtype.Text{String: *p, Valid: true}, grantSHA.MatchString(*p)
 }
 
+// requireHumanIssueAdmin loads the issue of the {id} route param for a person who
+// owns or administers its workspace. Any agent credential gets 403 before the
+// issue is read.
+func (h *Handler) requireHumanIssueAdmin(w http.ResponseWriter, r *http.Request, machineMsg string) (db.Issue, db.Member, bool) {
+	actorType, _ := h.resolveActor(r, requestUserID(r), h.resolveWorkspaceID(r))
+	if isGovernedFieldMachineActor(r, actorType) {
+		writeError(w, http.StatusForbidden, machineMsg)
+		return db.Issue{}, db.Member{}, false
+	}
+	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return db.Issue{}, db.Member{}, false
+	}
+	member, ok := h.requireWorkspaceRole(w, r, uuidToString(issue.WorkspaceID), "workspace not found", "owner", "admin")
+	return issue, member, ok
+}
+
 // CreateRunCapabilityGrant records a grant for one issue. Human owner/admin
 // only: any agent credential, including the task token of an agent a member
 // owns, gets 403 before the issue is read.
 func (h *Handler) CreateRunCapabilityGrant(w http.ResponseWriter, r *http.Request) {
-	actorType, _ := h.resolveActor(r, requestUserID(r), h.resolveWorkspaceID(r))
-	if isGovernedFieldMachineActor(r, actorType) {
-		writeError(w, http.StatusForbidden, "only a person can grant run capabilities")
-		return
-	}
-	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
-	if !ok {
-		return
-	}
-	member, ok := h.requireWorkspaceRole(w, r, uuidToString(issue.WorkspaceID), "workspace not found", "owner", "admin")
+	issue, member, ok := h.requireHumanIssueAdmin(w, r, "only a person can grant run capabilities")
 	if !ok {
 		return
 	}
@@ -170,6 +181,13 @@ func (h *Handler) CreateRunCapabilityGrant(w http.ResponseWriter, r *http.Reques
 		slog.Warn("create run capability grant failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to create the grant")
 		return
+	}
+	if req.ApproveCurrentComments {
+		if _, err := qtx.ApproveIssueCommentSet(r.Context(), db.ApproveIssueCommentSetParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, ApproverUserID: member.UserID}); err != nil {
+			slog.Warn("approve comment set failed", append(logger.RequestAttrs(r), "error", err)...)
+			writeError(w, http.StatusInternalServerError, "failed to approve the comment set")
+			return
+		}
 	}
 	details, _ := json.Marshal(map[string]any{"grant_id": uuidToString(grant.ID), "scopes": scopes, "expires_at": expiresAt.UTC().Format(time.RFC3339)})
 	if _, err := qtx.CreateActivity(r.Context(), db.CreateActivityParams{

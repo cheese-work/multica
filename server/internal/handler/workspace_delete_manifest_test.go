@@ -114,6 +114,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"github_workflow_run":                workspaceDelete, // CHE-2147 webhook-fed run/job mirror; workspace-owned leaf.
 	"github_webhook_intake":              workspaceDeleteKeep,
 	"github_snapshot_approval":           workspaceDelete,
+	"read_snapshot_approval":             workspaceDelete, // CHE-2509 elevated-read approvals; workspace-owned leaf.
 	"github_webhook_dispatch":            workspaceDelete,
 	"github_webhook_revision":            workspaceDelete,
 	"governed_vote_record":               workspaceDelete, // CHE-1862 vote-gate ledger; workspace-owned leaf.
