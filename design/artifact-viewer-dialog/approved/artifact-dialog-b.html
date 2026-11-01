@@ -1,0 +1,103 @@
+<!doctype html><html><head><meta charset=utf-8><style>
+*{margin:0;box-sizing:border-box}
+body{font:14px/1.45 "Helvetica Neue",Arial,"Liberation Sans","DejaVu Sans",sans-serif;background:#d9d9d4;color:#1c1c1a;padding:24px}
+h1{font-size:18px;font-weight:600;margin-bottom:2px}.sub{color:#3d3d38;max-width:1500px;margin-bottom:6px}
+.lab{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#3d3d38;margin:16px 0 6px}
+.grid{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start}
+.pane{padding:16px;border-radius:14px;background:var(--pg);color:var(--tx)}
+.t-l{--pg:#efefec;--cd:#fff;--bd:#e0e0db;--tx:#1c1c1a;--mu:#5f5f5a;--ac:#2f4fd0;--acb:#eaeefd;--sf:#f6f6f4;--ok:#17713a;--okb:#e0f3e6;--wn:#8a5200;--wnb:#fdf1dc;--er:#b3201f;--erb:#fdecec;--ad:#e3f4e8;--ade:#17713a;--dl:#fdecec;--dle:#b3201f;--ln:#8d8d86;--btn:#2f4fd0;--dis:#c9ccd8;--dtx:#4a4d5c;--scr:rgba(20,20,24,.55)}
+.t-d{--pg:#121316;--cd:#1c1d21;--bd:#35373d;--tx:#ececea;--mu:#a9aaa4;--ac:#9db0ff;--acb:#262c4a;--sf:#25262b;--ok:#7fd89a;--okb:#1d3a29;--wn:#f2bb66;--wnb:#3a2d14;--er:#ff9b99;--erb:#43201f;--ad:#183624;--ade:#7fd89a;--dl:#431f21;--dle:#ff9b99;--ln:#8c8d87;--btn:#4561e0;--dis:#3a3d4a;--dtx:#b4b7c6;--scr:rgba(0,0,0,.62)}
+.card{width:var(--w);background:var(--cd);border:1px solid var(--bd);border-radius:12px;overflow:hidden}
+.hd{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;padding:8px 12px;border-bottom:1px solid var(--bd);font-size:13px}
+.hd a{color:var(--tx);text-decoration:underline;text-underline-offset:2px}
+.pill{border-radius:99px;padding:1px 8px;font-size:11px;font-weight:600}.po{background:var(--wnb);color:var(--wn)}
+.chip{border:1px solid var(--bd);border-radius:99px;padding:0 10px;min-height:28px;display:inline-flex;align-items:center;font-weight:600}
+.bd{padding:12px;display:grid;gap:12px}.mu{color:var(--mu);font-size:12px}
+.you{border:1px solid var(--bd);background:var(--sf);border-radius:10px;padding:10px;display:grid;gap:8px}
+.you h3{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--mu);font-weight:700}
+.file{display:flex;gap:8px;align-items:stretch;flex-wrap:wrap}
+.frow{flex:1 1 230px;min-width:0;display:flex;gap:10px;align-items:center;text-align:left;border:1px solid var(--bd);background:var(--cd);border-radius:10px;padding:8px 10px;min-height:56px;color:inherit;font:inherit}
+.frow.f{outline:2px solid var(--ac);outline-offset:2px}
+.open{margin-left:auto;flex:none;display:inline-flex;gap:4px;align-items:center;color:var(--ac);font-weight:600;font-size:12px}
+.sum{display:flex;gap:6px;flex-wrap:wrap;margin-top:2px}.sum span{border:1px solid var(--bd);border-radius:99px;padding:0 8px;font-size:11px;font-weight:600;color:var(--mu)}
+.fi{flex:none;width:36px;height:36px;border-radius:8px;background:var(--acb);color:var(--ac);display:grid;place-items:center}
+.fm{flex:1;min-width:0;display:grid;gap:2px;justify-items:start}.fm b{font-size:14px}
+code{font:12px "DejaVu Sans Mono",Menlo,Consolas,monospace}
+.ok{color:var(--ok);font-style:normal;font-weight:600;display:inline-flex;gap:3px;align-items:center}
+.tag{display:inline-flex;align-items:center;gap:4px;border-radius:99px;padding:1px 8px;font-size:11px;font-weight:600}.tag.w{background:var(--wnb);color:var(--wn)}.tag.g{background:var(--okb);color:var(--ok)}
+.dl{min-height:44px;padding:0 14px;border:1px solid var(--ln);border-radius:8px;display:inline-flex;gap:6px;align-items:center;justify-content:center;font-weight:600;font-size:13px;color:var(--tx);background:var(--cd)}
+.pb{min-height:44px;padding:0 16px;border:0;border-radius:8px;background:var(--btn);color:#fff;display:inline-flex;gap:6px;align-items:center;justify-content:center;font:600 13px inherit}
+.sg{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;font-size:12px}
+.df{border:1px solid var(--bd);border-radius:8px;font:12px/1.5 "DejaVu Sans Mono",Menlo,Consolas,monospace;background:var(--cd)}
+.hh{padding:3px 10px;background:var(--sf);color:var(--mu)}
+.l{display:grid;grid-template-columns:32px 18px 1fr;white-space:pre-wrap;word-break:break-word}.l i{font-style:normal;color:var(--mu);text-align:right;padding-right:6px}.l s{text-decoration:none;text-align:center;font-weight:700}
+.l.a{background:var(--ad)}.l.a s{color:var(--ade)}.l.d{background:var(--dl)}.l.d s{color:var(--dle)}
+.gap{padding:2px 10px;color:var(--mu);text-align:center;font-style:italic;border-top:1px dashed var(--bd);border-bottom:1px dashed var(--bd)}
+.md{border:1px solid var(--bd);border-radius:8px;padding:12px 14px;background:var(--cd);font-size:14px;line-height:1.55;display:grid;gap:8px}
+.md h4{font-size:17px}.md h5{font-size:14px;margin-top:6px}.md ul{padding-left:18px}
+.sk{height:12px;border-radius:6px;background:var(--bd);animation:p 1.4s ease-in-out infinite}@keyframes p{50%{opacity:.45}}
+.bn{border-radius:8px;padding:8px 10px;font-size:12px;font-weight:600;display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}.bn.er{background:var(--erb);color:var(--er)}
+.ghost{min-height:44px;padding:0 12px;border:1px solid var(--ln);border-radius:8px;background:var(--cd);font:600 13px inherit;color:var(--tx);display:inline-flex;align-items:center}
+.ask p{margin:2px 0}.rows{display:grid;gap:6px}
+.row{display:flex;gap:10px;align-items:center;min-height:44px;padding:8px 10px;border:1px solid var(--bd);border-radius:8px}
+.rd{flex:none;width:16px;height:16px;border:2px solid var(--ln);border-radius:50%}
+.ft{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.btn{min-height:36px;padding:0 16px;border:0;border-radius:8px;background:var(--dis);color:var(--dtx);font:600 13px inherit}
+.stage{position:relative;overflow:hidden;border-radius:12px;background:var(--pg);color:var(--tx);width:var(--sw);height:var(--sh)}
+.stage .back{position:absolute;left:50%;top:24px;transform:translateX(-50%);width:540px}
+.stage .scrim{position:absolute;inset:0;background:var(--scr)}
+.dlg{position:absolute;inset:28px 36px;background:var(--cd);border:1px solid var(--bd);border-radius:14px;display:flex;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.35)}
+.dlg.ph{inset:0;border:0;border-radius:0;box-shadow:none;flex-direction:column}
+.rail{flex:none;width:250px;background:var(--sf);border-right:1px solid var(--bd);padding:16px;display:flex;flex-direction:column;gap:14px}
+.rail dl{display:grid;gap:8px}.rail dt{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--mu)}.rail dd{margin:0;font-size:13px}
+.vt{display:grid;gap:4px}
+.vb{min-height:44px;padding:0 12px;border:1px solid transparent;border-radius:8px;background:none;color:var(--tx);font:600 13px inherit;display:flex;gap:8px;align-items:center;text-align:left}
+.vb[aria-selected=true]{background:var(--cd);border-color:var(--bd);box-shadow:inset 3px 0 0 var(--ac)}
+.vb .mu{margin-left:auto}
+.pn{flex:1;min-width:0;display:flex;flex-direction:column}
+.pt{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 8px 8px 16px;border-bottom:1px solid var(--bd)}
+.x{flex:none;width:44px;height:44px;border:0;border-radius:8px;background:none;color:var(--tx);display:grid;place-items:center}
+.dbody{flex:1;overflow:hidden;padding:16px;display:grid;gap:10px;align-content:start}
+.ph .dh{display:flex;gap:12px;align-items:flex-start;padding:10px 4px 10px 12px;border-bottom:1px solid var(--bd)}
+.ph .tl{font-size:12px;display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--bd);background:var(--sf)}
+.bar{display:grid;grid-template-columns:1fr 1fr 1fr;border-top:1px solid var(--bd);background:var(--cd)}
+.bar button,.bar a{min-height:56px;border:0;background:none;color:var(--mu);font:600 12px inherit;display:flex;flex-direction:column;gap:2px;align-items:center;justify-content:center}
+.bar .on{color:var(--ac);box-shadow:inset 0 3px 0 var(--ac)}
+.bar .dlb{color:var(--tx)}
+.cap{font-size:12px;color:var(--mu)}
+</style></head><body>
+<h1>B · Dialog replaces the inline tabs — "You are approving" artifact viewer (CHE-2810)</h1>
+<p class=sub>Same locked card, but the inline Changes / Preview strip goes away. The file row is the single way in: it carries a one-line summary ("Preview", "Changes +3 −2") and opens the dialog. Download stays on the card. The card gets shorter, so the decision options stay above the fold on a phone.</p>
+<p class=sub>Dialog: role=dialog, aria-modal, labelled by the file name. Esc, the 44px close button and the phone back gesture close it; focus returns to the row. Desktop: file facts in a left rail (file, size, SHA, hash-verified, signer, Download), views as a vertical tab list, content on the right. Phone: true fullscreen, a bottom bar with Changes · Preview · Download in thumb reach. Diff lines carry a + or − mark, never colour alone.</p>
+<div id=root></div>
+<script>
+const I={doc:'<svg width=18 height=18 viewBox="0 0 24 24" fill=none stroke=currentColor stroke-width=2 aria-hidden=true><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg>',
+dl:'<svg width=16 height=16 viewBox="0 0 24 24" fill=none stroke=currentColor stroke-width=2 aria-hidden=true><path d="M12 4v11m0 0l-4-4m4 4l4-4M5 20h14"/></svg>',
+chk:'<svg width=13 height=13 viewBox="0 0 24 24" fill=none stroke=currentColor stroke-width=3 aria-hidden=true><path d="M5 12l5 5 9-10"/></svg>',
+chat:'<svg width=16 height=16 viewBox="0 0 24 24" fill=none stroke=currentColor stroke-width=2 aria-hidden=true><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
+x:'<svg width=20 height=20 viewBox="0 0 24 24" fill=none stroke=currentColor stroke-width=2 aria-hidden=true><path d="M6 6l12 12M18 6L6 18"/></svg>',
+exp:'<svg width=14 height=14 viewBox="0 0 24 24" fill=none stroke=currentColor stroke-width=2 aria-hidden=true><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>',
+diff:'<svg width=18 height=18 viewBox="0 0 24 24" fill=none stroke=currentColor stroke-width=2 aria-hidden=true><path d="M8 4v12a3 3 0 0 0 3 3h5M16 15l3 4-3 4M8 4a2 2 0 1 0 0 .01M16 8V4"/></svg>',
+eye:'<svg width=18 height=18 viewBox="0 0 24 24" fill=none stroke=currentColor stroke-width=2 aria-hidden=true><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx=12 cy=12 r=3 /></svg>'};
+const L=(n,t,k)=>`<div class="l ${k}"><i>${n}</i><s>${k=='a'?'+':k=='d'?'−':''}</s><code>${t}</code></div>`;
+const DIFF=`<div class=hh>@@ Card states · lines 22–27 @@</div>`+L(22,'- Open: radio list, answer box, Send.','')+L(23,'- Answered: recorded answer, Disclaim.','')+L('','- Conflict: draft is discarded silently.','d')+L(24,'- Conflict: draft is kept under the closed card.','a')+L(25,'- Offline: Send waits; the answer is kept.','a')+L(26,'- Disclaimed: card stays closed.','')+`<div class=gap>41 unchanged lines hidden</div><div class=hh>@@ Keyboard · lines 68–70 @@</div>`+L(68,'## Keyboard','')+L('','Enter sends.','d')+L(69,'Enter sends; Shift+Enter adds a line.','a')+L(70,'Arrow keys move between options.','');
+const SIGN=`<p class=sg><span class="tag g">${I.chk}Revision 4 signed by Sol</span><span>Rev 5 adds these 2 changes.</span></p>`;
+const diffBody=t=>t=='load'?`<div role=status aria-label="Loading changes" style="display:grid;gap:8px"><div class=sk style="width:60%"></div><div class=sk></div><div class=sk style="width:85%"></div><div class=sk style="width:40%"></div></div>`:t=='err'?`<div class="bn er" role=alert><span>Could not load the changes. Download the file to read it.</span><button class=ghost>Try again</button></div>`:SIGN+`<div class=df role=region aria-label="Text changes since revision 4, changed hunks only" tabindex=0>${DIFF}</div>`;
+const PREV=`<div class=md role=region aria-label="Rendered preview of design-rev5.md" tabindex=0><h4>Decision card, revision 5</h4><p>The card shows the file being approved before the answer box.</p><h5>Card states</h5><ul><li>Open: radio list, answer box, Send.</li><li>Answered: recorded answer, Disclaim.</li><li>Conflict: draft is kept under the closed card.</li><li>Offline: Send waits; the answer is kept.</li><li>Disclaimed: card stays closed.</li></ul><h5>Keyboard</h5><p>Enter sends; Shift+Enter adds a line. Arrow keys move between options.</p><h5>Open question</h5><p>Should a disclaimed card show the file it once asked about? Default: yes, read-only.</p></div><p class=cap>Rendered from design-rev5.md · 214 lines · scroll to read all</p>`;
+const body=t=>t=='prev'?PREV:diffBody(t);
+const meta=nd=>`<b>Design revision 5</b><span class=mu>design-rev5.md · 18.4 KB</span><span class=mu>SHA <code>3f9a2c1</code> · <em class=ok>${I.chk}Hash verified</em></span>${nd?'':'<span class="tag w">Revision 5 is not signed yet</span>'}`;
+const ask=`<div class=ask><p><b>Decision</b> Approve design revision 5 for the decision card?</p><p class=mu>If wrong: the card UI is built from a design Cheese did not intend.</p></div>`;
+const rows=`<div class=rows role=radiogroup aria-label="Decision options"><label class=row><i class=rd></i><span><b>A · Approve revision 5</b></span></label><label class=row><i class=rd></i><span><b>B · Ask for changes</b></span></label></div><div class=ft><span class=mu>Enter sends · Shift+Enter for a new line</span><button class=btn disabled>Send</button></div>`;
+const card=(f,nd)=>`<section class=card><div class=hd>${I.chat}<b>Decision request</b><span class="pill po">Open</span><span class=chip>CHE-2595</span><a>Source comment</a></div><div class=bd><section class=you aria-label="You are approving"><h3>You are approving</h3><div class=file><button class="frow${f?' f':''}" aria-haspopup=dialog aria-label="Open design-rev5.md"><i class=fi>${I.doc}</i><span class=fm>${meta(nd)}<span class=sum><span>Preview</span>${nd?'':'<span>Changes +3 −2</span>'}</span></span><span class=open>Open ${I.exp}</span></button><a class=dl>${I.dl}Download</a></div></section>${ask}${rows}<time class=mu>30 Oct 2026, 16:20 ICT</time></div></section>`;
+const dsk=(t,nd)=>`<div class=dlg role=dialog aria-modal=true aria-label="design-rev5.md"><aside class=rail><div class=file style="flex-wrap:nowrap"><i class=fi>${I.doc}</i><div class=fm><b>Design revision 5</b><span class=mu>design-rev5.md</span></div></div><dl><div><dt>Size</dt><dd>18.4 KB</dd></div><div><dt>SHA</dt><dd><code>3f9a2c1</code></dd></div><div><dt>Integrity</dt><dd><em class=ok>${I.chk}Hash verified</em></dd></div><div><dt>Signer</dt><dd>${nd?'None yet':'Rev 4 signed by Sol'}</dd></div>${nd?'':'<div><span class="tag w">Revision 5 is not signed yet</span></div>'}</dl><div class=vt role=tablist aria-orientation=vertical aria-label="Read the file">${nd?'':`<button class=vb role=tab aria-selected=${t!='prev'}>${I.diff}Changes<span class=mu>+3 −2</span></button>`}<button class=vb role=tab aria-selected=${t=='prev'||nd}>${I.eye}Preview</button></div><a class=pb style="margin-top:auto">${I.dl}Download</a></aside><main class=pn><div class=pt><b>${t=='prev'||nd?'Preview':'Changes since Rev 4'}</b><button class=x aria-label="Close">${I.x}</button></div><div class=dbody>${body(t)}</div></main></div>`;
+const phn=(t,nd)=>`<div class="dlg ph" role=dialog aria-modal=true aria-label="design-rev5.md"><div class=dh><i class=fi>${I.doc}</i><div class=fm><b>Design revision 5</b><span class=mu>design-rev5.md · 18.4 KB</span></div><button class=x aria-label="Close">${I.x}</button></div><div class=tl><span>SHA <code>3f9a2c1</code></span><em class=ok>${I.chk}Hash verified</em>${nd?'':'<span class="tag w">Revision 5 is not signed yet</span>'}</div><div class=dbody style="flex:1">${body(t)}</div><div class=bar role=tablist aria-label="Read the file">${nd?'':`<button role=tab class="${t!='prev'?'on':''}" aria-selected=${t!='prev'}>${I.diff}Changes +3 −2</button>`}<button role=tab class="${t=='prev'||nd?'on':''}" aria-selected=${t=='prev'||nd}>${I.eye}Preview</button><a class=dlb>${I.dl}Download</a></div></div>`;
+const dstage=(th,t,h,nd)=>`<div class="pane ${th}"><div class=stage style="--sw:920px;--sh:${h}px"><div class=back>${card(0,nd)}</div><div class=scrim></div>${dsk(t,nd)}</div></div>`;
+const pstage=(th,t,nd)=>`<div class="pane ${th}" style="padding:8px"><div class=stage style="--sw:390px;--sh:780px">${phn(t,nd)}</div></div>`;
+const cp=(th,f,w,nd)=>`<div class="pane ${th}" style="--w:${w}px">${card(f,nd)}</div>`;
+const sec=(n,h)=>`<div class=lab>${n}</div><div class=grid>${h}</div>`;
+document.getElementById('root').innerHTML=
+sec('1 · Card, no inline strip · desktop 540 light, dark with focus ring · phone 358',cp('t-l',0,540)+cp('t-d',1,540)+cp('t-l',0,358))+
+sec('2 · Dialog open · desktop · Changes light, Preview dark',dstage('t-l','diff',640)+dstage('t-d','prev',640))+
+sec('3 · Dialog loading and failed · desktop light',dstage('t-l','load',580)+dstage('t-l','err',580))+
+sec('4 · Dialog open · phone 390 fullscreen · Changes light, Preview dark, failed light, first revision (no Changes) dark',pstage('t-l','diff')+pstage('t-d','prev')+pstage('t-l','err')+pstage('t-d','prev',1));
+</script></body></html>
