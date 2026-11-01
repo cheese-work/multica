@@ -16,6 +16,10 @@ EXEC_WRAPPER=${MULTICA_TEST_EXEC:-$SCRIPT_DIR/go-test-db-exec.sh}
 shards=${MULTICA_HANDLER_SHARDS:-3}
 package_dir="$REPO_ROOT/server/internal/handler"
 
+case $shards in
+  '' | *[!0-9]* | 0*) echo "MULTICA_HANDLER_SHARDS must be an integer >= 1, got '$shards'" >&2; exit 2 ;;
+esac
+
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/multica-handler-shards.XXXXXX")
 trap 'rm -rf "$work_dir"' EXIT
 trap 'exit 130' INT

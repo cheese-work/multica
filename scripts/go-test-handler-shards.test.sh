@@ -53,4 +53,15 @@ covered=$(sed -E 's/.*-test\.run ([^ ]+).*/\1/' "$TEST_DIR/runs" | sed -E 's/^\^
 # One failing shard fails the script.
 : >"$TEST_DIR/runs"
 if SHARD_TEST_EXIT=1 run_shards >/dev/null 2>&1; then echo "failing shards must fail the script" >&2; exit 1; fi
+# A shard count that is not an integer >= 1 would start no process and still
+# exit 0 while test-go.sh has already dropped internal/handler from its run.
+for bad in 0 -1 abc; do
+  : >"$TEST_DIR/builds"
+  : >"$TEST_DIR/runs"
+  if MULTICA_HANDLER_SHARDS=$bad PATH="$TEST_DIR/bin:$PATH" MULTICA_TEST_EXEC="$TEST_DIR/exec" \
+    bash "$SCRIPT_DIR/go-test-handler-shards.sh" >/dev/null 2>&1; then
+    echo "MULTICA_HANDLER_SHARDS=$bad must fail the script" >&2; exit 1
+  fi
+  [ ! -s "$TEST_DIR/builds" ] || { echo "MULTICA_HANDLER_SHARDS=$bad must fail before compiling" >&2; exit 1; }
+done
 echo "go-test-handler-shards.test.sh: PASS"
