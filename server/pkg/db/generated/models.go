@@ -2455,6 +2455,16 @@ type QuickAction struct {
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 }
 
+type ReadSnapshotApproval struct {
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	IssueID        pgtype.UUID        `json:"issue_id"`
+	ObjectKind     string             `json:"object_kind"`
+	ObjectID       string             `json:"object_id"`
+	BodyHash       string             `json:"body_hash"`
+	ApproverUserID pgtype.UUID        `json:"approver_user_id"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
 type RecoveryClaim struct {
 	ID                pgtype.UUID        `json:"id"`
 	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
