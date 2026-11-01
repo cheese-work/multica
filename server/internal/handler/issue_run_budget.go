@@ -158,6 +158,11 @@ func (h *Handler) TopUpIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
+	// Moves and top-ups on one issue start their windows one at a time.
+	if err := qtx.LockIssueRunBudgetBoundary(r.Context(), issue.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to top up the run budget")
+		return
+	}
 	// The activity row below starts the next window. Writing the current one
 	// first keeps its credit or debt in the ledger; the lock it takes holds to
 	// the commit.
@@ -188,25 +193,61 @@ func (h *Handler) TopUpIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"max_runs": max})
 }
 
-// openRunBudgetWindowForMove opens a run-budget window around a person's status
-// move. Called before the event is published, the move is not yet in the log,
-// so it writes the window the move is about to end. Called after, the listener
-// has written the move and the window begins at that row, so its token
-// allowance is claimed when the move is recorded rather than at the next
-// admission or report. A failure is logged; the next admission or report
-// claims the same allowance.
-func (h *Handler) openRunBudgetWindowForMove(ctx context.Context, issue db.Issue) {
+// openRunBudgetWindow brings the issue's ledger to the window in force, in its
+// own transaction.
+func (h *Handler) openRunBudgetWindow(ctx context.Context, issue db.Issue) error {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
-		slog.Warn("run budget: open window for status move", "issue_id", uuidToString(issue.ID), "error", err)
-		return
+		return err
 	}
 	defer tx.Rollback(ctx)
 	if _, err := service.OpenRunBudgetWindow(ctx, h.Queries.WithTx(tx), issue.ID); err != nil {
-		slog.Warn("run budget: open window for status move", "issue_id", uuidToString(issue.ID), "error", err)
-		return
+		return err
 	}
-	if err := tx.Commit(ctx); err != nil {
+	return tx.Commit(ctx)
+}
+
+// lockRunBudgetMove readies a person's status write, which starts the issue's
+// next run-budget window: it takes the boundary lock, then writes the window
+// the move is about to end. The caller releases the lock after the move is
+// published and its new window opened, so two moves never interleave their
+// boundaries and the second one finds the first one's window written. An error
+// means nothing was written and the caller must not write the move.
+func (h *Handler) lockRunBudgetMove(ctx context.Context, issue db.Issue) (release func(), err error) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	release = func() { _ = tx.Rollback(ctx) }
+	if err := h.Queries.WithTx(tx).LockIssueRunBudgetBoundary(ctx, issue.ID); err != nil {
+		release()
+		return nil, err
+	}
+	if err := h.openRunBudgetWindow(ctx, issue); err != nil {
+		release()
+		return nil, err
+	}
+	return release, nil
+}
+
+func (h *Handler) beginRunBudgetMove(w http.ResponseWriter, r *http.Request, issue db.Issue) (release func(), ok bool) {
+	release, err := h.lockRunBudgetMove(r.Context(), issue)
+	if err != nil {
+		slog.Warn("run budget: prepare status move", "issue_id", uuidToString(issue.ID), "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to update issue")
+		return nil, false
+	}
+	return release, true
+}
+
+// openRunBudgetWindowForMove opens the run-budget window a person's status move
+// started, so its token allowance is claimed when the move is recorded rather
+// than at the next admission or report. It runs after the event is published:
+// the activity listener has written the move by then, and the window begins at
+// that row. A failure is logged; the next admission or report claims the same
+// allowance.
+func (h *Handler) openRunBudgetWindowForMove(ctx context.Context, issue db.Issue) {
+	if err := h.openRunBudgetWindow(ctx, issue); err != nil {
 		slog.Warn("run budget: open window for status move", "issue_id", uuidToString(issue.ID), "error", err)
 	}
 }

@@ -1,8 +1,15 @@
 package handler
 
 import (
+	"context"
+	"errors"
 	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // A window nobody opened still holds credit or debt: the runs counted in it
@@ -72,5 +79,140 @@ func TestRunBudgetMemberStatusMoveKeepsTheDebtOfAnUnopenedWindow(t *testing.T) {
 
 	if got := ledgerBalance(t, c.issueID); got != 36 {
 		t.Fatalf("balance after a member move and one admission = %d, want 36 (37 before the run)", got)
+	}
+}
+
+// holdRunBudgetBoundary takes the issue's boundary lock the way a move in
+// flight holds it, until the returned release runs.
+func holdRunBudgetBoundary(t *testing.T, issueID string) (release func()) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := testHandler.Queries.WithTx(tx).LockIssueRunBudgetBoundary(ctx, parseUUID(issueID)); err != nil {
+		tx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	return func() { tx.Rollback(ctx) }
+}
+
+// stillRunning reports whether done stays open through a short wait.
+func stillRunning(done <-chan struct{}) bool {
+	select {
+	case <-done:
+		return false
+	case <-time.After(400 * time.Millisecond):
+		return true
+	}
+}
+
+func TestRunBudgetTopUpWaitsForAMoveInFlight(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	c, _ := budgetedAt(t, 40, 38)
+	release := holdRunBudgetBoundary(t, c.issueID)
+	defer release()
+
+	done := make(chan struct{})
+	var code int
+	go func() {
+		defer close(done)
+		code = topUpBudget(t, c.issueID, nil).Code
+	}()
+	if !stillRunning(done) {
+		t.Fatal("the top-up finished while a window boundary was in flight")
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND action='run_budget_top_up'`, c.issueID); n != 0 {
+		t.Fatalf("top-up activity rows while the boundary was held = %d, want 0", n)
+	}
+	release()
+	<-done
+	if code != http.StatusOK {
+		t.Fatalf("top-up = %d", code)
+	}
+	admitRun(t, c)
+	if got := ledgerBalance(t, c.issueID); got != 41 {
+		t.Fatalf("balance after the top-up and one admission = %d, want 41", got)
+	}
+}
+
+func TestRunBudgetMemberMoveWaitsForAMoveInFlight(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	c, _ := budgetedAt(t, 40, 38)
+	recordMemberMovesOf(t, c.issueID)
+	release := holdRunBudgetBoundary(t, c.issueID)
+	defer release()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		moveStatusAsMember(t, c.issueID, "in_review")
+	}()
+	if !stillRunning(done) {
+		t.Fatal("the move finished while a window boundary was in flight")
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM issue WHERE id=$1 AND status='in_review'`, c.issueID); n != 0 {
+		t.Fatal("the move was written while a window boundary was in flight")
+	}
+	release()
+	<-done
+	admitRun(t, c)
+	if got := ledgerBalance(t, c.issueID); got != 41 {
+		t.Fatalf("balance after the move and one admission = %d, want 41", got)
+	}
+}
+
+// failFromBegin passes the first n-1 transactions to the real pool and refuses
+// every later one.
+type failFromBegin struct {
+	real  txStarter
+	n     int32
+	count atomic.Int32
+}
+
+func (f *failFromBegin) Begin(ctx context.Context) (pgx.Tx, error) {
+	if f.count.Add(1) >= f.n {
+		return nil, errors.New("begin refused")
+	}
+	return f.real.Begin(ctx)
+}
+
+// A move whose old window cannot be written is refused before it changes the
+// issue: writing it anyway would start the next window over an unwritten one.
+func TestRunBudgetMemberMoveFailsWhenTheOldWindowCannotBeWritten(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	c, _ := budgetedAt(t, 40, 38)
+	recordMemberMovesOf(t, c.issueID)
+
+	real := testHandler.TxStarter
+	// The first transaction takes the boundary lock; the second would write the window.
+	testHandler.TxStarter = &failFromBegin{real: real, n: 2}
+	req := withURLParam(newRequest(http.MethodPatch, "/api/issues/"+c.issueID, map[string]any{"status": "in_review", "suppress_run": true}), "id", c.issueID)
+	w := httptest.NewRecorder()
+	testHandler.UpdateIssue(w, req)
+	testHandler.TxStarter = real
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("move with a failing ledger write = %d, want 500: %s", w.Code, w.Body.String())
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM issue WHERE id=$1 AND status='in_progress'`, c.issueID); n != 1 {
+		t.Fatal("the refused move still changed the issue status")
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND action='status_changed'`, c.issueID); n != 0 {
+		t.Fatalf("status_changed activity rows after a refused move = %d, want 0", n)
+	}
+
+	// The lock was released and nothing was lost: the same move now goes through.
+	moveStatusAsMember(t, c.issueID, "in_review")
+	admitRun(t, c)
+	if got := ledgerBalance(t, c.issueID); got != 41 {
+		t.Fatalf("balance after the retried move and one admission = %d, want 41", got)
 	}
 }

@@ -4284,6 +4284,13 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if actorType == "member" && (req.Status != nil || params.Status.Valid) {
+		release, ok := h.beginRunBudgetMove(w, r, prevIssue)
+		if !ok {
+			return
+		}
+		defer release()
+	}
 	var issue db.Issue
 	attachmentsChanged := false
 	if req.Description != nil || req.TitleBase != nil || req.DescriptionBase != nil || len(attachmentIDs) > 0 {
@@ -4401,9 +4408,6 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	if handoff != nil {
 		updatedPayload["workflow_handoff"] = workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun, runReason)
-	}
-	if statusChanged && actorType == "member" {
-		h.openRunBudgetWindowForMove(r.Context(), issue)
 	}
 	h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, updatedPayload)
 	if statusChanged && actorType == "member" {
@@ -5188,6 +5192,15 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		releaseMove := func() {}
+		if actorType == "member" && (req.Updates.Status != nil || params.Status.Valid) {
+			release, err := h.lockRunBudgetMove(r.Context(), prevIssue)
+			if err != nil {
+				slog.Warn("batch update issue: run budget", "issue_id", issueID, "error", err)
+				continue
+			}
+			releaseMove = release
+		}
 		var issue db.Issue
 		if req.Updates.Description != nil {
 			// One batch-level base cannot describe multiple issue documents.
@@ -5204,6 +5217,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			issue, err = h.updateIssueWithStatusGuard(writeCtx, wsUUID, issueStatusGuard, params, workflowWrite)
 		}
 		if err != nil {
+			releaseMove()
 			// The archive race is a property of the batch's shared target
 			// status, not of one issue, so every remaining item would fail the
 			// same way. Abort with 409 instead of reporting a partial update.
@@ -5268,15 +5282,13 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		if handoff != nil {
 			batchPayload["workflow_handoff"] = workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun, runReason)
 		}
-		if statusChanged && actorType == "member" {
-			h.openRunBudgetWindowForMove(r.Context(), issue)
-		}
 		h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, batchPayload)
 		if statusChanged && actorType == "member" {
 			h.openRunBudgetWindowForMove(r.Context(), issue)
 		} else if statusChanged && actorType == "agent" {
 			h.grantRunBudgetStep(r.Context(), issue, prevIssue.Status)
 		}
+		releaseMove()
 
 		// Reassignment does not cancel existing tasks (#4963 / MUL-4113) —
 		// mirrors UpdateIssue. See that handler for the rationale.
