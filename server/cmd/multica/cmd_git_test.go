@@ -63,3 +63,10 @@ func TestGitPushLeaseReachesBroker(t *testing.T) {
 		t.Fatalf("err = %v, want the no-broker stop", err)
 	}
 }
+
+func TestGitPRNoBroker(t *testing.T) {
+	t.Setenv("MULTICA_BROKER_SOCKET", "")
+	if err := runGitPR(gitPRCmd, []string{"create"}); err == nil || !strings.Contains(err.Error(), "no push broker") {
+		t.Fatalf("pr without a broker: %v", err)
+	}
+}
