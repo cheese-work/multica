@@ -117,3 +117,8 @@ SELECT EXISTS (
   WHERE issue_id = sqlc.arg('issue_id')::uuid AND action = 'status_changed' AND actor_type = 'member'
     AND created_at >= sqlc.arg('since')::timestamptz AND details->>'to' = sqlc.arg('status')::text
 );
+
+-- name: RunBudgetBoundaryClock :one
+-- The time now, not the transaction's start: a window boundary taken after a
+-- wait for the boundary lock must sort after every boundary written during it.
+SELECT clock_timestamp()::timestamptz;

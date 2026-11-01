@@ -175,9 +175,17 @@ func (h *Handler) TopUpIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "the issue has no workflow run budget to top up")
 		return
 	}
+	// The transaction began before the wait for the lock, so now() would sort
+	// this boundary before any move recorded during the wait.
+	startedAt, err := qtx.RunBudgetBoundaryClock(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to top up the run budget")
+		return
+	}
 	if _, err := qtx.CreateActivity(r.Context(), db.CreateActivityParams{
 		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, ActorType: pgtype.Text{String: actorType, Valid: true},
 		ActorID: parseUUID(actorID), Action: "run_budget_top_up", Details: []byte("{}"),
+		CreatedAt: startedAt,
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to record the run budget top-up")
 		return
@@ -208,12 +216,15 @@ func (h *Handler) openRunBudgetWindow(ctx context.Context, issue db.Issue) error
 }
 
 // lockRunBudgetMove readies a person's status write, which starts the issue's
-// next run-budget window: it takes the boundary lock, then writes the window
-// the move is about to end. The caller releases the lock after the move is
-// published and its new window opened, so two moves never interleave their
-// boundaries and the second one finds the first one's window written. An error
-// means nothing was written and the caller must not write the move.
-func (h *Handler) lockRunBudgetMove(ctx context.Context, issue db.Issue) (release func(), err error) {
+// next run-budget window when it changes the status: it takes the boundary
+// lock, then writes the window the move is about to end. Whether the write
+// changes the status is read under the lock, because a move that held the lock
+// before may have changed it since the caller read the issue. The caller
+// releases the lock after the move is published and its new window opened, so
+// two moves never interleave their boundaries and the second one finds the
+// first one's window written. An error means nothing was written and the
+// caller must not write the move.
+func (h *Handler) lockRunBudgetMove(ctx context.Context, issue db.Issue, requestedStatus string) (release func(), err error) {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -223,6 +234,14 @@ func (h *Handler) lockRunBudgetMove(ctx context.Context, issue db.Issue) (releas
 		release()
 		return nil, err
 	}
+	current, err := h.Queries.WithTx(tx).GetIssue(ctx, issue.ID)
+	if err != nil {
+		release()
+		return nil, err
+	}
+	if current.Status == requestedStatus {
+		return release, nil
+	}
 	if err := h.openRunBudgetWindow(ctx, issue); err != nil {
 		release()
 		return nil, err
@@ -230,8 +249,8 @@ func (h *Handler) lockRunBudgetMove(ctx context.Context, issue db.Issue) (releas
 	return release, nil
 }
 
-func (h *Handler) beginRunBudgetMove(w http.ResponseWriter, r *http.Request, issue db.Issue) (release func(), ok bool) {
-	release, err := h.lockRunBudgetMove(r.Context(), issue)
+func (h *Handler) beginRunBudgetMove(w http.ResponseWriter, r *http.Request, issue db.Issue, requestedStatus string) (release func(), ok bool) {
+	release, err := h.lockRunBudgetMove(r.Context(), issue, requestedStatus)
 	if err != nil {
 		slog.Warn("run budget: prepare status move", "issue_id", uuidToString(issue.ID), "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to update issue")

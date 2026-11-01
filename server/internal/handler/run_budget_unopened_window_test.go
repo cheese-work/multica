@@ -216,3 +216,80 @@ func TestRunBudgetMemberMoveFailsWhenTheOldWindowCannotBeWritten(t *testing.T) {
 		t.Fatalf("balance after the retried move and one admission = %d, want 41", got)
 	}
 }
+
+// A request that asks for the status the issue has when it reads it is not yet
+// known to be a no-op: another move may change the status while it waits for
+// the boundary lock, and it then moves the issue back, which ends a window.
+func TestRunBudgetSameStatusRequestChecksTheStatusUnderTheLock(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	c, _ := budgetedAt(t, 40, 38)
+	recordMemberMovesOf(t, c.issueID)
+	release := holdRunBudgetBoundary(t, c.issueID)
+	defer release()
+
+	done := make(chan struct{})
+	var code int
+	go func() {
+		defer close(done)
+		req := withURLParam(newRequest(http.MethodPatch, "/api/issues/"+c.issueID, map[string]any{"status": "in_progress", "suppress_run": true}), "id", c.issueID)
+		w := httptest.NewRecorder()
+		testHandler.UpdateIssue(w, req)
+		code = w.Code
+	}()
+	if !stillRunning(done) {
+		t.Fatal("the request finished while a window boundary was in flight")
+	}
+	// The move that held the lock changed the status before the request got in.
+	if _, err := testPool.Exec(context.Background(), `UPDATE issue SET status='in_review' WHERE id=$1`, c.issueID); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	<-done
+	if code != http.StatusOK {
+		t.Fatalf("request = %d", code)
+	}
+	admitRun(t, c)
+	if got := ledgerBalance(t, c.issueID); got != 41 {
+		t.Fatalf("balance after the request and one admission = %d, want 41 (the old window's 2 runs kept)", got)
+	}
+}
+
+// A top-up that waits for the boundary lock starts its window when it gets the
+// lock, not when its transaction began: a move recorded while it waited must
+// not look newer than the top-up.
+func TestRunBudgetTopUpStartsItsWindowAfterAMoveItWaitedFor(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	c, _ := budgetedAt(t, 40, 38)
+	release := holdRunBudgetBoundary(t, c.issueID)
+	defer release()
+
+	done := make(chan struct{})
+	var code int
+	go func() {
+		defer close(done)
+		code = topUpBudget(t, c.issueID, nil).Code
+	}()
+	if !stillRunning(done) {
+		t.Fatal("the top-up finished while a window boundary was in flight")
+	}
+	// The move holding the lock records its boundary after the top-up began.
+	if _, err := testPool.Exec(context.Background(), `INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details)
+		SELECT workspace_id, id, 'member', $2::uuid, 'status_changed', '{}' FROM issue WHERE id=$1`, c.issueID, testUserID); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	<-done
+	if code != http.StatusOK {
+		t.Fatalf("top-up = %d", code)
+	}
+	var latest string
+	dbfx.QueryRow(t, `SELECT action FROM activity_log WHERE issue_id=$1 AND action IN ('status_changed','run_budget_top_up') AND actor_type='member'
+		ORDER BY created_at DESC LIMIT 1`, c.issueID).Scan(&latest)
+	if latest != "run_budget_top_up" {
+		t.Fatalf("latest window boundary = %q, want the top-up", latest)
+	}
+}

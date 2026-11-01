@@ -340,6 +340,19 @@ func (q *Queries) LockIssueRunBudgetBoundary(ctx context.Context, issueID pgtype
 	return err
 }
 
+const runBudgetBoundaryClock = `-- name: RunBudgetBoundaryClock :one
+SELECT clock_timestamp()::timestamptz
+`
+
+// The time now, not the transaction's start: a window boundary taken after a
+// wait for the boundary lock must sort after every boundary written during it.
+func (q *Queries) RunBudgetBoundaryClock(ctx context.Context) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, runBudgetBoundaryClock)
+	var column_1 pgtype.Timestamptz
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const sumIssueRunBudgetCap = `-- name: SumIssueRunBudgetCap :one
 SELECT COALESCE(SUM(cap_delta), 0)::bigint FROM issue_run_budget_entry
 WHERE issue_id = $1::uuid AND window_id = $2::text
