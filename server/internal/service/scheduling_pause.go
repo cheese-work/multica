@@ -36,11 +36,13 @@ func (s *TaskService) PauseWorkspaceScheduling(ctx context.Context, workspaceID,
 }
 
 func (s *TaskService) ResumeWorkspaceScheduling(ctx context.Context, workspaceID pgtype.UUID) (db.Workspace, error) {
-	ws, err := s.Queries.ResumeWorkspaceScheduling(ctx, workspaceID)
+	// List before resuming: a failure here leaves the workspace paused instead
+	// of resumed with no runtime woken.
+	runtimeIDs, err := s.Queries.ListAgentRuntimeIDsByWorkspace(ctx, workspaceID)
 	if err != nil {
 		return db.Workspace{}, err
 	}
-	runtimeIDs, err := s.Queries.ListAgentRuntimeIDsByWorkspace(ctx, workspaceID)
+	ws, err := s.Queries.ResumeWorkspaceScheduling(ctx, workspaceID)
 	if err != nil {
 		return db.Workspace{}, err
 	}

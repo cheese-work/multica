@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,6 +99,12 @@ func TestAgentSchedulingPauseBlocksClaimNotEnqueue(t *testing.T) {
 	f := newPauseFixture(t, 1)
 	a := f.agents[0]
 
+	// A task already running when the pause lands must stay untouched.
+	issue3 := f.fx.Issue(t, "already running")
+	running := f.fx.Task(t, util.UUIDToString(a.id), testutil.Cols{
+		"runtime_id": util.UUIDToString(a.runtimeID), "issue_id": issue3, "status": "running",
+	})
+
 	if _, err := f.svc.PauseAgentScheduling(ctx, f.workspaceID, a.id, f.actorID); err != nil {
 		t.Fatalf("pause: %v", err)
 	}
@@ -107,12 +114,6 @@ func TestAgentSchedulingPauseBlocksClaimNotEnqueue(t *testing.T) {
 	f.fx.Task(t, util.UUIDToString(a.id), testutil.Cols{
 		"runtime_id": util.UUIDToString(a.runtimeID), "issue_id": issue2, "status": "queued",
 	})
-	// A running task is not touched by pause.
-	issue3 := f.fx.Issue(t, "already running")
-	running := f.fx.Task(t, util.UUIDToString(a.id), testutil.Cols{
-		"runtime_id": util.UUIDToString(a.runtimeID), "issue_id": issue3, "status": "running",
-	})
-
 	claimed, candidates := f.claim(t, a)
 	if claimed {
 		t.Fatal("paused agent claimed a queued task")
@@ -236,6 +237,44 @@ func TestSchedulingResumeBumpsEmptyClaimVersion(t *testing.T) {
 			return err
 		})
 	})
+}
+
+// failingQuery makes any statement containing match fail, so a test can break
+// one step of a multi-step service method.
+type failingQuery struct {
+	db.DBTX
+	match string
+}
+
+func (f failingQuery) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+	if strings.Contains(sql, f.match) {
+		return nil, errors.New("injected query failure")
+	}
+	return f.DBTX.Query(ctx, sql, args...)
+}
+
+// A failed workspace resume must leave the workspace paused: resuming first and
+// then failing to list runtimes would return an error with the state changed
+// and no runtime woken or invalidated.
+func TestWorkspaceResumeFailureLeavesWorkspacePaused(t *testing.T) {
+	ctx := context.Background()
+	f := newPauseFixture(t, 1)
+	if _, err := f.svc.PauseWorkspaceScheduling(ctx, f.workspaceID, f.actorID); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+
+	f.svc.Queries = db.New(failingQuery{DBTX: f.pool, match: "FROM agent_runtime"})
+	if _, err := f.svc.ResumeWorkspaceScheduling(ctx, f.workspaceID); err == nil {
+		t.Fatal("resume succeeded although runtime listing failed")
+	}
+
+	var paused bool
+	if err := f.pool.QueryRow(ctx, `SELECT scheduling_paused_at IS NOT NULL FROM workspace WHERE id = $1`, f.workspaceID).Scan(&paused); err != nil {
+		t.Fatalf("read workspace: %v", err)
+	}
+	if !paused {
+		t.Fatal("failed resume cleared the pause")
+	}
 }
 
 func TestSecondPauseKeepsFirstActorAndTime(t *testing.T) {
