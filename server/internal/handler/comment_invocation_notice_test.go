@@ -161,13 +161,9 @@ func TestCommentInvocationDeniedNoticeSkipsOtherSubmissions(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	privateID, _, _ := privateAgentTestFixture(t)
 	allowedID := createHandlerTestAgent(t, "Successful notice target", nil)
-	// /note never triggers, so its mentions are inert: a denied one there is
-	// neither refused nor noticed.
 	for _, tc := range []struct{ name, content string }{
 		{"successful", fmt.Sprintf("[@Allowed](mention://agent/%s) proceed", allowedID)},
-		{"note", fmt.Sprintf("/note [@Private](mention://agent/%s) reference only", privateID)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			issueID := dbfx.Issue(t, "No permission notice for "+tc.name)

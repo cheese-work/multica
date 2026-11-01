@@ -81,6 +81,7 @@ func TestCreateCommentInvalidAgentMentionsRejected(t *testing.T) {
 		{"other workspace", foreignID, ""},
 		{"private not invocable", privateID, readerID},
 		{"archived", archivedID, ""},
+		{"inside a note", uuid.NewString(), ""},
 	}
 	var firstBody string
 	for i, tc := range cases {
@@ -163,11 +164,6 @@ func TestCreateCommentInvalidAgentMentionsStillSavesOtherTargets(t *testing.T) {
 		if findCommentOutcome(t, posted.TriggerOutcomes, unboundID).Status != DispatchBlocked {
 			t.Fatalf("outcomes = %+v", posted.TriggerOutcomes)
 		}
-	})
-	t.Run("note with a bad agent mention is inert", func(t *testing.T) {
-		issueID := gateIssue(t, "Gate note")
-		content := fmt.Sprintf("/note [@Gone](mention://agent/%s) reference only", uuid.NewString())
-		postCommentForGate(t, newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": content}), issueID).Want(http.StatusCreated)
 	})
 	t.Run("squad with private leader and member mentions are unchanged", func(t *testing.T) {
 		issueID := gateIssue(t, "Gate squad member")

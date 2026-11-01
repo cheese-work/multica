@@ -22,12 +22,8 @@ type mentionRange struct {
 // resolveMentionedAgentCommentTriggers, so this agrees with what the composer
 // preview reports. Offline runtimes, budgets and trigger policy are not
 // checked: those stay non-fatal blocked outcomes. skip holds lower-case agent
-// ids that need no check (mentions already present before an edit). A /note
-// comment never triggers anyone, so its mentions are inert and not checked.
+// ids that need no check (mentions already present before an edit).
 func (h *Handler) invalidAgentMentionRanges(ctx context.Context, issue db.Issue, content, actorType, actorID, originatorUserID string, skip map[string]struct{}) []mentionRange {
-	if isNoteComment(content) {
-		return nil
-	}
 	wsID := uuidToString(issue.WorkspaceID)
 	var invalid []mentionRange
 	for _, m := range util.MentionRe.FindAllStringSubmatchIndex(content, -1) {
