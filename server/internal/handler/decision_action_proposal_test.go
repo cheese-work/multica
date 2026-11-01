@@ -8,8 +8,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -239,10 +241,24 @@ func TestProposalFingerprintChangesWithEachIdentityField(test *testing.T) {
 	}
 }
 
+// The pool holds two connections for six callers: a request that reads through
+// the pool while its transaction holds the lane lock starves the callers queued
+// behind that lock, so every call must finish inside the deadline.
 func TestProposalConcurrentIdenticalCallsMakeOneRequest(test *testing.T) {
 	useProposalGuard(test)
 	fixture := newProposalFixture(test)
 	body := fixture.proposal(test)
+	config := testPool.Config().Copy()
+	config.MaxConns, config.MinConns = 2, 0
+	small, err := pgxpool.NewWithConfig(context.Background(), config)
+	if err != nil {
+		test.Fatal(err)
+	}
+	defer small.Close()
+	narrow := *testHandler
+	narrow.Queries, narrow.DB, narrow.TxStarter = db.New(small), small, small
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
 	const callers = 6
 	codes := make([]int, callers)
 	var group sync.WaitGroup
@@ -251,7 +267,7 @@ func TestProposalConcurrentIdenticalCallsMakeOneRequest(test *testing.T) {
 		go func() {
 			defer group.Done()
 			recorder := httptest.NewRecorder()
-			testHandler.ProposeDecisionAction(recorder, fixture.proposeRequest(body))
+			narrow.ProposeDecisionAction(recorder, fixture.proposeRequest(body).WithContext(ctx))
 			codes[index] = recorder.Code
 		}()
 	}
