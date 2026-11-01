@@ -300,7 +300,8 @@
     "more_actions": "更多操作",
     "statistics": "統計",
     "pin": "置頂對話",
-    "unpin": "取消置頂對話"
+    "unpin": "取消置頂對話",
+    "preset": { "label": "預設", "inherit": "繼承", "base": "基礎" }
   },
   "scheduled": {
     "chip": "已排程 {{count}}",

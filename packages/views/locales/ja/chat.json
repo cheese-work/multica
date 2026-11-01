@@ -300,7 +300,8 @@
     "unarchive": "アーカイブを解除",
     "statistics": "統計",
     "pin": "チャットをピン留め",
-    "unpin": "チャットのピン留めを解除"
+    "unpin": "チャットのピン留めを解除",
+    "preset": { "label": "プリセット", "inherit": "継承", "base": "ベース" }
   },
   "scheduled": {
     "chip": "予約済み {{count}}",
