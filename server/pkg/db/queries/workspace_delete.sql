@@ -386,6 +386,11 @@ deleted_stage_completion_wakes AS (
 deleted_stage_generations AS (
     DELETE FROM stage_generation WHERE workspace_id = $1
 ),
+-- CHE-1126 gateway-recovery claim ledger: workspace-owned leaf; the FK cascades
+-- too, the explicit delete keeps teardown independent of FK ordering.
+deleted_recovery_claims AS (
+    DELETE FROM recovery_claim WHERE workspace_id = $1
+),
 -- CHE-2297 run-budget notice claims: workspace-owned leaf, no FK.
 deleted_run_budget_notices AS (
     DELETE FROM run_budget_notice WHERE workspace_id = $1

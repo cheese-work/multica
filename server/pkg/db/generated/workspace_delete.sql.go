@@ -386,6 +386,9 @@ deleted_stage_completion_wakes AS (
 deleted_stage_generations AS (
     DELETE FROM stage_generation WHERE workspace_id = $1
 ),
+deleted_recovery_claims AS (
+    DELETE FROM recovery_claim WHERE workspace_id = $1
+),
 deleted_run_budget_notices AS (
     DELETE FROM run_budget_notice WHERE workspace_id = $1
 ),
@@ -670,6 +673,8 @@ WHERE channel_media_pending_object.workspace_id = $1
 // CHE-488 durable stage-completion-wake bookkeeping (stage_generation,
 // stage_completion_wake). Deleted before the parent issues below so neither
 // statement depends on FK cascade ordering.
+// CHE-1126 gateway-recovery claim ledger: workspace-owned leaf; the FK cascades
+// too, the explicit delete keeps teardown independent of FK ordering.
 // CHE-2297 run-budget notice claims: workspace-owned leaf, no FK.
 // CHE-2297 L2a run-budget ledger: workspace-owned leaf, no FK.
 // CHE-2489 run capability grants: workspace-owned leaf, no FK.
