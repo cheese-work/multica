@@ -138,12 +138,40 @@ func snapshotDecisionAction(ctx context.Context, queries *db.Queries, workspaceI
 	return nil, errors.New("no snapshot for action " + draft.Type)
 }
 
+// checkIssueTarget requires params.issue_id of an issue-target action to be
+// the issue its request is on, so an approval cannot reach another issue.
+func checkIssueTarget(params json.RawMessage, requestIssueID pgtype.UUID, status int) error {
+	var target struct {
+		IssueID string `json:"issue_id"`
+	}
+	if json.Unmarshal(params, &target) != nil {
+		return decisionIntentRefusal{status, "target_issue_mismatch: params.issue_id must be the issue the request is on"}
+	}
+	id, err := parseUUIDString(target.IssueID)
+	if err != nil || id != requestIssueID {
+		return decisionIntentRefusal{status, "target_issue_mismatch: params.issue_id must be the issue the request is on"}
+	}
+	return nil
+}
+
+// isIssueTargetAction reports whether the stored action targets its request's issue.
+func isIssueTargetAction(action db.DecisionAction) bool {
+	definition, found := decisionaction.Lookup(action.ActionType, int(action.ActionVersion))
+	return found && definition.Target == decisionaction.TargetIssue
+}
+
 // createDecisionAction stores the action in the request's transaction, so a
 // request never exists without the action it asks Cheese to approve.
 func createDecisionAction(ctx context.Context, queries *db.Queries, issue db.Issue, request db.DecisionRequest, taskID pgtype.UUID, draft *decisionActionDraft) (db.DecisionAction, error) {
 	empty := db.DecisionAction{}
-	preconditions, err := snapshotDecisionAction(ctx, queries, issue.WorkspaceID, draft)
-	if err != nil {
+	var preconditions map[string]any
+	var err error
+	if draft.Definition.Target == decisionaction.TargetIssue {
+		if err = checkIssueTarget(draft.Params, issue.ID, http.StatusBadRequest); err != nil {
+			return empty, err
+		}
+		preconditions = map[string]any{"issue_id": uuidToString(issue.ID)}
+	} else if preconditions, err = snapshotDecisionAction(ctx, queries, issue.WorkspaceID, draft); err != nil {
 		return empty, err
 	}
 	preconditionsJSON, err := json.Marshal(preconditions)
