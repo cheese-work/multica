@@ -202,6 +202,8 @@ interface ContentEditorBaseProps {
   enableSlashCommands?: boolean;
   enableRenameCommand?: boolean;
   enableForkCommand?: boolean;
+  /** Offer `/preset <name>` completions for this agent's presets (the open DM's agent). */
+  presetAgentId?: string;
   /** DM commands the owner handles itself; each is off unless switched on. */
   enableStatisticCommand?: boolean;
   enableArchiveCommand?: boolean;
@@ -396,6 +398,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       enableSlashCommands = false,
       enableRenameCommand = false,
       enableForkCommand = false,
+      presetAgentId,
       enableStatisticCommand = false,
       enableArchiveCommand = false,
       enablePinCommand = false,
@@ -442,6 +445,8 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     enableRenameCommandRef.current = enableRenameCommand;
     const enableForkCommandRef = useRef(enableForkCommand);
     enableForkCommandRef.current = enableForkCommand;
+    const presetAgentIdRef = useRef(presetAgentId);
+    presetAgentIdRef.current = presetAgentId;
     const dmCommandsRef = useRef({
       statistic: enableStatisticCommand,
       archive: enableArchiveCommand,
@@ -676,6 +681,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
         enableSlashCommands,
         canRename: () => enableRenameCommandRef.current,
         canFork: () => enableForkCommandRef.current,
+        getPresetAgentId: () => presetAgentIdRef.current,
         canUseCommand: (command) => dmCommandsRef.current[command],
         canCompact: () => enableCompactCommandRef.current,
         slashCommandMode,

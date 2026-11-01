@@ -94,6 +94,7 @@ func TestCHE2199DecisionRelayReplay(test *testing.T) {
 	assignee := createHandlerTestAgent(test, "decision-current-assignee", []byte("[]"))
 	dbfx.Exec(test, `UPDATE issue SET assignee_id = $1 WHERE id = $2`, assignee, fixture.issueID)
 	input := fixture.recordInput()
+	// The relay does not depend on the class; a non-reversible agent record cannot be woken (decision_answer_wake_policy).
 	input.ParentID, input.EscalationClass = parseUUID(parent), "reversible"
 	recorded, err := testHandler.createAskedDecisionRecord(request, fixture.issue, input)
 	if err != nil {
