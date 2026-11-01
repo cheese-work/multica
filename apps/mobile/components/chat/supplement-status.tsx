@@ -4,9 +4,9 @@
  * `packages/views/chat/components/chat-supplement-status.tsx`. The state
  * mapping lives in `lib/chat-supplement.ts`.
  *
- * Divergence: mobile has no queue UI, so it never starts a steer itself. It
- * renders receipts created from another client and offers the resend actions.
- * An `uncertain` resend asks for confirmation through a native alert first.
+ * Steer itself starts in `queued-follow-ups.tsx`. This row shows the receipt
+ * and offers the resend actions. An `uncertain` resend asks for confirmation
+ * through a native alert first.
  */
 import { useState } from "react";
 import { Alert, Pressable, View } from "react-native";

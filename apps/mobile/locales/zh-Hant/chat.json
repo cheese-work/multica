@@ -106,6 +106,15 @@
   },
   "picker.title": "選擇智慧體",
   "no_response": "本輪已結束，智慧體沒有返回文字回覆。",
+  "steer": {
+    "label": "引導",
+    "fallback": "排隊中的訊息",
+    "unavailable": "目前回覆開始後才能引導",
+    "starting": "執行正在啟動",
+    "unsupported": "此執行無法接收新訊息，訊息會繼續排隊。",
+    "no_permission": "你已無權執行此智慧體",
+    "failed": "無法將訊息加入執行，訊息仍在排隊。"
+  },
   "supplement": {
     "added": "已加入執行",
     "read": "智慧體已讀",

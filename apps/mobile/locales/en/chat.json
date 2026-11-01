@@ -171,6 +171,15 @@
   },
   "picker.title": "Choose an agent",
   "no_response": "The agent finished this turn without a text reply.",
+  "steer": {
+    "label": "Steer",
+    "fallback": "Queued message",
+    "unavailable": "Steer is available after the current reply starts",
+    "starting": "Run is starting",
+    "unsupported": "This run can't take new messages. The message stays queued.",
+    "no_permission": "You no longer have permission to run this agent",
+    "failed": "Couldn't add the message to the run. It stays queued."
+  },
   "supplement": {
     "added": "Added to run",
     "read": "Read by agent",
