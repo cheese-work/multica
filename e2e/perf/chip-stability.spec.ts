@@ -324,6 +324,12 @@ test("R2: delayed key resolution keeps chips and the reader's place stable", asy
   // Each chip's first box against its own resolved box. A chip that mounts already
   // resolved has delta 0; one that starts as a placeholder shows its jump.
   const placeholders = all.filter((t) => !RESOLVED.test(t.first.label));
+  // The transition must be observed, not assumed: a chip that began as a placeholder
+  // and ended as the title of the same key. Without one, a zero delta proves nothing.
+  const sameKeyTransitions = placeholders.filter((t) => {
+    const key = /PERF-\d+/.exec(t.last.label)?.[0];
+    return key !== undefined && t.first.label.includes(key);
+  });
   const widthDelta = Math.max(0, ...all.map((t) => Math.abs(t.last.w - t.first.w)));
   const heightDelta = Math.max(0, ...all.map((t) => Math.abs(t.last.h - t.first.h)));
   const shift = await fx.readShift(page);
@@ -331,6 +337,7 @@ test("R2: delayed key resolution keeps chips and the reader's place stable", asy
   const requestsPerKey = [...h.keyLookups.values()];
   expect(h.keyLookups.size, "distinct keys looked up").toBeGreaterThan(0);
   expect.soft(all.length, "chips measured").toBeGreaterThan(0);
+  expect.soft(sameKeyTransitions.length, "chips seen as placeholder, then as the same key's title").toBeGreaterThan(0);
   expect.soft(Math.max(...requestsPerKey), "getIssue requests per key").toBe(1);
   expect.soft(widthDelta, "chip width delta, placeholder to resolved (px)").toBeLessThanOrEqual(GEOMETRY_LIMIT_PX);
   expect.soft(heightDelta, "chip height delta, placeholder to resolved (px)").toBeLessThanOrEqual(GEOMETRY_LIMIT_PX);
@@ -340,6 +347,7 @@ test("R2: delayed key resolution keeps chips and the reader's place stable", asy
   report("R2", {
     profile, maxRequestsPerKey: Math.max(...requestsPerKey), widthDelta, heightDelta,
     scrollDelta, cls: shift.cls, rawShift: shift.raw, chips: all.length, placeholderChips: placeholders.length,
+    sameKeyTransitions: sameKeyTransitions.length,
     placeholderLabel: placeholders[0]?.first.label, resolvedLabel: all[0]?.last.label,
   });
   expectClean(h);
