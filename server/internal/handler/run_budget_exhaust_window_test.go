@@ -16,10 +16,18 @@ import (
 // refusal fires, without running the block.
 func refusedEvent(t *testing.T, c budgetCase) service.RunBudgetExhausted {
 	t.Helper()
+	return refusedEventAfter(t, c, func() {})
+}
+
+// refusedEventAfter is refusedEvent with afterSpend run between the spend and
+// the refusal, to put the issue in the state the refusal finds it in.
+func refusedEventAfter(t *testing.T, c budgetCase, afterSpend func()) service.RunBudgetExhausted {
+	t.Helper()
 	events := make(chan service.RunBudgetExhausted, 1)
 	service.SetOnRunBudgetExhausted(func(_ context.Context, e service.RunBudgetExhausted) { events <- e })
 	t.Cleanup(func() { service.SetOnRunBudgetExhausted(testHandler.onRunBudgetExhausted) })
 	c.spend(t, 2)
+	afterSpend()
 	c.refuse(t)
 	return <-events
 }
@@ -131,4 +139,58 @@ func TestRunBudgetExhaustionCallbackLosesToATopUpLandingBeforeTheBlock(t *testin
 	})
 	testHandler.onRunBudgetExhausted(context.Background(), e)
 	assertNotBlocked(t, c)
+}
+
+func landBeforeNotice(t *testing.T, write func()) {
+	t.Helper()
+	landed := false
+	runBudgetBeforeNotice = func() { runBudgetBeforeNotice = func() {}; landed = true; write() }
+	t.Cleanup(func() {
+		runBudgetBeforeNotice = func() {}
+		if !landed {
+			t.Error("the write never landed: the callback did not reach the notice")
+		}
+	})
+}
+
+// The notice-only paths move no status, so only the notice's own transaction
+// can stop a stale callback from opening the old window's decision request.
+func TestRunBudgetExhaustionNoticeLosesToATopUpLandingBeforeTheNotice(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	cases := []struct {
+		name   string
+		seed   int64
+		steps  []map[string]any
+		status string
+	}{
+		{"already blocked", 2807006, mergeEdgeSteps, "blocked"},
+		{"workflow without blocked", 2807007, noBlockedSteps, "in_progress"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newBudgetCase(t, tc.seed, tc.steps, 2)
+			e := refusedEventAfter(t, c, func() {
+				if tc.status == "blocked" {
+					c.enter(t, "blocked")
+				}
+			})
+			landBeforeNotice(t, func() {
+				if w := topUpBudget(t, c.issueID, nil); w.Code != http.StatusOK {
+					t.Errorf("top-up = %d: %s", w.Code, w.Body.String())
+				}
+			})
+			testHandler.onRunBudgetExhausted(context.Background(), e)
+			if got := c.status(t); got != tc.status {
+				t.Fatalf("status = %s, want %s kept", got, tc.status)
+			}
+			if n := c.decisionRows(t); n != 0 {
+				t.Fatalf("decision requests = %d, want 0", n)
+			}
+			if n := recoveryRuns(t, c.edgeCase); n != 0 {
+				t.Fatalf("recovery runs = %d, want 0", n)
+			}
+		})
+	}
 }
