@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/weblink"
@@ -459,6 +460,17 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 			Filename:     header.Filename,
 			ContentType:  contentType,
 			SizeBytes:    int64(len(data)),
+		}
+		// A marked task's upload stores the mark (CHE-2216 plan 3.7). If the
+		// requesting task cannot be read, the upload does not happen.
+		actor, acting, actErr := service.ActingTask(h.actingTaskContext(r), h.Queries)
+		if actErr != nil {
+			slog.Error("could not read requesting task", "error", actErr)
+			writeError(w, http.StatusInternalServerError, "upload failed")
+			return
+		}
+		if acting && actor.ExternalRead {
+			params.ExternalRead = pgtype.Bool{Bool: true, Valid: true}
 		}
 
 		if issueID := r.FormValue("issue_id"); issueID != "" {

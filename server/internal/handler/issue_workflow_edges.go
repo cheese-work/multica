@@ -257,7 +257,11 @@ func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetE
 			raise = h.runBudgetRaiseCommand(ctx, issue, e.Max, int(e.Runs))
 		}
 		refused = h.runBudgetRefusedRun(ctx, e)
-		if moved = h.blockExhaustedIssue(ctx, issue, e, refused, raise); moved || issue.Status == issuestatus.Blocked {
+		var lifted bool
+		if moved, lifted = h.blockExhaustedIssue(ctx, issue, e, refused, raise); lifted {
+			return
+		}
+		if moved || issue.Status == issuestatus.Blocked {
 			break
 		}
 		if latest, err := h.Queries.GetIssue(ctx, e.IssueID); err != nil || latest.Revision == issue.Revision {
@@ -288,7 +292,7 @@ func (h *Handler) enqueueBudgetRecovery(ctx context.Context, e service.RunBudget
 	if step, ok := def.Step(issuestatus.Blocked); !ok || step.Handler.Type != "agent" || step.Handler.ID != uuidToString(issue.AssigneeID) {
 		return
 	}
-	if _, err := h.TaskService.EnqueueBudgetRecoveryRun(ctx, issue, e.Since); err != nil && !errors.Is(err, service.ErrRecoveryClaimed) {
+	if _, err := h.TaskService.EnqueueBudgetRecoveryRun(ctx, issue, e.Since); err != nil && !errors.Is(err, service.ErrRecoveryClaimed) && !errors.Is(err, service.ErrRecoveryWindowLifted) {
 		slog.Warn("run budget: recovery run not enqueued", "err", err, "issue_id", uuidToString(issue.ID))
 	}
 }
@@ -297,11 +301,16 @@ func (h *Handler) enqueueBudgetRecovery(ctx context.Context, e service.RunBudget
 const runBudgetBlockTries = 3
 
 // exhaustedIssue reads the issue a refusal is about and reports whether the
-// refusal still applies: not finished, and still in the status that was
-// refused unless it is already blocked.
+// refusal still applies: not finished, its window still current and still
+// spent, and still in the status that was refused unless it is already blocked.
 func (h *Handler) exhaustedIssue(ctx context.Context, e service.RunBudgetExhausted) (db.Issue, bool) {
 	issue, err := h.Queries.GetIssue(ctx, e.IssueID)
 	if err != nil || service.IsFinishedStatus(ctx, h.Queries, issue.WorkspaceID, issue.Status) {
+		return issue, false
+	}
+	// Read after the issue, so a top-up that commits after this point moves the
+	// revision the block is conditional on, and the retry reads it again.
+	if refuses, err := service.RunBudgetStillRefuses(ctx, h.Queries, e.IssueID, e.Since); err != nil || !refuses {
 		return issue, false
 	}
 	if issue.Status == issuestatus.Blocked {
@@ -318,23 +327,58 @@ func (h *Handler) exhaustedIssue(ctx context.Context, e service.RunBudgetExhaust
 	return issue, true
 }
 
-// blockExhaustedIssue moves the issue to blocked and records why, and reports
-// whether this call moved it.
-func (h *Handler) blockExhaustedIssue(ctx context.Context, issue db.Issue, e service.RunBudgetExhausted, refused, raise string) bool {
+// runBudgetBeforeBlock runs between the callback's reads and its block write.
+// Tests use it to land a budget write in that window.
+var runBudgetBeforeBlock = func() {}
+
+// errRefusalLifted marks a block that found, under the budget lock, that the
+// refusal no longer holds: a top-up or a progress grant landed first.
+var errRefusalLifted = fmt.Errorf("run budget: the refusal no longer applies: %w", pgx.ErrNoRows)
+
+// blockExhaustedIssue moves the issue to blocked and records why. It reports
+// whether this call moved the issue, and whether the budget was restored
+// before the move so the refusal no longer applies.
+//
+// The check runs in the status write's transaction under the budget lock that
+// every grant, top-up and admission takes. A balance-restoring write either
+// commits before the check and the block is dropped, or waits for the block's
+// commit and is judged on the blocked issue. A write that changes no issue
+// field (a head grant) cannot be caught by the expected revision alone.
+func (h *Handler) blockExhaustedIssue(ctx context.Context, issue db.Issue, e service.RunBudgetExhausted, refused, raise string) (moved, lifted bool) {
 	if issue.Status == issuestatus.Blocked {
-		return false
+		return false, false
 	}
+	runBudgetBeforeBlock()
 	def, _, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
 	if err != nil || def == nil || !def.Has(issuestatus.Blocked) {
 		slog.Warn("run budget: cannot block issue", "err", err, "issue_id", uuidToString(issue.ID))
-		return false
+		return false, false
 	}
 	details := map[string]any{
 		"reason": issueworkflow.BlockedReasonRunBudget, "max_runs": e.Max, "runs": e.Runs,
 		"refused_run": refused, "raise_command": raise,
 	}
-	if moved, _ := h.moveIssueOnEdge(ctx, issue, issuestatus.Blocked, "run_budget", details, false); !moved {
-		return false
+	stillRefused := func(ctx context.Context, q *db.Queries, _ *db.UpdateIssueParams) error {
+		if _, err := q.LockIssueRunBudget(ctx, issue.ID); err != nil {
+			return err
+		}
+		if still, err := service.RunBudgetStillRefuses(ctx, q, issue.ID, e.Since); err != nil || !still {
+			if err == nil {
+				err = errRefusalLifted
+			}
+			return err
+		}
+		return nil
+	}
+	moved, _, err = h.tryMoveIssueOnEdge(withIssueMoveGuard(ctx, stillRefused), issue, issuestatus.Blocked, "run_budget", details, false)
+	if errors.Is(err, errRefusalLifted) {
+		return false, true
+	}
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		slog.Warn("run budget: block failed", "err", err, "issue_id", uuidToString(issue.ID))
+	}
+	if !moved {
+		return false, false
 	}
 	reason, _ := json.Marshal(issueworkflow.BlockedReasonRunBudget)
 	if _, err := h.Queries.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{Key: "blocked_reason", Value: reason, ID: issue.ID, WorkspaceID: issue.WorkspaceID}); err != nil {
@@ -347,7 +391,7 @@ func (h *Handler) blockExhaustedIssue(ctx context.Context, issue db.Issue, e ser
 	}); err != nil {
 		slog.Warn("run budget: activity failed", "err", err, "issue_id", uuidToString(issue.ID))
 	}
-	return true
+	return true, false
 }
 
 // exhaustedNoticeText is the exhaustion comment: what was refused, whether the
