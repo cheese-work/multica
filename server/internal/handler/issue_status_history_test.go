@@ -103,3 +103,30 @@ func TestUpdateIssueStatusRollsBackWithActivityFailure(t *testing.T) {
 		t.Fatalf("status = %q after failed activity write, want todo", status)
 	}
 }
+
+// The channel is a client hint kept apart from authentication provenance: a
+// CLI request keeps channel cli whatever credential it carries.
+func TestStatusTriggerChannelIsIndependentOfAuthSource(t *testing.T) {
+	cases := []struct{ source, platform, channel string }{
+		{"task_token", "cli", "cli"},
+		{"cloud_pat", "cli", "cli"},
+		{"cli_jwt", "cli", "cli"},
+		{"pat", "", "cli"},
+		{"cli_jwt", "", "cli"},
+		{"interactive_jwt", "desktop", "desktop"},
+		{"interactive_jwt", "web", "web"},
+		{"task_token", "", "unknown"},
+		{"interactive_jwt", "", "unknown"},
+	}
+	for _, c := range cases {
+		req := newRequest(http.MethodPatch, "/api/issues/x", nil)
+		req.Header.Set("X-Actor-Source", c.source)
+		if c.platform != "" {
+			req.Header.Set("X-Client-Platform", c.platform)
+		}
+		got := statusTriggerFromRequest(req, "member", "").Channel
+		if got != c.channel {
+			t.Errorf("source=%q platform=%q: channel %q, want %q", c.source, c.platform, got, c.channel)
+		}
+	}
+}

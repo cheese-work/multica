@@ -43,7 +43,7 @@ func statusTriggerFromRequest(r *http.Request, actorType, actorID string) servic
 		trigger.AuthSource = &source
 	}
 	switch platform := r.Header.Get("X-Client-Platform"); {
-	case platform == "web" || platform == "desktop":
+	case platform == "web" || platform == "desktop" || platform == "cli":
 		trigger.Channel = platform
 	case source == "cli_jwt" || source == "pat":
 		trigger.Channel = "cli"
