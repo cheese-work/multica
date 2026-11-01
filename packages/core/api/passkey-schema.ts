@@ -1,0 +1,33 @@
+import { z } from "zod";
+import { parseWithFallback } from "./schema";
+
+// Server options are `{ publicKey: {...} }` (go-webauthn); the ceremony helper
+// reads the inner fields, so only the wrapper is required here.
+const OptionsSchema = z.object({ publicKey: z.record(z.string(), z.unknown()) });
+
+export const PasskeyEnrollStartSchema = z.object({ ceremony_id: z.string(), options: OptionsSchema, expires_at: z.string() });
+export const PasskeyChallengeSchema = z.object({ challenge_id: z.string(), options: OptionsSchema, expires_at: z.string() });
+export const PasskeyEnrolledSchema = z.object({ enrolled: z.boolean() });
+export const PasskeyRevokedSchema = z.object({ revoked: z.boolean() });
+export const PasskeyDecisionOutcomeSchema = z.object({
+  id: z.string(),
+  state: z.string(),
+  result: z.unknown().optional(),
+  error_code: z.string().optional(),
+  error_message: z.string().optional(),
+});
+
+export type PasskeyEnrollStart = z.infer<typeof PasskeyEnrollStartSchema>;
+export type PasskeyChallenge = z.infer<typeof PasskeyChallengeSchema>;
+export type PasskeyDecisionOutcome = z.infer<typeof PasskeyDecisionOutcomeSchema>;
+
+/**
+ * Passkey responses gate a security decision, so a drifted shape must fail
+ * loudly instead of degrading to an empty fallback the UI could read as success.
+ * Uses `parseWithFallback` for the shared warning log, then throws on the null.
+ */
+export function parsePasskeyResponse<T>(raw: unknown, schema: z.ZodType<T>, endpoint: string): T {
+  const parsed = parseWithFallback<T | null>(raw, schema, null, { endpoint });
+  if (parsed === null) throw new Error(`unexpected response from ${endpoint}`);
+  return parsed;
+}
