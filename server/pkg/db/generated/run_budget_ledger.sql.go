@@ -11,17 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const bumpIssueRevision = `-- name: BumpIssueRevision :exec
-UPDATE issue SET revision = revision + 1 WHERE id = $1::uuid
-`
-
-// A budget write that changes no issue field (a member top-up) still moves the
-// revision, so a status write read before it loses its expected-revision check.
-func (q *Queries) BumpIssueRevision(ctx context.Context, issueID pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, bumpIssueRevision, issueID)
-	return err
-}
-
 const countIssueRunBudgetGrants = `-- name: CountIssueRunBudgetGrants :one
 SELECT COUNT(*)::bigint FROM issue_run_budget_entry
 WHERE issue_id = $1::uuid AND window_id = $2::text

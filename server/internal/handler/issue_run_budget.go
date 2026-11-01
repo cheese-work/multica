@@ -174,12 +174,6 @@ func (h *Handler) TopUpIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "the issue has no workflow run budget to top up")
 		return
 	}
-	// The top-up changes no issue field; the revision bump makes a block that
-	// read the issue before it lose (onRunBudgetExhausted).
-	if err := qtx.BumpIssueRevision(r.Context(), issue.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to top up the run budget")
-		return
-	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to top up the run budget")
 		return

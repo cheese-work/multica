@@ -78,3 +78,57 @@ func TestRunBudgetDelayedExhaustionAfterProgressGrantDoesNothing(t *testing.T) {
 	testHandler.onRunBudgetExhausted(context.Background(), e)
 	assertNotBlocked(t, c)
 }
+
+// landBeforeBlock runs write after the callback has read the issue and passed
+// its window check, and before the block write.
+func landBeforeBlock(t *testing.T, write func()) {
+	t.Helper()
+	landed := false
+	runBudgetBeforeBlock = func() { runBudgetBeforeBlock = func() {}; landed = true; write() }
+	t.Cleanup(func() {
+		runBudgetBeforeBlock = func() {}
+		if !landed {
+			t.Error("the write never landed: the callback did not reach the block")
+		}
+	})
+}
+
+// A head grant writes a ledger row and no issue field. Landing one between
+// the callback's reads and its block must still win, with the expected
+// revision unchanged. The revision is pinned to the value the callback read,
+// so the test does not depend on what else moves it.
+func TestRunBudgetExhaustionCallbackLosesToAHeadGrantLandingBeforeTheBlock(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c := newBudgetCase(t, 2807004, recoverySteps(seededReadyAgentID(t)), 2)
+	e := refusedEvent(t, c)
+	landBeforeBlock(t, func() {
+		ctx := context.Background()
+		var revision int64
+		if err := testPool.QueryRow(ctx, `SELECT revision FROM issue WHERE id=$1`, c.issueID).Scan(&revision); err != nil {
+			t.Fatal(err)
+		}
+		grantHead(t, c.issueID, "head-during-callback")
+		if _, err := testPool.Exec(ctx, `UPDATE issue SET revision=$2 WHERE id=$1`, c.issueID, revision); err != nil {
+			t.Fatal(err)
+		}
+	})
+	testHandler.onRunBudgetExhausted(context.Background(), e)
+	assertNotBlocked(t, c)
+}
+
+func TestRunBudgetExhaustionCallbackLosesToATopUpLandingBeforeTheBlock(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c := newBudgetCase(t, 2807005, recoverySteps(seededReadyAgentID(t)), 2)
+	e := refusedEvent(t, c)
+	landBeforeBlock(t, func() {
+		if w := topUpBudget(t, c.issueID, nil); w.Code != http.StatusOK {
+			t.Errorf("top-up = %d: %s", w.Code, w.Body.String())
+		}
+	})
+	testHandler.onRunBudgetExhausted(context.Background(), e)
+	assertNotBlocked(t, c)
+}
