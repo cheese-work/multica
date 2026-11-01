@@ -186,6 +186,26 @@ func TestApproveWorkflowTargetNeedsAnOwner(test *testing.T) {
 		makeApproverOwner(test, action, "member")
 		refused(test, action, withVerifier(acceptingVerifier), http.StatusForbidden, "class_needs_owner")
 	})
+	// The lifecycle worker can record the cancellation before the approval
+	// arrives; the answer stays the owner refusal and the request stays cancelled.
+	test.Run("agent-opened, demoted and already cancelled by the worker", func(test *testing.T) {
+		resetDecisionLease(test)
+		action, _ := newPendingWorkflowAction(test, workflowNoopAction)
+		makeApproverOwner(test, action, "owner")
+		makeApproverOwner(test, action, "admin")
+		_, runner := newDecisionRunnerFixture(test)
+		decisionPass(test, runner)
+		if count := dbfx.Count(test, `SELECT count(*) FROM decision_request WHERE id = $1 AND status = 'cancelled' AND cancel_reason = 'class_needs_owner'`, action.requestID); count != 1 {
+			test.Fatal("the lifecycle worker did not cancel the request with class_needs_owner")
+		}
+		body := action.approve(test, withVerifier(acceptingVerifier), action.claim(test, map[string]string{}), http.StatusForbidden)
+		if !strings.Contains(body, "class_needs_owner") {
+			test.Fatalf("body %q; want class_needs_owner", body)
+		}
+		if state := action.state(test); state == "executed" {
+			test.Fatal("the cancelled action was executed")
+		}
+	})
 }
 
 func TestApproveRequiresPreviewDigest(test *testing.T) {

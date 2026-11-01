@@ -206,6 +206,12 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 			return empty, err
 		}
 	}
+	targetKind := actionTargetKind(action)
+	// The lifecycle worker may have recorded the owner cancellation before this
+	// approval; an issue or workflow action still answers with the owner refusal.
+	if current.Status == "cancelled" && current.CancelReason.String == decisionClassNeedsOwner && targetKind != decisionaction.TargetAgent {
+		return empty, errNeedsOwner
+	}
 	if current.Status != "open" || action.State != "pending" {
 		return empty, errNotPending
 	}
@@ -214,7 +220,6 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	} else if expired {
 		return empty, errActionExpired
 	}
-	targetKind := actionTargetKind(action)
 	// A committed issue close or asking-agent archive wins over a stale open
 	// row: the sweeper that records it runs later, so check it under the locks.
 	if reason, err := queries.DecisionLifecycleReason(ctx, db.DecisionLifecycleReasonParams{WorkspaceID: caller.workspaceID, ID: current.ID}); err != nil {
