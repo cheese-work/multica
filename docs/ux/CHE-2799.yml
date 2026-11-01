@@ -1,5 +1,5 @@
 issue: CHE-2799
-design: none — approved lock or Cheese waiver pending (doop returned HTTP 401, no lock exists for this change)
+design: none — design lock waived by Cheese (decision card answer, 1 Nov 2026 ICT); captures are plain before/after screenshots at 1440 and 390 width, no design file
 pages:
   - id: dm-decision-request
     url: /cheese-work/chat
