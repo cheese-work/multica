@@ -75,8 +75,10 @@ and never joins the medians. A sample whose page never showed its data, or that
 made an unmocked request or threw a page error, fails the run instead of
 reading as fast. The phone run takes about 10 minutes.
 
-Not emulated: the document's transfer time on `phone` (only its RTT), and
-bandwidth for the synthetic API responses beyond RTT plus transfer time.
+Phone network: Chromium throttles the document body at 1.6 Mbps but adds no
+latency, so the spec adds one RTT. A phone sample fails if its document arrived
+faster than the bandwidth allows. Synthetic API responses wait RTT plus their
+transfer time; they do not share bandwidth with other requests.
 
 ## When to run it
 

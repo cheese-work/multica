@@ -8,8 +8,11 @@
  *
  * Both profiles throttle the CPU 4x. The phone profile also emulates 150 ms RTT
  * and 1.6 Mbps down. Synthetic API responses never reach the network stack, so
- * on the phone profile they wait the same RTT plus their transfer time here,
- * and the document request waits one RTT (its transfer time is not emulated).
+ * on the phone profile they wait the same RTT plus their transfer time here.
+ * The document goes through the network stack: Chromium throttles its body at
+ * the emulated bandwidth but adds no latency, so the spec adds one RTT. Each
+ * phone sample records the document transfer time and fails if the document
+ * arrived faster than the link allows.
  *
  * A sample whose page never showed its data is invalid, not fast: an error page
  * loads quickly.
@@ -19,6 +22,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import * as fx from "./fixtures/typing-under-live-runs";
 import * as pl from "./fixtures/page-load-baseline";
+import { documentFasterThanLink, responseDelayMs } from "./phone-network.mjs";
 
 const SAMPLES = Number(process.env.PERF_SAMPLES ?? 5);
 const CPU_THROTTLE = 4;
@@ -140,6 +144,7 @@ type Sample = {
   js_transferred_bytes: number; js_decoded_bytes: number; script_count: number;
   top_scripts: { name: string; transfer_bytes: number }[];
   long_tasks: { start_ms: number; duration_ms: number }[];
+  document_bytes: number; document_transfer_ms: number;
   api_requests: number; unmocked: string[]; page_errors: string[];
 };
 
@@ -156,6 +161,8 @@ async function readSample(page: Page): Promise<Omit<Sample, "api_requests" | "un
     const top = [...scripts].sort((a, b) => bytes(b) - bytes(a)).slice(0, 5);
     return {
       ttfb_ms: Math.round(nav.responseStart),
+      document_bytes: nav.transferSize,
+      document_transfer_ms: Math.round(nav.responseEnd - nav.responseStart),
       lcp_ms: w.__perfLcp === null ? null : Math.round(w.__perfLcp),
       long_task_total_ms: Math.round(w.__perfLongTasks.reduce((s, t) => s + t.duration, 0)),
       js_transferred_bytes: scripts.reduce((s, r) => s + bytes(r), 0),
@@ -260,7 +267,7 @@ test("page load baseline", async ({ browser, baseURL }, testInfo) => {
           }
           const text = JSON.stringify(body);
           if (phone) {
-            await sleep(PHONE_NETWORK.rttMs + (Buffer.byteLength(text) / PHONE_NETWORK.downBytesPerSec) * 1000);
+            await sleep(responseDelayMs(PHONE_NETWORK, Buffer.byteLength(text)));
           }
           return r.fulfill({ status: 200, contentType: "application/json", body: text });
         });
@@ -302,6 +309,12 @@ test("page load baseline", async ({ browser, baseURL }, testInfo) => {
         const sample: Sample = {
           ...(await readSample(page)), api_requests: apiRequests, unmocked, page_errors: pageErrors,
         };
+        if (phone && documentFasterThanLink(PHONE_NETWORK, sample.document_bytes, sample.document_transfer_ms)) {
+          throw new Error(
+            `${name}: document (${sample.document_bytes} B) took ${sample.document_transfer_ms} ms, ` +
+            "less than the phone bandwidth allows; the network throttle did not apply to it",
+          );
+        }
         routes[name]!.push(sample);
       } finally {
         await context.close();
