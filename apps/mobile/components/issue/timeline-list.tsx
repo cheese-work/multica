@@ -238,12 +238,15 @@ export function TimelineList({
     [dataWithDivider],
   );
 
-  // The effect must not re-fire when only `jumpToComment` changes (a WS append
-  // rebuilds it); the stamp gate below makes it one-shot per (id, nonce).
+  // The timers live outside the effect: an append (data.length) re-runs the
+  // effect, and its stamp gate would then skip re-arming a cancelled jump.
+  // Only a newer tap or unmount cancels them. The jump reads the latest
+  // `jumpToComment`, so rows appended meanwhile are indexed correctly.
   const jumpRef = useRef(jumpToComment);
   useEffect(() => {
     jumpRef.current = jumpToComment;
   }, [jumpToComment]);
+  const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   useEffect(() => {
     if (!highlightCommentId || data.length === 0) return;
     const stamp = `${highlightCommentId}:${highlightNonce ?? ""}`;
@@ -251,16 +254,18 @@ export function TimelineList({
     lastStampRef.current = stamp;
 
     setHighlightedId(highlightCommentId);
-    // The list remounts on every deep link and starts at the bottom, so an old
-    // target is off-screen. Jump once the fresh list has laid out its rows.
-    const jump = setTimeout(() => jumpRef.current(highlightCommentId), JUMP_DELAY_MS);
-
-    const fade = setTimeout(() => setHighlightedId(null), HIGHLIGHT_HOLD_MS);
-    return () => {
-      clearTimeout(jump);
-      clearTimeout(fade);
-    };
+    timersRef.current.forEach(clearTimeout);
+    timersRef.current = [
+      // The list remounts on every deep link and starts at the bottom, so an
+      // old target is off-screen. Jump once the fresh list has laid out.
+      setTimeout(() => jumpRef.current(highlightCommentId), JUMP_DELAY_MS),
+      setTimeout(() => setHighlightedId(null), HIGHLIGHT_HOLD_MS),
+    ];
   }, [highlightCommentId, highlightNonce, data.length]);
+  useEffect(() => {
+    const timers = timersRef;
+    return () => timers.current.forEach(clearTimeout);
+  }, []);
 
   // Mark "scrolled past" once the divider row leaves the viewport — used
   // by the unmount effect below to decide whether to bump last-viewed.
