@@ -18,3 +18,25 @@ SELECT * FROM github_snapshot_approval WHERE workspace_id = $1 AND revision_id =
 SELECT workspace_id, id FROM github_webhook_revision
 WHERE state = 'deferred' AND reason = 'approved_snapshot'
 ORDER BY updated_at LIMIT $1;
+
+-- name: HasAdmittedGitHubRevision :one
+-- An intake revision of this exact object read that intake admitted for this
+-- issue: its per-issue receipt is dispatched, or projected while gate G is
+-- closed. A PR link alone is not authorization; the receipt is the decision.
+SELECT EXISTS (
+    SELECT 1 FROM github_webhook_revision r
+    JOIN github_webhook_dispatch d ON d.workspace_id = r.workspace_id AND d.revision_id = r.id AND d.issue_id = $2
+    WHERE r.workspace_id = $1 AND r.object_kind = $3 AND r.object_id = $4
+      AND r.body_hash = $5 AND r.author_id = $6 AND r.review_state = $7
+      AND d.state IN ('dispatched', 'projected')
+);
+
+-- name: HasGitHubSnapshotApproval :one
+-- An exact-snapshot approval (the hash covers editor and last edit time) whose
+-- revision intake routed to this issue, so the approver could route it.
+SELECT EXISTS (
+    SELECT 1 FROM github_snapshot_approval a
+    JOIN github_webhook_dispatch d ON d.workspace_id = a.workspace_id AND d.revision_id = a.revision_id AND d.issue_id = $2
+    WHERE a.workspace_id = $1 AND a.snapshot_hash = $3
+      AND d.state IN ('dispatched', 'projected')
+);

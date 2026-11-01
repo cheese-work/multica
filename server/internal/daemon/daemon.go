@@ -8932,7 +8932,15 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if provider == "opencode" || provider == "codearts" {
 		idleWatchdogTimeout = d.cfg.OpenCodeIdleWatchdog
 	}
+	stableCwd := d.cfg.stableCwdFor(provider, task.Agent.Name, task.AgentID)
+	if stableCwd != "" {
+		if err := os.MkdirAll(stableCwd, 0o755); err != nil {
+			taskLog.Warn("stable cwd mount point unavailable", "path", stableCwd, "error", err)
+			stableCwd = ""
+		}
+	}
 	execOpts := agent.ExecOptions{
+		StableCwd: stableCwd,
 		// PR events ride the same injection channel, so they need its hooks too.
 		EnableTaskSupplement:       negotiation.Supplement || negotiation.PREvent,
 		CursorHookCommand:          cursorHookCommand,
@@ -9017,17 +9025,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// branch ownership from this in-memory record instead of trusting request
 	// fields or ambient process environment. Register only for the provider
 	// execution window and always remove the credential afterwards.
-	d.registerActiveRepoCheckoutTask(agentToken, activeRepoCheckoutTask{
-		WorkspaceID:     task.WorkspaceID,
-		TaskID:          task.ID,
-		AgentID:         task.AgentID,
-		AgentName:       task.Agent.Name,
-		WorkDir:         env.WorkDir,
-		IssueIdentifier: task.IssueIdentifier,
-		IntakeRun:       task.IntakeRun,
-		PinnedBranch:    task.PinnedBranch,
-		PinnedRepo:      task.PinnedRepo,
-	})
+	checkoutTask := newActiveRepoCheckoutTask(task, env.WorkDir)
+	checkoutTask.StableDir = stableCwd
+	d.registerActiveRepoCheckoutTask(agentToken, checkoutTask)
 	defer d.clearActiveRepoCheckoutTask(agentToken)
 
 	taskLog.Debug("invoking backend",
