@@ -117,6 +117,9 @@ export interface ChatSession {
   /** True when the user has pinned this chat to the top of the list.
    *  Optional so older clients / non-list payloads stay valid. */
   pinned?: boolean;
+  /** The DM's explicit preset: null = inherit, "base" or a preset name = chosen.
+   *  Absent on older servers. */
+  preset_name?: string | null;
   /** Present for Chats created by an external Channel. Historical Chats keep
    *  their source even after a newer route generation becomes current. */
   channel_source?: ChatChannelSource;

@@ -104,6 +104,7 @@ import {
   summarizeTaskUsage,
 } from "../../runtimes/utils";
 import { formatBytes } from "../format-bytes";
+import { RunPresetDetails } from "./run-preset-details";
 import "../../editor/styles/code.css";
 import "./task-transcript.css";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
@@ -860,6 +861,7 @@ export function AgentTranscriptDialog({
     !!task.branch_name ||
     !!reasonLabel ||
     !!task.error ||
+    !!task.preset_run ||
     !!createdLabel ||
     !!startedLabel ||
     !!completedLabel ||
@@ -1042,6 +1044,7 @@ export function AgentTranscriptDialog({
                           />
                         </>
                       )}
+                      {task.preset_run && <RunPresetDetails run={task.preset_run} />}
                       {usage && (
                         <>
                           <div className="my-2 h-px bg-border" />

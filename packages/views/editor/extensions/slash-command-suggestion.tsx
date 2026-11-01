@@ -37,7 +37,7 @@ import { isTriggerArmedAt } from "./suggestion-trigger-arming";
 const MAX_ITEMS = 20;
 
 /** Known built-in command ids — the keys under editor `slash_command.commands`. */
-export type BuiltinCommandKey = "note" | ChatCommandId;
+export type BuiltinCommandKey = "note" | "preset" | ChatCommandId;
 
 /** DM commands a surface switches on one by one; compact is gated separately. */
 export type DmClientCommand = "statistic" | "archive" | "pin" | "unarchive";
@@ -56,6 +56,8 @@ export interface SlashCommandItem {
    * so the visible string stays localized (the typed `/label` does not).
    */
   descriptionKey?: BuiltinCommandKey;
+  /** A bare value (a preset name), shown without the `/` command prefix. */
+  plain?: boolean;
 }
 
 interface SlashCommandListProps {
@@ -142,7 +144,9 @@ export const SlashCommandList = forwardRef<
   const describe = (item: SlashCommandItem): string | undefined =>
     item.descriptionKey === "note"
       ? t(($) => $.slash_command.commands.note)
-      : item.descriptionKey === "compact"
+      : item.descriptionKey === "preset"
+        ? t(($) => $.slash_command.commands.preset)
+        : item.descriptionKey === "compact"
         ? t(($) => $.slash_command.commands.compact)
         : item.descriptionKey === "rename"
           ? t(($) => $.slash_command.commands.rename)
@@ -199,7 +203,7 @@ export const SlashCommandList = forwardRef<
                 ) : null}
               </span>
             ) : (
-              <span className="font-medium">/{item.label}</span>
+              <span className="font-medium">{item.plain ? "" : "/"}{item.label}</span>
             )}
             {description && (
               <span
@@ -270,6 +274,7 @@ function buildItems(
   canFork: boolean,
   canUse: (command: DmClientCommand) => boolean,
   canCompact: boolean,
+  canPreset: boolean,
 ): SlashCommandItem[] {
   const wsId = getCurrentWsId();
   if (!wsId) return [];
@@ -309,6 +314,11 @@ function buildItems(
         descriptionKey: command.descriptionKey,
       }))
     : [];
+  // `/preset` is answered by the server and takes a name from its own menu, so
+  // it sits outside the client command registry.
+  if (firstWord && canPreset && "preset".startsWith(q)) {
+    commands.push({ id: "preset", label: "preset", descriptionKey: "preset" });
+  }
   return [...commands, ...skills].slice(0, MAX_ITEMS);
 }
 
@@ -321,6 +331,7 @@ export function createSlashCommandSuggestion(
   canFork = () => false,
   canUse: (command: DmClientCommand) => boolean = () => false,
   canCompact = () => true,
+  canPreset = () => false,
 ): Omit<
   SuggestionOptions<SlashCommandItem>,
   "editor"
@@ -342,7 +353,7 @@ export function createSlashCommandSuggestion(
       const firstWord = before.trim() === ""
         && position.depth === 1
         && position.parent.type.name === "paragraph";
-      return buildItems(qc, query, firstWord, canRename(), canFork(), canUse, canCompact());
+      return buildItems(qc, query, firstWord, canRename(), canFork(), canUse, canCompact(), canPreset());
     },
     command: ({ editor, range, props }) => {
       const nodeAfter = editor.view.state.selection.$to.nodeAfter;
@@ -351,7 +362,7 @@ export function createSlashCommandSuggestion(
         range.to += 1;
       }
 
-      if (isRegistryCommand(props)) {
+      if (isRegistryCommand(props) || props.id === "preset") {
         editor
           .chain()
           .focus()
