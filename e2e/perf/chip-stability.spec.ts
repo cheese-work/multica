@@ -20,14 +20,22 @@ import * as fx from "./fixtures/chip-stability";
 test.use({ locale: "en-US", serviceWorkers: "block" });
 
 /**
- * Raw layout-shift sums per profile, frozen at half of the lowest value observed
- * red on `main` over 6 runs (R1 desktop 0.0012-0.0027, R1 phone 0.0270-0.0408,
- * R2 desktop 0.0048-0.0110, R2 phone 0.3587-0.3666). A2 turns the scenarios
- * green without touching them; a threshold change needs a new plan revision.
+ * Raw layout-shift sums per profile, frozen from runs on `main`.
+ *
+ * R2 is red on both profiles: the limit is half of the lowest value seen over 10 runs
+ * (desktop 0.0048-0.0110, phone 0.2928-0.3666).
+ *
+ * R1 is not red on either profile. Measured after the streaming block has mounted,
+ * the shift is the chip arriving and the text after it moving, which happens with and
+ * without the fix (desktop 0.0017 on `main` and with the R1 patch; phone 0.0003-0.0142
+ * on `main`, 0.0092 with the patch). Its limit is a regression guard at twice the
+ * highest value seen on `main` (desktop 0.0017, phone 0.0142).
+ *
+ * A2 turns the red scenarios green without touching these; a change needs a new plan revision.
  */
 const SHIFT_LIMIT: Record<fx.Profile, { r1: number; r2: number }> = {
-  desktop: { r1: 0.0006, r2: 0.0024 },
-  phone: { r1: 0.0135, r2: 0.18 },
+  desktop: { r1: 0.0034, r2: 0.0024 },
+  phone: { r1: 0.0284, r2: 0.145 },
 };
 /** One pixel: sub-pixel rounding, not a visible jump. */
 const GEOMETRY_LIMIT_PX = 1;
@@ -48,11 +56,29 @@ function expectClean(h: fx.Harness) {
   expect(h.pageErrors, "page errors").toEqual([]);
 }
 
+// ---- Standard CLS -------------------------------------------------------------
+
+test("standard CLS is the largest session window and ignores input-driven shifts", () => {
+  const shift = (startTime: number, value: number, hadRecentInput = false) =>
+    ({ startTime, value, hadRecentInput });
+  const entries = [
+    shift(100, 0.1), shift(600, 0.1),      // window A: 0.2
+    shift(3000, 0.05), shift(3500, 0.05),  // window B (gap > 1 s): 0.1
+    shift(3600, 0.5, true),                // input-driven: not counted
+    shift(9000, 0.01), shift(9900, 0.01), shift(10800, 0.01), shift(11700, 0.01),
+    shift(12600, 0.01), shift(13500, 0.01), // chained gaps < 1 s, cut at 5 s: two windows
+  ];
+  expect(fx.sessionCls(entries)).toBeCloseTo(0.2, 6);
+  expect(fx.sessionCls(entries.slice(2))).toBeCloseTo(0.1, 6);
+  expect(entries.reduce((n, e) => n + e.value, 0)).toBeCloseTo(0.2 + 0.1 + 0.5 + 0.06, 6);
+});
+
 // ---- R1 ---------------------------------------------------------------------
 
 const SETTLED_ANSWER = "Settled answer, see PERF-77";
-const STREAM_HEAD = "Checking now, see PERF-18";
-const STREAM_TAIL = "24 more";
+const STREAM_OPEN = "Checking now, see ";
+const STREAM_KEY = "PERF-18";
+const STREAM_TAIL = "24 more"; // completes PERF-18 into PERF-1824
 
 test("R1: a streamed partial key stays text until its boundary arrives", async ({
   page, context, baseURL,
@@ -119,12 +145,17 @@ test("R1: a streamed partial key stays text until its boundary arrives", async (
   // A message that settled with a key at its very end links it.
   await expect.soft(chips("settled")).toHaveCount(1, { timeout: 5_000 });
 
+  // The streaming block mounts with text that holds no key. Shifts from the block
+  // appearing are not the chip's, so the measurement starts after it.
+  stream(STREAM_OPEN);
+  const streaming = list.locator('[data-rich-content][data-phase="streaming"]');
+  await expect(streaming).toContainText("see");
+  await page.waitForTimeout(fx.LOOKUP_DELAY_MS);
   await nextFrame(page);
   await fx.resetShift(page);
 
   // The key touches the end of the streamed text: it may still grow.
-  stream(STREAM_HEAD);
-  const streaming = list.locator('[data-rich-content][data-phase="streaming"]');
+  stream(STREAM_KEY);
   await expect(streaming).toContainText("PERF-18");
   await page.waitForTimeout(fx.LOOKUP_DELAY_MS * 2);
   const chipsWhileOpen = await chips("streaming").count();
@@ -136,6 +167,12 @@ test("R1: a streamed partial key stays text until its boundary arrives", async (
   await page.waitForTimeout(fx.LOOKUP_DELAY_MS * 2);
   const chipsAfterBoundary = await chips("streaming").count();
   expect.soft(chipsAfterBoundary, "chips after the boundary arrives").toBe(1);
+  // The one chip must be the completed key, not a stale one for the partial key.
+  const chip = chips("streaming").first();
+  await expect.soft(chip.locator("xpath=ancestor::a[1]"), "chip links the PERF-1824 issue").toHaveAttribute(
+    "href", new RegExp(`${fx.issueIdForKey("1824")}$`), { timeout: 5_000 },
+  );
+  await expect.soft(chip, "chip text names PERF-1824").toContainText("PERF-1824");
 
   await nextFrame(page);
   const shift = await fx.readShift(page);
@@ -144,6 +181,7 @@ test("R1: a streamed partial key stays text until its boundary arrives", async (
   report("R1", {
     profile, chipsWhileOpen, chipsAfterBoundary, settledChips: await chips("settled").count(),
     cls: shift.cls, rawShift: shift.raw, partialKeyLookups: h.keyLookups.get("PERF-18") ?? 0,
+    completedKeyLookups: h.keyLookups.get("PERF-1824") ?? 0,
   });
   expectClean(h);
 });
@@ -166,6 +204,15 @@ function commentBody(i: number): string {
   );
   return [lead, ...paragraphs].join("\n\n");
 }
+
+interface ChipTrace {
+  /** Frame of the latest sample; a chip whose row the virtualizer unmounted stops advancing. */
+  frame: number;
+  first: { w: number; h: number; label: string };
+  last: { w: number; h: number; label: string };
+}
+/** The fixture's issue title, which the chip shows only after its detail loads. */
+const RESOLVED = /Fixture issue PERF-\d+/;
 
 const timeline = () => Array.from({ length: COMMENT_COUNT }, (_, i) => ({
   type: "comment" as const, id: commentId(i), actor_type: "user" as const, actor_id: fx.USER_ID,
@@ -206,14 +253,22 @@ test("R2: delayed key resolution keeps chips and the reader's place stable", asy
   });
   await context.addInitScript(() => {
     localStorage.setItem("multica:chat:floatingChatEnabled", "false");
-    // Sampled every frame: the chip's box from its first appearance to the end.
-    const w = window as unknown as { __chipBoxes: { w: number; h: number }[] };
-    w.__chipBoxes = [];
+    // Sampled every frame, per chip (row id + position in the row): the chip's box and
+    // label when it first appears (the fallback label) and at its latest sample.
+    const w = window as unknown as { __chips: Record<string, ChipTrace>; __frame: number };
+    w.__chips = {};
+    w.__frame = 0;
     const sample = () => {
-      const chip = document.querySelector("span.issue-mention");
-      if (chip) {
+      w.__frame += 1;
+      for (const chip of document.querySelectorAll("span.issue-mention")) {
+        const row = chip.closest('[id^="comment-cccc"]');
+        if (!row) continue;
+        const id = `${row.id}#${[...row.querySelectorAll("span.issue-mention")].indexOf(chip)}`;
         const r = chip.getBoundingClientRect();
-        w.__chipBoxes.push({ w: r.width, h: r.height });
+        const now = { w: r.width, h: r.height, label: chip.textContent ?? "" };
+        const trace = w.__chips[id];
+        if (trace) { trace.last = now; trace.frame = w.__frame; }
+        else w.__chips[id] = { first: now, last: now, frame: w.__frame };
       }
       requestAnimationFrame(sample);
     };
@@ -254,21 +309,28 @@ test("R2: delayed key resolution keeps chips and the reader's place stable", asy
   const chips = page.locator("span.issue-mention");
   await expect.poll(async () => (await chips.count()) > 0 && (await chips.count()) === (await rows.count()),
     { timeout: 15_000 }).toBe(true);
-  await page.waitForTimeout(fx.LOOKUP_DELAY_MS * 2);
+  // Only chips still mounted: the virtualizer drops rows that scroll out of range.
+  const traces = () => page.evaluate(() => {
+    const w = window as unknown as { __chips: Record<string, ChipTrace>; __frame: number };
+    return Object.values(w.__chips).filter((t) => t.frame >= w.__frame - 1);
+  });
+  // Resolved = the chip shows the issue title, not the fallback label it started with.
+  await expect.poll(async () => (await traces()).every((t) => RESOLVED.test(t.last.label)),
+    { timeout: 15_000 }).toBe(true);
   await nextFrame(page);
 
   const scrollDelta = Math.abs((await anchor.boundingBox())!.y - topBefore);
-  const boxes = await page.evaluate(
-    () => (window as unknown as { __chipBoxes: { w: number; h: number }[] }).__chipBoxes,
-  );
-  const first = boxes[0]!;
-  const last = boxes[boxes.length - 1]!;
-  const widthDelta = Math.abs(last.w - first.w);
-  const heightDelta = Math.abs(last.h - first.h);
+  const all = await traces();
+  // Each chip's first box against its own resolved box. A chip that mounts already
+  // resolved has delta 0; one that starts as a placeholder shows its jump.
+  const placeholders = all.filter((t) => !RESOLVED.test(t.first.label));
+  const widthDelta = Math.max(0, ...all.map((t) => Math.abs(t.last.w - t.first.w)));
+  const heightDelta = Math.max(0, ...all.map((t) => Math.abs(t.last.h - t.first.h)));
   const shift = await fx.readShift(page);
 
   const requestsPerKey = [...h.keyLookups.values()];
   expect(h.keyLookups.size, "distinct keys looked up").toBeGreaterThan(0);
+  expect.soft(all.length, "chips measured").toBeGreaterThan(0);
   expect.soft(Math.max(...requestsPerKey), "getIssue requests per key").toBe(1);
   expect.soft(widthDelta, "chip width delta, placeholder to resolved (px)").toBeLessThanOrEqual(GEOMETRY_LIMIT_PX);
   expect.soft(heightDelta, "chip height delta, placeholder to resolved (px)").toBeLessThanOrEqual(GEOMETRY_LIMIT_PX);
@@ -277,7 +339,8 @@ test("R2: delayed key resolution keeps chips and the reader's place stable", asy
 
   report("R2", {
     profile, maxRequestsPerKey: Math.max(...requestsPerKey), widthDelta, heightDelta,
-    scrollDelta, cls: shift.cls, rawShift: shift.raw, samples: boxes.length,
+    scrollDelta, cls: shift.cls, rawShift: shift.raw, chips: all.length, placeholderChips: placeholders.length,
+    placeholderLabel: placeholders[0]?.first.label, resolvedLabel: all[0]?.last.label,
   });
   expectClean(h);
 });

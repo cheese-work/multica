@@ -141,25 +141,25 @@ export async function installHarness(
     { name: "multica_logged_in", value: "1", url: origin },
     { name: "last_workspace_slug", value: WORKSPACE_SLUG, url: origin },
   ]);
-  // Standard CLS drops shifts within 500 ms of input; the raw sum keeps them.
+  // Every shift is kept with its time and input flag, so standard CLS (session
+  // windows, input-driven shifts dropped) and the raw sum both come from one list.
   await context.addInitScript(() => {
     const w = window as unknown as {
-      __shift: { cls: number; raw: number };
+      __shifts: ShiftEntry[];
       __resetShift: () => void;
     };
-    w.__shift = { cls: 0, raw: 0 };
+    w.__shifts = [];
     const observer = new PerformanceObserver((list) => {
       for (const e of list.getEntries() as unknown as {
-        value: number; hadRecentInput: boolean;
+        value: number; startTime: number; hadRecentInput: boolean;
       }[]) {
-        w.__shift.raw += e.value;
-        if (!e.hadRecentInput) w.__shift.cls += e.value;
+        w.__shifts.push({ value: e.value, startTime: e.startTime, hadRecentInput: e.hadRecentInput });
       }
     });
     observer.observe({ type: "layout-shift", buffered: true });
     w.__resetShift = () => {
       observer.takeRecords();
-      w.__shift = { cls: 0, raw: 0 };
+      w.__shifts = [];
     };
   });
 
@@ -200,11 +200,35 @@ const json = (body: unknown) => ({
   status: 200, contentType: "application/json", body: JSON.stringify(body),
 });
 
-export const readShift = (page: Page) =>
-  page.evaluate(() => {
-    const { cls, raw } = (window as unknown as { __shift: { cls: number; raw: number } }).__shift;
-    return { cls: Math.round(cls * 10000) / 10000, raw: Math.round(raw * 10000) / 10000 };
-  });
+export interface ShiftEntry { value: number; startTime: number; hadRecentInput: boolean }
+
+/**
+ * Standard CLS: the largest session-window sum, where a window ends after a 1 s
+ * gap or 5 s of length, and shifts within 500 ms of input are not counted.
+ */
+export function sessionCls(entries: ShiftEntry[]): number {
+  let best = 0;
+  let sum = 0;
+  let windowStart = 0;
+  let last = 0;
+  for (const e of entries) {
+    if (e.hadRecentInput) continue;
+    if (sum > 0 && (e.startTime - last > 1000 || e.startTime - windowStart > 5000)) sum = 0;
+    if (sum === 0) windowStart = e.startTime;
+    sum += e.value;
+    last = e.startTime;
+    best = Math.max(best, sum);
+  }
+  return best;
+}
+
+const round4 = (n: number) => Math.round(n * 10000) / 10000;
+
+/** `cls` is standard CLS; `raw` is the sum of every layout-shift entry. */
+export async function readShift(page: Page) {
+  const entries = await page.evaluate(() => (window as unknown as { __shifts: ShiftEntry[] }).__shifts);
+  return { cls: round4(sessionCls(entries)), raw: round4(entries.reduce((n, e) => n + e.value, 0)) };
+}
 
 export const resetShift = (page: Page) =>
   page.evaluate(() => (window as unknown as { __resetShift: () => void }).__resetShift());
