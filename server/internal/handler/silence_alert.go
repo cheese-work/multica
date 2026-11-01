@@ -1,15 +1,13 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -28,10 +26,10 @@ type SilenceAlertRequest struct {
 
 // ReportSilenceAlert leaves one system comment on the task's issue.
 //
-// Idempotency lives in the comment id: it is derived from (task, segment), so a
-// replay collides on the primary key and posts nothing — no extra table. The
-// alert is advisory, so every failure past the access check answers 200 with a
-// log line; a 5xx here would make the daemon treat a diagnostic as a run error.
+// Idempotency lives in silence_alert_receipt, not in the comment: an admin may
+// delete the comment, and the replay must not bring it back. The alert is
+// advisory, so every failure past the access check answers 200 with a log line;
+// a 5xx here would make the daemon treat a diagnostic as a run error.
 func (h *Handler) ReportSilenceAlert(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
 	var req SilenceAlertRequest
@@ -45,12 +43,6 @@ func (h *Handler) ReportSilenceAlert(w http.ResponseWriter, r *http.Request) {
 	}
 	ack := func() { writeJSON(w, http.StatusOK, map[string]string{"status": "ok"}) }
 
-	switch task.Status {
-	case "dispatched", "waiting_local_directory", "running":
-	default:
-		ack()
-		return
-	}
 	if !task.IssueID.Valid {
 		ack()
 		return
@@ -62,26 +54,8 @@ func (h *Handler) ReportSilenceAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	commentID := uuid.NewSHA1(uuid.UUID(task.ID.Bytes), []byte("silence-alert:"+req.SegmentID))
-	content := redact.Prose(fmt.Sprintf(
-		"The agent has produced no output for %d minutes. The run is still active.",
-		max(req.SilentForSeconds, 0)/60,
-	))
-	created, err := h.Queries.CreateComment(r.Context(), db.CreateCommentParams{
-		ID:           pgtype.UUID{Bytes: commentID, Valid: true},
-		IssueID:      issue.ID,
-		WorkspaceID:  issue.WorkspaceID,
-		AuthorType:   "system",
-		AuthorID:     pgtype.UUID{Valid: true},
-		Content:      content,
-		Type:         "system",
-		SourceTaskID: task.ID,
-	})
-	if err != nil {
-		var pgErr *pgconn.PgError
-		if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
-			slog.Warn("silence alert: create system comment failed", "task_id", taskID, "error", err)
-		}
+	created, posted := h.postSilenceAlert(r.Context(), task.ID, issue, req)
+	if !posted {
 		ack()
 		return
 	}
@@ -106,4 +80,55 @@ func (h *Handler) ReportSilenceAlert(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 	ack()
+}
+
+// postSilenceAlert reports whether it created the comment. The task row is
+// locked FOR SHARE in the same transaction as the receipt and the comment, so a
+// completion either commits first (no active task, no alert) or waits for the
+// alert; the comment never claims a finished run is still active.
+func (h *Handler) postSilenceAlert(ctx context.Context, taskID pgtype.UUID, issue db.Issue, req SilenceAlertRequest) (db.CreateCommentRow, bool) {
+	tid := util.UUIDToString(taskID)
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		slog.Warn("silence alert: begin failed", "task_id", tid, "error", err)
+		return db.CreateCommentRow{}, false
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	qtx := h.Queries.WithTx(tx)
+
+	if _, err := qtx.LockActiveTaskForSilenceAlert(ctx, taskID); err != nil {
+		if !isNotFound(err) {
+			slog.Warn("silence alert: lock task failed", "task_id", tid, "error", err)
+		}
+		return db.CreateCommentRow{}, false
+	}
+	claimed, err := qtx.ClaimSilenceAlertReceipt(ctx, db.ClaimSilenceAlertReceiptParams{TaskID: taskID, SegmentID: req.SegmentID})
+	if err != nil {
+		slog.Warn("silence alert: claim receipt failed", "task_id", tid, "error", err)
+		return db.CreateCommentRow{}, false
+	}
+	if claimed == 0 {
+		return db.CreateCommentRow{}, false
+	}
+	created, err := qtx.CreateComment(ctx, db.CreateCommentParams{
+		IssueID:     issue.ID,
+		WorkspaceID: issue.WorkspaceID,
+		AuthorType:  "system",
+		AuthorID:    pgtype.UUID{Valid: true},
+		Content: redact.Prose(fmt.Sprintf(
+			"The agent has produced no output for %d minutes. The run is still active.",
+			max(req.SilentForSeconds, 0)/60,
+		)),
+		Type:         "system",
+		SourceTaskID: taskID,
+	})
+	if err != nil {
+		slog.Warn("silence alert: create system comment failed", "task_id", tid, "error", err)
+		return db.CreateCommentRow{}, false
+	}
+	if err := tx.Commit(ctx); err != nil {
+		slog.Warn("silence alert: commit failed", "task_id", tid, "error", err)
+		return db.CreateCommentRow{}, false
+	}
+	return created, true
 }
