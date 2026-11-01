@@ -18,7 +18,7 @@ func TestFoldDiacritics(t *testing.T) {
 		"dang NHAP":      "dang nhap",
 		"Đường Ưu Tiên":  "duong uu tien",
 		"login 123 ✓ 日本": "login 123 ✓ 日本",
-		"Café Naïve":     "cafe naive",
+		"Café":           "cafe",
 	} {
 		if got := foldDiacritics(in); got != want {
 			t.Errorf("foldDiacritics(%q) = %q, want %q", in, got, want)
@@ -26,18 +26,35 @@ func TestFoldDiacritics(t *testing.T) {
 	}
 }
 
-// The SQL fold must agree with the Go fold for every mapped character, in both
-// cases, or a folded query would silently miss the folded column.
+// The Go fold only locates snippets, but it must agree with the SQL fold on
+// every Vietnamese letter (both cases) and on NFD input, or a match would be
+// found yet not highlighted.
 func TestFoldDiacritics_SQLParity(t *testing.T) {
 	const vietnamese = "àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ"
-	for _, r := range vietnamese + strings.ToUpper(vietnamese) + "éèêëçñü" {
-		in := string(r)
-		var got string
-		if err := testPool.QueryRow(context.Background(), "SELECT "+foldSQL("$1::text"), in).Scan(&got); err != nil {
-			t.Fatalf("fold %q in SQL: %v", in, err)
+	inputs := []string{"Plain ASCII 123", "Mixed Lỗi ✓ 日本", "e\u0302 o\u031b\u0323", "éèêëçñü"}
+	for _, r := range vietnamese + strings.ToUpper(vietnamese) {
+		inputs = append(inputs, string(r))
+	}
+	got, err := foldQueryTexts(context.Background(), testPool, inputs)
+	if err != nil {
+		t.Fatalf("fold in SQL: %v", err)
+	}
+	for i, in := range inputs {
+		if want := foldDiacritics(in); got[i] != want {
+			t.Errorf("fold %q: SQL %q, Go %q", in, got[i], want)
 		}
-		if want := foldDiacritics(in); got != want {
-			t.Errorf("fold %q: SQL %q, Go %q", in, got, want)
+	}
+}
+
+// Characters outside the Vietnamese alphabet that unaccent maps (and NFD does
+// not) must still match, because the query is folded by the same function.
+func TestIssueSearch_QueryFoldMatchesColumnFoldBeyondVietnamese(t *testing.T) {
+	f := newDiacriticWorkspace(t)
+	id := dbfx.Issue(t, "Straße zu Fuß", testutil.Cols{"workspace_id": f.workspaceID})
+	for _, q := range []string{"strasse", "Straße", "fuss"} {
+		got := f.search(t, q)
+		if len(got) != 1 || got[0].ID != id {
+			t.Fatalf("search %q: got %+v, want %s", q, got, id)
 		}
 	}
 }
@@ -120,6 +137,19 @@ func TestIssueSearch_ExactDiacriticsRankAboveFoldedOnlyMatch(t *testing.T) {
 	// The folded-only match is newer, so recency alone would put it first.
 	exact := dbfx.Issue(t, "Lỗi đăng nhập", testutil.Cols{"workspace_id": f.workspaceID})
 	foldedOnly := dbfx.Issue(t, "Lỗi dang nhap", testutil.Cols{"workspace_id": f.workspaceID})
+
+	got := f.search(t, "đăng nhập")
+	if len(got) != 2 || got[0].ID != exact || got[1].ID != foldedOnly {
+		t.Fatalf("got %+v, want exact %s before folded-only %s", got, exact, foldedOnly)
+	}
+}
+
+// Terms spread over other words still agree on diacritics, so they rank above
+// a match that only agrees after folding (CHE-2943 review, terra).
+func TestIssueSearch_ExactDiacriticsRankAcrossNonContiguousTerms(t *testing.T) {
+	f := newDiacriticWorkspace(t)
+	exact := dbfx.Issue(t, "đăng lỗi nhập", testutil.Cols{"workspace_id": f.workspaceID})
+	foldedOnly := dbfx.Issue(t, "dang loi nhap", testutil.Cols{"workspace_id": f.workspaceID})
 
 	got := f.search(t, "đăng nhập")
 	if len(got) != 2 || got[0].ID != exact || got[1].ID != foldedOnly {
