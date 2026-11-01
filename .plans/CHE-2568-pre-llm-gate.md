@@ -1,6 +1,6 @@
 # CHE-2568: server-side gate for runs that need no LLM
 
-Revision 2 (1 Nov 2026, 23:30 ICT). Changed since revision 1: run output is now read from authored comments (revision 1 read incoming-comment receipts, which was wrong); gate estimates apply each gate's own eligibility rule and report false positives; only G1 survives; G3's shared-sender fallback is removed; the fetch pipeline is complete and frozen; the scripts have unit tests.
+Revision 3 (2 Nov 2026, 00:00 ICT). Changed since revision 2: G1 as designed matches only 6 runs (USD 2.1 per week), because 116 of 122 candidate runs had an unresolved agent-only thread; the earlier USD 41 is now an unverified upper bound that needs a new server-side behaviour (the server resolves those threads); every gate now uses one observable false-positive rule with a numeric shadow bar (`shadow.py`, tested); the measurement inputs are published in `.plans/CHE-2568-evidence/` (reproduction steps in its README) and the parts that cannot be reproduced are named; test-first status is stated in Tests.
 
 Plan only. No gate code. Parent: CHE-2566 (stage 3, option C). Stage 1 (B, CHE-2567) is live and measured (CHE-2581).
 
@@ -10,7 +10,7 @@ The parent premise says about 80% of x99-claude-sonnet and Tofu runs post no com
 
 ## Measurement
 
-Window: runs with `created_at` in [25 Oct 2026 00:00Z, 1 Nov 2026 15:00Z) (25 Oct 07:00 ICT to 1 Nov 22:00 ICT), x99-claude-sonnet and Tofu, status `completed`: 7,767 runs, 7,964 Mtok, USD 3,822 at the CHE-2567 list-price model. Inputs: `multica agent tasks <id>` (all pages) and `multica issue timeline <issue>` (activity and comments) for 954 issues. `.plans/CHE-2568-scripts/fetch.py` fetches both for the fixed window and writes `manifest.json` (sha256 of `tasks.json` and each timeline). The frozen manifest from this revision has `tasks.json` sha256 `689fab043129d30f…` and `manifest.json` sha256 `b7f17069b5a62c33…` (first 16 hex digits). No timeline was truncated.
+Window: runs with `created_at` in [25 Oct 2026 00:00Z, 1 Nov 2026 15:00Z) (25 Oct 07:00 ICT to 1 Nov 22:00 ICT), x99-claude-sonnet and Tofu, status `completed`: 7,767 runs, 7,964 Mtok, USD 3,822 at the CHE-2567 list-price model. Inputs: `multica agent tasks <id>` (all pages) and `multica issue timeline <issue>` (activity and comments) for 954 issues. `.plans/CHE-2568-scripts/fetch.py` fetches both for the fixed window and writes `manifest.json`. No timeline was truncated. Published in `.plans/CHE-2568-evidence/`: the manifest (sha256 `b7f17069b5a62c33…`), a per-run `rows.json.gz`, and `g1_evidence.json`. `est.py` and the G1, G2, G3 and G4 rows of `gates.py` reproduce from `rows.json.gz` alone (checked: 7,621 issue-bound runs, USD 417 no-change, G1 122/110/12). The raw `tasks.json` and timelines are not published and are mutable on the server, so a new fetch will differ from the manifest hashes. The G5 and G6 rows read timelines and are not reproducible from the published evidence; both gates are dropped, so no decision rests on them.
 
 Run classes (`lib.run_class`, covered by unit tests):
 
@@ -47,10 +47,10 @@ Caveats:
 ## Finding
 
 1. 19.7% of issue-bound runs change nothing (USD 417, 10.9% of cost). The parent's "about 80%" is not a measured quantity: 93% of runs author a comment, and 15% of runs author only a "nothing changed" comment.
-2. A server can decide without an LLM only when it holds the deciding fact at dispatch. Measured against that rule, one gate survives: G1 (`pr_merged` on a Done issue), about USD 41 per week, 1.1% of cost.
-3. Four proposed gates do not survive their own eligibility rule. The wakeups they would suppress mostly did real work (see the table below). G4 has no matching run in the week.
+2. A server can decide without an LLM only when it holds the deciding fact at dispatch. Measured against that rule, only G1 (`pr_merged` on a Done issue) is a candidate. As designed it matches 6 runs, USD 2.1 per week. Its USD 41 per week upper bound (1.1% of cost) holds only if the server also resolves agent-only threads, which is new behaviour and is not decided.
+3. Four proposed gates do not survive the false-positive rule. The wakeups they would suppress mostly did real work (see the table below). G4 has no matching run in the week.
 4. The larger part of the USD 417 is agent behaviour (a run that reads state and says "nothing to do") that a server cannot see without the agent's read. That is a design lever, not a gate: the plan lists it under "Not planned" with the opt-in `skip_if_unchanged` idea.
-5. The parent success criterion cannot be met with gates. Restate it, with Cheese's agreement, as: "G1 ships with zero dropped hand-offs and removes about 110 runs per week; any wider cut needs the opt-in design in Open question 3".
+5. The parent success criterion cannot be met with gates. Restate it, with Cheese's agreement, as: "measure first: ship G1 in shadow, enforce only if the shadow bar below is met, and treat USD 41 per week as an upper bound until then; any wider cut needs the opt-in design in Open question 3".
 
 ## Approach
 
@@ -59,8 +59,9 @@ Decide before spawning, in the existing dispatch paths. Every suppression writes
 Rollout per gate, one at a time:
 
 1. Shadow: compute the decision, log `would_suppress` with reason, still run the agent.
-2. Compare 48 h: every `would_suppress` run that delivered a comment, PR or state change is a false positive. Required: zero.
-3. Enforce, then 48 h before/after on the same agents (Cheese premise 3).
+2. Compare after 48 h with one rule for every gate (`shadow.py`, `shadow_verdict`). A `would_suppress` run is a false positive if it changed issue state (status, assignee, wakeup, description), authored a comment that does not say nothing changed, or has a PR url. A "nothing changed" comment alone is the saving, not a false positive. A run whose only work was resolving comment threads is `server_duty`: not a false positive only when the server performs that resolution. A run with no timeline is `unknown` and counts as not saved.
+3. Enforcement bar: at least 30 `would_suppress` runs in the compare window (extend the window until reached), zero false positives, and a hand read of the final output of every `would_suppress` run for external work the timeline cannot show (a push, a CI re-run, a deploy). One external-work finding is a false positive.
+4. Enforce, then 48 h before/after on the same agents (Cheese premise 3).
 
 ```mermaid
 flowchart LR
@@ -73,33 +74,44 @@ flowchart LR
 
 ## Gates
 
-Each predicate uses only facts the server holds at dispatch. `matched` = runs the predicate would suppress. `saved` = matched runs that changed nothing. `fp` = matched runs that did real work: each would have been a dropped hand-off. A gate may enforce only with `fp` explained and zero false positives in shadow.
+Each predicate uses only facts the server holds at dispatch. `matched` = runs the predicate would suppress. `saved` = matched runs that changed nothing. `fp` = matched runs the false-positive rule flags (state change, or a comment that is not a "nothing changed" note): each would have been a dropped hand-off. These columns come from the run classes in Measurement and ignore thread resolution; G1 below applies the full rule. A gate may enforce only when the shadow bar in Approach is met.
 
 | Gate | Predicate | Matched | Saved | fp | Saved USD | Saved Mtok | Verdict |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| G1 | `pr.merged`, issue status Done, `layer_delivered` false | 122 | 110 | 12 | 41 | 43 | Build (shadow first) |
+| G1 | `pr.merged`, issue status Done, `layer_delivered` false (no eligibility facts) | 122 | 110 | 12 | 41 | 43 | Upper bound only: see G1 |
 | G6 | entered `need_decision`, mover = this agent | 79 | 36 | 43 | 4 | 11 | Drop: more fp than saved; open-request fact not in the data |
 | G5 | polling wakeup, no issue activity since the agent's last run | 770 | 180 | 590 | 39 | 60 | Drop as a default: polls watch external state. Opt-in only |
 | G2 | `pr.event` kind `merged`, `ready` or `draft` | 192 | 88 | 104 | 19 | 30 | Drop: more fp than saved |
 | G4 | `pr.checks_failed` on a head a newer head had already replaced at dispatch | 0 | 0 | 0 | 0 | 0 | Drop: no match; 38 heads were replaced only after dispatch |
 | G3 | `pr.event` `head_changed` caused by the agent's own push | 186 | 102 | 84 | 18 | 33 | Dropped: see below |
 
-Only G1 is viable, so the planned saving is about USD 41 per week (1.1% of cost). Up to USD 6 more if the 12 G1 false positives move server-side (see G1). For scale, the saved sets of all five rows with matches add to USD 121 (G3 included) before removing overlap, and four of those rows fail on false positives.
+The `saved` column treats a no-change run as saved by the text heuristic, which misread 6 of 16 sampled runs (see Caveats), and the G1 row has no eligibility check. It is an upper bound, not a target. Only G1 is still a candidate; the other rows fail on false positives or have no match.
 
 ### G1: `pr_merged` on an issue that is already Done
 
-Evidence: 122 `pr_merged` runs started on an issue already `done` with `layer_delivered` false. 110 changed nothing. The 12 false positives all resolved the issue's agent-only comment threads, which the "Linked PR Merge Wakeup" rule requires. They did real work with no state change visible on the timeline.
+Measured on the 122 runs the bare predicate matches (`g1_evidence.json`, state read after the window), with one rule (`shadow_verdict`):
 
-Change: in `dispatchSystem` (`server/internal/service/issue_wakeup_system.go:971`), for rule `pr_merged`, record outcome `suppressed: issue_done` and spawn nothing when all hold: the issue status category is Done, the merge is not a stack layer (`layer_delivered` false in the receipt payload built at `:373`), no other linked PR is open, and no agent-only comment thread is unresolved. A run with an unresolved thread still spawns. Resolving threads server-side is a possible follow-up, not part of this plan.
+| Verdict | Runs | USD | Meaning |
+| --- | --- | --- | --- |
+| false_positive | 12 | 6.0 | state change, real-work comment |
+| saved | 65 | 23.9 | no work; at most a "nothing changed" comment |
+| server_duty | 45 | 17.6 | only work was resolving agent-only threads |
 
-Eligibility not measurable from the data: "other linked PR open" and "unresolved thread". The shadow run records both, and the compare treats every `would_suppress` run that changed state or resolved a thread as a false positive.
+Eligibility facts, read at each run's start: 116 of 122 runs had an unresolved agent-only comment thread. 1 had another linked PR open. Only 6 runs (USD 2.1) had neither. The "Linked PR Merge Wakeup" rule requires the agent to resolve agent-only threads, so the design "spawn when a thread is unresolved" keeps almost every run.
+
+Two designs:
+
+- **G1a (as first written):** suppress only when the issue is Done, `layer_delivered` is false, no other linked PR is open and no agent-only thread is unresolved. Saves at most USD 2.1 per week. Not worth a gate. Dropped.
+- **G1b (needs a decision):** the server also resolves the agent-only threads when it suppresses. Upper bound USD 41.5 per week (110 runs, 65 saved plus 45 server_duty). The bound is unverified: the "nothing changed" text test misread 6 of 16 sampled runs, 66 of the 110 runs resolved no thread and may have left threads open on purpose, and external work is not visible in the data. Silent runs alone are USD 19.3 (51 runs) as the lower anchor. G1b changes server behaviour (the server resolves threads that an agent used to judge), so it needs Cheese's product decision (Open question 1) before any code.
+
+Change for G1b, if approved: in `dispatchSystem` (`server/internal/service/issue_wakeup_system.go:971`), for rule `pr_merged`, resolve the issue's agent-only threads, record outcome `suppressed: issue_done` and spawn nothing when the issue status category is Done, the merge is not a stack layer (`layer_delivered` false in the receipt payload built at `:373`) and no other linked PR is open. Shadow mode first, with the bar in Approach.
 
 Negative controls (must still spawn):
 
-- Issue Done, PR base is not the default branch (`layer_delivered` true): successor PR may need a new base.
+- Issue Done, PR base is not the default branch (`layer_delivered` true): a successor PR may need a new base.
 - Issue Done and another linked PR is open: a later layer still needs the merge facts.
-- Issue Done and an agent-only comment thread is unresolved: the thread resolution still needs a run.
-- Issue `merged` (Code Accepted): agent sets `done`; never suppress.
+- Issue Done and a comment thread has a human participant or a human root: the server must not resolve it. The run still spawns.
+- Issue `merged` (Code Accepted): the agent sets `done`; never suppress.
 - Issue `in_review`, `blocked`, `in_progress`: never suppress.
 - Issue status unknown or the receipt payload incomplete: fail open.
 
@@ -121,27 +133,31 @@ A default rule is not viable (590 of 770 matched runs did real work: CI state, P
 | Todo-pull meta-cap precheck (CHE-2816) | 133 runs, USD 40, rule ends 10 Nov 2026. Expires first. |
 | Cut boot prefix, resume size | Separate lever (about 1 Mtok per run). Follow-up issue. |
 
-| G2, G4, G6 | Fail their eligibility rule (table above). Revisit only with a new predicate and a re-measurement. |
+| G2, G4, G6 | Fail the false-positive rule (table above). Revisit only with a new predicate and a re-measurement. |
 | Agents that post "nothing changed" comments (1,125 ceremonial runs, USD 303) | Agent behaviour, not a server decision. Follow-up: a skill rule to end a no-change run with `wakeup checkin` instead of a comment. |
 
 ## Steps
 
 1. Review this plan cross-lab (agent_review). Done when a different-lab reviewer signs PASS on the exact head.
-2. Cheese agrees the restated target (Finding 5) before any gate ships.
-3. One implementation issue for G1. It starts with a failing test per negative control, red then green recorded in its PR.
-4. G1 ships shadow first (log only), then enforces after 48 h with zero false positives.
-5. G1 gets a 48 h before/after read on the same agents: `pr_merged` runs, no-change share, review PASS rate.
+2. Cheese agrees the restated target (Finding 5) and decides Open question 1 before any gate ships.
+3. If Cheese approves G1b: one implementation issue. It starts with a failing test per negative control, red then green recorded in its PR.
+4. G1b ships shadow first (log only), then enforces only when the bar in Approach is met.
+5. G1b gets a 48 h before/after read on the same agents: `pr_merged` runs, no-change share, review PASS rate.
 6. Re-run this measurement (`fetch.py`, `classify.py`, `est.py`, `gates.py`) after G1 and decide on the opt-in and comment follow-ups.
 
 ## Tests
 
-The measurement scripts have unit tests: `python3 -m unittest discover -s tests` in `.plans/CHE-2568-scripts/`. Observed red (8 of 13 failing before `run_class`, 3 of 5 before `is_output`) and green (13 of 13) are in the PR body.
+Test-first status, stated exactly:
 
-Gate code tests (not run, no gate code in this PR): Go, targeted, `internal/service` wakeup and trigger tests (`issue_wakeup_system_test.go`, `issue_wakeup_test.go`). G1 has one positive test (suppressed), one test per negative control (spawns), and a shadow-mode test that the run still starts and the outcome is recorded.
+- `shadow.py` (this revision) is test-first. Tests came first against a stub that always returns `saved`: 25 tests ran, 6 failed on assertions. After the implementation, 25 of 25 pass.
+- `lib.py` (`is_output`, `run_class`): the code existed before its tests, as did `fetch.py`, `classify.py`, `est.py`, `gates.py` and `g1_elig.py`/`g1_report.py`. The recorded red for `lib.py` came from a stub, not from the original code, so it is not behavioral red for the original scripts. Test-first is NOT-MET for them. Only Cheese can waive it; this PR asks for that waiver and reconstructs nothing. The scripts are measurement helpers for a plan, not product code.
+- Run the tests: `python3 -m unittest discover -s tests` in `.plans/CHE-2568-scripts/`.
+
+Gate code tests (not run, no gate code in this PR): Go, targeted, `internal/service` wakeup and trigger tests (`issue_wakeup_system_test.go`, `issue_wakeup_test.go`). G1b has one positive test (suppressed and threads resolved), one test per negative control (spawns), a test that the server never resolves a thread with a human participant, and a shadow-mode test that the run still starts and the outcome is recorded.
 
 ## Open questions
 
-1. Is "no other linked PR open" and "unresolved agent-only thread" readable at dispatch in `dispatchSystem`? If not, G1 needs that read first.
+1. Decision for Cheese: may the server resolve agent-only comment threads when a PR merges on a Done issue (G1b)? Without it G1 saves at most USD 2.1 per week and is not built. Also: are "other linked PR open" and "agent-only thread unresolved" readable at dispatch in `dispatchSystem`?
 2. Does the server record which SHAs a run pushed? Without it G3 stays out.
 3. Which wakeup creators would set `skip_if_unchanged`? Default off is safe. A default-on rule needs a Cheese decision.
 4. Restating the parent success criterion (Finding 5) needs Cheese's agreement before any gate ships.
