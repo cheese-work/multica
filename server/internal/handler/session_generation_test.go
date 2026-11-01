@@ -203,23 +203,25 @@ func TestSessionGeneration_LoginTokenCarriesGen(t *testing.T) {
 	}
 }
 
-func TestSessionGeneration_FreshRoutesSkipTheCache(t *testing.T) {
+func TestSessionGeneration_RenewalReadErrorFailsClosedEvenWithWarmCache(t *testing.T) {
 	id, email := generationUser(t)
-	tok := generationToken(t, id, email, "sid-i", 0, time.Hour)
+	tok := generationToken(t, id, email, "sid-j", 0, auth.AuthRenewThreshold()/2)
+	// A successful request warms the 30 s cache for this user.
 	if rec := serveThroughAuth(testHandler.Queries, bearerGET(tok)); rec.Code != http.StatusOK {
-		t.Fatalf("before bump: got %d, want 200", rec.Code)
+		t.Fatalf("warm-up: got %d, want 200", rec.Code)
 	}
-	bumpGeneration(t, id)
+	pool, err := pgxpool.New(context.Background(), testPool.Config().ConnString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.Close()
 
-	// The generation just read is cached for ordinary routes (<= 30 s).
-	if rec := serveThroughAuth(testHandler.Queries, bearerGET(tok)); rec.Code != http.StatusOK {
-		t.Fatalf("ordinary route inside cache window: got %d, want 200", rec.Code)
-	}
+	called := false
 	rec := httptest.NewRecorder()
-	middleware.FreshSessionGeneration(middleware.Auth(testHandler.Queries, nil, nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))).ServeHTTP(rec, bearerGET(tok))
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("fresh route after bump: got %d, want 401", rec.Code)
+	middleware.Auth(db.New(pool), nil, nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	})).ServeHTTP(rec, cookieGET(tok))
+	if rec.Code != http.StatusServiceUnavailable || called {
+		t.Fatalf("got %d (handler called: %v), want 503 and no downstream call", rec.Code, called)
 	}
 }

@@ -41,40 +41,35 @@ func SessionRenewed(r *http.Request) bool {
 //     re-signing on every request would put a Set-Cookie on every response
 //     for no gain.
 //
-// Every failure below is non-fatal and silent to the caller: the session that
+// A failed renewal is non-fatal and silent to the caller: the session that
 // authenticated this request is still valid for at least another TTL/2, so a
-// failed renewal costs one more chance at it, not the session.
-func renewCookieSession(w http.ResponseWriter, r *http.Request, claims jwt.MapClaims, fromCookie bool, cfSigner *auth.CloudFrontSigner, queries *db.Queries) *http.Request {
+// failed renewal costs one more chance at it, not the session. The exception
+// is the revocation check, which writes its own 401/503 and returns false.
+func renewCookieSession(w http.ResponseWriter, r *http.Request, claims jwt.MapClaims, fromCookie bool, cfSigner *auth.CloudFrontSigner, queries *db.Queries) (*http.Request, bool) {
 	if !fromCookie || !auth.IsSafeMethod(r.Method) {
-		return r
+		return r, true
 	}
 	if !auth.ShouldRenewSession(time.Now(), auth.SessionExpiry(claims)) {
-		return r
+		return r, true
 	}
 
 	// Renewal reads the generation uncached, so a session revoked inside the
-	// cache window is never extended. A stale or unreadable generation skips
-	// renewal; the next request meets the normal revocation check.
-	currentGen := auth.SessionGeneration(claims)
-	if queries != nil {
-		var err error
-		sub, _ := claims["sub"].(string)
-		if currentGen, err = storedSessionGeneration(r.Context(), queries, sub, false); err != nil {
-			slog.Debug("auth: session renewal skipped", "path", r.URL.Path, "error", err)
-			return r
-		}
+	// cache window is never extended, and a storage error fails closed rather
+	// than letting the request on with an unverified session.
+	if queries != nil && !checkSessionGeneration(w, r, claims, queries, false) {
+		return r, false
 	}
-	token, expiresAt, err := auth.RenewSessionToken(claims, currentGen)
+	token, expiresAt, err := auth.RenewSessionToken(claims, auth.SessionGeneration(claims))
 	if err != nil {
 		slog.Debug("auth: session renewal skipped", "path", r.URL.Path, "error", err)
-		return r
+		return r, true
 	}
 
 	// Headers must be written before the handler starts the response body,
 	// which is why this runs ahead of next.ServeHTTP rather than after.
 	if err := auth.SetAuthCookies(w, token); err != nil {
 		slog.Warn("auth: failed to set renewed session cookies", "path", r.URL.Path, "error", err)
-		return r
+		return r, true
 	}
 
 	// The CDN cookies are signed for the lifetime of the session that created
@@ -90,5 +85,5 @@ func renewCookieSession(w http.ResponseWriter, r *http.Request, claims jwt.MapCl
 		}
 	}
 
-	return r.WithContext(context.WithValue(r.Context(), sessionRenewedCtxKey{}, true))
+	return r.WithContext(context.WithValue(r.Context(), sessionRenewedCtxKey{}, true)), true
 }

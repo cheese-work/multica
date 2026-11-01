@@ -337,6 +337,9 @@ func DaemonAuth(queries *db.Queries, patCache *auth.PATCache, daemonCache *auth.
 			if rejectTemporarilyDisabledUser(w, r, sub, email, DaemonAuthPathJWT) {
 				return
 			}
+			if !checkSessionGeneration(w, r, claims, queries, true) {
+				return
+			}
 			r.Header.Set("X-User-ID", sub)
 			ctx := context.WithValue(r.Context(), ctxKeyDaemonAuthPath, DaemonAuthPathJWT)
 			next.ServeHTTP(w, r.WithContext(ctx))
