@@ -98,6 +98,10 @@ func (service *Service) StartEnrollment(ctx context.Context, userID pgtype.UUID,
 	if err != nil {
 		return Started{}, err
 	}
+	needsAssertion, err := service.enrollNeedsAssertion(ctx, userID, rows)
+	if err != nil {
+		return Started{}, err
+	}
 	excluded := make([]protocol.CredentialDescriptor, len(rows))
 	for i, row := range rows {
 		excluded[i] = protocol.CredentialDescriptor{Type: protocol.PublicKeyCredentialType, CredentialID: row.CredentialID}
@@ -125,11 +129,13 @@ func (service *Service) StartEnrollment(ctx context.Context, userID pgtype.UUID,
 	if err != nil {
 		return Started{}, err
 	}
-	assertion, err := service.issueEnrollAssertion(ctx, userID, row.ID)
-	if err != nil {
-		return Started{}, err
+	started := Started{CeremonyID: row.ID, Options: options, ExpiresAt: row.ExpiresAt.Time}
+	if needsAssertion {
+		if started.Assertion, err = service.issueEnrollAssertion(ctx, userID, row.ID, rows); err != nil {
+			return Started{}, err
+		}
 	}
-	return Started{CeremonyID: row.ID, Options: options, ExpiresAt: row.ExpiresAt.Time, Assertion: assertion}, nil
+	return started, nil
 }
 
 const (

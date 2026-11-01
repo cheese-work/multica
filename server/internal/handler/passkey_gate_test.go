@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -350,4 +351,81 @@ func TestEmailCodeRevocationBelowTwoStillWorksWhileTheGateIsOff(test *testing.T)
 	}
 	decodeJSON(test, f.revokeByCode(f.keyIDs[1], http.StatusOK), &started)
 	f.confirmRevokeByCode(f.keyIDs[1], started.CeremonyID, http.StatusOK)
+}
+
+// holdRowLock keeps a transaction open on the rows the query locks, the way a
+// concurrent request would between its read and its commit. The lock drops at
+// the end of the test, or earlier with the returned release.
+func holdRowLock(test *testing.T, query string, args ...any) (release func()) {
+	test.Helper()
+	ctx := context.Background()
+	tx, err := testPool.Begin(ctx)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, query, args...); err != nil {
+		tx.Rollback(ctx)
+		test.Fatal(err)
+	}
+	release = func() { tx.Rollback(ctx) }
+	test.Cleanup(release)
+	return release
+}
+
+func (f *gateFixture) suspect(n int) {
+	f.test.Helper()
+	dbfx.Exec(f.test, `UPDATE user_passkey SET suspect_at = now() WHERE id = $1`, f.keyIDs[n])
+}
+
+func TestEnrollingWhileTheGateBlocksFailsClosedWhenOnlySuspectPasskeysRemain(test *testing.T) {
+	f := newGateFixture(test, 1)
+	f.forceGate("block")
+	f.suspect(0)
+	body := testutil.Call(test, f.handler.StartPasskeyEnrollment, enrollRequest("/api/passkeys/enroll/start", f.owner, "interactive_jwt", nil)).Want(http.StatusConflict).Text()
+	mustContain(test, body, "no_usable_passkey")
+	if credentialCount(test, f.owner) != 1 {
+		test.Fatal("a passkey was enrolled for a user whose keys cannot sign")
+	}
+}
+
+func TestEnrollmentFinishFailsClosedWhenPasskeysTurnSuspectAfterStart(test *testing.T) {
+	f := newGateFixture(test, 1)
+	started := f.startEnroll()
+	f.forceGate("block")
+	f.suspect(0)
+	mustContain(test, f.finishEnroll(started, nil, http.StatusForbidden), "assertion_required")
+	if credentialCount(test, f.owner) != 1 {
+		test.Fatal("a passkey was enrolled without an assertion")
+	}
+}
+
+func TestEnrollmentFinishWaitsOutAGateChangeInFlight(test *testing.T) {
+	f := newGateFixture(test, 2)
+	started := f.startEnroll()
+	holdRowLock(test, `SELECT id FROM workspace WHERE id = $1 FOR UPDATE`, f.workspace)
+	mustContain(test, f.finishEnroll(started, nil, http.StatusConflict), "busy_retry")
+	if credentialCount(test, f.owner) != 2 {
+		test.Fatal("a passkey was enrolled while the gate was changing")
+	}
+}
+
+func TestEmailCodeRevocationConfirmWaitsOutAGateChangeInFlight(test *testing.T) {
+	f := newGateFixture(test, 3)
+	var started struct {
+		CeremonyID string `json:"ceremony_id"`
+	}
+	decodeJSON(test, f.revokeByCode(f.keyIDs[2], http.StatusOK), &started)
+	holdRowLock(test, `SELECT id FROM workspace WHERE id = $1 FOR UPDATE`, f.workspace)
+	mustContain(test, f.confirmRevokeByCode(f.keyIDs[2], started.CeremonyID, http.StatusConflict), "busy_retry")
+	if f.revoked(f.keyIDs[2]) {
+		test.Fatal("a passkey was revoked while the gate was changing")
+	}
+}
+
+func TestEnablingTheGateWaitsOutAPasskeyRemovalInFlight(test *testing.T) {
+	f := newGateFixture(test, 2)
+	assertion := f.sign(0, f.issue("block"))
+	holdRowLock(test, `SELECT id FROM user_passkey WHERE id = $1 FOR UPDATE`, f.keyIDs[1])
+	mustContain(test, f.set("block", assertion, http.StatusConflict), "busy_retry")
+	f.wantGate("off", 1)
 }

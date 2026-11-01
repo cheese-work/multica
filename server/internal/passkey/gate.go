@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"slices"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -106,7 +107,7 @@ func (service *Service) SetDecisionGate(ctx context.Context, userID, workspaceID
 	if err != nil {
 		return busyOr(err)
 	}
-	usable, err := queries.ListUsablePasskeys(ctx, userID)
+	usable, err := lockUsablePasskeys(ctx, queries, userID)
 	if err != nil {
 		return err
 	}
@@ -154,23 +155,48 @@ func (service *Service) abortAssertion(ctx context.Context, tx pgx.Tx, err error
 	return busyOr(err)
 }
 
-// gatedWithPasskeys reports whether the user sits under a blocking gate and
-// already holds a usable passkey, and returns those passkeys. The first
-// passkey of a gated user needs no assertion: there is nothing to sign with.
-func gatedWithPasskeys(ctx context.Context, queries *db.Queries, userID pgtype.UUID) (bool, []db.UserPasskey, error) {
-	gated, err := queries.UserUnderDecisionGate(ctx, userID)
-	if err != nil || !gated {
-		return false, nil, err
-	}
+// lockUsablePasskeys locks the user's usable passkeys (NOWAIT, ascending id)
+// and returns them as the lock found them, so a count over the result cannot be
+// changed by a concurrent removal before the caller commits.
+func lockUsablePasskeys(ctx context.Context, queries *db.Queries, userID pgtype.UUID) ([]db.UserPasskey, error) {
 	usable, err := queries.ListUsablePasskeys(ctx, userID)
-	return len(usable) > 0, usable, err
+	if err != nil || len(usable) == 0 {
+		return nil, err
+	}
+	ids := make([]pgtype.UUID, len(usable))
+	for i, key := range usable {
+		ids[i] = key.ID
+	}
+	locked, err := queries.LockPasskeysNowait(ctx, ids)
+	if err != nil {
+		return nil, busyOr(err)
+	}
+	return slices.DeleteFunc(locked, func(key db.UserPasskey) bool { return key.RevokedAt.Valid || key.SuspectAt.Valid }), nil
+}
+
+// userGated reports whether any workspace of the user blocks. It also pins
+// every one of those gates until the caller's transaction ends, so a flip
+// cannot slip in between the check and the commit. A flip in flight answers
+// ErrBusy.
+func userGated(ctx context.Context, queries *db.Queries, userID pgtype.UUID) (bool, error) {
+	states, err := queries.LockUserWorkspaceGates(ctx, userID)
+	if err != nil {
+		return false, busyOr(err)
+	}
+	return slices.Contains(states, GateBlock), nil
 }
 
 // requireEnrollAssertion demands, for a gated user who already has a passkey,
-// that an existing passkey signed this enrollment ceremony.
+// that an existing passkey signed this enrollment ceremony. A passkey that
+// exists but cannot sign (suspect) still counts: the user is refused, not
+// treated as new.
 func (service *Service) requireEnrollAssertion(ctx context.Context, tx pgx.Tx, queries *db.Queries, userID, ceremonyID pgtype.UUID, assertion json.RawMessage) error {
-	required, _, err := gatedWithPasskeys(ctx, queries, userID)
-	if err != nil || !required {
+	gated, err := userGated(ctx, queries, userID)
+	if err != nil || !gated {
+		return err
+	}
+	live, err := queries.CountLivePasskeys(ctx, userID)
+	if err != nil || live == 0 {
 		return err
 	}
 	challengeID, credential, err := parseEnvelope(assertion)
@@ -186,13 +212,27 @@ func (service *Service) requireEnrollAssertion(ctx context.Context, tx pgx.Tx, q
 	return nil
 }
 
-// issueEnrollAssertion opens the assertion a gated user must sign to finish the
-// ceremony, or returns nil when none is needed.
-func (service *Service) issueEnrollAssertion(ctx context.Context, userID, ceremonyID pgtype.UUID) (*Issued, error) {
-	required, usable, err := gatedWithPasskeys(ctx, service.Queries, userID)
-	if err != nil || !required {
-		return nil, err
+// enrollNeedsAssertion reports whether finishing an enrollment needs an
+// existing passkey's signature: the user sits under a blocking gate and already
+// has a passkey. A gated user whose passkeys all stopped being usable is
+// refused, since no key can sign for them. Call it before anything is mailed.
+func (service *Service) enrollNeedsAssertion(ctx context.Context, userID pgtype.UUID, usable []db.UserPasskey) (bool, error) {
+	gated, err := userGated(ctx, service.Queries, userID)
+	if err != nil || !gated {
+		return false, err
 	}
+	live, err := service.Queries.CountLivePasskeys(ctx, userID)
+	if err != nil || live == 0 {
+		return false, err
+	}
+	if len(usable) == 0 {
+		return false, conflict("no_usable_passkey: none of your passkeys can sign; recover your account first")
+	}
+	return true, nil
+}
+
+// issueEnrollAssertion opens the assertion that lets the ceremony finish.
+func (service *Service) issueEnrollAssertion(ctx context.Context, userID, ceremonyID pgtype.UUID, usable []db.UserPasskey) (*Issued, error) {
 	issued, err := service.issueAssertion(ctx, userID, PurposeEnroll, ceremonyID, usable, func(nonce []byte) []byte {
 		return enrollChallenge(ceremonyID, nonce)
 	})
@@ -203,21 +243,18 @@ func (service *Service) issueEnrollAssertion(ctx context.Context, userID, ceremo
 }
 
 // enforceFloor refuses removing a usable passkey from a gated user when fewer
-// than two would stay.
+// than two would stay. The caller holds the user's usable passkeys locked.
 func enforceFloor(ctx context.Context, queries *db.Queries, userID, targetID pgtype.UUID) error {
-	gated, usable, err := gatedWithPasskeys(ctx, queries, userID)
+	gated, err := userGated(ctx, queries, userID)
 	if err != nil || !gated {
 		return err
 	}
-	remaining, targetUsable := 0, false
-	for _, key := range usable {
-		if key.ID == targetID {
-			targetUsable = true
-		} else {
-			remaining++
-		}
+	usable, err := queries.ListUsablePasskeys(ctx, userID)
+	if err != nil {
+		return err
 	}
-	if targetUsable && remaining < minGatedPasskeys {
+	remaining := len(slices.DeleteFunc(usable, func(key db.UserPasskey) bool { return key.ID == targetID }))
+	if len(usable) > remaining && remaining < minGatedPasskeys {
 		return conflict("passkey_floor: the decision gate needs at least two active passkeys")
 	}
 	return nil

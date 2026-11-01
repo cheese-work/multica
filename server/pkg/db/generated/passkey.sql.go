@@ -82,6 +82,20 @@ func (q *Queries) CountFailedPasskeyEnrollCeremonies(ctx context.Context, userID
 	return column_1, err
 }
 
+const countLivePasskeys = `-- name: CountLivePasskeys :one
+
+SELECT count(*)::int FROM user_passkey WHERE user_id = $1 AND revoked_at IS NULL
+`
+
+// Keys that exist, suspect or not. A suspect key cannot sign, but it still
+// means the person has a passkey the gate must hear from.
+func (q *Queries) CountLivePasskeys(ctx context.Context, userID pgtype.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, countLivePasskeys, userID)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countPasskeyEnrollStart = `-- name: CountPasskeyEnrollStart :exec
 UPDATE passkey_enroll_limit SET
     hour_starts = CASE WHEN now() - hour_started_at >= interval '1 hour' THEN 1 ELSE hour_starts + 1 END,
@@ -546,6 +560,35 @@ func (q *Queries) LockPasskeysNowait(ctx context.Context, ids []pgtype.UUID) ([]
 	return items, nil
 }
 
+const lockUserWorkspaceGates = `-- name: LockUserWorkspaceGates :many
+
+SELECT w.decision_passkey_gate::text FROM member m JOIN workspace w ON w.id = m.workspace_id
+WHERE m.user_id = $1 ORDER BY w.id FOR KEY SHARE OF w NOWAIT
+`
+
+// A key share on every workspace the person belongs to: a gate flip, which
+// takes the row FOR UPDATE, cannot commit between this read and the caller's
+// commit. NOWAIT, so a flip in flight answers busy and nothing waits.
+func (q *Queries) LockUserWorkspaceGates(ctx context.Context, userID pgtype.UUID) ([]string, error) {
+	rows, err := q.db.Query(ctx, lockUserWorkspaceGates, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var w_decision_passkey_gate string
+		if err := rows.Scan(&w_decision_passkey_gate); err != nil {
+			return nil, err
+		}
+		items = append(items, w_decision_passkey_gate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockWorkspaceDecisionGate = `-- name: LockWorkspaceDecisionGate :one
 
 SELECT id, decision_passkey_gate, policy_revision FROM workspace WHERE id = $1 FOR UPDATE
@@ -628,21 +671,6 @@ SELECT pg_try_advisory_xact_lock(hashtextextended($1::uuid::text || ':passkey_ch
 // index. This per-user advisory lock is taken first and never waits.
 func (q *Queries) TryLockPasskeyChallengeIssue(ctx context.Context, userID pgtype.UUID) (bool, error) {
 	row := q.db.QueryRow(ctx, tryLockPasskeyChallengeIssue, userID)
-	var column_1 bool
-	err := row.Scan(&column_1)
-	return column_1, err
-}
-
-const userUnderDecisionGate = `-- name: UserUnderDecisionGate :one
-SELECT EXISTS (
-    SELECT 1 FROM member m JOIN workspace w ON w.id = m.workspace_id
-    WHERE m.user_id = $1 AND w.decision_passkey_gate = 'block'
-)::boolean
-`
-
-// The gate is on for a person when any workspace they belong to is in block.
-func (q *Queries) UserUnderDecisionGate(ctx context.Context, userID pgtype.UUID) (bool, error) {
-	row := q.db.QueryRow(ctx, userUnderDecisionGate, userID)
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err
