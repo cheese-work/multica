@@ -97,6 +97,10 @@ type Task struct {
 	Scopes   []string `json:"scopes,omitempty"`
 	Epoch    int64    `json:"epoch,omitempty"`
 	TaintIDs []string `json:"taint_ids,omitempty"`
+	// PinnedBaseSHA and PinnedHeadSHA seed an elevated run's synthetic base
+	// (CHE-2216 plan 3.5): the head pin when set, otherwise the base pin.
+	PinnedBaseSHA string `json:"pinned_base_sha,omitempty"`
+	PinnedHeadSHA string `json:"pinned_head_sha,omitempty"`
 	// IntakeRun, PinnedBranch and PinnedRepo are the claim-time intake pin (CHE-2216 plan 3.6).
 	IntakeRun    bool   `json:"intake_run,omitempty"`
 	PinnedBranch string `json:"pinned_branch,omitempty"`

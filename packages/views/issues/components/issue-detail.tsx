@@ -35,7 +35,6 @@ import {
   Plus,
   SlidersHorizontal,
   Tag,
-  Unlink,
   Users,
   ArrowDown,
 } from "@multica/ui/icons";
@@ -43,7 +42,6 @@ import { BreadcrumbHeader, type BreadcrumbSegment } from "../../layout/breadcrum
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Button } from "@multica/ui/components/ui/button";
 import { IconButton } from "@multica/ui/components/common/icon-button";
-import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@multica/ui/components/ui/resizable";
 import { Sheet, SheetContent } from "@multica/ui/components/ui/sheet";
 import { useIsMobile } from "@multica/ui/hooks/use-mobile";
@@ -149,7 +147,7 @@ import { useAuthStore } from "@multica/core/auth";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { IssueRelationsButton } from "./issue-relations-button";
+import { IssueHierarchy } from "./hierarchy/hierarchy-minimap";
 import { useRecentContextStore } from "@multica/core/chat";
 import { useRegisterCommandBarContext } from "../../search/register-context";
 import { useModalStore } from "@multica/core/modals";
@@ -532,8 +530,8 @@ const EMPTY_ID_SET: Set<string> = new Set();
 //     the user explicitly added it via "+ Add property" in this session
 //     (priority / due_date / labels)
 //
-// Parent is not in either group — it has its own standalone section below
-// the Properties block, rendered only when the issue actually has a parent.
+// Parent is not in either group — the Hierarchy minimap above the Properties
+// block shows it (with siblings and children) when the issue has one.
 //
 // `OPTIONAL_PROP_KEYS` is the open set — adding a new optional field
 // means appending here, wiring its row in the JSX switch below, and
@@ -1408,7 +1406,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const sidebarOpen = isMobile ? mobileSidebarOpen : desktopSidebarOpen;
   const [propertiesOpen, setPropertiesOpen] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(true);
-  const [parentIssueOpen, setParentIssueOpen] = useState(true);
   const [pullRequestsOpen, setPullRequestsOpen] = useState(true);
   const [metadataOpen, setMetadataOpen] = useState(false);
   const githubSettings = useGitHubSettings();
@@ -3541,6 +3538,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
 
   const sidebarContent = (
     <div className="space-y-5">
+      {/* Hierarchy minimap — parent, siblings and children at a glance; replaces
+          the Parent issue section and the Relations graph button. */}
+      <IssueHierarchy key={issue.id} issue={issue} />
+
       {/* Properties */}
       <div>
         <button
@@ -3755,58 +3756,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           click an action they cannot run, and the refusal is explained at run
           time rather than by a silently shorter list. */}
       <QuickActionsSection issueId={issue.id} />
-      <IssueRelationsButton key={issue.id} issueId={issue.id} />
       <WakeupsSection
         issueId={issue.id}
         closed={["done", "closed"].includes(resolveStatusCategory(issue.status))}
         defaultAgentId={issue.assignee_type === "agent" ? (issue.assignee_id ?? undefined) : undefined}
       />
       <PluginPanelSection issueId={issue.id} />
-
-      {/* Parent issue — standalone section, only when the issue has a
-          parent. Setting a parent is reachable via the issue actions menu;
-          this card surfaces an existing parent without occupying sidebar
-          space for issues that don't have one. */}
-      {parentIssue && (
-        <div>
-          <button
-            type="button"
-            className={`flex w-full items-center gap-1 rounded-md px-2 py-1 text-caption font-medium transition-colors mb-2 hover:bg-accent/70 ${parentIssueOpen ? "" : "text-muted-foreground hover:text-foreground"}`}
-            onClick={() => setParentIssueOpen(!parentIssueOpen)}
-          >
-            {t(($) => $.detail.section_parent_issue)}
-            <ChevronRight className={`!size-3 shrink-0 stroke-[2.5] text-muted-foreground transition-transform ${parentIssueOpen ? "rotate-90" : ""}`} />
-          </button>
-          {parentIssueOpen && <div className="pl-2">
-            <div className="flex items-center gap-0.5 rounded-md px-2 -mx-2 hover:bg-accent/50 transition-colors group">
-              <AppLink
-                href={paths.issueDetail(parentIssue.id)}
-                className="flex flex-1 min-w-0 items-center gap-1.5 py-1.5 text-label"
-              >
-                <StatusIcon
-                  status={parentIssue.status}
-                  color={resolveStatusColor(parentIssue.status)}
-                  icon={resolveStatusIcon(parentIssue.status)}
-                  category={issueStatusCategory(parentIssue) ?? undefined}
-                  className="h-3.5 w-3.5 shrink-0"
-                />
-                <span className="text-muted-foreground shrink-0">{parentIssue.identifier}</span>
-                <span className="truncate group-hover:text-foreground">{parentIssue.title}</span>
-              </AppLink>
-              <TooltipHint label={t(($) => $.actions.remove_parent_issue)}>
-                <button
-                  type="button"
-                  aria-label={t(($) => $.actions.remove_parent_issue)}
-                  onClick={() => actions.removeParent()}
-                  className="shrink-0 rounded-xs p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
-                >
-                  <Unlink className="h-3.5 w-3.5" />
-                </button>
-              </TooltipHint>
-            </div>
-          </div>}
-        </div>
-      )}
 
       <IssueDuplicatesSection issueId={issue.id} />
 

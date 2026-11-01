@@ -258,6 +258,26 @@ func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID, tar
 	return ReviewGate{}, ErrRunBudgetExhausted
 }
 
+// RunBudgetStillRefuses reports whether the window a refusal was for is still
+// the issue's current window and still refuses a run. A top-up opens a new
+// window and a progress grant restores balance, so the refusal's delayed
+// callback checks this before it writes.
+func RunBudgetStillRefuses(ctx context.Context, q *db.Queries, issueID pgtype.UUID, since time.Time) (bool, error) {
+	ctx = readOnlyRunBudget(ctx)
+	issue, usage, balance, err := openRunBudget(ctx, q, issueID, pgtype.UUID{})
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (usage == nil || !usage.Since.Equal(since))) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("run budget: %w", err)
+	}
+	if balance < 1 {
+		return true, nil
+	}
+	_, tokensSpent, err := tokenBalanceSpent(ctx, q, issue, usage)
+	return tokensSpent, err
+}
+
 // IsReviewStatus reports whether a status hands the issue to its reviewer: the
 // built-in in_review, and the Default workflow's agent_review step. The
 // workflow definition has no review marker, so the two keys are named here.
