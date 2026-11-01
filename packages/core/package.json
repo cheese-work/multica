@@ -34,7 +34,6 @@
     "./workspace/wakeups-pause": "./workspace/wakeups-pause.ts",
     "./workspace/auto-compact": "./workspace/auto-compact.ts",
     "./workspace/mermaid-orientation": "./workspace/mermaid-orientation.ts",
-    "./workspace/jev-governance": "./workspace/jev-governance.ts",
     "./issue-statuses": "./issue-statuses/index.ts",
     "./issue-statuses/queries": "./issue-statuses/queries.ts",
     "./issue-statuses/hooks": "./issue-statuses/hooks.ts",
