@@ -588,14 +588,16 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 		return empty, err
 	}
 	taskIssue, agent, task, err := handler.authorizeDecisionTask(request, queries, issue, "agent", agentID)
-	if input.Proposal != nil && reuse && (err != nil || input.Proposal.RecipientErr != nil) {
-		// A stopped task or a removed recipient cannot ask again, but an open
-		// proposal of this identity is reported as ineligible, not refused.
-		if _, found, findErr := findOpenProposal(ctx, queries, issue, agentID, input, session); findErr != nil || found {
-			if findErr == nil {
-				findErr = proposalIneligible(cmp.Or(err, input.Proposal.RecipientErr))
-			}
-			return empty, findErr
+	if input.Proposal != nil && (err != nil || input.Proposal.RecipientErr != nil || !reuse) {
+		// A stopped task, a removed recipient or a lane that is gone cannot ask
+		// again, but an open proposal of this identity is reported as
+		// ineligible, not refused and not asked a second time.
+		held, holdErr := holdsOpenProposal(ctx, queries, issue, agentID, input)
+		if holdErr != nil {
+			return empty, holdErr
+		}
+		if held {
+			return empty, proposalIneligible(cmp.Or[error](err, input.Proposal.RecipientErr, errProposalLaneGone))
 		}
 	}
 	if err != nil {

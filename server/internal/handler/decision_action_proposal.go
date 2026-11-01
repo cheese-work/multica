@@ -124,6 +124,46 @@ func findOpenProposal(ctx context.Context, queries *db.Queries, issue db.Issue, 
 	return prior, err == nil, err
 }
 
+// errProposalLaneGone is the reason a held proposal can no longer be asked
+// again in a new lane.
+var errProposalLaneGone = decisionIntentRefusal{http.StatusForbidden, "decision lane is not available"}
+
+// holdsOpenProposal reports whether the agent has an open proposal of this
+// action and params on the issue for the named person, in any lane. The lane
+// is part of the identity, so a lane that is no longer found still holds it.
+// When the named person did not resolve, an open proposal whose recipient is
+// no longer an active member counts too: a removed member's ID cannot be
+// mapped back to the user.
+func holdsOpenProposal(ctx context.Context, queries *db.Queries, issue db.Issue, agentID pgtype.UUID, input decisionRequestInput) (bool, error) {
+	open, err := queries.ListOpenProposals(ctx, db.ListOpenProposalsParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AgentID: agentID})
+	if err != nil {
+		return false, err
+	}
+	for _, request := range open {
+		fingerprint, err := input.Proposal.identity(issue, agentID, request.HumanUserID, request.ChatSessionID).fingerprint()
+		if err != nil {
+			return false, err
+		}
+		if fingerprint != request.ProposalFingerprint.String {
+			continue
+		}
+		if request.HumanUserID == input.HumanUserID {
+			return true, nil
+		}
+		if input.Proposal.RecipientErr == nil {
+			continue
+		}
+		_, err = queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: request.HumanUserID, WorkspaceID: issue.WorkspaceID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return true, nil
+		}
+		if err != nil {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
 // replayProposal returns the open request holding this identity, if the
 // recipient may still be asked it.
 func (handler *Handler) replayProposal(request *http.Request, queries *db.Queries, issue db.Issue, agent db.Agent, input decisionRequestInput, session db.ChatSession) (decisionRequestResult, error) {

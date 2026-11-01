@@ -363,3 +363,51 @@ func TestProposalToARemovedMemberWithoutAnOpenRequestStaysBadRequest(test *testi
 	body["for"] = uuid.NewString()
 	testutil.Call(test, testHandler.ProposeDecisionAction, fixture.proposeRequest(body)).Want(http.StatusBadRequest)
 }
+
+func TestProposalReplayWithAnUnavailableLaneIsIneligible(test *testing.T) {
+	for _, mutation := range []string{"archived", "intro", "channel", "bound_channel"} {
+		test.Run(mutation, func(test *testing.T) {
+			useProposalGuard(test)
+			fixture := newProposalFixture(test)
+			body := fixture.proposal(test)
+			first := fixture.propose(test, body, http.StatusCreated)
+			switch mutation {
+			case "archived":
+				dbfx.Exec(test, `UPDATE chat_session SET status = 'archived' WHERE id = $1`, first.ChatSessionID)
+			case "intro":
+				dbfx.Exec(test, `UPDATE chat_session SET is_agent_intro = true WHERE id = $1`, first.ChatSessionID)
+			case "channel":
+				dbfx.Exec(test, `UPDATE chat_session SET channel_origin_at = now() WHERE id = $1`, first.ChatSessionID)
+			case "bound_channel":
+				installationID := dbfx.Insert(test, "channel_installation", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "channel_type": "slack", "installer_user_id": testUserID})
+				dbfx.Insert(test, "channel_chat_session_binding", testutil.Cols{"chat_session_id": first.ChatSessionID, "installation_id": installationID, "channel_type": "slack", "channel_chat_id": "bound-" + first.ChatSessionID, "chat_type": "p2p"})
+			}
+			if text := testutil.Call(test, testHandler.ProposeDecisionAction, fixture.proposeRequest(body)).Want(http.StatusConflict).Text(); !strings.Contains(text, "proposal_ineligible") {
+				test.Fatalf("body = %s", text)
+			}
+			if rows := fixture.proposalRows(test); rows != 1 {
+				test.Fatalf("proposal rows = %d, want the one open request", rows)
+			}
+		})
+	}
+}
+
+func TestProposalReplayAfterMemberIDRecipientIsRemovedIsIneligible(test *testing.T) {
+	useProposalGuard(test)
+	fixture := newProposalFixture(test)
+	var memberID, role string
+	dbfx.QueryRow(test, `SELECT id::text, role FROM member WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, fixture.humanID).Scan(&memberID, &role)
+	body := fixture.proposal(test)
+	body["for"] = memberID
+	fixture.propose(test, body, http.StatusCreated)
+	dbfx.Exec(test, `DELETE FROM member WHERE id = $1`, memberID)
+	test.Cleanup(func() {
+		dbfx.Exec(test, `INSERT INTO member (id, workspace_id, user_id, role) VALUES ($1, $2, $3, $4)`, memberID, testWorkspaceID, fixture.humanID, role)
+	})
+	if text := testutil.Call(test, testHandler.ProposeDecisionAction, fixture.proposeRequest(body)).Want(http.StatusConflict).Text(); !strings.Contains(text, "proposal_ineligible") {
+		test.Fatalf("body = %s", text)
+	}
+	if fixture.proposalRows(test) != 1 {
+		test.Fatal("replay wrote a second request")
+	}
+}
