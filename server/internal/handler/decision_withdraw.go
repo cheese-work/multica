@@ -76,6 +76,9 @@ func (handler *Handler) withdrawDecisionRequestTx(request *http.Request, located
 	ctx := request.Context()
 	empty := decisionRequestResult{}
 	deny := decisionIntentRefusal{http.StatusForbidden, "only the asking agent's running task or the named human can withdraw this ask"}
+	if isServerDecision(located) {
+		return empty, decisionIntentRefusal{http.StatusForbidden, "the platform opened this request; it cannot be withdrawn"}
+	}
 	actorType := "member"
 	actorID, err := util.ParseUUID(request.Header.Get("X-User-ID"))
 	if err != nil {

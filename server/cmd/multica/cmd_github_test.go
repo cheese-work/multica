@@ -60,3 +60,46 @@ func TestGitHubKillSwitchOnAndOffSendScopeAndState(t *testing.T) {
 		t.Fatalf("bodies = %v, want on acme/widget then off *", bodies)
 	}
 }
+
+func TestGitHubIntakeListReadsSinceWithoutWriting(t *testing.T) {
+	var query string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/github/intake" {
+			t.Fatalf("list sent %s %s, want GET /api/github/intake", r.Method, r.URL.Path)
+		}
+		query = r.URL.RawQuery
+		_ = json.NewEncoder(w).Encode(map[string]any{"deliveries": []map[string]any{{
+			"event": "issue_comment", "delivery_guid": "guid-1", "state": "projected", "reason": "notify_only",
+			"received_at": "2026-10-30T10:32:00Z", "revision_state": "projected", "revision_reason": "notify_only", "tasks": 0,
+		}}})
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+
+	cmd := newKillSwitchTestCmd("table")
+	cmd.Flags().String("since", "2026-10-30T10:31:00Z", "")
+	cmd.Flags().Int("limit", 50, "")
+	out, err := captureStdout(t, func() error { return runGitHubIntakeList(cmd, nil) })
+	if err != nil || !strings.Contains(out, "guid-1") || !strings.Contains(out, "issue_comment") {
+		t.Fatalf("list = %q, %v; want the delivery row", out, err)
+	}
+	if !strings.Contains(query, "since=2026-10-30T10%3A31%3A00Z") || !strings.Contains(query, "limit=50") {
+		t.Fatalf("query = %q, want since and limit", query)
+	}
+}
+
+func TestGitHubIntakeListEmptyTruncatedScanIsNotZeroDeliveries(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"deliveries": []any{}, "truncated": true})
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+
+	cmd := newKillSwitchTestCmd("table")
+	cmd.Flags().String("since", "2026-10-30T10:31:00Z", "")
+	cmd.Flags().Int("limit", 50, "")
+	out, err := captureStdout(t, func() error { return runGitHubIntakeList(cmd, nil) })
+	if err != nil || strings.Contains(out, "no deliveries") || !strings.Contains(out, "scan incomplete") {
+		t.Fatalf("out = %q, %v; want a scan-incomplete notice, never 'no deliveries'", out, err)
+	}
+}
