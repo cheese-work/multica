@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   warning-budget:
-    needs: [migration-prefix-check, cursor-background-lifecycle, changes, sqlc-check, frontend-build, frontend-test, frontend-views-test, frontend, backend-tests, backend-agent-tests, go-vulnerability-scan, go-lint, backend, daemon-artifact, image-budget, installer, script-checks, deploy-cd, frontend-quality]
+    needs: [migration-prefix-check, cursor-background-lifecycle, changes, sqlc-check, frontend-build, frontend-test, frontend-views-test, locale-parity, frontend, backend-tests, backend-agent-tests, go-vulnerability-scan, go-lint, backend, daemon-artifact, image-budget, installer, script-checks, deploy-cd, frontend-quality]
     if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -377,9 +377,46 @@ jobs:
       - name: Test views shard ${{ matrix.index }}/${{ matrix.total }}
         run: pnpm exec turbo test --filter='@multica/views' -- --shard=${{ matrix.index }}/${{ matrix.total }}
 
+  # CHE-2418 B3: fast fail-first check for locale skew. The merge queue failed
+  # 22% of runs, mostly on locales/parity.test.ts: two PRs, each green alone,
+  # leave zh-Hant keys missing together. A PR run only sees the main it last
+  # synced with, so this job merges the newest main into the PR first, then
+  # runs just the parity file (no build, no other tests).
+  locale-parity:
+    needs: changes
+    if: ${{ needs.changes.outputs.frontend == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Merge the newest main
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch origin main
+          git -c user.name=ci -c user.email=ci@invalid merge --no-edit origin/main
+
+      - name: Setup pnpm
+        run: bash scripts/setup-pnpm.sh
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Locale parity against the newest main
+        run: pnpm --filter @multica/views exec vitest run locales/parity.test.ts
+
   # Preserve the aggregate check names while validating intentional skips.
   frontend:
-    needs: [changes, frontend-build, frontend-test, frontend-views-test, frontend-quality]
+    needs: [changes, frontend-build, frontend-test, frontend-views-test, locale-parity, frontend-quality]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     steps:
@@ -387,7 +424,7 @@ jobs:
       - name: Check frontend job results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          JOB_SCOPES: '{"frontend-build":"push_full","frontend-test":"push_full","frontend-views-test":"frontend","frontend-quality":"quality_only"}'
+          JOB_SCOPES: '{"frontend-build":"push_full","frontend-test":"push_full","frontend-views-test":"frontend","locale-parity":"frontend","frontend-quality":"quality_only"}'
         run: node scripts/ci-scope.mjs gate
 
   # The Go caches are handled explicitly here rather than through setup-go's
@@ -563,12 +600,19 @@ jobs:
       - name: Verify Go test wrapper
         run: bash scripts/test-go.test.sh
 
+      # Runs against the freshly migrated template database; leaves it unchanged.
+      - name: Verify per-package test database wrapper
+        run: bash scripts/go-test-db-exec.test.sh
+
       - name: Verify integration database startup policy
         run: bash server/cmd/server/integration_startup.test.sh
 
       - name: Test
         env:
           GOFLAGS: -count=1 -v
+          # CHE-2418: each package gets its own database cloned from the
+          # migrated one, so test-go.sh runs packages with -p 4, not -p 1.
+          MULTICA_TEST_DB_PER_PACKAGE: "1"
         # pkg/agent runs on its own runner: backend-agent-tests below.
         run: bash scripts/test-go.sh --race --only regular
 
@@ -1024,6 +1068,7 @@ jobs:
         run: |
           bash deploy/cd/test-cutover.sh
           bash deploy/cd/test-ab-health-check.sh
+          bash deploy/cd/test-notify-approval.sh
           bash deploy/cd/test-jev-overlay.sh
           bash deploy/cd/test-flagfile-check.sh
 

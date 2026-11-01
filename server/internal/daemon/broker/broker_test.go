@@ -3,6 +3,7 @@ package broker
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -13,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -301,6 +303,20 @@ func TestNewRejectsBadPin(t *testing.T) {
 	}
 }
 
+// runShim retries ETXTBSY (CHE-2418 B2). The shim was just written, and any
+// fork in a parallel test while its write fd was open leaks that fd into the
+// child, so exec fails with "text file busy" until the child execs. The
+// window is milliseconds; this is a known Go/Linux race, not a shim bug.
+func runShim(shim string, args ...string) ([]byte, error) {
+	for attempt := 0; ; attempt++ {
+		out, err := exec.Command(shim, args...).CombinedOutput()
+		if err == nil || !errors.Is(err, syscall.ETXTBSY) || attempt == 50 {
+			return out, err
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func TestShim(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -319,7 +335,7 @@ func TestShim(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{{"push", "origin", "HEAD"}, {"status", "-s"}, {"-C", "x", "log"}} {
-		if out, err := exec.Command(shim, args...).CombinedOutput(); err != nil {
+		if out, err := runShim(shim, args...); err != nil {
 			t.Fatalf("shim %v: %v %s", args, err, out)
 		}
 	}
