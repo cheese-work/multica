@@ -20,12 +20,6 @@ const fuzzySearchThreshold = 0.4
 // letters share too few trigrams to score meaningfully.
 const fuzzySearchMinRunes = 3
 
-// fuzzyDescriptionRunes caps how much of each description is scored.
-// word_similarity cost grows with text length; scoring whole descriptions took
-// 6.4 s over 8,000 issues averaging 2,100 characters, scoring the first 200
-// runes keeps the fallback under the 1 s budget (CHE-2944).
-const fuzzyDescriptionRunes = 200
-
 // foldGroups is the single source for the diacritic fold: every rune in a
 // group's letters folds to its base. The Go fold and the SQL translate() are
 // both generated from it.
@@ -72,11 +66,19 @@ func shouldRunFuzzyFallback(query string, hasNum bool, offset, normalResults int
 		utf8.RuneCountInString(foldSearchText(query)) >= fuzzySearchMinRunes
 }
 
+// fuzzySearchSettings makes the index-backed `<%` operator use the same
+// threshold as the explicit word_similarity comparisons.
+var fuzzySearchSettings = fmt.Sprintf("SET LOCAL pg_trgm.word_similarity_threshold = %v", fuzzySearchThreshold)
+
 // buildFuzzySearchQuery scores folded title and description against the folded
 // query with word_similarity and returns the same columns as buildSearchQuery,
 // so the caller scans both with scanSearchIssue. Args: $1 folded query,
 // $2 workspace_id (filled by the caller), $3 threshold, [$4 terminal status
 // keys], then limit and offset (the last two, filled by the caller).
+//
+// Description candidates come from the idx_issue_description_fold_trgm GIN
+// index via `<%`, so whole descriptions are searched without scoring every row.
+// Titles are short and scored directly. Run the query with fuzzySearchSettings.
 func buildFuzzySearchQuery(foldedQuery string, includeClosed bool, terminalStatusKeys []string) (string, []any) {
 	args := []any{foldedQuery, nil, fuzzySearchThreshold}
 	nextArg := func(value any) string {
@@ -91,18 +93,26 @@ func buildFuzzySearchQuery(foldedQuery string, includeClosed bool, terminalStatu
 	limitParam := nextArg(nil)
 	offsetParam := nextArg(nil)
 
-	query := fmt.Sprintf(`WITH scored AS (
+	foldedTitle := foldSQL("i.title")
+	foldedDescription := foldSQL("COALESCE(i.description, '')")
+	query := fmt.Sprintf(`WITH candidates AS (
+		SELECT i.id FROM issue i
+		WHERE %[1]s AND word_similarity($1, %[2]s) >= $3
+		UNION
+		SELECT i.id FROM issue i
+		WHERE %[1]s AND $1 <%% %[3]s
+	),
+	scored AS (
 		SELECT i.id, i.updated_at,
-			word_similarity($1, %[1]s) AS title_score,
-			word_similarity($1, %[2]s) AS description_score
-		FROM issue i
-		WHERE %[3]s
+			word_similarity($1, %[2]s) AS title_score,
+			word_similarity($1, %[3]s) AS description_score
+		FROM candidates c
+		JOIN issue i ON i.id = c.id AND i.workspace_id = $2
 	),
 	page_candidates AS MATERIALIZED (
 		SELECT id, updated_at, title_score, description_score,
 			GREATEST(title_score, description_score) AS score
 		FROM scored
-		WHERE title_score >= $3 OR description_score >= $3
 		ORDER BY score DESC, updated_at DESC, id ASC
 		LIMIT %[4]s OFFSET %[5]s
 	)
@@ -116,7 +126,7 @@ func buildFuzzySearchQuery(foldedQuery string, includeClosed bool, terminalStatu
 	FROM page_candidates pc
 	JOIN issue i ON i.id = pc.id AND i.workspace_id = $2
 	ORDER BY pc.score DESC, pc.updated_at DESC, pc.id ASC`,
-		foldSQL("i.title"), foldSQL(fmt.Sprintf("left(COALESCE(i.description, ''), %d)", fuzzyDescriptionRunes)), where, limitParam, offsetParam)
+		where, foldedTitle, foldedDescription, limitParam, offsetParam)
 
 	return query, args
 }

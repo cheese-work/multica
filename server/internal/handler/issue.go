@@ -1255,7 +1255,7 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 	var results []searchResult
 	// runSearch fills results from one search statement and writes the error
 	// response itself, returning false when the request is already answered.
-	runSearch := func(sqlQuery string, args []any) bool {
+	runSearch := func(sqlQuery string, args []any, localSettings ...string) bool {
 		err := runSearchQuery(ctx, h.TxStarter, sqlQuery, args, func(rows pgx.Rows) error {
 			for rows.Next() {
 				sr, err := scanSearchIssue(rows)
@@ -1265,7 +1265,7 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 				results = append(results, sr)
 			}
 			return rows.Err()
-		})
+		}, localSettings...)
 		if err != nil {
 			if writeSearchCancellation(w, r, err) {
 				return false
@@ -1299,7 +1299,7 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		fuzzyArgs[1] = wsUUID
 		fuzzyArgs[len(fuzzyArgs)-2] = limit
 		fuzzyArgs[len(fuzzyArgs)-1] = offset
-		if !runSearch(fuzzyQuery, fuzzyArgs) {
+		if !runSearch(fuzzyQuery, fuzzyArgs, fuzzySearchSettings) {
 			return
 		}
 	}

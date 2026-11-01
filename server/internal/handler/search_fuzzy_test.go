@@ -90,7 +90,7 @@ func TestSearchIssues_FuzzyFallbackFindsTypoInDescription(t *testing.T) {
 		"description": "the importer crashes when the spreadsheet contains duplicate columns",
 	})
 
-	ids, _ := searchIssueIDs(t, "q="+url.QueryEscape("spreadsheat duplcate"))
+	ids, _ := searchIssueIDs(t, "q="+url.QueryEscape("spreadsheat duplcate")) //nolint:misspell // intentional typo
 	if !containsID(ids, id) {
 		t.Fatalf("typo in description query did not find the issue; got %v", ids)
 	}
@@ -186,5 +186,30 @@ func TestFoldSearchText_MatchesSQLFold(t *testing.T) {
 	}
 	if got := foldSearchText("ĐĂNG NHẬP"); got != "dang nhap" {
 		t.Fatalf("foldSearchText(ĐĂNG NHẬP) = %q, want %q", got, "dang nhap")
+	}
+}
+
+func TestSearchIssues_FuzzyFallbackFindsTypoDeepInDescription(t *testing.T) {
+	filler := strings.Repeat("lorem ipsum dolor sit amet consectetur ", 40)
+	id := dbfx.Issue(t, "Unrelated heading", testutil.Cols{
+		"description": filler + "the importer crashes when the spreadsheet contains duplicate columns",
+	})
+
+	ids, _ := searchIssueIDs(t, "q="+url.QueryEscape("spreadsheat duplcate")) //nolint:misspell // intentional typo
+	if !containsID(ids, id) {
+		t.Fatalf("typo deep in a long description was not found; got %v", ids)
+	}
+}
+
+// The fallback's description match is served by an expression index. The index
+// must be built on exactly the fold the query uses, or Postgres silently scans.
+func TestFuzzyDescriptionIndexMatchesQueryFold(t *testing.T) {
+	var def string
+	dbfx.QueryRow(t, `SELECT indexdef FROM pg_indexes WHERE indexname = 'idx_issue_description_fold_trgm'`).Scan(&def)
+	// Postgres re-prints the expression with ::text casts and lower-case calls.
+	normalize := strings.NewReplacer("::text", "", "(", "", ")", "", " ", "", "\n", "").Replace
+	want := foldSQL("COALESCE(description, '')") + " gin_trgm_ops"
+	if !strings.Contains(strings.ToLower(normalize(def)), strings.ToLower(normalize(want))) {
+		t.Fatalf("index definition %q does not contain the query fold %q", def, want)
 	}
 }

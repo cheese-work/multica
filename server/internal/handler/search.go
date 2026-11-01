@@ -147,8 +147,9 @@ func runSearchQuery(
 	sql string,
 	args []any,
 	rowsFn func(pgx.Rows) error,
+	localSettings ...string,
 ) error {
-	return runSearchQueryWithTimeout(ctx, txStarter, sql, args, rowsFn, effectiveSearchStatementTimeout())
+	return runSearchQueryWithTimeout(ctx, txStarter, sql, args, rowsFn, effectiveSearchStatementTimeout(), localSettings...)
 }
 
 func runSearchQueryWithTimeout(
@@ -158,6 +159,7 @@ func runSearchQueryWithTimeout(
 	args []any,
 	rowsFn func(pgx.Rows) error,
 	timeout time.Duration,
+	localSettings ...string,
 ) error {
 	tx, err := txStarter.Begin(ctx)
 	if err != nil {
@@ -184,6 +186,13 @@ func runSearchQueryWithTimeout(
 		// interpolating it cannot introduce SQL syntax or user input.
 		if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL work_mem = '%s'", workMem)); err != nil {
 			return fmt.Errorf("set search work_mem: %w", err)
+		}
+	}
+	// localSettings are complete SET LOCAL statements written by the caller from
+	// constants, never from request input.
+	for _, setting := range localSettings {
+		if _, err := tx.Exec(ctx, setting); err != nil {
+			return fmt.Errorf("apply search setting %q: %w", setting, err)
 		}
 	}
 	// The read-only mode is applied here rather than via TxOptions so we
