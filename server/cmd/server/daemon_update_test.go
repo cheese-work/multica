@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/analytics"
@@ -146,5 +147,25 @@ func TestDaemonUpdateRefusesMismatchedBuild(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// install.sh is public (a fresh host has no token yet, `curl | bash`); the
+// manifest and binary it calls stay behind DaemonAuth.
+func TestDaemonInstallScriptIsPublicAndNothingElseIs(t *testing.T) {
+	writeDaemonBinaries(t, updateTestCommit)
+	srv := updateTestServer(t, updateTestCommit)
+
+	code, body := updateGet(t, srv.URL+"/api/daemon/install.sh", false)
+	if code != http.StatusOK {
+		t.Fatalf("install.sh anonymous status = %d, want 200", code)
+	}
+	if !strings.HasPrefix(string(body), "#!/usr/bin/env bash") || !strings.Contains(string(body), srv.URL) {
+		t.Fatalf("install.sh body is not the script for %s:\n%.200s", srv.URL, body)
+	}
+	for _, p := range []string{"/api/daemon/update", "/api/daemon/update/binary?os=linux&arch=amd64", "/api/daemon/workspaces"} {
+		if code, _ := updateGet(t, srv.URL+p, false); code != http.StatusUnauthorized {
+			t.Errorf("%s anonymous status = %d, want 401", p, code)
+		}
 	}
 }

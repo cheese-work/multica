@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { useDefaultLayout } from "react-resizable-panels";
-import { ArrowLeft, MessageSquare } from "lucide-react";
+import { ArrowLeft, MessageSquare } from "@multica/ui/icons";
 import { toast } from "sonner";
 import { Button } from "@multica/ui/components/ui/button";
 import {
@@ -49,6 +49,7 @@ import { InteractiveLoginBanner } from "./components/interactive-login-banner";
 import { ChatAnnotationContext } from "./components/chat-annotation-context";
 import { useChatAnnotations } from "./components/use-chat-annotations";
 import { useQuoteRequest } from "./components/use-quote-request";
+import { useRegisterCommandBarContext } from "../search/register-context";
 
 /**
  * Chat tab — the first-class two-pane surface (thread list on the left,
@@ -286,6 +287,29 @@ export function ChatPage() {
       requestNav(c.currentSession ? "push" : "replace", true);
     }
   };
+
+  // The command bar calls the page's own handlers so archiving or re-scoping
+  // from it moves the pane exactly like the header controls do.
+  const commandBarHandlersRef = useRef({ handleArchive, changeProjectContext });
+  useEffect(() => {
+    commandBarHandlersRef.current = { handleArchive, changeProjectContext };
+  });
+  const commandBarSession = c.currentSession ?? null;
+  useRegisterCommandBarContext(
+    useMemo(
+      () =>
+        commandBarSession
+          ? {
+              kind: "chat",
+              session: commandBarSession,
+              archive: (session: ChatSession) => commandBarHandlersRef.current.handleArchive(session),
+              changeProject: (projectId: string | null) =>
+                commandBarHandlersRef.current.changeProjectContext(projectId),
+            }
+          : null,
+      [commandBarSession],
+    ),
+  );
 
   // URL → new chat: `?agent=<id>` is the deep link used by "DM" entry points
   // (e.g. the agent detail page) to land on a fresh compose bound to that

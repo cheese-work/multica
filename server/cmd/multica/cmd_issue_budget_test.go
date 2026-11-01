@@ -126,3 +126,28 @@ func TestRunIssueBudgetGetJSONKeepsEveryServerField(t *testing.T) {
 		t.Fatalf("out = %q err = %v", out, err)
 	}
 }
+
+func TestRunIssueBudgetTopUpPostsToTheIssue(t *testing.T) {
+	var gotPath, gotMethod string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotMethod = r.URL.Path, r.Method
+		_ = json.NewEncoder(w).Encode(map[string]any{"max_runs": 40})
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "mat_test-token")
+
+	cmd := &cobra.Command{Use: "top-up"}
+	cmd.Flags().String("output", "table", "")
+	out, err := captureStdout(t, func() error { return runIssueBudgetTopUp(cmd, []string{testIssueUUID}) })
+	if err != nil {
+		t.Fatalf("top-up: %v", err)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/api/issues/"+testIssueUUID+"/run-budget/top-up" {
+		t.Fatalf("request = %s %s", gotMethod, gotPath)
+	}
+	if !strings.Contains(out, "40") {
+		t.Fatalf("output %q lacks the new window's runs", out)
+	}
+}

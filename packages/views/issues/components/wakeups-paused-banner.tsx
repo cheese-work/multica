@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { PauseCircle } from "lucide-react";
+import { PauseCircle } from "@multica/ui/icons";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { memberListOptions } from "@multica/core/workspace/queries";
 import { deriveWakeupsPause } from "@multica/core/workspace/wakeups-pause";

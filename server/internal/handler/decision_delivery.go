@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"reflect"
 	"sort"
 	"strings"
@@ -277,6 +278,19 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 			return false, err
 		}
 	}
+	if snapshot.kind == "" && eligible {
+		for _, request := range snapshot.requests {
+			if request.Status == "cancelled" {
+				continue
+			}
+			var refusal decisionIntentRefusal
+			if err := requireRequestAuthority(ctx, queries, snapshot.issue, request, http.StatusConflict); errors.As(err, &refusal) {
+				eligible = false
+			} else if err != nil {
+				return false, err
+			}
+		}
+	}
 	if snapshot.kind == "" {
 		for _, answer := range snapshot.answers {
 			sources = append(sources, answer.ChatMessageIds...)
@@ -337,6 +351,11 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 		eligible = false
 	}
 	eligible = eligible && (!asking.ArchivedAt.Valid || (snapshot.kind == "" || snapshot.kind == "retraction") && snapshot.recipient.ID.Valid && !snapshot.recipient.ArchivedAt.Valid)
+	if eligible && snapshot.recipient.ID.Valid && isServerDecision(snapshot.request) {
+		// The platform picked this asker, not the person, so the answer runs the
+		// agent only when that person could have invoked it themselves.
+		eligible = handler.canInvokeAgent(ctx, snapshot.recipient, "member", uuidToString(snapshot.request.HumanUserID), "", uuidToString(workspaceID))
+	}
 	outcome := "skipped_ineligible"
 	var queued db.AgentTaskQueue
 	var comments, cleared []db.Comment

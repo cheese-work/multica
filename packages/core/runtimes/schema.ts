@@ -31,6 +31,12 @@ export const AgentRuntimeSchema = z.object({
   last_seen_at: z.string().nullable().catch(null),
   created_at: z.string().catch(""),
   updated_at: z.string().catch(""),
+  // Commit-based update verdict (CHE-2641). Absent or malformed means "no
+  // update": an older server must never light up a badge.
+  update_available: z.boolean().catch(false),
+  server_commit: z.string().catch(""),
+  server_version: z.string().catch(""),
+  update_reason: z.string().catch(""),
 }).loose();
 
 export const EMPTY_RUNTIME: AgentRuntime = {
@@ -52,4 +58,8 @@ export const EMPTY_RUNTIME: AgentRuntime = {
   last_seen_at: null,
   created_at: "",
   updated_at: "",
+  update_available: false,
+  server_commit: "",
+  server_version: "",
+  update_reason: "",
 };

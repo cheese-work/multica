@@ -259,6 +259,7 @@ type Handler struct {
 	EmailService          *service.EmailService
 	UpdateStore           UpdateStore
 	ModelListStore        ModelListStore
+	DaemonUpdate          *DaemonUpdateSource // daemon build baked into this image; nil when absent
 	LocalSkillListStore   LocalSkillListStore
 	LocalSkillImportStore LocalSkillImportStore
 	FeatureFlags          *featureflag.Service
@@ -473,6 +474,8 @@ type Handler struct {
 	// fetchPullRequestJSON overrides the REST pull request read of
 	// RepairUnverifiedHeadPullRequests; nil uses PRRefresh.
 	fetchPullRequestJSON func(ctx context.Context, installationID int64, owner, repo string, number int32) (json.RawMessage, error)
+	// readApprovalSnapshot overrides the snapshot read of the R3 approval action; nil uses PRRefresh.
+	readApprovalSnapshot githubSnapshotReader
 	cfg                  Config
 }
 
@@ -882,16 +885,25 @@ func (h *Handler) publishTask(eventType, workspaceID, actorType, actorID, taskID
 	})
 }
 
-// publishChat is publish() plus a ChatSessionID hint so the realtime layer
-// can route the event to the per-chat-session scope.
+// publishChat is publishChatFor for callers whose actor is the session's
+// creator: every member chat endpoint gates on creator ownership before
+// publishing.
 func (h *Handler) publishChat(eventType, workspaceID, actorType, actorID, chatSessionID string, payload any) {
+	h.publishChatFor(eventType, workspaceID, actorType, actorID, actorID, chatSessionID, payload)
+}
+
+// publishChatFor is publish() plus the chat session routing hints. The realtime
+// layer delivers the event to ownerID only, so ownerID must be the session's
+// creator even when the actor is an agent or the system.
+func (h *Handler) publishChatFor(eventType, workspaceID, actorType, actorID, ownerID, chatSessionID string, payload any) {
 	h.Bus.Publish(events.Event{
-		Type:          eventType,
-		WorkspaceID:   workspaceID,
-		ActorType:     actorType,
-		ActorID:       actorID,
-		ChatSessionID: chatSessionID,
-		Payload:       payload,
+		Type:               eventType,
+		WorkspaceID:        workspaceID,
+		ActorType:          actorType,
+		ActorID:            actorID,
+		ChatSessionID:      chatSessionID,
+		ChatSessionOwnerID: ownerID,
+		Payload:            payload,
 	})
 }
 

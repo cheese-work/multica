@@ -343,4 +343,30 @@ describe("commentToTimelineEntry", () => {
 
     expect(entry.deleted_at).toBe("2026-09-11T08:00:00Z");
   });
+
+  // CHE-2121: comment:resolved announces a superseded thread with its link; the
+  // snapshot must keep it or the "Superseded by" line vanishes on the next patch.
+  it("carries supersession links through a comment snapshot", () => {
+    const entry = commentToTimelineEntry({
+      id: "comment-1",
+      issue_id: "issue-1",
+      author_type: "agent",
+      author_id: "agent-1",
+      content: "plan rev-1",
+      type: "comment",
+      parent_id: null,
+      reactions: [],
+      attachments: [],
+      created_at: "2026-09-11T07:00:00Z",
+      updated_at: "2026-09-11T08:00:00Z",
+      resolved_at: "2026-09-11T08:00:00Z",
+      resolved_by_type: "agent",
+      resolved_by_id: "agent-2",
+      superseded_by_id: "comment-2",
+      supersedes: [{ comment_id: "comment-0" }],
+    });
+
+    expect(entry.superseded_by_id).toBe("comment-2");
+    expect(entry.supersedes).toEqual([{ comment_id: "comment-0" }]);
+  });
 });

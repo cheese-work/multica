@@ -2,6 +2,9 @@ package handler
 
 import (
 	"net/http"
+	"regexp"
+
+	"github.com/multica-ai/multica/server/internal/dispatch"
 )
 
 // RequireHumanActor rejects machine credentials on human-only route groups.
@@ -49,4 +52,27 @@ func isMachineCredentialActor(r *http.Request) bool {
 	default:
 		return false
 	}
+}
+
+// recoveryWritable lists the only writes a budget recovery run may make: record
+// why the issue is blocked (comment, summary, status move, attachment). Any other
+// write is refused, so an enqueue path nobody listed cannot start work for it.
+var recoveryWritable = regexp.MustCompile(`^(PUT /api/issues/[^/]+|POST /api/issues/[^/]+/(move|comments)|(PUT|DELETE) /api/issues/[^/]+/metadata/[^/]+|PUT /api/comments/[^/]+|(POST|DELETE) /api/comments/[^/]+/resolve|POST /api/upload-file)$`)
+
+// RejectRecoveryWrites is deny-by-default for a budget recovery run's task token
+// (CHE-2297 L3): reads pass, writes pass only if recoveryWritable names them.
+func RejectRecoveryWrites(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if dispatch.BudgetRecoveryCaller(r.Context()) {
+			switch r.Method {
+			case http.MethodGet, http.MethodHead, http.MethodOptions:
+			default:
+				if !recoveryWritable.MatchString(r.Method + " " + r.URL.Path) {
+					writeError(w, http.StatusForbidden, errRecoveryCaused)
+					return
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }

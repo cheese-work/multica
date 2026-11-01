@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useId, useState, type ReactNode } from "react";
-import { ChevronDown, ChevronUp, Clock } from "lucide-react";
+import { ChevronDown, ChevronUp, Clock } from "@multica/ui/icons";
 import { cn } from "@multica/ui/lib/utils";
 import { useWorkspacePaths } from "@multica/core/paths";
 import type { ChatScheduledWakeup } from "@multica/core/types";

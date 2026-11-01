@@ -1,4 +1,4 @@
-import { MessageSquareQuote } from "lucide-react";
+import { MessageSquareQuote } from "@multica/ui/icons";
 import { useWorkspacePaths } from "@multica/core/paths";
 import type { DecisionRequestCard } from "@multica/core/types";
 import { useT } from "../../i18n";

@@ -30,6 +30,7 @@ func newPendingAction(test *testing.T) pendingAction {
 	fixture.respond(test, body, http.StatusCreated, &created)
 	dbfx.Cleanup(test, `DELETE FROM decision_answer WHERE decision_request_id = $1`, created.ID)
 	action := pendingAction{fixture, created.ID, created.Action.ID}
+	placeDecisionHuman(test, fixture.issueID, action.humanID, "member", true)
 	action.setEnvAuthority(test, true)
 	return action
 }

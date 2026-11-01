@@ -185,6 +185,8 @@ type registeredCall struct {
 	// names maps runtime type -> the display name that call reported, so a
 	// test can assert the name a user will see for a runtime identity.
 	names map[string]string
+	// cliCommit / cliOS / cliArch are the build identity that call advertised.
+	cliCommit, cliOS, cliArch string
 }
 
 func (fx *batchFixture) setWorkspaces(ws ...WorkspaceInfo) {
@@ -348,6 +350,9 @@ func newBatchFixture(t *testing.T) *batchFixture {
 		case r.URL.Path == "/api/daemon/register":
 			var body struct {
 				WorkspaceID string              `json:"workspace_id"`
+				CLICommit   string              `json:"cli_commit"`
+				CLIOS       string              `json:"cli_os"`
+				CLIArch     string              `json:"cli_arch"`
 				Runtimes    []map[string]string `json:"runtimes"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
@@ -379,6 +384,9 @@ func newBatchFixture(t *testing.T) *batchFixture {
 				workspaceID: body.WorkspaceID,
 				versions:    map[string]string{},
 				names:       map[string]string{},
+				cliCommit:   body.CLICommit,
+				cliOS:       body.CLIOS,
+				cliArch:     body.CLIArch,
 			}
 			var resp RegisterResponse
 			fx.mu.Lock()

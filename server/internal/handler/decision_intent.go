@@ -137,6 +137,9 @@ func (handler *Handler) prepareDecisionIntent(request *http.Request, queries *db
 		if err := handler.checkDecisionTarget(request, queries, issue, agent, humanID); err != nil {
 			return issue, nil, err
 		}
+		if err := requireDecisionAuthority(request.Context(), queries, issue, humanID, "reversible", http.StatusBadRequest); err != nil {
+			return issue, nil, err
+		}
 		seen[humanID] = true
 		targets = append(targets, humanID)
 	}

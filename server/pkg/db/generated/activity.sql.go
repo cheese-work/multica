@@ -58,6 +58,37 @@ func (q *Queries) CountAssigneeChangesByActor(ctx context.Context, arg CountAssi
 	return items, nil
 }
 
+const countEntryGateWarnings = `-- name: CountEntryGateWarnings :one
+SELECT (count(*) FILTER (WHERE details->>'head' = $1::text))::bigint AS same_head,
+       count(*)::bigint AS total
+FROM activity_log
+WHERE issue_id = $2::uuid
+  AND action = 'entry_gate_warning'
+  AND details->>'step' = $3::text
+`
+
+type CountEntryGateWarningsParams struct {
+	Head    string      `json:"head"`
+	IssueID pgtype.UUID `json:"issue_id"`
+	Step    string      `json:"step"`
+}
+
+type CountEntryGateWarningsRow struct {
+	SameHead int64 `json:"same_head"`
+	Total    int64 `json:"total"`
+}
+
+// Entry-gate warnings already recorded for an issue and step: those for this
+// PR head, and all of them. The write holds the issue row lock, so the pair
+// decides, without a table of its own, whether this warning is new and
+// whether it is the step's first (CHE-2295).
+func (q *Queries) CountEntryGateWarnings(ctx context.Context, arg CountEntryGateWarningsParams) (CountEntryGateWarningsRow, error) {
+	row := q.db.QueryRow(ctx, countEntryGateWarnings, arg.Head, arg.IssueID, arg.Step)
+	var i CountEntryGateWarningsRow
+	err := row.Scan(&i.SameHead, &i.Total)
+	return i, err
+}
+
 const createActivity = `-- name: CreateActivity :one
 INSERT INTO activity_log (
     workspace_id, issue_id, actor_type, actor_id, action, details, id

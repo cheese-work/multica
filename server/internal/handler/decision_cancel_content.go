@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -83,6 +84,9 @@ func decisionCancelOtherContent(reason string, cancelled decisionCancelIssue) st
 	content := fmt.Sprintf("Decision request cancelled: %s. Issue: %s, status %s.", reason, cancelled.subject(), cancelled.status)
 	if reason == "human_removed" {
 		content += " The person asked is no longer a workspace member. Ask again with a new decision request."
+	}
+	if reason == decisiontx.ClassNeedsOwner || reason == "delegate_removed" {
+		content += " " + decisiontx.OwnerRequiredNotice
 	}
 	return content
 }

@@ -565,6 +565,12 @@ const IssueWorkflowEdgeSchema = z.object({
   on_timeout: z.string().optional(),
 });
 
+const IssueWorkflowEntryGateSchema = z.object({
+  guard: z.string(),
+  mode: z.string(),
+  member_override: z.boolean().default(true),
+});
+
 const IssueWorkflowSubWorkflowSchema = z.object({
   workflow_id: z.string(),
   stage: z.number().optional(),
@@ -578,6 +584,7 @@ const IssueWorkflowStepSchema = z.object({
   back_status_key: z.string().optional(),
   advance_on_ci_green: z.boolean().optional(),
   edges: z.array(IssueWorkflowEdgeSchema).optional(),
+  entry: z.array(IssueWorkflowEntryGateSchema).optional(),
   sub_workflow: IssueWorkflowSubWorkflowSchema.optional(),
 }).loose();
 
@@ -1115,6 +1122,7 @@ export const ChatMessageSchema = z.object({
   decision_request: DecisionRequestCardSchema.optional().catch(undefined),
   decision_requests: z.array(DecisionRequestCardSchema).optional().catch(undefined),
   scheduled_wakeup: ChatScheduledWakeupSchema.nullish().catch(undefined),
+  carried_from_session_id: z.string().nullable().optional().catch(undefined),
   // Optional additive data degrades independently: a malformed suggestion
   // must not hide the assistant reply that contains it.
   quick_actions: z.array(ChatQuickActionSchema).catch([]).optional().default([]),
@@ -1215,6 +1223,23 @@ const CommentSupplementReceiptsSchema = z.array(z.unknown()).optional().catch(un
     return parsed.success ? [parsed.data] : [];
   }));
 
+// Supersession links (CHE-2121). Lenient: a malformed link reads as absent
+// instead of failing the whole comment or timeline.
+const CommentSupersedeLinkSchema = z.object({
+  comment_id: z.string(),
+  resolved: z.boolean().optional().catch(undefined),
+  skipped_reason: z.string().optional().catch(undefined),
+}).loose();
+
+const supersessionShape = {
+  superseded_by_id: z.string().nullable().optional().catch(undefined),
+  supersedes: z.array(z.unknown()).optional().catch(undefined).transform((items) =>
+    items?.flatMap((item) => {
+      const parsed = CommentSupersedeLinkSchema.safeParse(item);
+      return parsed.success ? [parsed.data] : [];
+    })),
+};
+
 const TimelineEntrySchema = z.object({
   type: z.string(),
   id: z.string(),
@@ -1233,6 +1258,7 @@ const TimelineEntrySchema = z.object({
   reactions: z.array(ReactionSchema).optional(),
   attachments: z.array(AttachmentSchema).optional(),
   source_task_id: z.string().nullable().optional(),
+  ...supersessionShape,
   supplements: CommentSupplementReceiptsSchema,
   supplement_task_id: z.string().optional().catch(undefined),
   supplement_status: z.enum(["pending", "delivering", "delivered", "failed"]).optional().catch(undefined),
@@ -1418,6 +1444,7 @@ export const CommentSchema = z.object({
   decision_intent_id: z.string().nullable().optional().catch(undefined),
   decision_request_id: z.string().nullable().optional().catch(undefined),
   hints: z.array(z.string()).optional().catch(undefined),
+  ...supersessionShape,
   ...decisionCommentShape,
   supplements: CommentSupplementReceiptsSchema,
   supplement_task_id: z.string().optional().catch(undefined),
@@ -4043,42 +4070,6 @@ export const WorkspaceExportPrivacySchema = z
       manifest_retention_days: value.manifest_retention_days,
     }),
   );
-
-// CHE-1839: governance config, reduced to what the Jev tab reads. Parsed
-// strictly (no fallback): the version is the concurrency token of the next
-// write and the mode is state an admin acts on, so a malformed response must
-// surface as a load error rather than as a plausible default. Unknown fields
-// are dropped, so nothing else the server adds is cached by this tab.
-const GovernanceSettingsRecordSchema = z.record(z.string(), z.unknown());
-export const GovernanceAuditEntrySchema = z.object({
-  version: z.number().int().positive(),
-  actor_id: z.string().nullish().transform((value) => value ?? ""),
-  previous: GovernanceSettingsRecordSchema.nullish().transform((value) => value ?? null),
-  effective: GovernanceSettingsRecordSchema,
-  changed_at: z.string(),
-});
-
-export const WorkspaceGovernanceConfigSchema = z.object({
-  version: z.number().int().nonnegative(),
-  settings: z.object({
-    jev_squad_routing_mode: z.string().nullish(),
-    jev_squad_routing_enabled: z.boolean().nullish(),
-    jev_min_confidence: z.number().nullish(),
-    jev_api_url: z.string().nullish(),
-  }),
-  // Strict like the rest: a rollback offered from a history that did not parse
-  // would be a guess about what it restores.
-  audit_history: GovernanceAuditEntrySchema.array().default([]),
-});
-
-// CHE-1853: whether a Jev provider key is stored. Strict: "Not set" must never
-// be what a malformed response turns into.
-// `configurable` is absent from older servers; they are assumed able to store a
-// key, and the 403 on save remains the fallback signal.
-export const JevCredentialPresenceSchema = z.object({
-  present: z.boolean(),
-  configurable: z.boolean().default(true),
-});
 
 export const WakeupConditionSchema = z.union([
   z.object({ type: z.literal("issue_field"), field: z.literal("status"), value: z.string() }),

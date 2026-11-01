@@ -13,7 +13,6 @@ import {
   Laptop,
   ListPlus,
   Lock,
-  Scale,
   MessagesSquare,
   Plug,
   Search,
@@ -27,7 +26,7 @@ import {
   X,
   Workflow,
   Zap,
-} from "lucide-react";
+} from "@multica/ui/icons";
 import { useAuthStore } from "@multica/core/auth";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { useFeatureEnabled } from "@multica/core/config";
@@ -68,7 +67,6 @@ import { searchSettings } from "./settings-search";
 import { HighlightText } from "../../search/highlight-text";
 import { useSettingsSearchIndex } from "./use-settings-search-index";
 import { WakeupsTab } from "./wakeups-tab";
-import { JevGovernanceTab } from "./jev-governance-tab";
 import { CollapsedNavTrigger } from "../../layout/page-header";
 import { useT } from "../../i18n";
 
@@ -207,12 +205,6 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
                   <ExportPrivacyTab />,
                 )]
               : []),
-            entry(
-              "jev-governance",
-              t(($) => $.page.tabs.jev_governance),
-              Scale,
-              <JevGovernanceTab />,
-            ),
             ...(billingEnabled
               ? [
                   entry(

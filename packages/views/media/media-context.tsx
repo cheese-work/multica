@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, use, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Check, ExternalLink, Link, MoreHorizontal } from "lucide-react";
+import { Check, ExternalLink, Link, MoreHorizontal } from "@multica/ui/icons";
 import { toast } from "sonner";
 import { mediaPath, useWorkspaceSlug, type MediaKind, type MediaSource } from "@multica/core/paths";
 import { copyText } from "@multica/ui/lib/clipboard";

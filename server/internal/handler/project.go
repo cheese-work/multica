@@ -47,6 +47,9 @@ type ProjectResponse struct {
 	// WorkflowID is the workflow this project uses; null means the workspace
 	// Default workflow. (MUL-7420)
 	WorkflowID *string `json:"workflow_id"`
+	// DecisionDelegates are the member ids, besides the workspace owner, that a
+	// reversible decision on this project's issues may concern. Owner-only to set.
+	DecisionDelegates []string `json:"decision_delegates"`
 }
 
 func projectToResponse(p db.Project) ProjectResponse {
@@ -65,6 +68,8 @@ func projectToResponse(p db.Project) ProjectResponse {
 		CreatedAt:   timestampToString(p.CreatedAt),
 		UpdatedAt:   timestampToString(p.UpdatedAt),
 		WorkflowID:  uuidToPtr(p.WorkflowID),
+
+		DecisionDelegates: append([]string{}, uuidsToStrings(p.DecisionDelegates)...),
 	}
 }
 
@@ -139,6 +144,8 @@ type UpdateProjectRequest struct {
 	LeadID      *string `json:"lead_id"`
 	StartDate   *string `json:"start_date"`
 	DueDate     *string `json:"due_date"`
+	// DecisionDelegates replaces the whole list; null or [] clears it.
+	DecisionDelegates *[]string `json:"decision_delegates"`
 }
 
 func (h *Handler) ListProjects(w http.ResponseWriter, r *http.Request) {
@@ -571,6 +578,10 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	if rejectGovernedFieldForAgentActor(w, r, actorType, descriptionKeyPresent, "description") {
 		return
 	}
+	_, delegatesKeyPresent := rawFields["decision_delegates"]
+	if rejectGovernedFieldForAgentActor(w, r, actorType, delegatesKeyPresent, "decision_delegates") {
+		return
+	}
 
 	params := db.UpdateProjectParams{ID: prevProject.ID}
 	_, params.DescriptionSet = rawFields["description"]
@@ -652,6 +663,13 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 			params.DueDate = pgtype.Date{Valid: false} // explicit null = clear date
 		}
 	}
+	if delegatesKeyPresent {
+		delegates, ok := h.parseDecisionDelegates(w, r, wsUUID, userID, req.DecisionDelegates)
+		if !ok {
+			return
+		}
+		params.DecisionDelegatesSet, params.DecisionDelegates = true, delegates
+	}
 	project, err := h.TaskService.UpdateProject(r.Context(), wsUUID, params, actorType == "agent")
 	if err != nil {
 		if writeProjectAdmissionError(w, err) {
@@ -664,7 +682,42 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	resp.IssueCount, resp.DoneCount = h.loadProjectIssueStats(r.Context(), wsUUID, project.ID)
 	resp.ResourceCount = h.loadProjectResourceCount(r.Context(), project.ID)
 	h.publish(protocol.EventProjectUpdated, workspaceID, "member", userID, map[string]any{"project": resp})
+	if delegatesKeyPresent {
+		// Removing a delegate cancels that person's open requests on the worker's next pass.
+		h.DecisionWorker.Notify()
+	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// parseDecisionDelegates validates a decision_delegates write: only a workspace
+// owner sets it, and every id must be a distinct member of the workspace.
+func (h *Handler) parseDecisionDelegates(w http.ResponseWriter, r *http.Request, workspaceID pgtype.UUID, userID string, requested *[]string) ([]pgtype.UUID, bool) {
+	caller, err := h.getWorkspaceMember(r.Context(), userID, uuidToString(workspaceID))
+	if err != nil || caller.Role != "owner" {
+		writeError(w, http.StatusForbidden, "only a workspace owner can set decision_delegates")
+		return nil, false
+	}
+	delegates := []pgtype.UUID{}
+	if requested == nil {
+		return delegates, true
+	}
+	seen := map[string]bool{}
+	for _, raw := range *requested {
+		id, ok := parseUUIDOrBadRequest(w, raw, "decision_delegates")
+		if !ok {
+			return nil, false
+		}
+		if seen[uuidToString(id)] {
+			continue
+		}
+		seen[uuidToString(id)] = true
+		if _, err := h.Queries.GetMemberByUserAndWorkspace(r.Context(), db.GetMemberByUserAndWorkspaceParams{UserID: id, WorkspaceID: workspaceID}); err != nil {
+			writeError(w, http.StatusBadRequest, "decision_delegates must be members of this workspace")
+			return nil, false
+		}
+		delegates = append(delegates, id)
+	}
+	return delegates, true
 }
 
 func (h *Handler) DeleteProject(w http.ResponseWriter, r *http.Request) {

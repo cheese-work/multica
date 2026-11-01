@@ -12,7 +12,7 @@ import {
   PinOff,
   Trash2,
   UserRound,
-} from "lucide-react";
+} from "@multica/ui/icons";
 import { IconButton } from "@multica/ui/components/common/icon-button";
 import {
   DropdownMenu,

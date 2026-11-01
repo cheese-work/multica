@@ -80,6 +80,7 @@ UPDATE project SET
     lead_id = CASE WHEN sqlc.arg('lead_id_set')::boolean THEN sqlc.narg('lead_id') ELSE lead_id END,
     start_date = CASE WHEN sqlc.arg('start_date_set')::boolean THEN sqlc.narg('start_date') ELSE start_date END,
     due_date = CASE WHEN sqlc.arg('due_date_set')::boolean THEN sqlc.narg('due_date') ELSE due_date END,
+    decision_delegates = CASE WHEN sqlc.arg('decision_delegates_set')::boolean THEN sqlc.arg('decision_delegates')::uuid[] ELSE decision_delegates END,
     updated_at = now()
 WHERE id = $1
 RETURNING *;

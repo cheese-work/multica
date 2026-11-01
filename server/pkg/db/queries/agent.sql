@@ -325,8 +325,9 @@ LIMIT @page_limit;
 -- head_sha stamps the commit under review into the task's context JSONB so the
 -- reviewer-loop dedup (HasPendingTaskForIssueAndAgent) can tell a pending run
 -- against an OLD head apart from a fresh request against a NEW head (TEN-356).
--- Empty/absent head_sha leaves context NULL, preserving pre-TEN-356 behavior for
--- issues with no linked PR. Issue-linked tasks never hit quick-create context
+-- Empty/absent head_sha leaves context NULL unless fresh_rerun is requested.
+-- fresh_rerun disables source session/workdir reuse without losing rerun lineage.
+-- Issue-linked tasks never hit quick-create context
 -- parsing (parseQuickCreateContext short-circuits on IssueID.Valid), so this
 -- key rides harmlessly alongside.
 -- id is minted by the application as a UUIDv7 (pkg/dbid) so consecutive
@@ -367,11 +368,15 @@ SELECT
     COALESCE(sqlc.narg('is_leader_task')::boolean, FALSE),
     sqlc.narg(handoff_note),
     sqlc.narg(squad_id),
-    CASE
+    NULLIF(CASE
         WHEN COALESCE(sqlc.narg('head_sha')::text, '') <> ''
         THEN jsonb_build_object('head_sha', sqlc.narg('head_sha')::text)
-        ELSE NULL
-    END,
+        ELSE '{}'::jsonb
+    END || CASE
+        WHEN COALESCE(sqlc.narg('fresh_rerun')::boolean, FALSE)
+        THEN '{"fresh_rerun":true}'::jsonb
+        ELSE '{}'::jsonb
+    END, '{}'::jsonb),
     sqlc.narg(originator_user_id),
     sqlc.narg(accountable_user_id),
     sqlc.narg(runtime_mcp_overlay),
@@ -813,6 +818,8 @@ SET status = 'dispatched',
     preset_name = NULL, preset_source = NULL, preset_skips = NULL,
     claimed_model = NULL, claimed_thinking_level = NULL,
     claimed_service_tier = NULL, claimed_context_args = NULL,
+    applied_model = NULL, applied_thinking_level = NULL,
+    applied_service_tier = NULL, applied_context_args = NULL, applied_reported_at = NULL,
     prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision),
     chat_compaction_epoch = COALESCE(
         chat_compaction_epoch,
@@ -913,20 +920,31 @@ WHERE id = @task_id
 -- queue so another poll can retry immediately instead of waiting for stale
 -- dispatch recovery. The dispatched_at CAS prevents an old handler from
 -- rolling back a newer reclaim.
+-- Writes one requeue_claim_failure agent_task_event row for the ops page.
+WITH upd AS (
 UPDATE agent_task_queue
 SET status = 'queued',
     dispatched_at = NULL,
     preset_name = NULL, preset_source = NULL, preset_skips = NULL,
     claimed_model = NULL, claimed_thinking_level = NULL,
     claimed_service_tier = NULL, claimed_context_args = NULL,
+    applied_model = NULL, applied_thinking_level = NULL,
+    applied_service_tier = NULL, applied_context_args = NULL, applied_reported_at = NULL,
     prepare_lease_expires_at = NULL,
     delivered_comment_ids = '{}'
-WHERE id = @task_id
-  AND runtime_id = @runtime_id
-  AND status = 'dispatched'
-  AND started_at IS NULL
-  AND dispatched_at = @dispatched_at
-RETURNING *;
+WHERE agent_task_queue.id = @task_id
+  AND agent_task_queue.runtime_id = @runtime_id
+  AND agent_task_queue.status = 'dispatched'
+  AND agent_task_queue.started_at IS NULL
+  AND agent_task_queue.dispatched_at = @dispatched_at
+RETURNING *
+),
+ev AS (
+    INSERT INTO agent_task_event (workspace_id, task_id, runtime_id, kind)
+    SELECT r.workspace_id, upd.id, upd.runtime_id, 'requeue_claim_failure'
+    FROM upd JOIN agent_runtime r ON r.id = upd.runtime_id
+)
+SELECT * FROM upd;
 
 -- name: ReclaimStaleDispatchedTaskForRuntime :one
 -- Re-delivers a task whose previous claim likely succeeded server-side but
@@ -934,11 +952,15 @@ RETURNING *;
 -- with no `started_at`, so the daemon has not acknowledged it via StartTask.
 -- Refresh dispatched_at so the server-side dispatch timeout measures from the
 -- recovered delivery attempt.
+-- Writes one stale_reclaim agent_task_event row for the ops page.
+WITH upd AS (
 UPDATE agent_task_queue
 SET dispatched_at = now(),
     preset_name = NULL, preset_source = NULL, preset_skips = NULL,
     claimed_model = NULL, claimed_thinking_level = NULL,
     claimed_service_tier = NULL, claimed_context_args = NULL,
+    applied_model = NULL, applied_thinking_level = NULL,
+    applied_service_tier = NULL, applied_context_args = NULL, applied_reported_at = NULL,
     prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision)
 WHERE id = (
     SELECT atq.id FROM agent_task_queue atq
@@ -975,7 +997,14 @@ WHERE id = (
     LIMIT 1
     FOR UPDATE SKIP LOCKED
 )
-RETURNING *;
+RETURNING *
+),
+ev AS (
+    INSERT INTO agent_task_event (workspace_id, task_id, runtime_id, kind)
+    SELECT r.workspace_id, upd.id, upd.runtime_id, 'stale_reclaim'
+    FROM upd JOIN agent_runtime r ON r.id = upd.runtime_id
+)
+SELECT * FROM upd;
 
 -- name: ReclaimStaleDispatchedTasksForRuntimes :many
 -- Batch variant of ReclaimStaleDispatchedTaskForRuntime (MUL-4257): re-delivers
@@ -986,7 +1015,7 @@ RETURNING *;
 -- prepare lease) and the same dispatched_at refresh; only the runtime filter
 -- (= ANY) and the LIMIT (max_tasks instead of 1) differ.
 -- MATERIALIZED pins the candidate set so nested-loop rescans cannot exceed
--- max_tasks.
+-- max_tasks. Writes one stale_reclaim agent_task_event row per task.
 WITH candidates AS MATERIALIZED (
     SELECT atq.id FROM agent_task_queue atq
     WHERE atq.runtime_id = ANY(@runtime_ids::uuid[])
@@ -1021,15 +1050,25 @@ WITH candidates AS MATERIALIZED (
     ORDER BY atq.priority DESC, atq.dispatched_at ASC
     LIMIT @max_tasks::int
     FOR UPDATE SKIP LOCKED
-)
+),
+upd AS (
 UPDATE agent_task_queue
 SET dispatched_at = now(),
     preset_name = NULL, preset_source = NULL, preset_skips = NULL,
     claimed_model = NULL, claimed_thinking_level = NULL,
     claimed_service_tier = NULL, claimed_context_args = NULL,
+    applied_model = NULL, applied_thinking_level = NULL,
+    applied_service_tier = NULL, applied_context_args = NULL, applied_reported_at = NULL,
     prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision)
 WHERE id IN (SELECT id FROM candidates)
-RETURNING *;
+RETURNING *
+),
+ev AS (
+    INSERT INTO agent_task_event (workspace_id, task_id, runtime_id, kind)
+    SELECT r.workspace_id, upd.id, upd.runtime_id, 'stale_reclaim'
+    FROM upd JOIN agent_runtime r ON r.id = upd.runtime_id
+)
+SELECT * FROM upd;
 
 -- name: ExtendAgentTaskPrepareLease :one
 -- Keeps a dispatched task protected while the daemon resolves/cache/materializes
@@ -1042,22 +1081,6 @@ WHERE id = $1
   AND runtime_id = $2
   AND status IN ('dispatched', 'waiting_local_directory')
   AND started_at IS NULL
-RETURNING *;
-
--- name: StartAgentTask :one
--- Legacy single-winner transition; generation-aware callers lock the claim first.
--- Transitions a task to running. Accepts either 'dispatched' (the normal
--- claim → run flow) or 'waiting_local_directory' (the daemon held the row in
--- a wait state while another task owned the local_directory path lock; once
--- the lock was acquired the daemon flips here). wait_reason is cleared on
--- the transition so a future read can't conflate "currently waiting" with
--- "previously waited".
-UPDATE agent_task_queue
-SET status = 'running',
-    started_at = now(),
-    wait_reason = NULL,
-    prepare_lease_expires_at = NULL
-WHERE agent_task_queue.id = $1 AND agent_task_queue.status IN ('dispatched', 'waiting_local_directory')
 RETURNING *;
 
 -- name: LockAgentTaskStartClaim :one
@@ -1081,8 +1104,9 @@ FOR UPDATE;
 -- alongside the status.
 --
 -- The CHECK only allows the transition from 'dispatched' so a daemon can't
--- mark an already-running or terminal task as waiting; the StartAgentTask
--- mutation handles the reverse transition once the lock is acquired.
+-- mark an already-running or terminal task as waiting; the
+-- StartAgentTaskWithSupplement mutation handles the reverse transition once
+-- the lock is acquired.
 UPDATE agent_task_queue
 SET status = 'waiting_local_directory',
     wait_reason = $2,
@@ -3212,3 +3236,18 @@ WHERE id = @id
   AND runtime_id = @runtime_id
   AND dispatched_at = @dispatched_at
   AND status = 'dispatched';
+
+-- name: SetTaskAppliedSettings :execrows
+-- The daemon-reported launch selection for one claim generation (CHE-2248):
+-- what the daemon passed to the CLI after its own fallbacks and drops, not what
+-- the provider served. Written once per generation; a duplicate matches no row
+-- and the handler tells an identical retry from a conflicting one.
+UPDATE agent_task_queue
+SET applied_model = @applied_model, applied_thinking_level = @applied_thinking_level,
+    applied_service_tier = @applied_service_tier, applied_context_args = @applied_context_args,
+    applied_reported_at = now()
+WHERE id = @id
+  AND runtime_id = @runtime_id
+  AND dispatched_at = @dispatched_at
+  AND status IN ('dispatched', 'waiting_local_directory', 'running')
+  AND applied_reported_at IS NULL;

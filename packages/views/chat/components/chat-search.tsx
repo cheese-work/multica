@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { matchMutation, useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, ArchiveRestore, Loader2, Pin, PinOff, Search, X } from "lucide-react";
+import { Archive, ArchiveRestore, Loader2, Pin, PinOff, Search, X } from "@multica/ui/icons";
 import { cn } from "@multica/ui/lib/utils";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { paths, useWorkspaceSlug } from "@multica/core/paths";
