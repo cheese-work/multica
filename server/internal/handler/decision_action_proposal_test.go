@@ -206,19 +206,36 @@ func TestProposalInAnotherLaneIsAnotherRequest(test *testing.T) {
 	}
 }
 
+func fingerprintOf(test *testing.T, identity proposalIdentity) string {
+	test.Helper()
+	fingerprint, err := identity.fingerprint()
+	if err != nil {
+		test.Fatal(err)
+	}
+	return fingerprint
+}
+
+// The golden value is sha256 of the RFC 8785 form: keys sorted, no spaces.
+func TestProposalFingerprintIsTheCanonicalJSONHash(test *testing.T) {
+	const golden = "p1:158d971b38e0e514749b5540825bcdacaa4a703b1654f4d94d4656e871e704f0"
+	if got := fingerprintOf(test, proposalIdentity{"w", "a", "r", "s", "i", "agent.copy", 1, "p"}); got != golden {
+		test.Fatalf("fingerprint = %s, want %s", got, golden)
+	}
+}
+
 func TestProposalFingerprintChangesWithEachIdentityField(test *testing.T) {
 	base := proposalIdentity{"w", "a", "r", "s", "i", "agent.copy", 1, "p"}
-	seen := map[string]bool{base.fingerprint(): true}
+	seen := map[string]bool{fingerprintOf(test, base): true}
 	for _, changed := range []proposalIdentity{
 		{"w2", "a", "r", "s", "i", "agent.copy", 1, "p"}, {"w", "a2", "r", "s", "i", "agent.copy", 1, "p"},
 		{"w", "a", "r2", "s", "i", "agent.copy", 1, "p"}, {"w", "a", "r", "s2", "i", "agent.copy", 1, "p"},
 		{"w", "a", "r", "s", "i2", "agent.copy", 1, "p"}, {"w", "a", "r", "s", "i", "agent.env.patch", 1, "p"},
 		{"w", "a", "r", "s", "i", "agent.copy", 2, "p"}, {"w", "a", "r", "s", "i", "agent.copy", 1, "p2"},
 	} {
-		if fingerprint := changed.fingerprint(); seen[fingerprint] || !strings.HasPrefix(fingerprint, "p1:") {
+		if fingerprint := fingerprintOf(test, changed); seen[fingerprint] || !strings.HasPrefix(fingerprint, "p1:") {
 			test.Fatalf("%+v fingerprint %s repeats or lacks the p1: prefix", changed, fingerprint)
 		}
-		seen[changed.fingerprint()] = true
+		seen[fingerprintOf(test, changed)] = true
 	}
 }
 
@@ -289,4 +306,60 @@ func TestProposalAskKeepsAgentStringsInsideTheNoteQuote(test *testing.T) {
 			test.Fatalf("agent text %q outside the note quote", line)
 		}
 	}
+}
+
+func TestProposalGuardReceivesTheValidatedAction(test *testing.T) {
+	var admitted ProposalAdmission
+	testHandler.ProposalGuard = func(_ context.Context, _ *db.Queries, admission ProposalAdmission) error {
+		admitted = admission
+		return nil
+	}
+	test.Cleanup(func() { testHandler.ProposalGuard = nil })
+	fixture := newProposalFixture(test)
+	body := fixture.proposal(test)
+	body["reason"] = "because"
+	view := fixture.propose(test, body, http.StatusCreated)
+	if admitted.ActionType != "agent.copy" || admitted.ActionVersion != 1 || len(admitted.ParamsSHA256) != 64 ||
+		admitted.Ask != view.Ask || admitted.Reason != "because" || !strings.HasPrefix(admitted.Fingerprint, "p1:") ||
+		uuidToString(admitted.RecipientID) != fixture.humanID {
+		test.Fatalf("guard saw %+v", admitted)
+	}
+}
+
+func TestProposalReplayAfterTaskStopsIsIneligible(test *testing.T) {
+	useProposalGuard(test)
+	fixture := newProposalFixture(test)
+	body := fixture.proposal(test)
+	fixture.propose(test, body, http.StatusCreated)
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, fixture.taskID)
+	if text := testutil.Call(test, testHandler.ProposeDecisionAction, fixture.proposeRequest(body)).Want(http.StatusConflict).Text(); !strings.Contains(text, "proposal_ineligible") {
+		test.Fatalf("body = %s", text)
+	}
+}
+
+func TestProposalReplayAfterMembershipRemovalIsIneligible(test *testing.T) {
+	useProposalGuard(test)
+	fixture := newProposalFixture(test)
+	body := fixture.proposal(test)
+	fixture.propose(test, body, http.StatusCreated)
+	var role string
+	dbfx.QueryRow(test, `SELECT role FROM member WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, fixture.humanID).Scan(&role)
+	dbfx.Exec(test, `DELETE FROM member WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, fixture.humanID)
+	test.Cleanup(func() {
+		dbfx.Exec(test, `INSERT INTO member (workspace_id, user_id, role) VALUES ($1, $2, $3)`, testWorkspaceID, fixture.humanID, role)
+	})
+	if text := testutil.Call(test, testHandler.ProposeDecisionAction, fixture.proposeRequest(body)).Want(http.StatusConflict).Text(); !strings.Contains(text, "proposal_ineligible") {
+		test.Fatalf("body = %s", text)
+	}
+	if fixture.proposalRows(test) != 1 {
+		test.Fatal("replay wrote a second request")
+	}
+}
+
+func TestProposalToARemovedMemberWithoutAnOpenRequestStaysBadRequest(test *testing.T) {
+	useProposalGuard(test)
+	fixture := newProposalFixture(test)
+	body := fixture.proposal(test)
+	body["for"] = uuid.NewString()
+	testutil.Call(test, testHandler.ProposeDecisionAction, fixture.proposeRequest(body)).Want(http.StatusBadRequest)
 }

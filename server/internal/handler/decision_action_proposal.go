@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -20,12 +21,20 @@ import (
 // resolved and before the request is written. Nil refuses every proposal.
 type ProposalGuard func(ctx context.Context, queries *db.Queries, proposal ProposalAdmission) error
 
-// ProposalAdmission is what a guard may judge.
+// ProposalAdmission is what a guard may judge: the resolved parties and the
+// validated action, the same fields the fingerprint is made of, plus the
+// composed ask and the agent's unverified note.
 type ProposalAdmission struct {
-	Issue  db.Issue
-	Agent  db.Agent
-	Lane   db.ChatSession
-	Reason string
+	Issue         db.Issue
+	Agent         db.Agent
+	Lane          db.ChatSession
+	RecipientID   pgtype.UUID
+	ActionType    string
+	ActionVersion int
+	ParamsSHA256  string
+	Ask           string
+	Reason        string
+	Fingerprint   string
 }
 
 // errProposalRaced means the open-proposal index refused a duplicate that
@@ -45,10 +54,18 @@ type proposalIdentity struct {
 	ParamsSHA256    string `json:"params_sha256"`
 }
 
-func (identity proposalIdentity) fingerprint() string {
-	encoded, _ := json.Marshal(identity) // a flat struct of strings and an int
+// fingerprint hashes the RFC 8785 form of the identity, so key order and
+// spacing never change it.
+func (identity proposalIdentity) fingerprint() (string, error) {
+	encoded, err := json.Marshal(identity)
+	if err != nil {
+		return "", err
+	}
+	if encoded, err = decisionaction.Canonical(encoded); err != nil {
+		return "", err
+	}
 	digest := sha256.Sum256(encoded)
-	return "p1:" + hex.EncodeToString(digest[:])
+	return "p1:" + hex.EncodeToString(digest[:]), nil
 }
 
 // proposalRequest rides on decisionRequestInput. Fingerprint is filled inside
@@ -59,6 +76,9 @@ type proposalRequest struct {
 	ParamsSHA256 string
 	Reason       string
 	Fingerprint  string
+	// RecipientErr is the refusal of the named person, held back so an open
+	// proposal for that person is still reported as ineligible, not as a 400.
+	RecipientErr error
 }
 
 func (proposal *proposalRequest) identity(issue db.Issue, agentID, recipientID, sessionID pgtype.UUID) proposalIdentity {
@@ -73,36 +93,53 @@ func (proposal *proposalRequest) fingerprintText() pgtype.Text {
 	return pgtype.Text{String: proposal.Fingerprint, Valid: true}
 }
 
+// proposalIneligible reports a refusal of an open proposal's replay as 409.
+func proposalIneligible(err error) error {
+	var refusal decisionIntentRefusal
+	if errors.As(err, &refusal) {
+		return decisionIntentRefusal{http.StatusConflict, "proposal_ineligible: " + refusal.message}
+	}
+	return err
+}
+
 // laneError reports an unavailable lane of a proposal as ineligible.
 func (proposal *proposalRequest) laneError(err error) error {
 	var refusal decisionIntentRefusal
 	if proposal != nil && errors.As(err, &refusal) && refusal.status == http.StatusForbidden {
-		return decisionIntentRefusal{http.StatusConflict, "proposal_ineligible: " + refusal.message}
+		return proposalIneligible(err)
 	}
 	return err
+}
+
+// findOpenProposal returns the open request holding this identity.
+func findOpenProposal(ctx context.Context, queries *db.Queries, issue db.Issue, agentID pgtype.UUID, input decisionRequestInput, session db.ChatSession) (db.DecisionRequest, bool, error) {
+	fingerprint, err := input.Proposal.identity(issue, agentID, input.HumanUserID, session.ID).fingerprint()
+	if err != nil {
+		return db.DecisionRequest{}, false, err
+	}
+	prior, err := queries.FindOpenProposal(ctx, db.FindOpenProposalParams{WorkspaceID: issue.WorkspaceID, Fingerprint: pgtype.Text{String: fingerprint, Valid: true}})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.DecisionRequest{}, false, nil
+	}
+	return prior, err == nil, err
 }
 
 // replayProposal returns the open request holding this identity, if the
 // recipient may still be asked it.
 func (handler *Handler) replayProposal(request *http.Request, queries *db.Queries, issue db.Issue, agent db.Agent, input decisionRequestInput, session db.ChatSession) (decisionRequestResult, error) {
 	ctx := request.Context()
-	fingerprint := input.Proposal.identity(issue, agent.ID, input.HumanUserID, session.ID).fingerprint()
-	prior, err := queries.FindOpenProposal(ctx, db.FindOpenProposalParams{WorkspaceID: issue.WorkspaceID, Fingerprint: pgtype.Text{String: fingerprint, Valid: true}})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return decisionRequestResult{}, nil
-	}
-	if err != nil {
+	prior, found, err := findOpenProposal(ctx, queries, issue, agent.ID, input, session)
+	if err != nil || !found {
 		return decisionRequestResult{}, err
 	}
 	err = handler.checkDecisionTarget(request, queries, issue, agent, input.HumanUserID)
 	if err == nil {
 		err = requireDecisionAuthority(ctx, queries, issue, input.HumanUserID, input.EscalationClass, http.StatusForbidden)
 	}
-	var refusal decisionIntentRefusal
-	if errors.As(err, &refusal) {
-		return decisionRequestResult{}, decisionIntentRefusal{http.StatusConflict, "proposal_ineligible: " + refusal.message}
+	if err != nil {
+		return decisionRequestResult{}, proposalIneligible(err)
 	}
-	return decisionRequestResult{Request: prior, Replayed: true}, err
+	return decisionRequestResult{Request: prior, Replayed: true}, nil
 }
 
 // admitProposal fixes the identity of a new proposal and asks the guard.
@@ -111,8 +148,15 @@ func (handler *Handler) admitProposal(ctx context.Context, queries *db.Queries, 
 		return nil, errProposalsUnavailable
 	}
 	proposal := *input.Proposal
-	proposal.Fingerprint = proposal.identity(issue, agent.ID, input.HumanUserID, lane.ID).fingerprint()
-	return &proposal, handler.ProposalGuard(ctx, queries, ProposalAdmission{Issue: issue, Agent: agent, Lane: lane, Reason: proposal.Reason})
+	var err error
+	if proposal.Fingerprint, err = proposal.identity(issue, agent.ID, input.HumanUserID, lane.ID).fingerprint(); err != nil {
+		return nil, err
+	}
+	return &proposal, handler.ProposalGuard(ctx, queries, ProposalAdmission{
+		Issue: issue, Agent: agent, Lane: lane, RecipientID: input.HumanUserID,
+		ActionType: proposal.ActionType, ActionVersion: proposal.Version, ParamsSHA256: proposal.ParamsSHA256,
+		Ask: input.Ask, Reason: proposal.Reason, Fingerprint: proposal.Fingerprint,
+	})
 }
 
 var errProposalsUnavailable = decisionIntentRefusal{http.StatusServiceUnavailable, "proposals_unavailable: agent action proposals are not enabled on this server"}
@@ -180,9 +224,14 @@ func (handler *Handler) ProposeDecisionAction(writer http.ResponseWriter, reques
 		writeDecisionError(writer, err, "action proposal")
 		return
 	}
-	if recipient, err = handler.resolveDecisionRecipient(request.Context(), issue, recipient); err != nil {
+	var recipientErr error
+	if resolved, err := handler.resolveDecisionRecipient(request.Context(), issue, recipient); errors.As(err, new(decisionIntentRefusal)) {
+		recipientErr = err // judged in the transaction: an open proposal for this person replays as 409
+	} else if err != nil {
 		writeDecisionError(writer, err, "action proposal")
 		return
+	} else {
+		recipient = resolved
 	}
 	ask, err := composeProposalAsk(uuidToString(issue.ID), draft, body.Reason)
 	if err != nil {
@@ -196,7 +245,7 @@ func (handler *Handler) ProposeDecisionAction(writer http.ResponseWriter, reques
 	paramsHash := sha256.Sum256(draft.Params)
 	input := decisionRequestInput{
 		HumanUserID: recipient, Ask: ask, EscalationClass: actionRequestClass("reversible", draft.Definition.MinClass), Action: draft,
-		Proposal: &proposalRequest{ActionType: draft.Type, Version: draft.Version, ParamsSHA256: hex.EncodeToString(paramsHash[:]), Reason: body.Reason},
+		Proposal: &proposalRequest{ActionType: draft.Type, Version: draft.Version, ParamsSHA256: hex.EncodeToString(paramsHash[:]), Reason: body.Reason, RecipientErr: recipientErr},
 	}
 	// A duplicate that committed first makes the second pass replay it.
 	var result decisionRequestResult

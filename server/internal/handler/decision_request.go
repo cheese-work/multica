@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -586,10 +587,24 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 	if err != nil {
 		return empty, err
 	}
-	issue, agent, task, err := handler.authorizeDecisionTask(request, queries, issue, "agent", agentID)
+	taskIssue, agent, task, err := handler.authorizeDecisionTask(request, queries, issue, "agent", agentID)
+	if input.Proposal != nil && reuse && (err != nil || input.Proposal.RecipientErr != nil) {
+		// A stopped task or a removed recipient cannot ask again, but an open
+		// proposal of this identity is reported as ineligible, not refused.
+		if _, found, findErr := findOpenProposal(ctx, queries, issue, agentID, input, session); findErr != nil || found {
+			if findErr == nil {
+				findErr = proposalIneligible(cmp.Or(err, input.Proposal.RecipientErr))
+			}
+			return empty, findErr
+		}
+	}
 	if err != nil {
 		return empty, err
 	}
+	if input.Proposal != nil && input.Proposal.RecipientErr != nil {
+		return empty, input.Proposal.RecipientErr
+	}
+	issue = taskIssue
 	if prior, err := findDecisionRequestRetry(ctx, queries, issue, agentID, task.ID, input); err != nil || prior.Request.ID.Valid {
 		return prior, err
 	}

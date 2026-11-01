@@ -29,7 +29,7 @@ var decisionSchemaMigrations = []string{
 	"617_decision_comment_request_check", "618_decision_comment_request_validate",
 	"690_decision_contract", "730_decision_card_answer", "745_decision_card_answer", "773_decision_request_ask_identity", "795_decision_receipt_loop", "800_decision_record_excerpt",
 	"808_decision_authority", "813_decision_answer_feed", "821_decision_request_project",
-	"871_decision_request_proposal_fingerprint", "872_decision_request_proposal_fingerprint_idx",
+	"880_decision_request_proposal_fingerprint", "881_decision_request_proposal_fingerprint_idx",
 }
 
 func TestDecisionSchemaV14(test *testing.T) {
