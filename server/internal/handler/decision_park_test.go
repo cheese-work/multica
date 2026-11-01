@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
@@ -199,5 +200,24 @@ func TestDecisionWorkerPassRestoresABlockedFallbackPark(test *testing.T) {
 	dbfx.QueryRow(test, `SELECT status FROM issue WHERE id = $1`, fixture.issueID).Scan(&status)
 	if status != "in_progress" {
 		test.Fatalf("after the cancellation: status = %q, want in_progress", status)
+	}
+}
+
+func TestDecisionAnswerKeepsTheParkWhileAnotherAnswerAwaitsDelivery(test *testing.T) {
+	resetDecisionLease(test)
+	ensureParkCatalog(test)
+	fixture := newCardFixture(test)
+	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "Option A"}); err != nil {
+		test.Fatal(err)
+	}
+	otherID := dbfx.Insert(test, "decision_request", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": fixture.issueID, "asking_agent_id": fixture.agentID, "human_user_id": testUserID, "chat_session_id": fixture.sessionID, "issue_comment_id": fixture.parentID, "ask": "Second ask", "escalation_class": "reversible", "status": "answered", "origin": "asked"})
+	dbfx.Insert(test, "decision_answer", testutil.Cols{"decision_request_id": otherID, "answered_by_task_id": fixture.chatTaskID, "source_chat_session_id": fixture.sessionID, "chat_message_ids": "{" + fixture.messageID + "}", "content_snapshot": "Yes", "effective_at": time.Now(), "wake_at": time.Now().Add(time.Hour)})
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, fixture.taskID, fixture.chatTaskID)
+	_, runner := newDecisionRunnerFixture(test)
+	decisionPass(test, runner)
+	var status string
+	dbfx.QueryRow(test, `SELECT status FROM issue WHERE id = $1`, fixture.issueID).Scan(&status)
+	if status != "need_decision" || dbfx.Count(test, `SELECT count(*) FROM issue WHERE id = $1 AND metadata ? 'decision_park'`, fixture.issueID) != 1 {
+		test.Fatalf("status = %q: delivering one answer must keep the park while another is undelivered", status)
 	}
 }

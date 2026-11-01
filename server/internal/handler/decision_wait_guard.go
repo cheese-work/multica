@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -75,34 +76,17 @@ func (handler *Handler) checkDecisionWait(ctx context.Context, candidate db.Issu
 	if err != nil {
 		return err
 	}
-	closed, hasOpen := true, false
-	for _, request := range requests {
-		if request.Status == "open" {
-			closed, hasOpen = false, true
-		}
-		if request.Status == "answered" {
-			// An answered request holds the park only until its answer is delivered.
-			answer, err := queries.LockDecisionLiveAnswer(ctx, db.LockDecisionLiveAnswerParams{WorkspaceID: issue.WorkspaceID, ID: request.ID})
-			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-				return err
-			}
-			if err == nil && !answer.WokenAt.Valid {
-				closed = false
-			}
-		}
-	}
+	hasOpen := slices.ContainsFunc(requests, func(request db.DecisionRequest) bool { return request.Status == "open" })
 	// A request cancelled outside the answer path (lane archived, recipient
 	// removed, expired, withdrawn) leaves its park behind; undo it here.
-	if closed {
-		if restored, ok, err := unparkIssueAfterDecision(ctx, queries, issue); err != nil {
+	if restored, ok, err := unparkIssueAfterDecision(ctx, queries, issue, nil); err != nil {
+		return err
+	} else if ok {
+		if err := transaction.Commit(ctx); err != nil {
 			return err
-		} else if ok {
-			if err := transaction.Commit(ctx); err != nil {
-				return err
-			}
-			handler.publishDecisionStatusChange(ctx, issue, restored, "decision_cancel")
-			return nil
 		}
+		handler.publishDecisionStatusChange(ctx, issue, restored, "decision_cancel")
+		return nil
 	}
 	eligible, err := decisionWaitEligible(ctx, queries, issue)
 	if err != nil {

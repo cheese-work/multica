@@ -355,7 +355,7 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 		if err != nil {
 			return false, err
 		}
-		if restored, ok, err := unparkIssueAfterDecision(ctx, queries, locked); err != nil {
+		if restored, ok, err := unparkIssueAfterDecision(ctx, queries, locked, snapshot.answers); err != nil {
 			return false, err
 		} else if ok {
 			unparked = &restored

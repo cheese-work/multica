@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -105,9 +106,10 @@ func parkIssueForDecision(ctx context.Context, queries *db.Queries, issue db.Iss
 }
 
 // unparkIssueAfterDecision puts a parked issue back once its last open
-// decision request is answered. Run it under the issue lock. An issue someone
+// decision request is closed and every answer is delivered. `delivering` lists
+// the answers the caller is delivering now. Run it under the issue lock. An issue someone
 // moved on in the meantime keeps its status; only the record goes.
-func unparkIssueAfterDecision(ctx context.Context, queries *db.Queries, issue db.Issue) (db.Issue, bool, error) {
+func unparkIssueAfterDecision(ctx context.Context, queries *db.Queries, issue db.Issue, delivering []db.DecisionAnswer) (db.Issue, bool, error) {
 	var park decisionPark
 	if raw, ok := issueMetadataValue(issue, decisionParkKey); !ok || json.Unmarshal(raw, &park) != nil {
 		return issue, false, nil
@@ -118,6 +120,17 @@ func unparkIssueAfterDecision(ctx context.Context, queries *db.Queries, issue db
 	}
 	for _, request := range requests {
 		if request.Status == "open" {
+			return issue, false, nil
+		}
+		if request.Status != "answered" || slices.ContainsFunc(delivering, func(answer db.DecisionAnswer) bool { return answer.DecisionRequestID == request.ID }) {
+			continue
+		}
+		// An answered request holds the park until its answer is delivered.
+		answer, err := queries.LockDecisionLiveAnswer(ctx, db.LockDecisionLiveAnswerParams{WorkspaceID: issue.WorkspaceID, ID: request.ID})
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return issue, false, err
+		}
+		if err == nil && !answer.WokenAt.Valid {
 			return issue, false, nil
 		}
 	}
