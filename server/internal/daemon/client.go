@@ -211,6 +211,7 @@ func daemonCommonCapabilities() []string {
 		protocol.DaemonCapabilityCheckoutKeepsWorkV1,
 		protocol.DaemonCapabilityJoinedWakeupsV1,
 		protocol.DaemonCapabilityCLICommentSteerV1,
+		protocol.DaemonCapabilityAppliedSettingsV1,
 	}
 }
 
@@ -573,6 +574,35 @@ func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...strin
 		return TaskNegotiation{}, err
 	}
 	return negotiated, nil
+}
+
+// AppliedSettings is the launch selection the daemon resolved for one claim.
+type AppliedSettings struct {
+	Model, ThinkingLevel, ServiceTier string
+	ContextArgs                       []string
+}
+
+// ReportAppliedSettings records the launch selection against the claim
+// generation. One bounded attempt: the report is advisory, so callers log and
+// carry on when it fails.
+func (c *Client) ReportAppliedSettings(ctx context.Context, task Task, applied AppliedSettings) error {
+	if task.RuntimeID == "" || task.DispatchedAt == "" {
+		return fmt.Errorf("report applied settings: claim is missing runtime_id or dispatched_at")
+	}
+	contextArgs := applied.ContextArgs
+	if contextArgs == nil {
+		contextArgs = []string{}
+	}
+	ctx, cancel := context.WithTimeout(ctx, startTaskTimeout)
+	defer cancel()
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/applied-settings", task.ID), map[string]any{
+		"runtime_id":             task.RuntimeID,
+		"dispatched_at":          task.DispatchedAt,
+		"applied_model":          applied.Model,
+		"applied_thinking_level": applied.ThinkingLevel,
+		"applied_service_tier":   applied.ServiceTier,
+		"applied_context_args":   contextArgs,
+	}, nil)
 }
 
 // MarkTaskWaitingLocalDirectory parks a freshly-dispatched task in the

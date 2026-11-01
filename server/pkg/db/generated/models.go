@@ -226,6 +226,11 @@ type AgentTaskQueue struct {
 	ReplacementReleasedAt     pgtype.Timestamptz `json:"replacement_released_at"`
 	StopHoldIssueWide         bool               `json:"stop_hold_issue_wide"`
 	TaintIds                  []string           `json:"taint_ids"`
+	AppliedModel              pgtype.Text        `json:"applied_model"`
+	AppliedThinkingLevel      pgtype.Text        `json:"applied_thinking_level"`
+	AppliedServiceTier        pgtype.Text        `json:"applied_service_tier"`
+	AppliedContextArgs        []byte             `json:"applied_context_args"`
+	AppliedReportedAt         pgtype.Timestamptz `json:"applied_reported_at"`
 }
 
 type AgentToLabel struct {
