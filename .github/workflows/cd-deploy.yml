@@ -98,7 +98,9 @@ jobs:
   # never hold an approval or a deploy. Holds only the webhook secret.
   notify-approval:
     needs: candidate-preflight
-    if: always() && needs.candidate-preflight.outputs.eligible == 'true'
+    # Same condition as the gate: the manual path skips candidate-preflight but
+    # still waits for approval.
+    if: always() && (github.event_name == 'workflow_dispatch' || needs.candidate-preflight.outputs.eligible == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
@@ -108,10 +110,20 @@ jobs:
           sparse-checkout: deploy/cd/notify-approval.sh
       - name: Notify approver
         env:
-          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          # workflow_run: the qualified commit. workflow_dispatch: the commit
+          # inputs.ref resolves to, which the manifest's source_sha must match.
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          INPUT_REF: ${{ inputs.ref }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           WEBHOOK_URL: ${{ secrets.C00_APPROVAL_WEBHOOK_URL }}
-        run: bash deploy/cd/notify-approval.sh
+        run: |
+          SOURCE_SHA="$HEAD_SHA"
+          if [ -z "$SOURCE_SHA" ]; then
+            git fetch --quiet --depth=1 origin "$INPUT_REF"
+            SOURCE_SHA="$(git rev-parse FETCH_HEAD)"
+          fi
+          export SOURCE_SHA
+          bash deploy/cd/notify-approval.sh
 
   candidate-preflight:
     if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
