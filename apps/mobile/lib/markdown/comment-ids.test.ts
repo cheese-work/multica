@@ -1,5 +1,4 @@
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CommentPreview } from "@multica/core/types";
 import {
   findCommentIds,
@@ -149,23 +148,38 @@ describe("segments", () => {
   });
 });
 
-// CHE-2922 native run: on the Android dev client (Hermes) no comment-preview
-// request left the app, so `findCommentIds` found nothing. 4e9e72bb3 (numbered
-// groups) was the last scan regex seen working on a device; f617b0142 moved it
-// to named groups, named backreferences and `m.groups`. Keep the scan to
-// numbered groups until Hermes is proven to handle the named form.
-describe("comment-id scan regex stays Hermes-safe", () => {
-  const source = readFileSync(new URL("./comment-ids.ts", import.meta.url), "utf8");
+// CHE-2969 / CHE-2922 native run: on the Android dev client (Hermes 0.17) no
+// comment-preview request left the app, so the full UUID, the labeled anchor
+// and the bare anchor stayed plain. Cause, reproduced with a real Hermes v0.17.0
+// `hermes` binary: `String.prototype.matchAll` results carry no `.groups`
+// (`exec` and `replace` do). The scan read `m.groups`, found no id, so nothing
+// was fetched. Named groups themselves compile and match fine. This test
+// emulates Hermes' `matchAll`: the scan must read numbered groups only.
+describe("findCommentIds on an engine whose matchAll drops .groups (Hermes)", () => {
+  beforeEach(() => {
+    const real = String.prototype.matchAll;
+    vi.spyOn(String.prototype, "matchAll").mockImplementation(function (
+      this: string,
+      re: RegExp,
+    ) {
+      const hermes = Array.from(real.call(this, re), (m) => {
+        delete (m as { groups?: unknown }).groups;
+        return m;
+      });
+      return hermes[Symbol.iterator]() as ReturnType<typeof real>;
+    });
+  });
+  afterEach(() => vi.restoreAllMocks());
 
-  it("uses no named capture groups", () => {
-    expect(source).not.toMatch(/\(\?<[A-Za-z_]/);
+  it("finds a full UUID in prose", () => {
+    expect(findCommentIds(`see ${ID} ok`, CTX)).toEqual([ID]);
   });
 
-  it("uses no named backreferences", () => {
-    expect(source).not.toMatch(/\\k</);
+  it("finds the comment of a labeled in-app anchor link", () => {
+    expect(findCommentIds(`open [the root comment](${URL_FORM})`, CTX)).toEqual([ID]);
   });
 
-  it("does not read named groups off a match", () => {
-    expect(source).not.toMatch(/\.groups\b/);
+  it("finds the comment of a bare in-app anchor URL", () => {
+    expect(findCommentIds(`open ${URL_FORM}`, CTX)).toEqual([ID]);
   });
 });

@@ -25,9 +25,9 @@ export interface CommentLinkContext {
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 
 // Alternation order matters: spans we must not touch win over the UUID group.
-// Numbered groups only (no named groups or named backreferences): the Android dev client
-// (Hermes) found no ids with the named form. Groups: 1 code, 2 fence, 3 tick,
-// 4 labeled-link URL, 5 bare URL, 6 bare UUID.
+// Numbered groups only: Hermes' `matchAll` results carry no `.groups` (CHE-2969),
+// so read `m[4..6]`. Groups: 1 code, 2 fence, 3 tick, 4 labeled-link URL,
+// 5 bare URL, 6 bare UUID.
 // `code` is a nested fenced block (quote/list `splitMarkdown` leaves in prose)
 // or an N-backtick code span closed by a run of exactly N backticks.
 const SCAN_RE = new RegExp(
