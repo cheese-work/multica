@@ -7363,3 +7363,20 @@ func (h *Handler) inheritSessionTaint(ctx context.Context, task *db.AgentTaskQue
 	task.TaintIds = taint
 	return true
 }
+
+// MarkTaskExternalRead records that the run contacted a host other than the
+// Multica server and the provider API, or used a GitHub read token (CHE-2216
+// plan 3.7). Comments, description edits and attachments it writes from now on
+// store the mark. The mark only grows, so a repeat report is a no-op.
+func (h *Handler) MarkTaskExternalRead(w http.ResponseWriter, r *http.Request) {
+	task, ok := h.requireDaemonTaskAccess(w, r, chi.URLParam(r, "taskId"))
+	if !ok {
+		return
+	}
+	if err := h.Queries.MarkTaskExternalRead(r.Context(), task.ID); err != nil {
+		slog.Error("mark task external_read failed", "task_id", uuidToString(task.ID), "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to mark task")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}

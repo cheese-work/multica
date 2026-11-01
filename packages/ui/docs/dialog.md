@@ -46,6 +46,10 @@ HTML code previews use the focused `HtmlPreviewSurface` in `packages/views/edito
 
 A role alone does not supply an accessible name, focus management or dismissal behavior. Do not close before an asynchronous save succeeds.
 
+## Overlay
+
+`DialogContent` accepts `overlayClassName` for the backdrop, for example `supports-backdrop-filter:backdrop-blur-none` for a dialog that pans or zooms a large surface; blurring the page behind it is costly where the browser rasterises in software. Leave it unset otherwise.
+
 ## Motion
 
 Popup and backdrop consume `--dialog-enter-duration`, `--dialog-exit-duration`, `--dialog-enter-easing` and `--dialog-exit-easing` from `packages/ui/styles/tokens.css`. The defaults preserve the existing 100ms/ease animation. The popup also fades and scales between 95% and 100%.
