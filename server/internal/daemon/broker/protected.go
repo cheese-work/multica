@@ -75,8 +75,8 @@ func (b *Broker) scrub(s string) string { return strings.ReplaceAll(s, b.pin.Rem
 
 // defaultBranch reads the remote's default branch ref, so the check does not
 // depend on anything the run can influence.
-func (b *Broker) defaultBranch(ctx context.Context) (string, error) {
-	out, err := b.git(ctx, "", "ls-remote", "--symref", b.pin.RemoteURL, "HEAD")
+func (b *Broker) defaultBranch(ctx context.Context, auth []string) (string, error) {
+	out, err := b.git(ctx, "", auth, "ls-remote", "--symref", b.pin.RemoteURL, "HEAD")
 	if err != nil {
 		return "", fmt.Errorf("default branch lookup: %s", b.scrub(firstLine(out)))
 	}
@@ -95,12 +95,12 @@ func (b *Broker) defaultBranch(ctx context.Context) (string, error) {
 // symlink in the pushed tree makes reachable from one. The net tree diff is what
 // a merge would land; renames are split so both sides are checked. The walk is
 // bounded (see treewalk.go); a push over a bound is refused with 413.
-func (b *Broker) checkProtected(ctx context.Context, work, defRef, sha string, patterns []string) (int, error) {
+func (b *Broker) checkProtected(ctx context.Context, work, defRef, sha string, patterns []string, auth []string) (int, error) {
 	const def = "refs/multica/default"
-	if out, err := b.git(ctx, work, "-c", "transfer.fsckObjects=true", "fetch", "--no-tags", "--quiet", b.pin.RemoteURL, "+"+defRef+":"+def); err != nil {
+	if out, err := b.git(ctx, work, auth, "-c", "transfer.fsckObjects=true", "fetch", "--no-tags", "--quiet", b.pin.RemoteURL, "+"+defRef+":"+def); err != nil {
 		return http.StatusServiceUnavailable, fmt.Errorf("default branch fetch: %s", b.scrub(firstLine(out)))
 	}
-	bases, err := b.git(ctx, work, "merge-base", "--all", def, sha)
+	bases, err := b.git(ctx, work, nil, "merge-base", "--all", def, sha)
 	if err != nil || bases == "" {
 		return http.StatusForbidden, errors.New("the pushed branch shares no history with the default branch")
 	}
@@ -115,14 +115,14 @@ func (b *Broker) checkProtected(ctx context.Context, work, defRef, sha string, p
 		return http.StatusInternalServerError, err
 	}
 	defer o.close()
-	tipTree, err := b.git(ctx, work, "rev-parse", sha+"^{tree}")
+	tipTree, err := b.git(ctx, work, nil, "rev-parse", sha+"^{tree}")
 	if err != nil {
 		return http.StatusInternalServerError, fmt.Errorf("tip tree: %s", firstLine(tipTree))
 	}
 	var changed []string
 	w := &walker{o: o, max: limit, sink: func(p string) error { changed = append(changed, p); return nil }}
 	for _, base := range strings.Fields(bases) {
-		baseTree, err := b.git(ctx, work, "rev-parse", base+"^{tree}")
+		baseTree, err := b.git(ctx, work, nil, "rev-parse", base+"^{tree}")
 		if err != nil {
 			return http.StatusInternalServerError, fmt.Errorf("base tree: %s", firstLine(baseTree))
 		}
@@ -184,7 +184,7 @@ func (b *Broker) commitReceipts(ctx context.Context, work, sha string) ([]Commit
 	if limit <= 0 {
 		limit = defaultMaxCommits
 	}
-	list, err := b.git(ctx, work, "rev-list", "--reverse", "--max-count="+strconv.Itoa(limit+1), sha, "^"+b.pin.Base)
+	list, err := b.git(ctx, work, nil, "rev-list", "--reverse", "--max-count="+strconv.Itoa(limit+1), sha, "^"+b.pin.Base)
 	if err != nil {
 		return nil, fmt.Errorf("receipt: %s", firstLine(list))
 	}

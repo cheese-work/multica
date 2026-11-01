@@ -1715,6 +1715,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/tasks/{taskId}/pr-events/{eventId}/ack", h.AckTaskPREvent)
 		r.Post("/tasks/{taskId}/wait-local-directory", h.MarkTaskWaitingLocalDirectory)
 		r.Post("/tasks/{taskId}/progress", h.ReportTaskProgress)
+		r.Post("/tasks/{taskId}/external-read", h.MarkTaskExternalRead)
 		r.Post("/tasks/{taskId}/complete", h.CompleteTask)
 		r.Post("/tasks/{taskId}/fail", h.FailTask)
 		r.Post("/tasks/{taskId}/elevation/authorize", h.AuthorizeElevatedOp)
@@ -2227,6 +2228,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.With(handler.RequireHumanActor).Post("/run-budget/top-up", h.TopUpIssueRunBudget)
 					// CHE-2489: a person widens one issue's runs; machine credentials never reach the handler.
 					r.With(handler.RequireHumanActor).Post("/capability-grants", h.CreateRunCapabilityGrant)
+					// CHE-2514: a person clears the taint that keeps one issue's runs restricted.
+					r.With(handler.RequireHumanActor).Post("/taint/clear", h.ClearIssueTaint)
 					r.With(handler.RequireHumanActor).Post("/read-approvals", h.ApproveReadSnapshot)
 					r.Put("/workflow", h.SetIssueWorkflow)
 					r.Get("/subscribers", h.ListIssueSubscribers)

@@ -1,4 +1,11 @@
 {
+  "decision_banner": {
+    "title": "需要你做决定",
+    "waiting": "智能体尚未发送决策卡片。",
+    "queued_since": "自 {{time}} 起排队中",
+    "running_since": "自 {{time}} 起运行中",
+    "no_run": "没有活动的运行。"
+  },
   "needs_you": {
     "title": "待你决定",
     "loading": "正在加载待处理请求…",
@@ -382,6 +389,7 @@
     "answer_send": "发送",
     "answer_error": "发送失败，请重试。",
     "answer_helper": "发送会将你的回答发布到 {{issue}}。给 DM 智能体的问题请写在下方消息框。",
+    "answer_helper_issue": "发送会将你的回答发布到 {{issue}}。",
     "answer_hint": "{{shortcut}} 发送",
     "answer_too_long": "回答超过 8 KB。缩短后才能发送。",
     "answer_offline": "你已离线。回答已保留，重新连接后即可发送。",

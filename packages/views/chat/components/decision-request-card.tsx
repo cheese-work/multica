@@ -43,12 +43,14 @@ function DecisionAnswerForm({
   answer,
   onDraftChange,
   onSend,
+  inIssue,
 }: {
   card: RequestCard;
   draft: AnswerDraft;
   answer: AnswerMutation;
   onDraftChange: (draft: AnswerDraft) => void;
   onSend: (text: string) => void;
+  inIssue: boolean;
 }) {
   const { t } = useT("chat");
   const online = useOnline();
@@ -83,7 +85,7 @@ function DecisionAnswerForm({
       }}
     >
       <p className="text-caption text-muted-foreground">
-        {t(($) => $.decision.answer_helper, { issue: card.issue_identifier || card.issue_id })}
+        {t(($) => (inIssue ? $.decision.answer_helper_issue : $.decision.answer_helper), { issue: card.issue_identifier || card.issue_id })}
       </p>
       {!!card.options?.length && (
         <fieldset role="radiogroup" className="space-y-1">
@@ -203,7 +205,8 @@ function useNow(card: RequestCard) {
   return now;
 }
 
-export function DecisionRequestCard({ card }: { card: RequestCard }) {
+// `inIssue`: shown on the source issue page, where there is no DM message box.
+export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCard; inIssue?: boolean }) {
   const { t } = useT("chat");
   const paths = useWorkspacePaths();
   const shown = displayState(card, useNow(card));
@@ -305,7 +308,7 @@ export function DecisionRequestCard({ card }: { card: RequestCard }) {
           <KeptDraft draft={draft} onDiscard={discardDraft} />
         ) : (
           card.state === "open" && (
-            <DecisionAnswerForm key={formKey} card={card} draft={draft} answer={answer} onDraftChange={setDraft} onSend={sendAnswer} />
+            <DecisionAnswerForm key={formKey} card={card} draft={draft} answer={answer} onDraftChange={setDraft} onSend={sendAnswer} inIssue={inIssue} />
           )
         )}
         {shown === "picked_up" && card.answer?.run && (

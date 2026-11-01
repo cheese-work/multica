@@ -3,13 +3,13 @@
 -- its current project's (project_id may be NULL) and its own. Three exact
 -- lookups on the full identity index, so cost and result stay bounded no
 -- matter how many other definitions the workspace has.
-SELECT d.workspace_id,d.scope_kind,d.scope_id,d.rule_key,d.root,d.config,d.revision,d.created_by,d.updated_by,d.created_at,d.updated_at,d.event_types FROM issue_wakeup_definition d
+SELECT d.* FROM issue_wakeup_definition d
 WHERE d.workspace_id= @workspace_id AND d.scope_kind='workspace' AND d.scope_id= @workspace_id AND d.rule_key= @rule_key
 UNION ALL
-SELECT d.workspace_id,d.scope_kind,d.scope_id,d.rule_key,d.root,d.config,d.revision,d.created_by,d.updated_by,d.created_at,d.updated_at,d.event_types FROM issue_wakeup_definition d
+SELECT d.* FROM issue_wakeup_definition d
 WHERE d.workspace_id= @workspace_id AND d.scope_kind='project' AND d.scope_id= sqlc.narg(project_id)::uuid AND d.rule_key= @rule_key
 UNION ALL
-SELECT d.workspace_id,d.scope_kind,d.scope_id,d.rule_key,d.root,d.config,d.revision,d.created_by,d.updated_by,d.created_at,d.updated_at,d.event_types FROM issue_wakeup_definition d
+SELECT d.* FROM issue_wakeup_definition d
 WHERE d.workspace_id= @workspace_id AND d.scope_kind='issue' AND d.scope_id= @issue_id AND d.rule_key= @rule_key;
 
 -- name: InsertWakeupDefinitionIfAbsent :execrows
