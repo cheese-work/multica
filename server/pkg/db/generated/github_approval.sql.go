@@ -126,6 +126,67 @@ func (q *Queries) GetGitHubWebhookRevisionForUpdate(ctx context.Context, arg Get
 	return i, err
 }
 
+const hasAdmittedGitHubRevision = `-- name: HasAdmittedGitHubRevision :one
+SELECT EXISTS (
+    SELECT 1 FROM github_webhook_revision r
+    JOIN issue_pull_request l ON l.pull_request_id = r.pull_request_id AND l.issue_id = $2
+    WHERE r.workspace_id = $1 AND r.object_kind = $3 AND r.object_id = $4
+      AND r.body_hash = $5 AND r.author_id = $6 AND r.review_state = $7
+      AND r.state IN ('dispatched', 'projected')
+)
+`
+
+type HasAdmittedGitHubRevisionParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	ObjectKind  string      `json:"object_kind"`
+	ObjectID    int64       `json:"object_id"`
+	BodyHash    string      `json:"body_hash"`
+	AuthorID    int64       `json:"author_id"`
+	ReviewState string      `json:"review_state"`
+}
+
+// An admitted intake revision (dispatched, or projected while gate G is closed)
+// of this exact object read, on a PR linked to the issue.
+func (q *Queries) HasAdmittedGitHubRevision(ctx context.Context, arg HasAdmittedGitHubRevisionParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasAdmittedGitHubRevision,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.ObjectKind,
+		arg.ObjectID,
+		arg.BodyHash,
+		arg.AuthorID,
+		arg.ReviewState,
+	)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const hasGitHubSnapshotApproval = `-- name: HasGitHubSnapshotApproval :one
+SELECT EXISTS (
+    SELECT 1 FROM github_snapshot_approval a
+    JOIN github_webhook_revision r ON r.workspace_id = a.workspace_id AND r.id = a.revision_id
+    JOIN issue_pull_request l ON l.pull_request_id = r.pull_request_id AND l.issue_id = $2
+    WHERE a.workspace_id = $1 AND a.snapshot_hash = $3
+)
+`
+
+type HasGitHubSnapshotApprovalParams struct {
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+	IssueID      pgtype.UUID `json:"issue_id"`
+	SnapshotHash string      `json:"snapshot_hash"`
+}
+
+// An exact-snapshot approval (the hash covers editor and last edit time) for a
+// revision on a PR linked to the issue.
+func (q *Queries) HasGitHubSnapshotApproval(ctx context.Context, arg HasGitHubSnapshotApprovalParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasGitHubSnapshotApproval, arg.WorkspaceID, arg.IssueID, arg.SnapshotHash)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const insertGitHubSnapshotApproval = `-- name: InsertGitHubSnapshotApproval :execrows
 INSERT INTO github_snapshot_approval (
     workspace_id, revision_id, approver_user_id, snapshot_hash, object_kind, object_id,
