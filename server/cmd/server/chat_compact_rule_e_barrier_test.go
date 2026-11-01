@@ -147,7 +147,7 @@ func ruleEQueuedState(t *testing.T, id string) (status string, stamp, dmEpoch in
 // compact commits the completion finishes and the claim stamps the new epoch.
 func TestRuleE_BarrierCompletionQueuesBehindCompactClaimDoesNot(t *testing.T) {
 	svc := ruleENewService()
-	fx := newCompactFixture(t)
+	fx := newRuleEFixture(t)
 	queued := addRuleEChatTask(t, fx.sessionID, "queued")
 	runtimeID := ruleEOnlineRuntime(t, queued)
 
@@ -199,7 +199,7 @@ func TestRuleE_BarrierCompletionQueuesBehindCompactClaimDoesNot(t *testing.T) {
 // sees the claimed task and answers 409 with the epoch untouched.
 func TestRuleE_BarrierCompactWaitsForInFlightClaim(t *testing.T) {
 	svc := ruleENewService()
-	fx := newCompactFixture(t)
+	fx := newRuleEFixture(t)
 	queued := addRuleEChatTask(t, fx.sessionID, "queued")
 	runtimeID := ruleEOnlineRuntime(t, queued)
 	if _, err := testPool.Exec(ctx(), `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, fx.taskID); err != nil {
@@ -253,7 +253,7 @@ func TestRuleE_BarrierCompactWaitsForInFlightClaim(t *testing.T) {
 // limit. A wait would run into the deadline and fail the test.
 func TestRuleE_BarrierClaimSkipsHeldDMWithoutWaiting(t *testing.T) {
 	svc := ruleENewService()
-	fx := newCompactFixture(t)
+	fx := newRuleEFixture(t)
 	queued := addRuleEChatTask(t, fx.sessionID, "queued")
 	runtimeID := ruleEOnlineRuntime(t, queued)
 	if _, err := testPool.Exec(ctx(), `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, fx.taskID); err != nil {

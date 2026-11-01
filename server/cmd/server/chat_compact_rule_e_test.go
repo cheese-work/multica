@@ -29,12 +29,51 @@ func addRuleEChatTask(t *testing.T, sessionID, status string) string {
 	return id
 }
 
+// newRuleEFixture is newCompactFixture on a dedicated agent and runtime. The
+// shared workspace agent carries other tests' leftover tasks and concurrency
+// slots, which a claim here would pick up instead of the task under test.
+func newRuleEFixture(t *testing.T) compactFixture {
+	t.Helper()
+	var runtimeID, agentID, sessionID string
+	if err := testPool.QueryRow(ctx(), `
+		INSERT INTO agent_runtime (workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at)
+		VALUES ($1, NULL, 'rule-e runtime', 'local', 'che2899_rule_e', 'online', '{}'::jsonb, '{}'::jsonb, now())
+		RETURNING id::text`, testWorkspaceID).Scan(&runtimeID); err != nil {
+		t.Fatal(err)
+	}
+	if err := testPool.QueryRow(ctx(), `
+		INSERT INTO agent (workspace_id, name, description, runtime_mode, runtime_config, runtime_id, visibility, max_concurrent_tasks, owner_id)
+		VALUES ($1, 'che2899-rule-e-agent', '', 'local', '{}'::jsonb, $2, 'workspace', 20, $3)
+		RETURNING id::text`, testWorkspaceID, runtimeID, testUserID).Scan(&agentID); err != nil {
+		t.Fatal(err)
+	}
+	if err := testPool.QueryRow(ctx(), `
+		INSERT INTO chat_session (workspace_id, agent_id, creator_id, title, session_id, runtime_id, work_dir)
+		VALUES ($1, $2, $3, 'compact', 'S_old', $4, '/tmp/compact-work') RETURNING id::text`,
+		testWorkspaceID, agentID, testUserID, runtimeID).Scan(&sessionID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx(), `DELETE FROM agent_task_queue WHERE agent_id = $1`, agentID)
+		testPool.Exec(ctx(), `DELETE FROM chat_message WHERE chat_session_id = $1`, sessionID)
+		testPool.Exec(ctx(), `DELETE FROM chat_session WHERE id = $1`, sessionID)
+		testPool.Exec(ctx(), `DELETE FROM agent WHERE id = $1`, agentID)
+		testPool.Exec(ctx(), `DELETE FROM agent_runtime WHERE id = $1`, runtimeID)
+	})
+	token := chatTaskToken(t, sessionID, "running")
+	var taskID string
+	if err := testPool.QueryRow(ctx(), `SELECT id::text FROM agent_task_queue WHERE chat_session_id = $1`, sessionID).Scan(&taskID); err != nil {
+		t.Fatal(err)
+	}
+	return compactFixture{sessionID: sessionID, taskID: taskID, token: token}
+}
+
 // (p) A task other than the caller that is dispatched, waiting_local_directory
 // or running blocks the compact with 409; a queued one does not.
 func TestChatCompactRefusesWhileAnotherChatTaskIsActive(t *testing.T) {
 	for _, active := range []string{"dispatched", "waiting_local_directory", "running"} {
 		t.Run(active, func(t *testing.T) {
-			fx := newCompactFixture(t)
+			fx := newRuleEFixture(t)
 			addRuleEChatTask(t, fx.sessionID, active)
 			if status, body := postCompact(t, fx.token, "x"); status != http.StatusConflict {
 				t.Fatalf("compact beside a %s task = %d %s, want 409", active, status, body)
@@ -43,7 +82,7 @@ func TestChatCompactRefusesWhileAnotherChatTaskIsActive(t *testing.T) {
 		})
 	}
 	t.Run("queued does not block", func(t *testing.T) {
-		fx := newCompactFixture(t)
+		fx := newRuleEFixture(t)
 		addRuleEChatTask(t, fx.sessionID, "queued")
 		if status, body := postCompact(t, fx.token, "x"); status != http.StatusOK {
 			t.Fatalf("compact beside a queued task = %d %s, want 200", status, body)
@@ -54,7 +93,7 @@ func TestChatCompactRefusesWhileAnotherChatTaskIsActive(t *testing.T) {
 // (q) opposite order: the claim commits first, the compact then answers 409
 // and the DM epoch stays put.
 func TestChatCompactRefusesTaskClaimedJustBefore(t *testing.T) {
-	fx := newCompactFixture(t)
+	fx := newRuleEFixture(t)
 	queued := addRuleEChatTask(t, fx.sessionID, "queued")
 	var agentID, runtimeID string
 	if err := testPool.QueryRow(ctx(), `SELECT agent_id, runtime_id FROM agent_task_queue WHERE id = $1`, queued).Scan(&agentID, &runtimeID); err != nil {
@@ -105,7 +144,7 @@ func TestChatCompactClaimLockOrderHasNoDeadlock(t *testing.T) {
 	svc := service.NewTaskService(db.New(testPool), testPool, nil, events.New())
 	for i := 0; i < 40; i++ {
 		t.Run(fmt.Sprintf("iteration_%d", i), func(t *testing.T) {
-			fx := newCompactFixture(t)
+			fx := newRuleEFixture(t)
 			queued := addRuleEChatTask(t, fx.sessionID, "queued")
 			// Each subtest's fixture cleanup frees the agent's concurrency slot.
 			var runtimeID string
