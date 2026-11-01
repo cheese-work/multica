@@ -89,6 +89,9 @@ func TestCreateCommentInvalidAgentMentionsRejected(t *testing.T) {
 			issueID := gateIssue(t, "Gate "+tc.name)
 			mention := fmt.Sprintf("[@Alias](mention://agent/%s)", tc.agentID)
 			content := "please look " + mention + " now"
+			if tc.name == "inside a note" {
+				content = "/note reference " + mention
+			}
 			req := newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": content})
 			if tc.callerID != "" {
 				req = newRequestAs(tc.callerID, http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": content})
