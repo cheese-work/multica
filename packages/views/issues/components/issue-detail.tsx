@@ -4174,7 +4174,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               )
             }
           />
-          <IssueDecisionBanner issueId={id} status={issue.status} />
+          <IssueDecisionBanner issueId={id} status={issue.status} ownerAgentId={issue.assignee_type === "agent" ? issue.assignee_id : null} />
           {titleLazy.active && (
             <div id={`find-title-${id}`} className={titleLazy.ready ? undefined : "hidden"}>
               <TitleEditor

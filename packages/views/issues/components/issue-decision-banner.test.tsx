@@ -33,10 +33,15 @@ const open = (id: string, issue_id: string, extra = {}) => ({
   options: [{ label: "Ship it" }, { label: "Hold" }], ...extra,
 });
 
-function show(status = "in_progress") {
+vi.mock("@multica/core/workspace/queries", async (importActual) => ({
+  ...(await importActual<typeof import("@multica/core/workspace/queries")>()),
+  agentListOptions: () => ({ queryKey: ["agents"], queryFn: async () => [{ id: "owner", name: "Terra" }, { id: "rev", name: "Sol" }] }),
+}));
+
+function show(status = "in_progress", ownerAgentId: string | null = "owner") {
   return renderWithI18n(
-    <QueryClientProvider client={new QueryClient()}>
-      <WorkspaceSlugProvider slug="acme"><IssueDecisionBanner issueId="issue" status={status} /></WorkspaceSlugProvider>
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <WorkspaceSlugProvider slug="acme"><IssueDecisionBanner issueId="issue" status={status} ownerAgentId={ownerAgentId} /></WorkspaceSlugProvider>
     </QueryClientProvider>,
   );
 }
@@ -72,12 +77,42 @@ describe("IssueDecisionBanner", () => {
   it("explains need_decision with no open request and shows the owner run", async () => {
     api.listOpenDecisionRequests.mockResolvedValue([]);
     api.listTasksByIssue.mockResolvedValue([
-      { id: "t", issue_id: "issue", agent_id: "a", status: "queued", created_at: "2026-11-01T05:24:00Z" },
+      { id: "t", issue_id: "issue", agent_id: "owner", status: "queued", created_at: "2026-11-01T05:24:00Z" },
     ]);
     show("need_decision");
     expect(await screen.findByText(/has not sent the decision card yet/)).toBeInTheDocument();
     expect(await screen.findByText(/Queued since 01 Nov 2026, 12:24 ICT/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
+  });
+
+  it("shows the owner's run only, named, not an unrelated reviewer's", async () => {
+    api.listOpenDecisionRequests.mockResolvedValue([]);
+    api.listTasksByIssue.mockResolvedValue([
+      { id: "t1", issue_id: "issue", agent_id: "rev", status: "running", started_at: "2026-11-01T05:30:00Z", created_at: "2026-11-01T05:30:00Z" },
+      { id: "t2", issue_id: "issue", agent_id: "owner", status: "queued", created_at: "2026-11-01T05:24:00Z" },
+    ]);
+    show("need_decision");
+    expect(await screen.findByText(/Terra.*Queued since 01 Nov 2026, 12:24 ICT/)).toBeInTheDocument();
+    expect(screen.queryByText(/Running since/)).toBeNull();
+    expect(screen.queryByText(/Sol/)).toBeNull();
+  });
+
+  it("says the owner has no active run only once tasks loaded, not while pending or failed", async () => {
+    api.listOpenDecisionRequests.mockResolvedValue([]);
+    api.listTasksByIssue.mockRejectedValue(new Error("boom"));
+    show("need_decision");
+    expect(await screen.findByText(/has not sent the decision card yet/)).toBeInTheDocument();
+    await waitFor(() => expect(api.listTasksByIssue).toHaveBeenCalled());
+    expect(screen.queryByText("No active run.")).toBeNull();
+  });
+
+  it("shows a retryable error when open requests fail to load", async () => {
+    api.listOpenDecisionRequests.mockRejectedValueOnce(new Error("boom")).mockResolvedValue([open("r1", "issue")]);
+    show("need_decision");
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Could not load open asks.");
+    await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("Ask r1")).toBeInTheDocument();
   });
 
   it("renders nothing for answered or withdrawn requests", async () => {
