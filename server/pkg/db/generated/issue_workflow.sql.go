@@ -611,6 +611,28 @@ func (q *Queries) LockProjectForWorkflowChange(ctx context.Context, arg LockProj
 	return i, err
 }
 
+const minInheritedRunsOverrideForProject = `-- name: MinInheritedRunsOverrideForProject :one
+SELECT COALESCE(MIN(COALESCE(max_runs_override, 0)), 0)::int FROM issue
+WHERE workspace_id = $1::uuid
+  AND project_id = $2::uuid
+  AND workflow_id IS NULL
+`
+
+type MinInheritedRunsOverrideForProjectParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ProjectID   pgtype.UUID `json:"project_id"`
+}
+
+// The smallest run override among a project's issues that follow its workflow
+// (0 when one has none, or there are none). A workflow switch widens the budget
+// of the issue with the smallest override first.
+func (q *Queries) MinInheritedRunsOverrideForProject(ctx context.Context, arg MinInheritedRunsOverrideForProjectParams) (int32, error) {
+	row := q.db.QueryRow(ctx, minInheritedRunsOverrideForProject, arg.WorkspaceID, arg.ProjectID)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const releaseIssueCIAdvance = `-- name: ReleaseIssueCIAdvance :exec
 DELETE FROM issue_ci_advance
 WHERE issue_id = $1::uuid AND head_sha = $2::text
