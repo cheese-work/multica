@@ -38,15 +38,17 @@ type EditorProps = {
   onUploadFile?: (file: File, uploadId: string) => Promise<unknown>;
   onUploadingChange?: (uploading: boolean) => void;
 };
-const editor = vi.hoisted(() => ({ props: undefined as unknown, hasActiveUploads: false }));
+// `live` is what the editor holds right now; the card only hears of it through onUpdate, after a timer.
+const editor = vi.hoisted(() => ({ props: undefined as unknown, hasActiveUploads: false, live: undefined as string | undefined }));
 const editorProps = () => editor.props as EditorProps;
 vi.mock("../../editor", async () => ({
   ...(await vi.importActual<typeof import("../../editor/use-upload-gate")>("../../editor/use-upload-gate")),
   useEditorUpload: (await vi.importActual<typeof import("../../editor/use-editor-upload")>("../../editor/use-editor-upload")).useEditorUpload,
   ContentEditor: forwardRef(function MockEditor(props: EditorProps, ref) {
     editor.props = props;
-    if (typeof ref === "function") ref({ hasActiveUploads: () => editor.hasActiveUploads } as never);
-    else if (ref) (ref as { current: unknown }).current = { hasActiveUploads: () => editor.hasActiveUploads };
+    const handle = { hasActiveUploads: () => editor.hasActiveUploads, getMarkdown: () => editor.live ?? props.value ?? "" };
+    if (typeof ref === "function") ref(handle as never);
+    else if (ref) (ref as { current: unknown }).current = handle;
     return (
       <textarea
         aria-label={props.ariaLabel}
@@ -260,6 +262,7 @@ describe("DecisionRequestCard answering", () => {
     answerDecisionRequest.mockReset().mockResolvedValue(undefined);
     uploadFile.mockReset();
     editor.hasActiveUploads = false;
+    editor.live = undefined;
   });
 
   it("sends the selected option on Send, and only once chosen", async () => {
@@ -319,6 +322,23 @@ describe("DecisionRequestCard answering", () => {
       expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: undefined, text: "see ![x.png](https://app/att-1)" });
     });
 
+    it("sends what the editor holds when Send comes before its pending update fires", async () => {
+      renderCard();
+      const user = userEvent.setup();
+      act(() => editorProps().onUpdate?.("stale"));
+      editor.live = "stale and the last edit ![x.png](https://app/att-2)";
+      await user.click(screen.getByRole("button", { name: "Send" }));
+      expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: undefined, text: "stale and the last edit ![x.png](https://app/att-2)" });
+    });
+
+    it("sends on Enter typed before the card has heard of any text", async () => {
+      renderCard();
+      const user = userEvent.setup();
+      editor.live = "typed just now";
+      await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "{Enter}");
+      expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: undefined, text: "typed just now" });
+    });
+
     it("holds Send and Enter while an upload is in flight", async () => {
       renderCard();
       const user = userEvent.setup();
@@ -340,6 +360,15 @@ describe("DecisionRequestCard answering", () => {
       act(() => editorProps().onUpdate?.("x".repeat(8 << 10)));
       expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
       expect(screen.queryByText(/over 8 KB/)).toBeNull();
+    });
+
+    it("does not send an over-8 KB edit the card has not heard of yet", async () => {
+      renderCard();
+      const user = userEvent.setup();
+      act(() => editorProps().onUpdate?.("short"));
+      editor.live = "x".repeat((8 << 10) + 1);
+      await user.click(screen.getByRole("button", { name: "Send" }));
+      expect(answerDecisionRequest).not.toHaveBeenCalled();
     });
 
     it("blocks Send and says why once the text is over 8 KB, counting bytes not characters", async () => {

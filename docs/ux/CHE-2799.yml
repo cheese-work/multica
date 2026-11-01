@@ -1,0 +1,16 @@
+issue: CHE-2799
+design: none — approved lock or Cheese waiver pending (doop returned HTTP 401, no lock exists for this change)
+pages:
+  - id: dm-decision-request
+    url: /cheese-work/chat
+    keep: [decision-request-card, decision-request-source-issue, decision-request-source-comment, decision-request-reason]
+    change:
+      - decision-request-answer: "The answer field is a rich editor that takes pasted images, still capped at 8 KB; over the cap, Send is blocked and an alert says why."
+    remove: []
+  - id: issue-decision-comments
+    url: /cheese-work/issues/<issue-key>
+    keep: [decision-quote-card, decision-quote-words, decision-quote-open-dm, decision-quote-asked-dm]
+    change:
+      - decision-quote-jump-to-ask: "New link on the quote card that jumps to the ask comment it answers."
+      - decision-ask-jump-to-answer: "New link on the ask comment, shown once it has a quote, that jumps to the answer."
+    remove: []

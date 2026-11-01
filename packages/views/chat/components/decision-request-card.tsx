@@ -47,7 +47,7 @@ function DecisionAnswerForm({
   draft: AnswerDraft;
   answer: AnswerMutation;
   onDraftChange: (draft: AnswerDraft) => void;
-  onSend: () => void;
+  onSend: (text: string) => void;
 }) {
   const { t } = useT("chat");
   const online = useOnline();
@@ -62,8 +62,13 @@ function DecisionAnswerForm({
   const tooLong = answerBytes(text) > MAX_ANSWER_BYTES;
   const canSend = online && !answer.isPending && !uploadGate.uploading && !tooLong && (option !== "" || text.trim() !== "");
   const send = () => {
+    // onUpdate reaches `text` through a timer, so an Enter or click right after the last edit
+    // (or a finished upload) would send stale text. Read the editor and send exactly that.
+    const live = editorRef.current?.getMarkdown() ?? text;
     // Enter can arrive while an upload placeholder is still in the document.
-    if (canSend && !uploadGate.isBlocked()) onSend();
+    const sendable = online && !answer.isPending && !uploadGate.uploading && !uploadGate.isBlocked()
+      && answerBytes(live) <= MAX_ANSWER_BYTES && (option !== "" || live.trim() !== "");
+    if (sendable) onSend(live);
   };
 
   return (
@@ -208,14 +213,17 @@ export function DecisionRequestCard({ card }: { card: RequestCard }) {
   const [draft, setDraft] = useState<AnswerDraft>(EMPTY_DRAFT);
   const [refused, setRefused] = useState(false);
   const answer = useAnswerDecisionRequest(card.issue_id);
-  const sendAnswer = () =>
+  const sendAnswer = (text: string) => {
+    // Keep what is sent as the draft, so a refused send shows back the same text.
+    setDraft((current) => ({ ...current, text }));
     answer.mutate(
-      { requestId: card.id, option: draft.option || undefined, text: draft.text.trim() || undefined },
+      { requestId: card.id, option: draft.option || undefined, text: text.trim() || undefined },
       {
         onSuccess: () => setDraft(EMPTY_DRAFT),
         onError: (error) => isConflict(error) && setRefused(true),
       },
     );
+  };
   const discardDraft = () => {
     setDraft(EMPTY_DRAFT);
     setRefused(false);
