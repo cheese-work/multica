@@ -2234,16 +2234,18 @@ WITH wakeup_source AS MATERIALIZED (SELECT set_config('multica.source_task_id', 
         $11::date AS next_start_date,
         $12::date AS next_due_date,
         $13::uuid AS next_parent_issue_id,
-        $14::uuid AS next_project_id,
-        $15::integer AS next_stage,
+        -- preserve_project keeps the locked row's project, for a content write
+        -- built from a snapshot that a concurrent move may have outdated.
+        CASE WHEN COALESCE($14::boolean, false) THEN i.project_id ELSE $15::uuid END AS next_project_id,
+        $16::integer AS next_stage,
         -- A supplied pointer marks the issue (the handler also sets cancelled).
         -- Otherwise a mark only survives a write that leaves an already
         -- cancelled issue cancelled. Every other write drops it: reopening is
         -- how a mark is removed, and re-entering cancelled does not revive a
         -- pointer that a server predating this rule left on a reopened issue.
         CASE
-            WHEN $16::uuid IS NOT NULL
-                THEN $16::uuid
+            WHEN $17::uuid IS NOT NULL
+                THEN $17::uuid
             WHEN i.status = 'cancelled' AND COALESCE($6::text, i.status) = 'cancelled'
                 THEN i.duplicate_of_issue_id
             ELSE NULL
@@ -2321,6 +2323,7 @@ type UpdateIssueParams struct {
 	StartDate          pgtype.Date   `json:"start_date"`
 	DueDate            pgtype.Date   `json:"due_date"`
 	ParentIssueID      pgtype.UUID   `json:"parent_issue_id"`
+	PreserveProject    pgtype.Bool   `json:"preserve_project"`
 	ProjectID          pgtype.UUID   `json:"project_id"`
 	Stage              pgtype.Int4   `json:"stage"`
 	DuplicateOfIssueID pgtype.UUID   `json:"duplicate_of_issue_id"`
@@ -2341,6 +2344,7 @@ func (q *Queries) UpdateIssue(ctx context.Context, arg UpdateIssueParams) (Issue
 		arg.StartDate,
 		arg.DueDate,
 		arg.ParentIssueID,
+		arg.PreserveProject,
 		arg.ProjectID,
 		arg.Stage,
 		arg.DuplicateOfIssueID,
