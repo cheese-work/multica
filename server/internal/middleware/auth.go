@@ -369,11 +369,29 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				r.Header.Set("X-User-Email", email)
 			}
 
+			// Revocation: a bumped user.session_generation kills every JWT
+			// minted before it. Nil queries exists only in JWT-only unit tests;
+			// production always wires a database.
+			if queries != nil {
+				fresh, _ := r.Context().Value(freshGenerationCtxKey{}).(bool)
+				current, err := storedSessionGeneration(r.Context(), queries, sub, !fresh)
+				switch {
+				case errors.Is(err, errSessionUserUnknown) || (err == nil && current != auth.SessionGeneration(claims)):
+					slog.Warn("auth: revoked session rejected", "path", r.URL.Path, "user_id", sub)
+					writeAuthenticationError(w, r, `{"error":"session revoked"}`)
+					return
+				case err != nil:
+					slog.Error("auth: session generation read failed", "path", r.URL.Path, "error", err)
+					writeError(w, http.StatusServiceUnavailable, "session check unavailable")
+					return
+				}
+			}
+
 			// Sliding session: a browser that keeps using the app keeps its
 			// cookie, instead of being logged out on the anniversary of its
 			// login. No-op until the session drops below half its TTL
 			// (MUL-7436).
-			r = renewCookieSession(w, r, claims, fromCookie, cfSigner)
+			r = renewCookieSession(w, r, claims, fromCookie, cfSigner, queries)
 
 			next.ServeHTTP(w, r)
 		})

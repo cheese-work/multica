@@ -8,6 +8,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/multica-ai/multica/server/internal/auth"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 type sessionRenewedCtxKey struct{}
@@ -43,7 +44,7 @@ func SessionRenewed(r *http.Request) bool {
 // Every failure below is non-fatal and silent to the caller: the session that
 // authenticated this request is still valid for at least another TTL/2, so a
 // failed renewal costs one more chance at it, not the session.
-func renewCookieSession(w http.ResponseWriter, r *http.Request, claims jwt.MapClaims, fromCookie bool, cfSigner *auth.CloudFrontSigner) *http.Request {
+func renewCookieSession(w http.ResponseWriter, r *http.Request, claims jwt.MapClaims, fromCookie bool, cfSigner *auth.CloudFrontSigner, queries *db.Queries) *http.Request {
 	if !fromCookie || !auth.IsSafeMethod(r.Method) {
 		return r
 	}
@@ -51,7 +52,19 @@ func renewCookieSession(w http.ResponseWriter, r *http.Request, claims jwt.MapCl
 		return r
 	}
 
-	token, expiresAt, err := auth.RenewSessionToken(claims)
+	// Renewal reads the generation uncached, so a session revoked inside the
+	// cache window is never extended. A stale or unreadable generation skips
+	// renewal; the next request meets the normal revocation check.
+	currentGen := auth.SessionGeneration(claims)
+	if queries != nil {
+		var err error
+		sub, _ := claims["sub"].(string)
+		if currentGen, err = storedSessionGeneration(r.Context(), queries, sub, false); err != nil {
+			slog.Debug("auth: session renewal skipped", "path", r.URL.Path, "error", err)
+			return r
+		}
+	}
+	token, expiresAt, err := auth.RenewSessionToken(claims, currentGen)
 	if err != nil {
 		slog.Debug("auth: session renewal skipped", "path", r.URL.Path, "error", err)
 		return r
