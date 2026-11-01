@@ -130,6 +130,10 @@ export function BatchActionToolbar({
     const first = selectedIssues[0]?.workflow_id ?? null;
     return first && selectedIssues.every((i) => i.workflow_id === first) ? first : null;
   }, [selectedIssues]);
+  // Differing effective workflows (overrides, or an override beside its
+  // project's) list the whole catalog narrowed to the keys they share; the
+  // project's own list would hide a shared status it lacks.
+  const sameWorkflow = !!sharedWorkflowId || !selectedIssues.some((i) => i.workflow_id);
   const allowedStatuses = useMemo(
     () =>
       sharedWorkflowId || (sharedProjectId && !selectedIssues.some((i) => i.workflow_id))
@@ -393,7 +397,7 @@ export function BatchActionToolbar({
           status={common.status}
           // No shared project spans projects (or none): not the Default-only
           // list of a single issue outside a project. (MUL-8121)
-          projectId={sharedProjectId ?? undefined}
+          projectId={sameWorkflow ? (sharedProjectId ?? undefined) : undefined}
           workflowId={sharedWorkflowId}
           allowedStatuses={allowedStatuses}
           onUpdate={handleBatchStatus}
