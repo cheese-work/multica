@@ -293,7 +293,8 @@
     "unarchive": "채팅 보관 해제",
     "statistics": "통계",
     "pin": "채팅 고정",
-    "unpin": "채팅 고정 해제"
+    "unpin": "채팅 고정 해제",
+    "preset": { "label": "프리셋", "inherit": "상속", "base": "기본" }
   },
   "scheduled": {
     "chip": "예약됨 {{count}}",
