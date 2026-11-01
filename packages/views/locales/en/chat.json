@@ -1,4 +1,11 @@
 {
+  "decision_banner": {
+    "title": "Decision needed",
+    "waiting": "The agent has not sent the decision card yet.",
+    "queued_since": "Queued since {{time}}",
+    "running_since": "Running since {{time}}",
+    "no_run": "No active run."
+  },
   "needs_you": {
     "title": "Needs you",
     "loading": "Loading open asks…",
@@ -298,7 +305,8 @@
     "delete": "Delete chat",
     "statistics": "Statistics",
     "pin": "Pin chat",
-    "unpin": "Unpin chat"
+    "unpin": "Unpin chat",
+    "preset": { "label": "Preset", "inherit": "Inherit", "base": "Base" }
   },
   "scheduled": {
     "chip": "Scheduled {{count}}",
@@ -390,6 +398,7 @@
     "answer_send": "Send",
     "answer_error": "Could not send. Try again.",
     "answer_helper": "Send posts your answer to {{issue}}. Questions for the DM agent go in the message box below.",
+    "answer_helper_issue": "Send posts your answer to {{issue}}.",
     "answer_hint": "Enter sends · Shift+Enter for a new line",
     "answer_offline": "You are offline. Your answer is kept. Send turns on when you reconnect.",
     "answer_conflict": "This card can no longer take your answer, for example because it was answered first. Nothing from your draft was posted. Your draft:",
@@ -409,11 +418,11 @@
       "approved": "You approved",
       "download": "Download",
       "download_label": "Download {{name}}",
+      "open_label": "Open {{name}}",
       "hash_verified": "Hash verified",
       "sha": "SHA",
       "viewer_label": "Read the file",
-      "viewer_hint": "Select a tab to read the file here.",
-      "tab_changes": "Changes since {{previous}}",
+      "tab_changes": "Changes",
       "tab_preview": "Preview",
       "signed_by": "{{label}} signed by {{reviewer}}",
       "not_signed": "{{label}} is not signed yet",

@@ -65,6 +65,7 @@ import { ImageView } from "./image-view";
 import { BlockMathExtension, InlineMathExtension } from "./math";
 import { HighlightExtension } from "./highlight";
 import { codeLowlight } from "../syntax-highlight";
+import { createPresetArgExtension, presetNames } from "./preset-arg-suggestion";
 
 const LinkExtension = Link.extend({ inclusive: false }).configure({
   openOnClick: false,
@@ -176,6 +177,8 @@ export interface EditorExtensionsOptions {
   enableSlashCommands?: boolean;
   canRename?: () => boolean;
   canFork?: () => boolean;
+  /** Attach the `/preset <name>` completion menu for this agent's presets (chat `/` picker only). */
+  getPresetAgentId?: () => string | undefined;
   canUseCommand?: (command: DmClientCommand) => boolean;
   canCompact?: () => boolean;
   /**
@@ -312,9 +315,16 @@ export function createEditorExtensions(
               options.canFork,
               options.canUseCommand,
               options.canCompact,
+              () => !!options.getPresetAgentId?.(),
             )
             : { char: "/", allow: () => false },
     }),
+    ...(options.enableSlashCommands &&
+    options.slashCommandMode !== "command" &&
+    options.queryClient &&
+    options.getPresetAgentId
+      ? [createPresetArgExtension({ getNames: presetNames(options.queryClient, options.getPresetAgentId) })]
+      : []),
     Typography,
     Placeholder.configure({ placeholder: placeholderText }),
     createMarkdownPasteExtension(),

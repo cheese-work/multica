@@ -112,6 +112,9 @@ func (handler *Handler) raiseDecisionClassTx(request *http.Request, workspaceID,
 	if current.HumanUserID != userID {
 		return empty, decisionIntentRefusal{http.StatusForbidden, "only the request's human can raise its class"}
 	}
+	if isServerDecision(current) {
+		return empty, decisionIntentRefusal{http.StatusForbidden, "the platform opened this request; its class cannot be changed"}
+	}
 	if current.Status == "cancelled" || current.EscalationClass != "reversible" || class == "reversible" {
 		return empty, decisionIntentRefusal{http.StatusConflict, "decision class can only be raised from reversible to an escalation class on a non-cancelled request"}
 	}

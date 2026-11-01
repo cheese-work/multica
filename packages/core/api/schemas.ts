@@ -565,6 +565,12 @@ const IssueWorkflowEdgeSchema = z.object({
   on_timeout: z.string().optional(),
 });
 
+const IssueWorkflowEntryGateSchema = z.object({
+  guard: z.string(),
+  mode: z.string(),
+  member_override: z.boolean().default(true),
+});
+
 const IssueWorkflowSubWorkflowSchema = z.object({
   workflow_id: z.string(),
   stage: z.number().optional(),
@@ -578,6 +584,7 @@ const IssueWorkflowStepSchema = z.object({
   back_status_key: z.string().optional(),
   advance_on_ci_green: z.boolean().optional(),
   edges: z.array(IssueWorkflowEdgeSchema).optional(),
+  entry: z.array(IssueWorkflowEntryGateSchema).optional(),
   sub_workflow: IssueWorkflowSubWorkflowSchema.optional(),
 }).loose();
 
@@ -1094,6 +1101,11 @@ export const OpenDecisionRequestListSchema = z.array(z.object({
   created_at: z.string(),
   chat_session_id: z.string(),
   message_id: z.string().nullable().catch(null),
+  source_comment_id: z.string().nullable().catch(null),
+  options: z.array(z.object({
+    label: z.string(),
+    what_happens: z.string().optional().catch(undefined),
+  }).loose()).catch([]),
 }).loose());
 
 export const ChatMessageSchema = z.object({
@@ -2242,6 +2254,58 @@ const TaskUsageSchema = z.object({
   cost_usd_ticks: z.number().optional(),
 }).loose();
 
+const NullableStringSchema = z.string().nullable().catch(null);
+
+const TaskPresetSettingsShape = {
+  model: NullableStringSchema,
+  thinking_level: NullableStringSchema,
+  service_tier: NullableStringSchema,
+  context_args: z.array(z.string()).catch([]),
+};
+
+export const TaskPresetRunSchema = z.object({
+  name: z.string(),
+  source: z.string().catch(""),
+  skips: z
+    .array(
+      z.object({
+        level: z.string().catch(""),
+        name: z.string().catch(""),
+        reason: z.string().catch(""),
+      }),
+    )
+    .catch([]),
+  claimed: z.object(TaskPresetSettingsShape).catch({
+    model: null,
+    thinking_level: null,
+    service_tier: null,
+    context_args: [],
+  }),
+  applied: z
+    .object({ ...TaskPresetSettingsShape, reported_at: z.string().catch("") })
+    .nullable()
+    .catch(null),
+});
+
+// Stale reasons are an open set, so `stale` stays a plain string.
+export const AgentPresetListSchema = z.array(
+  z.object({
+    name: z.string(),
+    model: NullableStringSchema,
+    thinking_level: NullableStringSchema,
+    service_tier: NullableStringSchema,
+    context_args: z.array(z.string()).nullable().catch(null),
+    is_default: z.boolean().catch(false),
+    stale: z.string().catch(""),
+    created_at: z.string().catch(""),
+    updated_at: z.string().catch(""),
+  }).loose(),
+);
+
+export const PresetCompletionsSchema = z.object({
+  names: z.array(z.string()).catch([]),
+}).loose();
+
 export const AgentTaskSchema = z.object({
   wakeup_id: z.string().optional().catch(undefined),
   cancelled_by_comment_change: z.boolean().optional().catch(undefined),
@@ -2286,6 +2350,7 @@ export const AgentTaskSchema = z.object({
   // `.catch(undefined)` collapses a bad array to "no usage recorded", which
   // the UI already renders as an em dash.
   usage: z.array(TaskUsageSchema).optional().catch(undefined),
+  preset_run: TaskPresetRunSchema.optional().catch(undefined),
 }).loose();
 
 // Outcome counts are required: every backend that serves this endpoint
@@ -2394,6 +2459,7 @@ export const ChatSessionSchema: z.ZodType<ChatSession> = z.object({
   unread_count: z.number().optional(),
   last_message: ChatLastMessageSchema.nullable().optional().catch(undefined),
   pinned: z.boolean().optional(),
+  preset_name: z.string().nullable().optional().catch(undefined),
   channel_source: ChatChannelSourceSchema.optional().catch(undefined),
   compacting: z.boolean().optional().catch(undefined),
   context_tokens: z.number().nullable().optional().catch(undefined),
@@ -4064,42 +4130,6 @@ export const WorkspaceExportPrivacySchema = z
     }),
   );
 
-// CHE-1839: governance config, reduced to what the Jev tab reads. Parsed
-// strictly (no fallback): the version is the concurrency token of the next
-// write and the mode is state an admin acts on, so a malformed response must
-// surface as a load error rather than as a plausible default. Unknown fields
-// are dropped, so nothing else the server adds is cached by this tab.
-const GovernanceSettingsRecordSchema = z.record(z.string(), z.unknown());
-export const GovernanceAuditEntrySchema = z.object({
-  version: z.number().int().positive(),
-  actor_id: z.string().nullish().transform((value) => value ?? ""),
-  previous: GovernanceSettingsRecordSchema.nullish().transform((value) => value ?? null),
-  effective: GovernanceSettingsRecordSchema,
-  changed_at: z.string(),
-});
-
-export const WorkspaceGovernanceConfigSchema = z.object({
-  version: z.number().int().nonnegative(),
-  settings: z.object({
-    jev_squad_routing_mode: z.string().nullish(),
-    jev_squad_routing_enabled: z.boolean().nullish(),
-    jev_min_confidence: z.number().nullish(),
-    jev_api_url: z.string().nullish(),
-  }),
-  // Strict like the rest: a rollback offered from a history that did not parse
-  // would be a guess about what it restores.
-  audit_history: GovernanceAuditEntrySchema.array().default([]),
-});
-
-// CHE-1853: whether a Jev provider key is stored. Strict: "Not set" must never
-// be what a malformed response turns into.
-// `configurable` is absent from older servers; they are assumed able to store a
-// key, and the 403 on save remains the fallback signal.
-export const JevCredentialPresenceSchema = z.object({
-  present: z.boolean(),
-  configurable: z.boolean().default(true),
-});
-
 export const WakeupConditionSchema = z.union([
   z.object({ type: z.literal("issue_field"), field: z.literal("status"), value: z.string() }),
   z.object({ type: z.literal("issue_field"), field: z.literal("assignee"), assignee_type: z.enum(["member", "agent", "squad"]), assignee_id: z.string() }),
@@ -4150,6 +4180,8 @@ export const IssueWakeupSchema = z.object({
   condition: WakeupConditionSchema.nullish().catch(null),
   max_fires: z.number().int().nullish(), fire_count: z.number().int().nonnegative().optional().catch(undefined),
   paused_reason: z.enum(["max_fires", "loop", "rate"]).nullish().catch(null),
+  // Set for an instance a scoped default created; absent from older servers.
+  default_rule_key: z.string().nullish().catch(null),
 });
 
 export const SystemWakeupSchema = z.object({
@@ -4210,6 +4242,10 @@ export const WakeupEffectiveRuleSchema = z.object({
     instance_id: z.string(), enabled: z.boolean(),
     paused_reason: z.string().nullish().transform((v) => v ?? null),
   }).nullish().transform((v) => v ?? null),
+  // Only a condition rule's preview carries it; an older server never does.
+  already_satisfied: z.object({
+    satisfied: z.number().int().nonnegative(), examined: z.number().int().nonnegative(), truncated: z.boolean().default(false),
+  }).nullish().catch(null).transform((v) => v ?? null),
   redacted: z.boolean().default(false),
   capabilities: WakeupCapabilitiesSchema,
 });

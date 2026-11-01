@@ -9,6 +9,10 @@ import enChat from "../../locales/en/chat.json";
 import enEditor from "../../locales/en/editor.json";
 import { useCommentDraftStore } from "@multica/core/issues/stores";
 import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
+import type { ChatMessage } from "@multica/core/types";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { WorkspaceSlugProvider } from "@multica/core/paths";
+import { useChatAnnotations } from "./use-chat-annotations";
 
 // Uploads flow through the module-level coordinator, which calls
 // `api.uploadFile(file, ctx, signal)` (MUL-5181 L2). Tests drive uploads by
@@ -2058,5 +2062,43 @@ describe("ChatInput send disabled reason", () => {
 
     expect(sendButton()).toBeDisabled();
     expect(sendButton()).not.toHaveAttribute("aria-disabled");
+  });
+});
+
+// CHE-2823: a comment saved on a decision card must not outlive the card and
+// turn the next ordinary message into a reply to it (or block the send).
+describe("ChatInput after a decision card closes", () => {
+  const draftKey = "chat:session-1" as const;
+  const card = (state: "open" | "answered" | "withdrawn"): ChatMessage => ({
+    id: "ping-1", chat_session_id: "session-1", role: "assistant", content: "C. CHE-2161", task_id: null,
+    created_at: "2026-11-01T00:00:00Z", message_kind: "decision_request",
+    decision_request: { id: "request-1", issue_id: "issue-1", issue_identifier: "CHE-2161", ask: "C. CHE-2161", state, created_at: "2026-11-01T00:00:00Z" },
+  });
+  function Composer({ messages, onSend }: { messages: ChatMessage[]; onSend: React.ComponentProps<typeof ChatInput>["onSend"] }) {
+    const annotation = useChatAnnotations({ sessionId: "session-1", messages, agentName: "Multica", enabled: true });
+    return <ChatInput onSend={onSend} uploadEnabled agentName="Multica" annotationScope={annotation.input} />;
+  }
+  const ui = (messages: ChatMessage[], onSend: React.ComponentProps<typeof ChatInput>["onSend"]) => (
+    <QueryClientProvider client={new QueryClient()}>
+      <WorkspaceSlugProvider slug="acme">
+        <I18nProvider locale="en" resources={TEST_RESOURCES}><Composer messages={messages} onSend={onSend} /></I18nProvider>
+      </WorkspaceSlugProvider>
+    </QueryClientProvider>
+  );
+
+  it.each(["answered", "withdrawn"] as const)("sends an ordinary message with no request id once the card is %s", async (state) => {
+    useCommentDraftStore.setState({ drafts: {} });
+    useCommentDraftStore.getState().addAnnotation(draftKey, {
+      id: "a1", sourceCommentId: "decision-request:request-1", sourceActorName: "Multica", quote: "C. CHE-2161", note: "1", start: 0, prefix: "", suffix: "",
+    });
+    const onSend = vi.fn();
+    const view = render(ui([card("open")], onSend));
+    view.rerender(ui([card(state)], onSend));
+    await waitFor(() => expect(useCommentDraftStore.getState().getAnnotations(draftKey)).toHaveLength(0));
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "Next question" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend.mock.calls[0]![0]).toBe("Next question");
+    expect(onSend.mock.calls[0]![4]).toBeUndefined();
   });
 });

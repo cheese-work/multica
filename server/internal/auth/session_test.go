@@ -205,7 +205,7 @@ func TestRenewSessionToken_CarriesIdentityForward(t *testing.T) {
 	resetAuthTokenTTLForTest(t)
 
 	old := sessionClaims(t, time.Now().Add(24*time.Hour), "session-abc")
-	token, expiresAt, err := RenewSessionToken(old)
+	token, expiresAt, err := RenewSessionToken(old, 0)
 	if err != nil {
 		t.Fatalf("RenewSessionToken: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestRenewSessionToken_CarriesIdentityForward(t *testing.T) {
 func TestRenewSessionToken_MintsSessionIDForLegacyToken(t *testing.T) {
 	legacy := sessionClaims(t, time.Now().Add(24*time.Hour), "")
 
-	token, _, err := RenewSessionToken(legacy)
+	token, _, err := RenewSessionToken(legacy, 0)
 	if err != nil {
 		t.Fatalf("RenewSessionToken: %v", err)
 	}
@@ -258,14 +258,14 @@ func TestRenewSessionToken_RejectsDisabledUser(t *testing.T) {
 	claims := sessionClaims(t, time.Now().Add(time.Hour), "sid-1")
 	claims["sub"] = disabledID
 
-	_, _, err := RenewSessionToken(claims)
+	_, _, err := RenewSessionToken(claims, 0)
 	if !errors.Is(err, ErrTemporarilyDisabledUser) {
 		t.Fatalf("err = %v, want ErrTemporarilyDisabledUser", err)
 	}
 }
 
 func TestRenewSessionToken_RejectsClaimsWithoutSubject(t *testing.T) {
-	_, _, err := RenewSessionToken(jwt.MapClaims{"email": "nobody@multica.ai"})
+	_, _, err := RenewSessionToken(jwt.MapClaims{"email": "nobody@multica.ai"}, 0)
 	if !errors.Is(err, ErrNotSessionToken) {
 		t.Fatalf("err = %v, want ErrNotSessionToken", err)
 	}
@@ -345,7 +345,7 @@ func TestSlidingSession_ContinuousUseOutlivesTTL(t *testing.T) {
 		if !ShouldRenewSession(now, expiresAt) {
 			continue
 		}
-		token, _, err := RenewSessionToken(claims)
+		token, _, err := RenewSessionToken(claims, 0)
 		if err != nil {
 			t.Fatalf("day %d: RenewSessionToken: %v", day, err)
 		}
