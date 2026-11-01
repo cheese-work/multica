@@ -83,6 +83,8 @@ interface ChatInputProps {
   onArchive?: () => void | boolean | Promise<void | boolean>;
   onPin?: () => void | boolean | Promise<void | boolean>;
   onUnarchive?: () => void | boolean | Promise<void | boolean>;
+  /** Offer `/preset <name>` completions; the server answers the command in a saved, active DM. */
+  enablePresetCommand?: boolean;
   /** The open DM is archived: a send asks to unarchive first. Turns `/compact` off. */
   sessionArchived?: boolean;
   /** Identifies the composer for UI checks; the floating window overrides it. */
@@ -214,6 +216,7 @@ export function ChatInput({
   onArchive,
   onPin,
   onUnarchive,
+  enablePresetCommand,
   sessionArchived,
   testId = "chat-composer",
   restoreDraftRequest,
@@ -931,6 +934,7 @@ export function ChatInput({
             enableArchiveCommand={!!onArchive}
             enablePinCommand={!!onPin}
             enableUnarchiveCommand={!!onUnarchive}
+            enablePresetCommand={!!enablePresetCommand}
             enableCompactCommand={!sessionArchived}
             // The bubble menu carries the only affordance that can strip
             // formatting — "Normal text" (setParagraph) plus the mark/list

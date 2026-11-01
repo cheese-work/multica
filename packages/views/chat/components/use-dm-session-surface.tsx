@@ -43,6 +43,7 @@ export function useDmSessionSurface({
     | "onArchive"
     | "onPin"
     | "onUnarchive"
+    | "enablePresetCommand"
     | "sessionArchived"
   >;
   dialogs: ReactNode;
@@ -78,6 +79,8 @@ export function useDmSessionSurface({
       onArchive: active ? () => archive(active) : undefined,
       onPin: active ? () => actions.togglePin(active) : undefined,
       onUnarchive: session && archived ? () => actions.unarchive(session) : undefined,
+      // The server answers /preset only inside a saved, active DM.
+      enablePresetCommand: !!active,
       sessionArchived: archived,
     },
     dialogs: (
