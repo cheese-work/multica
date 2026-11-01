@@ -359,6 +359,36 @@ its content plus its supporting files; built-in skills ship with the server and
 are loaded the same way. Both reach the provider as skill content — which is why
 capability belongs in a bound skill, not pasted into `instructions`.
 
+## Presets
+
+A preset is a named bundle of model, thinking level, service tier and context
+args on one agent. It never changes identity, instructions, skills, env or
+runtime. A NULL field inherits the agent; `context_args: []` clears them.
+
+Precedence at claim: DM `/preset` > issue label `preset:<name>` > workflow step
+`handler.preset` > agent default > base (the agent row). `base` and `reset` are
+reserved names.
+
+```bash
+multica agent preset list <agent> --output json
+multica agent preset create <agent> fast --thinking-level low --context-arg --autocompact --context-arg 200k
+multica agent preset update <agent> fast --model <model> --reset thinking_level
+multica agent preset use <agent> fast --default       # agent default; `base` clears it
+multica agent preset use <agent> fast --issue <id>    # swaps the issue's preset:* label
+multica agent preset use <agent> --issue <id> --clear   # or: use <agent> reset --issue <id>
+multica agent preset delete <agent> fast
+```
+
+`update` is tri-state: an omitted flag is unchanged, `--reset <field>` sends
+null (inherit). In a DM, `/preset`, `/preset <name>`, `/preset base` and
+`/preset reset` list, set, pin base and hand back to the default; the command
+starts no run. `PUT /api/agents/{id}/presets/default`, `GET .../presets/usage`
+(per-preset tasks and tokens) and `GET .../presets/completions` (names the
+caller may use, plus `base` and `reset`) back the CLI and composer. Shell
+completion fills `<name>` for `use` (presets, `base`, `reset`; `reset` removes the
+issue's preset, or clears the default like `base`), and for `update` and `delete`
+(every stored preset, stale ones too).
+
 ## Side effects needing approval
 
 Read-only (safe): `agent get`, `agent skills list`, `agent env get`.
@@ -370,6 +400,8 @@ State-changing (require an explicit instruction — do not run speculatively):
   source is left untouched.
 - `multica agent skills add` / `set` — mutate bindings (`set` is destructive:
   it drops bindings not in the new list).
+- `multica agent preset create` / `update` / `delete` / `use` — change what
+  a future run of the agent (or issue) uses.
 - `multica agent env set` — overwrites the full `custom_env` map and writes an
   audit row.
 - `multica agent env patch` — sets/unsets the named keys only and writes an

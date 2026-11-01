@@ -178,6 +178,7 @@ func (h *Handler) issueJWT(user db.User, method string) (string, error) {
 		"email": user.Email,
 		"name":  user.Name,
 		"sid":   sid,
+		"gen":   user.SessionGeneration,
 		"exp":   time.Now().Add(auth.AuthTokenTTL()).Unix(),
 		"iat":   time.Now().Unix(),
 		"amr":   method,

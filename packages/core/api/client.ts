@@ -36,6 +36,7 @@ import type {
   IssueTableRowsRequest,
   IssueTableRowsResponse,
   Agent,
+  AgentPreset,
   MikaBootstrapResponse,
   CreateAgentRequest,
   AgentBuilderRuntimeSwitch,
@@ -69,10 +70,6 @@ import type {
   Workspace,
   WorkspaceRepo,
   WorkspaceExportPrivacy,
-  WorkspaceGovernanceConfig,
-  WorkspaceGovernanceRollback,
-  WorkspaceJevGovernancePatch,
-  JevCredentialPresence,
   WorkspaceMcpServer,
   MemberWithUser,
   User,
@@ -401,8 +398,6 @@ import {
   PurchaseWorkspaceSeatsResponseSchema,
   CreateWorkspaceSubscriptionPortalResponseSchema,
   WorkspaceExportPrivacySchema,
-  WorkspaceGovernanceConfigSchema,
-  JevCredentialPresenceSchema,
   DingTalkInstallationSchema,
   ListDingTalkInstallationsResponseSchema,
   ListDingTalkGroupsResponseSchema,
@@ -487,6 +482,8 @@ import {
   MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
   SkillSchema,
   EMPTY_SKILL,
+  AgentPresetListSchema,
+  PresetCompletionsSchema,
   SkillSummaryListSchema,
   EMPTY_SKILL_SUMMARY_LIST,
   SkillImportResultSchema,
@@ -3270,45 +3267,6 @@ export class ApiClient {
     return WorkspaceExportPrivacySchema.parse(raw);
   }
 
-  // CHE-1839: the Jev / Governance tab reads and writes the workspace governance
-  // config. Any member may read; only owners and admins may write (the server
-  // enforces both). Responses parse strictly, see WorkspaceGovernanceConfigSchema.
-  async getGovernanceConfig(id: string): Promise<WorkspaceGovernanceConfig> {
-    const raw = await this.fetch<unknown>(`/api/workspaces/${id}/governance/config`);
-    return WorkspaceGovernanceConfigSchema.parse(raw);
-  }
-
-  async patchGovernanceConfig(
-    id: string,
-    patch: WorkspaceJevGovernancePatch | WorkspaceGovernanceRollback,
-  ): Promise<WorkspaceGovernanceConfig> {
-    const raw = await this.fetch<unknown>(`/api/workspaces/${id}/governance/config`, {
-      method: "PATCH",
-      body: JSON.stringify(patch),
-    });
-    return WorkspaceGovernanceConfigSchema.parse(raw);
-  }
-
-  // CHE-1853: the Jev provider key. Presence is readable by any member; set,
-  // replace and delete are owner/admin only. There is no read endpoint for the
-  // key, and the key is sent once in a request body that is never logged here.
-  async getJevCredential(id: string): Promise<JevCredentialPresence> {
-    const raw = await this.fetch<unknown>(`/api/workspaces/${id}/jev/credential`);
-    return JevCredentialPresenceSchema.parse(raw);
-  }
-
-  async putJevCredential(id: string, apiKey: string): Promise<JevCredentialPresence> {
-    const raw = await this.fetch<unknown>(`/api/workspaces/${id}/jev/credential`, {
-      method: "PUT",
-      body: JSON.stringify({ api_key: apiKey }),
-    });
-    return JevCredentialPresenceSchema.parse(raw);
-  }
-
-  async deleteJevCredential(id: string): Promise<void> {
-    await this.fetch(`/api/workspaces/${id}/jev/credential`, { method: "DELETE" });
-  }
-
   async listPluginInstallations(workspaceId: string): Promise<PluginInstallationListResponse> {
     let raw: unknown;
     try {
@@ -3834,6 +3792,21 @@ export class ApiClient {
     return parseWithFallback(raw, SkillSchema, EMPTY_SKILL, {
       endpoint: "POST /api/skills/:id/refresh",
     });
+  }
+
+  async listAgentPresets(agentId: string): Promise<AgentPreset[]> {
+    const raw = await this.fetch<unknown>(`/api/agents/${agentId}/presets`);
+    return parseWithFallback<AgentPreset[]>(raw, AgentPresetListSchema, [], {
+      endpoint: "GET /api/agents/:id/presets",
+    });
+  }
+
+  /** `/preset <TAB>` source: `base`, `reset`, then the presets that can run now. */
+  async getAgentPresetCompletions(agentId: string): Promise<string[]> {
+    const raw = await this.fetch<unknown>(`/api/agents/${agentId}/presets/completions`);
+    return parseWithFallback(raw, PresetCompletionsSchema, { names: [] }, {
+      endpoint: "GET /api/agents/:id/presets/completions",
+    }).names;
   }
 
   async listAgentSkills(agentId: string): Promise<SkillSummary[]> {

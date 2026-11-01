@@ -84,7 +84,10 @@ func registerActivityListeners(bus *events.Bus, queries *db.Queries) {
 			assigneeChanged = false
 		}
 
-		if statusChanged {
+		// A migrated producer wrote the status row in its own transaction and
+		// names it here; one row per change.
+		recorded, _ := payload["activity_id"].(string)
+		if statusChanged && recorded == "" {
 			prevStatus, _ := payload["prev_status"].(string)
 			detailsMap := map[string]string{
 				"from": prevStatus,

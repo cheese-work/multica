@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -64,6 +65,9 @@ func TestClaimBriefShowsRunBudgetForDefaultWithoutHandoffs(t *testing.T) {
 	}
 	seedTestCatalog(t)
 	resetDefaultWorkflow(t)
+	// Listing stores Default only with the flag on; without it the list is
+	// empty unless an earlier test in the same process left a Default behind.
+	withFeatureFlag(t, testHandler, featureflags.ProjectWorkflowsV1, true)
 	var list struct {
 		Workflows []IssueWorkflowResponse `json:"workflows"`
 	}
