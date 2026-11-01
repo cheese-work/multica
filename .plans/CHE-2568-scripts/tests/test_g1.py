@@ -5,7 +5,7 @@ from g1 import evaluate, tally
 AGENT, HUMAN = 'agent-a', 'human-1'
 PR = 'https://github.com/o/r/pull/1'
 RUN = {'id': 'run-1', 'agent_id': AGENT, 'started_at': '2026-10-26T10:00:00Z', 'completed_at': '2026-10-26T10:05:00Z',
-       'pr_url': PR, 'usd': 1.0, 'run_class': 'silent'}
+       'merged_pr_url': PR, 'usd': 1.0, 'run_class': 'silent', 'result': {}}
 
 
 def pr(url, created='2026-10-20T00:00:00Z', closed=None, merged=None):
@@ -84,6 +84,24 @@ class Verdict(unittest.TestCase):
     def test_thread_resolve_only_is_server_duty(self):
         r = ev(comments=[cm('t1', resolved='2026-10-26T10:06:00Z', by=AGENT)])
         self.assertEqual(r['verdict'], 'server_duty')
+
+    def test_run_pr_output_is_false_positive(self):
+        # result.pr_url is the PR the run produced, not the merged PR that triggered it.
+        run = dict(RUN, result={'pr_url': 'https://github.com/o/r/pull/9'})
+        r = ev(run=run)
+        self.assertEqual(r['verdict'], 'false_positive')
+
+    def test_run_pr_output_wins_over_thread_resolve(self):
+        run = dict(RUN, result={'pr_url': 'https://github.com/o/r/pull/9'})
+        r = ev(comments=[cm('t1', resolved='2026-10-26T10:06:00Z', by=AGENT)], run=run)
+        self.assertEqual(r['verdict'], 'false_positive')
+
+    def test_run_without_result_is_not_pr_output(self):
+        run = {k: v for k, v in RUN.items() if k != 'result'}
+        self.assertEqual(ev(run=run)['verdict'], 'saved')
+
+    def test_trigger_pr_url_is_not_run_output(self):
+        self.assertEqual(ev()['verdict'], 'saved')
 
     def test_missing_timeline_is_unknown(self):
         self.assertEqual(evaluate(RUN, [], [], None, True)['verdict'], 'unknown')

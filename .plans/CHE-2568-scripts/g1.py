@@ -33,7 +33,7 @@ def _noop_text(text):
 
 def _open_prs(run, prs, start):
     """Other linked PRs open at run start; None when a PR lacks a creation time."""
-    others = [p for p in prs if p['html_url'] != run['pr_url']]
+    others = [p for p in prs if p['html_url'] != run['merged_pr_url']]
     if any(not p.get('pr_created_at') for p in others):
         return None
     return [p for p in others if _ts(p['pr_created_at']) <= start
@@ -66,6 +66,8 @@ def _verdict(run, comments, timeline):
         return 'false_positive'
     if any(e.get('type') == 'comment' and e.get('source_task_id') == run['id'] and not _noop_text(e.get('content'))
            for e in timeline):
+        return 'false_positive'
+    if (run.get('result') or {}).get('pr_url'):
         return 'false_positive'
     start, end = _ts(lo), _ts(hi) + RESOLVE_GRACE
     if any(c.get('resolved_by_id') == run['agent_id'] and c.get('resolved_at') and start <= _ts(c['resolved_at']) <= end
