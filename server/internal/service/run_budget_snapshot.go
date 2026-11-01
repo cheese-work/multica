@@ -75,12 +75,12 @@ func NewRunBudgetSnapshot(used int64, limit int, left int64, source string, wind
 	if left < 1 {
 		snap.Blocking = append(snap.Blocking, "runs")
 	}
-	// Runs past the platform maximum still read as used; the clamp only keeps
-	// the raise math on int.
-	usedInt := int(min(used, int64(issueworkflow.MaxRunsPerIssueLimit)))
-	if room := MaxAllowedRaise(limit, usedInt); room > 0 {
-		add := SuggestedRaise(limit, usedInt)
-		if raise, err := PreviewRunBudgetRaise(limit, usedInt, add); err == nil {
+	// The raise starts from the admitted balance, not the task count: a grant, a
+	// refund or carried debt moves one and not the other.
+	base := raiseUsed(limit, left)
+	if room := MaxAllowedRaise(limit, base); room > 0 {
+		add := SuggestedRaise(limit, base)
+		if raise, err := PreviewRunBudgetRaise(limit, base, add); err == nil {
 			snap.CanRaise = true
 			snap.RaisePreview = &RunBudgetPreview{
 				AddRuns: add, BalanceAfter: raise.BalanceAfter, LimitAfter: raise.CreditedAfter, MaxAllowedAdd: room,

@@ -6,12 +6,12 @@ import (
 )
 
 func TestRunBudgetBlockedMessageOffersARaiseOnlyWhenOneIsValid(t *testing.T) {
-	withRaise := runBudgetBlockedMessage("a run for agent A", 45, 40, "multica issue budget raise CHE-1 --runs 55")
+	withRaise := runBudgetBlockedMessage("a run for agent A", 45, 40, "multica issue budget raise CHE-1 --runs 55", 10)
 	if !strings.Contains(withRaise, "`multica issue budget raise CHE-1 --runs 55`") {
 		t.Errorf("want the raise command in %q", withRaise)
 	}
 	for _, c := range []struct{ runs, max int }{{1000, 1000}, {1010, 1000}} {
-		msg := runBudgetBlockedMessage("a run for agent A", c.runs, c.max, "")
+		msg := runBudgetBlockedMessage("a run for agent A", c.runs, c.max, "", 0)
 		if strings.Contains(msg, "multica issue budget raise") || strings.Contains(msg, "--runs") {
 			t.Errorf("%d of %d: message offers a raise that cannot work: %q", c.runs, c.max, msg)
 		}
