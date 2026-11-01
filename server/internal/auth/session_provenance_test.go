@@ -20,7 +20,7 @@ func TestRenewSessionTokenPreservesAuthProvenance(test *testing.T) {
 			if method != nil {
 				claims["amr"] = method
 			}
-			renewedToken, _, err := RenewSessionToken(claims)
+			renewedToken, _, err := RenewSessionToken(claims, 0)
 			if err != nil {
 				test.Fatal(err)
 			}
