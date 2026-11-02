@@ -1819,6 +1819,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
 					r.Put("/", h.UpdateWorkspace)
 					r.Patch("/", h.UpdateWorkspace)
+					// Scheduling pause: the handler also refuses agent credentials.
+					r.Post("/pause", h.PauseWorkspaceScheduling)
+					r.Post("/resume", h.ResumeWorkspaceScheduling)
 					r.Post("/members", h.CreateInvitation)
 					r.Route("/members/{memberId}", func(r chi.Router) {
 						r.Patch("/", h.UpdateMember)
@@ -2439,6 +2442,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Put("/", h.UpdateAgent)
 					r.Post("/archive", h.ArchiveAgent)
 					r.Post("/restore", h.RestoreAgent)
+					// Scheduling pause: person owner/admin only (the handler
+					// refuses agent credentials; canManageAgent would not).
+					r.Post("/pause", h.PauseAgentScheduling)
+					r.Post("/resume", h.ResumeAgentScheduling)
 					r.Post("/cancel-tasks", h.CancelAgentTasks)
 					r.Get("/tasks", h.ListAgentTasks)
 					r.Get("/dingtalk/groups", h.ListDingTalkGroupsForAgent)
