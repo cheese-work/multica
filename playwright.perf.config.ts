@@ -13,7 +13,7 @@ import { defineConfig, devices } from "@playwright/test";
  * profile, each its own project so the profile name is in every result line.
  * `chromium` keeps the older scenarios exactly as they were.
  */
-const PROFILE_SPECS = /(chip-stability|page-load-baseline)\.spec/;
+const PROFILE_SPECS = /(chip-stability|chip-retention|page-load-baseline)\.spec/;
 export default defineConfig({
   testDir: "./e2e/perf",
   timeout: 180_000,
