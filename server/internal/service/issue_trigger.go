@@ -181,7 +181,7 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 		// stamped for a step the issue has left would be refused the moment it
 		// moved the issue, so it must not suppress the run the new step needs.
 		if in.EnteredHandoffStep {
-			if s.hasPendingStepRun(ctx, issue, issue.AssigneeID) {
+			if s.hasPendingStepRun(ctx, issue, issue.AssigneeID) || s.headAlreadyReviewed(ctx, issue) {
 				return IssueRunTrigger{}, false
 			}
 		} else if source == RunSourceStatus && s.hasPendingRun(ctx, issue.ID, issue.AssigneeID) {
@@ -290,4 +290,22 @@ func (s *IssueService) CancelStaleStepRuns(ctx context.Context, issue db.Issue, 
 				"issue_id", util.UUIDToString(issue.ID), "task_id", util.UUIDToString(task.ID), "error", err)
 		}
 	}
+}
+
+// headAlreadyReviewed reports whether the issue entered agent_review on a PR
+// head that a review run already finished (CHE-3243). The loop only has a new
+// review to give after a push. Errors read as "not reviewed": a lookup failure
+// must not swallow a review.
+func (s *IssueService) headAlreadyReviewed(ctx context.Context, issue db.Issue) bool {
+	if issue.Status != statusAgentReview {
+		return false
+	}
+	head := s.TaskService.ResolveIssueReviewSHA(ctx, issue.ID)
+	if head == "" {
+		return false
+	}
+	reviewed, err := s.Queries.HasCompletedReviewRunForHead(ctx, db.HasCompletedReviewRunForHeadParams{
+		IssueID: issue.ID, Step: statusAgentReview, HeadSha: head,
+	})
+	return err == nil && reviewed
 }

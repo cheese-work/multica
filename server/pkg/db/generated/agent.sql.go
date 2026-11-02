@@ -2810,6 +2810,22 @@ func (q *Queries) CountDelegatedFailureRecoveryTasks(ctx context.Context, failed
 	return count, err
 }
 
+const countIssueActivityByAction = `-- name: CountIssueActivityByAction :one
+SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = $2
+`
+
+type CountIssueActivityByActionParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	Action  string      `json:"action"`
+}
+
+func (q *Queries) CountIssueActivityByAction(ctx context.Context, arg CountIssueActivityByActionParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countIssueActivityByAction, arg.IssueID, arg.Action)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countRunningTasks = `-- name: CountRunningTasks :one
 SELECT count(*) FROM agent_task_queue
 WHERE agent_id = $1 AND status IN ('dispatched', 'running', 'waiting_local_directory')
@@ -6065,6 +6081,29 @@ func (q *Queries) HasActiveTaskForIssueAndAgentInThread(ctx context.Context, arg
 	var has_active bool
 	err := row.Scan(&has_active)
 	return has_active, err
+}
+
+const hasCompletedReviewRunForHead = `-- name: HasCompletedReviewRunForHead :one
+SELECT EXISTS (
+  SELECT 1 FROM agent_task_queue
+  WHERE issue_id = $1 AND workflow_step = $2::text
+    AND status = 'completed' AND context->>'head_sha' = $3::text
+) AS reviewed
+`
+
+type HasCompletedReviewRunForHeadParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	Step    string      `json:"step"`
+	HeadSha string      `json:"head_sha"`
+}
+
+// Whether a review run of the step already finished on this PR head (CHE-3243):
+// a review dispatched for a head nobody pushed to since would only repeat it.
+func (q *Queries) HasCompletedReviewRunForHead(ctx context.Context, arg HasCompletedReviewRunForHeadParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasCompletedReviewRunForHead, arg.IssueID, arg.Step, arg.HeadSha)
+	var reviewed bool
+	err := row.Scan(&reviewed)
+	return reviewed, err
 }
 
 const hasPendingIssueTaskForAgent = `-- name: HasPendingIssueTaskForAgent :one

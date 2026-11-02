@@ -410,3 +410,14 @@ func CheckAgentMove(def Definition, from, to string) error {
 	}
 	return &MoveNotAllowedError{From: from, To: to, Allowed: moves}
 }
+
+// IsChangesMove reports whether moving from a step to a status is the step's
+// CHANGES verdict, the exit a reviewer takes to send the work back.
+func (d Definition) IsChangesMove(from, to string) bool {
+	for _, e := range d.EdgesOf(from) {
+		if g, err := ParseGuard(e.Guard); err == nil && g.Kind == GuardAgentVerdict && g.Args[0] == "CHANGES" && e.To == to {
+			return true
+		}
+	}
+	return false
+}
