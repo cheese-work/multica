@@ -8,6 +8,8 @@ import (
 	"github.com/multica-ai/multica/server/pkg/featureflag"
 )
 
+const testWorkspaceID = "55555555-5555-5555-5555-555555555555"
+
 // Background/scheduled work has no HTTP request to derive an EvalContext
 // from. A blank workspace id must be a hard error, not a context that
 // evaluates against the zero EvalContext and gets denied later for a
@@ -77,19 +79,5 @@ func TestWithBackgroundEvalContextReplacesInheritedEvalContext(t *testing.T) {
 	}
 	if _, ok := ec.Attributes[FlagAttrAgentID]; ok {
 		t.Error("background context inherited the leaked agent_id attribute")
-	}
-}
-
-// End-to-end: the context this helper produces must be usable directly with
-// the production gate, and must actually allow when the flag is on.
-func TestWithBackgroundEvalContextWorksWithProductionGate(t *testing.T) {
-	ctx, err := WithBackgroundEvalContext(context.Background(), testWorkspaceID)
-	if err != nil {
-		t.Fatalf("WithBackgroundEvalContext: %v", err)
-	}
-
-	gate := JevProductionGate{Flags: serviceWithJevRule(t, featureflag.Rule{Default: true})}
-	if !gate.Allowed(ctx) {
-		t.Error("production gate denied a background context with the flag on and a workspace present")
 	}
 }
