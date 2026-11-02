@@ -442,6 +442,7 @@ func (h *Handler) copyNoticeToTopicThread(ctx context.Context, queries *db.Queri
 }
 
 const (
+	agentDecisionJevKey    = "agent_decisions_jev"
 	agentDecisionJevShadow = "shadow"
 	agentDecisionJevLive   = "live"
 )
@@ -454,6 +455,16 @@ func agentDecisionJevSetting(ctx context.Context, q dbExecutor, workspaceID pgty
 	err = q.QueryRow(ctx, `SELECT coalesce(settings->'agent_decisions_jev'->>'agent_id',''),coalesce(settings->'agent_decisions_jev'->>'mode','')
         FROM workspace WHERE id=$1`, workspaceID).Scan(&agentID, &mode)
 	return agentID, mode, err
+}
+
+// reconcileAgentDecisionJev makes a generic settings save keep the stored Jev
+// registration: whatever the body says about the key is dropped. Only
+// SetAgentDecisionJev (human owner) changes it.
+func reconcileAgentDecisionJev(stored, incoming map[string]any) {
+	delete(incoming, agentDecisionJevKey)
+	if v, ok := stored[agentDecisionJevKey]; ok {
+		incoming[agentDecisionJevKey] = v
+	}
 }
 
 func requireAgentDecisionJev(ctx context.Context, q dbExecutor, workspaceID pgtype.UUID, proposer string) error {

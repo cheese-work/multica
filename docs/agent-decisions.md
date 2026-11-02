@@ -66,7 +66,7 @@ or `live`, the proposal is refused. In `shadow` mode the record is kept but neve
 settles, even with `agent_decisions_enabled` on. In `live` mode it settles under the
 same rules as any agent decision. The owner sets it with `PUT /api/agent-decisions/jev`
 (`{"agent_id": "<uuid>", "mode": "shadow"|"live"|"off"}`; human owner only, task tokens
-get 403). Moving `shadow` to `live` is the owner's call after the 7-day shadow and
+get 403). The generic workspace settings save (`PATCH`/`PUT /api/workspaces/{id}`) drops this key and keeps the stored value, so it cannot register, change or erase Jev. Moving `shadow` to `live` is the owner's call after the 7-day shadow and
 qualification. Settling an already-recorded Jev decision re-reads the mode, but reliance
 on a record that has already settled is not re-gated if the mode later returns to `shadow`.
 
