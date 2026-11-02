@@ -9,8 +9,6 @@ import enSettings from "../../locales/en/settings.json";
 const mockUpdateWorkspace = vi.hoisted(() => vi.fn());
 const mockInvalidateQueries = vi.hoisted(() => vi.fn());
 const mockToastSuccess = vi.hoisted(() => vi.fn());
-const mockToastError = vi.hoisted(() => vi.fn());
-const mockSetAgentDecisions = vi.hoisted(() => vi.fn());
 const workspaceRef = vi.hoisted(() => ({
   current: {
     id: "workspace-1",
@@ -66,7 +64,6 @@ vi.mock("@multica/core/workspace/mutations", () => ({
 vi.mock("@multica/core/api", () => ({
   api: {
     updateWorkspace: mockUpdateWorkspace,
-    setAgentDecisionsEnabled: mockSetAgentDecisions,
     getBaseUrl: () => "http://127.0.0.1:8080",
   },
 }));
@@ -84,12 +81,16 @@ vi.mock("../../navigation", () => ({
   useNavigation: () => ({ push: vi.fn() }),
 }));
 
+vi.mock("./agent-decisions-row", () => ({
+  AgentDecisionsRow: () => <div data-testid="agent-decisions-row" />,
+}));
+
 vi.mock("./delete-workspace-dialog", () => ({
   DeleteWorkspaceDialog: () => null,
 }));
 
 vi.mock("sonner", () => ({
-  toast: { success: mockToastSuccess, error: mockToastError },
+  toast: { success: mockToastSuccess, error: vi.fn() },
 }));
 
 import { WorkspaceTab } from "./workspace-tab";
@@ -295,63 +296,15 @@ describe("WorkspaceTab — automatic updates", () => {
     expect(screen.getByText("Source: workspace")).toBeInTheDocument();
   });
 
-  // CHE-3249: owner switch for agent decisions; writes through the PUT route.
-  describe("agent decisions switch", () => {
-    const switchName = "Agent decisions";
+  it.each([
+    ["owner", true],
+    ["admin", false],
+    ["member", false],
+  ] as const)("shows the agent decisions row to a %s: %s", (role, shown) => {
+    membersRef.current = [{ user_id: "user-1", role, name: "Ada" }];
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
 
-    it("is off when nothing is saved and shows the help line", () => {
-      render(<WorkspaceTab />, { wrapper: I18nWrapper });
-
-      expect(screen.getByRole("switch", { name: switchName })).not.toBeChecked();
-      expect(
-        screen.getByText(
-          "Agents may decide allowlisted gates for you. Each decision shows in the daily brief with a 24 h veto.",
-        ),
-      ).toBeInTheDocument();
-    });
-
-    it("reads the saved value on load", () => {
-      workspaceRef.current = {
-        ...workspaceRef.current,
-        settings: { agent_decisions_enabled: true },
-      };
-      render(<WorkspaceTab />, { wrapper: I18nWrapper });
-
-      expect(screen.getByRole("switch", { name: switchName })).toBeChecked();
-    });
-
-    it("lets the owner turn it on through the setting route", async () => {
-      mockSetAgentDecisions.mockResolvedValue({ enabled: true });
-      const user = setupUser();
-      render(<WorkspaceTab />, { wrapper: I18nWrapper });
-
-      await user.click(screen.getByRole("switch", { name: switchName }));
-
-      await waitFor(() => {
-        expect(mockSetAgentDecisions).toHaveBeenCalledWith(true);
-      });
-      expect(mockUpdateWorkspace).not.toHaveBeenCalled();
-    });
-
-    it("shows an error and keeps the switch off when the write fails", async () => {
-      mockSetAgentDecisions.mockRejectedValue(new Error("boom"));
-      const user = setupUser();
-      render(<WorkspaceTab />, { wrapper: I18nWrapper });
-
-      await user.click(screen.getByRole("switch", { name: switchName }));
-
-      await waitFor(() => {
-        expect(mockToastError).toHaveBeenCalledWith("boom");
-      });
-      expect(screen.getByRole("switch", { name: switchName })).not.toBeChecked();
-    });
-
-    it.each(["admin", "member"] as const)("is hidden from a %s", (role) => {
-      membersRef.current = [{ user_id: "user-1", role, name: "Ada" }];
-      render(<WorkspaceTab />, { wrapper: I18nWrapper });
-
-      expect(screen.queryByRole("switch", { name: switchName })).not.toBeInTheDocument();
-    });
+    expect(screen.queryByTestId("agent-decisions-row") !== null).toBe(shown);
   });
 
   // CHE-1806: settings.auto_compact saves through its own request field.

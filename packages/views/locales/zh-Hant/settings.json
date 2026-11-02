@@ -810,7 +810,10 @@
     "auto_compact_readonly_on": "開啓，閾值 {{threshold}}%",
     "auto_compact_readonly_off": "關閉",
     "agent_decisions_label": "代理決策",
-    "agent_decisions_hint": "代理可以代你決定白名單內的關卡。每項決定都會出現在每日簡報中，並有 24 小時否決期。"
+    "agent_decisions_hint": "代理可以代你決定白名單內的關卡。每項決定都會出現在每日簡報中，並有 24 小時否決期。",
+    "agent_decisions_stopped_title": "決策已自動停止",
+    "agent_decisions_stopped_description": "原因：{{reason}}。開啟決策會清除這筆記錄。",
+    "agent_decisions_stopped_confirm": "開啟"
   },
   "delete_workspace_dialog": {
     "title": "刪除工作區",
