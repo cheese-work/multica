@@ -17,8 +17,8 @@ Verdict = a PR comment by a trusted workspace bot:
   Findings: none          (FAIL: lines `- path:line <exploit path>`)
 
 A verdict counts only for the repo, PR number, base branch and head SHA it names. Only PRs into the default
-branch are supported. The PR author must be a registered agent (lab from the `agent/<name>/` branch) or a
-registered human; anyone else fails closed.
+branch are gated; a PR into another base is pending ("not gated yet") until it is retargeted. The PR author
+must be a registered agent (lab from the `agent/<name>/` branch) or a registered human; anyone else fails closed.
 
 Run from a checkout of the DEFAULT branch only; the head is fetched for its diff, never executed.
 """
@@ -121,7 +121,10 @@ def evaluate(pr: dict, comments: list[dict], trusted_ids: set[int], diff_text: s
              human_ids: frozenset[int] | set[int] = frozenset()) -> tuple[str, str]:
     head, why = pr["head_sha"], []
     if pr["base_ref"] != pr["default_branch"]:
-        return _out("failure", f"unsupported target {pr['base_ref']}: only {pr['default_branch']} is gated")
+        # A stacked layer is gated when it is retargeted to the default branch (the `edited` event re-runs this).
+        # Pending, not failure: no red check on a layer that merges into its parent, and a missed retarget event
+        # still cannot let the head reach the default branch.
+        return _out("pending", f"not gated yet: base {pr['base_ref']} is not {pr['default_branch']}; gated on retarget")
     secrets = scan_secrets(diff_text)
     if secrets:
         return _out("failure", f"secret in added lines: {', '.join(secrets[:3])}")
@@ -192,7 +195,7 @@ def gate_pr(repo: str, github: str, number: int, default_branch: str, trusted: s
     lines = _gh("--paginate", f"repos/{github}/issues/{number}/comments", "--jq",
                 '.[] | {id, author_id: .user.id, body: (.body // ""), updated_at}').splitlines()
     comments = [json.loads(l) for l in lines]
-    diff = ""  # an unsupported target fails before the diff is read; its base may not be in this checkout
+    diff = ""  # a non-default base returns before the diff is read; its base may not be in this checkout
     if pull["base"]["ref"] == default_branch:
         diff = subprocess.run(["git", "-C", repo, "diff", "-U0", "--no-color", f"{base}...{head}"],
                               check=True, capture_output=True, text=True).stdout

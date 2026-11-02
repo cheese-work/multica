@@ -128,12 +128,21 @@ class GateDecisionTest(unittest.TestCase):
         pr = {**PR, "base_ref": "release", "default_branch": "release"}
         self.assertEqual(self.run_gate([comment(verdict(base="main"))], pr=pr)[0], "pending")
 
-    def test_non_default_target_branch_fails(self):
-        # finding 1: only the protected default branch is supported
+    def test_stacked_base_is_pending_not_failed_and_never_passes(self):
+        # CHE-3035: a stacked layer is not gated yet. Pending (not failure) keeps the PR free of a red check, and
+        # not success keeps the head from reaching the default branch if the retarget event is ever missed.
         pr = {**PR, "base_ref": "evil", "default_branch": "main"}
-        state, why = self.run_gate([comment(verdict(base="evil"))], pr=pr)
-        self.assertEqual(state, "failure")
-        self.assertIn("main", why)
+        for comments in ([], [comment(verdict(base="evil"))]):
+            state, why = self.run_gate(comments, pr=pr)
+            self.assertEqual(state, "pending")
+            self.assertIn("not gated", why)
+            self.assertIn("main", why)
+
+    def test_retarget_to_default_runs_the_real_gate(self):
+        # CHE-3035: the same head, now based on main, is gated as before: a planted secret fails, no verdict is pending
+        self.assertEqual(self.run_gate([], diff=VULN_DIFF)[0], "failure")
+        self.assertEqual(self.run_gate([])[0], "pending")
+        self.assertEqual(self.run_gate([comment(verdict())])[0], "success")
 
     def test_verdict_missing_binding_fields_is_not_valid(self):
         old = "\n".join(l for l in verdict().splitlines() if not l.startswith(("Repo:", "PR:", "Base:")))
@@ -249,6 +258,19 @@ class WorkflowTest(unittest.TestCase):
         # findings 3 and 4
         self.assertIn("edited", self.doc[True]["pull_request_target"]["types"])
         self.assertIn("deleted", self.doc[True]["issue_comment"]["types"])
+
+    def test_refused_comment_authors_schedule_no_job(self):
+        # CHE-3035: the runner hook refuses issue_comment by NONE; skip them at the job `if:` so no red check appears
+        cond = self.doc["jobs"]["security-gate"]["if"]
+        self.assertIn("github.event.comment.author_association != 'NONE'", cond)
+        self.assertIn("github.event_name == 'pull_request_target'", cond)  # PR events are never filtered by author
+
+    def test_skipped_comment_cannot_cancel_a_real_evaluation(self):
+        # CHE-3035: a run cancels the in-flight run of its concurrency group before its `if:` is read. An ignored
+        # comment must land in its own group, or it cancels the real run and leaves no completed run behind it.
+        group = self.doc["concurrency"]["group"]
+        self.assertIn("author_association", group)
+        self.assertIn("github.run_id", group)
 
     def test_only_status_write_is_added(self):
         self.assertEqual(self.doc["permissions"], {"contents": "read", "pull-requests": "read", "statuses": "write"})

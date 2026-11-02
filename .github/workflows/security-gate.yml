@@ -24,14 +24,18 @@ permissions:
   statuses: write
 
 concurrency:
-  group: security-gate-${{ github.event.pull_request.number || github.event.issue.number }}
+  # A comment the job skips (see `if:` below) gets its own group: a run cancels the in-flight run of its group before
+  # its `if:` is read, so a skipped comment in the PR's group would cancel the real evaluation and post no status.
+  group: security-gate-${{ github.event_name == 'issue_comment' && github.event.comment.author_association == 'NONE' && format('ignored-{0}', github.run_id) || github.event.pull_request.number || github.event.issue.number }}
   cancel-in-progress: true
 
 jobs:
   security-gate:
     # Job name differs from the status context on purpose: the context is posted by the script, not by this job.
     name: security-gate-eval
-    if: github.event_name == 'pull_request_target' || github.event.issue.pull_request
+    # The x99 runner hook refuses issue_comment by NONE (`x99 runner policy: refusing ...`); skip them here so no job
+    # is scheduled and no red check appears. The hook is a security boundary and stays as it is.
+    if: github.event_name == 'pull_request_target' || (github.event.issue.pull_request && github.event.comment.author_association != 'NONE')
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 10
     env:
