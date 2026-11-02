@@ -326,6 +326,11 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 	if !reflect.DeepEqual(current, snapshot) {
 		return true, nil
 	}
+	if snapshot.kind == "" {
+		if refused, err := handler.refuseGatedAgentRecords(ctx, transaction, queries, snapshot); err != nil || refused {
+			return false, err
+		}
+	}
 	if snapshot.group && !snapshot.intent.SealedAt.Valid {
 		if _, err := decisiontx.SealInvalidIntent(ctx, queries, snapshot.intent); err != nil {
 			return false, err
