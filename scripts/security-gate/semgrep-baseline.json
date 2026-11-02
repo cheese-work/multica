@@ -65,10 +65,12 @@
   "javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket|server/cmd/multica/cmd_setup.go|42c66094e1a71eff",
   "javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket|server/cmd/multica/cmd_setup.go|c20f409b08878a4c",
   "javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket|server/cmd/multica/cmd_setup.go|cf645dd0ba04c934",
+  "python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args|scripts/security-gate/security_gate.py|79ba58ab6755b38f",
   "trailofbits.go.missing-unlock-before-return.missing-unlock-before-return|server/internal/daemon/local_directory.go|b5c38c1d82acbc7f",
   "trailofbits.go.missing-unlock-before-return.missing-unlock-before-return|server/internal/integrations/channel/engine/batcher.go|79501d4b07b5bc98",
   "trailofbits.go.missing-unlock-before-return.missing-unlock-before-return|server/internal/integrations/dingtalk/dingtalk_channel.go|b0c5d178834f683e",
   "trailofbits.go.missing-unlock-before-return.missing-unlock-before-return|server/internal/integrations/dingtalk/dispatch.go|476532cde0c980a2",
+  "trailofbits.python.tarfile-extractall-traversal.tarfile-extractall-traversal|scripts/security-gate/security_gate.py|a37ea47f8c28efaf",
   "yaml.github-actions.security.run-shell-injection.run-shell-injection|.github/workflows/cd-deploy.yml|7b97c70ee8af8d0a",
   "yaml.github-actions.security.run-shell-injection.run-shell-injection|.github/workflows/ui-performance.yml|de4a7de9ddb75e66"
  ]
