@@ -1,12 +1,14 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -55,6 +57,31 @@ func (h *Handler) listGitHubDispatchHaltAudit(r *http.Request, workspaceID strin
 	return out, nil
 }
 
+func (h *Handler) changeGitHubDispatchHalt(ctx context.Context, audit db.RecordGitHubDispatchHaltAuditParams) (pgtype.UUID, error) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return pgtype.UUID{}, err
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	q := h.Queries.WithTx(tx)
+	if err := q.LockGitHubDispatchHaltExclusive(ctx, audit.WorkspaceID); err != nil {
+		return pgtype.UUID{}, err
+	}
+	if audit.Halted {
+		err = q.HaltGitHubDispatch(ctx, db.HaltGitHubDispatchParams{WorkspaceID: audit.WorkspaceID, Scope: audit.Scope, HaltedBy: audit.ActorID})
+	} else {
+		_, err = q.ResumeGitHubDispatch(ctx, db.ResumeGitHubDispatchParams{WorkspaceID: audit.WorkspaceID, Scope: audit.Scope})
+	}
+	if err != nil {
+		return pgtype.UUID{}, err
+	}
+	id, err := q.RecordGitHubDispatchHaltAudit(ctx, audit)
+	if err != nil {
+		return pgtype.UUID{}, err
+	}
+	return id, tx.Commit(ctx)
+}
+
 // GetGitHubDispatchHalt (GET /api/github/dispatch-halt) reads the kill switch
 // without touching it.
 func (h *Handler) GetGitHubDispatchHalt(w http.ResponseWriter, r *http.Request) {
@@ -96,26 +123,29 @@ func (h *Handler) SetGitHubDispatchHalt(w http.ResponseWriter, r *http.Request) 
 	ctx := r.Context()
 	workspaceID := parseUUID(h.resolveWorkspaceID(r))
 	userID := parseUUID(requestUserID(r))
-	revoked := 0
 	actorSource := "member"
 	if isMachineCredentialActor(r) {
 		actorSource = r.Header.Get("X-Actor-Source")
 	}
-	// Once the switch row changed, the change is audited even when the sweep that follows fails.
-	recordAudit := func() {
-		if err := h.Queries.RecordGitHubDispatchHaltAudit(ctx, db.RecordGitHubDispatchHaltAuditParams{
-			WorkspaceID: workspaceID, Scope: scope, Halted: *req.Halted, ActorID: userID, ActorSource: actorSource, RunsRevoked: int32(revoked),
-		}); err != nil {
-			slog.Error("github dispatch halt: audit write failed", "workspace_id", uuidToString(workspaceID), "scope", scope, "err", err)
-		}
+	// The switch row and its audit row commit together, under the lock every
+	// intake dispatch holds shared, so no dispatch straddles the change.
+	auditID, err := h.changeGitHubDispatchHalt(ctx, db.RecordGitHubDispatchHaltAuditParams{
+		WorkspaceID: workspaceID, Scope: scope, Halted: *req.Halted, ActorID: userID, ActorSource: actorSource,
+	})
+	if err != nil {
+		slog.Error("github dispatch halt: change failed", "workspace_id", uuidToString(workspaceID), "scope", scope, "err", err)
+		writeError(w, http.StatusInternalServerError, "failed to change the kill switch")
+		return
 	}
-	if *req.Halted {
-		if err := h.Queries.HaltGitHubDispatch(ctx, db.HaltGitHubDispatchParams{WorkspaceID: workspaceID, Scope: scope, HaltedBy: userID}); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to turn the kill switch on")
-			return
+	revoked := 0
+	// The change is committed: finish the sweep and the audit count even if the caller hangs up.
+	ctx = context.WithoutCancel(ctx)
+	defer func() {
+		if err := h.Queries.SetGitHubDispatchHaltAuditRevoked(ctx, db.SetGitHubDispatchHaltAuditRevokedParams{ID: auditID, RunsRevoked: int32(revoked)}); err != nil {
+			slog.Error("github dispatch halt: audit revoked count not saved", "audit_id", uuidToString(auditID), "err", err)
 		}
-		defer recordAudit()
-		// The halt row is committed first, so nothing new starts while we sweep.
+	}()
+	if *req.Halted {
 		ids, err := h.Queries.ListGitHubTriggeredActiveTasks(ctx, db.ListGitHubTriggeredActiveTasksParams{WorkspaceID: workspaceID, Scope: scope})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "kill switch is on, but listing live GitHub-triggered runs failed")
@@ -131,11 +161,6 @@ func (h *Handler) SetGitHubDispatchHalt(w http.ResponseWriter, r *http.Request) 
 			}
 			revoked++
 		}
-	} else if _, err := h.Queries.ResumeGitHubDispatch(ctx, db.ResumeGitHubDispatchParams{WorkspaceID: workspaceID, Scope: scope}); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to turn the kill switch off")
-		return
-	} else {
-		defer recordAudit()
 	}
 	slog.Warn("github dispatch halt changed", "workspace_id", uuidToString(workspaceID), "scope", scope, "halted", *req.Halted, "actor", requestUserID(r), "runs_revoked", revoked)
 	halts, err := h.listGitHubDispatchHalts(r, uuidToString(workspaceID))

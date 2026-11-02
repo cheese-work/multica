@@ -46,9 +46,22 @@ WHERE i.workspace_id = sqlc.arg(workspace_id)
       AND sqlc.arg(scope)::text IN ('*', lower(pr.repo_owner), lower(pr.repo_owner || '/' || pr.repo_name))
   );
 
--- name: RecordGitHubDispatchHaltAudit :exec
-INSERT INTO github_dispatch_halt_audit (workspace_id, scope, halted, actor_id, actor_source, runs_revoked)
-VALUES ($1, $2, $3, $4, $5, $6);
+-- name: LockGitHubDispatchHaltShared :exec
+-- Held by a dispatch until its transaction ends, so a switch change cannot slip
+-- between the dispatch's check and its commit.
+SELECT pg_advisory_xact_lock_shared(hashtextextended('github_dispatch_halt:' || sqlc.arg(workspace_id)::uuid::text, 0));
+
+-- name: LockGitHubDispatchHaltExclusive :exec
+-- Taken by a switch change; waits for in-flight dispatches and blocks new ones until it commits.
+SELECT pg_advisory_xact_lock(hashtextextended('github_dispatch_halt:' || sqlc.arg(workspace_id)::uuid::text, 0));
+
+-- name: RecordGitHubDispatchHaltAudit :one
+INSERT INTO github_dispatch_halt_audit (workspace_id, scope, halted, actor_id, actor_source)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id;
+
+-- name: SetGitHubDispatchHaltAuditRevoked :exec
+UPDATE github_dispatch_halt_audit SET runs_revoked = $2 WHERE id = $1;
 
 -- name: ListGitHubDispatchHaltAudit :many
 SELECT * FROM github_dispatch_halt_audit WHERE workspace_id = $1 ORDER BY created_at DESC, id DESC LIMIT 20;

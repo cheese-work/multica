@@ -6,7 +6,10 @@ import (
 	"net/http"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/multica-ai/multica/server/internal/auth"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -357,5 +360,82 @@ func TestGitHubIntakeWorkerKillSwitchStopsAtProjected(t *testing.T) {
 	}
 	if count := dbfx.Count(t, `SELECT count(*) FROM github_webhook_dispatch WHERE issue_id=$1 AND state='projected' AND reason='kill_switch' AND task_id IS NULL`, fixture.issueID); count != 1 {
 		t.Fatalf("kill switch receipts = %d, want 1", count)
+	}
+}
+
+// A switch that commits between the worker's check and its commit must not lose
+// to the worker: the worker waits for the switch, then sees it on.
+func TestGitHubIntakeWorkerWaitsForSwitchInFlight(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
+	delivery := postIntakeForWorker(t, fixture, "-switch-in-flight")
+	worker := intakeWorkerForTest(t, fixture)
+	ctx := context.Background()
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM github_dispatch_halt WHERE workspace_id = $1`, testWorkspaceID)
+	})
+	switchTx, err := fixture.handler.TxStarter.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer switchTx.Rollback(ctx)
+	switchQueries := fixture.handler.Queries.WithTx(switchTx)
+	if err := switchQueries.LockGitHubDispatchHaltExclusive(ctx, parseUUID(testWorkspaceID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := switchQueries.HaltGitHubDispatch(ctx, db.HaltGitHubDispatchParams{WorkspaceID: parseUUID(testWorkspaceID), Scope: "*"}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := worker.runOnce(ctx)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("worker finished while the switch was uncommitted: %v", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+	if err := switchTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	assertIntakeWorkerState(t, delivery, "projected")
+	if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1`, fixture.issueID); count != 0 {
+		t.Fatalf("worker started %d runs past the switch", count)
+	}
+}
+
+// A run the worker already started, with its token, is swept when the switch turns on.
+func TestGitHubDispatchHaltRevokesRunStartedByIntake(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
+	postIntakeForWorker(t, fixture, "-sweep-intake-run")
+	worker := intakeWorkerForTest(t, fixture)
+	ctx := context.Background()
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM github_dispatch_halt WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_dispatch_halt_audit WHERE workspace_id = $1`, testWorkspaceID)
+	})
+	if _, err := worker.runOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var taskID string
+	dbfx.QueryRow(t, `SELECT id FROM agent_task_queue WHERE issue_id=$1`, fixture.issueID).Scan(&taskID)
+	dbfx.Insert(t, "task_token", testutil.Cols{
+		"token_hash": auth.HashToken("mat_intake_" + taskID), "task_id": taskID, "agent_id": fixture.author,
+		"workspace_id": testWorkspaceID, "user_id": testUserID, "expires_at": time.Now().Add(time.Hour),
+	})
+	if w := setHalt(t, "*", true, false); w.Code != http.StatusOK {
+		t.Fatalf("halt: %d %s", w.Code, w.Body)
+	}
+	if status := taskStatus(t, taskID); status != "cancelled" {
+		t.Fatalf("intake run status = %s, want cancelled", status)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM task_token WHERE task_id=$1`, taskID); n != 0 {
+		t.Fatalf("intake run token survived: %d", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM github_dispatch_halt_audit WHERE workspace_id=$1 AND halted AND runs_revoked=1`, testWorkspaceID); n != 1 {
+		t.Fatalf("audit rows with the revoked count = %d, want 1", n)
 	}
 }

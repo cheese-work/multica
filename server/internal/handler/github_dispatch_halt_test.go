@@ -620,3 +620,36 @@ func TestGitHubDispatchHaltWritesAuditRecord(t *testing.T) {
 		t.Fatalf("status audit = %+v (err %v), want 2 rows newest first", out.Audit, err)
 	}
 }
+
+// A change whose audit row cannot be written must not happen at all.
+func TestGitHubDispatchHaltChangeAndAuditAreAtomic(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	clean := func() {
+		testPool.Exec(ctx, `DELETE FROM github_dispatch_halt WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_dispatch_halt_audit WHERE workspace_id = $1`, testWorkspaceID)
+	}
+	clean()
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DROP TRIGGER IF EXISTS test_audit_fail ON github_dispatch_halt_audit`)
+		testPool.Exec(ctx, `DROP FUNCTION IF EXISTS test_audit_fail()`)
+		clean()
+	})
+	for _, ddl := range []string{
+		`CREATE OR REPLACE FUNCTION test_audit_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'audit insert refused'; END $$`,
+		`CREATE TRIGGER test_audit_fail BEFORE INSERT ON github_dispatch_halt_audit FOR EACH ROW EXECUTE FUNCTION test_audit_fail()`,
+	} {
+		if _, err := testPool.Exec(ctx, ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := setHalt(t, "acme", true, false)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status with a failing audit = %d, want 500", w.Code)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM github_dispatch_halt WHERE workspace_id=$1`, testWorkspaceID); n != 0 {
+		t.Fatalf("a change without its audit row left %d halt rows", n)
+	}
+}

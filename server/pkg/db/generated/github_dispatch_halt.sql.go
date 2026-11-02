@@ -160,6 +160,27 @@ func (q *Queries) ListGitHubTriggeredActiveTasks(ctx context.Context, arg ListGi
 	return items, nil
 }
 
+const lockGitHubDispatchHaltExclusive = `-- name: LockGitHubDispatchHaltExclusive :exec
+SELECT pg_advisory_xact_lock(hashtextextended('github_dispatch_halt:' || $1::uuid::text, 0))
+`
+
+// Taken by a switch change; waits for in-flight dispatches and blocks new ones until it commits.
+func (q *Queries) LockGitHubDispatchHaltExclusive(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockGitHubDispatchHaltExclusive, workspaceID)
+	return err
+}
+
+const lockGitHubDispatchHaltShared = `-- name: LockGitHubDispatchHaltShared :exec
+SELECT pg_advisory_xact_lock_shared(hashtextextended('github_dispatch_halt:' || $1::uuid::text, 0))
+`
+
+// Held by a dispatch until its transaction ends, so a switch change cannot slip
+// between the dispatch's check and its commit.
+func (q *Queries) LockGitHubDispatchHaltShared(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockGitHubDispatchHaltShared, workspaceID)
+	return err
+}
+
 const markGitHubDispatchRun = `-- name: MarkGitHubDispatchRun :exec
 UPDATE agent_task_queue SET context = COALESCE(context, '{}'::jsonb) || jsonb_build_object('github_dispatch', $1::text)
 WHERE id = $2 AND issue_id = $3
@@ -179,9 +200,10 @@ func (q *Queries) MarkGitHubDispatchRun(ctx context.Context, arg MarkGitHubDispa
 	return err
 }
 
-const recordGitHubDispatchHaltAudit = `-- name: RecordGitHubDispatchHaltAudit :exec
-INSERT INTO github_dispatch_halt_audit (workspace_id, scope, halted, actor_id, actor_source, runs_revoked)
-VALUES ($1, $2, $3, $4, $5, $6)
+const recordGitHubDispatchHaltAudit = `-- name: RecordGitHubDispatchHaltAudit :one
+INSERT INTO github_dispatch_halt_audit (workspace_id, scope, halted, actor_id, actor_source)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id
 `
 
 type RecordGitHubDispatchHaltAuditParams struct {
@@ -190,19 +212,19 @@ type RecordGitHubDispatchHaltAuditParams struct {
 	Halted      bool        `json:"halted"`
 	ActorID     pgtype.UUID `json:"actor_id"`
 	ActorSource string      `json:"actor_source"`
-	RunsRevoked int32       `json:"runs_revoked"`
 }
 
-func (q *Queries) RecordGitHubDispatchHaltAudit(ctx context.Context, arg RecordGitHubDispatchHaltAuditParams) error {
-	_, err := q.db.Exec(ctx, recordGitHubDispatchHaltAudit,
+func (q *Queries) RecordGitHubDispatchHaltAudit(ctx context.Context, arg RecordGitHubDispatchHaltAuditParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, recordGitHubDispatchHaltAudit,
 		arg.WorkspaceID,
 		arg.Scope,
 		arg.Halted,
 		arg.ActorID,
 		arg.ActorSource,
-		arg.RunsRevoked,
 	)
-	return err
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
 }
 
 const resumeGitHubDispatch = `-- name: ResumeGitHubDispatch :execrows
@@ -220,4 +242,18 @@ func (q *Queries) ResumeGitHubDispatch(ctx context.Context, arg ResumeGitHubDisp
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const setGitHubDispatchHaltAuditRevoked = `-- name: SetGitHubDispatchHaltAuditRevoked :exec
+UPDATE github_dispatch_halt_audit SET runs_revoked = $2 WHERE id = $1
+`
+
+type SetGitHubDispatchHaltAuditRevokedParams struct {
+	ID          pgtype.UUID `json:"id"`
+	RunsRevoked int32       `json:"runs_revoked"`
+}
+
+func (q *Queries) SetGitHubDispatchHaltAuditRevoked(ctx context.Context, arg SetGitHubDispatchHaltAuditRevokedParams) error {
+	_, err := q.db.Exec(ctx, setGitHubDispatchHaltAuditRevoked, arg.ID, arg.RunsRevoked)
+	return err
 }

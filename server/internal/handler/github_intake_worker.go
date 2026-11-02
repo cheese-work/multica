@@ -293,6 +293,10 @@ func (worker githubIntakeWorker) dispatch(ctx context.Context, queries *db.Queri
 	}
 	key := fmt.Sprintf("github.intake:%s:%s", uuidToString(revision.ID), uuidToString(issue.ID))
 	commentID := pgtype.UUID{Bytes: uuid.NewSHA1(uuid.NameSpaceURL, []byte(key)), Valid: true}
+	// Held until this transaction ends: a switch change waits for us, or we see it.
+	if err := queries.LockGitHubDispatchHaltShared(ctx, revision.WorkspaceID); err != nil {
+		return nil, err
+	}
 	pull, err := queries.GetGitHubPullRequestInWorkspace(ctx, db.GetGitHubPullRequestInWorkspaceParams{ID: revision.PullRequestID, WorkspaceID: revision.WorkspaceID})
 	if err != nil {
 		return nil, err
@@ -329,6 +333,10 @@ func (worker githubIntakeWorker) dispatch(ctx context.Context, queries *db.Queri
 		}
 		publication.task, err = worker.handler.TaskService.EnqueuePreparedTaskForMentionInTx(ctx, queries, issue, params, service.OriginDerived)
 		if err != nil {
+			return nil, err
+		}
+		// The kill switch sweep finds a live run by this mark.
+		if err := queries.MarkGitHubDispatchRun(ctx, db.MarkGitHubDispatchRunParams{TaskID: publication.task.ID, IssueID: issue.ID, Source: "intake"}); err != nil {
 			return nil, err
 		}
 		publication.state, publication.reason = "dispatched", "admitted"
