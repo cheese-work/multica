@@ -234,7 +234,8 @@ class MergeGroupTest(unittest.TestCase):
     BASE, G1, G2 = "1" * 40, "2" * 40, "3" * 40
     P1, P2 = "4" * 40, "5" * 40  # PR head SHAs (second parent of each merge-queue commit)
 
-    def run_group(self, pr_states, commits=None):
+    def run_group(self, pr_states, commits=None, pr_heads=None, api_error=None):
+        pr_heads = pr_heads if pr_heads is not None else {821: self.P1, 816: self.P2}
         commits = commits if commits is not None else [
             {"sha": self.G1, "parents": [self.BASE, self.P1], "message": "Merge pull request #821 from x/y"},
             {"sha": self.G2, "parents": [self.G1, self.P2], "message": "Merge pull request #816 from x/z"}]
@@ -242,8 +243,17 @@ class MergeGroupTest(unittest.TestCase):
 
         def fake_gh(*args):
             path = " ".join(args)
+            if "statuses/" not in path and api_error and api_error[0] in path:
+                if api_error[1] == "malformed":
+                    return "not json"
+                raise subprocess.CalledProcessError(1, ["gh"])
             if "compare/" in path:
                 return "\n".join(json.dumps(c) for c in commits)
+            for n, sha in pr_heads.items():
+                if path.endswith(f"/pulls/{n} --jq .head.sha"):
+                    return sha
+            if "/pulls/" in path:
+                return ""
             if "statuses/" in path:
                 posted.append(args)
                 return ""
@@ -281,6 +291,25 @@ class MergeGroupTest(unittest.TestCase):
                    {"sha": self.G2, "parents": [self.G1, self.P2], "message": "Merge pull request #816 from x/z"}]
         _, posted = self.run_group({self.P1: "success", self.P2: "success"}, commits)
         self.assertIn("state=success", posted[0])
+
+    def test_api_errors_still_post_failure_on_the_group_head(self):
+        # review finding 1: an unposted status leaves the queue entry waiting for its timeout
+        for needle, kind in (("compare/", "error"), ("compare/", "malformed"), ("/status", "error"), ("/pulls/", "error")):
+            code, posted = self.run_group({self.P1: "success", self.P2: "success"}, api_error=(needle, kind))
+            self.assertEqual(code, 0, (needle, kind))
+            self.assertEqual(len(posted), 1, (needle, kind))
+            self.assertIn("state=failure", posted[0], (needle, kind))
+
+    def test_a_two_parent_commit_that_is_not_a_pr_merge_fails_closed(self):
+        # review finding 2: no PR number in the message, so no PR to verify
+        commits = [{"sha": self.G2, "parents": [self.BASE, self.P1], "message": "Merge branch 'x' into main"}]
+        _, posted = self.run_group({self.P1: "success"}, commits)
+        self.assertIn("state=failure", posted[0])
+
+    def test_the_named_pr_must_have_the_second_parent_as_its_head(self):
+        _, posted = self.run_group({self.P1: "success", self.P2: "success"}, pr_heads={821: self.P1, 816: "9" * 40})
+        self.assertIn("state=failure", posted[0])
+        self.assertIn("#816", " ".join(posted[0]))
 
     def test_a_commit_that_is_not_a_pr_merge_fails_closed(self):
         commits = [{"sha": self.G2, "parents": [self.BASE], "message": "direct push"}]

@@ -208,7 +208,9 @@ def gate_pr(repo: str, github: str, number: int, default_branch: str, trusted: s
 def gate_merge_group(github: str, base: str, head: str) -> tuple[str, str]:
     """Merge-queue commit: carry each PR's existing `security-gate` verdict, never re-evaluate. The queue merges
     with MERGE, so every group commit is a merge whose second parent is the PR head SHA the verdict was posted on.
-    Anything else (no commits, a non-merge commit, a PR head without `success`) fails closed."""
+    Anything else (no commits, a non-merge commit, a PR head without `success`) fails closed. The PR number comes
+    from the queue commit message and is checked against the PR's live head, so a look-alike commit cannot borrow a
+    green head. API errors are the caller's: `main` turns them into a posted failure."""
     rows = [json.loads(l) for l in _gh("--paginate", f"repos/{github}/compare/{base}...{head}", "--jq",
                                        ".commits[] | {sha, parents: [.parents[].sha], message: .commit.message}").splitlines()]
     # compare also lists each PR's own branch commits: follow the first-parent chain from the head down to the base
@@ -220,10 +222,12 @@ def gate_merge_group(github: str, base: str, head: str) -> tuple[str, str]:
         return "failure", f"cannot walk {head[:12]} back to {base[:12]}"
     rows = chain
     for row in rows:
-        pr = re.match(r"Merge pull request #(\d+)", row["message"])
+        pr = re.match(r"Merge pull request #(\d+) ", row["message"])
         label = f"#{pr[1]}" if pr else row["sha"][:12]
-        if len(row["parents"]) != 2:
+        if len(row["parents"]) != 2 or not pr:
             return "failure", f"{label}: not a PR merge commit"
+        if _gh(f"repos/{github}/pulls/{pr[1]}", "--jq", ".head.sha").strip() != row["parents"][1]:
+            return "failure", f"{label}: merge parent is not the PR head"
         state = _gh(f"repos/{github}/commits/{row['parents'][1]}/status", "--jq",
                     f'[.statuses[] | select(.context=="{CONTEXT}")][0].state // ""').strip()
         if state != "success":
@@ -243,7 +247,10 @@ def main() -> int:
     ap.add_argument("--post", action="store_true", help="write the commit status (default: print only)")
     a = ap.parse_args()
     if a.merge_group_head:
-        state, desc = _out(*gate_merge_group(a.github, a.merge_group_base, a.merge_group_head))
+        try:
+            state, desc = _out(*gate_merge_group(a.github, a.merge_group_base, a.merge_group_head))
+        except Exception as e:  # an unposted status stalls the queue entry until its timeout: block instead
+            state, desc = "failure", f"cannot evaluate merge group: {type(e).__name__}"
         print(json.dumps({"context": CONTEXT, "sha": a.merge_group_head, "state": state, "description": desc}))
         if a.post:
             _gh(f"repos/{a.github}/statuses/{a.merge_group_head}", "-f", f"state={state}", "-f", f"context={CONTEXT}",
