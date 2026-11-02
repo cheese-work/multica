@@ -192,7 +192,7 @@ function run(args) {
       : "none";
     for (const { key, where } of result.strays) {
       const message = where === "close target"
-        ? `${key} is a PR close target not named by title or branch; linked issue(s): ${[...new Set([...issueKeys(pullRequest.title), ...issueKeys(pullRequest.head.ref.replace(AGENT_BRANCH_PREFIX, ""))])].join(", ")}`
+        ? `${key} is a PR close target not named by title or branch; linked issue(s): ${[...new Set([...issueKeys(pullRequest.title), ...issueKeys(withoutAgentName(pullRequest.head.ref))])].join(", ")}`
         : `${key} in PR ${where} is not declared as a close target; declared target(s): ${declared}`;
       console.log(
         `::error::${message}`,
@@ -204,7 +204,7 @@ function run(args) {
   const number = Number.isInteger(pullRequest.number) ? `#${pullRequest.number}` : "PR";
   const linkedKeys = [...new Set([
     ...issueKeys(pullRequest.title),
-    ...issueKeys(pullRequest.head.ref.replace(AGENT_BRANCH_PREFIX, "")),
+    ...issueKeys(withoutAgentName(pullRequest.head.ref)),
   ])];
   const targets = result.closeTargets.length > 0
     ? result.closeTargets

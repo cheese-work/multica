@@ -223,6 +223,21 @@ test("the CLI rejects the operational-parent fixture and accepts the child fixtu
   assert.match(correctTarget.stdout, /CHE-1926/);
 });
 
+test("the CLI output lists a CHE key held in the agent segment as the effective target", () => {
+  const dir = mkdtempSync(join(tmpdir(), "close-target-"));
+  try {
+    const event = join(dir, "event.json");
+    writeFileSync(event, JSON.stringify({
+      pull_request: { title: "fix", body: "Refs CHE-1", head: { ref: "agent/che-1/task" } },
+    }));
+    const result = spawnSync("node", [script, "--event", event], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /effective target\(s\): CHE-1 from title\/branch/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("the CLI skips upstream-sync heads", () => {
   const result = spawnSync(
     "node",
