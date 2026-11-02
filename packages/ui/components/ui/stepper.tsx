@@ -9,7 +9,6 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useRef,
   useState,
 } from "react"
 import { mergeProps } from "@base-ui/react/merge-props"
@@ -32,7 +31,7 @@ interface StepperContextValue {
   setActiveStep: (step: number) => void
   stepsCount: number
   orientation: StepperOrientation
-  registerTrigger: (node: HTMLButtonElement | null) => void
+  registerTrigger: (node: HTMLButtonElement) => () => void
   triggerNodes: HTMLButtonElement[]
   focusNext: (currentIdx: number) => void
   focusPrev: (currentIdx: number) => void
@@ -89,17 +88,18 @@ function Stepper({
   const [activeStep, setActiveStep] = useState(defaultValue)
   const [triggerNodes, setTriggerNodes] = useState<HTMLButtonElement[]>([])
 
-  // Register/unregister triggers
-  const registerTrigger = useCallback((node: HTMLButtonElement | null) => {
-    setTriggerNodes((prev) => {
-      if (node && !prev.includes(node)) {
-        return [...prev, node]
-      } else if (!node && prev.includes(node!)) {
-        return prev.filter((n) => n !== node)
-      } else {
-        return prev
-      }
-    })
+  // Register a trigger node (kept in DOM order); returns its unregister fn
+  const registerTrigger = useCallback((node: HTMLButtonElement) => {
+    setTriggerNodes((prev) =>
+      prev.includes(node)
+        ? prev
+        : [...prev, node].sort((a, b) =>
+            a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING
+              ? -1
+              : 1
+          )
+    )
+    return () => setTriggerNodes((prev) => prev.filter((n) => n !== node))
   }, [])
 
   const handleSetActiveStep = useCallback(
@@ -260,19 +260,22 @@ function StepperTrigger({
   const id = `stepper-tab-${step}`
   const panelId = `stepper-panel-${step}`
 
-  // Register this trigger for keyboard navigation
-  const btnRef = useRef<HTMLButtonElement>(null)
+  // Register this trigger for keyboard navigation. A state ref re-registers
+  // when `render` swaps the underlying node.
+  const [btnNode, setBtnNode] = useState<HTMLButtonElement | null>(null)
+  const btnRef = useCallback(
+    (node: HTMLElement | null) => setBtnNode(node as HTMLButtonElement | null),
+    []
+  )
   useEffect(() => {
-    if (btnRef.current) {
-      registerTrigger(btnRef.current)
-    }
-  }, [registerTrigger])
+    if (!btnNode) return undefined
+    return registerTrigger(btnNode)
+  }, [btnNode, registerTrigger])
 
   // Find our index among triggers for navigation
   const myIdx = useMemo(
-    () =>
-      triggerNodes.findIndex((n: HTMLButtonElement) => n === btnRef.current),
-    [triggerNodes]
+    () => triggerNodes.findIndex((n: HTMLButtonElement) => n === btnNode),
+    [triggerNodes, btnNode]
   )
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>) => {
