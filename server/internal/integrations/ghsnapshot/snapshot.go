@@ -14,6 +14,7 @@ const (
 	CausePR       = "pr"       // required, and not red on the base tip or on another run of the head
 	CauseInfra    = "infra"    // red on the base tip, or green on another run of the same head
 	CauseOptional = "optional" // not required by the base branch rules
+	CauseFlaky    = "flaky"    // a passing check that was red on this same head earlier
 )
 
 // CheckContext is one normalized check for a PR head. Both check runs and commit

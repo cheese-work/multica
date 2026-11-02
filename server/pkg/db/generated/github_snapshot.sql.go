@@ -400,6 +400,38 @@ func (q *Queries) ListGitHubPRNumbersByHeadSHA(ctx context.Context, arg ListGitH
 	return items, nil
 }
 
+const listGitHubPRRedCheckNames = `-- name: ListGitHubPRRedCheckNames :many
+SELECT name FROM github_pull_request_check_run
+WHERE pr_id = $1 AND head_sha = $2 AND red_cause IN ('pr', 'infra', 'flaky')
+`
+
+type ListGitHubPRRedCheckNamesParams struct {
+	PrID    pgtype.UUID `json:"pr_id"`
+	HeadSha string      `json:"head_sha"`
+}
+
+// Names of the checks stored red or flaky for this head, read before the
+// per-check replace so a green rerun of the same head can be marked flaky.
+func (q *Queries) ListGitHubPRRedCheckNames(ctx context.Context, arg ListGitHubPRRedCheckNamesParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listGitHubPRRedCheckNames, arg.PrID, arg.HeadSha)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		items = append(items, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGitHubPRRowsByAddress = `-- name: ListGitHubPRRowsByAddress :many
 
 SELECT gpr.id, gpr.workspace_id, gpr.head_sha, gpr.state

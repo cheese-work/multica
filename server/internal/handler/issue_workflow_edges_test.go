@@ -463,3 +463,53 @@ func TestEdgesChecksRedSplitsPRCausedFromInfra(t *testing.T) {
 		})
 	}
 }
+
+// CHE-3257: red on the head moves in_review to in_progress; when the same head
+// then comes back green on a rerun (the snapshot marks the check flaky), the
+// in_progress edge parks the issue in blocked.
+func TestEdgesGreenRerunOfRedHeadParksTheIssueInBlocked(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	const prNum, installationID = int32(325707), int64(3257000 + 325707)
+	c := newEdgeCase(t, installationID, []map[string]any{
+		{"status_key": "in_progress", "edges": []map[string]any{
+			{"to": "blocked", "guard": "pr.checks_flaky", "timeout": "72h", "on_timeout": "blocked"},
+		}},
+		{"status_key": "in_review", "edges": []map[string]any{
+			{"to": "in_progress", "guard": "pr.checks_red", "timeout": "72h", "on_timeout": "blocked"},
+		}},
+		{"status_key": "blocked"},
+	})
+	linkedPRForWakeup(t, c.fx, installationID, prNum, "edge-r")
+	ctx := context.Background()
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := testPool.Exec(ctx, q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`UPDATE github_pull_request SET checks_rollup_state='FAILURE', snapshot_head_sha=head_sha WHERE workspace_id=$1 AND pr_number=$2`, testWorkspaceID, prNum)
+	exec(`INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion, red_cause)
+		SELECT id, head_sha, 0, 'backend-tests', 'completed', 'failure', 'pr' FROM github_pull_request WHERE workspace_id=$1 AND pr_number=$2`, testWorkspaceID, prNum)
+	c.enter(t, "in_review")
+	tickEdges(t)
+	if got := c.status(t); got != "in_progress" {
+		t.Fatalf("red head: issue is %s, want in_progress", got)
+	}
+	due := func() {
+		exec(`UPDATE issue_wakeup SET next_fire_at=now() WHERE issue_id=$1 AND system_rule='workflow_edges'`, c.issueID)
+	}
+	due()
+	tickEdges(t)
+	if got := c.status(t); got != "in_progress" {
+		t.Fatalf("still red: issue is %s, want in_progress", got)
+	}
+	exec(`UPDATE github_pull_request SET checks_rollup_state='SUCCESS' WHERE workspace_id=$1 AND pr_number=$2`, testWorkspaceID, prNum)
+	exec(`UPDATE github_pull_request_check_run SET conclusion='success', red_cause='flaky' WHERE pr_id IN (SELECT id FROM github_pull_request WHERE workspace_id=$1 AND pr_number=$2)`, testWorkspaceID, prNum)
+	due()
+	tickEdges(t)
+	if got := c.status(t); got != "blocked" {
+		t.Fatalf("green rerun of the red head: issue is %s, want blocked", got)
+	}
+}

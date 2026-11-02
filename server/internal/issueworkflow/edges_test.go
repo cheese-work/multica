@@ -421,3 +421,34 @@ func TestChecksRedSplitsPRCausedFromInfraAndOptional(t *testing.T) {
 		t.Errorf("pr.checks_infra_red must parse and need a timeout: %v", err)
 	}
 }
+
+// CHE-3257: a required check that was red on this head and is green now on the
+// same head (a rerun) is flaky. pr.checks_flaky holds only on a fresh green
+// snapshot carrying that mark, so an issue already sent to in_progress by
+// pr.checks_red can still be parked in blocked.
+func TestChecksFlakyHoldsOnlyOnGreenRerunOfTheSameHead(t *testing.T) {
+	edges := []Edge{{To: "blocked", Guard: "pr.checks_flaky"}}
+	green := PRFact{State: "open", ChecksRollup: "SUCCESS", HeadFresh: true, RedCause: "flaky"}
+	stale, plain, red := green, green, green
+	stale.HeadFresh = false
+	plain.RedCause = ""
+	red.ChecksRollup = "FAILURE"
+	cases := []struct {
+		name string
+		pr   PRFact
+		want bool
+	}{
+		{"green rerun of a red head", green, true},
+		{"green and never red", plain, false},
+		{"stale head", stale, false},
+		{"still red", red, false},
+	}
+	for _, c := range cases {
+		if _, ok := FirstMatch(edges, Facts{PRs: []PRFact{c.pr}}); ok != c.want {
+			t.Errorf("%s: matched=%v, want %v", c.name, ok, c.want)
+		}
+	}
+	if g, err := ParseGuard("pr.checks_flaky"); err != nil || !g.needsTimeout() {
+		t.Errorf("pr.checks_flaky must parse and need a timeout: %v", err)
+	}
+}

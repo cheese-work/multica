@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"math/rand"
+	"slices"
 	"sync"
 	"time"
 
@@ -505,10 +506,19 @@ func (manager *Manager) applySnapshot(ctx context.Context, prID pgtype.UUID, sna
 		// rows. Nothing is written.
 		return false, nil
 	}
+	redBefore, err := q.ListGitHubPRRedCheckNames(ctx, db.ListGitHubPRRedCheckNamesParams{PrID: prID, HeadSha: snap.HeadSHA})
+	if err != nil {
+		return false, err
+	}
 	if err := q.DeleteGitHubPRCheckRuns(ctx, prID); err != nil {
 		return false, err
 	}
 	for i, c := range snap.Contexts {
+		if !isFailing(c) && slices.Contains(redBefore, c.Name) {
+			// Red earlier on this same head, rerunning or green now (CHE-3257).
+			// Carried through a pending rerun so the mark is still there on green.
+			c.RedCause = CauseFlaky
+		}
 		if err := q.InsertGitHubPRCheckRun(ctx, db.InsertGitHubPRCheckRunParams{
 			PrID:            prID,
 			HeadSha:         snap.HeadSHA,

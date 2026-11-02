@@ -62,6 +62,12 @@ WHERE gpr.id = sqlc.arg('pr_id')
         AND (w.settings ->> 'github_enabled') IS DISTINCT FROM 'false'
   );
 
+-- name: ListGitHubPRRedCheckNames :many
+-- Names of the checks stored red or flaky for this head, read before the
+-- per-check replace so a green rerun of the same head can be marked flaky.
+SELECT name FROM github_pull_request_check_run
+WHERE pr_id = $1 AND head_sha = $2 AND red_cause IN ('pr', 'infra', 'flaky');
+
 -- name: DeleteGitHubPRCheckRuns :exec
 -- First half of the atomic per-check replace. Runs inside the same transaction
 -- as UpdateGitHubPRSnapshot and the inserts below.
