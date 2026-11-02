@@ -48,11 +48,20 @@ func blocking(findings []ReviewFinding) bool {
 	return found
 }
 
+// errVerdictNeedsRun refuses a verdict from an agent without a run on this
+// issue: such a write names no reviewed PR or head, so it could not be counted
+// or skipped on.
+var errVerdictNeedsRun = errors.New("a review verdict must come from the agent's run on this issue (X-Task-ID of a run on this issue); a run of another issue names no reviewed PR or head")
+
 func writeReviewLoopError(w http.ResponseWriter, err error) bool {
-	if !errors.Is(err, errFindingsRequired) {
+	switch {
+	case errors.Is(err, errFindingsRequired):
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "review_verdict_findings_required"})
+	case errors.Is(err, errVerdictNeedsRun):
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": err.Error(), "code": "review_verdict_run_required"})
+	default:
 		return false
 	}
-	writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "review_verdict_findings_required"})
 	return true
 }
 
@@ -84,7 +93,14 @@ func runReviewHead(run *db.AgentTaskQueue) (prID, head string) {
 // need_decision. Any other move passes untouched. It runs again under the
 // issue row lock, so concurrent verdicts count one after the other.
 func (h *Handler) guardChangesVerdict(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, def *issueworkflow.Definition, caller workflowCaller) error {
-	if verdictOf(def, prev.Status, params.Status, caller) != "CHANGES" {
+	verdict := verdictOf(def, prev.Status, params.Status, caller)
+	if verdict == "" {
+		return nil
+	}
+	if caller.run == nil {
+		return errVerdictNeedsRun
+	}
+	if verdict != "CHANGES" {
 		return nil
 	}
 	if !blocking(caller.findings) {
@@ -126,7 +142,7 @@ func (w *workflowWrite) recordVerdict(ctx context.Context, q *db.Queries, moved 
 		WorkspaceID: prev.WorkspaceID,
 		IssueID:     prev.ID,
 		ActorType:   strToText("agent"),
-		ActorID:     w.caller.agentID,
+		ActorID:     w.caller.run.AgentID,
 		Action:      action,
 		Details:     details,
 	})

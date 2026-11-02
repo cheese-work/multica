@@ -287,20 +287,61 @@ func TestReviewLoop_OnlyTheLastVerdictHeadIsSkipped(t *testing.T) {
 	}
 }
 
-// An agent may deliver a verdict from a run of another issue (checkAgentMove
-// allows it): it is recorded under that agent, without a PR lineage, and does
-// not panic for want of a run on this issue.
-func TestReviewLoop_VerdictFromRunOfAnotherIssueIsRecorded(t *testing.T) {
-	l := newReviewLoop(t)
+// otherIssueRun is a running run of the loop's agent on a different issue.
+func (l reviewLoop) otherIssueRun(t *testing.T) string {
+	t.Helper()
 	other := dbfx.Issue(t, "other issue", testutil.Cols{"project_id": l.projectID, "status": "in_progress"})
-	otherRun := dbfx.Task(t, l.agentID, testutil.Cols{
+	return dbfx.Task(t, l.agentID, testutil.Cols{
 		"runtime_id": l.runtimeID, "issue_id": other, "status": "running",
 		"dispatched_at": testutil.Raw("now() - interval '5 minutes'"), "started_at": testutil.Raw("now() - interval '4 minutes'"),
 	})
-	agentUpdateIssue(t, l.issueID, l.agentID, otherRun, map[string]any{"status": "in_progress", "review_findings": []map[string]any{finding("P1")}}).Want(http.StatusOK)
-	var actor, prID string
-	dbfx.QueryRow(t, `SELECT actor_id::text, COALESCE(details->>'pull_request_id', 'missing') FROM activity_log WHERE issue_id = $1 AND action = 'review_changes_requested'`, l.issueID).Scan(&actor, &prID)
-	if actor != l.agentID || prID != "" {
-		t.Fatalf("recorded actor %q / PR %q, want %q / none", actor, prID, l.agentID)
+}
+
+func (l reviewLoop) verdictsRecorded(t *testing.T) (n int) {
+	t.Helper()
+	dbfx.QueryRow(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action IN ('review_changes_requested', 'review_passed')`, l.issueID).Scan(&n)
+	return n
+}
+
+// A verdict from a run of another issue names no reviewed PR or head, so it
+// could neither count as a round nor set the head to skip on: it is refused,
+// CHANGES and PASS alike, and the issue stays at its review step.
+func TestReviewLoop_VerdictFromRunOfAnotherIssueIsRefused(t *testing.T) {
+	l := newReviewLoop(t)
+	l.linkPR(t, reviewHeadA)
+	otherRun := l.otherIssueRun(t)
+	for name, body := range map[string]map[string]any{
+		"CHANGES": {"status": "in_progress", "review_findings": []map[string]any{finding("P1")}},
+		"PASS":    {"status": "in_review"},
+	} {
+		resp := agentUpdateIssue(t, l.issueID, l.agentID, otherRun, body).Want(http.StatusForbidden).Map()
+		if resp["code"] != "review_verdict_run_required" {
+			t.Fatalf("%s: refusal = %v", name, resp)
+		}
+		if status, _, _ := issueStatusAndAssignee(t, l.issueID); status != "agent_review" {
+			t.Fatalf("%s: status after refused verdict = %q, want agent_review", name, status)
+		}
+	}
+	if n := l.verdictsRecorded(t); n != 0 {
+		t.Fatalf("recorded verdicts = %d, want 0", n)
+	}
+}
+
+// Mixed origins: two rounds on the PR, then a third from another issue's run
+// is refused instead of counting zero rounds; the reviewer's own run then
+// hits the limit.
+func TestReviewLoop_CrossIssueVerdictCannotResetTheRoundCount(t *testing.T) {
+	l := newReviewLoop(t)
+	prID := l.linkPR(t, reviewHeadA)
+	l.priorChangesRounds(t, 2, prID)
+	body := map[string]any{"status": "in_progress", "review_findings": []map[string]any{finding("P1")}}
+
+	agentUpdateIssue(t, l.issueID, l.agentID, l.otherIssueRun(t), body).Want(http.StatusForbidden)
+	if status, _, _ := issueStatusAndAssignee(t, l.issueID); status != "agent_review" {
+		t.Fatalf("status after cross-issue verdict = %q, want agent_review", status)
+	}
+	agentUpdateIssue(t, l.issueID, l.agentID, l.run, body).Want(http.StatusOK)
+	if status, _, _ := issueStatusAndAssignee(t, l.issueID); status != "need_decision" {
+		t.Fatalf("third round from the reviewer's run: status = %q, want need_decision", status)
 	}
 }

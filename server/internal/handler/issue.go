@@ -4263,8 +4263,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		req.EntryGateOverrideReason = &reason
 	}
 	callerRun := h.agentRunOnIssue(r, actorType, prevIssue)
-	callerAgentID, _ := util.ParseUUID(actorID)
-	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, workflowCaller{run: callerRun, agent: actorType == "agent", agentID: callerAgentID, findings: req.ReviewFindings})
+	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, workflowCaller{run: callerRun, agent: actorType == "agent", findings: req.ReviewFindings})
 	if workflowWrite != nil {
 		workflowWrite.preview = req.HandoffPreview
 		workflowWrite.stopPrevious = req.StopPreviousAssigneeRuns
