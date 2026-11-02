@@ -40,6 +40,14 @@ func (h *Handler) requireSchedulingAdmin(w http.ResponseWriter, r *http.Request,
 // that decorates the response after the change has committed.
 var attachAgentSkillsForScheduling = (*Handler).attachAgentSkills
 
+// agentSkillsUnknown is the event shape when the skill lookup failed: the
+// shallower Skills field shadows AgentResponse.Skills and omitempty drops it, so
+// a client keeps the skills it has instead of reading an empty list.
+type agentSkillsUnknown struct {
+	AgentResponse
+	Skills *[]AgentSkillSummary `json:"skills,omitempty"`
+}
+
 func (h *Handler) PauseAgentScheduling(w http.ResponseWriter, r *http.Request) {
 	h.setAgentScheduling(w, r, true)
 }
@@ -90,7 +98,11 @@ func (h *Handler) setAgentScheduling(w http.ResponseWriter, r *http.Request, pau
 		if pause {
 			eventType = protocol.EventAgentSchedulingPaused
 		}
-		h.publish(eventType, wsID, actorType, actorID, map[string]any{"agent": broadcastAgentResponse(resp)})
+		payload := any(broadcastAgentResponse(resp))
+		if skillsErr != nil {
+			payload = agentSkillsUnknown{AgentResponse: broadcastAgentResponse(resp)}
+		}
+		h.publish(eventType, wsID, actorType, actorID, map[string]any{"agent": payload})
 	}
 	if skillsErr != nil {
 		slog.Warn("load agent skills after scheduling change failed", append(logger.RequestAttrs(r), "error", skillsErr, "agent_id", uuidToString(agent.ID))...)

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -156,6 +157,7 @@ func TestSchedulingPauseRoundTripKeepsFirstActor(t *testing.T) {
 // tests compare counts before and after.
 var (
 	pauseEventLog  = map[string]int{}
+	pauseEventLast = map[string]any{}
 	pauseEventMu   sync.Mutex
 	pauseEventOnce sync.Once
 )
@@ -168,6 +170,7 @@ func pauseEventCount(typ string) int {
 					pauseEventMu.Lock()
 					defer pauseEventMu.Unlock()
 					pauseEventLog[e.Type+"|"+e.WorkspaceID]++
+					pauseEventLast[e.Type+"|"+e.WorkspaceID] = e.Payload
 				})
 			}
 		}
@@ -175,6 +178,24 @@ func pauseEventCount(typ string) int {
 	pauseEventMu.Lock()
 	defer pauseEventMu.Unlock()
 	return pauseEventLog[typ+"|"+testWorkspaceID]
+}
+
+// pauseEventPayloadJSON is the JSON a WS client would receive for the last
+// event of this type in the fixture workspace.
+func pauseEventPayloadJSON(t *testing.T, typ string) map[string]map[string]json.RawMessage {
+	t.Helper()
+	pauseEventMu.Lock()
+	payload := pauseEventLast[typ+"|"+testWorkspaceID]
+	pauseEventMu.Unlock()
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 func TestSchedulingPauseEventsOncePerRealChange(t *testing.T) {
@@ -274,6 +295,14 @@ func TestSchedulingPauseSkillLoadFailureStillPublishes(t *testing.T) {
 		}
 		if step.verb == "pause" && !s.isPaused(t, id) {
 			t.Fatal("pause was not committed")
+		}
+		// The skill list is unknown here; the event must not claim it is empty.
+		agent := pauseEventPayloadJSON(t, step.event)["agent"]
+		if _, has := agent["skills"]; has {
+			t.Fatalf("%s event carries skills %s although the lookup failed", step.verb, agent["skills"])
+		}
+		if len(agent["id"]) == 0 {
+			t.Fatalf("%s event lost the agent payload: %v", step.verb, agent)
 		}
 	}
 }
