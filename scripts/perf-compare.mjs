@@ -13,12 +13,14 @@
  * floor means "run it again by hand", not "regression".
  *
  *   node scripts/perf-compare.mjs --base <ref> --head <ref> [--out <dir>]
+ *   node scripts/perf-compare.mjs --base <ref> --head <ref> --page-load [--rounds 5]
  */
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect, createServer } from "node:net";
+import { median } from "./page-load-report.mjs";
 
 const repoRoot = execFileSync("git", ["rev-parse", "--show-toplevel"]).toString().trim();
 const args = process.argv.slice(2);
@@ -171,14 +173,15 @@ const waitForServer = async (port, timeoutMs = 120_000) => {
 
 const seconds = (from) => Math.round((Date.now() - from) / 100) / 10;
 
-async function measure(ref, label) {
+/**
+ * Check out, install, build and start one ref. A failure here releases what it
+ * already started, so the caller only releases sides it received.
+ */
+async function prepare(ref, label) {
   const sha = execFileSync("git", ["rev-parse", ref], { cwd: repoRoot }).toString().trim();
   const checkout = mkdtempSync(join(tmpdir(), `perf-${label}-`));
   liveCheckouts.add(checkout);
-  let server;
-  let port;
-  // Everything this side started is torn down before it returns or throws, so
-  // the next side is measured on a machine with nothing of this one running.
+  const side = { ref, sha, checkout, server: undefined, port: undefined };
   try {
     console.log(`\n=== ${label}: ${ref} (${sha.slice(0, 9)}) ===`);
     run("git", ["worktree", "add", "--detach", checkout, sha], { cwd: repoRoot });
@@ -187,7 +190,7 @@ async function measure(ref, label) {
     // other ref's dependency tree is not that ref.
     const installStart = Date.now();
     run("pnpm", ["install", "--frozen-lockfile"], { cwd: checkout });
-    const installS = seconds(installStart);
+    side.installS = seconds(installStart);
 
     // REMOTE_API_URL is a runtime setting. Passing it to the build breaks
     // prerendering, and turbo filters it out of the build env anyway.
@@ -204,21 +207,41 @@ async function measure(ref, label) {
       { cwd: checkout, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
     );
     process.stdout.write(buildLog);
-    const buildS = seconds(buildStart);
-    const buildCached = /cache hit/.test(buildLog);
+    side.buildS = seconds(buildStart);
+    side.buildCached = /cache hit/.test(buildLog);
 
-    port = await freePort();
+    side.port = await freePort();
+    const { port } = side;
     const startStart = Date.now();
-    server = spawn("pnpm", ["--filter", "@multica/web", "start"], {
+    const server = spawn("pnpm", ["--filter", "@multica/web", "start"], {
       cwd: checkout,
       env: { ...process.env, PORT: String(port), REMOTE_API_URL: "http://127.0.0.1:1" },
       stdio: "ignore",
       detached: true,
     });
+    side.server = server;
     liveServers.add(server);
     await waitForServer(port);
-    const startS = seconds(startStart);
+    side.startS = seconds(startStart);
+    return side;
+  } catch (error) {
+    await release(side);
+    throw error;
+  }
+}
 
+async function release(side) {
+  if (side.server) await stopServer(side.server, side.port);
+  removeCheckout(side.checkout);
+}
+
+// Everything this side started is torn down before it returns or throws, so
+// the next side is measured on a machine with nothing of this one running.
+async function measure(ref, label) {
+  const side = await prepare(ref, label);
+  const { sha, port, buildCached } = side;
+  const [installS, buildS, startS] = [side.installS, side.buildS, side.startS];
+  try {
     // The spec, fixture and browser come from this working tree, not the ref's.
     const reportPath = join(outDir, `${label}.json`);
     // Only a report this run wrote may be read back. A file left by an earlier
@@ -263,8 +286,7 @@ async function measure(ref, label) {
       timings_s: { install: installS, build: buildS, start: startS, measure: measureS },
     };
   } finally {
-    if (server) await stopServer(server, port);
-    removeCheckout(checkout);
+    await release(side);
   }
 }
 
