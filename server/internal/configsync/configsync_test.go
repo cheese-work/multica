@@ -251,7 +251,7 @@ func TestFetchErrorFailsTheTarget(t *testing.T) {
 func TestPreMergeCommitPerMergeMethod(t *testing.T) {
 	// squash: one parent, PR had 3 commits whose messages differ from the squash commit.
 	g := base()
-	g.commits = map[string]Commit{"mrg": {Parents: []string{"pre"}, Message: "title (#7)"}, "pre": {Parents: []string{"p0"}}}
+	g.commits = map[string]Commit{"mrg": {Parents: []string{"pre"}, Message: "title (#7)"}, "pre": {Parents: []string{"p0"}, Message: "x"}, "p0": {Message: "y"}}
 	g.prMsgs = []string{"a", "b", "c"}
 	if r := eval(g, fakeTargets{"agent:" + agentUUID: "old"}); r.PreMergeSHA != "pre" {
 		t.Fatalf("squash: got %q", r.PreMergeSHA)
@@ -330,5 +330,78 @@ func TestParseSettings(t *testing.T) {
 		if _, err := ParseSettings(in); err == nil {
 			t.Errorf("%s: want error", name)
 		}
+	}
+}
+
+// The pre-merge boundary decides which mappings are trusted. An unreadable or
+// ambiguous history must fail closed, never fall back to the merge commit's
+// parent: inside a rebased PR that parent is a PR commit, so a mapping the PR
+// added in its first commit would be trusted as pre-merge.
+func TestPreMergeBoundaryFailsClosedWhenHistoryIsUnreadable(t *testing.T) {
+	rebased := func() *fakeGH {
+		g := base()
+		g.commits = map[string]Commit{
+			"mrg": {Parents: []string{"r2"}, Message: "c"},
+			"r2":  {Parents: []string{"r1"}, Message: "b"},
+			"r1":  {Parents: []string{"pre"}, Message: "a"},
+			"pre": {Parents: []string{"p0"}, Message: "base"},
+		}
+		g.prMsgs = []string{"a", "b", "c"}
+		return g
+	}
+	for _, missing := range []string{"r2", "r1"} {
+		g := rebased()
+		delete(g.commits, missing)
+		if r := eval(g, fakeTargets{"agent:" + agentUUID: "old"}); r.Skipped != "failed: fetch" || len(r.Targets) != 0 {
+			t.Errorf("read failure at %s: want failed: fetch, got skipped=%q targets=%v", missing, r.Skipped, r.Targets)
+		}
+	}
+
+	// More PR commits than the walk limit: cannot be proven, so no guess.
+	g := rebased()
+	g.prMsgs = make([]string, maxRebaseWalk+1)
+	if r := eval(g, fakeTargets{}); r.Skipped != "failed: fetch" {
+		t.Errorf("walk limit: want failed: fetch, got %q", r.Skipped)
+	}
+
+	// The attack: the PR adds a mapping in its first commit and changes the
+	// file in its last. With the history unreadable the receipt must not say
+	// "would apply" against the PR's own mapping.
+	g = rebased()
+	delete(g.commits, "r1")
+	g.files = map[string]string{
+		"r1:m.json":  manifest(entry("agent:"+agentUUID, "a.md")),
+		"pre:m.json": manifest(),
+		"mrg:m.json": manifest(entry("agent:"+agentUUID, "a.md")),
+		"r1:a.md":    "old",
+		"mrg:a.md":   "new",
+	}
+	if r := eval(g, fakeTargets{"agent:" + agentUUID: "old"}); r.Skipped != "failed: fetch" {
+		t.Errorf("attack: want failed: fetch, got skipped=%q targets=%v", r.Skipped, r.Targets)
+	}
+}
+
+func TestPreMergeBoundaryProvenNotRebase(t *testing.T) {
+	// Squash of 2 commits onto readable history: the messages do not match, so
+	// this is not a rebase and the single parent is the boundary.
+	g := base()
+	g.commits = map[string]Commit{"mrg": {Parents: []string{"pre"}, Message: "t (#7)"}, "pre": {Parents: []string{"p0"}, Message: "x"}}
+	g.prMsgs = []string{"a", "b"}
+	if r := eval(g, fakeTargets{}); r.PreMergeSHA != "pre" {
+		t.Errorf("squash: got %q (%q)", r.PreMergeSHA, r.Skipped)
+	}
+	// A merge commit inside the walk cannot be a rebase either.
+	g = base()
+	g.commits = map[string]Commit{"mrg": {Parents: []string{"pre"}, Message: "t (#7)"}, "pre": {Parents: []string{"p0", "p1"}, Message: "merge"}}
+	g.prMsgs = []string{"a", "b"}
+	if r := eval(g, fakeTargets{}); r.PreMergeSHA != "pre" {
+		t.Errorf("merge in walk: got %q (%q)", r.PreMergeSHA, r.Skipped)
+	}
+	// Fewer commits exist than the PR had: not a rebase.
+	g = base()
+	g.commits = map[string]Commit{"mrg": {Message: "root"}}
+	g.prMsgs = []string{"a", "b"}
+	if _, err := preMergeCommit(context.Background(), g, 7, "mrg"); err == nil {
+		t.Error("a merge commit with no parent must stay an error")
 	}
 }

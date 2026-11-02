@@ -5,4 +5,4 @@
 /server/internal/handler/config_sync_test.go              @congvc-dev
 /server/internal/handler/governed_instruction_owner_cas.go @congvc-dev
 /server/internal/integrations/ghsnapshot/configsync_reader.go @congvc-dev
-/server/migrations/883_workspace_config_sync.*.sql        @congvc-dev
+/server/migrations/897_workspace_config_sync.*.sql        @congvc-dev

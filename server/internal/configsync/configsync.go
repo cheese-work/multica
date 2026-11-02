@@ -257,6 +257,9 @@ func evaluateTarget(ctx context.Context, gh Reader, tg Targets, r Receipt, e man
 // parent for merge commits and squash merges; for a rebase merge, the parent of
 // the first rebased commit. A rebase is recognised when the PR has several
 // commits and the commits ending at the merge commit carry the same messages.
+// Unreadable or unprovable history is an error, never a guess: inside a rebased
+// PR the merge commit's parent is a PR commit, so guessing would trust the PR's
+// own mappings as pre-merge.
 func preMergeCommit(ctx context.Context, gh Reader, number int, mergeSHA string) (string, error) {
 	c, err := gh.Commit(ctx, mergeSHA)
 	if err != nil {
@@ -272,26 +275,29 @@ func preMergeCommit(ctx context.Context, gh Reader, number int, mergeSHA string)
 	if err != nil {
 		return "", err
 	}
-	if len(msgs) < 2 || len(msgs) > maxRebaseWalk {
+	if len(msgs) == 0 || len(msgs) > maxRebaseWalk {
+		return "", fmt.Errorf("cannot prove the merge method: PR has %d commits", len(msgs))
+	}
+	if len(msgs) == 1 {
 		return c.Parents[0], nil
 	}
 	cur, walked := c, []string{c.Message}
 	for len(walked) < len(msgs) {
 		if len(cur.Parents) != 1 {
-			return c.Parents[0], nil
+			return c.Parents[0], nil // a merge or root commit inside the walk: not a rebase
 		}
 		if cur, err = gh.Commit(ctx, cur.Parents[0]); err != nil {
-			return c.Parents[0], nil // squash: history shorter than the PR's commit list
+			return "", err
 		}
 		walked = append(walked, cur.Message)
 	}
 	for i, m := range msgs { // walked is newest first, msgs oldest first
 		if walked[len(msgs)-1-i] != m {
-			return c.Parents[0], nil
+			return c.Parents[0], nil // a rebase keeps every message: this is a squash
 		}
 	}
 	if len(cur.Parents) != 1 {
-		return c.Parents[0], nil
+		return "", fmt.Errorf("first rebased commit has %d parents", len(cur.Parents))
 	}
 	return cur.Parents[0], nil
 }
