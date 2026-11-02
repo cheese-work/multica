@@ -3616,6 +3616,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		Title:           req.Title,
 		Description:     ptrToText(req.Description),
 		Status:          status,
+		StatusOmitted:   req.Status == "",
 		Priority:        priority,
 		AssigneeType:    assigneeType,
 		AssigneeID:      assigneeID,
