@@ -49,9 +49,16 @@ describe("dashboard layout", () => {
   });
 });
 
-describe("search palette host dialogs", () => {
-  it("loads the autopilot dialog when the palette opens it, not at startup", () => {
-    const source = readFileSync(resolve(__dirname, "search/host-dialogs.tsx"), "utf8");
-    expect(source).not.toMatch(/^import \{ AutopilotDialog \}/m);
+// Next warns (INEFFECTIVE_DYNAMIC_IMPORT, which fails the warning budget) when
+// a module is imported dynamically in one place and statically in another.
+// Every importer of the autopilot form goes through its lazy wrapper.
+describe("autopilot dialog", () => {
+  it.each([
+    "search/host-dialogs.tsx",
+    "autopilots/components/autopilots-page.tsx",
+    "autopilots/components/autopilot-detail-page.tsx",
+  ])("%s does not import the dialog statically", (file) => {
+    const source = readFileSync(resolve(__dirname, file), "utf8");
+    expect(source).not.toMatch(/from\s+["'][^"']*\/autopilot-dialog["']/);
   });
 });

@@ -1,6 +1,5 @@
 "use client";
 
-import { lazy, Suspense } from "react";
 import { toast } from "sonner";
 import { useBatchDeleteIssues, useCancelIssueRun } from "@multica/core/issues/mutations";
 import {
@@ -13,15 +12,11 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@multica/ui/components/ui/alert-dialog";
+import { AutopilotDialog } from "../autopilots/components/autopilot-dialog-lazy";
 import { TerminateTaskConfirmDialog } from "../issues/components/terminate-task-confirm-dialog";
 import { useT } from "../i18n";
 import type { PaletteHostDialog } from "./types";
 
-// The autopilot form drags in the schedule editor and the rich-text editor;
-// it only mounts when the palette opens it.
-const AutopilotDialog = lazy(() =>
-  import("../autopilots/components/autopilot-dialog").then((m) => ({ default: m.AutopilotDialog })),
-);
 
 /**
  * Confirms and forms a palette command opens after the palette closes. They
@@ -43,11 +38,7 @@ export function PaletteHostDialogs({
     case "batch-delete":
       return <BatchDeleteDialog dialog={dialog} onClose={onClose} />;
     case "new-autopilot":
-      return (
-        <Suspense fallback={null}>
-          <AutopilotDialog mode="create" open onOpenChange={(open) => !open && onClose()} />
-        </Suspense>
-      );
+      return <AutopilotDialog mode="create" open onOpenChange={(open) => !open && onClose()} />;
   }
 }
 
