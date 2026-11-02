@@ -70,18 +70,7 @@ function liveLines(body) {
   });
 }
 
-function truncateGraphemes(text, limit) {
-  let used = 0;
-  let out = "";
-  for (const { segment } of new Intl.Segmenter("en", { granularity: "grapheme" }).segment(text)) {
-    used += [...segment].length;
-    if (used > limit) break;
-    out += segment;
-  }
-  return out;
-}
-
-const result = (status, text, override, warnings) => ({ status, text, override, warnings });
+const result = (status, text, override, warnings, overLimit = false) => ({ status, text, override, warnings, overLimit });
 
 export function parseChangelogLine(body) {
   const matches = liveLines(typeof body === "string" ? body : "")
@@ -115,12 +104,11 @@ export function parseChangelogLine(body) {
     return result("parse-error", null, null, warnings);
   }
 
-  let text = cleaned;
-  if ([...text].length > MAX_CODE_POINTS) {
-    text = truncateGraphemes(text, MAX_CODE_POINTS).trimEnd();
-    warnings.push(`Truncated to ${MAX_CODE_POINTS} characters.`);
-  }
-  return result("text", text, override ?? null, warnings);
+  // Never cut: the PR check fails an over-limit line so its author shortens it, and
+  // entries merged before that rule keep their complete sentence.
+  const overLimit = [...cleaned].length > MAX_CODE_POINTS;
+  if (overLimit) warnings.push(`The Changelog line is over ${MAX_CODE_POINTS} characters: shorten it to one short sentence.`);
+  return result("text", cleaned, override ?? null, warnings, overLimit);
 }
 
 const titleType = (title) => /^([a-z]+)(?:\([^)]*\))?!?:/i.exec(title ?? "")?.[1].toLowerCase() ?? null;
@@ -206,12 +194,13 @@ export function evaluatePr(pr, options = {}) {
     section: sectionFor(pr.title, parsed.override),
     text: parsed.text,
     warnings: parsed.warnings,
+    overLimit: parsed.overLimit,
   };
 }
 
 export function formatCheck(evaluation) {
   if (evaluation.kind === "entry") {
-    return { line: `Entry: [${evaluation.section}] "${evaluation.text}"`, failing: false, warnings: evaluation.warnings };
+    return { line: `Entry: [${evaluation.section}] "${evaluation.text}"`, failing: evaluation.overLimit, warnings: evaluation.warnings };
   }
   const missingLine = evaluation.reason === "missing" || evaluation.reason === "parse-error";
   return {
@@ -323,7 +312,7 @@ function runCheck(eventPath, options, env) {
   console.log(check.line);
   for (const message of check.warnings) console.log(`::warning::${message}`);
   if (check.failing) {
-    console.log('::error::This feat/fix/perf PR has no valid Changelog line. Add "Changelog: <sentence>" or "Changelog: none".');
+    console.log('::error::This PR has no valid Changelog line (feat/fix/perf need one; any line over 140 characters fails). Add "Changelog: <sentence>" or "Changelog: none".');
   }
   if (env.GITHUB_STEP_SUMMARY) {
     const lines = ["### Fork changelog", "", "```text", check.line.replace(/`/g, "'"), "```"];

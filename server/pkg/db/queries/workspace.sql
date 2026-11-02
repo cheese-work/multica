@@ -2,7 +2,9 @@
 SELECT w.id, w.name, w.slug, w.description, w.settings,
        w.created_at, w.updated_at, w.context, w.repos,
        w.issue_prefix, w.issue_counter, w.avatar_url, w.attribution_fail_closed,
-       w.export_redaction_mode, w.export_manifest_retention_days
+       w.export_redaction_mode, w.export_manifest_retention_days,
+       w.decision_passkey_gate, w.policy_revision,
+       w.scheduling_paused_at, w.scheduling_paused_by
 FROM member m
 JOIN workspace w ON w.id = m.workspace_id
 WHERE m.user_id = $1
@@ -320,3 +322,18 @@ cleared_client_usage_workspace AS (
     UPDATE client_usage_daily SET workspace_id = NULL WHERE workspace_id = $1
 )
 DELETE FROM workspace WHERE workspace.id = $1;
+
+-- name: PauseWorkspaceScheduling :one
+-- Pause claim for every agent in the workspace. Same contract as
+-- PauseAgentScheduling (idempotent, first actor and time win): enqueue and running tasks are untouched.
+UPDATE workspace
+SET scheduling_paused_at = COALESCE(scheduling_paused_at, now()),
+    scheduling_paused_by = COALESCE(scheduling_paused_by, @actor_id)
+WHERE id = @id
+RETURNING *;
+
+-- name: ResumeWorkspaceScheduling :one
+UPDATE workspace
+SET scheduling_paused_at = NULL, scheduling_paused_by = NULL
+WHERE id = @id
+RETURNING *;
