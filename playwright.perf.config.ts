@@ -8,11 +8,12 @@ import { defineConfig, devices } from "@playwright/test";
  * The default e2e config ignores this directory, so `pnpm exec playwright test`
  * never picks it up by accident.
  *
- * The layout-stability specs run once per measurement profile, each its own
- * project so the profile name is in every result line. `chromium` keeps the
- * older scenarios exactly as they were.
+ * `desktop` and `phone` are the two fixed measurement profiles (CHE-2976,
+ * CHE-2973): the page-load baseline and the layout-stability specs run once per
+ * profile, each its own project so the profile name is in every result line.
+ * `chromium` keeps the older scenarios exactly as they were.
  */
-const STABILITY_SPECS = /chip-stability\.spec\.ts$/;
+const PROFILE_SPECS = /(chip-stability|page-load-baseline)\.spec/;
 export default defineConfig({
   testDir: "./e2e/perf",
   timeout: 180_000,
@@ -24,20 +25,16 @@ export default defineConfig({
     headless: true,
   },
   projects: [
-    {
-      name: "chromium",
-      testIgnore: STABILITY_SPECS,
-      use: { browserName: "chromium" },
-    },
+    { name: "chromium", testIgnore: PROFILE_SPECS, use: { browserName: "chromium" } },
     {
       name: "desktop",
-      testMatch: STABILITY_SPECS,
+      testMatch: PROFILE_SPECS,
       use: { browserName: "chromium", viewport: { width: 1440, height: 900 }, hasTouch: false },
     },
     {
       // Pixel 7 sets viewport 412x915, isMobile, hasTouch, the phone user agent and scale factor.
       name: "phone",
-      testMatch: STABILITY_SPECS,
+      testMatch: PROFILE_SPECS,
       use: { ...devices["Pixel 7"], browserName: "chromium" },
     },
   ],
