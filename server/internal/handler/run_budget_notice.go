@@ -16,6 +16,7 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
+	"github.com/multica-ai/multica/server/pkg/redact"
 )
 
 // runBudgetCommitWait bounds how long a warning waits, after its transaction
@@ -298,7 +299,7 @@ const recentRunsShown = 3
 const recentRunSnippetLen = 200
 
 // runBudgetRecentRunsNote lists the issue's newest finished runs with their
-// outcome, so whoever reads the exhaustion notice sees what the budget was spent
+// outcome (redacted, as run output may hold credentials), so whoever reads the exhaustion notice sees what the budget was spent
 // on without opening the history. Best effort like the token figure: a failed
 // read drops the list, never the notice. It reads on the pool, before the
 // notice's transaction opens.
@@ -321,7 +322,10 @@ func (h *Handler) runBudgetRecentRunsNote(ctx context.Context, issue db.Issue) s
 		if detail == "" {
 			detail = "no result recorded"
 		}
-		fmt.Fprintf(&b, "\n- %s, %s: %s", run.AgentName, run.Status, strings.Join(strings.Fields(truncateRunes(detail, recentRunSnippetLen)), " "))
+		// Redact the whole text before cutting it: a credential that straddles the
+		// cut would otherwise survive as a prefix no pattern matches.
+		detail = truncateRunes(redact.Text(detail), recentRunSnippetLen)
+		fmt.Fprintf(&b, "\n- %s, %s: %s", run.AgentName, run.Status, strings.Join(strings.Fields(detail), " "))
 	}
 	return b.String()
 }

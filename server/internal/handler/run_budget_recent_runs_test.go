@@ -65,3 +65,37 @@ func TestRunBudgetExhaustionNoticeShowsFailedRunError(t *testing.T) {
 		t.Fatalf("notice lacks the failed run and its error:\n%s", got)
 	}
 }
+
+// Fake credentials are assembled at run time so no scanner flags the source.
+func fakeGitHubToken() string { return "ghp_" + strings.Repeat("A", 36) }
+
+func TestRunBudgetExhaustionNoticeRedactsRunOutputAndError(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c := newBudgetCase(t, 2310022, mergeEdgeSteps, 3)
+	c.spend(t, 3)
+	token := fakeGitHubToken()
+	// Pushes the token across the 200-rune cut, so truncating first would leave
+	// a prefix the patterns no longer match.
+	straddle := strings.Repeat("x", recentRunSnippetLen-10) + " " + token
+	for i, q := range []string{
+		`UPDATE agent_task_queue SET status='failed', error=$2::text WHERE id = (SELECT id FROM agent_task_queue WHERE issue_id=$1 ORDER BY created_at LIMIT 1 OFFSET 0)`,
+		`UPDATE agent_task_queue SET result=jsonb_build_object('output', $2::text) WHERE id = (SELECT id FROM agent_task_queue WHERE issue_id=$1 ORDER BY created_at LIMIT 1 OFFSET 1)`,
+		`UPDATE agent_task_queue SET result=jsonb_build_object('output', $2::text) WHERE id = (SELECT id FROM agent_task_queue WHERE issue_id=$1 ORDER BY created_at LIMIT 1 OFFSET 2)`,
+	} {
+		detail := []string{"clone failed with GITHUB_TOKEN=" + token, "pushed using " + token, straddle}[i]
+		if _, err := testPool.Exec(context.Background(), q, c.issueID, detail); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c.refuse(t)
+	c.waitNotices(t, service.RunBudgetKindExhausted, 1)
+	got := c.exhaustedNotice(t)
+	if strings.Contains(got, "ghp_") {
+		t.Fatalf("notice leaks a credential:\n%s", got)
+	}
+	if !strings.Contains(got, "clone failed") || !strings.Contains(got, "pushed using") {
+		t.Fatalf("notice lost the run text around the credential:\n%s", got)
+	}
+}
