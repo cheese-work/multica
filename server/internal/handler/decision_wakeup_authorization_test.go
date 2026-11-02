@@ -86,10 +86,7 @@ func TestCardDecisionQuoteAttributionRejectsUnboundSource(t *testing.T) {
 			case "kind":
 				dbfx.Exec(t, `UPDATE comment SET decision_comment_kind = 'delivery' WHERE id = $1`, result.Comment.ID)
 			case "recorder":
-				dbfx.Exec(t, `UPDATE decision_answer SET answered_by_task_id = $1, answered_by_user_id = NULL,
-					answer_source = 'agent_record', source_chat_session_id = $3,
-					chat_message_ids = ARRAY(SELECT id FROM chat_message WHERE decision_answer_id = $2 AND role = 'user')
-					WHERE id = $2`, fixture.chatTaskID, result.Answer.ID, fixture.sessionID)
+				dbfx.Exec(t, `UPDATE decision_answer SET answer_source = 'agent_record', answered_by_user_id = NULL, answered_by_task_id = $1 WHERE id = $2`, fixture.chatTaskID, result.Answer.ID)
 			}
 			originator := testHandler.TaskService.ResolveOriginatorFromTriggerComment(context.Background(), workspaceID, result.Comment.ID)
 			if originator.Valid {

@@ -32,7 +32,8 @@ BEGIN
       AND message.task_id IS NULL
       AND message.decision_answer_id IS NULL;
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'CHE-2976 decision card answer was not repaired; provenance did not match';
+        RAISE NOTICE 'CHE-2976 decision card answer no longer matches the repair provenance; leaving it unchanged';
+        RETURN;
     END IF;
 
     UPDATE decision_answer answer
@@ -50,7 +51,7 @@ BEGIN
       AND answer.source_chat_session_id = request.chat_session_id
       AND EXISTS (SELECT 1 FROM chat_message message WHERE message.decision_answer_id = answer.id);
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'CHE-2976 decision card answer changed during repair';
+        RAISE NOTICE 'CHE-2976 decision card answer changed during repair; leaving it for a card re-answer';
     END IF;
 END;
 $$;

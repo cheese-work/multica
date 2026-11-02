@@ -35,7 +35,7 @@ func TestCardOptionAnswerRecordsOnThatCardWithoutDMRun(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	if result.Request.Status != "answered" || result.Answer.AnswerSource != "card" || result.Answer.AnsweredByTaskID.Valid || result.Answer.AnsweredByUserID != parseUUID(fixture.humanID) || result.Answer.SourceChatSessionID.Valid || len(result.Answer.ChatMessageIds) != 0 || !result.Answer.WakeAt.Valid || result.Answer.ContentSnapshot != "Option B" || !result.Answer.ChosenOptionIndex.Valid || result.Answer.ChosenOptionIndex.Int32 != 1 {
+	if result.Request.Status != "answered" || result.Answer.AnswerSource != "card" || result.Answer.AnsweredByTaskID.Valid || result.Answer.AnsweredByUserID != parseUUID(fixture.humanID) || result.Answer.SourceChatSessionID != parseUUID(fixture.sessionID) || len(result.Answer.ChatMessageIds) != 1 || !result.Answer.WakeAt.Valid || result.Answer.ContentSnapshot != "Option B" || !result.Answer.ChosenOptionIndex.Valid || result.Answer.ChosenOptionIndex.Int32 != 1 {
 		test.Fatalf("wrong answered state: %+v %+v", result.Request, result.Answer)
 	}
 	if count := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id IN (SELECT id FROM decision_request WHERE issue_id = $1)`, fixture.issueID); count != 1 {
@@ -46,7 +46,7 @@ func TestCardOptionAnswerRecordsOnThatCardWithoutDMRun(test *testing.T) {
 	}
 	var role, sentVia string
 	var taskless bool
-	dbfx.QueryRow(test, `SELECT role, sent_via, task_id IS NULL FROM chat_message WHERE decision_answer_id = $1`, result.Answer.ID).Scan(&role, &sentVia, &taskless)
+	dbfx.QueryRow(test, `SELECT role, sent_via, task_id IS NULL FROM chat_message WHERE id = ANY($1)`, result.Answer.ChatMessageIds).Scan(&role, &sentVia, &taskless)
 	if role != "user" || sentVia != "interactive_jwt" || !taskless {
 		test.Fatalf("answer message = %s/%s/taskless=%v", role, sentVia, taskless)
 	}
