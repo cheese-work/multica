@@ -83,10 +83,13 @@ func guardAgentIssueStatus(ctx context.Context, queries *db.Queries, params db.U
 }
 
 func writeAgentIssueStatusError(writer http.ResponseWriter, err error) bool {
+	var refused *decisionEpisodeRefusal
 	switch {
 	case errors.Is(err, service.ErrAgentIssueApproval):
 		writeError(writer, http.StatusForbidden, err.Error())
 	case errors.Is(err, errAgentIssueOpenPR), errors.Is(err, errAgentIssueOpenDecision):
+		writeError(writer, http.StatusConflict, err.Error())
+	case errors.As(err, &refused):
 		writeError(writer, http.StatusConflict, err.Error())
 	default:
 		return false

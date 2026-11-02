@@ -180,6 +180,21 @@ func TestEncodeStepsRoundTripsHandoffs(t *testing.T) {
 	}
 }
 
+func TestEncodeStepsKeepsTheHumanInChargeHandler(t *testing.T) {
+	steps := []Step{{StatusKey: "need_decision", Handler: Handler{Type: HandlerHumanInCharge}}}
+	if steps[0].HandsOff() {
+		t.Fatal("human_in_charge must not hand the issue off by itself")
+	}
+	raw, err := EncodeSteps(steps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := DecodeSteps(raw)
+	if err != nil || !reflect.DeepEqual(got, steps) {
+		t.Fatalf("DecodeSteps = %+v, %v; want %+v", got, err, steps)
+	}
+}
+
 func TestNextStatusFallsBackToTheNextColumn(t *testing.T) {
 	def := devDefinition()
 	if got := def.NextStatus("implement"); got != "code_review" {
