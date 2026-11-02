@@ -74,6 +74,7 @@ import { DecisionWithdrawalCard } from "./decision-withdrawal-card";
 import { WakeupEventRow, WakeupReplyRail } from "./wakeup-event-row";
 import { stripWakeupHeader } from "@multica/core/chat/wakeup";
 import { ContinuationBlock } from "./continuation-block";
+import { ChatSupplementStatus } from "./chat-supplement-status";
 import { predecessorChain } from "../lib/predecessor-chain";
 
 // ─── Public component ────────────────────────────────────────────────────
@@ -1012,6 +1013,7 @@ const MessageBubble = memo(function MessageBubble({
           />
         </div>
         <MessageTime iso={message.created_at} className="mt-0.5 block text-right" />
+        {message.supplement ? <ChatSupplementStatus supplement={message.supplement} /> : null}
         {message.decision_quotes?.map((card) => (
           <DecisionDmCard key={card.answer_id} card={card} />
         ))}
