@@ -19,7 +19,7 @@
  * profiles instead (CHE-2976) and tabulates API requests and LCP per route.
  */
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, openSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect, createServer } from "node:net";
@@ -219,7 +219,8 @@ async function measure(ref, label) {
     server = spawn("pnpm", ["--filter", "@multica/web", "start"], {
       cwd: checkout,
       env: { ...process.env, PORT: String(port), REMOTE_API_URL: "http://127.0.0.1:1" },
-      stdio: "ignore",
+      // Kept: a server that dies mid-run is otherwise only a refused connection.
+      stdio: ["ignore", openSync(join(outDir, `${label}-server.log`), "w"), "inherit"],
       detached: true,
     });
     liveServers.add(server);
