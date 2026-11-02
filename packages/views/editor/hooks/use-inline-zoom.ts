@@ -61,12 +61,19 @@ export function stepScale(scale: number, factor: number): number {
 export function useInlineZoom({
   content,
   maxHeight,
+  minFitScale = 0,
   scrollRef,
 }: {
   /** Natural size of the diagram, or null before it has rendered. */
   content: Size | null;
   /** Tallest the fitted diagram may be drawn. */
   maxHeight: number;
+  /**
+   * Smallest scale the height cap may shrink the fit to. A tall diagram fitted
+   * whole into `maxHeight` would draw its text unreadably small; below this it
+   * keeps its size and the box scrolls. The column's width still wins.
+   */
+  minFitScale?: number;
   /** The preview's scroll box: measured for the fit, scrolled to keep zoom centered. */
   scrollRef: RefObject<HTMLElement | null>;
 }): InlineZoom {
@@ -105,11 +112,13 @@ export function useInlineZoom({
   }, [content?.width, content?.height]);
 
   const natural = content ?? { width: 1, height: 1 };
-  const fitScale = computeFitScale(natural, {
-    // Unmeasured (no layout, e.g. jsdom) constrains the height only.
-    width: availableWidth > 0 ? availableWidth : natural.width,
-    height: maxHeight,
-  });
+  // Unmeasured (no layout, e.g. jsdom) constrains the height only.
+  const width = availableWidth > 0 ? availableWidth : natural.width;
+  const widthFit = computeFitScale(natural, { width, height: natural.height });
+  const fitScale = Math.max(
+    computeFitScale(natural, { width, height: maxHeight }),
+    Math.min(widthFit, minFitScale),
+  );
   const scale = zoom === null ? fitScale : Math.max(fitScale, zoom);
   const fitted = scale <= fitScale + 0.001;
   const size: Size = {

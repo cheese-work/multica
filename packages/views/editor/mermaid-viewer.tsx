@@ -44,6 +44,7 @@ import {
   downloadBlob,
   renderSvgToPngBlob,
 } from "./utils/mermaid-export";
+import { hashSource } from "./utils/source-hash";
 import type { Size } from "./utils/zoom-transform";
 import { MediaLinkAction, ViewerActions } from "../media/media-context";
 
@@ -308,6 +309,10 @@ function MermaidViewerContent({
           >
             {viewerDocument && (
               <iframe
+                // Keyed on the drawing: Chrome drops a `srcdoc` change made
+                // while the first document is still loading, which left the old
+                // direction's diagram in the new direction's frame (CHE-2750).
+                key={hashSource(viewerDocument)}
                 className="mermaid-viewer-frame"
                 sandbox=""
                 srcDoc={viewerDocument}

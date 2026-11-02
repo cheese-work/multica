@@ -43,6 +43,7 @@ vi.mock("mermaid", () => ({
 const MOCK_SVG = '<svg viewBox="0 0 1000 500"><g><text>mock diagram</text></g></svg>';
 
 import { MermaidDiagram } from "./mermaid-diagram";
+import { MERMAID_FONT_PX, MERMAID_MIN_TEXT_PX } from "./utils/mermaid-theme";
 import { hashSource } from "./utils/source-hash";
 
 const CHART = "graph LR\n  A[Start] --> B[Done]";
@@ -409,7 +410,7 @@ describe("MermaidDiagram inline presentation", () => {
     expect(screen.getByText("80%")).toBeInTheDocument();
   });
 
-  it("fits a tall diagram to the preview's height cap", async () => {
+  it("keeps a tall diagram's text at body size and scrolls it inside the height cap", async () => {
     mermaidRenderMock.mockResolvedValue({
       svg: '<svg viewBox="0 0 400 1792"><g><text>tall</text></g></svg>',
     });
@@ -417,11 +418,15 @@ describe("MermaidDiagram inline presentation", () => {
     render(<MermaidDiagram chart={CHART} />);
 
     const frame = await findFrame();
+    const scroller = await findScroller();
 
-    // Capped at 448px tall, so the preview never grows past the frame's
-    // collapse threshold and always shows the whole diagram.
-    expect(frame.style.width).toBe("100px");
-    expect(frame.style.height).toBe("448px");
+    // Fitting 1792px into 448px would draw the 15px labels at ~4px (CHE-2750).
+    // The scale stops at body size and the box scrolls instead, so the preview
+    // still never grows past the frame's collapse threshold.
+    expect(Number.parseFloat(frame.style.width)).toBeGreaterThanOrEqual(
+      (400 * MERMAID_MIN_TEXT_PX) / MERMAID_FONT_PX - 1,
+    );
+    expect(scroller.style.maxHeight).toBe("448px");
   });
 
   it("never upscales a diagram that already fits", async () => {
@@ -819,7 +824,8 @@ describe("MermaidDiagram auto top-down", () => {
   });
 
   it("keeps a diagram whose scaled text is exactly the minimum", async () => {
-    stubColumnWidth(800);
+    // MOCK_SVG is 1000 wide.
+    stubColumnWidth((1000 * MERMAID_MIN_TEXT_PX) / MERMAID_FONT_PX);
     render(<MermaidDiagram chart={CHART} />);
     await findFrame();
     expect(mermaidRenderMock).toHaveBeenCalledTimes(1);
