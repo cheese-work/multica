@@ -158,6 +158,9 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 			"decision_intent_targets": []string{uuidToString(result.Request.HumanUserID)},
 		})
 	}
+	if result.Parked {
+		handler.publishDecisionStatusChange(request.Context(), issue, result.ParkedIssue, "decision_request")
+	}
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
 	handler.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(result.Request.HumanUserID), uuidToString(result.Message.ChatSessionID), protocol.ChatMessagePayload{
 		MessageKind:   result.Message.MessageKind,

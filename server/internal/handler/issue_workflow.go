@@ -1060,6 +1060,17 @@ func (h *Handler) DeleteIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to delete workflow")
 		return
 	}
+	if !isInteractiveRequest(r) {
+		widens, err := workflowDeleteWidensBudget(ctx, qtx, row, len(projects) > 0)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to delete workflow")
+			return
+		}
+		if widens {
+			writeBudgetRebindingRefused(w)
+			return
+		}
+	}
 	if len(projects) > 0 {
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"error":         fmt.Sprintf("%d project(s) still use this workflow; switch them to another workflow first", len(projects)),
@@ -1216,6 +1227,17 @@ func (h *Handler) SetProjectWorkflow(w http.ResponseWriter, r *http.Request) {
 			targetID = pgtype.UUID{}
 		} else {
 			target = &def
+		}
+	}
+	if !isInteractiveRequest(r) {
+		widens, err := projectSwitchWidensBudget(ctx, qtx, project, target)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to change workflow")
+			return
+		}
+		if widens {
+			writeBudgetRebindingRefused(w)
+			return
 		}
 	}
 	catalog, err := h.workflowStatusCatalog(ctx, qtx, wsUUID)
@@ -1489,6 +1511,22 @@ func (h *Handler) saveHandoffOnProjectCopy(w http.ResponseWriter, r *http.Reques
 		slog.Warn("SetIssueWorkflowHandoff copy failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to save handoff")
 		return
+	}
+	if !isInteractiveRequest(r) {
+		def, err := issueworkflow.Decode(row)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to save handoff")
+			return
+		}
+		widens, err := projectSwitchWidensBudget(ctx, qtx, project, &def)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to save handoff")
+			return
+		}
+		if widens {
+			writeBudgetRebindingRefused(w)
+			return
+		}
 	}
 	updated, err := qtx.SetProjectWorkflow(ctx, db.SetProjectWorkflowParams{ID: project.ID, WorkspaceID: source.WorkspaceID, WorkflowID: row.ID})
 	if err != nil {
