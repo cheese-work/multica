@@ -67,7 +67,7 @@ import { useAttachmentVersions } from "./deliverables/attachment-versions";
 import { VersionBadge } from "./deliverables/version-badge";
 import { useRunCommentMotion } from "./use-run-comment-motion";
 import { WakeupSourceChip } from "./wakeup-source-chip";
-import { DecisionQuoteCard, DecisionWithdrawalLine, decisionDisplayActor } from "./decision-quote-card";
+import { DecisionAskJump, DecisionQuoteCard, DecisionWithdrawalLine, decisionDisplayActor } from "./decision-quote-card";
 
 const commentActionClassName =
   "text-muted-foreground aria-expanded:bg-transparent aria-expanded:hover:bg-muted dark:aria-expanded:hover:bg-muted/50";
@@ -1032,6 +1032,7 @@ function CommentRow({
             ) : (
               <>
                 <CommentBody entry={entry} forceOpen={isHighlighted || findManualCollapseDisabled} findOpen={findManualCollapseDisabled} />
+                {entry.decision_comment_kind === "ask" && <DecisionAskJump entry={entry} issueId={issueId} onJumpToComment={onJumpToComment} />}
                 {entry.decision_receipt_answer_id && (
                   <DecisionQuoteCard compact entry={entry} issueId={issueId} currentUserId={currentUserId} onJumpToComment={onJumpToComment} />
                 )}
@@ -1594,6 +1595,7 @@ function CommentCardImpl({
                   ) : (
                     <>
                       <CommentBody entry={entry} forceOpen={isHighlighted || findManualCollapseDisabled} findOpen={findManualCollapseDisabled} />
+                      {entry.decision_comment_kind === "ask" && <DecisionAskJump entry={entry} issueId={issueId} onJumpToComment={onJumpToComment} />}
                       {entry.decision_receipt_answer_id && (
                         <DecisionQuoteCard compact entry={entry} issueId={issueId} currentUserId={currentUserId} onJumpToComment={onJumpToComment} />
                       )}
