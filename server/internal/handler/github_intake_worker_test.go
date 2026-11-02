@@ -949,3 +949,28 @@ func TestGitHubDispatchHaltRestoreRetriesFailedSweep(t *testing.T) {
 		t.Fatalf("pre-halt run status = %s, want cancelled", status)
 	}
 }
+
+// A halt can commit and fail its sweep after a restore read the unfinished sweeps but before it took
+// the lock; the restore then sees the failure under the lock and is refused.
+func TestGitHubDispatchHaltRestoreRecheckedUnderLock(t *testing.T) {
+	newGitHubIntakeFixture(t)
+	cleanHaltTables(t)
+	ctx := context.Background()
+	for _, ddl := range []string{
+		`INSERT INTO github_dispatch_halt (workspace_id, scope) VALUES ($1, '*')`,
+		`INSERT INTO github_dispatch_halt_audit (workspace_id, scope, halted, actor_source, sweep_failed) VALUES ($1, '*', true, 'member', true)`,
+	} {
+		if _, err := testPool.Exec(ctx, ddl, testWorkspaceID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := testHandler.commitGitHubDispatchHalt(ctx, db.RecordGitHubDispatchHaltAuditParams{
+		WorkspaceID: parseUUID(testWorkspaceID), Scope: "*", Halted: false, ActorID: parseUUID(testUserID), ActorSource: "member",
+	})
+	if !errors.Is(err, errGitHubDispatchHaltBusy) {
+		t.Fatalf("restore over a failed sweep, past the first read: err = %v, want busy", err)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM github_dispatch_halt WHERE workspace_id=$1`, testWorkspaceID); n != 1 {
+		t.Fatalf("halt rows = %d, want 1", n)
+	}
+}

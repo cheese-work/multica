@@ -115,8 +115,8 @@ func (h *Handler) finishAbandonedSweeps(ctx context.Context, workspaceID pgtype.
 	return nil
 }
 
-// errGitHubDispatchHaltBusy means an earlier halt's sweep is still running.
-var errGitHubDispatchHaltBusy = errors.New("an earlier kill switch change is still revoking runs")
+// errGitHubDispatchHaltBusy means an earlier halt's sweep is running or failed since the restore looked.
+var errGitHubDispatchHaltBusy = errors.New("an earlier kill switch change has not finished revoking runs")
 
 func (h *Handler) commitGitHubDispatchHalt(ctx context.Context, audit db.RecordGitHubDispatchHaltAuditParams) (db.RecordGitHubDispatchHaltAuditRow, error) {
 	tx, err := h.TxStarter.Begin(ctx)
@@ -129,7 +129,7 @@ func (h *Handler) commitGitHubDispatchHalt(ctx context.Context, audit db.RecordG
 		return db.RecordGitHubDispatchHaltAuditRow{}, err
 	}
 	if !audit.Halted {
-		busy, err := q.HasPendingGitHubDispatchHaltSweep(ctx, audit.WorkspaceID)
+		busy, err := q.HasUnfinishedGitHubDispatchHaltSweep(ctx, audit.WorkspaceID)
 		if err != nil {
 			return db.RecordGitHubDispatchHaltAuditRow{}, err
 		}

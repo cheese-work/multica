@@ -50,13 +50,14 @@ func (q *Queries) HaltGitHubDispatch(ctx context.Context, arg HaltGitHubDispatch
 	return err
 }
 
-const hasPendingGitHubDispatchHaltSweep = `-- name: HasPendingGitHubDispatchHaltSweep :one
-SELECT EXISTS (SELECT 1 FROM github_dispatch_halt_audit WHERE workspace_id = $1 AND sweep_pending)
+const hasUnfinishedGitHubDispatchHaltSweep = `-- name: HasUnfinishedGitHubDispatchHaltSweep :one
+SELECT EXISTS (SELECT 1 FROM github_dispatch_halt_audit WHERE workspace_id = $1 AND halted AND (sweep_pending OR sweep_failed))
 `
 
-// A restore is refused while any halt's sweep is pending: no connection waits for another change.
-func (q *Queries) HasPendingGitHubDispatchHaltSweep(ctx context.Context, workspaceID pgtype.UUID) (bool, error) {
-	row := q.db.QueryRow(ctx, hasPendingGitHubDispatchHaltSweep, workspaceID)
+// Read by a restore under the exclusive lock, after it reran the sweeps it knew of: a sweep still
+// pending or failed now means a halt committed in between, and the restore is refused.
+func (q *Queries) HasUnfinishedGitHubDispatchHaltSweep(ctx context.Context, workspaceID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, hasUnfinishedGitHubDispatchHaltSweep, workspaceID)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err

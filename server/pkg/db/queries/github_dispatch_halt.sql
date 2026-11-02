@@ -65,9 +65,10 @@ SELECT pg_advisory_xact_lock_shared(hashtextextended('github_dispatch_halt:' || 
 -- Taken by a switch change; waits for in-flight dispatches and blocks new ones until it commits.
 SELECT pg_advisory_xact_lock(hashtextextended('github_dispatch_halt:' || sqlc.arg(workspace_id)::uuid::text, 0));
 
--- name: HasPendingGitHubDispatchHaltSweep :one
--- A restore is refused while any halt's sweep is pending: no connection waits for another change.
-SELECT EXISTS (SELECT 1 FROM github_dispatch_halt_audit WHERE workspace_id = $1 AND sweep_pending);
+-- name: HasUnfinishedGitHubDispatchHaltSweep :one
+-- Read by a restore under the exclusive lock, after it reran the sweeps it knew of: a sweep still
+-- pending or failed now means a halt committed in between, and the restore is refused.
+SELECT EXISTS (SELECT 1 FROM github_dispatch_halt_audit WHERE workspace_id = $1 AND halted AND (sweep_pending OR sweep_failed));
 
 -- name: ListAbandonedGitHubDispatchHaltSweeps :many
 -- A sweep that failed, or is still pending after ten minutes (a crash), is unfinished: the next
