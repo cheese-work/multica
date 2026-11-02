@@ -360,7 +360,8 @@
   },
   "chat": {
     "floating_label": "悬浮聊天窗",
-    "floating_hint": "在每个页面显示悬浮聊天按钮。"
+    "floating_hint": "在每个页面显示悬浮聊天按钮。",
+    "recent_agents_label": "新建聊天中的最近智能体"
   },
   "issue": {
     "opening": {

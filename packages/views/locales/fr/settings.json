@@ -363,7 +363,8 @@
   },
   "chat": {
     "floating_label": "Fenêtre de discussion flottante",
-    "floating_hint": "Afficher le bouton de chat flottant sur chaque page."
+    "floating_hint": "Afficher le bouton de chat flottant sur chaque page.",
+    "recent_agents_label": "Agents récents dans Nouvelle discussion"
   },
   "issue": {
     "opening": {

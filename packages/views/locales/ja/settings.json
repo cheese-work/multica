@@ -360,7 +360,8 @@
   },
   "chat": {
     "floating_label": "フローティングチャット",
-    "floating_hint": "すべてのページにフローティングチャットボタンを表示します。"
+    "floating_hint": "すべてのページにフローティングチャットボタンを表示します。",
+    "recent_agents_label": "新規チャットの最近のエージェント"
   },
   "issue": {
     "opening": {
