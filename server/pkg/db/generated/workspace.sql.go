@@ -368,6 +368,41 @@ func (q *Queries) GetWorkspaceExportPrivacyForUpdate(ctx context.Context, id pgt
 	return i, err
 }
 
+const getWorkspaceForUpdate = `-- name: GetWorkspaceForUpdate :one
+SELECT id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days, decision_passkey_gate, policy_revision, scheduling_paused_at, scheduling_paused_by FROM workspace
+WHERE id = $1
+FOR UPDATE
+`
+
+// Scheduling pause/resume reads the prior state under this lock, so the caller
+// that flips it is the only one that sees a transition.
+func (q *Queries) GetWorkspaceForUpdate(ctx context.Context, id pgtype.UUID) (Workspace, error) {
+	row := q.db.QueryRow(ctx, getWorkspaceForUpdate, id)
+	var i Workspace
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Slug,
+		&i.Description,
+		&i.Settings,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Context,
+		&i.Repos,
+		&i.IssuePrefix,
+		&i.IssueCounter,
+		&i.AvatarUrl,
+		&i.AttributionFailClosed,
+		&i.ExportRedactionMode,
+		&i.ExportManifestRetentionDays,
+		&i.DecisionPasskeyGate,
+		&i.PolicyRevision,
+		&i.SchedulingPausedAt,
+		&i.SchedulingPausedBy,
+	)
+	return i, err
+}
+
 const incrementIssueCounter = `-- name: IncrementIssueCounter :one
 UPDATE workspace SET issue_counter = issue_counter + 1
 WHERE id = $1

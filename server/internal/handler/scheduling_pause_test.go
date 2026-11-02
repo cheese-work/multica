@@ -1,9 +1,13 @@
 package handler
 
 import (
+	"context"
 	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -147,39 +151,129 @@ func TestSchedulingPauseRoundTripKeepsFirstActor(t *testing.T) {
 	}
 }
 
-func TestSchedulingPauseEventsOncePerRealChange(t *testing.T) {
-	var mu sync.Mutex
-	seen := map[string]int{}
-	for _, s := range pauseScopes() {
-		for _, typ := range []string{s.pEvent, s.rEvent} {
-			testHandler.Bus.Subscribe(typ, func(e events.Event) {
-				mu.Lock()
-				defer mu.Unlock()
-				seen[e.Type+"|"+e.WorkspaceID]++
-			})
+// pauseEventLog counts scheduling events per type for the fixture workspace.
+// The bus has no unsubscribe, so the subscription is made once per process and
+// tests compare counts before and after.
+var (
+	pauseEventLog  = map[string]int{}
+	pauseEventMu   sync.Mutex
+	pauseEventOnce sync.Once
+)
+
+func pauseEventCount(typ string) int {
+	pauseEventOnce.Do(func() {
+		for _, s := range pauseScopes() {
+			for _, typ := range []string{s.pEvent, s.rEvent} {
+				testHandler.Bus.Subscribe(typ, func(e events.Event) {
+					pauseEventMu.Lock()
+					defer pauseEventMu.Unlock()
+					pauseEventLog[e.Type+"|"+e.WorkspaceID]++
+				})
+			}
 		}
-	}
-	count := func(typ string) int {
-		mu.Lock()
-		defer mu.Unlock()
-		return seen[typ+"|"+testWorkspaceID]
-	}
+	})
+	pauseEventMu.Lock()
+	defer pauseEventMu.Unlock()
+	return pauseEventLog[typ+"|"+testWorkspaceID]
+}
+
+func TestSchedulingPauseEventsOncePerRealChange(t *testing.T) {
+	pauseEventCount("") // subscribe before any call
 	for _, s := range pauseScopes() {
 		id := s.target(t)
-		p0, r0 := count(s.pEvent), count(s.rEvent)
+		p0, r0 := pauseEventCount(s.pEvent), pauseEventCount(s.rEvent)
 		s.call(t, s.resume, "resume", id, nil).Want(http.StatusOK) // no-op
 		s.call(t, s.pause, "pause", id, nil).Want(http.StatusOK)
 		s.call(t, s.pause, "pause", id, nil).Want(http.StatusOK) // no-op
-		if got := count(s.pEvent) - p0; got != 1 {
+		if got := pauseEventCount(s.pEvent) - p0; got != 1 {
 			t.Fatalf("%s: %s published %d times, want 1", s.name, s.pEvent, got)
 		}
-		if got := count(s.rEvent) - r0; got != 0 {
+		if got := pauseEventCount(s.rEvent) - r0; got != 0 {
 			t.Fatalf("%s: %s published %d times before a real resume, want 0", s.name, s.rEvent, got)
 		}
 		s.call(t, s.resume, "resume", id, nil).Want(http.StatusOK)
 		s.call(t, s.resume, "resume", id, nil).Want(http.StatusOK) // no-op
-		if got := count(s.rEvent) - r0; got != 1 {
+		if got := pauseEventCount(s.rEvent) - r0; got != 1 {
 			t.Fatalf("%s: %s published %d times, want 1", s.name, s.rEvent, got)
+		}
+	}
+}
+
+// fireConcurrently runs fn n times at once and returns the status codes.
+func fireConcurrently(n int, fn func() int) []int {
+	codes := make([]int, n)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range codes {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			codes[i] = fn()
+		}()
+	}
+	close(start)
+	wg.Wait()
+	return codes
+}
+
+// The transition is decided with the write, not from an earlier read: n callers
+// racing for one transition publish one event, whichever scope.
+func TestSchedulingPauseConcurrentCallsPublishOncePerTransition(t *testing.T) {
+	const racers = 8
+	for _, s := range pauseScopes() {
+		id := s.target(t)
+		do := func(fn http.HandlerFunc, verb string) func() int {
+			return func() int {
+				req := withURLParam(newRequest("POST", s.path(id)+"/"+verb, nil), "id", id)
+				rec := httptest.NewRecorder()
+				fn(rec, req)
+				return rec.Code
+			}
+		}
+		pauseEventCount("")
+		for _, step := range []struct {
+			verb  string
+			fn    http.HandlerFunc
+			event string
+		}{{"pause", s.pause, s.pEvent}, {"resume", s.resume, s.rEvent}} {
+			before := pauseEventCount(step.event)
+			for _, code := range fireConcurrently(racers, do(step.fn, step.verb)) {
+				if code != http.StatusOK {
+					t.Fatalf("%s %s: status %d, want 200", s.name, step.verb, code)
+				}
+			}
+			if got := pauseEventCount(step.event) - before; got != 1 {
+				t.Fatalf("%s: %d concurrent %s calls published %s %d times, want 1", s.name, racers, step.verb, step.event, got)
+			}
+		}
+	}
+}
+
+// The change is committed before the response is built; a failure to decorate
+// the response must not swallow its event, because a retry sees a no-op.
+func TestSchedulingPauseSkillLoadFailureStillPublishes(t *testing.T) {
+	pauseEventCount("")
+	orig := attachAgentSkillsForScheduling
+	attachAgentSkillsForScheduling = func(*Handler, context.Context, *AgentResponse, pgtype.UUID) error {
+		return context.DeadlineExceeded
+	}
+	t.Cleanup(func() { attachAgentSkillsForScheduling = orig })
+
+	s := pauseScopes()[0]
+	id := s.target(t)
+	for _, step := range []struct {
+		verb  string
+		fn    http.HandlerFunc
+		event string
+	}{{"pause", s.pause, s.pEvent}, {"resume", s.resume, s.rEvent}} {
+		before := pauseEventCount(step.event)
+		s.call(t, step.fn, step.verb, id, nil).Want(http.StatusInternalServerError)
+		if got := pauseEventCount(step.event) - before; got != 1 {
+			t.Fatalf("%s failed after commit published %s %d times, want 1", step.verb, step.event, got)
+		}
+		if step.verb == "pause" && !s.isPaused(t, id) {
+			t.Fatal("pause was not committed")
 		}
 	}
 }

@@ -1,10 +1,12 @@
 package handler
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/multica-ai/multica/server/internal/logger"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -34,6 +36,10 @@ func (h *Handler) requireSchedulingAdmin(w http.ResponseWriter, r *http.Request,
 	return userID, true
 }
 
+// attachAgentSkillsForScheduling is a seam so a test can fail the skill read
+// that decorates the response after the change has committed.
+var attachAgentSkillsForScheduling = (*Handler).attachAgentSkills
+
 func (h *Handler) PauseAgentScheduling(w http.ResponseWriter, r *http.Request) {
 	h.setAgentScheduling(w, r, true)
 }
@@ -59,12 +65,13 @@ func (h *Handler) setAgentScheduling(w http.ResponseWriter, r *http.Request, pau
 
 	var (
 		updated db.Agent
+		changed bool
 		err     error
 	)
 	if pause {
-		updated, err = h.TaskService.PauseAgentScheduling(r.Context(), agent.WorkspaceID, agent.ID, parseUUID(userID))
+		updated, changed, err = h.TaskService.PauseAgentScheduling(r.Context(), agent.WorkspaceID, agent.ID, parseUUID(userID))
 	} else {
-		updated, err = h.TaskService.ResumeAgentScheduling(r.Context(), agent.WorkspaceID, agent.ID)
+		updated, changed, err = h.TaskService.ResumeAgentScheduling(r.Context(), agent.WorkspaceID, agent.ID)
 	}
 	if err != nil {
 		slog.Warn("set agent scheduling failed", append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(agent.ID), "pause", pause)...)
@@ -72,21 +79,23 @@ func (h *Handler) setAgentScheduling(w http.ResponseWriter, r *http.Request, pau
 		return
 	}
 
+	// The change has committed. Publish its event before anything that can fail:
+	// a retry sees a no-op and would never publish it. A no-op (already paused /
+	// already running) answers 200 with the current state and publishes nothing.
 	resp := h.agentToResponse(updated)
-	if err := h.attachAgentSkills(r.Context(), &resp, updated.ID); err != nil {
-		slog.Warn("load agent skills after scheduling change failed", append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(agent.ID))...)
-		writeError(w, http.StatusInternalServerError, "failed to load agent skills")
-		return
-	}
-	// A no-op (already paused / already running) answers 200 with the current
-	// state but publishes nothing.
+	skillsErr := attachAgentSkillsForScheduling(h, r.Context(), &resp, updated.ID)
 	actorType, actorID := h.resolveActor(r, userID, wsID)
-	if agent.SchedulingPausedAt.Valid != pause {
+	if changed {
 		eventType := protocol.EventAgentSchedulingResumed
 		if pause {
 			eventType = protocol.EventAgentSchedulingPaused
 		}
 		h.publish(eventType, wsID, actorType, actorID, map[string]any{"agent": broadcastAgentResponse(resp)})
+	}
+	if skillsErr != nil {
+		slog.Warn("load agent skills after scheduling change failed", append(logger.RequestAttrs(r), "error", skillsErr, "agent_id", uuidToString(agent.ID))...)
+		writeError(w, http.StatusInternalServerError, "failed to load agent skills")
+		return
 	}
 	redactAgentResponseForActor(&resp, actorType)
 	writeJSON(w, http.StatusOK, resp)
@@ -110,17 +119,19 @@ func (h *Handler) setWorkspaceScheduling(w http.ResponseWriter, r *http.Request,
 	if !ok {
 		return
 	}
-	ws, err := h.Queries.GetWorkspace(r.Context(), wsUUID)
-	if err != nil {
+	var (
+		updated db.Workspace
+		changed bool
+		err     error
+	)
+	if pause {
+		updated, changed, err = h.TaskService.PauseWorkspaceScheduling(r.Context(), wsUUID, parseUUID(userID))
+	} else {
+		updated, changed, err = h.TaskService.ResumeWorkspaceScheduling(r.Context(), wsUUID)
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "workspace not found")
 		return
-	}
-
-	var updated db.Workspace
-	if pause {
-		updated, err = h.TaskService.PauseWorkspaceScheduling(r.Context(), wsUUID, parseUUID(userID))
-	} else {
-		updated, err = h.TaskService.ResumeWorkspaceScheduling(r.Context(), wsUUID)
 	}
 	if err != nil {
 		slog.Warn("set workspace scheduling failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", wsID, "pause", pause)...)
@@ -129,7 +140,7 @@ func (h *Handler) setWorkspaceScheduling(w http.ResponseWriter, r *http.Request,
 	}
 
 	resp := h.workspaceToResponse(updated)
-	if ws.SchedulingPausedAt.Valid != pause {
+	if changed {
 		eventType := protocol.EventWorkspaceSchedulingResumed
 		if pause {
 			eventType = protocol.EventWorkspaceSchedulingPaused
