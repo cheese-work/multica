@@ -6,10 +6,17 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestDecisionAskPostsOnlyTheAskToTheOneStepRoute(test *testing.T) {
+	for _, words := range [][]string{{"decision", "ask"}, {"agent", "decision", "ask"}} {
+		test.Run(strings.Join(words, " "), func(test *testing.T) { postDecisionAsk(test, words) })
+	}
+}
+
+func postDecisionAsk(test *testing.T, words []string) {
 	var path string
 	var body map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -21,9 +28,9 @@ func TestDecisionAskPostsOnlyTheAskToTheOneStepRoute(test *testing.T) {
 	test.Setenv("MULTICA_SERVER_URL", server.URL)
 	test.Setenv("MULTICA_TOKEN", "mat_test-token")
 	test.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
-	command, _, err := rootCmd.Find([]string{"decision", "ask"})
+	command, _, err := rootCmd.Find(words)
 	if err != nil || command.Name() != "ask" {
-		test.Fatalf("decision ask is unavailable: %v", err)
+		test.Fatalf("%v is unavailable: %v", words, err)
 	}
 	askPath := filepath.Join(test.TempDir(), "ask.json")
 	if err := os.WriteFile(askPath, []byte(structuredAskJSON(test, "Ship it?")), 0o600); err != nil {

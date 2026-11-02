@@ -20,13 +20,21 @@ func init() {
 	}
 	decisionCmd.AddCommand(command)
 
+	// The same command lives at `decision ask` and at `agent decision ask`.
+	agentDecisionCmd := &cobra.Command{Use: "decision", Short: "Decisions asked from this agent's run"}
+	agentDecisionCmd.AddCommand(newDecisionAskCmd())
+	agentCmd.AddCommand(agentDecisionCmd)
+	decisionCmd.AddCommand(newDecisionAskCmd())
+}
+
+func newDecisionAskCmd() *cobra.Command {
 	ask := &cobra.Command{Use: "ask", Short: "Ask the issue's requester one decision from this run; the server picks the person and the DM lane", Args: cobra.NoArgs, RunE: runDecisionAsk}
 	ask.Flags().String("class", "", "reversible, spend, deploy, publish, irreversible, or product_direction")
 	ask.Flags().String("ask-file", "", "UTF-8 JSON ask, same shape as decision request --ask-file")
 	ask.Flags().String("footer-file", "", "Optional UTF-8 file appended to the issue comment only, e.g. RHC-2 lines")
 	ask.Flags().String("parent", "", "Comment UUID to reply under (default: top-level)")
 	ask.Flags().String("output", "json", "Output format: table or json")
-	decisionCmd.AddCommand(ask)
+	return ask
 }
 
 // runDecisionAsk is decision request without the issue, lane and person: the
