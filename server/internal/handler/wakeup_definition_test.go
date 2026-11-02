@@ -163,6 +163,7 @@ func configKeys(t *testing.T, raw json.RawMessage) map[string]json.RawMessage {
 // ---- activation gate -------------------------------------------------------
 
 func TestWakeupDefinitionWritesClosedByDefault(t *testing.T) {
+	useWakeupActivation(t)
 	k := &wdKit{t: t, projectID: dbfx.Project(t, "wd project")}
 	k.issueID = dbfx.Issue(t, "wd issue", testutil.Cols{"project_id": k.projectID, "number": nextWorkspaceIssueNumber(t)})
 	wipeWakeupDefinitions(t)

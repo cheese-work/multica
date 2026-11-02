@@ -263,6 +263,9 @@ type Handler struct {
 	LocalSkillListStore   LocalSkillListStore
 	LocalSkillImportStore LocalSkillImportStore
 	FeatureFlags          *featureflag.Service
+	// WakeupActivationKey selects the wakeup definition activation the write gate
+	// reads; empty is production's. Tests set their own.
+	WakeupActivationKey string
 	// GovernanceReceipts runs the CHE-685 observe-only Jev governance
 	// receipt capture hook after a comment create/edit commits. Nil is the
 	// safe default (every call site checks for it before use) — every

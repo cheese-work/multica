@@ -2981,6 +2981,18 @@ type WakeupAggregateReservation struct {
 	ReservedAt  pgtype.Timestamptz `json:"reserved_at"`
 }
 
+type WakeupDefinitionActivation struct {
+	Name        string             `json:"name"`
+	State       string             `json:"state"`
+	Cursor      pgtype.UUID        `json:"cursor"`
+	Scanned     int64              `json:"scanned"`
+	Inserted    int64              `json:"inserted"`
+	LastError   pgtype.Text        `json:"last_error"`
+	StartedAt   pgtype.Timestamptz `json:"started_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	CompletedAt pgtype.Timestamptz `json:"completed_at"`
+}
+
 type WakeupScopedEvent struct {
 	ID           pgtype.UUID        `json:"id"`
 	WorkspaceID  pgtype.UUID        `json:"workspace_id"`

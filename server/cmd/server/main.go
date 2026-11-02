@@ -858,6 +858,11 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.IssueWakeupJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register issue wakeups", "error", err)
 	}
+	// CHE-1082: the legacy backfill that opens scoped wakeup definition writes.
+	// It runs from the deploy that ships it, so activation needs no manual step.
+	if err := schedulerMgr.Register(scheduler.WakeupDefinitionActivationJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
+		slog.Error("scheduler: register wakeup definition activation", "error", err)
+	}
 	if err := schedulerMgr.Register(scheduler.ChatWakeupJob(&service.ChatWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register chat wakeups", "error", err)
 	}
