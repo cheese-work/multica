@@ -144,7 +144,14 @@
       "missing_name": "Name the rule (up to {{max}} characters).",
       "unsupported_filter": "A workspace rule cannot filter by author or agent yet. Choose anyone or any agent.",
       "unsupported_schedule": "A workspace rule cannot run on a schedule yet. Choose an event or a condition.",
-      "closed_error": "Wakeup rules are not open for editing yet."
+      "closed_error": "Wakeup rules are not open for editing yet.",
+      "edit": "Edit {{name}}",
+      "edit_title": "Edit workspace rule",
+      "edit_unsupported": "This rule uses options this editor cannot change. Delete it and create a new one.",
+      "conflict_error": "Someone else changed this rule. The list is reloaded; edit it again.",
+      "cancel": "Cancel",
+      "save": "Save rule",
+      "saving": "Saving…"
     }
   },
   "quick_actions": {

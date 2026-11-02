@@ -16,6 +16,7 @@ import { buildWakeupInput, emptyWakeupDraft, type WakeupDraft, type WakeupDraftE
 export function useWakeupForm({
   workspaceId,
   defaultAgentId,
+  initial,
   save,
   onSaved,
   onBusy,
@@ -23,6 +24,8 @@ export function useWakeupForm({
 }: {
   workspaceId: string;
   defaultAgentId: string;
+  /** Draft fields to open with, for editing a saved rule. */
+  initial?: Partial<WakeupDraft>;
   save: (input: IssueWakeupInput) => Promise<unknown>;
   onSaved: () => void;
   onBusy?: (busy: boolean) => void;
@@ -32,7 +35,7 @@ export function useWakeupForm({
   const { t } = useT("issues");
   const text = useWakeupText();
   const timezone = useViewingTimezone();
-  const [draft, setDraft] = useState(() => emptyWakeupDraft(defaultAgentId, timezone));
+  const [draft, setDraft] = useState(() => ({ ...emptyWakeupDraft(defaultAgentId, timezone), ...initial }));
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const inFlight = useRef(false);

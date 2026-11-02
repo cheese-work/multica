@@ -1,5 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { api, ApiError } from "@multica/core/api";
 import type { WakeupDefinition } from "@multica/core/types";
@@ -13,6 +13,7 @@ vi.mock("@multica/core/api", async (importOriginal) => ({
     previewWakeupDefinition: vi.fn(),
     createWakeupDefinition: vi.fn(),
     deleteWakeupDefinition: vi.fn(),
+    saveWakeupDefinition: vi.fn(),
   },
 }));
 vi.mock("@multica/core/properties/queries", () => ({
@@ -24,14 +25,17 @@ vi.mock("../../issues/components/wakeup-condition-names", () => ({
 }));
 // The shared fields have their own tests; here a stub fills the draft they own.
 vi.mock("../../issues/components/wakeup-fields", () => ({
-  WakeupFields: ({ update, scope }: { update: (patch: object) => void; scope: { issueId?: string; definition?: boolean } }) => (
-    <button
-      type="button"
-      data-scope={scope.issueId ? "issue" : scope.definition ? "definition" : "plain"}
-      onClick={() => update({ condition: "custom", events: ["issue.updated"], agentId: "agent-1", instruction: "Look at it" })}
-    >
-      Fill fields
-    </button>
+  WakeupFields: ({ draft, update, scope }: { draft: { instruction: string; agentId: string; waitDays: number }; update: (patch: object) => void; scope: { issueId?: string; definition?: boolean } }) => (
+    <>
+      <button
+        type="button"
+        data-scope={scope.issueId ? "issue" : scope.definition ? "definition" : "plain"}
+        onClick={() => update({ condition: "custom", events: ["issue.updated"], agentId: "agent-1", instruction: "Look at it" })}
+      >
+        Fill fields
+      </button>
+      <output>{`draft:${draft.agentId}|${draft.instruction}|${draft.waitDays}`}</output>
+    </>
   ),
 }));
 
@@ -39,12 +43,21 @@ const list = vi.mocked(api.listWakeupDefinitions);
 const preview = vi.mocked(api.previewWakeupDefinition);
 const create = vi.mocked(api.createWakeupDefinition);
 const remove = vi.mocked(api.deleteWakeupDefinition);
+const save = vi.mocked(api.saveWakeupDefinition);
 
 const open = { definition_writes: true, trigger_kinds: ["event"], fields: ["name"] };
 const closed = { definition_writes: false, trigger_kinds: [], fields: [] };
 const existing: WakeupDefinition = {
   scope: "workspace", scope_id: "ws", rule_key: "6f1a2b3c-4d5e-4f60-8a7b-9c0d1e2f3a4b", root: true, revision: "3",
   config: { v: 1, name: "Triage", instruction: "Triage it", trigger: { kind: "event" } }, updated_at: null, redacted: false,
+};
+// A rule the editor can write back: an event trigger with events, an agent, a wait from the offered choices.
+const editable: WakeupDefinition = {
+  ...existing, rule_key: "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", revision: "7",
+  config: {
+    v: 1, name: "Watch PRs", instruction: "Check the PR", trigger: { kind: "event", events: ["comment.created"] },
+    target: { type: "agent", id: "agent-2" }, mode: "once", expiry: { after_seconds: 3 * 86400 }, rate_limit: 4, filters: { labels: ["a"] },
+  },
 };
 const effective = {
   rule_key: "x", scope: "workspace", applicable: true, inapplicable_reason: "", enabled: true, config: { v: 1 }, sources: {},
@@ -70,6 +83,7 @@ beforeEach(() => {
   preview.mockReset().mockResolvedValue(effective as never);
   create.mockReset().mockResolvedValue(existing as never);
   remove.mockReset().mockResolvedValue(undefined);
+  save.mockReset().mockResolvedValue(editable as never);
 });
 
 it("shows nothing while the server keeps definition writes closed", async () => {
@@ -142,4 +156,71 @@ it("is read-only for members who cannot manage the workspace", async () => {
   expect(await screen.findByText("Triage")).toBeVisible();
   expect(screen.queryByRole("button", { name: "Create rule" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Delete Triage" })).toBeNull();
+});
+
+async function openEditor() {
+  fireEvent.click(await screen.findByRole("button", { name: "Edit Watch PRs" }));
+  return within(screen.getByRole("form", { name: "Edit workspace rule" }));
+}
+
+it("opens a saved rule with its values in the shared fields", async () => {
+  list.mockResolvedValue({ definitions: [editable], capabilities: open });
+  mount();
+  const form = await openEditor();
+  expect(form.getByRole("textbox", { name: "Rule name" })).toHaveValue("Watch PRs");
+  expect(form.getByText("draft:agent-2|Check the PR|3")).toBeVisible();
+});
+
+it("saves an edit at the revision it was read at and keeps the fields the editor does not show", async () => {
+  list.mockResolvedValue({ definitions: [editable], capabilities: open });
+  mount();
+  const form = await openEditor();
+  fireEvent.change(form.getByRole("textbox", { name: "Rule name" }), { target: { value: "Watch PR comments" } });
+  fireEvent.click(form.getByRole("button", { name: "Save rule" }));
+  await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+  const [scope, ruleKey, body] = [save.mock.calls[0]![0], save.mock.calls[0]![1], save.mock.calls[0]![2]];
+  expect(scope).toEqual({ kind: "workspace" });
+  expect(ruleKey).toBe(editable.rule_key);
+  expect(body.revision).toBe("7");
+  expect(body.config).toMatchObject({
+    name: "Watch PR comments", instruction: "Check the PR", rate_limit: 4, filters: { labels: ["a"] },
+    trigger: { kind: "event", events: ["comment.created"] }, expiry: { after_seconds: 3 * 86400 },
+  });
+  expect(create).not.toHaveBeenCalled();
+  await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(screen.queryByRole("form", { name: "Edit workspace rule" })).toBeNull());
+});
+
+it("previews an edit against the rule it replaces", async () => {
+  list.mockResolvedValue({ definitions: [editable], capabilities: open });
+  mount();
+  const form = await openEditor();
+  fireEvent.click(form.getByRole("button", { name: "Preview" }));
+  await waitFor(() => expect(preview).toHaveBeenCalledTimes(1));
+  expect(preview.mock.calls[0]![1].rule_key).toBe(editable.rule_key);
+});
+
+it("keeps the edit open and says so when someone else saved the rule first", async () => {
+  save.mockRejectedValue(new ApiError("stale", 409, "Conflict"));
+  list.mockResolvedValue({ definitions: [editable], capabilities: open });
+  mount();
+  const form = await openEditor();
+  fireEvent.click(form.getByRole("button", { name: "Save rule" }));
+  expect(await form.findByRole("alert")).toHaveTextContent("Someone else changed this rule.");
+  expect(form.getByRole("textbox", { name: "Rule name" })).toHaveValue("Watch PRs");
+});
+
+it("leaves a rule the editor cannot write back unedited", async () => {
+  mount();
+  expect(await screen.findByText("Triage")).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Edit Triage" })).toBeNull();
+  expect(screen.getByText(/cannot change/)).toBeVisible();
+  expect(screen.getByRole("button", { name: "Delete Triage" })).toBeVisible();
+});
+
+it("offers no edit to members who cannot manage the workspace", async () => {
+  list.mockResolvedValue({ definitions: [editable], capabilities: open });
+  mount(false);
+  expect(await screen.findByText("Watch PRs")).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Edit Watch PRs" })).toBeNull();
 });

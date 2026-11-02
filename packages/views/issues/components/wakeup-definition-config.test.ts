@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { IssueWakeupInput } from "@multica/core/types";
-import { definitionConfigFromInput } from "./wakeup-definition-config";
+import { definitionConfigFromInput, draftFromDefinitionConfig } from "./wakeup-definition-config";
 
 const base: IssueWakeupInput = {
   agent_id: "agent-1",
@@ -49,5 +49,44 @@ describe("definitionConfigFromInput", () => {
 
   it("refuses a schedule, which only an issue rule has", () => {
     expect(definitionConfigFromInput({ ...base, kind: "at", at: "2030-01-01T00:00:00Z" }, "n")).toEqual({ error: "unsupported_schedule" });
+  });
+});
+
+describe("draftFromDefinitionConfig", () => {
+  const roundTrip = (input: IssueWakeupInput) => {
+    const built = definitionConfigFromInput(input, "R");
+    if ("error" in built) throw new Error(built.error);
+    return draftFromDefinitionConfig(built.config);
+  };
+
+  it("reads an event rule back into the fields that wrote it", () => {
+    expect(roundTrip(base)).toEqual({
+      name: "R",
+      draft: { condition: "custom", events: ["issue.status_changed"], agentId: "agent-1", instruction: "Check it", mode: "once", waitDays: 7 },
+    });
+  });
+
+  it("reads each platform condition the editor offers", () => {
+    const cond = (condition: IssueWakeupInput["condition"]) =>
+      roundTrip({ ...base, event_types: undefined, condition })?.draft;
+    expect(cond({ type: "issue_field", field: "status", value: "done" })).toMatchObject({ condition: "field", field: "status", fieldTarget: "done" });
+    expect(cond({ type: "issue_field", field: "assignee", assignee_type: "agent", assignee_id: "a" })).toMatchObject({ field: "assignee", assignee: { type: "agent", id: "a" } });
+    expect(cond({ type: "children_done", stage: 2 })).toMatchObject({ condition: "children", stage: 2 });
+    expect(cond({ type: "children_done" })).toMatchObject({ condition: "children", stage: null });
+    expect(cond({ type: "pull_request", event: "merged" })).toMatchObject({ condition: "pull_request", prEvent: "merged" });
+  });
+
+  it("keeps a continuous rule's fire limit", () => {
+    expect(roundTrip({ ...base, mode: "continuous", max_fires: 10 })?.draft).toMatchObject({ mode: "continuous", maxFires: 10 });
+  });
+
+  it("refuses a rule the editor would turn into a different one", () => {
+    expect(roundTrip({ ...base, event_types: undefined, condition: { type: "other_issue", issue_id: "i", state: "done" } })).toBeNull();
+    expect(roundTrip({ ...base, expires_in_seconds: 2 * 86400 })).toBeNull();
+    expect(roundTrip({ ...base, expires_in_seconds: undefined })).toBeNull();
+    expect(roundTrip({ ...base, mode: "continuous", max_fires: 7 })).toBeNull();
+    expect(roundTrip({ ...base, mode: "continuous" })).toBeNull();
+    expect(draftFromDefinitionConfig({ v: 1, name: "R", instruction: "x", mode: "once", trigger: { kind: "event" }, target: { type: "assignee" }, expiry: { after_seconds: 86400 } })).toBeNull();
+    expect(draftFromDefinitionConfig({ v: 1, name: "R", instruction: "x", mode: "once", trigger: { kind: "event", events: ["issue.updated"] }, target: { type: "agent", id: "a" }, expiry: { at: "2030-01-01T00:00:00Z" } })).toBeNull();
   });
 });

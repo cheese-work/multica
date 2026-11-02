@@ -133,7 +133,14 @@
       "missing_name": "請為規則命名（最多 {{max}} 個字元）。",
       "unsupported_filter": "工作區規則暫不支援依作者或代理過濾。請選擇任何人或任何代理。",
       "unsupported_schedule": "工作區規則暫不支援依排程執行。請選擇事件或條件。",
-      "closed_error": "喚醒規則尚未開放編輯。"
+      "closed_error": "喚醒規則尚未開放編輯。",
+      "edit": "編輯{{name}}",
+      "edit_title": "編輯工作區規則",
+      "edit_unsupported": "此規則使用了本編輯器無法修改的選項。請刪除後重新建立。",
+      "conflict_error": "其他人已修改此規則。清單已重新載入，請再次編輯。",
+      "cancel": "取消",
+      "save": "儲存規則",
+      "saving": "儲存中…"
     }
   },
   "quick_actions": {

@@ -2,23 +2,25 @@
 
 import { useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Trash2 } from "@multica/ui/icons";
+import { Pencil, Trash2 } from "@multica/ui/icons";
 import { ApiError } from "@multica/core/api";
 import {
   previewWorkspaceWakeupDefinition,
   useCreateWorkspaceWakeupDefinition,
   useDeleteWorkspaceWakeupDefinition,
+  useSaveWorkspaceWakeupDefinition,
   workspaceWakeupDefinitionsOptions,
 } from "@multica/core/workspace/wakeup-definitions";
-import type { WakeupEffectiveRule } from "@multica/core/types";
+import type { WakeupDefinition, WakeupEffectiveRule } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
 import { WakeupFields } from "../../issues/components/wakeup-fields";
 import { useWakeupForm } from "../../issues/components/use-wakeup-form";
-import { buildWakeupInput } from "../../issues/components/wakeup-draft";
+import { buildWakeupInput, type WakeupDraft } from "../../issues/components/wakeup-draft";
 import {
   WAKEUP_DEFINITION_NAME_MAX,
   definitionConfigFromInput,
+  draftFromDefinitionConfig,
   type WakeupDefinitionConfigError,
 } from "../../issues/components/wakeup-definition-config";
 import { useT } from "../../i18n";
@@ -61,7 +63,7 @@ export function WorkspaceWakeupRules({ workspaceId, canManage }: { workspaceId: 
             ))}
           </ul>
         )}
-        {canManage && <RuleForm key={formKey} workspaceId={workspaceId} onCreated={() => setFormKey((k) => k + 1)} />}
+        {canManage && <RuleForm key={formKey} workspaceId={workspaceId} onDone={() => setFormKey((k) => k + 1)} />}
       </SettingsCard>
     </SettingsSection>
   );
@@ -74,17 +76,35 @@ function RuleRow({
 }: {
   workspaceId: string;
   canManage: boolean;
-  rule: { rule_key: string; revision: string; config: { name?: string | null; instruction?: string | null } };
+  rule: WakeupDefinition;
 }) {
   const { t } = useT("settings");
   const remove = useDeleteWorkspaceWakeupDefinition(workspaceId);
+  const [editing, setEditing] = useState(false);
   const name = rule.config.name ?? "";
+  const editable = draftFromDefinitionConfig(rule.config);
+  if (editing && editable) {
+    return (
+      <li>
+        <RuleForm
+          workspaceId={workspaceId}
+          rule={rule}
+          initial={editable}
+          onDone={() => setEditing(false)}
+          onCancel={() => setEditing(false)}
+        />
+      </li>
+    );
+  }
   return (
     <li className="flex items-start justify-between gap-3 px-4 py-3">
       <div className="min-w-0">
         <p className="text-body font-medium">{name}</p>
         {rule.config.instruction && (
           <p className="mt-0.5 line-clamp-2 text-caption text-muted-foreground">{rule.config.instruction}</p>
+        )}
+        {canManage && !editable && (
+          <p className="mt-1 text-caption text-muted-foreground">{t(($) => $.wakeups.rules.edit_unsupported)}</p>
         )}
         {remove.isError && (
           <p role="alert" className="mt-1 text-caption text-destructive">
@@ -93,26 +113,53 @@ function RuleRow({
         )}
       </div>
       {canManage && (
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          aria-label={t(($) => $.wakeups.rules.delete, { name })}
-          disabled={remove.isPending}
-          onClick={() => remove.mutate({ ruleKey: rule.rule_key, revision: rule.revision })}
-        >
-          <Trash2 className="size-3.5" aria-hidden="true" />
-        </Button>
+        <div className="flex shrink-0 gap-1">
+          {editable && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label={t(($) => $.wakeups.rules.edit, { name })}
+              onClick={() => setEditing(true)}
+            >
+              <Pencil className="size-3.5" aria-hidden="true" />
+            </Button>
+          )}
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            aria-label={t(($) => $.wakeups.rules.delete, { name })}
+            disabled={remove.isPending}
+            onClick={() => remove.mutate({ ruleKey: rule.rule_key, revision: rule.revision })}
+          >
+            <Trash2 className="size-3.5" aria-hidden="true" />
+          </Button>
+        </div>
       )}
     </li>
   );
 }
 
-function RuleForm({ workspaceId, onCreated }: { workspaceId: string; onCreated: () => void }) {
+/** Creates a rule, or with `rule` edits that saved rule from its current revision. */
+function RuleForm({
+  workspaceId,
+  rule,
+  initial,
+  onDone,
+  onCancel,
+}: {
+  workspaceId: string;
+  rule?: WakeupDefinition;
+  initial?: { name: string; draft: Partial<WakeupDraft> };
+  onDone: () => void;
+  onCancel?: () => void;
+}) {
   const { t } = useT("settings");
   const id = useId();
   const create = useCreateWorkspaceWakeupDefinition(workspaceId);
-  const [name, setName] = useState("");
+  const save = useSaveWorkspaceWakeupDefinition(workspaceId);
+  const [name, setName] = useState(initial?.name ?? "");
   const [previewed, setPreviewed] = useState<WakeupEffectiveRule | null>(null);
   const [previewError, setPreviewError] = useState("");
   const [previewing, setPreviewing] = useState(false);
@@ -124,14 +171,23 @@ function RuleForm({ workspaceId, onCreated }: { workspaceId: string; onCreated: 
   const { draft, update, error, pending, submit } = useWakeupForm({
     workspaceId,
     defaultAgentId: "",
+    initial: initial?.draft,
     save: async (input) => {
       const result = definitionConfigFromInput(input, name);
       if ("error" in result) throw new DraftRefused(result.error);
-      await create.mutateAsync(result.config);
+      if (!rule) {
+        await create.mutateAsync(result.config);
+        return;
+      }
+      // Fields this form does not edit (rate limit, filters, ...) stay as saved.
+      const config = { ...rule.config, ...result.config };
+      if (result.config.max_fires === undefined) delete config.max_fires;
+      await save.mutateAsync({ ruleKey: rule.rule_key, revision: rule.revision, config });
     },
-    onSaved: onCreated,
+    onSaved: onDone,
     describeError: (err) => {
       if (err instanceof DraftRefused) return refusals[err.reason];
+      if (err instanceof ApiError && err.status === 409) return t(($) => $.wakeups.rules.conflict_error);
       const code = err instanceof ApiError && err.body && typeof err.body === "object" && "code" in err.body ? err.body.code : undefined;
       return code === "wakeup_definition_writes_closed" ? t(($) => $.wakeups.rules.closed_error) : undefined;
     },
@@ -150,7 +206,7 @@ function RuleForm({ workspaceId, onCreated }: { workspaceId: string; onCreated: 
     }
     setPreviewing(true);
     try {
-      setPreviewed(await previewWorkspaceWakeupDefinition(crypto.randomUUID(), result.config));
+      setPreviewed(await previewWorkspaceWakeupDefinition(rule?.rule_key ?? crypto.randomUUID(), result.config));
     } catch {
       setPreviewError(t(($) => $.wakeups.rules.preview_error));
     } finally {
@@ -168,7 +224,7 @@ function RuleForm({ workspaceId, onCreated }: { workspaceId: string; onCreated: 
       }}
     >
       <h3 id={`${id}-title`} className="text-body font-medium">
-        {t(($) => $.wakeups.rules.new_title)}
+        {t(($) => (rule ? $.wakeups.rules.edit_title : $.wakeups.rules.new_title))}
       </h3>
       <label htmlFor={`${id}-name`} className="mt-3 mb-1.5 block text-caption font-medium">
         {t(($) => $.wakeups.rules.name)}
@@ -187,11 +243,20 @@ function RuleForm({ workspaceId, onCreated }: { workspaceId: string; onCreated: 
       )}
       {previewed && <PreviewSummary rule={previewed} />}
       <div className="mt-4 flex justify-end gap-2 border-t border-border pt-3">
+        {onCancel && (
+          <Button type="button" variant="ghost" size="sm" disabled={pending} onClick={onCancel}>
+            {t(($) => $.wakeups.rules.cancel)}
+          </Button>
+        )}
         <Button type="button" variant="outline" size="sm" disabled={pending || previewing} onClick={() => void preview()}>
           {t(($) => (previewing ? $.wakeups.rules.previewing : $.wakeups.rules.preview))}
         </Button>
         <Button type="submit" size="sm" disabled={pending} aria-busy={pending}>
-          {t(($) => (pending ? $.wakeups.rules.creating : $.wakeups.rules.create))}
+          {t(($) =>
+            rule
+              ? pending ? $.wakeups.rules.saving : $.wakeups.rules.save
+              : pending ? $.wakeups.rules.creating : $.wakeups.rules.create,
+          )}
         </Button>
       </div>
     </form>

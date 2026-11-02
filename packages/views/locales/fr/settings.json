@@ -144,7 +144,14 @@
       "missing_name": "Nommez la règle ({{max}} caractères maximum).",
       "unsupported_filter": "Une règle d’espace de travail ne peut pas encore filtrer par auteur ou par agent. Choisissez n’importe qui ou n’importe quel agent.",
       "unsupported_schedule": "Une règle d’espace de travail ne peut pas encore suivre un calendrier. Choisissez un événement ou une condition.",
-      "closed_error": "Les règles de réveil ne sont pas encore modifiables."
+      "closed_error": "Les règles de réveil ne sont pas encore modifiables.",
+      "edit": "Modifier {{name}}",
+      "edit_title": "Modifier la règle de l’espace de travail",
+      "edit_unsupported": "Cette règle utilise des options que cet éditeur ne peut pas modifier. Supprimez-la et créez-en une nouvelle.",
+      "conflict_error": "Quelqu’un d’autre a modifié cette règle. La liste est rechargée ; modifiez-la à nouveau.",
+      "cancel": "Annuler",
+      "save": "Enregistrer la règle",
+      "saving": "Enregistrement…"
     }
   },
   "quick_actions": {

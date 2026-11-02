@@ -38,3 +38,12 @@ export function useDeleteWorkspaceWakeupDefinition(workspaceId: string) {
     onSettled: () => client.invalidateQueries({ queryKey: workspaceWakeupDefinitionsOptions(workspaceId).queryKey }),
   });
 }
+
+export function useSaveWorkspaceWakeupDefinition(workspaceId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ruleKey, revision, config }: { ruleKey: string; revision: string; config: WakeupDefinitionConfig }) =>
+      api.saveWakeupDefinition(WORKSPACE, ruleKey, { revision, config }),
+    onSettled: () => client.invalidateQueries({ queryKey: workspaceWakeupDefinitionsOptions(workspaceId).queryKey }),
+  });
+}
