@@ -193,9 +193,9 @@ Stacked, each at most 4 hours, test-first, project Cheese Work Setup:
 
 | # | Issue | Depends on | Estimate |
 | --- | --- | --- | --- |
-| 1 | `issuestatus.CatalogHash` and `ApplyChange` (pure, golden vector) | none | 2 h |
-| 2 | Bound mode on create/update, router middleware, `validateStatusFields`, new delegated field, agent actor on the event | 1 | 4 h |
-| 3 | `multica workspace status` commands, `--print-hash`, `--decision-id`, skill reference (`decisions.md`, `workspace.md`) | 2 | 4 h |
+| 1 (CHE-3097) | `issuestatus.CatalogHash` and `ApplyChange` (pure, golden vector) | none | 2 h |
+| 2 (CHE-3100) | Bound mode on create/update, router middleware, `validateStatusFields`, new delegated field, agent actor on the event | 1 | 4 h |
+| 3 (CHE-3103) | `multica workspace status` commands, `--print-hash`, `--decision-id`, skill reference (`decisions.md`, `workspace.md`) | 2 | 4 h |
 
 ## Risks and open questions
 
