@@ -228,6 +228,70 @@ class WrapperTest(unittest.TestCase):
         self.assertIn("state=failure", posted[0])
 
 
+class MergeGroupTest(unittest.TestCase):
+    """CHE-3240: a merge-queue commit carries the PR-head verdicts; it never re-evaluates."""
+
+    BASE, G1, G2 = "1" * 40, "2" * 40, "3" * 40
+    P1, P2 = "4" * 40, "5" * 40  # PR head SHAs (second parent of each merge-queue commit)
+
+    def run_group(self, pr_states, commits=None):
+        commits = commits if commits is not None else [
+            {"sha": self.G1, "parents": [self.BASE, self.P1], "message": "Merge pull request #821 from x/y"},
+            {"sha": self.G2, "parents": [self.G1, self.P2], "message": "Merge pull request #816 from x/z"}]
+        posted = []
+
+        def fake_gh(*args):
+            path = " ".join(args)
+            if "compare/" in path:
+                return "\n".join(json.dumps(c) for c in commits)
+            if "statuses/" in path:
+                posted.append(args)
+                return ""
+            for sha, state in pr_states.items():
+                if f"commits/{sha}/status" in path:
+                    return state
+            return ""  # no security-gate status on that head
+
+        argv = ["x", "--github", "cheese-work/multica", "--default-branch", "main",
+                "--merge-group-base", self.BASE, "--merge-group-head", self.G2, "--post"]
+        with mock.patch.object(sg, "_gh", fake_gh), mock.patch("sys.argv", argv), mock.patch("builtins.print"):
+            code = sg.main()
+        return code, posted
+
+    def test_all_prs_green_posts_success_on_the_group_head(self):
+        code, posted = self.run_group({self.P1: "success", self.P2: "success"})
+        self.assertEqual(code, 0)
+        self.assertIn(f"repos/cheese-work/multica/statuses/{self.G2}", posted[0])
+        self.assertIn("state=success", posted[0])
+        self.assertIn("context=security-gate", posted[0])
+
+    def test_a_pr_without_success_fails_the_group_and_names_the_pr(self):
+        for state in ("pending", "failure", ""):
+            code, posted = self.run_group({self.P1: "success", self.P2: state})
+            self.assertEqual(code, 0)
+            self.assertIn("state=failure", posted[0], state)
+            self.assertIn("#816", " ".join(posted[0]), state)
+
+    def test_pr_branch_commits_in_the_compare_range_are_not_group_entries(self):
+        # compare lists the PR's own commits and any main-merge inside the PR branch; only the first-parent chain counts
+        inner = "6" * 40
+        commits = [{"sha": inner, "parents": [self.BASE, "7" * 40], "message": "Merge branch 'main' into feat"},
+                   {"sha": self.P1, "parents": [inner], "message": "feat: x"},
+                   {"sha": self.G1, "parents": [self.BASE, self.P1], "message": "Merge pull request #821 from x/y"},
+                   {"sha": self.G2, "parents": [self.G1, self.P2], "message": "Merge pull request #816 from x/z"}]
+        _, posted = self.run_group({self.P1: "success", self.P2: "success"}, commits)
+        self.assertIn("state=success", posted[0])
+
+    def test_a_commit_that_is_not_a_pr_merge_fails_closed(self):
+        commits = [{"sha": self.G2, "parents": [self.BASE], "message": "direct push"}]
+        _, posted = self.run_group({}, commits)
+        self.assertIn("state=failure", posted[0])
+
+    def test_an_empty_group_fails_closed(self):
+        _, posted = self.run_group({}, commits=[])
+        self.assertIn("state=failure", posted[0])
+
+
 class WorkflowTest(unittest.TestCase):
     def setUp(self):
         self.text = (ROOT / ".github/workflows/security-gate.yml").read_text()
@@ -244,6 +308,12 @@ class WorkflowTest(unittest.TestCase):
         self.assertIn("github.event.repository.default_branch", self.text)
         self.assertNotIn(".base.sha", self.text)
         self.assertIn("--default-branch", self.text)
+
+    def test_merge_group_trigger_posts_without_a_head_checkout_or_pr_number(self):
+        self.assertEqual(self.doc[True]["merge_group"]["types"], ["checks_requested"])
+        self.assertIn("--merge-group-head", self.text)
+        self.assertIn("github.event.merge_group.head_sha", self.doc["concurrency"]["group"])
+        self.assertIn("github.event_name == 'merge_group'", self.doc["jobs"]["security-gate"]["if"])
 
     def test_retarget_and_comment_deletion_retrigger_the_gate(self):
         # findings 3 and 4

@@ -20,6 +20,9 @@ A verdict counts only for the repo, PR number, base branch and head SHA it names
 branch are supported. The PR author must be a registered agent (lab from the `agent/<name>/` branch) or a
 registered human; anyone else fails closed.
 
+On a `merge_group` event (merge queue) the same context is posted on the group head by carrying the PR-head
+verdicts above (`gate_merge_group`); a repo with a merge queue needs this before `security-gate` is required.
+
 Run from a checkout of the DEFAULT branch only; the head is fetched for its diff, never executed.
 """
 
@@ -202,15 +205,52 @@ def gate_pr(repo: str, github: str, number: int, default_branch: str, trusted: s
     return head, state, desc
 
 
+def gate_merge_group(github: str, base: str, head: str) -> tuple[str, str]:
+    """Merge-queue commit: carry each PR's existing `security-gate` verdict, never re-evaluate. The queue merges
+    with MERGE, so every group commit is a merge whose second parent is the PR head SHA the verdict was posted on.
+    Anything else (no commits, a non-merge commit, a PR head without `success`) fails closed."""
+    rows = [json.loads(l) for l in _gh("--paginate", f"repos/{github}/compare/{base}...{head}", "--jq",
+                                       ".commits[] | {sha, parents: [.parents[].sha], message: .commit.message}").splitlines()]
+    # compare also lists each PR's own branch commits: follow the first-parent chain from the head down to the base
+    by_sha, chain, sha = {r["sha"]: r for r in rows}, [], head
+    while sha != base and sha in by_sha:
+        chain.append(by_sha[sha])
+        sha = by_sha[sha]["parents"][0]
+    if not chain or sha != base:
+        return "failure", f"cannot walk {head[:12]} back to {base[:12]}"
+    rows = chain
+    for row in rows:
+        pr = re.match(r"Merge pull request #(\d+)", row["message"])
+        label = f"#{pr[1]}" if pr else row["sha"][:12]
+        if len(row["parents"]) != 2:
+            return "failure", f"{label}: not a PR merge commit"
+        state = _gh(f"repos/{github}/commits/{row['parents'][1]}/status", "--jq",
+                    f'[.statuses[] | select(.context=="{CONTEXT}")][0].state // ""').strip()
+        if state != "success":
+            return "failure", f"{label}: {CONTEXT} is {state or 'missing'} on its head"
+    return "success", f"{CONTEXT} success on {len(rows)} PR head(s) in the merge group"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--repo", default=".", help="DEFAULT-branch checkout with the head objects fetched")
     ap.add_argument("--github", required=True, help="owner/repo")
-    ap.add_argument("--pr", type=int, required=True)
+    ap.add_argument("--pr", type=int)
+    ap.add_argument("--merge-group-base", help="merge_group event base_sha; with --merge-group-head, carry verdicts")
+    ap.add_argument("--merge-group-head", help="merge_group event head_sha, the commit that gets the status")
     ap.add_argument("--default-branch", required=True)
     ap.add_argument("--run-url", default="")
     ap.add_argument("--post", action="store_true", help="write the commit status (default: print only)")
     a = ap.parse_args()
+    if a.merge_group_head:
+        state, desc = _out(*gate_merge_group(a.github, a.merge_group_base, a.merge_group_head))
+        print(json.dumps({"context": CONTEXT, "sha": a.merge_group_head, "state": state, "description": desc}))
+        if a.post:
+            _gh(f"repos/{a.github}/statuses/{a.merge_group_head}", "-f", f"state={state}", "-f", f"context={CONTEXT}",
+                "-f", f"description={desc}", *(["-f", f"target_url={a.run_url}"] if a.run_url else []))
+        return 0
+    if a.pr is None:
+        ap.error("--pr is required unless --merge-group-head is given")
     with open(f"{a.repo}/{TRUSTED_AUTHORS}") as f:
         registry = json.load(f)
     trusted = {b["id"] for b in registry["workspace_bots"]}

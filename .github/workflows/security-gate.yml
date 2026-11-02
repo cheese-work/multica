@@ -7,6 +7,10 @@
 # definition from the default branch. The job checks out the DEFAULT branch (never the PR's base: a PR can target an
 # unprotected branch that carries a modified gate script) and only FETCHES head objects for a diff read. Nothing from
 # the head is executed. Do not add a head checkout or a secret here.
+# `merge_group` (CHE-3240) posts the same context on the queue commit by carrying each PR head's existing verdict
+# (second parent of every MERGE-method queue commit); it evaluates nothing and reads no PR code. GitHub reads THIS
+# definition from the merge-group commit, so a PR that edits security-gate* could change this job: such a PR is
+# Cheese-merge only, and its own PR-head verdict (cross-lab PASS on that diff) is what the queue carries.
 # `issue_comment` (created, edited, deleted) is the path by which a verdict comment flips or revokes the status; `edited`
 # on the PR covers a retarget. The script re-reads the live head SHA and base ref.
 
@@ -17,6 +21,9 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, edited]
   issue_comment:
     types: [created, edited, deleted]
+  # Merge queue (CHE-3240): the required context must also exist on the queue commit, or the entry waits forever.
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -24,20 +31,22 @@ permissions:
   statuses: write
 
 concurrency:
-  group: security-gate-${{ github.event.pull_request.number || github.event.issue.number }}
+  group: security-gate-${{ github.event.pull_request.number || github.event.issue.number || github.event.merge_group.head_sha }}
   cancel-in-progress: true
 
 jobs:
   security-gate:
     # Job name differs from the status context on purpose: the context is posted by the script, not by this job.
     name: security-gate-eval
-    if: github.event_name == 'pull_request_target' || github.event.issue.pull_request
+    if: github.event_name == 'pull_request_target' || github.event_name == 'merge_group' || github.event.issue.pull_request
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 10
     env:
       PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
       GH_TOKEN: ${{ github.token }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      MG_BASE: ${{ github.event.merge_group.base_sha }}
+      MG_HEAD: ${{ github.event.merge_group.head_sha }}
     steps:
       - name: Discard a reused workspace
         run: |
@@ -49,11 +58,19 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Fetch the head objects without checking them out
+        if: github.event_name != 'merge_group'
         run: |
           auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
           git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
             fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/head"
+      - name: Carry the PR verdicts onto the merge-queue commit
+        if: github.event_name == 'merge_group'
+        run: |
+          python3 scripts/security-gate/security_gate.py --github "$GITHUB_REPOSITORY" --default-branch "$DEFAULT_BRANCH" \
+            --merge-group-base "$MG_BASE" --merge-group-head "$MG_HEAD" \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --post
       - name: Evaluate the verdict and post the status
+        if: github.event_name != 'merge_group'
         run: |
           python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" \
             --default-branch "$DEFAULT_BRANCH" \
