@@ -31,6 +31,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/agentpreset"
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
+	"github.com/multica-ai/multica/server/internal/daemon/initctx"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
 	"github.com/multica-ai/multica/server/internal/daemon/sandbox"
 	"github.com/multica-ai/multica/server/internal/selfexec"
@@ -283,6 +284,8 @@ type terminalTaskReport struct {
 	// contextTokens / contextWindow: see TaskResult. Complete reports only.
 	contextTokens int64
 	contextWindow int64
+	// initContext: see TaskResult. Complete reports only.
+	initContext *initctx.Report
 }
 
 type terminalReportSendFunc func(context.Context, terminalTaskReport, []time.Duration) error
@@ -6368,6 +6371,7 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 			retiredSessionID:      result.RetiredSessionID,
 			contextTokens:         result.ContextTokens,
 			contextWindow:         result.ContextWindow,
+			initContext:           result.InitContext,
 		})
 		if err == nil {
 			return
@@ -6511,7 +6515,7 @@ func (d *Daemon) sendTerminalTaskReport(ctx context.Context, report terminalTask
 	}
 	switch report.kind {
 	case terminalTaskReportComplete:
-		return d.client.completeTaskWithRetrySchedule(ctx, report.taskID, report.output, report.branchName, report.sessionID, report.workDir, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, report.contextTokens, report.contextWindow, schedule)
+		return d.client.completeTaskWithRetrySchedule(ctx, report.taskID, report.output, report.branchName, report.sessionID, report.workDir, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, report.contextTokens, report.contextWindow, report.initContext, schedule)
 	case terminalTaskReportFail:
 		return d.client.failTaskWithRetrySchedule(ctx, report.taskID, report.errorMessage, report.sessionID, report.workDir, report.branchName, report.failureReason, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, schedule)
 	default:
@@ -8673,6 +8677,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		promptOptions = append(promptOptions, WithWorktreeBranch(env.LocalWorktree.Branch, env.LocalWorktree.BaseCommit))
 	}
 	prompt := BuildPrompt(task, provider, promptOptions...)
+	initContext := buildInitContext(runtimeBrief, prompt)
 
 	// Pass task-scoped auth credentials and context so the spawned agent CLI
 	// can call the Multica API and the local daemon (e.g. `multica repo checkout`).
@@ -9201,6 +9206,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	defer func() {
 		taskResult.SessionRolloutMissing = sessionRolloutMissing
 		taskResult.ContextTokens, taskResult.ContextWindow = result.ContextTokens, result.ContextWindow
+		taskResult.InitContext = initContext
 	}()
 
 	switch result.Status {

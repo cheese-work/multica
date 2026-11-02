@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 
+	"github.com/multica-ai/multica/server/internal/daemon/initctx"
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
 	"github.com/multica-ai/multica/server/pkg/credentialexec"
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
@@ -362,6 +363,9 @@ type TaskResult struct {
 	// on the /complete callback only.
 	ContextTokens int64 `json:"-"`
 	ContextWindow int64 `json:"-"`
+	// InitContext is the first-prompt token report. Forwarded on the /complete
+	// callback only; nil when the brief or prompt was not built.
+	InitContext *initctx.Report `json:"-"`
 }
 
 // PluginHookTool is one agent-trigger plugin hook, as the agent will see it.
