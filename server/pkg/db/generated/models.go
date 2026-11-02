@@ -2612,6 +2612,12 @@ type SeatCapacityOutbox struct {
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
 }
 
+type SilenceAlertReceipt struct {
+	TaskID    pgtype.UUID        `json:"task_id"`
+	SegmentID string             `json:"segment_id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
 type Skill struct {
 	ID                   pgtype.UUID        `json:"id"`
 	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
