@@ -217,6 +217,27 @@ func (q *Queries) ChatSessionHasUserMessage(ctx context.Context, chatSessionID p
 	return has_user_message, err
 }
 
+const chatSessionPointerIsCurrent = `-- name: ChatSessionPointerIsCurrent :one
+SELECT EXISTS (
+  SELECT 1 FROM agent_task_queue t
+  JOIN chat_session cs ON cs.id = t.chat_session_id
+  WHERE cs.id = $1
+    AND t.session_id = cs.session_id
+    AND COALESCE(t.chat_compaction_epoch, 0) = cs.compaction_epoch
+) AS current
+`
+
+// True when the DM's resume pointer was recorded by a task of the DM's current
+// compaction epoch. The pointer has no epoch column of its own; the compact
+// clears it, so a pointer naming a session only older epochs recorded is a
+// stale write that must not seed the claim.
+func (q *Queries) ChatSessionPointerIsCurrent(ctx context.Context, id pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, chatSessionPointerIsCurrent, id)
+	var current bool
+	err := row.Scan(&current)
+	return current, err
+}
+
 const clearChatMessageChannelMediaPending = `-- name: ClearChatMessageChannelMediaPending :exec
 UPDATE chat_message
 SET channel_media_pending_until = NULL
@@ -1524,17 +1545,20 @@ func (q *Queries) GetChatSessionUsageSummary(ctx context.Context, chatSessionID 
 }
 
 const getLastAutoCompactTriggerForSession = `-- name: GetLastAutoCompactTriggerForSession :one
-SELECT compact_trigger_tokens FROM agent_task_queue
-WHERE chat_session_id = $1
-  AND task_kind = 'compact'
-  AND compact_trigger_tokens IS NOT NULL
-ORDER BY created_at DESC, id DESC
+SELECT t.compact_trigger_tokens FROM agent_task_queue t
+JOIN chat_session cs ON cs.id = t.chat_session_id
+WHERE t.chat_session_id = $1
+  AND t.task_kind = 'compact'
+  AND t.compact_trigger_tokens IS NOT NULL
+  AND COALESCE(t.chat_compaction_epoch, 0) = cs.compaction_epoch
+ORDER BY t.created_at DESC, t.id DESC
 LIMIT 1
 `
 
 // Prompt size that triggered the most recent automatic compaction of a DM, for
 // the 1.1x re-arm rule after a failed attempt. Manual compactions carry no
-// trigger size and are ignored.
+// trigger size and are ignored. Only compactions of the current epoch count: a
+// successful one bumps the epoch, which clears the guard.
 func (q *Queries) GetLastAutoCompactTriggerForSession(ctx context.Context, chatSessionID pgtype.UUID) (pgtype.Int8, error) {
 	row := q.db.QueryRow(ctx, getLastAutoCompactTriggerForSession, chatSessionID)
 	var compact_trigger_tokens pgtype.Int8
@@ -1581,6 +1605,7 @@ WITH retired_sessions AS (
       )
       AND t.session_id IS NOT NULL
       AND t.status IN ('completed', 'failed', 'cancelled')
+      AND COALESCE(t.chat_compaction_epoch, 0) = (SELECT cs.compaction_epoch FROM chat_session cs WHERE cs.id = $1)
     ORDER BY t.session_id, t.completed_at DESC
 )
 SELECT session_id, work_dir, runtime_id FROM latest_per_session
@@ -1668,6 +1693,10 @@ type GetLastChatTaskSessionRow struct {
 // empty message baked into the conversation history: both must match, and
 // both track emptyContentRe / historyMessageLocatorRe in
 // pkg/taskfailure/resume.go (GH #6066).
+//
+// Only tasks of the DM's current compaction epoch are candidates: a session
+// recorded before an in-place compact is the history the compact summarised
+// away and must not seed the next turn.
 //
 // Selection is per-session, not per-row, and retired sessions are excluded —
 // both mirroring GetLastTaskSession, which this query had drifted away from.
@@ -3518,11 +3547,13 @@ func (q *Queries) ListForkAttachmentIndex(ctx context.Context, arg ListForkAttac
 }
 
 const listLatestRunContextForChatSessions = `-- name: ListLatestRunContextForChatSessions :many
-SELECT DISTINCT ON (chat_session_id) chat_session_id, context_tokens, context_window
-FROM agent_task_queue
-WHERE chat_session_id = ANY($1::uuid[])
-  AND status = 'completed'
-ORDER BY chat_session_id, completed_at DESC, id DESC
+SELECT DISTINCT ON (t.chat_session_id) t.chat_session_id, t.context_tokens, t.context_window
+FROM agent_task_queue t
+JOIN chat_session cs ON cs.id = t.chat_session_id
+WHERE t.chat_session_id = ANY($1::uuid[])
+  AND t.status = 'completed'
+  AND COALESCE(t.chat_compaction_epoch, 0) = cs.compaction_epoch
+ORDER BY t.chat_session_id, t.completed_at DESC, t.id DESC
 `
 
 type ListLatestRunContextForChatSessionsRow struct {
@@ -3533,7 +3564,8 @@ type ListLatestRunContextForChatSessionsRow struct {
 
 // CHE-1808: the context meter reads the LATEST completed run of each DM. A run
 // that reported nothing stays in the result with NULL columns, so the meter
-// hides instead of showing an older run's stale numbers.
+// hides instead of showing an older run's stale numbers. Runs of an earlier
+// compaction epoch do not count: the meter hides until the first post-compact run.
 func (q *Queries) ListLatestRunContextForChatSessions(ctx context.Context, dollar_1 []pgtype.UUID) ([]ListLatestRunContextForChatSessionsRow, error) {
 	rows, err := q.db.Query(ctx, listLatestRunContextForChatSessions, dollar_1)
 	if err != nil {
