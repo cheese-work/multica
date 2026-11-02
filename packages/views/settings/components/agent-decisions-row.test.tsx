@@ -26,6 +26,12 @@ function mount(client = new QueryClient({ defaultOptions: { queries: { retry: fa
   return { client, ...view };
 }
 
+async function writableSwitch() {
+  const el = await screen.findByRole("switch", { name: switchName });
+  await waitFor(() => expect(el).not.toHaveAttribute("aria-disabled", "true"));
+  return el;
+}
+
 beforeEach(() => {
   mockToastError.mockReset();
   read.mockReset().mockResolvedValue({ enabled: false, stopped: null });
@@ -78,7 +84,7 @@ describe("AgentDecisionsRow", () => {
     const user = userEvent.setup();
     mount();
 
-    await user.click(await screen.findByRole("switch", { name: switchName }));
+    await user.click(await writableSwitch());
 
     await waitFor(() => expect(write).toHaveBeenCalledWith(false));
     await waitFor(() => {
@@ -91,10 +97,51 @@ describe("AgentDecisionsRow", () => {
     const user = userEvent.setup();
     mount();
 
-    await user.click(await screen.findByRole("switch", { name: switchName }));
+    await user.click(await writableSwitch());
 
     await waitFor(() => expect(mockToastError).toHaveBeenCalledWith("boom"));
     expect(screen.getByRole("switch", { name: switchName })).not.toBeChecked();
+  });
+
+  describe("without a current read", () => {
+    function cachedClient() {
+      const client = new QueryClient({
+        defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+      });
+      client.setQueryData(["agent-decisions", "setting", "ws"], { enabled: false, stopped: null });
+      return client;
+    }
+    const disabled = () =>
+      expect(screen.getByRole("switch", { name: switchName })).toHaveAttribute("aria-disabled", "true");
+
+    it("blocks writes while the refetch on entry is pending", async () => {
+      read.mockReturnValue(new Promise(() => {}));
+      mount(cachedClient());
+
+      await waitFor(() => expect(read).toHaveBeenCalled());
+      disabled();
+    });
+
+    it("blocks writes when the refetch on entry fails", async () => {
+      read.mockRejectedValue(new Error("offline"));
+      mount(cachedClient());
+
+      await waitFor(() => expect(read).toHaveBeenCalled());
+      await waitFor(disabled);
+    });
+
+    it("blocks further writes when the refresh after a successful write fails", async () => {
+      write.mockImplementation(async () => {
+        read.mockRejectedValue(new Error("offline"));
+        return { enabled: true };
+      });
+      const user = userEvent.setup();
+      mount();
+      await user.click(await writableSwitch());
+      await waitFor(() => expect(write).toHaveBeenCalledWith(true));
+
+      await waitFor(disabled);
+    });
   });
 
   describe("after an automatic stop", () => {
@@ -106,7 +153,7 @@ describe("AgentDecisionsRow", () => {
       const user = userEvent.setup();
       mount();
 
-      await user.click(await screen.findByRole("switch", { name: switchName }));
+      await user.click(await writableSwitch());
 
       expect(await screen.findByText(/excluded category: spend/)).toBeInTheDocument();
       expect(write).not.toHaveBeenCalled();
@@ -119,7 +166,7 @@ describe("AgentDecisionsRow", () => {
       const user = userEvent.setup();
       mount();
 
-      await user.click(await screen.findByRole("switch", { name: switchName }));
+      await user.click(await writableSwitch());
       await user.click(await screen.findByRole("button", { name: "Cancel" }));
 
       expect(write).not.toHaveBeenCalled();

@@ -25,12 +25,15 @@ export function AgentDecisionsRow({ wsId }: { wsId: string }) {
   const { t } = useT("settings");
   const qc = useQueryClient();
   const queryKey = ["agent-decisions", "setting", wsId];
-  const { data: setting } = useQuery({
+  const { data: setting, isFetching, isError } = useQuery({
     queryKey,
     queryFn: () => api.getAgentDecisionSetting(),
     staleTime: 0,
     refetchOnMount: "always",
   });
+  // The cached value may predate an external change or an automatic stop, so
+  // writes wait for a read that is current and did not fail.
+  const writable = !!setting && !isFetching && !isError;
   const [saving, setSaving] = useState(false);
   const [confirmStopReason, setConfirmStopReason] = useState<string | null>(null);
 
@@ -68,7 +71,7 @@ export function AgentDecisionsRow({ wsId }: { wsId: string }) {
       >
         <Switch
           checked={setting?.enabled ?? false}
-          disabled={!setting || saving}
+          disabled={!writable || saving}
           onCheckedChange={onToggle}
           aria-label={t(($) => $.workspace.agent_decisions_label)}
         />
