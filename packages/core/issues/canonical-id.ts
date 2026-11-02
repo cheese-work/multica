@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Issue } from "../types";
 import { issueDetailOptions, issueKeys } from "./queries";
@@ -20,8 +20,9 @@ export interface CanonicalIssue {
   issue: Issue | undefined;
   isResolving: boolean;
   /**
-   * The entry is still the identifier lookup's own response, never patched
-   * since. The view mounting on it need not read the detail endpoint again.
+   * The entry is still the response of an identifier lookup made during this
+   * mount, never patched since. The view mounting on it need not read the
+   * detail endpoint again; a leftover from an earlier visit is not this.
    */
   authoritative: boolean;
   /**
@@ -58,6 +59,8 @@ export interface CanonicalIssue {
  */
 export function useCanonicalIssue(wsId: string, routeId: string): CanonicalIssue {
   const qc = useQueryClient();
+  // Entries older than this mount were not refreshed by it.
+  const [mountedAt] = useState(() => Date.now());
   const isUuid = isIssueUuid(routeId);
   const resolveEnabled = !isUuid && !!wsId && !!routeId;
 
@@ -106,7 +109,11 @@ export function useCanonicalIssue(wsId: string, routeId: string): CanonicalIssue
     canonicalId,
     issue: detail.data,
     isResolving: resolveEnabled && !failed && resolve.data === undefined,
-    authoritative: !isUuid && detail.data !== undefined && detail.data === resolve.data,
+    authoritative:
+      !isUuid &&
+      detail.data !== undefined &&
+      detail.data === resolve.data &&
+      resolve.dataUpdatedAt >= mountedAt,
     notFound: failed,
   };
 }

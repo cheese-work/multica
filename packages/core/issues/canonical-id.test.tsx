@@ -159,6 +159,26 @@ describe("useCanonicalIssue", () => {
     await waitFor(() => expect(getIssue).toHaveBeenCalledTimes(2));
   });
 
+  // Revisit: an earlier visit left the same object under both keys. Nothing
+  // refreshed it on this open, so the view must still reconcile with the
+  // detail endpoint, or a missed realtime update stays hidden.
+  it("re-reads when both entries are an older visit's leftovers", async () => {
+    const older = { updatedAt: Date.now() - 60_000 };
+    qc.setQueryData(issueKeys.detail("ws-1", ISSUE_UUID), issue, older);
+    qc.setQueryData(issueKeys.detail("ws-1", "TRS-134"), issue, older);
+    const { result } = renderHook(() => useCanonicalIssue("ws-1", "TRS-134"), {
+      wrapper: createWrapper(qc),
+    });
+    await waitFor(() => expect(result.current.canonicalId).toBe(ISSUE_UUID));
+    expect(result.current.authoritative).toBe(false);
+
+    renderHook(
+      () => useQuery(issueDetailViewOptions("ws-1", ISSUE_UUID, undefined, result.current.authoritative)),
+      { wrapper: createWrapper(qc) },
+    );
+    await waitFor(() => expect(getIssue).toHaveBeenCalledTimes(1));
+  });
+
   // A list row or realtime payload omits detail-only fields, so the view must
   // still reconcile with the detail endpoint when it mounts on one.
   it("re-reads when the detail view mounts on a list row", async () => {
