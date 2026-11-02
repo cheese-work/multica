@@ -389,4 +389,98 @@ describe("WorkspaceTab — automatic updates", () => {
     expect(screen.queryByRole("spinbutton", { name: "Threshold (%)" })).toBeNull();
     expect(screen.getByText("On, at 70%")).toBeInTheDocument();
   });
+
+  // CHE-3296: settings.idle_started_guard saves through its own request field,
+  // for the owner only.
+  it("shows the idle guard defaults when nothing is saved", () => {
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    expect(screen.getByRole("combobox", { name: "Idle-issue guard" })).toHaveTextContent("Off");
+    expect(screen.getByRole("spinbutton", { name: "After (hours)" })).toHaveValue(4);
+    expect(
+      screen.getByText(
+        "Moves started issues with no run and no wakeup after N hours. Shadow only logs.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the saved idle guard after a reload", () => {
+    workspaceRef.current = {
+      ...workspaceRef.current,
+      settings: { idle_started_guard: { mode: "act", after_hours: 9 } },
+    };
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    expect(screen.getByRole("combobox", { name: "Idle-issue guard" })).toHaveTextContent("Act");
+    expect(screen.getByRole("spinbutton", { name: "After (hours)" })).toHaveValue(9);
+  });
+
+  it("saves only the chosen idle guard mode", async () => {
+    const user = setupUser();
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    await user.click(screen.getByRole("combobox", { name: "Idle-issue guard" }));
+    await user.click(await screen.findByRole("option", { name: "Shadow" }));
+
+    await waitFor(() => {
+      expect(mockUpdateWorkspace).toHaveBeenCalledWith("workspace-1", {
+        idle_started_guard: { mode: "shadow" },
+      });
+    });
+    for (const [, payload] of mockUpdateWorkspace.mock.calls) {
+      expect(Object.keys(payload)).toEqual(["idle_started_guard"]);
+    }
+  });
+
+  it("saves only the idle guard hours after the field loses focus", async () => {
+    const user = setupUser();
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+    const input = screen.getByRole("spinbutton", { name: "After (hours)" });
+
+    await user.clear(input);
+    await user.type(input, "6");
+    await user.tab();
+
+    await waitFor(() => {
+      expect(mockUpdateWorkspace).toHaveBeenLastCalledWith("workspace-1", {
+        idle_started_guard: { after_hours: 6 },
+      });
+    });
+    for (const [, payload] of mockUpdateWorkspace.mock.calls) {
+      expect(Object.keys(payload)).toEqual(["idle_started_guard"]);
+    }
+  });
+
+  it("never sends idle guard hours outside 1 to 72", async () => {
+    const user = setupUser();
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+    const input = screen.getByRole("spinbutton", { name: "After (hours)" });
+
+    await user.clear(input);
+    await user.type(input, "73");
+    await user.tab();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(700);
+    });
+
+    expect(mockUpdateWorkspace).not.toHaveBeenCalled();
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByText("Enter a whole number from 1 to 72.")).toBeInTheDocument();
+  });
+
+  it.each(["admin", "member"] as const)("shows a %s the idle guard read-only", (role) => {
+    membersRef.current = [
+      { user_id: "user-1", role },
+      { user_id: "user-2", role: "owner", name: "Grace Hopper" },
+    ];
+    workspaceRef.current = {
+      ...workspaceRef.current,
+      settings: { idle_started_guard: { mode: "shadow", after_hours: 6 } },
+    };
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    expect(screen.queryByRole("combobox", { name: "Idle-issue guard" })).toBeNull();
+    expect(screen.queryByRole("spinbutton", { name: "After (hours)" })).toBeNull();
+    expect(screen.getByText("Shadow, after 6 h")).toBeInTheDocument();
+  });
 });
