@@ -83,3 +83,20 @@ func TestLegacyChildDoneEndpointIsIndependentOfTheActivation(t *testing.T) {
 	completeActivation(t, s)
 	call("after")
 }
+
+// A flag cannot skip the backfill: an explicit on rule leaves the gate closed
+// until the activation completed.
+func TestWakeupDefinitionWritesEnabledFlagCannotOpenTheGateEarly(t *testing.T) {
+	s := useWakeupActivation(t)
+	k := &wdKit{t: t, projectID: dbfx.Project(t, "wd project")}
+	wipeWakeupDefinitions(t)
+	t.Cleanup(func() { wipeWakeupDefinitions(t) })
+	withFeatureFlag(t, testHandler, featureflags.WakeupDefinitionWrites, true)
+
+	k.workspace().put("child_done", 0, cfg(map[string]any{"name": "x"})).Want(http.StatusForbidden)
+	if k.workspace().list().Capabilities.DefinitionWrites {
+		t.Fatal("an enabled flag reported writes open before the activation completed")
+	}
+	completeActivation(t, s)
+	k.workspace().put("child_done", 0, cfg(map[string]any{"name": "x"})).Want(http.StatusOK)
+}

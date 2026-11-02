@@ -34,13 +34,17 @@ func TestWakeupDefinitionWritesFollowTheActivation(t *testing.T) {
 	}
 }
 
-// An explicit rule still wins either way: it opens the gate for fixtures and is
-// the operator's kill switch once the activation is done.
-func TestWakeupDefinitionWritesExplicitRuleOverridesTheActivation(t *testing.T) {
+// An explicit off rule is the kill switch once the activation is done, and an
+// explicit on rule never opens the gate before it: the flag cannot skip the
+// backfill and its verification.
+func TestWakeupDefinitionWritesFlagCannotOpenBeforeTheActivation(t *testing.T) {
 	ctx := context.Background()
 	on, off := wakeupWritesService(&featureflag.Rule{Default: true}), wakeupWritesService(&featureflag.Rule{Default: false})
-	if !WakeupDefinitionWritesEnabled(ctx, on, false) {
-		t.Fatal("explicit rule did not open wakeup definition writes")
+	if WakeupDefinitionWritesEnabled(ctx, on, false) {
+		t.Fatal("an enabled flag opened wakeup definition writes before the activation completed")
+	}
+	if !WakeupDefinitionWritesEnabled(ctx, on, true) {
+		t.Fatal("an enabled flag closed wakeup definition writes after the activation completed")
 	}
 	if WakeupDefinitionWritesEnabled(ctx, off, true) {
 		t.Fatal("explicit off rule did not close wakeup definition writes after activation")

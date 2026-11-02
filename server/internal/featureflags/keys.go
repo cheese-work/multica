@@ -164,10 +164,11 @@ func ExportPrivacyControlsEnabled(ctx context.Context, flags *featureflag.Servic
 // WakeupDefinitionWritesEnabled reports whether scoped wakeup definition writes
 // are open. activated is the persisted state of the legacy backfill: writes
 // stay closed until it completed and open by themselves after it, with no
-// operator step. An explicit rule for the flag wins either way, as a kill
-// switch or for fixtures.
+// operator step. An explicit off rule is the kill switch. No rule, and no
+// explicit on rule, opens writes before the activation completed: production
+// holds zero definitions until then.
 func WakeupDefinitionWritesEnabled(ctx context.Context, flags *featureflag.Service, activated bool) bool {
-	return flags.IsEnabled(ctx, WakeupDefinitionWrites, activated)
+	return activated && flags.IsEnabled(ctx, WakeupDefinitionWrites, true)
 }
 
 func LocalSearchIndexEnabled(ctx context.Context, flags *featureflag.Service) bool {

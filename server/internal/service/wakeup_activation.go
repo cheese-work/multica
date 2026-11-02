@@ -47,11 +47,27 @@ type ActivationResult struct {
 	Scanned, Inserted, Skipped int
 }
 
+// wakeupActivationKey is the production activation's name; a test points it at
+// its own row so a half-run activation never leaks into another test.
+var wakeupActivationKey = wakeupActivationName
+
 func (s *IssueWakeupService) activationName() string {
 	if s.ActivationKey != "" {
 		return s.ActivationKey
 	}
-	return wakeupActivationName
+	return wakeupActivationKey
+}
+
+// wakeupActivationPending reports whether the activation started and has not
+// completed. Until it completes, capture and dispatch ignore stored
+// definitions and keep to the legacy path: the backfill commits definitions a
+// page at a time, and a half-backfilled set must not change what runs.
+func wakeupActivationPending(ctx context.Context, q *db.Queries) (bool, error) {
+	row, err := q.GetWakeupDefinitionActivation(ctx, wakeupActivationKey)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil && row.State != activationComplete, err
 }
 
 // WakeupDefinitionsActivated reports whether the activation completed. A
