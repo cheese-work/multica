@@ -109,9 +109,10 @@ type AppConfig struct {
 	ServerBuild   string `json:"server_build,omitempty"`
 	ServerCommit  string `json:"server_commit,omitempty"`
 
-	// DocsURL is the absolute URL of the docs this deployment serves, set only
-	// when the operator runs the docs service (DOCS_URL) and the frontend origin
-	// is known. Absent = clients link to the upstream docs site.
+	// DocsURL is the path where this deployment serves its docs, set only when
+	// the operator runs the docs service (DOCS_URL). A path, not an absolute URL,
+	// so each client resolves it against the origin it actually reached. Absent =
+	// clients link to the upstream docs site.
 	DocsURL string `json:"docs_url,omitempty"`
 }
 
@@ -139,8 +140,8 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 	config.DaemonServerURL, config.DaemonAppURL = daemonSetupURLsFromEnv()
 	config.DaemonSetupTarget = "self_host"
 	config.VCSIntegrationAvailable = h.cfg.VCSIntegrationEnabled
-	if appURL := resolveFrontendAppURL(); appURL != "" && strings.TrimSpace(os.Getenv("DOCS_URL")) != "" {
-		config.DocsURL = appURL + "/docs"
+	if servesDocs() {
+		config.DocsURL = "/docs"
 	}
 	config.FeatureFlags = featureflags.EvaluateFrontendPublicFlags(r.Context(), h.FeatureFlags)
 	// Only surface the build version on self-hosted deployments. The managed
@@ -262,3 +263,17 @@ func canonicalURLHost(raw string) string {
 	}
 	return strings.TrimSuffix(strings.ToLower(host), ".")
 }
+
+// instanceDocs points upstream docs links in server-written text (stored
+// onboarding issues, agent instructions) at this deployment's docs. No request
+// origin exists there, so it uses the configured app URL; unchanged when the
+// deployment serves no docs or its app URL is unknown.
+func instanceDocs(s string) string {
+	appURL := resolveFrontendAppURL()
+	if appURL == "" || !servesDocs() {
+		return s
+	}
+	return strings.ReplaceAll(s, "https://multica.ai/docs", appURL+"/docs")
+}
+
+func servesDocs() bool { return strings.TrimSpace(os.Getenv("DOCS_URL")) != "" }

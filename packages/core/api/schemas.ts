@@ -929,7 +929,7 @@ export interface AppConfigResponse {
   server_version?: string;
   server_build?: string;
   server_commit?: string;
-  /** Absolute URL of the docs this instance serves; absent = none. */
+  /** Path ("/docs") or URL of the docs this instance serves; absent = none. */
   docs_url?: string;
 }
 

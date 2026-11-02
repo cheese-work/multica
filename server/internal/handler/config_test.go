@@ -635,20 +635,38 @@ func TestGetConfigDeclaresCommentDeleteKeepsReplies(t *testing.T) {
 }
 
 func TestGetConfigAdvertisesInstanceDocs(t *testing.T) {
-	for _, tt := range []struct{ name, docs, app, want string }{
-		{"served", "http://docs:4000", "https://app.example.com/", "https://app.example.com/docs"},
-		{"docs not configured", "", "https://app.example.com", ""},
-		{"app url unknown", "http://docs:4000", "", ""},
+	for _, tt := range []struct{ name, docs, want string }{
+		{"served", "http://docs:4000", "/docs"},
+		{"docs not configured", "", ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("DOCS_URL", tt.docs)
-			t.Setenv("MULTICA_APP_URL", tt.app)
-			t.Setenv("FRONTEND_ORIGIN", "")
+			// A localhost app URL must not leak into what remote browsers see.
+			t.Setenv("MULTICA_APP_URL", "http://localhost:3000")
 			var cfg AppConfig
 			testutil.Call(t, testHandler.GetConfig, httptest.NewRequest(http.MethodGet, "/api/config", nil)).Want(http.StatusOK).JSON(&cfg)
 			if cfg.DocsURL != tt.want {
 				t.Fatalf("docs_url: want %q, got %q", tt.want, cfg.DocsURL)
 			}
 		})
+	}
+}
+
+func TestInstanceDocsRewritesUpstreamLinks(t *testing.T) {
+	const text = "Full guide: https://multica.ai/docs/install-agent-runtime"
+	t.Setenv("MULTICA_APP_URL", "https://app.example.com/")
+	t.Setenv("FRONTEND_ORIGIN", "")
+
+	t.Setenv("DOCS_URL", "")
+	if got := instanceDocs(text); got != text {
+		t.Fatalf("docs not served: want unchanged, got %q", got)
+	}
+	t.Setenv("DOCS_URL", "http://docs:4000")
+	if got, want := instanceDocs(text), "Full guide: https://app.example.com/docs/install-agent-runtime"; got != want {
+		t.Fatalf("docs served: want %q, got %q", want, got)
+	}
+	t.Setenv("MULTICA_APP_URL", "")
+	if got := instanceDocs(text); got != text {
+		t.Fatalf("app URL unknown: want unchanged, got %q", got)
 	}
 }

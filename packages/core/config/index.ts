@@ -31,9 +31,9 @@ interface ConfigState {
   serverVersion: string;
   serverBuild: string;
   serverCommit: string;
-  // Absolute base URL of the fork docs this instance serves (e.g.
-  // https://host/docs). Empty when it serves none: links fall back to the
-  // upstream docs site.
+  // Where this instance serves its fork docs: a path ("/docs", resolved against
+  // the current origin) or an absolute URL. Empty when it serves none: links
+  // fall back to the upstream docs site.
   docsBaseUrl: string;
   // Whether the connected server validates local_directory execution_mode.
   // Defaults to false, and stays false for any server that does not declare it:

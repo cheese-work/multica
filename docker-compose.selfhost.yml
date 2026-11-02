@@ -247,7 +247,8 @@ services:
       # the operator needs to set here.
       MULTICA_TELEGRAM_SECRET_KEY: ${MULTICA_TELEGRAM_SECRET_KEY:-}
       # Same value as the frontend's: set means this instance serves /docs, so
-      # /api/config advertises it and in-app docs links stay on this origin.
+      # /api/config advertises the path and in-app docs links stay on the
+      # origin the visitor reached.
       DOCS_URL: ${DOCS_URL:-}
     restart: unless-stopped
 
@@ -271,7 +272,8 @@ services:
   # DOCS_URL=http://docs:4000 so the frontend proxies /docs to it.
   docs:
     profiles: ["docs"]
-    image: ${MULTICA_DOCS_IMAGE:-ghcr.io/cheese-work/multica-docs}:${MULTICA_IMAGE_TAG:-latest}
+    # Full reference, so a digest pin works: MULTICA_DOCS_IMAGE=repo@sha256:...
+    image: ${MULTICA_DOCS_IMAGE:-ghcr.io/cheese-work/multica-docs:latest}
     environment:
       HOSTNAME: "0.0.0.0"
     restart: unless-stopped
