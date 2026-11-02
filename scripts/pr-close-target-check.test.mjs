@@ -42,6 +42,17 @@ test("an agent name token in the branch prefix is not an issue key", async () =>
   );
 });
 
+test("an issue key inside the agent segment of the branch still counts", async () => {
+  assert.deepEqual(
+    await strayKeys(pullRequest({
+      title: "fix(x): change (CHE-2) [squash]",
+      body: "Closes CHE-2",
+      headRef: "agent/che-1/che-2-fix",
+    })),
+    ["CHE-1@branch"],
+  );
+});
+
 test("a title that names the parent fails, and Refs does not shield it", async () => {
   const result = await strayKeys(pullRequest({
     title: "fix(x): change (CHE-1911) [squash]",
