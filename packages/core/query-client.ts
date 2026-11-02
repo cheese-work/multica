@@ -15,36 +15,30 @@ const isHidden = () =>
  * refetches active observers even when the tab is hidden — N tabs means N
  * refetches per event (CHE-3117). While hidden we only mark queries stale
  * (`refetchType: "none"`); the tab refetches the invalidated ones once it
- * becomes visible again.
+ * becomes visible again. Patches the instance (not a subclass) so modules that
+ * mock `@tanstack/react-query` without `QueryClient` still import cleanly.
  */
-class TabAwareQueryClient extends QueryClient {
-  constructor(config: ConstructorParameters<typeof QueryClient>[0]) {
-    super(config);
-    if (typeof document === "undefined") return;
-    // ponytail: listener lives as long as the client (one per app; StrictMode's
-    // discarded extra client leaks one listener in dev only).
-    document.addEventListener("visibilitychange", () => {
-      if (isHidden()) return;
-      void this.refetchQueries({
-        type: "active",
-        predicate: (q) => q.state.isInvalidated,
-      });
-    });
-  }
-
-  override invalidateQueries(
-    filters?: InvalidateQueryFilters,
-    options?: InvalidateOptions,
-  ): Promise<void> {
-    if (isHidden() && filters?.refetchType === undefined) {
-      filters = { ...filters, refetchType: "none" };
-    }
-    return super.invalidateQueries(filters, options);
-  }
+function deferInvalidationWhenHidden(qc: QueryClient): QueryClient {
+  if (typeof document === "undefined") return qc;
+  const invalidate = qc.invalidateQueries.bind(qc);
+  qc.invalidateQueries = (filters?: InvalidateQueryFilters, options?: InvalidateOptions) =>
+    invalidate(
+      isHidden() && filters?.refetchType === undefined
+        ? { ...filters, refetchType: "none" }
+        : filters,
+      options,
+    );
+  // ponytail: listener lives as long as the client (one per app; StrictMode's
+  // discarded extra client leaks one listener in dev only).
+  document.addEventListener("visibilitychange", () => {
+    if (isHidden()) return;
+    void qc.refetchQueries({ type: "active", predicate: (q) => q.state.isInvalidated });
+  });
+  return qc;
 }
 
 export function createQueryClient(): QueryClient {
-  return new TabAwareQueryClient({
+  return deferInvalidationWhenHidden(new QueryClient({
     defaultOptions: {
       queries: {
         staleTime: Infinity,
@@ -57,7 +51,7 @@ export function createQueryClient(): QueryClient {
         retry: false,
       },
     },
-  });
+  }));
 }
 
 /**
