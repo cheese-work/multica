@@ -542,8 +542,9 @@ func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...strin
 			}
 		}
 		negotiated = TaskNegotiation{
-			Supplement: response.SupplementCapability == protocol.DaemonCapabilityTaskSupplementV1,
-			PREvent:    response.PREventCapability == protocol.DaemonCapabilityTaskSupplementPREventV1,
+			Supplement: response.SupplementCapability == protocol.DaemonCapabilityTaskSupplementV1 ||
+				response.SupplementCapability == protocol.DaemonCapabilityTaskSupplementChatV1,
+			PREvent: response.PREventCapability == protocol.DaemonCapabilityTaskSupplementPREventV1,
 		}
 		return nil
 	}

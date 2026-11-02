@@ -8599,13 +8599,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		taskCapabilities = append(taskCapabilities, protocol.DaemonCapabilityPiProcessCleanupV1)
 	}
 	var cursorHookCommand []string
-	supplementSupported := agent.SupportsTaskSupplement(provider, resolvedVersion) && task.IssueID != ""
+	supplementSupported := agent.SupportsTaskSupplement(provider, resolvedVersion) && (task.IssueID != "" || task.ChatSessionID != "")
 	if supplementSupported && provider == "cursor" {
 		cursorHookCommand, supplementSupported = cursorSupplementHookCommand(env)
 	}
 	if supplementSupported {
-		taskCapabilities = append(taskCapabilities,
-			protocol.DaemonCapabilityTaskSupplementV1, protocol.DaemonCapabilityTaskSupplementPREventV1)
+		taskCapabilities = append(taskCapabilities, taskSupplementCapabilities(task)...)
 	}
 	negotiation, err := d.startTaskWithCurrentClaim(prepareCtx, task, taskCapabilities...)
 	if err != nil {

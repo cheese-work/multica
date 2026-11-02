@@ -1936,6 +1936,8 @@
     "recorded_for": "Recorded for {{issue}}",
     "option_n": "Option {{number}}",
     "jump_to_card": "Jump to card",
+    "jump_to_ask": "Jump to ask",
+    "jump_to_answer": "Jump to answer",
     "answered_in_dm": "Answered in DM",
     "private_dm": "from a private DM",
     "disclaim_action": "Disclaim",

@@ -26,6 +26,7 @@ import type { DecisionState, TimelineEntry } from "@multica/core/types";
 import { useT } from "../../i18n";
 import { AppLink } from "../../navigation";
 import { RichContent } from "../../rich-content";
+import { useDecisionCounterpart } from "../hooks/use-decision-counterpart";
 
 const STATE_TONE: Record<DecisionState, string> = {
   pending: "bg-warning/10 text-warning",
@@ -96,6 +97,7 @@ export function DecisionQuoteCard({
   const [conflict, setConflict] = useState<DisclaimConflict | undefined>();
   const [failed, setFailed] = useState(false);
 
+  const askCommentId = useDecisionCounterpart(issueId, entry);
   const answerId = entry.decision_answer_id ?? entry.decision_receipt_answer_id ?? "";
   const isHuman = !!currentUserId && entry.decision_human_user_id === currentUserId;
   const state: DecisionState = conflict === "withdrawn" ? "disclaimed" : (entry.decision_state ?? "pending");
@@ -213,6 +215,17 @@ export function DecisionQuoteCard({
         <span className="mr-auto text-caption text-muted-foreground">
           {t(($) => $.decision.recorded_by, { name: recorder })}
         </span>
+        {askCommentId && onJumpToComment && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-muted-foreground"
+            data-testid="decision-quote-jump-to-ask"
+            onClick={() => onJumpToComment(askCommentId)}
+          >
+            ↑ {t(($) => $.decision.jump_to_ask)}
+          </Button>
+        )}
         {isHuman && askedHref && state !== "disclaimed" && (
           <Button
             size="sm"
@@ -308,6 +321,32 @@ export function DecisionQuoteCard({
         </AlertDialogContent>
       </AlertDialog>
     </div>
+  );
+}
+
+/** Under an ask comment's body: jumps to the answer once one is recorded. */
+export function DecisionAskJump({
+  entry,
+  issueId,
+  onJumpToComment,
+}: {
+  entry: TimelineEntry;
+  issueId: string;
+  onJumpToComment?: (commentId: string) => void;
+}) {
+  const { t } = useT("issues");
+  const answerCommentId = useDecisionCounterpart(issueId, entry);
+  if (!answerCommentId || !onJumpToComment) return null;
+  return (
+    <Button
+      size="sm"
+      variant="ghost"
+      className="mt-1 text-muted-foreground"
+      data-testid="decision-ask-jump-to-answer"
+      onClick={() => onJumpToComment(answerCommentId)}
+    >
+      ↓ {t(($) => $.decision.jump_to_answer)}
+    </Button>
   );
 }
 
