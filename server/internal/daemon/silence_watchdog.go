@@ -70,12 +70,14 @@ type silenceWatchdog struct {
 // flight the run is not silent; only a call past the warn threshold is marked,
 // once per call.
 func (w *silenceWatchdog) step() {
+	// inFlight first: a backend's tool count may refresh the activity stamp.
+	toolRunning := w.inFlight() > 0
 	last := w.last.Load()
 	if last != w.segment {
 		w.segment, w.warned, w.alerted = last, false, false
 	}
 	now := w.now()
-	if w.inFlight() > 0 {
+	if toolRunning {
 		if w.warn <= 0 || w.calls == nil {
 			return
 		}
@@ -95,6 +97,10 @@ func (w *silenceWatchdog) step() {
 	if w.warn > 0 && !w.warned && silent >= w.warn {
 		w.warned = true
 		w.mark("silence_warn", fmt.Sprintf("No agent activity for %s", silent.Round(time.Second)), "", "")
+		// The marker post can block; do not alert from a snapshot the run has left.
+		if w.inFlight() > 0 || w.last.Load() != last {
+			return
+		}
 	}
 	if w.alert > 0 && !w.alerted && silent >= w.alert {
 		w.alerted = true

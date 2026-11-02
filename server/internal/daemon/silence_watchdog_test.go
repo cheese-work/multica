@@ -212,3 +212,35 @@ func TestClientReportSilenceAlertPostsSegment(t *testing.T) {
 		t.Fatalf("path=%s body=%s", path, body)
 	}
 }
+
+// Cursor's tool count refreshes lastActivityAt as a side effect. The stamp must
+// be read after that call, or a tool that just ended reads as long silence.
+func TestSilenceReadsActivityAfterToolCountRefresh(t *testing.T) {
+	r := newSilenceRig(15*time.Minute, time.Hour)
+	r.now = time.Hour
+	r.w.inFlight = func() int32 {
+		r.message() // native tool activity ended just now
+		return 0
+	}
+	r.w.step()
+	r.want(t, 0, 0)
+}
+
+// A marker post can block; if the run moves on meanwhile, the alert must not
+// fire from the old snapshot.
+func TestSilenceAlertSkippedWhenRunMovesDuringMarker(t *testing.T) {
+	for name, move := range map[string]func(r *silenceRig){
+		"message":    func(r *silenceRig) { r.message() },
+		"tool start": func(r *silenceRig) { r.tools = 1 },
+	} {
+		r := newSilenceRig(15*time.Minute, time.Hour)
+		r.w.mark = func(typ, content, callID, tool string) {
+			r.marks = append(r.marks, typ)
+			move(r)
+		}
+		r.advance(time.Hour)
+		if len(r.alerts) != 0 {
+			t.Fatalf("%s: alert fired from a stale snapshot: %v", name, r.alerts)
+		}
+	}
+}
