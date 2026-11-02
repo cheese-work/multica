@@ -111,7 +111,7 @@ function commonResponse(pathname: string): unknown | undefined {
 }
 
 /** Requests of the issue-detail page for `issue`, with `timeline` as its comments. */
-export function issuePageRoute(pathname: string, issue: ReturnType<typeof issueFor>, timeline: unknown[]) {
+export function issuePageRoute(pathname: string, issue: { id: string; identifier: string }, timeline: unknown[]) {
   const base = `/api/issues/${issue.id}`;
   switch (pathname) {
     case `/api/issues/${issue.identifier}`:
