@@ -25,7 +25,7 @@ func TestDecisionAskToolReachesServerWithTheTaskTokenOnly(t *testing.T) {
 	task := Task{ID: "task-1", IssueID: "issue-1", AuthToken: "mat_task", RemoteMCPDaemonToken: "daemon-secret"}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	_, set, err := startTaskPluginHookMCP(ctx, task.ID, taskHookTools(task), taskHookInvoker(task, client, nil), nil)
+	_, set, err := startTaskPluginHookMCP(ctx, task.ID, taskHookTools(task, "claude"), taskHookInvoker(task, client, nil), nil)
 	if err != nil || set == nil {
 		t.Fatalf("start hook MCP: set=%v err=%v", set, err)
 	}
@@ -51,7 +51,15 @@ func TestDecisionAskToolReachesServerWithTheTaskTokenOnly(t *testing.T) {
 }
 
 func TestDecisionAskToolIsAbsentFromChatTasks(t *testing.T) {
-	if tools := taskHookTools(Task{ID: "task-1", ChatSessionID: "chat-1"}); len(tools) != 0 {
+	if tools := taskHookTools(Task{ID: "task-1", ChatSessionID: "chat-1"}, "claude"); len(tools) != 0 {
 		t.Fatalf("chat task tools = %v, want none", tools)
+	}
+}
+
+// Pi refuses to start with any MCP config below its MCP floor, so a tool every
+// issue task carries would stop those tasks; pi callers use the CLI instead.
+func TestDecisionAskToolIsAbsentFromPiTasks(t *testing.T) {
+	if tools := taskHookTools(Task{ID: "task-1", IssueID: "issue-1"}, "pi"); len(tools) != 0 {
+		t.Fatalf("pi task tools = %v, want none", tools)
 	}
 }

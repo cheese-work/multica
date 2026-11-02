@@ -22,9 +22,11 @@ const (
 )
 
 // taskHookTools is the task's plugin hook tools plus decision_ask on issue tasks.
-func taskHookTools(task Task) []PluginHookTool {
+// Pi fails to start with any MCP config below its MCP floor, and decision_ask
+// would put one on every issue task; pi uses `multica agent decision ask`.
+func taskHookTools(task Task, provider string) []PluginHookTool {
 	tools := task.PluginHookTools
-	if task.IssueID == "" || task.ChatSessionID != "" {
+	if task.IssueID == "" || task.ChatSessionID != "" || provider == "pi" {
 		return tools
 	}
 	return append(tools[:len(tools):len(tools)], PluginHookTool{
