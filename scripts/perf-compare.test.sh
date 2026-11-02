@@ -90,12 +90,14 @@ if (args[0] === "exec" && args[1] === "playwright") {
     const kib = Number(process.env.PERF_PAGE_LOAD_KIB ?? 1000);
     const sample = { ttfb_ms: 100, lcp_ms: 2000, long_task_total_ms: 500, js_transferred_bytes: kib * 1024 };
     const routes = ["issues", "issue-detail", "chat", "inbox", "projects"];
-    const evidence = Object.fromEntries(routes.map((r) => [r, { script_ms: 900, top_files: [{ name: "webpack-abc123.js", ms: 400 }] }]));
+    // PERF_EVIDENCE: "missing" drops the profile evidence, "truncated" keeps it
+    // without the webpack runtime chunk (it fell out of the spec's top files).
+    const top = process.env.PERF_EVIDENCE === "truncated" ? [{ name: "main-app.js", ms: 300 }] : [{ name: "webpack-abc123.js", ms: 400 }];
+    const evidence = Object.fromEntries(routes.map((r) => [r, { script_ms: 900, top_files: top }]));
     if (mode !== "fail-no-report") {
-      writeFileSync(
-        `${process.env.PERF_REPORT_DIR}/page-load-${project}.json`,
-        JSON.stringify({ profile: project, samples: 1, profiles: { [project]: Object.fromEntries(routes.map((r) => [r, [sample]])) }, profile_evidence: evidence }),
-      );
+      const report = { profile: project, samples: 1, profiles: { [project]: Object.fromEntries(routes.map((r) => [r, [sample]])) } };
+      if (process.env.PERF_EVIDENCE !== "missing") report.profile_evidence = evidence;
+      writeFileSync(`${process.env.PERF_REPORT_DIR}/page-load-${project}.json`, JSON.stringify(report));
     }
     process.exit(mode === "ok" ? 0 : 1);
   }
@@ -184,6 +186,20 @@ grep -q "^### desktop" "$work/out-page-load-success/comparison.md" || fail "no d
 grep -q "^### phone" "$work/out-page-load-success/comparison.md" || fail "no phone table"
 grep -q "^| chat | 1000 | 1000 |" "$work/out-page-load-success/comparison.md" || fail "chat row missing or wrong"
 grep -q "webpack self" "$work/out-page-load-success/comparison.md" || fail "webpack self time not reported"
+
+# Without profiling evidence there is no webpack measurement: invalid, never zero.
+PERF_EVIDENCE=missing SCENARIO_ARGS="--scenario page-load --runs 2" run_case page-load-no-evidence ok normal
+expect_exit 1
+expect_status invalid
+grep -q "no profile evidence" "$comparison" || fail "missing evidence was not named"
+
+# A webpack chunk that fell out of the top files is unknown, not 0 ms.
+PERF_EVIDENCE=truncated SCENARIO_ARGS="--scenario page-load --runs 2" run_case page-load-truncated-evidence ok normal
+expect_exit 1
+expect_status invalid
+grep -q "webpack-\*.js is not among the top files" "$comparison" || fail "truncated evidence was not named"
+grep -q "| issues | 1000 | 1000 | +0 | — | — | — |" "$work/out-page-load-truncated-evidence/comparison.md" \
+  || fail "an unknown webpack time was printed as a number"
 
 SCENARIO_ARGS="--scenario page-load --runs 1" run_case page-load-no-report fail-no-report normal
 expect_exit 1

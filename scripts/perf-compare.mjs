@@ -184,6 +184,15 @@ const waitForServer = async (port, timeoutMs = 120_000) => {
   throw new Error(`frontend on :${port} did not become reachable`);
 };
 
+/**
+ * Time the CPU profile attributed to webpack's runtime chunk, where module
+ * evaluation lands. Null when the chunk is not among the profile's top files.
+ */
+function webpackSelfMs(evidence) {
+  const files = (evidence.top_files ?? []).filter((file) => /^webpack-[0-9a-f]+\.js$/.test(file.name));
+  return files.length ? files.reduce((total, file) => total + file.ms, 0) : null;
+}
+
 const PAGE_LOAD_PROFILES = ["desktop", "phone"];
 const PAGE_LOAD_ROUTES = ["issues", "issue-detail", "chat", "inbox", "projects"];
 
@@ -232,7 +241,12 @@ function measurePageLoad(label, port) {
         if (!samples?.length) invalid.push(`${profile} run ${n}: no sample for ${route}`);
         else profiles[profile][route].push(...samples);
         const evidence = report.profile_evidence?.[route];
-        if (evidence) profileEvidence[profile][route].push(evidence);
+        if (!evidence) invalid.push(`${profile} run ${n}: no profile evidence for ${route}`);
+        else if (webpackSelfMs(evidence) === null) {
+          // The spec keeps only its top files. A runtime chunk that fell out of
+          // them was not measured: 0 ms would claim a number nobody took.
+          invalid.push(`${profile} run ${n}: webpack-*.js is not among the top files for ${route}`);
+        } else profileEvidence[profile][route].push(evidence);
       }
     }
   }
@@ -405,12 +419,6 @@ const median = (values) => {
   const mid = sorted.length >> 1;
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 };
-
-/** Time the CPU profile attributed to webpack's runtime chunk, where module evaluation lands. */
-const webpackSelfMs = (evidence) =>
-  (evidence.top_files ?? [])
-    .filter((file) => /^webpack-[0-9a-f]+\.js$/.test(file.name))
-    .reduce((total, file) => total + file.ms, 0);
 
 const cell = (value) => (value === null ? "—" : Math.round(value));
 const delta = (a, b) => (a === null || b === null ? "—" : `${b - a >= 0 ? "+" : ""}${Math.round(b - a)}`);
