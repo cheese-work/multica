@@ -16,7 +16,7 @@ import (
 func TestNoMJServerCode(t *testing.T) {
 	root := filepath.Join("..", "..")
 	banned := []string{"/internal/governance", "/pkg/jev"}
-	var goneDirs []string
+	goneDirs := []string{"internal/governance/receipt", "internal/governance/credential", "cmd/govreplay", "internal/governance/evaluator.go"}
 
 	for _, dir := range goneDirs {
 		if _, err := os.Stat(filepath.Join(root, dir)); err == nil {
