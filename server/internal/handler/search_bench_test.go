@@ -31,10 +31,13 @@ import (
 // Alternate before/after invocations (before, after, before, after) with a
 // smaller BENCH_RUNS: samples with the same label accumulate in the file, so
 // slow host load lands on both sides. Never point DATABASE_URL at a shared or
-// production database: the seed inserts BENCH_ISSUES issues and 4x as many
+// production database: the seed inserts BENCH_ISSUES issues and BENCH_COMMENTS
 // comments, and BENCH_RESET=1 deletes the benchmark workspace's rows first.
 //
-// Seed knobs: BENCH_ISSUES (default 6000), BENCH_RUNS (default 60). The corpus
+// Seed knobs: BENCH_ISSUES (default 6000), BENCH_COMMENTS (default 4x issues),
+// BENCH_RUNS (default 60). The production-shape corpus of CHE-3164 (3,195 issues,
+// 61,842 comments in one workspace on C00, read 2 Nov 2026) is
+// BENCH_ISSUES=3200 BENCH_COMMENTS=62000. The corpus
 // is deterministic: filler words come from a fixed vocabulary by row number,
 // and the needles below sit at fixed row-number intervals.
 const (
@@ -104,15 +107,24 @@ func benchPercentile(sorted []float64, p float64) float64 {
 //     m%180==3 "đăng nhập", m%240==4 "dang nhap".
 func seedSearchBench(t *testing.T, ctx context.Context, slug string, issues int) string {
 	t.Helper()
+	return seedSearchBenchShaped(t, ctx, slug, issues, issues*4)
+}
+
+// seedSearchBenchShaped is seedSearchBench with an explicit comment count, for a
+// corpus shaped like production (few issues, many comments).
+func seedSearchBenchShaped(t *testing.T, ctx context.Context, slug string, issues, comments int) string {
+	t.Helper()
 	pool := testPool
 	var wsID string
 	err := pool.QueryRow(ctx, `SELECT id::text FROM workspace WHERE slug = $1`, slug).Scan(&wsID)
 	if err == nil && os.Getenv("BENCH_RESET") != "1" {
-		var have int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM issue WHERE workspace_id = $1`, wsID).Scan(&have); err != nil {
+		var haveIssues, haveComments int
+		if err := pool.QueryRow(ctx,
+			`SELECT (SELECT count(*) FROM issue WHERE workspace_id = $1), (SELECT count(*) FROM comment WHERE workspace_id = $1)`,
+			wsID).Scan(&haveIssues, &haveComments); err != nil {
 			t.Fatal(err)
 		}
-		if have == issues {
+		if haveIssues == issues && haveComments == comments {
 			return wsID
 		}
 	}
@@ -159,7 +171,7 @@ func seedSearchBench(t *testing.T, ctx context.Context, slug string, issues int)
 				WHEN n %% 180 = 3 THEN 'đăng nhập ' WHEN n %% 240 = 4 THEN 'dang nhap ' ELSE '' END || %s,
 			now() - make_interval(secs => n), now() - make_interval(secs => n)
 		FROM generate_series(1, %d) n`,
-		issues, words(3, 50), issues*4)
+		issues, words(3, 50), comments)
 	if _, err := pool.Exec(ctx, commentSQL, wsID, benchVocabulary); err != nil {
 		t.Fatalf("seed comments: %v", err)
 	}
@@ -217,7 +229,7 @@ func TestSearchBench(t *testing.T) {
 	if label == "" || out == "" {
 		t.Fatal("set BENCH_LABEL and BENCH_OUT")
 	}
-	wsID := seedSearchBench(t, ctx, benchWorkspaceSlug, issues)
+	wsID := seedSearchBenchShaped(t, ctx, benchWorkspaceSlug, issues, benchEnvInt("BENCH_COMMENTS", issues*4))
 	var counts [2]int
 	if err := testPool.QueryRow(ctx,
 		`SELECT (SELECT count(*) FROM issue WHERE workspace_id = $1), (SELECT count(*) FROM comment WHERE workspace_id = $1)`,

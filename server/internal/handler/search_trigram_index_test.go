@@ -86,7 +86,9 @@ func TestIssueSearch_PlanReachesTrigramIndexes(t *testing.T) {
 // the prefilter must not change: an issue that matches only through its number,
 // only through one comment of several, with terms spread over title, description
 // and comments, or with a term too short for a trigram, still comes back, in the
-// order the unfiltered legacy statement gives.
+// order the unfiltered legacy statement gives. A number-only issue (found by
+// neither text nor comment) is covered too. The legacy statement predates
+// diacritic folding, so accent spellings are checked against fixed expectations.
 func TestIssueSearch_TrigramPrefilterKeepsEveryEligibleIssue(t *testing.T) {
 	token := fmt.Sprintf("trg%d", time.Now().UnixNano())
 	baseTime := time.Now().Add(-time.Hour).UTC()
@@ -99,7 +101,22 @@ func TestIssueSearch_TrigramPrefilterKeepsEveryEligibleIssue(t *testing.T) {
 	dbfx.Comment(t, commentOnly, "older "+token+" mention", testutil.Cols{"created_at": baseTime.Add(4 * time.Minute)})
 	dbfx.Comment(t, commentOnly, "newer unrelated", testutil.Cols{"created_at": baseTime.Add(5 * time.Minute)})
 
-	for _, phrase := range []string{token, token + " beta", "ab " + token} {
+	// numberOnly matches no text at all: only its number can bring it back.
+	numberOnly := dbfx.Issue(t, "unrelated words", testutil.Cols{"description": "none", "updated_at": baseTime.Add(6 * time.Minute)})
+	var number int
+	if err := testPool.QueryRow(context.Background(), `SELECT number FROM issue WHERE id = $1`, numberOnly).Scan(&number); err != nil {
+		t.Fatal(err)
+	}
+	// Accented and plain spellings must meet through the folded columns.
+	dbfx.Issue(t, token+" Đăng nhập", testutil.Cols{"description": "plain", "updated_at": baseTime.Add(7 * time.Minute)})
+	accentComment := dbfx.Issue(t, "no title hit either", testutil.Cols{"updated_at": baseTime.Add(8 * time.Minute)})
+	dbfx.Comment(t, accentComment, "xin "+token+" đăng nhập lại", testutil.Cols{"created_at": baseTime.Add(8 * time.Minute)})
+
+	phrases := []string{
+		token, token + " beta", "ab " + token,
+		fmt.Sprint(number), fmt.Sprintf("HAN-%d", number),
+	}
+	for _, phrase := range phrases {
 		t.Run(phrase, func(t *testing.T) {
 			terms := splitSearchTerms(phrase)
 			queryNum, hasNum := parseQueryNumber(phrase)
@@ -109,8 +126,33 @@ func TestIssueSearch_TrigramPrefilterKeepsEveryEligibleIssue(t *testing.T) {
 			legacyArgs[3] = testWorkspaceID
 			legacyArgs[len(legacyArgs)-2], legacyArgs[len(legacyArgs)-1] = 50, 0
 			legacy := runLegacySearchForParity(t, legacyQuery, legacyArgs)
+			if len(candidate) == 0 {
+				t.Fatalf("no rows for %q; the fixture is wrong", phrase)
+			}
 			if fmt.Sprint(candidate) != fmt.Sprint(legacy) {
 				t.Fatalf("prefiltered rows differ from legacy\ncandidate: %v\nlegacy:    %v", candidate, legacy)
+			}
+		})
+	}
+}
+
+// TestIssueSearch_TrigramPrefilterFoldsAccents: plain, accented and upper-case
+// spellings all reach the issue whose title is accented and the issue whose
+// comment is accented, through the folded columns the trigram indexes cover.
+func TestIssueSearch_TrigramPrefilterFoldsAccents(t *testing.T) {
+	token := fmt.Sprintf("acc%d", time.Now().UnixNano())
+	titleIssue := dbfx.Issue(t, token+" Đăng nhập", testutil.Cols{"description": "plain"})
+	commentIssue := dbfx.Issue(t, "unrelated title", testutil.Cols{"description": "plain"})
+	dbfx.Comment(t, commentIssue, "xin "+token+" đăng nhập lại", testutil.Cols{})
+
+	for _, phrase := range []string{token + " dang nhap", token + " đăng nhập", token + " ĐĂNG NHẬP"} {
+		t.Run(phrase, func(t *testing.T) {
+			got := map[string]string{}
+			for _, row := range runBuiltSearchForParity(t, phrase, false, []string{"done", "cancelled"}, 50, 0) {
+				got[row.id] = row.matchSource
+			}
+			if got[titleIssue] != "title" || got[commentIssue] != "comment" || len(got) != 2 {
+				t.Fatalf("rows = %v, want %s via title and %s via comment", got, titleIssue, commentIssue)
 			}
 		})
 	}
