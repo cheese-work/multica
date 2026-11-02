@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 // Review-loop guards (CHE-3243). A reviewer's CHANGES verdict is an agent's
@@ -21,7 +22,6 @@ const (
 	maxChangesRounds = 3
 
 	activityChangesRequested = "review_changes_requested"
-	activityRoundsExhausted  = "review_rounds_exhausted"
 	statusNeedDecision       = "need_decision"
 )
 
@@ -55,44 +55,71 @@ func writeReviewLoopError(w http.ResponseWriter, err error) bool {
 	return true
 }
 
+// isChangesVerdict reports whether the write is an agent's CHANGES verdict:
+// an explicit move along the step's agent_verdict(CHANGES) exit.
+func isChangesVerdict(def *issueworkflow.Definition, from string, to pgtype.Text, caller workflowCaller) bool {
+	return caller.agent && to.Valid && to.String != from && def.IsChangesMove(from, to.String)
+}
+
+// runReviewHead is the PR lineage and head the verdict's review run was
+// dispatched for; both are empty for a run without a PR.
+func runReviewHead(run *db.AgentTaskQueue) (prID, head string) {
+	if run == nil {
+		return "", ""
+	}
+	var ctxJSON struct {
+		HeadSHA string `json:"head_sha"`
+	}
+	_ = json.Unmarshal(run.Context, &ctxJSON)
+	return uuidToString(run.PullRequestID), ctxJSON.HeadSHA
+}
+
 // guardChangesVerdict judges an agent's move off a step. For a CHANGES verdict
-// it refuses findings without a P0/P1, and past the round limit it rewrites the
-// target to need_decision. Any other move passes untouched.
+// it refuses findings without a P0/P1, and when this verdict is the
+// maxChangesRounds-th round of the run's PR it rewrites the target to
+// need_decision. Any other move passes untouched. It runs again under the
+// issue row lock, so concurrent verdicts count one after the other.
 func (h *Handler) guardChangesVerdict(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, def *issueworkflow.Definition, caller workflowCaller) error {
-	if !caller.agent || !params.Status.Valid || params.Status.String == prev.Status || !def.IsChangesMove(prev.Status, params.Status.String) {
+	if !isChangesVerdict(def, prev.Status, params.Status, caller) {
 		return nil
 	}
 	if !blocking(caller.findings) {
 		return errFindingsRequired
 	}
-	rounds, err := q.CountIssueActivityByAction(ctx, db.CountIssueActivityByActionParams{IssueID: prev.ID, Action: activityChangesRequested})
+	prID, _ := runReviewHead(caller.run)
+	earlier, err := q.CountChangesVerdictsForPR(ctx, db.CountChangesVerdictsForPRParams{IssueID: prev.ID, PullRequestID: prID})
 	if err != nil {
 		return err
 	}
-	if rounds >= maxChangesRounds && def.Has(statusNeedDecision) {
+	if earlier+1 >= maxChangesRounds && def.Has(statusNeedDecision) {
 		params.Status = pgtype.Text{String: statusNeedDecision, Valid: true}
 	}
 	return nil
 }
 
-// recordChangesVerdict leaves the verdict where the next write counts it: the
-// round with its findings, or the refusal of one past the limit.
-func (h *Handler) recordChangesVerdict(ctx context.Context, caller workflowCaller, prev, issue db.Issue, requested *string) {
-	if !caller.agent || requested == nil || *requested == prev.Status || issue.Status == prev.Status {
-		return
+// recordVerdict stores an accepted CHANGES verdict with its findings, PR and
+// head, in the transaction that moves the issue: the round is counted exactly
+// when the move commits, and the head is what a later review is skipped on.
+func (w *workflowWrite) recordVerdict(ctx context.Context, q *db.Queries, moved db.Issue) error {
+	if w == nil || !w.statusExplicit || moved.Status == w.prev.Status {
+		return nil
 	}
-	def, _, err := issueworkflow.ForIssue(ctx, h.Queries, prev.WorkspaceID, prev.WorkflowID, prev.ProjectID)
-	if err != nil || def == nil || !def.IsChangesMove(prev.Status, *requested) {
-		return
+	prev := w.prev
+	def, _, err := issueworkflow.ForIssue(ctx, q, prev.WorkspaceID, prev.WorkflowID, w.pre.ProjectID)
+	if err != nil || def == nil || !isChangesVerdict(def, prev.Status, w.pre.Status, w.caller) {
+		return err
 	}
-	action := activityChangesRequested
-	if issue.Status != *requested {
-		action = activityRoundsExhausted
-	}
-	findings, _ := json.Marshal(caller.findings)
-	agentID := ""
-	if caller.run != nil {
-		agentID = uuidToString(caller.run.AgentID)
-	}
-	h.recordReviewActivity(ctx, issue.ID, "agent", agentID, action, map[string]string{"findings": string(findings)})
+	prID, head := runReviewHead(w.caller.run)
+	findings, _ := json.Marshal(w.caller.findings)
+	details, _ := json.Marshal(map[string]string{"findings": string(findings), "pull_request_id": prID, "head_sha": head})
+	_, err = q.CreateActivity(ctx, db.CreateActivityParams{
+		ID:          dbid.NewV7(),
+		WorkspaceID: prev.WorkspaceID,
+		IssueID:     prev.ID,
+		ActorType:   strToText("agent"),
+		ActorID:     w.caller.run.AgentID,
+		Action:      activityChangesRequested,
+		Details:     details,
+	})
+	return err
 }

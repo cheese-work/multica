@@ -1969,17 +1969,21 @@ WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
     AND workflow_step <> sqlc.arg('step')::text
   );
 
--- name: HasCompletedReviewRunForHead :one
--- Whether a review run of the step already finished on this PR head (CHE-3243):
--- a review dispatched for a head nobody pushed to since would only repeat it.
+-- name: HasChangesVerdictForHead :one
+-- Whether a changes-requested verdict was already recorded for this PR head
+-- (CHE-3243): a review dispatched for a head nobody pushed to since would only
+-- repeat it.
 SELECT EXISTS (
-  SELECT 1 FROM agent_task_queue
-  WHERE issue_id = $1 AND workflow_step = sqlc.arg('step')::text
-    AND status = 'completed' AND context->>'head_sha' = sqlc.arg('head_sha')::text
+  SELECT 1 FROM activity_log
+  WHERE issue_id = $1 AND action = 'review_changes_requested'
+    AND details->>'head_sha' = sqlc.arg('head_sha')::text
 ) AS reviewed;
 
--- name: CountIssueActivityByAction :one
-SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = $2;
+-- name: CountChangesVerdictsForPR :one
+-- Changes-requested rounds of one PR lineage; a replacement PR starts at zero.
+SELECT count(*) FROM activity_log
+WHERE issue_id = $1 AND action = 'review_changes_requested'
+  AND COALESCE(details->>'pull_request_id', '') = sqlc.arg('pull_request_id')::text;
 
 -- name: ListStalePendingStepTasks :many
 -- The runs HasPendingTaskForIssueAndAgentAtStep ignores: pending

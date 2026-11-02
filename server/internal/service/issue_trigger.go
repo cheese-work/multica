@@ -304,8 +304,8 @@ func (s *IssueService) headAlreadyReviewed(ctx context.Context, issue db.Issue) 
 	if head == "" {
 		return false
 	}
-	reviewed, err := s.Queries.HasCompletedReviewRunForHead(ctx, db.HasCompletedReviewRunForHeadParams{
-		IssueID: issue.ID, Step: statusAgentReview, HeadSha: head,
+	reviewed, err := s.Queries.HasChangesVerdictForHead(ctx, db.HasChangesVerdictForHeadParams{
+		IssueID: issue.ID, HeadSha: head,
 	})
 	return err == nil && reviewed
 }

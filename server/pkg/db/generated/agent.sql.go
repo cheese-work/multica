@@ -2793,6 +2793,25 @@ func (q *Queries) CompleteAgentTask(ctx context.Context, arg CompleteAgentTaskPa
 	return i, err
 }
 
+const countChangesVerdictsForPR = `-- name: CountChangesVerdictsForPR :one
+SELECT count(*) FROM activity_log
+WHERE issue_id = $1 AND action = 'review_changes_requested'
+  AND COALESCE(details->>'pull_request_id', '') = $2::text
+`
+
+type CountChangesVerdictsForPRParams struct {
+	IssueID       pgtype.UUID `json:"issue_id"`
+	PullRequestID string      `json:"pull_request_id"`
+}
+
+// Changes-requested rounds of one PR lineage; a replacement PR starts at zero.
+func (q *Queries) CountChangesVerdictsForPR(ctx context.Context, arg CountChangesVerdictsForPRParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countChangesVerdictsForPR, arg.IssueID, arg.PullRequestID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countDelegatedFailureRecoveryTasks = `-- name: CountDelegatedFailureRecoveryTasks :one
 SELECT count(*)
 FROM agent_task_queue
@@ -2805,22 +2824,6 @@ WHERE trigger_evidence_kind = 'delegated_failure'
 // automatic attempt until they need a standalone successor.
 func (q *Queries) CountDelegatedFailureRecoveryTasks(ctx context.Context, failedTaskID pgtype.UUID) (int64, error) {
 	row := q.db.QueryRow(ctx, countDelegatedFailureRecoveryTasks, failedTaskID)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
-const countIssueActivityByAction = `-- name: CountIssueActivityByAction :one
-SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = $2
-`
-
-type CountIssueActivityByActionParams struct {
-	IssueID pgtype.UUID `json:"issue_id"`
-	Action  string      `json:"action"`
-}
-
-func (q *Queries) CountIssueActivityByAction(ctx context.Context, arg CountIssueActivityByActionParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countIssueActivityByAction, arg.IssueID, arg.Action)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -6083,24 +6086,24 @@ func (q *Queries) HasActiveTaskForIssueAndAgentInThread(ctx context.Context, arg
 	return has_active, err
 }
 
-const hasCompletedReviewRunForHead = `-- name: HasCompletedReviewRunForHead :one
+const hasChangesVerdictForHead = `-- name: HasChangesVerdictForHead :one
 SELECT EXISTS (
-  SELECT 1 FROM agent_task_queue
-  WHERE issue_id = $1 AND workflow_step = $2::text
-    AND status = 'completed' AND context->>'head_sha' = $3::text
+  SELECT 1 FROM activity_log
+  WHERE issue_id = $1 AND action = 'review_changes_requested'
+    AND details->>'head_sha' = $2::text
 ) AS reviewed
 `
 
-type HasCompletedReviewRunForHeadParams struct {
+type HasChangesVerdictForHeadParams struct {
 	IssueID pgtype.UUID `json:"issue_id"`
-	Step    string      `json:"step"`
 	HeadSha string      `json:"head_sha"`
 }
 
-// Whether a review run of the step already finished on this PR head (CHE-3243):
-// a review dispatched for a head nobody pushed to since would only repeat it.
-func (q *Queries) HasCompletedReviewRunForHead(ctx context.Context, arg HasCompletedReviewRunForHeadParams) (bool, error) {
-	row := q.db.QueryRow(ctx, hasCompletedReviewRunForHead, arg.IssueID, arg.Step, arg.HeadSha)
+// Whether a changes-requested verdict was already recorded for this PR head
+// (CHE-3243): a review dispatched for a head nobody pushed to since would only
+// repeat it.
+func (q *Queries) HasChangesVerdictForHead(ctx context.Context, arg HasChangesVerdictForHeadParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasChangesVerdictForHead, arg.IssueID, arg.HeadSha)
 	var reviewed bool
 	err := row.Scan(&reviewed)
 	return reviewed, err

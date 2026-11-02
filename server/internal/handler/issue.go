@@ -309,7 +309,10 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 		}
 		var innerErr error
 		issue, cancelledWakeups, innerErr = updateIssueStoppingWakeups(ctx, q, params)
-		return innerErr
+		if innerErr != nil {
+			return innerErr
+		}
+		return wf.recordVerdict(ctx, q, issue)
 	})
 	if err != nil {
 		return issue, err
@@ -3973,6 +3976,9 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 	if err != nil {
 		return db.Issue{}, current, false, fmt.Errorf("update locked issue: %w", err)
 	}
+	if err := wf.recordVerdict(ctx, qtx, issue); err != nil {
+		return db.Issue{}, current, false, fmt.Errorf("record review verdict: %w", err)
+	}
 
 	attachmentsChanged := false
 	if len(attachmentIDs) > 0 {
@@ -4362,7 +4368,6 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.advanceRunStep(r.Context(), callerRun, prevIssue, issue)
-	h.recordChangesVerdict(r.Context(), workflowCaller{run: callerRun, agent: actorType == "agent", findings: req.ReviewFindings}, prevIssue, issue, req.Status)
 	issue = h.postEntryWarning(r.Context(), workflowWrite, issue)
 
 	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)

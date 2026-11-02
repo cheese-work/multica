@@ -57,12 +57,29 @@ func (l reviewLoop) verdict(t *testing.T, status string, findings ...map[string]
 	return agentUpdateIssue(t, l.issueID, l.agentID, l.run, body)
 }
 
-func (l reviewLoop) priorChangesRounds(t *testing.T, n int) {
+// priorChangesRounds records n earlier changes-requested verdicts of one PR
+// lineage ("" is the run without a PR).
+func (l reviewLoop) priorChangesRounds(t *testing.T, n int, prID string) {
 	t.Helper()
 	for i := 0; i < n; i++ {
 		dbfx.Exec(t, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details)
-			SELECT workspace_id, id, 'agent', $2, 'review_changes_requested', '{}'::jsonb FROM issue WHERE id = $1`, l.issueID, l.agentID)
+			SELECT workspace_id, id, 'agent', $2, 'review_changes_requested', jsonb_build_object('pull_request_id', $3::text) FROM issue WHERE id = $1`, l.issueID, l.agentID, prID)
 	}
+}
+
+// linkPR links a new open PR on head to the issue and stamps the review run
+// with it, as a dispatched review run is.
+func (l reviewLoop) linkPR(t *testing.T, head string) string {
+	t.Helper()
+	prID := dbfx.Insert(t, "github_pull_request", testutil.Cols{
+		"workspace_id": testWorkspaceID, "installation_id": 1, "repo_owner": "multica-ai", "repo_name": "multica",
+		"pr_number": testutil.Raw("(floor(random() * 1000000000))::int"), "title": "loop PR", "state": "open", "html_url": "https://example.test/pr",
+		"pr_created_at": testutil.Raw("now()"), "pr_updated_at": testutil.Raw("now()"), "head_sha": head,
+	})
+	dbfx.Exec(t, `INSERT INTO issue_pull_request (issue_id, pull_request_id) VALUES ($1, $2)`, l.issueID, prID)
+	t.Cleanup(func() { testPool.Exec(t.Context(), `DELETE FROM issue_pull_request WHERE pull_request_id = $1`, prID) })
+	dbfx.Exec(t, `UPDATE agent_task_queue SET context = jsonb_build_object('head_sha', $2::text), pull_request_id = $3 WHERE id = $1`, l.run, head, prID)
+	return prID
 }
 
 func finding(severity string) map[string]any {
@@ -107,37 +124,66 @@ func TestReviewLoop_PassVerdictNeedsNoFindings(t *testing.T) {
 	}
 }
 
-func TestReviewLoop_ThirdRoundStillMovesBack(t *testing.T) {
+func TestReviewLoop_SecondRoundStillMovesBack(t *testing.T) {
 	l := newReviewLoop(t)
-	l.priorChangesRounds(t, 2)
+	l.priorChangesRounds(t, 1, "")
 	l.verdict(t, "in_progress", finding("P0")).Want(http.StatusOK)
 	if status, _, _ := issueStatusAndAssignee(t, l.issueID); status != "in_progress" {
 		t.Fatalf("issue status = %q, want in_progress", status)
 	}
 }
 
-func TestReviewLoop_RoundAfterThreeChangesVerdictsGoesToNeedDecision(t *testing.T) {
+// The third changes-requested verdict is the one that stops the loop.
+func TestReviewLoop_ThirdChangesVerdictGoesToNeedDecision(t *testing.T) {
 	l := newReviewLoop(t)
-	l.priorChangesRounds(t, 3)
+	l.priorChangesRounds(t, 2, "")
 	l.verdict(t, "in_progress", finding("P0")).Want(http.StatusOK)
 	if status, _, _ := issueStatusAndAssignee(t, l.issueID); status != "need_decision" {
 		t.Fatalf("issue status = %q, want need_decision", status)
 	}
+	var n int
+	dbfx.QueryRow(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'review_changes_requested'`, l.issueID).Scan(&n)
+	if n != 3 {
+		t.Fatalf("recorded rounds = %d, want 3", n)
+	}
 }
 
-// A move back into agent_review with the head unchanged since a completed
-// review dispatches nothing; a new head dispatches one.
+// A replacement PR starts its own count: rounds of another PR do not carry over.
+func TestReviewLoop_RoundsOfAnotherPRDoNotCount(t *testing.T) {
+	l := newReviewLoop(t)
+	prID := l.linkPR(t, reviewHeadA)
+	l.priorChangesRounds(t, 5, "00000000-0000-0000-0000-000000000001")
+	l.verdict(t, "in_progress", finding("P1")).Want(http.StatusOK)
+	if status, _, _ := issueStatusAndAssignee(t, l.issueID); status != "in_progress" {
+		t.Fatalf("issue status = %q, want in_progress", status)
+	}
+	l.priorChangesRounds(t, 1, prID)
+	dbfx.Exec(t, `UPDATE issue SET status = 'agent_review' WHERE id = $1`, l.issueID)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET workflow_step = 'agent_review' WHERE id = $1`, l.run)
+	l.verdict(t, "in_progress", finding("P1")).Want(http.StatusOK)
+	if status, _, _ := issueStatusAndAssignee(t, l.issueID); status != "need_decision" {
+		t.Fatalf("third round of this PR: status = %q, want need_decision", status)
+	}
+}
+
+// The verdict that changes the status and the round that counts it commit
+// together: a refused write leaves no round behind.
+func TestReviewLoop_RefusedVerdictRecordsNoRound(t *testing.T) {
+	l := newReviewLoop(t)
+	l.verdict(t, "in_progress", finding("P3")).Want(http.StatusBadRequest)
+	var n int
+	dbfx.QueryRow(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'review_changes_requested'`, l.issueID).Scan(&n)
+	if n != 0 {
+		t.Fatalf("recorded rounds = %d, want 0", n)
+	}
+}
+
+// After a changes-requested verdict on a head, entering agent_review on the same
+// head dispatches nothing; a new head dispatches one.
 func TestReviewLoop_SameHeadIsNotReviewedAgain(t *testing.T) {
 	l := newReviewLoop(t)
-	prID := dbfx.Insert(t, "github_pull_request", testutil.Cols{
-		"workspace_id": testWorkspaceID, "installation_id": 1, "repo_owner": "multica-ai", "repo_name": "multica",
-		"pr_number": testutil.Raw("(floor(random() * 1000000000))::int"), "title": "loop PR", "state": "open", "html_url": "https://example.test/pr",
-		"pr_created_at": testutil.Raw("now()"), "pr_updated_at": testutil.Raw("now()"), "head_sha": reviewHeadA,
-	})
-	dbfx.Exec(t, `INSERT INTO issue_pull_request (issue_id, pull_request_id) VALUES ($1, $2)`, l.issueID, prID)
-	t.Cleanup(func() { testPool.Exec(t.Context(), `DELETE FROM issue_pull_request WHERE pull_request_id = $1`, prID) })
-	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed', completed_at = now(), context = jsonb_build_object('head_sha', $2::text), pull_request_id = $3 WHERE id = $1`, l.run, reviewHeadA, prID)
-	dbfx.Exec(t, `UPDATE issue SET status = 'in_progress' WHERE id = $1`, l.issueID)
+	prID := l.linkPR(t, reviewHeadA)
+	l.verdict(t, "in_progress", finding("P1")).Want(http.StatusOK)
 
 	updateIssueForTest(t, l.issueID, map[string]any{"status": "agent_review"}).Want(http.StatusOK)
 	if runs := queuedRuns(t, l.issueID); len(runs) != 0 {
@@ -149,5 +195,19 @@ func TestReviewLoop_SameHeadIsNotReviewedAgain(t *testing.T) {
 	updateIssueForTest(t, l.issueID, map[string]any{"status": "agent_review"}).Want(http.StatusOK)
 	if runs := queuedRuns(t, l.issueID); len(runs) != 1 || runs[0].head != reviewHeadB {
 		t.Fatalf("new head queued %v, want one run on %s", runs, reviewHeadB)
+	}
+}
+
+// A review run that completed without a verdict reviewed nothing: the head is
+// still owed a review.
+func TestReviewLoop_CompletedRunWithoutVerdictDoesNotSkipReview(t *testing.T) {
+	l := newReviewLoop(t)
+	l.linkPR(t, reviewHeadA)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE id = $1`, l.run)
+	dbfx.Exec(t, `UPDATE issue SET status = 'in_progress' WHERE id = $1`, l.issueID)
+
+	updateIssueForTest(t, l.issueID, map[string]any{"status": "agent_review"}).Want(http.StatusOK)
+	if runs := queuedRuns(t, l.issueID); len(runs) != 1 || runs[0].head != reviewHeadA {
+		t.Fatalf("queued %v, want one run on %s", runs, reviewHeadA)
 	}
 }
