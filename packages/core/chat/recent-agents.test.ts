@@ -32,6 +32,14 @@ describe("rankRecentAgents", () => {
     expect(rankRecentAgents(sessions, AGENTS, ME, NOW)).toEqual(["a"]);
   });
 
+  it("ignores sessions dated after now, counts one at now", () => {
+    const sessions = [
+      session({ id: "1", agent_id: "a", created_at: new Date(NOW + 1).toISOString() }),
+      session({ id: "2", agent_id: "b", created_at: new Date(NOW).toISOString() }),
+    ];
+    expect(rankRecentAgents(sessions, AGENTS, ME, NOW)).toEqual(["b"]);
+  });
+
   it("ignores sessions created by other users", () => {
     const sessions = [session({ id: "1", agent_id: "a", creator_id: "someone-else" })];
     expect(rankRecentAgents(sessions, AGENTS, ME, NOW)).toEqual([]);

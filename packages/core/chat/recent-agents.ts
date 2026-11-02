@@ -20,7 +20,7 @@ export function rankRecentAgents(
     if (s.creator_id !== userId) continue;
     if (s.forked_from_session_id || s.continued_from_session_id) continue;
     const created = Date.parse(s.created_at);
-    if (!(created >= since)) continue;
+    if (!(created >= since && created <= now)) continue;
     const prev = stats.get(s.agent_id);
     stats.set(s.agent_id, {
       count: (prev?.count ?? 0) + 1,
