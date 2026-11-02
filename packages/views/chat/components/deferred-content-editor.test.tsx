@@ -9,6 +9,8 @@ const editor = vi.hoisted(() => ({
   failNextLoad: false,
   // When set, the next chunk load waits for it (a slow network).
   gate: null as Promise<void> | null,
+  // What the live editor reports as its text (empty unless a test loads it with content).
+  text: "",
   created: 0,
   // A resolved `lazy` is cached for good, so every test starts from a fresh one.
   current: undefined as unknown,
@@ -27,7 +29,7 @@ vi.mock("./lazy-content-editor", async () => {
         uploadFile: (f: File) => void editor.calls.push(`upload:${f.name}`),
         insertMarkdownAtEnd: (md: string) => (editor.calls.push(`insert:${md}`), true),
         getMarkdown: () => "live-md",
-        getText: () => "live-text",
+        getText: () => editor.text,
         hasActiveUploads: () => false,
         flushPendingUpdate: () => null,
         adoptContent: (md: string) => void editor.calls.push(`adopt:${md}`),
@@ -77,6 +79,7 @@ beforeEach(() => {
   editor.calls = [];
   editor.failNextLoad = false;
   editor.gate = null;
+  editor.text = "";
   editor.created = 0;
   editor.current = editor.make();
 });
@@ -199,6 +202,89 @@ describe("DeferredContentEditor", () => {
       await waitFor(() => expect(editor.calls).toContain("focus"));
       expect(editor.calls.some((c) => c.startsWith("insert:"))).toBe(false);
       expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
+    });
+
+    it("keeps whitespace exactly as typed when it replays into an uncontrolled editor", async () => {
+      const release = slowLoad();
+      setup({ value: undefined });
+      fireEvent.focus(standIn());
+      type("  indented\n  and trailing  \n");
+      await act(async () => release());
+      await screen.findByTestId("live-editor");
+      await waitFor(() => expect(editor.calls).toContain("insert:  indented\n  and trailing  \n"));
+    });
+
+    it("reports typed text to the host draft at once, untrimmed, so it is never only in the stand-in", () => {
+      slowLoad();
+      const onUpdate = vi.fn();
+      setup({ onUpdate });
+      fireEvent.focus(standIn());
+      type("  hi  ");
+      expect(onUpdate).toHaveBeenLastCalledWith("  hi  ", "");
+    });
+
+    it("keeps text on the draft it was typed in when the host switches drafts mid-load", async () => {
+      const release = slowLoad();
+      const onUpdate = vi.fn();
+      const { rerender, ref } = setup({ onUpdate });
+      fireEvent.focus(standIn());
+      type("from A");
+      expect(onUpdate).toHaveBeenLastCalledWith("from A", "");
+      // The host switches to draft B (controlled value changes) while the chunk is still loading.
+      editor.text = "B draft";
+      rerender(
+        <DeferredContentEditor ref={ref} ariaLabel="Message" placeholder="Type…" value="B draft" onUpdate={onUpdate} />,
+      );
+      expect(standIn().textContent).toBe("B draft");
+      await act(async () => release());
+      await screen.findByTestId("live-editor");
+      await waitFor(() => expect(editor.calls).toContain("focus"));
+      expect(editor.calls.some((c) => c.startsWith("insert:"))).toBe(false);
+      expect(onUpdate).toHaveBeenCalledTimes(1); // nothing was written to B
+    });
+
+    it("shows an empty stand-in and replays nothing when the new draft is empty", async () => {
+      const release = slowLoad();
+      const { rerender, ref } = setup({ value: "" });
+      fireEvent.focus(standIn());
+      type("from A");
+      rerender(<DeferredContentEditor ref={ref} ariaLabel="Message" placeholder="Type…" value="x" />);
+      rerender(<DeferredContentEditor ref={ref} ariaLabel="Message" placeholder="Type…" value="" />);
+      expect(standIn().textContent).toBe("");
+      await act(async () => release());
+      await screen.findByTestId("live-editor");
+      expect(editor.calls.some((c) => c.startsWith("insert:"))).toBe(false);
+    });
+
+    it("keeps the typed text in the host draft when unmounted during a delayed load", async () => {
+      const release = slowLoad();
+      const onUpdate = vi.fn();
+      const { unmount } = setup({ onUpdate });
+      fireEvent.focus(standIn());
+      type("keep me");
+      unmount();
+      await act(async () => release());
+      expect(onUpdate).toHaveBeenLastCalledWith("keep me", "");
+    });
+
+    it("answers getMarkdown from the stand-in text before the editor exists", () => {
+      slowLoad();
+      const { ref } = setup();
+      fireEvent.focus(standIn());
+      type("draft so far");
+      expect(ref.current!.getMarkdown()).toBe("draft so far");
+    });
+
+    it("keeps the typed text in the host draft when the chunk fails to load", async () => {
+      const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+      editor.failNextLoad = true;
+      const onUpdate = vi.fn();
+      setup({ onUpdate });
+      fireEvent.focus(standIn());
+      type("typed");
+      await waitFor(() => expect(logged).toHaveBeenCalled());
+      expect(standIn().textContent).toBe("typed");
+      expect(onUpdate).toHaveBeenLastCalledWith("typed", "");
     });
   });
 });

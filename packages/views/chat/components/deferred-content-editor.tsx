@@ -24,7 +24,7 @@ import {
  */
 export const DeferredContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
   function DeferredContentEditor(props, ref) {
-    const { value, defaultValue, attachments, placeholder, ariaLabel, className, onReady } = props;
+    const { value, defaultValue, attachments, placeholder, ariaLabel, className, onReady, onUpdate } = props;
     const hasContent = !!(value ?? defaultValue)?.trim() || !!attachments?.length;
     const [wanted, setWanted] = useState(false);
     const [Editor, setEditor] = useState(() => LazyContentEditor);
@@ -33,16 +33,29 @@ export const DeferredContentEditor = forwardRef<ContentEditorRef, ContentEditorP
     const [ready, setReady] = useState(false);
     const [typed, setTyped] = useState(false);
     const typedText = useRef("");
+    const standInRef = useRef<HTMLDivElement>(null);
     const retryLoad = useRef<(() => void) | null>(null);
 
     // Replay after the commit that makes the editor visible: a hidden editor cannot take focus.
     useEffect(() => {
       if (!ready || !inner.current) return;
-      const text = typedText.current.trim();
+      // A controlled host already fed the typed text back as `value`, so the editor mounted with it.
+      // Insert only into an editor that is still empty (an uncontrolled host).
+      const text = typedText.current;
       typedText.current = "";
-      if (text) inner.current.insertMarkdownAtEnd(text);
+      if (text.trim() && !inner.current.getText().trim()) inner.current.insertMarkdownAtEnd(text);
       queue.current.splice(0).forEach((run) => run(inner.current!));
     }, [ready]);
+
+    // The host owns the draft. When it points the composer at another draft (a session switch) while
+    // the stand-in is showing, show that draft's text; never carry the old text across.
+    useEffect(() => {
+      const el = standInRef.current;
+      if (!el || value === undefined || value === typedText.current) return;
+      typedText.current = value;
+      el.textContent = value;
+      setTyped(value.length > 0);
+    }, [value, ready]);
 
     // Latch: once mounted the editor stays, even after a send empties the draft.
     if (hasContent && !wanted) setWanted(true);
@@ -56,8 +69,8 @@ export const DeferredContentEditor = forwardRef<ContentEditorRef, ContentEditorP
     useImperativeHandle(
       ref,
       (): ContentEditorRef => ({
-        getMarkdown: () => inner.current?.getMarkdown() ?? "",
-        getText: () => inner.current?.getText() ?? "",
+        getMarkdown: () => inner.current?.getMarkdown() ?? typedText.current,
+        getText: () => inner.current?.getText() ?? typedText.current,
         clearContent: () => inner.current?.clearContent(),
         blur: () => inner.current?.blur(),
         hasActiveUploads: () => inner.current?.hasActiveUploads() ?? false,
@@ -118,30 +131,37 @@ export const DeferredContentEditor = forwardRef<ContentEditorRef, ContentEditorP
           </div>
         )}
         {!ready && (
-          <div
-            role="textbox"
-            aria-multiline="true"
-            aria-label={ariaLabel}
-            tabIndex={0}
-            contentEditable="plaintext-only"
-            suppressContentEditableWarning
-            className={cn("flex-1 rich-text-editor text-body outline-none", className)}
-            onPointerEnter={preloadContentEditor}
-            onTouchStart={preloadContentEditor}
-            onFocus={() => {
-              preloadContentEditor();
-              wantEditor();
-            }}
-            onPointerDown={wantEditor}
-            onInput={(event) => {
-              const text = event.currentTarget.innerText ?? event.currentTarget.textContent ?? "";
-              typedText.current = text;
-              setTyped(text.length > 0);
-            }}
-          >
-            <p className={cn(!typed && "is-editor-empty")} data-placeholder={placeholder}>
-              <br />
-            </p>
+          <div className="relative flex flex-1 flex-col">
+            <div
+              role="textbox"
+              aria-multiline="true"
+              aria-label={ariaLabel}
+              tabIndex={0}
+              contentEditable="plaintext-only"
+              suppressContentEditableWarning
+              className={cn("flex-1 rich-text-editor text-body outline-none min-h-[1lh] whitespace-pre-wrap", className)}
+              onPointerEnter={preloadContentEditor}
+              onTouchStart={preloadContentEditor}
+              onFocus={() => {
+                preloadContentEditor();
+                wantEditor();
+              }}
+              onPointerDown={wantEditor}
+              ref={standInRef}
+              onInput={(event) => {
+                const el = event.currentTarget;
+                const text = el.innerText ?? el.textContent ?? "";
+                typedText.current = text;
+                setTyped(text.length > 0);
+                // Hand the text to the host draft now, as the editor would, so it is never held only here.
+                onUpdate?.(text, value ?? defaultValue ?? "");
+              }}
+            />
+            {!typed && (
+              <span aria-hidden className="pointer-events-none absolute left-0 top-0 text-muted-foreground">
+                {placeholder}
+              </span>
+            )}
           </div>
         )}
       </div>
