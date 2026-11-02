@@ -94,6 +94,9 @@ const (
 	EventChatSessionRead     = "chat:session_read"
 	EventChatSessionDeleted  = "chat:session_deleted"
 	EventChatSessionUpdated  = "chat:session_updated"
+	// EventChatSupplementUpdated carries the delivery receipt of a follow-up
+	// steered into the running chat task. Sent to the session creator only.
+	EventChatSupplementUpdated = "chat:supplement_updated"
 
 	// Project events
 	EventProjectCreated         = "project:created"
