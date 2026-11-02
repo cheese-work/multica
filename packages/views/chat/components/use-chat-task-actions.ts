@@ -188,7 +188,48 @@ export function useChatTaskActions(
     }
   }, [activeSessionId, qc, t, wsId]);
 
-  const handleSendQueuedTaskNow = useCallback(
+  // Adds a queued follow-up to the running reply (CHE-2820). The run keeps
+  // going: nothing is cancelled or reprioritized. On any refusal the follow-up
+  // stays queued, so the pending query is refetched instead of edited.
+  const steerQueuedChatTask = useCallback(
+    async (sessionId: string, taskId: string): Promise<boolean> => {
+      const pendingKey = chatKeys.pendingTask(sessionId);
+      try {
+        await api.steerChatTask(sessionId, taskId);
+        qc.setQueryData<ChatPendingTask>(
+          pendingKey,
+          (old) => removePendingChatTask(old, taskId),
+        );
+        return true;
+      } catch (err) {
+        apiLogger.warn("steerQueuedTask.error", { taskId, sessionId, err });
+        if (err instanceof ApiError && err.status === 409) {
+          toast.error(t(($) => $.queue.steer_unavailable_toast));
+        } else {
+          toast.error(t(($) => $.queue.action_failed_toast));
+        }
+        return false;
+      } finally {
+        qc.invalidateQueries({ queryKey: pendingKey });
+        qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
+        qc.invalidateQueries({ queryKey: chatKeys.messagesPage(sessionId) });
+        if (wsId) qc.invalidateQueries({ queryKey: chatKeys.pendingTasks(wsId) });
+      }
+    },
+    [qc, t, wsId],
+  );
+
+  const handleSteerQueuedTask = useCallback(
+    async (taskId: string) => {
+      if (!activeSessionId) return;
+      await steerQueuedChatTask(activeSessionId, taskId);
+    },
+    [activeSessionId, steerQueuedChatTask],
+  );
+
+  // "Stop & send": the explicit stop path. Prioritize the follow-up, then stop
+  // the run it was waiting behind.
+  const handleStopAndSendQueuedTask = useCallback(
     async (taskId: string) => {
       if (!activeSessionId) return;
       const pendingKey = chatKeys.pendingTask(activeSessionId);
@@ -206,13 +247,13 @@ export function useChatTaskActions(
         if (result.active_task_id) {
           const cancelled = await cancelChatTask(result.active_task_id, activeSessionId, {
             restoreDraftToInput: true,
-            source: "queued-message-send-now",
+            source: "queued-message-stop-and-send",
           });
           if (!cancelled) throw new Error("current task could not be stopped");
         }
       } catch (err) {
         if (!prioritizeSucceeded) qc.setQueryData(pendingKey, pendingSnapshot);
-        apiLogger.warn("sendQueuedTaskNow.error", {
+        apiLogger.warn("stopAndSendQueuedTask.error", {
           taskId,
           sessionId: activeSessionId,
           err,
@@ -234,6 +275,8 @@ export function useChatTaskActions(
     handleEditQueuedTask,
     handleRemoveQueuedTask,
     handleClearQueuedTasks,
-    handleSendQueuedTaskNow,
+    steerQueuedChatTask,
+    handleSteerQueuedTask,
+    handleStopAndSendQueuedTask,
   };
 }
