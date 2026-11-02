@@ -34,8 +34,22 @@ RETURNING *;
 -- turn starts a fresh session seeded from the summary. The DM id, status, pins
 -- and work_dir stay as they are.
 UPDATE chat_session
-SET compaction_epoch = compaction_epoch + 1, session_id = NULL, runtime_id = NULL, updated_at = now()
-WHERE id = $1
+SET compaction_epoch = compaction_epoch + 1, session_id = NULL, runtime_id = NULL, updated_at = now(),
+    segment_floor_at = (SELECT m.created_at FROM chat_message m WHERE m.id = sqlc.arg('divider_id')),
+    segment_floor_id = sqlc.arg('divider_id')
+WHERE chat_session.id = sqlc.arg('id')
+RETURNING *;
+
+-- name: CreateChatCompactionDivider :one
+-- The divider of an in-place compaction. Caller holds the DM lock, so the max
+-- read is stable: the divider sorts strictly after every committed message and
+-- two dividers never tie (CHE-2819 Rule P). Not subject to Rule W: it defines
+-- the floor instead of obeying it.
+INSERT INTO chat_message (id, chat_session_id, role, content, task_id, message_kind, sent_via, created_at)
+SELECT sqlc.arg('id'), cs.id, 'assistant', sqlc.arg('content'), sqlc.narg('task_id'), 'compaction_summary', 'system',
+       GREATEST(clock_timestamp(), COALESCE((SELECT max(m.created_at) FROM chat_message m WHERE m.chat_session_id = cs.id), '-infinity') + interval '1 microsecond')
+FROM chat_session cs
+WHERE cs.id = sqlc.arg('chat_session_id')
 RETURNING *;
 
 -- name: LockAgentTaskForCompaction :one
@@ -748,10 +762,13 @@ WHERE id = $1;
 -- message_kind and quick_actions default via COALESCE so every existing caller
 -- (which omits it) keeps writing ordinary messages; the empty-reply path passes
 -- 'no_response' to mark a visible turn with no text output (MUL-4351).
+-- Rule W (CHE-2819): created_at is never at or below the DM's segment floor,
+-- whatever the transaction start time, so a write that starts after a compact
+-- commits lands in the new segment. The floor is a plain read, no new lock.
 INSERT INTO chat_message (
     chat_session_id, role, content, task_id, failure_reason, elapsed_ms,
     message_kind, quick_actions, channel_media_pending_until, channel_ingested,
-    channel_context_revision, id, sent_via, decision_answer_id
+    channel_context_revision, id, sent_via, decision_answer_id, created_at
 )
 VALUES (
     $1, $2, $3, sqlc.narg(task_id), sqlc.narg(failure_reason), sqlc.narg(elapsed_ms),
@@ -770,7 +787,8 @@ VALUES (
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()),
     CASE WHEN COALESCE(sqlc.narg(channel_ingested)::boolean, FALSE) THEN 'channel'
          ELSE COALESCE(NULLIF(sqlc.narg(sent_via)::text, ''), 'system') END,
-    sqlc.narg(decision_answer_id)
+    sqlc.narg(decision_answer_id),
+    GREATEST(now(), COALESCE((SELECT cs.segment_floor_at + interval '1 microsecond' FROM chat_session cs WHERE cs.id = $1), now()))
 )
 RETURNING *;
 
@@ -1313,6 +1331,30 @@ SET created_at = GREATEST(
 FROM latest_visible
 WHERE claimed_input.id = latest_visible.claimed_input_id
   AND latest_visible.prior_created_at >= latest_visible.input_created_at;
+
+-- name: ReanchorChatInputAcrossFloor :exec
+-- A retry child owns its root's input batch, which neither direct reanchor
+-- query touches. If the batch sits at or before the DM's segment floor, move it
+-- just after the latest row so the question stays beside its answer. Order is
+-- kept with distinct microsecond offsets. No-op without a floor or when the
+-- batch is already above it. Caller runs it in the claim transaction.
+WITH batch AS (
+    SELECT m.id, row_number() OVER (ORDER BY m.created_at, m.id) AS n
+    FROM chat_message m
+    JOIN chat_session cs ON cs.id = m.chat_session_id
+    WHERE m.chat_session_id = sqlc.arg('chat_session_id')
+      AND m.task_id = sqlc.arg('input_task_id')
+      AND m.role = 'user'
+      AND cs.segment_floor_id IS NOT NULL
+      AND (m.created_at, m.id) <= (cs.segment_floor_at, cs.segment_floor_id)
+), base AS (
+    SELECT GREATEST(sqlc.arg('dispatched_at')::timestamptz, max(created_at) + interval '1 microsecond') AS at
+    FROM chat_message WHERE chat_session_id = sqlc.arg('chat_session_id')
+)
+UPDATE chat_message m
+SET created_at = base.at + (batch.n - 1) * interval '1 microsecond'
+FROM batch, base
+WHERE m.id = batch.id;
 
 -- name: ReanchorNextQueuedDirectChatInput :exec
 -- An assistant outcome can make the next queued direct task the positional

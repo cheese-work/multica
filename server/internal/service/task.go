@@ -4388,6 +4388,20 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			reanchorMs = time.Since(t0).Milliseconds()
 		}
 
+		// A retry child owns its root's input batch, which neither direct
+		// reanchor query reaches; keep a question that predates a compact
+		// beside its answer (CHE-2819).
+		if task.ChatSessionID.Valid && task.ChatInputTaskID.Valid && task.ChatInputTaskID != task.ID {
+			if err := qtx.ReanchorChatInputAcrossFloor(ctx, db.ReanchorChatInputAcrossFloorParams{
+				ChatSessionID: task.ChatSessionID,
+				InputTaskID:   task.ChatInputTaskID,
+				DispatchedAt:  task.DispatchedAt,
+			}); err != nil {
+				outcome = "error_reanchor_chat_input"
+				return fmt.Errorf("reanchor chat input across floor: %w", err)
+			}
+		}
+
 		claimedTask := task
 		claimed = &claimedTask
 		return nil
