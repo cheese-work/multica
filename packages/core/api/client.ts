@@ -271,6 +271,11 @@ import { createRequestId, createSafeId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseWithFallback } from "./schema";
 import {
+  PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
+  PasskeyRevokedSchema, parsePasskeyResponse,
+  type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart,
+} from "./passkey-schema";
+import {
   RuntimeProfileSchema,
   OpenDecisionRequestListSchema,
   DecisionArtifactListSchema,
@@ -4075,6 +4080,45 @@ export class ApiClient {
     return parseWithFallback(raw, DecisionArtifactListSchema, { artifacts: [] }, {
       endpoint: "GET /api/decisions/:id/artifacts",
     }).artifacts;
+  }
+
+  // Passkey and decision-action ceremonies. Responses are strict: a drifted shape throws
+  // (see parsePasskeyResponse) so a malformed body is never read as an approval.
+  private async passkeyPost<T>(path: string, schema: Parameters<typeof parsePasskeyResponse<T>>[1], body?: unknown): Promise<T> {
+    const raw: unknown = await this.fetch(path, { method: "POST", ...(body !== undefined && { body: JSON.stringify(body) }) });
+    return parsePasskeyResponse(raw, schema, `POST ${path}`);
+  }
+
+  startPasskeyEnrollment(): Promise<PasskeyEnrollStart> {
+    return this.passkeyPost("/api/passkeys/enroll/start", PasskeyEnrollStartSchema);
+  }
+
+  async finishPasskeyEnrollment(input: { ceremony_id: string; code: string; attestation: unknown }): Promise<void> {
+    await this.passkeyPost("/api/passkeys/enroll/finish", PasskeyEnrolledSchema, input);
+  }
+
+  challengePasskeyRevocation(passkeyId: string): Promise<PasskeyChallenge> {
+    return this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke/challenge`, PasskeyChallengeSchema);
+  }
+
+  async revokePasskey(passkeyId: string, assertion: PasskeyAssertionEnvelope): Promise<void> {
+    await this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke`, PasskeyRevokedSchema, { assertion });
+  }
+
+  challengeDecisionAction(actionId: string): Promise<PasskeyChallenge> {
+    return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/challenge`, PasskeyChallengeSchema);
+  }
+
+  approveDecisionAction(
+    actionId: string,
+    input: { payload_sha256: string; assertion: PasskeyAssertionEnvelope; secrets?: Record<string, string> },
+  ): Promise<PasskeyDecisionOutcome> {
+    return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/approve`, PasskeyDecisionOutcomeSchema, input);
+  }
+
+  async getDecisionActionOutcome(actionId: string): Promise<PasskeyDecisionOutcome> {
+    const raw: unknown = await this.fetch(`/api/decision-actions/${encodeURIComponent(actionId)}/outcome`);
+    return parsePasskeyResponse(raw, PasskeyDecisionOutcomeSchema, "GET /api/decision-actions/:id/outcome");
   }
 
   async listOpenDecisionRequests(): Promise<OpenDecisionRequest[]> {

@@ -143,13 +143,13 @@ func TestExhaustionNoticeShowsTheSnapshotRaiseAndBalance(t *testing.T) {
 	if p == nil {
 		t.Fatal("snapshot shows no raise")
 	}
-	cmd := fmt.Sprintf("--runs %d`", p.LimitAfter)
+	cmd := fmt.Sprintf("raise to %d runs", p.LimitAfter)
 	left := fmt.Sprintf("leaves %d runs", p.BalanceAfter)
-	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND action='run_budget_exhausted' AND details->>'raise_command' LIKE '% --runs '||$2::text`, c.issueID, fmt.Sprint(p.LimitAfter)); n != 1 {
-		t.Fatalf("exhaustion activity carrying the snapshot's raise command (%s) = %d, want 1", cmd, n)
+	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND action='run_budget_exhausted' AND details->>'raise_target' = $2::text`, c.issueID, fmt.Sprint(p.LimitAfter)); n != 1 {
+		t.Fatalf("exhaustion activity carrying the snapshot's raise target (%s) = %d, want 1", cmd, n)
 	}
 	var content string
-	if err := testPool.QueryRow(ctx, `SELECT content FROM comment WHERE issue_id=$1 AND type='system' AND content LIKE '%budget raise%' ORDER BY created_at DESC LIMIT 1`, c.issueID).Scan(&content); err != nil {
+	if err := testPool.QueryRow(ctx, `SELECT content FROM comment WHERE issue_id=$1 AND type='system' AND content LIKE '%approves a raise to%' ORDER BY created_at DESC LIMIT 1`, c.issueID).Scan(&content); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(content, cmd) || !strings.Contains(content, left) {
@@ -163,11 +163,11 @@ func noticeRaise(t *testing.T, c edgeCase, withActivity bool) (command, notice s
 	t.Helper()
 	ctx := context.Background()
 	if withActivity {
-		if err := testPool.QueryRow(ctx, `SELECT details->>'raise_command' FROM activity_log WHERE issue_id=$1 AND action='run_budget_exhausted' ORDER BY created_at DESC LIMIT 1`, c.issueID).Scan(&command); err != nil {
+		if err := testPool.QueryRow(ctx, `SELECT details->>'raise_target' FROM activity_log WHERE issue_id=$1 AND action='run_budget_exhausted' ORDER BY created_at DESC LIMIT 1`, c.issueID).Scan(&command); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := testPool.QueryRow(ctx, `SELECT content FROM comment WHERE issue_id=$1 AND type='system' AND content LIKE '%budget raise%' ORDER BY created_at DESC LIMIT 1`, c.issueID).Scan(&notice); err != nil {
+	if err := testPool.QueryRow(ctx, `SELECT content FROM comment WHERE issue_id=$1 AND type='system' AND content LIKE '%approves a raise to%' ORDER BY created_at DESC LIMIT 1`, c.issueID).Scan(&notice); err != nil {
 		t.Fatal(err)
 	}
 	return command, notice
@@ -182,10 +182,10 @@ func wantNoticeMatchesSnapshot(t *testing.T, c edgeCase, withActivity bool) serv
 		t.Fatal("snapshot shows no raise")
 	}
 	command, notice := noticeRaise(t, c, withActivity)
-	if want := fmt.Sprintf(" --runs %d", p.LimitAfter); withActivity && !strings.HasSuffix(command, want) {
-		t.Fatalf("activity raise command %q, want one ending %q (the snapshot's)", command, want)
+	if want := fmt.Sprint(p.LimitAfter); withActivity && command != want {
+		t.Fatalf("activity raise target %q, want %q (the snapshot's)", command, want)
 	}
-	if want, left := fmt.Sprintf("--runs %d`", p.LimitAfter), fmt.Sprintf("leaves %d runs", p.BalanceAfter); !strings.Contains(notice, want) || !strings.Contains(notice, left) {
+	if want, left := fmt.Sprintf("raise to %d runs", p.LimitAfter), fmt.Sprintf("leaves %d runs", p.BalanceAfter); !strings.Contains(notice, want) || !strings.Contains(notice, left) {
 		t.Fatalf("notice %q lacks the snapshot's command (%s) or balance (%s)", notice, want, left)
 	}
 	return *p
@@ -501,7 +501,7 @@ func TestConcurrentRefusalNoticeCountsTheRecoveryRunTheOtherCallbackGives(t *tes
 func raiseNotices(t *testing.T, c budgetCase) int {
 	t.Helper()
 	var n int
-	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM comment WHERE issue_id=$1 AND type='system' AND content LIKE '%budget raise%'`, c.issueID).Scan(&n); err != nil {
+	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM comment WHERE issue_id=$1 AND type='system' AND content LIKE '%approves a raise to%'`, c.issueID).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	return n
