@@ -96,6 +96,14 @@ SELECT EXISTS (
   WHERE issue_id = sqlc.arg('issue_id')::uuid AND window_id = sqlc.arg('window_id')::text AND kind = sqlc.arg('kind')::text
 );
 
+-- name: LockRunBudgetBlockMarker :one
+-- Whether the budget's block of the issue still stands in this window, holding
+-- the marker so the move out of blocked (which deletes it) waits for the
+-- caller's transaction.
+SELECT id FROM run_budget_notice
+WHERE issue_id = sqlc.arg('issue_id')::uuid AND window_id = sqlc.arg('window_id')::text AND kind = 'blocked'
+FOR SHARE;
+
 -- name: FirstStatusInWindow :one
 -- The status the issue held when the window opened: where the earliest status
 -- move at or after the window start came from.
