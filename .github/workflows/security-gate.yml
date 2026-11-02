@@ -38,6 +38,10 @@ jobs:
     # trusted X99 agent App (ID 282619718, type Bot) posting a `Security-Gate-Verdict:` comment. That bot is NONE, so
     # filtering NONE alone would drop every verdict. Skip here exactly what the hook refuses: no job is scheduled and
     # no red check appears. The hook is a security boundary and stays as it is; this only mirrors it.
+    # Revoking a PASS: edit it to a FAIL verdict, post a FAIL verdict, or delete it. Each event still carries the
+    # prefix, so the hook admits it. An edit that removes the prefix is refused by the hook, which is unchanged; the
+    # next PR event re-reads every comment. `startsWith` here ignores case and the hook's `jq startswith` does not, so
+    # a lowercase prefix from the bot schedules a job the hook then refuses: a red check, never a bypass.
     if: >-
       github.event_name == 'pull_request_target' || (github.event.issue.pull_request &&
       (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) ||
