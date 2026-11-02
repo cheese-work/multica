@@ -30,29 +30,6 @@ const (
 	// either way. Turning it off stops new intake and triage runs but leaves
 	// existing Triage issues workable.
 	TriageV1 = "triage_v1"
-	// Jev is the master kill switch for TypeSafe System One evaluation
-	// (CHE-621). It gates every outbound Jev call, so turning it off stops
-	// all spend and all Jev-derived behavior in one write. Individual use
-	// cases get their own narrower keys as they land; this one is the floor
-	// they all sit on, and it is off by default.
-	//
-	// Unlike TriageV1 this key is per-workspace targetable: the request's
-	// EvalContext is now populated, so an allow list on workspace_id, or a
-	// deny list on agent_id, reaches real requests.
-	Jev = "jev_enabled"
-	// JevReceipts gates governance RECEIPT CAPTURE (CHE-685) — the
-	// post-commit, best-effort observation hook in
-	// server/internal/governance/receipt that runs governance.Evaluate and
-	// persists a governance_receipt row. It is deliberately a SEPARATE key
-	// from Jev rather than reusing it: Jev is the live-spend kill switch for
-	// an eventual paid, acting evaluation, while this key only ever gates a
-	// capture path that (in every delivery through CHE-685) runs against a
-	// nil/fake Provider and never acts on what it observes. Sharing one key
-	// would mean flipping on real Jev spend later also silently turns on
-	// receipt capture (or vice versa) for workspaces that were never
-	// independently opted into each. Off by default, same as Jev.
-	JevReceipts         = "jev_receipts_enabled"
-	GovernanceCaseAudit = "governance_case_audit_enabled"
 	// WakeupDefinitionWrites (CHE-1082) is the server-side activation gate for
 	// scoped wakeup definition writes (create, update, delete). It is CLOSED by
 	// default and nothing but an explicit rule opens it: production must hold
@@ -128,19 +105,6 @@ func PluginsV1Enabled(ctx context.Context, flags *featureflag.Service) bool {
 
 func TriageV1Enabled(ctx context.Context, flags *featureflag.Service) bool {
 	return flags.IsEnabled(ctx, TriageV1, false)
-}
-
-// JevReceiptsEnabled reports whether this request may run a governance
-// receipt-capture observation. See [JevReceipts].
-func JevReceiptsEnabled(ctx context.Context, flags *featureflag.Service) bool {
-	return flags.IsEnabled(ctx, JevReceipts, false)
-}
-
-func GovernanceCaseAuditEnabled(ctx context.Context, flags *featureflag.Service) bool {
-	if flags == nil || flags.Provider() == nil {
-		return false
-	}
-	return flags.IsEnabled(ctx, GovernanceCaseAudit, false)
 }
 
 // ExportPrivacyControlsEnabled reports whether CHE-755 provenance export and
