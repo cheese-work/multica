@@ -20,6 +20,11 @@ export interface CanonicalIssue {
   issue: Issue | undefined;
   isResolving: boolean;
   /**
+   * The entry is still the identifier lookup's own response, never patched
+   * since. The view mounting on it need not read the detail endpoint again.
+   */
+  authoritative: boolean;
+  /**
    * Terminal: this identifier does not name an issue in this workspace.
    *
    * Callers MUST branch on this and render a not-found state rather than
@@ -101,6 +106,7 @@ export function useCanonicalIssue(wsId: string, routeId: string): CanonicalIssue
     canonicalId,
     issue: detail.data,
     isResolving: resolveEnabled && !failed && resolve.data === undefined,
+    authoritative: !isUuid && detail.data !== undefined && detail.data === resolve.data,
     notFound: failed,
   };
 }
