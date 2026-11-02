@@ -867,7 +867,9 @@ func TestGitHubDispatchHaltStaleSweepSparesRunStartedAfterIt(t *testing.T) {
 	fixture := newGitHubIntakeFixture(t)
 	taskID, _ := dispatchIntakeRunForSweep(t, fixture, "-stale-sweep")
 	ctx := context.Background()
-	ts := func(d time.Duration) pgtype.Timestamptz { return pgtype.Timestamptz{Time: time.Now().Add(d), Valid: true} }
+	ts := func(d time.Duration) pgtype.Timestamptz {
+		return pgtype.Timestamptz{Time: time.Now().Add(d), Valid: true}
+	}
 	revoked, err := fixture.handler.sweepGitHubTriggeredRuns(ctx, fixture.handler.Queries, parseUUID(testWorkspaceID), "*", ts(-time.Hour))
 	if err != nil || revoked != 0 {
 		t.Fatalf("stale sweep revoked %d runs (err %v), want 0", revoked, err)
