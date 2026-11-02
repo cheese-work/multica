@@ -93,6 +93,50 @@ func TestEpochBound_ClaimResumesCurrentEpochSession(t *testing.T) {
 	}
 }
 
+// currentEpochSession records a healthy session "S_new" under the DM's current
+// epoch, completed after the old-epoch "S_old" row.
+func currentEpochSession(t *testing.T, agentID, sessionID, runtimeID string) {
+	t.Helper()
+	dbfx.Exec(t, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, chat_session_id, status, priority, started_at, completed_at, chat_compaction_epoch, session_id, work_dir)
+		VALUES ($1, $2, $3, 'completed', 0, now() - interval '50 seconds', now() - interval '30 seconds', 1, 'S_new', '/tmp/new')`,
+		agentID, runtimeID, sessionID)
+}
+
+// An old-epoch overflow that finishes after a healthy current-epoch turn must
+// not hide that turn: the overflow cutoff and the retired set are per epoch.
+func TestEpochBound_OldEpochOverflowDoesNotHideCurrentSession(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	agentID, sessionID, runtimeID, daemonID := epochDM(t)
+	currentEpochSession(t, agentID, sessionID, runtimeID)
+	dbfx.Exec(t, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, chat_session_id, status, priority, started_at, completed_at, chat_compaction_epoch, failure_reason)
+		VALUES ($1, $2, $3, 'failed', 0, now() - interval '5 seconds', now(), 0, 'codex_resume_oversized')`,
+		agentID, runtimeID, sessionID)
+	sendDirectChat(t, context.Background(), agentID, sessionID, "next")
+	if got := claimedChatTask(t, runtimeID, daemonID); got.PriorSessionID != "S_new" {
+		t.Fatalf("PriorSessionID = %q, want S_new: an old-epoch overflow must not hide it", got.PriorSessionID)
+	}
+}
+
+func TestEpochBound_OldEpochRetirementDoesNotHideCurrentSession(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	agentID, sessionID, runtimeID, daemonID := epochDM(t)
+	currentEpochSession(t, agentID, sessionID, runtimeID)
+	dbfx.Exec(t, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, chat_session_id, status, priority, completed_at, chat_compaction_epoch, retired_session_id)
+		VALUES ($1, $2, $3, 'failed', 0, now(), 0, 'S_new')`,
+		agentID, runtimeID, sessionID)
+	sendDirectChat(t, context.Background(), agentID, sessionID, "next")
+	if got := claimedChatTask(t, runtimeID, daemonID); got.PriorSessionID != "S_new" {
+		t.Fatalf("PriorSessionID = %q, want S_new: an old-epoch retirement must not hide it", got.PriorSessionID)
+	}
+}
+
 // (o) A dispatched, never-started task is reclaimed after the epoch moved (its
 // requeue path): the reclaim delivery is rebased before any payload read.
 func TestEpochBound_ReclaimedChatTaskIsRebased(t *testing.T) {
@@ -118,26 +162,64 @@ func TestEpochBound_ReclaimedChatTaskIsRebased(t *testing.T) {
 	}
 }
 
-// (o) After the rebase the task's own completion saves the pointer and counts
-// for the meter.
-func TestEpochBound_RebasedTaskSavesPointerAndMeters(t *testing.T) {
+// (o) end to end: claim at epoch N, release before delivery, human compact to
+// N+1, claim again, complete. The re-claim is stamped N+1 and carries no old
+// session, the completion saves the pointer, the meter counts the run, and a
+// late completion of a run started at N does not overwrite the pointer.
+func TestEpochBound_RequeueCompactReclaimLifecycle(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	agentID, sessionID, runtimeID, daemonID := epochDM(t)
-	taskID := sendDirectChat(t, context.Background(), agentID, sessionID, "again")
-	claimedChatTask(t, runtimeID, daemonID)
-	markTaskRunning(t, context.Background(), taskID)
-	if _, err := testHandler.TaskService.CompleteTask(context.Background(), parseUUID(taskID), []byte(`{}`), "S_new", "/tmp/new", "", false, "", ""); err != nil {
+	ctx := context.Background()
+	agentID, sessionID, runtimeID, daemonID := setupDirectChatSession(t, ctx, "epoch lifecycle")
+	taskID := sendDirectChat(t, ctx, agentID, sessionID, "first")
+	if got := claimedChatTask(t, runtimeID, daemonID); got.ID != taskID {
+		t.Fatalf("claimed %s, want %s", got.ID, taskID)
+	}
+	claimed, err := testHandler.Queries.GetAgentTask(ctx, parseUUID(taskID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testHandler.TaskService.RequeueTaskAfterClaimFailure(ctx, claimed); err != nil {
+		t.Fatal(err)
+	}
+
+	if response := continueChatRequest(t, sessionID, "Goal: first.", ""); response.Code != http.StatusOK {
+		t.Fatalf("compact status = %d, body %s", response.Code, response.Body.String())
+	}
+
+	got := claimedChatTask(t, runtimeID, daemonID)
+	if got.ID != taskID || got.PriorSessionID != "" {
+		t.Fatalf("re-claim = task %s prior %q, want task %s and no prior session", got.ID, got.PriorSessionID, taskID)
+	}
+	var epoch int64
+	dbfx.QueryRow(t, `SELECT chat_compaction_epoch FROM agent_task_queue WHERE id = $1`, taskID).Scan(&epoch)
+	if epoch != 1 {
+		t.Fatalf("re-claimed task epoch = %d, want 1", epoch)
+	}
+
+	markTaskRunning(t, ctx, taskID)
+	if _, err := testHandler.TaskService.CompleteTask(ctx, parseUUID(taskID), []byte(`{}`), "S_new", "/tmp/new", "", false, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	dbfx.Exec(t, `UPDATE agent_task_queue SET context_tokens = 1000, context_window = 200000 WHERE id = $1`, taskID)
-	if pointer, _ := chatPointer(t, sessionID); pointer == nil {
-		t.Fatal("the rebased task's completion did not save the pointer")
+	if pointer, _ := chatPointer(t, sessionID); pointer == nil || *pointer != "S_new" {
+		t.Fatalf("pointer = %v, want S_new", pointer)
 	}
-	rows, err := testHandler.Queries.ListLatestRunContextForChatSessions(context.Background(), []pgtype.UUID{parseUUID(sessionID)})
+	rows, err := testHandler.Queries.ListLatestRunContextForChatSessions(ctx, []pgtype.UUID{parseUUID(sessionID)})
 	if err != nil || len(rows) != 1 {
-		t.Fatalf("meter rows = %d, err %v; want the current-epoch run", len(rows), err)
+		t.Fatalf("meter rows = %d, err %v; want the re-claimed run", len(rows), err)
+	}
+
+	staleID := dbfx.Task(t, agentID, testutil.Cols{
+		"runtime_id": runtimeID, "chat_session_id": sessionID, "status": "running", "started_at": testutil.Raw("now()"),
+		"chat_compaction_epoch": 0, "session_id": "S_old", "work_dir": "/tmp/old",
+	})
+	if _, err := testHandler.TaskService.CompleteTask(ctx, parseUUID(staleID), []byte(`{}`), "S_old", "/tmp/old", "", false, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if pointer, _ := chatPointer(t, sessionID); pointer == nil || *pointer != "S_new" {
+		t.Fatalf("pointer = %v after a stale completion, want S_new", pointer)
 	}
 }
 
