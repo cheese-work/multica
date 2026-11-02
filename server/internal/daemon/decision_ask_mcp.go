@@ -3,6 +3,8 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+
+	"github.com/multica-ai/multica/server/pkg/agent"
 )
 
 // decision_ask is a built-in tool on the plugin hook MCP server. Its call goes
@@ -21,12 +23,19 @@ const (
 	decisionAskSchema = `{"type":"object","required":["ask","escalation_class"],"properties":{"ask":{"type":"object"},"escalation_class":{"type":"string"},"footer":{"type":"string"},"parent_id":{"type":"string"}},"additionalProperties":false}`
 )
 
-// taskHookTools is the task's plugin hook tools plus decision_ask on issue tasks.
-// Pi fails to start with any MCP config below its MCP floor, and decision_ask
-// would put one on every issue task; pi uses `multica agent decision ask`.
-func taskHookTools(task Task, provider string) []PluginHookTool {
+// decisionAskReachable reports whether the task's runtime can load the MCP
+// config that carries decision_ask. Pi fails to start with any MCP config below
+// its MCP floor, and decision_ask would put one on every issue task, so the
+// tool stays off pi runs that cannot take it; those use `multica agent decision ask`.
+func decisionAskReachable(provider, cliVersion string, builtinRuntime bool) bool {
+	return provider != "pi" || agent.PiAcceptsMCP(cliVersion, builtinRuntime)
+}
+
+// taskHookTools is the task's plugin hook tools plus decision_ask on issue tasks
+// whose runtime can load it.
+func taskHookTools(task Task, askReachable bool) []PluginHookTool {
 	tools := task.PluginHookTools
-	if task.IssueID == "" || task.ChatSessionID != "" || provider == "pi" {
+	if task.IssueID == "" || task.ChatSessionID != "" || !askReachable {
 		return tools
 	}
 	return append(tools[:len(tools):len(tools)], PluginHookTool{

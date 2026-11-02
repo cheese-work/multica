@@ -25,7 +25,7 @@ func TestDecisionAskToolReachesServerWithTheTaskTokenOnly(t *testing.T) {
 	task := Task{ID: "task-1", IssueID: "issue-1", AuthToken: "mat_task", RemoteMCPDaemonToken: "daemon-secret"}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	_, set, err := startTaskPluginHookMCP(ctx, task.ID, taskHookTools(task, "claude"), taskHookInvoker(task, client, nil), nil)
+	_, set, err := startTaskPluginHookMCP(ctx, task.ID, taskHookTools(task, true), taskHookInvoker(task, client, nil), nil)
 	if err != nil || set == nil {
 		t.Fatalf("start hook MCP: set=%v err=%v", set, err)
 	}
@@ -51,15 +51,35 @@ func TestDecisionAskToolReachesServerWithTheTaskTokenOnly(t *testing.T) {
 }
 
 func TestDecisionAskToolIsAbsentFromChatTasks(t *testing.T) {
-	if tools := taskHookTools(Task{ID: "task-1", ChatSessionID: "chat-1"}, "claude"); len(tools) != 0 {
+	if tools := taskHookTools(Task{ID: "task-1", ChatSessionID: "chat-1"}, true); len(tools) != 0 {
 		t.Fatalf("chat task tools = %v, want none", tools)
 	}
 }
 
 // Pi refuses to start with any MCP config below its MCP floor, so a tool every
-// issue task carries would stop those tasks; pi callers use the CLI instead.
-func TestDecisionAskToolIsAbsentFromPiTasks(t *testing.T) {
-	if tools := taskHookTools(Task{ID: "task-1", IssueID: "issue-1"}, "pi"); len(tools) != 0 {
-		t.Fatalf("pi task tools = %v, want none", tools)
+// issue task carries would stop those tasks on old pi. Pi at or above the floor
+// loads it, and a custom profile command only promises pi's protocol.
+func TestDecisionAskReachableFollowsPiMcpFloor(t *testing.T) {
+	cases := []struct {
+		name, provider, version string
+		builtin, want           bool
+	}{
+		{"claude", "claude", "2.1.0", true, true},
+		{"pi at the floor", "pi", "0.99.0", true, true},
+		{"pi above the floor", "pi", "1.4.2", true, true},
+		{"pi below the floor", "pi", "0.98.9", true, false},
+		{"pi version unreadable", "pi", "", true, false},
+		{"pi custom profile", "pi", "", false, true},
+	}
+	for _, c := range cases {
+		if got := decisionAskReachable(c.provider, c.version, c.builtin); got != c.want {
+			t.Errorf("%s: reachable = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestDecisionAskToolIsAbsentWhenRuntimeCannotLoadIt(t *testing.T) {
+	if tools := taskHookTools(Task{ID: "task-1", IssueID: "issue-1"}, false); len(tools) != 0 {
+		t.Fatalf("tools = %v, want none", tools)
 	}
 }

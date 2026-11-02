@@ -8104,7 +8104,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// on the issue, which is the same rule that makes a failing tool call a
 	// tool error rather than a task error.
 	pluginHookConfig, pluginHookServer, pluginHookErr := startTaskPluginHookMCP(
-		ctx, task.ID, taskHookTools(task, provider),
+		ctx, task.ID, taskHookTools(task, decisionAskReachable(provider, resolvedVersion, !usesCustomProfileCommand)),
 		taskHookInvoker(task, d.client, func(callCtx context.Context, taskID, installationID, hookKey string, input json.RawMessage) (json.RawMessage, error) {
 			return d.client.InvokeAgentPluginHook(callCtx, task.RemoteMCPDaemonToken, taskID, installationID, hookKey, input)
 		}),
