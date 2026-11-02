@@ -1576,6 +1576,7 @@ WITH retired_sessions AS (
         OR COALESCE(r.channel_context_revision, 1) = $2::bigint
       )
       AND r.retired_session_id IS NOT NULL
+      AND COALESCE(r.chat_compaction_epoch, 0) = (SELECT cs.compaction_epoch FROM chat_session cs WHERE cs.id = $1)
 ), resume_overflow_at AS (
     -- completed_at alone, where the issue-side twin coalesces four columns:
     -- this query already selects and orders by bare completed_at throughout,
@@ -1589,6 +1590,7 @@ WITH retired_sessions AS (
         OR COALESCE(t.channel_context_revision, 1) = $2::bigint
       )
       AND t.status = 'failed'
+      AND COALESCE(t.chat_compaction_epoch, 0) = (SELECT cs.compaction_epoch FROM chat_session cs WHERE cs.id = $1)
       AND (
         COALESCE(t.failure_reason, '') = 'codex_resume_oversized'
         OR COALESCE(t.error, '') ILIKE '%response protection is unavailable%'
@@ -1694,9 +1696,10 @@ type GetLastChatTaskSessionRow struct {
 // both track emptyContentRe / historyMessageLocatorRe in
 // pkg/taskfailure/resume.go (GH #6066).
 //
-// Only tasks of the DM's current compaction epoch are candidates: a session
-// recorded before an in-place compact is the history the compact summarised
-// away and must not seed the next turn.
+// Every CTE reads the DM's current compaction epoch only: a session recorded
+// before an in-place compact is the history the compact summarised away and
+// must not seed the next turn, and a retirement or overflow of that old
+// history must not hide a healthy session of the current epoch.
 //
 // Selection is per-session, not per-row, and retired sessions are excluded —
 // both mirroring GetLastTaskSession, which this query had drifted away from.
