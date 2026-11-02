@@ -350,7 +350,8 @@
   },
   "list": {
     "empty_status": "無任務",
-    "add_issue_tooltip": "新建任務"
+    "add_issue_tooltip": "新建任務",
+    "unread_mention": "未讀的提及"
   },
   "swimlane": {
     "no_parent": "無父級",

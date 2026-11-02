@@ -49,7 +49,8 @@
   "list": {
     "empty": "No issues match your filters",
     "count_other": "{{count}} issues",
-    "search_placeholder": "Search issues and projects"
+    "search_placeholder": "Search issues and projects",
+    "unread_mention": "Unread mention"
   },
   "detail": {
     "properties": "Properties",

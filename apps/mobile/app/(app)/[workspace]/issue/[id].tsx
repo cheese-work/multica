@@ -10,7 +10,7 @@
  * Stack.Screen with title "Issue". We override that here once the data
  * lands so the navigation bar shows `MUL-123` (Linear-style).
  */
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import {
   ActionSheetIOS,
   ActivityIndicator,
@@ -39,6 +39,9 @@ import { useCreatePin, useDeletePin } from "@/data/mutations/pins";
 import { useAuthStore } from "@/data/auth-store";
 import { useIssueRealtime } from "@/data/realtime/use-issue-realtime";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { inboxListOptions } from "@/data/queries/inbox";
+import { useMarkInboxRead } from "@/data/mutations/inbox";
+import { unreadMentionItemIds } from "@multica/core/inbox/unread-mention-items";
 import { useViewedIssuesStore } from "@/data/viewed-issues-store";
 import { useCommentSelectStore } from "@/data/comment-select-store";
 import { useReplyTargetStore } from "@/data/stores/reply-target-store";
@@ -77,6 +80,20 @@ export default function IssueDetail() {
       useViewedIssuesStore.getState().push(wsId, id);
     }
   }, [wsId, id]);
+
+  // Opening the thread reads the viewer's mentions on it, so the list badge
+  // clears. Same rule as web's `useMarkMentionsReadOnOpen`.
+  const { data: inboxItems } = useQuery(inboxListOptions(wsId));
+  const markInboxRead = useMarkInboxRead().mutate;
+  const markedMentions = useRef(new Set<string>());
+  useEffect(() => {
+    if (!inboxItems || !id) return;
+    for (const itemId of unreadMentionItemIds(inboxItems, id)) {
+      if (markedMentions.current.has(itemId)) continue;
+      markedMentions.current.add(itemId);
+      markInboxRead(itemId);
+    }
+  }, [inboxItems, id, markInboxRead]);
 
   // Screen-scoped composer state — clear on unmount so re-entering the
   // issue starts from a clean slate (no stale text-selection comment id,

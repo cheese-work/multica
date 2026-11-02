@@ -393,7 +393,8 @@
   },
   "list": {
     "empty_status": "无任务",
-    "add_issue_tooltip": "新建任务"
+    "add_issue_tooltip": "新建任务",
+    "unread_mention": "未读的提及"
   },
   "swimlane": {
     "no_parent": "无父级",
