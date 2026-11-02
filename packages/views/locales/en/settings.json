@@ -813,6 +813,8 @@
     "auto_compact_threshold_invalid": "Enter a whole number from 50 to 90.",
     "auto_compact_readonly_on": "On, at {{threshold}}%",
     "auto_compact_readonly_off": "Off",
+    "agent_decisions_label": "Agent decisions",
+    "agent_decisions_hint": "Agents may decide allowlisted gates for you. Each decision shows in the daily brief with a 24 h veto.",
     "slug_hint": "Part of every workspace URL. It can't be changed.",
     "copy_slug": "Copy slug",
     "copy_failed": "Couldn't copy to clipboard",

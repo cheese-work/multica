@@ -808,7 +808,9 @@
     "auto_compact_threshold_label": "閾值 (%)",
     "auto_compact_threshold_invalid": "請輸入 50 到 90 的整數。",
     "auto_compact_readonly_on": "開啓，閾值 {{threshold}}%",
-    "auto_compact_readonly_off": "關閉"
+    "auto_compact_readonly_off": "關閉",
+    "agent_decisions_label": "代理決策",
+    "agent_decisions_hint": "代理可以代你決定白名單內的關卡。每項決定都會出現在每日簡報中，並有 24 小時否決期。"
   },
   "delete_workspace_dialog": {
     "title": "刪除工作區",

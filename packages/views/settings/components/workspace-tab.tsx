@@ -180,6 +180,7 @@ export function WorkspaceTab() {
   const [prefixDraft, setPrefixDraft] = useState<string | null>(null);
   const [prefixSaveStatus, setPrefixSaveStatus] =
     useState<SettingsSaveStatus>("idle");
+  const [agentDecisionsSaving, setAgentDecisionsSaving] = useState(false);
   const [actionId, setActionId] = useState<string | null>(null);
   const [confirmAction, setConfirmAction] = useState<{
     title: string;
@@ -313,6 +314,36 @@ export function WorkspaceTab() {
     enabled: !!workspace && canManageWorkspace,
     isEqual: (left, right) => left === right,
   });
+
+  // CHE-3249: a dedicated route owns this setting (owner only, and turning it
+  // on clears an earlier stop), so it never goes through updateWorkspace. The
+  // switch follows the cached value, so a failed write leaves it where it was.
+  const agentDecisionsEnabled = workspace?.settings?.agent_decisions_enabled === true;
+  const saveAgentDecisions = async (enabled: boolean) => {
+    if (!workspace) return;
+    setAgentDecisionsSaving(true);
+    try {
+      const saved = await api.setAgentDecisionsEnabled(enabled);
+      qc.setQueryData(workspaceKeys.list(), (old: Workspace[] | undefined) =>
+        old?.map((ws) =>
+          ws.id === workspace.id
+            ? {
+                ...ws,
+                settings: { ...ws.settings, agent_decisions_enabled: saved.enabled },
+              }
+            : ws,
+        ),
+      );
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t(($) => $.workspace.toast_save_failed),
+      );
+    } finally {
+      setAgentDecisionsSaving(false);
+    }
+  };
 
   const performPrefixSave = async (nextPrefix: string) => {
     if (!workspace) return;
@@ -611,6 +642,21 @@ export function WorkspaceTab() {
               ) : null}
             </SettingsRow>
           )}
+
+          {isOwner ? (
+            <SettingsRow
+              anchor="agent-decisions"
+              label={t(($) => $.workspace.agent_decisions_label)}
+              description={t(($) => $.workspace.agent_decisions_hint)}
+            >
+              <Switch
+                checked={agentDecisionsEnabled}
+                disabled={agentDecisionsSaving}
+                onCheckedChange={saveAgentDecisions}
+                aria-label={t(($) => $.workspace.agent_decisions_label)}
+              />
+            </SettingsRow>
+          ) : null}
 
           <SettingsRow
             anchor="slug"

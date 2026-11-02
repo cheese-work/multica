@@ -807,6 +807,8 @@
     "auto_compact_threshold_invalid": "50에서 90 사이의 정수를 입력하세요.",
     "auto_compact_readonly_on": "켜짐, {{threshold}}%",
     "auto_compact_readonly_off": "꺼짐",
+    "agent_decisions_label": "에이전트 결정",
+    "agent_decisions_hint": "에이전트가 허용 목록에 있는 게이트를 대신 결정할 수 있습니다. 각 결정은 일일 브리프에 표시되며 24시간 동안 거부할 수 있습니다.",
     "slug_hint": "모든 워크스페이스 URL에 쓰이며 생성 후에는 변경할 수 없습니다.",
     "copy_slug": "slug 복사",
     "copy_failed": "복사하지 못했습니다",

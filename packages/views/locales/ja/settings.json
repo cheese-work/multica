@@ -807,6 +807,8 @@
     "auto_compact_threshold_invalid": "50 から 90 の整数を入力してください。",
     "auto_compact_readonly_on": "オン（{{threshold}}%）",
     "auto_compact_readonly_off": "オフ",
+    "agent_decisions_label": "エージェントの判断",
+    "agent_decisions_hint": "エージェントは許可リストにあるゲートをあなたに代わって判断できます。各判断は日次ブリーフに表示され、24時間以内なら拒否できます。",
     "slug_hint": "ワークスペースの URL に使われます。作成後は変更できません。",
     "copy_slug": "slug をコピー",
     "copy_failed": "コピーできませんでした",

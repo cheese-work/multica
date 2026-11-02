@@ -3261,6 +3261,14 @@ export class ApiClient {
     });
   }
 
+  // Owner + human-actor only; the server clears an earlier stop when turned on.
+  async setAgentDecisionsEnabled(enabled: boolean): Promise<{ enabled: boolean }> {
+    return this.fetch("/api/agent-decisions/setting", {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    });
+  }
+
   // CHE-766: owner/admin + human-actor only, kill-switch gated server-side
   // (server/internal/handler/workspace_export_privacy.go). A disabled flag or
   // absent ACL surfaces here as a thrown ApiError (403/503), not a parsed
