@@ -253,6 +253,10 @@ issues filed" is met by filing them with project, estimate and test-first
 criteria; each names CHE-3070 and the design PR as origin. They stay in backlog
 until the design review passes.
 
+Cheese chose "Keep follow-ups" on 2 Nov 2026 (decision request
+`a0cef9ea-da8f-45df-ada8-a1bea340a88f`), which waives the sub-issue wording of
+the acceptance for this design issue.
+
 ## Risks and open questions
 
 - A new status does nothing until a workflow lists it, and a machine caller
