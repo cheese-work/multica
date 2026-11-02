@@ -6,7 +6,7 @@
 # SECURITY — same boundary as mechanical-tier.yml: `pull_request_target` and `issue_comment` both run this
 # definition from the default branch. The job checks out the DEFAULT branch (never the PR's base: a PR can target an
 # unprotected branch that carries a modified gate script) and only FETCHES head objects for a diff read. Nothing from
-# the head is executed. Do not add a head checkout or a secret here.
+# the head is executed (semgrep reads an extracted copy of the changed files; CHE-3121). Do not add a head checkout or a secret here.
 # `issue_comment` (created, edited, deleted) is the path by which a verdict comment flips or revokes the status; `edited`
 # on the PR covers a retarget. The script re-reads the live head SHA and base ref.
 
@@ -33,7 +33,7 @@ jobs:
     name: security-gate-eval
     if: github.event_name == 'pull_request_target' || github.event.issue.pull_request
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
-    timeout-minutes: 10
+    timeout-minutes: 20
     env:
       PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
       GH_TOKEN: ${{ github.token }}
@@ -53,8 +53,13 @@ jobs:
           auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
           git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
             fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/head"
+      - name: Install pinned semgrep (cached on the runner)
+        run: |
+          venv="$RUNNER_TOOL_CACHE/semgrep-1.183.0"
+          [ -x "$venv/bin/semgrep" ] || { python3 -m venv "$venv" && "$venv/bin/pip" install --quiet semgrep==1.183.0; }
+          echo "SEMGREP_BIN=$venv/bin/semgrep" >> "$GITHUB_ENV"
       - name: Evaluate the verdict and post the status
         run: |
           python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" \
-            --default-branch "$DEFAULT_BRANCH" \
+            --default-branch "$DEFAULT_BRANCH" --semgrep \
             --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --post
