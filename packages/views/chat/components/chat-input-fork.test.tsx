@@ -2,8 +2,7 @@ import type { ComponentProps } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Editor } from "@tiptap/core";
-import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { preloadEditors } from "../../editor/lazy-editors";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createChatStore, registerChatStore, useChatStore } from "@multica/core/chat";
 import { attachmentToDraftUpload } from "@multica/core/drafts";
 import { I18nProvider } from "@multica/core/i18n/react";
@@ -53,8 +52,6 @@ async function type(editor: Editor, text: string) {
 }
 
 const ok = () => vi.fn().mockResolvedValue({ ok: true });
-
-beforeAll(preloadEditors, 60_000);
 
 describe("ChatInput /fork", () => {
   it("forks with the message, sends no chat message and clears the composer", async () => {

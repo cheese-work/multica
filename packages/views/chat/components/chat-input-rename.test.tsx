@@ -2,8 +2,7 @@ import type { ComponentProps } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Editor } from "@tiptap/core";
-import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { preloadEditors } from "../../editor/lazy-editors";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createChatStore, registerChatStore, useChatStore } from "@multica/core/chat";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../locales/en/common.json";
@@ -48,8 +47,6 @@ function renderInput(props: Partial<ComponentProps<typeof ChatInput>> = {}) {
   const editor = (view.container.querySelector(".tiptap") as HTMLElement & { editor: Editor }).editor;
   return { ...view, editor, onSend, element };
 }
-
-beforeAll(preloadEditors, 60_000);
 
 describe("ChatInput rename with the real editor", () => {
   it("saves literal title characters instead of their Markdown escapes", async () => {

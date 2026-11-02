@@ -4,7 +4,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { preloadEditors } from "../../editor/lazy-editors";
 import { createChatStore, registerChatStore, useChatStore } from "@multica/core/chat";
 import { attachmentToDraftUpload } from "@multica/core/drafts";
 import { I18nProvider } from "@multica/core/i18n/react";
@@ -73,8 +72,6 @@ async function type(editor: Editor, text: string) {
   act(() => editor.view.dispatch(editor.state.tr.insertText(text)));
   await waitFor(() => expect(screen.getByRole("button", { name: /Send/ })).toBeEnabled());
 }
-
-beforeAll(preloadEditors, 60_000);
 
 describe("CHE-1762 web command registry behavior", () => {
   it("matches /statistic by search terms stats, statistics, and usage in the slash suggestion list", () => {

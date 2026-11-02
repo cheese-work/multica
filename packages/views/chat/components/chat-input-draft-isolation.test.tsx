@@ -1,5 +1,4 @@
-import { beforeAll, describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { preloadEditors } from "../../editor/lazy-editors";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { I18nProvider } from "@multica/core/i18n/react";
 import type { UploadResult } from "@multica/core/hooks/use-file-upload";
@@ -266,8 +265,6 @@ function type(markdown: string) {
     latestEditorOptions.current?.onUpdate?.({ editor: editorInstance.current });
   });
 }
-
-beforeAll(preloadEditors, 60_000);
 
 describe("ChatInput draft isolation across a composer switch (real debounce)", () => {
   beforeEach(() => {
