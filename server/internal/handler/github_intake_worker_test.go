@@ -507,9 +507,8 @@ func TestGitHubDispatchHaltSweepsIntakeRunAfterSourceUnlinked(t *testing.T) {
 	}
 }
 
-// A change is refused while the sweep of an earlier halt runs: a restore must not interleave with it,
-// and a refused change holds no connection while it waits.
-func TestGitHubDispatchHaltChangeRefusedWhileSweepRuns(t *testing.T) {
+// A restore is refused while the sweep of an earlier halt runs, and holds no connection while it waits.
+func TestGitHubDispatchHaltRestoreRefusedWhileSweepRuns(t *testing.T) {
 	fixture := newGitHubIntakeFixture(t)
 	cleanHaltTables(t)
 	taskID, _ := dispatchIntakeRunForSweep(t, fixture, "-restore-refused")
@@ -531,10 +530,8 @@ func TestGitHubDispatchHaltChangeRefusedWhileSweepRuns(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	for _, halt := range []bool{false, true} {
-		if w := setHalt(t, "*", halt, false); w.Code != http.StatusConflict {
-			t.Fatalf("change (halted=%v) during the sweep = %d, want 409", halt, w.Code)
-		}
+	if w := setHalt(t, "*", false, false); w.Code != http.StatusConflict {
+		t.Fatalf("restore during the sweep = %d, want 409", w.Code)
 	}
 	if err := hold.Commit(ctx); err != nil {
 		t.Fatal(err)
@@ -788,5 +785,123 @@ func TestGitHubDispatchHaltConcurrentChangesDoNotStarvePool(t *testing.T) {
 		if code := <-codes; code != http.StatusOK && code != http.StatusConflict {
 			t.Fatalf("concurrent change = %d, want 200 or 409", code)
 		}
+	}
+}
+
+// abandonedSweepFixture is a live GitHub-triggered run that predates a halt whose sweep never finished
+// (a crash): the halt row, and an audit row still pending after its lease.
+func abandonedSweepFixture(t *testing.T, suffix string) (fixture githubReviewFixture, taskID string) {
+	t.Helper()
+	fixture = newGitHubIntakeFixture(t)
+	taskID, _ = dispatchIntakeRunForSweep(t, fixture, suffix)
+	cleanHaltTables(t)
+	ctx := context.Background()
+	for _, ddl := range []string{
+		`UPDATE agent_task_queue SET created_at = now() - interval '2 hours' WHERE id = $2::uuid AND $1::uuid IS NOT NULL`,
+		`INSERT INTO github_dispatch_halt (workspace_id, scope) SELECT $1::uuid, '*' WHERE $2::text IS NOT NULL`,
+		`INSERT INTO github_dispatch_halt_audit (workspace_id, scope, halted, actor_source, sweep_pending, created_at)
+		 SELECT $1::uuid, '*', true, 'member', true, now() - interval '1 hour' WHERE $2::text IS NOT NULL`,
+	} {
+		if _, err := testPool.Exec(ctx, ddl, testWorkspaceID, taskID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dbfx.Insert(t, "task_token", testutil.Cols{
+		"token_hash": auth.HashToken("mat_abandoned_" + taskID), "task_id": taskID, "agent_id": fixture.author,
+		"workspace_id": testWorkspaceID, "user_id": testUserID, "expires_at": time.Now().Add(time.Hour),
+	})
+	return fixture, taskID
+}
+
+// A restore after a crashed sweep first finishes that sweep: the pre-halt run and its token do not survive it.
+func TestGitHubDispatchHaltRestoreFinishesAbandonedSweep(t *testing.T) {
+	_, taskID := abandonedSweepFixture(t, "-abandoned")
+	if w := setHalt(t, "*", false, false); w.Code != http.StatusOK {
+		t.Fatalf("restore after an abandoned sweep = %d: %s", w.Code, w.Body)
+	}
+	if status := taskStatus(t, taskID); status != "cancelled" {
+		t.Fatalf("pre-halt run status after the restore = %s, want cancelled", status)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM task_token WHERE task_id=$1`, taskID); n != 0 {
+		t.Fatalf("pre-halt token still valid after the restore: %d", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM github_dispatch_halt_audit WHERE workspace_id=$1 AND sweep_pending`, testWorkspaceID); n != 0 {
+		t.Fatalf("pending sweeps after the restore = %d, want 0", n)
+	}
+}
+
+// If the abandoned sweep still cannot finish, the restore does not happen.
+func TestGitHubDispatchHaltRestoreRefusedWhenAbandonedSweepFails(t *testing.T) {
+	_, taskID := abandonedSweepFixture(t, "-abandoned-fails")
+	ctx := context.Background()
+	dropTrigger := func() {
+		testPool.Exec(ctx, `DROP TRIGGER IF EXISTS test_token_delete_fail ON task_token`)
+		testPool.Exec(ctx, `DROP FUNCTION IF EXISTS test_token_delete_fail()`)
+	}
+	t.Cleanup(dropTrigger)
+	for _, ddl := range []string{
+		`CREATE OR REPLACE FUNCTION test_token_delete_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'token delete refused'; END $$`,
+		`CREATE TRIGGER test_token_delete_fail BEFORE DELETE ON task_token FOR EACH ROW EXECUTE FUNCTION test_token_delete_fail()`,
+	} {
+		if _, err := testPool.Exec(ctx, ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if w := setHalt(t, "*", false, false); w.Code == http.StatusOK {
+		t.Fatalf("restore with an unfinishable abandoned sweep = 200, want an error")
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM github_dispatch_halt WHERE workspace_id=$1`, testWorkspaceID); n != 1 {
+		t.Fatalf("halt rows after the refused restore = %d, want 1", n)
+	}
+	dropTrigger()
+	if w := setHalt(t, "*", false, false); w.Code != http.StatusOK {
+		t.Fatalf("restore once the sweep can finish = %d: %s", w.Code, w.Body)
+	}
+	if status := taskStatus(t, taskID); status != "cancelled" {
+		t.Fatalf("pre-halt run status = %s, want cancelled", status)
+	}
+}
+
+// A sweep that outlives its lease can only reach runs created before its halt: it never cancels one started after a restore.
+func TestGitHubDispatchHaltStaleSweepSparesRunStartedAfterIt(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
+	taskID, _ := dispatchIntakeRunForSweep(t, fixture, "-stale-sweep")
+	ctx := context.Background()
+	ts := func(d time.Duration) pgtype.Timestamptz { return pgtype.Timestamptz{Time: time.Now().Add(d), Valid: true} }
+	revoked, err := fixture.handler.sweepGitHubTriggeredRuns(ctx, fixture.handler.Queries, parseUUID(testWorkspaceID), "*", ts(-time.Hour))
+	if err != nil || revoked != 0 {
+		t.Fatalf("stale sweep revoked %d runs (err %v), want 0", revoked, err)
+	}
+	if status := taskStatus(t, taskID); status == "cancelled" {
+		t.Fatal("a sweep from before the run's creation cancelled it")
+	}
+	revoked, err = fixture.handler.sweepGitHubTriggeredRuns(ctx, fixture.handler.Queries, parseUUID(testWorkspaceID), "*", ts(time.Minute))
+	if err != nil || revoked != 1 {
+		t.Fatalf("current sweep revoked %d runs (err %v), want 1", revoked, err)
+	}
+}
+
+// A broader halt takes effect while an earlier, narrower sweep is still pending.
+func TestGitHubDispatchHaltBroaderHaltDuringPendingSweep(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
+	taskID, _ := dispatchIntakeRunForSweep(t, fixture, "-broader-halt")
+	cleanHaltTables(t)
+	ctx := context.Background()
+	for _, ddl := range []string{
+		`INSERT INTO github_dispatch_halt (workspace_id, scope) VALUES ($1, 'other/repo')`,
+		`INSERT INTO github_dispatch_halt_audit (workspace_id, scope, halted, actor_source, sweep_pending) VALUES ($1, 'other/repo', true, 'member', true)`,
+	} {
+		if _, err := testPool.Exec(ctx, ddl, testWorkspaceID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if w := setHalt(t, "*", true, false); w.Code != http.StatusOK {
+		t.Fatalf("workspace-wide halt during a pending sweep = %d: %s", w.Code, w.Body)
+	}
+	if status := taskStatus(t, taskID); status != "cancelled" {
+		t.Fatalf("run status after the broader halt = %s, want cancelled", status)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM github_dispatch_halt WHERE workspace_id=$1`, testWorkspaceID); n != 2 {
+		t.Fatalf("halt rows = %d, want 2", n)
 	}
 }

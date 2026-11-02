@@ -51,19 +51,48 @@ func (q *Queries) HaltGitHubDispatch(ctx context.Context, arg HaltGitHubDispatch
 }
 
 const hasPendingGitHubDispatchHaltSweep = `-- name: HasPendingGitHubDispatchHaltSweep :one
-SELECT EXISTS (
-    SELECT 1 FROM github_dispatch_halt_audit
-    WHERE workspace_id = $1 AND sweep_pending AND created_at > now() - interval '10 minutes'
-)
+SELECT EXISTS (SELECT 1 FROM github_dispatch_halt_audit WHERE workspace_id = $1 AND sweep_pending)
 `
 
-// A halt's sweep is a lease, not a held lock: a change that finds a live lease is refused, so
-// no connection waits for another. A sweep that crashed stops counting after ten minutes.
+// A restore is refused while any halt's sweep is pending: no connection waits for another change.
 func (q *Queries) HasPendingGitHubDispatchHaltSweep(ctx context.Context, workspaceID pgtype.UUID) (bool, error) {
 	row := q.db.QueryRow(ctx, hasPendingGitHubDispatchHaltSweep, workspaceID)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const listAbandonedGitHubDispatchHaltSweeps = `-- name: ListAbandonedGitHubDispatchHaltSweeps :many
+SELECT id, scope, created_at FROM github_dispatch_halt_audit
+WHERE workspace_id = $1 AND sweep_pending AND created_at <= now() - interval '10 minutes'
+ORDER BY created_at
+`
+
+type ListAbandonedGitHubDispatchHaltSweepsRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	Scope     string             `json:"scope"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+// A sweep still pending after ten minutes is treated as crashed; the next restore finishes it first.
+func (q *Queries) ListAbandonedGitHubDispatchHaltSweeps(ctx context.Context, workspaceID pgtype.UUID) ([]ListAbandonedGitHubDispatchHaltSweepsRow, error) {
+	rows, err := q.db.Query(ctx, listAbandonedGitHubDispatchHaltSweeps, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAbandonedGitHubDispatchHaltSweepsRow{}
+	for rows.Next() {
+		var i ListAbandonedGitHubDispatchHaltSweepsRow
+		if err := rows.Scan(&i.ID, &i.Scope, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listGitHubDispatchHaltAudit = `-- name: ListGitHubDispatchHaltAudit :many
@@ -152,19 +181,22 @@ WHERE i.workspace_id = $1
         AND $2::text IN ('*', lower(pr.repo_owner), lower(pr.repo_owner || '/' || pr.repo_name))
     )
   END
+  AND t.created_at < $3::timestamptz
 `
 
 type ListGitHubTriggeredActiveTasksParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	Scope       string      `json:"scope"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Scope       string             `json:"scope"`
+	Before      pgtype.Timestamptz `json:"before"`
 }
 
-// Live runs started by a GitHub event inside a scope: a PR system wakeup
+// Live runs started by a GitHub event inside a scope, created before the halt that asked for the sweep
+// (a sweep that outlives its lease then never reaches a run started after a restore): a PR system wakeup
 // (pr_merged, pr_checks_*, pr_needs_attention), a PR review wakeup, or a CI-green
 // workflow handoff (marked by MarkGitHubDispatchRun). The scope is matched against
 // the repo that triggered the run when recorded, else the repos of the issue's linked PRs.
 func (q *Queries) ListGitHubTriggeredActiveTasks(ctx context.Context, arg ListGitHubTriggeredActiveTasksParams) ([]pgtype.UUID, error) {
-	rows, err := q.db.Query(ctx, listGitHubTriggeredActiveTasks, arg.WorkspaceID, arg.Scope)
+	rows, err := q.db.Query(ctx, listGitHubTriggeredActiveTasks, arg.WorkspaceID, arg.Scope, arg.Before)
 	if err != nil {
 		return nil, err
 	}
@@ -233,9 +265,9 @@ func (q *Queries) MarkGitHubDispatchRun(ctx context.Context, arg MarkGitHubDispa
 }
 
 const recordGitHubDispatchHaltAudit = `-- name: RecordGitHubDispatchHaltAudit :one
-INSERT INTO github_dispatch_halt_audit (workspace_id, scope, halted, actor_id, actor_source, sweep_pending)
-VALUES ($1, $2, $3, $4, $5, $3)
-RETURNING id
+INSERT INTO github_dispatch_halt_audit (workspace_id, scope, halted, actor_id, actor_source, sweep_pending, created_at)
+VALUES ($1, $2, $3, $4, $5, $3, clock_timestamp())
+RETURNING id, created_at
 `
 
 type RecordGitHubDispatchHaltAuditParams struct {
@@ -246,7 +278,14 @@ type RecordGitHubDispatchHaltAuditParams struct {
 	ActorSource string      `json:"actor_source"`
 }
 
-func (q *Queries) RecordGitHubDispatchHaltAudit(ctx context.Context, arg RecordGitHubDispatchHaltAuditParams) (pgtype.UUID, error) {
+type RecordGitHubDispatchHaltAuditRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+// created_at is the clock at the insert, under the exclusive admission lock: every admission that
+// started before the halt finished before it, so the sweep's cutoff covers all their runs.
+func (q *Queries) RecordGitHubDispatchHaltAudit(ctx context.Context, arg RecordGitHubDispatchHaltAuditParams) (RecordGitHubDispatchHaltAuditRow, error) {
 	row := q.db.QueryRow(ctx, recordGitHubDispatchHaltAudit,
 		arg.WorkspaceID,
 		arg.Scope,
@@ -254,9 +293,9 @@ func (q *Queries) RecordGitHubDispatchHaltAudit(ctx context.Context, arg RecordG
 		arg.ActorID,
 		arg.ActorSource,
 	)
-	var id pgtype.UUID
-	err := row.Scan(&id)
-	return id, err
+	var i RecordGitHubDispatchHaltAuditRow
+	err := row.Scan(&i.ID, &i.CreatedAt)
+	return i, err
 }
 
 const resumeGitHubDispatch = `-- name: ResumeGitHubDispatch :execrows

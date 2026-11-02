@@ -28,7 +28,8 @@ UPDATE agent_task_queue SET context = COALESCE(context, '{}'::jsonb) || jsonb_bu
 WHERE id = sqlc.arg(task_id) AND issue_id = sqlc.arg(issue_id);
 
 -- name: ListGitHubTriggeredActiveTasks :many
--- Live runs started by a GitHub event inside a scope: a PR system wakeup
+-- Live runs started by a GitHub event inside a scope, created before the halt that asked for the sweep
+-- (a sweep that outlives its lease then never reaches a run started after a restore): a PR system wakeup
 -- (pr_merged, pr_checks_*, pr_needs_attention), a PR review wakeup, or a CI-green
 -- workflow handoff (marked by MarkGitHubDispatchRun). The scope is matched against
 -- the repo that triggered the run when recorded, else the repos of the issue's linked PRs.
@@ -52,7 +53,8 @@ WHERE i.workspace_id = sqlc.arg(workspace_id)
       WHERE link.issue_id = i.id
         AND sqlc.arg(scope)::text IN ('*', lower(pr.repo_owner), lower(pr.repo_owner || '/' || pr.repo_name))
     )
-  END;
+  END
+  AND t.created_at < sqlc.arg(before)::timestamptz;
 
 -- name: LockGitHubDispatchHaltShared :exec
 -- Held by a dispatch until its transaction ends, so a switch change cannot slip
@@ -64,17 +66,21 @@ SELECT pg_advisory_xact_lock_shared(hashtextextended('github_dispatch_halt:' || 
 SELECT pg_advisory_xact_lock(hashtextextended('github_dispatch_halt:' || sqlc.arg(workspace_id)::uuid::text, 0));
 
 -- name: HasPendingGitHubDispatchHaltSweep :one
--- A halt's sweep is a lease, not a held lock: a change that finds a live lease is refused, so
--- no connection waits for another. A sweep that crashed stops counting after ten minutes.
-SELECT EXISTS (
-    SELECT 1 FROM github_dispatch_halt_audit
-    WHERE workspace_id = $1 AND sweep_pending AND created_at > now() - interval '10 minutes'
-);
+-- A restore is refused while any halt's sweep is pending: no connection waits for another change.
+SELECT EXISTS (SELECT 1 FROM github_dispatch_halt_audit WHERE workspace_id = $1 AND sweep_pending);
+
+-- name: ListAbandonedGitHubDispatchHaltSweeps :many
+-- A sweep still pending after ten minutes is treated as crashed; the next restore finishes it first.
+SELECT id, scope, created_at FROM github_dispatch_halt_audit
+WHERE workspace_id = $1 AND sweep_pending AND created_at <= now() - interval '10 minutes'
+ORDER BY created_at;
 
 -- name: RecordGitHubDispatchHaltAudit :one
-INSERT INTO github_dispatch_halt_audit (workspace_id, scope, halted, actor_id, actor_source, sweep_pending)
-VALUES ($1, $2, $3, $4, $5, $3)
-RETURNING id;
+-- created_at is the clock at the insert, under the exclusive admission lock: every admission that
+-- started before the halt finished before it, so the sweep's cutoff covers all their runs.
+INSERT INTO github_dispatch_halt_audit (workspace_id, scope, halted, actor_id, actor_source, sweep_pending, created_at)
+VALUES ($1, $2, $3, $4, $5, $3, clock_timestamp())
+RETURNING id, created_at;
 
 -- name: SetGitHubDispatchHaltAuditSweep :exec
 UPDATE github_dispatch_halt_audit SET runs_revoked = $2, sweep_failed = $3, sweep_pending = false WHERE id = $1;

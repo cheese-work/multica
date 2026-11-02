@@ -64,14 +64,23 @@ func (h *Handler) listGitHubDispatchHaltAudit(r *http.Request, workspaceID strin
 // its audit row commit alone, under the exclusive lock every external admission
 // path holds shared: from that commit on every admission sees the halt, and a
 // crash or failing sweep cannot take it back. Then, when halting, the sweep
-// cancels the runs started before the commit. The audit row carries a
-// sweep_pending lease until the sweep ends; a change that finds a live lease is
-// refused (errGitHubDispatchHaltBusy) instead of waiting, so no change ever
-// holds one connection while needing another. A failed sweep leaves the halt in
-// force, marks the audit row sweep_failed and returns the error with the count
-// revoked so far; repeating the halt retries it.
+// cancels the runs created before that commit; the cutoff fences a sweep that
+// outlives its lease from touching a run started after a restore. A halt is
+// always allowed, even while an earlier sweep is pending. The audit row carries
+// a sweep_pending lease until its sweep ends. A restore that finds a live lease
+// is refused (errGitHubDispatchHaltBusy) instead of waiting, so no change holds
+// one connection while needing another; a lease older than ten minutes counts as
+// a crashed sweep, which the restore finishes first and does not proceed
+// without. A failed sweep leaves the halt in force, marks the audit row
+// sweep_failed and returns the error with the count revoked so far; repeating
+// the halt retries it.
 func (h *Handler) changeGitHubDispatchHalt(ctx context.Context, audit db.RecordGitHubDispatchHaltAuditParams) (revoked int, sweepErr error, err error) {
-	auditID, err := h.commitGitHubDispatchHalt(ctx, audit)
+	if !audit.Halted {
+		if err := h.finishAbandonedSweeps(ctx, audit.WorkspaceID); err != nil {
+			return 0, nil, err
+		}
+	}
+	recorded, err := h.commitGitHubDispatchHalt(ctx, audit)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -80,32 +89,53 @@ func (h *Handler) changeGitHubDispatchHalt(ctx context.Context, audit db.RecordG
 	}
 	// The change is committed: finish the sweep even if the caller hangs up.
 	ctx = context.WithoutCancel(ctx)
-	revoked, sweepErr = h.sweepGitHubTriggeredRuns(ctx, h.Queries, audit.WorkspaceID, audit.Scope)
-	if err := h.Queries.SetGitHubDispatchHaltAuditSweep(ctx, db.SetGitHubDispatchHaltAuditSweepParams{ID: auditID, RunsRevoked: int32(revoked), SweepFailed: sweepErr != nil}); err != nil {
-		slog.Error("github dispatch halt: audit sweep result not saved", "audit_id", uuidToString(auditID), "err", err)
+	revoked, sweepErr = h.sweepGitHubTriggeredRuns(ctx, h.Queries, audit.WorkspaceID, audit.Scope, recorded.CreatedAt)
+	if err := h.Queries.SetGitHubDispatchHaltAuditSweep(ctx, db.SetGitHubDispatchHaltAuditSweepParams{ID: recorded.ID, RunsRevoked: int32(revoked), SweepFailed: sweepErr != nil}); err != nil {
+		slog.Error("github dispatch halt: audit sweep result not saved", "audit_id", uuidToString(recorded.ID), "err", err)
 	}
 	return revoked, sweepErr, nil
+}
+
+// finishAbandonedSweeps runs again the sweep of every halt whose lease expired. Its audit row stays
+// pending when the sweep fails, so the restore is refused until a sweep completes.
+func (h *Handler) finishAbandonedSweeps(ctx context.Context, workspaceID pgtype.UUID) error {
+	abandoned, err := h.Queries.ListAbandonedGitHubDispatchHaltSweeps(ctx, workspaceID)
+	if err != nil {
+		return err
+	}
+	for _, sweep := range abandoned {
+		revoked, err := h.sweepGitHubTriggeredRuns(ctx, h.Queries, workspaceID, sweep.Scope, sweep.CreatedAt)
+		if err != nil {
+			return fmt.Errorf("finishing an earlier sweep of %s: %w", sweep.Scope, err)
+		}
+		if err := h.Queries.SetGitHubDispatchHaltAuditSweep(ctx, db.SetGitHubDispatchHaltAuditSweepParams{ID: sweep.ID, RunsRevoked: int32(revoked)}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // errGitHubDispatchHaltBusy means an earlier halt's sweep is still running.
 var errGitHubDispatchHaltBusy = errors.New("an earlier kill switch change is still revoking runs")
 
-func (h *Handler) commitGitHubDispatchHalt(ctx context.Context, audit db.RecordGitHubDispatchHaltAuditParams) (pgtype.UUID, error) {
+func (h *Handler) commitGitHubDispatchHalt(ctx context.Context, audit db.RecordGitHubDispatchHaltAuditParams) (db.RecordGitHubDispatchHaltAuditRow, error) {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
-		return pgtype.UUID{}, err
+		return db.RecordGitHubDispatchHaltAuditRow{}, err
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx))
 	q := h.Queries.WithTx(tx)
 	if err := q.LockGitHubDispatchHaltExclusive(ctx, audit.WorkspaceID); err != nil {
-		return pgtype.UUID{}, err
+		return db.RecordGitHubDispatchHaltAuditRow{}, err
 	}
-	busy, err := q.HasPendingGitHubDispatchHaltSweep(ctx, audit.WorkspaceID)
-	if err != nil {
-		return pgtype.UUID{}, err
-	}
-	if busy {
-		return pgtype.UUID{}, errGitHubDispatchHaltBusy
+	if !audit.Halted {
+		busy, err := q.HasPendingGitHubDispatchHaltSweep(ctx, audit.WorkspaceID)
+		if err != nil {
+			return db.RecordGitHubDispatchHaltAuditRow{}, err
+		}
+		if busy {
+			return db.RecordGitHubDispatchHaltAuditRow{}, errGitHubDispatchHaltBusy
+		}
 	}
 	if audit.Halted {
 		err = q.HaltGitHubDispatch(ctx, db.HaltGitHubDispatchParams{WorkspaceID: audit.WorkspaceID, Scope: audit.Scope, HaltedBy: audit.ActorID})
@@ -113,20 +143,20 @@ func (h *Handler) commitGitHubDispatchHalt(ctx context.Context, audit db.RecordG
 		_, err = q.ResumeGitHubDispatch(ctx, db.ResumeGitHubDispatchParams{WorkspaceID: audit.WorkspaceID, Scope: audit.Scope})
 	}
 	if err != nil {
-		return pgtype.UUID{}, err
+		return db.RecordGitHubDispatchHaltAuditRow{}, err
 	}
-	id, err := q.RecordGitHubDispatchHaltAudit(ctx, audit)
+	recorded, err := q.RecordGitHubDispatchHaltAudit(ctx, audit)
 	if err != nil {
-		return pgtype.UUID{}, err
+		return db.RecordGitHubDispatchHaltAuditRow{}, err
 	}
-	return id, tx.Commit(ctx)
+	return recorded, tx.Commit(ctx)
 }
 
 // sweepGitHubTriggeredRuns revokes the live GitHub-triggered runs in a scope. A
 // run's token goes first: the sweep selects live runs only, so a run cancelled
 // with its token still valid would never be found by a retry.
-func (h *Handler) sweepGitHubTriggeredRuns(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, scope string) (int, error) {
-	ids, err := q.ListGitHubTriggeredActiveTasks(ctx, db.ListGitHubTriggeredActiveTasksParams{WorkspaceID: workspaceID, Scope: scope})
+func (h *Handler) sweepGitHubTriggeredRuns(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, scope string, before pgtype.Timestamptz) (int, error) {
+	ids, err := q.ListGitHubTriggeredActiveTasks(ctx, db.ListGitHubTriggeredActiveTasksParams{WorkspaceID: workspaceID, Scope: scope, Before: before})
 	if err != nil {
 		return 0, fmt.Errorf("listing live GitHub-triggered runs: %w", err)
 	}
