@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
 import { NavigationProvider, AppLink, type NavigationAdapter } from "../navigation";
@@ -106,6 +106,37 @@ describe("RouteDataPrefetch", () => {
 
     await vi.advanceTimersByTimeAsync(3000);
     expect(prefetched.length).toBeGreaterThan(0);
+  });
+
+  it("does not warm from an idle callback scheduled before a new request", async () => {
+    // jsdom has no idle callbacks; queue them so the test decides when the browser runs one.
+    const idle = new Map<number, () => void>();
+    let nextId = 1;
+    vi.stubGlobal("requestIdleCallback", (cb: () => void) => {
+      idle.set(nextId, cb);
+      return nextId++;
+    });
+    vi.stubGlobal("cancelIdleCallback", (id: number) => idle.delete(id));
+    let finish: (value: string) => void = () => {};
+    renderLinks();
+
+    // The quiet period ends: the idle callback is queued but has not run yet.
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(idle.size).toBe(1);
+    void qc.fetchQuery({
+      queryKey: ["late-page-data"],
+      queryFn: () => new Promise<string>((resolve) => (finish = resolve)),
+    });
+
+    for (const run of [...idle.values()]) run();
+    expect(prefetched).toHaveLength(0);
+
+    finish("done");
+    await vi.advanceTimersByTimeAsync(3000);
+    for (const run of [...idle.values()]) run();
+    expect(prefetched.length).toBeGreaterThan(0);
+    cleanup();
+    vi.unstubAllGlobals();
   });
 
   it("stays idle without a resolved workspace", () => {

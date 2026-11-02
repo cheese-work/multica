@@ -131,6 +131,8 @@ export function RouteDataPrefetch({
     // Re-armed on every cache event: any in-flight request cancels the wait.
     const arm = () => {
       window.clearTimeout(quietTimer);
+      if (idleId !== undefined) window.cancelIdleCallback(idleId);
+      idleId = undefined;
       if (qc.isFetching() > 0) return;
       quietTimer = window.setTimeout(() => {
         if (typeof window.requestIdleCallback === "function") {
