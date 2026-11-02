@@ -46,6 +46,15 @@ SELECT * FROM agent_task_queue
 WHERE id = $1
 FOR UPDATE NOWAIT;
 
+-- name: CountOtherActiveChatTasks :one
+-- Rule E (CHE-2819): the epoch cannot move while a chat task of the DM other
+-- than the caller is claimed or running. Read under the DM lock, which the
+-- claim share-locks, so no claim can land between this read and the commit.
+SELECT count(*) FROM agent_task_queue
+WHERE chat_session_id = $1
+  AND id <> $2
+  AND status IN ('dispatched', 'waiting_local_directory', 'running');
+
 -- name: GetTaskCompactionSummary :one
 SELECT * FROM chat_message
 WHERE chat_session_id = $1 AND task_id = $2 AND message_kind = 'compaction_summary'

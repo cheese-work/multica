@@ -290,7 +290,7 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 	var issue db.Issue
 	var cancelledWakeups []db.AgentTaskQueue
 	moveGuard := issueMoveGuardFrom(ctx)
-	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil || moveGuard != nil || len(issueWriteTaint(ctx)) > 0, func(q *db.Queries) error {
+	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil || moveGuard != nil || statusRecordFrom(ctx) != nil || len(issueWriteTaint(ctx)) > 0 || ctx.Value(issueWriteExternalReadKey{}) != nil, func(q *db.Queries) error {
 		if err := wf.lockProject(ctx, q); err != nil {
 			return err
 		}
@@ -326,15 +326,42 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 	if err := guardAgentIssueStatus(ctx, q, params); err != nil {
 		return db.Issue{}, nil, err
 	}
+	if err := guardIssueProjectRebinding(ctx, q, params); err != nil {
+		return db.Issue{}, nil, err
+	}
+	rec := statusRecordFrom(ctx)
+	recordStatus := rec != nil && params.Status.Valid
+	var fromStatus string
+	if recordStatus {
+		// Lock first so "from" is the status this write replaces, not the
+		// caller's earlier read.
+		prior, err := q.LockIssueForDescriptionUpdate(ctx, db.LockIssueForDescriptionUpdateParams{ID: params.ID, WorkspaceID: rec.workspaceID})
+		if err != nil {
+			return db.Issue{}, nil, fmt.Errorf("lock issue for status history: %w", err)
+		}
+		fromStatus = prior.Status
+	}
 	issue, err := q.UpdateIssue(ctx, params)
 	if err != nil {
 		return issue, nil, err
+	}
+	if recordStatus && fromStatus != issue.Status {
+		row, err := service.RecordStatusChange(ctx, q, issue, fromStatus, issue.Status, rec.trigger, nil)
+		if err != nil {
+			return db.Issue{}, nil, fmt.Errorf("record status change: %w", err)
+		}
+		rec.activity = &row
 	}
 	// Same transaction as the write: a claim that reads the committed write
 	// finds this taint on its run.
 	if taint := issueWriteTaint(ctx); len(taint) > 0 {
 		if err := q.TaintPendingRunsOnIssue(ctx, db.TaintPendingRunsOnIssueParams{TaintIds: taint, IssueID: issue.ID}); err != nil {
 			return db.Issue{}, nil, fmt.Errorf("taint pending runs: %w", err)
+		}
+	}
+	if external, _ := ctx.Value(issueWriteExternalReadKey{}).(bool); external && params.Description.Valid {
+		if err := q.MarkIssueDescriptionExternalRead(ctx, issue.ID); err != nil {
+			return db.Issue{}, nil, fmt.Errorf("mark description external_read: %w", err)
 		}
 	}
 	var cancelled []db.AgentTaskQueue
@@ -3567,9 +3594,21 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
 		handoffResolver = h.createHandoffResolver(r, workspaceID, handoffCreatorType, parseUUID(handoffCreatorID), requestedByID)
 	}
+	markedWriter := false
+	if req.Description != nil {
+		actor, acting, actErr := service.ActingTask(h.actingTaskContext(r), h.Queries)
+		if actErr != nil {
+			slog.Error("could not read requesting task", "error", actErr)
+			writeError(w, http.StatusInternalServerError, "failed to create issue")
+			return
+		}
+		markedWriter = acting && actor.ExternalRead
+	}
 	res, err := h.IssueService.Create(r.Context(), service.IssueCreateParams{
 		WorkspaceID:     wsUUID,
 		HandoffResolver: handoffResolver,
+		MarkedWriter:    markedWriter,
+		EntryGate:       h.createEntryGate(wsUUID, creatorType, actualCreatorID),
 		Title:           req.Title,
 		Description:     ptrToText(req.Description),
 		Status:          status,
@@ -3741,6 +3780,10 @@ type UpdateIssueRequest struct {
 	// project move without it is administrative. Batch updates ignore it.
 	// (MUL-7420)
 	EnterWorkflowStep bool `json:"enter_workflow_step,omitempty"`
+	// EntryGateOverrideReason (1-500 chars) passes a status write that fails
+	// block entry gates the step lets a person override. Honored for a person's
+	// own credential only; batch updates and creates have no override. (CHE-2295)
+	EntryGateOverrideReason *string `json:"entry_gate_override_reason,omitempty"`
 	// DuplicateOfIssueID marks this issue as a duplicate of another issue in
 	// the same workspace (MUL-7349). A duplicate is an ordinary cancelled issue
 	// that remembers its original, so this also sets status to cancelled.
@@ -4203,11 +4246,23 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// A handoff assignee passes the same gate as a hand-picked one.
 	// An agent's run may only move the issue from the step it works on.
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	if req.EntryGateOverrideReason != nil {
+		reason, valid := validEntryOverrideReason(*req.EntryGateOverrideReason)
+		if !valid {
+			writeError(w, http.StatusBadRequest, "entry_gate_override_reason must be 1 to 500 characters")
+			return
+		}
+		req.EntryGateOverrideReason = &reason
+	}
 	callerRun := h.agentRunOnIssue(r, actorType, prevIssue)
 	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, workflowCaller{run: callerRun, agent: actorType == "agent"})
 	if workflowWrite != nil {
 		workflowWrite.preview = req.HandoffPreview
 		workflowWrite.stopPrevious = req.StopPreviousAssigneeRuns
+		workflowWrite.entry = entryWrite{actorType: actorType, actorID: actorID, human: actorType == "member" && !isMachineCredentialActor(r)}
+		if req.EntryGateOverrideReason != nil {
+			workflowWrite.entry.overrideReason = *req.EntryGateOverrideReason
+		}
 	}
 	if err != nil {
 		if writeIssueWorkflowError(w, err) {
@@ -4239,11 +4294,25 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	assigneeSupplied := req.AssigneeType != nil || req.AssigneeID != nil
 	suppressRun, runReason := h.suppressRunForWrite(r.Context(), actorType, actorID, prevIssue, params, handoff, req.SuppressRun)
 	writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
+	writeCtx = withBudgetActor(writeCtx, r)
 	if assigneeSupplied || handoff != nil {
 		var ok bool
 		if writeCtx, ok = h.withIssueWriteTaint(w, r, writeCtx); !ok {
 			return
 		}
+	}
+	if req.Description != nil {
+		var ok bool
+		if writeCtx, ok = h.withIssueWriteExternalRead(w, r, writeCtx); !ok {
+			return
+		}
+	}
+	// Status history is written in the status transaction. A workflow handoff
+	// and a duplicate mark keep the listener's richer row until they migrate.
+	var statusRec *statusRecord
+	if handoff == nil && !params.DuplicateOfIssueID.Valid && !prevIssue.DuplicateOfIssueID.Valid {
+		statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTriggerFromRequest(r, actorType, actorID)}
+		writeCtx = withStatusRecord(writeCtx, statusRec)
 	}
 	var issue db.Issue
 	attachmentsChanged := false
@@ -4259,7 +4328,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		issue, err = h.updateIssueWithStatusGuard(writeCtx, prevIssue.WorkspaceID, statusKeyForGuard, params, workflowWrite)
 	}
 	if err != nil {
-		if writeAgentIssueStatusError(w, err) || writeIssueStatusRaceError(w, err) || writeIssueWorkflowError(w, err) {
+		if writeAgentIssueStatusError(w, err) || writeIssueStatusRaceError(w, err) || writeIssueWorkflowError(w, err) || writeBudgetRebindingError(w, err) {
 			return
 		}
 		if writeDuplicateMarkError(w, err) {
@@ -4282,6 +4351,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.advanceRunStep(r.Context(), callerRun, prevIssue, issue)
+	issue = h.postEntryWarning(r.Context(), workflowWrite, issue)
 
 	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
 	resp := issueToResponse(issue, prefix)
@@ -4362,7 +4432,11 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if handoff != nil {
 		updatedPayload["workflow_handoff"] = workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun, runReason)
 	}
+	if statusRec != nil && statusRec.activity != nil {
+		updatedPayload["activity_id"] = uuidToString(statusRec.activity.ID)
+	}
 	h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, updatedPayload)
+	h.publishRecordedStatusActivity(statusRec, actorType, actorID)
 	if statusChanged && actorType == "member" {
 		h.openRunBudgetWindowForMove(r.Context(), issue)
 	} else if statusChanged && actorType == "agent" {
@@ -4942,6 +5016,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	updated := 0
 	// The issues this batch wrote; the rest were skipped by a per-issue guard.
 	updatedIDs := []string{}
+	failed := []map[string]any{}
 	var triggerOutcomes []CommentTriggerOutcome
 	// One Resolver for the whole batch — a per-issue filler would query the
 	// catalog once per custom-status row. (MUL-6243)
@@ -5111,6 +5186,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		workflowWrite.stopPrevious = req.Updates.StopPreviousAssigneeRuns
+		workflowWrite.entry = entryWrite{actorType: actorType, actorID: actorID}
 		// The client previewed no handoff for this batch. An issue that would
 		// hand off now is skipped: nobody confirmed it. verify checks again under
 		// the locks, for a handler that appears between here and the write.
@@ -5131,9 +5207,16 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		assigneeSupplied := req.Updates.AssigneeType != nil || req.Updates.AssigneeID != nil
 		suppressRun, runReason := h.suppressRunForWrite(r.Context(), actorType, actorID, prevIssue, params, handoff, req.Updates.SuppressRun)
 		writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
+		writeCtx = withBudgetActor(writeCtx, r)
 		if assigneeSupplied || handoff != nil {
 			var ok bool
 			if writeCtx, ok = h.withIssueWriteTaint(w, r, writeCtx); !ok {
+				return
+			}
+		}
+		if req.Updates.Description != nil {
+			var ok bool
+			if writeCtx, ok = h.withIssueWriteExternalRead(w, r, writeCtx); !ok {
 				return
 			}
 		}
@@ -5159,13 +5242,25 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			if writeIssueStatusRaceError(w, err) {
 				return
 			}
+			var gated *EntryGateError
+			if errors.As(err, &gated) {
+				failed = append(failed, map[string]any{"id": issueID, "code": "entry_gate_failed", "step": gated.Step, "failed_guards": gated.Failed})
+				continue
+			}
+			if errors.Is(err, errBudgetRebinding) {
+				failed = append(failed, map[string]any{"id": issueID, "code": budgetRebindingCode})
+				continue
+			}
 			slog.Warn("batch update issue failed", "issue_id", issueID, "error", err)
 			continue
 		}
 
 		prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
-		resp := issueToResponse(issue, prefix)
 		h.advanceRunStep(r.Context(), callerRun, prevIssue, issue)
+		// The warning comment bumps the revision; build the response from the
+		// reloaded issue so the batch result and event carry the stored one.
+		issue = h.postEntryWarning(r.Context(), workflowWrite, issue)
+		resp := issueToResponse(issue, prefix)
 
 		fillBatch(&resp)
 		h.fillProjectTriggerOutcome(r.Context(), issue, &resp)
@@ -5268,6 +5363,9 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	response := map[string]any{"updated": updated, "updated_ids": updatedIDs}
 	if len(triggerOutcomes) > 0 {
 		response["trigger_outcomes"] = triggerOutcomes
+	}
+	if len(failed) > 0 {
+		response["failed"] = failed
 	}
 	writeJSON(w, http.StatusOK, response)
 }

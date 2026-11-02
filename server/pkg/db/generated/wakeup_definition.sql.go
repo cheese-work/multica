@@ -83,7 +83,7 @@ func (q *Queries) FindWaitingIssueLeaderRun(ctx context.Context, arg FindWaiting
 }
 
 const getWakeupDefinition = `-- name: GetWakeupDefinition :one
-SELECT workspace_id, scope_kind, scope_id, rule_key, root, config, revision, created_by, updated_by, created_at, updated_at, event_types FROM issue_wakeup_definition
+SELECT workspace_id, scope_kind, scope_id, rule_key, root, config, revision, created_by, updated_by, created_at, updated_at, event_types, sweep_revision, sweep_cursor, sweep_done, sweep_baseline, sweep_attempts, sweep_retry_at, sweep_error FROM issue_wakeup_definition
 WHERE workspace_id= $1 AND scope_kind= $2 AND scope_id= $3 AND rule_key= $4
 `
 
@@ -115,6 +115,13 @@ func (q *Queries) GetWakeupDefinition(ctx context.Context, arg GetWakeupDefiniti
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.EventTypes,
+		&i.SweepRevision,
+		&i.SweepCursor,
+		&i.SweepDone,
+		&i.SweepBaseline,
+		&i.SweepAttempts,
+		&i.SweepRetryAt,
+		&i.SweepError,
 	)
 	return i, err
 }
@@ -123,7 +130,7 @@ const insertWakeupDefinition = `-- name: InsertWakeupDefinition :one
 INSERT INTO issue_wakeup_definition(workspace_id,scope_kind,scope_id,rule_key,root,config,event_types,created_by,updated_by)
 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$8)
 ON CONFLICT (workspace_id,scope_kind,scope_id,rule_key) DO NOTHING
-RETURNING workspace_id, scope_kind, scope_id, rule_key, root, config, revision, created_by, updated_by, created_at, updated_at, event_types
+RETURNING workspace_id, scope_kind, scope_id, rule_key, root, config, revision, created_by, updated_by, created_at, updated_at, event_types, sweep_revision, sweep_cursor, sweep_done, sweep_baseline, sweep_attempts, sweep_retry_at, sweep_error
 `
 
 type InsertWakeupDefinitionParams struct {
@@ -163,6 +170,13 @@ func (q *Queries) InsertWakeupDefinition(ctx context.Context, arg InsertWakeupDe
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.EventTypes,
+		&i.SweepRevision,
+		&i.SweepCursor,
+		&i.SweepDone,
+		&i.SweepBaseline,
+		&i.SweepAttempts,
+		&i.SweepRetryAt,
+		&i.SweepError,
 	)
 	return i, err
 }
@@ -197,7 +211,7 @@ func (q *Queries) InsertWakeupDefinitionIfAbsent(ctx context.Context, arg Insert
 }
 
 const listCustomizedSystemWakeupsAfter = `-- name: ListCustomizedSystemWakeupsAfter :many
-SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, workflow_step FROM issue_wakeup
+SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, content_revision, workflow_step FROM issue_wakeup
 WHERE system_rule IS NOT NULL AND customized_at IS NOT NULL AND id> $1
  AND ($2::uuid IS NULL OR workspace_id= $2::uuid)
 ORDER BY id LIMIT $3
@@ -266,6 +280,7 @@ func (q *Queries) ListCustomizedSystemWakeupsAfter(ctx context.Context, arg List
 			&i.AggregateBlockedScopeKind,
 			&i.AggregateBlockedScopeID,
 			&i.AggregateRetryAt,
+			&i.ContentRevision,
 			&i.WorkflowStep,
 		); err != nil {
 			return nil, err
@@ -303,13 +318,13 @@ func (q *Queries) ListIssueLabelIDs(ctx context.Context, issueID pgtype.UUID) ([
 }
 
 const listWakeupDefinitionsForRule = `-- name: ListWakeupDefinitionsForRule :many
-SELECT d.workspace_id,d.scope_kind,d.scope_id,d.rule_key,d.root,d.config,d.revision,d.created_by,d.updated_by,d.created_at,d.updated_at,d.event_types FROM issue_wakeup_definition d
+SELECT d.workspace_id, d.scope_kind, d.scope_id, d.rule_key, d.root, d.config, d.revision, d.created_by, d.updated_by, d.created_at, d.updated_at, d.event_types, d.sweep_revision, d.sweep_cursor, d.sweep_done, d.sweep_baseline, d.sweep_attempts, d.sweep_retry_at, d.sweep_error FROM issue_wakeup_definition d
 WHERE d.workspace_id= $1 AND d.scope_kind='workspace' AND d.scope_id= $1 AND d.rule_key= $2
 UNION ALL
-SELECT d.workspace_id,d.scope_kind,d.scope_id,d.rule_key,d.root,d.config,d.revision,d.created_by,d.updated_by,d.created_at,d.updated_at,d.event_types FROM issue_wakeup_definition d
+SELECT d.workspace_id, d.scope_kind, d.scope_id, d.rule_key, d.root, d.config, d.revision, d.created_by, d.updated_by, d.created_at, d.updated_at, d.event_types, d.sweep_revision, d.sweep_cursor, d.sweep_done, d.sweep_baseline, d.sweep_attempts, d.sweep_retry_at, d.sweep_error FROM issue_wakeup_definition d
 WHERE d.workspace_id= $1 AND d.scope_kind='project' AND d.scope_id= $3::uuid AND d.rule_key= $2
 UNION ALL
-SELECT d.workspace_id,d.scope_kind,d.scope_id,d.rule_key,d.root,d.config,d.revision,d.created_by,d.updated_by,d.created_at,d.updated_at,d.event_types FROM issue_wakeup_definition d
+SELECT d.workspace_id, d.scope_kind, d.scope_id, d.rule_key, d.root, d.config, d.revision, d.created_by, d.updated_by, d.created_at, d.updated_at, d.event_types, d.sweep_revision, d.sweep_cursor, d.sweep_done, d.sweep_baseline, d.sweep_attempts, d.sweep_retry_at, d.sweep_error FROM issue_wakeup_definition d
 WHERE d.workspace_id= $1 AND d.scope_kind='issue' AND d.scope_id= $4 AND d.rule_key= $2
 `
 
@@ -351,6 +366,13 @@ func (q *Queries) ListWakeupDefinitionsForRule(ctx context.Context, arg ListWake
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.EventTypes,
+			&i.SweepRevision,
+			&i.SweepCursor,
+			&i.SweepDone,
+			&i.SweepBaseline,
+			&i.SweepAttempts,
+			&i.SweepRetryAt,
+			&i.SweepError,
 		); err != nil {
 			return nil, err
 		}
@@ -363,7 +385,7 @@ func (q *Queries) ListWakeupDefinitionsForRule(ctx context.Context, arg ListWake
 }
 
 const listWakeupDefinitionsInScope = `-- name: ListWakeupDefinitionsInScope :many
-SELECT workspace_id, scope_kind, scope_id, rule_key, root, config, revision, created_by, updated_by, created_at, updated_at, event_types FROM issue_wakeup_definition
+SELECT workspace_id, scope_kind, scope_id, rule_key, root, config, revision, created_by, updated_by, created_at, updated_at, event_types, sweep_revision, sweep_cursor, sweep_done, sweep_baseline, sweep_attempts, sweep_retry_at, sweep_error FROM issue_wakeup_definition
 WHERE workspace_id= $1 AND scope_kind= $2 AND scope_id= $3
 ORDER BY created_at,rule_key LIMIT 100
 `
@@ -397,6 +419,13 @@ func (q *Queries) ListWakeupDefinitionsInScope(ctx context.Context, arg ListWake
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.EventTypes,
+			&i.SweepRevision,
+			&i.SweepCursor,
+			&i.SweepDone,
+			&i.SweepBaseline,
+			&i.SweepAttempts,
+			&i.SweepRetryAt,
+			&i.SweepError,
 		); err != nil {
 			return nil, err
 		}
@@ -437,7 +466,7 @@ const rebaseSystemWakeupConfig = `-- name: RebaseSystemWakeupConfig :one
 UPDATE issue_wakeup SET revision=revision+1,config_fingerprint=NULLIF($1::text,''),updated_at=clock_timestamp(),
  aggregate_blocked_scope_kind=NULL,aggregate_blocked_scope_id=NULL,aggregate_retry_at=NULL
 WHERE id= $2 AND system_rule IS NOT NULL
-RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, workflow_step
+RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, content_revision, workflow_step
 `
 
 type RebaseSystemWakeupConfigParams struct {
@@ -499,6 +528,7 @@ func (q *Queries) RebaseSystemWakeupConfig(ctx context.Context, arg RebaseSystem
 		&i.AggregateBlockedScopeKind,
 		&i.AggregateBlockedScopeID,
 		&i.AggregateRetryAt,
+		&i.ContentRevision,
 		&i.WorkflowStep,
 	)
 	return i, err
@@ -509,7 +539,7 @@ UPDATE issue_wakeup SET customized_at=NULL,instruction='',
  enabled=CASE WHEN paused_reason IS NULL AND disabled_at IS NULL THEN $1::bool ELSE enabled END,
  updated_at=clock_timestamp()
 WHERE id= $2 AND customized_at IS NOT NULL
-RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, workflow_step
+RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, content_revision, workflow_step
 `
 
 type RetireCustomizedSystemWakeupParams struct {
@@ -569,6 +599,7 @@ func (q *Queries) RetireCustomizedSystemWakeup(ctx context.Context, arg RetireCu
 		&i.AggregateBlockedScopeKind,
 		&i.AggregateBlockedScopeID,
 		&i.AggregateRetryAt,
+		&i.ContentRevision,
 		&i.WorkflowStep,
 	)
 	return i, err
@@ -578,7 +609,7 @@ const updateWakeupDefinition = `-- name: UpdateWakeupDefinition :one
 UPDATE issue_wakeup_definition
 SET config= $1,event_types= $2,revision=revision+1,updated_by= $3,updated_at=clock_timestamp()
 WHERE workspace_id= $4 AND scope_kind= $5 AND scope_id= $6 AND rule_key= $7 AND revision= $8
-RETURNING workspace_id, scope_kind, scope_id, rule_key, root, config, revision, created_by, updated_by, created_at, updated_at, event_types
+RETURNING workspace_id, scope_kind, scope_id, rule_key, root, config, revision, created_by, updated_by, created_at, updated_at, event_types, sweep_revision, sweep_cursor, sweep_done, sweep_baseline, sweep_attempts, sweep_retry_at, sweep_error
 `
 
 type UpdateWakeupDefinitionParams struct {
@@ -618,6 +649,13 @@ func (q *Queries) UpdateWakeupDefinition(ctx context.Context, arg UpdateWakeupDe
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.EventTypes,
+		&i.SweepRevision,
+		&i.SweepCursor,
+		&i.SweepDone,
+		&i.SweepBaseline,
+		&i.SweepAttempts,
+		&i.SweepRetryAt,
+		&i.SweepError,
 	)
 	return i, err
 }

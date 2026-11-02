@@ -14,7 +14,7 @@ import (
 )
 
 // The run-budget ledger (CHE-2297 L2a). The guard no longer counts task rows:
-// it reads the balance of the issue's open window, the sum of its entries.
+// it reads the issue's balance, the sum of its entries.
 //
 //	window:<window id>   the credit that opens a window: the cap in force minus
 //	                     the runs already counted in it. Written lazily by the
@@ -26,8 +26,9 @@ import (
 //	                     the open window follows the cap in force.
 //
 // The window id is the window's start time (RunBudgetStart), the same value
-// the L1a notices use as their claim key. A new window starts from its own
-// credit: runs left or overspent in the old one do not carry over.
+// the L1a notices use as their claim key. The balance is the sum of the
+// issue's entries in every window, so a new window's credit adds to the runs
+// left in the old one, or is reduced by the runs it overspent.
 const (
 	runBudgetKindWindow = "window"
 	runBudgetKindRun    = "run"
@@ -57,8 +58,8 @@ func recordRunBudgetEntry(ctx context.Context, q *db.Queries, issue db.Issue, wi
 }
 
 // openRunBudget locks the issue row until the caller's transaction ends, opens
-// the current window's ledger and returns the issue, its usage and the window's
-// balance. The lock is what makes the balance read and the debit one step:
+// the current window's ledger and returns the issue, its usage and the issue's
+// run balance. The lock is what makes the balance read and the debit one step:
 // callers that enqueue outside a transaction get no atomicity from it.
 // exceptTask is the run whose own debit is about to be written, so the credit
 // does not count it (zero UUID: none). usage is nil for an issue that is not
@@ -106,27 +107,38 @@ func openRunBudget(ctx context.Context, q *db.Queries, issueID, exceptTask pgtyp
 			return issue, nil, 0, fmt.Errorf("run budget: follow cap: %w", err)
 		}
 	}
-	balance, err := q.SumIssueRunBudgetWindow(ctx, db.SumIssueRunBudgetWindowParams{IssueID: issue.ID, WindowID: windowID})
+	balance, err := runBudgetBalance(ctx, q, issue.ID)
 	if err != nil {
-		return issue, nil, 0, fmt.Errorf("run budget: balance: %w", err)
+		return issue, nil, 0, err
 	}
 	return issue, usage, balance, nil
 }
 
+// runBudgetBalance is the issue's run balance: the sum of its run entries in
+// every window. A member window adds its credit to what the old windows left,
+// or takes away what they overspent.
+func runBudgetBalance(ctx context.Context, q *db.Queries, issueID pgtype.UUID) (int64, error) {
+	sum, err := q.SumIssueRunBudgetRuns(ctx, issueID)
+	if err != nil {
+		return 0, fmt.Errorf("run budget: balance: %w", err)
+	}
+	return sum, nil
+}
+
 // peekRunBudgetBalance is the balance openRunBudget would return, computed
-// without writing: the window's entries plus the cap difference a write would
+// without writing: the issue's entries plus the cap difference a write would
 // credit. An unopened window holds the cap minus the runs counted.
 func peekRunBudgetBalance(ctx context.Context, q *db.Queries, issue db.Issue, usage *runBudgetUsage, windowID string, counted int) (int64, error) {
 	opened, err := q.HasIssueRunBudgetWindow(ctx, db.HasIssueRunBudgetWindowParams{IssueID: issue.ID, WindowID: windowID})
 	if err != nil {
 		return 0, fmt.Errorf("run budget: window: %w", err)
 	}
-	if !opened {
-		return int64(usage.Max - counted), nil
-	}
-	sum, err := q.SumIssueRunBudgetWindow(ctx, db.SumIssueRunBudgetWindowParams{IssueID: issue.ID, WindowID: windowID})
+	sum, err := runBudgetBalance(ctx, q, issue.ID)
 	if err != nil {
-		return 0, fmt.Errorf("run budget: balance: %w", err)
+		return 0, err
+	}
+	if !opened {
+		return sum + int64(usage.Max-counted), nil
 	}
 	held, err := q.SumIssueRunBudgetCap(ctx, db.SumIssueRunBudgetCapParams{IssueID: issue.ID, WindowID: windowID})
 	if err != nil {

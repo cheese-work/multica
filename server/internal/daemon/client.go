@@ -211,6 +211,7 @@ func daemonCommonCapabilities() []string {
 		protocol.DaemonCapabilityCheckoutKeepsWorkV1,
 		protocol.DaemonCapabilityJoinedWakeupsV1,
 		protocol.DaemonCapabilityCLICommentSteerV1,
+		protocol.DaemonCapabilityAppliedSettingsV1,
 	}
 }
 
@@ -541,8 +542,9 @@ func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...strin
 			}
 		}
 		negotiated = TaskNegotiation{
-			Supplement: response.SupplementCapability == protocol.DaemonCapabilityTaskSupplementV1,
-			PREvent:    response.PREventCapability == protocol.DaemonCapabilityTaskSupplementPREventV1,
+			Supplement: response.SupplementCapability == protocol.DaemonCapabilityTaskSupplementV1 ||
+				response.SupplementCapability == protocol.DaemonCapabilityTaskSupplementChatV1,
+			PREvent: response.PREventCapability == protocol.DaemonCapabilityTaskSupplementPREventV1,
 		}
 		return nil
 	}
@@ -573,6 +575,35 @@ func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...strin
 		return TaskNegotiation{}, err
 	}
 	return negotiated, nil
+}
+
+// AppliedSettings is the launch selection the daemon resolved for one claim.
+type AppliedSettings struct {
+	Model, ThinkingLevel, ServiceTier string
+	ContextArgs                       []string
+}
+
+// ReportAppliedSettings records the launch selection against the claim
+// generation. One bounded attempt: the report is advisory, so callers log and
+// carry on when it fails.
+func (c *Client) ReportAppliedSettings(ctx context.Context, task Task, applied AppliedSettings) error {
+	if task.RuntimeID == "" || task.DispatchedAt == "" {
+		return fmt.Errorf("report applied settings: claim is missing runtime_id or dispatched_at")
+	}
+	contextArgs := applied.ContextArgs
+	if contextArgs == nil {
+		contextArgs = []string{}
+	}
+	ctx, cancel := context.WithTimeout(ctx, startTaskTimeout)
+	defer cancel()
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/applied-settings", task.ID), map[string]any{
+		"runtime_id":             task.RuntimeID,
+		"dispatched_at":          task.DispatchedAt,
+		"applied_model":          applied.Model,
+		"applied_thinking_level": applied.ThinkingLevel,
+		"applied_service_tier":   applied.ServiceTier,
+		"applied_context_args":   contextArgs,
+	}, nil)
 }
 
 // MarkTaskWaitingLocalDirectory parks a freshly-dispatched task in the
@@ -796,6 +827,25 @@ func (c *Client) GetTaskStatus(ctx context.Context, taskID string) (string, erro
 	return resp.Status, nil
 }
 
+// BrokerPolicyName is the server policy record the push broker enforces.
+const BrokerPolicyName = "default"
+
+// BrokerPolicy returns the push broker's Policy: it reads the workspace's
+// protected-path record from the server on every call, so an admin edit applies
+// to the next push and a failed read is an error the broker refuses on.
+func (c *Client) BrokerPolicy(workspaceID string) func(context.Context) ([]string, error) {
+	path := fmt.Sprintf("/api/daemon/workspaces/%s/protected-path-policies/%s", workspaceID, BrokerPolicyName)
+	return func(ctx context.Context) ([]string, error) {
+		var resp struct {
+			Patterns []string `json:"patterns"`
+		}
+		if err := c.getJSON(ctx, path, &resp); err != nil {
+			return nil, err
+		}
+		return resp.Patterns, nil
+	}
+}
+
 // HeartbeatResponse, PendingUpdate, etc. alias the wire types so HTTP and WS
 // heartbeat paths share a single type and a single decoder shape. Aliases
 // (rather than wrappers) keep call sites unchanged.
@@ -807,13 +857,9 @@ type (
 	PendingLocalSkillImport = protocol.DaemonHeartbeatPendingLocalSkillImport
 )
 
-func (c *Client) SendHeartbeat(ctx context.Context, runtimeID string, inFlightTasks int) (*HeartbeatResponse, error) {
+func (c *Client) SendHeartbeat(ctx context.Context, req protocol.DaemonHeartbeatRequestPayload) (*HeartbeatResponse, error) {
 	var resp HeartbeatResponse
-	if err := c.postJSON(ctx, "/api/daemon/heartbeat", map[string]any{
-		"runtime_id":            runtimeID,
-		"supports_batch_import": true,
-		"in_flight_tasks":       inFlightTasks,
-	}, &resp); err != nil {
+	if err := c.postJSON(ctx, "/api/daemon/heartbeat", req, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   AppConfigSchema,
-  JevCredentialPresenceSchema,
   WecomInstallationSchema,
   ListWecomInstallationsResponseSchema,
   RedeemWecomBindingTokenResponseSchema,
@@ -2484,23 +2483,17 @@ describe("AgentActivityBucketListSchema duration", () => {
   });
 });
 
-describe("JevCredentialPresenceSchema", () => {
-  it("carries the storage capability the server reports", () => {
-    expect(JevCredentialPresenceSchema.parse({ present: false, configurable: false })).toEqual({
-      present: false,
-      configurable: false,
+describe("CommentPreviewSchema", () => {
+  it("defaults optional text fields and requires ids", async () => {
+    const { CommentPreviewSchema } = await import("./schemas");
+    const ok = CommentPreviewSchema.parse({
+      comment_id: "c",
+      issue_id: "i",
+      issue_identifier: "CHE-1",
+      author_name: null,
     });
-    expect(JevCredentialPresenceSchema.parse({ present: true, configurable: true })).toEqual({
-      present: true,
-      configurable: true,
-    });
-  });
-
-  it("assumes a server that omits the capability can store a key", () => {
-    expect(JevCredentialPresenceSchema.parse({ present: false })).toEqual({ present: false, configurable: true });
-  });
-
-  it("rejects a response without the presence flag", () => {
-    expect(JevCredentialPresenceSchema.safeParse({ configurable: true }).success).toBe(false);
+    expect(ok.author_name).toBe("");
+    expect(ok.preview).toBe("");
+    expect(CommentPreviewSchema.safeParse({ comment_id: "c" }).success).toBe(false);
   });
 });

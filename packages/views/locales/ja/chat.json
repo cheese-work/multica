@@ -1,4 +1,11 @@
 {
+  "decision_banner": {
+    "title": "決定が必要です",
+    "waiting": "エージェントはまだ決定カードを送信していません。",
+    "queued_since": "{{time}} から待機中",
+    "running_since": "{{time}} から実行中",
+    "no_run": "実行中のランはありません。"
+  },
   "needs_you": {
     "title": "あなたの判断待ち",
     "loading": "未回答の依頼を読み込み中…",
@@ -293,7 +300,8 @@
     "unarchive": "アーカイブを解除",
     "statistics": "統計",
     "pin": "チャットをピン留め",
-    "unpin": "チャットのピン留めを解除"
+    "unpin": "チャットのピン留めを解除",
+    "preset": { "label": "プリセット", "inherit": "継承", "base": "ベース" }
   },
   "scheduled": {
     "chip": "予約済み {{count}}",
@@ -382,7 +390,9 @@
     "answer_send": "送信",
     "answer_error": "送信できませんでした。もう一度お試しください。",
     "answer_helper": "送信すると回答が {{issue}} に投稿されます。DM エージェントへの質問は下のメッセージ欄に入力してください。",
-    "answer_hint": "Enter で送信 · Shift+Enter で改行",
+    "answer_helper_issue": "送信すると回答が {{issue}} に投稿されます。",
+    "answer_hint": "{{shortcut}} で送信",
+    "answer_too_long": "回答が 8 KB を超えています。短くすると送信できます。",
     "answer_offline": "オフラインです。回答は保持されます。再接続すると送信できます。",
     "answer_conflict": "このカードは回答を受け付けられません（例: 先に回答があった場合）。下書きは投稿されていません。下書き:",
     "answer_discard": "下書きを破棄",
@@ -401,11 +411,11 @@
       "approved": "承認したファイル",
       "download": "ダウンロード",
       "download_label": "{{name}} をダウンロード",
+      "open_label": "{{name}} を開く",
       "hash_verified": "ハッシュ確認済み",
       "sha": "SHA",
       "viewer_label": "ファイルを読む",
-      "viewer_hint": "タブを選ぶとここでファイルを読めます。",
-      "tab_changes": "{{previous}} からの変更",
+      "tab_changes": "変更",
       "tab_preview": "プレビュー",
       "signed_by": "{{label}} は {{reviewer}} が署名済み",
       "not_signed": "{{label}} は未署名",

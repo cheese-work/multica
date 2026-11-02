@@ -21,7 +21,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/attribution"
 	"github.com/multica-ai/multica/server/internal/commentguard"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
-	"github.com/multica-ai/multica/server/internal/governance/receipt"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -2118,11 +2117,6 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	if kind, ok := parseStatusQuery(comment.Content); ok {
 		answer := h.buildStatusAnswer(r.Context(), issue, kind)
 		resp.StatusAnswer = &answer
-		// CHE-685: observe-only, after the response is fully decided. See
-		// the call below for the full contract; this earlier return path
-		// (a reserved status-query phrase) still creates a real comment row
-		// and must not silently skip receipt capture for it.
-		h.observeGovernanceReceipt(r, issue, comment, receipt.TriggerCreate)
 		writeJSON(w, http.StatusCreated, resp)
 		return
 	}
@@ -2135,13 +2129,6 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	if !steer.empty() {
 		applyCommentSupplements(&resp, h.listCommentSupplements(r.Context(), issue.WorkspaceID, []pgtype.UUID{comment.ID})[uuidToString(comment.ID)])
 	}
-
-	// CHE-685: post-commit, best-effort Jev governance receipt capture.
-	// Runs strictly after triggerTasksForComment (native mention/task
-	// routing has already fully happened) and can never change resp or the
-	// status code below — see observeGovernanceReceipt's doc. Bounded to
-	// receipt.Budget (50ms) internally; never retried.
-	h.observeGovernanceReceipt(r, issue, comment, receipt.TriggerCreate)
 
 	writeJSON(w, http.StatusCreated, resp)
 }
@@ -4046,6 +4033,7 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	// lineage is re-derived from the EDIT action itself (MUL-4857), never carried
 	// over from the comment's original authoring run.
 	sourceTaskID := existing.SourceTaskID
+	markExternalRead := false
 	var triggerIssue *db.Issue
 	var cancelled []db.AgentTaskQueue
 	if oldContent != req.Content {
@@ -4071,6 +4059,15 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 		} else {
 			sourceTaskID = pgtype.UUID{}
 		}
+		// The edit clears the lineage for a non-author, so the comment trigger
+		// cannot inherit the writer's external_read mark: carry it explicitly.
+		acting, hasActing, actingErr := service.ActingTask(h.actingTaskContext(r), h.Queries)
+		if actingErr != nil {
+			slog.Warn("read acting task for comment edit failed", "comment_id", uuidToString(existing.ID), "error", actingErr)
+			writeError(w, http.StatusInternalServerError, "failed to prepare comment edit")
+			return
+		}
+		markExternalRead = hasActing && acting.ExternalRead
 		// Legacy clients keep the existing cancel-before-update behavior. Strict
 		// revision writes defer cancellation until the conditional UPDATE wins,
 		// so a race that returns 409 cannot mutate the task queue.
@@ -4085,9 +4082,10 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updateParams := db.UpdateCommentParams{
-		ID:           commentUUID,
-		Content:      req.Content,
-		SourceTaskID: sourceTaskID,
+		ID:               commentUUID,
+		Content:          req.Content,
+		SourceTaskID:     sourceTaskID,
+		MarkExternalRead: pgtype.Bool{Bool: markExternalRead, Valid: markExternalRead},
 		// New text replaces the "don't start" choices completion replay keeps.
 		SuppressedAgentIds: suppressAgentIDs,
 	}
@@ -4214,17 +4212,6 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	// The broadcast above intentionally omits trigger_outcomes — it is the
 	// editor's private feedback, not shared timeline state (MUL-4525 §2).
 	resp.TriggerOutcomes = retriggerEditedComment()
-
-	// CHE-685: post-commit, best-effort Jev governance receipt capture — the
-	// UpdateComment twin of CreateComment's hook. issueForSource (loaded
-	// unconditionally above, for the required-source-link check) is used
-	// rather than triggerIssue, which stays nil when content did not
-	// change: an edit that only touches attachments/expected_revision still
-	// commits a real comment mutation and must not silently skip capture.
-	// Runs strictly after retriggerEditedComment (native mention/task
-	// re-routing has already fully happened) and can never change resp or
-	// the status code below.
-	h.observeGovernanceReceipt(r, issueForSource, comment, receipt.TriggerEdit)
 
 	writeJSON(w, http.StatusOK, resp)
 }

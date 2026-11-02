@@ -36,6 +36,7 @@ import type {
   IssueTableRowsRequest,
   IssueTableRowsResponse,
   Agent,
+  AgentPreset,
   MikaBootstrapResponse,
   CreateAgentRequest,
   AgentBuilderRuntimeSwitch,
@@ -69,10 +70,6 @@ import type {
   Workspace,
   WorkspaceRepo,
   WorkspaceExportPrivacy,
-  WorkspaceGovernanceConfig,
-  WorkspaceGovernanceRollback,
-  WorkspaceJevGovernancePatch,
-  JevCredentialPresence,
   WorkspaceMcpServer,
   MemberWithUser,
   User,
@@ -254,6 +251,7 @@ import type {
   PurchaseWorkspaceSeatsResponse,
   CreateWorkspaceSubscriptionPortalResponse,
   SourceContextPreview,
+  CommentPreview,
   CreateCommentSubIssueManualRequest,
   CreateCommentSubIssueAgentRequest,
   CreateCommentSubIssueRequest,
@@ -273,6 +271,11 @@ import { type Logger, noopLogger } from "../logger";
 import { createRequestId, createSafeId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseWithFallback } from "./schema";
+import {
+  PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
+  PasskeyRevokedSchema, parsePasskeyResponse,
+  type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart,
+} from "./passkey-schema";
 import {
   RuntimeProfileSchema,
   OpenDecisionRequestListSchema,
@@ -365,6 +368,7 @@ import {
   IssueSchema,
   AgentTaskSchema,
   SourceContextPreviewSchema,
+  CommentPreviewSchema,
   CommentSubIssueTaskResponseSchema,
   ListWebhookDeliveriesResponseSchema,
   RuntimeHourlyActivityListSchema,
@@ -401,8 +405,6 @@ import {
   PurchaseWorkspaceSeatsResponseSchema,
   CreateWorkspaceSubscriptionPortalResponseSchema,
   WorkspaceExportPrivacySchema,
-  WorkspaceGovernanceConfigSchema,
-  JevCredentialPresenceSchema,
   DingTalkInstallationSchema,
   ListDingTalkInstallationsResponseSchema,
   ListDingTalkGroupsResponseSchema,
@@ -487,6 +489,8 @@ import {
   MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
   SkillSchema,
   EMPTY_SKILL,
+  AgentPresetListSchema,
+  PresetCompletionsSchema,
   SkillSummaryListSchema,
   EMPTY_SKILL_SUMMARY_LIST,
   SkillImportResultSchema,
@@ -1560,6 +1564,18 @@ export class ApiClient {
       method: "POST",
       body: JSON.stringify(data),
     });
+  }
+
+  async getCommentPreview(commentId: string): Promise<CommentPreview> {
+    const raw = await this.fetch<unknown>(`/api/comments/${commentId}/preview`);
+    const preview = parseWithFallback<CommentPreview | null>(
+      raw,
+      CommentPreviewSchema,
+      null,
+      { endpoint: "GET /api/comments/:id/preview" },
+    );
+    if (!preview) throw new Error("Invalid comment preview response");
+    return preview;
   }
 
   async getCommentSubIssuePreview(anchorCommentId: string): Promise<SourceContextPreview> {
@@ -3270,45 +3286,6 @@ export class ApiClient {
     return WorkspaceExportPrivacySchema.parse(raw);
   }
 
-  // CHE-1839: the Jev / Governance tab reads and writes the workspace governance
-  // config. Any member may read; only owners and admins may write (the server
-  // enforces both). Responses parse strictly, see WorkspaceGovernanceConfigSchema.
-  async getGovernanceConfig(id: string): Promise<WorkspaceGovernanceConfig> {
-    const raw = await this.fetch<unknown>(`/api/workspaces/${id}/governance/config`);
-    return WorkspaceGovernanceConfigSchema.parse(raw);
-  }
-
-  async patchGovernanceConfig(
-    id: string,
-    patch: WorkspaceJevGovernancePatch | WorkspaceGovernanceRollback,
-  ): Promise<WorkspaceGovernanceConfig> {
-    const raw = await this.fetch<unknown>(`/api/workspaces/${id}/governance/config`, {
-      method: "PATCH",
-      body: JSON.stringify(patch),
-    });
-    return WorkspaceGovernanceConfigSchema.parse(raw);
-  }
-
-  // CHE-1853: the Jev provider key. Presence is readable by any member; set,
-  // replace and delete are owner/admin only. There is no read endpoint for the
-  // key, and the key is sent once in a request body that is never logged here.
-  async getJevCredential(id: string): Promise<JevCredentialPresence> {
-    const raw = await this.fetch<unknown>(`/api/workspaces/${id}/jev/credential`);
-    return JevCredentialPresenceSchema.parse(raw);
-  }
-
-  async putJevCredential(id: string, apiKey: string): Promise<JevCredentialPresence> {
-    const raw = await this.fetch<unknown>(`/api/workspaces/${id}/jev/credential`, {
-      method: "PUT",
-      body: JSON.stringify({ api_key: apiKey }),
-    });
-    return JevCredentialPresenceSchema.parse(raw);
-  }
-
-  async deleteJevCredential(id: string): Promise<void> {
-    await this.fetch(`/api/workspaces/${id}/jev/credential`, { method: "DELETE" });
-  }
-
   async listPluginInstallations(workspaceId: string): Promise<PluginInstallationListResponse> {
     let raw: unknown;
     try {
@@ -3836,6 +3813,21 @@ export class ApiClient {
     });
   }
 
+  async listAgentPresets(agentId: string): Promise<AgentPreset[]> {
+    const raw = await this.fetch<unknown>(`/api/agents/${agentId}/presets`);
+    return parseWithFallback<AgentPreset[]>(raw, AgentPresetListSchema, [], {
+      endpoint: "GET /api/agents/:id/presets",
+    });
+  }
+
+  /** `/preset <TAB>` source: `base`, `reset`, then the presets that can run now. */
+  async getAgentPresetCompletions(agentId: string): Promise<string[]> {
+    const raw = await this.fetch<unknown>(`/api/agents/${agentId}/presets/completions`);
+    return parseWithFallback(raw, PresetCompletionsSchema, { names: [] }, {
+      endpoint: "GET /api/agents/:id/presets/completions",
+    }).names;
+  }
+
   async listAgentSkills(agentId: string): Promise<SkillSummary[]> {
     return this.fetch(`/api/agents/${agentId}/skills`);
   }
@@ -4102,6 +4094,45 @@ export class ApiClient {
     return parseWithFallback(raw, DecisionArtifactListSchema, { artifacts: [] }, {
       endpoint: "GET /api/decisions/:id/artifacts",
     }).artifacts;
+  }
+
+  // Passkey and decision-action ceremonies. Responses are strict: a drifted shape throws
+  // (see parsePasskeyResponse) so a malformed body is never read as an approval.
+  private async passkeyPost<T>(path: string, schema: Parameters<typeof parsePasskeyResponse<T>>[1], body?: unknown): Promise<T> {
+    const raw: unknown = await this.fetch(path, { method: "POST", ...(body !== undefined && { body: JSON.stringify(body) }) });
+    return parsePasskeyResponse(raw, schema, `POST ${path}`);
+  }
+
+  startPasskeyEnrollment(): Promise<PasskeyEnrollStart> {
+    return this.passkeyPost("/api/passkeys/enroll/start", PasskeyEnrollStartSchema);
+  }
+
+  async finishPasskeyEnrollment(input: { ceremony_id: string; code: string; attestation: unknown }): Promise<void> {
+    await this.passkeyPost("/api/passkeys/enroll/finish", PasskeyEnrolledSchema, input);
+  }
+
+  challengePasskeyRevocation(passkeyId: string): Promise<PasskeyChallenge> {
+    return this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke/challenge`, PasskeyChallengeSchema);
+  }
+
+  async revokePasskey(passkeyId: string, assertion: PasskeyAssertionEnvelope): Promise<void> {
+    await this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke`, PasskeyRevokedSchema, { assertion });
+  }
+
+  challengeDecisionAction(actionId: string): Promise<PasskeyChallenge> {
+    return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/challenge`, PasskeyChallengeSchema);
+  }
+
+  approveDecisionAction(
+    actionId: string,
+    input: { payload_sha256: string; assertion: PasskeyAssertionEnvelope; secrets?: Record<string, string> },
+  ): Promise<PasskeyDecisionOutcome> {
+    return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/approve`, PasskeyDecisionOutcomeSchema, input);
+  }
+
+  async getDecisionActionOutcome(actionId: string): Promise<PasskeyDecisionOutcome> {
+    const raw: unknown = await this.fetch(`/api/decision-actions/${encodeURIComponent(actionId)}/outcome`);
+    return parsePasskeyResponse(raw, PasskeyDecisionOutcomeSchema, "GET /api/decision-actions/:id/outcome");
   }
 
   async listOpenDecisionRequests(): Promise<OpenDecisionRequest[]> {

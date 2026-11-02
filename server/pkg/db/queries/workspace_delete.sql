@@ -209,6 +209,9 @@ deleted_task_usage AS (
 deleted_task_messages AS (
     DELETE FROM task_message WHERE task_id IN (SELECT id FROM batch)
 ),
+deleted_silence_alert_receipts AS (
+    DELETE FROM silence_alert_receipt WHERE task_id IN (SELECT id FROM batch)
+),
 deleted_task_tokens AS (
     DELETE FROM task_token WHERE task_id IN (SELECT id FROM batch)
 ),
@@ -329,6 +332,9 @@ deleted_orphan_task_supplements AS (
 deleted_orphan_task_supplement_capabilities AS (
     DELETE FROM task_supplement_capability WHERE workspace_id = $1
 ),
+deleted_chat_task_supplements AS (
+    DELETE FROM chat_task_supplement WHERE workspace_id = $1
+),
 deleted_orphan_task_pr_event_deliveries AS (
     DELETE FROM task_pr_event_delivery WHERE workspace_id = $1
 ),
@@ -386,6 +392,11 @@ deleted_stage_completion_wakes AS (
 deleted_stage_generations AS (
     DELETE FROM stage_generation WHERE workspace_id = $1
 ),
+-- CHE-1126 gateway-recovery claim ledger: workspace-owned leaf; the FK cascades
+-- too, the explicit delete keeps teardown independent of FK ordering.
+deleted_recovery_claims AS (
+    DELETE FROM recovery_claim WHERE workspace_id = $1
+),
 -- CHE-2297 run-budget notice claims: workspace-owned leaf, no FK.
 deleted_run_budget_notices AS (
     DELETE FROM run_budget_notice WHERE workspace_id = $1
@@ -398,6 +409,10 @@ deleted_issue_run_budget_entries AS (
 deleted_run_capability_grants AS (
     DELETE FROM run_capability_grant WHERE workspace_id = $1
 ),
+-- CHE-2509 elevated-read snapshot approvals: workspace-owned leaf, no FK.
+deleted_read_snapshot_approvals AS (
+    DELETE FROM read_snapshot_approval WHERE workspace_id = $1
+),
 -- CHE-2490 protected-path policies: workspace-owned leaf, no FK.
 deleted_protected_path_policies AS (
     DELETE FROM protected_path_policy WHERE workspace_id = $1
@@ -408,6 +423,13 @@ deleted_task_elevations AS (
 ),
 deleted_elevated_ops AS (
     DELETE FROM elevated_op WHERE workspace_id = $1
+),
+-- CHE-2514 issue taint and its clear audit: workspace-owned leaves, no FK.
+deleted_issue_taints AS (
+    DELETE FROM issue_taint WHERE workspace_id = $1
+),
+deleted_issue_taint_clears AS (
+    DELETE FROM issue_taint_clear WHERE workspace_id = $1
 ),
 deleted_issue_checkpoints AS (
     DELETE FROM issue_checkpoint WHERE workspace_id = $1
@@ -776,6 +798,9 @@ DELETE FROM autopilot WHERE autopilot.workspace_id = $1;
 WITH deleted_github_webhook_dispatches AS (
     DELETE FROM github_webhook_dispatch
     WHERE github_webhook_dispatch.workspace_id = $1
+), deleted_github_snapshot_approvals AS (
+    DELETE FROM github_snapshot_approval
+    WHERE github_snapshot_approval.workspace_id = $1
 ), deleted_github_webhook_revisions AS (
     DELETE FROM github_webhook_revision
     WHERE github_webhook_revision.workspace_id = $1

@@ -1,4 +1,11 @@
 {
+  "decision_banner": {
+    "title": "需要你做决定",
+    "waiting": "智能体尚未发送决策卡片。",
+    "queued_since": "自 {{time}} 起排队中",
+    "running_since": "自 {{time}} 起运行中",
+    "no_run": "没有活动的运行。"
+  },
   "needs_you": {
     "title": "待你决定",
     "loading": "正在加载待处理请求…",
@@ -293,7 +300,8 @@
     "unarchive": "取消归档",
     "statistics": "统计",
     "pin": "置顶会话",
-    "unpin": "取消置顶会话"
+    "unpin": "取消置顶会话",
+    "preset": { "label": "预设", "inherit": "继承", "base": "基础" }
   },
   "scheduled": {
     "chip": "已计划 {{count}}",
@@ -382,7 +390,9 @@
     "answer_send": "发送",
     "answer_error": "发送失败，请重试。",
     "answer_helper": "发送会将你的回答发布到 {{issue}}。给 DM 智能体的问题请写在下方消息框。",
-    "answer_hint": "Enter 发送 · Shift+Enter 换行",
+    "answer_helper_issue": "发送会将你的回答发布到 {{issue}}。",
+    "answer_hint": "{{shortcut}} 发送",
+    "answer_too_long": "回答超过 8 KB。缩短后才能发送。",
     "answer_offline": "你已离线。回答已保留，重新连接后即可发送。",
     "answer_conflict": "此卡片已无法接收你的回答，例如已被先回答。你的草稿未被发布。你的草稿：",
     "answer_discard": "丢弃草稿",
@@ -401,11 +411,11 @@
       "approved": "你已批准",
       "download": "下载",
       "download_label": "下载 {{name}}",
+      "open_label": "打开 {{name}}",
       "hash_verified": "哈希已验证",
       "sha": "SHA",
       "viewer_label": "阅读文件",
-      "viewer_hint": "选择一个标签页即可在此阅读文件。",
-      "tab_changes": "自 {{previous}} 以来的变更",
+      "tab_changes": "变更",
       "tab_preview": "预览",
       "signed_by": "{{label}} 已由 {{reviewer}} 签署",
       "not_signed": "{{label}} 尚未签署",

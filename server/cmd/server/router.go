@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -29,9 +28,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/gitca"
-	"github.com/multica-ai/multica/server/internal/governance"
-	"github.com/multica-ai/multica/server/internal/governance/credential"
-	"github.com/multica-ai/multica/server/internal/governance/receipt"
 	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
@@ -64,10 +60,6 @@ var defaultOrigins = []string{
 }
 
 const pluginBridgePrefix = "/api/plugin-bridge/v1"
-
-type serverBudgetClock struct{}
-
-func (serverBudgetClock) Now() time.Time { return time.Now().UTC() }
 
 // corsAllowedHeaders must list every header the browser clients send. A header
 // missing here fails the preflight, so the request never reaches the handler at
@@ -492,29 +484,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	h.Metrics = opts.BusinessMetrics
 	h.FeatureFlags = opts.FeatureFlags
 	h.TaskService.FeatureFlags = opts.FeatureFlags
-	// GovernanceReceipts (CHE-685): receipt-capture-only, gated behind the
-	// separate JevReceipts flag (off by default). Provider stays nil in
-	// every wiring path this delivery adds — a nil Provider makes every
-	// observation record status="error"/shed_reason="error" rather than
-	// attempting a call, which is the intended no-key, no-network behavior
-	// for D03. Wiring a live jev.Client here is explicitly out of scope
-	// until a later delivery lifts the CHE-697 viability block.
-	budgetPolicy, budgetPolicyErr := governance.ParseDeploymentBudgetPolicy(os.Getenv("MULTICA_GOVERNANCE_BUDGET_POLICY"))
-	if budgetPolicyErr != nil {
-		slog.Error("governance deployment budget policy is invalid; evaluation admission fails closed", "error", budgetPolicyErr)
-	} else if budgetPolicy == nil {
-		slog.Warn("governance deployment budget policy is unset; evaluation admission fails closed", "configuration", "MULTICA_GOVERNANCE_BUDGET_POLICY")
-	}
-	var budgetAdmission receipt.BudgetAdmission
-	if pool != nil {
-		budgetService, budgetServiceErr := governance.NewBudgetService(pool, serverBudgetClock{})
-		if budgetServiceErr != nil {
-			slog.Error("governance budget service unavailable; evaluation admission fails closed", "error", budgetServiceErr)
-		} else {
-			budgetAdmission = budgetService
-		}
-	}
-	h.GovernanceReceipts = &receipt.Observer{Store: queries, BudgetAdmission: budgetAdmission, BudgetPolicy: budgetPolicy}
 	h.TaskService.Metrics = opts.BusinessMetrics
 	h.IssueService.Metrics = opts.BusinessMetrics
 	entitlementClient, entitlementErr := entitlement.New(entitlement.Config{
@@ -1362,43 +1331,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		slog.Info("composio integration disabled (COMPOSIO_API_KEY not set)")
 	}
 
-	// Jev integration (CHE-683): TypeSafe System One evaluation. Gated by
-	// JEV_API_KEY; the jev_enabled feature flag and per-workspace targeting
-	// are enforced per call by featureflags.JevProductionGate, not here — an
-	// unset key disables the client outright with no error, since this is a
-	// paid optional dependency and startup must succeed without it.
-	if jevAPIKey := strings.TrimSpace(os.Getenv("JEV_API_KEY")); jevAPIKey != "" {
-		jevClient, jerr := newJevClient(jevAPIKey, h.FeatureFlags)
-		if jerr != nil {
-			slog.Error("jev: client init failed; jev integration disabled", "error", jerr)
-		} else {
-			h.Jev = jevClient
-			slog.Info("jev integration enabled")
-		}
-	} else {
-		slog.Info("jev integration disabled (JEV_API_KEY not set)")
-	}
-	// Per-workspace Jev credentials are separate from the legacy process-wide
-	// JEV_API_KEY. Without a dedicated at-rest key, the management endpoints
-	// fail closed and cannot write plaintext. The feature remains default-off.
-	if key, err := credential.DecodeKey("current", strings.TrimSpace(os.Getenv("MULTICA_JEV_SECRET_KEY"))); err == nil {
-		key.ID = credential.KeyID(key.Material)
-		keys := []credential.Key{key}
-		if previous, err := credential.DecodeKey("previous", strings.TrimSpace(os.Getenv("MULTICA_JEV_SECRET_KEY_PREVIOUS"))); err == nil {
-			previous.ID = credential.KeyID(previous.Material)
-			if !bytes.Equal(previous.Material, key.Material) {
-				keys = append(keys, previous)
-			}
-		}
-		if ring, err := credential.NewKeyring(keys...); err != nil {
-			slog.Error("jev: credential keyring disabled", "error", err)
-		} else {
-			h.JevCredentials = ring
-		}
-	} else {
-		slog.Info("jev credential storage disabled (MULTICA_JEV_SECRET_KEY not set)")
-	}
-
 	// VCS at-rest encryption: the box encrypts per-workspace access tokens and
 	// webhook secrets for token-based providers (Forgejo / Gitea / GitLab).
 	// Without it, connect/webhook handlers return 503 (so a misconfigured
@@ -1682,6 +1614,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Get("/update/binary", daemonUpdate.Binary)
 		r.Get("/workspaces/{workspaceId}/repos", h.GetDaemonWorkspaceRepos)
 		r.Get("/workspaces/{workspaceId}/runtime-profiles", h.DaemonListRuntimeProfiles)
+		r.Get("/workspaces/{workspaceId}/protected-path-policies/{name}", h.GetDaemonProtectedPathPolicy)
 
 		// Agent-triggered plugin hooks. The daemon's local MCP server calls
 		// this when an agent picks one of its tools; the server makes the
@@ -1707,18 +1640,22 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 		r.Get("/tasks/{taskId}/status", h.GetTaskStatus)
 		r.Post("/tasks/{taskId}/start", h.StartTask)
+		r.Post("/tasks/{taskId}/applied-settings", h.ReportAppliedSettings)
 		r.Post("/tasks/{taskId}/supplements/claim", h.ClaimTaskSupplement)
 		r.Post("/tasks/{taskId}/supplements/{commentId}/ack", h.AckTaskSupplement)
 		r.Post("/tasks/{taskId}/pr-events/claim", h.ClaimTaskPREvent)
 		r.Post("/tasks/{taskId}/pr-events/{eventId}/ack", h.AckTaskPREvent)
 		r.Post("/tasks/{taskId}/wait-local-directory", h.MarkTaskWaitingLocalDirectory)
 		r.Post("/tasks/{taskId}/progress", h.ReportTaskProgress)
+		r.Post("/tasks/{taskId}/external-read", h.MarkTaskExternalRead)
 		r.Post("/tasks/{taskId}/complete", h.CompleteTask)
 		r.Post("/tasks/{taskId}/fail", h.FailTask)
 		r.Post("/tasks/{taskId}/elevation/authorize", h.AuthorizeElevatedOp)
 		r.Post("/tasks/{taskId}/elevation/ops/{opId}/complete", h.CompleteElevatedOp)
+		r.Post("/tasks/{taskId}/elevation/revision-check", h.CheckElevatedRevision)
 		r.Post("/tasks/{taskId}/usage", h.ReportTaskUsage)
 		r.Post("/tasks/{taskId}/messages", h.ReportTaskMessages)
+		r.Post("/tasks/{taskId}/silence-alert", h.ReportSilenceAlert)
 		r.Get("/tasks/{taskId}/messages", h.ListTaskMessages)
 		r.Post("/tasks/{taskId}/cancel-ack", h.AckTaskCancelled)
 
@@ -1868,8 +1805,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// The payload is names and transports only; the stored
 					// entries are write-only.
 					r.Get("/mcp-servers", h.ListWorkspaceMcpServers)
-					r.Get("/governance/config", h.GetGovernanceConfig)
-					r.Get("/jev/credential", h.GetJevCredential)
 					// Installed Plugins are member-visible so a member can
 					// see what is mounted in their workspace and which scopes
 					// it holds; install / configure / remove stay admin-only.
@@ -1884,9 +1819,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
 					r.Put("/", h.UpdateWorkspace)
 					r.Patch("/", h.UpdateWorkspace)
-					r.Patch("/governance/config", h.PatchGovernanceConfig)
-					r.Put("/jev/credential", h.PutJevCredential)
-					r.Delete("/jev/credential", h.DeleteJevCredential)
 					r.Post("/members", h.CreateInvitation)
 					r.Route("/members/{memberId}", func(r chi.Router) {
 						r.Patch("/", h.UpdateMember)
@@ -2166,9 +2098,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// Assignee frequency
 			r.Get("/api/assignee-frequency", h.GetAssigneeFrequency)
 
+			// R3 exact-snapshot approval (CHE-2126 plan 5.3): the handler checks can_route per issue.
+			r.Get("/api/github/intake/revisions/{id}/snapshot", h.GetGitHubRevisionSnapshot)
+			r.Post("/api/github/intake/revisions/{id}/approve", h.ApproveGitHubRevisionSnapshot)
+
 			// GitHub dispatch kill switch (CHE-2220): any member reads; owner/admin writes.
 			r.Get("/api/github/dispatch-halt", h.GetGitHubDispatchHalt)
 			r.With(middleware.RequireWorkspaceRole(queries, "owner", "admin")).Put("/api/github/dispatch-halt", h.SetGitHubDispatchHalt)
+			// GitHub intake delivery metadata (CHE-2669): read-only, any member.
+			r.Get("/api/github/intake", h.ListGitHubIntake)
 
 			// Local search index sync for Web/Desktop (MUL-7754). Human clients
 			// only: agents search through /api/issues/search.
@@ -2220,10 +2158,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/timeline", h.ListTimeline)
 					r.Get("/workflow-handoff", h.PreviewWorkflowHandoff)
 					r.Get("/run-budget", h.GetIssueRunBudget)
-					r.Post("/run-budget", h.RaiseIssueRunBudget)
-					r.With(handler.RequireHumanActor).Post("/run-budget/top-up", h.TopUpIssueRunBudget)
+					r.With(handler.RequireInteractiveSession).Post("/run-budget", h.RaiseIssueRunBudget)
+					r.With(handler.RequireInteractiveSession).Post("/run-budget/top-up", h.TopUpIssueRunBudget)
 					// CHE-2489: a person widens one issue's runs; machine credentials never reach the handler.
 					r.With(handler.RequireHumanActor).Post("/capability-grants", h.CreateRunCapabilityGrant)
+					// CHE-2514: a person clears the taint that keeps one issue's runs restricted.
+					r.With(handler.RequireHumanActor).Post("/taint/clear", h.ClearIssueTaint)
+					r.With(handler.RequireHumanActor).Post("/read-approvals", h.ApproveReadSnapshot)
 					r.Put("/workflow", h.SetIssueWorkflow)
 					r.Get("/subscribers", h.ListIssueSubscribers)
 					r.Post("/subscribe", h.SubscribeToIssue)
@@ -2266,6 +2207,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/labels", h.ListLabelsForIssue)
 					r.Post("/labels", h.AttachLabel)
 					r.Delete("/labels/{labelId}", h.DetachLabel)
+					r.Put("/preset", h.SetIssuePreset)
+					r.Delete("/preset", h.ClearIssuePreset)
 					r.Get("/metadata", h.ListIssueMetadata)
 					r.Put("/metadata/{key}", h.SetIssueMetadataKey)
 					r.Delete("/metadata/{key}", h.DeleteIssueMetadataKey)
@@ -2285,14 +2228,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// CHE-755 read-only provenance export. Human owners/admins only; the
 			// handler re-checks the role and actor source as a backstop.
 			r.With(handler.RequireHumanActor).Post("/api/provenance/export", h.ExportProvenance)
-			r.With(handler.RequireHumanActor).Get("/api/governance/cases", h.ListGovernanceCaseAudit)
-			r.With(handler.RequireHumanActor).Get("/api/governance/cases/{caseId}", h.GetGovernanceCaseAudit)
-			r.With(handler.RequireHumanActor).Post("/api/governance/cases/{caseId}/export", h.ExportGovernanceCaseAudit)
-			r.Route("/api/governance/proposals/{caseId}/attempts/{attemptId}", func(r chi.Router) {
-				r.Get("/evidence", h.GetGovernanceProposalEvidence)
-				r.Post("/heartbeat", h.HeartbeatGovernanceProposalAttempt)
-				r.Post("/result", h.SubmitGovernanceProposalResult)
-			})
 
 			// Issue quick actions (definitions; running one lives under
 			// /api/issues/{id}/quick-actions/{quickActionId}/run)
@@ -2473,6 +2408,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 			// Comments
 			r.Route("/api/comments/{commentId}", func(r chi.Router) {
+				r.Get("/preview", h.GetCommentPreview)
 				r.With(handler.RequireHumanActor).Get("/sub-issue-preview", h.PreviewCommentSubIssue)
 				r.With(handler.RequireHumanActor).Post("/sub-issues", h.CreateCommentSubIssue)
 				r.Put("/", h.UpdateComment)
@@ -2509,6 +2445,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/skills", h.ListAgentSkills)
 					r.Put("/skills", h.SetAgentSkills)
 					r.Post("/skills/add", h.AddAgentSkills)
+					// Agent presets (CHE-2249). The fixed names register before
+					// {name}; chi matches them first.
+					r.Get("/presets", h.ListAgentPresets)
+					r.Post("/presets", h.CreateAgentPreset)
+					r.Get("/presets/completions", h.AgentPresetCompletions)
+					r.Get("/presets/usage", h.AgentPresetUsage)
+					r.Put("/presets/default", h.SetAgentDefaultPreset)
+					r.Patch("/presets/{name}", h.UpdateAgentPreset)
+					r.Delete("/presets/{name}", h.DeleteAgentPreset)
 					r.Get("/labels", h.ListLabelsForAgent)
 					r.Post("/labels", h.AttachLabelToAgent)
 					r.Delete("/labels/{labelId}", h.DetachLabelFromAgent)
@@ -2579,6 +2524,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/failures/daily", h.GetDashboardFailuresDaily)
 				r.Get("/failures/by-agent", h.GetDashboardFailuresByAgent)
 			})
+
+			// Ops — queue and machine health for operators (CHE-2586 L1).
+			r.With(middleware.RequireWorkspaceRole(queries, "owner", "admin")).Get("/api/ops", h.GetOps)
 
 			// Runtimes
 			r.Route("/api/runtimes", func(r chi.Router) {
@@ -2695,6 +2643,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/pending-task", h.GetPendingChatTask)
 					r.With(denyRunToken).Delete("/queued-tasks", h.ClearQueuedChatTasks)
 					r.With(denyRunToken).Post("/queued-tasks/{taskId}/prioritize", h.PrioritizeQueuedChatTask)
+					r.Post("/tasks/{taskId}/steer", h.SteerChatTask)
+					r.Post("/messages/{messageId}/supplement/resend", h.ResendChatSupplement)
 					r.Post("/read", h.MarkChatSessionRead)
 					// Deferred-cancellation draft restores (#5219):
 					// creator-only fetch + idempotent consume.
@@ -2954,6 +2904,11 @@ func (pr *patResolver) ResolveToken(ctx context.Context, token string) (string, 
 	go pr.queries.UpdatePersonalAccessTokenLastUsed(context.Background(), pat.ID)
 
 	return userID, true
+}
+
+// GetUserSessionGeneration lets the WebSocket handshake refuse revoked JWTs.
+func (pr *patResolver) GetUserSessionGeneration(ctx context.Context, id pgtype.UUID) (int32, error) {
+	return pr.queries.GetUserSessionGeneration(ctx, id)
 }
 
 // parseUUID is a thin alias for util.MustParseUUID. Call sites here are all
