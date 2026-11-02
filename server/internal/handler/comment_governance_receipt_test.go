@@ -206,6 +206,16 @@ func TestObserveGovernanceReceipt_ControlLockDeadlineCountsBudgetExceeded(t *tes
 	}
 }
 
+// withGovernanceControlBudget lifts the handler's 50ms control-snapshot
+// deadline for one test, so a loaded database cannot make the hook skip the
+// observation (or cancel a deliberate lock wait) before the test's subject runs.
+func withGovernanceControlBudget(t *testing.T) {
+	t.Helper()
+	previous := testHandler.governanceBudget
+	testHandler.governanceBudget = time.Minute
+	t.Cleanup(func() { testHandler.governanceBudget = previous })
+}
+
 // withGovernanceObserver swaps in a fresh *receipt.Observer for the
 // duration of one test (each test gets its own cap-1 gate) and restores the
 // handler's previous one afterward.
@@ -522,6 +532,7 @@ func TestGovernanceDisableWinsConcurrentEvaluationAdmission(t *testing.T) {
 	requireGovernanceConfigTables(t)
 	issueID := createCommentTriggerPreviewIssue(t, "governance disable wins race", "member", testUserID)
 	withGovernanceFlag(t, true)
+	withGovernanceControlBudget(t)
 	provider := &blockingGovernanceProvider{entered: make(chan struct{}), release: make(chan struct{})}
 	t.Cleanup(func() {
 		select {
@@ -577,21 +588,35 @@ func TestGovernanceDisableWinsConcurrentEvaluationAdmission(t *testing.T) {
 		testHandler.CreateComment(recorder, request)
 		close(requestDone)
 	}()
-	var writerPID int32
-	select {
-	case writerPID = <-started:
-	case <-provider.entered:
-		t.Fatal("evaluation reached the provider before disable committed")
-	case <-requestDone:
-		t.Fatal("comment request completed before evaluation admission waited on disable")
-	case <-ctx.Done():
-		t.Fatalf("evaluation admission did not begin before timeout: %v", ctx.Err())
-	}
-	if writerPID == disablePID {
-		t.Fatalf("evaluation writer reused disable backend pid %d", disablePID)
-	}
-	if err := waitForGovernanceBackendLockWait(t, ctx, writerPID, 5*time.Second); err != nil {
-		t.Fatalf("evaluation admission did not wait on disable: %v", err)
+	// CreateComment can open other transactions before the admission one (for
+	// example collapseIntoQueuedSibling), so track every started backend and
+	// wait for any of them to block behind the disable transaction.
+	var writerPIDs []int32
+	poll := time.NewTicker(5 * time.Millisecond)
+	defer poll.Stop()
+	for waiting := true; waiting; {
+		select {
+		case pid := <-started:
+			if pid == disablePID {
+				t.Fatalf("evaluation writer reused disable backend pid %d", disablePID)
+			}
+			writerPIDs = append(writerPIDs, pid)
+		case <-provider.entered:
+			t.Fatal("evaluation reached the provider before disable committed")
+		case <-requestDone:
+			t.Fatal("comment request completed before evaluation admission waited on disable")
+		case <-ctx.Done():
+			t.Fatalf("evaluation admission did not wait on disable (started backends %v): %v", writerPIDs, ctx.Err())
+		case <-poll.C:
+			if len(writerPIDs) == 0 {
+				continue
+			}
+			if err := testPool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = ANY($1) AND $2 = ANY(pg_blocking_pids(pid)))`,
+				writerPIDs, disablePID).Scan(&waiting); err != nil {
+				t.Fatal(err)
+			}
+			waiting = !waiting
+		}
 	}
 	if err := disableTx.Commit(ctx); err != nil {
 		t.Fatalf("commit disable before evaluation admission: %v", err)
@@ -1045,6 +1070,7 @@ func TestCreateComment_GovernanceOn_TightWriteBudgetShedsDeterministically(t *te
 
 	issueID := createCommentTriggerPreviewIssue(t, "governance tight write budget", "member", testUserID)
 	withGovernanceFlag(t, true)
+	withGovernanceControlBudget(t)
 	slowStore := slowGovernanceStore{inner: testHandler.Queries, delay: 200 * time.Millisecond}
 	withGovernanceObserverWriteBudget(t, &governanceFakeProvider{}, slowStore, 1*time.Millisecond)
 

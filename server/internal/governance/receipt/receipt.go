@@ -672,6 +672,10 @@ func (o *Observer) evaluate(ctx context.Context, in Input) (Result, <-chan struc
 	case <-ctx.Done():
 		return Result{Status: "shed", ShedReason: ReasonBudgetExceeded}, goroutineDone
 	case out := <-done:
+		// The goroutine closes goroutineDone right after sending out; wait so
+		// releaseBusyWhenDone releases the gate synchronously. Otherwise a
+		// sequential next Observe can race the async release and see pool_busy.
+		<-goroutineDone
 		return decisionResult(out.decision, out.err), goroutineDone
 	}
 }

@@ -205,6 +205,16 @@ func testObserver(provider governance.Provider, store Store) *Observer {
 	}
 }
 
+// loadTolerantObserver is testObserver with the 50ms production Budget lifted
+// to realBudgetBound. Use it where the test asserts a decided/error outcome,
+// not latency: under -race or CI load the 50ms deadline can expire first and
+// shed the observation as budget_exceeded.
+func loadTolerantObserver(provider governance.Provider, store Store) *Observer {
+	o := testObserver(provider, store)
+	o.observationBudget = realBudgetBound
+	return o
+}
+
 func TestObserve_FailsClosedWhenBudgetAdmissionIsMissing(t *testing.T) {
 	provider := &fakeProvider{resp: mentionOwnerResponse(0.99)}
 	o := &Observer{Provider: provider, Store: &fakeStore{}}
@@ -281,7 +291,7 @@ func TestObserve_SettlesKnownProviderUsage(t *testing.T) {
 	response.Usage.OutputTokens = 25
 	provider := &fakeProvider{resp: response}
 	budget := &fakeBudgetAdmission{}
-	o := testObserver(provider, &fakeStore{})
+	o := loadTolerantObserver(provider, &fakeStore{})
 	o.BudgetAdmission = budget
 
 	result := o.Observe(context.Background(), testInput())
@@ -348,7 +358,7 @@ func TestObserve_NilProviderRecordsError(t *testing.T) {
 func TestObserve_DecidedPersistsAnswersAndActionKind(t *testing.T) {
 	provider := &fakeProvider{resp: mentionOwnerResponse(0.99)}
 	store := &fakeStore{}
-	o := testObserver(provider, store)
+	o := loadTolerantObserver(provider, store)
 
 	in := testInput()
 	result := o.Observe(context.Background(), in)
@@ -405,7 +415,7 @@ func TestObserve_DecidedPersistsAnswersAndActionKind(t *testing.T) {
 func TestObserve_ProviderErrorIsRecordedAsDecidedAbstention(t *testing.T) {
 	provider := &fakeProvider{err: errors.New("synthetic transport failure")}
 	store := &fakeStore{}
-	o := testObserver(provider, store)
+	o := loadTolerantObserver(provider, store)
 
 	result := o.Observe(context.Background(), testInput())
 	if result.Status != "decided" {
@@ -429,7 +439,7 @@ func TestObserve_ProviderErrorIsRecordedAsDecidedAbstention(t *testing.T) {
 // crash the caller and is recorded distinctly from a clean provider error.
 func TestObserve_PanicIsRecordedAsError(t *testing.T) {
 	store := &fakeStore{}
-	o := testObserver(panicProvider{}, store)
+	o := loadTolerantObserver(panicProvider{}, store)
 
 	result := o.Observe(context.Background(), testInput())
 	if result.Status != "error" || result.ShedReason != ReasonError {
@@ -539,7 +549,7 @@ func TestObserve_PoolCapOne_ConcurrentObservationIsShedPoolBusy(t *testing.T) {
 func TestObserve_PoolReleasedAfterCompletion(t *testing.T) {
 	provider := &fakeProvider{resp: mentionOwnerResponse(0.99)}
 	store := &fakeStore{}
-	o := testObserver(provider, store)
+	o := loadTolerantObserver(provider, store)
 
 	first := o.Observe(context.Background(), testInput())
 	second := o.Observe(context.Background(), testInput())

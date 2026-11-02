@@ -165,6 +165,7 @@ func TestOpenDecisionStatusGuardBoundaries(t *testing.T) {
 
 func TestOpenDecisionBlocksDefaultWorkflowHandoff(t *testing.T) {
 	resetDecisionLease(t)
+	dropStoredDefaultWorkflow(t)
 	createTestCustomStatus(t, "agent_accepted", "done")
 	fixture := newAskedRecordFixture(t)
 	leadID := createHandlerTestAgent(t, "decision workflow lead", []byte("[]"))
