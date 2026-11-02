@@ -440,3 +440,76 @@ func (h *Handler) copyNoticeToTopicThread(ctx context.Context, queries *db.Queri
 	}
 	return message, queries.TouchChatSession(ctx, lane.ID)
 }
+
+const (
+	agentDecisionJevShadow = "shadow"
+	agentDecisionJevLive   = "live"
+)
+
+// settings.agent_decisions_jev = {"agent_id", "mode"} names the one agent that
+// may propose as Jev and whether its records only record (shadow) or settle
+// (live). Absent means Jev delegation is off. It is independent of
+// agent_decisions_enabled so the 7-day shadow holds with that switch on.
+func agentDecisionJevSetting(ctx context.Context, q dbExecutor, workspaceID pgtype.UUID) (agentID, mode string, err error) {
+	err = q.QueryRow(ctx, `SELECT coalesce(settings->'agent_decisions_jev'->>'agent_id',''),coalesce(settings->'agent_decisions_jev'->>'mode','')
+        FROM workspace WHERE id=$1`, workspaceID).Scan(&agentID, &mode)
+	return agentID, mode, err
+}
+
+func requireAgentDecisionJev(ctx context.Context, q dbExecutor, workspaceID pgtype.UUID, proposer string) error {
+	agentID, mode, err := agentDecisionJevSetting(ctx, q, workspaceID)
+	if err != nil {
+		return err
+	}
+	if agentID != proposer || (mode != agentDecisionJevShadow && mode != agentDecisionJevLive) {
+		return agentDecisionRefusal("only the registered Jev agent may propose as Jev for Cheese, and only while Jev is in shadow or live mode")
+	}
+	return nil
+}
+
+// SetAgentDecisionJev registers the Jev agent and its mode (owner only).
+// mode "off" clears the registration.
+func (h *Handler) SetAgentDecisionJev(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := parseUUIDOrBadRequest(w, h.resolveWorkspaceID(r), "workspace_id")
+	if !ok {
+		return
+	}
+	if _, ok := h.requireWorkspaceRole(w, r, uuidToString(workspaceID), "workspace not found", "owner"); !ok {
+		return
+	}
+	var body struct {
+		AgentID string `json:"agent_id"`
+		Mode    string `json:"mode"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if body.Mode == "off" {
+		if _, err := h.DB.Exec(r.Context(), `UPDATE workspace SET settings=coalesce(settings,'{}'::jsonb) - 'agent_decisions_jev' WHERE id=$1`, workspaceID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to save setting")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"mode": "off"})
+		return
+	}
+	agentUUID, ok := parseUUIDOrBadRequest(w, body.AgentID, "agent_id")
+	if !ok {
+		return
+	}
+	if body.Mode != agentDecisionJevShadow && body.Mode != agentDecisionJevLive {
+		writeError(w, http.StatusBadRequest, "mode must be off, shadow or live")
+		return
+	}
+	tag, err := h.DB.Exec(r.Context(), `UPDATE workspace w SET settings=jsonb_set(coalesce(w.settings,'{}'::jsonb),'{agent_decisions_jev}',jsonb_build_object('agent_id',$3::text,'mode',$4::text))
+        WHERE w.id=$1 AND EXISTS (SELECT 1 FROM agent a WHERE a.id=$2 AND a.workspace_id=$1 AND a.archived_at IS NULL)`, workspaceID, agentUUID, uuidToString(agentUUID), body.Mode)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save setting")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusBadRequest, "agent not found in this workspace")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"agent_id": uuidToString(agentUUID), "mode": body.Mode})
+}

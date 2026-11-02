@@ -30,6 +30,8 @@ const (
 	agentDecisionGateTestFirstRed = "test_first_red"
 	// Display name of a decision Jev took for Cheese. It is an agent decision.
 	agentDecisionDeciderJev = "Jev for Cheese"
+	// The one class an agent or Jev decision may carry.
+	agentDecisionClassReversible = "reversible_gate"
 )
 
 func agentDecisionGateAllowed(gate string) bool {
@@ -275,6 +277,9 @@ func validateAgentDecisionProposal(p agentDecisionProposal, author string) error
 	if agentDecisionClassExcluded(p.DecisionClass) {
 		return agentDecisionExcluded("class stays with Cheese", "excluded category proposed: class "+p.DecisionClass)
 	}
+	if p.DecisionClass != agentDecisionClassReversible {
+		return agentDecisionRefusal("decision_class must be " + agentDecisionClassReversible)
+	}
 	if (p.Decider != "" && p.Decider != agentDecisionDeciderJev) || (p.Decider == "") != (p.Confidence == nil) ||
 		(p.Confidence != nil && (*p.Confidence <= 0 || *p.Confidence > 1)) {
 		return agentDecisionRefusal(`decider must be "` + agentDecisionDeciderJev + `" with a confidence in (0, 1]`)
@@ -414,6 +419,11 @@ func createAgentDecisionInstance(ctx context.Context, tx pgx.Tx, params db.Creat
 	}
 	if err := validateAgentDecisionProposal(proposal, author.AgentID); err != nil {
 		return err
+	}
+	if proposal.Decider != "" {
+		if err := requireAgentDecisionJev(ctx, tx, params.WorkspaceID, author.AgentID); err != nil {
+			return err
+		}
 	}
 	scope := agentDecisionScope{Proposal: proposal, Author: author}
 	names := proposal.Signers

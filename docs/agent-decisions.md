@@ -51,10 +51,24 @@ two signers, from a different lab than the author), `red_impossible_reason`,
 opinion repeats the reason in a `red_impossible_reason` header, which must match the
 proposal. A version 1 record stays valid and never gains the new gate.
 
-Any proposal may set `decider: "Jev for Cheese"` with a `confidence` in (0, 1]. It is
-a label on an agent decision: the brief shows it, and no answer from Cheese is created.
-A proposal with `decision_class` `irreversible`, `design_direction`, `architecture` or
-`high_level` is refused as an excluded category (stop rule), for any decider.
+Every new proposal must carry `decision_class: "reversible_gate"`, the only in-scope
+class. A missing or unrecognised class is refused (fail closed, no stop rule). A class of
+`irreversible`, `design_direction`, `architecture` or `high_level` is refused as an
+excluded category and trips the stop rule, for any decider. Records made before this
+check keep their stored scope.
+
+A proposal may set `decider: "Jev for Cheese"` with a `confidence` in (0, 1]. It is a
+label on an agent decision: the brief shows it, and no answer from Cheese is created.
+The label is only accepted from the agent registered in the workspace setting
+`agent_decisions_jev` (`{"agent_id", "mode"}`), checked against the task-verified
+proposer. Without that setting, with another agent, or with a mode other than `shadow`
+or `live`, the proposal is refused. In `shadow` mode the record is kept but never
+settles, even with `agent_decisions_enabled` on. In `live` mode it settles under the
+same rules as any agent decision. The owner sets it with `PUT /api/agent-decisions/jev`
+(`{"agent_id": "<uuid>", "mode": "shadow"|"live"|"off"}`; human owner only, task tokens
+get 403). Moving `shadow` to `live` is the owner's call after the 7-day shadow and
+qualification. Settling an already-recorded Jev decision re-reads the mode, but reliance
+on a record that has already settled is not re-gated if the mode later returns to `shadow`.
 
 The co-sign route freezes two distinct non-author agents of known, different
 labs. At least one lab differs from the author's lab. The casting task's lab must
