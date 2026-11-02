@@ -4174,7 +4174,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               )
             }
           />
-          <IssueDecisionBanner issueId={id} status={issue.status} ownerAgentId={issue.assignee_type === "agent" ? issue.assignee_id : null} />
           {titleLazy.active && (
             <div id={`find-title-${id}`} className={titleLazy.ready ? undefined : "hidden"}>
               <TitleEditor
@@ -4581,6 +4580,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               </IssueContextMenuProvider>
             );
           })()}
+
+          <IssueDecisionBanner issueId={id} status={issue.status} ownerAgentId={issue.assignee_type === "agent" ? issue.assignee_id : null} />
 
           <div className="my-8 border-t" />
 
