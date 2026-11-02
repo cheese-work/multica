@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/multica-ai/multica/server/internal/cli"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/spf13/cobra"
 )
 
@@ -18,6 +19,53 @@ func init() {
 		_ = command.MarkFlagRequired(flag)
 	}
 	decisionCmd.AddCommand(command)
+
+	ask := &cobra.Command{Use: "ask", Short: "Ask the issue's requester one decision from this run; the server picks the person and the DM lane", Args: cobra.NoArgs, RunE: runDecisionAsk}
+	ask.Flags().String("class", "", "reversible, spend, deploy, publish, irreversible, or product_direction")
+	ask.Flags().String("ask-file", "", "UTF-8 JSON ask, same shape as decision request --ask-file")
+	ask.Flags().String("footer-file", "", "Optional UTF-8 file appended to the issue comment only, e.g. RHC-2 lines")
+	ask.Flags().String("parent", "", "Comment UUID to reply under (default: top-level)")
+	ask.Flags().String("output", "json", "Output format: table or json")
+	decisionCmd.AddCommand(ask)
+}
+
+// runDecisionAsk is decision request without the issue, lane and person: the
+// run's task token already names the issue, and the server picks the rest.
+func runDecisionAsk(command *cobra.Command, _ []string) error {
+	class, _ := command.Flags().GetString("class")
+	askPath, _ := command.Flags().GetString("ask-file")
+	footerPath, _ := command.Flags().GetString("footer-file")
+	parentID, _ := command.Flags().GetString("parent")
+	if class == "" || askPath == "" {
+		return fmt.Errorf("--class and --ask-file are required")
+	}
+	askText, err := readDecisionText(askPath, "ask")
+	if err != nil {
+		return err
+	}
+	ask, err := decisiontx.DecodeAsk([]byte(askText))
+	if err != nil {
+		return err
+	}
+	footer := ""
+	if footerPath != "" {
+		if footer, err = readDecisionText(footerPath, "footer"); err != nil {
+			return err
+		}
+	}
+	client, err := newAPIClient(command)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+	var result map[string]any
+	body := map[string]any{"ask": ask, "footer": footer, "parent_id": parentID, "escalation_class": class}
+	if err := client.PostJSON(ctx, "/api/decisions/ask", body, &result); err != nil {
+		return fmt.Errorf("ask decision: %w", err)
+	}
+	printAskHints(command, decisiontx.LintAsk(ask), result)
+	return printDecisions(command, []map[string]any{result}, false)
 }
 
 func runAgentDecisionRely(command *cobra.Command, _ []string) error {
