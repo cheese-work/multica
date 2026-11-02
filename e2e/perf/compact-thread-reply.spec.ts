@@ -122,24 +122,18 @@ test("R5: the first typed character keeps a compact thread folded and the reply 
   const shell = thread.getByTestId("reply-composer-shell");
   await expect(page.locator('[id^="comment-ffff"]').first()).toBeVisible({ timeout: 30_000 });
   // The timeline is virtualized: scroll the page's own container until the thread's box mounts.
-  const scrollTop = () => page.evaluate(() => {
-    const row = document.querySelector('[id^="comment-ffff"]');
-    for (let n = row?.parentElement ?? null; n; n = n.parentElement) {
+  // Resolve that container once and keep its handle, so the scroll reading never depends on a row
+  // that virtualization may unmount; no scrollable ancestor fails the test instead of reading 0.
+  const scroller = await page.locator('[id^="comment-ffff"]').first().evaluateHandle((row) => {
+    for (let n = row.parentElement; n; n = n.parentElement) {
       const overflow = getComputedStyle(n).overflowY;
-      if ((overflow === "auto" || overflow === "scroll") && n.scrollHeight > n.clientHeight) return n.scrollTop;
+      if ((overflow === "auto" || overflow === "scroll") && n.scrollHeight > n.clientHeight) return n;
     }
-    return 0;
+    throw new Error("no scrollable ancestor found for the issue timeline");
   });
+  const scrollTop = () => scroller.evaluate((n) => n.scrollTop);
   for (let step = 0; step < 60 && (await shell.count()) === 0; step += 1) {
-    await page.locator('[id^="comment-ffff"]').first().evaluate((row) => {
-      for (let n = row.parentElement; n; n = n.parentElement) {
-        const overflow = getComputedStyle(n).overflowY;
-        if ((overflow === "auto" || overflow === "scroll") && n.scrollHeight > n.clientHeight) {
-          n.scrollTop += 400;
-          return;
-        }
-      }
-    });
+    await scroller.evaluate((n) => { n.scrollTop += 400; });
     await page.waitForTimeout(100);
   }
   await expect(thread.first()).toBeVisible();
@@ -150,6 +144,7 @@ test("R5: the first typed character keeps a compact thread folded and the reply 
   const box = await shell.evaluateHandle((el) => el.parentElement!);
   await shell.evaluate((el) => el.scrollIntoView({ block: "center" }));
   await nextFrame(page);
+  expect(await shell.evaluate((el, c) => c.contains(el), scroller), "reply box sits inside the measured scroll container").toBe(true);
   const boxTop = async () => (await box.asElement()!.boundingBox())!.y;
   const topBefore = await boxTop();
   const scrollBefore = await scrollTop();
