@@ -311,10 +311,17 @@ class MergeGroupTest(unittest.TestCase):
         self.assertIn("state=failure", posted[0])
         self.assertIn("#816", " ".join(posted[0]))
 
-    def test_a_revocation_between_the_read_and_the_post_cannot_leave_a_stale_success(self):
-        # review round 3 finding 2: the group read PR success, a revocation posted group failure, the group then posted
-        # success over it. The PR flip precedes the revocation write, so a re-read after the post sees it.
+    def test_a_revocation_before_the_write_is_caught_by_the_re_read_and_success_is_never_posted(self):
+        # review round 4 finding 2: success must not be visible, even briefly, when the PR status changed before the write
         _, posted = self.run_group({self.P1: "success", self.P2: ["success", "pending"]})
+        group_posts = [a for a in posted if a[0].endswith(self.G2)]
+        self.assertEqual(len(group_posts), 1)
+        self.assertIn("state=failure", group_posts[0])
+        self.assertIn("#816", " ".join(group_posts[0]))
+
+    def test_a_revocation_after_the_write_is_still_corrected_by_the_last_read(self):
+        # review round 3 finding 2: the PR flip precedes the revocation write, so a re-read after the post sees it
+        _, posted = self.run_group({self.P1: "success", self.P2: ["success", "success", "pending"]})
         group_posts = [a for a in posted if a[0].endswith(self.G2)]
         self.assertIn("state=success", group_posts[0])
         self.assertIn("state=failure", group_posts[-1])
@@ -348,9 +355,9 @@ class QueueRevocationTest(unittest.TestCase):
 
         def fake_gh(*args):
             path = " ".join(args)
-            if "git/matching-refs/heads/gh-readonly-queue/main/" in path:
+            if "git/matching-refs/heads/gh-readonly-queue/main/" in path or "/branches" in path:
                 lookups.append(path)
-                if queue_error:
+                if queue_error is True or (queue_error == "primary" and "matching-refs" in path):
                     raise subprocess.CalledProcessError(1, ["gh"])
                 return "\n".join(queue_heads.values())
             if "compare/main..." in path:
@@ -391,7 +398,15 @@ class QueueRevocationTest(unittest.TestCase):
         _, posted = self.run_pr([comment(verdict("PASS", repo="cheese-work/multica"))])
         self.assertEqual([a[0].rsplit("/", 1)[1] for a in posted], [HEAD])
 
-    def test_a_queue_lookup_that_keeps_failing_is_retried_then_raises(self):
+    def test_a_failing_ref_lookup_falls_back_to_the_branch_listing_and_still_flips_the_head(self):
+        # review round 4 finding 1: one failing endpoint must not leave the carried success on the queue head
+        with mock.patch.object(sg.time, "sleep"):
+            _, posted = self.run_pr([comment("no verdict any more")], queue_error="primary")
+        by_sha = {a[0].rsplit("/", 1)[1]: a for a in posted}
+        self.assertIn("state=failure", by_sha[self.G1])
+        self.assertTrue(any("/branches" in l for l in self.lookups))
+
+    def test_both_lookups_failing_is_retried_then_raises(self):
         with mock.patch.object(sg.time, "sleep"), self.assertRaises(subprocess.CalledProcessError):
             self.run_pr([comment("no verdict any more")], queue_error=True)
 

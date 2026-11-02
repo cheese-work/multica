@@ -206,15 +206,30 @@ def _group_chain(github: str, base: str, head: str, strict: bool = True) -> list
     return chain if sha == base or not strict else []
 
 
+def _heads_of(lookups: tuple[tuple[str, ...], ...]) -> list[str]:
+    """First lookup that answers wins; only when every one fails does the last error propagate."""
+    for i, args in enumerate(lookups):
+        try:
+            return _gh(*args).split()
+        except subprocess.CalledProcessError:
+            if i == len(lookups) - 1:
+                raise
+    return []
+
+
 def revoke_queue(github: str, number: int, default_branch: str, run_url: str) -> None:
     """A PR whose gate is no longer `success` must not ride a success already carried onto a queue head: flip every
     queue head whose group contains the PR to `failure`, so GitHub drops the entry. A group that cannot be read is
-    failed too (fail closed). Only a ref listing that keeps failing raises: no head is known to flip then, and the job
-    goes red. The PR status was written first, so a group evaluated after this point reads the revocation itself."""
+    failed too (fail closed). Only when both queue lookups keep failing for the whole retry period does it raise: no head
+    is known to flip then and the job goes red (accepted residual risk, CHE-3240: dequeue the PR by hand). The PR status
+    was written first, so a group evaluated after this point reads the revocation itself."""
+    prefix = f"gh-readonly-queue/{default_branch}/"
+    lookups = (  # two different endpoints: an outage of one must not leave a carried success in place
+        ("--paginate", f"repos/{github}/git/matching-refs/heads/{prefix}", "--jq", ".[].object.sha"),
+        ("--paginate", f"repos/{github}/branches", "--jq", f'.[] | select(.name | startswith("{prefix}")) | .commit.sha'))
     for attempt in range(3):
         try:
-            heads = _gh("--paginate", f"repos/{github}/git/matching-refs/heads/gh-readonly-queue/{default_branch}/",
-                        "--jq", ".[].object.sha").split()
+            heads = _heads_of(lookups)
             break
         except subprocess.CalledProcessError:
             if attempt == 2:
@@ -290,10 +305,12 @@ def main() -> int:
             except Exception as e:  # an unposted status stalls the queue entry until its timeout: block instead
                 return "failure", f"cannot evaluate merge group: {type(e).__name__}"
         state, desc = carry()
+        if state == "success":  # read again right before publishing it, so a revocation that landed meanwhile never shows as success
+            state, desc = carry()
         print(json.dumps({"context": CONTEXT, "sha": a.merge_group_head, "state": state, "description": desc}))
         if a.post:
             _post(a.github, a.merge_group_head, state, desc, a.run_url)
-            if state == "success":  # a revocation between the read and this write is overwritten: read again, fail on any change
+            if state == "success":  # a revocation inside the write itself is overwritten: read once more, fail on any change
                 state, desc = carry()
                 if state != "success":
                     _post(a.github, a.merge_group_head, state, desc, a.run_url)
