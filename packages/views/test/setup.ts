@@ -2,9 +2,13 @@ import "@testing-library/jest-dom/vitest";
 import { vi } from "vitest";
 
 // Production loads the chat composer's editor on demand; suites render it
-// synchronously instead of awaiting the lazy chunk (CHE-3018).
+// synchronously instead of awaiting the lazy chunk or waiting for intent
+// (CHE-3018). deferred-content-editor.test.tsx covers the real wrapper.
 vi.mock("../chat/components/lazy-content-editor", async () => ({
   LazyContentEditor: (await import("../editor/content-editor")).ContentEditor,
+}));
+vi.mock("../chat/components/deferred-content-editor", async () => ({
+  DeferredContentEditor: (await import("../editor/content-editor")).ContentEditor,
 }));
 
 function createMemoryStorage(): Storage {

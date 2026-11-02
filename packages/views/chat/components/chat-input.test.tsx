@@ -88,8 +88,8 @@ vi.mock("../../editor/use-file-drop-zone", () => ({
 }));
 vi.mock("../../editor/file-drop-overlay", () => ({ FileDropOverlay: () => null }));
 
-vi.mock("./lazy-content-editor", () => ({
-  LazyContentEditor: forwardRef(function MockContentEditor(
+vi.mock("./deferred-content-editor", () => ({
+  DeferredContentEditor: forwardRef(function MockContentEditor(
     props: {
       defaultValue?: string;
       value?: string;
