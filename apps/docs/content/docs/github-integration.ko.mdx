@@ -186,10 +186,15 @@ Repository permissions:
 |---|---|
 | Metadata | Read-only |
 | Pull requests | Read-only |
-| Members | Read-only. 연결 사용자가 organization의 active admin인지 확인하는 데 필요 |
 | Actions | Read-only. `--until-gh-run` wakeup에 필요 |
 | Checks | Read-only. CI 상태 표시에 사용 |
 | Commit statuses | Read-only. legacy status 형식의 CI 집계에 사용 |
+
+Organization permissions:
+
+| 권한 | 수준 |
+|---|---|
+| Members | Read-only. 연결 사용자가 organization의 active admin인지 확인하는 데 필요 |
 
 다음 이벤트를 구독합니다.
 

@@ -226,10 +226,15 @@ Repository permissions:
 |---|---|
 | Metadata | Read-only |
 | Pull requests | Read-only |
-| Members | Read-only; required to verify that the connecting user is an active organization admin |
 | Actions | Read-only; needed by `--until-gh-run` wakeups |
 | Checks | Read-only; used to show CI status |
 | Commit statuses | Read-only; used to aggregate legacy-status CI |
+
+Organization permissions:
+
+| Permission | Level |
+|---|---|
+| Members | Read-only; required to verify that the connecting user is an active organization admin |
 
 Subscribe to these events:
 
