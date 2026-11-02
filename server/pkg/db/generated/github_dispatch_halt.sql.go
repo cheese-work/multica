@@ -166,6 +166,17 @@ func (q *Queries) ListGitHubTriggeredActiveTasks(ctx context.Context, arg ListGi
 	return items, nil
 }
 
+const lockGitHubDispatchHaltChange = `-- name: LockGitHubDispatchHaltChange :exec
+SELECT pg_advisory_xact_lock(hashtextextended('github_dispatch_halt_change:' || $1::uuid::text, 0))
+`
+
+// Held by a switch change from its start to the end of its sweep, so two changes never interleave.
+// Separate from the admission lock above: admissions never wait on it.
+func (q *Queries) LockGitHubDispatchHaltChange(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockGitHubDispatchHaltChange, workspaceID)
+	return err
+}
+
 const lockGitHubDispatchHaltExclusive = `-- name: LockGitHubDispatchHaltExclusive :exec
 SELECT pg_advisory_xact_lock(hashtextextended('github_dispatch_halt:' || $1::uuid::text, 0))
 `

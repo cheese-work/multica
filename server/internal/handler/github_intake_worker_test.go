@@ -661,3 +661,73 @@ func TestGitHubDispatchHaltWakeupWaitsForActivation(t *testing.T) {
 		t.Fatalf("wakeup admitted across the activation: receipts = %d, want 0", got)
 	}
 }
+
+// A sweep that fails on a token must stay retryable: the run is not cancelled until its token is gone.
+func TestGitHubDispatchHaltRetryRevokesTokenAfterFailedSweep(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
+	taskID, _ := dispatchIntakeRunForSweep(t, fixture, "-sweep-retry")
+	cleanHaltTables(t)
+	ctx := context.Background()
+	dbfx.Insert(t, "task_token", testutil.Cols{
+		"token_hash": auth.HashToken("mat_sweepretry_" + taskID), "task_id": taskID, "agent_id": fixture.author,
+		"workspace_id": testWorkspaceID, "user_id": testUserID, "expires_at": time.Now().Add(time.Hour),
+	})
+	dropTrigger := func() {
+		testPool.Exec(ctx, `DROP TRIGGER IF EXISTS test_token_delete_fail ON task_token`)
+		testPool.Exec(ctx, `DROP FUNCTION IF EXISTS test_token_delete_fail()`)
+	}
+	t.Cleanup(dropTrigger)
+	for _, ddl := range []string{
+		`CREATE OR REPLACE FUNCTION test_token_delete_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'token delete refused'; END $$`,
+		`CREATE TRIGGER test_token_delete_fail BEFORE DELETE ON task_token FOR EACH ROW EXECUTE FUNCTION test_token_delete_fail()`,
+	} {
+		if _, err := testPool.Exec(ctx, ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if w := setHalt(t, "*", true, false); w.Code != http.StatusInternalServerError {
+		t.Fatalf("status with a failing sweep = %d, want 500", w.Code)
+	}
+	dropTrigger()
+	if w := setHalt(t, "*", true, false); w.Code != http.StatusOK {
+		t.Fatalf("retry status = %d: %s", w.Code, w.Body)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM task_token WHERE task_id=$1`, taskID); n != 0 {
+		t.Fatalf("token still valid after the retry: %d", n)
+	}
+	if status := taskStatus(t, taskID); status != "cancelled" {
+		t.Fatalf("run status after the retry = %s, want cancelled", status)
+	}
+}
+
+// A restore cannot land between the halt's commit and its sweep: it waits for the whole activation.
+func TestGitHubDispatchHaltRestoreWaitsForActivationGap(t *testing.T) {
+	newGitHubIntakeFixture(t)
+	cleanHaltTables(t)
+	ctx := context.Background()
+	activation, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer activation.Rollback(ctx)
+	if _, err := activation.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('github_dispatch_halt_change:' || $1::text, 0))`, testWorkspaceID); err != nil {
+		t.Fatal(err)
+	}
+	// The halt row is committed, as after the activation's first step; its sweep has not run yet.
+	if _, err := testPool.Exec(ctx, `INSERT INTO github_dispatch_halt (workspace_id, scope) VALUES ($1, '*')`, testWorkspaceID); err != nil {
+		t.Fatal(err)
+	}
+	restored := make(chan int, 1)
+	go func() { restored <- setHalt(t, "*", false, false).Code }()
+	select {
+	case code := <-restored:
+		t.Fatalf("restore finished (%d) while an activation was between its commit and its sweep", code)
+	case <-time.After(500 * time.Millisecond):
+	}
+	if err := activation.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if code := <-restored; code != http.StatusOK {
+		t.Fatalf("restore status = %d", code)
+	}
+}

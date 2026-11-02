@@ -3,11 +3,11 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"regexp"
-	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -60,15 +60,25 @@ func (h *Handler) listGitHubDispatchHaltAudit(r *http.Request, workspaceID strin
 	return out, nil
 }
 
-// changeGitHubDispatchHalt activates or lifts the switch in two steps. First
-// the switch row and its audit row commit alone, under the exclusive lock every
-// external admission path holds shared: from that commit on, every admission
-// sees the halt, and a crash or a failing sweep cannot take it back. Then,
-// when halting, a second transaction retakes the lock and sweeps the runs
-// started before the commit, so a restore waits for the sweep of the halt
-// before it. A failed sweep leaves the halt in force, marks the audit row
-// sweep_failed and returns the error with the count revoked so far.
+// changeGitHubDispatchHalt activates or lifts the switch. A change lock, held
+// from the start to the end of the sweep, serializes changes: a restore waits
+// for the whole activation before it, including the gap between its commit and
+// its sweep. Inside it, the switch row and its audit row commit alone, under
+// the exclusive lock every external admission path holds shared: from that
+// commit on every admission sees the halt, and a crash or failing sweep cannot
+// take it back. Then, when halting, the sweep cancels the runs started before
+// the commit. A failed sweep leaves the halt in force, marks the audit row
+// sweep_failed and returns the error with the count revoked so far; repeating
+// the halt retries it.
 func (h *Handler) changeGitHubDispatchHalt(ctx context.Context, audit db.RecordGitHubDispatchHaltAuditParams) (revoked int, sweepErr error, err error) {
+	lock, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer lock.Rollback(context.WithoutCancel(ctx))
+	if err := h.Queries.WithTx(lock).LockGitHubDispatchHaltChange(ctx, audit.WorkspaceID); err != nil {
+		return 0, nil, err
+	}
 	auditID, err := h.commitGitHubDispatchHalt(ctx, audit)
 	if err != nil {
 		return 0, nil, err
@@ -78,7 +88,7 @@ func (h *Handler) changeGitHubDispatchHalt(ctx context.Context, audit db.RecordG
 	}
 	// The change is committed: finish the sweep even if the caller hangs up.
 	ctx = context.WithoutCancel(ctx)
-	revoked, sweepErr = h.sweepUnderHaltLock(ctx, audit)
+	revoked, sweepErr = h.sweepGitHubTriggeredRuns(ctx, h.Queries, audit.WorkspaceID, audit.Scope)
 	if err := h.Queries.SetGitHubDispatchHaltAuditSweep(ctx, db.SetGitHubDispatchHaltAuditSweepParams{ID: auditID, RunsRevoked: int32(revoked), SweepFailed: sweepErr != nil}); err != nil {
 		slog.Error("github dispatch halt: audit sweep result not saved", "audit_id", uuidToString(auditID), "err", err)
 	}
@@ -110,46 +120,28 @@ func (h *Handler) commitGitHubDispatchHalt(ctx context.Context, audit db.RecordG
 	return id, tx.Commit(ctx)
 }
 
-// sweepUnderHaltLock holds the exclusive lock for the whole sweep. The sweep
-// itself uses the pool, so a failing statement cannot abort the lock's
-// transaction. A restore that landed between the two steps lifted the halt: the
-// operator asked for normal behavior, so nothing is swept.
-func (h *Handler) sweepUnderHaltLock(ctx context.Context, audit db.RecordGitHubDispatchHaltAuditParams) (int, error) {
-	tx, err := h.TxStarter.Begin(ctx)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback(ctx)
-	if err := h.Queries.WithTx(tx).LockGitHubDispatchHaltExclusive(ctx, audit.WorkspaceID); err != nil {
-		return 0, err
-	}
-	halts, err := h.Queries.ListGitHubDispatchHalts(ctx, audit.WorkspaceID)
-	if err != nil {
-		return 0, err
-	}
-	if !slices.ContainsFunc(halts, func(row db.GithubDispatchHalt) bool { return row.Scope == audit.Scope }) {
-		return 0, nil
-	}
-	return h.sweepGitHubTriggeredRuns(ctx, h.Queries, audit.WorkspaceID, audit.Scope)
-}
-
-// sweepGitHubTriggeredRuns cancels the live GitHub-triggered runs in a scope and deletes their tokens.
+// sweepGitHubTriggeredRuns revokes the live GitHub-triggered runs in a scope. A
+// run's token goes first: the sweep selects live runs only, so a run cancelled
+// with its token still valid would never be found by a retry.
 func (h *Handler) sweepGitHubTriggeredRuns(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, scope string) (int, error) {
 	ids, err := q.ListGitHubTriggeredActiveTasks(ctx, db.ListGitHubTriggeredActiveTasksParams{WorkspaceID: workspaceID, Scope: scope})
 	if err != nil {
 		return 0, fmt.Errorf("listing live GitHub-triggered runs: %w", err)
 	}
 	revoked := 0
+	var cancelErrs []error
 	for _, id := range ids {
+		if err := q.DeleteTaskTokensByTask(ctx, id); err != nil {
+			return revoked, errors.Join(append(cancelErrs, fmt.Errorf("revoking a run token: %w", err))...)
+		}
 		if _, err := h.TaskService.CancelTaskWithReason(ctx, id, "cancelled by GitHub dispatch kill switch", "github_dispatch_halted"); err != nil {
 			slog.Warn("github dispatch halt: cancel run failed", "task_id", uuidToString(id), "err", err)
-		}
-		if err := q.DeleteTaskTokensByTask(ctx, id); err != nil {
-			return revoked, fmt.Errorf("revoking a run token: %w", err)
+			cancelErrs = append(cancelErrs, fmt.Errorf("cancelling run %s: %w", uuidToString(id), err))
+			continue
 		}
 		revoked++
 	}
-	return revoked, nil
+	return revoked, errors.Join(cancelErrs...)
 }
 
 // GetGitHubDispatchHalt (GET /api/github/dispatch-halt) reads the kill switch

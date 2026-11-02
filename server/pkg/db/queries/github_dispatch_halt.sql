@@ -63,6 +63,11 @@ SELECT pg_advisory_xact_lock_shared(hashtextextended('github_dispatch_halt:' || 
 -- Taken by a switch change; waits for in-flight dispatches and blocks new ones until it commits.
 SELECT pg_advisory_xact_lock(hashtextextended('github_dispatch_halt:' || sqlc.arg(workspace_id)::uuid::text, 0));
 
+-- name: LockGitHubDispatchHaltChange :exec
+-- Held by a switch change from its start to the end of its sweep, so two changes never interleave.
+-- Separate from the admission lock above: admissions never wait on it.
+SELECT pg_advisory_xact_lock(hashtextextended('github_dispatch_halt_change:' || sqlc.arg(workspace_id)::uuid::text, 0));
+
 -- name: RecordGitHubDispatchHaltAudit :one
 INSERT INTO github_dispatch_halt_audit (workspace_id, scope, halted, actor_id, actor_source)
 VALUES ($1, $2, $3, $4, $5)
