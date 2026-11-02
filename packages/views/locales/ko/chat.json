@@ -1,4 +1,11 @@
 {
+  "decision_banner": {
+    "title": "결정이 필요합니다",
+    "waiting": "에이전트가 아직 결정 카드를 보내지 않았습니다.",
+    "queued_since": "{{time}}부터 대기 중",
+    "running_since": "{{time}}부터 실행 중",
+    "no_run": "활성 실행 없음."
+  },
   "needs_you": {
     "title": "내 결정이 필요해요",
     "loading": "미응답 요청을 불러오는 중…",
@@ -293,7 +300,8 @@
     "unarchive": "채팅 보관 해제",
     "statistics": "통계",
     "pin": "채팅 고정",
-    "unpin": "채팅 고정 해제"
+    "unpin": "채팅 고정 해제",
+    "preset": { "label": "프리셋", "inherit": "상속", "base": "기본" }
   },
   "scheduled": {
     "chip": "예약됨 {{count}}",
@@ -382,6 +390,7 @@
     "answer_send": "보내기",
     "answer_error": "보내지 못했습니다. 다시 시도하세요.",
     "answer_helper": "보내기를 누르면 답변이 {{issue}}에 게시됩니다. DM 에이전트에게 하는 질문은 아래 메시지 입력란에 입력하세요.",
+    "answer_helper_issue": "보내기를 누르면 답변이 {{issue}}에 게시됩니다.",
     "answer_hint": "Enter로 보내기 · Shift+Enter로 줄바꿈",
     "answer_offline": "오프라인입니다. 답변은 유지됩니다. 다시 연결되면 보내기가 켜집니다.",
     "answer_conflict": "이 카드는 더 이상 답변을 받을 수 없습니다(예: 먼저 답변이 있었던 경우). 초안은 게시되지 않았습니다. 초안:",
@@ -401,11 +410,11 @@
       "approved": "승인한 파일",
       "download": "다운로드",
       "download_label": "{{name}} 다운로드",
+      "open_label": "{{name}} 열기",
       "hash_verified": "해시 확인됨",
       "sha": "SHA",
       "viewer_label": "파일 읽기",
-      "viewer_hint": "탭을 선택하면 여기서 파일을 읽을 수 있습니다.",
-      "tab_changes": "{{previous}} 이후 변경 사항",
+      "tab_changes": "변경 사항",
       "tab_preview": "미리보기",
       "signed_by": "{{label}}: {{reviewer}} 서명 완료",
       "not_signed": "{{label}}: 아직 서명되지 않음",

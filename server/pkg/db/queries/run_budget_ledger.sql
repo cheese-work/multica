@@ -16,9 +16,10 @@ INSERT INTO issue_run_budget_entry (id, workspace_id, issue_id, window_id, kind,
 VALUES (sqlc.arg('id'), sqlc.arg('workspace_id'), sqlc.arg('issue_id'), sqlc.arg('window_id'), sqlc.arg('kind'), sqlc.arg('event_key'), sqlc.arg('runs_delta'), sqlc.arg('cap_delta'))
 ON CONFLICT (issue_id, kind, event_key) DO NOTHING;
 
--- name: SumIssueRunBudgetWindow :one
+-- name: SumIssueRunBudgetRuns :one
+-- The issue's run balance: every run entry, in any window.
 SELECT COALESCE(SUM(runs_delta), 0)::bigint FROM issue_run_budget_entry
-WHERE issue_id = sqlc.arg('issue_id')::uuid AND window_id = sqlc.arg('window_id')::text;
+WHERE issue_id = sqlc.arg('issue_id')::uuid;
 
 -- name: SumIssueRunBudgetCap :one
 -- The cap the window's ledger holds: credited by the window, raises and cap edits.
@@ -94,6 +95,14 @@ SELECT EXISTS (
   SELECT 1 FROM run_budget_notice
   WHERE issue_id = sqlc.arg('issue_id')::uuid AND window_id = sqlc.arg('window_id')::text AND kind = sqlc.arg('kind')::text
 );
+
+-- name: LockRunBudgetBlockMarker :one
+-- Whether the budget's block of the issue still stands in this window, holding
+-- the marker so the move out of blocked (which deletes it) waits for the
+-- caller's transaction.
+SELECT id FROM run_budget_notice
+WHERE issue_id = sqlc.arg('issue_id')::uuid AND window_id = sqlc.arg('window_id')::text AND kind = 'blocked'
+FOR SHARE;
 
 -- name: FirstStatusInWindow :one
 -- The status the issue held when the window opened: where the earliest status

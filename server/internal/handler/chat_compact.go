@@ -87,6 +87,15 @@ func (h *Handler) CompactChatSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "the task is no longer running")
 		return
 	}
+	otherActive, err := qtx.CountOtherActiveChatTasks(r.Context(), db.CountOtherActiveChatTasksParams{ChatSessionID: session.ID, ID: task.ID})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to check active chat tasks")
+		return
+	}
+	if otherActive > 0 {
+		writeError(w, http.StatusConflict, "another reply is in progress; compact after it finishes")
+		return
+	}
 	if _, err := qtx.GetChannelChatSessionBindingBySessionAny(r.Context(), session.ID); !errors.Is(err, pgx.ErrNoRows) {
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to check DM source")
