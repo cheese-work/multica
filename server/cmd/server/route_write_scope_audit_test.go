@@ -58,13 +58,15 @@ var scopedWriteRoutes = []string{
 // them (agent cancel/archive cascade to tasks, a project workflow remaps issue
 // statuses, pausing a project cancels its tasks, deleting a project, label,
 // squad, runtime, chat session, workspace or member detaches, reassigns or
-// cancels, clearing a chat's queue cancels its tasks and prioritizing one reorders them). A run token answers 403 on each
+// cancels, clearing a chat's queue cancels its tasks, prioritizing one reorders them and steering one cancels it; approving a GitHub revision projects comments onto linked issues). A run token answers 403 on each
 // (DenyTaskTokenWrites); TestTaskTokenDeniedOnCrossIssueRoutes drives them.
 var deniedRunTokenRoutes = []string{
 	"DELETE /api/chat/sessions/{sessionId}/",
 	"DELETE /api/chat/sessions/{sessionId}/queued-tasks",
 	"DELETE /api/projects/{id}/",
 	"POST /api/chat/sessions/{sessionId}/queued-tasks/{taskId}/prioritize",
+	"POST /api/chat/sessions/{sessionId}/tasks/{taskId}/steer",
+	"POST /api/github/intake/revisions/{id}/approve",
 	"DELETE /api/labels/{id}/",
 	"DELETE /api/runtimes/{runtimeId}/",
 	"DELETE /api/squads/{id}/",
@@ -97,7 +99,7 @@ var otherWriteFamilies = map[string]writeFamily{
 	"api/agents":                   {20, byWorkspace},
 	"api/auth":                     {2, byPublic},
 	"api/autopilots":               {12, byWorkspace},
-	"api/chat":                     {20, byOwnRow},
+	"api/chat":                     {19, byOwnRow},
 	"api/cli-token":                {1, byHuman},
 	"api/client-usage":             {1, byHuman},
 	"api/cloud-billing":            {2, byHuman},
@@ -110,7 +112,7 @@ var otherWriteFamilies = map[string]writeFamily{
 	"api/decision-requests":        {2, byHuman},
 	"api/dingtalk":                 {1, byPublic},
 	"api/feedback":                 {1, byOwnRow},
-	"api/github":                   {2, byWorkspace},
+	"api/github":                   {1, byWorkspace},
 	"api/inbox":                    {8, byOwnRow},
 	"api/integrations":             {2, byWorkspace},
 	"api/invitations":              {2, byOwnRow},

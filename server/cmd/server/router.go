@@ -2100,7 +2100,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 			// R3 exact-snapshot approval (CHE-2126 plan 5.3): the handler checks can_route per issue.
 			r.Get("/api/github/intake/revisions/{id}/snapshot", h.GetGitHubRevisionSnapshot)
-			r.Post("/api/github/intake/revisions/{id}/approve", h.ApproveGitHubRevisionSnapshot)
+			r.With(denyRunToken).Post("/api/github/intake/revisions/{id}/approve", h.ApproveGitHubRevisionSnapshot)
 
 			// GitHub dispatch kill switch (CHE-2220): any member reads; owner/admin writes.
 			r.Get("/api/github/dispatch-halt", h.GetGitHubDispatchHalt)
@@ -2643,7 +2643,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/pending-task", h.GetPendingChatTask)
 					r.With(denyRunToken).Delete("/queued-tasks", h.ClearQueuedChatTasks)
 					r.With(denyRunToken).Post("/queued-tasks/{taskId}/prioritize", h.PrioritizeQueuedChatTask)
-					r.Post("/tasks/{taskId}/steer", h.SteerChatTask)
+					r.With(denyRunToken).Post("/tasks/{taskId}/steer", h.SteerChatTask)
 					r.Post("/messages/{messageId}/supplement/resend", h.ResendChatSupplement)
 					r.Post("/read", h.MarkChatSessionRead)
 					// Deferred-cancellation draft restores (#5219):

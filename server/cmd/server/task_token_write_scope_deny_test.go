@@ -46,6 +46,12 @@ func TestTaskTokenDeniedOnCrossIssueRoutes(t *testing.T) {
 	chat := fixture.ChatSession(t, foreignAgent, testutil.Cols{"explicitly_created_at": time.Now()})
 	fixture.Task(t, foreignAgent, testutil.Cols{"chat_session_id": chat, "runtime_id": foreignRuntime, "status": "running"})
 	chatTask := fixture.Task(t, foreignAgent, testutil.Cols{"chat_session_id": chat, "runtime_id": foreignRuntime, "status": "queued"})
+	// Steering needs an agent the caller may invoke, else the handler's own 403 hides the scope gap.
+	steerAgent := fixture.Agent(t, "Deny steer agent", foreignRuntime, testutil.Cols{"permission_mode": "public_to", "visibility": "workspace"})
+	fixture.Insert(t, "agent_invocation_target", testutil.Cols{"agent_id": steerAgent, "target_type": "workspace", "target_id": testWorkspaceID})
+	steerChat := fixture.ChatSession(t, steerAgent, testutil.Cols{"explicitly_created_at": time.Now()})
+	fixture.Task(t, steerAgent, testutil.Cols{"chat_session_id": steerChat, "runtime_id": foreignRuntime, "status": "running"})
+	steerTask := fixture.Task(t, steerAgent, testutil.Cols{"chat_session_id": steerChat, "runtime_id": foreignRuntime, "status": "queued"})
 	pausedProject := fixture.Project(t, "Deny paused project")
 	pausedIssue := fixture.Issue(t, "Deny paused project issue", testutil.Cols{"assignee_type": "agent", "assignee_id": foreignAgent, "project_id": pausedProject})
 	pausedTask := fixture.Task(t, foreignAgent, testutil.Cols{"issue_id": pausedIssue, "runtime_id": foreignRuntime, "status": "queued"})
@@ -94,6 +100,10 @@ func TestTaskTokenDeniedOnCrossIssueRoutes(t *testing.T) {
 			`SELECT count(*) FROM agent_task_queue WHERE id = $1 AND status = 'queued'`, []any{chatTask}, "", ""},
 		{"prioritize queued chat task", "POST", "/api/chat/sessions/" + chat + "/queued-tasks/" + chatTask + "/prioritize", ``,
 			`SELECT count(*) FROM agent_task_queue WHERE id = $1 AND status = 'queued' AND priority = 0`, []any{chatTask}, "", ""},
+		{"steer queued chat task", "POST", "/api/chat/sessions/" + steerChat + "/tasks/" + steerTask + "/steer", `{"content":"steer"}`,
+			`SELECT count(*) FROM agent_task_queue WHERE id = $1 AND status = 'queued'`, []any{steerTask}, "", ""},
+		{"approve github revision", "POST", "/api/github/intake/revisions/00000000-0000-0000-0000-000000000001/approve", `{"snapshot_hash":"x"}`,
+			`SELECT count(*) FROM workspace WHERE id = $1`, []any{testWorkspaceID}, "", ""},
 		{"delete label", "DELETE", "/api/labels/" + label, ``,
 			`SELECT count(*) FROM issue_to_label WHERE issue_id = $1 AND label_id = $2`, []any{foreignIssue, label}, "", ""},
 		{"delete squad", "DELETE", "/api/squads/" + squad, ``,
