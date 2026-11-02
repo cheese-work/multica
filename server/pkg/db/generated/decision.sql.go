@@ -266,8 +266,8 @@ func (q *Queries) CreateDecisionAnswer(ctx context.Context, arg CreateDecisionAn
 }
 
 const createDecisionCardAnswer = `-- name: CreateDecisionCardAnswer :one
-INSERT INTO decision_answer (decision_request_id, answered_by_user_id, answer_source, chat_message_ids, content_snapshot, effective_at, issue_comment_id, wake_at)
-VALUES ($1, $2, 'card', '{}', $3, $4, $5, GREATEST($4::timestamptz, clock_timestamp()))
+INSERT INTO decision_answer (decision_request_id, answered_by_user_id, answer_source, chat_message_ids, content_snapshot, effective_at, issue_comment_id, wake_at, chosen_option_index, reply_text)
+VALUES ($1, $2, 'card', '{}', $3, $4, $5, GREATEST($4::timestamptz, clock_timestamp()), $6, $7)
 RETURNING id, decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, content_snapshot, effective_at, wake_at, woken_at, wake_outcome, issue_comment_id, disclaimed_at, disclaim_comment_posted_at, disclaimed_by_user_id, disclaim_reason, disclaimed_by_agent_id, disclaimed_by_task_id, veto_reason, veto_note_posted_at, retraction_delivered_at, retraction_outcome, withdrawal_comment_id, created_at, source_comment_id, answered_by_user_id, answer_source, chosen_option_index, reply_text, context_message_id, excerpted, answered_label, state_version, hindsight_acked_version
 `
 
@@ -277,9 +277,11 @@ type CreateDecisionCardAnswerParams struct {
 	ContentSnapshot   string             `json:"content_snapshot"`
 	EffectiveAt       pgtype.Timestamptz `json:"effective_at"`
 	IssueCommentID    pgtype.UUID        `json:"issue_comment_id"`
+	ChosenOptionIndex pgtype.Int4        `json:"chosen_option_index"`
+	ReplyText         pgtype.Text        `json:"reply_text"`
 }
 
-// A human's click on a decision card (approve or reject of a decision_action).
+// A human's click on a decision card.
 // No task, chat or comment source: the answering turn does not exist, so no
 // finalizer will ever schedule it. The click schedules the wake itself.
 func (q *Queries) CreateDecisionCardAnswer(ctx context.Context, arg CreateDecisionCardAnswerParams) (DecisionAnswer, error) {
@@ -289,6 +291,8 @@ func (q *Queries) CreateDecisionCardAnswer(ctx context.Context, arg CreateDecisi
 		arg.ContentSnapshot,
 		arg.EffectiveAt,
 		arg.IssueCommentID,
+		arg.ChosenOptionIndex,
+		arg.ReplyText,
 	)
 	var i DecisionAnswer
 	err := row.Scan(

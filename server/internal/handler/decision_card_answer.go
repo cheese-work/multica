@@ -162,18 +162,23 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if err != nil {
 		return empty, err
 	}
-	// A task-less user row: the card answer is the human's own message in the
-	// DM, so the answer's source rules and the delivery lock hold unchanged.
-	answerMessage, err := queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "user", Content: content, MessageKind: pgtype.Text{String: "message", Valid: true}, SentVia: pgtype.Text{String: "interactive_jwt", Valid: true}})
-	if err != nil {
-		return empty, err
-	}
 	commentID := dbid.NewV7()
 	chosen, err := cardOptionIndex(decision, input)
 	if err != nil {
 		return empty, err
 	}
-	answer, err := queries.CreateDecisionAnswer(ctx, db.CreateDecisionAnswerParams{DecisionRequestID: decision.ID, SourceChatSessionID: session.ID, ChatMessageIds: []pgtype.UUID{answerMessage.ID}, ContentSnapshot: content, EffectiveAt: effectiveAt, IssueCommentID: commentID, WakeAt: effectiveAt, ChosenOptionIndex: chosen, ReplyText: pgtype.Text{String: strings.TrimSpace(input.Text), Valid: true}})
+	answer, err := queries.CreateDecisionCardAnswer(ctx, db.CreateDecisionCardAnswerParams{
+		DecisionRequestID: decision.ID, AnsweredByUserID: userID, ContentSnapshot: content, EffectiveAt: effectiveAt,
+		IssueCommentID: commentID, ChosenOptionIndex: chosen, ReplyText: pgtype.Text{String: strings.TrimSpace(input.Text), Valid: true},
+	})
+	if err != nil {
+		return empty, err
+	}
+	answerMessage, err := queries.CreateChatMessage(ctx, db.CreateChatMessageParams{
+		ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "user", Content: content,
+		MessageKind: pgtype.Text{String: "message", Valid: true}, SentVia: pgtype.Text{String: "interactive_jwt", Valid: true},
+		DecisionAnswerID: answer.ID,
+	})
 	if err != nil {
 		return empty, err
 	}
