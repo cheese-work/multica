@@ -24,7 +24,7 @@ import { AppLink } from "../../navigation";
 import { PAGE_GUTTER } from "../../layout/page-header";
 import { ShortcutKeycaps } from "../../common/shortcut-keycaps";
 import { useT } from "../../i18n";
-import { IssueDetail } from "./issue-detail";
+import { IssueDetail } from "./issue-detail-lazy";
 import {
   IssuePeekActionsContext,
   IssuePeekIdContext,

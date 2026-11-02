@@ -15,7 +15,7 @@ vi.mock("@multica/core/paths", () => ({
 }));
 
 // The panel's job is hosting; IssueDetail itself is covered by its own suite.
-vi.mock("./issue-detail", () => ({
+vi.mock("./issue-detail-lazy", () => ({
   IssueDetail: ({
     issueId,
     variant,

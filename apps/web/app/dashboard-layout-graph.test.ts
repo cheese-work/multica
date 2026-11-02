@@ -50,8 +50,9 @@ function staticGraph(entry: string): Set<string> {
   return seen;
 }
 
-const graph = staticGraph(join(webRoot, "app/[workspaceSlug]/(dashboard)/layout.tsx"));
-const reachable = (suffix: string) => [...graph].filter((f) => f.endsWith(suffix));
+const dashboard = join(webRoot, "app/[workspaceSlug]/(dashboard)");
+const reachableFrom = (entry: string, suffix: string) =>
+  [...staticGraph(join(dashboard, entry))].filter((f) => f.endsWith(suffix));
 
 describe("dashboard layout static import graph", () => {
   it.each([
@@ -64,6 +65,18 @@ describe("dashboard layout static import graph", () => {
     "views/issues/components/issue-detail.tsx",
     "views/editor/content-editor.tsx",
   ])("does not statically reach %s", (suffix) => {
-    expect(reachable(suffix)).toEqual([]);
+    expect(reachableFrom("layout.tsx", suffix)).toEqual([]);
   });
+});
+
+// Issue detail and the editor belong to the detail route and the chat composer;
+// the list-style pages must load them on demand only (CHE-3018).
+describe("list pages static import graph", () => {
+  it.each(["inbox/page.tsx", "issues/page.tsx", "projects/page.tsx"])(
+    "%s does not statically reach issue detail or the editor",
+    (entry) => {
+      expect(reachableFrom(entry, "views/issues/components/issue-detail.tsx")).toEqual([]);
+      expect(reachableFrom(entry, "views/editor/content-editor.tsx")).toEqual([]);
+    },
+  );
 });
