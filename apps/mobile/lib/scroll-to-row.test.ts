@@ -12,7 +12,7 @@ function fakeList(opts: { shortBy: number; drift?: number; viewport?: number }) 
     async scrollToIndex({ index, animated }) {
       animatedFlags.push(animated);
       calls += 1;
-      top = calls <= shortBy ? index + drift : index;
+      top = calls <= shortBy ? index + drift * (shortBy - calls + 1) : index;
     },
     computeVisibleIndices: () => ({ startIndex: top, endIndex: top + viewport - 1 }),
   };
@@ -39,10 +39,48 @@ describe("scrollRowIntoView", () => {
     expect(f.animatedFlags).toEqual([true, false, false]);
   });
 
-  it("gives up and reports false after the attempt cap", async () => {
-    const f = fakeList({ shortBy: 99 });
-    expect(await scrollRowIntoView(f.list, () => 0)).toBe(false);
-    expect(f.calls()).toBe(4);
+  it("gives up and reports false when the list never moves", async () => {
+    let calls = 0;
+    const list: RowScroller = {
+      async scrollToIndex() {
+        calls += 1;
+      },
+      computeVisibleIndices: () => ({ startIndex: 100, endIndex: 104 }),
+    };
+    expect(await scrollRowIntoView(list, () => 0)).toBe(false);
+    // Two re-aims see the same range, then two walk steps see it again.
+    expect(calls).toBe(4);
+  });
+
+  it("walks down from the top when re-aiming at the target stalls", async () => {
+    // Re-aiming at row 18 always lands on rows 5-9; a scroll to a row above it
+    // lands there, so stepping down from row 0 reaches the target.
+    let top = 5;
+    const asked: number[] = [];
+    const list: RowScroller = {
+      async scrollToIndex({ index }) {
+        asked.push(index);
+        top = index === 18 ? 5 : index;
+      },
+      computeVisibleIndices: () => ({ startIndex: top, endIndex: top + 4 }),
+    };
+    expect(await scrollRowIntoView(list, () => 18)).toBe(true);
+    expect(asked).toEqual([18, 18, 0, 5, 10, 15]);
+    expect(list.computeVisibleIndices().startIndex).toBe(15);
+  });
+
+  it("stops at the attempt cap when the range keeps drifting", async () => {
+    let top = 100;
+    let calls = 0;
+    const list: RowScroller = {
+      async scrollToIndex() {
+        calls += 1;
+        top += 1; // always moves, never arrives
+      },
+      computeVisibleIndices: () => ({ startIndex: top, endIndex: top + 4 }),
+    };
+    expect(await scrollRowIntoView(list, () => 0)).toBe(false);
+    expect(calls).toBe(64);
   });
 
   it("stops retrying once cancelled", async () => {

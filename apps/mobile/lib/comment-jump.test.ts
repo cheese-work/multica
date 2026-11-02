@@ -90,6 +90,18 @@ describe("jumpToCommentRow", () => {
     }
   });
 
+  it("keeps scrolling while each pass makes progress (36 rows of 260, estimate 100)", async () => {
+    // CHE-3116 review: four fixed passes only reached rows 8-10 of a target at row 12.
+    const rows = timelineWithTargetAt(TARGET_ROW);
+    const { list, calls } = lazyList(Array.from({ length: 36 }, () => 260));
+    const arrived = await jumpToCommentRow(list, () => rows, OLD_ROOT, () => false);
+    const { startIndex, endIndex } = list.computeVisibleIndices();
+    expect(calls.length).toBeGreaterThan(4);
+    expect(arrived).toBe(true);
+    expect(TARGET_ROW).toBeGreaterThanOrEqual(startIndex);
+    expect(TARGET_ROW).toBeLessThanOrEqual(endIndex);
+  });
+
   it("scrolls to a reply's parent row", async () => {
     const rows = timelineWithTargetAt(TARGET_ROW);
     const { list } = lazyList(HEIGHTS);

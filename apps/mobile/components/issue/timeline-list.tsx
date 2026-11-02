@@ -245,7 +245,12 @@ export function TimelineList({
       () => rowsRef.current,
       commentId,
       () => jumpToken.current !== token,
-    );
+    ).then((arrived) => {
+      // A cancelled jump is superseded on purpose; only report a real miss.
+      if (!arrived && jumpToken.current === token) {
+        console.warn(`[timeline] could not scroll to comment ${commentId}`);
+      }
+    });
   }, []);
 
   // The timers live outside the effect: an append (data.length) re-runs the
