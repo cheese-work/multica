@@ -108,6 +108,11 @@ type AppConfig struct {
 	ServerVersion string `json:"server_version,omitempty"`
 	ServerBuild   string `json:"server_build,omitempty"`
 	ServerCommit  string `json:"server_commit,omitempty"`
+
+	// DocsURL is the absolute URL of the docs this deployment serves, set only
+	// when the operator runs the docs service (DOCS_URL) and the frontend origin
+	// is known. Absent = clients link to the upstream docs site.
+	DocsURL string `json:"docs_url,omitempty"`
 }
 
 // GetConfig is mounted on the public (unauthenticated) route group because
@@ -134,6 +139,9 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 	config.DaemonServerURL, config.DaemonAppURL = daemonSetupURLsFromEnv()
 	config.DaemonSetupTarget = "self_host"
 	config.VCSIntegrationAvailable = h.cfg.VCSIntegrationEnabled
+	if appURL := resolveFrontendAppURL(); appURL != "" && strings.TrimSpace(os.Getenv("DOCS_URL")) != "" {
+		config.DocsURL = appURL + "/docs"
+	}
 	config.FeatureFlags = featureflags.EvaluateFrontendPublicFlags(r.Context(), h.FeatureFlags)
 	// Only surface the build version on self-hosted deployments. The managed
 	// cloud is continuously deployed and its users can't choose the build, so

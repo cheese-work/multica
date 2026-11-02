@@ -633,3 +633,22 @@ func TestGetConfigDeclaresCommentDeleteKeepsReplies(t *testing.T) {
 		t.Fatalf("comment_delete_keep_replies_supported = %v, want true", raw["comment_delete_keep_replies_supported"])
 	}
 }
+
+func TestGetConfigAdvertisesInstanceDocs(t *testing.T) {
+	for _, tt := range []struct{ name, docs, app, want string }{
+		{"served", "http://docs:4000", "https://app.example.com/", "https://app.example.com/docs"},
+		{"docs not configured", "", "https://app.example.com", ""},
+		{"app url unknown", "http://docs:4000", "", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("DOCS_URL", tt.docs)
+			t.Setenv("MULTICA_APP_URL", tt.app)
+			t.Setenv("FRONTEND_ORIGIN", "")
+			var cfg AppConfig
+			testutil.Call(t, testHandler.GetConfig, httptest.NewRequest(http.MethodGet, "/api/config", nil)).Want(http.StatusOK).JSON(&cfg)
+			if cfg.DocsURL != tt.want {
+				t.Fatalf("docs_url: want %q, got %q", tt.want, cfg.DocsURL)
+			}
+		})
+	}
+}

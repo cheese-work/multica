@@ -24,9 +24,8 @@ import { normalizeCommandURL } from "@multica/core/runtimes";
 import { isDesktopShell } from "../platform/local-directory";
 import { DISCORD_URL, DiscordIcon } from "./discord";
 import { useT } from "../i18n";
-import { docsLocalePrefix } from "../common/docs-locale";
+import { docsUrl } from "../common/docs-url";
 
-const DOCS_URL = "https://multica.ai/docs";
 const BRAND_URL = "https://multica.ai";
 // Absolute, including on self-hosted deployments: the installers we ship are
 // the same binaries either way, and the desktop client can point at a
@@ -94,7 +93,7 @@ export function HelpLauncher() {
         <DropdownMenuItem
           render={
             <a
-              href={`${DOCS_URL}${docsLocalePrefix(i18n.language)}`}
+              href={docsUrl("", i18n.language)}
               target="_blank"
               rel="noopener noreferrer"
             />

@@ -246,6 +246,9 @@ services:
       # (bot_token_encrypted), so this single deployment-wide key is all
       # the operator needs to set here.
       MULTICA_TELEGRAM_SECRET_KEY: ${MULTICA_TELEGRAM_SECRET_KEY:-}
+      # Same value as the frontend's: set means this instance serves /docs, so
+      # /api/config advertises it and in-app docs links stay on this origin.
+      DOCS_URL: ${DOCS_URL:-}
     restart: unless-stopped
 
   frontend:
@@ -262,6 +265,15 @@ services:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
       NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-}
       GOOGLE_ANALYTICS_ID: ${GOOGLE_ANALYTICS_ID:-}
+    restart: unless-stopped
+
+  # Opt-in fork docs site: `docker compose --profile docs up -d`, then set
+  # DOCS_URL=http://docs:4000 so the frontend proxies /docs to it.
+  docs:
+    profiles: ["docs"]
+    image: ${MULTICA_DOCS_IMAGE:-ghcr.io/cheese-work/multica-docs}:${MULTICA_IMAGE_TAG:-latest}
+    environment:
+      HOSTNAME: "0.0.0.0"
     restart: unless-stopped
 
 volumes:
