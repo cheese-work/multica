@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -134,13 +136,30 @@ func (handler *Handler) decisionRequestsForMessages(ctx context.Context, workspa
 	return cards
 }
 
-// recommendedOptionIndex is the first option whose label the recommendation text names.
+// recommendedOptionIndex is the option the recommendation's first clause names
+// as a whole word. The text is free-form, so a clause that names no option or
+// more than one marks nothing: a wrong mark would steer the click.
 func recommendedOptionIndex(options []decisiontx.AskOption, recommendation string) *int {
-	recommendation = strings.ToLower(recommendation)
+	clause := strings.ToLower(recommendation)
+	if cut := strings.IndexAny(clause, ",.;:\n"); cut >= 0 {
+		clause = clause[:cut]
+	}
+	var named []int
 	for index, option := range options {
-		if label := strings.ToLower(strings.TrimSpace(option.Label)); label != "" && strings.Contains(recommendation, label) {
-			return &index
+		label := strings.ToLower(strings.TrimSpace(option.Label))
+		if label != "" && regexp.MustCompile(`(^|[^\p{L}\p{N}_])`+regexp.QuoteMeta(label)+`($|[^\p{L}\p{N}_])`).MatchString(clause) {
+			named = append(named, index)
 		}
 	}
-	return nil
+	// A label inside a longer named label ("Ship" in "Ship now") is not a second choice.
+	matched := slices.Clone(named)
+	named = slices.DeleteFunc(named, func(index int) bool {
+		return slices.ContainsFunc(matched, func(other int) bool {
+			return other != index && len(options[other].Label) > len(options[index].Label) && strings.Contains(strings.ToLower(options[other].Label), strings.ToLower(strings.TrimSpace(options[index].Label)))
+		})
+	})
+	if len(named) != 1 {
+		return nil
+	}
+	return &named[0]
 }
