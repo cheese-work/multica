@@ -2,7 +2,8 @@ import type { ComponentProps } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Editor } from "@tiptap/core";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { preloadEditors } from "../../editor/lazy-editors";
 import { createChatStore, registerChatStore, useChatStore } from "@multica/core/chat";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../locales/en/common.json";
@@ -60,6 +61,8 @@ function commandIds(editor: Editor): string[] {
     .items({ editor, query: "", signal: new AbortController().signal })
     .map((item: { id: string }) => item.id);
 }
+
+beforeAll(preloadEditors, 60_000);
 
 describe("ChatInput DM commands", () => {
   it("offers statistic, archive and pin ahead of compact for an active DM", () => {

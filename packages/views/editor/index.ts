@@ -1,13 +1,6 @@
-export {
-  ContentEditor,
-  type ContentEditorProps,
-  type ContentEditorRef,
-} from "./content-editor";
-export {
-  TitleEditor,
-  type TitleEditorProps,
-  type TitleEditorRef,
-} from "./title-editor";
+export { ContentEditor, TitleEditor } from "./lazy-editors";
+export type { ContentEditorProps, ContentEditorRef } from "./content-editor";
+export type { TitleEditorProps, TitleEditorRef } from "./title-editor";
 export { ReadonlyContent } from "./readonly-content";
 export { useFileDropZone } from "./use-file-drop-zone";
 export { useUploadGate, type UploadGate } from "./use-upload-gate";
