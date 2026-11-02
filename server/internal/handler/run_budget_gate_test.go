@@ -31,6 +31,10 @@ func spendBudget(t *testing.T, c edgeCase, max int, status string) db.Issue {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The 80% warning is written by a goroutine that outlives the enqueue and
+	// bumps the issue revision; setup runs have no use for it.
+	service.SetOnRunBudgetEvent(nil)
+	defer service.SetOnRunBudgetEvent(testHandler.onRunBudgetEvent)
 	for i := 0; i < max; i++ {
 		if _, err := testHandler.TaskService.EnqueueTaskForIssue(ctx, issue); err != nil {
 			t.Fatalf("run %d inside the budget refused: %v", i+1, err)
@@ -203,5 +207,25 @@ func TestRunBudgetBlockNamesRefusedRunAndRaiseCommand(t *testing.T) {
 	}
 	if n := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id=$1 AND type='system' AND content LIKE '%a run for agent % (trigger: assignment or status handoff) while the issue was in_progress%' AND content LIKE '%was refused because the issue used 2 of 2 runs%' AND content LIKE '%multica issue budget raise %'`, c.issueID); n != 1 {
 		t.Fatalf("block comment naming the run and the raise command = %d, want 1", n)
+	}
+}
+
+// spendBudget is setup. The 80% warning its last run raises writes a comment
+// from a goroutine about 100 ms later, which bumped the issue revision under
+// whatever the test did next: moveIssueOnEdge lost its revision check
+// silently (CHE-3014).
+func TestSpendBudgetLeavesNoLateIssueWriter(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	c := newEdgeCase(t, 3014001, mergeEdgeSteps)
+	issue := spendBudget(t, c, 2, "in_progress")
+	time.Sleep(500 * time.Millisecond)
+	after, err := testHandler.Queries.GetIssue(context.Background(), issue.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Revision != issue.Revision {
+		t.Fatalf("issue revision moved from %d to %d after spendBudget returned: a late writer is racing the test", issue.Revision, after.Revision)
 	}
 }
