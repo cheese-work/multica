@@ -327,6 +327,57 @@ func TestDecisionEpisodeReattach(t *testing.T) {
 	}
 }
 
+// A re-attach runs the same §4.3 step 3 checks as an entry, on the stored B.
+func TestDecisionEpisodeReattachRefusals(t *testing.T) {
+	bindSecond := func(t *testing.T, f episodeFixture) string {
+		second := f.secondRequest(t)
+		dbfx.Exec(t, `UPDATE decision_wait SET request_ids = array_append(request_ids, $2::uuid) WHERE issue_id = $1`, f.issueID, second)
+		return second
+	}
+	cases := []struct {
+		name     string
+		group    bool
+		fragment string
+		arrange  func(t *testing.T, f episodeFixture)
+	}{
+		{"open request with an answered sibling", true, "answer is already in", func(t *testing.T, f episodeFixture) {
+			dbfx.Exec(t, `UPDATE decision_request SET human_user_id = $2, status = 'answered' WHERE id = $1`, bindSecond(t, f), f.humanID)
+		}},
+		{"open request with a sibling to another human", true, "one human", func(t *testing.T, f episodeFixture) { bindSecond(t, f) }},
+		{"pending retraction in B", false, "retract", func(t *testing.T, f episodeFixture) { f.pendingRetraction(t, false) }},
+		{"rejected lane delivery", false, "lane", func(t *testing.T, f episodeFixture) {
+			dbfx.Exec(t, `UPDATE chat_message SET failure_reason = 'rejected' WHERE id = (SELECT ping_message_id FROM decision_request WHERE id = $1)`, f.requestID)
+		}},
+		{"archived lane", false, "lane", func(t *testing.T, f episodeFixture) {
+			dbfx.Exec(t, `UPDATE chat_session SET status = 'archived' WHERE id = (SELECT chat_session_id FROM decision_request WHERE id = $1)`, f.requestID)
+		}},
+	}
+	for _, tc := range cases {
+		for name, move := range map[string]func(t *testing.T, f episodeFixture) *testutil.Response{
+			"member": func(t *testing.T, f episodeFixture) *testutil.Response { return f.memberMove(t, "need_decision") },
+			"asking task": func(t *testing.T, f episodeFixture) *testutil.Response {
+				return f.agentMove(t, issueWriters[0], "need_decision")
+			},
+		} {
+			t.Run(tc.name+"/"+name, func(t *testing.T) {
+				f := newEpisodeFixture(t, tc.group)
+				f.suspendedEpisode(t, true)
+				f.unseal(t) // a sibling can only join an unsealed intent
+				tc.arrange(t, f)
+				dbfx.Exec(t, `UPDATE decision_intent SET sealed_at = now() WHERE id = $1`, f.intentID)
+				dbfx.Exec(t, `UPDATE issue SET status = 'blocked' WHERE id = $1`, f.issueID)
+				f.wantRefusal(t, move(t, f), tc.fragment)
+				if rows := f.episodes(t); len(rows) != 1 || rows[0].phase != "suspended" {
+					t.Fatalf("episodes = %+v, want the suspended one untouched", rows)
+				}
+				if status, _, _ := issueStatusAndAssignee(t, f.issueID); status != "blocked" {
+					t.Fatalf("issue status = %s, want blocked (unchanged)", status)
+				}
+			})
+		}
+	}
+}
+
 func TestDecisionEpisodeStatusMovedSuspendsAndReattaches(t *testing.T) {
 	f := newEpisodeFixture(t, false)
 	f.agentMove(t, issueWriters[0], "need_decision").Want(http.StatusOK)

@@ -25,6 +25,10 @@ import (
 
 // decisionEpisodeRefusal is an entry or re-attach the write refuses (409). The
 // write changes nothing.
+// noOpenRequestReason is the entry refusal when B has nothing open; a
+// re-attach words the same refusal for an episode that already exists.
+const noOpenRequestReason = "no open decision request to wait on"
+
 type decisionEpisodeRefusal struct{ reason string }
 
 func (e *decisionEpisodeRefusal) Error() string { return e.reason }
@@ -211,22 +215,25 @@ func (h *Handler) reattachDecisionEpisode(ctx context.Context, q *db.Queries, is
 	humanID := parseUUID(human.UserID)
 	sorted := append([]pgtype.UUID(nil), wait.RequestIds...)
 	sortUUIDs(sorted)
-	var open bool
+	bound := make([]db.DecisionRequest, 0, len(sorted))
 	for _, id := range sorted {
 		request, err := q.LockDecisionRequest(ctx, db.LockDecisionRequestParams{WorkspaceID: issue.WorkspaceID, ID: id})
 		if err != nil {
 			return err
 		}
-		if request.Status != "open" {
-			continue
-		}
-		if request.HumanUserID != humanID {
-			return refuseEpisode("the open requests address more than one human")
-		}
-		open = true
+		bound = append(bound, request)
 	}
-	if !open {
-		return refuseEpisode("a decision episode already holds this issue's decision and no bound request is open")
+	// The §4.3 step 3 checks run again on the stored B with R recomputed.
+	requestIDs, openIDs, _, err := checkBoundRequests(bound, humanID)
+	if err != nil {
+		var refused *decisionEpisodeRefusal
+		if errors.As(err, &refused) && refused.reason == noOpenRequestReason {
+			return refuseEpisode("a decision episode already holds this issue's decision and no bound request is open")
+		}
+		return err
+	}
+	if err := h.checkEpisodeDelivery(ctx, q, issue.WorkspaceID, requestIDs, openIDs); err != nil {
+		return err
 	}
 	arg := db.ReattachDecisionWaitParams{
 		ID: wait.ID, WorkspaceID: issue.WorkspaceID, HumanUserID: humanID,
@@ -281,7 +288,7 @@ func checkBoundRequests(bound []db.DecisionRequest, human pgtype.UUID) (requestI
 		}
 	}
 	if len(openIDs) == 0 {
-		return nil, nil, nil, refuseEpisode("no open decision request to wait on")
+		return nil, nil, nil, refuseEpisode(noOpenRequestReason)
 	}
 	sortUUIDs(intentIDs)
 	return requestIDs, openIDs, intentIDs, nil
