@@ -42,11 +42,14 @@ interface JumpOptions {
    */
   onSettled?: () => void;
   holdMs?: number;
+  /** Wait before the first scroll so a freshly mounted list can lay out. */
+  delayMs?: number;
 }
 
 /**
  * Owns the one jump that may be running. A new jump or `cancel()` stops the
- * older one's retries (user drag, unmount).
+ * older one, including one still waiting out its `delayMs` (user drag,
+ * unmount).
  */
 export function createJumpController() {
   let token = 0;
@@ -54,17 +57,23 @@ export function createJumpController() {
     cancel() {
       token += 1;
     },
+    /** `getList` is read after the delay; null means the list is gone. */
     async jump(
-      list: RowScroller,
+      getList: () => RowScroller | null,
       getRows: () => JumpRow[],
       commentId: string,
-      { onSettled, holdMs = 0 }: JumpOptions = {},
+      { onSettled, holdMs = 0, delayMs = 0 }: JumpOptions = {},
     ): Promise<boolean> {
       token += 1;
       const mine = token;
-      const arrived = await jumpToCommentRow(list, getRows, commentId, () => token !== mine);
+      const cancelled = () => token !== mine;
+      if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+      const list = cancelled() ? null : getList();
+      const arrived = list
+        ? await jumpToCommentRow(list, getRows, commentId, cancelled)
+        : false;
       // A cancelled jump was superseded on purpose; only report a real miss.
-      if (!arrived && token === mine) {
+      if (!arrived && !cancelled()) {
         console.warn(`[timeline] could not scroll to comment ${commentId}`);
       }
       if (onSettled) setTimeout(onSettled, holdMs);

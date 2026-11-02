@@ -237,28 +237,26 @@ export function TimelineList({
   // Scroll to the row that holds a comment: its own row for a root, the
   // parent's row for a reply (replies render inline inside their root's card).
   // `onSettled` runs HIGHLIGHT_HOLD_MS after the jump ends, so a long jump
-  // keeps its highlight once the row is on screen.
+  // keeps its highlight once the row is on screen. `delayMs` waits for a fresh
+  // list to lay out; a drag or newer jump during that wait cancels the jump.
   const jumpToComment = useCallback(
-    (commentId: string, onSettled?: () => void) => {
-      const list = listRef.current;
-      if (!list) return;
-      void jumpController.jump(list, () => rowsRef.current, commentId, {
-        holdMs: HIGHLIGHT_HOLD_MS,
-        onSettled,
-      });
+    (commentId: string, opts?: { onSettled?: () => void; delayMs?: number }) => {
+      void jumpController.jump(
+        () => listRef.current,
+        () => rowsRef.current,
+        commentId,
+        { holdMs: HIGHLIGHT_HOLD_MS, ...opts },
+      );
     },
     [jumpController],
   );
 
-  // The timers live outside the effect: an append (data.length) re-runs the
-  // effect, and its stamp gate would then skip re-arming a cancelled jump.
-  // Only a newer tap or unmount cancels them. The jump reads the latest
-  // `jumpToComment`, so rows appended meanwhile are indexed correctly.
-  const jumpRef = useRef(jumpToComment);
-  useEffect(() => {
-    jumpRef.current = jumpToComment;
-  }, [jumpToComment]);
-  const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  // Stable callback for the cards; they pass only the comment id.
+  const jumpToCommentLink = useCallback(
+    (commentId: string) => jumpToComment(commentId),
+    [jumpToComment],
+  );
+
   useEffect(() => {
     if (!highlightCommentId || data.length === 0) return;
     const stamp = `${highlightCommentId}:${highlightNonce ?? ""}`;
@@ -266,27 +264,19 @@ export function TimelineList({
     lastStampRef.current = stamp;
 
     setHighlightedId(highlightCommentId);
-    timersRef.current.forEach(clearTimeout);
-    timersRef.current = [
-      // The list remounts on every deep link and starts at the bottom, so an
-      // old target is off-screen. Jump once the fresh list has laid out.
-      setTimeout(
-        () =>
-          jumpRef.current(highlightCommentId, () => {
-            // A newer tap owns the highlight now; leave it alone.
-            if (lastStampRef.current === stamp) setHighlightedId(null);
-          }),
-        JUMP_DELAY_MS,
-      ),
-    ];
-  }, [highlightCommentId, highlightNonce, data.length]);
-  useEffect(() => {
-    const timers = timersRef;
-    return () => {
-      timers.current.forEach(clearTimeout);
-      jumpController.cancel();
-    };
-  }, [jumpController]);
+    // The list remounts on every deep link and starts at the bottom, so an
+    // old target is off-screen. Jump once the fresh list has laid out. An
+    // append (data.length) re-runs this effect, but the stamp gate keeps a
+    // running jump from restarting; only a newer tap, drag or unmount ends it.
+    jumpToComment(highlightCommentId, {
+      delayMs: JUMP_DELAY_MS,
+      onSettled: () => {
+        // A newer tap owns the highlight now; leave it alone.
+        if (lastStampRef.current === stamp) setHighlightedId(null);
+      },
+    });
+  }, [highlightCommentId, highlightNonce, data.length, jumpToComment]);
+  useEffect(() => () => jumpController.cancel(), [jumpController]);
 
   // Mark "scrolled past" once the divider row leaves the viewport — used
   // by the unmount effect below to decide whether to bump last-viewed.
@@ -470,7 +460,7 @@ export function TimelineList({
               issueIdentifier={issue.identifier}
               highlightedCommentId={highlightedId}
               revisions={revisions}
-              onJumpToComment={jumpToComment}
+              onJumpToComment={jumpToCommentLink}
             />
           ) : (
             <ActivityRow entry={item.entry} />

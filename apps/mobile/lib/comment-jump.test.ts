@@ -177,7 +177,7 @@ describe("createJumpController", () => {
     vi.useFakeTimers();
     const { list, rows, calls } = slowList(45);
     let cleared = false;
-    const done = createJumpController().jump(list, () => rows, OLD_ROOT, {
+    const done = createJumpController().jump(() => list, () => rows, OLD_ROOT, {
       holdMs: 5000,
       onSettled: () => {
         cleared = true;
@@ -203,7 +203,7 @@ describe("createJumpController", () => {
     vi.useFakeTimers();
     const { list, rows, calls } = slowList(45);
     const controller = createJumpController();
-    const done = controller.jump(list, () => rows, OLD_ROOT);
+    const done = controller.jump(() => list, () => rows, OLD_ROOT);
     await vi.advanceTimersByTimeAsync(1000);
     const seen = calls.length;
     expect(seen).toBeGreaterThan(0);
@@ -213,14 +213,36 @@ describe("createJumpController", () => {
     expect(calls.length).toBeLessThanOrEqual(seen + 1); // only the in-flight scroll finishes
   });
 
+  it("a drag during the layout delay stops the jump before its first scroll", async () => {
+    vi.useFakeTimers();
+    const { list, rows, calls } = slowList(45);
+    const controller = createJumpController();
+    const done = controller.jump(() => list, () => rows, OLD_ROOT, { delayMs: 100 });
+    await vi.advanceTimersByTimeAsync(50);
+    controller.cancel(); // user drags before the delay ends
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await done).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
+  it("scrolls once the layout delay passes when nobody cancels", async () => {
+    vi.useFakeTimers();
+    const { list, rows, calls } = slowList(3);
+    const done = createJumpController().jump(() => list, () => rows, OLD_ROOT, { delayMs: 100 });
+    await vi.advanceTimersByTimeAsync(99);
+    expect(calls).toEqual([]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await done).toBe(true);
+  });
+
   it("a newer jump supersedes the older one", async () => {
     vi.useFakeTimers();
     const first = slowList(45);
     const second = slowList(3);
     const controller = createJumpController();
-    const a = controller.jump(first.list, () => first.rows, OLD_ROOT);
+    const a = controller.jump(() => first.list, () => first.rows, OLD_ROOT);
     await vi.advanceTimersByTimeAsync(400);
-    const b = controller.jump(second.list, () => second.rows, OLD_ROOT);
+    const b = controller.jump(() => second.list, () => second.rows, OLD_ROOT);
     await vi.advanceTimersByTimeAsync(10_000);
     expect(await a).toBe(false);
     expect(await b).toBe(true);
