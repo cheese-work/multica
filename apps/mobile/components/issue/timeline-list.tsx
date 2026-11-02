@@ -32,7 +32,7 @@ import { supersessionRevisions } from "@multica/core/issues/supersession";
 import { useLastViewedStore } from "@/data/stores/last-viewed-store";
 import { coalesceTimeline } from "@/lib/timeline-coalesce";
 import { buildTimelineRows, type TimelineRow } from "@/lib/timeline-thread";
-import { scrollRowIntoView } from "@/lib/scroll-to-row";
+import { jumpToCommentRow } from "@/lib/comment-jump";
 import { ImageSequenceProvider } from "@/lib/markdown/image-sequence";
 import { issueAttachmentsOptions } from "@/data/queries/issues";
 import { useWorkspaceStore } from "@/data/workspace-store";
@@ -226,26 +226,27 @@ export function TimelineList({
   }, [data, dividerAnchorId]);
 
   const jumpToken = useRef(0);
+  // Latest rows for the jump: it re-reads them on every scroll attempt, since
+  // rows can arrive above the target while a scroll is in flight.
+  const rowsRef = useRef(dataWithDivider);
+  useEffect(() => {
+    rowsRef.current = dataWithDivider;
+  }, [dataWithDivider]);
   // Scroll to the row that holds a comment: its own row for a root, the
   // parent's row for a reply (replies render inline inside their root's card).
-  const jumpToComment = useCallback(
-    (commentId: string) => {
-      const index = dataWithDivider.findIndex(
-        (row) =>
-          row.entry.id === commentId ||
-          row.replies.some((reply) => reply.id === commentId),
-      );
-      const list = listRef.current;
-      if (index < 0 || !list) return;
-      // A newer jump or unmount supersedes this one, so it stops re-scrolling.
-      jumpToken.current += 1;
-      const token = jumpToken.current;
-      void scrollRowIntoView(list, index, {
-        isCancelled: () => jumpToken.current !== token,
-      });
-    },
-    [dataWithDivider],
-  );
+  const jumpToComment = useCallback((commentId: string) => {
+    const list = listRef.current;
+    if (!list) return;
+    // A newer jump or unmount supersedes this one, so it stops re-scrolling.
+    jumpToken.current += 1;
+    const token = jumpToken.current;
+    void jumpToCommentRow(
+      list,
+      () => rowsRef.current,
+      commentId,
+      () => jumpToken.current !== token,
+    );
+  }, []);
 
   // The timers live outside the effect: an append (data.length) re-runs the
   // effect, and its stamp gate would then skip re-arming a cancelled jump.

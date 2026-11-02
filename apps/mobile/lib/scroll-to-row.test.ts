@@ -22,26 +22,26 @@ function fakeList(opts: { shortBy: number; drift?: number; viewport?: number }) 
 describe("scrollRowIntoView", () => {
   it("returns true after one scroll when the row is already visible", async () => {
     const f = fakeList({ shortBy: 0 });
-    expect(await scrollRowIntoView(f.list, 0)).toBe(true);
+    expect(await scrollRowIntoView(f.list, () => 0)).toBe(true);
     expect(f.calls()).toBe(1);
   });
 
   it("scrolls again when the first scroll lands short of the row", async () => {
     const f = fakeList({ shortBy: 1 });
-    expect(await scrollRowIntoView(f.list, 0)).toBe(true);
+    expect(await scrollRowIntoView(f.list, () => 0)).toBe(true);
     expect(f.calls()).toBe(2);
     expect(f.list.computeVisibleIndices().startIndex).toBe(0);
   });
 
   it("retries without animation after the first animated attempt", async () => {
     const f = fakeList({ shortBy: 2 });
-    await scrollRowIntoView(f.list, 0);
+    await scrollRowIntoView(f.list, () => 0);
     expect(f.animatedFlags).toEqual([true, false, false]);
   });
 
   it("gives up and reports false after the attempt cap", async () => {
     const f = fakeList({ shortBy: 99 });
-    expect(await scrollRowIntoView(f.list, 0)).toBe(false);
+    expect(await scrollRowIntoView(f.list, () => 0)).toBe(false);
     expect(f.calls()).toBe(4);
   });
 
@@ -55,7 +55,35 @@ describe("scrollRowIntoView", () => {
         cancelled = true;
       },
     };
-    expect(await scrollRowIntoView(list, 0, { isCancelled: () => cancelled })).toBe(false);
+    expect(await scrollRowIntoView(list, () => 0, { isCancelled: () => cancelled })).toBe(false);
     expect(f.calls()).toBe(1);
+  });
+
+  it("aims every attempt at the row's current index when rows shift in flight", async () => {
+    const f = fakeList({ shortBy: 1 });
+    let target = 5;
+    const list: RowScroller = {
+      ...f.list,
+      async scrollToIndex(p) {
+        await f.list.scrollToIndex(p);
+        target = 7; // two rows were inserted above the target mid-scroll
+      },
+    };
+    const asked: number[] = [];
+    const spy: RowScroller = {
+      ...list,
+      scrollToIndex: (p) => {
+        asked.push(p.index);
+        return list.scrollToIndex(p);
+      },
+    };
+    expect(await scrollRowIntoView(spy, () => target)).toBe(true);
+    expect(asked).toEqual([5, 7]);
+  });
+
+  it("returns false when the target row disappears", async () => {
+    const f = fakeList({ shortBy: 0 });
+    expect(await scrollRowIntoView(f.list, () => -1)).toBe(false);
+    expect(f.calls()).toBe(0);
   });
 });
