@@ -24,6 +24,8 @@ const GEOMETRY_LIMIT_PX = 1;
 const LABEL_WINDOW_MS = 500;
 const commentId = (i: number) => `cccc${String(i).padStart(4, "0")}-4444-4444-8444-444444444444`;
 const CHIP_KEY = "PERF-101";
+/** One chip per comment. */
+const CHIP_COUNT = 3;
 const CHIP_ISSUE = fx.issueFor(CHIP_KEY);
 
 /** One line per assertion input, so the PR body can quote observed values. */
@@ -61,7 +63,7 @@ test("R3: a chip keeps its title when its issue leaves the list's first page", a
   const origin = new URL(baseURL ?? "http://localhost:3000").origin;
   const profile = fx.profileOf(testInfo.project.name);
   const threadIssue = fx.issueFor(fx.THREAD_ISSUE_IDENTIFIER, fx.THREAD_ISSUE_ID);
-  const comments = timeline((i) => `Comment ${i} tracks ${CHIP_KEY} in the thread.`, 3);
+  const comments = timeline((i) => `Comment ${i} tracks ${CHIP_KEY} in the thread.`, CHIP_COUNT);
   // The chip's issue is on page 1 until the synthetic list update removes it.
   const list = { holdsChipIssue: true, requests: 0 };
   const h = await fx.installHarness(page, context, origin, (path) => {
@@ -105,7 +107,7 @@ test("R3: a chip keeps its title when its issue leaves the list's first page", a
   });
   await socketReady;
   const chips = page.locator("span.issue-mention");
-  await expect(chips).toHaveCount(3, { timeout: 30_000 });
+  await expect(chips).toHaveCount(CHIP_COUNT, { timeout: 30_000 });
   // Every chip shows the title, served from the list.
   for (const chip of await chips.all()) {
     await expect(chip).toContainText(CHIP_ISSUE.title, { timeout: 15_000 });
@@ -128,19 +130,23 @@ test("R3: a chip keeps its title when its issue leaves the list's first page", a
     return w.__samples;
   });
 
-  const frames = samples.filter((s) => s.length > 0);
-  const texts = new Set(frames.flat().map((c) => c.text));
-  const widthDelta = Math.max(0, ...frames.flat().map((c) => Math.abs(c.w - frames[0]![0]!.w)));
-  const heightDelta = Math.max(0, ...frames.flat().map((c) => Math.abs(c.h - frames[0]![0]!.h)));
+  // Every frame counts, including one with no chip: a chip that disappears is the defect.
+  const frames = samples;
+  const chipCounts = [...new Set(frames.map((s) => s.length))];
+  const present = frames.filter((s) => s.length > 0);
+  const texts = new Set(present.flat().map((c) => c.text));
+  const widthDelta = Math.max(0, ...present.flat().map((c) => Math.abs(c.w - present[0]![0]!.w)));
+  const heightDelta = Math.max(0, ...present.flat().map((c) => Math.abs(c.h - present[0]![0]!.h)));
   const shift = await fx.readShift(page);
 
   expect.soft(frames.length, "frames sampled after the list update").toBeGreaterThan(10);
+  expect.soft(chipCounts, "chips present in every frame").toEqual([CHIP_COUNT]);
   expect.soft([...texts], "distinct chip texts after the list update").toEqual([titleText]);
   expect.soft(widthDelta, "chip width delta (px)").toBeLessThanOrEqual(GEOMETRY_LIMIT_PX);
   expect.soft(heightDelta, "chip height delta (px)").toBeLessThanOrEqual(GEOMETRY_LIMIT_PX);
 
   report("R3", {
-    profile, frames: frames.length, distinctTexts: [...texts], widthDelta, heightDelta,
+    profile, frames: frames.length, chipCounts, distinctTexts: [...texts], widthDelta, heightDelta,
     cls: shift.cls, rawShift: shift.raw,
   });
   expectClean(h);
@@ -180,24 +186,29 @@ test("R4: the disclosure label is stable after a child mutation in the descripti
 
   // A child mutation inside the description: an empty node, so the line count is unchanged.
   // It lands right after a frame, so the render it triggers has the rest of the frame to commit in.
-  const labels = await page.evaluate(({ windowMs }) => new Promise<string[]>((done) => {
+  // The window starts when the node is appended, and `mutated` proves it was.
+  const { labels, mutated } = await page.evaluate(({ windowMs }) => new Promise<{ labels: string[]; mutated: boolean }>((done) => {
     const label = () =>
       document.querySelector("[data-description-disclosure] button[aria-controls]")?.textContent ?? "";
     const host = document.querySelector("[data-description-editor] [data-comment-content]")!;
     const seen: string[] = [];
-    const start = performance.now();
-    requestAnimationFrame(() => setTimeout(() => host.appendChild(document.createElement("span")), 0));
+    let mutatedAt = 0;
+    requestAnimationFrame(() => setTimeout(() => {
+      host.appendChild(document.createElement("span"));
+      mutatedAt = performance.now();
+    }, 0));
     const tick = () => {
-      seen.push(label());
-      if (performance.now() - start < windowMs) requestAnimationFrame(tick);
-      else done(seen);
+      if (mutatedAt) seen.push(label());
+      if (!mutatedAt || performance.now() - mutatedAt < windowMs) requestAnimationFrame(tick);
+      else done({ labels: seen, mutated: true });
     };
     tick();
   }), { windowMs: LABEL_WINDOW_MS });
 
   const distinct = [...new Set(labels)];
   const shift = await fx.readShift(page);
-  expect.soft(labels.length, "requestAnimationFrame samples").toBeGreaterThan(5);
+  expect.soft(mutated, "the mutation ran before the window").toBe(true);
+  expect.soft(labels.length, "requestAnimationFrame samples after the mutation").toBeGreaterThan(5);
   expect.soft(distinct, "distinct disclosure labels over 500 ms").toEqual([settled]);
 
   report("R4", { profile, settled, samples: labels.length, distinctLabels: distinct, cls: shift.cls, rawShift: shift.raw });
