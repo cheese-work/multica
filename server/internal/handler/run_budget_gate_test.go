@@ -31,10 +31,7 @@ func spendBudget(t *testing.T, c edgeCase, max int, status string) db.Issue {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The 80% warning is written by a goroutine that outlives the enqueue and
-	// bumps the issue revision; setup runs have no use for it.
-	service.SetOnRunBudgetEvent(nil)
-	defer service.SetOnRunBudgetEvent(testHandler.onRunBudgetEvent)
+	defer withoutRunBudgetWriters()()
 	for i := 0; i < max; i++ {
 		if _, err := testHandler.TaskService.EnqueueTaskForIssue(ctx, issue); err != nil {
 			t.Fatalf("run %d inside the budget refused: %v", i+1, err)
@@ -47,6 +44,19 @@ func spendBudget(t *testing.T, c edgeCase, max int, status string) db.Issue {
 		t.Fatal(err)
 	}
 	return issue
+}
+
+// withoutRunBudgetWriters mutes the 80% warning and the exhaustion block until
+// the returned func runs. Each is written by a goroutine that outlives the
+// enqueue, bumps the issue revision and reads testHandler fields; setup runs
+// have no use for them, and a later test must not race them (CHE-3014).
+func withoutRunBudgetWriters() (restore func()) {
+	service.SetOnRunBudgetEvent(nil)
+	service.SetOnRunBudgetExhausted(nil)
+	return func() {
+		service.SetOnRunBudgetEvent(testHandler.onRunBudgetEvent)
+		service.SetOnRunBudgetExhausted(testHandler.onRunBudgetExhausted)
+	}
 }
 
 func finishRuns(t *testing.T, c edgeCase) {

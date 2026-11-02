@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -98,6 +99,7 @@ func TestTopUpIssueRunBudgetRefusesACloudNodeCredential(t *testing.T) {
 // many it admitted: the balance as admission sees it, not as the ledger rows add up.
 func admitUntilRefused(t *testing.T, c edgeCase, limit int) int {
 	t.Helper()
+	defer withoutRunBudgetWriters()()
 	ctx := context.Background()
 	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(c.issueID))
 	if err != nil {
@@ -179,5 +181,33 @@ func TestRepeatedTopUpsStayAdditive(t *testing.T) {
 	}
 	if got := admitUntilRefused(t, c, 10); got != 6 {
 		t.Fatalf("runs admitted after three top-ups = %d, want 6 (three 2-run windows)", got)
+	}
+}
+
+// admitUntilRefused is setup. The warning and exhaustion writers its runs raise
+// are goroutines that outlive the helper, bump the issue revision and read
+// testHandler fields a later test swaps (CHE-3014).
+func TestAdmitUntilRefusedLeavesNoLateIssueWriter(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	c, _ := budgetedAt(t, 40, 37)
+	openLedger(t, c)
+	if w := topUpBudget(t, c.issueID, nil); w.Code != http.StatusOK {
+		t.Fatalf("top-up = %d: %s", w.Code, w.Body.String())
+	}
+	admitUntilRefused(t, c, 50)
+	ctx := context.Background()
+	before, err := testHandler.Queries.GetIssue(ctx, parseUUID(c.issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	after, err := testHandler.Queries.GetIssue(ctx, parseUUID(c.issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Revision != before.Revision {
+		t.Fatalf("issue revision moved from %d to %d after admitUntilRefused returned: a late writer outlives the helper", before.Revision, after.Revision)
 	}
 }
