@@ -3,8 +3,8 @@
 Companion to [FORK-FEATURES.md](FORK-FEATURES.md) (CHE-2792). Re-check of every ledger row against current upstream `main`.
 
 - Fork `main`: `ee8b37834f56f7219f17d2046c8155a731cb80d8` (2026-11-02 16:33 ICT).
-- Upstream `main`: `e8b6a97643ccc35efbcf2a4675c8d088a288ed6e` (2026-11-02 17:44 ICT). Upstream tag `v0.7.0`: `dbdbb299164347586e2650bb67684a490726a798`.
-- Upstream `main` advanced to `3794359792` (3 commits, newest 2026-11-02 19:02 ICT) after this check. The commits change the agents UI, the collection page and skill-import size limits (`server/internal/cli/errors.go` gains a 413 kind). None changes an upstream line cited as evidence, so no status was re-run.
+- Upstream `main` pin: `3794359792e1e310d89d0488b46efff66e9d2369` (2026-11-02 19:02 ICT). Upstream tag `v0.7.0`: `dbdbb299164347586e2650bb67684a490726a798`.
+- Evidence was read at `e8b6a97643ccc35efbcf2a4675c8d088a288ed6e` (2026-11-02 17:44 ICT) and re-verified at the pin `3794359792e1e310d89d0488b46efff66e9d2369` (2026-11-02 19:02 ICT): 3 later commits change 55 files (agents UI, collection page, skill-import limit errors; `server/internal/cli/errors.go` gains a 413 kind). Of those 55 files only `packages/views/chat/components/chat-session-header.tsx`, `packages/views/layout/index.ts`, `packages/views/search/search-command.test.tsx` and `server/internal/cli/errors.go` are named anywhere in these docs, and none is an upstream line that a status or fix verdict rests on, so no status changed.
 - Method: search upstream `main` for the row's code (`git grep`, `git show upstream/main:<path>`, `git log v0.7.0..upstream/main -- <path>`).
   A title match alone is never `overlaps` or `upstreamed`; the evidence column names the upstream file, symbol or commit.
 - **fork-only**: no upstream code covers the behavior. **overlaps**: upstream covers part; the recommendation says what the fork still adds. **upstreamed**: upstream covers all of it.

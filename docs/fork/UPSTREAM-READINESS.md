@@ -22,9 +22,9 @@ Static. No runtime qualification and no coverage run. Evidence per row is mechan
 
 | Rating | Rows |
 | --- | --- |
-| complete | 104 |
+| complete | 108 |
 | experimental | 6 |
-| partial | 49 |
+| partial | 45 |
 | removed | 9 |
 
 | Upstream fit | Rows |
@@ -39,9 +39,9 @@ Board lanes (rules in the next section; counts in the board attached to CHE-2792
 
 | Lane | Rows | Rule |
 | --- | --- | --- |
-| Ready to pitch | 39 | fit yes, rating complete, fork-only, present on main, and every hard dependency is itself in this lane or already upstream |
+| Ready to pitch | 38 | fit yes, rating complete, fork-only, present on main, and every hard dependency is itself in this lane or already upstream |
 | Reconcile first | 26 | fit yes but upstream covers part of it; merge choice first |
-| Close gaps first | 21 | fit yes but rating partial, partly removed, or a hard dependency is not ready |
+| Close gaps first | 22 | fit yes but rating partial, partly removed, or a hard dependency is not ready |
 | Needs design talk | 32 | subsystem upstream has not asked for; start a design talk |
 | Stays in fork | 32 | fork integration or fork ops; stays in the fork (also every fork-only fix) |
 | Dead pool | 18 | removed, upstreamed, design-only or record-only rows |
@@ -86,16 +86,16 @@ Rows in a hard-dependency cycle share a depth and must land together or after a 
 | 28 | W11 | Ready to pitch | complete | - | - |
 | 29 | W14 | Ready to pitch | complete | - | - |
 | 30 | W18 | Ready to pitch | complete | - | - |
-| 31 | W20 | Ready to pitch | complete | - | - |
-| 32 | W22 | Ready to pitch | complete | - | - |
-| 33 | C05 | Close gaps first | complete | - | B01, B02 |
-| 34 | C15 | Close gaps first | partial | - | - |
-| 35 | C22 | Close gaps first | partial | - | - |
-| 36 | H09 | Close gaps first | complete | - | H10 |
-| 37 | W06 | Close gaps first | partial | - | W08, W09 |
-| 38 | W08 | Close gaps first | partial | - | W06, W09 |
-| 39 | W09 | Close gaps first | partial | - | W06, W08 |
-| 40 | W16 | Close gaps first | complete | - | W15 |
+| 31 | W22 | Ready to pitch | complete | - | - |
+| 32 | C05 | Close gaps first | complete | - | B01, B02 |
+| 33 | C15 | Close gaps first | partial | - | - |
+| 34 | C22 | Close gaps first | partial | - | - |
+| 35 | H09 | Close gaps first | complete | - | H10 |
+| 36 | W06 | Close gaps first | partial | - | W08, W09 |
+| 37 | W08 | Close gaps first | partial | - | W06, W09 |
+| 38 | W09 | Close gaps first | partial | - | W06, W08 |
+| 39 | W16 | Close gaps first | complete | - | W15 |
+| 40 | W20 | Close gaps first | complete | - | H07 (n/a, removed writer; helper survives) |
 | 41 | C01 | Reconcile first | partial | - | - |
 | 42 | C02 | Reconcile first | partial | - | - |
 | 43 | C03 | Reconcile first | partial | - | - |
@@ -201,7 +201,7 @@ Rows in a hard-dependency cycle share a depth and must land together or after a 
 | H03 | Merged PRs advance custom done-category review states | partial | yes | TUS | reconcile with upstream first (fc4a61570 / MUL-7726) |
 | H04 | Actor/task-aware automatic PR linking and CLI unlink repair | partial | yes | TUCS | reconcile with upstream first (0da0b46bb / MUL-7672) |
 | H05 | Snapshot refresh for already-decided PRs and latest-run-per-name/app check filtering | partial | yes | TUMS | reconcile with upstream first (e720fe221 / MUL-8135; ecce58986 / MUL-5265) |
-| H06 | PR close-target validation and non-leaking sparse checkout | partial | fork ops only | UI | no test file in its PRs; Workflow file has no test; CI-only. |
+| H06 | PR close-target validation and non-leaking sparse checkout | complete | fork ops only | TUI | tests in its PRs: `scripts/pr-close-target-check.test.mjs` (the earlier file-name check missed them). |
 | H07 | Durable merge-announcement writer, subsequently removed | removed | n/a | TUCDMIS | removed from main: 149e45f53e refactor(github): remove fork merge-announcement comment (#154) |
 | H08 | CLI browser handoff exchanged for a CLI token | partial | yes | TUDS | reconcile with upstream first (da278c7d4 / MUL-8154) |
 | H09 | Wake PR author agents on human reviews | complete | yes | TUS | - |
@@ -288,20 +288,20 @@ Rows in a hard-dependency cycle share a depth and must land together or after a 
 | O03 | Immutable image qualification and qualified C00 delivery admission | complete | fork ops only | TUDIS | - |
 | O04 | D2 migration quiescence and retained-archive rollback safety | complete | fork ops only | TUDMIS | - |
 | O05 | Blue/green application slots, router state, atomic cutover and correct rollback tuple | complete | fork ops only | TUDI | - |
-| O06 | C00 queue stall alarms and superseded-candidate skipping | partial | fork ops only | UDI | no test file in its PRs |
+| O06 | C00 queue stall alarms and superseded-candidate skipping | complete | fork ops only | TUDI | tests in its PRs: `deploy/cd/test-check-deploy-queue.py, deploy/cd/test-candidate-preflight.py` (the earlier file-name check missed them). |
 | O07 | Bounded candidate image-pull retry | complete | fork ops only | TUDI | - |
 | O08 | Historical migration identity reconciliation | complete | fork ops only | TUDMIS | - |
 | O09 | Scoped Jev environment inputs survive backend recreation | partial | fork ops only | TDI | partly removed from main: 1cb8be9138 / PR #703 (CHE-2760) deleted server/cmd/server/jev.go, so no MULTICA_JEV_SECRET_KEY consumer remains in server/ |
 | O10 | Integration tests fail without their database and avoid shared-fixture leakage | complete | fork ops only | TUDMIS | - |
 | O11 | Real-browser disclosure regressions and repaired upstream-sync E2E selectors/timeouts | complete | fork ops only | TUD | - |
 | O12 | Go/network dependency security update | complete | n/a | UDS | already upstream (ca593b3103; 3bacc41f84; ce5a2ba472) |
-| O13 | Isolated paired-replay instrumentation | partial | fork ops only | UD | no test file in its PRs |
+| O13 | Isolated paired-replay instrumentation | complete | fork ops only | TUD | tests in its PRs: `scripts/paired-replay.test.mjs` (the earlier file-name check missed them). |
 | O14 | Fork build stamps and distinct server version/build/commit fields | complete | fork ops only | TUCDIS | - |
 | O15 | Fork changelog line contract, generation, preview and qualified release display | complete | fork ops only | TUDIS | - |
 | O16 | Autopilot cooldown lookup scope and unset probe wiring | complete | fork ops only | TUCS | - |
 | O17 | Fork CLI/skill reference and child completion briefing updates | partial | fork ops only | TUDS | reconcile with upstream first (90a88519df; a008d893dd) |
 | O18 | Sandbox namespace/cgroup feasibility packet, not an implemented isolation feature | experimental | n/a | D | - |
-| O19 | Destructive development-startup GC requires explicit opt-in | partial | fork ops only | D | no test file in its PRs; Startup script, no test touched. |
+| O19 | Destructive development-startup GC requires explicit opt-in | complete | fork ops only | TD | tests in its PRs: `scripts/dev-env.test.sh` (the earlier file-name check missed them). |
 | O20 | Merge-group CI validation and reuse of green merge-group runs | complete | fork ops only | TDI | - |
 | O21 | CD approvals per version, superseded builds cancelled, approved deployments preserved, cached/parallel qualification, deploy flag isolation, backend shard | complete | fork ops only | TUDIS | - |
 | O22 | Migration prefix-collision gate | complete | fork ops only | TI | - |

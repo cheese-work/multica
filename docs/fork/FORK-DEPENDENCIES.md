@@ -16,8 +16,8 @@ Static read of fork `main` `ee8b37834f56f7219f17d2046c8155a731cb80d8` (2026-11-0
 | Item | Count |
 | --- | --- |
 | Rows | 168 |
-| Rows with `Depends on: none` | 91 |
-| Hard edges | 129 |
+| Rows with `Depends on: none` | 90 |
+| Hard edges | 130 |
 | Soft edges | 10 |
 
 ## Cycles
@@ -116,6 +116,7 @@ Rows in a cycle are ordered as one unit in [UPSTREAM-READINESS.md](UPSTREAM-READ
 | W16 | W15 | hard | server/internal/handler/issue_workflow_edges.go:71 spawn happens inside the edge-advance loop; stage join reads edge Facts (server/internal/issueworkflow/edges.go:212) |
 | W17 | W15 | hard | server/internal/handler/issue_workflow_edges.go:197 facts.Webhooks = h.guardedWebhooks(...); server/internal/issueworkflow/edges.go:35 GuardWebhook guard consumes verified events |
 | W19 | W15 | hard | server/internal/handler/issue_workflow_entry_gate.go:84 h.loadEdgeFacts(...); :206 issueworkflow.Edge; server/internal/issueworkflow/entry.go:16 MaxEntryGatesPerStep = MaxEdgesPerStep, :63 ParseGuard |
+| W20 | H07 | hard | server/internal/handler/github_workflow.go:62 `githubEnabledForWorkspace(ws)`; the helper is defined at server/internal/handler/github.go:2679 (added by fork commit cec25ddc8b, row H07) and is absent from upstream `3794359792` (upstream has the `github_enabled` setting, read in server/internal/daemon/daemon.go:3294, but no handler helper). The H07 writer was removed (149e45f53e); the 17-line helper stayed. W20 needs it bundled |
 | W21 | W06 | hard | server/internal/service/wakeup_custom_exec.go:47 b := &builtinWakeup{Eff: r.eff, ...} |
 | W21 | W07 | hard | server/internal/service/wakeup_custom_instance.go:139 ApplyDefaultWakeupInstance; wakeup_custom_sweep.go:312 same call |
 | W21 | W08 | hard | server/internal/service/wakeup_custom_exec.go:262 admitAggregateStart(...) |
@@ -236,7 +237,7 @@ Rows in a cycle are ordered as one unit in [UPSTREAM-READINESS.md](UPSTREAM-READ
 - **W17**: Verifier and nonce tables stand alone; only the guard that reads events needs W15.
 - **W18**: Source list trimmed; no hard cross-row symbol found.
 - **W19**: Entry gates reuse the edge/guard engine.
-- **W20**: github_workflow.go:62 calls githubEnabledForWorkspace, defined in handler/github.go:2679 (added by fork commit cec25ddc8b, CHE-374, row H07 commit); not an upstream symbol, so it must travel with the file.
+- **W20**: Edge to H07 is the surviving helper only (a second caller is github.go:2054). Not independent: the W20 PR must carry `githubEnabledForWorkspace` (about 17 lines), so W20 sits in Close gaps first until it does. Earlier revision of this file listed the symbol here but omitted the edge.
 - **W21**: Source list had 5 files; wakeup_schedule.go added as the schedule home.
 - **W22**: Source list trimmed of mobile inbox files.
 - **G04**: G04 and G24 share governed_cas.go; G24 side of the cycle not checked in this batch.
