@@ -88,7 +88,7 @@ func TestDecisionCardAnswerSchema(test *testing.T) {
 		if _, err := tx.Exec(ctx, `UPDATE decision_request SET status = 'answered' WHERE id = $1`, request.ID); err != nil {
 			test.Fatal(err)
 		}
-		migration := strings.Replace(readMigrationFile(test, "883_repair_che_2976_card_answer.up.sql"), "6094a9bb-0a90-4812-8dff-4d4d842d501b", uuid.UUID(request.ID.Bytes).String(), 1)
+		migration := strings.Replace(readMigrationFile(test, "885_repair_che_2976_card_answer.up.sql"), "6094a9bb-0a90-4812-8dff-4d4d842d501b", uuid.UUID(request.ID.Bytes).String(), 1)
 		if _, err := tx.Exec(ctx, migration); err != nil {
 			test.Fatalf("drifted repair migration must leave the changed answer alone: %v", err)
 		}
