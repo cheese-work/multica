@@ -14,7 +14,7 @@ import (
 const createWorkspace = `-- name: CreateWorkspace :one
 INSERT INTO workspace (name, slug, description, context, issue_prefix)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days, scheduling_paused_at, scheduling_paused_by
+RETURNING id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days, decision_passkey_gate, policy_revision, scheduling_paused_at, scheduling_paused_by
 `
 
 type CreateWorkspaceParams struct {
@@ -50,6 +50,8 @@ func (q *Queries) CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams
 		&i.AttributionFailClosed,
 		&i.ExportRedactionMode,
 		&i.ExportManifestRetentionDays,
+		&i.DecisionPasskeyGate,
+		&i.PolicyRevision,
 		&i.SchedulingPausedAt,
 		&i.SchedulingPausedBy,
 	)
@@ -246,7 +248,7 @@ func (q *Queries) GetDaemonWorkspace(ctx context.Context, id pgtype.UUID) (GetDa
 }
 
 const getWorkspace = `-- name: GetWorkspace :one
-SELECT id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days, scheduling_paused_at, scheduling_paused_by FROM workspace
+SELECT id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days, decision_passkey_gate, policy_revision, scheduling_paused_at, scheduling_paused_by FROM workspace
 WHERE id = $1
 `
 
@@ -269,6 +271,8 @@ func (q *Queries) GetWorkspace(ctx context.Context, id pgtype.UUID) (Workspace, 
 		&i.AttributionFailClosed,
 		&i.ExportRedactionMode,
 		&i.ExportManifestRetentionDays,
+		&i.DecisionPasskeyGate,
+		&i.PolicyRevision,
 		&i.SchedulingPausedAt,
 		&i.SchedulingPausedBy,
 	)
@@ -290,7 +294,7 @@ func (q *Queries) GetWorkspaceAttributionFailClosed(ctx context.Context, id pgty
 }
 
 const getWorkspaceBySlug = `-- name: GetWorkspaceBySlug :one
-SELECT id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days, scheduling_paused_at, scheduling_paused_by FROM workspace
+SELECT id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days, decision_passkey_gate, policy_revision, scheduling_paused_at, scheduling_paused_by FROM workspace
 WHERE slug = $1
 `
 
@@ -313,6 +317,8 @@ func (q *Queries) GetWorkspaceBySlug(ctx context.Context, slug string) (Workspac
 		&i.AttributionFailClosed,
 		&i.ExportRedactionMode,
 		&i.ExportManifestRetentionDays,
+		&i.DecisionPasskeyGate,
+		&i.PolicyRevision,
 		&i.SchedulingPausedAt,
 		&i.SchedulingPausedBy,
 	)
@@ -417,6 +423,7 @@ SELECT w.id, w.name, w.slug, w.description, w.settings,
        w.created_at, w.updated_at, w.context, w.repos,
        w.issue_prefix, w.issue_counter, w.avatar_url, w.attribution_fail_closed,
        w.export_redaction_mode, w.export_manifest_retention_days,
+       w.decision_passkey_gate, w.policy_revision,
        w.scheduling_paused_at, w.scheduling_paused_by
 FROM member m
 JOIN workspace w ON w.id = m.workspace_id
@@ -449,6 +456,8 @@ func (q *Queries) ListWorkspaces(ctx context.Context, userID pgtype.UUID) ([]Wor
 			&i.AttributionFailClosed,
 			&i.ExportRedactionMode,
 			&i.ExportManifestRetentionDays,
+			&i.DecisionPasskeyGate,
+			&i.PolicyRevision,
 			&i.SchedulingPausedAt,
 			&i.SchedulingPausedBy,
 		); err != nil {
@@ -541,7 +550,7 @@ UPDATE workspace
 SET scheduling_paused_at = COALESCE(scheduling_paused_at, now()),
     scheduling_paused_by = COALESCE(scheduling_paused_by, $1)
 WHERE id = $2
-RETURNING id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days, scheduling_paused_at, scheduling_paused_by
+RETURNING id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days, decision_passkey_gate, policy_revision, scheduling_paused_at, scheduling_paused_by
 `
 
 type PauseWorkspaceSchedulingParams struct {
@@ -570,6 +579,8 @@ func (q *Queries) PauseWorkspaceScheduling(ctx context.Context, arg PauseWorkspa
 		&i.AttributionFailClosed,
 		&i.ExportRedactionMode,
 		&i.ExportManifestRetentionDays,
+		&i.DecisionPasskeyGate,
+		&i.PolicyRevision,
 		&i.SchedulingPausedAt,
 		&i.SchedulingPausedBy,
 	)
@@ -580,7 +591,7 @@ const resumeWorkspaceScheduling = `-- name: ResumeWorkspaceScheduling :one
 UPDATE workspace
 SET scheduling_paused_at = NULL, scheduling_paused_by = NULL
 WHERE id = $1
-RETURNING id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days, scheduling_paused_at, scheduling_paused_by
+RETURNING id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days, decision_passkey_gate, policy_revision, scheduling_paused_at, scheduling_paused_by
 `
 
 func (q *Queries) ResumeWorkspaceScheduling(ctx context.Context, id pgtype.UUID) (Workspace, error) {
@@ -602,6 +613,8 @@ func (q *Queries) ResumeWorkspaceScheduling(ctx context.Context, id pgtype.UUID)
 		&i.AttributionFailClosed,
 		&i.ExportRedactionMode,
 		&i.ExportManifestRetentionDays,
+		&i.DecisionPasskeyGate,
+		&i.PolicyRevision,
 		&i.SchedulingPausedAt,
 		&i.SchedulingPausedBy,
 	)
@@ -642,7 +655,7 @@ UPDATE workspace SET
     avatar_url = COALESCE($14, avatar_url),
     updated_at = now()
 WHERE id = $1
-RETURNING id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days, scheduling_paused_at, scheduling_paused_by
+RETURNING id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days, decision_passkey_gate, policy_revision, scheduling_paused_at, scheduling_paused_by
 `
 
 type UpdateWorkspaceParams struct {
@@ -696,6 +709,8 @@ func (q *Queries) UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams
 		&i.AttributionFailClosed,
 		&i.ExportRedactionMode,
 		&i.ExportManifestRetentionDays,
+		&i.DecisionPasskeyGate,
+		&i.PolicyRevision,
 		&i.SchedulingPausedAt,
 		&i.SchedulingPausedBy,
 	)
