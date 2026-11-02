@@ -56,11 +56,16 @@ export function useWakeupForm({
     until_future: t(($) => $.wakeups.create.until_future),
   };
 
-  const submit = async () => {
-    if (inFlight.current) return;
+  /** The payload save sends: a property condition's value is typed by the property. */
+  const build = () => {
     const propertyType =
       draft.field === "property" ? properties.find((p) => p.id === draft.fieldTarget)?.type : undefined;
-    const result = buildWakeupInput(draft, new Date(), propertyType);
+    return buildWakeupInput(draft, new Date(), propertyType);
+  };
+
+  const submit = async () => {
+    if (inFlight.current) return;
+    const result = build();
     if ("error" in result) {
       setError(draftErrors[result.error]);
       return;
@@ -89,5 +94,5 @@ export function useWakeupForm({
     }
   };
 
-  return { draft, update, error, pending, submit };
+  return { draft, update, error, pending, submit, build };
 }

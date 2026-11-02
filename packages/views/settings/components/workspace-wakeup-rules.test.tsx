@@ -16,8 +16,9 @@ vi.mock("@multica/core/api", async (importOriginal) => ({
     saveWakeupDefinition: vi.fn(),
   },
 }));
+const properties = vi.hoisted(() => ({ current: [] as { id: string; type: string }[], value: "" }));
 vi.mock("@multica/core/properties/queries", () => ({
-  propertyListOptions: () => ({ queryKey: ["properties", "ws"], queryFn: async () => [] }),
+  propertyListOptions: () => ({ queryKey: ["properties", "ws"], queryFn: async () => properties.current }),
 }));
 vi.mock("../../common/use-viewing-timezone", () => ({ useViewingTimezone: () => "UTC" }));
 vi.mock("../../issues/components/wakeup-condition-names", () => ({
@@ -33,6 +34,14 @@ vi.mock("../../issues/components/wakeup-fields", () => ({
         onClick={() => update({ condition: "custom", events: ["issue.updated"], agentId: "agent-1", instruction: "Look at it" })}
       >
         Fill fields
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          update({ condition: "field", field: "property", fieldTarget: "p1", fieldValue: properties.value, agentId: "agent-1", instruction: "Look at it" })
+        }
+      >
+        Fill property
       </button>
       <output>{`draft:${draft.agentId}|${draft.instruction}|${draft.waitDays}`}</output>
     </>
@@ -79,6 +88,7 @@ async function fillAndName() {
 }
 
 beforeEach(() => {
+  properties.current = [];
   list.mockReset().mockResolvedValue({ definitions: [existing], capabilities: open });
   preview.mockReset().mockResolvedValue(effective as never);
   create.mockReset().mockResolvedValue(existing as never);
@@ -248,4 +258,23 @@ it("offers no edit to members who cannot manage the workspace", async () => {
   mount(false);
   expect(await screen.findByText("Watch PRs")).toBeVisible();
   expect(screen.queryByRole("button", { name: "Edit Watch PRs" })).toBeNull();
+});
+
+it.each([
+  ["number", "5", 5],
+  ["checkbox", "true", true],
+])("previews and saves a %s property condition with the typed value", async (type, raw, typed) => {
+  properties.current = [{ id: "p1", type }];
+  properties.value = raw;
+  mount();
+  const fill = await screen.findByRole("button", { name: "Fill property" });
+  fireEvent.click(fill);
+  fireEvent.change(screen.getByRole("textbox", { name: "Rule name" }), { target: { value: "By property" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+  await waitFor(() => expect(preview).toHaveBeenCalledTimes(1));
+  fireEvent.click(screen.getByRole("button", { name: "Create rule" }));
+  await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+  const trigger = (config: { trigger?: unknown }) => config.trigger;
+  expect(trigger(preview.mock.calls[0]![1].config)).toMatchObject({ condition: { value: typed } });
+  expect(trigger(create.mock.calls[0]![1].config)).toEqual(trigger(preview.mock.calls[0]![1].config));
 });

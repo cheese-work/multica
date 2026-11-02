@@ -16,7 +16,7 @@ import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
 import { WakeupFields } from "../../issues/components/wakeup-fields";
 import { useWakeupForm } from "../../issues/components/use-wakeup-form";
-import { buildWakeupInput, type WakeupDraft } from "../../issues/components/wakeup-draft";
+import type { WakeupDraft } from "../../issues/components/wakeup-draft";
 import {
   WAKEUP_DEFINITION_NAME_MAX,
   definitionConfigFromInput,
@@ -179,7 +179,7 @@ function RuleForm({
     unsupported_filter: t(($) => $.wakeups.rules.unsupported_filter),
     unsupported_schedule: t(($) => $.wakeups.rules.unsupported_schedule),
   };
-  const { draft, update, error, pending, submit } = useWakeupForm({
+  const { draft, update, error, pending, submit, build } = useWakeupForm({
     workspaceId,
     defaultAgentId: "",
     initial: initial?.draft,
@@ -204,7 +204,7 @@ function RuleForm({
   const preview = async () => {
     setPreviewed(null);
     setPreviewError("");
-    const built = buildWakeupInput(draft);
+    const built = build();
     const result = "input" in built ? definitionConfigFromInput(built.input, name) : null;
     if (!result || "error" in result) {
       // Only an incomplete draft gets here, so this shows what is missing
