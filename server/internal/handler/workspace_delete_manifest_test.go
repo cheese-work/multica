@@ -230,6 +230,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"stage_generation":                   workspaceDelete,
 	"sys_cron_executions":                workspaceDeleteKeep,
 	"task_message":                       workspaceDelete,
+	"silence_alert_receipt":              workspaceDelete, // CHE-2990 per-task alert receipt; removed with its task in DeleteTaskBatch.
 	"task_supplement":                    workspaceDelete,
 	"task_supplement_capability":         workspaceDelete,
 	"task_pr_event_capability":           workspaceDelete, // CHE-2298 a2
