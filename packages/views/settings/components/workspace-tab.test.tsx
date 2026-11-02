@@ -404,7 +404,78 @@ describe("WorkspaceTab — automatic updates", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows the saved idle guard after a reload", () => {
+  it("keeps the chosen idle guard mode and hours after a reload, leaving other settings alone", async () => {
+    const user = setupUser();
+    const others = {
+      compact_prompt: "Keep SHAs.",
+      auto_compact: { enabled: false, threshold_pct: 60 },
+      nested: { keep: "me" },
+    };
+    let server = { ...workspaceRef.current, settings: { ...others } as Record<string, unknown> };
+    workspaceRef.current = server;
+    // Stand-in for the server: the dedicated field merges into one settings
+    // key, and a `settings` blob replaces them all.
+    mockUpdateWorkspace.mockImplementation(async (_id: string, body: Record<string, unknown>) => {
+      const saved = (server.settings.idle_started_guard ?? {}) as Record<string, unknown>;
+      server = {
+        ...server,
+        settings: (body.settings as Record<string, unknown>) ?? {
+          ...server.settings,
+          idle_started_guard: { ...saved, ...(body.idle_started_guard as object) },
+        },
+      };
+      return server;
+    });
+    const first = render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    await user.click(screen.getByRole("combobox", { name: "Idle-issue guard" }));
+    await user.click(await screen.findByRole("option", { name: "Shadow" }));
+    await waitFor(() => expect(server.settings.idle_started_guard).toEqual({ mode: "shadow" }));
+    const hours = screen.getByRole("spinbutton", { name: "After (hours)" });
+    await user.clear(hours);
+    await user.type(hours, "6");
+    await user.tab();
+    await waitFor(() =>
+      expect(server.settings.idle_started_guard).toEqual({ mode: "shadow", after_hours: 6 }),
+    );
+
+    first.unmount();
+    workspaceRef.current = server;
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    expect(screen.getByRole("combobox", { name: "Idle-issue guard" })).toHaveTextContent("Shadow");
+    expect(screen.getByRole("spinbutton", { name: "After (hours)" })).toHaveValue(6);
+    expect(server.settings).toMatchObject(others);
+  });
+
+  it("saves the idle guard one request at a time, in the order the owner made them", async () => {
+    const user = setupUser();
+    const releases: (() => void)[] = [];
+    mockUpdateWorkspace.mockImplementation(
+      (_id: string, body: unknown) =>
+        new Promise((resolve) => releases.push(() => resolve({ ...workspaceRef.current, body }))),
+    );
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+    const hours = screen.getByRole("spinbutton", { name: "After (hours)" });
+
+    await user.clear(hours);
+    await user.type(hours, "8");
+    await user.click(screen.getByRole("combobox", { name: "Idle-issue guard" }));
+    await user.click(await screen.findByRole("option", { name: "Act" }));
+
+    await waitFor(() => expect(mockUpdateWorkspace).toHaveBeenCalledTimes(1));
+    expect(mockUpdateWorkspace).toHaveBeenLastCalledWith("workspace-1", {
+      idle_started_guard: { after_hours: 8 },
+    });
+    releases[0]?.();
+    await waitFor(() => expect(mockUpdateWorkspace).toHaveBeenCalledTimes(2));
+    expect(mockUpdateWorkspace).toHaveBeenLastCalledWith("workspace-1", {
+      idle_started_guard: { mode: "act" },
+    });
+    releases[1]?.();
+  });
+
+  it("shows the saved idle guard", () => {
     workspaceRef.current = {
       ...workspaceRef.current,
       settings: { idle_started_guard: { mode: "act", after_hours: 9 } },

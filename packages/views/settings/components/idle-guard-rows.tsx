@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "@multica/core/api";
@@ -39,7 +39,8 @@ function readIdleGuard(settings: Record<string, unknown> | undefined) {
 /**
  * CHE-3296: the idle-issue guard (CHE-2609) mode and threshold. Each save
  * sends only the changed field in its own request field, so no other
- * workspace setting is rewritten. Owner only, as on the server.
+ * workspace setting is rewritten. Saves run one at a time, in the order the
+ * owner made them. Owner only, as on the server.
  */
 export function IdleGuardRows({ workspace, canEdit }: { workspace: Workspace; canEdit: boolean }) {
   const { t } = useT("settings");
@@ -48,25 +49,29 @@ export function IdleGuardRows({ workspace, canEdit }: { workspace: Workspace; ca
   const [hoursDraft, setHoursDraft] = useState<string | null>(null);
   const hoursText = hoursDraft ?? String(saved.hours);
   const hoursInvalid = hoursDraft !== null && (hoursText.trim() === "" || !isValidHours(Number(hoursText)));
+  const queue = useRef<Promise<unknown>>(Promise.resolve());
   const modeLabel = (mode: IdleGuardMode) => t(($) => $.workspace[`idle_guard_${mode}`]);
 
-  async function save(next: { mode?: IdleGuardMode; after_hours?: number }) {
-    try {
-      const updated = await api.updateWorkspace(workspace.id, { idle_started_guard: next });
-      qc.setQueryData(workspaceKeys.list(), (old: Workspace[] | undefined) =>
-        old?.map((ws) => (ws.id === updated.id ? updated : ws)),
-      );
-      setHoursDraft(null);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : t(($) => $.workspace.toast_save_failed));
-    }
+  function save(next: { mode?: IdleGuardMode; after_hours?: number }, onSaved?: () => void) {
+    const run = async () => {
+      try {
+        const updated = await api.updateWorkspace(workspace.id, { idle_started_guard: next });
+        qc.setQueryData(workspaceKeys.list(), (old: Workspace[] | undefined) =>
+          old?.map((ws) => (ws.id === updated.id ? updated : ws)),
+        );
+        onSaved?.();
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : t(($) => $.workspace.toast_save_failed));
+      }
+    };
+    queue.current = queue.current.then(run);
   }
 
   function saveHours() {
     if (hoursDraft === null || hoursInvalid) return;
     const hours = Number(hoursText);
     if (hours === saved.hours) return setHoursDraft(null);
-    void save({ after_hours: hours });
+    save({ after_hours: hours }, () => setHoursDraft(null));
   }
 
   return (
@@ -81,7 +86,7 @@ export function IdleGuardRows({ workspace, canEdit }: { workspace: Workspace; ca
           <Select
             items={MODES.map((mode) => ({ value: mode, label: modeLabel(mode) }))}
             value={saved.mode}
-            onValueChange={(next) => next && next !== saved.mode && void save({ mode: next as IdleGuardMode })}
+            onValueChange={(next) => next && next !== saved.mode && save({ mode: next as IdleGuardMode })}
           >
             <SelectTrigger size="sm" className="w-full" aria-label={t(($) => $.workspace.idle_guard_label)}>
               <SelectValue />

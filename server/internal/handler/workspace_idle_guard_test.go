@@ -93,6 +93,14 @@ func TestWorkspaceIdleGuardField(t *testing.T) {
 			t.Errorf("mode %v: error %q does not name the field", invalid, body)
 		}
 	}
+	// Only mode and after_hours are writable here; statuses and any other
+	// field would reach the guard's settings reader unchecked.
+	for _, extra := range []string{"statuses", "extra"} {
+		_, body := patch(map[string]any{"idle_started_guard": map[string]any{"mode": "act", extra: []any{"x"}}}, http.StatusBadRequest)
+		if !strings.Contains(body, extra) {
+			t.Errorf("unknown field %q: error %q does not name it", extra, body)
+		}
+	}
 	for _, invalid := range []any{"on", 42, []any{}, nil} {
 		patch(map[string]any{"idle_started_guard": invalid}, http.StatusBadRequest)
 	}

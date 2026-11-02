@@ -28,6 +28,11 @@ func validateIdleGuardPatch(raw json.RawMessage) error {
 	if err := json.Unmarshal(raw, &patch); err != nil || patch == nil {
 		return errIdleGuardShape
 	}
+	for key := range patch {
+		if key != "mode" && key != "after_hours" {
+			return fmt.Errorf("idle_started_guard.%s is not settable; use mode or after_hours", key)
+		}
+	}
 	if v, present := patch["mode"]; present {
 		if mode, _ := v.(string); mode != "off" && mode != "shadow" && mode != "act" {
 			return fmt.Errorf("idle_started_guard.mode must be off, shadow or act")
