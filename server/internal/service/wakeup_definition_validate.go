@@ -22,21 +22,29 @@ import (
 // than stored.
 
 // WakeupDefinitionTriggerKinds lists the trigger kinds a definition may use
-// today: the three built-in presets. A later layer adds a kind when it
-// implements its execution; unimplemented kinds are rejected, never stored.
-func WakeupDefinitionTriggerKinds() []string { return slices.Clone(builtinWakeupRules) }
+// today: the built-in presets, custom events and conditions, and the schedule
+// kinds. A later layer adds a kind when it implements its execution;
+// unimplemented kinds are rejected, never stored.
+func WakeupDefinitionTriggerKinds() []string {
+	kinds := append(slices.Clone(builtinWakeupRules), wakeupTriggerKindEvent, wakeupTriggerKindCondition)
+	return append(kinds, wakeupScheduleKinds...)
+}
 
 // builtinWakeupRules are the platform rules, which double as the trigger presets.
 var builtinWakeupRules = []string{SystemRuleChildDone, SystemRulePRMerged, SystemRulePRChecksFailed, SystemRulePRAttention}
 
 // WakeupDefinitionFields lists the patch fields a definition may set today.
-// schedule belongs to a later layer.
 func WakeupDefinitionFields() []string {
-	return []string{"enabled", "name", "trigger", "target", "instruction", "mode", "max_fires", "expiry", "rate_limit", "aggregate_limit", "filters", "active_run"}
+	return []string{"enabled", "name", "trigger", "target", "instruction", "mode", "max_fires", "expiry", "schedule", "rate_limit", "aggregate_limit", "filters", "active_run"}
 }
 
+// wakeupTriggerSpec is every trigger's shape: a built-in names only its kind,
+// an event lists the event types it selects and a condition carries the
+// predicate the platform evaluates.
 type wakeupTriggerSpec struct {
-	Kind string `json:"kind"`
+	Kind      string          `json:"kind"`
+	Events    []string        `json:"events,omitempty"`
+	Condition json.RawMessage `json:"condition,omitempty"`
 }
 
 type wakeupTargetSpec struct {
@@ -141,9 +149,6 @@ type wakeupPatchRefs struct {
 // checked on the resolved rule by validateEffectiveWakeup.
 func validateWakeupPatch(ruleKey string, p WakeupConfigPatch, now time.Time) (wakeupPatchRefs, error) {
 	var refs wakeupPatchRefs
-	if p.Schedule.Set {
-		return refs, wakeupDefinitionBad("schedule is not available yet")
-	}
 	if len(setWakeupFields(p)) == 0 {
 		return refs, wakeupDefinitionBad("a definition sets at least one field; delete it to inherit")
 	}
@@ -179,6 +184,21 @@ func validateWakeupPatch(ruleKey string, p WakeupConfigPatch, now time.Time) (wa
 		}
 		if _, builtin := WakeupBuiltinBaseline(ruleKey); builtin && spec.Kind != ruleKey {
 			return refs, wakeupDefinitionBad("a built-in rule keeps its own trigger")
+		}
+		if err := validateWakeupTriggerBody(spec); err != nil {
+			return refs, err
+		}
+	}
+	if live(p.Schedule, p.Schedule.Null) {
+		if _, builtin := WakeupBuiltinBaseline(ruleKey); builtin {
+			return refs, wakeupDefinitionBad("a built-in rule takes no schedule")
+		}
+		var spec wakeupScheduleSpec
+		if err := decodeWakeupSpec(p.Schedule.Value, &spec); err != nil {
+			return refs, wakeupDefinitionBad("invalid schedule: %v", err)
+		}
+		if _, err := spec.validate(now); err != nil {
+			return refs, err
 		}
 	}
 	if live(p.Target, p.Target.Null) {
@@ -218,6 +238,38 @@ func validateWakeupPatch(ruleKey string, p WakeupConfigPatch, now time.Time) (wa
 		}
 	}
 	return refs, nil
+}
+
+// validateWakeupTriggerBody checks what a trigger kind carries: an event lists
+// subscribable event types, a condition names its predicate, and a built-in
+// preset carries nothing else.
+func validateWakeupTriggerBody(spec wakeupTriggerSpec) error {
+	switch spec.Kind {
+	case wakeupTriggerKindEvent:
+		if len(spec.Condition) > 0 {
+			return wakeupDefinitionBad("an event trigger takes events, not a condition")
+		}
+		if len(spec.Events) == 0 || len(spec.Events) > len(WakeupEventTypes) {
+			return wakeupDefinitionBad("an event trigger selects 1–%d events", len(WakeupEventTypes))
+		}
+		for _, e := range spec.Events {
+			if !slices.Contains(WakeupEventTypes, e) {
+				return wakeupDefinitionBad("unknown event %q", e)
+			}
+		}
+	case wakeupTriggerKindCondition:
+		if len(spec.Events) > 0 {
+			return wakeupDefinitionBad("a condition trigger takes a condition, not events")
+		}
+		if len(spec.Condition) == 0 {
+			return wakeupDefinitionBad("a condition trigger needs a condition")
+		}
+	default:
+		if len(spec.Events) > 0 || len(spec.Condition) > 0 {
+			return wakeupDefinitionBad("trigger %q takes no events or condition", spec.Kind)
+		}
+	}
+	return nil
 }
 
 func validateWakeupFilters(raw json.RawMessage) ([]pgtype.UUID, error) {
@@ -265,6 +317,11 @@ func validateEffectiveWakeup(eff EffectiveWakeupConfig) error {
 	_, builtin := WakeupBuiltinBaseline(eff.RuleKey)
 	if !builtin && (!eff.Config.Trigger.Set || !eff.Config.Instruction.Set) {
 		return wakeupDefinitionBad("a custom rule needs a trigger and an instruction")
+	}
+	if !builtin {
+		if err := validateEffectiveSchedule(eff.Config); err != nil {
+			return err
+		}
 	}
 	if !eff.Config.Filters.Set {
 		return nil

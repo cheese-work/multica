@@ -91,8 +91,26 @@ func (h *Handler) RefreshSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newToken, newExpiresAt, err := auth.RenewSessionToken(claims)
+	// The generation is read uncached: renewal is the one place a revoked
+	// session could be extended, so it never trusts the middleware's cache.
+	userUUID, ok := parseUUIDOrBadRequest(w, userID, "user id")
+	if !ok {
+		return
+	}
+	currentGen, err := h.Queries.GetUserSessionGeneration(r.Context(), userUUID)
 	if err != nil {
+		slog.Warn("session refresh: generation read failed",
+			append(logger.RequestAttrs(r), "error", err, "user_id", userID)...)
+		writeError(w, http.StatusServiceUnavailable, "session check unavailable")
+		return
+	}
+
+	newToken, newExpiresAt, err := auth.RenewSessionToken(claims, currentGen)
+	if err != nil {
+		if errors.Is(err, auth.ErrStaleSession) {
+			writeError(w, http.StatusUnauthorized, "session revoked")
+			return
+		}
 		if errors.Is(err, auth.ErrTemporarilyDisabledUser) {
 			writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
 			return

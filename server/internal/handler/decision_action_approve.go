@@ -76,6 +76,7 @@ var (
 	errPayloadMismatch     = decisionIntentRefusal{http.StatusConflict, "payload_mismatch: the approved payload is not the stored payload"}
 	errPreconditionDrift   = decisionIntentRefusal{http.StatusConflict, "precondition_drift: the target changed since the request; ask again"}
 	errActionExpired       = decisionIntentRefusal{http.StatusConflict, "expired: this action's approval window has closed"}
+	errNeedsOwner          = decisionIntentRefusal{http.StatusForbidden, decisionClassNeedsOwner + ": this action changes an issue and needs the workspace owner"}
 	errNotPermitted        = decisionIntentRefusal{http.StatusForbidden, "not_permitted: you may not make this change to this agent"}
 	errSecretsMismatch     = decisionIntentRefusal{http.StatusBadRequest, "secrets_mismatch: supply a value for exactly the secret slots, none masked or empty"}
 )
@@ -121,6 +122,9 @@ func (handler *Handler) approveDecisionAction(ctx context.Context, caller decisi
 	}
 	executor, found := decisionActionExecutors[preview.ActionType]
 	target, targeted := decisionActionTarget(preview)
+	if isIssueTargetAction(preview) {
+		targeted = true
+	}
 	if !found || !targeted {
 		return empty, errNotExecutable
 	}
@@ -182,6 +186,18 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	if current.HumanUserID != caller.userID {
 		return empty, errNotTheHuman
 	}
+	// A server-opened request is addressed to any member (CHE-2318), but an
+	// action on it moves real state: it needs owner authority, not the member
+	// shortcut.
+	if isServerDecision(current) {
+		issue, err := queries.GetIssue(ctx, current.IssueID)
+		if err != nil {
+			return empty, err
+		}
+		if err := requireDecisionAuthorityIn(ctx, queries, issue, caller.userID, "spend", pgtype.UUID{}, false, http.StatusForbidden); err != nil {
+			return empty, err
+		}
+	}
 	if current.Status != "open" || action.State != "pending" {
 		return empty, errNotPending
 	}
@@ -197,15 +213,26 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	} else if reason != "" {
 		return empty, errNotPending
 	}
+	// Row 6 already holds the issue lock to the end of this transaction, so an
+	// issue-target executor runs under it once params.issue_id is that issue.
+	issueTarget := isIssueTargetAction(action)
+	if issueTarget {
+		if err := checkIssueTarget(action.Params, current.IssueID, http.StatusConflict); err != nil {
+			return empty, err
+		}
+	}
 	if err := checkPayloadHash(action, body.PayloadSHA256); err != nil {
 		return empty, err
 	}
-	targetAgent, found := agentByID(agents, target)
-	if !found {
-		return empty, errActionNotFound
-	}
-	if err := checkPreconditions(action, targetAgent); err != nil {
-		return empty, err
+	var targetAgent db.Agent
+	if !issueTarget {
+		var ok bool
+		if targetAgent, ok = agentByID(agents, target); !ok {
+			return empty, errActionNotFound
+		}
+		if err := checkPreconditions(action, targetAgent); err != nil {
+			return empty, err
+		}
 	}
 	credential, err := handler.ApprovalVerifier(ctx, queries, ApprovalClaim{
 		WorkspaceID: caller.workspaceID, ActionID: action.ID, UserID: caller.userID,
@@ -220,7 +247,13 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	} else if err != nil {
 		return empty, err
 	}
-	if !decisionActionPermitted(action.ActionType, targetAgent, approver) {
+	// The passkey check above can outlast a role change that committed after the
+	// pre-lock reads, so the owner rule is applied again to the role read under
+	// the member lock: for an issue target and for any server-opened request.
+	if (issueTarget || isServerDecision(current)) && approver.Role != "owner" {
+		return empty, errNeedsOwner
+	}
+	if !issueTarget && !decisionActionPermitted(action.ActionType, targetAgent, approver) {
 		return empty, errNotPermitted
 	}
 	finish, summary, err := executeInSavepoint(ctx, transaction, queries, executor, decisionActionExecution{
@@ -338,7 +371,7 @@ func agentByID(agents []db.Agent, id pgtype.UUID) (db.Agent, bool) {
 func distinctUUIDs(ids ...pgtype.UUID) []pgtype.UUID {
 	unique := make([]pgtype.UUID, 0, len(ids))
 	for _, id := range ids {
-		if !slices.Contains(unique, id) {
+		if id.Valid && !slices.Contains(unique, id) {
 			unique = append(unique, id)
 		}
 	}

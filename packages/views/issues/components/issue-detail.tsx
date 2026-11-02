@@ -57,6 +57,7 @@ import { useWakeupText } from "./wakeup-presentation";
 import type { ImageSequenceBlock } from "@multica/core/attachments/image-sequence";
 import { DescriptionDisclosure } from "./description-disclosure";
 import { StatusSummary, statusSummaryOf } from "./status-summary";
+import { IssueDecisionBanner } from "./issue-decision-banner";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
 import {
   Tooltip,
@@ -2712,8 +2713,22 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       jumpToMinimapTarget(commentId);
       return;
     }
-    container.scrollTop = Math.max(0, container.scrollTop + element.getBoundingClientRect().top - container.getBoundingClientRect().top - 16);
+    // Highlighting a reply force-opens its compact thread, which mounts the
+    // hidden replies above the target after this scroll — so re-align until
+    // the offset stops moving (same settle loop as the pending reply jump).
     flashJumpTarget(commentId);
+    let frames = 0;
+    let last = -1;
+    const align = () => {
+      const target = document.getElementById(`comment-${commentId}`) ?? element;
+      const offset = target.getBoundingClientRect().top - container.getBoundingClientRect().top;
+      container.scrollTop = Math.max(0, container.scrollTop + offset - 16);
+      if (Math.abs(offset - last) > 1 && ++frames < 30) {
+        last = offset;
+        requestAnimationFrame(align);
+      }
+    };
+    align();
   }, [scrollContainerEl, flashJumpTarget, jumpToMinimapTarget]);
   const [pendingAnnotationEdit, setPendingAnnotationEdit] = useState<{
     rootId: string; sourceCommentId: string; annotationId: string;
@@ -4581,6 +4596,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               </IssueContextMenuProvider>
             );
           })()}
+
+          <IssueDecisionBanner issueId={id} status={issue.status} ownerAgentId={issue.assignee_type === "agent" ? issue.assignee_id : null} />
 
           <div className="my-8 border-t" />
 

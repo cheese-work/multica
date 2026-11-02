@@ -36,6 +36,7 @@ import type {
   IssueTableRowsRequest,
   IssueTableRowsResponse,
   Agent,
+  AgentPreset,
   MikaBootstrapResponse,
   CreateAgentRequest,
   AgentBuilderRuntimeSwitch,
@@ -113,6 +114,8 @@ import type {
   ChatDraftRestoresResponse,
   ChatPendingTask,
   PrioritizeQueuedChatTaskResponse,
+  ChatSupplement,
+  ResendChatSupplementResponse,
   PendingChatTasksResponse,
   HasPendingChatTasksResponse,
   SendChatMessageResponse,
@@ -250,6 +253,7 @@ import type {
   PurchaseWorkspaceSeatsResponse,
   CreateWorkspaceSubscriptionPortalResponse,
   SourceContextPreview,
+  CommentPreview,
   CreateCommentSubIssueManualRequest,
   CreateCommentSubIssueAgentRequest,
   CreateCommentSubIssueRequest,
@@ -269,6 +273,11 @@ import { type Logger, noopLogger } from "../logger";
 import { createRequestId, createSafeId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseWithFallback } from "./schema";
+import {
+  PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
+  PasskeyRevokedSchema, parsePasskeyResponse,
+  type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart,
+} from "./passkey-schema";
 import {
   RuntimeProfileSchema,
   OpenDecisionRequestListSchema,
@@ -295,6 +304,9 @@ import {
   EMPTY_CHAT_CONTINUE_RESPONSE,
   EMPTY_CHAT_FORK_RESPONSE,
   PrioritizeQueuedChatTaskResponseSchema,
+  ChatSupplementSchema,
+  EMPTY_CHAT_SUPPLEMENT,
+  ResendChatSupplementResponseSchema,
   SendChatMessageResponseSchema,
   StartMikaOnboardingResponseSchema,
   ChildIssuesResponseSchema,
@@ -361,6 +373,7 @@ import {
   IssueSchema,
   AgentTaskSchema,
   SourceContextPreviewSchema,
+  CommentPreviewSchema,
   CommentSubIssueTaskResponseSchema,
   ListWebhookDeliveriesResponseSchema,
   RuntimeHourlyActivityListSchema,
@@ -481,6 +494,8 @@ import {
   MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
   SkillSchema,
   EMPTY_SKILL,
+  AgentPresetListSchema,
+  PresetCompletionsSchema,
   SkillSummaryListSchema,
   EMPTY_SKILL_SUMMARY_LIST,
   SkillImportResultSchema,
@@ -1554,6 +1569,18 @@ export class ApiClient {
       method: "POST",
       body: JSON.stringify(data),
     });
+  }
+
+  async getCommentPreview(commentId: string): Promise<CommentPreview> {
+    const raw = await this.fetch<unknown>(`/api/comments/${commentId}/preview`);
+    const preview = parseWithFallback<CommentPreview | null>(
+      raw,
+      CommentPreviewSchema,
+      null,
+      { endpoint: "GET /api/comments/:id/preview" },
+    );
+    if (!preview) throw new Error("Invalid comment preview response");
+    return preview;
   }
 
   async getCommentSubIssuePreview(anchorCommentId: string): Promise<SourceContextPreview> {
@@ -3791,6 +3818,21 @@ export class ApiClient {
     });
   }
 
+  async listAgentPresets(agentId: string): Promise<AgentPreset[]> {
+    const raw = await this.fetch<unknown>(`/api/agents/${agentId}/presets`);
+    return parseWithFallback<AgentPreset[]>(raw, AgentPresetListSchema, [], {
+      endpoint: "GET /api/agents/:id/presets",
+    });
+  }
+
+  /** `/preset <TAB>` source: `base`, `reset`, then the presets that can run now. */
+  async getAgentPresetCompletions(agentId: string): Promise<string[]> {
+    const raw = await this.fetch<unknown>(`/api/agents/${agentId}/presets/completions`);
+    return parseWithFallback(raw, PresetCompletionsSchema, { names: [] }, {
+      endpoint: "GET /api/agents/:id/presets/completions",
+    }).names;
+  }
+
   async listAgentSkills(agentId: string): Promise<SkillSummary[]> {
     return this.fetch(`/api/agents/${agentId}/skills`);
   }
@@ -4059,6 +4101,45 @@ export class ApiClient {
     }).artifacts;
   }
 
+  // Passkey and decision-action ceremonies. Responses are strict: a drifted shape throws
+  // (see parsePasskeyResponse) so a malformed body is never read as an approval.
+  private async passkeyPost<T>(path: string, schema: Parameters<typeof parsePasskeyResponse<T>>[1], body?: unknown): Promise<T> {
+    const raw: unknown = await this.fetch(path, { method: "POST", ...(body !== undefined && { body: JSON.stringify(body) }) });
+    return parsePasskeyResponse(raw, schema, `POST ${path}`);
+  }
+
+  startPasskeyEnrollment(): Promise<PasskeyEnrollStart> {
+    return this.passkeyPost("/api/passkeys/enroll/start", PasskeyEnrollStartSchema);
+  }
+
+  async finishPasskeyEnrollment(input: { ceremony_id: string; code: string; attestation: unknown }): Promise<void> {
+    await this.passkeyPost("/api/passkeys/enroll/finish", PasskeyEnrolledSchema, input);
+  }
+
+  challengePasskeyRevocation(passkeyId: string): Promise<PasskeyChallenge> {
+    return this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke/challenge`, PasskeyChallengeSchema);
+  }
+
+  async revokePasskey(passkeyId: string, assertion: PasskeyAssertionEnvelope): Promise<void> {
+    await this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke`, PasskeyRevokedSchema, { assertion });
+  }
+
+  challengeDecisionAction(actionId: string): Promise<PasskeyChallenge> {
+    return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/challenge`, PasskeyChallengeSchema);
+  }
+
+  approveDecisionAction(
+    actionId: string,
+    input: { payload_sha256: string; assertion: PasskeyAssertionEnvelope; secrets?: Record<string, string> },
+  ): Promise<PasskeyDecisionOutcome> {
+    return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/approve`, PasskeyDecisionOutcomeSchema, input);
+  }
+
+  async getDecisionActionOutcome(actionId: string): Promise<PasskeyDecisionOutcome> {
+    const raw: unknown = await this.fetch(`/api/decision-actions/${encodeURIComponent(actionId)}/outcome`);
+    return parsePasskeyResponse(raw, PasskeyDecisionOutcomeSchema, "GET /api/decision-actions/:id/outcome");
+  }
+
   async listOpenDecisionRequests(): Promise<OpenDecisionRequest[]> {
     const raw: unknown = await this.fetch("/api/decisions/open");
     return parseWithFallback(raw, OpenDecisionRequestListSchema, [], {
@@ -4190,6 +4271,48 @@ export class ApiClient {
       PrioritizeQueuedChatTaskResponseSchema,
       EMPTY_PRIORITIZE_QUEUED_CHAT_TASK_RESPONSE,
       { endpoint: "POST /api/chat/sessions/:id/queued-tasks/:taskId/prioritize" },
+    );
+  }
+
+  /**
+   * Adds a queued follow-up to the running task instead of stopping it. The
+   * server answers 409 with a stable `code` when the run cannot take it; the
+   * follow-up then stays queued.
+   */
+  async steerChatTask(sessionId: string, taskId: string): Promise<ChatSupplement> {
+    const raw = await this.fetch<unknown>(
+      `/api/chat/sessions/${sessionId}/tasks/${taskId}/steer`,
+      { method: "POST" },
+    );
+    return parseWithFallback(raw, ChatSupplementSchema, EMPTY_CHAT_SUPPLEMENT, {
+      endpoint: "POST /api/chat/sessions/:id/tasks/:taskId/steer",
+    });
+  }
+
+  /**
+   * Sends a steered message that did not arrive as a new queued run. Pass
+   * `confirmPossibleDuplicate` only after the user accepted the duplicate
+   * warning for an `uncertain` receipt; the server refuses it otherwise.
+   */
+  async resendChatSupplement(
+    sessionId: string,
+    messageId: string,
+    options: { confirmPossibleDuplicate?: boolean } = {},
+  ): Promise<ResendChatSupplementResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/chat/sessions/${sessionId}/messages/${messageId}/supplement/resend`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          confirm_possible_duplicate: options.confirmPossibleDuplicate === true,
+        }),
+      },
+    );
+    return parseWithFallback(
+      raw,
+      ResendChatSupplementResponseSchema,
+      { task_id: "", supplement: EMPTY_CHAT_SUPPLEMENT },
+      { endpoint: "POST /api/chat/sessions/:id/messages/:messageId/supplement/resend" },
     );
   }
 

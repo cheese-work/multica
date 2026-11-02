@@ -34,7 +34,8 @@ func (s *IssueService) UpdateContent(ctx context.Context, issue db.Issue, patch 
 		StartDate:     issue.StartDate,
 		DueDate:       issue.DueDate,
 		ParentIssueID: issue.ParentIssueID,
-		ProjectID:     issue.ProjectID,
+		// The snapshot's project may be stale; a content edit must not rebind.
+		PreserveProject: pgtype.Bool{Bool: true, Valid: true},
 		Stage:         issue.Stage,
 	}
 	if patch.ExpectedRevision != nil {

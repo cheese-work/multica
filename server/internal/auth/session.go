@@ -41,6 +41,11 @@ const (
 	// not invalidate CSRF tokens other tabs are already holding.
 	sessionIDClaim = "sid"
 
+	// sessionGenerationClaim carries user.session_generation as of signing.
+	// Bumping the stored value kills every JWT minted before it, with or
+	// without `sid`. A token without the claim reads as generation 0.
+	sessionGenerationClaim = "gen"
+
 	// sessionRenewCheckDivisor derives the client-side re-check cadence
 	// from the configured TTL: a client that checks every TTL/10 gets
 	// roughly five attempts inside the renewal window, so several
@@ -73,6 +78,16 @@ const (
 // (mat_) and cloud-node PATs (mcn_) authenticate fine at the middleware but
 // must never be exchanged for an interactive session.
 var ErrNotSessionToken = errors.New("not an interactive session token")
+
+// ErrStaleSession is returned by RenewSessionToken when the token's `gen` no
+// longer matches the user's stored session generation: the session was revoked.
+var ErrStaleSession = errors.New("session generation revoked")
+
+// SessionGeneration reads the `gen` claim; absent or malformed reads as 0.
+func SessionGeneration(claims jwt.MapClaims) int32 {
+	gen, _ := claims[sessionGenerationClaim].(float64)
+	return int32(gen)
+}
 
 // AuthRenewThreshold is the remaining lifetime at or below which a session
 // token becomes eligible for renewal. Half the TTL is the largest threshold
@@ -200,20 +215,25 @@ func SessionIDFromToken(tokenString string) string {
 // RenewSessionToken re-signs the identity carried by claims with a fresh
 // lifetime, returning the new token and its expiry.
 //
-// Only `exp` and `iat` move. `sub`, `email`, `name`, `sid` and `amr` are copied
-// forward verbatim, which is what makes renewal free of any database read:
-// the claims were signed by this server, so they are already authoritative
-// for exactly the fields the auth middleware reads back out.
+// Only `exp` and `iat` move. `sub`, `email`, `name`, `sid`, `gen` and `amr` are
+// copied forward verbatim: the claims were signed by this server, so they are
+// already authoritative for exactly the fields the auth middleware reads back
+// out. The one exception is revocation: currentGen is the user's stored
+// session generation, supplied by the caller, and a token whose `gen` differs
+// is refused rather than extended.
 //
 // A pre-MUL-7436 token carries no `sid`. Renewal mints one, which is the
 // migration path for sessions that predate this code — and the one moment
 // where a CSRF token already read by another tab stops matching. It happens
 // once per legacy session, on a safe-method request; clients retry a CSRF
 // rejection once (packages/core/api/client.ts).
-func RenewSessionToken(claims jwt.MapClaims) (string, time.Time, error) {
+func RenewSessionToken(claims jwt.MapClaims, currentGen int32) (string, time.Time, error) {
 	sub, _ := claims["sub"].(string)
 	if sub == "" {
 		return "", time.Time{}, ErrNotSessionToken
+	}
+	if SessionGeneration(claims) != currentGen {
+		return "", time.Time{}, ErrStaleSession
 	}
 	email, _ := claims["email"].(string)
 
@@ -235,10 +255,11 @@ func RenewSessionToken(claims jwt.MapClaims) (string, time.Time, error) {
 	now := time.Now()
 	expiresAt := now.Add(AuthTokenTTL())
 	next := jwt.MapClaims{
-		"sub":          sub,
-		"exp":          expiresAt.Unix(),
-		"iat":          now.Unix(),
-		sessionIDClaim: sid,
+		"sub":                  sub,
+		"exp":                  expiresAt.Unix(),
+		"iat":                  now.Unix(),
+		sessionIDClaim:         sid,
+		sessionGenerationClaim: currentGen,
 	}
 	if email != "" {
 		next["email"] = email

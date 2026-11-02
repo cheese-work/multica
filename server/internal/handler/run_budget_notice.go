@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -16,10 +17,14 @@ import (
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
+// runBudgetCommitWait bounds how long a warning waits, after its transaction
+// has committed, for the committed run count to show the admission. Atomic:
+// tests shorten it while hook goroutines from earlier admissions still read it.
+var runBudgetCommitWait atomic.Int64
+
+func init() { runBudgetCommitWait.Store(int64(10 * time.Second)) }
+
 var (
-	// runBudgetCommitWait bounds how long a warning waits, after its transaction
-	// has committed, for the committed run count to show the admission.
-	runBudgetCommitWait = 10 * time.Second
 	// runBudgetTxWait is a safety cap on following an admission's open
 	// transaction; a transaction open this long is a leak, not a slow commit.
 	runBudgetTxWait = 10 * time.Minute
@@ -62,7 +67,7 @@ func (h *Handler) admissionCommitted(ctx context.Context, e service.RunBudgetEve
 		return false
 	}
 	since := pgtype.Timestamptz{Time: e.Since, Valid: true}
-	deadline := time.Now().Add(runBudgetCommitWait)
+	deadline := time.Now().Add(time.Duration(runBudgetCommitWait.Load()))
 	for {
 		runs, err := h.Queries.CountIssueRunsSince(ctx, db.CountIssueRunsSinceParams{IssueID: e.IssueID, Since: since})
 		if err != nil {
@@ -109,18 +114,28 @@ func (h *Handler) admissionTxFinished(ctx context.Context, e service.RunBudgetEv
 var runBudgetBeforeNotice = func() {}
 
 func (h *Handler) writeRunBudgetNotice(ctx context.Context, e service.RunBudgetEvent, text string) {
+	h.writeRunBudgetNoticeFrom(ctx, e, nil, func(context.Context, *db.Queries) string { return text })
+}
+
+// writeRunBudgetNoticeFrom is writeRunBudgetNotice with the text worded inside
+// the transaction, under the budget lock, by a function of the transaction's
+// queries. A non-nil recovery run is claimed in the same transaction.
+func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBudgetEvent, recovery *service.BudgetRecoveryRun, text func(context.Context, *db.Queries) string) {
 	issue, err := h.Queries.GetIssue(ctx, e.IssueID)
 	if err != nil {
 		slog.Warn("run budget: load issue for notice failed", "err", err, "issue_id", uuidToString(e.IssueID))
 		return
 	}
-	content, title := h.runBudgetNoticeText(ctx, issue, e, text)
+	usage := h.runBudgetUsageNote(ctx, issue)
 	runBudgetBeforeNotice()
+	var content, title string
 	var comment db.Comment
 	var revision int64
 	var items []db.InboxItem
 	var decisions []decisionRequestResult
-	err = h.withTx(ctx, func(qtx *db.Queries) error {
+	recovered := false
+	err = h.withPgxTx(ctx, func(tx pgx.Tx) error {
+		qtx := h.Queries.WithTx(tx)
 		noticeID, err := qtx.ClaimRunBudgetNotice(ctx, db.ClaimRunBudgetNoticeParams{
 			ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID,
 			WindowID: e.Since.UTC().Format(time.RFC3339Nano), Kind: e.Kind,
@@ -152,6 +167,25 @@ func (h *Handler) writeRunBudgetNotice(ctx context.Context, e service.RunBudgetE
 				return err
 			}
 		}
+		// The recovery run debits the ledger, so it commits with the notice
+		// that states the balance: both or neither. A run that cannot be
+		// inserted undoes only itself (Claim's savepoint): the notice still
+		// goes out, worded without a debit that did not commit, and the
+		// window's claim stays free for a later refusal.
+		if recovery != nil && e.Kind == service.RunBudgetKindExhausted {
+			switch err := recovery.Claim(ctx, tx, e.Since); {
+			case err == nil:
+				recovered = true
+			case errors.Is(err, service.ErrRecoveryClaimed), errors.Is(err, service.ErrRecoveryBlockEnded):
+			case errors.Is(err, service.ErrRecoveryWindowLifted):
+				return errRefusalLifted
+			default:
+				slog.Warn("run budget: recovery run not enqueued", "err", err, "issue_id", uuidToString(issue.ID))
+			}
+		}
+		// Worded under the budget lock, so a command in it describes the ledger
+		// this transaction commits against.
+		content, title = runBudgetNoticeText(usage, e, text(ctx, qtx))
 		created, err := qtx.CreateComment(ctx, db.CreateCommentParams{
 			ID: dbid.NewV7(), IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
 			AuthorType: "system", AuthorID: pgtype.UUID{Valid: true}, Content: content, Type: "system",
@@ -190,6 +224,9 @@ func (h *Handler) writeRunBudgetNotice(ctx context.Context, e service.RunBudgetE
 	if err != nil {
 		slog.Warn("run budget: write notice failed", "err", err, "issue_id", uuidToString(issue.ID), "kind", e.Kind)
 		return
+	}
+	if recovered {
+		recovery.Published(ctx)
 	}
 	if !comment.ID.Valid {
 		return
@@ -237,15 +274,20 @@ func runBudgetRecipients(ctx context.Context, q *db.Queries, issue db.Issue) ([]
 	return q.ListWorkspaceOwnerUserIDs(ctx, issue.WorkspaceID)
 }
 
-// runBudgetNoticeText appends the token figure to the notice text, best-effort:
-// a failed read leaves it as "unknown" rather than losing the notice.
-func (h *Handler) runBudgetNoticeText(ctx context.Context, issue db.Issue, e service.RunBudgetEvent, text string) (content, title string) {
-	tokens := "unknown"
-	if u, err := h.Queries.GetIssueUsageSummary(ctx, issue.ID); err == nil {
-		tokens = fmt.Sprintf("%d (%d runs have not reported usage)", u.TotalInputTokens+u.TotalOutputTokens, u.UnreportedTaskCount)
-	} else {
+// runBudgetUsageNote is the token figure a notice carries, best-effort: a
+// failed read leaves it as "unknown" rather than losing the notice. It reads on
+// the pool, so it runs before the notice's transaction opens.
+func (h *Handler) runBudgetUsageNote(ctx context.Context, issue db.Issue) string {
+	u, err := h.Queries.GetIssueUsageSummary(ctx, issue.ID)
+	if err != nil {
 		slog.Warn("run budget: usage summary failed", "err", err, "issue_id", uuidToString(issue.ID))
+		return "unknown"
 	}
+	return fmt.Sprintf("%d (%d runs have not reported usage)", u.TotalInputTokens+u.TotalOutputTokens, u.UnreportedTaskCount)
+}
+
+// runBudgetNoticeText appends the token figure to the notice text.
+func runBudgetNoticeText(tokens string, e service.RunBudgetEvent, text string) (content, title string) {
 	content = fmt.Sprintf("%s Tokens used so far (input and output): %s.", text, tokens)
 	switch e.Kind {
 	case service.RunBudgetKindWarn80:

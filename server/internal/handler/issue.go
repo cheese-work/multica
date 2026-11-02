@@ -290,7 +290,7 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 	var issue db.Issue
 	var cancelledWakeups []db.AgentTaskQueue
 	moveGuard := issueMoveGuardFrom(ctx)
-	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil || moveGuard != nil || len(issueWriteTaint(ctx)) > 0 || ctx.Value(issueWriteExternalReadKey{}) != nil, func(q *db.Queries) error {
+	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil || moveGuard != nil || statusRecordFrom(ctx) != nil || len(issueWriteTaint(ctx)) > 0 || ctx.Value(issueWriteExternalReadKey{}) != nil, func(q *db.Queries) error {
 		if err := wf.lockProject(ctx, q); err != nil {
 			return err
 		}
@@ -326,9 +326,31 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 	if err := guardAgentIssueStatus(ctx, q, params); err != nil {
 		return db.Issue{}, nil, err
 	}
+	if err := guardIssueProjectRebinding(ctx, q, params); err != nil {
+		return db.Issue{}, nil, err
+	}
+	rec := statusRecordFrom(ctx)
+	recordStatus := rec != nil && params.Status.Valid
+	var fromStatus string
+	if recordStatus {
+		// Lock first so "from" is the status this write replaces, not the
+		// caller's earlier read.
+		prior, err := q.LockIssueForDescriptionUpdate(ctx, db.LockIssueForDescriptionUpdateParams{ID: params.ID, WorkspaceID: rec.workspaceID})
+		if err != nil {
+			return db.Issue{}, nil, fmt.Errorf("lock issue for status history: %w", err)
+		}
+		fromStatus = prior.Status
+	}
 	issue, err := q.UpdateIssue(ctx, params)
 	if err != nil {
 		return issue, nil, err
+	}
+	if recordStatus && fromStatus != issue.Status {
+		row, err := service.RecordStatusChange(ctx, q, issue, fromStatus, issue.Status, rec.trigger, nil)
+		if err != nil {
+			return db.Issue{}, nil, fmt.Errorf("record status change: %w", err)
+		}
+		rec.activity = &row
 	}
 	// Same transaction as the write: a claim that reads the committed write
 	// finds this taint on its run.
@@ -4272,6 +4294,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	assigneeSupplied := req.AssigneeType != nil || req.AssigneeID != nil
 	suppressRun, runReason := h.suppressRunForWrite(r.Context(), actorType, actorID, prevIssue, params, handoff, req.SuppressRun)
 	writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
+	writeCtx = withBudgetActor(writeCtx, r)
 	if assigneeSupplied || handoff != nil {
 		var ok bool
 		if writeCtx, ok = h.withIssueWriteTaint(w, r, writeCtx); !ok {
@@ -4283,6 +4306,22 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		if writeCtx, ok = h.withIssueWriteExternalRead(w, r, writeCtx); !ok {
 			return
 		}
+	}
+	releaseMove := func() {}
+	if params.Status.Valid {
+		release, ok := h.beginRunBudgetMove(w, r, actorType, prevIssue, params.Status.String)
+		if !ok {
+			return
+		}
+		releaseMove = release
+		defer releaseMove()
+	}
+	// Status history is written in the status transaction. A workflow handoff
+	// and a duplicate mark keep the listener's richer row until they migrate.
+	var statusRec *statusRecord
+	if handoff == nil && !params.DuplicateOfIssueID.Valid && !prevIssue.DuplicateOfIssueID.Valid {
+		statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTriggerFromRequest(r, actorType, actorID)}
+		writeCtx = withStatusRecord(writeCtx, statusRec)
 	}
 	var issue db.Issue
 	attachmentsChanged := false
@@ -4298,7 +4337,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		issue, err = h.updateIssueWithStatusGuard(writeCtx, prevIssue.WorkspaceID, statusKeyForGuard, params, workflowWrite)
 	}
 	if err != nil {
-		if writeAgentIssueStatusError(w, err) || writeIssueStatusRaceError(w, err) || writeIssueWorkflowError(w, err) {
+		if writeAgentIssueStatusError(w, err) || writeIssueStatusRaceError(w, err) || writeIssueWorkflowError(w, err) || writeBudgetRebindingError(w, err) {
 			return
 		}
 		if writeDuplicateMarkError(w, err) {
@@ -4402,12 +4441,17 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if handoff != nil {
 		updatedPayload["workflow_handoff"] = workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun, runReason)
 	}
+	if statusRec != nil && statusRec.activity != nil {
+		updatedPayload["activity_id"] = uuidToString(statusRec.activity.ID)
+	}
 	h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, updatedPayload)
+	h.publishRecordedStatusActivity(statusRec, actorType, actorID)
 	if statusChanged && actorType == "member" {
 		h.openRunBudgetWindowForMove(r.Context(), issue)
 	} else if statusChanged && actorType == "agent" {
 		h.grantRunBudgetStep(r.Context(), issue, prevIssue.Status)
 	}
+	releaseMove()
 	if attachmentsChanged {
 		// The full owner snapshot must be admitted before an auxiliary event at
 		// the same revision. Otherwise clients advance only the revision here and
@@ -5173,6 +5217,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		assigneeSupplied := req.Updates.AssigneeType != nil || req.Updates.AssigneeID != nil
 		suppressRun, runReason := h.suppressRunForWrite(r.Context(), actorType, actorID, prevIssue, params, handoff, req.Updates.SuppressRun)
 		writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
+		writeCtx = withBudgetActor(writeCtx, r)
 		if assigneeSupplied || handoff != nil {
 			var ok bool
 			if writeCtx, ok = h.withIssueWriteTaint(w, r, writeCtx); !ok {
@@ -5184,6 +5229,21 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			if writeCtx, ok = h.withIssueWriteExternalRead(w, r, writeCtx); !ok {
 				return
 			}
+		}
+		releaseMove := func() {}
+		if params.Status.Valid {
+			var release func()
+			var err error
+			if actorType == "member" {
+				release, err = h.lockRunBudgetMove(r.Context(), prevIssue, params.Status.String)
+			} else {
+				release, err = h.lockRunBudgetBoundary(r.Context(), prevIssue.ID)
+			}
+			if err != nil {
+				slog.Warn("batch update issue: run budget", "issue_id", issueID, "error", err)
+				continue
+			}
+			releaseMove = release
 		}
 		var issue db.Issue
 		if req.Updates.Description != nil {
@@ -5201,6 +5261,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			issue, err = h.updateIssueWithStatusGuard(writeCtx, wsUUID, issueStatusGuard, params, workflowWrite)
 		}
 		if err != nil {
+			releaseMove()
 			// The archive race is a property of the batch's shared target
 			// status, not of one issue, so every remaining item would fail the
 			// same way. Abort with 409 instead of reporting a partial update.
@@ -5210,6 +5271,10 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			var gated *EntryGateError
 			if errors.As(err, &gated) {
 				failed = append(failed, map[string]any{"id": issueID, "code": "entry_gate_failed", "step": gated.Step, "failed_guards": gated.Failed})
+				continue
+			}
+			if errors.Is(err, errBudgetRebinding) {
+				failed = append(failed, map[string]any{"id": issueID, "code": budgetRebindingCode})
 				continue
 			}
 			slog.Warn("batch update issue failed", "issue_id", issueID, "error", err)
@@ -5271,6 +5336,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		} else if statusChanged && actorType == "agent" {
 			h.grantRunBudgetStep(r.Context(), issue, prevIssue.Status)
 		}
+		releaseMove()
 
 		// Reassignment does not cancel existing tasks (#4963 / MUL-4113) —
 		// mirrors UpdateIssue. See that handler for the rationale.

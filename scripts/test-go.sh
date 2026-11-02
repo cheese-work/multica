@@ -54,7 +54,32 @@ if [ "$only" != agent ]; then
   # packages' fixtures against each other and produced cross-package lock
   # waits and timeouts. -p 1 runs packages one at a time; tests within a
   # package keep the default -parallel.
-  "$GUARD_SCRIPT" -- go "${go_test_args[@]}" -p 1 "${regular_packages[@]}"
+  # CHE-2418: MULTICA_TEST_DB_PER_PACKAGE=1 (CI) removes the sharing instead:
+  # go-test-db-exec.sh clones the migrated DATABASE_URL database per package,
+  # so -p 4 is safe. Unset, the serial behavior above stands.
+  package_parallelism=(-p 1)
+  handler_shards_pid=
+  if [ "${MULTICA_TEST_DB_PER_PACKAGE:-}" = 1 ]; then
+    package_parallelism=(-p 4 -exec "$SCRIPT_DIR/go-test-db-exec.sh")
+    # internal/handler alone outlasted every other package combined, so it
+    # runs as parallel shards beside the rest (go-test-handler-shards.sh).
+    other_packages=()
+    for package in "${regular_packages[@]}"; do
+      case "$package" in
+        */internal/handler) ;;
+        *) other_packages+=("$package") ;;
+      esac
+    done
+    regular_packages=("${other_packages[@]}")
+    "${MULTICA_HANDLER_SHARDS_SCRIPT:-$SCRIPT_DIR/go-test-handler-shards.sh}" "${go_test_args[@]:1}" &
+    handler_shards_pid=$!
+  fi
+  regular_status=0
+  "$GUARD_SCRIPT" -- go "${go_test_args[@]}" "${package_parallelism[@]}" "${regular_packages[@]}" || regular_status=$?
+  shards_status=0
+  [ -z "$handler_shards_pid" ] || wait "$handler_shards_pid" || shards_status=$?
+  [ "$regular_status" -eq 0 ] || exit "$regular_status"
+  [ "$shards_status" -eq 0 ] || exit "$shards_status"
 fi
 
 if [ "$only" != regular ]; then
