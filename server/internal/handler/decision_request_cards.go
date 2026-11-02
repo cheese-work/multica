@@ -22,7 +22,9 @@ type DecisionRequestCard struct {
 	// AskingAgentName is the asking agent's current name; empty when the agent is gone.
 	AskingAgentName string `json:"asking_agent_name,omitempty"`
 	// Options are the answer buttons; empty for a card with no structured options.
-	Options     []decisiontx.AskOption `json:"options"`
+	Options []decisiontx.AskOption `json:"options"`
+	// RecommendedOptionIndex is the 0-based option the ask's recommendation names; absent when none matches.
+	RecommendedOptionIndex *int `json:"recommended_option_index,omitempty"`
 	State       string                 `json:"state"`
 	CreatedAt   string                 `json:"created_at"`
 	WithdrawnAt *string                `json:"withdrawn_at,omitempty"`
@@ -96,8 +98,12 @@ func (handler *Handler) decisionRequestsForMessages(ctx context.Context, workspa
 			Ask:             row.Ask, AskingAgentName: row.AskingAgentName, State: row.Status, CreatedAt: timestampToString(row.CreatedAt),
 			Answer: decisionRequestAnswerFromRow(row),
 		}
-		if err := json.Unmarshal(row.Options, &card.Options); err != nil {
-			slog.WarnContext(ctx, "decision card options unreadable", "request_id", card.ID, "error", err)
+		// Buttons need the structured ask; an older request stays text-only.
+		if row.HasAskJson {
+			if err := json.Unmarshal(row.Options, &card.Options); err != nil {
+				slog.WarnContext(ctx, "decision card options unreadable", "request_id", card.ID, "error", err)
+			}
+			card.RecommendedOptionIndex = recommendedOptionIndex(card.Options, row.Recommendation)
 		}
 		if row.SourceCommentID.Valid {
 			sourceID := uuidToString(row.SourceCommentID)
@@ -126,4 +132,15 @@ func (handler *Handler) decisionRequestsForMessages(ctx context.Context, workspa
 		}
 	}
 	return cards
+}
+
+// recommendedOptionIndex is the first option whose label the recommendation text names.
+func recommendedOptionIndex(options []decisiontx.AskOption, recommendation string) *int {
+	recommendation = strings.ToLower(recommendation)
+	for index, option := range options {
+		if label := strings.ToLower(strings.TrimSpace(option.Label)); label != "" && strings.Contains(recommendation, label) {
+			return &index
+		}
+	}
+	return nil
 }

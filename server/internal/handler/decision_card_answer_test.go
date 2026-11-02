@@ -7,15 +7,27 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-const cardOptions = `[{"label":"Option A","what_happens":"A happens"},{"label":"Option B","what_happens":"B happens"}]`
+const cardOptions = `[{"label":"Option A","what_happens":"A happens","pros":["fast"],"cons":["risky"],"cost_or_time":"1 h"},{"label":"Option B","what_happens":"B happens","pros":["safe"],"cons":["slow"],"cost_or_time":"2 days"}]`
+
+// cardAskJSON is the structured ask a clickable card needs; its recommendation names Option B.
+const cardAskJSON = `{"decision":"Pick one","options":` + cardOptions + `,"recommendation":"Option B, because it is safe"}`
 
 func newCardFixture(test *testing.T) askedRecordFixture {
+	test.Helper()
+	fixture := newLegacyCardFixture(test)
+	dbfx.Exec(test, `UPDATE decision_request SET ask_json = $2::jsonb WHERE id = $1`, fixture.decision.ID, cardAskJSON)
+	return fixture
+}
+
+// newLegacyCardFixture is a request stored before ask_json existed: options but no structured ask.
+func newLegacyCardFixture(test *testing.T) askedRecordFixture {
 	test.Helper()
 	fixture := newAskedRecordFixture(test)
 	dbfx.Exec(test, `UPDATE decision_request SET options = $2::jsonb WHERE id = $1`, fixture.decision.ID, cardOptions)
@@ -172,6 +184,7 @@ func TestDecisionRequestKeepsCardOptions(test *testing.T) {
 	fixture := newRequestCoreFixture(test, false)
 	input := fixture.input()
 	input.Options = []decisiontx.AskOption{{Label: "Ship now", WhatHappens: "release"}, {Label: "Wait", WhatHappens: "hold"}}
+	input.AskJSON = []byte(`{"decision":"Ship?"}`)
 	result, err := testHandler.createDecisionRequest(fixture.request(), fixture.issue, input)
 	if err != nil {
 		test.Fatal(err)
@@ -227,5 +240,57 @@ func TestComposerMessageCarriesOpenCardsAndRecordsNothing(test *testing.T) {
 	}
 	if count := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = ANY($1::uuid[])`, ids); count != 0 {
 		test.Fatalf("composer message recorded %d answers", count)
+	}
+}
+
+func cardFor(test *testing.T, fixture askedRecordFixture) DecisionRequestCard {
+	test.Helper()
+	cards := testHandler.decisionRequestsForMessages(context.Background(), testWorkspaceID, []db.ChatMessage{{ID: fixture.decision.PingMessageID, ChatSessionID: fixture.decision.ChatSessionID}})
+	got := cards[uuidToString(fixture.decision.PingMessageID)]
+	if len(got) != 1 {
+		test.Fatalf("cards = %+v", got)
+	}
+	return got[0]
+}
+
+func TestCardCarriesProsConsCostAndMarksTheRecommendation(test *testing.T) {
+	card := cardFor(test, newCardFixture(test))
+	if len(card.Options) != 2 || card.Options[1].Pros[0] != "safe" || card.Options[1].Cons[0] != "slow" || card.Options[1].CostOrTime != "2 days" {
+		test.Fatalf("options lack pros, cons or cost: %+v", card.Options)
+	}
+	if card.RecommendedOptionIndex == nil || *card.RecommendedOptionIndex != 1 {
+		test.Fatalf("recommended option = %v, want 1", card.RecommendedOptionIndex)
+	}
+}
+
+func TestCardWithoutAskJSONIsNotClickable(test *testing.T) {
+	fixture := newLegacyCardFixture(test)
+	if card := cardFor(test, fixture); len(card.Options) != 0 || card.RecommendedOptionIndex != nil {
+		test.Fatalf("a request with ask_json NULL offers buttons: %+v", card)
+	}
+	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "Option A"}); err == nil {
+		test.Fatal("a click answered a request with ask_json NULL")
+	}
+	if count := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1`, fixture.decision.ID); count != 0 {
+		test.Fatalf("refused click left %d answers", count)
+	}
+	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Text: "typed answer"}); err != nil {
+		test.Fatalf("a typed answer must still work: %v", err)
+	}
+}
+
+func TestCardClickOnAHeldClassWaitsTheHold(test *testing.T) {
+	fixture := newCardFixture(test)
+	dbfx.Exec(test, `UPDATE decision_request SET escalation_class = 'spend' WHERE id = $1`, fixture.decision.ID)
+	result, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "Option A"})
+	if err != nil {
+		test.Fatal(err)
+	}
+	wait := time.Until(result.Answer.WakeAt.Time)
+	if !result.Answer.WakeAt.Valid || wait < 9*time.Minute || wait > 10*time.Minute+5*time.Second {
+		test.Fatalf("held click wakes in %v, want about 10 minutes", wait)
+	}
+	if !result.Answer.ChosenOptionIndex.Valid || result.Answer.ChosenOptionIndex.Int32 != 0 {
+		test.Fatalf("chosen index = %+v, want 0", result.Answer.ChosenOptionIndex)
 	}
 }
