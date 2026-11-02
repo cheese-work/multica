@@ -2542,3 +2542,18 @@ describe("ChatPendingTaskSchema head_supplement", () => {
     expect(ChatPendingTaskSchema.parse({ task_id: "t", head_supplement: "maybe" }).head_supplement).toBe("unsupported");
   });
 });
+
+describe("CommentPreviewSchema", () => {
+  it("defaults optional text fields and requires ids", async () => {
+    const { CommentPreviewSchema } = await import("./schemas");
+    const ok = CommentPreviewSchema.parse({
+      comment_id: "c",
+      issue_id: "i",
+      issue_identifier: "CHE-1",
+      author_name: null,
+    });
+    expect(ok.author_name).toBe("");
+    expect(ok.preview).toBe("");
+    expect(CommentPreviewSchema.safeParse({ comment_id: "c" }).success).toBe(false);
+  });
+});

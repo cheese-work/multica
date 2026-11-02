@@ -22,6 +22,9 @@ deleted_task_usage AS (
 deleted_task_messages AS (
     DELETE FROM task_message WHERE task_id IN (SELECT id FROM batch)
 ),
+deleted_silence_alert_receipts AS (
+    DELETE FROM silence_alert_receipt WHERE task_id IN (SELECT id FROM batch)
+),
 deleted_task_tokens AS (
     DELETE FROM task_token WHERE task_id IN (SELECT id FROM batch)
 ),

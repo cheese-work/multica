@@ -1608,6 +1608,16 @@ export const SourceContextSnapshotSchema = z.object({
   anchor_comment_id: z.string(),
 }).loose();
 
+export const CommentPreviewSchema = z.object({
+  comment_id: z.string(),
+  issue_id: z.string(),
+  issue_identifier: z.string(),
+  author_type: z.string().catch(""),
+  author_id: z.string().catch(""),
+  author_name: z.string().catch(""),
+  preview: z.string().catch(""),
+}).loose();
+
 export const SourceContextPreviewSchema = SourceContextSnapshotSchema.extend({
   capture_token: z.string().min(1),
   limits: z.object({
@@ -2406,7 +2416,7 @@ export const TaskMessagePayloadSchema = z.object({
   issue_id: z.string().default(""),
   chat_session_id: z.string().optional(),
   seq: z.number().default(0),
-  type: z.enum(["text", "thinking", "tool_use", "tool_result", "error"]).catch("text"),
+  type: z.enum(["text", "thinking", "tool_use", "tool_result", "error", "silence_warn", "tool_stalled"]).catch("text"),
   tool: z.string().optional(),
   content: z.string().optional(),
   input: z.record(z.string(), z.unknown()).optional(),

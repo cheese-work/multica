@@ -115,8 +115,8 @@ func (s *IssueWakeupService) sweepOne(ctx context.Context, workspaceIDs []pgtype
 }
 
 // sweepsRule reports whether a definition's rule has instances a walk must
-// create or reconcile: a custom rule that is, or may override, a condition.
-// Events create their instances on the first event, and a built-in has its own.
+// create or reconcile: a custom rule that is, or may override, a condition or a
+// schedule. Events create their instances on the first event, and a built-in has its own.
 func sweepsRule(d db.IssueWakeupDefinition) bool {
 	if _, builtin := WakeupBuiltinBaseline(d.RuleKey); builtin {
 		return false
@@ -125,7 +125,11 @@ func sweepsRule(d db.IssueWakeupDefinition) bool {
 		return true // an override may enable or retire a condition the root defines
 	}
 	def, err := WakeupDefinitionFromRow(d)
-	return err == nil && customCondition(def.Patch.Trigger) != nil
+	if err != nil {
+		return false
+	}
+	trigger, ok := triggerSpec(def.Patch.Trigger)
+	return ok && (trigger.Kind == wakeupTriggerKindCondition || isScheduleTriggerKind(trigger.Kind))
 }
 
 // sweepBatch examines the next wakeupSweepBatch issues of the definition's scope
@@ -222,7 +226,7 @@ func (s *IssueWakeupService) activateIssueRule(ctx context.Context, d db.IssueWa
 }
 
 // activate ensures the rule's instance on the batch's issue when the rule is a
-// condition that runs there, and retires an existing one when the rule does not
+// condition or a schedule that runs there, and retires an existing one when the rule does not
 // run there at all. An event rule's instance is created by its first event and
 // is none of the sweep's business. It reports the instance, or the reason there
 // is none.
@@ -237,7 +241,7 @@ func (b *scopedIssueBatch) activate(ctx context.Context, r *scopedRule, baseline
 		}
 		return db.IssueWakeup{}, why, b.retire(ctx, existing)
 	}
-	if r.condition == nil {
+	if r.condition == nil && r.schedule == nil {
 		return db.IssueWakeup{}, scopedOutcomeNoMatch, nil
 	}
 	return b.ensure(ctx, r, baseline)
@@ -302,8 +306,12 @@ func (s *IssueWakeupService) retryCapacityHeldOne(ctx context.Context, issueID, 
 		}
 		return tx.Commit(ctx)
 	}
-	if _, err := ApplyDefaultWakeupInstance(ctx, tx, w.ID); err != nil {
+	if live, err := settleScheduledInstance(ctx, q, w, time.Now()); err != nil {
 		return err
+	} else if live {
+		if _, err := ApplyDefaultWakeupInstance(ctx, tx, w.ID); err != nil {
+			return err
+		}
 	}
 	return tx.Commit(ctx)
 }

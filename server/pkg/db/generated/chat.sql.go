@@ -382,6 +382,28 @@ func (q *Queries) CountChatMessagesForForkBlock(ctx context.Context, arg CountCh
 	return column_1, err
 }
 
+const countOtherActiveChatTasks = `-- name: CountOtherActiveChatTasks :one
+SELECT count(*) FROM agent_task_queue
+WHERE chat_session_id = $1
+  AND id <> $2
+  AND status IN ('dispatched', 'waiting_local_directory', 'running')
+`
+
+type CountOtherActiveChatTasksParams struct {
+	ChatSessionID pgtype.UUID `json:"chat_session_id"`
+	ID            pgtype.UUID `json:"id"`
+}
+
+// Rule E (CHE-2819): the epoch cannot move while a chat task of the DM other
+// than the caller is claimed or running. Read under the DM lock, which the
+// claim share-locks, so no claim can land between this read and the commit.
+func (q *Queries) CountOtherActiveChatTasks(ctx context.Context, arg CountOtherActiveChatTasksParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countOtherActiveChatTasks, arg.ChatSessionID, arg.ID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createChatDraftRestore = `-- name: CreateChatDraftRestore :one
 INSERT INTO chat_draft_restore (id, chat_session_id, task_id, content, attachment_ids)
 VALUES ($1, $2, $3, $4, $5)
