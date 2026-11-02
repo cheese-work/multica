@@ -41,3 +41,17 @@ describe("floating chat", () => {
     expect(source).not.toMatch(/^import \{ ChatWindow \}/m);
   });
 });
+
+describe("dashboard layout", () => {
+  it("imports the source-backfill modal directly, not through the onboarding barrel", () => {
+    const source = readFileSync(resolve(__dirname, "layout/dashboard-layout.tsx"), "utf8");
+    expect(source).not.toMatch(/from\s+["']\.\.\/onboarding["']/);
+  });
+});
+
+describe("search palette host dialogs", () => {
+  it("loads the autopilot dialog when the palette opens it, not at startup", () => {
+    const source = readFileSync(resolve(__dirname, "search/host-dialogs.tsx"), "utf8");
+    expect(source).not.toMatch(/^import \{ AutopilotDialog \}/m);
+  });
+});
