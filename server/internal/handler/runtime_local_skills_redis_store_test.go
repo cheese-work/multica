@@ -52,7 +52,8 @@ func newRedisTestClientWithoutMulti(t *testing.T) *redis.Client {
 	t.Helper()
 	admin := newRedisTestClient(t)
 	ctx := context.Background()
-	username := fmt.Sprintf("runtime-no-multi-%d", redisACLTestUserSequence.Add(1))
+	// ACL users are server-wide, so parallel test processes need distinct names.
+	username := fmt.Sprintf("runtime-no-multi-%d-%d", os.Getpid(), redisACLTestUserSequence.Add(1))
 	const password = "runtime-no-multi-test-password"
 
 	if err := admin.Do(

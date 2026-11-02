@@ -2,12 +2,10 @@ package handler
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -163,21 +161,12 @@ func TestRunBudgetStepGrantPolicy(t *testing.T) {
 
 	t.Run("a workflow edge's first entry grants once", func(t *testing.T) {
 		c, _ := budgetedAt(t, 40, 2)
-		// A concurrent writer (revision bump) wins the move; reload and retry.
-		var moved bool
-		var err error
-		for attempt := 0; attempt < 5 && !moved; attempt++ {
-			var issue db.Issue
-			if issue, err = testHandler.Queries.GetIssue(ctx, parseUUID(c.issueID)); err != nil {
-				t.Fatal(err)
-			}
-			moved, _, err = testHandler.tryMoveIssueOnEdge(ctx, issue, "in_review", "ci_green_advance", nil, false)
-			if !errors.Is(err, pgx.ErrNoRows) {
-				break
-			}
+		issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(c.issueID))
+		if err != nil {
+			t.Fatal(err)
 		}
-		if !moved {
-			t.Fatalf("the edge move did not happen: %v", err)
+		if moved, _ := testHandler.moveIssueOnEdge(ctx, issue, "in_review", "ci_green_advance", nil, false); !moved {
+			t.Fatal("the edge move did not happen")
 		}
 		if got := grantCount(t, c.issueID); got != 1 {
 			t.Fatalf("grants after the edge move = %d, want 1", got)
