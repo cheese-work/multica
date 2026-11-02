@@ -275,7 +275,7 @@ func preMergeCommit(ctx context.Context, gh Reader, number int, mergeSHA string)
 	if err != nil {
 		return "", err
 	}
-	if len(msgs) == 0 || len(msgs) > maxRebaseWalk {
+	if len(msgs) == 0 || len(msgs) >= maxRebaseWalk {
 		return "", fmt.Errorf("cannot prove the merge method: PR has %d commits", len(msgs))
 	}
 	if len(msgs) == 1 {

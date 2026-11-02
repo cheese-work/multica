@@ -17,6 +17,10 @@ import (
 // let a queued merge pass the direct-merge check.
 const maxConfigSyncPages = 10
 
+// prCommitsAPICap is the most commits GitHub's PR-commits endpoint returns. It
+// gives no sign of truncation, so a list that reaches the cap is unprovable.
+const prCommitsAPICap = 250
+
 // ConfigSyncReader is the GitHub App read surface of one config repo
 // (configsync.Reader) plus the receipt comment write. Every value comes from
 // the API, never from a webhook payload.
@@ -104,6 +108,9 @@ func (r *ConfigSyncReader) PRCommitMessages(ctx context.Context, number int) ([]
 	}](ctx, r, r.path("/pulls/%d/commits", number))
 	if err != nil {
 		return nil, err
+	}
+	if len(items) >= prCommitsAPICap {
+		return nil, fmt.Errorf("github REST: PR %d has %d or more commits, past the API's list cap", number, prCommitsAPICap)
 	}
 	msgs := make([]string, len(items))
 	for i, it := range items {

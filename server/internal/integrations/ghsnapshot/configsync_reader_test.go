@@ -98,3 +98,32 @@ func TestConfigSyncReaderFailsClosedOnShortPagesLimit(t *testing.T) {
 		t.Fatal("expected an error when the timeline exceeds the page cap")
 	}
 }
+
+// GitHub's PR-commits endpoint returns at most 250 commits and gives no sign
+// that it truncated. A list that reaches the cap cannot prove the PR's real
+// commit list, so the reader must error and never return it as complete.
+func TestConfigSyncReaderPRCommitsFailsClosedAtAPICap(t *testing.T) {
+	commit := func(n int) string {
+		return "[" + strings.TrimSuffix(strings.Repeat(`{"commit":{"message":"m"}},`, n), ",") + "]"
+	}
+	for _, tc := range []struct {
+		name    string
+		pages   []int
+		wantErr bool
+	}{
+		{"under the cap", []int{100, 100, 49}, false},
+		{"at the cap", []int{100, 100, 50}, true},
+	} {
+		routes := map[string]string{}
+		for i, n := range tc.pages {
+			routes[fmt.Sprintf("/repos/o/r/pulls/7/commits?per_page=100&page=%d", i+1)] = commit(n)
+		}
+		var posted string
+		srv := configSyncServer(t, routes, &posted)
+		msgs, err := NewConfigSyncReader(newTestClient(t, srv.URL), 1, "o", "r").PRCommitMessages(context.Background(), 7)
+		srv.Close()
+		if (err != nil) != tc.wantErr {
+			t.Errorf("%s: err=%v wantErr=%v (got %d messages)", tc.name, err, tc.wantErr, len(msgs))
+		}
+	}
+}

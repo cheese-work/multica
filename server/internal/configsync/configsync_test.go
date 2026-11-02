@@ -359,9 +359,11 @@ func TestPreMergeBoundaryFailsClosedWhenHistoryIsUnreadable(t *testing.T) {
 
 	// More PR commits than the walk limit: cannot be proven, so no guess.
 	g := rebased()
-	g.prMsgs = make([]string, maxRebaseWalk+1)
-	if r := eval(g, fakeTargets{}); r.Skipped != "failed: fetch" {
-		t.Errorf("walk limit: want failed: fetch, got %q", r.Skipped)
+	for _, n := range []int{maxRebaseWalk, maxRebaseWalk + 1} {
+		g.prMsgs = make([]string, n)
+		if r := eval(g, fakeTargets{}); r.Skipped != "failed: fetch" {
+			t.Errorf("walk limit with %d commits: want failed: fetch, got %q", n, r.Skipped)
+		}
 	}
 
 	// The attack: the PR adds a mapping in its first commit and changes the
