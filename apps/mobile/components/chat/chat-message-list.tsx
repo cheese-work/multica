@@ -27,7 +27,6 @@ import { Markdown } from "@/lib/markdown";
 import { ImageSequenceProvider } from "@/lib/markdown/image-sequence";
 import { failureReasonKey } from "@/lib/failure-reason-label";
 import { formatElapsedMs } from "@/lib/format-elapsed";
-import { formatCompactionTime } from "@/lib/compaction-time";
 import { cn } from "@/lib/utils";
 import { useChatSelectStore } from "@/data/chat-select-store";
 import { useChatMessageLongPress } from "./message-long-press";
@@ -37,6 +36,7 @@ import { ChatTimeline } from "./chat-timeline";
 // reuses in chat (AttachmentList). Renders any bound attachment not already
 // referenced inline in the message content, with same-file dedup.
 import { CommentAttachmentList } from "@/components/issue/comment-attachment-list";
+import { CompactionDivider } from "./compaction-divider";
 import { StatusPill } from "./status-pill";
 import {
   Collapsible,
@@ -380,44 +380,6 @@ function ContinuationSummary({
       </CollapsibleTrigger>
       <CollapsibleContent>
         <View className="mt-1">
-          <Markdown
-            content={message.content}
-            attachments={message.attachments}
-            selectable={isSelecting}
-          />
-        </View>
-      </CollapsibleContent>
-    </Collapsible>
-  );
-}
-
-function CompactionDivider({
-  message,
-  isSelecting,
-}: {
-  message: ChatMessage;
-  isSelecting: boolean;
-}) {
-  const { t } = useT("chat");
-  const time = formatCompactionTime(message.created_at);
-  const label = time
-    ? t("compaction_divider", { time })
-    : t("compaction_divider_untimed", {});
-  return (
-    <Collapsible>
-      <CollapsibleTrigger asChild>
-        <View
-          accessibilityRole="button"
-          accessibilityLabel={label}
-          className="flex-row items-center gap-3 active:opacity-70"
-        >
-          <View className="h-px flex-1 bg-border" />
-          <Text className="text-xs text-muted-foreground">{label}</Text>
-          <View className="h-px flex-1 bg-border" />
-        </View>
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <View className="mt-2">
           <Markdown
             content={message.content}
             attachments={message.attachments}

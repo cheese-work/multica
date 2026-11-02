@@ -31,6 +31,7 @@ export default defineConfig({
       "lib/**/*.test.ts",
       "data/**/*.test.ts",
       "components/issue/run-cancel-button.test.ts",
+      "components/chat/compaction-divider.test.ts",
     ],
     passWithNoTests: true,
   },
