@@ -100,7 +100,7 @@ class SemgrepError(Exception):
 
 def semgrep_scan(repo: str, rev: str, paths: list[str] | None = None) -> list[dict]:
     """ERROR-severity semgrep findings of `rev`: the whole tree, or only `paths`. Static scan of an extracted copy;
-    nothing from the revision runs. The default branch's .semgrepignore wins, `--disable-nosem` stops a PR from
+    nothing from the revision runs. Only the default branch's .semgrepignore is used (the revision's are deleted), `--disable-nosem` stops a PR from
     silencing a rule inline, and the `data` tar filter refuses links that point outside the copy."""
     with tempfile.TemporaryDirectory() as root:
         chunks = [[]] if paths is None else [paths[i:i + 200] for i in range(0, len(paths), 200)]
@@ -112,6 +112,9 @@ def semgrep_scan(repo: str, rev: str, paths: list[str] | None = None) -> list[di
                     t.extractall(root, filter="data")
             except (subprocess.CalledProcessError, tarfile.TarError) as e:
                 raise SemgrepError(f"cannot read {rev[:12]}: {type(e).__name__}") from e
+        for dirpath, _, names in os.walk(root):  # an ignore file from the revision is attacker data: drop all of them
+            if ".semgrepignore" in names:
+                os.unlink(os.path.join(dirpath, ".semgrepignore"))
         ignore = os.path.join(repo, ".semgrepignore")
         if os.path.exists(ignore):
             with open(ignore, "rb") as src, open(os.path.join(root, ".semgrepignore"), "wb") as dst:
@@ -142,15 +145,17 @@ def new_semgrep(findings: list[dict], baseline: list[str], diff_text: str) -> li
     baseline entry covers one finding)."""
     added = {(p, n) for p, n, _ in added_lines(diff_text)}
     left = list(baseline)
+    on_added = lambda f: any((f["path"], n) in added for n in range(f["start"], f["end"] + 1))
+    ordered = sorted(findings, key=lambda f: (f["path"], f["start"]))
+    # Untouched findings consume their baseline entries first, so an identical finding the PR adds in the same
+    # file cannot borrow one that belongs to code the PR did not touch.
     out = []
-    for f in sorted(findings, key=lambda f: (f["path"], f["start"])):
-        if not any((f["path"], n) in added for n in range(f["start"], f["end"] + 1)):
-            continue
+    for f in [f for f in ordered if not on_added(f)] + [f for f in ordered if on_added(f)]:
         if f["fp"] in left:
             left.remove(f["fp"])
-        else:
+        elif on_added(f):
             out.append(f"{f['path']}:{f['start']} {f['rule']}")
-    return out
+    return sorted(out)
 
 
 def load_baseline(repo: str) -> list[str]:

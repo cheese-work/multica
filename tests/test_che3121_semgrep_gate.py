@@ -45,6 +45,15 @@ class NewSemgrepTest(unittest.TestCase):
         diff = "+++ b/app.py\n@@ -1 +2,2 @@\n+x\n+y\n"
         self.assertEqual(sg.new_semgrep(two, ["r|app.py|1"], diff), ["app.py:3 sqli"])
 
+    def test_new_identical_finding_cannot_borrow_the_baseline_entry_of_an_untouched_one(self):
+        old, new = finding(start=2), finding(start=9)
+        diff = "+++ b/app.py\n@@ -8,0 +9,1 @@\n+x\n"
+        self.assertEqual(sg.new_semgrep([old, new], ["r|app.py|1"], diff), ["app.py:9 sqli"])
+        self.assertEqual(sg.new_semgrep([new, old], ["r|app.py|1"], diff), ["app.py:9 sqli"])
+        before = finding(start=1)  # new finding sorts BEFORE the untouched baselined one
+        diff = "+++ b/app.py\n@@ -0,0 +1,1 @@\n+x\n"
+        self.assertEqual(sg.new_semgrep([before, finding(start=5)], ["r|app.py|1"], diff), ["app.py:1 sqli"])
+
     def test_evaluate_fails_on_new_findings_and_skips_when_not_run(self):
         args = (PR, [], {BOT}, "")
         self.assertEqual(sg.evaluate(*args, semgrep=["app.py:2 sqli"])[0], "failure")
@@ -113,6 +122,15 @@ class GatePrWithSemgrepTest(unittest.TestCase):
         base = self.setup_base(SAFE)
         sneaky = self.commit(FILE.format(SQLI + "  # nosem"), "nosem")
         self.assertEqual(self.gate(base, sneaky, [])[0], "failure")
+
+    def test_pr_authored_semgrepignore_cannot_hide_its_own_finding(self):
+        base = self.setup_base(SAFE)
+        Path(self.repo, ".semgrepignore").write_text("app.py\n")
+        Path(self.repo, "sub").mkdir()
+        Path(self.repo, "sub", ".semgrepignore").write_text("*\n")
+        head = self.commit(FILE.format(SQLI), "ignore file plus vuln")
+        self.git("checkout", "-q", base)  # the gate runs from a default-branch checkout, never the head
+        self.assertEqual(self.gate(base, head, [])[0], "failure")
 
     def test_unusable_semgrep_is_pending_not_a_pass(self):
         base = self.setup_base(SAFE)
