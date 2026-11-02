@@ -334,6 +334,108 @@ function markdown(base, head) {
   ].join("\n");
 }
 
+/**
+ * `--page-load`: the five-route page-load baseline (CHE-2976) on both profiles.
+ *
+ * Both refs are built and started first, then measured in alternating rounds of
+ * one sample each, so a busy host slows both sides alike. Per-ref sequential
+ * runs let load drift land on one side only. The median over --rounds samples
+ * (default 5) is compared per route; the spec, profiles and throttling are the
+ * ones in e2e/perf/page-load-baseline.spec.ts.
+ */
+const PAGE_LOAD_PROFILES = ["desktop", "phone"];
+
+async function pageLoad() {
+  const rounds = Number(flag("rounds", "5"));
+  const sides = {};
+  const samples = { base: {}, head: {} };
+  const failures = [];
+  try {
+    sides.base = await prepare(baseRef, "base");
+    sides.head = await prepare(headRef, "head");
+    for (let round = 1; round <= rounds; round++) {
+      const order = round % 2 ? ["base", "head"] : ["head", "base"];
+      for (const label of order) {
+        for (const profile of PAGE_LOAD_PROFILES) {
+          const dir = join(outDir, "page-load", `${label}-r${round}`);
+          mkdirSync(dir, { recursive: true });
+          const reportPath = join(dir, `page-load-${profile}.json`);
+          rmSync(reportPath, { force: true });
+          try {
+            run("pnpm", ["exec", "playwright", "test", "--config=playwright.perf.config.ts", `--project=${profile}`], {
+              cwd: repoRoot,
+              env: {
+                ...process.env,
+                PLAYWRIGHT_BASE_URL: `http://127.0.0.1:${sides[label].port}`,
+                PERF_SAMPLES: "1",
+                PERF_REPORT_DIR: dir,
+              },
+            });
+          } catch {
+            failures.push(`${label} round ${round} ${profile}: spec failed`);
+          }
+          try {
+            const routes = JSON.parse(readFileSync(reportPath, "utf8")).profiles[profile];
+            for (const [route, found] of Object.entries(routes)) {
+              ((samples[label][profile] ??= {})[route] ??= []).push(...found);
+            }
+          } catch {
+            failures.push(`${label} round ${round} ${profile}: no readable report`);
+          }
+        }
+      }
+    }
+  } finally {
+    for (const side of Object.values(sides)) await release(side);
+  }
+
+  const longest = (sample) => Math.max(0, ...sample.long_tasks.map((task) => task.duration_ms));
+  const stat = (found = []) => ({
+    n: found.length,
+    longest: median(found.map(longest)),
+    total: median(found.map((sample) => sample.long_task_total_ms)),
+    lcp: median(found.map((sample) => sample.lcp_ms)),
+    bad: found.filter((sample) => sample.page_errors?.length || sample.unmocked?.length).length,
+  });
+  const delta = (a, b) =>
+    a === null || b === null ? "n/a" : `${b - a > 0 ? "+" : ""}${Math.round(b - a)} (${a === 0 ? "n/a" : `${(((b - a) / a) * 100).toFixed(0)}%`})`;
+  const tables = PAGE_LOAD_PROFILES.map((profile) => {
+    const rows = Object.keys(samples.base[profile] ?? {}).map((route) => {
+      const a = stat(samples.base[profile][route]);
+      const b = stat(samples.head[profile]?.[route]);
+      return `| ${route} | ${a.n}/${b.n} | ${a.longest}→${b.longest} | ${delta(a.longest, b.longest)} | ${a.total}→${b.total} | ${delta(a.total, b.total)} | ${a.lcp}→${b.lcp} | ${delta(a.lcp, b.lcp)} | ${a.bad}/${b.bad} |`;
+    });
+    return [
+      `### ${profile}`,
+      "",
+      "| Route | Samples base/head | Longest long task (ms) | Δ | Long-task total (ms) | Δ | LCP (ms) | Δ | Bad samples base/head |",
+      "|---|---|---|---|---|---|---|---|---|",
+      ...rows,
+    ].join("\n");
+  });
+  const summary = [
+    `Median of ${rounds} interleaved samples per route. base \`${baseRef}\` (${sides.base.sha.slice(0, 9)}), head \`${headRef}\` (${sides.head.sha.slice(0, 9)}).`,
+    "",
+    ...tables,
+    ...(failures.length ? ["", `Failures: ${failures.join("; ")}`] : []),
+  ].join("\n");
+  writeFileSync(join(outDir, "page-load-comparison.md"), `${summary}\n`);
+  writeFileSync(join(outDir, "page-load-comparison.json"), JSON.stringify({ baseRef, headRef, rounds, samples, failures }, null, 2));
+  console.log(`\n${summary}`);
+  return failures.length ? 1 : 0;
+}
+
+if (args.includes("--page-load")) {
+  mkdirSync(outDir, { recursive: true });
+  let code = 1;
+  try {
+    code = await pageLoad();
+  } catch (error) {
+    console.error(`\npage-load comparison aborted: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  process.exit(code);
+}
+
 mkdirSync(outDir, { recursive: true });
 // The files this script writes, cleared up front: a comparison that aborts
 // early must not leave the previous run's summary looking like its own.
