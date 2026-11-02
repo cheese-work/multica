@@ -60,25 +60,17 @@ func (h *Handler) listGitHubDispatchHaltAudit(r *http.Request, workspaceID strin
 	return out, nil
 }
 
-// changeGitHubDispatchHalt activates or lifts the switch. A change lock, held
-// from the start to the end of the sweep, serializes changes: a restore waits
-// for the whole activation before it, including the gap between its commit and
-// its sweep. Inside it, the switch row and its audit row commit alone, under
-// the exclusive lock every external admission path holds shared: from that
-// commit on every admission sees the halt, and a crash or failing sweep cannot
-// take it back. Then, when halting, the sweep cancels the runs started before
-// the commit. A failed sweep leaves the halt in force, marks the audit row
-// sweep_failed and returns the error with the count revoked so far; repeating
-// the halt retries it.
+// changeGitHubDispatchHalt activates or lifts the switch. The switch row and
+// its audit row commit alone, under the exclusive lock every external admission
+// path holds shared: from that commit on every admission sees the halt, and a
+// crash or failing sweep cannot take it back. Then, when halting, the sweep
+// cancels the runs started before the commit. The audit row carries a
+// sweep_pending lease until the sweep ends; a change that finds a live lease is
+// refused (errGitHubDispatchHaltBusy) instead of waiting, so no change ever
+// holds one connection while needing another. A failed sweep leaves the halt in
+// force, marks the audit row sweep_failed and returns the error with the count
+// revoked so far; repeating the halt retries it.
 func (h *Handler) changeGitHubDispatchHalt(ctx context.Context, audit db.RecordGitHubDispatchHaltAuditParams) (revoked int, sweepErr error, err error) {
-	lock, err := h.TxStarter.Begin(ctx)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer lock.Rollback(context.WithoutCancel(ctx))
-	if err := h.Queries.WithTx(lock).LockGitHubDispatchHaltChange(ctx, audit.WorkspaceID); err != nil {
-		return 0, nil, err
-	}
 	auditID, err := h.commitGitHubDispatchHalt(ctx, audit)
 	if err != nil {
 		return 0, nil, err
@@ -95,6 +87,9 @@ func (h *Handler) changeGitHubDispatchHalt(ctx context.Context, audit db.RecordG
 	return revoked, sweepErr, nil
 }
 
+// errGitHubDispatchHaltBusy means an earlier halt's sweep is still running.
+var errGitHubDispatchHaltBusy = errors.New("an earlier kill switch change is still revoking runs")
+
 func (h *Handler) commitGitHubDispatchHalt(ctx context.Context, audit db.RecordGitHubDispatchHaltAuditParams) (pgtype.UUID, error) {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
@@ -104,6 +99,13 @@ func (h *Handler) commitGitHubDispatchHalt(ctx context.Context, audit db.RecordG
 	q := h.Queries.WithTx(tx)
 	if err := q.LockGitHubDispatchHaltExclusive(ctx, audit.WorkspaceID); err != nil {
 		return pgtype.UUID{}, err
+	}
+	busy, err := q.HasPendingGitHubDispatchHaltSweep(ctx, audit.WorkspaceID)
+	if err != nil {
+		return pgtype.UUID{}, err
+	}
+	if busy {
+		return pgtype.UUID{}, errGitHubDispatchHaltBusy
 	}
 	if audit.Halted {
 		err = q.HaltGitHubDispatch(ctx, db.HaltGitHubDispatchParams{WorkspaceID: audit.WorkspaceID, Scope: audit.Scope, HaltedBy: audit.ActorID})
@@ -192,6 +194,10 @@ func (h *Handler) SetGitHubDispatchHalt(w http.ResponseWriter, r *http.Request) 
 	revoked, sweepErr, err := h.changeGitHubDispatchHalt(ctx, db.RecordGitHubDispatchHaltAuditParams{
 		WorkspaceID: workspaceID, Scope: scope, Halted: *req.Halted, ActorID: userID, ActorSource: actorSource,
 	})
+	if errors.Is(err, errGitHubDispatchHaltBusy) {
+		writeError(w, http.StatusConflict, err.Error()+"; retry shortly")
+		return
+	}
 	if err != nil {
 		slog.Error("github dispatch halt: change failed", "workspace_id", uuidToString(workspaceID), "scope", scope, "err", err)
 		writeError(w, http.StatusInternalServerError, "failed to change the kill switch")

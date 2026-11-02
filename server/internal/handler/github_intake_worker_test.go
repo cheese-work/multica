@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -504,10 +507,12 @@ func TestGitHubDispatchHaltSweepsIntakeRunAfterSourceUnlinked(t *testing.T) {
 	}
 }
 
-// A restore waits for the sweep of the halt before it: a run started after the restore must not be cancelled by it.
-func TestGitHubDispatchHaltRestoreWaitsForSweep(t *testing.T) {
+// A change is refused while the sweep of an earlier halt runs: a restore must not interleave with it,
+// and a refused change holds no connection while it waits.
+func TestGitHubDispatchHaltChangeRefusedWhileSweepRuns(t *testing.T) {
 	fixture := newGitHubIntakeFixture(t)
-	taskID, _ := dispatchIntakeRunForSweep(t, fixture, "-restore-waits")
+	cleanHaltTables(t)
+	taskID, _ := dispatchIntakeRunForSweep(t, fixture, "-restore-refused")
 	ctx := context.Background()
 	hold, err := testPool.Begin(ctx)
 	if err != nil {
@@ -517,14 +522,19 @@ func TestGitHubDispatchHaltRestoreWaitsForSweep(t *testing.T) {
 	if _, err := hold.Exec(ctx, `SELECT 1 FROM agent_task_queue WHERE id=$1 FOR UPDATE`, taskID); err != nil {
 		t.Fatal(err)
 	}
-	halted, restored := make(chan int, 1), make(chan int, 1)
+	halted := make(chan int, 1)
 	go func() { halted <- setHalt(t, "*", true, false).Code }()
-	time.Sleep(500 * time.Millisecond)
-	go func() { restored <- setHalt(t, "*", false, false).Code }()
-	select {
-	case code := <-restored:
-		t.Fatalf("restore finished (%d) while the halt's sweep was still running", code)
-	case <-time.After(700 * time.Millisecond):
+	deadline := time.Now().Add(3 * time.Second)
+	for dbfx.Count(t, `SELECT count(*) FROM github_dispatch_halt WHERE workspace_id=$1`, testWorkspaceID) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("halt not committed")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	for _, halt := range []bool{false, true} {
+		if w := setHalt(t, "*", halt, false); w.Code != http.StatusConflict {
+			t.Fatalf("change (halted=%v) during the sweep = %d, want 409", halt, w.Code)
+		}
 	}
 	if err := hold.Commit(ctx); err != nil {
 		t.Fatal(err)
@@ -532,8 +542,8 @@ func TestGitHubDispatchHaltRestoreWaitsForSweep(t *testing.T) {
 	if code := <-halted; code != http.StatusOK {
 		t.Fatalf("halt status = %d", code)
 	}
-	if code := <-restored; code != http.StatusOK {
-		t.Fatalf("restore status = %d", code)
+	if w := setHalt(t, "*", false, false); w.Code != http.StatusOK {
+		t.Fatalf("restore after the sweep = %d: %s", w.Code, w.Body)
 	}
 	if n := dbfx.Count(t, `SELECT count(*) FROM github_dispatch_halt WHERE workspace_id=$1`, testWorkspaceID); n != 0 {
 		t.Fatalf("halts after restore = %d, want 0", n)
@@ -700,34 +710,83 @@ func TestGitHubDispatchHaltRetryRevokesTokenAfterFailedSweep(t *testing.T) {
 	}
 }
 
-// A restore cannot land between the halt's commit and its sweep: it waits for the whole activation.
-func TestGitHubDispatchHaltRestoreWaitsForActivationGap(t *testing.T) {
+// A restore cannot land between the halt's commit and its sweep, or after a crash inside the lease.
+func TestGitHubDispatchHaltRestoreRefusedInActivationGap(t *testing.T) {
 	newGitHubIntakeFixture(t)
 	cleanHaltTables(t)
 	ctx := context.Background()
-	activation, err := testPool.Begin(ctx)
+	for _, ddl := range []string{
+		`INSERT INTO github_dispatch_halt (workspace_id, scope) VALUES ($1, '*')`,
+		`INSERT INTO github_dispatch_halt_audit (workspace_id, scope, halted, actor_source, sweep_pending) VALUES ($1, '*', true, 'member', true)`,
+	} {
+		if _, err := testPool.Exec(ctx, ddl, testWorkspaceID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if w := setHalt(t, "*", false, false); w.Code != http.StatusConflict {
+		t.Fatalf("restore in the activation gap = %d, want 409", w.Code)
+	}
+	// An abandoned sweep (a crash) stops blocking changes after its lease.
+	if _, err := testPool.Exec(ctx, `UPDATE github_dispatch_halt_audit SET created_at = now() - interval '1 hour' WHERE workspace_id=$1`, testWorkspaceID); err != nil {
+		t.Fatal(err)
+	}
+	if w := setHalt(t, "*", false, false); w.Code != http.StatusOK {
+		t.Fatalf("restore after the lease = %d: %s", w.Code, w.Body)
+	}
+}
+
+func handlerOnPool(t *testing.T, conns int32) *Handler {
+	t.Helper()
+	cfg, err := pgxpool.ParseConfig(os.Getenv("DATABASE_URL"))
+	if err != nil {
+		t.Skip("no database")
+	}
+	cfg.MaxConns = conns
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer activation.Rollback(ctx)
-	if _, err := activation.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('github_dispatch_halt_change:' || $1::text, 0))`, testWorkspaceID); err != nil {
-		t.Fatal(err)
+	t.Cleanup(pool.Close)
+	h := *testHandler
+	h.Queries = db.New(pool)
+	h.TxStarter = pool
+	return &h
+}
+
+func setHaltOn(h *Handler, scope string, halted bool) int {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req := newRequest("PUT", "/api/github/dispatch-halt", map[string]any{"scope": scope, "halted": halted}).WithContext(ctx)
+	w := httptest.NewRecorder()
+	h.SetGitHubDispatchHalt(w, req)
+	return w.Code
+}
+
+// A switch change never needs a second connection while it holds one.
+func TestGitHubDispatchHaltChangeOnOneConnectionPool(t *testing.T) {
+	newGitHubIntakeFixture(t)
+	cleanHaltTables(t)
+	h := handlerOnPool(t, 1)
+	if code := setHaltOn(h, "*", true); code != http.StatusOK {
+		t.Fatalf("halt on a one-connection pool = %d, want 200", code)
 	}
-	// The halt row is committed, as after the activation's first step; its sweep has not run yet.
-	if _, err := testPool.Exec(ctx, `INSERT INTO github_dispatch_halt (workspace_id, scope) VALUES ($1, '*')`, testWorkspaceID); err != nil {
-		t.Fatal(err)
+	if code := setHaltOn(h, "*", false); code != http.StatusOK {
+		t.Fatalf("restore on a one-connection pool = %d, want 200", code)
 	}
-	restored := make(chan int, 1)
-	go func() { restored <- setHalt(t, "*", false, false).Code }()
-	select {
-	case code := <-restored:
-		t.Fatalf("restore finished (%d) while an activation was between its commit and its sweep", code)
-	case <-time.After(500 * time.Millisecond):
+}
+
+// Concurrent changes for one workspace never starve the pool: each ends 200 or 409, none times out.
+func TestGitHubDispatchHaltConcurrentChangesDoNotStarvePool(t *testing.T) {
+	newGitHubIntakeFixture(t)
+	cleanHaltTables(t)
+	h := handlerOnPool(t, 2)
+	codes := make(chan int, 8)
+	for i := 0; i < 8; i++ {
+		go func() { codes <- setHaltOn(h, "*", i%2 == 0) }()
 	}
-	if err := activation.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if code := <-restored; code != http.StatusOK {
-		t.Fatalf("restore status = %d", code)
+	for i := 0; i < 8; i++ {
+		if code := <-codes; code != http.StatusOK && code != http.StatusConflict {
+			t.Fatalf("concurrent change = %d, want 200 or 409", code)
+		}
 	}
 }

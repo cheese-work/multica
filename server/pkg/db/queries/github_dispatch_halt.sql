@@ -63,18 +63,21 @@ SELECT pg_advisory_xact_lock_shared(hashtextextended('github_dispatch_halt:' || 
 -- Taken by a switch change; waits for in-flight dispatches and blocks new ones until it commits.
 SELECT pg_advisory_xact_lock(hashtextextended('github_dispatch_halt:' || sqlc.arg(workspace_id)::uuid::text, 0));
 
--- name: LockGitHubDispatchHaltChange :exec
--- Held by a switch change from its start to the end of its sweep, so two changes never interleave.
--- Separate from the admission lock above: admissions never wait on it.
-SELECT pg_advisory_xact_lock(hashtextextended('github_dispatch_halt_change:' || sqlc.arg(workspace_id)::uuid::text, 0));
+-- name: HasPendingGitHubDispatchHaltSweep :one
+-- A halt's sweep is a lease, not a held lock: a change that finds a live lease is refused, so
+-- no connection waits for another. A sweep that crashed stops counting after ten minutes.
+SELECT EXISTS (
+    SELECT 1 FROM github_dispatch_halt_audit
+    WHERE workspace_id = $1 AND sweep_pending AND created_at > now() - interval '10 minutes'
+);
 
 -- name: RecordGitHubDispatchHaltAudit :one
-INSERT INTO github_dispatch_halt_audit (workspace_id, scope, halted, actor_id, actor_source)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO github_dispatch_halt_audit (workspace_id, scope, halted, actor_id, actor_source, sweep_pending)
+VALUES ($1, $2, $3, $4, $5, $3)
 RETURNING id;
 
 -- name: SetGitHubDispatchHaltAuditSweep :exec
-UPDATE github_dispatch_halt_audit SET runs_revoked = $2, sweep_failed = $3 WHERE id = $1;
+UPDATE github_dispatch_halt_audit SET runs_revoked = $2, sweep_failed = $3, sweep_pending = false WHERE id = $1;
 
 -- name: ListGitHubDispatchHaltAudit :many
 SELECT * FROM github_dispatch_halt_audit WHERE workspace_id = $1 ORDER BY created_at DESC, id DESC LIMIT 20;

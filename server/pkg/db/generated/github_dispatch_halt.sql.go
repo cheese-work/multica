@@ -50,8 +50,24 @@ func (q *Queries) HaltGitHubDispatch(ctx context.Context, arg HaltGitHubDispatch
 	return err
 }
 
+const hasPendingGitHubDispatchHaltSweep = `-- name: HasPendingGitHubDispatchHaltSweep :one
+SELECT EXISTS (
+    SELECT 1 FROM github_dispatch_halt_audit
+    WHERE workspace_id = $1 AND sweep_pending AND created_at > now() - interval '10 minutes'
+)
+`
+
+// A halt's sweep is a lease, not a held lock: a change that finds a live lease is refused, so
+// no connection waits for another. A sweep that crashed stops counting after ten minutes.
+func (q *Queries) HasPendingGitHubDispatchHaltSweep(ctx context.Context, workspaceID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, hasPendingGitHubDispatchHaltSweep, workspaceID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const listGitHubDispatchHaltAudit = `-- name: ListGitHubDispatchHaltAudit :many
-SELECT id, workspace_id, scope, halted, actor_id, actor_source, runs_revoked, sweep_failed, created_at FROM github_dispatch_halt_audit WHERE workspace_id = $1 ORDER BY created_at DESC, id DESC LIMIT 20
+SELECT id, workspace_id, scope, halted, actor_id, actor_source, runs_revoked, sweep_failed, sweep_pending, created_at FROM github_dispatch_halt_audit WHERE workspace_id = $1 ORDER BY created_at DESC, id DESC LIMIT 20
 `
 
 func (q *Queries) ListGitHubDispatchHaltAudit(ctx context.Context, workspaceID pgtype.UUID) ([]GithubDispatchHaltAudit, error) {
@@ -72,6 +88,7 @@ func (q *Queries) ListGitHubDispatchHaltAudit(ctx context.Context, workspaceID p
 			&i.ActorSource,
 			&i.RunsRevoked,
 			&i.SweepFailed,
+			&i.SweepPending,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -166,17 +183,6 @@ func (q *Queries) ListGitHubTriggeredActiveTasks(ctx context.Context, arg ListGi
 	return items, nil
 }
 
-const lockGitHubDispatchHaltChange = `-- name: LockGitHubDispatchHaltChange :exec
-SELECT pg_advisory_xact_lock(hashtextextended('github_dispatch_halt_change:' || $1::uuid::text, 0))
-`
-
-// Held by a switch change from its start to the end of its sweep, so two changes never interleave.
-// Separate from the admission lock above: admissions never wait on it.
-func (q *Queries) LockGitHubDispatchHaltChange(ctx context.Context, workspaceID pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, lockGitHubDispatchHaltChange, workspaceID)
-	return err
-}
-
 const lockGitHubDispatchHaltExclusive = `-- name: LockGitHubDispatchHaltExclusive :exec
 SELECT pg_advisory_xact_lock(hashtextextended('github_dispatch_halt:' || $1::uuid::text, 0))
 `
@@ -227,8 +233,8 @@ func (q *Queries) MarkGitHubDispatchRun(ctx context.Context, arg MarkGitHubDispa
 }
 
 const recordGitHubDispatchHaltAudit = `-- name: RecordGitHubDispatchHaltAudit :one
-INSERT INTO github_dispatch_halt_audit (workspace_id, scope, halted, actor_id, actor_source)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO github_dispatch_halt_audit (workspace_id, scope, halted, actor_id, actor_source, sweep_pending)
+VALUES ($1, $2, $3, $4, $5, $3)
 RETURNING id
 `
 
@@ -271,7 +277,7 @@ func (q *Queries) ResumeGitHubDispatch(ctx context.Context, arg ResumeGitHubDisp
 }
 
 const setGitHubDispatchHaltAuditSweep = `-- name: SetGitHubDispatchHaltAuditSweep :exec
-UPDATE github_dispatch_halt_audit SET runs_revoked = $2, sweep_failed = $3 WHERE id = $1
+UPDATE github_dispatch_halt_audit SET runs_revoked = $2, sweep_failed = $3, sweep_pending = false WHERE id = $1
 `
 
 type SetGitHubDispatchHaltAuditSweepParams struct {
