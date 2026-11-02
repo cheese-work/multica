@@ -32,7 +32,7 @@ func TestFoldDiacritics(t *testing.T) {
 // foldFrom/foldTo are the single mapping: migration 883 must carry the same
 // literals, or the stored column and the Go query side would drift.
 func TestFoldTable_MatchesMigration(t *testing.T) {
-	up, err := os.ReadFile("../../migrations/883_search_folded_text.up.sql")
+	up, err := os.ReadFile("../../migrations/886_search_folded_text.up.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,6 +149,89 @@ func TestIssueSearch_DeleteRemovesStoredText(t *testing.T) {
 	if leftover != 0 {
 		t.Fatalf("%d stored search rows outlive their issue and comment", leftover)
 	}
+}
+
+// The exact-diacritic rank must cost one pass over the stored comment text. A
+// second pass over raw comment bodies (a lookup by id per matching comment)
+// measured +34% on an accented query (CHE-2943), over the +20% limit.
+func TestBuildSearchQuery_ExactDiacriticsRankIsOnePassOverComments(t *testing.T) {
+	sql, _ := buildSearchQuery("đăng nhập", splitSearchTerms("đăng nhập"), 0, false, false, nil)
+	for _, forbidden := range []string{"comment_cased", "unnest(", "comment rc"} {
+		if strings.Contains(sql, forbidden) {
+			t.Errorf("accented query still contains %q:\n%s", forbidden, sql)
+		}
+	}
+	if !strings.Contains(sql, "content_accents") {
+		t.Errorf("accented query does not rank on the stored accented text:\n%s", sql)
+	}
+}
+
+// content_accents keeps the lowered, unfolded comment only where folding
+// changed it, so ASCII comments cost no extra storage and an accented query
+// can rank on it without reading the comment table.
+func TestIssueSearch_StoresAccentedCommentTextOnlyWhereFoldingChangesIt(t *testing.T) {
+	f := newDiacriticWorkspace(t)
+	id := dbfx.Issue(t, "Plain title", testutil.Cols{"workspace_id": f.workspaceID})
+	plain := dbfx.Comment(t, id, "Plain ASCII comment", testutil.Cols{"workspace_id": f.workspaceID})
+	accented := dbfx.Comment(t, id, "Đã sửa Lỗi", testutil.Cols{"workspace_id": f.workspaceID})
+	ctx := context.Background()
+	for commentID, want := range map[string]*string{plain: nil, accented: strPtr("đã sửa lỗi")} {
+		var got *string
+		if err := testPool.QueryRow(ctx, "SELECT content_accents FROM comment_search_text WHERE comment_id = $1", commentID).Scan(&got); err != nil {
+			t.Fatalf("content_accents: %v", err)
+		}
+		if (got == nil) != (want == nil) || (got != nil && *got != *want) {
+			t.Errorf("comment %s: content_accents = %v, want %v", commentID, derefOrNull(got), derefOrNull(want))
+		}
+	}
+	if _, err := testPool.Exec(ctx, "UPDATE comment SET content = 'now plain' WHERE id = $1", accented); err != nil {
+		t.Fatal(err)
+	}
+	var got *string
+	if err := testPool.QueryRow(ctx, "SELECT content_accents FROM comment_search_text WHERE comment_id = $1", accented).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != nil {
+		t.Errorf("content_accents after editing to ASCII = %q, want NULL", *got)
+	}
+}
+
+func TestIssueSearch_StoresAccentedIssueTextOnlyWhereFoldingChangesIt(t *testing.T) {
+	f := newDiacriticWorkspace(t)
+	plain := dbfx.Issue(t, "Plain title", testutil.Cols{"workspace_id": f.workspaceID, "description": "Plain text"})
+	accented := dbfx.Issue(t, "Lỗi Đăng nhập", testutil.Cols{"workspace_id": f.workspaceID, "description": "Không vào được"})
+	ctx := context.Background()
+	type stored struct{ title, description *string }
+	for issueID, want := range map[string]stored{
+		plain:    {nil, nil},
+		accented: {strPtr("lỗi đăng nhập"), strPtr("không vào được")},
+	} {
+		var got stored
+		if err := testPool.QueryRow(ctx, "SELECT title_accents, description_accents FROM issue_search_text WHERE issue_id = $1", issueID).Scan(&got.title, &got.description); err != nil {
+			t.Fatalf("accents: %v", err)
+		}
+		if derefOrNull(got.title) != derefOrNull(want.title) || derefOrNull(got.description) != derefOrNull(want.description) {
+			t.Errorf("issue %s: accents = (%v, %v), want (%v, %v)", issueID,
+				derefOrNull(got.title), derefOrNull(got.description), derefOrNull(want.title), derefOrNull(want.description))
+		}
+	}
+	if _, err := testPool.Exec(ctx, "UPDATE issue SET title = 'Now plain', description = 'plain' WHERE id = $1", accented); err != nil {
+		t.Fatal(err)
+	}
+	var title, description *string
+	if err := testPool.QueryRow(ctx, "SELECT title_accents, description_accents FROM issue_search_text WHERE issue_id = $1", accented).Scan(&title, &description); err != nil {
+		t.Fatal(err)
+	}
+	if title != nil || description != nil {
+		t.Errorf("accents after editing to ASCII = (%v, %v), want NULL, NULL", derefOrNull(title), derefOrNull(description))
+	}
+}
+
+func derefOrNull(s *string) string {
+	if s == nil {
+		return "NULL"
+	}
+	return *s
 }
 
 type diacriticSearchFixture struct {

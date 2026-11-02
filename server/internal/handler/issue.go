@@ -891,10 +891,11 @@ type searchResult struct {
 // predictable pass over each relation within the selected workspace.
 // searchCommentSource scopes the name "comment" to the stored folded text for
 // one CTE body, so the comment scan reads one narrow table instead of joining
-// comment to its side table. content is the folded text; the unfolded body is
-// only fetched by primary key for the matches (comment_cased).
+// comment to its side table. content is the folded text; content_accents is the
+// lowered unfolded text where folding changed it, for the exact-diacritic rank.
 const searchCommentSource = `comment AS (
-			SELECT comment_id AS id, issue_id, workspace_id, created_at, content_folded AS content
+			SELECT comment_id AS id, issue_id, workspace_id, created_at,
+				content_folded AS content, content_accents
 			FROM comment_search_text
 		)`
 
@@ -902,8 +903,8 @@ const searchCommentSource = `comment AS (
 // next to the raw text that the exact-diacritic ranking compares against.
 const searchIssueSource = `(
 		SELECT i.id, i.workspace_id, i.status, i.updated_at, i.number,
-			i.title AS raw_title, i.description AS raw_description,
-			ist.title_folded AS title, ist.description_folded AS description
+			ist.title_folded AS title, ist.description_folded AS description,
+			ist.title_accents, ist.description_accents
 		FROM issue i
 		JOIN issue_search_text ist ON ist.issue_id = i.id AND ist.workspace_id = i.workspace_id
 	)`
@@ -1013,28 +1014,13 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		)
 	}
 
-	// Cased flags (see casedMatch) read the unfolded text, so the long description
-	// pays that only where the folded text already matched.
-	descriptionCasedJoin := ""
+	// Cased flags (see casedMatch) read the stored accented text, which is NULL
+	// where folding changed nothing and so cannot match a query with diacritics.
 	if exactDiacritics {
-		descriptionMatch := loweredIssueDescription + " LIKE " + phraseContainsParam
-		if len(termContainsParams) > 1 {
-			var allTerms []string
-			for _, termParam := range termContainsParams {
-				allTerms = append(allTerms, fmt.Sprintf("%s LIKE %s", loweredIssueDescription, termParam))
-			}
-			descriptionMatch += " OR (" + strings.Join(allTerms, " AND ") + ")"
-		}
 		issueFlagColumns = append(issueFlagColumns,
-			casedMatch("LOWER(i.raw_title)")+" AS title_cased",
-			"COALESCE(description_cased.v, FALSE) AS description_cased",
+			"COALESCE("+casedMatch("i.title_accents")+", FALSE) AS title_cased",
+			"COALESCE("+casedMatch("i.description_accents")+", FALSE) AS description_cased",
 		)
-		descriptionCasedJoin = fmt.Sprintf(`LEFT JOIN LATERAL (
-			SELECT %s AS v
-			WHERE %s
-			OFFSET 0
-		) description_cased ON TRUE
-		`, casedMatch("LOWER(i.raw_description)"), descriptionMatch)
 	}
 
 	issueWhere := "i.workspace_id = " + wsParam
@@ -1063,9 +1049,9 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 			WHERE NOT %s
 			OFFSET 0
 		) lowered_issue_description ON TRUE
-		%sWHERE %s
+		WHERE %s
 	)`, strings.Join(issueFlagColumns, ",\n\t\t\t"),
-		searchIssueSource, titleMatchExpr, descriptionCasedJoin, issueWhere)
+		searchIssueSource, titleMatchExpr, issueWhere)
 
 	// Comments are also scanned once, workspace-first. This intentionally avoids
 	// the legacy planner choice between global content GIN postings and repeated
@@ -1104,16 +1090,15 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	// looking the ID up later would repeat text predicates after pagination.
 	// The aggregate stores matching UUIDs per issue (not content), and the ID
 	// tie-break makes equal created_at values deterministic.
-	// With exact diacritics the aggregate keeps the whole ordered ID list, so the
-	// cased check below reuses it and the snippet is its first element.
 	snippetAggregate := fmt.Sprintf(
 		"ARRAY_AGG(c.id ORDER BY c.created_at DESC, c.id DESC) FILTER (WHERE %s)", commentSnippetPredicate)
-	commentOuterColumns := "*"
+	commentFlagColumns = append(commentFlagColumns, "("+snippetAggregate+")[1] AS snippet_comment_id")
+	// Exact diacritics add one flag to the same pass: some comment, not only the
+	// newest, agrees with the query on diacritics. content_accents is NULL for a
+	// comment folding left unchanged, which cannot match a query with diacritics.
 	if exactDiacritics {
-		commentFlagColumns = append(commentFlagColumns, snippetAggregate+" AS matched_comment_ids")
-		commentOuterColumns = "*, matched_comment_ids[1] AS snippet_comment_id"
-	} else {
-		commentFlagColumns = append(commentFlagColumns, "("+snippetAggregate+")[1] AS snippet_comment_id")
+		commentFlagColumns = append(commentFlagColumns,
+			"BOOL_OR("+casedMatch("c.content_accents")+") FILTER (WHERE c.content_accents IS NOT NULL) AS comment_diacritic_match")
 	}
 
 	// PostgreSQL otherwise inlines this scalar LATERAL subquery and recomputes
@@ -1123,7 +1108,7 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	// LOWER(c.content) can still match them.
 	commentMatchesCTE := fmt.Sprintf(`comment_matches AS MATERIALIZED (
 		WITH %s
-		SELECT %s
+		SELECT *
 		FROM (
 			SELECT %s
 			FROM comment c
@@ -1137,28 +1122,16 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		WHERE %s
 	)`,
 		searchCommentSource,
-		commentOuterColumns,
 		strings.Join(commentFlagColumns, ",\n\t\t\t\t"),
 		wsParam,
 		strings.Join(commentCandidateFlags, " OR "),
 	)
 
 	// Exact diacritics rank a match above one that only agrees after folding,
-	// across all three sources. Comments get that check by primary key, only for
-	// the ones that matched after folding, so the aggregate never reads raw bodies.
+	// across all three sources.
 	diacriticRank := "0"
-	casedCommentsJoin := ""
 	if exactDiacritics {
-		commentMatchesCTE += fmt.Sprintf(`,
-	comment_cased AS (
-		SELECT DISTINCT cm.issue_id
-		FROM comment_matches cm
-		CROSS JOIN LATERAL unnest(cm.matched_comment_ids) AS matched(id)
-		JOIN comment rc ON rc.id = matched.id AND rc.workspace_id = %s
-		WHERE %s
-	)`, wsParam, casedMatch("LOWER(rc.content)"))
-		casedCommentsJoin = "LEFT JOIN comment_cased cc ON cc.issue_id = im.issue_id\n\t\t"
-		diacriticRank = "CASE WHEN im.title_cased OR im.description_cased OR cc.issue_id IS NOT NULL THEN 0 ELSE 1 END"
+		diacriticRank = "CASE WHEN im.title_cased OR im.description_cased OR COALESCE(cm.comment_diacritic_match, FALSE) THEN 0 ELSE 1 END"
 	}
 
 	// Stage two combines the two narrow sources, applies the legacy eligibility
@@ -1264,8 +1237,8 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 			%s AS match_source
 		FROM issue_matches im
 		LEFT JOIN comment_matches cm ON cm.issue_id = im.issue_id
-		%sWHERE %s
-	)`, cancelledRank, rankExpr, statusRank, diacriticRank, matchSourceExpr, casedCommentsJoin, eligibleExpr)
+		WHERE %s
+	)`, cancelledRank, rankExpr, statusRank, diacriticRank, matchSourceExpr, eligibleExpr)
 
 	pageCandidatesCTE := fmt.Sprintf(`page_candidates AS MATERIALIZED (
 		SELECT issue_id, updated_at, snippet_comment_id, cancelled_rank, relevance_rank, status_rank, diacritic_rank, match_source

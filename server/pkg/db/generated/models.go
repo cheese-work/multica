@@ -754,11 +754,12 @@ type CommentReaction struct {
 }
 
 type CommentSearchText struct {
-	CommentID     pgtype.UUID        `json:"comment_id"`
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	IssueID       pgtype.UUID        `json:"issue_id"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
-	ContentFolded string             `json:"content_folded"`
+	CommentID      pgtype.UUID        `json:"comment_id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	IssueID        pgtype.UUID        `json:"issue_id"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	ContentFolded  string             `json:"content_folded"`
+	ContentAccents pgtype.Text        `json:"content_accents"`
 }
 
 type CommentSupersession struct {
@@ -1818,10 +1819,12 @@ type IssueRunBudgetEntry struct {
 }
 
 type IssueSearchText struct {
-	IssueID           pgtype.UUID `json:"issue_id"`
-	WorkspaceID       pgtype.UUID `json:"workspace_id"`
-	TitleFolded       string      `json:"title_folded"`
-	DescriptionFolded string      `json:"description_folded"`
+	IssueID            pgtype.UUID `json:"issue_id"`
+	WorkspaceID        pgtype.UUID `json:"workspace_id"`
+	TitleFolded        string      `json:"title_folded"`
+	DescriptionFolded  string      `json:"description_folded"`
+	TitleAccents       pgtype.Text `json:"title_accents"`
+	DescriptionAccents pgtype.Text `json:"description_accents"`
 }
 
 type IssueSourceContext struct {
