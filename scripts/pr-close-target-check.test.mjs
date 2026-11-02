@@ -31,6 +31,17 @@ test("a branch that names the operational parent fails", async () => {
   );
 });
 
+test("an agent name token in the branch prefix is not an issue key", async () => {
+  assert.deepEqual(
+    await strayKeys(pullRequest({
+      title: "fix(x): change (CHE-3025) [squash]",
+      body: "Closes CHE-3025",
+      headRef: "agent/x99-codex-luna-2/che-3025-change",
+    })),
+    [],
+  );
+});
+
 test("a title that names the parent fails, and Refs does not shield it", async () => {
   const result = await strayKeys(pullRequest({
     title: "fix(x): change (CHE-1911) [squash]",
