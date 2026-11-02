@@ -40,10 +40,10 @@ func settleAgentDecision(ctx context.Context, tx pgx.Tx, workspaceID pgtype.UUID
 	if err != nil {
 		return err
 	}
-	if !agentDecisionGateAllowed(gate) {
+	if !agentDecisionAllowedAt(version, gate) {
 		return stopAgentDecisions(ctx, tx, workspaceID, "excluded category reached settlement: gate "+gate+", decision "+instance)
 	}
-	if version != agentDecisionAllowlistVersion || delegation != agentDecisionDelegation {
+	if delegation != agentDecisionDelegation {
 		return nil
 	}
 	var scope agentDecisionScope
@@ -134,7 +134,11 @@ func (h *Handler) LookupAgentDecision(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to read agent decision")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"instance_id": instance, "state": state, "decided": false, "authorization": false})
+	out := map[string]any{"instance_id": instance, "state": state, "decided": false, "authorization": false}
+	if outcome := agentDecisionOutcome(b.Gate); outcome != "" {
+		out["outcome"] = outcome
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (h *Handler) RelyAgentDecision(w http.ResponseWriter, r *http.Request) {
@@ -157,7 +161,11 @@ func (h *Handler) RelyAgentDecision(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, closed)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"decided": true, "state": "decided", "instance_id": instance, "reliance_id": reliance})
+	out := map[string]any{"decided": true, "state": "decided", "instance_id": instance, "reliance_id": reliance}
+	if outcome := agentDecisionOutcome(b.Gate); outcome != "" {
+		out["outcome"] = outcome
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // The instance is immutable. Locate it, acquire the veto lock, then validate
@@ -192,16 +200,17 @@ func (h *Handler) relyAgentDecision(r *http.Request, issue db.Issue, b agentDeci
 		return "", "", err
 	}
 	var gate string
+	var version int
 	var effective time.Time
-	err = tx.QueryRow(ctx, `SELECT s.waived_gate,e.effective_at FROM decision_agent_scope s
+	err = tx.QueryRow(ctx, `SELECT s.waived_gate,s.allowlist_version,e.effective_at FROM decision_agent_scope s
  JOIN decision_request d ON d.id=s.instance_id AND d.workspace_id=s.workspace_id AND d.issue_id=s.issue_id AND d.authority='agents'
  JOIN decision_agent_settlement e ON e.instance_id=s.instance_id AND e.workspace_id=s.workspace_id AND e.issue_id=s.issue_id
  WHERE s.instance_id=$1 AND s.workspace_id=$2 AND s.issue_id=$3 AND s.candidate_sha256=$4 AND s.waived_gate=$5
- AND s.allowlist_version=$6 AND s.delegation_id=$7 AND e.revoked_at IS NULL AND e.effective_at<=clock_timestamp()`, instance, issue.WorkspaceID, issue.ID, b.CandidateSHA256, b.Gate, agentDecisionAllowlistVersion, agentDecisionDelegation).Scan(&gate, &effective)
+ AND s.allowlist_version<=$6 AND s.delegation_id=$7 AND e.revoked_at IS NULL AND e.effective_at<=clock_timestamp()`, instance, issue.WorkspaceID, issue.ID, b.CandidateSHA256, b.Gate, agentDecisionAllowlistVersion, agentDecisionDelegation).Scan(&gate, &version, &effective)
 	if err != nil {
 		return "", "", err
 	}
-	if !agentDecisionGateAllowed(gate) {
+	if !agentDecisionAllowedAt(version, gate) {
 		return "", "", agentDecisionRefusal("gate is no longer allowed")
 	}
 	var reliance string

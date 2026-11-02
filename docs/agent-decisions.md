@@ -43,6 +43,19 @@ hex) and identical, nonempty `base_failed_checks` and `candidate_failed_checks`
 arrays of distinct check names. These are attested evidence references; C1 does
 not fetch or independently verify remote evidence.
 
+Allowlist version 2 adds `test_first_red`: a waiver of the test-first red step. Its
+record is WAIVED, never PASS. The proposal also carries `reviewer_agent_id` (one of the
+two signers, from a different lab than the author), `red_impossible_reason`,
+`weaker_evidence_kind` (`characterization_test`, `manual_repro`, `static_check` or
+`review_only`) and `followup_check`. Only the cosign route is allowed. The reviewer's
+opinion repeats the reason in a `red_impossible_reason` header, which must match the
+proposal. A version 1 record stays valid and never gains the new gate.
+
+Any proposal may set `decider: "Jev for Cheese"` with a `confidence` in (0, 1]. It is
+a label on an agent decision: the brief shows it, and no answer from Cheese is created.
+A proposal with `decision_class` `irreversible`, `design_direction`, `architecture` or
+`high_level` is refused as an excluded category (stop rule), for any decider.
+
 The co-sign route freezes two distinct non-author agents of known, different
 labs. At least one lab differs from the author's lab. The casting task's lab must
 match the frozen signer lab. No signer replacement is supported.

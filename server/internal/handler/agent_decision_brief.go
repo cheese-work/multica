@@ -93,6 +93,11 @@ type agentDecisionBriefRecord struct {
 	RevokeReason   string `json:"revoke_reason,omitempty"`
 	Link           string `json:"link"`
 	VetoLine       string `json:"veto_line"`
+	// WAIVED for a waiver gate; empty otherwise.
+	Outcome string `json:"outcome,omitempty"`
+	// Set when Jev decided for Cheese. Still an agent decision.
+	Decider    string   `json:"decider,omitempty"`
+	Confidence *float64 `json:"confidence,omitempty"`
 }
 
 type agentDecisionNoticeFailure struct {
@@ -133,7 +138,7 @@ func (h *Handler) GetAgentDecisionBrief(w http.ResponseWriter, r *http.Request) 
 
 	// Every live record, and revoked ones from the last week.
 	rows, err := h.DB.Query(ctx, `SELECT s.instance_id::text,s.issue_id::text,w.issue_prefix || '-' || i.number,sc.waived_gate,sc.candidate_sha256,
-        s.effective_at,s.revoked_at,s.revoke_reason,
+        s.effective_at,s.revoked_at,s.revoke_reason,sc.scope->'Proposal'->>'decider',(sc.scope->'Proposal'->>'confidence')::float8,
         (SELECT v.comment_id::text FROM governed_vote_record v WHERE v.workspace_id=s.workspace_id AND v.decision_instance_id=s.instance_id AND v.decision_event='proposal' LIMIT 1)
         FROM decision_agent_settlement s
         JOIN decision_agent_scope sc ON sc.instance_id=s.instance_id AND sc.workspace_id=s.workspace_id
@@ -151,13 +156,17 @@ func (h *Handler) GetAgentDecisionBrief(w http.ResponseWriter, r *http.Request) 
 		var sha string
 		var effective time.Time
 		var revoked *time.Time
-		var reason, proposal *string
-		if err := rows.Scan(&rec.InstanceID, &rec.IssueID, &rec.Identifier, &rec.Gate, &sha, &effective, &revoked, &reason, &proposal); err != nil {
+		var reason, proposal, decider *string
+		if err := rows.Scan(&rec.InstanceID, &rec.IssueID, &rec.Identifier, &rec.Gate, &sha, &effective, &revoked, &reason, &decider, &rec.Confidence, &proposal); err != nil {
 			rows.Close()
 			fail(err)
 			return
 		}
 		rec.State = "effective"
+		rec.Outcome = agentDecisionOutcome(rec.Gate)
+		if decider != nil {
+			rec.Decider = *decider
+		}
 		rec.EffectiveAt = effective.UTC().Format(time.RFC3339)
 		rec.ReviewTargetAt = effective.Add(agentDecisionReviewTarget).UTC().Format(time.RFC3339)
 		if revoked != nil {
