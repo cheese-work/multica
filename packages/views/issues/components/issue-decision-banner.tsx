@@ -34,7 +34,7 @@ export function IssueDecisionBanner({ issueId, status, ownerAgentId }: { issueId
 
   if (cards.length > 0) {
     return (
-      <section aria-label={t(($) => $.decision_banner.title)} className="mb-4 space-y-2 rounded-xl border border-warning/40 bg-warning/5 p-2">
+      <section aria-label={t(($) => $.decision_banner.title)} className="mt-8 space-y-2 rounded-xl border border-warning/40 bg-warning/5 p-2">
         <h2 className="flex items-center gap-2 px-1 text-label font-semibold">
           {t(($) => $.decision_banner.title)}
           {cards.length > 1 && <span className="rounded-full bg-warning/10 px-2 text-micro tabular-nums text-warning">{cards.length}</span>}
@@ -45,7 +45,7 @@ export function IssueDecisionBanner({ issueId, status, ownerAgentId }: { issueId
   }
   if (isError && status === "need_decision") {
     return (
-      <section aria-label={t(($) => $.decision_banner.title)} role="alert" className="mb-4 rounded-xl border border-warning/40 bg-warning/5 p-3 text-caption">
+      <section aria-label={t(($) => $.decision_banner.title)} role="alert" className="mt-8 rounded-xl border border-warning/40 bg-warning/5 p-3 text-caption">
         <h2 className="text-label font-semibold">{t(($) => $.decision_banner.title)}</h2>
         {t(($) => $.needs_you.error)}
         <button type="button" onClick={() => void refetch()} className="ml-2 min-h-9 underline focus-visible:outline-2 focus-visible:outline-ring">
@@ -60,7 +60,7 @@ export function IssueDecisionBanner({ issueId, status, ownerAgentId }: { issueId
   const active = (tasksQuery.data ?? []).filter((task) => ACTIVE_TASK.has(task.status) && task.agent_id === ownerAgentId);
   const owner = agents.find((agent) => agent.id === ownerAgentId)?.name;
   return (
-    <section aria-label={t(($) => $.decision_banner.title)} role="status" className="mb-4 space-y-1 rounded-xl border border-warning/40 bg-warning/5 p-3 text-caption">
+    <section aria-label={t(($) => $.decision_banner.title)} role="status" className="mt-8 space-y-1 rounded-xl border border-warning/40 bg-warning/5 p-3 text-caption">
       <h2 className="text-label font-semibold">{t(($) => $.decision_banner.title)}</h2>
       <p>{t(($) => $.decision_banner.waiting)}</p>
       {tasksQuery.isSuccess && active.length === 0 && <p className="text-muted-foreground">{t(($) => $.decision_banner.no_run)}</p>}

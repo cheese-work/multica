@@ -340,6 +340,27 @@ func (q *Queries) LockIssueRunBudgetBoundary(ctx context.Context, issueID pgtype
 	return err
 }
 
+const lockRunBudgetBlockMarker = `-- name: LockRunBudgetBlockMarker :one
+SELECT id FROM run_budget_notice
+WHERE issue_id = $1::uuid AND window_id = $2::text AND kind = 'blocked'
+FOR SHARE
+`
+
+type LockRunBudgetBlockMarkerParams struct {
+	IssueID  pgtype.UUID `json:"issue_id"`
+	WindowID string      `json:"window_id"`
+}
+
+// Whether the budget's block of the issue still stands in this window, holding
+// the marker so the move out of blocked (which deletes it) waits for the
+// caller's transaction.
+func (q *Queries) LockRunBudgetBlockMarker(ctx context.Context, arg LockRunBudgetBlockMarkerParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockRunBudgetBlockMarker, arg.IssueID, arg.WindowID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const runBudgetBoundaryClock = `-- name: RunBudgetBoundaryClock :one
 SELECT clock_timestamp()::timestamptz
 `

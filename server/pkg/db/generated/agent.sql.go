@@ -2168,16 +2168,20 @@ SET status = 'dispatched',
     applied_model = NULL, applied_thinking_level = NULL,
     applied_service_tier = NULL, applied_context_args = NULL, applied_reported_at = NULL,
     prepare_lease_expires_at = now() + make_interval(secs => $1::double precision),
-    chat_compaction_epoch = COALESCE(
-        chat_compaction_epoch,
-        (SELECT cs.compaction_epoch FROM chat_session cs WHERE cs.id = agent_task_queue.chat_session_id)
-    )
+    -- Unconditional: a requeued never-started task rebases on re-claim. A task
+    -- already started never reaches this statement.
+    chat_compaction_epoch = (SELECT cs.compaction_epoch FROM chat_session cs WHERE cs.id = agent_task_queue.chat_session_id)
 WHERE id = (
     SELECT atq.id FROM agent_task_queue atq
     WHERE atq.agent_id = $2
       AND atq.runtime_id = $3
       AND atq.status = 'queued'
       AND (atq.context->>'wakeup_id' IS NULL OR EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.id=(atq.context->>'wakeup_id')::uuid AND w.disabled_at IS NULL AND w.revision=(atq.context->>'wakeup_revision')::bigint))
+      -- Rule E (CHE-2819): share-lock the DM row without waiting. A compact
+      -- holds it FOR NO KEY UPDATE, so a chat task of that DM is skipped for
+      -- this poll and stays queued. Held to commit, the share lock also keeps a
+      -- compact from committing between this claim and its epoch rebase.
+      AND (atq.chat_session_id IS NULL OR EXISTS (SELECT 1 FROM chat_session cs WHERE cs.id = atq.chat_session_id FOR SHARE SKIP LOCKED))
       AND EXISTS (
           SELECT 1
           FROM agent a
@@ -10072,6 +10076,26 @@ func (q *Queries) PromoteDueDeferredTasksForRuntimes(ctx context.Context, arg Pr
 		return nil, err
 	}
 	return items, nil
+}
+
+const rebaseClaimedChatTaskEpoch = `-- name: RebaseClaimedChatTaskEpoch :exec
+UPDATE agent_task_queue
+SET chat_compaction_epoch = cs.compaction_epoch
+FROM chat_session cs
+WHERE agent_task_queue.id = $1
+  AND cs.id = agent_task_queue.chat_session_id
+  AND agent_task_queue.status = 'dispatched'
+  AND agent_task_queue.started_at IS NULL
+`
+
+// Runs in the claim transaction right after ClaimAgentTask. The claim statement
+// can hold a snapshot older than a compact that committed just before the claim
+// took its DM lock, so the epoch it stamped may be one behind. This statement
+// reads the DM on a fresh snapshot; the claim's FOR SHARE lock keeps any later
+// compact out until commit, so the stamp is final for the whole claim.
+func (q *Queries) RebaseClaimedChatTaskEpoch(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, rebaseClaimedChatTaskEpoch, id)
+	return err
 }
 
 const rebindAgentBuilderRuntime = `-- name: RebindAgentBuilderRuntime :one
