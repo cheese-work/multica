@@ -336,3 +336,26 @@ func TestGitHubIntakeWorkerT8CommitRollback(t *testing.T) {
 	assertIntakeWorkerState(t, delivery, "dispatched")
 	assertIntakeWorkerDispatch(t, fixture, 1)
 }
+
+func TestGitHubIntakeWorkerKillSwitchStopsAtProjected(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
+	delivery := postIntakeForWorker(t, fixture, "-kill-switch")
+	worker := intakeWorkerForTest(t, fixture)
+	ctx := context.Background()
+	if err := fixture.handler.Queries.HaltGitHubDispatch(ctx, db.HaltGitHubDispatchParams{WorkspaceID: parseUUID(testWorkspaceID), Scope: "*"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM github_dispatch_halt WHERE workspace_id = $1`, testWorkspaceID)
+	})
+	if _, err := worker.runOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertIntakeWorkerState(t, delivery, "projected")
+	if count := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1`, fixture.issueID); count != 0 {
+		t.Fatalf("kill switch let %d runs start", count)
+	}
+	if count := dbfx.Count(t, `SELECT count(*) FROM github_webhook_dispatch WHERE issue_id=$1 AND state='projected' AND reason='kill_switch' AND task_id IS NULL`, fixture.issueID); count != 1 {
+		t.Fatalf("kill switch receipts = %d, want 1", count)
+	}
+}

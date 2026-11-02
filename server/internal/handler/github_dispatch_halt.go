@@ -13,6 +13,15 @@ import (
 // githubHaltScopeRe is '*', a GitHub owner, or owner/repo, lower-cased.
 var githubHaltScopeRe = regexp.MustCompile(`^(\*|[a-z0-9._-]+(/[a-z0-9._-]+)?)$`)
 
+type githubDispatchHaltAuditResponse struct {
+	Scope       string  `json:"scope"`
+	Halted      bool    `json:"halted"`
+	ActorID     *string `json:"actor_id"`
+	ActorSource string  `json:"actor_source"`
+	RunsRevoked int32   `json:"runs_revoked"`
+	At          string  `json:"at"`
+}
+
 type githubDispatchHaltResponse struct {
 	Scope    string  `json:"scope"`
 	HaltedBy *string `json:"halted_by"`
@@ -31,6 +40,21 @@ func (h *Handler) listGitHubDispatchHalts(r *http.Request, workspaceID string) (
 	return out, nil
 }
 
+func (h *Handler) listGitHubDispatchHaltAudit(r *http.Request, workspaceID string) ([]githubDispatchHaltAuditResponse, error) {
+	rows, err := h.Queries.ListGitHubDispatchHaltAudit(r.Context(), parseUUID(workspaceID))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]githubDispatchHaltAuditResponse, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, githubDispatchHaltAuditResponse{
+			Scope: row.Scope, Halted: row.Halted, ActorID: uuidToPtr(row.ActorID), ActorSource: row.ActorSource,
+			RunsRevoked: row.RunsRevoked, At: timestampToString(row.CreatedAt),
+		})
+	}
+	return out, nil
+}
+
 // GetGitHubDispatchHalt (GET /api/github/dispatch-halt) reads the kill switch
 // without touching it.
 func (h *Handler) GetGitHubDispatchHalt(w http.ResponseWriter, r *http.Request) {
@@ -39,7 +63,12 @@ func (h *Handler) GetGitHubDispatchHalt(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "failed to read dispatch halts")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"halts": halts})
+	audit, err := h.listGitHubDispatchHaltAudit(r, h.resolveWorkspaceID(r))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read dispatch halt audit")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"halts": halts, "audit": audit})
 }
 
 // SetGitHubDispatchHalt (PUT /api/github/dispatch-halt) turns the kill switch
@@ -68,11 +97,24 @@ func (h *Handler) SetGitHubDispatchHalt(w http.ResponseWriter, r *http.Request) 
 	workspaceID := parseUUID(h.resolveWorkspaceID(r))
 	userID := parseUUID(requestUserID(r))
 	revoked := 0
+	actorSource := "member"
+	if isMachineCredentialActor(r) {
+		actorSource = r.Header.Get("X-Actor-Source")
+	}
+	// Once the switch row changed, the change is audited even when the sweep that follows fails.
+	recordAudit := func() {
+		if err := h.Queries.RecordGitHubDispatchHaltAudit(ctx, db.RecordGitHubDispatchHaltAuditParams{
+			WorkspaceID: workspaceID, Scope: scope, Halted: *req.Halted, ActorID: userID, ActorSource: actorSource, RunsRevoked: int32(revoked),
+		}); err != nil {
+			slog.Error("github dispatch halt: audit write failed", "workspace_id", uuidToString(workspaceID), "scope", scope, "err", err)
+		}
+	}
 	if *req.Halted {
 		if err := h.Queries.HaltGitHubDispatch(ctx, db.HaltGitHubDispatchParams{WorkspaceID: workspaceID, Scope: scope, HaltedBy: userID}); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to turn the kill switch on")
 			return
 		}
+		defer recordAudit()
 		// The halt row is committed first, so nothing new starts while we sweep.
 		ids, err := h.Queries.ListGitHubTriggeredActiveTasks(ctx, db.ListGitHubTriggeredActiveTasksParams{WorkspaceID: workspaceID, Scope: scope})
 		if err != nil {
@@ -92,6 +134,8 @@ func (h *Handler) SetGitHubDispatchHalt(w http.ResponseWriter, r *http.Request) 
 	} else if _, err := h.Queries.ResumeGitHubDispatch(ctx, db.ResumeGitHubDispatchParams{WorkspaceID: workspaceID, Scope: scope}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to turn the kill switch off")
 		return
+	} else {
+		defer recordAudit()
 	}
 	slog.Warn("github dispatch halt changed", "workspace_id", uuidToString(workspaceID), "scope", scope, "halted", *req.Halted, "actor", requestUserID(r), "runs_revoked", revoked)
 	halts, err := h.listGitHubDispatchHalts(r, uuidToString(workspaceID))

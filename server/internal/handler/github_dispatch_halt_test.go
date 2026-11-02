@@ -583,3 +583,40 @@ func TestGitHubDispatchHaltCancelsCIGreenRun(t *testing.T) {
 		t.Fatalf("halt left %d CI-green runs live, want 0", got)
 	}
 }
+
+// Every switch change leaves an audit row naming the actor, the scope and the runs it revoked.
+func TestGitHubDispatchHaltWritesAuditRecord(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	clean := func() {
+		testPool.Exec(ctx, `DELETE FROM github_dispatch_halt WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_dispatch_halt_audit WHERE workspace_id = $1`, testWorkspaceID)
+	}
+	clean()
+	t.Cleanup(clean)
+	if w := setHalt(t, "acme", true, false); w.Code != http.StatusOK {
+		t.Fatalf("halt: %d %s", w.Code, w.Body)
+	}
+	if w := setHalt(t, "acme", false, false); w.Code != http.StatusOK {
+		t.Fatalf("resume: %d %s", w.Code, w.Body)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM github_dispatch_halt_audit WHERE workspace_id=$1 AND scope='acme' AND halted AND actor_id=$2 AND actor_source='member'`, testWorkspaceID, testUserID); n != 1 {
+		t.Fatalf("halt audit rows = %d, want 1", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM github_dispatch_halt_audit WHERE workspace_id=$1 AND scope='acme' AND NOT halted AND actor_id=$2`, testWorkspaceID, testUserID); n != 1 {
+		t.Fatalf("resume audit rows = %d, want 1", n)
+	}
+	w := httptest.NewRecorder()
+	testHandler.GetGitHubDispatchHalt(w, newRequest("GET", "/api/github/dispatch-halt", nil))
+	var out struct {
+		Audit []struct {
+			Scope  string `json:"scope"`
+			Halted bool   `json:"halted"`
+		} `json:"audit"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || len(out.Audit) != 2 || out.Audit[0].Halted {
+		t.Fatalf("status audit = %+v (err %v), want 2 rows newest first", out.Audit, err)
+	}
+}

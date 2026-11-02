@@ -45,3 +45,10 @@ WHERE i.workspace_id = sqlc.arg(workspace_id)
     WHERE link.issue_id = i.id
       AND sqlc.arg(scope)::text IN ('*', lower(pr.repo_owner), lower(pr.repo_owner || '/' || pr.repo_name))
   );
+
+-- name: RecordGitHubDispatchHaltAudit :exec
+INSERT INTO github_dispatch_halt_audit (workspace_id, scope, halted, actor_id, actor_source, runs_revoked)
+VALUES ($1, $2, $3, $4, $5, $6);
+
+-- name: ListGitHubDispatchHaltAudit :many
+SELECT * FROM github_dispatch_halt_audit WHERE workspace_id = $1 ORDER BY created_at DESC, id DESC LIMIT 20;

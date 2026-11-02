@@ -293,7 +293,15 @@ func (worker githubIntakeWorker) dispatch(ctx context.Context, queries *db.Queri
 	}
 	key := fmt.Sprintf("github.intake:%s:%s", uuidToString(revision.ID), uuidToString(issue.ID))
 	commentID := pgtype.UUID{Bytes: uuid.NewSHA1(uuid.NameSpaceURL, []byte(key)), Valid: true}
-	if !worker.dispatchEnabled {
+	pull, err := queries.GetGitHubPullRequestInWorkspace(ctx, db.GetGitHubPullRequestInWorkspaceParams{ID: revision.PullRequestID, WorkspaceID: revision.WorkspaceID})
+	if err != nil {
+		return nil, err
+	}
+	halted, err := queries.GitHubDispatchHalted(ctx, db.GitHubDispatchHaltedParams{WorkspaceID: revision.WorkspaceID, RepoOwner: pull.RepoOwner, RepoName: pull.RepoName})
+	if err != nil {
+		return nil, err
+	}
+	if !worker.dispatchEnabled || halted {
 		content, err := githubNotifyContent(ctx, queries, revision)
 		if err != nil {
 			return nil, err
@@ -304,6 +312,9 @@ func (worker githubIntakeWorker) dispatch(ctx context.Context, queries *db.Queri
 		}
 		publication.comment = db.CreateCommentRow(created)
 		publication.state, publication.reason = "projected", "gate_g_closed"
+		if halted {
+			publication.reason = "kill_switch"
+		}
 	} else {
 		params, err := worker.handler.TaskService.PrepareTaskForMention(ctx, queries, issue, target.AgentID, commentID, route.UserID, service.OriginDerived)
 		if err != nil {

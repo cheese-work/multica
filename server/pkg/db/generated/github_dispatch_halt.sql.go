@@ -50,6 +50,39 @@ func (q *Queries) HaltGitHubDispatch(ctx context.Context, arg HaltGitHubDispatch
 	return err
 }
 
+const listGitHubDispatchHaltAudit = `-- name: ListGitHubDispatchHaltAudit :many
+SELECT id, workspace_id, scope, halted, actor_id, actor_source, runs_revoked, created_at FROM github_dispatch_halt_audit WHERE workspace_id = $1 ORDER BY created_at DESC, id DESC LIMIT 20
+`
+
+func (q *Queries) ListGitHubDispatchHaltAudit(ctx context.Context, workspaceID pgtype.UUID) ([]GithubDispatchHaltAudit, error) {
+	rows, err := q.db.Query(ctx, listGitHubDispatchHaltAudit, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GithubDispatchHaltAudit{}
+	for rows.Next() {
+		var i GithubDispatchHaltAudit
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Scope,
+			&i.Halted,
+			&i.ActorID,
+			&i.ActorSource,
+			&i.RunsRevoked,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGitHubDispatchHalts = `-- name: ListGitHubDispatchHalts :many
 SELECT workspace_id, scope, halted_by, halted_at FROM github_dispatch_halt WHERE workspace_id = $1 ORDER BY scope
 `
@@ -143,6 +176,32 @@ type MarkGitHubDispatchRunParams struct {
 // task its enqueue created, so a later run of the issue is never tagged.
 func (q *Queries) MarkGitHubDispatchRun(ctx context.Context, arg MarkGitHubDispatchRunParams) error {
 	_, err := q.db.Exec(ctx, markGitHubDispatchRun, arg.Source, arg.TaskID, arg.IssueID)
+	return err
+}
+
+const recordGitHubDispatchHaltAudit = `-- name: RecordGitHubDispatchHaltAudit :exec
+INSERT INTO github_dispatch_halt_audit (workspace_id, scope, halted, actor_id, actor_source, runs_revoked)
+VALUES ($1, $2, $3, $4, $5, $6)
+`
+
+type RecordGitHubDispatchHaltAuditParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Scope       string      `json:"scope"`
+	Halted      bool        `json:"halted"`
+	ActorID     pgtype.UUID `json:"actor_id"`
+	ActorSource string      `json:"actor_source"`
+	RunsRevoked int32       `json:"runs_revoked"`
+}
+
+func (q *Queries) RecordGitHubDispatchHaltAudit(ctx context.Context, arg RecordGitHubDispatchHaltAuditParams) error {
+	_, err := q.db.Exec(ctx, recordGitHubDispatchHaltAudit,
+		arg.WorkspaceID,
+		arg.Scope,
+		arg.Halted,
+		arg.ActorID,
+		arg.ActorSource,
+		arg.RunsRevoked,
+	)
 	return err
 }
 
