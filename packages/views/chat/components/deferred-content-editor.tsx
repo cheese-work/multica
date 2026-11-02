@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, Suspense, useCallback, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, Suspense, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { ErrorBoundary } from "@multica/ui/components/common/error-boundary";
 import { cn } from "@multica/ui/lib/utils";
 import type { ContentEditorProps, ContentEditorRef } from "../../editor/content-editor";
@@ -18,9 +18,9 @@ import {
  * ref (focus, upload, quote). Calls made before the editor exists are replayed
  * once it is ready.
  *
- * Keys typed in the window between focus and the chunk arriving are lost;
- * hover/touch prefetch makes that window small. ponytail: buffer and replay
- * them if real users hit it.
+ * The stand-in is a plain-text editable element that stays mounted until the
+ * editor is live, so the caret survives and keys typed while the chunk loads
+ * are kept: their text is inserted into the editor, which then takes focus.
  */
 export const DeferredContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
   function DeferredContentEditor(props, ref) {
@@ -30,6 +30,19 @@ export const DeferredContentEditor = forwardRef<ContentEditorRef, ContentEditorP
     const [Editor, setEditor] = useState(() => LazyContentEditor);
     const inner = useRef<ContentEditorRef>(null);
     const queue = useRef<Array<(editor: ContentEditorRef) => void>>([]);
+    const [ready, setReady] = useState(false);
+    const [typed, setTyped] = useState(false);
+    const typedText = useRef("");
+    const retryLoad = useRef<(() => void) | null>(null);
+
+    // Replay after the commit that makes the editor visible: a hidden editor cannot take focus.
+    useEffect(() => {
+      if (!ready || !inner.current) return;
+      const text = typedText.current.trim();
+      typedText.current = "";
+      if (text) inner.current.insertMarkdownAtEnd(text);
+      queue.current.splice(0).forEach((run) => run(inner.current!));
+    }, [ready]);
 
     // Latch: once mounted the editor stays, even after a send empties the draft.
     if (hasContent && !wanted) setWanted(true);
@@ -67,52 +80,77 @@ export const DeferredContentEditor = forwardRef<ContentEditorRef, ContentEditorP
       [whenReady],
     );
 
-    const standIn = (onIntent: () => void) => (
-      <div
-        role="textbox"
-        aria-multiline="true"
-        aria-label={ariaLabel}
-        tabIndex={0}
-        className={cn("flex-1 rich-text-editor text-body outline-none", className)}
-        onPointerEnter={preloadContentEditor}
-        onTouchStart={preloadContentEditor}
-        onFocus={() => {
-          preloadContentEditor();
-          onIntent();
-        }}
-        onPointerDown={onIntent}
-      >
-        <p className="is-editor-empty" data-placeholder={placeholder}>
-          <br />
-        </p>
-      </div>
-    );
-    const wantEditor = () => whenReady((e) => e.focus());
+    const wantEditor = () => {
+      retryLoad.current?.();
+      retryLoad.current = null;
+      whenReady((e) => e.focus());
+    };
 
-    if (!wanted) return <div className="relative flex flex-1 min-h-full flex-col">{standIn(wantEditor)}</div>;
     return (
-      <ErrorBoundary
-        fallback={({ reset }) =>
-          // The chunk failed to load: show the composer again; the next intent retries.
-          standIn(() => {
-            setEditor(() => createLazyContentEditor());
-            reset();
-            wantEditor();
-          })
-        }
-      >
-        <Suspense fallback={standIn(wantEditor)}>
-          <Editor
-            {...props}
-            ref={inner}
-            onReady={() => {
-              onReady?.();
-              const pending = queue.current.splice(0);
-              if (inner.current) pending.forEach((run) => run(inner.current!));
+      <div className="relative flex flex-1 min-h-full flex-col">
+        {wanted && (
+          // Hidden and out of flow until ready, so the stand-in keeps the layout while the chunk loads.
+          <div className={ready ? "contents" : "invisible absolute inset-x-0 top-0"}>
+            <ErrorBoundary
+              fallback={({ reset }) => (
+                // The chunk failed to load: the stand-in stays; the next intent retries.
+                <LoadFailed
+                  onFailed={() => {
+                    retryLoad.current = () => {
+                      setEditor(() => createLazyContentEditor());
+                      reset();
+                    };
+                  }}
+                />
+              )}
+            >
+              <Suspense fallback={null}>
+                <Editor
+                  {...props}
+                  ref={inner}
+                  onReady={() => {
+                    onReady?.();
+                    setReady(true);
+                  }}
+                />
+              </Suspense>
+            </ErrorBoundary>
+          </div>
+        )}
+        {!ready && (
+          <div
+            role="textbox"
+            aria-multiline="true"
+            aria-label={ariaLabel}
+            tabIndex={0}
+            contentEditable="plaintext-only"
+            suppressContentEditableWarning
+            className={cn("flex-1 rich-text-editor text-body outline-none", className)}
+            onPointerEnter={preloadContentEditor}
+            onTouchStart={preloadContentEditor}
+            onFocus={() => {
+              preloadContentEditor();
+              wantEditor();
             }}
-          />
-        </Suspense>
-      </ErrorBoundary>
+            onPointerDown={wantEditor}
+            onInput={(event) => {
+              const text = event.currentTarget.innerText ?? event.currentTarget.textContent ?? "";
+              typedText.current = text;
+              setTyped(text.length > 0);
+            }}
+          >
+            <p className={cn(!typed && "is-editor-empty")} data-placeholder={placeholder}>
+              <br />
+            </p>
+          </div>
+        )}
+      </div>
     );
   },
 );
+
+/** Tells the host the editor chunk failed, from an effect rather than during render. */
+function LoadFailed({ onFailed }: { onFailed: () => void }) {
+  useEffect(onFailed, [onFailed]);
+  return null;
+}

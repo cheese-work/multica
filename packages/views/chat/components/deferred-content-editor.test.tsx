@@ -7,6 +7,8 @@ const editor = vi.hoisted(() => ({
   mounts: 0,
   calls: [] as string[],
   failNextLoad: false,
+  // When set, the next chunk load waits for it (a slow network).
+  gate: null as Promise<void> | null,
   created: 0,
   // A resolved `lazy` is cached for good, so every test starts from a fresh one.
   current: undefined as unknown,
@@ -40,6 +42,7 @@ vi.mock("./lazy-content-editor", async () => {
   );
   const make = () =>
     lazy(async () => {
+      if (editor.gate) await editor.gate;
       if (editor.failNextLoad) {
         editor.failNextLoad = false;
         throw new Error("chunk load failed");
@@ -73,6 +76,7 @@ beforeEach(() => {
   editor.mounts = 0;
   editor.calls = [];
   editor.failNextLoad = false;
+  editor.gate = null;
   editor.created = 0;
   editor.current = editor.make();
 });
@@ -151,5 +155,50 @@ describe("DeferredContentEditor", () => {
     fireEvent.pointerDown(standIn());
     expect(await screen.findByTestId("live-editor")).toBeInTheDocument();
     expect(editor.created).toBe(1);
+  });
+
+  describe("while the chunk is loading", () => {
+    function slowLoad() {
+      let release!: () => void;
+      editor.gate = new Promise<void>((done) => (release = done));
+      editor.current = editor.make();
+      return release;
+    }
+    const type = (text: string) => {
+      standIn().textContent = text;
+      fireEvent.input(standIn());
+    };
+
+    it("keeps the same editable element, so focus and caret survive the swap", () => {
+      slowLoad();
+      setup();
+      const before = standIn();
+      fireEvent.focus(before);
+      expect(standIn()).toBe(before);
+      expect(before.getAttribute("contenteditable")).toBe("plaintext-only");
+    });
+
+    it("replays text typed before the editor arrived and hands focus over", async () => {
+      const release = slowLoad();
+      setup();
+      fireEvent.focus(standIn());
+      type("hello");
+      expect(editor.mounts).toBe(0);
+      await act(async () => release());
+      await screen.findByTestId("live-editor");
+      await waitFor(() => expect(editor.calls).toEqual(expect.arrayContaining(["insert:hello", "focus"])));
+      expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull(); // stand-in gone
+    });
+
+    it("does not replay or show a stand-in once the editor is live", async () => {
+      const release = slowLoad();
+      setup();
+      fireEvent.focus(standIn());
+      await act(async () => release());
+      await screen.findByTestId("live-editor");
+      await waitFor(() => expect(editor.calls).toContain("focus"));
+      expect(editor.calls.some((c) => c.startsWith("insert:"))).toBe(false);
+      expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
+    });
   });
 });
