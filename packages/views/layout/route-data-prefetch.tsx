@@ -82,6 +82,10 @@ const WARM_ON_IDLE: RouteKey[] = [
   "projects",
 ];
 
+// Speculative warm-up waits this long so it never competes with the page's own
+// requests while it paints (slow links share one pipe).
+const WARM_DELAY_MS = 5000;
+
 /**
  * Feeds `AppLink`'s hover/focus prefetch with the destination page's data and
  * warms the common list pages once the workspace is idle. Mount inside the
@@ -121,12 +125,18 @@ export function RouteDataPrefetch({
     const warm = () => {
       for (const key of WARM_ON_IDLE) ROUTES[key](qc, wsId, userId);
     };
-    if (typeof window.requestIdleCallback === "function") {
-      const id = window.requestIdleCallback(warm, { timeout: 3000 });
-      return () => window.cancelIdleCallback(id);
-    }
-    const timer = window.setTimeout(warm, 1500);
-    return () => window.clearTimeout(timer);
+    let idleId: number | undefined;
+    const timer = window.setTimeout(() => {
+      if (typeof window.requestIdleCallback === "function") {
+        idleId = window.requestIdleCallback(warm, { timeout: 3000 });
+      } else {
+        warm();
+      }
+    }, WARM_DELAY_MS);
+    return () => {
+      window.clearTimeout(timer);
+      if (idleId !== undefined) window.cancelIdleCallback(idleId);
+    };
   }, [qc, wsId, userId]);
 
   return (

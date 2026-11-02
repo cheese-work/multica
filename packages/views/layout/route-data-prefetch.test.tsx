@@ -78,6 +78,10 @@ describe("RouteDataPrefetch", () => {
     renderLinks();
     expect(prefetched).toHaveLength(0);
 
+    // The page's own requests get a head start on a slow link.
+    vi.advanceTimersByTime(3000);
+    expect(prefetched).toHaveLength(0);
+
     vi.advanceTimersByTime(3000);
 
     const warmed = keys();
