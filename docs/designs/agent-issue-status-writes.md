@@ -28,7 +28,8 @@ Status: design, CHE-3070. No code changes in this PR.
 | In | Out (stay human-only) |
 | --- | --- |
 | Create a custom status | Archive, reorder |
-| Update name, description, category, colour, icon of a custom status | Built-in statuses, key rename |
+| Update name, description, colour, icon of a custom status | Built-in statuses, key rename |
+| Set the category when creating a status | Change the category of an existing status (see "Why no category change") |
 | | Run-budget and any non-status setting |
 
 ## Flow
@@ -86,16 +87,12 @@ Handler order, inside one transaction (same order as `UpdateIssueWorkflow`):
    (name, description, category, colour, icon, key pattern). Extract these into
    one `validateStatusFields` both paths call.
 2. `LockIssueStatusCatalog` (exclusive).
-3. Load the whole custom catalog. `CatalogHash(live, 0)` must equal
+3. Load the whole custom catalog. `CatalogHash(live)` must equal
    `before_sha256`, else 409 (the catalog moved; ask again).
-4. Update only: a category change counts the issues on the status
-   (`CountIssuesUsingStatusKey`) as `n`. It still needs
-   `confirm_category_change` in the body, as for a human. The approval does not
-   replace the confirmation. Any other write has `n = 0`.
-5. Apply the change in memory. `CatalogHash(result, n)` must equal
-   `after_sha256`, else 403 (the agent wrote something other than it hashed, or
-   the number of affected issues moved since the ask; the error body carries
-   the live `n`).
+4. Update only: a body that carries `category` is refused with 400 (see "Why no
+   category change").
+5. Apply the change in memory. `CatalogHash(result)` must equal
+   `after_sha256`, else 403 (the agent wrote something other than it hashed).
 6. `verifyDecisionBinding(..., "workspace.issue_statuses", before, after)` with
    the optional ask check described under "What the card binds". It inserts the
    single-use `decision_bound_write` row in this transaction.
@@ -114,35 +111,36 @@ covers create and update. It also makes a key collision or a concurrent edit a
 409. Cost: any other custom-status write between ask and apply invalidates the
 approval. Catalog writes are rare admin actions, so that is acceptable.
 
-Recipe (same style as `workflowStepsHash`), `CatalogHash(catalog, n)`:
+Recipe (same style as `workflowStepsHash`), `CatalogHash(catalog)`:
 
 1. Take every non-built-in status of the workspace, archived ones included
    (an archived status still owns its key).
 2. Project each to
    `{"archived": bool, "category": <wire category>, "color": <lowercase #rrggbb>, "description": ..., "icon": ..., "key": ..., "name": ...}`.
    Leave out `id`, `position`, timestamps and `is_system`.
-3. Wrap: `{"recategorized_issues": n, "statuses": [<sorted by key, bytewise>], "workspace_id": "<uuid>"}`.
-   `n` is the number of issues whose lifecycle category the write changes: 0
-   for every write that does not change a category, and for `before_sha256`.
+3. Wrap: `{"statuses": [<sorted by key, bytewise>], "workspace_id": "<uuid>"}`.
 4. Canonical JSON: UTF-8, keys sorted, no whitespace, no HTML escaping, then
    sha256, lowercase hex.
 
 `before_sha256` hashes the live catalog; `after_sha256` hashes the catalog as
-the server will store it, with the impact `n`. The workspace id binds an
+the server will store it. The workspace id binds an
 approval to one workspace.
 
-Issue assignments change without touching the catalog, so the catalog alone
-cannot bind the impact of a category change. `n` in the hash does. The server
-reads `n` under the exclusive catalog lock. Assigning a status to an issue takes
-the shared side of the same lock, so no assignment can slip in between the count
-and the commit. If issues moved onto or off the status after the ask, `n` differs,
-`after_sha256` no longer matches and the write is refused with the decision
-unused. The agent asks again with the new count.
+### Why no category change
 
-Put the recipe in `server/internal/issuestatus` (pure, no DB) as
-`CatalogHash` and `ApplyChange`. The handler and the CLI both import it, so
-there is one definition and no copy like `workflowStepsHash` in
-`cmd/multica/governed_decision.go`.
+Changing the category of a status that issues use rewrites the machine behaviour
+of every issue on it (terminal, started, closed). The number of such issues is
+not in the catalog, so the catalog hash cannot bind it. Binding it would need a
+count that stays true to commit, and the issue-status lock does not give that:
+`assertIssueStatusStillActive` skips the shared lock for built-in targets, so an
+issue moving off a custom status, or being deleted, changes the count without
+the lock. Closing that gap means a new lock on every issue transition, which is
+far more than this feature is worth.
+
+So bound mode never changes the category of an existing status. A create sets
+the category of a status that has no issues, so it has no impact to bind. A
+category change stays on the owner/admin path with `confirm_category_change`
+and its issue count. An agent that needs another category creates a new status.
 
 ### What the card binds
 
@@ -156,16 +154,15 @@ Apply this change to workspace.issue_statuses?
 before_sha256: <hex>
 after_sha256: <hex>
 change: {"key":"needs_qa","op":"create","status":{"category":"started","color":"#ff8800","description":"","icon":"","name":"Needs QA"}}
-recategorized_issues: 0
 ```
 
 - `change` is one line of canonical JSON. For create it holds the full status.
-  For update it holds `key`, `op` and only the changed fields under `set`.
+  For update it holds `key`, `op` and only the changed fields under `set`
+  (never `category`).
 - `verifyDecisionBinding` gets an optional ask check (nil for existing callers).
-  For this field the check requires exactly one `change:` line and exactly one
-  `recategorized_issues:` line in the decision text, parses `change`, applies
+  For this field the check requires exactly one `change:` line in the decision text, parses `change`, applies
   `ApplyChange` to the live catalog and requires
-  `CatalogHash(result, recategorized_issues)` to equal `after_sha256`. A card
+  `CatalogHash(result)` to equal `after_sha256`. A card
   that shows one change while the hashes cover another is refused, and so is
   a repeated line. A line in any other card section is ignored, as the hash
   lines are today.
@@ -185,7 +182,7 @@ and the owner should read the `change` line, not those.
 ```text
 multica workspace status list [workspace] [--include-archived]
 multica workspace status create --key K --name N --category C [--color #rrggbb] [--icon I] [--description D]
-multica workspace status update <key|id> [--name N] [--category C] [--color X] [--icon I] [--description D] [--confirm-category-change]
+multica workspace status update <key|id> [--name N] [--color X] [--icon I] [--description D]
 ```
 
 `create` and `update` share two flags:
@@ -220,17 +217,15 @@ Server, `server/internal/handler/issue_status_bound_write_test.go`, modelled on
 | refuses non-owner answer, expired, non-approve answer | 403 |
 | refuses `position`, missing `key` on create | 400 |
 | card `change` line differs from the body's change (hashes match the body) | 403, decision unused |
-| card with no, or a repeated, `change` or `recategorized_issues` line | 403 |
+| card with no, or a repeated, `change` line | 403 |
 | `change` line only in another card section | 403 |
-| issues assigned to the status after the ask (category change) | 403, body carries live `n`, decision unused |
-| approved category change of 0 issues cannot apply once issues exist | 403 |
+| update body or card `set` carries `category` | 400 / 403, decision unused |
 | refuses built-in status, key rename, archived status | 403 / 400 / 409 |
-| category change needs `confirm_category_change` | 409 `category_change_requires_confirmation` |
 | refuses reorder and delete for a task token | 403 |
 | human owner path ignores decision fields | unchanged behaviour |
 
-Pure, `server/internal/issuestatus/catalog_hash_test.go`: golden hash vector with and without `n`;
-order independence; `n` changes the hash; position, id and timestamps do not change the hash; archived
+Pure, `server/internal/issuestatus/catalog_hash_test.go`: golden hash vector;
+order independence; position, id and timestamps do not change the hash; archived
 rows do; HTML characters stay literal; `ApplyChange` matches what the handler
 stores (colour lowercased, name trimmed).
 
@@ -263,9 +258,5 @@ until the design review passes.
 - A new status does nothing until a workflow lists it, and a machine caller
   cannot add it to a workflow without its own decision. Two approvals for one
   rollout is intended.
-- A category change rewrites the machine behaviour of every issue on the
-  status. The confirmation flag and the issue count in the ask are the guard.
-  Whether to refuse category changes in bound mode altogether is a product
-  choice; the default here is to allow them, with the count.
 - Whether the web settings page for delegated writes lists fields from a
   constant or from the server is not checked. Child 2 greps for it.
