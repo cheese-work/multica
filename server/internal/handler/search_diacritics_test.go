@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -148,6 +149,33 @@ func TestIssueSearch_DeleteRemovesStoredText(t *testing.T) {
 	}
 	if leftover != 0 {
 		t.Fatalf("%d stored search rows outlive their issue and comment", leftover)
+	}
+}
+
+// The workspace deletion manifest classifies both side tables as delete-owned
+// by the row triggers. The teardown queries delete issue and comment rows in
+// bulk, so the triggers must still clear the side rows.
+func TestIssueSearch_WorkspaceTeardownRemovesStoredText(t *testing.T) {
+	f := newDiacriticWorkspace(t)
+	id := dbfx.Issue(t, "Lỗi đăng nhập", testutil.Cols{"workspace_id": f.workspaceID})
+	dbfx.Comment(t, id, "Đã sửa", testutil.Cols{"workspace_id": f.workspaceID})
+	ctx := context.Background()
+	queries := db.New(testPool)
+	workspaceID := parseUUID(f.workspaceID)
+	if err := queries.DeleteWorkspaceComments(ctx, workspaceID); err != nil {
+		t.Fatal(err)
+	}
+	if err := queries.DeleteWorkspaceIssueRoots(ctx, workspaceID); err != nil {
+		t.Fatal(err)
+	}
+	var leftover int
+	if err := testPool.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM issue_search_text WHERE workspace_id = $1) +
+		(SELECT count(*) FROM comment_search_text WHERE workspace_id = $1)`, f.workspaceID).Scan(&leftover); err != nil {
+		t.Fatal(err)
+	}
+	if leftover != 0 {
+		t.Fatalf("%d stored search rows survive workspace teardown", leftover)
 	}
 }
 
