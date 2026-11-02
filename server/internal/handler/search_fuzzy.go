@@ -58,6 +58,7 @@ func buildFuzzySearchQuery(foldedQuery string, includeClosed bool, terminalStatu
 			word_similarity($1, %[1]s) AS title_score,
 			word_similarity($1, %[2]s) AS description_score
 		FROM issue i
+		JOIN issue_search_text ist ON ist.issue_id = i.id AND ist.workspace_id = i.workspace_id
 		WHERE %[3]s
 	),
 	page_candidates AS MATERIALIZED (
@@ -78,7 +79,7 @@ func buildFuzzySearchQuery(foldedQuery string, includeClosed bool, terminalStatu
 	FROM page_candidates pc
 	JOIN issue i ON i.id = pc.id AND i.workspace_id = $2
 	ORDER BY pc.score DESC, pc.updated_at DESC, pc.id ASC`,
-		foldSQL("i.title"), foldSQL(fmt.Sprintf("left(COALESCE(i.description, ''), %d)", fuzzyDescriptionRunes)), where, limitParam, offsetParam)
+		"ist.title_folded", fmt.Sprintf("left(ist.description_folded, %d)", fuzzyDescriptionRunes), where, limitParam, offsetParam)
 
 	return query, args
 }

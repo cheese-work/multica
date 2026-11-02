@@ -109,13 +109,13 @@ func TestBuildSearchQuery_MultiTerm(t *testing.T) {
 func TestBuildSearchQuery_LowersCommentContentOnce(t *testing.T) {
 	query, _ := buildSearchQuery("Foo Bar Baz", []string{"Foo", "Bar", "Baz"}, 0, false, false, []string{"done", "cancelled"})
 
-	if count := strings.Count(query, foldSQL("c.content")); count != 1 {
+	if count := strings.Count(query, "LOWER(c.content)"); count != 1 {
 		t.Fatalf("query lowers comment content %d times, want exactly once:\n%s", count, query)
 	}
 	if !strings.Contains(query, "CROSS JOIN LATERAL (") {
 		t.Fatalf("query does not use a lateral join for comment lowercasing:\n%s", query)
 	}
-	if !strings.Contains(query, "SELECT "+foldSQL("c.content")+" AS lowered") {
+	if !strings.Contains(query, "SELECT LOWER(c.content) AS lowered") {
 		t.Fatalf("query does not project pre-lowered comment content:\n%s", query)
 	}
 	if !strings.Contains(query, "OFFSET 0") {
@@ -124,7 +124,7 @@ func TestBuildSearchQuery_LowersCommentContentOnce(t *testing.T) {
 	if !strings.Contains(query, ") lowered_comment") {
 		t.Fatalf("query does not retain the lateral alias after comment lowercasing:\n%s", query)
 	}
-	if strings.Contains(query, foldSQL("c.content")+" LIKE") {
+	if strings.Contains(query, "LOWER(c.content) LIKE") {
 		t.Fatalf("comment predicates bypass the pre-lowered value:\n%s", query)
 	}
 }
@@ -133,19 +133,19 @@ func TestBuildSearchQuery_LowersIssueTextOnceAndSkipsDescriptionForTitleMatches(
 	query, _ := buildSearchQuery("Foo Bar Baz", []string{"Foo", "Bar", "Baz"}, 0, false, false, []string{"done", "cancelled"})
 	normalizedQuery := strings.Join(strings.Fields(query), " ")
 
-	if count := strings.Count(query, foldSQL("i.title")); count != 1 {
+	if count := strings.Count(query, "LOWER(i.title)"); count != 1 {
 		t.Fatalf("query lowers issue title %d times, want exactly once:\n%s", count, query)
 	}
-	if count := strings.Count(query, foldSQL("COALESCE(i.description, '')")); count != 1 {
+	if count := strings.Count(query, "LOWER(COALESCE(i.description, ''))"); count != 1 {
 		t.Fatalf("query lowers issue description %d times, want exactly once:\n%s", count, query)
 	}
-	if !strings.Contains(normalizedQuery, "CROSS JOIN LATERAL ( SELECT "+foldSQL("i.title")+" AS lowered OFFSET 0 ) lowered_issue_title") {
+	if !strings.Contains(normalizedQuery, "CROSS JOIN LATERAL ( SELECT LOWER(i.title) AS lowered OFFSET 0 ) lowered_issue_title") {
 		t.Fatalf("query does not retain the title planner fence:\n%s", query)
 	}
-	if !strings.Contains(normalizedQuery, "LEFT JOIN LATERAL ( SELECT "+foldSQL("COALESCE(i.description, '')")+" AS lowered WHERE NOT (lowered_issue_title.lowered LIKE $2 OR (lowered_issue_title.lowered LIKE $5 AND lowered_issue_title.lowered LIKE $6 AND lowered_issue_title.lowered LIKE $7)) OFFSET 0 ) lowered_issue_description ON TRUE") {
+	if !strings.Contains(normalizedQuery, "LEFT JOIN LATERAL ( SELECT LOWER(COALESCE(i.description, '')) AS lowered WHERE NOT (lowered_issue_title.lowered LIKE $2 OR (lowered_issue_title.lowered LIKE $5 AND lowered_issue_title.lowered LIKE $6 AND lowered_issue_title.lowered LIKE $7)) OFFSET 0 ) lowered_issue_description ON TRUE") {
 		t.Fatalf("query does not condition description lowercasing on a complete title match:\n%s", query)
 	}
-	if strings.Contains(query, foldSQL("i.title")+" LIKE") || strings.Contains(query, foldSQL("COALESCE(i.description, '')")+" LIKE") {
+	if strings.Contains(query, "LOWER(i.title) LIKE") || strings.Contains(query, "LOWER(COALESCE(i.description, '')) LIKE") {
 		t.Fatalf("issue predicates bypass the pre-lowered values:\n%s", query)
 	}
 	if !strings.Contains(query, "COALESCE(lowered_issue_description.lowered LIKE $2, FALSE) AS description_phrase") {

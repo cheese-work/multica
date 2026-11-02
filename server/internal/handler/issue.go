@@ -889,20 +889,39 @@ type searchResult struct {
 // case-insensitive LIKE semantics as the legacy query. The pipeline deliberately
 // trades the title, description, and comment content GIN fast paths for one
 // predictable pass over each relation within the selected workspace.
+// searchCommentSource scopes the name "comment" to the stored folded text for
+// one CTE body, so the comment scan reads one narrow table instead of joining
+// comment to its side table. content is the folded text; content_accents is the
+// lowered unfolded text where folding changed it, for the exact-diacritic rank.
+const searchCommentSource = `comment AS (
+			SELECT comment_id AS id, issue_id, workspace_id, created_at,
+				content_folded AS content, content_accents
+			FROM comment_search_text
+		)`
+
+// searchIssueSource exposes the stored folded text as title and description,
+// next to the raw text that the exact-diacritic ranking compares against.
+const searchIssueSource = `(
+		SELECT i.id, i.workspace_id, i.status, i.updated_at, i.number,
+			ist.title_folded AS title, ist.description_folded AS description,
+			ist.title_accents, ist.description_accents
+		FROM issue i
+		JOIN issue_search_text ist ON ist.issue_id = i.id AND ist.workspace_id = i.workspace_id
+	)`
+
 func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, includeClosed bool, terminalStatusKeys []string) (string, []any) {
+	// The stored search text is lowered and diacritic-folded (search_fold), so the
+	// patterns are folded the same way. The lowered-only query is kept to rank a
+	// match that also agrees on diacritics above one that matches after folding.
+	lowerPhrase := strings.ToLower(phrase)
 	lowerTerms := make([]string, len(terms))
+	foldedTerms := make([]string, len(terms))
 	for i, term := range terms {
 		lowerTerms[i] = strings.ToLower(term)
+		foldedTerms[i] = foldDiacritics(term)
 	}
-	return buildFoldedSearchQuery(strings.ToLower(phrase), lowerTerms, strings.ToLower(phrase), lowerTerms, queryNum, hasNum, includeClosed, terminalStatusKeys)
-}
-
-// buildFoldedSearchQuery takes the query twice: lowered (still carrying its
-// diacritics) and folded by the database with foldQueryTexts, so the patterns
-// match the foldSQL() column side exactly. When the lowered query differs from
-// the folded one, matches that also agree on the diacritics rank first; an
-// unaccented query has nothing to prefer.
-func buildFoldedSearchQuery(lowerPhrase string, lowerTerms []string, phrase string, terms []string, queryNum int, hasNum bool, includeClosed bool, terminalStatusKeys []string) (string, []any) {
+	phrase = foldDiacritics(phrase)
+	terms = foldedTerms
 	exactDiacritics := lowerPhrase != phrase
 
 	args := []any{}
@@ -995,28 +1014,13 @@ func buildFoldedSearchQuery(lowerPhrase string, lowerTerms []string, phrase stri
 		)
 	}
 
-	// Cased flags (see casedMatch) cost a second normalization, so the long
-	// description pays it only where the folded text already matched.
-	descriptionCasedJoin := ""
+	// Cased flags (see casedMatch) read the stored accented text, which is NULL
+	// where folding changed nothing and so cannot match a query with diacritics.
 	if exactDiacritics {
-		descriptionMatch := loweredIssueDescription + " LIKE " + phraseContainsParam
-		if len(termContainsParams) > 1 {
-			var allTerms []string
-			for _, termParam := range termContainsParams {
-				allTerms = append(allTerms, fmt.Sprintf("%s LIKE %s", loweredIssueDescription, termParam))
-			}
-			descriptionMatch += " OR (" + strings.Join(allTerms, " AND ") + ")"
-		}
 		issueFlagColumns = append(issueFlagColumns,
-			casedMatch("LOWER(i.title)")+" AS title_cased",
-			"COALESCE(description_cased.v, FALSE) AS description_cased",
+			"COALESCE("+casedMatch("i.title_accents")+", FALSE) AS title_cased",
+			"COALESCE("+casedMatch("i.description_accents")+", FALSE) AS description_cased",
 		)
-		descriptionCasedJoin = fmt.Sprintf(`LEFT JOIN LATERAL (
-			SELECT %s AS v
-			WHERE %s
-			OFFSET 0
-		) description_cased ON TRUE
-		`, casedMatch("LOWER(i.description)"), descriptionMatch)
 	}
 
 	issueWhere := "i.workspace_id = " + wsParam
@@ -1035,21 +1039,19 @@ func buildFoldedSearchQuery(lowerPhrase string, lowerTerms []string, phrase stri
 	// fences so expression indexes can still match them.
 	issueMatchesCTE := fmt.Sprintf(`issue_matches AS (
 		SELECT %s
-		FROM issue i
+		FROM %s i
 		CROSS JOIN LATERAL (
-			SELECT %s AS lowered
+			SELECT LOWER(i.title) AS lowered
 			OFFSET 0
 		) lowered_issue_title
 		LEFT JOIN LATERAL (
-			SELECT %s AS lowered
+			SELECT LOWER(COALESCE(i.description, '')) AS lowered
 			WHERE NOT %s
 			OFFSET 0
 		) lowered_issue_description ON TRUE
-		%sWHERE %s
+		WHERE %s
 	)`, strings.Join(issueFlagColumns, ",\n\t\t\t"),
-		foldSQL("i.title"),
-		foldSQL("COALESCE(i.description, '')"),
-		titleMatchExpr, descriptionCasedJoin, issueWhere)
+		searchIssueSource, titleMatchExpr, issueWhere)
 
 	// Comments are also scanned once, workspace-first. This intentionally avoids
 	// the legacy planner choice between global content GIN postings and repeated
@@ -1088,23 +1090,30 @@ func buildFoldedSearchQuery(lowerPhrase string, lowerTerms []string, phrase stri
 	// looking the ID up later would repeat text predicates after pagination.
 	// The aggregate stores matching UUIDs per issue (not content), and the ID
 	// tie-break makes equal created_at values deterministic.
-	commentFlagColumns = append(commentFlagColumns, fmt.Sprintf(
-		"(ARRAY_AGG(c.id ORDER BY c.created_at DESC, c.id DESC) FILTER (WHERE %s))[1] AS snippet_comment_id",
-		commentSnippetPredicate,
-	))
+	snippetAggregate := fmt.Sprintf(
+		"ARRAY_AGG(c.id ORDER BY c.created_at DESC, c.id DESC) FILTER (WHERE %s)", commentSnippetPredicate)
+	commentFlagColumns = append(commentFlagColumns, "("+snippetAggregate+")[1] AS snippet_comment_id")
+	// Exact diacritics add one flag to the same pass: some comment, not only the
+	// newest, agrees with the query on diacritics. content_accents is NULL for a
+	// comment folding left unchanged, which cannot match a query with diacritics.
+	if exactDiacritics {
+		commentFlagColumns = append(commentFlagColumns,
+			"BOOL_OR("+casedMatch("c.content_accents")+") FILTER (WHERE c.content_accents IS NOT NULL) AS comment_diacritic_match")
+	}
 
 	// PostgreSQL otherwise inlines this scalar LATERAL subquery and recomputes
-	// the folded c.content for every flag. OFFSET 0 is the intentional planner fence
+	// LOWER(c.content) for every flag. OFFSET 0 is the intentional planner fence
 	// that keeps the long comment body lowercased once per row. Future indexable
 	// text predicates must stay outside this projection-only fence so an index on
 	// LOWER(c.content) can still match them.
 	commentMatchesCTE := fmt.Sprintf(`comment_matches AS MATERIALIZED (
+		WITH %s
 		SELECT *
 		FROM (
 			SELECT %s
 			FROM comment c
 			CROSS JOIN LATERAL (
-				SELECT %s AS lowered
+				SELECT LOWER(c.content) AS lowered
 				OFFSET 0
 			) lowered_comment
 			WHERE c.workspace_id = %s
@@ -1112,24 +1121,17 @@ func buildFoldedSearchQuery(lowerPhrase string, lowerTerms []string, phrase stri
 		) aggregated_comments
 		WHERE %s
 	)`,
+		searchCommentSource,
 		strings.Join(commentFlagColumns, ",\n\t\t\t\t"),
-		foldSQL("c.content"),
 		wsParam,
 		strings.Join(commentCandidateFlags, " OR "),
 	)
 
 	// Exact diacritics rank a match above one that only agrees after folding,
-	// across all three sources. The comment side checks only the snippet comment
-	// (the newest match, the one the user sees) by primary key: a per-comment flag
-	// would normalize every comment in the workspace a second time.
-	// ponytail: an older exact comment behind a newer fold-only one does not
-	// count; aggregate the matching ids if that ever matters.
+	// across all three sources.
 	diacriticRank := "0"
-	snippetCommentJoin := ""
 	if exactDiacritics {
-		diacriticRank = "CASE WHEN im.title_cased OR im.description_cased OR COALESCE(" +
-			casedMatch("LOWER(sc.content)") + ", FALSE) THEN 0 ELSE 1 END"
-		snippetCommentJoin = "LEFT JOIN comment sc ON sc.id = cm.snippet_comment_id\n\t\t"
+		diacriticRank = "CASE WHEN im.title_cased OR im.description_cased OR COALESCE(cm.comment_diacritic_match, FALSE) THEN 0 ELSE 1 END"
 	}
 
 	// Stage two combines the two narrow sources, applies the legacy eligibility
@@ -1235,8 +1237,8 @@ func buildFoldedSearchQuery(lowerPhrase string, lowerTerms []string, phrase stri
 			%s AS match_source
 		FROM issue_matches im
 		LEFT JOIN comment_matches cm ON cm.issue_id = im.issue_id
-		%sWHERE %s
-	)`, cancelledRank, rankExpr, statusRank, diacriticRank, matchSourceExpr, snippetCommentJoin, eligibleExpr)
+		WHERE %s
+	)`, cancelledRank, rankExpr, statusRank, diacriticRank, matchSourceExpr, eligibleExpr)
 
 	pageCandidatesCTE := fmt.Sprintf(`page_candidates AS MATERIALIZED (
 		SELECT issue_id, updated_at, snippet_comment_id, cancelled_rank, relevance_rank, status_rank, diacritic_rank, match_source
@@ -1319,20 +1321,7 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		terminalStatusKeys = resolvedKeys
 	}
 
-	foldedQuery, err := foldQueryTexts(ctx, h.DB, append([]string{q}, terms...))
-	if err != nil {
-		if writeSearchCancellation(w, r, err) {
-			return
-		}
-		slog.Warn("fold search query failed", append(logger.RequestAttrs(r), "error", err)...)
-		writeError(w, http.StatusInternalServerError, "failed to search issues")
-		return
-	}
-	lowerTerms := make([]string, len(terms))
-	for i, term := range terms {
-		lowerTerms[i] = strings.ToLower(term)
-	}
-	sqlQuery, args := buildFoldedSearchQuery(strings.ToLower(q), lowerTerms, foldedQuery[0], foldedQuery[1:], queryNum, hasNum, includeClosed, terminalStatusKeys)
+	sqlQuery, args := buildSearchQuery(q, terms, queryNum, hasNum, includeClosed, terminalStatusKeys)
 	// Fill placeholder args: $4 = workspace_id, last two = limit, offset
 	args[3] = wsUUID
 	args[len(args)-2] = limit
@@ -1381,7 +1370,7 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 	}
 	// Typo tolerance is a fallback: a query with any normal hit never pays for it.
 	if shouldRunFuzzyFallback(q, hasNum, offset, len(results)) {
-		fuzzyQuery, fuzzyArgs := buildFuzzySearchQuery(foldedQuery[0], includeClosed, terminalStatusKeys)
+		fuzzyQuery, fuzzyArgs := buildFuzzySearchQuery(foldDiacritics(q), includeClosed, terminalStatusKeys)
 		fuzzyArgs[1] = wsUUID
 		fuzzyArgs[len(fuzzyArgs)-2] = limit
 		fuzzyArgs[len(fuzzyArgs)-1] = offset
@@ -4409,6 +4398,15 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	releaseMove := func() {}
+	if params.Status.Valid {
+		release, ok := h.beginRunBudgetMove(w, r, actorType, prevIssue, params.Status.String)
+		if !ok {
+			return
+		}
+		releaseMove = release
+		defer releaseMove()
+	}
 	// Status history is written in the status transaction. A workflow handoff
 	// and a duplicate mark keep the listener's richer row until they migrate.
 	var statusRec *statusRecord
@@ -4544,6 +4542,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	} else if statusChanged && actorType == "agent" {
 		h.grantRunBudgetStep(r.Context(), issue, prevIssue.Status)
 	}
+	releaseMove()
 	if attachmentsChanged {
 		// The full owner snapshot must be admitted before an auxiliary event at
 		// the same revision. Otherwise clients advance only the revision here and
@@ -5322,6 +5321,21 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		releaseMove := func() {}
+		if params.Status.Valid {
+			var release func()
+			var err error
+			if actorType == "member" {
+				release, err = h.lockRunBudgetMove(r.Context(), prevIssue, params.Status.String)
+			} else {
+				release, err = h.lockRunBudgetBoundary(r.Context(), prevIssue.ID)
+			}
+			if err != nil {
+				slog.Warn("batch update issue: run budget", "issue_id", issueID, "error", err)
+				continue
+			}
+			releaseMove = release
+		}
 		var issue db.Issue
 		if req.Updates.Description != nil {
 			// One batch-level base cannot describe multiple issue documents.
@@ -5338,6 +5352,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			issue, err = h.updateIssueWithStatusGuard(writeCtx, wsUUID, issueStatusGuard, params, workflowWrite)
 		}
 		if err != nil {
+			releaseMove()
 			// The archive race is a property of the batch's shared target
 			// status, not of one issue, so every remaining item would fail the
 			// same way. Abort with 409 instead of reporting a partial update.
@@ -5412,6 +5427,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		} else if statusChanged && actorType == "agent" {
 			h.grantRunBudgetStep(r.Context(), issue, prevIssue.Status)
 		}
+		releaseMove()
 
 		// Reassignment does not cancel existing tasks (#4963 / MUL-4113) —
 		// mirrors UpdateIssue. See that handler for the rationale.

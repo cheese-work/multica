@@ -297,6 +297,13 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Orders this membership against the passkey gate checks, as the joins do.
+	if err := qtx.LockUserForMembershipChange(r.Context(), parseUUID(userID)); err != nil {
+		slog.Warn("lock owner failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to add owner")
+		return
+	}
+
 	_, err = qtx.CreateMember(r.Context(), db.CreateMemberParams{
 		WorkspaceID: ws.ID,
 		UserID:      parseUUID(userID),
