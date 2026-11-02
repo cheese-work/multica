@@ -336,7 +336,7 @@ func (worker githubIntakeWorker) dispatch(ctx context.Context, queries *db.Queri
 			return nil, err
 		}
 		// The kill switch sweep finds a live run by this mark.
-		if err := queries.MarkGitHubDispatchRun(ctx, db.MarkGitHubDispatchRunParams{TaskID: publication.task.ID, IssueID: issue.ID, Source: "intake"}); err != nil {
+		if err := queries.MarkGitHubDispatchRun(ctx, db.MarkGitHubDispatchRunParams{TaskID: publication.task.ID, IssueID: issue.ID, Source: "intake", Repo: pull.RepoOwner + "/" + pull.RepoName}); err != nil {
 			return nil, err
 		}
 		publication.state, publication.reason = "dispatched", "admitted"

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -437,5 +438,103 @@ func TestGitHubDispatchHaltRevokesRunStartedByIntake(t *testing.T) {
 	}
 	if n := dbfx.Count(t, `SELECT count(*) FROM github_dispatch_halt_audit WHERE workspace_id=$1 AND halted AND runs_revoked=1`, testWorkspaceID); n != 1 {
 		t.Fatalf("audit rows with the revoked count = %d, want 1", n)
+	}
+}
+
+// dispatchIntakeRunForSweep starts one run through the worker and returns its id and the source PR's id.
+func dispatchIntakeRunForSweep(t *testing.T, fixture githubReviewFixture, suffix string) (taskID, pullID string) {
+	t.Helper()
+	ctx := context.Background()
+	postIntakeForWorker(t, fixture, suffix)
+	if _, err := intakeWorkerForTest(t, fixture).runOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	dbfx.QueryRow(t, `SELECT id FROM agent_task_queue WHERE issue_id=$1`, fixture.issueID).Scan(&taskID)
+	dbfx.QueryRow(t, `SELECT pull_request_id FROM issue_pull_request WHERE issue_id=$1`, fixture.issueID).Scan(&pullID)
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM github_dispatch_halt WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_dispatch_halt_audit WHERE workspace_id = $1`, testWorkspaceID)
+	})
+	return taskID, pullID
+}
+
+// The sweep matches the repo that triggered the run, not whatever the issue links today.
+func TestGitHubDispatchHaltMatchesIntakeRunBySourceRepo(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
+	taskID, _ := dispatchIntakeRunForSweep(t, fixture, "-sweep-source-repo")
+	other, err := fixture.handler.Queries.UpsertGitHubPullRequest(context.Background(), db.UpsertGitHubPullRequestParams{
+		WorkspaceID: parseUUID(testWorkspaceID), InstallationID: 777001, RepoOwner: "other", RepoName: "repo", PrNumber: 5,
+		Title: "other repo PR", State: "open", HtmlUrl: "https://github.com/other/repo/pull/5",
+		PrCreatedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true}, PrUpdatedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
+		HeadSha: "other-head", ClearMergeableState: pgtype.Bool{Bool: true, Valid: true}, HeadRepoSame: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.handler.Queries.LinkIssueToPullRequest(context.Background(), db.LinkIssueToPullRequestParams{
+		IssueID: parseUUID(fixture.issueID), PullRequestID: other.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if w := setHalt(t, "other/repo", true, false); w.Code != http.StatusOK {
+		t.Fatalf("halt: %d %s", w.Code, w.Body)
+	}
+	if status := taskStatus(t, taskID); status != "queued" {
+		t.Fatalf("run triggered by acme/widget status after halting other/repo = %s, want queued", status)
+	}
+	if w := setHalt(t, "acme/widget", true, false); w.Code != http.StatusOK {
+		t.Fatalf("halt: %d %s", w.Code, w.Body)
+	}
+	if status := taskStatus(t, taskID); status != "cancelled" {
+		t.Fatalf("run status after halting its source repo = %s, want cancelled", status)
+	}
+}
+
+// A run whose source PR was unlinked before the sweep still stops under a workspace-wide halt.
+func TestGitHubDispatchHaltSweepsIntakeRunAfterSourceUnlinked(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
+	taskID, pullID := dispatchIntakeRunForSweep(t, fixture, "-sweep-unlinked")
+	dbfx.Exec(t, `DELETE FROM issue_pull_request WHERE issue_id=$1 AND pull_request_id=$2`, fixture.issueID, pullID)
+	if w := setHalt(t, "*", true, false); w.Code != http.StatusOK {
+		t.Fatalf("halt: %d %s", w.Code, w.Body)
+	}
+	if status := taskStatus(t, taskID); status != "cancelled" {
+		t.Fatalf("run status after its PR was unlinked = %s, want cancelled", status)
+	}
+}
+
+// A restore waits for the sweep of the halt before it: a run started after the restore must not be cancelled by it.
+func TestGitHubDispatchHaltRestoreWaitsForSweep(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
+	taskID, _ := dispatchIntakeRunForSweep(t, fixture, "-restore-waits")
+	ctx := context.Background()
+	hold, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hold.Rollback(ctx)
+	if _, err := hold.Exec(ctx, `SELECT 1 FROM agent_task_queue WHERE id=$1 FOR UPDATE`, taskID); err != nil {
+		t.Fatal(err)
+	}
+	halted, restored := make(chan int, 1), make(chan int, 1)
+	go func() { halted <- setHalt(t, "*", true, false).Code }()
+	time.Sleep(500 * time.Millisecond)
+	go func() { restored <- setHalt(t, "*", false, false).Code }()
+	select {
+	case code := <-restored:
+		t.Fatalf("restore finished (%d) while the halt's sweep was still running", code)
+	case <-time.After(700 * time.Millisecond):
+	}
+	if err := hold.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if code := <-halted; code != http.StatusOK {
+		t.Fatalf("halt status = %d", code)
+	}
+	if code := <-restored; code != http.StatusOK {
+		t.Fatalf("restore status = %d", code)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM github_dispatch_halt WHERE workspace_id=$1`, testWorkspaceID); n != 0 {
+		t.Fatalf("halts after restore = %d, want 0", n)
 	}
 }

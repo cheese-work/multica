@@ -70,7 +70,7 @@ func (h *Handler) advanceIssueOnCIGreen(ctx context.Context, issueID pgtype.UUID
 		if task.IssueID != issue.ID {
 			return
 		}
-		if err := h.Queries.MarkGitHubDispatchRun(ctx, db.MarkGitHubDispatchRunParams{TaskID: task.ID, IssueID: issue.ID, Source: "ci_green"}); err != nil {
+		if err := h.Queries.MarkGitHubDispatchRun(ctx, db.MarkGitHubDispatchRunParams{TaskID: task.ID, IssueID: issue.ID, Source: "ci_green", Repo: ""}); err != nil {
 			slog.Warn("ci advance: mark run failed", "err", err, "issue_id", uuidToString(issueID))
 		}
 	})

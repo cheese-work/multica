@@ -124,12 +124,16 @@ WHERE i.workspace_id = $1
         SELECT 1 FROM issue_wakeup w
         WHERE w.id = t.trigger_evidence_ref_id AND w.system_rule LIKE 'pr\_%'))
   )
-  AND EXISTS (
-    SELECT 1 FROM issue_pull_request link
-    JOIN github_pull_request pr ON pr.id = link.pull_request_id
-    WHERE link.issue_id = i.id
-      AND $2::text IN ('*', lower(pr.repo_owner), lower(pr.repo_owner || '/' || pr.repo_name))
-  )
+  AND CASE
+    WHEN t.context ? 'github_dispatch_repo' THEN
+      $2::text IN ('*', split_part(t.context->>'github_dispatch_repo', '/', 1), t.context->>'github_dispatch_repo')
+    ELSE EXISTS (
+      SELECT 1 FROM issue_pull_request link
+      JOIN github_pull_request pr ON pr.id = link.pull_request_id
+      WHERE link.issue_id = i.id
+        AND $2::text IN ('*', lower(pr.repo_owner), lower(pr.repo_owner || '/' || pr.repo_name))
+    )
+  END
 `
 
 type ListGitHubTriggeredActiveTasksParams struct {
@@ -139,7 +143,8 @@ type ListGitHubTriggeredActiveTasksParams struct {
 
 // Live runs started by a GitHub event inside a scope: a PR system wakeup
 // (pr_merged, pr_checks_*, pr_needs_attention), a PR review wakeup, or a CI-green
-// workflow handoff (marked by MarkGitHubDispatchRun). The scope is matched against the repos of the issue's linked PRs.
+// workflow handoff (marked by MarkGitHubDispatchRun). The scope is matched against
+// the repo that triggered the run when recorded, else the repos of the issue's linked PRs.
 func (q *Queries) ListGitHubTriggeredActiveTasks(ctx context.Context, arg ListGitHubTriggeredActiveTasksParams) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listGitHubTriggeredActiveTasks, arg.WorkspaceID, arg.Scope)
 	if err != nil {
@@ -183,11 +188,13 @@ func (q *Queries) LockGitHubDispatchHaltShared(ctx context.Context, workspaceID 
 
 const markGitHubDispatchRun = `-- name: MarkGitHubDispatchRun :exec
 UPDATE agent_task_queue SET context = COALESCE(context, '{}'::jsonb) || jsonb_build_object('github_dispatch', $1::text)
-WHERE id = $2 AND issue_id = $3
+  || CASE WHEN $2::text = '' THEN '{}'::jsonb ELSE jsonb_build_object('github_dispatch_repo', lower($2::text)) END
+WHERE id = $3 AND issue_id = $4
 `
 
 type MarkGitHubDispatchRunParams struct {
 	Source  string      `json:"source"`
+	Repo    string      `json:"repo"`
 	TaskID  pgtype.UUID `json:"task_id"`
 	IssueID pgtype.UUID `json:"issue_id"`
 }
@@ -195,8 +202,15 @@ type MarkGitHubDispatchRunParams struct {
 // Tags one run as started by a GitHub event, for a workflow handoff that
 // carries no wakeup or review marker of its own. The caller names the exact
 // task its enqueue created, so a later run of the issue is never tagged.
+// A non-empty repo ("owner/repo") records the repo that triggered the run, so the
+// sweep matches that repo even after the issue's PR links change.
 func (q *Queries) MarkGitHubDispatchRun(ctx context.Context, arg MarkGitHubDispatchRunParams) error {
-	_, err := q.db.Exec(ctx, markGitHubDispatchRun, arg.Source, arg.TaskID, arg.IssueID)
+	_, err := q.db.Exec(ctx, markGitHubDispatchRun,
+		arg.Source,
+		arg.Repo,
+		arg.TaskID,
+		arg.IssueID,
+	)
 	return err
 }
 
