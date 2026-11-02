@@ -39,6 +39,7 @@ function item(overrides: Partial<InboxItem>): InboxItem {
 describe("useMarkMentionsReadOnOpen", () => {
   let qc: QueryClient;
   let markInboxRead: ReturnType<typeof vi.fn>;
+  let listInbox: ReturnType<typeof vi.fn>;
 
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={qc}>{children}</QueryClientProvider>
@@ -47,9 +48,10 @@ describe("useMarkMentionsReadOnOpen", () => {
   beforeEach(() => {
     qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     markInboxRead = vi.fn().mockResolvedValue({});
+    listInbox = vi.fn().mockResolvedValue([]);
     setApiInstance({
       markInboxRead,
-      listInbox: vi.fn().mockResolvedValue([]),
+      listInbox,
       getInboxUnreadSummary: vi.fn().mockResolvedValue([]),
     } as unknown as ApiClient);
   });
@@ -73,5 +75,28 @@ describe("useMarkMentionsReadOnOpen", () => {
     renderHook(() => useMarkMentionsReadOnOpen("issue-1"), { wrapper });
     await new Promise((r) => setTimeout(r, 20));
     expect(markInboxRead).not.toHaveBeenCalled();
+  });
+
+  it("retries a mention whose read failed, then stops after repeated failures", async () => {
+    markInboxRead.mockRejectedValue(new Error("offline"));
+    // The server still reports the mention unread after the failed write.
+    listInbox.mockResolvedValue([item({ id: "a" })]);
+    qc.setQueryData(inboxKeys.list("ws-1"), [item({ id: "a" })]);
+    renderHook(() => useMarkMentionsReadOnOpen("issue-1"), { wrapper });
+
+    await waitFor(() => expect(markInboxRead).toHaveBeenCalledTimes(3));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(markInboxRead).toHaveBeenCalledTimes(3);
+  });
+
+  it("recovers when a retry succeeds", async () => {
+    markInboxRead.mockRejectedValueOnce(new Error("offline")).mockResolvedValue({});
+    listInbox.mockResolvedValue([item({ id: "a" })]);
+    qc.setQueryData(inboxKeys.list("ws-1"), [item({ id: "a" })]);
+    renderHook(() => useMarkMentionsReadOnOpen("issue-1"), { wrapper });
+
+    await waitFor(() => expect(markInboxRead).toHaveBeenCalledTimes(2));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(markInboxRead).toHaveBeenCalledTimes(2);
   });
 });

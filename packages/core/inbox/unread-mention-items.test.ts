@@ -1,7 +1,11 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import type { InboxItem } from "../types";
-import { unreadMentionIssueIds, unreadMentionItemIds } from "./unread-mention-items";
+import {
+  createReadRequestTracker,
+  unreadMentionIssueIds,
+  unreadMentionItemIds,
+} from "./unread-mention-items";
 
 function item(overrides: Partial<InboxItem>): InboxItem {
   return {
@@ -68,5 +72,29 @@ describe("unreadMentionItemIds", () => {
       "issue-1",
     );
     expect(ids).toEqual(["a"]);
+  });
+});
+
+describe("createReadRequestTracker", () => {
+  it("claims an id once while its request is in flight", () => {
+    const tracker = createReadRequestTracker();
+    expect(tracker.claim("a")).toBe(true);
+    expect(tracker.claim("a")).toBe(false);
+  });
+
+  it("lets a failed id be claimed again, up to a bounded number of failures", () => {
+    const tracker = createReadRequestTracker();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      expect(tracker.claim("a")).toBe(true);
+      tracker.settle("a", true);
+    }
+    expect(tracker.claim("a")).toBe(false);
+  });
+
+  it("does not claim an id again once the read succeeded", () => {
+    const tracker = createReadRequestTracker();
+    expect(tracker.claim("a")).toBe(true);
+    tracker.settle("a", false);
+    expect(tracker.claim("a")).toBe(false);
   });
 });

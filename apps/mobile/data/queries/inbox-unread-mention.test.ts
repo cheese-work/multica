@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import type { InboxItem } from "@multica/core/types";
+import {
+  createReadRequestTracker,
+  requestMentionReads,
+} from "@multica/core/inbox/unread-mention-items";
 
 vi.mock("@/data/api", () => ({ api: {} }));
 
@@ -47,5 +51,29 @@ describe("unreadMentionOptions", () => {
 
   it("ignores non-mention inbox items", () => {
     expect(observe([item({ type: "new_comment" })], "issue-1")).toBe(false);
+  });
+});
+
+describe("requestMentionReads", () => {
+  it("asks again for a mention whose read failed, and stops once it succeeds", () => {
+    const tracker = createReadRequestTracker();
+    const items = [item({ id: "a" }), item({ id: "b", issue_id: "issue-2" })];
+    const settles: Array<(failed: boolean) => void> = [];
+    const send = vi.fn((_id: string, settle: (failed: boolean) => void) => {
+      settles.push(settle);
+    });
+
+    requestMentionReads(items, "issue-1", tracker, send);
+    // In flight: a second pass sends nothing.
+    requestMentionReads(items, "issue-1", tracker, send);
+    expect(send.mock.calls.map(([id]) => id)).toEqual(["a"]);
+
+    settles[0]!(true);
+    requestMentionReads(items, "issue-1", tracker, send);
+    expect(send).toHaveBeenCalledTimes(2);
+
+    settles[1]!(false);
+    requestMentionReads(items, "issue-1", tracker, send);
+    expect(send).toHaveBeenCalledTimes(2);
   });
 });
