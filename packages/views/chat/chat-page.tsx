@@ -502,7 +502,9 @@ export function ChatPage() {
       <ChatQueue
         tasks={queuedTasks}
         headStatus={c.pendingTask?.status}
-        onSendNow={c.handleSendQueuedTaskNow}
+        headSupplement={c.pendingTask?.head_supplement}
+        onSteer={c.handleSteerQueuedTask}
+        onStopAndSend={c.handleStopAndSendQueuedTask}
         sendNowDisabled={c.isAgentAccessRevoked}
         onEdit={c.handleEditQueuedTask}
         onRemove={c.handleRemoveQueuedTask}

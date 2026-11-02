@@ -1860,6 +1860,8 @@
     "recorded_for": "{{issue}}에 기록됨",
     "option_n": "선택지 {{number}}",
     "jump_to_card": "카드로 이동",
+    "jump_to_ask": "질문으로 이동",
+    "jump_to_answer": "답변으로 이동",
     "answered_in_dm": "DM에서 답변",
     "private_dm": "비공개 DM에서",
     "disclaim_action": "철회",

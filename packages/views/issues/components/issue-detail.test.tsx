@@ -28,6 +28,10 @@ const TEST_RESOURCES = { en: { agents: enAgents, common: enCommon, issues: enIss
 
 const mockViewport = vi.hoisted(() => ({ isMobile: false }));
 const mockLocalDirectoryHint = vi.hoisted(() => vi.fn());
+// The banner has its own suite; here only its place in the page matters.
+vi.mock("./issue-decision-banner", () => ({
+  IssueDecisionBanner: () => <div data-testid="decision-banner" />,
+}));
 vi.mock("../../projects/components/local-directory-hint", () => ({
   LocalDirectoryHint: (props: unknown) => {
     mockLocalDirectoryHint(props);
@@ -4775,6 +4779,21 @@ describe("IssueDetail (shared)", () => {
   });
 
   describe("sub-issues list", () => {
+    it("places the decision banner after title, description and sub-issues, before activity", async () => {
+      mockApiObj.listChildIssues.mockResolvedValue({
+        issues: [{ ...mockIssue, id: "child-1", number: 11, identifier: "TES-11", title: "Fix login flow", parent_issue_id: "issue-1" }],
+      });
+      renderIssueDetail();
+      const banner = await screen.findByTestId("decision-banner");
+      const subIssue = await screen.findByText("Fix login flow");
+      const description = document.querySelector("[data-description-editor]")!;
+      const activity = screen.getByText("Activity", { selector: "h2" });
+      const follows = (a: Node, b: Node) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+      expect(follows(description, banner)).toBe(true);
+      expect(follows(subIssue, banner)).toBe(true);
+      expect(follows(banner, activity)).toBe(true);
+    });
+
     beforeEach(() => {
       useSubIssueDisplayStore.setState({
         rowProperties: { ...DEFAULT_SUB_ISSUE_ROW_PROPERTIES },

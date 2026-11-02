@@ -22,20 +22,20 @@ import (
 // than stored.
 
 // WakeupDefinitionTriggerKinds lists the trigger kinds a definition may use
-// today: the three built-in presets and custom events and conditions. A later
-// layer adds a kind when it implements its execution; unimplemented kinds are
-// rejected, never stored.
+// today: the built-in presets, custom events and conditions, and the schedule
+// kinds. A later layer adds a kind when it implements its execution;
+// unimplemented kinds are rejected, never stored.
 func WakeupDefinitionTriggerKinds() []string {
-	return append(slices.Clone(builtinWakeupRules), wakeupTriggerKindEvent, wakeupTriggerKindCondition)
+	kinds := append(slices.Clone(builtinWakeupRules), wakeupTriggerKindEvent, wakeupTriggerKindCondition)
+	return append(kinds, wakeupScheduleKinds...)
 }
 
 // builtinWakeupRules are the platform rules, which double as the trigger presets.
 var builtinWakeupRules = []string{SystemRuleChildDone, SystemRulePRMerged, SystemRulePRChecksFailed, SystemRulePRAttention}
 
 // WakeupDefinitionFields lists the patch fields a definition may set today.
-// schedule belongs to a later layer.
 func WakeupDefinitionFields() []string {
-	return []string{"enabled", "name", "trigger", "target", "instruction", "mode", "max_fires", "expiry", "rate_limit", "aggregate_limit", "filters", "active_run"}
+	return []string{"enabled", "name", "trigger", "target", "instruction", "mode", "max_fires", "expiry", "schedule", "rate_limit", "aggregate_limit", "filters", "active_run"}
 }
 
 // wakeupTriggerSpec is every trigger's shape: a built-in names only its kind,
@@ -149,9 +149,6 @@ type wakeupPatchRefs struct {
 // checked on the resolved rule by validateEffectiveWakeup.
 func validateWakeupPatch(ruleKey string, p WakeupConfigPatch, now time.Time) (wakeupPatchRefs, error) {
 	var refs wakeupPatchRefs
-	if p.Schedule.Set {
-		return refs, wakeupDefinitionBad("schedule is not available yet")
-	}
 	if len(setWakeupFields(p)) == 0 {
 		return refs, wakeupDefinitionBad("a definition sets at least one field; delete it to inherit")
 	}
@@ -189,6 +186,18 @@ func validateWakeupPatch(ruleKey string, p WakeupConfigPatch, now time.Time) (wa
 			return refs, wakeupDefinitionBad("a built-in rule keeps its own trigger")
 		}
 		if err := validateWakeupTriggerBody(spec); err != nil {
+			return refs, err
+		}
+	}
+	if live(p.Schedule, p.Schedule.Null) {
+		if _, builtin := WakeupBuiltinBaseline(ruleKey); builtin {
+			return refs, wakeupDefinitionBad("a built-in rule takes no schedule")
+		}
+		var spec wakeupScheduleSpec
+		if err := decodeWakeupSpec(p.Schedule.Value, &spec); err != nil {
+			return refs, wakeupDefinitionBad("invalid schedule: %v", err)
+		}
+		if _, err := spec.validate(now); err != nil {
 			return refs, err
 		}
 	}
@@ -308,6 +317,11 @@ func validateEffectiveWakeup(eff EffectiveWakeupConfig) error {
 	_, builtin := WakeupBuiltinBaseline(eff.RuleKey)
 	if !builtin && (!eff.Config.Trigger.Set || !eff.Config.Instruction.Set) {
 		return wakeupDefinitionBad("a custom rule needs a trigger and an instruction")
+	}
+	if !builtin {
+		if err := validateEffectiveSchedule(eff.Config); err != nil {
+			return err
+		}
 	}
 	if !eff.Config.Filters.Set {
 		return nil

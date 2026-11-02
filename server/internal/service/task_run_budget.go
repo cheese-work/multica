@@ -95,6 +95,9 @@ type RunBudgetExhausted struct {
 	IssueID pgtype.UUID
 	Runs    int64
 	Max     int
+	// Balance is the admitted run balance the refusal read; the suggested raise
+	// starts from it, not from Runs.
+	Balance int64
 	Since   time.Time
 	Status  string
 	Target  RunTarget
@@ -251,7 +254,7 @@ func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID, tar
 		// The guard runs inside the enqueue transaction; the hook writes the
 		// issue on its own connection after the caller is done with it.
 		go (*hook)(context.WithoutCancel(ctx), RunBudgetExhausted{
-			IssueID: issue.ID, Runs: runs, Max: max, Since: usage.Since,
+			IssueID: issue.ID, Runs: runs, Max: max, Balance: balance, Since: usage.Since,
 			Status: issue.Status, Target: target, TokensSpent: tokensSpent && balance >= 1, Tokens: tokens,
 		})
 	}
