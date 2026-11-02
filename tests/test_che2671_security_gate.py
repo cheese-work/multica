@@ -259,7 +259,7 @@ class MergeGroupTest(unittest.TestCase):
                 return ""
             for sha, state in pr_states.items():
                 if f"commits/{sha}/status" in path:
-                    return state
+                    return (state.pop(0) if len(state) > 1 else state[0]) if isinstance(state, list) else state
             return ""  # no security-gate status on that head
 
         argv = ["x", "--github", "cheese-work/multica", "--default-branch", "main",
@@ -311,6 +311,19 @@ class MergeGroupTest(unittest.TestCase):
         self.assertIn("state=failure", posted[0])
         self.assertIn("#816", " ".join(posted[0]))
 
+    def test_a_revocation_between_the_read_and_the_post_cannot_leave_a_stale_success(self):
+        # review round 3 finding 2: the group read PR success, a revocation posted group failure, the group then posted
+        # success over it. The PR flip precedes the revocation write, so a re-read after the post sees it.
+        _, posted = self.run_group({self.P1: "success", self.P2: ["success", "pending"]})
+        group_posts = [a for a in posted if a[0].endswith(self.G2)]
+        self.assertIn("state=success", group_posts[0])
+        self.assertIn("state=failure", group_posts[-1])
+        self.assertIn("#816", " ".join(group_posts[-1]))
+
+    def test_a_stable_green_group_is_posted_once(self):
+        _, posted = self.run_group({self.P1: "success", self.P2: "success"})
+        self.assertEqual(len(posted), 1)
+
     def test_a_commit_that_is_not_a_pr_merge_fails_closed(self):
         commits = [{"sha": self.G2, "parents": [self.BASE], "message": "direct push"}]
         _, posted = self.run_group({}, commits)
@@ -327,19 +340,22 @@ class QueueRevocationTest(unittest.TestCase):
     BASE, G1, G2, OTHER = "1" * 40, "2" * 40, "3" * 40, "6" * 40
     QUEUE_HEADS = {405: G1, 999: G2}  # queue head per tip PR number
 
-    def run_pr(self, comments, queue_heads=None, queue_error=False):
+    def run_pr(self, comments, queue_heads=None, queue_error=False, compare_error=False):
         queue_heads = self.QUEUE_HEADS if queue_heads is None else queue_heads
-        posted = []
+        posted, lookups = [], []
         chains = {self.G1: [{"sha": self.G1, "parents": [self.BASE, HEAD], "message": "Merge pull request #405 from x/y"}],
                   self.G2: [{"sha": self.G2, "parents": [self.OTHER, "7" * 40], "message": "Merge pull request #999 from x/z"}]}
 
         def fake_gh(*args):
             path = " ".join(args)
             if "git/matching-refs/heads/gh-readonly-queue/main/" in path:
+                lookups.append(path)
                 if queue_error:
                     raise subprocess.CalledProcessError(1, ["gh"])
                 return "\n".join(queue_heads.values())
             if "compare/main..." in path:
+                if compare_error:
+                    raise subprocess.CalledProcessError(1, ["gh"])
                 return "\n".join(json.dumps(c) for c in chains[path.split("...")[1].split()[0]])
             if args[0] == "--paginate":
                 return json.dumps(c) if (c := comments[0]) and "issues/405/comments" in path else ""
@@ -358,6 +374,7 @@ class QueueRevocationTest(unittest.TestCase):
         with mock.patch.object(sg, "_gh", fake_gh), mock.patch.object(sg.subprocess, "run", fake_run), \
                 mock.patch("sys.argv", argv), mock.patch("builtins.print"):
             code = sg.main()
+        self.lookups = lookups
         return code, posted
 
     def test_a_revoked_verdict_flips_the_queue_head_that_carries_the_pr_to_failure(self):
@@ -374,9 +391,17 @@ class QueueRevocationTest(unittest.TestCase):
         _, posted = self.run_pr([comment(verdict("PASS", repo="cheese-work/multica"))])
         self.assertEqual([a[0].rsplit("/", 1)[1] for a in posted], [HEAD])
 
-    def test_a_queue_lookup_error_is_not_swallowed(self):
-        with self.assertRaises(subprocess.CalledProcessError):
+    def test_a_queue_lookup_that_keeps_failing_is_retried_then_raises(self):
+        with mock.patch.object(sg.time, "sleep"), self.assertRaises(subprocess.CalledProcessError):
             self.run_pr([comment("no verdict any more")], queue_error=True)
+
+    def test_a_group_that_cannot_be_read_is_failed_closed_in_the_persisted_status(self):
+        # review round 3 finding 1: a compare error must not leave the carried success on that queue head
+        with mock.patch.object(sg.time, "sleep"):
+            _, posted = self.run_pr([comment("no verdict any more")], compare_error=True)
+        heads = {a[0].rsplit("/", 1)[1]: a for a in posted}
+        for g in (self.G1, self.G2):
+            self.assertIn("state=failure", heads[g])
 
 
 class WorkflowTest(unittest.TestCase):

@@ -34,6 +34,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 
 CONTEXT = "security-gate"
 TRUSTED_AUTHORS = "skills/multica-cheese-work-github/scripts/trusted-authors.json"
@@ -207,12 +208,27 @@ def _group_chain(github: str, base: str, head: str, strict: bool = True) -> list
 
 def revoke_queue(github: str, number: int, default_branch: str, run_url: str) -> None:
     """A PR whose gate is no longer `success` must not ride a success already carried onto a queue head: flip every
-    queue head whose group contains the PR to `failure`, so GitHub drops the entry. Errors propagate (job goes red)."""
-    heads = _gh("--paginate", f"repos/{github}/git/matching-refs/heads/gh-readonly-queue/{default_branch}/",
-                "--jq", ".[].object.sha").split()
+    queue head whose group contains the PR to `failure`, so GitHub drops the entry. A group that cannot be read is
+    failed too (fail closed). Only a ref listing that keeps failing raises: no head is known to flip then, and the job
+    goes red. The PR status was written first, so a group evaluated after this point reads the revocation itself."""
+    for attempt in range(3):
+        try:
+            heads = _gh("--paginate", f"repos/{github}/git/matching-refs/heads/gh-readonly-queue/{default_branch}/",
+                        "--jq", ".[].object.sha").split()
+            break
+        except subprocess.CalledProcessError:
+            if attempt == 2:
+                raise
+            time.sleep(2 * (attempt + 1))
     for head in heads:
-        if any(re.match(rf"Merge pull request #{number} ", r["message"]) for r in _group_chain(github, default_branch, head, strict=False)):
-            _post(github, head, "failure", f"#{number}: {CONTEXT} no longer success on its head", run_url)
+        try:
+            carries = any(re.match(rf"Merge pull request #{number} ", r["message"])
+                          for r in _group_chain(github, default_branch, head, strict=False))
+            desc = f"#{number}: {CONTEXT} no longer success on its head"
+        except Exception as e:  # unreadable group: block it rather than leave a carried success
+            carries, desc = True, f"cannot read queue group: {type(e).__name__}"
+        if carries:
+            _post(github, head, "failure", desc, run_url)
 
 
 def gate_pr(repo: str, github: str, number: int, default_branch: str, trusted: set[int],
@@ -268,13 +284,19 @@ def main() -> int:
     ap.add_argument("--post", action="store_true", help="write the commit status (default: print only)")
     a = ap.parse_args()
     if a.merge_group_head:
-        try:
-            state, desc = _out(*gate_merge_group(a.github, a.merge_group_base, a.merge_group_head))
-        except Exception as e:  # an unposted status stalls the queue entry until its timeout: block instead
-            state, desc = "failure", f"cannot evaluate merge group: {type(e).__name__}"
+        def carry() -> tuple[str, str]:
+            try:
+                return _out(*gate_merge_group(a.github, a.merge_group_base, a.merge_group_head))
+            except Exception as e:  # an unposted status stalls the queue entry until its timeout: block instead
+                return "failure", f"cannot evaluate merge group: {type(e).__name__}"
+        state, desc = carry()
         print(json.dumps({"context": CONTEXT, "sha": a.merge_group_head, "state": state, "description": desc}))
         if a.post:
             _post(a.github, a.merge_group_head, state, desc, a.run_url)
+            if state == "success":  # a revocation between the read and this write is overwritten: read again, fail on any change
+                state, desc = carry()
+                if state != "success":
+                    _post(a.github, a.merge_group_head, state, desc, a.run_url)
         return 0
     if a.pr is None:
         ap.error("--pr is required unless --merge-group-head is given")
