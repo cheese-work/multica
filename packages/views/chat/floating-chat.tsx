@@ -1,11 +1,15 @@
 "use client";
 
+import { lazy, Suspense, useState } from "react";
 import { useChatStore } from "@multica/core/chat";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useNavigation } from "../navigation";
 import { ChatFab } from "./components/chat-fab";
-import { ChatWindow } from "./components/chat-window";
 import { isFloatingChatRouteSuppressed } from "./floating-chat-visibility";
+
+const ChatWindow = lazy(() =>
+  import("./components/chat-window").then((m) => ({ default: m.ChatWindow })),
+);
 
 /**
  * Mount point for the floating chat overlay (FAB + window). Rendered once in
@@ -20,6 +24,11 @@ import { isFloatingChatRouteSuppressed } from "./floating-chat-visibility";
  */
 export function FloatingChat() {
   const enabled = useChatStore((s) => s.floatingChatEnabled);
+  const isOpen = useChatStore((s) => s.isOpen);
+  // The window (editor, markdown, pickers) loads on first open and stays
+  // mounted after that, so closing keeps its composer and drafts alive.
+  const [wasOpened, setWasOpened] = useState(isOpen);
+  if (isOpen && !wasOpened) setWasOpened(true);
   const { pathname } = useNavigation();
   const wsPaths = useWorkspacePaths();
 
@@ -29,7 +38,11 @@ export function FloatingChat() {
 
   return (
     <>
-      <ChatWindow />
+      {wasOpened && (
+        <Suspense fallback={null}>
+          <ChatWindow />
+        </Suspense>
+      )}
       <ChatFab />
     </>
   );
