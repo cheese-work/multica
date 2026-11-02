@@ -905,3 +905,47 @@ func TestGitHubDispatchHaltBroaderHaltDuringPendingSweep(t *testing.T) {
 		t.Fatalf("halt rows = %d, want 2", n)
 	}
 }
+
+// A halt whose sweep failed is not undone by a restore: the restore retries that sweep first.
+func TestGitHubDispatchHaltRestoreRetriesFailedSweep(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
+	taskID, _ := dispatchIntakeRunForSweep(t, fixture, "-failed-then-restore")
+	cleanHaltTables(t)
+	ctx := context.Background()
+	dbfx.Insert(t, "task_token", testutil.Cols{
+		"token_hash": auth.HashToken("mat_failedrestore_" + taskID), "task_id": taskID, "agent_id": fixture.author,
+		"workspace_id": testWorkspaceID, "user_id": testUserID, "expires_at": time.Now().Add(time.Hour),
+	})
+	dropTrigger := func() {
+		testPool.Exec(ctx, `DROP TRIGGER IF EXISTS test_token_delete_fail ON task_token`)
+		testPool.Exec(ctx, `DROP FUNCTION IF EXISTS test_token_delete_fail()`)
+	}
+	t.Cleanup(dropTrigger)
+	for _, ddl := range []string{
+		`CREATE OR REPLACE FUNCTION test_token_delete_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'token delete refused'; END $$`,
+		`CREATE TRIGGER test_token_delete_fail BEFORE DELETE ON task_token FOR EACH ROW EXECUTE FUNCTION test_token_delete_fail()`,
+	} {
+		if _, err := testPool.Exec(ctx, ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if w := setHalt(t, "*", true, false); w.Code != http.StatusInternalServerError {
+		t.Fatalf("halt with a failing sweep = %d, want 500", w.Code)
+	}
+	if w := setHalt(t, "*", false, false); w.Code == http.StatusOK {
+		t.Fatal("restore right after a failed sweep = 200, want an error")
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM github_dispatch_halt WHERE workspace_id=$1`, testWorkspaceID); n != 1 {
+		t.Fatalf("halt rows after the refused restore = %d, want 1", n)
+	}
+	dropTrigger()
+	if w := setHalt(t, "*", false, false); w.Code != http.StatusOK {
+		t.Fatalf("restore once the sweep can finish = %d: %s", w.Code, w.Body)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM task_token WHERE task_id=$1`, taskID); n != 0 {
+		t.Fatalf("pre-halt token still valid after the restore: %d", n)
+	}
+	if status := taskStatus(t, taskID); status != "cancelled" {
+		t.Fatalf("pre-halt run status = %s, want cancelled", status)
+	}
+}

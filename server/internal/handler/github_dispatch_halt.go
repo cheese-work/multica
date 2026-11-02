@@ -70,8 +70,8 @@ func (h *Handler) listGitHubDispatchHaltAudit(r *http.Request, workspaceID strin
 // a sweep_pending lease until its sweep ends. A restore that finds a live lease
 // is refused (errGitHubDispatchHaltBusy) instead of waiting, so no change holds
 // one connection while needing another; a lease older than ten minutes counts as
-// a crashed sweep, which the restore finishes first and does not proceed
-// without. A failed sweep leaves the halt in force, marks the audit row
+// a crashed sweep, and a failed sweep stays unfinished; the restore reruns both
+// first and does not proceed without. A failed sweep leaves the halt in force, marks the audit row
 // sweep_failed and returns the error with the count revoked so far; repeating
 // the halt retries it.
 func (h *Handler) changeGitHubDispatchHalt(ctx context.Context, audit db.RecordGitHubDispatchHaltAuditParams) (revoked int, sweepErr error, err error) {
@@ -96,8 +96,8 @@ func (h *Handler) changeGitHubDispatchHalt(ctx context.Context, audit db.RecordG
 	return revoked, sweepErr, nil
 }
 
-// finishAbandonedSweeps runs again the sweep of every halt whose lease expired. Its audit row stays
-// pending when the sweep fails, so the restore is refused until a sweep completes.
+// finishAbandonedSweeps runs again the sweep of every halt whose sweep failed or whose lease expired.
+// Its audit row keeps its flags when the rerun fails, so the restore is refused until a sweep completes.
 func (h *Handler) finishAbandonedSweeps(ctx context.Context, workspaceID pgtype.UUID) error {
 	abandoned, err := h.Queries.ListAbandonedGitHubDispatchHaltSweeps(ctx, workspaceID)
 	if err != nil {

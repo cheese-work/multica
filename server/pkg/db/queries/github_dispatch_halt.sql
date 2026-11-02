@@ -70,9 +70,10 @@ SELECT pg_advisory_xact_lock(hashtextextended('github_dispatch_halt:' || sqlc.ar
 SELECT EXISTS (SELECT 1 FROM github_dispatch_halt_audit WHERE workspace_id = $1 AND sweep_pending);
 
 -- name: ListAbandonedGitHubDispatchHaltSweeps :many
--- A sweep still pending after ten minutes is treated as crashed; the next restore finishes it first.
+-- A sweep that failed, or is still pending after ten minutes (a crash), is unfinished: the next
+-- restore runs it again first. A successful rerun clears sweep_failed and sweep_pending.
 SELECT id, scope, created_at FROM github_dispatch_halt_audit
-WHERE workspace_id = $1 AND sweep_pending AND created_at <= now() - interval '10 minutes'
+WHERE workspace_id = $1 AND halted AND (sweep_failed OR (sweep_pending AND created_at <= now() - interval '10 minutes'))
 ORDER BY created_at;
 
 -- name: RecordGitHubDispatchHaltAudit :one

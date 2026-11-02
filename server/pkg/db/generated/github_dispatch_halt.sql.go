@@ -64,7 +64,7 @@ func (q *Queries) HasPendingGitHubDispatchHaltSweep(ctx context.Context, workspa
 
 const listAbandonedGitHubDispatchHaltSweeps = `-- name: ListAbandonedGitHubDispatchHaltSweeps :many
 SELECT id, scope, created_at FROM github_dispatch_halt_audit
-WHERE workspace_id = $1 AND sweep_pending AND created_at <= now() - interval '10 minutes'
+WHERE workspace_id = $1 AND halted AND (sweep_failed OR (sweep_pending AND created_at <= now() - interval '10 minutes'))
 ORDER BY created_at
 `
 
@@ -74,7 +74,8 @@ type ListAbandonedGitHubDispatchHaltSweepsRow struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
-// A sweep still pending after ten minutes is treated as crashed; the next restore finishes it first.
+// A sweep that failed, or is still pending after ten minutes (a crash), is unfinished: the next
+// restore runs it again first. A successful rerun clears sweep_failed and sweep_pending.
 func (q *Queries) ListAbandonedGitHubDispatchHaltSweeps(ctx context.Context, workspaceID pgtype.UUID) ([]ListAbandonedGitHubDispatchHaltSweepsRow, error) {
 	rows, err := q.db.Query(ctx, listAbandonedGitHubDispatchHaltSweeps, workspaceID)
 	if err != nil {
