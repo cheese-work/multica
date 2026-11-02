@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -127,6 +128,10 @@ func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBud
 		return
 	}
 	usage := h.runBudgetUsageNote(ctx, issue)
+	recent := ""
+	if e.Kind == service.RunBudgetKindExhausted {
+		recent = h.runBudgetRecentRunsNote(ctx, issue)
+	}
 	runBudgetBeforeNotice()
 	var content, title string
 	var comment db.Comment
@@ -185,7 +190,7 @@ func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBud
 		}
 		// Worded under the budget lock, so a command in it describes the ledger
 		// this transaction commits against.
-		content, title = runBudgetNoticeText(usage, e, text(ctx, qtx))
+		content, title = runBudgetNoticeText(usage, recent, e, text(ctx, qtx))
 		created, err := qtx.CreateComment(ctx, db.CreateCommentParams{
 			ID: dbid.NewV7(), IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
 			AuthorType: "system", AuthorID: pgtype.UUID{Valid: true}, Content: content, Type: "system",
@@ -286,9 +291,45 @@ func (h *Handler) runBudgetUsageNote(ctx context.Context, issue db.Issue) string
 	return fmt.Sprintf("%d (%d runs have not reported usage)", u.TotalInputTokens+u.TotalOutputTokens, u.UnreportedTaskCount)
 }
 
-// runBudgetNoticeText appends the token figure to the notice text.
-func runBudgetNoticeText(tokens string, e service.RunBudgetEvent, text string) (content, title string) {
-	content = fmt.Sprintf("%s Tokens used so far (input and output): %s.", text, tokens)
+// recentRunsShown is how many finished runs the exhaustion notice lists.
+const recentRunsShown = 3
+
+// recentRunSnippetLen caps one run's result or error in the notice.
+const recentRunSnippetLen = 200
+
+// runBudgetRecentRunsNote lists the issue's newest finished runs with their
+// outcome, so whoever reads the exhaustion notice sees what the budget was spent
+// on without opening the history. Best effort like the token figure: a failed
+// read drops the list, never the notice. It reads on the pool, before the
+// notice's transaction opens.
+func (h *Handler) runBudgetRecentRunsNote(ctx context.Context, issue db.Issue) string {
+	runs, err := h.Queries.ListRecentIssueRunResults(ctx, db.ListRecentIssueRunResultsParams{IssueID: issue.ID, MaxRuns: recentRunsShown})
+	if err != nil {
+		slog.Warn("run budget: recent runs failed", "err", err, "issue_id", uuidToString(issue.ID))
+		return ""
+	}
+	if len(runs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n\nLast %d runs, newest first:", len(runs))
+	for _, run := range runs {
+		detail := strings.TrimSpace(run.Error)
+		if detail == "" {
+			detail = strings.TrimSpace(run.Output)
+		}
+		if detail == "" {
+			detail = "no result recorded"
+		}
+		fmt.Fprintf(&b, "\n- %s, %s: %s", run.AgentName, run.Status, strings.Join(strings.Fields(truncateRunes(detail, recentRunSnippetLen)), " "))
+	}
+	return b.String()
+}
+
+// runBudgetNoticeText appends the token figure and the recent runs to the
+// notice text.
+func runBudgetNoticeText(tokens, recentRuns string, e service.RunBudgetEvent, text string) (content, title string) {
+	content = fmt.Sprintf("%s Tokens used so far (input and output): %s.%s", text, tokens, recentRuns)
 	switch e.Kind {
 	case service.RunBudgetKindWarn80:
 		return content, "Run budget at 80%"
