@@ -69,6 +69,7 @@ type githubHalts struct {
 		ActorID     *string `json:"actor_id"`
 		ActorSource string  `json:"actor_source"`
 		RunsRevoked int     `json:"runs_revoked"`
+		SweepFailed bool    `json:"sweep_failed"`
 		At          string  `json:"at"`
 	} `json:"audit,omitempty"`
 	RunsRevoked int `json:"runs_revoked"`
@@ -142,7 +143,11 @@ func printGitHubHaltAudit(resp githubHalts) {
 		if a.ActorID != nil {
 			by = strings.Split(*a.ActorID, "-")[0] + " (" + a.ActorSource + ")"
 		}
-		rows = append(rows, []string{a.Scope, action, by, fmt.Sprint(a.RunsRevoked), relativeTimestamp(a.At)})
+		revoked := fmt.Sprint(a.RunsRevoked)
+		if a.SweepFailed {
+			revoked += " (sweep failed)"
+		}
+		rows = append(rows, []string{a.Scope, action, by, revoked, relativeTimestamp(a.At)})
 	}
 	fmt.Println()
 	cli.PrintTable(os.Stdout, []string{"AUDIT_SCOPE", "SWITCH", "BY", "RUNS_REVOKED", "WHEN"}, rows)

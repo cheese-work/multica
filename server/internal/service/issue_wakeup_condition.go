@@ -812,6 +812,10 @@ type linkedPR struct {
 // splitHaltedPRs returns the matching PRs outside halted repositories, and the
 // identities of all linked PRs inside them. repos[i] is the repository of prs[i].
 func splitHaltedPRs(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, prs []map[string]any, repos [][2]string, linked []linkedPR) (live []map[string]any, haltedPRs []string, err error) {
+	// Held to the end of the evaluation's transaction: a switch change waits for it, or is seen by it (CHE-2223).
+	if err := q.LockGitHubDispatchHaltShared(ctx, workspaceID); err != nil {
+		return nil, nil, err
+	}
 	halted := map[[2]string]bool{}
 	isHalted := func(repo [2]string) (bool, error) {
 		if h, ok := halted[repo]; ok {

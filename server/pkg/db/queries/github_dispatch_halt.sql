@@ -68,8 +68,8 @@ INSERT INTO github_dispatch_halt_audit (workspace_id, scope, halted, actor_id, a
 VALUES ($1, $2, $3, $4, $5)
 RETURNING id;
 
--- name: SetGitHubDispatchHaltAuditRevoked :exec
-UPDATE github_dispatch_halt_audit SET runs_revoked = $2 WHERE id = $1;
+-- name: SetGitHubDispatchHaltAuditSweep :exec
+UPDATE github_dispatch_halt_audit SET runs_revoked = $2, sweep_failed = $3 WHERE id = $1;
 
 -- name: ListGitHubDispatchHaltAudit :many
 SELECT * FROM github_dispatch_halt_audit WHERE workspace_id = $1 ORDER BY created_at DESC, id DESC LIMIT 20;

@@ -51,7 +51,7 @@ func (q *Queries) HaltGitHubDispatch(ctx context.Context, arg HaltGitHubDispatch
 }
 
 const listGitHubDispatchHaltAudit = `-- name: ListGitHubDispatchHaltAudit :many
-SELECT id, workspace_id, scope, halted, actor_id, actor_source, runs_revoked, created_at FROM github_dispatch_halt_audit WHERE workspace_id = $1 ORDER BY created_at DESC, id DESC LIMIT 20
+SELECT id, workspace_id, scope, halted, actor_id, actor_source, runs_revoked, sweep_failed, created_at FROM github_dispatch_halt_audit WHERE workspace_id = $1 ORDER BY created_at DESC, id DESC LIMIT 20
 `
 
 func (q *Queries) ListGitHubDispatchHaltAudit(ctx context.Context, workspaceID pgtype.UUID) ([]GithubDispatchHaltAudit, error) {
@@ -71,6 +71,7 @@ func (q *Queries) ListGitHubDispatchHaltAudit(ctx context.Context, workspaceID p
 			&i.ActorID,
 			&i.ActorSource,
 			&i.RunsRevoked,
+			&i.SweepFailed,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -258,16 +259,17 @@ func (q *Queries) ResumeGitHubDispatch(ctx context.Context, arg ResumeGitHubDisp
 	return result.RowsAffected(), nil
 }
 
-const setGitHubDispatchHaltAuditRevoked = `-- name: SetGitHubDispatchHaltAuditRevoked :exec
-UPDATE github_dispatch_halt_audit SET runs_revoked = $2 WHERE id = $1
+const setGitHubDispatchHaltAuditSweep = `-- name: SetGitHubDispatchHaltAuditSweep :exec
+UPDATE github_dispatch_halt_audit SET runs_revoked = $2, sweep_failed = $3 WHERE id = $1
 `
 
-type SetGitHubDispatchHaltAuditRevokedParams struct {
+type SetGitHubDispatchHaltAuditSweepParams struct {
 	ID          pgtype.UUID `json:"id"`
 	RunsRevoked int32       `json:"runs_revoked"`
+	SweepFailed bool        `json:"sweep_failed"`
 }
 
-func (q *Queries) SetGitHubDispatchHaltAuditRevoked(ctx context.Context, arg SetGitHubDispatchHaltAuditRevokedParams) error {
-	_, err := q.db.Exec(ctx, setGitHubDispatchHaltAuditRevoked, arg.ID, arg.RunsRevoked)
+func (q *Queries) SetGitHubDispatchHaltAuditSweep(ctx context.Context, arg SetGitHubDispatchHaltAuditSweepParams) error {
+	_, err := q.db.Exec(ctx, setGitHubDispatchHaltAuditSweep, arg.ID, arg.RunsRevoked, arg.SweepFailed)
 	return err
 }

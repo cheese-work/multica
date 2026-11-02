@@ -1115,6 +1115,7 @@ type GithubDispatchHaltAudit struct {
 	ActorID     pgtype.UUID        `json:"actor_id"`
 	ActorSource string             `json:"actor_source"`
 	RunsRevoked int32              `json:"runs_revoked"`
+	SweepFailed bool               `json:"sweep_failed"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -22,6 +23,7 @@ type githubDispatchHaltAuditResponse struct {
 	ActorID     *string `json:"actor_id"`
 	ActorSource string  `json:"actor_source"`
 	RunsRevoked int32   `json:"runs_revoked"`
+	SweepFailed bool    `json:"sweep_failed"`
 	At          string  `json:"at"`
 }
 
@@ -52,48 +54,83 @@ func (h *Handler) listGitHubDispatchHaltAudit(r *http.Request, workspaceID strin
 	for _, row := range rows {
 		out = append(out, githubDispatchHaltAuditResponse{
 			Scope: row.Scope, Halted: row.Halted, ActorID: uuidToPtr(row.ActorID), ActorSource: row.ActorSource,
-			RunsRevoked: row.RunsRevoked, At: timestampToString(row.CreatedAt),
+			RunsRevoked: row.RunsRevoked, SweepFailed: row.SweepFailed, At: timestampToString(row.CreatedAt),
 		})
 	}
 	return out, nil
 }
 
-// changeGitHubDispatchHalt commits the switch row, its audit row and, when
-// halting, the sweep of live runs under the lock every intake dispatch holds
-// shared. A restore therefore waits for the sweep of the halt before it, and no
-// dispatch straddles the change. A failed sweep still commits the halt: the
-// returned error says the sweep is incomplete, with the count revoked so far.
+// changeGitHubDispatchHalt activates or lifts the switch in two steps. First
+// the switch row and its audit row commit alone, under the exclusive lock every
+// external admission path holds shared: from that commit on, every admission
+// sees the halt, and a crash or a failing sweep cannot take it back. Then,
+// when halting, a second transaction retakes the lock and sweeps the runs
+// started before the commit, so a restore waits for the sweep of the halt
+// before it. A failed sweep leaves the halt in force, marks the audit row
+// sweep_failed and returns the error with the count revoked so far.
 func (h *Handler) changeGitHubDispatchHalt(ctx context.Context, audit db.RecordGitHubDispatchHaltAuditParams) (revoked int, sweepErr error, err error) {
-	tx, err := h.TxStarter.Begin(ctx)
+	auditID, err := h.commitGitHubDispatchHalt(ctx, audit)
 	if err != nil {
 		return 0, nil, err
+	}
+	if !audit.Halted {
+		return 0, nil, nil
+	}
+	// The change is committed: finish the sweep even if the caller hangs up.
+	ctx = context.WithoutCancel(ctx)
+	revoked, sweepErr = h.sweepUnderHaltLock(ctx, audit)
+	if err := h.Queries.SetGitHubDispatchHaltAuditSweep(ctx, db.SetGitHubDispatchHaltAuditSweepParams{ID: auditID, RunsRevoked: int32(revoked), SweepFailed: sweepErr != nil}); err != nil {
+		slog.Error("github dispatch halt: audit sweep result not saved", "audit_id", uuidToString(auditID), "err", err)
+	}
+	return revoked, sweepErr, nil
+}
+
+func (h *Handler) commitGitHubDispatchHalt(ctx context.Context, audit db.RecordGitHubDispatchHaltAuditParams) (pgtype.UUID, error) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return pgtype.UUID{}, err
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx))
 	q := h.Queries.WithTx(tx)
 	if err := q.LockGitHubDispatchHaltExclusive(ctx, audit.WorkspaceID); err != nil {
-		return 0, nil, err
+		return pgtype.UUID{}, err
 	}
-	// Past the lock the change must finish even if the caller hangs up.
-	ctx = context.WithoutCancel(ctx)
 	if audit.Halted {
 		err = q.HaltGitHubDispatch(ctx, db.HaltGitHubDispatchParams{WorkspaceID: audit.WorkspaceID, Scope: audit.Scope, HaltedBy: audit.ActorID})
 	} else {
 		_, err = q.ResumeGitHubDispatch(ctx, db.ResumeGitHubDispatchParams{WorkspaceID: audit.WorkspaceID, Scope: audit.Scope})
 	}
 	if err != nil {
-		return 0, nil, err
+		return pgtype.UUID{}, err
 	}
-	auditID, err := q.RecordGitHubDispatchHaltAudit(ctx, audit)
+	id, err := q.RecordGitHubDispatchHaltAudit(ctx, audit)
 	if err != nil {
-		return 0, nil, err
+		return pgtype.UUID{}, err
 	}
-	if audit.Halted {
-		revoked, sweepErr = h.sweepGitHubTriggeredRuns(ctx, q, audit.WorkspaceID, audit.Scope)
-		if err := q.SetGitHubDispatchHaltAuditRevoked(ctx, db.SetGitHubDispatchHaltAuditRevokedParams{ID: auditID, RunsRevoked: int32(revoked)}); err != nil {
-			return 0, nil, err
-		}
+	return id, tx.Commit(ctx)
+}
+
+// sweepUnderHaltLock holds the exclusive lock for the whole sweep. The sweep
+// itself uses the pool, so a failing statement cannot abort the lock's
+// transaction. A restore that landed between the two steps lifted the halt: the
+// operator asked for normal behavior, so nothing is swept.
+func (h *Handler) sweepUnderHaltLock(ctx context.Context, audit db.RecordGitHubDispatchHaltAuditParams) (int, error) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return 0, err
 	}
-	return revoked, sweepErr, tx.Commit(ctx)
+	defer tx.Rollback(ctx)
+	if err := h.Queries.WithTx(tx).LockGitHubDispatchHaltExclusive(ctx, audit.WorkspaceID); err != nil {
+		return 0, err
+	}
+	halts, err := h.Queries.ListGitHubDispatchHalts(ctx, audit.WorkspaceID)
+	if err != nil {
+		return 0, err
+	}
+	if !slices.ContainsFunc(halts, func(row db.GithubDispatchHalt) bool { return row.Scope == audit.Scope }) {
+		return 0, nil
+	}
+	return h.sweepGitHubTriggeredRuns(ctx, h.Queries, audit.WorkspaceID, audit.Scope)
 }
 
 // sweepGitHubTriggeredRuns cancels the live GitHub-triggered runs in a scope and deletes their tokens.
@@ -160,8 +197,6 @@ func (h *Handler) SetGitHubDispatchHalt(w http.ResponseWriter, r *http.Request) 
 	if isMachineCredentialActor(r) {
 		actorSource = r.Header.Get("X-Actor-Source")
 	}
-	// The switch row, its audit row and the sweep commit together, under the
-	// lock every intake dispatch holds shared.
 	revoked, sweepErr, err := h.changeGitHubDispatchHalt(ctx, db.RecordGitHubDispatchHaltAuditParams{
 		WorkspaceID: workspaceID, Scope: scope, Halted: *req.Halted, ActorID: userID, ActorSource: actorSource,
 	})

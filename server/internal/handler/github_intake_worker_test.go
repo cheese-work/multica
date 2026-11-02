@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/auth"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -536,5 +537,127 @@ func TestGitHubDispatchHaltRestoreWaitsForSweep(t *testing.T) {
 	}
 	if n := dbfx.Count(t, `SELECT count(*) FROM github_dispatch_halt WHERE workspace_id=$1`, testWorkspaceID); n != 0 {
 		t.Fatalf("halts after restore = %d, want 0", n)
+	}
+}
+
+func cleanHaltTables(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	clean := func() {
+		testPool.Exec(ctx, `DELETE FROM github_dispatch_halt WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_dispatch_halt_audit WHERE workspace_id = $1`, testWorkspaceID)
+	}
+	clean()
+	t.Cleanup(clean)
+}
+
+// A failing sweep must not take the halt or its audit row with it.
+func TestGitHubDispatchHaltSurvivesSweepFailure(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
+	taskID, _ := dispatchIntakeRunForSweep(t, fixture, "-sweep-fails")
+	cleanHaltTables(t)
+	ctx := context.Background()
+	dbfx.Insert(t, "task_token", testutil.Cols{
+		"token_hash": auth.HashToken("mat_sweepfail_" + taskID), "task_id": taskID, "agent_id": fixture.author,
+		"workspace_id": testWorkspaceID, "user_id": testUserID, "expires_at": time.Now().Add(time.Hour),
+	})
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DROP TRIGGER IF EXISTS test_token_delete_fail ON task_token`)
+		testPool.Exec(ctx, `DROP FUNCTION IF EXISTS test_token_delete_fail()`)
+	})
+	for _, ddl := range []string{
+		`CREATE OR REPLACE FUNCTION test_token_delete_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'token delete refused'; END $$`,
+		`CREATE TRIGGER test_token_delete_fail BEFORE DELETE ON task_token FOR EACH ROW EXECUTE FUNCTION test_token_delete_fail()`,
+	} {
+		if _, err := testPool.Exec(ctx, ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if w := setHalt(t, "*", true, false); w.Code != http.StatusInternalServerError {
+		t.Fatalf("status with a failing sweep = %d, want 500", w.Code)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM github_dispatch_halt WHERE workspace_id=$1 AND scope='*'`, testWorkspaceID); n != 1 {
+		t.Fatalf("halt rows after a failed sweep = %d, want 1", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM github_dispatch_halt_audit WHERE workspace_id=$1 AND halted AND sweep_failed`, testWorkspaceID); n != 1 {
+		t.Fatalf("audit rows marked sweep_failed = %d, want 1", n)
+	}
+}
+
+// The halt is durable and visible before the sweep finishes, so a crash during the sweep keeps it.
+func TestGitHubDispatchHaltIsCommittedBeforeSweep(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
+	taskID, _ := dispatchIntakeRunForSweep(t, fixture, "-halt-before-sweep")
+	cleanHaltTables(t)
+	ctx := context.Background()
+	hold, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hold.Rollback(ctx)
+	if _, err := hold.Exec(ctx, `SELECT 1 FROM agent_task_queue WHERE id=$1 FOR UPDATE`, taskID); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan int, 1)
+	go func() { done <- setHalt(t, "*", true, false).Code }()
+	deadline := time.Now().Add(3 * time.Second)
+	for dbfx.Count(t, `SELECT count(*) FROM github_dispatch_halt WHERE workspace_id=$1`, testWorkspaceID) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("halt not visible to other connections while the sweep is running")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	select {
+	case code := <-done:
+		t.Fatalf("halt finished (%d) while the sweep was blocked", code)
+	default:
+	}
+	if err := hold.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if code := <-done; code != http.StatusOK {
+		t.Fatalf("halt status = %d", code)
+	}
+}
+
+// An external wakeup in flight while a switch change is activating waits for it, then sees the halt.
+func TestGitHubDispatchHaltWakeupWaitsForActivation(t *testing.T) {
+	fx := newPRMergeWebhookFixture(t, 222011)
+	agent := createHandlerTestAgent(t, "CHE-2223 activation agent", nil)
+	setIssueAssigneeDirect(t, fx.child.ID, "agent", agent)
+	cleanHaltTables(t)
+	ctx := context.Background()
+	activation, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer activation.Rollback(ctx)
+	if _, err := activation.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('github_dispatch_halt:' || $1::text, 0))`, testWorkspaceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := activation.Exec(ctx, `INSERT INTO github_dispatch_halt (workspace_id, scope) VALUES ($1, '*')`, testWorkspaceID); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		wakeup := service.IssueWakeupService{Tasks: testHandler.TaskService}
+		done <- wakeup.TriggerPullRequestWakeup(ctx, parseUUID(fx.child.ID), service.PullRequestWakeupInput{
+			Rule: service.SystemRulePRMerged, RepoOwner: "acme", RepoName: "widget", Number: 7,
+			URL: "https://github.com/acme/widget/pull/7", MergeCommit: "activation-test",
+		})
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("wakeup finished (%v) while a switch change was activating", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+	if err := activation.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if got := mergedReceipts(t, fx.child.ID); got != 0 {
+		t.Fatalf("wakeup admitted across the activation: receipts = %d, want 0", got)
 	}
 }
