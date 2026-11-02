@@ -1592,6 +1592,16 @@ export const SourceContextSnapshotSchema = z.lazy(() => z.object({
   anchor_comment_id: z.string(),
 }).loose());
 
+export const CommentPreviewSchema = z.lazy(() => z.object({
+  comment_id: z.string(),
+  issue_id: z.string(),
+  issue_identifier: z.string(),
+  author_type: z.string().catch(""),
+  author_id: z.string().catch(""),
+  author_name: z.string().catch(""),
+  preview: z.string().catch(""),
+}).loose());
+
 export const SourceContextPreviewSchema = z.lazy(() => SourceContextSnapshotSchema.unwrap().extend({
   capture_token: z.string().min(1),
   limits: z.object({
