@@ -32,6 +32,7 @@ import { supersessionRevisions } from "@multica/core/issues/supersession";
 import { useLastViewedStore } from "@/data/stores/last-viewed-store";
 import { coalesceTimeline } from "@/lib/timeline-coalesce";
 import { buildTimelineRows, type TimelineRow } from "@/lib/timeline-thread";
+import { scrollRowIntoView } from "@/lib/scroll-to-row";
 import { ImageSequenceProvider } from "@/lib/markdown/image-sequence";
 import { issueAttachmentsOptions } from "@/data/queries/issues";
 import { useWorkspaceStore } from "@/data/workspace-store";
@@ -224,6 +225,7 @@ export function TimelineList({
     return [...data.slice(0, anchorIdx), divider, ...data.slice(anchorIdx)];
   }, [data, dividerAnchorId]);
 
+  const jumpToken = useRef(0);
   // Scroll to the row that holds a comment: its own row for a root, the
   // parent's row for a reply (replies render inline inside their root's card).
   const jumpToComment = useCallback(
@@ -233,7 +235,14 @@ export function TimelineList({
           row.entry.id === commentId ||
           row.replies.some((reply) => reply.id === commentId),
       );
-      if (index >= 0) listRef.current?.scrollToIndex({ index, animated: true });
+      const list = listRef.current;
+      if (index < 0 || !list) return;
+      // A newer jump or unmount supersedes this one, so it stops re-scrolling.
+      jumpToken.current += 1;
+      const token = jumpToken.current;
+      void scrollRowIntoView(list, index, {
+        isCancelled: () => jumpToken.current !== token,
+      });
     },
     [dataWithDivider],
   );
@@ -264,7 +273,11 @@ export function TimelineList({
   }, [highlightCommentId, highlightNonce, data.length]);
   useEffect(() => {
     const timers = timersRef;
-    return () => timers.current.forEach(clearTimeout);
+    const token = jumpToken;
+    return () => {
+      timers.current.forEach(clearTimeout);
+      token.current += 1;
+    };
   }, []);
 
   // Mark "scrolled past" once the divider row leaves the viewport — used

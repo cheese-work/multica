@@ -1,0 +1,61 @@
+import { describe, expect, it } from "vitest";
+import { scrollRowIntoView, type RowScroller } from "./scroll-to-row";
+
+/** Fake list whose first `shortBy` scrolls land `drift` rows short of the target,
+ *  like FlashList landing on estimated offsets before rows above are measured. */
+function fakeList(opts: { shortBy: number; drift?: number; viewport?: number }) {
+  const { shortBy, drift = 20, viewport = 5 } = opts;
+  let top = 100;
+  let calls = 0;
+  const animatedFlags: boolean[] = [];
+  const list: RowScroller = {
+    async scrollToIndex({ index, animated }) {
+      animatedFlags.push(animated);
+      calls += 1;
+      top = calls <= shortBy ? index + drift : index;
+    },
+    computeVisibleIndices: () => ({ startIndex: top, endIndex: top + viewport - 1 }),
+  };
+  return { list, calls: () => calls, animatedFlags };
+}
+
+describe("scrollRowIntoView", () => {
+  it("returns true after one scroll when the row is already visible", async () => {
+    const f = fakeList({ shortBy: 0 });
+    expect(await scrollRowIntoView(f.list, 0)).toBe(true);
+    expect(f.calls()).toBe(1);
+  });
+
+  it("scrolls again when the first scroll lands short of the row", async () => {
+    const f = fakeList({ shortBy: 1 });
+    expect(await scrollRowIntoView(f.list, 0)).toBe(true);
+    expect(f.calls()).toBe(2);
+    expect(f.list.computeVisibleIndices().startIndex).toBe(0);
+  });
+
+  it("retries without animation after the first animated attempt", async () => {
+    const f = fakeList({ shortBy: 2 });
+    await scrollRowIntoView(f.list, 0);
+    expect(f.animatedFlags).toEqual([true, false, false]);
+  });
+
+  it("gives up and reports false after the attempt cap", async () => {
+    const f = fakeList({ shortBy: 99 });
+    expect(await scrollRowIntoView(f.list, 0)).toBe(false);
+    expect(f.calls()).toBe(4);
+  });
+
+  it("stops retrying once cancelled", async () => {
+    const f = fakeList({ shortBy: 99 });
+    let cancelled = false;
+    const list: RowScroller = {
+      ...f.list,
+      async scrollToIndex(p) {
+        await f.list.scrollToIndex(p);
+        cancelled = true;
+      },
+    };
+    expect(await scrollRowIntoView(list, 0, { isCancelled: () => cancelled })).toBe(false);
+    expect(f.calls()).toBe(1);
+  });
+});
