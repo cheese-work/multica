@@ -116,14 +116,14 @@ type Manager struct {
 // snapshot was actually written (guard passed), so the handler can broadcast a
 // realtime PR update. Passing a nil client yields a disabled (no-op) manager.
 func NewManager(client *Client, queries *db.Queries, pool TxBeginner, onApplied func(ctx context.Context, prID pgtype.UUID)) *Manager {
-	return newManager(client, queries, pool, FetchPRSnapshot, onApplied)
+	return newManager(client, queries, pool, fetchEnrichedSnapshot, onApplied)
 }
 
 // NewManagerWithFetcher wires the normal refresh lifecycle with a supplied
 // snapshot fetcher. Production callers should normally use NewManager.
 func NewManagerWithFetcher(client *Client, queries *db.Queries, pool TxBeginner, fetch func(context.Context, *Client, int64, string, string, int32) (*PRSnapshot, error), onApplied func(ctx context.Context, prID pgtype.UUID)) *Manager {
 	if fetch == nil {
-		fetch = FetchPRSnapshot
+		fetch = fetchEnrichedSnapshot
 	}
 	return newManager(client, queries, pool, fetch, onApplied)
 }
@@ -518,6 +518,8 @@ func (manager *Manager) applySnapshot(ctx context.Context, prID pgtype.UUID, sna
 			Conclusion:      textOrNull(c.Conclusion),
 			DetailsUrl:      textOrNull(c.DetailsURL),
 			IsStatusContext: c.IsStatusContext,
+			Required:        c.Required,
+			RedOnBase:       c.RedOnBase,
 		}); err != nil {
 			return false, err
 		}

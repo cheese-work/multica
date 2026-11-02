@@ -24,6 +24,11 @@ type CheckContext struct {
 	Conclusion      string
 	DetailsURL      string
 	IsStatusContext bool
+	// Required: the base branch's rules require this check. RedOnBase: the same
+	// check is failing on the base branch tip, so a red here is not the PR's
+	// doing. Both are set by EnrichChecks (CHE-3257).
+	Required  bool
+	RedOnBase bool
 }
 
 // PRSnapshot is the atomic unit written per fetch. It mirrors exactly what the

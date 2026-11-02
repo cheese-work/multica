@@ -411,3 +411,53 @@ func TestWorkflowRunRulesPersistAndPreserve(t *testing.T) {
 	req := withURLParam(workflowRequest("PUT", "/api/issue-workflows/"+wf.ID, map[string]any{"max_runs_per_issue": 1001}), "id", wf.ID)
 	testutil.Call(t, testHandler.UpdateIssueWorkflow, req).Want(http.StatusBadRequest)
 }
+
+// CHE-3257: in_review sends a PR-caused required red back to in_progress, parks
+// an infra red (also red on the base tip) in blocked, and ignores a red on
+// non-required checks.
+func TestEdgesChecksRedSplitsPRCausedFromInfra(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	cases := []struct {
+		name  string
+		runs  [][3]any // name, required, red_on_base
+		want  string
+		prNum int32
+	}{
+		{"required red the PR caused", [][3]any{{"backend-tests", true, false}}, "in_progress", 325701},
+		{"required red also red on base", [][3]any{{"backend-tests", true, true}}, "blocked", 325702},
+		{"only a non-required check is red", [][3]any{{"docs-preview", false, false}}, "in_review", 325703},
+		{"one PR-caused red among infra reds", [][3]any{{"backend-tests", true, true}, {"lint", true, false}}, "in_progress", 325704},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			installationID := int64(3257000 + tc.prNum)
+			c := newEdgeCase(t, installationID, []map[string]any{
+				{"status_key": "in_progress"},
+				{"status_key": "in_review", "edges": []map[string]any{
+					{"to": "in_progress", "guard": "pr.checks_red", "timeout": "72h", "on_timeout": "blocked"},
+					{"to": "blocked", "guard": "pr.checks_infra_red", "timeout": "72h", "on_timeout": "blocked"},
+				}},
+				{"status_key": "blocked"},
+			})
+			linkedPRForWakeup(t, c.fx, installationID, tc.prNum, "edge-r")
+			ctx := context.Background()
+			if _, err := testPool.Exec(ctx, `UPDATE github_pull_request SET checks_rollup_state='FAILURE', snapshot_head_sha=head_sha WHERE workspace_id=$1 AND pr_number=$2`, testWorkspaceID, tc.prNum); err != nil {
+				t.Fatal(err)
+			}
+			for i, r := range tc.runs {
+				if _, err := testPool.Exec(ctx, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion, required, red_on_base)
+					SELECT id, head_sha, $3, $4, 'completed', 'failure', $5, $6 FROM github_pull_request WHERE workspace_id=$1 AND pr_number=$2`,
+					testWorkspaceID, tc.prNum, i, r[0], r[1], r[2]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			c.enter(t, "in_review")
+			tickEdges(t)
+			if got := c.status(t); got != tc.want {
+				t.Fatalf("issue is %s, want %s", got, tc.want)
+			}
+		})
+	}
+}

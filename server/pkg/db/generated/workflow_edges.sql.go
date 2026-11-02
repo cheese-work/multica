@@ -95,12 +95,16 @@ SELECT pr.state::text AS state,
        (pr.snapshot_head_sha <> '' AND pr.snapshot_head_sha = pr.head_sha)::boolean AS head_fresh,
        pr.snapshot_head_sha::text AS head_sha,
        pr.head_sha::text AS pr_head_sha,
-       (CASE WHEN pr.review_head_sha = pr.head_sha THEN pr.review_state ELSE '' END)::text AS review
+       (CASE WHEN pr.review_head_sha = pr.head_sha THEN pr.review_state ELSE '' END)::text AS review,
+       (EXISTS (SELECT 1 FROM github_pull_request_check_run c WHERE c.pr_id = pr.id AND c.head_sha = pr.snapshot_head_sha AND c.required AND c.status = 'completed' AND c.conclusion IN ('failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure', 'stale', 'error'))
+        AND NOT EXISTS (SELECT 1 FROM github_pull_request_check_run c WHERE c.pr_id = pr.id AND c.head_sha = pr.snapshot_head_sha AND c.required AND NOT c.red_on_base AND c.status = 'completed' AND c.conclusion IN ('failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure', 'stale', 'error')))::boolean AS infra_red,
+       (EXISTS (SELECT 1 FROM github_pull_request_check_run c WHERE c.pr_id = pr.id AND c.head_sha = pr.snapshot_head_sha AND c.status = 'completed' AND c.conclusion IN ('failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure', 'stale', 'error'))
+        AND NOT EXISTS (SELECT 1 FROM github_pull_request_check_run c WHERE c.pr_id = pr.id AND c.head_sha = pr.snapshot_head_sha AND c.required AND c.status = 'completed' AND c.conclusion IN ('failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure', 'stale', 'error')))::boolean AS optional_red_only
 FROM github_pull_request pr
 JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
 WHERE ipr.issue_id = ANY($1::uuid[])
 UNION ALL
-SELECT pr.state::text, ''::text, false, ''::text, ''::text, ''::text
+SELECT pr.state::text, ''::text, false, ''::text, ''::text, ''::text, false, false
 FROM vcs_pull_request pr
 JOIN issue_vcs_pull_request ipr ON ipr.pull_request_id = pr.id
 WHERE ipr.issue_id = ANY($1::uuid[])
@@ -113,6 +117,8 @@ type ListEdgePullRequestsRow struct {
 	HeadSha           string `json:"head_sha"`
 	PrHeadSha         string `json:"pr_head_sha"`
 	Review            string `json:"review"`
+	InfraRed          bool   `json:"infra_red"`
+	OptionalRedOnly   bool   `json:"optional_red_only"`
 }
 
 // Every PR linked to the given issues, GitHub and self-hosted, as the facts
@@ -120,7 +126,9 @@ type ListEdgePullRequestsRow struct {
 // the snapshot belongs to the PR's newest head; review is the latest human
 // review decision, and counts only while it is on the PR's current head.
 // pr_head_sha is the PR's own newest head, which a checks snapshot may not have
-// caught up with.
+// caught up with. infra_red: a required check is failing and every failing
+// required check also fails on the base tip. optional_red_only: checks are
+// failing and none of them is required (CHE-3257).
 func (q *Queries) ListEdgePullRequests(ctx context.Context, issueIds []pgtype.UUID) ([]ListEdgePullRequestsRow, error) {
 	rows, err := q.db.Query(ctx, listEdgePullRequests, issueIds)
 	if err != nil {
@@ -137,6 +145,8 @@ func (q *Queries) ListEdgePullRequests(ctx context.Context, issueIds []pgtype.UU
 			&i.HeadSha,
 			&i.PrHeadSha,
 			&i.Review,
+			&i.InfraRed,
+			&i.OptionalRedOnly,
 		); err != nil {
 			return nil, err
 		}

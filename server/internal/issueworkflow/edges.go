@@ -25,6 +25,7 @@ const (
 	GuardAgentVerdict     = "agent_verdict"
 	GuardPRChecksGreen    = "pr.checks_green"
 	GuardPRChecksRed      = "pr.checks_red"
+	GuardPRChecksInfraRed = "pr.checks_infra_red"
 	GuardPRReady          = "pr.ready"
 	GuardPRMerged         = "pr.merged"
 	GuardPRClosedUnmerged = "pr.closed_unmerged"
@@ -51,7 +52,7 @@ type Guard struct {
 }
 
 var guardArity = map[string]int{
-	GuardAgentDone: 0, GuardAgentVerdict: 1, GuardPRChecksGreen: 0, GuardPRChecksRed: 0, GuardPRReady: 0,
+	GuardAgentDone: 0, GuardAgentVerdict: 1, GuardPRChecksGreen: 0, GuardPRChecksRed: 0, GuardPRChecksInfraRed: 0, GuardPRReady: 0,
 	GuardPRMerged: 0, GuardPRClosedUnmerged: 0, GuardPRReviewChanges: 0, GuardPRReviewApproved: 0, GuardChildrenDone: 0, GuardIssueStatus: 2,
 	GuardWebhook: 1,
 }
@@ -192,6 +193,11 @@ type PRFact struct {
 	// Review is the latest human review decision on the PR's current head:
 	// approved, changes_requested, or empty.
 	Review string
+	// InfraRed: the checks are red, and every red required check is also red on
+	// the base branch, so the PR did not cause it (CHE-3257).
+	InfraRed bool
+	// OptionalRedOnly: the checks are red, and no red check is required.
+	OptionalRedOnly bool
 }
 
 // Facts are the stored facts guards are checked against. PRs cover the issue
@@ -223,9 +229,9 @@ func (f Facts) holds(g Guard) bool {
 	case GuardPRChecksGreen:
 		return f.anyPR(func(p PRFact) bool { return p.open() && p.HeadFresh && p.ChecksRollup == "SUCCESS" })
 	case GuardPRChecksRed:
-		return f.anyPR(func(p PRFact) bool {
-			return p.open() && p.HeadFresh && (p.ChecksRollup == "FAILURE" || p.ChecksRollup == "ERROR")
-		})
+		return f.anyPR(func(p PRFact) bool { return p.red() && !p.InfraRed && !p.OptionalRedOnly })
+	case GuardPRChecksInfraRed:
+		return f.anyPR(func(p PRFact) bool { return p.red() && p.InfraRed })
 	case GuardPRReady:
 		return f.anyPR(func(p PRFact) bool { return p.State == "open" })
 	case GuardPRMerged:
@@ -246,6 +252,11 @@ func (f Facts) holds(g Guard) bool {
 		return f.Webhooks[g.Args[0]]
 	}
 	return false
+}
+
+// red: the newest head's checks failed.
+func (p PRFact) red() bool {
+	return p.open() && p.HeadFresh && (p.ChecksRollup == "FAILURE" || p.ChecksRollup == "ERROR")
 }
 
 func (p PRFact) open() bool { return p.State == "open" || p.State == "draft" }

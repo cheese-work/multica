@@ -877,8 +877,12 @@ func TestRESTSnapshotRefreshStoresResultsAndPreservesThemOnPermissionFailure(t *
 				conclusion = "failure"
 			}
 			_, _ = fmt.Fprintf(w, `{"total_count":1,"check_runs":[{"id":1,"head_sha":"sha1","name":"ci","status":"completed","conclusion":%q}]}`, conclusion)
-		case "/repos/o/r/commits/sha1/status":
+		case "/repos/o/r/commits/sha1/status", "/repos/o/r/commits/base-tip/status":
 			_, _ = w.Write([]byte(`{"total_count":0,"statuses":[]}`))
+		case "/repos/o/r/rules/branches/release/1.x":
+			_, _ = w.Write([]byte(`[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"ci"}]}}]`))
+		case "/repos/o/r/commits/base-tip/check-runs":
+			_, _ = w.Write([]byte(`{"total_count":1,"check_runs":[{"id":9,"head_sha":"base-tip","name":"ci","status":"completed","conclusion":"failure"}]}`))
 		default:
 			t.Errorf("unexpected request: %s", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -898,6 +902,15 @@ func TestRESTSnapshotRefreshStoresResultsAndPreservesThemOnPermissionFailure(t *
 		}
 		if got.SnapshotHeadSha != "sha1" || !got.SnapshotFetchedAt.Valid || got.ChecksRollupState.String != want || checkRunCount(t, pool, pr.ID) != 1 {
 			t.Fatalf("phase %d: stored snapshot=%+v, want %s", i, got, want)
+		}
+		if want == "FAILURE" {
+			var required, redOnBase bool
+			if err := pool.QueryRow(ctx, `SELECT required, red_on_base FROM github_pull_request_check_run WHERE pr_id=$1`, pr.ID).Scan(&required, &redOnBase); err != nil {
+				t.Fatal(err)
+			}
+			if !required || !redOnBase {
+				t.Fatalf("phase %d: stored required=%v red_on_base=%v, want true true (CHE-3257)", i, required, redOnBase)
+			}
 		}
 	}
 	if applied != 2 || len(m.rateUntil) != 0 {

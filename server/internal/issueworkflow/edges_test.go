@@ -388,3 +388,36 @@ func TestSubWorkflowSurvivesStorage(t *testing.T) {
 		t.Fatalf("stored and read back %+v, want %+v", out, in[0].SubWorkflow)
 	}
 }
+
+// CHE-3257: pr.checks_red fires only for a red the PR caused on a required
+// check; a required red that is also red on the base is infra and fires
+// pr.checks_infra_red; a red on non-required checks only fires neither.
+func TestChecksRedSplitsPRCausedFromInfraAndOptional(t *testing.T) {
+	red := PRFact{State: "open", ChecksRollup: "FAILURE", HeadFresh: true}
+	infra, optional := red, red
+	infra.InfraRed = true
+	optional.OptionalRedOnly = true
+	edges := []Edge{
+		{To: "in_progress", Guard: "pr.checks_red"},
+		{To: "blocked", Guard: "pr.checks_infra_red"},
+	}
+	cases := []struct {
+		name string
+		pr   PRFact
+		want string
+	}{
+		{"PR-caused required red", red, "in_progress"},
+		{"required red also red on base", infra, "blocked"},
+		{"red on non-required checks only", optional, ""},
+		{"stale head ignored", PRFact{State: "open", ChecksRollup: "FAILURE", InfraRed: true}, ""},
+	}
+	for _, c := range cases {
+		got, ok := FirstMatch(edges, Facts{PRs: []PRFact{c.pr}})
+		if c.want == "" && ok || c.want != "" && got.To != c.want {
+			t.Errorf("%s: got %+v ok=%v, want %q", c.name, got, ok, c.want)
+		}
+	}
+	if g, err := ParseGuard("pr.checks_infra_red"); err != nil || !g.needsTimeout() {
+		t.Errorf("pr.checks_infra_red must parse and need a timeout: %v", err)
+	}
+}
