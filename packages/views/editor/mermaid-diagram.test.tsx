@@ -393,7 +393,7 @@ describe("MermaidDiagram rendering config", () => {
 
 describe("MermaidDiagram inline presentation", () => {
   it("renders the diagram in an empty sandbox, fitted to the column", async () => {
-    stubColumnWidth(800);
+    stubColumnWidth(950);
     render(<MermaidDiagram chart={CHART} />);
 
     expect(screen.getByLabelText("Mermaid diagram")).toBeInTheDocument();
@@ -401,13 +401,14 @@ describe("MermaidDiagram inline presentation", () => {
     const frame = await findFrame();
 
     expect(frame.getAttribute("sandbox")).toBe("");
-    // 1000x500 in an 800px column: the whole diagram, at 80%.
-    expect(frame.style.width).toBe("800px");
-    expect(frame.style.height).toBe("400px");
+    // 1000x500 in a 950px column: the width fits at 95%, but the 448px height
+    // cap would take it to 90%, below the 14/15 text floor, so it stops there.
+    expect(frame.style.width).toBe("933px");
+    expect(frame.style.height).toBe("466px");
     expect(frame.title).toBe("Mermaid diagram");
     // The SVG fills the iframe, so resizing the iframe is what zooms it.
     expect(frame.srcdoc).toContain("width: 100%; height: 100%; max-width: none !important");
-    expect(screen.getByText("80%")).toBeInTheDocument();
+    expect(screen.getByText("93%")).toBeInTheDocument();
   });
 
   it("keeps a tall diagram's text at body size and scrolls it inside the height cap", async () => {
@@ -429,6 +430,20 @@ describe("MermaidDiagram inline presentation", () => {
     expect(scroller.style.maxHeight).toBe("448px");
   });
 
+  it("keeps a wide diagram's text at body size in a narrow column and scrolls it sideways", async () => {
+    // Author direction: nothing restacks the chart, so the width is what it is.
+    orientationSetting.value = "author";
+    stubColumnWidth(350);
+    render(<MermaidDiagram chart={CHART} />);
+
+    const frame = await findFrame();
+
+    // 1000px wide in a 350px column would fit at 35%: 15px labels at ~5px (CHE-2750).
+    expect(Number.parseFloat(frame.style.width)).toBeGreaterThanOrEqual(
+      (1000 * MERMAID_MIN_TEXT_PX) / MERMAID_FONT_PX - 1,
+    );
+  });
+
   it("never upscales a diagram that already fits", async () => {
     mermaidRenderMock.mockResolvedValue({
       svg: '<svg viewBox="0 0 300 120"><g><text>small</text></g></svg>',
@@ -445,7 +460,7 @@ describe("MermaidDiagram inline presentation", () => {
   });
 
   it("zooms in and back out from the fit with the preview's buttons", async () => {
-    stubColumnWidth(800);
+    stubColumnWidth(950);
     render(<MermaidDiagram chart={CHART} />);
     const frame = await findFrame();
 
@@ -456,29 +471,27 @@ describe("MermaidDiagram inline presentation", () => {
     expect(fit).toBeDisabled();
 
     fireEvent.click(zoomIn);
-    // 80% x 1.2 = 96%.
-    expect(frame.style.width).toBe("960px");
-    expect(screen.getByText("96%")).toBeInTheDocument();
+    // 93% x 1.2 would pass 100%, so it lands there exactly.
+    expect(frame.style.width).toBe("1000px");
+    expect(frame.style.height).toBe("500px");
+    expect(screen.getByText("100%")).toBeInTheDocument();
     expect(zoomOut).toBeEnabled();
     expect(fit).toBeEnabled();
 
-    // The next step would pass 100%, so it lands there exactly.
     fireEvent.click(zoomIn);
-    expect(frame.style.width).toBe("1000px");
-    expect(frame.style.height).toBe("500px");
-
-    fireEvent.click(zoomOut);
-    expect(frame.style.width).toBe("833px");
+    expect(frame.style.width).toBe("1200px");
 
     // Stepping below the fit stops at the fit: it already shows everything.
     fireEvent.click(zoomOut);
-    expect(frame.style.width).toBe("800px");
+    expect(frame.style.width).toBe("1000px");
+    fireEvent.click(zoomOut);
+    expect(frame.style.width).toBe("933px");
     expect(zoomOut).toBeDisabled();
 
     fireEvent.click(zoomIn);
     fireEvent.click(zoomIn);
     fireEvent.click(fit);
-    expect(frame.style.width).toBe("800px");
+    expect(frame.style.width).toBe("933px");
     expect(fit).toBeDisabled();
   });
 

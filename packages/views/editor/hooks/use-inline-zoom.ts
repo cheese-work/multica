@@ -69,9 +69,9 @@ export function useInlineZoom({
   /** Tallest the fitted diagram may be drawn. */
   maxHeight: number;
   /**
-   * Smallest scale the height cap may shrink the fit to. A tall diagram fitted
-   * whole into `maxHeight` would draw its text unreadably small; below this it
-   * keeps its size and the box scrolls. The column's width still wins.
+   * Smallest scale the fit may shrink to, for the column's width as well as the
+   * height cap. Fitted whole, a tall or wide diagram would draw its text
+   * unreadably small; below this it keeps its size and the box scrolls.
    */
   minFitScale?: number;
   /** The preview's scroll box: measured for the fit, scrolled to keep zoom centered. */
@@ -114,10 +114,11 @@ export function useInlineZoom({
   const natural = content ?? { width: 1, height: 1 };
   // Unmeasured (no layout, e.g. jsdom) constrains the height only.
   const width = availableWidth > 0 ? availableWidth : natural.width;
-  const widthFit = computeFitScale(natural, { width, height: natural.height });
+  // A diagram never fits below the floor, in either axis: past it the box
+  // scrolls. Never above 100% either, so a small diagram is not upscaled.
   const fitScale = Math.max(
     computeFitScale(natural, { width, height: maxHeight }),
-    Math.min(widthFit, minFitScale),
+    Math.min(1, minFitScale),
   );
   const scale = zoom === null ? fitScale : Math.max(fitScale, zoom);
   const fitted = scale <= fitScale + 0.001;
