@@ -69,9 +69,10 @@ done
 node scripts/page-load-report.mjs perf-report/page-load-desktop.json perf-report/page-load-phone.json
 ```
 
-`PERF_SAMPLES` changes the sample count. `PERF_PROFILE=1` adds one extra load per
-route under the CPU profiler; its time-by-file evidence is written to the JSON
-and never joins the medians. A sample whose page never showed its data, or that
+`PERF_SAMPLES` changes the sample count. `PERF_PROFILE=N` adds N extra loads per
+route under the CPU profiler; their time-by-file evidence (and `webpack_eval_ms`,
+the time spent evaluating webpack modules) is written to the JSON as one entry
+per load and never joins the medians. A sample whose page never showed its data, or that
 made an unmocked request or threw a page error, fails the run instead of
 reading as fast. The phone run takes about 10 minutes.
 

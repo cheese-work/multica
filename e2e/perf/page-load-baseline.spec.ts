@@ -29,8 +29,8 @@ const CPU_THROTTLE = 4;
 const PHONE_NETWORK = { rttMs: 150, downBytesPerSec: (1.6 * 1_000_000) / 8 };
 /** Quiet time after the page shows its data, so LCP and late chunks are counted. */
 const SETTLE_MS = 2_500;
-/** One extra load per route under the CPU profiler. It never joins the medians. */
-const PROFILE = Boolean(process.env.PERF_PROFILE);
+/** Extra loads per route under the CPU profiler. They never join the medians. */
+const PROFILE = Number(process.env.PERF_PROFILE ?? 0);
 test.setTimeout(1_800_000);
 
 const ROUTES = {
@@ -194,14 +194,57 @@ async function profileEvidence(cdp: CDPSession) {
     const fn = `${frame.functionName || "(anonymous)"} @ ${file}:${frame.lineNumber}:${frame.columnNumber}`;
     byFunction.set(fn, (byFunction.get(fn) ?? 0) + ms);
   });
+  const webpackEvalMs = webpackEvaluationMs(profile);
   const top = (m: Map<string, number>, n: number) =>
     [...m].sort((a, b) => b[1] - a[1]).slice(0, n).map(([name, ms]) => ({ name, ms: Math.round(ms) }));
   const metric = (name: string) => Math.round((metrics.find((m) => m.name === name)?.value ?? 0) * 1000);
   return {
     script_ms: metric("ScriptDuration"), layout_ms: metric("LayoutDuration"),
     recalc_style_ms: metric("RecalcStyleDuration"), task_ms: metric("TaskDuration"),
+    webpack_eval_ms: webpackEvalMs,
     top_files: top(byFile, 8), top_functions: top(byFunction, 8),
   };
+}
+
+type CpuProfile = {
+  nodes: { id: number; callFrame: { functionName: string; url: string; lineNumber: number; columnNumber: number }; children?: number[] }[];
+  samples?: number[];
+  timeDeltas?: number[];
+};
+
+/**
+ * Time spent evaluating webpack modules: the inclusive time of the outermost
+ * calls of the runtime's `require` function. That function is minified, so it
+ * is the function in the `webpack-*.js` runtime chunk that appears inside its
+ * own call tree (modules require modules).
+ */
+function webpackEvaluationMs(profile: CpuProfile): number {
+  const nodes = new Map(profile.nodes.map((n) => [n.id, n]));
+  const parent = new Map<number, number>();
+  for (const n of profile.nodes) for (const c of n.children ?? []) parent.set(c, n.id);
+  const self = new Map<number, number>();
+  profile.samples?.forEach((id, i) => self.set(id, (self.get(id) ?? 0) + (profile.timeDeltas?.[i] ?? 0) / 1000));
+  const key = (id: number) => {
+    const f = nodes.get(id)!.callFrame;
+    return `${f.functionName}@${f.url}:${f.lineNumber}:${f.columnNumber}`;
+  };
+  const inRuntime = (id: number) => /\/webpack-[0-9a-f]+\.js$/.test(nodes.get(id)!.callFrame.url);
+  const ancestors = (id: number) => {
+    const out: number[] = [];
+    for (let p = parent.get(id); p !== undefined; p = parent.get(p)) out.push(p);
+    return out;
+  };
+  const requireKeys = new Set<string>();
+  for (const n of profile.nodes) {
+    if (inRuntime(n.id) && ancestors(n.id).some((a) => key(a) === key(n.id))) requireKeys.add(key(n.id));
+  }
+  // Attribute each sample once, to its outermost require frame.
+  let total = 0;
+  for (const [id, ms] of self) {
+    const outermost = [id, ...ancestors(id)].filter((a) => requireKeys.has(key(a))).pop();
+    if (outermost !== undefined) total += ms;
+  }
+  return Math.round(total);
 }
 
 test("page load baseline", async ({ browser, baseURL }, testInfo) => {
@@ -210,12 +253,13 @@ test("page load baseline", async ({ browser, baseURL }, testInfo) => {
   const phone = profile === "phone";
   const origin = new URL(baseURL ?? "http://localhost:3000").origin;
   const routes: Record<string, Sample[]> = {};
-  const evidence: Record<string, unknown> = {};
+  const evidence: Record<string, unknown[]> = {};
 
   for (const [name, route] of Object.entries(ROUTES)) {
     routes[name] = [];
-    for (let n = 0; n < SAMPLES + (PROFILE ? 1 : 0); n += 1) {
-      const profiling = n === SAMPLES;
+    evidence[name] = [];
+    for (let n = 0; n < SAMPLES + PROFILE; n += 1) {
+      const profiling = n >= SAMPLES;
       const context = await browser.newContext({
         viewport: use.viewport ?? null, userAgent: use.userAgent,
         deviceScaleFactor: use.deviceScaleFactor, isMobile: use.isMobile,
@@ -303,7 +347,7 @@ test("page load baseline", async ({ browser, baseURL }, testInfo) => {
         }
         await sleep(SETTLE_MS);
         if (profiling) {
-          evidence[name] = await profileEvidence(cdp);
+          evidence[name]!.push(await profileEvidence(cdp));
           continue;
         }
         const sample: Sample = {
