@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -266,14 +267,28 @@ func canonicalURLHost(raw string) string {
 
 // instanceDocs points upstream docs links in server-written text (stored
 // onboarding issues, agent instructions) at this deployment's docs. No request
-// origin exists there, so it uses the configured app URL; unchanged when the
-// deployment serves no docs or its app URL is unknown.
+// origin exists there, so it uses the configured app URL. Unchanged when the
+// deployment serves no docs or the app URL is unknown or loopback (compose
+// defaults it to http://localhost:3000, which is wrong for every remote reader).
 func instanceDocs(s string) string {
 	appURL := resolveFrontendAppURL()
-	if appURL == "" || !servesDocs() {
+	if !servesDocs() || appURL == "" || isLoopbackHost(canonicalURLHost(appURL)) {
 		return s
 	}
 	return strings.ReplaceAll(s, "https://multica.ai/docs", appURL+"/docs")
 }
 
-func servesDocs() bool { return strings.TrimSpace(os.Getenv("DOCS_URL")) != "" }
+// servesDocs mirrors the frontend proxy (apps/web/config/runtime-urls.ts),
+// which forwards /docs only to an http(s) DOCS_URL.
+func servesDocs() bool {
+	u, err := url.Parse(strings.TrimSpace(os.Getenv("DOCS_URL")))
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}

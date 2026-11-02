@@ -638,6 +638,10 @@ func TestGetConfigAdvertisesInstanceDocs(t *testing.T) {
 	for _, tt := range []struct{ name, docs, want string }{
 		{"served", "http://docs:4000", "/docs"},
 		{"docs not configured", "", ""},
+		// The frontend proxy only forwards to http(s) URLs; anything else
+		// would advertise docs it cannot serve.
+		{"path is not a proxy target", "/docs", ""},
+		{"non-http scheme", "ftp://docs:4000", ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("DOCS_URL", tt.docs)
@@ -665,8 +669,10 @@ func TestInstanceDocsRewritesUpstreamLinks(t *testing.T) {
 	if got, want := instanceDocs(text), "Full guide: https://app.example.com/docs/install-agent-runtime"; got != want {
 		t.Fatalf("docs served: want %q, got %q", want, got)
 	}
-	t.Setenv("MULTICA_APP_URL", "")
-	if got := instanceDocs(text); got != text {
-		t.Fatalf("app URL unknown: want unchanged, got %q", got)
+	for _, appURL := range []string{"", "http://localhost:3000", "http://127.0.0.1:3000", "http://[::1]:3000"} {
+		t.Setenv("MULTICA_APP_URL", appURL)
+		if got := instanceDocs(text); got != text {
+			t.Fatalf("app URL %q is unknown or loopback: want unchanged, got %q", appURL, got)
+		}
 	}
 }
