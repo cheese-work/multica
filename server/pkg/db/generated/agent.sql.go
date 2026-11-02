@@ -6086,29 +6086,6 @@ func (q *Queries) HasActiveTaskForIssueAndAgentInThread(ctx context.Context, arg
 	return has_active, err
 }
 
-const hasChangesVerdictForHead = `-- name: HasChangesVerdictForHead :one
-SELECT EXISTS (
-  SELECT 1 FROM activity_log
-  WHERE issue_id = $1 AND action = 'review_changes_requested'
-    AND details->>'head_sha' = $2::text
-) AS reviewed
-`
-
-type HasChangesVerdictForHeadParams struct {
-	IssueID pgtype.UUID `json:"issue_id"`
-	HeadSha string      `json:"head_sha"`
-}
-
-// Whether a changes-requested verdict was already recorded for this PR head
-// (CHE-3243): a review dispatched for a head nobody pushed to since would only
-// repeat it.
-func (q *Queries) HasChangesVerdictForHead(ctx context.Context, arg HasChangesVerdictForHeadParams) (bool, error) {
-	row := q.db.QueryRow(ctx, hasChangesVerdictForHead, arg.IssueID, arg.HeadSha)
-	var reviewed bool
-	err := row.Scan(&reviewed)
-	return reviewed, err
-}
-
 const hasPendingIssueTaskForAgent = `-- name: HasPendingIssueTaskForAgent :one
 SELECT EXISTS (
   SELECT 1 FROM agent_task_queue
@@ -6544,6 +6521,25 @@ func (q *Queries) IsTaskSessionRetired(ctx context.Context, arg IsTaskSessionRet
 	var retired bool
 	err := row.Scan(&retired)
 	return retired, err
+}
+
+const lastVerdictHeadSHA = `-- name: LastVerdictHeadSHA :one
+SELECT COALESCE((
+  SELECT details->>'head_sha' FROM activity_log
+  WHERE issue_id = $1 AND action IN ('review_changes_requested', 'review_passed')
+  ORDER BY created_at DESC, id DESC LIMIT 1
+), '')::text AS head_sha
+`
+
+// PR head of the issue's latest review verdict, PASS or CHANGES (CHE-3243): a
+// review dispatched for that head, with nothing pushed since, would only repeat
+// it. Earlier verdicts do not count: a head the PR returned to was not looked
+// at since.
+func (q *Queries) LastVerdictHeadSHA(ctx context.Context, issueID pgtype.UUID) (string, error) {
+	row := q.db.QueryRow(ctx, lastVerdictHeadSHA, issueID)
+	var head_sha string
+	err := row.Scan(&head_sha)
+	return head_sha, err
 }
 
 const linkTaskToIssue = `-- name: LinkTaskToIssue :exec

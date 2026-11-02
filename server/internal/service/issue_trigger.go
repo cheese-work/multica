@@ -292,8 +292,8 @@ func (s *IssueService) CancelStaleStepRuns(ctx context.Context, issue db.Issue, 
 	}
 }
 
-// headAlreadyReviewed reports whether the issue entered agent_review on a PR
-// head that a review run already finished (CHE-3243). The loop only has a new
+// headAlreadyReviewed reports whether the issue entered agent_review on the PR
+// head its latest review verdict was for (CHE-3243). The loop only has a new
 // review to give after a push. Errors read as "not reviewed": a lookup failure
 // must not swallow a review.
 func (s *IssueService) headAlreadyReviewed(ctx context.Context, issue db.Issue) bool {
@@ -304,8 +304,6 @@ func (s *IssueService) headAlreadyReviewed(ctx context.Context, issue db.Issue) 
 	if head == "" {
 		return false
 	}
-	reviewed, err := s.Queries.HasChangesVerdictForHead(ctx, db.HasChangesVerdictForHeadParams{
-		IssueID: issue.ID, HeadSha: head,
-	})
-	return err == nil && reviewed
+	last, err := s.Queries.LastVerdictHeadSHA(ctx, issue.ID)
+	return err == nil && last == head
 }

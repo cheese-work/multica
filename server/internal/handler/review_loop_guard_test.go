@@ -71,6 +71,14 @@ func (l reviewLoop) priorChangesRounds(t *testing.T, n int, prID string) {
 // with it, as a dispatched review run is.
 func (l reviewLoop) linkPR(t *testing.T, head string) string {
 	t.Helper()
+	prID := l.newPR(t, head)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET context = jsonb_build_object('head_sha', $2::text), pull_request_id = $3 WHERE id = $1`, l.run, head, prID)
+	return prID
+}
+
+// newPR links a new open PR on head to the issue.
+func (l reviewLoop) newPR(t *testing.T, head string) string {
+	t.Helper()
 	prID := dbfx.Insert(t, "github_pull_request", testutil.Cols{
 		"workspace_id": testWorkspaceID, "installation_id": 1, "repo_owner": "multica-ai", "repo_name": "multica",
 		"pr_number": testutil.Raw("(floor(random() * 1000000000))::int"), "title": "loop PR", "state": "open", "html_url": "https://example.test/pr",
@@ -78,7 +86,6 @@ func (l reviewLoop) linkPR(t *testing.T, head string) string {
 	})
 	dbfx.Exec(t, `INSERT INTO issue_pull_request (issue_id, pull_request_id) VALUES ($1, $2)`, l.issueID, prID)
 	t.Cleanup(func() { testPool.Exec(t.Context(), `DELETE FROM issue_pull_request WHERE pull_request_id = $1`, prID) })
-	dbfx.Exec(t, `UPDATE agent_task_queue SET context = jsonb_build_object('head_sha', $2::text), pull_request_id = $3 WHERE id = $1`, l.run, head, prID)
 	return prID
 }
 
@@ -209,5 +216,91 @@ func TestReviewLoop_CompletedRunWithoutVerdictDoesNotSkipReview(t *testing.T) {
 	updateIssueForTest(t, l.issueID, map[string]any{"status": "agent_review"}).Want(http.StatusOK)
 	if runs := queuedRuns(t, l.issueID); len(runs) != 1 || runs[0].head != reviewHeadA {
 		t.Fatalf("queued %v, want one run on %s", runs, reviewHeadA)
+	}
+}
+
+// An ordinarily dispatched review run is bound to the PR it reviews, so the
+// rounds of a replaced PR do not carry over to its replacement.
+func TestReviewLoop_OrdinaryDispatchCountsRoundsPerReplacementPR(t *testing.T) {
+	l := newReviewLoop(t)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE id = $1`, l.run)
+	dbfx.Exec(t, `UPDATE issue SET status = 'in_progress' WHERE id = $1`, l.issueID)
+	prA := l.newPR(t, reviewHeadA)
+	l.priorChangesRounds(t, 2, prA)
+
+	dbfx.Exec(t, `DELETE FROM issue_pull_request WHERE issue_id = $1 AND pull_request_id = $2`, l.issueID, prA)
+	prB := l.newPR(t, reviewHeadB)
+	updateIssueForTest(t, l.issueID, map[string]any{"status": "agent_review"}).Want(http.StatusOK)
+	runs := queuedRuns(t, l.issueID)
+	if len(runs) != 1 {
+		t.Fatalf("queued %v, want one review run", runs)
+	}
+	var bound string
+	dbfx.QueryRow(t, `SELECT COALESCE(pull_request_id::text, '') FROM agent_task_queue WHERE id = $1`, runs[0].id).Scan(&bound)
+	if bound != prB {
+		t.Fatalf("review run bound to PR %q, want %q", bound, prB)
+	}
+
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'running', dispatched_at = now(), started_at = now() WHERE id = $1`, runs[0].id)
+	agentUpdateIssue(t, l.issueID, l.agentID, runs[0].id, map[string]any{"status": "in_progress", "review_findings": []map[string]any{finding("P1")}}).Want(http.StatusOK)
+	if status, _, _ := issueStatusAndAssignee(t, l.issueID); status != "in_progress" {
+		t.Fatalf("first round of the replacement PR: status = %q, want in_progress", status)
+	}
+}
+
+// A PASS reviews the head too: coming back to agent_review on it dispatches nothing.
+func TestReviewLoop_PassOnHeadSkipsReturnToReview(t *testing.T) {
+	l := newReviewLoop(t)
+	l.linkPR(t, reviewHeadA)
+	l.verdict(t, "in_review").Want(http.StatusOK)
+
+	updateIssueForTest(t, l.issueID, map[string]any{"status": "agent_review"}).Want(http.StatusOK)
+	if runs := queuedRuns(t, l.issueID); len(runs) != 0 {
+		t.Fatalf("same head after PASS queued %d review run(s), want 0", len(runs))
+	}
+}
+
+// Only the last verdict's head is "already reviewed": A, then B, then A again
+// is a head nobody has looked at since B.
+func TestReviewLoop_OnlyTheLastVerdictHeadIsSkipped(t *testing.T) {
+	l := newReviewLoop(t)
+	prID := l.newPR(t, reviewHeadA)
+	for head, ago := range map[string]string{reviewHeadA: "2 minutes", reviewHeadB: "1 minute"} {
+		dbfx.Exec(t, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details, created_at)
+			SELECT workspace_id, id, 'agent', $2, 'review_changes_requested', jsonb_build_object('head_sha', $3::text), now() - $4::interval FROM issue WHERE id = $1`,
+			l.issueID, l.agentID, head, ago)
+	}
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE id = $1`, l.run)
+	dbfx.Exec(t, `UPDATE issue SET status = 'in_progress' WHERE id = $1`, l.issueID)
+
+	updateIssueForTest(t, l.issueID, map[string]any{"status": "agent_review"}).Want(http.StatusOK)
+	if runs := queuedRuns(t, l.issueID); len(runs) != 1 {
+		t.Fatalf("head A after a verdict on B queued %v, want one run", runs)
+	}
+
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'cancelled' WHERE issue_id = $1 AND status = 'queued'`, l.issueID)
+	dbfx.Exec(t, `UPDATE issue SET status = 'in_progress' WHERE id = $1`, l.issueID)
+	pushHead(t, prID, reviewHeadB)
+	updateIssueForTest(t, l.issueID, map[string]any{"status": "agent_review"}).Want(http.StatusOK)
+	if runs := queuedRuns(t, l.issueID); len(runs) != 0 {
+		t.Fatalf("head B after the verdict on B queued %v, want none", runs)
+	}
+}
+
+// An agent may deliver a verdict from a run of another issue (checkAgentMove
+// allows it): it is recorded under that agent, without a PR lineage, and does
+// not panic for want of a run on this issue.
+func TestReviewLoop_VerdictFromRunOfAnotherIssueIsRecorded(t *testing.T) {
+	l := newReviewLoop(t)
+	other := dbfx.Issue(t, "other issue", testutil.Cols{"project_id": l.projectID, "status": "in_progress"})
+	otherRun := dbfx.Task(t, l.agentID, testutil.Cols{
+		"runtime_id": l.runtimeID, "issue_id": other, "status": "running",
+		"dispatched_at": testutil.Raw("now() - interval '5 minutes'"), "started_at": testutil.Raw("now() - interval '4 minutes'"),
+	})
+	agentUpdateIssue(t, l.issueID, l.agentID, otherRun, map[string]any{"status": "in_progress", "review_findings": []map[string]any{finding("P1")}}).Want(http.StatusOK)
+	var actor, prID string
+	dbfx.QueryRow(t, `SELECT actor_id::text, COALESCE(details->>'pull_request_id', 'missing') FROM activity_log WHERE issue_id = $1 AND action = 'review_changes_requested'`, l.issueID).Scan(&actor, &prID)
+	if actor != l.agentID || prID != "" {
+		t.Fatalf("recorded actor %q / PR %q, want %q / none", actor, prID, l.agentID)
 	}
 }

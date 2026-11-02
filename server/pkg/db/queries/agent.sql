@@ -1969,15 +1969,16 @@ WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
     AND workflow_step <> sqlc.arg('step')::text
   );
 
--- name: HasChangesVerdictForHead :one
--- Whether a changes-requested verdict was already recorded for this PR head
--- (CHE-3243): a review dispatched for a head nobody pushed to since would only
--- repeat it.
-SELECT EXISTS (
-  SELECT 1 FROM activity_log
-  WHERE issue_id = $1 AND action = 'review_changes_requested'
-    AND details->>'head_sha' = sqlc.arg('head_sha')::text
-) AS reviewed;
+-- name: LastVerdictHeadSHA :one
+-- PR head of the issue's latest review verdict, PASS or CHANGES (CHE-3243): a
+-- review dispatched for that head, with nothing pushed since, would only repeat
+-- it. Earlier verdicts do not count: a head the PR returned to was not looked
+-- at since.
+SELECT COALESCE((
+  SELECT details->>'head_sha' FROM activity_log
+  WHERE issue_id = $1 AND action IN ('review_changes_requested', 'review_passed')
+  ORDER BY created_at DESC, id DESC LIMIT 1
+), '')::text AS head_sha;
 
 -- name: CountChangesVerdictsForPR :one
 -- Changes-requested rounds of one PR lineage; a replacement PR starts at zero.

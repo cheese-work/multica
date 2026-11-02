@@ -292,6 +292,8 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
 type workflowCaller struct {
 	run   *db.AgentTaskQueue
 	agent bool
+	// agentID is the calling agent, also when its run belongs to another issue.
+	agentID pgtype.UUID
 	// findings come with a reviewer's verdict (CHE-3243).
 	findings []ReviewFinding
 }

@@ -22,6 +22,7 @@ const (
 	maxChangesRounds = 3
 
 	activityChangesRequested = "review_changes_requested"
+	activityPassed           = "review_passed"
 	statusNeedDecision       = "need_decision"
 )
 
@@ -55,10 +56,13 @@ func writeReviewLoopError(w http.ResponseWriter, err error) bool {
 	return true
 }
 
-// isChangesVerdict reports whether the write is an agent's CHANGES verdict:
-// an explicit move along the step's agent_verdict(CHANGES) exit.
-func isChangesVerdict(def *issueworkflow.Definition, from string, to pgtype.Text, caller workflowCaller) bool {
-	return caller.agent && to.Valid && to.String != from && def.IsChangesMove(from, to.String)
+// verdictOf is the verdict an agent's write delivers: an explicit move along
+// the step's agent_verdict exit ("CHANGES", "PASS"), "" for any other write.
+func verdictOf(def *issueworkflow.Definition, from string, to pgtype.Text, caller workflowCaller) string {
+	if !caller.agent || !to.Valid || to.String == from {
+		return ""
+	}
+	return def.VerdictOf(from, to.String)
 }
 
 // runReviewHead is the PR lineage and head the verdict's review run was
@@ -80,7 +84,7 @@ func runReviewHead(run *db.AgentTaskQueue) (prID, head string) {
 // need_decision. Any other move passes untouched. It runs again under the
 // issue row lock, so concurrent verdicts count one after the other.
 func (h *Handler) guardChangesVerdict(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, def *issueworkflow.Definition, caller workflowCaller) error {
-	if !isChangesVerdict(def, prev.Status, params.Status, caller) {
+	if verdictOf(def, prev.Status, params.Status, caller) != "CHANGES" {
 		return nil
 	}
 	if !blocking(caller.findings) {
@@ -97,17 +101,22 @@ func (h *Handler) guardChangesVerdict(ctx context.Context, q *db.Queries, prev d
 	return nil
 }
 
-// recordVerdict stores an accepted CHANGES verdict with its findings, PR and
-// head, in the transaction that moves the issue: the round is counted exactly
-// when the move commits, and the head is what a later review is skipped on.
+// recordVerdict stores an accepted verdict with its findings, PR and head, in
+// the transaction that moves the issue: a CHANGES round is counted exactly when
+// the move commits, and the head of the last verdict, PASS or CHANGES, is what
+// a later review is skipped on.
 func (w *workflowWrite) recordVerdict(ctx context.Context, q *db.Queries, moved db.Issue) error {
 	if w == nil || !w.statusExplicit || moved.Status == w.prev.Status {
 		return nil
 	}
 	prev := w.prev
 	def, _, err := issueworkflow.ForIssue(ctx, q, prev.WorkspaceID, prev.WorkflowID, w.pre.ProjectID)
-	if err != nil || def == nil || !isChangesVerdict(def, prev.Status, w.pre.Status, w.caller) {
+	if err != nil || def == nil {
 		return err
+	}
+	action := map[string]string{"CHANGES": activityChangesRequested, "PASS": activityPassed}[verdictOf(def, prev.Status, w.pre.Status, w.caller)]
+	if action == "" {
+		return nil
 	}
 	prID, head := runReviewHead(w.caller.run)
 	findings, _ := json.Marshal(w.caller.findings)
@@ -117,8 +126,8 @@ func (w *workflowWrite) recordVerdict(ctx context.Context, q *db.Queries, moved 
 		WorkspaceID: prev.WorkspaceID,
 		IssueID:     prev.ID,
 		ActorType:   strToText("agent"),
-		ActorID:     w.caller.run.AgentID,
-		Action:      activityChangesRequested,
+		ActorID:     w.caller.agentID,
+		Action:      action,
 		Details:     details,
 	})
 	return err
