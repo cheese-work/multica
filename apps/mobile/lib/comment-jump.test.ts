@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { jumpToCommentRow, rowIndexOfComment } from "./comment-jump";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createJumpController, jumpToCommentRow, rowIndexOfComment } from "./comment-jump";
 import type { RowScroller } from "./scroll-to-row";
 
 const ESTIMATE = 100; // fixed guess for an unmeasured row
@@ -143,5 +143,87 @@ describe("jumpToCommentRow", () => {
     expect(calls.at(-1)).toBe(now);
     expect(now).toBeGreaterThanOrEqual(startIndex);
     expect(now).toBeLessThanOrEqual(endIndex);
+  });
+});
+
+/** A list that takes 200 ms per scroll and moves one row per scroll, so a far target needs many. */
+function slowList(targetRow: number) {
+  let top = 0;
+  const calls: number[] = [];
+  const list: RowScroller = {
+    scrollToIndex: ({ index }) =>
+      new Promise((resolve) => {
+        setTimeout(() => {
+          calls.push(index);
+          top += 1;
+          resolve();
+        }, 200);
+      }),
+    computeVisibleIndices: () => ({ startIndex: top, endIndex: top + 4 }),
+  };
+  const rows: Row[] = Array.from({ length: targetRow + 1 }, (_, i) => ({
+    entry: { id: i === targetRow ? OLD_ROOT : `r-${i}` },
+    replies: [],
+  }));
+  return { list, calls, rows };
+}
+
+describe("createJumpController", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("holds the highlight for holdMs after a long jump arrives, not after the tap", async () => {
+    vi.useFakeTimers();
+    const { list, rows, calls } = slowList(45);
+    let cleared = false;
+    const done = createJumpController().jump(list, () => rows, OLD_ROOT, {
+      holdMs: 5000,
+      onSettled: () => {
+        cleared = true;
+      },
+    });
+    let arrived = false;
+    void done.then(() => {
+      arrived = true;
+    });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(arrived, "still jumping at 5 s").toBe(false);
+    expect(cleared).toBe(false);
+    while (!arrived) await vi.advanceTimersByTimeAsync(200);
+    expect(await done).toBe(true);
+    expect(calls.length).toBeGreaterThan(25); // arrival took well over 5 s
+    await vi.advanceTimersByTimeAsync(4800);
+    expect(cleared, "hold not over yet").toBe(false);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(cleared).toBe(true);
+  });
+
+  it("cancel() mid-retry stops further scrolls (user drag)", async () => {
+    vi.useFakeTimers();
+    const { list, rows, calls } = slowList(45);
+    const controller = createJumpController();
+    const done = controller.jump(list, () => rows, OLD_ROOT);
+    await vi.advanceTimersByTimeAsync(1000);
+    const seen = calls.length;
+    expect(seen).toBeGreaterThan(0);
+    controller.cancel();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await done).toBe(false);
+    expect(calls.length).toBeLessThanOrEqual(seen + 1); // only the in-flight scroll finishes
+  });
+
+  it("a newer jump supersedes the older one", async () => {
+    vi.useFakeTimers();
+    const first = slowList(45);
+    const second = slowList(3);
+    const controller = createJumpController();
+    const a = controller.jump(first.list, () => first.rows, OLD_ROOT);
+    await vi.advanceTimersByTimeAsync(400);
+    const b = controller.jump(second.list, () => second.rows, OLD_ROOT);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await a).toBe(false);
+    expect(await b).toBe(true);
+    expect(first.calls.length).toBeLessThanOrEqual(3);
   });
 });

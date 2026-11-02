@@ -32,7 +32,7 @@ import { supersessionRevisions } from "@multica/core/issues/supersession";
 import { useLastViewedStore } from "@/data/stores/last-viewed-store";
 import { coalesceTimeline } from "@/lib/timeline-coalesce";
 import { buildTimelineRows, type TimelineRow } from "@/lib/timeline-thread";
-import { jumpToCommentRow } from "@/lib/comment-jump";
+import { createJumpController } from "@/lib/comment-jump";
 import { ImageSequenceProvider } from "@/lib/markdown/image-sequence";
 import { issueAttachmentsOptions } from "@/data/queries/issues";
 import { useWorkspaceStore } from "@/data/workspace-store";
@@ -225,7 +225,9 @@ export function TimelineList({
     return [...data.slice(0, anchorIdx), divider, ...data.slice(anchorIdx)];
   }, [data, dividerAnchorId]);
 
-  const jumpToken = useRef(0);
+  // One jump at a time: a newer jump, a user drag or unmount stops the older
+  // one's retries.
+  const jumpController = useMemo(() => createJumpController(), []);
   // Latest rows for the jump: it re-reads them on every scroll attempt, since
   // rows can arrive above the target while a scroll is in flight.
   const rowsRef = useRef(dataWithDivider);
@@ -234,24 +236,19 @@ export function TimelineList({
   }, [dataWithDivider]);
   // Scroll to the row that holds a comment: its own row for a root, the
   // parent's row for a reply (replies render inline inside their root's card).
-  const jumpToComment = useCallback((commentId: string) => {
-    const list = listRef.current;
-    if (!list) return;
-    // A newer jump or unmount supersedes this one, so it stops re-scrolling.
-    jumpToken.current += 1;
-    const token = jumpToken.current;
-    void jumpToCommentRow(
-      list,
-      () => rowsRef.current,
-      commentId,
-      () => jumpToken.current !== token,
-    ).then((arrived) => {
-      // A cancelled jump is superseded on purpose; only report a real miss.
-      if (!arrived && jumpToken.current === token) {
-        console.warn(`[timeline] could not scroll to comment ${commentId}`);
-      }
-    });
-  }, []);
+  // `onSettled` runs HIGHLIGHT_HOLD_MS after the jump ends, so a long jump
+  // keeps its highlight once the row is on screen.
+  const jumpToComment = useCallback(
+    (commentId: string, onSettled?: () => void) => {
+      const list = listRef.current;
+      if (!list) return;
+      void jumpController.jump(list, () => rowsRef.current, commentId, {
+        holdMs: HIGHLIGHT_HOLD_MS,
+        onSettled,
+      });
+    },
+    [jumpController],
+  );
 
   // The timers live outside the effect: an append (data.length) re-runs the
   // effect, and its stamp gate would then skip re-arming a cancelled jump.
@@ -273,18 +270,23 @@ export function TimelineList({
     timersRef.current = [
       // The list remounts on every deep link and starts at the bottom, so an
       // old target is off-screen. Jump once the fresh list has laid out.
-      setTimeout(() => jumpRef.current(highlightCommentId), JUMP_DELAY_MS),
-      setTimeout(() => setHighlightedId(null), HIGHLIGHT_HOLD_MS),
+      setTimeout(
+        () =>
+          jumpRef.current(highlightCommentId, () => {
+            // A newer tap owns the highlight now; leave it alone.
+            if (lastStampRef.current === stamp) setHighlightedId(null);
+          }),
+        JUMP_DELAY_MS,
+      ),
     ];
   }, [highlightCommentId, highlightNonce, data.length]);
   useEffect(() => {
     const timers = timersRef;
-    const token = jumpToken;
     return () => {
       timers.current.forEach(clearTimeout);
-      token.current += 1;
+      jumpController.cancel();
     };
-  }, []);
+  }, [jumpController]);
 
   // Mark "scrolled past" once the divider row leaves the viewport — used
   // by the unmount effect below to decide whether to bump last-viewed.
@@ -482,9 +484,11 @@ export function TimelineList({
         // matches iMessage's behavior where scrolling implicitly commits /
         // dismisses the selection caret. Hooks both drag-start and the
         // momentum kick after a flick so a fast scroll can't escape.
-        onScrollBeginDrag={() =>
-          useCommentSelectStore.getState().clear()
-        }
+        onScrollBeginDrag={() => {
+          useCommentSelectStore.getState().clear();
+          // The user took over the scroll: stop any retry still in flight.
+          jumpController.cancel();
+        }}
         onMomentumScrollBegin={() =>
           useCommentSelectStore.getState().clear()
         }

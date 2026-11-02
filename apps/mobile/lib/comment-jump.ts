@@ -34,3 +34,41 @@ export function jumpToCommentRow(
     { isCancelled },
   );
 }
+
+interface JumpOptions {
+  /**
+   * Called `holdMs` after the jump settles (arrived, gave up or cancelled), so a
+   * long jump keeps its highlight for the full hold once the row is on screen.
+   */
+  onSettled?: () => void;
+  holdMs?: number;
+}
+
+/**
+ * Owns the one jump that may be running. A new jump or `cancel()` stops the
+ * older one's retries (user drag, unmount).
+ */
+export function createJumpController() {
+  let token = 0;
+  return {
+    cancel() {
+      token += 1;
+    },
+    async jump(
+      list: RowScroller,
+      getRows: () => JumpRow[],
+      commentId: string,
+      { onSettled, holdMs = 0 }: JumpOptions = {},
+    ): Promise<boolean> {
+      token += 1;
+      const mine = token;
+      const arrived = await jumpToCommentRow(list, getRows, commentId, () => token !== mine);
+      // A cancelled jump was superseded on purpose; only report a real miss.
+      if (!arrived && token === mine) {
+        console.warn(`[timeline] could not scroll to comment ${commentId}`);
+      }
+      if (onSettled) setTimeout(onSettled, holdMs);
+      return arrived;
+    },
+  };
+}
