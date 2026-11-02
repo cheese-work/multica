@@ -823,6 +823,8 @@
     "silence_warn_unknown": "한동안 출력 없음",
     "tool_stalled": "{{minutes}}분 넘게 실행 중",
     "tool_stalled_unknown": "제한 시간을 넘겨 실행 중",
+    "tool_stalled_ended": "{{minutes}}분 넘게 실행되고 결과 없음",
+    "tool_stalled_ended_unknown": "제한 시간을 넘기고 결과 없음",
     "group_calls_other": "호출 {{count}}회",
     "step_running": "진행 중",
     "step_duration_unknown": "정확한 소요 시간을 확인할 수 없습니다.",

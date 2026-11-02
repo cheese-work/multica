@@ -972,6 +972,8 @@
     "silence_warn_unknown": "已有一段時間無輸出",
     "tool_stalled": "已執行超過 {{minutes}} 分鐘",
     "tool_stalled_unknown": "執行時間已超過限制",
+    "tool_stalled_ended": "執行超過 {{minutes}} 分鐘且無結果",
+    "tool_stalled_ended_unknown": "執行超過限制且無結果",
     "group_calls_other": "{{count}} 次呼叫",
     "step_running": "進行中",
     "step_duration_unknown": "無法確定準確耗時。",

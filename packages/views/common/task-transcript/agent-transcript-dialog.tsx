@@ -1536,6 +1536,25 @@ function SilenceRow({ row, runStartMs }: TranscriptRowProps & { row: TraceMessag
   );
 }
 
+/** The daemon's `tool_stalled` marker on a call. A call that has since
+ *  returned shows nothing; a call with no result in a run that is no longer
+ *  live ended without one, so it never says "still running". */
+function StalledBadge({ call, isLive }: { call: TraceCallStep; isLive: boolean }) {
+  const { t } = useT("agents");
+  if (!call.stalled || call.result) return null;
+  const minutes = silentMinutes(call.stalled.content);
+  const text = isLive
+    ? minutes === undefined
+      ? t(($) => $.transcript.tool_stalled_unknown)
+      : t(($) => $.transcript.tool_stalled, { minutes })
+    : minutes === undefined
+      ? t(($) => $.transcript.tool_stalled_ended_unknown)
+      : t(($) => $.transcript.tool_stalled_ended, { minutes });
+  return (
+    <span className="shrink-0 rounded-sm bg-warning/10 px-1 text-micro text-warning">{text}</span>
+  );
+}
+
 /** One call, one thinking block, or one error: a line, with its detail one
  *  click away in the inspector. */
 function StepRow({
@@ -1567,9 +1586,6 @@ function StepRow({
     : firstLineOf((row as TraceMessageStep).item.content);
   const pending = call !== null && isLive && !call.result;
   const selected = selectedSeq === row.seq;
-  // A stalled call that has since returned is no longer "still running".
-  const stalledMinutes = call?.stalled && !call.result ? silentMinutes(call.stalled.content) : undefined;
-  const stalled = call?.stalled !== undefined && !call.result;
 
   return (
     <button
@@ -1614,13 +1630,7 @@ function StepRow({
         >
           {summary}
         </span>
-        {stalled && (
-          <span className="shrink-0 rounded-sm bg-warning/10 px-1 text-micro text-warning">
-            {stalledMinutes === undefined
-              ? t(($) => $.transcript.tool_stalled_unknown)
-              : t(($) => $.transcript.tool_stalled, { minutes: stalledMinutes })}
-          </span>
-        )}
+        {call && <StalledBadge call={call} isLive={isLive} />}
       </span>
       <DurationCell ms={call?.durationMs} pending={pending} />
     </button>
@@ -1632,6 +1642,7 @@ function GroupRow({
   row,
   formatText,
   runStartMs,
+  isLive,
   selectedSeq,
   expanded,
   onToggleGroup,
@@ -1646,6 +1657,8 @@ function GroupRow({
     }),
     [t, formatText],
   );
+
+  const stalledMember = row.steps.find((step) => step.stalled && !step.result);
 
   return (
     <div className={cn(selectedSeq !== null && row.steps.some((s) => s.seq === selectedSeq) && "bg-brand/5")}>
@@ -1674,6 +1687,7 @@ function GroupRow({
           <span className="shrink-0 text-micro text-faint-foreground">
             {t(($) => $.transcript.group_calls, { count: row.steps.length })}
           </span>
+          {stalledMember && <StalledBadge call={stalledMember} isLive={isLive} />}
         </span>
         <DurationCell ms={row.durationMs} />
       </button>
@@ -1692,6 +1706,7 @@ function GroupRow({
               <span className="truncate font-mono text-muted-foreground">
                 {callSummary(step, summaryLabels) || step.tool}
               </span>
+              <StalledBadge call={step} isLive={isLive} />
               {step.durationMs === undefined ? (
                 <span className="ml-auto shrink-0" />
               ) : (

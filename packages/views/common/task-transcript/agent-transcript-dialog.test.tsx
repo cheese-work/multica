@@ -302,6 +302,37 @@ describe("AgentTranscriptDialog", () => {
       ).not.toBeInTheDocument();
     });
 
+    it("badges a stalled call inside a folded group, on the header and the expanded row", () => {
+      renderDialog(
+        [1, 2, 3].map((n) => ({
+          seq: n,
+          type: "tool_use" as const,
+          tool: "Read",
+          callId: `R${n}`,
+          input: { file_path: `/f${n}` },
+          created_at: at(n),
+        })).concat([
+          { seq: 4, type: "tool_stalled" as never, tool: "Read", callId: "R2", input: undefined as never, content: "Tool call running for 20m0s with no result", created_at: at(1200) } as never,
+        ]),
+        { task: liveTask, isLive: true },
+      );
+
+      const header = screen.getByRole("button", { name: /3 calls/ });
+      expect(within(header).getByText("Still running past 20 min")).toBeInTheDocument();
+      fireEvent.click(header);
+      expect(screen.getAllByText("Still running past 20 min")).toHaveLength(2);
+    });
+
+    it("does not say still running for a stalled call in a stopped run", () => {
+      renderDialog([
+        { seq: 1, type: "tool_use", tool: "Bash", callId: "A", input: { command: "slow-A" }, created_at: at(0) },
+        { seq: 2, type: "tool_stalled", tool: "Bash", callId: "A", content: "Tool call running for 20m0s with no result", created_at: at(1200) },
+      ], { task: { ...baseTask, status: "cancelled" } });
+
+      expect(screen.queryByText(/Still running/)).not.toBeInTheDocument();
+      expect(screen.getByText("Ran past 20 min with no result")).toBeInTheDocument();
+    });
+
     it("drops the stalled badge once the call has a result", () => {
       renderDialog([
         { seq: 1, type: "tool_use", tool: "Bash", callId: "A", input: { command: "slow-A" }, created_at: at(0) },

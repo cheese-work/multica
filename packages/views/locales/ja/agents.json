@@ -815,6 +815,8 @@
     "silence_warn_unknown": "しばらく出力なし",
     "tool_stalled": "{{minutes}} 分を超えて実行中",
     "tool_stalled_unknown": "制限時間を超えて実行中",
+    "tool_stalled_ended": "{{minutes}} 分を超えて結果なし",
+    "tool_stalled_ended_unknown": "制限時間を超えて結果なし",
     "group_calls_other": "{{count}} 回の呼び出し",
     "step_running": "実行中",
     "step_duration_unknown": "正確な所要時間は記録されていません。",
