@@ -2147,6 +2147,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetIssue)
 					r.Get("/agent-decisions", h.LookupAgentDecision)
+					r.Get("/human-in-charge", h.GetHumanInCharge)
 					r.Post("/agent-decisions/rely", h.RelyAgentDecision)
 					r.Get("/relations", h.GetIssueRelations)
 					r.Put("/", h.UpdateIssue)
