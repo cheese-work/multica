@@ -21,7 +21,8 @@ branch are supported. The PR author must be a registered agent (lab from the `ag
 registered human; anyone else fails closed.
 
 On a `merge_group` event (merge queue) the same context is posted on the group head by carrying the PR-head
-verdicts above (`gate_merge_group`); a repo with a merge queue needs this before `security-gate` is required.
+verdicts above (`gate_merge_group`); a PR whose own status is not `success` flips any queue head carrying it to
+failure (`revoke_queue`); a repo with a merge queue needs this before `security-gate` is required.
 
 Run from a checkout of the DEFAULT branch only; the head is fetched for its diff, never executed.
 """
@@ -187,6 +188,33 @@ def _gh(*args: str) -> str:
     return subprocess.run(["gh", "api", *args], check=True, capture_output=True, text=True).stdout
 
 
+def _post(github: str, sha: str, state: str, desc: str, run_url: str) -> None:
+    _gh(f"repos/{github}/statuses/{sha}", "-f", f"state={state}", "-f", f"context={CONTEXT}",
+        "-f", f"description={desc}", *(["-f", f"target_url={run_url}"] if run_url else []))
+
+
+def _group_chain(github: str, base: str, head: str, strict: bool = True) -> list[dict]:
+    """The first-parent chain of merge-queue commits from `head` down to `base` (compare also lists PR branch commits).
+    `strict=False` takes `base` as a branch name and stops where the chain leaves the compare range."""
+    rows = [json.loads(l) for l in _gh("--paginate", f"repos/{github}/compare/{base}...{head}", "--jq",
+                                       ".commits[] | {sha, parents: [.parents[].sha], message: .commit.message}").splitlines()]
+    by_sha, chain, sha = {r["sha"]: r for r in rows}, [], head
+    while sha != base and sha in by_sha:
+        chain.append(by_sha[sha])
+        sha = by_sha[sha]["parents"][0]
+    return chain if sha == base or not strict else []
+
+
+def revoke_queue(github: str, number: int, default_branch: str, run_url: str) -> None:
+    """A PR whose gate is no longer `success` must not ride a success already carried onto a queue head: flip every
+    queue head whose group contains the PR to `failure`, so GitHub drops the entry. Errors propagate (job goes red)."""
+    heads = _gh("--paginate", f"repos/{github}/git/matching-refs/heads/gh-readonly-queue/{default_branch}/",
+                "--jq", ".[].object.sha").split()
+    for head in heads:
+        if any(re.match(rf"Merge pull request #{number} ", r["message"]) for r in _group_chain(github, default_branch, head, strict=False)):
+            _post(github, head, "failure", f"#{number}: {CONTEXT} no longer success on its head", run_url)
+
+
 def gate_pr(repo: str, github: str, number: int, default_branch: str, trusted: set[int],
             humans: set[int]) -> tuple[str, str, str]:
     pull = json.loads(_gh(f"repos/{github}/pulls/{number}"))
@@ -211,16 +239,9 @@ def gate_merge_group(github: str, base: str, head: str) -> tuple[str, str]:
     Anything else (no commits, a non-merge commit, a PR head without `success`) fails closed. The PR number comes
     from the queue commit message and is checked against the PR's live head, so a look-alike commit cannot borrow a
     green head. API errors are the caller's: `main` turns them into a posted failure."""
-    rows = [json.loads(l) for l in _gh("--paginate", f"repos/{github}/compare/{base}...{head}", "--jq",
-                                       ".commits[] | {sha, parents: [.parents[].sha], message: .commit.message}").splitlines()]
-    # compare also lists each PR's own branch commits: follow the first-parent chain from the head down to the base
-    by_sha, chain, sha = {r["sha"]: r for r in rows}, [], head
-    while sha != base and sha in by_sha:
-        chain.append(by_sha[sha])
-        sha = by_sha[sha]["parents"][0]
-    if not chain or sha != base:
+    rows = _group_chain(github, base, head)
+    if not rows:
         return "failure", f"cannot walk {head[:12]} back to {base[:12]}"
-    rows = chain
     for row in rows:
         pr = re.match(r"Merge pull request #(\d+) ", row["message"])
         label = f"#{pr[1]}" if pr else row["sha"][:12]
@@ -253,8 +274,7 @@ def main() -> int:
             state, desc = "failure", f"cannot evaluate merge group: {type(e).__name__}"
         print(json.dumps({"context": CONTEXT, "sha": a.merge_group_head, "state": state, "description": desc}))
         if a.post:
-            _gh(f"repos/{a.github}/statuses/{a.merge_group_head}", "-f", f"state={state}", "-f", f"context={CONTEXT}",
-                "-f", f"description={desc}", *(["-f", f"target_url={a.run_url}"] if a.run_url else []))
+            _post(a.github, a.merge_group_head, state, desc, a.run_url)
         return 0
     if a.pr is None:
         ap.error("--pr is required unless --merge-group-head is given")
@@ -278,8 +298,9 @@ def main() -> int:
     state, desc = _out(*combine(results))
     print(json.dumps({"context": CONTEXT, "sha": head, "state": state, "description": desc}))
     if a.post:
-        _gh(f"repos/{a.github}/statuses/{head}", "-f", f"state={state}", "-f", f"context={CONTEXT}",
-            "-f", f"description={desc}", *(["-f", f"target_url={a.run_url}"] if a.run_url else []))
+        _post(a.github, head, state, desc, a.run_url)
+        if state != "success":
+            revoke_queue(a.github, a.pr, a.default_branch, a.run_url)
     return 0
 
 

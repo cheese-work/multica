@@ -321,6 +321,64 @@ class MergeGroupTest(unittest.TestCase):
         self.assertIn("state=failure", posted[0])
 
 
+class QueueRevocationTest(unittest.TestCase):
+    """CHE-3240: a success carried onto a queue head must not outlive the PR-head verdict that earned it."""
+
+    BASE, G1, G2, OTHER = "1" * 40, "2" * 40, "3" * 40, "6" * 40
+    QUEUE_HEADS = {405: G1, 999: G2}  # queue head per tip PR number
+
+    def run_pr(self, comments, queue_heads=None, queue_error=False):
+        queue_heads = self.QUEUE_HEADS if queue_heads is None else queue_heads
+        posted = []
+        chains = {self.G1: [{"sha": self.G1, "parents": [self.BASE, HEAD], "message": "Merge pull request #405 from x/y"}],
+                  self.G2: [{"sha": self.G2, "parents": [self.OTHER, "7" * 40], "message": "Merge pull request #999 from x/z"}]}
+
+        def fake_gh(*args):
+            path = " ".join(args)
+            if "git/matching-refs/heads/gh-readonly-queue/main/" in path:
+                if queue_error:
+                    raise subprocess.CalledProcessError(1, ["gh"])
+                return "\n".join(queue_heads.values())
+            if "compare/main..." in path:
+                return "\n".join(json.dumps(c) for c in chains[path.split("...")[1].split()[0]])
+            if args[0] == "--paginate":
+                return json.dumps(c) if (c := comments[0]) and "issues/405/comments" in path else ""
+            if "commits/" in path:
+                return json.dumps({"number": 405, "head": HEAD})
+            if "pulls/405" in path:
+                return json.dumps({"head": {"sha": HEAD, "ref": PR["head_ref"]}, "base": {"sha": "d" * 40, "ref": "main"},
+                                   "user": {"id": BOT}})
+            if "statuses/" in path:
+                posted.append(args)
+            return ""
+
+        argv = ["x", "--repo", str(ROOT), "--github", "cheese-work/multica", "--pr", "405",
+                "--default-branch", "main", "--post"]
+        fake_run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=CLEAN_DIFF)
+        with mock.patch.object(sg, "_gh", fake_gh), mock.patch.object(sg.subprocess, "run", fake_run), \
+                mock.patch("sys.argv", argv), mock.patch("builtins.print"):
+            code = sg.main()
+        return code, posted
+
+    def test_a_revoked_verdict_flips_the_queue_head_that_carries_the_pr_to_failure(self):
+        code, posted = self.run_pr([comment("no verdict any more")])
+        self.assertEqual(code, 0)
+        by_sha = {a[0].rsplit("/", 1)[1]: a for a in posted if "statuses/" in a[0]}
+        self.assertIn(HEAD, by_sha)  # the PR head status itself
+        self.assertIn("state=pending", by_sha[HEAD])
+        self.assertIn("state=failure", by_sha[self.G1])
+        self.assertIn("#405", " ".join(by_sha[self.G1]))
+        self.assertNotIn(self.G2, by_sha)  # a group without the PR is untouched
+
+    def test_a_still_green_pr_leaves_the_queue_alone(self):
+        _, posted = self.run_pr([comment(verdict("PASS", repo="cheese-work/multica"))])
+        self.assertEqual([a[0].rsplit("/", 1)[1] for a in posted], [HEAD])
+
+    def test_a_queue_lookup_error_is_not_swallowed(self):
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_pr([comment("no verdict any more")], queue_error=True)
+
+
 class WorkflowTest(unittest.TestCase):
     def setUp(self):
         self.text = (ROOT / ".github/workflows/security-gate.yml").read_text()

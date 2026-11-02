@@ -11,6 +11,8 @@
 # (second parent of every MERGE-method queue commit); it evaluates nothing and reads no PR code. GitHub reads THIS
 # definition from the merge-group commit, so a PR that edits security-gate* could change this job: such a PR is
 # Cheese-merge only, and its own PR-head verdict (cross-lab PASS on that diff) is what the queue carries.
+# A PR-head status that is not `success` (verdict deleted, edited, or a new FAIL) also flips any queue head carrying that PR to
+# `failure`, so a carried success cannot outlive its verdict.
 # `issue_comment` (created, edited, deleted) is the path by which a verdict comment flips or revokes the status; `edited`
 # on the PR covers a retarget. The script re-reads the live head SHA and base ref.
 
