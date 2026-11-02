@@ -50,6 +50,8 @@ Run rules change with their own flags, with or without --steps-file; a rule
 flag left out keeps its value. --max-runs-per-issue N (1 to 1000) caps the runs
 one issue can use before the engine blocks it (0 restores the default of 15);
 --include-child-prs=false stops PR guards from reading the PRs of sub-issues.
+--start-status KEY sets the status where new issues of the workflow start (an
+unstarted or started step of the workflow; "" restores todo).
 Prints the server's readback.`,
 	Args: exactArgs(1),
 	RunE: runWorkflowUpdate,
@@ -75,6 +77,7 @@ func init() {
 	workflowUpdateCmd.Flags().String("steps-file", "", "JSON file holding the full steps array (required unless a rule flag is given)")
 	workflowUpdateCmd.Flags().Int("max-runs-per-issue", 0, "Runs one issue can use before it is blocked, 1-1000 (0 restores the default)")
 	workflowUpdateCmd.Flags().Bool("include-child-prs", true, "Whether PR guards also read the PRs of sub-issues")
+	workflowUpdateCmd.Flags().String("start-status", "", "Status where new issues of the workflow start; an unstarted or started step (\"\" restores todo)")
 	workflowUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 	for _, c := range []*cobra.Command{workflowUpdateCmd, workflowSetInstructionsCmd} {
 		c.Flags().String("decision-id", "", "CHE-2448 decision path: id of the decision request Cheese answered for this exact change. The CLI sends decision_id, before_sha256 and after_sha256 and takes the steps from the live workflow read. Agent task tokens only.")
@@ -163,8 +166,12 @@ func runWorkflowUpdate(cmd *cobra.Command, args []string) error {
 		include, _ := cmd.Flags().GetBool("include-child-prs")
 		body["include_child_prs"] = include
 	}
+	if cmd.Flags().Changed("start-status") {
+		key, _ := cmd.Flags().GetString("start-status")
+		body["start_status_key"] = key
+	}
 	if len(body) == 0 {
-		return errors.New("give --steps-file, --max-runs-per-issue or --include-child-prs")
+		return errors.New("give --steps-file, --max-runs-per-issue, --include-child-prs or --start-status")
 	}
 	if err := checkWorkflowBindingFlags(cmd); err != nil {
 		return err
@@ -338,7 +345,11 @@ func printWorkflowRules(wf map[string]any) {
 	if b, ok := wf["include_child_prs"].(bool); ok {
 		include = b
 	}
-	fmt.Printf("max runs per issue: %s, include child PRs: %t\n", maxRuns, include)
+	start := issueworkflow.StartStatus
+	if key := strVal(wf, "start_status_key"); key != "" {
+		start = key
+	}
+	fmt.Printf("max runs per issue: %s, include child PRs: %t, start status: %s\n", maxRuns, include, start)
 }
 
 // bindWorkflow hashes steps as the workflow's new steps; before is the hash of

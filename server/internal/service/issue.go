@@ -396,7 +396,7 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 		if p.WorkflowID.Valid {
 			return IssueCreateResult{}, issueworkflow.CheckStatus(def, p.Status)
 		}
-		p.Status = issueworkflow.StartStatus
+		p.Status = def.Start()
 	}
 	// The handler of the step the issue lands on comes from the workflow as it
 	// stands under the locks. An earlier unlocked read can name the former

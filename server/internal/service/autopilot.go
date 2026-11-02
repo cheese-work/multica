@@ -22,6 +22,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/issueguard"
 	"github.com/multica-ai/multica/server/internal/issueposition"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -771,7 +772,16 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 		return fmt.Errorf("allocate issue number: %w", err)
 	}
 
-	newPosition, err := issueposition.NextTopPosition(ctx, tx, ap.WorkspaceID, "todo")
+	// The issue starts where the project's workflow says (CHE-3113); a project
+	// without a workflow, or one with no start status, keeps todo.
+	startStatus := issueworkflow.StartStatus
+	if workflow, _, err := issueworkflow.ForIssue(ctx, qtx, ap.WorkspaceID, pgtype.UUID{}, projectID); err != nil {
+		return fmt.Errorf("resolve project workflow: %w", err)
+	} else if workflow != nil {
+		startStatus = workflow.Start()
+	}
+
+	newPosition, err := issueposition.NextTopPosition(ctx, tx, ap.WorkspaceID, startStatus)
 	if err != nil {
 		return fmt.Errorf("get next issue position: %w", err)
 	}
@@ -781,7 +791,7 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 		WorkspaceID:  ap.WorkspaceID,
 		Title:        title,
 		Description:  description,
-		Status:       "todo",
+		Status:       startStatus,
 		Priority:     "none",
 		AssigneeType: pgtype.Text{String: ap.AssigneeType, Valid: true},
 		AssigneeID:   ap.AssigneeID,

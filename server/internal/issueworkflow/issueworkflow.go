@@ -219,6 +219,34 @@ type Definition struct {
 	// only when both are stored.
 	TokenAllowance int64
 	TokenReserve   int64
+	// StartStatusKey is the status where new issues of the workflow start
+	// (CHE-3113); empty means StartStatus.
+	StartStatusKey string
+}
+
+// Start is the status a new issue lands on when its creator picks none. A key
+// the workflow no longer lists falls back to StartStatus.
+func (d Definition) Start() string {
+	if d.StartStatusKey != "" && d.Has(d.StartStatusKey) {
+		return d.StartStatusKey
+	}
+	return StartStatus
+}
+
+// ValidateStartStatus checks a workflow's start status: empty keeps todo;
+// otherwise the key must be one of the steps, in an unstarted or started
+// category, so a new issue never begins finished or cancelled.
+func ValidateStartStatus(key string, steps []Step, catalog map[string]CatalogEntry) error {
+	if key == "" {
+		return nil
+	}
+	if !(Definition{Steps: steps}).Has(key) {
+		return invalid("start status %q is not a status of this workflow", key)
+	}
+	if category := catalog[key].Category; category != issuestatus.CategoryUnstarted && category != issuestatus.CategoryStarted {
+		return invalid("start status %q must be an unstarted or started status", key)
+	}
+	return nil
 }
 
 // HandsOff reports whether entering the step reassigns the issue.
@@ -253,6 +281,7 @@ func Decode(row db.IssueWorkflow) (Definition, error) {
 	def := Definition{
 		ID: row.ID, Name: row.Name, IsDefault: row.IsDefault, Steps: steps,
 		MaxRunsPerIssue: int(row.MaxRunsPerIssue.Int32), IncludeChildPRs: row.IncludeChildPrs,
+		StartStatusKey: row.StartStatusKey.String,
 	}
 	if row.RunBudgetSince.Valid {
 		def.RunBudgetSince = row.RunBudgetSince.Time

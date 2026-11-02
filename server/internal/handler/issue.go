@@ -3403,6 +3403,10 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if createWorkflow != nil {
+		// A creator who picked no status gets the workflow's start status.
+		if req.Status == "" {
+			status = createWorkflow.Start()
+		}
 		if err := issueworkflow.CheckStatus(createWorkflow, status); err != nil {
 			writeIssueWorkflowError(w, err)
 			return
