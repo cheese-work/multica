@@ -48,10 +48,16 @@ func (h *Handler) resolveHumanInCharge(ctx context.Context, issue db.Issue, aski
 				return pgtype.UUID{}, nil
 			}
 			project, err := h.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: issue.ProjectID, WorkspaceID: issue.WorkspaceID})
-			if errors.Is(err, pgx.ErrNoRows) || project.LeadType.String != "member" {
+			if errors.Is(err, pgx.ErrNoRows) {
 				return pgtype.UUID{}, nil
 			}
-			return project.LeadID, err
+			if err != nil {
+				return pgtype.UUID{}, err
+			}
+			if project.LeadType.String != "member" {
+				return pgtype.UUID{}, nil
+			}
+			return project.LeadID, nil
 		}},
 		{"workspace_owner", func() (pgtype.UUID, error) {
 			owner, err := h.Queries.GetWorkspaceOwnerUserID(ctx, issue.WorkspaceID)

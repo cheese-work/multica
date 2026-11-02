@@ -2,11 +2,13 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 type hicFixture struct {
@@ -112,6 +114,34 @@ func TestHumanInChargeLookupErrorFailsClosed(t *testing.T) {
 	got, err := hicResolve(t, ctx, issue, fx.agentID)
 	if err == nil || got != nil {
 		t.Fatalf("lookup failure must return an error and no member, got %+v err=%v", got, err)
+	}
+}
+
+// A failed project-lead lookup must fail closed, not fall through to the owner.
+func TestHumanInChargeProjectLookupErrorFailsClosed(t *testing.T) {
+	lead := hicMember(t, "member")
+	project := dbfx.Project(t, "hic project", testutil.Cols{"lead_type": "member", "lead_id": lead})
+	issue := dbfx.Issue(t, "hic project error", testutil.Cols{"creator_type": "agent", "creator_id": createHandlerTestAgent(t, "hic-creator-"+uuid.NewString()[:8], []byte("[]")), "project_id": project})
+	fx := newHICFixture(t, issue)
+	ctx := context.Background()
+
+	got, err := hicResolve(t, ctx, issue, fx.agentID)
+	wantHIC(t, got, err, lead, "project_lead") // healthy lookup resolves the lead
+
+	real := testHandler.Queries
+	testHandler.Queries = db.New(failQueryDBTX{DBTX: testPool, failOn: "FROM project", err: errors.New("project lookup failed")})
+	t.Cleanup(func() { testHandler.Queries = real })
+	issueRow, err := real.GetIssue(ctx, parseUUID(issue))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentRow, err := real.GetAgent(ctx, parseUUID(fx.agentID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = testHandler.resolveHumanInCharge(ctx, issueRow, agentRow)
+	if err == nil || got != nil {
+		t.Fatalf("project lookup failure must return an error and no member, got %+v err=%v", got, err)
 	}
 }
 
