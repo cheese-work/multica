@@ -121,6 +121,7 @@ import type {
   ChatQuickActionsPendingState,
   ChatQuickActionsFailureState,
   ChatCancelFinalizedPayload,
+  ChatSupplementUpdatedPayload,
   ChatMessage,
   ChatMessageEventPayload,
   ChatPendingTask,
@@ -1113,7 +1114,7 @@ export function useRealtimeSync(
       "subscriber:added", "subscriber:removed",
       "daemon:heartbeat",
       // Chat events are handled explicitly below; do not double-invalidate.
-      "chat:message", "chat:done", "chat:quick_actions", "chat:cancel_finalized", "chat:session_read",
+      "chat:message", "chat:done", "chat:quick_actions", "chat:cancel_finalized", "chat:session_read", "chat:supplement_updated",
       "chat:session_created", "chat:session_deleted", "chat:session_updated",
       // task:message stays out of the prefix path because it fires per
       // streamed message during a long run — invalidating the snapshot on
@@ -1720,6 +1721,16 @@ export function useRealtimeSync(
       }
     });
 
+    // A steered follow-up changed delivery state (CHE-2820). The receipt and the
+    // head task's steer capability are server-authored, so refetch both.
+    const unsubChatSupplementUpdated = ws.on("chat:supplement_updated", (p) => {
+      const sessionId = (p as ChatSupplementUpdatedPayload | undefined)?.supplement?.chat_session_id;
+      if (typeof sessionId !== "string" || sessionId.length === 0) return;
+      qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
+      qc.invalidateQueries({ queryKey: chatKeys.messagesPage(sessionId) });
+      qc.invalidateQueries({ queryKey: chatKeys.pendingTask(sessionId) });
+    });
+
     // Lifecycle events are invalidation hints. They intentionally omit queue
     // previews and message ids, so only the pending-task endpoint can author
     // the complete queue shape.
@@ -1959,6 +1970,7 @@ export function useRealtimeSync(
       unsubChatDone();
       unsubChatQuickActions();
       unsubChatCancelFinalized();
+      unsubChatSupplementUpdated();
       unsubTaskQueued();
       unsubTaskDispatch();
       unsubTaskRunning();

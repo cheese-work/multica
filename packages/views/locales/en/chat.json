@@ -71,7 +71,25 @@
     "remove": "Remove queued message",
     "more": "More queue actions",
     "fallback": "Queued message",
+    "steer_starting": "Run is starting",
+    "steer_unsupported": "This run can't take new messages. The message stays queued.",
+    "stop_and_send": "Stop & send",
     "action_failed_toast": "Couldn't update the queued message"
+  },
+  "supplement": {
+    "added": "Added to run",
+    "read": "Read by agent",
+    "read_twice": "Read by agent; also sent again, the agent may see it twice",
+    "not_received": "Not received",
+    "unconfirmed": "Delivery unconfirmed",
+    "resent": "Sent again as a new run",
+    "send_new_run": "Send as a new run",
+    "send_again_anyway": "Send again anyway",
+    "confirm_title": "Send this message again?",
+    "confirm_body": "The agent may already have received this message. Sending it again can make the agent act on it twice.",
+    "confirm_send": "Send again",
+    "cancel": "Cancel",
+    "resend_failed_toast": "Couldn't send the message again"
   },
   "message_list": {
     "continued_from": "Continued from",

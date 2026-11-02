@@ -122,3 +122,38 @@ RETURNING *;
 
 -- name: InsertPasskeyEvent :exec
 INSERT INTO passkey_event (user_id, action, details) VALUES ($1, $2, $3);
+
+-- Decision passkey gate (CHE-2798 P6).
+
+-- name: LockWorkspaceDecisionGate :one
+SELECT id, decision_passkey_gate, policy_revision FROM workspace WHERE id = $1 FOR UPDATE;
+
+-- name: SetWorkspaceDecisionGate :one
+UPDATE workspace SET decision_passkey_gate = $2, policy_revision = policy_revision + 1, updated_at = now()
+WHERE id = $1
+RETURNING decision_passkey_gate, policy_revision;
+
+-- The person's row is the stable per-user lock that orders gate checks against
+-- membership additions: a check holds it FOR SHARE (NOWAIT, so a join in flight
+-- answers busy), a join holds it FOR NO KEY UPDATE until it commits. Without it
+-- a join could add a blocking workspace the check's membership read never saw.
+
+-- name: LockUserForGateCheck :exec
+SELECT id FROM "user" WHERE id = $1 FOR SHARE NOWAIT;
+
+-- name: LockUserForMembershipChange :exec
+SELECT id FROM "user" WHERE id = $1 FOR NO KEY UPDATE;
+
+-- A key share on every workspace the person belongs to: a gate flip, which
+-- takes the row FOR UPDATE, cannot commit between this read and the caller's
+-- commit. NOWAIT, so a flip in flight answers busy and nothing waits.
+
+-- name: LockUserWorkspaceGates :many
+SELECT w.decision_passkey_gate::text FROM member m JOIN workspace w ON w.id = m.workspace_id
+WHERE m.user_id = $1 ORDER BY w.id FOR KEY SHARE OF w NOWAIT;
+
+-- Keys that exist, suspect or not. A suspect key cannot sign, but it still
+-- means the person has a passkey the gate must hear from.
+
+-- name: CountLivePasskeys :one
+SELECT count(*)::int FROM user_passkey WHERE user_id = $1 AND revoked_at IS NULL;
