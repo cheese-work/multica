@@ -4356,6 +4356,17 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			return fmt.Errorf("claim task: %w", err)
 		}
 
+		// Rule E: the claim stamped the epoch on a statement snapshot that a
+		// compact committed just before our DM lock may have outdated. Restamp
+		// on a fresh snapshot; the DM share lock keeps the epoch fixed until
+		// commit.
+		if task.ChatSessionID.Valid {
+			if err := qtx.RebaseClaimedChatTaskEpoch(ctx, task.ID); err != nil {
+				outcome = "error_rebase_chat_epoch"
+				return fmt.Errorf("rebase claimed chat task epoch: %w", err)
+			}
+		}
+
 		// An idle task-owned direct-chat row may already be visible as the
 		// positional queue head. Normal completion reanchors a successor beside
 		// the assistant outcome before commit; this claim-time query is the
