@@ -27,6 +27,7 @@ import {
   Info,
   Coins,
   GitBranch,
+  Clock,
 } from "@multica/ui/icons";
 import { cn } from "@multica/ui/lib/utils";
 import { copyText } from "@multica/ui/lib/clipboard";
@@ -71,6 +72,7 @@ import {
   isCallStep,
   isGroupRow,
   rowCalls,
+  silentMinutes,
   toolKindTotals,
   type TraceCallStep,
   type TraceGroupRow,
@@ -208,6 +210,7 @@ function StepIcon({ step, className }: { step: TraceStep; className?: string }) 
   if (!isCallStep(step)) {
     if (step.kind === "thinking") return <Brain className={className} />;
     if (step.kind === "error") return <CircleAlert className={className} />;
+    if (step.kind === "silence_warn") return <Clock className={className} />;
     return <Bot className={className} />;
   }
 
@@ -484,6 +487,8 @@ export function AgentTranscriptDialog({
   const filterOptions = useMemo(() => {
     const options = new Map<string, { label: string; step: TraceStep }>();
     for (const step of steps) {
+      // A watchdog marker is not something the agent did, so it is no facet.
+      if (step.kind === "silence_warn") continue;
       const key = stepFilterKey(step);
       if (options.has(key)) continue;
       options.set(key, {
@@ -1420,6 +1425,7 @@ function TranscriptRow(props: TranscriptRowProps) {
   const { row } = props;
   if (isGroupRow(row)) return <GroupRow {...props} row={row} />;
   if (!isCallStep(row) && row.kind === "text") return <ProseRow {...props} row={row} />;
+  if (!isCallStep(row) && row.kind === "silence_warn") return <SilenceRow {...props} row={row} />;
   return <StepRow {...props} row={row} />;
 }
 
@@ -1512,6 +1518,24 @@ function ProseRow({ row, runStartMs }: TranscriptRowProps & { row: TraceMessageS
   );
 }
 
+/** The daemon's "no output" marker: a muted line with nothing to open. */
+function SilenceRow({ row, runStartMs }: TranscriptRowProps & { row: TraceMessageStep }) {
+  const { t } = useT("agents");
+  const minutes = silentMinutes(row.item.content);
+  return (
+    <div className="flex items-start gap-2 px-4 py-1.5">
+      <OffsetCell startedAt={row.startedAt} runStartMs={runStartMs} />
+      <span aria-hidden className="mt-0.5 w-0.5 self-stretch rounded-full bg-border" />
+      <StepIcon step={row} className="mt-1 h-3 w-3 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 flex-1 text-micro text-muted-foreground">
+        {minutes === undefined
+          ? t(($) => $.transcript.silence_warn_unknown)
+          : t(($) => $.transcript.silence_warn, { minutes })}
+      </span>
+    </div>
+  );
+}
+
 /** One call, one thinking block, or one error: a line, with its detail one
  *  click away in the inspector. */
 function StepRow({
@@ -1543,6 +1567,9 @@ function StepRow({
     : firstLineOf((row as TraceMessageStep).item.content);
   const pending = call !== null && isLive && !call.result;
   const selected = selectedSeq === row.seq;
+  // A stalled call that has since returned is no longer "still running".
+  const stalledMinutes = call?.stalled && !call.result ? silentMinutes(call.stalled.content) : undefined;
+  const stalled = call?.stalled !== undefined && !call.result;
 
   return (
     <button
@@ -1587,6 +1614,13 @@ function StepRow({
         >
           {summary}
         </span>
+        {stalled && (
+          <span className="shrink-0 rounded-sm bg-warning/10 px-1 text-micro text-warning">
+            {stalledMinutes === undefined
+              ? t(($) => $.transcript.tool_stalled_unknown)
+              : t(($) => $.transcript.tool_stalled, { minutes: stalledMinutes })}
+          </span>
+        )}
       </span>
       <DurationCell ms={call?.durationMs} pending={pending} />
     </button>

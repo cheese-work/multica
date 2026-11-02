@@ -271,6 +271,56 @@ describe("AgentTranscriptDialog", () => {
     }
   });
 
+  describe("watchdog markers", () => {
+    const at = (seconds: number) =>
+      new Date(Date.parse(baseTask.started_at!) + seconds * 1000).toISOString();
+
+    it("renders silence_warn as a muted row with the silent minutes", () => {
+      renderDialog([
+        { seq: 1, type: "text", content: "Working on it", created_at: at(0) },
+        { seq: 2, type: "silence_warn", content: "No agent activity for 15m0s", created_at: at(900) },
+      ]);
+
+      expect(screen.getByText("No output for 15 min")).toBeInTheDocument();
+    });
+
+    it("badges the matching running call with tool_stalled and not other calls", () => {
+      renderDialog(
+        [
+          { seq: 1, type: "tool_use", tool: "Bash", callId: "A", input: { command: "slow-A" }, created_at: at(0) },
+          { seq: 2, type: "tool_use", tool: "Bash", callId: "B", input: { command: "fast-B" }, created_at: at(1) },
+          { seq: 3, type: "tool_stalled", tool: "Bash", callId: "A", content: "Tool call running for 20m0s with no result", created_at: at(1200) },
+        ],
+        { task: liveTask, isLive: true },
+      );
+
+      expect(
+        within(screen.getByRole("button", { name: /slow-A/ })).getByText("Still running past 20 min"),
+      ).toBeInTheDocument();
+      expect(
+        within(screen.getByRole("button", { name: /fast-B/ })).queryByText(/Still running past/),
+      ).not.toBeInTheDocument();
+    });
+
+    it("drops the stalled badge once the call has a result", () => {
+      renderDialog([
+        { seq: 1, type: "tool_use", tool: "Bash", callId: "A", input: { command: "slow-A" }, created_at: at(0) },
+        { seq: 2, type: "tool_stalled", tool: "Bash", callId: "A", content: "Tool call running for 20m0s with no result", created_at: at(1200) },
+        { seq: 3, type: "tool_result", tool: "Bash", callId: "A", output: "done", created_at: at(1300) },
+      ]);
+
+      expect(screen.queryByText(/Still running past/)).not.toBeInTheDocument();
+    });
+
+    it("keeps rendering an unknown future type instead of throwing", () => {
+      renderDialog([
+        { seq: 1, type: "future_marker" as TimelineItem["type"], content: "Something new", created_at: at(0) },
+      ]);
+
+      expect(screen.getByText("Something new")).toBeInTheDocument();
+    });
+  });
+
   it("shows what was asked, whole, under the header", () => {
     // The lists that open this dialog cut the ask to one line; here it wraps.
     const ask = "Merge the three split-out sub-issues back into this PR &amp; ship conditions, history and runaway protection together";
