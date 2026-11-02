@@ -69,7 +69,7 @@ export function renderComparison(base, head) {
     .join("\n\n");
 }
 
-const summarizeFiles = (files) => {
+export const summarizeFiles = (files) => {
   const merged = Object.assign({}, ...files.map((file) => JSON.parse(readFileSync(file, "utf8")).profiles));
   return Object.fromEntries(
     Object.entries(merged).map(([p, routes]) => [
