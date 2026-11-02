@@ -346,10 +346,6 @@ func TestRunBudgetWorkflowEdgeMoveWaitsForAMoveInFlight(t *testing.T) {
 		t.Fatal("isolated database required")
 	}
 	c, _ := budgetedAt(t, 40, 38)
-	issue, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(c.issueID))
-	if err != nil {
-		t.Fatal(err)
-	}
 	release := holdRunBudgetBoundary(t, c.issueID)
 	defer release()
 
@@ -357,7 +353,7 @@ func TestRunBudgetWorkflowEdgeMoveWaitsForAMoveInFlight(t *testing.T) {
 	var moved bool
 	go func() {
 		defer close(done)
-		moved, _ = testHandler.moveIssueOnEdge(context.Background(), issue, "in_review", "ci_green_advance", nil, false)
+		moved, _ = moveIssueOnEdgeOf(c.issueID, "in_review")
 	}()
 	if !stillRunning(done) {
 		t.Fatal("the edge move finished while a window boundary was in flight")
@@ -393,6 +389,26 @@ func TestRunBudgetExhaustionBlockDoesNotWaitForTheBoundaryLock(t *testing.T) {
 	if stillRunning(done) {
 		t.Fatal("the exhaustion block waited for the window boundary lock")
 	}
+}
+
+// moveIssueOnEdgeOf moves the issue as a workflow edge does, reading the issue
+// again when a concurrent writer wins the revision: the notice an admission
+// posts in the background also writes the issue, and it lands at any moment
+// after the admission, so one read of the issue can be stale by the move.
+func moveIssueOnEdgeOf(issueID, to string) (bool, error) {
+	var err error
+	for range 20 {
+		var issue db.Issue
+		if issue, err = testHandler.Queries.GetIssue(context.Background(), parseUUID(issueID)); err != nil {
+			return false, err
+		}
+		var moved bool
+		if moved, _, err = testHandler.tryMoveIssueOnEdge(context.Background(), issue, to, "ci_green_advance", nil, false); moved || !errors.Is(err, pgx.ErrNoRows) {
+			return moved, err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false, err
 }
 
 // withSmallPool returns a copy of the test handler on a pool of n connections:

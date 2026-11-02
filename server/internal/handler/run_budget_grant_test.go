@@ -161,11 +161,7 @@ func TestRunBudgetStepGrantPolicy(t *testing.T) {
 
 	t.Run("a workflow edge's first entry grants once", func(t *testing.T) {
 		c, _ := budgetedAt(t, 40, 2)
-		issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(c.issueID))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if moved, _, err := testHandler.tryMoveIssueOnEdge(ctx, issue, "in_review", "ci_green_advance", nil, false); !moved {
+		if moved, err := moveIssueOnEdgeOf(c.issueID, "in_review"); !moved {
 			t.Fatalf("the edge move did not happen: %v", err)
 		}
 		if got := grantCount(t, c.issueID); got != 1 {
