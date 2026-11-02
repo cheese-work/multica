@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 
@@ -246,7 +247,7 @@ func TestEpochBound_AutoCompactTriggerIgnoresOldEpoch(t *testing.T) {
 	dbfx.Exec(t, `
 		INSERT INTO agent_task_queue (agent_id, runtime_id, chat_session_id, status, priority, task_kind, compact_reason, compact_trigger_tokens, chat_compaction_epoch)
 		VALUES ($1, $2, $3, 'completed', 0, 'compact', 'r', 9000, 0)`, agentID, runtimeID, sessionID)
-	if _, err := testHandler.Queries.GetLastAutoCompactTriggerForSession(context.Background(), parseUUID(sessionID)); err != pgx.ErrNoRows {
+	if _, err := testHandler.Queries.GetLastAutoCompactTriggerForSession(context.Background(), parseUUID(sessionID)); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("old-epoch trigger err = %v, want no rows", err)
 	}
 	dbfx.Exec(t, `UPDATE agent_task_queue SET chat_compaction_epoch = 1 WHERE chat_session_id = $1 AND task_kind = 'compact'`, sessionID)
