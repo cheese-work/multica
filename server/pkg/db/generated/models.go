@@ -753,6 +753,14 @@ type CommentReaction struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type CommentSearchText struct {
+	CommentID     pgtype.UUID        `json:"comment_id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	ContentFolded string             `json:"content_folded"`
+}
+
 type CommentSupersession struct {
 	SupersededCommentID  pgtype.UUID        `json:"superseded_comment_id"`
 	SupersedingCommentID pgtype.UUID        `json:"superseding_comment_id"`
@@ -1807,6 +1815,13 @@ type IssueRunBudgetEntry struct {
 	CapDelta    int32              `json:"cap_delta"`
 	TokensDelta int64              `json:"tokens_delta"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type IssueSearchText struct {
+	IssueID           pgtype.UUID `json:"issue_id"`
+	WorkspaceID       pgtype.UUID `json:"workspace_id"`
+	TitleFolded       string      `json:"title_folded"`
+	DescriptionFolded string      `json:"description_folded"`
 }
 
 type IssueSourceContext struct {

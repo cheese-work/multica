@@ -889,20 +889,38 @@ type searchResult struct {
 // case-insensitive LIKE semantics as the legacy query. The pipeline deliberately
 // trades the title, description, and comment content GIN fast paths for one
 // predictable pass over each relation within the selected workspace.
+// searchCommentSource scopes the name "comment" to the stored folded text for
+// one CTE body, so the comment scan reads one narrow table instead of joining
+// comment to its side table. content is the folded text; the unfolded body is
+// only fetched by primary key for the matches (comment_cased).
+const searchCommentSource = `comment AS (
+			SELECT comment_id AS id, issue_id, workspace_id, created_at, content_folded AS content
+			FROM comment_search_text
+		)`
+
+// searchIssueSource exposes the stored folded text as title and description,
+// next to the raw text that the exact-diacritic ranking compares against.
+const searchIssueSource = `(
+		SELECT i.id, i.workspace_id, i.status, i.updated_at, i.number,
+			i.title AS raw_title, i.description AS raw_description,
+			ist.title_folded AS title, ist.description_folded AS description
+		FROM issue i
+		JOIN issue_search_text ist ON ist.issue_id = i.id AND ist.workspace_id = i.workspace_id
+	)`
+
 func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, includeClosed bool, terminalStatusKeys []string) (string, []any) {
+	// The stored search text is lowered and diacritic-folded (search_fold), so the
+	// patterns are folded the same way. The lowered-only query is kept to rank a
+	// match that also agrees on diacritics above one that matches after folding.
+	lowerPhrase := strings.ToLower(phrase)
 	lowerTerms := make([]string, len(terms))
+	foldedTerms := make([]string, len(terms))
 	for i, term := range terms {
 		lowerTerms[i] = strings.ToLower(term)
+		foldedTerms[i] = foldDiacritics(term)
 	}
-	return buildFoldedSearchQuery(strings.ToLower(phrase), lowerTerms, strings.ToLower(phrase), lowerTerms, queryNum, hasNum, includeClosed, terminalStatusKeys)
-}
-
-// buildFoldedSearchQuery takes the query twice: lowered (still carrying its
-// diacritics) and folded by the database with foldQueryTexts, so the patterns
-// match the foldSQL() column side exactly. When the lowered query differs from
-// the folded one, matches that also agree on the diacritics rank first; an
-// unaccented query has nothing to prefer.
-func buildFoldedSearchQuery(lowerPhrase string, lowerTerms []string, phrase string, terms []string, queryNum int, hasNum bool, includeClosed bool, terminalStatusKeys []string) (string, []any) {
+	phrase = foldDiacritics(phrase)
+	terms = foldedTerms
 	exactDiacritics := lowerPhrase != phrase
 
 	args := []any{}
@@ -995,8 +1013,8 @@ func buildFoldedSearchQuery(lowerPhrase string, lowerTerms []string, phrase stri
 		)
 	}
 
-	// Cased flags (see casedMatch) cost a second normalization, so the long
-	// description pays it only where the folded text already matched.
+	// Cased flags (see casedMatch) read the unfolded text, so the long description
+	// pays that only where the folded text already matched.
 	descriptionCasedJoin := ""
 	if exactDiacritics {
 		descriptionMatch := loweredIssueDescription + " LIKE " + phraseContainsParam
@@ -1008,7 +1026,7 @@ func buildFoldedSearchQuery(lowerPhrase string, lowerTerms []string, phrase stri
 			descriptionMatch += " OR (" + strings.Join(allTerms, " AND ") + ")"
 		}
 		issueFlagColumns = append(issueFlagColumns,
-			casedMatch("LOWER(i.title)")+" AS title_cased",
+			casedMatch("LOWER(i.raw_title)")+" AS title_cased",
 			"COALESCE(description_cased.v, FALSE) AS description_cased",
 		)
 		descriptionCasedJoin = fmt.Sprintf(`LEFT JOIN LATERAL (
@@ -1016,7 +1034,7 @@ func buildFoldedSearchQuery(lowerPhrase string, lowerTerms []string, phrase stri
 			WHERE %s
 			OFFSET 0
 		) description_cased ON TRUE
-		`, casedMatch("LOWER(i.description)"), descriptionMatch)
+		`, casedMatch("LOWER(i.raw_description)"), descriptionMatch)
 	}
 
 	issueWhere := "i.workspace_id = " + wsParam
@@ -1035,21 +1053,19 @@ func buildFoldedSearchQuery(lowerPhrase string, lowerTerms []string, phrase stri
 	// fences so expression indexes can still match them.
 	issueMatchesCTE := fmt.Sprintf(`issue_matches AS (
 		SELECT %s
-		FROM issue i
+		FROM %s i
 		CROSS JOIN LATERAL (
-			SELECT %s AS lowered
+			SELECT LOWER(i.title) AS lowered
 			OFFSET 0
 		) lowered_issue_title
 		LEFT JOIN LATERAL (
-			SELECT %s AS lowered
+			SELECT LOWER(COALESCE(i.description, '')) AS lowered
 			WHERE NOT %s
 			OFFSET 0
 		) lowered_issue_description ON TRUE
 		%sWHERE %s
 	)`, strings.Join(issueFlagColumns, ",\n\t\t\t"),
-		foldSQL("i.title"),
-		foldSQL("COALESCE(i.description, '')"),
-		titleMatchExpr, descriptionCasedJoin, issueWhere)
+		searchIssueSource, titleMatchExpr, descriptionCasedJoin, issueWhere)
 
 	// Comments are also scanned once, workspace-first. This intentionally avoids
 	// the legacy planner choice between global content GIN postings and repeated
@@ -1088,30 +1104,31 @@ func buildFoldedSearchQuery(lowerPhrase string, lowerTerms []string, phrase stri
 	// looking the ID up later would repeat text predicates after pagination.
 	// The aggregate stores matching UUIDs per issue (not content), and the ID
 	// tie-break makes equal created_at values deterministic.
-	commentFlagColumns = append(commentFlagColumns, fmt.Sprintf(
-		"(ARRAY_AGG(c.id ORDER BY c.created_at DESC, c.id DESC) FILTER (WHERE %s))[1] AS snippet_comment_id",
-		commentSnippetPredicate,
-	))
-
+	// With exact diacritics the aggregate keeps the whole ordered ID list, so the
+	// cased check below reuses it and the snippet is its first element.
+	snippetAggregate := fmt.Sprintf(
+		"ARRAY_AGG(c.id ORDER BY c.created_at DESC, c.id DESC) FILTER (WHERE %s)", commentSnippetPredicate)
+	commentOuterColumns := "*"
 	if exactDiacritics {
-		// Ids only, not content: the exact-diacritic rank reads the matching
-		// comments by primary key once the candidate set is known.
-		commentFlagColumns = append(commentFlagColumns, fmt.Sprintf(
-			"ARRAY_AGG(c.id) FILTER (WHERE %s) AS matching_comment_ids", commentSnippetPredicate))
+		commentFlagColumns = append(commentFlagColumns, snippetAggregate+" AS matched_comment_ids")
+		commentOuterColumns = "*, matched_comment_ids[1] AS snippet_comment_id"
+	} else {
+		commentFlagColumns = append(commentFlagColumns, "("+snippetAggregate+")[1] AS snippet_comment_id")
 	}
 
 	// PostgreSQL otherwise inlines this scalar LATERAL subquery and recomputes
-	// the folded c.content for every flag. OFFSET 0 is the intentional planner fence
+	// LOWER(c.content) for every flag. OFFSET 0 is the intentional planner fence
 	// that keeps the long comment body lowercased once per row. Future indexable
 	// text predicates must stay outside this projection-only fence so an index on
 	// LOWER(c.content) can still match them.
 	commentMatchesCTE := fmt.Sprintf(`comment_matches AS MATERIALIZED (
-		SELECT *
+		WITH %s
+		SELECT %s
 		FROM (
 			SELECT %s
 			FROM comment c
 			CROSS JOIN LATERAL (
-				SELECT %s AS lowered
+				SELECT LOWER(c.content) AS lowered
 				OFFSET 0
 			) lowered_comment
 			WHERE c.workspace_id = %s
@@ -1119,22 +1136,29 @@ func buildFoldedSearchQuery(lowerPhrase string, lowerTerms []string, phrase stri
 		) aggregated_comments
 		WHERE %s
 	)`,
+		searchCommentSource,
+		commentOuterColumns,
 		strings.Join(commentFlagColumns, ",\n\t\t\t\t"),
-		foldSQL("c.content"),
 		wsParam,
 		strings.Join(commentCandidateFlags, " OR "),
 	)
 
 	// Exact diacritics rank a match above one that only agrees after folding,
-	// across all three sources. The comment side reads every matching comment
-	// by primary key: a per-comment flag in the aggregate would normalize each
-	// comment in the workspace a second time.
+	// across all three sources. Comments get that check by primary key, only for
+	// the ones that matched after folding, so the aggregate never reads raw bodies.
 	diacriticRank := "0"
+	casedCommentsJoin := ""
 	if exactDiacritics {
-		diacriticRank = `CASE WHEN im.title_cased OR im.description_cased OR EXISTS (
-				SELECT 1 FROM comment sc
-				WHERE sc.id = ANY(cm.matching_comment_ids) AND ` + casedMatch("LOWER(sc.content)") + `
-			) THEN 0 ELSE 1 END`
+		commentMatchesCTE += fmt.Sprintf(`,
+	comment_cased AS (
+		SELECT DISTINCT cm.issue_id
+		FROM comment_matches cm
+		CROSS JOIN LATERAL unnest(cm.matched_comment_ids) AS matched(id)
+		JOIN comment rc ON rc.id = matched.id AND rc.workspace_id = %s
+		WHERE %s
+	)`, wsParam, casedMatch("LOWER(rc.content)"))
+		casedCommentsJoin = "LEFT JOIN comment_cased cc ON cc.issue_id = im.issue_id\n\t\t"
+		diacriticRank = "CASE WHEN im.title_cased OR im.description_cased OR cc.issue_id IS NOT NULL THEN 0 ELSE 1 END"
 	}
 
 	// Stage two combines the two narrow sources, applies the legacy eligibility
@@ -1240,8 +1264,8 @@ func buildFoldedSearchQuery(lowerPhrase string, lowerTerms []string, phrase stri
 			%s AS match_source
 		FROM issue_matches im
 		LEFT JOIN comment_matches cm ON cm.issue_id = im.issue_id
-		WHERE %s
-	)`, cancelledRank, rankExpr, statusRank, diacriticRank, matchSourceExpr, eligibleExpr)
+		%sWHERE %s
+	)`, cancelledRank, rankExpr, statusRank, diacriticRank, matchSourceExpr, casedCommentsJoin, eligibleExpr)
 
 	pageCandidatesCTE := fmt.Sprintf(`page_candidates AS MATERIALIZED (
 		SELECT issue_id, updated_at, snippet_comment_id, cancelled_rank, relevance_rank, status_rank, diacritic_rank, match_source
@@ -1324,27 +1348,14 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		terminalStatusKeys = resolvedKeys
 	}
 
-	foldedQuery, err := foldQueryTexts(ctx, h.DB, append([]string{q}, terms...))
-	if err != nil {
-		if writeSearchCancellation(w, r, err) {
-			return
-		}
-		slog.Warn("fold search query failed", append(logger.RequestAttrs(r), "error", err)...)
-		writeError(w, http.StatusInternalServerError, "failed to search issues")
-		return
-	}
-	lowerTerms := make([]string, len(terms))
-	for i, term := range terms {
-		lowerTerms[i] = strings.ToLower(term)
-	}
-	sqlQuery, args := buildFoldedSearchQuery(strings.ToLower(q), lowerTerms, foldedQuery[0], foldedQuery[1:], queryNum, hasNum, includeClosed, terminalStatusKeys)
+	sqlQuery, args := buildSearchQuery(q, terms, queryNum, hasNum, includeClosed, terminalStatusKeys)
 	// Fill placeholder args: $4 = workspace_id, last two = limit, offset
 	args[3] = wsUUID
 	args[len(args)-2] = limit
 	args[len(args)-1] = offset
 
 	var results []searchResult
-	err = runSearchQuery(ctx, h.TxStarter, sqlQuery, args, func(rows pgx.Rows) error {
+	err := runSearchQuery(ctx, h.TxStarter, sqlQuery, args, func(rows pgx.Rows) error {
 		for rows.Next() {
 			sr, err := scanSearchIssue(rows)
 			if err != nil {
