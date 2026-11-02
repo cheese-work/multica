@@ -106,7 +106,7 @@ def semgrep_scan(repo: str, rev: str, paths: list[str] | None = None) -> list[di
         chunks = [[]] if paths is None else [paths[i:i + 200] for i in range(0, len(paths), 200)]
         for chunk in chunks:
             try:
-                tar = subprocess.run(["git", "-C", repo, "archive", rev, "--", *chunk],
+                tar = subprocess.run(["git", "--literal-pathspecs", "-C", repo, "archive", rev, "--", *chunk],
                                      check=True, capture_output=True).stdout
                 with tarfile.open(fileobj=io.BytesIO(tar)) as t:
                     t.extractall(root, filter="data")
