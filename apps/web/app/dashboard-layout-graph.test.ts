@@ -51,6 +51,13 @@ function staticGraph(entry: string): Set<string> {
   return seen;
 }
 
+/** Files in the static graph that import Tiptap or ProseMirror directly (the editor engine, ~100 KiB). */
+function engineImporters(entry: string): string[] {
+  return [...staticGraph(entry)].filter((f) =>
+    [...readFileSync(f, "utf8").matchAll(STATIC_IMPORT)].some((m) => /^@tiptap\//.test((m[1] ?? m[2])!)),
+  );
+}
+
 const dashboard = join(webRoot, "app/[workspaceSlug]/(dashboard)");
 const reachableFrom = (entry: string, suffix: string) =>
   [...staticGraph(join(dashboard, entry))].filter((f) => f.endsWith(suffix));
@@ -78,6 +85,14 @@ describe("list pages static import graph", () => {
     (entry) => {
       expect(reachableFrom(entry, "views/issues/components/issue-detail.tsx")).toEqual([]);
       expect(reachableFrom(entry, "views/editor/content-editor.tsx")).toEqual([]);
+    },
+  );
+
+  // The composer defers its editor, but a helper that imports Tiptap would drag the engine back in.
+  it.each(["chat/page.tsx", "inbox/page.tsx", "issues/page.tsx", "projects/page.tsx"])(
+    "%s does not statically reach the Tiptap engine",
+    (entry) => {
+      expect(engineImporters(join(dashboard, entry))).toEqual([]);
     },
   );
 });
