@@ -79,14 +79,33 @@ describe("RouteDataPrefetch", () => {
     expect(prefetched).toHaveLength(0);
 
     // The page's own requests get a head start on a slow link.
-    vi.advanceTimersByTime(3000);
+    vi.advanceTimersByTime(2000);
     expect(prefetched).toHaveLength(0);
 
-    vi.advanceTimersByTime(3000);
+    vi.advanceTimersByTime(1000);
 
     const warmed = keys();
     expect(warmed.length).toBeGreaterThan(0);
     expect(new Set(warmed).size).toBeGreaterThanOrEqual(5);
+  });
+
+  it("waits for the page's own requests, then for a quiet period", async () => {
+    let finish: (value: string) => void = () => {};
+    renderLinks();
+    void qc.fetchQuery({
+      queryKey: ["page-data"],
+      queryFn: () => new Promise<string>((resolve) => (finish = resolve)),
+    });
+
+    vi.advanceTimersByTime(60_000);
+    expect(prefetched).toHaveLength(0);
+
+    finish("done");
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(prefetched).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(prefetched.length).toBeGreaterThan(0);
   });
 
   it("stays idle without a resolved workspace", () => {
