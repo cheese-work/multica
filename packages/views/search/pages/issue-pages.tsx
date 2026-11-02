@@ -25,6 +25,7 @@ import { StatusIcon } from "../../issues/components/status-icon";
 import { PriorityIcon } from "../../issues/components/priority-icon";
 import { outcomeMessage } from "../../issues/components/quick-actions-section";
 import { useIssueStatusOptions } from "../../issues/utils/status-options";
+import { useNotifyCatalogUnresolved } from "../../workflows/use-notify-catalog-unresolved";
 import { ProjectIcon } from "../../projects/components/project-icon";
 import { useT } from "../../i18n";
 import { HighlightText } from "../highlight-text";
@@ -75,17 +76,20 @@ export function IssueStatusPage({ target, query }: { target: IssueTarget; query:
     enabled: !single && sharedProjectId === undefined,
   });
   // A selection inside one project offers that project's workflow statuses;
-  // one spanning projects offers the statuses every selected issue's
-  // workflow allows — the batch toolbar's rule. (MUL-7420)
-  const { options, workflow } = useIssueStatusOptions(
+  // one spanning projects, or holding an issue with its own workflow, offers
+  // the statuses every selected issue's workflow allows — the batch toolbar's
+  // rule. (MUL-7420, CHE-2822)
+  const hasOverride = issues.some((issue) => issue.workflow_id);
+  const { options, workflow, resolved, retry } = useIssueStatusOptions(
     wsId,
-    single ? single.project_id : (sharedProjectId ?? undefined),
+    single ? single.project_id : hasOverride ? undefined : (sharedProjectId ?? undefined),
     single?.status,
     single?.workflow_id,
   );
+  const notifyCatalogUnresolved = useNotifyCatalogUnresolved();
   const allowed = useMemo(
-    () => (single || sharedProjectId ? null : sharedWorkflowStatusKeys(workflows, projects, issues)),
-    [issues, projects, sharedProjectId, single, workflows],
+    () => (single || (sharedProjectId && !hasOverride) ? null : sharedWorkflowStatusKeys(workflows, projects, issues)),
+    [hasOverride, issues, projects, sharedProjectId, single, workflows],
   );
   const current = common(issues, (issue) => issue.status);
   const visible = filterByLabel(
@@ -97,6 +101,12 @@ export function IssueStatusPage({ target, query }: { target: IssueTarget; query:
 
   const select = (status: string) => {
     palette.close();
+    // A workflow that is merely unresolved reads as "no handoff"; the server
+    // would still apply the real one with no confirmation shown.
+    if (single && (single.project_id || single.workflow_id) && !resolved) {
+      notifyCatalogUnresolved(() => retry?.());
+      return;
+    }
     if (
       single &&
       workflow &&
