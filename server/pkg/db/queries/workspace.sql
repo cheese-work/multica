@@ -3,6 +3,7 @@ SELECT w.id, w.name, w.slug, w.description, w.settings,
        w.created_at, w.updated_at, w.context, w.repos,
        w.issue_prefix, w.issue_counter, w.avatar_url, w.attribution_fail_closed,
        w.export_redaction_mode, w.export_manifest_retention_days,
+       w.decision_passkey_gate, w.policy_revision,
        w.scheduling_paused_at, w.scheduling_paused_by
 FROM member m
 JOIN workspace w ON w.id = m.workspace_id

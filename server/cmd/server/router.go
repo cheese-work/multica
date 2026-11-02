@@ -1808,6 +1808,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// bytes stay off the authenticated app/API origin.
 					r.Get("/plugins/{installationId}/surfaces/{surfaceKey}/launch", h.GetPluginSurfaceLaunch)
 				})
+				// Owner-only: the decision passkey gate, signed with a passkey.
+				r.Group(func(r chi.Router) {
+					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner"))
+					r.With(handler.RequireHumanActor).Post("/decision-gate/challenge", h.ChallengeDecisionGate)
+					r.With(handler.RequireHumanActor).Put("/decision-gate", h.SetDecisionGate)
+				})
 				// Admin-level access
 				r.Group(func(r chi.Router) {
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))

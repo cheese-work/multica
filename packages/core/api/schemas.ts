@@ -24,6 +24,8 @@ import type {
   ChatSessionUsage,
   ChatWakeup,
   PrioritizeQueuedChatTaskResponse,
+  ChatSupplement,
+  ResendChatSupplementResponse,
   SendChatMessageResponse,
   StartMikaOnboardingResponse,
   Comment,
@@ -1108,6 +1110,19 @@ export const OpenDecisionRequestListSchema = z.lazy(() => z.array(z.object({
   }).loose()).catch([]),
 }).loose()));
 
+// An unknown status degrades to `uncertain`: it never claims the agent read the
+// message and never invites a plain resend that could duplicate it.
+export const ChatSupplementSchema = z.lazy((): z.ZodType<ChatSupplement> => z.object({
+  message_id: z.string(),
+  chat_session_id: z.string(),
+  task_id: z.string().default(""),
+  status: z.enum(["pending", "delivering", "delivered", "uncertain", "failed"]).catch("uncertain"),
+  failure_reason: z.string().nullish().transform((v) => v ?? null),
+  delivered_at: z.string().nullish().transform((v) => v ?? null),
+  acked_after_resend_at: z.string().nullish().transform((v) => v ?? null),
+  resent_task_id: z.string().nullish().transform((v) => v ?? null),
+}).loose());
+
 export const ChatMessageSchema = z.lazy(() => z.object({
   id: z.string(),
   chat_session_id: z.string(),
@@ -1128,6 +1143,7 @@ export const ChatMessageSchema = z.lazy(() => z.object({
   decision_requests: z.array(DecisionRequestCardSchema).optional().catch(undefined),
   scheduled_wakeup: ChatScheduledWakeupSchema.nullish().catch(undefined),
   carried_from_session_id: z.string().nullable().optional().catch(undefined),
+  supplement: ChatSupplementSchema.optional().catch(undefined),
   // Optional additive data degrades independently: a malformed suggestion
   // must not hide the assistant reply that contains it.
   quick_actions: z.array(ChatQuickActionSchema).catch([]).optional().default([]),
@@ -2636,6 +2652,8 @@ export const ChatPendingTaskSchema: z.ZodType<ChatPendingTask> = z.lazy(() => z.
   status: z.string().optional(),
   created_at: z.string().optional(),
   supports_queue: z.boolean().optional(),
+  // An unknown value reads as unsupported so Steer never fires on a guess.
+  head_supplement: z.enum(["capable", "starting", "unsupported"]).optional().catch("unsupported"),
   queued_tasks: ChatQueuedTasksSchema.optional(),
 }).loose());
 
@@ -2658,6 +2676,22 @@ export const StartMikaOnboardingResponseSchema: z.ZodType<StartMikaOnboardingRes
   started: z.boolean(),
   message_id: z.string().nullish().transform((id) => id ?? undefined),
   created_at: z.string().nullish().transform((at) => at ?? undefined),
+}).loose());
+
+export const EMPTY_CHAT_SUPPLEMENT: ChatSupplement = {
+  message_id: "",
+  chat_session_id: "",
+  task_id: "",
+  status: "pending",
+  failure_reason: null,
+  delivered_at: null,
+  acked_after_resend_at: null,
+  resent_task_id: null,
+};
+
+export const ResendChatSupplementResponseSchema: z.ZodType<ResendChatSupplementResponse> = z.lazy(() => z.object({
+  task_id: z.string(),
+  supplement: ChatSupplementSchema,
 }).loose());
 
 export const PrioritizeQueuedChatTaskResponseSchema:
