@@ -106,12 +106,10 @@ func (h *Handler) tryMoveIssueOnEdge(ctx context.Context, issue db.Issue, to, so
 	// issue's status between this write and the grant. The block an exhausted
 	// budget causes neither grants nor needs it: it runs under the refused
 	// admission's locks, after that admission wrote the window's ledger row, and
-	// the boundary lock comes before those locks everywhere else. A listener
-	// reaches this move from inside another request's lock, so it takes no slot
-	// of its own (see enterRunBudgetBoundary).
+	// the boundary lock comes before those locks everywhere else.
 	release := func() {}
 	if source != "run_budget" {
-		if release, err = h.lockBoundary(ctx, issue.ID, false); err != nil {
+		if release, err = h.lockRunBudgetBoundary(ctx, issue.ID); err != nil {
 			return false, false, fmt.Errorf("run budget boundary: %w", err)
 		}
 	}

@@ -155,7 +155,7 @@ func (h *Handler) TopUpIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 	}
 	// Moves and top-ups on one issue start their windows one at a time, and
 	// wait for their turn before they hold a connection.
-	leave, err := h.enterRunBudgetBoundary(r.Context(), issue.ID, true)
+	leave, err := h.enterRunBudgetBoundary(r.Context(), issue.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to top up the run budget")
 		return
@@ -265,11 +265,10 @@ func boundarySlotsOf(starter txStarter) chan struct{} {
 }
 
 // enterRunBudgetBoundary waits, holding no connection, for the issue's turn
-// and then for a slot, and returns the function that gives both back. A
-// request that holds a boundary lock and takes another one for the issue a
-// listener moves passes capped=false for the second: it already has a slot,
-// and waiting for another could wait on itself.
-func (h *Handler) enterRunBudgetBoundary(ctx context.Context, issueID pgtype.UUID, capped bool) (leave func(), err error) {
+// and then for a slot, and returns the function that gives both back. No
+// caller takes a second boundary lock while it holds one, so a slot never
+// waits on its own holder.
+func (h *Handler) enterRunBudgetBoundary(ctx context.Context, issueID pgtype.UUID) (leave func(), err error) {
 	boundaryQueue.Lock()
 	turn := boundaryQueue.turns[issueID]
 	if turn == nil {
@@ -279,10 +278,7 @@ func (h *Handler) enterRunBudgetBoundary(ctx context.Context, issueID pgtype.UUI
 	turn.waiting++
 	boundaryQueue.Unlock()
 
-	var slots chan struct{}
-	if capped {
-		slots = boundarySlotsOf(h.TxStarter)
-	}
+	slots := boundarySlotsOf(h.TxStarter)
 	var gotTurn, gotSlot bool
 	leave = sync.OnceFunc(func() {
 		if gotSlot {
@@ -304,14 +300,12 @@ func (h *Handler) enterRunBudgetBoundary(ctx context.Context, issueID pgtype.UUI
 		leave()
 		return nil, ctx.Err()
 	}
-	if capped {
-		select {
-		case slots <- struct{}{}:
-			gotSlot = true
-		case <-ctx.Done():
-			leave()
-			return nil, ctx.Err()
-		}
+	select {
+	case slots <- struct{}{}:
+		gotSlot = true
+	case <-ctx.Done():
+		leave()
+		return nil, ctx.Err()
 	}
 	return leave, nil
 }
@@ -322,11 +316,7 @@ func (h *Handler) enterRunBudgetBoundary(ctx context.Context, issueID pgtype.UUI
 // status under the lock to decide whether it ends a window, so a write that
 // could land between that read and the move's own write has to wait.
 func (h *Handler) lockRunBudgetBoundary(ctx context.Context, issueID pgtype.UUID) (release func(), err error) {
-	return h.lockBoundary(ctx, issueID, true)
-}
-
-func (h *Handler) lockBoundary(ctx context.Context, issueID pgtype.UUID, capped bool) (release func(), err error) {
-	leave, err := h.enterRunBudgetBoundary(ctx, issueID, capped)
+	leave, err := h.enterRunBudgetBoundary(ctx, issueID)
 	if err != nil {
 		return nil, err
 	}

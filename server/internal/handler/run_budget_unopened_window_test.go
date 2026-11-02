@@ -396,14 +396,18 @@ func TestRunBudgetExhaustionBlockDoesNotWaitForTheBoundaryLock(t *testing.T) {
 // posts in the background also writes the issue, and it lands at any moment
 // after the admission, so one read of the issue can be stale by the move.
 func moveIssueOnEdgeOf(issueID, to string) (bool, error) {
+	return moveIssueOnEdgeWith(context.Background(), testHandler, issueID, to)
+}
+
+func moveIssueOnEdgeWith(ctx context.Context, h *Handler, issueID, to string) (bool, error) {
 	var err error
 	for range 20 {
 		var issue db.Issue
-		if issue, err = testHandler.Queries.GetIssue(context.Background(), parseUUID(issueID)); err != nil {
+		if issue, err = h.Queries.GetIssue(ctx, parseUUID(issueID)); err != nil {
 			return false, err
 		}
 		var moved bool
-		if moved, _, err = testHandler.tryMoveIssueOnEdge(context.Background(), issue, to, "ci_green_advance", nil, false); moved || !errors.Is(err, pgx.ErrNoRows) {
+		if moved, _, err = h.tryMoveIssueOnEdge(ctx, issue, to, "ci_green_advance", nil, false); moved || !errors.Is(err, pgx.ErrNoRows) {
 			return moved, err
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -489,6 +493,39 @@ func TestRunBudgetLockHoldersOfDifferentIssuesDoNotExhaustTheConnectionPool(t *t
 	}
 	h := withSmallPool(t, 4)
 	requireAllFinish(t, "moves on different issues", reqs, h.UpdateIssue)
+}
+
+// An edge move that nothing started inside another request's lock (a CI
+// advance, the idle guard, a due workflow edge) is one more lock holder, so it
+// counts against the pool like a person's move does.
+func TestRunBudgetIndependentEdgeMovesOfDifferentIssuesDoNotExhaustTheConnectionPool(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	ids := make([]string, 12)
+	for i := range ids {
+		c, _ := budgetedAt(t, 40, 38)
+		ids[i] = c.issueID
+	}
+	h := withSmallPool(t, 4)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	moved := make([]bool, len(ids))
+	errs := make([]error, len(ids))
+	var wg sync.WaitGroup
+	for i, id := range ids {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			moved[i], errs[i] = moveIssueOnEdgeWith(ctx, h, id, "in_review")
+		}()
+	}
+	wg.Wait()
+	for i := range ids {
+		if !moved[i] {
+			t.Fatalf("edge move %d did not happen: %v; %d concurrent edge moves on different issues on a pool of 4 connections must all finish", i, errs[i], len(ids))
+		}
+	}
 }
 
 // A top-up waits for the boundary lock like a move does, so it queues in the
