@@ -350,6 +350,12 @@ async function pageLoad() {
   const sides = {};
   const samples = { base: {}, head: {} };
   const failures = [];
+  // Cleared up front: a run that aborts while building must not leave the
+  // previous run's report looking like its own.
+  for (const name of ["page-load-comparison.md", "page-load-comparison.json"]) {
+    rmSync(join(outDir, name), { force: true });
+  }
+  rmSync(join(outDir, "page-load"), { recursive: true, force: true });
   try {
     sides.base = await prepare(baseRef, "base");
     sides.head = await prepare(headRef, "head");

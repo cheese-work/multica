@@ -159,4 +159,24 @@ expect_exit 1
 [ ! -f "$work/out-unknown-ref/comparison.md" ] || fail "an aborted run left the previous summary in place"
 grep -q "comparison aborted\|error" "$comparison" || fail "the aborted run does not record why"
 
+# page-load mode writes its own pair of files; a run that aborts before it
+# measures anything must not leave the previous run's pair behind.
+stale_out="$work/out-page-load-stale"
+mkdir -p "$stale_out/page-load/base-r1"
+echo "stale summary" >"$stale_out/page-load-comparison.md"
+echo '{"stale":true}' >"$stale_out/page-load-comparison.json"
+echo '{"stale":true}' >"$stale_out/page-load/base-r1/page-load-desktop.json"
+case=page-load-abort
+set +e
+(cd "$repo" && PATH="$bin:$PATH" TMPDIR="$work/tmp" PERF_STOP_GRACE_MS=300 \
+  PERF_PLAYWRIGHT=ok PERF_SERVER=normal PERF_TEST_SERVER_LOG="$server_log" \
+  node "$compare" --page-load --base does-not-exist --head HEAD --out "$stale_out") >"$work/out.log" 2>&1
+code=$?
+set -e
+expect_exit 1
+for stale in page-load-comparison.md page-load-comparison.json page-load; do
+  [ ! -e "$stale_out/$stale" ] || fail "an aborted page-load run left the previous $stale in place"
+done
+grep -q "aborted" "$work/out.log" || fail "the aborted page-load run does not say so"
+
 echo "perf-compare: all lifecycle and reporting cases passed"
