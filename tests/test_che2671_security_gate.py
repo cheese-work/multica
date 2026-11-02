@@ -259,18 +259,41 @@ class WorkflowTest(unittest.TestCase):
         self.assertIn("edited", self.doc[True]["pull_request_target"]["types"])
         self.assertIn("deleted", self.doc[True]["issue_comment"]["types"])
 
+    # Mirrors the X99 runner hook /home/congvc/cheese-work-runners/hooks/job-started.sh: a comment runs only for
+    # OWNER, MEMBER or COLLABORATOR, or for the trusted bot's `Security-Gate-Verdict:` comment (which is NONE).
+    ALLOWED = ("OWNER", "MEMBER", "COLLABORATOR", "282619718", "'Bot'", "'Security-Gate-Verdict:'")
+    HOOK = Path("/home/congvc/cheese-work-runners/hooks/job-started.sh")
+
     def test_refused_comment_authors_schedule_no_job(self):
-        # CHE-3035: the runner hook refuses issue_comment by NONE; skip them at the job `if:` so no red check appears
+        # CHE-3035: skip at the job `if:` what the runner hook refuses, so no job is scheduled and no red check appears
         cond = self.doc["jobs"]["security-gate"]["if"]
-        self.assertIn("github.event.comment.author_association != 'NONE'", cond)
         self.assertIn("github.event_name == 'pull_request_target'", cond)  # PR events are never filtered by author
+        for part in self.ALLOWED:
+            self.assertIn(part, cond)
+
+    def test_trusted_bot_verdict_comment_still_runs(self):
+        # The verdict bot's association is NONE (observed on PR #184). Filtering NONE alone would drop every
+        # verdict create/edit/delete and leave a revoked PASS in place.
+        cond = self.doc["jobs"]["security-gate"]["if"]
+        self.assertNotRegex(cond, r"author_association\s*!=\s*'NONE'")
+        self.assertIn("startsWith(github.event.comment.body, 'Security-Gate-Verdict:')", cond)
+
+    def test_job_filter_matches_the_runner_hook_allow_list(self):
+        if not self.HOOK.exists():
+            self.skipTest("runner hook not on this host")
+        hook = self.HOOK.read_text()
+        cond = self.doc["jobs"]["security-gate"]["if"]
+        for part in ("OWNER", "MEMBER", "COLLABORATOR", "282619718", "Security-Gate-Verdict:"):
+            self.assertIn(part, hook)
+            self.assertIn(part, cond)
 
     def test_skipped_comment_cannot_cancel_a_real_evaluation(self):
         # CHE-3035: a run cancels the in-flight run of its concurrency group before its `if:` is read. An ignored
         # comment must land in its own group, or it cancels the real run and leaves no completed run behind it.
         group = self.doc["concurrency"]["group"]
-        self.assertIn("author_association", group)
         self.assertIn("github.run_id", group)
+        for part in self.ALLOWED:
+            self.assertIn(part, group)
 
     def test_only_status_write_is_added(self):
         self.assertEqual(self.doc["permissions"], {"contents": "read", "pull-requests": "read", "statuses": "write"})
