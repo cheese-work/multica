@@ -23,8 +23,8 @@ var chatCmd = &cobra.Command{
 var chatContinueCmd = &cobra.Command{
 	Use:   "continue",
 	Short: "Continue this web DM in a fresh session seeded with a summary",
-	Long: `Without --fork, continue archives this web DM and moves the conversation to a
-new DM seeded with the --summary-file summary.
+	Long: `Without --fork, continue compacts this web DM in place: the --summary-file
+summary is stored in the same DM and the next turn starts a fresh session.
 
 With --fork, this DM stays active and unchanged. A new child DM receives a
 copy of its visible messages and attachments, with no summary and no message
