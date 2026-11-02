@@ -120,7 +120,29 @@
     "overridden": "깨우기가 일시 중지된 동안에는 적용되지 않습니다.",
     "pause_saved": "깨우기를 일시 중지했습니다.",
     "pause_resumed": "깨우기를 재개했습니다.",
-    "retry": "다시 시도"
+    "retry": "다시 시도",
+    "rules": {
+      "title": "워크스페이스 규칙",
+      "description": "워크스페이스 전체에 적용되는 사용자 지정 규칙입니다. 이벤트나 조건이 충족되면 선택한 에이전트를 깨웁니다.",
+      "empty": "아직 워크스페이스 규칙이 없습니다.",
+      "new_title": "새 워크스페이스 규칙",
+      "name": "규칙 이름",
+      "delete": "{{name}} 삭제",
+      "delete_error": "규칙을 삭제하지 못했습니다. 새로고침 후 다시 시도하세요.",
+      "preview": "미리 보기",
+      "previewing": "확인 중…",
+      "create": "규칙 만들기",
+      "creating": "만드는 중…",
+      "preview_ok": "지금 일치하는 열린 이슈가 없습니다. 새로운 활동에만 작동합니다.",
+      "preview_met": "이슈 {{examined}}개 중 {{satisfied}}개가 이미 조건에 맞습니다. 규칙을 켜면 해당 이슈에 대해 즉시 작동합니다.",
+      "preview_met_truncated": "처음 {{examined}}개 이슈 중 {{satisfied}}개가 이미 조건에 맞습니다. 규칙을 켜면 해당 이슈에 대해 즉시 작동합니다.",
+      "preview_cap": "한도: 워크스페이스 기준 시간당 웨이크업 {{limit}}회.",
+      "preview_error": "규칙을 미리 볼 수 없습니다. 설정을 확인하고 다시 시도하세요.",
+      "missing_name": "규칙 이름을 입력하세요(최대 {{max}}자).",
+      "unsupported_filter": "워크스페이스 규칙은 아직 작성자나 에이전트로 필터링할 수 없습니다. 모든 사람 또는 모든 에이전트를 선택하세요.",
+      "unsupported_schedule": "워크스페이스 규칙은 아직 일정에 따라 실행할 수 없습니다. 이벤트나 조건을 선택하세요.",
+      "closed_error": "웨이크업 규칙은 아직 편집할 수 없습니다."
+    }
   },
   "quick_actions": {
     "title": "퀵 액션",

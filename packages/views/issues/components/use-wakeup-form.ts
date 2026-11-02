@@ -19,12 +19,15 @@ export function useWakeupForm({
   save,
   onSaved,
   onBusy,
+  describeError,
 }: {
   workspaceId: string;
   defaultAgentId: string;
   save: (input: IssueWakeupInput) => Promise<unknown>;
   onSaved: () => void;
   onBusy?: (busy: boolean) => void;
+  /** A message for a refusal the caller knows; anything else gets the shared one. */
+  describeError?: (err: unknown) => string | undefined;
 }) {
   const { t } = useT("issues");
   const text = useWakeupText();
@@ -71,9 +74,10 @@ export function useWakeupForm({
           ? err.body.code
           : undefined;
       setError(
-        code === "wakeup_capacity_exceeded"
-          ? t(($) => $.wakeups.create.capacity_error)
-          : text.error(err, t(($) => $.wakeups.create.error)),
+        describeError?.(err) ??
+          (code === "wakeup_capacity_exceeded"
+            ? t(($) => $.wakeups.create.capacity_error)
+            : text.error(err, t(($) => $.wakeups.create.error))),
       );
     } finally {
       inFlight.current = false;
