@@ -3,6 +3,12 @@
 -- caller's transaction, so the balance read and the debit cannot interleave.
 SELECT id FROM issue WHERE id = sqlc.arg('issue_id')::uuid FOR NO KEY UPDATE;
 
+-- name: LockIssueRunBudgetBoundary :exec
+-- Orders the moves that start a run-budget window on one issue (a person's
+-- status move, a top-up). An advisory lock, not the issue row: the move's own
+-- write and its listeners update that row while the lock is held.
+SELECT pg_advisory_xact_lock(hashtextextended(sqlc.arg('issue_id')::uuid::text || ':run_budget_boundary', 0));
+
 -- name: CountIssueRunsSinceExcept :one
 -- CountIssueRunsSince without one task: the window credit must not count the
 -- run its own debit pays for.
@@ -119,3 +125,8 @@ SELECT EXISTS (
   WHERE issue_id = sqlc.arg('issue_id')::uuid AND action = 'status_changed' AND actor_type = 'member'
     AND created_at >= sqlc.arg('since')::timestamptz AND details->>'to' = sqlc.arg('status')::text
 );
+
+-- name: RunBudgetBoundaryClock :one
+-- The time now, not the transaction's start: a window boundary taken after a
+-- wait for the boundary lock must sort after every boundary written during it.
+SELECT clock_timestamp()::timestamptz;
