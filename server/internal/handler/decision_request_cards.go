@@ -138,26 +138,35 @@ func (handler *Handler) decisionRequestsForMessages(ctx context.Context, workspa
 
 // recommendedOptionIndex is the option the recommendation's first clause names
 // as a whole word. The text is free-form, so a clause that names no option or
-// more than one marks nothing: a wrong mark would steer the click.
+// more than one marks nothing: a wrong mark would steer the click. Longer labels
+// are matched first and their text is blanked, so "Ship" inside "Ship now" is
+// not a second choice, while "Ship rather than Ship now" still names two.
 func recommendedOptionIndex(options []decisiontx.AskOption, recommendation string) *int {
 	clause := strings.ToLower(recommendation)
 	if cut := strings.IndexAny(clause, ",.;:\n"); cut >= 0 {
 		clause = clause[:cut]
 	}
+	byLength := make([]int, len(options))
+	for index := range byLength {
+		byLength[index] = index
+	}
+	slices.SortStableFunc(byLength, func(a, b int) int {
+		return len(strings.TrimSpace(options[b].Label)) - len(strings.TrimSpace(options[a].Label))
+	})
 	var named []int
-	for index, option := range options {
-		label := strings.ToLower(strings.TrimSpace(option.Label))
-		if label != "" && regexp.MustCompile(`(^|[^\p{L}\p{N}_])`+regexp.QuoteMeta(label)+`($|[^\p{L}\p{N}_])`).MatchString(clause) {
-			named = append(named, index)
+	for _, index := range byLength {
+		label := strings.ToLower(strings.TrimSpace(options[index].Label))
+		if label == "" {
+			continue
+		}
+		whole := regexp.MustCompile(`(?:^|[^\p{L}\p{N}_])(` + regexp.QuoteMeta(label) + `)(?:$|[^\p{L}\p{N}_])`)
+		for found := whole.FindStringSubmatchIndex(clause); found != nil; found = whole.FindStringSubmatchIndex(clause) {
+			if !slices.Contains(named, index) {
+				named = append(named, index)
+			}
+			clause = clause[:found[2]] + strings.Repeat(" ", found[3]-found[2]) + clause[found[3]:]
 		}
 	}
-	// A label inside a longer named label ("Ship" in "Ship now") is not a second choice.
-	matched := slices.Clone(named)
-	named = slices.DeleteFunc(named, func(index int) bool {
-		return slices.ContainsFunc(matched, func(other int) bool {
-			return other != index && len(options[other].Label) > len(options[index].Label) && strings.Contains(strings.ToLower(options[other].Label), strings.ToLower(strings.TrimSpace(options[index].Label)))
-		})
-	})
 	if len(named) != 1 {
 		return nil
 	}
