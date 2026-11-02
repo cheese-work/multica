@@ -1,11 +1,15 @@
 "use client";
 
+import { lazy, Suspense } from "react";
 import { useChatStore } from "@multica/core/chat";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useNavigation } from "../navigation";
 import { ChatFab } from "./components/chat-fab";
-import { ChatWindow } from "./components/chat-window";
 import { isFloatingChatRouteSuppressed } from "./floating-chat-visibility";
+
+// The window pulls in the markdown/editor graph; the FAB alone is what the
+// first paint needs (CHE-3019).
+const ChatWindow = lazy(() => import("./components/chat-window").then((m) => ({ default: m.ChatWindow })));
 
 /**
  * Mount point for the floating chat overlay (FAB + window). Rendered once in
@@ -29,7 +33,9 @@ export function FloatingChat() {
 
   return (
     <>
-      <ChatWindow />
+      <Suspense fallback={null}>
+        <ChatWindow />
+      </Suspense>
       <ChatFab />
     </>
   );

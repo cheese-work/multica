@@ -243,7 +243,8 @@ vi.mock("../editor", async () => {
   };
 });
 
-vi.mock("../issues/components", () => ({
+function issuesComponentsMock() {
+  return {
   StatusIcon: ({ status }: { status: string }) => <span data-testid="status-icon">{status}</span>,
   // Drives the two field-level edits a batch continuation must tell apart from
   // the inherited values it started with.
@@ -258,7 +259,11 @@ vi.mock("../issues/components", () => ({
   StartDatePicker: () => <div data-testid="start-date-picker" />,
   DueDatePicker: () => <div data-testid="due-date-picker" />,
   LabelPicker: () => <div data-testid="label-picker" />,
-}));
+};
+}
+vi.mock("../issues/components/status-icon", issuesComponentsMock);
+vi.mock("../issues/components/priority-icon", issuesComponentsMock);
+vi.mock("../issues/components/pickers", issuesComponentsMock);
 
 vi.mock("../projects/components/project-picker", () => ({
   ProjectPicker: () => <div data-testid="project-picker" />,

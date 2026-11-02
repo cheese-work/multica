@@ -463,7 +463,8 @@ vi.mock("../editor", async () => {
   };
 });
 
-vi.mock("../issues/components", () => ({
+function issuesComponentsMock() {
+  return {
   StatusIcon: ({ status }: { status: string }) => <span data-testid="status-icon">{status}</span>,
   StatusPicker: () => <div data-testid="status-picker" />,
   // Surface onUpdate so tests can drive a field-only edit (priority is not
@@ -500,7 +501,11 @@ vi.mock("../issues/components", () => ({
       onClick={() => onOpenChange?.(false)}
     />
   ),
-}));
+};
+}
+vi.mock("../issues/components/status-icon", issuesComponentsMock);
+vi.mock("../issues/components/priority-icon", issuesComponentsMock);
+vi.mock("../issues/components/pickers", issuesComponentsMock);
 
 vi.mock("../issues/components/pickers/custom-property-picker", () => ({
   CustomPropertyValueInput: ({ property, onChange, open }: any) => (
