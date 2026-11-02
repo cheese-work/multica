@@ -227,13 +227,15 @@ Repository permissions:
 | Metadata | Read-only |
 | Pull requests | Read-only |
 | Members | Read-only; required to verify that the connecting user is an active organization admin |
+| Actions | Read-only; needed by `--until-gh-run` wakeups |
 | Checks | Read-only; used to show CI status |
 | Commit statuses | Read-only; used to aggregate legacy-status CI |
 
 Subscribe to these events:
 
 - **Pull request**;
-- **Pull request review**, if human review wakeups are configured;
+- **Pull request review**, **Pull request review comment**, and **Issue comment**, if human review wakeups are configured;
+- **Workflow run** and **Workflow job**, needed by `--until-gh-run` wakeups;
 - **Check suite**, **Check run**, and **Status**, which trigger CI and mergeability refreshes.
 
 PR snapshots use the Pull requests, Checks, and Commit statuses REST APIs. Contents access is not required.
@@ -268,7 +270,7 @@ Generate the private key under the GitHub App's **Private keys → Generate a pr
 
 All six GitHub values are required for the connect button. During a new connection, Multica exchanges GitHub's user-authorization code, resolves the installation as the App, and then requires either an exact personal-account ID and login match or an active organization admin membership. Visibility in a user's installation list is not treated as proof of organization authority. Verification errors fail closed. The temporary user token is revoked after the check.
 
-When adding the Members permission to an App that is already installed, approve the permission change in every target organization before connecting it to a new workspace.
+When adding the Members or Actions permission to an App that is already installed, approve the permission change in every target organization before connecting it to a new workspace. Existing installations must accept the new permission; until they do, `--until-gh-run` wakeups receive no workflow events.
 
 </Step>
 <Step>
