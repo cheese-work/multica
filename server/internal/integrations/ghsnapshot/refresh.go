@@ -518,8 +518,7 @@ func (manager *Manager) applySnapshot(ctx context.Context, prID pgtype.UUID, sna
 			Conclusion:      textOrNull(c.Conclusion),
 			DetailsUrl:      textOrNull(c.DetailsURL),
 			IsStatusContext: c.IsStatusContext,
-			Required:        c.Required,
-			RedOnBase:       c.RedOnBase,
+			RedCause:        textOrNull(c.RedCause),
 		}); err != nil {
 			return false, err
 		}

@@ -15,24 +15,37 @@ DELETE FROM issue_wakeup WHERE id = sqlc.arg('id')::uuid AND system_rule = 'work
 -- the snapshot belongs to the PR's newest head; review is the latest human
 -- review decision, and counts only while it is on the PR's current head.
 -- pr_head_sha is the PR's own newest head, which a checks snapshot may not have
--- caught up with. infra_red: a required check is failing and every failing
--- required check also fails on the base tip. optional_red_only: checks are
--- failing and none of them is required (CHE-3257).
+-- caught up with. red_cause is why the failing checks are red (CHE-3257):
+-- 'pr' when any failing check is PR-caused; '' when nothing fails (or no
+-- per-check rows exist yet); 'unknown' when a failing check has no cause; then
+-- 'infra' or 'optional'.
 SELECT pr.state::text AS state,
        COALESCE(pr.checks_rollup_state, '')::text AS checks_rollup_state,
        (pr.snapshot_head_sha <> '' AND pr.snapshot_head_sha = pr.head_sha)::boolean AS head_fresh,
        pr.snapshot_head_sha::text AS head_sha,
        pr.head_sha::text AS pr_head_sha,
        (CASE WHEN pr.review_head_sha = pr.head_sha THEN pr.review_state ELSE '' END)::text AS review,
-       (EXISTS (SELECT 1 FROM github_pull_request_check_run c WHERE c.pr_id = pr.id AND c.head_sha = pr.snapshot_head_sha AND c.required AND c.status = 'completed' AND c.conclusion IN ('failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure', 'stale', 'error'))
-        AND NOT EXISTS (SELECT 1 FROM github_pull_request_check_run c WHERE c.pr_id = pr.id AND c.head_sha = pr.snapshot_head_sha AND c.required AND NOT c.red_on_base AND c.status = 'completed' AND c.conclusion IN ('failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure', 'stale', 'error')))::boolean AS infra_red,
-       (EXISTS (SELECT 1 FROM github_pull_request_check_run c WHERE c.pr_id = pr.id AND c.head_sha = pr.snapshot_head_sha AND c.status = 'completed' AND c.conclusion IN ('failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure', 'stale', 'error'))
-        AND NOT EXISTS (SELECT 1 FROM github_pull_request_check_run c WHERE c.pr_id = pr.id AND c.head_sha = pr.snapshot_head_sha AND c.required AND c.status = 'completed' AND c.conclusion IN ('failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure', 'stale', 'error')))::boolean AS optional_red_only
+       (CASE
+          WHEN f.failing = 0 THEN ''
+          WHEN f.pr > 0 THEN 'pr'
+          WHEN f.unknown > 0 THEN 'unknown'
+          WHEN f.infra > 0 THEN 'infra'
+          ELSE 'optional'
+        END)::text AS red_cause
 FROM github_pull_request pr
 JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
+CROSS JOIN LATERAL (
+    SELECT count(*) AS failing,
+           count(*) FILTER (WHERE c.red_cause = 'pr') AS pr,
+           count(*) FILTER (WHERE c.red_cause IS NULL) AS unknown,
+           count(*) FILTER (WHERE c.red_cause = 'infra') AS infra
+    FROM github_pull_request_check_run c
+    WHERE c.pr_id = pr.id AND c.head_sha = pr.snapshot_head_sha AND c.status = 'completed'
+      AND c.conclusion IN ('failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure', 'stale', 'error')
+) f
 WHERE ipr.issue_id = ANY(sqlc.arg('issue_ids')::uuid[])
 UNION ALL
-SELECT pr.state::text, ''::text, false, ''::text, ''::text, ''::text, false, false
+SELECT pr.state::text, ''::text, false, ''::text, ''::text, ''::text, ''::text
 FROM vcs_pull_request pr
 JOIN issue_vcs_pull_request ipr ON ipr.pull_request_id = pr.id
 WHERE ipr.issue_id = ANY(sqlc.arg('issue_ids')::uuid[]);

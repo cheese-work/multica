@@ -16,27 +16,52 @@ func fetchEnrichedSnapshot(ctx context.Context, c *Client, installationID int64,
 	return snap, err
 }
 
-// EnrichChecks sets Required and RedOnBase on the failing checks of snap
-// (CHE-3257). Both reads are best effort and fail closed: if the branch rules
-// cannot be read every check counts as required, and if the base tip cannot be
-// read no check counts as red there, so a red keeps routing to the author.
-// Checks match by name only, not by app id.
+// EnrichChecks sets RedCause on the failing checks of snap (CHE-3257). A
+// failing check that is not required is optional. A required one is infra when
+// it is also red on the base tip or has a green run on this same head (a
+// re-run), and the PR's own otherwise. Every read is best effort and leaves the
+// cause empty (unknown) when it fails: an outage must never be pinned on the
+// PR. Checks match by name only, not by app id.
 func EnrichChecks(ctx context.Context, c *Client, installationID int64, owner, repo string, snap *PRSnapshot) {
-	base := "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo)
-	required, ok := requiredContexts(ctx, c, installationID, base, snap.BaseRef)
-	needBase := false
-	for i := range snap.Contexts {
-		cc := &snap.Contexts[i]
-		cc.Required = !ok || required[cc.Name]
-		needBase = needBase || (cc.Required && cc.Status == "completed" && rollupConclusion(cc.Conclusion) == "FAILURE")
+	failing := false
+	for _, cc := range snap.Contexts {
+		failing = failing || isFailing(cc)
 	}
-	if !needBase || snap.BaseSHA == "" {
+	if !failing {
 		return
 	}
-	red := redContexts(ctx, c, installationID, base, snap.BaseSHA)
-	for i := range snap.Contexts {
-		snap.Contexts[i].RedOnBase = red[snap.Contexts[i].Name]
+	base := "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo)
+	required, ok := requiredContexts(ctx, c, installationID, base, snap.BaseRef)
+	if !ok {
+		return
 	}
+	needsEvidence := false
+	for _, cc := range snap.Contexts {
+		needsEvidence = needsEvidence || (isFailing(cc) && required[cc.Name])
+	}
+	var onBase, rerunGreen map[string]bool
+	if needsEvidence {
+		if snap.BaseSHA != "" {
+			onBase = redContexts(ctx, c, installationID, base, snap.BaseSHA)
+		}
+		rerunGreen = greenOnHead(ctx, c, installationID, base, snap.HeadSHA)
+	}
+	for i := range snap.Contexts {
+		cc := &snap.Contexts[i]
+		switch {
+		case !isFailing(*cc):
+		case !required[cc.Name]:
+			cc.RedCause = CauseOptional
+		case onBase[cc.Name] || rerunGreen[cc.Name]:
+			cc.RedCause = CauseInfra
+		case onBase != nil && rerunGreen != nil:
+			cc.RedCause = CausePR
+		}
+	}
+}
+
+func isFailing(cc CheckContext) bool {
+	return cc.Status == "completed" && rollupConclusion(cc.Conclusion) == "FAILURE"
 }
 
 // requiredContexts is the union of the status checks every rule on the base
@@ -72,7 +97,7 @@ func requiredContexts(ctx context.Context, c *Client, installationID int64, base
 	return out, true
 }
 
-// redContexts names the checks failing on commit sha.
+// redContexts names the checks failing on commit sha; nil when unreadable.
 func redContexts(ctx context.Context, c *Client, installationID int64, base, sha string) map[string]bool {
 	commit := base + "/commits/" + url.PathEscape(sha)
 	runs, err := fetchSnapshotPages[restCheckRun](ctx, c, installationID, commit+"/check-runs?filter=latest", "check_runs")
@@ -95,4 +120,21 @@ func redContexts(ctx context.Context, c *Client, installationID int64, base, sha
 		}
 	}
 	return red
+}
+
+// greenOnHead names the checks with a successful run, in any attempt, on
+// commit sha: a check that is red now and green there is flaky. Nil when
+// unreadable.
+func greenOnHead(ctx context.Context, c *Client, installationID int64, base, sha string) map[string]bool {
+	runs, err := fetchSnapshotPages[restCheckRun](ctx, c, installationID, base+"/commits/"+url.PathEscape(sha)+"/check-runs?filter=all", "check_runs")
+	if err != nil {
+		return nil
+	}
+	green := map[string]bool{}
+	for _, r := range runs {
+		if normalizeRunStatus(r.Status) == "completed" && strings.ToLower(r.Conclusion) == "success" {
+			green[r.Name] = true
+		}
+	}
+	return green
 }

@@ -390,13 +390,11 @@ func TestSubWorkflowSurvivesStorage(t *testing.T) {
 }
 
 // CHE-3257: pr.checks_red fires only for a red the PR caused on a required
-// check; a required red that is also red on the base is infra and fires
+// check; a required red that is also red on the base or green on a re-run is infra and fires
 // pr.checks_infra_red; a red on non-required checks only fires neither.
 func TestChecksRedSplitsPRCausedFromInfraAndOptional(t *testing.T) {
 	red := PRFact{State: "open", ChecksRollup: "FAILURE", HeadFresh: true}
-	infra, optional := red, red
-	infra.InfraRed = true
-	optional.OptionalRedOnly = true
+	withCause := func(cause string) PRFact { p := red; p.RedCause = cause; return p }
 	edges := []Edge{
 		{To: "in_progress", Guard: "pr.checks_red"},
 		{To: "blocked", Guard: "pr.checks_infra_red"},
@@ -406,10 +404,12 @@ func TestChecksRedSplitsPRCausedFromInfraAndOptional(t *testing.T) {
 		pr   PRFact
 		want string
 	}{
-		{"PR-caused required red", red, "in_progress"},
-		{"required red also red on base", infra, "blocked"},
-		{"red on non-required checks only", optional, ""},
-		{"stale head ignored", PRFact{State: "open", ChecksRollup: "FAILURE", InfraRed: true}, ""},
+		{"no per-check evidence stored", red, "in_progress"},
+		{"PR-caused required red", withCause("pr"), "in_progress"},
+		{"infra or flaky required red", withCause("infra"), "blocked"},
+		{"red on non-required checks only", withCause("optional"), ""},
+		{"unreadable cause is not the PR's", withCause("unknown"), ""},
+		{"stale head ignored", PRFact{State: "open", ChecksRollup: "FAILURE", RedCause: "infra"}, ""},
 	}
 	for _, c := range cases {
 		got, ok := FirstMatch(edges, Facts{PRs: []PRFact{c.pr}})

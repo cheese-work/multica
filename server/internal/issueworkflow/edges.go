@@ -193,11 +193,12 @@ type PRFact struct {
 	// Review is the latest human review decision on the PR's current head:
 	// approved, changes_requested, or empty.
 	Review string
-	// InfraRed: the checks are red, and every red required check is also red on
-	// the base branch, so the PR did not cause it (CHE-3257).
-	InfraRed bool
-	// OptionalRedOnly: the checks are red, and no red check is required.
-	OptionalRedOnly bool
+	// RedCause says why the checks are red (CHE-3257): "pr" (a required check
+	// fails on this head and not on the base), "infra" (a required red is also
+	// red on the base, or green on a re-run of this head), "optional" (only
+	// non-required checks fail), "unknown" (the cause could not be read). Empty
+	// means no per-check evidence is stored; the red is then the PR's.
+	RedCause string
 }
 
 // Facts are the stored facts guards are checked against. PRs cover the issue
@@ -229,9 +230,9 @@ func (f Facts) holds(g Guard) bool {
 	case GuardPRChecksGreen:
 		return f.anyPR(func(p PRFact) bool { return p.open() && p.HeadFresh && p.ChecksRollup == "SUCCESS" })
 	case GuardPRChecksRed:
-		return f.anyPR(func(p PRFact) bool { return p.red() && !p.InfraRed && !p.OptionalRedOnly })
+		return f.anyPR(func(p PRFact) bool { return p.red() && (p.RedCause == "" || p.RedCause == "pr") })
 	case GuardPRChecksInfraRed:
-		return f.anyPR(func(p PRFact) bool { return p.red() && p.InfraRed })
+		return f.anyPR(func(p PRFact) bool { return p.red() && p.RedCause == "infra" })
 	case GuardPRReady:
 		return f.anyPR(func(p PRFact) bool { return p.State == "open" })
 	case GuardPRMerged:

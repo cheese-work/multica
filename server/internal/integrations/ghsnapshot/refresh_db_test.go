@@ -904,12 +904,12 @@ func TestRESTSnapshotRefreshStoresResultsAndPreservesThemOnPermissionFailure(t *
 			t.Fatalf("phase %d: stored snapshot=%+v, want %s", i, got, want)
 		}
 		if want == "FAILURE" {
-			var required, redOnBase bool
-			if err := pool.QueryRow(ctx, `SELECT required, red_on_base FROM github_pull_request_check_run WHERE pr_id=$1`, pr.ID).Scan(&required, &redOnBase); err != nil {
+			var cause *string
+			if err := pool.QueryRow(ctx, `SELECT red_cause FROM github_pull_request_check_run WHERE pr_id=$1`, pr.ID).Scan(&cause); err != nil {
 				t.Fatal(err)
 			}
-			if !required || !redOnBase {
-				t.Fatalf("phase %d: stored required=%v red_on_base=%v, want true true (CHE-3257)", i, required, redOnBase)
+			if cause == nil || *cause != CauseInfra {
+				t.Fatalf("phase %d: stored red_cause=%v, want %q: required check also red on the base tip (CHE-3257)", i, cause, CauseInfra)
 			}
 		}
 	}

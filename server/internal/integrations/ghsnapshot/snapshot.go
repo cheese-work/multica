@@ -10,6 +10,12 @@ import (
 	"time"
 )
 
+const (
+	CausePR       = "pr"       // required, and not red on the base tip or on another run of the head
+	CauseInfra    = "infra"    // red on the base tip, or green on another run of the same head
+	CauseOptional = "optional" // not required by the base branch rules
+)
+
 // CheckContext is one normalized check for a PR head. Both check runs and commit
 // statuses are flattened into this shape, so
 // downstream storage and aggregation are uniform.
@@ -24,11 +30,9 @@ type CheckContext struct {
 	Conclusion      string
 	DetailsURL      string
 	IsStatusContext bool
-	// Required: the base branch's rules require this check. RedOnBase: the same
-	// check is failing on the base branch tip, so a red here is not the PR's
-	// doing. Both are set by EnrichChecks (CHE-3257).
-	Required  bool
-	RedOnBase bool
+	// RedCause says why a failing check is red: CausePR, CauseInfra or
+	// CauseOptional. Empty means unknown, and no cause is attributed (CHE-3257).
+	RedCause string
 }
 
 // PRSnapshot is the atomic unit written per fetch. It mirrors exactly what the

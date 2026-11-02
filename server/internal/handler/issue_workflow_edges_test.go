@@ -413,22 +413,24 @@ func TestWorkflowRunRulesPersistAndPreserve(t *testing.T) {
 }
 
 // CHE-3257: in_review sends a PR-caused required red back to in_progress, parks
-// an infra red (also red on the base tip) in blocked, and ignores a red on
-// non-required checks.
+// an infra or flaky red in blocked, and leaves a red on non-required checks or
+// of unknown cause where it is (the edge timeout parks it).
 func TestEdgesChecksRedSplitsPRCausedFromInfra(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
 	cases := []struct {
 		name  string
-		runs  [][3]any // name, required, red_on_base
+		runs  [][2]any // name, red_cause (nil = unknown)
 		want  string
 		prNum int32
 	}{
-		{"required red the PR caused", [][3]any{{"backend-tests", true, false}}, "in_progress", 325701},
-		{"required red also red on base", [][3]any{{"backend-tests", true, true}}, "blocked", 325702},
-		{"only a non-required check is red", [][3]any{{"docs-preview", false, false}}, "in_review", 325703},
-		{"one PR-caused red among infra reds", [][3]any{{"backend-tests", true, true}, {"lint", true, false}}, "in_progress", 325704},
+		{"required red the PR caused", [][2]any{{"backend-tests", "pr"}}, "in_progress", 325701},
+		{"required red also red on base or flaky", [][2]any{{"backend-tests", "infra"}}, "blocked", 325702},
+		{"only a non-required check is red", [][2]any{{"docs-preview", "optional"}}, "in_review", 325703},
+		{"one PR-caused red among infra reds", [][2]any{{"backend-tests", "infra"}, {"lint", "pr"}}, "in_progress", 325704},
+		{"cause could not be read", [][2]any{{"backend-tests", nil}}, "in_review", 325705},
+		{"unknown cause next to infra stays put", [][2]any{{"backend-tests", "infra"}, {"lint", nil}}, "in_review", 325706},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -447,9 +449,9 @@ func TestEdgesChecksRedSplitsPRCausedFromInfra(t *testing.T) {
 				t.Fatal(err)
 			}
 			for i, r := range tc.runs {
-				if _, err := testPool.Exec(ctx, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion, required, red_on_base)
-					SELECT id, head_sha, $3, $4, 'completed', 'failure', $5, $6 FROM github_pull_request WHERE workspace_id=$1 AND pr_number=$2`,
-					testWorkspaceID, tc.prNum, i, r[0], r[1], r[2]); err != nil {
+				if _, err := testPool.Exec(ctx, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion, red_cause)
+					SELECT id, head_sha, $3, $4, 'completed', 'failure', $5 FROM github_pull_request WHERE workspace_id=$1 AND pr_number=$2`,
+					testWorkspaceID, tc.prNum, i, r[0], r[1]); err != nil {
 					t.Fatal(err)
 				}
 			}
