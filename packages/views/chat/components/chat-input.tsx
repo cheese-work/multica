@@ -1,18 +1,15 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { TriangleAlert } from "@multica/ui/icons";
 import { toast } from "sonner";
 import { cn } from "@multica/ui/lib/utils";
-import {
-  ContentEditor,
-  type ContentEditorRef,
-  useFileDropZone,
-  FileDropOverlay,
-  useUploadGate,
-  useComposerSubmit,
-} from "../../editor";
+import type { ContentEditorRef } from "../../editor/content-editor";
+import { useFileDropZone } from "../../editor/use-file-drop-zone";
+import { FileDropOverlay } from "../../editor/file-drop-overlay";
+import { useUploadGate } from "../../editor/use-upload-gate";
+import { useComposerSubmit } from "../../editor/use-composer-submit";
 import { PASTE_AS_FILE_THRESHOLD } from "../../editor/paste-as-file";
 import { parseForkCommand } from "../../editor/extensions/parse-fork-command";
 import { parseDmClientCommandAttempt } from "../../editor/extensions/parse-dm-client-command";
@@ -22,6 +19,7 @@ import {
   type UploadDraftBinding,
 } from "../../editor/use-coordinated-uploads";
 import { SubmitButton } from "@multica/ui/components/common/submit-button";
+import { LazyContentEditor as ContentEditor } from "./lazy-content-editor";
 import { ChatAddMenu } from "./chat-add-menu";
 import { CHAT_COLUMN, CHAT_GUTTER } from "./chat-column";
 import { useChatStore, DRAFT_NEW_SESSION } from "@multica/core/chat";
@@ -461,10 +459,13 @@ export function ChatInput({
   // started) so the user can type immediately. The editor's `focus()` latches
   // through to `onCreate` when it isn't mounted yet, so this works even on the
   // first render of a freshly-mounted compose box. `0` is inert on purpose.
+  // The editor chunk is lazy, so the ref is null until `onReady` flips
+  // `editorReady`; the effect re-runs then and honors a request made earlier.
+  const [editorReady, setEditorReady] = useState(false);
   useEffect(() => {
-    if (!focusRequest) return;
+    if (!focusRequest || !editorReady) return;
     editorRef.current?.focus();
-  }, [focusRequest]);
+  }, [focusRequest, editorReady]);
 
   // The editor emits the change itself, so the draft store follows as it does
   // for typing.
@@ -904,46 +905,49 @@ export function ChatInput({
           </div>
         )}
         <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2">
-          <ContentEditor
-            // See the editorKey / draftKey split note above — editor identity
-            // intentionally tracks neither the session nor the agent.
-            key={editorKey}
-            ref={editorRef}
-            value={inputDraft}
-            placeholder={placeholder}
-            onUpdate={(md) => {
-              setIsEmpty(!md.trim());
-              setForkError(null);
-              // The LOADED key, not the selected one: while an upload pins the
-              // document this fires for the source draft's body — including the
-              // upload's own completion dispatch.
-              commitDraft(editorDraftKeyRef.current, md);
-            }}
-            onSubmit={submit}
-            onUploadFile={uploadEnabled ? handleUpload : undefined}
-            pasteAsFileThreshold={PASTE_AS_FILE_THRESHOLD}
-            onUploadingChange={uploadGate.onUploadingChange}
-            attachments={draftAttachments}
-            debounceMs={100}
-            mentionMode={contextItems ? "context" : "default"}
-            mentionContextItems={contextItems}
-            enableSlashCommands
-            enableRenameCommand={!!onRename}
-            enableForkCommand={!!onFork}
-            enableStatisticCommand={!!onStatistic}
-            enableArchiveCommand={!!onArchive}
-            enablePinCommand={!!onPin}
-            enableUnarchiveCommand={!!onUnarchive}
-            presetAgentId={presetAgentId}
-            enableCompactCommand={!sessionArchived}
-            // The bubble menu carries the only affordance that can strip
-            // formatting — "Normal text" (setParagraph) plus the mark/list
-            // toggles. Once a `# ` input rule or a Markdown/HTML paste turns a
-            // line into a heading, chat has no other way to remove it, so
-            // without the bubble menu formatting can be created but never
-            // undone (MUL-5106).
-            showBubbleMenu
-          />
+          <Suspense fallback={null}>
+            <ContentEditor
+              // See the editorKey / draftKey split note above — editor identity
+              // intentionally tracks neither the session nor the agent.
+              key={editorKey}
+              ref={editorRef}
+              value={inputDraft}
+              placeholder={placeholder}
+              onUpdate={(md) => {
+                setIsEmpty(!md.trim());
+                setForkError(null);
+                // The LOADED key, not the selected one: while an upload pins the
+                // document this fires for the source draft's body — including the
+                // upload's own completion dispatch.
+                commitDraft(editorDraftKeyRef.current, md);
+              }}
+              onSubmit={submit}
+              onUploadFile={uploadEnabled ? handleUpload : undefined}
+              pasteAsFileThreshold={PASTE_AS_FILE_THRESHOLD}
+              onUploadingChange={uploadGate.onUploadingChange}
+              attachments={draftAttachments}
+              debounceMs={100}
+              mentionMode={contextItems ? "context" : "default"}
+              mentionContextItems={contextItems}
+              enableSlashCommands
+              enableRenameCommand={!!onRename}
+              enableForkCommand={!!onFork}
+              enableStatisticCommand={!!onStatistic}
+              enableArchiveCommand={!!onArchive}
+              enablePinCommand={!!onPin}
+              enableUnarchiveCommand={!!onUnarchive}
+              presetAgentId={presetAgentId}
+              enableCompactCommand={!sessionArchived}
+              // The bubble menu carries the only affordance that can strip
+              // formatting — "Normal text" (setParagraph) plus the mark/list
+              // toggles. Once a `# ` input rule or a Markdown/HTML paste turns a
+              // line into a heading, chat has no other way to remove it, so
+              // without the bubble menu formatting can be created but never
+              // undone (MUL-5106).
+              showBubbleMenu
+              onReady={() => setEditorReady(true)}
+            />
+          </Suspense>
         </div>
         {(uploadEnabled || projectSelectionEnabled || leftAdornment) && (
           <div className="absolute bottom-1.5 left-1.5 flex items-center gap-1">

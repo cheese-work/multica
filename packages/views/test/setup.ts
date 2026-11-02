@@ -1,4 +1,11 @@
 import "@testing-library/jest-dom/vitest";
+import { vi } from "vitest";
+
+// Production loads the chat composer's editor on demand; suites render it
+// synchronously instead of awaiting the lazy chunk (CHE-3018).
+vi.mock("../chat/components/lazy-content-editor", async () => ({
+  LazyContentEditor: (await import("../editor/content-editor")).ContentEditor,
+}));
 
 function createMemoryStorage(): Storage {
   const values = new Map<string, string>();

@@ -16,7 +16,8 @@ const viewsExports: Record<string, string> = JSON.parse(
   readFileSync(join(viewsRoot, "package.json"), "utf8"),
 ).exports;
 
-const STATIC_IMPORT = /^\s*(?:import|export)\s[^;'"]*?from\s*["']([^"']+)["']|^\s*import\s*["']([^"']+)["']/gm;
+// `import type` is erased at build time, so it is not an edge.
+const STATIC_IMPORT = /^\s*(?:import|export)\s(?!type\s)[^;'"]*?from\s*["']([^"']+)["']|^\s*import\s*["']([^"']+)["']/gm;
 
 function file(path: string): string | null {
   for (const candidate of [path, `${path}.ts`, `${path}.tsx`, join(path, "index.ts"), join(path, "index.tsx")]) {
@@ -70,9 +71,9 @@ describe("dashboard layout static import graph", () => {
 });
 
 // Issue detail and the editor belong to the detail route and the chat composer;
-// the list-style pages must load them on demand only (CHE-3018).
+// the list-style pages and chat (composer editor) must load them on demand only (CHE-3018).
 describe("list pages static import graph", () => {
-  it.each(["inbox/page.tsx", "issues/page.tsx", "projects/page.tsx"])(
+  it.each(["chat/page.tsx", "inbox/page.tsx", "issues/page.tsx", "projects/page.tsx"])(
     "%s does not statically reach issue detail or the editor",
     (entry) => {
       expect(reachableFrom(entry, "views/issues/components/issue-detail.tsx")).toEqual([]);

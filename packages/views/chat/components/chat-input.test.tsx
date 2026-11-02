@@ -78,23 +78,18 @@ const editorState = vi.hoisted(() => ({
   adopted: [] as string[],
 }));
 
-vi.mock("../../editor", async () => ({
-  // Real submit gate (pure React) driven by the mock editor's
-  // `hasActiveUploads` / `onUploadingChange`.
-  ...(await vi.importActual<typeof import("../../editor/use-upload-gate")>(
-    "../../editor/use-upload-gate",
-  )),
-  // Real await-then-render submit contract (pure React) — it only imports
-  // types from ContentEditor / the upload gate, so it pulls in no Tiptap tree.
-  ...(await vi.importActual<typeof import("../../editor/use-composer-submit")>(
-    "../../editor/use-composer-submit",
-  )),
+// The real submit gate and await-then-render submit contract (pure React, no
+// Tiptap) are used as-is; only the drop zone and the editor are replaced.
+vi.mock("../../editor/use-file-drop-zone", () => ({
   useFileDropZone: ({ onDrop }: { onDrop: (files: File[]) => void }) => {
     dropHandlers.onDrop = onDrop;
     return { isDragOver: false, dropZoneProps: { "data-testid": "drop-zone" } };
   },
-  FileDropOverlay: () => null,
-  ContentEditor: forwardRef(function MockContentEditor(
+}));
+vi.mock("../../editor/file-drop-overlay", () => ({ FileDropOverlay: () => null }));
+
+vi.mock("./lazy-content-editor", () => ({
+  LazyContentEditor: forwardRef(function MockContentEditor(
     props: {
       defaultValue?: string;
       value?: string;
@@ -104,6 +99,7 @@ vi.mock("../../editor", async () => ({
       onUploadingChange?: (uploading: boolean) => void;
       mentionMode?: string;
       mentionContextItems?: unknown[];
+      onReady?: () => void;
     },
     ref: React.Ref<unknown>,
   ) {
@@ -114,7 +110,13 @@ vi.mock("../../editor", async () => ({
       placeholder,
       onUploadFile,
       onUploadingChange,
+      onReady,
     } = props;
+    // The real editor signals once its Tiptap instance exists; ChatInput defers
+    // a focus request until then because the chunk loads lazily.
+    useEffect(() => {
+      onReady?.();
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
     editorProps.last = props as unknown as Record<string, unknown>;
     const valueRef = useRef<string>(value ?? defaultValue ?? "");
     const uploadingRef = useRef(0);

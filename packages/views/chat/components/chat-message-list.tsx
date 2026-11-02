@@ -34,7 +34,7 @@ import { MediaSourceProvider } from "../../media/media-context";
 import { RichContentScrollRootProvider } from "../../rich-content/scroll-root";
 import { NextSelfMention, useMentionsViewer } from "../../rich-content/next-self-mention";
 import { copyText } from "@multica/ui/lib/clipboard";
-import { AttachmentList } from "../../issues/components/comment-card";
+import { AttachmentList } from "../../issues/components/attachment-list";
 import { PreviewSequenceProvider, collectPreviewSequence } from "../../editor/preview-sequence-context";
 import type { AgentAvailability } from "@multica/core/agents";
 import { resolveFailureReasonKey } from "@multica/core/agents";
