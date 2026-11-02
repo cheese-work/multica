@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"regexp"
-	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -26,11 +24,11 @@ type DecisionRequestCard struct {
 	// Options are the answer buttons; empty for a card with no structured options.
 	Options []decisiontx.AskOption `json:"options"`
 	// RecommendedOptionIndex is the 0-based option the ask's recommendation names; absent when none matches.
-	RecommendedOptionIndex *int `json:"recommended_option_index,omitempty"`
-	State       string                 `json:"state"`
-	CreatedAt   string                 `json:"created_at"`
-	WithdrawnAt *string                `json:"withdrawn_at,omitempty"`
-	Reason      string                 `json:"reason,omitempty"`
+	RecommendedOptionIndex *int    `json:"recommended_option_index,omitempty"`
+	State                  string  `json:"state"`
+	CreatedAt              string  `json:"created_at"`
+	WithdrawnAt            *string `json:"withdrawn_at,omitempty"`
+	Reason                 string  `json:"reason,omitempty"`
 	// RecordCommentID is the issue comment that recorded the answer, set only while the request is answered.
 	RecordCommentID *string `json:"record_comment_id,omitempty"`
 	// Answer is the latest answer to the request, kept after a disclaim so the card can say so.
@@ -136,39 +134,27 @@ func (handler *Handler) decisionRequestsForMessages(ctx context.Context, workspa
 	return cards
 }
 
-// recommendedOptionIndex is the option the recommendation's first clause names
-// as a whole word. The text is free-form, so a clause that names no option or
-// more than one marks nothing: a wrong mark would steer the click. Longer labels
-// are matched first and their text is blanked, so "Ship" inside "Ship now" is
-// not a second choice, while "Ship rather than Ship now" still names two.
+// recommendedOptionIndex is the one option whose label is the whole
+// recommendation, trimmed and case-folded. The text is free-form, so anything
+// else (a reason, a negation, two labels, duplicate labels) marks nothing: a
+// wrong mark would steer the click.
 func recommendedOptionIndex(options []decisiontx.AskOption, recommendation string) *int {
-	clause := strings.ToLower(recommendation)
-	if cut := strings.IndexAny(clause, ",.;:\n"); cut >= 0 {
-		clause = clause[:cut]
-	}
-	byLength := make([]int, len(options))
-	for index := range byLength {
-		byLength[index] = index
-	}
-	slices.SortStableFunc(byLength, func(a, b int) int {
-		return len(strings.TrimSpace(options[b].Label)) - len(strings.TrimSpace(options[a].Label))
-	})
-	var named []int
-	for _, index := range byLength {
-		label := strings.ToLower(strings.TrimSpace(options[index].Label))
-		if label == "" {
-			continue
-		}
-		whole := regexp.MustCompile(`(?:^|[^\p{L}\p{N}_])(` + regexp.QuoteMeta(label) + `)(?:$|[^\p{L}\p{N}_])`)
-		for found := whole.FindStringSubmatchIndex(clause); found != nil; found = whole.FindStringSubmatchIndex(clause) {
-			if !slices.Contains(named, index) {
-				named = append(named, index)
-			}
-			clause = clause[:found[2]] + strings.Repeat(" ", found[3]-found[2]) + clause[found[3]:]
-		}
-	}
-	if len(named) != 1 {
+	want := strings.ToLower(strings.TrimSpace(recommendation))
+	if want == "" {
 		return nil
 	}
-	return &named[0]
+	match := -1
+	for index, option := range options {
+		if strings.ToLower(strings.TrimSpace(option.Label)) != want {
+			continue
+		}
+		if match >= 0 {
+			return nil
+		}
+		match = index
+	}
+	if match < 0 {
+		return nil
+	}
+	return &match
 }

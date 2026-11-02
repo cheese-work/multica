@@ -17,7 +17,7 @@ import (
 const cardOptions = `[{"label":"Option A","what_happens":"A happens","pros":["fast"],"cons":["risky"],"cost_or_time":"1 h"},{"label":"Option B","what_happens":"B happens","pros":["safe"],"cons":["slow"],"cost_or_time":"2 days"}]`
 
 // cardAskJSON is the structured ask a clickable card needs; its recommendation names Option B.
-const cardAskJSON = `{"decision":"Pick one","options":` + cardOptions + `,"recommendation":"Option B, because it is safe"}`
+const cardAskJSON = `{"decision":"Pick one","options":` + cardOptions + `,"recommendation":"Option B"}`
 
 func newCardFixture(test *testing.T) askedRecordFixture {
 	test.Helper()

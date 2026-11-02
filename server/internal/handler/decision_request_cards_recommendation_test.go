@@ -6,7 +6,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/decisiontx"
 )
 
-func TestRecommendedOptionIndexNamesOnlyAnUnambiguousChoice(test *testing.T) {
+func TestRecommendedOptionIndexMarksOnlyAnExactLabelMatch(test *testing.T) {
 	labels := func(names ...string) []decisiontx.AskOption {
 		options := make([]decisiontx.AskOption, len(names))
 		for index, name := range names {
@@ -20,15 +20,14 @@ func TestRecommendedOptionIndexNamesOnlyAnUnambiguousChoice(test *testing.T) {
 		recommendation string
 		want           int // -1: nothing is marked
 	}{
-		{"a label inside another word is not a match", labels("A", "B"), "B, because it is safe", 1},
-		{"short label inside prose only", labels("A", "B"), "Go with because", -1},
-		{"whole label, any case", labels("Ship now", "Wait"), "ship NOW.", 0},
-		{"overlapping labels pick the longer one", labels("Ship", "Ship now"), "Ship now", 1},
-		{"overlapping labels, shorter one named", labels("Ship", "Ship now"), "Ship", 0},
-		{"shorter label named apart from the longer one is ambiguous", labels("Ship", "Ship now"), "Ship rather than Ship now", -1},
-		{"only the first clause counts", labels("Ship", "Ship now"), "Ship now, not Ship", 1},
-		{"shorter label named twice is still one choice", labels("Ship", "Ship now"), "Ship or Ship", 0},
-		{"two different options named is ambiguous", labels("A", "B"), "A or B", -1},
+		{"whole recommendation equals a label, any case", labels("Ship now", "Wait"), "  ship NOW ", 0},
+		{"second option", labels("A", "B"), "B", 1},
+		{"a label followed by a reason is not exact", labels("A", "B"), "B, because it is safe", -1},
+		{"negation names the rejected option", labels("A", "B"), "Do not choose A; choose B", -1},
+		{"rather-than names two options", labels("Ship", "Ship now"), "Ship rather than Ship now", -1},
+		{"partial overlap", labels("Ship", "Ship now"), "Ship now, not Ship", -1},
+		{"two different options named", labels("A", "B"), "A or B", -1},
+		{"two options with the same label", labels("A", "a"), "A", -1},
 		{"no label named", labels("A", "B"), "Neither, wait a day", -1},
 		{"empty recommendation", labels("A", "B"), "", -1},
 	}
