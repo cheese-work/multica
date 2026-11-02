@@ -148,7 +148,7 @@
       "edit": "Modifier {{name}}",
       "edit_title": "Modifier la règle de l’espace de travail",
       "edit_unsupported": "Cette règle utilise des options que cet éditeur ne peut pas modifier. Supprimez-la et créez-en une nouvelle.",
-      "conflict_error": "Quelqu’un d’autre a modifié cette règle. La liste est rechargée ; modifiez-la à nouveau.",
+      "conflict_error": "Quelqu’un d’autre a modifié cette règle. Annulez et rouvrez-la pour voir ses modifications.",
       "cancel": "Annuler",
       "save": "Enregistrer la règle",
       "saving": "Enregistrement…"

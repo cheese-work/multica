@@ -11,7 +11,7 @@ import {
   useSaveWorkspaceWakeupDefinition,
   workspaceWakeupDefinitionsOptions,
 } from "@multica/core/workspace/wakeup-definitions";
-import type { WakeupDefinition, WakeupEffectiveRule } from "@multica/core/types";
+import type { WakeupDefinition, WakeupDefinitionConfig, WakeupEffectiveRule } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
 import { WakeupFields } from "../../issues/components/wakeup-fields";
@@ -80,18 +80,21 @@ function RuleRow({
 }) {
   const { t } = useT("settings");
   const remove = useDeleteWorkspaceWakeupDefinition(workspaceId);
-  const [editing, setEditing] = useState(false);
+  // The rule as it was when the edit opened. A refetch must not move the
+  // revision under a draft that was read at an older one.
+  const [editing, setEditing] = useState<WakeupDefinition | null>(null);
   const name = rule.config.name ?? "";
   const editable = draftFromDefinitionConfig(rule.config);
-  if (editing && editable) {
+  const pinned = editing ? draftFromDefinitionConfig(editing.config) : null;
+  if (editing && pinned) {
     return (
       <li>
         <RuleForm
           workspaceId={workspaceId}
-          rule={rule}
-          initial={editable}
-          onDone={() => setEditing(false)}
-          onCancel={() => setEditing(false)}
+          rule={editing}
+          initial={pinned}
+          onDone={() => setEditing(null)}
+          onCancel={() => setEditing(null)}
         />
       </li>
     );
@@ -120,7 +123,7 @@ function RuleRow({
               variant="ghost"
               size="icon"
               aria-label={t(($) => $.wakeups.rules.edit, { name })}
-              onClick={() => setEditing(true)}
+              onClick={() => setEditing(rule)}
             >
               <Pencil className="size-3.5" aria-hidden="true" />
             </Button>
@@ -141,7 +144,7 @@ function RuleRow({
   );
 }
 
-/** Creates a rule, or with `rule` edits that saved rule from its current revision. */
+/** Creates a rule, or with `rule` edits that saved rule at the revision `rule` carries. */
 function RuleForm({
   workspaceId,
   rule,
@@ -163,6 +166,14 @@ function RuleForm({
   const [previewed, setPreviewed] = useState<WakeupEffectiveRule | null>(null);
   const [previewError, setPreviewError] = useState("");
   const [previewing, setPreviewing] = useState(false);
+  // Fields this form does not edit (rate limit, filters, ...) stay as saved.
+  // Preview and save send the same configuration.
+  const configToSave = (edited: WakeupDefinitionConfig): WakeupDefinitionConfig => {
+    if (!rule) return edited;
+    const merged = { ...rule.config, ...edited };
+    if (edited.max_fires === undefined) delete merged.max_fires;
+    return merged;
+  };
   const refusals: Record<WakeupDefinitionConfigError, string> = {
     missing_name: t(($) => $.wakeups.rules.missing_name, { max: WAKEUP_DEFINITION_NAME_MAX }),
     unsupported_filter: t(($) => $.wakeups.rules.unsupported_filter),
@@ -179,10 +190,7 @@ function RuleForm({
         await create.mutateAsync(result.config);
         return;
       }
-      // Fields this form does not edit (rate limit, filters, ...) stay as saved.
-      const config = { ...rule.config, ...result.config };
-      if (result.config.max_fires === undefined) delete config.max_fires;
-      await save.mutateAsync({ ruleKey: rule.rule_key, revision: rule.revision, config });
+      await save.mutateAsync({ ruleKey: rule.rule_key, revision: rule.revision, config: configToSave(result.config) });
     },
     onSaved: onDone,
     describeError: (err) => {
@@ -206,7 +214,7 @@ function RuleForm({
     }
     setPreviewing(true);
     try {
-      setPreviewed(await previewWorkspaceWakeupDefinition(rule?.rule_key ?? crypto.randomUUID(), result.config));
+      setPreviewed(await previewWorkspaceWakeupDefinition(rule?.rule_key ?? crypto.randomUUID(), configToSave(result.config)));
     } catch {
       setPreviewError(t(($) => $.wakeups.rules.preview_error));
     } finally {

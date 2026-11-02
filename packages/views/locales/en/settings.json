@@ -148,7 +148,7 @@
       "edit": "Edit {{name}}",
       "edit_title": "Edit workspace rule",
       "edit_unsupported": "This rule uses options this editor cannot change. Delete it and create a new one.",
-      "conflict_error": "Someone else changed this rule. The list is reloaded; edit it again.",
+      "conflict_error": "Someone else changed this rule. Cancel and open it again to see their changes.",
       "cancel": "Cancel",
       "save": "Save rule",
       "saving": "Saving…"

@@ -191,13 +191,38 @@ it("saves an edit at the revision it was read at and keeps the fields the editor
   await waitFor(() => expect(screen.queryByRole("form", { name: "Edit workspace rule" })).toBeNull());
 });
 
-it("previews an edit against the rule it replaces", async () => {
+it("previews the same configuration it would save, with the fields the editor does not show", async () => {
   list.mockResolvedValue({ definitions: [editable], capabilities: open });
   mount();
   const form = await openEditor();
   fireEvent.click(form.getByRole("button", { name: "Preview" }));
   await waitFor(() => expect(preview).toHaveBeenCalledTimes(1));
   expect(preview.mock.calls[0]![1].rule_key).toBe(editable.rule_key);
+  fireEvent.click(form.getByRole("button", { name: "Save rule" }));
+  await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+  expect(preview.mock.calls[0]![1].config).toEqual(save.mock.calls[0]![2].config);
+  expect(preview.mock.calls[0]![1].config).toMatchObject({ rate_limit: 4, filters: { labels: ["a"] } });
+});
+
+it("keeps the revision the edit opened at when the list refetches after someone else saved", async () => {
+  save.mockRejectedValueOnce(new ApiError("stale", 409, "Conflict"));
+  list
+    .mockResolvedValueOnce({ definitions: [editable], capabilities: open })
+    .mockResolvedValue({
+      definitions: [{ ...editable, revision: "8", config: { ...editable.config, instruction: "Their change" } }],
+      capabilities: open,
+    });
+  mount();
+  const form = await openEditor();
+  fireEvent.click(form.getByRole("button", { name: "Save rule" }));
+  expect(await form.findByRole("alert")).toHaveTextContent("Someone else changed this rule.");
+  await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+  fireEvent.click(form.getByRole("button", { name: "Save rule" }));
+  await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+  // The retry carries the revision the draft was read at, so the server refuses it again
+  // instead of writing the old draft over the newer rule.
+  expect(save.mock.calls[1]![2].revision).toBe("7");
+  expect(save.mock.calls[1]![2].config.instruction).toBe("Check the PR");
 });
 
 it("keeps the edit open and says so when someone else saved the rule first", async () => {

@@ -137,7 +137,7 @@
       "edit": "編輯{{name}}",
       "edit_title": "編輯工作區規則",
       "edit_unsupported": "此規則使用了本編輯器無法修改的選項。請刪除後重新建立。",
-      "conflict_error": "其他人已修改此規則。清單已重新載入，請再次編輯。",
+      "conflict_error": "其他人已修改此規則。請取消後重新開啟，查看他們的變更。",
       "cancel": "取消",
       "save": "儲存規則",
       "saving": "儲存中…"
