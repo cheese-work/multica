@@ -21,6 +21,12 @@ const StatusCauseUIOrAPI = "ui_or_api"
 // stuck in_progress issue to todo after its run failed.
 const StatusCauseTaskReset = "task_reset"
 
+// StatusCauseWorkflowRemap is the cause of a status move a workflow edit or a
+// project workflow switch made to fit an issue to the new workflow. It is the
+// platform's administrative move, never a person's: it opens no run-budget
+// window.
+const StatusCauseWorkflowRemap = "workflow_remap"
+
 // Causes of the background writers that move a status without a request:
 // a merged PR (auto-complete or the GitHub merge hook) and a Qoder Cloud run.
 const (

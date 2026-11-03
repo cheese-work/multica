@@ -256,6 +256,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"workflow_webhook_nonce":             workspaceDelete, // CHE-2031 no workspace_id; deleted through its endpoint.
 	"workspace":                          workspaceDelete,
 	"workspace_config_sync":              workspaceDelete,
+	"ask_guard_event":                    workspaceDelete,
 	"workspace_invitation":               workspaceDelete,
 	"workspace_share_link":               workspaceDelete,
 }
