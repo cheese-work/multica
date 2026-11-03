@@ -208,7 +208,6 @@ JOIN decision_intent_target target ON target.decision_intent_id = intent.id AND 
 JOIN agent_task_queue task ON task.id = intent.task_id AND task.status IN ('completed', 'failed', 'cancelled')
 JOIN issue ON issue.id = intent.issue_id AND issue.workspace_id = intent.workspace_id
 WHERE intent.sealed_at IS NOT NULL AND intent.closed_at IS NULL
-  AND intent.sealed_at > clock_timestamp() - interval '7 days'
   AND NOT EXISTS (SELECT 1 FROM ask_guard_event event WHERE event.intent_id = intent.id AND event.member_id = target.human_user_id)
 ORDER BY intent.id, target.human_user_id
 LIMIT LEAST(GREATEST($1::int, 0), 100)
@@ -225,8 +224,9 @@ type ListAskGuardIntentTargetsRow struct {
 
 // S3: every unconsumed target of a sealed intent whose run has ended and that
 // has no event yet, whether or not other targets of the intent were consumed.
-// ponytail: scans sealed intents of the last 7 days; add an index on sealed_at
-// if the pass gets slow. Older intents are stale and are not replayed.
+// No age cutoff: a run can end long after its intent was sealed, and a worker
+// can be down for days. The NOT EXISTS makes a handled intent drop out; the
+// batch limit bounds one pass.
 func (q *Queries) ListAskGuardIntentTargets(ctx context.Context, batchSize int32) ([]ListAskGuardIntentTargetsRow, error) {
 	rows, err := q.db.Query(ctx, listAskGuardIntentTargets, batchSize)
 	if err != nil {
