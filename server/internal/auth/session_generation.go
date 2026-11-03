@@ -12,6 +12,10 @@ import (
 	"github.com/multica-ai/multica/server/internal/util"
 )
 
+// SessionGenerationHeader carries a JWT's `gen` claim from the auth middleware
+// to a handler. The middleware strips any client value and sets it for a JWT only.
+const SessionGenerationHeader = "X-Session-Generation"
+
 // SessionGenerationCacheTTL bounds how long ordinary routes trust a stored
 // session generation, and so how long a revoked JWT can keep working there.
 const SessionGenerationCacheTTL = 30 * time.Second
