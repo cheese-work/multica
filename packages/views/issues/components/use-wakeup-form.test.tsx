@@ -100,4 +100,20 @@ describe("useWakeupForm", () => {
     });
     expect(result.current.pending).toBe(false);
   });
+
+  it("shows the caller's message for a refusal it knows, and the shared one otherwise", async () => {
+    const describeError = vi.fn((err: unknown) => (err instanceof Error && err.message === "known" ? "Known refusal." : undefined));
+    const { result } = renderHook(
+      () => useWakeupForm({ workspaceId: "ws", defaultAgentId: "emacs", save, onSaved, describeError }),
+      { wrapper },
+    );
+    act(() => result.current.update({ condition: "custom", events: ["issue.updated"], instruction: "Go" }));
+    save.mockRejectedValueOnce(new Error("known"));
+    await act(() => result.current.submit());
+    expect(result.current.error).toBe("Known refusal.");
+    save.mockRejectedValueOnce(new Error("other"));
+    await act(() => result.current.submit());
+    expect(result.current.error).not.toBe("Known refusal.");
+    expect(result.current.error).not.toBe("");
+  });
 });
