@@ -1,3 +1,4 @@
+# ci-policy: class=deploy
 name: CD deploy to C00
 run-name: CD deploy to C00 · ${{ github.event.workflow_run.head_sha || inputs.ref || github.sha }}
 

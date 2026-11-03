@@ -1,3 +1,4 @@
+# ci-policy: class=main-build
 name: Docs image
 
 # Builds the fork docs image on X99 and publishes it by digest. Never builds on

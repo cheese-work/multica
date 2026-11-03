@@ -1,3 +1,4 @@
+# ci-policy: class=main-build
 name: CD qualification build
 
 on:

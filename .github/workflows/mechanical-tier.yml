@@ -1,3 +1,4 @@
+# ci-policy: class=gate
 # Mechanical review tier check (CHE-1298, phase 2 of CHE-1286) — PROPOSED, NOT ACTIVE. Copy of
 # cheese-work/multica-dotfiles .github/workflows/mechanical-tier.yml for multica PRs (CHE-3339); same pattern as security-gate.yml.
 #

@@ -1,3 +1,4 @@
+# ci-policy: class=pr-validation
 name: PR Changelog Check
 
 # Prints the /changelog entry this PR will publish (CHE-1631). Fails a feat/fix/perf

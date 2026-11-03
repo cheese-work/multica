@@ -1,3 +1,4 @@
+# ci-policy: class=manual
 name: CHE-701 services smoke
 
 # Run manually after changes to the X99 runner/dind Compose stack.

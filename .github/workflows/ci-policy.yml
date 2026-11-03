@@ -1,0 +1,77 @@
+# ci-policy: class=gate
+# ci-policy caller (D-6, eng review D10 = A and D14 = A). Same content in every enrolled repo; scripts/ci-policy/sync.py
+# keeps the copies current. See standards/general/ci.md.
+#
+# SECURITY — same boundary as mechanical-tier.yml: `pull_request_target` and `pull_request_review` run PR checks with
+# the BASE revision's checker. The job checks out the base SHA and only FETCHES head objects; gate.py reads the head's
+# `.github` tree as data. Do not add a head checkout, a head `run:` or a secret to this workflow.
+# `merge_group` checks out the default branch and copies every queued PR's `ci-policy` result (gate.py merge-group); gate.py fetches the group and head commits it must compare.
+# Not a required check until D-9 promotion; a push trigger is never needed (D-4).
+
+name: ci-policy
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted, dismissed]
+  merge_group:
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+
+# One group per event type: a review run must not cancel the run for a newer push.
+concurrency:
+  group: ci-policy-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  ci-policy:
+    name: ci-policy
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99-gate"]') || fromJSON('["ubuntu-latest"]') }}
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      GROUP_REF: ${{ github.event.merge_group.head_ref }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      PRIVATE: ${{ github.event.repository.private && '--private' || '' }}
+    steps:
+      - name: Discard a reused workspace
+        run: |
+          find "$GITHUB_WORKSPACE" -mindepth 1 -delete
+      # A plain git checkout of the BASE sha (or the default branch for a queue run): no `actions/checkout` and no head
+      # ref, so the pull_request_target checkout rule has nothing to match and the base-only boundary stays visible.
+      - name: Check out the trusted base
+        run: |
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git init --quiet .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            fetch --quiet --no-tags origin "+refs/heads/*:refs/remotes/origin/*"
+          git checkout --quiet --detach "${BASE_SHA:-refs/remotes/origin/${DEFAULT_BRANCH}}"
+      - name: Fetch the head objects without checking them out
+        if: github.event_name != 'merge_group'
+        run: |
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/head"
+          test "$(git rev-parse refs/remotes/pull/head)" = "$HEAD_SHA"
+      # Some X99 runners ship no PyYAML (CHE-2397); --target avoids PEP 668.
+      - name: Install PyYAML
+        run: |
+          python3 -m pip install --quiet --target "$RUNNER_TEMP/pydeps" pyyaml
+          echo "PYTHONPATH=$RUNNER_TEMP/pydeps" >> "$GITHUB_ENV"
+      - name: Check the PR against the base policy
+        if: github.event_name != 'merge_group'
+        run: |
+          python3 .github/ci-policy/gate.py pr --repo "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" \
+            --base "$BASE_SHA" --head "$HEAD_SHA" --default-branch "$DEFAULT_BRANCH" $PRIVATE
+      - name: Copy the queued PR's result
+        if: github.event_name == 'merge_group'
+        run: |
+          python3 .github/ci-policy/gate.py merge-group --repo "$GITHUB_REPOSITORY" --group-ref "$GROUP_REF"

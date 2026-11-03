@@ -1,3 +1,4 @@
+# ci-policy: class=gate
 # Pre-merge security gate (CHE-2671). Copy of cheese-work/multica-dotfiles .github/workflows/security-gate.yml.
 #
 # Sets the `security-gate` commit status on the PR's exact head SHA. Register `security-gate` as a required status

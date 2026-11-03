@@ -1,3 +1,4 @@
+# ci-policy: class=pr-validation
 name: Mobile Verify
 
 # Runs lint + typecheck for apps/mobile only, parallel to the main CI

@@ -1,0 +1,17 @@
+merge_queue: true
+required_checks:
+  - backend-tests
+status_contexts:
+  - name: security-gate
+    workflow: security-gate.yml
+    targets:
+      pull_request_target: pr-head
+      merge_group: merge-group-head
+exceptions:
+  # backend-tests is the heavy Go job, not an aggregate; CHE-3429 makes the required check an aggregate.
+  - repo: cheese-work/multica
+    workflow: ci.yml
+    rule: R8
+    reason: the required check is the heavy job itself, so a failed changes selector reports it skipped; CHE-3429 restructures it
+    owner: x99-claude-sonnet-200k
+    expires: 2026-12-15
