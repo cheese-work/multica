@@ -123,6 +123,7 @@ ORDER BY created_at ASC LIMIT 1;
 SELECT EXISTS (
   SELECT 1 FROM activity_log
   WHERE issue_id = sqlc.arg('issue_id')::uuid AND action = 'status_changed' AND actor_type = 'member'
+    AND details->'trigger'->'cause'->>'kind' IS DISTINCT FROM 'workflow_remap'
     AND created_at >= sqlc.arg('since')::timestamptz AND details->>'to' = sqlc.arg('status')::text
 );
 

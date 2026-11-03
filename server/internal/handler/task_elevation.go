@@ -235,3 +235,42 @@ func (h *Handler) fenceRound(ctx context.Context) error {
 	}
 	return nil
 }
+
+// GetTaskElevation tells the daemon where the task's fence stands. The daemon
+// polls it: a state other than elevated, or a newer epoch, starts its local fence.
+func (h *Handler) GetTaskElevation(w http.ResponseWriter, r *http.Request) {
+	task, ok := h.requireDaemonTaskAccess(w, r, chi.URLParam(r, "taskId"))
+	if !ok {
+		return
+	}
+	te, err := h.Queries.GetTaskElevation(r.Context(), task.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "task is not elevated")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read elevation")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"state": te.State, "epoch": te.Epoch})
+}
+
+// EndTaskLaunchScopes records that the processes holding the task's docker or
+// device: scopes exited, which lets a fence finish. Idempotent; refused while
+// the task is still elevated.
+func (h *Handler) EndTaskLaunchScopes(w http.ResponseWriter, r *http.Request) {
+	task, ok := h.requireDaemonTaskAccess(w, r, chi.URLParam(r, "taskId"))
+	if !ok {
+		return
+	}
+	_, err := h.Queries.EndTaskLaunchScopes(r.Context(), task.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusConflict, "task is not fenced")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record launch-scope end")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ended": true})
+}

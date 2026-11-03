@@ -95,8 +95,8 @@ const (
 // route in the family is reviewed.
 var otherWriteFamilies = map[string]writeFamily{
 	"api/agent-builder":            {3, byWorkspace},
-	"api/agent-decisions":          {1, byHuman},
-	"api/agents":                   {20, byWorkspace},
+	"api/agent-decisions":          {2, byHuman},
+	"api/agents":                   {22, byWorkspace},
 	"api/auth":                     {2, byPublic},
 	"api/autopilots":               {12, byWorkspace},
 	"api/chat":                     {19, byOwnRow},
@@ -106,7 +106,7 @@ var otherWriteFamilies = map[string]writeFamily{
 	"api/cloud-runtime":            {7, byWorkspace},
 	"api/cloud-subscriptions":      {5, byHuman},
 	"api/contact-sales":            {1, byPublic},
-	"api/daemon":                   {34, byDaemon},
+	"api/daemon":                   {35, byDaemon},
 	"api/decision-actions":         {3, byHuman},
 	"api/decision-answers":         {1, byHuman},
 	"api/decision-requests":        {2, byHuman},
@@ -144,7 +144,7 @@ var otherWriteFamilies = map[string]writeFamily{
 	"api/wakeup-definitions":       {4, byWorkspace},
 	"api/webhooks":                 {5, byPublic},
 	"api/wecom":                    {1, byPublic},
-	"api/workspaces":               {53, byWorkspace},
+	"api/workspaces":               {55, byWorkspace},
 	"auth/google":                  {1, byPublic},
 	"auth/logout":                  {1, byPublic},
 	"auth/send-code":               {1, byPublic},
