@@ -1650,6 +1650,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/tasks/{taskId}/external-read", h.MarkTaskExternalRead)
 		r.Post("/tasks/{taskId}/complete", h.CompleteTask)
 		r.Post("/tasks/{taskId}/fail", h.FailTask)
+		r.Get("/tasks/{taskId}/elevation", h.GetTaskElevation)
+		r.Post("/tasks/{taskId}/elevation/launch-scopes-ended", h.EndTaskLaunchScopes)
 		r.Post("/tasks/{taskId}/elevation/authorize", h.AuthorizeElevatedOp)
 		r.Post("/tasks/{taskId}/elevation/ops/{opId}/complete", h.CompleteElevatedOp)
 		r.Post("/tasks/{taskId}/elevation/revision-check", h.CheckElevatedRevision)

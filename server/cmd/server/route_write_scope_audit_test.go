@@ -106,7 +106,7 @@ var otherWriteFamilies = map[string]writeFamily{
 	"api/cloud-runtime":            {7, byWorkspace},
 	"api/cloud-subscriptions":      {5, byHuman},
 	"api/contact-sales":            {1, byPublic},
-	"api/daemon":                   {34, byDaemon},
+	"api/daemon":                   {35, byDaemon},
 	"api/decision-actions":         {3, byHuman},
 	"api/decision-answers":         {1, byHuman},
 	"api/decision-requests":        {2, byHuman},
