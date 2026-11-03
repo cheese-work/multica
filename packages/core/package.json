@@ -59,6 +59,7 @@
     "./issues/decision-answer": "./issues/decision-answer.ts",
     "./issues/decision-artifacts": "./issues/decision-artifacts.ts",
     "./issues/comment-trigger-outcomes": "./issues/comment-trigger-outcomes.ts",
+    "./issues/invalid-agent-mentions": "./issues/invalid-agent-mentions.ts",
     "./issues/run-steering": "./issues/run-steering.ts",
     "./issues/date": "./issues/date.ts",
     "./issues/ws-updaters": "./issues/ws-updaters.ts",
