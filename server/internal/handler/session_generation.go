@@ -1,10 +1,13 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/auth"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -21,29 +24,43 @@ func (h *Handler) withCurrentSession(r *http.Request, userID string, write func(
 	if generation == "" {
 		return write(h.Queries)
 	}
-	claimed, err := strconv.Atoi(generation)
-	if err != nil {
-		return err
-	}
 	ctx := r.Context()
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	queries := h.Queries.WithTx(tx)
+	if err := holdCurrentSession(ctx, tx, queries, parseUUID(userID), generation); err != nil {
+		return err
+	}
+	if err := write(queries); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// holdCurrentSession takes the share lock on the user row inside tx and
+// compares a JWT's generation (the header value) with the stored one. An empty
+// generation is not a JWT and passes. The lock lasts to the end of tx, so
+// recovery cannot commit between this check and the caller's writes.
+func holdCurrentSession(ctx context.Context, tx pgx.Tx, queries *db.Queries, userID pgtype.UUID, generation string) error {
+	if generation == "" {
+		return nil
+	}
+	claimed, err := strconv.Atoi(generation)
+	if err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '5s'`); err != nil {
 		return err
 	}
-	queries := h.Queries.WithTx(tx)
-	stored, err := queries.LockUserSessionGeneration(ctx, parseUUID(userID))
+	stored, err := queries.LockUserSessionGeneration(ctx, userID)
 	if err != nil {
 		return err
 	}
 	if int(stored) != claimed {
 		return errSessionRevoked
 	}
-	if err := write(queries); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	return nil
 }

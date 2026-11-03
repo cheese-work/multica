@@ -293,3 +293,53 @@ func TestSessionGeneration_HandoffTokenIsIssuedToACurrentSession(t *testing.T) {
 		}
 	}
 }
+
+func dialDaemonSocket(t *testing.T, token string) (*websocket.Conn, *http.Response, error) {
+	t.Helper()
+	url := "ws" + strings.TrimPrefix(testServer.URL, "http") + "/api/daemon/ws"
+	conn, resp, err := websocket.DefaultDialer.Dial(url, http.Header{"Authorization": {"Bearer " + token}})
+	if conn != nil {
+		t.Cleanup(func() { conn.Close() })
+	}
+	return conn, resp, err
+}
+
+func sendClaimFrame(t *testing.T, conn *websocket.Conn) error {
+	t.Helper()
+	frame := `{"type":"daemon:rpc_request","payload":{"request_id":"claim-1","method":"tasks.claim","body":{}}}`
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
+		return err
+	}
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, _, err := conn.ReadMessage()
+	return err
+}
+
+// A JWT daemon socket opened before recovery must not claim work after it:
+// the frame is refused and the socket closed, whatever the 30 s cache holds.
+func TestSessionGeneration_DaemonSocketIsClosedAcrossRecovery(t *testing.T) {
+	id, token := revocationUser(t, "sid-dws")
+	conn, resp, err := dialDaemonSocket(t, token)
+	if err != nil {
+		t.Fatalf("current JWT must open the daemon socket: %v (resp %v)", err, resp)
+	}
+	bumpRevocationUser(t, id)
+	if err := sendClaimFrame(t, conn); err == nil {
+		t.Fatal("a revoked session got an answer to tasks.claim on its open daemon socket")
+	} else if ne, ok := err.(interface{ Timeout() bool }); ok && ne.Timeout() {
+		t.Fatalf("socket stayed open after revocation: %v", err)
+	}
+}
+
+func TestSessionGeneration_DaemonSocketRefusesRevokedJWTOnConnect(t *testing.T) {
+	id, token := revocationUser(t, "sid-dws2")
+	routerStatus(t, "GET", "/api/daemon/workspaces", token) // warm the 30 s cache
+	bumpRevocationUser(t, id)
+	conn, resp, err := dialDaemonSocket(t, token)
+	if err == nil || resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("revoked JWT on /api/daemon/ws with a warm cache: want 401, got conn=%v resp=%v err=%v", conn != nil, resp, err)
+	}
+	if got := routerStatus(t, "GET", "/api/daemon/workspaces", token); got != http.StatusUnauthorized {
+		t.Fatalf("revoked JWT on a daemon HTTP route with a warm cache: got %d, want 401", got)
+	}
+}

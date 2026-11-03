@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/passkey"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
@@ -95,4 +96,27 @@ func TestApproveDecisionActionStaysRefusedAfterRecoveryUntilTwoNewKeys(test *tes
 		}
 	}
 	action.approve(test, handler, action.claim(test, map[string]string{"KEY": secretSentinel}), http.StatusOK)
+}
+
+// A card answer that began before recovery and finishes after re-enrolment
+// sees state `ready` again, so only its own generation tells it apart.
+func TestCardAnswerFromAnOlderSessionGenerationIsRefusedAfterRecoveryAndReenrolment(test *testing.T) {
+	fixture := newCardFixture(test)
+	dbfx.Exec(test, `UPDATE "user" SET session_generation = session_generation + 1 WHERE id = $1`, fixture.humanID)
+	dbfx.Cleanup(test, `UPDATE "user" SET session_generation = 0 WHERE id = $1`, fixture.humanID)
+	request := fixture.request()
+	request.Header.Set(auth.SessionGenerationHeader, "0")
+
+	_, err := testHandler.answerDecisionRequestTx(request, fixture.issue.WorkspaceID, fixture.decision.ID, parseUUID(fixture.humanID), decisionCardAnswerInput{Option: "Option A"})
+	if err == nil || !strings.Contains(err.Error(), "session revoked") {
+		test.Fatalf("err = %v, want session revoked", err)
+	}
+	if n := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1`, fixture.decision.ID); n != 0 {
+		test.Fatalf("the stale session left %d answers", n)
+	}
+
+	request.Header.Set(auth.SessionGenerationHeader, "1")
+	if _, err := testHandler.answerDecisionRequestTx(request, fixture.issue.WorkspaceID, fixture.decision.ID, parseUUID(fixture.humanID), decisionCardAnswerInput{Option: "Option A"}); err != nil {
+		test.Fatalf("current generation: %v", err)
+	}
 }
