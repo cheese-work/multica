@@ -259,7 +259,7 @@ describe("DecisionRequestCard accessibility", () => {
     const { container } = renderCard(ask);
     const hrefs = Array.from(container.querySelectorAll("a")).map((a) => a.getAttribute("href"));
     expect(hrefs).toContain(`/acme/issues/${issueId}`);
-    expect(hrefs.some((href) => href?.startsWith(`/acme/issues/${issueId}`))).toBe(true);
+    expect(hrefs).toContain(`/acme/issues/${issueId}#comment-${commentId}`);
     expect(hrefs.join(" ")).not.toContain("mention://");
   });
 
