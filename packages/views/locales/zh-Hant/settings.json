@@ -813,7 +813,15 @@
     "agent_decisions_hint": "代理可以代你決定白名單內的關卡。每項決定都會出現在每日簡報中，並有 24 小時否決期。",
     "agent_decisions_stopped_title": "決策已自動停止",
     "agent_decisions_stopped_description": "原因：{{reason}}。開啟決策會清除這筆記錄。",
-    "agent_decisions_stopped_confirm": "開啟"
+    "agent_decisions_stopped_confirm": "開啟",
+    "idle_guard_label": "閒置議題守衛",
+    "idle_guard_hint": "已開始但沒有執行和喚醒的議題，在 N 小時後被移動。Shadow 只記錄日誌。",
+    "idle_guard_off": "關閉",
+    "idle_guard_shadow": "Shadow",
+    "idle_guard_act": "Act",
+    "idle_guard_hours_label": "超過（小時）",
+    "idle_guard_hours_invalid": "請輸入 1 到 72 的整數。",
+    "idle_guard_readonly": "{{mode}}，{{hours}} 小時後"
   },
   "delete_workspace_dialog": {
     "title": "刪除工作區",

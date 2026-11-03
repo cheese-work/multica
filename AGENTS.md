@@ -55,7 +55,7 @@ Run these from the repository root:
 | Combined web/backend verification | `make check` |
 | Mobile | Commands in [apps/mobile/AGENTS.md](apps/mobile/AGENTS.md#verification) |
 
-Docs-only changes can use link/reference checks and `git diff --check`; state that code tests were not run.
+Docs ship with the change. A PR that adds or changes user-visible behavior, a CLI flag, an env var, a GitHub App permission or event, or a self-host requirement updates the matching page under `apps/docs/content/docs/` in the same PR, in every locale (`.mdx`, `.fr`, `.ja`, `.ko`, `.zh`). A new App permission or webhook event also updates the **Self-hosting setup** section of `github-integration.mdx` (App permissions, subscribed events). A purely internal change skips docs and says why in the PR checklist. Docs-only changes can use link/reference checks and `git diff --check`; state that code tests were not run.
 
 ## State Rules
 

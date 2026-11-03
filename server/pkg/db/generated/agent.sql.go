@@ -2793,6 +2793,25 @@ func (q *Queries) CompleteAgentTask(ctx context.Context, arg CompleteAgentTaskPa
 	return i, err
 }
 
+const countChangesVerdictsForPR = `-- name: CountChangesVerdictsForPR :one
+SELECT count(*) FROM activity_log
+WHERE issue_id = $1 AND action = 'review_changes_requested'
+  AND COALESCE(details->>'pull_request_id', '') = $2::text
+`
+
+type CountChangesVerdictsForPRParams struct {
+	IssueID       pgtype.UUID `json:"issue_id"`
+	PullRequestID string      `json:"pull_request_id"`
+}
+
+// Changes-requested rounds of one PR lineage; a replacement PR starts at zero.
+func (q *Queries) CountChangesVerdictsForPR(ctx context.Context, arg CountChangesVerdictsForPRParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countChangesVerdictsForPR, arg.IssueID, arg.PullRequestID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countDelegatedFailureRecoveryTasks = `-- name: CountDelegatedFailureRecoveryTasks :one
 SELECT count(*)
 FROM agent_task_queue
@@ -6502,6 +6521,25 @@ func (q *Queries) IsTaskSessionRetired(ctx context.Context, arg IsTaskSessionRet
 	var retired bool
 	err := row.Scan(&retired)
 	return retired, err
+}
+
+const lastVerdictHeadSHA = `-- name: LastVerdictHeadSHA :one
+SELECT COALESCE((
+  SELECT details->>'head_sha' FROM activity_log
+  WHERE issue_id = $1 AND action IN ('review_changes_requested', 'review_passed')
+  ORDER BY created_at DESC, id DESC LIMIT 1
+), '')::text AS head_sha
+`
+
+// PR head of the issue's latest review verdict, PASS or CHANGES (CHE-3243): a
+// review dispatched for that head, with nothing pushed since, would only repeat
+// it. Earlier verdicts do not count: a head the PR returned to was not looked
+// at since.
+func (q *Queries) LastVerdictHeadSHA(ctx context.Context, issueID pgtype.UUID) (string, error) {
+	row := q.db.QueryRow(ctx, lastVerdictHeadSHA, issueID)
+	var head_sha string
+	err := row.Scan(&head_sha)
+	return head_sha, err
 }
 
 const linkTaskToIssue = `-- name: LinkTaskToIssue :exec
