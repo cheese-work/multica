@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
+import sys
+import tempfile
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -228,6 +231,75 @@ class WrapperTest(unittest.TestCase):
         self.assertIn("state=failure", posted[0])
 
 
+class MergeGroupStepTest(unittest.TestCase):
+    """The merge queue requires `security-gate` on its own commit, which no PR event ever reaches. The job runs the
+    DEFAULT-branch script, which on the first queue run is still the old one (`--pr` only), so the workflow step
+    re-evaluates the queued PR with that script unchanged and posts the state on the queue commit itself."""
+
+    QUEUE = "e" * 40
+    REF = f"refs/heads/gh-readonly-queue/main/pr-405-{'d' * 40}"
+    STUB_GH = ('#!/bin/bash\n'
+               'case "$*" in\n'
+               '  *commits/*) printf "%s\\n" $PARENTS ;;\n'
+               '  *) echo "gh $*" >> "$LOG" ;;\n'
+               'esac\n')
+    STUB_GATE = ('#!/bin/bash\n'  # the old script: --pr N required (an empty N is an argparse error), verdict read live
+                 'echo "gate $*" >> "$LOG"\n'
+                 'case " $* " in *" --pr "[0-9]*) ;; *) exit 2 ;; esac\n'
+                 'echo \'{"context": "security-gate", "sha": "\'$HEAD\'", "state": "\'$STATE\'", "description": "PASS on x"}\'\n')
+
+    def step_run(self):
+        steps = yaml.safe_load((ROOT / ".github/workflows/security-gate.yml").read_text())["jobs"]["security-gate"]["steps"]
+        gate = [s for s in steps if "security_gate.py" in s.get("run", "")]
+        self.assertEqual(len(gate), 1)
+        return gate[0]["run"]
+
+    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success"):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / "bin").mkdir()
+            (tmp / "scripts/security-gate").mkdir(parents=True)
+            (tmp / "bin/gh").write_text(self.STUB_GH)
+            (tmp / "scripts/security-gate/gate.sh").write_text(self.STUB_GATE)
+            (tmp / "scripts/security-gate/security_gate.py").write_text("")  # the step runs it via the shadowed python3
+            (tmp / "bin/python3").write_text(
+                '#!/bin/bash\n[ "${1##*/}" = security_gate.py ] && exec bash "$(dirname "$1")/gate.sh" "${@:2}"\n'
+                f'exec {sys.executable} "$@"\n')
+            for path in (tmp / "bin/gh", tmp / "bin/python3", tmp / "scripts/security-gate/gate.sh"):
+                path.chmod(0o755)
+            env = {**os.environ, "PATH": f"{tmp / 'bin'}:{os.environ['PATH']}", "LOG": str(tmp / "log"), "HEAD": HEAD,
+                   "STATE": state, "PARENTS": " ".join(parents), "MERGE_GROUP_REF": ref, "MERGE_GROUP_SHA": self.QUEUE,
+                   "PR_NUMBER": "", "GH_TOKEN": "t", "DEFAULT_BRANCH": "main", "GITHUB_REPOSITORY": "o/r",
+                   "GITHUB_SERVER_URL": "https://github.com", "GITHUB_RUN_ID": "7"}
+            done = subprocess.run(["bash", "-c", self.step_run()], cwd=tmp, env=env, capture_output=True, text=True)
+            log = (tmp / "log").read_text().splitlines() if (tmp / "log").exists() else []
+        return done, log
+
+    def posted(self, log):
+        return [l for l in log if l.startswith("gh ") and f"statuses/{self.QUEUE}" in l]
+
+    def test_queued_pr_verdict_is_posted_on_the_queue_commit(self):
+        done, log = self.run_step()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(len(self.posted(log)), 1, log)
+        self.assertIn("state=success", self.posted(log)[0])
+        self.assertIn("--pr 405", " ".join(l for l in log if l.startswith("gate ")))
+        self.assertNotIn("--post", " ".join(log))  # the old script would post on the PR head, not the queue commit
+
+    def test_verdict_is_read_fresh_at_queue_time(self):
+        done, log = self.run_step(state="pending")
+        self.assertIn("state=pending", self.posted(log)[0])
+
+    def test_pr_head_that_is_not_a_parent_fails(self):
+        done, log = self.run_step(parents=("d" * 40, OLD))
+        self.assertIn("state=failure", self.posted(log)[0])
+
+    def test_queue_for_another_branch_fails_without_evaluating(self):
+        done, log = self.run_step(ref=f"refs/heads/gh-readonly-queue/dev/pr-405-{'d' * 40}")
+        self.assertIn("state=failure", self.posted(log)[0])
+        self.assertFalse([l for l in log if l.startswith("gate ")])
+
+
 class WorkflowTest(unittest.TestCase):
     def setUp(self):
         self.text = (ROOT / ".github/workflows/security-gate.yml").read_text()
@@ -249,6 +321,9 @@ class WorkflowTest(unittest.TestCase):
         # findings 3 and 4
         self.assertIn("edited", self.doc[True]["pull_request_target"]["types"])
         self.assertIn("deleted", self.doc[True]["issue_comment"]["types"])
+
+    def test_merge_queue_commit_gets_the_status(self):
+        self.assertIn("checks_requested", self.doc[True]["merge_group"]["types"])
 
     def test_only_status_write_is_added(self):
         self.assertEqual(self.doc["permissions"], {"contents": "read", "pull-requests": "read", "statuses": "write"})
