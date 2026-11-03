@@ -18,18 +18,23 @@ const MERGE_GROUP_POLL_MS = 10000;
 const blockingSleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 // The push to main lands seconds before the merge-group CI run finishes, so a run that is
-// still queued or in progress is awaited (bounded) rather than treated as not green.
-export function hasGreenMergeGroup(env, query = (endpoint) => JSON.parse(execFileSync("gh", ["api", endpoint], { encoding: "utf8", timeout: 30000 })), sleep = blockingSleep) {
+// still queued or in progress, or not listed yet, is awaited rather than treated as not green.
+// The bound covers total elapsed time, lookups included.
+export function hasGreenMergeGroup(env, query = (endpoint) => JSON.parse(execFileSync("gh", ["api", endpoint], { encoding: "utf8", timeout: 30000 })), sleep = blockingSleep, now = Date.now) {
   if (env.EVENT_NAME !== "push" || env.GITHUB_REF !== "refs/heads/main" || env.CI_PUSH_FULL === "true") return false;
   if (!/^[a-f0-9]{40}$/.test(env.GITHUB_SHA ?? "") || !env.GITHUB_REPOSITORY) return false;
+  const override = Number.parseInt(env.MERGE_GROUP_WAIT_MS ?? "", 10);
+  const waitMs = Number.isNaN(override) ? MERGE_GROUP_WAIT_MS : override;
+  const deadline = now() + waitMs;
   try {
-    for (let waited = 0; ; waited += MERGE_GROUP_POLL_MS) {
+    for (;;) {
       const response = query(`repos/${env.GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?event=merge_group&head_sha=${env.GITHUB_SHA}&per_page=10`);
       const runs = response.workflow_runs.filter((run) => run.event === "merge_group"
         && run.head_sha === env.GITHUB_SHA && run.head_repository?.full_name === env.GITHUB_REPOSITORY);
       if (runs.some((run) => run.status === "completed" && run.conclusion === "success")) return true;
-      if (waited >= MERGE_GROUP_WAIT_MS || !runs.some((run) => run.status !== "completed")) return false;
-      sleep(MERGE_GROUP_POLL_MS);
+      const remaining = deadline - now();
+      if (remaining <= 0 || runs.length > 0 && runs.every((run) => run.status === "completed")) return false;
+      sleep(Math.min(MERGE_GROUP_POLL_MS, remaining));
     }
   } catch {
     console.warn("Merge-group lookup failed; running full push CI.");
