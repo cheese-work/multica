@@ -21,7 +21,8 @@ import (
 // func a *InTx method returns runs on the original service, after the commit.
 // Composio is absent, as in createDeferredChannelIssueTaskWithQueries: building
 // its overlay is a network call and reads through the pool, neither of which
-// can run under the caller's locks, so a run inserted this way has no overlay.
+// can run under the caller's locks. A run inserted this way has the overlay
+// the caller prepared before its transaction, or none.
 func (s *TaskService) TxScoped(q *db.Queries) *TaskService {
 	return &TaskService{
 		RecordMemberActivity: s.RecordMemberActivity,
@@ -101,8 +102,10 @@ func (s *TaskService) CancelStaleStepRunsInTx(ctx context.Context, q *db.Queries
 // pending-run unique index, whose violation would abort the transaction; it is
 // ErrDuplicatePendingTask. The admission refusals (run budget, triage, a
 // recovery-caused run) are returned as they are, with nothing inserted. The
-// returned func publishes the run after commit.
-func (s *TaskService) EnqueueIssueRunInTx(ctx context.Context, q *db.Queries, issue db.Issue, actorUserID pgtype.UUID) (afterCommit func(), err error) {
+// returned func publishes the run after commit. overlay is the run's Composio
+// overlay, built before the transaction opened (PrepareIssueRunOverlay); a run
+// inserted without one has none.
+func (s *TaskService) EnqueueIssueRunInTx(ctx context.Context, q *db.Queries, issue db.Issue, actorUserID pgtype.UUID, overlay *PreparedRuntimeMCPOverlay) (afterCommit func(), err error) {
 	pending, err := q.HasPendingAssignmentTaskForAgent(ctx, db.HasPendingAssignmentTaskForAgentParams{IssueID: issue.ID, AgentID: issue.AssigneeID})
 	if err != nil {
 		return nil, fmt.Errorf("check pending run: %w", err)
@@ -111,7 +114,7 @@ func (s *TaskService) EnqueueIssueRunInTx(ctx context.Context, q *db.Queries, is
 		return nil, ErrDuplicatePendingTask
 	}
 	txCtx, notifyAfterCommit := deferEnqueuedTaskHook(ctx)
-	task, attr, err := s.enqueueIssueTaskWithQueries(txCtx, q, issue, pgtype.UUID{}, nil, false, "", actorUserID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
+	task, attr, err := s.enqueueIssueTaskWithQueriesAndOverlay(txCtx, q, issue, pgtype.UUID{}, nil, false, "", actorUserID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived, overlay)
 	if err != nil {
 		return nil, err
 	}

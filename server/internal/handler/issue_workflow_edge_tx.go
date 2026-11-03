@@ -37,8 +37,9 @@ type edgeMove struct {
 // A handoff check that cannot run inside the transaction refuses the move: a
 // run whose stop is not confirmed returns *service.StopNotConfirmedError with
 // nothing written. The move reads through q wherever it can, so the caller's
-// connection is the one it waits on.
-func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db.Issue, to, source string, extra map[string]any, startHandler bool) (edgeMove, error) {
+// connection is the one it waits on. overlay is the next run's Composio
+// overlay, built before the transaction opened (prepareEdgeRunOverlay).
+func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db.Issue, to, source string, extra map[string]any, startHandler bool, overlay *service.PreparedRuntimeMCPOverlay) (edgeMove, error) {
 	th := h.onQueries(q)
 	params := db.UpdateIssueParams{
 		ID:               issue.ID,
@@ -107,7 +108,7 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 			return edgeMove{}, err
 		}
 		if trigger.AssigneeType == "agent" {
-			runAfter, err = th.TaskService.EnqueueIssueRunInTx(ctx, q, updated, pgtype.UUID{})
+			runAfter, err = th.TaskService.EnqueueIssueRunInTx(ctx, q, updated, pgtype.UUID{}, overlay)
 			duplicateRun = errors.Is(err, service.ErrDuplicatePendingTask)
 		} else {
 			runAfter, err = th.enqueueSquadLeaderRunInTx(ctx, q, updated)
@@ -168,6 +169,30 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 		return ranHandler
 	}
 	return edgeMove{Issue: updated, RunRefused: runRefused, AfterCommit: afterCommit}, nil
+}
+
+// prepareEdgeRunOverlay builds, outside any transaction, the Composio overlay
+// of the run moving issue to `to` would insert: it decides the move's handoff
+// the way moveIssueOnEdgeTx will and builds the overlay for that handler. Nil
+// when no agent run follows. If the workflow changes before the move, the
+// overlay no longer matches the run's agent and the run takes none.
+func (h *Handler) prepareEdgeRunOverlay(ctx context.Context, issue db.Issue, to string, startHandler bool) *service.PreparedRuntimeMCPOverlay {
+	if !startHandler {
+		return nil
+	}
+	params := db.UpdateIssueParams{
+		ID:           issue.ID,
+		Status:       pgtype.Text{String: to, Valid: true},
+		AssigneeType: issue.AssigneeType,
+		AssigneeID:   issue.AssigneeID,
+		ProjectID:    issue.ProjectID,
+	}
+	handoff, err := h.applyIssueWorkflow(ctx, h.Queries, issue, &params, true, false, false, workflowCaller{})
+	if err != nil || handoff == nil || params.AssigneeType.String != "agent" {
+		return nil
+	}
+	issue.Status, issue.AssigneeType, issue.AssigneeID = to, params.AssigneeType, params.AssigneeID
+	return h.TaskService.PrepareIssueRunOverlay(ctx, issue, pgtype.UUID{})
 }
 
 // errSquadLeaderNotAdmitted is why a squad's leader got no run: the access gate

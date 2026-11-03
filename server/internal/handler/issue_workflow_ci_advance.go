@@ -106,6 +106,8 @@ func (h *Handler) tryMoveIssueOnEdge(ctx context.Context, issue db.Issue, to, so
 	// budget causes neither grants nor needs it: it runs under the refused
 	// admission's locks, after that admission wrote the window's ledger row, and
 	// the boundary lock comes before those locks everywhere else.
+	// The overlay can call the network: build it before any lock or transaction.
+	overlay := h.prepareEdgeRunOverlay(ctx, issue, to, startHandler)
 	release := func() {}
 	if source != "run_budget" {
 		if release, err = h.lockRunBudgetBoundary(ctx, issue.ID); err != nil {
@@ -118,7 +120,7 @@ func (h *Handler) tryMoveIssueOnEdge(ctx context.Context, issue db.Issue, to, so
 		return false, false, err
 	}
 	defer tx.Rollback(ctx)
-	move, err := h.moveIssueOnEdgeTx(ctx, h.Queries.WithTx(tx), issue, to, source, extra, startHandler)
+	move, err := h.moveIssueOnEdgeTx(ctx, h.Queries.WithTx(tx), issue, to, source, extra, startHandler, overlay)
 	if err != nil {
 		var notConfirmed *service.StopNotConfirmedError
 		if errors.As(err, &notConfirmed) {

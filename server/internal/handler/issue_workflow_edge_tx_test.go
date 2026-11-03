@@ -74,7 +74,7 @@ func TestMoveIssueOnEdgeTxWritesStatusHistoryAndRunTogether(t *testing.T) {
 	defer tx.Rollback(ctx)
 	tq := testHandler.Queries.WithTx(tx)
 
-	move, err := testHandler.moveIssueOnEdgeTx(ctx, tq, issue, "in_review", "ci_green_advance", nil, true)
+	move, err := testHandler.moveIssueOnEdgeTx(ctx, tq, issue, "in_review", "ci_green_advance", nil, true, nil)
 	if err != nil {
 		t.Fatalf("moveIssueOnEdgeTx: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestMoveIssueOnEdgeTxRollsBackWithTheCaller(t *testing.T) {
 	}
 	defer tx.Rollback(ctx)
 	tq := testHandler.Queries.WithTx(tx)
-	if _, err := testHandler.moveIssueOnEdgeTx(ctx, tq, issue, "in_review", "ci_green_advance", nil, true); err != nil {
+	if _, err := testHandler.moveIssueOnEdgeTx(ctx, tq, issue, "in_review", "ci_green_advance", nil, true, nil); err != nil {
 		t.Fatalf("moveIssueOnEdgeTx: %v", err)
 	}
 	if h, r := edgeTxRows(t, tx, c.issueID); h != 1 || r != 1 {
@@ -158,7 +158,7 @@ func TestMoveIssueOnEdgeTxRefusesWhenStopNotConfirmed(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	_, err = testHandler.moveIssueOnEdgeTx(ctx, testHandler.Queries.WithTx(tx), issue, "in_review", "ci_green_advance", nil, true)
+	_, err = testHandler.moveIssueOnEdgeTx(ctx, testHandler.Queries.WithTx(tx), issue, "in_review", "ci_green_advance", nil, true, nil)
 	var notConfirmed *service.StopNotConfirmedError
 	if !errors.As(err, &notConfirmed) {
 		t.Fatalf("moveIssueOnEdgeTx = %v, want *StopNotConfirmedError", err)
@@ -284,7 +284,7 @@ func TestMoveIssueOnEdgeTxReadsOnlyThroughTheCallersTransaction(t *testing.T) {
 	defer tx.Rollback(ctx)
 	moveCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	move, err := h.moveIssueOnEdgeTx(moveCtx, h.Queries.WithTx(tx), issue, "in_review", "ci_green_advance", nil, true)
+	move, err := h.moveIssueOnEdgeTx(moveCtx, h.Queries.WithTx(tx), issue, "in_review", "ci_green_advance", nil, true, nil)
 	if err != nil {
 		t.Fatalf("moveIssueOnEdgeTx on a pool of one held connection: %v", err)
 	}
@@ -293,5 +293,48 @@ func TestMoveIssueOnEdgeTxReadsOnlyThroughTheCallersTransaction(t *testing.T) {
 	}
 	if _, runs := edgeTxRows(t, tx, c.issueID); runs != 1 {
 		t.Fatalf("%d runs inside the transaction, want 1", runs)
+	}
+}
+
+// overlayComposio hands every run the same overlay and counts the builds.
+type overlayComposio struct {
+	overlay string
+	builds  int
+}
+
+func (c *overlayComposio) BuildTaskOverlay(context.Context, pgtype.UUID, db.Agent) (runtimeapps.MCPOverlayResult, error) {
+	c.builds++
+	return runtimeapps.MCPOverlayResult{MCPOverlay: []byte(c.overlay)}, nil
+}
+
+// The run an edge move inserts carries the Composio overlay, built before the
+// move's transaction opens.
+func TestTryMoveIssueOnEdgeKeepsTheComposioOverlayOnTheRun(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	c, _ := newHandoffEdgeCase(t, 2853006)
+	ctx := context.Background()
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(c.issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(db.New(testPool), testPool, realtime.NewHub(), events.New(), service.NewEmailService(), nil, nil, analytics.NoopClient{}, Config{})
+	provider := featureflag.NewStaticProvider()
+	provider.Set(featureflags.ComposioMCPApps, featureflag.Rule{Default: true})
+	h.TaskService.FeatureFlags = featureflag.NewService(provider)
+	composio := &overlayComposio{overlay: `{"mcpServers":{"composio":{"url":"https://example.test/mcp"}}}`}
+	h.TaskService.Composio = composio
+
+	moved, ranHandler, err := h.tryMoveIssueOnEdge(ctx, issue, "in_review", "ci_green_advance", nil, true)
+	if err != nil || !moved || !ranHandler {
+		t.Fatalf("tryMoveIssueOnEdge = moved %v, ran %v, err %v; want a move that ran the handler", moved, ranHandler, err)
+	}
+	var stored []byte
+	if err := testPool.QueryRow(ctx, `SELECT runtime_mcp_overlay FROM agent_task_queue WHERE issue_id=$1`, c.issueID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if string(stored) == "" || composio.builds != 1 {
+		t.Fatalf("run overlay %q after %d builds, want the built overlay from 1 build", stored, composio.builds)
 	}
 }

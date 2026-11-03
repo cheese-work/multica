@@ -406,6 +406,10 @@ type runtimeMCPOverlayData struct {
 	ConnectedApps json.RawMessage
 }
 
+// PreparedRuntimeMCPOverlay is an overlay built before a transaction opens, for
+// the run that transaction inserts.
+type PreparedRuntimeMCPOverlay = preparedRuntimeMCPOverlay
+
 type preparedRuntimeMCPOverlay struct {
 	agentID          pgtype.UUID
 	originatorUserID pgtype.UUID
@@ -1346,6 +1350,30 @@ func (s *TaskService) prepareCommentTriggerRuntimeMCPOverlay(ctx context.Context
 		originatorUserID: attr.UserID,
 		data:             s.buildRuntimeMCPOverlay(ctx, attr.UserID, agent),
 	}, nil
+}
+
+// PrepareIssueRunOverlay builds, outside any transaction, the overlay of the
+// run an assignment of issue to its agent inserts. Nil means there is nothing
+// to prepare, or that the insert will refuse and report why; the insert reads
+// the attribution again and uses the overlay only for the agent and
+// originator it was built for.
+func (s *TaskService) PrepareIssueRunOverlay(ctx context.Context, issue db.Issue, actorUserID pgtype.UUID) *PreparedRuntimeMCPOverlay {
+	if s.Composio == nil || !featureflags.ComposioMCPAppsEnabled(ctx, s.FeatureFlags) || !issue.AssigneeID.Valid {
+		return nil
+	}
+	agent, err := s.Queries.GetAgent(ctx, issue.AssigneeID)
+	if err != nil || agent.ArchivedAt.Valid || !agent.RuntimeID.Valid {
+		return nil
+	}
+	attr, err := s.applyAttributionFallback(ctx, s.attributionForIssueTask(ctx, issue, pgtype.UUID{}, attribution.SourceCommentSource, actorUserID), agent)
+	if err != nil {
+		return nil
+	}
+	return &preparedRuntimeMCPOverlay{
+		agentID:          agent.ID,
+		originatorUserID: attr.UserID,
+		data:             s.buildRuntimeMCPOverlay(ctx, attr.UserID, agent),
+	}
 }
 
 // EnqueueDeferredChannelIssueTask persists the assigned task for a media-backed
