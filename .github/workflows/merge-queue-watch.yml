@@ -1,0 +1,32 @@
+name: Merge queue stall alarm
+
+on:
+  schedule:
+    - cron: "3,18,33,48 * * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/merge-queue-watch.yml
+      - scripts/merge-queue-watch.py
+      - scripts/merge-queue-watch.test.py
+      - scripts/fixtures/merge-queue-watch/**
+
+permissions:
+  contents: read
+
+# Deliberately no concurrency group, no self-hosted runner and no merge_group
+# trigger: a stuck queue, a dead runner or a missing required check must not
+# suppress this alarm. Public repo: GitHub-hosted minutes are free.
+jobs:
+  queue-alarm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: Verify stall regression cases
+        run: python3 scripts/merge-queue-watch.test.py
+      - name: Check merge queue (read-only)
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/merge-queue-watch.py

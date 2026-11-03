@@ -11,7 +11,8 @@
  * still renders against the current value of `todo` and the optimistic
  * mutation patches the cache when the user picks.
  *
- * A project workflow can hand the issue off when it enters a status, so the
+ * The list is the issue's workflow: its own override, else its project's. A
+ * project workflow can hand the issue off when it enters a status, so the
  * change is previewed first (`planStatusChange`): a handoff is confirmed in a
  * native alert, and the write carries the previewed binding either way. A
  * failed preview, a cancelled confirmation or a stale binding writes nothing.
@@ -28,7 +29,10 @@ import { useUpdateIssue } from "@/data/mutations/issues";
 import { useActorLookup } from "@/data/use-actor-name";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { planStatusChange, type StatusChangePlan } from "@/data/workflow-handoff";
+import { projectListOptions } from "@/data/queries/projects";
+import { issueWorkflowListOptions } from "@/data/queries/issue-workflows";
 import { statusOptions } from "@/lib/issue-status";
+import { issueWorkflowStatusOptions } from "@/lib/issue-workflow";
 import { useIssueStatuses } from "@/lib/use-issue-statuses";
 import { useT } from "@/lib/i18n";
 
@@ -36,6 +40,8 @@ export default function IssueStatusPickerRoute() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const { data: issue } = useQuery(issueDetailOptions(wsId, id));
+  const { data: workflows } = useQuery(issueWorkflowListOptions(wsId));
+  const { data: projects } = useQuery(projectListOptions(wsId));
   const updateIssue = useUpdateIssue(id);
   const { t } = useT("issues");
   const catalog = useIssueStatuses();
@@ -103,5 +109,13 @@ export default function IssueStatusPickerRoute() {
     }
   };
 
-  return <StatusPickerBody value={issue?.status ?? "todo"} onChange={(next) => void choose(next)} />;
+  // The issue's own workflow wins over its project's (CHE-2822); the handoff
+  // preview above is resolved by the server against the same workflow.
+  return (
+    <StatusPickerBody
+      value={issue?.status ?? "todo"}
+      onChange={(next) => void choose(next)}
+      narrow={issue ? (options) => issueWorkflowStatusOptions(options, catalog, workflows, projects, issue) : undefined}
+    />
+  );
 }

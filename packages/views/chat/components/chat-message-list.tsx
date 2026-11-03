@@ -195,14 +195,20 @@ type ChatRenderItem =
   | { key: string; kind: "live"; taskId: string };
 
 /**
- * Row key for a persisted message. Assistant turns carrying a task_id key on
- * the task so they can inherit the live row; everything else keys on its own
- * id.
+ * Row key for a persisted message. The assistant reply carrying a task_id keys
+ * on the task so it can inherit the live row; everything else keys on its own
+ * id. A compact turn persists a compaction summary under the same task_id as
+ * its reply, so the summary never claims the task key, and `claimed` makes any
+ * other repeat fall back to its own id: duplicate keys orphan Virtuoso's rows.
  */
-function messageRowKey(message: ChatMessage): string {
-  return message.role === "assistant" && message.task_id
-    ? `task:${message.task_id}`
-    : message.id;
+function messageRowKey(message: ChatMessage, claimed: Set<string>): string {
+  if (message.role !== "assistant" || !message.task_id || message.message_kind === "compaction_summary") {
+    return message.id;
+  }
+  const key = `task:${message.task_id}`;
+  if (claimed.has(key)) return message.id;
+  claimed.add(key);
+  return key;
 }
 
 function ChatListHeader({ context }: { context?: ChatListContext }) {
@@ -475,6 +481,7 @@ export function ChatMessageList({
     [messages, hasOlderMessages],
   );
   const renderItems: ChatRenderItem[] = useMemo(() => {
+    const claimedKeys = new Set<string>();
     const items: ChatRenderItem[] = messages
       .filter(
         (message) =>
@@ -485,7 +492,7 @@ export function ChatMessageList({
           !(message.message_kind === "decision_reference" && message.decision_ref),
       )
       .map((message, i, visible) => ({
-        key: messageRowKey(message),
+        key: messageRowKey(message, claimedKeys),
         kind: "message" as const,
         message,
         taskId: message.task_id ?? null,

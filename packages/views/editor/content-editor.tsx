@@ -74,6 +74,7 @@ import { posFromAnchor, type TextAnchor } from "./text-anchor";
 import { useLinkHover, LinkHoverCard } from "./link-hover-card";
 import { AttachmentDownloadProvider } from "./attachment-download-context";
 import { PersistedEditorMediaProvider } from "../media/media-context";
+import { copyChipKeys } from "../rich-content/chip-copy";
 import "katex/dist/katex.min.css";
 import "./styles/index.css";
 
@@ -1135,6 +1136,9 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
             ref={wrapperRef}
             className="relative flex flex-1 min-h-full flex-col"
             onMouseDown={handleContainerMouseDown}
+            // After ProseMirror's own copy: overrides its clipboard only
+            // when the selection holds a chip.
+            onCopy={(e) => copyChipKeys(e.nativeEvent)}
           >
             <EditorContent className="flex flex-1 flex-col" editor={editor} />
             {showBubbleMenu && (
