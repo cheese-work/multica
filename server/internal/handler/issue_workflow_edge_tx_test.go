@@ -7,13 +7,17 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/realtime"
+	"github.com/multica-ai/multica/server/internal/runtimeapps"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/featureflag"
 )
 
 // moveIssueOnEdgeTx writes the status, its history row and the next step's run
@@ -237,10 +241,19 @@ func TestEnqueueSquadLeaderRunInTxRollsBackWithTheCaller(t *testing.T) {
 	}
 }
 
-// The move reads only through the caller's transaction. On a pool of one
-// connection, held by that transaction, any read through the pool waits for a
-// connection that never frees; enough such moves at once exhaust the real pool
-// the same way.
+// poolReadingComposio stands for the Composio service, whose store reads
+// through the pool.
+type poolReadingComposio struct{ pool *pgxpool.Pool }
+
+func (c poolReadingComposio) BuildTaskOverlay(ctx context.Context, _ pgtype.UUID, _ db.Agent) (runtimeapps.MCPOverlayResult, error) {
+	var one int
+	return runtimeapps.MCPOverlayResult{}, c.pool.QueryRow(ctx, `SELECT 1`).Scan(&one)
+}
+
+// The move reads only through the caller's transaction, with the Composio
+// integration enabled. On a pool of one connection, held by that transaction,
+// any read through the pool waits for a connection that never frees; enough
+// such moves at once exhaust the real pool the same way.
 func TestMoveIssueOnEdgeTxReadsOnlyThroughTheCallersTransaction(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
@@ -259,6 +272,10 @@ func TestMoveIssueOnEdgeTxReadsOnlyThroughTheCallersTransaction(t *testing.T) {
 	}
 	defer small.Close()
 	h := New(db.New(small), small, realtime.NewHub(), events.New(), service.NewEmailService(), nil, nil, analytics.NoopClient{}, Config{})
+	provider := featureflag.NewStaticProvider()
+	provider.Set(featureflags.ComposioMCPApps, featureflag.Rule{Default: true})
+	h.TaskService.FeatureFlags = featureflag.NewService(provider)
+	h.TaskService.Composio = poolReadingComposio{pool: small}
 
 	tx, err := small.Begin(ctx)
 	if err != nil {

@@ -19,6 +19,9 @@ import (
 // callers exhaust the pool. Configuration is shared; the locks and caches are
 // not copied, so the copy is for one transaction's preparation and insert. The
 // func a *InTx method returns runs on the original service, after the commit.
+// Composio is absent, as in createDeferredChannelIssueTaskWithQueries: building
+// its overlay is a network call and reads through the pool, neither of which
+// can run under the caller's locks, so a run inserted this way has no overlay.
 func (s *TaskService) TxScoped(q *db.Queries) *TaskService {
 	return &TaskService{
 		RecordMemberActivity: s.RecordMemberActivity,
@@ -36,7 +39,6 @@ func (s *TaskService) TxScoped(q *db.Queries) *TaskService {
 		FeatureFlags:         s.FeatureFlags,
 		EmptyClaim:           s.EmptyClaim,
 		ReclaimCheck:         s.ReclaimCheck,
-		Composio:             s.Composio,
 		QuickActions:         s.QuickActions,
 		ProviderFailureProbe: s.ProviderFailureProbe,
 		committed:            s.afterCommit(),
