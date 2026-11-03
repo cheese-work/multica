@@ -20,6 +20,9 @@ A verdict counts only for the repo, PR number, base branch and head SHA it names
 branch are supported. The PR author must be a registered agent (lab from the `agent/<name>/` branch) or a
 registered human; anyone else fails closed.
 
+A PR whose own status is not `success` also flips any merge-queue head carrying it to failure (`revoke_queue`,
+CHE-3240), so a success carried onto a queue commit cannot outlive its verdict.
+
 Run from a checkout of the DEFAULT branch only; the head is fetched for its diff, never executed.
 """
 
@@ -35,6 +38,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 
 CONTEXT = "security-gate"
 TRUSTED_AUTHORS = "skills/multica-cheese-work-github/scripts/trusted-authors.json"
@@ -267,6 +271,77 @@ def _gh(*args: str) -> str:
     return subprocess.run(["gh", "api", *args], check=True, capture_output=True, text=True).stdout
 
 
+def _post(github: str, sha: str, state: str, desc: str, run_url: str) -> None:
+    _gh(f"repos/{github}/statuses/{sha}", "-f", f"state={state}", "-f", f"context={CONTEXT}",
+        "-f", f"description={desc}", *(["-f", f"target_url={run_url}"] if run_url else []))
+
+
+def _group_chain(github: str, base: str, head: str, strict: bool = True) -> list[dict]:
+    """The first-parent chain of merge-queue commits from `head` down to `base` (compare also lists PR branch commits).
+    `strict=False` takes `base` as a branch name and stops where the chain leaves the compare range."""
+    rows = [json.loads(l) for l in _gh("--paginate", f"repos/{github}/compare/{base}...{head}", "--jq",
+                                       ".commits[] | {sha, parents: [.parents[].sha], message: .commit.message}").splitlines()]
+    by_sha, chain, sha = {r["sha"]: r for r in rows}, [], head
+    while sha != base and sha in by_sha:
+        chain.append(by_sha[sha])
+        sha = by_sha[sha]["parents"][0]
+    return chain if sha == base or not strict else []
+
+
+def _heads_of(lookups: tuple[tuple[str, ...], ...]) -> list[str]:
+    """First lookup that answers wins; only when every one fails does the last error propagate."""
+    for i, args in enumerate(lookups):
+        try:
+            return _gh(*args).split()
+        except subprocess.CalledProcessError:
+            if i == len(lookups) - 1:
+                raise
+    return []
+
+
+def revoke_queue(github: str, number: int, default_branch: str, run_url: str) -> None:
+    """A PR whose gate is no longer `success` must not ride a success already carried onto a queue head: flip every
+    queue head whose group contains the PR to `failure`, so GitHub drops the entry. A group that cannot be read is
+    failed too (fail closed). Only when both queue lookups keep failing for the whole retry period does it raise: no head
+    is known to flip then and the job goes red (accepted residual risk, CHE-3240: dequeue the PR by hand). Each head's
+    write is retried (3 attempts, short backoff) and a head that still fails never skips the later heads; every head left
+    unflipped is named in the error that fails the job (residual risk: a write that fails on every bounded retry cannot
+    be forced, so dequeue the entry or re-run the job). The PR status
+    was written first, so a group evaluated after this point reads the revocation itself."""
+    prefix = f"gh-readonly-queue/{default_branch}/"
+    lookups = (  # two different endpoints: an outage of one must not leave a carried success in place
+        ("--paginate", f"repos/{github}/git/matching-refs/heads/{prefix}", "--jq", ".[].object.sha"),
+        ("--paginate", f"repos/{github}/branches", "--jq", f'.[] | select(.name | startswith("{prefix}")) | .commit.sha'))
+    for attempt in range(3):
+        try:
+            heads = _heads_of(lookups)
+            break
+        except subprocess.CalledProcessError:
+            if attempt == 2:
+                raise
+            time.sleep(2 * (attempt + 1))
+    unflipped = []
+    for head in heads:
+        try:
+            carries = any(re.match(rf"Merge pull request #{number} ", r["message"])
+                          for r in _group_chain(github, default_branch, head, strict=False))
+            desc = f"#{number}: {CONTEXT} no longer success on its head"
+        except Exception as e:  # unreadable group: block it rather than leave a carried success
+            carries, desc = True, f"cannot read queue group: {type(e).__name__}"
+        if carries:
+            for attempt in range(3):  # a transient write error must not leave the carried success in place
+                try:
+                    _post(github, head, "failure", desc, run_url)
+                    break
+                except subprocess.CalledProcessError:
+                    if attempt == 2:
+                        unflipped.append(head)
+                    else:
+                        time.sleep(2 * (attempt + 1))
+    if unflipped:
+        raise RuntimeError(f"could not revoke security-gate on queue head(s): {' '.join(unflipped)}")
+
+
 def gate_pr(repo: str, github: str, number: int, default_branch: str, trusted: set[int],
             humans: set[int], baseline: list[str] | None = None) -> tuple[str, str, str]:
     """`baseline` None = no semgrep scan."""
@@ -335,8 +410,9 @@ def main() -> int:
     state, desc = _out(*combine(results))
     print(json.dumps({"context": CONTEXT, "sha": head, "state": state, "description": desc}))
     if a.post:
-        _gh(f"repos/{a.github}/statuses/{head}", "-f", f"state={state}", "-f", f"context={CONTEXT}",
-            "-f", f"description={desc}", *(["-f", f"target_url={a.run_url}"] if a.run_url else []))
+        _post(a.github, head, state, desc, a.run_url)
+        if state != "success":
+            revoke_queue(a.github, a.pr, a.default_branch, a.run_url)
     return 0
 
 
