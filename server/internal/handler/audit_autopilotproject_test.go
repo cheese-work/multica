@@ -439,6 +439,43 @@ func TestDeleteProject_AuditInsertFailureKeepsProject(t *testing.T) {
 	}
 }
 
+func apjUpdateProject(id string, body map[string]any) *httptest.ResponseRecorder {
+	w := httptest.NewRecorder()
+	testHandler.UpdateProject(w, withURLParam(newRequest(http.MethodPut, "/api/projects/"+id, body), "id", id))
+	return w
+}
+
+func TestUpdateProject_WritesAuditRow(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	id := dbfx.Project(t, "che2774 project update", testutil.Cols{"description": "secret project plan"})
+	if w := apjUpdateProject(id, map[string]any{"title": "che2774 project renamed", "description": "secret revised plan"}); w.Code != http.StatusOK {
+		t.Fatalf("UpdateProject: %d %s", w.Code, w.Body.String())
+	}
+	row := apjAssertMemberRow(t, auditRowsFor(t, "project.update", id), "project.update", "project")
+	if row.Before["title"] != "che2774 project update" || row.After["title"] != "che2774 project renamed" {
+		t.Errorf("diff = %v -> %v; want the title change", row.Before, row.After)
+	}
+	apjAssertNoLeak(t, row, "secret project plan")
+	apjAssertNoLeak(t, row, "secret revised plan")
+}
+
+func TestUpdateProject_AuditInsertFailureRollsBack(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	id := dbfx.Project(t, "che2774 project update fail")
+	failAuditInsertFor(t, id)
+	w := apjUpdateProject(id, map[string]any{"title": "che2774 should not stick"})
+	if w.Code != http.StatusInternalServerError || w.Header().Get("Retry-After") == "" {
+		t.Fatalf("UpdateProject with failing audit insert: %d %s; want retryable 500", w.Code, w.Body.String())
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM project WHERE id = $1 AND title = 'che2774 project update fail'`, id); n != 1 {
+		t.Fatalf("project title changed despite failed audit; the update must roll back")
+	}
+}
+
 // ---- project workflow -----------------------------------------------------
 
 func apjSwitchProjectWorkflow(projectID string, workflowID any) *httptest.ResponseRecorder {

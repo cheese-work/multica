@@ -34,7 +34,7 @@ func init() {
 		Allow:      []string{"title", "icon", "status", "priority", "lead_type", "lead_id", "start_date", "due_date", "workflow_id"},
 		Text:       []string{"description"},
 	}
-	for _, kind := range []string{"project.create", "project.delete"} {
+	for _, kind := range []string{"project.create", "project.update", "project.delete"} {
 		auditKinds[kind] = project
 	}
 	auditKinds["project.workflow.update"] = auditKindSpec{

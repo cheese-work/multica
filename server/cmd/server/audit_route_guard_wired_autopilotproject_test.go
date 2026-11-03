@@ -11,6 +11,7 @@ func init() {
 		"PATCH /api/autopilots/{id}/triggers/{triggerId}/":  "autopilot.trigger.update",
 		"DELETE /api/autopilots/{id}/triggers/{triggerId}/": "autopilot.trigger.delete",
 		"POST /api/projects/":                               "project.create",
+		"PUT /api/projects/{id}/":                           "project.update",
 		"DELETE /api/projects/{id}/":                        "project.delete",
 		"POST /api/projects/{id}/workflow":                  "project.workflow.update",
 		"POST /api/projects/{id}/resources":                 "project.resource.create",

@@ -682,8 +682,22 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 		}
 		params.DecisionDelegatesSet, params.DecisionDelegates = true, delegates
 	}
-	project, err := h.TaskService.UpdateProject(r.Context(), wsUUID, params, actorType == "agent")
+	project, err := h.TaskService.UpdateProject(r.Context(), wsUUID, params, actorType == "agent",
+		func(ctx context.Context, q *db.Queries, previous, updated db.Project) error {
+			if err := h.writeAudit(ctx, q, r, auditInput{
+				Kind: "project.update", WorkspaceID: updated.WorkspaceID, TargetID: updated.ID,
+				Before: projectAuditFields(previous), After: projectAuditFields(updated),
+			}); err != nil {
+				return auditWriteError{err}
+			}
+			return nil
+		})
 	if err != nil {
+		var auditErr auditWriteError
+		if errors.As(err, &auditErr) {
+			writeAuditFailure(w, r, auditErr.err, "project.update")
+			return
+		}
 		if writeProjectAdmissionError(w, err) {
 			return
 		}
