@@ -1,6 +1,7 @@
 // Reports why a PR left the merge queue for failed checks: one sticky PR comment plus a
 // `merge-queue-result` failure status on the PR head (so the head rollup goes red until a push).
-// Usage: node scripts/merge-queue-dequeue-report.mjs --repo owner/name --pr 842 [--dry-run] [--event -2]
+// Usage: node scripts/merge-queue-dequeue-report.mjs --repo owner/name --pr 842 [--dry-run] [--event -2] [--head-sha <sha>]
+// --head-sha is the PR head from the dequeue event payload (a snapshot): if the PR head moved since, the removal is stale and nothing is written.
 // --event picks a removal from the end of the PR timeline (default -1 = latest) to replay older ones.
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
@@ -66,7 +67,7 @@ const QUERY = `query($owner:String!,$name:String!,$pr:Int!){repository(owner:$ow
   timelineItems(last:30,itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT]){nodes{... on RemovedFromMergeQueueEvent{reason createdAt beforeCommit{oid}}}}
 }}}`;
 
-export async function report({ api, repo, pr, dryRun = false, eventIndex = -1, print = console.log }) {
+export async function report({ api, repo, pr, dryRun = false, eventIndex = -1, eventHeadSha, print = console.log }) {
   const [owner, name] = repo.split("/");
   const { pullRequest } = (await api.graphql(QUERY, { owner, name, pr })).repository;
   const events = pullRequest.timelineItems.nodes;
@@ -74,6 +75,9 @@ export async function report({ api, repo, pr, dryRun = false, eventIndex = -1, p
   if (last?.reason !== FAILED_CHECKS) return;
 
   const headSha = pullRequest.headRefOid;
+  // A push after the removal makes the failure belong to an old head; reporting it would turn the fixed head red.
+  // Replays without --head-sha (dry runs of old removals) skip this check.
+  if (eventHeadSha && (eventHeadSha !== headSha || last.createdAt < pullRequest.commits.nodes[0].commit.committedDate)) return;
   const queueSha = last.beforeCommit.oid;
   const runs = (await api.get(`/repos/${repo}/actions/runs?event=merge_group&head_sha=${queueSha}&per_page=20`)).workflow_runs
     .filter((r) => r.conclusion === "failure");
@@ -123,5 +127,5 @@ export const ghApi = {
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const arg = (k) => (process.argv.includes(k) ? process.argv[process.argv.indexOf(k) + 1] : undefined);
-  await report({ api: ghApi, repo: arg("--repo"), pr: Number(arg("--pr")), dryRun: process.argv.includes("--dry-run"), eventIndex: Number(arg("--event") ?? -1) });
+  await report({ api: ghApi, repo: arg("--repo"), pr: Number(arg("--pr")), dryRun: process.argv.includes("--dry-run"), eventHeadSha: arg("--head-sha"), eventIndex: Number(arg("--event") ?? -1) });
 }

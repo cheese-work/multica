@@ -73,7 +73,7 @@ test("buildComment carries marker, SHAs, jobs, failing lines, run URL and attemp
   }
 });
 
-const fakeApi = (reason) => {
+const fakeApi = (reason, { removedAt = "2026-11-03T08:00:00Z", existingComment = false } = {}) => {
   const writes = [];
   const run = { id: 7, html_url: "https://example/run/7", conclusion: "failure", head_branch: "gh-readonly-queue/main/pr-842-" + "c".repeat(40) };
   return {
@@ -83,14 +83,14 @@ const fakeApi = (reason) => {
         pullRequest: {
           headRefOid: "h".repeat(40),
           commits: { nodes: [{ commit: { committedDate: "2026-11-03T07:00:00Z" } }] },
-          timelineItems: { nodes: [{ reason, createdAt: "2026-11-03T08:00:00Z", beforeCommit: { oid: "q".repeat(40) } }] },
+          timelineItems: { nodes: [{ reason, createdAt: removedAt, beforeCommit: { oid: "q".repeat(40) } }] },
         },
       },
     }),
     get: async (path) => {
       if (path.includes("/actions/runs?")) return { workflow_runs: [run] };
       if (path.includes("/jobs?")) return { jobs: [{ id: 9, name: "backend-tests", conclusion: "failure", html_url: "https://example/job/9" }, { id: 10, name: "lint", conclusion: "success", html_url: "u" }] };
-      if (path.includes("/issues/842/comments")) return [];
+      if (path.includes("/issues/842/comments")) return existingComment ? [{ id: 55, body: "<!-- merge-queue-dequeue-report -->\nold" }] : [];
       throw new Error("unexpected GET " + path);
     },
     text: async () => log,
@@ -121,4 +121,44 @@ test("report: dry run prints payloads and writes nothing", async () => {
   await report({ api, repo: "o/r", pr: 842, dryRun: true, print: (s) => out.push(s) });
   assert.deepEqual(api.writes, []);
   assert.equal(out.length, 2);
+});
+
+test("report: a head pushed after the dequeue fired gets no stale comment and no status", async () => {
+  const { report } = await load();
+  const api = fakeApi("failed_checks");
+  await report({ api, repo: "o/r", pr: 842, eventHeadSha: "old".padEnd(40, "0") });
+  assert.deepEqual(api.writes, []);
+});
+
+test("report: the head of the dequeue event gets the status", async () => {
+  const { report } = await load();
+  const api = fakeApi("failed_checks");
+  await report({ api, repo: "o/r", pr: 842, eventHeadSha: "h".repeat(40) });
+  assert.equal(api.writes[1].path, `/repos/o/r/statuses/${"h".repeat(40)}`);
+});
+
+test("report: a removal older than the current head's commit is not reported", async () => {
+  const { report } = await load();
+  const api = fakeApi("failed_checks", { removedAt: "2026-11-03T06:00:00Z" });
+  await report({ api, repo: "o/r", pr: 842, eventHeadSha: "h".repeat(40) });
+  assert.deepEqual(api.writes, []);
+});
+
+test("report: overlapping dequeue runs for one head update the same sticky comment", async () => {
+  const { report } = await load();
+  const api = fakeApi("failed_checks", { existingComment: true });
+  await Promise.all([1, 2].map(() => report({ api, repo: "o/r", pr: 842, eventHeadSha: "h".repeat(40) })));
+  assert.deepEqual(api.writes.map((w) => w.method).sort(), ["PATCH", "PATCH", "POST", "POST"]);
+  assert.ok(api.writes.every((w) => w.method !== "POST" || w.path.includes("/statuses/")), "never a second comment");
+});
+
+// Trust boundary: the workflow holds a write token, so it must run default-branch code, never PR code.
+const workflow = readFileSync(new URL("../.github/workflows/merge-queue-dequeue-report.yml", import.meta.url), "utf8");
+
+test("workflow runs on pull_request_target and checks out the default branch only", () => {
+  assert.match(workflow, /^\s{2}pull_request_target:/m);
+  assert.doesNotMatch(workflow, /^\s{2}pull_request:/m, "pull_request runs the PR's own workflow/script and has a read-only fork token");
+  assert.match(workflow, /ref: \$\{\{ github\.event\.repository\.default_branch \}\}/);
+  assert.match(workflow, /persist-credentials: false/);
+  assert.doesNotMatch(workflow, /pull_request\.head\.(ref|repo)|refs\/pull|merge_commit_sha/);
 });
