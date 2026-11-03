@@ -285,3 +285,141 @@ func TestBackfillGitHubAccountIDs(t *testing.T) {
 		t.Fatalf("backfill called /users/: %v", usersCalls)
 	}
 }
+
+// bindFixture serves a verifiable GitHub bind for installationID whose account
+// has the given numeric id, then returns a callback request for it.
+func bindFixture(t *testing.T, installationID, accountID int64, withCode bool) *http.Request {
+	t.Helper()
+	pemBytes, _ := generateTestRSAKeyPEM(t)
+	t.Setenv("GITHUB_WEBHOOK_SECRET", "allowlist-bind-secret")
+	t.Setenv("GITHUB_APP_CLIENT_ID", "allow-client")
+	t.Setenv("GITHUB_APP_CLIENT_SECRET", "allow-client-secret")
+	t.Setenv("GITHUB_APP_ID", "268")
+	t.Setenv("GITHUB_APP_PRIVATE_KEY", string(pemBytes))
+	t.Setenv("FRONTEND_ORIGIN", "https://app.example.test")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/login/oauth/access_token":
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "tok"})
+		case fmt.Sprintf("/app/installations/%d", installationID):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": installationID, "account": map[string]any{"id": accountID, "login": "owner", "type": "User"},
+			})
+		case "/user":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": accountID, "login": "owner"})
+		case "/applications/allow-client/token":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	oldAPI, oldOAuth := githubAPIBase, githubOAuthBase
+	githubAPIBase, githubOAuthBase = srv.URL, srv.URL
+	t.Cleanup(func() { githubAPIBase, githubOAuthBase = oldAPI, oldOAuth })
+
+	state, err := signState(testWorkspaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := fmt.Sprintf("/api/github/setup?installation_id=%d&state=%s", installationID, url.QueryEscape(state))
+	if withCode {
+		target += "&code=c"
+	} else {
+		target += "&setup_action=update"
+	}
+	return httptest.NewRequest(http.MethodGet, target, nil)
+}
+
+// withTestAllowlist sets the policy on the shared test handler for one test.
+func withTestAllowlist(t *testing.T, raw string) *Handler {
+	t.Helper()
+	old := testHandler.githubAllowlist
+	t.Cleanup(func() { testHandler.githubAllowlist = old })
+	if err := testHandler.ConfigureGitHubAllowlist(raw); err != nil {
+		t.Fatalf("configure allowlist %q: %v", raw, err)
+	}
+	return testHandler
+}
+
+func callSetup(t *testing.T, h *Handler, req *http.Request) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	h.GitHubSetupCallback(rec, req)
+	return rec.Header().Get("Location")
+}
+
+func TestSetupCallbackAllowlistBind(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	cases := []struct {
+		name      string
+		list      string
+		accountID int64
+		wantErr   bool
+		installID int64
+	}{
+		{"account not in list is refused", "7001", 9001, true, 34130001},
+		{"list unset binds", "", 9001, false, 34130002},
+		{"account in list binds", "9001,7001", 9001, false, 34130003},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Cleanup(func() {
+				_, _ = testPool.Exec(ctx, `DELETE FROM github_installation WHERE installation_id = $1`, tc.installID)
+			})
+			h := withTestAllowlist(t, tc.list)
+			loc := callSetup(t, h, bindFixture(t, tc.installID, tc.accountID, true))
+			rows, _ := testHandler.Queries.ListGitHubInstallationsByInstallationID(ctx, tc.installID)
+			if tc.wantErr {
+				if !strings.Contains(loc, "github_error=installation_not_allowed") || len(rows) != 0 {
+					t.Fatalf("redirect = %q rows = %d; want installation_not_allowed and no row", loc, len(rows))
+				}
+				return
+			}
+			if !strings.Contains(loc, "github_connected=1") || len(rows) != 1 {
+				t.Fatalf("redirect = %q rows = %d; want success and one row", loc, len(rows))
+			}
+		})
+	}
+}
+
+func TestSetupCallbackAllowlistCodeLessUpdate(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	cases := []struct {
+		name    string
+		stored  *int64
+		wantErr bool
+		id      int64
+	}{
+		{"unlisted stored id is refused", ptr64(9001), true, 34130011},
+		{"null stored id is refused", nil, true, 34130012},
+		{"listed stored id succeeds", ptr64(7001), false, 34130013},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			before := seedAllowlistRow(t, tc.id, "stored-login", tc.stored)
+			h := withTestAllowlist(t, "7001")
+			loc := callSetup(t, h, bindFixture(t, tc.id, 5555, false))
+			rows, _ := testHandler.Queries.ListGitHubInstallationsByInstallationID(ctx, tc.id)
+			if len(rows) != 1 {
+				t.Fatalf("rows = %d, want 1", len(rows))
+			}
+			if tc.wantErr {
+				if !strings.Contains(loc, "github_error=installation_not_allowed") || !rows[0].UpdatedAt.Time.Equal(before.UpdatedAt.Time) {
+					t.Fatalf("redirect = %q updated_at changed = %v; want refusal and untouched row",
+						loc, !rows[0].UpdatedAt.Time.Equal(before.UpdatedAt.Time))
+				}
+				return
+			}
+			if !strings.Contains(loc, "github_connected=1") {
+				t.Fatalf("redirect = %q, want success", loc)
+			}
+		})
+	}
+}

@@ -1286,6 +1286,7 @@
     "github_not_configured": "La connexion GitHub n'est pas configurée pour ce déploiement.",
     "github_browse_not_configured": "Le parcours des dépôts exige GITHUB_APP_ID et GITHUB_APP_PRIVATE_KEY.",
     "github_connect_failed": "Impossible de connecter GitHub. Réessayez.",
+    "github_installation_not_allowed": "Ce compte GitHub n'est pas autorisé sur ce déploiement.",
     "github_picker_title": "Choisir des dépôts GitHub",
     "github_picker_description": "Les entrées manuelles existantes restent inchangées.",
     "github_account": "Compte GitHub",

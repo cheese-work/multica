@@ -231,6 +231,14 @@ GITHUB_APP_PRIVATE_KEY=<完整 PEM 私钥，保留 BEGIN/END 行和换行>
 
 如果为已经安装的 App 新增 Members 权限，请先在每个目标 organization 中批准权限变更，再把它连接到新工作区。
 
+可选：将 `GITHUB_ALLOWED_ACCOUNT_IDS` 设置为以逗号分隔的 GitHub 账号数字 ID 列表（用户或 organization 的 `id`，不是 login）。未设置或为空时，任何通过上述检查的账号都可以连接。设置后，Multica 会拒绝绑定账号 ID 不在列表中的 installation：setup 回调会重定向到 `github_error=installation_not_allowed`，且不创建绑定。不带 code 的 **Redirect on update** 回调按该绑定已存储的账号 ID 判断；没有已存储账号 ID 的绑定会被拒绝（fail closed）。格式错误的值（例如 login）会使服务器在启动时终止。
+
+```dotenv
+GITHUB_ALLOWED_ACCOUNT_IDS=1234567,7654321
+```
+
+无论列表如何，GitHub 的 `deleted` 和 `suspend` 事件始终会移除绑定。
+
 </Step>
 <Step>
 
