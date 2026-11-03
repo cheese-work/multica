@@ -56,7 +56,7 @@ type AgentResponse struct {
 	// update left unable to run (CHE-2249 E5).
 	StalePresets []stalePreset `json:"stale_presets,omitempty"`
 	ID           string        `json:"id"`
-	WorkspaceID string `json:"workspace_id"`
+	WorkspaceID  string        `json:"workspace_id"`
 	// RuntimeID is the empty string when the agent is unbound — it kept its
 	// configuration and history when its runtime was deleted, and needs a new
 	// runtime before it can run again (MUL-5559). The wire type stays a string
@@ -2578,19 +2578,6 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	updateQueries := h.Queries.WithTx(tx)
-	// The audit row's before-state is the row as locked here, not the pre-
-	// transaction read in existing: a concurrent edit that committed in between
-	// must not be attributed to this request.
-	before, err := updateQueries.GetAgentForUpdate(r.Context(), existing.ID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to lock agent")
-		return
-	}
-	beforeTargets, err := updateQueries.ListAgentInvocationTargets(r.Context(), existing.ID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to read invocation targets")
-		return
-	}
 	if req.RuntimeID != nil {
 		member, ok := h.workspaceMember(w, r, uuidToString(existing.WorkspaceID))
 		if !ok {
@@ -2618,6 +2605,20 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		params.RuntimeMode = pgtype.Text{String: runtime.RuntimeMode, Valid: true}
+	}
+	// Lock order is workspace, runtime, agent, as in runtime deletion. The
+	// audit row's before-state is the row as locked here, not the pre-
+	// transaction read in existing: a concurrent edit that committed in between
+	// must not be attributed to this request.
+	before, err := updateQueries.GetAgentForUpdate(r.Context(), existing.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to lock agent")
+		return
+	}
+	beforeTargets, err := updateQueries.ListAgentInvocationTargets(r.Context(), existing.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read invocation targets")
+		return
 	}
 	updated, err := updateQueries.UpdateAgent(r.Context(), params)
 	if err != nil {

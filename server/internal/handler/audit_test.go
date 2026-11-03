@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -792,5 +793,64 @@ func TestUpdateAgent_InvocationTargetChangeLeavesChangedMarker(t *testing.T) {
 	}
 	if rows[0].After["invocation_targets"] != "changed" {
 		t.Errorf("invocation target change not marked: after=%v", rows[0].After)
+	}
+}
+
+// Runtime deletion locks runtime then agent. An update that carries the
+// agent's current runtime_id must take the same order, or the two deadlock.
+func TestUpdateAgent_LocksRuntimeBeforeAgent(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "che2774-lock-order", nil)
+	var runtimeID string
+	dbfx.QueryRow(t, `SELECT runtime_id FROM agent WHERE id = $1`, agentID).Scan(&runtimeID)
+
+	ctx := context.Background()
+	deleter, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer deleter.Rollback(ctx)
+	if _, err := deleter.Exec(ctx, `SELECT 1 FROM agent_runtime WHERE id = $1 FOR UPDATE`, runtimeID); err != nil {
+		t.Fatalf("lock runtime: %v", err)
+	}
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := withURLParam(newRequest(http.MethodPut, "/api/agents/"+agentID, map[string]any{
+			"runtime_id": runtimeID,
+		}), "id", agentID)
+		w := httptest.NewRecorder()
+		testHandler.UpdateAgent(w, req)
+		done <- w
+	}()
+	// Wait until the update is blocked on the runtime lock we hold.
+	waiting := false
+	for i := 0; i < 100 && !waiting; i++ {
+		dbfx.QueryRow(t, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND datname = current_database())`).Scan(&waiting)
+		if !waiting {
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	if !waiting {
+		t.Fatal("update never blocked on the runtime lock")
+	}
+	// Deletion's next step: lock the agent. It must not wait on the update.
+	lockCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if _, err := deleter.Exec(lockCtx, `SELECT 1 FROM agent WHERE id = $1 FOR UPDATE`, agentID); err != nil {
+		t.Fatalf("agent lock while the update waits on the runtime: %v", err)
+	}
+	if err := deleter.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	select {
+	case w := <-done:
+		if w.Code != http.StatusOK {
+			t.Fatalf("UpdateAgent: %d %s", w.Code, w.Body.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("update did not finish after the runtime lock was released")
 	}
 }
