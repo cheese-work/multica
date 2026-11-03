@@ -2134,6 +2134,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Route("/api/agent-decisions", func(r chi.Router) {
 				r.Get("/brief", h.GetAgentDecisionBrief)
 				r.With(handler.RequireHumanActor).Put("/setting", h.SetAgentDecisionSetting)
+				r.With(handler.RequireHumanActor).Put("/jev", h.SetAgentDecisionJev)
 			})
 
 			// Issues
