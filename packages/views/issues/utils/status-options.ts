@@ -104,11 +104,16 @@ const CATEGORY_RANK = new Map<IssueStatusCategory, number>(ALL_STATUSES.map((c, 
  *   and `currentStatus` stays listed even when Default leaves it out.
  *   (MUL-8121)
  * - `undefined`: a surface spanning projects; the whole catalog.
+ *
+ * `workflowId` is the issue's own override. When set, its workflow is the one
+ * listed, in a project or not.
  */
 export function useIssueStatusOptions(
   wsId: string,
   projectId: string | null | undefined,
   currentStatus?: IssueStatus | null,
+  /** The issue's own workflow override; wins over the project's. (CHE-2822) */
+  workflowId?: string | null,
 ): {
   options: StatusOption[];
   workflow: IssueWorkflow | null;
@@ -122,8 +127,8 @@ export function useIssueStatusOptions(
   const catalogOptions = useStatusOptions(wsId);
   const { categoryOf, colorOf, iconOf } = useIssueStatuses(wsId);
   const labelOf = useStatusLabel(wsId);
-  const { workflow, project, defaultWorkflow, resolved: workflowResolved, retry } = useProjectWithWorkflow(wsId, projectId);
-  const defaultScope = projectId === null && !workflow ? defaultWorkflow ?? null : null;
+  const { workflow, project, defaultWorkflow, resolved: workflowResolved, retry } = useProjectWithWorkflow(wsId, projectId, workflowId);
+  const defaultScope = projectId === null && !workflowId && !workflow ? defaultWorkflow ?? null : null;
   const options = useMemo<StatusOption[]>(() => {
     const listed = workflow ?? defaultScope;
     if (!listed) return catalogOptions;

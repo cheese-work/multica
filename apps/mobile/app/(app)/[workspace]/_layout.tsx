@@ -8,7 +8,9 @@ import { RealtimeProvider } from "@/data/realtime/realtime-provider";
 import { useInboxRealtime } from "@/data/realtime/use-inbox-realtime";
 import { useIssuesRealtime } from "@/data/realtime/use-issues-realtime";
 import { useMyIssuesRealtime } from "@/data/realtime/use-my-issues-realtime";
+import { useCommentPreviewRealtime } from "@/data/realtime/use-comment-preview-realtime";
 import { useChatSessionsRealtime } from "@/data/realtime/use-chat-sessions-realtime";
+import { useIssueWorkflowsRealtime } from "@/data/realtime/use-issue-workflows-realtime";
 import { useProjectsRealtime } from "@/data/realtime/use-projects-realtime";
 import { usePinsRealtime } from "@/data/realtime/use-pins-realtime";
 import { usePresenceRealtime } from "@/data/realtime/use-presence-realtime";
@@ -80,7 +82,9 @@ function RealtimeSubscriptions() {
   useMyIssuesRealtime();
   useChatSessionsRealtime();
   useProjectsRealtime();
+  useIssueWorkflowsRealtime();
   usePinsRealtime();
+  useCommentPreviewRealtime();
   // Presence: warm the three queries up front so avatars don't flash a
   // dotless first render, and listen for daemon/agent/task events to keep
   // the runtime + snapshot caches fresh. See use-presence-realtime.ts for
@@ -217,6 +221,10 @@ export default function WorkspaceLayout() {
         />
         <Stack.Screen
           name="issue/[id]/picker/project"
+          options={SHEET_OPTIONS}
+        />
+        <Stack.Screen
+          name="issue/[id]/picker/workflow"
           options={SHEET_OPTIONS}
         />
         <Stack.Screen

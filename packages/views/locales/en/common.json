@@ -135,5 +135,27 @@
   },
   "navigation": {
     "open_in_new_tab": "Open in new tab"
+  },
+  "decision_action": {
+    "approve": "Approve with passkey",
+    "waiting": "Waiting for your passkey…",
+    "state": {
+      "executed": "Executed",
+      "failed": "Failed",
+      "rejected": "Rejected",
+      "expired": "Expired",
+      "cancelled": "Cancelled"
+    },
+    "failed_code": {
+      "stale_cap": "A higher cap is already in force.",
+      "stale_window": "The budget window changed. Start a new request.",
+      "not_budgeted": "This issue is no longer budgeted.",
+      "other": "Failed: {{code}}"
+    },
+    "no_passkey": "Add a passkey before you approve.",
+    "add_passkey": "Add a passkey",
+    "error": "Passkey approval did not complete. Try again.",
+    "lost": "The response was lost. The action is not approved again. Check the outcome.",
+    "check": "Check outcome"
   }
 }
