@@ -103,7 +103,7 @@ function RequestedRun({ issueId, runId, path }: { issueId: string; runId: string
  */
 export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
   const wsId = useWorkspaceId();
-  const { canonicalId, issue, isResolving, notFound } = useCanonicalIssue(wsId, routeId);
+  const { canonicalId, issue, isResolving, notFound, authoritative } = useCanonicalIssue(wsId, routeId);
   const highlight = useCommentHighlightHash();
   const { searchParams } = useNavigation();
   const paths = useWorkspacePaths();
@@ -128,6 +128,7 @@ export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
         issueId={canonicalId}
         onDelete={onDelete}
         highlightCommentId={highlight.commentId}
+        authoritative={authoritative}
       />
       {runId && <RequestedRun key={runId} issueId={canonicalId} runId={runId} path={`${paths.issueDetail(issue?.identifier ?? routeId)}${highlight.hash}`} />}
     </IssuePeekHost>

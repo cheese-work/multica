@@ -84,6 +84,16 @@ if (args[0] === "exec" && args[1] === "playwright") {
     fixture: { version: "test", sha256: "fresh", bytes: 0 },
   };
   const mode = process.env.PERF_PLAYWRIGHT;
+  const project = args.find((a) => a.startsWith("--project="))?.slice(10);
+  if (project) {
+    // Page-load scenario: one file per profile, in the spec's own shape.
+    const sample = { api_requests: 7, lcp_ms: 100 };
+    const profiles = { [project]: { issues: [sample, sample, sample] } };
+    if (mode !== "fail-no-report") {
+      writeFileSync(`${process.env.PERF_REPORT_DIR}/page-load-${project}.json`, JSON.stringify({ profiles }));
+    }
+    process.exit(mode === "ok" ? 0 : 1);
+  }
   if (mode !== "fail-no-report") writeFileSync(process.env.PERF_REPORT_PATH, JSON.stringify(report));
   process.exit(mode === "ok" ? 0 : 1);
 }
@@ -108,7 +118,7 @@ run_case() {
   set +e
   (cd "$repo" && PATH="$bin:$PATH" TMPDIR="$work/tmp" PERF_STOP_GRACE_MS=300 \
     PERF_PLAYWRIGHT="$2" PERF_SERVER="$3" PERF_TEST_SERVER_LOG="$server_log" \
-    node "$compare" --base "${4:-HEAD}" --head HEAD --out "$out") >"$work/out.log" 2>&1
+    node "$compare" ${SCENARIO:+--scenario $SCENARIO} --base "${4:-HEAD}" --head HEAD --out "$out") >"$work/out.log" 2>&1
   code=$?
   set -e
   comparison="$out/comparison.json"
@@ -158,5 +168,16 @@ SEED_STALE=1 run_case unknown-ref ok normal does-not-exist
 expect_exit 1
 [ ! -f "$work/out-unknown-ref/comparison.md" ] || fail "an aborted run left the previous summary in place"
 grep -q "comparison aborted\|error" "$comparison" || fail "the aborted run does not record why"
+
+SCENARIO=page-load run_case page-load ok normal
+expect_exit 0
+expect_status ok
+grep -q "### desktop" "$work/out-page-load/comparison.md" || fail "no desktop table"
+grep -q "### phone" "$work/out-page-load/comparison.md" || fail "no phone table"
+grep -q "| issues | 7 | 7 | 0 | 100 | 100 | 0 |" "$work/out-page-load/comparison.md" || fail "no issues row"
+
+SCENARIO=page-load run_case page-load-no-report fail-no-report normal
+expect_exit 1
+expect_status invalid
 
 echo "perf-compare: all lifecycle and reporting cases passed"

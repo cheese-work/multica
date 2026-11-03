@@ -4394,6 +4394,7 @@ func newIssueStatusTestCmd() *cobra.Command {
 	cmd.Flags().Bool("no-start", false, "")
 	cmd.Flags().String("duplicate-of", "", "")
 	cmd.Flags().String("override-reason", "", "")
+	cmd.Flags().StringArray("finding", nil, "")
 	cmd.Flags().String("output", "table", "")
 	return cmd
 }
@@ -4808,6 +4809,33 @@ func TestRunIssueStatusSendsOverrideReason(t *testing.T) {
 	want := map[string]any{"status": "in_review", "entry_gate_override_reason": "reviewed by hand"}
 	if !reflect.DeepEqual(body, want) {
 		t.Fatalf("body = %#v, want %#v", body, want)
+	}
+}
+
+func TestRunIssueStatusSendsReviewFindings(t *testing.T) {
+	var body map[string]any
+	newDuplicateMarkTestServer(t, true, &body)
+
+	cmd := newIssueStatusTestCmd()
+	_ = cmd.Flags().Set("finding", "P1: leaks the token")
+	_ = cmd.Flags().Set("finding", "P3:naming")
+	if err := runIssueStatus(cmd, []string{"MUL-2", "in_progress"}); err != nil {
+		t.Fatalf("runIssueStatus: %v", err)
+	}
+	want := map[string]any{"status": "in_progress", "review_findings": []any{
+		map[string]any{"severity": "P1", "summary": "leaks the token"},
+		map[string]any{"severity": "P3", "summary": "naming"},
+	}}
+	if !reflect.DeepEqual(body, want) {
+		t.Fatalf("body = %#v, want %#v", body, want)
+	}
+}
+
+func TestRunIssueStatusRejectsFindingWithoutSeverity(t *testing.T) {
+	cmd := newIssueStatusTestCmd()
+	_ = cmd.Flags().Set("finding", "no severity here")
+	if err := runIssueStatus(cmd, []string{"MUL-2", "in_progress"}); err == nil {
+		t.Fatal("want an error for a finding without <P0-P3>:<summary>")
 	}
 }
 

@@ -374,6 +374,13 @@ func (h *Handler) JoinByShareLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Orders this join against the passkey gate checks (enrolling, revoking by
+	// email code), which read the user's memberships under the same row lock.
+	if err := qtx.LockUserForMembershipChange(r.Context(), user.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create membership")
+		return
+	}
+
 	member, err := qtx.CreateMember(r.Context(), db.CreateMemberParams{
 		WorkspaceID: link.WorkspaceID,
 		UserID:      user.ID,

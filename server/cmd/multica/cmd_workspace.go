@@ -219,6 +219,8 @@ func init() {
 	workspaceUpdateCmd.Flags().String("context-file", "", "Read context from a file, byte-for-byte (no escape decoding)")
 	workspaceUpdateCmd.Flags().String("issue-prefix", "", "New issue prefix (uppercased server-side)")
 	workspaceUpdateCmd.Flags().String("compact-prompt-file", "", "Set the /compact summary prompt from a file, byte-for-byte; pass null to reset to the built-in default. Changes no other workspace setting")
+	workspaceUpdateCmd.Flags().String("idle-guard-mode", "", "Set the idle-issue guard mode: off, shadow (log only) or act (move idle started issues). Owner only; changes no other workspace setting")
+	workspaceUpdateCmd.Flags().Int("idle-guard-after-hours", 0, "Set the idle-issue guard threshold in whole hours, 1 to 72. Owner only; changes no other workspace setting")
 	workspaceUpdateCmd.Flags().String("expected-before-digest", "", "sha256 hex digest of the context value the caller believes is currently live; enables a conditional compare-and-swap write instead of an unconditional update. Requires the context to be set via --context-stdin or --context-file (inline --context is refused so the candidate never appears in arguments), and forbids combining with any other update flag. The digest is over the RAW UTF-8 bytes of the live value (no newline stripping; a card-manifest digest that strips one terminal LF does not match a value ending in LF). A 5xx or dropped connection is reported as AMBIGUOUS and is never retried.")
 	workspaceUpdateCmd.Flags().String("vote-issue", "", "CHE-1862 vote path: issue UUID that holds the Proposal line and the two PASS votes for this exact change. Requires --expected-before-digest; sends before_sha256/after_sha256 instead of the owner-only digest. Agent callers only.")
 	workspaceUpdateCmd.Flags().String("decision-id", "", "CHE-2448 decision path: id of the decision request Cheese answered for this exact change. Requires --expected-before-digest; sends decision_id, before_sha256 and after_sha256. Agent task tokens only; alternative to --vote-issue.")
@@ -645,7 +647,7 @@ func buildWorkspaceUpdateDigestBody(cmd *cobra.Command) (map[string]any, error) 
 	// The exception is single-field-only server-side: reject any other
 	// update flag client-side, naming the conflicting one, rather than
 	// silently dropping it or sending a body the server would 400 on.
-	conflicting := []string{"name", "description", "description-stdin", "issue-prefix", "compact-prompt-file"}
+	conflicting := []string{"name", "description", "description-stdin", "issue-prefix", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours"}
 	for _, name := range conflicting {
 		if cmd.Flags().Changed(name) {
 			return nil, fmt.Errorf("--expected-before-digest cannot be combined with --%s; digest-mode updates exactly one field (context)", name)
@@ -715,6 +717,24 @@ func buildWorkspaceUpdateBody(cmd *cobra.Command) (map[string]any, error) {
 			body["compact_prompt"] = string(prompt)
 		}
 	}
+	guard := map[string]any{}
+	if cmd.Flags().Changed("idle-guard-mode") {
+		mode, _ := cmd.Flags().GetString("idle-guard-mode")
+		if mode != "off" && mode != "shadow" && mode != "act" {
+			return nil, fmt.Errorf("--idle-guard-mode must be off, shadow or act")
+		}
+		guard["mode"] = mode
+	}
+	if cmd.Flags().Changed("idle-guard-after-hours") {
+		hours, _ := cmd.Flags().GetInt("idle-guard-after-hours")
+		if hours < 1 || hours > 72 {
+			return nil, fmt.Errorf("--idle-guard-after-hours must be from 1 to 72")
+		}
+		guard["after_hours"] = hours
+	}
+	if len(guard) > 0 {
+		body["idle_started_guard"] = guard
+	}
 	return body, nil
 }
 
@@ -781,7 +801,7 @@ func runWorkspaceUpdate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if len(body) == 0 {
-		return fmt.Errorf("no fields to update; use --name, --description, --context, --issue-prefix, or --compact-prompt-file")
+		return fmt.Errorf("no fields to update; use --name, --description, --context, --issue-prefix, --compact-prompt-file, --idle-guard-mode, or --idle-guard-after-hours")
 	}
 
 	var ws map[string]any
