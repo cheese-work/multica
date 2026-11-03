@@ -12,6 +12,7 @@ multica decision get <decision-id> --output json
 multica decision withdraw <decision-id> --reason "no longer needed"
 multica decision feed --output json   # sweep PAT with the decisions:feed scope only
 multica decision feed ack <answer-id> --version <n>
+multica issue human-in-charge <issue> --output json   # who to address; `human` is null when nobody is eligible
 ```
 
 - `--ask-file` is UTF-8 JSON: `agent_did`, `decision`, `options`,
@@ -21,6 +22,9 @@ multica decision feed ack <answer-id> --version <n>
   the server checks each hash.
 - `--class` takes one of the classes `decision request --help` lists. Which
   class a situation belongs to is workspace policy.
+- `issue human-in-charge` needs a running task on the issue. It returns the
+  first creator, requester, project lead or workspace owner who is an active
+  member and may invoke you, with `source`; otherwise `human: null` and a `reason`.
 - `--for` is the named person's user or workspace member id (a real UUID). It
   may be omitted only when an open intent already names the person.
 - `--parent <comment-id>` replies under a comment; it is not allowed with an
