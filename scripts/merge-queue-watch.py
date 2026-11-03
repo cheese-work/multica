@@ -11,12 +11,14 @@ query($owner: String!, $name: String!, $branch: String!) {
   repository(owner: $owner, name: $name) {
     mergeQueue(branch: $branch) {
       entries(first: 100) {
+        totalCount
         nodes {
           state
           enqueuedAt
           pullRequest { number url }
           headCommit {
             oid
+            committedDate
             statusCheckRollup {
               contexts(first: 100) {
                 totalCount
@@ -41,25 +43,33 @@ def now():
 
 
 def find_stalls(response, required, now, max_age_minutes=30):
+    """Clock = the merge-group head commit date: enqueuedAt also counts time spent
+    queued behind other entries, before this entry had a head or started checks."""
     queue = response["data"]["repository"]["mergeQueue"]
+    if not queue:
+        return []
+    entries = queue["entries"]
     stalls = []
-    for entry in (queue["entries"]["nodes"] if queue else []):
-        age = now - dt.datetime.fromisoformat(entry["enqueuedAt"].replace("Z", "+00:00"))
-        if age < dt.timedelta(minutes=max_age_minutes):
+    if entries["totalCount"] > len(entries["nodes"]):
+        stalls.append(f"inconclusive: {entries['totalCount']} queue entries, only {len(entries['nodes'])} read")
+    for entry in entries["nodes"]:
+        head = entry["headCommit"]
+        if not head:
+            continue
+        since = head["committedDate"]
+        if now - dt.datetime.fromisoformat(since.replace("Z", "+00:00")) < dt.timedelta(minutes=max_age_minutes):
             continue
         where = entry["pullRequest"]["url"]
         if entry["state"] == "AWAITING_CHECKS":
-            stalls.append(f"{where} is AWAITING_CHECKS since {entry['enqueuedAt']}")
-        head = entry["headCommit"]
-        contexts = ((head or {}).get("statusCheckRollup") or {}).get("contexts") or {"totalCount": 0, "nodes": []}
+            stalls.append(f"{where} is AWAITING_CHECKS on merge-group head {head['oid']} since {since}")
+        contexts = (head.get("statusCheckRollup") or {}).get("contexts") or {"totalCount": 0, "nodes": []}
         if contexts["totalCount"] > len(contexts["nodes"]):
-            # Without the full list a check cannot be called missing; the age rule above still applies.
-            print(f"::warning::{where}: {contexts['totalCount']} checks on {head['oid']}, only {len(contexts['nodes'])} read; skipped missing-check test")
+            stalls.append(f"inconclusive: {where} has {contexts['totalCount']} checks on {head['oid']}, only {len(contexts['nodes'])} read")
             continue
         reported = {node.get("name") or node.get("context") for node in contexts["nodes"]}
         for name in required:
             if name not in reported:
-                stalls.append(f"{where}: required check {name} missing on merge-group head {head['oid'] if head else '(none)'} since {entry['enqueuedAt']}")
+                stalls.append(f"{where}: required check {name} missing on merge-group head {head['oid']} since {since}")
     return stalls
 
 

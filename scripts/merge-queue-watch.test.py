@@ -36,11 +36,19 @@ class FindStallsTest(unittest.TestCase):
         self.assertIn("AWAITING_CHECKS", stalls[0])
         self.assertIn("pull/101", stalls[0])
 
-    def test_threshold_is_exactly_30_minutes(self):
+    def test_threshold_is_exactly_30_minutes_from_the_head_commit(self):
         response = fixture("stuck-awaiting-checks")
-        enqueued = dt.datetime.fromisoformat(response["data"]["repository"]["mergeQueue"]["entries"]["nodes"][0]["enqueuedAt"].replace("Z", "+00:00"))
-        self.assertEqual(len(watch.find_stalls(response, REQUIRED, enqueued + dt.timedelta(minutes=30))), 1)
-        self.assertEqual(watch.find_stalls(response, REQUIRED, enqueued + dt.timedelta(minutes=29, seconds=59)), [])
+        head = response["data"]["repository"]["mergeQueue"]["entries"]["nodes"][0]["headCommit"]
+        committed = dt.datetime.fromisoformat(head["committedDate"].replace("Z", "+00:00"))
+        self.assertEqual(len(watch.find_stalls(response, REQUIRED, committed + dt.timedelta(minutes=30))), 1)
+        self.assertEqual(watch.find_stalls(response, REQUIRED, committed + dt.timedelta(minutes=29, seconds=59)), [])
+
+    def test_long_queued_entry_with_a_new_head_passes(self):
+        # enqueuedAt is 3 h old, but the merge-group head and the checks wait are 5 min old.
+        self.assertEqual(watch.find_stalls(fixture("long-queued-new-head"), REQUIRED, NOW), [])
+
+    def test_long_queued_entry_without_a_head_passes(self):
+        self.assertEqual(watch.find_stalls(fixture("long-queued-no-head"), REQUIRED, NOW), [])
 
     def test_required_check_missing_on_old_head_fails(self):
         stalls = watch.find_stalls(fixture("missing-required-check"), REQUIRED, NOW)
@@ -54,14 +62,19 @@ class FindStallsTest(unittest.TestCase):
     def test_commit_status_satisfies_required_check(self):
         self.assertEqual(watch.find_stalls(fixture("status-context-satisfies"), REQUIRED, NOW), [])
 
-    def test_truncated_rollup_is_not_reported_as_missing(self):
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            self.assertEqual(watch.find_stalls(fixture("rollup-truncated"), REQUIRED, NOW), [])
-        self.assertIn("::warning::", out.getvalue())
+    def test_truncated_rollup_is_inconclusive_not_green(self):
+        stalls = watch.find_stalls(fixture("rollup-truncated"), REQUIRED, NOW)
+        self.assertEqual(len(stalls), 1)
+        self.assertIn("inconclusive", stalls[0])
+
+    def test_truncated_queue_is_inconclusive_not_green(self):
+        stalls = watch.find_stalls(fixture("queue-truncated"), REQUIRED, NOW)
+        self.assertEqual(len(stalls), 1)
+        self.assertIn("inconclusive", stalls[0])
 
     def test_invalid_timestamp_fails_loudly(self):
         response = fixture("stuck-awaiting-checks")
-        response["data"]["repository"]["mergeQueue"]["entries"]["nodes"][0]["enqueuedAt"] = "invalid"
+        response["data"]["repository"]["mergeQueue"]["entries"]["nodes"][0]["headCommit"]["committedDate"] = "invalid"
         with self.assertRaises(ValueError):
             watch.find_stalls(response, REQUIRED, NOW)
 

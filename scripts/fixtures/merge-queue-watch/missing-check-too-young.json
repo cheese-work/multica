@@ -3,6 +3,7 @@
     "repository": {
       "mergeQueue": {
         "entries": {
+          "totalCount": 1,
           "nodes": [
             {
               "state": "AWAITING_CHECKS",
@@ -14,6 +15,7 @@
               },
               "headCommit": {
                 "oid": "d1",
+                "committedDate": "2026-11-03T05:45:00Z",
                 "statusCheckRollup": {
                   "contexts": {
                     "totalCount": 1,

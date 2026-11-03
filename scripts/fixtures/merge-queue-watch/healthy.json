@@ -3,6 +3,7 @@
     "repository": {
       "mergeQueue": {
         "entries": {
+          "totalCount": 2,
           "nodes": [
             {
               "state": "AWAITING_CHECKS",
@@ -14,6 +15,7 @@
               },
               "headCommit": {
                 "oid": "a1",
+                "committedDate": "2026-11-03T05:45:00Z",
                 "statusCheckRollup": {
                   "contexts": {
                     "totalCount": 1,
@@ -35,15 +37,7 @@
                 "number": 102,
                 "url": "https://github.com/cheese-work/multica/pull/102"
               },
-              "headCommit": {
-                "oid": "a2",
-                "statusCheckRollup": {
-                  "contexts": {
-                    "totalCount": 0,
-                    "nodes": []
-                  }
-                }
-              }
+              "headCommit": null
             }
           ]
         }
