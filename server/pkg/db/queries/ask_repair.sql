@@ -58,9 +58,9 @@ WHERE root_id = $1 AND workspace_id = $2 AND id <> $1 AND mode = 'block' AND cle
 SELECT root.id, root.issue_id, root.agent_id, root.failure_reason, root.failed_at,
        (workspace.issue_prefix || '-' || issue.number)::text AS identifier,
        COALESCE(event.source_text, comment.content, '')::text AS source,
-       agent.name AS agent_name
+       COALESCE(agent.name, root.agent_id::text)::text AS agent_name
 FROM ask_repair_root root
-JOIN agent ON agent.id = root.agent_id
+LEFT JOIN agent ON agent.id = root.agent_id
 JOIN issue ON issue.id = root.issue_id AND issue.workspace_id = root.workspace_id
 JOIN workspace ON workspace.id = root.workspace_id
 LEFT JOIN ask_guard_event event ON event.id = root.id AND event.workspace_id = root.workspace_id

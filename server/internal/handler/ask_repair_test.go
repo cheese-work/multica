@@ -12,6 +12,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -339,4 +341,90 @@ func TestAskRepairFailureListedInBrief(t *testing.T) {
 		}
 	}
 	t.Fatalf("root %s missing from ask_failures: %s", eventID, w.Body.String())
+}
+
+// TestAskRepairMemberlessRequestSettlesRoot: a source-less wakeup event has no
+// member, yet the request the repair run makes clears it and settles the root.
+// An event that was never routed to repair stays unrecoverable.
+func TestAskRepairMemberlessRequestSettlesRoot(t *testing.T) {
+	fixture := newSingleCallFixture(t)
+	stray := uuid.NewString()
+	dbfx.Exec(t, `INSERT INTO ask_guard_event (id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode) VALUES ($1, $2, $3, $4, 'wakeup', $5, 'block')`,
+		stray, testWorkspaceID, fixture.issueID, uuid.NewString(), uuid.NewString())
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM ask_guard_event WHERE id = $1`, stray) })
+	eventID := repairEvent(t, fixture.intentFixture, "wakeup", nil, nil)
+	admitRepairs(t)
+	repairTask := onlyRepairTask(t, fixture.intentFixture)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'running' WHERE id = $1`, repairTask)
+
+	body := fixture.body()
+	body["recovers"] = stray
+	request := fixture.call(body)
+	request.Header.Set("X-Task-ID", repairTask)
+	testutil.Call(t, testHandler.RequestDecision, request).Want(http.StatusBadRequest)
+
+	body["recovers"] = eventID
+	request = fixture.call(body)
+	request.Header.Set("X-Task-ID", repairTask)
+	testutil.Call(t, testHandler.RequestDecision, request).Want(http.StatusCreated)
+	if !eventCleared(t, eventID) || eventCleared(t, stray) {
+		t.Fatal("the repair request must clear its own event and nothing else")
+	}
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, repairTask)
+	settleRepairs(t)
+	settleRepairs(t)
+	if state, reason := rootState(t, eventID); state != "settled" || reason != "" {
+		t.Fatalf("root = %s/%s, want settled", state, reason)
+	}
+}
+
+// TestAskRepairMessageNamesClass: the CLI refuses a request without --class, so
+// the command in the run message must carry it.
+func TestAskRepairMessageNamesClass(t *testing.T) {
+	message := askRepairMessage(db.AskGuardEvent{ID: parseUUID(uuid.NewString())}, db.Issue{ID: parseUUID(uuid.NewString())})
+	if !strings.Contains(message, "--class ") {
+		t.Fatalf("run message lacks --class:\n%s", message)
+	}
+}
+
+// TestAskRepairDoesNotUseReviewException: the producing agent is the reviewer of
+// an in_review issue whose budget is spent and whose head is unreviewed. A repair
+// is not a review, so the budget refuses it and no head admission is consumed.
+func TestAskRepairDoesNotUseReviewException(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c := newEdgeCase(t, 3363001, mergeEdgeSteps)
+	issue := spendBudget(t, c, 2, "in_review")
+	linkPR(t, c.issueID, 3363, "head-repair")
+	_, err := testHandler.TaskService.EnqueueAskRepairTaskInTx(context.Background(), testHandler.Queries, issue, issue.AssigneeID, "repair")
+	if !errors.Is(err, service.ErrRunBudgetExhausted) {
+		t.Fatalf("repair over the cap = %v, want ErrRunBudgetExhausted", err)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM issue_review_admission WHERE issue_id = $1`, c.issueID); n != 0 {
+		t.Fatalf("repair consumed %d head admissions", n)
+	}
+}
+
+// TestAskRepairFailureWithoutAgentRowStillListed: a failed root whose agent is
+// gone stays in the brief with the agent id as its owner.
+func TestAskRepairFailureWithoutAgentRowStillListed(t *testing.T) {
+	fixture := newIntentFixture(t)
+	eventID := repairEvent(t, fixture, "wakeup", nil, nil)
+	dbfx.Exec(t, `UPDATE agent SET archived_at = clock_timestamp() WHERE id = $1`, fixture.agentID)
+	admitRepairs(t)
+	dbfx.Exec(t, `DELETE FROM agent WHERE id = $1`, fixture.agentID)
+	rows, err := testHandler.Queries.ListFailedAskRepairRoots(context.Background(), parseUUID(testWorkspaceID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if uuidToString(row.ID) == eventID {
+			if row.AgentName != fixture.agentID {
+				t.Fatalf("owner = %q, want the agent id %s", row.AgentName, fixture.agentID)
+			}
+			return
+		}
+	}
+	t.Fatalf("root %s missing with its agent row gone", eventID)
 }

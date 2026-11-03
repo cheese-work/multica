@@ -1788,6 +1788,13 @@ func (s *TaskService) EnqueueDecisionTaskInTx(ctx context.Context, queries *db.Q
 	return task, err
 }
 
+// EnqueueAskRepairTaskInTx is EnqueueDecisionTaskInTx for an ask repair run.
+// A repair is not a review, so it never uses the review-head exception to a
+// spent run budget, even when the producing agent is the issue's reviewer.
+func (s *TaskService) EnqueueAskRepairTaskInTx(ctx context.Context, queries *db.Queries, issue db.Issue, agentID pgtype.UUID, handoff string) (db.AgentTaskQueue, error) {
+	return s.EnqueueDecisionTaskInTx(withoutReviewRun(ctx), queries, issue, agentID, pgtype.UUID{}, pgtype.UUID{}, nil, handoff)
+}
+
 // EnqueueDecisionWaitLeaderTaskInTx shares leader callback admission and
 // attribution. The caller commits its episode receipt with the task and calls
 // PublishTaskEnqueued only after commit. An automated alert is not a review run

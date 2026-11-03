@@ -135,7 +135,7 @@ func (handler *Handler) admitAskRepair(ctx context.Context, listed db.AskGuardEv
 		return err
 	}
 	defer admission.Rollback(ctx)
-	repair, enqueueErr := handler.TaskService.EnqueueDecisionTaskInTx(ctx, queries.WithTx(admission), issue, agent.ID, pgtype.UUID{}, pgtype.UUID{}, nil, askRepairMessage(event, issue))
+	repair, enqueueErr := handler.TaskService.EnqueueAskRepairTaskInTx(ctx, queries.WithTx(admission), issue, agent.ID, askRepairMessage(event, issue))
 	if enqueueErr != nil {
 		if err := admission.Rollback(ctx); err != nil {
 			return errors.Join(enqueueErr, err)
@@ -175,7 +175,7 @@ func askRepairMessage(event db.AskGuardEvent, issue db.Issue) string {
 	}
 	return fmt.Sprintf("Ask recovery: an ask from your earlier run on issue %s did not reach a person (reason: %s). "+
 		"Ask the person now with one decision request, one question in a file: "+
-		"`multica decision request --issue %s --for %s --recovers %s --ask-file <ask.json>`. "+
+		"`multica decision request --issue %s --for %s --class <reversible|spend|deploy|publish|irreversible|product_direction> --recovers %s --ask-file <ask.json>`. "+
 		"If you make no matching request, the ask counts as failed and the failure stays with you. "+
 		"This message grants no decision, merge or deploy authority.",
 		uuidToString(issue.ID), event.RepairReason.String, uuidToString(issue.ID), person, uuidToString(event.ID))
