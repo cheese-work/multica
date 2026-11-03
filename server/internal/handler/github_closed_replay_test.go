@@ -174,3 +174,30 @@ func testReplayStaysOwedUntilItFinishes(t *testing.T, inject func(*testing.T, *H
 		t.Fatalf("owed replays after retry = %d, want 0", got)
 	}
 }
+
+// A deleted workspace leaves no route for its installation address. The
+// replay marker has no workspace_id, so the replay must finish as a no-op and
+// clear it instead of staying owed forever.
+func TestGitHubReplayClosedPullRequestClearsMarkerWithoutRoutedWorkspace(t *testing.T) {
+	fixture := newGitHubReviewFixture(t)
+	pull := githubForkGatePR(t, fixture, map[string]any{"id": 424242, "full_name": "acme/widget", "fork": false})
+	pull["state"], pull["merged"] = "closed", true
+	pull["base"] = map[string]any{"ref": "main", "sha": "base-sha", "repo": map[string]any{
+		"id": 424242, "name": "widget", "full_name": "acme/widget", "default_branch": "main", "owner": map[string]any{"login": "acme"},
+	}}
+	raw, err := json.Marshal(pull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := *fixture.handler
+	handler.fetchPullRequestJSON = func(context.Context, int64, string, string, int32) (json.RawMessage, error) { return raw, nil }
+	const unboundInstallation = 987654321
+	if err := handler.replayClosedPullRequest(context.Background(), unboundInstallation, "acme", "widget", 2019); err != nil {
+		t.Fatal(err)
+	}
+	var owed int
+	dbfx.QueryRow(t, `SELECT count(*) FROM github_pr_closed_replay WHERE installation_id=$1`, int64(unboundInstallation)).Scan(&owed)
+	if owed != 0 {
+		t.Fatalf("owed replays = %d, want 0", owed)
+	}
+}
