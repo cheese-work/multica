@@ -94,8 +94,9 @@ type Manager struct {
 
 	// workspaceFilter, when set, returns the workspaces allowed to receive a
 	// snapshot for an installation; rows of other workspaces are never fetched
-	// for or written.
-	workspaceFilter func(ctx context.Context, installationID int64) (map[pgtype.UUID]bool, error)
+	// for or written. It runs on the given queries so the write can check
+	// inside its transaction.
+	workspaceFilter WorkspaceFilter
 
 	queue chan address
 
@@ -165,9 +166,15 @@ func newManager(client *Client, queries *db.Queries, pool TxBeginner, fetch func
 	return manager
 }
 
+// WorkspaceFilter lists the workspaces allowed to receive a snapshot for an
+// installation. Called inside the write transaction with that transaction's
+// queries, it must lock what it reads so the answer holds until commit.
+type WorkspaceFilter func(ctx context.Context, q *db.Queries, installationID int64) (map[pgtype.UUID]bool, error)
+
 // SetWorkspaceFilter restricts the refresh pipeline to the workspaces the
-// filter allows for each installation. Nil-safe: a disabled manager ignores it.
-func (manager *Manager) SetWorkspaceFilter(filter func(ctx context.Context, installationID int64) (map[pgtype.UUID]bool, error)) {
+// filter allows for each installation. Call it before Start. Nil-safe: a
+// disabled manager ignores it.
+func (manager *Manager) SetWorkspaceFilter(filter WorkspaceFilter) {
 	if manager != nil {
 		manager.workspaceFilter = filter
 	}
@@ -185,7 +192,7 @@ func (manager *Manager) selectRows(ctx context.Context, addr address) ([]db.List
 	if err != nil || manager.workspaceFilter == nil {
 		return rows, err
 	}
-	allowed, err := manager.workspaceFilter(ctx, addr.InstallationID)
+	allowed, err := manager.workspaceFilter(ctx, manager.queries, addr.InstallationID)
 	if err != nil {
 		return nil, err
 	}
@@ -370,7 +377,7 @@ func (manager *Manager) process(ctx context.Context, addr address) {
 	anyApplied := false
 	anyOpenApplied := false
 	for _, row := range rows {
-		applied, err := manager.applySnapshot(ctx, row.ID, snap)
+		applied, err := manager.applySnapshotGuarded(ctx, row.ID, snap, manager.bindingGuard(addr.InstallationID, row.WorkspaceID))
 		if err != nil {
 			slog.Warn("ghsnapshot: apply snapshot failed", "err", err.Error())
 			continue
@@ -505,12 +512,38 @@ func (manager *Manager) finish(addr address) {
 // writes nothing) when the row's head has advanced past the snapshot's head
 // (acceptance criterion 1).
 func (manager *Manager) applySnapshot(ctx context.Context, prID pgtype.UUID, snap *PRSnapshot) (bool, error) {
+	return manager.applySnapshotGuarded(ctx, prID, snap, nil)
+}
+
+// bindingGuard re-checks, inside the write transaction, that the workspace is
+// still allowed. The row was selected before the fetch; the binding may have
+// been removed or denied since. Nil when no filter is set.
+func (manager *Manager) bindingGuard(installationID int64, workspaceID pgtype.UUID) func(ctx context.Context, q *db.Queries) (bool, error) {
+	if manager.workspaceFilter == nil {
+		return nil
+	}
+	return func(ctx context.Context, q *db.Queries) (bool, error) {
+		allowed, err := manager.workspaceFilter(ctx, q, installationID)
+		return allowed[workspaceID], err
+	}
+}
+
+// applySnapshotGuarded is applySnapshot with an optional guard run first in the
+// transaction; a false guard writes nothing.
+func (manager *Manager) applySnapshotGuarded(ctx context.Context, prID pgtype.UUID, snap *PRSnapshot, guard func(ctx context.Context, q *db.Queries) (bool, error)) (bool, error) {
 	tx, err := manager.pool.Begin(ctx)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback(ctx)
 	q := manager.queries.WithTx(tx)
+
+	if guard != nil {
+		ok, err := guard(ctx, q)
+		if err != nil || !ok {
+			return false, err
+		}
+	}
 
 	prev, err := q.GetGitHubPRSnapshotState(ctx, prID)
 	if err != nil {
