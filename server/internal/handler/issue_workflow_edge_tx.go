@@ -195,18 +195,19 @@ func (h *Handler) enqueueSquadLeaderRunInTx(ctx context.Context, q *db.Queries, 
 	return h.TaskService.EnqueueSquadLeaderRunInTx(ctx, q, issue, squad.LeaderID, squad.ID, pgtype.UUID{})
 }
 
-// onQueries is h with every read going through q, the queries of a transaction
-// the caller holds open: a read through the pool would wait for a second
-// connection while this one is held, and enough such moves at once starve the
-// pool. TaskService holds locks and caches, so it is shared; the reads inside
-// its run preparation still use the pool.
+// onQueries is a handler whose reads go through q, the queries of a
+// transaction the caller holds open: a read through the pool would wait for a
+// second connection while this one is held, and enough such moves at once
+// starve the pool. TaskService holds locks and caches, so it is shared; the
+// reads inside its run preparation still use the pool. Only the fields the
+// edge move reads are carried: copying all of *h would read FeatureFlags, which
+// a test rewrites while a detached run-budget goroutine is still moving an edge.
 func (h *Handler) onQueries(q *db.Queries) *Handler {
-	th := *h
-	th.Queries = q
+	th := &Handler{Queries: q, TaskService: h.TaskService}
 	if h.IssueService != nil {
 		issues := *h.IssueService
 		issues.Queries = q
 		th.IssueService = &issues
 	}
-	return &th
+	return th
 }
