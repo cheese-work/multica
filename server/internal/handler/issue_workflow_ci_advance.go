@@ -12,7 +12,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
-	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // advanceIssueOnCIGreen moves an issue one workflow step when the checks of a
@@ -102,8 +101,8 @@ func (h *Handler) moveIssueOnEdge(ctx context.Context, issue db.Issue, to, sourc
 // tryMoveIssueOnEdge is moveIssueOnEdge for a caller that needs the reason a
 // move did not happen: pgx.ErrNoRows means a concurrent writer won.
 func (h *Handler) tryMoveIssueOnEdge(ctx context.Context, issue db.Issue, to, source string, extra map[string]any, startHandler bool) (moved, ranHandler bool, err error) {
-	// The lock holds through the grant, so a person's move cannot read this
-	// issue's status between this write and the grant. The block an exhausted
+	// The lock holds through the commit, so a person's move cannot read this
+	// issue's status between this write and its grant. The block an exhausted
 	// budget causes neither grants nor needs it: it runs under the refused
 	// admission's locks, after that admission wrote the window's ledger row, and
 	// the boundary lock comes before those locks everywhere else.
@@ -114,70 +113,27 @@ func (h *Handler) tryMoveIssueOnEdge(ctx context.Context, issue db.Issue, to, so
 		}
 	}
 	defer release()
-	params := db.UpdateIssueParams{
-		ID:               issue.ID,
-		ExpectedRevision: pgtype.Int8{Int64: issue.Revision, Valid: true},
-		Status:           pgtype.Text{String: to, Valid: true},
-		AssigneeType:     issue.AssigneeType,
-		AssigneeID:       issue.AssigneeID,
-		StartDate:        issue.StartDate,
-		DueDate:          issue.DueDate,
-		ParentIssueID:    issue.ParentIssueID,
-		ProjectID:        issue.ProjectID,
-		Stage:            issue.Stage,
-	}
-	handoff, write, err := h.decideIssueWorkflow(ctx, issue, &params, true, false, false, workflowCaller{})
+	tx, err := h.beginWakeupWrite(ctx)
 	if err != nil {
-		return false, false, fmt.Errorf("workflow refused the move: %w", err)
+		return false, false, err
 	}
-	write.system = true
-	updated, err := h.updateIssueWithStatusGuard(ctx, issue.WorkspaceID, to, params, write)
+	defer tx.Rollback(ctx)
+	move, err := h.moveIssueOnEdgeTx(ctx, h.Queries.WithTx(tx), issue, to, source, extra, startHandler)
 	if err != nil {
-		return false, false, fmt.Errorf("status write failed: %w", err)
+		var notConfirmed *service.StopNotConfirmedError
+		if errors.As(err, &notConfirmed) {
+			h.recordStopNotConfirmed(ctx, issue, "system", "", notConfirmed)
+		}
+		return false, false, err
 	}
-
-	assigneeChanged := handoff != nil &&
-		(issue.AssigneeType.String != updated.AssigneeType.String || uuidToString(issue.AssigneeID) != uuidToString(updated.AssigneeID))
-	var willRun bool
-	var trigger service.IssueRunTrigger
-	if handoff != nil && startHandler {
-		trigger, willRun = h.IssueService.WillEnqueueRun(ctx, service.IssueTriggerInput{
-			Issue: updated, PrevStatus: issue.Status, AssigneeChanged: true, StatusChanged: true, EnteredHandoffStep: true,
-		}, service.IssueTriggerProbe{})
-	}
-	payload := map[string]any{
-		"issue":            h.issueResponseWithCategory(ctx, updated),
-		"assignee_changed": assigneeChanged,
-		"status_changed":   true,
-		"prev_status":      issue.Status,
-		"creator_type":     issue.CreatorType,
-		"creator_id":       uuidToString(issue.CreatorID),
-		"source":           source,
-	}
-	for k, v := range extra {
-		payload[k] = v
-	}
-	if assigneeChanged {
-		payload["prev_assignee_type"] = textToPtr(issue.AssigneeType)
-		payload["prev_assignee_id"] = uuidToPtr(issue.AssigneeID)
-	}
-	if handoff != nil {
-		payload["workflow_handoff"] = workflowHandoffPayload(updated, handoff, h.workflowHandoffBrief(ctx, updated, handoff), willRun, "")
-	}
-	h.publish(protocol.EventIssueUpdated, uuidToString(updated.WorkspaceID), "system", "", payload)
-	// The block an exhausted budget causes is a consequence of exhaustion, and
-	// it lands before the window's exhaustion claim: it must not grant.
-	if source != "run_budget" {
-		h.grantRunBudgetStep(ctx, updated, issue.Status)
+	if err := tx.Commit(ctx); err != nil {
+		return false, false, fmt.Errorf("commit edge move: %w", err)
 	}
 	release()
-	if willRun {
-		h.IssueService.CancelStaleStepRuns(ctx, updated, trigger.AgentID)
-		ranHandler = h.dispatchIssueRun(ctx, updated, trigger, "system", "", "")
+	if move.RunRefused != nil && !errors.Is(move.RunRefused, service.ErrDuplicatePendingTask) {
+		slog.Debug("workflow edge: run refused", "err", move.RunRefused, "issue_id", uuidToString(issue.ID), "to", to, "source", source)
 	}
-	if updated.ParentIssueID.Valid || issue.ParentIssueID.Valid {
-		h.processChildEvents(ctx, updated.ParentIssueID, issue.ParentIssueID)
-	}
+	ranHandler = move.AfterCommit(ctx)
 	return true, ranHandler, nil
 }
 

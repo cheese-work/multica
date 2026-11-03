@@ -291,34 +291,43 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 	var cancelledWakeups []db.AgentTaskQueue
 	moveGuard := issueMoveGuardFrom(ctx)
 	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil || moveGuard != nil || statusRecordFrom(ctx) != nil || len(issueWriteTaint(ctx)) > 0 || ctx.Value(issueWriteExternalReadKey{}) != nil, func(q *db.Queries) error {
-		if err := wf.lockProject(ctx, q); err != nil {
-			return err
-		}
-		if params.DuplicateOfIssueID.Valid {
-			if err := lockAndCheckDuplicateMark(ctx, q, workspaceID, params.ID, params.DuplicateOfIssueID); err != nil {
-				return err
-			}
-		}
-		if err := wf.lockIssueAndVerify(ctx, h, q); err != nil {
-			return err
-		}
-		if moveGuard != nil {
-			if err := moveGuard(ctx, q, &params); err != nil {
-				return err
-			}
-		}
-		var innerErr error
-		issue, cancelledWakeups, innerErr = updateIssueStoppingWakeups(ctx, q, params)
-		if innerErr != nil {
-			return innerErr
-		}
-		return wf.recordVerdict(ctx, q, issue)
+		var err error
+		issue, cancelledWakeups, err = h.writeIssueLocked(ctx, q, workspaceID, params, wf)
+		return err
 	})
 	if err != nil {
 		return issue, err
 	}
 	h.broadcastCancelledWakeups(ctx, workspaceID, cancelledWakeups)
 	return issue, nil
+}
+
+// writeIssueLocked is the body of an issue write inside the caller's
+// transaction, which already holds the status-archive guard: project lock,
+// workflow re-check under the issue row lock, then the write. The caller
+// broadcasts the returned wakeups after commit.
+func (h *Handler) writeIssueLocked(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, params db.UpdateIssueParams, wf *workflowWrite) (db.Issue, []db.AgentTaskQueue, error) {
+	if err := wf.lockProject(ctx, q); err != nil {
+		return db.Issue{}, nil, err
+	}
+	if params.DuplicateOfIssueID.Valid {
+		if err := lockAndCheckDuplicateMark(ctx, q, workspaceID, params.ID, params.DuplicateOfIssueID); err != nil {
+			return db.Issue{}, nil, err
+		}
+	}
+	if err := wf.lockIssueAndVerify(ctx, h, q); err != nil {
+		return db.Issue{}, nil, err
+	}
+	if moveGuard := issueMoveGuardFrom(ctx); moveGuard != nil {
+		if err := moveGuard(ctx, q, &params); err != nil {
+			return db.Issue{}, nil, err
+		}
+	}
+	issue, cancelledWakeups, err := updateIssueStoppingWakeups(ctx, q, params)
+	if err != nil {
+		return issue, nil, err
+	}
+	return issue, cancelledWakeups, wf.recordVerdict(ctx, q, issue)
 }
 
 // updateIssueStoppingWakeups writes params and, when the write moves the issue
