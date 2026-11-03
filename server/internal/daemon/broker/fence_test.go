@@ -375,3 +375,36 @@ func TestDrainSeesAuthorizationInFlight(t *testing.T) {
 		t.Fatalf("Drain = %v, want ErrUnreported for the abort the server never heard", err)
 	}
 }
+
+// GraphQL answers 200 for every outcome, so only a complete success or an error
+// raised before execution is definite; the rest may have marked the PR ready.
+func TestReadyOutcome(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct{ name, reply, result string }{
+		{"exec error", `{"data":{"markPullRequestReadyForReview":null},"errors":[{"message":"boom"}]}`, ""},
+		{"empty", `{}`, ""},
+		{"null", `{"data":null}`, ""},
+		{"request error", `{"errors":[{"message":"bad query"}]}`, "failed"},
+		{"success", "", "completed"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			r, f, b, a := githubRig(t, 0)
+			f.addPR(r.branch, 42)
+			f.gqlReply = c.reply
+			code, _ := r.pr(t, `{"op":"ready","number":1}`)
+			if (code == 200) != (c.result == "completed") {
+				t.Fatalf("status %d for result %q", code, c.result)
+			}
+			b.Fence()
+			err := b.Drain(context.Background())
+			res := a.results()
+			if len(res) != 1 || res[0] != c.result {
+				t.Fatalf("reported %v, want %q", res, c.result)
+			}
+			if want := c.result == ""; want != errors.Is(err, ErrOutcomeUnknown) || (!want && err != nil) {
+				t.Fatalf("Drain = %v", err)
+			}
+		})
+	}
+}

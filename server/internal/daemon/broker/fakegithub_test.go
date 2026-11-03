@@ -60,6 +60,8 @@ type fakeGitHub struct {
 	// dropReply makes a comment land and then cut the connection before any
 	// reply; refuse makes it answer 422 without landing.
 	dropReply, refuse bool
+	// gqlReply replaces the GraphQL answer; the mutation still applies.
+	gqlReply string
 }
 
 func newFakeGitHub(t testing.TB, remote string) *fakeGitHub {
@@ -311,13 +313,17 @@ func (f *fakeGitHub) graphql(w http.ResponseWriter, _ *http.Request, body []byte
 		return
 	}
 	f.mu.Lock()
+	reply := f.gqlReply
 	for _, p := range f.prs {
 		if fmt.Sprintf("PR_node%d", p.Number) == in.Variables["id"] {
 			p.Ready = true
 		}
 	}
 	f.mu.Unlock()
-	w.Write([]byte(`{"data":{}}`))
+	if reply == "" {
+		reply = `{"data":{"markPullRequestReadyForReview":{"pullRequest":{"id":"` + in.Variables["id"] + `"}}}}`
+	}
+	w.Write([]byte(reply))
 }
 
 // writeCalls lists the authorized calls that change something on GitHub.

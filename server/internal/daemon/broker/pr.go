@@ -163,20 +163,42 @@ func (b *Broker) prOp(parent context.Context, req PRRequest) (res PRResult, stat
 		status, err = b.gh(ctx, g, http.MethodPost, fmt.Sprintf("%s/issues/%d/comments", repo, req.Number), map[string]any{"body": *req.Body}, nil)
 	case "ready": // REST has no endpoint for this; GraphQL does
 		var out struct {
+			Data   json.RawMessage            `json:"data"`
 			Errors []struct{ Message string } `json:"errors"`
 		}
 		status, err = b.gh(ctx, g, http.MethodPost, "/graphql", map[string]any{
 			"query":     "mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id}) { pullRequest { id } } }",
 			"variables": map[string]string{"id": pr.NodeID},
 		}, &out)
-		if err == nil && len(out.Errors) > 0 {
-			status, err = http.StatusBadGateway, notApplied{fmt.Errorf("github: %s", out.Errors[0].Message)}
+		if err == nil {
+			status, err = http.StatusBadGateway, readyOutcome(out.Data, len(out.Errors) > 0)
 		}
 	}
 	if err != nil {
 		return res, status, err
 	}
 	return res, http.StatusOK, nil
+}
+
+// readyOutcome reads a GraphQL answer to the ready mutation. GraphQL answers 200
+// for every outcome, so only two are definite: the success payload with no
+// error, and an error with no data entry at all, which GraphQL raises before it
+// executes anything. An error next to a data entry, or no payload, may have
+// followed a mutation that ran.
+func readyOutcome(data json.RawMessage, hasErrors bool) error {
+	var d struct {
+		Mark *struct {
+			PullRequest *struct{ ID string } `json:"pullRequest"`
+		} `json:"markPullRequestReadyForReview"`
+	}
+	_ = json.Unmarshal(data, &d)
+	switch {
+	case !hasErrors && d.Mark != nil && d.Mark.PullRequest != nil && d.Mark.PullRequest.ID != "":
+		return nil
+	case hasErrors && len(data) == 0:
+		return notApplied{errors.New("github: graphql request failed before execution")}
+	}
+	return errors.New("github: graphql answer does not show whether the PR was marked ready")
 }
 
 // gh makes one authorized call and returns the HTTP status to answer with if
