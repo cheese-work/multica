@@ -51,10 +51,11 @@ var ictZone = time.FixedZone("ICT", 7*60*60)
 func writeAgentDecisionMarkdown(w io.Writer, feed map[string]any) error {
 	records, _ := feed["decisions"].([]any)
 	failures, _ := feed["notice_failures"].([]any)
+	askFailures, _ := feed["ask_failures"].([]any)
 	stopped, isStopped := feed["stopped"].(map[string]any)
 	// With the pilot off the brief stays as it was: no section. Records made
 	// earlier stay vetoable, so they and a stop or failed notice still print.
-	if enabled, _ := feed["enabled"].(bool); !enabled && len(records) == 0 && len(failures) == 0 && !isStopped {
+	if enabled, _ := feed["enabled"].(bool); !enabled && len(records) == 0 && len(failures) == 0 && len(askFailures) == 0 && !isStopped {
 		return nil
 	}
 	var b strings.Builder
@@ -86,6 +87,16 @@ func writeAgentDecisionMarkdown(w io.Writer, feed map[string]any) error {
 		for _, raw := range failures {
 			f, _ := raw.(map[string]any)
 			fmt.Fprintf(&b, "- decision %v, %v attempts: %v\n", f["instance_id"], f["attempts"], f["last_error"])
+		}
+	}
+	if len(askFailures) > 0 {
+		b.WriteString("\nAsks that never reached a person:\n")
+		for _, raw := range askFailures {
+			f, _ := raw.(map[string]any)
+			fmt.Fprintf(&b, "- %v · owner %v · %v · %s\n", f["identifier"], f["agent"], f["reason"], ictTime(f["failed_at"]))
+			if excerpt, _ := f["excerpt"].(string); excerpt != "" {
+				fmt.Fprintf(&b, "  Ask: %s\n", excerpt)
+			}
 		}
 	}
 	_, err := io.WriteString(w, b.String())
