@@ -4522,8 +4522,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		"prev_duplicate_of_issue_id": liveDuplicateMark(prevIssue.Status, prevIssue.DuplicateOfIssueID),
 	}
 	if handoff != nil {
-		updatedPayload["workflow_handoff"] = workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun, runReason)
-		h.finishRecordedHandoff(r.Context(), statusRec, updatedPayload["workflow_handoff"].(map[string]string))
+		handoffPayload := workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun, runReason)
+		updatedPayload["workflow_handoff"] = handoffPayload
+		h.finishRecordedHandoff(r.Context(), statusRec, handoffPayload)
 	}
 	if statusRec != nil && statusRec.activity != nil {
 		updatedPayload["activity_id"] = uuidToString(statusRec.activity.ID)
@@ -5421,8 +5422,9 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			"prev_duplicate_of_issue_id": liveDuplicateMark(prevIssue.Status, prevIssue.DuplicateOfIssueID),
 		}
 		if handoff != nil {
-			batchPayload["workflow_handoff"] = workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun, runReason)
-			h.finishRecordedHandoff(r.Context(), statusRec, batchPayload["workflow_handoff"].(map[string]string))
+			handoffPayload := workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun, runReason)
+			batchPayload["workflow_handoff"] = handoffPayload
+			h.finishRecordedHandoff(r.Context(), statusRec, handoffPayload)
 		}
 		if statusRec != nil && statusRec.activity != nil {
 			batchPayload["activity_id"] = uuidToString(statusRec.activity.ID)

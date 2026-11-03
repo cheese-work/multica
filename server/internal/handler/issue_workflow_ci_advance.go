@@ -166,8 +166,9 @@ func (h *Handler) tryMoveIssueOnEdge(ctx context.Context, issue db.Issue, to, so
 		payload["prev_assignee_id"] = uuidToPtr(issue.AssigneeID)
 	}
 	if handoff != nil {
-		payload["workflow_handoff"] = workflowHandoffPayload(updated, handoff, h.workflowHandoffBrief(ctx, updated, handoff), willRun, "")
-		h.finishRecordedHandoff(ctx, statusRec, payload["workflow_handoff"].(map[string]string))
+		handoffPayload := workflowHandoffPayload(updated, handoff, h.workflowHandoffBrief(ctx, updated, handoff), willRun, "")
+		payload["workflow_handoff"] = handoffPayload
+		h.finishRecordedHandoff(ctx, statusRec, handoffPayload)
 	}
 	if statusRec.activity != nil {
 		payload["activity_id"] = uuidToString(statusRec.activity.ID)
