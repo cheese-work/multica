@@ -42,10 +42,8 @@ type EditorProps = {
 // `live` is what the editor holds right now; the card only hears of it through onUpdate, after a timer.
 const editor = vi.hoisted(() => ({ props: undefined as unknown, hasActiveUploads: false, live: undefined as string | undefined }));
 const editorProps = () => editor.props as EditorProps;
-vi.mock("../../editor", async () => ({
-  ...(await vi.importActual<typeof import("../../editor/use-upload-gate")>("../../editor/use-upload-gate")),
-  useEditorUpload: (await vi.importActual<typeof import("../../editor/use-editor-upload")>("../../editor/use-editor-upload")).useEditorUpload,
-  ContentEditor: forwardRef(function MockEditor(props: EditorProps, ref) {
+vi.mock("./lazy-content-editor", () => ({
+  LazyContentEditor: forwardRef(function MockEditor(props: EditorProps, ref) {
     editor.props = props;
     const handle = { hasActiveUploads: () => editor.hasActiveUploads, getMarkdown: () => editor.live ?? props.defaultValue ?? "" };
     if (typeof ref === "function") ref(handle as never);
