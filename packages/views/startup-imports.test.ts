@@ -13,8 +13,6 @@ const STARTUP_FILES = [
   "search/result-rows.tsx",
   "inbox/components/inbox-list-item.tsx",
   "inbox/components/inbox-detail-label.tsx",
-  "modals/create-issue.tsx",
-  "modals/quick-create-issue.tsx",
   "../../apps/web/app/[workspaceSlug]/(dashboard)/issues/page.tsx",
   "../../apps/web/app/[workspaceSlug]/(dashboard)/projects/page.tsx",
   "../../apps/web/features/landing/components/features-section.tsx",

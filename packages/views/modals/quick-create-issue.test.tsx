@@ -270,8 +270,7 @@ vi.mock("../common/actor-avatar", () => ({
   ActorAvatar: () => <span data-testid="actor-avatar" />,
 }));
 
-function issuesComponentsMock() {
-  return {
+vi.mock("../issues/components", () => ({
   PriorityIcon: ({ priority }: { priority: string }) => <span>{priority}</span>,
   PriorityPicker: ({ priority, onUpdate }: any) => (
     <button type="button" data-testid="priority-picker" onClick={() => onUpdate({ priority: "high" })}>
@@ -283,10 +282,7 @@ function issuesComponentsMock() {
       Due date {dueDate ?? "none"}
     </button>
   ),
-};
-}
-vi.mock("../issues/components/priority-icon", issuesComponentsMock);
-vi.mock("../issues/components/pickers", issuesComponentsMock);
+}));
 
 vi.mock("../projects/components/project-picker", () => ({
   ProjectPicker: ({ projectId, onUpdate, triggerRender }: any) => (

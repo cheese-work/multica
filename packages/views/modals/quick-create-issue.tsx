@@ -63,8 +63,7 @@ import {
 import { ActorAvatar } from "../common/actor-avatar";
 import { ClearablePillButton, PillButton } from "../common/pill-button";
 import { ProjectPicker } from "../projects/components/project-picker";
-import { PriorityIcon } from "../issues/components/priority-icon";
-import { DueDatePicker, PriorityPicker } from "../issues/components/pickers";
+import { DueDatePicker, PriorityIcon, PriorityPicker } from "../issues/components";
 import { canAssignAgent } from "../issues/components/pickers/assignee-picker";
 import { isAgentRuntimeBound } from "@multica/core/agents";
 import {
