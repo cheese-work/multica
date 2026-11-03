@@ -239,3 +239,14 @@ export interface Issue {
   /** Present only on issue detail responses for issues created from a comment. */
   source_context?: IssueSourceContext;
 }
+
+/** Where a comment lives and enough text to recognise it — backs comment-ID chips. */
+export interface CommentPreview {
+  comment_id: string;
+  issue_id: string;
+  issue_identifier: string;
+  author_type: string;
+  author_id: string;
+  author_name: string;
+  preview: string;
+}

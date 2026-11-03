@@ -144,6 +144,8 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
+	"888_issue_search_text_workspace_idx":                       "idx_issue_search_text_workspace",
+	"889_comment_search_text_workspace_idx":                     "idx_comment_search_text_workspace",
 	"865_idx_recovery_claim_workspace_issue":                    "recovery_claim_workspace_issue_idx",
 	"864_idx_recovery_claim_failed_task":                        "recovery_claim_failed_task_idx",
 	"861_agent_task_event_index":                                "idx_agent_task_event_ws_runtime_at",
@@ -184,6 +186,7 @@ var concurrentIndexCleanups = map[string]string{
 	"802_idx_run_capability_grant_issue":                        "idx_run_capability_grant_issue",
 	"849_idx_provider_failure_recovery_wakeup":                  "provider_failure_recovery_wakeup_idx",
 	"868_host_sample_key_idx":                                   "host_sample_key_idx",
+	"876_chat_task_supplement_task_status_idx":                  "chat_task_supplement_task_status_idx",
 	"797_chat_wakeup_fired_task_index":                          "idx_chat_wakeup_fired_task",
 	"695_issue_relations_description_trgm_index":                "idx_issue_description_trgm",
 	"696_issue_relations_comment_content_trgm_index":            "idx_comment_content_trgm",
@@ -245,6 +248,10 @@ var concurrentIndexCleanups = map[string]string{
 	"633_wakeup_scoped_event_pending_index":                     "wakeup_scoped_event_pending_idx",
 	"634_wakeup_scoped_event_handled_index":                     "wakeup_scoped_event_handled_idx",
 	"635_wakeup_scoped_event_issue_index":                       "wakeup_scoped_event_issue_idx",
+	"641_wakeup_definition_sweep_index":                         "issue_wakeup_definition_sweep_idx",
+	"642_issue_project_keyset_index":                            "idx_issue_project_id_keyset",
+	"643_wakeup_capacity_held_index":                            "issue_wakeup_capacity_held_idx",
+	"644_wakeup_scoped_event_delayed_index":                     "wakeup_scoped_event_delayed_idx",
 	"558_governance_budget_reservation_attempt_obligation_uidx": "governance_budget_reservation_attempt_obligation_uidx",
 	"557_governance_budget_outbox_due_idx":                      "governance_budget_outbox_due_idx",
 	"556_governance_budget_reservation_root_window_idx":         "governance_budget_reservation_root_window_idx",
@@ -574,6 +581,29 @@ var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
 		TableRegclass: "wakeup_scoped_event",
 		Columns:       []string{"issue_id", "captured_at", "id"},
 		Predicate:     "handled_at IS NULL",
+	},
+	"641_wakeup_definition_sweep_index": {
+		IndexRegclass: "issue_wakeup_definition_sweep_idx",
+		TableRegclass: "issue_wakeup_definition",
+		Columns:       []string{"updated_at", "rule_key"},
+		Predicate:     "NOT sweep_done OR sweep_revision <> revision",
+	},
+	"642_issue_project_keyset_index": {
+		IndexRegclass: "idx_issue_project_id_keyset",
+		TableRegclass: "issue",
+		Columns:       []string{"project_id", "id"},
+	},
+	"643_wakeup_capacity_held_index": {
+		IndexRegclass: "issue_wakeup_capacity_held_idx",
+		TableRegclass: "issue_wakeup",
+		Columns:       []string{"updated_at", "id"},
+		Predicate:     "capacity_reason IS NOT NULL",
+	},
+	"644_wakeup_scoped_event_delayed_index": {
+		IndexRegclass: "wakeup_scoped_event_delayed_idx",
+		TableRegclass: "wakeup_scoped_event",
+		Columns:       []string{"captured_at", "id"},
+		Predicate:     "handled_at IS NULL AND retry_at IS NOT NULL",
 	},
 	"555_governance_budget_reservation_receipt_idx": {
 		IndexRegclass: "governance_budget_reservation_receipt_uidx",

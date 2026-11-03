@@ -119,6 +119,18 @@ Human message:
 %s`, strconv.Quote(authorName), content)
 }
 
+// taskSupplementCapabilities lists the mid-run capabilities a supported
+// provider offers for this task.
+func taskSupplementCapabilities(task Task) []string {
+	if task.IssueID != "" {
+		return []string{protocol.DaemonCapabilityTaskSupplementV1, protocol.DaemonCapabilityTaskSupplementPREventV1}
+	}
+	if task.ChatSessionID != "" {
+		return []string{protocol.DaemonCapabilityTaskSupplementV1, protocol.DaemonCapabilityTaskSupplementChatV1}
+	}
+	return nil
+}
+
 func taskSupplementEndpointUnsupported(err error) bool {
 	var reqErr *requestError
 	return errors.As(err, &reqErr) && (reqErr.StatusCode == http.StatusNotFound || reqErr.StatusCode == http.StatusPreconditionFailed)
@@ -169,7 +181,7 @@ func (d *Daemon) runTaskSupplementLoop(ctx context.Context, session *agent.Sessi
 			cancelClaim()
 			switch {
 			case supplement != nil:
-				d.deliverTaskSupplement(ctx, session, taskID, supplement, taskLog)
+				DeliverTaskSupplement(ctx, d.client, session, taskID, supplement, taskLog)
 				delivered = true
 			case taskSupplementEndpointUnsupported(claimErr):
 				members = false
@@ -203,8 +215,10 @@ func (d *Daemon) runTaskSupplementLoop(ctx context.Context, session *agent.Sessi
 	}
 }
 
-// deliverTaskSupplement injects one member or agent message and records the outcome.
-func (d *Daemon) deliverTaskSupplement(ctx context.Context, session *agent.Session, taskID string, supplement *TaskSupplement, taskLog *slog.Logger) {
+// DeliverTaskSupplement injects one claimed member or agent message and
+// records the outcome. It is exported so server tests can drive this exact
+// delivery path against the real handlers.
+func DeliverTaskSupplement(ctx context.Context, client *Client, session *agent.Session, taskID string, supplement *TaskSupplement, taskLog *slog.Logger) {
 	// The adapter owns transport deadlines. Hook-based providers wait for a
 	// safe boundary, which can follow a long-running tool; run cancellation
 	// still aborts that wait and prevents late delivery.
@@ -217,14 +231,14 @@ func (d *Daemon) deliverTaskSupplement(ctx context.Context, session *agent.Sessi
 	}
 
 	ackCtx, cancelAck := context.WithTimeout(context.WithoutCancel(ctx), taskSupplementAckTimeout)
-	ackErr := d.client.AckTaskSupplement(ackCtx, taskID, supplement.CommentID, injectErr == nil, reason)
+	ackErr := client.AckTaskSupplement(ackCtx, taskID, supplement.CommentID, injectErr == nil, reason)
 	cancelAck()
 	if ackErr != nil {
 		taskLog.Warn("additional message acknowledgement failed", "comment_id", supplement.CommentID, "error", ackErr)
 	}
 }
 
-// deliverTaskPREvent is deliverTaskSupplement for a typed PR event.
+// deliverTaskPREvent is DeliverTaskSupplement for a typed PR event.
 func (d *Daemon) deliverTaskPREvent(ctx context.Context, session *agent.Session, taskID string, event *TaskPREvent, taskLog *slog.Logger) {
 	injectErr := session.Supplement(ctx, formatPREventInstruction(event))
 	reason := taskSupplementFailureReason(ctx, injectErr)

@@ -169,6 +169,30 @@
   },
   "picker.title": "选择智能体",
   "no_response": "本轮已结束，智能体没有返回文字回复。",
+  "steer": {
+    "label": "引导",
+    "fallback": "排队中的消息",
+    "unavailable": "当前回复开始后才能引导",
+    "starting": "运行正在启动",
+    "unsupported": "此运行无法接收新消息，消息会继续排队。",
+    "no_permission": "你已无权运行此智能体",
+    "failed": "无法将消息加入运行，消息仍在排队。"
+  },
+  "supplement": {
+    "added": "已加入运行",
+    "read": "智能体已读",
+    "read_twice": "智能体已读；也已重新发送，智能体可能会看到两次",
+    "not_received": "未收到",
+    "unconfirmed": "送达未确认",
+    "resent": "已作为新运行重新发送",
+    "send_new_run": "作为新运行发送",
+    "send_again_anyway": "仍然重新发送",
+    "confirm_title": "重新发送此消息？",
+    "confirm_body": "智能体可能已经收到此消息。重新发送可能导致智能体处理两次。",
+    "confirm_send": "重新发送",
+    "cancel": "取消",
+    "resend_failed": "无法重新发送消息"
+  },
   "continuation_summary": "对话摘要",
   "failure_reason": {
     "default": "运行失败",

@@ -141,10 +141,8 @@ func (s *TaskService) maybeAutoCompact(ctx context.Context, task db.AgentTaskQue
 		if session.Status != "active" || session.ContinuedIntoSessionID.Valid {
 			return nil
 		}
-		// A run that started before the DM's last in-place compaction (for
-		// example the one that wrote the summary) is not evidence that the new
-		// epoch has grown.
-		if task.ChatCompactionEpoch.Int64 < session.CompactionEpoch {
+		// A run of an earlier epoch measured history a compact already replaced.
+		if task.ChatCompactionEpoch.Int64 != session.CompactionEpoch {
 			return nil
 		}
 		// Web DMs only: a channel-bound chat has an external delivery route.
@@ -169,10 +167,7 @@ func (s *TaskService) maybeAutoCompact(ctx context.Context, task db.AgentTaskQue
 		}
 		// After a failed attempt, wait until the context has grown 10% past the
 		// size that triggered it, so a failing compaction cannot loop.
-		last, err := qtx.GetLastAutoCompactTriggerForSession(ctx, db.GetLastAutoCompactTriggerForSessionParams{
-			ChatSessionID:   session.ID,
-			CompactionEpoch: session.CompactionEpoch,
-		})
+		last, err := qtx.GetLastAutoCompactTriggerForSession(ctx, session.ID)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
@@ -250,18 +245,14 @@ func settleCompactionTask(ctx context.Context, q *db.Queries, task db.AgentTaskQ
 	} else if err != nil {
 		return fmt.Errorf("load chat session for compaction guard: %w", err)
 	}
-	if session.ContinuedIntoSessionID.Valid || !task.CompactReason.Valid {
+	if !task.CompactReason.Valid {
 		return nil
 	}
-	// In-place compaction ends with a summary owned by this task, not with a
-	// continued DM. Explicit "chat continue" still ends the other way.
-	if _, err := q.GetTaskCompactionSummary(ctx, db.GetTaskCompactionSummaryParams{
-		ChatSessionID: session.ID,
-		TaskID:        task.ID,
-	}); err == nil {
+	// The compaction succeeded when the task wrote its divider.
+	if _, err := q.GetTaskCompactionSummary(ctx, db.GetTaskCompactionSummaryParams{ChatSessionID: session.ID, TaskID: task.ID}); err == nil {
 		return nil
 	} else if !errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("load compaction summary for compaction guard: %w", err)
+		return fmt.Errorf("check compaction summary: %w", err)
 	}
 	if _, err := q.CreateChatMessage(ctx, db.CreateChatMessageParams{
 		ID:            dbid.NewV7(),

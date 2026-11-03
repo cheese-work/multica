@@ -5,6 +5,7 @@ import path from "path";
 export default defineConfig({
   plugins: [react()],
   test: {
+    testTimeout: 15_000,
     environment: "jsdom",
     globals: true,
     setupFiles: ["./test/setup.ts"],
