@@ -2,14 +2,16 @@
 
 import { useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Pencil, Trash2 } from "@multica/ui/icons";
+import { ChevronRight, Pencil, Trash2 } from "@multica/ui/icons";
 import { ApiError } from "@multica/core/api";
 import {
-  previewWorkspaceWakeupDefinition,
-  useCreateWorkspaceWakeupDefinition,
-  useDeleteWorkspaceWakeupDefinition,
-  useSaveWorkspaceWakeupDefinition,
-  workspaceWakeupDefinitionsOptions,
+  WORKSPACE_WAKEUP_SCOPE,
+  previewWakeupDefinition,
+  useCreateWakeupDefinition,
+  useDeleteWakeupDefinition,
+  useSaveWakeupDefinition,
+  wakeupDefinitionsOptions,
+  type EditableWakeupScope,
 } from "@multica/core/workspace/wakeup-definitions";
 import type { WakeupDefinition, WakeupDefinitionConfig, WakeupEffectiveRule } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
@@ -35,51 +37,92 @@ class DraftRefused extends Error {
 /** A custom rule's key is a UUID; the platform rules keep their names. */
 const CUSTOM_RULE_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/**
- * Workspace wakeup rules, edited with the same fields as an issue's wakeup. It
- * renders only when the server accepts definition writes, so an older server,
- * or one whose activation has not finished, shows nothing new.
- */
 export function WorkspaceWakeupRules({ workspaceId, canManage }: { workspaceId: string; canManage: boolean }) {
+  return <ScopedWakeupRules workspaceId={workspaceId} scope={WORKSPACE_WAKEUP_SCOPE} canManage={canManage} />;
+}
+
+/**
+ * Custom wakeup rules of a workspace or project, edited with the same fields
+ * as an issue's wakeup. It renders only when the server accepts definition
+ * writes, so an older server, or one whose activation has not finished, shows
+ * nothing new.
+ */
+export function ScopedWakeupRules({
+  workspaceId,
+  scope,
+  canManage,
+  toggleLabel,
+}: {
+  workspaceId: string;
+  scope: EditableWakeupScope;
+  canManage: boolean;
+  /** Puts the rules behind a collapsed toggle with this label; the drafts survive a collapse. */
+  toggleLabel?: string;
+}) {
   const { t } = useT("settings");
-  const { data } = useQuery(workspaceWakeupDefinitionsOptions(workspaceId));
+  const bodyId = useId();
+  const [open, setOpen] = useState(!toggleLabel);
+  const project = scope.kind === "project";
+  const { data } = useQuery(wakeupDefinitionsOptions(workspaceId, scope));
   // A saved rule empties the form: a new key remounts it.
   const [formKey, setFormKey] = useState(0);
   if (!data?.capabilities.definition_writes) return null;
   const rules = data.definitions.filter((d) => d.root && CUSTOM_RULE_KEY.test(d.rule_key));
-  return (
+  const section = (
     <SettingsSection
       anchor="rules"
-      title={t(($) => $.wakeups.rules.title)}
-      description={t(($) => $.wakeups.rules.description)}
+      title={t(($) => (project ? $.wakeups.rules.project_title : $.wakeups.rules.title))}
+      description={t(($) => (project ? $.wakeups.rules.project_description : $.wakeups.rules.description))}
     >
       <SettingsCard>
         {rules.length === 0 ? (
-          <p className="px-4 py-3.5 text-caption text-muted-foreground">{t(($) => $.wakeups.rules.empty)}</p>
+          <p className="px-4 py-3.5 text-caption text-muted-foreground">
+            {t(($) => (project ? $.wakeups.rules.project_empty : $.wakeups.rules.empty))}
+          </p>
         ) : (
           <ul className="divide-y divide-border">
             {rules.map((rule) => (
-              <RuleRow key={rule.rule_key} workspaceId={workspaceId} canManage={canManage} rule={rule} />
+              <RuleRow key={rule.rule_key} workspaceId={workspaceId} scope={scope} canManage={canManage} rule={rule} />
             ))}
           </ul>
         )}
-        {canManage && <RuleForm key={formKey} workspaceId={workspaceId} onDone={() => setFormKey((k) => k + 1)} />}
+        {canManage && <RuleForm key={formKey} workspaceId={workspaceId} scope={scope} onDone={() => setFormKey((k) => k + 1)} />}
       </SettingsCard>
     </SettingsSection>
+  );
+  if (!toggleLabel) return section;
+  return (
+    <div>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={bodyId}
+        className={`mb-2 flex w-full items-center gap-1 rounded-md px-2 py-1 text-caption font-medium transition-colors hover:bg-accent/70 ${open ? "" : "text-muted-foreground hover:text-foreground"}`}
+        onClick={() => setOpen(!open)}
+      >
+        {toggleLabel}
+        <ChevronRight className={`!size-3 shrink-0 stroke-[2.5] text-muted-foreground transition-transform ${open ? "rotate-90" : ""}`} />
+      </button>
+      <div id={bodyId} hidden={!open}>
+        {section}
+      </div>
+    </div>
   );
 }
 
 function RuleRow({
   workspaceId,
+  scope,
   canManage,
   rule,
 }: {
   workspaceId: string;
+  scope: EditableWakeupScope;
   canManage: boolean;
   rule: WakeupDefinition;
 }) {
   const { t } = useT("settings");
-  const remove = useDeleteWorkspaceWakeupDefinition(workspaceId);
+  const remove = useDeleteWakeupDefinition(workspaceId, scope);
   // The rule as it was when the edit opened. A refetch must not move the
   // revision under a draft that was read at an older one.
   const [editing, setEditing] = useState<WakeupDefinition | null>(null);
@@ -91,6 +134,7 @@ function RuleRow({
       <li>
         <RuleForm
           workspaceId={workspaceId}
+          scope={scope}
           rule={editing}
           initial={pinned}
           onDone={() => setEditing(null)}
@@ -147,12 +191,14 @@ function RuleRow({
 /** Creates a rule, or with `rule` edits that saved rule at the revision `rule` carries. */
 function RuleForm({
   workspaceId,
+  scope,
   rule,
   initial,
   onDone,
   onCancel,
 }: {
   workspaceId: string;
+  scope: EditableWakeupScope;
   rule?: WakeupDefinition;
   initial?: { name: string; draft: Partial<WakeupDraft> };
   onDone: () => void;
@@ -160,8 +206,8 @@ function RuleForm({
 }) {
   const { t } = useT("settings");
   const id = useId();
-  const create = useCreateWorkspaceWakeupDefinition(workspaceId);
-  const save = useSaveWorkspaceWakeupDefinition(workspaceId);
+  const create = useCreateWakeupDefinition(workspaceId, scope);
+  const save = useSaveWakeupDefinition(workspaceId, scope);
   const [name, setName] = useState(initial?.name ?? "");
   const [previewed, setPreviewed] = useState<WakeupEffectiveRule | null>(null);
   const [previewError, setPreviewError] = useState("");
@@ -214,7 +260,7 @@ function RuleForm({
     }
     setPreviewing(true);
     try {
-      setPreviewed(await previewWorkspaceWakeupDefinition(rule?.rule_key ?? crypto.randomUUID(), configToSave(result.config)));
+      setPreviewed(await previewWakeupDefinition(scope, rule?.rule_key ?? crypto.randomUUID(), configToSave(result.config)));
     } catch {
       setPreviewError(t(($) => $.wakeups.rules.preview_error));
     } finally {
@@ -232,7 +278,11 @@ function RuleForm({
       }}
     >
       <h3 id={`${id}-title`} className="text-body font-medium">
-        {t(($) => (rule ? $.wakeups.rules.edit_title : $.wakeups.rules.new_title))}
+        {t(($) =>
+          scope.kind === "project"
+            ? rule ? $.wakeups.rules.project_edit_title : $.wakeups.rules.project_new_title
+            : rule ? $.wakeups.rules.edit_title : $.wakeups.rules.new_title,
+        )}
       </h3>
       <label htmlFor={`${id}-name`} className="mt-3 mb-1.5 block text-caption font-medium">
         {t(($) => $.wakeups.rules.name)}
@@ -249,7 +299,7 @@ function RuleForm({
           {previewError}
         </p>
       )}
-      {previewed && <PreviewSummary rule={previewed} />}
+      {previewed && <PreviewSummary rule={previewed} scope={scope} />}
       <div className="mt-4 flex justify-end gap-2 border-t border-border pt-3">
         {onCancel && (
           <Button type="button" variant="ghost" size="sm" disabled={pending} onClick={onCancel}>
@@ -271,10 +321,10 @@ function RuleForm({
   );
 }
 
-function PreviewSummary({ rule }: { rule: WakeupEffectiveRule }) {
+function PreviewSummary({ rule, scope }: { rule: WakeupEffectiveRule; scope: EditableWakeupScope }) {
   const { t } = useT("settings");
   const met = rule.already_satisfied;
-  const caps = rule.aggregate_caps.filter((cap) => cap.scope === "workspace");
+  const caps = rule.aggregate_caps.filter((cap) => cap.scope === scope.kind);
   return (
     <div role="status" className="mt-3 space-y-1 rounded-md bg-muted/60 px-3 py-2 text-caption leading-5 text-muted-foreground">
       {met ? (
@@ -288,7 +338,9 @@ function PreviewSummary({ rule }: { rule: WakeupEffectiveRule }) {
         <p>{t(($) => $.wakeups.rules.preview_ok)}</p>
       )}
       {caps.map((cap) => (
-        <p key={`${cap.scope}:${cap.scope_id}`}>{t(($) => $.wakeups.rules.preview_cap, { limit: cap.limit })}</p>
+        <p key={`${cap.scope}:${cap.scope_id}`}>
+          {t(($) => (scope.kind === "project" ? $.wakeups.rules.project_preview_cap : $.wakeups.rules.preview_cap), { limit: cap.limit })}
+        </p>
       ))}
     </div>
   );
