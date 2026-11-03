@@ -13,3 +13,14 @@ SELECT id FROM agent_task_queue
 WHERE task_kind = 'budget_recovery'
   AND status IN ('queued', 'dispatched', 'running')
   AND created_at < now() - make_interval(secs => sqlc.arg('limit_seconds')::float8);
+
+-- name: ListRecentIssueRunResults :many
+-- The issue's newest finished runs, so the exhaustion notice can show what the
+-- last few runs did. A queued or running task has no result yet.
+SELECT a.name AS agent_name, t.status, COALESCE(t.error, '')::text AS error,
+       COALESCE(t.result->>'output', '')::text AS output
+FROM agent_task_queue t
+JOIN agent a ON a.id = t.agent_id
+WHERE t.issue_id = sqlc.arg('issue_id')::uuid AND t.status IN ('completed', 'failed', 'cancelled')
+ORDER BY t.created_at DESC, t.id DESC
+LIMIT sqlc.arg('max_runs')::int;

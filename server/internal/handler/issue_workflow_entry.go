@@ -79,6 +79,11 @@ func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db
 			return nil, err
 		}
 	}
+	if statusExplicit {
+		if err := h.guardChangesVerdict(ctx, q, prev, params, def, caller); err != nil {
+			return nil, err
+		}
+	}
 	// Someone else moved the issue while the run worked: the run's decision was
 	// made for a step the issue has left, and applying it would undo that move.
 	// Default without handoffs keeps the pre-workflow behavior, so workspaces
@@ -208,6 +213,9 @@ func workflowHandoffPayload(issue db.Issue, hand *workflowHandoff, note string, 
 // writeIssueWorkflowError answers a workflow rejection. It reports false when
 // err is not one, so the caller can fall through to its generic 500.
 func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
+	if writeReviewLoopError(w, err) {
+		return true
+	}
 	if errors.Is(err, issueworkflow.ErrOverrideMissing) {
 		writeError(w, http.StatusBadRequest, "workflow not found in this workspace")
 		return true
@@ -284,6 +292,8 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
 type workflowCaller struct {
 	run   *db.AgentTaskQueue
 	agent bool
+	// findings come with a reviewer's verdict (CHE-3243).
+	findings []ReviewFinding
 }
 
 // agentRunOnIssue returns the calling agent's run when it works on this issue,

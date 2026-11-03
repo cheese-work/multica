@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -31,7 +32,7 @@ func newRedisTestClient(t *testing.T) *redis.Client {
 	if err != nil {
 		t.Fatalf("parse REDIS_TEST_URL: %v", err)
 	}
-	opts.DB = redisTestDB
+	opts.DB = testutil.RedisTestDB(opts.DB, redisTestDB)
 	rdb := redis.NewClient(opts)
 	ctx := context.Background()
 	if err := rdb.Ping(ctx).Err(); err != nil {
@@ -51,7 +52,8 @@ func newRedisTestClientWithoutMulti(t *testing.T) *redis.Client {
 	t.Helper()
 	admin := newRedisTestClient(t)
 	ctx := context.Background()
-	username := fmt.Sprintf("runtime-no-multi-%d", redisACLTestUserSequence.Add(1))
+	// ACL users are server-wide, so parallel test processes need distinct names.
+	username := fmt.Sprintf("runtime-no-multi-%d-%d", os.Getpid(), redisACLTestUserSequence.Add(1))
 	const password = "runtime-no-multi-test-password"
 
 	if err := admin.Do(
