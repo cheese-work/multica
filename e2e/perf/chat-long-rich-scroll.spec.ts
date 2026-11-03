@@ -43,10 +43,15 @@ const LAST = "NEWEST-MESSAGE-SENTINEL";
 const giantReply = () => Array.from({ length: 10 }, (_, k) => `### Part ${k}\n\n${table(k)}\n\n${mermaid(k + 500)}\n\nProse ${k}. ${"text ".repeat(60)}`).join("\n\n");
 const TOTAL = 120;
 const taskId = "77777777-7777-4777-8777-777777777777";
+// A compact turn persists two assistant messages under one task_id: the
+// compaction summary (i % 20 === 7) and the reply right after it (i % 20 === 8).
+const compactTask = (i: number) => (i % 20 === 7 || i % 20 === 8 ? `compact-task-${i - (i % 20) + 7}` : null);
+const isAssistant = (i: number) => i % 2 === 1 || i % 20 === 8;
 const messages = Array.from({ length: TOTAL }, (_, i) => ({
   id: `message-${i}`, chat_session_id: sessionId,
-  role: i % 2 ? "assistant" : "user", task_id: null,
-  content: i === TOTAL - 1 ? `${GIANT ? giantReply() : reply(i)}\n\n${LAST}` : i % 2 ? reply(i) : `question ${i}`,
+  role: isAssistant(i) ? "assistant" : "user", task_id: compactTask(i),
+  message_kind: i % 20 === 7 ? "compaction_summary" : "message",
+  content: i === TOTAL - 1 ? `${GIANT ? giantReply() : reply(i)}\n\n${LAST}` : isAssistant(i) ? reply(i) : `question ${i}`,
   created_at: timestamp,
 }));
 
