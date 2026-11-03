@@ -377,6 +377,35 @@ class WorkflowTest(unittest.TestCase):
         self.assertIn(f"contains(github.event.comment.body, {self.VERDICT})", group)
         self.assertIn("github.event.changes.body.from", group)
 
+    def test_trusted_bot_edit_that_drops_the_header_still_runs(self):
+        # CHE-3354 review P1: the bot revokes a PASS by editing it. The new body may lack the header; the old body had it.
+        old = f"startsWith(github.event.changes.body.from, {self.VERDICT})"
+        self.assertIn(old, self.doc["jobs"]["security-gate"]["if"])
+        self.assertIn(old, self.doc["concurrency"]["group"])
+
+    def _hook_rc(self, **ev):
+        event = {"action": ev.get("action", "created"), "comment": {"author_association": "NONE", "body": ev["body"],
+                 "user": {"id": ev.get("uid", BOT), "type": "Bot"}}}
+        if "old" in ev:
+            event["changes"] = {"body": {"from": ev["old"]}}
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "event.json"
+            f.write_text(json.dumps(event))
+            env = {"PATH": os.environ["PATH"], "GITHUB_EVENT_PATH": str(f), "GITHUB_EVENT_NAME": "issue_comment",
+                   "GITHUB_REPOSITORY": "cheese-work/multica"}
+            return subprocess.run(["sh", str(self.HOOK)], env=env, capture_output=True).returncode
+
+    def test_hook_admits_the_bot_edit_that_drops_the_header_and_nothing_wider(self):
+        if not self.HOOK.exists():
+            self.skipTest("runner hook not on this host")
+        v = "Security-Gate-Verdict: PASS"
+        self.assertEqual(self._hook_rc(body=v), 0)
+        self.assertEqual(self._hook_rc(body="FAIL now", action="edited", old=v), 0)
+        self.assertNotEqual(self._hook_rc(body="hello"), 0)
+        self.assertNotEqual(self._hook_rc(body="hello", action="edited", old="hello"), 0)
+        self.assertNotEqual(self._hook_rc(body="x", action="edited", old=v, uid=1), 0)
+        self.assertNotEqual(self._hook_rc(body="x", action="created", old=v), 0)
+
     def test_job_filter_matches_the_runner_hook_allow_list(self):
         if not self.HOOK.exists():
             self.skipTest("runner hook not on this host")
