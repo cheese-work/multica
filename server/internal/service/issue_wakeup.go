@@ -106,6 +106,10 @@ func (s *IssueWakeupService) Expiry(in *WakeupInput, now time.Time) (pgtype.Time
 
 type IssueWakeupService struct {
 	Tasks *TaskService
+	// ActivationKey names the definition-write activation this service reads
+	// and runs; empty is the production activation. Tests set their own so
+	// parallel packages never share state.
+	ActivationKey string
 	// scopedPos is the scoped-event drain's fair scan position; see scopedCursor.
 	scopedPos scopedCursor
 	// prEvents is where the next-turn PR-event bridge resumes (wakeup_pr_event_queue.go).
