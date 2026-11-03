@@ -11,6 +11,7 @@ import type { DecisionRequestCard as RequestCard } from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
 import { ContentEditor, useEditorUpload, useUploadGate, type ContentEditorRef } from "../../editor";
 import { RichContent } from "../../rich-content";
+import { CompactIssueChipsProvider } from "../../issues/compact-issue-chips-context";
 import { useT } from "../../i18n";
 import { AppLink } from "../../navigation";
 import { useOnline } from "../../settings/components/use-online";
@@ -275,6 +276,11 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
         >
           {card.issue_identifier || card.issue_id}
         </AppLink>
+        {card.issue_title && (
+          <span className="min-w-0 break-words text-muted-foreground" data-testid="decision-request-source-title">
+            {card.issue_title}
+          </span>
+        )}
         {card.source_comment_id && (
           <AppLink
             href={`${issueHref}#comment-${card.source_comment_id}`}
@@ -301,7 +307,9 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
         <DecisionArtifacts requestId={card.id} answered={card.state === "answered"} />
         <div data-testid="decision-request-ask">
           <AnnotatableAnswer messageId={`${DECISION_REQUEST_SOURCE_PREFIX}${card.id}`} readOnly={card.state !== "open"}>
-            <RichContent content={card.ask} density="compact" phase="settled" />
+            <CompactIssueChipsProvider>
+              <RichContent content={card.ask} density="compact" phase="settled" />
+            </CompactIssueChipsProvider>
           </AnnotatableAnswer>
         </div>
         {(refused || card.state !== "open") && hasDraft(draft) && !answer.isPending ? (
