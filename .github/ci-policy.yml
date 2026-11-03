@@ -15,4 +15,5 @@ exceptions:
     rule: pr-feedback-latency
     reason: security-gate stays pending until a cross-lab reviewer posts a verdict, so it measures review wait, not CI. Baseline p90 430 min (window 27 Oct to 3 Nov 2026, last status per head SHA). backend-tests alone measures p90 12.5 min after CHE-2418 (PR 747, merged 1 Nov 2026).
     owner: x99-claude-sonnet-200k
+    added: 2026-11-03
     expires: 2026-12-31

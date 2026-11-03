@@ -79,3 +79,15 @@ test("each exception names an owner and an expiry date", () => {
     assert.match(entry, /^\s*expires: \d{4}-\d{2}-\d{2}$/m);
   }
 });
+
+// D-7: an exception lasts at most 60 days. `added` is the date the entry was written.
+test("each exception expires within 60 days of the day it was added", () => {
+  const exceptions = section(policy, "\nexceptions:\n").split(/\n  - /).slice(1);
+  for (const entry of exceptions) {
+    const added = entry.match(/^\s*added: (\d{4}-\d{2}-\d{2})$/m)?.[1];
+    const expires = entry.match(/^\s*expires: (\d{4}-\d{2}-\d{2})$/m)?.[1];
+    assert.ok(added, "exception has no added date");
+    const days = (Date.parse(expires) - Date.parse(added)) / 86_400_000;
+    assert.ok(days > 0 && days <= 60, `exception lasts ${days} days`);
+  }
+});
