@@ -410,3 +410,14 @@ func CheckAgentMove(def Definition, from, to string) error {
 	}
 	return &MoveNotAllowedError{From: from, To: to, Allowed: moves}
 }
+
+// VerdictOf names the verdict ("CHANGES" or "PASS") that moving from a step to
+// a status delivers, or "" when no agent_verdict exit leads there.
+func (d Definition) VerdictOf(from, to string) string {
+	for _, e := range d.EdgesOf(from) {
+		if g, err := ParseGuard(e.Guard); err == nil && g.Kind == GuardAgentVerdict && e.To == to {
+			return g.Args[0]
+		}
+	}
+	return ""
+}
