@@ -132,6 +132,30 @@ func TestStatusTriggerChannelIsIndependentOfAuthSource(t *testing.T) {
 	}
 }
 
+// A duplicate mark keeps the listener's mark row; the handler hands it the
+// same trigger a plain status move records.
+func TestDuplicateMarkEventCarriesStatusTrigger(t *testing.T) {
+	issueID := createIssueForTimeline(t, "duplicate trigger")
+	originalID := createIssueForTimeline(t, "duplicate trigger original")
+	var trigger any
+	testHandler.Bus.Subscribe(protocol.EventIssueUpdated, func(e events.Event) {
+		p, _ := e.Payload.(map[string]any)
+		if issue, _ := p["issue"].(IssueResponse); issue.ID == issueID {
+			trigger = p["status_trigger"]
+		}
+	})
+	req := withURLParam(newRequest(http.MethodPatch, "/api/issues/"+issueID, map[string]any{"duplicate_of_issue_id": originalID, "suppress_run": true}), "id", issueID)
+	req.Header.Set("X-Actor-Source", "interactive_jwt")
+	req.Header.Set("X-Client-Platform", "desktop")
+
+	testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK)
+
+	got, ok := trigger.(service.StatusTrigger)
+	if !ok || got.Version != 1 || got.Cause.Kind != service.StatusCauseUIOrAPI || got.Channel != "desktop" {
+		t.Fatalf("status_trigger = %#v", trigger)
+	}
+}
+
 // A status move may name the handoff comment that explains it. The link is
 // stored when the comment belongs to the issue; otherwise it is dropped and the
 // trigger says so.
@@ -219,5 +243,47 @@ func TestUpdateIssueWorkflowHandoffKeepsHandoffCommentLink(t *testing.T) {
 	trigger, _ = run(func(_, otherComment string) string { return otherComment })
 	if trigger["handoff_comment_id"] != nil || trigger["ref_invalid"] != true {
 		t.Errorf("link to another issue's comment on a handoff: trigger = %v", trigger)
+	}
+}
+
+// Reopening a duplicate straight into a handled workflow step is both an
+// unmark and a handoff. The listener writes that row, so the event must keep
+// the validated handoff link instead of the plain request trigger.
+func TestUpdateIssueDuplicateReopenIntoHandoffKeepsHandoffCommentLink(t *testing.T) {
+	reviewer := seededReadyAgentID(t)
+	wf := createTestWorkflowSteps(t, "Reopen handoff "+workflowTestSuffix(), []map[string]any{
+		{"status_key": "backlog"},
+		{"status_key": "cancelled"},
+		{"status_key": "in_review", "handler": map[string]any{"type": "agent", "id": reviewer}, "instructions": "Review the PR."},
+	})
+	projectID := createWorkflowTestProject(t, "Reopen handoff project")
+	setProjectWorkflow(t, projectID, map[string]any{"workflow_id": wf.ID}).Want(http.StatusOK)
+
+	issueID := createIssueForTimeline(t, "reopen handoff "+workflowTestSuffix())
+	originalID := createIssueForTimeline(t, "reopen handoff original "+workflowTestSuffix())
+	if _, err := testPool.Exec(context.Background(), `UPDATE issue SET project_id=$2, status='cancelled', duplicate_of_issue_id=$3 WHERE id=$1`, issueID, projectID, originalID); err != nil {
+		t.Fatal(err)
+	}
+	commentID := dbfx.Comment(t, issueID, "handoff")
+
+	var trigger service.StatusTrigger
+	var handoff map[string]string
+	testHandler.Bus.Subscribe(protocol.EventIssueUpdated, func(e events.Event) {
+		p, _ := e.Payload.(map[string]any)
+		if issue, _ := p["issue"].(IssueResponse); issue.ID != issueID {
+			return
+		}
+		trigger, _ = p["status_trigger"].(service.StatusTrigger)
+		handoff, _ = p["workflow_handoff"].(map[string]string)
+	})
+	req := withURLParam(newRequest(http.MethodPatch, "/api/issues/"+issueID, map[string]any{"status": "in_review", "suppress_run": true, "handoff_comment_id": commentID}), "id", issueID)
+	req.Header.Set("X-Actor-Source", "interactive_jwt")
+	testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK)
+
+	if handoff == nil {
+		t.Fatal("reopen did not hand off")
+	}
+	if trigger.HandoffCommentID != commentID || trigger.Version != 1 {
+		t.Errorf("trigger on a duplicate reopen into a handoff = %+v", trigger)
 	}
 }

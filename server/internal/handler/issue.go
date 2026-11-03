@@ -4428,10 +4428,13 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		defer releaseMove()
 	}
 	// Status history is written in the status transaction. A duplicate mark
-	// keeps the listener's richer row until it migrates.
+	// keeps the listener's richer row until it migrates; it gets the same
+	// trigger instead.
+	statusTrigger := statusTriggerFromRequest(r, actorType, actorID)
+	statusTrigger.Version = service.StatusTriggerVersion
 	var statusRec *statusRecord
 	if !params.DuplicateOfIssueID.Valid && !prevIssue.DuplicateOfIssueID.Valid {
-		statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTriggerFromRequest(r, actorType, actorID)}
+		statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTrigger}
 		if handoff != nil {
 			statusRec.handoffWorkflow = handoff.def.Name
 		}
@@ -4574,6 +4577,11 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		} else {
 			updatedPayload["status_trigger"] = trigger
 		}
+	}
+	// A handoff row already carries the validated trigger; a duplicate mark that
+	// reopens straight into a handled step must not replace it.
+	if _, resolved := updatedPayload["status_trigger"]; !resolved && duplicateOfPointer(issue.Status, issue.DuplicateOfIssueID) != duplicateOfPointer(prevIssue.Status, prevIssue.DuplicateOfIssueID) {
+		updatedPayload["status_trigger"] = statusTrigger
 	}
 	h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, updatedPayload)
 	h.publishRecordedStatusActivity(statusRec, actorType, actorID)
