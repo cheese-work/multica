@@ -287,3 +287,88 @@ func TestDecisionRequestRecoversLeavesOtherEventsForTheSameMember(t *testing.T) 
 		t.Fatalf("cleared first=%v second=%v, want true false", eventCleared(t, first), eventCleared(t, second))
 	}
 }
+
+// TestAskGuardIntentTargetOutlivesAnyWindow: a run can end long after its
+// intent was sealed, and a worker can be down for days. The unserved target
+// still gets its event, including a partly consumed intent from before rollout.
+func TestAskGuardIntentTargetOutlivesAnyWindow(t *testing.T) {
+	setAskGuardMode(t, "block")
+	fixture := newIntentFixture(t)
+	a, b, intentID := twoTargetIntent(t, fixture)
+	endTaskAndSeal(t, fixture, intentID)
+	dbfx.Exec(t, `UPDATE decision_intent SET sealed_at = clock_timestamp() - interval '30 days' WHERE id = $1`, intentID)
+	dbfx.Exec(t, `UPDATE decision_intent_target SET consumed_at = clock_timestamp() - interval '29 days' WHERE decision_intent_id = $1 AND human_user_id = $2`, intentID, a)
+	reconcile(t)
+	if got := targetEventMembers(t, intentID); strings.Join(got, ",") != b {
+		t.Fatalf("events for %v, want only the unserved %v", got, b)
+	}
+}
+
+// TestDecisionRequestRecoversOnReplay: a same-task retry of a request is a
+// replay, and --recovers on it is still validated and still clears the event.
+func TestDecisionRequestRecoversOnReplay(t *testing.T) {
+	fixture := newSingleCallFixture(t)
+	other := dbfx.User(t, "Other human", "replay-"+uuid.NewString()+"@test.invalid")
+	dbfx.Insert(t, "member", testutil.Cols{"workspace_id": testWorkspaceID, "user_id": other, "role": "member"})
+	match := recoveringEvent(t, fixture.issueID, fixture.humanID)
+	mismatch := recoveringEvent(t, fixture.issueID, other)
+
+	testutil.Call(t, testHandler.RequestDecision, fixture.call(fixture.body())).Want(http.StatusCreated)
+
+	bad := fixture.body()
+	bad["recovers"] = mismatch
+	testutil.Call(t, testHandler.RequestDecision, fixture.call(bad)).Want(http.StatusBadRequest)
+	if eventCleared(t, mismatch) {
+		t.Fatal("a replay cleared another person's event")
+	}
+
+	good := fixture.body()
+	good["recovers"] = match
+	if status := testutil.Call(t, testHandler.RequestDecision, fixture.call(good)).Code; status >= 300 {
+		t.Fatalf("replay with matching recovers = %d", status)
+	}
+	if !eventCleared(t, match) {
+		t.Fatal("a replay with --recovers left the event open")
+	}
+}
+
+// TestDecisionRequestRecoversOneEventPerRequest: a request answers one event.
+// Replaying it with a second event of the same member is refused and leaves the
+// second event open, one after another and in parallel.
+func TestDecisionRequestRecoversOneEventPerRequest(t *testing.T) {
+	fixture := newSingleCallFixture(t)
+	first := recoveringEvent(t, fixture.issueID, fixture.humanID)
+	second := recoveringEvent(t, fixture.issueID, fixture.humanID)
+	body := fixture.body()
+	body["recovers"] = first
+	testutil.Call(t, testHandler.RequestDecision, fixture.call(body)).Want(http.StatusCreated)
+
+	again := fixture.body()
+	again["recovers"] = first
+	testutil.Call(t, testHandler.RequestDecision, fixture.call(again)).Want(http.StatusOK)
+	other := fixture.body()
+	other["recovers"] = second
+	testutil.Call(t, testHandler.RequestDecision, fixture.call(other)).Want(http.StatusBadRequest)
+	if eventCleared(t, second) {
+		t.Fatal("a retry cleared a second event with the same request")
+	}
+
+	racer := newSingleCallFixture(t)
+	a := recoveringEvent(t, racer.issueID, racer.humanID)
+	b := recoveringEvent(t, racer.issueID, racer.humanID)
+	testutil.Call(t, testHandler.RequestDecision, racer.call(racer.body())).Want(http.StatusCreated)
+	var wg sync.WaitGroup
+	for _, id := range []string{a, b} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			retry := racer.body()
+			retry["recovers"] = id
+			testutil.Call(t, testHandler.RequestDecision, racer.call(retry))
+		}()
+	}
+	wg.Wait()
+	if eventCleared(t, a) == eventCleared(t, b) {
+		t.Fatalf("parallel retries cleared a=%v b=%v, want exactly one", eventCleared(t, a), eventCleared(t, b))
+	}
+}
