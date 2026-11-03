@@ -1384,6 +1384,50 @@ describe("ChatMessageList compact notice", () => {
   });
 });
 
+describe("ChatMessageList row keys (CHE-3329)", () => {
+  // A compact turn persists two assistant messages under one task_id: the
+  // compaction summary and the reply.
+  const pair = [
+    {
+      id: "summary", chat_session_id: "s", role: "assistant" as const, content: "SUMMARY-TEXT",
+      message_kind: "compaction_summary", task_id: TASK_ID, created_at: "2026-10-16T00:00:00Z",
+    },
+    {
+      id: "reply", chat_session_id: "s", role: "assistant" as const, content: "REPLY-TEXT",
+      message_kind: "message", task_id: TASK_ID, created_at: "2026-10-16T00:00:01Z",
+    },
+  ] as unknown as ChatMessage[];
+
+  it("gives two assistant messages sharing a task_id distinct row keys", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { container } = render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={new QueryClient()}>
+          <ChatMessageList messages={pair} pendingTask={null} availability="online" />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+    const keys = [...container.querySelectorAll("[data-row-key]")].map((el) => el.getAttribute("data-row-key"));
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(screen.getByText("SUMMARY-TEXT")).toBeInTheDocument();
+    expect(screen.getByText("REPLY-TEXT")).toBeInTheDocument();
+    expect(error.mock.calls.filter(([m]) => String(m).includes("same key"))).toHaveLength(0);
+    error.mockRestore();
+  });
+
+  it("keeps the task key on the one reply that inherits the live row", () => {
+    const { container } = render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={new QueryClient()}>
+          <ChatMessageList messages={pair} pendingTask={null} availability="online" />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+    const keys = [...container.querySelectorAll("[data-row-key]")].map((el) => el.getAttribute("data-row-key"));
+    expect(keys).toEqual(["summary", `task:${TASK_ID}`]);
+  });
+});
+
 describe("ChatMessageList message timestamps (CHE-1871)", () => {
   const at = (iso: string) => new Date(iso);
   const clock = (iso: string) => new Intl.DateTimeFormat(undefined, { timeStyle: "short" }).format(at(iso));

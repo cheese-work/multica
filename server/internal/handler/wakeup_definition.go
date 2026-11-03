@@ -20,7 +20,7 @@ import (
 // Scoped wakeup definition API (CHE-1082 L4). One set of handlers serves the
 // workspace, project and issue scopes; WakeupDefinitionAPI binds the scope.
 // Writes sit behind the activation gate (featureflags.WakeupDefinitionWrites,
-// closed by default). Reads and previews never persist, so they are not gated.
+// closed until the legacy backfill completed). Reads and previews never persist, so they are not gated.
 
 type wakeupDefinitionAPI struct {
 	h    *Handler
@@ -203,7 +203,7 @@ func (a wakeupDefinitionAPI) caller(w http.ResponseWriter, r *http.Request, writ
 		writeError(w, http.StatusForbidden, "agents cannot manage wakeup definitions")
 	case a.kind != service.WakeupScopeIssue && !roleAllowed(member.Role, "owner", "admin"):
 		writeError(w, http.StatusForbidden, "only owners and admins can manage workspace and project wakeup definitions")
-	case !featureflags.WakeupDefinitionWritesEnabled(r.Context(), h.FeatureFlags):
+	case !h.wakeupDefinitionWritesOpen(r):
 		writeFeatureDisabled(w, "wakeup_definition_writes_closed", "wakeup definition writes are not enabled")
 	default:
 		return c, true
@@ -211,9 +211,22 @@ func (a wakeupDefinitionAPI) caller(w http.ResponseWriter, r *http.Request, writ
 	return c, false
 }
 
+// wakeupDefinitionWritesOpen is the activation gate: open once the legacy
+// backfill completed, unless the flag says otherwise. An unreadable activation
+// state is closed, never assumed done.
+func (h *Handler) wakeupDefinitionWritesOpen(r *http.Request) bool {
+	svc := service.IssueWakeupService{Tasks: h.TaskService, ActivationKey: h.WakeupActivationKey}
+	activated, err := svc.WakeupDefinitionsActivated(r.Context())
+	if err != nil {
+		slog.Warn("wakeup activation state unreadable; definition writes stay closed", "error", err)
+		activated = false
+	}
+	return featureflags.WakeupDefinitionWritesEnabled(r.Context(), h.FeatureFlags, activated)
+}
+
 func (h *Handler) wakeupCapabilities(r *http.Request) wakeupCapabilities {
 	return wakeupCapabilities{
-		DefinitionWrites: featureflags.WakeupDefinitionWritesEnabled(r.Context(), h.FeatureFlags),
+		DefinitionWrites: h.wakeupDefinitionWritesOpen(r),
 		TriggerKinds:     service.WakeupDefinitionTriggerKinds(),
 		Fields:           service.WakeupDefinitionFields(),
 	}
