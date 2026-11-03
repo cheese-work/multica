@@ -1182,6 +1182,7 @@ multica autopilot create \
 
 multica autopilot update <id> --status paused
 multica autopilot update <id> --description "New prompt"
+multica autopilot update <id> --description "New prompt" --if-description-sha256 <hex>
 multica autopilot update <id> --subscriber "Alice" --subscriber "Bob"
 multica autopilot update <id> --clear-subscribers
 multica autopilot delete <id>
@@ -1189,6 +1190,8 @@ multica autopilot delete <id>
 
 `--mode` accepts `create_issue` (creates a new issue on each run and assigns it to the agent) or `run_only` (enqueues a direct agent task without creating an issue). `--agent` accepts either a name or UUID.
 `--subscriber` accepts a workspace member name or user ID and may be repeated; on update it replaces the autopilot's subscriber template. Subscribers receive inbox notifications for issues created by a `create_issue` autopilot. Use `--clear-subscribers` to remove all autopilot subscribers.
+
+`--if-description-sha256 <hex>` guards a `--description` write against lost updates: the server compares the SHA-256 of the live description (UTF-8, empty when unset) with the given hex digest under the row lock and, on mismatch, rejects the request with HTTP 409 (`autopilot_description_conflict`) without writing anything. It requires `--description`.
 
 ### Manual Trigger
 
