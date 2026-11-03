@@ -1192,6 +1192,15 @@ type GithubPendingInstallation struct {
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 }
 
+type GithubPrClosedReplay struct {
+	InstallationID int64              `json:"installation_id"`
+	RepoOwner      string             `json:"repo_owner"`
+	RepoName       string             `json:"repo_name"`
+	PrNumber       int32              `json:"pr_number"`
+	RequestedAt    pgtype.Timestamptz `json:"requested_at"`
+	AttemptedAt    pgtype.Timestamptz `json:"attempted_at"`
+}
+
 type GithubPullRequest struct {
 	ID                  pgtype.UUID        `json:"id"`
 	WorkspaceID         pgtype.UUID        `json:"workspace_id"`

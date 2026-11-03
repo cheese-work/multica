@@ -2164,15 +2164,27 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 			return fmt.Errorf("github: apply pr %s lifecycle: %w", state, err)
 		}
 	}
+	var autoCompleteErrs []error
 	if githubFeaturesEnabled(ws) && pr.HeadRepoSame && !linkPolicy.indeterminate {
-		if state == "merged" && prevState != "merged" {
+		// An owed closed-PR replay runs after an earlier attempt may have failed
+		// past the commit: the links are unchanged but the auto-completion they
+		// owe may not have run (CHE-3402). A plain redelivery stays a no-op.
+		if state == "merged" && (prevState != "merged" || isOwedClosedReplay(ctx)) {
 			for _, issueID := range closingIssueIDs {
 				touched[issueID] = struct{}{}
 			}
 		}
 		resolver := issuestatus.NewResolver(wsID)
 		for issueID := range touched {
-			h.maybeAutoCompleteIssue(ctx, wsID, issueID, resolver)
+			err := h.autoCompleteIssue(ctx, wsID, issueID, resolver)
+			switch {
+			case err == nil:
+			case isOwedClosedReplay(ctx):
+				// Fail the replay so its marker stays and the sweep retries.
+				autoCompleteErrs = append(autoCompleteErrs, fmt.Errorf("github: auto-complete issue %s: %w", uuidToString(issueID), err))
+			default:
+				slog.Warn("pr auto-complete failed", "err", err, "issue_id", uuidToString(issueID))
+			}
 		}
 	}
 	// A PR sent back to draft (CHE-1417): the rule itself decides whether the
@@ -2192,20 +2204,20 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
 		attention.RepoOwner, attention.RepoName, attention.Number, attention.URL = p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number, p.PullRequest.HTMLURL
 		attention.HeadSHA, attention.BaseBranch, attention.HeadBranch = p.PullRequest.Head.SHA, p.PullRequest.Base.Ref, p.PullRequest.Head.Ref
-		return dispatchMergedPRWakeups(issueIDs, func(issueID pgtype.UUID) error {
+		return errors.Join(append(autoCompleteErrs, dispatchMergedPRWakeups(issueIDs, func(issueID pgtype.UUID) error {
 			return wakeup.TriggerPullRequestWakeup(ctx, issueID, attention)
 		}, func() {
 			h.publish(protocol.EventPullRequestUpdated, workspaceID, "system", "", map[string]any{
 				"pull_request":     githubPullRequestToResponse(pr, h.PRRefresh.Enabled()),
 				"linked_issue_ids": linkedIssueIDs,
 			})
-		})
+		}))...)
 	}
 	h.publish(protocol.EventPullRequestUpdated, workspaceID, "system", "", map[string]any{
 		"pull_request":     githubPullRequestToResponse(pr, h.PRRefresh.Enabled()),
 		"linked_issue_ids": linkedIssueIDs,
 	})
-	return nil
+	return errors.Join(autoCompleteErrs...)
 }
 
 // refreshOpenPRsOnBase asks for a fresh snapshot of every open PR on the base
