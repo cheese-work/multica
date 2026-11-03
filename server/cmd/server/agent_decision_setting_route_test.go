@@ -37,8 +37,8 @@ func TestAgentDecisionSettingRejectsMachineCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	matToken := mintAgentTaskToken(t, agentID, ensureAgentTask(t, agentID), testUserID)
-	put := func(bearer, body string) int {
-		req, err := http.NewRequest(http.MethodPut, testServer.URL+"/api/agent-decisions/setting", bytes.NewBufferString(body))
+	putTo := func(path, bearer, body string) int {
+		req, err := http.NewRequest(http.MethodPut, testServer.URL+path, bytes.NewBufferString(body))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -53,6 +53,17 @@ func TestAgentDecisionSettingRejectsMachineCredentials(t *testing.T) {
 		}
 		defer resp.Body.Close()
 		return resp.StatusCode
+	}
+	put := func(bearer, body string) int { return putTo("/api/agent-decisions/setting", bearer, body) }
+
+	// Registering Jev is owner-only too; a task token must not be able to promote itself.
+	jevBody := `{"agent_id":"` + agentID + `","mode":"live"}`
+	if code := putTo("/api/agent-decisions/jev", matToken, jevBody); code != http.StatusForbidden {
+		t.Fatalf("task token Jev status=%d, want 403", code)
+	}
+	var jevSet bool
+	if err := testPool.QueryRow(ctx, `SELECT settings ? 'agent_decisions_jev' FROM workspace WHERE id=$1`, testWorkspaceID).Scan(&jevSet); err != nil || jevSet {
+		t.Fatalf("a refused task-token request set the Jev setting (set=%v err=%v)", jevSet, err)
 	}
 
 	for _, body := range []string{`{"enabled":true}`, `{"enabled":false}`} {
