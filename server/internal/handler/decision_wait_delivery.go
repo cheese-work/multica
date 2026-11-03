@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"reflect"
 	"slices"
 	"strings"
@@ -88,6 +89,9 @@ type episodeVerdict struct {
 	reason  string
 	rows    map[pgtype.UUID]terminalRow
 	running pgtype.UUID // the withdrawing task that is still running and is the continuation
+	// unauthorized is set with wait when a live request's person or authority is
+	// gone. The episode stays open; only the system close (L5d) ends it.
+	unauthorized bool
 }
 
 // memberMovedAfter reports whether a person changed the issue's status after t.
@@ -155,6 +159,20 @@ func (handler *Handler) evaluateDecisionEpisode(ctx context.Context, queries *db
 	for _, answer := range snapshot.answers {
 		if episodeLiveAnswer(answer) && live[answer.DecisionRequestID] && (!answer.WakeAt.Valid || answer.WakeAt.Time.After(now)) {
 			return verdict, nil
+		}
+	}
+	// Ordinary delivery re-checks the person and the authority under the locks
+	// (decision_delivery.go); a live answer is delivered on the same terms.
+	for _, request := range snapshot.requests {
+		if !live[request.ID] {
+			continue
+		}
+		var refusal decisionIntentRefusal
+		if err := requireRequestAuthority(ctx, queries, snapshot.issue, request, http.StatusConflict); errors.As(err, &refusal) {
+			verdict.unauthorized = true
+			return verdict, nil
+		} else if err != nil {
+			return verdict, err
 		}
 	}
 	verdict.wait, verdict.rows = false, make(map[pgtype.UUID]terminalRow, len(snapshot.requests))
@@ -513,8 +531,17 @@ func (handler *Handler) deliverDecisionEpisode(ctx context.Context, snapshot dec
 		return false, err
 	}
 	verdict, err := handler.evaluateDecisionEpisode(ctx, queries, snapshot, now.Time)
-	if err != nil || verdict.wait {
+	if err != nil {
 		return false, err
+	}
+	if verdict.unauthorized {
+		// Same demotion as a refused dispatch: the episode keeps its state and
+		// retries behind the others instead of holding a batch slot.
+		transaction.Rollback(ctx)
+		return false, handler.Queries.MarkDecisionWaitDispatchRefused(ctx, db.MarkDecisionWaitDispatchRefusedParams{WorkspaceID: workspaceID, ID: wait.ID})
+	}
+	if verdict.wait {
+		return false, nil
 	}
 	if refused, err := handler.refuseGatedAgentRecords(ctx, transaction, queries, snapshot); err != nil || refused {
 		return false, err

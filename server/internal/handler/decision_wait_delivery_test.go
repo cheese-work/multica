@@ -556,3 +556,59 @@ func TestDecisionEpisodeCandidatesRetryRefusedEpisodesFairly(t *testing.T) {
 		t.Fatal("a refused episode behind two batches of older refusals is never a candidate")
 	}
 }
+
+// Ordinary delivery re-checks the person and the authority under the locks
+// (decision_delivery.go); the episode path does the same. An episode whose
+// bound live answer lost its authority is neither captured, dispatched,
+// acknowledged nor closed (system close is L5d). It is demoted to the retry
+// order so it does not hold a batch slot ahead of others.
+func TestDecisionEpisodeRevalidatesAuthorityUnderTheLocks(t *testing.T) {
+	cases := []struct {
+		name   string
+		revoke func(t *testing.T, f episodeFixture, projectID string)
+	}{
+		{"authority intact", func(*testing.T, episodeFixture, string) {}},
+		{"member removed", func(t *testing.T, f episodeFixture, _ string) {
+			dbfx.Exec(t, `DELETE FROM member WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, f.humanID)
+		}},
+		{"delegate removed", func(t *testing.T, f episodeFixture, projectID string) {
+			dbfx.Exec(t, `UPDATE project SET decision_delegates = '{}' WHERE id = $1`, projectID)
+		}},
+		{"issue moved to another project", func(t *testing.T, f episodeFixture, projectID string) {
+			other := createWorkflowTestProject(t, "Moved to "+workflowTestSuffix())
+			dbfx.Exec(t, `UPDATE project SET decision_delegates = ARRAY[$1::uuid] WHERE id = $2`, f.humanID, other)
+			dbfx.Exec(t, `UPDATE issue SET project_id = $1 WHERE id = $2`, other, f.issueID)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newEpisodeFixture(t, false)
+			var projectID string
+			dbfx.QueryRow(t, `SELECT project_id::text FROM issue WHERE id = $1`, f.issueID).Scan(&projectID)
+			// A delegate, not the owner, answers a reversible request of this project.
+			dbfx.Exec(t, `UPDATE member SET role = 'member' WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, f.humanID)
+			dbfx.Exec(t, `UPDATE project SET decision_delegates = ARRAY[$1::uuid] WHERE id = $2`, f.humanID, projectID)
+			dbfx.Exec(t, `UPDATE decision_request SET project_id = $1 WHERE id = $2`, projectID, f.requestID)
+			f.enter(t)
+			answerID, _ := f.answerRequest(t, f.requestID, -time.Minute, false)
+			tc.revoke(t, f, projectID)
+
+			if err := testHandler.deliverDecisionItem(context.Background(), parseUUID(testWorkspaceID), parseUUID(f.onlyEpisode(t).id), "episode"); err != nil {
+				t.Fatal(err)
+			}
+			if tc.name == "authority intact" {
+				f.wantOneContinuation(t, "answered")
+				return
+			}
+			if woken, _ := f.answerState(t, answerID); woken || f.continuations(t) != 0 {
+				t.Fatal("an answer whose authority is gone was delivered")
+			}
+			if len(f.closedEpisodes(t)) != 0 {
+				t.Fatal("the episode was closed; the system close is L5d")
+			}
+			if dbfx.Count(t, `SELECT count(*) FROM decision_wait WHERE issue_id = $1 AND closed_at IS NULL AND dispatch_refused_since IS NOT NULL`, f.issueID) != 1 {
+				t.Fatal("the episode was not demoted to the retry order")
+			}
+		})
+	}
+}
