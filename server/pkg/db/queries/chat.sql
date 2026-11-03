@@ -2194,3 +2194,31 @@ FROM agent_task_queue
 WHERE chat_session_id = ANY($1::uuid[])
   AND status = 'completed'
 ORDER BY chat_session_id, completed_at DESC, id DESC;
+
+-- name: LockChatSessionsOfActiveCompactionTasks :many
+-- CHE-2908 (SEC-1 rule 4): the first lock of a compact_agent_id change. Takes
+-- the DM rows of the workspace's live compaction tasks in id order, so the
+-- change keeps the chat_session -> agent_task_queue order every chat writer
+-- uses and two changes cannot deadlock on each other.
+SELECT cs.id FROM chat_session cs
+WHERE cs.workspace_id = $1
+  AND cs.id IN (
+    SELECT t.chat_session_id FROM agent_task_queue t
+    WHERE t.purpose = 'compaction'
+      AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+  )
+ORDER BY cs.id
+FOR UPDATE;
+
+-- name: CancelCompactionTasksByWorkspace :many
+-- CHE-2908 (SEC-1 rule 4): a compact_agent_id change cancels every live
+-- compaction task of the workspace, whichever agent it was queued for, so a
+-- task queued under the old value never delivers the transcript. The chat
+-- resume pointer is not touched (SEC-2).
+UPDATE agent_task_queue
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
+    cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
+WHERE purpose = 'compaction'
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+  AND chat_session_id IN (SELECT id FROM chat_session WHERE workspace_id = $1)
+RETURNING *;

@@ -363,6 +363,10 @@ type UpdateWorkspaceRequest struct {
 	// overwrite, absent fields keep their saved value, null resets to the
 	// defaults. Raw for the same reason as CompactPrompt.
 	AutoCompact json.RawMessage `json:"auto_compact"`
+	// CompactAgentID sets settings.compact_agent_id alone (CHE-2908); null
+	// resets it. Raw so an explicit null is distinguishable from an absent key.
+	// Human owner or admin only: see workspace_compact_agent.go.
+	CompactAgentID json.RawMessage `json:"compact_agent_id"`
 	// GitHubReviewMembers and GitHubReviewAuthors each replace one settings
 	// map alone (CHE-2269); validateGitHubReviewMapping checks the entries.
 	GitHubReviewMembers json.RawMessage `json:"github_review_members"`
@@ -626,10 +630,25 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		params.AvatarUrl = pgtype.Text{String: accepted, Valid: true}
 	}
 
-	ws, pauseAction, activity, err := h.saveWorkspace(r.Context(), params, req.Settings, req.WakeupsPaused, requestUserID(r), actorType, actorID)
+	compact := compactAgentWrite{field: req.CompactAgentID}
+	if req.CompactAgentID != nil || req.Settings != nil {
+		// Defense in depth: the route already limits this to owner and admin,
+		// but a machine credential rides a human's X-User-ID.
+		if !isGovernedFieldMachineActor(r, actorType) {
+			if member, err := h.getWorkspaceMember(r.Context(), requestUserID(r), id); err == nil {
+				compact.allowed = roleAllowed(member.Role, "owner", "admin")
+			}
+		}
+	}
+	ws, pauseAction, activity, compactChange, err := h.saveWorkspace(r.Context(), params, req.Settings, req.WakeupsPaused, compact, requestUserID(r), actorType, actorID)
 	var rejected settingsRejectedError
 	if errors.As(err, &rejected) {
 		writeError(w, http.StatusBadRequest, rejected.Error())
+		return
+	}
+	var compactErr compactAgentError
+	if errors.As(err, &compactErr) {
+		writeErrorCode(w, compactErr.status, compactErr.code, compactErr.msg)
 		return
 	}
 	if err != nil {
@@ -642,6 +661,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	if pauseAction != "" {
 		h.publishWakeupsPauseActivity(ws, actorType, actorID, activity)
 	}
+	h.publishCompactAgentChange(r.Context(), id, actorType, actorID, compactChange)
 	userID := requestUserID(r)
 	h.publish(protocol.EventWorkspaceUpdated, uuidToString(ws.ID), "member", userID, map[string]any{"workspace": h.workspaceToResponse(ws)})
 	// A rename changes what daemons display; a settings edit changes how they

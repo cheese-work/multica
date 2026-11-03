@@ -78,25 +78,29 @@ func (e settingsRejectedError) Error() string { return e.msg }
 // pause held. The audit record of a flip commits with it, so a flip that
 // cannot be audited does not happen. A write that cannot read the stored
 // settings fails instead of guessing that they hold no pause.
-func (h *Handler) saveWorkspace(ctx context.Context, params db.UpdateWorkspaceParams, settings any, pause *bool, userID, actorType, actorID string) (db.Workspace, string, db.ActivityLog, error) {
+func (h *Handler) saveWorkspace(ctx context.Context, params db.UpdateWorkspaceParams, settings any, pause *bool, compact compactAgentWrite, userID, actorType, actorID string) (db.Workspace, string, db.ActivityLog, compactAgentChange, error) {
 	var activity db.ActivityLog
-	if settings == nil && pause == nil {
+	var change compactAgentChange
+	if settings == nil && pause == nil && compact.field == nil {
 		ws, err := h.Queries.UpdateWorkspace(ctx, params)
-		return ws, "", activity, err
+		return ws, "", activity, change, err
 	}
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
-		return db.Workspace{}, "", activity, err
+		return db.Workspace{}, "", activity, change, err
 	}
 	defer tx.Rollback(ctx)
 	q := h.Queries.WithTx(tx)
 	storedJSON, err := q.LockWorkspaceSettings(ctx, params.ID)
 	if err != nil {
-		return db.Workspace{}, "", activity, err
+		return db.Workspace{}, "", activity, change, err
 	}
 	var stored map[string]any
 	_ = json.Unmarshal(storedJSON, &stored) // stored settings that are not an object hold no pause
 	action := ""
+	oldCompactAgent, _ := stored[compactAgentIDKey].(string)
+	newCompactAgent := ""
+	clientSettings := settings != nil
 	if settings == nil {
 		// A pause-only patch: start from what is stored, not from the client.
 		clone := maps.Clone(stored)
@@ -114,25 +118,42 @@ func (h *Handler) saveWorkspace(ctx context.Context, params db.UpdateWorkspacePa
 		reconcilePRMergeSettings(stored, incoming)
 		reconcileDelegatedWrites(stored, incoming)
 		if action, err = reconcileWakeupsPause(stored, incoming, userID, time.Now()); err != nil {
-			return db.Workspace{}, "", activity, settingsRejectedError{err.Error()}
+			return db.Workspace{}, "", activity, change, settingsRejectedError{err.Error()}
+		}
+		if newCompactAgent, err = reconcileCompactAgent(incoming, compact.field, clientSettings, oldCompactAgent); err != nil {
+			if !compact.allowed {
+				// A refused caller learns nothing about what is valid.
+				err = errCompactAgentForbidden
+			}
+			return db.Workspace{}, "", activity, change, err
 		}
 	} else if stored[wakeupsPausedKey] == true || stored[delegatedWritesKey] != nil {
 		// A non-object body would replace the whole blob and clear the pause or
 		// the delegated-writes setting with no record. Other callers may still store one.
-		return db.Workspace{}, "", activity, settingsRejectedError{"settings must be an object while wakeups are paused or delegated writes are set"}
+		return db.Workspace{}, "", activity, change, settingsRejectedError{"settings must be an object while wakeups are paused or delegated writes are set"}
+	}
+	// newCompactAgent stays empty for a non-object body: it replaces the blob
+	// and so clears the setting.
+	if change, err = applyCompactAgentChange(ctx, q, params.ID, oldCompactAgent, newCompactAgent, compact.allowed); err != nil {
+		return db.Workspace{}, "", activity, change, err
 	}
 	params.Settings, _ = json.Marshal(settings)
 	ws, err := q.UpdateWorkspace(ctx, params)
 	if err != nil {
-		return ws, "", activity, err
+		return ws, "", activity, change, err
+	}
+	if change.changed {
+		if change.cancelledTasks, err = cancelCompactionTasks(ctx, q, ws.ID); err != nil {
+			return ws, "", activity, change, err
+		}
 	}
 	if action == wakeupsResumedAction {
 		if err := (&service.IssueWakeupService{Tasks: h.TaskService}).SettleWakeupsOnResume(ctx, tx, ws.ID); err != nil {
-			return ws, "", activity, err
+			return ws, "", activity, change, err
 		}
 		// Return the row with the resume time the settle stamped.
 		if ws, err = q.GetWorkspace(ctx, ws.ID); err != nil {
-			return ws, "", activity, err
+			return ws, "", activity, change, err
 		}
 	}
 	if action != "" {
@@ -141,10 +162,10 @@ func (h *Handler) saveWorkspace(ctx context.Context, params db.UpdateWorkspacePa
 			Action: action, Details: []byte(`{}`),
 		})
 		if err != nil {
-			return ws, "", activity, err
+			return ws, "", activity, change, err
 		}
 	}
-	return ws, action, activity, tx.Commit(ctx)
+	return ws, action, activity, change, tx.Commit(ctx)
 }
 
 // publishWakeupsPauseActivity announces a flip's committed audit record.
