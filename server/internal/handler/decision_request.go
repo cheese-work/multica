@@ -30,7 +30,11 @@ type decisionRequestInput struct {
 	ParentID        pgtype.UUID
 	EscalationClass string
 	SourceCommentID pgtype.UUID
-	Fingerprint     string
+	// Recovers is the ask guard event this request answers; the request clears
+	// it, for the person it asks, in its own transaction. It stays out of the
+	// legacy fingerprint, which is pinned.
+	Recovers    pgtype.UUID `json:"-"`
+	Fingerprint string
 	// Parsed is the decoded caller ask. When set, the request is fingerprinted
 	// from it and enriched once, for a new request. Nil means finished text.
 	Parsed *decisiontx.Ask `json:"-"`
@@ -481,6 +485,9 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 	messageID := dbid.NewV7()
 	created, err := queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: intent.AgentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, PingMessageID: messageID, IssueCommentID: commentID, Ask: input.Ask, Options: options, AskJson: input.AskJSON, EscalationClass: input.EscalationClass, Origin: "asked", DecisionIntentID: intent.ID, SourceCommentID: input.SourceCommentID, SourceContentSnapshot: sourceSnapshot, RequestFingerprint: input.Fingerprint, AskIdentity: askIdentity, ProjectID: issue.ProjectID})
 	if err != nil {
+		return empty, err
+	}
+	if err := clearAskGuardEvent(ctx, queries, issue, input.Recovers, session.CreatorID, created.ID); err != nil {
 		return empty, err
 	}
 	var action *db.DecisionAction

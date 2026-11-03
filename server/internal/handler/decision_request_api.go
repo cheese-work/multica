@@ -30,6 +30,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		ParentID        string              `json:"parent_id"`
 		EscalationClass string              `json:"escalation_class"`
 		Action          *decisionActionWire `json:"action"`
+		Recovers        string              `json:"recovers"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8*maxCommentContentBytes)).Decode(&input); err != nil {
 		writeError(writer, http.StatusBadRequest, "invalid decision request")
@@ -83,11 +84,12 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		return
 	}
 	var sessionID, humanID, parentID pgtype.UUID
+	var recovers pgtype.UUID
 	for _, field := range []struct {
 		value string
 		name  string
 		into  *pgtype.UUID
-	}{{input.SessionID, "session_id", &sessionID}, {input.For, "for", &humanID}, {input.ParentID, "parent_id", &parentID}} {
+	}{{input.SessionID, "session_id", &sessionID}, {input.For, "for", &humanID}, {input.ParentID, "parent_id", &parentID}, {input.Recovers, "recovers", &recovers}} {
 		if field.value == "" {
 			continue
 		}
@@ -108,7 +110,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusInternalServerError, "failed to encode ask")
 		return
 	}
-	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, Parsed: &parsed, Slug: workspace.Slug})
+	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Recovers: recovers, Action: draft, Parsed: &parsed, Slug: workspace.Slug})
 	if err != nil {
 		writeDecisionError(writer, err, "decision request")
 		return

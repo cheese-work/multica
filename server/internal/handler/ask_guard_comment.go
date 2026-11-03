@@ -53,6 +53,9 @@ func addsMemberMention(oldContent, newContent string) bool {
 
 func (h *Handler) askGuardMemberMention(w http.ResponseWriter, r *http.Request, issue db.Issue, task *db.AgentTaskQueue, kind, content, fix string) bool {
 	op := askguard.Op{IssueID: issue.ID, Kind: kind, Payload: []byte(content)}
+	if members := askguard.MentionedMembers(content); len(members) == 1 {
+		op.MemberID = parseUUID(members[0])
+	}
 	if task != nil {
 		op.TaskID = task.ID
 		op.WarnOnly = task.ChatSessionID.Valid

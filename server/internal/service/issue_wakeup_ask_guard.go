@@ -49,10 +49,14 @@ func (s *IssueWakeupService) askGuardWakeup(ctx context.Context, issue db.Issue,
 	if g == nil || binding.Valid || in.Purpose == askguard.PurposeObserve || !rule.MemberEligible() {
 		return nil
 	}
-	v, err := g.Guard.Hit(ctx, issue.WorkspaceID, askguard.Op{
+	op := askguard.Op{
 		IssueID: issue.ID, TaskID: g.TaskID, Kind: "wakeup",
 		Payload: wakeupOperationPayload(issue, in), WarnOnly: g.WarnOnly,
-	})
+	}
+	if member, err := wakeupUUID(in.FilterActorID); err == nil && in.FilterActorType == "member" {
+		op.MemberID = member
+	}
+	v, err := g.Guard.Hit(ctx, issue.WorkspaceID, op)
 	if err != nil {
 		slog.Warn("ask guard hit failed", "error", err, "kind", "wakeup")
 		return ErrWakeupAskGuardUnavailable

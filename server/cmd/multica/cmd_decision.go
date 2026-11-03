@@ -50,6 +50,7 @@ func init() {
 	decisionRequestCmd.Flags().String("class", "", "reversible, spend, deploy, publish, irreversible, or product_direction")
 	decisionRequestCmd.Flags().String("ask-file", "", "UTF-8 JSON ask: context_eli10, agent_did, decision, stakes_if_wrong, options[{label, what_happens, pros[], cons[], cost_or_time}], recommendation, default_if_no_reply, source_issue_id, source_comment_id. Refused: more than one question in decision (send one request per question); an inline numbered list (1. a 2. b on one line; use a Markdown list); a bare ID (full UUID outside a Markdown link destination, link it as [what it is](link)); an agent_did that is not a plain sentence. The list and ID rules cover context_eli10, decision, stakes_if_wrong, recommendation, default_if_no_reply, options[].label, options[].what_happens, options[].pros[], options[].cons[], options[].cost_or_time. For an ask that approves a file: subject \"artifact_approval\" with artifacts[{attachment_id, label, sha256, supersedes_attachment_id, signed_by{reviewer, comment_id}, supersedes_signed_by{reviewer, comment_id}}]. To ask a human to act also: human_steps[{action, command, values[{name, value, source}], verify_done}], probes[], after_done")
 	decisionRequestCmd.Flags().String("action-file", "", "Optional UTF-8 JSON privileged action Cheese approves on the card: {type, version, params, secret_slots[{slot, target}], expires_in_seconds}. Never put a secret value in it")
+	decisionRequestCmd.Flags().String("recovers", "", "Ask guard event ID this request answers (from a refusal or a recovery notice); the request clears that event for the person it asks")
 	decisionRequestCmd.Flags().String("footer-file", "", "Optional UTF-8 file appended to the issue comment only, e.g. RHC-2 lines")
 	for _, flag := range []string{"class", "ask-file"} {
 		_ = decisionRequestCmd.MarkFlagRequired(flag)
@@ -91,6 +92,7 @@ func runDecisionRequest(command *cobra.Command, _ []string) error {
 	footerPath, _ := command.Flags().GetString("footer-file")
 	actionPath, _ := command.Flags().GetString("action-file")
 	parentID, _ := command.Flags().GetString("parent")
+	recovers, _ := command.Flags().GetString("recovers")
 	if issueRef == "" || class == "" || askPath == "" {
 		return fmt.Errorf("--issue, --class, and --ask-file are required")
 	}
@@ -135,6 +137,9 @@ func runDecisionRequest(command *cobra.Command, _ []string) error {
 	}
 	if action != nil {
 		body["action"] = action
+	}
+	if recovers != "" {
+		body["recovers"] = recovers
 	}
 	var result map[string]any
 	if err := client.PostJSON(ctx, "/api/decisions", body, &result); err != nil {
