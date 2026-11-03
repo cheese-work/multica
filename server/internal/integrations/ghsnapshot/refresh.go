@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"math/rand"
+	"slices"
 	"sync"
 	"time"
 
@@ -116,14 +117,14 @@ type Manager struct {
 // snapshot was actually written (guard passed), so the handler can broadcast a
 // realtime PR update. Passing a nil client yields a disabled (no-op) manager.
 func NewManager(client *Client, queries *db.Queries, pool TxBeginner, onApplied func(ctx context.Context, prID pgtype.UUID)) *Manager {
-	return newManager(client, queries, pool, FetchPRSnapshot, onApplied)
+	return newManager(client, queries, pool, fetchEnrichedSnapshot, onApplied)
 }
 
 // NewManagerWithFetcher wires the normal refresh lifecycle with a supplied
 // snapshot fetcher. Production callers should normally use NewManager.
 func NewManagerWithFetcher(client *Client, queries *db.Queries, pool TxBeginner, fetch func(context.Context, *Client, int64, string, string, int32) (*PRSnapshot, error), onApplied func(ctx context.Context, prID pgtype.UUID)) *Manager {
 	if fetch == nil {
-		fetch = FetchPRSnapshot
+		fetch = fetchEnrichedSnapshot
 	}
 	return newManager(client, queries, pool, fetch, onApplied)
 }
@@ -508,10 +509,19 @@ func (manager *Manager) applySnapshot(ctx context.Context, prID pgtype.UUID, sna
 		// rows. Nothing is written.
 		return false, nil
 	}
+	redBefore, err := q.ListGitHubPRRedCheckNames(ctx, db.ListGitHubPRRedCheckNamesParams{PrID: prID, HeadSha: snap.HeadSHA})
+	if err != nil {
+		return false, err
+	}
 	if err := q.DeleteGitHubPRCheckRuns(ctx, prID); err != nil {
 		return false, err
 	}
 	for i, c := range snap.Contexts {
+		if !isFailing(c) && slices.Contains(redBefore, c.Name) {
+			// Red earlier on this same head, rerunning or green now (CHE-3257).
+			// Carried through a pending rerun so the mark is still there on green.
+			c.RedCause = CauseFlaky
+		}
 		if err := q.InsertGitHubPRCheckRun(ctx, db.InsertGitHubPRCheckRunParams{
 			PrID:            prID,
 			HeadSha:         snap.HeadSHA,
@@ -521,6 +531,7 @@ func (manager *Manager) applySnapshot(ctx context.Context, prID pgtype.UUID, sna
 			Conclusion:      textOrNull(c.Conclusion),
 			DetailsUrl:      textOrNull(c.DetailsURL),
 			IsStatusContext: c.IsStatusContext,
+			RedCause:        textOrNull(c.RedCause),
 		}); err != nil {
 			return false, err
 		}

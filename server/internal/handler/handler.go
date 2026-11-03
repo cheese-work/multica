@@ -260,6 +260,9 @@ type Handler struct {
 	LocalSkillListStore   LocalSkillListStore
 	LocalSkillImportStore LocalSkillImportStore
 	FeatureFlags          *featureflag.Service
+	// WakeupActivationKey selects the wakeup definition activation the write gate
+	// reads; empty is production's. Tests set their own.
+	WakeupActivationKey string
 	// IssueStatusCatalog reads the workspace status catalog. Defaults to
 	// Queries; a test can substitute a counting wrapper to assert HOW MANY
 	// catalog reads a request performs, which is the only property that

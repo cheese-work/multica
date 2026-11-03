@@ -104,6 +104,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"decision_request":                   workspaceDeleteWorker,
 	"decision_wait":                      workspaceDelete, // explicit workspace-scoped delete in DeleteWorkspaceLeafData; no FK.
 	"decision_worker_lease":              workspaceDeleteKeep,
+	"wakeup_definition_activation":       workspaceDeleteKeep,
 	"dingtalk_group_presence":            workspaceDelete,
 	"dingtalk_bot_identity":              workspaceDelete,
 	"dingtalk_group_route":               workspaceDelete,
@@ -257,6 +258,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"workflow_webhook_nonce":             workspaceDelete, // CHE-2031 no workspace_id; deleted through its endpoint.
 	"workspace":                          workspaceDelete,
 	"workspace_config_sync":              workspaceDelete,
+	"ask_guard_event":                    workspaceDelete,
 	"workspace_invitation":               workspaceDelete,
 	"workspace_share_link":               workspaceDelete,
 }

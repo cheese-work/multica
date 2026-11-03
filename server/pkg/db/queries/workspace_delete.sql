@@ -382,6 +382,10 @@ deleted_decision_waits AS (
 deleted_config_sync AS (
     DELETE FROM workspace_config_sync WHERE workspace_id = $1
 ),
+-- CHE-3345 ask guard events: workspace-owned leaf, no FK.
+deleted_ask_guard_events AS (
+    DELETE FROM ask_guard_event WHERE workspace_id = $1
+),
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
 ),

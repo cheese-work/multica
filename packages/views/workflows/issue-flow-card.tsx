@@ -1,14 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { Check, Settings, Workflow } from "@multica/ui/icons";
+import { Settings, Workflow } from "@multica/ui/icons";
 import { toast } from "sonner";
 import { clientErrorMessage } from "@multica/core/api";
 import { useFeatureEnabled } from "@multica/core/config";
 import { PROJECT_WORKFLOWS_V1_FLAG } from "@multica/core/feature-flags";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
-import { useIssueWorkflows, useProjectWithWorkflow, useSetIssueWorkflow } from "@multica/core/issue-workflows";
+import { useProjectWithWorkflow, useSetIssueWorkflow } from "@multica/core/issue-workflows";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { Button } from "@multica/ui/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@multica/ui/components/ui/dialog";
@@ -22,6 +22,7 @@ import { useNavigation } from "../navigation";
 import { useWorkflowPermissions } from "./permissions";
 import { stepHandlerActor, useStepHandlerLabel } from "./step-handler";
 import { WorkflowGraph } from "./workflow-graph";
+import { WorkflowOverrideOptions } from "./workflow-override-options";
 
 /** Whether the issue's workflow row has anything to show: a workflow, or a switch for its managers. */
 export function useIssueFlowVisible(projectId: string | null, workflowId: string | null | undefined): boolean {
@@ -58,7 +59,6 @@ export function IssueFlowCard({
   const labelOf = useStatusLabel(wsId);
   const { project, workflow } = useProjectWithWorkflow(wsId, projectId, workflowId);
   const { canCreateWorkflow, canManageProject } = useWorkflowPermissions(project);
-  const { workflows } = useIssueWorkflows(wsId);
   const setWorkflow = useSetIssueWorkflow();
   const handlerLabel = useStepHandlerLabel(project);
   const [open, setOpen] = useState(false);
@@ -147,32 +147,7 @@ export function IssueFlowCard({
         )}
         {canSwitch && (
           <div className="-mx-3 mt-2 border-t border-surface-border px-1 pt-1">
-            <p className="px-2 py-1 text-caption text-muted-foreground">{t(($) => $.workflows.detail.override_title)}</p>
-            {projectId && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="w-full justify-start"
-                disabled={setWorkflow.isPending}
-                onClick={() => choose(null)}
-              >
-                {!workflowId ? <Check aria-hidden className="size-3.5" /> : <span aria-hidden className="size-3.5" />}
-                {t(($) => $.workflows.detail.override_follow_project)}
-              </Button>
-            )}
-            {workflows.map((w) => (
-              <Button
-                key={w.id}
-                variant="ghost"
-                size="sm"
-                className="w-full justify-start"
-                disabled={setWorkflow.isPending}
-                onClick={() => choose(w.id)}
-              >
-                {workflowId === w.id ? <Check aria-hidden className="size-3.5" /> : <span aria-hidden className="size-3.5" />}
-                <span className="truncate">{w.name}</span>
-              </Button>
-            ))}
+            <WorkflowOverrideOptions workflowId={workflowId} projectId={projectId} pending={setWorkflow.isPending} onChoose={choose} />
           </div>
         )}
         {canCreateWorkflow && enabled && (

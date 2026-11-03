@@ -251,6 +251,17 @@ type AgentToLabel struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+type AskGuardEvent struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	TaskID        pgtype.UUID        `json:"task_id"`
+	OperationKind string             `json:"operation_kind"`
+	PayloadSha256 string             `json:"payload_sha256"`
+	Mode          string             `json:"mode"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
 type Attachment struct {
 	ID              pgtype.UUID        `json:"id"`
 	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
@@ -1228,6 +1239,7 @@ type GithubPullRequestCheckRun struct {
 	Conclusion      pgtype.Text `json:"conclusion"`
 	DetailsUrl      pgtype.Text `json:"details_url"`
 	IsStatusContext bool        `json:"is_status_context"`
+	RedCause        pgtype.Text `json:"red_cause"`
 }
 
 type GithubPullRequestCheckSuite struct {
@@ -3053,6 +3065,18 @@ type WakeupAggregateReservation struct {
 	TaskID      pgtype.UUID        `json:"task_id"`
 	WakeupID    pgtype.UUID        `json:"wakeup_id"`
 	ReservedAt  pgtype.Timestamptz `json:"reserved_at"`
+}
+
+type WakeupDefinitionActivation struct {
+	Name        string             `json:"name"`
+	State       string             `json:"state"`
+	Cursor      pgtype.UUID        `json:"cursor"`
+	Scanned     int64              `json:"scanned"`
+	Inserted    int64              `json:"inserted"`
+	LastError   pgtype.Text        `json:"last_error"`
+	StartedAt   pgtype.Timestamptz `json:"started_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	CompletedAt pgtype.Timestamptz `json:"completed_at"`
 }
 
 type WakeupScopedEvent struct {

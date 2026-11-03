@@ -30,7 +30,7 @@ func TestAgentDecisionWorkspaceDeletion(t *testing.T) {
 	f.peerID = agentOn("teardown peer", claude, "claude-test")
 	f.taskID = f.tasks[f.writerID]
 	f.scope = map[string]any{
-		"work_author_id": f.writerID, "waived_gate": "screenshot_evidence", "route": "cosign",
+		"work_author_id": f.writerID, "waived_gate": "screenshot_evidence", "route": "cosign", "decision_class": "reversible_gate",
 		"signers":  []string{f.leaderID, f.peerID},
 		"evidence": []map[string]string{{"url": "https://example.com/frozen.md", "sha256": boundAfter}},
 	}
