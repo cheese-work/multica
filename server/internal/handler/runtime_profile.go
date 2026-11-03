@@ -212,7 +212,7 @@ func (h *Handler) CreateRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
 		Kind: "runtime_profile.create", WorkspaceID: wsUUID, TargetID: profile.ID,
-		After: runtimeProfileAuditFields(profile),
+		After: runtimeProfileAuditFields(profile), External: []string{auditExternalProfileRefresh},
 	}); err != nil {
 		writeAuditFailure(w, r, err, "runtime_profile.create")
 		return
@@ -388,6 +388,7 @@ func (h *Handler) UpdateRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
 		Kind: "runtime_profile.update", WorkspaceID: wsUUID, TargetID: profile.ID,
 		Before: runtimeProfileAuditFields(before), After: runtimeProfileAuditFields(profile),
+		External: []string{auditExternalProfileRefresh},
 	}); err != nil {
 		writeAuditFailure(w, r, err, "runtime_profile.update")
 		return
@@ -668,9 +669,14 @@ func (h *Handler) DeleteRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 	if !profileMissing {
 		beforeProfile = runtimeProfileAuditFields(profile)
 	}
+	external := []string{auditExternalProfileRefresh}
+	if len(deletedRuntimes) > 0 {
+		external = append(external, auditExternalRuntimeGone)
+	}
 	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
 		Kind: "runtime_profile.delete", WorkspaceID: wsUUID, TargetID: profileUUID,
 		Before: beforeProfile, After: map[string]any{"runtimes_removed": len(deletedRuntimes)},
+		External: external,
 	}); err != nil {
 		writeAuditFailure(w, r, err, "runtime_profile.delete")
 		return

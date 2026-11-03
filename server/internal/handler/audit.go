@@ -35,8 +35,9 @@ import (
 
 // External step kinds recorded in workspace_audit_event.external_requested.
 const (
-	auditExternalRuntimeGone  = "runtime_gone_notice"
-	auditExternalDaemonUpdate = "daemon_update_request"
+	auditExternalRuntimeGone    = "runtime_gone_notice"
+	auditExternalDaemonUpdate   = "daemon_update_request"
+	auditExternalProfileRefresh = "daemon_profile_refresh"
 )
 
 // auditKindSpec declares what a kind may record. Redaction is default-deny:

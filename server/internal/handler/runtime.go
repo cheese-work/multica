@@ -553,8 +553,21 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 
 	changed := false
 
+	// Access and rename (and their audit rows) commit together or not at all.
+	var tx pgx.Tx
+	var qtx *db.Queries
+	if req.Visibility != nil || req.SharedWith != nil || req.CustomName != nil {
+		tx, err = h.TxStarter.Begin(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update runtime")
+			return
+		}
+		defer tx.Rollback(r.Context())
+		qtx = h.Queries.WithTx(tx)
+	}
+
 	if req.Visibility != nil || req.SharedWith != nil {
-		updated, plan, didChange, err := h.updateRuntimeAccessIfNoDependencies(r.Context(), r, rt, member, req)
+		updated, plan, didChange, err := h.updateRuntimeAccessIfNoDependencies(r.Context(), r, qtx, rt, member, req)
 		if err != nil {
 			if failedAudit(w, r, err, "runtime.access.update") || writeRuntimeRevocationBusy(w, err) {
 				return
@@ -584,14 +597,6 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 		// runtime falls back to its daemon-proposed Name.
 		trimmed := strings.TrimSpace(*req.CustomName)
 		customName := pgtype.Text{String: trimmed, Valid: trimmed != ""}
-
-		tx, err := h.TxStarter.Begin(r.Context())
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to update runtime")
-			return
-		}
-		defer tx.Rollback(r.Context())
-		qtx := h.Queries.WithTx(tx)
 
 		// The row lock makes the audited before-name the one this rename replaces.
 		current, err := qtx.LockAgentRuntimeForAccessChange(r.Context(), runtimeUUID)
@@ -656,11 +661,13 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 			writeAuditFailure(w, r, err, "runtime.rename")
 			return
 		}
+		changed = true
+	}
+	if tx != nil {
 		if err := tx.Commit(r.Context()); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to update runtime")
 			return
 		}
-		changed = true
 	}
 
 	if changed {
@@ -736,17 +743,11 @@ func (p runtimeWorkspaceAccessRevocationPlan) hasDependencies() bool {
 // updateRuntimeAccessIfNoDependencies applies grants without disrupting work.
 // Binding writers take the same runtime lock and recheck access.
 //
-// A non-empty plan is deliberately returned without committing. The caller
+// The caller owns the transaction and commits it. A non-empty plan is
+// deliberately returned without committing. The caller
 // turns it into the same confirmation response used by the disruptive path;
 // the confirmed endpoint will take a fresh locked snapshot before revoking.
-func (h *Handler) updateRuntimeAccessIfNoDependencies(ctx context.Context, r *http.Request, rt db.AgentRuntime, member db.Member, req UpdateAgentRuntimeRequest) (db.AgentRuntime, runtimeWorkspaceAccessRevocationPlan, bool, error) {
-	tx, err := h.TxStarter.Begin(ctx)
-	if err != nil {
-		return db.AgentRuntime{}, runtimeWorkspaceAccessRevocationPlan{}, false, fmt.Errorf("begin transaction: %w", err)
-	}
-	defer tx.Rollback(ctx)
-	qtx := h.Queries.WithTx(tx)
-
+func (h *Handler) updateRuntimeAccessIfNoDependencies(ctx context.Context, r *http.Request, qtx *db.Queries, rt db.AgentRuntime, member db.Member, req UpdateAgentRuntimeRequest) (db.AgentRuntime, runtimeWorkspaceAccessRevocationPlan, bool, error) {
 	lockedRuntime, err := qtx.LockAgentRuntimeForAccessChange(ctx, rt.ID)
 	if err != nil {
 		return db.AgentRuntime{}, runtimeWorkspaceAccessRevocationPlan{}, false, fmt.Errorf("lock runtime: %w", err)
@@ -805,9 +806,6 @@ func (h *Handler) updateRuntimeAccessIfNoDependencies(ctx context.Context, r *ht
 		Before: runtimeAccessAuditFields(lockedRuntime), After: runtimeAccessAuditFields(updated),
 	}); err != nil {
 		return db.AgentRuntime{}, runtimeWorkspaceAccessRevocationPlan{}, false, auditWriteError{err}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return db.AgentRuntime{}, runtimeWorkspaceAccessRevocationPlan{}, false, fmt.Errorf("commit transaction: %w", err)
 	}
 	return updated, runtimeWorkspaceAccessRevocationPlan{}, true, nil
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -607,5 +608,82 @@ func TestDisconnectQoderConnection_AuditInsertFailureKeepsConnection(t *testing.
 	}
 	if got := dbfx.Count(t, `SELECT count(*) FROM agent_runtime WHERE id = $1`, runtimeID); got != 1 {
 		t.Fatalf("runtime rows = %d after failed audit; the teardown must roll back", got)
+	}
+}
+
+type recordingProfileRefreshNotifier struct{ profileIDs []string }
+
+func (n *recordingProfileRefreshNotifier) NotifyRuntimeProfilesChanged(_, profileID string) {
+	n.profileIDs = append(n.profileIDs, profileID)
+}
+
+func TestDeleteRuntimeProfile_RecordsOutsideStepsAndStillRunsThem(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	profileID := pmCreateProfile(t, "che2774-profile-ext-"+uuid.NewString()[:8])
+	runtimeID := insertProfileRuntimeFixture(t, context.Background(), profileID, "che2774-profile-ext-rt", "codex")
+	gone := &recordingRuntimeGoneNotifier{}
+	refresh := &recordingProfileRefreshNotifier{}
+	h := *testHandler
+	h.DaemonRuntimeGone, h.DaemonProfileRefresh = gone, refresh
+
+	w := httptest.NewRecorder()
+	h.DeleteRuntimeProfile(w, pmProfileRequest(http.MethodDelete, profileID, nil))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("DeleteRuntimeProfile: %d %s", w.Code, w.Body.String())
+	}
+	rows := auditRowsFor(t, "runtime_profile.delete", profileID)
+	if len(rows) != 1 {
+		t.Fatalf("runtime_profile.delete audit rows = %d; want 1", len(rows))
+	}
+	got := append([]string(nil), rows[0].External...)
+	slices.Sort(got)
+	if want := []string{"daemon_profile_refresh", "runtime_gone_notice"}; !slices.Equal(got, want) {
+		t.Errorf("external_requested = %v; want %v", got, want)
+	}
+	if len(gone.runtimeIDs) != 1 || gone.runtimeIDs[0] != runtimeID || len(refresh.profileIDs) != 1 {
+		t.Errorf("outside steps must still run inline: gone=%v refresh=%v", gone.runtimeIDs, refresh.profileIDs)
+	}
+}
+
+func TestDeleteRuntimeProfile_AuditInsertFailureSkipsOutsideSteps(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	profileID := pmCreateProfile(t, "che2774-profile-ext-fail-"+uuid.NewString()[:8])
+	insertProfileRuntimeFixture(t, context.Background(), profileID, "che2774-profile-ext-fail-rt", "codex")
+	failAuditInsertFor(t, profileID)
+	gone := &recordingRuntimeGoneNotifier{}
+	refresh := &recordingProfileRefreshNotifier{}
+	h := *testHandler
+	h.DaemonRuntimeGone, h.DaemonProfileRefresh = gone, refresh
+
+	w := httptest.NewRecorder()
+	h.DeleteRuntimeProfile(w, pmProfileRequest(http.MethodDelete, profileID, nil))
+	pmRequireRetryable500(t, w, "DeleteRuntimeProfile")
+	if len(gone.runtimeIDs) != 0 || len(refresh.profileIDs) != 0 {
+		t.Errorf("outside steps ran though nothing committed: gone=%v refresh=%v", gone.runtimeIDs, refresh.profileIDs)
+	}
+}
+
+// A PATCH that changes access and renames is one mutation: if the rename's
+// audit insert fails, the access change must roll back with it.
+func TestUpdateAgentRuntime_CombinedPatchAuditFailureRollsBackBoth(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	runtimeID, ownerID, _ := runtimeVisibilityFixture(t)
+	pmFailAuditKind(t, "runtime.rename", testWorkspaceID)
+	w := patchRuntimeCustomName(ownerID, runtimeID, map[string]any{"visibility": "public", "custom_name": "must-not-stick"})
+	pmRequireRetryable500(t, w, "combined PATCH")
+	var visibility string
+	var name *string
+	dbfx.QueryRow(t, `SELECT visibility, custom_name FROM agent_runtime WHERE id = $1`, runtimeID).Scan(&visibility, &name)
+	if visibility != "private" || name != nil {
+		t.Fatalf("visibility=%q custom_name=%v after a failed audit; want private and unset", visibility, name)
+	}
+	if rows := auditRowsFor(t, "runtime.access.update", runtimeID); len(rows) != 0 {
+		t.Fatalf("access audit rows = %d for a rolled-back mutation; want 0", len(rows))
 	}
 }
