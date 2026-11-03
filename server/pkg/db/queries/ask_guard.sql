@@ -48,11 +48,14 @@ LIMIT LEAST(GREATEST(sqlc.arg('batch_size')::int, 0), 100);
 -- name: GetAskGuardEventForMember :one
 -- The event a request recovers: same issue, same member. A request for A
 -- never matches an event for B. An event with no member (an unfiltered
--- wakeup) matches only once it was routed to a repair run, which asks whoever
--- the agent judges right.
-SELECT * FROM ask_guard_event
-WHERE id = $1 AND workspace_id = $2 AND issue_id = $3
-  AND (member_id = $4 OR (member_id IS NULL AND repair_handled_at IS NOT NULL));
+-- wakeup) matches only the task that its root admitted as the repair run,
+-- while that root is still admitted.
+SELECT * FROM ask_guard_event event
+WHERE event.id = $1 AND event.workspace_id = $2 AND event.issue_id = $3
+  AND (event.member_id = $4 OR (event.member_id IS NULL AND EXISTS (
+        SELECT 1 FROM ask_repair_root root
+        WHERE root.id = event.id AND root.workspace_id = event.workspace_id
+          AND root.state = 'admitted' AND root.repair_task_id = sqlc.arg('task_id'))));
 
 -- name: ClearAskGuardEvent :exec
 UPDATE ask_guard_event SET cleared_at = clock_timestamp(), cleared_by_request_id = $2
