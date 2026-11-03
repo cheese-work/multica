@@ -1735,6 +1735,7 @@
       "follows_override": "(이 이슈에 설정됨)",
       "override_title": "이 이슈의 워크플로",
       "override_follow_project": "프로젝트 워크플로 따르기",
+      "override_default": "기본 워크플로",
       "override_error": "워크플로를 변경할 수 없습니다",
       "no_workflow": "워크플로 없음",
       "card_title": "“{{workflow}}” · “{{project}}” 기준",

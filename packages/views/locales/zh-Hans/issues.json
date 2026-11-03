@@ -1735,6 +1735,7 @@
       "follows_override": "（此议题单独设置）",
       "override_title": "此议题的工作流",
       "override_follow_project": "跟随项目的工作流",
+      "override_default": "默认工作流",
       "override_error": "无法更改工作流",
       "no_workflow": "无工作流",
       "card_title": "「{{workflow}}」· 跟随项目「{{project}}」",

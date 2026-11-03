@@ -3334,6 +3334,40 @@ func duplicateIssueMessage(issue IssueResponse) string {
 	return issueguard.DuplicateMessage(issue.Identifier, issue.Title, issue.Status)
 }
 
+// resolveCreateWorkflow validates the workflow a create names and loads the
+// workflow the new issue follows: the caller's override when it names one
+// (feature flag and workflow-manager permission required), otherwise the
+// project's. It writes the error response and returns false on any failure.
+// Shared by the ordinary create and the captured-comment create.
+func (h *Handler) resolveCreateWorkflow(w http.ResponseWriter, r *http.Request, workspaceID string, wsUUID pgtype.UUID, rawWorkflowID *string, workflowProjectID pgtype.UUID) (pgtype.UUID, *issueworkflow.Definition, db.Project, bool) {
+	var overrideID pgtype.UUID
+	if rawWorkflowID != nil && *rawWorkflowID != "" {
+		id, ok := parseUUIDOrBadRequest(w, *rawWorkflowID, "workflow_id")
+		if !ok {
+			return overrideID, nil, db.Project{}, false
+		}
+		overrideID = id
+	}
+	def, project, err := issueworkflow.ForIssue(r.Context(), h.Queries, wsUUID, overrideID, workflowProjectID)
+	if overrideID.Valid {
+		if !h.requireProjectWorkflowsV1(w, r) {
+			return overrideID, nil, project, false
+		}
+		if _, ok := h.requireIssueWorkflowManager(w, r, workspaceID, project); !ok {
+			return overrideID, nil, project, false
+		}
+	}
+	if writeIssueWorkflowError(w, err) {
+		return overrideID, nil, project, false
+	}
+	if err != nil {
+		slog.Error("create issue: resolve project workflow", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+		return overrideID, nil, project, false
+	}
+	return overrideID, def, project, true
+}
+
 func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	r = h.withWakeupActor(r)
 	var req CreateIssueRequest
@@ -3452,29 +3486,8 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var overrideID pgtype.UUID
-	if req.WorkflowID != nil && *req.WorkflowID != "" {
-		id, ok := parseUUIDOrBadRequest(w, *req.WorkflowID, "workflow_id")
-		if !ok {
-			return
-		}
-		overrideID = id
-	}
-	createWorkflow, createWorkflowProject, err := issueworkflow.ForIssue(r.Context(), h.Queries, wsUUID, overrideID, workflowProjectID)
-	if overrideID.Valid {
-		if !h.requireProjectWorkflowsV1(w, r) {
-			return
-		}
-		if _, ok := h.requireIssueWorkflowManager(w, r, workspaceID, createWorkflowProject); !ok {
-			return
-		}
-	}
-	if writeIssueWorkflowError(w, err) {
-		return
-	}
-	if err != nil {
-		slog.Error("create issue: resolve project workflow", append(logger.RequestAttrs(r), "error", err)...)
-		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+	overrideID, createWorkflow, createWorkflowProject, ok := h.resolveCreateWorkflow(w, r, workspaceID, wsUUID, req.WorkflowID, workflowProjectID)
+	if !ok {
 		return
 	}
 	if createWorkflow != nil {
