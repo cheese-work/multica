@@ -147,6 +147,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"issue_checkpoint":                   workspaceDelete,
 	"issue_wakeup":                       workspaceDelete,
 	"issue_wakeup_definition":            workspaceDelete,
+	"dm_progress_follow":                 workspaceDelete, // CHE-3369 C1 follow state; no FK, swept by DeleteWorkspaceIssueRoots.
+	"dm_progress_lane":                   workspaceDelete, // CHE-3369 C1 lane row; no FK, swept by DeleteWorkspaceIssueRoots.
 	"issue_wakeup_pr_event":              workspaceDelete,
 	"issue_ci_advance":                   workspaceDelete,
 	"issue_wakeup_receipt":               workspaceDelete,
