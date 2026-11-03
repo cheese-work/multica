@@ -77,7 +77,9 @@ func TestSessionGeneration_GatedRoutesSkipTheCache(t *testing.T) {
 		{"POST", "/api/decision-actions/00000000-0000-0000-0000-000000000001/approve"},
 		{"POST", "/api/decision-requests/00000000-0000-0000-0000-000000000001/answer"},
 		{"POST", "/api/decision-answers/00000000-0000-0000-0000-000000000001/disclaim"},
-		{"POST", "/api/tokens"}, // a PAT outlives the JWT and skips its generation check
+		{"POST", "/api/tokens"},             // a PAT outlives the JWT and skips its generation check
+		{"POST", "/api/cli-token"},          // both sign a new JWT with the stored generation
+		{"POST", "/api/auth/desktop-token"}, // so a stale one would come back as a fresh session
 	}
 	for _, route := range gated {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {
@@ -252,4 +254,42 @@ func TestSessionGeneration_PATIsMintedForACurrentSession(t *testing.T) {
 		t.Fatalf("current session: got %d, want 201", resp.StatusCode)
 	}
 	testPool.Exec(context.Background(), `DELETE FROM personal_access_token WHERE user_id = $1`, id)
+}
+
+// A handoff token is signed with the stored generation. If recovery is still
+// uncommitted when the request passes the middleware, the handler must wait for
+// the user-row lock and then refuse, not sign a session that outlives recovery.
+func TestSessionGeneration_HandoffTokenIsRefusedAcrossRecovery(t *testing.T) {
+	for _, path := range []string{"/api/cli-token", "/api/auth/desktop-token"} {
+		t.Run(path, func(t *testing.T) {
+			ctx := context.Background()
+			id, token := revocationUser(t, "")
+			recovery, err := testPool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer recovery.Rollback(ctx)
+			if _, err := recovery.Exec(ctx, `UPDATE "user" SET session_generation = session_generation + 1 WHERE id = $1`, id); err != nil {
+				t.Fatal(err)
+			}
+			status := make(chan int, 1)
+			go func() { status <- routerStatus(t, "POST", path, token) }()
+			time.Sleep(300 * time.Millisecond) // the middleware has read the old generation by now
+			if err := recovery.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if got := <-status; got != http.StatusUnauthorized {
+				t.Fatalf("handoff token signed across recovery: got %d, want 401", got)
+			}
+		})
+	}
+}
+
+func TestSessionGeneration_HandoffTokenIsIssuedToACurrentSession(t *testing.T) {
+	for _, path := range []string{"/api/cli-token", "/api/auth/desktop-token"} {
+		_, token := revocationUser(t, "")
+		if got := routerStatus(t, "POST", path, token); got != http.StatusOK {
+			t.Fatalf("%s for a current session: got %d, want 200", path, got)
+		}
+	}
 }
