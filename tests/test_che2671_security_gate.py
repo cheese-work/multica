@@ -340,11 +340,13 @@ class QueueRevocationTest(unittest.TestCase):
     BASE, G1, G2, OTHER = "1" * 40, "2" * 40, "3" * 40, "6" * 40
     QUEUE_HEADS = {405: G1, 999: G2}  # queue head per tip PR number
 
-    def run_pr(self, comments, queue_heads=None, queue_error=False, compare_error=False):
+    def run_pr(self, comments, queue_heads=None, queue_error=False, compare_error=False, post_fail=(), stacked=False):
         queue_heads = self.QUEUE_HEADS if queue_heads is None else queue_heads
         posted, lookups = [], []
         chains = {self.G1: [{"sha": self.G1, "parents": [self.BASE, HEAD], "message": "Merge pull request #405 from x/y"}],
                   self.G2: [{"sha": self.G2, "parents": [self.OTHER, "7" * 40], "message": "Merge pull request #999 from x/z"}]}
+        if stacked:  # the second group sits on top of the first, so both carry the PR
+            chains[self.G2] = [{"sha": self.G2, "parents": [self.G1, "7" * 40], "message": "Merge pull request #999 from x/z"}, *chains[self.G1]]
 
         def fake_gh(*args):
             path = " ".join(args)
@@ -366,6 +368,8 @@ class QueueRevocationTest(unittest.TestCase):
                                    "user": {"id": BOT}})
             if "statuses/" in path:
                 posted.append(args)
+                if path.split("statuses/")[1].split()[0] in post_fail:
+                    raise subprocess.CalledProcessError(1, ["gh"])
             return ""
 
         argv = ["x", "--repo", str(ROOT), "--github", "cheese-work/multica", "--pr", "405",
@@ -410,6 +414,40 @@ class QueueRevocationTest(unittest.TestCase):
         heads = {a[0].rsplit("/", 1)[1]: a for a in posted}
         for g in (self.G1, self.G2):
             self.assertIn("state=failure", heads[g])
+
+    def test_a_failed_status_write_on_one_head_does_not_skip_the_later_heads_and_fails_the_job(self):
+        # review round 8: one failed write must not leave later queue heads on a carried success
+        with self.assertRaises(RuntimeError) as ctx:
+            self.run_pr_capture([comment("no verdict any more")], post_fail={self.G1})
+        self.assertIn(self.G1, str(ctx.exception))
+        self.assertNotIn(self.G2, str(ctx.exception))
+        self.assertIn("state=failure", self.captured[self.G2])
+
+    def test_every_failed_head_is_named_when_all_status_writes_fail(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            self.run_pr_capture([comment("no verdict any more")], post_fail={self.G1, self.G2})
+        self.assertIn(self.G1, str(ctx.exception))
+        self.assertIn(self.G2, str(ctx.exception))
+
+    def test_a_failed_write_after_a_good_one_still_raises_and_keeps_the_good_flip(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            self.run_pr_capture([comment("no verdict any more")], post_fail={self.G2})
+        self.assertIn(self.G2, str(ctx.exception))
+        self.assertNotIn(self.G1, str(ctx.exception))
+        self.assertIn("state=failure", self.captured[self.G1])
+
+    def run_pr_capture(self, comments, post_fail):
+        # run_pr raises before it can return `posted`; capture the attempted writes through the mock instead
+        seen = {}
+        real = sg._post
+
+        def spy(github, sha, state, desc, run_url):
+            seen[sha] = (f"state={state}",)
+            return real(github, sha, state, desc, run_url)
+
+        self.captured = seen
+        with mock.patch.object(sg, "_post", spy):
+            return self.run_pr(comments, post_fail=post_fail, stacked=True)
 
 
 class WorkflowTest(unittest.TestCase):

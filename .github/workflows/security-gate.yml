@@ -14,7 +14,7 @@
 # branch and only fetches the queue ref. A verdict revoked after the queue commit went green is mirrored by the
 # pull_request_target / issue_comment path: when the PR status is not `success`, the script (`revoke_queue`, CHE-3240)
 # flips every queue head carrying that PR to `failure`, and fails a group it cannot read closed. If both queue lookups
-# keep failing the job goes red and no head is flipped: dequeue the PR by hand.
+# keep failing the job goes red and no head is flipped: dequeue the PR by hand. A failed write on one head never skips the later heads; the job fails naming each unflipped head: dequeue it or re-run the job.
 
 name: security-gate
 
