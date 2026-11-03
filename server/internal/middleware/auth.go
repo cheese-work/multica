@@ -68,6 +68,9 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			// to convince a downstream handler that its request came
 			// from a non-task-token path.
 			r.Header.Del("X-Actor-Source")
+			// X-Session-ID is the signed `sid` claim of a JWT login, set
+			// below; a passkey assertion binds a card answer to it.
+			r.Header.Del("X-Session-ID")
 			r.Header.Del("X-Task-Token-Purpose")
 			r.Header.Del("X-Governance-Case-ID")
 			r.Header.Del("X-Governance-Attempt-ID")
@@ -331,6 +334,9 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			r.Header.Set("X-Actor-Source", "cli_jwt")
 			if method, ok := claims["amr"].(string); ok && method == "interactive" {
 				r.Header.Set("X-Actor-Source", "interactive_jwt")
+			}
+			if sid, ok := claims["sid"].(string); ok {
+				r.Header.Set("X-Session-ID", sid)
 			}
 			if email != "" {
 				r.Header.Set("X-User-Email", email)
