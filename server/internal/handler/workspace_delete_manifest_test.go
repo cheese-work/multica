@@ -357,7 +357,8 @@ func TestDecisionWorkspaceDeletionRemainsWorkerOwned(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	if strings.Contains(string(queries), "decision_") {
+	// decision_wait (L5b) is workspace-scoped with no FK, so baseline deletion owns it.
+	if strings.Contains(strings.ReplaceAll(string(queries), "decision_wait", ""), "decision_") {
 		test.Error("baseline workspace deletion must not run a decision statement")
 	}
 }
