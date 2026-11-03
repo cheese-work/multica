@@ -359,6 +359,24 @@ class WorkflowTest(unittest.TestCase):
         self.assertNotRegex(cond, r"author_association\s*!=\s*'NONE'")
         self.assertIn("startsWith(github.event.comment.body, 'Security-Gate-Verdict:')", cond)
 
+    VERDICT = "'Security-Gate-Verdict:'"
+
+    def test_plain_comment_schedules_no_job(self):
+        # CHE-3354: a comment without the verdict header queues nothing on the single gate runner, even from a trusted author
+        cond = self.doc["jobs"]["security-gate"]["if"]
+        self.assertIn(f"contains(github.event.comment.body, {self.VERDICT})", cond)
+
+    def test_removing_the_header_by_edit_still_runs_the_gate(self):
+        # CHE-3354: revocation by edit. On an edit the new body lacks the header; the old body is `changes.body.from`.
+        cond = self.doc["jobs"]["security-gate"]["if"]
+        self.assertIn(f"github.event.action == 'edited' && contains(github.event.changes.body.from, {self.VERDICT})", cond)
+
+    def test_plain_comment_gets_its_own_concurrency_group(self):
+        # CHE-3354: keep the ignored-group test in step with the `if:` so a plain comment cannot cancel a real run
+        group = self.doc["concurrency"]["group"]
+        self.assertIn(f"contains(github.event.comment.body, {self.VERDICT})", group)
+        self.assertIn("github.event.changes.body.from", group)
+
     def test_job_filter_matches_the_runner_hook_allow_list(self):
         if not self.HOOK.exists():
             self.skipTest("runner hook not on this host")
