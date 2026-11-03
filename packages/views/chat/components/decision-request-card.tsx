@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { Suspense, useEffect, useId, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Loader2, MessageSquareQuote } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
@@ -6,8 +6,13 @@ import { ApiError } from "@multica/core/api";
 import { useAnswerDecisionRequest } from "@multica/core/issues/decision-answer";
 import { chatKeys } from "@multica/core/chat/queries";
 import { useWorkspacePaths } from "@multica/core/paths";
+import { formatShortcut, useShortcut } from "@multica/core/shortcuts";
 import type { DecisionRequestCard as RequestCard } from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
+import type { ContentEditorRef } from "../../editor/content-editor";
+import { useEditorUpload } from "../../editor/use-editor-upload";
+import { useUploadGate } from "../../editor/use-upload-gate";
+import { LazyContentEditor as ContentEditor } from "./lazy-content-editor";
 import { RichContent } from "../../rich-content";
 import { useT } from "../../i18n";
 import { AppLink } from "../../navigation";
@@ -20,6 +25,10 @@ interface AnswerDraft {
   option: string;
   text: string;
 }
+
+// Mirrors the server's `maxDecisionCardTextBytes`; it counts the trimmed text, image links included.
+const MAX_ANSWER_BYTES = 8 << 10;
+const answerBytes = (text: string) => new TextEncoder().encode(text.trim()).length;
 
 const isConflict = (error: unknown) => error instanceof ApiError && error.status === 409;
 
@@ -43,19 +52,30 @@ function DecisionAnswerForm({
   draft: AnswerDraft;
   answer: AnswerMutation;
   onDraftChange: (draft: AnswerDraft) => void;
-  onSend: () => void;
+  onSend: (text: string) => void;
   inIssue: boolean;
 }) {
   const { t } = useT("chat");
   const online = useOnline();
+  const sendShortcut = formatShortcut(useShortcut("send"));
   const { option, text } = draft;
   const setOption = (next: string) => onDraftChange({ option: next, text });
   const setText = (next: string) => onDraftChange({ option, text: next });
   const group = useId();
   const textId = useId();
-  const canSend = online && !answer.isPending && (option !== "" || text.trim() !== "");
+  const editorRef = useRef<ContentEditorRef>(null);
+  const uploadGate = useUploadGate(editorRef);
+  const { uploadWithToast } = useEditorUpload();
+  const tooLong = answerBytes(text) > MAX_ANSWER_BYTES;
+  const canSend = online && !answer.isPending && !uploadGate.uploading && !tooLong && (option !== "" || text.trim() !== "");
   const send = () => {
-    if (canSend) onSend();
+    // onUpdate reaches `text` through a timer, so an Enter or click right after the last edit
+    // (or a finished upload) would send stale text. Read the editor and send exactly that.
+    const live = editorRef.current?.getMarkdown() ?? text;
+    // Enter can arrive while an upload placeholder is still in the document.
+    const sendable = online && !answer.isPending && !uploadGate.uploading && !uploadGate.isBlocked()
+      && answerBytes(live) <= MAX_ANSWER_BYTES && (option !== "" || live.trim() !== "");
+    if (sendable) onSend(live);
   };
 
   return (
@@ -97,26 +117,30 @@ function DecisionAnswerForm({
           ))}
         </fieldset>
       )}
-      <label htmlFor={textId} className="block text-label font-medium">
+      <span className="block text-label font-medium">
         {card.options?.length ? t(($) => $.decision.answer_note) : t(($) => $.decision.answer_text)}
-      </label>
-      <textarea
-        id={textId}
-        aria-describedby={`${textId}-hint`}
-        value={text}
-        rows={2}
-        onChange={(event) => setText(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-            event.preventDefault();
-            send();
-          }
-        }}
-        className="block w-full resize-y rounded-lg border border-surface-border bg-transparent px-2 py-1.5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-      />
+      </span>
+      <div className="rounded-lg border border-surface-border px-2 py-1.5 focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-ring">
+        <Suspense fallback={null}>
+          <ContentEditor
+            ref={editorRef}
+            defaultValue={text}
+            ariaLabel={card.options?.length ? t(($) => $.decision.answer_note) : t(($) => $.decision.answer_text)}
+            ariaDescribedBy={`${textId}-hint`}
+            onUpdate={setText}
+            onSubmit={send}
+            onUploadFile={(file) => uploadWithToast(file, { issueId: card.issue_id })}
+            onUploadingChange={uploadGate.onUploadingChange}
+            debounceMs={0}
+            showBubbleMenu={false}
+            className="max-h-60 overflow-y-auto"
+          />
+        </Suspense>
+      </div>
       <p id={`${textId}-hint`} className="text-caption text-muted-foreground">
-        {t(($) => $.decision.answer_hint)}
+        {t(($) => $.decision.answer_hint, { shortcut: sendShortcut })}
       </p>
+      {tooLong && <p role="alert" className="text-caption text-destructive">{t(($) => $.decision.answer_too_long)}</p>}
       <div className="flex flex-wrap items-center gap-2">
         <Button type="submit" size="sm" disabled={!canSend} className="disabled:opacity-70">
           {answer.isPending && <Loader2 className="size-4 animate-spin" aria-hidden />}
@@ -198,15 +222,23 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
   const issueHref = paths.issueDetail(card.issue_id);
   const [draft, setDraft] = useState<AnswerDraft>(EMPTY_DRAFT);
   const [refused, setRefused] = useState(false);
+  // Remounting the form empties the editor after a send: the editor takes its draft once at mount.
+  const [formKey, setFormKey] = useState(0);
   const answer = useAnswerDecisionRequest(card.issue_id);
-  const sendAnswer = () =>
+  const sendAnswer = (text: string) => {
+    // Keep what is sent as the draft, so a refused send shows back the same text.
+    setDraft((current) => ({ ...current, text }));
     answer.mutate(
-      { requestId: card.id, option: draft.option || undefined, text: draft.text.trim() || undefined },
+      { requestId: card.id, option: draft.option || undefined, text: text.trim() || undefined },
       {
-        onSuccess: () => setDraft(EMPTY_DRAFT),
+        onSuccess: () => {
+          setDraft(EMPTY_DRAFT);
+          setFormKey((key) => key + 1);
+        },
         onError: (error) => isConflict(error) && setRefused(true),
       },
     );
+  };
   const discardDraft = () => {
     setDraft(EMPTY_DRAFT);
     setRefused(false);
@@ -281,7 +313,7 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
           <KeptDraft draft={draft} onDiscard={discardDraft} />
         ) : (
           card.state === "open" && (
-            <DecisionAnswerForm card={card} draft={draft} answer={answer} onDraftChange={setDraft} onSend={sendAnswer} inIssue={inIssue} />
+            <DecisionAnswerForm key={formKey} card={card} draft={draft} answer={answer} onDraftChange={setDraft} onSend={sendAnswer} inIssue={inIssue} />
           )
         )}
         {shown === "picked_up" && card.answer?.run && (

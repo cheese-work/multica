@@ -106,6 +106,30 @@
   },
   "picker.title": "選擇智慧體",
   "no_response": "本輪已結束，智慧體沒有返回文字回覆。",
+  "steer": {
+    "label": "引導",
+    "fallback": "排隊中的訊息",
+    "unavailable": "目前回覆開始後才能引導",
+    "starting": "執行正在啟動",
+    "unsupported": "此執行無法接收新訊息，訊息會繼續排隊。",
+    "no_permission": "你已無權執行此智慧體",
+    "failed": "無法將訊息加入執行，訊息仍在排隊。"
+  },
+  "supplement": {
+    "added": "已加入執行",
+    "read": "智慧體已讀",
+    "read_twice": "智慧體已讀；也已重新傳送，智慧體可能會看到兩次",
+    "not_received": "未收到",
+    "unconfirmed": "送達未確認",
+    "resent": "已作為新執行重新傳送",
+    "send_new_run": "作為新執行傳送",
+    "send_again_anyway": "仍然重新傳送",
+    "confirm_title": "重新傳送此訊息？",
+    "confirm_body": "智慧體可能已經收到此訊息。重新傳送可能導致智慧體處理兩次。",
+    "confirm_send": "重新傳送",
+    "cancel": "取消",
+    "resend_failed": "無法重新傳送訊息"
+  },
   "continuation_summary": "對話摘要",
   "failure_reason": {
     "default": "執行失敗",

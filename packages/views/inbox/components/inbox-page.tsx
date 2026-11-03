@@ -51,7 +51,8 @@ import {
   useInboxFilterStore,
 } from "@multica/core/inbox/filter-store";
 
-import { IssueDetail, issueHighlightMementoKey } from "../../issues/components/issue-detail";
+import { IssueDetail } from "../../issues/components/issue-detail-lazy";
+import { issueHighlightMementoKey } from "../../issues/components/issue-highlight-key";
 import { ActionShortcutKeycaps } from "../../common/shortcut-keycaps";
 import { useRegisterCommandBarContext } from "../../search/register-context";
 import { IssuePeekHost } from "../../issues/components/issue-peek";

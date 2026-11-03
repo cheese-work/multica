@@ -19,9 +19,10 @@ REPLACE-THIS-LINE-WITH-YOUR-DISPOSITION
 ## Changelog
 
 <!-- Replace the line below with one sentence a user notices, in English, plain text,
-     at most 140 characters. It publishes as this PR's entry on /changelog. Keep the
-     line verbatim, like Closes/Refs. A PR without a valid line is hidden from
-     /changelog; the placeholder below counts as missing.
+     at most 140 characters (a longer line fails the PR check). It publishes as this
+     PR's entry on /changelog. Keep the line verbatim, like Closes/Refs. A PR
+     without a valid line is hidden from /changelog; the placeholder below counts
+     as missing.
      The section follows the title type (feat, fix, perf); override it with
      Changelog(feat|fix|perf): <sentence>.
      Good:
@@ -65,7 +66,7 @@ Changelog: <one user-facing sentence, or none>
 - [ ] I have run tests locally and they pass
 - [ ] I have added or updated tests where applicable
 - [ ] If this change affects the UI, I have included before/after screenshots
-- [ ] I have updated relevant documentation to reflect my changes
+- [ ] Docs updated (page path under `apps/docs/content/docs/`, all locales) / not user-facing (reason): <path or reason>
 - [ ] If I added a new runtime / coding tool / UI tab, I synced the change to **landing copy** (`apps/web/features/landing/i18n/`) and **relevant docs** (`apps/docs/content/docs/`)
 - [ ] If this PR touches Chinese product copy, I checked it against `apps/docs/content/docs/developers/conventions.zh.mdx` (terminology, mixed-rule for `task` / `issue` / `skill`)
 - [ ] I have considered and documented any risks above

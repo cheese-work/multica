@@ -1,0 +1,33 @@
+# Decision card: tap a file to open a fullscreen viewer (Preview, Changes, Download).
+# Design gate: Cheese picked direction B in CHE-2810 comment 01a19580-8cd4-7537-bd61-7b94239f23b8; UX PASS
+# 01a19570-7789-7e31-b745-f95f1c476323 on frame Bi32qQ55Hi (updatedAt 2026-11-01T04:43:09.622Z). Lock PR #762.
+# Builds on the locked card design/you-are-approving-card/approved/.
+issue: CHE-2810
+design: design/artifact-viewer-dialog/approved/artifact-dialog-b.html @ b99b5865c0c1737430e3682922440b9ea4e932fb
+pages:
+  - id: chat-decision-card
+    url: /<workspace-slug>/chat   # a decision request card with a "You are approving" section; 540 px card on desktop
+    keep:
+      - decision-request-artifacts
+      - decision-artifact-file
+      - decision-artifact-signature
+      - decision-artifact-download
+    change:
+      - decision-artifact-open: "the whole file row (icon, label, filename, SHA, signer) is one button with aria-haspopup=dialog and a one-line summary (Preview, or Changes +3 -2 · Preview); opens the viewer"
+      - decision-artifact-viewer: "no longer an inline tab strip on the card; it is the tab panel inside the dialog"
+    remove:
+      - inline-changes-preview-tab-strip   # replaced by the dialog (direction B)
+  - id: chat-decision-artifact-dialog
+    url: /<workspace-slug>/chat   # opened from the file row; large modal with a left rail on desktop
+    keep: []
+    change:
+      - decision-artifact-dialog: "new: large modal on desktop (left rail: file facts, vertical tabs, Download); Esc, close button and browser Back close it; focus returns to the file row"
+      - decision-artifact-viewer: "new tab panel: Changes (diff) and Preview (Markdown or plain text); long files scroll inside the panel"
+      - decision-artifact-download: "second Download button inside the dialog rail"
+    remove: []
+  - id: chat-decision-artifact-dialog-phone
+    url: /<workspace-slug>/chat   # 390 px; fullscreen, bottom bar with tabs and Download
+    keep: []
+    change:
+      - decision-artifact-dialog: "fullscreen on a phone width; tabs and Download in a bottom bar"
+    remove: []

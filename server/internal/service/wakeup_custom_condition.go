@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -20,12 +21,12 @@ import (
 // start per issue when it names no limit.
 const wakeupCustomFireDefault = 20
 
-// withRootFireDefault gives a newly created repeating custom event or condition
-// rule the per-issue fire cap it did not set. Only creation calls it: updates,
+// withRootFireDefault gives a newly created repeating custom event, condition,
+// interval or cron rule the per-issue fire cap it did not set. Only creation calls it: updates,
 // built-ins and overrides never gain a default.
 func withRootFireDefault(p *WakeupConfigPatch) {
 	spec, ok := triggerSpec(p.Trigger)
-	if !ok || spec.Kind != wakeupTriggerKindEvent && spec.Kind != wakeupTriggerKindCondition {
+	if !ok || !slices.Contains([]string{wakeupTriggerKindEvent, wakeupTriggerKindCondition, wakeupTriggerKindEvery, wakeupTriggerKindCron}, spec.Kind) {
 		return
 	}
 	if !p.MaxFires.Set && !(p.Mode.Set && !p.Mode.Null && p.Mode.Value == "once") {

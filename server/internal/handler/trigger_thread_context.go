@@ -63,3 +63,12 @@ func (h *Handler) commentAuthorLabel(ctx context.Context, c db.Comment, cache ma
 	cache[c.AuthorID] = name
 	return name
 }
+
+// truncateRunes truncates a string to maxRunes, avoiding splitting UTF-8 characters.
+func truncateRunes(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes]) + "\n...[truncated]"
+}
