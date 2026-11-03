@@ -25,13 +25,24 @@ function chipReplacement(live: Element, clone: Element): [Element, Node] {
   return [target, a];
 }
 
+// Blocks are separated from their siblings, never padded at the ends, so the
+// copied text keeps exactly the newlines the selection held.
+function separator(node: Node): string {
+  if (!(node instanceof Element)) return "";
+  if (DOUBLE.has(node.tagName)) return "\n\n";
+  return SINGLE.has(node.tagName) ? "\n" : "";
+}
+
 function plainText(node: Node): string {
   if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
-  if (!(node instanceof Element)) return [...node.childNodes].map(plainText).join("");
-  if (node.tagName === "BR") return "\n";
-  const text = [...node.childNodes].map(plainText).join("");
-  if (DOUBLE.has(node.tagName)) return `${text}\n\n`;
-  return SINGLE.has(node.tagName) ? `${text}\n` : text;
+  if (node instanceof Element && node.tagName === "BR") return "\n";
+  let out = "";
+  node.childNodes.forEach((child, i) => {
+    const prev = node.childNodes[i - 1];
+    if (prev) out += [separator(prev), separator(child)].sort((x, y) => y.length - x.length)[0];
+    out += plainText(child);
+  });
+  return out;
 }
 
 /**
@@ -63,7 +74,7 @@ export function copyChipKeys(e: ClipboardEvent): boolean {
     });
   }
 
-  e.clipboardData.setData("text/plain", plainText(out).replace(/\n{3,}/g, "\n\n").replace(/\n+$/, ""));
+  e.clipboardData.setData("text/plain", plainText(out));
   e.clipboardData.setData("text/html", out.innerHTML);
   e.preventDefault();
   return true;

@@ -58,6 +58,11 @@ describe("copyChipKeys", () => {
     expect(data["text/plain"]).toBe("one CHE-1\n\ntwo\nthree CHE-2 four");
   });
 
+  it("does not collapse or trim newlines in text outside chips", () => {
+    const { data } = copyAll(`<pre>a\n\n\nb ${ISSUE("CHE-1", "x")}\n\n</pre>`);
+    expect(data["text/plain"]).toBe("a\n\n\nb CHE-1\n\n");
+  });
+
   it("copies the token when the selection is fully inside one chip", () => {
     const { data } = copyAll(`<p>x ${ISSUE("CHE-9", "title text")} y</p>`, (root) => {
       const text = root.querySelector("[data-copy-token]")!.firstChild!;
