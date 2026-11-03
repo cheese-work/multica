@@ -144,6 +144,10 @@ type AgentResponse struct {
 	UpdatedAt                        string                 `json:"updated_at"`
 	ArchivedAt                       *string                `json:"archived_at"`
 	ArchivedBy                       *string                `json:"archived_by"`
+	// SchedulingPausedAt / SchedulingPausedBy are set while an owner or admin
+	// holds this agent's claims. Both null when scheduling runs.
+	SchedulingPausedAt *string `json:"scheduling_paused_at"`
+	SchedulingPausedBy *string `json:"scheduling_paused_by"`
 }
 
 // runtimeConfigGatewayTokenMask is the placeholder the API substitutes for
@@ -245,6 +249,8 @@ func (h *Handler) agentToResponse(a db.Agent) AgentResponse {
 		UpdatedAt:                timestampToString(a.UpdatedAt),
 		ArchivedAt:               timestampToPtr(a.ArchivedAt),
 		ArchivedBy:               uuidToPtr(a.ArchivedBy),
+		SchedulingPausedAt:       timestampToPtr(a.SchedulingPausedAt),
+		SchedulingPausedBy:       uuidToPtr(a.SchedulingPausedBy),
 	}
 }
 

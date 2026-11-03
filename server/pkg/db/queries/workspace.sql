@@ -32,6 +32,13 @@ WHERE id = $1;
 SELECT * FROM workspace
 WHERE id = $1;
 
+-- name: GetWorkspaceForUpdate :one
+-- Scheduling pause/resume reads the prior state under this lock, so the caller
+-- that flips it is the only one that sees a transition.
+SELECT * FROM workspace
+WHERE id = $1
+FOR UPDATE;
+
 -- name: GetWorkspaceBySlug :one
 SELECT * FROM workspace
 WHERE slug = $1;

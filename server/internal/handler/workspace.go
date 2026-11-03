@@ -108,6 +108,10 @@ type WorkspaceResponse struct {
 	AvatarURL   *string `json:"avatar_url"`
 	CreatedAt   string  `json:"created_at"`
 	UpdatedAt   string  `json:"updated_at"`
+	// SchedulingPausedAt / SchedulingPausedBy are set while an owner or admin
+	// holds claims for every agent in the workspace. Both null when scheduling runs.
+	SchedulingPausedAt *string `json:"scheduling_paused_at"`
+	SchedulingPausedBy *string `json:"scheduling_paused_by"`
 }
 
 func (h *Handler) workspaceToResponse(w db.Workspace) WorkspaceResponse {
@@ -137,6 +141,9 @@ func (h *Handler) workspaceToResponse(w db.Workspace) WorkspaceResponse {
 		AvatarURL:   h.resolveAvatarURLPtr(textToPtr(w.AvatarUrl)),
 		CreatedAt:   timestampToString(w.CreatedAt),
 		UpdatedAt:   timestampToString(w.UpdatedAt),
+
+		SchedulingPausedAt: timestampToPtr(w.SchedulingPausedAt),
+		SchedulingPausedBy: uuidToPtr(w.SchedulingPausedBy),
 	}
 }
 
