@@ -11,6 +11,53 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const claimGitHubPRClosedReplays = `-- name: ClaimGitHubPRClosedReplays :many
+UPDATE github_pr_closed_replay AS owed
+SET attempted_at = now()
+WHERE (owed.installation_id, owed.repo_owner, owed.repo_name, owed.pr_number) IN (
+    SELECT c.installation_id, c.repo_owner, c.repo_name, c.pr_number
+    FROM github_pr_closed_replay AS c
+    ORDER BY c.attempted_at
+    LIMIT $1
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING owed.installation_id, owed.repo_owner, owed.repo_name, owed.pr_number
+`
+
+type ClaimGitHubPRClosedReplaysRow struct {
+	InstallationID int64  `json:"installation_id"`
+	RepoOwner      string `json:"repo_owner"`
+	RepoName       string `json:"repo_name"`
+	PrNumber       int32  `json:"pr_number"`
+}
+
+// Least recently attempted first. Claiming stamps attempted_at, so replays that
+// keep failing rotate behind newer ones instead of pinning the batch.
+func (q *Queries) ClaimGitHubPRClosedReplays(ctx context.Context, limit int32) ([]ClaimGitHubPRClosedReplaysRow, error) {
+	rows, err := q.db.Query(ctx, claimGitHubPRClosedReplays, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ClaimGitHubPRClosedReplaysRow{}
+	for rows.Next() {
+		var i ClaimGitHubPRClosedReplaysRow
+		if err := rows.Scan(
+			&i.InstallationID,
+			&i.RepoOwner,
+			&i.RepoName,
+			&i.PrNumber,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const claimGitHubPRsDueForRecheck = `-- name: ClaimGitHubPRsDueForRecheck :many
 WITH candidates AS (
     SELECT pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number,
@@ -374,46 +421,6 @@ func (q *Queries) ListConflictWatchedGitHubPRNumbersInRepo(ctx context.Context, 
 			return nil, err
 		}
 		items = append(items, pr_number)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listGitHubPRClosedReplayPending = `-- name: ListGitHubPRClosedReplayPending :many
-SELECT installation_id, repo_owner, repo_name, pr_number
-FROM github_pr_closed_replay
-ORDER BY requested_at
-LIMIT $1
-`
-
-type ListGitHubPRClosedReplayPendingRow struct {
-	InstallationID int64  `json:"installation_id"`
-	RepoOwner      string `json:"repo_owner"`
-	RepoName       string `json:"repo_name"`
-	PrNumber       int32  `json:"pr_number"`
-}
-
-// Oldest first; the sweep retries each address through the replay callback.
-func (q *Queries) ListGitHubPRClosedReplayPending(ctx context.Context, limit int32) ([]ListGitHubPRClosedReplayPendingRow, error) {
-	rows, err := q.db.Query(ctx, listGitHubPRClosedReplayPending, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListGitHubPRClosedReplayPendingRow{}
-	for rows.Next() {
-		var i ListGitHubPRClosedReplayPendingRow
-		if err := rows.Scan(
-			&i.InstallationID,
-			&i.RepoOwner,
-			&i.RepoName,
-			&i.PrNumber,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

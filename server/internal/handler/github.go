@@ -2165,7 +2165,10 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		}
 	}
 	if githubFeaturesEnabled(ws) && pr.HeadRepoSame && !linkPolicy.indeterminate {
-		if state == "merged" && prevState != "merged" {
+		// An owed closed-PR replay runs after an earlier attempt may have failed
+		// past the commit: the links are unchanged but the auto-completion they
+		// owe may not have run (CHE-3402). A plain redelivery stays a no-op.
+		if state == "merged" && (prevState != "merged" || isOwedClosedReplay(ctx)) {
 			for _, issueID := range closingIssueIDs {
 				touched[issueID] = struct{}{}
 			}

@@ -634,9 +634,9 @@ func (manager *Manager) sweepClosedReplays(ctx context.Context) {
 	if manager.onClosed == nil {
 		return
 	}
-	owed, err := manager.queries.ListGitHubPRClosedReplayPending(ctx, int32(manager.sweepMaxRows))
+	owed, err := manager.queries.ClaimGitHubPRClosedReplays(ctx, int32(manager.sweepMaxRows))
 	if err != nil {
-		slog.Warn("ghsnapshot: list owed closed replays failed", "err", err.Error())
+		slog.Warn("ghsnapshot: claim owed closed replays failed", "err", err.Error())
 		return
 	}
 	for _, r := range owed {

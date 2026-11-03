@@ -137,6 +137,9 @@ func TestGitHubReplayClosedPullRequestStaysOwedUntilItFinishes(t *testing.T) {
 	if err := handler.replayClosedPullRequest(context.Background(), 2019001, "acme", "widget", 2019); err != nil {
 		t.Fatal(err)
 	}
+	if status := issueStatusForTest(t, fixture.issueID); status != "done" {
+		t.Fatalf("linked issue status after retry = %q, want done (auto-completion owed by the merge)", status)
+	}
 	if got := owed(); got != 0 {
 		t.Fatalf("owed replays after retry = %d, want 0", got)
 	}

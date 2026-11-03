@@ -134,6 +134,16 @@ func pullRequestReplayEvent(raw json.RawMessage, action string, installationID i
 	return body, err == nil
 }
 
+type owedClosedReplayKey struct{}
+
+// isOwedClosedReplay reports whether the event is an owed closed-PR replay. Its
+// retry re-offers the closing issues to auto-completion, which a failed earlier
+// attempt may not have reached.
+func isOwedClosedReplay(ctx context.Context) bool {
+	owed, _ := ctx.Value(owedClosedReplayKey{}).(bool)
+	return owed
+}
+
 // replayClosedPullRequest is the refresh pipeline's onClosed callback
 // (CHE-3402). A PR closed on GitHub whose closed delivery never landed stays
 // open in the mirror, and GitHub does not redeliver it on its own. The current
@@ -160,7 +170,7 @@ func (h *Handler) replayClosedPullRequest(ctx context.Context, installationID in
 	if err := h.Queries.MarkGitHubPRClosedReplayPending(ctx, params); err != nil {
 		return fmt.Errorf("github: record owed closed pull request replay: %w", err)
 	}
-	if err := h.handlePullRequestEvent(ctx, body); err != nil {
+	if err := h.handlePullRequestEvent(context.WithValue(ctx, owedClosedReplayKey{}, true), body); err != nil {
 		return err
 	}
 	if err := h.Queries.ClearGitHubPRClosedReplayPending(ctx, db.ClearGitHubPRClosedReplayPendingParams(params)); err != nil {

@@ -298,9 +298,16 @@ ON CONFLICT DO NOTHING;
 DELETE FROM github_pr_closed_replay
 WHERE installation_id = $1 AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4;
 
--- name: ListGitHubPRClosedReplayPending :many
--- Oldest first; the sweep retries each address through the replay callback.
-SELECT installation_id, repo_owner, repo_name, pr_number
-FROM github_pr_closed_replay
-ORDER BY requested_at
-LIMIT $1;
+-- name: ClaimGitHubPRClosedReplays :many
+-- Least recently attempted first. Claiming stamps attempted_at, so replays that
+-- keep failing rotate behind newer ones instead of pinning the batch.
+UPDATE github_pr_closed_replay AS owed
+SET attempted_at = now()
+WHERE (owed.installation_id, owed.repo_owner, owed.repo_name, owed.pr_number) IN (
+    SELECT c.installation_id, c.repo_owner, c.repo_name, c.pr_number
+    FROM github_pr_closed_replay AS c
+    ORDER BY c.attempted_at
+    LIMIT $1
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING owed.installation_id, owed.repo_owner, owed.repo_name, owed.pr_number;

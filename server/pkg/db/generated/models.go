@@ -1169,6 +1169,7 @@ type GithubPrClosedReplay struct {
 	RepoName       string             `json:"repo_name"`
 	PrNumber       int32              `json:"pr_number"`
 	RequestedAt    pgtype.Timestamptz `json:"requested_at"`
+	AttemptedAt    pgtype.Timestamptz `json:"attempted_at"`
 }
 
 type GithubPullRequest struct {

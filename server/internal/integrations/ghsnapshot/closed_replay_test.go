@@ -128,3 +128,34 @@ func TestSweepRetriesOwedClosedReplays(t *testing.T) {
 		t.Fatalf("cleared replay handed to the callback again: %+v", got)
 	}
 }
+
+// Replays that keep failing rotate behind newer ones: with room for one per
+// sweep, every owed address is still handed out within two sweeps.
+func TestSweepRotatesOwedClosedReplays(t *testing.T) {
+	pool := testDBPool(t)
+	queries := db.New(pool)
+	ctx := context.Background()
+	const installationID = int64(3402002)
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM github_pr_closed_replay WHERE installation_id=$1`, installationID)
+	})
+	for _, number := range []int32{1, 2} {
+		if err := queries.MarkGitHubPRClosedReplayPending(ctx, db.MarkGitHubPRClosedReplayPendingParams{InstallationID: installationID, RepoOwner: "o", RepoName: "r", PrNumber: number}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	m := NewManager(enabledClient(t), queries, pool, nil)
+	m.sweepMaxRows = 1
+	seen := map[int32]bool{}
+	m.SetOnClosed(func(_ context.Context, id int64, _, _ string, n int32) {
+		if id == installationID {
+			seen[n] = true
+		}
+	})
+	m.sweepClosedReplays(ctx)
+	m.sweepClosedReplays(ctx)
+	if !seen[1] || !seen[2] {
+		t.Fatalf("owed replays handed out over two one-slot sweeps = %v, want both", seen)
+	}
+}
