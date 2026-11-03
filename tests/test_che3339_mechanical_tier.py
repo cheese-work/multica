@@ -34,6 +34,8 @@ case "$path" in
   *) echo "unexpected path $path" >&2; exit 1 ;;
 esac
 jq -rc "$q" "$FIXTURE_FILE" | jq -rc "$filter"
+# A listed path answers with its data and then fails, like a later page or a dropped connection.
+if jq -e --arg p "$path" '(.fail // []) | index($p)' "$FIXTURE_FILE" >/dev/null; then exit 42; fi
 """
 A, B, C = "a" * 40, "b" * 40, "c" * 40
 OLD, FRESH = "2026-11-03T08:00:00Z", "2026-11-03T09:00:05Z"
@@ -231,6 +233,27 @@ class ReceiptRefreshAfterCi(unittest.TestCase):
         fx = find_fixture(open_prs=range(100, 112), fresh=set(range(100, 112)))
         got = self.find("workflow_run", fx, HEAD_SHA="d" * 40, RUN_NAME="security-gate")
         self.assertEqual(sorted(t["pr"] for t in got), [8, *range(100, 112)])
+
+    def assert_find_fails_without_naming_a_partial_list(self, fail_path, **fixture_args):
+        fx = find_fixture(open_prs=range(100, 104), fresh={100, 101}, **fixture_args)
+        fx["fail"] = [fail_path]
+        done, targets = self.run_find("workflow_run", fx, HEAD_SHA="d" * 40, RUN_NAME="security-gate")
+        self.assertNotEqual(done.returncode, 0, done.stdout)
+        self.assertIsNone(targets)
+
+    def test_a_gate_run_with_no_open_pull_requests_names_nothing(self):
+        fx = find_fixture()
+        fx["open"] = []
+        self.assertEqual(self.find("workflow_run", fx, HEAD_SHA="d" * 40, RUN_NAME="security-gate"), [])
+
+    def test_a_pagination_failure_after_a_partial_page_fails_the_job(self):
+        self.assert_find_fails_without_naming_a_partial_list("repos/o/r/pulls?state=open&per_page=100")
+
+    def test_a_failed_status_read_fails_the_job(self):
+        self.assert_find_fails_without_naming_a_partial_list(f"repos/o/r/commits/{sha(100)}/statuses?per_page=100")
+
+    def test_a_failed_pull_request_read_fails_the_job_instead_of_dropping_it(self):
+        self.assert_find_fails_without_naming_a_partial_list("repos/o/r/pulls/100")
 
     def test_more_pull_requests_than_a_matrix_can_hold_fails_the_job_instead_of_dropping_some(self):
         fx = find_fixture(open_prs=range(100, 400), fresh=set(range(100, 400)))

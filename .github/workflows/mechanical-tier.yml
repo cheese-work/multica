@@ -66,20 +66,27 @@ jobs:
             if [ -z "$numbers" ] && [ "$RUN_NAME" = security-gate ]; then
               # Comment and merge-queue gate runs report the default-branch SHA. The status they post lands on the PR head.
               # Check every open PR (paginated); a limit here would leave a receipt stale with no retry.
+              # Capture each API read in an assignment so a failed request or page fails the job (set -e). A pipe or
+              # process substitution would hide the failure and leave a partial list.
+              open_prs="$(gh api "$repo/pulls?state=open&per_page=100" --paginate --jq '.[] | "\(.number) \(.head.sha)"')"
               while read -r n head; do
+                if [ -z "$n" ]; then continue; fi
                 fresh="$(gh api "$repo/commits/$head/statuses?per_page=100" \
                   --jq '[.[] | select(.context == "security-gate" and .updated_at >= env.RUN_CREATED)] | length')"
                 if [ "$fresh" -gt 0 ]; then numbers="$numbers $n"; fi
-              done < <(gh api "$repo/pulls?state=open&per_page=100" --paginate --jq '.[] | "\(.number) \(.head.sha)"')
+              done <<< "$open_prs"
             fi
-            # A matrix holds 256 jobs. Fail loudly rather than drop pull requests; a re-run covers the rest.
+            # A matrix holds 256 jobs. Fail loudly rather than drop pull requests. The excess is not retried by a
+            # re-run of the same event: re-run after fewer PRs are stale, or classify the rest by hand.
             if [ "$(echo $numbers | wc -w)" -gt 256 ]; then
               echo "More than 256 pull requests need a refresh; failing so none is dropped silently." >&2
               exit 1
             fi
-            targets="[$(for n in $numbers; do
-              gh api "$repo/pulls/$n" --jq '{pr: .number, base: .base.sha, head: .head.sha}'
-            done | paste -sd,)]"
+            items=""
+            for n in $numbers; do
+              items="$items$(gh api "$repo/pulls/$n" --jq '{pr: .number, base: .base.sha, head: .head.sha}'),"
+            done
+            targets="[${items%,}]"
           fi
           echo "targets=$targets" >> "$GITHUB_OUTPUT"
           echo "Pull requests to classify: $targets"
