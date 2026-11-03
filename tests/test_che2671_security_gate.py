@@ -131,12 +131,21 @@ class GateDecisionTest(unittest.TestCase):
         pr = {**PR, "base_ref": "release", "default_branch": "release"}
         self.assertEqual(self.run_gate([comment(verdict(base="main"))], pr=pr)[0], "pending")
 
-    def test_non_default_target_branch_fails(self):
-        # finding 1: only the protected default branch is supported
+    def test_stacked_base_is_pending_not_failed_and_never_passes(self):
+        # CHE-3035: a stacked layer is not gated yet. Pending (not failure) keeps the PR free of a red check, and
+        # not success keeps the head from reaching the default branch if the retarget event is ever missed.
         pr = {**PR, "base_ref": "evil", "default_branch": "main"}
-        state, why = self.run_gate([comment(verdict(base="evil"))], pr=pr)
-        self.assertEqual(state, "failure")
-        self.assertIn("main", why)
+        for comments in ([], [comment(verdict(base="evil"))]):
+            state, why = self.run_gate(comments, pr=pr)
+            self.assertEqual(state, "pending")
+            self.assertIn("not gated", why)
+            self.assertIn("main", why)
+
+    def test_retarget_to_default_runs_the_real_gate(self):
+        # CHE-3035: the same head, now based on main, is gated as before: a planted secret fails, no verdict is pending
+        self.assertEqual(self.run_gate([], diff=VULN_DIFF)[0], "failure")
+        self.assertEqual(self.run_gate([])[0], "pending")
+        self.assertEqual(self.run_gate([comment(verdict())])[0], "success")
 
     def test_verdict_missing_binding_fields_is_not_valid(self):
         old = "\n".join(l for l in verdict().splitlines() if not l.startswith(("Repo:", "PR:", "Base:")))
@@ -505,8 +514,49 @@ class WorkflowTest(unittest.TestCase):
         self.assertIn("edited", self.doc[True]["pull_request_target"]["types"])
         self.assertIn("deleted", self.doc[True]["issue_comment"]["types"])
 
+    # Mirrors the X99 runner hook /home/congvc/cheese-work-runners/hooks/job-started.sh: a comment runs only for
+    # OWNER, MEMBER or COLLABORATOR, or for the trusted bot's `Security-Gate-Verdict:` comment (which is NONE).
+    ALLOWED = ("OWNER", "MEMBER", "COLLABORATOR", "282619718", "'Bot'", "'Security-Gate-Verdict:'")
+    HOOK = Path("/home/congvc/cheese-work-runners/hooks/job-started.sh")
+
+    def test_refused_comment_authors_schedule_no_job(self):
+        # CHE-3035: skip at the job `if:` what the runner hook refuses, so no job is scheduled and no red check appears
+        cond = self.doc["jobs"]["security-gate"]["if"]
+        self.assertIn("github.event_name == 'pull_request_target'", cond)  # PR events are never filtered by author
+        for part in self.ALLOWED:
+            self.assertIn(part, cond)
+
+    def test_trusted_bot_verdict_comment_still_runs(self):
+        # The verdict bot's association is NONE (observed on PR #184). Filtering NONE alone would drop every
+        # verdict create/edit/delete and leave a revoked PASS in place.
+        cond = self.doc["jobs"]["security-gate"]["if"]
+        self.assertNotRegex(cond, r"author_association\s*!=\s*'NONE'")
+        self.assertIn("startsWith(github.event.comment.body, 'Security-Gate-Verdict:')", cond)
+
+    def test_job_filter_matches_the_runner_hook_allow_list(self):
+        if not self.HOOK.exists():
+            self.skipTest("runner hook not on this host")
+        hook = self.HOOK.read_text()
+        cond = self.doc["jobs"]["security-gate"]["if"]
+        for part in ("OWNER", "MEMBER", "COLLABORATOR", "282619718", "Security-Gate-Verdict:"):
+            self.assertIn(part, hook)
+            self.assertIn(part, cond)
+
+    def test_skipped_comment_cannot_cancel_a_real_evaluation(self):
+        # CHE-3035: a run cancels the in-flight run of its concurrency group before its `if:` is read. An ignored
+        # comment must land in its own group, or it cancels the real run and leaves no completed run behind it.
+        group = self.doc["concurrency"]["group"]
+        self.assertIn("github.run_id", group)
+        for part in self.ALLOWED:
+            self.assertIn(part, group)
+
     def test_merge_queue_commit_gets_the_status(self):
         self.assertIn("checks_requested", self.doc[True]["merge_group"]["types"])
+
+    def test_comment_filter_and_group_keep_the_merge_queue_path(self):
+        # CHE-3035 x CHE-3317: the author filter and the ignored-comment group must not drop or collide merge_group runs
+        self.assertIn("github.event_name == 'merge_group'", self.doc["jobs"]["security-gate"]["if"])
+        self.assertIn("github.event.merge_group.head_sha", self.doc["concurrency"]["group"])
 
     def test_only_status_write_is_added(self):
         self.assertEqual(self.doc["permissions"], {"contents": "read", "pull-requests": "read", "statuses": "write"})
