@@ -1861,6 +1861,8 @@
     "recorded_for": "{{issue}} に記録",
     "option_n": "選択肢 {{number}}",
     "jump_to_card": "カードへ移動",
+    "jump_to_ask": "質問へ移動",
+    "jump_to_answer": "回答へ移動",
     "answered_in_dm": "DM での回答",
     "private_dm": "非公開 DM から",
     "disclaim_action": "撤回",

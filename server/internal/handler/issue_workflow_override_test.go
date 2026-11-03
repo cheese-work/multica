@@ -35,7 +35,7 @@ func putIssueWorkflow(t *testing.T, issueID, workflowID string) *testutil.Respon
 	if workflowID != "" {
 		body["workflow_id"] = workflowID
 	}
-	req := withURLParam(newRequest("PUT", "/api/issues/"+issueID+"/workflow", body), "id", issueID)
+	req := withURLParam(withActorSource(newRequest("PUT", "/api/issues/"+issueID+"/workflow", body), "interactive_jwt"), "id", issueID)
 	return testutil.Call(t, testHandler.SetIssueWorkflow, req)
 }
 

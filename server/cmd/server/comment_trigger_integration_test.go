@@ -297,11 +297,12 @@ func TestCommentTriggerOnComment(t *testing.T) {
 
 	t.Run("top-level comment mentioning only others suppresses trigger", func(t *testing.T) {
 		clearTasks(t, issueID)
-		// Mention a fake agent UUID that is not the assignee.
-		content := "[@SomeoneElse](mention://agent/00000000-0000-0000-0000-000000000001) what do you think?"
+		// Mention a real agent that is not the assignee.
+		other := createSecondAgent(t)
+		content := fmt.Sprintf("[@SomeoneElse](mention://agent/%s) what do you think?", other)
 		postComment(t, issueID, content, nil)
-		if n := countPendingTasks(t, issueID); n != 0 {
-			t.Errorf("expected 0 pending tasks, got %d", n)
+		if n := countPendingTasksForAgent(t, issueID, agentID); n != 0 {
+			t.Errorf("expected 0 pending tasks for the assignee, got %d", n)
 		}
 	})
 

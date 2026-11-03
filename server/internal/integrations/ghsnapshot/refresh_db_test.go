@@ -877,8 +877,12 @@ func TestRESTSnapshotRefreshStoresResultsAndPreservesThemOnPermissionFailure(t *
 				conclusion = "failure"
 			}
 			_, _ = fmt.Fprintf(w, `{"total_count":1,"check_runs":[{"id":1,"head_sha":"sha1","name":"ci","status":"completed","conclusion":%q}]}`, conclusion)
-		case "/repos/o/r/commits/sha1/status":
+		case "/repos/o/r/commits/sha1/status", "/repos/o/r/commits/base-tip/status":
 			_, _ = w.Write([]byte(`{"total_count":0,"statuses":[]}`))
+		case "/repos/o/r/rules/branches/release/1.x":
+			_, _ = w.Write([]byte(`[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"ci"}]}}]`))
+		case "/repos/o/r/commits/base-tip/check-runs":
+			_, _ = w.Write([]byte(`{"total_count":1,"check_runs":[{"id":9,"head_sha":"base-tip","name":"ci","status":"completed","conclusion":"failure"}]}`))
 		default:
 			t.Errorf("unexpected request: %s", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -899,8 +903,85 @@ func TestRESTSnapshotRefreshStoresResultsAndPreservesThemOnPermissionFailure(t *
 		if got.SnapshotHeadSha != "sha1" || !got.SnapshotFetchedAt.Valid || got.ChecksRollupState.String != want || checkRunCount(t, pool, pr.ID) != 1 {
 			t.Fatalf("phase %d: stored snapshot=%+v, want %s", i, got, want)
 		}
+		if want == "FAILURE" {
+			var cause *string
+			if err := pool.QueryRow(ctx, `SELECT red_cause FROM github_pull_request_check_run WHERE pr_id=$1`, pr.ID).Scan(&cause); err != nil {
+				t.Fatal(err)
+			}
+			if cause == nil || *cause != CauseInfra {
+				t.Fatalf("phase %d: stored red_cause=%v, want %q: required check also red on the base tip (CHE-3257)", i, cause, CauseInfra)
+			}
+		}
 	}
 	if applied != 2 || len(m.rateUntil) != 0 {
 		t.Fatalf("permission failure must preserve snapshot without notification or installation pause: applied=%d limits=%v", applied, m.rateUntil)
+	}
+}
+
+// CHE-3257: a required check stored red on a head that comes back green on the
+// same head is marked flaky, and the mark survives later green snapshots, so
+// the workflow can still park an issue that pr.checks_red already moved. A
+// check that was never red stays unmarked.
+func TestRESTSnapshotRefreshMarksGreenRerunOfRedHeadAsFlaky(t *testing.T) {
+	pool := testDBPool(t)
+	q := db.New(pool)
+	ctx := context.Background()
+	pr := seedPRAt(t, pool, q, 1, "r", 5, "sha1")
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM github_pull_request_check_run WHERE pr_id=$1`, pr.ID)
+		_, _ = pool.Exec(ctx, `DELETE FROM github_pull_request WHERE id=$1`, pr.ID)
+	})
+	var phase atomic.Int32
+	srv := snapshotServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/o/r/pulls/5":
+			writeTestPR(w, "sha1", true, "clean")
+		case "/repos/o/r/commits/sha1/check-runs":
+			conclusion := "success"
+			if phase.Load() == 0 {
+				conclusion = "failure"
+			}
+			_, _ = fmt.Fprintf(w, `{"total_count":2,"check_runs":[{"id":1,"head_sha":"sha1","name":"ci","status":"completed","conclusion":%q},{"id":2,"head_sha":"sha1","name":"lint","status":"completed","conclusion":"success"}]}`, conclusion)
+		case "/repos/o/r/commits/sha1/status", "/repos/o/r/commits/base-tip/status":
+			_, _ = w.Write([]byte(`{"total_count":0,"statuses":[]}`))
+		case "/repos/o/r/rules/branches/release/1.x":
+			_, _ = w.Write([]byte(`[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"ci"},{"context":"lint"}]}}]`))
+		case "/repos/o/r/commits/base-tip/check-runs":
+			_, _ = w.Write([]byte(`{"total_count":0,"check_runs":[]}`))
+		default:
+			t.Errorf("unexpected request: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	defer srv.Close()
+	m := NewManager(newTestClient(t, srv.URL), q, pool, func(context.Context, pgtype.UUID) {})
+	m.jitter = func() time.Duration { return 0 }
+	addr := address{InstallationID: 1, Owner: "o", Repo: "r", Number: 5}
+	causes := func() map[string]string {
+		rows, err := pool.Query(ctx, `SELECT name, COALESCE(red_cause, '') FROM github_pull_request_check_run WHERE pr_id=$1`, pr.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		got := map[string]string{}
+		for rows.Next() {
+			var name, cause string
+			if err := rows.Scan(&name, &cause); err != nil {
+				t.Fatal(err)
+			}
+			got[name] = cause
+		}
+		return got
+	}
+	for i, want := range []map[string]string{
+		{"ci": CausePR, "lint": ""},
+		{"ci": CauseFlaky, "lint": ""},
+		{"ci": CauseFlaky, "lint": ""},
+	} {
+		phase.Store(int32(i))
+		m.process(ctx, addr)
+		if got := causes(); got["ci"] != want["ci"] || got["lint"] != want["lint"] {
+			t.Fatalf("snapshot %d: red_cause = %v, want %v", i, got, want)
+		}
 	}
 }

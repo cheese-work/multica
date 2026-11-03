@@ -11,6 +11,8 @@ export interface OpenDecisionRequest {
   created_at: string;
   chat_session_id: string;
   message_id: string | null;
+  source_comment_id?: string | null;
+  options?: DecisionRequestOption[];
 }
 
 /** One answer button on an open decision card. */

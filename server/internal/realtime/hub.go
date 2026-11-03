@@ -737,6 +737,16 @@ func authenticateToken(tokenStr string, pr PATResolver, ctx context.Context) (st
 	if auth.IsTemporarilyDisabledUser(uid, email) {
 		return "", `{"error":"account disabled"}`
 	}
+	// A revoked JWT must not open a socket. Resolvers that cannot read the
+	// generation (tests) skip the check; the production resolver reads it.
+	if reader, ok := pr.(auth.SessionGenerationReader); ok {
+		if err := auth.CheckSessionGeneration(ctx, reader, claims, true); err != nil {
+			if errors.Is(err, auth.ErrStaleSession) {
+				return "", `{"error":"session revoked"}`
+			}
+			return "", `{"error":"session check unavailable"}`
+		}
+	}
 	return uid, ""
 }
 
@@ -817,8 +827,11 @@ func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, resolveSlug
 		uid, errMsg := authenticateToken(cookie.Value, pr, r.Context())
 		if errMsg != "" {
 			status := http.StatusUnauthorized
-			if errMsg == `{"error":"account disabled"}` {
+			switch errMsg {
+			case `{"error":"account disabled"}`:
 				status = http.StatusForbidden
+			case `{"error":"session check unavailable"}`:
+				status = http.StatusServiceUnavailable
 			}
 			http.Error(w, errMsg, status)
 			return

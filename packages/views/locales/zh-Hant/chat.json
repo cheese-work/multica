@@ -1,4 +1,11 @@
 {
+  "decision_banner": {
+    "title": "需要你做決定",
+    "waiting": "代理尚未傳送決策卡片。",
+    "queued_since": "自 {{time}} 起排隊中",
+    "running_since": "自 {{time}} 起執行中",
+    "no_run": "沒有進行中的執行。"
+  },
   "needs_you": {
     "title": "待你決定",
     "loading": "正在載入待處理請求…",
@@ -62,7 +69,25 @@
     "remove": "移除排隊訊息",
     "more": "更多佇列操作",
     "fallback": "排隊訊息",
+    "steer_starting": "執行正在啟動",
+    "steer_unsupported": "此執行無法接收新訊息。訊息仍在佇列中。",
+    "stop_and_send": "停止並傳送",
     "action_failed_toast": "無法更新排隊訊息"
+  },
+  "supplement": {
+    "added": "已加入執行",
+    "read": "智慧體已讀",
+    "read_twice": "智慧體已讀；也已重新傳送，智慧體可能會看到兩次",
+    "not_received": "未收到",
+    "unconfirmed": "送達未確認",
+    "resent": "已作為新執行重新傳送",
+    "send_new_run": "作為新執行傳送",
+    "send_again_anyway": "仍然重新傳送",
+    "confirm_title": "重新傳送此訊息？",
+    "confirm_body": "智慧體可能已經收到此訊息。重新傳送可能導致智慧體處理兩次。",
+    "confirm_send": "重新傳送",
+    "cancel": "取消",
+    "resend_failed_toast": "無法重新傳送訊息"
   },
   "message_list": {
     "show_details": "檢視詳情",
@@ -293,7 +318,8 @@
     "more_actions": "更多操作",
     "statistics": "統計",
     "pin": "置頂對話",
-    "unpin": "取消置頂對話"
+    "unpin": "取消置頂對話",
+    "preset": { "label": "預設", "inherit": "繼承", "base": "基礎" }
   },
   "scheduled": {
     "chip": "已排程 {{count}}",
@@ -347,7 +373,9 @@
     "answer_send": "傳送",
     "answer_error": "傳送失敗，請重試。",
     "answer_helper": "傳送會將你的回答發佈到 {{issue}}。給 DM 代理的問題請寫在下方訊息框。",
-    "answer_hint": "Enter 傳送 · Shift+Enter 換行",
+    "answer_helper_issue": "傳送會將你的回答發佈到 {{issue}}。",
+    "answer_hint": "{{shortcut}} 傳送",
+    "answer_too_long": "回答超過 8 KB。縮短後才能傳送。",
     "answer_offline": "你已離線。回答已保留，重新連線後即可傳送。",
     "answer_conflict": "此卡片已無法接收你的回答，例如已被先回答。你的草稿未被發佈。你的草稿：",
     "answer_discard": "捨棄草稿",
@@ -366,11 +394,11 @@
       "approved": "你已批准",
       "download": "下載",
       "download_label": "下載 {{name}}",
+      "open_label": "開啟 {{name}}",
       "hash_verified": "雜湊已驗證",
       "sha": "SHA",
       "viewer_label": "閱讀檔案",
-      "viewer_hint": "選擇一個分頁即可在此閱讀檔案。",
-      "tab_changes": "自 {{previous}} 以來的變更",
+      "tab_changes": "變更",
       "tab_preview": "預覽",
       "signed_by": "{{label}} 已由 {{reviewer}} 簽署",
       "not_signed": "{{label}} 尚未簽署",
