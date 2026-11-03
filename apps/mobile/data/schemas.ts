@@ -437,7 +437,7 @@ export const EMPTY_TASK_MESSAGE_LIST: TaskMessagePayload[] = [];
 // (root CLAUDE.md "Enum drift downgrades, not crashes"): unknown values fall
 // back to "title" so the row still renders without a snippet line.
 
-const SearchIssueResultSchema = IssueSchema.safeExtend({
+const SearchIssueResultSchema = IssueSchema.unwrap().safeExtend({
   match_source: z.enum(["title", "description", "comment"]).catch("title"),
   matched_snippet: z.string().optional(),
 });
