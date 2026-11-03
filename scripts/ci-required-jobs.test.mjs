@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 // CHE-3279 (CI economy S5c): the required PR checks stay a small fast lane. Static checks only;
-// the 15 min p90 itself is measured from run data (docs/ci-latency in the PR), not asserted here.
-const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+// the 15 min p90 itself is measured from run data (see the PR body), not asserted here.
+const file = (path) => new URL(`../${path}`, import.meta.url);
+// A missing file reads as empty so the failing test names the file in an assertion, not a load error.
+const read = (path) => (existsSync(file(path)) ? readFileSync(file(path), "utf8") : "");
 const ci = read(".github/workflows/ci.yml");
 const policy = read(".github/ci-policy.yml");
 
@@ -22,12 +24,26 @@ const job = (id) => {
   const body = ci.slice(ci.indexOf(header) + header.length);
   return body.split(/\n  [a-z][\w-]*:\n/)[0];
 };
-const needs = (id) => {
-  const match = job(id).match(/^    needs: \[([^\]]*)\]/m);
-  return match ? match[1].split(",").map((s) => s.trim()).filter(Boolean) : [];
+// Value of a job-level key (4-space indent), joined across continuation and block-list lines.
+const jobKey = (id, key) => {
+  const lines = job(id).split("\n");
+  const at = lines.findIndex((line) => line.startsWith(`    ${key}:`));
+  if (at === -1) return "";
+  const rest = [];
+  for (const line of lines.slice(at + 1)) {
+    if (/^    \S/.test(line)) break;
+    rest.push(line);
+  }
+  return [lines[at].slice(`    ${key}:`.length), ...rest].join(" ");
 };
+const needs = (id) => jobKey(id, "needs").replace(/#[^\n]*/g, "").split(/[\s,\[\]]+/).filter((name) => name && name !== "-");
 const requiredChecks = () => section(policy, "required_checks:", "\nstatus_contexts:")
   .split("\n").map((l) => l.match(/^\s+- (\S+)/)?.[1]).filter(Boolean);
+
+test("ci.yml and ci-policy.yml exist", () => {
+  assert.ok(ci.length > 0, ".github/workflows/ci.yml is missing");
+  assert.ok(policy.length > 0, ".github/ci-policy.yml is missing");
+});
 
 test("ci.yml runs on pull_request and merge_group without trigger path filters", () => {
   const on = section(ci, "\non:\n", "\nconcurrency:");
@@ -48,7 +64,7 @@ test("the ci.yml required check waits only on fast-lane jobs and is not push-onl
     const deps = needs(name);
     assert.ok(deps.length > 0, `${name} has no needs`);
     for (const dep of deps) assert.ok(FAST_LANE_DEPS.has(dep), `${name} waits on ${dep}`);
-    assert.doesNotMatch(job(name), /^    if:.*github\.event_name/m, `${name} restricts its event`);
+    assert.doesNotMatch(jobKey(name, "if"), /github\.event_name/, `${name} restricts its event`);
   }
 });
 
