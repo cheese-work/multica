@@ -95,6 +95,9 @@ type RunBudgetExhausted struct {
 	IssueID pgtype.UUID
 	Runs    int64
 	Max     int
+	// Balance is the admitted run balance the refusal read; the suggested raise
+	// starts from it, not from Runs.
+	Balance int64
 	Since   time.Time
 	Status  string
 	Target  RunTarget
@@ -143,9 +146,10 @@ func SetOnRunBudgetEvent(fn func(context.Context, RunBudgetEvent)) {
 	onRunBudgetEvent.Store(&fn)
 }
 
-// runBudgetWarnAt is the run count that triggers the 80% warning.
+// runBudgetWarnAt is the balance that triggers the 80% warning: what is left
+// when the cap is 80% spent.
 func runBudgetWarnAt(max int) int64 {
-	return int64((max*4 + 4) / 5)
+	return int64(max) - int64((max*4+4)/5)
 }
 
 // noteRunInserted fires the 80% warning when the task row q just inserted is the
@@ -170,8 +174,9 @@ func noteRunInserted(ctx context.Context, q *db.Queries, issueID, taskID pgtype.
 	if err != nil {
 		return nil
 	}
-	usage, err := loadRunBudgetUsage(ctx, q, issue)
-	if err != nil || usage == nil || usage.Runs != runBudgetWarnAt(usage.Max) {
+	// The debit above is in the transaction, so the peek sees it.
+	_, usage, left, err := openRunBudget(readOnlyRunBudget(ctx), q, issueID, pgtype.UUID{})
+	if err != nil || usage == nil || left != runBudgetWarnAt(usage.Max) {
 		return nil
 	}
 	// A failed read leaves Xid 0: the handler then only counts committed runs.
@@ -249,11 +254,31 @@ func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID, tar
 		// The guard runs inside the enqueue transaction; the hook writes the
 		// issue on its own connection after the caller is done with it.
 		go (*hook)(context.WithoutCancel(ctx), RunBudgetExhausted{
-			IssueID: issue.ID, Runs: runs, Max: max, Since: usage.Since,
+			IssueID: issue.ID, Runs: runs, Max: max, Balance: balance, Since: usage.Since,
 			Status: issue.Status, Target: target, TokensSpent: tokensSpent && balance >= 1, Tokens: tokens,
 		})
 	}
 	return ReviewGate{}, ErrRunBudgetExhausted
+}
+
+// RunBudgetStillRefuses reports whether the window a refusal was for is still
+// the issue's current window and still refuses a run. A top-up opens a new
+// window and a progress grant restores balance, so the refusal's delayed
+// callback checks this before it writes.
+func RunBudgetStillRefuses(ctx context.Context, q *db.Queries, issueID pgtype.UUID, since time.Time) (bool, error) {
+	ctx = readOnlyRunBudget(ctx)
+	issue, usage, balance, err := openRunBudget(ctx, q, issueID, pgtype.UUID{})
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (usage == nil || !usage.Since.Equal(since))) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("run budget: %w", err)
+	}
+	if balance < 1 {
+		return true, nil
+	}
+	_, tokensSpent, err := tokenBalanceSpent(ctx, q, issue, usage)
+	return tokensSpent, err
 }
 
 // IsReviewStatus reports whether a status hands the issue to its reviewer: the

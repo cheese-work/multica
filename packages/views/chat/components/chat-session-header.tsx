@@ -45,6 +45,7 @@ import { ActorAvatar } from "../../common/actor-avatar";
 import { AppLink } from "../../navigation";
 import { useT } from "../../i18n";
 import { ChatContextMeter } from "./chat-context-meter";
+import { ChatPresetPicker } from "./chat-preset-picker";
 import { ScheduledWakeupsChip } from "./scheduled-wakeups-chip";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 
@@ -64,6 +65,7 @@ export function ChatSessionHeader({
   renameRequest = 0,
   autoCompactThresholdPct = null,
   onCompact,
+  onSetPreset,
 }: {
   session: ChatSession;
   agent: Agent | null;
@@ -82,6 +84,8 @@ export function ChatSessionHeader({
   autoCompactThresholdPct?: number | null;
   /** Sends /compact. Omit to hide the "Compact now" item. */
   onCompact?: () => void;
+  /** Sends `/preset <reset|base|name>`. Omit to hide the preset picker. */
+  onSetPreset?: (name: string) => void;
 }) {
   const { t } = useT("chat");
   const { t: tCommon } = useT("common");
@@ -263,6 +267,14 @@ export function ChatSessionHeader({
           tokens={session.context_tokens}
           window={session.context_window}
           thresholdPct={autoCompactThresholdPct}
+        />
+      )}
+
+      {isArchived || !agent || !onSetPreset ? null : (
+        <ChatPresetPicker
+          agentId={agent.id}
+          current={session.preset_name ?? null}
+          onSelect={onSetPreset}
         />
       )}
 

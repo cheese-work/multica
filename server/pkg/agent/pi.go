@@ -744,6 +744,13 @@ func (b *piBackend) Execute(ctx context.Context, prompt string, opts ExecOptions
 		if scanErr != nil || cleanup.tools.Load() > 0 || processCtx.Err() != nil {
 			cleanupErr = finishCleanup()
 		} else {
+			// The runtime exited on its own, but stderr can still hold unread
+			// output such as the resume refusal. Drain it before closePipes
+			// discards it; the deadline bounds a descendant holding stderr open.
+			if pipe, ok := stderrRead.(interface{ SetReadDeadline(time.Time) error }); ok &&
+				pipe.SetReadDeadline(time.Now().Add(250*time.Millisecond)) == nil {
+				<-stderrDone
+			}
 			cleanupErr = cleanup.complete(closeStdin, closePipes)
 		}
 		<-stderrDone

@@ -94,12 +94,34 @@ SELECT pr.state::text AS state,
        COALESCE(pr.checks_rollup_state, '')::text AS checks_rollup_state,
        (pr.snapshot_head_sha <> '' AND pr.snapshot_head_sha = pr.head_sha)::boolean AS head_fresh,
        pr.snapshot_head_sha::text AS head_sha,
-       (CASE WHEN pr.review_head_sha = pr.head_sha THEN pr.review_state ELSE '' END)::text AS review
+       pr.head_sha::text AS pr_head_sha,
+       (CASE WHEN pr.review_head_sha = pr.head_sha THEN pr.review_state ELSE '' END)::text AS review,
+       (CASE
+          WHEN f.failing = 0 AND f.flaky > 0 THEN 'flaky'
+          WHEN f.failing = 0 THEN ''
+          WHEN f.pr > 0 THEN 'pr'
+          WHEN f.unknown > 0 THEN 'unknown'
+          WHEN f.infra > 0 THEN 'infra'
+          ELSE 'optional'
+        END)::text AS red_cause
 FROM github_pull_request pr
 JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
+CROSS JOIN LATERAL (
+    SELECT count(*) FILTER (WHERE c.failing) AS failing,
+           count(*) FILTER (WHERE c.failing AND c.red_cause = 'pr') AS pr,
+           count(*) FILTER (WHERE c.failing AND c.red_cause IS NULL) AS unknown,
+           count(*) FILTER (WHERE c.failing AND c.red_cause = 'infra') AS infra,
+           count(*) FILTER (WHERE NOT c.failing AND c.red_cause = 'flaky') AS flaky
+    FROM (
+        SELECT red_cause,
+               (status = 'completed' AND conclusion IN ('failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure', 'stale', 'error')) AS failing
+        FROM github_pull_request_check_run
+        WHERE pr_id = pr.id AND head_sha = pr.snapshot_head_sha
+    ) c
+) f
 WHERE ipr.issue_id = ANY($1::uuid[])
 UNION ALL
-SELECT pr.state::text, ''::text, false, ''::text, ''::text
+SELECT pr.state::text, ''::text, false, ''::text, ''::text, ''::text, ''::text
 FROM vcs_pull_request pr
 JOIN issue_vcs_pull_request ipr ON ipr.pull_request_id = pr.id
 WHERE ipr.issue_id = ANY($1::uuid[])
@@ -110,13 +132,21 @@ type ListEdgePullRequestsRow struct {
 	ChecksRollupState string `json:"checks_rollup_state"`
 	HeadFresh         bool   `json:"head_fresh"`
 	HeadSha           string `json:"head_sha"`
+	PrHeadSha         string `json:"pr_head_sha"`
 	Review            string `json:"review"`
+	RedCause          string `json:"red_cause"`
 }
 
 // Every PR linked to the given issues, GitHub and self-hosted, as the facts
 // edge guards read. Only a GitHub PR carries a checks snapshot; head_fresh says
 // the snapshot belongs to the PR's newest head; review is the latest human
 // review decision, and counts only while it is on the PR's current head.
+// pr_head_sha is the PR's own newest head, which a checks snapshot may not have
+// caught up with. red_cause is why the failing checks are red (CHE-3257):
+// 'pr' when any failing check is PR-caused; ” when nothing fails (or no
+// per-check rows exist yet); 'unknown' when a failing check has no cause; then
+// 'infra' or 'optional'. 'flaky' when nothing fails now but a check was marked
+// flaky on this head: red earlier, green on a rerun of the same head.
 func (q *Queries) ListEdgePullRequests(ctx context.Context, issueIds []pgtype.UUID) ([]ListEdgePullRequestsRow, error) {
 	rows, err := q.db.Query(ctx, listEdgePullRequests, issueIds)
 	if err != nil {
@@ -131,7 +161,9 @@ func (q *Queries) ListEdgePullRequests(ctx context.Context, issueIds []pgtype.UU
 			&i.ChecksRollupState,
 			&i.HeadFresh,
 			&i.HeadSha,
+			&i.PrHeadSha,
 			&i.Review,
+			&i.RedCause,
 		); err != nil {
 			return nil, err
 		}

@@ -2916,32 +2916,34 @@ func (c *codexClient) request(ctx context.Context, method string, params any) (j
 		c.cfg.Logger.Info("codex turn/start sent", "request_id", id, "thread_id", threadID)
 	}
 
+	var res rpcResult
 	select {
-	case res := <-pr.ch:
-		return res.result, res.err
+	case res = <-pr.ch:
 	case <-processDone:
 		select {
-		case res := <-pr.ch:
-			return res.result, res.err
+		case res = <-pr.ch:
 		default:
+			c.mu.Lock()
+			delete(c.pending, id)
+			res.err = c.processErr
+			c.mu.Unlock()
+			if res.err == nil {
+				res.err = errCodexProcessExited
+			}
 		}
-		c.mu.Lock()
-		delete(c.pending, id)
-		err := c.processErr
-		c.mu.Unlock()
-		if requestCtx.Err() != nil {
-			return nil, codexRequestContextError(requestCtx)
-		}
-		if err == nil {
-			err = errCodexProcessExited
-		}
-		return nil, err
 	case <-requestCtx.Done():
 		c.mu.Lock()
 		delete(c.pending, id)
 		c.mu.Unlock()
 		return nil, codexRequestContextError(requestCtx)
 	}
+	// markProcessExited fails pending RPCs, so a cancellation that tears down
+	// the process makes several select cases ready at once. Cancellation must
+	// win regardless of which case select picked; a ready response still wins.
+	if res.err != nil && requestCtx.Err() != nil {
+		return nil, codexRequestContextError(requestCtx)
+	}
+	return res.result, res.err
 }
 
 func (c *codexClient) notify(method string) {

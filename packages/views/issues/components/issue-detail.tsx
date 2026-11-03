@@ -35,7 +35,6 @@ import {
   Plus,
   SlidersHorizontal,
   Tag,
-  Unlink,
   Users,
   ArrowDown,
 } from "@multica/ui/icons";
@@ -43,7 +42,6 @@ import { BreadcrumbHeader, type BreadcrumbSegment } from "../../layout/breadcrum
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Button } from "@multica/ui/components/ui/button";
 import { IconButton } from "@multica/ui/components/common/icon-button";
-import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@multica/ui/components/ui/resizable";
 import { Sheet, SheetContent } from "@multica/ui/components/ui/sheet";
 import { useIsMobile } from "@multica/ui/hooks/use-mobile";
@@ -59,6 +57,7 @@ import { useWakeupText } from "./wakeup-presentation";
 import type { ImageSequenceBlock } from "@multica/core/attachments/image-sequence";
 import { DescriptionDisclosure } from "./description-disclosure";
 import { StatusSummary, statusSummaryOf } from "./status-summary";
+import { IssueDecisionBanner } from "./issue-decision-banner";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
 import {
   Tooltip,
@@ -149,11 +148,11 @@ import { useAuthStore } from "@multica/core/auth";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { IssueRelationsButton } from "./issue-relations-button";
+import { IssueHierarchy } from "./hierarchy/hierarchy-minimap";
 import { useRecentContextStore } from "@multica/core/chat";
 import { useRegisterCommandBarContext } from "../../search/register-context";
 import { useModalStore } from "@multica/core/modals";
-import { issueListOptions, issueDetailOptions, childIssuesOptions, childIssueProgressOptions, issueAttachmentsOptions } from "@multica/core/issues/queries";
+import { issueListOptions, issueDetailOptions, issueDetailViewOptions, childIssuesOptions, childIssueProgressOptions, issueAttachmentsOptions } from "@multica/core/issues/queries";
 import { projectDetailOptions } from "@multica/core/projects/queries";
 import { ProjectIcon } from "../../projects/components/project-icon";
 import { issueLabelsOptions } from "@multica/core/labels";
@@ -532,8 +531,8 @@ const EMPTY_ID_SET: Set<string> = new Set();
 //     the user explicitly added it via "+ Add property" in this session
 //     (priority / due_date / labels)
 //
-// Parent is not in either group — it has its own standalone section below
-// the Properties block, rendered only when the issue actually has a parent.
+// Parent is not in either group — the Hierarchy minimap above the Properties
+// block shows it (with siblings and children) when the issue has one.
 //
 // `OPTIONAL_PROP_KEYS` is the open set — adding a new optional field
 // means appending here, wiring its row in the JSX switch below, and
@@ -1205,6 +1204,11 @@ interface IssueDetailProps {
    */
   highlightRequestToken?: number;
   /**
+   * The cached issue is the detail endpoint's own response, read a moment ago
+   * by the route, so mounting skips reading it again.
+   */
+  authoritative?: boolean;
+  /**
    * Far-left header slot, replacing the mobile sidebar trigger. A host that
    * embeds this detail one level deep (the inbox, on a phone) passes its own
    * "back" control here instead of stacking a second 48px bar above us — the
@@ -1348,7 +1352,7 @@ export function IssueDetailSkeleton({
 
 // IssueDetail
 
-export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId, highlightRequestToken, leadingAction, variant = "page", trailingActions }: IssueDetailProps) {
+export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId, highlightRequestToken, authoritative, leadingAction, variant = "page", trailingActions }: IssueDetailProps) {
   const isPeek = variant === "peek";
   const { t } = useT("issues");
   const { t: tCommon } = useT("common");
@@ -1370,7 +1374,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     members.find((m) => m.user_id === user?.id)?.role ?? null;
   const canModerateComments =
     currentUserRole === "owner" || currentUserRole === "admin";
-  const { data: allIssues = [] } = useQuery(issueListOptions(wsId));
+  // Cache read only: the list seeds the row another view already loaded, and
+  // is never worth its own workspace-wide request.
+  const { data: allIssues = [] } = useQuery({ ...issueListOptions(wsId), enabled: false });
   const { getActorName } = useActorName();
   const resolveStatusLabel = useStatusLabel(wsId);
   // Activity and issue visuals share the catalog's custom geometry and color;
@@ -1408,7 +1414,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const sidebarOpen = isMobile ? mobileSidebarOpen : desktopSidebarOpen;
   const [propertiesOpen, setPropertiesOpen] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(true);
-  const [parentIssueOpen, setParentIssueOpen] = useState(true);
   const [pullRequestsOpen, setPullRequestsOpen] = useState(true);
   const [metadataOpen, setMetadataOpen] = useState(false);
   const githubSettings = useGitHubSettings();
@@ -1612,21 +1617,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const lastHighlightRequestTokenRef = useRef(highlightRequestToken);
 
   // Issue data from TQ — uses detail query, seeded from list cache if available.
-  // Only seed when description is present; the list API omits it, so a partial
-  // list row must not masquerade as a hydrated issue detail.
-  const { data: issue = null, isLoading: issueLoading, refetch: refetchIssue } = useQuery({
-    ...issueDetailOptions(wsId, id),
-    // List rows and issue-created realtime payloads intentionally omit the
-    // detail-only source-context snapshot. They can still seed this query via
-    // initialData, so always reconcile with the authoritative detail endpoint
-    // when the detail view mounts. Without this, the global Infinity staleTime
-    // hides source context until a full page refresh.
-    refetchOnMount: "always",
-    initialData: () => {
-      const cached = allIssues.find((i) => i.id === id);
-      return cached?.description != null ? cached : undefined;
-    },
-  });
+  const { data: issue = null, isLoading: issueLoading, refetch: refetchIssue } = useQuery(
+    issueDetailViewOptions(wsId, id, allIssues.find((i) => i.id === id), authoritative),
+  );
   const descriptionSourceId = `description:${id}`;
   const descriptionAnnotations = useCommentAnnotations({
     draftKey: `new:${id}`,
@@ -2714,8 +2707,22 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       jumpToMinimapTarget(commentId);
       return;
     }
-    container.scrollTop = Math.max(0, container.scrollTop + element.getBoundingClientRect().top - container.getBoundingClientRect().top - 16);
+    // Highlighting a reply force-opens its compact thread, which mounts the
+    // hidden replies above the target after this scroll — so re-align until
+    // the offset stops moving (same settle loop as the pending reply jump).
     flashJumpTarget(commentId);
+    let frames = 0;
+    let last = -1;
+    const align = () => {
+      const target = document.getElementById(`comment-${commentId}`) ?? element;
+      const offset = target.getBoundingClientRect().top - container.getBoundingClientRect().top;
+      container.scrollTop = Math.max(0, container.scrollTop + offset - 16);
+      if (Math.abs(offset - last) > 1 && ++frames < 30) {
+        last = offset;
+        requestAnimationFrame(align);
+      }
+    };
+    align();
   }, [scrollContainerEl, flashJumpTarget, jumpToMinimapTarget]);
   const [pendingAnnotationEdit, setPendingAnnotationEdit] = useState<{
     rootId: string; sourceCommentId: string; annotationId: string;
@@ -3541,6 +3548,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
 
   const sidebarContent = (
     <div className="space-y-5">
+      {/* Hierarchy minimap — parent, siblings and children at a glance; replaces
+          the Parent issue section and the Relations graph button. */}
+      <IssueHierarchy key={issue.id} issue={issue} />
+
       {/* Properties */}
       <div>
         <button
@@ -3755,58 +3766,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           click an action they cannot run, and the refusal is explained at run
           time rather than by a silently shorter list. */}
       <QuickActionsSection issueId={issue.id} />
-      <IssueRelationsButton key={issue.id} issueId={issue.id} />
       <WakeupsSection
         issueId={issue.id}
         closed={["done", "closed"].includes(resolveStatusCategory(issue.status))}
         defaultAgentId={issue.assignee_type === "agent" ? (issue.assignee_id ?? undefined) : undefined}
       />
       <PluginPanelSection issueId={issue.id} />
-
-      {/* Parent issue — standalone section, only when the issue has a
-          parent. Setting a parent is reachable via the issue actions menu;
-          this card surfaces an existing parent without occupying sidebar
-          space for issues that don't have one. */}
-      {parentIssue && (
-        <div>
-          <button
-            type="button"
-            className={`flex w-full items-center gap-1 rounded-md px-2 py-1 text-caption font-medium transition-colors mb-2 hover:bg-accent/70 ${parentIssueOpen ? "" : "text-muted-foreground hover:text-foreground"}`}
-            onClick={() => setParentIssueOpen(!parentIssueOpen)}
-          >
-            {t(($) => $.detail.section_parent_issue)}
-            <ChevronRight className={`!size-3 shrink-0 stroke-[2.5] text-muted-foreground transition-transform ${parentIssueOpen ? "rotate-90" : ""}`} />
-          </button>
-          {parentIssueOpen && <div className="pl-2">
-            <div className="flex items-center gap-0.5 rounded-md px-2 -mx-2 hover:bg-accent/50 transition-colors group">
-              <AppLink
-                href={paths.issueDetail(parentIssue.id)}
-                className="flex flex-1 min-w-0 items-center gap-1.5 py-1.5 text-label"
-              >
-                <StatusIcon
-                  status={parentIssue.status}
-                  color={resolveStatusColor(parentIssue.status)}
-                  icon={resolveStatusIcon(parentIssue.status)}
-                  category={issueStatusCategory(parentIssue) ?? undefined}
-                  className="h-3.5 w-3.5 shrink-0"
-                />
-                <span className="text-muted-foreground shrink-0">{parentIssue.identifier}</span>
-                <span className="truncate group-hover:text-foreground">{parentIssue.title}</span>
-              </AppLink>
-              <TooltipHint label={t(($) => $.actions.remove_parent_issue)}>
-                <button
-                  type="button"
-                  aria-label={t(($) => $.actions.remove_parent_issue)}
-                  onClick={() => actions.removeParent()}
-                  className="shrink-0 rounded-xs p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
-                >
-                  <Unlink className="h-3.5 w-3.5" />
-                </button>
-              </TooltipHint>
-            </div>
-          </div>}
-        </div>
-      )}
 
       <IssueDuplicatesSection issueId={issue.id} />
 
@@ -4624,6 +4589,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               </IssueContextMenuProvider>
             );
           })()}
+
+          <IssueDecisionBanner issueId={id} status={issue.status} ownerAgentId={issue.assignee_type === "agent" ? issue.assignee_id : null} />
 
           <div className="my-8 border-t" />
 

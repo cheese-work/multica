@@ -839,7 +839,10 @@ func main() {
 	// missing because of an unusual partial-migration state — by
 	// logging them on the tick that fails and retrying on the next
 	// cycle, so a temporary outage does not crash the server.
-	schedulerMgr := scheduler.NewManager(pool, scheduler.Options{})
+	// TickInterval 10 s: the ops snapshot sampler runs a 30 s plan, and a tick
+	// every 30 s lets jitter skip a plan (CHE-2586 L1). Other jobs only pay a
+	// cheap due-plan check per tick.
+	schedulerMgr := scheduler.NewManager(pool, scheduler.Options{TickInterval: 10 * time.Second})
 	if err := schedulerMgr.Register(scheduler.TaskUsageHourlyJob(pool)); err != nil {
 		slog.Warn("scheduler: failed to register task_usage_hourly rollup job", "error", err)
 	}
@@ -878,13 +881,20 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.ProvenanceExportRetentionJob(queries, pool)); err != nil {
 		slog.Warn("scheduler: failed to register provenance_export_retention job", "error", err)
 	}
-	if err := schedulerMgr.Register(scheduler.GovernanceCaseEvidenceRetentionJob(queries, pool)); err != nil {
-		slog.Warn("scheduler: failed to register governance_case_evidence_retention job", "error", err)
-	}
 	// CHE-2147: the workflow run/job mirror behind the github_run wakeup
 	// condition is a 30-day cache; drop rows with no event for that long.
 	if err := schedulerMgr.Register(scheduler.GitHubWorkflowRetentionJob(queries)); err != nil {
 		slog.Warn("scheduler: failed to register github_workflow_retention job", "error", err)
+	}
+	// CHE-2586 L1: ops page snapshots (30 s sampler, 5 min rollup, retention).
+	for _, job := range []scheduler.JobSpec{
+		scheduler.OpsSnapshotSamplerJob(queries),
+		scheduler.OpsSnapshotRollupJob(queries),
+		scheduler.OpsRetentionJob(queries),
+	} {
+		if err := schedulerMgr.Register(job); err != nil {
+			slog.Warn("scheduler: failed to register ops job", "job", job.Name, "error", err)
+		}
 	}
 	go func() {
 		_ = schedulerMgr.Run(sweepCtx)

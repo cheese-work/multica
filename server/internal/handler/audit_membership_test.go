@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,7 +13,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/multica-ai/multica/server/internal/governance/credential"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -486,58 +484,6 @@ func TestUpdateDelegatedWrites_AuditInsertFailureKeepsSetting(t *testing.T) {
 	}
 }
 
-// --- governance.config.update ---
-
-func TestPatchGovernanceConfig_WritesAuditRowWithoutURL(t *testing.T) {
-	if testHandler == nil || testPool == nil {
-		t.Skip("handler test database is unavailable")
-	}
-	resetGovernanceConfigFixture(t)
-	t.Cleanup(func() { resetGovernanceConfigFixture(t) })
-	const secretURL = "https://user:hunter2@jev.example.test/v1"
-	body := []byte(`{"expected_version":0,"request_id":"` + uuid.NewString() + `","jev_governance_enabled":true,"jev_api_url":"` + secretURL + `","limits":{"max_refreshes":4}}`)
-	before := len(auditRowsFor(t, "governance.config.update", testWorkspaceID))
-	if w := invokeGovernanceConfig(t, testUserID, http.MethodPatch, body, ""); w.Code != http.StatusOK {
-		t.Fatalf("PATCH = %d: %s", w.Code, w.Body.String())
-	}
-
-	rows := auditRowsFor(t, "governance.config.update", testWorkspaceID)
-	if len(rows) != before+1 {
-		t.Fatalf("governance.config.update rows = %d; want %d", len(rows), before+1)
-	}
-	row := rows[len(rows)-1]
-	if row.TargetType != "workspace" || row.ActorType != "member" || row.ActorID != testUserID {
-		t.Errorf("row = %+v; want workspace target by %s", row, testUserID)
-	}
-	if row.After["jev_governance_enabled"] != true || row.After["max_refreshes"] != float64(4) || row.After["config_version"] != float64(1) {
-		t.Errorf("after = %v; want governance enabled, max_refreshes 4, version 1", row.After)
-	}
-	if row.After["jev_api_url"] != "changed" {
-		t.Errorf("jev_api_url = %v; want only the changed marker", row.After["jev_api_url"])
-	}
-	if strings.Contains(rowText(row), "hunter2") {
-		t.Errorf("URL credentials leaked into the audit row: %s", rowText(row))
-	}
-}
-
-func TestPatchGovernanceConfig_AuditInsertFailureKeepsConfig(t *testing.T) {
-	if testHandler == nil || testPool == nil {
-		t.Skip("handler test database is unavailable")
-	}
-	resetGovernanceConfigFixture(t)
-	t.Cleanup(func() { resetGovernanceConfigFixture(t) })
-	failAuditInsertFor(t, testWorkspaceID)
-	body := []byte(`{"expected_version":0,"request_id":"` + uuid.NewString() + `","jev_governance_enabled":true}`)
-	w := invokeGovernanceConfig(t, testUserID, http.MethodPatch, body, "")
-	requireAuditFailure(t, w)
-	if got := dbfx.Count(t, `SELECT count(*) FROM governance_workspace_config WHERE workspace_id = $1 AND config_version > 0`, testWorkspaceID); got != 0 {
-		t.Fatalf("config versions advanced = %d after failed audit; want rolled back", got)
-	}
-	if got := dbfx.Count(t, `SELECT count(*) FROM governance_workspace_config_audit WHERE workspace_id = $1`, testWorkspaceID); got != 0 {
-		t.Fatalf("governance config audit rows = %d after failed audit; want 0", got)
-	}
-}
-
 // --- workspace.export_privacy.update ---
 
 func TestUpdateWorkspaceExportPrivacy_WritesAuditRow(t *testing.T) {
@@ -575,99 +521,6 @@ func TestUpdateWorkspaceExportPrivacy_AuditInsertFailureKeepsPolicy(t *testing.T
 	dbfx.QueryRow(t, `SELECT export_manifest_retention_days FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&days)
 	if days != 90 {
 		t.Fatalf("retention days = %d after failed audit; want 90 (rolled back)", days)
-	}
-}
-
-// --- jev.credential.* ---
-
-func jevAuditFixture(t *testing.T) (string, Handler) {
-	t.Helper()
-	if testHandler == nil || testPool == nil || dbfx == nil {
-		t.Skip("handler test database is unavailable")
-	}
-	requireJevCredentialTable(t)
-	workspaceID := auditMembershipWorkspace(t)
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM governance_jev_credential WHERE workspace_id = $1`, workspaceID)
-	})
-	ring, err := credential.NewKeyring(credential.Key{ID: "current", Material: bytes.Repeat([]byte{1}, 32)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := *testHandler
-	h.JevCredentials = ring
-	return workspaceID, h
-}
-
-func jevCredentialStored(t *testing.T, workspaceID string) bool {
-	t.Helper()
-	return dbfx.Count(t, `SELECT count(*) FROM governance_jev_credential WHERE workspace_id = $1`, workspaceID) == 1
-}
-
-func TestPutJevCredential_AuditsSetAndRotateWithoutValue(t *testing.T) {
-	workspaceID, h := jevAuditFixture(t)
-	put := func(key string) *httptest.ResponseRecorder {
-		return invokeJevCredentialForWorkspace(t, &h, workspaceID, testUserID, http.MethodPut, []byte(`{"api_key":"`+key+`"}`), "")
-	}
-	firstKey, secondKey := jevCredentialTestSecret+"-first", jevCredentialTestSecret+"-second"
-	if w := put(firstKey); w.Code != http.StatusOK {
-		t.Fatalf("first PUT = %d: %s", w.Code, w.Body.String())
-	}
-	if w := put(secondKey); w.Code != http.StatusOK {
-		t.Fatalf("second PUT = %d: %s", w.Code, w.Body.String())
-	}
-
-	set := requireOneAuditRow(t, "jev.credential.set", workspaceID)
-	rotate := requireOneAuditRow(t, "jev.credential.rotate", workspaceID)
-	for _, row := range []auditRow{set, rotate} {
-		if row.TargetType != "workspace" || row.ActorType != "member" || row.ActorID != testUserID {
-			t.Errorf("row = %+v; want workspace target by %s", row, testUserID)
-		}
-		for _, leaked := range []string{firstKey, secondKey, jevCredentialTestSecret} {
-			if strings.Contains(rowText(row), leaked) {
-				t.Errorf("credential value leaked into the audit row: %s", rowText(row))
-			}
-		}
-	}
-}
-
-func TestPutJevCredential_AuditInsertFailureStoresNothing(t *testing.T) {
-	workspaceID, h := jevAuditFixture(t)
-	failAuditInsertFor(t, workspaceID)
-	w := invokeJevCredentialForWorkspace(t, &h, workspaceID, testUserID, http.MethodPut, []byte(`{"api_key":"`+jevCredentialTestSecret+`"}`), "")
-	requireAuditFailure(t, w)
-	if jevCredentialStored(t, workspaceID) {
-		t.Fatal("credential stored although the audit insert failed; the write must roll back")
-	}
-}
-
-func TestDeleteJevCredential_WritesAuditRow(t *testing.T) {
-	workspaceID, h := jevAuditFixture(t)
-	if w := invokeJevCredentialForWorkspace(t, &h, workspaceID, testUserID, http.MethodPut, []byte(`{"api_key":"`+jevCredentialTestSecret+`"}`), ""); w.Code != http.StatusOK {
-		t.Fatalf("PUT = %d: %s", w.Code, w.Body.String())
-	}
-	if w := invokeJevCredentialForWorkspace(t, &h, workspaceID, testUserID, http.MethodDelete, nil, ""); w.Code != http.StatusNoContent {
-		t.Fatalf("DELETE = %d: %s", w.Code, w.Body.String())
-	}
-	row := requireOneAuditRow(t, "jev.credential.delete", workspaceID)
-	if row.TargetType != "workspace" || row.ActorType != "member" || row.ActorID != testUserID {
-		t.Errorf("row = %+v; want workspace target by %s", row, testUserID)
-	}
-	if strings.Contains(rowText(row), jevCredentialTestSecret) {
-		t.Errorf("credential value leaked into the audit row: %s", rowText(row))
-	}
-}
-
-func TestDeleteJevCredential_AuditInsertFailureKeepsCredential(t *testing.T) {
-	workspaceID, h := jevAuditFixture(t)
-	if w := invokeJevCredentialForWorkspace(t, &h, workspaceID, testUserID, http.MethodPut, []byte(`{"api_key":"`+jevCredentialTestSecret+`"}`), ""); w.Code != http.StatusOK {
-		t.Fatalf("PUT = %d: %s", w.Code, w.Body.String())
-	}
-	failAuditInsertForKind(t, "jev.credential.delete", workspaceID)
-	w := invokeJevCredentialForWorkspace(t, &h, workspaceID, testUserID, http.MethodDelete, nil, "")
-	requireAuditFailure(t, w)
-	if !jevCredentialStored(t, workspaceID) {
-		t.Fatal("credential deleted although the audit insert failed; the delete must roll back")
 	}
 }
 

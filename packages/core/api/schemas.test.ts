@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   AppConfigSchema,
-  JevCredentialPresenceSchema,
   WecomInstallationSchema,
   ListWecomInstallationsResponseSchema,
   RedeemWecomBindingTokenResponseSchema,
@@ -29,6 +28,8 @@ import {
   DashboardUsageDailyListSchema,
   ChatDraftRestoresResponseSchema,
   ChatPendingTaskSchema,
+  ChatMessageSchema,
+  ChatSupplementSchema,
   ChatSessionListSchema,
   ChatSessionSchema,
   PrioritizeQueuedChatTaskResponseSchema,
@@ -2484,23 +2485,75 @@ describe("AgentActivityBucketListSchema duration", () => {
   });
 });
 
-describe("JevCredentialPresenceSchema", () => {
-  it("carries the storage capability the server reports", () => {
-    expect(JevCredentialPresenceSchema.parse({ present: false, configurable: false })).toEqual({
-      present: false,
-      configurable: false,
+// CHE-2820: the server steers a DM follow-up into the running task and keeps a
+// delivery receipt. A malformed or future receipt must degrade to the queue
+// state, never crash the transcript or read as delivered.
+describe("chat supplement receipts", () => {
+  const receipt = {
+    message_id: "m1",
+    chat_session_id: "s1",
+    task_id: "t1",
+    status: "delivered",
+    failure_reason: null,
+    delivered_at: "2026-11-01T00:00:00Z",
+    acked_after_resend_at: null,
+    resent_task_id: null,
+  };
+
+  it("parses a receipt on a chat message", () => {
+    const msg = ChatMessageSchema.parse({
+      id: "m1", chat_session_id: "s1", role: "user", content: "hi", supplement: receipt,
     });
-    expect(JevCredentialPresenceSchema.parse({ present: true, configurable: true })).toEqual({
-      present: true,
-      configurable: true,
-    });
+    expect(msg.supplement).toMatchObject({ status: "delivered", delivered_at: "2026-11-01T00:00:00Z" });
   });
 
-  it("assumes a server that omits the capability can store a key", () => {
-    expect(JevCredentialPresenceSchema.parse({ present: false })).toEqual({ present: false, configurable: true });
+  it.each(["pending", "delivering", "delivered", "uncertain", "failed"])("keeps status %s", (status) => {
+    expect(ChatSupplementSchema.parse({ ...receipt, status }).status).toBe(status);
   });
 
-  it("rejects a response without the presence flag", () => {
-    expect(JevCredentialPresenceSchema.safeParse({ configurable: true }).success).toBe(false);
+  it("treats an unknown status as uncertain, never delivered or failed", () => {
+    expect(ChatSupplementSchema.parse({ ...receipt, status: "teleported" }).status).toBe("uncertain");
+  });
+
+  it("drops a malformed receipt without losing the message", () => {
+    const msg = ChatMessageSchema.parse({
+      id: "m1", chat_session_id: "s1", role: "user", content: "hi", supplement: "nope",
+    });
+    expect(msg.content).toBe("hi");
+    expect(msg.supplement).toBeUndefined();
+  });
+
+  it("is absent on messages from older servers", () => {
+    const msg = ChatMessageSchema.parse({ id: "m1", chat_session_id: "s1", role: "user", content: "hi" });
+    expect(msg.supplement).toBeUndefined();
+  });
+});
+
+describe("ChatPendingTaskSchema head_supplement", () => {
+  it.each(["capable", "starting", "unsupported"])("keeps %s", (value) => {
+    expect(ChatPendingTaskSchema.parse({ task_id: "t", head_supplement: value }).head_supplement).toBe(value);
+  });
+
+  it("is absent on an older server", () => {
+    expect(ChatPendingTaskSchema.parse({ task_id: "t" }).head_supplement).toBeUndefined();
+  });
+
+  it("maps an unknown value to unsupported so Steer never fires on a guess", () => {
+    expect(ChatPendingTaskSchema.parse({ task_id: "t", head_supplement: "maybe" }).head_supplement).toBe("unsupported");
+  });
+});
+
+describe("CommentPreviewSchema", () => {
+  it("defaults optional text fields and requires ids", async () => {
+    const { CommentPreviewSchema } = await import("./schemas");
+    const ok = CommentPreviewSchema.parse({
+      comment_id: "c",
+      issue_id: "i",
+      issue_identifier: "CHE-1",
+      author_name: null,
+    });
+    expect(ok.author_name).toBe("");
+    expect(ok.preview).toBe("");
+    expect(CommentPreviewSchema.safeParse({ comment_id: "c" }).success).toBe(false);
   });
 });

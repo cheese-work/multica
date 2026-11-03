@@ -5,12 +5,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/multica-ai/multica/server/internal/governance"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // Audit kinds for membership, invitations, share links and workspace-level
-// governance settings (CHE-2774 L5a).
+// settings (CHE-2774 L5a).
 func init() {
 	// The invitee email is personal data and is not snapshotted at all.
 	invitation := auditKindSpec{
@@ -33,25 +32,9 @@ func init() {
 		TargetType: "workspace",
 		Allow:      []string{"allowed_agents", "allowed_fields", "requires_human_decision"},
 	}
-	// jev_api_url is not allowlisted: a URL can carry credentials.
-	auditKinds["governance.config.update"] = auditKindSpec{
-		TargetType: "workspace",
-		Allow: []string{
-			"config_version", "jev_governance_enabled", "jev_fallback_agents_enabled",
-			"governance_corrections_enabled", "rule_mode", "jev_squad_routing_enabled",
-			"jev_squad_routing_mode", "jev_min_confidence", "max_refreshes", "max_evaluations",
-			"admission_window_seconds", "workspace_spend_cap_micro_usd", "pricing_policy_version",
-			"input_micro_usd_per_million_tokens", "output_micro_usd_per_million_tokens",
-		},
-	}
 	auditKinds["workspace.export_privacy.update"] = auditKindSpec{
 		TargetType: "workspace",
 		Allow:      []string{"export_redaction_mode", "export_manifest_retention_days"},
-	}
-	// A credential row records that it was set, rotated or deleted and nothing
-	// else: no field is allowed, so no value or fingerprint can reach the row.
-	for _, kind := range []string{"jev.credential.set", "jev.credential.rotate", "jev.credential.delete"} {
-		auditKinds[kind] = auditKindSpec{TargetType: "workspace"}
 	}
 }
 
@@ -106,48 +89,6 @@ func sortedJoin(items []string) string {
 	return strings.Join(sorted, ",")
 }
 
-// governanceSettingsAuditFields flattens the workspace governance settings and
-// the config version into scalars.
-func governanceSettingsAuditFields(s governance.WorkspaceSettings, version int64) map[string]any {
-	fields := map[string]any{
-		"config_version":                 version,
-		"jev_governance_enabled":         s.JevGovernanceEnabled,
-		"jev_fallback_agents_enabled":    s.JevFallbackAgentsEnabled,
-		"governance_corrections_enabled": s.GovernanceCorrectionsEnabled,
-		"rule_mode":                      string(s.RuleMode),
-		"jev_squad_routing_enabled":      s.JevSquadRoutingEnabled,
-		"jev_squad_routing_mode":         string(s.JevSquadRoutingMode),
-		"jev_api_url":                    s.JevAPIURL,
-		"jev_min_confidence":             nil,
-		"max_refreshes":                  derefInt64(s.Limits.MaxRefreshes),
-		"max_evaluations":                derefInt64(s.Limits.MaxEvaluations),
-		"admission_window_seconds":       derefInt64(s.Limits.AdmissionWindowSeconds),
-		"workspace_spend_cap_micro_usd":  derefInt64(s.Limits.WorkspaceSpendCapMicroUSD),
-	}
-	if s.JevMinConfidence != nil {
-		fields["jev_min_confidence"] = *s.JevMinConfidence
-	}
-	if p := s.Limits.PricingPolicy; p != nil {
-		fields["pricing_policy_version"] = p.Version
-		fields["input_micro_usd_per_million_tokens"] = derefInt64(p.InputMicroUSDPerMillionTokens)
-		fields["output_micro_usd_per_million_tokens"] = derefInt64(p.OutputMicroUSDPerMillionTokens)
-	}
-	return fields
-}
-
-func derefInt64(v *int64) any {
-	if v == nil {
-		return nil
-	}
-	return *v
-}
-
 func exportPrivacyAuditFields(mode string, retentionDays int32) map[string]any {
 	return map[string]any{"export_redaction_mode": mode, "export_manifest_retention_days": retentionDays}
-}
-
-// jevCredentialAuditFields carries only presence; the kind allows no field, so
-// the stored row holds the marker and never a value.
-func jevCredentialAuditFields(present bool) map[string]any {
-	return map[string]any{"present": present}
 }

@@ -158,6 +158,9 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 			"decision_intent_targets": []string{uuidToString(result.Request.HumanUserID)},
 		})
 	}
+	if result.Parked {
+		handler.publishDecisionStatusChange(request.Context(), issue, result.ParkedIssue, "decision_request")
+	}
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
 	handler.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(result.Request.HumanUserID), uuidToString(result.Message.ChatSessionID), protocol.ChatMessagePayload{
 		MessageKind:   result.Message.MessageKind,
@@ -247,10 +250,25 @@ func (handler *Handler) ListOpenDecisions(writer http.ResponseWriter, request *h
 		writeError(writer, http.StatusInternalServerError, "failed to list open decision requests")
 		return
 	}
-	if requests == nil {
-		requests = []db.ListOpenDecisionRequestsForHumanRow{}
+	writeJSON(writer, http.StatusOK, openDecisionResponses(requests))
+}
+
+// openDecisionResponse sends options as JSON, not as the row's base64 bytes,
+// so the issue-page banner can render the answer buttons.
+type openDecisionResponse struct {
+	db.ListOpenDecisionRequestsForHumanRow
+	Options json.RawMessage `json:"options"`
+}
+
+func openDecisionResponses(rows []db.ListOpenDecisionRequestsForHumanRow) []openDecisionResponse {
+	out := make([]openDecisionResponse, len(rows))
+	for i, row := range rows {
+		out[i] = openDecisionResponse{row, row.Options}
+		if len(out[i].Options) == 0 {
+			out[i].Options = json.RawMessage("[]")
+		}
 	}
-	writeJSON(writer, http.StatusOK, requests)
+	return out
 }
 
 // openAskResponse is the open-asks projection. It deliberately has no field

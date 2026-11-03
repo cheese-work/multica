@@ -98,12 +98,12 @@ func TestDecisionCardAnswerSchema(test *testing.T) {
 	})
 	test.Run("card_answer_rejects_task_or_sources", func(test *testing.T) {
 		for name, statement := range map[string]string{
-			"task":       `INSERT INTO decision_answer (decision_request_id, answered_by_task_id, answered_by_user_id, answer_source, chat_message_ids, content_snapshot, effective_at) VALUES ($1, gen_random_uuid(), gen_random_uuid(), 'card', '{}', 'x', now())`,
-			"chat":       `INSERT INTO decision_answer (decision_request_id, answered_by_user_id, answer_source, source_chat_session_id, chat_message_ids, content_snapshot, effective_at) VALUES ($1, gen_random_uuid(), 'card', gen_random_uuid(), ARRAY[gen_random_uuid()], 'x', now())`,
-			"comment":    `INSERT INTO decision_answer (decision_request_id, answered_by_user_id, answer_source, source_comment_id, chat_message_ids, content_snapshot, effective_at) VALUES ($1, gen_random_uuid(), 'card', gen_random_uuid(), '{}', 'x', now())`,
-			"no_user":    `INSERT INTO decision_answer (decision_request_id, answer_source, chat_message_ids, content_snapshot, effective_at) VALUES ($1, 'card', '{}', 'x', now())`,
-			"agent_user": `INSERT INTO decision_answer (decision_request_id, answered_by_task_id, answered_by_user_id, answer_source, source_chat_session_id, chat_message_ids, content_snapshot, effective_at) VALUES ($1, gen_random_uuid(), gen_random_uuid(), 'agent_record', gen_random_uuid(), ARRAY[gen_random_uuid()], 'x', now())`,
-			"bad_source": `INSERT INTO decision_answer (decision_request_id, answered_by_user_id, answer_source, chat_message_ids, content_snapshot, effective_at) VALUES ($1, gen_random_uuid(), 'other', '{}', 'x', now())`,
+			"task":                  `INSERT INTO decision_answer (decision_request_id, answered_by_task_id, answered_by_user_id, answer_source, chat_message_ids, content_snapshot, effective_at) VALUES ($1, gen_random_uuid(), gen_random_uuid(), 'card', '{}', 'x', now())`,
+			"chat_without_messages": `INSERT INTO decision_answer (decision_request_id, answered_by_user_id, answer_source, source_chat_session_id, chat_message_ids, content_snapshot, effective_at) VALUES ($1, gen_random_uuid(), 'card', gen_random_uuid(), '{}', 'x', now())`,
+			"comment":               `INSERT INTO decision_answer (decision_request_id, answered_by_user_id, answer_source, source_comment_id, chat_message_ids, content_snapshot, effective_at) VALUES ($1, gen_random_uuid(), 'card', gen_random_uuid(), '{}', 'x', now())`,
+			"no_user":               `INSERT INTO decision_answer (decision_request_id, answer_source, chat_message_ids, content_snapshot, effective_at) VALUES ($1, 'card', '{}', 'x', now())`,
+			"agent_user":            `INSERT INTO decision_answer (decision_request_id, answered_by_task_id, answered_by_user_id, answer_source, source_chat_session_id, chat_message_ids, content_snapshot, effective_at) VALUES ($1, gen_random_uuid(), gen_random_uuid(), 'agent_record', gen_random_uuid(), ARRAY[gen_random_uuid()], 'x', now())`,
+			"bad_source":            `INSERT INTO decision_answer (decision_request_id, answered_by_user_id, answer_source, chat_message_ids, content_snapshot, effective_at) VALUES ($1, gen_random_uuid(), 'other', '{}', 'x', now())`,
 		} {
 			test.Run(name, func(test *testing.T) {
 				tx := begin(test)

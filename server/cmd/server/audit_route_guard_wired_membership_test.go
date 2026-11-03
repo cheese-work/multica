@@ -11,10 +11,7 @@ func init() {
 		"POST /api/workspaces/{id}/leave":                        "member.leave",
 		"POST /api/workspaces/{id}/share-links":                  "share_link.create",
 		"PUT /api/workspaces/{id}/delegated-writes":              "workspace.delegated_writes.update",
-		"PATCH /api/workspaces/{id}/governance/config":           "governance.config.update",
 		"PATCH /api/workspaces/{id}/export-privacy":              "workspace.export_privacy.update",
-		"PUT /api/workspaces/{id}/jev/credential":                "jev.credential.set",
-		"DELETE /api/workspaces/{id}/jev/credential":             "jev.credential.delete",
 	} {
 		auditedRoutes[route] = kind
 		delete(auditPendingL5b, route)

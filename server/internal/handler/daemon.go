@@ -563,6 +563,10 @@ var errRuntimeOwnedByAnotherUser = errors.New("runtime is registered to another 
 
 const runtimeOwnedByAnotherUserMessage = "this daemon's runtimes are registered to another user; remove them from the workspace or sign the daemon in as their owner"
 
+func isReservedDaemonID(id string) bool {
+	return len(id) >= 4 && strings.HasPrefix(id, "__") && strings.HasSuffix(id, "__")
+}
+
 func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 	var req DaemonRegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -576,6 +580,13 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 
 	if req.DaemonID == "" {
 		writeError(w, http.StatusBadRequest, "daemon_id is required")
+		return
+	}
+	// The ops page groups machines by daemon_id and uses __cloud__, __unbound__
+	// and __unknown__ for machines without one, so a real id of that shape would
+	// merge into a synthetic group.
+	if isReservedDaemonID(req.DaemonID) {
+		writeError(w, http.StatusBadRequest, "daemon_id must not start and end with __")
 		return
 	}
 	if req.WorkspaceID == "" {
@@ -1414,12 +1425,6 @@ func (h *Handler) DaemonDeregister(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-type DaemonHeartbeatRequest struct {
-	RuntimeID           string `json:"runtime_id"`
-	SupportsBatchImport bool   `json:"supports_batch_import,omitempty"`
-	InFlightTasks       *int   `json:"in_flight_tasks,omitempty"`
-}
-
 // heartbeatHasPendingTimeout bounds the cheap HasPending probe on the
 // heartbeat hot path. Probes are read-only (ZCARD in Redis) so a timeout is
 // ack-safe: the worst case is "we didn't find out if anything was queued this
@@ -1496,7 +1501,7 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	decodeStart := time.Now()
-	var req DaemonHeartbeatRequest
+	var req protocol.DaemonHeartbeatRequestPayload
 	decodeErr := json.NewDecoder(r.Body).Decode(&req)
 	decodeMs = time.Since(decodeStart).Milliseconds()
 	if decodeErr != nil {
@@ -1558,6 +1563,7 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	updateMs = time.Since(updateStart).Milliseconds()
+	h.ingestHostSample(r.Context(), rt.DaemonID.String, req.HostSample)
 
 	ack, m, err := h.processHeartbeat(r.Context(), runtimeID, req.SupportsBatchImport, req.InFlightTasks)
 	probeModelMs = m.ProbeModelMs
@@ -1606,7 +1612,8 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 // captured each runtime's liveness state in a connection lease, so the hot
 // path never reads agent_runtime. HTTP heartbeat remains the stateless lookup
 // fallback for a daemon that stops receiving WebSocket acknowledgements.
-func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws.ClientIdentity, runtimeID string, supportsBatchImport bool, inFlightTasks *int) (*protocol.DaemonHeartbeatAckPayload, error) {
+func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws.ClientIdentity, req protocol.DaemonHeartbeatRequestPayload) (*protocol.DaemonHeartbeatAckPayload, error) {
+	runtimeID := req.RuntimeID
 	lease := identity.RuntimeLeases[runtimeID]
 	if lease == nil {
 		return nil, fmt.Errorf("runtime not in connection lease")
@@ -1626,7 +1633,8 @@ func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws
 		}
 		return nil, err
 	}
-	ack, _, err := h.processHeartbeat(ctx, runtimeID, supportsBatchImport, inFlightTasks)
+	h.ingestHostSample(ctx, identity.DaemonID, req.HostSample)
+	ack, _, err := h.processHeartbeat(ctx, runtimeID, req.SupportsBatchImport, req.InFlightTasks)
 	return ack, err
 }
 
@@ -2886,6 +2894,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		generation := task.DispatchedAt.Time.UTC().Format(time.RFC3339Nano)
 		resp.DispatchedAt = &generation
 		resp.StartClaimSupported = true
+		resp.AppliedSettingsSupported = requestHasClientCapability(r, protocol.DaemonCapabilityAppliedSettingsV1)
 	}
 	var issueNumber int32
 	// Claim-only capability: this server resolves the squad-leader role on the
@@ -2900,6 +2909,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	applyRunProfile := func() {
 		rp := h.runProfileForTask(r.Context(), parseUUID(runtimeWorkspaceID), task.IssueID, task.ID, task.TaintIds)
 		resp.Profile, resp.Scopes, resp.Epoch, resp.TaintIDs = rp.Profile, rp.Scopes, rp.Epoch, rp.TaintIDs
+		resp.PinnedBaseSHA, resp.PinnedHeadSHA = rp.PinnedBaseSHA, rp.PinnedHeadSHA
 	}
 	applyRunProfile()
 	resp.IntakeRun, resp.PinnedBranch, resp.PinnedRepo = h.intakePinForTask(r.Context(), parseUUID(runtimeWorkspaceID), task.ID)
@@ -3675,6 +3685,14 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 
 	// Chat task: populate workspace/session info from the chat_session table.
 	if task.ChatSessionID.Valid {
+		// Rule E: a reclaimed delivery never passed ClaimAgentTask's rebase, and
+		// the epoch it was stamped under may predate a compact. Restamp it
+		// before any payload read; an active task blocks further compacts, so
+		// the epoch stays fixed from here.
+		if rebaseErr := h.Queries.RebaseClaimedChatTaskEpoch(r.Context(), task.ID); rebaseErr != nil {
+			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
+				h.rejectClaimSourceLoad(r.Context(), task, rebaseErr, "chat epoch rebase", uuidToString(task.ChatSessionID))
+		}
 		cs, chatErr := h.Queries.GetChatSession(r.Context(), task.ChatSessionID)
 		if chatErr != nil {
 			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
@@ -3744,7 +3762,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			// otherwise a single failed turn would silently drop the entire
 			// conversation memory on the next message. The fallback also
 			// requires runtime to match.
-			if cs.SessionID.Valid && cs.RuntimeID.Valid && cs.RuntimeID == task.RuntimeID {
+			if cs.SessionID.Valid && cs.RuntimeID.Valid && cs.RuntimeID == task.RuntimeID && h.chatPointerIsCurrent(r.Context(), cs) {
 				resp.PriorSessionID = cs.SessionID.String
 			}
 			if cs.WorkDir.Valid {
@@ -3896,9 +3914,21 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				attsByMessage[mid] = append(attsByMessage[mid], a)
 			}
 		}
+		resentUncertain, resentErr := h.resentUncertainChatMessages(r.Context(), task.ID, unanswered)
+		if resentErr != nil {
+			slog.Error("chat claim: load resent chat supplements failed; preserving task for redelivery",
+				"task_id", uuidToString(task.ID),
+				"chat_session_id", uuidToString(cs.ID),
+				"error", resentErr)
+			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+				outcome: "error_chat_supplement_load",
+				status:  http.StatusInternalServerError,
+				message: "failed to load chat supplements",
+			}
+		}
 		for _, m := range unanswered {
-			if strings.TrimSpace(m.Content) != "" {
-				parts = append(parts, m.Content)
+			if text := withResentUncertainNotice(m.Content, resentUncertain[uuidToString(m.ID)]); strings.TrimSpace(text) != "" {
+				parts = append(parts, text)
 			}
 			for _, a := range attsByMessage[uuidToString(m.ID)] {
 				resp.ChatMessageAttachments = append(resp.ChatMessageAttachments, ChatAttachmentMeta{
@@ -4907,6 +4937,7 @@ func (h *Handler) StartTask(w http.ResponseWriter, r *http.Request) {
 	}
 	offered := service.TaskStartCapabilities{
 		Supplement:     slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementV1),
+		ChatSupplement: slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementChatV1),
 		PREvent:        slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementPREventV1),
 		ProcessCleanup: slices.Contains(req.Capabilities, protocol.DaemonCapabilityPiProcessCleanupV1),
 	}
@@ -4947,12 +4978,14 @@ func (h *Handler) StartTask(w http.ResponseWriter, r *http.Request) {
 	// A daemon must use this response rather than its own offer: an old server
 	// ignores the offer and omits the field, which keeps daemon-first rollouts
 	// fail closed without requiring synchronized deployment.
-	if task.IssueID.Valid {
+	if task.IssueID.Valid || task.ChatSessionID.Valid {
 		if capability, capabilityErr := h.Queries.GetTaskSupplementCapability(r.Context(), task.ID); capabilityErr == nil {
 			resp.SupplementCapability = capability.Capability
 		} else if !errors.Is(capabilityErr, pgx.ErrNoRows) {
 			slog.Warn("start task: failed to load negotiated supplement capability", "task_id", taskID, "error", capabilityErr)
 		}
+	}
+	if task.IssueID.Valid {
 		if capability, capabilityErr := h.Queries.GetTaskPREventCapability(r.Context(), task.ID); capabilityErr == nil {
 			resp.PREventCapability = capability.Capability
 		} else if !errors.Is(capabilityErr, pgx.ErrNoRows) {
@@ -7337,4 +7370,38 @@ func (h *Handler) inheritSessionTaint(ctx context.Context, task *db.AgentTaskQue
 	}
 	task.TaintIds = taint
 	return true
+}
+
+// MarkTaskExternalRead records that the run contacted a host other than the
+// Multica server and the provider API, or used a GitHub read token (CHE-2216
+// plan 3.7). Comments, description edits and attachments it writes from now on
+// store the mark. The mark only grows, so a repeat report is a no-op.
+func (h *Handler) MarkTaskExternalRead(w http.ResponseWriter, r *http.Request) {
+	task, ok := h.requireDaemonTaskAccess(w, r, chi.URLParam(r, "taskId"))
+	if !ok {
+		return
+	}
+	if err := h.Queries.MarkTaskExternalRead(r.Context(), task.ID); err != nil {
+		slog.Error("mark task external_read failed", "task_id", uuidToString(task.ID), "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to mark task")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// chatPointerIsCurrent reports whether the DM's resume pointer may seed a
+// claim. A DM that never compacted has nothing stale to name; after a compact
+// the pointer must trace back to a task of the current epoch. A failed lookup
+// reads as not current: the claim then resolves the session from task rows.
+func (h *Handler) chatPointerIsCurrent(ctx context.Context, cs db.ChatSession) bool {
+	if cs.CompactionEpoch == 0 {
+		return true
+	}
+	current, err := h.Queries.ChatSessionPointerIsCurrent(ctx, cs.ID)
+	if err != nil {
+		slog.Warn("chat claim: pointer epoch check failed; ignoring the pointer",
+			"chat_session_id", uuidToString(cs.ID), "error", err)
+		return false
+	}
+	return current
 }

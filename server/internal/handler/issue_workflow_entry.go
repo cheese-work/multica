@@ -79,6 +79,11 @@ func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db
 			return nil, err
 		}
 	}
+	if statusExplicit {
+		if err := h.guardChangesVerdict(ctx, q, prev, params, def, caller); err != nil {
+			return nil, err
+		}
+	}
 	// Someone else moved the issue while the run worked: the run's decision was
 	// made for a step the issue has left, and applying it would undo that move.
 	// Default without handoffs keeps the pre-workflow behavior, so workspaces
@@ -208,6 +213,9 @@ func workflowHandoffPayload(issue db.Issue, hand *workflowHandoff, note string, 
 // writeIssueWorkflowError answers a workflow rejection. It reports false when
 // err is not one, so the caller can fall through to its generic 500.
 func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
+	if writeReviewLoopError(w, err) {
+		return true
+	}
 	if errors.Is(err, issueworkflow.ErrOverrideMissing) {
 		writeError(w, http.StatusBadRequest, "workflow not found in this workspace")
 		return true
@@ -229,6 +237,16 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
 			"code":          "status_move_not_allowed",
 			"from":          notAllowed.From,
 			"allowed_moves": notAllowed.Allowed,
+		})
+		return true
+	}
+	var gated *EntryGateError
+	if errors.As(err, &gated) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":         gated.Error(),
+			"code":          "entry_gate_failed",
+			"step":          gated.Step,
+			"failed_guards": gated.Failed,
 		})
 		return true
 	}
@@ -274,6 +292,8 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
 type workflowCaller struct {
 	run   *db.AgentTaskQueue
 	agent bool
+	// findings come with a reviewer's verdict (CHE-3243).
+	findings []ReviewFinding
 }
 
 // agentRunOnIssue returns the calling agent's run when it works on this issue,
@@ -534,36 +554,37 @@ func (h *Handler) claimProjectWorkflow(ctx context.Context, issue db.Issue, task
 }
 
 // runBudgetLine tells the run how much of the issue's run budget is left
-// (CHE-2297 L1b): runs left, tokens used, and runs that reported no usage.
-// Tokens are input plus output; the server cannot see tokens during a run, so
-// the figure lags by the runs still in flight. It is empty for a workflow with
-// no budget start, matching guardRunBudget.
+// (CHE-2297 L1b): the runs and, once token accounting is active, the tokens the
+// admission ledger still holds. Before that it reports the tokens used and the
+// runs that reported no usage. Tokens are input plus output; the server cannot
+// see tokens during a run, so the figure lags by the runs still in flight. It
+// is empty for a workflow with no budget start, matching guardRunBudget.
 func (h *Handler) runBudgetLine(ctx context.Context, issue db.Issue, def *issueworkflow.Definition) string {
 	if def.RunBudgetSince.IsZero() {
 		return ""
 	}
-	since, err := service.RunBudgetStart(ctx, h.Queries, issue.ID, def)
-	if err != nil {
-		slog.Warn("task claim: run budget window failed", "issue_id", uuidToString(issue.ID), "error", err)
+	snap, err := service.LoadRunBudgetSnapshot(ctx, h.Queries, issue)
+	if err != nil || !snap.Budgeted {
+		if err != nil {
+			slog.Warn("task claim: run budget snapshot failed", "issue_id", uuidToString(issue.ID), "error", err)
+		}
 		return ""
 	}
-	runs, err := h.Queries.CountIssueRunsSince(ctx, db.CountIssueRunsSinceParams{IssueID: issue.ID, Since: pgtype.Timestamptz{Time: since, Valid: true}})
-	if err != nil {
-		slog.Warn("task claim: run budget count failed", "issue_id", uuidToString(issue.ID), "error", err)
-		return ""
+	runs := fmt.Sprintf("Run budget: %d runs left of %d", max(0, snap.RunsLeft), snap.RunsLimit)
+	if snap.TokensActive {
+		return fmt.Sprintf("%s; %d tokens left.\n", runs, max(0, snap.TokensBalance))
 	}
 	usage, err := h.Queries.GetIssueUsageSummary(ctx, issue.ID)
 	if err != nil {
 		slog.Warn("task claim: run budget usage failed", "issue_id", uuidToString(issue.ID), "error", err)
 		return ""
 	}
-	limit := def.EffectiveMaxRuns()
 	unit := "runs"
 	if usage.UnreportedTaskCount == 1 {
 		unit = "run"
 	}
-	return fmt.Sprintf("Run budget: %d runs left of %d; %d tokens used (%d %s unreported).\n",
-		max(0, limit-int(runs)), limit, usage.TotalInputTokens+usage.TotalOutputTokens, usage.UnreportedTaskCount, unit)
+	return fmt.Sprintf("%s; %d tokens used (%d %s unreported).\n",
+		runs, usage.TotalInputTokens+usage.TotalOutputTokens, usage.UnreportedTaskCount, unit)
 }
 
 // taskRunsForAssignee reports whether a run works on the issue as its

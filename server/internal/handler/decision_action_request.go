@@ -138,11 +138,120 @@ func snapshotDecisionAction(ctx context.Context, queries *db.Queries, workspaceI
 	return nil, errors.New("no snapshot for action " + draft.Type)
 }
 
+// checkIssueTarget requires params.issue_id of an issue-target action to be
+// the issue its request is on, so an approval cannot reach another issue.
+func checkIssueTarget(params json.RawMessage, requestIssueID pgtype.UUID, status int) error {
+	var target struct {
+		IssueID string `json:"issue_id"`
+	}
+	if json.Unmarshal(params, &target) != nil {
+		return decisionIntentRefusal{status, "target_issue_mismatch: params.issue_id must be the issue the request is on"}
+	}
+	id, err := parseUUIDString(target.IssueID)
+	if err != nil || id != requestIssueID {
+		return decisionIntentRefusal{status, "target_issue_mismatch: params.issue_id must be the issue the request is on"}
+	}
+	return nil
+}
+
+// actionTargetKind is the kind of row a stored action reads or changes.
+func actionTargetKind(action db.DecisionAction) decisionaction.Target {
+	definition, found := decisionaction.Lookup(action.ActionType, int(action.ActionVersion))
+	if !found {
+		return decisionaction.TargetAgent
+	}
+	return definition.Target
+}
+
+// decisionActionPreviewer computes what an approver is shown for an action type
+// that RequiresPreview: the server's own rendering of the change, never agent text.
+type decisionActionPreviewer func(ctx context.Context, queries *db.Queries, workflow db.IssueWorkflow, params json.RawMessage) (any, error)
+
+// decisionActionPreviews maps an action type to its previewer.
+var decisionActionPreviews = map[string]decisionActionPreviewer{}
+
+// loadWorkflowTarget resolves params.workflow_id in the workspace, so a request
+// or approval cannot reach another workspace's workflow.
+func loadWorkflowTarget(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, params json.RawMessage, status int) (db.IssueWorkflow, error) {
+	mismatch := decisionIntentRefusal{status, "target_workflow_mismatch: params.workflow_id must be a workflow of this workspace"}
+	var target struct {
+		WorkflowID string `json:"workflow_id"`
+	}
+	if json.Unmarshal(params, &target) != nil {
+		return db.IssueWorkflow{}, mismatch
+	}
+	id, err := parseUUIDStrict(target.WorkflowID)
+	if err != nil {
+		return db.IssueWorkflow{}, mismatch
+	}
+	workflow, err := queries.GetIssueWorkflow(ctx, db.GetIssueWorkflowParams{ID: id, WorkspaceID: workspaceID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.IssueWorkflow{}, mismatch
+	}
+	return workflow, err
+}
+
+// workflowPreconditions records the workflow the approver must still find, the
+// status key and base digest the agent named, and for an action that
+// RequiresPreview the server's own preview with its digest.
+func workflowPreconditions(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, draft *decisionActionDraft) (map[string]any, error) {
+	workflow, err := loadWorkflowTarget(ctx, queries, workspaceID, draft.Params, http.StatusBadRequest)
+	if err != nil {
+		return nil, err
+	}
+	var params struct {
+		StatusKey  string `json:"status_key"`
+		BaseSHA256 string `json:"base_sha256"`
+	}
+	if err := json.Unmarshal(draft.Params, &params); err != nil {
+		return nil, err
+	}
+	preconditions := map[string]any{"workflow_id": uuidToString(workflow.ID), "status_key": params.StatusKey, "base_sha256": params.BaseSHA256}
+	if !draft.Definition.RequiresPreview {
+		return preconditions, nil
+	}
+	previewer, found := decisionActionPreviews[draft.Type]
+	if !found {
+		return nil, errors.New("no preview for action " + draft.Type)
+	}
+	preview, err := previewer(ctx, queries, workflow, draft.Params)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := json.Marshal(preview)
+	if err != nil {
+		return nil, err
+	}
+	canonical, err := decisionaction.Canonical(raw)
+	if err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256(canonical)
+	preconditions["preview"], preconditions["preview_sha256"] = json.RawMessage(canonical), hex.EncodeToString(digest[:])
+	return preconditions, nil
+}
+
+// actionPreconditions records what the approver must still find true: the
+// issue for an issue target, the workflow for a workflow target, otherwise the
+// agent's snapshot.
+func actionPreconditions(ctx context.Context, queries *db.Queries, issue db.Issue, draft *decisionActionDraft) (map[string]any, error) {
+	switch draft.Definition.Target {
+	case decisionaction.TargetIssue:
+		if err := checkIssueTarget(draft.Params, issue.ID, http.StatusBadRequest); err != nil {
+			return nil, err
+		}
+		return map[string]any{"issue_id": uuidToString(issue.ID)}, nil
+	case decisionaction.TargetWorkflow:
+		return workflowPreconditions(ctx, queries, issue.WorkspaceID, draft)
+	}
+	return snapshotDecisionAction(ctx, queries, issue.WorkspaceID, draft)
+}
+
 // createDecisionAction stores the action in the request's transaction, so a
 // request never exists without the action it asks Cheese to approve.
 func createDecisionAction(ctx context.Context, queries *db.Queries, issue db.Issue, request db.DecisionRequest, taskID pgtype.UUID, draft *decisionActionDraft) (db.DecisionAction, error) {
 	empty := db.DecisionAction{}
-	preconditions, err := snapshotDecisionAction(ctx, queries, issue.WorkspaceID, draft)
+	preconditions, err := actionPreconditions(ctx, queries, issue, draft)
 	if err != nil {
 		return empty, err
 	}
