@@ -25,6 +25,8 @@ const (
 	GuardAgentVerdict     = "agent_verdict"
 	GuardPRChecksGreen    = "pr.checks_green"
 	GuardPRChecksRed      = "pr.checks_red"
+	GuardPRChecksInfraRed = "pr.checks_infra_red"
+	GuardPRChecksFlaky    = "pr.checks_flaky"
 	GuardPRReady          = "pr.ready"
 	GuardPRMerged         = "pr.merged"
 	GuardPRClosedUnmerged = "pr.closed_unmerged"
@@ -51,7 +53,7 @@ type Guard struct {
 }
 
 var guardArity = map[string]int{
-	GuardAgentDone: 0, GuardAgentVerdict: 1, GuardPRChecksGreen: 0, GuardPRChecksRed: 0, GuardPRReady: 0,
+	GuardAgentDone: 0, GuardAgentVerdict: 1, GuardPRChecksGreen: 0, GuardPRChecksRed: 0, GuardPRChecksInfraRed: 0, GuardPRChecksFlaky: 0, GuardPRReady: 0,
 	GuardPRMerged: 0, GuardPRClosedUnmerged: 0, GuardPRReviewChanges: 0, GuardPRReviewApproved: 0, GuardChildrenDone: 0, GuardIssueStatus: 2,
 	GuardWebhook: 1,
 }
@@ -192,6 +194,14 @@ type PRFact struct {
 	// Review is the latest human review decision on the PR's current head:
 	// approved, changes_requested, or empty.
 	Review string
+	// RedCause says why the checks are red (CHE-3257): "pr" (a required check
+	// fails on this head and not on the base), "infra" (a required red is also
+	// red on the base, or green on a re-run of this head), "optional" (only
+	// non-required checks fail), "unknown" (the cause could not be read). Empty
+	// means no per-check evidence is stored; the red is then the PR's. "flaky"
+	// marks a green snapshot whose required check was red earlier on this same
+	// head and passed on a rerun.
+	RedCause string
 }
 
 // Facts are the stored facts guards are checked against. PRs cover the issue
@@ -223,8 +233,12 @@ func (f Facts) holds(g Guard) bool {
 	case GuardPRChecksGreen:
 		return f.anyPR(func(p PRFact) bool { return p.open() && p.HeadFresh && p.ChecksRollup == "SUCCESS" })
 	case GuardPRChecksRed:
+		return f.anyPR(func(p PRFact) bool { return p.red() && (p.RedCause == "" || p.RedCause == "pr") })
+	case GuardPRChecksInfraRed:
+		return f.anyPR(func(p PRFact) bool { return p.red() && p.RedCause == "infra" })
+	case GuardPRChecksFlaky:
 		return f.anyPR(func(p PRFact) bool {
-			return p.open() && p.HeadFresh && (p.ChecksRollup == "FAILURE" || p.ChecksRollup == "ERROR")
+			return p.open() && p.HeadFresh && p.ChecksRollup == "SUCCESS" && p.RedCause == "flaky"
 		})
 	case GuardPRReady:
 		return f.anyPR(func(p PRFact) bool { return p.State == "open" })
@@ -246,6 +260,11 @@ func (f Facts) holds(g Guard) bool {
 		return f.Webhooks[g.Args[0]]
 	}
 	return false
+}
+
+// red: the newest head's checks failed.
+func (p PRFact) red() bool {
+	return p.open() && p.HeadFresh && (p.ChecksRollup == "FAILURE" || p.ChecksRollup == "ERROR")
 }
 
 func (p PRFact) open() bool { return p.State == "open" || p.State == "draft" }

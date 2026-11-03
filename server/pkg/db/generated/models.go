@@ -1199,6 +1199,7 @@ type GithubPullRequestCheckRun struct {
 	Conclusion      pgtype.Text `json:"conclusion"`
 	DetailsUrl      pgtype.Text `json:"details_url"`
 	IsStatusContext bool        `json:"is_status_context"`
+	RedCause        pgtype.Text `json:"red_cause"`
 }
 
 type GithubPullRequestCheckSuite struct {
