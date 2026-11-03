@@ -246,7 +246,9 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 			return handler.deliverDecisionItem(ctx, request.WorkspaceID, request.ID, "reask")
 		}))
 	}
-	waits, err := handler.Queries.ListDecisionEpisodeCandidates(ctx, decisionBatchSize)
+	waits, err := handler.Queries.ListDecisionEpisodeCandidates(ctx, db.ListDecisionEpisodeCandidatesParams{
+		BatchSize: decisionBatchSize, Rotation: time.Now().Unix() / int64(decisionWorkerTick/time.Second),
+	})
 	if err != nil {
 		return errors.Join(failures, err)
 	}

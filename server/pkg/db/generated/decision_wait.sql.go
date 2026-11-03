@@ -294,19 +294,28 @@ WHERE wait.closed_at IS NULL
       WHERE bound.id = ANY(wait.request_ids) AND bound.status = 'answered'
         AND live.disclaimed_at IS NULL AND live.woken_at IS NULL AND live.wake_at > clock_timestamp()
   )
-ORDER BY (wait.dispatch_refused_since IS NOT NULL), wait.dispatch_refused_since, wait.id
-LIMIT LEAST(GREATEST($1::int, 0), 100)
+ORDER BY (wait.dispatch_refused_since IS NOT NULL),
+  CASE WHEN wait.dispatch_refused_since IS NOT NULL THEN md5(wait.id::text || $1::bigint::text) END,
+  wait.id
+LIMIT LEAST(GREATEST($2::int, 0), 100)
 `
+
+type ListDecisionEpisodeCandidatesParams struct {
+	Rotation  int64 `json:"rotation"`
+	BatchSize int32 `json:"batch_size"`
+}
 
 // Non-closed episodes that §6 can deliver now (design §4.4.1, clauses 2-4).
 // Closed-issue and unavailable-agent episodes are system-close candidates
 // (clause 1); the system close is L5d (design §11), so they stay out of the
 // batch here: an episode that cannot progress must not take a batch slot.
-// Episodes with a refused dispatch sort last. The run-budget resume condition
+// Episodes with a refused dispatch sort last, in an order that rotates with
+// the rotation argument, so a batch of persistent refusals cannot hold every
+// slot while a later one could now dispatch. The run-budget resume condition
 // is the member status change after the suspension or a later workflow budget
 // start; the delivery transaction re-checks it exactly.
-func (q *Queries) ListDecisionEpisodeCandidates(ctx context.Context, batchSize int32) ([]DecisionWait, error) {
-	rows, err := q.db.Query(ctx, listDecisionEpisodeCandidates, batchSize)
+func (q *Queries) ListDecisionEpisodeCandidates(ctx context.Context, arg ListDecisionEpisodeCandidatesParams) ([]DecisionWait, error) {
+	rows, err := q.db.Query(ctx, listDecisionEpisodeCandidates, arg.Rotation, arg.BatchSize)
 	if err != nil {
 		return nil, err
 	}

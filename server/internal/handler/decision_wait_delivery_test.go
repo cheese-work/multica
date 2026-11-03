@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -474,47 +475,84 @@ func TestDecisionEpisodeTerminalStateMapIsTotal(t *testing.T) {
 	}
 }
 
-// An episode that cannot progress must not take a batch slot: more than one
-// batch of closed-issue episodes, or of episodes with a refused dispatch, sorts
-// ahead of a ready episode and the ready one is still selected.
-func TestDecisionEpisodeCandidatesAreNotStarvedByStuckEpisodes(t *testing.T) {
-	f := newEpisodeFixture(t, false)
+const episodeFillerIDs = `DELETE FROM decision_wait WHERE id::text LIKE '00000000-0000-0000-000_-%'`
+
+// insertEpisodeFillers adds count episodes copied from the fixture's, each on
+// its own issue (one open episode per issue). Low ids sort first. They are
+// test-owned and outlive the workspace cleanup, so they are removed before and after.
+func insertEpisodeFillers(t *testing.T, readyID, prefix, status, askerID string, refused bool, count, first int) {
+	t.Helper()
+	for i := first; i < first+count; i++ {
+		issueID := dbfx.Issue(t, "Filler", testutil.Cols{"status": status})
+		dbfx.Exec(t, `INSERT INTO decision_wait (id, workspace_id, issue_id, asking_agent_id, human_user_id, request_ids, restore_status, dispatch_refused_since)
+			SELECT $1::uuid, workspace_id, $2::uuid, COALESCE(NULLIF($3::text, '')::uuid, asking_agent_id), human_user_id, '{}', 'in_progress',
+				CASE WHEN $4::boolean THEN now() END
+			FROM decision_wait WHERE id = $5::uuid`, fmt.Sprintf("%s%012d", prefix, i), issueID, askerID, refused, readyID)
+	}
+}
+
+func readyEpisode(t *testing.T) (f episodeFixture, readyID string) {
+	t.Helper()
+	f = newEpisodeFixture(t, false)
 	f.enter(t)
 	f.answerRequest(t, f.requestID, -time.Minute, false)
-	var readyID string
 	dbfx.QueryRow(t, `SELECT id::text FROM decision_wait WHERE issue_id = $1 AND closed_at IS NULL`, f.issueID).Scan(&readyID)
+	dbfx.Exec(t, episodeFillerIDs)
+	t.Cleanup(func() { dbfx.Exec(t, episodeFillerIDs) })
+	return f, readyID
+}
 
-	// Low ids sort first. Each filler needs its own issue (one open episode per issue).
-	// Fillers are test-owned and outlive the workspace cleanup, so they go before and after.
-	const fillerIDs = `DELETE FROM decision_wait WHERE id::text LIKE '00000000-0000-0000-000_-%'`
-	dbfx.Exec(t, fillerIDs)
-	t.Cleanup(func() { dbfx.Exec(t, fillerIDs) })
-	for i := 1; i <= decisionBatchSize+1; i++ {
-		for kind, status := range map[string]string{"closed": "done", "refused": "in_progress"} {
-			issueID := dbfx.Issue(t, "Filler "+kind, testutil.Cols{"status": status})
-			prefix := "00000000-0000-0000-0000-"
-			if kind == "refused" {
-				prefix = "00000000-0000-0000-0001-"
-			}
-			dbfx.Exec(t, `INSERT INTO decision_wait (id, workspace_id, issue_id, asking_agent_id, human_user_id, request_ids, restore_status, dispatch_refused_since)
-				SELECT $1::uuid, workspace_id, $2::uuid, asking_agent_id, human_user_id, '{}', 'in_progress',
-					CASE WHEN $3::text = 'refused' THEN now() END
-				FROM decision_wait WHERE id = $4::uuid`, fmt.Sprintf("%s%012d", prefix, i), issueID, kind, readyID)
-		}
-	}
-
-	waits, err := testHandler.Queries.ListDecisionEpisodeCandidates(context.Background(), decisionBatchSize)
+func episodeCandidateIDs(t *testing.T, rotation int64) []string {
+	t.Helper()
+	waits, err := testHandler.Queries.ListDecisionEpisodeCandidates(context.Background(), db.ListDecisionEpisodeCandidatesParams{BatchSize: decisionBatchSize, Rotation: rotation})
 	if err != nil {
 		t.Fatal(err)
 	}
+	ids := make([]string, len(waits))
+	for i, wait := range waits {
+		ids[i] = uuidToString(wait.ID)
+	}
+	return ids
+}
+
+// An episode that cannot progress must not take a batch slot: more than one
+// batch of closed-issue or unavailable-asker episodes sorts ahead of a ready
+// episode, and the ready one is still selected. Neither kind is selected.
+func TestDecisionEpisodeCandidatesAreNotStarvedByStuckEpisodes(t *testing.T) {
+	f, readyID := readyEpisode(t)
+	_ = f
+	insertEpisodeFillers(t, readyID, "00000000-0000-0000-0000-", "done", "", false, decisionBatchSize+1, 1)
+	gone := dbfx.Agent(t, "Without runtime", "")
+	insertEpisodeFillers(t, readyID, "00000000-0000-0000-0000-", "in_progress", gone, false, decisionBatchSize+1, 1000)
+
 	var found bool
-	for _, wait := range waits {
-		found = found || uuidToString(wait.ID) == readyID
-		if strings.HasPrefix(uuidToString(wait.ID), "00000000-0000-0000-0000-") {
-			t.Fatalf("closed-issue episode %s was selected; it cannot progress before the system close", uuidToString(wait.ID))
+	for _, id := range episodeCandidateIDs(t, 0) {
+		found = found || id == readyID
+		if strings.HasPrefix(id, "00000000-0000-0000-0000-") {
+			t.Fatalf("episode %s cannot progress before the system close and was selected", id)
 		}
 	}
 	if !found {
-		t.Fatalf("the ready episode is not among %d candidates behind %d stuck ones", len(waits), 2*(decisionBatchSize+1))
+		t.Fatal("the ready episode is not among the candidates behind two batches of stuck ones")
+	}
+}
+
+// Persistent refusals sort after the others and rotate, so a later refused
+// episode that can now dispatch is retried although more than one batch of
+// older refusals stays refused.
+func TestDecisionEpisodeCandidatesRetryRefusedEpisodesFairly(t *testing.T) {
+	f, readyID := readyEpisode(t)
+	dbfx.Exec(t, `UPDATE decision_wait SET dispatch_refused_since = now() + interval '1 hour' WHERE id = $1`, readyID)
+	insertEpisodeFillers(t, readyID, "00000000-0000-0000-0001-", "in_progress", "", true, 2*decisionBatchSize+1, 1)
+	_ = f
+
+	seen := 0
+	for rotation := int64(0); rotation < 40; rotation++ {
+		if slices.Contains(episodeCandidateIDs(t, rotation), readyID) {
+			seen++
+		}
+	}
+	if seen == 0 {
+		t.Fatal("a refused episode behind two batches of older refusals is never a candidate")
 	}
 }

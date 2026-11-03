@@ -137,7 +137,9 @@ WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
 -- Closed-issue and unavailable-agent episodes are system-close candidates
 -- (clause 1); the system close is L5d (design §11), so they stay out of the
 -- batch here: an episode that cannot progress must not take a batch slot.
--- Episodes with a refused dispatch sort last. The run-budget resume condition
+-- Episodes with a refused dispatch sort last, in an order that rotates with
+-- the rotation argument, so a batch of persistent refusals cannot hold every
+-- slot while a later one could now dispatch. The run-budget resume condition
 -- is the member status change after the suspension or a later workflow budget
 -- start; the delivery transaction re-checks it exactly.
 SELECT wait.* FROM decision_wait wait
@@ -184,5 +186,7 @@ WHERE wait.closed_at IS NULL
       WHERE bound.id = ANY(wait.request_ids) AND bound.status = 'answered'
         AND live.disclaimed_at IS NULL AND live.woken_at IS NULL AND live.wake_at > clock_timestamp()
   )
-ORDER BY (wait.dispatch_refused_since IS NOT NULL), wait.dispatch_refused_since, wait.id
+ORDER BY (wait.dispatch_refused_since IS NOT NULL),
+  CASE WHEN wait.dispatch_refused_since IS NOT NULL THEN md5(wait.id::text || sqlc.arg('rotation')::bigint::text) END,
+  wait.id
 LIMIT LEAST(GREATEST(sqlc.arg('batch_size')::int, 0), 100);
