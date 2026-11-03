@@ -110,6 +110,28 @@ func (q *Queries) ClaimGitHubPRsDueForRecheck(ctx context.Context, arg ClaimGitH
 	return items, nil
 }
 
+const clearGitHubPRClosedReplayPending = `-- name: ClearGitHubPRClosedReplayPending :exec
+DELETE FROM github_pr_closed_replay
+WHERE installation_id = $1 AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4
+`
+
+type ClearGitHubPRClosedReplayPendingParams struct {
+	InstallationID int64  `json:"installation_id"`
+	RepoOwner      string `json:"repo_owner"`
+	RepoName       string `json:"repo_name"`
+	PrNumber       int32  `json:"pr_number"`
+}
+
+func (q *Queries) ClearGitHubPRClosedReplayPending(ctx context.Context, arg ClearGitHubPRClosedReplayPendingParams) error {
+	_, err := q.db.Exec(ctx, clearGitHubPRClosedReplayPending,
+		arg.InstallationID,
+		arg.RepoOwner,
+		arg.RepoName,
+		arg.PrNumber,
+	)
+	return err
+}
+
 const deleteGitHubPRCheckRuns = `-- name: DeleteGitHubPRCheckRuns :exec
 DELETE FROM github_pull_request_check_run WHERE pr_id = $1
 `
@@ -352,6 +374,46 @@ func (q *Queries) ListConflictWatchedGitHubPRNumbersInRepo(ctx context.Context, 
 			return nil, err
 		}
 		items = append(items, pr_number)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGitHubPRClosedReplayPending = `-- name: ListGitHubPRClosedReplayPending :many
+SELECT installation_id, repo_owner, repo_name, pr_number
+FROM github_pr_closed_replay
+ORDER BY requested_at
+LIMIT $1
+`
+
+type ListGitHubPRClosedReplayPendingRow struct {
+	InstallationID int64  `json:"installation_id"`
+	RepoOwner      string `json:"repo_owner"`
+	RepoName       string `json:"repo_name"`
+	PrNumber       int32  `json:"pr_number"`
+}
+
+// Oldest first; the sweep retries each address through the replay callback.
+func (q *Queries) ListGitHubPRClosedReplayPending(ctx context.Context, limit int32) ([]ListGitHubPRClosedReplayPendingRow, error) {
+	rows, err := q.db.Query(ctx, listGitHubPRClosedReplayPending, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGitHubPRClosedReplayPendingRow{}
+	for rows.Next() {
+		var i ListGitHubPRClosedReplayPendingRow
+		if err := rows.Scan(
+			&i.InstallationID,
+			&i.RepoOwner,
+			&i.RepoName,
+			&i.PrNumber,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -694,6 +756,31 @@ func (q *Queries) ListStaleUndecidedGitHubPRs(ctx context.Context, arg ListStale
 		return nil, err
 	}
 	return items, nil
+}
+
+const markGitHubPRClosedReplayPending = `-- name: MarkGitHubPRClosedReplayPending :exec
+INSERT INTO github_pr_closed_replay (installation_id, repo_owner, repo_name, pr_number)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT DO NOTHING
+`
+
+type MarkGitHubPRClosedReplayPendingParams struct {
+	InstallationID int64  `json:"installation_id"`
+	RepoOwner      string `json:"repo_owner"`
+	RepoName       string `json:"repo_name"`
+	PrNumber       int32  `json:"pr_number"`
+}
+
+// CHE-3402: written before a closed-PR replay starts, so a failure after the
+// mirror row commits still leaves a retry marker.
+func (q *Queries) MarkGitHubPRClosedReplayPending(ctx context.Context, arg MarkGitHubPRClosedReplayPendingParams) error {
+	_, err := q.db.Exec(ctx, markGitHubPRClosedReplayPending,
+		arg.InstallationID,
+		arg.RepoOwner,
+		arg.RepoName,
+		arg.PrNumber,
+	)
+	return err
 }
 
 const updateGitHubPRSnapshot = `-- name: UpdateGitHubPRSnapshot :execrows

@@ -622,6 +622,26 @@ func (manager *Manager) sweepOnce(ctx context.Context) {
 	manager.sweepUndecided(ctx)
 	manager.sweepRecheck(ctx)
 	manager.sweepConflictWatched(ctx)
+	manager.sweepClosedReplays(ctx)
+}
+
+// sweepClosedReplays hands every closed-PR replay still owed back to the
+// callback (CHE-3402). A replay is written down before it starts and removed
+// when it finishes, so one that failed after the mirror row committed, or died
+// with the process, is retried here: that PR is no longer open, so the refresh
+// would not report it again.
+func (manager *Manager) sweepClosedReplays(ctx context.Context) {
+	if manager.onClosed == nil {
+		return
+	}
+	owed, err := manager.queries.ListGitHubPRClosedReplayPending(ctx, int32(manager.sweepMaxRows))
+	if err != nil {
+		slog.Warn("ghsnapshot: list owed closed replays failed", "err", err.Error())
+		return
+	}
+	for _, r := range owed {
+		manager.onClosed(ctx, r.InstallationID, r.RepoOwner, r.RepoName, r.PrNumber)
+	}
 }
 
 func (manager *Manager) sweepUndecided(ctx context.Context) {

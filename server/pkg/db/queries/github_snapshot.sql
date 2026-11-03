@@ -286,3 +286,21 @@ WHERE w.id = gpr.workspace_id
   AND gpr.repo_owner = sqlc.arg('repo_owner')
   AND gpr.repo_name = sqlc.arg('repo_name')
   AND gpr.pr_number = sqlc.arg('pr_number');
+
+-- name: MarkGitHubPRClosedReplayPending :exec
+-- CHE-3402: written before a closed-PR replay starts, so a failure after the
+-- mirror row commits still leaves a retry marker.
+INSERT INTO github_pr_closed_replay (installation_id, repo_owner, repo_name, pr_number)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT DO NOTHING;
+
+-- name: ClearGitHubPRClosedReplayPending :exec
+DELETE FROM github_pr_closed_replay
+WHERE installation_id = $1 AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4;
+
+-- name: ListGitHubPRClosedReplayPending :many
+-- Oldest first; the sweep retries each address through the replay callback.
+SELECT installation_id, repo_owner, repo_name, pr_number
+FROM github_pr_closed_replay
+ORDER BY requested_at
+LIMIT $1;

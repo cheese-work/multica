@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // RepairUnverifiedHeadPullRequests replays PRs stored with head_repo_same=false
@@ -153,5 +154,17 @@ func (h *Handler) replayClosedPullRequest(ctx context.Context, installationID in
 	if !ok {
 		return errors.New("github: closed pull request is not from the mirrored base repository")
 	}
-	return h.handlePullRequestEvent(ctx, body)
+	// The mirror row commits before lifecycle and wakeup work. Record the replay
+	// as owed first, so a failure after that commit is retried by the sweep.
+	params := db.MarkGitHubPRClosedReplayPendingParams{InstallationID: installationID, RepoOwner: owner, RepoName: name, PrNumber: number}
+	if err := h.Queries.MarkGitHubPRClosedReplayPending(ctx, params); err != nil {
+		return fmt.Errorf("github: record owed closed pull request replay: %w", err)
+	}
+	if err := h.handlePullRequestEvent(ctx, body); err != nil {
+		return err
+	}
+	if err := h.Queries.ClearGitHubPRClosedReplayPending(ctx, db.ClearGitHubPRClosedReplayPendingParams(params)); err != nil {
+		return fmt.Errorf("github: clear owed closed pull request replay: %w", err)
+	}
+	return nil
 }

@@ -3,9 +3,30 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
+
+// failOnceDB fails the first query whose SQL carries marker, like a database
+// error after the mirror transaction committed.
+type failOnceDB struct {
+	db.DBTX
+	marker string
+	failed bool
+}
+
+func (f *failOnceDB) Query(ctx context.Context, query string, args ...any) (pgx.Rows, error) {
+	if !f.failed && strings.Contains(query, f.marker) {
+		f.failed = true
+		return nil, errors.New("injected failure")
+	}
+	return f.DBTX.Query(ctx, query, args...)
+}
 
 // CHE-3402: the pull_request "closed" delivery for a merged PR never landed,
 // so the row stayed open. The refresh pipeline reports the PR closed and the
@@ -15,7 +36,7 @@ func TestGitHubReplayClosedPullRequestRecordsMerge(t *testing.T) {
 		name string
 		head map[string]any
 	}{
-		{"same repository", map[string]any{"id": 424242, "full_name": "acme/widget"}},
+		{"same repository", map[string]any{"id": 424242, "full_name": "acme/widget", "fork": false}},
 		{"fork", map[string]any{"id": 20, "full_name": "outsider/widget", "fork": true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -58,7 +79,7 @@ func TestGitHubReplayClosedPullRequestRecordsMerge(t *testing.T) {
 // replayed into that row.
 func TestGitHubReplayClosedPullRequestRejectsOtherBaseRepository(t *testing.T) {
 	fixture := newGitHubReviewFixture(t)
-	pull := githubForkGatePR(t, fixture, map[string]any{"id": 424242, "full_name": "acme/widget"})
+	pull := githubForkGatePR(t, fixture, map[string]any{"id": 424242, "full_name": "acme/widget", "fork": false})
 	pull["state"], pull["merged"] = "closed", true
 	pull["base"] = map[string]any{"ref": "main", "repo": map[string]any{
 		"id": 7, "name": "other", "full_name": "acme/other", "owner": map[string]any{"login": "acme"},
@@ -71,5 +92,52 @@ func TestGitHubReplayClosedPullRequestRejectsOtherBaseRepository(t *testing.T) {
 	}
 	if count := dbfx.Count(t, `SELECT count(*) FROM github_pull_request WHERE workspace_id=$1 AND pr_number=2019 AND state='open'`, testWorkspaceID); count != 1 {
 		t.Fatalf("open rows = %d, want 1", count)
+	}
+}
+
+// A failure after the mirror commit (here: the lifecycle step) leaves the row
+// merged, so the refresh no longer reports it. The replay stays owed until it
+// finishes, and a retry completes it.
+func TestGitHubReplayClosedPullRequestStaysOwedUntilItFinishes(t *testing.T) {
+	fixture := newGitHubReviewFixture(t)
+	pull := githubForkGatePR(t, fixture, map[string]any{"id": 424242, "full_name": "acme/widget", "fork": false})
+	mergedAt := time.Now().UTC().Truncate(time.Second).Format(time.RFC3339)
+	pull["state"], pull["merged"], pull["merged_at"], pull["closed_at"] = "closed", true, mergedAt, mergedAt
+	pull["base"] = map[string]any{"ref": "main", "sha": "base-sha", "repo": map[string]any{
+		"id": 424242, "name": "widget", "full_name": "acme/widget", "default_branch": "main", "owner": map[string]any{"login": "acme"},
+	}}
+	raw, err := json.Marshal(pull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := *fixture.handler
+	handler.fetchPullRequestJSON = func(context.Context, int64, string, string, int32) (json.RawMessage, error) { return raw, nil }
+	dbfx.Cleanup(t, `DELETE FROM github_pr_closed_replay WHERE repo_owner='acme' AND repo_name='widget' AND pr_number=2019`)
+	owed := func() int {
+		return dbfx.Count(t, `SELECT count(*) FROM github_pr_closed_replay WHERE repo_owner='acme' AND repo_name='widget' AND pr_number=2019`)
+	}
+
+	tasks := testHandler.TaskService
+	original := tasks.Queries
+	failing := &failOnceDB{DBTX: testPool, marker: "-- name: ListIssueIDsForPR "}
+	tasks.Queries = db.New(failing)
+	t.Cleanup(func() { tasks.Queries = original })
+	if err := handler.replayClosedPullRequest(context.Background(), 2019001, "acme", "widget", 2019); err == nil {
+		t.Fatal("replay hid the lifecycle failure")
+	}
+	var state string
+	dbfx.QueryRow(t, `SELECT state FROM github_pull_request WHERE workspace_id=$1 AND pr_number=2019`, testWorkspaceID).Scan(&state)
+	if state != "merged" {
+		t.Fatalf("row state = %q, want merged (committed before the failure)", state)
+	}
+	if got := owed(); got != 1 {
+		t.Fatalf("owed replays after failure = %d, want 1", got)
+	}
+
+	if err := handler.replayClosedPullRequest(context.Background(), 2019001, "acme", "widget", 2019); err != nil {
+		t.Fatal(err)
+	}
+	if got := owed(); got != 0 {
+		t.Fatalf("owed replays after retry = %d, want 0", got)
 	}
 }

@@ -91,3 +91,40 @@ func TestProcessReportsClosedPRStillStoredOpen(t *testing.T) {
 type failingBegin struct{}
 
 func (failingBegin) Begin(context.Context) (pgx.Tx, error) { return nil, errors.New("no database") }
+
+// A replay that did not finish is owed: the sweep hands its address to the
+// callback again, also after a restart, until the marker is cleared.
+func TestSweepRetriesOwedClosedReplays(t *testing.T) {
+	pool := testDBPool(t)
+	queries := db.New(pool)
+	ctx := context.Background()
+	const installationID, number = int64(3402001), int32(3402)
+	mark := db.MarkGitHubPRClosedReplayPendingParams{InstallationID: installationID, RepoOwner: "o", RepoName: "r", PrNumber: number}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM github_pr_closed_replay WHERE installation_id=$1`, installationID)
+	})
+	if err := queries.MarkGitHubPRClosedReplayPending(ctx, mark); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewManager(enabledClient(t), queries, pool, nil)
+	var got []address
+	m.SetOnClosed(func(_ context.Context, id int64, owner, repo string, n int32) {
+		if id == installationID {
+			got = append(got, address{InstallationID: id, Owner: owner, Repo: repo, Number: n})
+		}
+	})
+	m.sweepClosedReplays(ctx)
+	if want := (address{InstallationID: installationID, Owner: "o", Repo: "r", Number: number}); len(got) != 1 || got[0] != want {
+		t.Fatalf("owed replays handed to the callback = %+v, want [%+v]", got, want)
+	}
+
+	if err := queries.ClearGitHubPRClosedReplayPending(ctx, db.ClearGitHubPRClosedReplayPendingParams(mark)); err != nil {
+		t.Fatal(err)
+	}
+	got = nil
+	m.sweepClosedReplays(ctx)
+	if len(got) != 0 {
+		t.Fatalf("cleared replay handed to the callback again: %+v", got)
+	}
+}
