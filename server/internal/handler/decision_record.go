@@ -448,6 +448,13 @@ type decisionRecordSource struct {
 
 func (handler *Handler) persistDecisionRecord(ctx context.Context, queries *db.Queries, issue db.Issue, decision db.DecisionRequest, input decisionRecordInput, source decisionRecordSource, root *db.Comment) (decisionRecordResult, error) {
 	empty := decisionRecordResult{}
+	workspace, err := queries.GetWorkspace(ctx, issue.WorkspaceID)
+	if err != nil {
+		return empty, err
+	}
+	if err := refuseGatedAnswerWhileRecovering(ctx, queries, workspace, decision, decision.HumanUserID); err != nil {
+		return empty, err
+	}
 	effectiveAt, err := queries.DecisionRecordEffectiveAt(ctx, db.DecisionRecordEffectiveAtParams{WorkspaceID: issue.WorkspaceID, ID: decision.ID})
 	if err != nil {
 		return empty, err
@@ -473,10 +480,6 @@ func (handler *Handler) persistDecisionRecord(ctx context.Context, queries *db.Q
 		}
 	}
 	comment, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: source.CommentID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "agent", AuthorID: source.AgentID, SourceTaskID: source.TaskID, ParentID: input.ParentID, Content: source.Quote, Type: "comment", DecisionAnswerID: answer.ID, DecisionCommentKind: pgtype.Text{String: "quote", Valid: true}})
-	if err != nil {
-		return empty, err
-	}
-	workspace, err := queries.GetWorkspace(ctx, issue.WorkspaceID)
 	if err != nil {
 		return empty, err
 	}

@@ -11,11 +11,12 @@ import (
 )
 
 // freshGenerationPrefixes are the routes that act on a human's behalf with a
-// passkey or an approval. They read the stored generation on every request,
-// not the 30 s cache, so a revocation lands at once. Decided by path because
-// Auth runs before any per-route middleware.
+// passkey or an approval, or mint a non-expiring PAT. They read the stored
+// generation on every request, not the 30 s cache, so a revocation lands at
+// once. Decided by path because Auth runs before any per-route middleware.
 var freshGenerationPrefixes = []string{
 	"/api/passkeys/",
+	"/api/tokens",
 	"/api/decision-actions/",
 	"/api/decision-answers/",
 	"/api/decision-requests/",

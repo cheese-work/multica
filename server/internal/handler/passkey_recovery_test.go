@@ -96,3 +96,25 @@ func TestApproveDecisionActionStaysRefusedAfterRecoveryUntilTwoNewKeys(test *tes
 	}
 	action.approve(test, handler, action.claim(test, map[string]string{"KEY": secretSentinel}), http.StatusOK)
 }
+
+// The agent-recorded answer (decision_record) is a second way to answer a
+// request; it takes the same gate and the same recovery refusal as the card.
+func TestRecordedAnswerOfAGatedClassIsRefusedWhileThePersonIsInRecovery(test *testing.T) {
+	fixture := newAskedRecordFixture(test)
+	workspaceID := uuidToString(fixture.issue.WorkspaceID)
+	dbfx.Exec(test, `UPDATE decision_request SET escalation_class = 'spend' WHERE id = $1`, fixture.decision.ID)
+	dbfx.Exec(test, `UPDATE workspace SET decision_passkey_gate = 'block' WHERE id = $1`, workspaceID)
+	dbfx.Cleanup(test, `UPDATE workspace SET decision_passkey_gate = 'off' WHERE id = $1`, workspaceID)
+	setPasskeyState(test, uuidToString(fixture.decision.HumanUserID), "recovery_required")
+
+	_, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
+	if err == nil || !strings.Contains(err.Error(), "recovery_required") {
+		test.Fatalf("err = %v, want recovery_required", err)
+	}
+	fixture.assertRecordCounts(test, 0)
+
+	setPasskeyState(test, uuidToString(fixture.decision.HumanUserID), "ready")
+	if _, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput()); err != nil {
+		test.Fatalf("recorded answer after recovery ended: %v", err)
+	}
+}

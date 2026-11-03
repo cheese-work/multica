@@ -76,6 +76,7 @@ func TestSessionGeneration_GatedRoutesSkipTheCache(t *testing.T) {
 		{"POST", "/api/decision-actions/00000000-0000-0000-0000-000000000001/approve"},
 		{"POST", "/api/decision-requests/00000000-0000-0000-0000-000000000001/answer"},
 		{"POST", "/api/decision-answers/00000000-0000-0000-0000-000000000001/disclaim"},
+		{"POST", "/api/tokens"}, // a PAT outlives the JWT and skips its generation check
 	}
 	for _, route := range gated {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {

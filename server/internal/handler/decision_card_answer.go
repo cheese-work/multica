@@ -14,7 +14,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/commentguard"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
-	"github.com/multica-ai/multica/server/internal/passkey"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -159,10 +158,8 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if err != nil {
 		return empty, err
 	}
-	if decision.EscalationClass != "reversible" && workspace.DecisionPasskeyGate == passkey.GateBlock {
-		if err := refuseWhileRecovering(ctx, queries, userID); err != nil {
-			return empty, err
-		}
+	if err := refuseGatedAnswerWhileRecovering(ctx, queries, workspace, decision, userID); err != nil {
+		return empty, err
 	}
 	effectiveAt, err := queries.DecisionRecordEffectiveAt(ctx, db.DecisionRecordEffectiveAtParams{WorkspaceID: workspaceID, ID: decision.ID})
 	if err != nil {

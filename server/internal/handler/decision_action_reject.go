@@ -339,3 +339,13 @@ func (handler *Handler) locateDecisionAction(ctx context.Context, caller decisio
 	}
 	return preview, located, nil
 }
+
+// refuseGatedAnswerWhileRecovering is refuseWhileRecovering for an answer that
+// is gated (not reversible, workspace gate on block). Every path that records
+// an answer calls it inside its transaction.
+func refuseGatedAnswerWhileRecovering(ctx context.Context, queries *db.Queries, workspace db.Workspace, decision db.DecisionRequest, userID pgtype.UUID) error {
+	if decision.EscalationClass == "reversible" || workspace.DecisionPasskeyGate != passkey.GateBlock {
+		return nil
+	}
+	return refuseWhileRecovering(ctx, queries, userID)
+}
