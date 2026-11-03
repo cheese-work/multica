@@ -244,6 +244,7 @@ Private key는 GitHub App의 **Private keys → Generate a private key**에서 �
 - **연결 버튼을 사용할 수 없음**: `GITHUB_APP_SLUG`, `GITHUB_WEBHOOK_SECRET`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`가 API 프로세스에 전달되었는지 확인합니다.
 - **설치 직후 연결이 실패함**: **Request user authorization (OAuth) during installation**을 활성화하고 callback URL과 setup URL을 모두 `/api/github/setup`으로 설정한 뒤 Members read-only를 부여합니다. 연결 사용자는 개인 계정 소유자이거나 organization의 active admin이어야 합니다.
 - **Webhook이 401을 반환함**: GitHub App과 API가 같은 Webhook secret을 사용하는지 확인하고 GitHub의 **Recent Deliveries**에서 다시 전달합니다.
+- **GitHub에서 merge됐는데 Multica에서 PR이 open으로 남음**: `closed` Webhook이 유실되었습니다. `GITHUB_APP_ID`와 `GITHUB_APP_PRIVATE_KEY`가 설정되어 있으면 다음 CI 새로 고침이 GitHub에서 PR을 읽고, Webhook이 도착한 것처럼 merge 또는 close를 기록합니다. 태스크를 열어 새로 고침을 시작하거나 주기적인 백그라운드 새로 고침을 기다리세요. 자격 증명이 없으면 **Recent Deliveries**에서 이벤트를 다시 전달합니다.
 - **PR이 연결되지 않음**: 저장소가 App 승인 범위에 있는지, 자동 연결이 켜져 있는지, 번호가 현재 워크스페이스에 속하는지, 누군가 태스크에서 PR을 제거하지 않았는지 확인합니다.
 - **본문에 번호를 썼는데 연결되지 않음**: `Closes MUL-123`을 사용하거나, 번호를 브랜치 이름이나 PR 제목에 넣거나, 직접 연결합니다.
 - **CI 상태가 없음**: `GITHUB_APP_ID`와 `GITHUB_APP_PRIVATE_KEY`가 설정되었는지, App에 Pull requests, Checks 및 Commit statuses 읽기 권한이 있고 관련 이벤트를 구독했는지 확인합니다. Contents 권한은 필요하지 않습니다. 설치된 App에 권한을 추가한 뒤에는 각 installation owner가 GitHub에서 승인해야 적용됩니다.
