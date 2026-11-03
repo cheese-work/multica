@@ -16,20 +16,26 @@ import { buildWakeupInput, emptyWakeupDraft, type WakeupDraft, type WakeupDraftE
 export function useWakeupForm({
   workspaceId,
   defaultAgentId,
+  initial,
   save,
   onSaved,
   onBusy,
+  describeError,
 }: {
   workspaceId: string;
   defaultAgentId: string;
+  /** Draft fields to open with, for editing a saved rule. */
+  initial?: Partial<WakeupDraft>;
   save: (input: IssueWakeupInput) => Promise<unknown>;
   onSaved: () => void;
   onBusy?: (busy: boolean) => void;
+  /** A message for a refusal the caller knows; anything else gets the shared one. */
+  describeError?: (err: unknown) => string | undefined;
 }) {
   const { t } = useT("issues");
   const text = useWakeupText();
   const timezone = useViewingTimezone();
-  const [draft, setDraft] = useState(() => emptyWakeupDraft(defaultAgentId, timezone));
+  const [draft, setDraft] = useState(() => ({ ...emptyWakeupDraft(defaultAgentId, timezone), ...initial }));
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const inFlight = useRef(false);
@@ -50,11 +56,16 @@ export function useWakeupForm({
     until_future: t(($) => $.wakeups.create.until_future),
   };
 
-  const submit = async () => {
-    if (inFlight.current) return;
+  /** The payload save sends: a property condition's value is typed by the property. */
+  const build = () => {
     const propertyType =
       draft.field === "property" ? properties.find((p) => p.id === draft.fieldTarget)?.type : undefined;
-    const result = buildWakeupInput(draft, new Date(), propertyType);
+    return buildWakeupInput(draft, new Date(), propertyType);
+  };
+
+  const submit = async () => {
+    if (inFlight.current) return;
+    const result = build();
     if ("error" in result) {
       setError(draftErrors[result.error]);
       return;
@@ -71,9 +82,10 @@ export function useWakeupForm({
           ? err.body.code
           : undefined;
       setError(
-        code === "wakeup_capacity_exceeded"
-          ? t(($) => $.wakeups.create.capacity_error)
-          : text.error(err, t(($) => $.wakeups.create.error)),
+        describeError?.(err) ??
+          (code === "wakeup_capacity_exceeded"
+            ? t(($) => $.wakeups.create.capacity_error)
+            : text.error(err, t(($) => $.wakeups.create.error))),
       );
     } finally {
       inFlight.current = false;
@@ -82,5 +94,5 @@ export function useWakeupForm({
     }
   };
 
-  return { draft, update, error, pending, submit };
+  return { draft, update, error, pending, submit, build };
 }
