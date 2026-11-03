@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/commentguard"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
@@ -119,6 +120,13 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	}
 	defer transaction.Rollback(ctx)
 	queries := handler.Queries.WithTx(transaction)
+	// First lock of the transaction, so recovery (which holds the user row
+	// FOR UPDATE) is ordered before or after the whole answer, never inside it.
+	if err := holdCurrentSession(ctx, transaction, queries, userID, request.Header.Get(auth.SessionGenerationHeader)); errors.Is(err, errSessionRevoked) {
+		return empty, decisionIntentRefusal{http.StatusUnauthorized, "session revoked"}
+	} else if err != nil {
+		return empty, err
+	}
 	if _, err := queries.LockWorkspaceForChatSessionCreate(ctx, workspaceID); err != nil {
 		return empty, err
 	}
@@ -166,6 +174,9 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	}
 	workspace, err := queries.GetWorkspace(ctx, workspaceID)
 	if err != nil {
+		return empty, err
+	}
+	if err := refuseGatedAnswerWhileRecovering(ctx, queries, workspace, decision, userID); err != nil {
 		return empty, err
 	}
 	if err := handler.verifyGatedAnswer(ctx, queries, workspace, decision, userID, request.Header.Get("X-Session-ID"), input); err != nil {
