@@ -1,0 +1,56 @@
+# Required `pr-ready` check (CHE-3440). Canonical copy: cheese-work/dotfiles-agents .github/workflows/pr-ready.yml;
+# tests live there (tests/test_che3440_pr_ready.py). Fails while the PR body says the work is unfinished.
+# Register `pr-ready` as a required check only after a readback of the check on a real PR and a real queue run
+# (cheese-work/dotfiles-agents docs/pr-ready.md); this file alone blocks nothing.
+#
+# SECURITY — same boundary as security-gate.yml: `pull_request_target` runs this definition from the default branch,
+# and the job checks out the DEFAULT branch only. Nothing from a PR head is fetched, checked out or run; the body is
+# read through the API as data. Permissions are read-only and there is no secret. `merge_group` runs the definition
+# of the queue commit, so a PR that edits THIS file is judged by the default branch's copy at PR time but by its own
+# copy in the queue; the script run is always the default branch's. Closing that gap needs an org-level required
+# workflow rule (docs/pr-ready.md in dotfiles-agents).
+# A PR body edit made after the queue commit is built does not re-run `merge_group`: authors flip Status to Ready
+# BEFORE enqueueing. REQUIRE_SECURITY_GATE=1 also demands a `security-gate` success on each queued PR's head.
+
+name: pr-ready
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: read
+
+concurrency:
+  group: pr-ready-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  pr-ready:
+    name: pr-ready
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99-gate"]') || fromJSON('["ubuntu-latest"]') }}
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EVENT: ${{ github.event_name }}
+      REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      BASE_SHA: ${{ github.event.merge_group.base_sha }}
+      HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+      HEAD_REF: ${{ github.event.merge_group.head_ref }}
+      REQUIRE_SECURITY_GATE: "1"
+    steps:
+      - name: Discard a reused workspace
+        run: |
+          find "$GITHUB_WORKSPACE" -mindepth 1 -delete
+      - name: Check out the protected default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Judge the PR body and the merge group
+        run: python3 .github/scripts/pr_ready.py
