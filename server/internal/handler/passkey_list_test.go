@@ -15,6 +15,7 @@ type listedPasskeys struct {
 		CreatedAt  string   `json:"created_at"`
 		LastUsedAt *string  `json:"last_used_at"`
 		Transports []string `json:"transports"`
+		State      string   `json:"state"`
 	} `json:"passkeys"`
 }
 
@@ -45,6 +46,22 @@ func TestListPasskeysReturnsOnlyTheCallersUsableKeys(test *testing.T) {
 	}
 	if len(ids) != 2 || !ids[pair.firstID] || !ids[pair.secondID] {
 		test.Fatalf("listed %v, want exactly %s and %s", ids, pair.firstID, pair.secondID)
+	}
+}
+
+func TestListPasskeysShowsSuspectKeysWithTheirState(test *testing.T) {
+	pair := newTwoPasskeys(test)
+	dbfx.Exec(test, `UPDATE user_passkey SET suspect_at = now() WHERE id = $1`, pair.secondID)
+
+	var listed listedPasskeys
+	decodeJSON(test, testutil.Call(test, pair.handler.ListPasskeys, listRequest(pair.humanID, "interactive_jwt")).Want(http.StatusOK).Text(), &listed)
+
+	states := map[string]string{}
+	for _, item := range listed.Passkeys {
+		states[item.ID] = item.State
+	}
+	if len(states) != 2 || states[pair.firstID] != "active" || states[pair.secondID] != "suspect" {
+		test.Fatalf("states %v, want %s active and %s suspect", states, pair.firstID, pair.secondID)
 	}
 }
 

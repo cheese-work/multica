@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	"net/http"
-	"sort"
 )
 
 type passkeySummary struct {
@@ -11,9 +10,11 @@ type passkeySummary struct {
 	CreatedAt  string   `json:"created_at"`
 	LastUsedAt *string  `json:"last_used_at"`
 	Transports []string `json:"transports"`
+	// State is "active" or "suspect". A suspect key cannot sign but can still be revoked.
+	State string `json:"state"`
 }
 
-// ListPasskeys returns the caller's usable passkeys for the settings page. Like
+// ListPasskeys returns the caller's unrevoked passkeys, suspect ones included, for the settings page. Like
 // revocation it stays open while enrollment is closed, and it exposes no key
 // material: only what a person needs to tell their devices apart.
 func (handler *Handler) ListPasskeys(writer http.ResponseWriter, request *http.Request) {
@@ -27,21 +28,24 @@ func (handler *Handler) ListPasskeys(writer http.ResponseWriter, request *http.R
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), decisionActionDeadline)
 	defer cancel()
-	rows, err := handler.Queries.ListUsablePasskeys(ctx, userID)
+	rows, err := handler.Queries.ListLivePasskeys(ctx, userID)
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, "failed to list passkeys")
 		return
 	}
-	sort.SliceStable(rows, func(i, j int) bool { return rows[i].CreatedAt.Time.Before(rows[j].CreatedAt.Time) })
 	passkeys := make([]passkeySummary, 0, len(rows))
 	for _, row := range rows {
 		transports := row.Transports
 		if transports == nil {
 			transports = []string{}
 		}
+		state := "active"
+		if row.SuspectAt.Valid {
+			state = "suspect"
+		}
 		passkeys = append(passkeys, passkeySummary{
 			ID: uuidToString(row.ID), CreatedAt: timestampToString(row.CreatedAt),
-			LastUsedAt: timestampToPtr(row.LastUsedAt), Transports: transports,
+			LastUsedAt: timestampToPtr(row.LastUsedAt), Transports: transports, State: state,
 		})
 	}
 	writeJSON(writer, http.StatusOK, map[string][]passkeySummary{"passkeys": passkeys})

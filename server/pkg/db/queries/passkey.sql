@@ -38,6 +38,11 @@ SELECT * FROM user_passkey
 WHERE user_id = $1 AND revoked_at IS NULL AND suspect_at IS NULL
 ORDER BY id;
 
+-- name: ListLivePasskeys :many
+SELECT * FROM user_passkey
+WHERE user_id = $1 AND revoked_at IS NULL
+ORDER BY created_at, id;
+
 -- name: LockPasskeyByCredentialNowait :one
 SELECT * FROM user_passkey WHERE credential_id = $1 FOR UPDATE NOWAIT;
 
