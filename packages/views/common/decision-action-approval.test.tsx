@@ -25,6 +25,7 @@ function renderApproval(onEnroll = vi.fn()) {
 }
 
 beforeEach(() => {
+  sessionStorage.clear();
   Object.values(api).forEach((fn) => fn.mockReset());
   sign.mockReset();
   api.challengeDecisionAction.mockResolvedValue({ challenge_id: "ch", options: { publicKey: {} }, expires_at: "t" });
@@ -112,5 +113,16 @@ describe("DecisionActionApproval", () => {
     await renderApproval().approve();
     expect(await screen.findByText("Expired")).toBeTruthy();
     expect(api.approveDecisionAction).not.toHaveBeenCalled();
+  });
+
+  it("stays readback-only after a remount following a lost response", async () => {
+    api.approveDecisionAction.mockRejectedValue(new TypeError("network error"));
+    await renderApproval().approve();
+    await screen.findByRole("button", { name: "Check outcome" });
+    cleanup();
+    renderApproval();
+    expect(await screen.findByRole("button", { name: "Check outcome" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+    expect(api.approveDecisionAction).toHaveBeenCalledOnce();
   });
 });

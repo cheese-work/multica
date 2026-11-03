@@ -16,11 +16,30 @@ const TERMINAL = ["executed", "failed", "rejected", "expired", "cancelled"] as c
 type Terminal = (typeof TERMINAL)[number];
 const isTerminal = (state: string): state is Terminal => (TERMINAL as readonly string[]).includes(state);
 
+// An approve request that left this tab. Survives a remount, so an undecided
+// action never offers approve again (N15); a new tab or session starts clean.
+const sentKey = (actionId: string) => `decision-action-sent:${actionId}`;
+function approveWasSent(actionId: string): boolean {
+  try {
+    return sessionStorage.getItem(sentKey(actionId)) !== null;
+  } catch {
+    return false; // storage blocked: the server still refuses a decided action
+  }
+}
+function markApproveSent(actionId: string, sent = true) {
+  try {
+    if (sent) sessionStorage.setItem(sentKey(actionId), "1");
+    else sessionStorage.removeItem(sentKey(actionId));
+  } catch {
+    // see approveWasSent
+  }
+}
+
 /**
  * Passkey approval of one executable decision action: challenge → WebAuthn
  * assertion → approve → outcome. After the approve request leaves, a lost or
  * uncertain response only reads the outcome back; the action is never approved
- * a second time (CHE-2798 N15). A mount also reads the outcome first, so a
+ * a second time (CHE-2798 N15), also after a remount in the same tab. A mount also reads the outcome first, so a
  * remount or a second session shows a decided action instead of offering
  * approve again. `onEnroll` opens passkey enrollment.
  */
@@ -47,7 +66,7 @@ export function DecisionActionApproval({
   };
 
   useEffect(() => {
-    void readBack({ step: "idle" });
+    void readBack(approveWasSent(actionId) ? { step: "lost" } : { step: "idle" });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- read once per action
   }, [actionId]);
 
@@ -57,10 +76,12 @@ export function DecisionActionApproval({
     try {
       const assertion = await signPasskeyChallenge(await api.challengeDecisionAction(actionId));
       sent = true;
+      markApproveSent(actionId);
       const outcome = await api.approveDecisionAction(actionId, { payload_sha256: payloadSha256, assertion });
       setView(isTerminal(outcome.state) ? { step: "done", outcome } : { step: "lost" });
     } catch (error) {
       const refused = error instanceof ApiError && error.status < 500;
+      if (sent && refused) markApproveSent(actionId, false); // the server answered: nothing was approved
       const reason = refused ? error.message.split(":")[0] : "";
       if (!sent && reason === "no_passkey") setView({ step: "no_passkey" });
       else if (!sent && reason === "not_pending") await readBack();
