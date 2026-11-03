@@ -171,6 +171,9 @@ func (manager *Manager) SetReadSelector(selector *dbreader.Selector) {
 // Enabled reports whether the pipeline will actually do anything.
 func (manager *Manager) Enabled() bool { return manager != nil && manager.client.Enabled() }
 
+// Client returns the shared GitHub App client (nil-safe: check Enabled first).
+func (manager *Manager) Client() *Client { return manager.client }
+
 // Start launches the worker pool and the TTL sweeper under ctx. No-op (and
 // safe) when the manager is disabled.
 func (manager *Manager) Start(ctx context.Context) {

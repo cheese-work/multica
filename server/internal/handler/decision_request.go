@@ -63,6 +63,10 @@ type decisionRequestResult struct {
 	// no item for a departed recipient" from "not yet recorded".
 	PingItem     *db.InboxItem
 	PingRecorded bool
+	// Parked is set when this request moved the issue to its waiting status;
+	// ParkedIssue is the issue as written.
+	Parked      bool
+	ParkedIssue db.Issue
 }
 
 func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Issue, input decisionRequestInput) (decisionRequestResult, error) {
@@ -430,6 +434,9 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	if err != nil {
 		return empty, err
 	}
+	if result.ParkedIssue, result.Parked, err = parkIssueForDecision(ctx, queries, issue); err != nil {
+		return empty, err
+	}
 	if err := transaction.Commit(ctx); err != nil {
 		return empty, err
 	}
@@ -675,6 +682,9 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 		return empty, err
 	}
 	result.PingRecorded = true
+	if result.ParkedIssue, result.Parked, err = parkIssueForDecision(ctx, queries, issue); err != nil {
+		return empty, err
+	}
 	if err := transaction.Commit(ctx); err != nil {
 		return empty, err
 	}

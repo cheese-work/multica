@@ -188,14 +188,16 @@ func (q *Queries) ConsumeDecisionIntentTarget(ctx context.Context, arg ConsumeDe
 }
 
 const createDecisionAnswer = `-- name: CreateDecisionAnswer :one
-INSERT INTO decision_answer (decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, source_comment_id, content_snapshot, effective_at, issue_comment_id, wake_at, chosen_option_index, reply_text, context_message_id, excerpted, answered_label)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::boolean, $14)
+INSERT INTO decision_answer (decision_request_id, answered_by_task_id, answered_by_user_id, answer_source, source_chat_session_id, chat_message_ids, source_comment_id, content_snapshot, effective_at, issue_comment_id, wake_at, chosen_option_index, reply_text, context_message_id, excerpted, answered_label)
+VALUES ($1, $2, $3, COALESCE($4::text, 'agent_record'), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::boolean, $16)
 RETURNING id, decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, content_snapshot, effective_at, wake_at, woken_at, wake_outcome, issue_comment_id, disclaimed_at, disclaim_comment_posted_at, disclaimed_by_user_id, disclaim_reason, disclaimed_by_agent_id, disclaimed_by_task_id, veto_reason, veto_note_posted_at, retraction_delivered_at, retraction_outcome, withdrawal_comment_id, created_at, source_comment_id, answered_by_user_id, answer_source, chosen_option_index, reply_text, context_message_id, excerpted, answered_label, state_version, hindsight_acked_version
 `
 
 type CreateDecisionAnswerParams struct {
 	DecisionRequestID   pgtype.UUID        `json:"decision_request_id"`
 	AnsweredByTaskID    pgtype.UUID        `json:"answered_by_task_id"`
+	AnsweredByUserID    pgtype.UUID        `json:"answered_by_user_id"`
+	AnswerSource        pgtype.Text        `json:"answer_source"`
 	SourceChatSessionID pgtype.UUID        `json:"source_chat_session_id"`
 	ChatMessageIds      []pgtype.UUID      `json:"chat_message_ids"`
 	SourceCommentID     pgtype.UUID        `json:"source_comment_id"`
@@ -214,6 +216,8 @@ func (q *Queries) CreateDecisionAnswer(ctx context.Context, arg CreateDecisionAn
 	row := q.db.QueryRow(ctx, createDecisionAnswer,
 		arg.DecisionRequestID,
 		arg.AnsweredByTaskID,
+		arg.AnsweredByUserID,
+		arg.AnswerSource,
 		arg.SourceChatSessionID,
 		arg.ChatMessageIds,
 		arg.SourceCommentID,
