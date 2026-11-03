@@ -25,6 +25,9 @@ func newAskedRecordFixture(test *testing.T) askedRecordFixture {
 	if err != nil {
 		test.Fatal(err)
 	}
+	if result.Parked {
+		fixture.issue = result.ParkedIssue
+	}
 	messageID := dbfx.Insert(test, "chat_message", testutil.Cols{"chat_session_id": fixture.sessionID, "role": "user", "content": "  Yes.\nKeep the exact words.  ", "sent_via": "interactive_jwt"})
 	chatTaskID := dbfx.Task(test, fixture.agentID, testutil.Cols{"status": "running", "chat_session_id": fixture.sessionID, "runtime_id": handlerTestRuntimeID(test)})
 	dbfx.Exec(test, `UPDATE agent_task_queue SET started_at = clock_timestamp() WHERE id = $1`, chatTaskID)

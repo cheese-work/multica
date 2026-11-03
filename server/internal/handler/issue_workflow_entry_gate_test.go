@@ -48,6 +48,7 @@ func asSource(source string) func(*http.Request) *http.Request {
 func putIssue(t *testing.T, issueID string, body map[string]any, actor ...func(*http.Request) *http.Request) *testutil.Response {
 	t.Helper()
 	req := withURLParam(newRequest("PUT", "/api/issues/"+issueID, body), "id", issueID)
+	req.Header.Set("X-Actor-Source", "interactive_jwt")
 	for _, as := range actor {
 		req = as(req)
 	}

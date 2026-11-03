@@ -50,6 +50,55 @@ func (q *Queries) ListExpiredBudgetRecoveryTasks(ctx context.Context, limitSecon
 	return items, nil
 }
 
+const listRecentIssueRunResults = `-- name: ListRecentIssueRunResults :many
+SELECT a.name AS agent_name, t.status, COALESCE(t.error, '')::text AS error,
+       COALESCE(t.result->>'output', '')::text AS output
+FROM agent_task_queue t
+JOIN agent a ON a.id = t.agent_id
+WHERE t.issue_id = $1::uuid AND t.status IN ('completed', 'failed', 'cancelled')
+ORDER BY t.created_at DESC, t.id DESC
+LIMIT $2::int
+`
+
+type ListRecentIssueRunResultsParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	MaxRuns int32       `json:"max_runs"`
+}
+
+type ListRecentIssueRunResultsRow struct {
+	AgentName string `json:"agent_name"`
+	Status    string `json:"status"`
+	Error     string `json:"error"`
+	Output    string `json:"output"`
+}
+
+// The issue's newest finished runs, so the exhaustion notice can show what the
+// last few runs did. A queued or running task has no result yet.
+func (q *Queries) ListRecentIssueRunResults(ctx context.Context, arg ListRecentIssueRunResultsParams) ([]ListRecentIssueRunResultsRow, error) {
+	rows, err := q.db.Query(ctx, listRecentIssueRunResults, arg.IssueID, arg.MaxRuns)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRecentIssueRunResultsRow{}
+	for rows.Next() {
+		var i ListRecentIssueRunResultsRow
+		if err := rows.Scan(
+			&i.AgentName,
+			&i.Status,
+			&i.Error,
+			&i.Output,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markBudgetRecoveryTask = `-- name: MarkBudgetRecoveryTask :exec
 UPDATE agent_task_queue SET task_kind = 'budget_recovery' WHERE id = $1
 `

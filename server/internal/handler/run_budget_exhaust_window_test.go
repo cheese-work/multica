@@ -141,6 +141,18 @@ func TestRunBudgetExhaustionCallbackLosesToATopUpLandingBeforeTheBlock(t *testin
 	assertNotBlocked(t, c)
 }
 
+func landBeforeRecovery(t *testing.T, write func()) {
+	t.Helper()
+	landed := false
+	runBudgetBeforeRecovery = func() { runBudgetBeforeRecovery = func() {}; landed = true; write() }
+	t.Cleanup(func() {
+		runBudgetBeforeRecovery = func() {}
+		if !landed {
+			t.Error("the write never landed: the callback did not reach the recovery run")
+		}
+	})
+}
+
 func landBeforeNotice(t *testing.T, write func()) {
 	t.Helper()
 	landed := false
@@ -196,15 +208,16 @@ func TestRunBudgetExhaustionNoticeLosesToATopUpLandingBeforeTheNotice(t *testing
 }
 
 // The block commits while the window is exhausted, then a top-up lands before
-// the notice. The notice drops the stale refusal, and the recovery run, which
-// bypasses the exhaustion refusal, must not claim the old window either.
+// the recovery run is claimed. The recovery run bypasses the exhaustion
+// refusal, so it must not claim the old window, and the notice (which follows
+// it) drops the stale refusal.
 func TestRunBudgetExhaustionRecoveryLosesToATopUpLandingAfterTheBlock(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
 	c := newBudgetCase(t, 2807008, recoverySteps(seededReadyAgentID(t)), 2)
 	e := refusedEvent(t, c)
-	landBeforeNotice(t, func() {
+	landBeforeRecovery(t, func() {
 		if w := topUpBudget(t, c.issueID, nil); w.Code != http.StatusOK {
 			t.Errorf("top-up = %d: %s", w.Code, w.Body.String())
 		}

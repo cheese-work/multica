@@ -30,3 +30,25 @@ test("PR close target validates edited events using trusted code without an edit
 test("ci.yml matrix runners are GitHub-hosted labels", () => {
   assert.doesNotMatch(read("ci.yml"), /^\s+os:.*(cheese-x99|self-hosted)/m);
 });
+
+// CHE-2418 B6: X99 runners bind-mount ~/go and ~/.cache from the host's nvme disk, so a Go job
+// there already has a warm GOMODCACHE and GOCACHE. setup-go's own cache would download and
+// upload the same files through actions/cache. GitHub-hosted runners have no such disk and keep it.
+// PR runs never reach X99 (see the tests above), so this local cache is only ever written by
+// trusted default-branch and tag runs: a PR cannot plant objects that a release build reads.
+test("release.yml leaves the Go cache to the disk on a self-hosted runner", () => {
+  const workflow = read("release.yml");
+  const verify = workflow.slice(workflow.indexOf("\n  verify:"), workflow.indexOf("\n  release:"));
+  assert.match(verify, /cheese-x99/);
+  assert.match(verify, /uses: actions\/setup-go@[^\n]+\n\s+with:[\s\S]*?\n\s+cache: \$\{\{ runner\.environment != 'self-hosted' \}\}/);
+});
+
+// CHE-3128: gate checks run on the dedicated 2-runner lane so heavy CI on the shared
+// `cheese-x99` pool cannot delay them. Forks keep the GitHub-hosted fallback.
+test("security-gate.yml runs on the dedicated X99 gate lane", () => {
+  const [line, ...rest] = runsOn(read("security-gate.yml"));
+  assert.equal(rest.length, 0);
+  assert.match(line, /"cheese-x99-gate"/);
+  assert.doesNotMatch(line, /"cheese-x99"/);
+  assert.match(line, /ubuntu-latest/);
+});
