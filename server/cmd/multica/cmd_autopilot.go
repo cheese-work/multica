@@ -483,6 +483,15 @@ func runAutopilotUpdate(cmd *cobra.Command, args []string) error {
 		if !cmd.Flags().Changed("description") {
 			return fmt.Errorf("--if-description-sha256 requires --description")
 		}
+		var config struct {
+			AutopilotDescriptionGuardSupported bool `json:"autopilot_description_guard_supported"`
+		}
+		if err := client.GetJSON(ctx, "/api/config", &config); err != nil {
+			return fmt.Errorf("check description guard support: %w", err)
+		}
+		if !config.AutopilotDescriptionGuardSupported {
+			return errors.New("this server version does not support --if-description-sha256; update the server before using it")
+		}
 		v, _ := cmd.Flags().GetString("if-description-sha256")
 		body["expected_description_sha256"] = v
 	}
