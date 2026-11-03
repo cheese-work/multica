@@ -75,6 +75,35 @@ func (q *Queries) EnsureDMProgressLane(ctx context.Context, arg EnsureDMProgress
 	return err
 }
 
+const getActiveDMProgressFollow = `-- name: GetActiveDMProgressFollow :one
+SELECT id, workspace_id, issue_id, lineage_id, owner_user_id, source, state, muted_at, last_rendered_status, last_immediate_at, parent_follow_id, created_at FROM dm_progress_follow WHERE issue_id = $1 AND lineage_id = $2 AND state = 'active'
+`
+
+type GetActiveDMProgressFollowParams struct {
+	IssueID   pgtype.UUID `json:"issue_id"`
+	LineageID pgtype.UUID `json:"lineage_id"`
+}
+
+func (q *Queries) GetActiveDMProgressFollow(ctx context.Context, arg GetActiveDMProgressFollowParams) (DmProgressFollow, error) {
+	row := q.db.QueryRow(ctx, getActiveDMProgressFollow, arg.IssueID, arg.LineageID)
+	var i DmProgressFollow
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.LineageID,
+		&i.OwnerUserID,
+		&i.Source,
+		&i.State,
+		&i.MutedAt,
+		&i.LastRenderedStatus,
+		&i.LastImmediateAt,
+		&i.ParentFollowID,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getNativeChatSession = `-- name: GetNativeChatSession :one
 SELECT session.id, session.workspace_id, session.agent_id, session.creator_id, session.title, session.session_id, session.work_dir, session.status, session.created_at, session.updated_at, session.unread_since, session.runtime_id, session.last_read_at, session.is_agent_intro, session.pinned_at, session.project_id, session.explicitly_created_at, session.continued_from_session_id, session.continued_into_session_id, session.channel_origin_at, session.forked_from_session_id, session.fork_idempotency_key, session.fork_last_message_id, session.fork_message_count, session.fork_source_message_id, session.title_manually_set, session.compaction_epoch, session.preset_name, session.decision_topic_id FROM chat_session session
 WHERE session.id = $1
@@ -279,11 +308,13 @@ WITH RECURSIVE chain AS (
     FROM chat_session s JOIN chain c ON s.id = c.parent
     WHERE c.depth < 32
 )
-SELECT chain.id FROM chain ORDER BY depth DESC LIMIT 1
+SELECT chain.id FROM chain WHERE chain.parent IS NULL
 `
 
 // Root of a DM's continuation chain: follow continued_from_session_id back to
-// the first session. The depth bound makes a cyclic chain terminate.
+// the first session. The depth bound makes a cyclic chain terminate. Only a
+// session with no predecessor is a root: a cyclic or over-deep chain returns no
+// row instead of a partial root.
 func (q *Queries) ResolveChatLineageRoot(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
 	row := q.db.QueryRow(ctx, resolveChatLineageRoot, id)
 	var id_2 pgtype.UUID

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
@@ -371,5 +372,90 @@ func TestDMProgress_DeletingChatSessionRemovesLaneAndFollows(t *testing.T) {
 
 	if rows := followRows(t, issue); len(rows) != 0 || laneCount(t, dm) != 0 {
 		t.Errorf("after chat delete: follows = %+v, lanes = %d, want none", rows, laneCount(t, dm))
+	}
+}
+
+// childCreatedWhileParentFollowChanges creates a child of parent while another
+// transaction holds the lane lock, then commits change (an uncommitted write to
+// the parent's follow) and returns the child's id. Create reads the parent
+// follow before the lane lock is free; the follow it inherits must be the one
+// committed after the wait.
+func childCreatedWhileParentFollowChanges(t *testing.T, lineage, parent, change string) string {
+	t.Helper()
+	tx, err := testPool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(t.Context())
+	if _, err := tx.Exec(t.Context(), `SELECT 1 FROM dm_progress_lane WHERE lineage_id = $1 FOR UPDATE`, lineage); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(t.Context(), change, parent); err != nil {
+		t.Fatal(err)
+	}
+
+	type created struct {
+		id   string
+		code int
+	}
+	done := make(chan created, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		testHandler.CreateIssue(rec, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{"title": "racing child", "parent_issue_id": parent}))
+		var issue IssueResponse
+		_ = json.NewDecoder(rec.Body).Decode(&issue)
+		done <- created{issue.ID, rec.Code}
+	}()
+	time.Sleep(500 * time.Millisecond)
+	if err := tx.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	got := <-done
+	if got.code != http.StatusCreated {
+		t.Fatalf("CreateIssue = %d", got.code)
+	}
+	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM issue WHERE id = $1`, got.id) })
+	return got.id
+}
+
+func TestDMProgress_ChildSeesParentMuteCommittedWhileItWaitsForTheLane(t *testing.T) {
+	w := newDMWorld(t)
+	dm := w.dm(t, testUserID)
+	parent := w.agentIssue(t, w.task(t, dm, testUserID), nil)
+
+	child := childCreatedWhileParentFollowChanges(t, dm, parent, `UPDATE dm_progress_follow SET muted_at = now() WHERE issue_id = $1`)
+	if rows := followRows(t, child); len(rows) != 1 || !rows[0].Muted {
+		t.Fatalf("child follows = %+v, want one muted follow", rows)
+	}
+}
+
+func TestDMProgress_ChildSeesParentUnfollowCommittedWhileItWaitsForTheLane(t *testing.T) {
+	w := newDMWorld(t)
+	dm := w.dm(t, testUserID)
+	parent := w.agentIssue(t, w.task(t, dm, testUserID), nil)
+
+	child := childCreatedWhileParentFollowChanges(t, dm, parent, `UPDATE dm_progress_follow SET state = 'unfollowed' WHERE issue_id = $1`)
+	if rows := followRows(t, child); len(rows) != 0 {
+		t.Fatalf("child follows = %+v, want none after the parent was unfollowed", rows)
+	}
+}
+
+func TestDMProgress_BrokenContinuationChainHasNoLane(t *testing.T) {
+	w := newDMWorld(t)
+	cyclicA := w.dm(t, testUserID)
+	cyclicB := w.dm(t, testUserID, testutil.Cols{"continued_from_session_id": cyclicA})
+	dbfx.Exec(t, `UPDATE chat_session SET continued_from_session_id = $2 WHERE id = $1`, cyclicA, cyclicB)
+
+	tooDeep := w.dm(t, testUserID)
+	for i := 0; i < 33; i++ {
+		tooDeep = w.dm(t, testUserID, testutil.Cols{"continued_from_session_id": tooDeep})
+	}
+
+	for name, session := range map[string]string{"cyclic chain": cyclicB, "chain deeper than the bound": tooDeep} {
+		issue := w.agentIssue(t, w.task(t, session, testUserID), map[string]any{"title": name})
+		if rows := followRows(t, issue); len(rows) != 0 {
+			t.Errorf("%s: follows = %+v, want none rather than a partial root", name, rows)
+		}
+		testutil.Call(t, testHandler.FollowIssueProgress, progressReq("POST", issue, "", session)).Want(http.StatusForbidden)
 	}
 }

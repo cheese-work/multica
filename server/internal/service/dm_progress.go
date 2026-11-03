@@ -103,7 +103,19 @@ func followNewIssue(ctx context.Context, q *db.Queries, p IssueCreateParams, iss
 	if err != nil {
 		return err
 	}
-	for _, parent := range parentFollows {
+	for _, listed := range parentFollows {
+		// The list above predates the lane lock, so a mute or unfollow can commit
+		// while we wait for it. Re-read the parent under the lock.
+		if _, err := q.LockDMProgressLane(ctx, listed.LineageID); err != nil {
+			return err
+		}
+		parent, err := q.GetActiveDMProgressFollow(ctx, db.GetActiveDMProgressFollowParams{IssueID: p.ParentIssueID, LineageID: listed.LineageID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
 		lane := DMLane{Lineage: parent.LineageID, Owner: parent.OwnerUserID}
 		if _, _, err := AddProgressFollow(ctx, q, lane, issue, "child", parent.MutedAt, parent.ID); err != nil {
 			return err

@@ -1,6 +1,8 @@
 -- name: ResolveChatLineageRoot :one
 -- Root of a DM's continuation chain: follow continued_from_session_id back to
--- the first session. The depth bound makes a cyclic chain terminate.
+-- the first session. The depth bound makes a cyclic chain terminate. Only a
+-- session with no predecessor is a root: a cyclic or over-deep chain returns no
+-- row instead of a partial root.
 WITH RECURSIVE chain AS (
     SELECT chat_session.id, chat_session.continued_from_session_id AS parent, 1 AS depth
     FROM chat_session WHERE chat_session.id = $1
@@ -9,7 +11,7 @@ WITH RECURSIVE chain AS (
     FROM chat_session s JOIN chain c ON s.id = c.parent
     WHERE c.depth < 32
 )
-SELECT chain.id FROM chain ORDER BY depth DESC LIMIT 1;
+SELECT chain.id FROM chain WHERE chain.parent IS NULL;
 
 -- name: GetNativeChatSession :one
 -- A DM created in the product: channel-bridged chats (Lark, Telegram) are out.
@@ -42,6 +44,9 @@ RETURNING *;
 SELECT * FROM dm_progress_follow
 WHERE issue_id = $1 AND state = 'active'
 ORDER BY lineage_id;
+
+-- name: GetActiveDMProgressFollow :one
+SELECT * FROM dm_progress_follow WHERE issue_id = $1 AND lineage_id = $2 AND state = 'active';
 
 -- name: ListDMProgressFollowsByLineage :many
 SELECT * FROM dm_progress_follow
