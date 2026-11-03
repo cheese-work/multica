@@ -25,11 +25,13 @@ type wdKit struct {
 	issueID   string
 }
 
-// newWakeupDefinitionKit opens the activation gate, which is closed unless a
-// test asks, and removes every definition the test wrote.
+// newWakeupDefinitionKit completes the test's own activation, which opens the
+// gate, and removes every definition the test wrote.
 func newWakeupDefinitionKit(t *testing.T) *wdKit {
 	t.Helper()
-	withFeatureFlag(t, testHandler, featureflags.WakeupDefinitionWrites, true)
+	s := useWakeupActivation(t)
+	wipeWakeupDefinitions(t)
+	completeActivation(t, s)
 	k := &wdKit{t: t, projectID: dbfx.Project(t, "wd project")}
 	k.issueID = dbfx.Issue(t, "wd issue", testutil.Cols{"project_id": k.projectID, "number": nextWorkspaceIssueNumber(t)})
 	wipeWakeupDefinitions(t)
@@ -163,6 +165,7 @@ func configKeys(t *testing.T, raw json.RawMessage) map[string]json.RawMessage {
 // ---- activation gate -------------------------------------------------------
 
 func TestWakeupDefinitionWritesClosedByDefault(t *testing.T) {
+	useWakeupActivation(t)
 	k := &wdKit{t: t, projectID: dbfx.Project(t, "wd project")}
 	k.issueID = dbfx.Issue(t, "wd issue", testutil.Cols{"project_id": k.projectID, "number": nextWorkspaceIssueNumber(t)})
 	wipeWakeupDefinitions(t)

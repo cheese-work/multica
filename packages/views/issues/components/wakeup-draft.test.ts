@@ -146,4 +146,11 @@ describe("wakeupConditionsFor", () => {
     expect(conditions).not.toContain("other_issue");
     expect(conditions).toContain("children");
   });
+
+  it("drops the schedules for a workspace definition, which has none", () => {
+    const conditions = wakeupConditionsFor({ workspaceId: "ws", definition: true });
+    expect(conditions).not.toContain("at");
+    expect(conditions).not.toContain("recurring");
+    expect(conditions).toEqual(expect.arrayContaining(["reply", "field", "run_end", "children", "pull_request", "custom"]));
+  });
 });
