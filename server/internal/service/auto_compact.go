@@ -141,6 +141,10 @@ func (s *TaskService) maybeAutoCompact(ctx context.Context, task db.AgentTaskQue
 		if session.Status != "active" || session.ContinuedIntoSessionID.Valid {
 			return nil
 		}
+		// A run of an earlier epoch measured history a compact already replaced.
+		if task.ChatCompactionEpoch.Int64 != session.CompactionEpoch {
+			return nil
+		}
 		// Web DMs only: a channel-bound chat has an external delivery route.
 		if _, err := qtx.GetChannelChatSessionBindingBySessionAny(ctx, session.ID); !errors.Is(err, pgx.ErrNoRows) {
 			return err
@@ -241,8 +245,14 @@ func settleCompactionTask(ctx context.Context, q *db.Queries, task db.AgentTaskQ
 	} else if err != nil {
 		return fmt.Errorf("load chat session for compaction guard: %w", err)
 	}
-	if session.ContinuedIntoSessionID.Valid || !task.CompactReason.Valid {
+	if !task.CompactReason.Valid {
 		return nil
+	}
+	// The compaction succeeded when the task wrote its divider.
+	if _, err := q.GetTaskCompactionSummary(ctx, db.GetTaskCompactionSummaryParams{ChatSessionID: session.ID, TaskID: task.ID}); err == nil {
+		return nil
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("check compaction summary: %w", err)
 	}
 	if _, err := q.CreateChatMessage(ctx, db.CreateChatMessageParams{
 		ID:            dbid.NewV7(),

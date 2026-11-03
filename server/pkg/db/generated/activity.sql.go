@@ -91,19 +91,20 @@ func (q *Queries) CountEntryGateWarnings(ctx context.Context, arg CountEntryGate
 
 const createActivity = `-- name: CreateActivity :one
 INSERT INTO activity_log (
-    workspace_id, issue_id, actor_type, actor_id, action, details, id
-) VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::uuid, gen_random_uuid()))
+    workspace_id, issue_id, actor_type, actor_id, action, details, id, created_at
+) VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::uuid, gen_random_uuid()), COALESCE($8::timestamptz, now()))
 RETURNING id, workspace_id, issue_id, actor_type, actor_id, action, details, created_at
 `
 
 type CreateActivityParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	IssueID     pgtype.UUID `json:"issue_id"`
-	ActorType   pgtype.Text `json:"actor_type"`
-	ActorID     pgtype.UUID `json:"actor_id"`
-	Action      string      `json:"action"`
-	Details     []byte      `json:"details"`
-	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	ActorType   pgtype.Text        `json:"actor_type"`
+	ActorID     pgtype.UUID        `json:"actor_id"`
+	Action      string             `json:"action"`
+	Details     []byte             `json:"details"`
+	ID          pgtype.UUID        `json:"id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 func (q *Queries) CreateActivity(ctx context.Context, arg CreateActivityParams) (ActivityLog, error) {
@@ -115,6 +116,7 @@ func (q *Queries) CreateActivity(ctx context.Context, arg CreateActivityParams) 
 		arg.Action,
 		arg.Details,
 		arg.ID,
+		arg.CreatedAt,
 	)
 	var i ActivityLog
 	err := row.Scan(

@@ -31,6 +31,28 @@ test("a branch that names the operational parent fails", async () => {
   );
 });
 
+test("an agent name token in the branch prefix is not an issue key", async () => {
+  assert.deepEqual(
+    await strayKeys(pullRequest({
+      title: "fix(x): change (CHE-3025) [squash]",
+      body: "Closes CHE-3025",
+      headRef: "agent/x99-codex-luna-2/che-3025-change",
+    })),
+    [],
+  );
+});
+
+test("an issue key inside the agent segment of the branch still counts", async () => {
+  assert.deepEqual(
+    await strayKeys(pullRequest({
+      title: "fix(x): change (CHE-2) [squash]",
+      body: "Closes CHE-2",
+      headRef: "agent/che-1/che-2-fix",
+    })),
+    ["CHE-1@branch"],
+  );
+});
+
 test("a title that names the parent fails, and Refs does not shield it", async () => {
   const result = await strayKeys(pullRequest({
     title: "fix(x): change (CHE-1911) [squash]",
@@ -199,6 +221,21 @@ test("the CLI rejects the operational-parent fixture and accepts the child fixtu
   const correctTarget = run("child");
   assert.equal(correctTarget.status, 0, correctTarget.stdout + correctTarget.stderr);
   assert.match(correctTarget.stdout, /CHE-1926/);
+});
+
+test("the CLI output lists a CHE key held in the agent segment as the effective target", () => {
+  const dir = mkdtempSync(join(tmpdir(), "close-target-"));
+  try {
+    const event = join(dir, "event.json");
+    writeFileSync(event, JSON.stringify({
+      pull_request: { title: "fix", body: "Refs CHE-1", head: { ref: "agent/che-1/task" } },
+    }));
+    const result = spawnSync("node", [script, "--event", event], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /effective target\(s\): CHE-1 from title\/branch/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("the CLI skips upstream-sync heads", () => {

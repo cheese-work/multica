@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { fireEvent, screen } from "@testing-library/react";
 import { forwardRef, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { issueKeys } from "@multica/core/issues/queries";
 import type { TimelineEntry } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
 
@@ -95,8 +96,9 @@ function quote(extra: Partial<TimelineEntry> = {}): TimelineEntry {
   };
 }
 
-function renderCard(entry: TimelineEntry, replies: TimelineEntry[] = []) {
+function renderCard(entry: TimelineEntry, replies: TimelineEntry[] = [], onJumpToComment = vi.fn()) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  qc.setQueryData(issueKeys.timeline("issue-1"), [entry, ...replies]);
   return renderWithI18n(
     <QueryClientProvider client={qc}>
       <CommentCard
@@ -108,6 +110,7 @@ function renderCard(entry: TimelineEntry, replies: TimelineEntry[] = []) {
         onEdit={vi.fn().mockResolvedValue(undefined)}
         onDelete={vi.fn()}
         onToggleReaction={vi.fn()}
+        onJumpToComment={onJumpToComment}
       />
     </QueryClientProvider>,
   );
@@ -169,5 +172,28 @@ describe("CommentCard — decision quote", () => {
   it("renders the withdrawal note as a compact line", () => {
     renderCard(quote({ id: "d1", decision_comment_kind: "disclaim", content: "Decision withdrawn: human." }));
     expect(screen.getByTestId("decision-withdrawal-line")).toHaveTextContent("Decision withdrawn: human.");
+  });
+});
+
+describe("CommentCard — decision ask", () => {
+  const ask = quote({ id: "ask-1", decision_comment_kind: "ask", decision_answer_id: undefined, decision_request_id: "request-1", content: "Ship it?" });
+
+  it("jumps from the ask to its answer", () => {
+    const jump = vi.fn();
+    renderCard(ask, [quote({ id: "q9", parent_id: "ask-1" })], jump);
+    const button = screen.getByTestId("decision-ask-jump-to-answer");
+    expect(button).toHaveTextContent("Jump to answer");
+    fireEvent.click(button);
+    expect(jump).toHaveBeenCalledWith("q9");
+  });
+
+  it("offers no jump while the ask is unanswered", () => {
+    renderCard(ask);
+    expect(screen.queryByTestId("decision-ask-jump-to-answer")).toBeNull();
+  });
+
+  it("offers no jump on an ordinary comment", () => {
+    renderCard(quote({ id: "plain", decision_comment_kind: undefined, decision_answer_id: undefined }), [quote({ id: "q9", parent_id: "plain" })]);
+    expect(screen.queryByTestId("decision-ask-jump-to-answer")).toBeNull();
   });
 });

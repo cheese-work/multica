@@ -193,9 +193,25 @@ export const issueKeys = {
   tasksAll: () => ["issues", "tasks"] as const,
   /** Per-issue task list (issue-detail Execution log section). */
   tasks: (issueId: string) => [...issueKeys.tasksAll(), issueId] as const,
+  commentPreview: (wsId: string, commentId: string) =>
+    [...issueKeys.all(wsId), "comment-preview", commentId] as const,
   sourceContextPreview: (wsId: string, anchorCommentId: string) =>
     ["source-context", "preview", wsId, anchorCommentId] as const,
 };
+
+/**
+ * Resolve a comment UUID to its issue + first-line preview. A 404 (unknown,
+ * deleted, or another workspace) is a stable answer, so it is not retried.
+ */
+export function commentPreviewOptions(wsId: string, commentId: string) {
+  return queryOptions({
+    queryKey: issueKeys.commentPreview(wsId, commentId),
+    queryFn: () => api.getCommentPreview(commentId),
+    enabled: !!wsId,
+    retry: false,
+    staleTime: 5 * 60 * 1000,
+  });
+}
 
 export function sourceContextPreviewOptions(
   wsId: string,
@@ -452,6 +468,31 @@ export function issueDetailOptions(wsId: string, id: string) {
   return queryOptions({
     queryKey: issueKeys.detail(wsId, id),
     queryFn: () => api.getIssue(id),
+  });
+}
+
+/**
+ * The detail view's own observer on the detail entry.
+ *
+ * List rows and issue-created realtime payloads intentionally omit the
+ * detail-only source-context snapshot. They can still seed this query via
+ * `initialData`, so the view always reconciles with the authoritative detail
+ * endpoint when it mounts. Without this, the global Infinity staleTime hides
+ * source context until a full page refresh.
+ *
+ * `authoritative` says the entry is the detail endpoint's own response, read a
+ * moment ago by the route's identifier lookup, so the mount skips reading it
+ * again.
+ *
+ * Only seed when the description is present; the list API omits it, so a
+ * partial list row must not masquerade as a hydrated issue detail.
+ */
+export function issueDetailViewOptions(wsId: string, id: string, listRow?: Issue, authoritative = false) {
+  return queryOptions({
+    queryKey: issueKeys.detail(wsId, id),
+    queryFn: () => api.getIssue(id),
+    refetchOnMount: authoritative ? false : "always",
+    initialData: () => (listRow?.description != null ? listRow : undefined),
   });
 }
 

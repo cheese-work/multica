@@ -90,7 +90,7 @@ func TestRevocationCeremonyCannotFinishAnEnrollmentAndViceVersa(test *testing.T)
 	revocation := f.startByCode(f.key)
 	code := f.mailer.lastCode(test)
 	attestation := startedCeremony{Started: revocation}
-	err := f.service.FinishEnrollment(context.Background(), f.user, revocation.CeremonyID, code, f.attest(f.device, attestation, nil), testEmail)
+	err := f.service.FinishEnrollment(context.Background(), f.user, revocation.CeremonyID, code, f.attest(f.device, attestation, nil), nil, testEmail)
 	f.wantRefusal(err, http.StatusForbidden, "ceremony_not_yours")
 
 	enrolment := f.start()

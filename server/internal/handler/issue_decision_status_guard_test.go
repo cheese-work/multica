@@ -165,6 +165,9 @@ func TestOpenDecisionStatusGuardBoundaries(t *testing.T) {
 
 func TestOpenDecisionBlocksDefaultWorkflowHandoff(t *testing.T) {
 	resetDecisionLease(t)
+	// A Default stored by an earlier test predates agent_accepted; drop it so the
+	// handoff below is validated against a Default built from the catalog.
+	dbfx.Exec(t, `DELETE FROM issue_workflow WHERE workspace_id = $1 AND is_default`, testWorkspaceID)
 	createTestCustomStatus(t, "agent_accepted", "done")
 	fixture := newAskedRecordFixture(t)
 	leadID := createHandlerTestAgent(t, "decision workflow lead", []byte("[]"))

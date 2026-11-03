@@ -1,7 +1,8 @@
 "use client";
 
 import { Suspense } from "react";
-import { IssuesPage } from "@multica/views/issues/components";
+// Not the barrel: it re-exports IssueDetail and with it the whole editor.
+import { IssuesPage } from "@multica/views/issues/components/issues-page";
 import { ErrorBoundary } from "@multica/ui/components/common/error-boundary";
 import { useIssueViewUrlSync } from "../../../../platform/use-issue-view-url-sync";
 
