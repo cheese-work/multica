@@ -331,3 +331,44 @@ func TestDecisionRequestRecoversOnReplay(t *testing.T) {
 		t.Fatal("a replay with --recovers left the event open")
 	}
 }
+
+// TestDecisionRequestRecoversOneEventPerRequest: a request answers one event.
+// Replaying it with a second event of the same member is refused and leaves the
+// second event open, one after another and in parallel.
+func TestDecisionRequestRecoversOneEventPerRequest(t *testing.T) {
+	fixture := newSingleCallFixture(t)
+	first := recoveringEvent(t, fixture.issueID, fixture.humanID)
+	second := recoveringEvent(t, fixture.issueID, fixture.humanID)
+	body := fixture.body()
+	body["recovers"] = first
+	testutil.Call(t, testHandler.RequestDecision, fixture.call(body)).Want(http.StatusCreated)
+
+	again := fixture.body()
+	again["recovers"] = first
+	testutil.Call(t, testHandler.RequestDecision, fixture.call(again)).Want(http.StatusOK)
+	other := fixture.body()
+	other["recovers"] = second
+	testutil.Call(t, testHandler.RequestDecision, fixture.call(other)).Want(http.StatusBadRequest)
+	if eventCleared(t, second) {
+		t.Fatal("a retry cleared a second event with the same request")
+	}
+
+	racer := newSingleCallFixture(t)
+	a := recoveringEvent(t, racer.issueID, racer.humanID)
+	b := recoveringEvent(t, racer.issueID, racer.humanID)
+	testutil.Call(t, testHandler.RequestDecision, racer.call(racer.body())).Want(http.StatusCreated)
+	var wg sync.WaitGroup
+	for _, id := range []string{a, b} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			retry := racer.body()
+			retry["recovers"] = id
+			testutil.Call(t, testHandler.RequestDecision, racer.call(retry))
+		}()
+	}
+	wg.Wait()
+	if eventCleared(t, a) == eventCleared(t, b) {
+		t.Fatalf("parallel retries cleared a=%v b=%v, want exactly one", eventCleared(t, a), eventCleared(t, b))
+	}
+}
