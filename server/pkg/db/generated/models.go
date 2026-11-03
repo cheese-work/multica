@@ -2554,6 +2554,26 @@ type RunBudgetNotice struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type RunBudgetRefusal struct {
+	ID                   pgtype.UUID        `json:"id"`
+	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
+	IssueID              pgtype.UUID        `json:"issue_id"`
+	WindowID             string             `json:"window_id"`
+	Status               pgtype.Text        `json:"status"`
+	OccurrenceActivityID pgtype.UUID        `json:"occurrence_activity_id"`
+	Blocked              bool               `json:"blocked"`
+	AgentID              pgtype.UUID        `json:"agent_id"`
+	Trigger              string             `json:"trigger"`
+	State                string             `json:"state"`
+	StateReason          pgtype.Text        `json:"state_reason"`
+	HookPhase            string             `json:"hook_phase"`
+	HookReason           pgtype.Text        `json:"hook_reason"`
+	ActionID             pgtype.UUID        `json:"action_id"`
+	ResumeWindowID       pgtype.Text        `json:"resume_window_id"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+}
+
 type RunCapabilityGrant struct {
 	ID                pgtype.UUID        `json:"id"`
 	WorkspaceID       pgtype.UUID        `json:"workspace_id"`

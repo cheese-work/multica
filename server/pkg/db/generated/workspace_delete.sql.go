@@ -401,6 +401,9 @@ deleted_recovery_claims AS (
 deleted_run_budget_notices AS (
     DELETE FROM run_budget_notice WHERE workspace_id = $1
 ),
+deleted_run_budget_refusals AS (
+    DELETE FROM run_budget_refusal WHERE workspace_id = $1
+),
 deleted_issue_run_budget_entries AS (
     DELETE FROM issue_run_budget_entry WHERE workspace_id = $1
 ),
@@ -695,6 +698,7 @@ WHERE channel_media_pending_object.workspace_id = $1
 // CHE-1126 gateway-recovery claim ledger: workspace-owned leaf; the FK cascades
 // too, the explicit delete keeps teardown independent of FK ordering.
 // CHE-2297 run-budget notice claims: workspace-owned leaf, no FK.
+// CHE-2798 run-budget refusals: workspace-owned leaf, no FK.
 // CHE-2297 L2a run-budget ledger: workspace-owned leaf, no FK.
 // CHE-2489 run capability grants: workspace-owned leaf, no FK.
 // CHE-2509 elevated-read snapshot approvals: workspace-owned leaf, no FK.

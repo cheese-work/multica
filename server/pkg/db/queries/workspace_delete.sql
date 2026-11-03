@@ -405,6 +405,10 @@ deleted_recovery_claims AS (
 deleted_run_budget_notices AS (
     DELETE FROM run_budget_notice WHERE workspace_id = $1
 ),
+-- CHE-2798 run-budget refusals: workspace-owned leaf, no FK.
+deleted_run_budget_refusals AS (
+    DELETE FROM run_budget_refusal WHERE workspace_id = $1
+),
 -- CHE-2297 L2a run-budget ledger: workspace-owned leaf, no FK.
 deleted_issue_run_budget_entries AS (
     DELETE FROM issue_run_budget_entry WHERE workspace_id = $1
