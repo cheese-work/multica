@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,7 +10,9 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 func postCommentForGate(t *testing.T, req *http.Request, issueID string) *testutil.Response {
@@ -212,5 +215,60 @@ func TestUpdateCommentInvalidAgentMentionsOnlyForNewMentions(t *testing.T) {
 	dbfx.QueryRow(t, `SELECT content FROM comment WHERE id = $1`, posted.ID).Scan(&stored)
 	if !bytes.Contains([]byte(stored), []byte("typo fixed")) {
 		t.Errorf("edit keeping an archived mention was not saved: %q", stored)
+	}
+}
+
+// countingDBTX counts queries so a test can prove a repeated mention does not
+// repeat its authorization lookups.
+type countingDBTX struct {
+	db.DBTX
+	n int
+}
+
+func (c *countingDBTX) QueryRow(ctx context.Context, sql string, args ...interface{}) pgx.Row {
+	c.n++
+	return c.DBTX.QueryRow(ctx, sql, args...)
+}
+
+func (c *countingDBTX) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+	c.n++
+	return c.DBTX.Query(ctx, sql, args...)
+}
+
+func TestInvalidAgentMentionsChecksEachTargetOnce(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	issueID := gateIssue(t, "Gate memoize")
+	issue, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown := uuid.NewString()
+	var sb strings.Builder
+	const repeats = 50
+	for i := 0; i < repeats; i++ {
+		fmt.Fprintf(&sb, "[@A](mention://agent/%s) ", unknown)
+		if i%2 == 0 { // same agent, upper-case spelling
+			fmt.Fprintf(&sb, "[@A](mention://agent/%s) ", strings.ToUpper(unknown))
+		}
+	}
+	counter := &countingDBTX{DBTX: testPool}
+	h := *testHandler
+	h.Queries = db.New(counter)
+
+	got := h.invalidAgentMentionRanges(context.Background(), issue, sb.String(), "member", testUserID, "", nil)
+
+	if want := repeats + repeats/2; len(got) != want {
+		t.Fatalf("invalid ranges = %d, want every mention reported (%d)", len(got), want)
+	}
+	// One agent lookup, plus whatever canInvokeAgent needs for that one target.
+	counter.n = 0
+	h.invalidAgentMentionRanges(context.Background(), issue, "[@A]("+"mention://agent/"+unknown+")", "member", testUserID, "", nil)
+	perTarget := counter.n
+	counter.n = 0
+	h.invalidAgentMentionRanges(context.Background(), issue, sb.String(), "member", testUserID, "", nil)
+	if counter.n != perTarget {
+		t.Fatalf("queries for %d repeated mentions = %d, want %d (one target)", repeats+repeats/2, counter.n, perTarget)
 	}
 }

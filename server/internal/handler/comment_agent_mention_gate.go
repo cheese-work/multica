@@ -26,6 +26,9 @@ type mentionRange struct {
 func (h *Handler) invalidAgentMentionRanges(ctx context.Context, issue db.Issue, content, actorType, actorID, originatorUserID string, skip map[string]struct{}) []mentionRange {
 	wsID := uuidToString(issue.WorkspaceID)
 	var invalid []mentionRange
+	// Verdict per canonical agent id: a comment can repeat one mention many
+	// times, and each check costs database queries.
+	verdicts := map[string]bool{}
 	for _, m := range util.MentionRe.FindAllStringSubmatchIndex(content, -1) {
 		if content[m[4]:m[5]] != "agent" {
 			continue
@@ -34,11 +37,26 @@ func (h *Handler) invalidAgentMentionRanges(ctx context.Context, issue db.Issue,
 		if _, ok := skip[strings.ToLower(id)]; ok {
 			continue
 		}
-		if !h.agentMentionUsable(ctx, issue, id, actorType, actorID, originatorUserID, wsID) {
+		key := canonicalMentionID(id)
+		usable, seen := verdicts[key]
+		if !seen {
+			usable = h.agentMentionUsable(ctx, issue, id, actorType, actorID, originatorUserID, wsID)
+			verdicts[key] = usable
+		}
+		if !usable {
 			invalid = append(invalid, mentionRange{Start: m[0], End: m[1]})
 		}
 	}
 	return invalid
+}
+
+// canonicalMentionID maps every spelling of one UUID to one key; an id that
+// does not parse keeps its lower-cased text and is rejected without a query.
+func canonicalMentionID(id string) string {
+	if u, err := util.ParseUUID(id); err == nil {
+		return util.UUIDToString(u)
+	}
+	return strings.ToLower(id)
 }
 
 func (h *Handler) agentMentionUsable(ctx context.Context, issue db.Issue, id, actorType, actorID, originatorUserID, wsID string) bool {
