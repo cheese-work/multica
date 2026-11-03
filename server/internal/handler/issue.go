@@ -349,7 +349,7 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 		return issue, nil, err
 	}
 	if recordStatus && fromStatus != issue.Status {
-		row, err := service.RecordStatusChange(ctx, q, issue, fromStatus, issue.Status, rec.trigger, nil)
+		row, err := service.RecordStatusChange(ctx, q, issue, fromStatus, issue.Status, rec.trigger, rec.recordedHandoff(issue))
 		if err != nil {
 			return db.Issue{}, nil, fmt.Errorf("record status change: %w", err)
 		}
@@ -4412,11 +4412,14 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		releaseMove = release
 		defer releaseMove()
 	}
-	// Status history is written in the status transaction. A workflow handoff
-	// and a duplicate mark keep the listener's richer row until they migrate.
+	// Status history is written in the status transaction. A duplicate mark
+	// keeps the listener's richer row until it migrates.
 	var statusRec *statusRecord
-	if handoff == nil && !params.DuplicateOfIssueID.Valid && !prevIssue.DuplicateOfIssueID.Valid {
+	if !params.DuplicateOfIssueID.Valid && !prevIssue.DuplicateOfIssueID.Valid {
 		statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTriggerFromRequest(r, actorType, actorID)}
+		if handoff != nil {
+			statusRec.handoffWorkflow = handoff.def.Name
+		}
 		if req.HandoffCommentID != nil {
 			statusRec.trigger.HandoffCommentID = *req.HandoffCommentID
 		}
@@ -4538,7 +4541,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		"prev_duplicate_of_issue_id": liveDuplicateMark(prevIssue.Status, prevIssue.DuplicateOfIssueID),
 	}
 	if handoff != nil {
-		updatedPayload["workflow_handoff"] = workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun, runReason)
+		handoffPayload := workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun, runReason)
+		updatedPayload["workflow_handoff"] = handoffPayload
+		h.finishRecordedHandoff(r.Context(), statusRec, handoffPayload)
 	}
 	if statusRec != nil && statusRec.activity != nil {
 		updatedPayload["activity_id"] = uuidToString(statusRec.activity.ID)
@@ -5356,6 +5361,15 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			}
 			releaseMove = release
 		}
+		// Same recording as UpdateIssue: the row commits with the status.
+		var statusRec *statusRecord
+		if !params.DuplicateOfIssueID.Valid && !prevIssue.DuplicateOfIssueID.Valid {
+			statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTriggerFromRequest(r, actorType, actorID)}
+			if handoff != nil {
+				statusRec.handoffWorkflow = handoff.def.Name
+			}
+			writeCtx = withStatusRecord(writeCtx, statusRec)
+		}
 		var issue db.Issue
 		if req.Updates.Description != nil {
 			// One batch-level base cannot describe multiple issue documents.
@@ -5439,9 +5453,15 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			"prev_duplicate_of_issue_id": liveDuplicateMark(prevIssue.Status, prevIssue.DuplicateOfIssueID),
 		}
 		if handoff != nil {
-			batchPayload["workflow_handoff"] = workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun, runReason)
+			handoffPayload := workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun, runReason)
+			batchPayload["workflow_handoff"] = handoffPayload
+			h.finishRecordedHandoff(r.Context(), statusRec, handoffPayload)
+		}
+		if statusRec != nil && statusRec.activity != nil {
+			batchPayload["activity_id"] = uuidToString(statusRec.activity.ID)
 		}
 		h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, batchPayload)
+		h.publishRecordedStatusActivity(statusRec, actorType, actorID)
 		if statusChanged && actorType == "member" {
 			h.openRunBudgetWindowForMove(r.Context(), issue)
 		} else if statusChanged && actorType == "agent" {
