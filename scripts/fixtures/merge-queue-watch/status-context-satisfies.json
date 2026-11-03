@@ -1,0 +1,35 @@
+{
+  "data": {
+    "repository": {
+      "mergeQueue": {
+        "entries": {
+          "nodes": [
+            {
+              "state": "MERGEABLE",
+              "enqueuedAt": "2026-11-03T05:00:00Z",
+              "position": 1,
+              "pullRequest": {
+                "number": 101,
+                "url": "https://github.com/cheese-work/multica/pull/101"
+              },
+              "headCommit": {
+                "oid": "e1",
+                "statusCheckRollup": {
+                  "contexts": {
+                    "totalCount": 1,
+                    "nodes": [
+                      {
+                        "__typename": "StatusContext",
+                        "context": "security-gate"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
