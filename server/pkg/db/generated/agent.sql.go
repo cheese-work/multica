@@ -6090,6 +6090,34 @@ func (q *Queries) HasActiveTaskForIssueAndAgentInThread(ctx context.Context, arg
 	return has_active, err
 }
 
+const hasPendingAssignmentTaskForAgent = `-- name: HasPendingAssignmentTaskForAgent :one
+SELECT EXISTS (
+  SELECT 1 FROM agent_task_queue
+  WHERE issue_id = $1 AND agent_id = $2
+    AND comment_thread_id IS NULL
+    AND (
+      status IN ('queued', 'dispatched')
+      OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+    )
+)
+`
+
+type HasPendingAssignmentTaskForAgentParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+}
+
+// Whether the agent holds the issue's assignment-level pending slot: exactly
+// the rows idx_one_pending_task_per_issue_agent_thread keeps one of. A caller
+// inside a transaction checks it before the insert, because the unique
+// violation would abort the transaction.
+func (q *Queries) HasPendingAssignmentTaskForAgent(ctx context.Context, arg HasPendingAssignmentTaskForAgentParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasPendingAssignmentTaskForAgent, arg.IssueID, arg.AgentID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const hasPendingIssueTaskForAgent = `-- name: HasPendingIssueTaskForAgent :one
 SELECT EXISTS (
   SELECT 1 FROM agent_task_queue

@@ -768,18 +768,28 @@ func (h *Handler) issueHandoffToken(w http.ResponseWriter, r *http.Request, meth
 		return
 	}
 
-	user, err := h.Queries.GetUser(r.Context(), parseUUID(userID))
-	if err != nil {
+	// The token carries the stored generation, so it is read and signed under
+	// the same share lock that compares it with the caller's.
+	var tokenString string
+	err := h.withCurrentSession(r, userID, func(queries *db.Queries) error {
+		user, err := queries.GetUser(r.Context(), parseUUID(userID))
+		if err != nil {
+			return err
+		}
+		tokenString, err = h.issueJWT(user, method)
+		return err
+	})
+	switch {
+	case errors.Is(err, errSessionRevoked):
+		writeError(w, http.StatusUnauthorized, "session revoked")
+		return
+	case errors.Is(err, pgx.ErrNoRows):
 		writeError(w, http.StatusNotFound, "user not found")
 		return
-	}
-
-	tokenString, err := h.issueJWT(user, method)
-	if err != nil {
-		if errors.Is(err, auth.ErrTemporarilyDisabledUser) {
-			writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
-			return
-		}
+	case errors.Is(err, auth.ErrTemporarilyDisabledUser):
+		writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
+		return
+	case err != nil:
 		slog.Warn("auth-token: failed to issue JWT", append(logger.RequestAttrs(r), "error", err, "user_id", userID)...)
 		writeError(w, http.StatusInternalServerError, "failed to generate token")
 		return
