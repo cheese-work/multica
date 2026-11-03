@@ -987,6 +987,9 @@ jobs:
       - name: Check runner routing
         run: python3 .github/tests/test_runner_routing.py
 
+      - name: Test mechanical-tier classifier paths (CHE-3339)
+        run: python3 -m unittest tests.test_che3339_mechanical_tier
+
       - name: Test pinned pnpm setup
         run: node --test scripts/setup-pnpm.test.mjs
 

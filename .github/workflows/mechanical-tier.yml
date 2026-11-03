@@ -1,0 +1,69 @@
+# Mechanical review tier check (CHE-1298, phase 2 of CHE-1286) — PROPOSED, NOT ACTIVE. Copy of
+# cheese-work/multica-dotfiles .github/workflows/mechanical-tier.yml for multica PRs (CHE-3339); same pattern as security-gate.yml.
+#
+# Publishing this file activates no tier waiver. The check only records a receipt; it never approves a merge.
+# Register `mechanical-tier` as a required check only through the owner rollout of the CHE-1286 card.
+#
+# SECURITY — the classifier and its registry come from the PR's BASE commit, never from the PR head.
+# `pull_request_target` runs this workflow definition from the base branch; the job checks out the base SHA and
+# only FETCHES the head's objects (no checkout, nothing from the head is executed). The classifier also refuses to
+# trust itself unless its bytes equal the base revision's copy, so a PR that edits the classifier or registry is
+# Tier 2 and cannot classify itself. Do not add a head checkout or a secret to this workflow.
+#
+# The classifier excludes its own check name from the required-check set, so it is never its own evidence.
+
+name: mechanical-tier
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+  statuses: read
+
+concurrency:
+  group: mechanical-tier-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  mechanical-tier:
+    name: mechanical-tier
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    timeout-minutes: 10
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # A reused self-hosted workspace can be a `blob:none` partial clone; checkout keeps that filter, the head fetch
+      # then skips head blobs and `git diff` fails on an uncredentialed lazy fetch (CHE-1681). Start from nothing.
+      - name: Discard a reused workspace
+        run: |
+          find "$GITHUB_WORKSPACE" -mindepth 1 -delete
+      - name: Check out the trusted base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch the head objects without checking them out
+        run: |
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/head"
+          test "$(git rev-parse refs/remotes/pull/head)" = "$HEAD_SHA"
+      - name: Classify with the base classifier and read real required-check evidence
+        run: |
+          python3 scripts/mechanical-tier/mechanical_tier.py classify \
+            --repo . --base "$BASE_SHA" --head "$HEAD_SHA" \
+            --github "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" --out receipt.json
+          {
+            echo '### mechanical-tier receipt'
+            echo '```json'
+            cat receipt.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
