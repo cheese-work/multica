@@ -269,6 +269,23 @@ type AskGuardEvent struct {
 	MemberID           pgtype.UUID        `json:"member_id"`
 	ClearedAt          pgtype.Timestamptz `json:"cleared_at"`
 	ClearedByRequestID pgtype.UUID        `json:"cleared_by_request_id"`
+	SourceText         pgtype.Text        `json:"source_text"`
+	DeliveredAt        pgtype.Timestamptz `json:"delivered_at"`
+	RepairReason       pgtype.Text        `json:"repair_reason"`
+}
+
+type AskRecoveryNotice struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	EventID       pgtype.UUID        `json:"event_id"`
+	MemberID      pgtype.UUID        `json:"member_id"`
+	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
+	ChatMessageID pgtype.UUID        `json:"chat_message_id"`
+	CommentID     pgtype.UUID        `json:"comment_id"`
+	State         string             `json:"state"`
+	DeliveredAt   pgtype.Timestamptz `json:"delivered_at"`
+	AnsweredAt    pgtype.Timestamptz `json:"answered_at"`
 }
 
 type Attachment struct {
