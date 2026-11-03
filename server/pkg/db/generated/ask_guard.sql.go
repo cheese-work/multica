@@ -70,7 +70,8 @@ func (q *Queries) GetAskGuardEventByOperation(ctx context.Context, arg GetAskGua
 
 const getAskGuardEventForMember = `-- name: GetAskGuardEventForMember :one
 SELECT id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, created_at, intent_id, member_id, cleared_at, cleared_by_request_id, source_text, delivered_at, repair_reason, root_id, repair_handled_at FROM ask_guard_event
-WHERE id = $1 AND workspace_id = $2 AND issue_id = $3 AND member_id = $4
+WHERE id = $1 AND workspace_id = $2 AND issue_id = $3
+  AND (member_id = $4 OR (member_id IS NULL AND repair_handled_at IS NOT NULL))
 `
 
 type GetAskGuardEventForMemberParams struct {
@@ -81,7 +82,9 @@ type GetAskGuardEventForMemberParams struct {
 }
 
 // The event a request recovers: same issue, same member. A request for A
-// never matches an event for B.
+// never matches an event for B. An event with no member (an unfiltered
+// wakeup) matches only once it was routed to a repair run, which asks whoever
+// the agent judges right.
 func (q *Queries) GetAskGuardEventForMember(ctx context.Context, arg GetAskGuardEventForMemberParams) (AskGuardEvent, error) {
 	row := q.db.QueryRow(ctx, getAskGuardEventForMember,
 		arg.ID,
