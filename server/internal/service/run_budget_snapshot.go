@@ -75,12 +75,12 @@ func NewRunBudgetSnapshot(used int64, limit int, left int64, source string, wind
 	if left < 1 {
 		snap.Blocking = append(snap.Blocking, "runs")
 	}
-	// Runs past the platform maximum still read as used; the clamp only keeps
-	// the raise math on int.
-	usedInt := int(min(used, int64(issueworkflow.MaxRunsPerIssueLimit)))
-	if room := MaxAllowedRaise(limit, usedInt); room > 0 {
-		add := SuggestedRaise(limit, usedInt)
-		if raise, err := PreviewRunBudgetRaise(limit, usedInt, add); err == nil {
+	// The raise starts from the admitted balance, not the task count: a grant, a
+	// refund or carried debt moves one and not the other.
+	base := raiseUsed(limit, left)
+	if room := MaxAllowedRaise(limit, base); room > 0 {
+		add := SuggestedRaise(limit, base)
+		if raise, err := PreviewRunBudgetRaise(limit, base, add); err == nil {
 			snap.CanRaise = true
 			snap.RaisePreview = &RunBudgetPreview{
 				AddRuns: add, BalanceAfter: raise.BalanceAfter, LimitAfter: raise.CreditedAfter, MaxAllowedAdd: room,
@@ -151,6 +151,20 @@ func LoadRunBudgetSnapshot(ctx context.Context, q *db.Queries, issue db.Issue) (
 	}
 	snap := NewRunBudgetSnapshot(usage.Runs, usage.Max, left, usage.Source, usage.Since)
 	return withTokenBalance(ctx, q, issue, usage, snap)
+}
+
+// CurrentRunBudget reads the issue's cap and run balance as admission would
+// now, without writing. The exhaustion notice prices its raise from this, not
+// from the balance the refusal saw: a named run or a grant can land between.
+func CurrentRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID) (max int, balance int64, err error) {
+	_, usage, balance, err := openRunBudget(readOnlyRunBudget(ctx), q, issueID, pgtype.UUID{})
+	if err != nil {
+		return 0, 0, err
+	}
+	if usage == nil {
+		return 0, 0, pgx.ErrNoRows
+	}
+	return usage.Max, balance, nil
 }
 
 // withTokenBalance adds the token side to a snapshot once the issue is

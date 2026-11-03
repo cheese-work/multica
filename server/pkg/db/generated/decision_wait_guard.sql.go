@@ -59,9 +59,10 @@ func (q *Queries) GetDecisionWaitGuardSquad(ctx context.Context, arg GetDecision
 }
 
 const listDecisionWaitGuardIssues = `-- name: ListDecisionWaitGuardIssues :many
-SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties, i.revision, i.last_activity_at, i.triage_state, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.max_runs_override FROM issue i
+SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties, i.revision, i.last_activity_at, i.triage_state, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.max_runs_override, i.description_external_read FROM issue i
 WHERE i.metadata ?| ARRAY['decision_wait_started_at', 'decision_wait_alert_id',
-                          'decision_wait_missing_request', 'decision_wait_route_error']
+                          'decision_wait_missing_request', 'decision_wait_route_error',
+                          'decision_park']
    OR (i.status NOT IN ('in_review', 'done', 'cancelled')
        AND NOT EXISTS (
          SELECT 1 FROM issue_status s
@@ -124,6 +125,7 @@ func (q *Queries) ListDecisionWaitGuardIssues(ctx context.Context) ([]Issue, err
 			&i.WorkflowID,
 			&i.RequestedByID,
 			&i.MaxRunsOverride,
+			&i.DescriptionExternalRead,
 		); err != nil {
 			return nil, err
 		}

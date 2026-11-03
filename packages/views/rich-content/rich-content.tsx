@@ -57,6 +57,7 @@ import {
   useAppOrigin,
   useOptionalNavigation,
 } from "../navigation";
+import { CommentMentionCard } from "../issues/components/comment-mention-card";
 import { IssueMentionCard } from "../issues/components/issue-mention-card";
 import { useResolveIssueIdentifier } from "../issues/hooks";
 import { ProjectMentionCard } from "../projects/components/project-mention-card";
@@ -65,6 +66,7 @@ import {
   openLink,
   isMentionHref,
   parseWorkspaceEntityLink,
+  parseWorkspaceCommentLink,
   type WorkspaceEntityRef,
 } from "../editor/utils/link-handler";
 import { preprocessMarkdown } from "../editor/utils/preprocess";
@@ -291,7 +293,10 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
     : undefined;
 
   if (isMentionHref(href)) {
-    const match = href.match(/^mention:\/\/(member|agent|issue|project|all)\/(.+)$/);
+    const match = href.match(/^mention:\/\/(member|agent|issue|project|comment|all)\/(.+)$/);
+    if (match?.[1] === "comment" && match[2]) {
+      return <CommentMentionCard commentId={match[2]} fallback={children} />;
+    }
     if (match?.[1] === "issue" && match[2]) {
       // A bare identifier (from the autolink preprocessor) is carried as the id
       // segment; a real mention carries a UUID. Dispatch on the id shape.
@@ -360,6 +365,13 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
       {children}
     </a>
   );
+
+  // An in-app issue URL with `#comment-<uuid>` renders as the comment chip,
+  // bare or labeled; a miss keeps the author's link and label.
+  const commentRef = href ? parseWorkspaceCommentLink(href, appOrigin) : null;
+  if (commentRef && (commentRef.slug === null || commentRef.slug === slug)) {
+    return <CommentMentionCard commentId={commentRef.commentId} fallback={plainLink} />;
+  }
 
   // A bare in-app entity URL renders as the chip its mention form would.
   const entity = href

@@ -1,0 +1,16 @@
+issue: CHE-2799
+design: none — design lock waived by Cheese (decision card answer, 1 Nov 2026 ICT); captures are plain before/after screenshots at 1440 and 390 width, no design file
+pages:
+  - id: dm-decision-request
+    url: /cheese-work/chat
+    keep: [decision-request-card, decision-request-source-issue, decision-request-source-comment, decision-request-reason]
+    change:
+      - decision-request-answer: "The answer field is a rich editor that takes pasted images, still capped at 8 KB; over the cap, Send is blocked and an alert says why."
+    remove: []
+  - id: issue-decision-comments
+    url: /cheese-work/issues/<issue-key>
+    keep: [decision-quote-card, decision-quote-words, decision-quote-open-dm, decision-quote-asked-dm]
+    change:
+      - decision-quote-jump-to-ask: "New link on the quote card that jumps to the ask comment it answers."
+      - decision-ask-jump-to-answer: "New link on the ask comment, shown once it has a quote, that jumps to the answer."
+    remove: []

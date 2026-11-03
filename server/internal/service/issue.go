@@ -47,7 +47,7 @@ type IssueService struct {
 	// the self-hosted unlimited path.
 	Entitlements entitlement.Provider
 	// SquadDispatcher overrides default squad leader enqueue on issue create,
-	// allowing handler-level Jev fast-path routing and access gating.
+	// allowing handler-level access gating.
 	SquadDispatcher func(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID string) bool
 }
 
@@ -97,6 +97,9 @@ type IssueCreateParams struct {
 	// used by the standalone PUT path, then inserts the complete bag atomically.
 	Properties     map[pgtype.UUID]json.RawMessage
 	AllowDuplicate bool
+	// MarkedWriter: the creating task is marked external_read, so the description
+	// stores the mark (CHE-2216 plan 3.7).
+	MarkedWriter bool
 	// Stage groups this issue into an ordered barrier group under its parent
 	// (NULL = unstaged). See issue_wakeup_system.go for the staged-barrier wake.
 	Stage pgtype.Int4
@@ -531,6 +534,12 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 		// The recorded comment bumped the revision the result must carry.
 		if issue, err = qtx.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: issue.ID, WorkspaceID: p.WorkspaceID}); err != nil {
 			return IssueCreateResult{}, fmt.Errorf("reload issue: %w", err)
+		}
+	}
+
+	if p.MarkedWriter && p.Description.Valid {
+		if err := qtx.MarkIssueDescriptionExternalRead(ctx, issue.ID); err != nil {
+			return IssueCreateResult{}, fmt.Errorf("mark description external_read: %w", err)
 		}
 	}
 

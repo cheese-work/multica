@@ -30,6 +30,12 @@ const (
 	EventAgentArchived = "agent:archived"
 	EventAgentRestored = "agent:restored"
 
+	// Scheduling pause: published once per real change, never on a no-op.
+	EventAgentSchedulingPaused      = "agent:scheduling_paused"
+	EventAgentSchedulingResumed     = "agent:scheduling_resumed"
+	EventWorkspaceSchedulingPaused  = "workspace:scheduling_paused"
+	EventWorkspaceSchedulingResumed = "workspace:scheduling_resumed"
+
 	// Task events (server <-> daemon).
 	// Each event maps to a status transition on agent_task_queue. Front-end
 	// subscribes by `task:` prefix and invalidates the workspace task
@@ -94,6 +100,9 @@ const (
 	EventChatSessionRead     = "chat:session_read"
 	EventChatSessionDeleted  = "chat:session_deleted"
 	EventChatSessionUpdated  = "chat:session_updated"
+	// EventChatSupplementUpdated carries the delivery receipt of a follow-up
+	// steered into the running chat task. Sent to the session creator only.
+	EventChatSupplementUpdated = "chat:supplement_updated"
 
 	// Project events
 	EventProjectCreated         = "project:created"

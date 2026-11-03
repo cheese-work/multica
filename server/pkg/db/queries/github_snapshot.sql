@@ -62,6 +62,12 @@ WHERE gpr.id = sqlc.arg('pr_id')
         AND (w.settings ->> 'github_enabled') IS DISTINCT FROM 'false'
   );
 
+-- name: ListGitHubPRRedCheckNames :many
+-- Names of the checks stored red or flaky for this head, read before the
+-- per-check replace so a green rerun of the same head can be marked flaky.
+SELECT name FROM github_pull_request_check_run
+WHERE pr_id = $1 AND head_sha = $2 AND red_cause IN ('pr', 'infra', 'flaky');
+
 -- name: DeleteGitHubPRCheckRuns :exec
 -- First half of the atomic per-check replace. Runs inside the same transaction
 -- as UpdateGitHubPRSnapshot and the inserts below.
@@ -69,9 +75,9 @@ DELETE FROM github_pull_request_check_run WHERE pr_id = $1;
 
 -- name: InsertGitHubPRCheckRun :exec
 INSERT INTO github_pull_request_check_run (
-    pr_id, head_sha, ordinal, name, status, conclusion, details_url, is_status_context
+    pr_id, head_sha, ordinal, name, status, conclusion, details_url, is_status_context, red_cause
 ) VALUES (
-    $1, $2, $3, $4, $5, sqlc.narg('conclusion'), sqlc.narg('details_url'), $6
+    $1, $2, $3, $4, $5, sqlc.narg('conclusion'), sqlc.narg('details_url'), $6, sqlc.narg('red_cause')
 );
 
 -- name: ListStaleUndecidedGitHubPRs :many
@@ -249,6 +255,8 @@ SELECT * FROM github_pull_request WHERE id = $1;
 -- merge handler refreshes the returned PRs, and one the refresh queue drops is
 -- undecided, so ListStaleUndecidedGitHubPRs picks it up. A row whose base is
 -- not known yet (no snapshot since the column was added) is included.
+-- CHE-2796: a stack child is based on the merged PR's head branch, which GitHub
+-- retargets to the base when the parent merges, so it is included as well.
 UPDATE github_pull_request
 SET api_mergeable          = NULL,
     api_merge_state_status = NULL,
@@ -258,5 +266,23 @@ WHERE installation_id = sqlc.arg('installation_id')
   AND repo_name = sqlc.arg('repo_name')
   AND state IN ('open', 'draft')
   AND pr_number <> sqlc.arg('merged_pr_number')
-  AND (snapshot_base_ref = sqlc.arg('base_ref') OR snapshot_base_ref IS NULL)
+  AND (snapshot_base_ref = sqlc.arg('base_ref') OR snapshot_base_ref = sqlc.arg('head_ref') OR snapshot_base_ref IS NULL)
 RETURNING installation_id, repo_owner, repo_name, pr_number;
+
+-- name: InvalidateGitHubPRMergeState :exec
+-- CHE-2796: a base-branch swap (pull_request.edited with changes.base) makes the
+-- stored API merge verdict describe the old base, so it is cleared for the
+-- caller's refresh to decide again. Workspaces that turned GitHub off are
+-- skipped: the refresh pipeline excludes them, so a cleared row could never be
+-- decided again.
+UPDATE github_pull_request gpr
+SET api_mergeable          = NULL,
+    api_merge_state_status = NULL,
+    updated_at             = now()
+FROM workspace w
+WHERE w.id = gpr.workspace_id
+  AND (w.settings ->> 'github_enabled') IS DISTINCT FROM 'false'
+  AND gpr.installation_id = sqlc.arg('installation_id')
+  AND gpr.repo_owner = sqlc.arg('repo_owner')
+  AND gpr.repo_name = sqlc.arg('repo_name')
+  AND gpr.pr_number = sqlc.arg('pr_number');

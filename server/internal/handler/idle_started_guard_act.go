@@ -260,14 +260,18 @@ func (handler *Handler) idleGuardHumanWait(ctx context.Context, issue db.Issue) 
 // idleGuardStatusAvailable reports whether the issue can sit in status: its
 // workflow lists it, or, with no workflow, the workspace catalog knows it.
 func (handler *Handler) idleGuardStatusAvailable(ctx context.Context, issue db.Issue, status string) (bool, error) {
-	def, _, err := issueworkflow.ForIssue(ctx, handler.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
+	return statusAvailableToIssue(ctx, handler.Queries, issue, status)
+}
+
+func statusAvailableToIssue(ctx context.Context, queries *db.Queries, issue db.Issue, status string) (bool, error) {
+	def, _, err := issueworkflow.ForIssue(ctx, queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
 	if err != nil {
 		return false, err
 	}
 	if def != nil {
 		return def.Has(status), nil
 	}
-	if _, err := issuestatus.CategoryWithError(ctx, handler.Queries, issue.WorkspaceID, status); err != nil {
+	if _, err := issuestatus.CategoryWithError(ctx, queries, issue.WorkspaceID, status); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil
 		}

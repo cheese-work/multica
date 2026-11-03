@@ -77,6 +77,9 @@ type WakeupDefinitionWrite struct {
 type WakeupEffectiveRule struct {
 	EffectiveWakeupConfig
 	Overrides []string
+	// AlreadySatisfied is set on the preview of a condition rule: what enabling
+	// it would meet at once.
+	AlreadySatisfied *WakeupSatisfiedPreview
 }
 
 func wakeupDefinitionView(row db.IssueWakeupDefinition) (WakeupDefinitionView, error) {
@@ -221,6 +224,7 @@ func (s *IssueWakeupService) SaveWakeupDefinition(ctx context.Context, ref Wakeu
 	normalizeWakeupPatch(&patch)
 	if create {
 		withRootAggregateDefault(&patch)
+		withRootFireDefault(&patch)
 	}
 	if err := checkWakeupAggregateScope(ref.Kind, patch); err != nil {
 		return WakeupDefinitionView{}, err
@@ -239,6 +243,9 @@ func (s *IssueWakeupService) SaveWakeupDefinition(ctx context.Context, ref Wakeu
 	defer tx.Rollback(ctx)
 	q := s.Tasks.Queries.WithTx(tx)
 	if err := q.LockWakeupDefinitionScope(ctx, ref.lockKey()); err != nil {
+		return WakeupDefinitionView{}, err
+	}
+	if err := normalizeWakeupConditionTrigger(ctx, tx, ref.WorkspaceID, &patch); err != nil {
 		return WakeupDefinitionView{}, err
 	}
 	if aliased {
@@ -440,12 +447,31 @@ func (s *IssueWakeupService) DeleteWakeupDefinition(ctx context.Context, ref Wak
 	} else if n == 0 {
 		return ErrWakeupConflict
 	}
+	if err := reopenBroaderSweepsOfPendingOverride(ctx, q, row); err != nil {
+		return err
+	}
 	if _, builtin := WakeupBuiltinBaseline(ruleKey); builtin && ref.Kind == WakeupScopeIssue {
 		if err := retireLegacyIssueOverride(ctx, tx, q, ref, ruleKey); err != nil {
 			return err
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+// reopenBroaderSweepsOfPendingOverride keeps activation from being lost when an
+// override is deleted before its own sweep ran. The broader sweeps left the
+// issues it covered to that sweep and moved on, finished or not, so they restart
+// from the beginning of their scope to reach those issues under the inherited rule.
+func reopenBroaderSweepsOfPendingOverride(ctx context.Context, q *db.Queries, deleted db.IssueWakeupDefinition) error {
+	if deleted.Root || deleted.SweepDone && deleted.SweepRevision == deleted.Revision {
+		return nil
+	}
+	broader := []string{string(WakeupScopeWorkspace)}
+	if WakeupScope(deleted.ScopeKind) == WakeupScopeIssue {
+		broader = append(broader, string(WakeupScopeProject))
+	}
+	_, err := q.ReopenBroaderWakeupSweeps(ctx, db.ReopenBroaderWakeupSweepsParams{WorkspaceID: deleted.WorkspaceID, RuleKey: deleted.RuleKey, ScopeKinds: broader})
+	return err
 }
 
 // retireLegacyIssueOverride resets an issue's customized legacy row to
@@ -593,12 +619,16 @@ func (s *IssueWakeupService) EffectiveWakeupRule(ctx context.Context, ref Wakeup
 		normalizeWakeupPatch(&patch)
 		if newRoot {
 			withRootAggregateDefault(&patch)
+			withRootFireDefault(&patch)
 		}
 		if err := checkWakeupAggregateScope(ref.Kind, patch); err != nil {
 			return WakeupEffectiveRule{}, err
 		}
 		refs, err := validateWakeupPatch(ruleKey, patch, time.Now())
 		if err != nil {
+			return WakeupEffectiveRule{}, err
+		}
+		if err := s.normalizeConditionTriggerReadOnly(ctx, ref.WorkspaceID, &patch); err != nil {
 			return WakeupEffectiveRule{}, err
 		}
 		if err := s.authorizeWakeupRefs(ctx, q, ref.WorkspaceID, member, refs); err != nil {
@@ -622,7 +652,11 @@ func (s *IssueWakeupService) EffectiveWakeupRule(ctx context.Context, ref Wakeup
 		if err := s.authorizeResolvedTarget(ctx, q, ref.WorkspaceID, member, eff); err != nil {
 			return WakeupEffectiveRule{}, err
 		}
-		return WakeupEffectiveRule{EffectiveWakeupConfig: eff, Overrides: overriddenWakeupFields(in, ref, candidate)}, nil
+		satisfied, err := s.previewSatisfied(ctx, ref, eff.Config.Trigger)
+		if err != nil {
+			return WakeupEffectiveRule{}, err
+		}
+		return WakeupEffectiveRule{EffectiveWakeupConfig: eff, Overrides: overriddenWakeupFields(in, ref, candidate), AlreadySatisfied: satisfied}, nil
 	}
 	eff, err := ResolveWakeupConfig(in)
 	if err != nil {

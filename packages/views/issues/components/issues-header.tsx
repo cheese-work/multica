@@ -60,7 +60,8 @@ import { Toggle } from "@multica/ui/components/ui/toggle";
 import {
   PRIORITY_DISPLAY_ORDER,
 } from "@multica/core/issues/config";
-import { StatusIcon, PriorityIcon } from ".";
+import { StatusIcon } from "./status-icon";
+import { PriorityIcon } from "./priority-icon";
 import { useQuery } from "@tanstack/react-query";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useIssueWorkflows } from "@multica/core/issue-workflows";
