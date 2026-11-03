@@ -135,5 +135,27 @@
   },
   "navigation": {
     "open_in_new_tab": "在新标签页打开"
+  },
+  "decision_action": {
+    "approve": "使用通行密钥批准",
+    "waiting": "正在等待你的通行密钥…",
+    "state": {
+      "executed": "已执行",
+      "failed": "失败",
+      "rejected": "已拒绝",
+      "expired": "已过期",
+      "cancelled": "已取消"
+    },
+    "failed_code": {
+      "stale_cap": "已有更高的上限生效。",
+      "stale_window": "预算窗口已变化。请发起新请求。",
+      "not_budgeted": "此事项已不再受预算限制。",
+      "other": "失败：{{code}}"
+    },
+    "no_passkey": "批准前请先添加通行密钥。",
+    "add_passkey": "添加通行密钥",
+    "error": "通行密钥批准未完成。请重试。",
+    "lost": "响应丢失。该操作不会被再次批准。请检查结果。",
+    "check": "检查结果"
   }
 }

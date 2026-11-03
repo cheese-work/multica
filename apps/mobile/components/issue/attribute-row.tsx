@@ -13,6 +13,7 @@
  *   assignee  →  issue/[id]/picker/assignee
  *   labels    →  issue/[id]/picker/label   (multi-select, stays open)
  *   project   →  issue/[id]/picker/project
+ *   workflow  →  issue/[id]/picker/workflow
  *   due_date  →  issue/[id]/picker/due-date
  */
 import { useMemo } from "react";
@@ -32,6 +33,7 @@ import { ProjectIcon } from "@/components/ui/project-icon";
 import { AttributeChip } from "./attribute-chip";
 import { useActorLookup } from "@/data/use-actor-name";
 import { findProject, projectListOptions } from "@/data/queries/projects";
+import { issueWorkflowListOptions } from "@/data/queries/issue-workflows";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { PRIORITY_LABEL as PRIORITY_FULL_LABEL } from "@/lib/issue-status";
 import { useIssueStatuses } from "@/lib/use-issue-statuses";
@@ -56,6 +58,7 @@ type IssuePickerField =
   | "assignee"
   | "label"
   | "project"
+  | "workflow"
   | "due-date";
 
 const ISSUE_PICKER_PATHNAMES = {
@@ -64,6 +67,7 @@ const ISSUE_PICKER_PATHNAMES = {
   assignee: "/[workspace]/issue/[id]/picker/assignee",
   label: "/[workspace]/issue/[id]/picker/label",
   project: "/[workspace]/issue/[id]/picker/project",
+  workflow: "/[workspace]/issue/[id]/picker/workflow",
   "due-date": "/[workspace]/issue/[id]/picker/due-date",
 } as const satisfies Record<IssuePickerField, string>;
 
@@ -97,6 +101,12 @@ export function AttributeRow({ issue }: { issue: Issue }) {
     () => findProject(projects, issue.project_id),
     [projects, issue.project_id],
   );
+
+  // Workflow override (CHE-2822): shown once a named workflow exists or the
+  // issue already has an override, so a workspace on Default alone sees no chip.
+  const { data: workflows = [] } = useQuery(issueWorkflowListOptions(wsId));
+  const ownWorkflow = workflows.find((w) => w.id === issue.workflow_id);
+  const showWorkflow = !!issue.workflow_id || workflows.some((w) => !w.is_default);
 
   const labels = issue.labels ?? [];
 
@@ -214,6 +224,16 @@ export function AttributeRow({ issue }: { issue: Issue }) {
           onPress={() => openPicker("project")}
         />
       )}
+
+      {/* Workflow override */}
+      {showWorkflow ? (
+        <AttributeChip
+          icon={<Text className="text-xs text-muted-foreground/80">⇄</Text>}
+          label={ownWorkflow?.name ?? (issue.workflow_id ? t("workflow.title") : t("workflow.follow_project"))}
+          variant={issue.workflow_id ? "filled" : "dimmed"}
+          onPress={() => openPicker("workflow")}
+        />
+      ) : null}
 
       {/* Due date */}
       <AttributeChip

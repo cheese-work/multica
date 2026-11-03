@@ -139,6 +139,22 @@ func (h *Handler) tryMoveIssueOnEdge(ctx context.Context, issue db.Issue, to, so
 	return true, ranHandler, nil
 }
 
+// edgeMoveCause maps the source of an edge move to the cause kind its history
+// row carries.
+func edgeMoveCause(source string) string {
+	switch source {
+	case "workflow_edge":
+		return "workflow_edge"
+	case "ci_green_advance":
+		return "ci_advance"
+	case "run_budget":
+		return "run_budget"
+	case "idle_started_guard":
+		return "watchdog"
+	}
+	return "system"
+}
+
 // issueResponseWithCategory is the issue as clients receive it on an update.
 func (h *Handler) issueResponseWithCategory(ctx context.Context, issue db.Issue) IssueResponse {
 	resp := issueToResponse(issue, h.getIssuePrefix(ctx, issue.WorkspaceID))

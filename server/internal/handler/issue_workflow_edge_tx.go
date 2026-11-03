@@ -60,7 +60,11 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 		return edgeMove{}, fmt.Errorf("workflow refused the move: %w", err)
 	}
 	write.system = true
-	updated, cancelledWakeups, err := h.writeIssueLocked(ctx, q, issue.WorkspaceID, params, write)
+	rec := &statusRecord{workspaceID: issue.WorkspaceID, trigger: statusTriggerFromSystem(edgeMoveCause(source))}
+	if handoff != nil {
+		rec.handoffWorkflow = handoff.def.Name
+	}
+	updated, cancelledWakeups, err := h.writeIssueLocked(withStatusRecord(ctx, rec), q, issue.WorkspaceID, params, write)
 	if err != nil {
 		return edgeMove{}, fmt.Errorf("status write failed: %w", err)
 	}
@@ -77,17 +81,6 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 	var handoffDetails map[string]string
 	if handoff != nil {
 		handoffDetails = workflowHandoffPayload(updated, handoff, th.workflowHandoffBrief(ctx, updated, handoff), willRun, "")
-	}
-	var rec *statusRecord
-	if issue.Status != updated.Status {
-		row, err := service.RecordStatusChange(ctx, q, updated, issue.Status, updated.Status, service.StatusTrigger{
-			Cause:   service.StatusCause{Kind: source, By: service.StatusCauseActor{Type: "system"}},
-			Channel: "system",
-		}, handoffDetails)
-		if err != nil {
-			return edgeMove{}, fmt.Errorf("record status change: %w", err)
-		}
-		rec = &statusRecord{workspaceID: updated.WorkspaceID, activity: &row}
 	}
 	// The block an exhausted budget causes is a consequence of exhaustion, and
 	// it lands before the window's exhaustion claim: it must not grant. The
@@ -147,13 +140,14 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 	if handoffDetails != nil {
 		payload["workflow_handoff"] = handoffDetails
 	}
-	if rec != nil {
+	if rec.activity != nil {
 		payload["activity_id"] = uuidToString(rec.activity.ID)
 	}
 
 	afterCommit := func(ctx context.Context) (ranHandler bool) {
 		payload["issue"] = h.issueResponseWithCategory(ctx, updated)
 		h.broadcastCancelledWakeups(ctx, issue.WorkspaceID, cancelledWakeups)
+		h.finishRecordedHandoff(ctx, rec, handoffDetails)
 		h.publish(protocol.EventIssueUpdated, uuidToString(updated.WorkspaceID), "system", "", payload)
 		h.publishRecordedStatusActivity(rec, "system", "")
 		if cancelAfter != nil {
