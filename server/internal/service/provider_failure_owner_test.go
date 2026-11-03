@@ -214,7 +214,7 @@ func TestReserveProviderFailureRecoveryAndApplyRequiresOwner(t *testing.T) {
 			}
 			defer tx.Rollback(ctx)
 			applied := false
-			got, err := reserveProviderFailureRecoveryAndApply(ctx, tx, tc.params, func(context.Context, pgx.Tx) error { applied = true; return nil })
+			got, _, err := reserveProviderFailureRecoveryAndApply(ctx, tx, tc.params, func(context.Context, pgx.Tx) error { applied = true; return nil })
 			if err != nil || got != tc.want || applied != tc.want {
 				t.Fatalf("reserved=%t applied=%t err=%v, want %t", got, applied, err, tc.want)
 			}

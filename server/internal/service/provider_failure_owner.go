@@ -81,22 +81,29 @@ func providerFailureEffectKind(p db.RecordProviderFailureRecoveryParams) provide
 // only when its kind equals the canonical owner of the failed task. A mismatch,
 // a cap, a guard-owned or an unknown task inserts nothing and never calls apply;
 // the caller's transaction stays usable.
-func reserveProviderFailureRecoveryAndApply(ctx context.Context, tx pgx.Tx, reservation db.RecordProviderFailureRecoveryParams, apply func(context.Context, pgx.Tx) error) (bool, error) {
+//
+// The returned decision tells the caller about a cap. Nothing is written or
+// published here: when decision.Capped() the caller sends the notice with
+// notifyProviderFailureCap after its own transaction outcome is final, never
+// inside the transaction, because a rollback would lose the notice while its
+// event was already published.
+func reserveProviderFailureRecoveryAndApply(ctx context.Context, tx pgx.Tx, reservation db.RecordProviderFailureRecoveryParams, apply func(context.Context, pgx.Tx) error) (bool, providerFailureOwnerDecision, error) {
 	if tx == nil {
-		return false, errors.New("provider failure recovery reservation requires a transaction")
+		return false, providerFailureOwnerDecision{}, errors.New("provider failure recovery reservation requires a transaction")
 	}
 	kind := providerFailureEffectKind(reservation)
 	if kind == providerOwnerNone {
-		return false, nil
+		return false, providerFailureOwnerDecision{Owner: providerOwnerNone}, nil
 	}
 	decision, err := resolveProviderFailureOwner(ctx, db.New(tx), reservation.FailedTaskID)
 	if err != nil {
-		return false, err
+		return false, providerFailureOwnerDecision{}, err
 	}
 	if decision.Owner != kind {
-		return false, nil
+		return false, decision, nil
 	}
-	return applyProviderFailureReservation(ctx, tx, reservation, apply)
+	reserved, err := applyProviderFailureReservation(ctx, tx, reservation, apply)
+	return reserved, decision, err
 }
 
 // notifyProviderFailureCap tells the failed run's accountable user, once, that
@@ -152,4 +159,14 @@ func providerFailureTrigger(ctx context.Context, q *db.Queries, failedTaskID pgt
 		return "", pgtype.UUID{}, fmt.Errorf("provider failure trigger: %w", err)
 	}
 	return "issue_wakeup", id, nil
+}
+
+// notifyProviderFailureAttemptCap sends the cap notice a legacy reservation
+// recorded on its attempt. Call it only after the caller's transaction is
+// committed or rolled back, on the pool-backed queries.
+func (s *TaskService) notifyProviderFailureAttemptCap(ctx context.Context, attempt *providerFailureRecoveryAttempt) {
+	if s == nil || attempt == nil || attempt.Cap == nil {
+		return
+	}
+	s.notifyProviderFailureCap(ctx, s.Queries, attempt.FailedTaskID, *attempt.Cap)
 }

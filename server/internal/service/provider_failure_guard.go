@@ -104,6 +104,9 @@ type providerFailureRecoveryAttempt struct {
 	Scope        providerFailureRecoveryScope
 	SkipReason   string
 	ReturnOwner  bool
+	// Cap is set when the reservation was refused by a recovery cap. The caller
+	// sends the notice after its transaction outcome (notifyProviderFailureAttemptCap).
+	Cap *providerFailureOwnerDecision
 }
 
 func providerTriggerConditionKey(payload []byte) string {
@@ -306,7 +309,7 @@ func (s *TaskService) reserveProviderFailureRecovery(ctx context.Context, q *db.
 		return false, err
 	}
 	if decision.Capped() {
-		s.notifyProviderFailureCap(ctx, q, attempt.FailedTaskID, decision)
+		attempt.Cap = &decision
 		return false, nil
 	}
 	rows, err := q.RecordProviderFailureRecovery(ctx, db.RecordProviderFailureRecoveryParams{
