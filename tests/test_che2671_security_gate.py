@@ -131,12 +131,21 @@ class GateDecisionTest(unittest.TestCase):
         pr = {**PR, "base_ref": "release", "default_branch": "release"}
         self.assertEqual(self.run_gate([comment(verdict(base="main"))], pr=pr)[0], "pending")
 
-    def test_non_default_target_branch_fails(self):
-        # finding 1: only the protected default branch is supported
+    def test_stacked_base_is_pending_not_failed_and_never_passes(self):
+        # CHE-3035: a stacked layer is not gated yet. Pending (not failure) keeps the PR free of a red check, and
+        # not success keeps the head from reaching the default branch if the retarget event is ever missed.
         pr = {**PR, "base_ref": "evil", "default_branch": "main"}
-        state, why = self.run_gate([comment(verdict(base="evil"))], pr=pr)
-        self.assertEqual(state, "failure")
-        self.assertIn("main", why)
+        for comments in ([], [comment(verdict(base="evil"))]):
+            state, why = self.run_gate(comments, pr=pr)
+            self.assertEqual(state, "pending")
+            self.assertIn("not gated", why)
+            self.assertIn("main", why)
+
+    def test_retarget_to_default_runs_the_real_gate(self):
+        # CHE-3035: the same head, now based on main, is gated as before: a planted secret fails, no verdict is pending
+        self.assertEqual(self.run_gate([], diff=VULN_DIFF)[0], "failure")
+        self.assertEqual(self.run_gate([])[0], "pending")
+        self.assertEqual(self.run_gate([comment(verdict())])[0], "success")
 
     def test_verdict_missing_binding_fields_is_not_valid(self):
         old = "\n".join(l for l in verdict().splitlines() if not l.startswith(("Repo:", "PR:", "Base:")))
@@ -246,6 +255,9 @@ class MergeGroupStepTest(unittest.TestCase):
     STUB_GATE = ('#!/bin/bash\n'  # the old script: --pr N required (an empty N is an argparse error), verdict read live
                  'echo "gate $*" >> "$LOG"\n'
                  'case " $* " in *" --pr "[0-9]*) ;; *) exit 2 ;; esac\n'
+                 'n=$(grep -c "^gate " "$LOG")\n'  # this is the Nth read: STATES answers per read, FAIL_AT makes one read error out
+                 '[ "$n" = "${FAIL_AT:-}" ] && exit 1\n'
+                 'if [ -n "${STATES:-}" ]; then STATE=$(echo $STATES | cut -d" " -f$n); fi\n'
                  'echo \'{"context": "security-gate", "sha": "\'$HEAD\'", "state": "\'$STATE\'", "description": "PASS on x"}\'\n')
 
     def step_run(self):
@@ -254,21 +266,21 @@ class MergeGroupStepTest(unittest.TestCase):
         self.assertEqual(len(gate), 1)
         return gate[0]["run"]
 
-    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success"):
+    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success", script="", states="", fail_at=""):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             (tmp / "bin").mkdir()
             (tmp / "scripts/security-gate").mkdir(parents=True)
             (tmp / "bin/gh").write_text(self.STUB_GH)
             (tmp / "scripts/security-gate/gate.sh").write_text(self.STUB_GATE)
-            (tmp / "scripts/security-gate/security_gate.py").write_text("")  # the step runs it via the shadowed python3
+            (tmp / "scripts/security-gate/security_gate.py").write_text(script)  # the step runs it via the shadowed python3
             (tmp / "bin/python3").write_text(
                 '#!/bin/bash\n[ "${1##*/}" = security_gate.py ] && exec bash "$(dirname "$1")/gate.sh" "${@:2}"\n'
                 f'exec {sys.executable} "$@"\n')
             for path in (tmp / "bin/gh", tmp / "bin/python3", tmp / "scripts/security-gate/gate.sh"):
                 path.chmod(0o755)
             env = {**os.environ, "PATH": f"{tmp / 'bin'}:{os.environ['PATH']}", "LOG": str(tmp / "log"), "HEAD": HEAD,
-                   "STATE": state, "PARENTS": " ".join(parents), "MERGE_GROUP_REF": ref, "MERGE_GROUP_SHA": self.QUEUE,
+                   "STATE": state, "STATES": states, "FAIL_AT": str(fail_at), "PARENTS": " ".join(parents), "MERGE_GROUP_REF": ref, "MERGE_GROUP_SHA": self.QUEUE,
                    "PR_NUMBER": "", "GH_TOKEN": "t", "DEFAULT_BRANCH": "main", "GITHUB_REPOSITORY": "o/r",
                    "GITHUB_SERVER_URL": "https://github.com", "GITHUB_RUN_ID": "7"}
             done = subprocess.run(["bash", "-c", self.step_run()], cwd=tmp, env=env, capture_output=True, text=True)
@@ -286,9 +298,40 @@ class MergeGroupStepTest(unittest.TestCase):
         self.assertIn("--pr 405", " ".join(l for l in log if l.startswith("gate ")))
         self.assertNotIn("--post", " ".join(log))  # the old script would post on the PR head, not the queue commit
 
+    def test_queue_run_scans_with_semgrep_once_the_gate_script_supports_it(self):
+        done, log = self.run_step(script='ap.add_argument("--semgrep")')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("--semgrep", " ".join(l for l in log if l.startswith("gate ")))
+
+    def test_queue_run_omits_semgrep_for_an_older_gate_script(self):
+        done, log = self.run_step()
+        self.assertNotIn("--semgrep", " ".join(l for l in log if l.startswith("gate ")))
+
     def test_verdict_is_read_fresh_at_queue_time(self):
         done, log = self.run_step(state="pending")
         self.assertIn("state=pending", self.posted(log)[0])
+
+    def test_a_verdict_revoked_after_the_first_read_never_ends_as_success(self):
+        # a late success must not overwrite a revocation failure: a success is read again before and after it is posted
+        for states, last in (("success pending", "pending"), ("success success pending", "pending"),
+                             ("success success success", "success")):
+            done, log = self.run_step(states=states)
+            self.assertIn(f"state={last}", self.posted(log)[-1], (states, log))
+
+    def test_a_success_is_read_again_before_and_after_it_is_published(self):
+        done, log = self.run_step(states="success success success")
+        self.assertEqual(len([l for l in log if l.startswith("gate ")]), 3, log)
+
+    def test_a_failed_read_after_the_success_was_posted_fails_closed(self):
+        # round 7 P1: an error in the post-write read left the cached success in place under set -e
+        done, log = self.run_step(fail_at=3)
+        self.assertIn("state=success", self.posted(log)[0], log)
+        self.assertIn("state=failure", self.posted(log)[-1], (done.stderr, log))
+
+    def test_a_failed_read_before_the_success_is_posted_posts_a_failure_not_a_stall(self):
+        for fail_at in (1, 2):
+            done, log = self.run_step(fail_at=fail_at)
+            self.assertIn("state=failure", self.posted(log)[-1], (fail_at, done.stderr, log))
 
     def test_pr_head_that_is_not_a_parent_fails(self):
         done, log = self.run_step(parents=("d" * 40, OLD))
@@ -298,6 +341,155 @@ class MergeGroupStepTest(unittest.TestCase):
         done, log = self.run_step(ref=f"refs/heads/gh-readonly-queue/dev/pr-405-{'d' * 40}")
         self.assertIn("state=failure", self.posted(log)[0])
         self.assertFalse([l for l in log if l.startswith("gate ")])
+
+
+class QueueRevocationTest(unittest.TestCase):
+    """CHE-3240: a success carried onto a queue head must not outlive the PR-head verdict that earned it."""
+
+    BASE, G1, G2, OTHER = "1" * 40, "2" * 40, "3" * 40, "6" * 40
+    QUEUE_HEADS = {405: G1, 999: G2}  # queue head per tip PR number
+
+    def run_pr(self, comments, queue_heads=None, queue_error=False, compare_error=False, post_fail=(), stacked=False):
+        queue_heads = self.QUEUE_HEADS if queue_heads is None else queue_heads
+        posted, lookups = [], []
+        # a set fails every write to those heads; a dict maps head -> number of writes that fail before one succeeds
+        fails = dict(post_fail) if isinstance(post_fail, dict) else dict.fromkeys(post_fail, 10**9)
+        chains = {self.G1: [{"sha": self.G1, "parents": [self.BASE, HEAD], "message": "Merge pull request #405 from x/y"}],
+                  self.G2: [{"sha": self.G2, "parents": [self.OTHER, "7" * 40], "message": "Merge pull request #999 from x/z"}]}
+        if stacked:  # the second group sits on top of the first, so both carry the PR
+            chains[self.G2] = [{"sha": self.G2, "parents": [self.G1, "7" * 40], "message": "Merge pull request #999 from x/z"}, *chains[self.G1]]
+
+        def fake_gh(*args):
+            path = " ".join(args)
+            if "git/matching-refs/heads/gh-readonly-queue/main/" in path or "/branches" in path:
+                lookups.append(path)
+                if queue_error is True or (queue_error == "primary" and "matching-refs" in path):
+                    raise subprocess.CalledProcessError(1, ["gh"])
+                return "\n".join(queue_heads.values())
+            if "compare/main..." in path:
+                if compare_error:
+                    raise subprocess.CalledProcessError(1, ["gh"])
+                return "\n".join(json.dumps(c) for c in chains[path.split("...")[1].split()[0]])
+            if args[0] == "--paginate":
+                return json.dumps(c) if (c := comments[0]) and "issues/405/comments" in path else ""
+            if "commits/" in path:
+                return json.dumps({"number": 405, "head": HEAD})
+            if "pulls/405" in path:
+                return json.dumps({"head": {"sha": HEAD, "ref": PR["head_ref"]}, "base": {"sha": "d" * 40, "ref": "main"},
+                                   "user": {"id": BOT}})
+            if "statuses/" in path:
+                posted.append(args)
+                sha = path.split("statuses/")[1].split()[0]
+                if fails.get(sha, 0) > 0:
+                    fails[sha] -= 1
+                    raise subprocess.CalledProcessError(1, ["gh"])
+            return ""
+
+        argv = ["x", "--repo", str(ROOT), "--github", "cheese-work/multica", "--pr", "405",
+                "--default-branch", "main", "--post"]
+        fake_run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=CLEAN_DIFF)
+        with mock.patch.object(sg, "_gh", fake_gh), mock.patch.object(sg.subprocess, "run", fake_run), \
+                mock.patch.object(sg.time, "sleep"), mock.patch("sys.argv", argv), mock.patch("builtins.print"):
+            code = sg.main()
+        self.lookups = lookups
+        return code, posted
+
+    def test_a_revoked_verdict_flips_the_queue_head_that_carries_the_pr_to_failure(self):
+        code, posted = self.run_pr([comment("no verdict any more")])
+        self.assertEqual(code, 0)
+        by_sha = {a[0].rsplit("/", 1)[1]: a for a in posted if "statuses/" in a[0]}
+        self.assertIn(HEAD, by_sha)  # the PR head status itself
+        self.assertIn("state=pending", by_sha[HEAD])
+        self.assertIn("state=failure", by_sha[self.G1])
+        self.assertIn("#405", " ".join(by_sha[self.G1]))
+        self.assertNotIn(self.G2, by_sha)  # a group without the PR is untouched
+
+    def test_a_still_green_pr_leaves_the_queue_alone(self):
+        _, posted = self.run_pr([comment(verdict("PASS", repo="cheese-work/multica"))])
+        self.assertEqual([a[0].rsplit("/", 1)[1] for a in posted], [HEAD])
+
+    def test_a_failing_ref_lookup_falls_back_to_the_branch_listing_and_still_flips_the_head(self):
+        # review round 4 finding 1: one failing endpoint must not leave the carried success on the queue head
+        with mock.patch.object(sg.time, "sleep"):
+            _, posted = self.run_pr([comment("no verdict any more")], queue_error="primary")
+        by_sha = {a[0].rsplit("/", 1)[1]: a for a in posted}
+        self.assertIn("state=failure", by_sha[self.G1])
+        self.assertTrue(any("/branches" in l for l in self.lookups))
+
+    def test_both_lookups_failing_is_retried_then_raises(self):
+        with mock.patch.object(sg.time, "sleep"), self.assertRaises(subprocess.CalledProcessError):
+            self.run_pr([comment("no verdict any more")], queue_error=True)
+
+    def test_a_group_that_cannot_be_read_is_failed_closed_in_the_persisted_status(self):
+        # review round 3 finding 1: a compare error must not leave the carried success on that queue head
+        with mock.patch.object(sg.time, "sleep"):
+            _, posted = self.run_pr([comment("no verdict any more")], compare_error=True)
+        heads = {a[0].rsplit("/", 1)[1]: a for a in posted}
+        for g in (self.G1, self.G2):
+            self.assertIn("state=failure", heads[g])
+
+    def test_a_failed_status_write_on_one_head_does_not_skip_the_later_heads_and_fails_the_job(self):
+        # review round 8: one failed write must not leave later queue heads on a carried success
+        with self.assertRaises(RuntimeError) as ctx:
+            self.run_pr_capture([comment("no verdict any more")], post_fail={self.G1})
+        self.assertIn(self.G1, str(ctx.exception))
+        self.assertNotIn(self.G2, str(ctx.exception))
+        self.assertIn("state=failure", self.captured[self.G2])
+
+    def test_every_failed_head_is_named_when_all_status_writes_fail(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            self.run_pr_capture([comment("no verdict any more")], post_fail={self.G1, self.G2})
+        self.assertIn(self.G1, str(ctx.exception))
+        self.assertIn(self.G2, str(ctx.exception))
+
+    def test_a_failed_write_after_a_good_one_still_raises_and_keeps_the_good_flip(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            self.run_pr_capture([comment("no verdict any more")], post_fail={self.G2})
+        self.assertIn(self.G2, str(ctx.exception))
+        self.assertNotIn(self.G1, str(ctx.exception))
+        self.assertIn("state=failure", self.captured[self.G1])
+
+    def writes_to(self, posted, sha):
+        return [a for a in posted if a[0].endswith(f"statuses/{sha}")]
+
+    def test_a_transient_status_write_failure_is_retried_and_the_head_ends_on_failure(self):
+        # review round 9: one failed attempt must not leave the carried success while the API has recovered
+        code, posted = self.run_pr([comment("no verdict any more")], post_fail={self.G1: 2}, stacked=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.writes_to(posted, self.G1)), 3)
+        self.assertIn("state=failure", self.writes_to(posted, self.G1)[-1])
+        self.assertEqual(len(self.writes_to(posted, self.G2)), 1)
+
+    def test_a_write_that_fails_on_every_bounded_retry_is_named_and_the_other_heads_are_still_flipped(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            self.run_pr([comment("no verdict any more")], post_fail={self.G1: 10**9}, stacked=True)
+        self.assertIn(self.G1, str(ctx.exception))
+        self.assertNotIn(self.G2, str(ctx.exception))
+
+    def test_retries_are_bounded_at_three_attempts_per_head(self):
+        attempts = []
+        real = sg._post
+
+        def spy(github, sha, *rest):
+            attempts.append(sha)
+            return real(github, sha, *rest)
+
+        with mock.patch.object(sg, "_post", spy), self.assertRaises(RuntimeError):
+            self.run_pr([comment("no verdict any more")], post_fail={self.G1: 10**9, self.G2: 10**9}, stacked=True)
+        self.assertEqual([attempts.count(self.G1), attempts.count(self.G2)], [3, 3])
+
+    def run_pr_capture(self, comments, post_fail):
+        # run_pr raises before it can return `posted`; capture the attempted writes through the mock instead
+        seen = {}
+        real = sg._post
+
+        def spy(github, sha, state, desc, run_url):
+            seen[sha] = (f"state={state}",)
+            return real(github, sha, state, desc, run_url)
+
+        self.captured = seen
+        with mock.patch.object(sg, "_post", spy):
+            return self.run_pr(comments, post_fail=post_fail, stacked=True)
 
 
 class WorkflowTest(unittest.TestCase):
@@ -322,8 +514,49 @@ class WorkflowTest(unittest.TestCase):
         self.assertIn("edited", self.doc[True]["pull_request_target"]["types"])
         self.assertIn("deleted", self.doc[True]["issue_comment"]["types"])
 
+    # Mirrors the X99 runner hook /home/congvc/cheese-work-runners/hooks/job-started.sh: a comment runs only for
+    # OWNER, MEMBER or COLLABORATOR, or for the trusted bot's `Security-Gate-Verdict:` comment (which is NONE).
+    ALLOWED = ("OWNER", "MEMBER", "COLLABORATOR", "282619718", "'Bot'", "'Security-Gate-Verdict:'")
+    HOOK = Path("/home/congvc/cheese-work-runners/hooks/job-started.sh")
+
+    def test_refused_comment_authors_schedule_no_job(self):
+        # CHE-3035: skip at the job `if:` what the runner hook refuses, so no job is scheduled and no red check appears
+        cond = self.doc["jobs"]["security-gate"]["if"]
+        self.assertIn("github.event_name == 'pull_request_target'", cond)  # PR events are never filtered by author
+        for part in self.ALLOWED:
+            self.assertIn(part, cond)
+
+    def test_trusted_bot_verdict_comment_still_runs(self):
+        # The verdict bot's association is NONE (observed on PR #184). Filtering NONE alone would drop every
+        # verdict create/edit/delete and leave a revoked PASS in place.
+        cond = self.doc["jobs"]["security-gate"]["if"]
+        self.assertNotRegex(cond, r"author_association\s*!=\s*'NONE'")
+        self.assertIn("startsWith(github.event.comment.body, 'Security-Gate-Verdict:')", cond)
+
+    def test_job_filter_matches_the_runner_hook_allow_list(self):
+        if not self.HOOK.exists():
+            self.skipTest("runner hook not on this host")
+        hook = self.HOOK.read_text()
+        cond = self.doc["jobs"]["security-gate"]["if"]
+        for part in ("OWNER", "MEMBER", "COLLABORATOR", "282619718", "Security-Gate-Verdict:"):
+            self.assertIn(part, hook)
+            self.assertIn(part, cond)
+
+    def test_skipped_comment_cannot_cancel_a_real_evaluation(self):
+        # CHE-3035: a run cancels the in-flight run of its concurrency group before its `if:` is read. An ignored
+        # comment must land in its own group, or it cancels the real run and leaves no completed run behind it.
+        group = self.doc["concurrency"]["group"]
+        self.assertIn("github.run_id", group)
+        for part in self.ALLOWED:
+            self.assertIn(part, group)
+
     def test_merge_queue_commit_gets_the_status(self):
         self.assertIn("checks_requested", self.doc[True]["merge_group"]["types"])
+
+    def test_comment_filter_and_group_keep_the_merge_queue_path(self):
+        # CHE-3035 x CHE-3317: the author filter and the ignored-comment group must not drop or collide merge_group runs
+        self.assertIn("github.event_name == 'merge_group'", self.doc["jobs"]["security-gate"]["if"])
+        self.assertIn("github.event.merge_group.head_sha", self.doc["concurrency"]["group"])
 
     def test_only_status_write_is_added(self):
         self.assertEqual(self.doc["permissions"], {"contents": "read", "pull-requests": "read", "statuses": "write"})

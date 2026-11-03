@@ -9,7 +9,7 @@ import test from "node:test";
 const read = (name) => readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), "utf8");
 const runsOn = (text) => text.split("\n").filter((line) => /^\s+runs-on:/.test(line));
 
-for (const name of ["ci.yml", "pr-changelog-check.yml", "pr-close-target-check.yml"]) {
+for (const name of ["ci.yml", "main-build.yml", "pr-changelog-check.yml", "pr-close-target-check.yml"]) {
   test(`${name} runs every job on GitHub-hosted runners`, () => {
     const lines = runsOn(read(name));
     assert.ok(lines.length > 0);
@@ -41,4 +41,14 @@ test("release.yml leaves the Go cache to the disk on a self-hosted runner", () =
   const verify = workflow.slice(workflow.indexOf("\n  verify:"), workflow.indexOf("\n  release:"));
   assert.match(verify, /cheese-x99/);
   assert.match(verify, /uses: actions\/setup-go@[^\n]+\n\s+with:[\s\S]*?\n\s+cache: \$\{\{ runner\.environment != 'self-hosted' \}\}/);
+});
+
+// CHE-3128: gate checks run on the dedicated 2-runner lane so heavy CI on the shared
+// `cheese-x99` pool cannot delay them. Forks keep the GitHub-hosted fallback.
+test("security-gate.yml runs on the dedicated X99 gate lane", () => {
+  const [line, ...rest] = runsOn(read("security-gate.yml"));
+  assert.equal(rest.length, 0);
+  assert.match(line, /"cheese-x99-gate"/);
+  assert.doesNotMatch(line, /"cheese-x99"/);
+  assert.match(line, /ubuntu-latest/);
 });
