@@ -187,6 +187,7 @@ func TestBusinessMetricsRegistryExposesAllFamilies(t *testing.T) {
 	m.RecordEntitlementDecision("autopilot_runs", "observe", "cache_fresh")
 	m.RecordEntitlementVersionRegression()
 	m.RecordAutopilotQuotaDecision("observe", "manual", "admitted")
+	m.RecordAskGuardEvent("warn", "created")
 	m.ObserveRuntimeSweepStage(RuntimeSweepStageLiveness, time.Second, 2, 1)
 
 	families, err := registry.Gather()
