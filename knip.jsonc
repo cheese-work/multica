@@ -32,9 +32,10 @@
     },
 
     "apps/desktop": {
-      // window-state.node-test.mjs is run by hand (`node --test`, see its
-      // header) rather than by a package script, so nothing imports it.
-      "entry": ["eslint.config.mjs", "src/main/*.node-test.mjs"],
+      // window-state.node-test.mjs and bundle-cli.node-test.mjs are run by
+      // hand (`node --test`) rather than by a package script, so nothing
+      // imports them.
+      "entry": ["eslint.config.mjs", "src/main/*.node-test.mjs", "scripts/*.node-test.mjs"],
       // Consumed by `extends` in tsconfig.node.json / tsconfig.web.json.
       // knip follows `extends` from the default tsconfig.json only.
       "ignoreDependencies": ["@multica/tsconfig"]
@@ -61,16 +62,20 @@
     // export and knip picks that directory back up; the script reads the same
     // manifest, so the two stay in step without overlapping.
     "packages/ui": {
-      "entry": ["eslint.config.mjs"],
+      // Loaded by e2e/shimmer-text.spec.ts, which sits outside every workspace.
+      "entry": ["eslint.config.mjs", "test/shimmer-text-bundle.mjs"],
       "project": ["**/*.{ts,tsx}"]
     },
     "packages/views": {
-      "entry": ["eslint.config.mjs"],
       "project": ["**/*.{ts,tsx}"]
     },
     "packages/core": {
       "entry": ["eslint.config.mjs"],
       "project": ["**/*.{ts,tsx}"]
+    },
+
+    "packages/plugin-sdk": {
+      "entry": ["eslint.config.mjs"]
     },
 
     "packages/eslint-config": {},
