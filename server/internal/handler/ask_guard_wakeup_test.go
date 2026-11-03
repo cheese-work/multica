@@ -272,3 +272,18 @@ func TestAskGuardWakeupChecksTheStoredRuleOnEnable(t *testing.T) {
 	dbfx.Exec(t, `UPDATE issue_wakeup SET decision_request_id = $2 WHERE id = $1`, rule, f.request(t, f.issueID, f.humanID, "open"))
 	enable().Want(http.StatusOK)
 }
+
+// Two refused waits of one shape are two asks: each keeps its own event so
+// recovery can serve both. A retry of the same request is still one event.
+func TestAskGuardWakeupDistinctWaitsKeepDistinctEvents(t *testing.T) {
+	setAskGuardMode(t, "block")
+	f := newAskGuardWakeupFixture(t)
+	first := f.memberWait("Ask the owner about the quote.")
+	second := f.memberWait("Ask the owner about the schedule.")
+	f.wantFix(t, f.create(t, first).Want(http.StatusUnprocessableEntity))
+	f.wantFix(t, f.create(t, second).Want(http.StatusUnprocessableEntity))
+	f.wantFix(t, f.create(t, first).Want(http.StatusUnprocessableEntity))
+	if n := f.events(t, "block"); n != 2 {
+		t.Errorf("block events = %d, want 2 (one per distinct wait, retry deduplicated)", n)
+	}
+}

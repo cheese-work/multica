@@ -2,9 +2,11 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -49,7 +51,7 @@ func (s *IssueWakeupService) askGuardWakeup(ctx context.Context, issue db.Issue,
 	}
 	v, err := g.Guard.Hit(ctx, issue.WorkspaceID, askguard.Op{
 		IssueID: issue.ID, TaskID: g.TaskID, Kind: "wakeup",
-		Payload: append(rule.Payload(), util.UUIDToString(issue.ID)...), WarnOnly: g.WarnOnly,
+		Payload: wakeupOperationPayload(issue, in), WarnOnly: g.WarnOnly,
 	})
 	if err != nil {
 		slog.Warn("ask guard hit failed", "error", err, "kind", "wakeup")
@@ -61,6 +63,31 @@ func (s *IssueWakeupService) askGuardWakeup(ctx context.Context, issue db.Issue,
 	return nil
 }
 
+// wakeupOperationPayload is the stable bytes of one request. Two waits that
+// differ in any field are two asks and keep their own events; the same request
+// retried finds the same event. The guard never reads these bytes, it only
+// hashes them.
+func wakeupOperationPayload(issue db.Issue, in WakeupInput) []byte {
+	in.EventTypes = slices.Sorted(slices.Values(in.EventTypes))
+	b, _ := json.Marshal(in)
+	return append(b, util.UUIDToString(issue.ID)...)
+}
+
+// receiptMemberCause reports whether a member's event is among the inputs of
+// the receipt: the merge keeps that mark when a later agent event replaces the
+// payload.
+func receiptMemberCause(r db.IssueWakeupReceipt) bool {
+	var p struct {
+		MemberCause *bool `json:"member_cause"`
+	}
+	_ = json.Unmarshal(r.Payload, &p)
+	if p.MemberCause != nil {
+		return *p.MemberCause
+	}
+	actorType, _, _ := receiptActor(r)
+	return actorType == "member"
+}
+
 // auditObserveFire records the S1-fire event: a rule declared observe, yet a
 // member's action started a run. It is audit only and never refuses.
 func auditObserveFire(ctx context.Context, q *db.Queries, w db.IssueWakeup, task db.AgentTaskQueue, receipts []db.IssueWakeupReceipt) error {
@@ -70,9 +97,7 @@ func auditObserveFire(ctx context.Context, q *db.Queries, w db.IssueWakeup, task
 	var keys []byte
 	byMember := false
 	for _, r := range receipts {
-		if actorType, _, _ := receiptActor(r); actorType == "member" {
-			byMember = true
-		}
+		byMember = byMember || receiptMemberCause(r)
 		keys = append(keys, r.EventKey...)
 		keys = append(keys, 0)
 	}

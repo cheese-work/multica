@@ -1,7 +1,6 @@
 package askguard
 
 import (
-	"encoding/json"
 	"slices"
 	"strings"
 )
@@ -28,12 +27,4 @@ func (r WakeupRule) MemberEligible() bool {
 		return false
 	}
 	return slices.ContainsFunc(r.EventTypes, func(e string) bool { return !strings.HasPrefix(e, "task.") })
-}
-
-// Payload is the stable bytes the operation key hashes: the same rule shape
-// retried in one task finds the same event.
-func (r WakeupRule) Payload() []byte {
-	r.EventTypes = slices.Sorted(slices.Values(r.EventTypes))
-	b, _ := json.Marshal(r)
-	return b
 }

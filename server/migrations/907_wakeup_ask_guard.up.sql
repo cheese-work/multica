@@ -70,7 +70,9 @@ BEGIN
      WHEN (EXCLUDED.payload->>'occurred_at')::timestamptz >= COALESCE((issue_wakeup_receipt.payload->>'occurred_at')::timestamptz,'-infinity')
      THEN EXCLUDED.payload ELSE issue_wakeup_receipt.payload END || jsonb_build_object(
      'coalesced_count',COALESCE((issue_wakeup_receipt.payload->>'coalesced_count')::bigint,1)+1,
-     'first_occurred_at',LEAST((issue_wakeup_receipt.payload->>'first_occurred_at')::timestamptz,(EXCLUDED.payload->>'occurred_at')::timestamptz,(issue_wakeup_receipt.payload->>'occurred_at')::timestamptz))
+     'first_occurred_at',LEAST((issue_wakeup_receipt.payload->>'first_occurred_at')::timestamptz,(EXCLUDED.payload->>'occurred_at')::timestamptz,(issue_wakeup_receipt.payload->>'occurred_at')::timestamptz),
+     -- A member's event stays a cause of the firing after an agent's event merges in.
+     'member_cause',COALESCE(COALESCE((issue_wakeup_receipt.payload->>'member_cause')::boolean,issue_wakeup_receipt.payload->>'actor_type'='member') OR EXCLUDED.payload->>'actor_type'='member',false))
     WHERE issue_wakeup_receipt.event_key<>p_key AND issue_wakeup_receipt.payload->>'event_id' IS DISTINCT FROM p_key;
    EXCEPTION WHEN unique_violation THEN
     GET STACKED DIAGNOSTICS violated_constraint = CONSTRAINT_NAME;

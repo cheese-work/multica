@@ -28,14 +28,3 @@ func TestWakeupRuleMemberEligible(t *testing.T) {
 		}
 	}
 }
-
-func TestWakeupRulePayloadIgnoresEventOrder(t *testing.T) {
-	a := WakeupRule{Kind: "event", EventTypes: []string{"comment.created", "reaction.added"}}
-	b := WakeupRule{Kind: "event", EventTypes: []string{"reaction.added", "comment.created"}}
-	if string(a.Payload()) != string(b.Payload()) {
-		t.Errorf("payload depends on event order: %s vs %s", a.Payload(), b.Payload())
-	}
-	if a.EventTypes[0] != "comment.created" {
-		t.Error("Payload reordered the caller's slice")
-	}
-}

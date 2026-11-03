@@ -1350,6 +1350,9 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		if err := note(wakeupActivityTriggered, details); err != nil {
 			return err
 		}
+		if err := auditObserveFire(ctx, q, w, run.task, run.receipts); err != nil {
+			return err
+		}
 	}
 	if len(taken) > 0 {
 		// A once rule has fired, and one at its cap stops after this firing,
