@@ -34,6 +34,7 @@ import {
   pickContentLang,
 } from "./templates";
 import { useT } from "../i18n";
+import { docsUrl } from "../common/docs-url";
 
 const EMPTY_QUESTIONNAIRE: QuestionnaireAnswers = {
   source: [],
@@ -250,7 +251,7 @@ export function OnboardingFlow({
       return;
     }
     onComplete(workspaces[0] ?? undefined);
-  }, [workspaces, onComplete]);
+  }, [workspaces, onComplete, t]);
 
   const handleWorkspaceCreated = useCallback(
     (ws: Workspace) => {
@@ -310,7 +311,10 @@ export function OnboardingFlow({
           const issue = await api.createIssue(
             {
               title: INSTALL_RUNTIME_ISSUE_TITLE[contentLang],
-              description: INSTALL_RUNTIME_ISSUE_BODY[contentLang],
+              description: INSTALL_RUNTIME_ISSUE_BODY[contentLang].replaceAll(
+                "https://multica.ai/docs",
+                docsUrl(),
+              ),
               status: "in_progress",
               priority: "high",
               assignee_type: "member",

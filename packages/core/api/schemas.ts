@@ -929,6 +929,8 @@ export interface AppConfigResponse {
   server_version?: string;
   server_build?: string;
   server_commit?: string;
+  /** Path ("/docs") or URL of the docs this instance serves; absent = none. */
+  docs_url?: string;
 }
 
 // Schemas for the highest-risk API endpoints — those whose responses drive
@@ -1376,6 +1378,7 @@ export const AppConfigSchema = z.lazy(() => z.object({
   server_version: OptionalStringSchema,
   server_build: OptionalStringSchema,
   server_commit: OptionalStringSchema,
+  docs_url: OptionalStringSchema,
 }).loose());
 
 export const EMPTY_APP_CONFIG: AppConfigResponse = {

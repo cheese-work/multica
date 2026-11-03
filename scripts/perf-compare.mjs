@@ -13,14 +13,17 @@
  * floor means "run it again by hand", not "regression".
  *
  *   node scripts/perf-compare.mjs --base <ref> --head <ref> [--out <dir>]
- *   node scripts/perf-compare.mjs --base <ref> --head <ref> --page-load [--rounds 5]
+ *   node scripts/perf-compare.mjs --scenario page-load --base <ref> --head <ref>
+ *
+ * `--scenario page-load` runs e2e/perf/page-load-baseline.spec.ts on both
+ * profiles instead (CHE-2976) and tabulates API requests and LCP per route.
  */
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, openSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect, createServer } from "node:net";
-import { median } from "./page-load-report.mjs";
+import { renderComparison, summarizeFiles } from "./page-load-report.mjs";
 
 const repoRoot = execFileSync("git", ["rev-parse", "--show-toplevel"]).toString().trim();
 const args = process.argv.slice(2);
@@ -30,6 +33,8 @@ const flag = (name, fallback) => {
 };
 const baseRef = flag("base");
 const headRef = flag("head", "HEAD");
+const pageLoad = flag("scenario", "typing") === "page-load";
+const PROFILES = ["desktop", "phone"];
 const outDir = resolve(flag("out", join(repoRoot, "perf-report")));
 if (!baseRef) {
   console.error("usage: node scripts/perf-compare.mjs --base <ref> [--head <ref>] [--out <dir>]");
@@ -173,15 +178,14 @@ const waitForServer = async (port, timeoutMs = 120_000) => {
 
 const seconds = (from) => Math.round((Date.now() - from) / 100) / 10;
 
-/**
- * Check out, install, build and start one ref. A failure here releases what it
- * already started, so the caller only releases sides it received.
- */
-async function prepare(ref, label) {
+async function measure(ref, label) {
   const sha = execFileSync("git", ["rev-parse", ref], { cwd: repoRoot }).toString().trim();
   const checkout = mkdtempSync(join(tmpdir(), `perf-${label}-`));
   liveCheckouts.add(checkout);
-  const side = { ref, sha, checkout, server: undefined, port: undefined };
+  let server;
+  let port;
+  // Everything this side started is torn down before it returns or throws, so
+  // the next side is measured on a machine with nothing of this one running.
   try {
     console.log(`\n=== ${label}: ${ref} (${sha.slice(0, 9)}) ===`);
     run("git", ["worktree", "add", "--detach", checkout, sha], { cwd: repoRoot });
@@ -190,7 +194,7 @@ async function prepare(ref, label) {
     // other ref's dependency tree is not that ref.
     const installStart = Date.now();
     run("pnpm", ["install", "--frozen-lockfile"], { cwd: checkout });
-    side.installS = seconds(installStart);
+    const installS = seconds(installStart);
 
     // REMOTE_API_URL is a runtime setting. Passing it to the build breaks
     // prerendering, and turbo filters it out of the build env anyway.
@@ -207,41 +211,22 @@ async function prepare(ref, label) {
       { cwd: checkout, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
     );
     process.stdout.write(buildLog);
-    side.buildS = seconds(buildStart);
-    side.buildCached = /cache hit/.test(buildLog);
+    const buildS = seconds(buildStart);
+    const buildCached = /cache hit/.test(buildLog);
 
-    side.port = await freePort();
-    const { port } = side;
+    port = await freePort();
     const startStart = Date.now();
-    const server = spawn("pnpm", ["--filter", "@multica/web", "start"], {
+    server = spawn("pnpm", ["--filter", "@multica/web", "start"], {
       cwd: checkout,
       env: { ...process.env, PORT: String(port), REMOTE_API_URL: "http://127.0.0.1:1" },
-      stdio: "ignore",
+      // Kept: a server that dies mid-run is otherwise only a refused connection.
+      stdio: ["ignore", openSync(join(outDir, `${label}-server.log`), "w"), "inherit"],
       detached: true,
     });
-    side.server = server;
     liveServers.add(server);
     await waitForServer(port);
-    side.startS = seconds(startStart);
-    return side;
-  } catch (error) {
-    await release(side);
-    throw error;
-  }
-}
+    const startS = seconds(startStart);
 
-async function release(side) {
-  if (side.server) await stopServer(side.server, side.port);
-  removeCheckout(side.checkout);
-}
-
-// Everything this side started is torn down before it returns or throws, so
-// the next side is measured on a machine with nothing of this one running.
-async function measure(ref, label) {
-  const side = await prepare(ref, label);
-  const { sha, port, buildCached } = side;
-  const [installS, buildS, startS] = [side.installS, side.buildS, side.startS];
-  try {
     // The spec, fixture and browser come from this working tree, not the ref's.
     const reportPath = join(outDir, `${label}.json`);
     // Only a report this run wrote may be read back. A file left by an earlier
@@ -250,23 +235,37 @@ async function measure(ref, label) {
     rmSync(reportPath, { force: true });
     const measureStart = Date.now();
     let scenarioExit = 0;
-    try {
-      run("pnpm", ["exec", "playwright", "test", "--config=playwright.perf.config.ts"], {
-        cwd: repoRoot,
-        env: {
-          ...process.env,
-          PLAYWRIGHT_BASE_URL: `http://127.0.0.1:${port}`,
-          PERF_REPORT_PATH: reportPath,
-        },
-      });
-    } catch (error) {
-      scenarioExit = typeof error.status === "number" ? error.status : 1;
+    const playwright = (extra, env) => {
+      try {
+        run("pnpm", ["exec", "playwright", "test", "--config=playwright.perf.config.ts", ...extra], {
+          cwd: repoRoot,
+          env: { ...process.env, PLAYWRIGHT_BASE_URL: `http://127.0.0.1:${port}`, ...env },
+        });
+      } catch (error) {
+        scenarioExit ||= typeof error.status === "number" ? error.status : 1;
+      }
+    };
+    const reportDir = join(outDir, label);
+    if (pageLoad) {
+      rmSync(reportDir, { recursive: true, force: true });
+      mkdirSync(reportDir, { recursive: true });
+      for (const profile of PROFILES) {
+        playwright([`--project=${profile}`, "page-load-baseline.spec.ts"], { PERF_REPORT_DIR: reportDir });
+      }
+    } else {
+      playwright([], { PERF_REPORT_PATH: reportPath });
     }
     const measureS = seconds(measureStart);
 
     let report;
     try {
-      report = JSON.parse(readFileSync(reportPath, "utf8"));
+      if (pageLoad) {
+        const files = PROFILES.map((profile) => join(reportDir, `page-load-${profile}.json`));
+        files.forEach((file) => readFileSync(file));
+        report = { status: "ok", invalid: [], files };
+      } else {
+        report = JSON.parse(readFileSync(reportPath, "utf8"));
+      }
     } catch {
       report = { status: "invalid", invalid: ["the scenario produced no readable report"] };
     }
@@ -286,7 +285,8 @@ async function measure(ref, label) {
       timings_s: { install: installS, build: buildS, start: startS, measure: measureS },
     };
   } finally {
-    await release(side);
+    if (server) await stopServer(server, port);
+    removeCheckout(checkout);
   }
 }
 
@@ -301,7 +301,23 @@ const METRICS = [
   ["long_task_max_ms", "Long task max"],
 ];
 
+function pageLoadMarkdown(base, head) {
+  const usable = base.status === "ok" && head.status === "ok";
+  return [
+    "## Page-load comparison (CHE-2976)",
+    "",
+    usable
+      ? "Median of the spec's samples per route. LCP moves with host load; API requests do not."
+      : `**Not a usable comparison.** base: \`${base.status}\`, head: \`${head.status}\`.`,
+    "",
+    ...(usable ? [renderComparison(summarizeFiles(base.files), summarizeFiles(head.files)), ""] : []),
+    `- base \`${base.ref}\` (${base.sha}) — ${base.status}${base.invalid?.length ? `: ${base.invalid.join("; ")}` : ""}`,
+    `- head \`${head.ref}\` (${head.sha}) — ${head.status}${head.invalid?.length ? `: ${head.invalid.join("; ")}` : ""}`,
+  ].join("\n");
+}
+
 function markdown(base, head) {
+  if (pageLoad) return pageLoadMarkdown(base, head);
   const usable = base.status === "ok" && head.status === "ok";
   const rows = METRICS.map(([key, label]) => {
     const a = base[key];
@@ -332,114 +348,6 @@ function markdown(base, head) {
     `- base timings: ${timing(base)}`,
     `- head timings: ${timing(head)}`,
   ].join("\n");
-}
-
-/**
- * `--page-load`: the five-route page-load baseline (CHE-2976) on both profiles.
- *
- * Both refs are built and started first, then measured in alternating rounds of
- * one sample each, so a busy host slows both sides alike. Per-ref sequential
- * runs let load drift land on one side only. The median over --rounds samples
- * (default 5) is compared per route; the spec, profiles and throttling are the
- * ones in e2e/perf/page-load-baseline.spec.ts.
- */
-const PAGE_LOAD_PROFILES = ["desktop", "phone"];
-
-async function pageLoad() {
-  const rounds = Number(flag("rounds", "5"));
-  const sides = {};
-  const samples = { base: {}, head: {} };
-  const failures = [];
-  // Cleared up front: a run that aborts while building must not leave the
-  // previous run's report looking like its own.
-  for (const name of ["page-load-comparison.md", "page-load-comparison.json"]) {
-    rmSync(join(outDir, name), { force: true });
-  }
-  rmSync(join(outDir, "page-load"), { recursive: true, force: true });
-  try {
-    sides.base = await prepare(baseRef, "base");
-    sides.head = await prepare(headRef, "head");
-    for (let round = 1; round <= rounds; round++) {
-      const order = round % 2 ? ["base", "head"] : ["head", "base"];
-      for (const label of order) {
-        for (const profile of PAGE_LOAD_PROFILES) {
-          const dir = join(outDir, "page-load", `${label}-r${round}`);
-          mkdirSync(dir, { recursive: true });
-          const reportPath = join(dir, `page-load-${profile}.json`);
-          rmSync(reportPath, { force: true });
-          try {
-            run("pnpm", ["exec", "playwright", "test", "--config=playwright.perf.config.ts", `--project=${profile}`], {
-              cwd: repoRoot,
-              env: {
-                ...process.env,
-                PLAYWRIGHT_BASE_URL: `http://127.0.0.1:${sides[label].port}`,
-                PERF_SAMPLES: "1",
-                PERF_REPORT_DIR: dir,
-              },
-            });
-          } catch {
-            failures.push(`${label} round ${round} ${profile}: spec failed`);
-          }
-          try {
-            const routes = JSON.parse(readFileSync(reportPath, "utf8")).profiles[profile];
-            for (const [route, found] of Object.entries(routes)) {
-              ((samples[label][profile] ??= {})[route] ??= []).push(...found);
-            }
-          } catch {
-            failures.push(`${label} round ${round} ${profile}: no readable report`);
-          }
-        }
-      }
-    }
-  } finally {
-    for (const side of Object.values(sides)) await release(side);
-  }
-
-  const longest = (sample) => Math.max(0, ...sample.long_tasks.map((task) => task.duration_ms));
-  const stat = (found = []) => ({
-    n: found.length,
-    longest: median(found.map(longest)),
-    total: median(found.map((sample) => sample.long_task_total_ms)),
-    lcp: median(found.map((sample) => sample.lcp_ms)),
-    bad: found.filter((sample) => sample.page_errors?.length || sample.unmocked?.length).length,
-  });
-  const delta = (a, b) =>
-    a === null || b === null ? "n/a" : `${b - a > 0 ? "+" : ""}${Math.round(b - a)} (${a === 0 ? "n/a" : `${(((b - a) / a) * 100).toFixed(0)}%`})`;
-  const tables = PAGE_LOAD_PROFILES.map((profile) => {
-    const rows = Object.keys(samples.base[profile] ?? {}).map((route) => {
-      const a = stat(samples.base[profile][route]);
-      const b = stat(samples.head[profile]?.[route]);
-      return `| ${route} | ${a.n}/${b.n} | ${a.longest}→${b.longest} | ${delta(a.longest, b.longest)} | ${a.total}→${b.total} | ${delta(a.total, b.total)} | ${a.lcp}→${b.lcp} | ${delta(a.lcp, b.lcp)} | ${a.bad}/${b.bad} |`;
-    });
-    return [
-      `### ${profile}`,
-      "",
-      "| Route | Samples base/head | Longest long task (ms) | Δ | Long-task total (ms) | Δ | LCP (ms) | Δ | Bad samples base/head |",
-      "|---|---|---|---|---|---|---|---|---|",
-      ...rows,
-    ].join("\n");
-  });
-  const summary = [
-    `Median of ${rounds} interleaved samples per route. base \`${baseRef}\` (${sides.base.sha.slice(0, 9)}), head \`${headRef}\` (${sides.head.sha.slice(0, 9)}).`,
-    "",
-    ...tables,
-    ...(failures.length ? ["", `Failures: ${failures.join("; ")}`] : []),
-  ].join("\n");
-  writeFileSync(join(outDir, "page-load-comparison.md"), `${summary}\n`);
-  writeFileSync(join(outDir, "page-load-comparison.json"), JSON.stringify({ baseRef, headRef, rounds, samples, failures }, null, 2));
-  console.log(`\n${summary}`);
-  return failures.length ? 1 : 0;
-}
-
-if (args.includes("--page-load")) {
-  mkdirSync(outDir, { recursive: true });
-  let code = 1;
-  try {
-    code = await pageLoad();
-  } catch (error) {
-    console.error(`\npage-load comparison aborted: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  process.exit(code);
 }
 
 mkdirSync(outDir, { recursive: true });

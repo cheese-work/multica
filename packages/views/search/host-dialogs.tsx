@@ -17,7 +17,6 @@ import { TerminateTaskConfirmDialog } from "../issues/components/terminate-task-
 import { useT } from "../i18n";
 import type { PaletteHostDialog } from "./types";
 
-
 /**
  * Confirms and forms a palette command opens after the palette closes. They
  * live here rather than on the page because the page that would host them

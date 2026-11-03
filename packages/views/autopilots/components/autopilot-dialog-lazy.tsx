@@ -1,18 +1,18 @@
 "use client";
 
 import { lazy, Suspense, type ComponentProps } from "react";
+import type { AutopilotDialog as AutopilotDialogForm } from "./autopilot-dialog";
 
-// The form pulls in the schedule editor and the rich-text editor, and it only
-// mounts when a user opens it. Every importer goes through this wrapper so no
-// route carries the dialog before then.
-const Dialog = lazy(() =>
+// The form carries the rich-text editor. Every caller goes through this wrapper,
+// so the editor loads when a dialog opens and the dynamic import stays effective.
+const Form = lazy(() =>
   import("./autopilot-dialog").then((m) => ({ default: m.AutopilotDialog })),
 );
 
-export function AutopilotDialog(props: ComponentProps<typeof Dialog>) {
+export function AutopilotDialog(props: ComponentProps<typeof AutopilotDialogForm>) {
   return (
     <Suspense fallback={null}>
-      <Dialog {...props} />
+      <Form {...props} />
     </Suspense>
   );
 }
