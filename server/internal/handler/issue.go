@@ -4527,7 +4527,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if statusRec != nil && statusRec.activity != nil {
 		updatedPayload["activity_id"] = uuidToString(statusRec.activity.ID)
 	}
-	if statusRec == nil {
+	if duplicateOfPointer(issue.Status, issue.DuplicateOfIssueID) != duplicateOfPointer(prevIssue.Status, prevIssue.DuplicateOfIssueID) {
 		updatedPayload["status_trigger"] = statusTrigger
 	}
 	h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, updatedPayload)
