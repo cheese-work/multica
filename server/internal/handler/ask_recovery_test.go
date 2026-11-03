@@ -66,7 +66,7 @@ func TestAskRecoveryReachesOnlyTheAddressedMember(t *testing.T) {
 	dbfx.QueryRow(t, `SELECT m.content FROM chat_message m JOIN chat_session s ON s.id = m.chat_session_id WHERE s.creator_id = $1 AND m.message_kind = 'ask_recovery'`, b).Scan(&content)
 	var source string
 	dbfx.QueryRow(t, `SELECT c.content FROM decision_intent i JOIN comment c ON c.id = i.comment_id JOIN ask_guard_event e ON e.intent_id = i.id WHERE e.id = $1`, eventID).Scan(&source)
-	for _, want := range []string{source, "automatic recovery", "mention://issue/" + fixture.issueID} {
+	for _, want := range []string{source, "automatic recovery", "mention://issue/" + fixture.issueID, "comment thread under this notice"} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("notice lacks %q:\n%s", want, content)
 		}
@@ -78,6 +78,24 @@ func TestAskRecoveryReachesOnlyTheAddressedMember(t *testing.T) {
 		t.Fatalf("a notice created %d decision requests", n)
 	}
 	if n := dbfx.Count(t, `SELECT count(*) FROM ask_guard_event WHERE id = $1 AND cleared_at IS NOT NULL AND delivered_at IS NOT NULL`, eventID); n != 1 {
+		t.Fatal("event is not delivered")
+	}
+}
+
+// TestAskRecoveryIgnoresMutedPreferences: the recovery ping is mandatory, so a
+// recipient who muted activity on issues they are not assigned to still gets
+// the inbox item, and the event is not marked delivered without it.
+func TestAskRecoveryIgnoresMutedPreferences(t *testing.T) {
+	fixture, _, b, eventID := recoveryScenario(t)
+	dbfx.Exec(t, `INSERT INTO notification_preference (workspace_id, user_id, preferences) VALUES ($1, $2, '{"unassigned_activity":"muted"}')`, testWorkspaceID, b)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM notification_preference WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, b)
+	})
+	deliverRecoveries(t)
+	if noticeInbox(t, b, fixture.issueID) != 1 {
+		t.Fatal("a muted recipient got no recovery inbox item")
+	}
+	if dbfx.Count(t, `SELECT count(*) FROM ask_guard_event WHERE id = $1 AND delivered_at IS NOT NULL`, eventID) != 1 {
 		t.Fatal("event is not delivered")
 	}
 }

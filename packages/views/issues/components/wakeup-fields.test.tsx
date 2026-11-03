@@ -74,6 +74,15 @@ describe("WakeupFields", () => {
     expect(screen.queryByLabelText("Until")).toBeNull();
   });
 
+  it("leaves out the timeout wake for a workspace definition", () => {
+    const { unmount } = renderWithI18n(<Harness scope={issueScope} initial={{ condition: "reply" }} />);
+    expect(screen.getByRole("button", { name: /Wake the agent to handle it|Wake .* to handle it/ })).toBeVisible();
+    unmount();
+    renderWithI18n(<Harness scope={{ workspaceId: "ws", definition: true }} initial={{ condition: "reply" }} />);
+    expect(screen.getByRole("radiogroup", { name: "Triggers" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: /to handle it/ })).toBeNull();
+  });
+
   it("explains that a reply wait for the assignee joins the run a comment starts", () => {
     renderWithI18n(
       <WakeupFields
