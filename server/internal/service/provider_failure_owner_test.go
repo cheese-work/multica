@@ -4,15 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 type ownerFixture struct {
@@ -275,5 +278,74 @@ func TestProviderFailureReservationRefusesDuplicateEffectAtDatabase(t *testing.T
 	var one int
 	if err := tx.QueryRow(ctx, `SELECT 1`).Scan(&one); err != nil {
 		t.Fatalf("caller transaction aborted: %v", err)
+	}
+}
+
+// A capped failed task tells its accountable user once, in issue-run wording,
+// on the existing unconstrained inbox type. Other owner decisions send nothing.
+func TestProviderFailureCapNoticeIsOnePerFailedTask(t *testing.T) {
+	o := newOwnerFixture(t)
+	ctx := context.Background()
+	recovery := o.failedTask(t, nil)
+	o.recordRecovery(t, o.failedTask(t, nil), db.RecordProviderFailureRecoveryParams{RecoveryTaskID: parseTestUUID(t, recovery)})
+	capped := o.failedTask(t, testutil.Cols{"retry_of_task_id": recovery, "accountable_user_id": o.UserID})
+	uncapped := o.failedTask(t, testutil.Cols{"accountable_user_id": o.UserID})
+	o.Cleanup(t, "DELETE FROM inbox_item WHERE id=ANY($1::uuid[])", []string{capped, uncapped})
+
+	published := 0
+	o.svc.TaskSvc.Bus.Subscribe(protocol.EventInboxNew, func(events.Event) { published++ })
+	for _, task := range []string{capped, capped, uncapped} {
+		decision, err := resolveProviderFailureOwner(ctx, o.q, parseTestUUID(t, task))
+		if err != nil {
+			t.Fatal(err)
+		}
+		o.svc.TaskSvc.notifyProviderFailureCap(ctx, o.q, parseTestUUID(t, task), decision)
+	}
+	var count int
+	if err := o.Pool.QueryRow(ctx, `SELECT count(*) FROM inbox_item WHERE id=ANY($1::uuid[])`, []string{capped, uncapped}).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("notices = %d err=%v, want exactly one for the capped task", count, err)
+	}
+	var recipient, noticeType, severity, body, reason string
+	var visible bool
+	if err := o.Pool.QueryRow(ctx, `SELECT recipient_id::text, type, severity, body, details->>'reason_code',
+			inbox_item_visible(type, chat_session_id, workspace_id, recipient_id)
+		FROM inbox_item WHERE id=$1`, capped).Scan(&recipient, &noticeType, &severity, &body, &reason, &visible); err != nil {
+		t.Fatal(err)
+	}
+	if recipient != o.UserID || noticeType != "provider_failure_recovery_blocked" || severity != "action_required" || !visible {
+		t.Fatalf("notice recipient=%s type=%s severity=%s visible=%t", recipient, noticeType, severity, visible)
+	}
+	if !strings.Contains(body, "run") || strings.Contains(body, "recurring trigger") || reason != "provider_failure_recovery_capped" {
+		t.Fatalf("notice body=%q reason=%q, want issue-run wording", body, reason)
+	}
+	if published != 1 {
+		t.Fatalf("inbox events = %d, want one", published)
+	}
+}
+
+// task_retry rows reuse the legacy trigger columns as provenance only: a task
+// that came from a wakeup names that wakeup, an ordinary issue task names itself.
+// Neither invents a trigger, and the recurring-trigger guard never reads the row
+// by trigger_id.
+func TestProviderFailureTriggerMapping(t *testing.T) {
+	o := newOwnerFixture(t)
+	ctx := context.Background()
+	wakeupID := o.wakeup(t, "every", "continuous", nil)
+	fromWakeup := o.failedTask(t, wakeupContext(t, wakeupID))
+	ordinary := o.failedTask(t, nil)
+	for name, tc := range map[string]struct{ task, wantID string }{
+		"wakeup task names its wakeup":     {fromWakeup, wakeupID},
+		"ordinary issue task names itself": {ordinary, ordinary},
+	} {
+		t.Run(name, func(t *testing.T) {
+			kind, id, err := providerFailureTrigger(ctx, o.q, parseTestUUID(t, tc.task))
+			if err != nil || kind != "issue_wakeup" || util.UUIDToString(id) != tc.wantID {
+				t.Fatalf("trigger = %s %s err=%v, want issue_wakeup %s", kind, util.UUIDToString(id), err, tc.wantID)
+			}
+			o.recordRecovery(t, tc.task, db.RecordProviderFailureRecoveryParams{RecoveryTaskID: dbid.NewV7()})
+		})
+	}
+	if _, _, err := providerFailureTrigger(ctx, o.q, dbid.NewV7()); err == nil {
+		t.Fatal("unknown failed task must not get a trigger")
 	}
 }

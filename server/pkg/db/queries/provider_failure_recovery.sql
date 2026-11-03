@@ -111,6 +111,39 @@ VALUES (
 )
 ON CONFLICT (id) DO NOTHING;
 
+-- Issue-run wording for the cap notice: the failed run belongs to an issue, not
+-- to a recurring trigger. Shares the failed task id as inbox id with the guard
+-- notice, so one failed task can never tell its user twice.
+-- name: CreateProviderFailureCapNotice :execrows
+INSERT INTO inbox_item (
+    id, workspace_id, recipient_type, recipient_id, type, severity,
+    issue_id, title, body, actor_type, details
+)
+VALUES (
+    @id, @workspace_id, 'member', @recipient_id,
+    'provider_failure_recovery_blocked', 'action_required',
+    sqlc.narg('issue_id')::uuid,
+    'Provider recovery needs attention',
+    'A provider failure already had an automatic recovery run, so this run will not be retried again. Check the provider, then rerun the issue by hand when it is healthy.',
+    'system', @details
+)
+ON CONFLICT (id) DO NOTHING;
+
+-- name: GetProviderFailureTriggerID :one
+SELECT COALESCE(NULLIF(context->>'wakeup_id', '')::uuid, id)::uuid AS trigger_id
+FROM agent_task_queue
+WHERE id = @task_id;
+
+-- name: GetProviderFailureNoticeTarget :one
+SELECT
+    COALESCE(issue.workspace_id, agent.workspace_id) AS workspace_id,
+    task.accountable_user_id,
+    task.issue_id
+FROM agent_task_queue task
+LEFT JOIN issue ON issue.id = task.issue_id
+LEFT JOIN agent ON agent.id = task.agent_id
+WHERE task.id = @task_id;
+
 -- Inputs of the canonical recovery owner. The guard-owned predicates repeat the
 -- conditions of FindLatestRecurringWakeupTask and
 -- FindLatestScheduledAutopilotTaskForTrigger without their "latest task" ordering.

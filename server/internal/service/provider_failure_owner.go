@@ -2,11 +2,14 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -94,4 +97,59 @@ func reserveProviderFailureRecoveryAndApply(ctx context.Context, tx pgx.Tx, rese
 		return false, nil
 	}
 	return applyProviderFailureReservation(ctx, tx, reservation, apply)
+}
+
+// notifyProviderFailureCap tells the failed run's accountable user, once, that
+// a capped failure will not be retried. Only cap decisions notify; the other
+// owner results are normal routing.
+func (s *TaskService) notifyProviderFailureCap(ctx context.Context, q *db.Queries, failedTaskID pgtype.UUID, decision providerFailureOwnerDecision) {
+	if s == nil || q == nil || !decision.Capped() || !failedTaskID.Valid {
+		return
+	}
+	target, err := q.GetProviderFailureNoticeTarget(ctx, failedTaskID)
+	if err != nil || !target.WorkspaceID.Valid || !target.AccountableUserID.Valid {
+		slog.Warn("provider recovery cap notice skipped: no accountable user",
+			"failed_task_id", util.UUIDToString(failedTaskID), "error", err)
+		return
+	}
+	if _, err := q.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: target.AccountableUserID, WorkspaceID: target.WorkspaceID}); err != nil {
+		slog.Warn("provider recovery cap notice skipped: accountable user is not a workspace member",
+			"failed_task_id", util.UUIDToString(failedTaskID), "error", err)
+		return
+	}
+	details, err := json.Marshal(map[string]any{
+		"reason_code":    "provider_failure_recovery_capped",
+		"failed_task_id": util.UUIDToString(failedTaskID),
+		"cap_rule":       decision.Rule,
+	})
+	if err != nil {
+		return
+	}
+	rows, err := q.CreateProviderFailureCapNotice(ctx, db.CreateProviderFailureCapNoticeParams{
+		ID:          failedTaskID,
+		WorkspaceID: target.WorkspaceID,
+		RecipientID: target.AccountableUserID,
+		IssueID:     target.IssueID,
+		Details:     details,
+	})
+	if err != nil {
+		slog.Warn("provider recovery cap notice failed", "failed_task_id", util.UUIDToString(failedTaskID), "error", err)
+		return
+	}
+	if rows == 1 {
+		s.publishProviderFailureNotice(ctx, q, failedTaskID, target.WorkspaceID)
+	}
+}
+
+// providerFailureTrigger maps a failed task to the legacy trigger columns of its
+// recovery row. trigger_kind only admits autopilot_schedule (the guard's scope)
+// and issue_wakeup, so an owner-routed issue task is always issue_wakeup: a task
+// that came from a wakeup names that wakeup, any other issue task names itself.
+// The columns are provenance only; no query matches a row by trigger_id.
+func providerFailureTrigger(ctx context.Context, q *db.Queries, failedTaskID pgtype.UUID) (string, pgtype.UUID, error) {
+	id, err := q.GetProviderFailureTriggerID(ctx, failedTaskID)
+	if err != nil {
+		return "", pgtype.UUID{}, fmt.Errorf("provider failure trigger: %w", err)
+	}
+	return "issue_wakeup", id, nil
 }

@@ -11,6 +11,47 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const createProviderFailureCapNotice = `-- name: CreateProviderFailureCapNotice :execrows
+INSERT INTO inbox_item (
+    id, workspace_id, recipient_type, recipient_id, type, severity,
+    issue_id, title, body, actor_type, details
+)
+VALUES (
+    $1, $2, 'member', $3,
+    'provider_failure_recovery_blocked', 'action_required',
+    $4::uuid,
+    'Provider recovery needs attention',
+    'A provider failure already had an automatic recovery run, so this run will not be retried again. Check the provider, then rerun the issue by hand when it is healthy.',
+    'system', $5
+)
+ON CONFLICT (id) DO NOTHING
+`
+
+type CreateProviderFailureCapNoticeParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RecipientID pgtype.UUID `json:"recipient_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	Details     []byte      `json:"details"`
+}
+
+// Issue-run wording for the cap notice: the failed run belongs to an issue, not
+// to a recurring trigger. Shares the failed task id as inbox id with the guard
+// notice, so one failed task can never tell its user twice.
+func (q *Queries) CreateProviderFailureCapNotice(ctx context.Context, arg CreateProviderFailureCapNoticeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, createProviderFailureCapNotice,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.RecipientID,
+		arg.IssueID,
+		arg.Details,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const createProviderFailureOwnerNotice = `-- name: CreateProviderFailureOwnerNotice :execrows
 INSERT INTO inbox_item (
     id, workspace_id, recipient_type, recipient_id, type, severity,
@@ -223,6 +264,30 @@ func (q *Queries) FindLatestScheduledAutopilotTaskForTrigger(ctx context.Context
 	return i, err
 }
 
+const getProviderFailureNoticeTarget = `-- name: GetProviderFailureNoticeTarget :one
+SELECT
+    COALESCE(issue.workspace_id, agent.workspace_id) AS workspace_id,
+    task.accountable_user_id,
+    task.issue_id
+FROM agent_task_queue task
+LEFT JOIN issue ON issue.id = task.issue_id
+LEFT JOIN agent ON agent.id = task.agent_id
+WHERE task.id = $1
+`
+
+type GetProviderFailureNoticeTargetRow struct {
+	WorkspaceID       pgtype.UUID `json:"workspace_id"`
+	AccountableUserID pgtype.UUID `json:"accountable_user_id"`
+	IssueID           pgtype.UUID `json:"issue_id"`
+}
+
+func (q *Queries) GetProviderFailureNoticeTarget(ctx context.Context, taskID pgtype.UUID) (GetProviderFailureNoticeTargetRow, error) {
+	row := q.db.QueryRow(ctx, getProviderFailureNoticeTarget, taskID)
+	var i GetProviderFailureNoticeTargetRow
+	err := row.Scan(&i.WorkspaceID, &i.AccountableUserID, &i.IssueID)
+	return i, err
+}
+
 const getProviderFailureOwnerFacts = `-- name: GetProviderFailureOwnerFacts :one
 WITH RECURSIVE lineage(id) AS (
     SELECT t.id FROM agent_task_queue t WHERE t.id = $1
@@ -329,6 +394,19 @@ func (q *Queries) GetProviderFailureOwnerFacts(ctx context.Context, taskID pgtyp
 		&i.NonScheduleAutopilot,
 	)
 	return i, err
+}
+
+const getProviderFailureTriggerID = `-- name: GetProviderFailureTriggerID :one
+SELECT COALESCE(NULLIF(context->>'wakeup_id', '')::uuid, id)::uuid AS trigger_id
+FROM agent_task_queue
+WHERE id = $1
+`
+
+func (q *Queries) GetProviderFailureTriggerID(ctx context.Context, taskID pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getProviderFailureTriggerID, taskID)
+	var trigger_id pgtype.UUID
+	err := row.Scan(&trigger_id)
+	return trigger_id, err
 }
 
 const recordProviderFailureRecovery = `-- name: RecordProviderFailureRecovery :execrows

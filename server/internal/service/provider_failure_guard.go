@@ -239,13 +239,20 @@ func (s *TaskService) notifyProviderFailureOwner(
 		)
 		return
 	}
-	if rows != 1 || s.Bus == nil {
+	if rows == 1 {
+		s.publishProviderFailureNotice(ctx, q, attempt.FailedTaskID, workspaceID)
+	}
+}
+
+// publishProviderFailureNotice announces a freshly inserted notice to its recipient.
+func (s *TaskService) publishProviderFailureNotice(ctx context.Context, q *db.Queries, failedTaskID, workspaceID pgtype.UUID) {
+	if s.Bus == nil {
 		return
 	}
-	item, err := q.GetInboxItem(ctx, attempt.FailedTaskID)
+	item, err := q.GetInboxItem(ctx, failedTaskID)
 	if err != nil {
 		slog.Warn("provider recovery owner notice readback failed",
-			"failed_task_id", util.UUIDToString(attempt.FailedTaskID),
+			"failed_task_id", util.UUIDToString(failedTaskID),
 			"error", err,
 		)
 		return
@@ -299,6 +306,7 @@ func (s *TaskService) reserveProviderFailureRecovery(ctx context.Context, q *db.
 		return false, err
 	}
 	if decision.Capped() {
+		s.notifyProviderFailureCap(ctx, q, attempt.FailedTaskID, decision)
 		return false, nil
 	}
 	rows, err := q.RecordProviderFailureRecovery(ctx, db.RecordProviderFailureRecoveryParams{
