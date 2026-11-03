@@ -4530,6 +4530,18 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if statusRec != nil && statusRec.activity != nil {
 		updatedPayload["activity_id"] = uuidToString(statusRec.activity.ID)
 	}
+	if handoff != nil && statusChanged {
+		// The listener still writes a handoff's row; give it the trigger.
+		trigger := statusTriggerFromRequest(r, actorType, actorID)
+		if req.HandoffCommentID != nil {
+			trigger.HandoffCommentID = *req.HandoffCommentID
+		}
+		if trigger, err := service.ResolveStatusTrigger(r.Context(), h.Queries, issue, trigger); err != nil {
+			slog.Warn("status trigger for handoff row", "issue_id", uuidToString(issue.ID), "error", err)
+		} else {
+			updatedPayload["status_trigger"] = trigger
+		}
+	}
 	h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, updatedPayload)
 	h.publishRecordedStatusActivity(statusRec, actorType, actorID)
 	if statusChanged && actorType == "member" {

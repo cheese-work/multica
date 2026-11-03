@@ -50,16 +50,9 @@ type StatusTrigger struct {
 // is not a comment of the same workspace and issue is dropped and the trigger
 // is marked RefInvalid.
 func RecordStatusChange(ctx context.Context, qtx *db.Queries, issue db.Issue, from, to string, trigger StatusTrigger, handoff map[string]string) (db.ActivityLog, error) {
-	trigger.Version = StatusTriggerVersion
-	trigger.RefInvalid = false
-	if trigger.HandoffCommentID != "" {
-		ok, err := handoffCommentBelongsTo(ctx, qtx, issue, trigger.HandoffCommentID)
-		if err != nil {
-			return db.ActivityLog{}, err
-		}
-		if !ok {
-			trigger.HandoffCommentID, trigger.RefInvalid = "", true
-		}
+	trigger, err := ResolveStatusTrigger(ctx, qtx, issue, trigger)
+	if err != nil {
+		return db.ActivityLog{}, err
 	}
 	details := map[string]any{"from": from, "to": to, "trigger": trigger}
 	for k, v := range handoff {
@@ -84,6 +77,25 @@ func RecordStatusChange(ctx context.Context, qtx *db.Queries, issue db.Issue, fr
 		Action:      "status_changed",
 		Details:     body,
 	})
+}
+
+// ResolveStatusTrigger stamps the trigger version and checks the handoff
+// comment link against issue. A link that is not a comment of the same
+// workspace and issue is dropped and the trigger is marked RefInvalid.
+func ResolveStatusTrigger(ctx context.Context, qtx *db.Queries, issue db.Issue, trigger StatusTrigger) (StatusTrigger, error) {
+	trigger.Version = StatusTriggerVersion
+	trigger.RefInvalid = false
+	if trigger.HandoffCommentID == "" {
+		return trigger, nil
+	}
+	ok, err := handoffCommentBelongsTo(ctx, qtx, issue, trigger.HandoffCommentID)
+	if err != nil {
+		return trigger, err
+	}
+	if !ok {
+		trigger.HandoffCommentID, trigger.RefInvalid = "", true
+	}
+	return trigger, nil
 }
 
 func handoffCommentBelongsTo(ctx context.Context, qtx *db.Queries, issue db.Issue, commentID string) (bool, error) {

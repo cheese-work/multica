@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -166,5 +167,57 @@ func TestUpdateIssueStatusHandoffCommentLink(t *testing.T) {
 	other := statusRows(t, otherID)
 	if got := trigger(other, 0); got["handoff_comment_id"] != nil || got["ref_invalid"] != true {
 		t.Errorf("link to a comment of another issue: trigger = %v", got)
+	}
+}
+
+// A move into a workflow step with a handler hands the issue off; the
+// listener still writes that row, so the event must carry the validated link.
+func TestUpdateIssueWorkflowHandoffKeepsHandoffCommentLink(t *testing.T) {
+	reviewer := seededReadyAgentID(t)
+	wf := createTestWorkflowSteps(t, "Handoff link "+workflowTestSuffix(), []map[string]any{
+		{"status_key": "backlog"},
+		{"status_key": "in_progress"},
+		{"status_key": "in_review", "handler": map[string]any{"type": "agent", "id": reviewer}, "instructions": "Review the PR."},
+	})
+	projectID := createWorkflowTestProject(t, "Handoff link project")
+	setProjectWorkflow(t, projectID, map[string]any{"workflow_id": wf.ID}).Want(http.StatusOK)
+
+	run := func(link func(issue, other string) string) (map[string]any, map[string]string) {
+		issueID := createIssueForTimeline(t, "handoff workflow link "+workflowTestSuffix())
+		otherID := createIssueForTimeline(t, "handoff workflow link other "+workflowTestSuffix())
+		if _, err := testPool.Exec(context.Background(), `UPDATE issue SET project_id=$2, status='in_progress' WHERE id=$1`, issueID, projectID); err != nil {
+			t.Fatal(err)
+		}
+		commentID := link(dbfx.Comment(t, issueID, "handoff"), dbfx.Comment(t, otherID, "other issue"))
+		var trigger map[string]any
+		var handoff map[string]string
+		testHandler.Bus.Subscribe(protocol.EventIssueUpdated, func(e events.Event) {
+			p, _ := e.Payload.(map[string]any)
+			if issue, _ := p["issue"].(IssueResponse); issue.ID != issueID {
+				return
+			}
+			if tr, ok := p["status_trigger"].(service.StatusTrigger); ok {
+				b, _ := json.Marshal(tr)
+				_ = json.Unmarshal(b, &trigger)
+			}
+			handoff, _ = p["workflow_handoff"].(map[string]string)
+		})
+		req := withURLParam(newRequest(http.MethodPatch, "/api/issues/"+issueID, map[string]any{"status": "in_review", "suppress_run": true, "handoff_comment_id": commentID}), "id", issueID)
+		req.Header.Set("X-Actor-Source", "interactive_jwt")
+		testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK)
+		return trigger, handoff
+	}
+
+	own := ""
+	trigger, handoff := run(func(issueComment, _ string) string { own = issueComment; return issueComment })
+	if handoff == nil {
+		t.Fatal("move did not hand off")
+	}
+	if trigger["handoff_comment_id"] != own || trigger["ref_invalid"] != nil || trigger["v"] != float64(1) {
+		t.Errorf("valid link on a handoff: trigger = %v", trigger)
+	}
+	trigger, _ = run(func(_, otherComment string) string { return otherComment })
+	if trigger["handoff_comment_id"] != nil || trigger["ref_invalid"] != true {
+		t.Errorf("link to another issue's comment on a handoff: trigger = %v", trigger)
 	}
 }
