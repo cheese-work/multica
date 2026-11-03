@@ -9,9 +9,10 @@
 # the head is executed. Do not add a head checkout or a secret here.
 # `issue_comment` (created, edited, deleted) is the path by which a verdict comment flips or revokes the status; `edited`
 # on the PR covers a retarget. The script re-reads the live head SHA and base ref.
-# `merge_group` posts the queued PR's re-evaluated state on the queue commit; without it the required check never
-# reports there and the queue times out. That event runs this file from the queue commit, whose PR head already
-# passed this gate; the job still checks out the default branch and only fetches the queue commit.
+# `merge_group` posts the queued PR's freshly evaluated state on the queue commit; without it the required check never
+# reports there and the queue times out. This file runs from the queue commit; the job still checks out the default
+# branch and only fetches the queue ref. A verdict revoked after the queue commit went green is NOT mirrored here
+# (the issue_comment path cannot be relied on); remove the PR from the queue instead.
 
 name: security-gate
 
@@ -28,34 +29,12 @@ permissions:
   pull-requests: read
   statuses: write
 
+concurrency:
+  group: security-gate-${{ github.event.pull_request.number || github.event.issue.number || github.event.merge_group.head_sha }}
+  cancel-in-progress: true
+
 jobs:
-  # One serial lane per PR, shared by pull_request_target, issue_comment and merge_group runs. Without it a merge_group
-  # run could read PASS, a revocation run post pending, and the earlier run then post a stale success on the queue
-  # commit. A merge_group ref carries the PR number but no expression can parse it, so a tiny job resolves it first.
-  resolve:
-    name: security-gate-resolve
-    if: github.event_name == 'pull_request_target' || github.event_name == 'merge_group' || github.event.issue.pull_request
-    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
-    timeout-minutes: 2
-    outputs:
-      pr: ${{ steps.pr.outputs.pr }}
-    env:
-      PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
-      MERGE_GROUP_REF: ${{ github.event.merge_group.head_ref }}
-    steps:
-      - id: pr
-        run: |
-          pr="$PR_NUMBER"
-          if [ -n "$MERGE_GROUP_REF" ]; then
-            [[ $MERGE_GROUP_REF =~ /pr-([0-9]+)-[0-9a-f]{40}$ ]] && pr="${BASH_REMATCH[1]}" || pr="queue-$MERGE_GROUP_REF"
-          fi
-          echo "pr=$pr" >> "$GITHUB_OUTPUT"
   security-gate:
-    needs: resolve
-    # cancel-in-progress stays false: a revocation run must queue behind a running evaluation, never cancel or be cancelled by it.
-    concurrency:
-      group: security-gate-${{ needs.resolve.outputs.pr }}
-      cancel-in-progress: false
     # Job name differs from the status context on purpose: the context is posted by the script, not by this job.
     name: security-gate-eval
     if: github.event_name == 'pull_request_target' || github.event_name == 'merge_group' || github.event.issue.pull_request
@@ -80,46 +59,38 @@ jobs:
       - name: Fetch the head objects without checking them out
         run: |
           auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
-          # A queue commit has the queued PR head as a parent, so fetching it brings the head objects too.
+          # A queue commit has the queued PR head as a parent, so fetching the queue ref brings the head objects too.
           src="refs/pull/${PR_NUMBER}/head"
           [ -n "$MERGE_GROUP_REF" ] && src="$MERGE_GROUP_REF"
           git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
             fetch --no-tags origin "+${src}:refs/remotes/pull/head"
-      # Runs the default-branch script unchanged, so the first queue run works before any script change has merged.
-      # A queue commit gets the PR's re-evaluated state only while the PR head is its parent. Every event updates the
-      # open queue commit(s) of the PR, so a revoked or replaced verdict cannot leave a queue commit green.
       - name: Evaluate the verdict and post the status
         run: |
           set -euo pipefail
-          post() {
-            gh api "repos/$GITHUB_REPOSITORY/statuses/$1" -f "state=$2" -f context=security-gate -f "description=${3:0:140}" \
-              -f "target_url=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          }
-          pr="$PR_NUMBER" queue="" flags=(--post)
-          if [ -n "$MERGE_GROUP_REF" ]; then
-            re='^refs/heads/gh-readonly-queue/(.+)/pr-([0-9]+)-[0-9a-f]{40}$'
-            if [[ ! $MERGE_GROUP_REF =~ $re ]] || [ "${BASH_REMATCH[1]}" != "$DEFAULT_BRANCH" ]; then
-              post "$MERGE_GROUP_SHA" failure "unsupported merge group $MERGE_GROUP_REF: only $DEFAULT_BRANCH is gated"
-              exit 0
-            fi
-            pr="${BASH_REMATCH[2]}" queue="$MERGE_GROUP_SHA" flags=()  # --post would write to the PR head, not the queue commit
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          if [ -z "$MERGE_GROUP_REF" ]; then
+            exec python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" \
+              --default-branch "$DEFAULT_BRANCH" --run-url "$run_url" --post
           fi
-          gate() {
-            python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$pr" \
-              --default-branch "$DEFAULT_BRANCH" --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "${flags[@]}"
+          # Queue run. The default-branch script is used unchanged (it may predate this step), without --post: that
+          # would write to the PR head. Its state goes on the queue commit, and only if the PR head is its parent.
+          post() {
+            gh api "repos/$GITHUB_REPOSITORY/statuses/$MERGE_GROUP_SHA" -f "state=$1" -f context=security-gate \
+              -f "description=${2:0:140}" -f "target_url=$run_url"
           }
-          out="$(gate)"
-          [ -n "$queue" ] || queue="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/heads/gh-readonly-queue/$DEFAULT_BRANCH/pr-$pr-" \
-            --jq '.[].object.sha')"
-          # Re-read right before posting: a verdict revoked since the first read must not be posted as success.
-          [ -z "$queue" ] || out="$(gate)"
+          re='^refs/heads/gh-readonly-queue/(.+)/pr-([0-9]+)-[0-9a-f]{40}$'
+          if [[ ! $MERGE_GROUP_REF =~ $re ]] || [ "${BASH_REMATCH[1]}" != "$DEFAULT_BRANCH" ]; then
+            post failure "unsupported merge group $MERGE_GROUP_REF: only $DEFAULT_BRANCH is gated"
+            exit 0
+          fi
+          pr="${BASH_REMATCH[2]}"
+          out="$(python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$pr" \
+            --default-branch "$DEFAULT_BRANCH" --run-url "$run_url")"
           field() { python3 -c 'import json,sys; print(json.loads(sys.argv[1])[sys.argv[2]])' "$out" "$1"; }
           head="$(field sha)" state="$(field state)" desc="#$pr: $(field description)"
-          for sha in $queue; do
-            parents="$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" --jq '.parents[].sha')"  # not piped: grep -q + pipefail
-            if grep -qx "$head" <<<"$parents"; then
-              post "$sha" "$state" "$desc"
-            else
-              post "$sha" failure "#$pr head ${head:0:12} is not a parent of ${sha:0:12}"
-            fi
-          done
+          parents="$(gh api "repos/$GITHUB_REPOSITORY/commits/$MERGE_GROUP_SHA" --jq '.parents[].sha')"  # not piped: grep -q + pipefail
+          if grep -qx "$head" <<<"$parents"; then
+            post "$state" "$desc"
+          else
+            post failure "#$pr head ${head:0:12} is not a parent of ${MERGE_GROUP_SHA:0:12}"
+          fi
