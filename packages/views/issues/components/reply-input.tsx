@@ -22,6 +22,7 @@ import { SteerAttachmentNotice } from "./steer-attachment-notice";
 import { useStopRunsBeforeSend } from "./use-stop-runs-before-send";
 import { useCommentUploads } from "./use-comment-uploads";
 import { useQuickActionMenu } from "../hooks/use-quick-action-menu";
+import type { InvalidMentionRejection } from "../invalid-agent-mentions-copy";
 
 // Types
 
@@ -33,7 +34,7 @@ interface ReplyInputProps {
   avatarId: string;
   /** Resolves true on success, false on failure — the reply box keeps its text
    *  (locked + spinning) until then, clearing only on success. */
-  onSubmit: (content: string, attachmentIds?: string[], suppressAgentIds?: string[], steerTaskIds?: string[]) => Promise<string | boolean>;
+  onSubmit: (content: string, attachmentIds?: string[], suppressAgentIds?: string[], steerTaskIds?: string[]) => Promise<string | boolean | InvalidMentionRejection>;
   /** Called after the server accepts the reply and the composer is cleared. */
   onAccepted?: (commentId: string) => void;
   size?: "sm" | "default";
@@ -197,9 +198,14 @@ function ReplyInput({
         activeIds.length > 0 ? activeIds : undefined,
         suppressAgentIds.length > 0 ? suppressAgentIds : undefined,
         steerTaskIds.length > 0 ? steerTaskIds : undefined,
-      ).then((commentId) => {
-        acceptedCommentIdRef.current = typeof commentId === "string" ? commentId : null;
-        return !!commentId;
+      ).then((result) => {
+        // Server refused a mention: keep the draft and flag the refused chips.
+        if (typeof result === "object") {
+          editorRef.current?.flagMentions(result.invalidMentionIds);
+          return false;
+        }
+        acceptedCommentIdRef.current = typeof result === "string" ? result : null;
+        return !!result;
       });
     },
     onAccepted: () => {

@@ -82,6 +82,10 @@ const WARM_ON_IDLE: RouteKey[] = [
   "projects",
 ];
 
+// Speculative warm-up starts only after the page's own requests have been quiet
+// this long, so it never shares a slow link with the data the page is waiting on.
+const WARM_QUIET_MS = 3000;
+
 /**
  * Feeds `AppLink`'s hover/focus prefetch with the destination page's data and
  * warms the common list pages once the workspace is idle. Mount inside the
@@ -118,15 +122,33 @@ export function RouteDataPrefetch({
 
   useEffect(() => {
     if (!wsId) return;
+    let quietTimer: number | undefined;
+    let idleId: number | undefined;
     const warm = () => {
+      unsubscribe();
       for (const key of WARM_ON_IDLE) ROUTES[key](qc, wsId, userId);
     };
-    if (typeof window.requestIdleCallback === "function") {
-      const id = window.requestIdleCallback(warm, { timeout: 3000 });
-      return () => window.cancelIdleCallback(id);
-    }
-    const timer = window.setTimeout(warm, 1500);
-    return () => window.clearTimeout(timer);
+    // Re-armed on every cache event: any in-flight request cancels the wait.
+    const arm = () => {
+      window.clearTimeout(quietTimer);
+      if (idleId !== undefined) window.cancelIdleCallback(idleId);
+      idleId = undefined;
+      if (qc.isFetching() > 0) return;
+      quietTimer = window.setTimeout(() => {
+        if (typeof window.requestIdleCallback === "function") {
+          idleId = window.requestIdleCallback(warm, { timeout: 3000 });
+        } else {
+          warm();
+        }
+      }, WARM_QUIET_MS);
+    };
+    const unsubscribe = qc.getQueryCache().subscribe(arm);
+    arm();
+    return () => {
+      unsubscribe();
+      window.clearTimeout(quietTimer);
+      if (idleId !== undefined) window.cancelIdleCallback(idleId);
+    };
   }, [qc, wsId, userId]);
 
   return (
