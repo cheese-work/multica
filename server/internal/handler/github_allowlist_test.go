@@ -17,7 +17,7 @@ import (
 
 func TestParseGitHubAllowedAccountIDs(t *testing.T) {
 	t.Run("unset and blank are off", func(t *testing.T) {
-		for _, raw := range []string{"", "  ", " , "} {
+		for _, raw := range []string{"", "  "} {
 			a, err := parseGitHubAllowedAccountIDs(raw)
 			if err != nil || a.ids != nil {
 				t.Fatalf("parse(%q) = %+v, %v; want policy off", raw, a, err)
@@ -36,7 +36,7 @@ func TestParseGitHubAllowedAccountIDs(t *testing.T) {
 		}
 	})
 	t.Run("malformed entry is an error", func(t *testing.T) {
-		for _, raw := range []string{"11,octocat", "abc", "1.5", "0", "-3", "11;22"} {
+		for _, raw := range []string{"11,octocat", "abc", "1.5", "0", "-3", "11;22", ",", " , ", "11,", ",11", "11,,22"} {
 			if _, err := parseGitHubAllowedAccountIDs(raw); err == nil ||
 				!strings.Contains(err.Error(), "GITHUB_ALLOWED_ACCOUNT_IDS") {
 				t.Fatalf("parse(%q) err = %v; want GITHUB_ALLOWED_ACCOUNT_IDS error", raw, err)
