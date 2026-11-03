@@ -41,6 +41,22 @@ export type WakeupCondition =
   | "pull_request"
   | "other_issue"
   | "custom";
+/** Where a rule is being configured; it decides which fields make sense. */
+export interface WakeupScope {
+  workspaceId: string;
+  /** Unset when the rule is not tied to one issue. */
+  issueId?: string;
+}
+
+const ALL_CONDITIONS: WakeupCondition[] = [
+  "at", "recurring", "reply", "field", "run_end", "children", "pull_request", "other_issue", "custom",
+];
+
+/** Conditions the scope can offer; watching one named issue needs an issue to be relative to. */
+export function wakeupConditionsFor(scope: WakeupScope): WakeupCondition[] {
+  return scope.issueId ? ALL_CONDITIONS : ALL_CONDITIONS.filter((c) => c !== "other_issue");
+}
+
 export type WakeupField = "status" | "assignee" | "label" | "property";
 export type WakeupAtPreset = "10m" | "1h" | "tomorrow" | "custom";
 export type WakeupRecurrence = "hourly" | "daily" | "weekdays";
