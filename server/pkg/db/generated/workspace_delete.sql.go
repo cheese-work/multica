@@ -377,6 +377,9 @@ deleted_chat_wakeups AS (
 deleted_github_dispatch_halts AS (
     DELETE FROM github_dispatch_halt WHERE workspace_id = $1
 ),
+deleted_decision_waits AS (
+    DELETE FROM decision_wait WHERE workspace_id = $1
+),
 deleted_config_sync AS (
     DELETE FROM workspace_config_sync WHERE workspace_id = $1
 ),
@@ -688,6 +691,7 @@ WHERE channel_media_pending_object.workspace_id = $1
 // Same no-FK chore as chat_draft_restore above. Matched on workspace_id rather
 // than the session set because that column exists precisely so this statement
 // does not have to join through chat_session, which it deletes in this same CTE.
+// CHE-3045 L5b wait episodes: workspace-owned leaf, no FK.
 // CHE-3284 config-sync enrollment: workspace-owned leaf, no FK.
 // CHE-488 durable stage-completion-wake bookkeeping (stage_generation,
 // stage_completion_wake). Deleted before the parent issues below so neither

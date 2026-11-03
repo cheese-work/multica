@@ -102,6 +102,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"decision_intent":                    workspaceDeleteWorker,
 	"decision_intent_target":             workspaceDeleteWorker,
 	"decision_request":                   workspaceDeleteWorker,
+	"decision_wait":                      workspaceDelete, // explicit workspace-scoped delete in DeleteWorkspaceLeafData; no FK.
 	"decision_worker_lease":              workspaceDeleteKeep,
 	"dingtalk_group_presence":            workspaceDelete,
 	"dingtalk_bot_identity":              workspaceDelete,
