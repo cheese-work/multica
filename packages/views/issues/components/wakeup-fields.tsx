@@ -163,23 +163,27 @@ export function WakeupFields({
               onChange={(value) => update({ waitDays: Number(value) })}
             />
           </div>
-          <span className="text-caption text-muted-foreground">{t(($) => $.wakeups.create.on_timeout)}</span>
-          <div className="flex min-w-0">
-            <PillMenu
-              label={t(($) => $.wakeups.create.on_timeout)}
-              value={draft.onTimeout}
-              options={[
-                {
-                  value: "wake",
-                  label: t(($) => $.wakeups.create.timeout_wake, {
-                    agent: agentName ?? t(($) => $.wakeups.create.the_agent),
-                  }),
-                },
-                { value: "end", label: t(($) => $.wakeups.create.timeout_end) },
-              ]}
-              onChange={(value) => update({ onTimeout: value as WakeupDraft["onTimeout"] })}
-            />
-          </div>
+          {!scope.definition && (
+            <>
+              <span className="text-caption text-muted-foreground">{t(($) => $.wakeups.create.on_timeout)}</span>
+              <div className="flex min-w-0">
+                <PillMenu
+                  label={t(($) => $.wakeups.create.on_timeout)}
+                  value={draft.onTimeout}
+                  options={[
+                    {
+                      value: "wake",
+                      label: t(($) => $.wakeups.create.timeout_wake, {
+                        agent: agentName ?? t(($) => $.wakeups.create.the_agent),
+                      }),
+                    },
+                    { value: "end", label: t(($) => $.wakeups.create.timeout_end) },
+                  ]}
+                  onChange={(value) => update({ onTimeout: value as WakeupDraft["onTimeout"] })}
+                />
+              </div>
+            </>
+          )}
         </div>
       )}
     </>
