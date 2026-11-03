@@ -373,7 +373,11 @@ func recordDuplicateMarkActivities(ctx context.Context, bus *events.Bus, queries
 	}
 	next := derefPayloadString(payload["duplicate_of_issue_id"])
 	prev := derefPayloadString(payload["prev_duplicate_of_issue_id"])
+	// A status row already recorded in the transaction (activity_id) needs no
+	// stand-in from the unmarked row.
+	recorded, _ := payload["activity_id"].(string)
 	statusChanged, _ := payload["status_changed"].(bool)
+	statusChanged = statusChanged && recorded == ""
 	record := func(issueID, action string, details map[string]string) bool {
 		body, _ := json.Marshal(details)
 		activity, err := queries.CreateActivity(ctx, db.CreateActivityParams{
