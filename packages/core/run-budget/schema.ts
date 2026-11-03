@@ -21,6 +21,9 @@ const schema = z
     blocking: z.array(z.string()),
     can_raise: z.boolean(),
   })
+  // The server sets state for every budgeted snapshot; without it the meter
+  // would lose its exhaustion state, so treat the response as malformed.
+  .refine((v) => !v.budgeted || v.state !== undefined, { message: "budgeted snapshot without state" })
   .transform((v) => ({
     budgeted: v.budgeted,
     runsUsed: v.runs_used,

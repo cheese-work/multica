@@ -60,6 +60,7 @@ describe("run-budget meter response boundary (CHE-2851)", () => {
       { ...budgeted, runs_left: null },
       { ...budgeted, runs_limit: 1.5 },
       { ...budgeted, state: "bogus" },
+      { ...budgeted, state: undefined },
       { ...budgeted, window_id: 7 },
       { ...budgeted, blocking: "runs" },
     ]) {
