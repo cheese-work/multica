@@ -103,6 +103,7 @@ func init() {
 	Register(&Definition{Type: "agent.copy", Version: 1, MinClass: "reversible", Normalize: normalizeAgentCopy})
 	Register(&Definition{Type: "agent.env.patch", Version: 1, MinClass: "reversible", Normalize: normalizeEnvPatch})
 	Register(&Definition{Type: "issue.run_budget.raise", Version: 1, MinClass: "spend", Target: TargetIssue, Normalize: normalizeRunBudgetRaise})
+	Register(&Definition{Type: "issue.run_budget.top_up", Version: 1, MinClass: "spend", Target: TargetIssue, Normalize: normalizeRunBudgetTopUp})
 }
 
 func Lookup(typ string, version int) (*Definition, bool) {
@@ -315,6 +316,38 @@ func normalizeRunBudgetRaise(raw json.RawMessage, slots []SecretSlot) (json.RawM
 	// The server compares the id as a string, so only its own spelling is valid.
 	if at, err := time.Parse(time.RFC3339Nano, params.WindowID); err != nil || at.UTC().Format(time.RFC3339Nano) != params.WindowID {
 		return nil, nil, invalid("window_id must be a window_id read from the run budget")
+	}
+	out, err := json.Marshal(params)
+	return out, nil, err
+}
+
+// RunBudgetTopUpParams names the issue and the window the person saw. The window
+// id is opaque: the executor compares it with the window in force.
+type RunBudgetTopUpParams struct {
+	IssueID   string `json:"issue_id"`
+	WindowID  string `json:"window_id"`
+	RefusalID string `json:"refusal_id,omitempty"`
+}
+
+func normalizeRunBudgetTopUp(raw json.RawMessage, slots []SecretSlot) (json.RawMessage, []SecretSlot, error) {
+	if len(slots) > 0 {
+		return nil, nil, invalid("issue.run_budget.top_up takes no secret slots")
+	}
+	var params RunBudgetTopUpParams
+	if err := decodeStrict(raw, &params); err != nil {
+		return nil, nil, err
+	}
+	var err error
+	if params.IssueID, err = canonicalUUID("issue_id", params.IssueID); err != nil {
+		return nil, nil, err
+	}
+	if params.WindowID == "" {
+		return nil, nil, invalid("window_id is required")
+	}
+	if params.RefusalID != "" {
+		if params.RefusalID, err = canonicalUUID("refusal_id", params.RefusalID); err != nil {
+			return nil, nil, err
+		}
 	}
 	out, err := json.Marshal(params)
 	return out, nil, err
