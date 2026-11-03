@@ -1528,7 +1528,33 @@
       "rate": "plus de 12 exécutions en une heure"
     },
     "paused_banner": "Réveils suspendus par {{name}} à {{time}}",
-    "paused_banner_anonymous": "Réveils suspendus à {{time}}"
+    "paused_banner_anonymous": "Réveils suspendus à {{time}}",
+    "defaults": {
+      "title": "Réveils par défaut",
+      "rule_pr_merged": "Quand la PR liée est fusionnée",
+      "rule_pr_checks_failed": "Quand les vérifications de la PR échouent",
+      "rule_pr_needs_attention": "Quand la PR liée demande de l’attention",
+      "state_on": "Activé",
+      "state_disabled": "Désactivé",
+      "state_paused": "En pause : {{reason}}",
+      "inherited": "Hérité de {{source}}",
+      "overridden": "Remplacé sur ce ticket",
+      "source_workspace": "l’espace de travail",
+      "source_project": "le projet",
+      "source_default": "la valeur par défaut",
+      "override": "Remplacer",
+      "override_label": "Remplacer {{rule}}",
+      "edit": "Modifier le remplacement",
+      "edit_label": "Modifier le remplacement de {{rule}}",
+      "reset": "Réinitialiser",
+      "reset_label": "Réinitialiser {{rule}}",
+      "save": "Enregistrer le remplacement",
+      "saving": "Enregistrement…",
+      "cancel": "Annuler",
+      "save_error": "Impossible d’enregistrer le remplacement.",
+      "reset_error": "Impossible de réinitialiser la règle.",
+      "conflict_error": "Quelqu’un a modifié cette règle avant vous. Vos modifications sont conservées ; rechargez pour voir les siennes."
+    }
   },
   "duplicates": {
     "banner_prefix": "Doublon de",
