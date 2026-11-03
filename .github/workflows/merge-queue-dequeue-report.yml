@@ -1,0 +1,36 @@
+name: Merge queue dequeue report
+
+# Explains a failed-check removal from the merge queue on the PR itself and marks the PR head red.
+# The queue build (PR + current main) fails while the PR head checks stay green, so without this
+# nobody is told. Advisory only: `merge-queue-result` is deliberately not a required check.
+on:
+  pull_request:
+    types: [dequeued]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number to report on (reads its latest queue removal)
+        required: true
+      dry_run:
+        description: Print the comment and status instead of writing them
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+  statuses: write
+
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: Report the failed queue run on the PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '--dry-run' || '' }}
+        run: node scripts/merge-queue-dequeue-report.mjs --repo "$GITHUB_REPOSITORY" --pr "$PR" $DRY_RUN
