@@ -4026,6 +4026,9 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 		if h.rejectInvalidAgentMentions(r.Context(), w, issueForSource, req.Content, triggerType, triggerID, h.invokeOriginatorFromRequest(r, triggerType, triggerID), agentMentionIDs(existing.Content)) {
 			return
 		}
+		if !h.askGuardAllowsCommentEdit(w, r, issueForSource, actorType, existing.Content, req.Content) {
+			return
+		}
 	}
 	if req.ExpectedRevision != nil {
 		if *req.ExpectedRevision < 1 {

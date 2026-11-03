@@ -141,7 +141,7 @@ multica issue comment add MUL-123 --content-file note.md --steer <task-id>
 multica issue comment add MUL-123 --content-file note.md --steer-active
 ```
 
-エージェントのタスクから、メンバーへのメンション（`[@名前](mention://member/<id>)`）を含むコメントを送るには、決定リクエスト、`--decision-intent`・`--decision-record`・`--decision-veto` のコメント、または `--notify-only` のいずれかが必要です。返答が要らない通知には `--notify-only` を使います。待機を開始せず、決定リクエストとしても数えません。決定系のフラグとは併用できません。判定は文面ではなくメンションのリンクで行い、コード内のリンクも対象です。ワークスペース設定 `ask_guard_mode`（`off`、`warn`、`block`）で、拒否されるコメントを記録だけにするか 422 を返すかを決めます。チャットのタスクとタスクなしの呼び出しは記録のみです。
+エージェントのタスクから、メンバーへのメンション（`[@名前](mention://member/<id>)`）を含むコメントを送るには、決定リクエスト、`--decision-intent`・`--decision-record`・`--decision-veto` のコメント、または `--notify-only` のいずれかが必要です。返答が要らない通知には `--notify-only` を使います。待機を開始せず、決定リクエストとしても数えません。決定系のフラグとは併用できません。判定は文面ではなくメンションのリンクで行い、コード内のリンクも対象です。ワークスペース設定 `ask_guard_mode`（`off`、`warn`、`block`）で、拒否されるコメントを記録だけにするか 422 を返すかを決めます。チャットのタスクとタスクなしの呼び出しは記録のみです。メンバーへのメンションを追加する編集にも同じルールが適用されます。
 
 ```bash
 multica issue comment add MUL-123 --content-file fyi.md --notify-only

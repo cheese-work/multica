@@ -190,3 +190,46 @@ func TestAskGuardCommentTypedDecisionKindsPassInBlockMode(t *testing.T) {
 	})
 	t.Run("decision request ask comment", TestDecisionRequestCoreRoundTrip)
 }
+
+func (f askGuardCommentFixture) edit(t *testing.T, commentID, content string) *testutil.Response {
+	t.Helper()
+	req := withURLParam(newRequest(http.MethodPut, "/api/comments/"+commentID, map[string]any{"content": content}), "commentId", commentID)
+	req.Header.Set("X-Actor-Source", "task_token")
+	req.Header.Set("X-Agent-ID", f.agentID)
+	req.Header.Set("X-Task-ID", f.taskID)
+	return testutil.Call(t, testHandler.UpdateComment, req)
+}
+
+// An edit must not be a way around the guard: adding a member link to an
+// existing agent comment is refused, while keeping an old link is not.
+func TestAskGuardCommentEditAddingMemberMention(t *testing.T) {
+	setAskGuardMode(t, "block")
+	t.Run("added link is refused", func(t *testing.T) {
+		f := newAskGuardCommentFixture(t)
+		id, _ := f.post(t, map[string]any{"content": "Receipt posted"}).Want(http.StatusCreated).Map()["id"].(string)
+		res := f.edit(t, id, "Receipt posted "+f.mention()).Want(http.StatusUnprocessableEntity)
+		if !strings.Contains(res.Text(), "--notify-only") {
+			t.Errorf("422 body lacks the fix: %s", res.Text())
+		}
+		if n := f.events(t, "block"); n != 1 {
+			t.Errorf("block events = %d, want 1", n)
+		}
+	})
+	t.Run("kept link is allowed", func(t *testing.T) {
+		f := newAskGuardCommentFixture(t)
+		id, _ := f.post(t, map[string]any{"content": "FYI " + f.mention(), "notify_only": true}).Want(http.StatusCreated).Map()["id"].(string)
+		f.edit(t, id, "FYI again "+f.mention()).Want(http.StatusOK)
+		if n := f.events(t, "block"); n != 0 {
+			t.Errorf("block events = %d, want 0", n)
+		}
+	})
+	t.Run("warn mode posts the edit", func(t *testing.T) {
+		setAskGuardMode(t, "warn")
+		f := newAskGuardCommentFixture(t)
+		id, _ := f.post(t, map[string]any{"content": "Receipt posted"}).Want(http.StatusCreated).Map()["id"].(string)
+		f.edit(t, id, "Receipt posted "+f.mention()).Want(http.StatusOK)
+		if n := f.events(t, "warn"); n != 1 {
+			t.Errorf("warn events = %d, want 1", n)
+		}
+	})
+}

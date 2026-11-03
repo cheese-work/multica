@@ -141,7 +141,7 @@ multica issue comment add MUL-123 --content-file note.md --steer <task-id>
 multica issue comment add MUL-123 --content-file note.md --steer-active
 ```
 
-A comment from an agent task that mentions a member (`[@Name](mention://member/<id>)`) is accepted only as a decision request, a `--decision-intent`, `--decision-record` or `--decision-veto` comment, or a comment with `--notify-only`. Use `--notify-only` for an FYI that needs no answer. It never opens a wait and never counts as a decision request. It cannot combine with the decision flags. The check reads the mention link, not the wording, and a link inside code counts. The workspace setting `ask_guard_mode` (`off`, `warn`, `block`) decides whether a refused comment is only logged or returns 422. Chat tasks and calls without a task only log.
+A comment from an agent task that mentions a member (`[@Name](mention://member/<id>)`) is accepted only as a decision request, a `--decision-intent`, `--decision-record` or `--decision-veto` comment, or a comment with `--notify-only`. Use `--notify-only` for an FYI that needs no answer. It never opens a wait and never counts as a decision request. It cannot combine with the decision flags. The check reads the mention link, not the wording, and a link inside code counts. The workspace setting `ask_guard_mode` (`off`, `warn`, `block`) decides whether a refused comment is only logged or returns 422. Chat tasks and calls without a task only log. An edit that adds a member mention follows the same rule.
 
 ```bash
 multica issue comment add MUL-123 --content-file fyi.md --notify-only
