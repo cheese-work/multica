@@ -7,9 +7,11 @@ import (
 	"unicode"
 )
 
-// Blocking readability rules (CHE-2181 D1c). They are pattern checks, not
-// meaning checks: a free-prose multi-question ask can pass, and a false
-// refusal costs the agent one rewrite.
+// Blocking readability rules (CHE-2181 D1c) are structural: required fields,
+// option cardinality, bare IDs, inline lists and a character bound on
+// agent_did. One question per request is the single decision field plus typed
+// options[] and human_steps[]. Wording checks (question marks, "answer 1 to 5")
+// are advisory hints from LintAsk, because natural language never refuses an ask.
 var (
 	// manyAnswers: "answer 1 to 5", "answer 1-5", "answer per number/each/all", "decisions 5, 6, 7, 9".
 	manyAnswers = regexp.MustCompile(`(?i)\banswer\s+(?:\d+\s*(?:to|-|–)\s*\d+|per number|each|all)\b|\bdecisions\s+\d+\s*(?:,|-|–|and)\s*\d+`)
@@ -21,7 +23,9 @@ var (
 	hexPattern  = regexp.MustCompile(`(?i)\b[0-9a-f]{7,}\b`)
 )
 
-const minAgentDidWords = 4
+// minAgentDidChars counts letters, not space-separated words, so a language
+// written without spaces is measured fairly.
+const minAgentDidChars = 10
 
 type proseField struct{ path, text string }
 
@@ -46,9 +50,6 @@ func (ask Ask) proseFields() []proseField {
 }
 
 func (ask Ask) validateReadable() error {
-	if asksSeveral(ask) {
-		return &AskError{"ask.decision", "asks more than one question; split into one request per question"}
-	}
 	fields := ask.proseFields()
 	for _, field := range fields {
 		for _, line := range strings.Split(field.text, "\n") {
@@ -63,7 +64,7 @@ func (ask Ask) validateReadable() error {
 			return &AskError{field.path, "has a bare ID; link it as [what it is](link)"}
 		}
 	}
-	if plainWords(ask.AgentDid) < minAgentDidWords {
+	if plainLetters(ask.AgentDid) < minAgentDidChars {
 		return &AskError{"ask.agent_did", "must say in at least one plain sentence what the agent did; an ID alone is not enough"}
 	}
 	return nil
@@ -126,8 +127,9 @@ func closingIndex(text string, start int, open, closer byte) int {
 	return -1
 }
 
+// asksSeveral reports wording that looks like several questions. It is advisory.
 func asksSeveral(ask Ask) bool {
-	if manyAnswers.MatchString(ask.Decision) || strings.Count(ask.Decision, "?") >= 2 {
+	if manyAnswers.MatchString(ask.Decision) || strings.Count(ask.Decision, "?")+strings.Count(ask.Decision, "？") >= 2 {
 		return true
 	}
 	for _, option := range ask.Options {
@@ -138,14 +140,13 @@ func asksSeveral(ask Ask) bool {
 	return false
 }
 
-// plainWords counts words with letters once links, UUIDs and long hex values are removed.
-func plainWords(text string) int {
+// plainLetters counts letters once links, UUIDs and long hex values are removed.
+func plainLetters(text string) int {
 	text = hexPattern.ReplaceAllString(uuidPattern.ReplaceAllString(anyLink.ReplaceAllString(text, " "), " "), " ")
-	count := 0
-	for _, word := range strings.Fields(text) {
-		if strings.IndexFunc(word, unicode.IsLetter) >= 0 {
-			count++
+	return strings.Count(strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) {
+			return 'x'
 		}
-	}
-	return count
+		return -1
+	}, text), "x")
 }
