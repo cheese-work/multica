@@ -1,15 +1,30 @@
 "use client";
 
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { useChatStore } from "@multica/core/chat";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useNavigation } from "../navigation";
 import { ChatFab } from "./components/chat-fab";
 import { isFloatingChatRouteSuppressed } from "./floating-chat-visibility";
 
+// The window pulls in the chat composer (editor) and message list (markdown).
+// Loading it after first paint keeps those chunks off the page's critical path.
 const ChatWindow = lazy(() =>
   import("./components/chat-window").then((m) => ({ default: m.ChatWindow })),
 );
+
+function useAfterIdle() {
+  const [idle, setIdle] = useState(false);
+  useEffect(() => {
+    if (typeof window.requestIdleCallback !== "function") {
+      const id = window.setTimeout(() => setIdle(true), 2000);
+      return () => window.clearTimeout(id);
+    }
+    const id = window.requestIdleCallback(() => setIdle(true), { timeout: 5000 });
+    return () => window.cancelIdleCallback(id);
+  }, []);
+  return idle;
+}
 
 /**
  * Mount point for the floating chat overlay (FAB + window). Rendered once in
@@ -24,13 +39,10 @@ const ChatWindow = lazy(() =>
  */
 export function FloatingChat() {
   const enabled = useChatStore((s) => s.floatingChatEnabled);
-  const isOpen = useChatStore((s) => s.isOpen);
-  // The window (editor, markdown, pickers) loads on first open and stays
-  // mounted after that, so closing keeps its composer and drafts alive.
-  const [wasOpened, setWasOpened] = useState(isOpen);
-  if (isOpen && !wasOpened) setWasOpened(true);
   const { pathname } = useNavigation();
+  const isOpen = useChatStore((s) => s.isOpen);
   const wsPaths = useWorkspacePaths();
+  const idle = useAfterIdle();
 
   if (!enabled) return null;
   // Suppress on the Chat tab — it renders the same conversation full-page.
@@ -38,7 +50,7 @@ export function FloatingChat() {
 
   return (
     <>
-      {wasOpened && (
+      {(idle || isOpen) && (
         <Suspense fallback={null}>
           <ChatWindow />
         </Suspense>

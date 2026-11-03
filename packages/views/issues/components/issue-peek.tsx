@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { lazy, memo, Suspense, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { AnimatePresence, motion, useIsPresent, useReducedMotion } from "motion/react";
 import { ChevronDown, ChevronUp, Maximize2, X } from "@multica/ui/icons";
 import { Button, buttonVariants } from "@multica/ui/components/ui/button";
@@ -24,7 +24,6 @@ import { AppLink } from "../../navigation";
 import { PAGE_GUTTER } from "../../layout/page-header";
 import { ShortcutKeycaps } from "../../common/shortcut-keycaps";
 import { useT } from "../../i18n";
-import { IssueDetail } from "./issue-detail-lazy";
 import {
   IssuePeekActionsContext,
   IssuePeekIdContext,
@@ -36,6 +35,11 @@ import {
   type IssuePeekActions,
   type IssuePeekColumns,
 } from "../surface/peek-context";
+
+// The detail carries the rich-text editor and markdown renderer. It loads off
+// the list's critical path: when the browser is idle, or at the first peek.
+const loadIssueDetail = () => import("./issue-detail").then((m) => ({ default: m.IssueDetail }));
+const IssueDetail = lazy(loadIssueDetail);
 
 const NEXT_KEY = createShortcutChord("J");
 const PREV_KEY = createShortcutChord("K");
@@ -78,6 +82,12 @@ export function IssuePeekHost({ children }: { children: ReactNode }) {
     [],
   );
   const openId = peekId;
+  // Warm the detail chunk once the browser is idle so the first peek opens at once.
+  useEffect(() => {
+    if (typeof window.requestIdleCallback !== "function") return;
+    const id = window.requestIdleCallback(() => void loadIssueDetail(), { timeout: 5000 });
+    return () => window.cancelIdleCallback(id);
+  }, []);
   const position = useMemo(() => locateInColumns(columns, openId), [columns, openId]);
 
   // Tracked from pointer events rather than queried with `:hover`, so the
@@ -185,15 +195,17 @@ const IssuePeekPanel = memo(function IssuePeekPanel({ issueId }: { issueId: stri
           </div>
         )}
       >
-        <IssueDetail
-          key={issueId}
-          issueId={issueId}
-          variant="peek"
-          defaultSidebarOpen={false}
-          leadingAction={<IssuePeekNav />}
-          trailingActions={<IssuePeekTrailingActions issueId={issueId} />}
-          onDelete={actions.close}
-        />
+        <Suspense fallback={null}>
+          <IssueDetail
+            key={issueId}
+            issueId={issueId}
+            variant="peek"
+            defaultSidebarOpen={false}
+            leadingAction={<IssuePeekNav />}
+            trailingActions={<IssuePeekTrailingActions issueId={issueId} />}
+            onDelete={actions.close}
+          />
+        </Suspense>
       </ErrorBoundary>
     </motion.aside>
   );

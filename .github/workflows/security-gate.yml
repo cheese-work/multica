@@ -6,9 +6,13 @@
 # SECURITY — same boundary as mechanical-tier.yml: `pull_request_target` and `issue_comment` both run this
 # definition from the default branch. The job checks out the DEFAULT branch (never the PR's base: a PR can target an
 # unprotected branch that carries a modified gate script) and only FETCHES head objects for a diff read. Nothing from
-# the head is executed. Do not add a head checkout or a secret here.
+# the head is executed (semgrep reads an extracted copy of the changed files; CHE-3121). Do not add a head checkout or a secret here.
 # `issue_comment` (created, edited, deleted) is the path by which a verdict comment flips or revokes the status; `edited`
 # on the PR covers a retarget. The script re-reads the live head SHA and base ref.
+# `merge_group` posts the queued PR's freshly evaluated state on the queue commit; without it the required check never
+# reports there and the queue times out. This file runs from the queue commit; the job still checks out the default
+# branch and only fetches the queue ref. A verdict revoked after the queue commit went green is NOT mirrored here
+# (the issue_comment path cannot be relied on); remove the PR from the queue instead.
 
 name: security-gate
 
@@ -17,6 +21,8 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, edited]
   issue_comment:
     types: [created, edited, deleted]
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -24,20 +30,22 @@ permissions:
   statuses: write
 
 concurrency:
-  group: security-gate-${{ github.event.pull_request.number || github.event.issue.number }}
+  group: security-gate-${{ github.event.pull_request.number || github.event.issue.number || github.event.merge_group.head_sha }}
   cancel-in-progress: true
 
 jobs:
   security-gate:
     # Job name differs from the status context on purpose: the context is posted by the script, not by this job.
     name: security-gate-eval
-    if: github.event_name == 'pull_request_target' || github.event.issue.pull_request
+    if: github.event_name == 'pull_request_target' || github.event_name == 'merge_group' || github.event.issue.pull_request
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
-    timeout-minutes: 10
+    timeout-minutes: 20
     env:
       PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
       GH_TOKEN: ${{ github.token }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      MERGE_GROUP_REF: ${{ github.event.merge_group.head_ref }}
+      MERGE_GROUP_SHA: ${{ github.event.merge_group.head_sha }}
     steps:
       - name: Discard a reused workspace
         run: |
@@ -51,10 +59,46 @@ jobs:
       - name: Fetch the head objects without checking them out
         run: |
           auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          # A queue commit has the queued PR head as a parent, so fetching the queue ref brings the head objects too.
+          src="refs/pull/${PR_NUMBER}/head"
+          [ -n "$MERGE_GROUP_REF" ] && src="$MERGE_GROUP_REF"
           git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
-            fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/head"
+            fetch --no-tags origin "+${src}:refs/remotes/pull/head"
+      - name: Install pinned semgrep (cached on the runner)
+        run: |
+          venv="$RUNNER_TOOL_CACHE/semgrep-1.183.0"
+          [ -x "$venv/bin/semgrep" ] || { python3 -m venv "$venv" && "$venv/bin/pip" install --quiet semgrep==1.183.0; }
+          echo "SEMGREP_BIN=$venv/bin/semgrep" >> "$GITHUB_ENV"
       - name: Evaluate the verdict and post the status
         run: |
-          python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" \
-            --default-branch "$DEFAULT_BRANCH" \
-            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --post
+          set -euo pipefail
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          if [ -z "$MERGE_GROUP_REF" ]; then
+            exec python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" \
+              --default-branch "$DEFAULT_BRANCH" --semgrep --run-url "$run_url" --post
+          fi
+          # Queue run. The default-branch script is used unchanged (it may predate this step), without --post: that
+          # would write to the PR head. Its state goes on the queue commit, and only if the PR head is its parent.
+          post() {
+            gh api "repos/$GITHUB_REPOSITORY/statuses/$MERGE_GROUP_SHA" -f "state=$1" -f context=security-gate \
+              -f "description=${2:0:140}" -f "target_url=$run_url"
+          }
+          re='^refs/heads/gh-readonly-queue/(.+)/pr-([0-9]+)-[0-9a-f]{40}$'
+          if [[ ! $MERGE_GROUP_REF =~ $re ]] || [ "${BASH_REMATCH[1]}" != "$DEFAULT_BRANCH" ]; then
+            post failure "unsupported merge group $MERGE_GROUP_REF: only $DEFAULT_BRANCH is gated"
+            exit 0
+          fi
+          pr="${BASH_REMATCH[2]}"
+          # Scan with semgrep once the default-branch script knows the flag; an older script would reject it.
+          sg=""
+          grep -q -e '--semgrep' scripts/security-gate/security_gate.py && sg="--semgrep"
+          out="$(python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$pr" \
+            --default-branch "$DEFAULT_BRANCH" $sg --run-url "$run_url")"
+          field() { python3 -c 'import json,sys; print(json.loads(sys.argv[1])[sys.argv[2]])' "$out" "$1"; }
+          head="$(field sha)" state="$(field state)" desc="#$pr: $(field description)"
+          parents="$(gh api "repos/$GITHUB_REPOSITORY/commits/$MERGE_GROUP_SHA" --jq '.parents[].sha')"  # not piped: grep -q + pipefail
+          if grep -qx "$head" <<<"$parents"; then
+            post "$state" "$desc"
+          else
+            post failure "#$pr head ${head:0:12} is not a parent of ${MERGE_GROUP_SHA:0:12}"
+          fi

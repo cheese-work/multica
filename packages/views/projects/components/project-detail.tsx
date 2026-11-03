@@ -129,18 +129,23 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
     useMemo(() => (project ? { kind: "project", project } : null), [project]),
   );
   const recordRecentContext = useRecentContextStore((s) => s.recordVisit);
+  const recentId = project?.id;
+  const recentTitle = project?.title;
+  const recentDescription = project?.description;
+  const recentIcon = project?.icon;
+  const recentStatus = project?.status;
   useEffect(() => {
-    if (project) {
+    if (recentId !== undefined && recentTitle !== undefined && recentStatus !== undefined) {
       recordRecentContext(wsId, {
         type: "project",
-        id: project.id,
-        label: project.title,
-        subtitle: project.description ?? undefined,
-        icon: project.icon,
-        projectStatus: project.status,
+        id: recentId,
+        label: recentTitle,
+        subtitle: recentDescription ?? undefined,
+        icon: recentIcon ?? null,
+        projectStatus: recentStatus,
       });
     }
-  }, [project?.id, project?.title, project?.description, project?.icon, project?.status, recordRecentContext, wsId]);
+  }, [recentId, recentTitle, recentDescription, recentIcon, recentStatus, recordRecentContext, wsId]);
   const issueTab = useIssuesScope(`project:${projectId}`);
   const issueScope = useMemo(
     () => ({ type: "project" as const, projectId, actorKind: issueTab }),
