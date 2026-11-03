@@ -1,0 +1,18 @@
+# Policy file for the CI economy standard (cheese-work/multica-dotfiles standards/general/ci.md, D-2).
+# CHE-3279 adds this file for the latency exception; the checker caller is added by CHE-3273.
+merge_queue: true
+required_checks:
+  - backend-tests
+  - security-gate
+status_contexts:
+  - name: security-gate
+    workflow: security-gate.yml
+    targets:
+      pull_request: pr-head
+exceptions:
+  - repo: cheese-work/multica
+    workflow: security-gate.yml
+    rule: pr-feedback-latency
+    reason: security-gate stays pending until a cross-lab reviewer posts a verdict, so it measures review wait, not CI. Baseline p90 288 min (7 days to 3 Nov 2026 ICT). backend-tests alone measures p90 12.9 min on 2 Nov 2026.
+    owner: x99-claude-sonnet-200k
+    expires: 2026-12-31
