@@ -66,13 +66,6 @@ func assertNoneStored(t *testing.T, row auditRow, secrets ...string) {
 	}
 }
 
-func assertNoAuditRows(t *testing.T, kind, targetID string) {
-	t.Helper()
-	if rows := auditRowsFor(t, kind, targetID); len(rows) != 0 {
-		t.Errorf("%s audit rows for %s = %d; want 0", kind, targetID, len(rows))
-	}
-}
-
 func assertAuditFailure(t *testing.T, w *httptest.ResponseRecorder) {
 	t.Helper()
 	if w.Code != http.StatusInternalServerError {
