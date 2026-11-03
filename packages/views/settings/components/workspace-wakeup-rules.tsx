@@ -66,8 +66,16 @@ export function ScopedWakeupRules({
   const { data } = useQuery(wakeupDefinitionsOptions(workspaceId, scope));
   // A saved rule empties the form: a new key remounts it.
   const [formKey, setFormKey] = useState(0);
+  // Rules opened for editing, as they were when the edit opened. They live here,
+  // not in the row, so a rule someone else deletes mid-edit does not take the
+  // open draft with it when the list refetches.
+  const [editing, setEditing] = useState<Record<string, WakeupDefinition>>({});
   if (!data?.capabilities.definition_writes) return null;
-  const rules = data.definitions.filter((d) => d.root && CUSTOM_RULE_KEY.test(d.rule_key));
+  const listed = data.definitions.filter((d) => d.root && CUSTOM_RULE_KEY.test(d.rule_key));
+  const gone = Object.values(editing).filter((open) => !listed.some((d) => d.rule_key === open.rule_key));
+  const rules = [...listed, ...gone];
+  const setEditingRule = (key: string, rule: WakeupDefinition | null) =>
+    setEditing(({ [key]: _closed, ...rest }) => (rule ? { ...rest, [key]: rule } : rest));
   const section = (
     <SettingsSection
       anchor="rules"
@@ -82,7 +90,15 @@ export function ScopedWakeupRules({
         ) : (
           <ul className="divide-y divide-border">
             {rules.map((rule) => (
-              <RuleRow key={rule.rule_key} workspaceId={workspaceId} scope={scope} canManage={canManage} rule={rule} />
+              <RuleRow
+                key={rule.rule_key}
+                workspaceId={workspaceId}
+                scope={scope}
+                canManage={canManage}
+                rule={rule}
+                editing={editing[rule.rule_key] ?? null}
+                onEdit={(opened) => setEditingRule(rule.rule_key, opened)}
+              />
             ))}
           </ul>
         )}
@@ -115,17 +131,20 @@ function RuleRow({
   scope,
   canManage,
   rule,
+  editing,
+  onEdit,
 }: {
   workspaceId: string;
   scope: EditableWakeupScope;
   canManage: boolean;
   rule: WakeupDefinition;
+  editing: WakeupDefinition | null;
+  onEdit: (opened: WakeupDefinition | null) => void;
 }) {
   const { t } = useT("settings");
   const remove = useDeleteWakeupDefinition(workspaceId, scope);
-  // The rule as it was when the edit opened. A refetch must not move the
-  // revision under a draft that was read at an older one.
-  const [editing, setEditing] = useState<WakeupDefinition | null>(null);
+  // `editing` is the rule as it was when the edit opened. A refetch must not
+  // move the revision under a draft that was read at an older one.
   const name = rule.config.name ?? "";
   const editable = draftFromDefinitionConfig(rule.config);
   const pinned = editing ? draftFromDefinitionConfig(editing.config) : null;
@@ -137,8 +156,8 @@ function RuleRow({
           scope={scope}
           rule={editing}
           initial={pinned}
-          onDone={() => setEditing(null)}
-          onCancel={() => setEditing(null)}
+          onDone={() => onEdit(null)}
+          onCancel={() => onEdit(null)}
         />
       </li>
     );
@@ -167,7 +186,7 @@ function RuleRow({
               variant="ghost"
               size="icon"
               aria-label={t(($) => $.wakeups.rules.edit, { name })}
-              onClick={() => setEditing(rule)}
+              onClick={() => onEdit(rule)}
             >
               <Pencil className="size-3.5" aria-hidden="true" />
             </Button>

@@ -175,6 +175,25 @@ it("keeps the draft and the opened revision when someone else saved the rule fir
   expect(save.mock.calls[1]![2].config.name).toBe("My draft name");
 });
 
+it("keeps the open draft when the rule is deleted by someone else before the save (409, rule gone from the list)", async () => {
+  save.mockRejectedValue(new ApiError("stale", 409, "Conflict"));
+  list
+    .mockResolvedValueOnce({ definitions: [editable], capabilities: open })
+    .mockResolvedValue({ definitions: [], capabilities: open });
+  mount();
+  const form = await openEditor();
+  fireEvent.change(form.getByRole("textbox", { name: "Rule name" }), { target: { value: "My draft name" } });
+  fireEvent.click(form.getByRole("button", { name: "Save rule" }));
+  expect(await form.findByRole("alert")).toHaveTextContent("Someone else changed this rule.");
+  await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+  // The list no longer has the rule; the editor and its draft stay until the user cancels.
+  expect(screen.getByRole("form", { name: "Edit project rule" })).toBeVisible();
+  expect(form.getByRole("textbox", { name: "Rule name" })).toHaveValue("My draft name");
+  fireEvent.click(form.getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(screen.queryByRole("form", { name: "Edit project rule" })).toBeNull());
+  expect(screen.getByText("No project rules yet.")).toBeVisible();
+});
+
 it("deletes a rule at the revision it was read at", async () => {
   mount();
   await expand();
