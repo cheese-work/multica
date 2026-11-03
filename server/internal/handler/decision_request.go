@@ -70,7 +70,18 @@ type decisionRequestResult struct {
 	ParkedIssue db.Issue
 }
 
+// createDecisionRequest creates the request, or finds the same-task retry of
+// it. A new request clears --recovers inside its own transaction; a replay never
+// reaches that code, so it validates and clears here. Clearing is idempotent.
 func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Issue, input decisionRequestInput) (decisionRequestResult, error) {
+	result, err := handler.createDecisionRequestOnce(request, issue, input)
+	if err != nil || !result.Replayed {
+		return result, err
+	}
+	return result, clearAskGuardEvent(request.Context(), handler.Queries, issue, input.Recovers, result.Request.HumanUserID, result.Request.ID)
+}
+
+func (handler *Handler) createDecisionRequestOnce(request *http.Request, issue db.Issue, input decisionRequestInput) (decisionRequestResult, error) {
 	empty := decisionRequestResult{}
 	deny := decisionIntentRefusal{http.StatusForbidden, "decision request requires this issue's running task"}
 	if request.Header.Get("X-Actor-Source") != "task_token" {
