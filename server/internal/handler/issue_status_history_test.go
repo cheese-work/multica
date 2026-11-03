@@ -130,3 +130,41 @@ func TestStatusTriggerChannelIsIndependentOfAuthSource(t *testing.T) {
 		}
 	}
 }
+
+// A status move may name the handoff comment that explains it. The link is
+// stored when the comment belongs to the issue; otherwise it is dropped and the
+// trigger says so.
+func TestUpdateIssueStatusHandoffCommentLink(t *testing.T) {
+	issueID := createIssueForTimeline(t, "handoff link")
+	otherID := createIssueForTimeline(t, "handoff link other")
+	own := dbfx.Comment(t, issueID, "handoff")
+	elsewhere := dbfx.Comment(t, otherID, "other issue")
+
+	move := func(issue, status, commentID string) {
+		req := withURLParam(newRequest(http.MethodPatch, "/api/issues/"+issue, map[string]any{"status": status, "suppress_run": true, "handoff_comment_id": commentID}), "id", issue)
+		req.Header.Set("X-Actor-Source", "interactive_jwt")
+		testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK)
+	}
+	move(issueID, "in_progress", own)
+	move(otherID, "in_progress", own)
+	move(issueID, "in_review", elsewhere)
+
+	trigger := func(rows []map[string]any, i int) map[string]any {
+		tr, _ := rows[i]["trigger"].(map[string]any)
+		return tr
+	}
+	rows := statusRows(t, issueID)
+	if len(rows) != 2 {
+		t.Fatalf("status_changed rows = %d, want 2", len(rows))
+	}
+	if got := trigger(rows, 0); got["handoff_comment_id"] != own || got["ref_invalid"] != nil {
+		t.Errorf("valid link: trigger = %v", got)
+	}
+	if got := trigger(rows, 1); got["handoff_comment_id"] != nil || got["ref_invalid"] != true {
+		t.Errorf("link to a comment of another issue: trigger = %v", got)
+	}
+	other := statusRows(t, otherID)
+	if got := trigger(other, 0); got["handoff_comment_id"] != nil || got["ref_invalid"] != true {
+		t.Errorf("link to a comment of another issue: trigger = %v", got)
+	}
+}

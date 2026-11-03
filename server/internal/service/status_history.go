@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -37,14 +39,28 @@ type StatusTrigger struct {
 	AuthSource       *string     `json:"auth_source"`
 	Channel          string      `json:"channel"`
 	HandoffCommentID string      `json:"handoff_comment_id,omitempty"`
+	// RefInvalid marks a handoff comment link that RecordStatusChange dropped.
+	RefInvalid bool `json:"ref_invalid,omitempty"`
 }
 
 // RecordStatusChange writes the status_changed activity row with qtx, the
 // queries of the transaction that changes the status, so the row commits with
 // the status or not at all. handoff entries are stored as handoff_<key>
-// details, the way the activity listener stores them.
+// details, the way the activity listener stores them. A HandoffCommentID that
+// is not a comment of the same workspace and issue is dropped and the trigger
+// is marked RefInvalid.
 func RecordStatusChange(ctx context.Context, qtx *db.Queries, issue db.Issue, from, to string, trigger StatusTrigger, handoff map[string]string) (db.ActivityLog, error) {
 	trigger.Version = StatusTriggerVersion
+	trigger.RefInvalid = false
+	if trigger.HandoffCommentID != "" {
+		ok, err := handoffCommentBelongsTo(ctx, qtx, issue, trigger.HandoffCommentID)
+		if err != nil {
+			return db.ActivityLog{}, err
+		}
+		if !ok {
+			trigger.HandoffCommentID, trigger.RefInvalid = "", true
+		}
+	}
 	details := map[string]any{"from": from, "to": to, "trigger": trigger}
 	for k, v := range handoff {
 		details["handoff_"+k] = v
@@ -68,4 +84,16 @@ func RecordStatusChange(ctx context.Context, qtx *db.Queries, issue db.Issue, fr
 		Action:      "status_changed",
 		Details:     body,
 	})
+}
+
+func handoffCommentBelongsTo(ctx context.Context, qtx *db.Queries, issue db.Issue, commentID string) (bool, error) {
+	id, err := util.ParseUUID(commentID)
+	if err != nil {
+		return false, nil
+	}
+	c, err := qtx.GetCommentInWorkspace(ctx, db.GetCommentInWorkspaceParams{ID: id, WorkspaceID: issue.WorkspaceID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil && c.IssueID == issue.ID, err
 }
