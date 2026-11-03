@@ -96,7 +96,7 @@ const (
 var otherWriteFamilies = map[string]writeFamily{
 	"api/agent-builder":            {3, byWorkspace},
 	"api/agent-decisions":          {1, byHuman},
-	"api/agents":                   {20, byWorkspace},
+	"api/agents":                   {22, byWorkspace},
 	"api/auth":                     {2, byPublic},
 	"api/autopilots":               {12, byWorkspace},
 	"api/chat":                     {19, byOwnRow},
@@ -144,7 +144,7 @@ var otherWriteFamilies = map[string]writeFamily{
 	"api/wakeup-definitions":       {4, byWorkspace},
 	"api/webhooks":                 {5, byPublic},
 	"api/wecom":                    {1, byPublic},
-	"api/workspaces":               {53, byWorkspace},
+	"api/workspaces":               {55, byWorkspace},
 	"auth/google":                  {1, byPublic},
 	"auth/logout":                  {1, byPublic},
 	"auth/send-code":               {1, byPublic},
