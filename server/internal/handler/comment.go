@@ -1776,6 +1776,10 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		}
 		parentComment = &parent
 	}
+	notice, answersNotice, ok := h.askRecoveryNoticeAnswer(w, r, parentComment, userID)
+	if !ok {
+		return
+	}
 
 	requestStart := time.Now()
 	supersedeTargets, ok := h.loadSupersedeTargets(w, r.Context(), issue, req.Supersedes, parentID)
@@ -2071,6 +2075,9 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	var supersedeOutcomes []supersedeOutcome
 	if err == nil && len(supersedeTargets) > 0 {
 		supersedeOutcomes, err = applySupersedes(r.Context(), qtx, created.Comment(), supersedeTargets, requestStart, authorType, createParams.AuthorID)
+	}
+	if err == nil && answersNotice && authorType == "member" {
+		err = qtx.MarkAskRecoveryNoticeAnswered(r.Context(), notice.ID)
 	}
 	if err != nil {
 		slog.Warn("create comment failed", append(logger.RequestAttrs(r), "error", err, "issue_id", issueID)...)
