@@ -15,6 +15,15 @@ SELECT * FROM github_installation
 WHERE installation_id = $1
 ORDER BY created_at ASC, id ASC;
 
+-- name: ListGitHubInstallationsByInstallationIDForShare :many
+-- Same rows as ListGitHubInstallationsByInstallationID, share-locked until the
+-- transaction ends: a concurrent delete or account change of a binding waits, so
+-- a policy check made inside the transaction still holds when it commits.
+SELECT * FROM github_installation
+WHERE installation_id = $1
+ORDER BY created_at ASC, id ASC
+FOR SHARE;
+
 -- name: GetGitHubInstallationByID :one
 SELECT * FROM github_installation
 WHERE id = $1;

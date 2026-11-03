@@ -579,6 +579,47 @@ func (q *Queries) ListGitHubInstallationsByInstallationID(ctx context.Context, i
 	return items, nil
 }
 
+const listGitHubInstallationsByInstallationIDForShare = `-- name: ListGitHubInstallationsByInstallationIDForShare :many
+SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, account_id FROM github_installation
+WHERE installation_id = $1
+ORDER BY created_at ASC, id ASC
+FOR SHARE
+`
+
+// Same rows as ListGitHubInstallationsByInstallationID, share-locked until the
+// transaction ends: a concurrent delete or account change of a binding waits, so
+// a policy check made inside the transaction still holds when it commits.
+func (q *Queries) ListGitHubInstallationsByInstallationIDForShare(ctx context.Context, installationID int64) ([]GithubInstallation, error) {
+	rows, err := q.db.Query(ctx, listGitHubInstallationsByInstallationIDForShare, installationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GithubInstallation{}
+	for rows.Next() {
+		var i GithubInstallation
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.InstallationID,
+			&i.AccountLogin,
+			&i.AccountType,
+			&i.AccountAvatarUrl,
+			&i.ConnectedByID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.AccountID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGitHubInstallationsByWorkspace = `-- name: ListGitHubInstallationsByWorkspace :many
 
 SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, account_id FROM github_installation

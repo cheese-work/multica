@@ -55,20 +55,19 @@ func (h *Handler) ConfigureGitHubAllowlist(raw string) error {
 	h.githubAllowlist = list
 	// The refresh pipeline also selects rows by address; keep it off denied
 	// bindings that share an installation with an allowed one.
-	h.PRRefresh.SetWorkspaceFilter(func(ctx context.Context, installationID int64) (map[pgtype.UUID]bool, error) {
-		allowed, err := h.allowedGitHubInstallations(ctx, installationID)
+	h.PRRefresh.SetWorkspaceFilter(func(ctx context.Context, q *db.Queries, installationID int64) (map[pgtype.UUID]bool, error) {
+		rows, err := q.ListGitHubInstallationsByInstallationIDForShare(ctx, installationID)
 		if err != nil {
 			return nil, err
 		}
-		set := make(map[pgtype.UUID]bool, len(allowed))
-		for _, row := range allowed {
-			set[row.WorkspaceID] = true
+		set := make(map[pgtype.UUID]bool, len(rows))
+		for _, row := range rows {
+			if h.githubInstallationAllowed(row) {
+				set[row.WorkspaceID] = true
+			}
 		}
 		return set, nil
 	})
-	if list.ids == nil && isGitHubConfigured() {
-		slog.Warn("github: " + githubAllowedAccountIDsEnv + " is unset; any GitHub account may bind an installation")
-	}
 	return nil
 }
 
