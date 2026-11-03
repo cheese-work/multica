@@ -908,6 +908,8 @@ export function ChatInput({
             // intentionally tracks neither the session nor the agent.
             key={editorKey}
             ref={editorRef}
+            // Queued file/quote calls made before the editor chunk loads are bound to this draft.
+            draftKey={draftKey}
             value={inputDraft}
             placeholder={placeholder}
             onUpdate={(md) => {

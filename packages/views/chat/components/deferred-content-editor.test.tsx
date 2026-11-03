@@ -243,6 +243,55 @@ describe("DeferredContentEditor", () => {
       expect(onUpdate).toHaveBeenCalledTimes(1); // nothing was written to B
     });
 
+    describe("when the host switches draft (draftKey) mid-load", () => {
+      const withKey = (ref: React.Ref<ContentEditorRef>, draftKey: string) => (
+        <DeferredContentEditor ref={ref} ariaLabel="Message" placeholder="Type…" value="" draftKey={draftKey} />
+      );
+
+      it("drops a file and a quote queued on draft A instead of replaying them into draft B", async () => {
+        const release = slowLoad();
+        const { rerender, ref } = setup({ draftKey: "A" });
+        act(() => {
+          ref.current!.uploadFile(new File(["x"], "a-secret.png"));
+          ref.current!.insertMarkdownAtEnd("> quote from A");
+        });
+        rerender(withKey(ref, "B"));
+        act(() => ref.current!.focus()); // belongs to B; proves the replay ran
+        await act(async () => release());
+        await screen.findByTestId("live-editor");
+        await waitFor(() => expect(editor.calls).toContain("focus"));
+        expect(editor.calls).not.toContain("upload:a-secret.png");
+        expect(editor.calls).not.toContain("insert:> quote from A");
+      });
+
+      it("keeps content the host queues after the switch, which belongs to draft B", async () => {
+        const release = slowLoad();
+        const { rerender, ref } = setup({ draftKey: "A" });
+        act(() => void ref.current!.insertMarkdownAtEnd("> from A"));
+        rerender(withKey(ref, "B"));
+        act(() => void ref.current!.insertMarkdownAtEnd("> from B"));
+        await act(async () => release());
+        await screen.findByTestId("live-editor");
+        await waitFor(() => expect(editor.calls).toContain("insert:> from B"));
+        expect(editor.calls).not.toContain("insert:> from A");
+      });
+
+      it("does not carry text typed on draft A into draft B when both drafts are empty", async () => {
+        const release = slowLoad();
+        const { rerender, ref } = setup({ draftKey: "A", value: undefined });
+        fireEvent.focus(standIn());
+        type("typed on A");
+        rerender(
+          <DeferredContentEditor ref={ref} ariaLabel="Message" placeholder="Type…" draftKey="B" />,
+        );
+        expect(standIn().textContent).toBe("");
+        await act(async () => release());
+        await screen.findByTestId("live-editor");
+        await waitFor(() => expect(editor.calls).toContain("focus"));
+        expect(editor.calls.some((c) => c.startsWith("insert:"))).toBe(false);
+      });
+    });
+
     it("shows an empty stand-in and replays nothing when the new draft is empty", async () => {
       const release = slowLoad();
       const { rerender, ref } = setup({ value: "" });
