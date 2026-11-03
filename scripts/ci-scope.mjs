@@ -90,12 +90,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
           Object.entries(outputs).map(([key, value]) => `${key}=${value}\n`).join(""));
         break;
       }
+      case "merge-group-green":
+        appendFileSync(process.env.GITHUB_OUTPUT, `merge_group_green=${hasGreenMergeGroup(process.env)}\n`);
+        break;
       case "gate":
         checkGate(JSON.parse(process.env.NEEDS_JSON), JSON.parse(process.env.JOB_SCOPES));
         console.log("All selected CI jobs succeeded; only unselected jobs were skipped.");
         break;
       default:
-        throw new Error("Usage: node scripts/ci-scope.mjs decide|gate");
+        throw new Error("Usage: node scripts/ci-scope.mjs decide|merge-group-green|gate");
     }
   } catch (error) {
     console.error(error.message);
