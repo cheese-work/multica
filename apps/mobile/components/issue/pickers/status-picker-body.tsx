@@ -20,7 +20,7 @@ import { useColorScheme } from "nativewind";
 import type { IssueStatus } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { StatusIcon } from "@/components/ui/status-icon";
-import { statusOptions } from "@/lib/issue-status";
+import { statusOptions, type StatusOption } from "@/lib/issue-status";
 import { useIssueStatuses } from "@/lib/use-issue-statuses";
 import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/i18n";
@@ -28,15 +28,17 @@ import { useT } from "@/lib/i18n";
 interface Props {
   value: IssueStatus;
   onChange: (next: IssueStatus) => void;
+  /** Narrows the list (an issue's workflow); the whole catalog when absent. */
+  narrow?: (options: StatusOption[]) => StatusOption[];
 }
 
-export function StatusPickerBody({ value, onChange }: Props) {
+export function StatusPickerBody({ value, onChange, narrow }: Props) {
   const { colorScheme } = useColorScheme();
   const checkColor =
     colorScheme === "dark" ? THEME.dark.primary : THEME.light.primary;
   const catalog = useIssueStatuses();
   const { t } = useT("issues");
-  const options = statusOptions(catalog);
+  const options = narrow ? narrow(statusOptions(catalog)) : statusOptions(catalog);
 
   return (
     <ScrollView showsVerticalScrollIndicator={false}>

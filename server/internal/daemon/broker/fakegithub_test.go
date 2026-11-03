@@ -57,6 +57,11 @@ type fakeGitHub struct {
 	// waits for revokeGate to close.
 	revokeSeen chan struct{}
 	revokeGate chan struct{}
+	// dropReply makes a comment land and then cut the connection before any
+	// reply; refuse makes it answer 422 without landing.
+	dropReply, refuse bool
+	// gqlReply replaces the GraphQL answer; the mutation still applies.
+	gqlReply string
 }
 
 func newFakeGitHub(t testing.TB, remote string) *fakeGitHub {
@@ -276,8 +281,22 @@ func (f *fakeGitHub) comment(w http.ResponseWriter, r *http.Request, body []byte
 	json.Unmarshal(body, &in)
 	p := f.pr(r)
 	f.mu.Lock()
-	p.Comment = append(p.Comment, in.Body)
+	refuse, drop := f.refuse, f.dropReply
+	if !refuse {
+		p.Comment = append(p.Comment, in.Body)
+	}
 	f.mu.Unlock()
+	if refuse {
+		http.Error(w, `{"message":"Validation Failed"}`, http.StatusUnprocessableEntity)
+		return
+	}
+	if drop {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			conn.Close()
+		}
+		return
+	}
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]any{"id": 1})
 }
@@ -294,13 +313,17 @@ func (f *fakeGitHub) graphql(w http.ResponseWriter, _ *http.Request, body []byte
 		return
 	}
 	f.mu.Lock()
+	reply := f.gqlReply
 	for _, p := range f.prs {
 		if fmt.Sprintf("PR_node%d", p.Number) == in.Variables["id"] {
 			p.Ready = true
 		}
 	}
 	f.mu.Unlock()
-	w.Write([]byte(`{"data":{}}`))
+	if reply == "" {
+		reply = `{"data":{"markPullRequestReadyForReview":{"pullRequest":{"id":"` + in.Variables["id"] + `"}}}}`
+	}
+	w.Write([]byte(reply))
 }
 
 // writeCalls lists the authorized calls that change something on GitHub.
