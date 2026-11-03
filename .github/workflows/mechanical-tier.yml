@@ -11,7 +11,9 @@
 # Tier 2 and cannot classify itself. Do not add a head checkout or a secret to this workflow.
 #
 # Refresh (CHE-3339): a receipt records required-check state at classification time, so one taken while CI is pending
-# stops verifying once CI finishes. `workflow_run` re-classifies the same head when CI or security-gate completes.
+# stops verifying once CI finishes. `workflow_run` re-classifies the same head when CI completes, and `status` does
+# the same when security-gate posts its result. security-gate also runs on issue_comment and merge_group, where
+# `workflow_run.head_sha` is the default-branch SHA, but the status it posts always lands on the pull request head.
 # The pull request, its base SHA and its head SHA are read from the API (the event payload is not trusted for them),
 # and the job still checks out only the base. The run records the fresh receipt in its step summary; it attaches no
 # check to the pull request. Merge decisions use the latest receipt for the exact head, re-verified with `verify`.
@@ -24,8 +26,9 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_run:
-    workflows: [CI, security-gate]
+    workflows: [CI]
     types: [completed]
+  status:
 
 permissions:
   contents: read
@@ -34,7 +37,7 @@ permissions:
   statuses: read
 
 concurrency:
-  group: mechanical-tier-${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha }}
+  group: mechanical-tier-${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || github.event.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -42,10 +45,11 @@ jobs:
     name: mechanical-tier
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 10
+    if: github.event_name != 'status' || github.event.context == 'security-gate'
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
-      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || github.event.sha }}
       GH_TOKEN: ${{ github.token }}
     steps:
       # A reused self-hosted workspace can be a `blob:none` partial clone; checkout keeps that filter, the head fetch
@@ -53,8 +57,8 @@ jobs:
       - name: Discard a reused workspace
         run: |
           find "$GITHUB_WORKSPACE" -mindepth 1 -delete
-      - name: Find the open pull request for a completed workflow run
-        if: github.event_name == 'workflow_run'
+      - name: Find the open pull request for the head this event reports
+        if: github.event_name != 'pull_request_target'
         run: |
           PR_NUMBER="$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/pulls" \
             --jq '[.[] | select(.state == "open" and .head.sha == env.HEAD_SHA)][0].number // empty')"

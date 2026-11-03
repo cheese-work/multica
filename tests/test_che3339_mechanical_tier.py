@@ -119,8 +119,20 @@ class ReceiptRefreshAfterCi(unittest.TestCase):
     def setUp(self):
         self.text = WORKFLOW.read_text()
 
-    def test_a_finished_required_workflow_re_runs_the_classifier(self):
-        self.assertRegex(self.text, r"(?m)^  workflow_run:\n    workflows: \[CI, security-gate\]\n    types: \[completed\]")
+    def test_a_finished_ci_run_re_runs_the_classifier(self):
+        self.assertRegex(self.text, r"(?m)^  workflow_run:\n    workflows: \[CI\]\n    types: \[completed\]")
+
+    def test_a_security_gate_status_re_runs_the_classifier_on_the_status_commit(self):
+        # security-gate also runs on issue_comment and merge_group; those runs report the default-branch SHA, but the
+        # status it posts always lands on the pull request head, so the `status` event carries the right SHA.
+        self.assertRegex(self.text, r"(?m)^  status:\n")
+        self.assertNotRegex(self.text, r"(?m)^  issue_comment:")
+        self.assertNotIn("security-gate]", self.text.split("jobs:")[0].split("workflow_run:")[1].split("\n\n")[0])
+        self.assertIn("github.event_name != 'status' || github.event.context == 'security-gate'", self.text)
+        self.assertIn("github.event.pull_request.head.sha || github.event.workflow_run.head_sha || github.event.sha", self.text)
+
+    def test_a_pull_request_event_needs_no_lookup_and_every_other_event_does(self):
+        self.assertIn("if: github.event_name != 'pull_request_target'", self.text)
 
     def test_the_refresh_finds_the_pull_request_through_the_api_and_checks_its_head(self):
         self.assertRegex(self.text, r"commits/\$HEAD_SHA/pulls")
@@ -133,7 +145,7 @@ class ReceiptRefreshAfterCi(unittest.TestCase):
         self.assertNotRegex(self.text, r"ref: \$\{\{ github\.event\.workflow_run")
 
     def test_a_pull_request_event_and_a_refresh_for_one_head_share_a_concurrency_group_without_cancelling(self):
-        self.assertIn("github.event.pull_request.head.sha || github.event.workflow_run.head_sha", self.text)
+        self.assertIn("mechanical-tier-${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || github.event.sha }}", self.text)
         self.assertIn("cancel-in-progress: false", self.text)
 
     def test_a_receipt_taken_while_ci_is_pending_fails_verify_once_ci_succeeds_and_a_fresh_one_passes(self):
