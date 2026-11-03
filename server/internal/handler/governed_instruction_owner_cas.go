@@ -220,7 +220,7 @@ func (h *Handler) ownerCASApply(w http.ResponseWriter, r *http.Request, actorTyp
 	if !ok {
 		return hermesExceptionSwapResult{}, false
 	}
-	if !h.instructionTokenLimitOK(w, r, c, workspaceID, id, content) {
+	if !configSyncSettingsValid(w, c, content) || !h.instructionTokenLimitOK(w, r, c, workspaceID, id, content) {
 		return hermesExceptionSwapResult{}, false
 	}
 	result, reason, err := h.ownerCASWrite(r.Context(), c, workspaceID, id, content, digest)
@@ -292,6 +292,10 @@ func logOwnerCASOutcome(r *http.Request, c ownerCASColumn, id string, result her
 // ownerCASUpdateWorkspace handles an UpdateWorkspace request that carries the
 // digest key. Called after the Hermes exception and the CHE-455 guard.
 func (h *Handler) ownerCASUpdateWorkspace(w http.ResponseWriter, r *http.Request, workspaceID, actorType, actorID string, raw map[string]json.RawMessage) {
+	if rawFieldsHasKeyFold(raw, ownerCASWorkspaceConfigSync.field) {
+		h.configSyncUpdate(w, r, workspaceID, actorType, raw)
+		return
+	}
 	member, ok := h.workspaceMember(w, r, workspaceID)
 	if !ok {
 		return

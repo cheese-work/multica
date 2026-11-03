@@ -173,7 +173,7 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if err != nil {
 		return empty, err
 	}
-	answer, err := queries.CreateDecisionAnswer(ctx, db.CreateDecisionAnswerParams{DecisionRequestID: decision.ID, SourceChatSessionID: session.ID, ChatMessageIds: []pgtype.UUID{answerMessage.ID}, ContentSnapshot: content, EffectiveAt: effectiveAt, IssueCommentID: commentID, WakeAt: effectiveAt, ChosenOptionIndex: chosen, ReplyText: pgtype.Text{String: strings.TrimSpace(input.Text), Valid: true}})
+	answer, err := queries.CreateDecisionAnswer(ctx, db.CreateDecisionAnswerParams{DecisionRequestID: decision.ID, AnsweredByUserID: userID, AnswerSource: pgtype.Text{String: "card", Valid: true}, SourceChatSessionID: session.ID, ChatMessageIds: []pgtype.UUID{answerMessage.ID}, ContentSnapshot: content, EffectiveAt: effectiveAt, IssueCommentID: commentID, WakeAt: effectiveAt, ChosenOptionIndex: chosen, ReplyText: pgtype.Text{String: strings.TrimSpace(input.Text), Valid: true}})
 	if err != nil {
 		return empty, err
 	}

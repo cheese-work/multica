@@ -387,7 +387,7 @@ func TestClaimedAutoCompactionRunsTheCompactPromptWithoutUserInput(t *testing.T)
 	}
 }
 
-func TestAutoCompactReasonLeadsTheNewDMSummary(t *testing.T) {
+func TestAutoCompactSuccessKeepsTheReasonNoticeAndPostsNoFailure(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -400,24 +400,17 @@ func TestAutoCompactReasonLeadsTheNewDMSummary(t *testing.T) {
 	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1`, tasks[0].ID)
 
 	response := continueChatRequest(t, dm.sessionID, "Retained goal.", tasks[0].ID)
-	if response.Code != http.StatusCreated {
+	if response.Code != http.StatusOK {
 		t.Fatalf("continue: %d %s", response.Code, response.Body.String())
 	}
-	var result ChatContinueResponse
-	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
-		t.Fatal(err)
-	}
-	dbfx.Cleanup(t, `DELETE FROM chat_message WHERE chat_session_id = $1`, result.Session.ID)
-	dbfx.Cleanup(t, `DELETE FROM chat_session WHERE id = $1`, result.Session.ID)
-
 	var summary string
-	dbfx.QueryRow(t, `SELECT content FROM chat_message WHERE chat_session_id = $1 AND message_kind = 'continuation_summary'`, result.Session.ID).Scan(&summary)
-	wantFirstLine := "Auto-compacted: context 164k of 200k tokens (82%) reached the 80% threshold."
-	if first, _, _ := strings.Cut(summary, "\n"); first != wantFirstLine {
-		t.Fatalf("first line of the new DM summary = %q, want %q", first, wantFirstLine)
-	}
+	dbfx.QueryRow(t, `SELECT content FROM chat_message WHERE chat_session_id = $1 AND message_kind = 'compaction_summary'`, dm.sessionID).Scan(&summary)
 	if !strings.Contains(summary, "Retained goal.") {
 		t.Fatalf("the agent's summary is missing from %q", summary)
+	}
+	wantNotice := "Auto-compacted: context 164k of 200k tokens (82%) reached the 80% threshold."
+	if notices := dm.messages(t, "compact_notice"); len(notices) != 1 || !strings.HasPrefix(notices[0], wantNotice) {
+		t.Fatalf("compact notices = %q, want one starting %q", notices, wantNotice)
 	}
 
 	// The compaction succeeded: finishing it must not post a failure notice.
