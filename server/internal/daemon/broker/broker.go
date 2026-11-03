@@ -56,6 +56,8 @@ type Pin struct {
 	// MaxPaths caps the paths one push may change, and so the work the
 	// protected-path check does; zero means the default.
 	MaxPaths int `json:"-"`
+	// Elevation, when set, makes every push and PR operation an elevated one.
+	Elevation *Elevation `json:"-"`
 }
 
 // gitEnv keeps host git config, hooks and prompts out of broker git runs.
@@ -81,6 +83,13 @@ type Broker struct {
 
 	rmu      sync.Mutex
 	receipts []Receipt
+
+	fmu     sync.Mutex // guards fenced, open, changed and the elevOp fields
+	fenced  bool
+	open    map[*elevOp]struct{} // authorized, not yet acknowledged by the server
+	changed chan struct{}        // closed and replaced when open or its state changes
+
+	beforeWrite, afterWrite func() // test hooks around the remote write
 }
 
 // New starts a broker listening on socket (mode 0600).
@@ -100,7 +109,7 @@ func New(p Pin, socket string, log *slog.Logger) (*Broker, error) {
 		ln.Close()
 		return nil, fmt.Errorf("broker: %w", err)
 	}
-	b := &Broker{pin: p, log: log, ln: ln, socket: socket}
+	b := &Broker{pin: p, log: log, ln: ln, socket: socket, open: map[*elevOp]struct{}{}, changed: make(chan struct{})}
 	b.bg, b.stop = context.WithCancel(context.Background())
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /pin", b.handlePin)
@@ -294,6 +303,18 @@ func (b *Broker) push(r *http.Request) (sha string, status int, err error) {
 	}
 	if err != nil {
 		return sha, http.StatusInternalServerError, err
+	}
+	bundleSum, err := fileSHA256(bundle)
+	if err != nil {
+		return sha, http.StatusInternalServerError, err
+	}
+	op, status, err := b.authorize(ctx, inputHash("push", b.pin.Repo, b.pin.Ref, sha, lease, bundleSum))
+	if err != nil {
+		return sha, status, err
+	}
+	defer func() { b.finish(op, err == nil) }()
+	if err := b.write(op); err != nil {
+		return sha, http.StatusForbidden, err
 	}
 	args := []string{"push", b.pin.RemoteURL, sha + ":" + b.pin.Ref}
 	if lease != "" {

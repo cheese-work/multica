@@ -106,6 +106,12 @@ func (b *Broker) prOp(parent context.Context, req PRRequest) (res PRResult, stat
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	in, _ := json.Marshal(req)
+	op, status, err := b.authorize(parent, inputHash("pr", b.pin.Repo, b.pin.Ref, string(in)))
+	if err != nil {
+		return res, status, err
+	}
+	defer func() { b.finish(op, err == nil) }()
 	g, status, err := b.mint(parent, true)
 	if err != nil {
 		return res, status, err
@@ -117,6 +123,9 @@ func (b *Broker) prOp(parent context.Context, req PRRequest) (res PRResult, stat
 	repo := "/repos/" + b.pin.Slug
 	var pr ghPR
 	if req.Op == "create" {
+		if err := b.write(op); err != nil {
+			return res, http.StatusForbidden, err
+		}
 		in := map[string]any{"title": *req.Title, "head": strings.TrimPrefix(b.pin.Ref, "refs/heads/"), "base": req.Base, "draft": req.Draft}
 		if req.Body != nil {
 			in["body"] = *req.Body
@@ -137,6 +146,9 @@ func (b *Broker) prOp(parent context.Context, req PRRequest) (res PRResult, stat
 		return res, http.StatusForbidden, errors.New("that PR is not this run's own")
 	}
 	res = PRResult{pr.Number, pr.HTMLURL}
+	if err := b.write(op); err != nil {
+		return res, http.StatusForbidden, err
+	}
 	switch req.Op {
 	case "edit":
 		in := map[string]any{}
