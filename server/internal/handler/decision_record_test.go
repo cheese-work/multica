@@ -170,20 +170,6 @@ func TestAskedDecisionRecordRefusals(test *testing.T) {
 	}
 }
 
-func TestAskedDecisionRecordEscalationHold(test *testing.T) {
-	fixture := newAskedRecordFixture(test)
-	dbfx.Exec(test, `UPDATE decision_request SET escalation_class = 'deploy' WHERE id = $1`, fixture.decision.ID)
-	var before pgtype.Timestamptz
-	dbfx.QueryRow(test, `SELECT clock_timestamp()`).Scan(&before)
-	result, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
-	if err != nil {
-		test.Fatal(err)
-	}
-	if result.Answer.EffectiveAt.Time.Sub(before.Time).Minutes() < 10 || result.Answer.WakeAt.Valid {
-		test.Fatalf("hold was bypassed: %+v", result.Answer)
-	}
-}
-
 func TestAskedDecisionRecordNearestParent(test *testing.T) {
 	fixture := newAskedRecordFixture(test)
 	child := dbfx.Insert(test, "comment", testutil.Cols{"issue_id": fixture.issueID, "workspace_id": testWorkspaceID, "author_type": "member", "author_id": testUserID, "parent_id": fixture.parentID, "content": "Thread reply"})

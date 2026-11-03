@@ -115,12 +115,12 @@ export function IssueActionsMenuItems({
   const wsId = useWorkspaceId();
   // Only the statuses the issue's workflow allows; entering a step that hands
   // the issue off confirms first, as in the status picker. (MUL-7420)
-  const { options: statusOptions, workflow, resolved: workflowResolved, retry: retryCatalog } = useIssueStatusOptions(wsId, issue.project_id, issue.status);
+  const { options: statusOptions, workflow, resolved: workflowResolved, retry: retryCatalog } = useIssueStatusOptions(wsId, issue.project_id, issue.status, issue.workflow_id);
   const notifyCatalogUnresolved = useNotifyCatalogUnresolved();
   const openModal = useModalStore((s) => s.open);
   const setStatus = (status: string) => {
     // A workflow that is merely unloaded reads as "no handoff"; wait for it.
-    if (issue.project_id && !workflowResolved) {
+    if ((issue.project_id || issue.workflow_id) && !workflowResolved) {
       notifyCatalogUnresolved(() => retryCatalog?.());
       return;
     }

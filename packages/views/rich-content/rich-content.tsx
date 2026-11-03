@@ -87,6 +87,7 @@ import { RichTable, RichTableSourceContext } from "./rich-table";
 import { getTextContent } from "./rich-table-model";
 import "katex/dist/katex.min.css";
 import "../editor/styles/index.css";
+import { copyChipKeys } from "./chip-copy";
 import "./rich-content.css";
 
 export type RichContentDensity = "compact" | "document";
@@ -660,6 +661,7 @@ export const RichContent = memo(function RichContent({
         data-rich-content=""
         data-density={density}
         data-phase={phase}
+        onCopy={(e) => copyChipKeys(e.nativeEvent)}
         className={cn(
           "rich-text-editor readonly text-body",
           density === "compact" && "rich-content-compact",

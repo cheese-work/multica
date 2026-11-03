@@ -294,6 +294,11 @@
   "summary.direct": "Run",
   "cancel.title": "Cancel run?",
   "cancel.cancel_task": "Cancel run",
+  "workflow": {
+    "title": "Workflow",
+    "follow_project": "Follow project",
+    "failed_title": "Couldn't change the workflow"
+  },
   "workflow_handoff": {
     "check_failed_title": "Couldn't check the handoff",
     "check_failed_message": "Nothing was changed. {{message}}",
