@@ -14,6 +14,12 @@ import (
 // through the issue API.
 const StatusCauseUIOrAPI = "ui_or_api"
 
+// StatusCauseWorkflowRemap is the cause of a status move a workflow edit or a
+// project workflow switch made to fit an issue to the new workflow. It is the
+// platform's administrative move, never a person's: it opens no run-budget
+// window.
+const StatusCauseWorkflowRemap = "workflow_remap"
+
 // StatusTriggerVersion is the schema version of details.trigger.
 const StatusTriggerVersion = 1
 
