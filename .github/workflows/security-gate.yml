@@ -64,12 +64,34 @@ jobs:
           git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
             fetch --no-tags origin "+${src}:refs/remotes/pull/head"
       - name: Evaluate the verdict and post the status
+        if: github.event_name != 'merge_group'
         run: |
-          if [ -n "$MERGE_GROUP_REF" ]; then
-            target=(--merge-group-ref "$MERGE_GROUP_REF" --merge-group-sha "$MERGE_GROUP_SHA")
-          else
-            target=(--pr "$PR_NUMBER")
-          fi
-          python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" "${target[@]}" \
+          python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" \
             --default-branch "$DEFAULT_BRANCH" \
             --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --post
+      # Runs the default-branch script unchanged (no --post: that would write to the PR head), so the first queue run
+      # works before any script change has merged. Fail closed unless the queued PR head is a parent of the queue commit.
+      - name: Mirror the queued PR's verdict onto the queue commit
+        if: github.event_name == 'merge_group'
+        run: |
+          set -euo pipefail
+          post() {
+            gh api "repos/$GITHUB_REPOSITORY/statuses/$MERGE_GROUP_SHA" -f "state=$1" -f context=security-gate \
+              -f "description=${2:0:140}" \
+              -f "target_url=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          }
+          re='^refs/heads/gh-readonly-queue/(.+)/pr-([0-9]+)-[0-9a-f]{40}$'
+          if [[ ! $MERGE_GROUP_REF =~ $re ]] || [ "${BASH_REMATCH[1]}" != "$DEFAULT_BRANCH" ]; then
+            post failure "unsupported merge group $MERGE_GROUP_REF: only $DEFAULT_BRANCH is gated"
+            exit 0
+          fi
+          pr="${BASH_REMATCH[2]}"
+          out="$(python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$pr" \
+            --default-branch "$DEFAULT_BRANCH")"
+          field() { python3 -c 'import json,sys; print(json.loads(sys.argv[1])[sys.argv[2]])' "$out" "$1"; }
+          head="$(field sha)" state="$(field state)" desc="#$pr: $(field description)"
+          parents="$(gh api "repos/$GITHUB_REPOSITORY/commits/$MERGE_GROUP_SHA" --jq '.parents[].sha')"
+          if ! grep -qx "$head" <<<"$parents"; then
+            state=failure desc="#$pr head ${head:0:12} is not a parent of ${MERGE_GROUP_SHA:0:12}"
+          fi
+          post "$state" "$desc"

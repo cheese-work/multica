@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
+import sys
+import tempfile
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -228,50 +231,72 @@ class WrapperTest(unittest.TestCase):
         self.assertIn("state=failure", posted[0])
 
 
-class MergeGroupTest(unittest.TestCase):
-    """The merge queue requires `security-gate` on its own commit, which no PR event ever reaches."""
+class MergeGroupStepTest(unittest.TestCase):
+    """The queue commit needs its own `security-gate` status, and the job runs the DEFAULT-branch script, which on the
+    first queue run is still the old one (`--pr` only). The workflow step therefore runs that script unchanged."""
 
-    MG_SHA = "e" * 40
-    MG_REF = f"refs/heads/gh-readonly-queue/main/pr-405-{'d' * 40}"
+    QUEUE = "e" * 40
+    REF = f"refs/heads/gh-readonly-queue/main/pr-405-{'d' * 40}"
+    STUB_GH = ('#!/bin/bash\n'
+               'case "$*" in\n'
+               '  *commits/*) printf "%s\\n" $PARENTS ;;\n'
+               '  *) echo "gh $*" >> "$LOG" ;;\n'
+               'esac\n')
+    STUB_GATE = ('#!/bin/bash\n'  # the old script: --pr required, anything else is an argparse error
+                 'echo "gate $*" >> "$LOG"\n'
+                 'case " $* " in *" --pr "*) ;; *) exit 2 ;; esac\n'
+                 'echo \'{"context": "security-gate", "sha": "\'$HEAD\'", "state": "\'$STATE\'", "description": "PASS on x"}\'\n')
 
-    def run_main(self, ref=MG_REF, parents=(("d" * 40), HEAD), state="success"):
-        posted = []
+    def step_run(self):
+        steps = yaml.safe_load((ROOT / ".github/workflows/security-gate.yml").read_text())["jobs"]["security-gate"]["steps"]
+        queue = [s for s in steps if "security_gate.py" in s.get("run", "") and "!= 'merge_group'" not in s.get("if", "")]
+        self.assertEqual(len(queue), 1)
+        return queue[0]["run"]
 
-        def fake_gh(*args):
-            path = " ".join(args)
-            if f"commits/{self.MG_SHA}" in path:
-                return json.dumps(list(parents))
-            if "statuses/" in path:
-                posted.append(args)
-            return ""
+    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success"):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / "bin").mkdir()
+            (tmp / "scripts/security-gate").mkdir(parents=True)
+            (tmp / "bin/gh").write_text(self.STUB_GH)
+            (tmp / "scripts/security-gate/gate.sh").write_text(self.STUB_GATE)
+            (tmp / "scripts/security-gate/security_gate.py").write_text("")  # the step runs it via the shadowed python3
+            (tmp / "bin/python3").write_text(
+                '#!/bin/bash\n[ "${1##*/}" = security_gate.py ] && exec bash "$(dirname "$1")/gate.sh" "${@:2}"\n'
+                f'exec {sys.executable} "$@"\n')
+            for path in (tmp / "bin/gh", tmp / "bin/python3", tmp / "scripts/security-gate/gate.sh"):
+                path.chmod(0o755)
+            env = {**os.environ, "PATH": f"{tmp / 'bin'}:{os.environ['PATH']}", "LOG": str(tmp / "log"), "HEAD": HEAD,
+                   "STATE": state, "PARENTS": " ".join(parents), "MERGE_GROUP_REF": ref, "MERGE_GROUP_SHA": self.QUEUE,
+                   "DEFAULT_BRANCH": "main", "GITHUB_REPOSITORY": "o/r", "GITHUB_SERVER_URL": "https://github.com",
+                   "GITHUB_RUN_ID": "7"}
+            done = subprocess.run(["bash", "-c", self.step_run()], cwd=tmp, env=env, capture_output=True, text=True)
+            log = (tmp / "log").read_text().splitlines() if (tmp / "log").exists() else []
+        return done, log
 
-        argv = ["x", "--repo", str(ROOT), "--github", "cheese-work/multica-dotfiles", "--default-branch", "main",
-                "--merge-group-ref", ref, "--merge-group-sha", self.MG_SHA, "--post"]
-        calls = []
-        with mock.patch.object(sg, "_gh", fake_gh), \
-                mock.patch.object(sg, "gate_pr", side_effect=lambda *a: calls.append(a[2]) or (HEAD, state, "PASS")), \
-                mock.patch("sys.argv", argv), mock.patch("builtins.print"):
-            code = sg.main()
-        return code, posted, calls
+    def posted(self, log):
+        return [l for l in log if l.startswith("gh ") and f"statuses/{self.QUEUE}" in l]
 
-    def test_queued_pr_verdict_is_posted_on_the_merge_group_commit(self):
-        code, posted, calls = self.run_main()
-        self.assertEqual((code, calls), (0, [405]))
-        self.assertIn(f"repos/cheese-work/multica-dotfiles/statuses/{self.MG_SHA}", posted[0])
-        self.assertIn("state=success", posted[0])
+    def test_queued_pr_verdict_is_posted_on_the_queue_commit(self):
+        done, log = self.run_step()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(len(self.posted(log)), 1, log)
+        self.assertIn("state=success", self.posted(log)[0])
+        self.assertIn("--pr 405", " ".join(l for l in log if l.startswith("gate ")))
+        self.assertNotIn("--post", " ".join(log))  # the old script would post on the PR head, not the queue commit
 
     def test_pr_head_that_is_not_a_parent_fails(self):
-        _, posted, _ = self.run_main(parents=("d" * 40, OLD))
-        self.assertIn("state=failure", posted[0])
+        done, log = self.run_step(parents=("d" * 40, OLD))
+        self.assertIn("state=failure", self.posted(log)[0])
 
     def test_pending_pr_verdict_stays_pending(self):
-        _, posted, _ = self.run_main(state="pending")
-        self.assertIn("state=pending", posted[0])
+        done, log = self.run_step(state="pending")
+        self.assertIn("state=pending", self.posted(log)[0])
 
     def test_queue_for_another_branch_fails_without_evaluating(self):
-        _, posted, calls = self.run_main(ref=f"refs/heads/gh-readonly-queue/dev/pr-405-{'d' * 40}")
-        self.assertEqual(calls, [])
-        self.assertIn("state=failure", posted[0])
+        done, log = self.run_step(ref=f"refs/heads/gh-readonly-queue/dev/pr-405-{'d' * 40}")
+        self.assertIn("state=failure", self.posted(log)[0])
+        self.assertFalse([l for l in log if l.startswith("gate ")])
 
 
 class WorkflowTest(unittest.TestCase):
@@ -298,7 +323,6 @@ class WorkflowTest(unittest.TestCase):
 
     def test_merge_queue_commit_gets_the_status(self):
         self.assertIn("checks_requested", self.doc[True]["merge_group"]["types"])
-        self.assertIn("--merge-group-sha", self.text)
 
     def test_only_status_write_is_added(self):
         self.assertEqual(self.doc["permissions"], {"contents": "read", "pull-requests": "read", "statuses": "write"})

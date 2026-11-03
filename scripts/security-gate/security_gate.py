@@ -21,10 +21,6 @@ branch are supported. The PR author must be a registered agent (lab from the `ag
 registered human; anyone else fails closed.
 
 Run from a checkout of the DEFAULT branch only; the head is fetched for its diff, never executed.
-
-Merge queue: `--merge-group-ref/--merge-group-sha` re-evaluate the queued PR and post its state on the queue
-commit, which must have that PR's head as a parent. No PR event ever reaches the queue commit, so without this the
-required check never reports and the queue times out.
 """
 
 from __future__ import annotations
@@ -41,7 +37,6 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 FINDING_RE = re.compile(r"^- (\S+:\d+)\s+\S")
 REVIEWER_RE = re.compile(r"^(\S+) \(([^)]+)\)$")
-MERGE_GROUP_RE = re.compile(r"^refs/heads/gh-readonly-queue/(.+)/pr-(\d+)-[0-9a-f]{40}$")
 # ponytail: regex floor, not a scanner; swap in gitleaks when the X99 runner ships it.
 SECRET_RES = [re.compile(p) for p in (
     r"-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----",
@@ -207,27 +202,11 @@ def gate_pr(repo: str, github: str, number: int, default_branch: str, trusted: s
     return head, state, desc
 
 
-def gate_merge_group(repo: str, github: str, ref: str, sha: str, default_branch: str, trusted: set[int],
-                     humans: set[int]) -> tuple[str, str]:
-    m = MERGE_GROUP_RE.match(ref)
-    if not m or m[1] != default_branch:
-        return _out("failure", f"unsupported merge group {ref}: only {default_branch} is gated")
-    number = int(m[2])
-    head, state, desc = gate_pr(repo, github, number, default_branch, trusted, humans)
-    parents = json.loads(_gh(f"repos/{github}/commits/{sha}", "--jq", "[.parents[].sha]"))
-    if head not in parents:
-        return _out("failure", f"#{number} head {head[:12]} is not a parent of {sha[:12]}")
-    return _out(state, f"#{number}: {desc}")
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--repo", default=".", help="DEFAULT-branch checkout with the head objects fetched")
     ap.add_argument("--github", required=True, help="owner/repo")
-    target = ap.add_mutually_exclusive_group(required=True)
-    target.add_argument("--pr", type=int)
-    target.add_argument("--merge-group-ref", help="merge_group.head_ref; needs --merge-group-sha")
-    ap.add_argument("--merge-group-sha", help="merge_group.head_sha: the queue commit that gets the status")
+    ap.add_argument("--pr", type=int, required=True)
     ap.add_argument("--default-branch", required=True)
     ap.add_argument("--run-url", default="")
     ap.add_argument("--post", action="store_true", help="write the commit status (default: print only)")
@@ -236,12 +215,6 @@ def main() -> int:
         registry = json.load(f)
     trusted = {b["id"] for b in registry["workspace_bots"]}
     humans = {h["id"] for h in registry["instruction_authors"]}
-    if a.merge_group_ref:
-        if not a.merge_group_sha:
-            ap.error("--merge-group-ref needs --merge-group-sha")
-        state, desc = gate_merge_group(a.repo, a.github, a.merge_group_ref, a.merge_group_sha, a.default_branch,
-                                       trusted, humans)
-        return _report(a, a.merge_group_sha, state, desc)
     head, state, desc = gate_pr(a.repo, a.github, a.pr, a.default_branch, trusted, humans)
     # The API also lists PRs that merely contain the commit (descendants, forks) with a different head. Their
     # head objects may not be fetched, so they are filtered here, before any diff is read.
@@ -255,13 +228,10 @@ def main() -> int:
             h, st, d = head, "failure", f"cannot evaluate: {type(e).__name__}"
         if h == head:
             results.append((st, f"#{n}: {d}"))
-    return _report(a, head, *_out(*combine(results)))
-
-
-def _report(a: argparse.Namespace, sha: str, state: str, desc: str) -> int:
-    print(json.dumps({"context": CONTEXT, "sha": sha, "state": state, "description": desc}))
+    state, desc = _out(*combine(results))
+    print(json.dumps({"context": CONTEXT, "sha": head, "state": state, "description": desc}))
     if a.post:
-        _gh(f"repos/{a.github}/statuses/{sha}", "-f", f"state={state}", "-f", f"context={CONTEXT}",
+        _gh(f"repos/{a.github}/statuses/{head}", "-f", f"state={state}", "-f", f"context={CONTEXT}",
             "-f", f"description={desc}", *(["-f", f"target_url={a.run_url}"] if a.run_url else []))
     return 0
 
