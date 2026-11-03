@@ -10,7 +10,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/multica-ai/multica/server/internal/inbox"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -58,7 +57,7 @@ func (handler *Handler) deliverAskRecoveries(ctx context.Context) error {
 // askRecoveryContent quotes the stored source verbatim. It names no option,
 // recommendation or approval, so nothing in it can answer a decision.
 func askRecoveryContent(identifier, issuePath, issueID, source string) string {
-	return fmt.Sprintf("This is automatic recovery, not a decision request. A run asked about [%s](mention://issue/%s) and ended before the ask reached you.\n\nOriginal ask:\n\n%s\n\nReply in this thread to answer. Open issue: %s", identifier, issueID, source, issuePath)
+	return fmt.Sprintf("This is automatic recovery, not a decision request. A run asked about [%s](mention://issue/%s) and ended before the ask reached you.\n\nOriginal ask:\n\n%s\n\nReply in the comment thread under this notice on the issue to answer; a reply in this chat does not count. Open issue: %s", identifier, issueID, source, issuePath)
 }
 
 // deliverAskRecovery writes the notice, the issue comment, the DM message and
@@ -176,8 +175,10 @@ func (handler *Handler) deliverAskRecovery(ctx context.Context, listed db.AskGua
 	if err != nil {
 		return err
 	}
+	// The recovery ping is mandatory: it skips the delivery preferences that
+	// inbox.CreateIfEligible applies, and a missing recipient fails the delivery.
 	// The item opens the issue comment, not the DM, so push says nothing about a decision.
-	item, inserted, err := inbox.CreateIfEligible(ctx, queries, db.CreateInboxItemParams{ID: dbid.NewV7(), WorkspaceID: event.WorkspaceID, RecipientType: "member", RecipientID: event.MemberID, Type: "mentioned", Severity: "info", IssueID: issue.ID, Title: issue.Title, Body: pgtype.Text{String: content, Valid: true}, ActorType: pgtype.Text{String: "agent", Valid: true}, ActorID: agent.ID, Details: details})
+	item, err := queries.CreateInboxItem(ctx, db.CreateInboxItemParams{ID: dbid.NewV7(), WorkspaceID: event.WorkspaceID, RecipientType: "member", RecipientID: event.MemberID, Type: "mentioned", Severity: "info", IssueID: issue.ID, Title: issue.Title, Body: pgtype.Text{String: content, Valid: true}, ActorType: pgtype.Text{String: "agent", Valid: true}, ActorID: agent.ID, Details: details})
 	if err != nil {
 		return err
 	}
@@ -192,9 +193,7 @@ func (handler *Handler) deliverAskRecovery(ctx context.Context, listed db.AskGua
 	}
 	workspaceID, agentID := uuidToString(event.WorkspaceID), uuidToString(agent.ID)
 	handler.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(event.MemberID), uuidToString(session.ID), protocol.ChatMessagePayload{ChatSessionID: uuidToString(session.ID), MessageID: uuidToString(message.ID), Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt), MessageKind: message.MessageKind})
-	if inserted {
-		handler.publish(protocol.EventInboxNew, workspaceID, "agent", agentID, map[string]any{"item": inboxToResponse(item)})
-	}
+	handler.publish(protocol.EventInboxNew, workspaceID, "agent", agentID, map[string]any{"item": inboxToResponse(item)})
 	return askRecoveryFaultAt("after_commit")
 }
 
