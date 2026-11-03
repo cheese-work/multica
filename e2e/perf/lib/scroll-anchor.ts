@@ -79,10 +79,14 @@ export function createAnchorMeter(page: Page, options: AnchorMeterOptions): Anch
           const current = visibleOffsets();
           if (previous) {
             let anchor: string | null = null;
+            let first: string | null = null;
             for (const [id, top] of previous) {
+              if (first === null || top < previous.get(first)!) first = id;
               if (current.has(id) && (anchor === null || top < previous.get(anchor)!)) anchor = id;
             }
             summary.frames += 1;
+            // The row the reader was on is gone with no scroll to explain it.
+            const lostFirst = first !== null && first !== anchor && commanded === 0;
             if (anchor === null) {
               summary.lost_frames += 1;
               summary.jump_count += 1;
@@ -91,7 +95,7 @@ export function createAnchorMeter(page: Page, options: AnchorMeterOptions): Anch
               // Scrolling by `commanded` moves a row by -commanded; anything else is a jump.
               const moved = current.get(anchor)! - previous.get(anchor)! + commanded;
               const delta = Math.abs(moved);
-              if (delta > threshold) summary.jump_count += 1;
+              if (delta > threshold || lostFirst) summary.jump_count += 1;
               summary.max_delta_px = Math.max(summary.max_delta_px, delta);
             }
           }

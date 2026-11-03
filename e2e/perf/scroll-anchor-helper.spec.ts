@@ -30,6 +30,12 @@ const PAGE = `<!doctype html><body style="margin:0">
     list.insertBefore(row("inserted-" + Math.random()), list.firstChild);
     if (compensate) scroller.scrollTop += 50;
   };
+  // Re-keys the row at the top of the viewport; every other row stays put.
+  window.replaceTopRow = () => {
+    const rows = [...list.children];
+    const top = rows.find((el) => el.getBoundingClientRect().bottom > scroller.getBoundingClientRect().top);
+    list.replaceChild(row("replaced-" + Math.random()), top);
+  };
 </script></body>`;
 
 const options = { scroller: "#scroller", rows: "[data-row-id]", idAttr: "data-row-id" };
@@ -40,13 +46,15 @@ const nextFrames = (page: Page, n: number) =>
     tick(count);
   }), n);
 
-async function measure(page: Page, action: "none" | "insert" | "insert-compensated") {
+async function measure(page: Page, action: "none" | "insert" | "insert-compensated" | "replace-top") {
   await page.setContent(PAGE);
   await nextFrames(page, 3);
   const meter = createAnchorMeter(page, options);
   await meter.start();
   await nextFrames(page, 3);
-  if (action !== "none") {
+  if (action === "replace-top") {
+    await page.evaluate(() => (window as unknown as { replaceTopRow: () => void }).replaceTopRow());
+  } else if (action !== "none") {
     await page.evaluate((compensate) => (window as unknown as {
       insertAbove: (c: boolean) => void;
     }).insertAbove(compensate), action === "insert-compensated");
@@ -72,6 +80,11 @@ test("reports no jump when the offset is corrected for the insert", async ({ pag
   const summary = await measure(page, "insert-compensated");
   expect(summary.jump_count).toBe(0);
   expect(() => assertStable(summary)).not.toThrow();
+});
+
+test("reports a jump when the row the reader is on disappears and the rest stays put", async ({ page }) => {
+  const summary = await measure(page, "replace-top");
+  expect(summary.jump_count, JSON.stringify(summary)).toBeGreaterThan(0);
 });
 
 test("a stimulus sent with no connected socket fails instead of vanishing", () => {
