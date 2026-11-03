@@ -22,6 +22,9 @@ deleted_task_usage AS (
 deleted_task_messages AS (
     DELETE FROM task_message WHERE task_id IN (SELECT id FROM batch)
 ),
+deleted_silence_alert_receipts AS (
+    DELETE FROM silence_alert_receipt WHERE task_id IN (SELECT id FROM batch)
+),
 deleted_task_tokens AS (
     DELETE FROM task_token WHERE task_id IN (SELECT id FROM batch)
 ),
@@ -335,6 +338,9 @@ deleted_orphan_task_supplements AS (
 deleted_orphan_task_supplement_capabilities AS (
     DELETE FROM task_supplement_capability WHERE workspace_id = $1
 ),
+deleted_chat_task_supplements AS (
+    DELETE FROM chat_task_supplement WHERE workspace_id = $1
+),
 deleted_orphan_task_pr_event_deliveries AS (
     DELETE FROM task_pr_event_delivery WHERE workspace_id = $1
 ),
@@ -370,6 +376,9 @@ deleted_chat_wakeups AS (
 ),
 deleted_github_dispatch_halts AS (
     DELETE FROM github_dispatch_halt WHERE workspace_id = $1
+),
+deleted_config_sync AS (
+    DELETE FROM workspace_config_sync WHERE workspace_id = $1
 ),
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
@@ -679,6 +688,7 @@ WHERE channel_media_pending_object.workspace_id = $1
 // Same no-FK chore as chat_draft_restore above. Matched on workspace_id rather
 // than the session set because that column exists precisely so this statement
 // does not have to join through chat_session, which it deletes in this same CTE.
+// CHE-3284 config-sync enrollment: workspace-owned leaf, no FK.
 // CHE-488 durable stage-completion-wake bookkeeping (stage_generation,
 // stage_completion_wake). Deleted before the parent issues below so neither
 // statement depends on FK cascade ordering.

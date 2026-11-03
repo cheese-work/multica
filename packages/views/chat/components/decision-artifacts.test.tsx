@@ -49,6 +49,12 @@ function renderArtifacts(artifacts: DecisionArtifact[], answered = false) {
   );
 }
 
+// Taps the file row and returns the fullscreen dialog it opens.
+async function openViewer(user = userEvent.setup()) {
+  await user.click(await screen.findByRole("button", { name: "Open design-rev5.md" }));
+  return screen.findByRole("dialog", { name: "Design revision 5" });
+}
+
 describe("DecisionArtifacts", () => {
   beforeEach(() => {
     listDecisionArtifacts.mockReset();
@@ -76,9 +82,12 @@ describe("DecisionArtifacts", () => {
   it("carries the element ids the admit sheet names", async () => {
     renderArtifacts([artifact()]);
     const section = await screen.findByTestId("decision-request-artifacts");
-    for (const id of ["decision-artifact-file", "decision-artifact-signature", "decision-artifact-download", "decision-artifact-viewer"]) {
+    for (const id of ["decision-artifact-file", "decision-artifact-open", "decision-artifact-signature", "decision-artifact-download"]) {
       expect(within(section).getByTestId(id)).toBeInTheDocument();
     }
+    const dialog = await openViewer();
+    expect(dialog).toHaveAttribute("data-testid", "decision-artifact-dialog");
+    expect(within(dialog).getByTestId("decision-artifact-viewer")).toBeInTheDocument();
   });
 
   it("downloads through the shared attachment downloader, not a bare link", async () => {
@@ -93,28 +102,122 @@ describe("DecisionArtifacts", () => {
     expect(await screen.findByRole("region", { name: "You approved" })).toBeInTheDocument();
   });
 
-  it("starts closed with a hint and opens a labelled tab panel on select", async () => {
+  it("has no inline viewer; the file row names what it opens", async () => {
     renderArtifacts([artifact()]);
-    const user = userEvent.setup();
-    expect(await screen.findByText("Select a tab to read the file here.")).toBeInTheDocument();
+    const row = await screen.findByRole("button", { name: "Open design-rev5.md" });
+    expect(row).toHaveTextContent("Changes +3 −2 · Preview");
+    expect(screen.queryByRole("tablist")).toBeNull();
     expect(screen.queryByRole("tabpanel")).toBeNull();
-    const changes = screen.getByRole("tab", { name: /Changes since design-rev4\.md/ });
-    expect(changes).toHaveAttribute("aria-selected", "false");
-    await user.click(changes);
-    const panel = screen.getByRole("tabpanel");
+  });
+
+  it("opens a dialog from the file row with the card header, both tabs and a download", async () => {
+    getAttachmentTextContent.mockResolvedValue({ text: "# Decision card\n", originalContentType: "text/markdown" });
+    const user = userEvent.setup();
+    renderArtifacts([artifact()]);
+    const dialog = await openViewer(user);
+    expect(within(dialog).getByText(/design-rev5\.md/)).toHaveTextContent("18 KB");
+    expect(within(dialog).getByText("3f9a2c1")).toBeInTheDocument();
+    expect(within(dialog).getByText("Hash verified")).toBeInTheDocument();
+    expect(within(dialog).getByText("Design revision 5 signed by Sol")).toBeInTheDocument();
+    // The first tab is already open: nothing to select before reading.
+    const changes = within(dialog).getByRole("tab", { name: /^Changes/ });
     expect(changes).toHaveAttribute("aria-selected", "true");
+    const panel = within(dialog).getByRole("tabpanel");
     expect(changes).toHaveAttribute("aria-controls", panel.id);
     expect(panel).toHaveAttribute("aria-labelledby", changes.id);
-    await user.click(changes);
-    expect(screen.queryByRole("tabpanel")).toBeNull();
-    expect(changes).toHaveAttribute("aria-selected", "false");
+    expect(within(panel).getByRole("region", { name: /Text changes since design-rev4\.md/ })).toBeInTheDocument();
+    // Every tab names the panel it controls, selected or not, before and after a selection change.
+    const preview = within(dialog).getByRole("tab", { name: "Preview" });
+    expect(preview).toHaveAttribute("aria-controls", panel.id);
+    await user.click(preview);
+    expect(changes).toHaveAttribute("aria-controls", panel.id);
+    expect(preview).toHaveAttribute("aria-controls", panel.id);
+    expect(within(dialog).getByRole("tabpanel")).toHaveAttribute("aria-labelledby", preview.id);
+    expect(await within(dialog).findByRole("heading", { name: "Decision card" })).toBeInTheDocument();
+    // Selecting the open tab does not close it: one tab is always open.
+    await user.click(within(dialog).getByRole("tab", { name: "Preview" }));
+    expect(within(dialog).getByRole("tabpanel")).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Download design-rev5.md" }));
+    expect(downloadAttachment).toHaveBeenCalledWith("att-5");
+  });
+
+  it("opens on Preview for a first revision, which has no Changes tab", async () => {
+    getAttachmentTextContent.mockResolvedValue({ text: "# First\n", originalContentType: "text/markdown" });
+    renderArtifacts([artifact({ supersedes_attachment_id: undefined, supersedes_signed_by: undefined, diff: undefined })]);
+    const dialog = await openViewer();
+    expect(within(dialog).getByRole("tab", { name: "Preview" })).toHaveAttribute("aria-selected", "true");
+    expect(within(dialog).queryByRole("tab", { name: /^Changes/ })).toBeNull();
+    expect(within(dialog).getByText("Design revision 5 signed by Sol")).toBeInTheDocument();
+    expect(await within(dialog).findByRole("heading", { name: "First" })).toBeInTheDocument();
+  });
+
+  it("closes on Escape and returns focus to the file row", async () => {
+    const user = userEvent.setup();
+    renderArtifacts([artifact()]);
+    const row = await screen.findByRole("button", { name: "Open design-rev5.md" });
+    await openViewer(user);
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(row).toHaveFocus();
+  });
+
+  it("previews a plain-text file as text, not Markdown, and opens it on Preview", async () => {
+    getAttachmentTextContent.mockResolvedValue({ text: "# not a heading\nline two\n", originalContentType: "text/plain" });
+    renderArtifacts([artifact({
+      supersedes_attachment_id: undefined, supersedes_signed_by: undefined, diff: undefined,
+      attachment: { id: "att-5", filename: "notes.txt", content_type: "text/plain", size_bytes: 30, download_url: "/api/attachments/att-5/download" },
+    })]);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Open notes.txt" }));
+    const dialog = await screen.findByRole("dialog", { name: "Design revision 5" });
+    expect(within(dialog).getByRole("tab", { name: "Preview" })).toHaveAttribute("aria-selected", "true");
+    expect(await within(dialog).findByText(/# not a heading/)).toBeInTheDocument();
+    expect(within(dialog).queryByRole("heading", { name: "not a heading" })).toBeNull();
+  });
+
+  it("offers Preview next to Changes for a plain-text revision", async () => {
+    getAttachmentTextContent.mockResolvedValue({ text: "body\n", originalContentType: "text/plain" });
+    const user = userEvent.setup();
+    renderArtifacts([artifact({
+      attachment: { id: "att-5", filename: "notes.txt", content_type: "text/plain", size_bytes: 30, download_url: "/api/attachments/att-5/download" },
+    })]);
+    await user.click(await screen.findByRole("button", { name: "Open notes.txt" }));
+    const dialog = await screen.findByRole("dialog", { name: "Design revision 5" });
+    expect(within(dialog).getByRole("tab", { name: "Preview" })).toBeInTheDocument();
+  });
+
+  it("closes on browser Back instead of leaving the page, and a normal close leaves no history entry", async () => {
+    const user = userEvent.setup();
+    renderArtifacts([artifact()]);
+    const row = await screen.findByRole("button", { name: "Open design-rev5.md" });
+    await openViewer(user);
+    expect(window.history.state?.artifactViewer).toBe(true);
+    window.history.back();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(window.history.state?.artifactViewer).toBeFalsy();
+    expect(row).toHaveFocus();
+    await openViewer(user);
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(window.history.state?.artifactViewer).toBeFalsy());
+  });
+
+  it("offers no dialog for a file that cannot be previewed or diffed", async () => {
+    renderArtifacts([artifact({
+      supersedes_attachment_id: undefined, diff: undefined,
+      attachment: { id: "att-5", filename: "mock.png", content_type: "image/png", size_bytes: 10, download_url: "https://files.test/x" },
+    })]);
+    await screen.findByRole("region", { name: "You are approving" });
+    expect(screen.queryByRole("button", { name: /^Open / })).toBeNull();
+    expect(screen.getByRole("button", { name: "Download mock.png" })).toBeInTheDocument();
   });
 
   it("moves focus between tabs with the arrow, Home and End keys; only one tab is tabbable", async () => {
-    renderArtifacts([artifact()]);
     const user = userEvent.setup();
-    const changes = await screen.findByRole("tab", { name: /Changes since/ });
-    const preview = screen.getByRole("tab", { name: /Preview/ });
+    renderArtifacts([artifact()]);
+    const dialog = await openViewer(user);
+    const changes = within(dialog).getByRole("tab", { name: /^Changes/ });
+    const preview = within(dialog).getByRole("tab", { name: "Preview" });
     expect(changes).toHaveAttribute("tabindex", "0");
     expect(preview).toHaveAttribute("tabindex", "-1");
     changes.focus();
@@ -122,23 +225,21 @@ describe("DecisionArtifacts", () => {
     expect(preview).toHaveFocus();
     expect(preview).toHaveAttribute("tabindex", "0");
     expect(changes).toHaveAttribute("tabindex", "-1");
-    await user.keyboard("{ArrowRight}");
+    await user.keyboard("{ArrowDown}");
     expect(changes).toHaveFocus();
-    await user.keyboard("{ArrowLeft}");
+    await user.keyboard("{ArrowUp}");
     expect(preview).toHaveFocus();
     await user.keyboard("{Home}");
     expect(changes).toHaveFocus();
     await user.keyboard("{End}");
     expect(preview).toHaveFocus();
     await user.keyboard("{Enter}");
-    expect(screen.getByRole("tabpanel")).toBeInTheDocument();
+    expect(preview).toHaveAttribute("aria-selected", "true");
   });
 
   it("shows only the changed hunks with +/- marks, a hidden-lines gap and the signature marker", async () => {
     renderArtifacts([artifact()]);
-    const user = userEvent.setup();
-    await user.click(await screen.findByRole("tab", { name: /Changes since/ }));
-    const panel = screen.getByRole("tabpanel");
+    const panel = within(await openViewer()).getByRole("tabpanel");
     expect(within(panel).getByText("design-rev4.md signed by Terra")).toBeInTheDocument();
     expect(within(panel).queryByText(/signed by Sol/)).toBeNull();
     expect(within(panel).getByText("3 lines added, 2 removed.")).toBeInTheDocument();
@@ -151,90 +252,66 @@ describe("DecisionArtifacts", () => {
     expect(within(region).getByText("Unchanged lines hidden: 43")).toBeInTheDocument();
   });
 
-  it("marks the current revision on the collapsed file card, signed or not", async () => {
+  it("marks the current revision on the file card, signed or not", async () => {
     const signed = renderArtifacts([artifact()]);
     const card = await screen.findByRole("region", { name: "You are approving" });
-    expect(screen.queryByRole("tabpanel")).toBeNull();
     expect(within(card).getByText("Design revision 5 signed by Sol")).toBeInTheDocument();
     signed.unmount();
     renderArtifacts([artifact({ signed_by: undefined })]);
     expect(await screen.findByText("Design revision 5 is not signed yet")).toBeInTheDocument();
   });
 
-  it("shows the reviewer of a signed first revision that has no Changes tab", async () => {
-    renderArtifacts([artifact({ supersedes_attachment_id: undefined, supersedes_signed_by: undefined, diff: undefined })]);
-    expect(await screen.findByText("Design revision 5 signed by Sol")).toBeInTheDocument();
-    expect(screen.queryByRole("tab", { name: /Changes since/ })).toBeNull();
-  });
-
   it("keeps the previous and the current signature apart: rev 4 signed, rev 5 not yet", async () => {
     renderArtifacts([artifact({ signed_by: undefined })]);
-    const user = userEvent.setup();
-    await user.click(await screen.findByRole("tab", { name: /Changes since/ }));
-    const panel = screen.getByRole("tabpanel");
+    const dialog = await openViewer();
+    const panel = within(dialog).getByRole("tabpanel");
     expect(within(panel).getByText("design-rev4.md signed by Terra")).toBeInTheDocument();
-    expect(screen.getByText("Design revision 5 is not signed yet")).toBeInTheDocument();
+    expect(within(dialog).getByText("Design revision 5 is not signed yet")).toBeInTheDocument();
     expect(within(panel).queryByText(/Design revision 5/)).toBeNull();
   });
 
   it("says so when the previous revision has no recorded signature", async () => {
     renderArtifacts([artifact({ supersedes_signed_by: undefined })]);
-    const user = userEvent.setup();
-    await user.click(await screen.findByRole("tab", { name: /Changes since/ }));
-    expect(within(screen.getByRole("tabpanel")).getByText("No signature recorded for design-rev4.md")).toBeInTheDocument();
+    const panel = within(await openViewer()).getByRole("tabpanel");
+    expect(within(panel).getByText("No signature recorded for design-rev4.md")).toBeInTheDocument();
   });
 
-  it("offers only Preview for a first revision", async () => {
-    renderArtifacts([artifact({ supersedes_attachment_id: undefined, diff: undefined })]);
-    expect(await screen.findByRole("tab", { name: "Preview" })).toBeInTheDocument();
-    expect(screen.queryByRole("tab", { name: /Changes since/ })).toBeNull();
-  });
-
-  it("offers no viewer for a file that cannot be previewed or diffed", async () => {
-    renderArtifacts([artifact({
-      supersedes_attachment_id: undefined, diff: undefined,
-      attachment: { id: "att-5", filename: "mock.png", content_type: "image/png", size_bytes: 10, download_url: "https://files.test/x" },
-    })]);
-    expect(await screen.findByRole("region", { name: "You are approving" })).toBeInTheDocument();
-    expect(screen.queryByRole("tablist")).toBeNull();
-  });
-
-  it("renders the Markdown preview on demand", async () => {
+  it("renders the Markdown preview", async () => {
     getAttachmentTextContent.mockResolvedValue({ text: "# Decision card\n\nBody line.\n", originalContentType: "text/markdown" });
-    renderArtifacts([artifact()]);
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("tab", { name: "Preview" }));
+    renderArtifacts([artifact()]);
+    const dialog = await openViewer(user);
+    await user.click(within(dialog).getByRole("tab", { name: "Preview" }));
     expect(getAttachmentTextContent).toHaveBeenCalledWith("att-5");
-    const region = await screen.findByRole("region", { name: "Rendered preview of design-rev5.md" });
+    const region = await within(dialog).findByRole("region", { name: "Rendered preview of design-rev5.md" });
     expect(region).toHaveAttribute("tabindex", "0");
     expect(await within(region).findByRole("heading", { name: "Decision card" })).toBeInTheDocument();
-    expect(screen.getByText("Rendered from design-rev5.md. Scroll to read all 3 lines.")).toBeInTheDocument();
+    expect(within(dialog).getByText("Rendered from design-rev5.md. Scroll to read all 3 lines.")).toBeInTheDocument();
   });
 
   it("says so when the preview cannot load, and retries", async () => {
     getAttachmentTextContent.mockRejectedValueOnce(new Error("boom")).mockResolvedValue({ text: "# Back", originalContentType: "text/markdown" });
-    renderArtifacts([artifact()]);
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("tab", { name: "Preview" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load the preview. Download the file to read it.");
-    await user.click(screen.getByRole("button", { name: "Try again" }));
-    expect(await screen.findByRole("heading", { name: "Back" })).toBeInTheDocument();
+    renderArtifacts([artifact()]);
+    const dialog = await openViewer(user);
+    await user.click(within(dialog).getByRole("tab", { name: "Preview" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Could not load the preview. Download the file to read it.");
+    await user.click(within(dialog).getByRole("button", { name: "Try again" }));
+    expect(await within(dialog).findByRole("heading", { name: "Back" })).toBeInTheDocument();
   });
 
   it.each([["too_large"], ["not_text"], ["unavailable"]] as const)("shows a banner when the changes cannot be shown (%s)", async (problem) => {
-    renderArtifacts([artifact({ diff: { previous_filename: "design-rev4.md", hunks: [], problem } })]);
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("tab", { name: /Changes since/ }));
-    expect(screen.getByRole("alert")).toHaveTextContent("Could not load the changes. Download the files to read them.");
-    await user.click(screen.getByRole("button", { name: "Try again" }));
+    renderArtifacts([artifact({ diff: { previous_filename: "design-rev4.md", hunks: [], problem } })]);
+    const dialog = await openViewer(user);
+    expect(within(dialog).getByRole("alert")).toHaveTextContent("Could not load the changes. Download the files to read them.");
+    await user.click(within(dialog).getByRole("button", { name: "Try again" }));
     await waitFor(() => expect(listDecisionArtifacts).toHaveBeenCalledTimes(2));
   });
 
   it("says when a diff has no text changes", async () => {
     renderArtifacts([artifact({ diff: { previous_filename: "design-rev4.md", hunks: [] } })]);
-    const user = userEvent.setup();
-    await user.click(await screen.findByRole("tab", { name: /Changes since/ }));
-    expect(screen.getByText("No text changes.")).toBeInTheDocument();
+    expect(within(await openViewer()).getByText("No text changes.")).toBeInTheDocument();
   });
 
   it("names a file that was deleted after the ask was sent", async () => {

@@ -290,7 +290,7 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 	var issue db.Issue
 	var cancelledWakeups []db.AgentTaskQueue
 	moveGuard := issueMoveGuardFrom(ctx)
-	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil || moveGuard != nil || len(issueWriteTaint(ctx)) > 0 || ctx.Value(issueWriteExternalReadKey{}) != nil, func(q *db.Queries) error {
+	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil || moveGuard != nil || statusRecordFrom(ctx) != nil || len(issueWriteTaint(ctx)) > 0 || ctx.Value(issueWriteExternalReadKey{}) != nil, func(q *db.Queries) error {
 		if err := wf.lockProject(ctx, q); err != nil {
 			return err
 		}
@@ -309,7 +309,10 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 		}
 		var innerErr error
 		issue, cancelledWakeups, innerErr = updateIssueStoppingWakeups(ctx, q, params)
-		return innerErr
+		if innerErr != nil {
+			return innerErr
+		}
+		return wf.recordVerdict(ctx, q, issue)
 	})
 	if err != nil {
 		return issue, err
@@ -326,9 +329,31 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 	if err := guardAgentIssueStatus(ctx, q, params); err != nil {
 		return db.Issue{}, nil, err
 	}
+	if err := guardIssueProjectRebinding(ctx, q, params); err != nil {
+		return db.Issue{}, nil, err
+	}
+	rec := statusRecordFrom(ctx)
+	recordStatus := rec != nil && params.Status.Valid
+	var fromStatus string
+	if recordStatus {
+		// Lock first so "from" is the status this write replaces, not the
+		// caller's earlier read.
+		prior, err := q.LockIssueForDescriptionUpdate(ctx, db.LockIssueForDescriptionUpdateParams{ID: params.ID, WorkspaceID: rec.workspaceID})
+		if err != nil {
+			return db.Issue{}, nil, fmt.Errorf("lock issue for status history: %w", err)
+		}
+		fromStatus = prior.Status
+	}
 	issue, err := q.UpdateIssue(ctx, params)
 	if err != nil {
 		return issue, nil, err
+	}
+	if recordStatus && fromStatus != issue.Status {
+		row, err := service.RecordStatusChange(ctx, q, issue, fromStatus, issue.Status, rec.trigger, nil)
+		if err != nil {
+			return db.Issue{}, nil, fmt.Errorf("record status change: %w", err)
+		}
+		rec.activity = &row
 	}
 	// Same transaction as the write: a claim that reads the committed write
 	// finds this taint on its run.
@@ -721,15 +746,15 @@ type SearchIssueResponse struct {
 // earliest occurring individual term and centers the snippet around it.
 func extractSnippet(content, query string) string {
 	runes := []rune(content)
-	lowerRunes := []rune(strings.ToLower(content))
-	queryRunes := []rune(strings.ToLower(query))
+	lowerRunes := []rune(foldDiacritics(content))
+	queryRunes := []rune(foldDiacritics(query))
 
 	idx := findRuneSubstring(lowerRunes, queryRunes)
 
 	// If phrase not found, try individual terms for multi-word queries.
 	matchLen := len(queryRunes)
 	if idx < 0 {
-		terms := strings.Fields(strings.ToLower(query))
+		terms := strings.Fields(foldDiacritics(query))
 		if len(terms) > 1 {
 			earliest := -1
 			earliestLen := 0
@@ -797,13 +822,13 @@ func descriptionContains(desc pgtype.Text, phrase string, terms []string) bool {
 	if !desc.Valid || desc.String == "" {
 		return false
 	}
-	lower := strings.ToLower(desc.String)
-	if strings.Contains(lower, strings.ToLower(phrase)) {
+	lower := foldDiacritics(desc.String)
+	if strings.Contains(lower, foldDiacritics(phrase)) {
 		return true
 	}
 	if len(terms) > 1 {
 		for _, t := range terms {
-			if !strings.Contains(lower, strings.ToLower(t)) {
+			if !strings.Contains(lower, foldDiacritics(t)) {
 				return false
 			}
 		}
@@ -867,12 +892,40 @@ type searchResult struct {
 // case-insensitive LIKE semantics as the legacy query. The pipeline deliberately
 // trades the title, description, and comment content GIN fast paths for one
 // predictable pass over each relation within the selected workspace.
+// searchCommentSource scopes the name "comment" to the stored folded text for
+// one CTE body, so the comment scan reads one narrow table instead of joining
+// comment to its side table. content is the folded text; content_accents is the
+// lowered unfolded text where folding changed it, for the exact-diacritic rank.
+const searchCommentSource = `comment AS (
+			SELECT comment_id AS id, issue_id, workspace_id, created_at,
+				content_folded AS content, content_accents
+			FROM comment_search_text
+		)`
+
+// searchIssueSource exposes the stored folded text as title and description,
+// next to the raw text that the exact-diacritic ranking compares against.
+const searchIssueSource = `(
+		SELECT i.id, i.workspace_id, i.status, i.updated_at, i.number,
+			ist.title_folded AS title, ist.description_folded AS description,
+			ist.title_accents, ist.description_accents
+		FROM issue i
+		JOIN issue_search_text ist ON ist.issue_id = i.id AND ist.workspace_id = i.workspace_id
+	)`
+
 func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, includeClosed bool, terminalStatusKeys []string) (string, []any) {
-	// Lowercase in Go so SQL only needs LOWER() on the column side.
-	phrase = strings.ToLower(phrase)
+	// The stored search text is lowered and diacritic-folded (search_fold), so the
+	// patterns are folded the same way. The lowered-only query is kept to rank a
+	// match that also agrees on diacritics above one that matches after folding.
+	lowerPhrase := strings.ToLower(phrase)
+	lowerTerms := make([]string, len(terms))
+	foldedTerms := make([]string, len(terms))
 	for i, term := range terms {
-		terms[i] = strings.ToLower(term)
+		lowerTerms[i] = strings.ToLower(term)
+		foldedTerms[i] = foldDiacritics(term)
 	}
+	phrase = foldDiacritics(phrase)
+	terms = foldedTerms
+	exactDiacritics := lowerPhrase != phrase
 
 	args := []any{}
 	nextArg := func(value any) string {
@@ -903,6 +956,24 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		// Negate only known terminal keys so an unknown legacy key remains
 		// searchable instead of disappearing from the default result set.
 		terminalStatusesParam = nextArg(terminalStatusKeys)
+	}
+
+	// casedMatch reports whether the unfolded text still agrees with the query on
+	// diacritics: the whole phrase, or every term when they are spread apart.
+	casedMatch := func(string) string { return "FALSE" }
+	if exactDiacritics {
+		casedParts := []string{"%s LIKE " + nextArg("%"+escapeLike(lowerPhrase)+"%")}
+		if len(termContainsParams) > 1 {
+			var casedTerms []string
+			for _, term := range lowerTerms {
+				casedTerms = append(casedTerms, "%s LIKE "+nextArg("%"+escapeLike(term)+"%"))
+			}
+			casedParts = append(casedParts, "("+strings.Join(casedTerms, " AND ")+")")
+		}
+		casedPattern := "(" + strings.Join(casedParts, " OR ") + ")"
+		casedMatch = func(rawLower string) string {
+			return strings.ReplaceAll(casedPattern, "%s", rawLower)
+		}
 	}
 
 	limitParam := nextArg(nil)
@@ -946,6 +1017,15 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		)
 	}
 
+	// Cased flags (see casedMatch) read the stored accented text, which is NULL
+	// where folding changed nothing and so cannot match a query with diacritics.
+	if exactDiacritics {
+		issueFlagColumns = append(issueFlagColumns,
+			"COALESCE("+casedMatch("i.title_accents")+", FALSE) AS title_cased",
+			"COALESCE("+casedMatch("i.description_accents")+", FALSE) AS description_cased",
+		)
+	}
+
 	issueWhere := "i.workspace_id = " + wsParam
 	if terminalStatusesParam != "" {
 		issueWhere += fmt.Sprintf(" AND NOT (i.status = ANY(%s::text[]))", terminalStatusesParam)
@@ -962,7 +1042,7 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	// fences so expression indexes can still match them.
 	issueMatchesCTE := fmt.Sprintf(`issue_matches AS (
 		SELECT %s
-		FROM issue i
+		FROM %s i
 		CROSS JOIN LATERAL (
 			SELECT LOWER(i.title) AS lowered
 			OFFSET 0
@@ -973,7 +1053,8 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 			OFFSET 0
 		) lowered_issue_description ON TRUE
 		WHERE %s
-	)`, strings.Join(issueFlagColumns, ",\n\t\t\t"), titleMatchExpr, issueWhere)
+	)`, strings.Join(issueFlagColumns, ",\n\t\t\t"),
+		searchIssueSource, titleMatchExpr, issueWhere)
 
 	// Comments are also scanned once, workspace-first. This intentionally avoids
 	// the legacy planner choice between global content GIN postings and repeated
@@ -1012,10 +1093,16 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	// looking the ID up later would repeat text predicates after pagination.
 	// The aggregate stores matching UUIDs per issue (not content), and the ID
 	// tie-break makes equal created_at values deterministic.
-	commentFlagColumns = append(commentFlagColumns, fmt.Sprintf(
-		"(ARRAY_AGG(c.id ORDER BY c.created_at DESC, c.id DESC) FILTER (WHERE %s))[1] AS snippet_comment_id",
-		commentSnippetPredicate,
-	))
+	snippetAggregate := fmt.Sprintf(
+		"ARRAY_AGG(c.id ORDER BY c.created_at DESC, c.id DESC) FILTER (WHERE %s)", commentSnippetPredicate)
+	commentFlagColumns = append(commentFlagColumns, "("+snippetAggregate+")[1] AS snippet_comment_id")
+	// Exact diacritics add one flag to the same pass: some comment, not only the
+	// newest, agrees with the query on diacritics. content_accents is NULL for a
+	// comment folding left unchanged, which cannot match a query with diacritics.
+	if exactDiacritics {
+		commentFlagColumns = append(commentFlagColumns,
+			"BOOL_OR("+casedMatch("c.content_accents")+") FILTER (WHERE c.content_accents IS NOT NULL) AS comment_diacritic_match")
+	}
 
 	// PostgreSQL otherwise inlines this scalar LATERAL subquery and recomputes
 	// LOWER(c.content) for every flag. OFFSET 0 is the intentional planner fence
@@ -1023,6 +1110,7 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	// text predicates must stay outside this projection-only fence so an index on
 	// LOWER(c.content) can still match them.
 	commentMatchesCTE := fmt.Sprintf(`comment_matches AS MATERIALIZED (
+		WITH %s
 		SELECT *
 		FROM (
 			SELECT %s
@@ -1036,10 +1124,18 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		) aggregated_comments
 		WHERE %s
 	)`,
+		searchCommentSource,
 		strings.Join(commentFlagColumns, ",\n\t\t\t\t"),
 		wsParam,
 		strings.Join(commentCandidateFlags, " OR "),
 	)
+
+	// Exact diacritics rank a match above one that only agrees after folding,
+	// across all three sources.
+	diacriticRank := "0"
+	if exactDiacritics {
+		diacriticRank = "CASE WHEN im.title_cased OR im.description_cased OR COALESCE(cm.comment_diacritic_match, FALSE) THEN 0 ELSE 1 END"
+	}
 
 	// Stage two combines the two narrow sources, applies the legacy eligibility
 	// and ranking rules once, and materializes only the requested page.
@@ -1140,16 +1236,17 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 			%s AS cancelled_rank,
 			%s AS relevance_rank,
 			%s AS status_rank,
+			%s AS diacritic_rank,
 			%s AS match_source
 		FROM issue_matches im
 		LEFT JOIN comment_matches cm ON cm.issue_id = im.issue_id
 		WHERE %s
-	)`, cancelledRank, rankExpr, statusRank, matchSourceExpr, eligibleExpr)
+	)`, cancelledRank, rankExpr, statusRank, diacriticRank, matchSourceExpr, eligibleExpr)
 
 	pageCandidatesCTE := fmt.Sprintf(`page_candidates AS MATERIALIZED (
-		SELECT issue_id, updated_at, snippet_comment_id, cancelled_rank, relevance_rank, status_rank, match_source
+		SELECT issue_id, updated_at, snippet_comment_id, cancelled_rank, relevance_rank, status_rank, diacritic_rank, match_source
 		FROM ranked_candidates
-		ORDER BY cancelled_rank, relevance_rank, status_rank, updated_at DESC, issue_id ASC
+		ORDER BY cancelled_rank, relevance_rank, status_rank, diacritic_rank, updated_at DESC, issue_id ASC
 		LIMIT %s OFFSET %s
 	)`, limitParam, offsetParam)
 
@@ -1167,7 +1264,7 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	FROM page_candidates pc
 	JOIN issue i ON i.id = pc.issue_id AND i.workspace_id = %s
 	LEFT JOIN comment c ON c.id = pc.snippet_comment_id AND c.workspace_id = %s
-	ORDER BY pc.cancelled_rank, pc.relevance_rank, pc.status_rank, pc.updated_at DESC, pc.issue_id ASC`,
+	ORDER BY pc.cancelled_rank, pc.relevance_rank, pc.status_rank, pc.diacritic_rank, pc.updated_at DESC, pc.issue_id ASC`,
 		issueMatchesCTE,
 		commentMatchesCTE,
 		rankedCandidatesCTE,
@@ -3704,6 +3801,8 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 type UpdateIssueRequest struct {
 	ExpectedRevision *int64  `json:"expected_revision,omitempty"`
 	Title            *string `json:"title"`
+	// ReviewFindings come with a reviewer's changes-requested status write.
+	ReviewFindings []ReviewFinding `json:"review_findings,omitempty"`
 	// TitleBase is the title adopted by the editor before producing Title. It
 	// protects title edits without coupling them to unrelated issue mutations.
 	TitleBase   *string `json:"title_base,omitempty"`
@@ -3948,6 +4047,9 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 	issue, cancelledWakeups, err := updateIssueStoppingWakeups(ctx, qtx, params)
 	if err != nil {
 		return db.Issue{}, current, false, fmt.Errorf("update locked issue: %w", err)
+	}
+	if err := wf.recordVerdict(ctx, qtx, issue); err != nil {
+		return db.Issue{}, current, false, fmt.Errorf("record review verdict: %w", err)
 	}
 
 	attachmentsChanged := false
@@ -4233,7 +4335,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		req.EntryGateOverrideReason = &reason
 	}
 	callerRun := h.agentRunOnIssue(r, actorType, prevIssue)
-	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, workflowCaller{run: callerRun, agent: actorType == "agent"})
+	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, workflowCaller{run: callerRun, agent: actorType == "agent", findings: req.ReviewFindings})
 	if workflowWrite != nil {
 		workflowWrite.preview = req.HandoffPreview
 		workflowWrite.stopPrevious = req.StopPreviousAssigneeRuns
@@ -4272,6 +4374,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	assigneeSupplied := req.AssigneeType != nil || req.AssigneeID != nil
 	suppressRun, runReason := h.suppressRunForWrite(r.Context(), actorType, actorID, prevIssue, params, handoff, req.SuppressRun)
 	writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
+	writeCtx = withBudgetActor(writeCtx, r)
 	if assigneeSupplied || handoff != nil {
 		var ok bool
 		if writeCtx, ok = h.withIssueWriteTaint(w, r, writeCtx); !ok {
@@ -4283,6 +4386,22 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		if writeCtx, ok = h.withIssueWriteExternalRead(w, r, writeCtx); !ok {
 			return
 		}
+	}
+	releaseMove := func() {}
+	if params.Status.Valid {
+		release, ok := h.beginRunBudgetMove(w, r, actorType, prevIssue, params.Status.String)
+		if !ok {
+			return
+		}
+		releaseMove = release
+		defer releaseMove()
+	}
+	// Status history is written in the status transaction. A workflow handoff
+	// and a duplicate mark keep the listener's richer row until they migrate.
+	var statusRec *statusRecord
+	if handoff == nil && !params.DuplicateOfIssueID.Valid && !prevIssue.DuplicateOfIssueID.Valid {
+		statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTriggerFromRequest(r, actorType, actorID)}
+		writeCtx = withStatusRecord(writeCtx, statusRec)
 	}
 	var issue db.Issue
 	attachmentsChanged := false
@@ -4298,7 +4417,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		issue, err = h.updateIssueWithStatusGuard(writeCtx, prevIssue.WorkspaceID, statusKeyForGuard, params, workflowWrite)
 	}
 	if err != nil {
-		if writeAgentIssueStatusError(w, err) || writeIssueStatusRaceError(w, err) || writeIssueWorkflowError(w, err) {
+		if writeAgentIssueStatusError(w, err) || writeIssueStatusRaceError(w, err) || writeIssueWorkflowError(w, err) || writeBudgetRebindingError(w, err) {
 			return
 		}
 		if writeDuplicateMarkError(w, err) {
@@ -4402,12 +4521,17 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if handoff != nil {
 		updatedPayload["workflow_handoff"] = workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun, runReason)
 	}
+	if statusRec != nil && statusRec.activity != nil {
+		updatedPayload["activity_id"] = uuidToString(statusRec.activity.ID)
+	}
 	h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, updatedPayload)
+	h.publishRecordedStatusActivity(statusRec, actorType, actorID)
 	if statusChanged && actorType == "member" {
 		h.openRunBudgetWindowForMove(r.Context(), issue)
 	} else if statusChanged && actorType == "agent" {
 		h.grantRunBudgetStep(r.Context(), issue, prevIssue.Status)
 	}
+	releaseMove()
 	if attachmentsChanged {
 		// The full owner snapshot must be admitted before an auxiliary event at
 		// the same revision. Otherwise clients advance only the revision here and
@@ -5173,6 +5297,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		assigneeSupplied := req.Updates.AssigneeType != nil || req.Updates.AssigneeID != nil
 		suppressRun, runReason := h.suppressRunForWrite(r.Context(), actorType, actorID, prevIssue, params, handoff, req.Updates.SuppressRun)
 		writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
+		writeCtx = withBudgetActor(writeCtx, r)
 		if assigneeSupplied || handoff != nil {
 			var ok bool
 			if writeCtx, ok = h.withIssueWriteTaint(w, r, writeCtx); !ok {
@@ -5184,6 +5309,21 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			if writeCtx, ok = h.withIssueWriteExternalRead(w, r, writeCtx); !ok {
 				return
 			}
+		}
+		releaseMove := func() {}
+		if params.Status.Valid {
+			var release func()
+			var err error
+			if actorType == "member" {
+				release, err = h.lockRunBudgetMove(r.Context(), prevIssue, params.Status.String)
+			} else {
+				release, err = h.lockRunBudgetBoundary(r.Context(), prevIssue.ID)
+			}
+			if err != nil {
+				slog.Warn("batch update issue: run budget", "issue_id", issueID, "error", err)
+				continue
+			}
+			releaseMove = release
 		}
 		var issue db.Issue
 		if req.Updates.Description != nil {
@@ -5201,6 +5341,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			issue, err = h.updateIssueWithStatusGuard(writeCtx, wsUUID, issueStatusGuard, params, workflowWrite)
 		}
 		if err != nil {
+			releaseMove()
 			// The archive race is a property of the batch's shared target
 			// status, not of one issue, so every remaining item would fail the
 			// same way. Abort with 409 instead of reporting a partial update.
@@ -5210,6 +5351,10 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			var gated *EntryGateError
 			if errors.As(err, &gated) {
 				failed = append(failed, map[string]any{"id": issueID, "code": "entry_gate_failed", "step": gated.Step, "failed_guards": gated.Failed})
+				continue
+			}
+			if errors.Is(err, errBudgetRebinding) {
+				failed = append(failed, map[string]any{"id": issueID, "code": budgetRebindingCode})
 				continue
 			}
 			slog.Warn("batch update issue failed", "issue_id", issueID, "error", err)
@@ -5271,6 +5416,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		} else if statusChanged && actorType == "agent" {
 			h.grantRunBudgetStep(r.Context(), issue, prevIssue.Status)
 		}
+		releaseMove()
 
 		// Reassignment does not cancel existing tasks (#4963 / MUL-4113) —
 		// mirrors UpdateIssue. See that handler for the rationale.

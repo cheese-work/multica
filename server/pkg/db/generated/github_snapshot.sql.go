@@ -170,9 +170,9 @@ func (q *Queries) GetGitHubPullRequestByID(ctx context.Context, id pgtype.UUID) 
 
 const insertGitHubPRCheckRun = `-- name: InsertGitHubPRCheckRun :exec
 INSERT INTO github_pull_request_check_run (
-    pr_id, head_sha, ordinal, name, status, conclusion, details_url, is_status_context
+    pr_id, head_sha, ordinal, name, status, conclusion, details_url, is_status_context, red_cause
 ) VALUES (
-    $1, $2, $3, $4, $5, $7, $8, $6
+    $1, $2, $3, $4, $5, $7, $8, $6, $9
 )
 `
 
@@ -185,6 +185,7 @@ type InsertGitHubPRCheckRunParams struct {
 	IsStatusContext bool        `json:"is_status_context"`
 	Conclusion      pgtype.Text `json:"conclusion"`
 	DetailsUrl      pgtype.Text `json:"details_url"`
+	RedCause        pgtype.Text `json:"red_cause"`
 }
 
 func (q *Queries) InsertGitHubPRCheckRun(ctx context.Context, arg InsertGitHubPRCheckRunParams) error {
@@ -197,6 +198,7 @@ func (q *Queries) InsertGitHubPRCheckRun(ctx context.Context, arg InsertGitHubPR
 		arg.IsStatusContext,
 		arg.Conclusion,
 		arg.DetailsUrl,
+		arg.RedCause,
 	)
 	return err
 }
@@ -391,6 +393,38 @@ func (q *Queries) ListGitHubPRNumbersByHeadSHA(ctx context.Context, arg ListGitH
 			return nil, err
 		}
 		items = append(items, pr_number)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGitHubPRRedCheckNames = `-- name: ListGitHubPRRedCheckNames :many
+SELECT name FROM github_pull_request_check_run
+WHERE pr_id = $1 AND head_sha = $2 AND red_cause IN ('pr', 'infra', 'flaky')
+`
+
+type ListGitHubPRRedCheckNamesParams struct {
+	PrID    pgtype.UUID `json:"pr_id"`
+	HeadSha string      `json:"head_sha"`
+}
+
+// Names of the checks stored red or flaky for this head, read before the
+// per-check replace so a green rerun of the same head can be marked flaky.
+func (q *Queries) ListGitHubPRRedCheckNames(ctx context.Context, arg ListGitHubPRRedCheckNamesParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listGitHubPRRedCheckNames, arg.PrID, arg.HeadSha)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		items = append(items, name)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
