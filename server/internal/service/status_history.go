@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -14,6 +15,10 @@ import (
 // through the issue API.
 const StatusCauseUIOrAPI = "ui_or_api"
 
+// StatusCauseTaskReset is the cause of the background move that returns a
+// stuck in_progress issue to todo after its run failed.
+const StatusCauseTaskReset = "task_reset"
+
 // StatusTriggerVersion is the schema version of details.trigger.
 const StatusTriggerVersion = 1
 
@@ -23,8 +28,9 @@ type StatusCauseActor struct {
 }
 
 type StatusCause struct {
-	Kind string           `json:"kind"`
-	By   StatusCauseActor `json:"by"`
+	Kind string            `json:"kind"`
+	By   StatusCauseActor  `json:"by"`
+	Ref  map[string]string `json:"ref,omitempty"`
 }
 
 // StatusTrigger is the trigger object stored in a status_changed row's
@@ -68,4 +74,31 @@ func RecordStatusChange(ctx context.Context, qtx *db.Queries, issue db.Issue, fr
 		Action:      "status_changed",
 		Details:     body,
 	})
+}
+
+// ResetIssueForFailedTask moves an issue whose run failed back to todo and
+// records the move, both with q. Callers with a transaction pass its queries so
+// the row commits with the status.
+func ResetIssueForFailedTask(ctx context.Context, q *db.Queries, issue db.Issue, task db.AgentTaskQueue) (db.Issue, db.ActivityLog, error) {
+	updated, err := q.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+		SourceTaskID: task.ID,
+		ID:           issue.ID,
+		Status:       "todo",
+		WorkspaceID:  issue.WorkspaceID,
+	})
+	if err != nil {
+		return db.Issue{}, db.ActivityLog{}, err
+	}
+	row, err := RecordStatusChange(ctx, q, updated, issue.Status, updated.Status, StatusTrigger{
+		Cause: StatusCause{
+			Kind: StatusCauseTaskReset,
+			By:   StatusCauseActor{Type: "system"},
+			Ref:  map[string]string{"run_id": util.UUIDToString(task.ID)},
+		},
+		Channel: "unknown",
+	}, nil)
+	if err != nil {
+		return db.Issue{}, db.ActivityLog{}, fmt.Errorf("record status change: %w", err)
+	}
+	return updated, row, nil
 }

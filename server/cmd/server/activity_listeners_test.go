@@ -857,3 +857,29 @@ func TestActivityIssueUpdated_StatusChangedWithActivityIDWritesNoRow(t *testing.
 		t.Fatalf("expected 0 listener rows when activity_id is present, got %d", n)
 	}
 }
+
+// A duplicate mark and unmark carry the status trigger the handler put on the
+// event, so the timeline row says who and what moved the issue.
+func TestActivityIssueUpdated_DuplicateRowsCarryTrigger(t *testing.T) {
+	queries := db.New(testPool)
+	bus, duplicateID, originalID := newDuplicateTestIssues(t, queries)
+	trigger := map[string]any{"v": 1, "cause": map[string]any{"kind": "ui_or_api"}, "channel": "web"}
+
+	bus.Publish(duplicateMarkEvent(duplicateID, "MUL-7624", "cancelled", nil, &originalID, map[string]any{
+		"status_changed": true, "prev_status": "todo", "status_trigger": trigger,
+	}))
+	bus.Publish(duplicateMarkEvent(duplicateID, "MUL-7624", "todo", &originalID, nil, map[string]any{
+		"status_changed": true, "prev_status": "cancelled", "status_trigger": trigger,
+	}))
+
+	for _, action := range []string{"duplicate_marked", "duplicate_unmarked"} {
+		var raw []byte
+		if err := testPool.QueryRow(context.Background(), `SELECT details FROM activity_log WHERE issue_id = $1 AND action = $2`, duplicateID, action).Scan(&raw); err != nil {
+			t.Fatalf("%s: %v", action, err)
+		}
+		var details struct{ Trigger map[string]any }
+		if err := json.Unmarshal(raw, &details); err != nil || details.Trigger["channel"] != "web" {
+			t.Fatalf("%s details = %s", action, raw)
+		}
+	}
+}

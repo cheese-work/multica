@@ -4397,10 +4397,13 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		defer releaseMove()
 	}
 	// Status history is written in the status transaction. A workflow handoff
-	// and a duplicate mark keep the listener's richer row until they migrate.
+	// and a duplicate mark keep the listener's richer row until they migrate;
+	// a duplicate mark hands that row the same trigger instead.
+	statusTrigger := statusTriggerFromRequest(r, actorType, actorID)
+	statusTrigger.Version = service.StatusTriggerVersion
 	var statusRec *statusRecord
 	if handoff == nil && !params.DuplicateOfIssueID.Valid && !prevIssue.DuplicateOfIssueID.Valid {
-		statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTriggerFromRequest(r, actorType, actorID)}
+		statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTrigger}
 		writeCtx = withStatusRecord(writeCtx, statusRec)
 	}
 	var issue db.Issue
@@ -4523,6 +4526,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	if statusRec != nil && statusRec.activity != nil {
 		updatedPayload["activity_id"] = uuidToString(statusRec.activity.ID)
+	}
+	if statusRec == nil {
+		updatedPayload["status_trigger"] = statusTrigger
 	}
 	h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, updatedPayload)
 	h.publishRecordedStatusActivity(statusRec, actorType, actorID)

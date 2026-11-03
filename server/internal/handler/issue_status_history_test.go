@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -128,5 +129,29 @@ func TestStatusTriggerChannelIsIndependentOfAuthSource(t *testing.T) {
 		if got != c.channel {
 			t.Errorf("source=%q platform=%q: channel %q, want %q", c.source, c.platform, got, c.channel)
 		}
+	}
+}
+
+// A duplicate mark keeps the listener's mark row; the handler hands it the
+// same trigger a plain status move records.
+func TestDuplicateMarkEventCarriesStatusTrigger(t *testing.T) {
+	issueID := createIssueForTimeline(t, "duplicate trigger")
+	originalID := createIssueForTimeline(t, "duplicate trigger original")
+	var trigger any
+	testHandler.Bus.Subscribe(protocol.EventIssueUpdated, func(e events.Event) {
+		p, _ := e.Payload.(map[string]any)
+		if issue, _ := p["issue"].(IssueResponse); issue.ID == issueID {
+			trigger = p["status_trigger"]
+		}
+	})
+	req := withURLParam(newRequest(http.MethodPatch, "/api/issues/"+issueID, map[string]any{"duplicate_of_issue_id": originalID, "suppress_run": true}), "id", issueID)
+	req.Header.Set("X-Actor-Source", "interactive_jwt")
+	req.Header.Set("X-Client-Platform", "desktop")
+
+	testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK)
+
+	got, ok := trigger.(service.StatusTrigger)
+	if !ok || got.Version != 1 || got.Cause.Kind != service.StatusCauseUIOrAPI || got.Channel != "desktop" {
+		t.Fatalf("status_trigger = %#v", trigger)
 	}
 }

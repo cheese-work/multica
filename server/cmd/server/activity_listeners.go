@@ -374,8 +374,17 @@ func recordDuplicateMarkActivities(ctx context.Context, bus *events.Bus, queries
 	next := derefPayloadString(payload["duplicate_of_issue_id"])
 	prev := derefPayloadString(payload["prev_duplicate_of_issue_id"])
 	statusChanged, _ := payload["status_changed"].(bool)
+	trigger := payload["status_trigger"]
 	record := func(issueID, action string, details map[string]string) bool {
-		body, _ := json.Marshal(details)
+		body := map[string]any{}
+		for k, v := range details {
+			body[k] = v
+		}
+		// Only the duplicate's own mark and unmark rows carry the trigger.
+		if trigger != nil && issueID == issue.ID {
+			body["trigger"] = trigger
+		}
+		raw, _ := json.Marshal(body)
 		activity, err := queries.CreateActivity(ctx, db.CreateActivityParams{
 			ID:          dbid.NewV7(),
 			WorkspaceID: parseUUID(issue.WorkspaceID),
@@ -383,7 +392,7 @@ func recordDuplicateMarkActivities(ctx context.Context, bus *events.Bus, queries
 			ActorType:   util.StrToText(e.ActorType),
 			ActorID:     optionalUUID(e.ActorID),
 			Action:      action,
-			Details:     body,
+			Details:     raw,
 		})
 		if err != nil {
 			slog.Error("activity: failed to record duplicate mark change",
