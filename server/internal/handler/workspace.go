@@ -297,6 +297,13 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Orders this membership against the passkey gate checks, as the joins do.
+	if err := qtx.LockUserForMembershipChange(r.Context(), parseUUID(userID)); err != nil {
+		slog.Warn("lock owner failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to add owner")
+		return
+	}
+
 	_, err = qtx.CreateMember(r.Context(), db.CreateMemberParams{
 		WorkspaceID: ws.ID,
 		UserID:      parseUUID(userID),
@@ -363,6 +370,9 @@ type UpdateWorkspaceRequest struct {
 	// overwrite, absent fields keep their saved value, null resets to the
 	// defaults. Raw for the same reason as CompactPrompt.
 	AutoCompact json.RawMessage `json:"auto_compact"`
+	// IdleStartedGuard patches settings.idle_started_guard alone (CHE-3296):
+	// named fields overwrite, absent fields keep their saved value. Owner only.
+	IdleStartedGuard json.RawMessage `json:"idle_started_guard"`
 	// GitHubReviewMembers and GitHubReviewAuthors each replace one settings
 	// map alone (CHE-2269); validateGitHubReviewMapping checks the entries.
 	GitHubReviewMembers json.RawMessage `json:"github_review_members"`
@@ -569,6 +579,17 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		} else {
 			params.AutoCompact = req.AutoCompact
 		}
+	}
+	if req.IdleStartedGuard != nil {
+		// The route admits admins; this switch is the owner's.
+		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {
+			return
+		}
+		if err := validateIdleGuardPatch(req.IdleStartedGuard); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		params.IdleStartedGuard = req.IdleStartedGuard
 	}
 	for _, mapping := range []struct {
 		field string

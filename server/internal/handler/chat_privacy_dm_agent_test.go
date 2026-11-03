@@ -52,17 +52,15 @@ func TestChatPrivacyKeepsDMReadableToItsRunningAgent(t *testing.T) {
 
 	t.Run("chat continue", func(t *testing.T) {
 		response := continueChatRequest(t, sessionID, "Retained goal: lane B.", taskID)
-		if response.Code != http.StatusCreated {
+		if response.Code != http.StatusOK {
 			t.Fatalf("continue: %d %s", response.Code, response.Body.String())
 		}
 		var result ChatContinueResponse
 		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 			t.Fatal(err)
 		}
-		dbfx.Cleanup(t, `DELETE FROM chat_message WHERE chat_session_id = $1`, result.Session.ID)
-		dbfx.Cleanup(t, `DELETE FROM chat_session WHERE id = $1`, result.Session.ID)
-		if result.PreviousSessionID != sessionID || result.Session.CreatorID != creatorID {
-			t.Fatalf("continuation = %+v, want it to follow %s for creator %s", result, sessionID, creatorID)
+		if result.Session.ID != sessionID || result.Session.CreatorID != creatorID {
+			t.Fatalf("compaction = %+v, want it in %s for creator %s", result, sessionID, creatorID)
 		}
 	})
 }

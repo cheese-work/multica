@@ -77,6 +77,11 @@ const (
 	// coexist on one task and a daemon with only the old capability never
 	// receives a PR event through the mid-run channel.
 	DaemonCapabilityTaskSupplementPREventV1 = "task-supplement-pr-event-v1"
+	// DaemonCapabilityTaskSupplementChatV1 extends task-supplement-v1 to a DM
+	// chat run: a steered follow-up is claimed through the same supplement
+	// endpoints. Offered only for chat tasks, so an old daemon's chat run has
+	// no capability row and its follow-ups stay queued.
+	DaemonCapabilityTaskSupplementChatV1 = "task-supplement-chat-v1"
 	// DaemonCapabilityPiProcessCleanupV1 promises that this Pi/omp run joins
 	// descendant cleanup and explicitly confirms its cancellation outcome.
 	// Persist only at start; old daemons must retain their cancellation contract.

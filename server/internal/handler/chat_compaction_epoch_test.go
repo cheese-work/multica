@@ -161,7 +161,8 @@ func TestCompactionEpoch_PostBoundaryCompleteRecordsPointer(t *testing.T) {
 	}
 }
 
-// ClaimAgentTask stamps the session's epoch on first dispatch and keeps it.
+// ClaimAgentTask stamps the session's epoch on dispatch. A re-claim of a
+// never-started task re-stamps (TestRuleE_ClaimRestampsRequeuedTask).
 func TestCompactionEpoch_ClaimStampsTaskOnce(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -172,7 +173,6 @@ func TestCompactionEpoch_ClaimStampsTaskOnce(t *testing.T) {
 		want  int64
 	}{
 		{"first dispatch takes the session epoch", nil, 2},
-		{"redispatch keeps the first stamp", 1, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()

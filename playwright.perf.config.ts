@@ -1,4 +1,4 @@
-import { defineConfig } from "@playwright/test";
+import { defineConfig, devices } from "@playwright/test";
 
 /**
  * The performance scenario runs on its own: one Chromium worker, one test, no
@@ -18,5 +18,19 @@ export default defineConfig({
     baseURL: process.env.PLAYWRIGHT_BASE_URL ?? "http://localhost:3000",
     headless: true,
   },
-  projects: [{ name: "chromium", use: { browserName: "chromium" } }],
+  // `desktop` and `phone` are the two fixed measurement profiles (CHE-2976);
+  // only the page-load baseline runs under them.
+  projects: [
+    { name: "chromium", testIgnore: /page-load-baseline\.spec/, use: { browserName: "chromium" } },
+    {
+      name: "desktop",
+      testMatch: /page-load-baseline\.spec/,
+      use: { browserName: "chromium", viewport: { width: 1440, height: 900 }, hasTouch: false },
+    },
+    {
+      name: "phone",
+      testMatch: /page-load-baseline\.spec/,
+      use: { browserName: "chromium", ...devices["Pixel 7"] },
+    },
+  ],
 });

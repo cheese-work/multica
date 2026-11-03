@@ -821,16 +821,20 @@ SET status = 'dispatched',
     applied_model = NULL, applied_thinking_level = NULL,
     applied_service_tier = NULL, applied_context_args = NULL, applied_reported_at = NULL,
     prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision),
-    chat_compaction_epoch = COALESCE(
-        chat_compaction_epoch,
-        (SELECT cs.compaction_epoch FROM chat_session cs WHERE cs.id = agent_task_queue.chat_session_id)
-    )
+    -- Unconditional: a requeued never-started task rebases on re-claim. A task
+    -- already started never reaches this statement.
+    chat_compaction_epoch = (SELECT cs.compaction_epoch FROM chat_session cs WHERE cs.id = agent_task_queue.chat_session_id)
 WHERE id = (
     SELECT atq.id FROM agent_task_queue atq
     WHERE atq.agent_id = @agent_id
       AND atq.runtime_id = @runtime_id
       AND atq.status = 'queued'
       AND (atq.context->>'wakeup_id' IS NULL OR EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.id=(atq.context->>'wakeup_id')::uuid AND w.disabled_at IS NULL AND w.revision=(atq.context->>'wakeup_revision')::bigint))
+      -- Rule E (CHE-2819): share-lock the DM row without waiting. A compact
+      -- holds it FOR NO KEY UPDATE, so a chat task of that DM is skipped for
+      -- this poll and stays queued. Held to commit, the share lock also keeps a
+      -- compact from committing between this claim and its epoch rebase.
+      AND (atq.chat_session_id IS NULL OR EXISTS (SELECT 1 FROM chat_session cs WHERE cs.id = atq.chat_session_id FOR SHARE SKIP LOCKED))
       AND EXISTS (
           SELECT 1
           FROM agent a
@@ -838,6 +842,12 @@ WHERE id = (
           WHERE a.id = atq.agent_id
             -- A task's persisted runtime is not authority after an agent rebind.
             AND a.runtime_id = atq.runtime_id
+            -- Scheduling pause: neither the agent nor its workspace is paused.
+            AND a.scheduling_paused_at IS NULL
+            AND NOT EXISTS (
+                SELECT 1 FROM workspace pw
+                WHERE pw.id = a.workspace_id AND pw.scheduling_paused_at IS NOT NULL
+            )
             -- Queued private-runtime rows are claimable so the handler can
             -- settle an owner mismatch through the existing FailTask path
             -- before daemon delivery. Public runtimes remain shareable across
@@ -872,6 +882,20 @@ WHERE id = (
     FOR UPDATE SKIP LOCKED
 )
 RETURNING *;
+
+-- name: RebaseClaimedChatTaskEpoch :exec
+-- Runs in the claim transaction right after ClaimAgentTask. The claim statement
+-- can hold a snapshot older than a compact that committed just before the claim
+-- took its DM lock, so the epoch it stamped may be one behind. This statement
+-- reads the DM on a fresh snapshot; the claim's FOR SHARE lock keeps any later
+-- compact out until commit, so the stamp is final for the whole claim.
+UPDATE agent_task_queue
+SET chat_compaction_epoch = cs.compaction_epoch
+FROM chat_session cs
+WHERE agent_task_queue.id = $1
+  AND cs.id = agent_task_queue.chat_session_id
+  AND agent_task_queue.status = 'dispatched'
+  AND agent_task_queue.started_at IS NULL;
 
 -- name: SetTaskDeliveredCommentIDs :one
 -- Replace (rather than append to) the delivery receipt for this claim. A stale
@@ -1945,6 +1969,23 @@ WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
     AND workflow_step <> sqlc.arg('step')::text
   );
 
+-- name: LastVerdictHeadSHA :one
+-- PR head of the issue's latest review verdict, PASS or CHANGES (CHE-3243): a
+-- review dispatched for that head, with nothing pushed since, would only repeat
+-- it. Earlier verdicts do not count: a head the PR returned to was not looked
+-- at since.
+SELECT COALESCE((
+  SELECT details->>'head_sha' FROM activity_log
+  WHERE issue_id = $1 AND action IN ('review_changes_requested', 'review_passed')
+  ORDER BY created_at DESC, id DESC LIMIT 1
+), '')::text AS head_sha;
+
+-- name: CountChangesVerdictsForPR :one
+-- Changes-requested rounds of one PR lineage; a replacement PR starts at zero.
+SELECT count(*) FROM activity_log
+WHERE issue_id = $1 AND action = 'review_changes_requested'
+  AND COALESCE(details->>'pull_request_id', '') = sqlc.arg('pull_request_id')::text;
+
 -- name: ListStalePendingStepTasks :many
 -- The runs HasPendingTaskForIssueAndAgentAtStep ignores: pending
 -- assignment-level runs of one agent stamped for a step the issue has left.
@@ -2670,6 +2711,12 @@ WHERE atq.runtime_id = $1
       JOIN agent_runtime r ON r.id = atq.runtime_id
       WHERE a.id = atq.agent_id
         AND a.runtime_id = atq.runtime_id
+        -- Scheduling pause: neither the agent nor its workspace is paused.
+        AND a.scheduling_paused_at IS NULL
+        AND NOT EXISTS (
+            SELECT 1 FROM workspace pw
+            WHERE pw.id = a.workspace_id AND pw.scheduling_paused_at IS NOT NULL
+        )
         AND (
             r.visibility = 'public'
             OR r.visibility = 'private'
@@ -2791,6 +2838,12 @@ WHERE atq.runtime_id = ANY(@runtime_ids::uuid[])
       JOIN agent_runtime r ON r.id = atq.runtime_id
       WHERE a.id = atq.agent_id
         AND a.runtime_id = atq.runtime_id
+        -- Scheduling pause: neither the agent nor its workspace is paused.
+        AND a.scheduling_paused_at IS NULL
+        AND NOT EXISTS (
+            SELECT 1 FROM workspace pw
+            WHERE pw.id = a.workspace_id AND pw.scheduling_paused_at IS NOT NULL
+        )
         AND (
             r.visibility = 'public'
             OR r.visibility = 'private'
@@ -3251,3 +3304,19 @@ WHERE id = @id
   AND dispatched_at = @dispatched_at
   AND status IN ('dispatched', 'waiting_local_directory', 'running')
   AND applied_reported_at IS NULL;
+
+-- name: PauseAgentScheduling :one
+-- Pause claim for one agent. A second pause keeps the first actor and time
+-- (COALESCE) yet still returns the row. Enqueue, coalescing and running tasks are
+-- untouched; only ClaimAgentTask and its candidate lists skip the agent.
+UPDATE agent
+SET scheduling_paused_at = COALESCE(scheduling_paused_at, now()),
+    scheduling_paused_by = COALESCE(scheduling_paused_by, @actor_id)
+WHERE id = @id AND workspace_id = @workspace_id
+RETURNING *;
+
+-- name: ResumeAgentScheduling :one
+UPDATE agent
+SET scheduling_paused_at = NULL, scheduling_paused_by = NULL
+WHERE id = @id AND workspace_id = @workspace_id
+RETURNING *;
