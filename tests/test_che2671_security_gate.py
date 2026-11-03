@@ -263,14 +263,14 @@ class MergeGroupStepTest(unittest.TestCase):
         self.assertEqual(len(gate), 1)
         return gate[0]["run"]
 
-    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success"):
+    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success", script=""):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             (tmp / "bin").mkdir()
             (tmp / "scripts/security-gate").mkdir(parents=True)
             (tmp / "bin/gh").write_text(self.STUB_GH)
             (tmp / "scripts/security-gate/gate.sh").write_text(self.STUB_GATE)
-            (tmp / "scripts/security-gate/security_gate.py").write_text("")  # the step runs it via the shadowed python3
+            (tmp / "scripts/security-gate/security_gate.py").write_text(script)  # the step runs it via the shadowed python3
             (tmp / "bin/python3").write_text(
                 '#!/bin/bash\n[ "${1##*/}" = security_gate.py ] && exec bash "$(dirname "$1")/gate.sh" "${@:2}"\n'
                 f'exec {sys.executable} "$@"\n')
@@ -294,6 +294,15 @@ class MergeGroupStepTest(unittest.TestCase):
         self.assertIn("state=success", self.posted(log)[0])
         self.assertIn("--pr 405", " ".join(l for l in log if l.startswith("gate ")))
         self.assertNotIn("--post", " ".join(log))  # the old script would post on the PR head, not the queue commit
+
+    def test_queue_run_scans_with_semgrep_once_the_gate_script_supports_it(self):
+        done, log = self.run_step(script='ap.add_argument("--semgrep")')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("--semgrep", " ".join(l for l in log if l.startswith("gate ")))
+
+    def test_queue_run_omits_semgrep_for_an_older_gate_script(self):
+        done, log = self.run_step()
+        self.assertNotIn("--semgrep", " ".join(l for l in log if l.startswith("gate ")))
 
     def test_verdict_is_read_fresh_at_queue_time(self):
         done, log = self.run_step(state="pending")

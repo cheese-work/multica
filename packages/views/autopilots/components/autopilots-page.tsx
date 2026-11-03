@@ -59,7 +59,7 @@ import {
   CollectionPageHeaderAction,
   CollectionPageState,
 } from "../../layout/collection-page";
-import { AutopilotDialog } from "./autopilot-dialog";
+import { AutopilotDialog } from "./autopilot-dialog-lazy";
 import {
   AutopilotListToolbar,
   actorFilterValue,

@@ -37,12 +37,27 @@ func spendBudget(t *testing.T, c edgeCase, max int, status string) db.Issue {
 		}
 		finishRuns(t, c)
 	}
+	waitForRunBudgetWarning(t, c)
 	c.enter(t, status)
 	issue, err = testHandler.Queries.GetIssue(ctx, parseUUID(c.issueID))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return issue
+}
+
+// waitForRunBudgetWarning waits for the 80% warning that the run reaching it
+// fires in a goroutine. The warning's system comment bumps the issue revision,
+// so a test that goes on to write the issue with an expected revision would
+// otherwise lose that write to it.
+func waitForRunBudgetWarning(t *testing.T, c edgeCase) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if dbfx.Count(t, `SELECT count(*) FROM run_budget_notice WHERE issue_id=$1 AND kind='warn80' AND comment_id IS NOT NULL`, c.issueID) > 0 {
+			return
+		}
+	}
+	t.Fatal("the run budget warning did not finish in 10s")
 }
 
 func finishRuns(t *testing.T, c edgeCase) {
