@@ -611,6 +611,23 @@ func TestActivityIssueUpdated_DuplicateUnmarked(t *testing.T) {
 	}
 }
 
+// A reopen that already recorded its status row in the transaction
+// (activity_id) must not have the unmarked row stand in for it too.
+func TestActivityIssueUpdated_DuplicateUnmarkedWithRecordedStatusRow(t *testing.T) {
+	queries := db.New(testPool)
+	bus, duplicateID, originalID := newDuplicateTestIssues(t, queries)
+
+	bus.Publish(duplicateMarkEvent(duplicateID, "MUL-7624", "todo", &originalID, nil, map[string]any{
+		"status_changed": true,
+		"prev_status":    "cancelled",
+		"activity_id":    "00000000-0000-4000-8000-0000000000a1",
+	}))
+
+	if got := activityDetails(t, queries, duplicateID, "duplicate_unmarked"); got["to"] != "" {
+		t.Fatalf("duplicate_unmarked details = %v, want no to", got)
+	}
+}
+
 // Moving a mark from one original to another reads as leaving the first and
 // joining the second, on all three issues. The status did not move.
 func TestActivityIssueUpdated_DuplicateRepointed(t *testing.T) {
