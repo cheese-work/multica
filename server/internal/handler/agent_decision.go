@@ -345,8 +345,9 @@ func agentDecisionDisputant(ctx context.Context, tx pgx.Tx, commentID, taskID, b
 }
 
 // agentDecisionHeader reads the typed `Key: value` lines at the top of a signed
-// verdict, up to the first line that is not one. A repeated key is ambiguous
-// and reports false.
+// verdict, up to the first line that is not one. A repeated typed key (Gate,
+// Block-category) is ambiguous and reports false; other repeated keys are prose
+// and keep their first value.
 func agentDecisionHeader(body string) (map[string]string, bool) {
 	fields := map[string]string{}
 	for _, line := range strings.Split(body, "\n") {
@@ -355,7 +356,10 @@ func agentDecisionHeader(body string) (map[string]string, bool) {
 			break
 		}
 		if _, dup := fields[key]; dup {
-			return nil, false
+			if key == "Gate" || key == "Block-category" {
+				return nil, false
+			}
+			continue
 		}
 		fields[key] = value
 	}

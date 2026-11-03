@@ -11,9 +11,10 @@ const exclusionHeader = "Verdict: BLOCK\nDisputed-point: screenshot coverage\n"
 // Prose never excludes a decision or turns the setting off: only typed fields do.
 func TestAgentDecisionAdjudicationIgnoresProseWords(t *testing.T) {
 	for name, prose := range map[string]string{
-		"vietnamese": "Cần ảnh chụp màn hình. Không liên quan đến deploy, security hay spend; thiếu missing evidence cũng không đúng.\n",
-		"chinese":    "需要截图。这与 deploy、security、spend 无关，也不是 missing evidence。\n",
-		"english":    "Screenshots are required. Not about deploy, security or spend.\n",
+		"vietnamese":           "Cần ảnh chụp màn hình. Không liên quan đến deploy, security hay spend; thiếu missing evidence cũng không đúng.\n",
+		"chinese":              "需要截图。这与 deploy、security、spend 无关，也不是 missing evidence。\n",
+		"english":              "Screenshots are required. Not about deploy, security or spend.\n",
+		"repeated untyped key": "Note: cần ảnh chụp màn hình\nNote: 需要截图\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newAdjudicationFixtureWithReview(t, exclusionHeader+"Gate: screenshot_evidence\nBlock-category: reversible_gate\n"+prose)
