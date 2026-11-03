@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "@multica/core/api";
 import { ApiError } from "@multica/core/api/client";
 import type { PasskeyDecisionOutcome } from "@multica/core/api/passkey-schema";
@@ -9,7 +9,7 @@ import { Button } from "@multica/ui/components/ui/button";
 import { useT } from "../i18n";
 
 type View =
-  | { step: "idle" | "busy" | "no_passkey" | "retry" | "lost" }
+  | { step: "loading" | "idle" | "busy" | "no_passkey" | "retry" | "lost" }
   | { step: "done"; outcome: PasskeyDecisionOutcome };
 
 const TERMINAL = ["executed", "failed", "rejected", "expired", "cancelled"] as const;
@@ -20,7 +20,9 @@ const isTerminal = (state: string): state is Terminal => (TERMINAL as readonly s
  * Passkey approval of one executable decision action: challenge → WebAuthn
  * assertion → approve → outcome. After the approve request leaves, a lost or
  * uncertain response only reads the outcome back; the action is never approved
- * a second time (CHE-2798 N15). `onEnroll` opens passkey enrollment.
+ * a second time (CHE-2798 N15). A mount also reads the outcome first, so a
+ * remount or a second session shows a decided action instead of offering
+ * approve again. `onEnroll` opens passkey enrollment.
  */
 export function DecisionActionApproval({
   actionId,
@@ -32,16 +34,22 @@ export function DecisionActionApproval({
   onEnroll?: () => void;
 }) {
   const { t } = useT("common");
-  const [view, setView] = useState<View>({ step: "idle" });
+  const [view, setView] = useState<View>({ step: "loading" });
 
-  const readBack = async () => {
+  // `ifPending` is the view for an action that is still undecided.
+  const readBack = async (ifPending: View = { step: "lost" }) => {
     try {
       const outcome = await api.getDecisionActionOutcome(actionId);
-      setView(isTerminal(outcome.state) ? { step: "done", outcome } : { step: "lost" });
+      setView(isTerminal(outcome.state) ? { step: "done", outcome } : ifPending);
     } catch {
       setView({ step: "lost" });
     }
   };
+
+  useEffect(() => {
+    void readBack({ step: "idle" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- read once per action
+  }, [actionId]);
 
   const approve = async () => {
     setView({ step: "busy" });
@@ -53,7 +61,10 @@ export function DecisionActionApproval({
       setView(isTerminal(outcome.state) ? { step: "done", outcome } : { step: "lost" });
     } catch (error) {
       const refused = error instanceof ApiError && error.status < 500;
-      if (!sent && refused && error.message.startsWith("no_passkey")) setView({ step: "no_passkey" });
+      const reason = refused ? error.message.split(":")[0] : "";
+      if (!sent && reason === "no_passkey") setView({ step: "no_passkey" });
+      else if (!sent && reason === "not_pending") await readBack();
+      else if (!sent && reason === "expired") await readBack({ step: "done", outcome: { id: actionId, state: "expired" } });
       else if (!sent || refused) setView({ step: "retry" });
       else await readBack();
     }
@@ -78,7 +89,7 @@ export function DecisionActionApproval({
     return (
       <div className="space-y-1 text-label">
         <p role="alert" className="text-caption text-destructive">{t(($) => $.decision_action.lost)}</p>
-        <Button size="sm" variant="outline" onClick={readBack}>{t(($) => $.decision_action.check)}</Button>
+        <Button size="sm" variant="outline" onClick={() => readBack()}>{t(($) => $.decision_action.check)}</Button>
       </div>
     );
   }
@@ -90,6 +101,7 @@ export function DecisionActionApproval({
       </div>
     );
   }
+  if (view.step === "loading") return null;
   return (
     <div className="space-y-1 text-label">
       {view.step === "retry" && <p role="alert" className="text-caption text-destructive">{t(($) => $.decision_action.error)}</p>}
