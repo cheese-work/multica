@@ -790,6 +790,7 @@ func init() {
 	issueCommentAddCmd.Flags().Bool("decision-intent", false, "Open a 3-minute decision window for the named people (running non-chat issue tasks only)")
 	issueCommentAddCmd.Flags().Bool("decision-record", false, "Record the named human's reversible decision from attested DM messages or a member comment; every other class is refused and must be answered on the decision card")
 	issueCommentAddCmd.Flags().Bool("decision-veto", false, "Withdraw the stamped answer named by --parent; requires a non-empty --content-file reason")
+	issueCommentAddCmd.Flags().Bool("notify-only", false, "Declare the comment an FYI so it may mention a member without a decision request; it never binds a wait. Cannot combine with --decision-intent, --decision-record or --decision-veto")
 	issueCommentAddCmd.Flags().StringArray("message", nil, "Source DM message UUID (repeatable; requires --decision-record)")
 	issueCommentAddCmd.Flags().StringArray("excerpt", nil, "Verbatim part of the source message to quote as the human's words (repeatable; requires --decision-record). Pass one per record when a message answers several asks; the server refuses text the message does not hold")
 	issueCommentAddCmd.Flags().String("source-comment", "", "Source member comment UUID (requires --decision-record and --parent; excludes --message)")
@@ -2994,6 +2995,10 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	decisionRecord, _ := cmd.Flags().GetBool("decision-record")
 	decisionIntent, _ := cmd.Flags().GetBool("decision-intent")
 	decisionVeto, _ := cmd.Flags().GetBool("decision-veto")
+	notifyOnly, _ := cmd.Flags().GetBool("notify-only")
+	if notifyOnly && (decisionRecord || decisionIntent || decisionVeto) {
+		return fmt.Errorf("--notify-only cannot combine with --decision-intent, --decision-record or --decision-veto: those comments are already typed")
+	}
 	messageIDs, _ := cmd.Flags().GetStringArray("message")
 	escalationClass, _ := cmd.Flags().GetString("class")
 	contextMessage, _ := cmd.Flags().GetString("context-message")
@@ -3096,6 +3101,9 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	body := map[string]any{"content": content}
 	if decisionVeto {
 		body["decision_veto"] = true
+	}
+	if notifyOnly {
+		body["notify_only"] = true
 	}
 	if decisionRecord {
 		body["decision_record"] = true

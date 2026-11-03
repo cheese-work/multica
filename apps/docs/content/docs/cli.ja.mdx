@@ -141,6 +141,12 @@ multica issue comment add MUL-123 --content-file note.md --steer <task-id>
 multica issue comment add MUL-123 --content-file note.md --steer-active
 ```
 
+エージェントのタスクから、メンバーへのメンション（`[@名前](mention://member/<id>)`）を含むコメントを送るには、決定リクエスト、`--decision-intent`・`--decision-record`・`--decision-veto` のコメント、または `--notify-only` のいずれかが必要です。返答が要らない通知には `--notify-only` を使います。待機を開始せず、決定リクエストとしても数えません。決定系のフラグとは併用できません。判定は文面ではなくメンションのリンクで行い、コード内のリンクも対象です。ワークスペース設定 `ask_guard_mode`（`off`、`warn`、`block`）で、拒否されるコメントを記録だけにするか 422 を返すかを決めます。チャットのタスクとタスクなしの呼び出しは記録のみです。
+
+```bash
+multica issue comment add MUL-123 --content-file fyi.md --notify-only
+```
+
 同じプロジェクト・同じ親タスクの下に、タイトルが同じ（大文字小文字と余分な空白は区別しない）未完了のタスクがすでにあると、`issue create` は作成を拒否してそのタスクを示します。それでも作る場合は `--allow-duplicate` を付けます。あるタスクを別のタスクの重複にするには `multica issue status MUL-124 cancelled --duplicate-of MUL-123` を使います。
 
 ### タイムライン
