@@ -2,7 +2,7 @@
 -- the work that was refused. state tracks the resume, hook_phase the
 -- exhaustion hook; state_reason carries the suffix of a still_blocked or
 -- superseded state. status is NULL when the issue was blocked before this
--- table existed. The unique index lives in migration 899.
+-- table existed. The unique index lives in migration 903.
 CREATE TABLE IF NOT EXISTS run_budget_refusal (
     id UUID PRIMARY KEY,
     workspace_id UUID NOT NULL,
