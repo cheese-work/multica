@@ -343,6 +343,8 @@ class QueueRevocationTest(unittest.TestCase):
     def run_pr(self, comments, queue_heads=None, queue_error=False, compare_error=False, post_fail=(), stacked=False):
         queue_heads = self.QUEUE_HEADS if queue_heads is None else queue_heads
         posted, lookups = [], []
+        # a set fails every write to those heads; a dict maps head -> number of writes that fail before one succeeds
+        fails = dict(post_fail) if isinstance(post_fail, dict) else dict.fromkeys(post_fail, 10**9)
         chains = {self.G1: [{"sha": self.G1, "parents": [self.BASE, HEAD], "message": "Merge pull request #405 from x/y"}],
                   self.G2: [{"sha": self.G2, "parents": [self.OTHER, "7" * 40], "message": "Merge pull request #999 from x/z"}]}
         if stacked:  # the second group sits on top of the first, so both carry the PR
@@ -368,7 +370,9 @@ class QueueRevocationTest(unittest.TestCase):
                                    "user": {"id": BOT}})
             if "statuses/" in path:
                 posted.append(args)
-                if path.split("statuses/")[1].split()[0] in post_fail:
+                sha = path.split("statuses/")[1].split()[0]
+                if fails.get(sha, 0) > 0:
+                    fails[sha] -= 1
                     raise subprocess.CalledProcessError(1, ["gh"])
             return ""
 
@@ -376,7 +380,7 @@ class QueueRevocationTest(unittest.TestCase):
                 "--default-branch", "main", "--post"]
         fake_run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=CLEAN_DIFF)
         with mock.patch.object(sg, "_gh", fake_gh), mock.patch.object(sg.subprocess, "run", fake_run), \
-                mock.patch("sys.argv", argv), mock.patch("builtins.print"):
+                mock.patch.object(sg.time, "sleep"), mock.patch("sys.argv", argv), mock.patch("builtins.print"):
             code = sg.main()
         self.lookups = lookups
         return code, posted
@@ -435,6 +439,35 @@ class QueueRevocationTest(unittest.TestCase):
         self.assertIn(self.G2, str(ctx.exception))
         self.assertNotIn(self.G1, str(ctx.exception))
         self.assertIn("state=failure", self.captured[self.G1])
+
+    def writes_to(self, posted, sha):
+        return [a for a in posted if a[0].endswith(f"statuses/{sha}")]
+
+    def test_a_transient_status_write_failure_is_retried_and_the_head_ends_on_failure(self):
+        # review round 9: one failed attempt must not leave the carried success while the API has recovered
+        code, posted = self.run_pr([comment("no verdict any more")], post_fail={self.G1: 2}, stacked=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.writes_to(posted, self.G1)), 3)
+        self.assertIn("state=failure", self.writes_to(posted, self.G1)[-1])
+        self.assertEqual(len(self.writes_to(posted, self.G2)), 1)
+
+    def test_a_write_that_fails_on_every_bounded_retry_is_named_and_the_other_heads_are_still_flipped(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            self.run_pr([comment("no verdict any more")], post_fail={self.G1: 10**9}, stacked=True)
+        self.assertIn(self.G1, str(ctx.exception))
+        self.assertNotIn(self.G2, str(ctx.exception))
+
+    def test_retries_are_bounded_at_three_attempts_per_head(self):
+        attempts = []
+        real = sg._post
+
+        def spy(github, sha, *rest):
+            attempts.append(sha)
+            return real(github, sha, *rest)
+
+        with mock.patch.object(sg, "_post", spy), self.assertRaises(RuntimeError):
+            self.run_pr([comment("no verdict any more")], post_fail={self.G1: 10**9, self.G2: 10**9}, stacked=True)
+        self.assertEqual([attempts.count(self.G1), attempts.count(self.G2)], [3, 3])
 
     def run_pr_capture(self, comments, post_fail):
         # run_pr raises before it can return `posted`; capture the attempted writes through the mock instead

@@ -303,9 +303,10 @@ def revoke_queue(github: str, number: int, default_branch: str, run_url: str) ->
     """A PR whose gate is no longer `success` must not ride a success already carried onto a queue head: flip every
     queue head whose group contains the PR to `failure`, so GitHub drops the entry. A group that cannot be read is
     failed too (fail closed). Only when both queue lookups keep failing for the whole retry period does it raise: no head
-    is known to flip then and the job goes red (accepted residual risk, CHE-3240: dequeue the PR by hand). A status write
-    that fails on one head never skips the later heads; every head left unflipped is named in the error that fails the
-    job (residual risk: a write that keeps failing cannot be forced, so dequeue the entry or re-run the job). The PR status
+    is known to flip then and the job goes red (accepted residual risk, CHE-3240: dequeue the PR by hand). Each head's
+    write is retried (3 attempts, short backoff) and a head that still fails never skips the later heads; every head left
+    unflipped is named in the error that fails the job (residual risk: a write that fails on every bounded retry cannot
+    be forced, so dequeue the entry or re-run the job). The PR status
     was written first, so a group evaluated after this point reads the revocation itself."""
     prefix = f"gh-readonly-queue/{default_branch}/"
     lookups = (  # two different endpoints: an outage of one must not leave a carried success in place
@@ -328,10 +329,15 @@ def revoke_queue(github: str, number: int, default_branch: str, run_url: str) ->
         except Exception as e:  # unreadable group: block it rather than leave a carried success
             carries, desc = True, f"cannot read queue group: {type(e).__name__}"
         if carries:
-            try:
-                _post(github, head, "failure", desc, run_url)
-            except subprocess.CalledProcessError:
-                unflipped.append(head)
+            for attempt in range(3):  # a transient write error must not leave the carried success in place
+                try:
+                    _post(github, head, "failure", desc, run_url)
+                    break
+                except subprocess.CalledProcessError:
+                    if attempt == 2:
+                        unflipped.append(head)
+                    else:
+                        time.sleep(2 * (attempt + 1))
     if unflipped:
         raise RuntimeError(f"could not revoke security-gate on queue head(s): {' '.join(unflipped)}")
 
