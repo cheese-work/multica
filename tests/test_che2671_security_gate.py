@@ -228,6 +228,52 @@ class WrapperTest(unittest.TestCase):
         self.assertIn("state=failure", posted[0])
 
 
+class MergeGroupTest(unittest.TestCase):
+    """The merge queue requires `security-gate` on its own commit, which no PR event ever reaches."""
+
+    MG_SHA = "e" * 40
+    MG_REF = f"refs/heads/gh-readonly-queue/main/pr-405-{'d' * 40}"
+
+    def run_main(self, ref=MG_REF, parents=(("d" * 40), HEAD), state="success"):
+        posted = []
+
+        def fake_gh(*args):
+            path = " ".join(args)
+            if f"commits/{self.MG_SHA}" in path:
+                return json.dumps(list(parents))
+            if "statuses/" in path:
+                posted.append(args)
+            return ""
+
+        argv = ["x", "--repo", str(ROOT), "--github", "cheese-work/multica-dotfiles", "--default-branch", "main",
+                "--merge-group-ref", ref, "--merge-group-sha", self.MG_SHA, "--post"]
+        calls = []
+        with mock.patch.object(sg, "_gh", fake_gh), \
+                mock.patch.object(sg, "gate_pr", side_effect=lambda *a: calls.append(a[2]) or (HEAD, state, "PASS")), \
+                mock.patch("sys.argv", argv), mock.patch("builtins.print"):
+            code = sg.main()
+        return code, posted, calls
+
+    def test_queued_pr_verdict_is_posted_on_the_merge_group_commit(self):
+        code, posted, calls = self.run_main()
+        self.assertEqual((code, calls), (0, [405]))
+        self.assertIn(f"repos/cheese-work/multica-dotfiles/statuses/{self.MG_SHA}", posted[0])
+        self.assertIn("state=success", posted[0])
+
+    def test_pr_head_that_is_not_a_parent_fails(self):
+        _, posted, _ = self.run_main(parents=("d" * 40, OLD))
+        self.assertIn("state=failure", posted[0])
+
+    def test_pending_pr_verdict_stays_pending(self):
+        _, posted, _ = self.run_main(state="pending")
+        self.assertIn("state=pending", posted[0])
+
+    def test_queue_for_another_branch_fails_without_evaluating(self):
+        _, posted, calls = self.run_main(ref=f"refs/heads/gh-readonly-queue/dev/pr-405-{'d' * 40}")
+        self.assertEqual(calls, [])
+        self.assertIn("state=failure", posted[0])
+
+
 class WorkflowTest(unittest.TestCase):
     def setUp(self):
         self.text = (ROOT / ".github/workflows/security-gate.yml").read_text()
@@ -249,6 +295,10 @@ class WorkflowTest(unittest.TestCase):
         # findings 3 and 4
         self.assertIn("edited", self.doc[True]["pull_request_target"]["types"])
         self.assertIn("deleted", self.doc[True]["issue_comment"]["types"])
+
+    def test_merge_queue_commit_gets_the_status(self):
+        self.assertIn("checks_requested", self.doc[True]["merge_group"]["types"])
+        self.assertIn("--merge-group-sha", self.text)
 
     def test_only_status_write_is_added(self):
         self.assertEqual(self.doc["permissions"], {"contents": "read", "pull-requests": "read", "statuses": "write"})
