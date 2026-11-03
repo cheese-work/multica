@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -14,6 +16,19 @@ import (
 // through the issue API.
 const StatusCauseUIOrAPI = "ui_or_api"
 
+// StatusCauseWorkflowRemap is the cause of a status move a workflow edit or a
+// project workflow switch made to fit an issue to the new workflow. It is the
+// platform's administrative move, never a person's: it opens no run-budget
+// window.
+const StatusCauseWorkflowRemap = "workflow_remap"
+
+// Causes of the background writers that move a status without a request:
+// a merged PR (auto-complete or the GitHub merge hook) and a Qoder Cloud run.
+const (
+	StatusCausePRMerged = "pr_merged"
+	StatusCauseQoder    = "qoder"
+)
+
 // StatusTriggerVersion is the schema version of details.trigger.
 const StatusTriggerVersion = 1
 
@@ -23,8 +38,9 @@ type StatusCauseActor struct {
 }
 
 type StatusCause struct {
-	Kind string           `json:"kind"`
-	By   StatusCauseActor `json:"by"`
+	Kind string            `json:"kind"`
+	By   StatusCauseActor  `json:"by"`
+	Ref  map[string]string `json:"ref,omitempty"`
 }
 
 // StatusTrigger is the trigger object stored in a status_changed row's
@@ -37,17 +53,35 @@ type StatusTrigger struct {
 	AuthSource       *string     `json:"auth_source"`
 	Channel          string      `json:"channel"`
 	HandoffCommentID string      `json:"handoff_comment_id,omitempty"`
+	// RefInvalid marks a handoff comment link that RecordStatusChange dropped.
+	RefInvalid bool `json:"ref_invalid,omitempty"`
+}
+
+// BackgroundStatusTrigger is the trigger of a status move no request made: it
+// has no credential, so auth_source stays null.
+func BackgroundStatusTrigger(kind string, by StatusCauseActor, ref map[string]string) StatusTrigger {
+	return StatusTrigger{Cause: StatusCause{Kind: kind, By: by, Ref: ref}, Channel: "unknown"}
 }
 
 // RecordStatusChange writes the status_changed activity row with qtx, the
 // queries of the transaction that changes the status, so the row commits with
 // the status or not at all. handoff entries are stored as handoff_<key>
-// details, the way the activity listener stores them.
+// details, the way the activity listener stores them. A HandoffCommentID that
+// is not a comment of the same workspace and issue is dropped and the trigger
+// is marked RefInvalid.
 func RecordStatusChange(ctx context.Context, qtx *db.Queries, issue db.Issue, from, to string, trigger StatusTrigger, handoff map[string]string) (db.ActivityLog, error) {
-	trigger.Version = StatusTriggerVersion
+	trigger, err := ResolveStatusTrigger(ctx, qtx, issue, trigger)
+	if err != nil {
+		return db.ActivityLog{}, err
+	}
 	details := map[string]any{"from": from, "to": to, "trigger": trigger}
 	for k, v := range handoff {
 		details["handoff_"+k] = v
+	}
+	// The timeline names the PRs that completed an issue (MUL-7429).
+	if prs := trigger.Cause.Ref["pr"]; trigger.Cause.Kind == StatusCausePRMerged && prs != "" {
+		details["source"] = "pr_automation"
+		details["pull_requests"] = prs
 	}
 	body, err := json.Marshal(details)
 	if err != nil {
@@ -68,4 +102,35 @@ func RecordStatusChange(ctx context.Context, qtx *db.Queries, issue db.Issue, fr
 		Action:      "status_changed",
 		Details:     body,
 	})
+}
+
+// ResolveStatusTrigger stamps the trigger version and checks the handoff
+// comment link against issue. A link that is not a comment of the same
+// workspace and issue is dropped and the trigger is marked RefInvalid.
+func ResolveStatusTrigger(ctx context.Context, qtx *db.Queries, issue db.Issue, trigger StatusTrigger) (StatusTrigger, error) {
+	trigger.Version = StatusTriggerVersion
+	trigger.RefInvalid = false
+	if trigger.HandoffCommentID == "" {
+		return trigger, nil
+	}
+	ok, err := handoffCommentBelongsTo(ctx, qtx, issue, trigger.HandoffCommentID)
+	if err != nil {
+		return trigger, err
+	}
+	if !ok {
+		trigger.HandoffCommentID, trigger.RefInvalid = "", true
+	}
+	return trigger, nil
+}
+
+func handoffCommentBelongsTo(ctx context.Context, qtx *db.Queries, issue db.Issue, commentID string) (bool, error) {
+	id, err := util.ParseUUID(commentID)
+	if err != nil {
+		return false, nil
+	}
+	c, err := qtx.GetCommentInWorkspace(ctx, db.GetCommentInWorkspaceParams{ID: id, WorkspaceID: issue.WorkspaceID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil && c.IssueID == issue.ID, err
 }
