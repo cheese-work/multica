@@ -39,6 +39,8 @@ export type {
   AgentInvocationTargetInput,
   AgentTask,
   AgentPreset,
+  TaskInitContext,
+  TaskInitContextPart,
   TaskPresetRun,
   TaskPresetSettings,
   TaskPresetSkip,
