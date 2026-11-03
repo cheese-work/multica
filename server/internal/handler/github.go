@@ -1524,6 +1524,7 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to process pull_request event")
 			return
 		}
+		h.configSyncOnPullRequest(ctx, body)
 	case "workflow_run":
 		if err := h.handleWorkflowRunEvent(ctx, body); err != nil {
 			slog.Error("github: workflow_run event failed", "err", err, "delivery_guid", deliveryGUID)
@@ -1795,6 +1796,15 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error
 	// authoritative CI + mergeability snapshot for that head. The webhook is
 	// only the doorbell — its own mergeable/checks payload is not used for
 	// display anymore (MUL-5265).
+	if p.Action == "edited" && baseRefChanged(p.Changes) {
+		// The stored API verdict describes the old base. A failed clear must
+		// fail the delivery so GitHub redelivers it.
+		if err := h.Queries.InvalidateGitHubPRMergeState(ctx, db.InvalidateGitHubPRMergeStateParams{
+			InstallationID: p.Installation.ID, RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name, PrNumber: p.PullRequest.Number,
+		}); err != nil {
+			errs = append(errs, fmt.Errorf("github: invalidate merge state of retargeted pull request: %w", err))
+		}
+	}
 	h.PRRefresh.Enqueue(p.Installation.ID, p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number)
 	if p.Action == "closed" && p.PullRequest.Merged {
 		h.PRRefresh.RefreshConflictWatchers(ctx, p.Installation.ID, p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number)
@@ -2201,6 +2211,7 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 // refreshOpenPRsOnBase asks for a fresh snapshot of every open PR on the base
 // a merge just moved (CHE-1417). Their merge state can turn DIRTY or BEHIND
 // without a pull_request event of their own; the refresh is what notices it.
+// A stack child, based on the merged PR's head branch, is included (CHE-2796).
 // Their stored merge state is cleared first, so a PR the refresh queue drops
 // is undecided and the snapshot sweep refreshes it. A failed clear is returned:
 // the old decided verdicts would stay outside the sweep, so the delivery must
@@ -2212,6 +2223,7 @@ func (h *Handler) refreshOpenPRsOnBase(ctx context.Context, p *ghPullRequestPayl
 	rows, err := h.Queries.InvalidateOpenGitHubPRMergeStateOnBase(ctx, db.InvalidateOpenGitHubPRMergeStateOnBaseParams{
 		InstallationID: p.Installation.ID, RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name,
 		MergedPrNumber: p.PullRequest.Number, BaseRef: pgtype.Text{String: p.PullRequest.Base.Ref, Valid: true},
+		HeadRef: pgtype.Text{String: p.PullRequest.Head.Ref, Valid: true},
 	})
 	if err != nil {
 		return fmt.Errorf("github: invalidate merge state of open pull requests on merged base: %w", err)

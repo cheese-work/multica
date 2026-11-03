@@ -146,6 +146,12 @@ export function useSettingsSearchIndex(
         title: t(($) => $.workspace.auto_compact_label),
         description: t(($) => $.workspace.auto_compact_hint),
       },
+      {
+        tab: "workspace",
+        anchor: "idle-guard",
+        title: t(($) => $.workspace.idle_guard_label),
+        description: t(($) => $.workspace.idle_guard_hint),
+      },
       { tab: "workspace", anchor: "slug", title: t(($) => $.workspace.slug_label) },
       {
         tab: "workspace",
@@ -156,11 +162,6 @@ export function useSettingsSearchIndex(
       { tab: "workspace", anchor: "delete", title: t(($) => $.workspace.delete_title) },
       { tab: "members", anchor: "invitations", title: t(($) => $.members.pending_label) },
       { tab: "members", anchor: "links", title: t(($) => $.members.share_links_label) },
-      {
-        tab: "jev-governance",
-        title: t(($) => $.page.tabs.jev_governance),
-        description: t(($) => $.jev_governance.search_description),
-      },
       {
         tab: "wakeups",
         anchor: "pause",

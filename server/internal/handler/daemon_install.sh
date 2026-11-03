@@ -103,8 +103,12 @@ chmod 0700 "$work/multica"
 PROBE_TIMEOUT="${MULTICA_PROBE_TIMEOUT:-10}"
 MULTICA_TOKEN='' "$work/multica" --version >"$work/probe.out" 2>/dev/null </dev/null &
 probe_pid=$!
+# Fork the watchdog without the EXIT trap: bash runs an inherited EXIT trap when
+# a fresh subshell is killed, and that would delete $work under the installer.
+trap - EXIT
 { sleep "$PROBE_TIMEOUT"; kill -9 "$probe_pid"; } >/dev/null 2>&1 &
 watchdog_pid=$!
+trap 'rm -rf "$work"' EXIT
 probe_ok=1
 wait "$probe_pid" 2>/dev/null && probe_ok=0
 kill "$watchdog_pid" >/dev/null 2>&1 || true

@@ -119,7 +119,7 @@ func (f *fixture) attest(device *passkeytest.Authenticator, ceremony startedCere
 }
 
 func (f *fixture) finishAs(user pgtype.UUID, ceremony startedCeremony, code string, attestation []byte) error {
-	return f.service.FinishEnrollment(context.Background(), user, ceremony.CeremonyID, code, attestation, testEmail)
+	return f.service.FinishEnrollment(context.Background(), user, ceremony.CeremonyID, code, attestation, nil, testEmail)
 }
 
 func (f *fixture) credentials() int {

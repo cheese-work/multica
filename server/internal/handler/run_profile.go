@@ -62,8 +62,8 @@ func resolveRunProfile(grants []db.RunCapabilityGrant, taintIDs []string, issueT
 // runProfileForTask resolves the profile of a task on one issue and records the
 // task's first elevated claim (task_elevation), whose scopes and epoch then stay
 // frozen for the task. A task whose row left `elevated` is fenced for good. The
-// task's taint IDs come from its row; issue-level taint has no storage yet
-// (B5b). Any read or write error resolves restricted.
+// task's taint IDs come from its row; the issue's from issue_taint, which only a
+// member clear empties. Any read or write error resolves restricted.
 func (h *Handler) runProfileForTask(ctx context.Context, workspaceID, issueID, taskID pgtype.UUID, taintIDs []string) runProfile {
 	restricted := resolveRunProfile(nil, nil, false, false)
 	grants, err := h.Queries.ListActiveRunCapabilityGrants(ctx, db.ListActiveRunCapabilityGrantsParams{WorkspaceID: workspaceID, IssueID: issueID})
@@ -71,21 +71,27 @@ func (h *Handler) runProfileForTask(ctx context.Context, workspaceID, issueID, t
 		slog.Warn("run profile grant read failed; resolving restricted", "issue_id", uuidToString(issueID), "error", err)
 		return restricted
 	}
+	issueTaint, err := h.Queries.GetIssueTaintIDs(ctx, issueID)
+	if err != nil {
+		slog.Warn("issue taint read failed; resolving restricted", "issue_id", uuidToString(issueID), "error", err)
+		return restricted
+	}
+	issueTainted := len(issueTaint) > 0
 	te, err := h.Queries.GetTaskElevation(ctx, taskID)
 	known := err == nil
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		slog.Warn("task elevation read failed; resolving restricted", "task_id", uuidToString(taskID), "error", err)
 		return restricted
 	}
-	if known && len(taintIDs) > 0 && te.State == elevationElevated {
+	if known && (len(taintIDs) > 0 || issueTainted) && te.State == elevationElevated {
 		// Taint grew after the elevation was recorded (a resumed session, a
-		// late assignment): the stored row must not stay usable. Authorization
+		// late assignment, tainted material on the issue): the stored row must not stay usable. Authorization
 		// refuses tainted tasks on its own; a failed fence here is swept later.
 		if _, err := h.Queries.FenceTaintedTaskElevations(ctx, taskID); err != nil {
 			slog.Warn("tainted task elevation fence failed", "task_id", uuidToString(taskID), "error", err)
 		}
 	}
-	rp := resolveRunProfile(grants, taintIDs, false, known && te.State != elevationElevated)
+	rp := resolveRunProfile(grants, taintIDs, issueTainted, known && te.State != elevationElevated)
 	if rp.Profile != runProfileElevated {
 		return rp
 	}

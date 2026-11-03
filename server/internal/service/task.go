@@ -1481,15 +1481,25 @@ func actingTask(ctx context.Context) pgtype.UUID {
 // ActingTaskTaint is the taint of the task WithActingTask names, nil when ctx
 // names none. Fail closed: a task that cannot be read cannot be shown clean.
 func ActingTaskTaint(ctx context.Context, q *db.Queries) ([]string, error) {
-	acting := actingTask(ctx)
-	if !acting.Valid {
-		return nil, nil
-	}
-	actor, err := q.GetAgentTask(ctx, acting)
-	if err != nil {
-		return nil, fmt.Errorf("read acting task taint: %w", err)
+	actor, ok, err := ActingTask(ctx, q)
+	if err != nil || !ok {
+		return nil, err
 	}
 	return actor.TaintIds, nil
+}
+
+// ActingTask is the task WithActingTask names; ok is false when ctx names none.
+// Fail closed: a task that cannot be read is an error, never "clean".
+func ActingTask(ctx context.Context, q *db.Queries) (task db.AgentTaskQueue, ok bool, err error) {
+	acting := actingTask(ctx)
+	if !acting.Valid {
+		return db.AgentTaskQueue{}, false, nil
+	}
+	task, err = q.GetAgentTask(ctx, acting)
+	if err != nil {
+		return db.AgentTaskQueue{}, false, fmt.Errorf("read acting task: %w", err)
+	}
+	return task, true, nil
 }
 
 // issueReviewHead is GetIssueReviewHeadSha unless ctx pins a PR (WithReviewPR).
@@ -4346,6 +4356,17 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			return fmt.Errorf("claim task: %w", err)
 		}
 
+		// Rule E: the claim stamped the epoch on a statement snapshot that a
+		// compact committed just before our DM lock may have outdated. Restamp
+		// on a fresh snapshot; the DM share lock keeps the epoch fixed until
+		// commit.
+		if task.ChatSessionID.Valid {
+			if err := qtx.RebaseClaimedChatTaskEpoch(ctx, task.ID); err != nil {
+				outcome = "error_rebase_chat_epoch"
+				return fmt.Errorf("rebase claimed chat task epoch: %w", err)
+			}
+		}
+
 		// An idle task-owned direct-chat row may already be visible as the
 		// positional queue head. Normal completion reanchors a successor beside
 		// the assistant outcome before commit; this claim-time query is the
@@ -5043,6 +5064,7 @@ func (s *TaskService) maybeLogClaimSlow(agentID pgtype.UUID, outcome string, sta
 // Persist these in the same transaction as running, before cancellation can win.
 type TaskStartCapabilities struct {
 	Supplement     bool
+	ChatSupplement bool
 	PREvent        bool
 	ProcessCleanup bool
 }
@@ -5106,6 +5128,7 @@ func (s *TaskService) startTask(ctx context.Context, taskID pgtype.UUID, claim *
 		task, err = qtx.StartAgentTaskWithSupplement(ctx, db.StartAgentTaskWithSupplementParams{
 			TaskID:               task.ID,
 			EnableTaskSupplement: offered.Supplement,
+			EnableChatSupplement: offered.ChatSupplement,
 			EnableProcessCleanup: offered.ProcessCleanup,
 		})
 		if err != nil {
@@ -7469,6 +7492,9 @@ func SettleTerminalTaskState(ctx context.Context, q *db.Queries, tasks ...db.Age
 	}
 	if _, err := q.SettleTerminalTaskSupplements(ctx, taskIDs); err != nil {
 		return fmt.Errorf("settle terminal task supplements: %w", err)
+	}
+	if _, err := q.SettleTerminalChatTaskSupplements(ctx, taskIDs); err != nil {
+		return fmt.Errorf("settle terminal chat task supplements: %w", err)
 	}
 	if _, err := q.SettleTerminalTaskPREventDeliveries(ctx, taskIDs); err != nil {
 		return fmt.Errorf("settle terminal task PR events: %w", err)

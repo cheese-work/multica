@@ -85,3 +85,8 @@ UPDATE "user" SET
     updated_at = now()
 WHERE id = $1
 RETURNING *;
+
+-- name: GetUserSessionGeneration :one
+-- Revocation counter: a session JWT whose `gen` claim differs is dead.
+SELECT session_generation FROM "user"
+WHERE id = $1;
