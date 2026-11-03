@@ -99,6 +99,9 @@ export function buildSteps(items: TimelineItem[]): TraceStep[] {
   const open = new Map<string, TraceCallStep[]>();
 
   for (const item of items) {
+    // Watchdog markers have no trace row yet; skipping keeps them out of the
+    // agent's own steps.
+    if (item.type === "silence_warn" || item.type === "tool_stalled") continue;
     const pairingKey = item.callId ? `id:${item.callId}` : `tool:${item.tool ?? ""}`;
     if (item.type === "tool_use") {
       const tool = item.tool ?? "";

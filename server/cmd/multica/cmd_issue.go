@@ -731,6 +731,7 @@ func init() {
 	// issue status
 	issueStatusCmd.Flags().Bool("no-start", false, "Change status without starting an agent run")
 	issueStatusCmd.Flags().String("duplicate-of", "", "Mark the issue as a duplicate of this original issue (key like MUL-123, or full UUID); the status must be cancelled")
+	issueStatusCmd.Flags().StringArray("finding", nil, "Review finding as <P0-P3>:<summary>; repeatable. A changes-requested verdict needs at least one P0 or P1")
 	issueStatusCmd.Flags().String("override-reason", "", "Reason (1-500 characters) to pass a block entry gate of the target step; honored for a person's own login only")
 	issueStatusCmd.Flags().String("output", "table", "Output format: table or json")
 
@@ -2380,6 +2381,22 @@ func runIssueAssign(cmd *cobra.Command, args []string) error {
 	return cli.PrintJSON(os.Stdout, result)
 }
 
+// findingFlags parses repeatable --finding "<P0-P3>:<summary>" values; the
+// server owns the severity rules, the CLI only splits and rejects a missing part.
+func findingFlags(cmd *cobra.Command) ([]map[string]string, error) {
+	raw, _ := cmd.Flags().GetStringArray("finding")
+	findings := make([]map[string]string, 0, len(raw))
+	for _, f := range raw {
+		severity, summary, ok := strings.Cut(f, ":")
+		severity, summary = strings.TrimSpace(severity), strings.TrimSpace(summary)
+		if !ok || severity == "" || summary == "" {
+			return nil, fmt.Errorf("--finding %q: want <P0-P3>:<summary>", f)
+		}
+		findings = append(findings, map[string]string{"severity": severity, "summary": summary})
+	}
+	return findings, nil
+}
+
 func runIssueStatus(cmd *cobra.Command, args []string) error {
 	id := args[0]
 	status := args[1]
@@ -2389,6 +2406,10 @@ func runIssueStatus(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	duplicateOf, err := duplicateOfFlag(cmd, status, true)
+	if err != nil {
+		return err
+	}
+	findings, err := findingFlags(cmd)
 	if err != nil {
 		return err
 	}
@@ -2419,6 +2440,9 @@ func runIssueStatus(cmd *cobra.Command, args []string) error {
 	}
 	if reason, _ := cmd.Flags().GetString("override-reason"); strings.TrimSpace(reason) != "" {
 		body["entry_gate_override_reason"] = strings.TrimSpace(reason)
+	}
+	if len(findings) > 0 {
+		body["review_findings"] = findings
 	}
 	var result map[string]any
 	if err := client.PutJSON(ctx, "/api/issues/"+issueRef.ID, body, &result); err != nil {

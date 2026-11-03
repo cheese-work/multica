@@ -48,7 +48,7 @@ export interface IssueChipProps {
   className?: string;
 }
 
-const BASE_CLASS =
+export const ISSUE_CHIP_CLASS =
   "issue-mention inline-flex min-w-0 max-w-[min(18rem,100%)] items-center gap-1.5 rounded-md border mx-0.5 px-2 py-0.5 text-caption";
 
 export function IssueChip({
@@ -71,7 +71,7 @@ export function IssueChip({
   });
 
   const issue = listIssue ?? detailIssue;
-  const cls = className ? `${BASE_CLASS} ${className}` : BASE_CLASS;
+  const cls = className ? `${ISSUE_CHIP_CLASS} ${className}` : ISSUE_CHIP_CLASS;
 
   if (children !== undefined) {
     return <span className={cls}>{children}</span>;

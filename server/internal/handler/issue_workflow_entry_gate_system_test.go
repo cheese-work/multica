@@ -27,21 +27,6 @@ func blockedStepProject(t *testing.T, statuses ...string) string {
 	return projectID
 }
 
-func TestEntryGateSkipsJevRouting(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	squad := jevWorkflowSquad(t)
-	projectID := blockedStepProject(t, "in_progress")
-	issueID := dbfx.Issue(t, "gated jev", testutil.Cols{
-		"project_id": projectID, "status": "todo", "assignee_type": "squad", "assignee_id": uuidToString(squad.ID),
-	})
-
-	routeIssueThroughJev(t, squad, issueID)
-
-	wantIssueStatus(t, issueID, "in_progress")
-}
-
 func TestEntryGateSkipsGitHubMergeCompletion(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")

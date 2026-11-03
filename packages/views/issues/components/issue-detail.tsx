@@ -152,7 +152,7 @@ import { IssueHierarchy } from "./hierarchy/hierarchy-minimap";
 import { useRecentContextStore } from "@multica/core/chat";
 import { useRegisterCommandBarContext } from "../../search/register-context";
 import { useModalStore } from "@multica/core/modals";
-import { issueListOptions, issueDetailOptions, childIssuesOptions, childIssueProgressOptions, issueAttachmentsOptions } from "@multica/core/issues/queries";
+import { issueListOptions, issueDetailOptions, issueDetailViewOptions, childIssuesOptions, childIssueProgressOptions, issueAttachmentsOptions } from "@multica/core/issues/queries";
 import { projectDetailOptions } from "@multica/core/projects/queries";
 import { ProjectIcon } from "../../projects/components/project-icon";
 import { issueLabelsOptions } from "@multica/core/labels";
@@ -1204,6 +1204,11 @@ interface IssueDetailProps {
    */
   highlightRequestToken?: number;
   /**
+   * The cached issue is the detail endpoint's own response, read a moment ago
+   * by the route, so mounting skips reading it again.
+   */
+  authoritative?: boolean;
+  /**
    * Far-left header slot, replacing the mobile sidebar trigger. A host that
    * embeds this detail one level deep (the inbox, on a phone) passes its own
    * "back" control here instead of stacking a second 48px bar above us — the
@@ -1347,7 +1352,7 @@ export function IssueDetailSkeleton({
 
 // IssueDetail
 
-export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId, highlightRequestToken, leadingAction, variant = "page", trailingActions }: IssueDetailProps) {
+export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId, highlightRequestToken, authoritative, leadingAction, variant = "page", trailingActions }: IssueDetailProps) {
   const isPeek = variant === "peek";
   const { t } = useT("issues");
   const { t: tCommon } = useT("common");
@@ -1369,7 +1374,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     members.find((m) => m.user_id === user?.id)?.role ?? null;
   const canModerateComments =
     currentUserRole === "owner" || currentUserRole === "admin";
-  const { data: allIssues = [] } = useQuery(issueListOptions(wsId));
+  // Cache read only: the list seeds the row another view already loaded, and
+  // is never worth its own workspace-wide request.
+  const { data: allIssues = [] } = useQuery({ ...issueListOptions(wsId), enabled: false });
   const { getActorName } = useActorName();
   const resolveStatusLabel = useStatusLabel(wsId);
   // Activity and issue visuals share the catalog's custom geometry and color;
@@ -1610,21 +1617,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const lastHighlightRequestTokenRef = useRef(highlightRequestToken);
 
   // Issue data from TQ — uses detail query, seeded from list cache if available.
-  // Only seed when description is present; the list API omits it, so a partial
-  // list row must not masquerade as a hydrated issue detail.
-  const { data: issue = null, isLoading: issueLoading, refetch: refetchIssue } = useQuery({
-    ...issueDetailOptions(wsId, id),
-    // List rows and issue-created realtime payloads intentionally omit the
-    // detail-only source-context snapshot. They can still seed this query via
-    // initialData, so always reconcile with the authoritative detail endpoint
-    // when the detail view mounts. Without this, the global Infinity staleTime
-    // hides source context until a full page refresh.
-    refetchOnMount: "always",
-    initialData: () => {
-      const cached = allIssues.find((i) => i.id === id);
-      return cached?.description != null ? cached : undefined;
-    },
-  });
+  const { data: issue = null, isLoading: issueLoading, refetch: refetchIssue } = useQuery(
+    issueDetailViewOptions(wsId, id, allIssues.find((i) => i.id === id), authoritative),
+  );
   const descriptionSourceId = `description:${id}`;
   const descriptionAnnotations = useCommentAnnotations({
     draftKey: `new:${id}`,
@@ -2712,8 +2707,22 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       jumpToMinimapTarget(commentId);
       return;
     }
-    container.scrollTop = Math.max(0, container.scrollTop + element.getBoundingClientRect().top - container.getBoundingClientRect().top - 16);
+    // Highlighting a reply force-opens its compact thread, which mounts the
+    // hidden replies above the target after this scroll — so re-align until
+    // the offset stops moving (same settle loop as the pending reply jump).
     flashJumpTarget(commentId);
+    let frames = 0;
+    let last = -1;
+    const align = () => {
+      const target = document.getElementById(`comment-${commentId}`) ?? element;
+      const offset = target.getBoundingClientRect().top - container.getBoundingClientRect().top;
+      container.scrollTop = Math.max(0, container.scrollTop + offset - 16);
+      if (Math.abs(offset - last) > 1 && ++frames < 30) {
+        last = offset;
+        requestAnimationFrame(align);
+      }
+    };
+    align();
   }, [scrollContainerEl, flashJumpTarget, jumpToMinimapTarget]);
   const [pendingAnnotationEdit, setPendingAnnotationEdit] = useState<{
     rootId: string; sourceCommentId: string; annotationId: string;
