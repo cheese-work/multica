@@ -19,6 +19,11 @@ vi.mock("../../issues/components/issue-chip", () => ({
   IssueChip: ({ fallbackLabel, children }: { fallbackLabel?: string; children?: React.ReactNode }) => <span data-testid="issue-chip">{children ?? fallbackLabel}</span>,
 }));
 
+// Resolving a comment needs a workspace query; here only the link it falls back to matters.
+vi.mock("../../issues/components/comment-mention-card", () => ({
+  CommentMentionCard: ({ fallback }: { fallback: React.ReactNode }) => <>{fallback}</>,
+}));
+
 const answerDecisionRequest = vi.hoisted(() => vi.fn());
 const listDecisionArtifacts = vi.hoisted(() => vi.fn());
 const uploadFile = vi.hoisted(() => vi.fn());
@@ -243,6 +248,19 @@ describe("DecisionRequestCard accessibility", () => {
     expect(details).toHaveTextContent("Ran all requested checks.");
     expect(details).not.toHaveTextContent("Investigate in issue");
     expect(text.match(/Investigate in issue/g)).toHaveLength(1);
+  });
+
+  // CHE-3411: the link shape the server emits today (`util.WorkspaceIssuePath`):
+  // the Issue chip carries the UUID, the Comment link is a workspace UUID path.
+  it("links the Issue chip and the Comment link to the issue by UUID path", () => {
+    const issueId = "01a1a0eb-718d-778e-9948-770bc5e04ad7";
+    const commentId = "01a1a165-1b88-769c-8137-bd8be641b61b";
+    const ask = `Ship?\n\nInvestigate in issue: [Issue](mention://issue/${issueId}) · [Comment](/acme/issues/${issueId}#comment-${commentId})`;
+    const { container } = renderCard(ask);
+    const hrefs = Array.from(container.querySelectorAll("a")).map((a) => a.getAttribute("href"));
+    expect(hrefs).toContain(`/acme/issues/${issueId}`);
+    expect(hrefs.some((href) => href?.startsWith(`/acme/issues/${issueId}`))).toBe(true);
+    expect(hrefs.join(" ")).not.toContain("mention://");
   });
 
   it("renders a legacy ask unchanged", () => {
