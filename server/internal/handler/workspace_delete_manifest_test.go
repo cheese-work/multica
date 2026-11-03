@@ -82,6 +82,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"client_usage_daily":                 workspaceDeleteDetach,
 	"comment":                            workspaceDelete,
 	"comment_reaction":                   workspaceDelete,
+	"comment_search_text":                workspaceDelete, // CHE-2943 derived; the comment delete trigger removes it, no FK.
 	"comment_supersession":               workspaceDelete,
 	"comment_trigger_rate_limit":         workspaceDelete,
 	"contact_sales_inquiry":              workspaceDeleteKeep,
@@ -164,6 +165,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"issue_reaction":                     workspaceDelete,
 	"issue_source_context":               workspaceDelete,
 	"issue_source_context_object_intent": workspaceDeleteSettle,
+	"issue_search_text":                  workspaceDelete, // CHE-2943 derived; the issue delete trigger removes it, no FK.
 	"issue_status":                       workspaceDelete,
 	"issue_workflow":                     workspaceDelete,
 	"issue_subscriber":                   workspaceDelete,
@@ -254,6 +256,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"workflow_webhook_event":             workspaceDelete, // CHE-2031
 	"workflow_webhook_nonce":             workspaceDelete, // CHE-2031 no workspace_id; deleted through its endpoint.
 	"workspace":                          workspaceDelete,
+	"workspace_config_sync":              workspaceDelete,
 	"workspace_invitation":               workspaceDelete,
 	"workspace_share_link":               workspaceDelete,
 }

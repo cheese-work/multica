@@ -452,6 +452,12 @@ type Handler struct {
 	// so the feature degrades cleanly on deployments without a private key.
 	// Wired in cmd/server/router.go after New.
 	PRRefresh *ghsnapshot.Manager
+
+	// ConfigSyncGitHub builds the GitHub reader for one config repo (CHE-3284);
+	// nil when the GitHub App is not configured. configSyncRun runs one
+	// evaluation (nil = in a goroutine); tests run it inline.
+	ConfigSyncGitHub func(installationID int64, owner, repo string) ConfigSyncGitHub
+	configSyncRun    func(func())
 	// fetchPullRequestJSON overrides the REST pull request read of
 	// RepairUnverifiedHeadPullRequests; nil uses PRRefresh.
 	fetchPullRequestJSON func(ctx context.Context, installationID int64, owner, repo string, number int32) (json.RawMessage, error)
@@ -587,6 +593,11 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	}
 	h.PRRefresh = ghsnapshot.NewManager(ghClient, queries, txStarter, h.broadcastPRSnapshotApplied)
 	taskSvc.PRSnapshotsEnabled = h.PRRefresh.Enabled()
+	if h.PRRefresh.Enabled() {
+		h.ConfigSyncGitHub = func(installationID int64, owner, repo string) ConfigSyncGitHub {
+			return ghsnapshot.NewConfigSyncReader(ghClient, installationID, owner, repo)
+		}
+	}
 	taskSvc.WorkflowEdges = h.evaluateWorkflowEdges
 	service.SetOnRunBudgetExhausted(h.onRunBudgetExhausted)
 	service.SetOnRunBudgetEvent(h.onRunBudgetEvent)

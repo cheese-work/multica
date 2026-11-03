@@ -13,12 +13,17 @@
  * floor means "run it again by hand", not "regression".
  *
  *   node scripts/perf-compare.mjs --base <ref> --head <ref> [--out <dir>]
+ *   node scripts/perf-compare.mjs --scenario page-load --base <ref> --head <ref>
+ *
+ * `--scenario page-load` runs e2e/perf/page-load-baseline.spec.ts on both
+ * profiles instead (CHE-2976) and tabulates API requests and LCP per route.
  */
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, openSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect, createServer } from "node:net";
+import { renderComparison, summarizeFiles } from "./page-load-report.mjs";
 
 const repoRoot = execFileSync("git", ["rev-parse", "--show-toplevel"]).toString().trim();
 const args = process.argv.slice(2);
@@ -28,6 +33,8 @@ const flag = (name, fallback) => {
 };
 const baseRef = flag("base");
 const headRef = flag("head", "HEAD");
+const pageLoad = flag("scenario", "typing") === "page-load";
+const PROFILES = ["desktop", "phone"];
 const outDir = resolve(flag("out", join(repoRoot, "perf-report")));
 if (!baseRef) {
   console.error("usage: node scripts/perf-compare.mjs --base <ref> [--head <ref>] [--out <dir>]");
@@ -212,7 +219,8 @@ async function measure(ref, label) {
     server = spawn("pnpm", ["--filter", "@multica/web", "start"], {
       cwd: checkout,
       env: { ...process.env, PORT: String(port), REMOTE_API_URL: "http://127.0.0.1:1" },
-      stdio: "ignore",
+      // Kept: a server that dies mid-run is otherwise only a refused connection.
+      stdio: ["ignore", openSync(join(outDir, `${label}-server.log`), "w"), "inherit"],
       detached: true,
     });
     liveServers.add(server);
@@ -227,23 +235,37 @@ async function measure(ref, label) {
     rmSync(reportPath, { force: true });
     const measureStart = Date.now();
     let scenarioExit = 0;
-    try {
-      run("pnpm", ["exec", "playwright", "test", "--config=playwright.perf.config.ts"], {
-        cwd: repoRoot,
-        env: {
-          ...process.env,
-          PLAYWRIGHT_BASE_URL: `http://127.0.0.1:${port}`,
-          PERF_REPORT_PATH: reportPath,
-        },
-      });
-    } catch (error) {
-      scenarioExit = typeof error.status === "number" ? error.status : 1;
+    const playwright = (extra, env) => {
+      try {
+        run("pnpm", ["exec", "playwright", "test", "--config=playwright.perf.config.ts", ...extra], {
+          cwd: repoRoot,
+          env: { ...process.env, PLAYWRIGHT_BASE_URL: `http://127.0.0.1:${port}`, ...env },
+        });
+      } catch (error) {
+        scenarioExit ||= typeof error.status === "number" ? error.status : 1;
+      }
+    };
+    const reportDir = join(outDir, label);
+    if (pageLoad) {
+      rmSync(reportDir, { recursive: true, force: true });
+      mkdirSync(reportDir, { recursive: true });
+      for (const profile of PROFILES) {
+        playwright([`--project=${profile}`, "page-load-baseline.spec.ts"], { PERF_REPORT_DIR: reportDir });
+      }
+    } else {
+      playwright([], { PERF_REPORT_PATH: reportPath });
     }
     const measureS = seconds(measureStart);
 
     let report;
     try {
-      report = JSON.parse(readFileSync(reportPath, "utf8"));
+      if (pageLoad) {
+        const files = PROFILES.map((profile) => join(reportDir, `page-load-${profile}.json`));
+        files.forEach((file) => readFileSync(file));
+        report = { status: "ok", invalid: [], files };
+      } else {
+        report = JSON.parse(readFileSync(reportPath, "utf8"));
+      }
     } catch {
       report = { status: "invalid", invalid: ["the scenario produced no readable report"] };
     }
@@ -279,7 +301,23 @@ const METRICS = [
   ["long_task_max_ms", "Long task max"],
 ];
 
+function pageLoadMarkdown(base, head) {
+  const usable = base.status === "ok" && head.status === "ok";
+  return [
+    "## Page-load comparison (CHE-2976)",
+    "",
+    usable
+      ? "Median of the spec's samples per route. LCP moves with host load; API requests do not."
+      : `**Not a usable comparison.** base: \`${base.status}\`, head: \`${head.status}\`.`,
+    "",
+    ...(usable ? [renderComparison(summarizeFiles(base.files), summarizeFiles(head.files)), ""] : []),
+    `- base \`${base.ref}\` (${base.sha}) — ${base.status}${base.invalid?.length ? `: ${base.invalid.join("; ")}` : ""}`,
+    `- head \`${head.ref}\` (${head.sha}) — ${head.status}${head.invalid?.length ? `: ${head.invalid.join("; ")}` : ""}`,
+  ].join("\n");
+}
+
 function markdown(base, head) {
+  if (pageLoad) return pageLoadMarkdown(base, head);
   const usable = base.status === "ok" && head.status === "ok";
   const rows = METRICS.map(([key, label]) => {
     const a = base[key];
