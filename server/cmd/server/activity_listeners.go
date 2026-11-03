@@ -89,9 +89,12 @@ func registerActivityListeners(bus *events.Bus, queries *db.Queries) {
 		recorded, _ := payload["activity_id"].(string)
 		if statusChanged && recorded == "" {
 			prevStatus, _ := payload["prev_status"].(string)
-			detailsMap := map[string]string{
+			detailsMap := map[string]any{
 				"from": prevStatus,
 				"to":   issue.Status,
+			}
+			if trigger, ok := payload["status_trigger"].(service.StatusTrigger); ok {
+				detailsMap["trigger"] = trigger
 			}
 			for k, v := range handoff {
 				detailsMap["handoff_"+k] = v
