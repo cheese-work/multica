@@ -63,7 +63,7 @@ import type {
 import type { AgentTask } from "@multica/core/types/agent";
 import { ReadonlyContent } from "../../editor";
 import { TranscriptButton } from "../../common/task-transcript";
-import { AutopilotDialog } from "./autopilot-dialog";
+import { AutopilotDialog } from "./autopilot-dialog-lazy";
 import { EditScheduleTriggerDialog } from "./edit-schedule-trigger-dialog";
 import { useRunAutopilotNow } from "./use-run-autopilot-now";
 import { useRegisterCommandBarContext } from "../../search/register-context";
