@@ -171,7 +171,11 @@ func (reconciler githubReconciler) recordUnsigned(ctx context.Context) (int, err
 	enabled := map[pgtype.UUID]bool{}
 	policy := reconciler.handler.newGitHubPolicyRun()
 	for _, pull := range pulls {
-		if !policy.workspaceAllowed(ctx, pull.InstallationID, pull.WorkspaceID) {
+		permitted, err := policy.workspaceAllowed(ctx, pull.InstallationID, pull.WorkspaceID)
+		if err != nil {
+			return recorded, err
+		}
+		if !permitted {
 			continue
 		}
 		allowed, known := enabled[pull.WorkspaceID]

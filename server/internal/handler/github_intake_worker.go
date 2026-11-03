@@ -212,7 +212,11 @@ func (worker githubIntakeWorker) process(ctx context.Context, queries *db.Querie
 		}
 		if needsAdmission {
 			// A revision stored before the policy applied is still checked here, so a now-disallowed binding routes no agent.
-			if allowed := policy.workspaceAllowed(ctx, revision.InstallationID, revision.WorkspaceID); !allowed {
+			allowed, err := policy.workspaceAllowed(ctx, revision.InstallationID, revision.WorkspaceID)
+			if err != nil {
+				return "", "", nil, err
+			}
+			if !allowed {
 				if err := queries.SetGitHubWebhookRevisionState(ctx, db.SetGitHubWebhookRevisionStateParams{
 					WorkspaceID: revision.WorkspaceID, ID: revision.ID, State: "denied", Reason: "installation_not_allowed",
 				}); err != nil {

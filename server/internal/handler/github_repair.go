@@ -37,7 +37,15 @@ func (h *Handler) RepairUnverifiedHeadPullRequests(ctx context.Context) (replaye
 	gone := map[int64]bool{}
 	policy := h.newGitHubPolicyRun()
 	for _, row := range rows {
-		if gone[row.InstallationID] || !policy.installationAllowed(ctx, row.InstallationID) {
+		if gone[row.InstallationID] {
+			continue
+		}
+		permitted, err := policy.installationAllowed(ctx, row.InstallationID)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if !permitted {
 			continue
 		}
 		raw, err := fetch(ctx, row.InstallationID, row.RepoOwner, row.RepoName, row.PrNumber)

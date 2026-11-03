@@ -7,15 +7,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -41,7 +40,7 @@ func allowlistWebhookHandler(t *testing.T, list string) (*Handler, *atomic.Int32
 	h.PRRefresh = ghsnapshot.NewManagerWithFetcher(client, h.Queries, testPool,
 		func(context.Context, *ghsnapshot.Client, int64, string, string, int32) (*ghsnapshot.PRSnapshot, error) {
 			fetches.Add(1)
-			return nil, errors.New("stubbed snapshot fetch")
+			return &ghsnapshot.PRSnapshot{Mergeable: "MERGEABLE", MergeStateStatus: "CLEAN"}, nil
 		}, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	h.PRRefresh.Start(ctx)
@@ -311,4 +310,135 @@ func TestGitHubWebhookAllowlistChangeStopsNextDelivery(t *testing.T) {
 	if intakeRows(t, "che3414-l2") != 0 {
 		t.Fatal("L2 should drop the delivery")
 	}
+}
+
+// A shared installation with one allowed and one denied binding: every write a
+// delivery causes must reach only the allowed workspace.
+type mixedBindings struct {
+	installationID int64
+	allowedWS      string
+	deniedWS       string
+}
+
+func seedMixedBindings(t *testing.T, installationID int64, deniedAccountID *int64) mixedBindings {
+	t.Helper()
+	ctx := context.Background()
+	seedAllowlistRow(t, installationID, "acme", ptr64(7001))
+	m := mixedBindings{installationID: installationID, allowedWS: testWorkspaceID, deniedWS: seedForeignWorkspace(t)}
+	params := db.CreateGitHubInstallationParams{
+		WorkspaceID: parseUUID(m.deniedWS), InstallationID: installationID, AccountLogin: "acme", AccountType: "Organization",
+	}
+	if deniedAccountID != nil {
+		params.AccountID = pgtype.Int8{Int64: *deniedAccountID, Valid: true}
+	}
+	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, params); err != nil {
+		t.Fatalf("seed denied binding: %v", err)
+	}
+	for _, ws := range []string{m.allowedWS, m.deniedWS} {
+		if _, err := testHandler.Queries.UpsertGitHubPullRequest(ctx, db.UpsertGitHubPullRequestParams{
+			WorkspaceID: parseUUID(ws), InstallationID: installationID, RepoOwner: "acme", RepoName: "widget",
+			PrNumber: 3414, Title: "t", State: "open", HtmlUrl: "https://example.test/pr/3414",
+			PrCreatedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true}, PrUpdatedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
+		}); err != nil {
+			t.Fatalf("mirror PR: %v", err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE installation_id = $1`, installationID)
+	})
+	return m
+}
+
+func (m mixedBindings) mergeable(t *testing.T, ws string) string {
+	t.Helper()
+	var v *string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT api_mergeable FROM github_pull_request WHERE installation_id = $1 AND workspace_id = $2`,
+		m.installationID, ws).Scan(&v); err != nil {
+		t.Fatal(err)
+	}
+	if v == nil {
+		return ""
+	}
+	return *v
+}
+
+func TestGitHubWebhookMixedBindingsLifecycle(t *testing.T) {
+	m := seedMixedBindings(t, 34140600, nil)
+	h, _ := allowlistWebhookHandler(t, "7001")
+	postAllowlistWebhook(t, h, "installation", "che3414-mixed-inst", map[string]any{
+		"action": "created", "installation": map[string]any{
+			"id": m.installationID, "account": map[string]any{"id": 7001, "login": "renamed", "type": "Organization"},
+		},
+	})
+	var login string
+	var accountID *int64
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT account_login, account_id FROM github_installation WHERE installation_id = $1 AND workspace_id = $2`,
+		m.installationID, m.deniedWS).Scan(&login, &accountID); err != nil {
+		t.Fatal(err)
+	}
+	if login != "acme" || accountID != nil {
+		t.Fatalf("denied binding was refreshed: login=%q account_id=%v", login, accountID)
+	}
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT account_login FROM github_installation WHERE installation_id = $1 AND workspace_id = $2`,
+		m.installationID, m.allowedWS).Scan(&login); err != nil || login != "renamed" {
+		t.Fatalf("allowed binding login = %q, %v; want renamed", login, err)
+	}
+}
+
+func TestGitHubWebhookMixedBindingsSnapshotWrites(t *testing.T) {
+	m := seedMixedBindings(t, 34140700, ptr64(7999))
+	h, _ := allowlistWebhookHandler(t, "7001")
+	postAllowlistWebhook(t, h, "check_run", "che3414-mixed-ci", map[string]any{
+		"installation": map[string]any{"id": m.installationID},
+		"repository":   map[string]any{"name": "widget", "owner": map[string]any{"login": "acme"}},
+		"check_run":    map[string]any{"pull_requests": []map[string]any{{"number": 3414}}},
+	})
+	deadline := time.Now().Add(2 * time.Second)
+	for m.mergeable(t, m.allowedWS) == "" && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := m.mergeable(t, m.allowedWS); got != "MERGEABLE" {
+		t.Fatalf("allowed row api_mergeable = %q, want MERGEABLE", got)
+	}
+	time.Sleep(400 * time.Millisecond) // the worker writes rows one after another
+	if got := m.mergeable(t, m.deniedWS); got != "" {
+		t.Fatalf("denied row api_mergeable = %q, want untouched", got)
+	}
+}
+
+func TestGitHubWebhookMixedBindingsInvalidation(t *testing.T) {
+	setup := func(t *testing.T) (mixedBindings, *Handler) {
+		m := seedMixedBindings(t, 34140800, ptr64(7999))
+		for _, ws := range []string{m.allowedWS, m.deniedWS} {
+			if _, err := testPool.Exec(context.Background(),
+				`UPDATE github_pull_request SET api_mergeable = 'MERGEABLE', state = 'open' WHERE installation_id = $1 AND workspace_id = $2`,
+				m.installationID, ws); err != nil {
+				t.Fatal(err)
+			}
+		}
+		h, _ := allowlistWebhookHandler(t, "7001")
+		return m, h
+	}
+	t.Run("retargeted base", func(t *testing.T) {
+		m, h := setup(t)
+		body := buildMergedPRWebhookBody("NOPE-1", 3414, "acme", "widget", m.installationID)
+		body["action"] = "edited"
+		body["changes"] = map[string]any{"base": map[string]any{"ref": map[string]any{"from": "main"}}}
+		postAllowlistWebhook(t, h, "pull_request", "che3414-mixed-edit", body)
+		if got := m.mergeable(t, m.deniedWS); got != "MERGEABLE" {
+			t.Fatalf("denied row merge state cleared: %q", got)
+		}
+	})
+	t.Run("merged base", func(t *testing.T) {
+		m, h := setup(t)
+		body := buildMergedPRWebhookBody("NOPE-1", 3999, "acme", "widget", m.installationID)
+		body["pull_request"].(map[string]any)["base"] = map[string]any{"ref": "main"}
+		postAllowlistWebhook(t, h, "pull_request", "che3414-mixed-merge", body)
+		if got := m.mergeable(t, m.deniedWS); got != "MERGEABLE" {
+			t.Fatalf("denied row merge state cleared: %q", got)
+		}
+	})
 }

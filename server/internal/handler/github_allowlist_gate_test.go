@@ -4,9 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // CHE-3419: every GitHub consumer past intake skips an installation whose
@@ -206,5 +213,90 @@ func TestGitHubGateHeadRepairWarnsOncePerInstallation(t *testing.T) {
 	}
 	if n := strings.Count(logs.String(), "denied by allowlist"); n != 1 {
 		t.Fatalf("denied warnings = %d, want 1: %s", n, logs.String())
+	}
+}
+
+// flakyBindings fails the installation-binding lookup while down is set.
+type flakyBindings struct {
+	db.DBTX
+	down atomic.Bool
+}
+
+var errBindingsDown = errors.New("test: binding lookup down")
+
+func (f *flakyBindings) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	if f.down.Load() && strings.Contains(sql, "name: ListGitHubInstallationsByInstallationID") {
+		return nil, errBindingsDown
+	}
+	return f.DBTX.Query(ctx, sql, args...)
+}
+
+func (f *flakyBindings) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	return f.DBTX.Exec(ctx, sql, args...)
+}
+
+// flakyPolicy returns a policy copy of base whose binding lookups go through the flaky DB.
+func flakyPolicy(t *testing.T, base *Handler, list string) (*Handler, *flakyBindings) {
+	t.Helper()
+	flaky := &flakyBindings{DBTX: testPool}
+	h := gatePolicy(t, base, list)
+	h.Queries = db.New(flaky)
+	return h, flaky
+}
+
+// A failed policy lookup is not a denial: the delivery stays retryable and
+// reaches routing once the lookup recovers.
+func TestGitHubGateIntakeWorkerRetriesWhenPolicyLookupFails(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
+	bindAccount(t, 2019001, 7001)
+	delivery := postIntakeForWorker(t, fixture, "-gate-lookup-down")
+	worker := intakeWorkerForTest(t, fixture)
+	var flaky *flakyBindings
+	worker.handler, flaky = flakyPolicy(t, fixture.handler, "7001")
+	flaky.down.Store(true)
+	if _, err := worker.runOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertIntakeWorkerState(t, delivery, "deferred")
+	assertIntakeWorkerDispatch(t, fixture, 0)
+	if got := dbfx.Count(t, `SELECT count(*) FROM github_webhook_revision WHERE workspace_id=$1 AND reason='installation_not_allowed'`, testWorkspaceID); got != 0 {
+		t.Fatalf("lookup failure settled %d revisions as denied", got)
+	}
+	flaky.down.Store(false)
+	dbfx.Exec(t, `UPDATE github_webhook_intake SET next_attempt_at=now()-interval '1 second' WHERE delivery_guid=$1`, delivery)
+	if _, err := worker.runOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertIntakeWorkerState(t, delivery, "dispatched")
+	assertIntakeWorkerDispatch(t, fixture, 1)
+}
+
+func TestGitHubGateReconcilerReportsPolicyLookupFailure(t *testing.T) {
+	fixture := newGitHubIntakeFixture(t)
+	bindAccount(t, 2019001, 7001)
+	var flaky *flakyBindings
+	fixture.handler, flaky = flakyPolicy(t, fixture.handler, "7001")
+	flaky.down.Store(true)
+	api := &fakeReconcileAPI{objects: unsignedObjects(fixture)}
+	if _, err := reconcilerForTest(fixture, api).recordUnsigned(context.Background()); !errors.Is(err, errBindingsDown) {
+		t.Fatalf("error = %v, want the lookup failure", err)
+	}
+	if api.objectCalls != 0 {
+		t.Fatalf("GitHub calls = %d while the policy was unknown", api.objectCalls)
+	}
+}
+
+func TestGitHubGateHeadRepairReportsPolicyLookupFailure(t *testing.T) {
+	fixture := newGitHubReviewFixture(t)
+	bindAccount(t, 2019001, 7001)
+	legacyUnverifiedPR(t, fixture)
+	handler, flaky := flakyPolicy(t, fixture.handler, "7001")
+	flaky.down.Store(true)
+	handler.fetchPullRequestJSON = func(context.Context, int64, string, string, int32) (json.RawMessage, error) {
+		t.Error("fetched a pull request while the policy was unknown")
+		return nil, nil
+	}
+	if _, err := handler.RepairUnverifiedHeadPullRequests(context.Background()); !errors.Is(err, errBindingsDown) {
+		t.Fatalf("error = %v, want the lookup failure", err)
 	}
 }
