@@ -60,7 +60,7 @@ test.use({ viewport: { width: 1440, height: 900 }, locale: "en-US", serviceWorke
 
 async function scenario(
   { page, context, baseURL }: { page: Page; context: BrowserContext; baseURL: string | undefined },
-  { paged, streaming }: { paged: boolean; streaming: boolean },
+  { paged, streaming, refetch = false }: { paged: boolean; streaming: boolean; refetch?: boolean },
 ) {
   const origin = new URL(baseURL ?? "http://localhost:3000").origin;
   await context.addCookies([
@@ -74,6 +74,7 @@ async function scenario(
     localStorage.setItem("multica:chat:selectedAgentId:perf", agentId);
   }, { sessionId, agentId });
   // Newest `limit` messages, or the `limit` before the cursor. Unpaged: everything.
+  let pageRequests = 0;
   const pageFor = (url: URL) => {
     const all = paged ? messages : messages.slice(-24);
     const beforeId = url.searchParams.get("before_id");
@@ -103,7 +104,7 @@ async function scenario(
       case "/api/agents": return [agent];
       case "/api/chat/sessions": return [session];
       case `/api/chat/sessions/${sessionId}`: return session;
-      case `/api/chat/sessions/${sessionId}/messages/page`: return pageFor(currentUrl);
+      case `/api/chat/sessions/${sessionId}/messages/page`: pageRequests++; return pageFor(currentUrl);
       case `/api/chat/sessions/${sessionId}/pending-task`: return streaming ? {
         task_id: taskId, status: "running", created_at: timestamp, supports_queue: true, queued_tasks: [],
       } : {};
@@ -153,8 +154,10 @@ async function scenario(
       contentType: "application/json", body: JSON.stringify(body ?? {}) });
   });
   let streamChunk = (_content: string) => {};
+  let pushEvent = (_type: string, _payload: unknown) => {};
   await context.routeWebSocket(url => url.pathname === "/ws", socket => {
     socket.onMessage(() => {});
+    pushEvent = (type, payload) => socket.send(JSON.stringify({ type, payload, actor_type: "system", actor_id: "" }));
     streamChunk = content => {
       const payload = { task_id: taskId, seq: taskMessages.length, type: "text", content };
       taskMessages.push(payload);
@@ -193,6 +196,19 @@ async function scenario(
     }
     await page.waitForTimeout(80);
   }
+  if (refetch) {
+    // Same list, new array: every event refetches the message pages while the reader sits at the end.
+    const tops: number[] = [];
+    const before = pageRequests;
+    for (let i = 0; i < 150; i++) {
+      pushEvent("decision_answer:updated", { issue_id: "refetch-issue" });
+      await page.waitForTimeout(100);
+      tops.push((await metrics()).top);
+    }
+    expect(pageRequests - before).toBeGreaterThan(50);
+    const stable = tops.slice(20);
+    expect(Math.max(...stable) - Math.min(...stable)).toBeLessThanOrEqual(2);
+  }
   await page.waitForTimeout(1500);
   const a = await metrics();
   await page.waitForTimeout(1500);
@@ -205,3 +221,4 @@ async function scenario(
 test("long rich DM, single page", async ({ page, context, baseURL }) => scenario({ page, context, baseURL }, { paged: false, streaming: false }));
 test("long rich DM, three pages of history", async ({ page, context, baseURL }) => scenario({ page, context, baseURL }, { paged: true, streaming: false }));
 test("long rich DM, newest reply still growing", async ({ page, context, baseURL }) => scenario({ page, context, baseURL }, { paged: false, streaming: true }));
+test("long rich DM, repeated refetches at the end", async ({ page, context, baseURL }) => scenario({ page, context, baseURL }, { paged: false, streaming: false, refetch: true }));
