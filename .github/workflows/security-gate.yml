@@ -9,6 +9,10 @@
 # the head is executed. Do not add a head checkout or a secret here.
 # `issue_comment` (created, edited, deleted) is the path by which a verdict comment flips or revokes the status; `edited`
 # on the PR covers a retarget. The script re-reads the live head SHA and base ref.
+# `merge_group` posts the queued PR's freshly evaluated state on the queue commit; without it the required check never
+# reports there and the queue times out. This file runs from the queue commit; the job still checks out the default
+# branch and only fetches the queue ref. A verdict revoked after the queue commit went green is NOT mirrored here
+# (the issue_comment path cannot be relied on); remove the PR from the queue instead.
 
 name: security-gate
 
@@ -17,6 +21,8 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, edited]
   issue_comment:
     types: [created, edited, deleted]
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -27,7 +33,7 @@ concurrency:
   # A comment the job skips (see `if:` below) gets its own group: a run cancels the in-flight run of its group before
   # its `if:` is read, so a skipped comment in the PR's group would cancel the real evaluation and post no status.
   # The skip test below repeats the `if:` condition; keep the two in step.
-  group: security-gate-${{ github.event_name == 'issue_comment' && !(contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) || (github.event.comment.user.id == 282619718 && github.event.comment.user.type == 'Bot' && startsWith(github.event.comment.body, 'Security-Gate-Verdict:'))) && format('ignored-{0}', github.run_id) || github.event.pull_request.number || github.event.issue.number }}
+  group: security-gate-${{ github.event_name == 'issue_comment' && !(contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) || (github.event.comment.user.id == 282619718 && github.event.comment.user.type == 'Bot' && startsWith(github.event.comment.body, 'Security-Gate-Verdict:'))) && format('ignored-{0}', github.run_id) || github.event.pull_request.number || github.event.issue.number || github.event.merge_group.head_sha }}
   cancel-in-progress: true
 
 jobs:
@@ -43,7 +49,7 @@ jobs:
     # next PR event re-reads every comment. `startsWith` here ignores case and the hook's `jq startswith` does not, so
     # a lowercase prefix from the bot schedules a job the hook then refuses: a red check, never a bypass.
     if: >-
-      github.event_name == 'pull_request_target' || (github.event.issue.pull_request &&
+      github.event_name == 'pull_request_target' || github.event_name == 'merge_group' || (github.event.issue.pull_request &&
       (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) ||
       (github.event.comment.user.id == 282619718 && github.event.comment.user.type == 'Bot' &&
       startsWith(github.event.comment.body, 'Security-Gate-Verdict:'))))
@@ -53,6 +59,8 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
       GH_TOKEN: ${{ github.token }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      MERGE_GROUP_REF: ${{ github.event.merge_group.head_ref }}
+      MERGE_GROUP_SHA: ${{ github.event.merge_group.head_sha }}
     steps:
       - name: Discard a reused workspace
         run: |
@@ -66,10 +74,38 @@ jobs:
       - name: Fetch the head objects without checking them out
         run: |
           auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          # A queue commit has the queued PR head as a parent, so fetching the queue ref brings the head objects too.
+          src="refs/pull/${PR_NUMBER}/head"
+          [ -n "$MERGE_GROUP_REF" ] && src="$MERGE_GROUP_REF"
           git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
-            fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/head"
+            fetch --no-tags origin "+${src}:refs/remotes/pull/head"
       - name: Evaluate the verdict and post the status
         run: |
-          python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" \
-            --default-branch "$DEFAULT_BRANCH" \
-            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --post
+          set -euo pipefail
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          if [ -z "$MERGE_GROUP_REF" ]; then
+            exec python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" \
+              --default-branch "$DEFAULT_BRANCH" --run-url "$run_url" --post
+          fi
+          # Queue run. The default-branch script is used unchanged (it may predate this step), without --post: that
+          # would write to the PR head. Its state goes on the queue commit, and only if the PR head is its parent.
+          post() {
+            gh api "repos/$GITHUB_REPOSITORY/statuses/$MERGE_GROUP_SHA" -f "state=$1" -f context=security-gate \
+              -f "description=${2:0:140}" -f "target_url=$run_url"
+          }
+          re='^refs/heads/gh-readonly-queue/(.+)/pr-([0-9]+)-[0-9a-f]{40}$'
+          if [[ ! $MERGE_GROUP_REF =~ $re ]] || [ "${BASH_REMATCH[1]}" != "$DEFAULT_BRANCH" ]; then
+            post failure "unsupported merge group $MERGE_GROUP_REF: only $DEFAULT_BRANCH is gated"
+            exit 0
+          fi
+          pr="${BASH_REMATCH[2]}"
+          out="$(python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$pr" \
+            --default-branch "$DEFAULT_BRANCH" --run-url "$run_url")"
+          field() { python3 -c 'import json,sys; print(json.loads(sys.argv[1])[sys.argv[2]])' "$out" "$1"; }
+          head="$(field sha)" state="$(field state)" desc="#$pr: $(field description)"
+          parents="$(gh api "repos/$GITHUB_REPOSITORY/commits/$MERGE_GROUP_SHA" --jq '.parents[].sha')"  # not piped: grep -q + pipefail
+          if grep -qx "$head" <<<"$parents"; then
+            post "$state" "$desc"
+          else
+            post failure "#$pr head ${head:0:12} is not a parent of ${MERGE_GROUP_SHA:0:12}"
+          fi

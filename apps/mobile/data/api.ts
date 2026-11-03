@@ -20,6 +20,7 @@ import type {
   Attachment,
   ChatMessage,
   ChatPendingTask,
+  ChatSupplement,
   ChatSession,
   ChatSessionUsage,
   Comment,
@@ -92,6 +93,8 @@ import {
   ChatMessageListSchema,
   CommentSchema,
   ChatPendingTaskSchema,
+  ChatSupplementSchema,
+  ResendChatSupplementResponseSchema,
   ChatSessionListSchema,
   ChatSessionSchema,
   ChatSessionUsageSchema,
@@ -1290,6 +1293,42 @@ class ApiClient {
       EMPTY_CHAT_PENDING_TASK,
       { endpoint: "GET /api/chat/sessions/:id/pending-task" },
     );
+  }
+
+  /** Adds a queued DM follow-up to the running task instead of cancelling it. */
+  async steerChatTask(sessionId: string, taskId: string): Promise<ChatSupplement> {
+    const raw = await this.fetch<unknown>(
+      `/api/chat/sessions/${sessionId}/tasks/${taskId}/steer`,
+      { method: "POST" },
+    );
+    const parsed = ChatSupplementSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new ApiError("Steer response invalid", 0, raw);
+    }
+    return parsed.data;
+  }
+
+  /** Sends a never-received or unconfirmed follow-up as a new run. An
+   *  `uncertain` receipt needs `confirmPossibleDuplicate`. */
+  async resendChatSupplement(
+    sessionId: string,
+    messageId: string,
+    opts: { confirmPossibleDuplicate?: boolean } = {},
+  ): Promise<{ task_id: string; supplement: ChatSupplement }> {
+    const raw = await this.fetch<unknown>(
+      `/api/chat/sessions/${sessionId}/messages/${messageId}/supplement/resend`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          confirm_possible_duplicate: opts.confirmPossibleDuplicate === true,
+        }),
+      },
+    );
+    const parsed = ResendChatSupplementResponseSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new ApiError("Resend response invalid", 0, raw);
+    }
+    return parsed.data;
   }
 
   async markChatSessionRead(sessionId: string): Promise<void> {
