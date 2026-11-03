@@ -53,6 +53,19 @@ func (h *Handler) ConfigureGitHubAllowlist(raw string) error {
 		return err
 	}
 	h.githubAllowlist = list
+	// The refresh pipeline also selects rows by address; keep it off denied
+	// bindings that share an installation with an allowed one.
+	h.PRRefresh.SetWorkspaceFilter(func(ctx context.Context, installationID int64) (map[pgtype.UUID]bool, error) {
+		allowed, err := h.allowedGitHubInstallations(ctx, installationID)
+		if err != nil {
+			return nil, err
+		}
+		set := make(map[pgtype.UUID]bool, len(allowed))
+		for _, row := range allowed {
+			set[row.WorkspaceID] = true
+		}
+		return set, nil
+	})
 	if list.ids == nil && isGitHubConfigured() {
 		slog.Warn("github: " + githubAllowedAccountIDsEnv + " is unset; any GitHub account may bind an installation")
 	}
@@ -100,6 +113,26 @@ func (h *Handler) anyGitHubInstallationAllowed(rows []db.GithubInstallation) boo
 		}
 	}
 	return false
+}
+
+// workspaceIDsOf lists the workspace of each binding.
+func workspaceIDsOf(rows []db.GithubInstallation) []pgtype.UUID {
+	ids := make([]pgtype.UUID, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.WorkspaceID)
+	}
+	return ids
+}
+
+// allowedWorkspaceIDs lists the workspaces of the bindings that pass the policy.
+func (h *Handler) allowedWorkspaceIDs(rows []db.GithubInstallation) []pgtype.UUID {
+	ids := make([]pgtype.UUID, 0, len(rows))
+	for _, row := range rows {
+		if h.githubInstallationAllowed(row) {
+			ids = append(ids, row.WorkspaceID)
+		}
+	}
+	return ids
 }
 
 // githubAccountIDParam maps a trusted id (0 = none) to a nullable column value.

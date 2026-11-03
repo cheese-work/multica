@@ -1642,7 +1642,8 @@ func (h *Handler) handleInstallationEvent(ctx context.Context, body []byte) {
 				"installation_id", p.Installation.ID, "action", p.Action)
 			return
 		}
-		// Refresh the account display metadata across every workspace binding;
+		// Refresh the account display metadata on the allowed bindings only; a
+		// denied binding on a shared installation keeps its stored account.
 		// workspace_id and connected_by_id are left untouched.
 		refreshed, err := h.Queries.UpdateGitHubInstallationAccountByInstallationID(ctx, db.UpdateGitHubInstallationAccountByInstallationIDParams{
 			InstallationID:   p.Installation.ID,
@@ -1650,6 +1651,7 @@ func (h *Handler) handleInstallationEvent(ctx context.Context, body []byte) {
 			AccountType:      accountType,
 			AccountAvatarUrl: ptrToText(avatar),
 			AccountID:        githubAccountIDParam(p.Installation.Account.ID),
+			WorkspaceIds:     h.allowedWorkspaceIDs(bound),
 		})
 		if err != nil {
 			slog.Warn("github: refresh installation failed", "err", err)
@@ -1804,6 +1806,7 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error
 		// fail the delivery so GitHub redelivers it.
 		if err := h.Queries.InvalidateGitHubPRMergeState(ctx, db.InvalidateGitHubPRMergeStateParams{
 			InstallationID: p.Installation.ID, RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name, PrNumber: p.PullRequest.Number,
+			WorkspaceIds: workspaceIDsOf(insts),
 		}); err != nil {
 			errs = append(errs, fmt.Errorf("github: invalidate merge state of retargeted pull request: %w", err))
 		}
@@ -1813,7 +1816,7 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error
 		h.PRRefresh.RefreshConflictWatchers(ctx, p.Installation.ID, p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number)
 	}
 	if p.PullRequest.Merged {
-		if err := h.refreshOpenPRsOnBase(ctx, &p); err != nil {
+		if err := h.refreshOpenPRsOnBase(ctx, &p, insts); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -2222,12 +2225,13 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 // is undecided and the snapshot sweep refreshes it. A failed clear is returned:
 // the old decided verdicts would stay outside the sweep, so the delivery must
 // fail and GitHub's redelivery retries it.
-func (h *Handler) refreshOpenPRsOnBase(ctx context.Context, p *ghPullRequestPayload) error {
+func (h *Handler) refreshOpenPRsOnBase(ctx context.Context, p *ghPullRequestPayload, insts []db.GithubInstallation) error {
 	if !h.PRRefresh.Enabled() || p.PullRequest.Base.Ref == "" {
 		return nil
 	}
 	rows, err := h.Queries.InvalidateOpenGitHubPRMergeStateOnBase(ctx, db.InvalidateOpenGitHubPRMergeStateOnBaseParams{
-		InstallationID: p.Installation.ID, RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name,
+		InstallationID: p.Installation.ID, WorkspaceIds: workspaceIDsOf(insts),
+		RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name,
 		MergedPrNumber: p.PullRequest.Number, BaseRef: pgtype.Text{String: p.PullRequest.Base.Ref, Valid: true},
 		HeadRef: pgtype.Text{String: p.PullRequest.Head.Ref, Valid: true},
 	})

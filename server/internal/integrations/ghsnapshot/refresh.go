@@ -92,6 +92,11 @@ type Manager struct {
 	// stub this directly, the same way they stub fetch.
 	listRows func(ctx context.Context, params db.ListGitHubPRRowsByAddressParams) ([]db.ListGitHubPRRowsByAddressRow, error)
 
+	// workspaceFilter, when set, returns the workspaces allowed to receive a
+	// snapshot for an installation; rows of other workspaces are never fetched
+	// for or written.
+	workspaceFilter func(ctx context.Context, installationID int64) (map[pgtype.UUID]bool, error)
+
 	queue chan address
 
 	mu       sync.Mutex
@@ -158,6 +163,39 @@ func newManager(client *Client, queries *db.Queries, pool TxBeginner, fetch func
 	}
 	manager.listRows = manager.listGitHubPRRowsByAddress
 	return manager
+}
+
+// SetWorkspaceFilter restricts the refresh pipeline to the workspaces the
+// filter allows for each installation. Nil-safe: a disabled manager ignores it.
+func (manager *Manager) SetWorkspaceFilter(filter func(ctx context.Context, installationID int64) (map[pgtype.UUID]bool, error)) {
+	if manager != nil {
+		manager.workspaceFilter = filter
+	}
+}
+
+// selectRows lists the rows of an address and drops those the workspace filter
+// denies.
+func (manager *Manager) selectRows(ctx context.Context, addr address) ([]db.ListGitHubPRRowsByAddressRow, error) {
+	rows, err := manager.listRows(ctx, db.ListGitHubPRRowsByAddressParams{
+		InstallationID: addr.InstallationID,
+		RepoOwner:      addr.Owner,
+		RepoName:       addr.Repo,
+		PrNumber:       addr.Number,
+	})
+	if err != nil || manager.workspaceFilter == nil {
+		return rows, err
+	}
+	allowed, err := manager.workspaceFilter(ctx, addr.InstallationID)
+	if err != nil {
+		return nil, err
+	}
+	kept := rows[:0:0]
+	for _, row := range rows {
+		if allowed[row.WorkspaceID] {
+			kept = append(kept, row)
+		}
+	}
+	return kept, nil
 }
 
 // SetReadSelector opts the refresh worker into the API server's configured
@@ -287,12 +325,7 @@ func (manager *Manager) process(ctx context.Context, addr address) {
 	// workspace that re-enables GitHub between this check and the fetch simply
 	// waits for the next trigger or the TTL sweep, same as any other missed
 	// refresh window.
-	preRows, err := manager.listRows(ctx, db.ListGitHubPRRowsByAddressParams{
-		InstallationID: addr.InstallationID,
-		RepoOwner:      addr.Owner,
-		RepoName:       addr.Repo,
-		PrNumber:       addr.Number,
-	})
+	preRows, err := manager.selectRows(ctx, addr)
 	if err != nil {
 		slog.Warn("ghsnapshot: eligibility check failed", "err", err.Error())
 		return
@@ -328,12 +361,7 @@ func (manager *Manager) process(ctx context.Context, addr address) {
 	// false while the fetch was in flight is excluded here even though it
 	// justified (or shared the address with a row that justified) the fetch
 	// above.
-	rows, err := manager.listRows(ctx, db.ListGitHubPRRowsByAddressParams{
-		InstallationID: addr.InstallationID,
-		RepoOwner:      addr.Owner,
-		RepoName:       addr.Repo,
-		PrNumber:       addr.Number,
-	})
+	rows, err := manager.selectRows(ctx, addr)
 	if err != nil {
 		slog.Warn("ghsnapshot: list rows failed", "err", err.Error())
 		return

@@ -1023,20 +1023,23 @@ SET account_login = $2,
     account_id = COALESCE($5, account_id),
     updated_at = now()
 WHERE installation_id = $1
+  AND workspace_id = ANY($6::uuid[])
 RETURNING id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, account_id
 `
 
 type UpdateGitHubInstallationAccountByInstallationIDParams struct {
-	InstallationID   int64       `json:"installation_id"`
-	AccountLogin     string      `json:"account_login"`
-	AccountType      string      `json:"account_type"`
-	AccountAvatarUrl pgtype.Text `json:"account_avatar_url"`
-	AccountID        pgtype.Int8 `json:"account_id"`
+	InstallationID   int64         `json:"installation_id"`
+	AccountLogin     string        `json:"account_login"`
+	AccountType      string        `json:"account_type"`
+	AccountAvatarUrl pgtype.Text   `json:"account_avatar_url"`
+	AccountID        pgtype.Int8   `json:"account_id"`
+	WorkspaceIds     []pgtype.UUID `json:"workspace_ids"`
 }
 
-// Refresh the GitHub account display metadata across every workspace binding of
-// an installation (fired by installation.created/new_permissions_accepted/
-// unsuspend). Leaves workspace_id and connected_by_id untouched.
+// Refresh the GitHub account display metadata on the given workspace bindings
+// of an installation (fired by installation.created/new_permissions_accepted/
+// unsuspend). Callers pass only the bindings the allowlist permits. Leaves
+// workspace_id and connected_by_id untouched.
 func (q *Queries) UpdateGitHubInstallationAccountByInstallationID(ctx context.Context, arg UpdateGitHubInstallationAccountByInstallationIDParams) ([]GithubInstallation, error) {
 	rows, err := q.db.Query(ctx, updateGitHubInstallationAccountByInstallationID,
 		arg.InstallationID,
@@ -1044,6 +1047,7 @@ func (q *Queries) UpdateGitHubInstallationAccountByInstallationID(ctx context.Co
 		arg.AccountType,
 		arg.AccountAvatarUrl,
 		arg.AccountID,
+		arg.WorkspaceIds,
 	)
 	if err != nil {
 		return nil, err
