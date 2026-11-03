@@ -65,6 +65,13 @@ const {readFileSync} = require('node:fs');
 if (process.env.LOOKUP_FAIL === 'true') process.exit(1);
 process.stdout.write(readFileSync(process.env.RUN_FIXTURE));
 `, { mode: 0o700 });
+  // Build the step env from the workflow itself: the runner sets GITHUB_* only, so a variable the
+  // script reads (EVENT_NAME) must come from the step's own `env:` block.
+  const step = mainBuild.slice(mainBuild.indexOf("id: green"), mainBuild.indexOf("run: node scripts/ci-scope.mjs merge-group-green"));
+  const expressions = { "github.event_name": "push", "github.token": "token", "vars.CI_PUSH_FULL": "" };
+  const stepEnv = (forceFull) => Object.fromEntries([...step.matchAll(/^ {10}(\w+): \$\{\{ ([\w.]+) \}\}$/gm)].map(([, key, expression]) => [
+    key, key === "CI_PUSH_FULL" ? forceFull : expressions[expression],
+  ]));
   for (const [runs, forceFull, failure, expected] of [
     [[green], "", "", "true"], [[], "", "", "false"],
     [[green], "true", "", "false"], [[green], "", "true", "false"],
@@ -74,8 +81,8 @@ process.stdout.write(readFileSync(process.env.RUN_FIXTURE));
     const result = spawnSync(process.execPath, [command, "merge-group-green"], {
       encoding: "utf8",
       env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, RUN_FIXTURE: fixture, LOOKUP_FAIL: failure,
-        EVENT_NAME: "push", GITHUB_REF: "refs/heads/main", GITHUB_SHA: sha,
-        GITHUB_REPOSITORY: "cheese-work/multica", CI_PUSH_FULL: forceFull, GITHUB_OUTPUT: output },
+        ...stepEnv(forceFull), GITHUB_REF: "refs/heads/main", GITHUB_SHA: sha,
+        GITHUB_REPOSITORY: "cheese-work/multica", GITHUB_OUTPUT: output },
     });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(readFileSync(output, "utf8"), `merge_group_green=${expected}\n`);

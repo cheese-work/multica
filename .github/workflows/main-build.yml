@@ -30,6 +30,7 @@ jobs:
       - name: Look up the merge-group run for this SHA
         id: green
         env:
+          EVENT_NAME: ${{ github.event_name }}
           GH_TOKEN: ${{ github.token }}
           CI_PUSH_FULL: ${{ vars.CI_PUSH_FULL }}
         run: node scripts/ci-scope.mjs merge-group-green
