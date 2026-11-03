@@ -1,8 +1,8 @@
 // Reports why a PR left the merge queue for failed checks: one sticky PR comment plus a
 // `merge-queue-result` failure status on the PR head (so the head rollup goes red until a push).
 // Usage: node scripts/merge-queue-dequeue-report.mjs --repo owner/name --pr 842 [--dry-run] [--event -2] [--head-sha <sha>]
-// --head-sha is the PR head from the dequeue event payload (a snapshot): if the PR head moved since, the removal is stale and nothing is written.
-// --event picks a removal from the end of the PR timeline (default -1 = latest) to replay older ones.
+// --head-sha is the PR head from the dequeue event payload (a snapshot); if the head moved, nothing is written.
+// --event replays an older removal and is dry-run only.
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
@@ -38,9 +38,12 @@ export function buildStatus({ baseSha, lines, targetUrl }) {
   return { state: "failure", context: CONTEXT, description: description.slice(0, STATUS_MAX), target_url: targetUrl };
 }
 
-// ponytail: events carry no head SHA; "since the head was committed" is the attempt window.
-export const countAttempts = (events, headCommittedAt) =>
-  events.filter((e) => e.reason === FAILED_CHECKS && e.createdAt >= headCommittedAt).length;
+// A removal carries no head SHA, so bind it to its head by timeline order (commit dates can be backdated):
+// anything after the last push belongs to the current head, anything before it to an old head.
+const PUSHES = new Set(["PullRequestCommit", "HeadRefForcePushedEvent"]);
+const isRemoval = (n) => n.__typename === "RemovedFromMergeQueueEvent";
+const sinceLastPush = (nodes) => nodes.slice(nodes.findLastIndex((n) => PUSHES.has(n.__typename)) + 1);
+export const countAttempts = (nodes) => sinceLastPush(nodes).filter((n) => isRemoval(n) && n.reason === FAILED_CHECKS).length;
 
 export function buildComment({ headSha, baseSha, attempts, failures, runUrls }) {
   const jobs = failures
@@ -63,21 +66,23 @@ export function buildComment({ headSha, baseSha, attempts, failures, runUrls }) 
 
 const QUERY = `query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){
   headRefOid
-  commits(last:1){nodes{commit{committedDate}}}
-  timelineItems(last:30,itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT]){nodes{... on RemovedFromMergeQueueEvent{reason createdAt beforeCommit{oid}}}}
+  timelineItems(last:100,itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT,PULL_REQUEST_COMMIT,HEAD_REF_FORCE_PUSHED_EVENT]){nodes{__typename ... on RemovedFromMergeQueueEvent{reason createdAt beforeCommit{oid}}}}
 }}}`;
 
 export async function report({ api, repo, pr, dryRun = false, eventIndex = -1, eventHeadSha, print = console.log }) {
   const [owner, name] = repo.split("/");
   const { pullRequest } = (await api.graphql(QUERY, { owner, name, pr })).repository;
-  const events = pullRequest.timelineItems.nodes;
-  const last = events.at(eventIndex);
-  if (last?.reason !== FAILED_CHECKS) return;
+  let timeline = pullRequest.timelineItems.nodes;
+  if (eventIndex !== -1) {
+    if (!dryRun) throw new Error("replaying an older removal needs --dry-run");
+    timeline = timeline.slice(0, timeline.indexOf(timeline.filter(isRemoval).at(eventIndex)) + 1);
+  }
+  // Fail closed: report only when the removal is the newest timeline item, so no push or later removal followed it.
+  const last = timeline.at(-1);
+  if (!last || !isRemoval(last) || last.reason !== FAILED_CHECKS) return;
 
   const headSha = pullRequest.headRefOid;
-  // A push after the removal makes the failure belong to an old head; reporting it would turn the fixed head red.
-  // Replays without --head-sha (dry runs of old removals) skip this check.
-  if (eventHeadSha && (eventHeadSha !== headSha || last.createdAt < pullRequest.commits.nodes[0].commit.committedDate)) return;
+  if (eventHeadSha && eventHeadSha !== headSha) return;
   const queueSha = last.beforeCommit.oid;
   const runs = (await api.get(`/repos/${repo}/actions/runs?event=merge_group&head_sha=${queueSha}&per_page=20`)).workflow_runs
     .filter((r) => r.conclusion === "failure");
@@ -95,7 +100,7 @@ export async function report({ api, repo, pr, dryRun = false, eventIndex = -1, e
   const runUrls = runs.map((r) => r.html_url);
   const comment = buildComment({
     headSha, baseSha, runUrls, failures,
-    attempts: countAttempts(events, pullRequest.commits.nodes[0].commit.committedDate),
+    attempts: countAttempts(timeline),
   });
   const status = buildStatus({ baseSha, lines, targetUrl: runUrls[0] ?? "" });
 

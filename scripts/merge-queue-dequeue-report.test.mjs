@@ -46,16 +46,15 @@ function extractLines() {
   return ["route_write_scope_audit_test.go:192: x", "--- FAIL: TestRouterWriteRoutesAuditedAgainstTaskWriteScope (0.02s)"];
 }
 
-test("countAttempts counts failed-check removals since the head was committed", async () => {
+const removal = (reason, extra = {}) => ({ __typename: "RemovedFromMergeQueueEvent", reason, createdAt: "2026-11-03T08:00:00Z", beforeCommit: { oid: "q".repeat(40) }, ...extra });
+const push = { __typename: "PullRequestCommit" };
+const forcePush = { __typename: "HeadRefForcePushedEvent" };
+
+test("countAttempts counts failed-check removals after the last push, by timeline order", async () => {
   const { countAttempts } = await load();
-  const ev = (reason, createdAt) => ({ reason, createdAt });
-  assert.equal(
-    countAttempts(
-      [ev("failed_checks", "2026-11-03T01:00:00Z"), ev("manual", "2026-11-03T08:00:00Z"), ev("failed_checks", "2026-11-03T09:00:00Z")],
-      "2026-11-03T07:00:00Z",
-    ),
-    1,
-  );
+  assert.equal(countAttempts([push, removal("failed_checks"), removal("manual"), removal("failed_checks")]), 2);
+  assert.equal(countAttempts([push, removal("failed_checks"), push, removal("failed_checks")]), 1);
+  assert.equal(countAttempts([push, removal("failed_checks"), forcePush]), 0);
 });
 
 test("buildComment carries marker, SHAs, jobs, failing lines, run URL and attempt count", async () => {
@@ -73,19 +72,13 @@ test("buildComment carries marker, SHAs, jobs, failing lines, run URL and attemp
   }
 });
 
-const fakeApi = (reason, { removedAt = "2026-11-03T08:00:00Z", existingComment = false } = {}) => {
+const fakeApi = (reason, { timeline, existingComment = false } = {}) => {
   const writes = [];
   const run = { id: 7, html_url: "https://example/run/7", conclusion: "failure", head_branch: "gh-readonly-queue/main/pr-842-" + "c".repeat(40) };
   return {
     writes,
     graphql: async () => ({
-      repository: {
-        pullRequest: {
-          headRefOid: "h".repeat(40),
-          commits: { nodes: [{ commit: { committedDate: "2026-11-03T07:00:00Z" } }] },
-          timelineItems: { nodes: [{ reason, createdAt: removedAt, beforeCommit: { oid: "q".repeat(40) } }] },
-        },
-      },
+      repository: { pullRequest: { headRefOid: "h".repeat(40), timelineItems: { nodes: timeline ?? [push, removal(reason)] } } },
     }),
     get: async (path) => {
       if (path.includes("/actions/runs?")) return { workflow_runs: [run] };
@@ -137,16 +130,43 @@ test("report: the head of the dequeue event gets the status", async () => {
   assert.equal(api.writes[1].path, `/repos/o/r/statuses/${"h".repeat(40)}`);
 });
 
-test("report: a removal older than the current head's commit is not reported", async () => {
+for (const [name, pushed] of [["a commit", push], ["a force push", forcePush]]) {
+  for (const eventHeadSha of [undefined, "h".repeat(40)]) {
+    test(`report: ${name} after the failed removal writes nothing (${eventHeadSha ? "event" : "dispatch"})`, async () => {
+      const { report } = await load();
+      const api = fakeApi("failed_checks", { timeline: [push, removal("failed_checks"), pushed] });
+      await report({ api, repo: "o/r", pr: 842, eventHeadSha });
+      assert.deepEqual(api.writes, []);
+    });
+  }
+}
+
+test("report: only the removal after the last push is reported, with its own attempt count", async () => {
   const { report } = await load();
-  const api = fakeApi("failed_checks", { removedAt: "2026-11-03T06:00:00Z" });
+  const api = fakeApi("failed_checks", { timeline: [push, removal("failed_checks"), push, removal("failed_checks")] });
   await report({ api, repo: "o/r", pr: 842, eventHeadSha: "h".repeat(40) });
+  assert.match(api.writes[0].body.body, /Failed attempts for this head: 1/);
+});
+
+test("report: a manual removal after a failed one on the same head writes nothing", async () => {
+  const { report } = await load();
+  const api = fakeApi("failed_checks", { timeline: [push, removal("failed_checks"), removal("manual")] });
+  await report({ api, repo: "o/r", pr: 842 });
   assert.deepEqual(api.writes, []);
+});
+
+test("report: replaying an older removal is dry-run only", async () => {
+  const { report } = await load();
+  const api = fakeApi("failed_checks", { timeline: [push, removal("failed_checks"), push, removal("failed_checks")] });
+  await assert.rejects(report({ api, repo: "o/r", pr: 842, eventIndex: -2 }), /dry/);
+  const out = [];
+  await report({ api, repo: "o/r", pr: 842, eventIndex: -2, dryRun: true, print: (s) => out.push(s) });
+  assert.equal(out.length, 2);
 });
 
 test("report: overlapping dequeue runs for one head update the same sticky comment", async () => {
   const { report } = await load();
-  const api = fakeApi("failed_checks", { existingComment: true });
+  const api = fakeApi("failed_checks", { timeline: [push, removal("failed_checks"), removal("failed_checks")], existingComment: true });
   await Promise.all([1, 2].map(() => report({ api, repo: "o/r", pr: 842, eventHeadSha: "h".repeat(40) })));
   assert.deepEqual(api.writes.map((w) => w.method).sort(), ["PATCH", "PATCH", "POST", "POST"]);
   assert.ok(api.writes.every((w) => w.method !== "POST" || w.path.includes("/statuses/")), "never a second comment");
