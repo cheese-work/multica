@@ -191,7 +191,7 @@ test("only successful merge-group CI from this repository on this exact main SHA
   const env = { EVENT_NAME: "push", GITHUB_REF: "refs/heads/main", GITHUB_SHA: "a".repeat(40), GITHUB_REPOSITORY: "cheese-work/multica" };
   const green = { event: "merge_group", head_sha: env.GITHUB_SHA, status: "completed", conclusion: "success", head_repository: { full_name: env.GITHUB_REPOSITORY } };
   const query = (endpoint) => {
-    assert.equal(endpoint, `repos/cheese-work/multica/actions/workflows/ci.yml/runs?event=merge_group&status=success&head_sha=${env.GITHUB_SHA}&per_page=1`);
+    assert.equal(endpoint, `repos/cheese-work/multica/actions/workflows/ci.yml/runs?event=merge_group&head_sha=${env.GITHUB_SHA}&per_page=10`);
     return { workflow_runs: [green] };
   };
   assert.equal(hasGreenMergeGroup(env, query), true);
@@ -207,7 +207,7 @@ test("only successful merge-group CI from this repository on this exact main SHA
     { ...green, status: "in_progress" }, { ...green, head_repository: { full_name: "fork/multica" } },
     ...["failure", "cancelled", "skipped", "neutral", null].map((conclusion) => ({ ...green, conclusion })),
   ]) {
-    assert.equal(hasGreenMergeGroup(env, () => ({ workflow_runs: [run] })), false);
+    assert.equal(hasGreenMergeGroup(env, () => ({ workflow_runs: [run] }), () => {}), false);
   }
   assert.equal(hasGreenMergeGroup(env, () => ({ workflow_runs: [] })), false);
   assert.equal(hasGreenMergeGroup(env, () => { throw new Error("API unavailable"); }), false);
@@ -216,6 +216,40 @@ test("only successful merge-group CI from this repository on this exact main SHA
     assert.equal(decideScopes(event, filterFiles([]), "main", true).push_full, "true");
   }
   assert.equal(decideScopes("push", filterFiles([]), "feature", true).push_full, "true");
+});
+
+test("a merge-group run still in progress on the first lookup is awaited, within a bound", () => {
+  const env = { EVENT_NAME: "push", GITHUB_REF: "refs/heads/main", GITHUB_SHA: "a".repeat(40), GITHUB_REPOSITORY: "cheese-work/multica" };
+  const run = { event: "merge_group", head_sha: env.GITHUB_SHA, head_repository: { full_name: env.GITHUB_REPOSITORY } };
+  const sequence = (...states) => {
+    let calls = 0;
+    const query = () => ({ workflow_runs: [{ ...run, ...states[Math.min(calls++, states.length - 1)] }] });
+    return { query, calls: () => calls };
+  };
+  const running = { status: "in_progress", conclusion: null };
+  const success = { status: "completed", conclusion: "success" };
+
+  let slept = [];
+  let lookups = sequence(running, running, success);
+  assert.equal(hasGreenMergeGroup(env, lookups.query, (ms) => slept.push(ms)), true);
+  assert.equal(lookups.calls(), 3);
+  assert.deepEqual(slept, [10000, 10000]);
+
+  slept = [];
+  lookups = sequence(running, { status: "completed", conclusion: "failure" });
+  assert.equal(hasGreenMergeGroup(env, lookups.query, (ms) => slept.push(ms)), false);
+  assert.equal(lookups.calls(), 2);
+
+  slept = [];
+  lookups = sequence(running);
+  assert.equal(hasGreenMergeGroup(env, lookups.query, (ms) => slept.push(ms)), false);
+  assert.equal(slept.reduce((sum, ms) => sum + ms, 0), 180000);
+
+  slept = [];
+  lookups = sequence({ status: "completed", conclusion: "failure" });
+  assert.equal(hasGreenMergeGroup(env, lookups.query, (ms) => slept.push(ms)), false);
+  assert.equal(lookups.calls(), 1);
+  assert.deepEqual(slept, []);
 });
 
 test("the decide CLI queries merge-group evidence and preserves full CI on lookup errors or the kill switch", (context) => {
