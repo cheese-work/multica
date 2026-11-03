@@ -80,3 +80,36 @@ func (s *TaskService) EnqueueIssueRunInTx(ctx context.Context, q *db.Queries, is
 		s.PublishTaskEnqueued(ctx, task)
 	}, nil
 }
+
+// EnqueueSquadLeaderRunInTx inserts the squad leader's run an assignment to a
+// squad starts, with the caller's queries. A pending run of the leader on the
+// reviewed head is ErrDuplicatePendingTask, checked under the caller's issue
+// row lock so the insert never trips the unique index. The returned func
+// publishes the run after commit.
+func (s *TaskService) EnqueueSquadLeaderRunInTx(ctx context.Context, q *db.Queries, issue db.Issue, leaderID, squadID, actorUserID pgtype.UUID) (afterCommit func(), err error) {
+	pending, err := q.HasPendingTaskForIssueAndAgent(ctx, db.HasPendingTaskForIssueAndAgentParams{
+		IssueID: issue.ID,
+		AgentID: leaderID,
+		HeadSha: s.ResolveIssueReviewSHAParam(ctx, issue.ID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("check pending leader run: %w", err)
+	}
+	if pending {
+		return nil, ErrDuplicatePendingTask
+	}
+	params, attr, err := s.prepareMentionTaskWithQueries(ctx, q, issue, leaderID, pgtype.UUID{}, nil, true, squadID, false, "", actorUserID, pgtype.UUID{}, OriginDerived)
+	if err != nil {
+		return nil, err
+	}
+	params.FreshRerun = pgtype.Bool{Bool: false, Valid: true}
+	task, err := s.enqueuePreparedInTx(ctx, q, issue, params, OriginDerived, "squad leader callback")
+	if err != nil {
+		return nil, err
+	}
+	return func() {
+		notifyTaskEnqueued(ctx, task)
+		s.RecordHumanDelegation(ctx, attr)
+		s.PublishTaskEnqueued(ctx, task)
+	}, nil
+}

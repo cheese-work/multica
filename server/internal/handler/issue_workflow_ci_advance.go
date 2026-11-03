@@ -122,6 +122,8 @@ func (h *Handler) tryMoveIssueOnEdge(ctx context.Context, issue db.Issue, to, so
 	if err != nil {
 		var notConfirmed *service.StopNotConfirmedError
 		if errors.As(err, &notConfirmed) {
+			// The move holds the issue row; the activity row needs a key-share lock on it.
+			_ = tx.Rollback(ctx)
 			h.recordStopNotConfirmed(ctx, issue, "system", "", notConfirmed)
 		}
 		return false, false, err

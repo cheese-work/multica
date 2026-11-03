@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -152,5 +153,81 @@ func TestMoveIssueOnEdgeTxRefusesWhenStopNotConfirmed(t *testing.T) {
 	var notConfirmed *service.StopNotConfirmedError
 	if !errors.As(err, &notConfirmed) {
 		t.Fatalf("moveIssueOnEdgeTx = %v, want *StopNotConfirmedError", err)
+	}
+}
+
+// The wrapper rolls the move back before it records the refusal: the activity
+// row needs a key-share lock on the issue row the move holds.
+func TestTryMoveIssueOnEdgeRecordsStopNotConfirmedWithoutHanging(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c, agentID := newHandoffEdgeCase(t, 2853004)
+	supersededRun(t, agentID, handlerTestRuntimeID(t), c.issueID, "in_review", testutil.Cols{})
+	issue, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(c.issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		moved bool
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		moved, _, err := testHandler.tryMoveIssueOnEdge(context.Background(), issue, "in_review", "ci_green_advance", nil, true)
+		done <- result{moved, err}
+	}()
+	select {
+	case r := <-done:
+		var notConfirmed *service.StopNotConfirmedError
+		if r.moved || !errors.As(r.err, &notConfirmed) {
+			t.Fatalf("tryMoveIssueOnEdge = moved %v, %v; want refused with *StopNotConfirmedError", r.moved, r.err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("tryMoveIssueOnEdge did not return: the refusal waits on the move's own lock")
+	}
+	if got := c.status(t); got != "in_progress" {
+		t.Fatalf("status %q, want in_progress", got)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND action='stop_not_confirmed'`, c.issueID); n != 1 {
+		t.Fatalf("%d stop_not_confirmed rows, want 1", n)
+	}
+}
+
+// A squad's leader run is admitted and inserted in the caller's transaction, so
+// it commits or rolls back with the move. No workflow step hands off to a squad
+// today, so the helper is driven directly.
+func TestEnqueueSquadLeaderRunInTxRollsBackWithTheCaller(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c, _ := newHandoffEdgeCase(t, 2853005)
+	sq := newSquadCommentTriggerFixture(t)
+	setIssueAssigneeDirect(t, c.issueID, "squad", sq.SquadID)
+	ctx := context.Background()
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(c.issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := testHandler.TxStarter.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	tq := testHandler.Queries.WithTx(tx)
+	if _, err := testHandler.onQueries(tq).enqueueSquadLeaderRunInTx(ctx, tq, issue); err != nil {
+		t.Fatalf("enqueueSquadLeaderRunInTx: %v", err)
+	}
+	if _, runs := edgeTxRows(t, tx, c.issueID); runs != 1 {
+		t.Fatalf("%d runs inside the transaction, want the leader's 1", runs)
+	}
+	if _, runs := edgeTxRows(t, testPool, c.issueID); runs != 0 {
+		t.Fatal("the leader run is visible before the caller commits")
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, runs := edgeTxRows(t, testPool, c.issueID); runs != 0 {
+		t.Fatalf("%d runs after rollback, want 0", runs)
 	}
 }

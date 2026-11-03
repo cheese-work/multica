@@ -36,9 +36,10 @@ type edgeMove struct {
 //
 // A handoff check that cannot run inside the transaction refuses the move: a
 // run whose stop is not confirmed returns *service.StopNotConfirmedError with
-// nothing written. A squad leader's run is the one handoff that still starts
-// after commit, because its access gate reads outside the transaction.
+// nothing written. The move reads through q wherever it can, so the caller's
+// connection is the one it waits on.
 func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db.Issue, to, source string, extra map[string]any, startHandler bool) (edgeMove, error) {
+	th := h.onQueries(q)
 	params := db.UpdateIssueParams{
 		ID:               issue.ID,
 		ExpectedRevision: pgtype.Int8{Int64: issue.Revision, Valid: true},
@@ -69,13 +70,13 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 	var willRun bool
 	var trigger service.IssueRunTrigger
 	if handoff != nil && startHandler {
-		trigger, willRun = h.IssueService.WillEnqueueRun(ctx, service.IssueTriggerInput{
+		trigger, willRun = th.IssueService.WillEnqueueRun(ctx, service.IssueTriggerInput{
 			Issue: updated, PrevStatus: issue.Status, AssigneeChanged: true, StatusChanged: true, EnteredHandoffStep: true,
 		}, service.IssueTriggerProbe{})
 	}
 	var handoffDetails map[string]string
 	if handoff != nil {
-		handoffDetails = workflowHandoffPayload(updated, handoff, h.workflowHandoffBrief(ctx, updated, handoff), willRun, "")
+		handoffDetails = workflowHandoffPayload(updated, handoff, th.workflowHandoffBrief(ctx, updated, handoff), willRun, "")
 	}
 	var rec *statusRecord
 	if issue.Status != updated.Status {
@@ -102,7 +103,6 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 		runAfter     func()
 		runRefused   error
 		cancelAfter  func()
-		squadAfter   bool
 		duplicateRun bool
 	)
 	if willRun {
@@ -110,27 +110,26 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 		if err := service.StopGate(ctx, q, updated.ID); errors.As(err, &notConfirmed) {
 			return edgeMove{}, err
 		}
+		if cancelAfter, err = th.TaskService.CancelStaleStepRunsInTx(ctx, q, updated, trigger.AgentID); err != nil {
+			return edgeMove{}, err
+		}
 		if trigger.AssigneeType == "agent" {
-			if cancelAfter, err = h.TaskService.CancelStaleStepRunsInTx(ctx, q, updated, trigger.AgentID); err != nil {
-				return edgeMove{}, err
-			}
-			runAfter, err = h.TaskService.EnqueueIssueRunInTx(ctx, q, updated, pgtype.UUID{})
-			switch {
-			case err == nil:
-			case errors.Is(err, service.ErrDuplicatePendingTask):
-				runRefused, duplicateRun = err, true
-			case errors.Is(err, service.ErrRunBudgetExhausted), errors.Is(err, service.ErrIssueInTriage), errors.Is(err, service.ErrRecoveryCaused):
-				runRefused = err
-			default:
-				return edgeMove{}, err
-			}
+			runAfter, err = th.TaskService.EnqueueIssueRunInTx(ctx, q, updated, pgtype.UUID{})
+			duplicateRun = errors.Is(err, service.ErrDuplicatePendingTask)
 		} else {
-			squadAfter = true
+			runAfter, err = th.enqueueSquadLeaderRunInTx(ctx, q, updated)
+		}
+		switch {
+		case err == nil:
+		case duplicateRun, errors.Is(err, service.ErrRunBudgetExhausted), errors.Is(err, service.ErrIssueInTriage),
+			errors.Is(err, service.ErrRecoveryCaused), errors.Is(err, errSquadLeaderNotAdmitted):
+			runRefused = err
+		default:
+			return edgeMove{}, err
 		}
 	}
 
 	payload := map[string]any{
-		"issue":            h.issueResponseWithCategory(ctx, updated),
 		"assignee_changed": assigneeChanged,
 		"status_changed":   true,
 		"prev_status":      issue.Status,
@@ -153,6 +152,7 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 	}
 
 	afterCommit := func(ctx context.Context) (ranHandler bool) {
+		payload["issue"] = h.issueResponseWithCategory(ctx, updated)
 		h.broadcastCancelledWakeups(ctx, issue.WorkspaceID, cancelledWakeups)
 		h.publish(protocol.EventIssueUpdated, uuidToString(updated.WorkspaceID), "system", "", payload)
 		h.publishRecordedStatusActivity(rec, "system", "")
@@ -160,9 +160,6 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 			cancelAfter()
 		}
 		switch {
-		case squadAfter:
-			h.IssueService.CancelStaleStepRuns(ctx, updated, trigger.AgentID)
-			ranHandler = h.dispatchIssueRun(ctx, updated, trigger, "system", "", "")
 		case duplicateRun:
 			// A sibling run holds the slot; it delivers the move only if it is
 			// the queued assignment-level run for the step the issue is in now.
@@ -177,4 +174,39 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 		return ranHandler
 	}
 	return edgeMove{Issue: updated, RunRefused: runRefused, AfterCommit: afterCommit}, nil
+}
+
+// errSquadLeaderNotAdmitted is why a squad's leader got no run: the access gate
+// refused it, or the squad is gone.
+var errSquadLeaderNotAdmitted = errors.New("squad leader run not admitted")
+
+// enqueueSquadLeaderRunInTx is the in-transaction form of
+// enqueueSquadLeaderTaskOutcome for the platform as the actor: the leader's
+// access gate and the run insert both read and write through q.
+func (h *Handler) enqueueSquadLeaderRunInTx(ctx context.Context, q *db.Queries, issue db.Issue) (func(), error) {
+	squad, err := q.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: issue.AssigneeID, WorkspaceID: issue.WorkspaceID})
+	if err != nil {
+		return nil, errSquadLeaderNotAdmitted
+	}
+	originator := uuidToString(h.TaskService.OriginatorForIssueTask(ctx, issue, pgtype.UUID{}))
+	if !h.canEnqueueSquadLeader(ctx, squad.LeaderID, "system", "", originator, uuidToString(issue.WorkspaceID)) {
+		return nil, errSquadLeaderNotAdmitted
+	}
+	return h.TaskService.EnqueueSquadLeaderRunInTx(ctx, q, issue, squad.LeaderID, squad.ID, pgtype.UUID{})
+}
+
+// onQueries is h with every read going through q, the queries of a transaction
+// the caller holds open: a read through the pool would wait for a second
+// connection while this one is held, and enough such moves at once starve the
+// pool. TaskService holds locks and caches, so it is shared; the reads inside
+// its run preparation still use the pool.
+func (h *Handler) onQueries(q *db.Queries) *Handler {
+	th := *h
+	th.Queries = q
+	if h.IssueService != nil {
+		issues := *h.IssueService
+		issues.Queries = q
+		th.IssueService = &issues
+	}
+	return &th
 }
