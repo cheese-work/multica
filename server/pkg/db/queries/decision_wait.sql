@@ -91,3 +91,96 @@ UPDATE decision_wait SET
     refused_task_id = CASE WHEN sqlc.arg('suspend')::boolean AND phase = 'waiting' THEN NULL ELSE refused_task_id END
 WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id') AND closed_at IS NULL
 RETURNING *;
+
+-- name: GetBindingDecisionWait :one
+-- The non-closed episode that binds a request (CHE-2591 L5 design §4.4.1).
+SELECT * FROM decision_wait
+WHERE workspace_id = sqlc.arg('workspace_id') AND closed_at IS NULL AND sqlc.arg('request_id')::uuid = ANY(request_ids);
+
+-- name: GetDecisionWait :one
+SELECT * FROM decision_wait WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id');
+
+-- name: LockDecisionWait :one
+SELECT * FROM decision_wait WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') FOR UPDATE;
+
+-- name: ListDecisionWaitRequests :many
+SELECT * FROM decision_request
+WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = ANY(sqlc.arg('request_ids')::uuid[])
+ORDER BY id;
+
+-- name: ListDecisionWaitAnswers :many
+SELECT answer.* FROM decision_answer answer
+JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
+WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.id = ANY(sqlc.arg('request_ids')::uuid[])
+ORDER BY answer.id;
+
+-- name: ListDecisionWaitIntents :many
+SELECT * FROM decision_intent
+WHERE workspace_id = sqlc.arg('workspace_id') AND id = ANY(sqlc.arg('intent_ids')::uuid[])
+ORDER BY id;
+
+-- name: ClaimDecisionWait :execrows
+UPDATE decision_wait SET closed_at = now(), close_reason = sqlc.arg('close_reason')
+WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND closed_at IS NULL;
+
+-- name: RecordDecisionWaitResume :execrows
+UPDATE decision_wait SET resume_task_id = sqlc.arg('resume_task_id'), resume_outcome = sqlc.arg('resume_outcome')
+WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND close_reason IS NOT NULL;
+
+-- name: MarkDecisionWaitDispatchRefused :exec
+UPDATE decision_wait SET dispatch_refused_since = now()
+WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
+  AND dispatch_refused_since IS NULL AND closed_at IS NULL AND phase = 'waiting';
+
+-- name: ListDecisionEpisodeCandidates :many
+-- Non-closed episodes that qualify for delivery or a system close (design
+-- §4.4.1, clauses 1-4). The run-budget resume condition is the member status
+-- change after the suspension or a later workflow budget start; the delivery
+-- transaction re-checks it exactly.
+SELECT wait.* FROM decision_wait wait
+JOIN issue ON issue.id = wait.issue_id AND issue.workspace_id = wait.workspace_id
+JOIN agent asker ON asker.id = wait.asking_agent_id AND asker.workspace_id = wait.workspace_id
+LEFT JOIN project ON project.id = issue.project_id AND project.workspace_id = issue.workspace_id
+WHERE wait.closed_at IS NULL AND (
+    issue.status IN ('done', 'cancelled', 'agent_accepted', 'approved')
+    OR asker.archived_at IS NOT NULL OR asker.runtime_id IS NULL OR asker.kind = 'system'
+    OR (
+        (wait.phase = 'waiting' OR wait.suspend_reason = 'status_moved'
+         OR (wait.suspend_reason = 'run_budget' AND (
+             EXISTS (
+                 SELECT 1 FROM activity_log moved
+                 WHERE moved.issue_id = issue.id AND moved.action IN ('status_changed', 'run_budget_top_up')
+                   AND moved.actor_type = 'member' AND moved.created_at > wait.suspended_at
+             ) OR EXISTS (
+                 SELECT 1 FROM issue_workflow flow
+                 WHERE flow.workspace_id = issue.workspace_id AND flow.run_budget_since > wait.suspended_at
+                   AND (flow.id = issue.workflow_id OR (issue.workflow_id IS NULL AND (
+                       flow.id = project.workflow_id OR (flow.is_default AND project.workflow_id IS NULL)
+                   )))
+             )
+         ))
+         OR (wait.suspend_reason = 'dispatch_refused' AND (
+             wait.refused_task_id IS NULL
+             OR NOT EXISTS (
+                 SELECT 1 FROM agent_task_queue task
+                 WHERE task.id = wait.refused_task_id AND task.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+             ) OR EXISTS (
+                 SELECT 1 FROM activity_log moved
+                 WHERE moved.issue_id = issue.id AND moved.action IN ('status_changed', 'run_budget_top_up')
+                   AND moved.actor_type = 'member' AND moved.created_at > wait.suspended_at
+             )
+         )))
+        AND NOT EXISTS (
+            SELECT 1 FROM decision_request bound
+            WHERE bound.authority = 'human' AND bound.id = ANY(wait.request_ids) AND bound.status = 'open'
+        )
+        AND NOT EXISTS (
+            SELECT 1 FROM decision_answer live
+            JOIN decision_request bound ON bound.authority = 'human' AND bound.id = live.decision_request_id
+            WHERE bound.id = ANY(wait.request_ids) AND bound.status = 'answered'
+              AND live.disclaimed_at IS NULL AND live.woken_at IS NULL AND live.wake_at > clock_timestamp()
+        )
+    )
+)
+ORDER BY wait.id
+LIMIT LEAST(GREATEST(sqlc.arg('batch_size')::int, 0), 100);

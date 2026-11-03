@@ -246,6 +246,15 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 			return handler.deliverDecisionItem(ctx, request.WorkspaceID, request.ID, "reask")
 		}))
 	}
+	waits, err := handler.Queries.ListDecisionEpisodeCandidates(ctx, decisionBatchSize)
+	if err != nil {
+		return errors.Join(failures, err)
+	}
+	for _, wait := range waits {
+		failures = errors.Join(failures, decisionAttempt(ctx, func() error {
+			return handler.deliverDecisionItem(ctx, wait.WorkspaceID, wait.ID, "episode")
+		}))
+	}
 	recipients, err := handler.Queries.ListDecisionExpiryDigestRecipients(ctx, decisionBatchSize)
 	if err != nil {
 		return errors.Join(failures, err)
