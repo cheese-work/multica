@@ -87,9 +87,9 @@ test("the script fails closed when UPSTREAM_VERSION is missing or malformed", (t
   assert.notEqual(run(prefixed.dir).status, 0);
 });
 
-test("the CI daemon-artifact job uses the script and stamps the full commit separately", () => {
-  const ci = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
-  const job = ci.slice(ci.indexOf("  daemon-artifact:"), ci.indexOf("  image-budget:"));
+test("the main-build daemon-artifact job uses the script and stamps the full commit separately", () => {
+  const ci = readFileSync(join(root, ".github/workflows/main-build.yml"), "utf8");
+  const job = ci.slice(ci.indexOf("  daemon-artifact:"));
   assert.match(job, /scripts\/daemon-artifact-version\.sh/);
   assert.match(job, /-X main\.version=\$\{version\}/);
   assert.match(job, /-X main\.commit=\$\{GITHUB_SHA\}/);

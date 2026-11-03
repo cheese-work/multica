@@ -1202,6 +1202,7 @@ function IssueTableBodyCell({
             status={issue.status}
             onUpdate={onUpdate}
             projectId={issue.project_id}
+            workflowId={issue.workflow_id}
             issue={issue}
             align="start"
             open={editorOpen}
@@ -1865,7 +1866,7 @@ export function TableView({
           ?.name ?? String(value.value ?? "")
       );
     },
-    [getActorName, groupProjectMap, propertyById, t],
+    [getActorName, groupProjectMap, propertyById, resolveStatusLabel, t],
   );
 
   const serverDisplayRows = useMemo<IssueTableDisplayRow[]>(() => {

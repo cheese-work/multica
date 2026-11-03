@@ -68,6 +68,7 @@
     "section_properties": "Propriétés",
     "section_progress": "Avancement",
     "section_description": "Description",
+    "section_wakeups": "Réveils",
     "prop_start_date": "Date de début",
     "prop_due_date": "Date d'échéance",
     "no_start_date": "Aucune date de début",

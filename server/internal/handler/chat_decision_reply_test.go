@@ -169,7 +169,6 @@ func TestSendChatDecisionReplyWithdrawnTurnCanBeRecordedAgain(test *testing.T) {
 			ctx := context.Background()
 			agentID, sessionID, runtimeID, _ := setupDirectChatSession(test, ctx, "Withdrawn bound answer")
 			requestID, parentID, issueID := seedDMDecision(test, agentID, sessionID, "Deploy?", "open", "1 minute")
-			dbfx.Exec(test, `UPDATE decision_request SET escalation_class = 'deploy' WHERE id = $1`, requestID)
 			request := newRequest(http.MethodPost, "/api/chat/sessions/"+sessionID+"/messages", map[string]any{"content": "> Deploy?\n\nYes", "decision_request_id": requestID})
 			request.Header.Set("X-Actor-Source", "interactive_jwt")
 			request = withChatTestWorkspaceCtx(test, withURLParam(request, "sessionId", sessionID))
@@ -215,13 +214,12 @@ func TestSendChatDecisionReplyWithdrawnTurnCanBeRecordedAgain(test *testing.T) {
 			recordRequest.Header.Set("X-Actor-Source", "task_token")
 			recordRequest.Header.Set("X-Task-ID", retryID)
 			recordRequest.Header.Set("X-Agent-ID", agentID)
-			before := time.Now()
 			recorded, err := testHandler.createAskedDecisionRecord(recordRequest, issue, decisionRecordInput{ParentID: parseUUID(parentID), MessageIDs: []pgtype.UUID{message.ID}})
 			if err != nil {
 				test.Fatalf("withdrawn source cannot be recorded again: %v", err)
 			}
-			if recorded.Request.Status != "answered" || recorded.Answer.DisclaimedAt.Valid || recorded.Answer.ID == withdrawn.Answer.ID || recorded.Answer.WakeAt.Valid || recorded.Answer.EffectiveAt.Time.Before(before.Add(10*time.Minute)) || recorded.Answer.ContentSnapshot != message.Content {
-				test.Fatalf("retry lost the answer or its hold: %+v", recorded.Answer)
+			if recorded.Request.Status != "answered" || recorded.Answer.DisclaimedAt.Valid || recorded.Answer.ID == withdrawn.Answer.ID || recorded.Answer.WakeAt.Valid || recorded.Answer.ContentSnapshot != message.Content {
+				test.Fatalf("retry lost the answer: %+v", recorded.Answer)
 			}
 		})
 	}

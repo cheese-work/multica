@@ -332,6 +332,9 @@ deleted_orphan_task_supplements AS (
 deleted_orphan_task_supplement_capabilities AS (
     DELETE FROM task_supplement_capability WHERE workspace_id = $1
 ),
+deleted_chat_task_supplements AS (
+    DELETE FROM chat_task_supplement WHERE workspace_id = $1
+),
 deleted_orphan_task_pr_event_deliveries AS (
     DELETE FROM task_pr_event_delivery WHERE workspace_id = $1
 ),
@@ -370,6 +373,14 @@ deleted_chat_wakeups AS (
 ),
 deleted_github_dispatch_halts AS (
     DELETE FROM github_dispatch_halt WHERE workspace_id = $1
+),
+-- CHE-3284 config-sync enrollment: workspace-owned leaf, no FK.
+deleted_config_sync AS (
+    DELETE FROM workspace_config_sync WHERE workspace_id = $1
+),
+-- CHE-3345 ask guard events: workspace-owned leaf, no FK.
+deleted_ask_guard_events AS (
+    DELETE FROM ask_guard_event WHERE workspace_id = $1
 ),
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1

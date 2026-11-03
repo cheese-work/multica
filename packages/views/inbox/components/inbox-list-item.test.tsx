@@ -19,7 +19,7 @@ vi.mock("@multica/core/issue-statuses/hooks", () => ({
   useIssueStatuses: () => buildIssueStatusCatalog(catalogEntries),
 }));
 
-vi.mock("../../issues/components", () => ({
+vi.mock("../../issues/components/visuals", () => ({
   StatusIcon: ({
     status,
     category,
