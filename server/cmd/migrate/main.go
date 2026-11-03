@@ -494,7 +494,7 @@ var concurrentIndexCleanups = map[string]string{
 	"536_governance_receipt_workspace_comment_created_idx":      "idx_governance_receipt_workspace_comment_created",
 	"552_governance_concurrency_guard_identity":                 "governance_concurrency_guard_identity_uidx",
 	"553_governance_concurrency_hold_identity":                  "governance_concurrency_hold_identity_uidx",
-	"899_decision_wait_open_issue_idx":                          "decision_wait_open_issue_idx",
+	"926_decision_wait_open_issue_idx":                          "decision_wait_open_issue_idx",
 }
 
 type requiredConcurrentIndex struct {
