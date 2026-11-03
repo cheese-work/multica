@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -33,7 +34,7 @@ func (binding AnswerBinding) Digest() string {
 	var canonical bytes.Buffer
 	encoder := json.NewEncoder(&canonical)
 	encoder.SetEscapeHTML(false)
-	encoder.Encode(struct {
+	err := encoder.Encode(struct {
 		AnswerRevision  int32  `json:"answer_revision"`
 		DecisionID      string `json:"decision_id"`
 		Option          string `json:"option"`
@@ -47,6 +48,10 @@ func (binding AnswerBinding) Digest() string {
 		binding.AnswerRevision, uuid.UUID(binding.DecisionID.Bytes).String(), binding.Option, binding.PolicyRevision,
 		uuid.UUID(binding.RecipientUserID.Bytes).String(), binding.SessionID, binding.Text, 1, uuid.UUID(binding.WorkspaceID.Bytes).String(),
 	})
+	if err != nil {
+		// A fixed struct of strings and ints into a bytes.Buffer cannot fail.
+		panic(fmt.Sprintf("passkey: encode answer binding: %v", err))
+	}
 	sum := sha256.Sum256(bytes.TrimSuffix(canonical.Bytes(), []byte("\n")))
 	return hex.EncodeToString(sum[:])
 }
