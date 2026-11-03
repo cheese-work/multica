@@ -80,7 +80,7 @@ process.stdout.write(readFileSync(process.env.RUN_FIXTURE));
     writeFileSync(output, "");
     const result = spawnSync(process.execPath, [command, "merge-group-green"], {
       encoding: "utf8",
-      env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, RUN_FIXTURE: fixture, LOOKUP_FAIL: failure,
+      env: { ...process.env, MERGE_GROUP_WAIT_MS: "0", PATH: `${directory}:${process.env.PATH}`, RUN_FIXTURE: fixture, LOOKUP_FAIL: failure,
         ...stepEnv(forceFull), GITHUB_REF: "refs/heads/main", GITHUB_SHA: sha,
         GITHUB_REPOSITORY: "cheese-work/multica", GITHUB_OUTPUT: output },
     });

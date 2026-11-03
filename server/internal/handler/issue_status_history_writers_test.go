@@ -3,10 +3,8 @@ package handler
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -20,24 +18,6 @@ import (
 // One test per status writer (CHE-2840, C1b1): the writer commits one
 // status_changed row with its status, names it as activity_id in the event, and
 // rolls the status back when the row cannot be written.
-
-// failStatusActivityInserts makes every status_changed insert for issueID fail.
-func failStatusActivityInserts(t *testing.T, issueID string) {
-	t.Helper()
-	fn := "che2840_fail_" + strings.ReplaceAll(issueID, "-", "")
-	for _, stmt := range []string{
-		fmt.Sprintf(`CREATE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected activity failure'; END $$`, fn),
-		fmt.Sprintf(`CREATE TRIGGER %s BEFORE INSERT ON activity_log FOR EACH ROW WHEN (NEW.issue_id = '%s' AND NEW.action = 'status_changed') EXECUTE FUNCTION %s()`, fn, issueID, fn),
-	} {
-		if _, err := testPool.Exec(context.Background(), stmt); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), fmt.Sprintf(`DROP TRIGGER IF EXISTS %s ON activity_log`, fn))
-		testPool.Exec(context.Background(), fmt.Sprintf(`DROP FUNCTION IF EXISTS %s()`, fn))
-	})
-}
 
 // recordActivityIDs collects the activity_id of every status-changing
 // issue:updated event for issueID.
