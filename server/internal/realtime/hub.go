@@ -198,8 +198,8 @@ func checkOrigin(r *http.Request) bool {
 }
 
 const (
-	writeWait  = 10 * time.Second
-	pongWait   = 60 * time.Second
+	writeWait = 10 * time.Second
+	pongWait  = 60 * time.Second
 
 	// inboundReadLimit caps a single inbound message. Every frame a client
 	// legitimately sends is tiny — the largest is the token auth frame, well
@@ -236,7 +236,7 @@ type Client struct {
 	workspaceID string
 	// recheck re-reads the JWT's session generation; nil for a PAT. writePump
 	// runs it on every ping, so a revoked session loses its socket within one
-	// ping period (CHE-2798 P6).
+	// ping period (CHE-2798 P6). A failed read closes it too (fail closed).
 	recheck func(context.Context) error
 	writeMu sync.Mutex // serializes application writes and the final removal notice
 	stopped atomic.Bool
@@ -1137,20 +1137,21 @@ func (c *Client) sendJSON(v any) {
 	c.trySend(data)
 }
 
-// sessionRevoked reports whether the socket's JWT was revoked after it
-// connected. Only an explicit revocation drops the socket; a storage error
-// keeps it until the next ping, because the reconnect would fail on the same
-// storage.
+// sessionRevoked reports whether the socket's JWT must lose its socket: it was
+// revoked after the socket connected, or the generation could not be read.
+// Failing closed means a storage outage cannot keep a revoked session alive;
+// the client reconnects once storage is back.
 func (c *Client) sessionRevoked() bool {
 	if c.recheck == nil {
 		return false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := c.recheck(ctx); !errors.Is(err, auth.ErrStaleSession) {
+	err := c.recheck(ctx)
+	if err == nil {
 		return false
 	}
-	slog.Warn("ws: revoked session closed", "user_id", c.userID, "workspace_id", c.workspaceID)
+	slog.Warn("ws: session closed", "user_id", c.userID, "workspace_id", c.workspaceID, "stale", errors.Is(err, auth.ErrStaleSession), "error", err)
 	return true
 }
 

@@ -662,16 +662,32 @@ func TestReadPump_AcceptsFrameUnderReadLimit(t *testing.T) {
 
 // generationResolver is a PATResolver that also reads a mutable stored
 // session generation, like the production resolver.
-type generationResolver struct{ gen atomic.Int32 }
+type generationResolver struct {
+	gen  atomic.Int32
+	fail atomic.Bool
+}
 
 func (*generationResolver) ResolveToken(context.Context, string) (string, bool) { return "", false }
 func (r *generationResolver) GetUserSessionGeneration(context.Context, pgtype.UUID) (int32, error) {
+	if r.fail.Load() {
+		return 0, errors.New("storage down")
+	}
 	return r.gen.Load(), nil
 }
 
 // A socket opened before passkey recovery must not outlive the bump: writePump
 // rereads the generation on every ping and closes a revoked session.
 func TestWritePump_ClosesSocketWhenSessionGenerationBumps(t *testing.T) {
+	testWritePumpClosesSocket(t, func(r *generationResolver) { r.gen.Store(1) })
+}
+
+// A storage error is not a reason to keep a possibly revoked session open.
+func TestWritePump_ClosesSocketWhenTheGenerationCannotBeRead(t *testing.T) {
+	testWritePumpClosesSocket(t, func(r *generationResolver) { r.fail.Store(true) })
+}
+
+func testWritePumpClosesSocket(t *testing.T, breakSession func(*generationResolver)) {
+	t.Helper()
 	old := pingPeriod
 	pingPeriod = 20 * time.Millisecond
 	t.Cleanup(func() { pingPeriod = old })
@@ -697,7 +713,7 @@ func TestWritePump_ClosesSocketWhenSessionGenerationBumps(t *testing.T) {
 		t.Fatalf("socket with a current session must stay open, clients=%d", got)
 	}
 
-	resolver.gen.Store(1)
+	breakSession(resolver)
 	waitFor(t, "revoked socket to close", func() bool { return totalClients(hub) == 0 })
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	if _, _, err := conn.ReadMessage(); err == nil {

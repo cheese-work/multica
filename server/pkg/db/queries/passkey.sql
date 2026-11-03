@@ -185,6 +185,12 @@ WHERE user_id = $1 AND consumed_at IS NULL AND superseded_at IS NULL;
 -- name: LockUserPasskeyState :one
 SELECT passkey_state FROM "user" WHERE id = $1 FOR SHARE NOWAIT;
 
+-- Serializes a credential insert with recovery: recovery holds the row FOR
+-- UPDATE, so this waits for it and then reads the bumped generation.
+
+-- name: LockUserSessionGeneration :one
+SELECT session_generation FROM "user" WHERE id = $1 FOR SHARE;
+
 -- Ends recovery in the transaction that brings the usable keys to two.
 
 -- name: LeavePasskeyRecovery :exec

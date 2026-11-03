@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -111,7 +112,7 @@ func (h *Handler) CreatePersonalAccessToken(w http.ResponseWriter, r *http.Reque
 		prefix = prefix[:12]
 	}
 
-	pat, err := h.Queries.CreatePersonalAccessToken(r.Context(), db.CreatePersonalAccessTokenParams{
+	pat, err := h.insertPersonalAccessToken(r, db.CreatePersonalAccessTokenParams{
 		UserID:      parseUUID(userID),
 		Name:        req.Name,
 		TokenHash:   auth.HashToken(rawToken),
@@ -119,6 +120,10 @@ func (h *Handler) CreatePersonalAccessToken(w http.ResponseWriter, r *http.Reque
 		ExpiresAt:   expiresAt,
 		Scopes:      req.Scopes,
 	})
+	if errors.Is(err, errSessionRevoked) {
+		writeError(w, http.StatusUnauthorized, "session revoked")
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create token")
 		return
@@ -301,4 +306,43 @@ func (h *Handler) RevokePersonalAccessToken(w http.ResponseWriter, r *http.Reque
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+var errSessionRevoked = errors.New("session revoked")
+
+// insertPersonalAccessToken stores the PAT. A JWT caller's generation is
+// checked under a share lock on the user row in the same transaction as the
+// insert. Passkey recovery holds that row FOR UPDATE, so a request whose body
+// outlived the middleware check cannot mint a PAT across the recovery commit.
+func (h *Handler) insertPersonalAccessToken(r *http.Request, params db.CreatePersonalAccessTokenParams) (db.PersonalAccessToken, error) {
+	generation := r.Header.Get(auth.SessionGenerationHeader)
+	if generation == "" {
+		return h.Queries.CreatePersonalAccessToken(r.Context(), params)
+	}
+	claimed, err := strconv.Atoi(generation)
+	if err != nil {
+		return db.PersonalAccessToken{}, err
+	}
+	ctx := r.Context()
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return db.PersonalAccessToken{}, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '5s'`); err != nil {
+		return db.PersonalAccessToken{}, err
+	}
+	queries := h.Queries.WithTx(tx)
+	stored, err := queries.LockUserSessionGeneration(ctx, params.UserID)
+	if err != nil {
+		return db.PersonalAccessToken{}, err
+	}
+	if int(stored) != claimed {
+		return db.PersonalAccessToken{}, errSessionRevoked
+	}
+	pat, err := queries.CreatePersonalAccessToken(ctx, params)
+	if err != nil {
+		return db.PersonalAccessToken{}, err
+	}
+	return pat, tx.Commit(ctx)
 }

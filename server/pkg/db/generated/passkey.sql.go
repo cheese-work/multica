@@ -638,6 +638,20 @@ func (q *Queries) LockUserPasskeyState(ctx context.Context, id pgtype.UUID) (str
 	return passkey_state, err
 }
 
+const lockUserSessionGeneration = `-- name: LockUserSessionGeneration :one
+
+SELECT session_generation FROM "user" WHERE id = $1 FOR SHARE
+`
+
+// Serializes a credential insert with recovery: recovery holds the row FOR
+// UPDATE, so this waits for it and then reads the bumped generation.
+func (q *Queries) LockUserSessionGeneration(ctx context.Context, id pgtype.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, lockUserSessionGeneration, id)
+	var session_generation int32
+	err := row.Scan(&session_generation)
+	return session_generation, err
+}
+
 const lockUserWorkspaceGates = `-- name: LockUserWorkspaceGates :many
 
 SELECT w.decision_passkey_gate::text FROM member m JOIN workspace w ON w.id = m.workspace_id

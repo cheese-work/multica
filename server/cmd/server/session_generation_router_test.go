@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -189,4 +190,66 @@ func TestSessionGeneration_RecoveryKillsOldSessionsAndRenewal(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A request can pass the middleware and then hold its body open across the
+// recovery commit. The PAT must not be minted: the handler rechecks the
+// generation under the user-row lock, in the transaction that inserts it.
+func TestSessionGeneration_PATWithADelayedBodyIsRefusedAcrossRecovery(t *testing.T) {
+	id, token := revocationUser(t, "")
+	var email string
+	if err := testPool.QueryRow(context.Background(), `SELECT email FROM "user" WHERE id = $1`, id).Scan(&email); err != nil {
+		t.Fatal(err)
+	}
+	body, writer := io.Pipe()
+	req, err := http.NewRequest("POST", testServer.URL+"/api/tokens", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	status := make(chan int, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			status <- -1
+			return
+		}
+		resp.Body.Close()
+		status <- resp.StatusCode
+	}()
+	if _, err := writer.Write([]byte(`{"name":"stolen"`)); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond) // the middleware has read the generation by now
+	if _, err := passkey.RecoverUser(context.Background(), testPool, email); err != nil {
+		t.Fatal(err)
+	}
+	writer.Write([]byte(`}`))
+	writer.Close()
+	if got := <-status; got != http.StatusUnauthorized {
+		t.Fatalf("PAT minted across recovery: got %d, want 401", got)
+	}
+	var minted int
+	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM personal_access_token WHERE user_id = $1`, id).Scan(&minted); err != nil || minted != 0 {
+		t.Fatalf("PAT rows after recovery = %d (%v), want 0", minted, err)
+	}
+}
+
+// The same request with no recovery in between still mints, so the 401 above is
+// the recheck and not a broken fixture.
+func TestSessionGeneration_PATIsMintedForACurrentSession(t *testing.T) {
+	id, token := revocationUser(t, "")
+	req, _ := http.NewRequest("POST", testServer.URL+"/api/tokens", strings.NewReader(`{"name":"ok"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("current session: got %d, want 201", resp.StatusCode)
+	}
+	testPool.Exec(context.Background(), `DELETE FROM personal_access_token WHERE user_id = $1`, id)
 }
