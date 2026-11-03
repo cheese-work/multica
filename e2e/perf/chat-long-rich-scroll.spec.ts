@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 
 // CHE-3329: a DM of long agent replies (tables + mermaid) must scroll to a
 // stable end that shows the newest message. Production shared UI with
@@ -27,7 +27,11 @@ const table = (n: number) => [
   "| Gate | Owner | Status | Notes |", "| --- | --- | --- | --- |",
   ...Array.from({ length: 12 }, (_, i) => `| gate-${n}-${i} | owner ${i} | ${i % 2 ? "green" : "red"} | ${"note ".repeat(8)} |`),
 ].join("\n");
-const mermaid = (n: number) =>
+const GIANT = process.env.GIANT === "1";
+const sequence = (n: number) =>
+  "```mermaid\nsequenceDiagram\n" +
+  Array.from({ length: 30 }, (_, i) => `  P${n}->>Q${n}: call ${i} with a longer label to widen the lane`).join("\n") + "\n```";
+const mermaid = (n: number) => GIANT ? sequence(n) :
   "```mermaid\nflowchart TD\n" +
   Array.from({ length: Number(process.env.STEPS ?? 14) }, (_, i) => `  A${n}_${i}[Step ${i}] --> A${n}_${i + 1}[Step ${i + 1}]`).join("\n") +
   "\n```";
@@ -36,16 +40,23 @@ const reply = (n: number) => [
   table(n + 100), mermaid(n + 100), `Closing paragraph of reply ${n}.`,
 ].join("\n\n");
 const LAST = "NEWEST-MESSAGE-SENTINEL";
-const messages = Array.from({ length: 24 }, (_, i) => ({
+const giantReply = () => Array.from({ length: 10 }, (_, k) => `### Part ${k}\n\n${table(k)}\n\n${mermaid(k + 500)}\n\nProse ${k}. ${"text ".repeat(60)}`).join("\n\n");
+const TOTAL = 120;
+const taskId = "77777777-7777-4777-8777-777777777777";
+const messages = Array.from({ length: TOTAL }, (_, i) => ({
   id: `message-${i}`, chat_session_id: sessionId,
   role: i % 2 ? "assistant" : "user", task_id: null,
-  content: i === 23 ? `${reply(i)}\n\n${LAST}` : i % 2 ? reply(i) : `question ${i}`,
+  content: i === TOTAL - 1 ? `${GIANT ? giantReply() : reply(i)}\n\n${LAST}` : i % 2 ? reply(i) : `question ${i}`,
   created_at: timestamp,
 }));
 
+test.setTimeout(900_000);
 test.use({ viewport: { width: 1440, height: 900 }, locale: "en-US", serviceWorkers: "block" });
 
-test("long rich DM scrolls to a stable end showing the newest message", async ({ page, context, baseURL }) => {
+async function scenario(
+  { page, context, baseURL }: { page: Page; context: BrowserContext; baseURL: string | undefined },
+  { paged, streaming }: { paged: boolean; streaming: boolean },
+) {
   const origin = new URL(baseURL ?? "http://localhost:3000").origin;
   await context.addCookies([
     { name: "multica_logged_in", value: "1", url: origin },
@@ -57,6 +68,20 @@ test("long rich DM scrolls to a stable end showing the newest message", async ({
     localStorage.setItem("multica:chat:activeSessionId:perf", sessionId);
     localStorage.setItem("multica:chat:selectedAgentId:perf", agentId);
   }, { sessionId, agentId });
+  // Newest `limit` messages, or the `limit` before the cursor. Unpaged: everything.
+  const pageFor = (url: URL) => {
+    const all = paged ? messages : messages.slice(-24);
+    const beforeId = url.searchParams.get("before_id");
+    const end = beforeId ? all.findIndex(m => m.id === beforeId) : all.length;
+    const limit = Number(url.searchParams.get("limit") ?? 50);
+    const slice = all.slice(Math.max(0, end - limit), end).map(m =>
+      streaming ? { ...m, content: m.content.replace(LAST, "") } : m);
+    const hasMore = end - limit > 0;
+    return { messages: slice, limit, has_more: hasMore,
+      next_cursor: hasMore ? { created_at: slice[0]!.created_at, id: slice[0]!.id } : null };
+  };
+  let currentUrl = new URL(origin);
+  const taskMessages: { task_id: string; seq: number; type: string; content: string }[] = [];
   const responseFor = (path: string): unknown => {
     switch (path) {
       case "/api/config": return { feature_flags: {}, allow_signup: true };
@@ -73,8 +98,11 @@ test("long rich DM scrolls to a stable end showing the newest message", async ({
       case "/api/agents": return [agent];
       case "/api/chat/sessions": return [session];
       case `/api/chat/sessions/${sessionId}`: return session;
-      case `/api/chat/sessions/${sessionId}/messages/page`: return { messages, limit: 50, has_more: false };
-      case `/api/chat/sessions/${sessionId}/pending-task`: return {};
+      case `/api/chat/sessions/${sessionId}/messages/page`: return pageFor(currentUrl);
+      case `/api/chat/sessions/${sessionId}/pending-task`: return streaming ? {
+        task_id: taskId, status: "running", created_at: timestamp, supports_queue: true, queued_tasks: [],
+      } : {};
+      case `/api/tasks/${taskId}/messages`: return taskMessages;
       case `/api/chat/sessions/${sessionId}/read`: return {};
       case `/api/chat/sessions/${sessionId}/draft-restores`: return [];
       case "/api/chat/pending-tasks/has-any": return { has_pending: false };
@@ -114,41 +142,61 @@ test("long rich DM scrolls to a stable end showing the newest message", async ({
     const url = new URL(route.request().url());
     if (url.origin !== origin) return route.abort();
     if (!url.pathname.startsWith("/api/")) return route.continue();
+    currentUrl = url;
     const body = responseFor(url.pathname);
     await route.fulfill({ status: body === undefined ? 404 : 200,
       contentType: "application/json", body: JSON.stringify(body ?? {}) });
   });
-  await context.routeWebSocket(url => url.pathname === "/ws", socket => socket.onMessage(() => {}));
+  let streamChunk = (_content: string) => {};
+  await context.routeWebSocket(url => url.pathname === "/ws", socket => {
+    socket.onMessage(() => {});
+    streamChunk = content => {
+      const payload = { task_id: taskId, seq: taskMessages.length, type: "text", content };
+      taskMessages.push(payload);
+      socket.send(JSON.stringify({ type: "task:message", payload, actor_type: "system", actor_id: "" }));
+    };
+  });
 
   await page.goto(`${origin}/perf/chat?session=${sessionId}`, { waitUntil: "domcontentloaded" });
-  const list = page.locator("[data-tab-scroll-root]").filter({ has: page.locator("[data-message-id]") });
-  await expect(list).toBeVisible({ timeout: 30_000 });
+  const list = page.locator("[data-tab-scroll-root]");
+  await expect(page.locator("[data-message-id]").first()).toBeVisible({ timeout: 30_000 });
   const metrics = () => list.evaluate(el => ({
     top: el.scrollTop, height: el.scrollHeight, client: el.clientHeight,
     sentinelVisible: (() => {
-      const s = [...el.querySelectorAll("*")].find(n => n.children.length === 0 && n.textContent?.includes("NEWEST-MESSAGE-SENTINEL"));
-      if (!s) return false;
-      const r = s.getBoundingClientRect(), v = el.getBoundingClientRect();
-      return r.bottom <= v.bottom + 1 && r.top >= v.top;
+      const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      for (let n = w.nextNode(); n; n = w.nextNode()) {
+        if (!n.nodeValue?.includes("NEWEST-MESSAGE-SENTINEL")) continue;
+        const range = document.createRange();
+        range.selectNodeContents(n);
+        const r = range.getBoundingClientRect(), v = el.getBoundingClientRect();
+        return r.bottom <= v.bottom + 1 && r.top >= v.top;
+      }
+      return false;
     })(),
   }));
 
-  // Scroll up a page at a time to the top, then back down to the bottom, as a reader would.
+  // Read up toward the top (loading older pages when paged), then wheel down to the end.
   await list.hover();
-  const up: unknown[] = [];
-  for (let i = 0; i < 40; i++) { await page.mouse.wheel(0, -1500); await page.waitForTimeout(60); up.push(await metrics()); }
-  const svgs = await list.evaluate(el => el.querySelectorAll("[data-rich-block-shell] svg").length);
-  const trace: unknown[] = [];
-  for (let i = 0; i < 80; i++) {
-    await page.mouse.wheel(0, 1000);
+  for (let i = 0; i < (paged ? 160 : GIANT ? 12 : 40); i++) {
+    await page.mouse.wheel(0, -1500);
+    await page.waitForTimeout(60);
+  }
+  for (let i = 0; i < 200; i++) {
+    await page.mouse.wheel(0, 2000);
+    if (streaming) {
+      streamChunk(i === 199 ? `\n\n${LAST}` : i % 50 === 0 ? `\n\n${table(i)}\n\n${mermaid(i)}\n\n` : "streamed token ".repeat(30));
+    }
     await page.waitForTimeout(80);
-    trace.push(await metrics());
   }
   await page.waitForTimeout(1500);
   const a = await metrics();
   await page.waitForTimeout(1500);
   const b = await metrics();
-  console.log("TRACE", JSON.stringify({ svgs, upHeights: up.map((t: any) => t.height), heights: trace.map((t: any) => t.height), a, b }));
+  // The extent stops moving at the end, and the end is the newest message.
   expect(b.height).toBe(a.height);
   expect(b.sentinelVisible).toBe(true);
-});
+}
+
+test("long rich DM, single page", async ({ page, context, baseURL }) => scenario({ page, context, baseURL }, { paged: false, streaming: false }));
+test("long rich DM, three pages of history", async ({ page, context, baseURL }) => scenario({ page, context, baseURL }, { paged: true, streaming: false }));
+test("long rich DM, newest reply still growing", async ({ page, context, baseURL }) => scenario({ page, context, baseURL }, { paged: false, streaming: true }));
