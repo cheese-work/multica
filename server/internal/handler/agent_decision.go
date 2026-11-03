@@ -344,6 +344,24 @@ func agentDecisionDisputant(ctx context.Context, tx pgx.Tx, commentID, taskID, b
 	return identity, nil
 }
 
+// agentDecisionHeader reads the typed `Key: value` lines at the top of a signed
+// verdict, up to the first line that is not one. A repeated key is ambiguous
+// and reports false.
+func agentDecisionHeader(body string) (map[string]string, bool) {
+	fields := map[string]string{}
+	for _, line := range strings.Split(body, "\n") {
+		key, value, ok := strings.Cut(line, ": ")
+		if !ok || key == "" || strings.ContainsAny(key, " \t") {
+			break
+		}
+		if _, dup := fields[key]; dup {
+			return nil, false
+		}
+		fields[key] = value
+	}
+	return fields, true
+}
+
 func createAgentDecisionInstance(ctx context.Context, tx pgx.Tx, params db.CreateCommentParams, line agentDecisionLine, author agentDecisionIdentity) error {
 	raw, err := agentDecisionBlock(params.Content, "decision")
 	if err != nil {
@@ -386,22 +404,29 @@ func createAgentDecisionInstance(ctx context.Context, tx pgx.Tx, params db.Creat
 			return err
 		}
 		// A co-signer split is never an adjudication input. Both source bodies
-		// explicitly bind the same gate and disputed point; excluded BLOCKs fail closed.
+		// explicitly bind the same gate and disputed point; excluded BLOCKs fail closed
+		// from typed fields.
 		if rebuttal.AgentID != author.AgentID || reviewer.AgentID == author.AgentID || reviewer.Lab == author.Lab ||
 			scope.Signers[0].AgentID == reviewer.AgentID || scope.Signers[0].Lab == author.Lab || scope.Signers[0].Lab == reviewer.Lab {
 			return agentDecisionRefusal("adjudication needs a third lab and a genuine author/reviewer dispute")
 		}
+		if !strings.HasPrefix(dispute.ReviewerVerdict, "Verdict: BLOCK\n") {
+			return agentDecisionRefusal("reviewer BLOCK must be for this reversible gate")
+		}
+		// Exclusion reads the typed header fields only; prose is never read.
+		header, unambiguous := agentDecisionHeader(dispute.ReviewerVerdict)
+		if !unambiguous {
+			return agentDecisionExcluded("excluded or missing-evidence BLOCK cannot be adjudicated", "excluded BLOCK: repeated typed field")
+		}
+		if category := header["Block-category"]; category != "reversible_gate" {
+			return agentDecisionExcluded("excluded or missing-evidence BLOCK cannot be adjudicated", fmt.Sprintf("excluded BLOCK: Block-category %.64q", category))
+		}
+		if gate := header["Gate"]; !agentDecisionGateAllowed(gate) {
+			return agentDecisionExcluded("excluded or missing-evidence BLOCK cannot be adjudicated", fmt.Sprintf("excluded BLOCK: Gate %.64q", gate))
+		}
 		for _, body := range []string{dispute.ReviewerVerdict, dispute.AuthorRebuttal} {
 			if strings.Contains(body, "decision:") || !strings.Contains(body, "Disputed-point: "+dispute.Point+"\n") || !strings.Contains(body, "Gate: "+proposal.WaivedGate+"\n") {
 				return agentDecisionRefusal("dispute must bind the gate and point, not a co-signer split")
-			}
-		}
-		if !strings.HasPrefix(dispute.ReviewerVerdict, "Verdict: BLOCK\n") || !strings.Contains(dispute.ReviewerVerdict, "Block-category: reversible_gate\n") {
-			return agentDecisionRefusal("reviewer BLOCK must be for this reversible gate")
-		}
-		for _, excluded := range []string{"security", "test-first", "test_first", "merge approval", "deploy", "spend", "publication", "irreversible", "product direction", "missing evidence", "independently protected"} {
-			if strings.Contains(strings.ToLower(dispute.ReviewerVerdict), excluded) {
-				return agentDecisionExcluded("excluded or missing-evidence BLOCK cannot be adjudicated", "excluded category in adjudication: "+excluded)
 			}
 		}
 		scope.Disputants = []agentDecisionIdentity{rebuttal, reviewer}
