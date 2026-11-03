@@ -53,6 +53,24 @@ func actionTxBusy(err error) bool {
 	return strings.HasPrefix(pgError.Code, "08")
 }
 
+// refuseWhileRecovering answers 403 recovery_required while the person is in
+// recovery. The state is read under the share lock the gate check takes, inside
+// the caller's transaction (CHE-2798 P6).
+func refuseWhileRecovering(ctx context.Context, queries *db.Queries, userID pgtype.UUID) error {
+	recovering, err := passkey.UserRecovering(ctx, queries, userID)
+	switch {
+	case errors.Is(err, passkey.ErrBusy):
+		return errBusyRetry
+	case err != nil:
+		return err
+	case recovering:
+		return errRecoveryRequired
+	}
+	return nil
+}
+
+var errRecoveryRequired = decisionIntentRefusal{http.StatusForbidden, "recovery_required: enroll two new passkeys before deciding"}
+
 var (
 	errBusyRetry      = decisionIntentRefusal{http.StatusConflict, "busy_retry: another change holds this decision; retry"}
 	errNotPending     = decisionIntentRefusal{http.StatusConflict, "not_pending: this action is no longer waiting for a decision"}

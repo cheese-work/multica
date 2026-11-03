@@ -698,3 +698,81 @@ func (q *Queries) TryLockPasskeyChallengeIssue(ctx context.Context, userID pgtyp
 	err := row.Scan(&column_1)
 	return column_1, err
 }
+
+const lockUserForRecovery = `-- name: LockUserForRecovery :one
+
+SELECT id FROM "user" WHERE email = $1 FOR UPDATE
+`
+
+// Recovery (CHE-2798 P6, B3). The C00 command takes the person's row FOR
+// UPDATE; a gate check holds it FOR SHARE, so a check in flight finishes first
+// and a later one sees recovery_required.
+func (q *Queries) LockUserForRecovery(ctx context.Context, email string) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockUserForRecovery, email)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const enterPasskeyRecovery = `-- name: EnterPasskeyRecovery :one
+UPDATE "user" SET passkey_state = 'recovery_required', session_generation = session_generation + 1, updated_at = now()
+WHERE id = $1
+RETURNING session_generation
+`
+
+func (q *Queries) EnterPasskeyRecovery(ctx context.Context, id pgtype.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, enterPasskeyRecovery, id)
+	var session_generation int32
+	err := row.Scan(&session_generation)
+	return session_generation, err
+}
+
+const revokeAllPasskeys = `-- name: RevokeAllPasskeys :execrows
+UPDATE user_passkey SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL
+`
+
+// Suspect keys included: every credential of the person dies.
+func (q *Queries) RevokeAllPasskeys(ctx context.Context, userID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeAllPasskeys, userID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const supersedeOpenPasskeyChallenges = `-- name: SupersedeOpenPasskeyChallenges :exec
+UPDATE passkey_assertion_challenge SET superseded_at = now()
+WHERE user_id = $1 AND consumed_at IS NULL AND superseded_at IS NULL
+`
+
+func (q *Queries) SupersedeOpenPasskeyChallenges(ctx context.Context, userID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, supersedeOpenPasskeyChallenges, userID)
+	return err
+}
+
+const lockUserPasskeyState = `-- name: LockUserPasskeyState :one
+
+SELECT passkey_state FROM "user" WHERE id = $1 FOR SHARE NOWAIT
+`
+
+// Approvals read the state under the same share lock the gate check takes.
+// NOWAIT: a recovery in flight answers busy and nothing waits.
+func (q *Queries) LockUserPasskeyState(ctx context.Context, id pgtype.UUID) (string, error) {
+	row := q.db.QueryRow(ctx, lockUserPasskeyState, id)
+	var passkey_state string
+	err := row.Scan(&passkey_state)
+	return passkey_state, err
+}
+
+const leavePasskeyRecovery = `-- name: LeavePasskeyRecovery :exec
+
+UPDATE "user" SET passkey_state = 'ready', updated_at = now()
+WHERE id = $1 AND passkey_state = 'recovery_required'
+  AND (SELECT count(*) FROM user_passkey WHERE user_id = $1 AND revoked_at IS NULL AND suspect_at IS NULL) >= 2
+`
+
+// Ends recovery in the transaction that brings the usable keys to two.
+func (q *Queries) LeavePasskeyRecovery(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, leavePasskeyRecovery, id)
+	return err
+}

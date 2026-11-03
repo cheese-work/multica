@@ -11,6 +11,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 	"github.com/multica-ai/multica/server/internal/auth"
+	"github.com/multica-ai/multica/server/internal/passkey"
 )
 
 // revocationUser inserts a workspace member so a bump never touches the shared
@@ -134,4 +135,57 @@ func TestSessionGeneration_CurrentJWTStillAccepted(t *testing.T) {
 		t.Fatalf("/ws dial: %v", err)
 	}
 	conn.Close()
+}
+
+// Recovery bumps the generation in the C00 command; every session minted
+// before it must die at once on a gated route and on an ordinary one, and a
+// cookie inside the renewal window must not be renewed into a new session.
+func TestSessionGeneration_RecoveryKillsOldSessionsAndRenewal(t *testing.T) {
+	for name, sid := range map[string]string{"with sid": "sid-r", "without sid": ""} {
+		t.Run(name, func(t *testing.T) {
+			id, token := revocationUser(t, sid)
+			var email string
+			if err := testPool.QueryRow(context.Background(), `SELECT email FROM "user" WHERE id = $1`, id).Scan(&email); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := passkey.RecoverUser(context.Background(), testPool, email); err != nil {
+				t.Fatal(err)
+			}
+			for _, route := range []struct{ method, path string }{
+				{"GET", "/api/daemon/workspaces"},
+				{"POST", "/api/decision-actions/00000000-0000-0000-0000-000000000001/approve"},
+				{"POST", "/api/passkeys/enroll/start"},
+			} {
+				if got := routerStatus(t, route.method, route.path, token); got != http.StatusUnauthorized {
+					t.Fatalf("%s %s with a pre-recovery JWT: got %d, want 401", route.method, route.path, got)
+				}
+			}
+			claims := jwt.MapClaims{
+				"sub": id, "email": email, "amr": "interactive",
+				"exp": time.Now().Add(auth.AuthRenewThreshold() / 2).Unix(), "iat": time.Now().Add(-time.Hour).Unix(),
+			}
+			if sid != "" {
+				claims["sid"] = sid
+			}
+			cookie, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(auth.JWTSecret())
+			if err != nil {
+				t.Fatal(err)
+			}
+			req, _ := http.NewRequest("GET", testServer.URL+"/api/me", nil)
+			req.AddCookie(&http.Cookie{Name: auth.AuthCookieName, Value: cookie})
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("renewal-window cookie after recovery: got %d, want 401", resp.StatusCode)
+			}
+			for _, c := range resp.Cookies() {
+				if c.Name == auth.AuthCookieName && c.Value != "" {
+					t.Fatal("recovery let the old session renew itself")
+				}
+			}
+		})
+	}
 }
