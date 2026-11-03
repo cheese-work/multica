@@ -86,13 +86,23 @@ jobs:
             exit 0
           fi
           pr="${BASH_REMATCH[2]}"
-          out="$(python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$pr" \
-            --default-branch "$DEFAULT_BRANCH" --run-url "$run_url")"
-          field() { python3 -c 'import json,sys; print(json.loads(sys.argv[1])[sys.argv[2]])' "$out" "$1"; }
-          head="$(field sha)" state="$(field state)" desc="#$pr: $(field description)"
-          parents="$(gh api "repos/$GITHUB_REPOSITORY/commits/$MERGE_GROUP_SHA" --jq '.parents[].sha')"  # not piped: grep -q + pipefail
-          if grep -qx "$head" <<<"$parents"; then
-            post "$state" "$desc"
-          else
-            post failure "#$pr head ${head:0:12} is not a parent of ${MERGE_GROUP_SHA:0:12}"
+          # Fresh verdict read -> head/state/desc; the PR head must be a parent of the queue commit.
+          evaluate() {
+            out="$(python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$pr" \
+              --default-branch "$DEFAULT_BRANCH" --run-url "$run_url")"
+            field() { python3 -c 'import json,sys; print(json.loads(sys.argv[1])[sys.argv[2]])' "$out" "$1"; }
+            head="$(field sha)" state="$(field state)" desc="#$pr: $(field description)"
+            parents="$(gh api "repos/$GITHUB_REPOSITORY/commits/$MERGE_GROUP_SHA" --jq '.parents[].sha')"  # not piped: grep -q + pipefail
+            if ! grep -qx "$head" <<<"$parents"; then
+              state=failure desc="#$pr head ${head:0:12} is not a parent of ${MERGE_GROUP_SHA:0:12}"
+            fi
+          }
+          # A success is read again right before it is published and once more after (CHE-3240): a verdict revoked in
+          # between is overwritten by the failure instead of the cached success. The revoke path (PR events) covers the rest.
+          evaluate
+          if [ "$state" = success ]; then evaluate; fi
+          post "$state" "$desc"
+          if [ "$state" = success ]; then
+            evaluate
+            if [ "$state" != success ]; then post "$state" "$desc"; fi
           fi

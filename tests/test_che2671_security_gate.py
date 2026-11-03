@@ -246,6 +246,7 @@ class MergeGroupStepTest(unittest.TestCase):
     STUB_GATE = ('#!/bin/bash\n'  # the old script: --pr N required (an empty N is an argparse error), verdict read live
                  'echo "gate $*" >> "$LOG"\n'
                  'case " $* " in *" --pr "[0-9]*) ;; *) exit 2 ;; esac\n'
+                 'if [ -n "${STATES:-}" ]; then n=$(grep -c "^gate " "$LOG"); STATE=$(echo $STATES | cut -d" " -f$n); fi\n'  # Nth read answers Nth state
                  'echo \'{"context": "security-gate", "sha": "\'$HEAD\'", "state": "\'$STATE\'", "description": "PASS on x"}\'\n')
 
     def step_run(self):
@@ -254,7 +255,7 @@ class MergeGroupStepTest(unittest.TestCase):
         self.assertEqual(len(gate), 1)
         return gate[0]["run"]
 
-    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success"):
+    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success", states=""):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             (tmp / "bin").mkdir()
@@ -268,7 +269,7 @@ class MergeGroupStepTest(unittest.TestCase):
             for path in (tmp / "bin/gh", tmp / "bin/python3", tmp / "scripts/security-gate/gate.sh"):
                 path.chmod(0o755)
             env = {**os.environ, "PATH": f"{tmp / 'bin'}:{os.environ['PATH']}", "LOG": str(tmp / "log"), "HEAD": HEAD,
-                   "STATE": state, "PARENTS": " ".join(parents), "MERGE_GROUP_REF": ref, "MERGE_GROUP_SHA": self.QUEUE,
+                   "STATE": state, "STATES": states, "PARENTS": " ".join(parents), "MERGE_GROUP_REF": ref, "MERGE_GROUP_SHA": self.QUEUE,
                    "PR_NUMBER": "", "GH_TOKEN": "t", "DEFAULT_BRANCH": "main", "GITHUB_REPOSITORY": "o/r",
                    "GITHUB_SERVER_URL": "https://github.com", "GITHUB_RUN_ID": "7"}
             done = subprocess.run(["bash", "-c", self.step_run()], cwd=tmp, env=env, capture_output=True, text=True)
@@ -289,6 +290,20 @@ class MergeGroupStepTest(unittest.TestCase):
     def test_verdict_is_read_fresh_at_queue_time(self):
         done, log = self.run_step(state="pending")
         self.assertIn("state=pending", self.posted(log)[0])
+
+    def test_a_verdict_revoked_after_the_first_read_never_ends_as_success(self):
+        # review round 6 P1: evaluate once + post the cached state let a late success overwrite a revocation failure
+        for states in ("success pending", "success success pending", "success success success"):
+            done, log = self.run_step(states=states)
+            last = self.posted(log)[-1]
+            expect = "state=success" if states.endswith("success success success") else "state=pending"
+            self.assertIn(expect, last, (states, log))
+        done, log = self.run_step(states="success pending")
+        self.assertNotIn("state=success", self.posted(log)[-1])
+
+    def test_a_success_is_read_again_before_and_after_it_is_published(self):
+        done, log = self.run_step(states="success success success")
+        self.assertEqual(len([l for l in log if l.startswith("gate ")]), 3, log)
 
     def test_pr_head_that_is_not_a_parent_fails(self):
         done, log = self.run_step(parents=("d" * 40, OLD))
