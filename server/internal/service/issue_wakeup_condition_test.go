@@ -925,3 +925,41 @@ func TestWakeupConditionVCSChecksKeyedByPullRequest(t *testing.T) {
 		}
 	})
 }
+
+// A pending verdict status (security-gate) stays pending until a cross-lab
+// verdict exists, and that verdict is requested after checks finish. It must
+// not hold back checks_finished, or the wait deadlocks (CHE-3389).
+func TestWakeupConditionPullRequestChecksIgnorePendingVerdictStatus(t *testing.T) {
+	f, s, issue, agent := conditionFixture(t)
+	s.Tasks.PRSnapshotsEnabled = true
+	pr := f.Insert(t, "github_pull_request", testutil.Cols{
+		"workspace_id": f.WorkspaceID, "installation_id": 1,
+		"repo_owner": "fixture", "repo_name": "verdict-gate", "pr_number": 9,
+		"title": "PR", "state": "open", "html_url": "https://example.test/verdict-gate",
+		"pr_created_at": "2026-01-01T00:00:00Z", "pr_updated_at": "2026-01-01T00:00:00Z",
+		"head_sha": "aaa", "snapshot_head_sha": "aaa", "checks_rollup_state": "PENDING",
+	})
+	f.Cleanup(t, "DELETE FROM issue_pull_request WHERE pull_request_id=$1", pr)
+	f.Cleanup(t, "DELETE FROM github_pull_request_check_run WHERE pr_id=$1", pr)
+	f.Exec(t, "INSERT INTO issue_pull_request(issue_id,pull_request_id) VALUES($1,$2)", issue, pr)
+	addCheck := func(ordinal int, name, status string, conclusion any, statusContext bool) {
+		f.Exec(t, `INSERT INTO github_pull_request_check_run(pr_id,head_sha,ordinal,name,status,conclusion,is_status_context)
+			VALUES($1,'aaa',$2,$3,$4,$5,$6)`, pr, ordinal, name, status, conclusion, statusContext)
+	}
+	addCheck(0, "build", "in_progress", nil, false)
+	addCheck(1, "security-gate", "queued", nil, true)
+	w := wakeCreate(t, f, s, issue, WakeupInput{AgentID: agent, Kind: "event", Instruction: "Request the verdict",
+		Condition: condition(t, map[string]any{"type": "pull_request", "event": "checks_finished"})})
+	wakeTick(t, f, s, w.ID)
+
+	// A real check is still running: nothing fires.
+	if n := wakeRuns(t, f, w.ID); n != 0 {
+		t.Fatalf("running check started %d runs, want 0", n)
+	}
+	// Every check run is done; only the verdict status is pending.
+	f.Exec(t, "UPDATE github_pull_request_check_run SET status='completed',conclusion='success' WHERE pr_id=$1 AND name='build'", pr)
+	wakeTick(t, f, s, w.ID)
+	if n := wakeRuns(t, f, w.ID); n != 1 {
+		t.Fatalf("finished checks with pending security-gate started %d runs, want 1", n)
+	}
+}

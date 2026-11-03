@@ -302,8 +302,12 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 		// base-branch move). On the same head that keeps the previous verdict,
 		// so a recompute does not read as resolved-then-conflicting again.
 		previous := conditionKeys(w.ConditionState)
-		rows, err := tx.Query(ctx, `SELECT pr.pr_number,pr.state,COALESCE(pr.snapshot_head_sha,''),COALESCE(pr.checks_rollup_state,''),pr.head_sha,COALESCE(pr.api_mergeable,''),pr.id::text,pr.repo_owner,pr.repo_name
-			FROM github_pull_request pr JOIN issue_pull_request ipr ON ipr.pull_request_id=pr.id WHERE ipr.issue_id=$1`, w.IssueID)
+		rows, err := tx.Query(ctx, `SELECT pr.pr_number,pr.state,COALESCE(pr.snapshot_head_sha,''),CASE WHEN pr.checks_rollup_state='PENDING'
+				AND EXISTS (SELECT 1 FROM github_pull_request_check_run cr WHERE cr.pr_id=pr.id AND cr.head_sha=pr.snapshot_head_sha AND cr.name=ANY($2))
+				AND NOT EXISTS (SELECT 1 FROM github_pull_request_check_run cr WHERE cr.pr_id=pr.id AND cr.head_sha=pr.snapshot_head_sha AND cr.name<>ALL($2) AND cr.status<>'completed')
+				THEN 'SUCCESS' ELSE COALESCE(pr.checks_rollup_state,'') END,
+			pr.head_sha,COALESCE(pr.api_mergeable,''),pr.id::text,pr.repo_owner,pr.repo_name
+			FROM github_pull_request pr JOIN issue_pull_request ipr ON ipr.pull_request_id=pr.id WHERE ipr.issue_id=$1`, w.IssueID, verdictChecks)
 		if err != nil {
 			return false, "", nil, err
 		}
@@ -601,6 +605,12 @@ func conditionNewlyMet(previous, current string) bool {
 	}
 	return false
 }
+
+// verdictChecks are commit statuses that stay pending until a reviewer posts a
+// verdict, which is requested only after the other checks finish. A rollup
+// that is PENDING only because of them counts as finished for checks_finished;
+// otherwise waiting for checks before asking for the verdict never ends.
+var verdictChecks = []string{"security-gate"}
 
 // conditionFiresOnChange reports whether facts already true at registration
 // are ignored. Finished checks usually belong to the head the agent just

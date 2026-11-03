@@ -37,7 +37,7 @@ func (tx *prConditionTx) Query(_ context.Context, sql string, args ...any) (pgx.
 	if strings.Contains(sql, "FROM vcs_pull_request") {
 		return &sliceRows{}, nil
 	}
-	if !strings.Contains(sql, "WHERE ipr.issue_id=$1") || len(args) != 1 || args[0] != tx.issue {
+	if !strings.Contains(sql, "WHERE ipr.issue_id=$1") || len(args) != 2 || args[0] != tx.issue {
 		return nil, fmt.Errorf("unexpected PR scope: %s %v", sql, args)
 	}
 	return &sliceRows{rows: tx.prs}, tx.queryErr
