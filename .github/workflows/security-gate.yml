@@ -63,35 +63,37 @@ jobs:
           [ -n "$MERGE_GROUP_REF" ] && src="$MERGE_GROUP_REF"
           git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
             fetch --no-tags origin "+${src}:refs/remotes/pull/head"
+      # Runs the default-branch script unchanged, so the first queue run works before any script change has merged.
+      # A queue commit gets the PR's re-evaluated state only while the PR head is its parent. Every event updates the
+      # open queue commit(s) of the PR, so a revoked or replaced verdict cannot leave a queue commit green.
       - name: Evaluate the verdict and post the status
-        if: github.event_name != 'merge_group'
-        run: |
-          python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" \
-            --default-branch "$DEFAULT_BRANCH" \
-            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --post
-      # Runs the default-branch script unchanged (no --post: that would write to the PR head), so the first queue run
-      # works before any script change has merged. Fail closed unless the queued PR head is a parent of the queue commit.
-      - name: Mirror the queued PR's verdict onto the queue commit
-        if: github.event_name == 'merge_group'
         run: |
           set -euo pipefail
           post() {
-            gh api "repos/$GITHUB_REPOSITORY/statuses/$MERGE_GROUP_SHA" -f "state=$1" -f context=security-gate \
-              -f "description=${2:0:140}" \
+            gh api "repos/$GITHUB_REPOSITORY/statuses/$1" -f "state=$2" -f context=security-gate -f "description=${3:0:140}" \
               -f "target_url=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           }
-          re='^refs/heads/gh-readonly-queue/(.+)/pr-([0-9]+)-[0-9a-f]{40}$'
-          if [[ ! $MERGE_GROUP_REF =~ $re ]] || [ "${BASH_REMATCH[1]}" != "$DEFAULT_BRANCH" ]; then
-            post failure "unsupported merge group $MERGE_GROUP_REF: only $DEFAULT_BRANCH is gated"
-            exit 0
+          pr="$PR_NUMBER" queue="" flags=(--post)
+          if [ -n "$MERGE_GROUP_REF" ]; then
+            re='^refs/heads/gh-readonly-queue/(.+)/pr-([0-9]+)-[0-9a-f]{40}$'
+            if [[ ! $MERGE_GROUP_REF =~ $re ]] || [ "${BASH_REMATCH[1]}" != "$DEFAULT_BRANCH" ]; then
+              post "$MERGE_GROUP_SHA" failure "unsupported merge group $MERGE_GROUP_REF: only $DEFAULT_BRANCH is gated"
+              exit 0
+            fi
+            pr="${BASH_REMATCH[2]}" queue="$MERGE_GROUP_SHA" flags=()  # --post would write to the PR head, not the queue commit
           fi
-          pr="${BASH_REMATCH[2]}"
           out="$(python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$pr" \
-            --default-branch "$DEFAULT_BRANCH")"
+            --default-branch "$DEFAULT_BRANCH" --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            "${flags[@]}")"
+          [ -n "$queue" ] || queue="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/heads/gh-readonly-queue/$DEFAULT_BRANCH/pr-$pr-" \
+            --jq '.[].object.sha')"
           field() { python3 -c 'import json,sys; print(json.loads(sys.argv[1])[sys.argv[2]])' "$out" "$1"; }
           head="$(field sha)" state="$(field state)" desc="#$pr: $(field description)"
-          parents="$(gh api "repos/$GITHUB_REPOSITORY/commits/$MERGE_GROUP_SHA" --jq '.parents[].sha')"
-          if ! grep -qx "$head" <<<"$parents"; then
-            state=failure desc="#$pr head ${head:0:12} is not a parent of ${MERGE_GROUP_SHA:0:12}"
-          fi
-          post "$state" "$desc"
+          for sha in $queue; do
+            parents="$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" --jq '.parents[].sha')"  # not piped: grep -q + pipefail
+            if grep -qx "$head" <<<"$parents"; then
+              post "$sha" "$state" "$desc"
+            else
+              post "$sha" failure "#$pr head ${head:0:12} is not a parent of ${sha:0:12}"
+            fi
+          done

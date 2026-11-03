@@ -240,6 +240,7 @@ class MergeGroupStepTest(unittest.TestCase):
     STUB_GH = ('#!/bin/bash\n'
                'case "$*" in\n'
                '  *commits/*) printf "%s\\n" $PARENTS ;;\n'
+               '  *matching-refs/*) printf "%s\\n" $QUEUE_SHAS ;;\n'
                '  *) echo "gh $*" >> "$LOG" ;;\n'
                'esac\n')
     STUB_GATE = ('#!/bin/bash\n'  # the old script: --pr required, anything else is an argparse error
@@ -247,13 +248,14 @@ class MergeGroupStepTest(unittest.TestCase):
                  'case " $* " in *" --pr "*) ;; *) exit 2 ;; esac\n'
                  'echo \'{"context": "security-gate", "sha": "\'$HEAD\'", "state": "\'$STATE\'", "description": "PASS on x"}\'\n')
 
-    def step_run(self):
+    def step_run(self, pr_event):
         steps = yaml.safe_load((ROOT / ".github/workflows/security-gate.yml").read_text())["jobs"]["security-gate"]["steps"]
-        queue = [s for s in steps if "security_gate.py" in s.get("run", "") and "!= 'merge_group'" not in s.get("if", "")]
-        self.assertEqual(len(queue), 1)
-        return queue[0]["run"]
+        only = "!= 'merge_group'" if pr_event else "== 'merge_group'"
+        applicable = [s for s in steps if "security_gate.py" in s.get("run", "") and only in s.get("if", only)]
+        self.assertEqual(len(applicable), 1)
+        return applicable[0]["run"]
 
-    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success"):
+    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success", queue_shas=(), pr_event=False):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             (tmp / "bin").mkdir()
@@ -267,10 +269,12 @@ class MergeGroupStepTest(unittest.TestCase):
             for path in (tmp / "bin/gh", tmp / "bin/python3", tmp / "scripts/security-gate/gate.sh"):
                 path.chmod(0o755)
             env = {**os.environ, "PATH": f"{tmp / 'bin'}:{os.environ['PATH']}", "LOG": str(tmp / "log"), "HEAD": HEAD,
-                   "STATE": state, "PARENTS": " ".join(parents), "MERGE_GROUP_REF": ref, "MERGE_GROUP_SHA": self.QUEUE,
+                   "STATE": state, "PARENTS": " ".join(parents), "QUEUE_SHAS": " ".join(queue_shas),
+                   "MERGE_GROUP_REF": "" if pr_event else ref, "MERGE_GROUP_SHA": "" if pr_event else self.QUEUE,
+                   "PR_NUMBER": "405", "GH_TOKEN": "t",
                    "DEFAULT_BRANCH": "main", "GITHUB_REPOSITORY": "o/r", "GITHUB_SERVER_URL": "https://github.com",
                    "GITHUB_RUN_ID": "7"}
-            done = subprocess.run(["bash", "-c", self.step_run()], cwd=tmp, env=env, capture_output=True, text=True)
+            done = subprocess.run(["bash", "-c", self.step_run(pr_event)], cwd=tmp, env=env, capture_output=True, text=True)
             log = (tmp / "log").read_text().splitlines() if (tmp / "log").exists() else []
         return done, log
 
@@ -297,6 +301,22 @@ class MergeGroupStepTest(unittest.TestCase):
         done, log = self.run_step(ref=f"refs/heads/gh-readonly-queue/dev/pr-405-{'d' * 40}")
         self.assertIn("state=failure", self.posted(log)[0])
         self.assertFalse([l for l in log if l.startswith("gate ")])
+
+    # A verdict revoked, edited or replaced by FAIL after the queue commit went green must not leave that commit green.
+    def test_revoked_verdict_updates_the_open_queue_commit(self):
+        done, log = self.run_step(pr_event=True, queue_shas=(self.QUEUE,), state="pending")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("state=pending", self.posted(log)[0])
+        self.assertIn("--post", " ".join(l for l in log if l.startswith("gate ")))  # the PR head still gets its status
+
+    def test_pr_event_without_a_queue_entry_posts_nothing_extra(self):
+        done, log = self.run_step(pr_event=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual([l for l in log if l.startswith("gh ")], [])
+
+    def test_pr_event_does_not_update_a_queue_commit_that_lacks_the_head(self):
+        done, log = self.run_step(pr_event=True, queue_shas=(self.QUEUE,), parents=("d" * 40, OLD))
+        self.assertIn("state=failure", self.posted(log)[0])
 
 
 class WorkflowTest(unittest.TestCase):
