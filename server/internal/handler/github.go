@@ -1625,24 +1625,21 @@ func (h *Handler) handleInstallationEvent(ctx context.Context, body []byte) {
 			return
 		}
 
-		// We don't know which workspace(s) this maps to from the webhook
-		// alone. If no setup callback has created a workspace binding yet,
-		// keep the account metadata and let the callback consume it after it
-		// creates github_installation.
-		existing, err := h.Queries.ListGitHubInstallationsByInstallationID(ctx, p.Installation.ID)
+		// A signed delivery proves GitHub sent it, not that anyone here wants
+		// the installation. Only an existing workspace binding (made by the setup
+		// callback, which verifies the installing user) may be refreshed; with no
+		// binding nothing is stored, whatever the account.
+		bound, err := h.Queries.ListGitHubInstallationsByInstallationID(ctx, p.Installation.ID)
 		if err != nil {
 			slog.Warn("github: lookup installation failed", "err", err, "installation_id", p.Installation.ID)
 			return
 		}
-		if len(existing) == 0 {
-			if _, err := h.Queries.UpsertPendingGitHubInstallation(ctx, db.UpsertPendingGitHubInstallationParams{
-				InstallationID:   p.Installation.ID,
-				AccountLogin:     login,
-				AccountType:      accountType,
-				AccountAvatarUrl: ptrToText(avatar),
-			}); err != nil {
-				slog.Warn("github: store pending installation failed", "err", err, "installation_id", p.Installation.ID)
-			}
+		if len(bound) == 0 {
+			return
+		}
+		if !h.anyGitHubInstallationAllowed(bound) {
+			slog.Warn("github: installation event ignored; binding denied by allowlist",
+				"installation_id", p.Installation.ID, "action", p.Action)
 			return
 		}
 		// Refresh the account display metadata across every workspace binding;
@@ -1668,6 +1665,9 @@ func (h *Handler) handleInstallationEvent(ctx context.Context, body []byte) {
 		// the user already loaded the page) would stay visibly stale
 		// until the user manually refreshes. One broadcast per bound workspace.
 		for _, inst := range refreshed {
+			if !h.githubInstallationAllowed(inst) {
+				continue
+			}
 			h.publish(protocol.EventGitHubInstallationCreated, uuidToString(inst.WorkspaceID), "system", "", map[string]any{
 				"installation": githubInstallationToBroadcast(inst),
 			})
@@ -1750,7 +1750,7 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error
 	if p.Installation.ID == 0 {
 		return nil
 	}
-	insts, err := h.Queries.ListGitHubInstallationsByInstallationID(ctx, p.Installation.ID)
+	insts, err := h.allowedGitHubInstallations(ctx, p.Installation.ID)
 	if err != nil {
 		// CHE-374 review round 2, item 5: a real DB error here (as opposed to
 		// "no installation row exists", which is len(insts)==0 below and stays
@@ -1764,8 +1764,8 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error
 		return fmt.Errorf("list installations by installation id: %w", err)
 	}
 	if len(insts) == 0 {
-		// Webhook from an installation we never wired up — nothing we
-		// can attribute to a workspace, so drop it silently.
+		// Webhook from an installation we never wired up, or one the account
+		// allowlist denies — nothing we may attribute to a workspace, so drop it.
 		return nil
 	}
 	// #4855 lets one GitHub App installation bind to several workspaces. A
@@ -1993,6 +1993,9 @@ func (h *Handler) triggerPRRefreshFromCIEvent(ctx context.Context, body []byte) 
 		return
 	}
 	if p.Installation.ID == 0 || p.Repository.Name == "" {
+		return
+	}
+	if allowed, err := h.allowedGitHubInstallations(ctx, p.Installation.ID); err != nil || len(allowed) == 0 {
 		return
 	}
 	owner, repo := p.Repository.Owner.Login, p.Repository.Name

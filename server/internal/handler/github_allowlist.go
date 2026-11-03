@@ -90,6 +90,17 @@ func (h *Handler) allowedGitHubInstallations(ctx context.Context, installationID
 	return allowed, nil
 }
 
+// anyGitHubInstallationAllowed reports whether at least one binding passes the
+// policy.
+func (h *Handler) anyGitHubInstallationAllowed(rows []db.GithubInstallation) bool {
+	for _, row := range rows {
+		if h.githubInstallationAllowed(row) {
+			return true
+		}
+	}
+	return false
+}
+
 // githubAccountIDParam maps a trusted id (0 = none) to a nullable column value.
 func githubAccountIDParam(id int64) pgtype.Int8 {
 	return pgtype.Int8{Int64: id, Valid: id > 0}
