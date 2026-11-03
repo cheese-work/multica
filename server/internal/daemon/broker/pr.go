@@ -111,7 +111,7 @@ func (b *Broker) prOp(parent context.Context, req PRRequest) (res PRResult, stat
 	if err != nil {
 		return res, status, err
 	}
-	defer func() { b.finish(op, err == nil) }()
+	defer func() { b.finish(op, err) }()
 	g, status, err := b.mint(parent, true)
 	if err != nil {
 		return res, status, err
@@ -170,7 +170,7 @@ func (b *Broker) prOp(parent context.Context, req PRRequest) (res PRResult, stat
 			"variables": map[string]string{"id": pr.NodeID},
 		}, &out)
 		if err == nil && len(out.Errors) > 0 {
-			status, err = http.StatusBadGateway, fmt.Errorf("github: %s", out.Errors[0].Message)
+			status, err = http.StatusBadGateway, notApplied{fmt.Errorf("github: %s", out.Errors[0].Message)}
 		}
 	}
 	if err != nil {
@@ -191,7 +191,11 @@ func (b *Broker) gh(ctx context.Context, g grant, method, path string, in, out a
 	if resp.StatusCode/100 != 2 {
 		var msg struct{ Message string }
 		_ = json.Unmarshal(body, &msg)
-		return http.StatusBadGateway, fmt.Errorf("github %s %s: status %d: %.200s", method, path, resp.StatusCode, msg.Message)
+		err := fmt.Errorf("github %s %s: status %d: %.200s", method, path, resp.StatusCode, msg.Message)
+		if resp.StatusCode/100 == 4 && resp.StatusCode != http.StatusRequestTimeout { // GitHub refused it
+			err = notApplied{err}
+		}
+		return http.StatusBadGateway, err
 	}
 	if out != nil {
 		if err := json.Unmarshal(body, out); err != nil {

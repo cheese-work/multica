@@ -36,10 +36,24 @@ type Elevation struct {
 // result, so the fence cannot complete (plan 3.8, fail closed).
 var ErrUnreported = errors.New("broker: operation result not acknowledged")
 
+// ErrOutcomeUnknown means a remote write started and ended in a way that does
+// not show whether the remote applied it: a timeout, a lost reply, a server
+// error. The broker reports nothing for it, so the server's lease lapses to
+// unknown and the fence stays closed until the outcome is reconciled.
+var ErrOutcomeUnknown = errors.New("broker: remote write outcome unknown")
+
+// notApplied marks an error that proves the remote did not apply the write: a
+// rejected ref, a 4xx answer. Any other error after the write started may have
+// landed.
+type notApplied struct{ error }
+
+func (e notApplied) Unwrap() error { return e.error }
+
 type elevOp struct {
 	id      string
 	started bool // the remote write began; the fence lets it finish
 	ended   bool
+	unknown bool // the write ended with no proof either way; nothing is reported
 	acked   bool
 	result  string
 }
@@ -79,15 +93,19 @@ func (b *Broker) Fence() {
 
 // Drain returns once every operation has ended and the server has acknowledged
 // its result. It retries unacknowledged reports; one that still fails returns
-// ErrUnreported, and ctx expiry returns ctx's error: the fence is not complete.
+// ErrUnreported, an operation whose write may have landed returns
+// ErrOutcomeUnknown, and ctx expiry returns ctx's error: the fence is not
+// complete. Reconciling an unknown outcome is not the broker's job.
 func (b *Broker) Drain(ctx context.Context) error {
 	for {
 		b.fmu.Lock()
-		running, stuck, changed := 0, []*elevOp(nil), b.changed
+		running, unknown, stuck, changed := 0, 0, []*elevOp(nil), b.changed
 		for o := range b.open {
 			switch {
 			case !o.ended:
 				running++
+			case o.unknown:
+				unknown++
 			case !o.acked:
 				stuck = append(stuck, o)
 			}
@@ -109,6 +127,8 @@ func (b *Broker) Drain(ctx context.Context) error {
 			}
 		case len(stuck) > 0:
 			return ErrUnreported
+		case unknown > 0:
+			return ErrOutcomeUnknown
 		default:
 			return nil
 		}
@@ -124,40 +144,42 @@ func (b *Broker) notify() {
 
 // authorize runs the authority check for input and registers the operation. A
 // run with no Elevation gets a nil op, whose methods do nothing. It returns the
-// HTTP status to answer with when the operation must not run.
+// HTTP status to answer with when the operation must not run. The operation is
+// open from before the server call, so Drain waits for an authorization in
+// flight.
 func (b *Broker) authorize(ctx context.Context, input string) (*elevOp, int, error) {
 	el := b.pin.Elevation
 	if el == nil {
 		return nil, 0, nil
 	}
-	if b.isFenced() {
-		return nil, http.StatusForbidden, errors.New("run is fenced: elevated operations are refused")
+	errFenced := errors.New("run is fenced: elevated operations are refused")
+	o := &elevOp{}
+	b.fmu.Lock()
+	if b.fenced {
+		b.fmu.Unlock()
+		return nil, http.StatusForbidden, errFenced
 	}
+	b.open[o] = struct{}{}
+	b.fmu.Unlock()
 	id, err := el.Authority.Authorize(ctx, el.Scope, input)
 	if err != nil {
 		b.log.Warn("broker authorize failed; refusing", "task", b.pin.Task, "error", err)
+		b.fmu.Lock()
+		delete(b.open, o)
+		b.fmu.Unlock()
+		b.notify()
 		return nil, http.StatusServiceUnavailable, errors.New("no authority for this operation; refused")
 	}
-	o := &elevOp{id: id}
 	b.fmu.Lock()
-	fenced := b.fenced
-	if !fenced {
-		b.open[o] = struct{}{}
+	o.id = id
+	if b.fenced { // the fence began while the server was authorizing
+		o.result, o.ended = "aborted", true
+		b.fmu.Unlock()
+		b.report(o)
+		return nil, http.StatusForbidden, errFenced
 	}
 	b.fmu.Unlock()
-	if fenced { // the fence began while the server was authorizing
-		o.result = "aborted"
-		o.ended = true
-		b.report(o)
-		return nil, http.StatusForbidden, errors.New("run is fenced: elevated operations are refused")
-	}
 	return o, 0, nil
-}
-
-func (b *Broker) isFenced() bool {
-	b.fmu.Lock()
-	defer b.fmu.Unlock()
-	return b.fenced
 }
 
 // write is called right before the remote write. After the fence it refuses, so
@@ -178,26 +200,36 @@ func (b *Broker) write(o *elevOp) error {
 	return nil
 }
 
-// finish reports how the operation ended: completed, failed once the write
-// started, aborted if it never did.
-func (b *Broker) finish(o *elevOp, ok bool) {
+// finish reports how the operation ended: completed, aborted if the write never
+// started, failed if the remote provably did not apply it. Any other error
+// after the write started reports nothing, so the server's lease lapses to
+// unknown and the fence stays closed.
+func (b *Broker) finish(o *elevOp, err error) {
 	if o == nil {
 		return
 	}
-	if b.afterWrite != nil && ok {
+	if b.afterWrite != nil && err == nil {
 		b.afterWrite()
 	}
 	b.fmu.Lock()
+	o.ended = true
 	switch {
-	case ok:
+	case err == nil:
 		o.result = "completed"
-	case o.started:
+	case !o.started:
+		o.result = "aborted"
+	case errors.As(err, new(notApplied)):
 		o.result = "failed"
 	default:
-		o.result = "aborted"
+		o.unknown = true
 	}
-	o.ended = true
+	unknown := o.unknown
 	b.fmu.Unlock()
+	if unknown {
+		b.log.Error("broker remote write outcome unknown; reporting nothing", "task", b.pin.Task, "op", o.id, "error", err)
+		b.notify()
+		return
+	}
 	b.report(o)
 }
 

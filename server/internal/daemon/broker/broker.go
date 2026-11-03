@@ -312,7 +312,7 @@ func (b *Broker) push(r *http.Request) (sha string, status int, err error) {
 	if err != nil {
 		return sha, status, err
 	}
-	defer func() { b.finish(op, err == nil) }()
+	defer func() { b.finish(op, err) }()
 	if err := b.write(op); err != nil {
 		return sha, http.StatusForbidden, err
 	}
@@ -324,7 +324,11 @@ func (b *Broker) push(r *http.Request) (sha string, status int, err error) {
 		if ctx.Err() == context.DeadlineExceeded {
 			return expired(sha)
 		}
-		return sha, http.StatusConflict, fmt.Errorf("push: %s", b.scrub(pushReason(out)))
+		err = fmt.Errorf("push: %s", b.scrub(pushReason(out)))
+		if strings.Contains(out, "rejected]") { // git names a ref the remote refused
+			err = notApplied{err}
+		}
+		return sha, http.StatusConflict, err
 	}
 	b.record(Receipt{Task: b.pin.Task, Repo: b.pin.Repo, Ref: b.pin.Ref, Time: time.Now().UTC(), Forced: lease != "", Commits: commits})
 	return sha, http.StatusOK, nil

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sync"
 	"testing"
@@ -16,6 +18,7 @@ type fakeOp struct{ scope, hash, result string }
 
 // fakeAuthority is the server: it records what the broker authorizes and reports.
 type fakeAuthority struct {
+	authGate    *gate // when set, Authorize blocks in it
 	mu          sync.Mutex
 	ops         []*fakeOp
 	authorizeIn error
@@ -24,6 +27,9 @@ type fakeAuthority struct {
 }
 
 func (a *fakeAuthority) Authorize(_ context.Context, scope, hash string) (string, error) {
+	if a.authGate != nil {
+		a.authGate.hook()
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.authorizeIn != nil {
@@ -237,5 +243,135 @@ func TestFencedPROperationIsRefusedBeforeGitHubWrite(t *testing.T) {
 	}
 	if n := a.authorized(); n != 0 {
 		t.Fatalf("%d operations authorized after the fence", n)
+	}
+}
+
+// githubRig is a rig whose remote and GitHub API are the fake GitHub, with an
+// elevated broker the test can fence and drain.
+func githubRig(t *testing.T, deadline time.Duration) (*rig, *fakeGitHub, *Broker, *fakeAuthority) {
+	t.Helper()
+	r := newRig(t)
+	f := newFakeGitHub(t, r.remote)
+	a := &fakeAuthority{}
+	r.pin.RemoteURL, r.pin.Slug, r.pin.Bases, r.pin.Tokens = f.srv.URL+"/git/remote.git", "o/r", []string{"main"}, f.tokens()
+	r.pin.Deadline = deadline
+	r.pin.Elevation = &Elevation{Authority: a, Scope: "repo_write:42", ReportFor: 100 * time.Millisecond}
+	b, err := New(r.pin, r.socket, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { b.Close() })
+	return r, f, b, a
+}
+
+// A push the remote accepted but whose reply never came back may have landed.
+// It must not be reported failed: the fence stays closed (plan 3.8, fail closed).
+func TestPushAppliedButReplyLostKeepsFenceClosed(t *testing.T) {
+	t.Parallel()
+	r, _, b, a := githubRig(t, 3*time.Second)
+	hook := filepath.Join(r.remote, "hooks", "post-receive") // runs after the ref moved
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nsleep 8\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r.commits(t, 1)
+	if err := Push(context.Background(), r.socket, r.work, io.Discard); err == nil {
+		t.Fatal("push reported success though its reply never came")
+	}
+	if got := r.remoteRef(t, r.pin.Ref); got == "" {
+		t.Fatal("the remote did not apply the push; the test does not model a lost reply")
+	}
+	b.Fence()
+	if err := b.Drain(context.Background()); !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("Drain = %v, want ErrOutcomeUnknown", err)
+	}
+	if res := a.results(); len(res) != 1 || res[0] != "" || a.completes != 0 {
+		t.Fatalf("reported %v (%d completes); an unknown outcome must report nothing", res, a.completes)
+	}
+}
+
+func TestPRApplyButReplyLostKeepsFenceClosed(t *testing.T) {
+	t.Parallel()
+	r, f, b, a := githubRig(t, 0)
+	f.addPR(r.branch, 42)
+	f.dropReply = true
+	if code, body := r.pr(t, `{"op":"comment","number":1,"body":"x"}`); code == 200 {
+		t.Fatalf("status %d (%s), want a failure", code, body)
+	}
+	if w := f.writeCalls(); len(w) != 1 {
+		t.Fatalf("GitHub writes %v, want the one that landed", w)
+	}
+	b.Fence()
+	if err := b.Drain(context.Background()); !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("Drain = %v, want ErrOutcomeUnknown", err)
+	}
+	if res := a.results(); len(res) != 1 || res[0] != "" {
+		t.Fatalf("reported %v, want nothing", res)
+	}
+}
+
+// A refusal that proves nothing was applied is a plain failure; the fence can finish.
+func TestRefusedWritesReportFailed(t *testing.T) {
+	t.Parallel()
+	t.Run("push", func(t *testing.T) {
+		t.Parallel()
+		r, _, b, a := githubRig(t, 0)
+		r.commits(t, 1)
+		if err := Push(context.Background(), r.socket, r.work, io.Discard); err != nil {
+			t.Fatal(err)
+		}
+		git(t, r.work, "reset", "--hard", r.base)
+		r.commits(t, 2) // forked history: the remote rejects it
+		if err := Push(context.Background(), r.socket, r.work, io.Discard); err == nil {
+			t.Fatal("non-fast-forward push succeeded")
+		}
+		b.Fence()
+		if err := b.Drain(context.Background()); err != nil {
+			t.Fatalf("Drain: %v", err)
+		}
+		if res := a.results(); len(res) != 2 || res[0] != "completed" || res[1] != "failed" {
+			t.Fatalf("reported %v, want completed then failed", res)
+		}
+	})
+	t.Run("pull request", func(t *testing.T) {
+		t.Parallel()
+		r, f, b, a := githubRig(t, 0)
+		f.addPR(r.branch, 42)
+		f.refuse = true
+		if code, _ := r.pr(t, `{"op":"comment","number":1,"body":"x"}`); code == 200 {
+			t.Fatal("refused comment succeeded")
+		}
+		b.Fence()
+		if err := b.Drain(context.Background()); err != nil {
+			t.Fatalf("Drain: %v", err)
+		}
+		if res := a.results(); len(res) != 1 || res[0] != "failed" {
+			t.Fatalf("reported %v, want one failed", res)
+		}
+	})
+}
+
+// A fence that begins while the server is authorizing must still wait for that
+// call, and an abort report the server does not hear stays visible to Drain.
+func TestDrainSeesAuthorizationInFlight(t *testing.T) {
+	t.Parallel()
+	r, b, a := elevatedRig(t)
+	a.authGate = newGate()
+	a.completeErr = errors.New("server unreachable")
+	done := pushAsync(r)
+	a.authGate.wait(t)
+	b.Fence()
+	drained := make(chan error, 1)
+	go func() { drained <- b.Drain(context.Background()) }()
+	select {
+	case err := <-drained:
+		t.Fatalf("Drain returned (%v) while an authorization was in flight", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	close(a.authGate.release)
+	if err := <-done; err == nil {
+		t.Fatal("push succeeded after the fence began")
+	}
+	if err := <-drained; !errors.Is(err, ErrUnreported) {
+		t.Fatalf("Drain = %v, want ErrUnreported for the abort the server never heard", err)
 	}
 }

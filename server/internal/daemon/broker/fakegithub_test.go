@@ -57,6 +57,9 @@ type fakeGitHub struct {
 	// waits for revokeGate to close.
 	revokeSeen chan struct{}
 	revokeGate chan struct{}
+	// dropReply makes a comment land and then cut the connection before any
+	// reply; refuse makes it answer 422 without landing.
+	dropReply, refuse bool
 }
 
 func newFakeGitHub(t testing.TB, remote string) *fakeGitHub {
@@ -276,8 +279,22 @@ func (f *fakeGitHub) comment(w http.ResponseWriter, r *http.Request, body []byte
 	json.Unmarshal(body, &in)
 	p := f.pr(r)
 	f.mu.Lock()
-	p.Comment = append(p.Comment, in.Body)
+	refuse, drop := f.refuse, f.dropReply
+	if !refuse {
+		p.Comment = append(p.Comment, in.Body)
+	}
 	f.mu.Unlock()
+	if refuse {
+		http.Error(w, `{"message":"Validation Failed"}`, http.StatusUnprocessableEntity)
+		return
+	}
+	if drop {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			conn.Close()
+		}
+		return
+	}
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]any{"id": 1})
 }
