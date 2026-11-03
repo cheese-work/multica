@@ -60,6 +60,7 @@ function PasskeysManager() {
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [revokeId, setRevokeId] = useState<string | null>(null);
+  const hasOtherSigner = passkeys.some((p) => p.id !== revokeId && p.state === "active");
   // Sole-key revoke: no other active key can sign, so a mailed code stands in for the assertion.
   const [codeRevoke, setCodeRevoke] = useState<{ id: string; ceremonyId: string } | null>(null);
 
@@ -108,10 +109,11 @@ function PasskeysManager() {
     }
   };
 
-  const revoke = async (id: string) => {
+  const revoke = async (id: string, forceCode = false) => {
     setBusy(true);
     try {
-      if (!passkeys.some((p) => p.id !== id && p.state === "active")) {
+      // The mailed code also covers a signer that exists but is lost; the server still enforces the gate floor.
+      if (forceCode || !passkeys.some((p) => p.id !== id && p.state === "active")) {
         const started = await api.startPasskeyRevocationByCode(id);
         setCodeRevoke({ id, ceremonyId: started.ceremony_id });
         setCode("");
@@ -255,6 +257,18 @@ function PasskeysManager() {
             >
               {t(($) => $.passkeys.revoke_dialog.confirm)}
             </AlertDialogAction>
+            {hasOtherSigner && (
+              <AlertDialogAction
+                variant="outline"
+                onClick={async () => {
+                  const id = revokeId;
+                  setRevokeId(null);
+                  if (id) await revoke(id, true);
+                }}
+              >
+                {t(($) => $.passkeys.revoke_dialog.use_code)}
+              </AlertDialogAction>
+            )}
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

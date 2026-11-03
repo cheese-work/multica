@@ -247,6 +247,35 @@ describe("PasskeysTab", () => {
     expect(mocks.challengePasskeyRevocation).not.toHaveBeenCalled();
   });
 
+  it("offers an email code when the other active passkeys are lost too", async () => {
+    const user = userEvent.setup();
+    mocks.listPasskeys.mockResolvedValue([key("p1"), key("p2")]);
+    mocks.startPasskeyRevocationByCode.mockResolvedValue({ ceremony_id: "rc1", expires_at: "t" });
+    mocks.confirmPasskeyRevocationByCode.mockResolvedValue(undefined);
+    renderWithI18n(<PasskeysTab />);
+
+    await user.click(await screen.findByRole("button", { name: "Revoke passkey 1" }));
+    await user.click(await screen.findByRole("button", { name: "Use an email code instead" }));
+    await waitFor(() => expect(mocks.startPasskeyRevocationByCode).toHaveBeenCalledWith("p1"));
+    expect(mocks.challengePasskeyRevocation).not.toHaveBeenCalled();
+    expect(mocks.signPasskeyChallenge).not.toHaveBeenCalled();
+    await user.type(await screen.findByLabelText("Email code"), "654321");
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(mocks.confirmPasskeyRevocationByCode).toHaveBeenCalledWith("p1", { ceremony_id: "rc1", code: "654321" }));
+  });
+
+  it("shows the server floor refusal when the code start is refused", async () => {
+    const user = userEvent.setup();
+    mocks.listPasskeys.mockResolvedValue([key("p1"), key("p2")]);
+    mocks.startPasskeyRevocationByCode.mockRejectedValue(new Error("passkey_floor: the decision gate needs at least two active passkeys"));
+    renderWithI18n(<PasskeysTab />);
+
+    await user.click(await screen.findByRole("button", { name: "Revoke passkey 1" }));
+    await user.click(await screen.findByRole("button", { name: "Use an email code instead" }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("passkey_floor: the decision gate needs at least two active passkeys"));
+    expect(screen.queryByLabelText("Email code")).not.toBeInTheDocument();
+  });
+
   it("on desktop opens the web page in the system browser and does not call the API", async () => {
     mocks.desktop = true;
     const user = userEvent.setup();

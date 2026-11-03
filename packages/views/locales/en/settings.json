@@ -751,7 +751,8 @@
       "title": "Revoke passkey",
       "description": "This passkey will be removed and can no longer approve decisions. You sign this with another passkey.",
       "cancel": "Cancel",
-      "confirm": "Revoke"
+      "confirm": "Revoke",
+      "use_code": "Use an email code instead"
     }
   },
   "tokens": {

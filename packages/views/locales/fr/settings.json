@@ -751,7 +751,8 @@
       "title": "Révoquer la clé d'accès",
       "description": "Cette clé d'accès sera supprimée et ne pourra plus approuver de décisions. Vous la confirmez avec une autre clé d'accès.",
       "cancel": "Annuler",
-      "confirm": "Révoquer"
+      "confirm": "Révoquer",
+      "use_code": "Utiliser un code par e-mail à la place"
     }
   },
   "tokens": {
