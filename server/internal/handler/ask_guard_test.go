@@ -208,6 +208,28 @@ func TestAskGuardModeSwitchKeepsEarlierWarnEvents(t *testing.T) {
 	}
 }
 
+// TestAskGuardSameOperationWarnThenBlock: retrying an operation that already
+// has a warn event, after the switch to block, still leaves a block event
+// behind the 422 and keeps the warn event as it was.
+func TestAskGuardSameOperationWarnThenBlock(t *testing.T) {
+	setAskGuardMode(t, "warn")
+	op := askGuardOp("comment", "retried-across-switch")
+	hitAskGuard(op)
+	setAskGuardMode(t, "block")
+	for range 2 {
+		w, proceed := hitAskGuard(op)
+		if proceed || w.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("block retry: proceed=%v code=%d, want 422", proceed, w.Code)
+		}
+	}
+	if n := askGuardEventCount(t, "task_id = $1 AND mode = 'warn'", op.TaskID); n != 1 {
+		t.Fatalf("warn event rows = %d, want 1 unchanged", n)
+	}
+	if n := askGuardEventCount(t, "task_id = $1 AND mode = 'block'", op.TaskID); n != 1 {
+		t.Fatalf("block event rows = %d, want 1 behind the 422", n)
+	}
+}
+
 func TestAskGuardMetric(t *testing.T) {
 	setAskGuardMode(t, "warn")
 	m := metrics.NewBusinessMetrics()

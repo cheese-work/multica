@@ -13,17 +13,23 @@ import (
 
 const getAskGuardEventByOperation = `-- name: GetAskGuardEventByOperation :one
 SELECT id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, created_at FROM ask_guard_event
-WHERE task_id = $1 AND operation_kind = $2 AND payload_sha256 = $3
+WHERE task_id = $1 AND operation_kind = $2 AND payload_sha256 = $3 AND mode = $4
 `
 
 type GetAskGuardEventByOperationParams struct {
 	TaskID        pgtype.UUID `json:"task_id"`
 	OperationKind string      `json:"operation_kind"`
 	PayloadSha256 string      `json:"payload_sha256"`
+	Mode          string      `json:"mode"`
 }
 
 func (q *Queries) GetAskGuardEventByOperation(ctx context.Context, arg GetAskGuardEventByOperationParams) (AskGuardEvent, error) {
-	row := q.db.QueryRow(ctx, getAskGuardEventByOperation, arg.TaskID, arg.OperationKind, arg.PayloadSha256)
+	row := q.db.QueryRow(ctx, getAskGuardEventByOperation,
+		arg.TaskID,
+		arg.OperationKind,
+		arg.PayloadSha256,
+		arg.Mode,
+	)
 	var i AskGuardEvent
 	err := row.Scan(
 		&i.ID,
@@ -41,7 +47,7 @@ func (q *Queries) GetAskGuardEventByOperation(ctx context.Context, arg GetAskGua
 const insertAskGuardEvent = `-- name: InsertAskGuardEvent :one
 INSERT INTO ask_guard_event (id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
-ON CONFLICT (task_id, operation_kind, payload_sha256) DO NOTHING
+ON CONFLICT (task_id, operation_kind, payload_sha256, mode) DO NOTHING
 RETURNING id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, created_at
 `
 

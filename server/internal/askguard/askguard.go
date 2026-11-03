@@ -79,9 +79,10 @@ type Guard struct {
 	Metrics *metrics.BusinessMetrics
 }
 
-// Verdict is the outcome of a hit. Event is nil when the mode is off. Block
-// follows the mode now, not the mode the event was created under; the event
-// keeps its own snapshot for recovery work.
+// Verdict is the outcome of a hit. Event is nil when the mode is off. The
+// event is always the one created under the current mode, so a refusal is
+// backed by a block event while an earlier warn event of the same operation
+// keeps its snapshot.
 type Verdict struct {
 	Event *db.AskGuardEvent
 	Block bool
@@ -123,7 +124,7 @@ func (g Guard) record(ctx context.Context, workspaceID pgtype.UUID, mode Mode, o
 		return ev, "error", fmt.Errorf("write guard event: %w", err)
 	}
 	ev, err = g.Queries.GetAskGuardEventByOperation(ctx, db.GetAskGuardEventByOperationParams{
-		TaskID: op.TaskID, OperationKind: op.Kind, PayloadSha256: digest,
+		TaskID: op.TaskID, OperationKind: op.Kind, PayloadSha256: digest, Mode: string(mode),
 	})
 	if err != nil {
 		return ev, "error", fmt.Errorf("read guard event: %w", err)
