@@ -60,6 +60,8 @@ type decisionActionExecutor func(ctx context.Context, execution decisionActionEx
 var decisionActionExecutors = map[string]decisionActionExecutor{
 	"agent.env.patch": executeEnvPatchAction,
 	"agent.copy":      executeAgentCopyAction,
+
+	"issue.run_budget.top_up": executeRunBudgetTopUpAction,
 }
 
 // decisionActionPermitted applies the rule of the action's own HTTP path to
