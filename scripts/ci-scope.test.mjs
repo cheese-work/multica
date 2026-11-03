@@ -256,18 +256,22 @@ test("merge-group reuse is wired to authenticated Actions reads and separate hos
   assert.match(jobs.changes, /^      actions: read$/m);
   assert.match(jobs.changes, /CI_PUSH_FULL: \$\{\{ vars\.CI_PUSH_FULL \}\}/);
   assert.match(jobs.changes, /GH_TOKEN: \$\{\{ github\.token \}\}/);
+  const mainBuild = readFileSync(new URL("../.github/workflows/main-build.yml", import.meta.url), "utf8");
+  const mainJobs = Object.fromEntries([...mainBuild.matchAll(/^  ([\w-]+):$/gm)].map((match, index, all) => [
+    match[1], mainBuild.slice(match.index, all[index + 1]?.index),
+  ]));
   for (const name of ["push-go-cache-warm", "push-turbo-cache-warm"]) {
-    assert.match(jobs[name], /github\.event_name == 'push' && github\.ref == 'refs\/heads\/main' && needs\.changes\.outputs\.merge_group_green == 'true'/);
-    assert.match(jobs[name], /^    runs-on: ubuntu-24\.04$/m);
+    assert.match(mainJobs[name], /needs\.merge-group\.outputs\.merge_group_green == 'true'/);
+    assert.match(mainJobs[name], /^    runs-on: ubuntu-24\.04$/m);
   }
-  assert.match(jobs["push-go-cache-warm"], /go test -race -run '\^\$' -exec \/bin\/true \.\/\.\.\./);
+  assert.match(mainJobs["push-go-cache-warm"], /go test -race -run '\^\$' -exec \/bin\/true \.\/\.\.\./);
   for (const prefix of ["go-mod-", "go-build-race-"]) {
     assert.ok(jobs["backend-tests"].includes(prefix));
-    assert.ok(jobs["push-go-cache-warm"].includes(prefix));
+    assert.ok(mainJobs["push-go-cache-warm"].includes(prefix));
   }
-  assert.match(jobs["push-turbo-cache-warm"], /key: turbo-build-/);
-  assert.match(jobs["push-turbo-cache-warm"], /pnpm exec turbo build typecheck lint --concurrency=2/);
-  assert.match(jobs["daemon-artifact"], /if: \$\{\{ github\.event_name == 'push' && github\.ref == 'refs\/heads\/main' \}\}/);
+  assert.match(mainJobs["push-turbo-cache-warm"], /key: turbo-build-/);
+  assert.match(mainJobs["push-turbo-cache-warm"], /pnpm exec turbo build typecheck lint --concurrency=2/);
+  assert.ok(mainJobs["daemon-artifact"]);
 });
 
 test("merge groups filter the complete candidate against the queue base", () => {
