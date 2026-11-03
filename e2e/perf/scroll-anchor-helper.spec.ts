@@ -10,6 +10,7 @@
  */
 import { expect, test, type Page } from "@playwright/test";
 import { assertStable, createAnchorMeter } from "./lib/scroll-anchor";
+import { MockSocket } from "./lib/mock-socket";
 
 const PAGE = `<!doctype html><body style="margin:0">
 <div id="scroller" style="height:400px;overflow-y:auto;overflow-anchor:none"><div id="list"></div></div>
@@ -71,4 +72,8 @@ test("reports no jump when the offset is corrected for the insert", async ({ pag
   const summary = await measure(page, "insert-compensated");
   expect(summary.jump_count).toBe(0);
   expect(() => assertStable(summary)).not.toThrow();
+});
+
+test("a stimulus sent with no connected socket fails instead of vanishing", () => {
+  expect(() => new MockSocket().send("task:running", {})).toThrow(/not connected/);
 });

@@ -19,10 +19,11 @@
  * scenario assert jump count 0, max delta <= 1 px and, for C2, zero requests
  * for the DM. Only HTTP and the WebSocket are synthetic; no backend is needed.
  */
-import { expect, test, type Page, type WebSocketRoute } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import * as fx from "./fixtures/scroll-stability";
+import { MockSocket } from "./lib/mock-socket";
 import { assertStable, createAnchorMeter, type AnchorSummary } from "./lib/scroll-anchor";
 
 const ASSERT = process.env.SCROLL_STABILITY_ASSERT === "1";
@@ -39,6 +40,7 @@ const nextFrames = (page: Page, n: number) =>
   }), n);
 
 interface App {
+  socket: MockSocket;
   send(type: string, payload: unknown): void;
   /** Chat message-list requests for the DM since the last reset. */
   chatListRequests: () => number;
@@ -52,7 +54,7 @@ async function boot(page: Page, baseURL: string | undefined): Promise<App> {
   const origin = new URL(baseURL ?? "http://localhost:3000").origin;
   const context = page.context();
   const app: App = {
-    send: () => {}, messages: fx.initialMessages(), unmocked: [], pageErrors: [],
+    socket: new MockSocket(), send: (type, payload) => app.socket.send(type, payload), messages: fx.initialMessages(), unmocked: [], pageErrors: [],
     chatListRequests: () => chatRequests, resetChatListRequests: () => { chatRequests = 0; },
   };
   let chatRequests = 0;
@@ -104,13 +106,8 @@ async function boot(page: Page, baseURL: string | undefined): Promise<App> {
     return json(body);
   });
 
-  let socket: WebSocketRoute | null = null;
-  await context.routeWebSocket((url) => url.pathname === "/ws", (ws) => {
-    socket = ws;
-    ws.onMessage(() => {});
-  });
-  app.send = (type, payload) =>
-    socket?.send(JSON.stringify({ type, payload, actor_id: "", actor_type: "system" }));
+  await app.socket.watch(page);
+  await context.routeWebSocket((url) => url.pathname === "/ws", app.socket.attach);
   return app;
 }
 
@@ -171,11 +168,14 @@ interface Report extends AnchorSummary {
   assert_mode: boolean;
 }
 
-function emit(report: Report) {
+async function emit(report: Report) {
   const line = `SCROLL_STABILITY_REPORT ${JSON.stringify(report)}`;
   // eslint-disable-next-line no-console
   console.log(line);
   test.info().annotations.push({ type: "scroll-stability", description: JSON.stringify(report) });
+  await test.info().attach(`scroll-stability-${report.scenario}.json`, {
+    body: JSON.stringify(report, null, 2), contentType: "application/json",
+  });
   const dir = process.env.PERF_REPORT_DIR;
   if (dir) {
     mkdirSync(resolve(dir), { recursive: true });
@@ -183,8 +183,8 @@ function emit(report: Report) {
   }
 }
 
-function finish(report: Report, options: { zeroRequests?: boolean } = {}) {
-  emit(report);
+async function finish(report: Report, options: { zeroRequests?: boolean } = {}) {
+  await emit(report);
   expect(report.page_errors, "page errors").toEqual([]);
   if (!ASSERT) return;
   assertStable(report);
@@ -195,30 +195,39 @@ function finish(report: Report, options: { zeroRequests?: boolean } = {}) {
 
 async function scenario(
   page: Page, baseURL: string | undefined, name: string,
-  act: (app: App) => Promise<void>, options: { zeroRequests?: boolean } = {},
+  act: (app: App) => Promise<void>,
+  options: { zeroRequests?: boolean; delivered?: Record<string, number> } = {},
 ) {
   const origin = new URL(baseURL ?? "http://localhost:3000").origin;
   const app = await boot(page, baseURL);
   await openChatMidList(page, app, origin);
   const meter = chatMeter(page);
   app.resetChatListRequests();
+  await expect.poll(() => app.socket.connected, { message: "mock WebSocket connected" }).toBe(true);
   await meter.start();
   await act(app);
   await page.waitForTimeout(1000);
   await nextFrames(page, 5);
   const summary = await meter.stop();
-  finish({
+  // A stimulus the page never received would read as a stable list.
+  for (const [type, count] of Object.entries(options.delivered ?? {})) {
+    await expect.poll(() => app.socket.delivered(type), { message: `"${type}" frames received` })
+      .toBeGreaterThanOrEqual(count);
+  }
+  await finish({
     scenario: name, ...summary, chat_requests: app.chatListRequests(),
     unmocked_requests: app.unmocked, page_errors: app.pageErrors, assert_mode: ASSERT,
   }, options);
 }
 
 test("C1 re-page: one new message moves the page boundary", async ({ page, baseURL }) => {
-  await scenario(page, baseURL, "C1", addChatMessage);
+  await scenario(page, baseURL, "C1", addChatMessage, { delivered: { "chat:message": 1 } });
 });
 
 test("C2 run-start burst: unrelated run starts refetch the DM", async ({ page, baseURL }) => {
-  await scenario(page, baseURL, "C2", runStartBurst, { zeroRequests: true });
+  await scenario(page, baseURL, "C2", runStartBurst, {
+    zeroRequests: true, delivered: { "task:running": BURST_EVENTS },
+  });
 });
 
 test("C3 combined: new message during a run-start burst", async ({ page, baseURL }) => {
@@ -227,7 +236,7 @@ test("C3 combined: new message during a run-start burst", async ({ page, baseURL
     await new Promise((done) => setTimeout(done, BURST_MS / 2));
     await addChatMessage(app);
     await burst;
-  });
+  }, { delivered: { "chat:message": 1, "task:running": BURST_EVENTS } });
 });
 
 test("D1 issue detail: scroll up through a long comment thread", async ({ page, baseURL }) => {
@@ -256,7 +265,7 @@ test("D1 issue detail: scroll up through a long comment thread", async ({ page, 
   // A zero reads as "stable" only if the reader really moved three screens.
   const travelled = scrollTopBefore - (await scroller.evaluate((el) => el.scrollTop));
   expect(travelled, "px scrolled up").toBeGreaterThan(2.5 * viewport);
-  finish({
+  await finish({
     scenario: "D1", ...summary, chat_requests: null,
     unmocked_requests: app.unmocked, page_errors: app.pageErrors, assert_mode: ASSERT,
   });
