@@ -196,6 +196,14 @@ multica issue wakeup runs MUL-123 <wakeup-id>
 
 在终端里以成员身份创建时需要 `--agent-id`；智能体在自己的运行中创建时默认唤醒它自己。
 
+人可以触发的规则，是针对评论、任务、回应或附件变更的事件规则，且其操作者筛选不排除成员。当工作区设置 `ask_guard_mode` 为 `warn` 或 `block` 时，智能体不能自行注册这类规则，除非满足下列之一：
+
+- `--decision <request-id>` 把规则绑定到本任务的决定请求。请求必须处于已提问或已回答状态；若设置了 `--filter-actor-id`，请求须属于该成员。一个请求同一时间只绑定一条启用的唤醒。
+- `--purpose observe` 表示不等待人的规则。由成员引起的每次触发都会记录一条审计事件。
+- 不带 `--filter-actor-id` 的 `--filter-actor-type agent` 匹配任何智能体，不匹配任何成员。
+
+`block` 模式下返回 422，错误信息包含修复命令。`warn` 模式下规则照常创建，只记录一条事件。
+
 ## 智能体和 skill
 
 ```bash
