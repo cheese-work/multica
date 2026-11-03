@@ -187,11 +187,17 @@ test("deploy admission accepts skipped push tests only after green merge-group C
   }
 });
 
+// Fake clock: sleep advances time, so bounded polling finishes instantly and elapsed time is observable.
+const fakeClock = () => {
+  const clock = { time: 0, slept: [], now: () => clock.time, sleep: (ms) => { clock.slept.push(ms); clock.time += ms; } };
+  return clock;
+};
+
 test("only successful merge-group CI from this repository on this exact main SHA can suppress push tests", () => {
   const env = { EVENT_NAME: "push", GITHUB_REF: "refs/heads/main", GITHUB_SHA: "a".repeat(40), GITHUB_REPOSITORY: "cheese-work/multica" };
   const green = { event: "merge_group", head_sha: env.GITHUB_SHA, status: "completed", conclusion: "success", head_repository: { full_name: env.GITHUB_REPOSITORY } };
   const query = (endpoint) => {
-    assert.equal(endpoint, `repos/cheese-work/multica/actions/workflows/ci.yml/runs?event=merge_group&status=success&head_sha=${env.GITHUB_SHA}&per_page=1`);
+    assert.equal(endpoint, `repos/cheese-work/multica/actions/workflows/ci.yml/runs?event=merge_group&head_sha=${env.GITHUB_SHA}&per_page=10`);
     return { workflow_runs: [green] };
   };
   assert.equal(hasGreenMergeGroup(env, query), true);
@@ -207,15 +213,65 @@ test("only successful merge-group CI from this repository on this exact main SHA
     { ...green, status: "in_progress" }, { ...green, head_repository: { full_name: "fork/multica" } },
     ...["failure", "cancelled", "skipped", "neutral", null].map((conclusion) => ({ ...green, conclusion })),
   ]) {
-    assert.equal(hasGreenMergeGroup(env, () => ({ workflow_runs: [run] })), false);
+    const { sleep, now } = fakeClock();
+    assert.equal(hasGreenMergeGroup(env, () => ({ workflow_runs: [run] }), sleep, now), false);
   }
-  assert.equal(hasGreenMergeGroup(env, () => ({ workflow_runs: [] })), false);
+  const empty = fakeClock();
+  assert.equal(hasGreenMergeGroup(env, () => ({ workflow_runs: [] }), empty.sleep, empty.now), false);
   assert.equal(hasGreenMergeGroup(env, () => { throw new Error("API unavailable"); }), false);
   assert.equal(hasGreenMergeGroup(env, () => ({})), false);
   for (const event of ["pull_request", "merge_group", "schedule", "workflow_dispatch"]) {
     assert.equal(decideScopes(event, filterFiles([]), "main", true).push_full, "true");
   }
   assert.equal(decideScopes("push", filterFiles([]), "feature", true).push_full, "true");
+});
+
+test("a merge-group run still in progress or not yet listed is awaited, within a total bound", () => {
+  const env = { EVENT_NAME: "push", GITHUB_REF: "refs/heads/main", GITHUB_SHA: "a".repeat(40), GITHUB_REPOSITORY: "cheese-work/multica" };
+  const run = { event: "merge_group", head_sha: env.GITHUB_SHA, head_repository: { full_name: env.GITHUB_REPOSITORY } };
+  // Each state is one lookup; null means the run is not listed yet. `queryMs` is the time a lookup takes.
+  const sequence = (clock, queryMs, ...states) => {
+    let calls = 0;
+    const query = () => {
+      clock.time += queryMs;
+      const state = states[Math.min(calls++, states.length - 1)];
+      return { workflow_runs: state ? [{ ...run, ...state }] : [] };
+    };
+    return { query, calls: () => calls };
+  };
+  const running = { status: "in_progress", conclusion: null };
+  const success = { status: "completed", conclusion: "success" };
+  const failure = { status: "completed", conclusion: "failure" };
+
+  let clock = fakeClock();
+  let lookups = sequence(clock, 0, running, running, success);
+  assert.equal(hasGreenMergeGroup(env, lookups.query, clock.sleep, clock.now), true);
+  assert.equal(lookups.calls(), 3);
+  assert.deepEqual(clock.slept, [10000, 10000]);
+
+  clock = fakeClock();
+  lookups = sequence(clock, 0, null, null, success);
+  assert.equal(hasGreenMergeGroup(env, lookups.query, clock.sleep, clock.now), true);
+  assert.equal(lookups.calls(), 3);
+
+  clock = fakeClock();
+  lookups = sequence(clock, 0, running, failure);
+  assert.equal(hasGreenMergeGroup(env, lookups.query, clock.sleep, clock.now), false);
+  assert.equal(lookups.calls(), 2);
+
+  clock = fakeClock();
+  lookups = sequence(clock, 0, failure);
+  assert.equal(hasGreenMergeGroup(env, lookups.query, clock.sleep, clock.now), false);
+  assert.equal(lookups.calls(), 1);
+  assert.deepEqual(clock.slept, []);
+
+  // Slow lookups count against the same bound: the wait ends near 180 s, not 180 s plus the lookups.
+  for (const state of [running, null]) {
+    clock = fakeClock();
+    lookups = sequence(clock, 4000, state);
+    assert.equal(hasGreenMergeGroup(env, lookups.query, clock.sleep, clock.now), false);
+    assert.ok(clock.time >= 180000 && clock.time <= 184000, `elapsed ${clock.time}`);
+  }
 });
 
 test("the decide CLI queries merge-group evidence and preserves full CI on lookup errors or the kill switch", (context) => {
@@ -239,7 +295,7 @@ process.stdout.write(readFileSync(process.env.RUN_FIXTURE));
     writeFileSync(output, "");
     const result = spawnSync(process.execPath, [command, "decide"], {
       encoding: "utf8",
-      env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, RUN_FIXTURE: fixture, LOOKUP_FAIL: failure,
+      env: { ...process.env, MERGE_GROUP_WAIT_MS: "0", PATH: `${directory}:${process.env.PATH}`, RUN_FIXTURE: fixture, LOOKUP_FAIL: failure,
         EVENT_NAME: "push", GITHUB_REF: "refs/heads/main", HEAD_REF: "main", GITHUB_SHA: sha,
         GITHUB_REPOSITORY: "cheese-work/multica", CI_PUSH_FULL: forceFull,
         FILTER_RESULTS: JSON.stringify(filterFiles([".github/ci-paths.json"])), GITHUB_OUTPUT: output },
@@ -256,18 +312,22 @@ test("merge-group reuse is wired to authenticated Actions reads and separate hos
   assert.match(jobs.changes, /^      actions: read$/m);
   assert.match(jobs.changes, /CI_PUSH_FULL: \$\{\{ vars\.CI_PUSH_FULL \}\}/);
   assert.match(jobs.changes, /GH_TOKEN: \$\{\{ github\.token \}\}/);
+  const mainBuild = readFileSync(new URL("../.github/workflows/main-build.yml", import.meta.url), "utf8");
+  const mainJobs = Object.fromEntries([...mainBuild.matchAll(/^  ([\w-]+):$/gm)].map((match, index, all) => [
+    match[1], mainBuild.slice(match.index, all[index + 1]?.index),
+  ]));
   for (const name of ["push-go-cache-warm", "push-turbo-cache-warm"]) {
-    assert.match(jobs[name], /github\.event_name == 'push' && github\.ref == 'refs\/heads\/main' && needs\.changes\.outputs\.merge_group_green == 'true'/);
-    assert.match(jobs[name], /^    runs-on: ubuntu-24\.04$/m);
+    assert.match(mainJobs[name], /needs\.merge-group\.outputs\.merge_group_green == 'true'/);
+    assert.match(mainJobs[name], /^    runs-on: ubuntu-24\.04$/m);
   }
-  assert.match(jobs["push-go-cache-warm"], /go test -race -run '\^\$' -exec \/bin\/true \.\/\.\.\./);
+  assert.match(mainJobs["push-go-cache-warm"], /go test -race -run '\^\$' -exec \/bin\/true \.\/\.\.\./);
   for (const prefix of ["go-mod-", "go-build-race-"]) {
     assert.ok(jobs["backend-tests"].includes(prefix));
-    assert.ok(jobs["push-go-cache-warm"].includes(prefix));
+    assert.ok(mainJobs["push-go-cache-warm"].includes(prefix));
   }
-  assert.match(jobs["push-turbo-cache-warm"], /key: turbo-build-/);
-  assert.match(jobs["push-turbo-cache-warm"], /pnpm exec turbo build typecheck lint --concurrency=2/);
-  assert.match(jobs["daemon-artifact"], /if: \$\{\{ github\.event_name == 'push' && github\.ref == 'refs\/heads\/main' \}\}/);
+  assert.match(mainJobs["push-turbo-cache-warm"], /key: turbo-build-/);
+  assert.match(mainJobs["push-turbo-cache-warm"], /pnpm exec turbo build typecheck lint --concurrency=2/);
+  assert.ok(mainJobs["daemon-artifact"]);
 });
 
 test("merge groups filter the complete candidate against the queue base", () => {

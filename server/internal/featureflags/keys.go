@@ -31,10 +31,11 @@ const (
 	// existing Triage issues workable.
 	TriageV1 = "triage_v1"
 	// WakeupDefinitionWrites (CHE-1082) is the server-side activation gate for
-	// scoped wakeup definition writes (create, update, delete). It is CLOSED by
-	// default and nothing but an explicit rule opens it: production must hold
-	// zero scoped definitions until the layer that backfills and activates
-	// them. Reads and previews are not gated; they never persist.
+	// scoped wakeup definition writes (create, update, delete). Its default is
+	// the completed legacy backfill (service.WakeupDefinitionsActivated), so it
+	// is closed until production holds the backfilled definitions and opens
+	// with the deploy that ran it; an explicit rule overrides either way.
+	// Reads and previews are not gated; they never persist.
 	WakeupDefinitionWrites = "wakeup_definition_writes"
 	// PasskeyEnrollment (CHE-2233) opens first-passkey enrollment. It is CLOSED
 	// in every environment until Cheese records that no agent or automation can
@@ -125,12 +126,13 @@ func ExportPrivacyControlsEnabled(ctx context.Context, flags *featureflag.Servic
 }
 
 // WakeupDefinitionWritesEnabled reports whether scoped wakeup definition writes
-// are open. A nil service or provider is closed, never "unset".
-func WakeupDefinitionWritesEnabled(ctx context.Context, flags *featureflag.Service) bool {
-	if flags == nil || flags.Provider() == nil {
-		return false
-	}
-	return flags.IsEnabled(ctx, WakeupDefinitionWrites, false)
+// are open. activated is the persisted state of the legacy backfill: writes
+// stay closed until it completed and open by themselves after it, with no
+// operator step. An explicit off rule is the kill switch. No rule, and no
+// explicit on rule, opens writes before the activation completed: production
+// holds zero definitions until then.
+func WakeupDefinitionWritesEnabled(ctx context.Context, flags *featureflag.Service, activated bool) bool {
+	return activated && flags.IsEnabled(ctx, WakeupDefinitionWrites, true)
 }
 
 func LocalSearchIndexEnabled(ctx context.Context, flags *featureflag.Service) bool {
