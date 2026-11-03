@@ -58,7 +58,14 @@ func TestCompactionClaim_CurrentEpochPointerResumesWithoutSeed(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	_, chatID, runtimeID, daemonID := compactedDM(t, "claude")
+	agentID, chatID, runtimeID, daemonID := compactedDM(t, "claude")
+	// The pointer only counts when a task of the current epoch recorded it
+	// (ChatSessionPointerIsCurrent), as the daemon writes it in production.
+	dbfx.Task(t, agentID, testutil.Cols{
+		"runtime_id": runtimeID, "chat_session_id": chatID, "status": "completed",
+		"started_at": testutil.Raw("now() - interval '2 minutes'"), "completed_at": testutil.Raw("now() - interval '1 minute'"),
+		"chat_compaction_epoch": 1, "session_id": "S_new", "work_dir": "/tmp/new-workdir",
+	})
 	dbfx.Exec(t, `UPDATE chat_session SET session_id = 'S_new', runtime_id = $2 WHERE id = $1`, chatID, runtimeID)
 	got := claimTaskForRuntimeGuard(t, runtimeID, daemonID)
 	if got.PriorSessionID != "S_new" || got.ChatMessage != "CURRENT-INPUT" {
