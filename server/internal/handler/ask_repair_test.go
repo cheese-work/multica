@@ -428,3 +428,56 @@ func TestAskRepairFailureWithoutAgentRowStillListed(t *testing.T) {
 	}
 	t.Fatalf("root %s missing with its agent row gone", eventID)
 }
+
+// bystanderRequest sends a decision request recovering eventID from a running
+// task that is not the admitted repair run.
+func bystanderRequest(t *testing.T, fixture singleCallFixture, eventID string) *testutil.Response {
+	t.Helper()
+	bystander := dbfx.Task(t, fixture.agentID, testutil.Cols{"issue_id": fixture.issueID, "status": "running", "runtime_id": handlerTestRuntimeID(t)})
+	body := fixture.body()
+	body["recovers"] = eventID
+	request := fixture.call(body)
+	request.Header.Set("X-Task-ID", bystander)
+	return testutil.Call(t, testHandler.RequestDecision, request)
+}
+
+// TestAskRepairBystanderCannotMaskFailure: only the admitted repair run recovers
+// a memberless event. Another task's request is refused, so a repair that ends
+// with no request of its own still fails the root.
+func TestAskRepairBystanderCannotMaskFailure(t *testing.T) {
+	fixture := newSingleCallFixture(t)
+	eventID := repairEvent(t, fixture.intentFixture, "wakeup", nil, nil)
+	admitRepairs(t)
+	repairTask := onlyRepairTask(t, fixture.intentFixture)
+
+	bystanderRequest(t, fixture, eventID).Want(http.StatusBadRequest)
+	if eventCleared(t, eventID) {
+		t.Fatal("a bystander task cleared the event")
+	}
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, repairTask)
+	settleRepairs(t)
+	settleRepairs(t)
+	if state, reason := rootState(t, eventID); state != "failed" || reason != "no_matching_request" {
+		t.Fatalf("root = %s/%s, want failed/no_matching_request", state, reason)
+	}
+}
+
+// TestAskRepairFailedRootCannotBeRecovered: a root that failed (refused admission,
+// unavailable agent) has no live repair run, so nothing recovers its event.
+func TestAskRepairFailedRootCannotBeRecovered(t *testing.T) {
+	fixture := newSingleCallFixture(t)
+	eventID := repairEvent(t, fixture.intentFixture, "wakeup", nil, nil)
+	admitRepairs(t)
+	repairTask := onlyRepairTask(t, fixture.intentFixture)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'running' WHERE id = $1`, repairTask)
+	dbfx.Exec(t, `UPDATE ask_repair_root SET state = 'failed', failure_reason = 'admission_refused', failed_at = clock_timestamp() WHERE id = $1`, eventID)
+
+	body := fixture.body()
+	body["recovers"] = eventID
+	request := fixture.call(body)
+	request.Header.Set("X-Task-ID", repairTask)
+	testutil.Call(t, testHandler.RequestDecision, request).Want(http.StatusBadRequest)
+	if eventCleared(t, eventID) {
+		t.Fatal("a failed root's event was cleared")
+	}
+}

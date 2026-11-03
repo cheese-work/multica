@@ -78,7 +78,8 @@ func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Is
 	if err != nil || !result.Replayed {
 		return result, err
 	}
-	return result, clearAskGuardEvent(request.Context(), handler.Queries, issue, input.Recovers, result.Request.HumanUserID, result.Request.ID)
+	taskID, _ := util.ParseUUID(request.Header.Get("X-Task-ID")) // createDecisionRequestOnce already required it
+	return result, clearAskGuardEvent(request.Context(), handler.Queries, issue, input.Recovers, result.Request.HumanUserID, result.Request.ID, taskID)
 }
 
 func (handler *Handler) createDecisionRequestOnce(request *http.Request, issue db.Issue, input decisionRequestInput) (decisionRequestResult, error) {
@@ -498,7 +499,7 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 	if err != nil {
 		return empty, err
 	}
-	if err := clearAskGuardEvent(ctx, queries, issue, input.Recovers, session.CreatorID, created.ID); err != nil {
+	if err := clearAskGuardEvent(ctx, queries, issue, input.Recovers, session.CreatorID, created.ID, intent.TaskID); err != nil {
 		return empty, err
 	}
 	var action *db.DecisionAction
