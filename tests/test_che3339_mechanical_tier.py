@@ -22,37 +22,39 @@ GIT_ENV = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": 
            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
 
 
-# `gh api <path> --jq <filter>`: serve canned JSON for the path and apply the filter with jq, as gh does.
+# `gh api <path> [--paginate] --jq <filter>`: serve canned JSON for the path and apply the filter with jq, as gh does.
 FAKE_GH_SH = r"""#!/bin/bash
-path="$2"; filter="$4"
+path="$2"; filter=""
+while [ $# -gt 0 ]; do [ "$1" = --jq ] && filter="$2"; shift; done
 case "$path" in
-  repos/o/r/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/pulls) key=pulls_a ;;
-  repos/o/r/commits/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee/pulls) key=pulls_e ;;
-  repos/o/r/commits/*/pulls) key=none ;;
-  repos/o/r/pulls/7) key=pr7 ;;
-  repos/o/r/pulls/8) key=pr8 ;;
-  repos/o/r/pulls/9) key=pr9 ;;
-  "repos/o/r/pulls?state=open&sort=updated&direction=desc&per_page=30") key=open ;;
-  repos/o/r/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/statuses*) key=st_a ;;
-  repos/o/r/commits/cccccccccccccccccccccccccccccccccccccccc/statuses*) key=st_c ;;
-  repos/o/r/commits/*/statuses*) key=none ;;
+  repos/o/r/commits/*/pulls) sha="${path#repos/o/r/commits/}"; q=".pulls_for[\"${sha%/pulls}\"] // []" ;;
+  repos/o/r/commits/*/statuses*) sha="${path#repos/o/r/commits/}"; q=".statuses[\"${sha%%/*}\"] // []" ;;
+  repos/o/r/pulls/*) q=".pr[\"${path#repos/o/r/pulls/}\"]" ;;
+  "repos/o/r/pulls?state=open&per_page=100") q=".open" ;;
   *) echo "unexpected path $path" >&2; exit 1 ;;
 esac
-printf '%s' "$FIXTURE" | jq -rc ".$key" | jq -rc "$filter"
+jq -rc "$q" "$FIXTURE_FILE" | jq -rc "$filter"
 """
-A, B, C, E = "a" * 40, "b" * 40, "c" * 40, "e" * 40
-FIND_FIXTURE = {
-    "none": [],
-    "pulls_a": [{"number": 7, "state": "open", "head": {"sha": A}}],
-    "pulls_e": [{"number": 9, "state": "open", "head": {"sha": "f" * 40}}],
-    "pr7": {"number": 7, "base": {"sha": B}, "head": {"sha": A}},
-    "pr8": {"number": 8, "base": {"sha": B}, "head": {"sha": C}},
-    "pr9": {"number": 9, "base": {"sha": B}, "head": {"sha": "f" * 40}},
-    "open": [{"number": 8, "head": {"sha": C}}, {"number": 7, "head": {"sha": A}}],
-    "st_a": [{"context": "security-gate", "updated_at": "2026-11-03T08:00:00Z"}],
-    "st_c": [{"context": "security-gate", "updated_at": "2026-11-03T09:00:05Z"},
-             {"context": "other", "updated_at": "2026-11-03T09:00:05Z"}],
-}
+A, B, C = "a" * 40, "b" * 40, "c" * 40
+OLD, FRESH = "2026-11-03T08:00:00Z", "2026-11-03T09:00:05Z"
+
+
+def sha(n):
+    return f"{n:040x}"
+
+
+def find_fixture(open_prs=(), fresh=()):
+    """Open PRs 7 (head A, gate status OLD), 8 (head C, FRESH), plus `open_prs` numbers; `fresh` numbers get FRESH."""
+    prs = {7: A, 8: C, **{n: sha(n) for n in open_prs}}
+    gate = lambda n: [{"context": "security-gate", "updated_at": FRESH if n in fresh or n == 8 else OLD},
+                      {"context": "other", "updated_at": FRESH}]
+    return {
+        "pulls_for": {A: [{"number": 7, "state": "open", "head": {"sha": A}}],
+                      sha(9): [{"number": 9, "state": "open", "head": {"sha": "f" * 40}}]},
+        "pr": {str(n): {"number": n, "base": {"sha": B}, "head": {"sha": h}} for n, h in prs.items()},
+        "open": [{"number": n, "head": {"sha": h}} for n, h in prs.items()],
+        "statuses": {h: gate(n) for n, h in prs.items()},
+    }
 
 
 def load_classifier():
@@ -176,7 +178,7 @@ class ReceiptRefreshAfterCi(unittest.TestCase):
         self.assertNotIn("workflow_run.head_branch", self.text)
         self.assertNotRegex(self.text, r"ref: \$\{\{ github\.event\.workflow_run")
 
-    def find(self, event, **env):
+    def run_find(self, event, fixture, **env):
         wf = yaml.safe_load(self.text)
         script = wf["jobs"]["find"]["steps"][0]["run"]
         d = tempfile.mkdtemp()
@@ -184,34 +186,57 @@ class ReceiptRefreshAfterCi(unittest.TestCase):
             fake = Path(d) / "gh"
             fake.write_text(FAKE_GH_SH)
             fake.chmod(0o755)
+            (Path(d) / "fixture.json").write_text(json.dumps(fixture))
             out = Path(d) / "out"
             full = {**os.environ, "PATH": d + ":" + os.environ["PATH"], "GITHUB_REPOSITORY": "o/r",
                     "GITHUB_OUTPUT": str(out), "EVENT_NAME": event, "PR_NUMBER": "", "BASE_SHA": "", "HEAD_SHA": "",
-                    "RUN_NAME": "", "RUN_CREATED": "", "FIXTURE": json.dumps(FIND_FIXTURE), **env}
-            done = subprocess.run(["bash", "-e", "-c", script], env=full, capture_output=True, text=True, timeout=60)
-            self.assertEqual(done.returncode, 0, done.stderr)
-            line = [l for l in out.read_text().splitlines() if l.startswith("targets=")][0]
-            return json.loads(line[len("targets="):])
+                    "RUN_NAME": "", "RUN_CREATED": "2026-11-03T09:00:00Z", "FIXTURE_FILE": str(Path(d) / "fixture.json"), **env}
+            done = subprocess.run(["bash", "-e", "-c", script], env=full, capture_output=True, text=True, timeout=120)
+            targets = None
+            if out.exists():
+                line = [l for l in out.read_text().splitlines() if l.startswith("targets=")]
+                targets = json.loads(line[0][len("targets="):]) if line else None
+            return done, targets
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
+    def find(self, event, fixture=None, **env):
+        done, targets = self.run_find(event, fixture or find_fixture(), **env)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return targets
+
     def test_a_pull_request_event_names_the_pull_request_of_the_event(self):
-        got = self.find("pull_request_target", PR_NUMBER="7", BASE_SHA="b" * 40, HEAD_SHA="a" * 40)
-        self.assertEqual(got, [{"pr": 7, "base": "b" * 40, "head": "a" * 40}])
+        got = self.find("pull_request_target", PR_NUMBER="7", BASE_SHA=B, HEAD_SHA=A)
+        self.assertEqual(got, [{"pr": 7, "base": B, "head": A}])
 
     def test_a_finished_run_for_a_pull_request_head_names_that_pull_request_from_the_api(self):
-        got = self.find("workflow_run", HEAD_SHA="a" * 40, RUN_NAME="CI", RUN_CREATED="2026-11-03T09:00:00Z")
-        self.assertEqual(got, [{"pr": 7, "base": "b" * 40, "head": "a" * 40}])
+        self.assertEqual(self.find("workflow_run", HEAD_SHA=A, RUN_NAME="CI"), [{"pr": 7, "base": B, "head": A}])
 
     def test_a_security_gate_run_on_the_default_branch_sha_names_the_pull_requests_whose_gate_status_it_wrote(self):
-        got = self.find("workflow_run", HEAD_SHA="d" * 40, RUN_NAME="security-gate", RUN_CREATED="2026-11-03T09:00:00Z")
-        self.assertEqual(got, [{"pr": 8, "base": "b" * 40, "head": "c" * 40}])
+        self.assertEqual(self.find("workflow_run", HEAD_SHA="d" * 40, RUN_NAME="security-gate"), [{"pr": 8, "base": B, "head": C}])
 
     def test_a_ci_run_with_no_open_pull_request_for_its_head_names_nothing_and_does_not_scan(self):
-        self.assertEqual(self.find("workflow_run", HEAD_SHA="d" * 40, RUN_NAME="CI", RUN_CREATED="2026-11-03T09:00:00Z"), [])
+        self.assertEqual(self.find("workflow_run", HEAD_SHA="d" * 40, RUN_NAME="CI"), [])
 
     def test_a_pull_request_whose_head_moved_since_the_run_is_not_named(self):
-        self.assertEqual(self.find("workflow_run", HEAD_SHA="e" * 40, RUN_NAME="CI", RUN_CREATED="2026-11-03T09:00:00Z"), [])
+        self.assertEqual(self.find("workflow_run", HEAD_SHA="e" * 40, RUN_NAME="CI"), [])
+
+    def test_the_gate_scan_reaches_a_pull_request_far_down_the_open_list(self):
+        # 78 PRs were open when this was written; the last one in the list is as reachable as the first.
+        fx = find_fixture(open_prs=range(100, 220), fresh={219})
+        got = self.find("workflow_run", fx, HEAD_SHA="d" * 40, RUN_NAME="security-gate")
+        self.assertEqual(sorted(t["pr"] for t in got), [8, 219])
+
+    def test_every_pull_request_with_a_fresh_gate_status_is_named_not_only_the_first_few(self):
+        fx = find_fixture(open_prs=range(100, 112), fresh=set(range(100, 112)))
+        got = self.find("workflow_run", fx, HEAD_SHA="d" * 40, RUN_NAME="security-gate")
+        self.assertEqual(sorted(t["pr"] for t in got), [8, *range(100, 112)])
+
+    def test_more_pull_requests_than_a_matrix_can_hold_fails_the_job_instead_of_dropping_some(self):
+        fx = find_fixture(open_prs=range(100, 400), fresh=set(range(100, 400)))
+        done, _ = self.run_find("workflow_run", fx, HEAD_SHA="d" * 40, RUN_NAME="security-gate")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("256", done.stdout + done.stderr)
 
     def test_a_receipt_taken_while_ci_is_pending_fails_verify_once_ci_succeeds_and_a_fresh_one_passes(self):
         mt, d, base, head = head_commit({"docs/note.md": "x\n"})
@@ -240,8 +265,15 @@ class MulticaPathsMapToTiers(unittest.TestCase):
                  "packages/core/api/schema.ts", "AGENTS.md", "skills/x/SKILL.md")
         self.assertEqual(protected({p: "x\n" for p in paths}), set(paths))
 
+    def test_build_install_release_and_daemon_execution_paths_are_tier_2(self):
+        paths = ("Makefile", "scripts/install.sh", "scripts/install.ps1", "scripts/install-cli-from-ref.sh",
+                 "scripts/build-daemon-binaries.sh", "scripts/daemon-artifact-version.sh",
+                 "apps/desktop/electron-builder.yml", "server/internal/daemon/daemon.go")
+        self.assertEqual(protected({p: "x\n" for p in paths}), set(paths))
+
     def test_a_change_of_only_handler_tests_and_docs_is_not_flagged(self):
-        paths = ("server/internal/handler/issue_test.go", "docs/note.md", "tests/test_other.py")
+        paths = ("server/internal/handler/issue_test.go", "docs/note.md", "tests/test_other.py",
+                 "scripts/install.test.sh", "scripts/daemon-artifact-version.test.mjs", "server/internal/daemon/daemon_test.go")
         self.assertEqual(protected({p: "x\n" for p in paths}), set())
 
     def test_registry_is_valid_and_has_no_active_waiver_claim(self):

@@ -14,8 +14,8 @@
 # stops verifying once CI finishes. `workflow_run` re-classifies when CI or security-gate completes. (A `status` or
 # `issue_comment` trigger would not work: events made with GITHUB_TOKEN start no workflow run, but `workflow_run` fires.)
 # security-gate also runs on issue_comment and merge_group, where `workflow_run.head_sha` is the default-branch SHA.
-# For those runs the `find` job names every open pull request whose `security-gate` status was written at or after the
-# run was created. The pull request, base SHA and head SHA come from the API (the event payload is not trusted for
+# For those runs the `find` job checks every open pull request (paginated) and names those whose `security-gate`
+# status was written at or after the run was created. The pull request, base SHA and head SHA come from the API (the event payload is not trusted for
 # them), `find` checks nothing out, and each `mechanical-tier` job still checks out only its base. The run records the
 # fresh receipt in its step summary; it attaches no check to the pull request. Merge decisions use the latest receipt
 # for the exact head, re-verified with `verify`.
@@ -65,14 +65,19 @@ jobs:
               --jq '.[] | select(.state == "open" and .head.sha == env.HEAD_SHA) | .number')"
             if [ -z "$numbers" ] && [ "$RUN_NAME" = security-gate ]; then
               # Comment and merge-queue gate runs report the default-branch SHA. The status they post lands on the PR head.
-              for n in $(gh api "$repo/pulls?state=open&sort=updated&direction=desc&per_page=30" --jq '.[].number'); do
-                head="$(gh api "$repo/pulls/$n" --jq .head.sha)"
+              # Check every open PR (paginated); a limit here would leave a receipt stale with no retry.
+              while read -r n head; do
                 fresh="$(gh api "$repo/commits/$head/statuses?per_page=100" \
                   --jq '[.[] | select(.context == "security-gate" and .updated_at >= env.RUN_CREATED)] | length')"
                 if [ "$fresh" -gt 0 ]; then numbers="$numbers $n"; fi
-              done
+              done < <(gh api "$repo/pulls?state=open&per_page=100" --paginate --jq '.[] | "\(.number) \(.head.sha)"')
             fi
-            targets="[$(for n in $(echo $numbers | tr ' ' '\n' | head -n 10); do
+            # A matrix holds 256 jobs. Fail loudly rather than drop pull requests; a re-run covers the rest.
+            if [ "$(echo $numbers | wc -w)" -gt 256 ]; then
+              echo "More than 256 pull requests need a refresh; failing so none is dropped silently." >&2
+              exit 1
+            fi
+            targets="[$(for n in $numbers; do
               gh api "$repo/pulls/$n" --jq '{pr: .number, base: .base.sha, head: .head.sha}'
             done | paste -sd,)]"
           fi
