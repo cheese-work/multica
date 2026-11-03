@@ -103,9 +103,12 @@ Use `route: "adjudicate"`, omit `signers`, and provide an `adjudication` object:
 
 The verdict and rebuttal must equal the original, unedited task-authored comments
 on this issue. Both bodies bind `Disputed-point: <point>` and `Gate: <waived_gate>`
-on complete lines. The reviewer body begins `Verdict: BLOCK` and includes
-`Block-category: reversible_gate`. Security, excluded gates, missing evidence,
-protected gates and co-signer splits cannot be adjudicated.
+on complete lines. The reviewer body begins `Verdict: BLOCK` and carries typed
+header lines (`Key: value`, up to the first line that is not one): `Gate:` must be
+on the allowlist and `Block-category:` must be `reversible_gate`. Any other,
+missing, unknown or repeated value is excluded and fails closed. Prose is never
+read, in any language: a word such as "deploy" in the text neither excludes the
+decision nor turns the setting off. Co-signer splits cannot be adjudicated.
 
 The one adjudicator must differ from both disputants and their labs. Its frozen
 opinion uses the same commit/reveal protocol, plus `disputed_point: <point>` and
@@ -202,7 +205,8 @@ stop.
 
 Stop rule: one excluded-category decision turns the setting off and stores
 `settings.agent_decisions_stopped {reason, at}`. Triggers: a proposal whose gate
-is outside the allowlist, an adjudication BLOCK in an excluded category, and a
+is outside the allowlist, an adjudication BLOCK whose typed `Gate:` or
+`Block-category:` is excluded, missing or unknown, and a
 stored record whose gate left the allowlist reaching settlement. Existing
 records stay vetoable because veto never reads the setting. Not covered: a
 reliance on a record whose gate later left the allowlist is refused and does not
