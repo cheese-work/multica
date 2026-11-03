@@ -7,14 +7,14 @@
 # definition from the default branch. The job checks out the DEFAULT branch (never the PR's base: a PR can target an
 # unprotected branch that carries a modified gate script) and only FETCHES head objects for a diff read. Nothing from
 # the head is executed. Do not add a head checkout or a secret here.
-# `merge_group` (CHE-3240) posts the same context on the queue commit by carrying each PR head's existing verdict
-# (second parent of every MERGE-method queue commit); it evaluates nothing and reads no PR code. GitHub reads THIS
-# definition from the merge-group commit, so a PR that edits security-gate* could change this job: such a PR is
-# Cheese-merge only, and its own PR-head verdict (cross-lab PASS on that diff) is what the queue carries.
-# A PR-head status that is not `success` (verdict deleted, edited, or a new FAIL) also flips any queue head carrying that PR to
-# `failure`, so a carried success cannot outlive its verdict.
 # `issue_comment` (created, edited, deleted) is the path by which a verdict comment flips or revokes the status; `edited`
 # on the PR covers a retarget. The script re-reads the live head SHA and base ref.
+# `merge_group` posts the queued PR's freshly evaluated state on the queue commit; without it the required check never
+# reports there and the queue times out. This file runs from the queue commit; the job still checks out the default
+# branch and only fetches the queue ref. A verdict revoked after the queue commit went green is mirrored by the
+# pull_request_target / issue_comment path: when the PR status is not `success`, the script (`revoke_queue`, CHE-3240)
+# flips every queue head carrying that PR to `failure`, and fails a group it cannot read closed. If both queue lookups
+# keep failing the job goes red and no head is flipped: dequeue the PR by hand.
 
 name: security-gate
 
@@ -23,7 +23,6 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, edited]
   issue_comment:
     types: [created, edited, deleted]
-  # Merge queue (CHE-3240): the required context must also exist on the queue commit, or the entry waits forever.
   merge_group:
     types: [checks_requested]
 
@@ -47,8 +46,8 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
       GH_TOKEN: ${{ github.token }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-      MG_BASE: ${{ github.event.merge_group.base_sha }}
-      MG_HEAD: ${{ github.event.merge_group.head_sha }}
+      MERGE_GROUP_REF: ${{ github.event.merge_group.head_ref }}
+      MERGE_GROUP_SHA: ${{ github.event.merge_group.head_sha }}
     steps:
       - name: Discard a reused workspace
         run: |
@@ -60,20 +59,40 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Fetch the head objects without checking them out
-        if: github.event_name != 'merge_group'
         run: |
           auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          # A queue commit has the queued PR head as a parent, so fetching the queue ref brings the head objects too.
+          src="refs/pull/${PR_NUMBER}/head"
+          [ -n "$MERGE_GROUP_REF" ] && src="$MERGE_GROUP_REF"
           git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
-            fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/head"
-      - name: Carry the PR verdicts onto the merge-queue commit
-        if: github.event_name == 'merge_group'
-        run: |
-          python3 scripts/security-gate/security_gate.py --github "$GITHUB_REPOSITORY" --default-branch "$DEFAULT_BRANCH" \
-            --merge-group-base "$MG_BASE" --merge-group-head "$MG_HEAD" \
-            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --post
+            fetch --no-tags origin "+${src}:refs/remotes/pull/head"
       - name: Evaluate the verdict and post the status
-        if: github.event_name != 'merge_group'
         run: |
-          python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" \
-            --default-branch "$DEFAULT_BRANCH" \
-            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --post
+          set -euo pipefail
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          if [ -z "$MERGE_GROUP_REF" ]; then
+            exec python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" \
+              --default-branch "$DEFAULT_BRANCH" --run-url "$run_url" --post
+          fi
+          # Queue run. The default-branch script is used unchanged (it may predate this step), without --post: that
+          # would write to the PR head. Its state goes on the queue commit, and only if the PR head is its parent.
+          post() {
+            gh api "repos/$GITHUB_REPOSITORY/statuses/$MERGE_GROUP_SHA" -f "state=$1" -f context=security-gate \
+              -f "description=${2:0:140}" -f "target_url=$run_url"
+          }
+          re='^refs/heads/gh-readonly-queue/(.+)/pr-([0-9]+)-[0-9a-f]{40}$'
+          if [[ ! $MERGE_GROUP_REF =~ $re ]] || [ "${BASH_REMATCH[1]}" != "$DEFAULT_BRANCH" ]; then
+            post failure "unsupported merge group $MERGE_GROUP_REF: only $DEFAULT_BRANCH is gated"
+            exit 0
+          fi
+          pr="${BASH_REMATCH[2]}"
+          out="$(python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$pr" \
+            --default-branch "$DEFAULT_BRANCH" --run-url "$run_url")"
+          field() { python3 -c 'import json,sys; print(json.loads(sys.argv[1])[sys.argv[2]])' "$out" "$1"; }
+          head="$(field sha)" state="$(field state)" desc="#$pr: $(field description)"
+          parents="$(gh api "repos/$GITHUB_REPOSITORY/commits/$MERGE_GROUP_SHA" --jq '.parents[].sha')"  # not piped: grep -q + pipefail
+          if grep -qx "$head" <<<"$parents"; then
+            post "$state" "$desc"
+          else
+            post failure "#$pr head ${head:0:12} is not a parent of ${MERGE_GROUP_SHA:0:12}"
+          fi

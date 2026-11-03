@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
+import sys
+import tempfile
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -228,117 +231,73 @@ class WrapperTest(unittest.TestCase):
         self.assertIn("state=failure", posted[0])
 
 
-class MergeGroupTest(unittest.TestCase):
-    """CHE-3240: a merge-queue commit carries the PR-head verdicts; it never re-evaluates."""
+class MergeGroupStepTest(unittest.TestCase):
+    """The merge queue requires `security-gate` on its own commit, which no PR event ever reaches. The job runs the
+    DEFAULT-branch script, which on the first queue run is still the old one (`--pr` only), so the workflow step
+    re-evaluates the queued PR with that script unchanged and posts the state on the queue commit itself."""
 
-    BASE, G1, G2 = "1" * 40, "2" * 40, "3" * 40
-    P1, P2 = "4" * 40, "5" * 40  # PR head SHAs (second parent of each merge-queue commit)
+    QUEUE = "e" * 40
+    REF = f"refs/heads/gh-readonly-queue/main/pr-405-{'d' * 40}"
+    STUB_GH = ('#!/bin/bash\n'
+               'case "$*" in\n'
+               '  *commits/*) printf "%s\\n" $PARENTS ;;\n'
+               '  *) echo "gh $*" >> "$LOG" ;;\n'
+               'esac\n')
+    STUB_GATE = ('#!/bin/bash\n'  # the old script: --pr N required (an empty N is an argparse error), verdict read live
+                 'echo "gate $*" >> "$LOG"\n'
+                 'case " $* " in *" --pr "[0-9]*) ;; *) exit 2 ;; esac\n'
+                 'echo \'{"context": "security-gate", "sha": "\'$HEAD\'", "state": "\'$STATE\'", "description": "PASS on x"}\'\n')
 
-    def run_group(self, pr_states, commits=None, pr_heads=None, api_error=None):
-        pr_heads = pr_heads if pr_heads is not None else {821: self.P1, 816: self.P2}
-        commits = commits if commits is not None else [
-            {"sha": self.G1, "parents": [self.BASE, self.P1], "message": "Merge pull request #821 from x/y"},
-            {"sha": self.G2, "parents": [self.G1, self.P2], "message": "Merge pull request #816 from x/z"}]
-        posted = []
+    def step_run(self):
+        steps = yaml.safe_load((ROOT / ".github/workflows/security-gate.yml").read_text())["jobs"]["security-gate"]["steps"]
+        gate = [s for s in steps if "security_gate.py" in s.get("run", "")]
+        self.assertEqual(len(gate), 1)
+        return gate[0]["run"]
 
-        def fake_gh(*args):
-            path = " ".join(args)
-            if "statuses/" not in path and api_error and api_error[0] in path:
-                if api_error[1] == "malformed":
-                    return "not json"
-                raise subprocess.CalledProcessError(1, ["gh"])
-            if "compare/" in path:
-                return "\n".join(json.dumps(c) for c in commits)
-            for n, sha in pr_heads.items():
-                if path.endswith(f"/pulls/{n} --jq .head.sha"):
-                    return sha
-            if "/pulls/" in path:
-                return ""
-            if "statuses/" in path:
-                posted.append(args)
-                return ""
-            for sha, state in pr_states.items():
-                if f"commits/{sha}/status" in path:
-                    return (state.pop(0) if len(state) > 1 else state[0]) if isinstance(state, list) else state
-            return ""  # no security-gate status on that head
+    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success"):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / "bin").mkdir()
+            (tmp / "scripts/security-gate").mkdir(parents=True)
+            (tmp / "bin/gh").write_text(self.STUB_GH)
+            (tmp / "scripts/security-gate/gate.sh").write_text(self.STUB_GATE)
+            (tmp / "scripts/security-gate/security_gate.py").write_text("")  # the step runs it via the shadowed python3
+            (tmp / "bin/python3").write_text(
+                '#!/bin/bash\n[ "${1##*/}" = security_gate.py ] && exec bash "$(dirname "$1")/gate.sh" "${@:2}"\n'
+                f'exec {sys.executable} "$@"\n')
+            for path in (tmp / "bin/gh", tmp / "bin/python3", tmp / "scripts/security-gate/gate.sh"):
+                path.chmod(0o755)
+            env = {**os.environ, "PATH": f"{tmp / 'bin'}:{os.environ['PATH']}", "LOG": str(tmp / "log"), "HEAD": HEAD,
+                   "STATE": state, "PARENTS": " ".join(parents), "MERGE_GROUP_REF": ref, "MERGE_GROUP_SHA": self.QUEUE,
+                   "PR_NUMBER": "", "GH_TOKEN": "t", "DEFAULT_BRANCH": "main", "GITHUB_REPOSITORY": "o/r",
+                   "GITHUB_SERVER_URL": "https://github.com", "GITHUB_RUN_ID": "7"}
+            done = subprocess.run(["bash", "-c", self.step_run()], cwd=tmp, env=env, capture_output=True, text=True)
+            log = (tmp / "log").read_text().splitlines() if (tmp / "log").exists() else []
+        return done, log
 
-        argv = ["x", "--github", "cheese-work/multica", "--default-branch", "main",
-                "--merge-group-base", self.BASE, "--merge-group-head", self.G2, "--post"]
-        with mock.patch.object(sg, "_gh", fake_gh), mock.patch("sys.argv", argv), mock.patch("builtins.print"):
-            code = sg.main()
-        return code, posted
+    def posted(self, log):
+        return [l for l in log if l.startswith("gh ") and f"statuses/{self.QUEUE}" in l]
 
-    def test_all_prs_green_posts_success_on_the_group_head(self):
-        code, posted = self.run_group({self.P1: "success", self.P2: "success"})
-        self.assertEqual(code, 0)
-        self.assertIn(f"repos/cheese-work/multica/statuses/{self.G2}", posted[0])
-        self.assertIn("state=success", posted[0])
-        self.assertIn("context=security-gate", posted[0])
+    def test_queued_pr_verdict_is_posted_on_the_queue_commit(self):
+        done, log = self.run_step()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(len(self.posted(log)), 1, log)
+        self.assertIn("state=success", self.posted(log)[0])
+        self.assertIn("--pr 405", " ".join(l for l in log if l.startswith("gate ")))
+        self.assertNotIn("--post", " ".join(log))  # the old script would post on the PR head, not the queue commit
 
-    def test_a_pr_without_success_fails_the_group_and_names_the_pr(self):
-        for state in ("pending", "failure", ""):
-            code, posted = self.run_group({self.P1: "success", self.P2: state})
-            self.assertEqual(code, 0)
-            self.assertIn("state=failure", posted[0], state)
-            self.assertIn("#816", " ".join(posted[0]), state)
+    def test_verdict_is_read_fresh_at_queue_time(self):
+        done, log = self.run_step(state="pending")
+        self.assertIn("state=pending", self.posted(log)[0])
 
-    def test_pr_branch_commits_in_the_compare_range_are_not_group_entries(self):
-        # compare lists the PR's own commits and any main-merge inside the PR branch; only the first-parent chain counts
-        inner = "6" * 40
-        commits = [{"sha": inner, "parents": [self.BASE, "7" * 40], "message": "Merge branch 'main' into feat"},
-                   {"sha": self.P1, "parents": [inner], "message": "feat: x"},
-                   {"sha": self.G1, "parents": [self.BASE, self.P1], "message": "Merge pull request #821 from x/y"},
-                   {"sha": self.G2, "parents": [self.G1, self.P2], "message": "Merge pull request #816 from x/z"}]
-        _, posted = self.run_group({self.P1: "success", self.P2: "success"}, commits)
-        self.assertIn("state=success", posted[0])
+    def test_pr_head_that_is_not_a_parent_fails(self):
+        done, log = self.run_step(parents=("d" * 40, OLD))
+        self.assertIn("state=failure", self.posted(log)[0])
 
-    def test_api_errors_still_post_failure_on_the_group_head(self):
-        # review finding 1: an unposted status leaves the queue entry waiting for its timeout
-        for needle, kind in (("compare/", "error"), ("compare/", "malformed"), ("/status", "error"), ("/pulls/", "error")):
-            code, posted = self.run_group({self.P1: "success", self.P2: "success"}, api_error=(needle, kind))
-            self.assertEqual(code, 0, (needle, kind))
-            self.assertEqual(len(posted), 1, (needle, kind))
-            self.assertIn("state=failure", posted[0], (needle, kind))
-
-    def test_a_two_parent_commit_that_is_not_a_pr_merge_fails_closed(self):
-        # review finding 2: no PR number in the message, so no PR to verify
-        commits = [{"sha": self.G2, "parents": [self.BASE, self.P1], "message": "Merge branch 'x' into main"}]
-        _, posted = self.run_group({self.P1: "success"}, commits)
-        self.assertIn("state=failure", posted[0])
-
-    def test_the_named_pr_must_have_the_second_parent_as_its_head(self):
-        _, posted = self.run_group({self.P1: "success", self.P2: "success"}, pr_heads={821: self.P1, 816: "9" * 40})
-        self.assertIn("state=failure", posted[0])
-        self.assertIn("#816", " ".join(posted[0]))
-
-    def test_a_revocation_before_the_write_is_caught_by_the_re_read_and_success_is_never_posted(self):
-        # review round 4 finding 2: success must not be visible, even briefly, when the PR status changed before the write
-        _, posted = self.run_group({self.P1: "success", self.P2: ["success", "pending"]})
-        group_posts = [a for a in posted if a[0].endswith(self.G2)]
-        self.assertEqual(len(group_posts), 1)
-        self.assertIn("state=failure", group_posts[0])
-        self.assertIn("#816", " ".join(group_posts[0]))
-
-    def test_a_revocation_after_the_write_is_still_corrected_by_the_last_read(self):
-        # review round 3 finding 2: the PR flip precedes the revocation write, so a re-read after the post sees it
-        _, posted = self.run_group({self.P1: "success", self.P2: ["success", "success", "pending"]})
-        group_posts = [a for a in posted if a[0].endswith(self.G2)]
-        self.assertIn("state=success", group_posts[0])
-        self.assertIn("state=failure", group_posts[-1])
-        self.assertIn("#816", " ".join(group_posts[-1]))
-
-    def test_a_stable_green_group_is_posted_once(self):
-        _, posted = self.run_group({self.P1: "success", self.P2: "success"})
-        self.assertEqual(len(posted), 1)
-
-    def test_a_commit_that_is_not_a_pr_merge_fails_closed(self):
-        commits = [{"sha": self.G2, "parents": [self.BASE], "message": "direct push"}]
-        _, posted = self.run_group({}, commits)
-        self.assertIn("state=failure", posted[0])
-
-    def test_an_empty_group_fails_closed(self):
-        _, posted = self.run_group({}, commits=[])
-        self.assertIn("state=failure", posted[0])
+    def test_queue_for_another_branch_fails_without_evaluating(self):
+        done, log = self.run_step(ref=f"refs/heads/gh-readonly-queue/dev/pr-405-{'d' * 40}")
+        self.assertIn("state=failure", self.posted(log)[0])
+        self.assertFalse([l for l in log if l.startswith("gate ")])
 
 
 class QueueRevocationTest(unittest.TestCase):
@@ -436,16 +395,13 @@ class WorkflowTest(unittest.TestCase):
         self.assertNotIn(".base.sha", self.text)
         self.assertIn("--default-branch", self.text)
 
-    def test_merge_group_trigger_posts_without_a_head_checkout_or_pr_number(self):
-        self.assertEqual(self.doc[True]["merge_group"]["types"], ["checks_requested"])
-        self.assertIn("--merge-group-head", self.text)
-        self.assertIn("github.event.merge_group.head_sha", self.doc["concurrency"]["group"])
-        self.assertIn("github.event_name == 'merge_group'", self.doc["jobs"]["security-gate"]["if"])
-
     def test_retarget_and_comment_deletion_retrigger_the_gate(self):
         # findings 3 and 4
         self.assertIn("edited", self.doc[True]["pull_request_target"]["types"])
         self.assertIn("deleted", self.doc[True]["issue_comment"]["types"])
+
+    def test_merge_queue_commit_gets_the_status(self):
+        self.assertIn("checks_requested", self.doc[True]["merge_group"]["types"])
 
     def test_only_status_write_is_added(self):
         self.assertEqual(self.doc["permissions"], {"contents": "read", "pull-requests": "read", "statuses": "write"})

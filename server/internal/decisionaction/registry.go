@@ -53,6 +53,9 @@ type Target string
 const (
 	TargetAgent Target = ""
 	TargetIssue Target = "issue"
+	// TargetWorkflow is a workflow of the request's workspace, named by
+	// params.workflow_id.
+	TargetWorkflow Target = "workflow"
 )
 
 // Definition is one allowlisted action. Execution is added with the extracted
@@ -64,6 +67,10 @@ type Definition struct {
 	Target     Target
 	DefaultTTL time.Duration
 	MaxTTL     time.Duration
+
+	// RequiresPreview stores a server-computed preview in the preconditions and
+	// makes approval present that preview's digest.
+	RequiresPreview bool
 
 	// Normalize is exported so a package that owns an executor can register
 	// its action type.
