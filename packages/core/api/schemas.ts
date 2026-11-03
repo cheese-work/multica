@@ -24,6 +24,8 @@ import type {
   ChatSessionUsage,
   ChatWakeup,
   PrioritizeQueuedChatTaskResponse,
+  ChatSupplement,
+  ResendChatSupplementResponse,
   SendChatMessageResponse,
   StartMikaOnboardingResponse,
   Comment,
@@ -927,6 +929,8 @@ export interface AppConfigResponse {
   server_version?: string;
   server_build?: string;
   server_commit?: string;
+  /** Path ("/docs") or URL of the docs this instance serves; absent = none. */
+  docs_url?: string;
 }
 
 // Schemas for the highest-risk API endpoints — those whose responses drive
@@ -1101,7 +1105,25 @@ export const OpenDecisionRequestListSchema = z.array(z.object({
   created_at: z.string(),
   chat_session_id: z.string(),
   message_id: z.string().nullable().catch(null),
+  source_comment_id: z.string().nullable().catch(null),
+  options: z.array(z.object({
+    label: z.string(),
+    what_happens: z.string().optional().catch(undefined),
+  }).loose()).catch([]),
 }).loose());
+
+// An unknown status degrades to `uncertain`: it never claims the agent read the
+// message and never invites a plain resend that could duplicate it.
+export const ChatSupplementSchema: z.ZodType<ChatSupplement> = z.object({
+  message_id: z.string(),
+  chat_session_id: z.string(),
+  task_id: z.string().default(""),
+  status: z.enum(["pending", "delivering", "delivered", "uncertain", "failed"]).catch("uncertain"),
+  failure_reason: z.string().nullish().transform((v) => v ?? null),
+  delivered_at: z.string().nullish().transform((v) => v ?? null),
+  acked_after_resend_at: z.string().nullish().transform((v) => v ?? null),
+  resent_task_id: z.string().nullish().transform((v) => v ?? null),
+}).loose();
 
 export const ChatMessageSchema = z.object({
   id: z.string(),
@@ -1123,6 +1145,7 @@ export const ChatMessageSchema = z.object({
   decision_requests: z.array(DecisionRequestCardSchema).optional().catch(undefined),
   scheduled_wakeup: ChatScheduledWakeupSchema.nullish().catch(undefined),
   carried_from_session_id: z.string().nullable().optional().catch(undefined),
+  supplement: ChatSupplementSchema.optional().catch(undefined),
   // Optional additive data degrades independently: a malformed suggestion
   // must not hide the assistant reply that contains it.
   quick_actions: z.array(ChatQuickActionSchema).catch([]).optional().default([]),
@@ -1355,6 +1378,7 @@ export const AppConfigSchema = z.object({
   server_version: OptionalStringSchema,
   server_build: OptionalStringSchema,
   server_commit: OptionalStringSchema,
+  docs_url: OptionalStringSchema,
 }).loose();
 
 export const EMPTY_APP_CONFIG: AppConfigResponse = {
@@ -1585,6 +1609,16 @@ export const SourceContextSnapshotSchema = z.object({
   source_issue: SourceContextIssueSnapshotSchema,
   comment_thread: z.array(SourceContextCommentSnapshotSchema),
   anchor_comment_id: z.string(),
+}).loose();
+
+export const CommentPreviewSchema = z.object({
+  comment_id: z.string(),
+  issue_id: z.string(),
+  issue_identifier: z.string(),
+  author_type: z.string().catch(""),
+  author_id: z.string().catch(""),
+  author_name: z.string().catch(""),
+  preview: z.string().catch(""),
 }).loose();
 
 export const SourceContextPreviewSchema = SourceContextSnapshotSchema.extend({
@@ -2249,6 +2283,58 @@ const TaskUsageSchema = z.object({
   cost_usd_ticks: z.number().optional(),
 }).loose();
 
+const NullableStringSchema = z.string().nullable().catch(null);
+
+const TaskPresetSettingsShape = {
+  model: NullableStringSchema,
+  thinking_level: NullableStringSchema,
+  service_tier: NullableStringSchema,
+  context_args: z.array(z.string()).catch([]),
+};
+
+export const TaskPresetRunSchema = z.object({
+  name: z.string(),
+  source: z.string().catch(""),
+  skips: z
+    .array(
+      z.object({
+        level: z.string().catch(""),
+        name: z.string().catch(""),
+        reason: z.string().catch(""),
+      }),
+    )
+    .catch([]),
+  claimed: z.object(TaskPresetSettingsShape).catch({
+    model: null,
+    thinking_level: null,
+    service_tier: null,
+    context_args: [],
+  }),
+  applied: z
+    .object({ ...TaskPresetSettingsShape, reported_at: z.string().catch("") })
+    .nullable()
+    .catch(null),
+});
+
+// Stale reasons are an open set, so `stale` stays a plain string.
+export const AgentPresetListSchema = z.array(
+  z.object({
+    name: z.string(),
+    model: NullableStringSchema,
+    thinking_level: NullableStringSchema,
+    service_tier: NullableStringSchema,
+    context_args: z.array(z.string()).nullable().catch(null),
+    is_default: z.boolean().catch(false),
+    stale: z.string().catch(""),
+    created_at: z.string().catch(""),
+    updated_at: z.string().catch(""),
+  }).loose(),
+);
+
+export const PresetCompletionsSchema = z.object({
+  names: z.array(z.string()).catch([]),
+}).loose();
+
 export const AgentTaskSchema = z.object({
   wakeup_id: z.string().optional().catch(undefined),
   cancelled_by_comment_change: z.boolean().optional().catch(undefined),
@@ -2293,6 +2379,7 @@ export const AgentTaskSchema = z.object({
   // `.catch(undefined)` collapses a bad array to "no usage recorded", which
   // the UI already renders as an em dash.
   usage: z.array(TaskUsageSchema).optional().catch(undefined),
+  preset_run: TaskPresetRunSchema.optional().catch(undefined),
 }).loose();
 
 // Outcome counts are required: every backend that serves this endpoint
@@ -2332,7 +2419,7 @@ export const TaskMessagePayloadSchema = z.object({
   issue_id: z.string().default(""),
   chat_session_id: z.string().optional(),
   seq: z.number().default(0),
-  type: z.enum(["text", "thinking", "tool_use", "tool_result", "error"]).catch("text"),
+  type: z.enum(["text", "thinking", "tool_use", "tool_result", "error", "silence_warn", "tool_stalled"]).catch("text"),
   tool: z.string().optional(),
   content: z.string().optional(),
   input: z.record(z.string(), z.unknown()).optional(),
@@ -2401,6 +2488,7 @@ export const ChatSessionSchema: z.ZodType<ChatSession> = z.object({
   unread_count: z.number().optional(),
   last_message: ChatLastMessageSchema.nullable().optional().catch(undefined),
   pinned: z.boolean().optional(),
+  preset_name: z.string().nullable().optional().catch(undefined),
   channel_source: ChatChannelSourceSchema.optional().catch(undefined),
   compacting: z.boolean().optional().catch(undefined),
   context_tokens: z.number().nullable().optional().catch(undefined),
@@ -2567,6 +2655,8 @@ export const ChatPendingTaskSchema: z.ZodType<ChatPendingTask> = z.object({
   status: z.string().optional(),
   created_at: z.string().optional(),
   supports_queue: z.boolean().optional(),
+  // An unknown value reads as unsupported so Steer never fires on a guess.
+  head_supplement: z.enum(["capable", "starting", "unsupported"]).optional().catch("unsupported"),
   queued_tasks: ChatQueuedTasksSchema.optional(),
 }).loose();
 
@@ -2589,6 +2679,22 @@ export const StartMikaOnboardingResponseSchema: z.ZodType<StartMikaOnboardingRes
   started: z.boolean(),
   message_id: z.string().nullish().transform((id) => id ?? undefined),
   created_at: z.string().nullish().transform((at) => at ?? undefined),
+}).loose();
+
+export const EMPTY_CHAT_SUPPLEMENT: ChatSupplement = {
+  message_id: "",
+  chat_session_id: "",
+  task_id: "",
+  status: "pending",
+  failure_reason: null,
+  delivered_at: null,
+  acked_after_resend_at: null,
+  resent_task_id: null,
+};
+
+export const ResendChatSupplementResponseSchema: z.ZodType<ResendChatSupplementResponse> = z.object({
+  task_id: z.string(),
+  supplement: ChatSupplementSchema,
 }).loose();
 
 export const PrioritizeQueuedChatTaskResponseSchema:
@@ -4121,6 +4227,8 @@ export const IssueWakeupSchema = z.object({
   condition: WakeupConditionSchema.nullish().catch(null),
   max_fires: z.number().int().nullish(), fire_count: z.number().int().nonnegative().optional().catch(undefined),
   paused_reason: z.enum(["max_fires", "loop", "rate"]).nullish().catch(null),
+  // Set for an instance a scoped default created; absent from older servers.
+  default_rule_key: z.string().nullish().catch(null),
 });
 
 export const SystemWakeupSchema = z.object({
@@ -4181,6 +4289,10 @@ export const WakeupEffectiveRuleSchema = z.object({
     instance_id: z.string(), enabled: z.boolean(),
     paused_reason: z.string().nullish().transform((v) => v ?? null),
   }).nullish().transform((v) => v ?? null),
+  // Only a condition rule's preview carries it; an older server never does.
+  already_satisfied: z.object({
+    satisfied: z.number().int().nonnegative(), examined: z.number().int().nonnegative(), truncated: z.boolean().default(false),
+  }).nullish().catch(null).transform((v) => v ?? null),
   redacted: z.boolean().default(false),
   capabilities: WakeupCapabilitiesSchema,
 });

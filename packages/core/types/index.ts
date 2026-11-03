@@ -1,4 +1,4 @@
-export type { Issue, IssueStatus, BuiltInIssueStatus, IssuePriority, IssueAssigneeType, IssueMetadata, IssueMetadataValue, IssueReaction, SourceContextAttachment, SourceContextAuthor, SourceContextIssueSnapshot, SourceContextCommentSnapshot, SourceContextSnapshot, SourceContextLimitUsage, SourceContextPreview, SourceContextAuthorState, IssueSourceContext,
+export type { Issue, IssueStatus, BuiltInIssueStatus, IssuePriority, IssueAssigneeType, IssueMetadata, IssueMetadataValue, IssueReaction, SourceContextAttachment, SourceContextAuthor, SourceContextIssueSnapshot, SourceContextCommentSnapshot, SourceContextSnapshot, SourceContextLimitUsage, SourceContextPreview, CommentPreview, SourceContextAuthorState, IssueSourceContext,
   IssueDuplicateOf,
 } from "./issue";
 export type {
@@ -38,6 +38,10 @@ export type {
   AgentInvocationTarget,
   AgentInvocationTargetInput,
   AgentTask,
+  AgentPreset,
+  TaskPresetRun,
+  TaskPresetSettings,
+  TaskPresetSkip,
   TaskUsage,
   TaskAttribution,
   AttributionUser,
@@ -204,6 +208,10 @@ export type {
   ChatPendingTask,
   ChatQueuedTask,
   PrioritizeQueuedChatTaskResponse,
+  ChatSupplement,
+  ChatSupplementStatus,
+  ChatHeadSupplement,
+  ResendChatSupplementResponse,
   PendingChatTaskItem,
   PendingChatTasksResponse,
   HasPendingChatTasksResponse,

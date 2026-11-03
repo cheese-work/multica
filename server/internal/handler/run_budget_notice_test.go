@@ -77,6 +77,15 @@ func (c budgetCase) notices(t *testing.T, kind string) (comments, inbox int) {
 		dbfx.Count(t, `SELECT count(*) FROM inbox_item WHERE issue_id=$1 AND type='run_budget' AND details->>'notice'=$2`, c.issueID, kind)
 }
 
+// shortenRunBudgetCommitWait sets the commit wait to 300ms for one test.
+func shortenRunBudgetCommitWait(t *testing.T) time.Duration {
+	t.Helper()
+	const wait = 300 * time.Millisecond
+	old := runBudgetCommitWait.Swap(int64(wait))
+	t.Cleanup(func() { runBudgetCommitWait.Store(old) })
+	return wait
+}
+
 // waitNotices waits for the hook goroutine, then lets stray duplicates land
 // before the caller asserts exact counts.
 func (c budgetCase) waitNotices(t *testing.T, kind string, wantComments int) (comments, inbox int) {
@@ -294,9 +303,7 @@ func TestRunBudgetWarningWaitsForCommittedAdmission(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	old := runBudgetCommitWait
-	runBudgetCommitWait = 300 * time.Millisecond
-	t.Cleanup(func() { runBudgetCommitWait = old })
+	shortenRunBudgetCommitWait(t)
 
 	c := newBudgetCase(t, 2310010, mergeEdgeSteps, 5)
 	c.spend(t, 3)
@@ -357,14 +364,12 @@ func TestRunBudgetWarningSurvivesSlowCommit(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	old := runBudgetCommitWait
-	runBudgetCommitWait = 300 * time.Millisecond
-	t.Cleanup(func() { runBudgetCommitWait = old })
+	commitWait := shortenRunBudgetCommitWait(t)
 
 	c := newBudgetCase(t, 2310012, mergeEdgeSteps, 5)
 	c.spend(t, 3)
 	tx := c.slowAdmission(t)
-	time.Sleep(3 * runBudgetCommitWait)
+	time.Sleep(3 * commitWait)
 	if err := tx.Commit(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -373,20 +378,36 @@ func TestRunBudgetWarningSurvivesSlowCommit(t *testing.T) {
 	}
 }
 
+// A test may shorten the commit wait while a hook goroutine from an earlier
+// admission is still reading it; under -race the two must not conflict.
+func TestRunBudgetCommitWaitChangesWhileHookRuns(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c := newBudgetCase(t, 2310015, mergeEdgeSteps, 5)
+	c.spend(t, 4)
+	ev := c.warnEvent(t)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		testHandler.onRunBudgetEvent(context.Background(), ev)
+	}()
+	shortenRunBudgetCommitWait(t)
+	<-done
+}
+
 // A transaction that rolls back after the wait leaves no warning and keeps the
 // window's claim free.
 func TestRunBudgetWarningDroppedOnSlowRollback(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	old := runBudgetCommitWait
-	runBudgetCommitWait = 300 * time.Millisecond
-	t.Cleanup(func() { runBudgetCommitWait = old })
+	commitWait := shortenRunBudgetCommitWait(t)
 
 	c := newBudgetCase(t, 2310013, mergeEdgeSteps, 5)
 	c.spend(t, 3)
 	tx := c.slowAdmission(t)
-	time.Sleep(3 * runBudgetCommitWait)
+	time.Sleep(3 * commitWait)
 	if err := tx.Rollback(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -404,9 +425,7 @@ func TestRunBudgetWarningSurvivesDelayedDirectInsert(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	old := runBudgetCommitWait
-	runBudgetCommitWait = 300 * time.Millisecond
-	t.Cleanup(func() { runBudgetCommitWait = old })
+	commitWait := shortenRunBudgetCommitWait(t)
 
 	c := newBudgetCase(t, 2310014, mergeEdgeSteps, 5)
 	c.spend(t, 3)
@@ -421,7 +440,7 @@ func TestRunBudgetWarningSurvivesDelayedDirectInsert(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() { done <- c.admit(t) }()
-	time.Sleep(3 * runBudgetCommitWait)
+	time.Sleep(3 * commitWait)
 	if err := lock.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}

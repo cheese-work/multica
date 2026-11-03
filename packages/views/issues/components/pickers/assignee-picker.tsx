@@ -114,7 +114,8 @@ function AssigneePickerImpl({
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
   const { data: squads = [] } = useQuery(squadListOptions(wsId));
-  const { data: frequency = [] } = useQuery(assigneeFrequencyOptions(wsId));
+  // Ranking only matters inside the popover; a closed picker skips the request.
+  const { data: frequency = [] } = useQuery({ ...assigneeFrequencyOptions(wsId), enabled: open });
   const { getActorName } = useActorName();
 
   const currentMember = members.find((m) => m.user_id === user?.id);
