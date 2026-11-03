@@ -1524,6 +1524,7 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to process pull_request event")
 			return
 		}
+		h.configSyncOnPullRequest(ctx, body)
 	case "workflow_run":
 		if err := h.handleWorkflowRunEvent(ctx, body); err != nil {
 			slog.Error("github: workflow_run event failed", "err", err, "delivery_guid", deliveryGUID)
