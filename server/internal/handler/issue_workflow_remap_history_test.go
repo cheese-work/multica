@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 
@@ -30,7 +31,7 @@ func wantRemapRow(t *testing.T, issueID, from, to string) {
 		t.Fatalf("auth_source = %v, want null", trigger["auth_source"])
 	}
 	// A remap is not a person's move, so it opens no run-budget window.
-	if _, err := testHandler.Queries.LatestMemberStatusChange(context.Background(), parseUUID(issueID)); err != pgx.ErrNoRows {
+	if _, err := testHandler.Queries.LatestMemberStatusChange(context.Background(), parseUUID(issueID)); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("remap row opened a budget window (LatestMemberStatusChange err = %v)", err)
 	}
 }
