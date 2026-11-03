@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/featureflags"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 )
@@ -381,4 +382,51 @@ func TestCIGreenAdvancesByTheIssuesOverrideWorkflow(t *testing.T) {
 	snap.set(t, prNumber, "green-ovr-a", "SUCCESS")
 	refresh()
 	wantIssueStatus(t, fx.child.ID, "in_review")
+}
+
+// A sub-issue created from a captured comment honours the workflow override the
+// dialog sends, through the same validation as an ordinary create.
+func TestCommentSubIssueWithAWorkflowOverride(t *testing.T) {
+	seedTestCatalog(t)
+	syncIssueCounter(t)
+	wf := createTestWorkflow(t, "Comment override "+workflowTestSuffix(), "in_progress")
+	limited := createTestWorkflow(t, "Comment limited "+workflowTestSuffix())
+	sourceID := dbfx.Issue(t, "comment override source", testutil.Cols{"status": "todo"})
+	anchorID := dbfx.Comment(t, sourceID, "anchor comment")
+	syncIssueCounter(t)
+	build, err := service.BuildSourceContext(context.Background(), testHandler.Queries, util.MustParseUUID(testWorkspaceID), util.MustParseUUID(anchorID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	create := func(issue map[string]any) *testutil.Response {
+		req := withURLParam(newRequest("POST", "/api/comments/"+anchorID+"/sub-issues?workspace_id="+testWorkspaceID, map[string]any{
+			"mode": "manual", "capture_token": build.Token, "issue": issue,
+		}), "commentId", anchorID)
+		return testutil.Call(t, testHandler.CreateCommentSubIssue, req)
+	}
+
+	var created struct {
+		ID         string  `json:"id"`
+		WorkflowID *string `json:"workflow_id"`
+	}
+	create(map[string]any{"title": "comment override " + workflowTestSuffix(), "status": "in_progress", "workflow_id": wf.ID}).
+		Want(http.StatusCreated).JSON(&created)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM issue_source_context WHERE issue_id = $1`, util.MustParseUUID(created.ID))
+		testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, util.MustParseUUID(created.ID))
+	})
+	if created.WorkflowID == nil || *created.WorkflowID != wf.ID {
+		t.Fatalf("response workflow_id = %v, want %s", created.WorkflowID, wf.ID)
+	}
+	if got := issueOverride(t, created.ID); got != wf.ID {
+		t.Fatalf("stored override = %q, want %q", got, wf.ID)
+	}
+
+	// The same rejections as an ordinary create.
+	create(map[string]any{"title": "comment reject " + workflowTestSuffix(), "status": "in_progress", "workflow_id": limited.ID}).
+		Want(http.StatusBadRequest)
+	create(map[string]any{"title": "comment missing " + workflowTestSuffix(), "workflow_id": "00000000-0000-0000-0000-000000000001"}).
+		Want(http.StatusBadRequest)
+	create(map[string]any{"title": "comment bad " + workflowTestSuffix(), "workflow_id": "not-a-uuid"}).
+		Want(http.StatusBadRequest)
 }
