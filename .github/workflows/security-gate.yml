@@ -6,7 +6,7 @@
 # SECURITY — same boundary as mechanical-tier.yml: `pull_request_target` and `issue_comment` both run this
 # definition from the default branch. The job checks out the DEFAULT branch (never the PR's base: a PR can target an
 # unprotected branch that carries a modified gate script) and only FETCHES head objects for a diff read. Nothing from
-# the head is executed. Do not add a head checkout or a secret here.
+# the head is executed (semgrep reads an extracted copy of the changed files; CHE-3121). Do not add a head checkout or a secret here.
 # `issue_comment` (created, edited, deleted) is the path by which a verdict comment flips or revokes the status; `edited`
 # on the PR covers a retarget. The script re-reads the live head SHA and base ref.
 # `merge_group` posts the queued PR's freshly evaluated state on the queue commit; without it the required check never
@@ -39,7 +39,7 @@ jobs:
     name: security-gate-eval
     if: github.event_name == 'pull_request_target' || github.event_name == 'merge_group' || github.event.issue.pull_request
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99-gate"]') || fromJSON('["ubuntu-latest"]') }}
-    timeout-minutes: 10
+    timeout-minutes: 20
     env:
       PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
       GH_TOKEN: ${{ github.token }}
@@ -64,13 +64,18 @@ jobs:
           [ -n "$MERGE_GROUP_REF" ] && src="$MERGE_GROUP_REF"
           git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
             fetch --no-tags origin "+${src}:refs/remotes/pull/head"
+      - name: Install pinned semgrep (cached on the runner)
+        run: |
+          venv="$RUNNER_TOOL_CACHE/semgrep-1.183.0"
+          [ -x "$venv/bin/semgrep" ] || { python3 -m venv "$venv" && "$venv/bin/pip" install --quiet semgrep==1.183.0; }
+          echo "SEMGREP_BIN=$venv/bin/semgrep" >> "$GITHUB_ENV"
       - name: Evaluate the verdict and post the status
         run: |
           set -euo pipefail
           run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           if [ -z "$MERGE_GROUP_REF" ]; then
             exec python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" \
-              --default-branch "$DEFAULT_BRANCH" --run-url "$run_url" --post
+              --default-branch "$DEFAULT_BRANCH" --semgrep --run-url "$run_url" --post
           fi
           # Queue run. The default-branch script is used unchanged (it may predate this step), without --post: that
           # would write to the PR head. Its state goes on the queue commit, and only if the PR head is its parent.
@@ -84,8 +89,11 @@ jobs:
             exit 0
           fi
           pr="${BASH_REMATCH[2]}"
+          # Scan with semgrep once the default-branch script knows the flag; an older script would reject it.
+          sg=""
+          grep -q -e '--semgrep' scripts/security-gate/security_gate.py && sg="--semgrep"
           out="$(python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$pr" \
-            --default-branch "$DEFAULT_BRANCH" --run-url "$run_url")"
+            --default-branch "$DEFAULT_BRANCH" $sg --run-url "$run_url")"
           field() { python3 -c 'import json,sys; print(json.loads(sys.argv[1])[sys.argv[2]])' "$out" "$1"; }
           head="$(field sha)" state="$(field state)" desc="#$pr: $(field description)"
           parents="$(gh api "repos/$GITHUB_REPOSITORY/commits/$MERGE_GROUP_SHA" --jq '.parents[].sha')"  # not piped: grep -q + pipefail
