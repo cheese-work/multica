@@ -1,9 +1,13 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/multica-ai/multica/server/internal/passkey"
+	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func setPasskeyState(test *testing.T, userID, state string) {
@@ -54,4 +58,41 @@ func TestCardAnswerOfAGatedClassIsRefusedWhileThePersonIsInRecovery(test *testin
 	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "Option A"}); err != nil {
 		test.Fatalf("reversible answer during recovery: %v", err)
 	}
+}
+
+// Matrix row 3, end to end: after the C00 recovery an action approval stays
+// refused with no key and with one new key, and goes through with the second.
+func TestApproveDecisionActionStaysRefusedAfterRecoveryUntilTwoNewKeys(test *testing.T) {
+	mailer := &codeMailbox{}
+	handler := enrollHandler(test, true, mailer)
+	handler.ApprovalVerifier = acceptingVerifier
+	action := newPendingSecretAction(test)
+	for _, table := range []string{"passkey_enroll_ceremony", "passkey_enroll_limit", "passkey_event", "user_passkey"} {
+		dbfx.Cleanup(test, `DELETE FROM `+table+` WHERE user_id = $1`, action.humanID)
+	}
+	dbfx.Cleanup(test, `UPDATE "user" SET passkey_state = 'ready' WHERE id = $1`, action.humanID)
+	var email string
+	dbfx.QueryRow(test, `SELECT email FROM "user" WHERE id = $1`, action.humanID).Scan(&email)
+
+	if _, err := passkey.RecoverUser(context.Background(), handler.TxStarter, email); err != nil {
+		test.Fatal(err)
+	}
+	refused := func(stage string) {
+		test.Helper()
+		body := action.approve(test, handler, action.claim(test, map[string]string{"KEY": secretSentinel}), http.StatusForbidden)
+		if !strings.Contains(body, "recovery_required") {
+			test.Fatalf("%s: body %q lacks recovery_required", stage, body)
+		}
+		action.assertUntouched(test)
+	}
+	refused("after recovery")
+	for enrolled := 1; enrolled <= 2; enrolled++ {
+		mailer.body = nil
+		started := startEnrollment(test, handler, action.humanID)
+		testutil.Call(test, handler.FinishPasskeyEnrollment, enrollRequest("/api/passkeys/enroll/finish", action.humanID, "interactive_jwt", finishBody(test, started, mailer.code(test)))).Want(http.StatusOK)
+		if enrolled == 1 {
+			refused("after the first new key")
+		}
+	}
+	action.approve(test, handler, action.claim(test, map[string]string{"KEY": secretSentinel}), http.StatusOK)
 }

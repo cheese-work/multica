@@ -189,5 +189,5 @@ SELECT passkey_state FROM "user" WHERE id = $1 FOR SHARE NOWAIT;
 
 -- name: LeavePasskeyRecovery :exec
 UPDATE "user" SET passkey_state = 'ready', updated_at = now()
-WHERE id = $1 AND passkey_state = 'recovery_required'
-  AND (SELECT count(*) FROM user_passkey WHERE user_id = $1 AND revoked_at IS NULL AND suspect_at IS NULL) >= 2;
+WHERE "user".id = $1 AND "user".passkey_state = 'recovery_required'
+  AND (SELECT count(*) FROM user_passkey WHERE user_passkey.user_id = $1 AND user_passkey.revoked_at IS NULL AND user_passkey.suspect_at IS NULL) >= 2;
