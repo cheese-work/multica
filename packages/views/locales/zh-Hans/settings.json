@@ -421,6 +421,7 @@
       "issue": "任务",
       "notifications": "通知",
       "tokens": "API Token",
+      "passkeys": "通行密钥",
       "general": "常规",
       "github": "GitHub",
       "labs": "实验室",
@@ -714,6 +715,35 @@
       "granted": "当前浏览器可以弹出通知横幅。",
       "denied": "已被浏览器拦截。请在浏览器设置中为本站点开启通知权限。",
       "enabled_badge": "已启用"
+    }
+  },
+  "passkeys": {
+    "title": "通行密钥",
+    "purpose": "通行密钥使用此设备或安全密钥为敏感审批签名。",
+    "description": "审批受保护的决策时，通行密钥用于证明是你本人。请在不同设备上至少保留两个。",
+    "desktop_note": "通行密钥绑定到网页版，请在浏览器中管理。",
+    "open_in_browser": "在浏览器中打开",
+    "add": "添加通行密钥",
+    "code_hint": "我们已向你的邮箱发送验证码。输入验证码，然后按浏览器提示创建通行密钥。",
+    "code_label": "邮箱验证码",
+    "confirm": "确认",
+    "cancel": "取消",
+    "empty": "暂无通行密钥。",
+    "load_failed": "无法加载通行密钥。请刷新页面重试。",
+    "item_title": "通行密钥 {{number}}",
+    "item_meta": "添加于 {{created}} · {{lastUsed}}",
+    "last_used_with_date": "上次使用 {{date}}",
+    "last_used_never": "从未使用",
+    "revoke_aria": "吊销通行密钥 {{number}}",
+    "toast_enrolled": "通行密钥已添加",
+    "toast_enroll_failed": "添加通行密钥失败",
+    "toast_revoked": "通行密钥已吊销",
+    "toast_revoke_failed": "吊销通行密钥失败",
+    "revoke_dialog": {
+      "title": "吊销通行密钥",
+      "description": "该通行密钥将被移除，不能再用于审批决策。需要使用另一个通行密钥签名确认。",
+      "cancel": "取消",
+      "confirm": "吊销"
     }
   },
   "tokens": {

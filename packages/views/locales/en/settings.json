@@ -424,6 +424,7 @@
       "issue": "Issue",
       "notifications": "Notifications",
       "tokens": "API Tokens",
+      "passkeys": "Passkeys",
       "general": "General",
       "github": "GitHub",
       "labs": "Labs",
@@ -720,6 +721,35 @@
       "granted": "This browser can show notification banners.",
       "denied": "Blocked by your browser. Enable notifications for this site in your browser settings.",
       "enabled_badge": "Enabled"
+    }
+  },
+  "passkeys": {
+    "title": "Passkeys",
+    "purpose": "Passkeys sign security-sensitive approvals with this device or a security key.",
+    "description": "A passkey proves it is you when you approve a protected decision. Keep at least two, on different devices.",
+    "desktop_note": "Passkeys are tied to the web app, so manage them in your browser.",
+    "open_in_browser": "Open in browser",
+    "add": "Add passkey",
+    "code_hint": "We emailed you a code. Enter it, then follow your browser's prompt to create the passkey.",
+    "code_label": "Email code",
+    "confirm": "Confirm",
+    "cancel": "Cancel",
+    "empty": "No passkeys yet.",
+    "load_failed": "Could not load your passkeys. Reload the page to try again.",
+    "item_title": "Passkey {{number}}",
+    "item_meta": "Added {{created}} · {{lastUsed}}",
+    "last_used_with_date": "Last used {{date}}",
+    "last_used_never": "Never used",
+    "revoke_aria": "Revoke passkey {{number}}",
+    "toast_enrolled": "Passkey added",
+    "toast_enroll_failed": "Failed to add passkey",
+    "toast_revoked": "Passkey revoked",
+    "toast_revoke_failed": "Failed to revoke passkey",
+    "revoke_dialog": {
+      "title": "Revoke passkey",
+      "description": "This passkey will be removed and can no longer approve decisions. You sign this with another passkey.",
+      "cancel": "Cancel",
+      "confirm": "Revoke"
     }
   },
   "tokens": {
