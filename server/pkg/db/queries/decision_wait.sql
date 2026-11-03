@@ -133,18 +133,21 @@ WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
   AND dispatch_refused_since IS NULL AND closed_at IS NULL AND phase = 'waiting';
 
 -- name: ListDecisionEpisodeCandidates :many
--- Non-closed episodes that qualify for delivery or a system close (design
--- §4.4.1, clauses 1-4). The run-budget resume condition is the member status
--- change after the suspension or a later workflow budget start; the delivery
--- transaction re-checks it exactly.
+-- Non-closed episodes that §6 can deliver now (design §4.4.1, clauses 2-4).
+-- Closed-issue and unavailable-agent episodes are system-close candidates
+-- (clause 1); the system close is L5d (design §11), so they stay out of the
+-- batch here: an episode that cannot progress must not take a batch slot.
+-- Episodes with a refused dispatch sort last. The run-budget resume condition
+-- is the member status change after the suspension or a later workflow budget
+-- start; the delivery transaction re-checks it exactly.
 SELECT wait.* FROM decision_wait wait
 JOIN issue ON issue.id = wait.issue_id AND issue.workspace_id = wait.workspace_id
 JOIN agent asker ON asker.id = wait.asking_agent_id AND asker.workspace_id = wait.workspace_id
 LEFT JOIN project ON project.id = issue.project_id AND project.workspace_id = issue.workspace_id
-WHERE wait.closed_at IS NULL AND (
-    issue.status IN ('done', 'cancelled', 'agent_accepted', 'approved')
-    OR asker.archived_at IS NOT NULL OR asker.runtime_id IS NULL OR asker.kind = 'system'
-    OR (
+WHERE wait.closed_at IS NULL
+  AND issue.status NOT IN ('done', 'cancelled', 'agent_accepted', 'approved')
+  AND asker.archived_at IS NULL AND asker.runtime_id IS NOT NULL AND asker.kind <> 'system'
+  AND (
         (wait.phase = 'waiting' OR wait.suspend_reason = 'status_moved'
          OR (wait.suspend_reason = 'run_budget' AND (
              EXISTS (
@@ -170,17 +173,16 @@ WHERE wait.closed_at IS NULL AND (
                    AND moved.actor_type = 'member' AND moved.created_at > wait.suspended_at
              )
          )))
-        AND NOT EXISTS (
-            SELECT 1 FROM decision_request bound
-            WHERE bound.authority = 'human' AND bound.id = ANY(wait.request_ids) AND bound.status = 'open'
-        )
-        AND NOT EXISTS (
-            SELECT 1 FROM decision_answer live
-            JOIN decision_request bound ON bound.authority = 'human' AND bound.id = live.decision_request_id
-            WHERE bound.id = ANY(wait.request_ids) AND bound.status = 'answered'
-              AND live.disclaimed_at IS NULL AND live.woken_at IS NULL AND live.wake_at > clock_timestamp()
-        )
-    )
-)
-ORDER BY wait.id
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM decision_request bound
+      WHERE bound.authority = 'human' AND bound.id = ANY(wait.request_ids) AND bound.status = 'open'
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM decision_answer live
+      JOIN decision_request bound ON bound.authority = 'human' AND bound.id = live.decision_request_id
+      WHERE bound.id = ANY(wait.request_ids) AND bound.status = 'answered'
+        AND live.disclaimed_at IS NULL AND live.woken_at IS NULL AND live.wake_at > clock_timestamp()
+  )
+ORDER BY (wait.dispatch_refused_since IS NOT NULL), wait.dispatch_refused_since, wait.id
 LIMIT LEAST(GREATEST(sqlc.arg('batch_size')::int, 0), 100);

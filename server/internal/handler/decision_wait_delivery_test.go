@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"regexp"
 	"sort"
@@ -470,5 +471,50 @@ func TestDecisionEpisodeTerminalStateMapIsTotal(t *testing.T) {
 				t.Fatalf("continuation runs = %d, want 1", got)
 			}
 		})
+	}
+}
+
+// An episode that cannot progress must not take a batch slot: more than one
+// batch of closed-issue episodes, or of episodes with a refused dispatch, sorts
+// ahead of a ready episode and the ready one is still selected.
+func TestDecisionEpisodeCandidatesAreNotStarvedByStuckEpisodes(t *testing.T) {
+	f := newEpisodeFixture(t, false)
+	f.enter(t)
+	f.answerRequest(t, f.requestID, -time.Minute, false)
+	var readyID string
+	dbfx.QueryRow(t, `SELECT id::text FROM decision_wait WHERE issue_id = $1 AND closed_at IS NULL`, f.issueID).Scan(&readyID)
+
+	// Low ids sort first. Each filler needs its own issue (one open episode per issue).
+	// Fillers are test-owned and outlive the workspace cleanup, so they go before and after.
+	const fillerIDs = `DELETE FROM decision_wait WHERE id::text LIKE '00000000-0000-0000-000_-%'`
+	dbfx.Exec(t, fillerIDs)
+	t.Cleanup(func() { dbfx.Exec(t, fillerIDs) })
+	for i := 1; i <= decisionBatchSize+1; i++ {
+		for kind, status := range map[string]string{"closed": "done", "refused": "in_progress"} {
+			issueID := dbfx.Issue(t, "Filler "+kind, testutil.Cols{"status": status})
+			prefix := "00000000-0000-0000-0000-"
+			if kind == "refused" {
+				prefix = "00000000-0000-0000-0001-"
+			}
+			dbfx.Exec(t, `INSERT INTO decision_wait (id, workspace_id, issue_id, asking_agent_id, human_user_id, request_ids, restore_status, dispatch_refused_since)
+				SELECT $1::uuid, workspace_id, $2::uuid, asking_agent_id, human_user_id, '{}', 'in_progress',
+					CASE WHEN $3::text = 'refused' THEN now() END
+				FROM decision_wait WHERE id = $4::uuid`, fmt.Sprintf("%s%012d", prefix, i), issueID, kind, readyID)
+		}
+	}
+
+	waits, err := testHandler.Queries.ListDecisionEpisodeCandidates(context.Background(), decisionBatchSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, wait := range waits {
+		found = found || uuidToString(wait.ID) == readyID
+		if strings.HasPrefix(uuidToString(wait.ID), "00000000-0000-0000-0000-") {
+			t.Fatalf("closed-issue episode %s was selected; it cannot progress before the system close", uuidToString(wait.ID))
+		}
+	}
+	if !found {
+		t.Fatalf("the ready episode is not among %d candidates behind %d stuck ones", len(waits), 2*(decisionBatchSize+1))
 	}
 }
