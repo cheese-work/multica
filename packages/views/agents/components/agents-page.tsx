@@ -62,7 +62,7 @@ import {
 import { TruncatedTooltip } from "@multica/ui/components/common/truncated-tooltip";
 import { useNavigation, useRowLink } from "../../navigation";
 import { ActorAvatar } from "../../common/actor-avatar";
-import { docsLocalePrefix } from "../../common/docs-locale";
+import { docsUrl } from "../../common/docs-url";
 import { ProviderLogo } from "../../runtimes/components/provider-logo";
 import {
   CollectionPageHeader,
@@ -263,7 +263,7 @@ function PageHeaderBar({
       title={t(($) => $.page.title)}
       count={totalCount}
       learnMore={{
-        href: `https://multica.ai/docs${docsLocalePrefix(i18n.language)}/agents`,
+        href: docsUrl("/agents", i18n.language),
         label: t(($) => $.page.learn_more),
       }}
       actions={
