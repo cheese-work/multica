@@ -67,3 +67,11 @@ RETURNING task_id;
 -- Share lock: a taint writer updates the task row, so it waits for an
 -- authorization in flight, and an authorization that starts after it sees it.
 SELECT taint_ids FROM agent_task_queue WHERE id = $1 FOR SHARE;
+
+-- name: EndTaskLaunchScopes :one
+-- The daemon reports that the processes holding docker or device: scopes exited.
+-- Counts only during a fence: a report while elevated would let a later fence
+-- finish without anything having stopped.
+UPDATE task_elevation SET launch_scopes_ended_at = COALESCE(launch_scopes_ended_at, clock_timestamp()), updated_at = clock_timestamp()
+WHERE task_id = $1 AND state IN ('fencing', 'restricted_final')
+RETURNING *;

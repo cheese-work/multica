@@ -53,7 +53,7 @@ jobs:
       (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) ||
       (github.event.comment.user.id == 282619718 && github.event.comment.user.type == 'Bot' &&
       startsWith(github.event.comment.body, 'Security-Gate-Verdict:'))))
-    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99-gate"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 20
     env:
       PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
