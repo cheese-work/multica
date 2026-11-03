@@ -92,7 +92,7 @@ func TestIssueCommentWriteReportsInvalidAgentMentions(test *testing.T) {
 				}
 				message := cli.FormatError(runErr, false)
 				for _, want := range []string{
-					"invalid_agent_mentions", "nothing was saved",
+					"invalid_agent_mentions", "the comment was not saved", "attachments already uploaded stay on the issue",
 					"bytes " + strconv.Itoa(firstStart) + "-" + strconv.Itoa(firstStart+len(first)), first,
 					"bytes " + strconv.Itoa(secondStart) + "-" + strconv.Itoa(secondStart+len(second)), second,
 				} {

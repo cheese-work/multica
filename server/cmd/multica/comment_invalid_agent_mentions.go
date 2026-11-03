@@ -33,7 +33,8 @@ func invalidAgentMentionsMessage(httpErr *cli.HTTPError, sent string) (string, b
 		return "", false
 	}
 	var message strings.Builder
-	message.WriteString("comment rejected (invalid_agent_mentions): nothing was saved. " +
+	message.WriteString("comment rejected (invalid_agent_mentions): the comment was not saved " +
+		"(attachments already uploaded stay on the issue). " +
 		"These agent mentions do not exist, are archived, or you cannot invoke them:")
 	for _, mention := range payload.InvalidMentions {
 		fmt.Fprintf(&message, "\n  bytes %d-%d", mention.Start, mention.End)

@@ -389,7 +389,7 @@ var issueCommentUpdateCmd = &cobra.Command{
 		"mentions. Attachments are left as they are.\n\n" +
 		"A mention of an agent that does not exist, is archived or that you cannot invoke is refused " +
 		"(invalid_agent_mentions): the command exits non-zero, lists each rejected range with its text, " +
-		"and nothing is saved.",
+		"and the comment is not saved (attachments uploaded before the post stay on the issue).",
 	Args: exactArgs(1),
 	RunE: runIssueCommentUpdate,
 }
