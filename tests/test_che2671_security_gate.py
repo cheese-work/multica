@@ -246,7 +246,9 @@ class MergeGroupStepTest(unittest.TestCase):
     STUB_GATE = ('#!/bin/bash\n'  # the old script: --pr N required (an empty N is an argparse error), verdict read live
                  'echo "gate $*" >> "$LOG"\n'
                  'case " $* " in *" --pr "[0-9]*) ;; *) exit 2 ;; esac\n'
-                 'if [ -n "${STATES:-}" ]; then n=$(grep -c "^gate " "$LOG"); STATE=$(echo $STATES | cut -d" " -f$n); fi\n'  # Nth read answers Nth state
+                 'n=$(grep -c "^gate " "$LOG")\n'  # this is the Nth read: STATES answers per read, FAIL_AT makes one read error out
+                 '[ "$n" = "${FAIL_AT:-}" ] && exit 1\n'
+                 'if [ -n "${STATES:-}" ]; then STATE=$(echo $STATES | cut -d" " -f$n); fi\n'
                  'echo \'{"context": "security-gate", "sha": "\'$HEAD\'", "state": "\'$STATE\'", "description": "PASS on x"}\'\n')
 
     def step_run(self):
@@ -255,21 +257,21 @@ class MergeGroupStepTest(unittest.TestCase):
         self.assertEqual(len(gate), 1)
         return gate[0]["run"]
 
-    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success", states=""):
+    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success", script="", states="", fail_at=""):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             (tmp / "bin").mkdir()
             (tmp / "scripts/security-gate").mkdir(parents=True)
             (tmp / "bin/gh").write_text(self.STUB_GH)
             (tmp / "scripts/security-gate/gate.sh").write_text(self.STUB_GATE)
-            (tmp / "scripts/security-gate/security_gate.py").write_text("")  # the step runs it via the shadowed python3
+            (tmp / "scripts/security-gate/security_gate.py").write_text(script)  # the step runs it via the shadowed python3
             (tmp / "bin/python3").write_text(
                 '#!/bin/bash\n[ "${1##*/}" = security_gate.py ] && exec bash "$(dirname "$1")/gate.sh" "${@:2}"\n'
                 f'exec {sys.executable} "$@"\n')
             for path in (tmp / "bin/gh", tmp / "bin/python3", tmp / "scripts/security-gate/gate.sh"):
                 path.chmod(0o755)
             env = {**os.environ, "PATH": f"{tmp / 'bin'}:{os.environ['PATH']}", "LOG": str(tmp / "log"), "HEAD": HEAD,
-                   "STATE": state, "STATES": states, "PARENTS": " ".join(parents), "MERGE_GROUP_REF": ref, "MERGE_GROUP_SHA": self.QUEUE,
+                   "STATE": state, "STATES": states, "FAIL_AT": str(fail_at), "PARENTS": " ".join(parents), "MERGE_GROUP_REF": ref, "MERGE_GROUP_SHA": self.QUEUE,
                    "PR_NUMBER": "", "GH_TOKEN": "t", "DEFAULT_BRANCH": "main", "GITHUB_REPOSITORY": "o/r",
                    "GITHUB_SERVER_URL": "https://github.com", "GITHUB_RUN_ID": "7"}
             done = subprocess.run(["bash", "-c", self.step_run()], cwd=tmp, env=env, capture_output=True, text=True)
@@ -287,23 +289,40 @@ class MergeGroupStepTest(unittest.TestCase):
         self.assertIn("--pr 405", " ".join(l for l in log if l.startswith("gate ")))
         self.assertNotIn("--post", " ".join(log))  # the old script would post on the PR head, not the queue commit
 
+    def test_queue_run_scans_with_semgrep_once_the_gate_script_supports_it(self):
+        done, log = self.run_step(script='ap.add_argument("--semgrep")')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("--semgrep", " ".join(l for l in log if l.startswith("gate ")))
+
+    def test_queue_run_omits_semgrep_for_an_older_gate_script(self):
+        done, log = self.run_step()
+        self.assertNotIn("--semgrep", " ".join(l for l in log if l.startswith("gate ")))
+
     def test_verdict_is_read_fresh_at_queue_time(self):
         done, log = self.run_step(state="pending")
         self.assertIn("state=pending", self.posted(log)[0])
 
     def test_a_verdict_revoked_after_the_first_read_never_ends_as_success(self):
-        # review round 6 P1: evaluate once + post the cached state let a late success overwrite a revocation failure
-        for states in ("success pending", "success success pending", "success success success"):
+        # a late success must not overwrite a revocation failure: a success is read again before and after it is posted
+        for states, last in (("success pending", "pending"), ("success success pending", "pending"),
+                             ("success success success", "success")):
             done, log = self.run_step(states=states)
-            last = self.posted(log)[-1]
-            expect = "state=success" if states.endswith("success success success") else "state=pending"
-            self.assertIn(expect, last, (states, log))
-        done, log = self.run_step(states="success pending")
-        self.assertNotIn("state=success", self.posted(log)[-1])
+            self.assertIn(f"state={last}", self.posted(log)[-1], (states, log))
 
     def test_a_success_is_read_again_before_and_after_it_is_published(self):
         done, log = self.run_step(states="success success success")
         self.assertEqual(len([l for l in log if l.startswith("gate ")]), 3, log)
+
+    def test_a_failed_read_after_the_success_was_posted_fails_closed(self):
+        # round 7 P1: an error in the post-write read left the cached success in place under set -e
+        done, log = self.run_step(fail_at=3)
+        self.assertIn("state=success", self.posted(log)[0], log)
+        self.assertIn("state=failure", self.posted(log)[-1], (done.stderr, log))
+
+    def test_a_failed_read_before_the_success_is_posted_posts_a_failure_not_a_stall(self):
+        for fail_at in (1, 2):
+            done, log = self.run_step(fail_at=fail_at)
+            self.assertIn("state=failure", self.posted(log)[-1], (fail_at, done.stderr, log))
 
     def test_pr_head_that_is_not_a_parent_fails(self):
         done, log = self.run_step(parents=("d" * 40, OLD))
