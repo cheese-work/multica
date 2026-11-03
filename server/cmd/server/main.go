@@ -858,6 +858,11 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.IssueWakeupJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register issue wakeups", "error", err)
 	}
+	// CHE-1082: the legacy backfill that opens scoped wakeup definition writes.
+	// It runs from the deploy that ships it, so activation needs no manual step.
+	if err := schedulerMgr.Register(scheduler.WakeupDefinitionActivationJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
+		slog.Error("scheduler: register wakeup definition activation", "error", err)
+	}
 	if err := schedulerMgr.Register(scheduler.ChatWakeupJob(&service.ChatWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register chat wakeups", "error", err)
 	}
@@ -880,9 +885,6 @@ func main() {
 	// live at deletion time with a workspace-scoped receipt per sweep.
 	if err := schedulerMgr.Register(scheduler.ProvenanceExportRetentionJob(queries, pool)); err != nil {
 		slog.Warn("scheduler: failed to register provenance_export_retention job", "error", err)
-	}
-	if err := schedulerMgr.Register(scheduler.GovernanceCaseEvidenceRetentionJob(queries, pool)); err != nil {
-		slog.Warn("scheduler: failed to register governance_case_evidence_retention job", "error", err)
 	}
 	// CHE-2147: the workflow run/job mirror behind the github_run wakeup
 	// condition is a 30-day cache; drop rows with no event for that long.

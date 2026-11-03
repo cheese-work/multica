@@ -77,10 +77,12 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"chat_message":                       workspaceDelete,
 	"chat_pinned_agent":                  workspaceDelete,
 	"chat_session":                       workspaceDelete,
+	"chat_task_supplement":               workspaceDelete,
 	"chat_wakeup":                        workspaceDelete,
 	"client_usage_daily":                 workspaceDeleteDetach,
 	"comment":                            workspaceDelete,
 	"comment_reaction":                   workspaceDelete,
+	"comment_search_text":                workspaceDelete, // CHE-2943 derived; the comment delete trigger removes it, no FK.
 	"comment_supersession":               workspaceDelete,
 	"comment_trigger_rate_limit":         workspaceDelete,
 	"contact_sales_inquiry":              workspaceDeleteKeep,
@@ -101,6 +103,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"decision_intent_target":             workspaceDeleteWorker,
 	"decision_request":                   workspaceDeleteWorker,
 	"decision_worker_lease":              workspaceDeleteKeep,
+	"wakeup_definition_activation":       workspaceDeleteKeep,
 	"dingtalk_group_presence":            workspaceDelete,
 	"dingtalk_bot_identity":              workspaceDelete,
 	"dingtalk_group_route":               workspaceDelete,
@@ -162,6 +165,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"issue_reaction":                     workspaceDelete,
 	"issue_source_context":               workspaceDelete,
 	"issue_source_context_object_intent": workspaceDeleteSettle,
+	"issue_search_text":                  workspaceDelete, // CHE-2943 derived; the issue delete trigger removes it, no FK.
 	"issue_status":                       workspaceDelete,
 	"issue_workflow":                     workspaceDelete,
 	"issue_subscriber":                   workspaceDelete,
@@ -230,6 +234,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"stage_generation":                   workspaceDelete,
 	"sys_cron_executions":                workspaceDeleteKeep,
 	"task_message":                       workspaceDelete,
+	"silence_alert_receipt":              workspaceDelete, // CHE-2990 per-task alert receipt; removed with its task in DeleteTaskBatch.
 	"task_supplement":                    workspaceDelete,
 	"task_supplement_capability":         workspaceDelete,
 	"task_pr_event_capability":           workspaceDelete, // CHE-2298 a2
@@ -251,6 +256,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"workflow_webhook_event":             workspaceDelete, // CHE-2031
 	"workflow_webhook_nonce":             workspaceDelete, // CHE-2031 no workspace_id; deleted through its endpoint.
 	"workspace":                          workspaceDelete,
+	"workspace_config_sync":              workspaceDelete,
+	"ask_guard_event":                    workspaceDelete,
 	"workspace_invitation":               workspaceDelete,
 	"workspace_share_link":               workspaceDelete,
 }

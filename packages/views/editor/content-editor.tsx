@@ -74,6 +74,7 @@ import { posFromAnchor, type TextAnchor } from "./text-anchor";
 import { useLinkHover, LinkHoverCard } from "./link-hover-card";
 import { AttachmentDownloadProvider } from "./attachment-download-context";
 import { PersistedEditorMediaProvider } from "../media/media-context";
+import { copyChipKeys } from "../rich-content/chip-copy";
 import "katex/dist/katex.min.css";
 import "./styles/index.css";
 
@@ -137,6 +138,10 @@ interface ContentEditorBaseProps {
   onUpdate?: (markdown: string, baseMarkdown: string) => void;
   placeholder?: string;
   className?: string;
+  /** Accessible name of the editable surface, for editors with a visible label that cannot use `htmlFor`. */
+  ariaLabel?: string;
+  /** Id of the element that describes the editable surface (a hint under the field). */
+  ariaDescribedBy?: string;
   debounceMs?: number;
   onSubmit?: () => void;
   onBlur?: () => void;
@@ -383,6 +388,8 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       onUpdate,
       placeholder: placeholderText = "",
       className,
+      ariaLabel,
+      ariaDescribedBy,
       debounceMs = 300,
       onSubmit,
       onBlur,
@@ -760,6 +767,8 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
         },
         attributes: {
           class: cn("flex-1 rich-text-editor text-body outline-none", className),
+          ...(ariaLabel ? { role: "textbox", "aria-multiline": "true", "aria-label": ariaLabel } : {}),
+          ...(ariaDescribedBy ? { "aria-describedby": ariaDescribedBy } : {}),
         },
       },
     });
@@ -823,6 +832,9 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     // owner opted in, emit the markdown cached at `onUpdate` time so a long
     // debounce can't swallow the last edit when the surrounding modal closes.
     useEffect(() => {
+      // The map is created once and only mutated, so the cleanup sees the live
+      // set of uploads through this copy of the reference.
+      const inFlightUploads = inFlightUploadsRef.current;
       return () => {
         const hadDebounce = !!debounceRef.current;
         if (hadDebounce) {
@@ -852,7 +864,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
         // no-ops its own transaction dispatch once `editor.isDestroyed`, so
         // this is the only remaining path that can still deliver the
         // attachment link and id (CHE-502).
-        const pending = Array.from(inFlightUploadsRef.current.values());
+        const pending = Array.from(inFlightUploads.values());
         if (pending.length === 0) return;
         const baseline = flushed ?? lastEmittedRef.current ?? documentBaseRef.current;
         void Promise.allSettled(pending).then((settled) => {
@@ -1124,6 +1136,9 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
             ref={wrapperRef}
             className="relative flex flex-1 min-h-full flex-col"
             onMouseDown={handleContainerMouseDown}
+            // After ProseMirror's own copy: overrides its clipboard only
+            // when the selection holds a chip.
+            onCopy={(e) => copyChipKeys(e.nativeEvent)}
           >
             <EditorContent className="flex flex-1 flex-col" editor={editor} />
             {showBubbleMenu && (

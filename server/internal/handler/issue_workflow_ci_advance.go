@@ -102,6 +102,18 @@ func (h *Handler) moveIssueOnEdge(ctx context.Context, issue db.Issue, to, sourc
 // tryMoveIssueOnEdge is moveIssueOnEdge for a caller that needs the reason a
 // move did not happen: pgx.ErrNoRows means a concurrent writer won.
 func (h *Handler) tryMoveIssueOnEdge(ctx context.Context, issue db.Issue, to, source string, extra map[string]any, startHandler bool) (moved, ranHandler bool, err error) {
+	// The lock holds through the grant, so a person's move cannot read this
+	// issue's status between this write and the grant. The block an exhausted
+	// budget causes neither grants nor needs it: it runs under the refused
+	// admission's locks, after that admission wrote the window's ledger row, and
+	// the boundary lock comes before those locks everywhere else.
+	release := func() {}
+	if source != "run_budget" {
+		if release, err = h.lockRunBudgetBoundary(ctx, issue.ID); err != nil {
+			return false, false, fmt.Errorf("run budget boundary: %w", err)
+		}
+	}
+	defer release()
 	params := db.UpdateIssueParams{
 		ID:               issue.ID,
 		ExpectedRevision: pgtype.Int8{Int64: issue.Revision, Valid: true},
@@ -119,7 +131,11 @@ func (h *Handler) tryMoveIssueOnEdge(ctx context.Context, issue db.Issue, to, so
 		return false, false, fmt.Errorf("workflow refused the move: %w", err)
 	}
 	write.system = true
-	updated, err := h.updateIssueWithStatusGuard(ctx, issue.WorkspaceID, to, params, write)
+	statusRec := &statusRecord{workspaceID: issue.WorkspaceID, trigger: statusTriggerFromSystem(edgeMoveCause(source))}
+	if handoff != nil {
+		statusRec.handoffWorkflow = handoff.def.Name
+	}
+	updated, err := h.updateIssueWithStatusGuard(withStatusRecord(ctx, statusRec), issue.WorkspaceID, to, params, write)
 	if err != nil {
 		return false, false, fmt.Errorf("status write failed: %w", err)
 	}
@@ -150,14 +166,21 @@ func (h *Handler) tryMoveIssueOnEdge(ctx context.Context, issue db.Issue, to, so
 		payload["prev_assignee_id"] = uuidToPtr(issue.AssigneeID)
 	}
 	if handoff != nil {
-		payload["workflow_handoff"] = workflowHandoffPayload(updated, handoff, h.workflowHandoffBrief(ctx, updated, handoff), willRun, "")
+		handoffPayload := workflowHandoffPayload(updated, handoff, h.workflowHandoffBrief(ctx, updated, handoff), willRun, "")
+		payload["workflow_handoff"] = handoffPayload
+		h.finishRecordedHandoff(ctx, statusRec, handoffPayload)
+	}
+	if statusRec.activity != nil {
+		payload["activity_id"] = uuidToString(statusRec.activity.ID)
 	}
 	h.publish(protocol.EventIssueUpdated, uuidToString(updated.WorkspaceID), "system", "", payload)
+	h.publishRecordedStatusActivity(statusRec, "system", "")
 	// The block an exhausted budget causes is a consequence of exhaustion, and
 	// it lands before the window's exhaustion claim: it must not grant.
 	if source != "run_budget" {
 		h.grantRunBudgetStep(ctx, updated, issue.Status)
 	}
+	release()
 	if willRun {
 		h.IssueService.CancelStaleStepRuns(ctx, updated, trigger.AgentID)
 		ranHandler = h.dispatchIssueRun(ctx, updated, trigger, "system", "", "")
@@ -166,6 +189,22 @@ func (h *Handler) tryMoveIssueOnEdge(ctx context.Context, issue db.Issue, to, so
 		h.processChildEvents(ctx, updated.ParentIssueID, issue.ParentIssueID)
 	}
 	return true, ranHandler, nil
+}
+
+// edgeMoveCause maps the source of an edge move to the cause kind its history
+// row carries.
+func edgeMoveCause(source string) string {
+	switch source {
+	case "workflow_edge":
+		return "workflow_edge"
+	case "ci_green_advance":
+		return "ci_advance"
+	case "run_budget":
+		return "run_budget"
+	case "idle_started_guard":
+		return "watchdog"
+	}
+	return "system"
 }
 
 // issueResponseWithCategory is the issue as clients receive it on an update.
