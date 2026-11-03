@@ -74,6 +74,14 @@ func resetDefaultWorkflow(t *testing.T) {
 	})
 }
 
+// dropStoredDefaultWorkflow removes a Default an earlier test left stored, for
+// a test that needs to snapshot its own (a leftover carries that test's
+// handoffs, or predates the statuses this one creates).
+func dropStoredDefaultWorkflow(t *testing.T) {
+	t.Helper()
+	dbfx.Exec(t, `DELETE FROM issue_workflow WHERE workspace_id = $1 AND is_default`, testWorkspaceID)
+}
+
 func createWorkflowTestProject(t *testing.T, title string) string {
 	t.Helper()
 	projectID := dbfx.Project(t, title)
@@ -784,6 +792,7 @@ func TestArchiveStatusGuardsNamedWorkflowsOnly(t *testing.T) {
 
 func TestClaimCarriesProjectWorkflow(t *testing.T) {
 	seedTestCatalog(t)
+	dropStoredDefaultWorkflow(t)
 	resetDefaultWorkflow(t)
 	agentID := seededReadyAgentID(t)
 	quietProject := createWorkflowTestProject(t, "Workflow quiet project")
