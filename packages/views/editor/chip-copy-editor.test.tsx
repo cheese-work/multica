@@ -55,7 +55,9 @@ function Harness({ onReady, withHandler = true }: { onReady: (el: HTMLElement, e
   return (
     <div
       data-testid="wrapper"
-      ref={(el) => el && editor && onReady(el, editor)}
+      ref={(el) => {
+        if (el && editor) onReady(el, editor);
+      }}
       onCopy={withHandler ? (e) => copyChipKeys(e.nativeEvent) : undefined}
     >
       <EditorContent editor={editor} />
