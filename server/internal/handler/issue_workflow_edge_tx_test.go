@@ -7,8 +7,13 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // moveIssueOnEdgeTx writes the status, its history row and the next step's run
@@ -229,5 +234,47 @@ func TestEnqueueSquadLeaderRunInTxRollsBackWithTheCaller(t *testing.T) {
 	}
 	if _, runs := edgeTxRows(t, testPool, c.issueID); runs != 0 {
 		t.Fatalf("%d runs after rollback, want 0", runs)
+	}
+}
+
+// The move reads only through the caller's transaction. On a pool of one
+// connection, held by that transaction, any read through the pool waits for a
+// connection that never frees; enough such moves at once exhaust the real pool
+// the same way.
+func TestMoveIssueOnEdgeTxReadsOnlyThroughTheCallersTransaction(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	c, _ := newHandoffEdgeCase(t, 2853005)
+	ctx := context.Background()
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(c.issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := testPool.Config()
+	cfg.MaxConns = 1
+	small, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer small.Close()
+	h := New(db.New(small), small, realtime.NewHub(), events.New(), service.NewEmailService(), nil, nil, analytics.NoopClient{}, Config{})
+
+	tx, err := small.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	moveCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	move, err := h.moveIssueOnEdgeTx(moveCtx, h.Queries.WithTx(tx), issue, "in_review", "ci_green_advance", nil, true)
+	if err != nil {
+		t.Fatalf("moveIssueOnEdgeTx on a pool of one held connection: %v", err)
+	}
+	if move.RunRefused != nil {
+		t.Fatalf("run refused: %v", move.RunRefused)
+	}
+	if _, runs := edgeTxRows(t, tx, c.issueID); runs != 1 {
+		t.Fatalf("%d runs inside the transaction, want 1", runs)
 	}
 }

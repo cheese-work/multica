@@ -13,6 +13,44 @@ import (
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
+// TxScoped is a TaskService whose reads and writes go through q, the queries
+// of a transaction the caller holds open. A read through the pool would wait
+// for a second connection while the caller holds one, and enough concurrent
+// callers exhaust the pool. Configuration is shared; the locks and caches are
+// not copied, so the copy is for one transaction's preparation and insert. The
+// func a *InTx method returns runs on the original service, after the commit.
+func (s *TaskService) TxScoped(q *db.Queries) *TaskService {
+	return &TaskService{
+		RecordMemberActivity: s.RecordMemberActivity,
+		Queries:              q,
+		TxStarter:            s.TxStarter,
+		Hub:                  s.Hub,
+		Bus:                  s.Bus,
+		Analytics:            s.Analytics,
+		Metrics:              s.Metrics,
+		Wakeup:               s.Wakeup,
+		PRSnapshotsEnabled:   s.PRSnapshotsEnabled,
+		WorkflowEdges:        s.WorkflowEdges,
+		Entitlements:         s.Entitlements,
+		SourceContextStorage: s.SourceContextStorage,
+		FeatureFlags:         s.FeatureFlags,
+		EmptyClaim:           s.EmptyClaim,
+		ReclaimCheck:         s.ReclaimCheck,
+		Composio:             s.Composio,
+		QuickActions:         s.QuickActions,
+		ProviderFailureProbe: s.ProviderFailureProbe,
+		committed:            s.afterCommit(),
+	}
+}
+
+// afterCommit is the service that runs the work following a commit.
+func (s *TaskService) afterCommit() *TaskService {
+	if s.committed != nil {
+		return s.committed
+	}
+	return s
+}
+
 // CancelStaleStepRunsInTx is CancelStaleStepRuns with the caller's queries: the
 // agent's pending runs stamped for a step the issue has left are cancelled in
 // the caller's transaction, so the run for the step it entered can take the
@@ -42,13 +80,14 @@ func (s *TaskService) CancelStaleStepRunsInTx(ctx context.Context, q *db.Queries
 		}
 		cancelled = append(cancelled, done)
 	}
+	after := s.afterCommit()
 	return func() {
 		for _, task := range cancelled {
 			slog.Info("task cancelled", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
-			s.captureTaskCancelled(ctx, task)
-			s.ReconcileAgentStatus(ctx, task.AgentID)
-			s.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, task)
-			s.NotifyTaskFinished(task)
+			after.captureTaskCancelled(ctx, task)
+			after.ReconcileAgentStatus(ctx, task.AgentID)
+			after.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, task)
+			after.NotifyTaskFinished(task)
 		}
 	}, nil
 }
@@ -74,10 +113,11 @@ func (s *TaskService) EnqueueIssueRunInTx(ctx context.Context, q *db.Queries, is
 	if err != nil {
 		return nil, err
 	}
+	after := s.afterCommit()
 	return func() {
 		notifyAfterCommit()
-		s.RecordHumanDelegation(ctx, attr)
-		s.PublishTaskEnqueued(ctx, task)
+		after.RecordHumanDelegation(ctx, attr)
+		after.PublishTaskEnqueued(ctx, task)
 	}, nil
 }
 
@@ -107,9 +147,10 @@ func (s *TaskService) EnqueueSquadLeaderRunInTx(ctx context.Context, q *db.Queri
 	if err != nil {
 		return nil, err
 	}
+	after := s.afterCommit()
 	return func() {
 		notifyTaskEnqueued(ctx, task)
-		s.RecordHumanDelegation(ctx, attr)
-		s.PublishTaskEnqueued(ctx, task)
+		after.RecordHumanDelegation(ctx, attr)
+		after.PublishTaskEnqueued(ctx, task)
 	}, nil
 }

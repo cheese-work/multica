@@ -126,6 +126,11 @@ type TaskService struct {
 	// each unique index the rerun insert can hit is exercised
 	// deterministically (TestRerunIssueRetryLoop*).
 	testHookBeforeRerunEnqueue func()
+
+	// committed is the service a txScoped copy was made from; the work that
+	// follows a commit runs on it, not on the copy whose Queries is the
+	// transaction.
+	committed *TaskService
 }
 
 type SourceContextObjectStore interface {
