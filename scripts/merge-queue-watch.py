@@ -55,6 +55,11 @@ def find_stalls(response, required, now, max_age_minutes=30):
     for entry in entries["nodes"]:
         head = entry["headCommit"]
         if not head:
+            # No head, so no state clock. AWAITING_CHECKS cannot have lasted longer than the entry
+            # has been queued: younger than the limit is healthy, older cannot be judged.
+            enqueued = dt.datetime.fromisoformat(entry["enqueuedAt"].replace("Z", "+00:00"))
+            if entry["state"] == "AWAITING_CHECKS" and now - enqueued >= dt.timedelta(minutes=max_age_minutes):
+                stalls.append(f"inconclusive: {entry['pullRequest']['url']} is AWAITING_CHECKS without a merge-group head, queued since {entry['enqueuedAt']}")
             continue
         since = head["committedDate"]
         if now - dt.datetime.fromisoformat(since.replace("Z", "+00:00")) < dt.timedelta(minutes=max_age_minutes):

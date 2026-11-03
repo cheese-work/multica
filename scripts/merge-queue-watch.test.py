@@ -50,6 +50,15 @@ class FindStallsTest(unittest.TestCase):
     def test_long_queued_entry_without_a_head_passes(self):
         self.assertEqual(watch.find_stalls(fixture("long-queued-no-head"), REQUIRED, NOW), [])
 
+    def test_headless_awaiting_checks_beyond_30_minutes_is_inconclusive_not_green(self):
+        stalls = watch.find_stalls(fixture("headless-awaiting-checks"), REQUIRED, NOW)
+        self.assertEqual(len(stalls), 1)
+        self.assertIn("inconclusive", stalls[0])
+        self.assertIn("AWAITING_CHECKS", stalls[0])
+
+    def test_headless_awaiting_checks_younger_than_30_minutes_passes(self):
+        self.assertEqual(watch.find_stalls(fixture("headless-awaiting-checks-young"), REQUIRED, NOW), [])
+
     def test_required_check_missing_on_old_head_fails(self):
         stalls = watch.find_stalls(fixture("missing-required-check"), REQUIRED, NOW)
         self.assertEqual(len(stalls), 1)
