@@ -12,12 +12,47 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 TIER_DIR = ROOT / "scripts/mechanical-tier"
 WORKFLOW = ROOT / ".github/workflows/mechanical-tier.yml"
 GIT_ENV = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null",
            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
+
+
+# `gh api <path> --jq <filter>`: serve canned JSON for the path and apply the filter with jq, as gh does.
+FAKE_GH_SH = r"""#!/bin/bash
+path="$2"; filter="$4"
+case "$path" in
+  repos/o/r/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/pulls) key=pulls_a ;;
+  repos/o/r/commits/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee/pulls) key=pulls_e ;;
+  repos/o/r/commits/*/pulls) key=none ;;
+  repos/o/r/pulls/7) key=pr7 ;;
+  repos/o/r/pulls/8) key=pr8 ;;
+  repos/o/r/pulls/9) key=pr9 ;;
+  "repos/o/r/pulls?state=open&sort=updated&direction=desc&per_page=30") key=open ;;
+  repos/o/r/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/statuses*) key=st_a ;;
+  repos/o/r/commits/cccccccccccccccccccccccccccccccccccccccc/statuses*) key=st_c ;;
+  repos/o/r/commits/*/statuses*) key=none ;;
+  *) echo "unexpected path $path" >&2; exit 1 ;;
+esac
+printf '%s' "$FIXTURE" | jq -rc ".$key" | jq -rc "$filter"
+"""
+A, B, C, E = "a" * 40, "b" * 40, "c" * 40, "e" * 40
+FIND_FIXTURE = {
+    "none": [],
+    "pulls_a": [{"number": 7, "state": "open", "head": {"sha": A}}],
+    "pulls_e": [{"number": 9, "state": "open", "head": {"sha": "f" * 40}}],
+    "pr7": {"number": 7, "base": {"sha": B}, "head": {"sha": A}},
+    "pr8": {"number": 8, "base": {"sha": B}, "head": {"sha": C}},
+    "pr9": {"number": 9, "base": {"sha": B}, "head": {"sha": "f" * 40}},
+    "open": [{"number": 8, "head": {"sha": C}}, {"number": 7, "head": {"sha": A}}],
+    "st_a": [{"context": "security-gate", "updated_at": "2026-11-03T08:00:00Z"}],
+    "st_c": [{"context": "security-gate", "updated_at": "2026-11-03T09:00:05Z"},
+             {"context": "other", "updated_at": "2026-11-03T09:00:05Z"}],
+}
 
 
 def load_classifier():
@@ -96,8 +131,7 @@ class WorkflowShape(unittest.TestCase):
 
     def test_checks_out_only_the_base_and_never_the_head(self):
         self.assertEqual(self.text.count("actions/checkout@"), 1)
-        self.assertIn("ref: ${{ env.BASE_SHA }}", self.text)
-        self.assertIn("BASE_SHA: ${{ github.event.pull_request.base.sha }}", self.text)
+        self.assertIn("ref: ${{ matrix.base }}", self.text)
         self.assertIn("persist-credentials: false", self.text)
         self.assertNotIn("pull_request.head.ref", self.text)
         self.assertNotRegex(self.text, r"ref: \$\{\{ github\.event\.pull_request\.head")
@@ -119,34 +153,65 @@ class ReceiptRefreshAfterCi(unittest.TestCase):
     def setUp(self):
         self.text = WORKFLOW.read_text()
 
-    def test_a_finished_ci_run_re_runs_the_classifier(self):
-        self.assertRegex(self.text, r"(?m)^  workflow_run:\n    workflows: \[CI\]\n    types: \[completed\]")
-
-    def test_a_security_gate_status_re_runs_the_classifier_on_the_status_commit(self):
-        # security-gate also runs on issue_comment and merge_group; those runs report the default-branch SHA, but the
-        # status it posts always lands on the pull request head, so the `status` event carries the right SHA.
-        self.assertRegex(self.text, r"(?m)^  status:\n")
+    def test_a_finished_ci_or_security_gate_run_re_runs_the_classifier(self):
+        # `status` events posted with GITHUB_TOKEN start no workflow run; workflow_run does fire for them.
+        self.assertRegex(self.text, r"(?m)^  workflow_run:\n    workflows: \[CI, security-gate\]\n    types: \[completed\]")
+        self.assertNotRegex(self.text, r"(?m)^  status:")
         self.assertNotRegex(self.text, r"(?m)^  issue_comment:")
-        self.assertNotIn("security-gate]", self.text.split("jobs:")[0].split("workflow_run:")[1].split("\n\n")[0])
-        self.assertIn("github.event_name != 'status' || github.event.context == 'security-gate'", self.text)
-        self.assertIn("github.event.pull_request.head.sha || github.event.workflow_run.head_sha || github.event.sha", self.text)
 
-    def test_a_pull_request_event_needs_no_lookup_and_every_other_event_does(self):
-        self.assertIn("if: github.event_name != 'pull_request_target'", self.text)
+    def test_the_classifier_runs_once_per_pull_request_the_find_job_names(self):
+        wf = yaml.safe_load(self.text)
+        classify = wf["jobs"]["mechanical-tier"]
+        self.assertEqual(classify["needs"], "find")
+        self.assertEqual(classify["strategy"]["matrix"]["include"], "${{ fromJSON(needs.find.outputs.targets) }}")
+        self.assertFalse(classify["strategy"]["fail-fast"])
+        self.assertEqual(classify["concurrency"], {"group": "mechanical-tier-${{ matrix.head }}", "cancel-in-progress": False})
+        self.assertEqual(classify["env"]["HEAD_SHA"], "${{ matrix.head }}")
+        self.assertEqual(classify["env"]["PR_NUMBER"], "${{ matrix.pr }}")
 
-    def test_the_refresh_finds_the_pull_request_through_the_api_and_checks_its_head(self):
-        self.assertRegex(self.text, r"commits/\$HEAD_SHA/pulls")
-        self.assertIn(".head.sha == env.HEAD_SHA", self.text)
-
-    def test_the_refresh_keeps_the_base_only_checkout(self):
+    def test_the_find_job_checks_nothing_out_and_the_classify_job_keeps_the_base_only_checkout(self):
+        wf = yaml.safe_load(self.text)
+        self.assertFalse(any("uses" in step for step in wf["jobs"]["find"]["steps"]))
         self.assertEqual(self.text.count("actions/checkout@"), 1)
-        self.assertRegex(self.text, r"ref: \$\{\{ env\.BASE_SHA \}\}")
         self.assertNotIn("workflow_run.head_branch", self.text)
         self.assertNotRegex(self.text, r"ref: \$\{\{ github\.event\.workflow_run")
 
-    def test_a_pull_request_event_and_a_refresh_for_one_head_share_a_concurrency_group_without_cancelling(self):
-        self.assertIn("mechanical-tier-${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || github.event.sha }}", self.text)
-        self.assertIn("cancel-in-progress: false", self.text)
+    def find(self, event, **env):
+        wf = yaml.safe_load(self.text)
+        script = wf["jobs"]["find"]["steps"][0]["run"]
+        d = tempfile.mkdtemp()
+        try:
+            fake = Path(d) / "gh"
+            fake.write_text(FAKE_GH_SH)
+            fake.chmod(0o755)
+            out = Path(d) / "out"
+            full = {**os.environ, "PATH": d + ":" + os.environ["PATH"], "GITHUB_REPOSITORY": "o/r",
+                    "GITHUB_OUTPUT": str(out), "EVENT_NAME": event, "PR_NUMBER": "", "BASE_SHA": "", "HEAD_SHA": "",
+                    "RUN_NAME": "", "RUN_CREATED": "", "FIXTURE": json.dumps(FIND_FIXTURE), **env}
+            done = subprocess.run(["bash", "-e", "-c", script], env=full, capture_output=True, text=True, timeout=60)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            line = [l for l in out.read_text().splitlines() if l.startswith("targets=")][0]
+            return json.loads(line[len("targets="):])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_a_pull_request_event_names_the_pull_request_of_the_event(self):
+        got = self.find("pull_request_target", PR_NUMBER="7", BASE_SHA="b" * 40, HEAD_SHA="a" * 40)
+        self.assertEqual(got, [{"pr": 7, "base": "b" * 40, "head": "a" * 40}])
+
+    def test_a_finished_run_for_a_pull_request_head_names_that_pull_request_from_the_api(self):
+        got = self.find("workflow_run", HEAD_SHA="a" * 40, RUN_NAME="CI", RUN_CREATED="2026-11-03T09:00:00Z")
+        self.assertEqual(got, [{"pr": 7, "base": "b" * 40, "head": "a" * 40}])
+
+    def test_a_security_gate_run_on_the_default_branch_sha_names_the_pull_requests_whose_gate_status_it_wrote(self):
+        got = self.find("workflow_run", HEAD_SHA="d" * 40, RUN_NAME="security-gate", RUN_CREATED="2026-11-03T09:00:00Z")
+        self.assertEqual(got, [{"pr": 8, "base": "b" * 40, "head": "c" * 40}])
+
+    def test_a_ci_run_with_no_open_pull_request_for_its_head_names_nothing_and_does_not_scan(self):
+        self.assertEqual(self.find("workflow_run", HEAD_SHA="d" * 40, RUN_NAME="CI", RUN_CREATED="2026-11-03T09:00:00Z"), [])
+
+    def test_a_pull_request_whose_head_moved_since_the_run_is_not_named(self):
+        self.assertEqual(self.find("workflow_run", HEAD_SHA="e" * 40, RUN_NAME="CI", RUN_CREATED="2026-11-03T09:00:00Z"), [])
 
     def test_a_receipt_taken_while_ci_is_pending_fails_verify_once_ci_succeeds_and_a_fresh_one_passes(self):
         mt, d, base, head = head_commit({"docs/note.md": "x\n"})
@@ -159,7 +224,7 @@ class ReceiptRefreshAfterCi(unittest.TestCase):
             self.assertFalse(ok, "a pending-CI receipt must not verify against finished CI")
             self.assertIn("recomputed ci differs from the receipt", why)
             fresh = mt.classify(d, base, head, ci=mt.fetch_ci(done, "o/r", head, None, pr=7))
-            self.assertEqual(fresh["tier"], 0)
+            self.assertEqual(fresh["tier"], 0, fresh["tier_reasons"])
             self.assertEqual(mt.verify(fresh, d, ci=mt.fetch_ci(done, "o/r", head, None, pr=7)), (True, []))
         finally:
             shutil.rmtree(d, ignore_errors=True)
