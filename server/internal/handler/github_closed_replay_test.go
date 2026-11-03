@@ -20,6 +20,14 @@ type failOnceDB struct {
 	failed bool
 }
 
+func (f *failOnceDB) QueryRow(ctx context.Context, query string, args ...any) pgx.Row {
+	if !f.failed && strings.Contains(query, f.marker) {
+		f.failed = true
+		return errRow{err: errors.New("injected failure")}
+	}
+	return f.DBTX.QueryRow(ctx, query, args...)
+}
+
 func (f *failOnceDB) Query(ctx context.Context, query string, args ...any) (pgx.Rows, error) {
 	if !f.failed && strings.Contains(query, f.marker) {
 		f.failed = true
@@ -99,6 +107,28 @@ func TestGitHubReplayClosedPullRequestRejectsOtherBaseRepository(t *testing.T) {
 // merged, so the refresh no longer reports it. The replay stays owed until it
 // finishes, and a retry completes it.
 func TestGitHubReplayClosedPullRequestStaysOwedUntilItFinishes(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		inject func(t *testing.T, handler *Handler, failing *failOnceDB)
+		marker string
+	}{
+		{"lifecycle", func(t *testing.T, _ *Handler, failing *failOnceDB) {
+			tasks := testHandler.TaskService
+			original := tasks.Queries
+			tasks.Queries = db.New(failing)
+			t.Cleanup(func() { tasks.Queries = original })
+		}, "-- name: ListIssueIDsForPR "},
+		{"auto-completion", func(_ *testing.T, handler *Handler, failing *failOnceDB) {
+			handler.Queries = db.New(failing)
+		}, "-- name: GetIssueInWorkspace "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testReplayStaysOwedUntilItFinishes(t, tc.inject, tc.marker)
+		})
+	}
+}
+
+func testReplayStaysOwedUntilItFinishes(t *testing.T, inject func(*testing.T, *Handler, *failOnceDB), marker string) {
 	fixture := newGitHubReviewFixture(t)
 	pull := githubForkGatePR(t, fixture, map[string]any{"id": 424242, "full_name": "acme/widget", "fork": false})
 	mergedAt := time.Now().UTC().Truncate(time.Second).Format(time.RFC3339)
@@ -117,13 +147,13 @@ func TestGitHubReplayClosedPullRequestStaysOwedUntilItFinishes(t *testing.T) {
 		return dbfx.Count(t, `SELECT count(*) FROM github_pr_closed_replay WHERE repo_owner='acme' AND repo_name='widget' AND pr_number=2019`)
 	}
 
-	tasks := testHandler.TaskService
-	original := tasks.Queries
-	failing := &failOnceDB{DBTX: testPool, marker: "-- name: ListIssueIDsForPR "}
-	tasks.Queries = db.New(failing)
-	t.Cleanup(func() { tasks.Queries = original })
+	failing := &failOnceDB{DBTX: testPool, marker: marker}
+	inject(t, &handler, failing)
 	if err := handler.replayClosedPullRequest(context.Background(), 2019001, "acme", "widget", 2019); err == nil {
-		t.Fatal("replay hid the lifecycle failure")
+		t.Fatal("replay hid the failure")
+	}
+	if !failing.failed {
+		t.Fatalf("injected failure on %q never ran", marker)
 	}
 	var state string
 	dbfx.QueryRow(t, `SELECT state FROM github_pull_request WHERE workspace_id=$1 AND pr_number=2019`, testWorkspaceID).Scan(&state)
