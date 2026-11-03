@@ -123,8 +123,15 @@ hunks only (`diff.hunks`, lines prefixed ` `, `-` or `+`). `diff.problem` is
 Advisory lint: the CLI prints a `hint:` line on stderr, and the API returns
 `hints[]`, when `context_eli10`, `stakes_if_wrong` or an option's
 `what_happens` holds a commit SHA or an internal code such as `L2` or `RGS-1`,
-or when `context_eli10` is not two to five sentences. Hints never block a
-request.
+or when `context_eli10` is not two to five sentences. A hint also appears
+when `decision` looks like several questions (two or more `?` or `？`, or
+wording such as "answer 1 to 5"), and when a `human_steps` action or command
+leaves values implicit ("etc."). One question per request is enforced by
+structure: one `decision` field, typed `options[]` and typed `human_steps[]`.
+Wording never refuses a request. `agent_did` needs at least 10 letters after
+links, IDs and hex values are removed; the bound counts characters, not
+space-separated words, so text written without spaces is measured fairly.
+Hints never block a request.
 
 The server renders the fields and source links into the stored ask, issue
 comment and DM message. The stored request also retains `source_comment_id`

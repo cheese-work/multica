@@ -106,6 +106,12 @@ func (b *Broker) prOp(parent context.Context, req PRRequest) (res PRResult, stat
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	in, _ := json.Marshal(req)
+	op, status, err := b.authorize(parent, inputHash("pr", b.pin.Repo, b.pin.Ref, string(in)))
+	if err != nil {
+		return res, status, err
+	}
+	defer func() { b.finish(op, err) }()
 	g, status, err := b.mint(parent, true)
 	if err != nil {
 		return res, status, err
@@ -117,6 +123,9 @@ func (b *Broker) prOp(parent context.Context, req PRRequest) (res PRResult, stat
 	repo := "/repos/" + b.pin.Slug
 	var pr ghPR
 	if req.Op == "create" {
+		if err := b.write(op); err != nil {
+			return res, http.StatusForbidden, err
+		}
 		in := map[string]any{"title": *req.Title, "head": strings.TrimPrefix(b.pin.Ref, "refs/heads/"), "base": req.Base, "draft": req.Draft}
 		if req.Body != nil {
 			in["body"] = *req.Body
@@ -137,6 +146,9 @@ func (b *Broker) prOp(parent context.Context, req PRRequest) (res PRResult, stat
 		return res, http.StatusForbidden, errors.New("that PR is not this run's own")
 	}
 	res = PRResult{pr.Number, pr.HTMLURL}
+	if err := b.write(op); err != nil {
+		return res, http.StatusForbidden, err
+	}
 	switch req.Op {
 	case "edit":
 		in := map[string]any{}
@@ -151,20 +163,42 @@ func (b *Broker) prOp(parent context.Context, req PRRequest) (res PRResult, stat
 		status, err = b.gh(ctx, g, http.MethodPost, fmt.Sprintf("%s/issues/%d/comments", repo, req.Number), map[string]any{"body": *req.Body}, nil)
 	case "ready": // REST has no endpoint for this; GraphQL does
 		var out struct {
+			Data   json.RawMessage            `json:"data"`
 			Errors []struct{ Message string } `json:"errors"`
 		}
 		status, err = b.gh(ctx, g, http.MethodPost, "/graphql", map[string]any{
 			"query":     "mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id}) { pullRequest { id } } }",
 			"variables": map[string]string{"id": pr.NodeID},
 		}, &out)
-		if err == nil && len(out.Errors) > 0 {
-			status, err = http.StatusBadGateway, fmt.Errorf("github: %s", out.Errors[0].Message)
+		if err == nil {
+			status, err = http.StatusBadGateway, readyOutcome(out.Data, len(out.Errors) > 0)
 		}
 	}
 	if err != nil {
 		return res, status, err
 	}
 	return res, http.StatusOK, nil
+}
+
+// readyOutcome reads a GraphQL answer to the ready mutation. GraphQL answers 200
+// for every outcome, so only two are definite: the success payload with no
+// error, and an error with no data entry at all, which GraphQL raises before it
+// executes anything. An error next to a data entry, or no payload, may have
+// followed a mutation that ran.
+func readyOutcome(data json.RawMessage, hasErrors bool) error {
+	var d struct {
+		Mark *struct {
+			PullRequest *struct{ ID string } `json:"pullRequest"`
+		} `json:"markPullRequestReadyForReview"`
+	}
+	_ = json.Unmarshal(data, &d)
+	switch {
+	case !hasErrors && d.Mark != nil && d.Mark.PullRequest != nil && d.Mark.PullRequest.ID != "":
+		return nil
+	case hasErrors && len(data) == 0:
+		return notApplied{errors.New("github: graphql request failed before execution")}
+	}
+	return errors.New("github: graphql answer does not show whether the PR was marked ready")
 }
 
 // gh makes one authorized call and returns the HTTP status to answer with if
@@ -179,7 +213,11 @@ func (b *Broker) gh(ctx context.Context, g grant, method, path string, in, out a
 	if resp.StatusCode/100 != 2 {
 		var msg struct{ Message string }
 		_ = json.Unmarshal(body, &msg)
-		return http.StatusBadGateway, fmt.Errorf("github %s %s: status %d: %.200s", method, path, resp.StatusCode, msg.Message)
+		err := fmt.Errorf("github %s %s: status %d: %.200s", method, path, resp.StatusCode, msg.Message)
+		if resp.StatusCode/100 == 4 && resp.StatusCode != http.StatusRequestTimeout { // GitHub refused it
+			err = notApplied{err}
+		}
+		return http.StatusBadGateway, err
 	}
 	if out != nil {
 		if err := json.Unmarshal(body, out); err != nil {

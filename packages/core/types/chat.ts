@@ -23,6 +23,7 @@ export type ChatMessageKind =
   | "onboarding_kickoff"
   | "onboarding_opening"
   | "continuation_summary"
+  | "compaction_summary"
   | "compact_notice"
   | "decision_request"
   | "decision_cancel_notice"
