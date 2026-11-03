@@ -386,7 +386,10 @@ var issueCommentUpdateCmd = &cobra.Command{
 		"with the newer revision: that overwrites the other edit.\n\n" +
 		"Changing the content is a new trigger, not a silent fix: the server cancels runs this " +
 		"comment triggered that are still in flight and re-enqueues every agent the new body " +
-		"mentions. Attachments are left as they are.",
+		"mentions. Attachments are left as they are.\n\n" +
+		"A mention of an agent that does not exist, is archived or that you cannot invoke is refused " +
+		"(invalid_agent_mentions): the command exits non-zero, lists each rejected range with its text, " +
+		"and nothing is saved.",
 	Args: exactArgs(1),
 	RunE: runIssueCommentUpdate,
 }
@@ -3137,7 +3140,9 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	}
 	var result map[string]any
 	if err := client.PostJSON(ctx, "/api/issues/"+issueID+"/comments", body, &result); err != nil {
-		return fmt.Errorf("add comment: %w", err)
+		output, _ := cmd.Flags().GetString("output")
+		sent, _ := body["content"].(string)
+		return fmt.Errorf("add comment: %w", invalidAgentMentionsError(err, sent, output, os.Stdout))
 	}
 
 	fmt.Fprintf(os.Stderr, "Comment added to issue %s.\n", issueRef.Display)
@@ -3224,7 +3229,8 @@ func runIssueCommentUpdate(cmd *cobra.Command, args []string) error {
 		"content":           content,
 		"expected_revision": expectedRevision,
 	}, &result); err != nil {
-		return fmt.Errorf("update comment: %w", err)
+		output, _ := cmd.Flags().GetString("output")
+		return fmt.Errorf("update comment: %w", invalidAgentMentionsError(err, content, output, os.Stdout))
 	}
 
 	fmt.Fprintf(os.Stderr, "Comment %s updated.\n", commentID)
