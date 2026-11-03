@@ -46,6 +46,11 @@ export interface WakeupScope {
   workspaceId: string;
   /** Unset when the rule is not tied to one issue. */
   issueId?: string;
+  /**
+   * The rule is a workspace definition, not an issue rule: no schedule, no
+   * timeout wake. Neither fits a definition.
+   */
+  definition?: boolean;
 }
 
 const ALL_CONDITIONS: WakeupCondition[] = [
@@ -54,7 +59,9 @@ const ALL_CONDITIONS: WakeupCondition[] = [
 
 /** Conditions the scope can offer; watching one named issue needs an issue to be relative to. */
 export function wakeupConditionsFor(scope: WakeupScope): WakeupCondition[] {
-  return scope.issueId ? ALL_CONDITIONS : ALL_CONDITIONS.filter((c) => c !== "other_issue");
+  return ALL_CONDITIONS.filter(
+    (c) => (scope.issueId || c !== "other_issue") && !(scope.definition && (c === "at" || c === "recurring")),
+  );
 }
 
 export type WakeupField = "status" | "assignee" | "label" | "property";

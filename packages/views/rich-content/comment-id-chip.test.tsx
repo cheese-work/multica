@@ -7,7 +7,7 @@
  * short prefix stay plain text.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { NavigationProvider } from "../navigation/context";
 import type { NavigationAdapter } from "../navigation/types";
@@ -94,6 +94,23 @@ beforeEach(() => {
 });
 
 describe("comment ID chips", () => {
+  it("copies a selected comment chip as its issue#comment key (CHE-3371)", async () => {
+    getCommentPreview.mockResolvedValue(PREVIEW);
+    const { container } = renderContent(`Look at ${COMMENT_ID} please`);
+    await waitFor(() => expect(container.querySelector("[data-copy-token]")).not.toBeNull());
+
+    const range = document.createRange();
+    range.selectNodeContents(container.firstElementChild!);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    const data: Record<string, string> = {};
+    fireEvent.copy(container.firstElementChild!, {
+      clipboardData: { setData: (t: string, v: string) => (data[t] = v) },
+    });
+
+    expect(data["text/plain"]).toBe(`Look at CHE-1#comment-${COMMENT_ID} please`);
+  });
+
   it("renders a full comment UUID as a chip with issue key, author and preview", async () => {
     getCommentPreview.mockResolvedValue(PREVIEW);
     const { container } = renderContent(`Look at ${COMMENT_ID} please`);

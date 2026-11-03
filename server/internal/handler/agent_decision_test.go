@@ -26,7 +26,7 @@ func newAgentDecisionFixture(t *testing.T) agentDecisionFixture {
 		dbfx.Exec(t, `UPDATE agent_task_queue SET issue_id = $1 WHERE id = $2`, f.issueID, task)
 	}
 	f.scope = map[string]any{
-		"work_author_id": f.writerID, "waived_gate": "screenshot_evidence", "route": "cosign",
+		"work_author_id": f.writerID, "waived_gate": "screenshot_evidence", "route": "cosign", "decision_class": "reversible_gate",
 		"signers":  []string{f.leaderID, f.peerID},
 		"evidence": []map[string]string{{"url": "https://example.com/frozen.md", "sha256": boundAfter}},
 	}
