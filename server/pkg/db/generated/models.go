@@ -3117,6 +3117,13 @@ type Workspace struct {
 	SchedulingPausedBy          pgtype.UUID        `json:"scheduling_paused_by"`
 }
 
+type WorkspaceConfigSync struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	ID          pgtype.UUID        `json:"id"`
+	Settings    string             `json:"settings"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
 type WorkspaceInvitation struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
