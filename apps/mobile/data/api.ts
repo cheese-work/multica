@@ -14,11 +14,13 @@
  *   4. Bearer auth + X-Workspace-Slug — NOT cookie auth (no CSRF, no credentials)
  */
 import type {
+  CommentPreview,
   Agent,
   AgentTask,
   Attachment,
   ChatMessage,
   ChatPendingTask,
+  ChatSupplement,
   ChatSession,
   ChatSessionUsage,
   Comment,
@@ -61,9 +63,11 @@ import type {
   Workspace,
   WorkspaceSubscriptionSummary,
   WorkflowHandoffPreview,
+  ListIssueWorkflowsResponse,
 } from "@multica/core/types";
 import {
   AppConfigSchema,
+  CommentPreviewSchema,
   EMPTY_APP_CONFIG,
   EMPTY_REFRESH_SESSION_RESPONSE,
   RefreshSessionResponseSchema,
@@ -73,6 +77,7 @@ import {
   IssueSchema,
   ListIssuesResponseSchema,
   ListIssueStatusesResponseSchema,
+  ListIssueWorkflowsResponseSchema,
   TimelineEntriesSchema,
   WorkflowHandoffPreviewSchema,
   WorkspaceSubscriptionSummarySchema,
@@ -90,6 +95,8 @@ import {
   ChatMessageListSchema,
   CommentSchema,
   ChatPendingTaskSchema,
+  ChatSupplementSchema,
+  ResendChatSupplementResponseSchema,
   ChatSessionListSchema,
   ChatSessionSchema,
   ChatSessionUsageSchema,
@@ -695,6 +702,27 @@ class ApiClient {
   }
 
   /**
+   * Where a comment lives plus a one-line preview, for comment-ID chips.
+   * `null` means "render the id as plain text": the server answers 404 for an
+   * unknown, deleted or unreadable comment (no leak), and a malformed body
+   * must not become a half-filled chip.
+   */
+  async getCommentPreview(
+    id: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<CommentPreview | null> {
+    let raw: unknown;
+    try {
+      raw = await this.fetch<unknown>(`/api/comments/${id}/preview`, opts);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return null;
+      throw e;
+    }
+    const parsed = CommentPreviewSchema.safeParse(raw);
+    return parsed.success ? (parsed.data as CommentPreview) : null;
+  }
+
+  /**
    * What moving the issue to `status` would do under its project's workflow:
    * who it goes to and the previous agent's active runs. Writes nothing.
    * Fails closed on a malformed body — the caller shows an error instead of
@@ -1001,6 +1029,28 @@ class ApiClient {
     );
   }
 
+  /**
+   * Workspace workflows, for the statuses an issue offers under its project's
+   * or its own workflow (CHE-2822). An empty fallback reads as "unknown": the
+   * status picker then offers the whole catalog and the server still judges.
+   */
+  async listIssueWorkflows(opts?: { signal?: AbortSignal }): Promise<ListIssueWorkflowsResponse> {
+    return this.fetchValidated(
+      "/api/issue-workflows",
+      ListIssueWorkflowsResponseSchema,
+      { workflows: [], total: 0 },
+      { ...opts, endpoint: "GET /api/issue-workflows" },
+    ) as Promise<ListIssueWorkflowsResponse>;
+  }
+
+  /** Sets (or, with null, clears) the workflow an issue follows instead of its project's. */
+  async setIssueWorkflow(id: string, workflowId: string | null): Promise<void> {
+    await this.fetch<unknown>(`/api/issues/${id}/workflow`, {
+      method: "PUT",
+      body: JSON.stringify({ workflow_id: workflowId }),
+    });
+  }
+
   // --- Projects ---
   async listProjects(opts?: {
     signal?: AbortSignal;
@@ -1267,6 +1317,42 @@ class ApiClient {
       EMPTY_CHAT_PENDING_TASK,
       { endpoint: "GET /api/chat/sessions/:id/pending-task" },
     );
+  }
+
+  /** Adds a queued DM follow-up to the running task instead of cancelling it. */
+  async steerChatTask(sessionId: string, taskId: string): Promise<ChatSupplement> {
+    const raw = await this.fetch<unknown>(
+      `/api/chat/sessions/${sessionId}/tasks/${taskId}/steer`,
+      { method: "POST" },
+    );
+    const parsed = ChatSupplementSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new ApiError("Steer response invalid", 0, raw);
+    }
+    return parsed.data;
+  }
+
+  /** Sends a never-received or unconfirmed follow-up as a new run. An
+   *  `uncertain` receipt needs `confirmPossibleDuplicate`. */
+  async resendChatSupplement(
+    sessionId: string,
+    messageId: string,
+    opts: { confirmPossibleDuplicate?: boolean } = {},
+  ): Promise<{ task_id: string; supplement: ChatSupplement }> {
+    const raw = await this.fetch<unknown>(
+      `/api/chat/sessions/${sessionId}/messages/${messageId}/supplement/resend`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          confirm_possible_duplicate: opts.confirmPossibleDuplicate === true,
+        }),
+      },
+    );
+    const parsed = ResendChatSupplementResponseSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new ApiError("Resend response invalid", 0, raw);
+    }
+    return parsed.data;
   }
 
   async markChatSessionRead(sessionId: string): Promise<void> {

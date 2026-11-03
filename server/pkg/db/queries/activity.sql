@@ -28,8 +28,8 @@ WHERE id = $1;
 
 -- name: CreateActivity :one
 INSERT INTO activity_log (
-    workspace_id, issue_id, actor_type, actor_id, action, details, id
-) VALUES ($1, $2, $3, $4, $5, $6, COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()))
+    workspace_id, issue_id, actor_type, actor_id, action, details, id, created_at
+) VALUES ($1, $2, $3, $4, $5, $6, COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()), COALESCE(sqlc.narg('created_at')::timestamptz, now()))
 RETURNING *;
 
 -- name: HasSquadLeaderNoActionEvaluationForTask :one

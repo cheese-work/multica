@@ -1,8 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
   merge_group:
@@ -17,7 +15,7 @@ concurrency:
 
 jobs:
   warning-budget:
-    needs: [migration-prefix-check, cursor-background-lifecycle, changes, sqlc-check, frontend-build, frontend-test, frontend-views-test, locale-parity, frontend, backend-tests, backend-agent-tests, go-vulnerability-scan, go-lint, backend, daemon-artifact, image-budget, installer, script-checks, deploy-cd, frontend-quality]
+    needs: [migration-prefix-check, cursor-background-lifecycle, changes, sqlc-check, frontend-build, frontend-test, frontend-views-test, locale-parity, frontend, backend-tests, backend-agent-tests, go-vulnerability-scan, go-lint, backend, image-budget, installer, script-checks, deploy-cd, frontend-quality]
     if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -160,7 +158,7 @@ jobs:
           node-version: 22
 
       - name: Test CI selection and gates
-        run: node --test scripts/ci-scope.test.mjs scripts/check-image-budget.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/pr-changelog-line.test.mjs scripts/pr-issue-link-check.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/fork-sync-guard.test.mjs scripts/ci-runners.test.mjs scripts/ci-locale-parity.test.mjs scripts/ci-vitest-timeout.test.mjs scripts/page-load-report.test.mjs scripts/phone-network.test.mjs deploy/cd/release-manifest.test.mjs deploy/cd/drift-receipt.test.mjs
+        run: node --test scripts/ci-scope.test.mjs scripts/check-image-budget.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/pr-changelog-line.test.mjs scripts/pr-issue-link-check.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/fork-sync-guard.test.mjs scripts/ci-runners.test.mjs scripts/ci-locale-parity.test.mjs scripts/ci-vitest-timeout.test.mjs scripts/merge-queue-dequeue-report.test.mjs scripts/page-load-report.test.mjs scripts/phone-network.test.mjs deploy/cd/release-manifest.test.mjs deploy/cd/drift-receipt.test.mjs
 
       - name: Filter paths
         id: filter
@@ -775,132 +773,10 @@ jobs:
           JOB_SCOPES: '{"backend-tests":"push_full","backend-agent-tests":"backend","sqlc-check":"push_full","go-vulnerability-scan":"push_full","go-lint":"push_full","script-checks":"scripts","installer":"installer","deploy-cd":"deploy_cd"}'
         run: node scripts/ci-scope.mjs gate
 
-  push-go-cache-warm:
-    needs: changes
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.merge_group_green == 'true' }}
-    runs-on: ubuntu-24.04
-    env:
-      CI: "true"
-      GOFLAGS: -count=1
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v7
-        id: go
-        with:
-          go-version: "~1.27.3"
-          check-latest: true
-          cache: false
-      - name: Restore Go module cache
-        uses: actions/cache@v6
-        with:
-          path: ~/go/pkg/mod
-          key: go-mod-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('server/go.sum') }}
-      - name: Resolve Go build cache key
-        id: gocache
-        run: echo "prefix=go-build-race-${{ runner.os }}-${{ runner.arch }}-$ImageOS-${{ steps.go.outputs.go-version }}-" >> "$GITHUB_OUTPUT"
-      - name: Restore Go build cache
-        uses: actions/cache/restore@v6
-        with:
-          path: ~/.cache/go-build
-          key: ${{ steps.gocache.outputs.prefix }}${{ github.sha }}
-          restore-keys: ${{ steps.gocache.outputs.prefix }}
-      - name: Mark Go build cache epoch
-        id: goepoch
-        run: touch -d '-1 hour' "$RUNNER_TEMP/go-build-epoch"
-      - name: Compile race test binaries without executing TestMain
-        working-directory: server
-        run: ../scripts/go-test-with-agent-cli-guard.sh -- go test -race -run '^$' -exec /bin/true ./...
-      - name: Prune Go build cache to this run's entries
-        if: ${{ !cancelled() && steps.goepoch.outcome == 'success' }}
-        run: |
-          find ~/.cache/go-build -mindepth 2 -maxdepth 2 \( -name '*-a' -o -name '*-d' \) \
-            ! -newer "$RUNNER_TEMP/go-build-epoch" -exec rm -rf {} +
-      - name: Save Go build cache
-        if: ${{ !cancelled() && steps.gocache.outcome == 'success' }}
-        uses: actions/cache/save@v6
-        with:
-          path: ~/.cache/go-build
-          key: ${{ steps.gocache.outputs.prefix }}${{ github.sha }}
-
-  push-turbo-cache-warm:
-    needs: changes
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.merge_group_green == 'true' }}
-    runs-on: ubuntu-24.04
-    env:
-      TURBO_CACHE_DIR: .turbo/cache
-    steps:
-      - uses: actions/checkout@v6
-      - name: Setup pnpm
-        run: bash scripts/setup-pnpm.sh
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: pnpm
-      - name: Install dependencies
-        run: pnpm install
-      - name: Resolve runtime for cache key
-        id: runtime
-        run: echo "node=$(node --version)" >> "$GITHUB_OUTPUT"
-      - name: Restore turbo cache
-        uses: actions/cache@v6
-        with:
-          path: .turbo/cache
-          key: turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.sha }}
-          restore-keys: |
-            turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-
-      - name: Warm build, type check, and lint cache
-        run: pnpm exec turbo build typecheck lint --concurrency=2 --filter='!@multica/docs' --filter='!@multica/mobile'
-
-
   # macOS daemon CI is halted (CHE-1012): there are no free macOS runners, so
   # the former macos-runtime job (Blacksmith) is removed and no macOS daemon
   # artifact is built. cursor_background_process_darwin.go is therefore not
   # built or tested in CI until a macOS runner is provisioned by its owner.
-
-  # Bootstrap only (CHE-1980). Daemons update from their own Multica server
-  # now, but a daemon still on the earlier GitHub-based updater reaches its
-  # first server-built version through this artifact: `multica-daemon-<goos>-<goarch>`
-  # holding one file named `multica`. Delete this job once every host runs a
-  # server-only build.
-  daemon-artifact:
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        goarch: [amd64, arm64]
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0 # commit history for version/commit stamping
-      - uses: actions/setup-go@v7
-        with:
-          go-version: "~1.27.3"
-          check-latest: true
-          cache-dependency-path: server/go.sum
-      - name: Build daemon binary
-        working-directory: server
-        env:
-          CGO_ENABLED: "0"
-          GOOS: linux
-          GOARCH: ${{ matrix.goarch }}
-        # main.version uses <upstream>-YYYYMMDD-hhmm from UPSTREAM_VERSION and
-        # commit timestamp so capability gates accept it (scripts/daemon-artifact-version.sh
-        # fails closed otherwise); the exact full commit goes separately into
-        # main.commit, which the updater requires the candidate's `--version` to report.
-        run: |
-          mkdir -p ../dist
-          version=$(cd .. && scripts/daemon-artifact-version.sh)
-          go build -trimpath \
-            -ldflags "-s -w -X main.version=${version} -X main.commit=${GITHUB_SHA} -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            -o ../dist/multica ./cmd/multica
-      - name: Upload daemon artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: multica-daemon-linux-${{ matrix.goarch }}
-          path: dist/multica
-          if-no-files-found: error
-          retention-days: 30
 
   image-budget:
     # Soft gate against the 21.7MB of raw PNG/JPG that MUL-6352 cleared out:
@@ -986,6 +862,9 @@ jobs:
 
       - name: Check runner routing
         run: python3 .github/tests/test_runner_routing.py
+
+      - name: Test mechanical-tier classifier paths (CHE-3339)
+        run: python3 -m unittest tests.test_che3339_mechanical_tier
 
       - name: Test pinned pnpm setup
         run: node --test scripts/setup-pnpm.test.mjs

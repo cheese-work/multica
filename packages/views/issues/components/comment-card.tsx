@@ -34,7 +34,7 @@ import { useLocale, useTimeAgo } from "../../i18n";
 import { RichTableDeferContext } from "../../rich-content";
 import { bodyPrefix } from "../../rich-content/body-prefix";
 import { SupersedesLine } from "./supersession-links";
-import { ContentEditor, type ContentEditorRef, ReadonlyContent, useFileDropZone, FileDropOverlay, Attachment as AttachmentRenderer, AttachmentDownloadProvider, useUploadGate, useComposerSubmit } from "../../editor";
+import { ContentEditor, type ContentEditorRef, ReadonlyContent, useFileDropZone, FileDropOverlay, useUploadGate, useComposerSubmit } from "../../editor";
 import { useCommentUploads } from "./use-comment-uploads";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
 import { api, dispatchReasonCode, errorCode } from "@multica/core/api";
@@ -48,11 +48,6 @@ import { contentReferencesAttachment } from "@multica/core/types";
 import { isDeletedComment } from "@multica/core/issues/comment-deletion";
 import { commentSupplementReceipts, isSupplementInFlight } from "@multica/core/issues/run-steering";
 import { useConfigStore } from "@multica/core/config";
-import {
-  orderStandaloneAttachments,
-  selectStandaloneAttachments,
-  standaloneAttachmentGroup,
-} from "@multica/core/attachments/image-sequence";
 import { useCommentCollapseStore, useCommentDraftStore } from "@multica/core/issues/stores";
 import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 import { useT } from "../../i18n";
@@ -63,11 +58,11 @@ import { InlineCommentRun, PlacedInlineCommentRun, useInlineCommentRunState, typ
 import { EMPTY_COMMENT_RUNS, isRunFailureNotice, showCommentRunInHeader, type CommentRun } from "./comment-runs";
 import { descriptionPreview } from "./description-preview";
 import { useCommentAnnotations } from "./use-comment-annotations";
-import { useAttachmentVersions } from "./deliverables/attachment-versions";
-import { VersionBadge } from "./deliverables/version-badge";
+import { AttachmentList } from "./attachment-list";
 import { useRunCommentMotion } from "./use-run-comment-motion";
 import { WakeupSourceChip } from "./wakeup-source-chip";
-import { DecisionQuoteCard, DecisionWithdrawalLine, decisionDisplayActor } from "./decision-quote-card";
+import { DecisionAskJump, DecisionQuoteCard, DecisionWithdrawalLine, decisionDisplayActor } from "./decision-quote-card";
+import { rejectInvalidAgentMentions, type InvalidMentionRejection } from "../invalid-agent-mentions-copy";
 
 const commentActionClassName =
   "text-muted-foreground aria-expanded:bg-transparent aria-expanded:hover:bg-muted dark:aria-expanded:hover:bg-muted/50";
@@ -148,7 +143,7 @@ interface CommentCardProps {
    * `CommentRow` has to rerun the rule per row.
    */
   canModerate?: boolean;
-  onReply: (parentId: string, content: string, attachmentIds?: string[], suppressAgentIds?: string[], steerTaskIds?: string[]) => Promise<string | boolean>;
+  onReply: (parentId: string, content: string, attachmentIds?: string[], suppressAgentIds?: string[], steerTaskIds?: string[]) => Promise<string | boolean | InvalidMentionRejection>;
   onReplyAccepted?: (commentId: string) => void;
   onEdit: (commentId: string, content: string, attachmentIds: string[], suppressAgentIds?: string[], contentBase?: string) => Promise<void>;
   onDelete: (commentId: string) => void;
@@ -277,66 +272,7 @@ function DeleteCommentDialog({
   );
 }
 
-// Standalone attachment list — renders attachments not already in the markdown
-
-export function AttachmentList({
-  attachments,
-  content,
-  className,
-  onRemove,
-}: {
-  attachments?: Attachment[];
-  content?: string;
-  className?: string;
-  onRemove?: (attachmentId: string) => void;
-}) {
-  const versions = useAttachmentVersions();
-  if (!attachments?.length) return null;
-  // Skip attachments whose URL (stable or legacy) is already referenced in the
-  // markdown content, and duplicates of the same file that are referenced.
-  // Shared with the image-sequence builder (MUL-5752) so the cards rendered
-  // here and the images the viewer pages through can't disagree — as is the
-  // grouping below, so paging follows the screen (MUL-7649).
-  const standalone = orderStandaloneAttachments(
-    selectStandaloneAttachments(content, attachments),
-  );
-  if (!standalone.length) return null;
-
-  const images = standalone.filter((a) => standaloneAttachmentGroup(a) === "image");
-  const files = standalone.filter((a) => standaloneAttachmentGroup(a) === "file");
-  const render = (a: Attachment) => {
-    const version = versions?.get(a.id);
-    return (
-      <AttachmentRenderer
-        key={a.id}
-        attachment={{ kind: "record", attachment: a }}
-        layout="card"
-        badge={version ? <VersionBadge version={version} /> : undefined}
-        editable={!!onRemove}
-        onDelete={onRemove ? () => onRemove(a.id) : undefined}
-      />
-    );
-  };
-
-  // Every image shows at its full size, one under another, so it reads
-  // without opening (MUL-7736). Every other file — HTML too: an uploaded file
-  // is a deliverable to open, not part of the text — is a card in a grid, not
-  // a full-width row each.
-  return (
-    <AttachmentDownloadProvider attachments={attachments}>
-      <div className={cn("flex flex-col gap-2", className)}>
-        {images.length > 0 && (
-          <div className="flex flex-col items-start gap-2">{images.map(render)}</div>
-        )}
-        {files.length > 0 && (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(min(15rem,100%),1fr))] gap-2">
-            {files.map(render)}
-          </div>
-        )}
-      </div>
-    </AttachmentDownloadProvider>
-  );
-}
+export { AttachmentList };
 
 function collectActiveAttachmentIds(
   content: string,
@@ -585,6 +521,11 @@ function useEditAttachmentState(
         setRevisionConflict(false);
         return true;
       } catch (err) {
+        const rejected = rejectInvalidAgentMentions(err, trimmed, t);
+        if (rejected) {
+          editorRef.current?.flagMentions(rejected.invalidMentionIds);
+          return false;
+        }
         if (errorCode(err) === "revision_conflict") {
           setRevisionConflict(true);
         }
@@ -1032,6 +973,7 @@ function CommentRow({
             ) : (
               <>
                 <CommentBody entry={entry} forceOpen={isHighlighted || findManualCollapseDisabled} findOpen={findManualCollapseDisabled} />
+                {entry.decision_comment_kind === "ask" && <DecisionAskJump entry={entry} issueId={issueId} onJumpToComment={onJumpToComment} />}
                 {entry.decision_receipt_answer_id && (
                   <DecisionQuoteCard compact entry={entry} issueId={issueId} currentUserId={currentUserId} onJumpToComment={onJumpToComment} />
                 )}
@@ -1594,6 +1536,7 @@ function CommentCardImpl({
                   ) : (
                     <>
                       <CommentBody entry={entry} forceOpen={isHighlighted || findManualCollapseDisabled} findOpen={findManualCollapseDisabled} />
+                      {entry.decision_comment_kind === "ask" && <DecisionAskJump entry={entry} issueId={issueId} onJumpToComment={onJumpToComment} />}
                       {entry.decision_receipt_answer_id && (
                         <DecisionQuoteCard compact entry={entry} issueId={issueId} currentUserId={currentUserId} onJumpToComment={onJumpToComment} />
                       )}

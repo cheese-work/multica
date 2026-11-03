@@ -1,4 +1,5 @@
 import { act, screen, waitFor } from "@testing-library/react";
+import { forwardRef } from "react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@multica/core/api";
@@ -20,9 +21,48 @@ vi.mock("../../issues/components/issue-chip", () => ({
 
 const answerDecisionRequest = vi.hoisted(() => vi.fn());
 const listDecisionArtifacts = vi.hoisted(() => vi.fn());
+const uploadFile = vi.hoisted(() => vi.fn());
 vi.mock("@multica/core/api", async (importActual) => ({
   ...(await importActual<typeof import("@multica/core/api")>()),
-  api: { answerDecisionRequest, listDecisionArtifacts },
+  api: { answerDecisionRequest, listDecisionArtifacts, uploadFile },
+}));
+
+// The real editor is Tiptap; its own suites cover typing and paste. Here it is
+// a textarea that exposes the props the card wires up.
+type EditorProps = {
+  value?: string;
+  defaultValue?: string;
+  ariaLabel?: string;
+  ariaDescribedBy?: string;
+  onUpdate?: (markdown: string) => void;
+  onSubmit?: () => void;
+  onUploadFile?: (file: File, uploadId: string) => Promise<unknown>;
+  onUploadingChange?: (uploading: boolean) => void;
+};
+// `live` is what the editor holds right now; the card only hears of it through onUpdate, after a timer.
+const editor = vi.hoisted(() => ({ props: undefined as unknown, hasActiveUploads: false, live: undefined as string | undefined }));
+const editorProps = () => editor.props as EditorProps;
+vi.mock("./lazy-content-editor", () => ({
+  LazyContentEditor: forwardRef(function MockEditor(props: EditorProps, ref) {
+    editor.props = props;
+    const handle = { hasActiveUploads: () => editor.hasActiveUploads, getMarkdown: () => editor.live ?? props.defaultValue ?? "" };
+    if (typeof ref === "function") ref(handle as never);
+    else if (ref) (ref as { current: unknown }).current = handle;
+    return (
+      <textarea
+        aria-label={props.ariaLabel}
+        aria-describedby={props.ariaDescribedBy}
+        defaultValue={props.defaultValue ?? ""}
+        onChange={(event) => props.onUpdate?.(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            props.onSubmit?.();
+          }
+        }}
+      />
+    );
+  }),
 }));
 
 const card = {
@@ -219,6 +259,27 @@ describe("DecisionRequestCard answering", () => {
     renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={value} /></WorkspaceSlugProvider></QueryClientProvider>);
   beforeEach(() => {
     answerDecisionRequest.mockReset().mockResolvedValue(undefined);
+    uploadFile.mockReset();
+    editor.hasActiveUploads = false;
+    editor.live = undefined;
+  });
+
+  it("never feeds its draft back into the editor, so a late echo cannot overwrite newer typing", async () => {
+    renderCard();
+    expect(editorProps()).not.toHaveProperty("value");
+    await userEvent.setup().type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "before ");
+    expect(editorProps()).not.toHaveProperty("value");
+  });
+
+  it("empties the editor after a successful send while the card is still open", async () => {
+    renderCard({ ...card, options: undefined });
+    const user = userEvent.setup();
+    const box = screen.getByRole("textbox", { name: "Write an answer" });
+    await user.type(box, "Ship it");
+    editor.live = "Ship it";
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(screen.getByRole("textbox", { name: "Write an answer" })).toHaveValue(""));
   });
 
   it("sends the selected option on Send, and only once chosen", async () => {
@@ -260,6 +321,84 @@ describe("DecisionRequestCard answering", () => {
     expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: "Option A", text: "but wait a day" });
   });
 
+  describe("image paste", () => {
+    it("uploads a pasted file against the card's issue and returns it to the editor", async () => {
+      uploadFile.mockResolvedValue({ id: "att-1", url: "https://cdn/x.png", markdown_url: "https://app/att-1" });
+      renderCard();
+      const file = new File(["png"], "x.png", { type: "image/png" });
+      const result = await editorProps().onUploadFile?.(file, "upload-1");
+      expect(uploadFile).toHaveBeenCalledWith(file, { issueId: "issue", commentId: undefined, chatSessionId: undefined });
+      expect(result).toMatchObject({ markdownLink: "https://app/att-1" });
+    });
+
+    it("sends the image markdown the editor produced as the answer text", async () => {
+      renderCard();
+      const user = userEvent.setup();
+      act(() => editorProps().onUpdate?.("see ![x.png](https://app/att-1)"));
+      await user.click(screen.getByRole("button", { name: "Send" }));
+      expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: undefined, text: "see ![x.png](https://app/att-1)" });
+    });
+
+    it("sends what the editor holds when Send comes before its pending update fires", async () => {
+      renderCard();
+      const user = userEvent.setup();
+      act(() => editorProps().onUpdate?.("stale"));
+      editor.live = "stale and the last edit ![x.png](https://app/att-2)";
+      await user.click(screen.getByRole("button", { name: "Send" }));
+      expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: undefined, text: "stale and the last edit ![x.png](https://app/att-2)" });
+    });
+
+    it("sends on Enter typed before the card has heard of any text", async () => {
+      renderCard();
+      const user = userEvent.setup();
+      editor.live = "typed just now";
+      await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "{Enter}");
+      expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: undefined, text: "typed just now" });
+    });
+
+    it("holds Send and Enter while an upload is in flight", async () => {
+      renderCard();
+      const user = userEvent.setup();
+      await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "hi");
+      act(() => editorProps().onUploadingChange?.(true));
+      expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+      editor.hasActiveUploads = true;
+      await user.keyboard("{Enter}");
+      expect(answerDecisionRequest).not.toHaveBeenCalled();
+      act(() => editorProps().onUploadingChange?.(false));
+      editor.hasActiveUploads = false;
+      expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+    });
+  });
+
+  describe("the 8 KB answer cap", () => {
+    it("keeps an answer of exactly 8 KB sendable", async () => {
+      renderCard();
+      act(() => editorProps().onUpdate?.("x".repeat(8 << 10)));
+      expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+      expect(screen.queryByText(/over 8 KB/)).toBeNull();
+    });
+
+    it("does not send an over-8 KB edit the card has not heard of yet", async () => {
+      renderCard();
+      const user = userEvent.setup();
+      act(() => editorProps().onUpdate?.("short"));
+      editor.live = "x".repeat((8 << 10) + 1);
+      await user.click(screen.getByRole("button", { name: "Send" }));
+      expect(answerDecisionRequest).not.toHaveBeenCalled();
+    });
+
+    it("blocks Send and says why once the text is over 8 KB, counting bytes not characters", async () => {
+      renderCard();
+      act(() => editorProps().onUpdate?.("é".repeat((8 << 10) / 2 + 1)));
+      expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+      expect(screen.getByRole("alert")).toHaveTextContent("over 8 KB");
+      const user = userEvent.setup();
+      await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "{Enter}");
+      expect(answerDecisionRequest).not.toHaveBeenCalled();
+    });
+  });
+
   it("has no answer form once the card is answered", () => {
     renderCard({ ...withOptions, state: "answered" });
     expect(screen.queryByTestId("decision-request-answer")).toBeNull();
@@ -276,9 +415,10 @@ describe("DecisionRequestCard answering", () => {
   it("explains where Send posts and the keyboard contract, with a visible field label", () => {
     renderCard();
     expect(screen.getByText("Send posts your answer to CHE-2088. Questions for the DM agent go in the message box below.")).toBeVisible();
-    expect(screen.getByText("Enter sends · Shift+Enter for a new line")).toBeVisible();
+    // The editor sends on the configured shortcut (Ctrl/Cmd+Enter by default), so the hint names that key.
+    expect(screen.getByText(/^(Ctrl\+Enter|⌘↵) sends$/)).toBeVisible();
     expect(screen.getByRole("radiogroup", { name: "Options" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Add a note (optional)")).toHaveAccessibleDescription("Enter sends · Shift+Enter for a new line");
+    expect(screen.getByLabelText("Add a note (optional)")).toHaveAccessibleDescription(/^(Ctrl\+Enter|⌘↵) sends$/);
   });
 
   it("keeps the answer and disables Send while offline", async () => {

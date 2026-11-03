@@ -526,7 +526,7 @@ func (q *Queries) GetTaskSupplementByRequest(ctx context.Context, arg GetTaskSup
 }
 
 const getTaskSupplementCapability = `-- name: GetTaskSupplementCapability :one
-SELECT task_id, workspace_id, issue_id, capability, created_at FROM task_supplement_capability WHERE task_id = $1
+SELECT task_id, workspace_id, issue_id, capability, created_at, chat_session_id FROM task_supplement_capability WHERE task_id = $1
 `
 
 func (q *Queries) GetTaskSupplementCapability(ctx context.Context, taskID pgtype.UUID) (TaskSupplementCapability, error) {
@@ -538,6 +538,7 @@ func (q *Queries) GetTaskSupplementCapability(ctx context.Context, taskID pgtype
 		&i.IssueID,
 		&i.Capability,
 		&i.CreatedAt,
+		&i.ChatSessionID,
 	)
 	return i, err
 }
@@ -857,7 +858,7 @@ func (q *Queries) SettleTerminalTaskSupplements(ctx context.Context, taskIds []p
 
 const startAgentTaskWithSupplement = `-- name: StartAgentTaskWithSupplement :one
 WITH candidate AS MATERIALIZED (
-    SELECT t.id, t.issue_id, r.workspace_id, r.provider
+    SELECT t.id, t.issue_id, t.chat_session_id, t.task_kind, r.workspace_id, r.provider
     FROM agent_task_queue t
     JOIN agent_runtime r ON r.id = t.runtime_id
     WHERE t.id = $2
@@ -870,6 +871,18 @@ WITH candidate AS MATERIALIZED (
     WHERE $3::boolean
       AND provider IN ('codex', 'claude', 'grok', 'cursor', 'kiro')
       AND issue_id IS NOT NULL
+    ON CONFLICT DO NOTHING
+    RETURNING task_id
+), chat_capability AS (
+    -- Compaction runs never carry a human turn, so they never take steers.
+    INSERT INTO task_supplement_capability (task_id, workspace_id, chat_session_id, capability)
+    SELECT id, workspace_id, chat_session_id, 'task-supplement-chat-v1'
+    FROM candidate
+    WHERE $4::boolean
+      AND provider IN ('codex', 'claude', 'grok', 'cursor', 'kiro')
+      AND issue_id IS NULL
+      AND chat_session_id IS NOT NULL
+      AND task_kind IS DISTINCT FROM 'compact'
     ON CONFLICT DO NOTHING
     RETURNING task_id
 )
@@ -886,6 +899,7 @@ WHERE t.id = candidate.id
   -- Reference the data-modifying CTE explicitly: capability persistence and
   -- the returned running row are one indivisible statement.
   AND (SELECT count(*) FROM capability) >= 0
+  AND (SELECT count(*) FROM chat_capability) >= 0
 RETURNING t.id, t.agent_id, t.issue_id, t.status, t.priority, t.dispatched_at, t.started_at, t.completed_at, t.result, t.error, t.created_at, t.context, t.runtime_id, t.session_id, t.work_dir, t.trigger_comment_id, t.chat_session_id, t.autopilot_run_id, t.attempt, t.max_attempts, t.parent_task_id, t.failure_reason, t.trigger_summary, t.force_fresh_session, t.is_leader_task, t.wait_reason, t.initiator_user_id, t.handoff_note, t.prepare_lease_expires_at, t.squad_id, t.runtime_mcp_overlay, t.escalation_for_task_id, t.fire_at, t.originator_user_id, t.runtime_connected_apps, t.coalesced_comment_ids, t.delivered_comment_ids, t.chat_input_task_id, t.chat_finalize_deferred_at, t.originator_source, t.delegated_from_task_id, t.retry_of_task_id, t.rerun_of_task_id, t.rule_version_id, t.trigger_evidence_kind, t.trigger_evidence_ref_id, t.accountable_user_id, t.session_rollout_missing, t.retired_session_id, t.quick_actions_disabled, t.regenerate_quick_actions_for, t.branch_name, t.durable_work_dir, t.channel_context_revision, t.comment_thread_id, t.cancelled_by_type, t.cancelled_by_id, t.cancelled_by_name, t.issue_snapshot, t.context_tokens, t.context_window, t.task_kind, t.compact_reason, t.compact_trigger_tokens, t.workflow_step, t.claimed_model, t.chat_compaction_epoch, t.preset_name, t.preset_source, t.preset_skips, t.claimed_thinking_level, t.claimed_service_tier, t.claimed_context_args, t.cancel_acked_at, t.stop_unconfirmed_at, t.pull_request_id, t.replacement_released_at, t.stop_hold_issue_wide, t.taint_ids, t.applied_model, t.applied_thinking_level, t.applied_service_tier, t.applied_context_args, t.applied_reported_at, t.external_read
 `
 
@@ -893,13 +907,19 @@ type StartAgentTaskWithSupplementParams struct {
 	EnableProcessCleanup bool        `json:"enable_process_cleanup"`
 	TaskID               pgtype.UUID `json:"task_id"`
 	EnableTaskSupplement bool        `json:"enable_task_supplement"`
+	EnableChatSupplement bool        `json:"enable_chat_supplement"`
 }
 
 // Starting the task and recording the exact daemon/server capability handshake
 // are one state transition. A missing row is the fail-closed value for old
 // daemons, old servers, unsupported providers and application rollback.
 func (q *Queries) StartAgentTaskWithSupplement(ctx context.Context, arg StartAgentTaskWithSupplementParams) (AgentTaskQueue, error) {
-	row := q.db.QueryRow(ctx, startAgentTaskWithSupplement, arg.EnableProcessCleanup, arg.TaskID, arg.EnableTaskSupplement)
+	row := q.db.QueryRow(ctx, startAgentTaskWithSupplement,
+		arg.EnableProcessCleanup,
+		arg.TaskID,
+		arg.EnableTaskSupplement,
+		arg.EnableChatSupplement,
+	)
 	var i AgentTaskQueue
 	err := row.Scan(
 		&i.ID,

@@ -34,6 +34,7 @@ import {
   useSetChatSessionProject,
 } from "@multica/core/chat/mutations";
 import { useChatStore } from "@multica/core/chat";
+import { useCommentComposerStore } from "@multica/core/issues/stores/comment-composer-store";
 import { upsertChatMessageToCaches } from "@multica/core/chat/message-cache";
 import {
   enqueuePendingChatTask,
@@ -274,8 +275,11 @@ export function useChatController(opts?: { isActive?: boolean }) {
     handleEditQueuedTask,
     handleRemoveQueuedTask,
     handleClearQueuedTasks,
-    handleSendQueuedTaskNow,
+    steerQueuedChatTask,
+    handleSteerQueuedTask,
+    handleStopAndSendQueuedTask,
   } = useChatTaskActions(activeSessionId, enqueueLocalRestore);
+  const runningAgentReply = useCommentComposerStore((s) => s.runningAgentReply);
   // Nonce handed to ChatInput to pull focus into the compose box when a new
   // chat starts. Bumped by handleNewChat / handleStartNewChat only, so
   // selecting an existing chat or a deep link never steals focus.
@@ -668,6 +672,17 @@ export function useChatController(opts?: { isActive?: boolean }) {
           toast.error(t(($) => $.input.attachment_bind_failed_toast));
         }
       }
+      // `running_agent_reply = steer`: add the follow-up to the running reply
+      // right away. Only a capable run is steered; a starting or unsupported one
+      // keeps the message queued. A refused steer leaves it queued too, so the
+      // send itself still succeeded.
+      if (
+        result.queued === true &&
+        runningAgentReply === "steer" &&
+        pendingTask?.head_supplement === "capable"
+      ) {
+        await steerQueuedChatTask(sessionId, result.task_id);
+      }
       qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
       qc.invalidateQueries({ queryKey: chatKeys.messagesPage(sessionId) });
       return true;
@@ -682,6 +697,8 @@ export function useChatController(opts?: { isActive?: boolean }) {
       isAgentRuntimeBound,
       ensureSession,
       cancelChatTask,
+      steerQueuedChatTask,
+      runningAgentReply,
       qc,
       setActiveSession,
       t,
@@ -883,7 +900,8 @@ export function useChatController(opts?: { isActive?: boolean }) {
     // actions
     handleSend,
     handleStop,
-    handleSendQueuedTaskNow,
+    handleSteerQueuedTask,
+    handleStopAndSendQueuedTask,
     handleEditQueuedTask,
     handleRemoveQueuedTask,
     handleClearQueuedTasks,
