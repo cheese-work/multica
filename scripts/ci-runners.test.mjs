@@ -42,3 +42,13 @@ test("release.yml leaves the Go cache to the disk on a self-hosted runner", () =
   assert.match(verify, /cheese-x99/);
   assert.match(verify, /uses: actions\/setup-go@[^\n]+\n\s+with:[\s\S]*?\n\s+cache: \$\{\{ runner\.environment != 'self-hosted' \}\}/);
 });
+
+// CHE-3128: gate checks run on the dedicated 2-runner lane so heavy CI on the shared
+// `cheese-x99` pool cannot delay them. Forks keep the GitHub-hosted fallback.
+test("security-gate.yml runs on the dedicated X99 gate lane", () => {
+  const [line, ...rest] = runsOn(read("security-gate.yml"));
+  assert.equal(rest.length, 0);
+  assert.match(line, /"cheese-x99-gate"/);
+  assert.doesNotMatch(line, /"cheese-x99"/);
+  assert.match(line, /ubuntu-latest/);
+});
