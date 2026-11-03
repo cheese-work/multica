@@ -14,6 +14,13 @@ import (
 // through the issue API.
 const StatusCauseUIOrAPI = "ui_or_api"
 
+// Causes of the background writers that move a status without a request:
+// a merged PR (auto-complete or the GitHub merge hook) and a Qoder Cloud run.
+const (
+	StatusCausePRMerged = "pr_merged"
+	StatusCauseQoder    = "qoder"
+)
+
 // StatusTriggerVersion is the schema version of details.trigger.
 const StatusTriggerVersion = 1
 
@@ -23,8 +30,9 @@ type StatusCauseActor struct {
 }
 
 type StatusCause struct {
-	Kind string           `json:"kind"`
-	By   StatusCauseActor `json:"by"`
+	Kind string            `json:"kind"`
+	By   StatusCauseActor  `json:"by"`
+	Ref  map[string]string `json:"ref,omitempty"`
 }
 
 // StatusTrigger is the trigger object stored in a status_changed row's
@@ -39,6 +47,12 @@ type StatusTrigger struct {
 	HandoffCommentID string      `json:"handoff_comment_id,omitempty"`
 }
 
+// BackgroundStatusTrigger is the trigger of a status move no request made: it
+// has no credential, so auth_source stays null.
+func BackgroundStatusTrigger(kind string, by StatusCauseActor, ref map[string]string) StatusTrigger {
+	return StatusTrigger{Cause: StatusCause{Kind: kind, By: by, Ref: ref}, Channel: "unknown"}
+}
+
 // RecordStatusChange writes the status_changed activity row with qtx, the
 // queries of the transaction that changes the status, so the row commits with
 // the status or not at all. handoff entries are stored as handoff_<key>
@@ -48,6 +62,11 @@ func RecordStatusChange(ctx context.Context, qtx *db.Queries, issue db.Issue, fr
 	details := map[string]any{"from": from, "to": to, "trigger": trigger}
 	for k, v := range handoff {
 		details["handoff_"+k] = v
+	}
+	// The timeline names the PRs that completed an issue (MUL-7429).
+	if prs := trigger.Cause.Ref["pr"]; trigger.Cause.Kind == StatusCausePRMerged && prs != "" {
+		details["source"] = "pr_automation"
+		details["pull_requests"] = prs
 	}
 	body, err := json.Marshal(details)
 	if err != nil {
