@@ -1524,6 +1524,7 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to process pull_request event")
 			return
 		}
+		h.configSyncOnPullRequest(ctx, body)
 	case "workflow_run":
 		if err := h.handleWorkflowRunEvent(ctx, body); err != nil {
 			slog.Error("github: workflow_run event failed", "err", err, "delivery_guid", deliveryGUID)
@@ -2788,11 +2789,25 @@ func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, worksp
 		}
 	}
 
-	updated, err := h.Queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		slog.Warn("github: advance issue to done: begin failed", "err", err)
+		return
+	}
+	defer tx.Rollback(ctx)
+	qtx := h.Queries.WithTx(tx)
+	updated, err := qtx.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
 		ID:          issue.ID,
 		Status:      "done",
 		WorkspaceID: issue.WorkspaceID,
 	})
+	var recorded *db.ActivityLog
+	if err == nil {
+		recorded, err = recordSystemStatusChange(ctx, qtx, issue, updated, service.StatusCausePRMerged, nil)
+	}
+	if err == nil {
+		err = tx.Commit(ctx)
+	}
 	if err != nil {
 		slog.Warn("github: advance issue to done failed", "err", err)
 		return
@@ -2804,7 +2819,7 @@ func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, worksp
 	prefix := h.getIssuePrefix(ctx, issue.WorkspaceID)
 	resp := issueToResponse(updated, prefix)
 	h.fillStatusCategory(ctx, updated.WorkspaceID, &resp)
-	h.publish(protocol.EventIssueUpdated, workspaceID, "system", "", map[string]any{
+	h.publishSystemStatusChange(workspaceID, recorded, map[string]any{
 		"issue":          resp,
 		"status_changed": true,
 		"prev_status":    issue.Status,

@@ -472,6 +472,31 @@ export function issueDetailOptions(wsId: string, id: string) {
 }
 
 /**
+ * The detail view's own observer on the detail entry.
+ *
+ * List rows and issue-created realtime payloads intentionally omit the
+ * detail-only source-context snapshot. They can still seed this query via
+ * `initialData`, so the view always reconciles with the authoritative detail
+ * endpoint when it mounts. Without this, the global Infinity staleTime hides
+ * source context until a full page refresh.
+ *
+ * `authoritative` says the entry is the detail endpoint's own response, read a
+ * moment ago by the route's identifier lookup, so the mount skips reading it
+ * again.
+ *
+ * Only seed when the description is present; the list API omits it, so a
+ * partial list row must not masquerade as a hydrated issue detail.
+ */
+export function issueDetailViewOptions(wsId: string, id: string, listRow?: Issue, authoritative = false) {
+  return queryOptions({
+    queryKey: issueKeys.detail(wsId, id),
+    queryFn: () => api.getIssue(id),
+    refetchOnMount: authoritative ? false : "always",
+    initialData: () => (listRow?.description != null ? listRow : undefined),
+  });
+}
+
+/**
  * Resolve a bare issue identifier ("MUL-123") to its issue, or `null`.
  *
  * Backs the Linear-style autolink. This is an EXACT lookup, so it goes to
