@@ -515,9 +515,16 @@ func activityDetails(t *testing.T, queries *db.Queries, issueID, action string) 
 	if len(found) != 1 {
 		t.Fatalf("expected exactly 1 %q activity on %s, got %d", action, issueID, len(found))
 	}
-	var details map[string]string
-	if err := json.Unmarshal(found[0].Details, &details); err != nil {
+	var raw map[string]any
+	if err := json.Unmarshal(found[0].Details, &raw); err != nil {
 		t.Fatalf("failed to unmarshal details: %v", err)
+	}
+	// String fields only; the trigger object is read by its own test.
+	details := map[string]string{}
+	for k, v := range raw {
+		if s, ok := v.(string); ok {
+			details[k] = s
+		}
 	}
 	return details
 }
