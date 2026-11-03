@@ -109,7 +109,7 @@ var otherWriteFamilies = map[string]writeFamily{
 	"api/daemon":                   {35, byDaemon},
 	"api/decision-actions":         {3, byHuman},
 	"api/decision-answers":         {1, byHuman},
-	"api/decision-requests":        {2, byHuman},
+	"api/decision-requests":        {3, byHuman},
 	"api/dingtalk":                 {1, byPublic},
 	"api/feedback":                 {1, byOwnRow},
 	"api/github":                   {1, byWorkspace},
