@@ -91,6 +91,8 @@ export const DeferredContentEditor = forwardRef<ContentEditorRef, DeferredConten
         blur: () => inner.current?.blur(),
         hasActiveUploads: () => inner.current?.hasActiveUploads() ?? false,
         flushPendingUpdate: () => inner.current?.flushPendingUpdate() ?? null,
+        // Marks mentions in rendered content; with no live editor there is nothing to mark.
+        flagMentions: (ids) => inner.current?.flagMentions(ids),
         insertUploadPlaceholder: (upload) => inner.current?.insertUploadPlaceholder(upload) ?? false,
         settleUploadPlaceholder: (id, result) => inner.current?.settleUploadPlaceholder(id, result) ?? false,
         focus: () => whenReady((e) => e.focus()),
