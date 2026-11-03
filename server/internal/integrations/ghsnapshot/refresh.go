@@ -109,6 +109,11 @@ type Manager struct {
 	// them. One customer must never pause every other installation.
 	rateUntil map[int64]time.Time
 
+	// allow, when set, vets an installation before any refresh is queued;
+	// deniedLogged rate-limits the denial warning per installation.
+	allow        func(installationID int64) bool
+	deniedLogged map[int64]time.Time
+
 	ctx     context.Context
 	started bool
 }
@@ -169,6 +174,15 @@ func (manager *Manager) SetReadSelector(selector *dbreader.Selector) {
 	}
 }
 
+// SetInstallationFilter installs the allowlist policy check. Enqueue drops an
+// installation the filter rejects, logging it once per sweep interval. Call it
+// before Start.
+func (manager *Manager) SetInstallationFilter(allow func(installationID int64) bool) {
+	if manager != nil {
+		manager.allow = allow
+	}
+}
+
 // Enabled reports whether the pipeline will actually do anything.
 func (manager *Manager) Enabled() bool { return manager != nil && manager.client.Enabled() }
 
@@ -207,6 +221,10 @@ func (manager *Manager) Enqueue(installationID int64, owner, repo string, number
 	if !manager.Enabled() {
 		return
 	}
+	if manager.allow != nil && !manager.allow(installationID) {
+		manager.warnDenied(installationID)
+		return
+	}
 	addr := address{InstallationID: installationID, Owner: owner, Repo: repo, Number: number}
 	manager.mu.Lock()
 	if manager.active[addr] {
@@ -231,6 +249,20 @@ func (manager *Manager) Enqueue(installationID int64, owner, repo string, number
 		manager.mu.Unlock()
 		slog.Warn("ghsnapshot: refresh queue full, dropping enqueue")
 	}
+}
+
+func (manager *Manager) warnDenied(installationID int64) {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	now := manager.now()
+	if last, ok := manager.deniedLogged[installationID]; ok && now.Sub(last) < manager.sweepInterval {
+		return
+	}
+	if manager.deniedLogged == nil {
+		manager.deniedLogged = map[int64]time.Time{}
+	}
+	manager.deniedLogged[installationID] = now
+	slog.Warn("ghsnapshot: installation denied by allowlist; refresh skipped", "installation_id", installationID)
 }
 
 // MaybeEnqueueOnView is the page-visit trigger: refresh only when the snapshot

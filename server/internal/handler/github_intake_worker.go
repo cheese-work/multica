@@ -185,6 +185,7 @@ func (worker githubIntakeWorker) process(ctx context.Context, queries *db.Querie
 	state, reason := "denied", "no_revision"
 	priority := map[string]int{"denied": 0, "dispatched": 1, "projected": 2, "unsigned": 3, "quarantined": 4, "deferred": 5}
 	var publications []githubIntakePublication
+	policy := worker.handler.newGitHubPolicyRun()
 	for _, revision := range revisions {
 		if !revision.SourceDeliveryGuid.Valid || revision.SourceDeliveryGuid.String == "" {
 			// No signed delivery backs this revision (R3). Settle it as unsigned; retrying cannot create one.
@@ -210,6 +211,18 @@ func (worker githubIntakeWorker) process(ctx context.Context, queries *db.Querie
 			needsAdmission = !recorded
 		}
 		if needsAdmission {
+			// A revision stored before the policy applied is still checked here, so a now-disallowed binding routes no agent.
+			if allowed := policy.workspaceAllowed(ctx, revision.InstallationID, revision.WorkspaceID); !allowed {
+				if err := queries.SetGitHubWebhookRevisionState(ctx, db.SetGitHubWebhookRevisionStateParams{
+					WorkspaceID: revision.WorkspaceID, ID: revision.ID, State: "denied", Reason: "installation_not_allowed",
+				}); err != nil {
+					return "", "", nil, err
+				}
+				if priority["denied"] >= priority[state] {
+					state, reason = "denied", "installation_not_allowed"
+				}
+				continue
+			}
 			if worker.admit == nil {
 				return "", "", nil, errors.New("github: admission unavailable")
 			}

@@ -53,6 +53,7 @@ func (h *Handler) ConfigureGitHubAllowlist(raw string) error {
 		return err
 	}
 	h.githubAllowlist = list
+	h.PRRefresh.SetInstallationFilter(h.githubRefreshAllowed)
 	if list.ids == nil && isGitHubConfigured() {
 		slog.Warn("github: " + githubAllowedAccountIDsEnv + " is unset; any GitHub account may bind an installation")
 	}
