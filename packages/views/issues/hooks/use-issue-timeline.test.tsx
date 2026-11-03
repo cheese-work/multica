@@ -108,6 +108,8 @@ vi.mock("sonner", () => ({
   toast: { error: vi.fn(), success: vi.fn() },
 }));
 
+import { toast } from "sonner";
+import { ApiError } from "@multica/core/api";
 import { useIssueTimeline } from "./use-issue-timeline";
 
 describe("useIssueTimeline", () => {
@@ -149,6 +151,44 @@ describe("useIssueTimeline", () => {
     expect(result.current.deleteComment).toBe(first.deleteComment);
     expect(result.current.toggleReaction).toBe(first.toggleReaction);
     expect(result.current.submitComment).toBe(first.submitComment);
+  });
+
+  // CHE-3003: the server refuses a non-invocable agent mention with 422 and
+  // saves nothing. The composer must keep the draft (false/rejection, never a
+  // comment id), toast the localized sentence naming the mention, and hand
+  // back the mention ids so the editor can flag the chips.
+  describe("422 invalid_agent_mentions", () => {
+    const content = "hi [@Ghost](mention://agent/abc)";
+    const rejection = () =>
+      new ApiError("nope", 422, "Unprocessable Entity", {
+        code: "invalid_agent_mentions",
+        invalid_mentions: [{ start: 3, end: 32 }],
+      });
+
+    it("submitComment keeps the draft, toasts and returns the ids to flag", async () => {
+      vi.mocked(toast.error).mockClear();
+      stableHandles.createMutateAsync.mockRejectedValueOnce(rejection());
+      const { result } = renderHook(() => useIssueTimeline("issue-1", "user-1"));
+      let out: unknown;
+      await act(async () => {
+        out = await result.current.submitComment(content);
+      });
+      expect(out).toEqual({ invalidMentionIds: ["abc"] });
+      // Localized sentence (copy content is covered by invalid-agent-mentions-copy.test),
+      // never the server's raw English message.
+      expect(toast.error).toHaveBeenCalledTimes(1);
+      expect(toast.error).not.toHaveBeenCalledWith("nope");
+    });
+
+    it("submitReply behaves the same", async () => {
+      stableHandles.createMutateAsync.mockRejectedValueOnce(rejection());
+      const { result } = renderHook(() => useIssueTimeline("issue-1", "user-1"));
+      let out: unknown;
+      await act(async () => {
+        out = await result.current.submitReply("parent-1", content);
+      });
+      expect(out).toEqual({ invalidMentionIds: ["abc"] });
+    });
   });
 
   it("passes suppressed agent ids through editComment", async () => {

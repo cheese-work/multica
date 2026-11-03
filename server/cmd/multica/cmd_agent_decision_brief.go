@@ -67,7 +67,14 @@ func writeAgentDecisionMarkdown(w io.Writer, feed map[string]any) error {
 	}
 	for _, raw := range records {
 		rec, _ := raw.(map[string]any)
-		fmt.Fprintf(&b, "- %v · %v · %v\n  Record: %v\n", rec["identifier"], rec["gate"], rec["state"], rec["link"])
+		fmt.Fprintf(&b, "- %v · %v · %v", rec["identifier"], rec["gate"], rec["state"])
+		if outcome, _ := rec["outcome"].(string); outcome != "" {
+			fmt.Fprintf(&b, " · %s", outcome)
+		}
+		fmt.Fprintf(&b, "\n  Record: %v\n", rec["link"])
+		if decider, _ := rec["decider"].(string); decider != "" {
+			fmt.Fprintf(&b, "  Decided by %s (agent decision, confidence %v).\n", decider, rec["confidence"])
+		}
 		if rec["state"] == "revoked" {
 			fmt.Fprintf(&b, "  Revoked: %v\n", rec["revoke_reason"])
 			continue
