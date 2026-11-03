@@ -51,6 +51,20 @@ an in-flight upload alive, shows messages received while closed on reopen, and
 survives an interrupted exit. It also checks that the message list's ancestor
 is never scaled. HTTP and WebSocket traffic is synthetic; no backend is needed.
 
+## Layout-stability profiles
+
+`chip-stability.spec.ts` (issue-key chips while streaming and while resolving)
+runs once per profile project, both under 4x CPU throttling:
+
+```bash
+pnpm exec playwright test --config=playwright.perf.config.ts chip-stability            # both
+pnpm exec playwright test --config=playwright.perf.config.ts chip-stability --project=phone
+```
+
+`desktop` is Chromium 1440x900 without touch; `phone` is `devices['Pixel 7']`
+(touch, mobile). Geometry limits are shared; layout-shift limits are keyed by
+profile in the spec. Soft assertions: one run reports every requirement.
+
 ## Page-load baseline (CHE-2976)
 
 Cold load of five routes (issue list, issue detail, chat, inbox, projects) on
@@ -64,7 +78,7 @@ pnpm exec turbo build --filter=@multica/web
 REMOTE_API_URL=http://127.0.0.1:1 PORT=3931 pnpm --filter @multica/web start &
 for p in desktop phone; do
   PERF_PROFILE=1 PERF_REPORT_DIR=perf-report PLAYWRIGHT_BASE_URL=http://127.0.0.1:3931 \
-    pnpm exec playwright test --config=playwright.perf.config.ts --project=$p
+    pnpm exec playwright test --config=playwright.perf.config.ts page-load-baseline --project=$p
 done
 node scripts/page-load-report.mjs perf-report/page-load-desktop.json perf-report/page-load-phone.json
 ```
