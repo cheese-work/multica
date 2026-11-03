@@ -740,6 +740,8 @@
     "item_meta": "Added {{created}} · {{lastUsed}}",
     "last_used_with_date": "Last used {{date}}",
     "last_used_never": "Never used",
+    "suspect": "Suspect",
+    "revoke_code_hint": "We emailed you a code to remove this passkey. Enter it to confirm.",
     "revoke_aria": "Revoke passkey {{number}}",
     "toast_enrolled": "Passkey added",
     "toast_enroll_failed": "Failed to add passkey",

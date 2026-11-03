@@ -726,6 +726,8 @@
     "item_meta": "新增於 {{created}} · {{lastUsed}}",
     "last_used_with_date": "上次使用 {{date}}",
     "last_used_never": "從未使用",
+    "suspect": "可疑",
+    "revoke_code_hint": "我們已寄送用於移除此通行金鑰的驗證碼到你的信箱。輸入驗證碼以確認。",
     "revoke_aria": "吊銷通行金鑰 {{number}}",
     "toast_enrolled": "通行金鑰已新增",
     "toast_enroll_failed": "新增通行金鑰失敗",

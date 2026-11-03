@@ -734,6 +734,8 @@
     "item_meta": "추가일 {{created}} · {{lastUsed}}",
     "last_used_with_date": "마지막 사용 {{date}}",
     "last_used_never": "사용 안 함",
+    "suspect": "의심됨",
+    "revoke_code_hint": "이 패스키를 삭제할 코드를 이메일로 보냈습니다. 코드를 입력해 확인하세요.",
     "revoke_aria": "패스키 {{number}} 폐기",
     "toast_enrolled": "패스키를 추가했습니다",
     "toast_enroll_failed": "패스키를 추가하지 못했습니다",

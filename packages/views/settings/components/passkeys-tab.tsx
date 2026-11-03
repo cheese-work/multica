@@ -7,6 +7,7 @@ import { api } from "@multica/core/api";
 import { createPasskey, signPasskeyChallenge } from "@multica/core/auth/webauthn";
 import type { PasskeySummary } from "@multica/core/api/passkey-schema";
 import { Button } from "@multica/ui/components/ui/button";
+import { Badge } from "@multica/ui/components/ui/badge";
 import { Card, CardContent } from "@multica/ui/components/ui/card";
 import { Input } from "@multica/ui/components/ui/input";
 import {
@@ -59,6 +60,8 @@ function PasskeysManager() {
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [revokeId, setRevokeId] = useState<string | null>(null);
+  // Sole-key revoke: no other active key can sign, so a mailed code stands in for the assertion.
+  const [codeRevoke, setCodeRevoke] = useState<{ id: string; ceremonyId: string } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -108,8 +111,29 @@ function PasskeysManager() {
   const revoke = async (id: string) => {
     setBusy(true);
     try {
+      if (!passkeys.some((p) => p.id !== id && p.state === "active")) {
+        const started = await api.startPasskeyRevocationByCode(id);
+        setCodeRevoke({ id, ceremonyId: started.ceremony_id });
+        setCode("");
+        return;
+      }
       const challenge = await api.challengePasskeyRevocation(id);
       await api.revokePasskey(id, await signPasskeyChallenge(challenge));
+      toast.success(t(($) => $.passkeys.toast_revoked));
+      await load();
+    } catch (e) {
+      toast.error(errorMessage(e, t(($) => $.passkeys.toast_revoke_failed)));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const finishCodeRevoke = async () => {
+    if (!codeRevoke) return;
+    setBusy(true);
+    try {
+      await api.confirmPasskeyRevocationByCode(codeRevoke.id, { ceremony_id: codeRevoke.ceremonyId, code: code.trim() });
+      setCodeRevoke(null);
       toast.success(t(($) => $.passkeys.toast_revoked));
       await load();
     } catch (e) {
@@ -122,7 +146,28 @@ function PasskeysManager() {
   return (
     <SettingsTab title={t(($) => $.passkeys.title)} description={t(($) => $.passkeys.purpose)} scope="account">
       <SettingsSection description={t(($) => $.passkeys.description)}>
-        {ceremony ? (
+        {codeRevoke ? (
+          <Card>
+            <CardContent className="space-y-3">
+              <p className="text-caption text-muted-foreground">{t(($) => $.passkeys.revoke_code_hint)}</p>
+              <div className="grid gap-3 sm:grid-cols-[1fr_auto_auto]">
+                <Input
+                  autoComplete="one-time-code"
+                  inputMode="numeric"
+                  aria-label={t(($) => $.passkeys.code_label)}
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                />
+                <Button onClick={finishCodeRevoke} disabled={busy || !code.trim()}>
+                  {t(($) => $.passkeys.confirm)}
+                </Button>
+                <Button variant="ghost" onClick={() => setCodeRevoke(null)} disabled={busy}>
+                  {t(($) => $.passkeys.cancel)}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        ) : ceremony ? (
           <Card>
             <CardContent className="space-y-3">
               <p className="text-caption text-muted-foreground">{t(($) => $.passkeys.code_hint)}</p>
@@ -161,6 +206,9 @@ function PasskeysManager() {
                   <div className="min-w-0 flex-1">
                     <div className="text-body font-medium truncate">
                       {t(($) => $.passkeys.item_title, { number: index + 1 })}
+                      {passkey.state === "suspect" && (
+                        <Badge variant="destructive" className="ml-2">{t(($) => $.passkeys.suspect)}</Badge>
+                      )}
                     </div>
                     <div className="text-caption text-muted-foreground">
                       {t(($) => $.passkeys.item_meta, {

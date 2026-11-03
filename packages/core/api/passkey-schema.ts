@@ -13,9 +13,11 @@ export const PasskeyEnrollStartSchema = z.object({
 export const PasskeyListSchema = z.object({
   passkeys: z.array(z.object({
     id: z.string(), created_at: z.string(), last_used_at: z.string().nullable(), transports: z.array(z.string()),
+    state: z.enum(["active", "suspect"]),
   })),
 });
 export const PasskeyEnrolledSchema = z.object({ enrolled: z.literal(true) });
+export const PasskeyRevokeCodeStartSchema = z.object({ ceremony_id: z.string(), expires_at: z.string() });
 export const PasskeyRevokedSchema = z.object({ revoked: z.literal(true) });
 export const PasskeyDecisionOutcomeSchema = z.object({
   id: z.string(),

@@ -734,6 +734,8 @@
     "item_meta": "追加日 {{created}} · {{lastUsed}}",
     "last_used_with_date": "最終使用 {{date}}",
     "last_used_never": "未使用",
+    "suspect": "要確認",
+    "revoke_code_hint": "このパスキーを削除するコードをメールで送信しました。コードを入力して確定してください。",
     "revoke_aria": "パスキー {{number}} を失効",
     "toast_enrolled": "パスキーを追加しました",
     "toast_enroll_failed": "パスキーを追加できませんでした",

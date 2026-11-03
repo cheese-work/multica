@@ -740,6 +740,8 @@
     "item_meta": "Ajoutée le {{created}} · {{lastUsed}}",
     "last_used_with_date": "Dernière utilisation le {{date}}",
     "last_used_never": "Jamais utilisée",
+    "suspect": "Suspecte",
+    "revoke_code_hint": "Nous vous avons envoyé un code par e-mail pour supprimer cette clé d'accès. Saisissez-le pour confirmer.",
     "revoke_aria": "Révoquer la clé d'accès {{number}}",
     "toast_enrolled": "Clé d'accès ajoutée",
     "toast_enroll_failed": "Échec de l'ajout de la clé d'accès",

@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   finishPasskeyEnrollment: vi.fn(),
   challengePasskeyRevocation: vi.fn(),
   revokePasskey: vi.fn(),
+  startPasskeyRevocationByCode: vi.fn(),
+  confirmPasskeyRevocationByCode: vi.fn(),
   createPasskey: vi.fn(),
   signPasskeyChallenge: vi.fn(),
   openExternal: vi.fn(),
@@ -24,6 +26,8 @@ vi.mock("@multica/core/api", () => ({
     finishPasskeyEnrollment: mocks.finishPasskeyEnrollment,
     challengePasskeyRevocation: mocks.challengePasskeyRevocation,
     revokePasskey: mocks.revokePasskey,
+    startPasskeyRevocationByCode: mocks.startPasskeyRevocationByCode,
+    confirmPasskeyRevocationByCode: mocks.confirmPasskeyRevocationByCode,
   },
 }));
 vi.mock("@multica/core/auth/webauthn", () => ({
@@ -47,7 +51,7 @@ vi.mock("../../navigation", () => ({
 import { PasskeysTab } from "./passkeys-tab";
 
 const key = (id: string, over: Record<string, unknown> = {}) => ({
-  id, created_at: "2026-10-01T00:00:00Z", last_used_at: null, transports: ["usb"], ...over,
+  id, created_at: "2026-10-01T00:00:00Z", last_used_at: null, transports: ["usb"], state: "active", ...over,
 });
 const challenge = { challenge_id: "ch1", options: { publicKey: { challenge: "AQ" } }, expires_at: "t" };
 const start = { ceremony_id: "ce1", options: { publicKey: { challenge: "AQ" } }, expires_at: "t" };
@@ -175,6 +179,72 @@ describe("PasskeysTab", () => {
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith("no_passkey: no usable passkey to sign with"));
     expect(mocks.revokePasskey).not.toHaveBeenCalled();
     expect(mocks.listPasskeys).toHaveBeenCalledTimes(1);
+  });
+
+  it("revokes the only active passkey with a mailed code, since no other key can sign", async () => {
+    const user = userEvent.setup();
+    mocks.listPasskeys.mockResolvedValue([key("p1")]);
+    mocks.startPasskeyRevocationByCode.mockResolvedValue({ ceremony_id: "rc1", expires_at: "t" });
+    mocks.confirmPasskeyRevocationByCode.mockResolvedValue(undefined);
+    renderWithI18n(<PasskeysTab />);
+
+    await user.click(await screen.findByRole("button", { name: "Revoke passkey 1" }));
+    await user.click(await screen.findByRole("button", { name: "Revoke" }));
+    await user.type(await screen.findByLabelText("Email code"), "654321");
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
+
+    await waitFor(() => expect(mocks.confirmPasskeyRevocationByCode).toHaveBeenCalledWith("p1", { ceremony_id: "rc1", code: "654321" }));
+    expect(mocks.startPasskeyRevocationByCode).toHaveBeenCalledWith("p1");
+    expect(mocks.challengePasskeyRevocation).not.toHaveBeenCalled();
+    await waitFor(() => expect(mocks.listPasskeys).toHaveBeenCalledTimes(2));
+    expect(toast.success).toHaveBeenCalled();
+    expect(screen.queryByLabelText("Email code")).not.toBeInTheDocument();
+  });
+
+  it("keeps the passkey and shows the server reason when the code revoke is refused", async () => {
+    const user = userEvent.setup();
+    mocks.listPasskeys.mockResolvedValue([key("p1")]);
+    mocks.startPasskeyRevocationByCode.mockResolvedValue({ ceremony_id: "rc1", expires_at: "t" });
+    mocks.confirmPasskeyRevocationByCode.mockRejectedValue(new Error("passkey_floor: at least two passkeys must stay active"));
+    renderWithI18n(<PasskeysTab />);
+
+    await user.click(await screen.findByRole("button", { name: "Revoke passkey 1" }));
+    await user.click(await screen.findByRole("button", { name: "Revoke" }));
+    await user.type(await screen.findByLabelText("Email code"), "654321");
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("passkey_floor: at least two passkeys must stay active"));
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(mocks.listPasskeys).toHaveBeenCalledTimes(1);
+  });
+
+  it("labels a suspect passkey and revokes it by signing with an active one", async () => {
+    const user = userEvent.setup();
+    const envelope = { challenge_id: "ch1", credential: { id: "sig" } };
+    mocks.listPasskeys.mockResolvedValue([key("p1"), key("p2", { state: "suspect" })]);
+    mocks.challengePasskeyRevocation.mockResolvedValue(challenge);
+    mocks.signPasskeyChallenge.mockResolvedValue(envelope);
+    mocks.revokePasskey.mockResolvedValue(undefined);
+    renderWithI18n(<PasskeysTab />);
+
+    expect(await screen.findAllByText("Suspect")).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: "Revoke passkey 2" }));
+    await user.click(await screen.findByRole("button", { name: "Revoke" }));
+
+    await waitFor(() => expect(mocks.revokePasskey).toHaveBeenCalledWith("p2", envelope));
+    expect(mocks.startPasskeyRevocationByCode).not.toHaveBeenCalled();
+  });
+
+  it("uses a mailed code for the last active passkey even when a suspect one remains", async () => {
+    const user = userEvent.setup();
+    mocks.listPasskeys.mockResolvedValue([key("p1"), key("p2", { state: "suspect" })]);
+    mocks.startPasskeyRevocationByCode.mockResolvedValue({ ceremony_id: "rc1", expires_at: "t" });
+    renderWithI18n(<PasskeysTab />);
+
+    await user.click(await screen.findByRole("button", { name: "Revoke passkey 1" }));
+    await user.click(await screen.findByRole("button", { name: "Revoke" }));
+    await waitFor(() => expect(mocks.startPasskeyRevocationByCode).toHaveBeenCalledWith("p1"));
+    expect(mocks.challengePasskeyRevocation).not.toHaveBeenCalled();
   });
 
   it("on desktop opens the web page in the system browser and does not call the API", async () => {
