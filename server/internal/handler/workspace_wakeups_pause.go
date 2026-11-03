@@ -127,6 +127,9 @@ func (h *Handler) saveWorkspace(ctx context.Context, params db.UpdateWorkspacePa
 			}
 			return db.Workspace{}, "", activity, change, err
 		}
+	} else if compact.field != nil {
+		// The dedicated value has no object to land in; refuse rather than drop it.
+		return db.Workspace{}, "", activity, change, settingsRejectedError{"settings must be an object when compact_agent_id is sent"}
 	} else if stored[wakeupsPausedKey] == true || stored[delegatedWritesKey] != nil {
 		// A non-object body would replace the whole blob and clear the pause or
 		// the delegated-writes setting with no record. Other callers may still store one.

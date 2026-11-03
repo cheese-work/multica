@@ -112,7 +112,9 @@ func reconcileCompactAgent(incoming map[string]any, field json.RawMessage, clien
 }
 
 // compactAgentEligible is ENG-8: an agent of this workspace that is not
-// archived, not private and runs on a workspace-shared runtime.
+// archived, is invokable by the whole workspace and runs on a workspace-shared
+// runtime. A public_to agent limited to members or teams is private to the
+// legacy view, so only a workspace invocation target counts.
 func compactAgentEligible(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, agentID string) (bool, error) {
 	id, err := util.ParseUUID(agentID)
 	if err != nil {
@@ -125,7 +127,14 @@ func compactAgentEligible(ctx context.Context, q *db.Queries, workspaceID pgtype
 	if err != nil {
 		return false, err
 	}
-	if agent.ArchivedAt.Valid || agent.PermissionMode == "private" || !agent.RuntimeID.Valid {
+	if agent.ArchivedAt.Valid || !agent.RuntimeID.Valid {
+		return false, nil
+	}
+	targets, err := q.ListAgentInvocationTargets(ctx, agent.ID)
+	if err != nil {
+		return false, err
+	}
+	if deriveLegacyVisibility(agent.PermissionMode, targets) != "workspace" {
 		return false, nil
 	}
 	runtime, err := q.GetAgentRuntimeForWorkspace(ctx, db.GetAgentRuntimeForWorkspaceParams{ID: agent.RuntimeID, WorkspaceID: workspaceID})

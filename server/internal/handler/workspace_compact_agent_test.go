@@ -86,10 +86,12 @@ func newCompactAgentFixture(t *testing.T) *compactAgentFixture {
 func (f *compactAgentFixture) eligibleAgent(name string) string {
 	f.t.Helper()
 	runtimeID := dbfx.Runtime(f.t, name+"-runtime", testutil.Cols{"visibility": "public"})
-	return dbfx.Agent(f.t, name, runtimeID, testutil.Cols{
+	agentID := dbfx.Agent(f.t, name, runtimeID, testutil.Cols{
 		"visibility":      "workspace",
 		"permission_mode": "public_to",
 	})
+	dbfx.Exec(f.t, `INSERT INTO agent_invocation_target (agent_id, target_type, target_id) VALUES ($1, 'workspace', $2)`, agentID, testWorkspaceID)
+	return agentID
 }
 
 func (f *compactAgentFixture) stored() string {
@@ -243,6 +245,13 @@ func TestCompactAgentIDEligibility(t *testing.T) {
 	dbfx.Exec(t, `UPDATE agent SET archived_at = now() WHERE id = $1`, archived)
 	private := f.eligibleAgent("compact-agent-private")
 	dbfx.Exec(t, `UPDATE agent SET permission_mode = 'private', visibility = 'private' WHERE id = $1`, private)
+	// public_to limited to one member or to a team is not workspace-visible.
+	memberOnly := f.eligibleAgent("compact-agent-member-only")
+	dbfx.Exec(t, `DELETE FROM agent_invocation_target WHERE agent_id = $1`, memberOnly)
+	dbfx.Exec(t, `INSERT INTO agent_invocation_target (agent_id, target_type, target_id) VALUES ($1, 'member', $2)`, memberOnly, testUserID)
+	teamOnly := f.eligibleAgent("compact-agent-team-only")
+	dbfx.Exec(t, `DELETE FROM agent_invocation_target WHERE agent_id = $1`, teamOnly)
+	dbfx.Exec(t, `INSERT INTO agent_invocation_target (agent_id, target_type, target_id) VALUES ($1, 'team', gen_random_uuid())`, teamOnly)
 	privateRuntime := f.eligibleAgent("compact-agent-private-runtime")
 	dbfx.Exec(t, `UPDATE agent_runtime SET visibility = 'private' WHERE id = (SELECT runtime_id FROM agent WHERE id = $1)`, privateRuntime)
 	noRuntime := f.eligibleAgent("compact-agent-no-runtime")
@@ -262,6 +271,8 @@ func TestCompactAgentIDEligibility(t *testing.T) {
 	}{
 		{"archived", archived, "compact_agent_ineligible", archived},
 		{"private agent", private, "compact_agent_ineligible", private},
+		{"member-only public_to", memberOnly, "compact_agent_ineligible", memberOnly},
+		{"team-only public_to", teamOnly, "compact_agent_ineligible", teamOnly},
 		{"private runtime", privateRuntime, "compact_agent_ineligible", privateRuntime},
 		{"no runtime", noRuntime, "compact_agent_ineligible", noRuntime},
 		{"other workspace", foreign, "compact_agent_ineligible", foreign},
@@ -527,5 +538,21 @@ func TestCompactAgentIDWriteWaitsForWorkspaceRowLock(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the write never finished after the lock was released")
+	}
+}
+
+// A dedicated compact_agent_id next to a non-object settings body cannot be
+// applied: the request is refused instead of silently dropping the value.
+func TestCompactAgentIDDedicatedFieldWithNonObjectSettingsRefused(t *testing.T) {
+	f := newCompactAgentFixture(t)
+	agentA := f.eligibleAgent("compact-agent-nonobject")
+	for _, settings := range []any{"oops", []any{1}, 7} {
+		rec := f.send(http.MethodPatch, map[string]any{"compact_agent_id": agentA, "settings": settings}, humanActor)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("settings %v: status %d, want 400: %s", settings, rec.Code, rec.Body.String())
+		}
+		if got := f.stored(); got != "" {
+			t.Fatalf("settings %v: a refused write stored %q", settings, got)
+		}
 	}
 }
