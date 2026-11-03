@@ -79,10 +79,11 @@ var auditKinds = map[string]auditKindSpec{
 	},
 	// Governed instruction writes (owner CAS, vote receipt, decision binding).
 	// The kind is the column kind; the field is long text, stored as a digest.
-	"workspace.context":   {TargetType: "workspace", Text: []string{"context"}},
-	"squad.instructions":  {TargetType: "squad", Text: []string{"instructions"}},
-	"agent.instructions":  {TargetType: "agent", Text: []string{"instructions"}},
-	"project.description": {TargetType: "project", Text: []string{"description"}},
+	"workspace.context":     {TargetType: "workspace", Text: []string{"context"}},
+	"squad.instructions":    {TargetType: "squad", Text: []string{"instructions"}},
+	"agent.instructions":    {TargetType: "agent", Text: []string{"instructions"}},
+	"project.description":   {TargetType: "project", Text: []string{"description"}},
+	"workspace.config_sync": {TargetType: "workspace", Text: []string{"config_sync"}},
 	// Runtime access narrowing/widening. shared_with is a list of user ids, so
 	// it is recorded as the changed marker; the counts are the confirmed
 	// teardown the revoke applied.

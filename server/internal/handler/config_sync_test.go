@@ -297,3 +297,36 @@ func TestConfigSyncLiveDigestIsScopedToTheWorkspace(t *testing.T) {
 		t.Errorf("malformed agent id: found=%v err=%v", found, err)
 	}
 }
+
+// Every governed column writes an audit row of its own kind, so a column added
+// without an auditKinds entry would answer 500 on its first write.
+func TestOwnerCASColumnsHaveAuditKinds(t *testing.T) {
+	for _, c := range []ownerCASColumn{ownerCASWorkspaceContext, ownerCASSquadInstructions, ownerCASAgentInstructions, ownerCASWorkspaceConfigSync} {
+		if _, ok := auditKinds[c.kind]; !ok {
+			t.Errorf("owner CAS column %q has no auditKinds entry", c.kind)
+		}
+	}
+}
+
+func TestConfigSyncOwnerCAS_WritesAuditRow(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	cleanConfigSync(t)
+	w := httptest.NewRecorder()
+	testHandler.UpdateWorkspace(w, configSyncPatch(testUserID, configSyncSettingsJSON, testDigest("")))
+	if w.Code != http.StatusOK {
+		t.Fatalf("owner enroll: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	rows := auditRowsFor(t, "workspace.config_sync", testWorkspaceID)
+	if len(rows) == 0 {
+		t.Fatal("workspace.config_sync audit rows = 0; want 1")
+	}
+	row := rows[len(rows)-1]
+	if row.ActorType != "member" || row.ActorID != testUserID || row.TargetType != "workspace" {
+		t.Errorf("row = %+v; want a member row on a workspace target", row)
+	}
+	if encoded, _ := json.Marshal(row); strings.Contains(string(encoded), "acme/widget") {
+		t.Errorf("settings text reached the audit row: %s", encoded)
+	}
+}
