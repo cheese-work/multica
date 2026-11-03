@@ -297,6 +297,10 @@ func TestCIAdvanceRollsBackWithActivityFailure(t *testing.T) {
 func exhaustRunBudget(t *testing.T, c edgeCase) {
 	t.Helper()
 	ctx := context.Background()
+	// Every Handler New() registers the process-wide exhaustion hook on its own
+	// bus; point it back at testHandler so the block publishes where this
+	// test listens.
+	service.SetOnRunBudgetExhausted(testHandler.onRunBudgetExhausted)
 	agentID := seededReadyAgentID(t)
 	if _, err := testPool.Exec(ctx, `UPDATE issue_workflow SET max_runs_per_issue=2, run_budget_since=now()-interval '1 hour' WHERE id=$1`, c.workflowID); err != nil {
 		t.Fatal(err)
