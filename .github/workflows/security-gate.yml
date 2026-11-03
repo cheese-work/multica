@@ -28,12 +28,34 @@ permissions:
   pull-requests: read
   statuses: write
 
-concurrency:
-  group: security-gate-${{ github.event.pull_request.number || github.event.issue.number || github.event.merge_group.head_sha }}
-  cancel-in-progress: true
-
 jobs:
+  # One serial lane per PR, shared by pull_request_target, issue_comment and merge_group runs. Without it a merge_group
+  # run could read PASS, a revocation run post pending, and the earlier run then post a stale success on the queue
+  # commit. A merge_group ref carries the PR number but no expression can parse it, so a tiny job resolves it first.
+  resolve:
+    name: security-gate-resolve
+    if: github.event_name == 'pull_request_target' || github.event_name == 'merge_group' || github.event.issue.pull_request
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    timeout-minutes: 2
+    outputs:
+      pr: ${{ steps.pr.outputs.pr }}
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+      MERGE_GROUP_REF: ${{ github.event.merge_group.head_ref }}
+    steps:
+      - id: pr
+        run: |
+          pr="$PR_NUMBER"
+          if [ -n "$MERGE_GROUP_REF" ]; then
+            [[ $MERGE_GROUP_REF =~ /pr-([0-9]+)-[0-9a-f]{40}$ ]] && pr="${BASH_REMATCH[1]}" || pr="queue-$MERGE_GROUP_REF"
+          fi
+          echo "pr=$pr" >> "$GITHUB_OUTPUT"
   security-gate:
+    needs: resolve
+    # cancel-in-progress stays false: a revocation run must queue behind a running evaluation, never cancel or be cancelled by it.
+    concurrency:
+      group: security-gate-${{ needs.resolve.outputs.pr }}
+      cancel-in-progress: false
     # Job name differs from the status context on purpose: the context is posted by the script, not by this job.
     name: security-gate-eval
     if: github.event_name == 'pull_request_target' || github.event_name == 'merge_group' || github.event.issue.pull_request
@@ -82,11 +104,15 @@ jobs:
             fi
             pr="${BASH_REMATCH[2]}" queue="$MERGE_GROUP_SHA" flags=()  # --post would write to the PR head, not the queue commit
           fi
-          out="$(python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$pr" \
-            --default-branch "$DEFAULT_BRANCH" --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            "${flags[@]}")"
+          gate() {
+            python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$pr" \
+              --default-branch "$DEFAULT_BRANCH" --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "${flags[@]}"
+          }
+          out="$(gate)"
           [ -n "$queue" ] || queue="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/heads/gh-readonly-queue/$DEFAULT_BRANCH/pr-$pr-" \
             --jq '.[].object.sha')"
+          # Re-read right before posting: a verdict revoked since the first read must not be posted as success.
+          [ -z "$queue" ] || out="$(gate)"
           field() { python3 -c 'import json,sys; print(json.loads(sys.argv[1])[sys.argv[2]])' "$out" "$1"; }
           head="$(field sha)" state="$(field state)" desc="#$pr: $(field description)"
           for sha in $queue; do

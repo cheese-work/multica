@@ -245,6 +245,8 @@ class MergeGroupStepTest(unittest.TestCase):
                'esac\n')
     STUB_GATE = ('#!/bin/bash\n'  # the old script: --pr required, anything else is an argparse error
                  'echo "gate $*" >> "$LOG"\n'
+                 'n=$(cat "$LOG.n" 2>/dev/null || echo 0); echo $((n + 1)) > "$LOG.n"\n'
+                 '[ "$n" -ge 1 ] && STATE="${STATE2:-$STATE}"\n'
                  'case " $* " in *" --pr "*) ;; *) exit 2 ;; esac\n'
                  'echo \'{"context": "security-gate", "sha": "\'$HEAD\'", "state": "\'$STATE\'", "description": "PASS on x"}\'\n')
 
@@ -255,7 +257,7 @@ class MergeGroupStepTest(unittest.TestCase):
         self.assertEqual(len(applicable), 1)
         return applicable[0]["run"]
 
-    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success", queue_shas=(), pr_event=False):
+    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success", queue_shas=(), pr_event=False, state2=""):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             (tmp / "bin").mkdir()
@@ -269,7 +271,7 @@ class MergeGroupStepTest(unittest.TestCase):
             for path in (tmp / "bin/gh", tmp / "bin/python3", tmp / "scripts/security-gate/gate.sh"):
                 path.chmod(0o755)
             env = {**os.environ, "PATH": f"{tmp / 'bin'}:{os.environ['PATH']}", "LOG": str(tmp / "log"), "HEAD": HEAD,
-                   "STATE": state, "PARENTS": " ".join(parents), "QUEUE_SHAS": " ".join(queue_shas),
+                   "STATE": state, "STATE2": state2, "PARENTS": " ".join(parents), "QUEUE_SHAS": " ".join(queue_shas),
                    "MERGE_GROUP_REF": "" if pr_event else ref, "MERGE_GROUP_SHA": "" if pr_event else self.QUEUE,
                    "PR_NUMBER": "405", "GH_TOKEN": "t",
                    "DEFAULT_BRANCH": "main", "GITHUB_REPOSITORY": "o/r", "GITHUB_SERVER_URL": "https://github.com",
@@ -317,6 +319,38 @@ class MergeGroupStepTest(unittest.TestCase):
     def test_pr_event_does_not_update_a_queue_commit_that_lacks_the_head(self):
         done, log = self.run_step(pr_event=True, queue_shas=(self.QUEUE,), parents=("d" * 40, OLD))
         self.assertIn("state=failure", self.posted(log)[0])
+
+    # Run A reads PASS, a revocation lands, run A attempts to post success: the queue commit must end non-success.
+    def test_verdict_revoked_while_the_run_is_in_flight_is_not_posted_as_success(self):
+        done, log = self.run_step(state="success", state2="pending")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertNotIn("state=success", " ".join(self.posted(log)))
+        self.assertIn("state=pending", self.posted(log)[-1])
+
+
+class ConcurrencyTest(unittest.TestCase):
+    """One serial lane per PR: a revocation run queues behind a running evaluation instead of racing it."""
+
+    def setUp(self):
+        self.jobs = yaml.safe_load((ROOT / ".github/workflows/security-gate.yml").read_text())["jobs"]
+
+    def resolve_pr(self, **env):
+        run = self.jobs["resolve"]["steps"][0]["run"]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "out"
+            subprocess.run(["bash", "-c", run], env={**os.environ, "MERGE_GROUP_REF": "", "PR_NUMBER": "",
+                                                     "GITHUB_OUTPUT": str(out), **env}, check=True)
+            return out.read_text().strip()
+
+    def test_merge_group_and_comment_runs_for_one_pr_share_a_group_that_never_cancels(self):
+        conc = self.jobs["security-gate"]["concurrency"]
+        self.assertEqual(conc["group"], "security-gate-${{ needs.resolve.outputs.pr }}")
+        self.assertIs(conc["cancel-in-progress"], False)
+
+    def test_queue_ref_and_pr_event_resolve_to_the_same_number(self):
+        ref = f"refs/heads/gh-readonly-queue/main/pr-405-{'d' * 40}"
+        self.assertEqual(self.resolve_pr(MERGE_GROUP_REF=ref), "pr=405")
+        self.assertEqual(self.resolve_pr(PR_NUMBER="405"), "pr=405")
 
 
 class WorkflowTest(unittest.TestCase):
