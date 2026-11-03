@@ -3334,6 +3334,40 @@ func duplicateIssueMessage(issue IssueResponse) string {
 	return issueguard.DuplicateMessage(issue.Identifier, issue.Title, issue.Status)
 }
 
+// resolveCreateWorkflow validates the workflow a create names and loads the
+// workflow the new issue follows: the caller's override when it names one
+// (feature flag and workflow-manager permission required), otherwise the
+// project's. It writes the error response and returns false on any failure.
+// Shared by the ordinary create and the captured-comment create.
+func (h *Handler) resolveCreateWorkflow(w http.ResponseWriter, r *http.Request, workspaceID string, wsUUID pgtype.UUID, rawWorkflowID *string, workflowProjectID pgtype.UUID) (pgtype.UUID, *issueworkflow.Definition, db.Project, bool) {
+	var overrideID pgtype.UUID
+	if rawWorkflowID != nil && *rawWorkflowID != "" {
+		id, ok := parseUUIDOrBadRequest(w, *rawWorkflowID, "workflow_id")
+		if !ok {
+			return overrideID, nil, db.Project{}, false
+		}
+		overrideID = id
+	}
+	def, project, err := issueworkflow.ForIssue(r.Context(), h.Queries, wsUUID, overrideID, workflowProjectID)
+	if overrideID.Valid {
+		if !h.requireProjectWorkflowsV1(w, r) {
+			return overrideID, nil, project, false
+		}
+		if _, ok := h.requireIssueWorkflowManager(w, r, workspaceID, project); !ok {
+			return overrideID, nil, project, false
+		}
+	}
+	if writeIssueWorkflowError(w, err) {
+		return overrideID, nil, project, false
+	}
+	if err != nil {
+		slog.Error("create issue: resolve project workflow", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+		return overrideID, nil, project, false
+	}
+	return overrideID, def, project, true
+}
+
 func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	r = h.withWakeupActor(r)
 	var req CreateIssueRequest
@@ -3452,29 +3486,8 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var overrideID pgtype.UUID
-	if req.WorkflowID != nil && *req.WorkflowID != "" {
-		id, ok := parseUUIDOrBadRequest(w, *req.WorkflowID, "workflow_id")
-		if !ok {
-			return
-		}
-		overrideID = id
-	}
-	createWorkflow, createWorkflowProject, err := issueworkflow.ForIssue(r.Context(), h.Queries, wsUUID, overrideID, workflowProjectID)
-	if overrideID.Valid {
-		if !h.requireProjectWorkflowsV1(w, r) {
-			return
-		}
-		if _, ok := h.requireIssueWorkflowManager(w, r, workspaceID, createWorkflowProject); !ok {
-			return
-		}
-	}
-	if writeIssueWorkflowError(w, err) {
-		return
-	}
-	if err != nil {
-		slog.Error("create issue: resolve project workflow", append(logger.RequestAttrs(r), "error", err)...)
-		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+	overrideID, createWorkflow, createWorkflowProject, ok := h.resolveCreateWorkflow(w, r, workspaceID, wsUUID, req.WorkflowID, workflowProjectID)
+	if !ok {
 		return
 	}
 	if createWorkflow != nil {
@@ -3823,6 +3836,9 @@ type UpdateIssueRequest struct {
 	ParentIssueID   *string  `json:"parent_issue_id"`
 	ProjectID       *string  `json:"project_id"`
 	Stage           *int32   `json:"stage"`
+	// HandoffCommentID names the comment that explains a status move. The
+	// status history keeps it only when the comment belongs to the issue.
+	HandoffCommentID *string `json:"handoff_comment_id,omitempty"`
 	// AttachmentIDs lets the description editor bind newly uploaded files to
 	// this issue so they surface in `GET /api/issues/:id/attachments` and the
 	// editor's preview Eye keeps working past a refresh. Existing bindings
@@ -4404,6 +4420,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	var statusRec *statusRecord
 	if handoff == nil && !params.DuplicateOfIssueID.Valid && !prevIssue.DuplicateOfIssueID.Valid {
 		statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTrigger}
+		if req.HandoffCommentID != nil {
+			statusRec.trigger.HandoffCommentID = *req.HandoffCommentID
+		}
 		writeCtx = withStatusRecord(writeCtx, statusRec)
 	}
 	var issue db.Issue
@@ -4526,6 +4545,18 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	if statusRec != nil && statusRec.activity != nil {
 		updatedPayload["activity_id"] = uuidToString(statusRec.activity.ID)
+	}
+	if handoff != nil && statusChanged {
+		// The listener still writes a handoff's row; give it the trigger.
+		trigger := statusTriggerFromRequest(r, actorType, actorID)
+		if req.HandoffCommentID != nil {
+			trigger.HandoffCommentID = *req.HandoffCommentID
+		}
+		if trigger, err := service.ResolveStatusTrigger(r.Context(), h.Queries, issue, trigger); err != nil {
+			slog.Warn("status trigger for handoff row", "issue_id", uuidToString(issue.ID), "error", err)
+		} else {
+			updatedPayload["status_trigger"] = trigger
+		}
 	}
 	if duplicateOfPointer(issue.Status, issue.DuplicateOfIssueID) != duplicateOfPointer(prevIssue.Status, prevIssue.DuplicateOfIssueID) {
 		updatedPayload["status_trigger"] = statusTrigger

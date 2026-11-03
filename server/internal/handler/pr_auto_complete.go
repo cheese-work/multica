@@ -328,9 +328,13 @@ func (h *Handler) maybeAutoCompleteIssue(ctx context.Context, workspaceID, issue
 		return
 	}
 	var cancelledWakeups []db.AgentTaskQueue
+	var recorded *db.ActivityLog
 	if err == nil {
 		// A no-op unless the target closes the issue.
 		cancelledWakeups, err = service.StopClosedIssueWakeups(ctx, qtx, updated)
+	}
+	if err == nil {
+		recorded, err = recordSystemStatusChange(ctx, qtx, issue, updated, service.StatusCausePRMerged, map[string]string{"pr": prNumberList(d.PRs)})
 	}
 	if err == nil {
 		err = tx.Commit(ctx)
@@ -349,7 +353,7 @@ func (h *Handler) maybeAutoCompleteIssue(ctx context.Context, workspaceID, issue
 	prefix := h.getIssuePrefix(ctx, issue.WorkspaceID)
 	resp := issueToResponse(updated, prefix)
 	h.fillStatusCategory(ctx, updated.WorkspaceID, &resp)
-	h.publish(protocol.EventIssueUpdated, uuidToString(workspaceID), "system", "", map[string]any{
+	payload := map[string]any{
 		"issue":          resp,
 		"status_changed": true,
 		"prev_status":    issue.Status,
@@ -361,7 +365,8 @@ func (h *Handler) maybeAutoCompleteIssue(ctx context.Context, workspaceID, issue
 		// both ends so the activity log and clients see the mark go.
 		"duplicate_of_issue_id":      liveDuplicateMark(updated.Status, updated.DuplicateOfIssueID),
 		"prev_duplicate_of_issue_id": liveDuplicateMark(issue.Status, issue.DuplicateOfIssueID),
-	})
+	}
+	h.publishSystemStatusChange(uuidToString(workspaceID), recorded, payload)
 }
 
 // prNumberList renders "#12, #15" for the activity entry.

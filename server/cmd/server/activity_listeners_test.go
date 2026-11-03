@@ -618,6 +618,23 @@ func TestActivityIssueUpdated_DuplicateUnmarked(t *testing.T) {
 	}
 }
 
+// A reopen that already recorded its status row in the transaction
+// (activity_id) must not have the unmarked row stand in for it too.
+func TestActivityIssueUpdated_DuplicateUnmarkedWithRecordedStatusRow(t *testing.T) {
+	queries := db.New(testPool)
+	bus, duplicateID, originalID := newDuplicateTestIssues(t, queries)
+
+	bus.Publish(duplicateMarkEvent(duplicateID, "MUL-7624", "todo", &originalID, nil, map[string]any{
+		"status_changed": true,
+		"prev_status":    "cancelled",
+		"activity_id":    "00000000-0000-4000-8000-0000000000a1",
+	}))
+
+	if got := activityDetails(t, queries, duplicateID, "duplicate_unmarked"); got["to"] != "" {
+		t.Fatalf("duplicate_unmarked details = %v, want no to", got)
+	}
+}
+
 // Moving a mark from one original to another reads as leaving the first and
 // joining the second, on all three issues. The status did not move.
 func TestActivityIssueUpdated_DuplicateRepointed(t *testing.T) {
@@ -888,5 +905,66 @@ func TestActivityIssueUpdated_DuplicateRowsCarryTrigger(t *testing.T) {
 		if err := json.Unmarshal(raw, &details); err != nil || details.Trigger["channel"] != "web" {
 			t.Fatalf("%s details = %s", action, raw)
 		}
+	}
+}
+
+// A workflow handoff still gets its row from the listener. When the handler
+// sends the validated trigger, the row carries it next to the handoff entries.
+func TestActivityIssueUpdated_WorkflowHandoffRecordsStatusTrigger(t *testing.T) {
+	queries := db.New(testPool)
+	bus := events.New()
+	registerActivityListeners(bus, queries)
+
+	issueID := createTestIssue(t, testWorkspaceID, testUserID)
+	t.Cleanup(func() {
+		cleanupActivities(t, issueID)
+		cleanupTestIssue(t, issueID)
+	})
+
+	agentType := "agent"
+	agentID := "0f0e0d0c-0b0a-4909-8807-060504030201"
+	source := "interactive_jwt"
+	bus.Publish(events.Event{
+		Type:        protocol.EventIssueUpdated,
+		WorkspaceID: testWorkspaceID,
+		ActorType:   "member",
+		ActorID:     testUserID,
+		Payload: map[string]any{
+			"issue": handler.IssueResponse{
+				ID: issueID, WorkspaceID: testWorkspaceID, Title: "activity test issue", Status: "code_review",
+				Priority: "medium", CreatorType: "member", CreatorID: testUserID, AssigneeType: &agentType, AssigneeID: &agentID,
+			},
+			"status_changed": true,
+			"prev_status":    "implement",
+			"workflow_handoff": map[string]string{
+				"workflow": "Delivery", "to_type": "agent", "to_id": agentID, "run": "true",
+			},
+			"status_trigger": service.StatusTrigger{
+				Version:    service.StatusTriggerVersion,
+				Cause:      service.StatusCause{Kind: service.StatusCauseUIOrAPI, By: service.StatusCauseActor{Type: "member", ID: testUserID}},
+				AuthSource: &source,
+				Channel:    "cli",
+				RefInvalid: true,
+			},
+		},
+	})
+
+	activities := listActivitiesForIssue(t, queries, issueID)
+	if len(activities) != 1 {
+		t.Fatalf("expected one status_changed activity, got %+v", activities)
+	}
+	var details struct {
+		HandoffWorkflow string `json:"handoff_workflow"`
+		Trigger         struct {
+			V          int     `json:"v"`
+			AuthSource *string `json:"auth_source"`
+			RefInvalid bool    `json:"ref_invalid"`
+		} `json:"trigger"`
+	}
+	if err := json.Unmarshal(activities[0].Details, &details); err != nil {
+		t.Fatal(err)
+	}
+	if details.HandoffWorkflow != "Delivery" || details.Trigger.V != 1 || details.Trigger.AuthSource == nil || *details.Trigger.AuthSource != source || !details.Trigger.RefInvalid {
+		t.Fatalf("details = %s", activities[0].Details)
 	}
 }

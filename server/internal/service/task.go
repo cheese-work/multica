@@ -8913,17 +8913,27 @@ func (s *TaskService) broadcastChatDone(ctx context.Context, task db.AgentTaskQu
 // realtime-staleness fix (#4648 / MUL-3782); folding those side effects in
 // would mean unifying the payload type and is left as a follow-up.
 func (s *TaskService) broadcastIssueUpdated(ctx context.Context, issue db.Issue, prevStatus string) {
+	s.broadcastIssueUpdatedWith(ctx, issue, prevStatus, nil)
+}
+
+// broadcastIssueUpdatedWith adds extra payload keys, such as the activity_id
+// of a status row the writer already committed.
+func (s *TaskService) broadcastIssueUpdatedWith(ctx context.Context, issue db.Issue, prevStatus string, extra map[string]any) {
 	prefix := s.getIssuePrefix(issue.WorkspaceID)
+	payload := map[string]any{
+		"issue":          IssueToMapResolved(ctx, s.Queries, issue, prefix),
+		"status_changed": prevStatus != issue.Status,
+		"prev_status":    prevStatus,
+	}
+	for k, v := range extra {
+		payload[k] = v
+	}
 	s.Bus.Publish(events.Event{
 		Type:        protocol.EventIssueUpdated,
 		WorkspaceID: util.UUIDToString(issue.WorkspaceID),
 		ActorType:   "system",
 		ActorID:     "",
-		Payload: map[string]any{
-			"issue":          IssueToMapResolved(ctx, s.Queries, issue, prefix),
-			"status_changed": prevStatus != issue.Status,
-			"prev_status":    prevStatus,
-		},
+		Payload:     payload,
 	})
 }
 
