@@ -87,11 +87,17 @@ UPDATE workspace SET
     -- named fields into the saved object so an unnamed field keeps its value.
     -- CHE-2269: github_review_members / github_review_authors replace one settings
     -- key each; the other survives.
+    -- CHE-3296: idle_started_guard merges named fields into the saved object, so
+    -- the statuses list and any unnamed field keep their value.
     settings = (
         SELECT CASE
+            WHEN sqlc.narg('idle_started_guard')::jsonb IS NOT NULL THEN jsonb_set(g.v, '{idle_started_guard}', COALESCE(g.v -> 'idle_started_guard', '{}'::jsonb) || sqlc.narg('idle_started_guard')::jsonb)
+            ELSE g.v
+        END
+        FROM (SELECT CASE
             WHEN sqlc.narg('github_review_authors')::jsonb IS NOT NULL THEN jsonb_set(m.v, '{github_review_authors}', sqlc.narg('github_review_authors')::jsonb)
             ELSE m.v
-        END
+        END AS v
         FROM (SELECT CASE
             WHEN sqlc.narg('github_review_members')::jsonb IS NOT NULL THEN jsonb_set(a.v, '{github_review_members}', sqlc.narg('github_review_members')::jsonb)
             ELSE a.v
@@ -104,7 +110,7 @@ UPDATE workspace SET
             WHEN sqlc.narg('compact_prompt_reset')::bool THEN COALESCE(sqlc.narg('settings')::jsonb, settings) - 'compact_prompt'
             WHEN sqlc.narg('compact_prompt')::text IS NOT NULL THEN jsonb_set(COALESCE(sqlc.narg('settings')::jsonb, settings), '{compact_prompt}', to_jsonb(sqlc.narg('compact_prompt')::text))
             ELSE COALESCE(sqlc.narg('settings')::jsonb, settings)
-        END AS v) AS base) AS a) AS m
+        END AS v) AS base) AS a) AS m) AS g
     ),
     repos = COALESCE(sqlc.narg('repos'), repos),
     issue_prefix = COALESCE(sqlc.narg('issue_prefix'), issue_prefix),
