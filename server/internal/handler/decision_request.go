@@ -31,7 +31,11 @@ type decisionRequestInput struct {
 	ParentID        pgtype.UUID
 	EscalationClass string
 	SourceCommentID pgtype.UUID
-	Fingerprint     string
+	// Recovers is the ask guard event this request answers; the request clears
+	// it, for the person it asks, in its own transaction. It stays out of the
+	// legacy fingerprint, which is pinned.
+	Recovers    pgtype.UUID `json:"-"`
+	Fingerprint string
 	// Kind and ExpiresInSeconds are set for an action request only; they stay out of the legacy fingerprint.
 	// Covers are the open cards this batch card answers for (CHE-4453).
 	Covers           []pgtype.UUID `json:"-"`
@@ -501,6 +505,9 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 		return empty, err
 	}
 	if created, err = coverBatchRequests(ctx, queries, created, input.Covers); err != nil {
+		return empty, err
+	}
+	if err := clearAskGuardEvent(ctx, queries, issue, input.Recovers, session.CreatorID, created.ID); err != nil {
 		return empty, err
 	}
 	if err := recordDecisionObservation(ctx, queries, issue, created, input.Parsed); err != nil {

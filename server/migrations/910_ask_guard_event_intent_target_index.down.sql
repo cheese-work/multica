@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_ask_guard_event_intent_target;
