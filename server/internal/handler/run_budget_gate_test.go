@@ -31,19 +31,33 @@ func spendBudget(t *testing.T, c edgeCase, max int, status string) db.Issue {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer withoutRunBudgetWriters()()
 	for i := 0; i < max; i++ {
 		if _, err := testHandler.TaskService.EnqueueTaskForIssue(ctx, issue); err != nil {
 			t.Fatalf("run %d inside the budget refused: %v", i+1, err)
 		}
 		finishRuns(t, c)
 	}
+	waitForRunBudgetWarning(t, c)
 	c.enter(t, status)
 	issue, err = testHandler.Queries.GetIssue(ctx, parseUUID(c.issueID))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return issue
+}
+
+// waitForRunBudgetWarning waits for the 80% warning that the run reaching it
+// fires in a goroutine. The warning's system comment bumps the issue revision,
+// so a test that goes on to write the issue with an expected revision would
+// otherwise lose that write to it.
+func waitForRunBudgetWarning(t *testing.T, c edgeCase) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if dbfx.Count(t, `SELECT count(*) FROM run_budget_notice WHERE issue_id=$1 AND kind='warn80' AND comment_id IS NOT NULL`, c.issueID) > 0 {
+			return
+		}
+	}
+	t.Fatal("the run budget warning did not finish in 10s")
 }
 
 // withoutRunBudgetWriters mutes the 80% warning and the exhaustion block until
@@ -212,11 +226,11 @@ func TestRunBudgetBlockNamesRefusedRunAndRaiseCommand(t *testing.T) {
 	if got := c.status(t); got != "blocked" {
 		t.Fatalf("issue is %s, want blocked after a plain retry past the cap", got)
 	}
-	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND action='run_budget_exhausted' AND details->>'raise_command' LIKE 'multica issue budget raise % --runs %' AND details->>'refused_run' <> ''`, c.issueID); n != 1 {
-		t.Fatalf("run_budget_exhausted activity with refused_run and raise_command = %d, want 1", n)
+	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND action='run_budget_exhausted' AND details->>'raise_target' IS NOT NULL AND details->>'refused_run' <> ''`, c.issueID); n != 1 {
+		t.Fatalf("run_budget_exhausted activity with refused_run and raise_target = %d, want 1", n)
 	}
-	if n := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id=$1 AND type='system' AND content LIKE '%a run for agent % (trigger: assignment or status handoff) while the issue was in_progress%' AND content LIKE '%was refused because the issue used 2 of 2 runs%' AND content LIKE '%multica issue budget raise %'`, c.issueID); n != 1 {
-		t.Fatalf("block comment naming the run and the raise command = %d, want 1", n)
+	if n := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id=$1 AND type='system' AND content LIKE '%a run for agent % (trigger: assignment or status handoff) while the issue was in_progress%' AND content LIKE '%was refused because the issue used 2 of 2 runs%' AND content LIKE '%approves a raise to % runs in the web app%'`, c.issueID); n != 1 {
+		t.Fatalf("block comment naming the run and the web-app raise = %d, want 1", n)
 	}
 }
 
