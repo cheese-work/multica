@@ -69,6 +69,7 @@ type Manager struct {
 	readSelector *dbreader.Selector
 	pool         TxBeginner
 	onApplied    func(ctx context.Context, prID pgtype.UUID)
+	onClosed     func(ctx context.Context, installationID int64, owner, repo string, number int32)
 
 	concurrency   int
 	viewTTL       time.Duration
@@ -158,6 +159,12 @@ func newManager(client *Client, queries *db.Queries, pool TxBeginner, fetch func
 	}
 	manager.listRows = manager.listGitHubPRRowsByAddress
 	return manager
+}
+
+// SetOnClosed registers the callback for a PR that GitHub reports closed while
+// a mirrored row is still open or draft. Call it before Start.
+func (manager *Manager) SetOnClosed(onClosed func(ctx context.Context, installationID int64, owner, repo string, number int32)) {
+	manager.onClosed = onClosed
 }
 
 // SetReadSelector opts the refresh worker into the API server's configured
@@ -341,7 +348,9 @@ func (manager *Manager) process(ctx context.Context, addr address) {
 
 	anyApplied := false
 	anyOpenApplied := false
+	staleOpen := false
 	for _, row := range rows {
+		staleOpen = staleOpen || (snap.Closed && (row.State == "open" || row.State == "draft"))
 		applied, err := manager.applySnapshot(ctx, row.ID, snap)
 		if err != nil {
 			slog.Warn("ghsnapshot: apply snapshot failed", "err", err.Error())
@@ -357,6 +366,12 @@ func (manager *Manager) process(ctx context.Context, addr address) {
 		if manager.onApplied != nil {
 			manager.onApplied(ctx, row.ID)
 		}
+	}
+
+	// The pull_request delivery that closed this PR never landed (CHE-3402).
+	// GitHub does not redeliver it on its own, so the row would stay open.
+	if staleOpen && manager.onClosed != nil {
+		manager.onClosed(ctx, addr.InstallationID, addr.Owner, addr.Repo, addr.Number)
 	}
 
 	// Chase only while the snapshot is undecided AND a write proved that an

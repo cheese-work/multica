@@ -244,6 +244,7 @@ GITHUB_APP_PRIVATE_KEY=<complete PEM private key, including BEGIN/END lines and 
 - **接続ボタンを使用できない**: `GITHUB_APP_SLUG`、`GITHUB_WEBHOOK_SECRET`、`GITHUB_APP_CLIENT_ID`、`GITHUB_APP_CLIENT_SECRET`、`GITHUB_APP_ID`、`GITHUB_APP_PRIVATE_KEY` が API プロセスに設定されていることを確認します。
 - **インストール直後に接続が失敗する**: **Request user authorization (OAuth) during installation** を有効にし、callback URL と setup URL の両方を `/api/github/setup` に設定して、Members read-only を付与します。接続ユーザーは個人アカウントの所有者、または organization の active admin である必要があります。
 - **Webhook が 401 を返す**: GitHub App と API が同じ Webhook secret を使っていることを確認し、GitHub の **Recent Deliveries** から再配信します。
+- **GitHub でマージ済みなのに Multica で PR が open のまま**: `closed` Webhook が失われています。`GITHUB_APP_ID` と `GITHUB_APP_PRIVATE_KEY` が設定されていれば、次の CI 更新が GitHub から PR を読み、Webhook が届いた場合と同じようにマージまたはクローズを記録します。タスクを開くと更新が始まります。定期的なバックグラウンド更新を待つこともできます。認証情報がない場合は **Recent Deliveries** からイベントを再配信します。
 - **PR が紐づかない**: リポジトリが App の許可範囲にあること、PR の自動紐づけが有効であること、番号が現在のワークスペースのものであること、誰かがタスクから外していないかを確認します。
 - **本文に番号を書いても紐づかない**: `Closes MUL-123` を使うか、番号をブランチ名または PR タイトルに入れるか、手動で紐づけます。
 - **CI の状態がない**: `GITHUB_APP_ID` と `GITHUB_APP_PRIVATE_KEY` が設定済みで、App に Pull requests、Checks、Commit statuses の read-only 権限があり、関連イベントを購読していることを確認します。Contents 権限は不要です。インストール済み App に権限を追加した場合は、各 installation の所有者が GitHub 上で承認するまで有効になりません。

@@ -78,11 +78,9 @@ func replayableSameRepositoryPR(raw json.RawMessage, installationID int64, owner
 	var pull struct {
 		Base struct {
 			Repo struct {
-				ID            int64  `json:"id"`
-				Name          string `json:"name"`
-				FullName      string `json:"full_name"`
-				DefaultBranch string `json:"default_branch"`
-				Owner         struct {
+				ID    int64  `json:"id"`
+				Name  string `json:"name"`
+				Owner struct {
 					Login string `json:"login"`
 				} `json:"owner"`
 			} `json:"repo"`
@@ -95,11 +93,37 @@ func replayableSameRepositoryPR(raw json.RawMessage, installationID int64, owner
 		return nil, false
 	}
 	base := pull.Base.Repo
-	if !strings.EqualFold(base.FullName, owner+"/"+name) || !pull.Head.Repo.sameRepository(base.ID, base.Owner.Login, base.Name) {
+	if !pull.Head.Repo.sameRepository(base.ID, base.Owner.Login, base.Name) {
+		return nil, false
+	}
+	return pullRequestReplayEvent(raw, "synchronize", installationID, owner, name)
+}
+
+// pullRequestReplayEvent wraps a REST pull request as a pull_request webhook
+// body with action when its base repository is the row's repository.
+func pullRequestReplayEvent(raw json.RawMessage, action string, installationID int64, owner, name string) ([]byte, bool) {
+	var pull struct {
+		Base struct {
+			Repo struct {
+				ID            int64  `json:"id"`
+				Name          string `json:"name"`
+				FullName      string `json:"full_name"`
+				DefaultBranch string `json:"default_branch"`
+				Owner         struct {
+					Login string `json:"login"`
+				} `json:"owner"`
+			} `json:"repo"`
+		} `json:"base"`
+	}
+	if json.Unmarshal(raw, &pull) != nil {
+		return nil, false
+	}
+	base := pull.Base.Repo
+	if !strings.EqualFold(base.FullName, owner+"/"+name) {
 		return nil, false
 	}
 	body, err := json.Marshal(map[string]any{
-		"action":       "synchronize",
+		"action":       action,
 		"pull_request": raw,
 		"repository": map[string]any{
 			"id": base.ID, "name": base.Name, "default_branch": base.DefaultBranch, "owner": map[string]any{"login": base.Owner.Login},
@@ -107,4 +131,27 @@ func replayableSameRepositoryPR(raw json.RawMessage, installationID int64, owner
 		"installation": map[string]any{"id": installationID},
 	})
 	return body, err == nil
+}
+
+// replayClosedPullRequest is the refresh pipeline's onClosed callback
+// (CHE-3402). A PR closed on GitHub whose closed delivery never landed stays
+// open in the mirror, and GitHub does not redeliver it on its own. The current
+// REST pull request is replayed as a closed event through the normal
+// pull_request path, so links, wakeups and auto-complete run as for a real
+// delivery. The fork check stays in that path; only the base repository must
+// match the row.
+func (h *Handler) replayClosedPullRequest(ctx context.Context, installationID int64, owner, name string, number int32) error {
+	fetch := h.fetchPullRequestJSON
+	if fetch == nil {
+		fetch = h.PRRefresh.FetchPullRequest
+	}
+	raw, err := fetch(ctx, installationID, owner, name, number)
+	if err != nil {
+		return fmt.Errorf("github: fetch closed pull request: %w", err)
+	}
+	body, ok := pullRequestReplayEvent(raw, "closed", installationID, owner, name)
+	if !ok {
+		return errors.New("github: closed pull request is not from the mirrored base repository")
+	}
+	return h.handlePullRequestEvent(ctx, body)
 }

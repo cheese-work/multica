@@ -246,6 +246,7 @@ GITHUB_APP_PRIVATE_KEY=<完整 PEM 私钥，保留 BEGIN/END 行和换行>
 - **连接按钮不可用**：检查 `GITHUB_APP_SLUG`、`GITHUB_WEBHOOK_SECRET`、`GITHUB_APP_CLIENT_ID`、`GITHUB_APP_CLIENT_SECRET`、`GITHUB_APP_ID` 和 `GITHUB_APP_PRIVATE_KEY` 是否都已进入 API 进程。
 - **安装完成后连接失败**：启用 **Request user authorization (OAuth) during installation**，把 callback URL 和 setup URL 都设为 `/api/github/setup`，并授予 Members read-only。连接用户必须是个人账号所有者或 organization 的 active admin。
 - **Webhook 返回 401**：确认 GitHub App 与 API 使用同一个 Webhook secret，然后在 GitHub 的 **Recent Deliveries** 中重新投递。
+- **PR 已在 GitHub 合并，但在 Multica 中仍为 open**：`closed` Webhook 已丢失。配置了 `GITHUB_APP_ID` 和 `GITHUB_APP_PRIVATE_KEY` 时，下一次 CI 刷新会从 GitHub 读取该 PR，并像收到 Webhook 一样记录合并或关闭。打开任务即可触发刷新，或等待定期的后台刷新。未配置这些凭据时，请在 **Recent Deliveries** 中重新投递该事件。
 - **PR 没有关联**：检查仓库是否在 App 授权范围内、自动关联是否开启、编号是否属于当前工作区，以及是否有人把它从任务上移除过。
 - **正文写了编号但没关联**：改用 `Closes MUL-123`，或把编号放到分支名、PR 标题中，或者手动关联。
 - **没有 CI 状态**：确认 `GITHUB_APP_ID` 和 `GITHUB_APP_PRIVATE_KEY` 已配置，App 具有 Pull requests、Checks 与 Commit statuses 的只读权限并订阅了对应事件。不需要 Contents 权限。给已安装的 App 补加权限后，需要各 installation 的所有者在 GitHub 上批准才会生效。
