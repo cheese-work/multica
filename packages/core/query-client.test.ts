@@ -36,6 +36,28 @@ describe("createQueryClient hidden-tab invalidation", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
     setVisibility("visible");
     await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+    // catch-up cleared the obligation: a later patch + focus must not refetch
+    qc.setQueryData(["a"], "patched");
+    setVisibility("hidden");
+    setVisibility("visible");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    unsub();
+  });
+
+  it("hidden invalidation survives a later partial setQueryData", async () => {
+    const { qc, fetcher, unsub } = await setup();
+    setVisibility("hidden");
+    await qc.invalidateQueries({ queryKey: ["a"] });
+    qc.setQueryData(["a"], "patched"); // clears isInvalidated but is not authoritative
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    setVisibility("visible");
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+    // obligation satisfied: a second visible event must not refetch again
+    setVisibility("hidden");
+    setVisibility("visible");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fetcher).toHaveBeenCalledTimes(2);
     unsub();
   });
 });

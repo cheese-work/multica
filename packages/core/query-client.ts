@@ -2,6 +2,7 @@ import {
   QueryClient,
   type InvalidateOptions,
   type InvalidateQueryFilters,
+  type Query,
 } from "@tanstack/react-query";
 import { setWorkspaceSlugLookup } from "./paths/workspace-slugs";
 import { workspaceKeys } from "./workspace/queries";
@@ -21,18 +22,23 @@ const isHidden = () =>
 function deferInvalidationWhenHidden(qc: QueryClient): QueryClient {
   if (typeof document === "undefined") return qc;
   const invalidate = qc.invalidateQueries.bind(qc);
-  qc.invalidateQueries = (filters?: InvalidateQueryFilters, options?: InvalidateOptions) =>
-    invalidate(
-      isHidden() && filters?.refetchType === undefined
-        ? { ...filters, refetchType: "none" }
-        : filters,
-      options,
-    );
+  // `setQueryData` clears `isInvalidated`, but a partial patch (e.g. a rename)
+  // does not satisfy a deferred refresh (a missing new row), so remember the
+  // obligation separately until the visible catch-up refetch takes it.
+  const deferred = new WeakSet<Query>();
+  qc.invalidateQueries = (filters?: InvalidateQueryFilters, options?: InvalidateOptions) => {
+    if (!isHidden() || filters?.refetchType !== undefined) return invalidate(filters, options);
+    qc.getQueryCache().findAll(filters).forEach((q) => deferred.add(q));
+    return invalidate({ ...filters, refetchType: "none" }, options);
+  };
   // ponytail: listener lives as long as the client (one per app; StrictMode's
   // discarded extra client leaks one listener in dev only).
   document.addEventListener("visibilitychange", () => {
     if (isHidden()) return;
-    void qc.refetchQueries({ type: "active", predicate: (q) => q.state.isInvalidated });
+    void qc.refetchQueries({
+      type: "active",
+      predicate: (q) => deferred.delete(q) || q.state.isInvalidated,
+    });
   });
   return qc;
 }
