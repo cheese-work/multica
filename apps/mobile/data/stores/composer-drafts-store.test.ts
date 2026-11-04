@@ -1,0 +1,167 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// In-memory stand-in for the native AsyncStorage module. It outlives
+// vi.resetModules(), exactly like the disk outlives an app process.
+const disk = vi.hoisted(() => new Map<string, string>());
+vi.mock("@react-native-async-storage/async-storage", () => ({
+  default: {
+    getItem: async (k: string) => disk.get(k) ?? null,
+    setItem: async (k: string, v: string) => void disk.set(k, v),
+    removeItem: async (k: string) => void disk.delete(k),
+    getAllKeys: async () => [...disk.keys()],
+    multiGet: async (ks: string[]) =>
+      ks.map((k) => [k, disk.get(k) ?? null] as [string, string | null]),
+    multiRemove: async (ks: string[]) => void ks.forEach((k) => disk.delete(k)),
+  },
+}));
+
+// A cold start: new JS module graph, same disk.
+async function coldStart(scope = "u1:ws1") {
+  vi.resetModules();
+  const store = (await import("./composer-drafts-store")).useComposerDraftsStore;
+  const persistence = await import("../draft-persistence");
+  await store.getState().hydrate(scope);
+  return { store, persistence };
+}
+
+const settle = () => vi.advanceTimersByTimeAsync(1000);
+
+const reply = { commentId: "c1", actorName: "Ada", preview: "hello" };
+const mention = { type: "agent" as const, id: "a1", name: "Bot" };
+const upload = {
+  localId: "l1",
+  localUri: "file:///cache/a.png",
+  filename: "a.png",
+  mimeType: "image/png",
+  status: "completed" as const,
+  id: "att1",
+  url: "mc://file/att1",
+  downloadUrl: "/api/attachments/att1/download",
+};
+
+describe("composer drafts survive unmount, route change and cold start", () => {
+  beforeEach(() => {
+    disk.clear();
+    vi.useFakeTimers();
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("comment composer: typed text comes back per issue", async () => {
+    const run1 = await coldStart();
+    run1.store.getState().patch("comment:i1", { text: "half-typed" });
+    run1.store.getState().patch("comment:i2", { text: "other issue" });
+    await settle();
+
+    const run2 = await coldStart();
+    expect(run2.store.getState().drafts["comment:i1"]?.text).toBe("half-typed");
+    expect(run2.store.getState().drafts["comment:i2"]?.text).toBe("other issue");
+  });
+
+  it("comment composer: the reply target comes back", async () => {
+    const run1 = await coldStart();
+    run1.store.getState().patch("comment:i1", { reply });
+    await settle();
+
+    const run2 = await coldStart();
+    expect(run2.store.getState().drafts["comment:i1"]?.reply).toEqual(reply);
+  });
+
+  it("mention chips come back", async () => {
+    const run1 = await coldStart();
+    run1.store.getState().patch("comment:i1", { mentions: [mention] });
+    await settle();
+
+    const run2 = await coldStart();
+    expect(run2.store.getState().drafts["comment:i1"]?.mentions).toEqual([
+      mention,
+    ]);
+  });
+
+  it("chat composer: uploaded attachments come back, an in-flight one does not", async () => {
+    const run1 = await coldStart();
+    run1.store.getState().patch("chat:s1", {
+      attachments: [upload, { ...upload, localId: "l2", status: "uploading", id: undefined }],
+    });
+    await settle();
+
+    const run2 = await coldStart();
+    expect(run2.store.getState().drafts["chat:s1"]?.attachments).toEqual([upload]);
+  });
+
+  it("an upload that finishes after the composer unmounted still lands", async () => {
+    const run1 = await coldStart();
+    const s = run1.store.getState();
+    s.patch("comment:i1", {
+      attachments: [{ ...upload, status: "uploading", id: undefined }],
+    });
+    s.patchAttachments("comment:i1", (prev) =>
+      prev.map((a) => ({ ...a, status: "completed" as const, id: "att1" })),
+    );
+    await settle();
+
+    const run2 = await coldStart();
+    expect(run2.store.getState().drafts["comment:i1"]?.attachments[0]?.id).toBe("att1");
+  });
+
+  it("a successful send clears the draft", async () => {
+    const run1 = await coldStart();
+    const s = run1.store.getState();
+    s.patch("comment:i1", { text: "sent", mentions: [mention], reply });
+    await settle();
+    s.beginSend("comment:i1");
+    s.patch("comment:i1", { text: "", mentions: [], attachments: [], reply: null });
+    s.finishSend("comment:i1");
+    await settle();
+
+    const run2 = await coldStart();
+    expect(run2.store.getState().drafts).toEqual({});
+  });
+
+  it("a failed send keeps the draft", async () => {
+    const run1 = await coldStart();
+    const s = run1.store.getState();
+    s.patch("comment:i1", { text: "refused", mentions: [mention] });
+    await settle();
+    s.beginSend("comment:i1");
+    s.patch("comment:i1", { text: "", mentions: [], attachments: [], reply: null });
+    // the composer restores the snapshot on rejection
+    s.patch("comment:i1", { text: "refused", mentions: [mention] });
+    s.finishSend("comment:i1");
+    await settle();
+
+    const run2 = await coldStart();
+    expect(run2.store.getState().drafts["comment:i1"]?.text).toBe("refused");
+  });
+
+  it("the app killed mid-send keeps the submitted draft", async () => {
+    const run1 = await coldStart();
+    const s = run1.store.getState();
+    s.patch("comment:i1", { text: "in flight" });
+    s.beginSend("comment:i1");
+    s.patch("comment:i1", { text: "" });
+    await settle();
+
+    const run2 = await coldStart();
+    expect(run2.store.getState().drafts["comment:i1"]?.text).toBe("in flight");
+  });
+
+  it("drafts stay in their own user + workspace scope", async () => {
+    const run1 = await coldStart("u1:ws1");
+    run1.store.getState().patch("comment:i1", { text: "ws1 only" });
+    await settle();
+
+    const other = await coldStart("u1:ws2");
+    expect(other.store.getState().drafts).toEqual({});
+  });
+
+  it("logout empties memory and disk", async () => {
+    const run1 = await coldStart();
+    run1.store.getState().patch("comment:i1", { text: "gone after logout" });
+    await settle();
+    await run1.persistence.clearAllDrafts();
+
+    expect(run1.store.getState().drafts).toEqual({});
+    const run2 = await coldStart();
+    expect(run2.store.getState().drafts).toEqual({});
+  });
+});

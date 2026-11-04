@@ -11,6 +11,7 @@ import { useEffect } from "react";
 import { AppState } from "react-native";
 import { draftPersistence } from "../draft-persistence";
 import { useChatDraftsStore } from "./chat-drafts-store";
+import { useComposerDraftsStore } from "./composer-drafts-store";
 
 export function useDraftLifecycle(
   userId: string | null,
@@ -18,7 +19,9 @@ export function useDraftLifecycle(
 ) {
   useEffect(() => {
     if (userId && workspaceId) {
-      void useChatDraftsStore.getState().hydrate(`${userId}:${workspaceId}`);
+      const scope = `${userId}:${workspaceId}`;
+      void useChatDraftsStore.getState().hydrate(scope);
+      void useComposerDraftsStore.getState().hydrate(scope);
     }
   }, [userId, workspaceId]);
 

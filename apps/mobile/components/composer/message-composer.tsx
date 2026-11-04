@@ -34,8 +34,12 @@
  *   - Stop visual / animation — chat passes a `renderStop()` slot when
  *     `isSending` is true.
  *
- * Cleanup: mention draft store cleared on unmount so navigating away
- * from comment-A's draft doesn't leak `@张三` into comment-B's composer.
+ * Drafts: text (comment mode), mention chips and attachments live in
+ * `useComposerDraftsStore` under `draftKey`, so they survive this component
+ * unmounting (route change, scroll out of a list) and an app cold start. The
+ * mention store is the live copy the picker route writes to; it is loaded from
+ * the draft on mount and emptied on unmount so comment-A's `@张三` never leaks
+ * into comment-B's composer.
  */
 import {
   useCallback,
@@ -53,6 +57,7 @@ import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
 import { api, MAX_FILE_SIZE } from "@/data/api";
+import { useComposerDraftsStore } from "@/data/stores/composer-drafts-store";
 import { useMentionDraftStore } from "@/data/stores/mention-draft-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { stripMarkdown } from "@/lib/strip-markdown";
@@ -74,6 +79,10 @@ export interface MessageComposerReplyTarget {
 }
 
 interface Props {
+  /** Key of this composer's draft, e.g. `comment:<issueId>` or
+   *  `chat:<sessionId>`. */
+  draftKey: string;
+
   /** Submit callback. Composer awaits this; on rejection it restores text,
    *  attachments, and mentions so the user can retry without losing
    *  context. Resolved promise → text + chips cleared, composer collapses
@@ -141,6 +150,8 @@ interface Props {
   manageKeyboard?: boolean;
 }
 
+const NO_ATTACHMENTS: ComposerAttachmentItem[] = [];
+
 function makeLocalId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -165,6 +176,7 @@ function serializeMentions(chips: MentionChip[]): string {
 }
 
 export function MessageComposer({
+  draftKey,
   onSubmit,
   mentionPickerPath,
   uploadContext,
@@ -192,25 +204,47 @@ export function MessageComposer({
   const insets = useSafeAreaInsets();
   const inputRef = useRef<TextInput>(null);
   const [expanded, setExpanded] = useState(false);
-  const [internalText, setInternalText] = useState("");
-  const [attachments, setAttachments] = useState<ComposerAttachmentItem[]>([]);
   const [submitting, setSubmitting] = useState(false);
 
+  const draft = useComposerDraftsStore((s) => s.drafts[draftKey]);
+  const draftsHydrated = useComposerDraftsStore((s) => s.hydrated);
+  const attachments = draft?.attachments ?? NO_ATTACHMENTS;
+  const setAttachments = useCallback(
+    (
+      next:
+        | ComposerAttachmentItem[]
+        | ((prev: ComposerAttachmentItem[]) => ComposerAttachmentItem[]),
+    ) =>
+      useComposerDraftsStore
+        .getState()
+        .patchAttachments(
+          draftKey,
+          typeof next === "function" ? next : () => next,
+        ),
+    [draftKey],
+  );
+  // A saved draft keeps the composer open instead of hiding behind the pill.
+  const isExpanded = expanded || (draft !== undefined && !disabled);
+  const keyRef = useRef(draftKey);
+  useEffect(() => {
+    keyRef.current = draftKey;
+  }, [draftKey]);
+
   // Hybrid controlled / uncontrolled pattern (React-canonical). Chat
-  // passes `value`/`onChangeText` for cross-session draft persistence;
-  // comment omits both and the composer manages local state.
+  // passes `value`/`onChangeText` (its own draft store owns the text);
+  // comment omits both and the text lives in the composer draft.
   const isControlled =
     controlledValue !== undefined && controlledOnChange !== undefined;
-  const text = isControlled ? controlledValue : internalText;
+  const text = isControlled ? controlledValue : (draft?.text ?? "");
   const setText = useCallback(
     (next: string) => {
       if (isControlled) {
         controlledOnChange(next);
       } else {
-        setInternalText(next);
+        useComposerDraftsStore.getState().patch(draftKey, { text: next });
       }
     },
-    [isControlled, controlledOnChange],
+    [isControlled, controlledOnChange, draftKey],
   );
 
   // Latest input value for the failure path: text typed while a send is
@@ -224,13 +258,29 @@ export function MessageComposer({
   const removeMention = useMentionDraftStore((s) => s.remove);
   const clearMentions = useMentionDraftStore((s) => s.clear);
 
-  // Drop mention draft on composer unmount so navigating away doesn't
-  // leak chips into the next composer's session.
+  // The mention store is the live copy (the picker route writes to it).
+  // Load it from this key's draft, mirror every later change back, and
+  // empty it on unmount or key change so chips never leak into the next
+  // composer. Unsubscribe before emptying so that is not saved as a clear.
+  // Re-runs when the disk drafts finish loading.
   useEffect(() => {
+    useMentionDraftStore.setState({
+      mentions:
+        useComposerDraftsStore.getState().drafts[draftKey]?.mentions ?? [],
+    });
+    const unsubscribe = useMentionDraftStore.subscribe((state, prev) => {
+      if (state.mentions !== prev.mentions) {
+        useComposerDraftsStore
+          .getState()
+          .patch(draftKey, { mentions: state.mentions });
+      }
+    });
     return () => {
+      unsubscribe();
       clearMentions();
     };
-  }, [clearMentions]);
+  }, [draftKey, draftsHydrated, clearMentions]);
+
 
   // Auto-expand + focus when an `expandTrigger` changes. Comment uses
   // this to react to the long-press → reply flow setting a reply target.
@@ -244,10 +294,10 @@ export function MessageComposer({
     setExpanded(true);
   }
   useEffect(() => {
-    if (!expanded || !triggerSeen || disabled) return;
+    if (!isExpanded || !triggerSeen || disabled) return;
     const frame = requestAnimationFrame(() => inputRef.current?.focus());
     return () => cancelAnimationFrame(frame);
-  }, [expanded, triggerSeen, disabled]);
+  }, [isExpanded, triggerSeen, disabled]);
 
   const hasInFlightUpload = attachments.some((a) => a.status === "uploading");
   const canSend =
@@ -289,7 +339,9 @@ export function MessageComposer({
 
     // Optimistic clear: text + chips empty out immediately so the next
     // typing tick doesn't double-include them. Restored on rejection.
+    const sendKey = draftKey;
     const sendHandle = onSubmitStart?.(textSnap);
+    useComposerDraftsStore.getState().beginSend(sendKey);
     setText("");
     setAttachments([]);
     clearMentions();
@@ -309,23 +361,38 @@ export function MessageComposer({
       inputRef.current?.blur();
       Keyboard.dismiss();
       setExpanded(false);
+      onClearReplyTarget?.();
       if (sendHandle !== undefined) onSubmitSettled?.(sendHandle, true);
     } catch {
       setText(mergeRestoredText(textSnap, textRef.current));
       setAttachments(attachmentsSnap);
-      mentionsSnap.forEach((m) =>
-        useMentionDraftStore.getState().toggle(m),
-      );
+      const draftsStore = useComposerDraftsStore.getState();
+      if (keyRef.current === sendKey) {
+        mentionsSnap.forEach((m) => {
+          const present = useMentionDraftStore
+            .getState()
+            .mentions.some((x) => x.type === m.type && x.id === m.id);
+          if (!present) useMentionDraftStore.getState().toggle(m);
+        });
+      } else {
+        // The composer moved to another entity mid-send; restore into the
+        // draft of the one the send started in, not the live mention store.
+        draftsStore.patch(sendKey, { mentions: mentionsSnap });
+      }
       if (sendHandle !== undefined) onSubmitSettled?.(sendHandle, false);
     } finally {
+      useComposerDraftsStore.getState().finishSend(sendKey);
       setSubmitting(false);
     }
   }, [
+    draftKey,
+    onClearReplyTarget,
     canSend,
     text,
     mentions,
     attachments,
     setText,
+    setAttachments,
     clearMentions,
     onSubmit,
     onSubmitStart,
@@ -404,7 +471,7 @@ export function MessageComposer({
       name: filename,
       type: mimeType,
     });
-  }, [startUpload, t]);
+  }, [startUpload, setAttachments, t]);
 
   const onFilePress = useCallback(async () => {
     const picker = await DocumentPicker.getDocumentAsync({
@@ -439,7 +506,7 @@ export function MessageComposer({
       name: picked.name,
       type: mimeType,
     });
-  }, [startUpload, t]);
+  }, [startUpload, setAttachments, t]);
 
   const onRemoveAttachment = useCallback((localId: string) => {
     setAttachments((prev) => prev.filter((it) => it.localId !== localId));
@@ -632,7 +699,7 @@ export function MessageComposer({
     </View>
   );
 
-  const body = expanded ? expandedContent : pillContent;
+  const body = isExpanded ? expandedContent : pillContent;
 
   // When the parent owns keyboard handling (chat.tsx wraps in
   // KeyboardAvoidingView + SafeAreaView), skip the KeyboardStickyView —
