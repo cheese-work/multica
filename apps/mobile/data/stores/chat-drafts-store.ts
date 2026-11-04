@@ -31,8 +31,10 @@ interface ChatDraftsState {
   setDraft: (sessionId: string, text: string, forScope?: string | null) => void;
   clearDraft: (sessionId: string) => void;
   /** Move the `__new__` draft onto a freshly-created session id without
-   *  the user seeing an empty input on the first frame after send. */
-  promoteNewDraft: (newSessionId: string) => void;
+   *  the user seeing an empty input on the first frame after send.
+   *  `forScope` is the scope the send started in; session creation is async,
+   *  so a scope that was left since only repoints its own open sends. */
+  promoteNewDraft: (newSessionId: string, forScope?: string | null) => void;
   /** Switch to a workspace: drop the previous workspace's drafts from memory
    *  and load this workspace's drafts from disk. */
   hydrate: (workspaceId: string) => Promise<void>;
@@ -167,16 +169,26 @@ export const useChatDraftsStore = create<ChatDraftsState>((set, get) => ({
     set({ drafts: next });
     persist(sessionId, null);
   },
-  promoteNewDraft: (newSessionId) => {
-    const current = get().drafts;
+  promoteNewDraft: (newSessionId, forScope) => {
+    const origin = forScope === undefined ? scope : forScope;
     // An open send follows the draft onto the created session.
-    let repointed = false;
+    let repointed: InflightSend | null = null;
     for (const entry of inflight.values()) {
-      if (entry.scope === scope && entry.sessionId === DRAFT_NEW_SESSION) {
+      if (entry.scope === origin && entry.sessionId === DRAFT_NEW_SESSION) {
         entry.sessionId = newSessionId;
-        repointed = true;
+        repointed = entry;
       }
     }
+    if (origin !== scope) {
+      // The scope was left while the session was being created: only its
+      // disk entry moves, and the current scope's drafts stay untouched.
+      if (repointed && origin !== null) {
+        writeDisk(origin, newSessionId, repointed.parkedText || null);
+        writeDisk(origin, DRAFT_NEW_SESSION, null);
+      }
+      return;
+    }
+    const current = get().drafts;
     const pending = current[DRAFT_NEW_SESSION];
     if (!pending) {
       if (repointed) {

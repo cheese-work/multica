@@ -364,5 +364,53 @@ describe("a send is in flight while the workspace changes", () => {
       "from B",
     );
   });
+
+  it("a late session creation from the left workspace leaves the other workspace alone", async () => {
+    const { run, s, token } = await switchDuringSend();
+    // A's session is created only now; promotion carries A's scope.
+    s.promoteNewDraft("session-a1", "u1:wsA");
+    await vi.advanceTimersByTimeAsync(1000);
+
+    const state = run.useChatDraftsStore.getState();
+    expect(state.drafts[run.DRAFT_NEW_SESSION]).toBe("from B");
+    expect(state.drafts["session-a1"]).toBeUndefined();
+    expect(await draftsAfterRestart("u1:wsB", run.DRAFT_NEW_SESSION)).toBe(
+      "from B",
+    );
+    expect(await draftsAfterRestart("u1:wsB", "session-a1")).toBeUndefined();
+    // A's open send moved onto the created session, not B's new chat.
+    expect(await draftsAfterRestart("u1:wsA", "session-a1")).toBe("from A");
+    expect(
+      await draftsAfterRestart("u1:wsA", run.DRAFT_NEW_SESSION),
+    ).toBeUndefined();
+
+    s.finishSend(token, true);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(
+      await draftsAfterRestart("u1:wsA", "session-a1"),
+    ).toBeUndefined();
+    expect(await draftsAfterRestart("u1:wsB", run.DRAFT_NEW_SESSION)).toBe(
+      "from B",
+    );
+  });
+
+  it("a late session creation does not repoint a send open in the other workspace", async () => {
+    const { run, s, token } = await switchDuringSend();
+    // B starts its own new-chat send while A's creation is still pending.
+    const tokenB = s.beginSend(run.DRAFT_NEW_SESSION, "from B");
+    s.setDraft(run.DRAFT_NEW_SESSION, "");
+    s.promoteNewDraft("session-a1", "u1:wsA");
+    s.setDraft(run.DRAFT_NEW_SESSION, "from B"); // composer restores on failure
+    s.finishSend(tokenB, false);
+    s.finishSend(token, true);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(
+      run.useChatDraftsStore.getState().drafts[run.DRAFT_NEW_SESSION],
+    ).toBe("from B");
+    expect(await draftsAfterRestart("u1:wsB", run.DRAFT_NEW_SESSION)).toBe(
+      "from B",
+    );
+    expect(await draftsAfterRestart("u1:wsB", "session-a1")).toBeUndefined();
+  });
 });
 

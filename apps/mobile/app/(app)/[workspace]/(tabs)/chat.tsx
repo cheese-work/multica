@@ -473,8 +473,12 @@ export default function ChatTab() {
           ),
       );
       if (isNewSession) {
-        promoteNewDraft(sessionId);
-        setActiveSessionId(sessionId);
+        // Session creation is async: promote in the scope the send started
+        // in, and do not select the session if the user switched away.
+        promoteNewDraft(sessionId, draftScope);
+        if (useChatDraftsStore.getState().scopeId === draftScope) {
+          setActiveSessionId(sessionId);
+        }
       }
 
       try {
@@ -529,6 +533,7 @@ export default function ChatTab() {
       sendFailureMessage,
       t,
       promoteNewDraft,
+      draftScope,
     ],
   );
 
