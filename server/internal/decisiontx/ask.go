@@ -27,7 +27,7 @@ type Ask struct {
 	StakesIfWrong  string      `json:"stakes_if_wrong"`
 	Options        []AskOption `json:"options"`
 	Recommendation string      `json:"recommendation"`
-	// RecommendedOption is the exact label of the recommended option (optional, CHE-3628). It overrides reading the recommendation text.
+	// RecommendedOption is the exact label of the recommended option (CHE-3628). Required with two or more options; the server moves it first. The recommendation prose is never read for order.
 	RecommendedOption string `json:"recommended_option,omitempty"`
 	// Confidence is the asking agent's own 0..1 confidence that its recommendation is right (optional, CHE-3628).
 	Confidence       *float64    `json:"confidence,omitempty"`

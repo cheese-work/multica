@@ -22,7 +22,7 @@ One row per event in `system1_observation` (migrations `936` to `939`).
 | `decision_source` | `rule` (a workflow handoff chose the handler) | `human` once answered. Empty while open. |
 | `inputs` | Issue status, project, workflow | Origin, issue status, project, asking agent, option count |
 | `option_count` | Not used (0) | Number of options offered. No labels. |
-| `recommended_index` | Not used | Position of the recommended option as shown. `0` after the first-position rule. Empty if the recommendation names no option. |
+| `recommended_index` | Not used | Position of the recommended option as shown. `0` after the first-position rule. Empty when the ask did not come through the request API. |
 | `agent_confidence` | Not used | The agent's own confidence, 0 to 1. Optional ask field `confidence`. |
 | `predicted_key`, `predicted_confidence`, `predicted_precedents`, `predicted_at` | Shadow prediction | Shadow prediction, stored in the same transaction as the request |
 | `choice_key`, `chosen_index`, `answered_at`, `time_to_answer_ms` | Chosen handler (`agent:<id>` or `member:<id>`) | The human answer. `choice_key` is `recommended`, `other`, `option` or `free_text`. |
@@ -45,23 +45,20 @@ writer.
 ## Recommended option stays first
 
 - The request API (`RequireRecommendedFirst`) moves the recommended option to
-  index 0 and refuses an ask it cannot resolve. Two ways to name it:
-  - **Structured (preferred):** optional ask field `recommended_option`, the
-    exact label (case-insensitive). It wins over the text. A value that
-    matches no label is refused (400).
-  - **Text:** the `recommendation` field. A label that starts the text wins,
-    after markdown and a filler word such as "Option" or "I recommend" are
-    skipped; the longest label wins. Otherwise exactly one label must appear
-    as whole words ("I recommend Hold because CI is red"). A contrast
-    ("Hold rather than Proceed", "instead of", "over", "vs") falls back to the
-    words before it. A label with a negation next to it ("not Proceed") or
-    inside a longer label ("Hold" in "Hold off") does not count.
-- An ask with two or more options and no resolvable recommended option is
-  refused with a 400 that says to set `recommended_option`. So no stored ask
-  breaks the first-position rule, and `recommended_index` is always `0`.
-  Asks with fewer than two options (actions) are not affected. Asks the
-  server creates itself (for example run-budget decisions) do not pass this
-  gate; the observation records an empty `recommended_index` for them.
+  index 0 and stores it that way. The ask names it in the field
+  **`recommended_option`**: the exact option label, case-insensitive.
+- The `recommendation` prose is **never read** to pick the option. Free text
+  cannot be matched reliably ("Proceed is risky; I recommend Hold", "Hold
+  rather than Proceed"), and a wrong guess puts the wrong option first and
+  flips the agreement signal.
+- An ask with two or more options is refused with a 400 when
+  `recommended_option` is missing, blank or matches no label. So no stored ask
+  breaks the first-position rule.
+- The shadow capture stores the index of that option as stored, so
+  `recommended_index` is always `0` for requests made through the API. Asks
+  with fewer than two options (actions) are not affected. Asks the server
+  creates itself (for example run-budget decisions) do not pass this gate and
+  record an empty `recommended_index`.
 - Why it matters: Cheese picked the recommended option 92.1% of the time while
   the recommendation was first 92% of the time. Position and recommendation are
   confounded. A model trained on this cannot tell "the recommendation was good"

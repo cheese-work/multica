@@ -24,11 +24,7 @@ func recordDecisionObservation(ctx context.Context, q *db.Queries, issue db.Issu
 	if ask == nil || len(ask.Options) < 2 {
 		return nil
 	}
-	labels := make([]string, len(ask.Options))
-	for i, option := range ask.Options {
-		labels[i] = option.Label
-	}
-	recommended := decisiontx.RecommendedIndex(ask.Recommendation, labels)
+	recommended := ask.RecommendedIndex() // the option the ask names, as stored (first after RequireRecommendedFirst)
 	precedents, err := q.ListSystem1PrecedentKeys(ctx, db.ListSystem1PrecedentKeysParams{WorkspaceID: issue.WorkspaceID, Kind: "decision", Class: request.EscalationClass})
 	if err != nil {
 		return err
@@ -39,11 +35,11 @@ func recordDecisionObservation(ctx context.Context, q *db.Queries, issue db.Issu
 	}
 	inputs, _ := json.Marshal(map[string]any{
 		"origin": request.Origin, "issue_status": issue.Status, "project_id": uuidToString(issue.ProjectID),
-		"asking_agent_id": uuidToString(request.AskingAgentID), "option_count": len(labels),
+		"asking_agent_id": uuidToString(request.AskingAgentID), "option_count": len(ask.Options),
 	})
 	params := db.CreateSystem1ObservationParams{
 		WorkspaceID: issue.WorkspaceID, Kind: "decision", SubjectID: request.ID, Class: request.EscalationClass,
-		Inputs: inputs, OptionCount: int32(len(labels)),
+		Inputs: inputs, OptionCount: int32(len(ask.Options)),
 		PredictedKey: pgtype.Text{String: prediction.Key, Valid: true}, PredictedConfidence: pgtype.Float4{Float32: float32(prediction.Confidence), Valid: prediction.Key != ""},
 		PredictedPrecedents: pgtype.Int4{Int32: int32(prediction.Precedents), Valid: true},
 	}

@@ -31,7 +31,7 @@ func (fixture requestCoreFixture) apiRequest() *http.Request {
 }
 
 func structuredDecisionAsk(issueID, commentID, decision string) decisiontx.Ask {
-	return decisiontx.Ask{ContextELI10: "A change is ready. You decide when it ships.", AgentDid: "Ran the scoped checks.", Decision: decision, StakesIfWrong: "A bad change could reach users.", Options: []decisiontx.AskOption{testAskOption("Proceed"), testAskOption("Hold")}, Recommendation: "Hold", DefaultIfNoReply: "Do not proceed.", SourceIssueID: issueID, SourceCommentID: commentID}
+	return decisiontx.Ask{ContextELI10: "A change is ready. You decide when it ships.", AgentDid: "Ran the scoped checks.", Decision: decision, StakesIfWrong: "A bad change could reach users.", Options: []decisiontx.AskOption{testAskOption("Proceed"), testAskOption("Hold")}, Recommendation: "Hold", RecommendedOption: "Hold", DefaultIfNoReply: "Do not proceed.", SourceIssueID: issueID, SourceCommentID: commentID}
 }
 
 func testAskOption(label string) decisiontx.AskOption {
@@ -47,7 +47,11 @@ func (fixture requestCoreFixture) unorderedAsk() decisiontx.Ask {
 
 // structuredAsk is the ask as the server stores it: recommended option first (CHE-3628).
 func (fixture requestCoreFixture) structuredAsk() decisiontx.Ask {
-	return fixture.unorderedAsk().RecommendedFirst()
+	ask, err := fixture.unorderedAsk().RequireRecommendedFirst()
+	if err != nil {
+		panic(err)
+	}
+	return ask
 }
 
 func TestDecisionRequestAPIRoundTrip(test *testing.T) {
