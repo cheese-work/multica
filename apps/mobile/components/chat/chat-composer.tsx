@@ -45,6 +45,10 @@ interface Props {
    *  server ids. Caller resets the input by setting `value=""` after a
    *  successful send. */
   onSend: (content: string, attachmentIds: string[]) => Promise<void> | void;
+  /** Keep the submitted text on disk until the send settles (see
+   *  `useChatDraftsStore.beginSend`). */
+  onSendStart?: (text: string) => string;
+  onSendSettled?: (handle: string, ok: boolean) => void;
   /** Cancel the in-flight agent task. Only callable while `sending===true`. */
   onStop: () => void;
   /** True while an agent task is running for the active session. The
@@ -68,6 +72,8 @@ export function ChatComposer({
   value,
   onChangeText,
   onSend,
+  onSendStart,
+  onSendSettled,
   onStop,
   sending,
   allowStop = true,
@@ -110,6 +116,8 @@ export function ChatComposer({
         value={value}
         onChangeText={onChangeText}
         onSubmit={onSubmit}
+        onSubmitStart={onSendStart}
+        onSubmitSettled={onSendSettled}
         mentionPickerPath={{
           pathname: "/[workspace]/mention-picker",
           params: { workspace: wsSlug ?? "", mode: "chat" },

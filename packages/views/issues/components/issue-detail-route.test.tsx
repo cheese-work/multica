@@ -187,7 +187,7 @@ describe("IssueDetailRoute when the lookup fails for a reason other than 404", (
   it("offers a retry instead of claiming the issue is deleted", async () => {
     const getIssue = vi
       .fn()
-      .mockRejectedValue(new ApiError("boom", 500, "Internal Server Error"));
+      .mockRejectedValue(new ApiError("unauthorized", 401, "Unauthorized"));
     setApiInstance({ getIssue } as unknown as ApiClient);
     const qc = new QueryClient({
       defaultOptions: { queries: { staleTime: Infinity, retry: false } },

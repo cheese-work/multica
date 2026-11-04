@@ -4,6 +4,7 @@ import { createHash } from "crypto";
 import { existsSync } from "fs";
 import { chmod, mkdir, rename, rm, writeFile } from "fs/promises";
 import { join, dirname } from "path";
+import type { CliDownloadProgress } from "../shared/daemon-types";
 
 // Desktop prefers the bundled `multica` CLI shipped inside the app for
 // same-repo builds, but it can also repair or bootstrap a managed copy in
@@ -61,9 +62,39 @@ async function serverGet(
   return res;
 }
 
+async function readBody(
+  res: Response,
+  opts: {
+    total: number;
+    onProgress?: (progress: CliDownloadProgress) => void;
+    intervalMs: number;
+  },
+): Promise<Buffer> {
+  if (!res.body) return Buffer.from(await res.arrayBuffer());
+  const chunks: Uint8Array[] = [];
+  let bytesDone = 0;
+  let lastReport = Date.now();
+  let reportedDone = 0;
+  const report = () => {
+    if (!opts.onProgress || opts.total <= 0 || bytesDone === reportedDone) return;
+    lastReport = Date.now();
+    reportedDone = bytesDone;
+    opts.onProgress({ bytesDone, bytesTotal: opts.total });
+  };
+  for await (const chunk of res.body) {
+    chunks.push(chunk);
+    bytesDone += chunk.length;
+    if (Date.now() - lastReport >= opts.intervalMs) report();
+  }
+  report();
+  return Buffer.concat(chunks);
+}
+
 /**
  * Downloads the server's own CLI build for this platform and verifies it
  * against the sha256 in the server's manifest before returning the bytes.
+ * `onProgress` fires at most once per `progressIntervalMs`, plus once on the
+ * last chunk.
  */
 export async function downloadServerCli(opts: {
   serverUrl: string;
@@ -71,6 +102,8 @@ export async function downloadServerCli(opts: {
   platform?: string;
   arch?: string;
   fetchImpl?: typeof fetch;
+  onProgress?: (progress: CliDownloadProgress) => void;
+  progressIntervalMs?: number;
 }): Promise<Buffer> {
   const serverUrl = opts.serverUrl.trim().replace(/\/+$/, "");
   if (!/^https?:\/\/./.test(serverUrl)) {
@@ -82,23 +115,24 @@ export async function downloadServerCli(opts: {
 
   const manifest = (await (
     await serverGet(fetchImpl, serverUrl, "/api/daemon/update", token)
-  ).json()) as { binaries?: Record<string, { sha256?: string }> };
+  ).json()) as { binaries?: Record<string, { sha256?: string; size?: number }> };
   const expected = manifest.binaries?.[key]?.sha256?.toLowerCase();
   if (!expected || !/^[0-9a-f]{64}$/.test(expected)) {
     throw new Error(`the server has no ${key} CLI build`);
   }
 
   const [os, arch] = key.split("-");
-  const bytes = Buffer.from(
-    await (
-      await serverGet(
-        fetchImpl,
-        serverUrl,
-        `/api/daemon/update/binary?os=${os}&arch=${arch}`,
-        token,
-      )
-    ).arrayBuffer(),
+  const res = await serverGet(
+    fetchImpl,
+    serverUrl,
+    `/api/daemon/update/binary?os=${os}&arch=${arch}`,
+    token,
   );
+  const bytes = await readBody(res, {
+    total: Number(res.headers.get("content-length")) || manifest.binaries?.[key]?.size || 0,
+    onProgress: opts.onProgress,
+    intervalMs: opts.progressIntervalMs ?? 250,
+  });
   const actual = createHash("sha256").update(bytes).digest("hex");
   if (actual !== expected) {
     throw new Error(
@@ -114,14 +148,17 @@ export interface EnsureManagedCliOptions {
   serverUrl?: string | null;
   /** Credential for `serverUrl` (the update endpoints sit behind daemon auth). */
   token?: string;
+  /** Throttled download progress, for the first-run "installing" UI. */
+  onProgress?: (progress: CliDownloadProgress) => void;
 }
 
 async function installFresh(
   serverUrl: string | null | undefined,
   token: string | undefined,
+  onProgress: EnsureManagedCliOptions["onProgress"],
 ): Promise<string> {
   const target = managedCliPath();
-  const bytes = await downloadServerCli({ serverUrl: serverUrl ?? "", token });
+  const bytes = await downloadServerCli({ serverUrl: serverUrl ?? "", token, onProgress });
 
   console.log(`[cli-bootstrap] downloaded ${bytes.length} bytes from ${serverUrl}`);
   await mkdir(dirname(target), { recursive: true });
@@ -157,5 +194,5 @@ export async function ensureManagedCli(
 ): Promise<string> {
   const target = managedCliPath();
   if (existsSync(target) && !options.forceInstall) return target;
-  return installFresh(options.serverUrl, options.token);
+  return installFresh(options.serverUrl, options.token, options.onProgress);
 }
