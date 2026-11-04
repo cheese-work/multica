@@ -55,6 +55,9 @@ type decisionActionExecution struct {
 	Workflow  db.IssueWorkflow
 	Squad     db.Squad
 	Workspace db.Workspace
+	// CredentialID is the passkey credential that signed this approval and
+	// IssueID the issue the request sits on; both go into a config-change audit.
+	CredentialID, IssueID pgtype.UUID
 }
 
 type decisionActionExecutor func(ctx context.Context, execution decisionActionExecution) (json.RawMessage, error)
@@ -320,6 +323,7 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	finish, summary, err := executeInSavepoint(ctx, transaction, queries, executor, decisionActionExecution{
 		Queries: queries, Approver: verifiedApprover{UserID: caller.userID, DecisionActionID: action.ID},
 		Action: action, Agent: targetAgent, Runtime: runtime, Secrets: body.Secrets, Workflow: workflow, Squad: squad, Workspace: workspace,
+		CredentialID: credential, IssueID: current.IssueID,
 	})
 	if err != nil {
 		return empty, err
@@ -602,6 +606,12 @@ func lockDecisionThreadAndIssue(ctx context.Context, queries *db.Queries, worksp
 // publishDecisionActionExecuted sends the realtime event of what the action
 // changed. It is idempotent.
 func (handler *Handler) publishDecisionActionExecuted(ctx context.Context, action db.DecisionAction) error {
+	if change, ok := configChanges[action.ActionType]; ok {
+		if change.Publish == nil {
+			return nil
+		}
+		return change.Publish(ctx, handler, action)
+	}
 	if action.ActionType == "agent.copy" {
 		return handler.publishAgentCopyCreated(ctx, action)
 	}
