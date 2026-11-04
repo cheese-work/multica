@@ -3991,7 +3991,19 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			resp.ChatDecisionContext = decisions
 		}
 
-		if cs.ForkedFromSessionID.Valid && resp.PriorSessionID == "" {
+		// Branch order (CHE-2819): a compacted DM never reaches the fork block,
+		// whose history reads the unfiltered DM; the summary carries what mattered.
+		if cs.SegmentFloorID.Valid && resp.PriorSessionID == "" {
+			block, err := h.carryOverBlock(r.Context(), cs, unanswered)
+			if err != nil {
+				slog.Error("chat claim: build carry-over block failed; preserving task for redelivery",
+					"task_id", uuidToString(task.ID), "chat_session_id", uuidToString(cs.ID), "error", err)
+				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+					outcome: "error_chat_carry_over", status: http.StatusInternalServerError, message: "failed to build carry-over context",
+				}
+			}
+			resp.ChatMessage = block + "\n\nCurrent message:\n\n" + resp.ChatMessage
+		} else if cs.ForkedFromSessionID.Valid && resp.PriorSessionID == "" {
 			block, inlined, err := h.forkContextBlock(r.Context(), cs, unanswered, hasLocalDirectory(resp.ProjectResources))
 			if err != nil {
 				slog.Error("chat claim: build fork context block failed; preserving task for redelivery",

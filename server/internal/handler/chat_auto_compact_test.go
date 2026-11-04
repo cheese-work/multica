@@ -188,8 +188,9 @@ func TestAutoCompactEnqueuesATaskWithAServerBuiltReason(t *testing.T) {
 		t.Fatalf("compaction task owns %d user messages, want 0", n)
 	}
 	notices := dm.messages(t, "compact_notice")
-	if len(notices) != 1 || notices[0] != wantReason+" Continuing in a new DM." {
-		t.Fatalf("compact_notice rows = %q, want one %q", notices, wantReason+" Continuing in a new DM.")
+	wantNotice := wantReason + " Compacting this DM. Earlier messages stay above the divider."
+	if len(notices) != 1 || notices[0] != wantNotice {
+		t.Fatalf("compact_notice rows = %q, want one %q", notices, wantNotice)
 	}
 	if role := dbfx.Count(t, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1 AND message_kind = 'compact_notice' AND role = 'assistant'`, dm.sessionID); role != 1 {
 		t.Fatalf("the notice must be an assistant message")
@@ -669,5 +670,34 @@ func TestSweptStaleCompactionRunsTheFailureGuard(t *testing.T) {
 				t.Fatalf("%d compaction tasks at the re-arm point, want 2", n)
 			}
 		})
+	}
+}
+
+// (k): a success bumps the epoch, so the next segment compacts again at the
+// threshold even though the last attempt triggered at the same size; a failure
+// inside one epoch still backs off (TestAutoCompactDoesNotLoopAfterAFailureUntilTheContextGrows).
+func TestAutoCompactRearmsAfterASuccessfulCompaction(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	dm := newAutoCompactDM(t, `{}`, `{}`)
+	dm.complete(t, dm.sendRunning(t, "one"), 170_000, 200_000)
+	first := dm.compactionTasks(t)[0]
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1`, first.ID)
+	if response := continueChatRequest(t, dm.sessionID, "Retained goal.", first.ID); response.Code != http.StatusOK {
+		t.Fatalf("continue: %d %s", response.Code, response.Body.String())
+	}
+	dm.complete(t, first.ID, 0, 0)
+	for _, content := range dm.messages(t, "compact_notice") {
+		if strings.Contains(content, "failed") {
+			t.Fatalf("a successful compaction posted %q", content)
+		}
+	}
+
+	next := dm.sendRunning(t, "two")
+	dbfx.Exec(t, `UPDATE agent_task_queue SET chat_compaction_epoch = 1 WHERE id = $1`, next)
+	dm.complete(t, next, 170_000, 200_000)
+	if n := len(dm.compactionTasks(t)); n != 2 {
+		t.Fatalf("%d compaction tasks after a success and a new threshold run, want 2", n)
 	}
 }

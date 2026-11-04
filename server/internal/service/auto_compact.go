@@ -212,7 +212,7 @@ func (s *TaskService) maybeAutoCompact(ctx context.Context, task db.AgentTaskQue
 			ID:            dbid.NewV7(),
 			ChatSessionID: session.ID,
 			Role:          "assistant",
-			Content:       reason + " Continuing in a new DM.",
+			Content:       reason + " Compacting this DM. Earlier messages stay above the divider.",
 			MessageKind:   pgtype.Text{String: protocol.ChatMessageKindCompactNotice, Valid: true},
 		}); err != nil {
 			return err

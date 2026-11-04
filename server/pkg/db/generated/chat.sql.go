@@ -2770,6 +2770,72 @@ func (q *Queries) ListChannelOutboundMessageIDsForContext(ctx context.Context, a
 	return items, nil
 }
 
+const listChatCarryOverMessages = `-- name: ListChatCarryOverMessages :many
+SELECT m.id, m.chat_session_id, m.role, m.content, m.task_id, m.created_at, m.failure_reason, m.elapsed_ms, m.message_kind, m.channel_media_pending_until, m.channel_ingested, m.quick_actions, m.channel_context_revision, m.channel_outbound_type, m.channel_outbound_installation_id, m.channel_outbound_chat_id, m.channel_outbound_message_ids, m.channel_typing_settled, m.sent_via, m.decision_answer_id, m.lineage_message_ids, m.decision_request_ids FROM chat_message m
+JOIN chat_session cs ON cs.id = m.chat_session_id
+WHERE m.chat_session_id = $1
+  AND m.message_kind = 'message'
+  AND (m.created_at, m.id) > (cs.segment_floor_at, cs.segment_floor_id)
+  AND NOT (m.id = ANY($2::uuid[]))
+  AND NOT (m.role = 'user' AND EXISTS (
+      SELECT 1 FROM agent_task_queue t WHERE t.id = m.task_id AND t.status = 'queued'))
+ORDER BY m.created_at DESC, m.id DESC
+LIMIT $3
+`
+
+type ListChatCarryOverMessagesParams struct {
+	ChatSessionID pgtype.UUID   `json:"chat_session_id"`
+	ExcludedIds   []pgtype.UUID `json:"excluded_ids"`
+	RowLimit      int32         `json:"row_limit"`
+}
+
+// Carry-over block, current segment (CHE-2819 Rule P): ordinary user and
+// assistant messages above the DM's segment floor, newest first. A queued
+// follow-up is not delivered yet and stays out; the claiming task's own input
+// batch is excluded because the claim delivers it separately.
+func (q *Queries) ListChatCarryOverMessages(ctx context.Context, arg ListChatCarryOverMessagesParams) ([]ChatMessage, error) {
+	rows, err := q.db.Query(ctx, listChatCarryOverMessages, arg.ChatSessionID, arg.ExcludedIds, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChatMessage{}
+	for rows.Next() {
+		var i ChatMessage
+		if err := rows.Scan(
+			&i.ID,
+			&i.ChatSessionID,
+			&i.Role,
+			&i.Content,
+			&i.TaskID,
+			&i.CreatedAt,
+			&i.FailureReason,
+			&i.ElapsedMs,
+			&i.MessageKind,
+			&i.ChannelMediaPendingUntil,
+			&i.ChannelIngested,
+			&i.QuickActions,
+			&i.ChannelContextRevision,
+			&i.ChannelOutboundType,
+			&i.ChannelOutboundInstallationID,
+			&i.ChannelOutboundChatID,
+			&i.ChannelOutboundMessageIds,
+			&i.ChannelTypingSettled,
+			&i.SentVia,
+			&i.DecisionAnswerID,
+			&i.LineageMessageIds,
+			&i.DecisionRequestIds,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listChatDraftRestoresBySession = `-- name: ListChatDraftRestoresBySession :many
 SELECT id, chat_session_id, task_id, content, attachment_ids, created_at FROM chat_draft_restore
 WHERE chat_session_id = $1
@@ -3353,6 +3419,82 @@ func (q *Queries) ListChatMessagesPageForChannelContext(ctx context.Context, arg
 		arg.BeforeID,
 		arg.PageLimit,
 	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChatMessage{}
+	for rows.Next() {
+		var i ChatMessage
+		if err := rows.Scan(
+			&i.ID,
+			&i.ChatSessionID,
+			&i.Role,
+			&i.Content,
+			&i.TaskID,
+			&i.CreatedAt,
+			&i.FailureReason,
+			&i.ElapsedMs,
+			&i.MessageKind,
+			&i.ChannelMediaPendingUntil,
+			&i.ChannelIngested,
+			&i.QuickActions,
+			&i.ChannelContextRevision,
+			&i.ChannelOutboundType,
+			&i.ChannelOutboundInstallationID,
+			&i.ChannelOutboundChatID,
+			&i.ChannelOutboundMessageIds,
+			&i.ChannelTypingSettled,
+			&i.SentVia,
+			&i.DecisionAnswerID,
+			&i.LineageMessageIds,
+			&i.DecisionRequestIds,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChatSegmentTail = `-- name: ListChatSegmentTail :many
+WITH last_answer AS (
+    SELECT m.created_at, m.id FROM chat_message m
+    JOIN chat_session cs ON cs.id = m.chat_session_id
+    WHERE m.chat_session_id = $1
+      AND m.role = 'assistant' AND m.message_kind = 'message'
+      AND (m.created_at, m.id) < (cs.segment_floor_at, cs.segment_floor_id)
+    ORDER BY m.created_at DESC, m.id DESC
+    LIMIT 1
+)
+SELECT m.id, m.chat_session_id, m.role, m.content, m.task_id, m.created_at, m.failure_reason, m.elapsed_ms, m.message_kind, m.channel_media_pending_until, m.channel_ingested, m.quick_actions, m.channel_context_revision, m.channel_outbound_type, m.channel_outbound_installation_id, m.channel_outbound_chat_id, m.channel_outbound_message_ids, m.channel_typing_settled, m.sent_via, m.decision_answer_id, m.lineage_message_ids, m.decision_request_ids FROM chat_message m
+JOIN chat_session cs ON cs.id = m.chat_session_id
+LEFT JOIN last_answer la ON true
+WHERE m.chat_session_id = $1
+  AND m.message_kind = 'message'
+  AND (m.created_at, m.id) < (cs.segment_floor_at, cs.segment_floor_id)
+  AND (la.id IS NULL OR (m.created_at, m.id) >= (la.created_at, la.id))
+  AND NOT (m.id = ANY($2::uuid[]))
+  AND NOT (m.role = 'user' AND EXISTS (
+      SELECT 1 FROM agent_task_queue t WHERE t.id = m.task_id AND t.status = 'queued'))
+ORDER BY m.created_at DESC, m.id DESC
+LIMIT $3
+`
+
+type ListChatSegmentTailParams struct {
+	ChatSessionID pgtype.UUID   `json:"chat_session_id"`
+	ExcludedIds   []pgtype.UUID `json:"excluded_ids"`
+	RowLimit      int32         `json:"row_limit"`
+}
+
+// Carry-over fallback when the current segment holds no assistant message yet:
+// the last assistant message before the floor and the messages after it, newest
+// first. Same exclusions as ListChatCarryOverMessages.
+func (q *Queries) ListChatSegmentTail(ctx context.Context, arg ListChatSegmentTailParams) ([]ChatMessage, error) {
+	rows, err := q.db.Query(ctx, listChatSegmentTail, arg.ChatSessionID, arg.ExcludedIds, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}
