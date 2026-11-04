@@ -28,42 +28,52 @@ def qual(conclusion, attempt=1, run_id=10, created="2026-11-05T10:00:00Z"):
             "run_attempt": attempt, "created_at": created, "html_url": f"https://example.test/run/{run_id}"}
 
 
-def deploy(conclusion, sha=SHA):
-    # workflow_run deploys carry main's tip in head_sha; the qualified SHA is only in the run name (CHE-3634 review)
-    return {"id": 20, "head_sha": SHA, "display_title": f"CD deploy to C00 · {sha}", "conclusion": conclusion, "status": "completed"}
+def deploy(conclusion, sha=SHA, job="success"):
+    # workflow_run deploys carry main's tip in head_sha; the qualified SHA is only in the run name (CHE-3634 review).
+    # `job` is the conclusion of the run's `deploy` job: a run can succeed with that job skipped (ineligible preflight).
+    return {"id": 20, "head_sha": SHA, "display_title": f"CD deploy to C00 · {sha}", "conclusion": conclusion, "status": "completed", "_job": job}
+
+
+def ran(run):
+    return run["_job"] == "success"
+
+
+def decide(*args):
+    return fresh.decide(*args, ran)
 
 
 class DecideTest(unittest.TestCase):
     def test_failed_first_attempt_is_rerun_once(self):
-        self.assertEqual(fresh.decide(SHA, head_at(10), NOW, [qual("failure")], [])["rerun"], 10)
+        self.assertEqual(decide(SHA, head_at(10), NOW, [qual("failure")], [])["rerun"], 10)
 
     def test_second_attempt_failure_is_not_rerun_again(self):
-        self.assertIsNone(fresh.decide(SHA, head_at(10), NOW, [qual("failure", attempt=2)], [])["rerun"])
+        self.assertIsNone(decide(SHA, head_at(10), NOW, [qual("failure", attempt=2)], [])["rerun"])
 
     def test_only_the_newest_qualification_run_counts(self):
         old = qual("failure", run_id=1, created="2026-11-05T09:00:00Z")
         new = qual("success", run_id=2, created="2026-11-05T10:00:00Z")
-        self.assertIsNone(fresh.decide(SHA, head_at(10), NOW, [old, new], [])["rerun"])
-        self.assertIsNone(fresh.decide(SHA, head_at(10), NOW, [new, old], [])["rerun"])
+        self.assertIsNone(decide(SHA, head_at(10), NOW, [old, new], [])["rerun"])
+        self.assertIsNone(decide(SHA, head_at(10), NOW, [new, old], [])["rerun"])
 
     def test_success_running_and_cancelled_are_not_rerun(self):
         for conclusion in ("success", None, "cancelled", "skipped"):
-            self.assertIsNone(fresh.decide(SHA, head_at(10), NOW, [qual(conclusion)], [])["rerun"], conclusion)
+            self.assertIsNone(decide(SHA, head_at(10), NOW, [qual(conclusion)], [])["rerun"], conclusion)
 
     def test_alert_exactly_at_90_minutes(self):
-        self.assertFalse(fresh.decide(SHA, head_at(89), NOW, [qual("success")], [])["alert"])
-        self.assertTrue(fresh.decide(SHA, head_at(90), NOW, [qual("success")], [])["alert"])
+        self.assertFalse(decide(SHA, head_at(89), NOW, [qual("success")], [])["alert"])
+        self.assertTrue(decide(SHA, head_at(90), NOW, [qual("success")], [])["alert"])
 
     def test_successful_deploy_of_head_clears_the_alarm(self):
-        self.assertFalse(fresh.decide(SHA, head_at(600), NOW, [qual("success")], [deploy("success")])["alert"])
+        self.assertFalse(decide(SHA, head_at(600), NOW, [qual("success")], [deploy("success")])["alert"])
 
-    def test_skipped_failed_or_other_sha_deploy_is_not_deployed(self):
-        for runs in ([deploy("skipped")], [deploy("failure")], [deploy("success", sha="0" * 40)], [deploy("success", sha="07ce9f73b918f20d829c906fcb37db56e213e129")]):
-            self.assertTrue(fresh.decide(SHA, head_at(600), NOW, [qual("success")], runs)["alert"], runs)
+    def test_skipped_failed_other_sha_or_job_not_run_deploy_is_not_deployed(self):
+        for runs in ([deploy("skipped")], [deploy("failure")], [deploy("success", sha="0" * 40)], [deploy("success", sha="07ce9f73b918f20d829c906fcb37db56e213e129")],
+                     [deploy("success", job="skipped")], [deploy("success", job="failure")], [deploy("success", job=None)]):
+            self.assertTrue(decide(SHA, head_at(600), NOW, [qual("success")], runs)["alert"], runs)
 
     def test_no_qualification_run_at_all_alerts_after_90_minutes(self):
-        self.assertTrue(fresh.decide(SHA, head_at(91), NOW, [], [])["alert"])
-        self.assertFalse(fresh.decide(SHA, head_at(5), NOW, [], [])["alert"])
+        self.assertTrue(decide(SHA, head_at(91), NOW, [], [])["alert"])
+        self.assertFalse(decide(SHA, head_at(5), NOW, [], [])["alert"])
 
 
 class RateLimitTest(unittest.TestCase):
@@ -105,7 +115,7 @@ class RateLimitTest(unittest.TestCase):
 
 
 class MainTest(unittest.TestCase):
-    def run_main(self, qual_runs, deploy_runs, minutes_ago, log="2026-11-05T10:01:02Z ok\n2026-11-05T10:01:03Z ##[error]buildx failed: boom\n"):
+    def run_main(self, qual_runs, deploy_runs, minutes_ago, deploy_job="success", log="2026-11-05T10:01:02Z ok\n2026-11-05T10:01:03Z ##[error]buildx failed: boom\n"):
         commit = {"sha": SHA, "commit": {"committer": {"date": head_at(minutes_ago).isoformat()}}}
         jobs = [{"id": 7, "name": "build-images", "conclusion": "failure"}, {"id": 8, "name": "cd-qualification", "conclusion": "skipped"}]
         seen = []
@@ -122,6 +132,8 @@ class MainTest(unittest.TestCase):
             if "workflows/cd-deploy.yml/runs" in path:
                 self.assertIn("status=success", path)
                 return json.dumps({"workflow_runs": deploy_runs})
+            if "/actions/runs/20/jobs" in path:
+                return json.dumps({"jobs": [{"id": 9, "name": "deploy", "conclusion": deploy_job}]})
             if path.endswith("/jobs?per_page=100"):
                 return json.dumps({"jobs": jobs})
             if path.endswith("/jobs/7/logs"):
@@ -151,6 +163,11 @@ class MainTest(unittest.TestCase):
     def test_healthy_deployed_head_is_silent(self):
         rc, out, seen = self.run_main([qual("success")], [deploy("success")], 300)
         self.assertEqual((rc, out), (0, "main %s is deployed to C00.\n" % SHA[:9]))
+
+    def test_successful_run_with_skipped_deploy_job_still_alerts(self):
+        rc, out, _ = self.run_main([qual("success")], [deploy("success")], 120, deploy_job="skipped")
+        self.assertEqual(rc, 1)
+        self.assertIn("::error::", out)
 
     def test_old_undeployed_head_with_no_error_line_still_alerts(self):
         rc, out, _ = self.run_main([qual("success")], [deploy("failure")], 120, log="nothing useful\n")

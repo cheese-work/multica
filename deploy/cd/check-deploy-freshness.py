@@ -4,8 +4,8 @@
 Two rules for the current main head:
 1. Newest `CD qualification build` run failed on its first attempt -> `gh run rerun --failed`, once per
    run ID (run_attempt > 1 means it was already rerun).
-2. Head merged >= 90 min ago and no successful `CD deploy to C00` run named for it (manual dispatches
-   named by ref, not SHA, do not count) -> ::error:: with the run
+2. Head merged >= 90 min ago and no successful `CD deploy to C00` run named for it whose `deploy` job succeeded
+   (manual dispatches named by ref, not SHA, do not count; a run with the deploy job skipped does not count) -> ::error:: with the run
    URL and the first error line.
 GitHub rate limits (403/429) wait for the reset time (capped) and retry instead of failing the alarm.
 """
@@ -48,12 +48,15 @@ def parse(ts):
     return dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
 
-def decide(sha, head_time, now, qual_runs, deploy_runs):
+def decide(sha, head_time, now, qual_runs, deploy_runs, ran_deploy):
     newest = max(qual_runs, key=lambda r: r["created_at"], default=None)
     rerun = newest["id"] if newest and newest["conclusion"] == "failure" and newest["run_attempt"] == 1 else None
     # A workflow_run deploy's head_sha is main's tip at trigger time, not the SHA it deployed. The qualified
-    # SHA is only in the run name: "CD deploy to C00 · <sha>". Match that and a success conclusion.
-    deployed = any(r["conclusion"] == "success" and r.get("display_title", "").endswith(f" {sha}") for r in deploy_runs)
+    # SHA is only in the run name: "CD deploy to C00 · <sha>". Match that and a success conclusion. A run also
+    # succeeds when candidate-preflight finds the commit ineligible and every later job is skipped, so ran_deploy(run)
+    # must confirm that the `deploy` job itself succeeded (a baseline "skip" there means C00 already has the commit).
+    deployed = any(r["conclusion"] == "success" and r.get("display_title", "").endswith(f" {sha}") and ran_deploy(r)
+                   for r in deploy_runs)
     return {"rerun": rerun, "alert": not deployed and now - head_time >= DEPLOY_DEADLINE,
             "deployed": deployed, "run": newest}
 
@@ -71,12 +74,18 @@ def first_error(repo, run):
     return "no error line available"
 
 
+def deploy_job_succeeded(repo, run):
+    jobs = json.loads(gh_api("api", f"repos/{repo}/actions/runs/{run['id']}/jobs?per_page=100"))["jobs"]
+    return any(j["name"] == "deploy" and j["conclusion"] == "success" for j in jobs)
+
+
 def main():
     repo = os.environ["GITHUB_REPOSITORY"]
     commit = json.loads(gh_api("api", f"repos/{repo}/commits/main"))
     sha, head_time, now = commit["sha"], parse(commit["commit"]["committer"]["date"]), utcnow()
     runs = lambda wf, query: json.loads(gh_api("api", f"repos/{repo}/actions/workflows/{wf}/runs?{query}&per_page=100"))["workflow_runs"]
-    d = decide(sha, head_time, now, runs("cd-qualification.yml", f"head_sha={sha}"), runs("cd-deploy.yml", "status=success"))
+    d = decide(sha, head_time, now, runs("cd-qualification.yml", f"head_sha={sha}"), runs("cd-deploy.yml", "status=success"),
+               lambda run: deploy_job_succeeded(repo, run))
     if d["rerun"]:
         gh_api("run", "rerun", str(d["rerun"]), "--failed", "-R", repo)
         print(f"Reran failed jobs of qualification run {d['rerun']} (once per run ID).")
