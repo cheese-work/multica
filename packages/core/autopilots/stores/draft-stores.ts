@@ -28,6 +28,12 @@ export interface AutopilotDialogDraft {
   schedule?: ScheduleDraft;
   scheduleAdded?: boolean;
   eventFilters?: WebhookEventFilter[];
+  /**
+   * Set once a create has made the autopilot but its trigger write failed, so a
+   * retry (even after a reload) updates that autopilot instead of creating a
+   * duplicate.
+   */
+  createdAutopilotId?: string;
 }
 
 /** One draft per dialog target: `create`, `create:<template>` or `edit:<id>`. */

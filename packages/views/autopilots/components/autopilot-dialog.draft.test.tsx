@@ -1,4 +1,4 @@
-import { useImperativeHandle, useRef, useState } from "react";
+import { useEffect, useImperativeHandle, useRef, useState } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -9,6 +9,7 @@ import { renderWithI18n } from "../../test/i18n";
 // survives the dialog unmounting and clears only after a successful create.
 const mockCreateAutopilot = vi.hoisted(() => vi.fn());
 const mockCreateTrigger = vi.hoisted(() => vi.fn());
+const mockUpdateAutopilot = vi.hoisted(() => vi.fn());
 
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-test" }));
 vi.mock("@multica/core/paths", () => ({ useCurrentWorkspace: () => ({ name: "Acme" }) }));
@@ -50,7 +51,7 @@ vi.mock("@multica/core/autopilots/queries", () => ({
 vi.mock("@multica/core/autopilots/mutations", () => ({
   useCreateAutopilot: () => ({ mutateAsync: mockCreateAutopilot }),
   useCreateAutopilotTrigger: () => ({ mutateAsync: mockCreateTrigger }),
-  useUpdateAutopilot: () => ({ mutateAsync: vi.fn() }),
+  useUpdateAutopilot: () => ({ mutateAsync: mockUpdateAutopilot }),
   useUpdateAutopilotTrigger: () => ({ mutateAsync: vi.fn() }),
 }));
 
@@ -83,8 +84,29 @@ vi.mock("../../editor", () => ({
       />
     );
   },
-  ContentEditor: ({ defaultValue, placeholder, onUpdate }: any) => {
+  // Mirrors the real editor's lifecycle: `onUpdate` is debounced, and a pending
+  // update is dropped on unmount unless `flushPendingOnUnmount` is set.
+  ContentEditor: ({
+    defaultValue,
+    placeholder,
+    onUpdate,
+    debounceMs = 0,
+    flushPendingOnUnmount = false,
+  }: any) => {
     const [value, setValue] = useState(defaultValue ?? "");
+    const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+    const pending = useRef<string | null>(null);
+    const onUpdateRef = useRef(onUpdate);
+    onUpdateRef.current = onUpdate;
+    useEffect(
+      () => () => {
+        clearTimeout(timer.current);
+        if (flushPendingOnUnmount && pending.current !== null) {
+          onUpdateRef.current?.(pending.current);
+        }
+      },
+      [flushPendingOnUnmount],
+    );
     return (
       <textarea
         aria-label="runbook"
@@ -92,7 +114,12 @@ vi.mock("../../editor", () => ({
         value={value}
         onChange={(e) => {
           setValue(e.target.value);
-          onUpdate?.(e.target.value);
+          pending.current = e.target.value;
+          clearTimeout(timer.current);
+          timer.current = setTimeout(() => {
+            pending.current = null;
+            onUpdateRef.current?.(e.target.value);
+          }, debounceMs);
         }}
       />
     );
@@ -127,6 +154,32 @@ function renderCreateDialog() {
   );
 }
 
+function renderEditDialog(onOpenChange = vi.fn()) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return renderWithI18n(
+    <QueryClientProvider client={qc}>
+      <AutopilotDialog
+        mode="edit"
+        open
+        onOpenChange={onOpenChange}
+        autopilotId="ap-1"
+        initial={{
+          title: "Issue title sweep",
+          description: "",
+          project_id: null,
+          assignee_type: "agent",
+          assignee_id: "agent-1",
+          execution_mode: "run_only",
+          subscriber_user_ids: [],
+        }}
+        triggers={[]}
+        collaborators={[]}
+        canManageAccess={false}
+      />
+    </QueryClientProvider>,
+  );
+}
+
 const createButton = () => screen.getByRole("button", { name: "Create autopilot" });
 const assigneeTrigger = () => screen.getByRole("button", { name: /Select agent or squad/ });
 
@@ -135,6 +188,7 @@ describe("AutopilotDialog draft persistence", () => {
     useAutopilotDialogDraftStore.setState({ drafts: {} });
     mockCreateAutopilot.mockReset();
     mockCreateTrigger.mockReset();
+    mockUpdateAutopilot.mockReset();
   });
 
   it("restores title, runbook and assignee after an unmount and remount", async () => {
@@ -174,5 +228,85 @@ describe("AutopilotDialog draft persistence", () => {
 
     renderCreateDialog();
     expect(screen.getByLabelText("title")).toHaveValue("");
+  });
+  it("keeps runbook text typed just before the dialog closes", async () => {
+    const user = userEvent.setup();
+    const first = renderCreateDialog();
+    await user.type(screen.getByLabelText("runbook"), "Summarise the inbox");
+    // Closed inside the editor's 300ms debounce window.
+    first.unmount();
+
+    renderCreateDialog();
+    expect(screen.getByLabelText("runbook")).toHaveValue("Summarise the inbox");
+  });
+
+  it("does not bring runbook text back after a successful create", async () => {
+    const user = userEvent.setup();
+    mockCreateAutopilot.mockResolvedValue({ id: "ap-1" });
+    mockCreateTrigger.mockResolvedValue({ id: "tr-1" });
+    const first = renderCreateDialog();
+    await user.type(screen.getByLabelText("title"), "Daily digest");
+    await user.click(assigneeTrigger());
+    await user.click(await screen.findByRole("button", { name: /Scout/ }));
+    await user.type(screen.getByLabelText("runbook"), "Summarise the inbox");
+    // Submit while that runbook update is still pending in the editor.
+    await user.click(createButton());
+    await waitFor(() => expect(mockCreateTrigger).toHaveBeenCalled());
+    first.unmount();
+
+    renderCreateDialog();
+    expect(screen.getByLabelText("title")).toHaveValue("");
+    expect(screen.getByLabelText("runbook")).toHaveValue("");
+  });
+
+  it("retries a failed trigger on the autopilot it already created", async () => {
+    const user = userEvent.setup();
+    mockCreateAutopilot.mockResolvedValue({ id: "ap-1" });
+    mockUpdateAutopilot.mockResolvedValue({ id: "ap-1" });
+    mockCreateTrigger.mockRejectedValueOnce(new Error("bad cron")).mockResolvedValue({ id: "tr-1" });
+    const first = renderCreateDialog();
+    await user.type(screen.getByLabelText("title"), "Daily digest");
+    await user.click(assigneeTrigger());
+    await user.click(await screen.findByRole("button", { name: /Scout/ }));
+    await user.click(createButton());
+    await waitFor(() => expect(mockCreateTrigger).toHaveBeenCalledTimes(1));
+    const failedTrigger = mockCreateTrigger.mock.calls[0]![0];
+    // Closed or reloaded before the retry: the draft must remember the autopilot.
+    first.unmount();
+
+    const second = renderCreateDialog();
+    expect(screen.getByLabelText("title")).toHaveValue("Daily digest");
+    await user.click(createButton());
+    await waitFor(() => expect(mockCreateTrigger).toHaveBeenCalledTimes(2));
+    expect(mockCreateAutopilot).toHaveBeenCalledTimes(1);
+    expect(mockUpdateAutopilot).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "ap-1", title: "Daily digest" }),
+    );
+    expect(mockCreateTrigger.mock.calls[1]![0]).toEqual(failedTrigger);
+    second.unmount();
+
+    renderCreateDialog();
+    expect(screen.getByLabelText("title")).toHaveValue("");
+  });
+  it("keeps an edit open and retries the schedule when only the trigger write fails", async () => {
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+    mockUpdateAutopilot.mockResolvedValue({ id: "ap-1" });
+    mockCreateTrigger.mockRejectedValueOnce(new Error("bad cron")).mockResolvedValue({ id: "tr-1" });
+    const first = renderEditDialog(onOpenChange);
+    await user.click(screen.getByRole("button", { name: "Add schedule" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mockCreateTrigger).toHaveBeenCalledTimes(1));
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
+    first.unmount();
+
+    // Reopened: the unsaved schedule is still there to retry.
+    renderEditDialog(onOpenChange);
+    expect(
+      await screen.findByText("Once saved, runs automatically until paused."),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mockCreateTrigger).toHaveBeenCalledTimes(2));
+    expect(mockCreateTrigger.mock.calls[1]![0]).toEqual(mockCreateTrigger.mock.calls[0]![0]);
   });
 });
