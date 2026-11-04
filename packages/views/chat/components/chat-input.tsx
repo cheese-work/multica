@@ -22,6 +22,10 @@ import { SubmitButton } from "@multica/ui/components/common/submit-button";
 import { DeferredContentEditor as ContentEditor } from "./deferred-content-editor";
 import { ChatAddMenu } from "./chat-add-menu";
 import { CHAT_COLUMN, CHAT_GUTTER } from "./chat-column";
+import { useVisualViewportKeyboard } from "./use-visual-viewport-keyboard";
+
+/** Share of the visible viewport the composer may take while the soft keyboard is open. */
+const KEYBOARD_COMPOSER_MAX_RATIO = 0.4;
 import { useChatStore, DRAFT_NEW_SESSION } from "@multica/core/chat";
 import { attachmentToDraftUpload, type DraftUpload } from "@multica/core/drafts";
 import { createLogger } from "@multica/core/logger";
@@ -250,6 +254,7 @@ export function ChatInput({
   const sendShortcut = useShortcut("send");
   const editorRef = useRef<ContentEditorRef>(null);
   const composerRef = useRef<HTMLDivElement>(null);
+  const keyboard = useVisualViewportKeyboard();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   // Two keys with deliberately different concerns:
   //
@@ -814,6 +819,12 @@ export function ChatInput({
     <div
       ref={composerRef}
       data-testid={testId}
+      // Soft keyboards (iOS) leave the layout viewport full-height, so the
+      // percentage cap below resolves against a surface mostly hidden behind
+      // the keyboard (CHE-3534). While it is up, cap by the visible strip
+      // instead so the message list keeps the rest. Always written, so the
+      // cap clears when the keyboard closes.
+      style={{ maxHeight: keyboard ? Math.floor(keyboard.viewportHeight * KEYBOARD_COMPOSER_MAX_RATIO) : undefined }}
       className={cn(
         // The composer grows with the draft up to half the surface it sits on
         // — a fixed 160px cap made long drafts unreadable in a five-line
