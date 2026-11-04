@@ -3,7 +3,6 @@ name: C00 deploy freshness alarm
 on:
   schedule:
     - cron: "12,27,42,57 * * * *"
-  workflow_dispatch:
   pull_request:
     paths:
       - .github/workflows/cd-freshness-watch.yml
@@ -35,8 +34,10 @@ jobs:
 
   # C00's API is tailnet only, so this job runs on an existing X99 runner. It catches what run history cannot: a
   # rollback on C00. The job above stays on a GitHub-hosted runner, so a dead X99 runner cannot silence the stall alarm.
-  # Main only (CHE-3634 review): the default runner group serves every workflow, and a repo writer can workflow_dispatch
+  # Main only (CHE-3634 review): the default runner group serves every workflow, and a repo writer can manually dispatch
   # any branch, so an unreviewed script would otherwise run on a tailnet-connected X99 runner. Read-only token.
+  # This file has no manual-dispatch trigger: the schedule runs from the default branch only. The if: is branch YAML, so
+  # it is not an admission control; restricting the runner group to main workflows is org-owner config (CHE-3634 follow-up).
   live-revision:
     runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 5

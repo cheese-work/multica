@@ -232,6 +232,9 @@ class WorkflowFileTest(unittest.TestCase):
         self.assertIn("github.event_name != 'pull_request'", text)
         # CHE-3634 review P1: a repo writer can workflow_dispatch any branch. The tailnet-connected X99 job and the
         # write-token step must only run main's reviewed code, and the X99 job gets a read-only token.
+        # Round 3: the guard lives in branch YAML, so also add no manual path: only the schedule (default branch) or a
+        # PR (job skipped) can start this file. Runner-group admission is org-owner config, tracked separately.
+        self.assertNotIn("workflow_dispatch", text)
         main_only = "github.ref == 'refs/heads/main'"
         live = job[1].split("steps:")[0]
         self.assertIn(main_only, live)
