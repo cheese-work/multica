@@ -230,6 +230,15 @@ class WorkflowFileTest(unittest.TestCase):
         self.assertIn("actions: write", text)
         self.assertIn("cron:", text)
         self.assertIn("github.event_name != 'pull_request'", text)
+        # CHE-3634 review P1: a repo writer can workflow_dispatch any branch. The tailnet-connected X99 job and the
+        # write-token step must only run main's reviewed code, and the X99 job gets a read-only token.
+        main_only = "github.ref == 'refs/heads/main'"
+        live = job[1].split("steps:")[0]
+        self.assertIn(main_only, live)
+        self.assertIn("permissions:\n      contents: read\n      actions: read", live)
+        self.assertNotIn("actions: write", job[1])
+        rerun_step = text.split("Rerun a failed main build once")[1].split("run:")[0]
+        self.assertIn(main_only, rerun_step)
         self.assertIn("python3 deploy/cd/test-check-deploy-freshness.py", text)
         self.assertIn("python3 deploy/cd/check-deploy-freshness.py", text)
 

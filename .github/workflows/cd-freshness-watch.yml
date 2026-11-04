@@ -28,17 +28,22 @@ jobs:
       - name: Verify freshness-rule regression cases
         run: python3 deploy/cd/test-check-deploy-freshness.py
       - name: Rerun a failed main build once; alarm when main is not on C00 within 90 min
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 deploy/cd/check-deploy-freshness.py
 
   # C00's API is tailnet only, so this job runs on an existing X99 runner. It catches what run history cannot: a
   # rollback on C00. The job above stays on a GitHub-hosted runner, so a dead X99 runner cannot silence the stall alarm.
+  # Main only (CHE-3634 review): the default runner group serves every workflow, and a repo writer can workflow_dispatch
+  # any branch, so an unreviewed script would otherwise run on a tailnet-connected X99 runner. Read-only token.
   live-revision:
     runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 5
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v6
         with:
