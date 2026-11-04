@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const load = () => import("./pr-main-sync.mjs");
@@ -115,4 +116,22 @@ test("issueIdOf reads the identifier from branch, then title, then body", async 
   assert.equal(issueIdOf({ head: { ref: "topic" }, title: "fix (CHE-12)", body: "" }), "CHE-12");
   assert.equal(issueIdOf({ head: { ref: "topic" }, title: "t", body: "Closes CHE-77" }), "CHE-77");
   assert.equal(issueIdOf({ head: { ref: "topic" }, title: "t", body: "" }), undefined);
+});
+
+test("taskOwner: the branch's agent, else the issue assignee, else a loud failure", async () => {
+  const { taskOwner } = await load();
+  const agents = [{ name: "a1", id: "id-a1" }];
+  assert.equal(taskOwner("a1", agents, { assignee_id: "id-x" }), "id-a1");
+  assert.equal(taskOwner("ghost", agents, { assignee_id: "id-x" }), "id-x");
+  assert.equal(taskOwner(undefined, agents, { assignee_id: "id-x" }), "id-x");
+  assert.throws(() => taskOwner("ghost", agents, {}), /no owner/);
+});
+
+test("workflow: every live path (push or dispatch with dry_run=false) is behind PR_MAIN_SYNC_ENABLED", () => {
+  const yml = readFileSync(new URL("../.github/workflows/pr-main-sync.yml", import.meta.url), "utf8");
+  const jobIf = yml.match(/^ {4}if: (.*)$/m)[1];
+  const dryRun = yml.match(/^ {10}DRY_RUN: (.*)$/m)[1];
+  assert.match(jobIf, /PR_MAIN_SYNC_ENABLED == 'true'/);
+  // Forced dry-run whenever the switch is off, regardless of the dispatch input.
+  assert.match(dryRun, /PR_MAIN_SYNC_ENABLED != 'true'/);
 });

@@ -18,6 +18,14 @@ export const issueIdOf = (pr) => {
 // The PR author is the agent named in `agent/<name>/...`; the issue assignee may be a reviewer or a human.
 export const authorOf = (pr) => /^agent\/([^/]+)\//.exec(pr.head.ref)?.[1];
 
+// The branch's agent; else the issue assignee as the responsible owner; else fail so the job goes red
+// instead of leaving a task nobody owns.
+export const taskOwner = (author, agents, issue) => {
+  const owner = agents.find((a) => a.name === author)?.id ?? issue.assignee_id;
+  if (!owner) throw new Error(`no owner for the conflict task: author ${author ?? "(not an agent branch)"}, issue has no assignee`);
+  return owner;
+};
+
 export async function syncPrs({ gh, multica, repo, base, only, print = console.log }) {
   const failures = [];
   for (const pr of (await gh.openPrs()).filter((p) => !only || only.includes(p.number))) {
@@ -78,12 +86,10 @@ export const multicaCli = (repo, dryRun) => ({
   createConflictTask: async (pr, id) => {
     if (dryRun) return;
     const issue = JSON.parse(must("multica", ["issue", "get", id, "--output", "json"]));
-    const author = authorOf(pr);
     const agents = JSON.parse(must("multica", ["agent", "list", "--output", "json"]));
-    const agentId = (Array.isArray(agents) ? agents : agents.agents).find((a) => a.name === author)?.id;
-    if (!agentId) console.log(`#${pr.number}: author ${author ?? "(not an agent branch)"} not found, task left unassigned`);
+    const owner = taskOwner(authorOf(pr), Array.isArray(agents) ? agents : agents.agents, issue);
     const body = `PR https://github.com/${repo}/pull/${pr.number} (${id}) conflicts with the base branch. Merge the base branch into \`${pr.head.ref}\`, resolve the conflict, push. Nothing was pushed by the sync job.`;
-    must("multica", ["issue", "create", "--title", taskTitle(pr.number), "--parent", issue.id, ...(agentId ? ["--assignee-id", agentId] : []),
+    must("multica", ["issue", "create", "--title", taskTitle(pr.number), "--parent", issue.id, "--assignee-id", owner,
       ...(issue.project_id ? ["--project", issue.project_id] : []), "--status", "todo", "--description-stdin"], body);
   },
 });

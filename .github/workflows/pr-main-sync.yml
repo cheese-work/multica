@@ -27,7 +27,8 @@ concurrency:
 jobs:
   sync:
     # Off until C3 (diff-keyed evidence, CHE-3610) ships: a merge of main voids head-keyed PASS evidence.
-    # Enable with the repository variable PR_MAIN_SYNC_ENABLED=true. Manual dispatch always runs.
+    # Enable with the repository variable PR_MAIN_SYNC_ENABLED=true. Manual dispatch runs without it,
+    # but only as a forced dry run: no live merge happens while the switch is off.
     if: github.event_name == 'workflow_dispatch' || vars.PR_MAIN_SYNC_ENABLED == 'true'
     runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 10
@@ -38,5 +39,5 @@ jobs:
           persist-credentials: false
       - name: Merge main into behind PR branches
         env:
-          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '--dry-run' || '' }}
+          DRY_RUN: ${{ (vars.PR_MAIN_SYNC_ENABLED != 'true' || (github.event_name == 'workflow_dispatch' && inputs.dry_run)) && '--dry-run' || '' }}
         run: node scripts/pr-main-sync.mjs --repo "$GITHUB_REPOSITORY" --base "${{ github.event.repository.default_branch }}" $DRY_RUN
