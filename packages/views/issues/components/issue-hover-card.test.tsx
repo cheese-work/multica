@@ -601,6 +601,20 @@ describe("IssueHoverCard", () => {
     expect(screen.getByText("MUL-7")).toBeInTheDocument();
   });
 
+  it("does not retry a 404 on the detail query but keeps the default retry for other errors", async () => {
+    mockIssue(BASE_ISSUE);
+    await openCard();
+
+    const detailOptions = mockUseQuery.mock.calls
+      .map(([options]) => options as { queryKey: string[]; retry?: (count: number, err: Error) => boolean })
+      .find((options) => options.queryKey[0] === "issue" && options.queryKey[1] === "issue-1");
+    expect(detailOptions?.retry).toBeTypeOf("function");
+    expect(detailOptions!.retry!(0, new ApiError("not found", 404, "Not Found"))).toBe(false);
+    expect(detailOptions!.retry!(0, new ApiError("forbidden", 403, "Forbidden"))).toBe(false);
+    expect(detailOptions!.retry!(0, new TypeError("Failed to fetch"))).toBe(true);
+    expect(detailOptions!.retry!(1, new TypeError("Failed to fetch"))).toBe(false);
+  });
+
   it("replaces the skeleton with the not-found state when the query settles with no issue", async () => {
     mockQueries({ phase: "success", issue: undefined });
 

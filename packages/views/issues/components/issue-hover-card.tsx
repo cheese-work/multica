@@ -111,7 +111,11 @@ function IssueHoverCardBody({
   fallbackLabel?: string;
 }) {
   const wsId = useWorkspaceId();
-  const detail = useQuery(issueDetailOptions(wsId, issueId));
+  const detail = useQuery({
+    ...issueDetailOptions(wsId, issueId),
+    // The app-wide retry of 1, minus the definite 404/403 that will not change.
+    retry: (failureCount, err) => failureCount < 1 && !isIssueNotFoundError(err),
+  });
   const { t } = useT("issues");
 
   // A skeleton rather than localized loading text: only the pending phase gets
