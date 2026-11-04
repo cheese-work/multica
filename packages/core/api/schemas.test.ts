@@ -71,7 +71,7 @@ import {
   EMPTY_PLUGIN_INSTALLATION_LIST,
   EMPTY_PLUGIN_PREVIEW,
 } from "./schemas";
-import { IssueViewSchema, IssueViewListSchema } from "./schemas";
+import { IssueViewSchema, IssueViewListSchema, AgentDecisionSettingSchema } from "./schemas";
 import {
   ListIssueStatusesResponseSchema,
   IssueStatusEntrySchema,
@@ -2597,5 +2597,26 @@ describe("RuntimeUpdateSchema", () => {
 
   it("falls back to failed when the body is not an update", () => {
     expect(parse(null)).toEqual(MALFORMED_RUNTIME_UPDATE);
+  });
+});
+
+describe("AgentDecisionSettingSchema", () => {
+  it("keeps enabled and the stop reason, and ignores the rest of the brief", () => {
+    const parsed = AgentDecisionSettingSchema.parse({
+      enabled: false,
+      stopped: { reason: "excluded category", at: "2026-11-02T00:00:00Z" },
+      decisions: [],
+    });
+    expect(parsed.enabled).toBe(false);
+    expect(parsed.stopped).toEqual({ reason: "excluded category" });
+  });
+
+  it("reads a missing or null stop record as no stop", () => {
+    expect(AgentDecisionSettingSchema.parse({ enabled: true }).stopped).toBeNull();
+    expect(AgentDecisionSettingSchema.parse({ enabled: true, stopped: null }).stopped).toBeNull();
+  });
+
+  it("falls back to null when enabled is missing instead of guessing a value", () => {
+    expect(parseWithFallback({}, AgentDecisionSettingSchema, null, { endpoint: "t" })).toBeNull();
   });
 });
