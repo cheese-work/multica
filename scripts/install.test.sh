@@ -512,7 +512,8 @@ STUB
 # --- download progress (CHE-3541 step 3) ------------------------------------
 # Sandbox whose archive is ~2.6 MB and whose `curl` hands it over in 512 KiB
 # chunks, 0.4 s apart, so a pty run sees the bar move. FAKE_LENGTH becomes the
-# HEAD Content-Length (unset: none); FAKE_FAIL=1 makes the download exit 22.
+# HEAD Content-Length (unset: none) and FAKE_REDIRECT_LENGTH the redirect's;
+# FAKE_FAIL=1 makes the download exit 22.
 _setup_slow_sandbox() {
   local tmp="$1"
   _setup_sandbox "$tmp"
@@ -521,7 +522,7 @@ _setup_slow_sandbox() {
   cat >"$tmp/stub-bin/curl" <<'STUB'
 #!/usr/bin/env bash
 if [[ "$*" == *"-sIL"* ]]; then
-  printf 'HTTP/2 302\r\ncontent-length: 0\r\n\r\nHTTP/2 200\r\n'
+  printf 'HTTP/2 302\r\ncontent-length: %s\r\n\r\nHTTP/2 200\r\n' "${FAKE_REDIRECT_LENGTH:-0}"
   if [[ -n "${FAKE_LENGTH:-}" ]]; then printf 'content-length: %s\r\n' "$FAKE_LENGTH"; fi
   printf '\r\n'
   exit 0
@@ -594,6 +595,22 @@ test_tty_download_renders_unknown_size_line() {
   fi
 }
 
+test_tty_redirect_length_does_not_leak_into_final_response() {
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  _setup_slow_sandbox "$tmp"
+
+  _run_installer_tty "$tmp" FAKE_REDIRECT_LENGTH=123 || { cat "$tmp/tty.out" >&2; return 1; }
+  tr '\r' '\n' <"$tmp/tty.out" >"$tmp/tty.lines"
+  if grep -q '^\[' "$tmp/tty.lines"; then
+    echo "a redirect's Content-Length must not become the bar total" >&2
+    cat "$tmp/tty.lines" >&2; return 1
+  fi
+  grep -Eq '^[0-9.]+ MB  [0-9.]+ MB/s' "$tmp/tty.lines" || {
+    echo "expected unknown-size mode" >&2; cat "$tmp/tty.lines" >&2; return 1; }
+}
+
 test_tty_download_failure_keeps_message_and_exit_code() {
   local tmp rc=0
   tmp="$(mktemp -d)"
@@ -609,7 +626,7 @@ test_tty_download_failure_keeps_message_and_exit_code() {
 }
 
 test_tty_interrupt_leaves_no_download_process() {
-  local tmp pid i
+  local tmp pid i rc
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' RETURN
   _setup_slow_sandbox "$tmp"
@@ -620,7 +637,9 @@ test_tty_interrupt_leaves_no_download_process() {
   [ -s "$tmp/curl.pids" ] || { echo "download never started" >&2; return 1; }
   sleep 0.5
   kill -TERM "$(cat "$tmp/shell.pid")"
-  wait "$runner" || true
+  rc=0
+  wait "$runner" || rc=$?
+  [ "$rc" -eq 143 ] || { echo "expected exit 143 after TERM, got $rc" >&2; return 1; }
   sleep 0.3
   while read -r pid; do
     if kill -0 "$pid" 2>/dev/null; then
@@ -656,6 +675,7 @@ test_with_server_uses_compose_published_ports
 test_with_server_fails_when_compose_port_is_unavailable
 test_tty_download_renders_known_size_bar
 test_tty_download_renders_unknown_size_line
+test_tty_redirect_length_does_not_leak_into_final_response
 test_tty_download_failure_keeps_message_and_exit_code
 test_tty_interrupt_leaves_no_download_process
 test_non_tty_download_stays_quiet

@@ -154,7 +154,8 @@ phase() { if [ -t 2 ]; then printf '%s\n' "$*" >&2; fi; }
 render_progress() {
   local pid=$1 file=$2 total=${3:-} start=$SECONDS alive n
   trap "kill $pid >/dev/null 2>&1 || true" EXIT
-  trap 'exit 130' INT TERM
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
   while :; do
     alive=1
     kill -0 "$pid" 2>/dev/null || alive=0
@@ -198,7 +199,7 @@ install_cli_binary() {
     # Terminal: draw a progress line. Size comes from the final HEAD response
     # (empty when the server sends none); curl's own errors are replayed on failure.
     local size
-    size=$(curl -sIL "$url" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="content-length:" {n=$2} END {if (n > 0) print n}' || true)
+    size=$(curl -sIL "$url" 2>/dev/null | tr -d '\r' | awk '/^HTTP/ {n=0} tolower($1)=="content-length:" {n=$2} END {if (n > 0) print n}' || true)
     curl -fsSL "$url" -o "$tmp_dir/multica.tar.gz" 2>"$tmp_dir/curl.err" &
     local dl_pid=$!
     render_progress "$dl_pid" "$tmp_dir/multica.tar.gz" "$size"
