@@ -40,7 +40,7 @@ const workflow = {
 function withInstructions(instructions: string): IssueWorkflow {
   return {
     ...workflow,
-    steps: workflow.steps.map((s) => (s.status_key === "in_progress" ? { ...s, instructions } : s)),
+    steps: workflow.steps.map((s) => (s.status_key === "in_progress" ? { ...s, handler: { type: "agent" as const, id: "agent-1" }, instructions } : s)),
   };
 }
 
@@ -104,5 +104,28 @@ describe("WorkflowHandoffForm draft", () => {
     const view = mount();
     view.rerender(tree(withInstructions("From elsewhere")));
     expect(screen.queryByText(/changed by someone else/)).toBeNull();
+  });
+
+  it("holds Save on a conflict, across a remount, until the admin keeps their edits", async () => {
+    const view = mount();
+    fireEvent.click(screen.getByRole("radio", { name: /Hand to an agent/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Choose an agent" }));
+    fireEvent.click(await screen.findByText("Builder"));
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "My unsent plan" } });
+    const theirs = withInstructions("Someone else's text");
+    view.rerender(tree(theirs));
+    const save = () => screen.getByRole("button", { name: "Save" }).hasAttribute("disabled");
+    expect(save()).toBe(true);
+    view.unmount();
+
+    const again = mount(theirs);
+    expect(screen.getByText(/changed by someone else/)).toBeTruthy();
+    expect(save()).toBe(true);
+    again.unmount();
+
+    mount(theirs);
+    fireEvent.click(screen.getByRole("button", { name: "Keep my edits" }));
+    expect(screen.queryByText(/changed by someone else/)).toBeNull();
+    expect(save()).toBe(false);
   });
 });

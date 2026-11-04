@@ -147,16 +147,27 @@ export function WorkflowHandoffForm({
   const [draft, setDraft] = useState<IssueWorkflowStep>(held.step ?? saved);
   const [previewOpen, setPreviewOpen] = useState(false);
   const setHandoff = useSetWorkflowHandoff();
-  // A saved step that changed under unsaved edits is a conflict: keep the edits, let the admin choose.
-  const [changedElsewhere, setChangedElsewhere] = useState(false);
-  const lastSaved = useRef(saved);
+  const savedRef = useRef(saved);
+  savedRef.current = saved;
+  // The saved step the edits sit on. It moves with the saved step while the
+  // draft is clean, and only by an explicit choice once the edits conflict.
+  const base = useRef<IssueWorkflowStep>(held.base ?? saved);
+  // A saved step that changed under unsaved edits (live, or while the form was
+  // away) is a conflict: keep the edits and hold Save until the admin chooses.
+  const [changedElsewhere, setChangedElsewhere] = useState(
+    () => held.step !== null && !sameStep(savedHandoff(base.current), savedHandoff(saved)),
+  );
   useEffect(() => {
-    const previous = lastSaved.current;
-    if (previous === saved) return;
-    lastSaved.current = saved;
-    if (sameStep(savedHandoff(draft), savedHandoff(saved))) return;
-    if (sameStep(savedHandoff(draft), savedHandoff(previous))) setDraft(saved);
-    else setChangedElsewhere(true);
+    if (sameStep(savedHandoff(draft), savedHandoff(saved))) {
+      base.current = saved;
+    } else if (sameStep(savedHandoff(base.current), savedHandoff(saved))) {
+      // Same content under a new identity: nothing changed.
+    } else if (sameStep(savedHandoff(draft), savedHandoff(base.current))) {
+      base.current = saved;
+      setDraft(saved);
+    } else {
+      setChangedElsewhere(true);
+    }
     // Only a new saved step matters here; the draft is read as it stands.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [saved]);
@@ -169,18 +180,19 @@ export function WorkflowHandoffForm({
     if (!dirty) {
       setScope("all");
       setChangedElsewhere(false);
+      base.current = savedRef.current;
     }
   }, [dirty]);
   const holding = useRef(held.step !== null);
   useEffect(() => {
     if (dirty) {
       holding.current = true;
-      holdDraft({ step: draft, scope });
+      holdDraft({ step: draft, scope, base: base.current });
     } else if (holding.current) {
       holding.current = false;
       dropDraft();
     }
-  }, [dirty, draft, scope, holdDraft, dropDraft]);
+  }, [dirty, draft, scope, changedElsewhere, holdDraft, dropDraft]);
 
   const save = async () => {
     const out = savedHandoff(draft);
@@ -202,7 +214,7 @@ export function WorkflowHandoffForm({
           : t(($) => $.workflows.handoff.saved),
       );
       // A copy leaves this workflow's step as it was, so reset to it explicitly.
-      setDraft(lastSaved.current);
+      setDraft(savedRef.current);
       onSaved?.();
     } catch (err) {
       toast.error(clientErrorMessage(err) ?? t(($) => $.workflows.handoff.error));
@@ -251,10 +263,25 @@ export function WorkflowHandoffForm({
         <div className="flex items-center justify-between gap-2 rounded-lg border border-surface-border bg-muted/40 p-2">
           <p className="text-caption text-muted-foreground">{t(($) => $.workflows.editor.changed_elsewhere)}</p>
           <div className="flex shrink-0 gap-1">
-            <Button variant="ghost" size="sm" onClick={() => setDraft(saved)}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                base.current = saved;
+                setDraft(saved);
+                setChangedElsewhere(false);
+              }}
+            >
               {t(($) => $.workflows.editor.load_latest)}
             </Button>
-            <Button variant="ghost" size="sm" onClick={() => setChangedElsewhere(false)}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                base.current = saved;
+                setChangedElsewhere(false);
+              }}
+            >
               {t(($) => $.workflows.editor.keep_edits)}
             </Button>
           </div>
@@ -267,7 +294,7 @@ export function WorkflowHandoffForm({
               {t(($) => $.workflows.editor.cancel)}
             </Button>
           )}
-          <Button size="sm" onClick={() => void save()} disabled={!dirty || needsTarget || setHandoff.isPending}>
+          <Button size="sm" onClick={() => void save()} disabled={!dirty || needsTarget || changedElsewhere || setHandoff.isPending}>
             {setHandoff.isPending && <Spinner className="size-3.5" />}
             {t(($) => $.workflows.editor.save)}
           </Button>

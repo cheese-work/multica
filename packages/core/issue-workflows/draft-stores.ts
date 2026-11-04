@@ -44,9 +44,11 @@ export const useWorkflowEditorDraftStore = createKeyedDraftStore<WorkflowEditorD
 export interface WorkflowHandoffDraft {
   step: IssueWorkflowStep | null;
   scope: "all" | "project";
+  /** The saved step the edits sit on, to spot a save made while they were away. */
+  base: IssueWorkflowStep | null;
 }
 
-export const EMPTY_WORKFLOW_HANDOFF_DRAFT: WorkflowHandoffDraft = { step: null, scope: "all" };
+export const EMPTY_WORKFLOW_HANDOFF_DRAFT: WorkflowHandoffDraft = { step: null, scope: "all", base: null };
 
 export const useWorkflowHandoffDraftStore = createKeyedDraftStore<WorkflowHandoffDraft>({
   storageKey: "multica_workflow_handoff_drafts",

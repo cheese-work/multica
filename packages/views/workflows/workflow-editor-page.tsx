@@ -358,7 +358,12 @@ export function WorkflowEditorPage({
     if (!back) return;
     holding.current = true;
     setDraft(back);
-    if (workflowId && baseVersion !== (latestVersion ?? "")) setChangedElsewhere(true);
+    if (workflowId && baseVersion !== (latestVersion ?? "")) {
+      // The edits sit on the older version: keep naming it, so the stored base
+      // survives further reloads and a save cannot pass for the newer one.
+      if (baseVersion) acceptedVersion.current = baseVersion;
+      setChangedElsewhere(true);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rowLoaded]);
 

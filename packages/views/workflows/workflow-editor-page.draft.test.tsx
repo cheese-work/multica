@@ -102,4 +102,24 @@ describe("WorkflowEditorPage unsaved edits", () => {
     expect(await screen.findByRole("alert")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(true);
   });
+
+  it("keeps the conflict across repeated reloads until the admin chooses", async () => {
+    const first = mount("wf-1");
+    fireEvent.change(screen.getByDisplayValue("Delivery"), { target: { value: "Delivery v2" } });
+    const theirs = { ...saved, description: "Their change", version: "v2" } as IssueWorkflow;
+    act(() => first.qc.setQueryData(issueWorkflowKeys.list("ws-1"), { workflows: [theirs], total: 1 }));
+    first.unmount();
+
+    const second = mount("wf-1", theirs);
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    second.unmount();
+
+    mount("wf-1", theirs);
+    expect(await screen.findByDisplayValue("Delivery v2")).toBeTruthy();
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Keep my edits" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(false);
+  });
 });
