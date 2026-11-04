@@ -223,8 +223,11 @@ type RuntimeRecoveryNotifier interface {
 type Handler struct {
 	// workflowWriter overrides how workflow deliveries are stored; nil means the
 	// default transaction-per-workspace writer. Tests inject faults through it.
-	workflowWriter         workflowWriter
-	Queries                *db.Queries
+	workflowWriter workflowWriter
+	Queries        *db.Queries
+	// ActionRequestsEnabled lets `kind=action` decision requests be created. It
+	// stays off until the whole CHE-2394 stack is deployed (P7 removes it).
+	ActionRequestsEnabled  bool
 	ReadSelector           *dbreader.Selector
 	DB                     dbExecutor
 	TxStarter              txStarter
@@ -262,6 +265,9 @@ type Handler struct {
 	LocalSkillListStore   LocalSkillListStore
 	LocalSkillImportStore LocalSkillImportStore
 	FeatureFlags          *featureflag.Service
+	// WakeupActivationKey selects the wakeup definition activation the write gate
+	// reads; empty is production's. Tests set their own.
+	WakeupActivationKey string
 	// IssueStatusCatalog reads the workspace status catalog. Defaults to
 	// Queries; a test can substitute a counting wrapper to assert HOW MANY
 	// catalog reads a request performs, which is the only property that
@@ -591,6 +597,13 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		slog.Warn("github: PR snapshot pipeline disabled (invalid App private key)", "err", err)
 	}
 	h.PRRefresh = ghsnapshot.NewManager(ghClient, queries, txStarter, h.broadcastPRSnapshotApplied)
+	h.PRRefresh.SetOnClosed(func(ctx context.Context, installationID int64, owner, repo string, number int32) error {
+		err := h.replayClosedPullRequest(ctx, installationID, owner, repo, number)
+		if err != nil {
+			slog.Warn("github: closed pull request replay failed", "repo", owner+"/"+repo, "pr_number", number, "err", err)
+		}
+		return err
+	})
 	taskSvc.PRSnapshotsEnabled = h.PRRefresh.Enabled()
 	if h.PRRefresh.Enabled() {
 		h.ConfigSyncGitHub = func(installationID int64, owner, repo string) ConfigSyncGitHub {

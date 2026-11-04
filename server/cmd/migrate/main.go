@@ -147,6 +147,7 @@ var concurrentIndexCleanups = map[string]string{
 	"881_decision_request_proposal_fingerprint_idx":             "idx_decision_request_open_proposal",
 	"888_issue_search_text_workspace_idx":                       "idx_issue_search_text_workspace",
 	"889_comment_search_text_workspace_idx":                     "idx_comment_search_text_workspace",
+	"906_ask_guard_event_operation_key":                         "idx_ask_guard_event_operation_key",
 	"865_idx_recovery_claim_workspace_issue":                    "recovery_claim_workspace_issue_idx",
 	"864_idx_recovery_claim_failed_task":                        "recovery_claim_failed_task_idx",
 	"861_agent_task_event_index":                                "idx_agent_task_event_ws_runtime_at",

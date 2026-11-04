@@ -95,7 +95,7 @@ const (
 // route in the family is reviewed.
 var otherWriteFamilies = map[string]writeFamily{
 	"api/agent-builder":            {3, byWorkspace},
-	"api/agent-decisions":          {1, byHuman},
+	"api/agent-decisions":          {2, byHuman},
 	"api/agents":                   {22, byWorkspace},
 	"api/auth":                     {2, byPublic},
 	"api/autopilots":               {12, byWorkspace},
