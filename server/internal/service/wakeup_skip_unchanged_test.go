@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
@@ -133,6 +132,9 @@ func TestPRWatchdogStillRunsWhenSomethingChanged(t *testing.T) {
 		{"last run older than the skip window", func(t *testing.T, e skipEnv) {
 			e.f.Exec(t, `UPDATE agent_task_queue SET created_at=now()-interval '7 hours' WHERE issue_id=$1`, e.issue)
 		}, true},
+		{"rule instruction edited", func(t *testing.T, e skipEnv) {
+			e.f.Exec(t, `UPDATE issue_wakeup SET instruction=instruction||' (edited)' WHERE issue_id=$1 AND system_rule IS NOT NULL`, e.issue)
+		}, true},
 		{"no linked PR", func(t *testing.T, e skipEnv) {}, false},
 	}
 	for _, tc := range cases {
@@ -160,84 +162,32 @@ func TestPRWatchdogFirstRunIsNeverSkipped(t *testing.T) {
 	}
 }
 
-func (e skipEnv) heartbeat(t *testing.T, byAgent bool) pgtype.UUID {
+func (e skipEnv) heartbeat(t *testing.T) pgtype.UUID {
 	t.Helper()
-	w := wakeCreate(t, e.f, e.s, e.issue, WakeupInput{AgentID: e.agent, Kind: "every", IntervalSeconds: 3600, Instruction: "PR health heartbeat"})
-	if byAgent {
-		e.f.Exec(t, `UPDATE issue_wakeup SET source_task_id=$2 WHERE id=$1`, w.ID, dbid.NewV7())
-	}
+	w := wakeCreate(t, e.f, e.s, e.issue, WakeupInput{AgentID: e.agent, Kind: "every", IntervalSeconds: 3600, Instruction: "Check the other issue and the external CI"})
+	e.f.Exec(t, `UPDATE issue_wakeup SET source_task_id=$2 WHERE id=$1`, w.ID, dbid.NewV7())
 	return w.ID
 }
 
-func (e skipEnv) heartbeatSkips(t *testing.T) int {
-	t.Helper()
-	return e.f.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND action='wakeup_skipped' AND details->>'reason'='unchanged_since_last_run'`, e.issue)
-}
-
-func TestAgentHeartbeatSkipsWhenInputsUnchangedSinceLastRun(t *testing.T) {
+// A free-text heartbeat can watch anything (other issues, external CI, a
+// deadline), so the platform cannot tell that nothing changed: every tick runs.
+func TestAgentHeartbeatAlwaysRunsEvenWhenPRStateUnchanged(t *testing.T) {
 	e := newSkipEnv(t, true)
-	id := e.heartbeat(t, true)
+	id := e.heartbeat(t)
 	wakeTick(t, e.f, e.s, id)
 	e.finishRuns(t, "completed")
 	wakeTick(t, e.f, e.s, id)
-	if got := wakeRuns(t, e.f, id); got != 1 {
-		t.Fatalf("heartbeat runs = %d, want 1", got)
+	if got := wakeRuns(t, e.f, id); got != 2 {
+		t.Fatalf("heartbeat runs = %d, want 2", got)
 	}
-	if got := e.heartbeatSkips(t); got != 1 {
-		t.Fatalf("skip activities = %d, want 1", got)
-	}
-}
-
-// Negative controls: each of these must still start a run.
-func TestAgentHeartbeatStillRunsWhenSomethingChanged(t *testing.T) {
-	cases := []struct {
-		name    string
-		byAgent bool
-		link    bool
-		setup   func(t *testing.T, e skipEnv, id pgtype.UUID)
-	}{
-		{"created by a person", false, true, func(t *testing.T, e skipEnv, id pgtype.UUID) {}},
-		{"PR head moved", true, true, func(t *testing.T, e skipEnv, id pgtype.UUID) {
-			e.f.Exec(t, `UPDATE github_pull_request SET head_sha='h2' WHERE id=$1`, e.prID)
-		}},
-		{"check rollup changed", true, true, func(t *testing.T, e skipEnv, id pgtype.UUID) {
-			e.f.Exec(t, `UPDATE github_pull_request SET checks_rollup_state='SUCCESS' WHERE id=$1`, e.prID)
-		}},
-		{"new comment on the issue", true, true, func(t *testing.T, e skipEnv, id pgtype.UUID) {
-			e.f.Comment(t, util.UUIDToString(e.issue), "a person wrote")
-		}},
-		{"issue status moved", true, true, func(t *testing.T, e skipEnv, id pgtype.UUID) {
-			e.f.Exec(t, `UPDATE issue SET status='blocked' WHERE id=$1`, e.issue)
-		}},
-		{"last run older than the skip window", true, true, func(t *testing.T, e skipEnv, id pgtype.UUID) {
-			e.f.Exec(t, `UPDATE agent_task_queue SET created_at=now()-interval '7 hours' WHERE issue_id=$1`, e.issue)
-		}},
-		{"previous run failed", true, true, func(t *testing.T, e skipEnv, id pgtype.UUID) {
-			e.f.Exec(t, `UPDATE agent_task_queue SET status='failed' WHERE issue_id=$1`, e.issue)
-		}},
-		{"no linked PR to watch", true, false, func(t *testing.T, e skipEnv, id pgtype.UUID) {}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			e := newSkipEnv(t, tc.link)
-			id := e.heartbeat(t, tc.byAgent)
-			wakeTick(t, e.f, e.s, id)
-			e.finishRuns(t, "completed")
-			tc.setup(t, e, id)
-			wakeTick(t, e.f, e.s, id)
-			if got := wakeRuns(t, e.f, id); got != 2 {
-				t.Fatalf("heartbeat runs = %d, want 2", got)
-			}
-			if got := e.heartbeatSkips(t); got != 0 {
-				t.Fatalf("skip activities = %d, want 0", got)
-			}
-		})
+	if got := e.skipped(t); got != 0 {
+		t.Fatalf("skip activities = %d, want 0", got)
 	}
 }
 
 func TestPersonWakeNowIsNeverSkipped(t *testing.T) {
 	e := newSkipEnv(t, true)
-	id := e.heartbeat(t, true)
+	id := e.heartbeat(t)
 	wakeTick(t, e.f, e.s, id)
 	e.finishRuns(t, "completed")
 	if err := e.s.Trigger(context.Background(), e.issue, id, parseTestUUID(t, e.f.UserID)); err != nil {

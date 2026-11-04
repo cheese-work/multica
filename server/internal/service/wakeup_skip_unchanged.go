@@ -35,25 +35,6 @@ func prStateFingerprint(ctx context.Context, db rowQuerier, issueID pgtype.UUID)
 	return fp, err
 }
 
-// heartbeatFingerprint adds what else a heartbeat can react to: the issue's
-// status and assignee, and comments by anyone but the woken agent. "" when no PR
-// is linked, since the rest of the world is then unobservable here.
-func heartbeatFingerprint(ctx context.Context, db rowQuerier, issueID, agentID pgtype.UUID) (string, error) {
-	pr, err := prStateFingerprint(ctx, db, issueID)
-	if err != nil || pr == "" {
-		return "", err
-	}
-	var rest string
-	err = db.QueryRow(ctx, `SELECT md5(jsonb_build_array(i.status, i.assignee_id,
-			(SELECT count(*) FROM comment c WHERE c.issue_id = i.id AND NOT (c.author_type = 'agent' AND c.author_id = $2)),
-			(SELECT max(c.created_at) FROM comment c WHERE c.issue_id = i.id AND NOT (c.author_type = 'agent' AND c.author_id = $2)))::text)
-		FROM issue i WHERE i.id = $1`, issueID, agentID).Scan(&rest)
-	if err != nil {
-		return "", err
-	}
-	return pr + rest, nil
-}
-
 // unchangedSinceLastRun reports whether the newest run on the issue that
 // matches (context key = value) completed recently with this same fingerprint.
 func unchangedSinceLastRun(ctx context.Context, db rowQuerier, issueID, agentID pgtype.UUID, ctxKey, ctxValue, fingerprint string) (pgtype.UUID, bool, error) {

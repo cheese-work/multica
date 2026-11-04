@@ -1464,6 +1464,10 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		if inputFingerprint, err = prStateFingerprint(ctx, tx, issue.ID); err != nil {
 			return err
 		}
+		// An edited rule (instruction or settings) is not what the last run answered.
+		if inputFingerprint != "" {
+			inputFingerprint += fmt.Sprintf("|%d|%s", w.Revision, w.Instruction)
+		}
 		// A conflict against a newer base commit is a new fact, not a repeat.
 		if baseSHA, _ := facts["base_sha"].(string); baseSHA != "" && inputFingerprint != "" {
 			inputFingerprint += "|" + baseSHA

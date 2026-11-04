@@ -1539,37 +1539,9 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 				return nil
 			}
 		}
-		// CHE-3590: an agent's own recurring heartbeat skips a tick whose inputs
-		// are the same as when its last run started. A person's rule, a one-off
-		// time, a timeout and "wake now" always run.
-		inputFingerprint := ""
-		if scheduled && !manual && w.SourceTaskID.Valid && !w.SystemRule.Valid && custom == nil && w.Mode == "continuous" && (w.Kind == "every" || w.Kind == "cron") && !timedOut {
-			if inputFingerprint, err = heartbeatFingerprint(ctx, tx, w.IssueID, w.AgentID); err != nil {
-				return err
-			}
-			lastTask, unchanged, err := unchangedSinceLastRun(ctx, tx, w.IssueID, w.AgentID, "wakeup_id", util.UUIDToString(w.ID), inputFingerprint)
-			if err != nil {
-				return err
-			}
-			if unchanged {
-				if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
-					return err
-				}
-				if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: enabled, NextFireAt: next, LastTaskID: w.LastTaskID}); err != nil {
-					return err
-				}
-				if err := note(wakeupActivitySkipped, skippedUnchangedDetails("heartbeat", lastTask)); err != nil {
-					return err
-				}
-				return commit()
-			}
-		}
 		taskContext := map[string]any{"wakeup_id": util.UUIDToString(w.ID), "wakeup_revision": w.Revision, "wakeup_evidence": evidence, "wakeup_chain": chain}
 		if deferring {
 			taskContext[wakeupIsolatedKey] = true
-		}
-		if inputFingerprint != "" {
-			taskContext[wakeupFingerprintKey] = inputFingerprint
 		}
 		if custom != nil {
 			taskContext["wakeup_custom"] = true // checked again at start, like a platform rule's run
