@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/passkey/passkeytest"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -364,9 +365,14 @@ func TestSettingsPatchConcurrentApprovalsApplyOnce(test *testing.T) {
 	if statuses[winner] != http.StatusOK {
 		test.Fatalf("statuses %v; one approval must succeed", statuses)
 	}
-	// The loser meets either the busy try-lock or the winner's new value.
-	if loser := 1 - winner; statuses[loser] != http.StatusConflict || !(strings.Contains(bodies[loser], "precondition_drift") || strings.Contains(bodies[loser], "busy_retry")) {
-		test.Fatalf("loser got %d %s; want 409 precondition_drift or busy_retry", statuses[loser], bodies[loser])
+	// The loser meets the busy try-lock or the winner's committed value. A busy
+	// loser retries, and the retry must then drift.
+	loser := []settingsRequest{first, second}[1-winner]
+	if statuses[1-winner] == http.StatusConflict && strings.Contains(bodies[1-winner], "busy_retry") {
+		statuses[1-winner], bodies[1-winner] = loser.approveRaw(test, handler)
+	}
+	if statuses[1-winner] != http.StatusConflict || !strings.Contains(bodies[1-winner], "precondition_drift") {
+		test.Fatalf("loser got %d %s; want 409 precondition_drift", statuses[1-winner], bodies[1-winner])
 	}
 }
 
@@ -457,15 +463,21 @@ func TestSettingsPatchRefusesWithoutAValidAssertion(test *testing.T) {
 	})
 }
 
-// seedPause stores the settings, then files and approves a patch of the pause
-// switch; it returns the approval handler's action.
-func approvePause(test *testing.T, seed string, patch, after map[string]any) settingsRequest {
+// filePause stores the settings and files a patch of the pause switch.
+func filePause(test *testing.T, seed string, patch, after map[string]any) settingsRequest {
 	test.Helper()
 	setWorkspaceSettings(test, seed)
 	request, _ := fileSettings(test, http.StatusCreated, map[string]any{
 		"workspace_id": testWorkspaceID, "settings": patch,
 		"base_sha256": liveSettingsDigest(test, wakeupsPausedKey), "after_sha256": patchDigest(test, after),
 	})
+	return request
+}
+
+// approvePause files the patch and approves it as the owner.
+func approvePause(test *testing.T, seed string, patch, after map[string]any) settingsRequest {
+	test.Helper()
+	request := filePause(test, seed, patch, after)
 	request.approveOwner(test, withVerifier(acceptingVerifier), http.StatusOK)
 	return request
 }
@@ -522,6 +534,44 @@ func TestSettingsPatchResumeClearsThePauseAndSettles(test *testing.T) {
 	}
 	if after := workspaceActivityCount(test, wakeupsResumedAction); after != before+1 {
 		test.Fatalf("wakeups_resumed activity rows %d, want %d", after, before+1)
+	}
+	test.Cleanup(func() {
+		dbfx.Exec(test, `DELETE FROM activity_log WHERE workspace_id = $1 AND action = $2`, testWorkspaceID, wakeupsResumedAction)
+	})
+}
+
+func TestSettingsPatchPauseKeepsUnnamedNumbersExact(test *testing.T) {
+	// 2^53+1 does not survive a float64 round trip.
+	seed := `{"compact_prompt":"old","big":9007199254740993,"nested":{"ids":[9007199254740993,1.50],"deep":{"n":12345678901234567890}}}`
+	approvePause(test, seed, map[string]any{wakeupsPausedKey: true}, map[string]any{wakeupsPausedKey: true})
+	got := storedSettings(test)
+	// jsonb normalizes whitespace but keeps numeric digits.
+	if string(got["big"]) != `9007199254740993` || strings.ReplaceAll(string(got["nested"]), " ", "") != `{"ids":[9007199254740993,1.50],"deep":{"n":12345678901234567890}}` {
+		test.Fatalf("unnamed values changed by the pause: big=%s nested=%s", got["big"], got["nested"])
+	}
+	if string(got[wakeupsPausedKey]) != `true` {
+		test.Fatalf("pause not applied: %v", got)
+	}
+}
+
+func TestSettingsPatchResumeSettlesHeldWakeups(test *testing.T) {
+	seed := `{"wakeups_paused":true,"wakeups_paused_by":"earlier","wakeups_paused_at":"2026-01-01T00:00:00Z"}`
+	request := filePause(test, seed, map[string]any{wakeupsPausedKey: false}, map[string]any{wakeupsPausedKey: nil})
+	wakeup, err := (&service.IssueWakeupService{Tasks: testHandler.TaskService}).Create(context.Background(), parseUUID(request.action.issueID), parseUUID(testUserID), pgtype.UUID{}, service.WakeupInput{
+		AgentID: request.action.agentID, Kind: "event", Mode: "once", EventTypes: []string{"comment.created"},
+		Instruction: "Held while paused.",
+	})
+	if err != nil {
+		test.Fatal(err)
+	}
+	dbfx.Cleanup(test, `DELETE FROM issue_wakeup WHERE id = $1`, wakeup.ID)
+	dbfx.Cleanup(test, `DELETE FROM issue_wakeup_receipt WHERE wakeup_id = $1`, wakeup.ID)
+	dbfx.Exec(test, `INSERT INTO issue_wakeup_receipt (id, wakeup_id, revision, event_key, event_type, payload) VALUES (gen_random_uuid(), $1, 1, 'held-while-paused', 'comment.created', '{}'::jsonb)`, wakeup.ID)
+	request.approveOwner(test, withVerifier(acceptingVerifier), http.StatusOK)
+	var outcome string
+	dbfx.QueryRow(test, `SELECT COALESCE(payload->>'outcome', '') FROM issue_wakeup_receipt WHERE wakeup_id = $1 AND processed_at IS NOT NULL`, wakeup.ID).Scan(&outcome)
+	if outcome != "paused" {
+		test.Fatalf("held receipt outcome %q, want it consumed as paused", outcome)
 	}
 	test.Cleanup(func() {
 		dbfx.Exec(test, `DELETE FROM activity_log WHERE workspace_id = $1 AND action = $2`, testWorkspaceID, wakeupsResumedAction)

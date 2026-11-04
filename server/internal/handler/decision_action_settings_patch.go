@@ -278,15 +278,15 @@ func applySettingsPatch(ctx context.Context, execution decisionActionExecution, 
 			stored[key] = value
 		}
 	}
+	pauseAction := ""
+	if _, names := params.Settings[wakeupsPausedKey]; names {
+		if pauseAction, err = reconcileSettingsPatchPause(workspace.Settings, stored, uuidToString(execution.Approver.UserID)); err != nil {
+			return err
+		}
+	}
 	encoded, err := json.Marshal(stored)
 	if err != nil {
 		return err
-	}
-	pauseAction := ""
-	if _, names := params.Settings[wakeupsPausedKey]; names {
-		if encoded, pauseAction, err = reconcileSettingsPatchPause(workspace.Settings, encoded, uuidToString(execution.Approver.UserID)); err != nil {
-			return err
-		}
 	}
 	ws, err := execution.Queries.UpdateWorkspace(ctx, db.UpdateWorkspaceParams{ID: workspace.ID, Settings: encoded})
 	if err != nil || pauseAction == "" {
@@ -308,23 +308,46 @@ func applySettingsPatch(ctx context.Context, execution decisionActionExecution, 
 // reconcileSettingsPatchPause lets the pause switch of the patched settings go
 // through the ordinary rule: the server stamps who paused and when, a pause of
 // a paused workspace keeps its stamp, and a resume removes the switch. It
-// returns the settings to store and the activity action of a flip.
-func reconcileSettingsPatchPause(storedRaw, patchedRaw []byte, approverID string) ([]byte, string, error) {
-	var stored, patched map[string]any
-	if err := json.Unmarshal(storedRaw, &stored); err != nil {
-		return nil, "", err
+// rewrites only the pause keys of patched, so every other stored value keeps
+// its exact bytes, and returns the activity action of a flip.
+func reconcileSettingsPatchPause(storedRaw []byte, patched map[string]json.RawMessage, approverID string) (string, error) {
+	pauseKeys := []string{wakeupsPausedKey, wakeupsPausedByKey, wakeupsPausedAtKey, wakeupsResumedAtKey}
+	var storedAll map[string]json.RawMessage
+	if err := json.Unmarshal(storedRaw, &storedAll); err != nil {
+		return "", err
 	}
-	if err := json.Unmarshal(patchedRaw, &patched); err != nil {
-		return nil, "", err
+	stored, incoming := map[string]any{}, map[string]any{}
+	for _, source := range []struct {
+		from map[string]json.RawMessage
+		to   map[string]any
+	}{{storedAll, stored}, {patched, incoming}} {
+		for _, key := range pauseKeys {
+			if raw, present := source.from[key]; present {
+				var value any
+				if err := json.Unmarshal(raw, &value); err != nil {
+					return "", err
+				}
+				source.to[key] = value
+			}
+		}
 	}
 	// The patch leaves the pause stamps alone; the rule rewrites them.
-	patched[wakeupsPausedKey] = patched[wakeupsPausedKey] == true
-	action, err := reconcileWakeupsPause(stored, patched, approverID, time.Now())
+	incoming[wakeupsPausedKey] = incoming[wakeupsPausedKey] == true
+	action, err := reconcileWakeupsPause(stored, incoming, approverID, time.Now())
 	if err != nil {
-		return nil, "", err
+		return "", err
 	}
-	out, err := json.Marshal(patched)
-	return out, action, err
+	for _, key := range pauseKeys {
+		value, present := incoming[key]
+		if !present {
+			delete(patched, key)
+			continue
+		}
+		if patched[key], err = json.Marshal(value); err != nil {
+			return "", err
+		}
+	}
+	return action, nil
 }
 
 // publishSettingsPatch announces the committed settings to clients and wakes
