@@ -1,4 +1,4 @@
-import { resetAllRegisteredDrafts } from "@multica/core/drafts";
+import { clearRegisteredWorkspaceDrafts, resetAllRegisteredDrafts } from "@multica/core/drafts";
 import { setCurrentWorkspace } from "@multica/core/platform";
 import { act, screen } from "@testing-library/react";
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
@@ -280,12 +280,42 @@ describe("decision card draft survives remount", () => {
     expect(stored("late-logout")).toBeUndefined();
   });
 
-  it("a late upload writes nothing into a different workspace", async () => {
-    setCurrentWorkspace("acme", "ws-a");
+  const inWorkspace = async (slug: string) => {
+    act(() => setCurrentWorkspace(slug, `id-${slug}`));
+    await act(async () => { await Promise.resolve(); });
+  };
+
+  it("a workspace round trip during an upload ends with the attachment in the original workspace only", async () => {
+    await inWorkspace("acme");
     const { settle } = await startUpload("late-ws");
-    setCurrentWorkspace("other", "ws-b");
+    await inWorkspace("other");
     await settle();
     expect(stored("late-ws")).toBeUndefined();
+    expect(window.localStorage.getItem("multica_decision_answer_drafts:other")).toBeNull();
+    await inWorkspace("acme");
+    expect(stored("late-ws")).toMatch(/^see\n\n!\[shot\.png\]/);
+    setCurrentWorkspace(null, null);
+  });
+
+  it("Send is disabled after returning to the original workspace until the upload settles", async () => {
+    await inWorkspace("acme");
+    const { user, settle } = await startUpload("late-ws-gate");
+    await inWorkspace("other");
+    await inWorkspace("acme");
+    renderWithI18n(chat(card("late-ws-gate")));
+    await user.click(screen.getByRole("radio", { name: /Option A/ }));
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    await settle();
+    await vi.waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeEnabled());
+    setCurrentWorkspace(null, null);
+  });
+
+  it("a late upload writes nothing after its workspace's drafts were deleted", async () => {
+    await inWorkspace("acme");
+    const { settle } = await startUpload("late-del");
+    clearRegisteredWorkspaceDrafts(window.localStorage as never, "acme");
+    await settle();
+    expect(window.localStorage.getItem("multica_decision_answer_drafts:acme")).toBeNull();
     setCurrentWorkspace(null, null);
   });
 

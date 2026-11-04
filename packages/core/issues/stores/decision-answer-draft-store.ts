@@ -21,11 +21,12 @@ export const useDecisionAnswerDraftStore = createKeyedDraftStore<DecisionAnswerD
   hasMeaningful: (d) => d.option !== "" || d.text.trim() !== "",
 });
 
-/** Adds an attachment link to the end of the stored note; a link already there stays single. */
-export function appendDecisionAttachment(requestId: string, markdown: string): void {
-  const key = decisionAnswerDraftKey(requestId);
-  const store = useDecisionAnswerDraftStore.getState();
-  const current = store.getDraft(key)?.text ?? "";
-  if (current.includes(markdown)) return;
-  store.setDraft(key, { text: `${current.trimEnd()}\n\n${markdown}`.trim() });
+/**
+ * Adds an attachment link to the end of the note stored in workspace `slug`; a link already
+ * there stays single. `slug` is the workspace the upload started in, not necessarily the active one.
+ */
+export function appendDecisionAttachment(slug: string | null, requestId: string, markdown: string): void {
+  useDecisionAnswerDraftStore.getState().patchDraftIn(slug, decisionAnswerDraftKey(requestId), (current) =>
+    current.text.includes(markdown) ? current : { text: `${current.text.trimEnd()}\n\n${markdown}`.trim() },
+  );
 }

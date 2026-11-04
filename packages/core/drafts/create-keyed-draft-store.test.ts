@@ -206,4 +206,28 @@ describe("createKeyedDraftStore", () => {
     await flush();
     expect(useStore.getState().hasDraft("k")).toBe(false);
   });
+
+  it("patchDraftIn writes another workspace's persisted drafts and leaves the active one alone", async () => {
+    const storage = memoryStorage();
+    const { useStore } = build("k_patch_in", storage, { workspaceScoped: true });
+    setCurrentWorkspace("acme", "ws-a");
+    await flush();
+    useStore.getState().setDraft("a", { text: "one" });
+
+    setCurrentWorkspace("other", "ws-b");
+    await flush();
+    useStore.getState().patchDraftIn("acme", "a", (current) => ({ text: `${current.text} two` }));
+
+    expect(useStore.getState().getDraft("a")).toBeUndefined();
+    expect(storage.getItem("k_patch_in:other")).toBeNull();
+    setCurrentWorkspace("acme", "ws-a");
+    await flush();
+    expect(useStore.getState().getDraft("a")).toEqual({ text: "one two", tags: [] });
+  });
+
+  it("patchDraftIn on the active workspace behaves like setDraft", () => {
+    const { useStore } = build("k_patch_active");
+    useStore.getState().patchDraftIn(null, "a", { text: "x" });
+    expect(useStore.getState().getDraft("a")).toEqual({ text: "x", tags: [] });
+  });
 });

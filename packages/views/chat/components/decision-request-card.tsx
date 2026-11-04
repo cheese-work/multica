@@ -107,7 +107,7 @@ function DecisionAnswerForm({
       return result;
     } finally {
       settlePendingUpload(ticket, () => {
-        if (result && closing.current) appendDecisionAttachment(card.id, attachmentMarkdown(result));
+        if (result && closing.current) appendDecisionAttachment(ticket.slug, card.id, attachmentMarkdown(result));
       });
     }
   };
