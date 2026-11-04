@@ -128,6 +128,7 @@ export interface FilterSnapshot {
   projectFilters: string[];
   includeNoProject: boolean;
   projectStatusFilters: ProjectStatus[];
+  workflowFilters: string[];
   labelFilters: string[];
   propertyFilters: Record<string, PropertyFilterValue[]>;
 }
@@ -141,6 +142,7 @@ export type FilterDimension =
   | "creator"
   | "project"
   | "projectStatus"
+  | "workflow"
   | "label"
   | `property:${string}`;
 
@@ -253,6 +255,8 @@ export interface IssueViewState {
    * issue with no project never matches.
    */
   projectStatusFilters: ProjectStatus[];
+  /** Workflow ids matched against an issue's own override (`workflow_id`); OR within. */
+  workflowFilters: string[];
   labelFilters: string[];
   /**
    * Custom-property filters: definition id → selected values (checkbox
@@ -323,6 +327,7 @@ export interface IssueViewState {
   toggleProjectFilter: (projectId: string) => void;
   toggleNoProject: () => void;
   toggleProjectStatusFilter: (status: ProjectStatus) => void;
+  toggleWorkflowFilter: (workflowId: string) => void;
   toggleLabelFilter: (labelId: string) => void;
   togglePropertyFilter: (propertyId: string, optionId: string) => void;
   /** Replace a property's full filter value set (used by scalar value inputs
@@ -372,6 +377,7 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
   projectFilters: [],
   includeNoProject: false,
   projectStatusFilters: [],
+  workflowFilters: [],
   labelFilters: [],
   propertyFilters: {},
   dateFilter: null,
@@ -471,6 +477,12 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
         ? state.projectStatusFilters.filter((s) => s !== status)
         : [...state.projectStatusFilters, status],
     })),
+  toggleWorkflowFilter: (workflowId) =>
+    set((state) => ({
+      workflowFilters: state.workflowFilters.includes(workflowId)
+        ? state.workflowFilters.filter((id) => id !== workflowId)
+        : [...state.workflowFilters, workflowId],
+    })),
   toggleLabelFilter: (labelId) =>
     set((state) => ({
       labelFilters: state.labelFilters.includes(labelId)
@@ -518,6 +530,7 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
       projectFilters: [],
       includeNoProject: false,
       projectStatusFilters: [],
+      workflowFilters: [],
       labelFilters: [],
       propertyFilters: {},
       dateFilter: null,
@@ -539,6 +552,8 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
           return { projectFilters: [], includeNoProject: false };
         case "projectStatus":
           return { projectStatusFilters: [] };
+        case "workflow":
+          return { workflowFilters: [] };
         case "label":
           return { labelFilters: [] };
         default: {
@@ -675,6 +690,7 @@ export const viewStorePersistOptions = (name: string) => ({
     projectFilters: state.projectFilters,
     includeNoProject: state.includeNoProject,
     projectStatusFilters: state.projectStatusFilters,
+    workflowFilters: state.workflowFilters,
     labelFilters: state.labelFilters,
     propertyFilters: state.propertyFilters,
     sortBy: state.sortBy,
@@ -798,6 +814,9 @@ export function mergeViewStatePersisted<T extends IssueViewState>(
           (PROJECT_STATUS_ORDER as readonly string[]).includes(status as string),
         )
       : current.projectStatusFilters,
+    workflowFilters: Array.isArray(p.workflowFilters)
+      ? p.workflowFilters.filter((id): id is string => typeof id === "string")
+      : current.workflowFilters,
   };
   return {
     ...merged,

@@ -2666,6 +2666,21 @@ SELECT EXISTS (
     )
 );
 
+-- name: HasPendingAssignmentTaskForAgent :one
+-- Whether the agent holds the issue's assignment-level pending slot: exactly
+-- the rows idx_one_pending_task_per_issue_agent_thread keeps one of. A caller
+-- inside a transaction checks it before the insert, because the unique
+-- violation would abort the transaction.
+SELECT EXISTS (
+  SELECT 1 FROM agent_task_queue
+  WHERE issue_id = $1 AND agent_id = $2
+    AND comment_thread_id IS NULL
+    AND (
+      status IN ('queued', 'dispatched')
+      OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+    )
+);
+
 -- name: HasActiveTaskForIssueAndAgentInThread :one
 -- Active execution and pending work in this comment thread only.
 SELECT count(*) > 0 AS has_active FROM agent_task_queue

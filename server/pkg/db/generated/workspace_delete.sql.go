@@ -256,6 +256,10 @@ WITH deleted_wakeup_pr_events AS (
  DELETE FROM issue_wakeup WHERE workspace_id=$1
 ), deleted_wakeup_definitions AS (
  DELETE FROM issue_wakeup_definition WHERE workspace_id=$1
+), deleted_dm_progress_follows AS (
+ DELETE FROM dm_progress_follow WHERE workspace_id=$1
+), deleted_dm_progress_lanes AS (
+ DELETE FROM dm_progress_lane WHERE workspace_id=$1
 ), deleted_wakeup_aggregate_reservations AS (
  DELETE FROM wakeup_aggregate_reservation WHERE workspace_id=$1
 ), deleted_wakeup_aggregate_budgets AS (
@@ -379,6 +383,9 @@ deleted_github_dispatch_halts AS (
 ),
 deleted_config_sync AS (
     DELETE FROM workspace_config_sync WHERE workspace_id = $1
+),
+deleted_ask_guard_events AS (
+    DELETE FROM ask_guard_event WHERE workspace_id = $1
 ),
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
@@ -689,6 +696,7 @@ WHERE channel_media_pending_object.workspace_id = $1
 // than the session set because that column exists precisely so this statement
 // does not have to join through chat_session, which it deletes in this same CTE.
 // CHE-3284 config-sync enrollment: workspace-owned leaf, no FK.
+// CHE-3345 ask guard events: workspace-owned leaf, no FK.
 // CHE-488 durable stage-completion-wake bookkeeping (stage_generation,
 // stage_completion_wake). Deleted before the parent issues below so neither
 // statement depends on FK cascade ordering.

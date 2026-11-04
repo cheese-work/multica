@@ -91,7 +91,10 @@ type issueTableFiltersRequest struct {
 	// ProjectStatuses filters on the parent project's lifecycle status
 	// (`validProjectStatuses`), independently of ProjectIDs.
 	ProjectStatuses []string `json:"project_statuses,omitempty"`
-	LabelIDs        []string `json:"label_ids,omitempty"`
+	// WorkflowIDs matches the issue's own workflow override (`issue.workflow_id`);
+	// an issue that follows its project never matches.
+	WorkflowIDs []string `json:"workflow_ids,omitempty"`
+	LabelIDs    []string `json:"label_ids,omitempty"`
 	// Members are raw JSON so operator objects ({op, value}) and plain
 	// strings both survive the round-trip into parsePropertiesFilterParam.
 	Properties       map[string][]json.RawMessage `json:"properties,omitempty"`
@@ -262,6 +265,7 @@ func canonicalIssueTableFingerprint(workspaceID string, spec issueTableQuerySpec
 	normalized.Filters.Priorities = sortedUniqueStrings(normalized.Filters.Priorities)
 	normalized.Filters.ProjectIDs = sortedUniqueStrings(normalized.Filters.ProjectIDs)
 	normalized.Filters.ProjectStatuses = sortedUniqueStrings(normalized.Filters.ProjectStatuses)
+	normalized.Filters.WorkflowIDs = sortedUniqueStrings(normalized.Filters.WorkflowIDs)
 	normalized.Filters.LabelIDs = sortedUniqueStrings(normalized.Filters.LabelIDs)
 	normalized.Filters.Assignees = sortedUniqueActors(normalized.Filters.Assignees)
 	normalized.Filters.WorkingIssueIDs = sortedUniqueStrings(normalized.Filters.WorkingIssueIDs)
@@ -621,6 +625,14 @@ func (h *Handler) compileIssueTableQuery(w http.ResponseWriter, r *http.Request,
 			"EXISTS (SELECT 1 FROM project p WHERE p.id = i.project_id AND p.workspace_id = i.workspace_id AND p.status = ANY(%s::text[]))",
 			addArg(spec.Filters.ProjectStatuses),
 		))
+	}
+
+	workflowIDs, ok := parseIssueTableUUIDList(w, spec.Filters.WorkflowIDs, "filters.workflow_ids")
+	if !ok {
+		return issueTableSQL{}, false
+	}
+	if len(workflowIDs) > 0 {
+		where = append(where, fmt.Sprintf("i.workflow_id = ANY(%s::uuid[])", addArg(workflowIDs)))
 	}
 
 	labelIDs, ok := parseIssueTableUUIDList(w, spec.Filters.LabelIDs, "filters.label_ids")
