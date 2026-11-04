@@ -1613,7 +1613,7 @@ func (s *TaskService) prepareIssueTaskWithQueriesAndOverlay(ctx context.Context,
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "issue has no assignee")
 		return db.CreateAgentTaskParams{}, attribution.Result{}, fmt.Errorf("issue has no assignee")
 	}
-	if _, err := guardIssueRunGate(ctx, queries, issue.ID, origin, issueRunTarget(issue, triggerCommentID, fireAt)); err != nil {
+	if _, err := guardIssueRunGate(ctx, queries, issue.ID, origin, issueRunTarget(issue, triggerCommentID, actorUserID, fireAt)); err != nil {
 		return db.CreateAgentTaskParams{}, attribution.Result{}, err
 	}
 
@@ -1677,19 +1677,19 @@ func (s *TaskService) prepareIssueTaskWithQueriesAndOverlay(ctx context.Context,
 	}, attr, nil
 }
 
-func issueRunTarget(issue db.Issue, triggerCommentID pgtype.UUID, fireAt pgtype.Timestamptz) RunTarget {
+func issueRunTarget(issue db.Issue, triggerCommentID, actorUserID pgtype.UUID, fireAt pgtype.Timestamptz) RunTarget {
 	trigger := "assignment or status handoff"
 	if triggerCommentID.Valid {
 		trigger = "comment"
 	}
-	return RunTarget{AgentID: issue.AssigneeID, Trigger: trigger, ReviewRun: !fireAt.Valid}
+	return RunTarget{AgentID: issue.AssigneeID, Trigger: trigger, ReviewRun: !fireAt.Valid, ActorUserID: actorUserID, TriggerCommentID: triggerCommentID}
 }
 
 // insertPreparedIssueTask takes the issue's budget lock through queries, admits
 // the run and inserts it: the lock lasts until the caller's transaction ends.
 // queries must not need a second connection.
 func (s *TaskService) insertPreparedIssueTask(ctx context.Context, queries *db.Queries, issue db.Issue, createParams db.CreateAgentTaskParams, fireAt pgtype.Timestamptz, origin RunOrigin) (db.AgentTaskQueue, error) {
-	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, issueRunTarget(issue, createParams.TriggerCommentID, fireAt))
+	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, issueRunTarget(issue, createParams.TriggerCommentID, createParams.OriginatorUserID, fireAt))
 	if err != nil {
 		return db.AgentTaskQueue{}, err
 	}
@@ -1809,7 +1809,7 @@ func (s *TaskService) EnqueuePreparedTaskForMentionInTx(ctx context.Context, que
 }
 
 func (s *TaskService) enqueuePreparedInTx(ctx context.Context, queries *db.Queries, issue db.Issue, params db.CreateAgentTaskParams, origin RunOrigin, trigger string) (db.AgentTaskQueue, error) {
-	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, RunTarget{AgentID: params.AgentID, Trigger: trigger, ReviewRun: true})
+	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, RunTarget{AgentID: params.AgentID, Trigger: trigger, ReviewRun: true, ActorUserID: params.OriginatorUserID, TriggerCommentID: params.TriggerCommentID})
 	if err != nil {
 		return db.AgentTaskQueue{}, err
 	}
@@ -1945,7 +1945,7 @@ func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Contex
 	if isLeader {
 		trigger = "squad leader callback"
 	}
-	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, RunTarget{AgentID: agentID, Trigger: trigger, ReviewRun: true})
+	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, RunTarget{AgentID: agentID, Trigger: trigger, ReviewRun: true, ActorUserID: actorUserID, TriggerCommentID: triggerCommentID})
 	if err != nil {
 		return db.CreateAgentTaskParams{}, attribution.Result{}, err
 	}

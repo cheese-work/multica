@@ -9,11 +9,21 @@
 SELECT pg_advisory_xact_lock(hashtextextended('stage_queue:' || sqlc.arg('stage')::text || ':' || sqlc.arg('agent_id')::uuid::text, 0));
 
 -- name: MarkStageWaiting :exec
--- Records a refusal. Written on the pool by the early guard so the enqueue
--- transaction's rollback cannot lose it.
-INSERT INTO stage_queue_waiting (issue_id, agent_id, queued_at)
-VALUES (sqlc.arg('issue_id')::uuid, sqlc.arg('agent_id')::uuid, now())
-ON CONFLICT (issue_id, agent_id) DO UPDATE SET queued_at = now();
+-- Records a refusal with who asked, the comment that asked, and the taint of
+-- the refused run. A repeat refusal keeps the latest non-null actor and
+-- comment and only adds taint.
+INSERT INTO stage_queue_waiting (issue_id, agent_id, queued_at, actor_user_id, trigger_comment_id, taint_ids)
+VALUES (sqlc.arg('issue_id')::uuid, sqlc.arg('agent_id')::uuid, now(), sqlc.narg('actor_user_id')::uuid, sqlc.narg('trigger_comment_id')::uuid, sqlc.arg('taint_ids')::text[])
+ON CONFLICT (issue_id, agent_id) DO UPDATE SET
+  queued_at = now(),
+  actor_user_id = COALESCE(EXCLUDED.actor_user_id, stage_queue_waiting.actor_user_id),
+  trigger_comment_id = COALESCE(EXCLUDED.trigger_comment_id, stage_queue_waiting.trigger_comment_id),
+  taint_ids = (SELECT COALESCE(array_agg(DISTINCT t ORDER BY t), '{}')
+                 FROM unnest(stage_queue_waiting.taint_ids || EXCLUDED.taint_ids) AS t);
+
+-- name: GetStageWaiting :one
+SELECT actor_user_id, trigger_comment_id, taint_ids FROM stage_queue_waiting
+WHERE issue_id = sqlc.arg('issue_id')::uuid AND agent_id = sqlc.arg('agent_id')::uuid;
 
 -- name: ListReviewStageEntries :many
 -- Review stage: issues in a review status assigned to the reviewer, with a

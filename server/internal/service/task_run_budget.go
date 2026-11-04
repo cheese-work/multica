@@ -51,6 +51,11 @@ type RunTarget struct {
 	AgentID   pgtype.UUID
 	Trigger   string
 	ReviewRun bool
+	// ActorUserID and TriggerCommentID name who asked for the run and the
+	// comment that asked. A stage refusal keeps them so the release starts the
+	// run under the same attribution (CHE-3611).
+	ActorUserID      pgtype.UUID
+	TriggerCommentID pgtype.UUID
 }
 
 // ReviewGate is what the guard hands the enqueue: the PR head the run reviews
@@ -84,6 +89,7 @@ func createAgentTask(ctx context.Context, q *db.Queries, p db.CreateAgentTaskPar
 		return db.AgentTaskQueue{}, err
 	}
 	p.TaintIds = append(p.TaintIds, acting...)
+	p.TaintIds = append(p.TaintIds, stageTaint(ctx)...)
 	task, err := q.CreateAgentTask(ctx, p)
 	if errors.Is(err, pgx.ErrNoRows) && p.GateRequired.Bool {
 		return db.AgentTaskQueue{}, ErrDuplicatePendingTask

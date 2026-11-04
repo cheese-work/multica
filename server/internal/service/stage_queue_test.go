@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/stagequeue"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -109,7 +110,7 @@ func TestReleaseStageQueuesStartsRefusedPROnce(t *testing.T) {
 		t.Fatalf("B while A runs: err = %v, want ErrStageQueueFull", err)
 	}
 	var released []string
-	enqueue := func(_ context.Context, issue db.Issue) error {
+	enqueue := func(_ context.Context, issue db.Issue, _, _ pgtype.UUID) error {
 		released = append(released, util.UUIDToString(issue.ID))
 		// A real enqueue inserts the task; mimic it so B now holds the slot.
 		f.run(t, util.UUIDToString(issue.ID), "queued")
@@ -211,7 +212,7 @@ func TestReleaseStageQueuesOrdersByOpenGatesThenAge(t *testing.T) {
 		f.Exec(t, `INSERT INTO stage_queue_waiting (issue_id, agent_id) VALUES ($1, $2)`, id, f.agentID)
 	}
 	var released []string
-	err := releaseStageQueues(context.Background(), f.q, func(_ context.Context, issue db.Issue) error {
+	err := releaseStageQueues(context.Background(), f.q, func(_ context.Context, issue db.Issue, _, _ pgtype.UUID) error {
 		released = append(released, util.UUIDToString(issue.ID))
 		return nil
 	})
@@ -363,5 +364,74 @@ func TestStageQueueRefusalWriteFailureIsReturned(t *testing.T) {
 	check("in-tx guard", err)
 	if got := f.tasksOn(t, b); got != 0 {
 		t.Fatalf("B has %d tasks, want 0", got)
+	}
+}
+
+// releasedTask is the task a release created for the issue: who it runs as and
+// what taint it carries.
+func (f *stageFixture) releasedTask(t *testing.T, issueID string) (originator string, taint []string) {
+	t.Helper()
+	f.QueryRow(t, `SELECT COALESCE(originator_user_id::text, ''), taint_ids FROM agent_task_queue
+		WHERE issue_id = $1 ORDER BY created_at DESC LIMIT 1`, issueID).Scan(&originator, &taint)
+	return originator, taint
+}
+
+// A refused PR is released as the person who asked for the run, not as the
+// issue's creator: the creator's private agents stay out of reach (CWE-863).
+func TestStageQueueReleaseKeepsTheRequestingPrincipal(t *testing.T) {
+	f := newStageFixture(t, stagequeue.Limits{stagequeue.StageReview: 1})
+	svc := f.service(t)
+	actor := f.User(t, "Requester", fmt.Sprintf("stage-actor-%d@multica.test", time.Now().UnixNano()))
+	f.Member(t, f.WorkspaceID, actor, "member")
+	runA := f.run(t, f.reviewIssue(t, "PR A", 3*time.Hour), "running")
+	b := f.reviewIssue(t, "PR B", 1*time.Hour) // created by f.UserID
+	issueB, err := f.q.GetIssue(context.Background(), util.MustParseUUID(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.EnqueueTaskForIssueByActor(context.Background(), issueB, util.MustParseUUID(actor)); !errors.Is(err, ErrStageQueueFull) {
+		t.Fatalf("enqueue B while A runs: err = %v, want ErrStageQueueFull", err)
+	}
+	f.Exec(t, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, runA)
+	if err := svc.ReleaseStageQueues(context.Background()); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if got, _ := f.releasedTask(t, b); got != actor {
+		t.Fatalf("released run originator = %q, want the requester %q (not the creator %q)", got, actor, f.UserID)
+	}
+}
+
+// A refusal keeps the taint of the task that asked, and the released run
+// carries it: release must not launder a tainted request into a clean run.
+func TestStageQueueReleaseCarriesTheRequestersTaint(t *testing.T) {
+	f := newStageFixture(t, stagequeue.Limits{stagequeue.StageReview: 1})
+	svc := f.service(t)
+	runA := f.run(t, f.reviewIssue(t, "PR A", 3*time.Hour), "running")
+	b := f.reviewIssue(t, "PR B", 1*time.Hour)
+	issueB, err := f.q.GetIssue(context.Background(), util.MustParseUUID(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := f.Issue(t, "elsewhere", testutil.Cols{"status": "in_progress"})
+	taintedTask := f.run(t, other, "running")
+	f.Exec(t, `UPDATE agent_task_queue SET taint_ids = ARRAY['ext-1'] WHERE id = $1`, taintedTask)
+	ctx := WithActingTask(context.Background(), util.MustParseUUID(taintedTask))
+
+	if _, err := svc.EnqueueTaskForIssue(ctx, issueB); !errors.Is(err, ErrStageQueueFull) {
+		t.Fatalf("enqueue B while A runs: err = %v, want ErrStageQueueFull", err)
+	}
+	// A second refusal from a differently tainted task adds to the record.
+	f.Exec(t, `UPDATE agent_task_queue SET taint_ids = ARRAY['ext-2'] WHERE id = $1`, taintedTask)
+	if _, err := svc.EnqueueTaskForIssue(ctx, issueB); !errors.Is(err, ErrStageQueueFull) {
+		t.Fatalf("second enqueue B: err = %v, want ErrStageQueueFull", err)
+	}
+	f.Exec(t, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, runA)
+	if err := svc.ReleaseStageQueues(context.Background()); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	_, taint := f.releasedTask(t, b)
+	if len(taint) != 2 || taint[0] != "ext-1" || taint[1] != "ext-2" {
+		t.Fatalf("released run taint = %v, want [ext-1 ext-2]", taint)
 	}
 }

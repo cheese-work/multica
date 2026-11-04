@@ -11,6 +11,29 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const getStageWaiting = `-- name: GetStageWaiting :one
+SELECT actor_user_id, trigger_comment_id, taint_ids FROM stage_queue_waiting
+WHERE issue_id = $1::uuid AND agent_id = $2::uuid
+`
+
+type GetStageWaitingParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+}
+
+type GetStageWaitingRow struct {
+	ActorUserID      pgtype.UUID `json:"actor_user_id"`
+	TriggerCommentID pgtype.UUID `json:"trigger_comment_id"`
+	TaintIds         []string    `json:"taint_ids"`
+}
+
+func (q *Queries) GetStageWaiting(ctx context.Context, arg GetStageWaitingParams) (GetStageWaitingRow, error) {
+	row := q.db.QueryRow(ctx, getStageWaiting, arg.IssueID, arg.AgentID)
+	var i GetStageWaitingRow
+	err := row.Scan(&i.ActorUserID, &i.TriggerCommentID, &i.TaintIds)
+	return i, err
+}
+
 const listGateStageEntries = `-- name: ListGateStageEntries :many
 SELECT s.id AS run_issue_id,
        s.parent_issue_id AS pr_key,
@@ -219,19 +242,34 @@ func (q *Queries) LockStageQueue(ctx context.Context, arg LockStageQueueParams) 
 }
 
 const markStageWaiting = `-- name: MarkStageWaiting :exec
-INSERT INTO stage_queue_waiting (issue_id, agent_id, queued_at)
-VALUES ($1::uuid, $2::uuid, now())
-ON CONFLICT (issue_id, agent_id) DO UPDATE SET queued_at = now()
+INSERT INTO stage_queue_waiting (issue_id, agent_id, queued_at, actor_user_id, trigger_comment_id, taint_ids)
+VALUES ($1::uuid, $2::uuid, now(), $3::uuid, $4::uuid, $5::text[])
+ON CONFLICT (issue_id, agent_id) DO UPDATE SET
+  queued_at = now(),
+  actor_user_id = COALESCE(EXCLUDED.actor_user_id, stage_queue_waiting.actor_user_id),
+  trigger_comment_id = COALESCE(EXCLUDED.trigger_comment_id, stage_queue_waiting.trigger_comment_id),
+  taint_ids = (SELECT COALESCE(array_agg(DISTINCT t ORDER BY t), '{}')
+                 FROM unnest(stage_queue_waiting.taint_ids || EXCLUDED.taint_ids) AS t)
 `
 
 type MarkStageWaitingParams struct {
-	IssueID pgtype.UUID `json:"issue_id"`
-	AgentID pgtype.UUID `json:"agent_id"`
+	IssueID          pgtype.UUID `json:"issue_id"`
+	AgentID          pgtype.UUID `json:"agent_id"`
+	ActorUserID      pgtype.UUID `json:"actor_user_id"`
+	TriggerCommentID pgtype.UUID `json:"trigger_comment_id"`
+	TaintIds         []string    `json:"taint_ids"`
 }
 
-// Records a refusal. Written on the pool by the early guard so the enqueue
-// transaction's rollback cannot lose it.
+// Records a refusal with who asked, the comment that asked, and the taint of
+// the refused run. A repeat refusal keeps the latest non-null actor and
+// comment and only adds taint.
 func (q *Queries) MarkStageWaiting(ctx context.Context, arg MarkStageWaitingParams) error {
-	_, err := q.db.Exec(ctx, markStageWaiting, arg.IssueID, arg.AgentID)
+	_, err := q.db.Exec(ctx, markStageWaiting,
+		arg.IssueID,
+		arg.AgentID,
+		arg.ActorUserID,
+		arg.TriggerCommentID,
+		arg.TaintIds,
+	)
 	return err
 }

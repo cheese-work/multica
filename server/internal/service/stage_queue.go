@@ -17,6 +17,19 @@ import (
 // stageLimits is N per stage (CHE-3611), read once at start from the env.
 var stageLimits = stagequeue.LimitsFromEnv(os.Getenv)
 
+type stageTaintKey struct{}
+
+// withStageTaint makes every task inserted under ctx carry taint, on top of the
+// taint of any acting task (createAgentTask).
+func withStageTaint(ctx context.Context, taint []string) context.Context {
+	return context.WithValue(ctx, stageTaintKey{}, taint)
+}
+
+func stageTaint(ctx context.Context) []string {
+	taint, _ := ctx.Value(stageTaintKey{}).([]string)
+	return taint
+}
+
 // stageEntries lists the PRs in one owner's stage as queue entries: those that
 // hold a slot, those refused and still waiting, and the candidate being admitted.
 func stageEntries(ctx context.Context, q *db.Queries, stage stagequeue.Stage, agentID, candidate pgtype.UUID) ([]stagequeue.Entry, error) {
@@ -110,25 +123,45 @@ func guardStageQueue(ctx context.Context, q *db.Queries, issueID pgtype.UUID, ta
 			return nil
 		}
 	}
-	if err := markStageWaiting(ctx, q, issueID, target.AgentID); err != nil {
+	// Fail closed: a requester whose taint cannot be read is never shown clean.
+	taint, err := ActingTaskTaint(ctx, q)
+	if err != nil {
+		return fmt.Errorf("stage queue: read requester taint: %w", err)
+	}
+	refusal := &stageFullError{
+		issueID: issueID, agentID: target.AgentID,
+		actor: target.ActorUserID, comment: target.TriggerCommentID, taint: taint,
+	}
+	if err := markStageWaiting(ctx, q, refusal); err != nil {
 		return err
 	}
 	slog.Info("stage queue: run refused, PR queued",
 		"stage", stage, "agent_id", util.UUIDToString(target.AgentID), "issue_id", ref, "queued", len(d.Queued))
-	return &stageFullError{issueID: issueID, agentID: target.AgentID}
+	return refusal
 }
 
 // stageFullError is ErrStageQueueFull for one (issue, agent): the pair whose
-// refusal must be written down. errors.Is(err, ErrStageQueueFull) holds.
-type stageFullError struct{ issueID, agentID pgtype.UUID }
+// refusal must be written down, with who asked (actor, trigger comment) and
+// the taint the asker carried. errors.Is(err, ErrStageQueueFull) holds.
+type stageFullError struct {
+	issueID, agentID pgtype.UUID
+	actor, comment   pgtype.UUID
+	taint            []string
+}
 
 func (*stageFullError) Error() string        { return ErrStageQueueFull.Error() }
 func (*stageFullError) Is(target error) bool { return target == ErrStageQueueFull }
 
 // markStageWaiting records a refusal so the release job can start the PR later.
 // A failure is returned: a refusal that is not on record is a lost run.
-func markStageWaiting(ctx context.Context, q *db.Queries, issueID, agentID pgtype.UUID) error {
-	if err := q.MarkStageWaiting(ctx, db.MarkStageWaitingParams{IssueID: issueID, AgentID: agentID}); err != nil {
+func markStageWaiting(ctx context.Context, q *db.Queries, r *stageFullError) error {
+	taint := r.taint
+	if taint == nil {
+		taint = []string{}
+	}
+	if err := q.MarkStageWaiting(ctx, db.MarkStageWaitingParams{
+		IssueID: r.issueID, AgentID: r.agentID, ActorUserID: r.actor, TriggerCommentID: r.comment, TaintIds: taint,
+	}); err != nil {
 		return fmt.Errorf("stage queue: record refusal: %w", err)
 	}
 	return nil
@@ -143,7 +176,7 @@ func (s *TaskService) recordStageRefusal(ctx context.Context, err error) error {
 	if !errors.As(err, &full) {
 		return err
 	}
-	if merr := markStageWaiting(ctx, s.Queries, full.issueID, full.agentID); merr != nil {
+	if merr := markStageWaiting(ctx, s.Queries, full); merr != nil {
 		return merr
 	}
 	return err
@@ -152,7 +185,12 @@ func (s *TaskService) recordStageRefusal(ctx context.Context, err error) error {
 // releaseStageQueues starts the admitted PRs that have no active run, for every
 // owner with a PR waiting. It is the only way a refused PR advances: a PR holds
 // no slot while it waits, so there is nothing to hand over on completion.
-func releaseStageQueues(ctx context.Context, q *db.Queries, enqueue func(context.Context, db.Issue) error) error {
+//
+// A PR starts under the attribution and taint its refusal recorded: enqueue
+// gets the actor and trigger comment of the refused run, and ctx carries its
+// taint (stageTaint), so a released run is never cleaner or more privileged
+// than the one that was refused.
+func releaseStageQueues(ctx context.Context, q *db.Queries, enqueue func(ctx context.Context, issue db.Issue, actor, comment pgtype.UUID) error) error {
 	owners, err := q.ListWaitingStageOwners(ctx)
 	if err != nil {
 		return fmt.Errorf("stage queue release: list owners: %w", err)
@@ -174,7 +212,13 @@ func releaseStageQueues(ctx context.Context, q *db.Queries, enqueue func(context
 				errs = append(errs, err)
 				continue
 			}
-			if err := enqueue(ctx, issue); err != nil &&
+			// Fail closed: no readable refusal record means no run.
+			w, err := q.GetStageWaiting(ctx, db.GetStageWaitingParams{IssueID: issue.ID, AgentID: o.AgentID})
+			if err != nil {
+				errs = append(errs, fmt.Errorf("stage queue release %s: read refusal: %w", e.Ref, err))
+				continue
+			}
+			if err := enqueue(withStageTaint(ctx, w.TaintIds), issue, w.ActorUserID, w.TriggerCommentID); err != nil &&
 				!errors.Is(err, ErrDuplicatePendingTask) && !errors.Is(err, ErrStageQueueFull) {
 				errs = append(errs, fmt.Errorf("stage queue release %s: %w", e.Ref, err))
 			}
@@ -185,8 +229,8 @@ func releaseStageQueues(ctx context.Context, q *db.Queries, enqueue func(context
 
 // ReleaseStageQueues is the scheduler's tick.
 func (s *TaskService) ReleaseStageQueues(ctx context.Context) error {
-	return releaseStageQueues(ctx, s.Queries, func(ctx context.Context, issue db.Issue) error {
-		_, err := s.EnqueueTaskForIssue(ctx, issue)
+	return releaseStageQueues(ctx, s.Queries, func(ctx context.Context, issue db.Issue, actor, comment pgtype.UUID) error {
+		_, err := s.enqueueIssueTask(ctx, issue, comment, false, "", actor, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
 		return err
 	})
 }
