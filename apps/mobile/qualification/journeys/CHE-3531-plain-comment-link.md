@@ -3,6 +3,8 @@
 ## Immutable inputs
 
 - Runner source: `cheese-work/artemis` commit `cbf2fea84cbd47ea54053239679ab521b01d4d23` (Artemis Pro; pinned source only, this case does not claim device-class qualification).
+- Runner dependency lock: `cheese-work/artemis/uv.lock` at the runner commit above (Git blob `dc2d35b8c284055c92ff1cd2560c8201e648bf9f`).
+- Runner CLI configuration: `cheese-work/artemis/pyproject.toml` at the runner commit above (Git blob `a36b834875b465bf33e221ffcffc003d4ca94ec4`).
 - Fixed app source: `cheese-work/multica` commit `b9715570402d6d38e3a8dce12317b5a8724c7329` (PR #918).
 - Pre-fix app source: `cheese-work/multica` commit `1a9e20e40d84916e0bca3b1358e77be7de22565b` (parent of the first fix commit).
 - Requested target class: X99 AVD `x99_api35_medium_phone`, API 35, x86_64. The executor must use the exact serial and actions granted by the Android device squad on CHE-3531.
@@ -17,7 +19,7 @@ Run each case from the existing chat/DM decision card. Tap its plain `Comment` l
 Run Artemis from the pinned checkout with the authorized host configuration. Set `ANDROID_SERIAL` to the exact granted serial and `ARTEMIS_TASK` to the matching case above. Run:
 
 ```sh
-uv run artemis run "$ARTEMIS_TASK" --profile pro --verification-level strict --device-serial "$ANDROID_SERIAL"
+uv run artemis run "$ARTEMIS_TASK" --profile pro --verification-level strict --device-serial "$ANDROID_SERIAL" --test-name "$ARTEMIS_RUN_ID" --traces-path "$ARTIFACT_DIR/artemis-traces"
 ```
 
 Record the process exit status and Artemis task/report identifiers. Artemis must identify the target card, tap the plain `Comment` link, and stop if the link target does not match the case UUID. Do not use model narration as the UI assertion.
