@@ -2,7 +2,8 @@
 
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { resetAllRegisteredDrafts } from "@multica/core/drafts";
-import { screen } from "@testing-library/react";
+import { useState } from "react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Agent } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
@@ -64,5 +65,41 @@ describe("AgentDetailInspector drafts", () => {
     renderInspector();
     expect(screen.getByLabelText("Name")).toHaveValue("Renamed");
     expect(screen.getByLabelText("Description")).toHaveValue("New blurb");
+  });
+
+  it("keeps the draft when a save fails after the parent's optimistic cache update", async () => {
+    const user = userEvent.setup();
+    const calls: Record<string, unknown>[] = [];
+    function Parent() {
+      const [current, setCurrent] = useState(agent);
+      const onUpdate = async (_id: string, data: Record<string, unknown>) => {
+        calls.push(data);
+        setCurrent((a) => ({ ...a, ...data }) as Agent); // optimistic write
+        await new Promise((r) => setTimeout(r, 50)); // network round trip
+        setCurrent(agent); // rollback
+        throw new Error("offline");
+      };
+      return (
+        <AgentDetailInspector
+          agent={current}
+          runtime={null}
+          runtimes={[]}
+          members={[]}
+          currentUserId="user-1"
+          canEdit
+          onUpdate={onUpdate}
+        />
+      );
+    }
+    const first = renderWithI18n(<Parent />);
+    const name = screen.getByLabelText("Name");
+    await user.clear(name);
+    await user.type(name, "Failing rename");
+    await waitFor(() => expect(calls.length).toBeGreaterThan(0), { timeout: 3000 });
+    await act(async () => { await new Promise((r) => setTimeout(r, 150)); });
+    first.unmount();
+
+    renderWithI18n(<Parent />);
+    expect(screen.getByLabelText("Name")).toHaveValue("Failing rename");
   });
 });

@@ -278,4 +278,61 @@ describe("McpServerDialog", () => {
     view.rerender(<McpServerDialog open {...props} />);
     expect(screen.getByLabelText("Server name")).toHaveValue("");
   });
+
+  it("restores JSON-mode edits after reopen but never stores secret values", async () => {
+    const user = userEvent.setup();
+    const props = {
+      server: null,
+      existingNames: new Set<string>(),
+      onSave: vi.fn().mockResolvedValue(undefined),
+      onOpenChange: vi.fn(),
+      draftKey: "agent-1:json",
+    };
+    const view = render(<McpServerDialog open {...props} />, { wrapper: Wrapper });
+    await user.click(screen.getByRole("tab", { name: "JSON" }));
+    const field = screen.getByLabelText("MCP server JSON configuration");
+    fireEvent.change(field, {
+      target: {
+        value: JSON.stringify({
+          type: "sse",
+          url: "https://example.test/sse",
+          headers: { Authorization: "Bearer s3cret-token" },
+        }),
+      },
+    });
+
+    expect(JSON.stringify({ ...localStorage })).not.toContain("s3cret-token");
+    view.rerender(<McpServerDialog open={false} {...props} />);
+    view.rerender(<McpServerDialog open {...props} />);
+
+    const restored = JSON.parse(
+      (screen.getByLabelText("MCP server JSON configuration") as HTMLTextAreaElement).value,
+    );
+    expect(restored).toEqual({ type: "sse", url: "https://example.test/sse" });
+  });
+
+  it("keeps the saved secret values of an edited server when restoring a JSON draft", async () => {
+    const server = managedServer({
+      name: "remote",
+      config: { type: "sse", url: "https://a.test", headers: { Authorization: "saved" } },
+      transport: "sse",
+    });
+    const props = {
+      server,
+      existingNames: new Set(["remote"]),
+      onSave: vi.fn().mockResolvedValue(undefined),
+      onOpenChange: vi.fn(),
+      draftKey: "agent-1:remote",
+    };
+    const view = render(<McpServerDialog open {...props} />, { wrapper: Wrapper });
+    fireEvent.change(screen.getByLabelText("MCP server JSON configuration"), {
+      target: { value: JSON.stringify({ type: "sse", url: "https://b.test", headers: { Authorization: "typed" } }) },
+    });
+    view.rerender(<McpServerDialog open={false} {...props} />);
+    view.rerender(<McpServerDialog open {...props} />);
+
+    expect(
+      JSON.parse((screen.getByLabelText("MCP server JSON configuration") as HTMLTextAreaElement).value),
+    ).toEqual({ type: "sse", url: "https://b.test", headers: { Authorization: "saved" } });
+  });
 });

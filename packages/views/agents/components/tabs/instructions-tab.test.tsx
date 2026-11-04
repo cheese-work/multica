@@ -158,4 +158,19 @@ describe("InstructionsTab", () => {
     renderWithI18n(tab(agent));
     expect(screen.getByLabelText("System prompt")).toHaveValue("Review carefully.");
   });
+
+  it("keeps an edit typed while an earlier save is still in flight", async () => {
+    const agent = { ...baseAgent, id: "agent-inflight" };
+    let resolveSave!: () => void;
+    const onSave = vi.fn(() => new Promise<void>((resolve) => { resolveSave = resolve; }));
+    const first = renderWithI18n(tab(agent, onSave));
+    const user = await typeInstructions("First version");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.type(screen.getByLabelText("System prompt"), " plus newer");
+    await act(async () => resolveSave());
+    first.unmount();
+
+    renderWithI18n(tab(agent));
+    expect(screen.getByLabelText("System prompt")).toHaveValue("First version plus newer");
+  });
 });

@@ -141,4 +141,15 @@ describe("CustomArgsTab", () => {
     renderTab({ id: "agent-args", custom_args: [] });
     expect(screen.queryByText("--draft")).not.toBeInTheDocument();
   });
+
+  it("keeps the open editor and its text across unmount and remount", async () => {
+    const user = userEvent.setup();
+    const first = renderTab({ id: "agent-editor", custom_args: [] });
+    await user.click(screen.getByRole("button", { name: /add argument/i }));
+    await user.type(screen.getByRole("textbox", { name: /new argument/i }), "--half-typed");
+    first.unmount();
+
+    renderTab({ id: "agent-editor", custom_args: [] });
+    expect(screen.getByRole("textbox", { name: /new argument/i })).toHaveValue("--half-typed");
+  });
 });

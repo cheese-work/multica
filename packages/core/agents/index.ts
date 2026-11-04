@@ -3,6 +3,7 @@ export * from "./draft";
 export * from "./stored-draft";
 export * from "./manual-draft-store";
 export * from "./settings-draft-stores";
+export * from "./mcp-draft";
 export * from "./builder-protocol";
 export * from "./derive-presence";
 export * from "./failure-reason";

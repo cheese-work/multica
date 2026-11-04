@@ -7,7 +7,11 @@ import {
   useRef,
   useState,
 } from "react";
-import { useMcpDialogDraftStore } from "@multica/core/agents";
+import {
+  restoreMcpSecrets,
+  stripMcpSecrets,
+  useMcpDialogDraftStore,
+} from "@multica/core/agents";
 import { Globe2, Loader2, Plus, SquareTerminal, Trash2 } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
 import { IconButton } from "@multica/ui/components/common/icon-button";
@@ -221,7 +225,7 @@ function seedState(server: ManagedMcpServer | null, replacementMode: boolean) {
   return { name: server?.name ?? "", form, config };
 }
 
-/** The fields kept as a draft. Env/header values and raw JSON are left out: they can hold tokens. */
+/** The form fields kept as a draft. Env/header values are left out: they can hold tokens. */
 function draftFields(name: string, form: McpFormState) {
   return {
     name,
@@ -264,8 +268,8 @@ export function McpServerDialog({
    */
   hideNameWhenEditing?: boolean;
   /**
-   * Keeps an unsaved name / transport / command / args / URL across close and
-   * reopen, per key. Pass one that names the owner and the server. Omit to
+   * Keeps an unsaved name / transport / command / args / URL / JSON text (credential
+   * keys stripped) across close and reopen, per key. Pass one that names the owner and the server. Omit to
    * keep nothing.
    */
   draftKey?: string;
@@ -287,6 +291,8 @@ export function McpServerDialog({
   const formId = `${fieldId}-form`;
   const nameHidden = replacementMode || (hideNameWhenEditing && server !== null);
 
+  const jsonResult = useMemo(() => parseServerJson(jsonText), [jsonText]);
+
   // Form the seed effect just set; the persist effect below skips renders that
   // still hold the previous state, which would overwrite the draft being restored.
   const seededForm = useRef<McpFormState | null>(null);
@@ -298,6 +304,7 @@ export function McpServerDialog({
       draftKey === undefined
         ? undefined
         : useMcpDialogDraftStore.getState().getDraft(draftKey);
+    const savedJson = saved?.json ? parseServerJson(saved.json) : null;
     const seeded: McpFormState = {
       ...base.form,
       transport: saved?.transport ?? base.form.transport,
@@ -308,8 +315,15 @@ export function McpServerDialog({
     seededForm.current = seeded;
     setName(saved?.name ?? base.name);
     setForm(seeded);
-    setJsonText(JSON.stringify(base.config, null, 2));
-    setMode(server && !formSupportsServer(server) ? "json" : "form");
+    // Credential keys never reach storage; they come back from the saved config.
+    setJsonText(
+      JSON.stringify(
+        savedJson?.ok ? restoreMcpSecrets(base.config, savedJson.value) : base.config,
+        null,
+        2,
+      ),
+    );
+    setMode(savedJson?.ok || (server && !formSupportsServer(server)) ? "json" : "form");
     setSaveAttempted(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, replacementMode, server]);
@@ -324,20 +338,27 @@ export function McpServerDialog({
     const seed = seedState(server, replacementMode);
     const base = draftFields(seed.name, seed.form);
     const current = draftFields(name, form);
-    const patch = Object.fromEntries(
+    const patch: Record<string, unknown> = Object.fromEntries(
       Object.entries(current).map(([field, value]) => [
         field,
         JSON.stringify(value) === JSON.stringify(base[field as keyof typeof base]) ? null : value,
       ]),
     );
+    // JSON text is kept only once it parses, so credential keys can be stripped.
+    // While it does not, the last parsable copy stays.
+    if (mode !== "json") patch.json = null;
+    else if (jsonResult.ok) {
+      const stripped = JSON.stringify(stripMcpSecrets(jsonResult.value), null, 2);
+      const baseline = JSON.stringify(stripMcpSecrets(seed.config), null, 2);
+      patch.json = stripped === baseline ? null : stripped;
+    }
     useMcpDialogDraftStore.getState().setDraft(draftKey, patch);
-  }, [open, draftKey, name, form, server, replacementMode]);
+  }, [open, draftKey, name, form, mode, jsonResult, server, replacementMode]);
 
   // The form is unavailable — not merely unselected — for entries it cannot
   // represent, so switching to it cannot rewrite them either.
   const formAvailable = replacementMode || !server || formSupportsServer(server);
 
-  const jsonResult = useMemo(() => parseServerJson(jsonText), [jsonText]);
   // Existing entries can originate from a runtime or API with a broader name
   // grammar. Configuration edits must retain that identity verbatim; only
   // newly entered names go through the create/rename validation below.

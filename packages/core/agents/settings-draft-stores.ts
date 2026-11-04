@@ -41,12 +41,14 @@ export const useAgentProfileDraftStore = createKeyedDraftStore<AgentProfileDraft
 
 export interface AgentCustomArgsDraft {
   args: string[] | null;
+  /** The open add/edit field, by position: entry ids do not survive a remount. */
+  editor: { index: number | null; value: string } | null;
 }
-export const EMPTY_AGENT_CUSTOM_ARGS_DRAFT: AgentCustomArgsDraft = { args: null };
+export const EMPTY_AGENT_CUSTOM_ARGS_DRAFT: AgentCustomArgsDraft = { args: null, editor: null };
 export const useAgentCustomArgsDraftStore = createKeyedDraftStore<AgentCustomArgsDraft>({
   storageKey: "multica:agents:custom-args-draft",
   emptyData: EMPTY_AGENT_CUSTOM_ARGS_DRAFT,
-  hasMeaningful: (d) => d.args !== null,
+  hasMeaningful: (d) => d.args !== null || d.editor !== null,
 });
 
 /**
@@ -65,8 +67,9 @@ export const useAgentEnvDraftStore = createKeyedDraftStore<AgentEnvDraft>({
 });
 
 /**
- * MCP server dialog. Transport, command, args, URL and name only. Env and
- * header values and the JSON editor text can hold tokens, so they are dropped.
+ * MCP server dialog. Name, transport, command, args, URL and the JSON text
+ * with credential-named keys removed. Env and header values never
+ * reach storage.
  */
 export interface McpDialogDraft {
   name: string | null;
@@ -74,6 +77,8 @@ export interface McpDialogDraft {
   command: string | null;
   args: string[] | null;
   url: string | null;
+  /** JSON editor text, credential-named keys removed (`mcp-draft.ts`). Set means JSON mode. */
+  json: string | null;
 }
 export const EMPTY_MCP_DIALOG_DRAFT: McpDialogDraft = {
   name: null,
@@ -81,6 +86,7 @@ export const EMPTY_MCP_DIALOG_DRAFT: McpDialogDraft = {
   command: null,
   args: null,
   url: null,
+  json: null,
 };
 export const useMcpDialogDraftStore = createKeyedDraftStore<McpDialogDraft>({
   storageKey: "multica:agents:mcp-dialog-draft",

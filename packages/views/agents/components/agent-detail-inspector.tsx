@@ -143,20 +143,6 @@ export function AgentDetailInspector({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent.id]);
 
-  // Once the server holds a draft field's value (autosave landed), drop it so a
-  // later server-side change is not overwritten by a stale local copy.
-  useEffect(() => {
-    const saved = useAgentProfileDraftStore.getState().getDraft(agent.id);
-    if (!saved) return;
-    const settled: Partial<typeof saved> = {};
-    if (saved.name === agent.name) settled.name = null;
-    if (saved.description === (agent.description ?? "")) settled.description = null;
-    if (saved.starters && startersEqual(saved.starters, agent.conversation_starters ?? [])) {
-      settled.starters = null;
-    }
-    if (Object.keys(settled).length) setProfile(settled);
-  }, [agent.id, agent.name, agent.description, agent.conversation_starters, setProfile]);
-
   const profileDraft = useMemo(
     () => ({ name: name.trim(), description }),
     [description, name],
@@ -171,8 +157,16 @@ export function AgentDetailInspector({
   const saveProfile = useCallback(
     async (next: ProfileDraft) => {
       await update({ name: next.name, description: next.description });
+      // Confirmed by the server (the parent rolls back and throws on failure).
+      // Drop only what was sent: a newer edit typed meanwhile stays a draft.
+      const current = useAgentProfileDraftStore.getState().getDraft(agent.id);
+      if (!current) return;
+      const sent: Partial<typeof current> = {};
+      if (current.name?.trim() === next.name) sent.name = null;
+      if (current.description === next.description) sent.description = null;
+      if (Object.keys(sent).length) setProfile(sent);
     },
-    [update],
+    [agent.id, setProfile, update],
   );
   const profileAutoSave = useAutoSave({
     value: profileDraft,
@@ -204,8 +198,12 @@ export function AgentDetailInspector({
   const saveStarters = useCallback(
     async (next: AgentConversationStarter[]) => {
       await update({ conversation_starters: next });
+      const current = useAgentProfileDraftStore.getState().getDraft(agent.id);
+      if (current?.starters && startersEqual(current.starters, next)) {
+        setProfile({ starters: null });
+      }
     },
-    [update],
+    [agent.id, setProfile, update],
   );
   const startersAutoSave = useAutoSave({
     value: starters,

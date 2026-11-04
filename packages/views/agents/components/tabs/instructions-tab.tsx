@@ -87,10 +87,14 @@ export function InstructionsTab({
   }, [isDirty, onDirtyChange]);
 
   const handleSave = async () => {
+    const submitted = value;
     setSaving(true);
     try {
-      await onSave({ instructions: value });
-      clearDraft();
+      await onSave({ instructions: submitted });
+      // Drop the draft only if it still holds what was sent: text typed while
+      // the save was in flight is newer and stays a draft.
+      const current = draftRef.current.value;
+      if (current === null || current === submitted) clearDraft();
     } catch {
       // toast handled by parent
     } finally {
