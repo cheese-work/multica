@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { resetAllRegisteredDrafts } from "@multica/core/drafts";
 import { setCurrentWorkspace } from "@multica/core/platform";
@@ -13,10 +13,12 @@ import { renderWithI18n } from "../test/i18n";
 import { WorkflowHandoffForm } from "./handoff-form";
 
 vi.mock("@multica/core/api", () => ({ api: {}, clientErrorMessage: () => null }));
+const mutate = vi.hoisted(() => vi.fn());
 vi.mock("@multica/core/issue-workflows", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@multica/core/issue-workflows")>()),
-  useSetWorkflowHandoff: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useSetWorkflowHandoff: () => ({ mutateAsync: mutate, isPending: false }),
 }));
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
 vi.mock("@multica/core/issue-statuses/hooks", () => ({ useIssueStatuses: () => buildIssueStatusCatalog([]) }));
 vi.mock("../common/actor-avatar", () => ({ ActorAvatar: () => <span /> }));
@@ -62,6 +64,7 @@ function mount(wf: IssueWorkflow = workflow) {
 }
 
 beforeEach(async () => {
+  mutate.mockReset();
   localStorage.clear();
   resetAllRegisteredDrafts();
   setCurrentWorkspace("acme", "ws-1");
@@ -127,5 +130,29 @@ describe("WorkflowHandoffForm draft", () => {
     fireEvent.click(screen.getByRole("button", { name: "Keep my edits" }));
     expect(screen.queryByText(/changed by someone else/)).toBeNull();
     expect(save()).toBe(false);
+  });
+
+  it("keeps text typed while a save is pending, and restores it after a remount", async () => {
+    let resolveSave: (w: IssueWorkflow) => void = () => {};
+    mutate.mockReturnValue(new Promise<IssueWorkflow>((r) => (resolveSave = r)));
+    const view = mount();
+    fireEvent.click(screen.getByRole("radio", { name: /Hand to an agent/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Choose an agent" }));
+    fireEvent.click(await screen.findByText("Builder"));
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Text A" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Text B" } });
+
+    const savedA = withInstructions("Text A");
+    await act(async () => resolveSave(savedA));
+    view.rerender(tree(savedA));
+
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Text B");
+    expect(screen.queryByText(/changed by someone else/)).toBeNull();
+    view.unmount();
+
+    mount(savedA);
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Text B");
+    expect(screen.queryByText(/changed by someone else/)).toBeNull();
   });
 });

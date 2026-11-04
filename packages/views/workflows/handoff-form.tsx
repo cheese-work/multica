@@ -154,6 +154,10 @@ export function WorkflowHandoffForm({
   const base = useRef<IssueWorkflowStep>(held.base ?? saved);
   // A saved step that changed under unsaved edits (live, or while the form was
   // away) is a conflict: keep the edits and hold Save until the admin chooses.
+  // What this form last sent to the server, so its own save arriving is no conflict.
+  const submitted = useRef<IssueWorkflowStep | null>(null);
+  // Bumped when `base` moves without the draft changing, so the stored draft is rewritten.
+  const [baseMoves, setBaseMoves] = useState(0);
   const [changedElsewhere, setChangedElsewhere] = useState(
     () => held.step !== null && !sameStep(savedHandoff(base.current), savedHandoff(saved)),
   );
@@ -162,6 +166,10 @@ export function WorkflowHandoffForm({
       base.current = saved;
     } else if (sameStep(savedHandoff(base.current), savedHandoff(saved))) {
       // Same content under a new identity: nothing changed.
+    } else if (submitted.current && sameStep(savedHandoff(saved), submitted.current)) {
+      // This form's own save arrived. Edits made after sending it sit on it.
+      if (sameStep(savedHandoff(draft), savedHandoff(base.current))) setDraft(saved);
+      base.current = saved;
     } else if (sameStep(savedHandoff(draft), savedHandoff(base.current))) {
       base.current = saved;
       setDraft(saved);
@@ -192,11 +200,12 @@ export function WorkflowHandoffForm({
       holding.current = false;
       dropDraft();
     }
-  }, [dirty, draft, scope, changedElsewhere, holdDraft, dropDraft]);
+  }, [dirty, draft, scope, changedElsewhere, baseMoves, holdDraft, dropDraft]);
 
   const save = async () => {
     const out = savedHandoff(draft);
     const copyFor = askScope && scope === "project" ? project : undefined;
+    submitted.current = copyFor ? null : out;
     try {
       const result = await setHandoff.mutateAsync({
         workflowId: workflow.id,
@@ -213,10 +222,17 @@ export function WorkflowHandoffForm({
           ? t(($) => $.workflows.handoff.saved_copy, { workflow: result.name, project: copyFor.title })
           : t(($) => $.workflows.handoff.saved),
       );
-      // A copy leaves this workflow's step as it was, so reset to it explicitly.
-      setDraft(savedRef.current);
+      // Fields stay editable while the request is pending: only a draft still
+      // equal to what was sent resets. A copy leaves this workflow's step as it
+      // was, so it resets to that explicitly.
+      setDraft((d) => (sameStep(savedHandoff(d), out) ? (copyFor ? savedRef.current : out) : d));
+      if (!copyFor) {
+        base.current = out;
+        setBaseMoves((n) => n + 1);
+      }
       onSaved?.();
     } catch (err) {
+      submitted.current = null;
       toast.error(clientErrorMessage(err) ?? t(($) => $.workflows.handoff.error));
     }
   };
