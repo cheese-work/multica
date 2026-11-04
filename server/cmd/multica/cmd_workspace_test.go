@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -537,7 +538,7 @@ func TestResolveWorkspaceByIDOrSlug(t *testing.T) {
 func resetWorkspaceUpdateFlags(t *testing.T) {
 	t.Helper()
 	flags := workspaceUpdateCmd.Flags()
-	for _, name := range []string{"name", "description", "context", "context-file", "issue-prefix", "expected-before-digest", "compact-prompt-file"} {
+	for _, name := range []string{"name", "description", "context", "context-file", "issue-prefix", "expected-before-digest", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours"} {
 		_ = flags.Set(name, "")
 		if f := flags.Lookup(name); f != nil {
 			f.Changed = false
@@ -1236,5 +1237,44 @@ func TestWorkspaceUpdateDigestRejectsCompactPromptFile(t *testing.T) {
 	_, err := buildWorkspaceUpdateDigestBody(workspaceUpdateCmd)
 	if err == nil || !strings.Contains(err.Error(), "--compact-prompt-file") {
 		t.Fatalf("err = %v, want a conflict naming --compact-prompt-file", err)
+	}
+}
+
+// CHE-3296: the idle guard flags send only idle_started_guard, and only the
+// fields the caller set.
+func TestBuildWorkspaceUpdateBodyIdleGuard(t *testing.T) {
+	for _, testCase := range []struct {
+		flags map[string]string
+		want  map[string]any
+	}{
+		{map[string]string{"idle-guard-mode": "shadow"}, map[string]any{"mode": "shadow"}},
+		{map[string]string{"idle-guard-after-hours": "6"}, map[string]any{"after_hours": 6}},
+		{map[string]string{"idle-guard-mode": "act", "idle-guard-after-hours": "72"}, map[string]any{"mode": "act", "after_hours": 72}},
+	} {
+		resetWorkspaceUpdateFlags(t)
+		for name, value := range testCase.flags {
+			setStringFlag(t, name, value)
+		}
+		body, err := buildWorkspaceUpdateBody(workspaceUpdateCmd)
+		if err != nil {
+			t.Fatalf("%v: %v", testCase.flags, err)
+		}
+		if !reflect.DeepEqual(body, map[string]any{"idle_started_guard": testCase.want}) {
+			t.Errorf("%v: body = %#v, want only idle_started_guard = %#v", testCase.flags, body, testCase.want)
+		}
+	}
+	for _, mode := range []string{"on", "", "ACT"} {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "idle-guard-mode", mode)
+		if _, err := buildWorkspaceUpdateBody(workspaceUpdateCmd); err == nil {
+			t.Errorf("mode %q: expected an error", mode)
+		}
+	}
+	for _, hours := range []string{"0", "73"} {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "idle-guard-after-hours", hours)
+		if _, err := buildWorkspaceUpdateBody(workspaceUpdateCmd); err == nil {
+			t.Errorf("hours %q: expected an error", hours)
+		}
 	}
 }

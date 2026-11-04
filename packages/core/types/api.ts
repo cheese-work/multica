@@ -13,6 +13,8 @@ export interface CreateIssueRequest {
   assignee_id?: string;
   parent_issue_id?: string;
   project_id?: string;
+  /** The workflow this issue follows instead of its project's; omit to follow the project. */
+  workflow_id?: string;
   /** Ordered stage (>= 1) grouping this sub-issue under its parent. */
   stage?: number;
   start_date?: string;
@@ -372,6 +374,8 @@ export interface IssueTableFilters {
    *  `project_ids` (AND across the two); an issue with no project never
    *  matches. */
   project_statuses?: ProjectStatus[];
+  /** Workflow ids matched against an issue's own override (`workflow_id`). */
+  workflow_ids?: string[];
   label_ids?: string[];
   /** Same shape as `ListIssuesParams.properties`: bare strings are exact
    *  equality / "No value", operator objects narrow scalar matches. */

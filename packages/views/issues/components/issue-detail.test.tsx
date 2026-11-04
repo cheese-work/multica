@@ -1045,6 +1045,18 @@ describe("IssueDetail (shared)", () => {
     ).toBe(true);
   });
 
+  // The list is only a seed for rows another view already loaded. Opening an
+  // issue must not pay for a workspace-wide list request to read a cache.
+  it("does not request the workspace issue list", async () => {
+    mockApiObj.getIssue.mockResolvedValue(mockIssue);
+    renderIssueDetail();
+    await waitFor(() => {
+      expect(screen.getByText("Implement authentication")).toBeInTheDocument();
+    });
+
+    expect(mockApiObj.listIssues).not.toHaveBeenCalled();
+  });
+
   it("gives the skeleton the same horizontal gutters as the loaded column", async () => {
     // The skeleton is the loaded column's stand-in, so a gutter change has to
     // land on both or the column jumps sideways at the moment the issue

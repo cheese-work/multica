@@ -4,6 +4,17 @@ import { fileURLToPath } from "node:url";
 const ISSUE_KEY = /\b[a-z][a-z0-9]{0,9}-\d+\b/gi;
 const CLOSE_DIRECTIVE = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[:\s]+([a-z][a-z0-9]{0,9}-\d+)\b/gi;
 const REFERENCE_DIRECTIVE = /\b(?:refs?|part\s+of)[:\s]+([a-z][a-z0-9]{0,9}-\d+)\b/gi;
+// agent/<agent-name>/ is a runtime prefix; its name may look like an issue key (e.g. luna-2).
+// Only workspace CHE-<n> keys inside it still count, as the server reads the whole branch.
+const AGENT_BRANCH_PREFIX = /^agent\/([^/]+)\//;
+const WORKSPACE_KEY = /\bche-\d+\b/gi;
+
+function withoutAgentName(headRef) {
+  const prefix = AGENT_BRANCH_PREFIX.exec(headRef);
+  if (!prefix) return headRef;
+  const kept = prefix[1].match(WORKSPACE_KEY) ?? [];
+  return `${kept.join(" ")} ${headRef.slice(prefix[0].length)}`;
+}
 const FENCE_START = /^ {0,3}(?:(`{3,})[^`\n]*|(~{3,})[^\n]*)$/m;
 
 function withoutMarkdownCode(body) {
@@ -105,7 +116,7 @@ export function checkCloseTarget({ title = "", body = "", headRef = "", author =
   const hasExplicitCloseTarget = closeTargets.size > 0;
   for (const { value, where } of [
     { value: typeof title === "string" ? title : "", where: "title" },
-    { value: normalizedHeadRef, where: "branch" },
+    { value: withoutAgentName(normalizedHeadRef), where: "branch" },
   ]) {
     for (const key of issueKeys(value)) {
       if (!linkedKeys.has(key)) linkedEntries.push({ key, where });
@@ -181,7 +192,7 @@ function run(args) {
       : "none";
     for (const { key, where } of result.strays) {
       const message = where === "close target"
-        ? `${key} is a PR close target not named by title or branch; linked issue(s): ${[...new Set([...issueKeys(pullRequest.title), ...issueKeys(pullRequest.head.ref)])].join(", ")}`
+        ? `${key} is a PR close target not named by title or branch; linked issue(s): ${[...new Set([...issueKeys(pullRequest.title), ...issueKeys(withoutAgentName(pullRequest.head.ref))])].join(", ")}`
         : `${key} in PR ${where} is not declared as a close target; declared target(s): ${declared}`;
       console.log(
         `::error::${message}`,
@@ -193,7 +204,7 @@ function run(args) {
   const number = Number.isInteger(pullRequest.number) ? `#${pullRequest.number}` : "PR";
   const linkedKeys = [...new Set([
     ...issueKeys(pullRequest.title),
-    ...issueKeys(pullRequest.head.ref),
+    ...issueKeys(withoutAgentName(pullRequest.head.ref)),
   ])];
   const targets = result.closeTargets.length > 0
     ? result.closeTargets

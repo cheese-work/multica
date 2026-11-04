@@ -3,13 +3,13 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { setApiInstance } from "../api";
 import type { ApiClient } from "../api/client";
 import type { Issue } from "../types";
 import { createQueryClient } from "../query-client";
-import { issueKeys } from "./queries";
+import { issueDetailViewOptions, issueKeys } from "./queries";
 import { isIssueUuid, useCanonicalIssue } from "./canonical-id";
 
 const ISSUE_UUID = "cb240efb-154c-42a8-ae92-42b02676feca";
@@ -122,6 +122,72 @@ describe("useCanonicalIssue", () => {
     // Let any follow-up fetch settle before counting.
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(getIssue).toHaveBeenCalledTimes(1);
+  });
+
+  // The detail view mounts once the route resolved the identifier. The row it
+  // finds under the UUID came from the detail endpoint a moment ago, so the
+  // view's reconcile-on-mount must not read it again.
+  it("does not re-read a resolved issue when the detail view mounts on it", async () => {
+    const { result } = renderHook(() => useCanonicalIssue("ws-1", "TRS-134"), {
+      wrapper: createWrapper(qc),
+    });
+    await waitFor(() => expect(result.current.issue).toEqual(issue));
+
+    const view = renderHook(
+      () => useQuery(issueDetailViewOptions("ws-1", ISSUE_UUID, undefined, result.current.authoritative)),
+      { wrapper: createWrapper(qc) },
+    );
+    await waitFor(() => expect(view.result.current.data).toEqual(issue));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(getIssue).toHaveBeenCalledTimes(1);
+  });
+
+  // An entry patched since the lookup, or one that was already cached, may lack
+  // detail-only fields, so it is not authoritative and the view reconciles.
+  it("re-reads when the cached entry is not the lookup's response", async () => {
+    qc.setQueryData(issueKeys.detail("ws-1", ISSUE_UUID), { ...issue, status: "done" } as Issue);
+    const { result } = renderHook(() => useCanonicalIssue("ws-1", "TRS-134"), {
+      wrapper: createWrapper(qc),
+    });
+    await waitFor(() => expect(getIssue).toHaveBeenCalledTimes(1));
+    expect(result.current.authoritative).toBe(false);
+
+    renderHook(
+      () => useQuery(issueDetailViewOptions("ws-1", ISSUE_UUID, undefined, result.current.authoritative)),
+      { wrapper: createWrapper(qc) },
+    );
+    await waitFor(() => expect(getIssue).toHaveBeenCalledTimes(2));
+  });
+
+  // Revisit: an earlier visit left the same object under both keys. Nothing
+  // refreshed it on this open, so the view must still reconcile with the
+  // detail endpoint, or a missed realtime update stays hidden.
+  it("re-reads when both entries are an older visit's leftovers", async () => {
+    const older = { updatedAt: Date.now() - 60_000 };
+    qc.setQueryData(issueKeys.detail("ws-1", ISSUE_UUID), issue, older);
+    qc.setQueryData(issueKeys.detail("ws-1", "TRS-134"), issue, older);
+    const { result } = renderHook(() => useCanonicalIssue("ws-1", "TRS-134"), {
+      wrapper: createWrapper(qc),
+    });
+    await waitFor(() => expect(result.current.canonicalId).toBe(ISSUE_UUID));
+    expect(result.current.authoritative).toBe(false);
+
+    renderHook(
+      () => useQuery(issueDetailViewOptions("ws-1", ISSUE_UUID, undefined, result.current.authoritative)),
+      { wrapper: createWrapper(qc) },
+    );
+    await waitFor(() => expect(getIssue).toHaveBeenCalledTimes(1));
+  });
+
+  // A list row or realtime payload omits detail-only fields, so the view must
+  // still reconcile with the detail endpoint when it mounts on one.
+  it("re-reads when the detail view mounts on a list row", async () => {
+    const row = { ...issue, description: "from the list" } as Issue;
+    const view = renderHook(() => useQuery(issueDetailViewOptions("ws-1", ISSUE_UUID, row)), {
+      wrapper: createWrapper(qc),
+    });
+    expect(view.result.current.data).toEqual(row);
+    await waitFor(() => expect(getIssue).toHaveBeenCalledTimes(1));
   });
 
   // The realtime updaters patch `issueKeys.detail(wsId, issue.id)` with the
