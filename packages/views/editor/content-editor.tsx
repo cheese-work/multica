@@ -58,6 +58,7 @@ import type { MentionItem } from "./extensions/mention-suggestion";
 import type { IssueIdentifierResolver } from "./extensions/issue-identifier-autolink";
 import type { BuiltinCommandSuggestionOptions } from "./extensions/slash-command-suggestion";
 import { createEditorExtensions } from "./extensions";
+import { flagMentions } from "./utils/flag-mentions";
 import {
   uploadAndInsertFile,
   insertUploadPlaceholder,
@@ -359,6 +360,8 @@ interface ContentEditorRef {
    * targets, so it reads the current document rather than a cached copy.
    */
   flushPendingUpdate: () => string | null;
+  /** Mark the mention chips with these ids as refused by the server (red wavy underline). */
+  flagMentions: (ids: string[]) => void;
   /**
    * Force `markdown` into the document, bypassing the synchronized `value`
    * guards.
@@ -1088,6 +1091,9 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
           contentType: "markdown",
         });
         return true;
+      },
+      flagMentions: (ids) => {
+        if (editor && !editor.isDestroyed) flagMentions(editor.view.dom, ids);
       },
       flushPendingUpdate: () => {
         // No armed timer = nothing typed since the last emit. The editor is

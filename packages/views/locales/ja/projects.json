@@ -67,6 +67,7 @@
     "section_properties": "プロパティ",
     "section_progress": "進捗",
     "section_description": "説明",
+    "section_wakeups": "起動",
     "prop_start_date": "開始日",
     "prop_due_date": "期限",
     "no_start_date": "開始日なし",
