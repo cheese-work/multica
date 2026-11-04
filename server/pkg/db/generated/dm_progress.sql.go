@@ -415,23 +415,25 @@ func (q *Queries) ResolveChatLineageRoot(ctx context.Context, id pgtype.UUID) (p
 
 const resolveDMProgressReportingRoot = `-- name: ResolveDMProgressReportingRoot :one
 WITH RECURSIVE walk AS (
-    SELECT f.id, f.issue_id, f.parent_follow_id FROM dm_progress_follow f WHERE f.id = $1
+    SELECT f.id, f.parent_follow_id FROM dm_progress_follow f WHERE f.id = $1
     UNION ALL
-    SELECT f.id, f.issue_id, f.parent_follow_id
+    SELECT f.id, f.parent_follow_id
     FROM walk w JOIN dm_progress_follow f ON f.id = w.parent_follow_id
 ) CYCLE id SET is_cycle USING path
-SELECT walk.issue_id FROM walk WHERE walk.parent_follow_id IS NULL
+SELECT p.reporting_root_id FROM dm_progress_follow p
+WHERE p.id = $1 AND EXISTS (SELECT 1 FROM walk WHERE walk.parent_follow_id IS NULL)
 `
 
-// Issue of the top follow in a follow's parent chain. The walk is iterative with
-// no depth limit and the CYCLE clause stops it at a repeated follow, so a
-// corrupt chain terminates. A looping chain never reaches a parentless follow:
-// no row comes back for it (callers pass an existing follow).
+// Stored reporting root of a parent follow, provided its parent chain ends. The
+// chain walk is iterative with no depth limit; the CYCLE clause stops it at a
+// repeated follow, so a corrupt chain terminates. A looping chain never reaches
+// a parentless follow: no row comes back for it. The root is read from the
+// parent, not from the chain's current top, so a reparent never splits a rollup.
 func (q *Queries) ResolveDMProgressReportingRoot(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
 	row := q.db.QueryRow(ctx, resolveDMProgressReportingRoot, id)
-	var issue_id pgtype.UUID
-	err := row.Scan(&issue_id)
-	return issue_id, err
+	var reporting_root_id pgtype.UUID
+	err := row.Scan(&reporting_root_id)
+	return reporting_root_id, err
 }
 
 const setDMProgressFollowMuted = `-- name: SetDMProgressFollowMuted :one

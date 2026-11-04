@@ -119,3 +119,16 @@ func TestDMProgress_DescendantCountIsCompleteAcrossPages(t *testing.T) {
 		}
 	}
 }
+
+func TestDMProgress_ChildOfReparentedFollowKeepsTheStoredRoot(t *testing.T) {
+	w := newDMWorld(t)
+	root := w.agentIssue(t, w.task(t, w.dm(t, testUserID), testUserID), nil)
+	mid := childOf(t, root)
+	// mid is detached from its parent follow; its stored root must not change.
+	dbfx.Exec(t, `UPDATE dm_progress_follow SET parent_follow_id = NULL WHERE issue_id = $1`, mid)
+
+	leaf := childOf(t, mid)
+	if got := reportingRoot(t, leaf); got != root {
+		t.Fatalf("child of a detached follow reports to %s, want the stored root %s", got, root)
+	}
+}
