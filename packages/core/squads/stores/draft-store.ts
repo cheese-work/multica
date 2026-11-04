@@ -33,7 +33,14 @@ export function squadDraftKey(squadId: string, field: string, sub?: string): str
 export function useSquadFieldDraft(
   key: string,
   saved: string,
-): { text: string; hasDraft: boolean; setText: (next: string) => void; discard: () => void } {
+): {
+  text: string;
+  hasDraft: boolean;
+  setText: (next: string) => void;
+  discard: () => void;
+  /** Drop the draft after a save of `sent`, unless the user typed more since. */
+  discardSent: (sent: string) => void;
+} {
   const [draft, setDraft, discard] = usePersistedDraft(
     useSquadFieldDraftStore,
     key,
@@ -44,6 +51,9 @@ export function useSquadFieldDraft(
     hasDraft: draft.text !== null,
     setText: (next) => (next === saved ? discard() : setDraft({ text: next })),
     discard,
+    discardSent: (sent) => {
+      if (useSquadFieldDraftStore.getState().getDraft(key)?.text === sent) discard();
+    },
   };
 }
 

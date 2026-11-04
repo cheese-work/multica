@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, screen } from "@testing-library/react";
 import { renderWithI18n } from "../../test/i18n";
 import { resetAllRegisteredDrafts } from "@multica/core/drafts";
 import type { Squad } from "@multica/core/types";
@@ -13,44 +13,125 @@ import {
   SquadNameEditor,
 } from "./squad-detail-page";
 
-// ContentEditor reads `value` at mount only, like the real one.
-vi.mock("../../editor/content-editor", () => ({
-  ContentEditor: ({ value, onUpdate }: { value: string; onUpdate: (v: string) => void }) => (
-    <textarea aria-label="editor" defaultValue={value} onChange={(e) => onUpdate(e.target.value)} />
-  ),
-}));
+// Mirrors the real ContentEditor contract: `value` is read at mount, `onUpdate`
+// is debounced, and a pending update is dropped on unmount unless the host opts
+// in with `flushPendingOnUnmount` (editor/content-editor.tsx).
+vi.mock("../../editor/content-editor", async () => {
+  const { useEffect, useRef } = await import("react");
+  return {
+    ContentEditor: ({
+      value,
+      onUpdate,
+      debounceMs = 0,
+      flushPendingOnUnmount = false,
+    }: {
+      value: string;
+      onUpdate: (v: string) => void;
+      debounceMs?: number;
+      flushPendingOnUnmount?: boolean;
+    }) => {
+      const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+      const pending = useRef<string | null>(null);
+      const onUpdateRef = useRef(onUpdate);
+      onUpdateRef.current = onUpdate;
+      const flushRef = useRef(flushPendingOnUnmount);
+      flushRef.current = flushPendingOnUnmount;
+      useEffect(
+        () => () => {
+          clearTimeout(timer.current);
+          if (flushRef.current && pending.current !== null) onUpdateRef.current(pending.current);
+        },
+        [],
+      );
+      return (
+        <textarea
+          aria-label="editor"
+          defaultValue={value}
+          onChange={(e) => {
+            pending.current = e.target.value;
+            clearTimeout(timer.current);
+            timer.current = setTimeout(() => {
+              const v = pending.current;
+              pending.current = null;
+              if (v !== null) onUpdateRef.current(v);
+            }, debounceMs);
+          }}
+        />
+      );
+    },
+  };
+});
 vi.mock("../../common/actor-avatar", () => ({ ActorAvatar: () => null }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 const squad = { id: "squad-1", instructions: "saved" } as Squad;
 
 beforeEach(() => resetAllRegisteredDrafts());
+afterEach(() => vi.useRealTimers());
+
+const type = (label: string, value: string) =>
+  fireEvent.change(screen.getByLabelText(label), { target: { value } });
+const flushDebounce = () => act(() => vi.advanceTimersByTimeAsync(200));
 
 describe("squad detail drafts survive unmount and remount", () => {
-  it("instructions tab", () => {
+  it("instructions tab", async () => {
+    vi.useFakeTimers();
     const props = { squad, canManage: true, onSave: vi.fn() };
     const first = renderWithI18n(<SquadInstructionsTab {...props} />);
-    fireEvent.change(screen.getByLabelText("editor"), { target: { value: "unsent instructions" } });
+    type("editor", "unsent instructions");
+    await flushDebounce();
     first.unmount();
 
     renderWithI18n(<SquadInstructionsTab {...props} />);
     expect(screen.getByLabelText("editor")).toHaveValue("unsent instructions");
   });
 
+  it("instructions typed inside the debounce window survive an immediate unmount", () => {
+    vi.useFakeTimers();
+    const props = { squad, canManage: true, onSave: vi.fn() };
+    const first = renderWithI18n(<SquadInstructionsTab {...props} />);
+    type("editor", "typed just before a tab change");
+    first.unmount();
+
+    renderWithI18n(<SquadInstructionsTab {...props} />);
+    expect(screen.getByLabelText("editor")).toHaveValue("typed just before a tab change");
+  });
+
+  it("instructions edited while a save is pending are not erased when it succeeds", async () => {
+    vi.useFakeTimers();
+    let resolveSave!: () => void;
+    const onSave = vi.fn(() => new Promise<void>((r) => (resolveSave = r)));
+    const props = { squad, canManage: true, onSave };
+    const first = renderWithI18n(<SquadInstructionsTab {...props} />);
+    type("editor", "A");
+    await flushDebounce();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    type("editor", "AB");
+    await flushDebounce();
+    await act(async () => resolveSave());
+
+    expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
+    first.unmount();
+    renderWithI18n(<SquadInstructionsTab {...props} />);
+    expect(screen.getByLabelText("editor")).toHaveValue("AB");
+  });
+
   it("instructions tab keeps the draft when save fails and clears it on success", async () => {
+    vi.useFakeTimers();
     const onSave = vi.fn().mockRejectedValueOnce(new Error("boom")).mockResolvedValueOnce(undefined);
     const props = { squad, canManage: true, onSave };
     const first = renderWithI18n(<SquadInstructionsTab {...props} />);
-    fireEvent.change(screen.getByLabelText("editor"), { target: { value: "new" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await vi.waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    type("editor", "new");
+    await flushDebounce();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save" })));
+    expect(onSave).toHaveBeenCalledTimes(1);
     first.unmount();
     const second = renderWithI18n(<SquadInstructionsTab {...props} />);
     expect(screen.getByLabelText("editor")).toHaveValue("new");
 
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await vi.waitFor(() => expect(onSave).toHaveBeenCalledTimes(2));
-    await vi.waitFor(() => expect(screen.queryByText("Unsaved changes")).toBeNull());
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save" })));
+    expect(onSave).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("Unsaved changes")).toBeNull();
     second.unmount();
     renderWithI18n(<SquadInstructionsTab {...props} />);
     expect(screen.getByLabelText("editor")).toHaveValue("saved");
