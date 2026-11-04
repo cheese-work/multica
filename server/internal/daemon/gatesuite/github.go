@@ -226,7 +226,7 @@ func apiNeeds(r *http.Request) []need {
 	write := r.Method != http.MethodGet
 	rest := strings.Split(r.PathValue("rest"), "/")
 	if write && len(rest) == 3 && rest[0] == "pulls" && rest[2] == "merge" {
-		return []need{{[]string{"pull_requests"}, true}, {[]string{"contents"}, true}}
+		return []need{{[]string{"contents"}, true}}
 	}
 	anyOf, ok := map[string][]string{
 		"pulls": {"pull_requests"}, "issues": {"issues", "pull_requests"}, "actions": {"actions"},

@@ -243,7 +243,6 @@ func TestPermissionMustMatchTheOperation(t *testing.T) {
 	gitIn(t, work, "commit", "-m", "c")
 	issuesW := mint(t, g, []int64{repoID}, Perms{"issues": "write"})
 	prW := mint(t, g, []int64{repoID}, Perms{"pull_requests": "write"})
-	both := mint(t, g, []int64{repoID}, Perms{"pull_requests": "write", "contents": "write"})
 	contentsW := mint(t, g, []int64{repoID}, PushPerms)
 	cases := []struct {
 		name         string
@@ -256,7 +255,7 @@ func TestPermissionMustMatchTheOperation(t *testing.T) {
 		{"issues:write can comment", issuesW, "POST", "/repos/o/r/issues/1/comments", 200},
 		{"pull_requests:write alone cannot merge", prW, "PUT", "/repos/o/r/pulls/1/merge", 403},
 		{"pull_requests:write can edit a PR", prW, "PATCH", "/repos/o/r/pulls/1", 200},
-		{"pull_requests+contents write can merge", both, "PUT", "/repos/o/r/pulls/1/merge", 200},
+		{"contents:write alone can merge", contentsW, "PUT", "/repos/o/r/pulls/1/merge", 200},
 		{"contents:write cannot edit a PR", contentsW, "PATCH", "/repos/o/r/pulls/1", 403},
 		{"contents:write cannot write to an unknown endpoint", contentsW, "POST", "/repos/o/r/hooks", 403},
 	}
