@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 func TestRedisUpdateStore_EnvelopePersistsRunStartedAt(t *testing.T) {
@@ -361,5 +363,68 @@ func TestRedisUpdateStore_SetProgressIgnoredOnTerminal(t *testing.T) {
 	}
 	if got.Progress != nil {
 		t.Fatalf("terminal request stored late progress: %+v", got.Progress)
+	}
+}
+
+// interleaveHook runs fn once, just before the first write command that
+// targets key, so a test can land another node's write between SetProgress's
+// read and its write.
+type interleaveHook struct {
+	key  string
+	fn   func()
+	once sync.Once
+}
+
+func (h *interleaveHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (h *interleaveHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		switch cmd.Name() {
+		case "set", "eval", "evalsha":
+			for _, arg := range cmd.Args() {
+				if s, ok := arg.(string); ok && s == h.key {
+					h.once.Do(h.fn)
+				}
+			}
+		}
+		return next(ctx, cmd)
+	}
+}
+
+func (h *interleaveHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
+func TestRedisUpdateStore_SetProgressCannotUndoConcurrentTerminal(t *testing.T) {
+	rdb := newRedisTestClient(t)
+	ctx := context.Background()
+	other := NewRedisUpdateStore(redis.NewClient(rdb.Options()))
+	store := NewRedisUpdateStore(rdb)
+
+	req, err := store.Create(ctx, "runtime-progress-race", "v1.2.3", "user-1")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := store.PopPending(ctx, "runtime-progress-race"); err != nil {
+		t.Fatalf("pop: %v", err)
+	}
+
+	// Another node completes the request after SetProgress read "running"
+	// and before it writes.
+	rdb.AddHook(&interleaveHook{key: updateKey(req.ID), fn: func() {
+		if err := other.Complete(ctx, req.ID, "done"); err != nil {
+			t.Errorf("concurrent complete: %v", err)
+		}
+	}})
+
+	if err := store.SetProgress(ctx, req.ID, UpdateProgress{Phase: "download", BytesDone: 1, BytesTotal: 2}); err != nil {
+		t.Fatalf("set progress: %v", err)
+	}
+	got, err := store.Get(ctx, req.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Status != UpdateCompleted || got.Output != "done" || got.Progress != nil {
+		t.Fatalf("terminal result lost: status=%s output=%q progress=%+v", got.Status, got.Output, got.Progress)
 	}
 }
