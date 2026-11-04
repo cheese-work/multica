@@ -1,16 +1,15 @@
 package handler
 
 import (
-	"context"
+	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
-	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // squad.instructions.set and workspace.context.set share one test matrix: the
@@ -200,9 +199,14 @@ func TestInstructionSetRequestRefusals(test *testing.T) {
 func TestInstructionSetApproveAppliesAndAudits(test *testing.T) {
 	forEachInstructionSetTarget(test, func(test *testing.T, target instructionSetTarget) {
 		request, _ := requestInstructionSet(test, target, http.StatusCreated, nil)
-		_, keyID := request.action.enrollPasskey(test)
-		verify := func(context.Context, *db.Queries, ApprovalClaim) (pgtype.UUID, error) { return parseUUID(keyID), nil }
-		request.approveOwner(test, withVerifier(verify), http.StatusOK)
+		// A real enrolled passkey signs the issued challenge: no verifier stub.
+		device, keyID := request.action.enrollPasskey(test)
+		makeApproverOwner(test, request.action, "owner")
+		handler := passkeyHandler(test)
+		issued := request.action.issue(test, handler)
+		claim := request.claim(test)
+		claim["assertion"] = request.action.assertion(test, device, issued, passkeyStart+1)
+		request.action.approve(test, handler, claim, http.StatusOK)
 
 		if got := target.live(test, request.id); got != editedText {
 			test.Fatalf("stored text %q, want %q", got, editedText)
@@ -335,19 +339,51 @@ func TestInstructionSetConcurrentApprovalsApplyOnce(test *testing.T) {
 
 		makeApproverOwner(test, first.action, "owner")
 		handler := withVerifier(acceptingVerifier)
-		statuses := make([]int, 2)
+		statuses, bodies := make([]int, 2), make([]string, 2)
 		var group sync.WaitGroup
 		for i, request := range []instructionSetRequest{first, second} {
 			group.Add(1)
 			go func() {
 				defer group.Done()
-				statuses[i] = approveStatus(test, handler, configRequest{action: request.action})
+				raw, err := json.Marshal(request.claim(test))
+				if err != nil {
+					test.Error(err)
+					return
+				}
+				call := request.action.decide("approve", request.action.humanID, "interactive_jwt")
+				call.Body = readerCloser{bytes.NewReader(raw)}
+				recorder := httptest.NewRecorder()
+				handler.ApproveDecisionAction(recorder, call)
+				statuses[i], bodies[i] = recorder.Code, recorder.Body.String()
 			}()
 		}
 		group.Wait()
 		applied := dbfx.Count(test, `SELECT count(*) FROM activity_log WHERE issue_id IN ($1, $2) AND action = 'config_change_applied'`, first.action.issueID, second.action.issueID)
 		if applied != 1 {
 			test.Fatalf("applied %d times (statuses %v), want exactly 1", applied, statuses)
+		}
+		// The loser is refused with 409: precondition_drift when the winner had
+		// already committed, busy_retry (the core's contract, see
+		// TestConfigChangeBusyTargetAnswersBusyRetry) when the winner still held
+		// the target lock. Either way it changed nothing.
+		winners := 0
+		for i, status := range statuses {
+			switch status {
+			case http.StatusOK:
+				winners++
+			case http.StatusConflict:
+				if !strings.Contains(bodies[i], "precondition_drift") && !strings.Contains(bodies[i], "busy_retry") {
+					test.Fatalf("loser body %s, want precondition_drift or busy_retry", bodies[i])
+				}
+			default:
+				test.Fatalf("approval %d answered %d (%s)", i, status, bodies[i])
+			}
+		}
+		if winners != 1 {
+			test.Fatalf("statuses %v, want one 200 and one 409", statuses)
+		}
+		if got := target.live(test, first.id); got != editedText && got != other {
+			test.Fatalf("stored text %q is neither approved edit", got)
 		}
 	})
 }
