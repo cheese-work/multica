@@ -13,7 +13,7 @@ vi.mock("shiki", () => {
   };
 });
 
-import { CodeBlock } from "./CodeBlock";
+import { CodeBlock } from "@multica/ui/markdown/CodeBlock";
 
 it("loads shiki when a code block renders, not when the module is imported", async () => {
   expect(shikiLoads.count).toBe(0);
