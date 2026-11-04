@@ -158,11 +158,6 @@ func (step HumanStep) validate(prefix string) error {
 			return &AskError{prefix, "names " + name + " without a values entry"}
 		}
 	}
-	for _, field := range []struct{ name, value string }{{"action", step.Action}, {"command", step.Command}} {
-		if match := implicitWord.FindStringSubmatch(field.value); match != nil {
-			return &AskError{prefix + "." + field.name, "leaves values implicit (" + strings.ToLower(match[1]) + "); write each one"}
-		}
-	}
 	for _, field := range []struct{ name, value string }{{"action", step.Action}, {"verify_done", step.VerifyDone}} {
 		if hasBareUUID(field.value) {
 			return &AskError{prefix + "." + field.name, "has a bare UUID; use a name or a mention link"}
@@ -195,6 +190,13 @@ func lintHumanSteps(ask Ask) []string {
 			hints = append(hints, fmt.Sprintf("options[%d].what_happens has a bare UUID; say who or what it is in plain words", index))
 		}
 		asksToAct = asksToAct || wantsAction.MatchString(option.Label+" "+option.WhatHappens)
+	}
+	for index, step := range ask.HumanSteps {
+		for _, field := range []struct{ name, value string }{{"action", step.Action}, {"command", step.Command}} {
+			if match := implicitWord.FindStringSubmatch(field.value); match != nil {
+				hints = append(hints, fmt.Sprintf("human_steps[%d].%s leaves values implicit (%s); write each one", index, field.name, strings.ToLower(match[1])))
+			}
+		}
 	}
 	if len(ask.HumanSteps) == 0 {
 		if asksToAct {
