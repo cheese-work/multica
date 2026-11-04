@@ -2,7 +2,11 @@ import { useEffect } from "react";
 import type { ComponentProps } from "react";
 import { Redirect, Stack, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
-import { workspaceListOptions } from "@/data/queries/workspaces";
+import {
+  validatedWorkspaces,
+  workspaceListCheckedOptions,
+  workspaceListOptions,
+} from "@/data/queries/workspaces";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { RealtimeProvider } from "@/data/realtime/realtime-provider";
@@ -112,12 +116,8 @@ function RealtimeSubscriptions() {
 export default function WorkspaceLayout() {
   const { workspace: slug } = useLocalSearchParams<{ workspace: string }>();
   const { t } = useT("navigation");
-  const {
-    data: workspaces,
-    isLoading,
-    isSuccess,
-    isFetching,
-  } = useQuery(workspaceListOptions());
+  const { data: workspaces, isLoading } = useQuery(workspaceListOptions());
+  const checkedList = useQuery(workspaceListCheckedOptions());
   const setCurrentWorkspace = useWorkspaceStore((s) => s.setCurrentWorkspace);
   const userId = useAuthStore((s) => s.user?.id ?? null);
 
@@ -139,7 +139,7 @@ export default function WorkspaceLayout() {
   useDraftLifecycle(
     userId,
     matched?.id ?? null,
-    isSuccess && !isFetching ? workspaces : null,
+    validatedWorkspaces(checkedList),
   );
 
   // Wait for the workspaces list before deciding membership — otherwise a
