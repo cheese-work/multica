@@ -7,8 +7,6 @@ import { useAnswerDecisionRequest } from "@multica/core/issues/decision-answer";
 import {
   type DecisionAnswerDraft as AnswerDraft,
   EMPTY_DECISION_ANSWER_DRAFT as EMPTY_DRAFT,
-  appendLateDecisionNote,
-  captureDecisionDraftScope,
   decisionAnswerDraftKey,
   useDecisionAnswerDraftStore,
 } from "@multica/core/issues/stores/decision-answer-draft-store";
@@ -66,14 +64,16 @@ function DecisionAnswerForm({
   // What this editor last reported. A stored text that differs came from the other surface
   // showing the same request, and is adopted so a send from here cannot overwrite it.
   const emitted = useRef(text);
-  // After unmount the editor can still report a settled upload. It must append, not replace,
-  // and only within the workspace and session it was started in. The flag flips after the
-  // unmount flush, which belongs to the card and is applied as usual.
-  const scope = useRef(captureDecisionDraftScope());
-  const unmounted = useRef(false);
-  useEffect(() => () => queueMicrotask(() => { unmounted.current = true; }), []);
-  const onEditorUpdate = (next: string, base?: string) =>
-    unmounted.current ? appendLateDecisionNote(scope.current, card.id, base ?? "", next) : setText(next);
+  // The editor's own unmount flush (the last note edit) is applied. Anything it reports after
+  // that, such as an upload that settles later, is dropped so it cannot overwrite a newer note
+  // or revive a draft that was sent, discarded or cleared by logout. The flag flips on a timer
+  // because a parent's cleanup runs before its child's flush; mounting again cancels it.
+  const closed = useRef(false);
+  useEffect(() => {
+    closed.current = false;
+    return () => { setTimeout(() => { closed.current = true; }, 0); };
+  }, []);
+  const onEditorUpdate = (next: string) => { if (!closed.current) setText(next); };
   const setOption = (next: string) => onDraftChange({ option: next });
   const setText = (next: string) => {
     emitted.current = next;

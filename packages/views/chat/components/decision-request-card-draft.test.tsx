@@ -206,20 +206,9 @@ describe("decision card draft survives remount", () => {
     expect(note()).toHaveValue("last words");
   });
 
-  it("keeps an attachment whose upload settles after the card unmounted", async () => {
-    const user = userEvent.setup();
-    let resolveUpload: (v: unknown) => void = () => { throw new Error("not started"); };
-    api.uploadFile.mockReturnValue(new Promise((r) => { resolveUpload = r; }));
-    const first = renderWithI18n(chat(card("upload")));
-    await user.type(note(), "see");
-    await vi.waitFor(() => expect(useDecisionAnswerDraftStore.getState().hasDraft("decision:upload")).toBe(true), { timeout: 2000 });
-    act(() => editorHandle.current?.uploadFile(new File(["x"], "shot.png", { type: "image/png" })));
-    first.unmount();
-    resolveUpload({ id: "att", filename: "shot.png", url: "/api/attachments/att/download", download_url: "/api/attachments/att/download" });
-    await act(async () => { await uploads.settle?.(); });
-    await vi.waitFor(() => expect(useDecisionAnswerDraftStore.getState().getDraft("decision:upload")?.text).toContain("shot.png"));
-  });
-
+  // An upload still in flight when the card unmounts is dropped (it may restart). Its late
+  // callback must never write: not over a later edit, not after send or discard, not across a
+  // logout or workspace change.
   const startUpload = async (id: string) => {
     let resolveUpload: (v: unknown) => void = () => { throw new Error("not started"); };
     api.uploadFile.mockReturnValue(new Promise((r) => { resolveUpload = r; }));
@@ -229,7 +218,8 @@ describe("decision card draft survives remount", () => {
     await vi.waitFor(() => expect(useDecisionAnswerDraftStore.getState().hasDraft(`decision:${id}`)).toBe(true), { timeout: 2000 });
     act(() => editorHandle.current?.uploadFile(new File(["x"], "shot.png", { type: "image/png" })));
     first.unmount();
-    await act(async () => { await Promise.resolve(); });
+    // The card closes to the editor one timer tick after its unmount flush.
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
     return {
       user,
       settle: async () => {
@@ -240,14 +230,38 @@ describe("decision card draft survives remount", () => {
   };
   const stored = (id: string) => useDecisionAnswerDraftStore.getState().getDraft(`decision:${id}`)?.text;
 
-  it("a late upload keeps the note edited after the card was reopened", async () => {
+  it("a late upload leaves the stored note alone", async () => {
+    const { settle } = await startUpload("late-note");
+    await settle();
+    expect(stored("late-note")).toBe("see");
+  });
+
+  it("a late upload does not overwrite a note edited after the card was reopened", async () => {
     const { user, settle } = await startUpload("late-edit");
     renderWithI18n(chat(card("late-edit")));
     await user.type(note(), " and more");
     await vi.waitFor(() => expect(stored("late-edit")).toBe("see and more"), { timeout: 2000 });
     await settle();
-    expect(stored("late-edit")).toContain("see and more");
-    expect(stored("late-edit")).toContain("shot.png");
+    expect(stored("late-edit")).toBe("see and more");
+  });
+
+  it("a late upload does not bring the draft back after a successful send", async () => {
+    const { user, settle } = await startUpload("late-send");
+    renderWithI18n(chat(card("late-send")));
+    await user.click(screen.getByRole("radio", { name: /Option A/ }));
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await vi.waitFor(() => expect(useDecisionAnswerDraftStore.getState().hasDraft("decision:late-send")).toBe(false));
+    await settle();
+    expect(useDecisionAnswerDraftStore.getState().hasDraft("decision:late-send")).toBe(false);
+  });
+
+  it("a late upload does not bring the draft back after Discard", async () => {
+    const { user, settle } = await startUpload("late-discard");
+    const second = renderWithI18n(chat(card("late-discard")));
+    second.rerender(chat({ ...card("late-discard"), state: "answered" }));
+    await user.click(screen.getByRole("button", { name: "Discard draft" }));
+    await settle();
+    expect(useDecisionAnswerDraftStore.getState().hasDraft("decision:late-discard")).toBe(false);
   });
 
   it("a late upload writes nothing after logout", async () => {
