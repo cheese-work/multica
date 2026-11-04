@@ -47,6 +47,11 @@ import {
   useUpdateAutopilotTrigger,
 } from "@multica/core/autopilots/mutations";
 import { buildAutopilotWebhookUrl } from "@multica/core/autopilots";
+import {
+  useAutopilotDialogDraftStore,
+  type AutopilotDialogDraft,
+} from "@multica/core/autopilots/stores";
+import { usePersistedDraft } from "@multica/core/drafts";
 import { api } from "@multica/core/api";
 import type {
   AutopilotAssigneeType,
@@ -113,6 +118,8 @@ const OUTPUT_MODE_ICONS: Record<AutopilotExecutionMode, typeof FilePlus2> = {
   run_only: Play,
 };
 
+const EMPTY_DRAFT: AutopilotDialogDraft = {};
+
 // Webhook event-filter dirty detection
 
 // serializeEventFilters returns a stable JSON string so the edit-mode dirty
@@ -142,19 +149,58 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
     ? props.initial ?? {}
     : props.initial;
 
-  const [title, setTitle] = useState(initial.title ?? "");
-  const [description, setDescription] = useState(initial.description ?? "");
-  const [projectId, setProjectId] = useState<string | null>(initial.project_id ?? null);
+  // Unsent input is mirrored into the keyed draft store and read back on mount,
+  // so it survives the dialog unmounting. It overlays `initial` (a template, or
+  // the autopilot being edited) and is cleared once the autopilot is saved.
+  const [draft, patchDraft, clearDraft] = usePersistedDraft(
+    useAutopilotDialogDraftStore,
+    isCreate
+      ? `create${initial.title ? `:${initial.title}` : ""}`
+      : `edit:${props.autopilotId}`,
+    EMPTY_DRAFT,
+  );
+  // Seeded once from the draft at mount; later reads come from this state.
+  const [seed] = useState(draft);
+
+  const [title, setTitleState] = useState(seed.title ?? initial.title ?? "");
+  const setTitle = (v: string) => {
+    setTitleState(v);
+    patchDraft({ title: v });
+  };
+  const [description, setDescriptionState] = useState(
+    seed.description ?? initial.description ?? "",
+  );
+  const setDescription = (v: string) => {
+    setDescriptionState(v);
+    patchDraft({ description: v });
+  };
+  const [projectId, setProjectIdState] = useState<string | null>(
+    seed.projectId !== undefined ? seed.projectId : (initial.project_id ?? null),
+  );
+  const setProjectId = (v: string | null) => {
+    setProjectIdState(v);
+    patchDraft({ projectId: v });
+  };
   const [assigneeType, setAssigneeType] = useState<AutopilotAssigneeType>(
-    initial.assignee_type ?? "agent",
+    seed.assigneeType ?? initial.assignee_type ?? "agent",
   );
-  const [assigneeId, setAssigneeId] = useState<string>(initial.assignee_id ?? "");
-  const [executionMode, setExecutionMode] = useState<AutopilotExecutionMode>(
-    initial.execution_mode ?? "create_issue",
+  const [assigneeId, setAssigneeId] = useState<string>(
+    seed.assigneeId ?? initial.assignee_id ?? "",
   );
-  const [subscriberUserIds, setSubscriberUserIds] = useState<string[]>(
-    initial.subscriber_user_ids ?? [],
+  const [executionMode, setExecutionModeState] = useState<AutopilotExecutionMode>(
+    seed.executionMode ?? initial.execution_mode ?? "create_issue",
   );
+  const setExecutionMode = (v: AutopilotExecutionMode) => {
+    setExecutionModeState(v);
+    patchDraft({ executionMode: v });
+  };
+  const [subscriberUserIds, setSubscriberUserIdsState] = useState<string[]>(
+    seed.subscriberUserIds ?? initial.subscriber_user_ids ?? [],
+  );
+  const setSubscriberUserIds = (v: string[]) => {
+    setSubscriberUserIdsState(v);
+    patchDraft({ subscriberUserIds: v });
+  };
 
   // The schedule panel speaks for the autopilot's SCHEDULE trigger, not for
   // `triggers[0]` — on a webhook- or api-triggered autopilot that row is one no
@@ -174,7 +220,13 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
     }
     return getDefaultScheduleConfig(browserTimezone());
   })();
-  const [schedule, setSchedule] = useState<ScheduleConfig>(initialCfg);
+  const [schedule, setScheduleState] = useState<ScheduleConfig>(() =>
+    seed.schedule ? parseCron(seed.schedule.cron, seed.schedule.timezone) : initialCfg,
+  );
+  const setSchedule = (cfg: ScheduleConfig) => {
+    setScheduleState(cfg);
+    patchDraft({ schedule: { cron: toCron(cfg), timezone: cfg.timezone } });
+  };
 
   // Editing an autopilot that has no schedule: the panel has nothing to
   // reflect, so anything it showed would be a proposal dressed as the
@@ -183,7 +235,11 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
   // (MUL-5649). The schedule is asked for explicitly instead: until the user
   // adds one, the panel says the autopilot is manual, and once they do, Save
   // writes what it shows whether or not they touched the default.
-  const [scheduleAdded, setScheduleAdded] = useState(false);
+  const [scheduleAdded, setScheduleAddedState] = useState(seed.scheduleAdded ?? false);
+  const setScheduleAdded = (v: boolean) => {
+    setScheduleAddedState(v);
+    patchDraft({ scheduleAdded: v });
+  };
 
   // Trigger kind selector. Only meaningful in create mode — edit mode does
   // not support converting between kinds inline (PLAN.md calls that
@@ -197,11 +253,23 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
     if (first?.kind === "webhook") return "webhook";
     return "schedule";
   })();
-  const [triggerKind, setTriggerKind] = useState<"schedule" | "webhook">(initialKind);
+  const [triggerKind, setTriggerKindState] = useState<"schedule" | "webhook">(
+    seed.triggerKind ?? initialKind,
+  );
+  const setTriggerKind = (v: "schedule" | "webhook") => {
+    setTriggerKindState(v);
+    patchDraft({ triggerKind: v });
+  };
 
   const initialEventFilters: WebhookEventFilter[] =
     !isCreate && props.triggers[0]?.event_filters ? props.triggers[0].event_filters : [];
-  const [eventFilters, setEventFilters] = useState<WebhookEventFilter[]>(initialEventFilters);
+  const [eventFilters, setEventFiltersState] = useState<WebhookEventFilter[]>(
+    seed.eventFilters ?? initialEventFilters,
+  );
+  const setEventFilters = (v: WebhookEventFilter[]) => {
+    setEventFiltersState(v);
+    patchDraft({ eventFilters: v });
+  };
 
   const initialCronRef = useRef(toCron(initialCfg));
   const initialTimezoneRef = useRef(initialCfg.timezone);
@@ -253,6 +321,7 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
   const handleAssigneeChange = (next: AssigneeSelection) => {
     setAssigneeType(next.type);
     setAssigneeId(next.id);
+    patchDraft({ assigneeType: next.type, assigneeId: next.id });
   };
 
   const createAutopilot = useCreateAutopilot();
@@ -324,6 +393,7 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
             user_id,
           })),
         });
+        clearDraft();
         let triggerOk = true;
         let triggerErrMessage: string | null = null;
         let webhookTrigger: AutopilotTrigger | null = null;
@@ -377,6 +447,7 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
             user_id,
           })),
         });
+        clearDraft();
         let triggerOk = true;
         let triggerErrMessage: string | null = null;
         // Skip the schedule sync when the autopilot's first trigger is a
@@ -567,7 +638,7 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
               <TitleEditor
                 ref={titleEditorRef}
                 autoFocus={isCreate}
-                defaultValue={initial.title ?? ""}
+                defaultValue={seed.title ?? initial.title ?? ""}
                 placeholder={t(($) => $.dialog.title_placeholder)}
                 className="text-display-sm font-semibold tracking-tight"
                 onChange={setTitle}
@@ -596,7 +667,7 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
             <div className="flex-1 min-h-0 px-6 pb-6 flex flex-col lg:h-full">
               <div className="min-h-[200px] lg:min-h-0 lg:h-full overflow-y-auto rounded-lg border border-border bg-background transition-colors focus-within:border-input px-4 py-3">
                 <ContentEditor
-                  defaultValue={initial.description ?? ""}
+                  defaultValue={seed.description ?? initial.description ?? ""}
                   placeholder={t(($) => $.dialog.description_placeholder)}
                   onUpdate={setDescription}
                   debounceMs={300}

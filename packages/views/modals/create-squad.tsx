@@ -13,6 +13,12 @@ import {
   workspaceKeys,
 } from "@multica/core/workspace/queries";
 import { AGENT_DESCRIPTION_MAX_LENGTH } from "@multica/core/agents";
+import { usePersistedDraft } from "@multica/core/drafts";
+import {
+  CREATE_SQUAD_DRAFT_KEY,
+  EMPTY_CREATE_SQUAD_DRAFT,
+  useCreateSquadDraftStore,
+} from "@multica/core/squads/stores";
 import { isImeComposing } from "@multica/core/utils";
 import type { Agent, MemberWithUser } from "@multica/core/types";
 import {
@@ -70,23 +76,30 @@ export function CreateSquadModal({ onClose }: { onClose: () => void }) {
     [agents],
   );
 
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
-  const [leaderId, setLeaderId] = useState("");
-  const [selectedMembers, setSelectedMembers] = useState<SelectedMember[]>([]);
+  // Unsent input lives in the keyed draft store so it survives the modal
+  // unmounting (route change, reload); it is cleared only after a create.
+  const [draft, patchDraft, clearDraft] = usePersistedDraft(
+    useCreateSquadDraftStore,
+    CREATE_SQUAD_DRAFT_KEY,
+    EMPTY_CREATE_SQUAD_DRAFT,
+  );
+  const { name, description, avatarUrl, leaderId, members: selectedMembers } = draft;
+  const setName = (v: string) => patchDraft({ name: v });
+  const setDescription = (v: string) => patchDraft({ description: v });
+  const setAvatarUrl = (v: string | null) => patchDraft({ avatarUrl: v });
+  const setSelectedMembers = (v: SelectedMember[]) => patchDraft({ members: v });
   const [creating, setCreating] = useState(false);
 
   // Promoting an agent to leader must actually drop it from selectedMembers,
   // not merely hide it. Otherwise switching leader away later resurrects the
   // hidden pick and silently submits it as a member.
   const handleLeaderChange = (id: string) => {
-    setLeaderId(id);
-    if (id) {
-      setSelectedMembers((prev) =>
-        prev.filter((m) => !(m.type === "agent" && m.id === id)),
-      );
-    }
+    patchDraft({
+      leaderId: id,
+      ...(id && {
+        members: selectedMembers.filter((m) => !(m.type === "agent" && m.id === id)),
+      }),
+    });
   };
 
   const canSubmit = !!name.trim() && !!leaderId && !creating;
@@ -127,6 +140,7 @@ export function CreateSquadModal({ onClose }: { onClose: () => void }) {
         });
       }
 
+      clearDraft();
       onClose();
       toast.success(t(($) => $.create_squad.toast_created));
       router.push(wsPaths.squadDetail(squad.id));
