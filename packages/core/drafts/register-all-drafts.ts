@@ -20,6 +20,8 @@ import "../issues/stores/comment-draft-store";
 import "../projects/draft-store";
 import "../feedback/draft-store";
 import "../agents/manual-draft-store";
+import "../skills/draft-stores";
+import "../issue-workflows/draft-stores";
 import { registerDraftCleanup } from "./cleanup-registry";
 
 // Retired: drafts for a running turn now live in the thread's reply draft.

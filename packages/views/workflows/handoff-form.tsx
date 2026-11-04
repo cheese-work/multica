@@ -1,10 +1,15 @@
 "use client";
 
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, clientErrorMessage } from "@multica/core/api";
+import { usePersistedDraft } from "@multica/core/drafts";
 import { useWorkspaceId } from "@multica/core/hooks";
+import {
+  EMPTY_WORKFLOW_HANDOFF_DRAFT,
+  useWorkflowHandoffDraftStore,
+} from "@multica/core/issue-workflows/draft-stores";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useSetWorkflowHandoff, workflowNextStatus } from "@multica/core/issue-workflows";
 import { projectListOptions } from "@multica/core/projects/queries";
@@ -123,7 +128,13 @@ export function WorkflowHandoffForm({
 }) {
   const { t } = useT("issues");
   const sharing = useWorkflowSharing(workflow, project?.id);
-  const [scope, setScope] = useState<SaveScope>("all");
+  // Unsaved edits per workflow column survive the popover closing or a reload.
+  const [held, holdDraft, dropDraft] = usePersistedDraft(
+    useWorkflowHandoffDraftStore,
+    `${workflow.id}:${statusKey}`,
+    EMPTY_WORKFLOW_HANDOFF_DRAFT,
+  );
+  const [scope, setScope] = useState<SaveScope>(held.scope);
   const saved = useMemo<IssueWorkflowStep>(
     () =>
       workflow.steps.find((s) => s.status_key === statusKey) ?? {
@@ -133,10 +144,16 @@ export function WorkflowHandoffForm({
       },
     [statusKey, workflow.steps],
   );
-  const [draft, setDraft] = useState<IssueWorkflowStep>(saved);
+  const [draft, setDraft] = useState<IssueWorkflowStep>(held.step ?? saved);
   const [previewOpen, setPreviewOpen] = useState(false);
   const setHandoff = useSetWorkflowHandoff();
-  useEffect(() => setDraft(saved), [saved]);
+  // Follow the saved step when it changes, not on mount (that would drop the restored edits).
+  const lastSaved = useRef(saved);
+  useEffect(() => {
+    if (lastSaved.current === saved) return;
+    lastSaved.current = saved;
+    setDraft(saved);
+  }, [saved]);
 
   const handler = draft.handler;
   const needsTarget = (handler.type === "agent" || handler.type === "member") && !handler.id;
@@ -145,6 +162,16 @@ export function WorkflowHandoffForm({
   useEffect(() => {
     if (!dirty) setScope("all");
   }, [dirty]);
+  const holding = useRef(held.step !== null);
+  useEffect(() => {
+    if (dirty) {
+      holding.current = true;
+      holdDraft({ step: draft, scope });
+    } else if (holding.current) {
+      holding.current = false;
+      dropDraft();
+    }
+  }, [dirty, draft, scope, holdDraft, dropDraft]);
 
   const save = async () => {
     const out = savedHandoff(draft);
@@ -165,6 +192,8 @@ export function WorkflowHandoffForm({
           ? t(($) => $.workflows.handoff.saved_copy, { workflow: result.name, project: copyFor.title })
           : t(($) => $.workflows.handoff.saved),
       );
+      // A copy leaves this workflow's step as it was, so reset to it explicitly.
+      setDraft(saved);
       onSaved?.();
     } catch (err) {
       toast.error(clientErrorMessage(err) ?? t(($) => $.workflows.handoff.error));
