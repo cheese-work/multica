@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Migration 929 backfills reasons from the old source + parent_follow_id chain.
+// Migration 931 backfills reasons from the old source + parent_follow_id chain.
 // A grandchild must inherit from the root at the top of the chain, so the root's
 // unsubscribe removes it too.
 func TestDMProgressFollowReasonsBackfillUsesTheChainRoot(t *testing.T) {
@@ -60,7 +60,7 @@ func TestDMProgressFollowReasonsBackfillUsesTheChainRoot(t *testing.T) {
 	insert(orphan, "child", "active", &danglingParent)
 	insert(gone, "child", "unfollowed", rootFollow())
 
-	if _, err := conn.Exec(ctx, readMigrationFile(t, "929_dm_progress_follow_reasons.up.sql")); err != nil {
+	if _, err := conn.Exec(ctx, readMigrationFile(t, "931_dm_progress_follow_reasons.up.sql")); err != nil {
 		t.Fatal(err)
 	}
 
