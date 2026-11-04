@@ -69,12 +69,24 @@ func AddProgressFollow(ctx context.Context, q *db.Queries, lane DMLane, issue db
 	if locked.OwnerUserID != lane.Owner || locked.WorkspaceID != issue.WorkspaceID {
 		return db.DmProgressFollow{}, false, nil
 	}
+	root, parent, cyclic, err := reportingRoot(ctx, q, issue, parent)
+	if err != nil {
+		return db.DmProgressFollow{}, false, err
+	}
 	follow, err := q.InsertDMProgressFollow(ctx, db.InsertDMProgressFollowParams{
 		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, LineageID: lane.Lineage, OwnerUserID: lane.Owner,
-		Source: source, MutedAt: mutedAt, LastRenderedStatus: issue.Status, ParentFollowID: parent,
+		Source: source, MutedAt: mutedAt, LastRenderedStatus: issue.Status, ParentFollowID: parent, ReportingRootID: root,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return db.DmProgressFollow{}, false, nil
+	}
+	if err != nil {
+		return db.DmProgressFollow{}, false, err
+	}
+	if cyclic {
+		err = q.InsertDMProgressDataIncident(ctx, db.InsertDMProgressDataIncidentParams{
+			WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, FollowID: follow.ID, Kind: "parent_cycle",
+		})
 	}
 	return follow, err == nil, err
 }
@@ -122,4 +134,31 @@ func followNewIssue(ctx context.Context, q *db.Queries, p IssueCreateParams, iss
 		}
 	}
 	return nil
+}
+
+// CountProgressDescendants counts the tracked descendants of root in lane: each
+// issue once, however deep, with no cap.
+func CountProgressDescendants(ctx context.Context, q *db.Queries, lane, root pgtype.UUID) (int64, error) {
+	return q.CountDMProgressDescendants(ctx, db.CountDMProgressDescendantsParams{LineageID: lane, ReportingRootID: root})
+}
+
+// ListProgressDescendants returns one page of root's tracked descendants in
+// issue-id order, starting after the given id (invalid for the first page). An
+// empty page ends the walk.
+func ListProgressDescendants(ctx context.Context, q *db.Queries, lane, root, after pgtype.UUID, limit int32) ([]pgtype.UUID, error) {
+	return q.ListDMProgressDescendants(ctx, db.ListDMProgressDescendantsParams{LineageID: lane, ReportingRootID: root, AfterIssueID: after, Limit: limit})
+}
+
+// reportingRoot is the immutable root a new follow reports to: the issue at the
+// top of the parent chain, or the issue itself for an origin or manual follow.
+// A parent chain that loops makes the follow a standalone root with no parent.
+func reportingRoot(ctx context.Context, q *db.Queries, issue db.Issue, parent pgtype.UUID) (root, parentOut pgtype.UUID, cyclic bool, err error) {
+	if !parent.Valid {
+		return issue.ID, parent, false, nil
+	}
+	top, err := q.ResolveDMProgressReportingRoot(ctx, parent)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return issue.ID, pgtype.UUID{}, true, nil
+	}
+	return top, parent, false, err
 }

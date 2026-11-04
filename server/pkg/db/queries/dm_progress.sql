@@ -30,14 +30,46 @@ SELECT * FROM dm_progress_lane WHERE lineage_id = $1 FOR UPDATE;
 
 -- name: InsertDMProgressFollow :one
 -- No row comes back when an active follow already exists. An unfollowed one is
--- reactivated with the new source, mute and baseline status.
-INSERT INTO dm_progress_follow (workspace_id, issue_id, lineage_id, owner_user_id, source, muted_at, last_rendered_status, parent_follow_id)
-VALUES ($1, $2, $3, $4, $5, sqlc.narg('muted_at'), $6, sqlc.narg('parent_follow_id'))
+-- reactivated with the new source, mute and baseline status; its reporting root
+-- is immutable and stays.
+INSERT INTO dm_progress_follow (workspace_id, issue_id, lineage_id, owner_user_id, source, muted_at, last_rendered_status, parent_follow_id, reporting_root_id)
+VALUES ($1, $2, $3, $4, $5, sqlc.narg('muted_at'), $6, sqlc.narg('parent_follow_id'), $7)
 ON CONFLICT (issue_id, lineage_id) DO UPDATE
 SET state = 'active', source = EXCLUDED.source, muted_at = EXCLUDED.muted_at,
     last_rendered_status = EXCLUDED.last_rendered_status, parent_follow_id = EXCLUDED.parent_follow_id
 WHERE dm_progress_follow.state = 'unfollowed'
 RETURNING *;
+
+-- name: ResolveDMProgressReportingRoot :one
+-- Issue of the top follow in a follow's parent chain. The walk is iterative with
+-- no depth limit and the CYCLE clause stops it at a repeated follow, so a
+-- corrupt chain terminates. A looping chain never reaches a parentless follow:
+-- no row comes back for it (callers pass an existing follow).
+WITH RECURSIVE walk AS (
+    SELECT f.id, f.issue_id, f.parent_follow_id FROM dm_progress_follow f WHERE f.id = $1
+    UNION ALL
+    SELECT f.id, f.issue_id, f.parent_follow_id
+    FROM walk w JOIN dm_progress_follow f ON f.id = w.parent_follow_id
+) CYCLE id SET is_cycle USING path
+SELECT walk.issue_id FROM walk WHERE walk.parent_follow_id IS NULL;
+
+-- name: InsertDMProgressDataIncident :exec
+INSERT INTO dm_progress_data_incident (workspace_id, issue_id, follow_id, kind)
+VALUES ($1, $2, $3, $4);
+
+-- name: CountDMProgressDescendants :one
+-- Tracked descendants of a reporting root in one lane. (issue_id, lineage_id) is
+-- unique, so each issue counts once; the root itself is not its own descendant.
+SELECT count(*) FROM dm_progress_follow
+WHERE lineage_id = $1 AND reporting_root_id = $2 AND state = 'active' AND issue_id <> $2;
+
+-- name: ListDMProgressDescendants :many
+-- Keyset pages by issue_id; nothing is truncated, the caller walks every page.
+SELECT issue_id FROM dm_progress_follow
+WHERE lineage_id = $1 AND reporting_root_id = $2 AND state = 'active' AND issue_id <> $2
+  AND (sqlc.narg('after_issue_id')::uuid IS NULL OR issue_id > sqlc.narg('after_issue_id')::uuid)
+ORDER BY issue_id
+LIMIT $3;
 
 -- name: ListActiveDMProgressFollowsForIssue :many
 -- Lineage order, so a caller locking each lane in turn always locks in one order.
@@ -78,8 +110,10 @@ WITH gone AS (
 DELETE FROM dm_progress_lane AS l WHERE l.lineage_id = $1 AND l.workspace_id = $2;
 
 -- name: DeleteDMProgressByWorkspace :exec
--- No FKs (repo rule): workspace delete sweeps both tables here.
-WITH gone AS (
+-- No FKs (repo rule): workspace delete sweeps all three tables here.
+WITH gone_follows AS (
     DELETE FROM dm_progress_follow AS f WHERE f.workspace_id = $1
+), gone_incidents AS (
+    DELETE FROM dm_progress_data_incident AS i WHERE i.workspace_id = $1
 )
 DELETE FROM dm_progress_lane AS l WHERE l.workspace_id = $1;

@@ -11,14 +11,35 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countDMProgressDescendants = `-- name: CountDMProgressDescendants :one
+SELECT count(*) FROM dm_progress_follow
+WHERE lineage_id = $1 AND reporting_root_id = $2 AND state = 'active' AND issue_id <> $2
+`
+
+type CountDMProgressDescendantsParams struct {
+	LineageID       pgtype.UUID `json:"lineage_id"`
+	ReportingRootID pgtype.UUID `json:"reporting_root_id"`
+}
+
+// Tracked descendants of a reporting root in one lane. (issue_id, lineage_id) is
+// unique, so each issue counts once; the root itself is not its own descendant.
+func (q *Queries) CountDMProgressDescendants(ctx context.Context, arg CountDMProgressDescendantsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countDMProgressDescendants, arg.LineageID, arg.ReportingRootID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const deleteDMProgressByWorkspace = `-- name: DeleteDMProgressByWorkspace :exec
-WITH gone AS (
+WITH gone_follows AS (
     DELETE FROM dm_progress_follow AS f WHERE f.workspace_id = $1
+), gone_incidents AS (
+    DELETE FROM dm_progress_data_incident AS i WHERE i.workspace_id = $1
 )
 DELETE FROM dm_progress_lane AS l WHERE l.workspace_id = $1
 `
 
-// No FKs (repo rule): workspace delete sweeps both tables here.
+// No FKs (repo rule): workspace delete sweeps all three tables here.
 func (q *Queries) DeleteDMProgressByWorkspace(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteDMProgressByWorkspace, workspaceID)
 	return err
@@ -76,7 +97,7 @@ func (q *Queries) EnsureDMProgressLane(ctx context.Context, arg EnsureDMProgress
 }
 
 const getActiveDMProgressFollow = `-- name: GetActiveDMProgressFollow :one
-SELECT id, workspace_id, issue_id, lineage_id, owner_user_id, source, state, muted_at, last_rendered_status, last_immediate_at, parent_follow_id, created_at FROM dm_progress_follow WHERE issue_id = $1 AND lineage_id = $2 AND state = 'active'
+SELECT id, workspace_id, issue_id, lineage_id, owner_user_id, source, state, muted_at, last_rendered_status, last_immediate_at, parent_follow_id, created_at, reporting_root_id FROM dm_progress_follow WHERE issue_id = $1 AND lineage_id = $2 AND state = 'active'
 `
 
 type GetActiveDMProgressFollowParams struct {
@@ -100,6 +121,7 @@ func (q *Queries) GetActiveDMProgressFollow(ctx context.Context, arg GetActiveDM
 		&i.LastImmediateAt,
 		&i.ParentFollowID,
 		&i.CreatedAt,
+		&i.ReportingRootID,
 	)
 	return i, err
 }
@@ -149,14 +171,36 @@ func (q *Queries) GetNativeChatSession(ctx context.Context, id pgtype.UUID) (Cha
 	return i, err
 }
 
+const insertDMProgressDataIncident = `-- name: InsertDMProgressDataIncident :exec
+INSERT INTO dm_progress_data_incident (workspace_id, issue_id, follow_id, kind)
+VALUES ($1, $2, $3, $4)
+`
+
+type InsertDMProgressDataIncidentParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	FollowID    pgtype.UUID `json:"follow_id"`
+	Kind        string      `json:"kind"`
+}
+
+func (q *Queries) InsertDMProgressDataIncident(ctx context.Context, arg InsertDMProgressDataIncidentParams) error {
+	_, err := q.db.Exec(ctx, insertDMProgressDataIncident,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.FollowID,
+		arg.Kind,
+	)
+	return err
+}
+
 const insertDMProgressFollow = `-- name: InsertDMProgressFollow :one
-INSERT INTO dm_progress_follow (workspace_id, issue_id, lineage_id, owner_user_id, source, muted_at, last_rendered_status, parent_follow_id)
-VALUES ($1, $2, $3, $4, $5, $7, $6, $8)
+INSERT INTO dm_progress_follow (workspace_id, issue_id, lineage_id, owner_user_id, source, muted_at, last_rendered_status, parent_follow_id, reporting_root_id)
+VALUES ($1, $2, $3, $4, $5, $8, $6, $9, $7)
 ON CONFLICT (issue_id, lineage_id) DO UPDATE
 SET state = 'active', source = EXCLUDED.source, muted_at = EXCLUDED.muted_at,
     last_rendered_status = EXCLUDED.last_rendered_status, parent_follow_id = EXCLUDED.parent_follow_id
 WHERE dm_progress_follow.state = 'unfollowed'
-RETURNING id, workspace_id, issue_id, lineage_id, owner_user_id, source, state, muted_at, last_rendered_status, last_immediate_at, parent_follow_id, created_at
+RETURNING id, workspace_id, issue_id, lineage_id, owner_user_id, source, state, muted_at, last_rendered_status, last_immediate_at, parent_follow_id, created_at, reporting_root_id
 `
 
 type InsertDMProgressFollowParams struct {
@@ -166,12 +210,14 @@ type InsertDMProgressFollowParams struct {
 	OwnerUserID        pgtype.UUID        `json:"owner_user_id"`
 	Source             string             `json:"source"`
 	LastRenderedStatus string             `json:"last_rendered_status"`
+	ReportingRootID    pgtype.UUID        `json:"reporting_root_id"`
 	MutedAt            pgtype.Timestamptz `json:"muted_at"`
 	ParentFollowID     pgtype.UUID        `json:"parent_follow_id"`
 }
 
 // No row comes back when an active follow already exists. An unfollowed one is
-// reactivated with the new source, mute and baseline status.
+// reactivated with the new source, mute and baseline status; its reporting root
+// is immutable and stays.
 func (q *Queries) InsertDMProgressFollow(ctx context.Context, arg InsertDMProgressFollowParams) (DmProgressFollow, error) {
 	row := q.db.QueryRow(ctx, insertDMProgressFollow,
 		arg.WorkspaceID,
@@ -180,6 +226,7 @@ func (q *Queries) InsertDMProgressFollow(ctx context.Context, arg InsertDMProgre
 		arg.OwnerUserID,
 		arg.Source,
 		arg.LastRenderedStatus,
+		arg.ReportingRootID,
 		arg.MutedAt,
 		arg.ParentFollowID,
 	)
@@ -197,12 +244,13 @@ func (q *Queries) InsertDMProgressFollow(ctx context.Context, arg InsertDMProgre
 		&i.LastImmediateAt,
 		&i.ParentFollowID,
 		&i.CreatedAt,
+		&i.ReportingRootID,
 	)
 	return i, err
 }
 
 const listActiveDMProgressFollowsForIssue = `-- name: ListActiveDMProgressFollowsForIssue :many
-SELECT id, workspace_id, issue_id, lineage_id, owner_user_id, source, state, muted_at, last_rendered_status, last_immediate_at, parent_follow_id, created_at FROM dm_progress_follow
+SELECT id, workspace_id, issue_id, lineage_id, owner_user_id, source, state, muted_at, last_rendered_status, last_immediate_at, parent_follow_id, created_at, reporting_root_id FROM dm_progress_follow
 WHERE issue_id = $1 AND state = 'active'
 ORDER BY lineage_id
 `
@@ -230,6 +278,7 @@ func (q *Queries) ListActiveDMProgressFollowsForIssue(ctx context.Context, issue
 			&i.LastImmediateAt,
 			&i.ParentFollowID,
 			&i.CreatedAt,
+			&i.ReportingRootID,
 		); err != nil {
 			return nil, err
 		}
@@ -241,8 +290,49 @@ func (q *Queries) ListActiveDMProgressFollowsForIssue(ctx context.Context, issue
 	return items, nil
 }
 
+const listDMProgressDescendants = `-- name: ListDMProgressDescendants :many
+SELECT issue_id FROM dm_progress_follow
+WHERE lineage_id = $1 AND reporting_root_id = $2 AND state = 'active' AND issue_id <> $2
+  AND ($4::uuid IS NULL OR issue_id > $4::uuid)
+ORDER BY issue_id
+LIMIT $3
+`
+
+type ListDMProgressDescendantsParams struct {
+	LineageID       pgtype.UUID `json:"lineage_id"`
+	ReportingRootID pgtype.UUID `json:"reporting_root_id"`
+	Limit           int32       `json:"limit"`
+	AfterIssueID    pgtype.UUID `json:"after_issue_id"`
+}
+
+// Keyset pages by issue_id; nothing is truncated, the caller walks every page.
+func (q *Queries) ListDMProgressDescendants(ctx context.Context, arg ListDMProgressDescendantsParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listDMProgressDescendants,
+		arg.LineageID,
+		arg.ReportingRootID,
+		arg.Limit,
+		arg.AfterIssueID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var issue_id pgtype.UUID
+		if err := rows.Scan(&issue_id); err != nil {
+			return nil, err
+		}
+		items = append(items, issue_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDMProgressFollowsByLineage = `-- name: ListDMProgressFollowsByLineage :many
-SELECT id, workspace_id, issue_id, lineage_id, owner_user_id, source, state, muted_at, last_rendered_status, last_immediate_at, parent_follow_id, created_at FROM dm_progress_follow
+SELECT id, workspace_id, issue_id, lineage_id, owner_user_id, source, state, muted_at, last_rendered_status, last_immediate_at, parent_follow_id, created_at, reporting_root_id FROM dm_progress_follow
 WHERE lineage_id = $1 AND state = 'active'
 ORDER BY created_at, id
 `
@@ -269,6 +359,7 @@ func (q *Queries) ListDMProgressFollowsByLineage(ctx context.Context, lineageID 
 			&i.LastImmediateAt,
 			&i.ParentFollowID,
 			&i.CreatedAt,
+			&i.ReportingRootID,
 		); err != nil {
 			return nil, err
 		}
@@ -322,11 +413,32 @@ func (q *Queries) ResolveChatLineageRoot(ctx context.Context, id pgtype.UUID) (p
 	return id_2, err
 }
 
+const resolveDMProgressReportingRoot = `-- name: ResolveDMProgressReportingRoot :one
+WITH RECURSIVE walk AS (
+    SELECT f.id, f.issue_id, f.parent_follow_id FROM dm_progress_follow f WHERE f.id = $1
+    UNION ALL
+    SELECT f.id, f.issue_id, f.parent_follow_id
+    FROM walk w JOIN dm_progress_follow f ON f.id = w.parent_follow_id
+) CYCLE id SET is_cycle USING path
+SELECT walk.issue_id FROM walk WHERE walk.parent_follow_id IS NULL
+`
+
+// Issue of the top follow in a follow's parent chain. The walk is iterative with
+// no depth limit and the CYCLE clause stops it at a repeated follow, so a
+// corrupt chain terminates. A looping chain never reaches a parentless follow:
+// no row comes back for it (callers pass an existing follow).
+func (q *Queries) ResolveDMProgressReportingRoot(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, resolveDMProgressReportingRoot, id)
+	var issue_id pgtype.UUID
+	err := row.Scan(&issue_id)
+	return issue_id, err
+}
+
 const setDMProgressFollowMuted = `-- name: SetDMProgressFollowMuted :one
 UPDATE dm_progress_follow
 SET muted_at = CASE WHEN $3::boolean THEN COALESCE(muted_at, now()) ELSE NULL END
 WHERE issue_id = $1 AND lineage_id = $2 AND state = 'active'
-RETURNING id, workspace_id, issue_id, lineage_id, owner_user_id, source, state, muted_at, last_rendered_status, last_immediate_at, parent_follow_id, created_at
+RETURNING id, workspace_id, issue_id, lineage_id, owner_user_id, source, state, muted_at, last_rendered_status, last_immediate_at, parent_follow_id, created_at, reporting_root_id
 `
 
 type SetDMProgressFollowMutedParams struct {
@@ -351,6 +463,7 @@ func (q *Queries) SetDMProgressFollowMuted(ctx context.Context, arg SetDMProgres
 		&i.LastImmediateAt,
 		&i.ParentFollowID,
 		&i.CreatedAt,
+		&i.ReportingRootID,
 	)
 	return i, err
 }
@@ -359,7 +472,7 @@ const unfollowDMProgressFollow = `-- name: UnfollowDMProgressFollow :one
 UPDATE dm_progress_follow
 SET state = 'unfollowed'
 WHERE issue_id = $1 AND lineage_id = $2 AND state = 'active'
-RETURNING id, workspace_id, issue_id, lineage_id, owner_user_id, source, state, muted_at, last_rendered_status, last_immediate_at, parent_follow_id, created_at
+RETURNING id, workspace_id, issue_id, lineage_id, owner_user_id, source, state, muted_at, last_rendered_status, last_immediate_at, parent_follow_id, created_at, reporting_root_id
 `
 
 type UnfollowDMProgressFollowParams struct {
@@ -383,6 +496,7 @@ func (q *Queries) UnfollowDMProgressFollow(ctx context.Context, arg UnfollowDMPr
 		&i.LastImmediateAt,
 		&i.ParentFollowID,
 		&i.CreatedAt,
+		&i.ReportingRootID,
 	)
 	return i, err
 }

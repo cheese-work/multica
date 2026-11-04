@@ -1098,6 +1098,15 @@ type DingtalkGroupRoute struct {
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 }
 
+type DmProgressDataIncident struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	FollowID    pgtype.UUID        `json:"follow_id"`
+	Kind        string             `json:"kind"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type DmProgressFollow struct {
 	ID                 pgtype.UUID        `json:"id"`
 	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
@@ -1111,6 +1120,7 @@ type DmProgressFollow struct {
 	LastImmediateAt    pgtype.Timestamptz `json:"last_immediate_at"`
 	ParentFollowID     pgtype.UUID        `json:"parent_follow_id"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	ReportingRootID    pgtype.UUID        `json:"reporting_root_id"`
 }
 
 type DmProgressLane struct {

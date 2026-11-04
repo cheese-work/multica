@@ -1,0 +1,121 @@
+package handler
+
+import (
+	"fmt"
+	"strings"
+	"sync/atomic"
+	"testing"
+
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/service"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+)
+
+func reportingRoot(t *testing.T, issueID string) string {
+	t.Helper()
+	var root string
+	dbfx.QueryRow(t, `SELECT reporting_root_id::text FROM dm_progress_follow WHERE issue_id = $1`, issueID).Scan(&root)
+	return root
+}
+
+var childSeq atomic.Int64
+
+func childOf(t *testing.T, parent string) string {
+	t.Helper()
+	return createDMIssue(t, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{"title": fmt.Sprintf("child %d", childSeq.Add(1)), "parent_issue_id": parent}))
+}
+
+func TestDMProgress_ReportingRootIsTheTopRootAtAnyDepth(t *testing.T) {
+	w := newDMWorld(t)
+	dm := w.dm(t, testUserID)
+	root := w.agentIssue(t, w.task(t, dm, testUserID), nil)
+	if got := reportingRoot(t, root); got != root {
+		t.Fatalf("origin root reports to %s, want itself %s", got, root)
+	}
+	leaf := root
+	for level := 1; level <= 4; level++ {
+		leaf = childOf(t, leaf)
+	}
+	if got := reportingRoot(t, leaf); got != root {
+		t.Fatalf("level-4 descendant reports to %s, want top root %s", got, root)
+	}
+}
+
+func TestDMProgress_ParentCycleBecomesStandaloneRootAndRaisesIncident(t *testing.T) {
+	w := newDMWorld(t)
+	dm := w.dm(t, testUserID)
+	a := w.agentIssue(t, w.task(t, dm, testUserID), nil)
+	b := childOf(t, a)
+	c := childOf(t, b)
+	// Corrupt the chain: a's follow now points at b's follow (a -> b -> a).
+	dbfx.Exec(t, `UPDATE dm_progress_follow SET parent_follow_id = (SELECT id FROM dm_progress_follow WHERE issue_id = $2) WHERE issue_id = $1`, a, b)
+
+	d := childOf(t, c) // must terminate
+	if got := reportingRoot(t, d); got != d {
+		t.Fatalf("cycle node reports to %s, want standalone root %s", got, d)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM dm_progress_data_incident WHERE issue_id = $1 AND kind = 'parent_cycle'`, d); n != 1 {
+		t.Fatalf("%d parent_cycle incidents for the cycle node, want 1", n)
+	}
+}
+
+func TestDMProgress_ReportingRootIsImmutable(t *testing.T) {
+	w := newDMWorld(t)
+	root := w.agentIssue(t, w.task(t, w.dm(t, testUserID), testUserID), nil)
+	if _, err := testPool.Exec(t.Context(), `UPDATE dm_progress_follow SET reporting_root_id = gen_random_uuid() WHERE issue_id = $1`, root); err == nil || !strings.Contains(err.Error(), "reporting_root_id is immutable") {
+		t.Fatalf("reporting_root_id update err = %v, want the immutable-column rejection", err)
+	}
+}
+
+func TestDMProgress_DescendantCountIsCompleteAcrossPages(t *testing.T) {
+	w := newDMWorld(t)
+	dm := w.dm(t, testUserID)
+	root := w.agentIssue(t, w.task(t, dm, testUserID), nil)
+	want := map[string]bool{}
+	parent := root
+	for i := 0; i < 150; i++ {
+		id := childOf(t, parent)
+		want[id] = true
+		if i%3 == 0 { // mix wide and deep
+			parent = id
+		}
+	}
+	var lane, rootID, after pgtype.UUID
+	_ = lane.Scan(dm)
+	_ = rootID.Scan(root)
+	q := db.New(testPool)
+
+	n, err := service.CountProgressDescendants(t.Context(), q, lane, rootID)
+	if err != nil || n != 150 {
+		t.Fatalf("count = %d, %v; want 150", n, err)
+	}
+	seen := map[string]bool{}
+	for pages := 0; ; pages++ {
+		page, err := service.ListProgressDescendants(t.Context(), q, lane, rootID, after, 40)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		if pages > 10 {
+			t.Fatal("pagination does not terminate")
+		}
+		for _, id := range page {
+			s := id.String()
+			if seen[s] {
+				t.Fatalf("descendant %s listed twice", s)
+			}
+			seen[s] = true
+		}
+		after = page[len(page)-1]
+	}
+	if len(seen) != 150 {
+		t.Fatalf("paged %d descendants, want 150", len(seen))
+	}
+	for id := range want {
+		if !seen[id] {
+			t.Fatalf("descendant %s missing from pages", id)
+		}
+	}
+}
