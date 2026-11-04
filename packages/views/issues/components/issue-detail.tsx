@@ -83,6 +83,7 @@ import { PropertyIcon } from "../../common/property-icon";
 import type { Attachment, Issue, IssueProperty, IssueStatus, IssueStatusCategory, IssuePriority, TimelineEntry, UpdateIssueRequest } from "@multica/core/types";
 import { contentReferencesAttachment } from "@multica/core/types";
 import { isBuiltInIssueStatus } from "@multica/core/issue-statuses";
+import { isNotFoundError } from "@multica/core/issues/canonical-id";
 import { commentLandingTarget, isDeletedComment } from "@multica/core/issues/comment-deletion";
 import { formatDateOnly, isPastDateOnly } from "@multica/core/issues/date";
 import { useUpdateIssue } from "@multica/core/issues/mutations";
@@ -205,6 +206,7 @@ import { useInPageFind } from "../hooks/use-in-page-find";
 import { useIssueDisclosureReveal } from "../hooks/use-issue-disclosure-reveal";
 import { useStickyComposer } from "../hooks/use-sticky-composer";
 import { FindBar } from "./find-bar";
+import { issueHighlightMementoKey } from "./issue-highlight-key";
 import {
   AnimatedRightSidebar,
   getAnimatedRightSidebarInitialOpen,
@@ -213,16 +215,7 @@ import {
   useRightSidebarShortcut,
 } from "../../layout/animated-right-sidebar";
 
-/**
- * Memento entry recording that the comment-highlight deep link for this
- * issue already landed on the current route (value: the consumed comment
- * id). Lets a remount that merely restores the view (tab switch back) skip
- * the jump-and-highlight, while a fresh selection — which clears the entry
- * (see InboxPage.handleSelect) — runs it again.
- */
-export function issueHighlightMementoKey(issueId: string): string {
-  return `highlight:${issueId}`;
-}
+export { issueHighlightMementoKey };
 
 // Shared by the subscribe button and the unsubscribe menu trigger so the two
 // stay one control visually — they occupy the same slot and only differ in
@@ -975,6 +968,7 @@ function SubIssueRow({
           status={child.status}
           onUpdate={handleUpdate}
           projectId={child.project_id}
+          workflowId={child.workflow_id}
           issue={child}
           align="start"
           trigger={
@@ -1238,8 +1232,11 @@ export function IssueNotFound({
   showBackLink = true,
   leading,
   trailing,
+  onRetry,
 }: {
   showBackLink?: boolean;
+  /** Set when the load failed for a reason other than a 404: says so and offers a retry. */
+  onRetry?: () => void;
   /**
    * Host-supplied way back, mirrored from `IssueDetailProps.leadingAction`. A
    * host that hands its whole screen to this component (the inbox, on a phone)
@@ -1263,7 +1260,12 @@ export function IssueNotFound({
         </div>
       )}
       <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 text-body text-muted-foreground">
-        <p>{t(($) => $.detail.not_found)}</p>
+        <p>{t(($) => (onRetry ? $.detail.load_failed : $.detail.not_found))}</p>
+        {onRetry && (
+          <Button variant="outline" size="sm" onClick={onRetry}>
+            {t(($) => $.detail.retry)}
+          </Button>
+        )}
         {showBackLink && (
           <Button variant="outline" size="sm" onClick={() => backOrReplace(paths.issues())}>
             <ChevronLeft className="mr-1 h-3.5 w-3.5" />
@@ -1617,7 +1619,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const lastHighlightRequestTokenRef = useRef(highlightRequestToken);
 
   // Issue data from TQ — uses detail query, seeded from list cache if available.
-  const { data: issue = null, isLoading: issueLoading, refetch: refetchIssue } = useQuery(
+  const { data: issue = null, error: issueError, isLoading: issueLoading, refetch: refetchIssue } = useQuery(
     issueDetailViewOptions(wsId, id, allIssues.find((i) => i.id === id), authoritative),
   );
   const descriptionSourceId = `description:${id}`;
@@ -3484,7 +3486,14 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   }
 
   if (!issue) {
-    return <IssueNotFound showBackLink={!onDelete} leading={leadingAction} trailing={trailingActions} />;
+    return (
+      <IssueNotFound
+        showBackLink={!onDelete}
+        leading={leadingAction}
+        trailing={trailingActions}
+        onRetry={issueError && !isNotFoundError(issueError) ? () => void refetchIssue() : undefined}
+      />
+    );
   }
 
   const persistDescriptionSave = (
@@ -3570,6 +3579,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               onUpdate={handleUpdateField}
               align="start"
               projectId={issue.project_id}
+              workflowId={issue.workflow_id}
               issue={issue}
               onMarkDuplicate={actions.openMarkDuplicate}
               isDuplicate={isDuplicateIssue(issue)}

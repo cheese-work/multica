@@ -190,6 +190,21 @@ multica issue wakeup runs MUL-123 <wakeup-id>
 
 ターミナルからメンバーとして作成するときは `--agent-id` が必要です。エージェントが自分の実行の中で作成した場合は、既定でそのエージェント自身を起こします。
 
+### DM で進捗をフォローする
+
+DM は、エージェントがあなたのために作成した issue をフォローします。メンバーは自分が作成した DM でのみ `--chat` を付けてフォローを管理できます。エージェントは `--chat` なしで `multica issue follow <issue>` を実行します。DM は自分のタスクから決まり、DM のないタスクは拒否されます。子 issue は親の有効なフォローを引き継ぎます。
+
+```bash
+multica issue follow MUL-123 --chat <chat-session-id>
+multica issue mute-follow MUL-123 --chat <chat-session-id>
+multica issue unmute-follow MUL-123 --chat <chat-session-id>
+multica issue unfollow MUL-123 --chat <chat-session-id>
+multica issue unfollow MUL-123 --chat <chat-session-id> --scope root
+multica issue follows --chat <chat-session-id>
+```
+
+`unfollow` はその issue のフォローを終了します。`--scope root` を付けると、子 issue がそこから継承したフォローも終了します。個別に手動でフォローした子 issue はフォローされたままです。フォローを外した子 issue は、後から子 issue が作成されても再びフォローされません。
+
 ## エージェントとスキル
 
 ```bash
