@@ -1,0 +1,90 @@
+// Keeps open PR branches current with `main`: when a PR is behind, merge `main` into it with
+// GitHub's update-branch (a merge commit, no rebase, no force-push).
+// Usage: node scripts/pr-main-sync.mjs --repo owner/name [--base main] [--dry-run]
+// Safety: an issue with an active author run is skipped; every push is pinned to the PR head
+// we read (`expected_head_sha`), so an author commit made in between is never overwritten and
+// the call is rejected instead. A conflict pushes nothing and opens one task for the PR author.
+// Needs a token that can push to PR branches (gh login on the runner, not the Actions token,
+// or the new head would not start CI).
+import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
+
+// Branch first (agent branches carry it), then title, then body.
+export const issueIdOf = (pr) => {
+  const m = [pr.head.ref, pr.title, pr.body].map((s) => /\bche-(\d+)/i.exec(s ?? "")).find(Boolean);
+  return m && `CHE-${m[1]}`;
+};
+
+export async function syncPrs({ gh, multica, repo, base, print = console.log }) {
+  const failures = [];
+  for (const pr of await gh.openPrs()) {
+    try {
+      // Fork branches are not ours to push to; a PR with no linked issue cannot be checked for an active run.
+      if (pr.base.ref !== base || pr.head.repo?.full_name !== repo) continue;
+      if (!(await gh.behindBy(pr.head.sha))) continue;
+      const id = issueIdOf(pr);
+      if (!id) {
+        print(`#${pr.number}: skip, no linked issue`);
+        continue;
+      }
+      if ((await multica.activeRuns(id)).length) {
+        print(`#${pr.number}: skip, active run on ${id}`);
+        continue;
+      }
+      const result = await gh.updateBranch(pr.number, pr.head.sha);
+      print(`#${pr.number}: ${result}`);
+      if (result === "conflict" && !(await multica.findConflictTask(pr.number))) await multica.createConflictTask(pr, id);
+    } catch (e) {
+      print(`#${pr.number}: error ${e.message}`);
+      failures.push(e);
+    }
+  }
+  if (failures.length) throw failures[0];
+}
+
+const run = (cmd, args, input) => {
+  const r = spawnSync(cmd, args, { input, encoding: "utf8", maxBuffer: 1 << 28 });
+  return { ok: r.status === 0, out: r.stdout, err: `${r.stderr}${r.stdout}` };
+};
+const must = (cmd, args, input) => {
+  const r = run(cmd, args, input);
+  if (!r.ok) throw new Error(`${cmd} ${args.slice(0, 3).join(" ")} failed: ${r.err}`);
+  return r.out;
+};
+
+export const taskTitle = (n) => `main-sync conflict: PR #${n}`;
+
+export const ghFor = (repo, base, dryRun) => ({
+  openPrs: async () => must("gh", ["api", "--paginate", `repos/${repo}/pulls?state=open&per_page=100`, "--jq", ".[] | @json"]).split("\n").filter(Boolean).map((l) => JSON.parse(l)),
+  behindBy: async (sha) => Number(must("gh", ["api", `repos/${repo}/compare/${base}...${sha}`, "--jq", ".behind_by"])),
+  updateBranch: async (number, expectedHeadSha) => {
+    if (dryRun) return "dry-run";
+    const r = run("gh", ["api", "-X", "PUT", `repos/${repo}/pulls/${number}/update-branch`, "-f", `expected_head_sha=${expectedHeadSha}`]);
+    if (r.ok) return "merged";
+    if (/merge conflict/i.test(r.err)) return "conflict";
+    if (/expected head sha|head ref/i.test(r.err)) return "moved";
+    throw new Error(`update-branch PR #${number} failed: ${r.err}`);
+  },
+});
+
+export const multicaCli = (repo, dryRun) => ({
+  activeRuns: async (id) => JSON.parse(must("multica", ["issue", "runs", id, "--active", "--output", "json"])),
+  // Closed tasks do not count: search hides done and cancelled issues by default.
+  findConflictTask: async (n) =>
+    JSON.parse(must("multica", ["issue", "search", taskTitle(n), "--output", "json"])).issues.find((i) => i.title === taskTitle(n)),
+  createConflictTask: async (pr, id) => {
+    if (dryRun) return;
+    const issue = JSON.parse(must("multica", ["issue", "get", id, "--output", "json"]));
+    const body = `PR https://github.com/${repo}/pull/${pr.number} (${id}) conflicts with the base branch. Merge the base branch into \`${pr.head.ref}\`, resolve the conflict, push. Nothing was pushed by the sync job.`;
+    must("multica", ["issue", "create", "--title", taskTitle(pr.number), "--parent", issue.id, "--assignee-id", issue.assignee_id,
+      ...(issue.project_id ? ["--project", issue.project_id] : []), "--status", "todo", "--description-stdin"], body);
+  },
+});
+
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  const arg = (k, d) => (process.argv.includes(k) ? process.argv[process.argv.indexOf(k) + 1] : d);
+  const repo = arg("--repo");
+  const base = arg("--base", "main");
+  const dryRun = process.argv.includes("--dry-run");
+  await syncPrs({ gh: ghFor(repo, base, dryRun), multica: multicaCli(repo, dryRun), repo, base });
+}
