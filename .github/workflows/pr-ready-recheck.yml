@@ -4,7 +4,8 @@
 # no pull_request event, so without this file a new, edited or deleted PASS would not change the check. When the
 # workspace bot comments on a PR, this job re-runs the latest completed pr-ready run of the PR's current head; that
 # run reads the live comments. A re-run, not a new check: an issue_comment run attaches to the default branch, so it
-# cannot satisfy a PR's required check.
+# cannot satisfy a PR's required check. A run still going is waited for first (a run cannot be re-run while it goes,
+# and it may already have read the old verdict). The merge-queue checks that hold the PR are re-run the same way.
 #
 # SECURITY: `issue_comment` runs THIS definition from the default branch and the job checks out the DEFAULT branch
 # only. The comment body is never interpolated or read here (only the author id gates the job); the script reads
@@ -31,7 +32,7 @@ jobs:
     name: recheck
     if: github.event.issue.pull_request && github.event.comment.user.id == 282619718
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99-gate"]') || fromJSON('["ubuntu-latest"]') }}
-    timeout-minutes: 5
+    timeout-minutes: 15
     env:
       GH_TOKEN: ${{ github.token }}
       EVENT: ${{ github.event_name }}

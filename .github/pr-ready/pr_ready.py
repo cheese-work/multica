@@ -35,6 +35,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import unicodedata
 
 # ponytail: bare `blocked` is a deliberate false-positive trade for no false negative; the message names the marker
@@ -69,12 +70,16 @@ AGENT_LABS = {
                      "mbp-codex-luna-pixel3a", "c00-hermes-devops", "OpenCodeReview"), "openai"),
     **dict.fromkeys(("x99-agy-gemini", "x99-agy-gemini-ux"), "google"),
 }
+NO_QUEUE = "no merge queue found for the base branch"
+RUN_NAME = "pr-ready #{}"  # the pr-ready.yml `run-name`; the recheck matches runs to a PR by it
+WAIT_POLLS, POLL_SECONDS = 40, 15
+MAX_TREE_DIRS = 100
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 FINDING_RE = re.compile(r"^- (\S+:\d+)\s+\S")
 REVIEWER_RE = re.compile(r"^(\S+) \(([^)]+)\)$")
 QUEUE_QUERY = ("query($owner:String!,$name:String!,$branch:String!){repository(owner:$owner,name:$name){"
                "mergeQueue(branch:$branch){entries(first:100){pageInfo{hasNextPage} "
-               "nodes{headCommit{oid} pullRequest{number headRefOid}}}}}}")
+               "nodes{position headCommit{oid} pullRequest{number headRefOid}}}}}}")
 
 
 def _rendered(body: str, tag_sep: str, punct_sep: str) -> str:
@@ -213,15 +218,37 @@ def queue_prs(commits: list[dict], entries: list[dict], base_sha: str, head_sha:
 
 
 def changed_files(gh, repo: str, spec: str) -> dict | None:
-    """{path: (status, blob sha)} of a compare, or None when the API truncated the file list."""
+    """{path: (status, blob sha, previous path)} of a compare, or None when the API truncated the file list. The
+    previous path is part of the change: two renames to one destination from different sources differ."""
     files = gh(f"repos/{repo}/compare/{spec}")["files"]
-    return None if len(files) >= 300 else {f["filename"]: (f["status"], f.get("sha")) for f in files}
+    if len(files) >= 300:
+        return None
+    return {f["filename"]: (f["status"], f.get("sha"), f.get("previous_filename")) for f in files}
+
+
+def modes_at(gh, repo: str, commit: str, paths: list[str]) -> dict | None:
+    """{path: (mode, blob sha) or None if absent} at `commit`, from the git trees API (the compare API has no mode);
+    None when a listing is truncated or there are too many directories to read."""
+    dirs = sorted({p.rpartition("/")[0] for p in paths})
+    if len(dirs) > MAX_TREE_DIRS:
+        return None
+    entries: dict[str, tuple] = {}
+    for d in dirs:
+        try:
+            listing = gh(f"repos/{repo}/git/trees/{commit}:{d}")
+        except subprocess.CalledProcessError:  # the directory does not exist in this commit
+            continue
+        if listing.get("truncated"):
+            return None
+        entries.update({f"{d}/{t['path']}" if d else t["path"]: (t["mode"], t["sha"]) for t in listing["tree"]})
+    return {p: entries.get(p) for p in paths}
 
 
 def bind_problem(gh, repo: str, pull: dict, commit: dict) -> str | None:
     """Why the queue `commit` does not carry this PR's current revision, else None. A merge-method commit holds the PR
-    head as its second parent. A squash or rebase commit has no such parent, so its change set must equal the PR's
-    (same paths, same blobs): a base that edited the same files makes it differ, which fails closed."""
+    head as its second parent. A squash or rebase commit has no such parent, so its whole tree change must equal the
+    PR's: same paths, statuses, rename sources, blobs and modes. A base that edited the same files makes it differ,
+    which fails closed (a false fail, never a false pass)."""
     head, parents = pull["head"]["sha"], commit["parents"]
     if len(parents) >= 2:
         return None if parents[1]["sha"] == head else f"queue commit {commit['sha'][:12]} does not hold the PR head {head[:12]}"
@@ -231,6 +258,12 @@ def bind_problem(gh, repo: str, pull: dict, commit: dict) -> str | None:
         return "too many changed files to bind the queue commit to the PR head"
     if queued != own:
         return f"queue commit {commit['sha'][:12]} changes other files or content than PR head {head[:12]}"
+    kept = [path for path, (status, *_) in own.items() if status != "removed"]
+    in_queue, in_head = modes_at(gh, repo, commit["sha"], kept), modes_at(gh, repo, head, kept)
+    if in_queue is None or in_head is None:
+        return "tree listing too large to compare file modes of the queue commit and the PR head"
+    if in_queue != in_head:
+        return f"queue commit {commit['sha'][:12]} differs from PR head {head[:12]} in file mode or tree content"
     return None
 
 
@@ -282,30 +315,63 @@ def queue_entries(gql, repo: str, base_ref: str) -> tuple[list[dict], list[str]]
     q = (gql(QUEUE_QUERY, owner=owner, name=name, branch=base_ref.removeprefix("refs/heads/")) or {}).get("data", {})
     queue = (q.get("repository") or {}).get("mergeQueue")
     if not queue:
-        return [], ["no merge queue found for the base branch"]
+        return [], [NO_QUEUE]
     entries = queue["entries"]
     if entries.get("pageInfo", {}).get("hasNextPage"):
         return [], ["merge queue holds more than 100 entries: cannot read the whole group"]
     return entries["nodes"], []
 
 
-def recheck(env: dict, gh, post) -> list[str]:
-    """A verdict comment fires no PR event: re-run the latest completed pr-ready run of the PR's current head, so a
-    new, edited or deleted PASS replaces the old result. Only the workspace bot's comments count."""
+def rerun_when_done(gh, post, sleep, repo: str, run: dict, polls: list[int]) -> str | None:
+    """Re-run `run` once it has finished, so the new attempt reads the comments as they are now. A run that is still
+    going may already have read the old verdict and would finish on it, and a run cannot be re-run while it goes.
+    `polls` is the poll budget left for the whole recheck. Returns a problem if the run never finishes."""
+    while True:
+        status = gh(f"repos/{repo}/actions/runs/{run['id']}")["status"]
+        if status == "completed":
+            post(f"repos/{repo}/actions/runs/{run['id']}/rerun")
+            return None
+        if polls[0] <= 0:
+            return f"run {run['id']} is still {status} after {WAIT_POLLS} polls: cannot re-evaluate it"
+        polls[0] -= 1
+        sleep(POLL_SECONDS)
+
+
+def latest(runs: list[dict]) -> dict | None:
+    return max(runs, key=lambda r: r["created_at"], default=None)
+
+
+def recheck(env: dict, gh, gql, post, sleep) -> list[str]:
+    """A verdict comment fires no pull_request_target or merge_group event, so re-run the checks it can change: the
+    PR's own latest run for its current head (matched by `run-name`, because two PRs can share a head), and the queue
+    checks of every merge-queue entry at or behind the PR (each is stacked on the PR's commit). A new, edited or deleted
+    PASS then replaces the old result. Only the workspace bot's comments count."""
     if int(env["COMMENT_USER_ID"]) not in TRUSTED_BOT_IDS:
         return []
     repo, number = env["REPO"], int(env["PR_NUMBER"])
+    polls = [WAIT_POLLS]
     head = gh(f"repos/{repo}/pulls/{number}")["head"]["sha"]
     runs = gh(f"repos/{repo}/actions/workflows/pr-ready.yml/runs?event=pull_request_target&head_sha={head}")["workflow_runs"]
-    if not runs:
-        return [f"no pr-ready run found for #{number} at {head[:12]}: nothing to re-run"]
-    latest = max(runs, key=lambda r: r["created_at"])
-    if latest["status"] == "completed":  # a run still going reads the live comments itself
-        post(f"repos/{repo}/actions/runs/{latest['id']}/rerun")
-    return []
+    mine = latest([r for r in runs if r.get("display_title") == RUN_NAME.format(number)])
+    problems = []
+    if mine is None:
+        problems.append(f"no pr-ready run found for #{number} at {head[:12]}: nothing to re-run")
+    elif (why := rerun_when_done(gh, post, sleep, repo, mine, polls)):
+        problems.append(why)
+    entries, queue_problems = queue_entries(gql, repo, env["DEFAULT_BRANCH"])
+    problems += [p for p in queue_problems if p != NO_QUEUE]
+    here = next((e["position"] for e in entries if e["pullRequest"]["number"] == number), None)
+    for e in entries if here is not None else []:
+        if e["position"] < here:
+            continue
+        oid = e["headCommit"]["oid"]
+        queued = gh(f"repos/{repo}/actions/workflows/pr-ready-queue.yml/runs?event=merge_group&head_sha={oid}")["workflow_runs"]
+        if (run := latest(queued)) and (why := rerun_when_done(gh, post, sleep, repo, run, polls)):
+            problems.append(why)
+    return problems
 
 
-def run(env: dict, gh, gql=None, post=None) -> list[str]:
+def run(env: dict, gh, gql=None, post=None, sleep=None) -> list[str]:
     """Problems for this event; empty means pass."""
     repo, default = env["REPO"], env["DEFAULT_BRANCH"]
     if env["EVENT"] == "merge_group":
@@ -317,7 +383,7 @@ def run(env: dict, gh, gql=None, post=None) -> list[str]:
     if env["EVENT"] == "pull_request_target":
         return check_pr(gh, repo, int(env["PR_NUMBER"]), default)
     if env["EVENT"] == "issue_comment":
-        return recheck(env, gh, post)
+        return recheck(env, gh, gql, post, sleep or time.sleep)
     return [f"unsupported event {env['EVENT']}"]
 
 
