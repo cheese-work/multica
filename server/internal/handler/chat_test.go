@@ -966,3 +966,41 @@ func TestListChatSessions_ArchivedSessionReportsZeroUnread(t *testing.T) {
 		t.Fatalf("unarchived session unread: want count=1 has=true, got count=%d has=%v", n, has)
 	}
 }
+
+func TestListChatSessionsIncludesLastMessageID(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	ctx := context.Background()
+	agentID := createHandlerTestAgent(t, "ChatLastMessageIDAgent", []byte("[]"))
+	sessionID := createHandlerTestChatSession(t, agentID)
+	var messageID string
+	if err := testPool.QueryRow(ctx,
+		`INSERT INTO chat_message (chat_session_id, role, content) VALUES ($1, 'assistant', 'reply') RETURNING id`,
+		sessionID).Scan(&messageID); err != nil {
+		t.Fatalf("insert assistant message: %v", err)
+	}
+
+	req := newRequest("GET", "/api/chat/sessions?status=all", nil)
+	req = withChatTestWorkspaceCtx(t, req)
+	w := httptest.NewRecorder()
+	testHandler.ListChatSessions(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("ListChatSessions: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var sessions []ChatSessionResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &sessions); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	for _, session := range sessions {
+		if session.ID != sessionID {
+			continue
+		}
+		if session.LastMessage == nil || session.LastMessage.ID == nil || *session.LastMessage.ID != messageID {
+			t.Fatalf("last_message.id = %v, want %q", session.LastMessage, messageID)
+		}
+		return
+	}
+	t.Fatalf("session %s not found in list of %d", sessionID, len(sessions))
+}

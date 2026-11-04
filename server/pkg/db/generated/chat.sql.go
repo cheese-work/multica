@@ -2493,13 +2493,14 @@ SELECT cs.id, cs.workspace_id, cs.agent_id, cs.creator_id, cs.title, cs.session_
                       AND m.created_at > cs.last_read_at)
        END::int AS unread_count,
        COALESCE(lm.content, '') AS last_message_content,
+       lm.id AS last_message_id,
        COALESCE(lm.role, '') AS last_message_role,
        lm.created_at AS last_message_at,
        lm.failure_reason AS last_message_failure_reason,
        COALESCE(lm.message_kind, '') AS last_message_kind
 FROM chat_session cs
 LEFT JOIN LATERAL (
-  SELECT content, role, created_at, failure_reason, message_kind
+  SELECT id, content, role, created_at, failure_reason, message_kind
     FROM chat_message m
    WHERE m.chat_session_id = cs.id
      AND m.message_kind NOT IN ('channel_command', 'decision_cancel_notice', 'decision_reference')
@@ -2552,6 +2553,7 @@ type ListAllChatSessionsByCreatorRow struct {
 	DecisionTopicID          pgtype.UUID        `json:"decision_topic_id"`
 	UnreadCount              int32              `json:"unread_count"`
 	LastMessageContent       string             `json:"last_message_content"`
+	LastMessageID            pgtype.UUID        `json:"last_message_id"`
 	LastMessageRole          string             `json:"last_message_role"`
 	LastMessageAt            pgtype.Timestamptz `json:"last_message_at"`
 	LastMessageFailureReason pgtype.Text        `json:"last_message_failure_reason"`
@@ -2608,6 +2610,7 @@ func (q *Queries) ListAllChatSessionsByCreator(ctx context.Context, arg ListAllC
 			&i.DecisionTopicID,
 			&i.UnreadCount,
 			&i.LastMessageContent,
+			&i.LastMessageID,
 			&i.LastMessageRole,
 			&i.LastMessageAt,
 			&i.LastMessageFailureReason,
@@ -3344,13 +3347,14 @@ SELECT cs.id, cs.workspace_id, cs.agent_id, cs.creator_id, cs.title, cs.session_
             AND m.message_kind NOT IN ('decision_cancel_notice', 'decision_reference')
             AND m.created_at > cs.last_read_at)::int AS unread_count,
        COALESCE(lm.content, '') AS last_message_content,
+       lm.id AS last_message_id,
        COALESCE(lm.role, '') AS last_message_role,
        lm.created_at AS last_message_at,
        lm.failure_reason AS last_message_failure_reason,
        COALESCE(lm.message_kind, '') AS last_message_kind
 FROM chat_session cs
 LEFT JOIN LATERAL (
-  SELECT content, role, created_at, failure_reason, message_kind
+  SELECT id, content, role, created_at, failure_reason, message_kind
     FROM chat_message m
    WHERE m.chat_session_id = cs.id
      AND m.message_kind NOT IN ('channel_command', 'decision_cancel_notice', 'decision_reference')
@@ -3403,6 +3407,7 @@ type ListChatSessionsByCreatorRow struct {
 	DecisionTopicID          pgtype.UUID        `json:"decision_topic_id"`
 	UnreadCount              int32              `json:"unread_count"`
 	LastMessageContent       string             `json:"last_message_content"`
+	LastMessageID            pgtype.UUID        `json:"last_message_id"`
 	LastMessageRole          string             `json:"last_message_role"`
 	LastMessageAt            pgtype.Timestamptz `json:"last_message_at"`
 	LastMessageFailureReason pgtype.Text        `json:"last_message_failure_reason"`
@@ -3455,6 +3460,7 @@ func (q *Queries) ListChatSessionsByCreator(ctx context.Context, arg ListChatSes
 			&i.DecisionTopicID,
 			&i.UnreadCount,
 			&i.LastMessageContent,
+			&i.LastMessageID,
 			&i.LastMessageRole,
 			&i.LastMessageAt,
 			&i.LastMessageFailureReason,
