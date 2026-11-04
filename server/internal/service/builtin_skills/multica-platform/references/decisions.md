@@ -7,6 +7,7 @@ what counts as needing one is workspace policy, not platform behavior.
 
 ```bash
 multica decision request --issue <issue> --for <user-id> --class <class> --ask-file ./ask.json
+conflict fixture line
 multica decision list --issue <issue> --output json
 multica decision get <decision-id> --output json
 multica decision withdraw <decision-id> --reason "no longer needed"
