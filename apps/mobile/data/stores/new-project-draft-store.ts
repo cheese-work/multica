@@ -9,11 +9,10 @@
  * A small Zustand store is the minimum-viable cross-screen channel — and the
  * same pattern as new-issue.
  *
- * Lifecycle: `reset()` runs from `project/new.tsx` when the user dismisses
- * the modal (either submit succeeds or they cancel) so the next open starts
- * clean. Title / description / icon stay local useState because they're
- * controlled inputs that never leave the new-project screen; only the
- * attribute-chip values cross routes.
+ * Lifecycle: `reset()` runs from `project/new.tsx` after a successful create
+ * or an explicit discard. Closing the modal keeps the chips: the screen saves
+ * them with the title, icon and description through `form-drafts-store` and
+ * restores them on the next open (also after an app cold start).
  *
  * Workspace lifecycle: workspace-scoped — reset is wired in
  * `app/(app)/[workspace]/_layout.tsx` via

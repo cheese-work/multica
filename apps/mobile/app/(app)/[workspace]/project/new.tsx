@@ -15,7 +15,7 @@
  * On success: dismiss modal → navigate to the new project's detail page so
  * the user can immediately add a lead / attach issues / configure properties.
  */
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Alert,
   InteractionManager,
@@ -27,6 +27,7 @@ import {
   View,
 } from "react-native";
 import { Stack, router } from "expo-router";
+import type { ProjectPriority, ProjectStatus } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { AutosizeTextArea } from "@/components/ui/autosize-textarea";
 import {
@@ -40,7 +41,12 @@ import {
   projectStatusLabel,
 } from "@/lib/project-status";
 import { useCreateProject } from "@/data/mutations/projects";
+import {
+  NEW_PROJECT_KEY,
+  useFormDraftsStore,
+} from "@/data/stores/form-drafts-store";
 import { useNewProjectDraftStore } from "@/data/stores/new-project-draft-store";
+import { useRestoredFormDraft } from "@/data/stores/use-form-draft";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useT } from "@/lib/i18n";
 
@@ -55,6 +61,14 @@ const NEW_PROJECT_PICKER_PATHNAMES = {
   priority: "/[workspace]/new-project-picker/priority",
 } as const satisfies Record<NewProjectPickerField, string>;
 
+type NewProjectFormDraft = {
+  title: string;
+  icon: string;
+  description: string;
+  status: ProjectStatus;
+  priority: ProjectPriority;
+};
+
 export default function NewProject() {
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const { t } = useT("projects");
@@ -67,12 +81,41 @@ export default function NewProject() {
   const priority = useNewProjectDraftStore((s) => s.priority);
   const resetDraft = useNewProjectDraftStore((s) => s.reset);
 
+  // The unsent form is saved as a draft: closing the modal keeps it; only a
+  // successful create or an explicit discard clears it.
+  const restored = useRestoredFormDraft<NewProjectFormDraft>(
+    NEW_PROJECT_KEY,
+    useCallback((draft) => {
+      setTitle(draft.title);
+      setIcon(draft.icon);
+      setDescription(draft.description);
+      useNewProjectDraftStore.setState({
+        status: draft.status,
+        priority: draft.priority,
+      });
+    }, []),
+  );
+
   const dirty =
     title.length > 0 ||
     icon.length > 0 ||
     description.length > 0 ||
     status !== "planned" ||
     priority !== "none";
+
+  useEffect(() => {
+    if (!restored) return;
+    const { setDraft, clearDraft } = useFormDraftsStore.getState();
+    if (dirty) {
+      setDraft(NEW_PROJECT_KEY, {
+        title,
+        icon,
+        description,
+        status,
+        priority,
+      } satisfies NewProjectFormDraft);
+    } else clearDraft(NEW_PROJECT_KEY);
+  }, [restored, dirty, title, icon, description, status, priority]);
 
   const canCreate = title.trim().length > 0 && !create.isPending;
 
@@ -90,6 +133,7 @@ export default function NewProject() {
   const onCancel = useCallback(() => {
     if (!dirty) {
       resetDraft();
+      useFormDraftsStore.getState().clearDraft(NEW_PROJECT_KEY);
       router.back();
       return;
     }
@@ -103,6 +147,7 @@ export default function NewProject() {
           style: "destructive",
           onPress: () => {
             resetDraft();
+            useFormDraftsStore.getState().clearDraft(NEW_PROJECT_KEY);
             router.back();
           },
         },
@@ -123,6 +168,7 @@ export default function NewProject() {
       {
         onSuccess: (project) => {
           resetDraft();
+          useFormDraftsStore.getState().clearDraft(NEW_PROJECT_KEY);
           router.back();
           // Wait for the modal dismiss animation to finish before pushing
           // the detail screen. `InteractionManager` resolves once iOS

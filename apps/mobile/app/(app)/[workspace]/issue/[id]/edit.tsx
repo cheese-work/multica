@@ -18,7 +18,7 @@
  * are NOT edited here — they have dedicated chip pickers on the detail page.
  * This screen only owns the two free-text fields.
  */
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   KeyboardAvoidingView,
@@ -38,6 +38,12 @@ import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { issueDetailOptions } from "@/data/queries/issues";
 import { useUpdateIssue } from "@/data/mutations/issues";
 import { buildIssueTextUpdate } from "@/data/issue-edit";
+import {
+  issueEditKey,
+  readFormDraft,
+  useFormDraftsStore,
+  type EditDraft,
+} from "@/data/stores/form-drafts-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useT } from "@/lib/i18n";
 import { useMentionInput } from "@/lib/use-mention-input";
@@ -54,15 +60,23 @@ export default function EditIssue() {
   const [initialDescription, setInitialDescription] = useState("");
   const description = useMentionInput();
   const [seeded, setSeeded] = useState(false);
+  const draftKey = issueEditKey(id);
+  const draftsReady = useFormDraftsStore((s) => s.ready);
+  // Set once a save succeeded, so the persist effect cannot re-save the draft.
+  const settled = useRef(false);
   // Seed once when data arrives, before committing the form. Background
-  // refetches must not overwrite edits already in progress.
+  // refetches must not overwrite edits already in progress. Waits for the
+  // saved draft to load; it wins over the server text.
   const setDescriptionText = description.setText;
 
-  if (detail.data && !seeded) {
-    setTitle(detail.data.title);
+  if (detail.data && draftsReady && !seeded) {
+    const draft = readFormDraft<EditDraft>(draftKey);
+    setTitle(draft?.title ?? detail.data.title);
     setInitialTitle(detail.data.title);
     const initial = detail.data.description ?? "";
-    setDescriptionText(stripChannelMediaMarkers(initial));
+    setDescriptionText(
+      draft ? draft.description : stripChannelMediaMarkers(initial),
+    );
     setInitialDescription(initial);
     setSeeded(true);
   }
@@ -81,6 +95,13 @@ export default function EditIssue() {
   const canSave =
     seeded && title.trim().length > 0 && dirty && !update.isPending;
 
+  useEffect(() => {
+    if (!seeded || settled.current) return;
+    const { setDraft, clearDraft } = useFormDraftsStore.getState();
+    if (dirty) setDraft(draftKey, { title, description: currentDescription });
+    else clearDraft(draftKey);
+  }, [seeded, dirty, title, currentDescription, draftKey]);
+
   const onCancel = useCallback(() => {
     if (!dirty) {
       router.back();
@@ -94,11 +115,15 @@ export default function EditIssue() {
         {
           text: t("common:actions.discard"),
           style: "destructive",
-          onPress: () => router.back(),
+          onPress: () => {
+            settled.current = true;
+            useFormDraftsStore.getState().clearDraft(draftKey);
+            router.back();
+          },
         },
       ],
     );
-  }, [dirty, t]);
+  }, [dirty, draftKey, t]);
 
   const onSave = useCallback(() => {
     if (!canSave) return;
@@ -110,7 +135,11 @@ export default function EditIssue() {
     // loop. Web/desktop keep baseline protection with their compare UI.
     const patch = buildIssueTextUpdate(title, currentDescription);
     update.mutate(patch, {
-      onSuccess: () => router.back(),
+      onSuccess: () => {
+        settled.current = true;
+        useFormDraftsStore.getState().clearDraft(draftKey);
+        router.back();
+      },
       onError: (err) => {
         Alert.alert(
           t("form.save_failed"),
@@ -118,7 +147,7 @@ export default function EditIssue() {
         );
       },
     });
-  }, [canSave, title, currentDescription, update, t]);
+  }, [canSave, title, currentDescription, update, draftKey, t]);
 
   const headerLeft = useCallback(
     () => (

@@ -6,7 +6,7 @@
  * Cancel/dismiss flow: header Cancel + iOS drag-down gesture both check
  * dirty state and pop an Alert if there are unsaved edits.
  */
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   KeyboardAvoidingView,
@@ -26,6 +26,12 @@ import {
 } from "@/components/ui/input-tokens";
 import { projectDetailOptions } from "@/data/queries/projects";
 import { useUpdateProject } from "@/data/mutations/projects";
+import {
+  projectEditKey,
+  readFormDraft,
+  useFormDraftsStore,
+  type EditDraft,
+} from "@/data/stores/form-drafts-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useT } from "@/lib/i18n";
 
@@ -40,13 +46,19 @@ export default function EditProject() {
   const [description, setDescription] = useState("");
   const [icon, setIcon] = useState("");
   const [seeded, setSeeded] = useState(false);
+  const draftKey = projectEditKey(id);
+  const draftsReady = useFormDraftsStore((s) => s.ready);
+  // Set once a save succeeded, so the persist effect cannot re-save the draft.
+  const settled = useRef(false);
 
   // Seed once when data arrives, before committing the form. Background
-  // refetches must not overwrite edits already in progress.
-  if (detail.data && !seeded) {
-    setTitle(detail.data.title);
-    setDescription(detail.data.description ?? "");
-    setIcon(detail.data.icon ?? "");
+  // refetches must not overwrite edits already in progress. Waits for the
+  // saved draft to load; it wins over the server values.
+  if (detail.data && draftsReady && !seeded) {
+    const draft = readFormDraft<EditDraft>(draftKey);
+    setTitle(draft?.title ?? detail.data.title);
+    setDescription(draft?.description ?? detail.data.description ?? "");
+    setIcon(draft?.icon ?? detail.data.icon ?? "");
     setSeeded(true);
   }
 
@@ -62,6 +74,13 @@ export default function EditProject() {
   const canSave =
     seeded && title.trim().length > 0 && dirty && !update.isPending;
 
+  useEffect(() => {
+    if (!seeded || settled.current) return;
+    const { setDraft, clearDraft } = useFormDraftsStore.getState();
+    if (dirty) setDraft(draftKey, { title, description, icon });
+    else clearDraft(draftKey);
+  }, [seeded, dirty, title, description, icon, draftKey]);
+
   const onCancel = useCallback(() => {
     if (!dirty) {
       router.back();
@@ -75,11 +94,15 @@ export default function EditProject() {
         {
           text: t("common:actions.discard"),
           style: "destructive",
-          onPress: () => router.back(),
+          onPress: () => {
+            settled.current = true;
+            useFormDraftsStore.getState().clearDraft(draftKey);
+            router.back();
+          },
         },
       ],
     );
-  }, [dirty, t]);
+  }, [dirty, draftKey, t]);
 
   const onSave = useCallback(() => {
     if (!canSave) return;
@@ -89,7 +112,11 @@ export default function EditProject() {
       icon: icon.trim() || null,
     };
     update.mutate(patch, {
-      onSuccess: () => router.back(),
+      onSuccess: () => {
+        settled.current = true;
+        useFormDraftsStore.getState().clearDraft(draftKey);
+        router.back();
+      },
       onError: (err) => {
         Alert.alert(
           t("form.save_failed_edit"),
@@ -97,7 +124,7 @@ export default function EditProject() {
         );
       },
     });
-  }, [canSave, title, description, icon, update, t]);
+  }, [canSave, title, description, icon, update, draftKey, t]);
 
   const headerLeft = useCallback(() => {
     return (

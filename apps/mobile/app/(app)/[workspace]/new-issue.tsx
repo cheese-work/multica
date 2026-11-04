@@ -23,15 +23,32 @@ import {
   TextInput,
 } from "react-native";
 import { Stack, router } from "expo-router";
+import type { IssuePriority, IssueStatus, Project } from "@multica/core/types";
+import type { AssigneeValue } from "@/components/issue/pickers/assignee-picker-body";
 import { SubmitIssueButton } from "@/components/issue/submit-issue-button";
 import { CreateFormAttributeRow } from "@/components/issue/create-form-attribute-row";
 import { MentionSuggestionBar } from "@/components/issue/mention-suggestion-bar";
 import { DescriptionField } from "@/components/issue/description-field";
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { useCreateIssue } from "@/data/mutations/issues";
+import {
+  NEW_ISSUE_KEY,
+  useFormDraftsStore,
+} from "@/data/stores/form-drafts-store";
 import { useNewIssueDraftStore } from "@/data/stores/new-issue-draft-store";
+import { useRestoredFormDraft } from "@/data/stores/use-form-draft";
 import { useMentionInput } from "@/lib/use-mention-input";
 import { useT } from "@/lib/i18n";
+
+type NewIssueFormDraft = {
+  title: string;
+  description: string;
+  status: IssueStatus;
+  priority: IssuePriority;
+  assignee: AssigneeValue;
+  dueDate: string | null;
+  project: Project | null;
+};
 
 export default function NewIssueModal() {
   const { t } = useT("issues");
@@ -40,8 +57,9 @@ export default function NewIssueModal() {
   // Attribute chips (status / priority / assignee / due date / project)
   // live in `useNewIssueDraftStore` so the new-issue-picker/* formSheet
   // routes can read and write the same values without a parent-child
-  // React relationship. The store is reset on mount + on unmount so
-  // re-opening the new-issue modal starts clean.
+  // React relationship. The unsent form (title, description, chips) is saved
+  // as a draft, so closing the modal keeps it; only a successful create
+  // clears it.
   const status = useNewIssueDraftStore((s) => s.status);
   const priority = useNewIssueDraftStore((s) => s.priority);
   const assignee = useNewIssueDraftStore((s) => s.assignee);
@@ -49,12 +67,49 @@ export default function NewIssueModal() {
   const project = useNewIssueDraftStore((s) => s.project);
   const resetDraft = useNewIssueDraftStore((s) => s.reset);
 
+  const restored = useRestoredFormDraft<NewIssueFormDraft>(
+    NEW_ISSUE_KEY,
+    useCallback(
+      (draft) => {
+        setTitle(draft.title);
+        description.setText(draft.description);
+        useNewIssueDraftStore.setState({
+          status: draft.status,
+          priority: draft.priority,
+          assignee: draft.assignee,
+          dueDate: draft.dueDate,
+          project: draft.project,
+        });
+      },
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- setText is stable
+      [description.setText],
+    ),
+  );
+  const descriptionText = description.serialize();
+
   useEffect(() => {
-    resetDraft();
-    return () => {
-      resetDraft();
-    };
-  }, [resetDraft]);
+    if (!restored) return;
+    const { setDraft, clearDraft } = useFormDraftsStore.getState();
+    const empty =
+      !title &&
+      !descriptionText &&
+      status === "todo" &&
+      priority === "none" &&
+      !assignee &&
+      !dueDate &&
+      !project;
+    if (empty) clearDraft(NEW_ISSUE_KEY);
+    else
+      setDraft(NEW_ISSUE_KEY, {
+        title,
+        description: descriptionText,
+        status,
+        priority,
+        assignee,
+        dueDate,
+        project,
+      } satisfies NewIssueFormDraft);
+  }, [restored, title, descriptionText, status, priority, assignee, dueDate, project]);
 
   const createIssue = useCreateIssue();
   const isSubmitting = createIssue.isPending;
@@ -77,6 +132,8 @@ export default function NewIssueModal() {
         ...(dueDate ? { due_date: dueDate } : {}),
         ...(project ? { project_id: project.id } : {}),
       });
+      resetDraft();
+      useFormDraftsStore.getState().clearDraft(NEW_ISSUE_KEY);
       router.back();
     } catch (err) {
       Alert.alert(
@@ -93,6 +150,7 @@ export default function NewIssueModal() {
     dueDate,
     project,
     createIssue,
+    resetDraft,
     t,
   ]);
 
