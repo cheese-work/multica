@@ -112,7 +112,12 @@ function RealtimeSubscriptions() {
 export default function WorkspaceLayout() {
   const { workspace: slug } = useLocalSearchParams<{ workspace: string }>();
   const { t } = useT("navigation");
-  const { data: workspaces, isLoading } = useQuery(workspaceListOptions());
+  const {
+    data: workspaces,
+    isLoading,
+    isSuccess,
+    isFetching,
+  } = useQuery(workspaceListOptions());
   const setCurrentWorkspace = useWorkspaceStore((s) => s.setCurrentWorkspace);
   const userId = useAuthStore((s) => s.user?.id ?? null);
 
@@ -131,7 +136,11 @@ export default function WorkspaceLayout() {
   useNewProjectDraftResetOnWorkspaceChange(matched?.id ?? null);
   useChatSessionPickerResetOnWorkspaceChange(matched?.id ?? null);
   useChatSessionActionsResetOnWorkspaceChange(matched?.id ?? null);
-  useDraftLifecycle(userId, matched?.id ?? null);
+  useDraftLifecycle(
+    userId,
+    matched?.id ?? null,
+    isSuccess && !isFetching ? workspaces : null,
+  );
 
   // Wait for the workspaces list before deciding membership — otherwise a
   // valid deep link would briefly redirect away on cold start.

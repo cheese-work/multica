@@ -44,6 +44,9 @@ export interface DraftPersistence {
   sweepExpired(): Promise<void>;
   /** Write every pending draft now (call when the app is backgrounded). */
   flush(): Promise<void>;
+  /** Workspace ids that have drafts on disk for `userId` (scope
+   *  `<userId>:<workspaceId>`). */
+  workspaceIds(userId: string): Promise<string[]>;
   /** Delete every draft of one scope and drop its pending writes. Rejects
    *  when the disk delete fails. */
   clearScope(scope: string): Promise<void>;
@@ -176,6 +179,17 @@ export function createDraftPersistence(options: {
       await queue;
     },
 
+    async workspaceIds(userId) {
+      const base = diskKey(userId, "");
+      const ids = new Set<string>();
+      await enqueue(async () => {
+        for (const k of await storage.getAllKeys()) {
+          if (k.startsWith(base)) ids.add(k.slice(base.length).split(":")[0]);
+        }
+      });
+      return [...ids];
+    },
+
     clearScope(scope) {
       const base = diskKey(scope, "");
       for (const [k, { timer }] of pending) {
@@ -237,4 +251,20 @@ export function registerScopeCleanup(cleanup: (scope: string) => void): void {
 export async function clearScopeDrafts(scope: string): Promise<void> {
   scopeCleanups.forEach((cleanup) => cleanup(scope));
   await draftPersistence.clearScope(scope);
+}
+
+/** A workspace deleted while this device was offline never sent its
+ *  `workspace:deleted` event. Given the user's settled, successfully fetched
+ *  workspace list, drop the drafts of every other workspace of that user.
+ *  Nothing happens without a list (failed or pending fetch) or with an empty
+ *  one, which may be a fallback response rather than the real list. */
+export async function reconcileWorkspaceDrafts(
+  userId: string,
+  workspaces: readonly { id: string }[] | null | undefined,
+): Promise<void> {
+  if (!workspaces || workspaces.length === 0) return;
+  const live = new Set(workspaces.map((w) => w.id));
+  for (const id of await draftPersistence.workspaceIds(userId)) {
+    if (!live.has(id)) await clearScopeDrafts(`${userId}:${id}`);
+  }
 }

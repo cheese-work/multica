@@ -335,4 +335,47 @@ describe("composer drafts survive unmount, route change and cold start", () => {
     const run2 = await coldStart();
     expect(run2.store.getState().drafts["comment:i1"]).toEqual(expected);
   });
+
+  describe("workspaces deleted while the device was offline", () => {
+    const seed = async () => {
+      for (const scope of ["u1:ws1", "u1:ws2", "u2:ws9"]) {
+        const run = await coldStart(scope);
+        run.store.getState().patch("comment:i1", { text: `${scope} draft` });
+        await settle();
+      }
+    };
+
+    it("drops the drafts of workspaces missing from the fetched list", async () => {
+      await seed();
+      const run = await coldStart("u1:ws1");
+      await run.persistence.reconcileWorkspaceDrafts("u1", [{ id: "ws1" }]);
+
+      expect((await coldStart("u1:ws2")).store.getState().drafts).toEqual({});
+      const kept = await coldStart("u1:ws1");
+      expect(kept.store.getState().drafts["comment:i1"]?.text).toBe("u1:ws1 draft");
+      // Another account's drafts are not this list's business.
+      const other = await coldStart("u2:ws9");
+      expect(other.store.getState().drafts["comment:i1"]?.text).toBe("u2:ws9 draft");
+    });
+
+    it("also empties the memory of a dropped workspace", async () => {
+      await seed();
+      const run = await coldStart("u1:ws2");
+      await run.persistence.reconcileWorkspaceDrafts("u1", [{ id: "ws1" }]);
+      expect(run.store.getState().drafts).toEqual({});
+    });
+
+    it.each([
+      ["a failed fetch", undefined],
+      ["no list yet", null],
+      ["an empty list", []],
+    ])("deletes nothing after %s", async (_name, list) => {
+      await seed();
+      const run = await coldStart("u1:ws1");
+      await run.persistence.reconcileWorkspaceDrafts("u1", list);
+      expect((await coldStart("u1:ws2")).store.getState().drafts["comment:i1"]?.text).toBe(
+        "u1:ws2 draft",
+      );
+    });
+  });
 });

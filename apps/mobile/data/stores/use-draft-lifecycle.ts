@@ -4,18 +4,26 @@
  * and writes pending ones when the app leaves the foreground, because the OS
  * may kill a backgrounded app before a debounced write fires.
  *
+ * `workspaces` is the user's workspace list, passed only once it is fetched
+ * and settled (null otherwise). Drafts of a workspace missing from it were
+ * deleted while the device was offline and are dropped.
+ *
  * Drafts are scoped by user AND workspace. If logout cannot delete the old
  * account's drafts from disk, the next account still never loads them.
  */
 import { useEffect } from "react";
 import { AppState } from "react-native";
-import { draftPersistence } from "../draft-persistence";
+import {
+  draftPersistence,
+  reconcileWorkspaceDrafts,
+} from "../draft-persistence";
 import { useChatDraftsStore } from "./chat-drafts-store";
 import { useComposerDraftsStore } from "./composer-drafts-store";
 
 export function useDraftLifecycle(
   userId: string | null,
   workspaceId: string | null,
+  workspaces: readonly { id: string }[] | null,
 ) {
   useEffect(() => {
     if (userId && workspaceId) {
@@ -24,6 +32,14 @@ export function useDraftLifecycle(
       void useComposerDraftsStore.getState().hydrate(scope);
     }
   }, [userId, workspaceId]);
+
+  useEffect(() => {
+    if (userId && workspaces) {
+      reconcileWorkspaceDrafts(userId, workspaces).catch((err) =>
+        console.warn("[drafts] workspace reconcile failed", err),
+      );
+    }
+  }, [userId, workspaces]);
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (state) => {
