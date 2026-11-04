@@ -1128,6 +1128,8 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	if err != nil {
 		return err
 	}
+	// A waiver follow-up check runs after release, when its issue is usually done.
+	active = active || w.FollowupInstanceID.Valid
 	agent, err := q.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: w.AgentID, WorkspaceID: w.WorkspaceID})
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return err

@@ -51,6 +51,21 @@ two signers, from a different lab than the author), `red_impossible_reason`,
 opinion repeats the reason in a `red_impossible_reason` header, which must match the
 proposal. A version 1 record stays valid and never gains the new gate.
 
+Every `test_first_red` waiver owes its follow-up check. When the record becomes
+effective, the same transaction creates one wakeup on the waived issue (a timed,
+one-shot `issue_wakeup` for the author, 7 days after the record took effect). Its
+instruction carries the reason, the weaker evidence and the proposal's `followup_check`,
+and asks for one comment starting `Follow-up result:` on the waived issue. A failed
+check or a worse crash rate reopens the work (`in_progress`, new PR). The wakeup is
+marked with `followup_instance_id` (unique per record), so closing the issue does not
+disable it: the check is meant to run after release. A proposal may add
+`crash_signature` (a Crashlytics issue id: 1-128 letters, digits, `.`, `:`, `_`, `-`);
+the instruction then tells the author to read the Crashlytics crash rate for that
+signature after the release (firebase-crashlytics MCP) and to re-arm with
+`multica issue wakeup create <issue> --after 72h` while the fix is unreleased.
+`followup_check` is limited to 2000 bytes. A refused or unsettled proposal creates no
+wakeup.
+
 Every new proposal must carry `decision_class: "reversible_gate"`, the only in-scope
 class. A missing or unrecognised class is refused (fail closed, no stop rule). A class of
 `irreversible`, `design_direction`, `architecture` or `high_level` is refused as an
