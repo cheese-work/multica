@@ -59,7 +59,7 @@ func runUpdate(cmd *cobra.Command, _ []string) error {
 	// Detect installation method and update accordingly.
 	if cli.IsBrewInstall() {
 		fmt.Fprintln(os.Stderr, "Updating via Homebrew...")
-		output, err := cli.UpdateViaBrew()
+		output, err := cli.UpdateViaBrewWithProgress(cli.NewProgress(os.Stderr))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s\n", output)
 			return fmt.Errorf("brew upgrade failed: %w\nYou can try manually: brew upgrade multica-ai/tap/multica", err)

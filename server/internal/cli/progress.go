@@ -25,6 +25,7 @@ type Progress struct {
 	tty   bool
 	now   func() time.Time
 	start time.Time
+	base  int64 // byte count at start; the rate counts from here
 
 	mu       sync.Mutex
 	done     int64
@@ -40,6 +41,9 @@ func NewProgress(w io.Writer) *Progress {
 	tty := ok && isTerminal(f)
 	return &Progress{w: w, tty: tty, now: time.Now, start: time.Now(), notified: -1}
 }
+
+// Active reports whether p draws anything: false for nil and for non-terminals.
+func (p *Progress) Active() bool { return p != nil && p.tty }
 
 // Wrap counts bytes read from r against total (0 = unknown size).
 func (p *Progress) Wrap(r io.Reader, total int64) io.Reader {
@@ -74,8 +78,12 @@ func (p *Progress) Set(done, total int64) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	now := p.now()
+	if done < p.done { // a retry restarted the file: measure the rate afresh
+		p.start, p.base = now, done
+	}
 	p.done, p.total = done, total
-	if now := p.now(); now.Sub(p.last) >= progressInterval {
+	if now.Sub(p.last) >= progressInterval {
 		p.last = now
 		p.drawLocked(now)
 		p.notifyLocked()
@@ -136,7 +144,7 @@ func (p *Progress) drawLocked(now time.Time) {
 	} else {
 		line = fmt.Sprintf("%.1f MB", done)
 		if secs := now.Sub(p.start).Seconds(); secs > 0 {
-			line += fmt.Sprintf("  %.1f MB/s", done/secs)
+			line += fmt.Sprintf("  %.1f MB/s", float64(p.done-p.base)/mb/secs)
 		}
 	}
 	fmt.Fprintf(p.w, "\r\x1b[K%s", line)
