@@ -8,8 +8,17 @@ import {
   Lock,
 } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
+import {
+  Progress,
+  ProgressLabel,
+  ProgressValue,
+} from "@multica/ui/components/ui/progress";
 import { api } from "@multica/core/api";
-import type { RuntimeUpdateInfo, RuntimeUpdateStatus } from "@multica/core/types";
+import type {
+  RuntimeUpdateInfo,
+  RuntimeUpdateProgress,
+  RuntimeUpdateStatus,
+} from "@multica/core/types";
 import { useT } from "../../i18n";
 
 const statusConfig: Record<
@@ -22,6 +31,12 @@ const statusConfig: Record<
   failed: { icon: XCircle, color: "text-destructive" },
   timeout: { icon: XCircle, color: "text-warning" },
 };
+
+// Phases the daemon reports; an unknown one shows the bar without a label.
+const PROGRESS_PHASES = ["download", "verify", "install"] as const;
+type ProgressPhase = (typeof PROGRESS_PHASES)[number];
+const isProgressPhase = (phase: string): phase is ProgressPhase =>
+  (PROGRESS_PHASES as readonly string[]).includes(phase);
 
 interface UpdateSectionProps {
   /** Null for a read-only viewer who cannot use a runtime as the command channel. */
@@ -57,6 +72,7 @@ export function UpdateSection({
   const [output, setOutput] = useState("");
   const [updating, setUpdating] = useState(false);
   const [targetVersion, setTargetVersion] = useState<string | null>(null);
+  const [progress, setProgress] = useState<RuntimeUpdateProgress | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const cleanup = useCallback(() => {
@@ -98,6 +114,7 @@ export function UpdateSection({
     setStatus("pending");
     setError("");
     setOutput("");
+    setProgress(null);
 
     try {
       const update = await api.initiateUpdate(runtimeId, target);
@@ -106,6 +123,7 @@ export function UpdateSection({
         try {
           const result = await api.getUpdateResult(runtimeId, update.id);
           setStatus(result.status as RuntimeUpdateStatus);
+          setProgress(result.progress ?? null);
 
           if (result.status === "completed") {
             markCompleted(
@@ -157,6 +175,11 @@ export function UpdateSection({
   const config = status ? statusConfig[status] : null;
   const Icon = config?.icon;
   const isActive = status === "pending" || status === "running";
+  // An unknown total (0) renders an indeterminate bar rather than a fake percent.
+  const progressValue =
+    progress && progress.bytes_total > 0
+      ? Math.min(100, Math.round((progress.bytes_done / progress.bytes_total) * 100))
+      : null;
 
   return (
     <div className="space-y-2">
@@ -225,7 +248,7 @@ export function UpdateSection({
           </>
         )}
 
-        {config && Icon && status && (
+        {config && Icon && status && !(isActive && progress) && (
           <span
             className={`inline-flex items-center gap-1 text-caption ${config.color}`}
           >
@@ -234,6 +257,19 @@ export function UpdateSection({
           </span>
         )}
       </div>
+
+      {isActive && progress && (
+        <Progress value={progressValue} className="max-w-xs gap-1">
+          <ProgressLabel className="text-caption text-muted-foreground">
+            {isProgressPhase(progress.phase)
+              ? t(($) => $.update.phase[progress.phase as ProgressPhase])
+              : t(($) => $.update.status[status])}
+          </ProgressLabel>
+          {progressValue !== null && (
+            <ProgressValue className="text-caption" />
+          )}
+        </Progress>
+      )}
 
       {status === "completed" && output && (
         <div className="rounded-lg border bg-success/5 px-3 py-2">

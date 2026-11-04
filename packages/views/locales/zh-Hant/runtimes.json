@@ -341,6 +341,11 @@
       "completed": "更新完成。守護程序正在重啟...",
       "failed": "更新失敗",
       "timeout": "超時"
+    },
+    "phase": {
+      "download": "下載中",
+      "verify": "驗證中",
+      "install": "安裝中"
     }
   },
   "charts": {
