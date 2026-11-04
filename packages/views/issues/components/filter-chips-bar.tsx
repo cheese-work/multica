@@ -13,12 +13,14 @@ import {
   Tag,
   User,
   UserPen,
+  Workflow,
   X,
 } from "@multica/ui/icons";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@multica/ui/components/ui/button";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { useIssueWorkflows } from "@multica/core/issue-workflows";
 import { memberListOptions, agentListOptions, squadListOptions } from "@multica/core/workspace/queries";
 import { projectListOptions } from "@multica/core/projects/queries";
 import { PROJECT_STATUS_CONFIG } from "@multica/core/projects/config";
@@ -197,6 +199,7 @@ function useFilterChips(
   const projectFilters = useViewStore((s) => s.projectFilters);
   const includeNoProject = useViewStore((s) => s.includeNoProject);
   const projectStatusFilters = useViewStore((s) => s.projectStatusFilters);
+  const workflowFilters = useViewStore((s) => s.workflowFilters);
   const labelFilters = useViewStore((s) => s.labelFilters);
   const propertyFilters = useViewStore((s) => s.propertyFilters);
   const store = useViewStoreApi();
@@ -210,6 +213,7 @@ function useFilterChips(
     projectFilters.length > 0 ||
     includeNoProject ||
     projectStatusFilters.length > 0 ||
+    workflowFilters.length > 0 ||
     labelFilters.length > 0 ||
     Object.values(propertyFilters).some((selected) => selected.length > 0);
   const showDateChip = !!onDateFilterChange && !!dateFilter;
@@ -244,6 +248,7 @@ function useFilterChips(
     ...projectListOptions(wsId),
     enabled: enabled && projectFilters.length > 0,
   });
+  const { workflows } = useIssueWorkflows(wsId);
   const { data: labels = [] } = useQuery({
     ...labelListOptions(wsId),
     enabled: enabled && labelFilters.length > 0,
@@ -272,6 +277,7 @@ function useFilterChips(
       projectFilters: s.projectFilters,
       includeNoProject: s.includeNoProject,
       projectStatusFilters: s.projectStatusFilters,
+      workflowFilters: s.workflowFilters,
       labelFilters: s.labelFilters,
       propertyFilters: s.propertyFilters,
     };
@@ -304,6 +310,9 @@ function useFilterChips(
           ...current,
           projectStatusFilters: raw.projectStatusFilters,
         });
+        break;
+      case "workflow":
+        s.resetFiltersTo({ ...current, workflowFilters: raw.workflowFilters });
         break;
       case "label":
         s.resetFiltersTo({ ...current, labelFilters: raw.labelFilters });
@@ -348,6 +357,9 @@ function useFilterChips(
     // The store sanitizes on rehydrate; this keeps a member the config does
     // not know from throwing on `.dotColor` if one ever gets past that.
   ).filter((status) => PROJECT_STATUS_CONFIG[status] !== undefined);
+  const deltaWorkflows = baseline
+    ? workflowFilters.filter((id) => !baseline.workflow.has(id))
+    : workflowFilters;
   const deltaLabels = baseline
     ? labelFilters.filter((id) => !baseline.label.has(id))
     : labelFilters;
@@ -475,6 +487,16 @@ function useFilterChips(
         deltaProjectStatuses.map((status) => projectStatusLabels[status]),
       ),
       onRemove: () => clearDimension("projectStatus"),
+    });
+  }
+  if (deltaWorkflows.length > 0) {
+    const nameById = new Map(workflows.map((w) => [w.id, w.name]));
+    chips.push({
+      key: "workflow",
+      icon: <Workflow className={CHIP_ICON_CLASS} />,
+      label: t(($) => $.filters.section_workflow),
+      value: summarize(deltaWorkflows.map((id) => nameById.get(id) ?? id)),
+      onRemove: () => clearDimension("workflow"),
     });
   }
   if (deltaLabels.length > 0) {

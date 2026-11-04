@@ -187,12 +187,21 @@ Permissions de dépôt (Repository permissions) :
 |---|---|
 | Metadata | Read-only |
 | Pull requests | Read-only |
+| Actions | Read-only ; nécessaire aux réveils `--until-gh-run` |
 | Checks | Read-only ; sert à afficher le statut CI |
 | Commit statuses | Read-only ; sert à agréger la CI basée sur les statuts hérités (legacy statuses) |
+
+Permissions d'organisation (Organization permissions) :
+
+| Permission | Niveau |
+|---|---|
+| Members | Read-only ; nécessaire pour vérifier que l'utilisateur qui se connecte est un admin actif de l'organisation |
 
 Abonnez-vous à ces événements :
 
 - **Pull request** ;
+- **Pull request review**, **Pull request review comment** et **Issue comment**, si des réveils sur revue humaine sont configurés ;
+- **Workflow run** et **Workflow job**, nécessaires aux réveils `--until-gh-run` ;
 - **Check suite**, **Check run** et **Status**, qui déclenchent l'actualisation de la CI et de la possibilité de fusion.
 
 Les instantanés de PR utilisent les API REST Pull requests, Checks et Commit statuses. La permission Contents n'est pas nécessaire.
@@ -224,6 +233,8 @@ GITHUB_APP_PRIVATE_KEY=<full PEM private key, keeping the BEGIN/END lines and ne
 ```
 
 Générez la clé privée dans **Private keys → Generate a private key** de la GitHub App. Sans ces deux variables, les PR sont toujours reflétées et les tâches toujours associées automatiquement et changées de statut à la fusion ; la carte de PR n'affiche simplement ni CI ni état de fusion.
+
+Si vous ajoutez la permission Members ou Actions à une App déjà installée, approuvez le changement de permission dans chaque organisation cible avant de la connecter à un nouvel espace de travail. Les installations existantes doivent accepter la nouvelle permission ; tant qu'elles ne l'ont pas fait, les réveils `--until-gh-run` ne reçoivent aucun événement de workflow.
 
 </Step>
 <Step>
