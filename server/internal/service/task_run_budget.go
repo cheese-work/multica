@@ -28,6 +28,12 @@ import (
 // run_budget_exhausted; background callers log it and drop the trigger.
 var ErrRunBudgetExhausted = errors.New("the issue used its workflow's run budget, so nothing derived from it runs")
 
+// ErrStageQueueFull is returned by an enqueue path when the PR's bottleneck
+// stage already runs its capacity of PRs (CHE-3611). The PR waits in the stage
+// queue; handlers render it as 409 stage_queue_full and background callers
+// drop the trigger, which the stage's next free slot re-issues.
+var ErrStageQueueFull = errors.New("the stage is at capacity, so the PR is queued")
+
 // statusMerged is the "Code Accepted" status: a linked PR merged. It sits in the
 // started category, so the budget names it besides the done and closed ones.
 const statusMerged = "merged"
