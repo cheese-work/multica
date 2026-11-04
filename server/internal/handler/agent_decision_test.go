@@ -238,3 +238,20 @@ func TestAgentDecisionRetractionAndConflictingVote(t *testing.T) {
 		t.Fatalf("retracted PASS counted: %d", got)
 	}
 }
+
+func TestAgentDecisionLinkIsRelativeEvenWithAppURL(test *testing.T) {
+	h := &Handler{cfg: Config{AppURL: "https://multica.test"}}
+	proposal := "c1"
+	for _, c := range []struct {
+		name     string
+		proposal *string
+		want     string
+	}{
+		{"issue", nil, "/ws/issues/CHE-1"},
+		{"comment", &proposal, "/ws/issues/CHE-1#comment-c1"},
+	} {
+		if got := h.agentDecisionLink("ws", "CHE-1", c.proposal); got != c.want {
+			test.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}

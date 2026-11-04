@@ -252,15 +252,13 @@ func agentDecisionVetoLine(instance, candidateSHA, memberUserID string) string {
 }
 
 // The link opens this instance's frozen proposal comment, not only the issue.
+// It is root-relative: the web UI navigates in-app on whichever origin the
+// reader used, so no deployment origin is baked into stored content.
 func (h *Handler) agentDecisionLink(slug, identifier string, proposalCommentID *string) string {
-	path := weblink.Issue(slug, identifier)
 	if proposalCommentID != nil {
-		path = weblink.Comment(slug, identifier, *proposalCommentID)
+		return weblink.Comment(slug, identifier, *proposalCommentID)
 	}
-	if link := weblink.Build(h.cfg.AppURL, path); link != "" {
-		return link
-	}
-	return path
+	return weblink.Issue(slug, identifier)
 }
 
 // Runs after commit. Each notice is its own transaction; a failure is stored on
