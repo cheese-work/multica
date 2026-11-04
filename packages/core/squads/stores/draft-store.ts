@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { createKeyedDraftStore } from "../../drafts/create-keyed-draft-store";
 import { usePersistedDraft } from "../../drafts/use-persisted-draft";
 
@@ -27,14 +27,17 @@ export function squadDraftKey(squadId: string, field: string, sub?: string): str
   return sub ? `${squadId}:${field}:${sub}` : `${squadId}:${field}`;
 }
 
-// Keys with a save in flight. While one is pending the saved value is about to
-// change, so typing the old saved text back is a real, unsent edit.
-const savesInFlight = new Set<string>();
+// Keys whose saved value is about to change. From the moment a save starts until
+// the `saved` prop moves off the value it had then, "typing the saved text" is
+// not "back to unchanged": the prop is stale, the server will hold the sent
+// text. The prop lags the save (the refetch is not awaited), and a debounced
+// editor can deliver its last update on either side of the save finishing.
+const awaitingSaved = new Map<string, { savedAtSend: string; inFlight: boolean }>();
 
 /**
  * Bind a text field to its draft. `text` is the draft when one exists, else
  * the saved value; typing the saved value back drops the draft, except while
- * a save runs through `commit`.
+ * the saved value is awaiting a save (see `awaitingSaved`).
  */
 export function useSquadFieldDraft(
   key: string,
@@ -59,22 +62,39 @@ export function useSquadFieldDraft(
   const draftText = () => useSquadFieldDraftStore.getState().getDraft(key)?.text;
   const latestSaved = useRef(saved);
   latestSaved.current = saved;
+
+  // The saved value moved: the awaited save landed (or someone else saved).
+  // Release the key, and drop a draft that now only repeats the saved value.
+  useEffect(() => {
+    const wait = awaitingSaved.get(key);
+    if (!wait || wait.inFlight || saved === wait.savedAtSend) return;
+    awaitingSaved.delete(key);
+    if (draftText() === saved) discard();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, saved]);
+
   return {
     text: draft.text ?? saved,
     hasDraft: draft.text !== null,
     setText: (next) =>
-      next === saved && !savesInFlight.has(key) ? discard() : setDraft({ text: next }),
+      next === saved && !awaitingSaved.has(key) ? discard() : setDraft({ text: next }),
     discard,
     commit: async (sent, save) => {
-      savesInFlight.add(key);
+      const wait = { savedAtSend: latestSaved.current, inFlight: true };
+      awaitingSaved.set(key, wait);
       try {
         await save();
         if (draftText() === sent) discard();
       } catch (e) {
+        awaitingSaved.delete(key);
         if (draftText() === latestSaved.current) discard();
         throw e;
       } finally {
-        savesInFlight.delete(key);
+        wait.inFlight = false;
+      }
+      // The refetch may already have landed while the save was in flight.
+      if (latestSaved.current !== wait.savedAtSend && awaitingSaved.get(key) === wait) {
+        awaitingSaved.delete(key);
       }
     },
   };

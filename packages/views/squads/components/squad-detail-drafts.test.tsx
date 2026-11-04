@@ -137,6 +137,26 @@ describe("squad detail drafts survive unmount and remount", () => {
     expect(screen.getByLabelText("editor")).toHaveValue("saved");
   });
 
+  it("a revert typed before the save finishes but flushed after it stays unsent while the saved prop is stale", async () => {
+    vi.useFakeTimers();
+    let resolveSave!: () => void;
+    const onSave = vi.fn(() => new Promise<void>((r) => (resolveSave = r)));
+    const first = renderWithI18n(<SquadInstructionsTab squad={squad} canManage onSave={onSave} />);
+    type("editor", "new");
+    await flushDebounce();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    type("editor", "saved"); // debounce still pending
+    await act(async () => resolveSave()); // save ends first; saved prop is still "saved"
+    await flushDebounce(); // the editor update lands after the save, against the stale prop
+    const saved = { ...squad, instructions: "new" } as Squad;
+    first.rerender(<SquadInstructionsTab squad={saved} canManage onSave={onSave} />);
+    expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
+    first.unmount();
+
+    renderWithI18n(<SquadInstructionsTab squad={saved} canManage onSave={onSave} />);
+    expect(screen.getByLabelText("editor")).toHaveValue("saved");
+  });
+
   it("instructions tab keeps the draft when save fails and clears it on success", async () => {
     vi.useFakeTimers();
     const onSave = vi.fn().mockRejectedValueOnce(new Error("boom")).mockResolvedValueOnce(undefined);
