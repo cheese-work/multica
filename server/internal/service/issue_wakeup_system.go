@@ -201,8 +201,13 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	} else if err != nil {
 		return err
 	}
-	// The kill switch (CHE-2220) drops the event rather than queueing it. A read
-	// that fails returns the error, so the delivery fails and GitHub redelivers.
+	// The kill switch (CHE-2220) drops the event rather than queueing it. The
+	// shared lock holds to the commit, so a switch change either waits for this
+	// admission and sweeps it, or commits first and this read sees it (CHE-2223).
+	// A read that fails returns the error, so the delivery fails and GitHub redelivers.
+	if err := q.LockGitHubDispatchHaltShared(ctx, workspace); err != nil {
+		return err
+	}
 	if halted, err := q.GitHubDispatchHalted(ctx, db.GitHubDispatchHaltedParams{WorkspaceID: workspace, RepoOwner: in.RepoOwner, RepoName: in.RepoName}); err != nil {
 		return err
 	} else if halted {

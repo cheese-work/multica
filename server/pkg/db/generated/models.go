@@ -1154,6 +1154,19 @@ type GithubDispatchHalt struct {
 	HaltedAt    pgtype.Timestamptz `json:"halted_at"`
 }
 
+type GithubDispatchHaltAudit struct {
+	ID           pgtype.UUID        `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	Scope        string             `json:"scope"`
+	Halted       bool               `json:"halted"`
+	ActorID      pgtype.UUID        `json:"actor_id"`
+	ActorSource  string             `json:"actor_source"`
+	RunsRevoked  int32              `json:"runs_revoked"`
+	SweepFailed  bool               `json:"sweep_failed"`
+	SweepPending bool               `json:"sweep_pending"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
 type GithubInstallation struct {
 	ID               pgtype.UUID        `json:"id"`
 	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
@@ -1164,6 +1177,7 @@ type GithubInstallation struct {
 	ConnectedByID    pgtype.UUID        `json:"connected_by_id"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	AccountID        pgtype.Int8        `json:"account_id"`
 }
 
 type GithubPendingCheckSuite struct {

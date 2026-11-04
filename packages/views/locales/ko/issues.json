@@ -1476,7 +1476,33 @@
       "rate": "1시간에 12회 넘게 실행됨"
     },
     "paused_banner": "{{name}}님이 {{time}}에 깨우기를 일시 중지했습니다",
-    "paused_banner_anonymous": "{{time}}에 깨우기가 일시 중지되었습니다"
+    "paused_banner_anonymous": "{{time}}에 깨우기가 일시 중지되었습니다",
+    "defaults": {
+      "title": "기본 웨이크업",
+      "rule_pr_merged": "연결된 PR이 병합될 때",
+      "rule_pr_checks_failed": "PR 검사가 실패할 때",
+      "rule_pr_needs_attention": "연결된 PR에 확인이 필요할 때",
+      "state_on": "켜짐",
+      "state_disabled": "비활성화됨",
+      "state_paused": "일시 중지됨: {{reason}}",
+      "inherited": "{{source}}에서 상속됨",
+      "overridden": "이 이슈에서 재정의됨",
+      "source_workspace": "워크스페이스",
+      "source_project": "프로젝트",
+      "source_default": "기본값",
+      "override": "재정의",
+      "override_label": "{{rule}} 재정의",
+      "edit": "재정의 편집",
+      "edit_label": "{{rule}} 재정의 편집",
+      "reset": "초기화",
+      "reset_label": "{{rule}} 초기화",
+      "save": "재정의 저장",
+      "saving": "저장 중…",
+      "cancel": "취소",
+      "save_error": "재정의를 저장하지 못했습니다.",
+      "reset_error": "규칙을 초기화하지 못했습니다.",
+      "conflict_error": "다른 사람이 먼저 이 규칙을 변경했습니다. 편집 내용은 유지됩니다. 새로고침하여 상대의 변경을 확인하세요."
+    }
   },
   "duplicates": {
     "banner_prefix": "중복 원본:",
