@@ -341,50 +341,54 @@ def block(gh, post, repo: str, sha: str, why: str) -> str:
     try:
         made = post(f"repos/{repo}/check-runs", fields)
         shown = gh(f"repos/{repo}/commits/{sha}/check-runs?check_name={CHECK_NAME}&filter=latest&per_page=100")["check_runs"]
-        if not any(r["id"] == made["id"] for r in shown):
-            raise ValueError(f"the latest {CHECK_NAME} check run of the commit is not the fallback")
+        mine = next((r for r in shown if r["id"] == made["id"]), None)  # the fallback itself, not just any run
+        if mine is None or (mine["name"], mine["head_sha"], mine["status"], mine["conclusion"]) != (CHECK_NAME, sha, "completed", "failure"):
+            raise ValueError(f"the latest {CHECK_NAME} check run of the commit is not the completed failing fallback")
     except API_ERRORS as e:
         return api_problem(f"UNPROTECTED {sha[:12]}: {why}, and the blocking check could not be posted or read back", e)
     return f"{why}: posted a failing {CHECK_NAME} check on {sha[:12]} to block it (read back as the latest)"
 
 
 def settle(gh, post, sleep, repo: str, runs: list[tuple[dict, str]]) -> list[str]:
-    """Invalidate each (run, sha) result, then re-run it so the new attempt reads the comments as they are now. A
-    finished run is re-run at once. A run still going may already have read the old verdict and would finish green, and
-    a run cannot be re-run while it goes, so it is cancelled first (a cancelled run is not a success; a rejected cancel
-    is asked again every round, and the commit is blocked at the first rejection because the run may finish green while
-    we wait) and re-run once it has stopped. A re-run counts only once the run shows a NEW attempt.
+    """Invalidate each (run, sha) result, then re-run it so the new attempt reads the comments as they are now. Every
+    target gets its first action in the first round, before any confirmation is polled: a finished run is re-run at
+    once, and a run still going is cancelled (it may already have read the old verdict and would finish green; a run
+    cannot be re-run while it goes, and a cancelled run is not a success). Later rounds share one wait: a rejected
+    cancel is asked again, a stopped run is re-run, and a re-run counts only once the run shows a NEW attempt. The
+    commit is blocked at the first rejected cancel, because the run may finish green while we wait.
     Whatever cannot be confirmed (rejected or unseen re-run, failed read, a run that never stops) blocks its commit
-    with `block`. Every run is handled on its own: one failure never skips another. Returns the problems."""
-    problems, polls = [], WAIT_POLLS
-    pending = [{"run": r, "sha": sha, "sent": None, "cancelled": False, "cancel_error": None} for r, sha in runs]
+    with `block`. Every target is handled on its own: one failure or delay never holds back another.
+    Returns the problems."""
+    problems, elapsed = [], 0
+    pending = [{"run": r, "sha": sha, "sent": None, "since": 0, "cancelled": False, "cancel_error": None} for r, sha in runs]
     while pending:
         going = []
         for st in pending:
             try:
-                if not step(gh, post, sleep, repo, st, problems):
+                if not step(gh, post, repo, st, elapsed, problems):
                     going.append(st)
             except API_ERRORS as e:
                 problems.append(block(gh, post, repo, st["sha"], api_problem(f"run {st['run']['id']} not invalidated", e)))
         pending = going
-        if not pending:
-            break
-        if polls <= 0:
-            for st in pending:
-                why = f"run {st['run']['id']} did not stop after {WAIT_POLLS} polls"
-                if st["cancel_error"] is not None:
-                    why += f"; cancel rejected ({api_problem('cancel', st['cancel_error'])})"
-                problems.append(block(gh, post, repo, st["sha"], why))  # newest again: the run may have finished meanwhile
-            break
-        polls -= 1
-        sleep(POLL_SECONDS)
+        if pending:
+            nap = CONFIRM_SECONDS if any(st["sent"] is not None for st in pending) else POLL_SECONDS
+            sleep(nap)
+            elapsed += nap
     return problems
 
 
-def step(gh, post, sleep, repo: str, st: dict, problems: list[str]) -> bool:
-    """Advance one run toward 'invalidated'. True when done; False to look again after a wait; raises on API errors."""
+def step(gh, post, repo: str, st: dict, elapsed: int, problems: list[str]) -> bool:
+    """Advance one run toward 'invalidated' without waiting. True when done; False to look again after the shared
+    wait; raises on API errors. `elapsed` is the seconds the whole recheck has waited so far."""
     run_id, path = st["run"]["id"], f"repos/{repo}/actions/runs/{st['run']['id']}"
     state = gh(path)
+    if st["sent"] is not None:  # re-run asked: confirmed only by a NEW attempt, looked for a short while
+        if state["run_attempt"] > st["sent"]:
+            return True
+        if elapsed - st["since"] >= CONFIRM_POLLS * CONFIRM_SECONDS:
+            problems.append(block(gh, post, repo, st["sha"], f"run {run_id} re-run accepted but no new attempt appeared"))
+            return True
+        return False
     if state["status"] != "completed":
         if not st["cancelled"]:  # accepted once is enough; a rejected one is asked again next round
             try:
@@ -394,6 +398,12 @@ def step(gh, post, sleep, repo: str, st: dict, problems: list[str]) -> bool:
                 if st["cancel_error"] is None:  # first rejection: the run may finish green on the old verdict meanwhile
                     problems.append(block(gh, post, repo, st["sha"], f"run {run_id} cannot be cancelled and may finish green on the old verdict"))
                 st["cancel_error"] = e
+        if elapsed >= WAIT_POLLS * POLL_SECONDS:
+            why = f"run {run_id} did not stop after {WAIT_POLLS} polls"
+            if st["cancel_error"] is not None:
+                why += f"; cancel rejected ({api_problem('cancel', st['cancel_error'])})"
+            problems.append(block(gh, post, repo, st["sha"], why))  # newest again: the run may have finished meanwhile
+            return True
         return False
     if state.get("conclusion") in BLOCKING:  # not green already: nothing stale to merge on, the re-run only refreshes it
         try:
@@ -402,14 +412,8 @@ def step(gh, post, sleep, repo: str, st: dict, problems: list[str]) -> bool:
             problems.append(api_problem(f"run {run_id} is not green but cannot be re-run", e))
         return True
     post(f"{path}/rerun")
-    attempt = state["run_attempt"]
-    for look in range(CONFIRM_POLLS + 1):  # confirmed only by a NEW attempt; a short look, then block
-        if gh(path)["run_attempt"] > attempt:
-            return True
-        if look < CONFIRM_POLLS:
-            sleep(CONFIRM_SECONDS)
-    problems.append(block(gh, post, repo, st["sha"], f"run {run_id} re-run accepted but no new attempt appeared"))
-    return True
+    st["sent"], st["since"] = state["run_attempt"], elapsed
+    return gh(path)["run_attempt"] > st["sent"]  # one look right away, no wait; unconfirmed ones are looked at again
 
 
 def latest(runs: list[dict]) -> dict | None:
@@ -431,6 +435,8 @@ def affected_queue_commits(gh, gql, repo: str, default_branch: str, number: int)
         entries, uncertain = [], True
     for e in entries:
         try:
+            if not isinstance(e["position"], int):
+                raise ValueError("queue entry without a numeric position")
             parsed.append((e["position"], e["pullRequest"]["number"], e["headCommit"]["oid"]))
         except API_ERRORS:
             problems.append(f"malformed merge-queue entry at position {e.get('position') if isinstance(e, dict) else '?'}: its commit cannot be named")
