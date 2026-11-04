@@ -67,6 +67,7 @@
     "section_properties": "속성",
     "section_progress": "진행률",
     "section_description": "설명",
+    "section_wakeups": "웨이크업",
     "prop_start_date": "시작일",
     "prop_due_date": "마감일",
     "no_start_date": "시작일 없음",

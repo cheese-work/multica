@@ -111,14 +111,22 @@ func (h *Handler) CreatePersonalAccessToken(w http.ResponseWriter, r *http.Reque
 		prefix = prefix[:12]
 	}
 
-	pat, err := h.Queries.CreatePersonalAccessToken(r.Context(), db.CreatePersonalAccessTokenParams{
-		UserID:      parseUUID(userID),
-		Name:        req.Name,
-		TokenHash:   auth.HashToken(rawToken),
-		TokenPrefix: prefix,
-		ExpiresAt:   expiresAt,
-		Scopes:      req.Scopes,
+	var pat db.PersonalAccessToken
+	err = h.withCurrentSession(r, userID, func(queries *db.Queries) (err error) {
+		pat, err = queries.CreatePersonalAccessToken(r.Context(), db.CreatePersonalAccessTokenParams{
+			UserID:      parseUUID(userID),
+			Name:        req.Name,
+			TokenHash:   auth.HashToken(rawToken),
+			TokenPrefix: prefix,
+			ExpiresAt:   expiresAt,
+			Scopes:      req.Scopes,
+		})
+		return err
 	})
+	if errors.Is(err, errSessionRevoked) {
+		writeError(w, http.StatusUnauthorized, "session revoked")
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create token")
 		return
