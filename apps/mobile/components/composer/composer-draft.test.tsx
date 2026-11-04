@@ -266,4 +266,23 @@ describe("composers keep their draft across unmount and remount", () => {
     expect(input(t).props.editable).toBe(true);
     expect(input(t).props.value).toBe("hello");
   });
+
+  it("comment composer: a reply and a mention chosen while the draft loads survive", async () => {
+    const store = useComposerDraftsStore.getState();
+    store.patch("comment:i1", { text: "hello", reply, mentions: [mention] });
+    await draftPersistence.flush();
+    store.reset();
+
+    const loading = useComposerDraftsStore.getState().hydrate(SCOPE);
+    mount(comment());
+    const newReply = { commentId: "c2", actorName: "Bo", preview: "hi" };
+    const newMention = { type: "member" as const, id: "m1", name: "Mo" };
+    act(() => useReplyTargetStore.getState().setTarget(newReply));
+    act(() => useMentionDraftStore.getState().toggle(newMention));
+    await act(async () => loading);
+
+    expect(useReplyTargetStore.getState().target?.commentId).toBe("c2");
+    expect(useMentionDraftStore.getState().mentions).toEqual([mention, newMention]);
+    expect(useComposerDraftsStore.getState().drafts["comment:i1"]?.text).toBe("hello");
+  });
 });

@@ -10,10 +10,11 @@
  * text is NOT stored here: `chat-drafts-store` owns it.
  *
  * Disk is empty until `hydrate(scope)` runs (from the workspace layout).
- * While it loads, `patch` is ignored: a patch replaces whole fields (text,
- * mentions, reply) and would overwrite the saved ones, so the composer keeps
- * its input read-only until `hydrated`. Attachment updates are functional
- * and are replayed on top of the disk draft.
+ * Edits made while it loads are replayed on top of the disk draft per field:
+ * a reply replaces the saved one, mentions and attachments are added to the
+ * saved ones. `text` is the exception. A patch replaces it whole and would
+ * overwrite the saved text, so a `text` patch is ignored until `hydrated`
+ * and the composer keeps its input read-only until then.
  *
  * Scope-bound writes: a caller that outlives a workspace switch (an upload,
  * a send that settles late) passes the scope it started in as `forScope`; a
@@ -64,8 +65,8 @@ interface State {
   scopeId: string | null;
   /** True once the disk drafts of `scopeId` are merged into memory. */
   hydrated: boolean;
-  /** `forScope` is the scope the caller rendered in; see the header. Ignored
-   *  until `hydrated`. */
+  /** `forScope` is the scope the caller rendered in; see the header. A `text`
+   *  patch is ignored until `hydrated`. */
   patch: (
     key: string,
     patch: Partial<ComposerDraft>,
@@ -135,6 +136,15 @@ function persist(key: string, draft: ComposerDraft | undefined) {
   writeDisk(scope, key, draft);
 }
 
+function unionMentions(
+  saved: MentionChipDraft[],
+  added: MentionChipDraft[],
+): MentionChipDraft[] {
+  const isNew = (m: MentionChipDraft) =>
+    !saved.some((x) => x.type === m.type && x.id === m.id);
+  return [...saved, ...added.filter(isNew)];
+}
+
 // A failed send of a scope that was left: the submitted draft comes back,
 // followed by what the user typed there afterwards.
 function mergeDrafts(
@@ -142,11 +152,9 @@ function mergeDrafts(
   parked: ComposerDraft | undefined,
 ): ComposerDraft {
   if (!parked) return submitted;
-  const isNew = (m: MentionChipDraft) =>
-    !submitted.mentions.some((x) => x.type === m.type && x.id === m.id);
   return {
     text: mergeRestoredText(submitted.text, parked.text),
-    mentions: [...submitted.mentions, ...parked.mentions.filter(isNew)],
+    mentions: unionMentions(submitted.mentions, parked.mentions),
     attachments: [...submitted.attachments, ...parked.attachments],
     reply: parked.reply ?? submitted.reply,
   };
@@ -180,8 +188,20 @@ export const useComposerDraftsStore = create<State>((set, get) => {
     scopeId: null,
     hydrated: false,
     patch: (key, patch, forScope) => {
-      if (loading) return;
-      write(key, (draft) => ({ ...draft, ...patch }), forScope);
+      if (!loading) {
+        write(key, (draft) => ({ ...draft, ...patch }), forScope);
+        return;
+      }
+      const { text: _ignored, mentions, ...rest } = patch;
+      write(
+        key,
+        (draft) => ({
+          ...draft,
+          ...rest,
+          mentions: mentions ? unionMentions(draft.mentions, mentions) : draft.mentions,
+        }),
+        forScope,
+      );
     },
     patchAttachments: (key, update, forScope) =>
       write(

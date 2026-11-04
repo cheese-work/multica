@@ -278,4 +278,34 @@ describe("composer drafts survive unmount, route change and cold start", () => {
     const back = await coldStart("u1:ws1");
     expect(back.store.getState().drafts).toEqual({});
   });
+
+  it("a reply and a mention chosen before the drafts load are kept next to the saved ones", async () => {
+    const run1 = await coldStart();
+    run1.store.getState().patch("comment:i1", {
+      text: "hello",
+      reply,
+      mentions: [mention],
+    });
+    await settle();
+
+    vi.resetModules();
+    const store = (await import("./composer-drafts-store")).useComposerDraftsStore;
+    const loading = store.getState().hydrate("u1:ws1");
+    const newReply = { commentId: "c2", actorName: "Bo", preview: "hi" };
+    const newMention = { type: "member" as const, id: "m1", name: "Mo" };
+    store.getState().patch("comment:i1", { reply: newReply });
+    store.getState().patch("comment:i1", { mentions: [newMention] });
+    await loading;
+    await settle();
+
+    const expected = {
+      text: "hello",
+      reply: newReply,
+      mentions: [mention, newMention],
+      attachments: [],
+    };
+    expect(store.getState().drafts["comment:i1"]).toEqual(expected);
+    const run2 = await coldStart();
+    expect(run2.store.getState().drafts["comment:i1"]).toEqual(expected);
+  });
 });
