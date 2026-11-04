@@ -27,7 +27,7 @@ func NewProvider(t testing.TB) *Provider {
 		p.reqs = append(p.reqs, ProviderRequest{r.Method, r.URL.Path, r.Header.Get("Authorization"), string(body)})
 		p.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"type":"message","role":"assistant","content":[{"type":"text","text":"fake reply"}]}`)
+		_, _ = io.WriteString(w, `{"type":"message","role":"assistant","content":[{"type":"text","text":"fake reply"}]}`)
 	}))
 	t.Cleanup(srv.Close)
 	p.URL = srv.URL

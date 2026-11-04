@@ -84,7 +84,7 @@ func NewGitHub(t testing.TB, o GitHubOptions) *GitHub {
 		h := &cgi.Handler{Path: git, Root: "/git", Args: []string{"http-backend"}, Stderr: io.Discard,
 			Env: []string{"GIT_PROJECT_ROOT=" + o.Remote, "GIT_HTTP_EXPORT_ALL=1"}, InheritEnv: []string{"PATH", "HOME"}}
 		mux.HandleFunc("/git/{owner}/{repo}/{rest...}", func(w http.ResponseWriter, r *http.Request) {
-			if g.authorize(w, r, strings.TrimSuffix(r.PathValue("repo"), ".git"), isPush(r)) {
+			if g.authorize(w, r, strings.TrimSuffix(r.PathValue("repo"), ".git"), gitNeeds(r)) {
 				h.ServeHTTP(w, r)
 			}
 		})
@@ -149,7 +149,7 @@ func (g *GitHub) handleMint(w http.ResponseWriter, r *http.Request) {
 	g.mints = append(g.mints, rec)
 	g.mu.Unlock()
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"token": rec.token, "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
+	_ = json.NewEncoder(w).Encode(map[string]string{"token": rec.token, "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
 }
 
 func (g *GitHub) handleRevoke(w http.ResponseWriter, r *http.Request) {
@@ -175,10 +175,46 @@ func (g *GitHub) find(tok string) *mintRec {
 	return nil
 }
 
+// need is one permission requirement: any name in anyOf at the right level.
+// write needs "write"; otherwise "read" or "write" will do.
+type need struct {
+	anyOf []string
+	write bool
+}
+
+func (n need) met(m *mintRec) bool {
+	return slices.ContainsFunc(n.anyOf, func(name string) bool {
+		return m.Perms[name] == "write" || (!n.write && m.Perms[name] == "read")
+	})
+}
+
+func gitNeeds(r *http.Request) []need {
+	return []need{{[]string{"contents"}, isPush(r)}}
+}
+
+// apiNeeds maps an API path to the permission GitHub asks for it. An
+// endpoint the fake does not know needs "metadata" at the call's level, which
+// no write token holds, so an unknown write is refused.
+func apiNeeds(r *http.Request) []need {
+	write := r.Method != http.MethodGet
+	rest := strings.Split(r.PathValue("rest"), "/")
+	if write && len(rest) == 3 && rest[0] == "pulls" && rest[2] == "merge" {
+		return []need{{[]string{"pull_requests"}, true}, {[]string{"contents"}, true}}
+	}
+	anyOf, ok := map[string][]string{
+		"pulls": {"pull_requests"}, "issues": {"issues", "pull_requests"}, "actions": {"actions"},
+		"check-runs": {"checks"}, "check-suites": {"checks"}, "contents": {"contents"}, "git": {"contents"}, "commits": {"contents"},
+	}[rest[0]]
+	if !ok {
+		anyOf = []string{"metadata"}
+	}
+	return []need{{anyOf, write}}
+}
+
 // authorize answers 401 for a missing, unknown or revoked token, 404 for a
-// repository outside the token, and 403 for a write the permissions do not
-// cover, and reports whether the call may go on.
-func (g *GitHub) authorize(w http.ResponseWriter, r *http.Request, repo string, write bool) bool {
+// repository outside the token, and 403 when the permissions do not cover
+// what the call needs, and reports whether the call may go on.
+func (g *GitHub) authorize(w http.ResponseWriter, r *http.Request, repo string, needs []need) bool {
 	tok := bearer(r)
 	if _, pass, ok := r.BasicAuth(); ok {
 		tok = pass
@@ -192,7 +228,7 @@ func (g *GitHub) authorize(w http.ResponseWriter, r *http.Request, repo string, 
 		status = http.StatusUnauthorized
 	case !slices.Contains(m.RepoIDs, g.repos[full]):
 		status = http.StatusNotFound
-	case write && !slices.Contains(slices.Collect(maps.Values(m.Perms)), "write"):
+	case slices.ContainsFunc(needs, func(n need) bool { return !n.met(m) }):
 		status = http.StatusForbidden
 	}
 	g.calls = append(g.calls, fmt.Sprintf("%s /%s %d", r.Method, strings.TrimPrefix(r.URL.Path, "/"), status))
@@ -201,19 +237,20 @@ func (g *GitHub) authorize(w http.ResponseWriter, r *http.Request, repo string, 
 	}
 	if status != http.StatusOK {
 		http.Error(w, http.StatusText(status), status)
+		return false
 	}
-	return status == http.StatusOK
+	return true
 }
 
 func isPush(r *http.Request) bool {
 	return r.URL.Query().Get("service") == "git-receive-pack" || strings.HasSuffix(r.URL.Path, "/git-receive-pack")
 }
 
-// handleAPI knows no endpoint by name: after the scope check every call
-// answers 200 {}, so a merge a token may not do is refused by scope alone.
+// handleAPI answers 200 {} to every call that passes the scope check, so a
+// merge the token may not do is refused by scope alone.
 func (g *GitHub) handleAPI(w http.ResponseWriter, r *http.Request) {
-	if g.authorize(w, r, r.PathValue("repo"), r.Method != http.MethodGet) {
-		io.WriteString(w, "{}")
+	if g.authorize(w, r, r.PathValue("repo"), apiNeeds(r)) {
+		_, _ = io.WriteString(w, "{}")
 	}
 }
 

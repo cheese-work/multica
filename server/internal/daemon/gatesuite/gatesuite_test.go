@@ -126,7 +126,7 @@ func TestTokenScopeIsEnforcedOnTheAPI(t *testing.T) {
 			t.Errorf("%s: status %d, want %d", c.name, got, c.want)
 		}
 	}
-	push := mint(t, g, []int64{repoID}, PushPerms)
+	push := mint(t, g, []int64{repoID}, PRPushPerms)
 	if got := api(t, g, push, "PATCH", "/repos/o/r/pulls/1"); got != 200 {
 		t.Errorf("write token write: status %d, want 200", got)
 	}
@@ -167,7 +167,7 @@ func TestGitRemoteChecksTheToken(t *testing.T) {
 	if gitIn(t, work, "push", url(push), "main") == "ERR" {
 		t.Fatalf("push with write token must work: %v", g.Calls())
 	}
-	if got := gitIn(t, filepath.Join(root, "o/r.git"), "rev-parse", "main"); got != gitIn(t, work, "rev-parse", "main") {
+	if got := gitIn(t, filepath.Join(root, "o", "r.git"), "rev-parse", "main"); got != gitIn(t, work, "rev-parse", "main") {
 		t.Fatalf("bare repo has %s", got)
 	}
 	revoke(t, g, push)
@@ -199,7 +199,7 @@ func TestAgentPerformsActionsDirectlyAndReportsEachOutcome(t *testing.T) {
 	p := NewProvider(t)
 	dir := t.TempDir()
 	steps := []Step{
-		{Op: "exec", Argv: []string{"echo", "hi"}},
+		{Op: "exec", Data: "echo hi"},
 		{Op: "write", Path: filepath.Join(dir, "a"), Data: "hostile text"},
 		{Op: "read", Path: filepath.Join(dir, "a")},
 		{Op: "read", Path: filepath.Join(dir, "missing")},
@@ -229,5 +229,49 @@ func TestAgentPerformsActionsDirectlyAndReportsEachOutcome(t *testing.T) {
 	}
 	if r := p.Requests(); len(r) != 1 || r[0].Auth != "Bearer c" {
 		t.Errorf("provider saw %+v", r)
+	}
+}
+
+func TestPermissionMustMatchTheOperation(t *testing.T) {
+	g, _ := newGH(t)
+	work := t.TempDir()
+	gitIn(t, work, "init", "-b", "main")
+	os.WriteFile(filepath.Join(work, "f"), []byte("x"), 0o644)
+	gitIn(t, work, "add", ".")
+	gitIn(t, work, "commit", "-m", "c")
+	issuesW := mint(t, g, []int64{repoID}, Perms{"issues": "write"})
+	prW := mint(t, g, []int64{repoID}, Perms{"pull_requests": "write"})
+	both := mint(t, g, []int64{repoID}, Perms{"pull_requests": "write", "contents": "write"})
+	contentsW := mint(t, g, []int64{repoID}, PushPerms)
+	cases := []struct {
+		name         string
+		seq          int
+		method, path string
+		want         int
+	}{
+		{"issues:write cannot merge", issuesW, "PUT", "/repos/o/r/pulls/1/merge", 403},
+		{"issues:write cannot edit a PR", issuesW, "PATCH", "/repos/o/r/pulls/1", 403},
+		{"issues:write can comment", issuesW, "POST", "/repos/o/r/issues/1/comments", 200},
+		{"pull_requests:write alone cannot merge", prW, "PUT", "/repos/o/r/pulls/1/merge", 403},
+		{"pull_requests:write can edit a PR", prW, "PATCH", "/repos/o/r/pulls/1", 200},
+		{"pull_requests+contents write can merge", both, "PUT", "/repos/o/r/pulls/1/merge", 200},
+		{"contents:write cannot edit a PR", contentsW, "PATCH", "/repos/o/r/pulls/1", 403},
+		{"contents:write cannot write to an unknown endpoint", contentsW, "POST", "/repos/o/r/hooks", 403},
+	}
+	for _, c := range cases {
+		if got := api(t, g, c.seq, c.method, c.path); got != c.want {
+			t.Errorf("%s: status %d, want %d", c.name, got, c.want)
+		}
+	}
+	url := strings.Replace(g.GitURL("o/r"), "http://", "http://x-access-token:"+g.Token(issuesW)+"@", 1)
+	if gitIn(t, work, "push", url, "main") != "ERR" {
+		t.Error("issues:write must not push")
+	}
+}
+
+func TestAgentExecRunsAShellScript(t *testing.T) {
+	got := RunAgent(t, []Step{{Op: "exec", Data: "echo a | tr a b"}, {Op: "exec", Data: "echo out; exit 3"}})
+	if len(got) != 2 || !got[0].OK || got[0].Out != "b" || got[1].OK || got[1].Out != "out" {
+		t.Fatalf("outcomes %+v", got)
 	}
 }

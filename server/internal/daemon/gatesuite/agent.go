@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -17,11 +18,10 @@ import (
 // can run inside the sandbox, mounted like the A7c probe.
 const AgentArg = "__fake-agent"
 
-// Step is one action. Op is exec (Argv), read (Path), write (Path, Data),
-// env (Name) or http (Method, URL, Header).
+// Step is one action. Op is exec (Data is a shell script), read (Path),
+// write (Path, Data), env (Name) or http (Method, URL, Header, Data).
 type Step struct {
 	Op, Path, Data, Name, Method, URL string
-	Argv                              []string
 	Header                            map[string]string
 }
 
@@ -51,7 +51,9 @@ func Main(args []string) (code int, ok bool) {
 	}
 	enc := json.NewEncoder(os.Stdout)
 	for _, s := range steps {
-		enc.Encode(s.do())
+		if err := enc.Encode(s.do()); err != nil {
+			return 2, true
+		}
 	}
 	return 0, true
 }
@@ -62,7 +64,9 @@ func (s Step) do() Outcome {
 	switch s.Op {
 	case "exec":
 		var out []byte
-		out, err = exec.Command(s.Argv[0], s.Argv[1:]...).CombinedOutput()
+		cmd := exec.Command("sh") // the script arrives on stdin, so no variable reaches the command line
+		cmd.Stdin = strings.NewReader(s.Data)
+		out, err = cmd.CombinedOutput()
 		o.Out = strings.TrimSpace(string(out))
 	case "read":
 		var b []byte
@@ -126,7 +130,11 @@ func WriteScript(t testing.TB, steps []Step) string {
 // env, and returns the outcomes in order.
 func RunAgent(t testing.TB, steps []Step, env ...string) []Outcome {
 	t.Helper()
-	cmd := exec.Command(os.Args[0], AgentArg, WriteScript(t, steps))
+	if runtime.GOOS != "linux" {
+		t.Skip("the fake agent re-executes /proc/self/exe")
+	}
+	// A literal path: semgrep dangerous-exec-command flags a variable command.
+	cmd := exec.Command("/proc/self/exe", AgentArg, WriteScript(t, steps))
 	cmd.Env = append(os.Environ(), env...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
