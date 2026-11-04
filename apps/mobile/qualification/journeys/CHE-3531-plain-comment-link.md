@@ -29,11 +29,11 @@ uv run artemis run "$ARTEMIS_GOAL" --standalone --profile pro --verification-lev
 
 Use standalone mode so verification, test name, run ID, and trace flags apply to this run. If Artemis routes to or starts the shared daemon, stop and record the attempt as `FAIL`; do not stop a pre-existing shared daemon. Record process exit status, Artemis task/report identifiers, runner checkout SHA, configured model ID, and generated trace paths. Do not include API keys. Do not use model narration as the UI assertion.
 
-Confirm the tapped link target by the resulting issue identifier and exact title in the case row. The tapped `href` is not exposed in the Android accessibility hierarchy. A mismatch is `FAIL`; do not continue that case. For each fixed-build case, require the issue identifier in the native navigation header, the exact title in the issue header/body, and absence of `does not exist` and `issue not found` text. Also capture a screenshot with the identifier, title, and linked comment visible. Luna visually checks the screenshot for the named linked-comment evidence and records PASS/FAIL in the report. Sol signs the returned execution evidence when verifying the run. Capture only the target issue content needed for this check.
+Confirm the tapped link target by the resulting issue identifier and exact title in the case row. The tapped `href` is not exposed in the Android accessibility hierarchy. A mismatch is `FAIL`; do not continue that case. For each fixed-build case, Luna's screenshot oracle must confirm the complete issue-detail screen: the expected identifier is in the native navigation header, the exact title is in the `IssueHeaderCard` body, the expected linked timeline comment is visible, and no not-found/load-error message is present. For Case A, confirm the comment by its attached `replay.py` and `sample.py` files. For Case B, confirm “Chose: Accept card” and its answer link to the decision card. Record each location and visible-text check as PASS/FAIL. A screenshot that does not show all four checks is FAIL. Sol signs the returned execution evidence when verifying the run. Capture only the target issue content needed for this check.
 
 ## Independent UI assertion
 
-Artemis navigation and its final report are not the assertion. After navigation, capture the Android accessibility hierarchy and screenshot for the visible screen. The hierarchy must contain the issue identifier and exact title, and must not contain either not-found error string above. The screenshot is the visual oracle for the linked comment. Set `ANDROID_SERIAL`, `ARTEMIS_RUN_ID`, and `ARTIFACT_DIR` as specified above. The commands set the output paths and use a unique temporary file on the device:
+Artemis navigation and its final report are not the assertion. After navigation, capture the Android accessibility hierarchy and screenshot for the visible screen. The hierarchy is diagnostic evidence only; its text matches do not establish that the native navigation header or `IssueHeaderCard` is visible. Luna's screenshot review is the authoritative screen and content oracle, including the issue identifier's header location, exact title's `IssueHeaderCard` location, the case-specific linked comment, and absence of not-found/load-error messages. Set `ANDROID_SERIAL`, `ARTEMIS_RUN_ID`, and `ARTIFACT_DIR` as specified above. The commands set the output paths and use a unique temporary file on the device:
 
 ```sh
 set -e
@@ -50,32 +50,26 @@ adb -s "$ANDROID_SERIAL" shell rm "$REMOTE_XML"
 trap - EXIT
 ```
 
-Keep the XML and screenshot in the run artifacts. If the remote path already exists, choose a new run identifier; do not overwrite it. Record the cleanup result. Set `ISSUE_IDENTIFIER` and `ISSUE_TITLE` to the expected values from the case row. Set `ISSUE_DETAIL_MARKER` to the exact native navigation header identifier (`Stack.Screen` title) from `issue/[id].tsx`; it must equal `ISSUE_IDENTIFIER`. The exact title is the issue body node rendered by `IssueHeaderCard`:
+Keep the XML and screenshot in the run artifacts. If the remote path already exists, choose a new run identifier; do not overwrite it. Record the cleanup result. Set `ISSUE_IDENTIFIER` and `ISSUE_TITLE` to the expected values from the case row. These whole-document matches are diagnostic only and cannot pass a case:
 
 ```sh
-grep -Fq -- "$ISSUE_DETAIL_MARKER" "$UI_XML" && grep -Fq -- "$ISSUE_TITLE" "$UI_XML" && ! grep -Fq -- 'does not exist' "$UI_XML" && ! grep -Fq -- 'issue not found' "$UI_XML"
+grep -Fq -- "$ISSUE_IDENTIFIER" "$UI_XML" && grep -Fq -- "$ISSUE_TITLE" "$UI_XML" && ! grep -Fq -- 'does not exist' "$UI_XML" && ! grep -Fq -- 'issue not found' "$UI_XML"
 ```
 
-All conditions are required. A missing match or present error string is a failing assertion. Record the command and exit status. Keep the hierarchy and screenshot as evidence.
+Record the command and exit status as diagnostic evidence. A generic hierarchy node can contain these strings while navigation failed, so the grep result is never the case assertion. The screenshot oracle above controls PASS/FAIL.
 
 ## Comparison and qualification sequence
 
-1. Install the pre-fix APK with `adb install -r`. Do not uninstall between builds. If replacement requires uninstall due to signature/package mismatch, mark the affected comparison and subsequent fixed case `NOT-RUN`; do not clear app data or change the authenticated account. Open the existing Comment link for Case A, then Case B. Record the observed error state and capture one screenshot and hierarchy per issue. The expected comparison is the reported false “does not exist” failure; this is the pre-fix application regression observation, not the deliberate assertion negative control. Run the positive UI assertion against each pre-fix hierarchy; each must exit non-zero and that exact exit status must be recorded.
-2. Install the fixed APK with `adb install -r`, without uninstalling. Run Cases A and B and require both positive UI assertions to exit 0. Capture one screenshot and hierarchy for each issue.
-3. Return to the same source card and repeat Case A from a clean app navigation state without clearing app data. Require the positive UI assertion to exit 0 and retain the rerun screenshot and hierarchy. This is the clean representative rerun for the API 35 x86_64 first-run class qualification.
-4. On the fixed build, deliberately run Case A's positive assertion against an expectation that the target is absent:
+1. Install the pre-fix APK with `adb install -r`. Do not uninstall between builds. If replacement requires uninstall due to signature/package mismatch, mark the affected comparison and subsequent fixed case `NOT-RUN`; do not clear app data or change the authenticated account. Before calling Case B a pre-fix regression observation, verify from existing production metadata that the CHE-1554 regression precondition is present. Do not create or edit production metadata to establish it. If the condition is absent or cannot be verified, mark only that comparison `NOT-RUN` with the reason. Open the existing Comment link for Case A, then Case B when eligible. Record the observed error state and capture one screenshot and hierarchy per issue. The expected Case A comparison is the reported false “does not exist” failure; this is the pre-fix application regression observation, not the deliberate assertion negative control. The hierarchy grep is diagnostic only.
+2. Install the fixed APK with `adb install -r`, without uninstalling. Run Cases A and B. Require the screenshot oracle to pass each case; record hierarchy grep output as diagnostic only. Capture one screenshot and hierarchy for each issue.
+3. Return to the same source card and repeat Case A from a clean app navigation state without clearing app data. Require the screenshot oracle to pass again and retain the rerun screenshot and hierarchy. This is the clean representative rerun for the API 35 x86_64 first-run class qualification.
+4. **Qualification blocker: pinned Artemis cannot currently demonstrate the required failing exit for an assertion failure.** At runner `cbf2fea84cbd47ea54053239679ab521b01d4d23`, `artemis/sdk/agent.py` logs `tests_failed > 0`, finalizes the task without an error, and ends the session as `completed`; `artemis/interfaces/cli/commands/run.py` does not inspect the returned assertion summary. A strict Checker assertion failure can therefore produce a successful CLI exit. A shell inversion or a wrapper that changes that exit does not prove Artemis reports a failing exit. Do not claim the API 35 x86_64 class is qualified until the pinned runner or an approved report-gating path provides an Artemis-run-linked failing exit and preserves the report and traces. Record this qualification requirement as `BLOCKED`, with the run/report identifiers and artifact paths if an attempt is later authorized. Do not alter the runner in this case.
 
-   ```sh
-   ! grep -Fq -- "$ISSUE_IDENTIFIER" "$UI_XML"
-   ```
-
-   The assertion must exit non-zero because the fixed screen contains the target. Record this as `EXPECTED ASSERTION FAILURE` with its command and exit status. It is not an app regression and must not be counted as one.
-
-The pre-fix comparison, fixed-build pass, clean rerun, and deliberate assertion failure are separate attempts. This deliberate failure exercises the independent assertion script only; Artemis's own failure-reporting path is outside this device-class qualification. Never change the testcase expectation to turn an unexpected result into a pass. If the accessibility hierarchy cannot expose the issue identifier and title, record the limitation as `BLOCKED`; do not replace the oracle with Artemis narration alone.
+The pre-fix comparison, fixed-build pass, clean rerun, and any future Artemis-reported controlled failure are separate attempts. Never change the testcase expectation to turn an unexpected result into a pass. If the accessibility hierarchy cannot expose the issue identifier and title, retain it as diagnostic evidence and use the screenshot oracle; missing or unreadable screenshot evidence is `BLOCKED`.
 
 ## Setup, synchronization, and cleanup
 
-- Before every attempt, confirm the installed APK SHA-256 and app source pin in the report. Poll for up to 60 seconds by repeating `adb -s "$ANDROID_SERIAL" shell uiautomator dump "$REMOTE_XML"` and pulling the hierarchy. Treat dump failure, including a null root node, as retryable until the deadline. Stop polling when the issue identifier and title appear and neither error string is present. Record timeout as `FAIL` with the last observed state.
+- Before every attempt, confirm the installed APK SHA-256 and app source pin in the report. Poll for up to 60 seconds by repeating `adb -s "$ANDROID_SERIAL" shell uiautomator dump "$REMOTE_XML"` and pulling the hierarchy. Each dump may overwrite only this run's unique `REMOTE_XML`; do not overwrite a pre-existing path. Treat dump failure, including a null root node, as retryable until the deadline. Stop polling when the target issue screen is visually settled; hierarchy text is diagnostic and cannot establish screen identity. Record timeout as `FAIL` with the last observed state.
 - Confirm the app has an authorized, already authenticated account after each `adb install -r`. Do not put credentials in the case, command history, logs, screenshots, or report. If authentication is unavailable, record `NOT-RUN`.
 - Reset between attempts by returning to the same existing source chat/card and reopening the plain `Comment` link. Do not clear app data, reset or reboot the AVD, restart shared ADB, or modify account/workspace data.
 - Target all device commands at the exact serial from the active grant. Use a unique, task-scoped temporary hierarchy path and remove that exact path after collection. Stop only processes started by this run and record cleanup and release evidence for Sol.
@@ -83,15 +77,15 @@ The pre-fix comparison, fixed-build pass, clean rerun, and deliberate assertion 
 
 ## Result states
 
-- Fixed-build positive assertion: `PASS` only when the exact issue identifier and title are present, both not-found strings are absent, and Luna's screenshot review confirms the named linked comment is visible.
+- Fixed-build case: `PASS` only when Luna's screenshot review confirms the expected identifier in the native navigation header, exact title in `IssueHeaderCard`, the named linked comment, and absence of not-found/load-error messages.
 - Pre-fix comparison: record the observed error; never label it as the deliberate assertion failure.
-- Clean rerun: `PASS` only when the same fixed-build positive assertion passes again after the defined navigation reset.
-- Deliberate negative control: `EXPECTED ASSERTION FAILURE` only when the inverted assertion exits non-zero while the fixed screen still shows the expected issue.
+- Clean rerun: `PASS` only when the same fixed-build screenshot oracle passes again after the defined navigation reset.
+- Artemis failure-path qualification: remains `BLOCKED` until an Artemis-run-linked controlled assertion failure has a failing exit and its report and traces are preserved. Shell inversion alone does not qualify the runner.
 - Missing grant, missing source card, missing artifact, uncertain cleanup, or unavailable target: `NOT-RUN` or `BLOCKED`, never `PASS`.
 
 ## References
 
 - PR #918 documents the `metadata.decision_park` parse failure and the two issue repros.
 - `apps/mobile/app/(app)/[workspace]/issue/[id].tsx` renders the issue detail and loading/error states.
-- `apps/mobile/components/issue/issue-header-card.tsx` renders the issue identifier and title used by the independent UI assertion.
+- `apps/mobile/components/issue/issue-header-card.tsx` renders the issue identifier and title locations checked by Luna's screenshot oracle.
 - Android execution, artifact, qualification, and cleanup requirements are governed by the live Android device squad grant and policy.
