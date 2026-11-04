@@ -792,6 +792,14 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Same no-FK chore for the DM progress lane this session roots, and its follows.
+	if err := qtx.DeleteDMProgressForLineage(r.Context(), db.DeleteDMProgressForLineageParams{
+		LineageID: session.ID, WorkspaceID: session.WorkspaceID,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete dm progress follows")
+		return
+	}
+
 	// The DM is going away, so the notifications it raised close with it.
 	closedRecords, err := qtx.MarkDMRepliesRead(r.Context(), db.MarkDMRepliesReadParams{ChatSessionID: session.ID, RecipientID: session.CreatorID})
 	if err != nil {
