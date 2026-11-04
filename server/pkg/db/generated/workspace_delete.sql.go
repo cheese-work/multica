@@ -381,6 +381,9 @@ deleted_chat_wakeups AS (
 deleted_github_dispatch_halts AS (
     DELETE FROM github_dispatch_halt WHERE workspace_id = $1
 ),
+deleted_github_dispatch_halt_audits AS (
+    DELETE FROM github_dispatch_halt_audit WHERE workspace_id = $1
+),
 deleted_decision_waits AS (
     DELETE FROM decision_wait WHERE workspace_id = $1
 ),

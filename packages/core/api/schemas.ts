@@ -4351,3 +4351,11 @@ export const RuntimeProfileSchema = z.lazy(() => z
     runtime_type: profile.runtime_type || profile.protocol_family,
   })));
 export const RuntimeProfileListSchema = z.lazy(() => z.array(RuntimeProfileSchema));
+
+// GET /api/agent-decisions/brief carries more (decisions, pilot); the Settings
+// switch reads only the setting and the automatic-stop record.
+export const AgentDecisionSettingSchema = z.lazy(() => z.object({
+  enabled: z.boolean(),
+  stopped: z.object({ reason: z.string().catch("") }).nullish().transform((v) => v ?? null),
+}).loose());
+export type AgentDecisionSetting = z.infer<typeof AgentDecisionSettingSchema>;

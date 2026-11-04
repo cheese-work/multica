@@ -29,14 +29,21 @@ ON CONFLICT (lineage_id) DO NOTHING;
 SELECT * FROM dm_progress_lane WHERE lineage_id = $1 FOR UPDATE;
 
 -- name: InsertDMProgressFollow :one
--- No row comes back when an active follow already exists. An unfollowed one is
--- reactivated with the new source, mute and baseline status.
-INSERT INTO dm_progress_follow (workspace_id, issue_id, lineage_id, owner_user_id, source, muted_at, last_rendered_status, parent_follow_id)
-VALUES ($1, $2, $3, $4, $5, sqlc.narg('muted_at'), $6, sqlc.narg('parent_follow_id'))
+-- Adds reasons to the follow of (issue, lineage). An active follow gains the
+-- reasons and keeps its mute. An unfollowed row is a negative override: only an
+-- explicit follow (origin or manual) reactivates it, with exactly the new
+-- reasons, mute and baseline status; an inherited one returns no row.
+INSERT INTO dm_progress_follow (workspace_id, issue_id, lineage_id, owner_user_id, reasons, muted_at, last_rendered_status)
+VALUES ($1, $2, $3, $4, sqlc.arg('reasons')::text[], sqlc.narg('muted_at'), $5)
 ON CONFLICT (issue_id, lineage_id) DO UPDATE
-SET state = 'active', source = EXCLUDED.source, muted_at = EXCLUDED.muted_at,
-    last_rendered_status = EXCLUDED.last_rendered_status, parent_follow_id = EXCLUDED.parent_follow_id
-WHERE dm_progress_follow.state = 'unfollowed'
+SET reasons = CASE
+        WHEN dm_progress_follow.state = 'unfollowed' THEN EXCLUDED.reasons
+        ELSE (SELECT COALESCE(array_agg(DISTINCT r ORDER BY r), '{}') FROM unnest(dm_progress_follow.reasons || EXCLUDED.reasons) AS r)
+    END,
+    muted_at = CASE WHEN dm_progress_follow.state = 'unfollowed' THEN EXCLUDED.muted_at ELSE dm_progress_follow.muted_at END,
+    last_rendered_status = CASE WHEN dm_progress_follow.state = 'unfollowed' THEN EXCLUDED.last_rendered_status ELSE dm_progress_follow.last_rendered_status END,
+    state = 'active'
+WHERE dm_progress_follow.state = 'active' OR sqlc.arg('explicit')::boolean
 RETURNING *;
 
 -- name: ListActiveDMProgressFollowsForIssue :many
@@ -60,9 +67,21 @@ WHERE issue_id = $1 AND lineage_id = $2 AND state = 'active'
 RETURNING *;
 
 -- name: UnfollowDMProgressFollow :one
+-- Scope "issue": drops every reason of this issue's follow. The empty row stays
+-- as the negative override.
 UPDATE dm_progress_follow
-SET state = 'unfollowed'
+SET state = 'unfollowed', reasons = '{}'
 WHERE issue_id = $1 AND lineage_id = $2 AND state = 'active'
+RETURNING *;
+
+-- name: DropInheritedDMProgressReason :many
+-- Scope "root": removes the reason 'inherited:<root>' from every follow of the
+-- lane. A follow left with no reason is unfollowed; one with another reason
+-- (a manual follow, another root) stays active.
+UPDATE dm_progress_follow
+SET reasons = array_remove(reasons, sqlc.arg('reason')::text),
+    state = CASE WHEN cardinality(array_remove(reasons, sqlc.arg('reason')::text)) = 0 THEN 'unfollowed' ELSE state END
+WHERE lineage_id = $1 AND state = 'active' AND sqlc.arg('reason')::text = ANY(reasons)
 RETURNING *;
 
 -- name: DeleteDMProgressForIssue :exec

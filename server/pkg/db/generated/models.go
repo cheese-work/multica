@@ -1056,6 +1056,7 @@ type DecisionRequest struct {
 	ProjectID             pgtype.UUID        `json:"project_id"`
 	Kind                  string             `json:"kind"`
 	ExpiresAt             pgtype.Timestamptz `json:"expires_at"`
+	AnswerRevision        int32              `json:"answer_revision"`
 }
 
 type DecisionWait struct {
@@ -1135,13 +1136,12 @@ type DmProgressFollow struct {
 	IssueID            pgtype.UUID        `json:"issue_id"`
 	LineageID          pgtype.UUID        `json:"lineage_id"`
 	OwnerUserID        pgtype.UUID        `json:"owner_user_id"`
-	Source             string             `json:"source"`
 	State              string             `json:"state"`
 	MutedAt            pgtype.Timestamptz `json:"muted_at"`
 	LastRenderedStatus string             `json:"last_rendered_status"`
 	LastImmediateAt    pgtype.Timestamptz `json:"last_immediate_at"`
-	ParentFollowID     pgtype.UUID        `json:"parent_follow_id"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	Reasons            []string           `json:"reasons"`
 }
 
 type DmProgressLane struct {
@@ -1183,6 +1183,19 @@ type GithubDispatchHalt struct {
 	HaltedAt    pgtype.Timestamptz `json:"halted_at"`
 }
 
+type GithubDispatchHaltAudit struct {
+	ID           pgtype.UUID        `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	Scope        string             `json:"scope"`
+	Halted       bool               `json:"halted"`
+	ActorID      pgtype.UUID        `json:"actor_id"`
+	ActorSource  string             `json:"actor_source"`
+	RunsRevoked  int32              `json:"runs_revoked"`
+	SweepFailed  bool               `json:"sweep_failed"`
+	SweepPending bool               `json:"sweep_pending"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
 type GithubInstallation struct {
 	ID               pgtype.UUID        `json:"id"`
 	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
@@ -1193,6 +1206,7 @@ type GithubInstallation struct {
 	ConnectedByID    pgtype.UUID        `json:"connected_by_id"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	AccountID        pgtype.Int8        `json:"account_id"`
 }
 
 type GithubPendingCheckSuite struct {

@@ -81,6 +81,10 @@ vi.mock("../../navigation", () => ({
   useNavigation: () => ({ push: vi.fn() }),
 }));
 
+vi.mock("./agent-decisions-row", () => ({
+  AgentDecisionsRow: () => <div data-testid="agent-decisions-row" />,
+}));
+
 vi.mock("./delete-workspace-dialog", () => ({
   DeleteWorkspaceDialog: () => null,
 }));
@@ -290,6 +294,17 @@ describe("WorkspaceTab — automatic updates", () => {
     expect(mockUpdateWorkspace).not.toHaveBeenCalled();
     expect(screen.getByRole("textbox", { name: "Compact prompt" })).toHaveValue("Saved from CLI.");
     expect(screen.getByText("Source: workspace")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["owner", true],
+    ["admin", false],
+    ["member", false],
+  ] as const)("shows the agent decisions row to a %s: %s", (role, shown) => {
+    membersRef.current = [{ user_id: "user-1", role, name: "Ada" }];
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    expect(screen.queryByTestId("agent-decisions-row") !== null).toBe(shown);
   });
 
   // CHE-1806: settings.auto_compact saves through its own request field.
