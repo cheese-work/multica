@@ -14,7 +14,7 @@
 name: pr-ready
 # The recheck workflow finds this PR's run by this name (two PRs can share one head SHA). Trusted: this definition
 # runs from the default branch, and the number is an integer.
-run-name: "pr-ready #${{ github.event.pull_request.number }}"
+run-name: pr-ready-${{ github.event.pull_request.number }}
 
 on:
   pull_request_target:

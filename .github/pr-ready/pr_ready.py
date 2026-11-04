@@ -71,7 +71,7 @@ AGENT_LABS = {
     **dict.fromkeys(("x99-agy-gemini", "x99-agy-gemini-ux"), "google"),
 }
 NO_QUEUE = "no merge queue found for the base branch"
-RUN_NAME = "pr-ready #{}"  # the pr-ready.yml `run-name`; the recheck matches runs to a PR by it
+RUN_NAME = "pr-ready-{}"  # the pr-ready.yml `run-name`; the recheck matches runs to a PR by it
 WAIT_POLLS, POLL_SECONDS = 40, 15
 MAX_TREE_DIRS = 100
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
