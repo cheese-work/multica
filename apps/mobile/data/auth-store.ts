@@ -12,6 +12,7 @@
 import { create } from "zustand";
 import type { User } from "@multica/core/types";
 import { api, ApiError } from "./api";
+import { clearAllDrafts } from "./draft-persistence";
 import { clearToken, getToken, setToken } from "./secure-storage";
 import { invalidateSessionEpoch } from "./session-epoch";
 import { useWorkspaceStore } from "./workspace-store";
@@ -57,6 +58,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         invalidateSessionEpoch();
         await clearToken();
         api.setToken(null);
+        await clearAllDrafts();
       }
       set({ user: null, isLoading: false });
     }
@@ -85,6 +87,8 @@ export const useAuthStore = create<AuthState>((set) => ({
     invalidateSessionEpoch();
     await clearToken();
     api.setToken(null);
+    // Unsent drafts belong to the account that is leaving.
+    await clearAllDrafts();
     set({ user: null });
   },
 

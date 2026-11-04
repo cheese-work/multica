@@ -20,6 +20,7 @@ import { useNewIssueDraftResetOnWorkspaceChange } from "@/data/stores/new-issue-
 import { useNewProjectDraftResetOnWorkspaceChange } from "@/data/stores/new-project-draft-store";
 import { useChatSessionPickerResetOnWorkspaceChange } from "@/data/stores/chat-session-picker-store";
 import { useChatSessionActionsResetOnWorkspaceChange } from "@/data/stores/chat-session-actions-store";
+import { useDraftLifecycle } from "@/data/stores/use-draft-lifecycle";
 import { useT } from "@/lib/i18n";
 
 /**
@@ -126,6 +127,7 @@ export default function WorkspaceLayout() {
   useNewProjectDraftResetOnWorkspaceChange(matched?.id ?? null);
   useChatSessionPickerResetOnWorkspaceChange(matched?.id ?? null);
   useChatSessionActionsResetOnWorkspaceChange(matched?.id ?? null);
+  useDraftLifecycle(matched?.id ?? null);
 
   // Wait for the workspaces list before deciding membership — otherwise a
   // valid deep link would briefly redirect away on cold start.
