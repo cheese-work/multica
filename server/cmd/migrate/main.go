@@ -247,6 +247,8 @@ var concurrentIndexCleanups = map[string]string{
 	"587_wakeup_aggregate_reservation_identity_index":           "wakeup_aggregate_reservation_identity_idx",
 	"588_wakeup_aggregate_reservation_window_index":             "wakeup_aggregate_reservation_window_idx",
 	"589_wakeup_aggregate_blocked_index":                        "issue_wakeup_aggregate_blocked_idx",
+	"923_dm_progress_follow_issue_lineage_idx":                  "idx_dm_progress_follow_issue_lineage",
+	"924_dm_progress_follow_lineage_idx":                        "idx_dm_progress_follow_lineage",
 	"591_wakeup_aggregate_reservation_age_index":                "wakeup_aggregate_reservation_age_idx",
 	"632_wakeup_scoped_event_id_index":                          "wakeup_scoped_event_id_idx",
 	"633_wakeup_scoped_event_pending_index":                     "wakeup_scoped_event_pending_idx",
