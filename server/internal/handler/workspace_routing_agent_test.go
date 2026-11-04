@@ -41,7 +41,7 @@ func routedAgent(t *testing.T, wsID, status string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := testHandler.routingAgentFor(context.Background(), ws, db.Project{}, status)
+	id := routingAgentFor(context.Background(), testHandler.Queries, ws, db.Project{}, status)
 	if !id.Valid {
 		return ""
 	}

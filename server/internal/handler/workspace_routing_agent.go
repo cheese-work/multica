@@ -38,8 +38,8 @@ func routingAgentFromSettings(settings map[string]any) RoutingAgentConfig {
 	return service.RoutingAgentFromSettings(settings)
 }
 
-func (h *Handler) loadRoutingAgent(ctx context.Context, ws pgtype.UUID) (RoutingAgentConfig, error) {
-	row, err := h.Queries.GetWorkspace(ctx, ws)
+func loadRoutingAgent(ctx context.Context, q *db.Queries, ws pgtype.UUID) (RoutingAgentConfig, error) {
+	row, err := q.GetWorkspace(ctx, ws)
 	if err != nil {
 		return RoutingAgentConfig{}, err
 	}
@@ -52,12 +52,12 @@ func (h *Handler) loadRoutingAgent(ctx context.Context, ws pgtype.UUID) (Routing
 // or an invalid id when the step keeps its own handler. The configured agent
 // is skipped when archived, then the fallback is tried. A read error routes
 // nothing: the step's own handler is always a safe owner.
-func (h *Handler) routingAgentFor(ctx context.Context, ws pgtype.UUID, project db.Project, status string) pgtype.UUID {
-	cfg, err := h.loadRoutingAgent(ctx, ws)
+func routingAgentFor(ctx context.Context, q *db.Queries, ws pgtype.UUID, project db.Project, status string) pgtype.UUID {
+	cfg, err := loadRoutingAgent(ctx, q, ws)
 	if err != nil || cfg.AgentID == "" {
 		return pgtype.UUID{}
 	}
-	primary := cfg.AgentFor(service.WorkflowScope(ctx, h.Queries, project), status)
+	primary := cfg.AgentFor(service.WorkflowScope(ctx, q, project), status)
 	if primary == "" {
 		return pgtype.UUID{}
 	}
@@ -66,7 +66,7 @@ func (h *Handler) routingAgentFor(ctx context.Context, ws pgtype.UUID, project d
 		if err != nil {
 			continue
 		}
-		agent, err := h.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: id, WorkspaceID: ws})
+		agent, err := q.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: id, WorkspaceID: ws})
 		if err == nil && !agent.ArchivedAt.Valid {
 			return id
 		}
@@ -87,7 +87,7 @@ func (h *Handler) GetRoutingAgent(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	cfg, err := h.loadRoutingAgent(r.Context(), member.WorkspaceID)
+	cfg, err := loadRoutingAgent(r.Context(), h.Queries, member.WorkspaceID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load routing agent")
 		return
