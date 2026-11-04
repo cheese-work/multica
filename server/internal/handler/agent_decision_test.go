@@ -255,3 +255,13 @@ func TestAgentDecisionLinkIsRelativeEvenWithAppURL(test *testing.T) {
 		}
 	}
 }
+
+func TestAgentDecisionRecordRefChatIsMarkdownLink(test *testing.T) {
+	link := "/ws/issues/CHE-1#comment-c1"
+	if got := agentDecisionRecordRef(link, false); got != link {
+		test.Errorf("inbox: got %q, want plain %q", got, link)
+	}
+	if got, want := agentDecisionRecordRef(link, true), "[open the record]("+link+")"; got != want {
+		test.Errorf("chat: got %q, want %q", got, want)
+	}
+}

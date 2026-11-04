@@ -367,8 +367,9 @@ func (h *Handler) sendAgentDecisionNotice(ctx context.Context, workspaceID, issu
 	var items []db.InboxItem
 	var messages []db.ChatMessage
 	for _, owner := range owners {
-		body := fmt.Sprintf("Agents decided %s on %s (%s).\nRecord: %s\nReview within %d hours; a later veto still works.\nTo veto, comment on the issue:\n%s\n\nfollowed by your reason.",
-			gate, identifier, title, link, int(agentDecisionReviewTarget/time.Hour), agentDecisionVetoLine(instance, sha, uuidToString(owner)))
+		vetoLine := agentDecisionVetoLine(instance, sha, uuidToString(owner))
+		body := agentDecisionNoticeBody(gate, identifier, title, agentDecisionRecordRef(link, false), vetoLine)
+		chatBody := agentDecisionNoticeBody(gate, identifier, title, agentDecisionRecordRef(link, true), vetoLine)
 		item, inserted, err := inbox.CreateIfEligible(ctx, queries, db.CreateInboxItemParams{
 			ID: dbid.NewV7(), WorkspaceID: workspaceID, RecipientType: "member", RecipientID: owner,
 			Type: "agent_decision_notice", Severity: "info", IssueID: issueID,
@@ -382,7 +383,7 @@ func (h *Handler) sendAgentDecisionNotice(ctx context.Context, workspaceID, issu
 			return nil, nil, fmt.Errorf("owner %s did not receive the notice item", uuidToString(owner))
 		}
 		items = append(items, item)
-		message, err := h.copyNoticeToTopicThread(ctx, queries, issue, proposer, owner, body)
+		message, err := h.copyNoticeToTopicThread(ctx, queries, issue, proposer, owner, chatBody)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -521,4 +522,18 @@ func (h *Handler) SetAgentDecisionJev(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"agent_id": uuidToString(agentUUID), "mode": body.Mode})
+}
+
+// The inbox shows its body as plain text; chat renders markdown, which links
+// only a markdown link, not a bare root-relative path.
+func agentDecisionRecordRef(link string, markdown bool) string {
+	if markdown && link != "" {
+		return "[open the record](" + link + ")"
+	}
+	return link
+}
+
+func agentDecisionNoticeBody(gate, identifier, title, recordRef, vetoLine string) string {
+	return fmt.Sprintf("Agents decided %s on %s (%s).\nRecord: %s\nReview within %d hours; a later veto still works.\nTo veto, comment on the issue:\n%s\n\nfollowed by your reason.",
+		gate, identifier, title, recordRef, int(agentDecisionReviewTarget/time.Hour), vetoLine)
 }
