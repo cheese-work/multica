@@ -92,6 +92,7 @@ func TestCanonicalIssueTableFingerprintNormalizesSetLikeArrays(t *testing.T) {
 			Statuses:        []string{"todo", "backlog", "todo"},
 			ProjectIDs:      []string{"b", "a"},
 			ProjectStatuses: []string{"planned", "in_progress", "planned"},
+			WorkflowIDs:     []string{"w-b", "w-a", "w-b"},
 		},
 		Sort: issueTableSortRequest{Field: "title", Direction: "asc"},
 	}
@@ -101,6 +102,7 @@ func TestCanonicalIssueTableFingerprintNormalizesSetLikeArrays(t *testing.T) {
 			Statuses:        []string{"backlog", "todo"},
 			ProjectIDs:      []string{"a", "b"},
 			ProjectStatuses: []string{"in_progress", "planned"},
+			WorkflowIDs:     []string{"w-a", "w-b"},
 		},
 		Sort: issueTableSortRequest{Field: "title", Direction: "asc"},
 	}

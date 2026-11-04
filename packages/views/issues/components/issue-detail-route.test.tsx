@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, renderHook, waitFor } from "@testing-library/react";
+import { fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { setApiInstance } from "@multica/core/api";
-import type { ApiClient } from "@multica/core/api/client";
+import { ApiError, type ApiClient } from "@multica/core/api/client";
+import { renderWithI18n } from "../../test/i18n";
 import { NavigationProvider } from "../../navigation";
 import type { NavigationAdapter } from "../../navigation";
 import { IssueDetail } from "./issue-detail";
@@ -127,7 +128,7 @@ describe("IssueDetailRoute with an identifier that names no issue", () => {
     expect(vi.isMockFunction(IssueDetail)).toBe(false);
     replace.mockClear();
     push.mockClear();
-    const getIssue = vi.fn().mockRejectedValue(new Error("issue not found"));
+    const getIssue = vi.fn().mockRejectedValue(new ApiError("issue not found", 404, "Not Found"));
     setApiInstance({ getIssue } as unknown as ApiClient);
     const qc = new QueryClient({
       defaultOptions: { queries: { staleTime: Infinity, retry: false } },
@@ -177,6 +178,43 @@ describe("IssueDetailRoute with an identifier that names no issue", () => {
 
     // A failed resolve must never rewrite the URL.
     expect(replace).not.toHaveBeenCalled();
+    qc.clear();
+  });
+});
+
+describe("IssueDetailRoute when the lookup fails for a reason other than 404", () => {
+  // Regression (CHE-3411): a 5xx opened as "does not exist or has been deleted".
+  it("offers a retry instead of claiming the issue is deleted", async () => {
+    const getIssue = vi
+      .fn()
+      .mockRejectedValue(new ApiError("boom", 500, "Internal Server Error"));
+    setApiInstance({ getIssue } as unknown as ApiClient);
+    const qc = new QueryClient({
+      defaultOptions: { queries: { staleTime: Infinity, retry: false } },
+    });
+
+    renderWithI18n(
+      <QueryClientProvider client={qc}>
+        <NavigationProvider
+          value={{
+            push,
+            replace,
+            back: vi.fn(),
+            pathname: "/acme/issues/ZZZ-134",
+            searchParams: new URLSearchParams(),
+            hash: "",
+            getShareableUrl: (p: string) => `https://app.multica.com${p}`,
+          }}
+        >
+          <IssueDetailRoute routeId="ZZZ-134" />
+        </NavigationProvider>
+      </QueryClientProvider>,
+    );
+
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expect(screen.queryByText(/does not exist or has been deleted/)).not.toBeInTheDocument();
+    fireEvent.click(retry);
+    await waitFor(() => expect(getIssue).toHaveBeenCalledTimes(2));
     qc.clear();
   });
 });

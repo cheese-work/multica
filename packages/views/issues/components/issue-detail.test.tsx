@@ -9,6 +9,7 @@ import { issueStatusKeys } from "@multica/core/issue-statuses";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { toast } from "sonner";
 import { useResolvedExpandStore } from "@multica/core/issues/stores/resolved-expand-store";
+import { ApiError } from "@multica/core/api/client";
 // Imported from the barrel (not the submodule path) so this is the exact
 // same module instance issue-detail.tsx reads through the barrel mock below
 // — the submodule path resolves to a second, disconnected instance under
@@ -1398,7 +1399,7 @@ describe("IssueDetail (shared)", () => {
   });
 
   it("keeps the peek's host controls when the issue cannot be loaded", async () => {
-    mockApiObj.getIssue.mockRejectedValue(new Error("Not found"));
+    mockApiObj.getIssue.mockRejectedValue(new ApiError("Not found", 404, "Not Found"));
     renderPeek("nonexistent-id");
     await waitFor(() => {
       expect(
@@ -2974,7 +2975,7 @@ describe("IssueDetail (shared)", () => {
   });
 
   it("shows 'not found' message when issue does not exist", async () => {
-    mockApiObj.getIssue.mockRejectedValue(new Error("Not found"));
+    mockApiObj.getIssue.mockRejectedValue(new ApiError("Not found", 404, "Not Found"));
 
     renderIssueDetail("nonexistent-id");
 
@@ -2985,8 +2986,23 @@ describe("IssueDetail (shared)", () => {
     });
   });
 
+  // Regression (CHE-3411): a 403/5xx on a decision-card link read as "deleted".
+  it("offers a retry, not the deleted message, when the load fails with a non-404", async () => {
+    mockApiObj.getIssue.mockRejectedValueOnce(new ApiError("boom", 500, "Internal Server Error"));
+
+    renderIssueDetail("issue-1");
+
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expect(
+      screen.queryByText("This issue does not exist or has been deleted in this workspace."),
+    ).not.toBeInTheDocument();
+    mockApiObj.getIssue.mockResolvedValue(mockIssue);
+    fireEvent.click(retry);
+    expect(await screen.findByText(mockIssue.title)).toBeInTheDocument();
+  });
+
   it("shows 'Back' button when issue is not found and no onDelete prop", async () => {
-    mockApiObj.getIssue.mockRejectedValue(new Error("Not found"));
+    mockApiObj.getIssue.mockRejectedValue(new ApiError("Not found", 404, "Not Found"));
 
     renderIssueDetail("nonexistent-id");
 

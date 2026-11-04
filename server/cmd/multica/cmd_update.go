@@ -103,6 +103,7 @@ func runForkUpdate(serverURL, token string) error {
 		return fmt.Errorf("no update applied; installed multica is unchanged: %w", err)
 	}
 	fmt.Fprintf(os.Stderr, "Updating to %s\n", u)
+	u.Progress = cli.NewProgress(os.Stderr)
 	output, err := cli.ApplyForkUpdate(ctx, u, updateDownloadTimeout)
 	if err != nil {
 		return fmt.Errorf("update failed; installed multica is unchanged: %w", err)

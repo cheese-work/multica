@@ -50,8 +50,11 @@ type decisionActionExecution struct {
 	Agent    db.Agent
 	Runtime  db.AgentRuntime
 	Secrets  map[string]string
-	// Workflow is the re-read target of a workflow-target action.
-	Workflow db.IssueWorkflow
+	// Workflow, Squad and Workspace are the locked, re-read target of an action
+	// on that kind; only the one matching its target is set.
+	Workflow  db.IssueWorkflow
+	Squad     db.Squad
+	Workspace db.Workspace
 }
 
 type decisionActionExecutor func(ctx context.Context, execution decisionActionExecution) (json.RawMessage, error)
@@ -78,7 +81,7 @@ var (
 	errPayloadMismatch     = decisionIntentRefusal{http.StatusConflict, "payload_mismatch: the approved payload is not the stored payload"}
 	errPreconditionDrift   = decisionIntentRefusal{http.StatusConflict, "precondition_drift: the target changed since the request; ask again"}
 	errActionExpired       = decisionIntentRefusal{http.StatusConflict, "expired: this action's approval window has closed"}
-	errNeedsOwner          = decisionIntentRefusal{http.StatusForbidden, decisionClassNeedsOwner + ": this action changes an issue or workflow and needs the workspace owner"}
+	errNeedsOwner          = decisionIntentRefusal{http.StatusForbidden, decisionClassNeedsOwner + ": this action needs the workspace owner"}
 	errPreviewRequired     = decisionIntentRefusal{http.StatusConflict, "preview_required: approve with the digest of the preview you were shown"}
 	errNotPermitted        = decisionIntentRefusal{http.StatusForbidden, "not_permitted: you may not make this change to this agent"}
 	errSecretsMismatch     = decisionIntentRefusal{http.StatusBadRequest, "secrets_mismatch: supply a value for exactly the secret slots, none masked or empty"}
@@ -128,7 +131,7 @@ func (handler *Handler) approveDecisionAction(ctx context.Context, caller decisi
 	var target pgtype.UUID
 	var targeted bool
 	switch actionTargetKind(preview) {
-	case decisionaction.TargetIssue, decisionaction.TargetWorkflow:
+	case decisionaction.TargetIssue, decisionaction.TargetWorkflow, decisionaction.TargetSquad, decisionaction.TargetWorkspace:
 		targeted = true
 	default:
 		target, targeted = decisionActionTarget(preview)
@@ -194,6 +197,11 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	if current.HumanUserID != caller.userID {
 		return empty, errNotTheHuman
 	}
+	// Every action class: recovery revoked the person's keys and nothing
+	// executable is approved until they hold two new ones.
+	if err := refuseWhileRecovering(ctx, queries, caller.userID); err != nil {
+		return empty, err
+	}
 	// A server-opened request is addressed to any member (CHE-2318), but an
 	// action on it moves real state: it needs owner authority, not the member
 	// shortcut.
@@ -206,10 +214,24 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 			return empty, err
 		}
 	}
-	targetKind := actionTargetKind(action)
+	targetKind, ownerOnly := actionTargetKind(action), actionOwnerOnly(action)
+	// An owner-only action refuses a non-owner before the passkey, whatever the
+	// request's class or state: the role read under the member lock below
+	// decides again.
+	if ownerOnly {
+		member, err := queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: caller.userID, WorkspaceID: caller.workspaceID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return empty, errNotTheHuman
+		} else if err != nil {
+			return empty, err
+		}
+		if member.Role != "owner" {
+			return empty, errNeedsOwner
+		}
+	}
 	// The lifecycle worker may have recorded the owner cancellation before this
-	// approval; an issue or workflow action still answers with the owner refusal.
-	if current.Status == "cancelled" && current.CancelReason.String == decisionClassNeedsOwner && targetKind != decisionaction.TargetAgent {
+	// approval; an owner-only action still answers with the owner refusal.
+	if current.Status == "cancelled" && current.CancelReason.String == decisionClassNeedsOwner && ownerOnly {
 		return empty, errNeedsOwner
 	}
 	if current.Status != "open" || action.State != "pending" {
@@ -224,24 +246,36 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	// row: the sweeper that records it runs later, so check it under the locks.
 	if reason, err := queries.DecisionLifecycleReason(ctx, db.DecisionLifecycleReasonParams{WorkspaceID: caller.workspaceID, ID: current.ID}); err != nil {
 		return empty, err
-	} else if reason == decisionClassNeedsOwner && targetKind != decisionaction.TargetAgent {
-		// The sweeper would cancel this request, but an issue or workflow action
-		// answers a non-owner approver with the owner refusal, not a stale row.
+	} else if reason == decisionClassNeedsOwner && ownerOnly {
+		// The sweeper would cancel this request, but an owner-only action answers
+		// a non-owner approver with the owner refusal, not a stale row.
 		return empty, errNeedsOwner
 	} else if reason != "" {
 		return empty, errNotPending
 	}
 	// Row 6 already holds the issue lock to the end of this transaction, so an
-	// issue-target executor runs under it once params.issue_id is that issue.
+	// issue-target executor runs under it once params.issue_id is that issue. A
+	// workflow, squad or workspace target is resolved in the request's workspace
+	// and locked here (row 9), before the passkey is checked.
 	var targetAgent db.Agent
 	var workflow db.IssueWorkflow
+	var squad db.Squad
+	var workspace db.Workspace
 	switch targetKind {
 	case decisionaction.TargetIssue:
 		if err := checkIssueTarget(action.Params, current.IssueID, http.StatusConflict); err != nil {
 			return empty, err
 		}
 	case decisionaction.TargetWorkflow:
-		if workflow, err = loadWorkflowTarget(ctx, queries, caller.workspaceID, action.Params, http.StatusConflict); err != nil {
+		if workflow, err = loadWorkflowTarget(ctx, queries, caller.workspaceID, action.Params, http.StatusConflict, true); err != nil {
+			return empty, err
+		}
+	case decisionaction.TargetSquad:
+		if squad, err = loadSquadTarget(ctx, queries, caller.workspaceID, action.Params, http.StatusConflict, true); err != nil {
+			return empty, err
+		}
+	case decisionaction.TargetWorkspace:
+		if workspace, err = loadWorkspaceTarget(ctx, queries, caller.workspaceID, action.Params, http.StatusConflict, true); err != nil {
 			return empty, err
 		}
 	}
@@ -275,9 +309,9 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	}
 	// The passkey check above can outlast a role change that committed after the
 	// pre-lock reads, so the owner rule is applied again to the role read under
-	// the member lock: for an issue or workflow target and for any server-opened
+	// the member lock: for an owner-only action and for any server-opened
 	// request.
-	if (targetKind != decisionaction.TargetAgent || isServerDecision(current)) && approver.Role != "owner" {
+	if (ownerOnly || isServerDecision(current)) && approver.Role != "owner" {
 		return empty, errNeedsOwner
 	}
 	if targetKind == decisionaction.TargetAgent && !decisionActionPermitted(action.ActionType, targetAgent, approver) {
@@ -285,7 +319,7 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	}
 	finish, summary, err := executeInSavepoint(ctx, transaction, queries, executor, decisionActionExecution{
 		Queries: queries, Approver: verifiedApprover{UserID: caller.userID, DecisionActionID: action.ID},
-		Action: action, Agent: targetAgent, Runtime: runtime, Secrets: body.Secrets, Workflow: workflow,
+		Action: action, Agent: targetAgent, Runtime: runtime, Secrets: body.Secrets, Workflow: workflow, Squad: squad, Workspace: workspace,
 	})
 	if err != nil {
 		return empty, err

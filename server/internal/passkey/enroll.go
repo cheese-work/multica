@@ -292,6 +292,9 @@ func (service *Service) FinishEnrollment(ctx context.Context, userID, ceremonyID
 	if err := writeEvent(ctx, queries, userID, eventEnrolled, map[string]any{"passkey_id": uuid.UUID(stored.ID.Bytes).String()}); err != nil {
 		return err
 	}
+	if err := queries.LeavePasskeyRecovery(ctx, userID); err != nil {
+		return err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
