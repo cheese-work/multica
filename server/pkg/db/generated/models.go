@@ -1056,6 +1056,7 @@ type DecisionRequest struct {
 	ProjectID             pgtype.UUID        `json:"project_id"`
 	Kind                  string             `json:"kind"`
 	ExpiresAt             pgtype.Timestamptz `json:"expires_at"`
+	AnswerRevision        int32              `json:"answer_revision"`
 }
 
 type DecisionWorkerLease struct {
@@ -1163,6 +1164,7 @@ type GithubInstallation struct {
 	ConnectedByID    pgtype.UUID        `json:"connected_by_id"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	AccountID        pgtype.Int8        `json:"account_id"`
 }
 
 type GithubPendingCheckSuite struct {

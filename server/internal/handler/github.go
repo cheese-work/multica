@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -30,6 +31,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -409,16 +411,17 @@ const (
 
 // signState produces an opaque token that binds a workspace and return target
 // to a short-lived install flow.
-// Format: "<workspaceID>.<returnTo>.<issuedAtUnix>.<nonce>.<sigHex>".
+// Format: "<workspaceID>.<returnTo>.<issuedAtUnix>.<nonce>.<originB64>.<sigHex>"
+// (originB64 is the base64url browser origin that started the flow, or empty).
 func signState(workspaceID string) (string, error) {
-	return signStateForReturn(workspaceID, githubReturnToGitHub)
+	return signStateForReturn(workspaceID, githubReturnToGitHub, "")
 }
 
-func signStateForReturn(workspaceID, returnTo string) (string, error) {
-	return signStateForReturnAt(workspaceID, returnTo, time.Now())
+func signStateForReturn(workspaceID, returnTo, origin string) (string, error) {
+	return signStateForReturnAt(workspaceID, returnTo, origin, time.Now())
 }
 
-func signStateForReturnAt(workspaceID, returnTo string, now time.Time) (string, error) {
+func signStateForReturnAt(workspaceID, returnTo, origin string, now time.Time) (string, error) {
 	secret := githubWebhookSecret()
 	if secret == "" {
 		return "", errors.New("github integration is not configured")
@@ -435,6 +438,7 @@ func signStateForReturnAt(workspaceID, returnTo string, now time.Time) (string, 
 		returnTo,
 		strconv.FormatInt(now.Unix(), 10),
 		hex.EncodeToString(nonceBytes),
+		base64.RawURLEncoding.EncodeToString([]byte(origin)),
 	}, ".")
 	return payload + "." + signGitHubState(secret, payload), nil
 }
@@ -446,40 +450,44 @@ func signGitHubState(secret, payload string) string {
 }
 
 func verifyState(token string) (string, bool) {
-	workspaceID, _, ok := verifyStateWithReturn(token)
+	workspaceID, _, _, ok := verifyStateWithReturn(token)
 	return workspaceID, ok
 }
 
-func verifyStateWithReturn(token string) (workspaceID, returnTo string, ok bool) {
+func verifyStateWithReturn(token string) (workspaceID, returnTo, origin string, ok bool) {
 	return verifyStateWithReturnAt(token, time.Now())
 }
 
-func verifyStateWithReturnAt(token string, now time.Time) (workspaceID, returnTo string, ok bool) {
+func verifyStateWithReturnAt(token string, now time.Time) (workspaceID, returnTo, origin string, ok bool) {
 	secret := githubWebhookSecret()
 	if secret == "" {
-		return "", "", false
+		return "", "", "", false
 	}
 	parts := strings.Split(token, ".")
-	if len(parts) != 5 {
-		return "", "", false
+	if len(parts) != 6 {
+		return "", "", "", false
 	}
 	workspaceID, returnTo = parts[0], parts[1]
 	if !isAllowedGitHubReturnTo(returnTo) {
-		return "", "", false
+		return "", "", "", false
 	}
-	payload := strings.Join(parts[:4], ".")
-	if !hmac.Equal([]byte(signGitHubState(secret, payload)), []byte(parts[4])) {
-		return "", "", false
+	payload := strings.Join(parts[:5], ".")
+	if !hmac.Equal([]byte(signGitHubState(secret, payload)), []byte(parts[5])) {
+		return "", "", "", false
 	}
 	issuedAt, err := strconv.ParseInt(parts[2], 10, 64)
 	if err != nil {
-		return "", "", false
+		return "", "", "", false
 	}
 	age := now.Sub(time.Unix(issuedAt, 0))
 	if age > githubStateMaxAge || age < -githubStateClockSkew {
-		return "", "", false
+		return "", "", "", false
 	}
-	return workspaceID, returnTo, true
+	rawOrigin, err := base64.RawURLEncoding.DecodeString(parts[4])
+	if err != nil {
+		return "", "", "", false
+	}
+	return workspaceID, returnTo, string(rawOrigin), true
 }
 
 func isAllowedGitHubReturnTo(returnTo string) bool {
@@ -514,7 +522,7 @@ func (h *Handler) GitHubConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slug := githubAppSlug()
-	state, err := signStateForReturn(workspaceID, returnTo)
+	state, err := signStateForReturn(workspaceID, returnTo, util.RequestOrigin(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to sign state")
 		return
@@ -545,12 +553,12 @@ func (h *Handler) GitHubSetupCallback(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, settingsURL+"&github_error=missing_params", http.StatusFound)
 		return
 	}
-	workspaceID, returnTo, ok := verifyStateWithReturn(state)
+	workspaceID, returnTo, origin, ok := verifyStateWithReturn(state)
 	if !ok {
 		http.Redirect(w, r, settingsURL+"&github_error=invalid_state", http.StatusFound)
 		return
 	}
-	settingsURL = githubSettingsURL(frontend, returnTo)
+	settingsURL = githubSettingsURL(util.ReturnOrigin(origin, frontend), returnTo)
 	if installationIDStr == "" {
 		http.Redirect(w, r, settingsURL+"&github_error=missing_params", http.StatusFound)
 		return
@@ -607,6 +615,7 @@ func (h *Handler) GitHubSetupCallback(w http.ResponseWriter, r *http.Request) {
 		AccountType:      verified.Account.Type,
 		AccountAvatarUrl: avatar,
 		ConnectedByID:    connectedBy,
+		AccountID:        githubAccountIDParam(verified.Account.ID),
 	})
 	if err != nil {
 		slog.Error("github: failed to persist installation", "err", err, "installation_id", installationID)
@@ -1568,6 +1577,7 @@ type ghInstallationPayload struct {
 	Installation struct {
 		ID      int64 `json:"id"`
 		Account struct {
+			ID        int64  `json:"id"`
 			Login     string `json:"login"`
 			Type      string `json:"type"`
 			AvatarURL string `json:"avatar_url"`
@@ -1650,6 +1660,7 @@ func (h *Handler) handleInstallationEvent(ctx context.Context, body []byte) {
 			AccountLogin:     login,
 			AccountType:      accountType,
 			AccountAvatarUrl: ptrToText(avatar),
+			AccountID:        githubAccountIDParam(p.Installation.Account.ID),
 		})
 		if err != nil {
 			slog.Warn("github: refresh installation failed", "err", err)
