@@ -126,7 +126,7 @@ func (h *Handler) enterDecisionEpisode(ctx context.Context, q *db.Queries, issue
 	if err != nil {
 		return err
 	}
-	human, err := h.resolveHumanInCharge(ctx, issue, asking)
+	human, err := h.resolveHumanInCharge(ctx, q, issue, asking)
 	if err != nil {
 		return err
 	}
@@ -205,7 +205,7 @@ func (h *Handler) reattachDecisionEpisode(ctx context.Context, q *db.Queries, is
 	if err != nil {
 		return err
 	}
-	human, err := h.resolveHumanInCharge(ctx, issue, asking)
+	human, err := h.resolveHumanInCharge(ctx, q, issue, asking)
 	if err != nil {
 		return err
 	}
