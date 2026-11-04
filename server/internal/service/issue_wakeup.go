@@ -1929,11 +1929,15 @@ func (s *IssueWakeupService) dispatchWorkflowEdges(ctx context.Context, w db.Iss
 
 // waiverFollowupRecorded reports whether this waiver's own result comment exists.
 // The marker carries the decision instance, so another waiver's result on the
-// same issue does not end this check. Only the agent that runs the check can
-// record its result: a marker from a member or another agent ends nothing.
+// same issue does not end this check. Only a run this wakeup dispatched can
+// record the result: the comment's source task must carry this wakeup's id and
+// belong to the agent that wrote it. A marker from a member, another agent, an
+// unrelated run of the same agent or no run at all ends nothing.
 func waiverFollowupRecorded(ctx context.Context, tx pgx.Tx, w db.IssueWakeup) (bool, error) {
 	var recorded bool
-	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM comment WHERE issue_id=$1 AND author_type='agent' AND author_id=$3 AND starts_with(content, $2))`,
-		w.IssueID, "Follow-up result ("+util.UUIDToString(w.FollowupInstanceID)+"):", w.AgentID).Scan(&recorded)
+	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM comment c JOIN agent_task_queue t ON t.id=c.source_task_id
+ WHERE c.issue_id=$1 AND c.author_type='agent' AND c.author_id=$3 AND starts_with(c.content, $2)
+ AND t.agent_id=$3 AND t.issue_id=$1 AND t.context->>'wakeup_id'=$4)`,
+		w.IssueID, "Follow-up result ("+util.UUIDToString(w.FollowupInstanceID)+"):", w.AgentID, util.UUIDToString(w.ID)).Scan(&recorded)
 	return recorded, err
 }

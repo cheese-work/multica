@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"testing"
@@ -254,15 +255,39 @@ func TestAgentDecisionFollowupRunsOnClosedIssue(t *testing.T) {
 	}
 }
 
+// followupTask is a finished task of the author agent. With a wakeup instance it
+// is a run that wakeup dispatched; without one it is an unrelated run.
+func followupTask(t *testing.T, f agentDecisionFixture, instance string) string {
+	t.Helper()
+	var id string
+	err := testPool.QueryRow(t.Context(), `INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority, issue_id, originator_source, originator_user_id, accountable_user_id, context)
+		VALUES ($1, (SELECT runtime_id FROM agent WHERE id=$1), 'completed', 0, $2, 'direct_human', $3, $3,
+		COALESCE((SELECT jsonb_build_object('wakeup_id', id::text) FROM issue_wakeup WHERE followup_instance_id=$4), '{}'::jsonb))
+		RETURNING id`, f.writerID, f.issueID, testUserID, nullIfEmpty(instance)).Scan(&id)
+	if err != nil {
+		t.Fatalf("insert follow-up task: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id=$1`, id) })
+	return id
+}
+
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// The genuine result: the author agent's comment from a run this wakeup dispatched.
 func recordFollowupResult(t *testing.T, f agentDecisionFixture, instance string) {
 	t.Helper()
-	dbfx.Exec(t, `INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content) VALUES ($1,$2,'agent',$3,$4)`,
-		testWorkspaceID, f.issueID, f.writerID, "Follow-up result ("+instance+"): crash rate fell from 1.2% to 0.1%.")
+	dbfx.Exec(t, `INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content, source_task_id) VALUES ($1,$2,'agent',$3,$4,$5)`,
+		testWorkspaceID, f.issueID, f.writerID, "Follow-up result ("+instance+"): crash rate fell from 1.2% to 0.1%.", followupTask(t, f, instance))
 }
 
 func dueFollowupRuns(t *testing.T, f agentDecisionFixture, instance string) int {
 	t.Helper()
-	return dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_id'=(SELECT id::text FROM issue_wakeup WHERE followup_instance_id=$2)`, f.issueID, instance)
+	return dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND status<>'completed' AND context->>'wakeup_id'=(SELECT id::text FROM issue_wakeup WHERE followup_instance_id=$2)`, f.issueID, instance)
 }
 
 // The recorded result ends the repeat, so no further run is wasted.
@@ -316,6 +341,27 @@ func TestAgentDecisionFollowupIgnoresResultFromOtherAuthors(t *testing.T) {
 	}
 	if got := followups(t, f); len(got) != 1 || !got[0].Enabled {
 		t.Fatalf("follow-up after other authors' marker: %+v, want enabled", got)
+	}
+}
+
+// The author agent runs many tasks on the issue. Only a result from a run this
+// wakeup dispatched counts: the same agent's marker from an unrelated run, or
+// from no run, must not end the check.
+func TestAgentDecisionFollowupIgnoresResultFromUnrelatedRun(t *testing.T) {
+	f := testFirstRedFixture(t)
+	f.scope["crash_signature"] = crashSignature
+	settleTestFirstRed(t, f)
+	marker := "Follow-up result (" + f.instance + "): all good."
+	dbfx.Exec(t, `INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content) VALUES ($1,$2,'agent',$3,$4)`, testWorkspaceID, f.issueID, f.writerID, marker)
+	dbfx.Exec(t, `INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content, source_task_id) VALUES ($1,$2,'agent',$3,$4,$5)`,
+		testWorkspaceID, f.issueID, f.writerID, marker, followupTask(t, f, ""))
+	dbfx.Exec(t, `UPDATE issue_wakeup SET next_fire_at = now() - interval '1 minute' WHERE followup_instance_id=$1`, f.instance)
+	runWakeupTick(t)
+	if n := dueFollowupRuns(t, f, f.instance); n != 1 {
+		t.Fatalf("%d runs after marker comments from unrelated runs, want 1", n)
+	}
+	if got := followups(t, f); len(got) != 1 || !got[0].Enabled {
+		t.Fatalf("follow-up after unrelated markers: %+v, want enabled", got)
 	}
 }
 
