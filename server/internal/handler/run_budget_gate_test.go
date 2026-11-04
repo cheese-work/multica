@@ -60,6 +60,25 @@ func waitForRunBudgetWarning(t *testing.T, c edgeCase) {
 	t.Fatal("the run budget warning did not finish in 10s")
 }
 
+// withoutRunBudgetWriters mutes the 80% warning and the exhaustion block until
+// the returned func runs. Each is written by a goroutine that outlives the
+// enqueue, bumps the issue revision and reads testHandler fields; setup runs
+// have no use for them, and a later test must not race them (CHE-3014).
+func withoutRunBudgetWriters() (restore func()) {
+	service.SetOnRunBudgetEvent(nil)
+	service.SetOnRunBudgetExhausted(nil)
+	return giveBackRunBudgetHooks
+}
+
+// giveBackRunBudgetHooks hands the process-wide budget hooks back to
+// testHandler. Every Handler New() registers them on its own bus, so a test that
+// builds a second Handler would leave them there for the run-budget tests that
+// share its shard.
+func giveBackRunBudgetHooks() {
+	service.SetOnRunBudgetEvent(testHandler.onRunBudgetEvent)
+	service.SetOnRunBudgetExhausted(testHandler.onRunBudgetExhausted)
+}
+
 func finishRuns(t *testing.T, c edgeCase) {
 	t.Helper()
 	if _, err := testPool.Exec(context.Background(), `UPDATE agent_task_queue SET status='completed',completed_at=clock_timestamp() WHERE issue_id=$1 AND status IN ('queued','dispatched','running')`, c.issueID); err != nil {
@@ -218,5 +237,25 @@ func TestRunBudgetBlockNamesRefusedRunAndRaiseCommand(t *testing.T) {
 	}
 	if n := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id=$1 AND type='system' AND content LIKE '%a run for agent % (trigger: assignment or status handoff) while the issue was in_progress%' AND content LIKE '%was refused because the issue used 2 of 2 runs%' AND content LIKE '%approves a raise to % runs in the web app%'`, c.issueID); n != 1 {
 		t.Fatalf("block comment naming the run and the web-app raise = %d, want 1", n)
+	}
+}
+
+// spendBudget is setup. The 80% warning its last run raises writes a comment
+// from a goroutine about 100 ms later, which bumped the issue revision under
+// whatever the test did next: moveIssueOnEdge lost its revision check
+// silently (CHE-3014).
+func TestSpendBudgetLeavesNoLateIssueWriter(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	c := newEdgeCase(t, 3014001, mergeEdgeSteps)
+	issue := spendBudget(t, c, 2, "in_progress")
+	time.Sleep(500 * time.Millisecond)
+	after, err := testHandler.Queries.GetIssue(context.Background(), issue.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Revision != issue.Revision {
+		t.Fatalf("issue revision moved from %d to %d after spendBudget returned: a late writer is racing the test", issue.Revision, after.Revision)
 	}
 }

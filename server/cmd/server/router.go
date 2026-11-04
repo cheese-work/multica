@@ -1650,6 +1650,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/tasks/{taskId}/external-read", h.MarkTaskExternalRead)
 		r.Post("/tasks/{taskId}/complete", h.CompleteTask)
 		r.Post("/tasks/{taskId}/fail", h.FailTask)
+		r.Get("/tasks/{taskId}/elevation", h.GetTaskElevation)
+		r.Post("/tasks/{taskId}/elevation/launch-scopes-ended", h.EndTaskLaunchScopes)
 		r.Post("/tasks/{taskId}/elevation/authorize", h.AuthorizeElevatedOp)
 		r.Post("/tasks/{taskId}/elevation/ops/{opId}/complete", h.CompleteElevatedOp)
 		r.Post("/tasks/{taskId}/elevation/revision-check", h.CheckElevatedRevision)
@@ -1825,6 +1827,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
 					r.Put("/", h.UpdateWorkspace)
 					r.Patch("/", h.UpdateWorkspace)
+					// Scheduling pause: the handler also refuses agent credentials.
+					r.Post("/pause", h.PauseWorkspaceScheduling)
+					r.Post("/resume", h.ResumeWorkspaceScheduling)
 					r.Post("/members", h.CreateInvitation)
 					r.Route("/members/{memberId}", func(r chi.Router) {
 						r.Patch("/", h.UpdateMember)
@@ -2129,6 +2134,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Route("/api/agent-decisions", func(r chi.Router) {
 				r.Get("/brief", h.GetAgentDecisionBrief)
 				r.With(handler.RequireHumanActor).Put("/setting", h.SetAgentDecisionSetting)
+				r.With(handler.RequireHumanActor).Put("/jev", h.SetAgentDecisionJev)
 			})
 
 			// Issues
@@ -2177,6 +2183,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/subscribe", h.SubscribeToIssue)
 					r.Post("/unsubscribe", h.UnsubscribeFromIssue)
 					r.Post("/unsubscribe/subtree", h.UnsubscribeFromIssueSubtree)
+					r.Post("/progress-follow", h.FollowIssueProgress)
+					r.Delete("/progress-follow", h.UnfollowIssueProgress)
+					r.Post("/progress-follow/mute", h.MuteIssueProgress)
+					r.Post("/progress-follow/unmute", h.UnmuteIssueProgress)
 					r.Get("/wakeups", h.ListIssueWakeups)
 					r.Post("/wakeups", h.CreateIssueWakeup)
 					r.Put("/wakeups/{wakeupID}", h.CreateIssueWakeup)
@@ -2446,6 +2456,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Put("/", h.UpdateAgent)
 					r.With(denyRunToken).Post("/archive", h.ArchiveAgent)
 					r.Post("/restore", h.RestoreAgent)
+					// Scheduling pause: person owner/admin only (the handler
+					// refuses agent credentials; canManageAgent would not).
+					r.Post("/pause", h.PauseAgentScheduling)
+					r.Post("/resume", h.ResumeAgentScheduling)
 					r.With(denyRunToken).Post("/cancel-tasks", h.CancelAgentTasks)
 					r.Get("/tasks", h.ListAgentTasks)
 					r.Get("/dingtalk/groups", h.ListDingTalkGroupsForAgent)
@@ -2626,6 +2640,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Get("/api/agent-run-counts", h.GetWorkspaceAgentRunCounts)
 
 			r.Get("/api/chat/search", h.SearchChats)
+			r.Get("/api/dm-progress/follows", h.ListDMProgressFollows)
 			r.Route("/api/chat/sessions", func(r chi.Router) {
 				r.Post("/", h.CreateChatSession)
 				r.Get("/", h.ListChatSessions)
@@ -2707,6 +2722,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 			r.Route("/api/decisions", func(r chi.Router) {
 				r.Post("/", h.RequestDecision)
+				r.Post("/ask", h.AskDecision)
 				r.Get("/", h.ListDecisions)
 				r.With(handler.RequireHumanActor).Get("/open", h.ListOpenDecisions)
 				r.Get("/feed", h.ListDecisionFeed)
@@ -2729,6 +2745,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.With(handler.RequireHumanActor).Post("/api/decision-actions/{id}/approve", h.ApproveDecisionAction)
 			r.With(handler.RequireHumanActor).Get("/api/decision-actions/{id}/outcome", h.GetDecisionActionOutcome)
 			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/answer", h.AnswerDecisionRequest)
+			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/answer/challenge", h.ChallengeDecisionAnswer)
 
 			// Notification preferences
 			r.Route("/api/notification-preferences", func(r chi.Router) {

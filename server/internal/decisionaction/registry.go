@@ -57,6 +57,10 @@ const (
 	// TargetWorkflow is a workflow of the request's workspace, named by
 	// params.workflow_id.
 	TargetWorkflow Target = "workflow"
+	// TargetSquad is a squad of the request's workspace, named by params.squad_id.
+	TargetSquad Target = "squad"
+	// TargetWorkspace is the request's own workspace, named by params.workspace_id.
+	TargetWorkspace Target = "workspace"
 )
 
 // Definition is one allowlisted action. Execution is added with the extracted
@@ -72,6 +76,10 @@ type Definition struct {
 	// RequiresPreview stores a server-computed preview in the preconditions and
 	// makes approval present that preview's digest.
 	RequiresPreview bool
+
+	// OwnerOnly makes approval need the workspace owner whatever the target and
+	// class. An action on a non-agent target is owner-only already.
+	OwnerOnly bool
 
 	// Normalize is exported so a package that owns an executor can register
 	// its action type.
@@ -103,6 +111,7 @@ func init() {
 	Register(&Definition{Type: "agent.copy", Version: 1, MinClass: "reversible", Normalize: normalizeAgentCopy})
 	Register(&Definition{Type: "agent.env.patch", Version: 1, MinClass: "reversible", Normalize: normalizeEnvPatch})
 	Register(&Definition{Type: "issue.run_budget.raise", Version: 1, MinClass: "spend", Target: TargetIssue, Normalize: normalizeRunBudgetRaise})
+	Register(&Definition{Type: "agent.instructions.set", Version: 1, MinClass: "spend", Target: TargetAgent, RequiresPreview: true, OwnerOnly: true, Normalize: normalizeAgentInstructionsSet})
 }
 
 func Lookup(typ string, version int) (*Definition, bool) {
