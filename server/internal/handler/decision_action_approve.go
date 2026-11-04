@@ -402,7 +402,7 @@ func decisionActionTarget(action db.DecisionAction) (pgtype.UUID, bool) {
 	}
 	var raw string
 	switch action.ActionType {
-	case "agent.env.patch":
+	case "agent.env.patch", agentInstructionsAction:
 		raw = params.AgentID
 	case "agent.copy":
 		raw = params.SourceAgentID
@@ -485,6 +485,10 @@ func checkPreviewDigest(action db.DecisionAction, claimed string) error {
 }
 
 func checkPreconditions(action db.DecisionAction, agent db.Agent) error {
+	if _, ok := configChanges[action.ActionType]; ok {
+		// The config-change core checks its own digests under the row lock.
+		return nil
+	}
 	var drifted bool
 	if action.ActionType == "agent.copy" {
 		var err error
