@@ -610,6 +610,9 @@ func taskRunsForAssignee(issue db.Issue, task *db.AgentTaskQueue) bool {
 // skip the lookups. A workspace with no owner is not an error; a failed lookup
 // is, so the write fails instead of leaving the issue unassigned.
 func (h *Handler) workflowHumans(ctx context.Context, step issueworkflow.Step, project db.Project, workspaceID, requestedByID pgtype.UUID) (issueworkflow.Humans, error) {
+	if step.Handler.Type == issueworkflow.HandlerAgent {
+		return issueworkflow.Humans{RoutingAgent: h.routingAgentFor(ctx, workspaceID, step.StatusKey)}, nil
+	}
 	if step.Handler.Type != issueworkflow.HandlerHumanByRole {
 		return issueworkflow.Humans{}, nil
 	}

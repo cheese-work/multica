@@ -293,6 +293,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Europ
 
 - `--lead` prend le nom d'un membre ou d'un agent. `--default-branch-hint` indique seulement à l'agent la branche par défaut du dépôt ; il ne change pas de branche.
 - Le `--context` d'un espace de travail est fourni à tous ses agents. `--slug` ne peut plus être modifié après la création. `--issue-prefix` est mis en majuscules ; le changer renumérote toutes les tâches existantes, et les anciens identifiants cités ailleurs ne mènent plus nulle part.
+- `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]` désigne l'agent qui prend les étapes de workflow de simple routage (par défaut `todo`, `blocked`, `merged`, `need_decision` ; modifiable avec `--routing-statuses`, et `--routing-overrides todo=<agent-id>` envoie un statut à un autre agent). L'agent de repli prend le relais quand cet agent est archivé. `none` désactive un champ. Seul un propriétaire ou administrateur humain peut le modifier, et chaque changement est consigné dans le journal d'activité.
 - `--issue-title-template` ne remplace que `{{date}}` (UTC, `YYYY-MM-DD`) et refuse tout autre `{{...}}`. Le `--timezone` d'un déclencheur planifié vaut UTC par défaut.
 
 ## Vue d'ensemble des commandes

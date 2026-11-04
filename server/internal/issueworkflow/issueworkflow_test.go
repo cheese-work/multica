@@ -521,3 +521,19 @@ func TestCheckAgentMoveRefusesEveryMoveOffAFactOnlyStep(t *testing.T) {
 		t.Errorf("in_review → cancelled refused: %v", err)
 	}
 }
+
+func TestResolveHandlerRoutingAgentReplacesAgentHandlerOnly(t *testing.T) {
+	var routed pgtype.UUID
+	if err := routed.Scan("11111111-1111-4111-8111-111111111111"); err != nil {
+		t.Fatal(err)
+	}
+	humans := Humans{RoutingAgent: routed}
+	agent := Step{StatusKey: "todo", Handler: Handler{Type: HandlerAgent, ID: testAgentID}}
+	if typ, id, ok := ResolveHandler(agent, db.Project{}, "", pgtype.UUID{}, humans); !ok || typ != HandlerAgent || id != routed {
+		t.Fatalf("agent handler = %s %v %v, want the routing agent", typ, id, ok)
+	}
+	member := Step{StatusKey: "todo", Handler: Handler{Type: HandlerMember, ID: testAgentID}}
+	if _, id, _ := ResolveHandler(member, db.Project{}, "", pgtype.UUID{}, humans); id == routed {
+		t.Fatal("routing agent replaced a member handler")
+	}
+}

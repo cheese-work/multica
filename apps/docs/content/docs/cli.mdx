@@ -361,6 +361,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Europ
 
 - `--lead` takes the name of a member or an agent. `--default-branch-hint` only tells the agent the repository's default branch; it does not switch branches.
 - A workspace's `--context` is provided to every agent in the workspace. `--slug` cannot be changed after creation. `--issue-prefix` is uppercased; changing it renumbers every existing issue, and old identifiers in external references stop resolving.
+- `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]` names the agent that takes routing-only workflow steps (`todo`, `blocked`, `merged`, `need_decision` by default; change with `--routing-statuses`, send one status elsewhere with `--routing-overrides todo=<agent-id>`). The fallback takes over when that agent is archived. `none` turns a field off. Only a human owner or admin can change it, and each change is recorded in the activity log.
 - `--issue-title-template` interpolates only `{{date}}` (UTC, `YYYY-MM-DD`) and rejects any other `{{...}}` token. A schedule trigger's `--timezone` defaults to UTC.
 
 ## Command overview
