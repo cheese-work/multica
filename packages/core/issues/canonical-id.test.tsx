@@ -6,11 +6,11 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { setApiInstance } from "../api";
-import type { ApiClient } from "../api/client";
+import { ApiError, type ApiClient } from "../api/client";
 import type { Issue } from "../types";
 import { createQueryClient } from "../query-client";
 import { issueDetailViewOptions, issueKeys } from "./queries";
-import { isIssueUuid, useCanonicalIssue } from "./canonical-id";
+import { isIssueUuid, isNotFoundError, useCanonicalIssue } from "./canonical-id";
 
 const ISSUE_UUID = "cb240efb-154c-42a8-ae92-42b02676feca";
 
@@ -207,7 +207,7 @@ describe("useCanonicalIssue", () => {
   });
 
   it("reports a nonexistent identifier as terminally not-found", async () => {
-    getIssue.mockRejectedValue(new Error("issue not found"));
+    getIssue.mockRejectedValue(new ApiError("issue not found", 404, "Not Found"));
 
     const { result } = renderHook(() => useCanonicalIssue("ws-1", "ZZZ-134"), {
       wrapper: createWrapper(qc),
@@ -234,7 +234,7 @@ describe("useCanonicalIssue", () => {
       // 1 can only mean a remount refetched.
       defaultOptions: { queries: { staleTime: Infinity, retry: false } },
     });
-    getIssue.mockRejectedValue(new Error("issue not found"));
+    getIssue.mockRejectedValue(new ApiError("issue not found", 404, "Not Found"));
 
     const { result, rerender } = renderHook(() => useCanonicalIssue("ws-1", "ZZZ-134"), {
       wrapper: createWrapper(noRetry),
@@ -252,6 +252,29 @@ describe("useCanonicalIssue", () => {
     noRetry.clear();
   });
 
+  // Regression (CHE-3411): any failed resolution used to read as "deleted".
+  // A 5xx or a timeout says nothing about whether the issue exists.
+  it("reports a non-404 failure as a retryable load error, not not-found", async () => {
+    const noRetry = new QueryClient({
+      defaultOptions: { queries: { staleTime: Infinity, retry: false } },
+    });
+    getIssue.mockRejectedValueOnce(new ApiError("boom", 500, "Internal Server Error"));
+
+    const { result } = renderHook(() => useCanonicalIssue("ws-1", "TRS-134"), {
+      wrapper: createWrapper(noRetry),
+    });
+
+    await waitFor(() => expect(result.current.loadError).toBe(true));
+    expect(result.current.notFound).toBe(false);
+    expect(result.current.isResolving).toBe(false);
+
+    result.current.retry();
+    await waitFor(() => expect(result.current.canonicalId).toBe(ISSUE_UUID));
+    expect(result.current.loadError).toBe(false);
+
+    noRetry.clear();
+  });
+
   it("stays idle without a workspace id", () => {
     const { result } = renderHook(() => useCanonicalIssue("", "TRS-134"), {
       wrapper: createWrapper(qc),
@@ -260,5 +283,15 @@ describe("useCanonicalIssue", () => {
     expect(result.current.canonicalId).toBeNull();
     expect(result.current.isResolving).toBe(false);
     expect(getIssue).not.toHaveBeenCalled();
+  });
+});
+
+describe("isNotFoundError", () => {
+  it("is true only for a 404 ApiError", () => {
+    expect(isNotFoundError(new ApiError("gone", 404, "Not Found"))).toBe(true);
+    expect(isNotFoundError(new ApiError("denied", 403, "Forbidden"))).toBe(false);
+    expect(isNotFoundError(new ApiError("boom", 500, "Internal Server Error"))).toBe(false);
+    expect(isNotFoundError(new Error("network down"))).toBe(false);
+    expect(isNotFoundError(null)).toBe(false);
   });
 });
