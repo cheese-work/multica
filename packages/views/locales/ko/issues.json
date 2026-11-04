@@ -1490,6 +1490,7 @@
       "source_workspace": "워크스페이스",
       "source_project": "프로젝트",
       "source_default": "기본값",
+      "open_project": "프로젝트 규칙에서 편집",
       "override": "재정의",
       "override_label": "{{rule}} 재정의",
       "edit": "재정의 편집",

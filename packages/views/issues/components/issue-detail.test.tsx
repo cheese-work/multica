@@ -215,6 +215,7 @@ vi.mock("../../navigation", () => ({
     pathname: "/issues/issue-1",
     getShareableUrl: (p: string) => `https://app.multica.com${p}`,
   }),
+  useOptionalNavigation: () => null,
   useBackOrReplace: () => vi.fn(),
   NavigationProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
