@@ -2986,9 +2986,9 @@ describe("IssueDetail (shared)", () => {
     });
   });
 
-  // Regression (CHE-3411): a 403/5xx on a decision-card link read as "deleted".
+  // Regression (CHE-3411): a 5xx/401 on a decision-card link read as "deleted".
   it("offers a retry, not the deleted message, when the load fails with a non-404", async () => {
-    mockApiObj.getIssue.mockRejectedValueOnce(new ApiError("boom", 500, "Internal Server Error"));
+    mockApiObj.getIssue.mockRejectedValueOnce(new ApiError("unauthorized", 401, "Unauthorized"));
 
     renderIssueDetail("issue-1");
 
