@@ -35,14 +35,17 @@ func (h *Handler) CompactChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	task, err := h.Queries.GetAgentTask(r.Context(), taskID)
-	if err != nil || !task.ChatSessionID.Valid || (task.Status != "running" && task.Status != "dispatched") {
+	if err != nil || !task.ChatSessionID.Valid {
 		writeError(w, http.StatusForbidden, "a running session chat task is required")
 		return
 	}
 	workspaceID := ctxWorkspaceID(r.Context())
 	session, err := h.Queries.GetChatSession(r.Context(), task.ChatSessionID)
-	if err != nil || uuidToString(session.WorkspaceID) != workspaceID || session.AgentID != task.AgentID {
+	if err != nil {
 		writeError(w, http.StatusForbidden, "task does not belong to this chat session")
+		return
+	}
+	if !h.authorizeChatTask(r.Context(), w, h.Queries, chatOpCompact, task, session, workspaceID) {
 		return
 	}
 	var request struct {
@@ -83,8 +86,10 @@ func (h *Handler) CompactChatSession(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if task.ChatSessionID != session.ID || (task.Status != "running" && task.Status != "dispatched") {
-		writeError(w, http.StatusConflict, "the task is no longer running")
+	// Authority again on the locked task and the setting as this transaction
+	// sees it (SEC-1 rule 5): a cancel or setting change that committed while
+	// the lock was awaited refuses here.
+	if !h.authorizeChatTask(r.Context(), w, qtx, chatOpCompact, task, session, workspaceID) {
 		return
 	}
 	otherActive, err := qtx.CountOtherActiveChatTasks(r.Context(), db.CountOtherActiveChatTasksParams{ChatSessionID: session.ID, ID: task.ID})

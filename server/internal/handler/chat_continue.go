@@ -44,7 +44,7 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		task, err := h.Queries.GetAgentTask(r.Context(), taskID)
-		if err != nil || !task.ChatSessionID.Valid || (task.Status != "running" && task.Status != "dispatched") {
+		if err != nil || !task.ChatSessionID.Valid {
 			writeError(w, http.StatusForbidden, "a running session chat task is required")
 			return
 		}
@@ -53,8 +53,11 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		session, err = h.Queries.GetChatSession(r.Context(), task.ChatSessionID)
-		if err != nil || uuidToString(session.WorkspaceID) != workspaceID || session.AgentID != task.AgentID {
+		if err != nil {
 			writeError(w, http.StatusForbidden, "task does not belong to this chat session")
+			return
+		}
+		if !h.authorizeChatTask(r.Context(), w, h.Queries, chatOpContinue, task, session, workspaceID) {
 			return
 		}
 		compactReason = task.CompactReason.String
