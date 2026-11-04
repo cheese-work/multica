@@ -66,6 +66,7 @@ import {
   type MentionChip,
 } from "@/components/issue/composer-attachment-row";
 import { useT } from "@/lib/i18n";
+import { mergeRestoredText } from "@/lib/merge-restored-text";
 
 export interface MessageComposerReplyTarget {
   actorName: string;
@@ -102,6 +103,13 @@ interface Props {
    *  own internal text state (comment). */
   value?: string;
   onChangeText?: (next: string) => void;
+
+  /** Fired with the submitted text just before the input empties, so the
+   *  parent can keep it on disk until the send settles. The returned handle
+   *  is passed back to `onSubmitSettled`. */
+  onSubmitStart?: (text: string) => string;
+  /** Fired when the send resolves (`ok`) or rejects. */
+  onSubmitSettled?: (handle: string, ok: boolean) => void;
 
   /** Optional reply chip (comment only). */
   replyTarget?: MessageComposerReplyTarget | null;
@@ -165,6 +173,8 @@ export function MessageComposer({
   pillIcon = "chatbubble-ellipses-outline",
   value: controlledValue,
   onChangeText: controlledOnChange,
+  onSubmitStart,
+  onSubmitSettled,
   replyTarget = null,
   onClearReplyTarget,
   expandTrigger,
@@ -202,6 +212,13 @@ export function MessageComposer({
     },
     [isControlled, controlledOnChange],
   );
+
+  // Latest input value for the failure path: text typed while a send is
+  // pending must not be overwritten by the restored snapshot.
+  const textRef = useRef(text);
+  useEffect(() => {
+    textRef.current = text;
+  }, [text]);
 
   const mentions = useMentionDraftStore((s) => s.mentions);
   const removeMention = useMentionDraftStore((s) => s.remove);
@@ -272,6 +289,7 @@ export function MessageComposer({
 
     // Optimistic clear: text + chips empty out immediately so the next
     // typing tick doesn't double-include them. Restored on rejection.
+    const sendHandle = onSubmitStart?.(textSnap);
     setText("");
     setAttachments([]);
     clearMentions();
@@ -291,12 +309,14 @@ export function MessageComposer({
       inputRef.current?.blur();
       Keyboard.dismiss();
       setExpanded(false);
+      if (sendHandle !== undefined) onSubmitSettled?.(sendHandle, true);
     } catch {
-      setText(textSnap);
+      setText(mergeRestoredText(textSnap, textRef.current));
       setAttachments(attachmentsSnap);
       mentionsSnap.forEach((m) =>
         useMentionDraftStore.getState().toggle(m),
       );
+      if (sendHandle !== undefined) onSubmitSettled?.(sendHandle, false);
     } finally {
       setSubmitting(false);
     }
@@ -308,6 +328,8 @@ export function MessageComposer({
     setText,
     clearMentions,
     onSubmit,
+    onSubmitStart,
+    onSubmitSettled,
   ]);
 
   /** Streams a picked asset to /api/upload-file, updating the matching
