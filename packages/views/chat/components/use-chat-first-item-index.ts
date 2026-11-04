@@ -4,30 +4,38 @@ import { useState } from "react";
 export const CHAT_FIRST_ITEM_INDEX_BASE = 1_000_000;
 
 interface FirstItemIndexState {
-  oldestKey: string | null;
+  keys: string[];
   index: number;
 }
 
+function sameKeys(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((key, i) => key === b[i]);
+}
+
 function advance(state: FirstItemIndexState, keys: string[]): FirstItemIndexState {
-  const oldest = keys[0] ?? null;
-  if (oldest === state.oldestKey) return state;
-  if (oldest === null) return { oldestKey: null, index: CHAT_FIRST_ITEM_INDEX_BASE };
-  if (state.oldestKey === null) return { oldestKey: oldest, index: CHAT_FIRST_ITEM_INDEX_BASE };
-  // Rows in front of the previous oldest row were prepended. If it is gone
-  // (removed, not prepended before), nothing shifted: keep the index.
-  const prepended = Math.max(0, keys.indexOf(state.oldestKey));
-  return { oldestKey: oldest, index: state.index - prepended };
+  if (sameKeys(state.keys, keys)) return state;
+  if (keys.length === 0 || state.keys.length === 0) {
+    return { keys, index: CHAT_FIRST_ITEM_INDEX_BASE };
+  }
+  // A row that survives keeps its index: rows before it that are new were
+  // prepended (index down), rows before it that are gone were dropped (index up).
+  const position = new Map(keys.map((key, i) => [key, i]));
+  for (let was = 0; was < state.keys.length; was += 1) {
+    const now = position.get(state.keys[was]!);
+    if (now !== undefined) return { keys, index: state.index + was - now };
+  }
+  return { keys, index: state.index };
 }
 
 /**
  * Virtuoso `firstItemIndex` for a chat list, from the rendered row keys
- * (oldest first). It moves only when rows really arrive before the previous
- * oldest row, never with page sizes, so a refetch that re-pages the same
- * messages does not shift the view.
+ * (oldest first). It follows the rows that really arrived or left at the
+ * front, never page sizes: a refetch that only re-pages the same messages,
+ * or slides the loaded window by one, leaves every surviving row at its index.
  */
 export function useChatFirstItemIndex(keys: string[]): number {
   const [state, setState] = useState<FirstItemIndexState>({
-    oldestKey: keys[0] ?? null,
+    keys,
     index: CHAT_FIRST_ITEM_INDEX_BASE,
   });
   const next = advance(state, keys);

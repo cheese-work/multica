@@ -42,9 +42,19 @@ describe("useChatFirstItemIndex", () => {
     expect(result.current).toBe(CHAT_FIRST_ITEM_INDEX_BASE - 3);
   });
 
-  it("keeps the index when the oldest row is removed", () => {
+  it("raises the index when a refetch slides the loaded window and drops the oldest rows", () => {
+    // Full pages re-fetched after a new message: one row enters at the end,
+    // the oldest loaded row falls off the front. Surviving rows keep their index.
+    const { result, rerender } = setup(ids(1, 150));
+    rerender({ keys: ids(2, 151) });
+    expect(result.current).toBe(CHAT_FIRST_ITEM_INDEX_BASE + 1);
+    rerender({ keys: ids(4, 152) });
+    expect(result.current).toBe(CHAT_FIRST_ITEM_INDEX_BASE + 3);
+  });
+
+  it("keeps surviving rows at their index when older rows arrive and the tail moves", () => {
     const { result, rerender } = setup(ids(11, 20));
-    rerender({ keys: ids(12, 20) });
-    expect(result.current).toBe(CHAT_FIRST_ITEM_INDEX_BASE);
+    rerender({ keys: [...ids(6, 19), "task:t1"] });
+    expect(result.current).toBe(CHAT_FIRST_ITEM_INDEX_BASE - 5);
   });
 });
