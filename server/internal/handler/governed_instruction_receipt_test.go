@@ -170,9 +170,19 @@ func TestPassReceipt_FailedChecksStayRefused(t *testing.T) {
 			r.retask(t, r.writerID, r.runtimeOf(t, r.writerID), "claude-unlisted")
 			r.review(t)
 		}},
+		// The receipt is real for the digests it names, so only the live-value
+		// and new-value checks can refuse these two.
 		{name: "stale before digest", before: testDigest("not the live value"),
-			setup: func(t *testing.T, r receiptFixture) { r.review(t) }},
-		{name: "wrong after digest", setup: func(t *testing.T, r receiptFixture) { r.review(t) },
+			setup: func(t *testing.T, r receiptFixture) {
+				r.reviewerLine = "Vote: PASS " + r.label + " " + r.nextDigest + " from " + testDigest("not the live value")
+				r.review(t)
+			}},
+		{name: "wrong after digest",
+			setup: func(t *testing.T, r receiptFixture) {
+				r.nextDigest = testDigest("something else")
+				r.reviewerLine = "Vote: PASS " + r.label + " " + r.nextDigest + " from " + r.beforeDigest
+				r.review(t)
+			},
 			mut: func(b map[string]any) { b["after_sha256"] = testDigest("something else") }},
 		{name: "receipt names another before digest", setup: func(t *testing.T, r receiptFixture) {
 			r.reviewerLine = "Vote: PASS " + r.label + " " + r.nextDigest + " from " + testDigest("older value")
@@ -246,6 +256,8 @@ func TestPassReceipt_OtherFieldsRefused(t *testing.T) {
 		}
 		t.Run(tg.name, func(t *testing.T) {
 			f := newVoteFixture(t)
+			// Delegated and receipted: only the field scope can refuse this write.
+			receiptFixture{voteFixture: f}.delegate(t, f.writerID, tg.name)
 			id := tg.seed(t, initial)
 			f.say(t, "agent", f.writerID, 60, "Proposal: "+tg.name+":"+id+" "+testDigest(next))
 			f.say(t, "agent", f.leaderID, 30, "Vote: PASS "+tg.name+":"+id+" "+testDigest(next)+" from "+testDigest(initial))

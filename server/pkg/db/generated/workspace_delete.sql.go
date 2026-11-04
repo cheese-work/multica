@@ -438,6 +438,9 @@ deleted_issue_checkpoints AS (
 deleted_governed_vote_records AS (
     DELETE FROM governed_vote_record WHERE workspace_id = $1
 ),
+deleted_governed_pass_receipts AS (
+    DELETE FROM governed_pass_receipt WHERE workspace_id = $1
+),
 deleted_run_gate_events AS (
     DELETE FROM run_gate_event WHERE workspace_id = $1
 ),
@@ -710,6 +713,7 @@ WHERE channel_media_pending_object.workspace_id = $1
 // CHE-2510 elevation state and authorized operations: workspace-owned leaves, no FK.
 // CHE-2514 issue taint and its clear audit: workspace-owned leaves, no FK.
 // CHE-1862 vote-gate ledger: workspace-owned, a leaf with no dependents.
+// CHE-3490 single-use PASS receipts: workspace-owned leaf, no dependents.
 // CHE-1918 run-gate shadow ledger: workspace-owned, a leaf with no dependents
 // and no FK. Outlives issues and receipts; goes with the workspace.
 // CHE-2147 webhook-fed GitHub Actions run/job mirror: workspace-owned leaves
