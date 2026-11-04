@@ -52,12 +52,12 @@ func (h *Handler) loadRoutingAgent(ctx context.Context, ws pgtype.UUID) (Routing
 // or an invalid id when the step keeps its own handler. The configured agent
 // is skipped when archived, then the fallback is tried. A read error routes
 // nothing: the step's own handler is always a safe owner.
-func (h *Handler) routingAgentFor(ctx context.Context, ws pgtype.UUID, status string) pgtype.UUID {
+func (h *Handler) routingAgentFor(ctx context.Context, ws pgtype.UUID, project db.Project, status string) pgtype.UUID {
 	cfg, err := h.loadRoutingAgent(ctx, ws)
 	if err != nil || cfg.AgentID == "" {
 		return pgtype.UUID{}
 	}
-	primary := cfg.AgentFor(status)
+	primary := cfg.AgentFor(service.WorkflowScope(ctx, h.Queries, project), status)
 	if primary == "" {
 		return pgtype.UUID{}
 	}
@@ -181,15 +181,39 @@ func (h *Handler) validateRoutingAgent(ctx context.Context, ws pgtype.UUID, next
 		next.Statuses = slices.Clone(defaultRoutingStatuses)
 	}
 	overrides := make(map[string]string, len(next.Overrides))
-	for status, raw := range next.Overrides {
-		if strings.TrimSpace(status) == "" {
-			return "overrides must be keyed by status key"
+	for key, raw := range next.Overrides {
+		if msg := h.checkOverrideKey(ctx, ws, key); msg != "" {
+			return msg
 		}
-		if overrides[status], msg = canon("overrides."+status, raw); msg != "" {
+		if overrides[key], msg = canon("overrides."+key, raw); msg != "" {
 			return msg
 		}
 	}
 	next.Overrides = overrides
+	return ""
+}
+
+// checkOverrideKey accepts "<status>" or "<workflow id>:<status>" for a
+// workflow of this workspace.
+func (h *Handler) checkOverrideKey(ctx context.Context, ws pgtype.UUID, key string) string {
+	const bad = "overrides must be keyed by <status> or <workflow id>:<status>"
+	scope, status, scoped := strings.Cut(key, ":")
+	if !scoped {
+		status = key
+	}
+	if strings.TrimSpace(status) == "" || status != strings.TrimSpace(status) {
+		return bad
+	}
+	if !scoped {
+		return ""
+	}
+	id, err := util.ParseUUID(scope)
+	if err != nil {
+		return bad
+	}
+	if _, err := h.Queries.GetIssueWorkflow(ctx, db.GetIssueWorkflowParams{ID: id, WorkspaceID: ws}); err != nil {
+		return "overrides." + key + ": workflow not in this workspace"
+	}
 	return ""
 }
 

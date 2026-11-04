@@ -2,8 +2,11 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"testing"
+
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -37,7 +40,7 @@ func routedAgent(t *testing.T, wsID, status string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := testHandler.routingAgentFor(context.Background(), ws, status)
+	id := testHandler.routingAgentFor(context.Background(), ws, db.Project{}, status)
 	if !id.Valid {
 		return ""
 	}
@@ -168,4 +171,54 @@ func TestRoutingAgentTakesTheHandoffOfARoutingStep(t *testing.T) {
 	if _, _, assignee := issueStatusAndAssignee(t, routed.ID); assignee != stepAgent {
 		t.Fatalf("in_progress handed to %s, want its own handler %s", assignee, stepAgent)
 	}
+}
+
+// An override keyed "<workflow>:<status>" sends one step of one workflow to a
+// different agent; another workflow's key, and the primary agent, do not apply.
+func TestRoutingAgentOverrideIsPerWorkflowStep(t *testing.T) {
+	seedTestCatalog(t)
+	resetDefaultWorkflow(t)
+	stepAgent := seededReadyAgentID(t)
+	runtime := dbfx.Runtime(t, "ra-scoped", testutil.Cols{"workspace_id": testWorkspaceID})
+	primary := dbfx.Agent(t, "ra-scoped-primary", runtime, testutil.Cols{"workspace_id": testWorkspaceID})
+	scoped := dbfx.Agent(t, "ra-scoped-scoped", runtime, testutil.Cols{"workspace_id": testWorkspaceID})
+	t.Cleanup(func() {
+		dbfx.Exec(t, `UPDATE workspace SET settings = settings - 'routing_agent' WHERE id=$1`, testWorkspaceID)
+	})
+	projectID := createWorkflowTestProject(t, "Routing scoped project")
+	setColumnHandoff(t, projectID, "todo", handToAgent(stepAgent, "Do it.")).Want(http.StatusOK)
+	workflowID := projectWorkflowID(t, projectID)
+
+	var n int
+	handoff := func(overrides map[string]string) string {
+		n++
+		putRoutingAgent(t, testWorkspaceID, map[string]any{"agent_id": primary, "overrides": overrides}, nil).Want(http.StatusOK)
+		issue := createIssueForTest(t, map[string]any{"title": fmt.Sprintf("scoped %d", n), "project_id": projectID})
+		if issue.AssigneeID == nil {
+			t.Fatal("todo handed to nobody")
+		}
+		return *issue.AssigneeID
+	}
+	if got := handoff(map[string]string{workflowID + ":todo": scoped}); got != scoped {
+		t.Fatalf("this workflow's override: handed to %s, want %s", got, scoped)
+	}
+	otherWorkflowID := createTestWorkflow(t, "Routing other workflow").ID
+	if got := handoff(map[string]string{otherWorkflowID + ":todo": scoped}); got != primary {
+		t.Fatalf("another workflow's override: handed to %s, want primary %s", got, primary)
+	}
+}
+
+func TestRoutingAgentRejectsOverrideForUnknownWorkflow(t *testing.T) {
+	wsID, primary, _, other := routingFixture(t, "ra-unknown-wf")
+	for name, key := range map[string]string{
+		"workflow not in workspace": "00000000-0000-0000-0000-000000000001:todo",
+		"not a workflow id":         "nope:todo",
+		"empty status":              "nope:",
+		"default is not a workflow": "default:todo",
+	} {
+		t.Run(name, func(t *testing.T) {
+			putRoutingAgent(t, wsID, map[string]any{"agent_id": primary, "overrides": map[string]string{key: other}}, nil).Want(http.StatusBadRequest)
+		})
+	}
+	putRoutingAgent(t, wsID, map[string]any{"agent_id": primary, "overrides": map[string]string{"todo": other}}, nil).Want(http.StatusOK)
 }

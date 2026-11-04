@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"slices"
 
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
@@ -49,11 +50,34 @@ func RoutingAgentFromSettings(settings map[string]any) RoutingAgentConfig {
 	return cfg
 }
 
-// AgentFor is the configured agent for a step entering status, or "" when the
-// step keeps its own handler.
-func (c RoutingAgentConfig) AgentFor(status string) string {
+// WorkflowScope is the override-key prefix of the workflow a project follows,
+// or "" when it has none (then only status-wide overrides apply).
+func WorkflowScope(ctx context.Context, q issueworkflow.Querier, project db.Project) string {
+	if !project.ID.Valid {
+		return ""
+	}
+	def, err := issueworkflow.ForProjectRow(ctx, q, project)
+	if err != nil || def == nil || !def.ID.Valid {
+		return ""
+	}
+	return util.UUIDToString(def.ID)
+}
+
+// OverrideKey is the Overrides key for one step of one workflow.
+func OverrideKey(workflowScope, status string) string { return workflowScope + ":" + status }
+
+// AgentFor is the configured agent for a step entering status in the workflow
+// with this scope, or "" when the step keeps its own handler. An override for
+// that workflow's step wins, then one for the status in every workflow, then
+// the primary agent.
+func (c RoutingAgentConfig) AgentFor(workflowScope, status string) string {
 	if c.AgentID == "" {
 		return ""
+	}
+	if workflowScope != "" {
+		if override, ok := c.Overrides[OverrideKey(workflowScope, status)]; ok {
+			return override
+		}
 	}
 	if override, ok := c.Overrides[status]; ok {
 		return override
@@ -64,10 +88,10 @@ func (c RoutingAgentConfig) AgentFor(status string) string {
 	return ""
 }
 
-// FailoverFor is the fallback to run when failed, the configured agent for
-// status, could not finish its run. "" when there is none to use.
-func (c RoutingAgentConfig) FailoverFor(failed, status string) string {
-	if c.FallbackAgentID == "" || c.FallbackAgentID == failed || c.AgentFor(status) != failed {
+// FailoverFor is the fallback to run when failed, the configured agent for the
+// step, could not finish its run. "" when there is none to use.
+func (c RoutingAgentConfig) FailoverFor(failed, workflowScope, status string) string {
+	if c.FallbackAgentID == "" || c.FallbackAgentID == failed || c.AgentFor(workflowScope, status) != failed {
 		return ""
 	}
 	return c.FallbackAgentID
@@ -100,7 +124,11 @@ func (s *TaskService) failOverRoutingTask(ctx context.Context, failed db.AgentTa
 	}
 	var settings map[string]any
 	_ = json.Unmarshal(ws.Settings, &settings)
-	fallback, err := util.ParseUUID(RoutingAgentFromSettings(settings).FailoverFor(util.UUIDToString(failed.AgentID), issue.Status))
+	var project db.Project
+	if issue.ProjectID.Valid {
+		project, _ = s.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: issue.ProjectID, WorkspaceID: issue.WorkspaceID})
+	}
+	fallback, err := util.ParseUUID(RoutingAgentFromSettings(settings).FailoverFor(util.UUIDToString(failed.AgentID), WorkflowScope(ctx, s.Queries, project), issue.Status))
 	if err != nil {
 		return
 	}

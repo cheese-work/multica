@@ -611,7 +611,7 @@ func taskRunsForAssignee(issue db.Issue, task *db.AgentTaskQueue) bool {
 // is, so the write fails instead of leaving the issue unassigned.
 func (h *Handler) workflowHumans(ctx context.Context, step issueworkflow.Step, project db.Project, workspaceID, requestedByID pgtype.UUID) (issueworkflow.Humans, error) {
 	if step.Handler.Type == issueworkflow.HandlerAgent {
-		return issueworkflow.Humans{RoutingAgent: h.routingAgentFor(ctx, workspaceID, step.StatusKey)}, nil
+		return issueworkflow.Humans{RoutingAgent: h.routingAgentFor(ctx, workspaceID, project, step.StatusKey)}, nil
 	}
 	if step.Handler.Type != issueworkflow.HandlerHumanByRole {
 		return issueworkflow.Humans{}, nil
