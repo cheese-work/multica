@@ -11,14 +11,14 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const createSystem1Observation = `-- name: CreateSystem1Observation :one
+const createSystem1Observation = `-- name: CreateSystem1Observation :exec
 INSERT INTO system1_observation (workspace_id, kind, subject_id, class, decision_source, inputs, option_count, recommended_index, agent_confidence, predicted_key, predicted_confidence, predicted_precedents, predicted_at, choice_key, outcome, answered_at)
-VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::int, $8, $9, $10, $11, $12, clock_timestamp(), $13, $14, CASE WHEN $14::text = 'applied' THEN clock_timestamp() END)
-RETURNING id, workspace_id, kind, subject_id, class, decision_source, inputs, option_count, recommended_index, agent_confidence, predicted_key, predicted_confidence, predicted_precedents, predicted_at, choice_key, chosen_index, answered_at, time_to_answer_ms, outcome, reversed_at, created_at
+SELECT workspace.id, $1::text, $2::uuid, $3::text, $4::text, $5::jsonb, $6::int, $7::int, $8::real, $9::text, $10::real, $11::int, clock_timestamp(), $12::text, $13::text, CASE WHEN $13::text = 'applied' THEN clock_timestamp() END
+FROM workspace WHERE workspace.id = $14
+FOR KEY SHARE OF workspace
 `
 
 type CreateSystem1ObservationParams struct {
-	WorkspaceID         pgtype.UUID   `json:"workspace_id"`
 	Kind                string        `json:"kind"`
 	SubjectID           pgtype.UUID   `json:"subject_id"`
 	Class               string        `json:"class"`
@@ -32,11 +32,15 @@ type CreateSystem1ObservationParams struct {
 	PredictedPrecedents pgtype.Int4   `json:"predicted_precedents"`
 	ChoiceKey           pgtype.Text   `json:"choice_key"`
 	Outcome             pgtype.Text   `json:"outcome"`
+	WorkspaceID         pgtype.UUID   `json:"workspace_id"`
 }
 
-func (q *Queries) CreateSystem1Observation(ctx context.Context, arg CreateSystem1ObservationParams) (System1Observation, error) {
-	row := q.db.QueryRow(ctx, createSystem1Observation,
-		arg.WorkspaceID,
+// Inserts only while the workspace exists. FOR KEY SHARE conflicts with the FOR
+// UPDATE that workspace deletion takes first, so a capture that overlaps a
+// deletion waits, then finds no workspace and inserts nothing: the table has no
+// FK to catch the orphan.
+func (q *Queries) CreateSystem1Observation(ctx context.Context, arg CreateSystem1ObservationParams) error {
+	_, err := q.db.Exec(ctx, createSystem1Observation,
 		arg.Kind,
 		arg.SubjectID,
 		arg.Class,
@@ -50,32 +54,9 @@ func (q *Queries) CreateSystem1Observation(ctx context.Context, arg CreateSystem
 		arg.PredictedPrecedents,
 		arg.ChoiceKey,
 		arg.Outcome,
+		arg.WorkspaceID,
 	)
-	var i System1Observation
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.Kind,
-		&i.SubjectID,
-		&i.Class,
-		&i.DecisionSource,
-		&i.Inputs,
-		&i.OptionCount,
-		&i.RecommendedIndex,
-		&i.AgentConfidence,
-		&i.PredictedKey,
-		&i.PredictedConfidence,
-		&i.PredictedPrecedents,
-		&i.PredictedAt,
-		&i.ChoiceKey,
-		&i.ChosenIndex,
-		&i.AnsweredAt,
-		&i.TimeToAnswerMs,
-		&i.Outcome,
-		&i.ReversedAt,
-		&i.CreatedAt,
-	)
-	return i, err
+	return err
 }
 
 const listSystem1PrecedentKeys = `-- name: ListSystem1PrecedentKeys :many

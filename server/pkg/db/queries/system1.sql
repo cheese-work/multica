@@ -1,7 +1,12 @@
--- name: CreateSystem1Observation :one
+-- name: CreateSystem1Observation :exec
+-- Inserts only while the workspace exists. FOR KEY SHARE conflicts with the FOR
+-- UPDATE that workspace deletion takes first, so a capture that overlaps a
+-- deletion waits, then finds no workspace and inserts nothing: the table has no
+-- FK to catch the orphan.
 INSERT INTO system1_observation (workspace_id, kind, subject_id, class, decision_source, inputs, option_count, recommended_index, agent_confidence, predicted_key, predicted_confidence, predicted_precedents, predicted_at, choice_key, outcome, answered_at)
-VALUES (sqlc.arg('workspace_id'), sqlc.arg('kind'), sqlc.arg('subject_id'), sqlc.arg('class'), sqlc.narg('decision_source'), sqlc.arg('inputs')::jsonb, sqlc.arg('option_count')::int, sqlc.narg('recommended_index'), sqlc.narg('agent_confidence'), sqlc.narg('predicted_key'), sqlc.narg('predicted_confidence'), sqlc.narg('predicted_precedents'), clock_timestamp(), sqlc.narg('choice_key'), sqlc.narg('outcome'), CASE WHEN sqlc.narg('outcome')::text = 'applied' THEN clock_timestamp() END)
-RETURNING *;
+SELECT workspace.id, sqlc.arg('kind')::text, sqlc.arg('subject_id')::uuid, sqlc.arg('class')::text, sqlc.narg('decision_source')::text, sqlc.arg('inputs')::jsonb, sqlc.arg('option_count')::int, sqlc.narg('recommended_index')::int, sqlc.narg('agent_confidence')::real, sqlc.narg('predicted_key')::text, sqlc.narg('predicted_confidence')::real, sqlc.narg('predicted_precedents')::int, clock_timestamp(), sqlc.narg('choice_key')::text, sqlc.narg('outcome')::text, CASE WHEN sqlc.narg('outcome')::text = 'applied' THEN clock_timestamp() END
+FROM workspace WHERE workspace.id = sqlc.arg('workspace_id')
+FOR KEY SHARE OF workspace;
 
 -- name: ListSystem1PrecedentKeys :many
 SELECT choice_key::text AS choice_key FROM system1_observation

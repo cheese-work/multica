@@ -49,8 +49,7 @@ func recordDecisionObservation(ctx context.Context, q *db.Queries, issue db.Issu
 	if ask.Confidence != nil {
 		params.AgentConfidence = pgtype.Float4{Float32: float32(*ask.Confidence), Valid: true}
 	}
-	_, err = q.CreateSystem1Observation(ctx, params)
-	return err
+	return q.CreateSystem1Observation(ctx, params)
 }
 
 // recordSystem1Routing notes a workflow handoff (a rule chose the handler) or a
@@ -68,7 +67,7 @@ func (h *Handler) recordSystem1Routing(ctx context.Context, prev, issue db.Issue
 				"workflow": handoff.def.Name, "from_status": prev.Status, "to_status": issue.Status, "actor_type": actorType,
 				"from_assignee": prev.AssigneeType.String + ":" + uuidToString(prev.AssigneeID), "project_id": uuidToString(issue.ProjectID),
 			})
-			_, err = h.Queries.CreateSystem1Observation(ctx, db.CreateSystem1ObservationParams{
+			err = h.Queries.CreateSystem1Observation(ctx, db.CreateSystem1ObservationParams{
 				WorkspaceID: issue.WorkspaceID, Kind: "routing", SubjectID: issue.ID, Class: class,
 				DecisionSource: pgtype.Text{String: "rule", Valid: true}, Inputs: inputs,
 				PredictedKey: pgtype.Text{String: prediction.Key, Valid: true}, PredictedConfidence: pgtype.Float4{Float32: float32(prediction.Confidence), Valid: prediction.Key != ""},
