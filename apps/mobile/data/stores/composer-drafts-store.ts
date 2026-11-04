@@ -12,7 +12,9 @@
  * Disk is empty until `hydrate(scope)` runs (from the workspace layout).
  * Edits made while it loads are replayed on top of the disk draft per field:
  * a reply replaces the saved one, mentions and attachments are added to the
- * saved ones. `text` is the exception. A patch replaces it whole and would
+ * saved ones. Each mentions patch is the whole live list, so only the last
+ * one is replayed (a mention picked and removed again stays removed).
+ * `text` is the exception. A patch replaces it whole and would
  * overwrite the saved text, so a `text` patch is ignored until `hydrated`
  * and the composer keeps its input read-only until then.
  *
@@ -105,6 +107,8 @@ let scope: string | null = null;
 // Edits made while the disk drafts load, replayed on top of them.
 let loading = false;
 let loadingOps: { key: string; op: DraftOp }[] = [];
+// Latest mentions patch per key made while loading.
+let loadingMentions = new Map<string, MentionChipDraft[]>();
 // Sends that have not settled. While one is open its disk entry stays at the
 // submitted draft.
 const sending = new Map<string, OpenSend>();
@@ -172,9 +176,14 @@ function isDraft(value: unknown): value is ComposerDraft {
 }
 
 export const useComposerDraftsStore = create<State>((set, get) => {
-  const write = (key: string, op: DraftOp, forScope?: string | null) => {
+  const write = (
+    key: string,
+    op: DraftOp,
+    forScope?: string | null,
+    replay: DraftOp = op,
+  ) => {
     if (forScope !== undefined && forScope !== scope) return;
-    if (loading) loadingOps.push({ key, op });
+    if (loading) loadingOps.push({ key, op: replay });
     const next = op(get().drafts[key] ?? EMPTY);
     const drafts = { ...get().drafts };
     if (isEmpty(next)) delete drafts[key];
@@ -192,15 +201,20 @@ export const useComposerDraftsStore = create<State>((set, get) => {
         write(key, (draft) => ({ ...draft, ...patch }), forScope);
         return;
       }
+      if (forScope !== undefined && forScope !== scope) return;
       const { text: _ignored, mentions, ...rest } = patch;
+      if (mentions) loadingMentions.set(key, mentions);
       write(
         key,
+        (draft) => ({ ...draft, ...rest, ...(mentions && { mentions }) }),
+        forScope,
         (draft) => ({
           ...draft,
           ...rest,
-          mentions: mentions ? unionMentions(draft.mentions, mentions) : draft.mentions,
+          mentions: mentions
+            ? unionMentions(draft.mentions, loadingMentions.get(key) ?? mentions)
+            : draft.mentions,
         }),
-        forScope,
       );
     },
     patchAttachments: (key, update, forScope) =>
@@ -245,6 +259,7 @@ export const useComposerDraftsStore = create<State>((set, get) => {
       scope = workspaceScope;
       loading = true;
       loadingOps = [];
+      loadingMentions = new Map();
       set({ drafts: {}, scopeId: workspaceScope, hydrated: false });
       const onDisk = await draftPersistence.loadAll<unknown>(
         workspaceScope,
@@ -273,6 +288,7 @@ export const useComposerDraftsStore = create<State>((set, get) => {
       const touched = new Set(loadingOps.map((o) => o.key));
       loading = false;
       loadingOps = [];
+      loadingMentions = new Map();
       set({ drafts, hydrated: true });
       touched.forEach((key) => persist(key, drafts[key]));
     },
@@ -286,6 +302,7 @@ export const useComposerDraftsStore = create<State>((set, get) => {
       scope = null;
       loading = false;
       loadingOps = [];
+      loadingMentions = new Map();
       sending.clear();
       set({ drafts: {}, scopeId: null, hydrated: false });
     },

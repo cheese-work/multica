@@ -308,4 +308,31 @@ describe("composer drafts survive unmount, route change and cold start", () => {
     const run2 = await coldStart();
     expect(run2.store.getState().drafts["comment:i1"]).toEqual(expected);
   });
+
+  it("a mention picked and removed before the drafts load does not come back", async () => {
+    const run1 = await coldStart();
+    run1.store.getState().patch("comment:i1", { text: "hello", mentions: [mention] });
+    await settle();
+
+    vi.resetModules();
+    const store = (await import("./composer-drafts-store")).useComposerDraftsStore;
+    const loading = store.getState().hydrate("u1:ws1");
+    const picked = { type: "member" as const, id: "m1", name: "Mo" };
+    const kept = { type: "member" as const, id: "m2", name: "Al" };
+    // The mention mirror pushes the whole live list on every toggle.
+    store.getState().patch("comment:i1", { mentions: [picked, kept] });
+    store.getState().patch("comment:i1", { mentions: [kept] });
+    await loading;
+    await settle();
+
+    const expected = {
+      text: "hello",
+      reply: null,
+      mentions: [mention, kept],
+      attachments: [],
+    };
+    expect(store.getState().drafts["comment:i1"]).toEqual(expected);
+    const run2 = await coldStart();
+    expect(run2.store.getState().drafts["comment:i1"]).toEqual(expected);
+  });
 });
