@@ -804,6 +804,19 @@ func (q *Queries) RejectDecisionActionRow(ctx context.Context, arg RejectDecisio
 	return i, err
 }
 
+const tryLockConfigChange = `-- name: TryLockConfigChange :one
+SELECT pg_try_advisory_xact_lock(hashtextextended($1::text, 0))::boolean
+`
+
+// A config change serialises per field and target on a try-lock: a second
+// approval of the same field gets false and retries, never waits.
+func (q *Queries) TryLockConfigChange(ctx context.Context, key string) (bool, error) {
+	row := q.db.QueryRow(ctx, tryLockConfigChange, key)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const tryLockDecisionCommentThread = `-- name: TryLockDecisionCommentThread :one
 SELECT pg_try_advisory_xact_lock(hashtextextended($1::uuid::text || ':comment_thread', 0))::boolean
 `
