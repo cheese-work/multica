@@ -199,8 +199,11 @@ multica issue follow MUL-123 --chat <chat-session-id>
 multica issue mute-follow MUL-123 --chat <chat-session-id>
 multica issue unmute-follow MUL-123 --chat <chat-session-id>
 multica issue unfollow MUL-123 --chat <chat-session-id>
+multica issue unfollow MUL-123 --chat <chat-session-id> --scope root
 multica issue follows --chat <chat-session-id>
 ```
+
+`unfollow`는 해당 이슈의 팔로우를 종료합니다. `--scope root`를 함께 쓰면 하위 이슈가 그 이슈에서 상속한 팔로우도 종료합니다. 직접 수동으로 팔로우한 하위 이슈는 계속 팔로우됩니다. 팔로우를 해제한 하위 이슈는 이후 하위 이슈가 생성되어도 다시 팔로우되지 않습니다.
 
 ## 에이전트와 스킬
 

@@ -26,6 +26,7 @@ var issueFollowCmd = &cobra.Command{
 var issueUnfollowCmd = &cobra.Command{
 	Use:   "unfollow <issue-id>",
 	Short: "Stop following an issue's progress in a DM",
+	Long:  "--scope issue (default) ends this issue's follow. --scope root also ends the follows its children inherited from it; a child with an independent manual follow stays followed.",
 	Args:  exactArgs(1),
 	RunE:  runIssueFollowAction("DELETE", ""),
 }
@@ -57,15 +58,22 @@ func init() {
 		c.Flags().String("output", "json", "Output format: table or json")
 		issueCmd.AddCommand(c)
 	}
+	issueUnfollowCmd.Flags().String("scope", "", "Unfollow scope: issue (default) or root")
 	_ = issueFollowsCmd.MarkFlagRequired("chat")
 }
 
 func chatQuery(cmd *cobra.Command) string {
-	chat, _ := cmd.Flags().GetString("chat")
-	if chat == "" {
+	query := url.Values{}
+	if chat, _ := cmd.Flags().GetString("chat"); chat != "" {
+		query.Set("chat_session_id", chat)
+	}
+	if scope, _ := cmd.Flags().GetString("scope"); scope != "" {
+		query.Set("scope", scope)
+	}
+	if len(query) == 0 {
 		return ""
 	}
-	return "?" + url.Values{"chat_session_id": {chat}}.Encode()
+	return "?" + query.Encode()
 }
 
 func printFollowResult(cmd *cobra.Command, raw json.RawMessage) error {

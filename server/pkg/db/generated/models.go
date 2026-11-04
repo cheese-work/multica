@@ -1056,6 +1056,7 @@ type DecisionRequest struct {
 	ProjectID             pgtype.UUID        `json:"project_id"`
 	Kind                  string             `json:"kind"`
 	ExpiresAt             pgtype.Timestamptz `json:"expires_at"`
+	AnswerRevision        int32              `json:"answer_revision"`
 }
 
 type DecisionWorkerLease struct {
@@ -1106,13 +1107,12 @@ type DmProgressFollow struct {
 	IssueID            pgtype.UUID        `json:"issue_id"`
 	LineageID          pgtype.UUID        `json:"lineage_id"`
 	OwnerUserID        pgtype.UUID        `json:"owner_user_id"`
-	Source             string             `json:"source"`
 	State              string             `json:"state"`
 	MutedAt            pgtype.Timestamptz `json:"muted_at"`
 	LastRenderedStatus string             `json:"last_rendered_status"`
 	LastImmediateAt    pgtype.Timestamptz `json:"last_immediate_at"`
-	ParentFollowID     pgtype.UUID        `json:"parent_follow_id"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	Reasons            []string           `json:"reasons"`
 }
 
 type DmProgressLane struct {
