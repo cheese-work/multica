@@ -5,9 +5,13 @@
 package gatesuite
 
 import (
+	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -21,8 +25,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/golang-jwt/jwt/v5"
 )
 
 // Perms is a GitHub permission set as sent in a token request.
@@ -129,9 +131,7 @@ func NewBareRepo(t testing.TB, root, repo string) string {
 func (g *GitHub) GitURL(repo string) string { return g.URL + "/git/" + repo + ".git" }
 
 func (g *GitHub) handleMint(w http.ResponseWriter, r *http.Request) {
-	_, err := jwt.Parse(bearer(r), func(*jwt.Token) (any, error) { return &g.Key.PublicKey, nil },
-		jwt.WithValidMethods([]string{"RS256"}), jwt.WithIssuer(g.AppID))
-	if err != nil {
+	if err := g.verifyAppJWT(bearer(r)); err != nil {
 		http.Error(w, "bad app jwt: "+err.Error(), http.StatusUnauthorized)
 		return
 	}
@@ -150,6 +150,33 @@ func (g *GitHub) handleMint(w http.ResponseWriter, r *http.Request) {
 	g.mu.Unlock()
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(map[string]string{"token": rec.token, "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
+}
+
+// verifyAppJWT checks the RS256 signature and issuer of the App JWT by hand.
+// This is a GitHub App credential, not a Multica session token, so it does not
+// go through the session-generation check that the repo guards on jwt.Parse.
+func (g *GitHub) verifyAppJWT(tok string) error {
+	parts := strings.Split(tok, ".")
+	if len(parts) != 3 {
+		return errors.New("not a JWT")
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
+	if err := rsa.VerifyPKCS1v15(&g.Key.PublicKey, crypto.SHA256, sum[:], sig); err != nil {
+		return err
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return err
+	}
+	var claims struct{ Iss string }
+	if err := json.Unmarshal(raw, &claims); err != nil || claims.Iss != g.AppID {
+		return errors.New("wrong issuer")
+	}
+	return nil
 }
 
 func (g *GitHub) handleRevoke(w http.ResponseWriter, r *http.Request) {

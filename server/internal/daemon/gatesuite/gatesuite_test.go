@@ -2,6 +2,8 @@ package gatesuite
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -273,5 +275,31 @@ func TestAgentExecRunsAShellScript(t *testing.T) {
 	got := RunAgent(t, []Step{{Op: "exec", Data: "echo a | tr a b"}, {Op: "exec", Data: "echo out; exit 3"}})
 	if len(got) != 2 || !got[0].OK || got[0].Out != "b" || got[1].OK || got[1].Out != "out" {
 		t.Fatalf("outcomes %+v", got)
+	}
+}
+
+func TestMintRefusesAnAppJWTSignedByAnotherKey(t *testing.T) {
+	g, _ := newGH(t)
+	other, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, key := range map[string]*rsa.PrivateKey{"other key": other} {
+		tok, _ := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.RegisteredClaims{Issuer: g.AppID}).SignedString(key)
+		for _, bearer := range []string{tok, "garbage"} {
+			req, _ := http.NewRequest("POST", fmt.Sprintf("%s/app/installations/%d/access_tokens", g.URL, g.InstallationID), strings.NewReader("{}"))
+			req.Header.Set("Authorization", "Bearer "+bearer)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusUnauthorized {
+				t.Errorf("%s: status %d, want 401", name, resp.StatusCode)
+			}
+		}
+	}
+	if len(g.Mints()) != 0 {
+		t.Error("a refused request must not mint")
 	}
 }
