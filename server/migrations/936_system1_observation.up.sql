@@ -14,8 +14,8 @@ CREATE TABLE system1_observation (
     -- Who made the choice. NULL while a decision request is still open.
     decision_source text CHECK (decision_source IN ('rule', 'agent', 'human')),
     inputs jsonb NOT NULL DEFAULT '{}',
-    -- Option labels in presented order; the recommended one is first when identified.
-    options jsonb NOT NULL DEFAULT '[]',
+    -- Number of options offered. Labels are ask text and are never stored.
+    option_count integer NOT NULL DEFAULT 0 CHECK (option_count >= 0),
     recommended_index integer CHECK (recommended_index >= 0),
     agent_confidence real CHECK (agent_confidence BETWEEN 0 AND 1),
     -- Shadow prediction, written in the same transaction that creates the

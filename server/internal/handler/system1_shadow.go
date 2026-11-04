@@ -13,7 +13,9 @@ import (
 )
 
 // Shadow System 1 capture (CHE-3628). Facts only: no ask text, no answer text.
-// A prediction is stored and reported, never applied.
+// A prediction is stored and reported, never applied. Option labels are ask
+// text and may hold secrets, so only the option count and the recommended
+// position are kept.
 
 // recordDecisionObservation runs inside the request transaction, so the
 // prediction exists before the human can answer. Action requests (no options)
@@ -35,14 +37,13 @@ func recordDecisionObservation(ctx context.Context, q *db.Queries, issue db.Issu
 	if prediction.Key == system1.KeyRecommended && recommended < 0 {
 		prediction.Key = "" // no recommendation to predict the human taking
 	}
-	optionsJSON, _ := json.Marshal(labels)
 	inputs, _ := json.Marshal(map[string]any{
 		"origin": request.Origin, "issue_status": issue.Status, "project_id": uuidToString(issue.ProjectID),
 		"asking_agent_id": uuidToString(request.AskingAgentID), "option_count": len(labels),
 	})
 	params := db.CreateSystem1ObservationParams{
 		WorkspaceID: issue.WorkspaceID, Kind: "decision", SubjectID: request.ID, Class: request.EscalationClass,
-		Inputs: inputs, Options: optionsJSON,
+		Inputs: inputs, OptionCount: int32(len(labels)),
 		PredictedKey: pgtype.Text{String: prediction.Key, Valid: true}, PredictedConfidence: pgtype.Float4{Float32: float32(prediction.Confidence), Valid: prediction.Key != ""},
 		PredictedPrecedents: pgtype.Int4{Int32: int32(prediction.Precedents), Valid: true},
 	}
@@ -73,7 +74,7 @@ func (h *Handler) recordSystem1Routing(ctx context.Context, prev, issue db.Issue
 			})
 			_, err = h.Queries.CreateSystem1Observation(ctx, db.CreateSystem1ObservationParams{
 				WorkspaceID: issue.WorkspaceID, Kind: "routing", SubjectID: issue.ID, Class: class,
-				DecisionSource: pgtype.Text{String: "rule", Valid: true}, Inputs: inputs, Options: []byte("[]"),
+				DecisionSource: pgtype.Text{String: "rule", Valid: true}, Inputs: inputs,
 				PredictedKey: pgtype.Text{String: prediction.Key, Valid: true}, PredictedConfidence: pgtype.Float4{Float32: float32(prediction.Confidence), Valid: prediction.Key != ""},
 				PredictedPrecedents: pgtype.Int4{Int32: int32(prediction.Precedents), Valid: true},
 				ChoiceKey:           pgtype.Text{String: choice, Valid: true}, Outcome: pgtype.Text{String: "applied", Valid: true},

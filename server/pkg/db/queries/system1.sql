@@ -1,6 +1,6 @@
 -- name: CreateSystem1Observation :one
-INSERT INTO system1_observation (workspace_id, kind, subject_id, class, decision_source, inputs, options, recommended_index, agent_confidence, predicted_key, predicted_confidence, predicted_precedents, predicted_at, choice_key, outcome, answered_at)
-VALUES (sqlc.arg('workspace_id'), sqlc.arg('kind'), sqlc.arg('subject_id'), sqlc.arg('class'), sqlc.narg('decision_source'), sqlc.arg('inputs')::jsonb, sqlc.arg('options')::jsonb, sqlc.narg('recommended_index'), sqlc.narg('agent_confidence'), sqlc.narg('predicted_key'), sqlc.narg('predicted_confidence'), sqlc.narg('predicted_precedents'), clock_timestamp(), sqlc.narg('choice_key'), sqlc.narg('outcome'), CASE WHEN sqlc.narg('outcome')::text = 'applied' THEN clock_timestamp() END)
+INSERT INTO system1_observation (workspace_id, kind, subject_id, class, decision_source, inputs, option_count, recommended_index, agent_confidence, predicted_key, predicted_confidence, predicted_precedents, predicted_at, choice_key, outcome, answered_at)
+VALUES (sqlc.arg('workspace_id'), sqlc.arg('kind'), sqlc.arg('subject_id'), sqlc.arg('class'), sqlc.narg('decision_source'), sqlc.arg('inputs')::jsonb, sqlc.arg('option_count')::int, sqlc.narg('recommended_index'), sqlc.narg('agent_confidence'), sqlc.narg('predicted_key'), sqlc.narg('predicted_confidence'), sqlc.narg('predicted_precedents'), clock_timestamp(), sqlc.narg('choice_key'), sqlc.narg('outcome'), CASE WHEN sqlc.narg('outcome')::text = 'applied' THEN clock_timestamp() END)
 RETURNING *;
 
 -- name: ListSystem1PrecedentKeys :many

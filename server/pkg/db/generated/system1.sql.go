@@ -12,9 +12,9 @@ import (
 )
 
 const createSystem1Observation = `-- name: CreateSystem1Observation :one
-INSERT INTO system1_observation (workspace_id, kind, subject_id, class, decision_source, inputs, options, recommended_index, agent_confidence, predicted_key, predicted_confidence, predicted_precedents, predicted_at, choice_key, outcome, answered_at)
-VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10, $11, $12, clock_timestamp(), $13, $14, CASE WHEN $14::text = 'applied' THEN clock_timestamp() END)
-RETURNING id, workspace_id, kind, subject_id, class, decision_source, inputs, options, recommended_index, agent_confidence, predicted_key, predicted_confidence, predicted_precedents, predicted_at, choice_key, chosen_index, answered_at, time_to_answer_ms, outcome, reversed_at, created_at
+INSERT INTO system1_observation (workspace_id, kind, subject_id, class, decision_source, inputs, option_count, recommended_index, agent_confidence, predicted_key, predicted_confidence, predicted_precedents, predicted_at, choice_key, outcome, answered_at)
+VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::int, $8, $9, $10, $11, $12, clock_timestamp(), $13, $14, CASE WHEN $14::text = 'applied' THEN clock_timestamp() END)
+RETURNING id, workspace_id, kind, subject_id, class, decision_source, inputs, option_count, recommended_index, agent_confidence, predicted_key, predicted_confidence, predicted_precedents, predicted_at, choice_key, chosen_index, answered_at, time_to_answer_ms, outcome, reversed_at, created_at
 `
 
 type CreateSystem1ObservationParams struct {
@@ -24,7 +24,7 @@ type CreateSystem1ObservationParams struct {
 	Class               string        `json:"class"`
 	DecisionSource      pgtype.Text   `json:"decision_source"`
 	Inputs              []byte        `json:"inputs"`
-	Options             []byte        `json:"options"`
+	OptionCount         int32         `json:"option_count"`
 	RecommendedIndex    pgtype.Int4   `json:"recommended_index"`
 	AgentConfidence     pgtype.Float4 `json:"agent_confidence"`
 	PredictedKey        pgtype.Text   `json:"predicted_key"`
@@ -42,7 +42,7 @@ func (q *Queries) CreateSystem1Observation(ctx context.Context, arg CreateSystem
 		arg.Class,
 		arg.DecisionSource,
 		arg.Inputs,
-		arg.Options,
+		arg.OptionCount,
 		arg.RecommendedIndex,
 		arg.AgentConfidence,
 		arg.PredictedKey,
@@ -60,7 +60,7 @@ func (q *Queries) CreateSystem1Observation(ctx context.Context, arg CreateSystem
 		&i.Class,
 		&i.DecisionSource,
 		&i.Inputs,
-		&i.Options,
+		&i.OptionCount,
 		&i.RecommendedIndex,
 		&i.AgentConfidence,
 		&i.PredictedKey,
@@ -132,9 +132,9 @@ SELECT class::text AS class,
     count(*) FILTER (WHERE choice_key IS NOT NULL)::bigint AS decided,
     count(*) FILTER (WHERE choice_key IS NOT NULL AND coalesce(predicted_key, '') <> '')::bigint AS predicted,
     count(*) FILTER (WHERE choice_key IS NOT NULL AND predicted_key = choice_key)::bigint AS agreed,
-    count(*) FILTER (WHERE choice_key IS NOT NULL AND choice_key <> 'recommended')::bigint AS other_decided,
-    count(*) FILTER (WHERE choice_key IS NOT NULL AND choice_key <> 'recommended' AND coalesce(predicted_key, '') <> '')::bigint AS other_predicted,
-    count(*) FILTER (WHERE choice_key IS NOT NULL AND choice_key <> 'recommended' AND predicted_key = choice_key)::bigint AS other_agreed,
+    count(*) FILTER (WHERE choice_key IS NOT NULL AND choice_key IN ('other', 'free_text'))::bigint AS other_decided,
+    count(*) FILTER (WHERE choice_key IS NOT NULL AND choice_key IN ('other', 'free_text') AND coalesce(predicted_key, '') <> '')::bigint AS other_predicted,
+    count(*) FILTER (WHERE choice_key IS NOT NULL AND choice_key IN ('other', 'free_text') AND predicted_key = choice_key)::bigint AS other_agreed,
     count(*) FILTER (WHERE reversed_at IS NOT NULL)::bigint AS reversed,
     coalesce(percentile_cont(0.5) WITHIN GROUP (ORDER BY time_to_answer_ms), 0)::float8 AS median_answer_ms
 FROM system1_observation
@@ -161,7 +161,7 @@ type System1ReportByClassRow struct {
 }
 
 // Precision and coverage of the shadow predictions that preceded an answer.
-// other_* is the audit slice: answers where the human did not take the recommendation.
+// other_* is the audit slice: answers where the human did not take the recommendation (another option, or free text).
 func (q *Queries) System1ReportByClass(ctx context.Context, arg System1ReportByClassParams) ([]System1ReportByClassRow, error) {
 	rows, err := q.db.Query(ctx, system1ReportByClass, arg.WorkspaceID, arg.Kind)
 	if err != nil {

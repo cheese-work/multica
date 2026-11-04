@@ -27,6 +27,15 @@ func TestRecommendedIndex(test *testing.T) {
 		{"label boundary", "D10 is better", []string{"D1", "D10"}, 1},
 		{"prefix of longer word is no match", "Merge-now wins", []string{"Merge", "Hold"}, -1},
 		{"no label named", "Do whatever is cheaper.", []string{"A", "B"}, -1},
+		{"ordinary wording", "I recommend Hold because CI is red.", []string{"Proceed", "Hold"}, 1},
+		{"label mid-sentence", "We should go with Later, since CI is red.", []string{"Now", "Later"}, 1},
+		{"label inside longer label", "Use Hold off until CI is green.", []string{"Hold", "Hold off"}, 1},
+		{"label at start wins over a later mention", "Hold, then Proceed once CI is green.", []string{"Proceed", "Hold"}, 1},
+		{"two labels named mid-sentence is ambiguous", "Either Hold or Proceed works.", []string{"Proceed", "Hold"}, -1},
+		{"other label negated", "Hold, not Proceed.", []string{"Proceed", "Hold"}, 1},
+		{"negated mid-sentence label is no match", "Do not Proceed yet.", []string{"Proceed", "Hold"}, -1},
+		{"negated start label is no match", "Proceed is not safe.", []string{"Proceed", "Hold"}, -1},
+		{"word inside another word is no match", "Withhold the change.", []string{"Proceed", "Hold"}, -1},
 	}
 	for _, tc := range cases {
 		test.Run(tc.name, func(test *testing.T) {

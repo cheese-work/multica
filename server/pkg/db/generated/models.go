@@ -2806,7 +2806,7 @@ type System1Observation struct {
 	Class               string             `json:"class"`
 	DecisionSource      pgtype.Text        `json:"decision_source"`
 	Inputs              []byte             `json:"inputs"`
-	Options             []byte             `json:"options"`
+	OptionCount         int32              `json:"option_count"`
 	RecommendedIndex    pgtype.Int4        `json:"recommended_index"`
 	AgentConfidence     pgtype.Float4      `json:"agent_confidence"`
 	PredictedKey        pgtype.Text        `json:"predicted_key"`

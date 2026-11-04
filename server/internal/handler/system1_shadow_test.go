@@ -4,15 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/system1"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
 type observationRow struct {
 	id                                  string
-	options                             []byte
+	optionCount                         int
 	recommended, chosen                 *int
 	source, predicted, choice, outcome  *string
 	predictedPrecedents                 *int
@@ -23,9 +25,9 @@ type observationRow struct {
 func loadObservation(t *testing.T, kind, subject string) observationRow {
 	t.Helper()
 	var row observationRow
-	dbfx.QueryRow(t, `SELECT id::text, options, recommended_index, chosen_index, decision_source, predicted_key, choice_key, outcome, predicted_precedents, agent_confidence,
+	dbfx.QueryRow(t, `SELECT id::text, option_count, recommended_index, chosen_index, decision_source, predicted_key, choice_key, outcome, predicted_precedents, agent_confidence,
 		predicted_at IS NOT NULL, answered_at IS NOT NULL, reversed_at IS NOT NULL FROM system1_observation WHERE kind = $1 AND subject_id = $2 ORDER BY created_at DESC LIMIT 1`, kind, subject).
-		Scan(&row.id, &row.options, &row.recommended, &row.chosen, &row.source, &row.predicted, &row.choice, &row.outcome, &row.predictedPrecedents, &row.confidence, &row.hasPredictedAt, &row.hasAnswered, &row.hasRev)
+		Scan(&row.id, &row.optionCount, &row.recommended, &row.chosen, &row.source, &row.predicted, &row.choice, &row.outcome, &row.predictedPrecedents, &row.confidence, &row.hasPredictedAt, &row.hasAnswered, &row.hasRev)
 	return row
 }
 
@@ -67,10 +69,8 @@ func TestSystem1DecisionObservationLifecycle(t *testing.T) {
 		t.Fatalf("stored options = %v, want Hold first", storedOptions)
 	}
 	row := loadObservation(t, "decision", requestID)
-	var labels []string
-	_ = json.Unmarshal(row.options, &labels)
-	if len(labels) != 2 || labels[0] != "Hold" || row.recommended == nil || *row.recommended != 0 {
-		t.Fatalf("observation options=%v recommended=%v", labels, row.recommended)
+	if row.optionCount != 2 || row.recommended == nil || *row.recommended != 0 {
+		t.Fatalf("observation option_count=%d recommended=%v", row.optionCount, row.recommended)
 	}
 	// Shadow prediction exists before any answer, and nothing is decided yet.
 	if !row.hasPredictedAt || row.predicted == nil || *row.predicted != system1.KeyRecommended || row.predictedPrecedents == nil || *row.predictedPrecedents != 6 || row.confidence == nil || *row.confidence != 0.75 {
@@ -116,6 +116,50 @@ func TestSystem1DecisionObservationLifecycle(t *testing.T) {
 	}
 }
 
+func TestSystem1ObservationHoldsNoAskText(t *testing.T) {
+	fixture := newRequestCoreFixture(t, false)
+	ask := fixture.unorderedAsk()
+	ask.Options = []decisiontx.AskOption{testAskOption("Proceed"), testAskOption("Hold sk-live-SECRET99")}
+	ask.Recommendation = "Hold sk-live-SECRET99"
+	request := newRequest(http.MethodPost, "/api/decisions", map[string]any{"issue_id": fixture.issueID, "session_id": fixture.sessionID, "ask": ask, "escalation_class": "reversible"})
+	request.Header.Set("X-Actor-Source", "task_token")
+	request.Header.Set("X-Agent-ID", fixture.agentID)
+	request.Header.Set("X-Task-ID", fixture.taskID)
+	var created map[string]any
+	testutil.Call(t, testHandler.RequestDecision, request).Want(http.StatusCreated).JSON(&created)
+	requestID := created["id"].(string)
+	answerOnCardRow(t, requestID, ptr(1))
+	var row string
+	dbfx.QueryRow(t, `SELECT to_jsonb(o)::text FROM system1_observation o WHERE subject_id = $1`, requestID).Scan(&row)
+	for _, text := range []string{"SECRET99", "Proceed", "Hold", ask.Decision, ask.ContextELI10} {
+		if strings.Contains(row, text) {
+			t.Fatalf("observation row holds ask text %q: %s", text, row)
+		}
+	}
+	var count, recommended int
+	dbfx.QueryRow(t, `SELECT option_count, recommended_index FROM system1_observation WHERE subject_id = $1`, requestID).Scan(&count, &recommended)
+	if count != 2 || recommended != 0 {
+		t.Fatalf("option_count=%d recommended_index=%d, want 2 and 0", count, recommended)
+	}
+}
+
+func TestSystem1OrdinaryRecommendationWordingStillMovesFirst(t *testing.T) {
+	fixture := newRequestCoreFixture(t, false)
+	ask := fixture.unorderedAsk()
+	ask.Recommendation = "I recommend Hold because the check is still red."
+	request := newRequest(http.MethodPost, "/api/decisions", map[string]any{"issue_id": fixture.issueID, "session_id": fixture.sessionID, "ask": ask, "escalation_class": "reversible"})
+	request.Header.Set("X-Actor-Source", "task_token")
+	request.Header.Set("X-Agent-ID", fixture.agentID)
+	request.Header.Set("X-Task-ID", fixture.taskID)
+	var created map[string]any
+	testutil.Call(t, testHandler.RequestDecision, request).Want(http.StatusCreated).JSON(&created)
+	var first string
+	dbfx.QueryRow(t, `SELECT ask_json->'options'->0->>'label' FROM decision_request WHERE id = $1`, created["id"]).Scan(&first)
+	if first != "Hold" {
+		t.Fatalf("first option = %s, want Hold", first)
+	}
+}
+
 func TestSystem1AskWithoutNamedRecommendationKeepsOrderAndAbstains(t *testing.T) {
 	seedPrecedents(t, "reversible", system1.KeyRecommended, 6)
 	fixture := newRequestCoreFixture(t, false)
@@ -128,10 +172,10 @@ func TestSystem1AskWithoutNamedRecommendationKeepsOrderAndAbstains(t *testing.T)
 	var created map[string]any
 	testutil.Call(t, testHandler.RequestDecision, request).Want(http.StatusCreated).JSON(&created)
 	row := loadObservation(t, "decision", created["id"].(string))
-	var labels []string
-	_ = json.Unmarshal(row.options, &labels)
-	if labels[0] != "Proceed" || row.recommended != nil || row.predicted == nil || *row.predicted != "" {
-		t.Fatalf("order=%v recommended=%v predicted=%v", labels, row.recommended, row.predicted)
+	var first string
+	dbfx.QueryRow(t, `SELECT ask_json->'options'->0->>'label' FROM decision_request WHERE id = $1`, created["id"]).Scan(&first)
+	if first != "Proceed" || row.optionCount != 2 || row.recommended != nil || row.predicted == nil || *row.predicted != "" {
+		t.Fatalf("first=%s count=%d recommended=%v predicted=%v", first, row.optionCount, row.recommended, row.predicted)
 	}
 	answerOnCardRow(t, created["id"].(string), ptr(0))
 	if row = loadObservation(t, "decision", created["id"].(string)); *row.choice != "option" {

@@ -12,7 +12,7 @@ System 1 plugs in later, and the criteria for each later step.
 
 ## What is captured
 
-One row per event in `system1_observation` (migrations `932` to `935`).
+One row per event in `system1_observation` (migrations `936` to `939`).
 
 | Field | Routing row | Decision row |
 | --- | --- | --- |
@@ -21,8 +21,8 @@ One row per event in `system1_observation` (migrations `932` to `935`).
 | `class` | `<workflow>/<step status>` | `escalation_class` (for example `reversible`) |
 | `decision_source` | `rule` (a workflow handoff chose the handler) | `human` once answered. Empty while open. |
 | `inputs` | Issue status, project, workflow | Origin, issue status, project, asking agent, option count |
-| `options` | Not used | Option labels in the order shown |
-| `recommended_index` | Not used | Index of the recommended option. `0` after the first-position rule. Empty if the recommendation names no option. |
+| `option_count` | Not used (0) | Number of options offered. No labels. |
+| `recommended_index` | Not used | Position of the recommended option as shown. `0` after the first-position rule. Empty if the recommendation names no option. |
 | `agent_confidence` | Not used | The agent's own confidence, 0 to 1. Optional ask field `confidence`. |
 | `predicted_key`, `predicted_confidence`, `predicted_precedents`, `predicted_at` | Shadow prediction | Shadow prediction, stored in the same transaction as the request |
 | `choice_key`, `chosen_index`, `answered_at`, `time_to_answer_ms` | Chosen handler (`agent:<id>` or `member:<id>`) | The human answer. `choice_key` is `recommended`, `other`, `option` or `free_text`. |
@@ -45,11 +45,17 @@ writer.
 ## Recommended option stays first
 
 - `RecommendedFirst` moves the recommended option to index 0 when the ask is
-  created through the API. The match is on the `recommendation` text: the
-  longest option label that starts the text, ignoring markdown and a filler
-  word such as "Option".
-- If no option matches, the order is unchanged and `recommended_index` is empty.
-  The shadow prediction abstains in that case.
+  created through the API. The match is on the `recommendation` text:
+  - A label that starts the text wins, after markdown and a filler word such
+    as "Option" or "I recommend" are skipped. The longest label wins.
+  - Otherwise exactly one label must appear as whole words anywhere in the
+    text ("I recommend Hold because CI is red").
+  - A label with a negation next to it ("not Proceed", "Proceed is not safe")
+    does not count. A label inside a longer label ("Hold" in "Hold off") does
+    not count.
+- If no option, or more than one, matches, the order is unchanged and
+  `recommended_index` is empty. The request is still accepted. The shadow
+  prediction abstains. Ask text that names its choice plainly keeps the rule.
 - Why it matters: Cheese picked the recommended option 92.1% of the time while
   the recommendation was first 92% of the time. Position and recommendation are
   confounded. A model trained on this cannot tell "the recommendation was good"
@@ -125,12 +131,16 @@ Predict(precedents []string) Prediction
 
 ## Privacy
 
-- The table holds facts and labels only: ids, class names, option labels,
-  indexes, timestamps and counts.
-- It holds no secrets, no tokens, no DM message text and no answer free text.
-  `free_text` is a key, not the content.
-- Option labels come from the ask. An agent must not put a secret in a label.
-  The existing ask lint already refuses bare IDs and lists.
+- The table holds facts only: ids, class names, counts, positions, keys,
+  timestamps and the agent's confidence.
+- It holds no ask text. Option labels are ask text and can carry secrets or
+  DM content, so only the option count and the recommended position are kept.
+  A test posts a label that looks like a key and checks that the whole row
+  holds no label, decision or context text.
+- It holds no DM message text and no answer free text. `free_text` is a key,
+  not the content.
+- Routing rows hold the workflow name and status key as the class. Both are
+  admin-set names, not user input.
 - Training or fine-tune data is built from this table plus public ask fields.
   DM contents never enter it. Export is a separate, reviewed step.
 
