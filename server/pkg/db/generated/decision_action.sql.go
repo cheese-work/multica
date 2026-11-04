@@ -789,6 +789,26 @@ func (q *Queries) LockPendingDecisionAction(ctx context.Context, arg LockPending
 	return i, err
 }
 
+const lockWorkflowTargetNowait = `-- name: LockWorkflowTargetNowait :one
+SELECT id FROM issue_workflow
+WHERE id = $1 AND workspace_id = $2
+FOR UPDATE NOWAIT
+`
+
+type LockWorkflowTargetNowaitParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// The row a config change reads and writes is locked the same way, so an
+// ordinary edit cannot commit between the approval's read and its write.
+func (q *Queries) LockWorkflowTargetNowait(ctx context.Context, arg LockWorkflowTargetNowaitParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockWorkflowTargetNowait, arg.ID, arg.WorkspaceID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const lockWorkspaceKeyShareNowait = `-- name: LockWorkspaceKeyShareNowait :one
 
 SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE NOWAIT
@@ -901,6 +921,19 @@ func (q *Queries) RejectDecisionActionRow(ctx context.Context, arg RejectDecisio
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const tryLockConfigChange = `-- name: TryLockConfigChange :one
+SELECT pg_try_advisory_xact_lock(hashtextextended($1::text, 0))::boolean
+`
+
+// A config change serialises per field and target on a try-lock: a second
+// approval of the same field gets false and retries, never waits.
+func (q *Queries) TryLockConfigChange(ctx context.Context, key string) (bool, error) {
+	row := q.db.QueryRow(ctx, tryLockConfigChange, key)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const tryLockDecisionCommentThread = `-- name: TryLockDecisionCommentThread :one
