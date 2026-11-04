@@ -18,14 +18,14 @@ import (
 // in. Every refusal is a 403, so a probe learns nothing about other DMs.
 
 type dmProgressFollowResponse struct {
-	IssueID string `json:"issue_id"`
-	LaneID  string `json:"lane_id"`
-	Source  string `json:"source"`
-	Muted   bool   `json:"muted"`
+	IssueID string   `json:"issue_id"`
+	LaneID  string   `json:"lane_id"`
+	Reasons []string `json:"reasons"`
+	Muted   bool     `json:"muted"`
 }
 
 func dmProgressFollowToResponse(f db.DmProgressFollow) dmProgressFollowResponse {
-	return dmProgressFollowResponse{IssueID: uuidToString(f.IssueID), LaneID: uuidToString(f.LineageID), Source: f.Source, Muted: f.MutedAt.Valid}
+	return dmProgressFollowResponse{IssueID: uuidToString(f.IssueID), LaneID: uuidToString(f.LineageID), Reasons: f.Reasons, Muted: f.MutedAt.Valid}
 }
 
 // progressLane resolves the lane the caller may write. Agents get follow only
@@ -87,7 +87,7 @@ func (h *Handler) FollowIssueProgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Explicit follow: no row back means it is already active.
-	if _, _, err := service.AddProgressFollow(r.Context(), qtx, lane, issue, "manual", pgtype.Timestamptz{}, pgtype.UUID{}); err != nil {
+	if _, _, err := service.AddProgressFollow(r.Context(), qtx, lane, issue, []string{service.ReasonManual}, pgtype.Timestamptz{}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to follow")
 		return
 	}
@@ -98,8 +98,31 @@ func (h *Handler) FollowIssueProgress(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"issue_id": uuidToString(issue.ID), "lane_id": uuidToString(lane.Lineage), "followed": true})
 }
 
+var errUnfollowScope = errors.New("scope=root needs an issue that is a followed root")
+
+// UnfollowIssueProgress ends a follow. ?scope=issue (default) ends this issue's
+// follow with all its reasons. ?scope=root also removes what the rest of the
+// lane inherited from this issue, and leaves any follow that still has another
+// reason, such as an independent manual follow.
 func (h *Handler) UnfollowIssueProgress(w http.ResponseWriter, r *http.Request) {
+	scope := r.URL.Query().Get("scope")
+	if scope != "" && scope != "issue" && scope != "root" {
+		writeError(w, http.StatusBadRequest, "scope must be issue or root")
+		return
+	}
 	h.changeProgressFollow(w, r, func(q *db.Queries, issue, lane pgtype.UUID) (db.DmProgressFollow, error) {
+		if scope == "root" {
+			target, err := q.GetActiveDMProgressFollow(r.Context(), db.GetActiveDMProgressFollowParams{IssueID: issue, LineageID: lane})
+			if err != nil {
+				return db.DmProgressFollow{}, err
+			}
+			if !service.IsRoot(target) {
+				return db.DmProgressFollow{}, errUnfollowScope
+			}
+			if _, err := q.DropInheritedDMProgressReason(r.Context(), db.DropInheritedDMProgressReasonParams{LineageID: lane, Reason: service.InheritedReason(issue)}); err != nil {
+				return db.DmProgressFollow{}, err
+			}
+		}
 		return q.UnfollowDMProgressFollow(r.Context(), db.UnfollowDMProgressFollowParams{IssueID: issue, LineageID: lane})
 	})
 }
@@ -144,6 +167,10 @@ func (h *Handler) changeProgressFollow(w http.ResponseWriter, r *http.Request, c
 	}()
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "no active follow for this issue in this chat")
+		return
+	}
+	if errors.Is(err, errUnfollowScope) {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if err != nil || tx.Commit(r.Context()) != nil {
