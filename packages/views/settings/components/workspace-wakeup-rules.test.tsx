@@ -1,3 +1,4 @@
+import { resetAllRegisteredDrafts } from "@multica/core/drafts";
 import { beforeEach, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -278,3 +279,15 @@ it.each([
   expect(trigger(preview.mock.calls[0]![1].config)).toMatchObject({ condition: { value: typed } });
   expect(trigger(create.mock.calls[0]![1].config)).toEqual(trigger(preview.mock.calls[0]![1].config));
 });
+
+it("restores the unsent new rule name and fields after a remount (CHE-3527)", async () => {
+  const first = mount();
+  await fillAndName();
+  first.unmount();
+
+  mount();
+  expect(await screen.findByRole("textbox", { name: "Rule name" })).toHaveValue("Watch updates");
+  expect(screen.getByText("draft:agent-1|Look at it|7")).toBeInTheDocument();
+});
+
+beforeEach(() => resetAllRegisteredDrafts());
