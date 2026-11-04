@@ -202,13 +202,31 @@ export function refreshRuntimesWhilePaused(qc: QueryClient, wsId: string) {
   if (paused) qc.invalidateQueries({ queryKey: runtimeKeys.list(wsId) });
 }
 
+/** Issue ids of every decision card a message carries. */
+function messageCardIssueIds(m: ChatMessage): string[] {
+  return [m.decision_ref, ...(m.decision_quotes ?? []), m.decision_request, ...(m.decision_requests ?? [])]
+    .flatMap((card) => (card ? [card.issue_id] : []));
+}
+
 /**
- * An issue run started. A decision card in a DM shows the run that picked its
- * answer up, and that run has no message of its own to push, so refresh them.
+ * Issue runs started. A decision card in a DM shows the run that picked its
+ * answer up, and that run has no message of its own to push. Every card names
+ * its issue, so refresh only the DMs whose cached messages hold a card for one
+ * of `issueIds`. A DM with no cache has nothing stale; it fetches on first open.
  */
-export function applyIssueRunStarted(qc: QueryClient) {
-  qc.invalidateQueries({ queryKey: chatKeys.messagesAll() });
-  qc.invalidateQueries({ queryKey: chatKeys.messagesPageAll() });
+export function applyIssueRunStarted(qc: QueryClient, issueIds: ReadonlySet<string>) {
+  const hit = (messages: ChatMessage[] | undefined) =>
+    messages?.some((m) => messageCardIssueIds(m).some((id) => issueIds.has(id))) ?? false;
+  const refresh = (
+    all: readonly unknown[],
+    pick: (data: never) => ChatMessage[] | undefined,
+  ) => {
+    for (const [queryKey, data] of qc.getQueriesData({ queryKey: all })) {
+      if (data && hit(pick(data as never))) qc.invalidateQueries({ queryKey, exact: true });
+    }
+  };
+  refresh(chatKeys.messagesAll(), (d: ChatMessage[]) => d);
+  refresh(chatKeys.messagesPageAll(), (d: InfiniteData<ChatMessagesPage>) => d.pages.flatMap((p) => p.messages));
 }
 
 /**
@@ -1780,10 +1798,17 @@ export function useRealtimeSync(
     // path is collapsed in the handler above, so this handler exists mainly to
     // clear a stale `waiting_local_directory` pill — without it, the pill
     // would stay parked even after the daemon resumed work.
+    const runStartedIssues = new Set<string>();
     const unsubTaskRunning = ws.on("task:running", (p) => {
       const payload = p as TaskRunningPayload;
       if (!payload.chat_session_id) {
-        if (payload.issue_id) applyIssueRunStarted(qc);
+        if (payload.issue_id) {
+          runStartedIssues.add(payload.issue_id);
+          debouncedRefresh("issue_run_started", () => {
+            applyIssueRunStarted(qc, new Set(runStartedIssues));
+            runStartedIssues.clear();
+          });
+        }
         return;
       }
       qc.setQueryData<ChatPendingTask>(
