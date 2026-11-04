@@ -55,7 +55,7 @@ def main():
     while True:
         try:
             result = subprocess.run(["gh", "api", *sys.argv[2:], "--include"],
-                                    capture_output=True, timeout=max(1, deadline - time.time()))
+                                    capture_output=True, timeout=max(30, deadline - time.time()))
         except subprocess.TimeoutExpired:
             print("GitHub API request exceeded the checks deadline", file=sys.stderr)
             return 1

@@ -61,7 +61,7 @@ class BuildCacheTests(unittest.TestCase):
         recovery = '\n'.join(step.get('run', '') for step in before_setup
                              if 'docker buildx' in step.get('run', ''))
         for image in ['backend', 'web']:
-            for state in ['healthy', 'bootstrap-failed', 'node-error', 'absent']:
+            for state in ['healthy', 'bootstrap-failed', 'node-error', 'wrong-driver', 'absent']:
                 with self.subTest(image=image, state=state), tempfile.TemporaryDirectory() as directory:
                     workspace = Path(directory)
                     docker = workspace / 'docker'
@@ -69,17 +69,30 @@ class BuildCacheTests(unittest.TestCase):
 set -eu
 case "$1 $2" in
   'buildx ls')
-    echo unrelated-builder
-    [ "$STUB_STATE" = absent ] || echo "$BUILDX_NAME"
+    # Real buildx: ls takes --format only; json prints one object per builder.
+    [ "$3" = --format ] || exit 125
+    case "$4" in
+      '{{.Name}}')
+        echo unrelated-builder
+        [ "$STUB_STATE" = absent ] || echo "$BUILDX_NAME"
+        ;;
+      json)
+        echo '{"Name":"unrelated-builder","Driver":"docker","Nodes":[{}]}'
+        if [ "$STUB_STATE" = node-error ]; then
+          echo '{"Name":"'"$BUILDX_NAME"'","Driver":"docker-container","Nodes":[{"Err":"dead context"}]}'
+        elif [ "$STUB_STATE" = wrong-driver ]; then
+          echo '{"Name":"'"$BUILDX_NAME"'","Driver":"docker","Nodes":[{}]}'
+        elif [ "$STUB_STATE" != absent ]; then
+          echo '{"Name":"'"$BUILDX_NAME"'","Driver":"docker-container","Nodes":[{}]}'
+        fi
+        ;;
+      *) exit 125 ;;
+    esac
     ;;
   'buildx inspect')
-    [ "$3" = "$BUILDX_NAME" ]
+    # Real buildx: inspect has no --format flag.
+    [ "$3" = "$BUILDX_NAME" ] && [ "${4:-}" = --bootstrap ] && [ "$#" -eq 4 ] || exit 125
     [ "$STUB_STATE" != bootstrap-failed ] || exit 1
-    if [ "$STUB_STATE" = node-error ]; then
-      echo '{"Driver":"docker-container","Nodes":[{"Error":"dead context"}]}'
-    else
-      echo '{"Driver":"docker-container","Nodes":[{}]}'
-    fi
     ;;
   'buildx rm') printf '%s\\n' "$*" >> "$REMOVALS" ;;
   *) exit 2 ;;
@@ -94,7 +107,7 @@ esac
                                                  'REMOVALS': str(removals)}, capture_output=True, text=True)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     removed = removals.read_text() if removals.exists() else ''
-                    if state in ['bootstrap-failed', 'node-error']:
+                    if state in ['bootstrap-failed', 'node-error', 'wrong-driver']:
                         self.assertIn(name, removed, 'broken named builder was retained')
                         self.assertEqual(len(removed.splitlines()), 1)
                     else:
