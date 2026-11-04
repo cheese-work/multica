@@ -382,6 +382,10 @@ deleted_config_sync AS (
 deleted_ask_guard_events AS (
     DELETE FROM ask_guard_event WHERE workspace_id = $1
 ),
+-- CHE-3628 shadow System 1 observations: workspace-owned leaf, no FK.
+deleted_system1_observations AS (
+    DELETE FROM system1_observation WHERE workspace_id = $1
+),
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
 ),
