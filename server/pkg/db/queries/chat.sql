@@ -292,16 +292,45 @@ SELECT cs.*,
             AND m.created_at > cs.last_read_at)::int AS unread_count,
        COALESCE(lm.content, '') AS last_message_content,
        lm.id AS last_message_id,
+       lm.task_id AS last_message_task_id,
        COALESCE(lm.role, '') AS last_message_role,
        lm.created_at AS last_message_at,
        lm.failure_reason AS last_message_failure_reason,
        COALESCE(lm.message_kind, '') AS last_message_kind
 FROM chat_session cs
 LEFT JOIN LATERAL (
-  SELECT id, content, role, created_at, failure_reason, message_kind
+  SELECT id, task_id, content, role, created_at, failure_reason, message_kind
     FROM chat_message m
    WHERE m.chat_session_id = cs.id
      AND m.message_kind NOT IN ('channel_command', 'decision_cancel_notice', 'decision_reference')
+     -- Keep the preview aligned with the queued-follow-up rule in ListChatMessagesPage.
+     AND NOT (
+       m.role = 'user'
+       AND EXISTS (
+         SELECT 1
+         FROM agent_task_queue AS task
+         WHERE task.chat_session_id = m.chat_session_id
+           AND task.status = 'queued'
+           AND task.id = m.task_id
+           AND task.id <> (
+             SELECT head.id
+             FROM agent_task_queue AS head
+             WHERE head.chat_session_id = m.chat_session_id
+               AND head.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+               AND head.regenerate_quick_actions_for IS NULL
+             ORDER BY
+               CASE
+                 WHEN head.status IN ('dispatched', 'running', 'waiting_local_directory') THEN 0
+                 WHEN head.status = 'deferred' THEN 1
+                 ELSE 2
+               END,
+               head.priority DESC,
+               head.created_at ASC,
+               head.id ASC
+             LIMIT 1
+           )
+       )
+     )
    ORDER BY m.created_at DESC
    LIMIT 1
 ) lm ON true
@@ -333,16 +362,45 @@ SELECT cs.*,
        END::int AS unread_count,
        COALESCE(lm.content, '') AS last_message_content,
        lm.id AS last_message_id,
+       lm.task_id AS last_message_task_id,
        COALESCE(lm.role, '') AS last_message_role,
        lm.created_at AS last_message_at,
        lm.failure_reason AS last_message_failure_reason,
        COALESCE(lm.message_kind, '') AS last_message_kind
 FROM chat_session cs
 LEFT JOIN LATERAL (
-  SELECT id, content, role, created_at, failure_reason, message_kind
+  SELECT id, task_id, content, role, created_at, failure_reason, message_kind
     FROM chat_message m
    WHERE m.chat_session_id = cs.id
      AND m.message_kind NOT IN ('channel_command', 'decision_cancel_notice', 'decision_reference')
+     -- Keep archived previews aligned with ListChatMessagesPage too.
+     AND NOT (
+       m.role = 'user'
+       AND EXISTS (
+         SELECT 1
+         FROM agent_task_queue AS task
+         WHERE task.chat_session_id = m.chat_session_id
+           AND task.status = 'queued'
+           AND task.id = m.task_id
+           AND task.id <> (
+             SELECT head.id
+             FROM agent_task_queue AS head
+             WHERE head.chat_session_id = m.chat_session_id
+               AND head.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+               AND head.regenerate_quick_actions_for IS NULL
+             ORDER BY
+               CASE
+                 WHEN head.status IN ('dispatched', 'running', 'waiting_local_directory') THEN 0
+                 WHEN head.status = 'deferred' THEN 1
+                 ELSE 2
+               END,
+               head.priority DESC,
+               head.created_at ASC,
+               head.id ASC
+             LIMIT 1
+           )
+       )
+     )
    ORDER BY m.created_at DESC
    LIMIT 1
 ) lm ON true

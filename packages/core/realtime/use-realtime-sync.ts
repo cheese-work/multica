@@ -1692,7 +1692,7 @@ export function useRealtimeSync(
 
         const pending = qc.getQueryData<ChatPendingTask>(chatKeys.pendingTask(session.id));
         if ((pending?.status === "dispatched" || pending?.status === "running") &&
-          lastMessage.role !== "user" && pending.created_at &&
+          lastMessage.role !== "user" && lastMessage.task_id === pending.task_id && pending.created_at &&
           Date.parse(lastMessage.created_at) > Date.parse(pending.created_at)) {
           qc.invalidateQueries({ queryKey: chatKeys.pendingTask(session.id) });
         }

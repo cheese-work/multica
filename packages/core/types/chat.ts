@@ -76,6 +76,8 @@ export interface ChatQuickActionsFailureState {
 export interface ChatLastMessage {
   /** Message identity lets an open detail detect a missed realtime update. */
   id?: string;
+  /** Task identity distinguishes a reply from an earlier queued turn. */
+  task_id?: string;
   content: string;
   role: "user" | "assistant";
   created_at: string;
