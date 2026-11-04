@@ -1,3 +1,4 @@
+# ci-policy: class=gate
 # Required `pr-ready` check, merge-queue half (CHE-3440). Canonical copy: cheese-work/dotfiles-agents
 # .github/workflows/pr-ready-queue.yml. Same job name `pr-ready` as pr-ready.yml: the required context is satisfied
 # by whichever file the event triggers. Judges every PR the merge queue holds (body + signed PASS at its head).

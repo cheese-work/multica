@@ -1,3 +1,4 @@
+# ci-policy: class=gate
 # Required `pr-ready` check, PR half (CHE-3440). Canonical copy: cheese-work/dotfiles-agents
 # .github/workflows/pr-ready.yml; tests live there (tests/test_che3440_pr_ready.py). The merge-queue half is
 # pr-ready-queue.yml. Fails while the PR body says the work is unfinished OR no trusted cross-lab PASS names the
