@@ -3,6 +3,7 @@ package decisiontx
 import (
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -35,6 +36,9 @@ func TestRecommendedIndex(test *testing.T) {
 		{"other label negated", "Hold, not Proceed.", []string{"Proceed", "Hold"}, 1},
 		{"negated mid-sentence label is no match", "Do not Proceed yet.", []string{"Proceed", "Hold"}, -1},
 		{"negated start label is no match", "Proceed is not safe.", []string{"Proceed", "Hold"}, -1},
+		{"contrast: rather than", "I recommend Hold rather than Proceed", []string{"Proceed", "Hold"}, 1},
+		{"contrast: instead of", "Hold instead of Proceed.", []string{"Proceed", "Hold"}, 0 + 1},
+		{"contrast: over", "Go with Hold over Proceed.", []string{"Proceed", "Hold"}, 1},
 		{"word inside another word is no match", "Withhold the change.", []string{"Proceed", "Hold"}, -1},
 	}
 	for _, tc := range cases {
@@ -98,5 +102,51 @@ func TestDecodeAskConfidence(test *testing.T) {
 	raw, _ := json.Marshal(validAskMap())
 	if got, _ := DecodeAsk(raw); got.Confidence != nil {
 		test.Fatalf("absent confidence = %v, want nil", got.Confidence)
+	}
+}
+
+func TestRequireRecommendedFirst(test *testing.T) {
+	raw, _ := json.Marshal(validAskMap()) // options NOW, LATER; recommendation LATER
+	ask, err := DecodeAsk(raw)
+	if err != nil {
+		test.Fatal(err)
+	}
+	cases := []struct {
+		name, recommendation, option string
+		want                         []string // nil: the ask is refused
+	}{
+		{"text names it", "LATER", "", []string{"LATER", "NOW"}},
+		{"structured field wins over prose", "Whichever is cheaper.", "later", []string{"LATER", "NOW"}},
+		{"structured field wins over a different label in prose", "NOW is fine too.", "LATER", []string{"LATER", "NOW"}},
+		{"already first", "NOW", "", []string{"NOW", "LATER"}},
+		{"ambiguous text is refused", "Either NOW or LATER works.", "", nil},
+		{"no label named is refused", "Whichever is cheaper.", "", nil},
+		{"unknown structured label is refused", "LATER", "SOMETIME", nil},
+	}
+	for _, tc := range cases {
+		test.Run(tc.name, func(test *testing.T) {
+			candidate := ask
+			candidate.Recommendation, candidate.RecommendedOption = tc.recommendation, tc.option
+			got, err := candidate.RequireRecommendedFirst()
+			if tc.want == nil {
+				if err == nil || !strings.Contains(err.Error(), "recommended_option") {
+					test.Fatalf("want a refusal naming recommended_option, got %v", err)
+				}
+				return
+			}
+			if err != nil || !slices.Equal(labels(got.Options), tc.want) {
+				test.Fatalf("got %v (%v), want %v", labels(got.Options), err, tc.want)
+			}
+		})
+	}
+}
+
+func TestDecodeAskRecommendedOption(test *testing.T) {
+	m := validAskMap()
+	m["recommended_option"] = "LATER"
+	raw, _ := json.Marshal(m)
+	ask, err := DecodeAsk(raw)
+	if err != nil || ask.RecommendedOption != "LATER" {
+		test.Fatalf("recommended_option = %q (%v)", ask.RecommendedOption, err)
 	}
 }

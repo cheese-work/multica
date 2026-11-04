@@ -44,18 +44,24 @@ writer.
 
 ## Recommended option stays first
 
-- `RecommendedFirst` moves the recommended option to index 0 when the ask is
-  created through the API. The match is on the `recommendation` text:
-  - A label that starts the text wins, after markdown and a filler word such
-    as "Option" or "I recommend" are skipped. The longest label wins.
-  - Otherwise exactly one label must appear as whole words anywhere in the
-    text ("I recommend Hold because CI is red").
-  - A label with a negation next to it ("not Proceed", "Proceed is not safe")
-    does not count. A label inside a longer label ("Hold" in "Hold off") does
-    not count.
-- If no option, or more than one, matches, the order is unchanged and
-  `recommended_index` is empty. The request is still accepted. The shadow
-  prediction abstains. Ask text that names its choice plainly keeps the rule.
+- The request API (`RequireRecommendedFirst`) moves the recommended option to
+  index 0 and refuses an ask it cannot resolve. Two ways to name it:
+  - **Structured (preferred):** optional ask field `recommended_option`, the
+    exact label (case-insensitive). It wins over the text. A value that
+    matches no label is refused (400).
+  - **Text:** the `recommendation` field. A label that starts the text wins,
+    after markdown and a filler word such as "Option" or "I recommend" are
+    skipped; the longest label wins. Otherwise exactly one label must appear
+    as whole words ("I recommend Hold because CI is red"). A contrast
+    ("Hold rather than Proceed", "instead of", "over", "vs") falls back to the
+    words before it. A label with a negation next to it ("not Proceed") or
+    inside a longer label ("Hold" in "Hold off") does not count.
+- An ask with two or more options and no resolvable recommended option is
+  refused with a 400 that says to set `recommended_option`. So no stored ask
+  breaks the first-position rule, and `recommended_index` is always `0`.
+  Asks with fewer than two options (actions) are not affected. Asks the
+  server creates itself (for example run-budget decisions) do not pass this
+  gate; the observation records an empty `recommended_index` for them.
 - Why it matters: Cheese picked the recommended option 92.1% of the time while
   the recommendation was first 92% of the time. Position and recommendation are
   confounded. A model trained on this cannot tell "the recommendation was good"

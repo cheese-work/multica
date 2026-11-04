@@ -27,6 +27,8 @@ type Ask struct {
 	StakesIfWrong  string      `json:"stakes_if_wrong"`
 	Options        []AskOption `json:"options"`
 	Recommendation string      `json:"recommendation"`
+	// RecommendedOption is the exact label of the recommended option (optional, CHE-3628). It overrides reading the recommendation text.
+	RecommendedOption string `json:"recommended_option,omitempty"`
 	// Confidence is the asking agent's own 0..1 confidence that its recommendation is right (optional, CHE-3628).
 	Confidence       *float64    `json:"confidence,omitempty"`
 	DefaultIfNoReply string      `json:"default_if_no_reply"`
@@ -76,7 +78,7 @@ func (err *AskError) Error() string { return err.Field + " " + err.Problem }
 const askOptionShape = "must be an object with label, what_happens, pros, cons, cost_or_time"
 
 var (
-	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "confidence", "default_if_no_reply", "source_issue_id", "source_comment_id", "human_steps", "probes", "after_done", "subject", "artifacts"}
+	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "recommended_option", "confidence", "default_if_no_reply", "source_issue_id", "source_comment_id", "human_steps", "probes", "after_done", "subject", "artifacts"}
 	optionFields = []string{"label", "what_happens", "pros", "cons", "cost_or_time"}
 	// actionFields is the whole action ask: no options, recommendation, decision or stakes.
 	actionFields = []string{"context_eli10", "agent_did", "why_human", "steps", "done_when", "default_if_no_reply", "source_issue_id", "source_comment_id"}
@@ -168,7 +170,7 @@ func DecodeAsk(raw []byte) (Ask, error) {
 		into *string
 	}{
 		{"context_eli10", &ask.ContextELI10}, {"agent_did", &ask.AgentDid}, {"decision", &ask.Decision},
-		{"stakes_if_wrong", &ask.StakesIfWrong}, {"recommendation", &ask.Recommendation},
+		{"stakes_if_wrong", &ask.StakesIfWrong}, {"recommendation", &ask.Recommendation}, {"recommended_option", &ask.RecommendedOption},
 		{"default_if_no_reply", &ask.DefaultIfNoReply}, {"source_issue_id", &ask.SourceIssueID}, {"source_comment_id", &ask.SourceCommentID},
 		{"after_done", &ask.AfterDone}, {"subject", &ask.Subject},
 	} {

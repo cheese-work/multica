@@ -160,26 +160,62 @@ func TestSystem1OrdinaryRecommendationWordingStillMovesFirst(t *testing.T) {
 	}
 }
 
-func TestSystem1AskWithoutNamedRecommendationKeepsOrderAndAbstains(t *testing.T) {
-	seedPrecedents(t, "reversible", system1.KeyRecommended, 6)
-	fixture := newRequestCoreFixture(t, false)
-	ask := fixture.unorderedAsk()
-	ask.Recommendation = "Whichever is cheaper."
+func postOrderedAsk(t *testing.T, fixture requestCoreFixture, ask decisiontx.Ask) *testutil.Response {
+	t.Helper()
 	request := newRequest(http.MethodPost, "/api/decisions", map[string]any{"issue_id": fixture.issueID, "session_id": fixture.sessionID, "ask": ask, "escalation_class": "reversible"})
 	request.Header.Set("X-Actor-Source", "task_token")
 	request.Header.Set("X-Agent-ID", fixture.agentID)
 	request.Header.Set("X-Task-ID", fixture.taskID)
-	var created map[string]any
-	testutil.Call(t, testHandler.RequestDecision, request).Want(http.StatusCreated).JSON(&created)
-	row := loadObservation(t, "decision", created["id"].(string))
+	return testutil.Call(t, testHandler.RequestDecision, request)
+}
+
+func firstOption(t *testing.T, requestID string) string {
+	t.Helper()
 	var first string
-	dbfx.QueryRow(t, `SELECT ask_json->'options'->0->>'label' FROM decision_request WHERE id = $1`, created["id"]).Scan(&first)
-	if first != "Proceed" || row.optionCount != 2 || row.recommended != nil || row.predicted == nil || *row.predicted != "" {
-		t.Fatalf("first=%s count=%d recommended=%v predicted=%v", first, row.optionCount, row.recommended, row.predicted)
+	dbfx.QueryRow(t, `SELECT ask_json->'options'->0->>'label' FROM decision_request WHERE id = $1`, requestID).Scan(&first)
+	return first
+}
+
+// "Hold rather than Proceed" names both labels; the request must still be stored Hold-first.
+func TestSystem1ContrastRecommendationMovesFirst(t *testing.T) {
+	fixture := newRequestCoreFixture(t, false)
+	ask := fixture.unorderedAsk()
+	ask.Recommendation = "I recommend Hold rather than Proceed"
+	var created map[string]any
+	postOrderedAsk(t, fixture, ask).Want(http.StatusCreated).JSON(&created)
+	if got := firstOption(t, created["id"].(string)); got != "Hold" {
+		t.Fatalf("first option = %s, want Hold", got)
 	}
-	answerOnCardRow(t, created["id"].(string), ptr(0))
-	if row = loadObservation(t, "decision", created["id"].(string)); *row.choice != "option" {
-		t.Fatalf("choice = %v, want option", *row.choice)
+	if row := loadObservation(t, "decision", created["id"].(string)); row.recommended == nil || *row.recommended != 0 {
+		t.Fatalf("recommended_index = %v, want 0", row.recommended)
+	}
+}
+
+func TestSystem1StructuredRecommendedOptionMovesFirst(t *testing.T) {
+	fixture := newRequestCoreFixture(t, false)
+	ask := fixture.unorderedAsk()
+	ask.Recommendation = "Whichever is cheaper."
+	ask.RecommendedOption = "hold"
+	var created map[string]any
+	postOrderedAsk(t, fixture, ask).Want(http.StatusCreated).JSON(&created)
+	if got := firstOption(t, created["id"].(string)); got != "Hold" {
+		t.Fatalf("first option = %s, want Hold", got)
+	}
+}
+
+// An ask whose recommended option cannot be identified is refused, so no stored ask breaks the first-position rule.
+func TestSystem1UnresolvedRecommendationIsRefused(t *testing.T) {
+	for name, mutate := range map[string]func(*decisiontx.Ask){
+		"names no option":    func(a *decisiontx.Ask) { a.Recommendation = "Whichever is cheaper." },
+		"names both options": func(a *decisiontx.Ask) { a.Recommendation = "Either Proceed or Hold works." },
+		"unknown structured": func(a *decisiontx.Ask) { a.RecommendedOption = "Sometime" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture := newRequestCoreFixture(t, false) // one open intent per request
+			ask := fixture.unorderedAsk()
+			mutate(&ask)
+			postOrderedAsk(t, fixture, ask).Want(http.StatusBadRequest)
+		})
 	}
 }
 
