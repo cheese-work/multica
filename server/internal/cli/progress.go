@@ -37,11 +37,7 @@ type Progress struct {
 // NewProgress reports on w. Output is on only when w is a terminal file.
 func NewProgress(w io.Writer) *Progress {
 	f, ok := w.(*os.File)
-	tty := false
-	if ok {
-		fi, err := f.Stat()
-		tty = err == nil && fi.Mode()&os.ModeCharDevice != 0
-	}
+	tty := ok && isTerminal(f)
 	return &Progress{w: w, tty: tty, now: time.Now, start: time.Now(), notified: -1}
 }
 

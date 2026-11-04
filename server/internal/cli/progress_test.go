@@ -134,6 +134,17 @@ func TestProgressDetectsTTYFromFile(t *testing.T) {
 	}
 }
 
+func TestProgressCharDeviceThatIsNotATerminalIsSilent(t *testing.T) {
+	f, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if NewProgress(f).tty {
+		t.Fatal("/dev/null treated as TTY")
+	}
+}
+
 func TestApplyForkUpdateReportsProgressAndPhases(t *testing.T) {
 	f := newFake(testHead)
 	srv := f.serve(t)
