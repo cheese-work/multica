@@ -2,6 +2,7 @@ import { create, type StoreApi, type UseBoundStore } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import {
   createWorkspaceAwareStorage,
+  getCurrentSlug,
   registerForWorkspaceRehydration,
 } from "../platform/workspace-storage";
 import { defaultStorage } from "../platform/storage";
@@ -74,12 +75,21 @@ export function createKeyedDraftStore<TData extends object>(
     return out;
   };
 
+  // Slug the in-memory map was loaded from. `setCurrentWorkspace` changes the
+  // slug synchronously but rehydrates in a microtask; a write in that gap would
+  // persist the old workspace's map under the new slug.
+  let loadedSlug: string | null = null;
+  const syncToWorkspace = () => {
+    if (workspaceScoped && getCurrentSlug() !== loadedSlug) useStore.persist.rehydrate();
+  };
+
   const useStore = create<KeyedDraftStore<TData>>()(
     persist(
       (set, get) => ({
         drafts: {},
         getDraft: (key) => get().drafts[key]?.data,
-        setDraft: (key, patch) =>
+        setDraft: (key, patch) => {
+          syncToWorkspace();
           set((s) => {
             const data = { ...(s.drafts[key]?.data ?? empty()), ...patch };
             if (!config.hasMeaningful(data)) {
@@ -88,13 +98,16 @@ export function createKeyedDraftStore<TData extends object>(
               return { drafts: rest };
             }
             return { drafts: { ...s.drafts, [key]: { data, updatedAt: Date.now() } } };
-          }),
-        clearDraft: (key) =>
+          });
+        },
+        clearDraft: (key) => {
+          syncToWorkspace();
           set((s) => {
             if (!(key in s.drafts)) return s;
             const { [key]: _dropped, ...rest } = s.drafts;
             return { drafts: rest };
-          }),
+          });
+        },
         hasDraft: (key) => key in get().drafts,
       }),
       {
@@ -105,12 +118,15 @@ export function createKeyedDraftStore<TData extends object>(
         partialize: (s) => ({ drafts: s.drafts }) as KeyedDraftStore<TData>,
         // An empty namespace must mean an empty draft set — zustand's default
         // merge would keep the previous workspace's drafts.
-        merge: (persisted, current) => ({
-          ...current,
-          drafts: prune(
-            (persisted as { drafts?: Record<string, KeyedDraftEntry<TData>> } | undefined)?.drafts,
-          ),
-        }),
+        merge: (persisted, current) => {
+          loadedSlug = getCurrentSlug();
+          return {
+            ...current,
+            drafts: prune(
+              (persisted as { drafts?: Record<string, KeyedDraftEntry<TData>> } | undefined)?.drafts,
+            ),
+          };
+        },
       },
     ),
   );

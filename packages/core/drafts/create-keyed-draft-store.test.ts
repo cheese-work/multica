@@ -162,4 +162,25 @@ describe("createKeyedDraftStore", () => {
     await flush();
     expect(useStore.getState().getDraft("issue-1")?.text).toBe("in A");
   });
+
+  it("a write right after a workspace switch, before rehydration, does not clobber the new workspace", async () => {
+    setCurrentWorkspace("ws-a", "id-a");
+    const { useStore, storage } = build("k_ws_race", memoryStorage(), { workspaceScoped: true });
+    await flush();
+    useStore.getState().setDraft("issue-1", { text: "in A" });
+    setCurrentWorkspace("ws-b", "id-b");
+    await flush();
+    useStore.getState().setDraft("issue-2", { text: "in B" });
+
+    // Switch back to A and write before the queued rehydration runs.
+    setCurrentWorkspace("ws-a", "id-a");
+    useStore.getState().setDraft("issue-3", { text: "A again" });
+    await flush();
+
+    const persisted = (slug: string) =>
+      Object.keys(JSON.parse(storage.values.get(`k_ws_race:${slug}`)!).state.drafts).sort();
+    expect(persisted("ws-a")).toEqual(["issue-1", "issue-3"]);
+    expect(persisted("ws-b")).toEqual(["issue-2"]);
+    expect(Object.keys(useStore.getState().drafts).sort()).toEqual(["issue-1", "issue-3"]);
+  });
 });
