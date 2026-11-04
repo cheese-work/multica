@@ -37,16 +37,28 @@ const workflow = {
   updated_at: "",
 } as unknown as IssueWorkflow;
 
-function mount() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function withInstructions(instructions: string): IssueWorkflow {
+  return {
+    ...workflow,
+    steps: workflow.steps.map((s) => (s.status_key === "in_progress" ? { ...s, instructions } : s)),
+  };
+}
+
+const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+function tree(wf: IssueWorkflow) {
+  return (
+    <QueryClientProvider client={qc}>
+      <WorkflowHandoffForm workflow={wf} statusKey="in_progress" canEdit />
+    </QueryClientProvider>
+  );
+}
+
+function mount(wf: IssueWorkflow = workflow) {
   qc.setQueryData(agentListOptions("ws-1").queryKey, [{ id: "agent-1", name: "Builder", archived_at: null }] as never);
   qc.setQueryData(memberListOptions("ws-1").queryKey, [] as never);
   qc.setQueryData(projectListOptions("ws-1").queryKey, { projects: [] } as never);
-  return renderWithI18n(
-    <QueryClientProvider client={qc}>
-      <WorkflowHandoffForm workflow={workflow} statusKey="in_progress" canEdit />
-    </QueryClientProvider>,
-  );
+  return renderWithI18n(tree(wf));
 }
 
 beforeEach(async () => {
@@ -70,5 +82,27 @@ describe("WorkflowHandoffForm draft", () => {
     expect(screen.getByRole("radio", { name: /Hand to an agent/ }).getAttribute("aria-checked")).toBe("true");
     expect(screen.getByText("Builder")).toBeTruthy();
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Write the test first");
+  });
+
+  it("keeps unsaved edits when the saved step refreshes underneath them", async () => {
+    const view = mount();
+    fireEvent.click(screen.getByRole("radio", { name: /Hand to an agent/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Choose an agent" }));
+    fireEvent.click(await screen.findByText("Builder"));
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "My unsent plan" } });
+
+    view.rerender(tree(withInstructions("Someone else's text")));
+
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("My unsent plan");
+    expect(screen.getByText(/changed by someone else/)).toBeTruthy();
+    view.unmount();
+    mount(withInstructions("Someone else's text"));
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("My unsent plan");
+  });
+
+  it("follows the saved step when there are no unsaved edits", () => {
+    const view = mount();
+    view.rerender(tree(withInstructions("From elsewhere")));
+    expect(screen.queryByText(/changed by someone else/)).toBeNull();
   });
 });

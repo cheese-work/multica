@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { resetAllRegisteredDrafts } from "@multica/core/drafts";
 import { setCurrentWorkspace } from "@multica/core/platform";
@@ -46,16 +46,19 @@ const saved = {
   version: "v1",
 } as unknown as IssueWorkflow;
 
-function mount(workflowId: string | null) {
+function mount(workflowId: string | null, current: IssueWorkflow = saved) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   qc.setQueryData(issueStatusKeys.list("ws-1"), { statuses });
   qc.setQueryData(projectListOptions("ws-1").queryKey, { projects: [], total: 0 });
-  qc.setQueryData(issueWorkflowKeys.list("ws-1"), { workflows: [saved], total: 1 });
-  return renderWithI18n(
-    <QueryClientProvider client={qc}>
-      <WorkflowEditorPage workflowId={workflowId} seed={null} canEdit onBack={() => {}} onOpen={() => {}} />
-    </QueryClientProvider>,
-  );
+  qc.setQueryData(issueWorkflowKeys.list("ws-1"), { workflows: [current], total: 1 });
+  return {
+    qc,
+    ...renderWithI18n(
+      <QueryClientProvider client={qc}>
+        <WorkflowEditorPage workflowId={workflowId} seed={null} canEdit onBack={() => {}} onOpen={() => {}} />
+      </QueryClientProvider>,
+    ),
+  };
 }
 
 beforeEach(async () => {
@@ -84,5 +87,19 @@ describe("WorkflowEditorPage unsaved edits", () => {
 
     mount(null);
     expect(await screen.findByDisplayValue("Fresh flow")).toBeTruthy();
+  });
+
+  it("still flags a conflict after a reload when another admin saved while the edits were open", async () => {
+    const first = mount("wf-1");
+    fireEvent.change(screen.getByDisplayValue("Delivery"), { target: { value: "Delivery v2" } });
+    const theirs = { ...saved, description: "Their change", version: "v2" } as IssueWorkflow;
+    act(() => first.qc.setQueryData(issueWorkflowKeys.list("ws-1"), { workflows: [theirs], total: 1 }));
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    first.unmount();
+
+    mount("wf-1", theirs);
+    expect(await screen.findByDisplayValue("Delivery v2")).toBeTruthy();
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(true);
   });
 });

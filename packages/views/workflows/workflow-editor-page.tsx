@@ -342,12 +342,14 @@ export function WorkflowEditorPage({
     if (created.current) return;
     if (edited) {
       holding.current = true;
-      holdDraft({ draft, baseVersion: latestVersion ?? "" });
+      // The version the edits sit on, not the newest one: a restore must still
+      // see a save another admin made while these edits were open.
+      holdDraft({ draft, baseVersion: acceptedVersion.current ?? "" });
     } else if (holding.current) {
       holding.current = false;
       dropDraft();
     }
-  }, [edited, draft, latestVersion, holdDraft, dropDraft]);
+  }, [edited, draft, latestVersion, changedElsewhere, holdDraft, dropDraft]);
   const rowLoaded = !workflowId || !!saved;
   useEffect(() => {
     if (restored.current || !rowLoaded) return;

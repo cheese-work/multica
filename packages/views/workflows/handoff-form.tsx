@@ -147,12 +147,18 @@ export function WorkflowHandoffForm({
   const [draft, setDraft] = useState<IssueWorkflowStep>(held.step ?? saved);
   const [previewOpen, setPreviewOpen] = useState(false);
   const setHandoff = useSetWorkflowHandoff();
-  // Follow the saved step when it changes, not on mount (that would drop the restored edits).
+  // A saved step that changed under unsaved edits is a conflict: keep the edits, let the admin choose.
+  const [changedElsewhere, setChangedElsewhere] = useState(false);
   const lastSaved = useRef(saved);
   useEffect(() => {
-    if (lastSaved.current === saved) return;
+    const previous = lastSaved.current;
+    if (previous === saved) return;
     lastSaved.current = saved;
-    setDraft(saved);
+    if (sameStep(savedHandoff(draft), savedHandoff(saved))) return;
+    if (sameStep(savedHandoff(draft), savedHandoff(previous))) setDraft(saved);
+    else setChangedElsewhere(true);
+    // Only a new saved step matters here; the draft is read as it stands.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [saved]);
 
   const handler = draft.handler;
@@ -160,7 +166,10 @@ export function WorkflowHandoffForm({
   const dirty = !sameStep(savedHandoff(draft), savedHandoff(saved));
   const askScope = canEdit && canCopyForProject && dirty && !!project && !workflow.is_default && sharing.others.length > 0;
   useEffect(() => {
-    if (!dirty) setScope("all");
+    if (!dirty) {
+      setScope("all");
+      setChangedElsewhere(false);
+    }
   }, [dirty]);
   const holding = useRef(held.step !== null);
   useEffect(() => {
@@ -193,7 +202,7 @@ export function WorkflowHandoffForm({
           : t(($) => $.workflows.handoff.saved),
       );
       // A copy leaves this workflow's step as it was, so reset to it explicitly.
-      setDraft(saved);
+      setDraft(lastSaved.current);
       onSaved?.();
     } catch (err) {
       toast.error(clientErrorMessage(err) ?? t(($) => $.workflows.handoff.error));
@@ -235,6 +244,19 @@ export function WorkflowHandoffForm({
                 project: project.title,
               })}
             />
+          </div>
+        </div>
+      )}
+      {canEdit && dirty && changedElsewhere && (
+        <div className="flex items-center justify-between gap-2 rounded-lg border border-surface-border bg-muted/40 p-2">
+          <p className="text-caption text-muted-foreground">{t(($) => $.workflows.editor.changed_elsewhere)}</p>
+          <div className="flex shrink-0 gap-1">
+            <Button variant="ghost" size="sm" onClick={() => setDraft(saved)}>
+              {t(($) => $.workflows.editor.load_latest)}
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setChangedElsewhere(false)}>
+              {t(($) => $.workflows.editor.keep_edits)}
+            </Button>
           </div>
         </div>
       )}
