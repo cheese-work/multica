@@ -127,9 +127,10 @@ class DeployApprovalTests(unittest.TestCase):
     def test_gate_holds_no_secrets(self):
         self.assertNotIn("secrets.C00", yaml.safe_dump(self.jobs[GATE]))
 
-    def test_waiting_approval_is_replaced_by_a_newer_version(self):
+    def test_waiting_approval_is_never_cancelled_by_a_newer_version(self):
+        # CI policy R4: a deploy-path job never sets cancel-in-progress (CHE-3273).
         gate = self.jobs[GATE]["concurrency"]
-        self.assertTrue(gate["cancel-in-progress"])
+        self.assertFalse(gate.get("cancel-in-progress", False))
         self.assertNotEqual(gate["group"], LOCK)
 
     def test_no_workflow_level_lock_behind_a_waiting_approval(self):

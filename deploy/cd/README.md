@@ -677,8 +677,9 @@ An eligible candidate waits at `approve-c00`, the only job that asks for
 approval (CHE-2027): one prompt per version, on both the automatic and manual
 paths. It runs in the existing `c00-production` environment (required reviewer,
 wait timer, branch policy), which is left unchanged, and holds no secrets. Its concurrency group
-`cd-deploy-c00-approval` has `cancel-in-progress: true`, so a newer version
-replaces an older run still waiting for approval. Once approved, a candidate
+`cd-deploy-c00-approval` has `cancel-in-progress: false` (CI policy R4,
+CHE-3273), so a newer version waits behind an older run still waiting for
+approval; approve or reject the older one to release it. Once approved, a candidate
 is not superseded merely because `main` advances (CHE-2146). There is no
 post-approval `require-current.sh` guard or `deploy-gate` job. The manual path
 still names an explicit admitted manifest and may deploy a non-head ref.
