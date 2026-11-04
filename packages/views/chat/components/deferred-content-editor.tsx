@@ -93,6 +93,7 @@ export const DeferredContentEditor = forwardRef<ContentEditorRef, DeferredConten
         flushPendingUpdate: () => inner.current?.flushPendingUpdate() ?? null,
         insertUploadPlaceholder: (upload) => inner.current?.insertUploadPlaceholder(upload) ?? false,
         settleUploadPlaceholder: (id, result) => inner.current?.settleUploadPlaceholder(id, result) ?? false,
+        flagMentions: (ids) => inner.current?.flagMentions(ids),
         focus: () => whenReady((e) => e.focus()),
         focusAtCoords: (coords) => whenReady((e) => e.focusAtCoords(coords)),
         focusAtAnchor: (anchor) => whenReady((e) => e.focusAtAnchor(anchor)),

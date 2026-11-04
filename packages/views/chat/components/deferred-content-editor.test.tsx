@@ -34,6 +34,7 @@ vi.mock("./lazy-content-editor", async () => {
         flushPendingUpdate: () => null,
         adoptContent: (md: string) => void editor.calls.push(`adopt:${md}`),
         clearContent: () => void editor.calls.push("clear"),
+        flagMentions: (ids: string[]) => void editor.calls.push(`flag:${ids.join(",")}`),
       }) as unknown as ContentEditorRef);
       return (
         <div data-testid="live-editor">
@@ -139,6 +140,14 @@ describe("DeferredContentEditor", () => {
     });
     await screen.findByTestId("live-editor");
     await waitFor(() => expect(editor.calls).toEqual(["focus", "upload:a.png", "insert:> quote"]));
+  });
+
+  it("forwards flagMentions to the live editor once it is mounted", async () => {
+    const { ref } = setup({ value: "x" });
+    await screen.findByTestId("live-editor");
+    await waitFor(() => expect(ref.current!.getMarkdown()).toBe("live-md"));
+    ref.current!.flagMentions(["m1", "m2"]);
+    expect(editor.calls).toContain("flag:m1,m2");
   });
 
   it("talks to the live editor directly once it is mounted", async () => {
