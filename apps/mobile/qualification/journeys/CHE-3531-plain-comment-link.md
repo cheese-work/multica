@@ -47,7 +47,7 @@ Run each case from its named existing chat/DM decision card. The read-only decis
 | A | Existing Cheese Work DM decision request `32839d38-d445-48c5-952c-4ac477bc24ba`, asking whether to accept the CHE-3357 replay/sample proposal. Its `ping_message_id` is `01a1a166-673d-79bc-a412-d7a557df410c`. The exact message body links its plain `Comment` to `/cheese-work/issues/01a1a0eb-718d-778e-9948-770bc5e04ad7#comment-01a1a165-1b88-769c-8137-bd8be641b61b`. | `From the currently visible existing decision card for request 32839d38-d445-48c5-952c-4ac477bc24ba, tap only the plain Comment link whose target ends in comment-01a1a165-1b88-769c-8137-bd8be641b61b. Wait until the issue screen settles. Make no data changes.` | Target issue UUID `01a1a0eb-718d-778e-9948-770bc5e04ad7`; `CHE-3357`, `feat(multica): replay ask-guard signals on 7 days and sample the residual gap`; linked timeline comment `01a1a165-1b88-769c-8137-bd8be641b61b`, identified by `Verdict: BLOCKED / NOT-RUN` and reviewer `x99-codex-terra`. |
 | B | Existing Cheese Work DM decision card posted 4 Nov 2026, asking Cheese to accept the frozen CHE-1554 r5 revision 2 owner card. Decision request `9d7091c7-5e0b-48db-8ba3-7921f36d128d`; its `ping_message_id` is `01a1a493-3dd7-79c9-8c39-1ca017a18299`. The exact message body links its plain `Comment` to `/cheese-work/issues/01a12f17-2493-7dff-a202-cac3a562ff36#comment-01a1a48c-0e98-7177-bf6e-3fcbd96afb5c`. | `From the currently visible existing decision card for request 9d7091c7-5e0b-48db-8ba3-7921f36d128d, tap only the plain Comment link whose target ends in comment-01a1a48c-0e98-7177-bf6e-3fcbd96afb5c. Wait until the issue screen settles. Make no data changes.` | Target issue UUID `01a12f17-2493-7dff-a202-cac3a562ff36`; `CHE-1554`, `chore(instructions): require markdown links for issues, PRs and files in human-facing text`; linked timeline comment `01a1a48c-0e98-7177-bf6e-3fcbd96afb5c`, a reply by `x99-codex-sol` under parent `01a1a482-6fdf-7443-abc6-2cef14519f66`, identified by its opening `Verdict: ready for Cheese's owner run.` |
 
-Set non-empty values for `ANDROID_SERIAL`, `ARTEMIS_BATCH_ID`, `CASE_ID`, `BUILD_ID`, `PREP_GOAL`, `NAV_GOAL`, `PREP_ATTEMPT_ID`, `NAV_ATTEMPT_ID`, `ISSUE_IDENTIFIER`, `ISSUE_TITLE`, and `ARTIFACT_DIR`. Use the exact granted serial and task evidence directory. The two attempt IDs must differ and all batch, case, build, attempt, run, test, artifact, and trace identifiers must be unique across cases, app builds, retries, and the clean rerun. The attempt-ID ledger and exclusive directory creation below reject reused IDs and existing artifact paths before Artemis starts. Bind both attempts in one report row. GNU coreutils `timeout` must be available; if it is absent, collection is `NOT-RUN`, never unbounded. Run the following shell blocks for an attempt in one persistent Bash process; do not execute each fence in a new shell because later blocks use earlier variables. Artemis preparation and navigation remain separate `--standalone` invocations. A standalone invocation is a separate runner process and does not guarantee that the device remains on the prepared card. Capture the source card before starting navigation, and confirm it is still visible when the navigation invocation begins. If it is not visible, do not recover with another navigation tap; mark navigation `NOT-RUN`. Run Artemis from the pinned checkout with authorized host configuration:
+Set non-empty values for `ANDROID_SERIAL`, `ARTEMIS_BATCH_ID`, `CASE_ID`, `BUILD_ID`, `PREP_GOAL`, `NAV_GOAL`, `PREP_ATTEMPT_ID`, `NAV_ATTEMPT_ID`, `ISSUE_IDENTIFIER`, `ISSUE_TITLE`, `ARTIFACT_DIR`, and `ARTEMIS_WALLCLOCK_LIMIT` from the active grant. Use the exact granted serial and task evidence directory. The two attempt IDs must differ and all batch, case, build, attempt, run, test, artifact, and trace identifiers must be unique across cases, app builds, retries, and the clean rerun. The attempt-ID ledger and exclusive directory creation below reject reused IDs and existing artifact paths before Artemis starts. Bind both attempts in one report row. GNU coreutils `timeout` must be available; if it is absent, collection is `NOT-RUN`, never unbounded. Run the following shell blocks for an attempt in one persistent Bash process; do not execute each fence in a new shell because later blocks use earlier variables. Artemis preparation and navigation remain separate `--standalone` invocations. A standalone invocation is a separate runner process and does not guarantee that the device remains on the prepared card. Capture the source card before starting navigation, and confirm it is still visible when the navigation invocation begins. If it is not visible, do not recover with another navigation tap; mark navigation `NOT-RUN`. Run Artemis from the pinned checkout with authorized host configuration:
 
 Position on the source card in a separate Artemis preparation attempt. For Case A, open the named DM request and stop on its decision card. For Case B, open the named 4 Nov 2026 DM card and stop on that card. Save the preparation trace and exit status separately. Capture a non-empty source screenshot only after the card is visible and before the navigation attempt. If preparation does not land on the specified card, record `NOT-RUN` and do not start navigation. Do not tap the Comment link during preparation. Read-only `multica decision get` currently reports both records as `answered`; the answer value is unavailable in those records. Do not infer a choice or permission from `answered`. If positioning would require touching an answer control or changing card data, stop with that attempt `NOT-RUN`.
 
@@ -55,6 +55,9 @@ Use this exact preparation goal for Case A: `Open the existing Cheese Work DM de
 
 ```sh
 set -euo pipefail
+for required_var in ANDROID_SERIAL ARTEMIS_BATCH_ID CASE_ID BUILD_ID PREP_GOAL NAV_GOAL PREP_ATTEMPT_ID NAV_ATTEMPT_ID ISSUE_IDENTIFIER ISSUE_TITLE ARTIFACT_DIR ARTEMIS_WALLCLOCK_LIMIT; do
+  : "${!required_var:?set a non-empty value before the attempt}"
+done
 command -v timeout >/dev/null
 mkdir -p "$ARTIFACT_DIR"
 PREP_RUN_ID="${ARTEMIS_BATCH_ID}-${CASE_ID}-${BUILD_ID}-prep-${PREP_ATTEMPT_ID}"
@@ -82,7 +85,7 @@ printf '%s\n%s\n' "$PREP_ATTEMPT_ID" "$NAV_ATTEMPT_ID" >> "$ATTEMPT_LEDGER"
 
 ```sh
 set +e
-uv run artemis run "$PREP_GOAL" --standalone --profile pro --verification-level strict --device-serial "$ANDROID_SERIAL" --test-name "$PREP_TEST_NAME" --run-id "$PREP_RUN_ID" --traces-path "$PREP_TRACE_PATH"
+timeout --signal=TERM --kill-after=2s "$ARTEMIS_WALLCLOCK_LIMIT" uv run artemis run "$PREP_GOAL" --standalone --profile pro --verification-level strict --device-serial "$ANDROID_SERIAL" --test-name "$PREP_TEST_NAME" --run-id "$PREP_RUN_ID" --traces-path "$PREP_TRACE_PATH"
 PREP_EXIT=$?
 set -e
 printf '%s\n' "$PREP_EXIT" > "$PREP_ARTIFACT_DIR/${PREP_RUN_ID}-exit-status.txt"
@@ -93,7 +96,7 @@ After the preparation attempt succeeds and its trace/exit status are saved, conf
 
 ```sh
 SOURCE_SCREENSHOT="$PREP_ARTIFACT_DIR/${PREP_RUN_ID}-source.png"
-adb -s "$ANDROID_SERIAL" exec-out screencap -p > "$SOURCE_SCREENSHOT"
+timeout --signal=TERM --kill-after=1s 10s adb -s "$ANDROID_SERIAL" exec-out screencap -p > "$SOURCE_SCREENSHOT"
 test -s "$SOURCE_SCREENSHOT"
 ```
 
@@ -101,11 +104,11 @@ Standalone mode runs a separate Artemis process with verification, test name, ru
 
 The decision records' `ask` fields returned through `multica decision get` are bound to the exact source messages by matching `ping_message_id`; those bodies establish the hrefs above. Do not substitute `issue_comment_id`, `source_comment_id`, a nearby reply, or an answer comment for the href target. Confirm the resulting issue UUID and exact title against the selected case row. A mismatch is `FAIL`; do not continue that case.
 
-For every navigation attempt, the non-empty source-card screenshot must show enough of the named decision text and plain `Comment` link to identify the source card. Redact unrelated chat content. Start a separate Artemis navigation attempt only while that prepared card is currently visible. Give it its own unique run ID, test name, artifact directory, and trace path. Its goal begins from the visible card, taps only the named plain `Comment` link, and stops after the first post-tap screen settles; it does not scroll. Immediately after Artemis exits, capture and preserve the first post-tap screen before any hierarchy poll, scroll, or other inspection. A missing issue identifier or hierarchy dump failure must never skip the screenshot. Then collect hierarchy diagnostically, retaining the last successfully pulled non-empty XML. Poll for at most 60 seconds including the bounded duration of every hierarchy subprocess. Record hierarchy availability, subprocess timeout, deadline expiration, identifier observation, and visual navigation result as separate values. A hierarchy identifier may match the source chat and is not route evidence. Hierarchy timeout or missing identifiers do not determine navigation PASS/FAIL. Luna reviews the preserved screenshots: correct native header identifier, exact title, and no not-found/load-error text establish visual PASS; a visible wrong page, not-found/load error, or inert link establishes navigation FAIL. If screenshots cannot establish either outcome, record `BLOCKED`/inconclusive. Keep expected pre-fix error observations separate from fixed-build failures.
+For every navigation attempt, the non-empty source-card screenshot must show enough of the named decision text and plain `Comment` link to identify the source card. Redact unrelated chat content. Start a separate Artemis navigation attempt only while that prepared card is currently visible. Give it its own unique run ID, test name, artifact directory, and trace path. Its goal begins from the visible card, taps only the named plain `Comment` link, and stops after the first post-tap screen settles; it does not scroll. If standalone Artemis loses the prepared card and recovery would require another tap, record navigation `NOT-RUN`/`BLOCKED`; do not classify recovery as a Comment-link failure. Immediately after Artemis exits, capture and preserve the first post-tap screen before any hierarchy poll, scroll, or other inspection. A missing issue identifier or hierarchy dump failure must never skip the screenshot. Then collect hierarchy diagnostically, retaining the last successfully pulled non-empty XML. Poll for at most 60 seconds including the bounded duration of every hierarchy subprocess. Record hierarchy availability, subprocess timeout and raw status, deadline expiration, identifier observation, and visual navigation result as separate values. A hierarchy identifier may match the source chat and is not route evidence. Hierarchy timeout or missing identifiers do not determine navigation PASS/FAIL. Luna reviews the preserved screenshots: correct native header identifier, exact title, and no not-found/load-error text establish visual PASS; a visible wrong page, not-found/load error, or inert link establishes navigation FAIL. If screenshots cannot establish either outcome, record `BLOCKED`/inconclusive. Keep expected pre-fix error observations separate from fixed-build failures.
 
 The visual oracle for mobile acceptance is the native issue page render: the native navigation header shows the expected identifier, `IssueHeaderCard` shows the exact title, and the screen has no not-found/load-error text. The initial post-tap screenshot and a later header screenshot together may prove these checks. Do not require automatic scrolling to the linked comment for issue-render PASS. Record the href and expected comment identity as diagnostic evidence. A whole-hierarchy identifier match may come from the source chat and is not route evidence. A wrong issue identifier/title or an inert plain Comment link is `FAIL`; if the issue route was not reached, the metadata parsing-regression comparison is `NOT-RUN`. Do not use an Issue chip, search, pasted URL, or edited card.
 
-If the exact title is not visible in the initial screenshot, inspect the same issue screen only after preserving that screenshot. Read `wm size` on the granted serial. Use the `Override size` dimensions when present; otherwise use the `Physical size`. Record the complete output and the selected width and height. Calculate `X=width/2`, `Ystart=floor(height*0.25)`, and `Yend=floor(height*0.75)`. Issue at most 40 downward `adb -s "$ANDROID_SERIAL" shell input swipe "$X" "$Ystart" "$X" "$Yend" 500` gestures, one at a time, capturing a non-empty screenshot after each. Stop when the native header identifier and full exact title are visible, or when two consecutive screenshots show no visible movement in the timeline content region below the native toolbar and above the system navigation area (ignore the status-bar clock), or the 40-gesture cap is reached. Do not tap during this evidence scroll. A downward gesture can trigger pull-to-refresh/refetch at the top; record any visible refresh indicator and refetch, and keep the initial post-tap screenshot as the primary landing evidence. Later inspection screenshots are supplemental and cannot replace or rewrite the initial landing result. Record every gesture and screenshot filename. If the title is still not visible at the stop condition, record the visual oracle as `BLOCKED`/inconclusive, not `FAIL`; an inspection bound is not evidence of a wrong issue page. Bind source-preparation trace/screenshot, navigation trace, initial post-tap screenshot, each evidence-scroll screenshot, later header screenshot, hierarchy diagnostics, source message ID, href target comment ID, issue UUID, app pin, and both distinct Artemis attempt IDs in one report row.
+If the exact title is not visible in the initial screenshot, inspect the same issue screen only after preserving that screenshot. Read `wm size` on the granted serial through GNU `timeout`; use the `Override size` dimensions when present, otherwise use the `Physical size`. Record the complete output, raw command status, and selected width and height. Calculate `X=width/2`, `Ystart=floor(height*0.25)`, and `Yend=floor(height*0.75)`. Issue at most 40 downward `adb -s "$ANDROID_SERIAL" shell input swipe "$X" "$Ystart" "$X" "$Yend" 500` gestures, one at a time, each bounded by GNU `timeout`, capturing a non-empty screenshot after each with a separately bounded `screencap`. Stop when the native header identifier and full exact title are visible, or when two consecutive screenshots show no visible movement in the timeline content region below the native toolbar and above the system navigation area (ignore the status-bar clock), or the 40-gesture cap is reached. Do not tap during this evidence scroll. A downward gesture can trigger pull-to-refresh/refetch at the top; record any visible refresh indicator and refetch, and keep the initial post-tap screenshot as the primary landing evidence. Later inspection screenshots are supplemental and cannot replace or rewrite the initial landing result. Record every gesture and screenshot filename. If any inspection command reaches the grant's wall-clock limit, stop and record its raw status; do not continue outside the grant. If the title is still not visible at the stop condition, record the visual oracle as `BLOCKED`/inconclusive, not `FAIL`; an inspection bound is not evidence of a wrong issue page. Bind source-preparation trace/screenshot, navigation trace, initial post-tap screenshot, each evidence-scroll screenshot, later header screenshot, hierarchy diagnostics, source message ID, href target comment ID, issue UUID, app pin, and both distinct Artemis attempt IDs in one report row.
 
 For Case A, record diagnostic comment identity `01a1a165-1b88-769c-8137-bd8be641b61b`, opening `Verdict: BLOCKED / NOT-RUN`, by `x99-codex-terra`. For Case B, record diagnostic identity `01a1a48c-0e98-7177-bf6e-3fcbd96afb5c`, opening `Verdict: ready for Cheese's owner run.`, by `x99-codex-sol`, as a reply under `01a1a482-6fdf-7443-abc6-2cef14519f66`. Comment identity is diagnostic and does not gate the narrow issue-rendering PASS. Sol signs the returned execution evidence when verifying the run. Capture only the target issue content needed for this check.
 
@@ -114,13 +117,21 @@ For Case A, record diagnostic comment identity `01a1a165-1b88-769c-8137-bd8be641
 - Finding 4, pull-to-refresh: a downward evidence swipe may trigger `RefreshControl` and refetch. The first post-tap screenshot remains the primary landing evidence. Record any visible refresh indicator and refetch; later inspection screenshots are supplemental and cannot replace the landing screenshot.
 - Finding 5, source-chat identifier: a whole-document hierarchy identifier can match the source DM. It is diagnostic synchronization only and cannot establish that the issue route was reached.
 - Finding 6, movement comparison: compare the content region below the native toolbar and above system navigation. Ignore status-bar clock changes. Stop after two consecutive screenshots show no visible timeline movement there.
-- Finding 7, variables and shell scope: list every required variable before the blocks. Run the blocks for an attempt in one persistent Bash process so variables persist; Artemis preparation and navigation remain separate `--standalone` process invocations.
+- Finding 7, variables and shell scope: the complete required-variable list includes the grant's `ARTEMIS_WALLCLOCK_LIMIT`; non-empty guards run at the start of the attempt block. Run the blocks for an attempt in one persistent Bash process so variables persist; each Artemis command has a grant-bounded wall clock, and preparation/navigation remain separate `--standalone` process invocations.
 - Finding 8, captures and dimensions: require non-empty source, landing, and per-gesture screenshots. Select `Override size` from `wm size` when present; otherwise use `Physical size`, and record the output and selected dimensions.
 - Finding 9, answer controls: read-only records report both decision requests as `answered`, but the selected answer is not exposed. Do not infer permission or answer either request. If safe positioning would require touching an answer control, stop and mark the preparation and dependent navigation `NOT-RUN`.
 
+### Round-4 Sonnet advisory dispositions
+
+- Finding 2, lost prepared state: if standalone Artemis loses the prepared card and recovery would require another tap, record navigation `NOT-RUN`/`BLOCKED`; do not classify recovery as a Comment-link failure.
+- Finding 3, bounded calls: bound every `adb` operation, including screenshots, `wm size`, and swipes, with GNU `timeout`. Bound each standalone Artemis invocation by the active grant's wall-clock limit. Preserve partial files and raw statuses; timeout or empty capture is `NOT-RUN`/`BLOCKED` as applicable.
+- Finding 4, early guards: the complete required-variable list includes the grant's `ARTEMIS_WALLCLOCK_LIMIT`; non-empty guards run at the start of the persistent-shell attempt.
+- Finding 5, remote dump orphan: a timed-out local `adb` client may leave `uiautomator dump` running remotely. Record raw subprocess status and possible orphan; do not assume the next dump can reuse that path. Require scoped cleanup or Sol recovery.
+- Finding 6, path-check errors: only a successful remote existence check that reports the path exists is a collision. A timeout or other `adb` error is unavailable/unconfirmed, not a collision; record the raw status and stop without overwriting the path.
+
 ## Independent UI assertion
 
-Artemis navigation and its final report are not the assertion. Use separate preparation and navigation attempts. Capture the source-card screenshot after preparation and before navigation. Immediately after the navigation attempt exits, capture the first post-tap screen before hierarchy collection or scrolling. Luna's same-attempt screenshot review checks the native header identifier, exact title in `IssueHeaderCard`, and absence of not-found/load-error text. The hierarchy is diagnostic only. Inspect the navigation trace and confirm it tapped only the named plain `Comment` link. Record evidence-scroll gestures outside the navigation trace. Any other Artemis tap or route change within the navigation attempt is `FAIL`; preparation navigation is recorded only in its separate preparation trace. Set `ANDROID_SERIAL`, `ARTEMIS_BATCH_ID`, `CASE_ID`, `BUILD_ID`, `PREP_GOAL`, `NAV_GOAL`, distinct `PREP_ATTEMPT_ID` and `NAV_ATTEMPT_ID`, `ISSUE_IDENTIFIER`, `ISSUE_TITLE`, and `ARTIFACT_DIR` before the one-shell attempt blocks. Use unique local and remote artifact names for each capture and a unique temporary XML path on the device.
+Artemis navigation and its final report are not the assertion. Use separate preparation and navigation attempts. Capture the source-card screenshot after preparation and before navigation. Immediately after the navigation attempt exits, capture the first post-tap screen before hierarchy collection or scrolling. Luna's same-attempt screenshot review checks the native header identifier, exact title in `IssueHeaderCard`, and absence of not-found/load-error text. The hierarchy is diagnostic only. Inspect the navigation trace and confirm it tapped only the named plain `Comment` link. Record evidence-scroll gestures outside the navigation trace. Any other Artemis tap or route change within the navigation attempt is `FAIL` only if the prepared card remained visible and the named link attempt began. If prepared state was lost before that tap, record `NOT-RUN`/`BLOCKED`. Preparation navigation is recorded only in its separate preparation trace. Set `ANDROID_SERIAL`, `ARTEMIS_BATCH_ID`, `CASE_ID`, `BUILD_ID`, `PREP_GOAL`, `NAV_GOAL`, distinct `PREP_ATTEMPT_ID` and `NAV_ATTEMPT_ID`, `ISSUE_IDENTIFIER`, `ISSUE_TITLE`, `ARTIFACT_DIR`, and the active grant's `ARTEMIS_WALLCLOCK_LIMIT` before the one-shell attempt blocks. Use unique local and remote artifact names for each capture and a unique temporary XML path on the device.
 
 ```sh
 set -euo pipefail
@@ -132,7 +143,7 @@ Run the navigation attempt from the prepared source card:
 
 ```sh
 set +e
-uv run artemis run "$NAV_GOAL" --standalone --profile pro --verification-level strict --device-serial "$ANDROID_SERIAL" --test-name "$NAV_TEST_NAME" --run-id "$NAV_RUN_ID" --traces-path "$NAV_TRACE_PATH"
+timeout --signal=TERM --kill-after=2s "$ARTEMIS_WALLCLOCK_LIMIT" uv run artemis run "$NAV_GOAL" --standalone --profile pro --verification-level strict --device-serial "$ANDROID_SERIAL" --test-name "$NAV_TEST_NAME" --run-id "$NAV_RUN_ID" --traces-path "$NAV_TRACE_PATH"
 NAV_EXIT=$?
 set -e
 printf '%s\n' "$NAV_EXIT" > "$NAV_ARTIFACT_DIR/${NAV_RUN_ID}-exit-status.txt"
@@ -147,10 +158,13 @@ TMP_UI_XML="$NAV_ARTIFACT_DIR/${NAV_RUN_ID}-landing.tmp.xml"
 LANDING_SCREENSHOT="$NAV_ARTIFACT_DIR/${NAV_RUN_ID}-landing.png"
 REMOTE_XML="/sdcard/che-3531-${NAV_RUN_ID}.xml"
 COLLECTION_STATE="$NAV_ARTIFACT_DIR/${NAV_RUN_ID}-collection-state.txt"
+REMOTE_PATH_CHECK_OUTPUT="$NAV_ARTIFACT_DIR/${NAV_RUN_ID}-remote-path-check.txt"
 HIERARCHY_STATUS=unavailable
 HIERARCHY_DEADLINE=not-expired
 HIERARCHY_IDENTIFIER=not-observed
 HIERARCHY_SUBPROCESS_TIMEOUT=not-observed
+HIERARCHY_SUBPROCESS_STATUS=not-run
+REMOTE_PATH_CHECK_STATUS=not-run
 VISUAL_NAVIGATION_RESULT=not-assessed
 LANDING_SCREENSHOT_STATUS=not-captured
 REMOTE_XML_CLEANUP=not-needed
@@ -161,6 +175,8 @@ write_collection_state() {
     "$HIERARCHY_STATUS" "$HIERARCHY_DEADLINE" "$HIERARCHY_SUBPROCESS_TIMEOUT" \
     "$HIERARCHY_IDENTIFIER" "$VISUAL_NAVIGATION_RESULT" "$LANDING_SCREENSHOT_STATUS" \
     "$REMOTE_XML_CLEANUP" "$TMP_XML_CLEANUP" > "$COLLECTION_STATE"
+  printf 'hierarchy_subprocess_status=%s\nremote_path_check_status=%s\nremote_path_check_output=%s\n' \
+    "$HIERARCHY_SUBPROCESS_STATUS" "$REMOTE_PATH_CHECK_STATUS" "$REMOTE_PATH_CHECK_OUTPUT" >> "$COLLECTION_STATE"
 }
 cleanup_collection() {
   if (( REMOTE_XML_CREATED )); then
@@ -179,11 +195,14 @@ cleanup_collection() {
     fi
   fi
   write_collection_state
+  if [[ "$REMOTE_XML_CLEANUP" == unconfirmed || "$TMP_XML_CLEANUP" == unconfirmed ]]; then
+    return 1
+  fi
 }
 trap cleanup_collection EXIT
 trap 'HIERARCHY_DEADLINE=interrupted; exit 130' INT TERM
 # Preserve the first post-tap screen before diagnostics, including error pages.
-if adb -s "$ANDROID_SERIAL" exec-out screencap -p > "$LANDING_SCREENSHOT" && test -s "$LANDING_SCREENSHOT"; then
+if timeout --signal=TERM --kill-after=1s 10s adb -s "$ANDROID_SERIAL" exec-out screencap -p > "$LANDING_SCREENSHOT" && test -s "$LANDING_SCREENSHOT"; then
   LANDING_SCREENSHOT_STATUS=non-empty
 else
   LANDING_SCREENSHOT_STATUS=missing-or-empty
@@ -191,9 +210,25 @@ else
 fi
 : "${ISSUE_IDENTIFIER:?set the expected issue identifier before collection}"
 : "${ISSUE_TITLE:?set the expected exact title before collection}"
-if ! timeout --signal=TERM --kill-after=1s 5s adb -s "$ANDROID_SERIAL" shell test ! -e "$REMOTE_XML"; then
-  REMOTE_XML_CLEANUP=path-collision
-  exit 2
+if timeout --signal=TERM --kill-after=1s 5s adb -s "$ANDROID_SERIAL" shell "if test -e '$REMOTE_XML'; then printf exists; else printf absent; fi" > "$NAV_ARTIFACT_DIR/${NAV_RUN_ID}-remote-path-check.txt"; then
+  REMOTE_PATH_CHECK_STATUS=0
+  REMOTE_PATH_CHECK_OUTPUT=$(<"$NAV_ARTIFACT_DIR/${NAV_RUN_ID}-remote-path-check.txt")
+  if [[ "$REMOTE_PATH_CHECK_OUTPUT" == exists ]]; then
+    REMOTE_XML_CLEANUP=path-collision
+    exit 2
+  elif [[ "$REMOTE_PATH_CHECK_OUTPUT" != absent ]]; then
+    HIERARCHY_STATUS=unavailable
+    REMOTE_XML_CLEANUP=unconfirmed
+    write_collection_state
+    exit 3
+  fi
+else
+  REMOTE_PATH_CHECK_STATUS=$?
+  REMOTE_PATH_CHECK_OUTPUT=unavailable
+  HIERARCHY_STATUS=unavailable
+  REMOTE_XML_CLEANUP=unconfirmed
+  write_collection_state
+  exit 3
 fi
 COLLECTION_DEADLINE=$((SECONDS + 60))
 run_bounded_adb() {
@@ -217,11 +252,13 @@ while (( SECONDS < COLLECTION_DEADLINE )); do
       fi
     else
       command_status=$?
-      (( command_status == 124 )) && HIERARCHY_SUBPROCESS_TIMEOUT=observed
+      HIERARCHY_SUBPROCESS_STATUS=$command_status
+      (( command_status == 124 || command_status == 137 )) && HIERARCHY_SUBPROCESS_TIMEOUT=observed
     fi
   else
     command_status=$?
-    (( command_status == 124 )) && HIERARCHY_SUBPROCESS_TIMEOUT=observed
+    HIERARCHY_SUBPROCESS_STATUS=$command_status
+    (( command_status == 124 || command_status == 137 )) && HIERARCHY_SUBPROCESS_TIMEOUT=observed
   fi
   remaining=$((COLLECTION_DEADLINE - SECONDS))
   (( remaining > 0 )) || break
@@ -231,10 +268,10 @@ done
 if [[ "$HIERARCHY_STATUS" == unavailable ]]; then
   echo "Hierarchy unavailable; landing screenshot retained" > "$NAV_ARTIFACT_DIR/${NAV_RUN_ID}-hierarchy-unavailable.txt"
 fi
-write_collection_state
+cleanup_collection
 ```
 
-Run the source `screencap` after the separate preparation attempt succeeds and before navigation starts. Require a non-empty source capture. Run the landing `screencap` immediately after the navigation attempt exits, before the hierarchy poll or any scroll, and require a non-empty file. If capture fails or is empty, preserve the file and collection-state report and mark the visual result `BLOCKED`; do not recapture over the primary landing file. Then use the bounded evidence scroll defined above. If the remote path already exists, choose a new navigation run identifier before execution; do not overwrite it. The 60-second collection deadline includes each bounded `uiautomator dump` and `exec-out cat`, with a two-second reserve for timeout termination. The separate cleanup is bounded to five seconds and removes only this attempt's remote path. The `EXIT`, `INT`, and `TERM` paths retain the last non-empty XML, write collection state, and attempt scoped cleanup. `remote_xml_cleanup=unconfirmed` requires Sol recovery and is not a clean attempt. Set non-empty `ISSUE_IDENTIFIER` and `ISSUE_TITLE` values from the case row before running the poll block; the `:?` guards stop collection if either is empty. An identifier match may come from the source chat; it only synchronizes collection and is never evidence that the issue route was reached. These whole-document matches are diagnostic only and cannot pass a case:
+Bound source, landing, and per-gesture screenshots, `wm size`, every swipe, and each standalone Artemis invocation with GNU `timeout`; use the active grant's `ARTEMIS_WALLCLOCK_LIMIT` for Artemis and stop all inspection when that limit expires. Require non-empty source, landing, and per-gesture screenshots. If capture fails or is empty, preserve the primary file and collection-state report and mark the visual result `BLOCKED`; do not recapture over the primary landing file. Then use the bounded evidence scroll defined above. If the remote path exists, record `path-collision`; if the existence check times out or `adb` otherwise fails, record the raw status as unavailable/unconfirmed and stop without overwriting the remote path. The 60-second collection deadline includes each bounded `uiautomator dump` and `exec-out cat`, with a two-second reserve for timeout termination. The separate cleanup is bounded to five seconds and removes only this attempt's remote path. `cleanup_collection` runs before the hierarchy block returns and rewrites the state file with `removed` or `unconfirmed`. The `EXIT`, `INT`, and `TERM` paths remain fallback cleanup, retain the last non-empty XML, write collection state, and attempt scoped cleanup. A timed-out local `adb` client may leave a remote dump running; record the raw subprocess status and possible orphan, and do not assume a later dump can safely reuse the path. `remote_xml_cleanup=unconfirmed` requires Sol recovery and is not a clean attempt. The required-variable guards run before use. An identifier match may come from the source chat; it only synchronizes collection and is never evidence that the issue route was reached. These whole-document matches are diagnostic only and cannot pass a case:
 
 ```sh
 grep -Fq -- "$ISSUE_IDENTIFIER" "$UI_XML" && grep -Fq -- "$ISSUE_TITLE" "$UI_XML" && ! grep -Fq -- 'does not exist' "$UI_XML" && ! grep -Fq -- 'issue not found' "$UI_XML"
