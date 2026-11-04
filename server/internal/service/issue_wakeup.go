@@ -1129,7 +1129,17 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		return err
 	}
 	// A waiver follow-up check runs after release, when its issue is usually done.
-	active = active || w.FollowupInstanceID.Valid
+	closedReason := "Wakeup disabled: issue closed or permission unavailable"
+	if w.FollowupInstanceID.Valid {
+		active = true
+		recorded, err := waiverFollowupRecorded(ctx, tx, w)
+		if err != nil {
+			return err
+		}
+		if recorded {
+			active, closedReason = false, "Wakeup disabled: its follow-up result is recorded"
+		}
+	}
 	agent, err := q.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: w.AgentID, WorkspaceID: w.WorkspaceID})
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return err
@@ -1142,7 +1152,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		if authErr != nil && !errors.Is(authErr, ErrWakeupForbidden) {
 			return authErr
 		}
-		_, err = tx.Exec(ctx, "UPDATE issue_wakeup SET enabled=false,disabled_at=COALESCE(disabled_at,now()),last_error=$2 WHERE id=$1", w.ID, "Wakeup disabled: issue closed or permission unavailable")
+		_, err = tx.Exec(ctx, "UPDATE issue_wakeup SET enabled=false,disabled_at=COALESCE(disabled_at,now()),last_error=$2 WHERE id=$1", w.ID, closedReason)
 		if err != nil {
 			return err
 		}
@@ -1915,4 +1925,14 @@ func (s *IssueWakeupService) dispatchWorkflowEdges(ctx context.Context, w db.Iss
 		return nil
 	}
 	return s.Tasks.WorkflowEdges(ctx, w)
+}
+
+// waiverFollowupRecorded reports whether this waiver's own result comment exists.
+// The marker carries the decision instance, so another waiver's result on the
+// same issue does not end this check.
+func waiverFollowupRecorded(ctx context.Context, tx pgx.Tx, w db.IssueWakeup) (bool, error) {
+	var recorded bool
+	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM comment WHERE issue_id=$1 AND starts_with(content, $2))`,
+		w.IssueID, "Follow-up result ("+util.UUIDToString(w.FollowupInstanceID)+"):").Scan(&recorded)
+	return recorded, err
 }

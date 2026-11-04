@@ -55,16 +55,19 @@ Every `test_first_red` waiver owes its follow-up check. When the record becomes
 effective, the same transaction creates one wakeup on the waived issue (a timed,
 one-shot `issue_wakeup` for the author, 7 days after the record took effect). Its
 instruction carries the reason, the weaker evidence and the proposal's `followup_check`,
-and asks for one comment starting `Follow-up result:` on the waived issue. A failed
+and asks for one comment starting `Follow-up result (<decision instance>):` on the waived issue. A failed
 check or a worse crash rate reopens the work (`in_progress`, new PR). The wakeup is
 marked with `followup_instance_id` (unique per record), so closing the issue does not
 disable it: the check is meant to run after release. A proposal may add
 `crash_signature` (a Crashlytics issue id: 1-128 letters, digits, `.`, `:`, `_`, `-`);
 the instruction then tells the author to read the Crashlytics crash rate for that
 signature after the release (firebase-crashlytics MCP). A closed issue accepts no new
-wakeup, so a crash-fix check is not one-shot: it repeats every 72 hours, at most 8 runs.
-A run that finds the fix unreleased posts nothing; once a `Follow-up result:` comment
-exists, later runs stop without a change.
+wakeup, so a crash-fix check is not one-shot: it repeats every 72 hours, with no run cap,
+until the result is recorded. The result comment starts with
+`Follow-up result (<decision instance>):`; the platform then disables that waiver's
+wakeup before the next run. Another waiver's result on the same issue does not end this
+check. A run that finds the fix unreleased posts nothing. If the change will never ship,
+the author records that as the result.
 `followup_check` is limited to 2000 bytes. A refused or unsettled proposal creates no
 wakeup.
 

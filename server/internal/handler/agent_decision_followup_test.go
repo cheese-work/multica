@@ -74,7 +74,7 @@ func TestAgentDecisionWaiverCreatesExactlyOneFollowupWakeup(t *testing.T) {
 	if w.Kind != "at" || w.Mode != "once" || w.MaxFires != 0 || !w.Enabled || !w.DueInFuture || w.AgentID != f.writerID {
 		t.Fatalf("follow-up: %+v, want an enabled one-shot timed wakeup for the author", w)
 	}
-	for _, want := range []string{"add a regression test when the rename lands behind a flag", "Follow-up result:", "WAIVED"} {
+	for _, want := range []string{"add a regression test when the rename lands behind a flag", "Follow-up result (" + f.instance + "):", "WAIVED"} {
 		if !strings.Contains(w.Instruction, want) {
 			t.Fatalf("instruction lacks %q:\n%s", want, w.Instruction)
 		}
@@ -121,7 +121,7 @@ func TestAgentDecisionCrashFixFollowupNamesSignature(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("%d follow-ups, want 1", len(got))
 	}
-	for _, want := range []string{crashSignature, "Crashlytics", "crash rate", "release that carries the fix", "reopen", "Follow-up result:"} {
+	for _, want := range []string{crashSignature, "Crashlytics", "crash rate", "release that carries the fix", "reopen", "Follow-up result (" + f.instance + "):"} {
 		if !strings.Contains(got[0].Instruction, want) {
 			t.Fatalf("crash-fix instruction lacks %q:\n%s", want, got[0].Instruction)
 		}
@@ -135,22 +135,22 @@ func TestAgentDecisionCrashFixFollowupRetriesWithoutNewWakeup(t *testing.T) {
 	f.scope["crash_signature"] = crashSignature
 	settleTestFirstRed(t, f)
 	w := followups(t, f)[0]
-	if w.Kind != "every" || w.Mode != "continuous" || w.IntervalSeconds != 72*3600 || w.MaxFires != 8 || !w.Enabled {
-		t.Fatalf("crash-fix follow-up: %+v, want an enabled repeat every 72h capped at 8 runs", w)
+	if w.Kind != "every" || w.Mode != "continuous" || w.IntervalSeconds != 72*3600 || w.MaxFires != 0 || !w.Enabled {
+		t.Fatalf("crash-fix follow-up: %+v, want an enabled repeat every 72h with no run cap", w)
 	}
 	for _, banned := range []string{"wakeup create", "create one more wakeup"} {
 		if strings.Contains(w.Instruction, banned) {
 			t.Fatalf("instruction sends the agent to a closed-issue wakeup (%q):\n%s", banned, w.Instruction)
 		}
 	}
-	for _, want := range []string{"not released yet", "72 hours", "already has a comment that starts with `Follow-up result:`"} {
+	for _, want := range []string{"not released yet", "72 hours", "until a comment that starts with `Follow-up result (" + f.instance + "):`", "never ship"} {
 		if !strings.Contains(w.Instruction, want) {
 			t.Fatalf("instruction lacks %q:\n%s", want, w.Instruction)
 		}
 	}
 }
 
-// Unreleased on the first run, released on the second, on a closed issue.
+// Unreleased on every run until the tenth, on a closed issue.
 func TestAgentDecisionCrashFixFollowupRunsAgainOnClosedIssue(t *testing.T) {
 	f := testFirstRedFixture(t)
 	f.scope["crash_signature"] = crashSignature
@@ -159,7 +159,8 @@ func TestAgentDecisionCrashFixFollowupRunsAgainOnClosedIssue(t *testing.T) {
 	runs := func() int {
 		return dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_id'=(SELECT id::text FROM issue_wakeup WHERE followup_instance_id=$2)`, f.issueID, f.instance)
 	}
-	for round := 1; round <= 2; round++ {
+	// Past the old cap of eight runs: an unreleased fix is never dropped.
+	for round := 1; round <= 10; round++ {
 		dbfx.Exec(t, `UPDATE issue_wakeup SET next_fire_at = now() - interval '1 minute' WHERE followup_instance_id=$1`, f.instance)
 		runWakeupTick(t)
 		if n := runs(); n != round {
@@ -250,6 +251,52 @@ func TestAgentDecisionFollowupRunsOnClosedIssue(t *testing.T) {
 	}
 	if got := followups(t, f); len(got) != 1 || got[0].Enabled {
 		t.Fatalf("one-shot follow-up after firing: %+v, want consumed (disabled) and not duplicated", got)
+	}
+}
+
+func recordFollowupResult(t *testing.T, f agentDecisionFixture, instance string) {
+	t.Helper()
+	dbfx.Exec(t, `INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content) VALUES ($1,$2,'agent',$3,$4)`,
+		testWorkspaceID, f.issueID, f.writerID, "Follow-up result ("+instance+"): crash rate fell from 1.2% to 0.1%.")
+}
+
+func dueFollowupRuns(t *testing.T, f agentDecisionFixture, instance string) int {
+	t.Helper()
+	return dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_id'=(SELECT id::text FROM issue_wakeup WHERE followup_instance_id=$2)`, f.issueID, instance)
+}
+
+// The recorded result ends the repeat, so no further run is wasted.
+func TestAgentDecisionFollowupStopsOnceItsResultIsRecorded(t *testing.T) {
+	f := testFirstRedFixture(t)
+	f.scope["crash_signature"] = crashSignature
+	settleTestFirstRed(t, f)
+	recordFollowupResult(t, f, f.instance)
+	dbfx.Exec(t, `UPDATE issue_wakeup SET next_fire_at = now() - interval '1 minute' WHERE followup_instance_id=$1`, f.instance)
+	runWakeupTick(t)
+	if n := dueFollowupRuns(t, f, f.instance); n != 0 {
+		t.Fatalf("%d runs after the result was recorded, want 0", n)
+	}
+	if got := followups(t, f); len(got) != 1 || got[0].Enabled {
+		t.Fatalf("follow-up after its result: %+v, want disabled", got)
+	}
+}
+
+// Another waiver's result on the same issue must not end this waiver's check.
+func TestAgentDecisionOtherWaiversResultDoesNotEndThisFollowup(t *testing.T) {
+	f := testFirstRedFixture(t)
+	f.scope["crash_signature"] = crashSignature
+	settleTestFirstRed(t, f)
+	other := uuidToString(dbid.NewV7())
+	dbfx.Exec(t, `INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,created_by,instruction,kind,mode,event_types,timezone,next_fire_at,followup_instance_id,interval_seconds)
+		SELECT gen_random_uuid(),workspace_id,issue_id,agent_id,created_by,instruction,kind,mode,event_types,timezone,next_fire_at,$2,interval_seconds FROM issue_wakeup WHERE followup_instance_id=$1`, f.instance, other)
+	recordFollowupResult(t, f, other)
+	dbfx.Exec(t, `UPDATE issue_wakeup SET next_fire_at = now() - interval '1 minute' WHERE issue_id=$1`, f.issueID)
+	runWakeupTick(t)
+	if n := dueFollowupRuns(t, f, f.instance); n != 1 {
+		t.Fatalf("%d runs for the waiver without a result, want 1", n)
+	}
+	if n := dueFollowupRuns(t, f, other); n != 0 {
+		t.Fatalf("%d runs for the waiver that has its result, want 0", n)
 	}
 }
 
