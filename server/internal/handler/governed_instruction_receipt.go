@@ -53,9 +53,27 @@ type receiptRecord struct {
 	commentID string
 }
 
+// proposalBeforePass reports whether one comment's recorded lines hold the
+// Proposal line above the PASS line: the design's receipt is a single comment
+// by the reviewer, and both lines carry the comment's one timestamp.
+func proposalBeforePass(lines, proposal, pass string) bool {
+	proposalAt := -1
+	for i, line := range strings.Split(lines, "\n") {
+		switch strings.TrimSpace(line) {
+		case proposal:
+			if proposalAt < 0 {
+				proposalAt = i
+			}
+		case pass:
+			return proposalAt >= 0
+		}
+	}
+	return false
+}
+
 // receiptTally returns the PASS records that bind this exact change and
 // whether any BLOCK exists. A PASS counts once per author and only after the
-// earliest matching Proposal.
+// earliest matching Proposal: in a later comment, or above it in the same one.
 func receiptTally(records []receiptRecord, writerID, label, before, after string) (passes []receiptRecord, blocked bool) {
 	proposal := "Proposal: " + label + " " + after
 	block := "Vote: BLOCK " + label + " " + after
@@ -75,7 +93,7 @@ func receiptTally(records []receiptRecord, writerID, label, before, after string
 			blocked = blocked || strings.HasPrefix(l, block)
 		}
 		if len(lines) != 1 || lines[0] != pass || rec.authorType != "agent" || rec.authorID == writerID ||
-			proposedAt.IsZero() || !rec.createdAt.After(proposedAt) || seen[rec.authorID] {
+			proposedAt.IsZero() || !(rec.createdAt.After(proposedAt) || proposalBeforePass(rec.lines, proposal, pass)) || seen[rec.authorID] {
 			continue
 		}
 		seen[rec.authorID] = true

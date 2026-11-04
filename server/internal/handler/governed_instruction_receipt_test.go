@@ -117,14 +117,34 @@ func TestPassReceipt_ValidReceiptWritesOnceAndLeavesAuditRow(t *testing.T) {
 	if r.used(t) != 1 {
 		t.Fatal("accepted write left no receipt row")
 	}
-	// Same receipt, change moved back: refused, value stays.
-	again := r.send(r.initial, r.nextDigest)
-	if again.Code != http.StatusForbidden && again.Code != http.StatusConflict {
-		t.Fatalf("reuse: expected 403 or 409, got %d: %s", again.Code, again.Body.String())
+	// The value is restored out of band, then the same signed change is
+	// retried: the used receipt is refused with 409 and nothing is written.
+	dbfx.Exec(t, `UPDATE agent SET instructions = $2 WHERE id = $1`, r.id, r.initial)
+	again := r.send(r.next, r.beforeDigest)
+	if again.Code != http.StatusConflict {
+		t.Fatalf("reuse: expected 409, got %d: %s", again.Code, again.Body.String())
 	}
-	if got := r.tg.read(t, r.id); got != r.next {
+	if got := r.tg.read(t, r.id); got != r.initial {
 		t.Fatalf("reused receipt changed the value to %q", got)
 	}
+	if r.used(t) != 1 {
+		t.Fatalf("reuse changed the receipt rows: %d", r.used(t))
+	}
+}
+
+// The design's receipt is one comment by the reviewer: Proposal, then PASS.
+func TestPassReceipt_ProposalAndPassInOneComment(t *testing.T) {
+	r := newReceiptFixture(t)
+	r.say(t, "agent", r.reviewerID, 30, "Proposal: "+r.label+" "+r.nextDigest+"\n"+r.reviewerLine)
+	if w := r.send(r.next, r.beforeDigest); w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestPassReceipt_PassBeforeProposalInOneCommentRefused(t *testing.T) {
+	r := newReceiptFixture(t)
+	r.say(t, "agent", r.reviewerID, 30, r.reviewerLine+"\nProposal: "+r.label+" "+r.nextDigest)
+	r.wantRefused(t, r.send(r.next, r.beforeDigest))
 }
 
 func TestPassReceipt_FailedChecksStayRefused(t *testing.T) {
