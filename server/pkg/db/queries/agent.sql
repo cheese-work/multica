@@ -2243,7 +2243,7 @@ WHERE id = (
     ORDER BY t.created_at DESC
     LIMIT 1
 )
-RETURNING id, coalesced_comment_ids;
+RETURNING *;
 
 -- name: MergeCommentIntoQueuedIssueTask :one
 -- CHE-1418: one comment produces at most one run per agent. Same fold and

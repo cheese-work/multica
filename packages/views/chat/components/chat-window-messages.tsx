@@ -28,6 +28,7 @@ export function ChatWindowMessages({
   quickActionsDisabled,
   quickActionsPendingMessageId,
   onQuoteMessage,
+  onReady,
   children,
 }: {
   sessionId: string | null;
@@ -50,6 +51,8 @@ export function ChatWindowMessages({
   quickActionsDisabled: boolean;
   quickActionsPendingMessageId: string | null;
   onQuoteMessage?: (content: string) => void;
+  /** This area has something to show — the window can fade in around it. */
+  onReady?: () => void;
   children: ReactNode;
 }) {
   const isPresent = useIsPresent();
@@ -72,6 +75,25 @@ export function ChatWindowMessages({
     (count, page) => count + page.messages.length,
     0,
   );
+  const loginRequired =
+    interactiveLoginRequired || errorCode(error) === "interactive_login_required";
+  const hasSessionLinks = !!(
+    session?.continued_from_session_id ||
+    session?.continued_into_session_id ||
+    session?.forked_from_session_id
+  );
+
+  const showSkeleton = !loginRequired && !!sessionId && (isLoading || pendingTaskLoading);
+  const showList =
+    !loginRequired &&
+    !showSkeleton &&
+    (messages.length > 0 || !!pendingTask?.task_id || hasSessionLinks);
+
+  // The skeleton and the empty state are right on their first frame; the list
+  // is hidden until it lands, so it reports through `onRevealed` instead.
+  useEffect(() => {
+    if (isPresent && !showList) onReady?.();
+  }, [isPresent, showList, onReady]);
 
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
@@ -81,14 +103,6 @@ export function ChatWindowMessages({
     onMessages?.(messagesRef.current);
   }, [messageSet, onMessages]);
   useEffect(() => () => onMessages?.([]), [onMessages]);
-
-  const loginRequired =
-    interactiveLoginRequired || errorCode(error) === "interactive_login_required";
-  const hasSessionLinks = !!(
-    session?.continued_from_session_id ||
-    session?.continued_into_session_id ||
-    session?.forked_from_session_id
-  );
 
   return (
     <motion.div
@@ -100,12 +114,14 @@ export function ChatWindowMessages({
     >
       {loginRequired ? (
         <InteractiveLoginBanner />
-      ) : sessionId && (isLoading || pendingTaskLoading) ? (
+      ) : showSkeleton ? (
         <ChatMessageSkeleton />
-      ) : messages.length > 0 || pendingTask?.task_id || hasSessionLinks ? (
+      ) : showList ? (
         <ChatMessageList
           key={sessionId}
           active={isPresent}
+          revealKey={sessionId}
+          onRevealed={onReady}
           messages={messages}
           continuedFromSessionId={session?.continued_from_session_id}
           continuedIntoSessionId={session?.continued_into_session_id}
