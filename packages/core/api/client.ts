@@ -280,6 +280,8 @@ import {
 } from "./passkey-schema";
 import {
   RuntimeProfileSchema,
+  AgentDecisionSettingSchema,
+  type AgentDecisionSetting,
   OpenDecisionRequestListSchema,
   DecisionArtifactListSchema,
   RuntimeProfileListSchema,
@@ -3258,6 +3260,22 @@ export class ApiClient {
     return this.fetch(`/api/workspaces/${id}`, {
       method: "PATCH",
       body: JSON.stringify(data),
+    });
+  }
+
+  // Null when the response is malformed: callers must not show a guessed value.
+  async getAgentDecisionSetting(): Promise<AgentDecisionSetting | null> {
+    const raw: unknown = await this.fetch("/api/agent-decisions/brief");
+    return parseWithFallback<AgentDecisionSetting | null>(raw, AgentDecisionSettingSchema, null, {
+      endpoint: "GET /api/agent-decisions/brief",
+    });
+  }
+
+  // Owner + human-actor only; the server clears an earlier stop when turned on.
+  async setAgentDecisionsEnabled(enabled: boolean): Promise<{ enabled: boolean }> {
+    return this.fetch("/api/agent-decisions/setting", {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
     });
   }
 
