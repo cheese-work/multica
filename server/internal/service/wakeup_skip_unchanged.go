@@ -2,12 +2,14 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // CHE-3590: a wakeup whose watched inputs are the same as when the last run on
@@ -57,6 +59,19 @@ func unchangedSinceLastRun(ctx context.Context, db rowQuerier, issueID, agentID 
 		return pgtype.UUID{}, false, err
 	}
 	return id, status == "completed" && fresh && prev != nil && *prev == fingerprint, nil
+}
+
+// holdsDraftReturn reports whether any pending fact is a returned-to-draft event.
+func holdsDraftReturn(receipts []db.IssueWakeupReceipt) bool {
+	for _, r := range receipts {
+		var p struct {
+			Reason string `json:"reason"`
+		}
+		if json.Unmarshal(r.Payload, &p) == nil && p.Reason == PRAttentionDraft {
+			return true
+		}
+	}
+	return false
 }
 
 func skippedUnchangedDetails(rule string, lastTask pgtype.UUID) map[string]any {

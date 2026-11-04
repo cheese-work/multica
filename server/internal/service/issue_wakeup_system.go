@@ -1460,8 +1460,9 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	}
 	// CHE-3590: the PR is as it was when the last run on this rule started.
 	inputFingerprint := ""
-	// Returning to draft is an event, not a state: each conversion is new.
-	if reason, _ := facts["reason"].(string); reason != PRAttentionDraft &&
+	// Returning to draft is an event, not a state: each conversion is new, and
+	// the skip consumes the whole batch, not only its newest fact.
+	if !holdsDraftReturn(receipts) &&
 		(w.SystemRule.String == SystemRulePRChecksFailed || w.SystemRule.String == SystemRulePRAttention) {
 		if inputFingerprint, err = prStateFingerprint(ctx, tx, issue.ID); err != nil {
 			return err

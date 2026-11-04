@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
@@ -122,6 +124,40 @@ func TestPRDraftReturnIsNeverSkipped(t *testing.T) {
 	}
 	if got := e.skipped(t); got != 0 {
 		t.Fatalf("skip activities = %d, want 0", got)
+	}
+}
+
+// The skip decides for the whole batch of pending facts: a draft return that
+// waited behind a running turn must not be consumed with an unchanged
+// mergeability fact that arrived after it.
+func TestPRDraftReturnInAMixedBatchIsNeverSkipped(t *testing.T) {
+	e := newSkipEnv(t, true)
+	e.conflict(t, "main")
+	e.finishRuns(t, "completed")
+	e.f.Exec(t, `UPDATE issue SET status='done' WHERE id=$1`, e.issue)
+	running := e.f.Task(t, e.agent, testutil.Cols{"issue_id": e.issue, "status": "running", "started_at": testutil.Raw("clock_timestamp()"),
+		"runtime_id": testutil.Raw("(SELECT runtime_id FROM agent WHERE id='" + e.agent + "')")})
+	if err := e.s.TriggerPullRequestWakeup(context.Background(), e.issue, PullRequestWakeupInput{
+		Rule: SystemRulePRAttention, Reason: PRAttentionDraft, RepoOwner: "acme", RepoName: "widget", Number: 157,
+		URL: "https://github.com/acme/widget/pull/157", HeadSHA: "h1", EventAt: "2026-11-04T10:00:00Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e.conflict(t, "release")
+	e.f.Exec(t, `UPDATE agent_task_queue SET status='completed',completed_at=clock_timestamp() WHERE id=$1`, running)
+	e.finishRuns(t, "completed")
+	w, err := e.f.q.GetSystemWakeup(context.Background(), db.GetSystemWakeupParams{IssueID: e.issue, SystemRule: systemRuleText(SystemRulePRAttention)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.s.dispatchSystem(context.Background(), w); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.skipped(t); got != 0 {
+		t.Fatalf("skip activities for a batch holding a draft return = %d, want 0", got)
+	}
+	if got := e.systemRuns(t, SystemRulePRAttention); got < 2 {
+		t.Fatalf("attention runs = %d, want the draft return to start one", got)
 	}
 }
 
