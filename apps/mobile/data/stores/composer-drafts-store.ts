@@ -9,20 +9,34 @@
  * Keys: `comment:<issueId>` and `chat:<sessionId | __new__>`. Chat input
  * text is NOT stored here: `chat-drafts-store` owns it.
  *
- * Disk is empty until `hydrate(scope)` runs (from the workspace layout);
- * writes made before that stay in memory only, and win over the disk copy.
+ * Disk is empty until `hydrate(scope)` runs (from the workspace layout).
+ * Writes made while it loads stay in memory and are replayed on top of the
+ * disk draft field by field, so typing early never wipes a saved reply,
+ * mention or attachment.
+ *
+ * Scope-bound writes: a caller that outlives a workspace switch (an upload,
+ * a send that settles late) passes the scope it started in as `forScope`; a
+ * write for a scope that was left since is dropped instead of landing in the
+ * new workspace.
  *
  * Send lifecycle: `beginSend` freezes the disk entry at the submitted draft
- * while the composer empties its input. `finishSend` writes whatever the
- * draft holds then: nothing after a success, the restored snapshot after a
- * failure. A kill mid-send therefore restores the submitted draft.
+ * while the composer empties its input and returns the send's scope.
+ * `finishSend` writes whatever the draft holds then: nothing after a
+ * success, the restored snapshot after a failure. A send that settles after
+ * its scope was left is settled against that scope's own disk entry. A kill
+ * mid-send therefore restores the submitted draft.
  *
  * Only completed uploads are written to disk. An upload still running when
  * the app dies is lost and has to be picked again.
  */
 import { create } from "zustand";
 import type { ComposerAttachmentItem } from "../../components/issue/composer-attachment-row";
-import { draftPersistence, registerDraftCleanup } from "../draft-persistence";
+import { mergeRestoredText } from "../../lib/merge-restored-text";
+import {
+  draftPersistence,
+  registerDraftCleanup,
+  registerScopeCleanup,
+} from "../draft-persistence";
 import type { MentionChipDraft } from "./mention-draft-store";
 import type { ReplyTarget } from "./reply-target-store";
 
@@ -41,33 +55,57 @@ const EMPTY: ComposerDraft = {
   reply: null,
 };
 
+type DraftOp = (draft: ComposerDraft) => ComposerDraft;
+
 interface State {
   drafts: Record<string, ComposerDraft>;
   /** Scope (user + workspace) the drafts belong to; null before `hydrate`. */
   scopeId: string | null;
   /** True once the disk drafts of `scopeId` are merged into memory. */
   hydrated: boolean;
-  patch: (key: string, patch: Partial<ComposerDraft>) => void;
+  /** `forScope` is the scope the caller rendered in; see the header. */
+  patch: (
+    key: string,
+    patch: Partial<ComposerDraft>,
+    forScope?: string | null,
+  ) => void;
   /** Functional update for async upload results that land after unmount. */
   patchAttachments: (
     key: string,
     update: (prev: ComposerAttachmentItem[]) => ComposerAttachmentItem[],
+    forScope?: string | null,
   ) => void;
-  /** The composer is about to empty its input to submit. */
-  beginSend: (key: string) => void;
-  /** The send settled; the composer already emptied or restored the draft. */
-  finishSend: (key: string) => void;
+  /** The composer is about to empty its input to submit. Returns the scope
+   *  the send belongs to; pass it to `finishSend`. */
+  beginSend: (key: string) => string | null;
+  /** The send settled. When its scope is still current the composer already
+   *  emptied or restored the draft; otherwise the scope's disk entry is
+   *  settled here. */
+  finishSend: (key: string, forScope: string | null, ok: boolean) => void;
   hydrate: (scope: string) => Promise<void>;
+  /** Drop the drafts of a deleted workspace from memory. */
+  dropScope: (scope: string) => void;
   /** Empty memory and detach from disk (logout). */
   reset: () => void;
 }
 
+interface OpenSend {
+  scope: string;
+  key: string;
+  submitted: ComposerDraft | undefined;
+  /** Draft of the key at the moment its scope was left. */
+  parked: ComposerDraft | undefined;
+}
+
 let scope: string | null = null;
-// Keys with an open send: their disk entry stays at the submitted draft.
-const sending = new Set<string>();
-// Keys written since the current hydrate() began; the disk copy must not
-// overwrite them.
-let touchedDuringHydrate = new Set<string>();
+// Edits made while the disk drafts load, replayed on top of them.
+let loading = false;
+let loadingOps: { key: string; op: DraftOp }[] = [];
+// Sends that have not settled. While one is open its disk entry stays at the
+// submitted draft.
+const sending = new Map<string, OpenSend>();
+
+const sendId = (forScope: string, key: string) => `${forScope}\n${key}`;
 
 function isEmpty(draft: ComposerDraft): boolean {
   return (
@@ -78,16 +116,37 @@ function isEmpty(draft: ComposerDraft): boolean {
   );
 }
 
-function persist(key: string, draft: ComposerDraft | undefined) {
-  if (scope === null || sending.has(key)) return;
+function writeDisk(forScope: string, key: string, draft: ComposerDraft | undefined) {
   if (!draft || isEmpty(draft)) {
-    draftPersistence.remove(scope, DISK_PREFIX + key);
+    draftPersistence.remove(forScope, DISK_PREFIX + key);
     return;
   }
-  draftPersistence.save(scope, DISK_PREFIX + key, {
+  draftPersistence.save(forScope, DISK_PREFIX + key, {
     ...draft,
     attachments: draft.attachments.filter((a) => a.status === "completed"),
   });
+}
+
+function persist(key: string, draft: ComposerDraft | undefined) {
+  if (scope === null || loading || sending.has(sendId(scope, key))) return;
+  writeDisk(scope, key, draft);
+}
+
+// A failed send of a scope that was left: the submitted draft comes back,
+// followed by what the user typed there afterwards.
+function mergeDrafts(
+  submitted: ComposerDraft,
+  parked: ComposerDraft | undefined,
+): ComposerDraft {
+  if (!parked) return submitted;
+  const isNew = (m: MentionChipDraft) =>
+    !submitted.mentions.some((x) => x.type === m.type && x.id === m.id);
+  return {
+    text: mergeRestoredText(submitted.text, parked.text),
+    mentions: [...submitted.mentions, ...parked.mentions.filter(isNew)],
+    attachments: [...submitted.attachments, ...parked.attachments],
+    reply: parked.reply ?? submitted.reply,
+  };
 }
 
 function isDraft(value: unknown): value is ComposerDraft {
@@ -102,8 +161,10 @@ function isDraft(value: unknown): value is ComposerDraft {
 }
 
 export const useComposerDraftsStore = create<State>((set, get) => {
-  const write = (key: string, next: ComposerDraft) => {
-    touchedDuringHydrate.add(key);
+  const write = (key: string, op: DraftOp, forScope?: string | null) => {
+    if (forScope !== undefined && forScope !== scope) return;
+    if (loading) loadingOps.push({ key, op });
+    const next = op(get().drafts[key] ?? EMPTY);
     const drafts = { ...get().drafts };
     if (isEmpty(next)) delete drafts[key];
     else drafts[key] = next;
@@ -115,25 +176,50 @@ export const useComposerDraftsStore = create<State>((set, get) => {
     drafts: {},
     scopeId: null,
     hydrated: false,
-    patch: (key, patch) => write(key, { ...(get().drafts[key] ?? EMPTY), ...patch }),
-    patchAttachments: (key, update) =>
-      get().patch(key, {
-        attachments: update(get().drafts[key]?.attachments ?? []),
-      }),
+    patch: (key, patch, forScope) =>
+      write(key, (draft) => ({ ...draft, ...patch }), forScope),
+    patchAttachments: (key, update, forScope) =>
+      write(
+        key,
+        (draft) => ({ ...draft, attachments: update(draft.attachments) }),
+        forScope,
+      ),
     beginSend: (key) => {
-      persist(key, get().drafts[key]);
-      sending.add(key);
+      if (scope === null) return null;
+      const submitted = get().drafts[key];
+      persist(key, submitted);
+      sending.set(sendId(scope, key), {
+        scope,
+        key,
+        submitted,
+        parked: undefined,
+      });
+      return scope;
     },
-    finishSend: (key) => {
-      sending.delete(key);
-      persist(key, get().drafts[key]);
+    finishSend: (key, forScope, ok) => {
+      if (forScope === null) return;
+      const open = sending.get(sendId(forScope, key));
+      if (!open) return;
+      sending.delete(sendId(forScope, key));
+      if (forScope === scope) {
+        persist(key, get().drafts[key]);
+        return;
+      }
+      const failed = open.submitted
+        ? mergeDrafts(open.submitted, open.parked)
+        : open.parked;
+      writeDisk(forScope, key, ok ? open.parked : failed);
     },
     hydrate: async (workspaceScope) => {
       if (scope === workspaceScope) return;
       void draftPersistence.flush();
+      // Park open sends of the scope being left (see OpenSend).
+      for (const open of sending.values()) {
+        if (open.scope === scope) open.parked = get().drafts[open.key];
+      }
       scope = workspaceScope;
-      touchedDuringHydrate = new Set();
-      sending.clear();
+      loading = true;
+      loadingOps = [];
       set({ drafts: {}, scopeId: workspaceScope, hydrated: false });
       const onDisk = await draftPersistence.loadAll<unknown>(
         workspaceScope,
@@ -141,22 +227,47 @@ export const useComposerDraftsStore = create<State>((set, get) => {
       );
       // A newer hydrate() or a logout reset won while we were reading.
       if (scope !== workspaceScope) return;
-      const restored: Record<string, ComposerDraft> = {};
+      const drafts: Record<string, ComposerDraft> = {};
       for (const [diskKey, value] of Object.entries(onDisk)) {
-        const key = diskKey.slice(DISK_PREFIX.length);
-        if (isDraft(value) && !touchedDuringHydrate.has(key)) {
-          restored[key] = value;
-        }
+        if (isDraft(value)) drafts[diskKey.slice(DISK_PREFIX.length)] = value;
       }
-      set({ drafts: { ...restored, ...get().drafts }, hydrated: true });
+      // A send of this scope that is still open: its submitted draft is on
+      // disk but already in flight, so only what the user typed after it
+      // (parked when the scope was left) shows up.
+      for (const open of sending.values()) {
+        if (open.scope !== workspaceScope) continue;
+        if (open.parked) drafts[open.key] = open.parked;
+        else delete drafts[open.key];
+        open.parked = undefined;
+      }
+      for (const { key, op } of loadingOps) {
+        const next = op(drafts[key] ?? EMPTY);
+        if (isEmpty(next)) delete drafts[key];
+        else drafts[key] = next;
+      }
+      const touched = new Set(loadingOps.map((o) => o.key));
+      loading = false;
+      loadingOps = [];
+      set({ drafts, hydrated: true });
+      touched.forEach((key) => persist(key, drafts[key]));
+    },
+    dropScope: (deleted) => {
+      for (const [id, open] of sending) {
+        if (open.scope === deleted) sending.delete(id);
+      }
+      if (scope === deleted) set({ drafts: {} });
     },
     reset: () => {
       scope = null;
+      loading = false;
+      loadingOps = [];
       sending.clear();
-      touchedDuringHydrate = new Set();
       set({ drafts: {}, scopeId: null, hydrated: false });
     },
   };
 });
 
 registerDraftCleanup(() => useComposerDraftsStore.getState().reset());
+registerScopeCleanup((deleted) =>
+  useComposerDraftsStore.getState().dropScope(deleted),
+);

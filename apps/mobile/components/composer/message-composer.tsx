@@ -209,17 +209,22 @@ export function MessageComposer({
   const draft = useComposerDraftsStore((s) => s.drafts[draftKey]);
   const draftsHydrated = useComposerDraftsStore((s) => s.hydrated);
   const attachments = draft?.attachments ?? NO_ATTACHMENTS;
+  // `forScope` pins the write to the workspace the caller started in: an
+  // upload or restore that settles after a workspace switch is dropped.
   const setAttachments = useCallback(
     (
       next:
         | ComposerAttachmentItem[]
         | ((prev: ComposerAttachmentItem[]) => ComposerAttachmentItem[]),
+      forKey: string = draftKey,
+      forScope?: string | null,
     ) =>
       useComposerDraftsStore
         .getState()
         .patchAttachments(
-          draftKey,
+          forKey,
           typeof next === "function" ? next : () => next,
+          forScope,
         ),
     [draftKey],
   );
@@ -237,11 +242,13 @@ export function MessageComposer({
     controlledValue !== undefined && controlledOnChange !== undefined;
   const text = isControlled ? controlledValue : (draft?.text ?? "");
   const setText = useCallback(
-    (next: string) => {
+    (next: string, forScope?: string | null) => {
       if (isControlled) {
         controlledOnChange(next);
       } else {
-        useComposerDraftsStore.getState().patch(draftKey, { text: next });
+        useComposerDraftsStore
+          .getState()
+          .patch(draftKey, { text: next }, forScope);
       }
     },
     [isControlled, controlledOnChange, draftKey],
@@ -340,8 +347,14 @@ export function MessageComposer({
     // Optimistic clear: text + chips empty out immediately so the next
     // typing tick doesn't double-include them. Restored on rejection.
     const sendKey = draftKey;
+    let ok = false;
     const sendHandle = onSubmitStart?.(textSnap);
-    useComposerDraftsStore.getState().beginSend(sendKey);
+    const sendScope = useComposerDraftsStore.getState().beginSend(sendKey);
+    // The composer may move to another entity or workspace mid-send; the live
+    // reply and mention stores then belong to that one, not to this send.
+    const isCurrentSend = () =>
+      keyRef.current === sendKey &&
+      useComposerDraftsStore.getState().scopeId === sendScope;
     setText("");
     setAttachments([]);
     clearMentions();
@@ -361,13 +374,14 @@ export function MessageComposer({
       inputRef.current?.blur();
       Keyboard.dismiss();
       setExpanded(false);
-      onClearReplyTarget?.();
+      ok = true;
+      if (isCurrentSend()) onClearReplyTarget?.();
       if (sendHandle !== undefined) onSubmitSettled?.(sendHandle, true);
     } catch {
-      setText(mergeRestoredText(textSnap, textRef.current));
-      setAttachments(attachmentsSnap);
+      setText(mergeRestoredText(textSnap, textRef.current), sendScope);
+      setAttachments(attachmentsSnap, sendKey, sendScope);
       const draftsStore = useComposerDraftsStore.getState();
-      if (keyRef.current === sendKey) {
+      if (isCurrentSend()) {
         mentionsSnap.forEach((m) => {
           const present = useMentionDraftStore
             .getState()
@@ -375,13 +389,13 @@ export function MessageComposer({
           if (!present) useMentionDraftStore.getState().toggle(m);
         });
       } else {
-        // The composer moved to another entity mid-send; restore into the
-        // draft of the one the send started in, not the live mention store.
-        draftsStore.patch(sendKey, { mentions: mentionsSnap });
+        // Restore into the draft of the entity the send started in, not the
+        // live mention store.
+        draftsStore.patch(sendKey, { mentions: mentionsSnap }, sendScope);
       }
       if (sendHandle !== undefined) onSubmitSettled?.(sendHandle, false);
     } finally {
-      useComposerDraftsStore.getState().finishSend(sendKey);
+      useComposerDraftsStore.getState().finishSend(sendKey, sendScope, ok);
       setSubmitting(false);
     }
   }, [
@@ -407,6 +421,10 @@ export function MessageComposer({
       localId: string,
       asset: { uri: string; name: string; type: string },
     ) => {
+      // The result lands in the draft the upload started in, even after the
+      // composer moved to another entity or workspace.
+      const uploadKey = draftKey;
+      const uploadScope = useComposerDraftsStore.getState().scopeId;
       try {
         const result = await api.uploadFile(asset, uploadContext);
         setAttachments((prev) =>
@@ -421,6 +439,8 @@ export function MessageComposer({
                 }
               : it,
           ),
+          uploadKey,
+          uploadScope,
         );
       } catch (err) {
         const message =
@@ -431,10 +451,12 @@ export function MessageComposer({
               ? { ...it, status: "failed", error: message }
               : it,
           ),
+          uploadKey,
+          uploadScope,
         );
       }
     },
-    [uploadContext, t, setAttachments],
+    [uploadContext, t, setAttachments, draftKey],
   );
 
   const onImagePress = useCallback(async () => {

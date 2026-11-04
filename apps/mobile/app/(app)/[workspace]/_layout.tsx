@@ -15,6 +15,7 @@ import { useIssueWorkflowsRealtime } from "@/data/realtime/use-issue-workflows-r
 import { useProjectsRealtime } from "@/data/realtime/use-projects-realtime";
 import { usePinsRealtime } from "@/data/realtime/use-pins-realtime";
 import { usePresenceRealtime } from "@/data/realtime/use-presence-realtime";
+import { useWorkspaceDraftsRealtime } from "@/data/realtime/use-workspace-drafts-realtime";
 import { useWorkspacePresencePrefetch } from "@/lib/use-workspace-presence-prefetch";
 import { ModalCloseButton } from "@/components/ui/modal-close-button";
 import { useNewIssueDraftResetOnWorkspaceChange } from "@/data/stores/new-issue-draft-store";
@@ -87,6 +88,7 @@ function RealtimeSubscriptions() {
   useIssueWorkflowsRealtime();
   usePinsRealtime();
   useCommentPreviewRealtime();
+  useWorkspaceDraftsRealtime();
   // Presence: warm the three queries up front so avatars don't flash a
   // dotless first render, and listen for daemon/agent/task events to keep
   // the runtime + snapshot caches fresh. See use-presence-realtime.ts for

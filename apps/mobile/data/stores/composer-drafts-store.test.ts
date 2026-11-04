@@ -108,9 +108,9 @@ describe("composer drafts survive unmount, route change and cold start", () => {
     const s = run1.store.getState();
     s.patch("comment:i1", { text: "sent", mentions: [mention], reply });
     await settle();
-    s.beginSend("comment:i1");
+    const sendScope = s.beginSend("comment:i1");
     s.patch("comment:i1", { text: "", mentions: [], attachments: [], reply: null });
-    s.finishSend("comment:i1");
+    s.finishSend("comment:i1", sendScope, true);
     await settle();
 
     const run2 = await coldStart();
@@ -122,11 +122,11 @@ describe("composer drafts survive unmount, route change and cold start", () => {
     const s = run1.store.getState();
     s.patch("comment:i1", { text: "refused", mentions: [mention] });
     await settle();
-    s.beginSend("comment:i1");
+    const sendScope = s.beginSend("comment:i1");
     s.patch("comment:i1", { text: "", mentions: [], attachments: [], reply: null });
     // the composer restores the snapshot on rejection
     s.patch("comment:i1", { text: "refused", mentions: [mention] });
-    s.finishSend("comment:i1");
+    s.finishSend("comment:i1", sendScope, false);
     await settle();
 
     const run2 = await coldStart();
@@ -163,5 +163,82 @@ describe("composer drafts survive unmount, route change and cold start", () => {
     expect(run1.store.getState().drafts).toEqual({});
     const run2 = await coldStart();
     expect(run2.store.getState().drafts).toEqual({});
+  });
+
+  it("typing before the disk drafts load keeps the saved reply and mentions", async () => {
+    const run1 = await coldStart();
+    run1.store.getState().patch("comment:i1", { reply, mentions: [mention] });
+    await settle();
+
+    vi.resetModules();
+    const store = (await import("./composer-drafts-store")).useComposerDraftsStore;
+    const loading = store.getState().hydrate("u1:ws1");
+    store.getState().patch("comment:i1", { text: "typed early" });
+    await loading;
+    await settle();
+
+    const expected = { text: "typed early", mentions: [mention], reply };
+    expect(store.getState().drafts["comment:i1"]).toMatchObject(expected);
+    const run2 = await coldStart();
+    expect(run2.store.getState().drafts["comment:i1"]).toMatchObject(expected);
+  });
+
+  it("a failed send that settles after a workspace switch stays in its own workspace", async () => {
+    const run1 = await coldStart("u1:ws1");
+    const s = run1.store.getState();
+    s.patch("comment:i1", { text: "refused", mentions: [mention] });
+    const sendScope = s.beginSend("comment:i1");
+    s.patch("comment:i1", { text: "", mentions: [] });
+    await run1.store.getState().hydrate("u1:ws2");
+
+    // the composer restores its snapshot for the scope the send started in
+    s.patch("comment:i1", { text: "refused", mentions: [mention] }, sendScope);
+    s.finishSend("comment:i1", sendScope, false);
+    await settle();
+
+    expect(run1.store.getState().drafts).toEqual({});
+    const back = await coldStart("u1:ws1");
+    expect(back.store.getState().drafts["comment:i1"]?.text).toBe("refused");
+  });
+
+  it("a successful send that settles after a workspace switch clears its own workspace", async () => {
+    const run1 = await coldStart("u1:ws1");
+    const s = run1.store.getState();
+    s.patch("comment:i1", { text: "sent" });
+    const sendScope = s.beginSend("comment:i1");
+    s.patch("comment:i1", { text: "" });
+    await run1.store.getState().hydrate("u1:ws2");
+    s.finishSend("comment:i1", sendScope, true);
+    await settle();
+
+    const back = await coldStart("u1:ws1");
+    expect(back.store.getState().drafts).toEqual({});
+  });
+
+  it("an upload that finishes after a workspace switch is dropped", async () => {
+    const run1 = await coldStart("u1:ws1");
+    const s = run1.store.getState();
+    const uploadScope = s.scopeId;
+    await run1.store.getState().hydrate("u1:ws2");
+    s.patchAttachments("comment:i1", () => [upload], uploadScope);
+    await settle();
+
+    expect(run1.store.getState().drafts).toEqual({});
+  });
+
+  it("deleting a workspace clears its drafts and leaves the others", async () => {
+    const other = await coldStart("u1:ws2");
+    other.store.getState().patch("comment:i1", { text: "ws2 draft" });
+    await settle();
+    const run1 = await coldStart("u1:ws1");
+    run1.store.getState().patch("comment:i1", { text: "ws1 draft" });
+    await settle();
+
+    await run1.persistence.clearScopeDrafts("u1:ws1");
+    expect(run1.store.getState().drafts).toEqual({});
+    const ws1 = await coldStart("u1:ws1");
+    expect(ws1.store.getState().drafts).toEqual({});
+    const ws2 = await coldStart("u1:ws2");
+    expect(ws2.store.getState().drafts["comment:i1"]?.text).toBe("ws2 draft");
   });
 });

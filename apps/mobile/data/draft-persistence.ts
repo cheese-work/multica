@@ -13,8 +13,9 @@
  * Writes are debounced per draft (a keystroke must not hit disk) and all disk
  * operations are serialized, so a remove or logout wipe always lands after a
  * write that was already in flight. Disk errors are logged and swallowed: a
- * failed draft write must never break typing. The one exception is `clearAll`
- * (logout): it rejects when the delete fails so the caller can tell.
+ * failed draft write must never break typing. The exceptions are `clearAll`
+ * (logout) and `clearScope` (workspace deleted): they reject when the delete
+ * fails so the caller can tell.
  */
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
@@ -43,6 +44,9 @@ export interface DraftPersistence {
   sweepExpired(): Promise<void>;
   /** Write every pending draft now (call when the app is backgrounded). */
   flush(): Promise<void>;
+  /** Delete every draft of one scope and drop its pending writes. Rejects
+   *  when the disk delete fails. */
+  clearScope(scope: string): Promise<void>;
   /** Delete every draft of every scope and drop pending writes. Rejects when
    *  the disk delete fails. */
   clearAll(): Promise<void>;
@@ -172,6 +176,21 @@ export function createDraftPersistence(options: {
       await queue;
     },
 
+    clearScope(scope) {
+      const base = diskKey(scope, "");
+      for (const [k, { timer }] of pending) {
+        if (!k.startsWith(base)) continue;
+        clearTimeout(timer);
+        pending.delete(k);
+      }
+      return enqueue(async () => {
+        const keys = (await storage.getAllKeys()).filter((k) =>
+          k.startsWith(base),
+        );
+        if (keys.length > 0) await storage.multiRemove(keys);
+      }, true);
+    },
+
     clearAll() {
       for (const { timer } of pending.values()) clearTimeout(timer);
       pending.clear();
@@ -203,4 +222,19 @@ export function registerDraftCleanup(cleanup: () => void): void {
 export async function clearAllDrafts(): Promise<void> {
   cleanups.forEach((cleanup) => cleanup());
   await draftPersistence.clearAll();
+}
+
+const scopeCleanups = new Set<(scope: string) => void>();
+
+/** Stores that hold drafts in memory register a hook here so a deleted
+ *  workspace is dropped from memory as well as from disk. */
+export function registerScopeCleanup(cleanup: (scope: string) => void): void {
+  scopeCleanups.add(cleanup);
+}
+
+/** Workspace deleted: drop the drafts of one scope (user + workspace) from
+ *  memory and disk. Other workspaces keep theirs. */
+export async function clearScopeDrafts(scope: string): Promise<void> {
+  scopeCleanups.forEach((cleanup) => cleanup(scope));
+  await draftPersistence.clearScope(scope);
 }

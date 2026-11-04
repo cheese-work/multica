@@ -16,6 +16,7 @@ import { mergeRestoredText } from "../../lib/merge-restored-text";
 import {
   draftPersistence,
   registerDraftCleanup,
+  registerScopeCleanup,
 } from "../draft-persistence";
 
 export const DRAFT_NEW_SESSION = "__new__";
@@ -44,6 +45,8 @@ interface ChatDraftsState {
   /** The send settled. Success drops the submitted text from disk; failure
    *  leaves whatever the input holds now (the composer restores it). */
   finishSend: (token: string, ok: boolean) => void;
+  /** Drop the drafts of a deleted workspace from memory. */
+  dropScope: (scope: string) => void;
   /** Empty memory and detach from disk (logout). */
   reset: () => void;
 }
@@ -236,6 +239,12 @@ export const useChatDraftsStore = create<ChatDraftsState>((set, get) => ({
     }
     set({ drafts: { ...restored, ...get().drafts } });
   },
+  dropScope: (deleted) => {
+    for (const [token, entry] of inflight) {
+      if (entry.scope === deleted) inflight.delete(token);
+    }
+    if (scope === deleted) set({ drafts: {} });
+  },
   reset: () => {
     scope = null;
     hydrating = false;
@@ -246,3 +255,6 @@ export const useChatDraftsStore = create<ChatDraftsState>((set, get) => ({
 }));
 
 registerDraftCleanup(() => useChatDraftsStore.getState().reset());
+registerScopeCleanup((deleted) =>
+  useChatDraftsStore.getState().dropScope(deleted),
+);
