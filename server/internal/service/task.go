@@ -6272,6 +6272,9 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 	if errMsg != "" && task.IssueID.Valid && retried == nil {
 		s.createAgentComment(ctx, task.IssueID, task.AgentID, redact.Text(errMsg), "system", task.TriggerCommentID, task.ID)
 	}
+	if retried == nil {
+		s.failOverRoutingTask(ctx, task, failureReason)
+	}
 	// CHE-607: errMsg above is the proximate cause (e.g. a stream disconnect) —
 	// on its own it says nothing about why the auto-retry that would normally
 	// follow a provider_network failure didn't happen. Post the policy notice

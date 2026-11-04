@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/logger"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -22,41 +23,19 @@ import (
 // Routing agent (CHE-3627): a workspace setting naming the agent that handles
 // routing-only workflow steps, a fallback for when it is unusable, and
 // per-status overrides. It lives in workspace.settings under one key; only the
-// dedicated route changes it, and every change is audited.
+// dedicated route changes it, and every change is audited. The stored shape and
+// its readers live in the service package.
 const (
-	routingAgentKey      = "routing_agent"
+	routingAgentKey      = service.RoutingAgentSettingsKey
 	routingAgentActivity = "routing_agent_changed"
 )
 
-// defaultRoutingStatuses are the steps that only route work to the next owner.
-var defaultRoutingStatuses = []string{"todo", "blocked", "merged", "need_decision"}
+var defaultRoutingStatuses = service.DefaultRoutingStatuses
 
-// RoutingAgentConfig is the stored setting. An empty AgentID means routing is
-// off: every step keeps its own handler.
-type RoutingAgentConfig struct {
-	AgentID         string `json:"agent_id"`
-	FallbackAgentID string `json:"fallback_agent_id"`
-	// Statuses lists the routing steps; empty means defaultRoutingStatuses.
-	Statuses []string `json:"statuses"`
-	// Overrides sends one routing status to another agent than AgentID. Its
-	// keys are routing steps too.
-	Overrides map[string]string `json:"overrides"`
-}
+type RoutingAgentConfig = service.RoutingAgentConfig
 
 func routingAgentFromSettings(settings map[string]any) RoutingAgentConfig {
-	var cfg RoutingAgentConfig
-	if raw, ok := settings[routingAgentKey]; ok {
-		if b, err := json.Marshal(raw); err == nil {
-			_ = json.Unmarshal(b, &cfg) // a malformed value routes nothing
-		}
-	}
-	if cfg.Statuses == nil {
-		cfg.Statuses = slices.Clone(defaultRoutingStatuses)
-	}
-	if cfg.Overrides == nil {
-		cfg.Overrides = map[string]string{}
-	}
-	return cfg
+	return service.RoutingAgentFromSettings(settings)
 }
 
 func (h *Handler) loadRoutingAgent(ctx context.Context, ws pgtype.UUID) (RoutingAgentConfig, error) {
@@ -78,13 +57,9 @@ func (h *Handler) routingAgentFor(ctx context.Context, ws pgtype.UUID, status st
 	if err != nil || cfg.AgentID == "" {
 		return pgtype.UUID{}
 	}
-	override, overridden := cfg.Overrides[status]
-	if !overridden && !slices.Contains(cfg.Statuses, status) {
+	primary := cfg.AgentFor(status)
+	if primary == "" {
 		return pgtype.UUID{}
-	}
-	primary := cfg.AgentID
-	if overridden {
-		primary = override
 	}
 	for _, candidate := range []string{primary, cfg.FallbackAgentID} {
 		id, err := util.ParseUUID(candidate)
