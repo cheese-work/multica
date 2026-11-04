@@ -250,7 +250,7 @@ describe("WSClient", () => {
     }
 
     it("reconnects a half-open socket when a probe gets no pong", () => {
-      const ws = new WSClient("ws://example.test/ws");
+      const ws = new WSClient("wss://example.test/ws");
       ws.setAuth("tok", "acme");
       const onReconnect = vi.fn();
       ws.onReconnect(onReconnect);
@@ -274,7 +274,7 @@ describe("WSClient", () => {
     });
 
     it("reconnects immediately when a probe finds a closed socket with backoff pending", () => {
-      const ws = new WSClient("ws://example.test/ws");
+      const ws = new WSClient("wss://example.test/ws");
       ws.setAuth("tok", "acme");
       const onReconnect = vi.fn();
       ws.onReconnect(onReconnect);
@@ -290,7 +290,7 @@ describe("WSClient", () => {
     });
 
     it("keeps a live socket when pong arrives and throttles probes for 5 seconds", () => {
-      const ws = new WSClient("ws://example.test/ws");
+      const ws = new WSClient("wss://example.test/ws");
       const onReconnect = vi.fn();
       const onAny = vi.fn();
       ws.onReconnect(onReconnect);
