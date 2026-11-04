@@ -1,3 +1,4 @@
+# ci-policy: class=scheduled
 name: Build cache maintenance
 
 on:
