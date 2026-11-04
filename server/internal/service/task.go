@@ -7457,12 +7457,7 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 							"error", checkErr,
 						)
 					} else if !hasActive {
-						updatedIssue, updateErr := s.Queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
-							SourceTaskID: t.ID,
-							ID:           t.IssueID,
-							Status:       "todo",
-							WorkspaceID:  issue.WorkspaceID,
-						})
+						updatedIssue, activity, updateErr := s.resetIssueForFailedTask(ctx, issue, t)
 						if updateErr != nil {
 							slog.Warn("handle failed tasks: reset stuck issue failed",
 								"issue_id", issueKey,
@@ -7474,6 +7469,7 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 							// it here too. Without it the board / status-filter
 							// caches keep showing the issue as in_progress until
 							// the next write touches it (#4648 / MUL-3782).
+							(&IssueWakeupService{Tasks: s}).publishWakeupActivities(wakeupActivity{row: activity, actorType: "system", details: activity.Details})
 							s.broadcastIssueUpdated(ctx, updatedIssue, issue.Status)
 						}
 					}
@@ -7494,6 +7490,20 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 	}
 	s.notifyTasksFinished(tasks)
 	return retried
+}
+
+// resetIssueForFailedTask runs ResetIssueForFailedTask in its own transaction.
+func (s *TaskService) resetIssueForFailedTask(ctx context.Context, issue db.Issue, t db.AgentTaskQueue) (db.Issue, db.ActivityLog, error) {
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return db.Issue{}, db.ActivityLog{}, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	updated, activity, err := ResetIssueForFailedTask(ctx, s.Queries.WithTx(tx), issue, t)
+	if err != nil {
+		return db.Issue{}, db.ActivityLog{}, err
+	}
+	return updated, activity, tx.Commit(ctx)
 }
 
 const (
