@@ -1,0 +1,52 @@
+# ci-policy: class=gate
+# Required `pr-ready` check, verdict-change half (CHE-3440). Canonical copy: cheese-work/dotfiles-agents
+# .github/workflows/pr-ready-recheck.yml; tests live there (tests/test_che3440_pr_ready.py). A verdict comment fires
+# no pull_request event, so without this file a new, edited or deleted PASS would not change the check. When the
+# workspace bot comments on a PR, this job re-runs the latest completed pr-ready run of the PR's current head; that
+# run reads the live comments. A re-run, not a new check: an issue_comment run attaches to the default branch, so it
+# cannot satisfy a PR's required check.
+#
+# SECURITY: `issue_comment` runs THIS definition from the default branch and the job checks out the DEFAULT branch
+# only. The comment body is never interpolated or read here (only the author id gates the job); the script reads
+# PR state through the API. The one write scope is `actions: write`, needed to re-run a workflow; nothing else.
+
+name: pr-ready-recheck
+
+on:
+  issue_comment:
+    types: [created, edited, deleted]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+  actions: write
+
+concurrency:
+  group: pr-ready-recheck-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  recheck:
+    name: recheck
+    if: github.event.issue.pull_request && github.event.comment.user.id == 282619718
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99-gate"]') || fromJSON('["ubuntu-latest"]') }}
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EVENT: ${{ github.event_name }}
+      REPO: ${{ github.repository }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      PR_NUMBER: ${{ github.event.issue.number }}
+      COMMENT_USER_ID: ${{ github.event.comment.user.id }}
+    steps:
+      - name: Discard a reused workspace
+        run: |
+          find "$GITHUB_WORKSPACE" -mindepth 1 -delete
+      - name: Check out the protected default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Re-run pr-ready for the PR head
+        run: python3 .github/pr-ready/pr_ready.py
