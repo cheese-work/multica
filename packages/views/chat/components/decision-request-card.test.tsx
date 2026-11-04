@@ -6,6 +6,7 @@ import { ApiError } from "@multica/core/api";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderWithI18n } from "../../test/i18n";
+import { useDecisionAnswerDraftStore } from "@multica/core/issues/stores/decision-answer-draft-store";
 import type { DecisionRequestCard as RequestCard } from "@multica/core/types";
 import { DecisionRequestCard } from "./decision-request-card";
 import { ChatAnnotationContext } from "./chat-annotation-context";
@@ -258,6 +259,7 @@ describe("DecisionRequestCard answering", () => {
   const renderCard = (value: RequestCard = withOptions) =>
     renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={value} /></WorkspaceSlugProvider></QueryClientProvider>);
   beforeEach(() => {
+    useDecisionAnswerDraftStore.setState({ drafts: {} });
     answerDecisionRequest.mockReset().mockResolvedValue(undefined);
     uploadFile.mockReset();
     editor.hasActiveUploads = false;

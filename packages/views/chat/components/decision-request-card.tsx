@@ -4,6 +4,13 @@ import { Loader2, MessageSquareQuote } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
 import { ApiError } from "@multica/core/api";
 import { useAnswerDecisionRequest } from "@multica/core/issues/decision-answer";
+import {
+  type DecisionAnswerDraft as AnswerDraft,
+  EMPTY_DECISION_ANSWER_DRAFT as EMPTY_DRAFT,
+  decisionAnswerDraftKey,
+  useDecisionAnswerDraftStore,
+} from "@multica/core/issues/stores/decision-answer-draft-store";
+import { usePersistedDraft } from "@multica/core/drafts";
 import { chatKeys } from "@multica/core/chat/queries";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { formatShortcut, useShortcut } from "@multica/core/shortcuts";
@@ -21,23 +28,17 @@ import { AnnotatableAnswer } from "./annotatable-answer";
 import { DecisionArtifacts } from "./decision-artifacts";
 import { DECISION_REQUEST_SOURCE_PREFIX } from "./chat-annotation-context";
 
-interface AnswerDraft {
-  option: string;
-  text: string;
-}
-
 // Mirrors the server's `maxDecisionCardTextBytes`; it counts the trimmed text, image links included.
 const MAX_ANSWER_BYTES = 8 << 10;
 const answerBytes = (text: string) => new TextEncoder().encode(text.trim()).length;
 
 const isConflict = (error: unknown) => error instanceof ApiError && error.status === 409;
 
-const EMPTY_DRAFT: AnswerDraft = { option: "", text: "" };
 const hasDraft = (draft: AnswerDraft) => draft.option !== "" || draft.text.trim() !== "";
 
 type AnswerMutation = ReturnType<typeof useAnswerDecisionRequest>;
 
-// The parent owns the draft and the send, so a card that turns answered under
+// The parent owns the draft (persisted per request, so it outlives an unmount) and the send, so a card that turns answered under
 // the reader (another tab, the DM, our own realtime event arriving before the
 // HTTP 201) does not unmount the form and drop the draft or the send callbacks.
 function DecisionAnswerForm({
@@ -51,7 +52,7 @@ function DecisionAnswerForm({
   card: RequestCard;
   draft: AnswerDraft;
   answer: AnswerMutation;
-  onDraftChange: (draft: AnswerDraft) => void;
+  onDraftChange: (patch: Partial<AnswerDraft>) => void;
   onSend: (text: string) => void;
   inIssue: boolean;
 }) {
@@ -59,8 +60,8 @@ function DecisionAnswerForm({
   const online = useOnline();
   const sendShortcut = formatShortcut(useShortcut("send"));
   const { option, text } = draft;
-  const setOption = (next: string) => onDraftChange({ option: next, text });
-  const setText = (next: string) => onDraftChange({ option, text: next });
+  const setOption = (next: string) => onDraftChange({ option: next });
+  const setText = (next: string) => onDraftChange({ text: next });
   const group = useId();
   const textId = useId();
   const editorRef = useRef<ContentEditorRef>(null);
@@ -220,27 +221,28 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
   const date = new Date(timestamp);
   const validDate = !Number.isNaN(date.getTime());
   const issueHref = paths.issueDetail(card.issue_id);
-  const [draft, setDraft] = useState<AnswerDraft>(EMPTY_DRAFT);
+  const [draft, setDraft, clearDraft] = usePersistedDraft(useDecisionAnswerDraftStore, decisionAnswerDraftKey(card.id), EMPTY_DRAFT);
   const [refused, setRefused] = useState(false);
   // Remounting the form empties the editor after a send: the editor takes its draft once at mount.
   const [formKey, setFormKey] = useState(0);
   const answer = useAnswerDecisionRequest(card.issue_id);
   const sendAnswer = (text: string) => {
     // Keep what is sent as the draft, so a refused send shows back the same text.
-    setDraft((current) => ({ ...current, text }));
-    answer.mutate(
-      { requestId: card.id, option: draft.option || undefined, text: text.trim() || undefined },
-      {
-        onSuccess: () => {
-          setDraft(EMPTY_DRAFT);
-          setFormKey((key) => key + 1);
-        },
-        onError: (error) => isConflict(error) && setRefused(true),
-      },
-    );
+    setDraft({ text });
+    // mutateAsync, not mutate's callbacks: those are dropped when the card unmounts mid-send,
+    // which would leave a sent answer in the store.
+    answer
+      .mutateAsync({ requestId: card.id, option: draft.option || undefined, text: text.trim() || undefined })
+      .then(() => {
+        clearDraft();
+        setFormKey((key) => key + 1);
+      })
+      .catch((error: unknown) => {
+        if (isConflict(error)) setRefused(true);
+      });
   };
   const discardDraft = () => {
-    setDraft(EMPTY_DRAFT);
+    clearDraft();
     setRefused(false);
   };
 
