@@ -1054,6 +1054,8 @@ type DecisionRequest struct {
 	AskJson               []byte             `json:"ask_json"`
 	Authority             string             `json:"authority"`
 	ProjectID             pgtype.UUID        `json:"project_id"`
+	Kind                  string             `json:"kind"`
+	ExpiresAt             pgtype.Timestamptz `json:"expires_at"`
 }
 
 type DecisionWorkerLease struct {
@@ -1096,6 +1098,31 @@ type DingtalkGroupRoute struct {
 	Revision          int64              `json:"revision"`
 	DiscoveredAt      pgtype.Timestamptz `json:"discovered_at"`
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
+type DmProgressFollow struct {
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	IssueID            pgtype.UUID        `json:"issue_id"`
+	LineageID          pgtype.UUID        `json:"lineage_id"`
+	OwnerUserID        pgtype.UUID        `json:"owner_user_id"`
+	Source             string             `json:"source"`
+	State              string             `json:"state"`
+	MutedAt            pgtype.Timestamptz `json:"muted_at"`
+	LastRenderedStatus string             `json:"last_rendered_status"`
+	LastImmediateAt    pgtype.Timestamptz `json:"last_immediate_at"`
+	ParentFollowID     pgtype.UUID        `json:"parent_follow_id"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+}
+
+type DmProgressLane struct {
+	LineageID       pgtype.UUID        `json:"lineage_id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	OwnerUserID     pgtype.UUID        `json:"owner_user_id"`
+	LastCardAt      pgtype.Timestamptz `json:"last_card_at"`
+	NextSeq         int64              `json:"next_seq"`
+	SuspendedReason pgtype.Text        `json:"suspended_reason"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 }
 
 type ElevatedOp struct {
@@ -1161,6 +1188,15 @@ type GithubPendingInstallation struct {
 	AccountAvatarUrl pgtype.Text        `json:"account_avatar_url"`
 	ReceivedAt       pgtype.Timestamptz `json:"received_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+}
+
+type GithubPrClosedReplay struct {
+	InstallationID int64              `json:"installation_id"`
+	RepoOwner      string             `json:"repo_owner"`
+	RepoName       string             `json:"repo_name"`
+	PrNumber       int32              `json:"pr_number"`
+	RequestedAt    pgtype.Timestamptz `json:"requested_at"`
+	AttemptedAt    pgtype.Timestamptz `json:"attempted_at"`
 }
 
 type GithubPullRequest struct {
