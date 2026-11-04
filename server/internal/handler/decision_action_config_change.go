@@ -38,7 +38,11 @@ type configChange struct {
 	// digests of both, resolved inside the workspace. Called at request and
 	// again, under the lock, at approval and after Apply.
 	Read func(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, params json.RawMessage) (configChangeRead, error)
-	// Apply writes the change in the approval transaction.
+	// Apply writes the change in the approval transaction. It runs after the row
+	// lock, and the execution it gets carries no target snapshot (Agent and
+	// Workflow are zeroed): those were read before the lock and an ordinary edit
+	// may have changed other columns since. Apply must reload the target under
+	// the lock, or write only the columns it owns.
 	Apply func(ctx context.Context, execution decisionActionExecution, read configChangeRead) error
 	// Publish sends the realtime event after commit; it must be idempotent.
 	Publish func(ctx context.Context, handler *Handler, action db.DecisionAction) error
@@ -209,6 +213,7 @@ func executeConfigChange(ctx context.Context, change configChange, execution dec
 	if err := checkConfigChange(read, claim, configChangeWant{stored.Field, stored.TargetID, stored.BeforeSHA256}, http.StatusConflict); err != nil {
 		return nil, err
 	}
+	execution.Agent, execution.Workflow = db.Agent{}, db.IssueWorkflow{}
 	if err := change.Apply(ctx, execution, read); err != nil {
 		return nil, err
 	}

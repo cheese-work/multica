@@ -36,6 +36,9 @@ var (
 	// configBeforeApply runs inside the approval just before Apply writes, where
 	// a competing ordinary edit would land if the target row were not locked.
 	configBeforeApply atomic.Pointer[func()]
+	// configBeforeLock runs inside the approval after its first read of the
+	// target and before the row lock: the window an earlier snapshot goes stale in.
+	configBeforeLock atomic.Pointer[func()]
 )
 
 func registerConfigAction(test *testing.T) {
@@ -44,6 +47,7 @@ func registerConfigAction(test *testing.T) {
 	configAfterSuffix.Store("")
 	configPublished.Store(0)
 	configBeforeApply.Store(nil)
+	configBeforeLock.Store(nil)
 	decisionaction.Register(&decisionaction.Definition{
 		Type: configAction, Version: 1, MinClass: "spend", Target: decisionaction.TargetWorkflow, RequiresPreview: true,
 		Normalize: func(raw json.RawMessage, slots []decisionaction.SecretSlot) (json.RawMessage, []decisionaction.SecretSlot, error) {
@@ -52,6 +56,9 @@ func registerConfigAction(test *testing.T) {
 	})
 	registerConfigChange(configAction, configChange{
 		Lock: func(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, params json.RawMessage) error {
+			if hook := configBeforeLock.Load(); hook != nil {
+				(*hook)()
+			}
 			workflow, err := loadWorkflowTarget(ctx, queries, workspaceID, params, http.StatusConflict)
 			if err != nil {
 				return err
@@ -95,7 +102,11 @@ func registerConfigAction(test *testing.T) {
 			if err := json.Unmarshal(execution.Action.Params, &wanted); err != nil {
 				return err
 			}
-			live, err := issueworkflow.DecodeSteps(execution.Workflow.Steps)
+			workflow, err := loadWorkflowTarget(ctx, execution.Queries, execution.Action.WorkspaceID, execution.Action.Params, http.StatusConflict)
+			if err != nil {
+				return err
+			}
+			live, err := issueworkflow.DecodeSteps(workflow.Steps)
 			if err != nil {
 				return err
 			}
@@ -108,9 +119,9 @@ func registerConfigAction(test *testing.T) {
 				return err
 			}
 			_, err = execution.Queries.UpdateIssueWorkflow(ctx, db.UpdateIssueWorkflowParams{
-				Name: execution.Workflow.Name, Description: execution.Workflow.Description, InitialStatusKey: execution.Workflow.InitialStatusKey,
-				Steps: encoded, MaxRunsPerIssue: execution.Workflow.MaxRunsPerIssue, IncludeChildPrs: pgtype.Bool{Bool: execution.Workflow.IncludeChildPrs, Valid: true},
-				ID: execution.Workflow.ID, WorkspaceID: execution.Workflow.WorkspaceID,
+				Name: workflow.Name, Description: workflow.Description, InitialStatusKey: workflow.InitialStatusKey,
+				Steps: encoded, MaxRunsPerIssue: workflow.MaxRunsPerIssue, IncludeChildPrs: pgtype.Bool{Bool: workflow.IncludeChildPrs, Valid: true},
+				ID: workflow.ID, WorkspaceID: workflow.WorkspaceID,
 			})
 			return err
 		},
@@ -561,4 +572,23 @@ func TestConfigChangeRefusesWhileAnOrdinaryEditIsInFlight(test *testing.T) {
 	}
 	// The edit left the steps alone, so the approval now applies on the same base.
 	request.action.approve(test, withVerifier(acceptingVerifier), request.claim(test), http.StatusOK)
+}
+
+func TestConfigChangeKeepsAnEditCommittedBeforeTheLock(test *testing.T) {
+	request, _ := requestConfig(test, http.StatusCreated, nil)
+	var committed atomic.Bool
+	hook := func() { committed.Store(ordinaryEdit(test, request.workflowID)) }
+	configBeforeLock.Store(&hook)
+	request.approveOwner(test, withVerifier(acceptingVerifier), http.StatusOK)
+	if !committed.Load() {
+		test.Fatal("the ordinary edit before the lock did not commit")
+	}
+	var description string
+	dbfx.QueryRow(test, `SELECT description FROM issue_workflow WHERE id = $1`, request.workflowID).Scan(&description)
+	if description != "ordinary edit" {
+		test.Fatalf("approval overwrote an ordinary edit committed before the lock: description = %q", description)
+	}
+	if liveStepsDigest(test, request.workflowID) == request.base {
+		test.Fatal("approval did not apply")
+	}
 }
