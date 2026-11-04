@@ -307,3 +307,59 @@ var (
 	_ UpdateStore = (*InMemoryUpdateStore)(nil)
 	_ UpdateStore = (*RedisUpdateStore)(nil)
 )
+
+func TestRedisUpdateStore_SetProgressPersistsOnRunning(t *testing.T) {
+	rdb := newRedisTestClient(t)
+	ctx := context.Background()
+	store := NewRedisUpdateStore(rdb)
+
+	req, err := store.Create(ctx, "runtime-progress", "v1.2.3", "user-1")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := store.PopPending(ctx, "runtime-progress"); err != nil {
+		t.Fatalf("pop: %v", err)
+	}
+
+	want := UpdateProgress{Phase: "download", BytesDone: 512, BytesTotal: 2048}
+	if err := store.SetProgress(ctx, req.ID, want); err != nil {
+		t.Fatalf("set progress: %v", err)
+	}
+	got, err := store.Get(ctx, req.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Progress == nil || *got.Progress != want {
+		t.Fatalf("progress = %+v, want %+v", got.Progress, want)
+	}
+	if got.Status != UpdateRunning {
+		t.Fatalf("status = %s, want running", got.Status)
+	}
+}
+
+func TestRedisUpdateStore_SetProgressIgnoredOnTerminal(t *testing.T) {
+	rdb := newRedisTestClient(t)
+	ctx := context.Background()
+	store := NewRedisUpdateStore(rdb)
+
+	req, err := store.Create(ctx, "runtime-progress-term", "v1.2.3", "user-1")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := store.PopPending(ctx, "runtime-progress-term"); err != nil {
+		t.Fatalf("pop: %v", err)
+	}
+	if err := store.Complete(ctx, req.ID, "done"); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if err := store.SetProgress(ctx, req.ID, UpdateProgress{Phase: "download", BytesDone: 1, BytesTotal: 2}); err != nil {
+		t.Fatalf("set progress: %v", err)
+	}
+	got, err := store.Get(ctx, req.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Progress != nil {
+		t.Fatalf("terminal request stored late progress: %+v", got.Progress)
+	}
+}

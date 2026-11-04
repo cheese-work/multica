@@ -261,6 +261,19 @@ func (s *RedisUpdateStore) Fail(ctx context.Context, id string, errMsg string) e
 	return nil
 }
 
+func (s *RedisUpdateStore) SetProgress(ctx context.Context, id string, progress UpdateProgress) error {
+	req, err := s.loadRequest(ctx, id)
+	if err != nil {
+		return err
+	}
+	if req == nil || req.Status != UpdateRunning {
+		return nil
+	}
+	req.Progress = &progress
+	req.UpdatedAt = time.Now()
+	return s.persistRequest(ctx, req)
+}
+
 func (s *RedisUpdateStore) clearActiveIfMatches(ctx context.Context, runtimeID, id string) error {
 	if runtimeID == "" || id == "" {
 		return nil

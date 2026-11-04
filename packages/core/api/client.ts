@@ -492,6 +492,8 @@ import {
   EMPTY_LIST_GITHUB_REPOSITORIES_RESPONSE,
   RuntimeModelListRequestSchema,
   MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
+  RuntimeUpdateSchema,
+  MALFORMED_RUNTIME_UPDATE,
   SkillSchema,
   EMPTY_SKILL,
   AgentPresetListSchema,
@@ -2858,7 +2860,15 @@ export class ApiClient {
     runtimeId: string,
     updateId: string,
   ): Promise<RuntimeUpdate> {
-    return this.fetch(`/api/runtimes/${runtimeId}/update/${updateId}`);
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/update/${updateId}`,
+    );
+    return parseWithFallback<RuntimeUpdate>(
+      raw,
+      RuntimeUpdateSchema,
+      { ...MALFORMED_RUNTIME_UPDATE, id: updateId, runtime_id: runtimeId },
+      { endpoint: "GET /api/runtimes/{id}/update/{updateId}" },
+    );
   }
 
   // Both discovery endpoints feed a UI state machine (poll while
