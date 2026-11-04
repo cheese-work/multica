@@ -206,9 +206,9 @@ describe("decision card draft survives remount", () => {
     expect(note()).toHaveValue("last words");
   });
 
-  // An upload still in flight when the card unmounts is dropped (it may restart). Its late
-  // callback must never write: not over a later edit, not after send or discard, not across a
-  // logout or workspace change.
+  // An upload started in a card that unmounts before it settles still lands in the stored note,
+  // appended once, and never later than a send, Discard, logout or workspace change. The tests
+  // settle right after the unmount: no timer wait, so a microtask-late editor report is covered.
   const startUpload = async (id: string) => {
     let resolveUpload: (v: unknown) => void = () => { throw new Error("not started"); };
     api.uploadFile.mockReturnValue(new Promise((r) => { resolveUpload = r; }));
@@ -218,41 +218,50 @@ describe("decision card draft survives remount", () => {
     await vi.waitFor(() => expect(useDecisionAnswerDraftStore.getState().hasDraft(`decision:${id}`)).toBe(true), { timeout: 2000 });
     act(() => editorHandle.current?.uploadFile(new File(["x"], "shot.png", { type: "image/png" })));
     first.unmount();
-    // The card closes to the editor one timer tick after its unmount flush.
-    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
     return {
       user,
       settle: async () => {
-        resolveUpload({ id: "att", filename: "shot.png", url: "/api/attachments/att/download", download_url: "/api/attachments/att/download" });
+        resolveUpload({ id: "att", filename: "shot.png", content_type: "image/png", url: "/api/attachments/att/download", download_url: "/api/attachments/att/download" });
         await act(async () => { await uploads.settle?.(); });
       },
     };
   };
   const stored = (id: string) => useDecisionAnswerDraftStore.getState().getDraft(`decision:${id}`)?.text;
+  const occurrences = (text: string | undefined) => (text?.match(/shot\.png/g) ?? []).length;
 
-  it("a late upload leaves the stored note alone", async () => {
+  it("a late upload adds its attachment to the stored note, once", async () => {
     const { settle } = await startUpload("late-note");
     await settle();
-    expect(stored("late-note")).toBe("see");
+    expect(stored("late-note")).toMatch(/^see\n\n!\[shot\.png\]/);
+    expect(occurrences(stored("late-note"))).toBe(1);
   });
 
-  it("a late upload does not overwrite a note edited after the card was reopened", async () => {
+  it("a card reopened before the upload settles shows the attachment once it does", async () => {
+    const { settle } = await startUpload("late-reopen");
+    renderWithI18n(chat(card("late-reopen")));
+    expect(note()).toHaveValue("see");
+    await settle();
+    await vi.waitFor(() => expect((note() as HTMLTextAreaElement).value).toContain("shot.png"));
+    expect(occurrences(stored("late-reopen"))).toBe(1);
+  });
+
+  it("Send stays disabled in the reopened card while the upload is pending", async () => {
+    const { user, settle } = await startUpload("late-gate");
+    renderWithI18n(chat(card("late-gate")));
+    await user.click(screen.getByRole("radio", { name: /Option A/ }));
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    await settle();
+    await vi.waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeEnabled());
+  });
+
+  it("a late upload keeps a note edited after the card was reopened", async () => {
     const { user, settle } = await startUpload("late-edit");
     renderWithI18n(chat(card("late-edit")));
     await user.type(note(), " and more");
     await vi.waitFor(() => expect(stored("late-edit")).toBe("see and more"), { timeout: 2000 });
     await settle();
-    expect(stored("late-edit")).toBe("see and more");
-  });
-
-  it("a late upload does not bring the draft back after a successful send", async () => {
-    const { user, settle } = await startUpload("late-send");
-    renderWithI18n(chat(card("late-send")));
-    await user.click(screen.getByRole("radio", { name: /Option A/ }));
-    await user.click(screen.getByRole("button", { name: "Send" }));
-    await vi.waitFor(() => expect(useDecisionAnswerDraftStore.getState().hasDraft("decision:late-send")).toBe(false));
-    await settle();
-    expect(useDecisionAnswerDraftStore.getState().hasDraft("decision:late-send")).toBe(false);
+    expect(stored("late-edit")).toMatch(/^see and more\n\n!\[shot\.png\]/);
+    expect(occurrences(stored("late-edit"))).toBe(1);
   });
 
   it("a late upload does not bring the draft back after Discard", async () => {

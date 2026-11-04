@@ -20,3 +20,12 @@ export const useDecisionAnswerDraftStore = createKeyedDraftStore<DecisionAnswerD
   emptyData: EMPTY_DECISION_ANSWER_DRAFT,
   hasMeaningful: (d) => d.option !== "" || d.text.trim() !== "",
 });
+
+/** Adds an attachment link to the end of the stored note; a link already there stays single. */
+export function appendDecisionAttachment(requestId: string, markdown: string): void {
+  const key = decisionAnswerDraftKey(requestId);
+  const store = useDecisionAnswerDraftStore.getState();
+  const current = store.getDraft(key)?.text ?? "";
+  if (current.includes(markdown)) return;
+  store.setDraft(key, { text: `${current.trimEnd()}\n\n${markdown}`.trim() });
+}
