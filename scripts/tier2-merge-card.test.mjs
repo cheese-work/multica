@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { currentWindow, eligible, renderAsk } from './tier2-merge-card.mjs';
+import { currentWindow, eligible, mergeMethod, parseListed, planMerge, renderAsk } from './tier2-merge-card.mjs';
 
 const HEAD = 'a'.repeat(40);
 const pr = (over = {}) => ({
   number: 10, url: 'https://github.com/cheese-work/multica/pull/10', title: 'feat(x): y [squash]',
   headSha: HEAD, isDraft: false,
-  receipt: { tier: 2, head: HEAD, error: null, ci: { head_sha: HEAD, passed: true } },
+  receipt: { tier: 2, head: HEAD, error: null, classifier: { trusted: true }, ci: { head_sha: HEAD, passed: true } },
   securityGate: { sha: HEAD, state: 'success' },
   ...over,
 });
@@ -18,14 +18,14 @@ test('lists a ready Tier 2 PR with green checks and a PASS on its exact head', (
 test('drops a PR whose head moved after the receipt, checks or PASS', () => {
   const moved = 'b'.repeat(40);
   assert.deepEqual(eligible([pr({ headSha: moved })]), []);
-  assert.deepEqual(eligible([pr({ receipt: { tier: 2, head: HEAD, ci: { head_sha: moved, passed: true } } })]), []);
+  assert.deepEqual(eligible([pr({ receipt: { ...pr().receipt, ci: { head_sha: moved, passed: true } } })]), []);
   assert.deepEqual(eligible([pr({ securityGate: { sha: moved, state: 'success' } })]), []);
 });
 
 test('drops drafts, Tier 0/1, red or missing checks, and a missing or failed PASS', () => {
   assert.deepEqual(eligible([pr({ isDraft: true })]), []);
-  for (const tier of [0, 1]) assert.deepEqual(eligible([pr({ receipt: { tier, head: HEAD, ci: { head_sha: HEAD, passed: true } } })]), []);
-  assert.deepEqual(eligible([pr({ receipt: { tier: 2, head: HEAD, ci: { head_sha: HEAD, passed: false } } })]), []);
+  for (const tier of [0, 1]) assert.deepEqual(eligible([pr({ receipt: { ...pr().receipt, tier } })]), []);
+  assert.deepEqual(eligible([pr({ receipt: { ...pr().receipt, ci: { head_sha: HEAD, passed: false } } })]), []);
   assert.deepEqual(eligible([pr({ receipt: null })]), []);
   assert.deepEqual(eligible([pr({ securityGate: { sha: HEAD, state: 'pending' } })]), []);
   assert.deepEqual(eligible([pr({ securityGate: null })]), []);
@@ -51,4 +51,32 @@ test('picks the window nearest at or before now, in ICT', () => {
   assert.equal(at('2026-11-04T13:00:00Z'), '20:00');
   assert.equal(at('2026-11-04T02:00:00Z'), '07:30'); // 09:00 ICT, between windows: latest passed window
   assert.equal(at('2026-11-03T18:00:00Z'), '20:00'); // 01:00 ICT, overnight: last evening's window
+});
+
+test('rejects a receipt that failed to classify or came from an untrusted classifier', () => {
+  const r = pr().receipt;
+  assert.deepEqual(eligible([pr({ receipt: { ...r, error: 'RuntimeError: boom' } })]), []);
+  assert.deepEqual(eligible([pr({ receipt: { ...r, classifier: { trusted: false } } })]), []);
+  assert.deepEqual(eligible([pr({ receipt: { ...r, classifier: undefined } })]), []);
+});
+
+test('merge method follows the title tag; no tag is refused', () => {
+  assert.equal(mergeMethod('feat: x [squash]'), '--squash');
+  assert.equal(mergeMethod('feat: x [merge]'), '--merge');
+  assert.equal(mergeMethod('feat: x'), null);
+});
+
+test('parses the card command pairs and refuses a malformed one', () => {
+  assert.deepEqual(parseListed([`10:${HEAD}`]), [{ number: 10, headSha: HEAD }]);
+  assert.throws(() => parseListed(['10:abc']));
+  assert.throws(() => parseListed([]));
+});
+
+test('execution merges only PRs still eligible at the listed head; a moved head is skipped', () => {
+  const moved = 'b'.repeat(40);
+  const listed = [{ number: 10, headSha: HEAD }, { number: 11, headSha: HEAD }, { number: 12, headSha: HEAD }];
+  const now = eligible([pr(), pr({ number: 11, headSha: moved, receipt: { ...pr().receipt, head: moved, ci: { head_sha: moved, passed: true } }, securityGate: { sha: moved, state: 'success' } })]);
+  const plan = planMerge(listed, now);
+  assert.deepEqual(plan.merge.map((p) => p.number), [10]);
+  assert.deepEqual(plan.skipped.map((s) => s.number), [11, 12]); // 11 moved; 12 no longer eligible (merged, closed or red)
 });
