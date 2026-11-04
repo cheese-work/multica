@@ -116,6 +116,27 @@ describe("squad detail drafts survive unmount and remount", () => {
     expect(screen.getByLabelText("editor")).toHaveValue("AB");
   });
 
+  it("instructions reverted to the old saved text during a pending save stay unsent", async () => {
+    vi.useFakeTimers();
+    let resolveSave!: () => void;
+    const onSave = vi.fn(() => new Promise<void>((r) => (resolveSave = r)));
+    const first = renderWithI18n(<SquadInstructionsTab squad={squad} canManage onSave={onSave} />);
+    type("editor", "new");
+    await flushDebounce();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    type("editor", "saved");
+    await flushDebounce();
+    await act(async () => resolveSave());
+    // The server now holds "new"; the reversal back to "saved" was never sent.
+    const saved = { ...squad, instructions: "new" } as Squad;
+    first.rerender(<SquadInstructionsTab squad={saved} canManage onSave={onSave} />);
+    expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
+    first.unmount();
+
+    renderWithI18n(<SquadInstructionsTab squad={saved} canManage onSave={onSave} />);
+    expect(screen.getByLabelText("editor")).toHaveValue("saved");
+  });
+
   it("instructions tab keeps the draft when save fails and clears it on success", async () => {
     vi.useFakeTimers();
     const onSave = vi.fn().mockRejectedValueOnce(new Error("boom")).mockResolvedValueOnce(undefined);

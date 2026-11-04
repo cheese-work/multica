@@ -431,7 +431,7 @@ function InlineEditPopover({
 }) {
   const { t } = useT("squads");
   const [open, setOpen] = useState(false);
-  const { text: draft, setText: setDraft, discard, discardSent } = useSquadFieldDraft(draftKey, value);
+  const { text: draft, setText: setDraft, discard, commit: commitDraft } = useSquadFieldDraft(draftKey, value);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -451,8 +451,7 @@ function InlineEditPopover({
     }
     setSaving(true);
     try {
-      await onSave(draft);
-      discardSent(draft);
+      await commitDraft(draft, () => onSave(draft));
       setOpen(false);
       toast.success(t(($) => $.name_editor.saved));
     } catch (e) {
@@ -905,7 +904,7 @@ function SquadDescriptionEditorBody({
   onClose: () => void;
 }) {
   const { t } = useT("squads");
-  const { text: draft, setText: setDraft, discard, discardSent } = useSquadFieldDraft(draftKey, initialValue);
+  const { text: draft, setText: setDraft, discard, commit: commitDraft } = useSquadFieldDraft(draftKey, initialValue);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   const dirty = draft !== initialValue;
@@ -916,8 +915,7 @@ function SquadDescriptionEditorBody({
     savingRef.current = true;
     setSaving(true);
     try {
-      await onSave(draft);
-      discardSent(draft);
+      await commitDraft(draft, () => onSave(draft));
       onClose();
     } catch {
       // toast handled by parent's mutation
@@ -1353,7 +1351,7 @@ export function SquadInstructionsTab({
     text: value,
     hasDraft: isDirty,
     setText: setValue,
-    discardSent,
+    commit: commitDraft,
   } = useSquadFieldDraft(squadDraftKey(squad.id, "instructions"), squad.instructions ?? "");
   const [saving, setSaving] = useState(false);
 
@@ -1365,8 +1363,7 @@ export function SquadInstructionsTab({
   const handleSave = async () => {
     setSaving(true);
     try {
-      await onSave(value);
-      discardSent(value);
+      await commitDraft(value, () => onSave(value));
     } catch {
       // toast handled by parent
     } finally {
