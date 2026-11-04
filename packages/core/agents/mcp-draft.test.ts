@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { restoreMcpSecrets, stripMcpSecrets } from "./mcp-draft";
+import {
+  fillRedactedSecrets,
+  redactMcpJsonText,
+  restoreMcpSecrets,
+  stripMcpSecrets,
+} from "./mcp-draft";
 
 describe("stripMcpSecrets", () => {
   it("drops credential-named keys at any depth and keeps the rest", () => {
@@ -30,5 +35,53 @@ describe("restoreMcpSecrets", () => {
 
   it("restores nothing secret when there is no saved config", () => {
     expect(restoreMcpSecrets({}, { url: "https://b.test" })).toEqual({ url: "https://b.test" });
+  });
+});
+
+describe("stripMcpSecrets in arrays", () => {
+  it("drops credential keys inside array elements", () => {
+    expect(
+      stripMcpSecrets({ url: "https://example.test", options: [{ token: "secret", name: "a" }, [{ password: "p" }]] }),
+    ).toEqual({ url: "https://example.test", options: [{ name: "a" }, [{}]] });
+  });
+});
+
+describe("redactMcpJsonText", () => {
+  it("strips a parsable object without needing a url or command", () => {
+    expect(JSON.parse(redactMcpJsonText('{"name":"x","options":[{"token":"s"}]}'))).toEqual({
+      name: "x",
+      options: [{}],
+    });
+  });
+
+  it.each([
+    ['{"url": "https://a.test", "headers": {"Authorization": "Bearer s3cret"', "https://a.test"],
+    ['{"command": "npx", "env": {"API_KEY": "s3cret"}, "args": ["-y"', "npx"],
+    ['{"url": "https://a.test",\n  "token": "s3cr', "https://a.test"],
+    ['{"options": [{"api-token":\n"s3cret"}], "url": "https', "options"],
+  ])("keeps unfinished text but never the credential value: %s", (text, kept) => {
+    const out = redactMcpJsonText(text);
+    expect(out).not.toContain("s3cret");
+    expect(out).not.toContain("s3cr");
+    expect(out).toContain(kept);
+  });
+
+  it("does not treat a value that mentions a credential word as a key", () => {
+    expect(redactMcpJsonText('{"url": "https://a.test/token", "x"')).toContain("https://a.test/token");
+  });
+});
+
+describe("fillRedactedSecrets", () => {
+  it("swaps null placeholders for saved values and leaves typed ones", () => {
+    expect(
+      fillRedactedSecrets(
+        { headers: { A: "saved" }, mcp: { env: { K: "saved" } } },
+        { headers: null, mcp: { env: null, token: "typed" }, other: null },
+      ),
+    ).toEqual({ headers: { A: "saved" }, mcp: { env: { K: "saved" }, token: "typed" }, other: null });
+  });
+
+  it("drops a placeholder that has no saved value", () => {
+    expect(fillRedactedSecrets({}, { url: "u", headers: null })).toEqual({ url: "u" });
   });
 });

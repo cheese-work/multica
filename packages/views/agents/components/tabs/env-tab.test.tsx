@@ -2,6 +2,7 @@
 
 import { beforeEach, describe, expect, it, vi, afterEach } from "vitest";
 import { resetAllRegisteredDrafts } from "@multica/core/drafts";
+import { useAgentEnvDraftStore } from "@multica/core/agents";
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Agent } from "@multica/core/types";
@@ -438,7 +439,7 @@ describe("EnvTab values that bulk text cannot represent", () => {
     await user.type(screen.getByPlaceholderText("value"), "s3cret-value");
     first.unmount();
 
-    expect(JSON.stringify({ ...localStorage })).not.toContain("s3cret-value");
+    expect(JSON.stringify(useAgentEnvDraftStore.getState())).not.toContain("s3cret-value");
 
     renderTab();
     await user.click(screen.getByRole("button", { name: /reveal & edit/i }));

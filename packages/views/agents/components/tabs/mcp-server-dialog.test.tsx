@@ -3,6 +3,7 @@
 import type { ComponentProps, ReactNode } from "react";
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { resetAllRegisteredDrafts } from "@multica/core/drafts";
+import { useMcpDialogDraftStore } from "@multica/core/agents";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { I18nProvider } from "@multica/core/i18n/react";
@@ -301,7 +302,7 @@ describe("McpServerDialog", () => {
       },
     });
 
-    expect(JSON.stringify({ ...localStorage })).not.toContain("s3cret-token");
+    expect(JSON.stringify(useMcpDialogDraftStore.getState())).not.toContain("s3cret-token");
     view.rerender(<McpServerDialog open={false} {...props} />);
     view.rerender(<McpServerDialog open {...props} />);
 
@@ -334,5 +335,70 @@ describe("McpServerDialog", () => {
     expect(
       JSON.parse((screen.getByLabelText("MCP server JSON configuration") as HTMLTextAreaElement).value),
     ).toEqual({ type: "sse", url: "https://b.test", headers: { Authorization: "saved" } });
+  });
+
+  describe("JSON drafts that are not a finished server yet", () => {
+    const setup = async (server: ReturnType<typeof managedServer> | null, draftKey: string) => {
+      const props = {
+        server,
+        existingNames: new Set<string>(server ? [server.name] : []),
+        onSave: vi.fn().mockResolvedValue(undefined),
+        onOpenChange: vi.fn(),
+        draftKey,
+      };
+      const view = render(<McpServerDialog open {...props} />, { wrapper: Wrapper });
+      if (!server) await userEvent.setup().click(screen.getByRole("tab", { name: "JSON" }));
+      const type = (value: string) =>
+        fireEvent.change(screen.getByLabelText("MCP server JSON configuration"), { target: { value } });
+      const reopen = () => {
+        view.rerender(<McpServerDialog open={false} {...props} />);
+        view.rerender(<McpServerDialog open {...props} />);
+        return (screen.getByLabelText("MCP server JSON configuration") as HTMLTextAreaElement).value;
+      };
+      return { type, reopen, props };
+    };
+
+    it("never stores a credential nested in an array", async () => {
+      const { type } = await setup(null, "agent-1:arr");
+      type('{"url":"https://example.test","options":[{"token":"s3cret-nested"}]}');
+      expect(JSON.stringify(useMcpDialogDraftStore.getState())).not.toContain("s3cret-nested");
+    });
+
+    it("keeps valid JSON that has no url or command yet", async () => {
+      const { type, reopen } = await setup(null, "agent-1:notarget");
+      type('{"type":"sse","note":"half done"}');
+      expect(JSON.parse(reopen())).toEqual({ type: "sse", note: "half done" });
+    });
+
+    it("keeps unfinished JSON text without its credential values", async () => {
+      const { type, reopen } = await setup(null, "agent-1:partial");
+      type('{"url": "https://example.test", "headers": {"Authorization": "Bearer s3cret-partial"');
+      expect(JSON.stringify(useMcpDialogDraftStore.getState())).not.toContain("s3cret-partial");
+      const restored = reopen();
+      expect(restored).toContain("https://example.test");
+      expect(restored).not.toContain("s3cret-partial");
+    });
+
+    it("keeps the saved credentials when an unfinished draft of an edited server is completed", async () => {
+      const server = managedServer({
+        name: "remote",
+        config: { type: "sse", url: "https://a.test", headers: { Authorization: "saved" } },
+        transport: "sse",
+      });
+      const { type, reopen, props } = await setup(server, "agent-1:remote-partial");
+      type('{"type": "sse", "url": "https://b.test", "headers": {"Authorization": "typed-s3cret"');
+      const restored = reopen();
+      expect(restored).not.toContain("typed-s3cret");
+      fireEvent.change(screen.getByLabelText("MCP server JSON configuration"), {
+        target: { value: restored.replace(/"headers": null/, '"headers": null') + "}" },
+      });
+      await userEvent.setup().click(screen.getByRole("button", { name: /save/i }));
+      await vi.waitFor(() => expect(props.onSave).toHaveBeenCalled());
+      expect(props.onSave).toHaveBeenCalledWith("remote", {
+        type: "sse",
+        url: "https://b.test",
+        headers: { Authorization: "saved" },
+      });
+    });
   });
 });

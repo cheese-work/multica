@@ -8,6 +8,8 @@ import {
   useState,
 } from "react";
 import {
+  fillRedactedSecrets,
+  redactMcpJsonText,
   restoreMcpSecrets,
   stripMcpSecrets,
   useMcpDialogDraftStore,
@@ -180,6 +182,15 @@ function configFromForm(form: McpFormState): Record<string, unknown> {
   return config;
 }
 
+function parseJsonObject(text: string): Record<string, unknown> | null {
+  try {
+    const value = JSON.parse(text);
+    return isRecord(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 function parseServerJson(text: string):
   | { ok: true; value: Record<string, unknown> }
   | { ok: false; error: string } {
@@ -304,7 +315,7 @@ export function McpServerDialog({
       draftKey === undefined
         ? undefined
         : useMcpDialogDraftStore.getState().getDraft(draftKey);
-    const savedJson = saved?.json ? parseServerJson(saved.json) : null;
+    const savedJson = saved?.json ? parseJsonObject(saved.json) : null;
     const seeded: McpFormState = {
       ...base.form,
       transport: saved?.transport ?? base.form.transport,
@@ -316,14 +327,17 @@ export function McpServerDialog({
     setName(saved?.name ?? base.name);
     setForm(seeded);
     // Credential keys never reach storage; they come back from the saved config.
+    // Text that did not parse yet comes back as saved, credentials marked `null`.
     setJsonText(
-      JSON.stringify(
-        savedJson?.ok ? restoreMcpSecrets(base.config, savedJson.value) : base.config,
-        null,
-        2,
-      ),
+      saved?.json && !savedJson
+        ? saved.json
+        : JSON.stringify(
+            savedJson ? restoreMcpSecrets(base.config, savedJson) : base.config,
+            null,
+            2,
+          ),
     );
-    setMode(savedJson?.ok || (server && !formSupportsServer(server)) ? "json" : "form");
+    setMode(saved?.json || (server && !formSupportsServer(server)) ? "json" : "form");
     setSaveAttempted(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, replacementMode, server]);
@@ -344,16 +358,15 @@ export function McpServerDialog({
         JSON.stringify(value) === JSON.stringify(base[field as keyof typeof base]) ? null : value,
       ]),
     );
-    // JSON text is kept only once it parses, so credential keys can be stripped.
-    // While it does not, the last parsable copy stays.
+    // JSON text is kept as typed, finished or not, with credential values withheld.
     if (mode !== "json") patch.json = null;
-    else if (jsonResult.ok) {
-      const stripped = JSON.stringify(stripMcpSecrets(jsonResult.value), null, 2);
+    else {
+      const redacted = redactMcpJsonText(jsonText);
       const baseline = JSON.stringify(stripMcpSecrets(seed.config), null, 2);
-      patch.json = stripped === baseline ? null : stripped;
+      patch.json = redacted.trim() === "" || redacted === baseline ? null : redacted;
     }
     useMcpDialogDraftStore.getState().setDraft(draftKey, patch);
-  }, [open, draftKey, name, form, mode, jsonResult, server, replacementMode]);
+  }, [open, draftKey, name, form, mode, jsonText, server, replacementMode]);
 
   // The form is unavailable — not merely unselected — for entries it cannot
   // represent, so switching to it cannot rewrite them either.
@@ -422,7 +435,11 @@ export function McpServerDialog({
     if (next === "json" && mode === "form") {
       setJsonText(JSON.stringify(configFromForm(form), null, 2));
     } else if (next === "form" && mode === "json" && jsonResult.ok) {
-      setForm(formFromConfig(jsonResult.value));
+      setForm(
+        formFromConfig(
+          replacementMode ? jsonResult.value : fillRedactedSecrets(server?.config ?? {}, jsonResult.value),
+        ),
+      );
     }
     setSaveAttempted(false);
     setMode(next);
@@ -443,8 +460,12 @@ export function McpServerDialog({
     }
     let config: Record<string, unknown>;
     if (mode === "form") config = configFromForm(form);
-    else if (jsonResult.ok) config = jsonResult.value;
-    else return;
+    else if (jsonResult.ok) {
+      // A restored draft marks withheld credentials as null; the saved ones go back in.
+      config = replacementMode
+        ? jsonResult.value
+        : fillRedactedSecrets(server?.config ?? {}, jsonResult.value);
+    } else return;
     setSaving(true);
     try {
       await onSave(submittedName, config);
