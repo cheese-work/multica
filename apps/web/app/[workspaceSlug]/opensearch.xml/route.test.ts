@@ -92,6 +92,16 @@ describe("workspace OpenSearch description", () => {
     );
   });
 
+  it("keeps HTTPS for an alternate host when the proxy hop reports http", async () => {
+    vi.stubEnv("MULTICA_APP_URL", "https://congvc-c00.taila6fa8a.ts.net:19443");
+    const response = await GET(new Request("http://0.0.0.0:3000/acme/opensearch.xml", {
+      headers: { host: "alias.example.test", "x-forwarded-proto": "http" },
+    }), { params: Promise.resolve({ workspaceSlug: "acme" }) });
+    const text = await response.text();
+    expect(text).toContain('template="https://alias.example.test/acme/search?q={searchTerms}"');
+    expect(text).not.toContain("http://alias.example.test");
+  });
+
   it("reflects an unconfigured request host only in its own uncached response", async () => {
     const response = await GET(new Request("http://0.0.0.0:3000/acme/opensearch.xml", {
       headers: { host: "attacker.test:8443", "x-forwarded-proto": "https" },

@@ -16,8 +16,10 @@ export async function GET(
   let origin: string;
   try {
     const configured = process.env.MULTICA_APP_URL?.trim();
-    const visitor = new URL(`${protocol}://${host}`);
-    const publicUrl = new URL(configured || visitor);
+    const publicUrl = new URL(configured || `${protocol}://${host}`);
+    // An https configured origin means the instance is served over TLS; the
+    // proxy hop's X-Forwarded-Proto: http must not downgrade alternate hosts.
+    const visitor = new URL(`${publicUrl.protocol === "https:" ? "https" : protocol}://${host}`);
     if (!/^https?:$/.test(publicUrl.protocol) || publicUrl.username || publicUrl.password
       || publicUrl.pathname !== "/" || publicUrl.search || publicUrl.hash) {
       return new Response("Invalid origin", { status: 400 });
