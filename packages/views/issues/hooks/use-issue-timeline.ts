@@ -155,13 +155,24 @@ export function useIssueTimeline(issueId: string, userId?: string) {
       (payload: unknown) => {
         const { comment } = payload as CommentCreatedPayload;
         if (comment.issue_id !== issueId) return;
-        void qc.cancelQueries({ queryKey: issueKeys.timeline(issueId) });
-        qc.setQueryData<TLCache>(issueKeys.timeline(issueId), (old) => {
-          const entry = commentToTimelineEntry(comment);
-          if (!old) return [entry];
-          if (old.some((e) => e.id === comment.id)) return old;
-          return sortTimelineEntriesAsc([...old, entry]);
-        });
+        const queryKey = issueKeys.timeline(issueId);
+        const recoveringFetch = qc.getQueryState?.(queryKey)?.fetchStatus === "fetching";
+        const writeComment = (): void => {
+          qc.setQueryData<TLCache>(queryKey, (old) => {
+            const entry = commentToTimelineEntry(comment);
+            if (!old) return [entry];
+            if (old.some((e) => e.id === comment.id)) return old;
+            return sortTimelineEntriesAsc([...old, entry]);
+          });
+          if (recoveringFetch) {
+            void qc.invalidateQueries({ queryKey, refetchType: "active" });
+          }
+        };
+        if (recoveringFetch) {
+          void qc.cancelQueries({ queryKey }).then(writeComment);
+        } else {
+          writeComment();
+        }
       },
       [qc, issueId],
     ),

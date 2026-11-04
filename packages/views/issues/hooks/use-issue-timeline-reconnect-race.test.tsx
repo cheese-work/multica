@@ -51,14 +51,15 @@ describe("useIssueTimeline reconnect race", () => {
     setApiInstance(undefined as unknown as ApiClient);
   });
 
-  it("keeps a comment event when the older reconnect timeline response resolves", async () => {
+  it("keeps reconnect-missed entries when a comment arrives during the reconnect fetch", async () => {
     const oldEntry = { type: "activity", id: "activity-old" };
     const newEntry = { type: "comment", id: "comment-new" };
+    const missedEntry = { type: "comment", id: "comment-missed" };
     let resolveReconnect!: (entries: unknown[]) => void;
     const listTimeline = vi.fn()
       .mockResolvedValueOnce([oldEntry])
       .mockImplementationOnce(() => new Promise((resolve) => { resolveReconnect = resolve; }))
-      .mockResolvedValue([oldEntry, newEntry]);
+      .mockResolvedValue([oldEntry, missedEntry, newEntry]);
     setApiInstance({ listTimeline } as unknown as ApiClient);
 
     const { unmount } = renderHook(() => useIssueTimeline("issue-race"), {
@@ -86,14 +87,55 @@ describe("useIssueTimeline reconnect race", () => {
         },
       });
     });
-    await act(async () => {
-      resolveReconnect([oldEntry]);
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    await act(async () => { resolveReconnect([oldEntry, missedEntry]); });
+    await waitFor(() => expect(qc.getQueryState(queryKey)?.fetchStatus).toBe("idle"));
 
-    expect(listTimeline).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(listTimeline).toHaveBeenCalledTimes(3));
     expect((qc.getQueryData<{ id: string }[]>(queryKey) ?? []).map((entry) => entry.id))
-      .toEqual([oldEntry.id, newEntry.id]);
+      .toEqual([oldEntry.id, missedEntry.id, newEntry.id]);
+    unmount();
+  });
+
+  it("keeps the full first timeline response when a comment arrives during initial load", async () => {
+    const activity = { type: "activity", id: "activity-first" };
+    const persistedComment = { type: "comment", id: "comment-persisted" };
+    let resolveInitial!: (entries: unknown[]) => void;
+    const listTimeline = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveInitial = resolve; }))
+      .mockResolvedValue([activity, persistedComment, {
+        type: "comment",
+        id: "comment-new",
+      }]);
+    setApiInstance({ listTimeline } as unknown as ApiClient);
+
+    const { unmount } = renderHook(() => useIssueTimeline("issue-first-load"), {
+      wrapper: createWrapper(qc),
+    });
+    const queryKey = issueKeys.timeline("issue-first-load");
+    await waitFor(() => expect(listTimeline).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      realtime.events.get("comment:created")?.({
+        comment: {
+          id: "comment-new",
+          issue_id: "issue-first-load",
+          author_type: "member",
+          author_id: "user-1",
+          content: "new comment",
+          parent_id: null,
+          created_at: "2026-11-04T00:01:00Z",
+          updated_at: "2026-11-04T00:01:00Z",
+          type: "comment",
+          reactions: [],
+          attachments: [],
+        },
+      });
+    });
+    await act(async () => { resolveInitial([activity, persistedComment]); });
+    await waitFor(() => expect(qc.getQueryState(queryKey)?.fetchStatus).toBe("idle"));
+
+    expect((qc.getQueryData<{ id: string }[]>(queryKey) ?? []).map((entry) => entry.id))
+      .toEqual([activity.id, persistedComment.id, "comment-new"]);
     unmount();
   });
 });
