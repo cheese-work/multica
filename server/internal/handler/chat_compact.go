@@ -48,6 +48,13 @@ func (h *Handler) CompactChatSession(w http.ResponseWriter, r *http.Request) {
 	if !h.authorizeChatTask(r.Context(), w, h.Queries, chatOpCompact, task, session, workspaceID) {
 		return
 	}
+	h.compactChatSessionInPlace(w, r, task, session, workspaceID)
+}
+
+// compactChatSessionInPlace is the one in-place finish shared by `chat compact`
+// and a compaction task's `chat continue` without --fork. The caller has already
+// authorized the task; the helper authorizes it again on the locked task.
+func (h *Handler) compactChatSessionInPlace(w http.ResponseWriter, r *http.Request, task db.AgentTaskQueue, session db.ChatSession, workspaceID string) {
 	var request struct {
 		Summary string `json:"summary"`
 	}

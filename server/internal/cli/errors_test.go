@@ -734,7 +734,7 @@ func TestChatTaskAuthorityRefusalReachesUser(t *testing.T) {
 		{"chat_task_session_mismatch", "This task does not belong to this chat session."},
 		{"chat_task_agent_mismatch", "This task's agent does not own this chat session."},
 		{"compaction_agent_not_current", "This agent is no longer the workspace's compaction agent."},
-		{"compaction_continue_refused", "A compaction task finishes in place with `multica chat compact`; it cannot continue or fork the DM."},
+		{"compaction_continue_refused", "A compaction task finishes in place with `multica chat compact` or `multica chat continue` without --fork; it cannot fork or archive the DM."},
 	} {
 		t.Run(tc.code, func(t *testing.T) {
 			body, _ := json.Marshal(map[string]string{"error": tc.msg, "code": tc.code})

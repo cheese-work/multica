@@ -79,7 +79,7 @@ func resolveChatTaskAuthority(in chatTaskAuthorityInput) *chatTaskRefusal {
 	}
 	if compaction {
 		if in.Op == chatOpContinue {
-			return refuseChatTask(codeCompactionContinueRefused, "A compaction task finishes in place with `multica chat compact`; it cannot continue or fork the DM.")
+			return refuseChatTask(codeCompactionContinueRefused, "A compaction task finishes in place with `multica chat compact` or `multica chat continue` without --fork; it cannot fork or archive the DM.")
 		}
 		// SEC-1 rule 2: equality with the DM agent gives no access.
 		if !in.CompactAgentUsable || in.CompactAgentID == "" || uuidToString(task.AgentID) != in.CompactAgentID {

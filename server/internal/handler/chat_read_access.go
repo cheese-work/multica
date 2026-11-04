@@ -32,11 +32,12 @@ func (handler *Handler) callingChatSession(writer http.ResponseWriter, request *
 		writeError(writer, http.StatusForbidden, "chat task does not belong to this session and workspace")
 		return db.ChatSession{}, false
 	}
-	if !handler.authorizeChatTask(request.Context(), writer, handler.Queries, chatOpRead, task, session, ctxWorkspaceID(request.Context())) {
-		return db.ChatSession{}, false
-	}
+	// The target check comes first so a refused target never logs a grant.
 	if target := chi.URLParam(request, "sessionId"); target != "" && target != uuidToString(session.ID) {
 		writeError(writer, http.StatusForbidden, "chat task cannot access another session")
+		return db.ChatSession{}, false
+	}
+	if !handler.authorizeChatTask(request.Context(), writer, handler.Queries, chatOpRead, task, session, ctxWorkspaceID(request.Context())) {
 		return db.ChatSession{}, false
 	}
 	return session, true

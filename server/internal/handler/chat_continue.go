@@ -57,6 +57,14 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "task does not belong to this chat session")
 			return
 		}
+		// A compaction task finishes in place; the archive below is for an
+		// ordinary task, and resolveChatTaskAuthority refuses compaction there.
+		if task.Purpose.Valid && task.Purpose.String == taskPurposeCompaction {
+			if h.authorizeChatTask(r.Context(), w, h.Queries, chatOpCompact, task, session, workspaceID) {
+				h.compactChatSessionInPlace(w, r, task, session, workspaceID)
+			}
+			return
+		}
 		if !h.authorizeChatTask(r.Context(), w, h.Queries, chatOpContinue, task, session, workspaceID) {
 			return
 		}

@@ -68,7 +68,7 @@ func TestResolveChatTaskAuthority(t *testing.T) {
 		{"compaction by DM agent, setting cleared", chatOpCompact, compaction(dmAgent, "running"), "", true, workspace, codeCompactionAgentNotCurrent},
 		{"compaction by DM agent, setting moved", chatOpRead, compaction(dmAgent, "running"), compactID, true, workspace, codeCompactionAgentNotCurrent},
 		{"compaction by DM agent, setting is DM agent", chatOpCompact, compaction(dmAgent, "running"), "00000000-0000-0000-0000-0000000000a1", true, workspace, ""},
-		// Continue archives or forks the DM; a compaction finishes in place only.
+		// Fork and the archive branch refuse compaction; it finishes in place only.
 		{"compaction continue", chatOpContinue, compaction(compactAgent, "running"), compactID, true, workspace, codeCompactionContinueRefused},
 		{"compaction continue by DM agent", chatOpContinue, compaction(dmAgent, "running"), "", true, workspace, codeCompactionContinueRefused},
 	}
@@ -236,22 +236,52 @@ func TestChatTaskAuthorityArchivedCompactionAgentRefused(t *testing.T) {
 	requireStatus(t, a.compact(task), http.StatusForbidden, codeCompactionAgentNotCurrent)
 }
 
-func TestChatTaskAuthorityContinueRefusesCompactionEverywhere(t *testing.T) {
+func TestChatTaskAuthorityCompactionContinueFinishesInPlace(t *testing.T) {
 	a := newAuthorityFixture(t)
 	task := a.task(a.compactAgent, "running", taskPurposeCompaction)
-	requireStatus(t, a.continueDM(task), http.StatusForbidden, codeCompactionContinueRefused)
+	requireStatus(t, a.continueDM(task), http.StatusOK, "")
 
+	var status string
+	var summaries, continued int
+	dbfx.QueryRow(t, `SELECT status FROM chat_session WHERE id = $1`, a.session).Scan(&status)
+	dbfx.QueryRow(t, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1 AND task_id = $2 AND message_kind = 'compaction_summary'`, a.session, task).Scan(&summaries)
+	dbfx.QueryRow(t, `SELECT count(*) FROM chat_session WHERE continued_from_session_id = $1`, a.session).Scan(&continued)
+	if status != "active" || summaries != 1 || continued != 0 {
+		t.Fatalf("status = %q, summaries = %d, continued DMs = %d; want active DM, one in-place summary, no new DM", status, summaries, continued)
+	}
+}
+
+func TestChatTaskAuthorityForkRefusesCompaction(t *testing.T) {
+	a := newAuthorityFixture(t)
+	task := a.task(a.compactAgent, "running", taskPurposeCompaction)
 	forkReq := newRequest(http.MethodPost, "/api/chat/fork", map[string]any{})
 	forkReq.Header.Set("X-Actor-Source", "task_token")
 	forkReq.Header.Set("X-Task-ID", task)
 	rec := httptest.NewRecorder()
 	testHandler.ForkChatSession(rec, withChatTestWorkspaceCtx(t, forkReq))
 	requireStatus(t, rec, http.StatusForbidden, codeCompactionContinueRefused)
+}
 
-	// Same refusal when the compaction agent is also the DM agent.
-	a.seed(a.dmAgent)
+func TestChatTaskAuthorityCompactionByDMAgentCannotContinue(t *testing.T) {
+	a := newAuthorityFixture(t)
 	own := a.task(a.dmAgent, "running", taskPurposeCompaction)
-	requireStatus(t, a.continueDM(own), http.StatusForbidden, codeCompactionContinueRefused)
+	requireStatus(t, a.continueDM(own), http.StatusForbidden, codeCompactionAgentNotCurrent)
+}
+
+// A read aimed at another session is refused without a grant record: the grant
+// log means the task was allowed to act.
+func TestChatTaskAuthorityOtherSessionTargetLogsNoGrant(t *testing.T) {
+	a := newAuthorityFixture(t)
+	logs := captureLogs(t)
+	task := a.task(a.compactAgent, "running", taskPurposeCompaction)
+	otherSession := dbfx.ChatSession(t, a.dmAgent)
+	req := withURLParam(withChatTestWorkspaceCtx(t, taskActorReq("/api/chat/sessions/"+otherSession+"/messages", task)), "sessionId", otherSession)
+	rec := httptest.NewRecorder()
+	testHandler.ListChatMessages(rec, req)
+	requireStatus(t, rec, http.StatusForbidden, "")
+	if got := logs.records(t, chatTaskAuthorityEvent); len(got) != 0 {
+		t.Fatalf("authority log records = %v, want none for a refused target", got)
+	}
 }
 
 func TestChatTaskAuthorityOrdinaryDMTaskKeepsAccess(t *testing.T) {
