@@ -3,12 +3,14 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -26,14 +28,27 @@ func registerGovernedTargetActions(test *testing.T) {
 	}
 	decisionaction.Register(&decisionaction.Definition{Type: squadNoopAction, Version: 1, MinClass: "spend", Target: decisionaction.TargetSquad, OwnerOnly: true, Normalize: normalize})
 	decisionaction.Register(&decisionaction.Definition{Type: workspaceNoopAction, Version: 1, MinClass: "spend", Target: decisionaction.TargetWorkspace, OwnerOnly: true, Normalize: normalize})
-	noop := func(context.Context, decisionActionExecution) (json.RawMessage, error) {
-		return json.RawMessage(`{"ok":true}`), nil
-	}
-	decisionActionExecutors[squadNoopAction], decisionActionExecutors[workspaceNoopAction] = noop, noop
+	decisionActionExecutors[squadNoopAction] = noopAssertingTarget("squad_id", func(execution decisionActionExecution) pgtype.UUID { return execution.Squad.ID })
+	decisionActionExecutors[workspaceNoopAction] = noopAssertingTarget("workspace_id", func(execution decisionActionExecution) pgtype.UUID { return execution.Workspace.ID })
 	test.Cleanup(func() {
 		delete(decisionActionExecutors, squadNoopAction)
 		delete(decisionActionExecutors, workspaceNoopAction)
 	})
+}
+
+// noopAssertingTarget fails the execution unless the executor was handed the
+// locked target row the action's params name.
+func noopAssertingTarget(paramKey string, loaded func(decisionActionExecution) pgtype.UUID) decisionActionExecutor {
+	return func(_ context.Context, execution decisionActionExecution) (json.RawMessage, error) {
+		var params map[string]string
+		if err := json.Unmarshal(execution.Action.Params, &params); err != nil {
+			return nil, err
+		}
+		if got := util.UUIDToString(loaded(execution)); got != params[paramKey] {
+			return nil, fmt.Errorf("executor received target %q; want %s %q", got, paramKey, params[paramKey])
+		}
+		return json.RawMessage(`{"ok":true}`), nil
+	}
 }
 
 // foreignWorkspaceID creates a second workspace the test fixtures do not belong to.
