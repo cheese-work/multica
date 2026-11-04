@@ -29,35 +29,41 @@ ON CONFLICT (lineage_id) DO NOTHING;
 SELECT * FROM dm_progress_lane WHERE lineage_id = $1 FOR UPDATE;
 
 -- name: InsertDMProgressFollow :one
--- No row comes back when an active follow already exists. An unfollowed one is
--- reactivated with the new source, mute and baseline status; its reporting root
--- is immutable and stays.
-INSERT INTO dm_progress_follow (workspace_id, issue_id, lineage_id, owner_user_id, source, muted_at, last_rendered_status, parent_follow_id, reporting_root_id)
-VALUES ($1, $2, $3, $4, $5, sqlc.narg('muted_at'), $6, sqlc.narg('parent_follow_id'), $7)
+-- Adds reasons to the follow of (issue, lineage). An active follow gains the
+-- reasons and keeps its mute. An unfollowed row is a negative override: only an
+-- explicit follow (origin or manual) reactivates it, with exactly the new
+-- reasons, mute and baseline status; an inherited one returns no row. The
+-- reporting root is set at creation and never changes (a trigger enforces it).
+INSERT INTO dm_progress_follow (workspace_id, issue_id, lineage_id, owner_user_id, reasons, muted_at, last_rendered_status, reporting_root_id)
+VALUES ($1, $2, $3, $4, sqlc.arg('reasons')::text[], sqlc.narg('muted_at'), $5, sqlc.arg('reporting_root_id'))
 ON CONFLICT (issue_id, lineage_id) DO UPDATE
-SET state = 'active', source = EXCLUDED.source, muted_at = EXCLUDED.muted_at,
-    last_rendered_status = EXCLUDED.last_rendered_status, parent_follow_id = EXCLUDED.parent_follow_id
-WHERE dm_progress_follow.state = 'unfollowed'
+SET reasons = CASE
+        WHEN dm_progress_follow.state = 'unfollowed' THEN EXCLUDED.reasons
+        ELSE (SELECT COALESCE(array_agg(DISTINCT r ORDER BY r), '{}') FROM unnest(dm_progress_follow.reasons || EXCLUDED.reasons) AS r)
+    END,
+    muted_at = CASE WHEN dm_progress_follow.state = 'unfollowed' THEN EXCLUDED.muted_at ELSE dm_progress_follow.muted_at END,
+    last_rendered_status = CASE WHEN dm_progress_follow.state = 'unfollowed' THEN EXCLUDED.last_rendered_status ELSE dm_progress_follow.last_rendered_status END,
+    state = 'active'
+WHERE dm_progress_follow.state = 'active' OR sqlc.arg('explicit')::boolean
 RETURNING *;
 
--- name: ResolveDMProgressReportingRoot :one
--- Stored reporting root of a parent follow, provided its parent chain ends. The
--- chain walk is iterative with no depth limit; the CYCLE clause stops it at a
--- repeated follow, so a corrupt chain terminates. A looping chain never reaches
--- a parentless follow: no row comes back for it. The root is read from the
--- parent, not from the chain's current top, so a reparent never splits a rollup.
+-- name: IssueParentChainLoops :one
+-- Whether the parent chain above an issue loops. The walk is iterative with no
+-- depth limit; the CYCLE clause stops it at a repeated issue, so a corrupt chain
+-- terminates. A looping chain never reaches an issue without a parent.
 WITH RECURSIVE walk AS (
-    SELECT f.id, f.parent_follow_id FROM dm_progress_follow f WHERE f.id = $1
+    SELECT i.id, i.parent_issue_id FROM issue i WHERE i.id = $1
     UNION ALL
-    SELECT f.id, f.parent_follow_id
-    FROM walk w JOIN dm_progress_follow f ON f.id = w.parent_follow_id
+    SELECT i.id, i.parent_issue_id
+    FROM walk w JOIN issue i ON i.id = w.parent_issue_id
 ) CYCLE id SET is_cycle USING path
-SELECT p.reporting_root_id FROM dm_progress_follow p
-WHERE p.id = $1 AND EXISTS (SELECT 1 FROM walk WHERE walk.parent_follow_id IS NULL);
+SELECT NOT EXISTS (SELECT 1 FROM walk WHERE walk.parent_issue_id IS NULL)::boolean AS loops;
 
 -- name: InsertDMProgressDataIncident :exec
+-- One incident per follow and kind, however often the child event repeats.
 INSERT INTO dm_progress_data_incident (workspace_id, issue_id, follow_id, kind)
-VALUES ($1, $2, $3, $4);
+SELECT $1, $2, $3, $4
+WHERE NOT EXISTS (SELECT 1 FROM dm_progress_data_incident WHERE follow_id = $3 AND kind = $4);
 
 -- name: CountDMProgressDescendants :one
 -- Tracked descendants of a reporting root in one lane. (issue_id, lineage_id) is
@@ -94,9 +100,21 @@ WHERE issue_id = $1 AND lineage_id = $2 AND state = 'active'
 RETURNING *;
 
 -- name: UnfollowDMProgressFollow :one
+-- Scope "issue": drops every reason of this issue's follow. The empty row stays
+-- as the negative override.
 UPDATE dm_progress_follow
-SET state = 'unfollowed'
+SET state = 'unfollowed', reasons = '{}'
 WHERE issue_id = $1 AND lineage_id = $2 AND state = 'active'
+RETURNING *;
+
+-- name: DropInheritedDMProgressReason :many
+-- Scope "root": removes the reason 'inherited:<root>' from every follow of the
+-- lane. A follow left with no reason is unfollowed; one with another reason
+-- (a manual follow, another root) stays active.
+UPDATE dm_progress_follow
+SET reasons = array_remove(reasons, sqlc.arg('reason')::text),
+    state = CASE WHEN cardinality(array_remove(reasons, sqlc.arg('reason')::text)) = 0 THEN 'unfollowed' ELSE state END
+WHERE lineage_id = $1 AND state = 'active' AND sqlc.arg('reason')::text = ANY(reasons)
 RETURNING *;
 
 -- name: DeleteDMProgressForIssue :exec

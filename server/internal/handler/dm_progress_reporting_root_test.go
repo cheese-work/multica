@@ -18,11 +18,11 @@ func reportingRoot(t *testing.T, issueID string) string {
 	return root
 }
 
-var childSeq atomic.Int64
+var numberedChildSeq atomic.Int64
 
-func childOf(t *testing.T, parent string) string {
+func numberedChild(t *testing.T, parent string) string {
 	t.Helper()
-	return createDMIssue(t, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{"title": fmt.Sprintf("child %d", childSeq.Add(1)), "parent_issue_id": parent}))
+	return createDMIssue(t, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{"title": fmt.Sprintf("child %d", numberedChildSeq.Add(1)), "parent_issue_id": parent}))
 }
 
 func TestDMProgress_ReportingRootIsTheTopRootAtAnyDepth(t *testing.T) {
@@ -34,7 +34,7 @@ func TestDMProgress_ReportingRootIsTheTopRootAtAnyDepth(t *testing.T) {
 	}
 	leaf := root
 	for level := 1; level <= 4; level++ {
-		leaf = childOf(t, leaf)
+		leaf = numberedChild(t, leaf)
 	}
 	if got := reportingRoot(t, leaf); got != root {
 		t.Fatalf("level-4 descendant reports to %s, want top root %s", got, root)
@@ -45,12 +45,12 @@ func TestDMProgress_ParentCycleBecomesStandaloneRootAndRaisesIncident(t *testing
 	w := newDMWorld(t)
 	dm := w.dm(t, testUserID)
 	a := w.agentIssue(t, w.task(t, dm, testUserID), nil)
-	b := childOf(t, a)
-	c := childOf(t, b)
-	// Corrupt the chain: a's follow now points at b's follow (a -> b -> a).
-	dbfx.Exec(t, `UPDATE dm_progress_follow SET parent_follow_id = (SELECT id FROM dm_progress_follow WHERE issue_id = $2) WHERE issue_id = $1`, a, b)
+	b := numberedChild(t, a)
+	c := numberedChild(t, b)
+	// Corrupt the chain: a's parent is now c (a -> c -> b -> a).
+	dbfx.Exec(t, `UPDATE issue SET parent_issue_id = $2 WHERE id = $1`, a, c)
 
-	d := childOf(t, c) // must terminate
+	d := numberedChild(t, c) // must terminate
 	if got := reportingRoot(t, d); got != d {
 		t.Fatalf("cycle node reports to %s, want standalone root %s", got, d)
 	}
@@ -74,7 +74,7 @@ func TestDMProgress_DescendantCountIsCompleteAcrossPages(t *testing.T) {
 	want := map[string]bool{}
 	parent := root
 	for i := 0; i < 150; i++ {
-		id := childOf(t, parent)
+		id := numberedChild(t, parent)
 		want[id] = true
 		if i%3 == 0 { // mix wide and deep
 			parent = id
@@ -120,15 +120,15 @@ func TestDMProgress_DescendantCountIsCompleteAcrossPages(t *testing.T) {
 	}
 }
 
-func TestDMProgress_ChildOfReparentedFollowKeepsTheStoredRoot(t *testing.T) {
+func TestDMProgress_ChildOfReparentedIssueKeepsTheStoredRoot(t *testing.T) {
 	w := newDMWorld(t)
 	root := w.agentIssue(t, w.task(t, w.dm(t, testUserID), testUserID), nil)
-	mid := childOf(t, root)
-	// mid is detached from its parent follow; its stored root must not change.
-	dbfx.Exec(t, `UPDATE dm_progress_follow SET parent_follow_id = NULL WHERE issue_id = $1`, mid)
+	mid := numberedChild(t, root)
+	// mid is detached from its parent issue; its stored root must not change.
+	dbfx.Exec(t, `UPDATE issue SET parent_issue_id = NULL WHERE id = $1`, mid)
 
-	leaf := childOf(t, mid)
+	leaf := numberedChild(t, mid)
 	if got := reportingRoot(t, leaf); got != root {
-		t.Fatalf("child of a detached follow reports to %s, want the stored root %s", got, root)
+		t.Fatalf("child of a detached issue reports to %s, want the stored root %s", got, root)
 	}
 }

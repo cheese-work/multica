@@ -2,9 +2,7 @@
 -- reporting root (the origin or manual follow's issue), at any depth.
 ALTER TABLE dm_progress_follow ADD COLUMN reporting_root_id UUID;
 
--- Backfill: walk parent_follow_id to the top. A walk that loops (CYCLE) never
--- reaches a parentless follow, so the follow reports to itself and raises a
--- parent_cycle incident.
+-- L0 data incidents: a follow whose issue parent chain loops.
 CREATE TABLE dm_progress_data_incident (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     workspace_id UUID NOT NULL,
@@ -14,28 +12,17 @@ CREATE TABLE dm_progress_data_incident (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- One incident per follow whose walk never reaches a parentless top.
-INSERT INTO dm_progress_data_incident (workspace_id, issue_id, follow_id, kind)
-WITH RECURSIVE walk AS (
-    SELECT id AS start_id, id, issue_id, parent_follow_id FROM dm_progress_follow
-    UNION ALL
-    SELECT w.start_id, f.id, f.issue_id, f.parent_follow_id
-    FROM walk w JOIN dm_progress_follow f ON f.id = w.parent_follow_id
-) CYCLE id SET is_cycle USING path
-SELECT f.workspace_id, f.issue_id, f.id, 'parent_cycle'
-FROM dm_progress_follow f
-WHERE NOT EXISTS (SELECT 1 FROM walk w WHERE w.start_id = f.id AND NOT w.is_cycle AND w.parent_follow_id IS NULL);
-
-WITH RECURSIVE walk AS (
-    SELECT id AS start_id, id, issue_id, parent_follow_id FROM dm_progress_follow
-    UNION ALL
-    SELECT w.start_id, f.id, f.issue_id, f.parent_follow_id
-    FROM walk w JOIN dm_progress_follow f ON f.id = w.parent_follow_id
-) CYCLE id SET is_cycle USING path
+-- Backfill: a follow with an independent reason (origin, manual) reports to
+-- itself. An inherited-only follow reports to the root its reason names; with
+-- several roots the smallest id wins, so the choice is deterministic.
 UPDATE dm_progress_follow f
 SET reporting_root_id = COALESCE(
-    (SELECT w.issue_id FROM walk w WHERE w.start_id = f.id AND NOT w.is_cycle AND w.parent_follow_id IS NULL),
+    (SELECT min(substr(r, length('inherited:') + 1))::uuid FROM unnest(f.reasons) AS r WHERE r LIKE 'inherited:%'),
     f.issue_id);
+
+UPDATE dm_progress_follow f
+SET reporting_root_id = f.issue_id
+WHERE EXISTS (SELECT 1 FROM unnest(f.reasons) AS r WHERE r NOT LIKE 'inherited:%');
 
 ALTER TABLE dm_progress_follow ALTER COLUMN reporting_root_id SET NOT NULL;
 
