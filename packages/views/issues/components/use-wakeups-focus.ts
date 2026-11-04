@@ -10,10 +10,13 @@ import { useOptionalNavigation } from "../../navigation";
  * refresh does not replay it. A second click must land again, and so must one
  * aimed at a different resource on the same route.
  *
+ * While `enabled` is false the param stays in the URL: a page that is still
+ * loading has no section to reveal yet, and consuming the link then loses it.
+ *
  * Navigation is read optionally: the sections that host this are leaves that
  * tests mount in isolation, and without an adapter there is nothing to focus.
  */
-export function useWakeupsFocus(resourceId: string, onFocus: () => void) {
+export function useWakeupsFocus(resourceId: string, onFocus: () => void, enabled = true) {
   const navigation = useOptionalNavigation();
   const handledForRef = useRef<string | null>(null);
   // The latest callback, so the effect below does not re-run on every render of an unstable one.
@@ -21,7 +24,7 @@ export function useWakeupsFocus(resourceId: string, onFocus: () => void) {
   onFocusRef.current = onFocus;
 
   useEffect(() => {
-    if (!navigation) return;
+    if (!navigation || !enabled) return;
     if (navigation.searchParams.get("focus") !== FOCUS_WAKEUPS) {
       // Ordinary visit, or the `replace` below has landed: re-arm.
       handledForRef.current = null;
@@ -37,5 +40,5 @@ export function useWakeupsFocus(resourceId: string, onFocus: () => void) {
     params.delete("focus");
     const query = params.toString();
     navigation.replace(query ? `${navigation.pathname}?${query}` : navigation.pathname);
-  }, [resourceId, navigation]);
+  }, [resourceId, navigation, enabled]);
 }

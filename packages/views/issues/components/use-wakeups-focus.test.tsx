@@ -6,8 +6,8 @@ import { NavigationProvider } from "../../navigation";
 import type { NavigationAdapter } from "../../navigation";
 import { useWakeupsFocus } from "./use-wakeups-focus";
 
-function Harness({ resourceId, onFocus }: { resourceId: string; onFocus: () => void }) {
-  useWakeupsFocus(resourceId, onFocus);
+function Harness({ resourceId, onFocus, enabled = true }: { resourceId: string; onFocus: () => void; enabled?: boolean }) {
+  useWakeupsFocus(resourceId, onFocus, enabled);
   return null;
 }
 
@@ -25,16 +25,21 @@ describe("useWakeupsFocus", () => {
     getShareableUrl: (path: string) => `https://app.test${path}`,
   });
 
-  function setup(search: string) {
+  function setup(search: string, enabled = true) {
     const replace = vi.fn();
     const onFocus = vi.fn();
-    const tree = (value: NavigationAdapter, id: string) => (
+    const tree = (value: NavigationAdapter, id: string, on = enabled) => (
       <NavigationProvider value={value}>
-        <Harness resourceId={id} onFocus={onFocus} />
+        <Harness resourceId={id} onFocus={onFocus} enabled={on} />
       </NavigationProvider>
     );
     const view = render(tree(adapter(search, replace), "p1"));
-    return { replace, onFocus, settle: (next: string, id = "p1") => view.rerender(tree(adapter(next, replace), id)) };
+    return {
+      replace,
+      onFocus,
+      settle: (next: string, id = "p1") => view.rerender(tree(adapter(next, replace), id)),
+      enable: (next: string) => view.rerender(tree(adapter(next, replace), "p1", true)),
+    };
   }
 
   it("reveals the rules once and drops the focus param, keeping the others", () => {
@@ -62,6 +67,15 @@ describe("useWakeupsFocus", () => {
     const { onFocus, settle } = setup("focus=wakeups");
     settle("focus=wakeups", "p2");
     expect(onFocus).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the param while disabled and consumes it once enabled", () => {
+    const { replace, onFocus, enable } = setup("focus=wakeups", false);
+    expect(onFocus).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
+    enable("focus=wakeups");
+    expect(onFocus).toHaveBeenCalledTimes(1);
+    expect(replace).toHaveBeenCalledWith("/acme/projects/p1");
   });
 
   it("is inert without a navigation adapter", () => {

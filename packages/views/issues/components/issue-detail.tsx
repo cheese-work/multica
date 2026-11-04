@@ -3439,8 +3439,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     });
   }, [handleToggleSidebar, id, sidebarOpen]);
 
-  // `?focus=wakeups` lands on the same section as the header chip.
-  useWakeupsFocus(id, openWakeups);
+  // `?focus=wakeups` lands on the same section as the header chip, once the
+  // issue has loaded and the section exists.
+  useWakeupsFocus(id, openWakeups, !loading && !!issue);
 
   useRightSidebarShortcut(rightSidebarShortcutTargetRef, handleToggleSidebar);
 
