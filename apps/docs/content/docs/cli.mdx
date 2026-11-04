@@ -224,8 +224,11 @@ multica issue follow MUL-123 --chat <chat-session-id>
 multica issue mute-follow MUL-123 --chat <chat-session-id>
 multica issue unmute-follow MUL-123 --chat <chat-session-id>
 multica issue unfollow MUL-123 --chat <chat-session-id>
+multica issue unfollow MUL-123 --chat <chat-session-id> --scope root
 multica issue follows --chat <chat-session-id>
 ```
+
+`unfollow` ends this issue's follow. With `--scope root` it also ends the follows its child issues inherited from it; a child with its own manual follow stays followed. A child you unfollowed is not followed again when a later child is created.
 
 ## Agents and skills
 
