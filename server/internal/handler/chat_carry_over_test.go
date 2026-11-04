@@ -137,6 +137,28 @@ func TestCarryOver_QueuedQuestionIsDeliveredOnce(t *testing.T) {
 	}
 }
 
+// The fallback stops at the previous divider: after two compacts with no answer
+// between them, nothing from before the first divider is carried.
+func TestCarryOver_FallbackStopsAtThePreviousDivider(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	for name, seg1 := range map[string][]string{
+		"no answer in the previous segment": {"user", "SEG1-USER"},
+		"answer in the previous segment":    {"assistant", "SEG1-ANSWER"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dm := newCarryOverDM(t)
+			dm.compact(t, "SUMMARY-ONE")
+			dbfx.Exec(t, `INSERT INTO chat_message (chat_session_id, role, content, created_at) VALUES ($1, $2, $3, clock_timestamp())`, dm.sessionID, seg1[0], seg1[1])
+			dm.compact(t, "SUMMARY-TWO")
+			got := dm.claim(t, "NEXT-QUESTION")
+			wantIn(t, got.ChatMessage, "SUMMARY-TWO", seg1[1], "NEXT-QUESTION")
+			wantNotIn(t, got.ChatMessage, "SUMMARY-ONE", "OLD-ANSWER-LAST", "OLD-USER-AFTER-ANSWER", "OLD-QUESTION")
+		})
+	}
+}
+
 // A second queued question is not part of this claim at all.
 func TestCarryOver_LaterQueuedQuestionStaysOut(t *testing.T) {
 	if testHandler == nil || testPool == nil {

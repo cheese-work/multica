@@ -44,7 +44,7 @@ func (h *Handler) carryOverBlock(ctx context.Context, session db.ChatSession, in
 	label := "Messages since the summary"
 	messages := current
 	if !hasAssistantMessage(current) {
-		tail, err := h.Queries.ListChatSegmentTail(ctx, db.ListChatSegmentTailParams(params))
+		tail, err := h.Queries.ListChatSegmentTail(ctx, db.ListChatSegmentTailParams{ChatSessionID: params.ChatSessionID, ExcludedIds: params.ExcludedIds, RowLimit: params.RowLimit})
 		if err != nil {
 			return "", fmt.Errorf("read segment tail: %w", err)
 		}

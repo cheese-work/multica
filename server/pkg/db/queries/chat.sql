@@ -93,24 +93,35 @@ LIMIT sqlc.arg('row_limit');
 
 -- name: ListChatSegmentTail :many
 -- Carry-over fallback when the current segment holds no assistant message yet:
--- the last assistant message before the floor and the messages after it, newest
--- first. Same exclusions as ListChatCarryOverMessages.
-WITH last_answer AS (
+-- the last assistant message of the previous segment and the messages after it,
+-- newest first. Nothing at or before the previous divider is returned. Same
+-- exclusions as ListChatCarryOverMessages.
+WITH prev_divider AS (
     SELECT m.created_at, m.id FROM chat_message m
     JOIN chat_session cs ON cs.id = m.chat_session_id
     WHERE m.chat_session_id = sqlc.arg('chat_session_id')
-      AND m.role = 'assistant' AND m.message_kind = 'message'
+      AND m.message_kind = 'compaction_summary'
       AND (m.created_at, m.id) < (cs.segment_floor_at, cs.segment_floor_id)
     ORDER BY m.created_at DESC, m.id DESC
     LIMIT 1
+), prev_segment AS (
+    SELECT m.id, m.role, m.created_at FROM chat_message m
+    JOIN chat_session cs ON cs.id = m.chat_session_id
+    LEFT JOIN prev_divider pd ON true
+    WHERE m.chat_session_id = sqlc.arg('chat_session_id')
+      AND m.message_kind = 'message'
+      AND (m.created_at, m.id) < (cs.segment_floor_at, cs.segment_floor_id)
+      AND (pd.id IS NULL OR (m.created_at, m.id) > (pd.created_at, pd.id))
+), last_answer AS (
+    SELECT created_at, id FROM prev_segment
+    WHERE role = 'assistant'
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
 )
 SELECT m.* FROM chat_message m
-JOIN chat_session cs ON cs.id = m.chat_session_id
+JOIN prev_segment ps ON ps.id = m.id
 LEFT JOIN last_answer la ON true
-WHERE m.chat_session_id = sqlc.arg('chat_session_id')
-  AND m.message_kind = 'message'
-  AND (m.created_at, m.id) < (cs.segment_floor_at, cs.segment_floor_id)
-  AND (la.id IS NULL OR (m.created_at, m.id) >= (la.created_at, la.id))
+WHERE (la.id IS NULL OR (m.created_at, m.id) >= (la.created_at, la.id))
   AND NOT (m.id = ANY(sqlc.arg('excluded_ids')::uuid[]))
   AND NOT (m.role = 'user' AND EXISTS (
       SELECT 1 FROM agent_task_queue t WHERE t.id = m.task_id AND t.status = 'queued'))
