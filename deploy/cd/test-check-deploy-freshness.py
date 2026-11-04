@@ -29,7 +29,8 @@ def qual(conclusion, attempt=1, run_id=10, created="2026-11-05T10:00:00Z"):
 
 
 def deploy(conclusion, sha=SHA):
-    return {"id": 20, "head_sha": sha, "conclusion": conclusion, "status": "completed"}
+    # workflow_run deploys carry main's tip in head_sha; the qualified SHA is only in the run name (CHE-3634 review)
+    return {"id": 20, "head_sha": SHA, "display_title": f"CD deploy to C00 · {sha}", "conclusion": conclusion, "status": "completed"}
 
 
 class DecideTest(unittest.TestCase):
@@ -57,7 +58,7 @@ class DecideTest(unittest.TestCase):
         self.assertFalse(fresh.decide(SHA, head_at(600), NOW, [qual("success")], [deploy("success")])["alert"])
 
     def test_skipped_failed_or_other_sha_deploy_is_not_deployed(self):
-        for runs in ([deploy("skipped")], [deploy("failure")], [deploy("success", sha="0" * 40)]):
+        for runs in ([deploy("skipped")], [deploy("failure")], [deploy("success", sha="0" * 40)], [deploy("success", sha="07ce9f73b918f20d829c906fcb37db56e213e129")]):
             self.assertTrue(fresh.decide(SHA, head_at(600), NOW, [qual("success")], runs)["alert"], runs)
 
     def test_no_qualification_run_at_all_alerts_after_90_minutes(self):
@@ -119,6 +120,7 @@ class MainTest(unittest.TestCase):
             if "workflows/cd-qualification.yml/runs" in path:
                 return json.dumps({"workflow_runs": qual_runs})
             if "workflows/cd-deploy.yml/runs" in path:
+                self.assertIn("status=success", path)
                 return json.dumps({"workflow_runs": deploy_runs})
             if path.endswith("/jobs?per_page=100"):
                 return json.dumps({"jobs": jobs})

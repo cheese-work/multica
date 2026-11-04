@@ -4,7 +4,8 @@
 Two rules for the current main head:
 1. Newest `CD qualification build` run failed on its first attempt -> `gh run rerun --failed`, once per
    run ID (run_attempt > 1 means it was already rerun).
-2. Head merged >= 90 min ago and no successful `CD deploy to C00` run for it -> ::error:: with the run
+2. Head merged >= 90 min ago and no successful `CD deploy to C00` run named for it (manual dispatches
+   named by ref, not SHA, do not count) -> ::error:: with the run
    URL and the first error line.
 GitHub rate limits (403/429) wait for the reset time (capped) and retry instead of failing the alarm.
 """
@@ -50,7 +51,9 @@ def parse(ts):
 def decide(sha, head_time, now, qual_runs, deploy_runs):
     newest = max(qual_runs, key=lambda r: r["created_at"], default=None)
     rerun = newest["id"] if newest and newest["conclusion"] == "failure" and newest["run_attempt"] == 1 else None
-    deployed = any(r["head_sha"] == sha and r["conclusion"] == "success" for r in deploy_runs)
+    # A workflow_run deploy's head_sha is main's tip at trigger time, not the SHA it deployed. The qualified
+    # SHA is only in the run name: "CD deploy to C00 · <sha>". Match that and a success conclusion.
+    deployed = any(r["conclusion"] == "success" and r.get("display_title", "").endswith(f" {sha}") for r in deploy_runs)
     return {"rerun": rerun, "alert": not deployed and now - head_time >= DEPLOY_DEADLINE,
             "deployed": deployed, "run": newest}
 
@@ -72,8 +75,8 @@ def main():
     repo = os.environ["GITHUB_REPOSITORY"]
     commit = json.loads(gh_api("api", f"repos/{repo}/commits/main"))
     sha, head_time, now = commit["sha"], parse(commit["commit"]["committer"]["date"]), utcnow()
-    runs = lambda wf: json.loads(gh_api("api", f"repos/{repo}/actions/workflows/{wf}/runs?head_sha={sha}&per_page=100"))["workflow_runs"]
-    d = decide(sha, head_time, now, runs("cd-qualification.yml"), runs("cd-deploy.yml"))
+    runs = lambda wf, query: json.loads(gh_api("api", f"repos/{repo}/actions/workflows/{wf}/runs?{query}&per_page=100"))["workflow_runs"]
+    d = decide(sha, head_time, now, runs("cd-qualification.yml", f"head_sha={sha}"), runs("cd-deploy.yml", "status=success"))
     if d["rerun"]:
         gh_api("run", "rerun", str(d["rerun"]), "--failed", "-R", repo)
         print(f"Reran failed jobs of qualification run {d['rerun']} (once per run ID).")
