@@ -607,6 +607,7 @@ func (h *Handler) GitHubSetupCallback(w http.ResponseWriter, r *http.Request) {
 		AccountType:      verified.Account.Type,
 		AccountAvatarUrl: avatar,
 		ConnectedByID:    connectedBy,
+		AccountID:        githubAccountIDParam(verified.Account.ID),
 	})
 	if err != nil {
 		slog.Error("github: failed to persist installation", "err", err, "installation_id", installationID)
@@ -1568,6 +1569,7 @@ type ghInstallationPayload struct {
 	Installation struct {
 		ID      int64 `json:"id"`
 		Account struct {
+			ID        int64  `json:"id"`
 			Login     string `json:"login"`
 			Type      string `json:"type"`
 			AvatarURL string `json:"avatar_url"`
@@ -1650,6 +1652,7 @@ func (h *Handler) handleInstallationEvent(ctx context.Context, body []byte) {
 			AccountLogin:     login,
 			AccountType:      accountType,
 			AccountAvatarUrl: ptrToText(avatar),
+			AccountID:        githubAccountIDParam(p.Installation.Account.ID),
 		})
 		if err != nil {
 			slog.Warn("github: refresh installation failed", "err", err)
