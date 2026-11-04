@@ -596,6 +596,8 @@ async function resolveCliBinary(): Promise<string | null> {
         serverUrl: prereqs.serverUrl,
         token: prereqs.token,
         onProgress: (progress) => {
+          // A retry after cli_not_found reaches here still in that state.
+          currentState = "installing_cli";
           cliDownload = progress;
           sendStatus({ state: "installing_cli", cliDownload });
         },
