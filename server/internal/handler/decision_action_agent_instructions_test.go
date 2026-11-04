@@ -1,10 +1,13 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -20,6 +23,9 @@ const governedAgentText = "<!-- governed:agent -->role: author<!-- /governed:age
 // fixture agent, whose live instructions are governedAgentText.
 type agentInstructionRequest struct {
 	action pendingAction
+	// target is the agent whose instructions the action changes; it is not the
+	// asking agent when a second request is filed on the same target.
+	target string
 	before string
 	after  string
 }
@@ -46,13 +52,29 @@ func requestAgentInstructions(test *testing.T, status int, edit func(params map[
 		return agentInstructionRequest{before: governedAgentText, after: after}, body
 	}
 	dbfx.Cleanup(test, `DELETE FROM decision_answer WHERE decision_request_id = $1`, created.ID)
-	return agentInstructionRequest{pendingAction{fixture, created.ID, created.Action.ID}, governedAgentText, after}, body
+	return agentInstructionRequest{pendingAction{fixture, created.ID, created.Action.ID}, fixture.agentID, governedAgentText, after}, body
+}
+
+// requestAgentInstructionsOn files a second request against target, built on
+// the same base digest as the first.
+func requestAgentInstructionsOn(test *testing.T, target, role string) agentInstructionRequest {
+	test.Helper()
+	fixture := newActionFixture(test)
+	after := strings.Replace(governedAgentText, "role: author", "role: "+role, 1)
+	params := map[string]any{
+		"agent_id": target, "instructions": after,
+		"base_sha256": decisionaction.TextDigest(governedAgentText), "after_sha256": decisionaction.TextDigest(after),
+	}
+	var created actionResponse
+	fixture.respond(test, fixture.withAction(map[string]any{"type": "agent.instructions.set", "version": 1, "params": params}), http.StatusCreated, &created)
+	dbfx.Cleanup(test, `DELETE FROM decision_answer WHERE decision_request_id = $1`, created.ID)
+	return agentInstructionRequest{pendingAction{fixture, created.ID, created.Action.ID}, target, governedAgentText, after}
 }
 
 func (request agentInstructionRequest) live(test *testing.T) string {
 	test.Helper()
 	var text string
-	dbfx.QueryRow(test, `SELECT instructions FROM agent WHERE id = $1`, request.action.agentID).Scan(&text)
+	dbfx.QueryRow(test, `SELECT instructions FROM agent WHERE id = $1`, request.target).Scan(&text)
 	return text
 }
 
@@ -197,9 +219,17 @@ func foreignWorkspaceAgent(test *testing.T) string {
 
 func TestAgentInstructionsSetApproveAppliesAuditsAndPublishes(test *testing.T) {
 	request, _ := requestAgentInstructions(test, http.StatusCreated, nil)
-	_, keyID := request.action.enrollPasskey(test)
-	verify := func(context.Context, *db.Queries, ApprovalClaim) (pgtype.UUID, error) { return parseUUID(keyID), nil }
-	request.approveOwner(test, withVerifier(verify), http.StatusOK)
+	device, keyID := request.action.enrollPasskey(test)
+	makeApproverOwner(test, request.action, "owner")
+	handler := passkeyHandler(test)
+	claim := request.claim(test)
+	claim["assertion"] = request.action.assertion(test, device, request.action.issue(test, handler), passkeyStart+1)
+	request.action.approve(test, handler, claim, http.StatusOK)
+	var used string
+	dbfx.QueryRow(test, `SELECT webauthn_credential_id::text FROM decision_action WHERE id = $1`, request.action.actionID).Scan(&used)
+	if used != keyID {
+		test.Fatalf("recorded credential %s, want %s", used, keyID)
+	}
 
 	if got := request.live(test); got != request.after {
 		test.Fatalf("instructions %q, want %q", got, request.after)
@@ -337,4 +367,83 @@ func TestAgentInstructionsSetBusyTargetAnswersBusyRetry(test *testing.T) {
 		mustContain(test, request.approveOwner(test, withVerifier(acceptingVerifier), http.StatusConflict), "busy_retry")
 		request.assertNotApplied(test, request.before)
 	})
+}
+
+// A second request on the same target and base digest, approved after the
+// first one applied, is refused as drift and changes nothing.
+func TestAgentInstructionsSetSecondApprovalOnTheSameBaseIsDrift(test *testing.T) {
+	first, _ := requestAgentInstructions(test, http.StatusCreated, nil)
+	second := requestAgentInstructionsOn(test, first.target, "planner")
+	handler := withVerifier(acceptingVerifier)
+	first.approveOwner(test, handler, http.StatusOK)
+	mustContain(test, second.approveOwner(test, handler, http.StatusConflict), "precondition_drift")
+	second.action.assertUntouched(test)
+	if got := first.live(test); got != first.after {
+		test.Fatalf("instructions %q after the losing approval, want the winner's %q", got, first.after)
+	}
+	if n := second.action.activityCount(test, "config_change_applied"); n != 0 {
+		test.Fatalf("losing action wrote %d config_change_applied rows, want 0", n)
+	}
+}
+
+// Two approvals racing on one target apply exactly once. The loser either read
+// the winner's committed value (precondition_drift) or hit the NOWAIT row lock
+// (busy_retry, the retryable answer every config change gives); a retry of
+// the loser must then be precondition_drift. The loser never mutates.
+func TestAgentInstructionsSetConcurrentApprovalsApplyOnce(test *testing.T) {
+	first, _ := requestAgentInstructions(test, http.StatusCreated, nil)
+	second := requestAgentInstructionsOn(test, first.target, "planner")
+	makeApproverOwner(test, first.action, "owner")
+	makeApproverOwner(test, second.action, "owner")
+	handler := withVerifier(acceptingVerifier)
+	requests := []agentInstructionRequest{first, second}
+	claims := []map[string]any{first.claim(test), second.claim(test)}
+	bodies, statuses := make([]string, 2), make([]int, 2)
+	var group sync.WaitGroup
+	for i, request := range requests {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			statuses[i], bodies[i] = approveClaim(test, handler, request, claims[i])
+		}()
+	}
+	group.Wait()
+	winner, loser := 0, 1
+	if statuses[1] == http.StatusOK {
+		winner, loser = 1, 0
+	}
+	if statuses[winner] != http.StatusOK || statuses[loser] != http.StatusConflict {
+		test.Fatalf("statuses %v (%q, %q); want one 200 and one 409", statuses, bodies[0], bodies[1])
+	}
+	if !strings.Contains(bodies[loser], "precondition_drift") && !strings.Contains(bodies[loser], "busy_retry") {
+		test.Fatalf("loser body %q; want precondition_drift or busy_retry", bodies[loser])
+	}
+	applied := dbfx.Count(test, `SELECT count(*) FROM activity_log WHERE issue_id IN ($1, $2) AND action = 'config_change_applied'`, first.action.issueID, second.action.issueID)
+	if applied != 1 {
+		test.Fatalf("applied %d times (statuses %v), want exactly 1", applied, statuses)
+	}
+	if got := first.live(test); got != requests[winner].after {
+		test.Fatalf("instructions %q, want the winner's %q", got, requests[winner].after)
+	}
+	requests[loser].action.assertUntouched(test)
+	mustContain(test, requests[loser].action.approve(test, handler, requests[loser].claim(test), http.StatusConflict), "precondition_drift")
+	if got := first.live(test); got != requests[winner].after {
+		test.Fatalf("the loser's retry changed the instructions to %q", got)
+	}
+}
+
+// approveClaim posts an approval and returns its status and body; it is safe to
+// call from a goroutine.
+func approveClaim(test *testing.T, handler *Handler, request agentInstructionRequest, claim map[string]any) (int, string) {
+	test.Helper()
+	raw, err := json.Marshal(claim)
+	if err != nil {
+		test.Error(err)
+		return 0, ""
+	}
+	call := request.action.decide("approve", request.action.humanID, "interactive_jwt")
+	call.Body = readerCloser{bytes.NewReader(raw)}
+	recorder := httptest.NewRecorder()
+	handler.ApproveDecisionAction(recorder, call)
+	return recorder.Code, recorder.Body.String()
 }
