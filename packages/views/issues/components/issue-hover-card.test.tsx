@@ -2,7 +2,7 @@ import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { useQuery } from "@tanstack/react-query";
-import { ApiError } from "@multica/core/api";
+import { ApiError } from "@multica/core/api/client";
 import { renderWithI18n } from "../../test/i18n";
 import { IssueHoverCard } from "./issue-hover-card";
 
@@ -31,11 +31,7 @@ vi.mock("@multica/core/issue-statuses/hooks", () => ({
   }),
 }));
 
-vi.mock("@multica/core/issues/queries", async () => ({
-  // The real predicate, so the card branches on the same ApiError statuses.
-  isIssueNotFoundError: (
-    await vi.importActual<typeof import("@multica/core/issues/queries")>("@multica/core/issues/queries")
-  ).isIssueNotFoundError,
+vi.mock("@multica/core/issues/queries", () => ({
   issueDetailOptions: (_workspaceId: string, issueId: string) => ({
     queryKey: ["issue", issueId],
   }),
@@ -214,7 +210,7 @@ function mockQueries(detail: DetailState, fixtures: Fixtures = {}): void {
         data: detail.phase === "success" ? detail.issue : undefined,
         isPending: detail.phase === "pending",
         isError: detail.phase === "error",
-        error: detail.phase === "error" ? detail.error : null,
+        error: detail.phase === "error" ? detail.error : undefined,
       } as unknown as ReturnType<typeof useQuery>;
     }
     if (key === "issue" && id === PARENT_ISSUE.id) return settled(PARENT_ISSUE);
@@ -581,7 +577,7 @@ describe("IssueHoverCard", () => {
   });
 
   it("replaces the skeleton with the not-found state when the detail query fails", async () => {
-    mockQueries({ phase: "error", error: new ApiError("not found", 404, "Not Found") });
+    mockQueries({ phase: "error", error: new ApiError("gone", 404, "Not Found") });
 
     await openFailedCard();
 
@@ -589,30 +585,14 @@ describe("IssueHoverCard", () => {
     expect(screen.getByText("MUL-7")).toBeInTheDocument();
   });
 
-  it("says the issue could not load, not that it is gone, when the fetch fails", async () => {
-    mockQueries({ phase: "error", error: new TypeError("Failed to fetch") });
+  it("says the load failed, not that the issue is deleted, on a non-404 error", async () => {
+    mockQueries({ phase: "error", error: new ApiError("boom", 500, "Internal Server Error") });
     const user = userEvent.setup();
     renderCard("MUL-7");
-
     await user.hover(screen.getByText("MUL-3405"));
 
-    expect(await screen.findByText("Couldn't load this issue")).toBeInTheDocument();
+    await screen.findByText("Couldn't load this issue.");
     expect(screen.queryByText(NOT_FOUND_TEXT)).not.toBeInTheDocument();
-    expect(screen.getByText("MUL-7")).toBeInTheDocument();
-  });
-
-  it("does not retry a 404 on the detail query but keeps the default retry for other errors", async () => {
-    mockIssue(BASE_ISSUE);
-    await openCard();
-
-    const detailOptions = mockUseQuery.mock.calls
-      .map(([options]) => options as { queryKey: string[]; retry?: (count: number, err: Error) => boolean })
-      .find((options) => options.queryKey[0] === "issue" && options.queryKey[1] === "issue-1");
-    expect(detailOptions?.retry).toBeTypeOf("function");
-    expect(detailOptions!.retry!(0, new ApiError("not found", 404, "Not Found"))).toBe(false);
-    expect(detailOptions!.retry!(0, new ApiError("forbidden", 403, "Forbidden"))).toBe(false);
-    expect(detailOptions!.retry!(0, new TypeError("Failed to fetch"))).toBe(true);
-    expect(detailOptions!.retry!(1, new TypeError("Failed to fetch"))).toBe(false);
   });
 
   it("replaces the skeleton with the not-found state when the query settles with no issue", async () => {

@@ -83,6 +83,7 @@ import { PropertyIcon } from "../../common/property-icon";
 import type { Attachment, Issue, IssueProperty, IssueStatus, IssueStatusCategory, IssuePriority, TimelineEntry, UpdateIssueRequest } from "@multica/core/types";
 import { contentReferencesAttachment } from "@multica/core/types";
 import { isBuiltInIssueStatus } from "@multica/core/issue-statuses";
+import { isNotFoundError } from "@multica/core/issues/canonical-id";
 import { commentLandingTarget, isDeletedComment } from "@multica/core/issues/comment-deletion";
 import { formatDateOnly, isPastDateOnly } from "@multica/core/issues/date";
 import { useUpdateIssue } from "@multica/core/issues/mutations";
@@ -152,7 +153,7 @@ import { IssueHierarchy } from "./hierarchy/hierarchy-minimap";
 import { useRecentContextStore } from "@multica/core/chat";
 import { useRegisterCommandBarContext } from "../../search/register-context";
 import { useModalStore } from "@multica/core/modals";
-import { isIssueNotFoundError, issueListOptions, issueDetailOptions, issueDetailViewOptions, childIssuesOptions, childIssueProgressOptions, issueAttachmentsOptions } from "@multica/core/issues/queries";
+import { issueListOptions, issueDetailOptions, issueDetailViewOptions, childIssuesOptions, childIssueProgressOptions, issueAttachmentsOptions } from "@multica/core/issues/queries";
 import { projectDetailOptions } from "@multica/core/projects/queries";
 import { ProjectIcon } from "../../projects/components/project-icon";
 import { issueLabelsOptions } from "@multica/core/labels";
@@ -1221,8 +1222,21 @@ interface IssueDetailProps {
 
 // Not found
 
-type IssueStateFrameProps = {
+/**
+ * Exported so `IssueDetailRoute` can render it for an identifier that names no
+ * issue. The route must NOT fall through to `IssueDetail` in that case: doing
+ * so mounts a second observer on the already-failed query, which refetches it
+ * and restarts the resolve/remount cycle indefinitely.
+ */
+export function IssueNotFound({
+  showBackLink = true,
+  leading,
+  trailing,
+  onRetry,
+}: {
   showBackLink?: boolean;
+  /** Set when the load failed for a reason other than a 404: says so and offers a retry. */
+  onRetry?: () => void;
   /**
    * Host-supplied way back, mirrored from `IssueDetailProps.leadingAction`. A
    * host that hands its whole screen to this component (the inbox, on a phone)
@@ -1232,15 +1246,7 @@ type IssueStateFrameProps = {
   leading?: ReactNode;
   /** Host controls at the end of the bar — the side peek's close button. */
   trailing?: ReactNode;
-};
-
-function IssueStateFrame({
-  showBackLink = true,
-  leading,
-  trailing,
-  message,
-  onRetry,
-}: IssueStateFrameProps & { message: string; onRetry?: () => void }) {
+}) {
   const { t } = useT("issues");
   const backOrReplace = useBackOrReplace();
   const paths = useWorkspacePaths();
@@ -1254,45 +1260,21 @@ function IssueStateFrame({
         </div>
       )}
       <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 text-body text-muted-foreground">
-        <p>{message}</p>
-        <div className="flex items-center gap-2">
-          {onRetry && (
-            <Button variant="outline" size="sm" onClick={onRetry}>
-              {t(($) => $.detail.load_retry)}
-            </Button>
-          )}
-          {showBackLink && (
-            <Button variant="outline" size="sm" onClick={() => backOrReplace(paths.issues())}>
-              <ChevronLeft className="mr-1 h-3.5 w-3.5" />
-              {t(($) => $.detail.back)}
-            </Button>
-          )}
-        </div>
+        <p>{t(($) => (onRetry ? $.detail.load_failed : $.detail.not_found))}</p>
+        {onRetry && (
+          <Button variant="outline" size="sm" onClick={onRetry}>
+            {t(($) => $.detail.retry)}
+          </Button>
+        )}
+        {showBackLink && (
+          <Button variant="outline" size="sm" onClick={() => backOrReplace(paths.issues())}>
+            <ChevronLeft className="mr-1 h-3.5 w-3.5" />
+            {t(($) => $.detail.back)}
+          </Button>
+        )}
       </div>
     </div>
   );
-}
-
-/**
- * Exported so `IssueDetailRoute` can render it for an identifier that names no
- * issue. The route must NOT fall through to `IssueDetail` in that case: doing
- * so mounts a second observer on the already-failed query, which refetches it
- * and restarts the resolve/remount cycle indefinitely.
- */
-export function IssueNotFound(props: IssueStateFrameProps) {
-  const { t } = useT("issues");
-  return <IssueStateFrame {...props} message={t(($) => $.detail.not_found)} />;
-}
-
-/**
- * The fetch failed without saying the issue is gone (network, timeout, 401,
- * 5xx). Not terminal for the issue, so it offers a retry. Like
- * `IssueNotFound`, a route renders it instead of mounting `IssueDetail` on the
- * failed query.
- */
-export function IssueLoadFailed({ onRetry, ...props }: IssueStateFrameProps & { onRetry: () => void }) {
-  const { t } = useT("issues");
-  return <IssueStateFrame {...props} message={t(($) => $.detail.load_failed)} onRetry={onRetry} />;
 }
 
 // Loading skeleton
@@ -1637,7 +1619,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const lastHighlightRequestTokenRef = useRef(highlightRequestToken);
 
   // Issue data from TQ — uses detail query, seeded from list cache if available.
-  const { data: issue = null, isLoading: issueLoading, error: issueError, refetch: refetchIssue } = useQuery(
+  const { data: issue = null, error: issueError, isLoading: issueLoading, refetch: refetchIssue } = useQuery(
     issueDetailViewOptions(wsId, id, allIssues.find((i) => i.id === id), authoritative),
   );
   const descriptionSourceId = `description:${id}`;
@@ -3504,19 +3486,14 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   }
 
   if (!issue) {
-    // Only a definite 404/403 means the issue is gone. A failed fetch (network,
-    // timeout, 5xx, 401) gets a retry instead of a false "deleted".
-    if (issueError && !isIssueNotFoundError(issueError)) {
-      return (
-        <IssueLoadFailed
-          showBackLink={!onDelete}
-          leading={leadingAction}
-          trailing={trailingActions}
-          onRetry={() => void refetchIssue()}
-        />
-      );
-    }
-    return <IssueNotFound showBackLink={!onDelete} leading={leadingAction} trailing={trailingActions} />;
+    return (
+      <IssueNotFound
+        showBackLink={!onDelete}
+        leading={leadingAction}
+        trailing={trailingActions}
+        onRetry={issueError && !isNotFoundError(issueError) ? () => void refetchIssue() : undefined}
+      />
+    );
   }
 
   const persistDescriptionSave = (

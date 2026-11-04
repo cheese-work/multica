@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Issue } from "../types";
 import {
-  isIssueNotFoundError,
   issueDetailOptions,
   issueFetchRetryDelay,
   issueKeys,
@@ -10,6 +9,17 @@ import {
 } from "./queries";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * True only for a 404 from the API. A 403, 5xx or network failure says nothing
+ * about whether the issue exists, so callers must not present it as deleted.
+ * Duck-typed on `status` so it holds across module boundaries and test mocks.
+ */
+export function isNotFoundError(error: unknown): boolean {
+  return (
+    typeof error === "object" && error !== null && (error as { status?: unknown }).status === 404
+  );
+}
 
 /** True for a canonical issue UUID; false for an identifier like `MUL-123`. */
 export function isIssueUuid(value: string): boolean {
@@ -40,18 +50,10 @@ export interface CanonicalIssue {
    * (`retryOnMount`), which flips this hook back to resolving, unmounts that
    * view, and remounts it when the refetch fails — an unbounded request loop
    * that never settles on "not found".
-   *
-   * Only a definite server answer (404/403) sets this; a network failure or
-   * 5xx sets `loadFailed` instead — the issue may well exist.
    */
   notFound: boolean;
-  /**
-   * Terminal: the lookup failed without saying whether the issue exists
-   * (network error, timeout, 401, 5xx) after its automatic retries. Render a
-   * retry state at the route, for the same remount-loop reason as `notFound`.
-   */
-  loadFailed: boolean;
-  /** Re-run a failed lookup. */
+  /** Terminal, but not a 404: the lookup failed and `retry` may succeed. */
+  loadError: boolean;
   retry: () => void;
 }
 
@@ -123,23 +125,19 @@ export function useCanonicalIssue(wsId: string, routeId: string): CanonicalIssue
   // still-resolving, or the caller flips back to a loading frame and the
   // remount loop described on `notFound` starts.
   const failed = resolveEnabled && resolve.isError;
-  const notFound = failed && isIssueNotFoundError(resolve.error);
-  // A user retry refetches the errored query. Show that as resolving so the
-  // button gives feedback; not-found never does, so a stray observer refetching
-  // a definite 404 cannot flip the route back into the remount loop.
-  const retrying = failed && !notFound && resolve.isFetching;
+  const notFound = failed && isNotFoundError(resolve.error);
 
   return {
     canonicalId,
     issue: detail.data,
-    isResolving: resolveEnabled && (!failed || retrying) && resolve.data === undefined,
+    isResolving: resolveEnabled && !failed && resolve.data === undefined,
     authoritative:
       !isUuid &&
       detail.data !== undefined &&
       detail.data === resolve.data &&
       resolve.dataUpdatedAt >= mountedAt,
     notFound,
-    loadFailed: failed && !notFound && !retrying,
+    loadError: failed && !notFound,
     retry: () => void resolve.refetch(),
   };
 }

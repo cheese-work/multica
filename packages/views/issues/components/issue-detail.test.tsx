@@ -2,7 +2,6 @@ import { forwardRef, useEffect, useRef, useState, useImperativeHandle, useSyncEx
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { ApiError } from "@multica/core/api";
 import type { Attachment, AgentTask, Issue, IssueStatusEntry, Label, TimelineEntry } from "@multica/core/types";
 import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 import { issueKeys } from "@multica/core/issues/queries";
@@ -10,6 +9,7 @@ import { issueStatusKeys } from "@multica/core/issue-statuses";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { toast } from "sonner";
 import { useResolvedExpandStore } from "@multica/core/issues/stores/resolved-expand-store";
+import { ApiError } from "@multica/core/api/client";
 // Imported from the barrel (not the submodule path) so this is the exact
 // same module instance issue-detail.tsx reads through the barrel mock below
 // — the submodule path resolves to a second, disconnected instance under
@@ -444,9 +444,7 @@ const mockApiObj = vi.hoisted(() => ({
   listProjects: vi.fn().mockResolvedValue({ projects: [] }),
 }));
 
-vi.mock("@multica/core/api", async () => ({
-  // The real class: the issue queries branch on `instanceof ApiError`.
-  ApiError: (await vi.importActual<typeof import("@multica/core/api/client")>("@multica/core/api/client")).ApiError,
+vi.mock("@multica/core/api", () => ({
   api: mockApiObj,
   getApi: () => mockApiObj,
   setApiInstance: vi.fn(),
@@ -1409,21 +1407,6 @@ describe("IssueDetail (shared)", () => {
       ).toBeInTheDocument();
     });
     expect(screen.getByRole("button", { name: "Close preview" })).toBeInTheDocument();
-  });
-
-  // CHE-3535: a failed fetch is not a deleted issue.
-  it("offers Retry, not not-found, when the fetch fails for a reason other than 404", async () => {
-    mockApiObj.getIssue.mockRejectedValue(new ApiError("unauthorized", 401, "Unauthorized"));
-    renderPeek("issue-1");
-    expect(await screen.findByText("Couldn't load this issue")).toBeInTheDocument();
-    expect(
-      screen.queryByText("This issue does not exist or has been deleted in this workspace."),
-    ).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Close preview" })).toBeInTheDocument();
-
-    mockApiObj.getIssue.mockResolvedValue(mockIssue);
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    await waitFor(() => expect(screen.queryByText("Couldn't load this issue")).not.toBeInTheDocument());
   });
 
   it("renders the peek variant as one column with property pills and host actions", async () => {
@@ -3001,6 +2984,21 @@ describe("IssueDetail (shared)", () => {
         screen.getByText("This issue does not exist or has been deleted in this workspace."),
       ).toBeInTheDocument();
     });
+  });
+
+  // Regression (CHE-3411): a 5xx/401 on a decision-card link read as "deleted".
+  it("offers a retry, not the deleted message, when the load fails with a non-404", async () => {
+    mockApiObj.getIssue.mockRejectedValueOnce(new ApiError("unauthorized", 401, "Unauthorized"));
+
+    renderIssueDetail("issue-1");
+
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expect(
+      screen.queryByText("This issue does not exist or has been deleted in this workspace."),
+    ).not.toBeInTheDocument();
+    mockApiObj.getIssue.mockResolvedValue(mockIssue);
+    fireEvent.click(retry);
+    expect(await screen.findByText(mockIssue.title)).toBeInTheDocument();
   });
 
   it("shows 'Back' button when issue is not found and no onDelete prop", async () => {

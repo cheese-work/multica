@@ -1,5 +1,6 @@
 "use client";
 
+import { isNotFoundError } from "@multica/core/issues/canonical-id";
 import { issueStatusCategory } from "@multica/core/issues";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useStatusLabel } from "./../utils/status-label";
@@ -15,7 +16,7 @@ import {
   UserRound,
   type IconComponent,
 } from "@multica/ui/icons";
-import { childIssueProgressOptions, isIssueNotFoundError, issueDetailOptions } from "@multica/core/issues/queries";
+import { childIssueProgressOptions, issueDetailOptions } from "@multica/core/issues/queries";
 import { formatDateOnly, isPastDateOnly } from "@multica/core/issues/date";
 import { agentTaskSnapshotOptions } from "@multica/core/agents";
 import { issuePullRequestsOptions } from "@multica/core/github";
@@ -111,11 +112,7 @@ function IssueHoverCardBody({
   fallbackLabel?: string;
 }) {
   const wsId = useWorkspaceId();
-  const detail = useQuery({
-    ...issueDetailOptions(wsId, issueId),
-    // The app-wide retry of 1, minus the definite 404/403 that will not change.
-    retry: (failureCount, err) => failureCount < 1 && !isIssueNotFoundError(err),
-  });
+  const detail = useQuery(issueDetailOptions(wsId, issueId));
   const { t } = useT("issues");
 
   // A skeleton rather than localized loading text: only the pending phase gets
@@ -134,13 +131,10 @@ function IssueHoverCardBody({
   const issue = detail.data;
 
   // Terminal state for every way the detail can fail to arrive: an error after
-  // retries, a deleted issue, or a mention the viewer cannot read. Only a
-  // 404/403 or an empty result says the issue is gone; any other error says it
-  // could not load. Named with
+  // retries, a deleted issue, or a mention the viewer cannot read. Named with
   // the identifier the way the chip degrades, so the card still says which
   // issue it is about.
   if (detail.isError || !issue) {
-    const loadFailed = detail.isError && !isIssueNotFoundError(detail.error);
     return (
       <div className="flex flex-col gap-1.5">
         {fallbackLabel && (
@@ -149,7 +143,7 @@ function IssueHoverCardBody({
           </span>
         )}
         <p className="text-caption text-muted-foreground">
-          {loadFailed ? t(($) => $.detail.load_failed) : t(($) => $.detail.not_found)}
+          {t(($) => (detail.isError && !isNotFoundError(detail.error) ? $.detail.card_load_failed : $.detail.not_found))}
         </p>
       </div>
     );
