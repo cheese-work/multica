@@ -110,18 +110,43 @@ func guardStageQueue(ctx context.Context, q *db.Queries, issueID pgtype.UUID, ta
 			return nil
 		}
 	}
-	markStageWaiting(ctx, q, issueID, target.AgentID)
+	if err := markStageWaiting(ctx, q, issueID, target.AgentID); err != nil {
+		return err
+	}
 	slog.Info("stage queue: run refused, PR queued",
 		"stage", stage, "agent_id", util.UUIDToString(target.AgentID), "issue_id", ref, "queued", len(d.Queued))
-	return ErrStageQueueFull
+	return &stageFullError{issueID: issueID, agentID: target.AgentID}
 }
 
+// stageFullError is ErrStageQueueFull for one (issue, agent): the pair whose
+// refusal must be written down. errors.Is(err, ErrStageQueueFull) holds.
+type stageFullError struct{ issueID, agentID pgtype.UUID }
+
+func (*stageFullError) Error() string        { return ErrStageQueueFull.Error() }
+func (*stageFullError) Is(target error) bool { return target == ErrStageQueueFull }
+
 // markStageWaiting records a refusal so the release job can start the PR later.
-// Best effort: a lost mark is re-written by the next refusal.
-func markStageWaiting(ctx context.Context, q *db.Queries, issueID, agentID pgtype.UUID) {
+// A failure is returned: a refusal that is not on record is a lost run.
+func markStageWaiting(ctx context.Context, q *db.Queries, issueID, agentID pgtype.UUID) error {
 	if err := q.MarkStageWaiting(ctx, db.MarkStageWaitingParams{IssueID: issueID, AgentID: agentID}); err != nil {
-		slog.Warn("stage queue: record refusal failed", "issue_id", util.UUIDToString(issueID), "error", err)
+		return fmt.Errorf("stage queue: record refusal: %w", err)
 	}
+	return nil
+}
+
+// recordStageRefusal runs after a transaction that ended in a stage refusal has
+// rolled back, taking the mark the guard wrote inside it. It writes the mark
+// again on the pool. A write failure replaces the refusal, so the caller sees
+// an error instead of a run that is neither started nor queued.
+func (s *TaskService) recordStageRefusal(ctx context.Context, err error) error {
+	var full *stageFullError
+	if !errors.As(err, &full) {
+		return err
+	}
+	if merr := markStageWaiting(ctx, s.Queries, full.issueID, full.agentID); merr != nil {
+		return merr
+	}
+	return err
 }
 
 // releaseStageQueues starts the admitted PRs that have no active run, for every

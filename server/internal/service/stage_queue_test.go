@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/stagequeue"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -254,5 +255,113 @@ func TestLoadStageQueueSnapshotShowsAdmittedAndQueued(t *testing.T) {
 	plain := f.Issue(t, "plain", testutil.Cols{"status": "in_progress", "assignee_type": "agent", "assignee_id": f.agentID})
 	if s := load(plain); s.State != "none" {
 		t.Fatalf("plain issue snapshot = %+v, want none", s)
+	}
+}
+
+func (f *stageFixture) service(t *testing.T) *TaskService {
+	t.Helper()
+	return &TaskService{Queries: f.q, TxStarter: sharedTestPool(t), Bus: events.New()}
+}
+
+func (f *stageFixture) tasksOn(t *testing.T, issueID string) int {
+	t.Helper()
+	return f.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1`, issueID)
+}
+
+func (f *stageFixture) marks(t *testing.T, issueID string) int {
+	t.Helper()
+	return f.Count(t, `SELECT count(*) FROM stage_queue_waiting WHERE issue_id = $1`, issueID)
+}
+
+// Through the real enqueue: the refused PR leaves no task, but its refusal is
+// on record after the transaction's rollback, and the release job starts it
+// once, when the slot frees.
+func TestStageQueueRealEnqueueRecordsRefusalAndReleaseStartsIt(t *testing.T) {
+	f := newStageFixture(t, stagequeue.Limits{stagequeue.StageReview: 1})
+	svc := f.service(t)
+	a := f.reviewIssue(t, "PR A", 3*time.Hour)
+	b := f.reviewIssue(t, "PR B", 1*time.Hour)
+	runA := f.run(t, a, "running")
+	issueB, err := f.q.GetIssue(context.Background(), util.MustParseUUID(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.EnqueueTaskForIssue(context.Background(), issueB); !errors.Is(err, ErrStageQueueFull) {
+		t.Fatalf("enqueue B while A runs: err = %v, want ErrStageQueueFull", err)
+	}
+	if got := f.tasksOn(t, b); got != 0 {
+		t.Fatalf("B has %d tasks after a refusal, want 0", got)
+	}
+	if got := f.marks(t, b); got != 1 {
+		t.Fatalf("B has %d refusal rows, want 1", got)
+	}
+
+	if err := svc.ReleaseStageQueues(context.Background()); err != nil || f.tasksOn(t, b) != 0 {
+		t.Fatalf("release while A runs: err %v, B tasks %d; want none", err, f.tasksOn(t, b))
+	}
+	f.Exec(t, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, runA)
+	for i := 0; i < 2; i++ {
+		if err := svc.ReleaseStageQueues(context.Background()); err != nil {
+			t.Fatalf("release %d: %v", i, err)
+		}
+	}
+	if got := f.tasksOn(t, b); got != 1 {
+		t.Fatalf("B has %d tasks after release, want exactly 1", got)
+	}
+}
+
+// A refusal that happens inside the enqueue transaction (the race the early
+// check cannot see) rolls back with the transaction, yet stays on record.
+func TestStageQueueRefusalInsideRolledBackTxStaysOnRecord(t *testing.T) {
+	f := newStageFixture(t, stagequeue.Limits{stagequeue.StageReview: 1})
+	svc := f.service(t)
+	f.run(t, f.reviewIssue(t, "PR A", 3*time.Hour), "running")
+	b := f.reviewIssue(t, "PR B", 1*time.Hour)
+
+	err := svc.runInTx(context.Background(), func(qtx *db.Queries) error {
+		_, err := guardIssueRunGate(context.Background(), qtx, util.MustParseUUID(b), OriginDerived,
+			RunTarget{AgentID: util.MustParseUUID(f.agentID), Trigger: "assignment or status handoff", ReviewRun: true})
+		return err
+	})
+	if !errors.Is(err, ErrStageQueueFull) {
+		t.Fatalf("err = %v, want ErrStageQueueFull", err)
+	}
+	if got := f.marks(t, b); got != 1 {
+		t.Fatalf("B has %d refusal rows after the rollback, want 1", got)
+	}
+}
+
+// If the refusal cannot be written down, the caller gets an error, never a
+// silent ErrStageQueueFull that nothing will ever retry.
+func TestStageQueueRefusalWriteFailureIsReturned(t *testing.T) {
+	f := newStageFixture(t, stagequeue.Limits{stagequeue.StageReview: 1})
+	svc := f.service(t)
+	f.run(t, f.reviewIssue(t, "PR A", 3*time.Hour), "running")
+	b := f.reviewIssue(t, "PR B", 1*time.Hour)
+	issueB, err := f.q.GetIssue(context.Background(), util.MustParseUUID(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Exec(t, `CREATE OR REPLACE FUNCTION stage_queue_test_fail() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'stage_queue_test_fail'; END $$ LANGUAGE plpgsql`)
+	f.Exec(t, `CREATE TRIGGER stage_queue_test_fail BEFORE INSERT OR UPDATE ON stage_queue_waiting FOR EACH ROW EXECUTE FUNCTION stage_queue_test_fail()`)
+	f.Cleanup(t, `DROP TRIGGER IF EXISTS stage_queue_test_fail ON stage_queue_waiting`)
+
+	check := func(name string, err error) {
+		t.Helper()
+		if err == nil || errors.Is(err, ErrStageQueueFull) {
+			t.Fatalf("%s: err = %v, want a record-refusal error that is not ErrStageQueueFull", name, err)
+		}
+	}
+	_, err = svc.EnqueueTaskForIssue(context.Background(), issueB)
+	check("enqueue", err)
+	err = svc.runInTx(context.Background(), func(qtx *db.Queries) error {
+		_, err := guardIssueRunGate(context.Background(), qtx, util.MustParseUUID(b), OriginDerived,
+			RunTarget{AgentID: util.MustParseUUID(f.agentID), Trigger: "assignment or status handoff", ReviewRun: true})
+		return err
+	})
+	check("in-tx guard", err)
+	if got := f.tasksOn(t, b); got != 0 {
+		t.Fatalf("B has %d tasks, want 0", got)
 	}
 }

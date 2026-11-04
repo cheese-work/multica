@@ -1579,10 +1579,6 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 		task, err = s.insertPreparedIssueTask(txCtx, qtx, issue, params, fireAt, origin)
 		return err
 	})
-	if errors.Is(err, ErrStageQueueFull) {
-		// The rollback dropped the mark the guard wrote in the transaction.
-		markStageWaiting(ctx, s.Queries, issue.ID, issue.AssigneeID)
-	}
 	if err == nil {
 		notifyAfterCommit()
 		s.RecordHumanDelegation(ctx, attr)
@@ -8262,7 +8258,10 @@ func (s *TaskService) runInTx(ctx context.Context, fn func(*db.Queries) error) e
 	}
 	defer tx.Rollback(ctx)
 	if err := fn(s.Queries.WithTx(tx)); err != nil {
-		return err
+		// Roll back first: the refusal's mark row is uncommitted in this
+		// transaction and the pool write below would wait on it.
+		_ = tx.Rollback(ctx)
+		return s.recordStageRefusal(ctx, err)
 	}
 	return tx.Commit(ctx)
 }
