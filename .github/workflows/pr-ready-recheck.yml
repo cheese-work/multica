@@ -5,11 +5,15 @@
 # workspace bot comments on a PR, this job re-runs the latest completed pr-ready run of the PR's current head; that
 # run reads the live comments. A re-run, not a new check: an issue_comment run attaches to the default branch, so it
 # cannot satisfy a PR's required check. A run still going is waited for first (a run cannot be re-run while it goes,
-# and it may already have read the old verdict). The merge-queue checks that hold the PR are re-run the same way.
+# and it may already have read the old verdict, so it is cancelled first and the cancel is repeated until it stops).
+# The merge-queue checks that hold the PR are re-run the same way. A re-run counts only once the run shows a new
+# attempt; if a lookup, cancel or re-run fails or cannot be confirmed, the job posts a failing `pr-ready` check run on
+# the affected commit so it cannot merge on the old green (a separate failing recheck job would not block it).
 #
 # SECURITY: `issue_comment` runs THIS definition from the default branch and the job checks out the DEFAULT branch
 # only. The comment body is never interpolated or read here (only the author id gates the job); the script reads
-# PR state through the API. The one write scope is `actions: write`, needed to re-run a workflow; nothing else.
+# PR state through the API. The write scopes are `actions: write` (cancel and re-run a workflow run) and
+# `checks: write` (post the blocking `pr-ready` failure above); nothing else.
 
 name: pr-ready-recheck
 
@@ -22,6 +26,7 @@ permissions:
   pull-requests: read
   issues: read
   actions: write
+  checks: write
 
 concurrency:
   group: pr-ready-recheck-${{ github.event.issue.number }}

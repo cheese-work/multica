@@ -73,6 +73,8 @@ AGENT_LABS = {
 NO_QUEUE = "no merge queue found for the base branch"
 RUN_NAME = "pr-ready-{}"  # the pr-ready.yml `run-name`; the recheck matches runs to a PR by it
 WAIT_POLLS, POLL_SECONDS = 40, 15
+CHECK_NAME = "pr-ready"  # the required check; the blocking fallback posts a failing run under this name
+BLOCKING = {"failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale"}  # conclusions that already stop a merge
 MAX_TREE_DIRS = 100
 API_ERRORS = (subprocess.CalledProcessError, KeyError, ValueError, TypeError)  # a failed or malformed read
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -326,40 +328,76 @@ def api_problem(what: str, e: Exception) -> str:
     return f"{what}: {type(e).__name__}: {str(e)[-120:]}"
 
 
-def settle(gh, post, sleep, repo: str, runs: list[dict]) -> list[str]:
-    """Invalidate each run's result, then re-run it so the new attempt reads the comments as they are now. A finished
-    run is re-run at once. A run still going may already have read the old verdict and would finish green, and a run
-    cannot be re-run while it goes, so it is cancelled first (a cancelled run is not a success) and re-run once it has
-    stopped. Every run is handled on its own: one failure never skips another. Returns the problems."""
-    problems, pending, polls = [], list(runs), WAIT_POLLS
-    first = True
+def block(post, repo: str, sha: str, why: str) -> str:
+    """Merge-blocking fallback for a commit whose old result could not be invalidated: a completed, failing check run
+    named like the required check, posted last, so the commit cannot merge on the old green. A separate failing
+    recheck job is not enough: it is another check and the required one stays green. If even this post fails, say so
+    loudly. Returns the problem to report."""
+    fields = {"name": CHECK_NAME, "head_sha": sha, "status": "completed", "conclusion": "failure",
+              "output[title]": f"{CHECK_NAME}: verdict change not applied",
+              "output[summary]": f"{why}. The earlier result may be stale, so this commit is blocked until the check is re-run or the branch changes."}
+    try:
+        post(f"repos/{repo}/check-runs", fields)
+    except API_ERRORS as e:
+        return api_problem(f"UNPROTECTED {sha[:12]}: {why}, and the blocking check could not be posted", e)
+    return f"{why}: posted a failing {CHECK_NAME} check on {sha[:12]} to block it"
+
+
+def settle(gh, post, sleep, repo: str, runs: list[tuple[dict, str]]) -> list[str]:
+    """Invalidate each (run, sha) result, then re-run it so the new attempt reads the comments as they are now. A
+    finished run is re-run at once. A run still going may already have read the old verdict and would finish green, and
+    a run cannot be re-run while it goes, so it is cancelled first (a cancelled run is not a success; a rejected cancel
+    is asked again every round) and re-run once it has stopped. A re-run counts only once the run shows a new attempt.
+    Whatever cannot be confirmed (rejected or unseen re-run, failed read, a run that never stops) blocks its commit
+    with `block`. Every run is handled on its own: one failure never skips another. Returns the problems."""
+    problems, polls = [], WAIT_POLLS
+    pending = [{"run": r, "sha": sha, "sent": None, "cancelled": False, "cancel_error": None} for r, sha in runs]
     while pending:
         going = []
-        for run in pending:
-            path = f"repos/{repo}/actions/runs/{run['id']}"
+        for st in pending:
             try:
-                status = gh(path)["status"]
-                if status == "completed":
-                    post(f"{path}/rerun")
-                    continue
+                if not step(gh, post, repo, st, problems):
+                    going.append(st)
             except API_ERRORS as e:
-                problems.append(api_problem(f"run {run['id']} cannot be re-run", e))
-                continue
-            if first:
-                try:
-                    post(f"{path}/cancel")
-                except API_ERRORS:  # it may have just finished: the next read decides
-                    pass
-            going.append(run)
-        pending, first = going, False
+                problems.append(block(post, repo, st["sha"], api_problem(f"run {st['run']['id']} not invalidated", e)))
+        pending = going
         if not pending:
             break
         if polls <= 0:
-            problems += [f"run {r['id']} did not stop after {WAIT_POLLS} polls: cannot re-run it" for r in pending]
+            for st in pending:
+                why = f"run {st['run']['id']} {'re-run not confirmed' if st['sent'] else 'did not stop'} after {WAIT_POLLS} polls"
+                if st["cancel_error"] is not None:
+                    why += f"; cancel rejected ({api_problem('cancel', st['cancel_error'])})"
+                problems.append(block(post, repo, st["sha"], why))
             break
         polls -= 1
         sleep(POLL_SECONDS)
     return problems
+
+
+def step(gh, post, repo: str, st: dict, problems: list[str]) -> bool:
+    """Advance one run toward 'invalidated'. True when done; False to look again after a wait; raises on API errors."""
+    path = f"repos/{repo}/actions/runs/{st['run']['id']}"
+    state = gh(path)
+    if st["sent"] is not None:  # re-run requested: only a new attempt (or a run going again) proves it took
+        return state["status"] != "completed" or state["run_attempt"] > st["sent"]
+    if state["status"] != "completed":
+        if not st["cancelled"]:  # accepted once is enough; a rejected one is asked again next round
+            try:
+                post(f"{path}/cancel")
+                st["cancelled"], st["cancel_error"] = True, None
+            except API_ERRORS as e:  # it may have just finished: the next read decides
+                st["cancel_error"] = e
+        return False
+    if state.get("conclusion") in BLOCKING:  # not green already: nothing stale to merge on, the re-run only refreshes it
+        try:
+            post(f"{path}/rerun")
+        except API_ERRORS as e:
+            problems.append(api_problem(f"run {st['run']['id']} is not green but cannot be re-run", e))
+        return True
+    post(f"{path}/rerun")
+    st["sent"] = state["run_attempt"]
+    return step(gh, post, repo, st, problems)
 
 
 def latest(runs: list[dict]) -> dict | None:
@@ -375,17 +413,19 @@ def recheck(env: dict, gh, gql, post, sleep) -> list[str]:
     if int(env["COMMENT_USER_ID"]) not in TRUSTED_BOT_IDS:
         return []
     repo, number = env["REPO"], int(env["PR_NUMBER"])
-    problems, targets = [], []
+    problems, targets, head = [], [], None
     try:
         head = gh(f"repos/{repo}/pulls/{number}")["head"]["sha"]
         runs = gh(f"repos/{repo}/actions/workflows/pr-ready.yml/runs?event=pull_request_target&head_sha={head}&per_page=100")["workflow_runs"]
         mine = latest([r for r in runs if r.get("display_title") == RUN_NAME.format(number)])
         if mine is None:
-            problems.append(f"no pr-ready run found for #{number} at {head[:12]}: nothing to re-run")
+            problems.append(block(post, repo, head, f"no pr-ready run found for #{number} at {head[:12]}: its check cannot be re-run"))
         else:
-            targets.append(mine)
+            targets.append((mine, head))
     except API_ERRORS as e:
         problems.append(api_problem(f"cannot find the pr-ready run of #{number}", e))
+        if head is not None:  # the head is known: block it; without it nothing can be named (documented residual)
+            problems.append(block(post, repo, head, f"pr-ready run of #{number} not found"))
     try:
         entries, queue_problems = queue_entries(gql, repo, env["DEFAULT_BRANCH"])
         problems += [p for p in queue_problems if p != NO_QUEUE]
@@ -395,15 +435,16 @@ def recheck(env: dict, gh, gql, post, sleep) -> list[str]:
         problems.append(api_problem("cannot read the merge queue", e))
         affected = []
     for e in affected:
+        oid = e["headCommit"]["oid"]
         try:
-            oid = e["headCommit"]["oid"]
             queued = gh(f"repos/{repo}/actions/workflows/pr-ready-queue.yml/runs?event=merge_group&head_sha={oid}&per_page=100")["workflow_runs"]
-            if (run := latest(queued)) is None:
+            if (run := latest(queued)) is None:  # its run starts later and reads the live comments: no stale result
                 problems.append(f"no pr-ready-queue run found for queue entry #{e['pullRequest']['number']} at {oid[:12]}: cannot invalidate its check")
             else:
-                targets.append(run)
+                targets.append((run, oid))
         except API_ERRORS as err:
             problems.append(api_problem("cannot find the queue run of an affected entry", err))
+            problems.append(block(post, repo, oid, f"queue run of #{e['pullRequest']['number']} not found"))
     return problems + settle(gh, post, sleep, repo, targets)
 
 
@@ -427,8 +468,9 @@ def _gh(path: str):
     return json.loads(subprocess.run(["gh", "api", path], check=True, capture_output=True, text=True).stdout)
 
 
-def _post(path: str) -> None:
-    subprocess.run(["gh", "api", "-X", "POST", path], check=True, capture_output=True, text=True)
+def _post(path: str, fields: dict | None = None) -> None:
+    args = ["gh", "api", "-X", "POST", path] + [a for k, v in (fields or {}).items() for a in ("-f", f"{k}={v}")]
+    subprocess.run(args, check=True, capture_output=True, text=True)
 
 
 def _gql(query: str, **variables):
