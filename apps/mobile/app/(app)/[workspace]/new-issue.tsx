@@ -130,7 +130,7 @@ export default function NewIssueModal() {
             description={description}
             disabled={!restored || isSubmitting}
           />
-          <CreateFormAttributeRow />
+          <CreateFormAttributeRow disabled={!restored} />
         </ScrollView>
 
         {/* Mention suggestions float above the keyboard only when the user

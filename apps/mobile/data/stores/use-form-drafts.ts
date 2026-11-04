@@ -78,6 +78,17 @@ function usePersistedForm<T>(o: {
   return { restored, settle };
 }
 
+/**
+ * What closing a create form must do. Before the saved draft has restored the
+ * form looks empty, so closing must leave the draft on disk untouched.
+ */
+export type CloseMode = "keep" | "discard" | "confirm";
+
+export function closeMode(restored: boolean, dirty: boolean): CloseMode {
+  if (!restored) return "keep";
+  return dirty ? "confirm" : "discard";
+}
+
 export interface IssueRecordText {
   title: string;
   description?: string | null;
@@ -279,5 +290,6 @@ export function useNewProjectDraft() {
     restored,
     dirty,
     settle,
+    closeMode: closeMode(restored, dirty),
   };
 }

@@ -69,7 +69,7 @@ export default function NewProject() {
     description,
     setDescription,
     restored,
-    dirty,
+    closeMode,
     settle,
   } = useNewProjectDraft();
   const status = useNewProjectDraftStore((s) => s.status);
@@ -80,17 +80,21 @@ export default function NewProject() {
 
   const openPicker = useCallback(
     (field: NewProjectPickerField) => {
-      if (!wsSlug) return;
+      if (!wsSlug || !restored) return;
       router.push({
         pathname: NEW_PROJECT_PICKER_PATHNAMES[field],
         params: { workspace: wsSlug },
       });
     },
-    [wsSlug],
+    [wsSlug, restored],
   );
 
   const onCancel = useCallback(() => {
-    if (!dirty) {
+    if (closeMode === "keep") {
+      router.back();
+      return;
+    }
+    if (closeMode === "discard") {
       resetDraft();
       settle();
       router.back();
@@ -112,7 +116,7 @@ export default function NewProject() {
         },
       ],
     );
-  }, [dirty, resetDraft, settle, t]);
+  }, [closeMode, resetDraft, settle, t]);
 
   const onCreate = useCallback(() => {
     if (!canCreate) return;
@@ -235,6 +239,7 @@ export default function NewProject() {
               <Field label={t("properties.status")}>
                 <Pressable
                   onPress={() => openPicker("status")}
+                  disabled={!restored}
                   className="flex-row items-center gap-2 bg-secondary/50 rounded-md px-3 py-2.5"
                 >
                   <ProjectStatusIcon status={status} size={16} />
@@ -248,6 +253,7 @@ export default function NewProject() {
               <Field label={t("properties.priority")}>
                 <Pressable
                   onPress={() => openPicker("priority")}
+                  disabled={!restored}
                   className="flex-row items-center gap-2 bg-secondary/50 rounded-md px-3 py-2.5"
                 >
                   <ProjectPriorityIcon priority={priority} size={16} />
