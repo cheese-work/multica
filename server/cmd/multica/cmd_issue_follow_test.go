@@ -66,3 +66,32 @@ func TestIssueFollowCommandsCallTheProgressFollowAPI(t *testing.T) {
 		}
 	})
 }
+
+func TestIssueUnfollowScopeReachesTheAPI(t *testing.T) {
+	var query string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.RawQuery
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "mat_test-token")
+
+	cmd := issueUnfollowCmd
+	t.Cleanup(func() {
+		_ = cmd.Flags().Set("scope", "")
+		_ = cmd.Flags().Set("chat", "")
+	})
+	for flag, value := range map[string]string{"chat": "11111111-1111-1111-1111-111111111111", "scope": "root"} {
+		if err := cmd.Flags().Set(flag, value); err != nil {
+			t.Fatalf("unfollow has no --%s flag: %v", flag, err)
+		}
+	}
+	if err := runIssueFollowAction("DELETE", "")(cmd, []string{testIssueUUID}); err != nil {
+		t.Fatal(err)
+	}
+	if query != "chat_session_id=11111111-1111-1111-1111-111111111111&scope=root" {
+		t.Fatalf("sent query %q, want the chat and scope=root", query)
+	}
+}

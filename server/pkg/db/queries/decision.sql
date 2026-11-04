@@ -101,12 +101,12 @@ WHERE request.authority = 'human' AND request.id = answer.decision_request_id AN
 RETURNING answer.*;
 
 -- name: ReopenDecisionRequest :one
-UPDATE decision_request SET status = 'open'
+UPDATE decision_request SET status = 'open', answer_revision = answer_revision + 1
 WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND status = 'answered'
 RETURNING *;
 
 -- name: RaiseDecisionClass :one
-UPDATE decision_request SET escalation_class = sqlc.arg('escalation_class')
+UPDATE decision_request SET escalation_class = sqlc.arg('escalation_class'), answer_revision = answer_revision + 1
 WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
 RETURNING *;
 
