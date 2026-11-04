@@ -81,6 +81,15 @@ describe("fillRedactedSecrets", () => {
     ).toEqual({ headers: { A: "saved" }, mcp: { env: { K: "saved" }, token: "typed" }, other: null });
   });
 
+  it("restores placeholders inside arrays by position", () => {
+    expect(
+      fillRedactedSecrets(
+        { options: [{ token: "saved", name: "a" }, { name: "c" }] },
+        { options: [{ token: null, name: "b" }, { name: "d", password: null }, { token: null }] },
+      ),
+    ).toEqual({ options: [{ token: "saved", name: "b" }, { name: "d" }, {}] });
+  });
+
   it("drops a placeholder that has no saved value", () => {
     expect(fillRedactedSecrets({}, { url: "u", headers: null })).toEqual({ url: "u" });
   });

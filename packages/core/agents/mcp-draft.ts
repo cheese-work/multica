@@ -127,11 +127,17 @@ export function fillRedactedSecrets(saved: Json, config: Json): Json {
   for (const [key, v] of Object.entries(config)) {
     if (SECRET_KEY.test(key) && v === null) {
       if (saved[key] !== undefined) out[key] = saved[key];
-    } else if (isObject(v)) {
-      out[key] = fillRedactedSecrets(isObject(saved[key]) ? (saved[key] as Json) : {}, v);
     } else {
-      out[key] = v;
+      out[key] = fillValue(saved[key], v);
     }
   }
   return out;
+}
+
+/** Arrays pair with the saved array by position, like `restoreValue`. */
+function fillValue(saved: unknown, value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item, index) => fillValue(Array.isArray(saved) ? saved[index] : undefined, item));
+  }
+  return isObject(value) ? fillRedactedSecrets(isObject(saved) ? saved : {}, value) : value;
 }

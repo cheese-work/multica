@@ -379,6 +379,28 @@ describe("McpServerDialog", () => {
       expect(restored).not.toContain("s3cret-partial");
     });
 
+    it("keeps a saved credential inside an array through an unfinished draft, reopen and save", async () => {
+      const server = managedServer({
+        name: "remote",
+        config: { type: "sse", url: "https://a.test", options: [{ token: "saved", name: "a" }] },
+        transport: "sse",
+      });
+      const { type, reopen, props } = await setup(server, "agent-1:remote-array");
+      type('{"type": "sse", "url": "https://b.test", "options": [{"token": "typed-s3cret", "name": "b"}');
+      const restored = reopen();
+      expect(restored).not.toContain("typed-s3cret");
+      fireEvent.change(screen.getByLabelText("MCP server JSON configuration"), {
+        target: { value: restored + "]}" },
+      });
+      await userEvent.setup().click(screen.getByRole("button", { name: /save/i }));
+      await vi.waitFor(() => expect(props.onSave).toHaveBeenCalled());
+      expect(props.onSave).toHaveBeenCalledWith("remote", {
+        type: "sse",
+        url: "https://b.test",
+        options: [{ token: "saved", name: "b" }],
+      });
+    });
+
     it("keeps the saved credentials when an unfinished draft of an edited server is completed", async () => {
       const server = managedServer({
         name: "remote",
