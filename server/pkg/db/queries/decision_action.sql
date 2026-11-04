@@ -63,6 +63,22 @@ WHERE workspace_id = sqlc.arg('workspace_id') AND id = ANY(sqlc.arg('ids')::uuid
 ORDER BY id
 FOR UPDATE NOWAIT;
 
+-- name: LockDecisionSquadNowait :one
+-- The squad a squad-target action changes, locked in its workspace.
+SELECT * FROM squad
+WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
+FOR UPDATE NOWAIT;
+
+-- name: LockDecisionWorkflowNowait :one
+SELECT * FROM issue_workflow
+WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
+FOR UPDATE NOWAIT;
+
+-- name: LockDecisionWorkspaceNowait :one
+-- A workspace-target action rewrites a column of the row row 1 holds FOR KEY
+-- SHARE; take the stronger mode the update needs, once.
+SELECT * FROM workspace WHERE id = $1 FOR NO KEY UPDATE NOWAIT;
+
 -- name: LockDecisionIssueNowait :one
 SELECT id FROM issue
 WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
