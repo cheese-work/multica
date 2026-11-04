@@ -161,6 +161,8 @@ jobs:
 
       - name: Build and publish immutable amd64 backend
         if: matrix.image == 'backend'
+        env:
+          BUILDX_BUILDER: ${{ steps.buildx.outputs.name }}
         shell: bash
         run: |
           set -euo pipefail
@@ -188,6 +190,8 @@ jobs:
 
       - name: Build and publish immutable amd64 web
         if: matrix.image == 'web'
+        env:
+          BUILDX_BUILDER: ${{ steps.buildx.outputs.name }}
         shell: bash
         run: |
           set -euo pipefail
@@ -217,6 +221,7 @@ jobs:
       - name: Record immutable image inspection and web entries
         env:
           IMAGE_NAME: ${{ matrix.image }}
+          BUILDX_BUILDER: ${{ steps.buildx.outputs.name }}
         shell: bash
         run: |
           set -euo pipefail

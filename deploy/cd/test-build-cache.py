@@ -31,6 +31,21 @@ class BuildCacheTests(unittest.TestCase):
                 self.assertIn(flag, step['run'])
         self.assertEqual(self.workflow['jobs']['cd-qualification']['needs'], 'build-images')
 
+    def test_every_buildx_call_is_bound_to_the_named_builder(self):
+        # Runner ~/.docker persists across jobs. When the named builder already exists the
+        # setup action skips `--use`, so an unbound call follows a stale buildx/current
+        # pointer to the default docker driver, which rejects --provenance/--sbom.
+        steps = self.workflow['jobs']['build-images']['steps']
+        calls = [s for s in steps if 'docker buildx build' in s.get('run', '')
+                 or 'docker buildx imagetools' in s.get('run', '')]
+        self.assertEqual(len(calls), 3)
+        for step in calls:
+            self.assertEqual(
+                step.get('env', {}).get('BUILDX_BUILDER'),
+                '${{ steps.buildx.outputs.name }}',
+                step['name'],
+            )
+
     def test_builder_survives_without_retaining_running_memory(self):
         steps = self.workflow['jobs']['build-images']['steps']
         setup = next(step for step in steps if step.get('id') == 'buildx')['with']
