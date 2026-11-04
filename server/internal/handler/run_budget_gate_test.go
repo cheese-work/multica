@@ -7,6 +7,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -67,10 +70,16 @@ func waitForRunBudgetWarning(t *testing.T, c edgeCase) {
 func withoutRunBudgetWriters() (restore func()) {
 	service.SetOnRunBudgetEvent(nil)
 	service.SetOnRunBudgetExhausted(nil)
-	return func() {
-		service.SetOnRunBudgetEvent(testHandler.onRunBudgetEvent)
-		service.SetOnRunBudgetExhausted(testHandler.onRunBudgetExhausted)
-	}
+	return useSharedRunBudgetHooks
+}
+
+// useSharedRunBudgetHooks points the process-wide budget hooks at testHandler.
+// Every Handler New() takes them, and a test that builds a second one (with a
+// pool it closes) would otherwise leave them there for the next budget test
+// (CHE-3579).
+func useSharedRunBudgetHooks() {
+	service.SetOnRunBudgetEvent(testHandler.onRunBudgetEvent)
+	service.SetOnRunBudgetExhausted(testHandler.onRunBudgetExhausted)
 }
 
 func finishRuns(t *testing.T, c edgeCase) {
@@ -252,4 +261,23 @@ func TestSpendBudgetLeavesNoLateIssueWriter(t *testing.T) {
 	if after.Revision != issue.Revision {
 		t.Fatalf("issue revision moved from %d to %d after spendBudget returned: a late writer is racing the test", issue.Revision, after.Revision)
 	}
+}
+
+// A test that builds a second Handler takes the process-wide budget hooks with
+// it, and its pool is closed when it ends. The next budget test must still get
+// its 80% warning from the shared handler (CHE-3579).
+func TestRunBudgetWarningSurvivesAnEarlierTestsSecondHandler(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	pool, err := pgxpool.NewWithConfig(context.Background(), testPool.Config().Copy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	New(db.New(pool), pool, testHandler.Hub, events.New(), service.NewEmailService(), nil, nil, analytics.NoopClient{}, Config{})
+	pool.Close()
+	t.Cleanup(useSharedRunBudgetHooks)
+
+	c := newEdgeCase(t, 3579001, mergeEdgeSteps)
+	spendBudget(t, c, 2, "in_progress")
 }
