@@ -668,7 +668,9 @@ export function MessageComposer({
           placeholder={resolvedPlaceholder}
           placeholderTextColor={theme.mutedForeground}
           multiline
-          editable={!disabled}
+          // Comment text lives in the composer draft: typing before the saved
+          // draft has loaded would replace it.
+          editable={!disabled && (isControlled || draftsHydrated)}
           className="px-4 pt-3 pb-1 text-base text-foreground"
           style={{ minHeight: 28, maxHeight: 140, textAlignVertical: "top" }}
         />

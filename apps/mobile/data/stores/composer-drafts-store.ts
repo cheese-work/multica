@@ -10,9 +10,10 @@
  * text is NOT stored here: `chat-drafts-store` owns it.
  *
  * Disk is empty until `hydrate(scope)` runs (from the workspace layout).
- * Writes made while it loads stay in memory and are replayed on top of the
- * disk draft field by field, so typing early never wipes a saved reply,
- * mention or attachment.
+ * While it loads, `patch` is ignored: a patch replaces whole fields (text,
+ * mentions, reply) and would overwrite the saved ones, so the composer keeps
+ * its input read-only until `hydrated`. Attachment updates are functional
+ * and are replayed on top of the disk draft.
  *
  * Scope-bound writes: a caller that outlives a workspace switch (an upload,
  * a send that settles late) passes the scope it started in as `forScope`; a
@@ -63,7 +64,8 @@ interface State {
   scopeId: string | null;
   /** True once the disk drafts of `scopeId` are merged into memory. */
   hydrated: boolean;
-  /** `forScope` is the scope the caller rendered in; see the header. */
+  /** `forScope` is the scope the caller rendered in; see the header. Ignored
+   *  until `hydrated`. */
   patch: (
     key: string,
     patch: Partial<ComposerDraft>,
@@ -83,7 +85,8 @@ interface State {
    *  settled here. */
   finishSend: (key: string, forScope: string | null, ok: boolean) => void;
   hydrate: (scope: string) => Promise<void>;
-  /** Drop the drafts of a deleted workspace from memory. */
+  /** A workspace was deleted: if it is the current scope, detach from it so
+   *  a pending load and late writes cannot bring its drafts back. */
   dropScope: (scope: string) => void;
   /** Empty memory and detach from disk (logout). */
   reset: () => void;
@@ -176,8 +179,10 @@ export const useComposerDraftsStore = create<State>((set, get) => {
     drafts: {},
     scopeId: null,
     hydrated: false,
-    patch: (key, patch, forScope) =>
-      write(key, (draft) => ({ ...draft, ...patch }), forScope),
+    patch: (key, patch, forScope) => {
+      if (loading) return;
+      write(key, (draft) => ({ ...draft, ...patch }), forScope);
+    },
     patchAttachments: (key, update, forScope) =>
       write(
         key,
@@ -255,7 +260,7 @@ export const useComposerDraftsStore = create<State>((set, get) => {
       for (const [id, open] of sending) {
         if (open.scope === deleted) sending.delete(id);
       }
-      if (scope === deleted) set({ drafts: {} });
+      if (scope === deleted) get().reset();
     },
     reset: () => {
       scope = null;

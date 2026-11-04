@@ -165,22 +165,39 @@ describe("composer drafts survive unmount, route change and cold start", () => {
     expect(run2.store.getState().drafts).toEqual({});
   });
 
-  it("typing before the disk drafts load keeps the saved reply and mentions", async () => {
+  it("editing before the disk drafts load keeps the whole saved draft", async () => {
     const run1 = await coldStart();
-    run1.store.getState().patch("comment:i1", { reply, mentions: [mention] });
+    run1.store.getState().patch("comment:i1", {
+      text: "hello",
+      reply,
+      mentions: [mention],
+      attachments: [upload],
+    });
     await settle();
 
     vi.resetModules();
     const store = (await import("./composer-drafts-store")).useComposerDraftsStore;
     const loading = store.getState().hydrate("u1:ws1");
-    store.getState().patch("comment:i1", { text: "typed early" });
+    store.getState().patch("comment:i1", { text: "x" });
+    store.getState().patch("comment:i1", { mentions: [] });
+    store
+      .getState()
+      .patchAttachments("comment:i1", (prev) => [
+        ...prev,
+        { ...upload, localId: "l2", id: "att2" },
+      ]);
     await loading;
     await settle();
 
-    const expected = { text: "typed early", mentions: [mention], reply };
-    expect(store.getState().drafts["comment:i1"]).toMatchObject(expected);
+    const expected = {
+      text: "hello",
+      mentions: [mention],
+      reply,
+      attachments: [upload, { ...upload, localId: "l2", id: "att2" }],
+    };
+    expect(store.getState().drafts["comment:i1"]).toEqual(expected);
     const run2 = await coldStart();
-    expect(run2.store.getState().drafts["comment:i1"]).toMatchObject(expected);
+    expect(run2.store.getState().drafts["comment:i1"]).toEqual(expected);
   });
 
   it("a failed send that settles after a workspace switch stays in its own workspace", async () => {
@@ -240,5 +257,25 @@ describe("composer drafts survive unmount, route change and cold start", () => {
     expect(ws1.store.getState().drafts).toEqual({});
     const ws2 = await coldStart("u1:ws2");
     expect(ws2.store.getState().drafts["comment:i1"]?.text).toBe("ws2 draft");
+  });
+
+  it("deleting a workspace while its drafts load does not bring them back", async () => {
+    const run1 = await coldStart("u1:ws1");
+    run1.store.getState().patch("comment:i1", { text: "ws1 draft" });
+    await settle();
+
+    vi.resetModules();
+    const store = (await import("./composer-drafts-store")).useComposerDraftsStore;
+    const persistence = await import("../draft-persistence");
+    const loading = store.getState().hydrate("u1:ws1");
+    await persistence.clearScopeDrafts("u1:ws1");
+    await loading;
+    // a late upload callback of the deleted workspace
+    store.getState().patchAttachments("comment:i1", () => [upload], "u1:ws1");
+    await settle();
+
+    expect(store.getState().drafts).toEqual({});
+    const back = await coldStart("u1:ws1");
+    expect(back.store.getState().drafts).toEqual({});
   });
 });

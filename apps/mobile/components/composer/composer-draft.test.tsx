@@ -3,7 +3,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatComposer } from "@/components/chat/chat-composer";
 import { InlineCommentComposer } from "@/components/issue/inline-comment-composer";
-import { clearAllDrafts } from "@/data/draft-persistence";
+import { clearAllDrafts, draftPersistence } from "@/data/draft-persistence";
 import { useComposerDraftsStore } from "@/data/stores/composer-drafts-store";
 import { useMentionDraftStore } from "@/data/stores/mention-draft-store";
 import { useReplyTargetStore } from "@/data/stores/reply-target-store";
@@ -249,5 +249,21 @@ describe("composers keep their draft across unmount and remount", () => {
     await flush();
     unmount();
     expect(hosts(mount(comment()), "TextInput")).toHaveLength(0);
+  });
+
+  it("comment composer: typing waits until the saved draft has loaded", async () => {
+    const store = useComposerDraftsStore.getState();
+    store.patch("comment:i1", { text: "hello" });
+    await draftPersistence.flush();
+    store.reset();
+
+    const loading = useComposerDraftsStore.getState().hydrate(SCOPE);
+    const t = mount(comment());
+    act(() => pill(t).props.onPress());
+    expect(input(t).props.editable).toBe(false);
+
+    await act(async () => loading);
+    expect(input(t).props.editable).toBe(true);
+    expect(input(t).props.value).toBe("hello");
   });
 });
