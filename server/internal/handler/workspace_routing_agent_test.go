@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -221,4 +222,66 @@ func TestRoutingAgentRejectsOverrideForUnknownWorkflow(t *testing.T) {
 		})
 	}
 	putRoutingAgent(t, wsID, map[string]any{"agent_id": primary, "overrides": map[string]string{"todo": other}}, nil).Want(http.StatusOK)
+}
+
+// The fallback agent must take over the step, not observe it: after a provider
+// failure the issue belongs to the fallback and its run claims the assignee's
+// workflow brief, with the step instructions and status commands.
+func TestRoutingFailoverGivesTheFallbackTheStepBrief(t *testing.T) {
+	seedTestCatalog(t)
+	resetDefaultWorkflow(t)
+	ctx := context.Background()
+	runtime := dbfx.Runtime(t, "ra-failover", testutil.Cols{"workspace_id": testWorkspaceID})
+	routing := dbfx.Agent(t, "ra-failover-routing", runtime, testutil.Cols{"workspace_id": testWorkspaceID})
+	fallback := dbfx.Agent(t, "ra-failover-fallback", runtime, testutil.Cols{"workspace_id": testWorkspaceID})
+	t.Cleanup(func() {
+		dbfx.Exec(t, `UPDATE workspace SET settings = settings - 'routing_agent' WHERE id=$1`, testWorkspaceID)
+	})
+	projectID := createWorkflowTestProject(t, "Routing failover project")
+	setColumnHandoff(t, projectID, "todo", handToAgent(seededReadyAgentID(t), "Route it.")).Want(http.StatusOK)
+	putRoutingAgent(t, testWorkspaceID, map[string]any{"agent_id": routing, "fallback_agent_id": fallback}, nil).Want(http.StatusOK)
+
+	routed := createIssueForTest(t, map[string]any{"title": "routing failover", "project_id": projectID})
+	if routed.AssigneeID == nil || *routed.AssigneeID != routing {
+		t.Fatalf("todo handed to %v, want the routing agent", routed.AssigneeID)
+	}
+	var taskID string
+	if err := testPool.QueryRow(ctx, `UPDATE agent_task_queue SET status='running', started_at=now()
+		WHERE issue_id=$1 AND agent_id=$2 AND status IN ('queued','dispatched') RETURNING id`, routed.ID, routing).Scan(&taskID); err != nil {
+		t.Fatalf("routing agent has no run to fail: %v", err)
+	}
+	if _, err := testHandler.TaskService.FailTask(ctx, util.MustParseUUID(taskID), "provider returned 500", "", "", "", "agent_error.provider_server_error", false, "", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	issue, err := testHandler.Queries.GetIssue(ctx, util.MustParseUUID(routed.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := util.UUIDToString(issue.AssigneeID); got != fallback {
+		t.Fatalf("issue assigned to %s, want the fallback %s", got, fallback)
+	}
+	var queued db.AgentTaskQueue
+	tasks, err := testHandler.Queries.ListActiveTasksByIssue(ctx, issue.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, task := range tasks {
+		if util.UUIDToString(task.AgentID) == fallback {
+			queued = task
+		}
+	}
+	if !queued.ID.Valid {
+		t.Fatal("no run queued for the fallback agent")
+	}
+	got := testHandler.claimProjectWorkflow(ctx, issue, &queued)
+	if got == nil {
+		t.Fatal("fallback claim carries no workflow")
+	}
+	if strings.Contains(got.Brief, "You are not its assignee") {
+		t.Fatalf("fallback got the observer brief:\n%s", got.Brief)
+	}
+	if !strings.Contains(got.Brief, `"todo" step`) {
+		t.Fatalf("brief does not name the step:\n%s", got.Brief)
+	}
 }

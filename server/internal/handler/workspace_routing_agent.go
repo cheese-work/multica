@@ -177,7 +177,7 @@ func (h *Handler) validateRoutingAgent(ctx context.Context, ws pgtype.UUID, next
 		}
 	}
 	next.Statuses = statuses
-	if next.Statuses == nil || len(next.Statuses) == 0 {
+	if len(next.Statuses) == 0 {
 		next.Statuses = slices.Clone(defaultRoutingStatuses)
 	}
 	overrides := make(map[string]string, len(next.Overrides))

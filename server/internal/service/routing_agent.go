@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"github.com/jackc/pgx/v5/pgtype"
 	"log/slog"
 	"slices"
 
@@ -136,7 +137,29 @@ func (s *TaskService) failOverRoutingTask(ctx context.Context, failed db.AgentTa
 	if err != nil || agent.ArchivedAt.Valid {
 		return
 	}
-	if _, err := s.EnqueueTaskForMention(ctx, issue, fallback, failed.TriggerCommentID, OriginDerived); err != nil {
+	// The fallback takes the step over as its assignee. A mention would queue it
+	// as an observer: the workflow brief gives step instructions and status
+	// commands only to the issue's assignee. Every other field is written back
+	// unchanged, as the public edit path does.
+	owned, err := s.Queries.UpdateIssue(ctx, db.UpdateIssueParams{
+		ID:                 issue.ID,
+		SourceTaskID:       failed.ID,
+		AssigneeType:       pgtype.Text{String: "agent", Valid: true},
+		AssigneeID:         fallback,
+		StartDate:          issue.StartDate,
+		DueDate:            issue.DueDate,
+		ParentIssueID:      issue.ParentIssueID,
+		PreserveProject:    pgtype.Bool{Bool: true, Valid: true},
+		Stage:              issue.Stage,
+		DuplicateOfIssueID: issue.DuplicateOfIssueID,
+	})
+	if err != nil {
+		slog.Warn("routing failover: hand the step to the fallback agent failed",
+			"issue_id", util.UUIDToString(issue.ID), "fallback_agent_id", util.UUIDToString(fallback), "error", err)
+		return
+	}
+	note := "Routing failover: the routing agent's run failed with a provider error (" + failureReason + "). You are the fallback agent and now own this step."
+	if _, err := s.EnqueueTaskForIssueWithHandoff(ctx, owned, note, pgtype.UUID{}); err != nil {
 		slog.Warn("routing failover: enqueue fallback run failed",
 			"issue_id", util.UUIDToString(issue.ID), "fallback_agent_id", util.UUIDToString(fallback), "error", err)
 		return

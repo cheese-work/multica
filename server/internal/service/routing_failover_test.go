@@ -52,6 +52,19 @@ func TestRoutingFailoverRunsTheFallbackAgentOnProviderFailure(t *testing.T) {
 	if got := fallbackRuns(t, rows, f, f.worker); got != 1 {
 		t.Fatalf("fallback runs = %d, want 1", got)
 	}
+	// The fallback must own the step, not observe it: the workflow brief gives
+	// step instructions and status commands only to the issue's assignee.
+	if got := rows.Count(t, `SELECT count(*) FROM issue WHERE id = $1 AND assignee_type = 'agent' AND assignee_id = $2`,
+		f.issueID, f.worker); got != 1 {
+		t.Fatalf("issue assigned to the fallback agent = %d, want 1", got)
+	}
+	if got := rows.Count(t, `SELECT count(*) FROM agent_task_queue t JOIN issue i ON i.id = t.issue_id
+		WHERE t.issue_id = $1 AND t.status = 'queued' AND t.agent_id = i.assignee_id`, f.issueID); got != 1 {
+		t.Fatalf("queued runs for the assignee = %d, want 1", got)
+	}
+	if got := rows.Count(t, `SELECT count(*) FROM issue WHERE id = $1 AND status = 'todo'`, f.issueID); got != 1 {
+		t.Fatalf("issue left its routing status, count = %d", got)
+	}
 }
 
 func TestRoutingFailoverIgnoresCasesThatAreNotARoutingProviderFailure(t *testing.T) {
@@ -86,6 +99,9 @@ func TestRoutingFailoverIgnoresCasesThatAreNotARoutingProviderFailure(t *testing
 			if got := rows.Count(t, `SELECT count(*) FROM agent_task_queue
 				WHERE issue_id = $1 AND status IN ('queued', 'dispatched')`, f.issueID); got != 0 {
 				t.Fatalf("%d runs were queued, want none", got)
+			}
+			if got := rows.Count(t, `SELECT count(*) FROM issue WHERE id = $1 AND assignee_id = $2`, f.issueID, f.coordinator); got != 1 {
+				t.Fatal("the issue was reassigned")
 			}
 		})
 	}
