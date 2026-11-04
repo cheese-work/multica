@@ -256,13 +256,13 @@ export async function clearScopeDrafts(scope: string): Promise<void> {
 /** A workspace deleted while this device was offline never sent its
  *  `workspace:deleted` event. Given the user's settled, successfully fetched
  *  workspace list, drop the drafts of every other workspace of that user.
- *  Nothing happens without a list (failed or pending fetch) or with an empty
- *  one, which may be a fallback response rather than the real list. */
+ *  Nothing happens without a list (failed or pending fetch). An empty list
+ *  is a valid answer: the user's last workspace was deleted. */
 export async function reconcileWorkspaceDrafts(
   userId: string,
   workspaces: readonly { id: string }[] | null | undefined,
 ): Promise<void> {
-  if (!workspaces || workspaces.length === 0) return;
+  if (!workspaces) return;
   const live = new Set(workspaces.map((w) => w.id));
   for (const id of await draftPersistence.workspaceIds(userId)) {
     if (!live.has(id)) await clearScopeDrafts(`${userId}:${id}`);

@@ -365,10 +365,21 @@ describe("composer drafts survive unmount, route change and cold start", () => {
       expect(run.store.getState().drafts).toEqual({});
     });
 
+    it("a successful empty list drops every draft of the user", async () => {
+      await seed();
+      const run = await coldStart("u1:ws1");
+      await run.persistence.reconcileWorkspaceDrafts("u1", []);
+
+      expect(run.store.getState().drafts).toEqual({});
+      expect((await coldStart("u1:ws1")).store.getState().drafts).toEqual({});
+      expect((await coldStart("u1:ws2")).store.getState().drafts).toEqual({});
+      const other = await coldStart("u2:ws9");
+      expect(other.store.getState().drafts["comment:i1"]?.text).toBe("u2:ws9 draft");
+    });
+
     it.each([
       ["a failed fetch", undefined],
       ["no list yet", null],
-      ["an empty list", []],
     ])("deletes nothing after %s", async (_name, list) => {
       await seed();
       const run = await coldStart("u1:ws1");
