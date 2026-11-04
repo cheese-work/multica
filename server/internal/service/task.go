@@ -1579,6 +1579,10 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 		task, err = s.insertPreparedIssueTask(txCtx, qtx, issue, params, fireAt, origin)
 		return err
 	})
+	if errors.Is(err, ErrStageQueueFull) {
+		// The rollback dropped the mark the guard wrote in the transaction.
+		markStageWaiting(ctx, s.Queries, issue.ID, issue.AssigneeID)
+	}
 	if err == nil {
 		notifyAfterCommit()
 		s.RecordHumanDelegation(ctx, attr)
@@ -1899,7 +1903,7 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 			slog.Debug("mention task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
 			return db.AgentTaskQueue{}, ErrDuplicatePendingTask
 		}
-		if !errors.Is(err, ErrRunBudgetExhausted) {
+		if !errors.Is(err, ErrRunBudgetExhausted) && !errors.Is(err, ErrStageQueueFull) {
 			slog.Error("mention task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
 		}
 		return db.AgentTaskQueue{}, err
@@ -6680,7 +6684,7 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		return nil, err
 	}
 	if err := guardIssueRunAllowed(ctx, qtx, parent.IssueID, OriginDerived, RunTarget{AgentID: parent.AgentID, Trigger: "retry"}); err != nil {
-		if errors.Is(err, ErrIssueInTriage) || errors.Is(err, ErrRunBudgetExhausted) || IsProjectInactive(err) {
+		if errors.Is(err, ErrIssueInTriage) || errors.Is(err, ErrRunBudgetExhausted) || errors.Is(err, ErrStageQueueFull) || IsProjectInactive(err) {
 			slog.Info("task auto-retry skipped: issue does not run",
 				"parent_task_id", util.UUIDToString(parent.ID),
 				"issue_id", util.UUIDToString(parent.IssueID))

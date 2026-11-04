@@ -137,3 +137,24 @@ func TestAdmit(t *testing.T) {
 		t.Fatal("active PR refused")
 	}
 }
+
+func TestGateStage(t *testing.T) {
+	cases := []struct {
+		title string
+		want  Stage
+		ok    bool
+	}{
+		{"device gate: CHE-3611", StageDevice, true},
+		{"Browser Gate: CHE-12", StageBrowser, true},
+		{"  device gate: x", StageDevice, true},
+		{"security gate: CHE-3611", "", false},
+		{"feat: device gate handling", "", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		got, ok := GateStage(c.title)
+		if got != c.want || ok != c.ok {
+			t.Errorf("GateStage(%q) = %q, %v; want %q, %v", c.title, got, ok, c.want, c.ok)
+		}
+	}
+}

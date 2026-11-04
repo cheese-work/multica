@@ -64,6 +64,9 @@ type Entry struct {
 	OpenGates int
 	Created   time.Time
 	Active    bool
+	// Ref is the caller's handle for the run to start: the id of the issue the
+	// stage run belongs to. Plan keeps it from the PR's first entry.
+	Ref string
 }
 
 // Decision splits a stage's PRs into those that run and those that wait, in
@@ -121,4 +124,18 @@ func Admit(entries []Entry, candidate Entry, limit int) (admitted bool, position
 		}
 	}
 	return true, 0
+}
+
+// GateStage names the lane stage a gate sub-issue queues in, from its title
+// "<stage> gate: <KEY>" (the Default workflow's gate sub-issue convention).
+// Only the device and browser lanes are bottleneck stages here; any other gate
+// title is not queued.
+func GateStage(title string) (Stage, bool) {
+	t := strings.ToLower(strings.TrimSpace(title))
+	for _, s := range []Stage{StageDevice, StageBrowser} {
+		if strings.HasPrefix(t, string(s)+" gate:") {
+			return s, true
+		}
+	}
+	return "", false
 }
