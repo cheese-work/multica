@@ -101,6 +101,30 @@ func TestPRAttentionWatchdogSkipsWhenPRStateUnchangedSinceLastRun(t *testing.T) 
 	}
 }
 
+// Returning to draft is an event, not a state: a second conversion at the same
+// head and rollup still starts a run.
+func TestPRDraftReturnIsNeverSkipped(t *testing.T) {
+	e := newSkipEnv(t, true)
+	e.f.Exec(t, `UPDATE issue SET status='done' WHERE id=$1`, e.issue)
+	draft := func(at string) {
+		if err := e.s.TriggerPullRequestWakeup(context.Background(), e.issue, PullRequestWakeupInput{
+			Rule: SystemRulePRAttention, Reason: PRAttentionDraft, RepoOwner: "acme", RepoName: "widget", Number: 157,
+			URL: "https://github.com/acme/widget/pull/157", HeadSHA: "h1", EventAt: at,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	draft("2026-11-04T10:00:00Z")
+	e.finishRuns(t, "completed")
+	draft("2026-11-04T10:05:00Z")
+	if got := e.systemRuns(t, SystemRulePRAttention); got != 2 {
+		t.Fatalf("attention runs for two draft returns = %d, want 2", got)
+	}
+	if got := e.skipped(t); got != 0 {
+		t.Fatalf("skip activities = %d, want 0", got)
+	}
+}
+
 // Negative controls: each of these must still start a run.
 func TestPRWatchdogStillRunsWhenSomethingChanged(t *testing.T) {
 	cases := []struct {
