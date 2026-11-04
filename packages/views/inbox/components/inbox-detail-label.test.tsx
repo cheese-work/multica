@@ -5,7 +5,7 @@ import en from "../../locales/en/inbox.json";
 import zhHansIssues from "../../locales/zh-Hans/issues.json";
 import { InboxDetailLabel } from "./inbox-detail-label";
 
-vi.mock("../../issues/components", () => ({
+vi.mock("../../issues/components/visuals", () => ({
   StatusIcon: () => null,
   PriorityIcon: () => null,
 }));

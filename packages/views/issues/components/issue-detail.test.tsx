@@ -9,6 +9,7 @@ import { issueStatusKeys } from "@multica/core/issue-statuses";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { toast } from "sonner";
 import { useResolvedExpandStore } from "@multica/core/issues/stores/resolved-expand-store";
+import { ApiError } from "@multica/core/api/client";
 // Imported from the barrel (not the submodule path) so this is the exact
 // same module instance issue-detail.tsx reads through the barrel mock below
 // — the submodule path resolves to a second, disconnected instance under
@@ -1045,6 +1046,18 @@ describe("IssueDetail (shared)", () => {
     ).toBe(true);
   });
 
+  // The list is only a seed for rows another view already loaded. Opening an
+  // issue must not pay for a workspace-wide list request to read a cache.
+  it("does not request the workspace issue list", async () => {
+    mockApiObj.getIssue.mockResolvedValue(mockIssue);
+    renderIssueDetail();
+    await waitFor(() => {
+      expect(screen.getByText("Implement authentication")).toBeInTheDocument();
+    });
+
+    expect(mockApiObj.listIssues).not.toHaveBeenCalled();
+  });
+
   it("gives the skeleton the same horizontal gutters as the loaded column", async () => {
     // The skeleton is the loaded column's stand-in, so a gutter change has to
     // land on both or the column jumps sideways at the moment the issue
@@ -1386,7 +1399,7 @@ describe("IssueDetail (shared)", () => {
   });
 
   it("keeps the peek's host controls when the issue cannot be loaded", async () => {
-    mockApiObj.getIssue.mockRejectedValue(new Error("Not found"));
+    mockApiObj.getIssue.mockRejectedValue(new ApiError("Not found", 404, "Not Found"));
     renderPeek("nonexistent-id");
     await waitFor(() => {
       expect(
@@ -2962,7 +2975,7 @@ describe("IssueDetail (shared)", () => {
   });
 
   it("shows 'not found' message when issue does not exist", async () => {
-    mockApiObj.getIssue.mockRejectedValue(new Error("Not found"));
+    mockApiObj.getIssue.mockRejectedValue(new ApiError("Not found", 404, "Not Found"));
 
     renderIssueDetail("nonexistent-id");
 
@@ -2973,8 +2986,23 @@ describe("IssueDetail (shared)", () => {
     });
   });
 
+  // Regression (CHE-3411): a 5xx/401 on a decision-card link read as "deleted".
+  it("offers a retry, not the deleted message, when the load fails with a non-404", async () => {
+    mockApiObj.getIssue.mockRejectedValueOnce(new ApiError("unauthorized", 401, "Unauthorized"));
+
+    renderIssueDetail("issue-1");
+
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expect(
+      screen.queryByText("This issue does not exist or has been deleted in this workspace."),
+    ).not.toBeInTheDocument();
+    mockApiObj.getIssue.mockResolvedValue(mockIssue);
+    fireEvent.click(retry);
+    expect(await screen.findByText(mockIssue.title)).toBeInTheDocument();
+  });
+
   it("shows 'Back' button when issue is not found and no onDelete prop", async () => {
-    mockApiObj.getIssue.mockRejectedValue(new Error("Not found"));
+    mockApiObj.getIssue.mockRejectedValue(new ApiError("Not found", 404, "Not Found"));
 
     renderIssueDetail("nonexistent-id");
 

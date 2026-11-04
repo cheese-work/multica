@@ -50,6 +50,14 @@ type decisionActionExecution struct {
 	Agent    db.Agent
 	Runtime  db.AgentRuntime
 	Secrets  map[string]string
+	// Workflow, Squad and Workspace are the locked, re-read target of an action
+	// on that kind; only the one matching its target is set.
+	Workflow  db.IssueWorkflow
+	Squad     db.Squad
+	Workspace db.Workspace
+	// CredentialID is the passkey credential that signed this approval and
+	// IssueID the issue the request sits on; both go into a config-change audit.
+	CredentialID, IssueID pgtype.UUID
 }
 
 type decisionActionExecutor func(ctx context.Context, execution decisionActionExecution) (json.RawMessage, error)
@@ -76,7 +84,8 @@ var (
 	errPayloadMismatch     = decisionIntentRefusal{http.StatusConflict, "payload_mismatch: the approved payload is not the stored payload"}
 	errPreconditionDrift   = decisionIntentRefusal{http.StatusConflict, "precondition_drift: the target changed since the request; ask again"}
 	errActionExpired       = decisionIntentRefusal{http.StatusConflict, "expired: this action's approval window has closed"}
-	errNeedsOwner          = decisionIntentRefusal{http.StatusForbidden, decisionClassNeedsOwner + ": this action changes an issue and needs the workspace owner"}
+	errNeedsOwner          = decisionIntentRefusal{http.StatusForbidden, decisionClassNeedsOwner + ": this action needs the workspace owner"}
+	errPreviewRequired     = decisionIntentRefusal{http.StatusConflict, "preview_required: approve with the digest of the preview you were shown"}
 	errNotPermitted        = decisionIntentRefusal{http.StatusForbidden, "not_permitted: you may not make this change to this agent"}
 	errSecretsMismatch     = decisionIntentRefusal{http.StatusBadRequest, "secrets_mismatch: supply a value for exactly the secret slots, none masked or empty"}
 )
@@ -85,6 +94,7 @@ type approveBody struct {
 	PayloadSHA256 string            `json:"payload_sha256"`
 	Assertion     json.RawMessage   `json:"assertion"`
 	Secrets       map[string]string `json:"secrets"`
+	PreviewSHA256 string            `json:"preview_sha256"`
 }
 
 // ApproveDecisionAction runs a pending action after its human approves it.
@@ -121,9 +131,13 @@ func (handler *Handler) approveDecisionAction(ctx context.Context, caller decisi
 		return empty, errApprovalUnavailable
 	}
 	executor, found := decisionActionExecutors[preview.ActionType]
-	target, targeted := decisionActionTarget(preview)
-	if isIssueTargetAction(preview) {
+	var target pgtype.UUID
+	var targeted bool
+	switch actionTargetKind(preview) {
+	case decisionaction.TargetIssue, decisionaction.TargetWorkflow, decisionaction.TargetSquad, decisionaction.TargetWorkspace:
 		targeted = true
+	default:
+		target, targeted = decisionActionTarget(preview)
 	}
 	if !found || !targeted {
 		return empty, errNotExecutable
@@ -186,6 +200,11 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	if current.HumanUserID != caller.userID {
 		return empty, errNotTheHuman
 	}
+	// Every action class: recovery revoked the person's keys and nothing
+	// executable is approved until they hold two new ones.
+	if err := refuseWhileRecovering(ctx, queries, caller.userID); err != nil {
+		return empty, err
+	}
 	// A server-opened request is addressed to any member (CHE-2318), but an
 	// action on it moves real state: it needs owner authority, not the member
 	// shortcut.
@@ -197,6 +216,26 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 		if err := requireDecisionAuthorityIn(ctx, queries, issue, caller.userID, "spend", pgtype.UUID{}, false, http.StatusForbidden); err != nil {
 			return empty, err
 		}
+	}
+	targetKind, ownerOnly := actionTargetKind(action), actionOwnerOnly(action)
+	// An owner-only action refuses a non-owner before the passkey, whatever the
+	// request's class or state: the role read under the member lock below
+	// decides again.
+	if ownerOnly {
+		member, err := queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: caller.userID, WorkspaceID: caller.workspaceID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return empty, errNotTheHuman
+		} else if err != nil {
+			return empty, err
+		}
+		if member.Role != "owner" {
+			return empty, errNeedsOwner
+		}
+	}
+	// The lifecycle worker may have recorded the owner cancellation before this
+	// approval; an owner-only action still answers with the owner refusal.
+	if current.Status == "cancelled" && current.CancelReason.String == decisionClassNeedsOwner && ownerOnly {
+		return empty, errNeedsOwner
 	}
 	if current.Status != "open" || action.State != "pending" {
 		return empty, errNotPending
@@ -210,22 +249,46 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	// row: the sweeper that records it runs later, so check it under the locks.
 	if reason, err := queries.DecisionLifecycleReason(ctx, db.DecisionLifecycleReasonParams{WorkspaceID: caller.workspaceID, ID: current.ID}); err != nil {
 		return empty, err
+	} else if reason == decisionClassNeedsOwner && ownerOnly {
+		// The sweeper would cancel this request, but an owner-only action answers
+		// a non-owner approver with the owner refusal, not a stale row.
+		return empty, errNeedsOwner
 	} else if reason != "" {
 		return empty, errNotPending
 	}
 	// Row 6 already holds the issue lock to the end of this transaction, so an
-	// issue-target executor runs under it once params.issue_id is that issue.
-	issueTarget := isIssueTargetAction(action)
-	if issueTarget {
+	// issue-target executor runs under it once params.issue_id is that issue. A
+	// workflow, squad or workspace target is resolved in the request's workspace
+	// and locked here (row 9), before the passkey is checked.
+	var targetAgent db.Agent
+	var workflow db.IssueWorkflow
+	var squad db.Squad
+	var workspace db.Workspace
+	switch targetKind {
+	case decisionaction.TargetIssue:
 		if err := checkIssueTarget(action.Params, current.IssueID, http.StatusConflict); err != nil {
+			return empty, err
+		}
+	case decisionaction.TargetWorkflow:
+		if workflow, err = loadWorkflowTarget(ctx, queries, caller.workspaceID, action.Params, http.StatusConflict, true); err != nil {
+			return empty, err
+		}
+	case decisionaction.TargetSquad:
+		if squad, err = loadSquadTarget(ctx, queries, caller.workspaceID, action.Params, http.StatusConflict, true); err != nil {
+			return empty, err
+		}
+	case decisionaction.TargetWorkspace:
+		if workspace, err = loadWorkspaceTarget(ctx, queries, caller.workspaceID, action.Params, http.StatusConflict, true); err != nil {
 			return empty, err
 		}
 	}
 	if err := checkPayloadHash(action, body.PayloadSHA256); err != nil {
 		return empty, err
 	}
-	var targetAgent db.Agent
-	if !issueTarget {
+	if err := checkPreviewDigest(action, body.PreviewSHA256); err != nil {
+		return empty, err
+	}
+	if targetKind == decisionaction.TargetAgent {
 		var ok bool
 		if targetAgent, ok = agentByID(agents, target); !ok {
 			return empty, errActionNotFound
@@ -249,16 +312,18 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	}
 	// The passkey check above can outlast a role change that committed after the
 	// pre-lock reads, so the owner rule is applied again to the role read under
-	// the member lock: for an issue target and for any server-opened request.
-	if (issueTarget || isServerDecision(current)) && approver.Role != "owner" {
+	// the member lock: for an owner-only action and for any server-opened
+	// request.
+	if (ownerOnly || isServerDecision(current)) && approver.Role != "owner" {
 		return empty, errNeedsOwner
 	}
-	if !issueTarget && !decisionActionPermitted(action.ActionType, targetAgent, approver) {
+	if targetKind == decisionaction.TargetAgent && !decisionActionPermitted(action.ActionType, targetAgent, approver) {
 		return empty, errNotPermitted
 	}
 	finish, summary, err := executeInSavepoint(ctx, transaction, queries, executor, decisionActionExecution{
 		Queries: queries, Approver: verifiedApprover{UserID: caller.userID, DecisionActionID: action.ID},
-		Action: action, Agent: targetAgent, Runtime: runtime, Secrets: body.Secrets,
+		Action: action, Agent: targetAgent, Runtime: runtime, Secrets: body.Secrets, Workflow: workflow, Squad: squad, Workspace: workspace,
+		CredentialID: credential, IssueID: current.IssueID,
 	})
 	if err != nil {
 		return empty, err
@@ -399,6 +464,26 @@ func checkPayloadHash(action db.DecisionAction, claimed string) error {
 	return nil
 }
 
+// checkPreviewDigest requires, for an action that RequiresPreview, the digest of
+// the preview stored in its (hash-covered) preconditions: a client that did not
+// show the diff cannot approve.
+func checkPreviewDigest(action db.DecisionAction, claimed string) error {
+	definition, found := decisionaction.Lookup(action.ActionType, int(action.ActionVersion))
+	if !found || !definition.RequiresPreview {
+		return nil
+	}
+	var stored struct {
+		PreviewSHA256 string `json:"preview_sha256"`
+	}
+	if err := json.Unmarshal(action.Preconditions, &stored); err != nil {
+		return err
+	}
+	if stored.PreviewSHA256 == "" || claimed != stored.PreviewSHA256 {
+		return errPreviewRequired
+	}
+	return nil
+}
+
 func checkPreconditions(action db.DecisionAction, agent db.Agent) error {
 	var drifted bool
 	if action.ActionType == "agent.copy" {
@@ -521,6 +606,12 @@ func lockDecisionThreadAndIssue(ctx context.Context, queries *db.Queries, worksp
 // publishDecisionActionExecuted sends the realtime event of what the action
 // changed. It is idempotent.
 func (handler *Handler) publishDecisionActionExecuted(ctx context.Context, action db.DecisionAction) error {
+	if change, ok := configChanges[action.ActionType]; ok {
+		if change.Publish == nil {
+			return nil
+		}
+		return change.Publish(ctx, handler, action)
+	}
 	if action.ActionType == "agent.copy" {
 		return handler.publishAgentCopyCreated(ctx, action)
 	}

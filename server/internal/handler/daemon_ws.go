@@ -44,6 +44,7 @@ func (h *Handler) buildDaemonWebSocketIdentity(w http.ResponseWriter, r *http.Re
 		RuntimeLeases:      make(map[string]*daemonws.RuntimeLease, len(runtimeIDs)),
 		ClientVersion:      r.Header.Get("X-Client-Version"),
 		Capabilities:       r.Header.Get("X-Client-Capabilities"),
+		SessionRecheck:     middleware.DaemonSessionRecheckFromContext(r.Context()),
 	}
 	if len(runtimeIDs) == 0 {
 		return identity, true

@@ -251,6 +251,17 @@ type AgentToLabel struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+type AskGuardEvent struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	TaskID        pgtype.UUID        `json:"task_id"`
+	OperationKind string             `json:"operation_kind"`
+	PayloadSha256 string             `json:"payload_sha256"`
+	Mode          string             `json:"mode"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
 type Attachment struct {
 	ID              pgtype.UUID        `json:"id"`
 	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
@@ -755,6 +766,15 @@ type CommentReaction struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type CommentSearchText struct {
+	CommentID      pgtype.UUID        `json:"comment_id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	IssueID        pgtype.UUID        `json:"issue_id"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	ContentFolded  string             `json:"content_folded"`
+	ContentAccents pgtype.Text        `json:"content_accents"`
+}
+
 type CommentSupersession struct {
 	SupersededCommentID  pgtype.UUID        `json:"superseded_comment_id"`
 	SupersedingCommentID pgtype.UUID        `json:"superseding_comment_id"`
@@ -1036,6 +1056,9 @@ type DecisionRequest struct {
 	AskJson               []byte             `json:"ask_json"`
 	Authority             string             `json:"authority"`
 	ProjectID             pgtype.UUID        `json:"project_id"`
+	Kind                  string             `json:"kind"`
+	ExpiresAt             pgtype.Timestamptz `json:"expires_at"`
+	AnswerRevision        int32              `json:"answer_revision"`
 }
 
 type DecisionWorkerLease struct {
@@ -1078,6 +1101,30 @@ type DingtalkGroupRoute struct {
 	Revision          int64              `json:"revision"`
 	DiscoveredAt      pgtype.Timestamptz `json:"discovered_at"`
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
+type DmProgressFollow struct {
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	IssueID            pgtype.UUID        `json:"issue_id"`
+	LineageID          pgtype.UUID        `json:"lineage_id"`
+	OwnerUserID        pgtype.UUID        `json:"owner_user_id"`
+	State              string             `json:"state"`
+	MutedAt            pgtype.Timestamptz `json:"muted_at"`
+	LastRenderedStatus string             `json:"last_rendered_status"`
+	LastImmediateAt    pgtype.Timestamptz `json:"last_immediate_at"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	Reasons            []string           `json:"reasons"`
+}
+
+type DmProgressLane struct {
+	LineageID       pgtype.UUID        `json:"lineage_id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	OwnerUserID     pgtype.UUID        `json:"owner_user_id"`
+	LastCardAt      pgtype.Timestamptz `json:"last_card_at"`
+	NextSeq         int64              `json:"next_seq"`
+	SuspendedReason pgtype.Text        `json:"suspended_reason"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 }
 
 type ElevatedOp struct {
@@ -1145,6 +1192,15 @@ type GithubPendingInstallation struct {
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 }
 
+type GithubPrClosedReplay struct {
+	InstallationID int64              `json:"installation_id"`
+	RepoOwner      string             `json:"repo_owner"`
+	RepoName       string             `json:"repo_name"`
+	PrNumber       int32              `json:"pr_number"`
+	RequestedAt    pgtype.Timestamptz `json:"requested_at"`
+	AttemptedAt    pgtype.Timestamptz `json:"attempted_at"`
+}
+
 type GithubPullRequest struct {
 	ID                  pgtype.UUID        `json:"id"`
 	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
@@ -1192,6 +1248,7 @@ type GithubPullRequestCheckRun struct {
 	Conclusion      pgtype.Text `json:"conclusion"`
 	DetailsUrl      pgtype.Text `json:"details_url"`
 	IsStatusContext bool        `json:"is_status_context"`
+	RedCause        pgtype.Text `json:"red_cause"`
 }
 
 type GithubPullRequestCheckSuite struct {
@@ -1809,6 +1866,15 @@ type IssueRunBudgetEntry struct {
 	CapDelta    int32              `json:"cap_delta"`
 	TokensDelta int64              `json:"tokens_delta"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type IssueSearchText struct {
+	IssueID            pgtype.UUID `json:"issue_id"`
+	WorkspaceID        pgtype.UUID `json:"workspace_id"`
+	TitleFolded        string      `json:"title_folded"`
+	DescriptionFolded  string      `json:"description_folded"`
+	TitleAccents       pgtype.Text `json:"title_accents"`
+	DescriptionAccents pgtype.Text `json:"description_accents"`
 }
 
 type IssueSourceContext struct {
@@ -3010,6 +3076,18 @@ type WakeupAggregateReservation struct {
 	ReservedAt  pgtype.Timestamptz `json:"reserved_at"`
 }
 
+type WakeupDefinitionActivation struct {
+	Name        string             `json:"name"`
+	State       string             `json:"state"`
+	Cursor      pgtype.UUID        `json:"cursor"`
+	Scanned     int64              `json:"scanned"`
+	Inserted    int64              `json:"inserted"`
+	LastError   pgtype.Text        `json:"last_error"`
+	StartedAt   pgtype.Timestamptz `json:"started_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	CompletedAt pgtype.Timestamptz `json:"completed_at"`
+}
+
 type WakeupScopedEvent struct {
 	ID           pgtype.UUID        `json:"id"`
 	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
@@ -3117,6 +3195,13 @@ type Workspace struct {
 	PolicyRevision              int32              `json:"policy_revision"`
 	SchedulingPausedAt          pgtype.Timestamptz `json:"scheduling_paused_at"`
 	SchedulingPausedBy          pgtype.UUID        `json:"scheduling_paused_by"`
+}
+
+type WorkspaceConfigSync struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	ID          pgtype.UUID        `json:"id"`
+	Settings    string             `json:"settings"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 }
 
 type WorkspaceInvitation struct {
