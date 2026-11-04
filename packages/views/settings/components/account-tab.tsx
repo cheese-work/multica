@@ -45,7 +45,7 @@ export function AccountTab() {
   );
   // Keyed on user id and persisted: edits survive remounts and reloads, and an
   // avatar upload or auto-save replacing the user object never wipes them.
-  const [fields, setFields] = useSettingsDraft(
+  const [fields, setFields, confirmFields] = useSettingsDraft(
     useAccountProfileDraftStore,
     user?.id ?? "",
     savedFields,
@@ -75,6 +75,8 @@ export function AccountTab() {
     value: draft,
     savedValue: savedFields,
     onSave: saveProfile,
+    onSuccess: confirmFields,
+    onIdle: confirmFields,
     onError: (error) =>
       toast.error(
         error instanceof Error

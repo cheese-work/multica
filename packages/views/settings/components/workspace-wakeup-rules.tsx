@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { usePersistedDraft } from "@multica/core/drafts";
 import { useWakeupRuleDraftStore, type SettingsFieldsDraft } from "@multica/core/settings/draft-stores";
 import { useQuery } from "@tanstack/react-query";
@@ -236,7 +236,11 @@ function RuleForm({
   const draftKey = `${scope.kind}:${scope.kind === "project" ? scope.id : workspaceId}:${rule?.rule_key ?? "new"}`;
   const [persisted, setPersisted, clearPersisted] = usePersistedDraft(useWakeupRuleDraftStore, draftKey, NO_RULE_DRAFT);
   const [name, setNameState] = useState(persisted.name ?? initial?.name ?? "");
+  // The store fills in after mount when the workspace storage namespace
+  // switches; a draft arriving then applies once, unless the user typed first.
+  const touched = useRef(Boolean(persisted.name ?? persisted.form));
   const setName = (next: string) => {
+    touched.current = true;
     setNameState(next);
     setPersisted({ name: next });
   };
@@ -281,7 +285,15 @@ function RuleForm({
     },
   });
 
+  useEffect(() => {
+    if (touched.current || !(persisted.name ?? persisted.form)) return;
+    touched.current = true;
+    if (persisted.name !== undefined) setNameState(persisted.name);
+    if (persisted.form) updateDraft(JSON.parse(persisted.form) as Partial<WakeupDraft>);
+  }, [persisted, updateDraft]);
+
   const update = (patch: Partial<WakeupDraft>) => {
+    touched.current = true;
     updateDraft(patch);
     setPersisted({ form: JSON.stringify({ ...draft, ...patch }) });
   };
@@ -326,8 +338,10 @@ function RuleForm({
       <label htmlFor={`${id}-name`} className="mt-3 mb-1.5 block text-caption font-medium">
         {t(($) => $.wakeups.rules.name)}
       </label>
-      <Input id={`${id}-name`} value={name} maxLength={WAKEUP_DEFINITION_NAME_MAX * 4} onChange={(event) => setName(event.target.value)} />
-      <WakeupFields draft={draft} update={update} scope={{ workspaceId, definition: true }} assigneeAgentId={null} />
+      <Input id={`${id}-name`} value={name} disabled={pending} maxLength={WAKEUP_DEFINITION_NAME_MAX * 4} onChange={(event) => setName(event.target.value)} />
+      <fieldset disabled={pending} className="contents">
+        <WakeupFields draft={draft} update={update} scope={{ workspaceId, definition: true }} assigneeAgentId={null} />
+      </fieldset>
       {error && (
         <p role="alert" className="mt-3 text-caption text-destructive">
           {error}

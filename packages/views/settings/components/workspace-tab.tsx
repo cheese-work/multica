@@ -173,7 +173,7 @@ export function WorkspaceTab() {
   // Unsent edits are kept per workspace and persisted, so they survive a
   // remount or reload. An untouched field follows what is saved elsewhere (the
   // CLI); an edited one is never overwritten until its save lands.
-  const [fields, setFields] = useSettingsDraft(
+  const [fields, setFields, confirmFields] = useSettingsDraft(
     useWorkspaceSettingsDraftStore,
     workspace?.id ?? "",
     savedFields,
@@ -260,6 +260,8 @@ export function WorkspaceTab() {
     value: detailsDraft,
     savedValue: savedDetails,
     onSave: saveDetails,
+    onSuccess: confirmFields,
+    onIdle: confirmFields,
     onError: (error) =>
       toast.error(
         error instanceof Error
@@ -286,6 +288,8 @@ export function WorkspaceTab() {
     value: compactPrompt,
     savedValue: savedCompactPrompt,
     onSave: saveCompactPrompt,
+    onSuccess: (compactPrompt) => confirmFields({ compactPrompt }),
+    onIdle: (compactPrompt) => confirmFields({ compactPrompt }),
     onError: (error) =>
       toast.error(
         error instanceof Error
