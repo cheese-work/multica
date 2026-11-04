@@ -194,6 +194,11 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	if current.HumanUserID != caller.userID {
 		return empty, errNotTheHuman
 	}
+	// Every action class: recovery revoked the person's keys and nothing
+	// executable is approved until they hold two new ones.
+	if err := refuseWhileRecovering(ctx, queries, caller.userID); err != nil {
+		return empty, err
+	}
 	// A server-opened request is addressed to any member (CHE-2318), but an
 	// action on it moves real state: it needs owner authority, not the member
 	// shortcut.

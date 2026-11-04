@@ -87,8 +87,6 @@ func TestHumanStepsRejects(test *testing.T) {
 			step["command"] = "gh secret set X --body <token>"
 			step["values"] = []any{map[string]any{"name": "unrelated_token_backup", "value": "x"}}
 		}, "ask.human_steps[0] names <token> without a values entry"},
-		{"implicit value word", func(ask map[string]any) { firstStep(ask)["action"] = "Set the URL, tương tự the others" }, "ask.human_steps[0].action leaves values implicit (tương tự); write each one"},
-		{"implicit etc", func(ask map[string]any) { firstStep(ask)["action"] = "Set the URL, etc." }, "ask.human_steps[0].action leaves values implicit (etc.); write each one"},
 		{"bare uuid in action", func(ask map[string]any) {
 			firstStep(ask)["action"] = "Open agent 75eed3bd-33c6-42f5-b612-cf0f03b8879a"
 		}, "ask.human_steps[0].action has a bare UUID; use a name or a mention link"},

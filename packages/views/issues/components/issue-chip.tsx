@@ -74,7 +74,7 @@ export function IssueChip({
   const cls = className ? `${ISSUE_CHIP_CLASS} ${className}` : ISSUE_CHIP_CLASS;
 
   if (children !== undefined) {
-    return <span className={cls}>{children}</span>;
+    return <span className={cls} data-copy-token={issue?.identifier}>{children}</span>;
   }
 
   if (!issue) {
@@ -88,7 +88,7 @@ export function IssueChip({
   }
 
   return (
-    <span className={cls}>
+    <span className={cls} data-copy-token={issue.identifier}>
       <StatusIcon
         status={issue.status}
         category={issueStatusCategory(issue) ?? undefined}
