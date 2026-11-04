@@ -22,10 +22,11 @@ const (
 
 func init() {
 	registerConfigChange(agentInstructionsAction, configChange{
-		Lock:    lockAgentInstructionsTarget,
-		Read:    readAgentInstructions,
-		Apply:   applyAgentInstructions,
-		Publish: publishAgentInstructionsSet,
+		Lock:       lockAgentInstructionsTarget,
+		Read:       readAgentInstructions,
+		Apply:      applyAgentInstructions,
+		Publish:    publishAgentInstructionsSet,
+		QueueField: agentInstructionsField,
 	})
 }
 

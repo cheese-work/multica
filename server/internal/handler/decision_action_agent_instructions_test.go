@@ -386,10 +386,9 @@ func TestAgentInstructionsSetSecondApprovalOnTheSameBaseIsDrift(test *testing.T)
 	}
 }
 
-// Two approvals racing on one target apply exactly once. The loser either read
-// the winner's committed value (precondition_drift) or hit the NOWAIT row lock
-// (busy_retry, the retryable answer every config change gives); a retry of
-// the loser must then be precondition_drift. The loser never mutates.
+// Two approvals racing on one target apply exactly once. The approvals queue
+// on the field lock, so the loser reads the winner's committed value and
+// answers precondition_drift, never busy_retry. The loser never mutates.
 func TestAgentInstructionsSetConcurrentApprovalsApplyOnce(test *testing.T) {
 	first, _ := requestAgentInstructions(test, http.StatusCreated, nil)
 	second := requestAgentInstructionsOn(test, first.target, "planner")
@@ -415,8 +414,8 @@ func TestAgentInstructionsSetConcurrentApprovalsApplyOnce(test *testing.T) {
 	if statuses[winner] != http.StatusOK || statuses[loser] != http.StatusConflict {
 		test.Fatalf("statuses %v (%q, %q); want one 200 and one 409", statuses, bodies[0], bodies[1])
 	}
-	if !strings.Contains(bodies[loser], "precondition_drift") && !strings.Contains(bodies[loser], "busy_retry") {
-		test.Fatalf("loser body %q; want precondition_drift or busy_retry", bodies[loser])
+	if !strings.Contains(bodies[loser], "precondition_drift") {
+		test.Fatalf("loser body %q; want precondition_drift", bodies[loser])
 	}
 	applied := dbfx.Count(test, `SELECT count(*) FROM activity_log WHERE issue_id IN ($1, $2) AND action = 'config_change_applied'`, first.action.issueID, second.action.issueID)
 	if applied != 1 {
