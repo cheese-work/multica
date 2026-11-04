@@ -1101,6 +1101,31 @@ type DingtalkGroupRoute struct {
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 }
 
+type DmProgressFollow struct {
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	IssueID            pgtype.UUID        `json:"issue_id"`
+	LineageID          pgtype.UUID        `json:"lineage_id"`
+	OwnerUserID        pgtype.UUID        `json:"owner_user_id"`
+	Source             string             `json:"source"`
+	State              string             `json:"state"`
+	MutedAt            pgtype.Timestamptz `json:"muted_at"`
+	LastRenderedStatus string             `json:"last_rendered_status"`
+	LastImmediateAt    pgtype.Timestamptz `json:"last_immediate_at"`
+	ParentFollowID     pgtype.UUID        `json:"parent_follow_id"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+}
+
+type DmProgressLane struct {
+	LineageID       pgtype.UUID        `json:"lineage_id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	OwnerUserID     pgtype.UUID        `json:"owner_user_id"`
+	LastCardAt      pgtype.Timestamptz `json:"last_card_at"`
+	NextSeq         int64              `json:"next_seq"`
+	SuspendedReason pgtype.Text        `json:"suspended_reason"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+}
+
 type ElevatedOp struct {
 	OpID        pgtype.UUID        `json:"op_id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
