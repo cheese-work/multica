@@ -95,13 +95,10 @@ func TestGetRuntimeUsage_BucketsByUsageTime(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	// Pick a runtime bound to the fixture workspace.
-	var runtimeID string
-	if err := testPool.QueryRow(ctx, `
-		SELECT id FROM agent_runtime WHERE workspace_id = $1 LIMIT 1
-	`, testWorkspaceID).Scan(&runtimeID); err != nil {
-		t.Fatalf("fetch runtime: %v", err)
-	}
+	// Use the fixture runtime. "LIMIT 1" over the workspace can return a
+	// private runtime another test left behind, which the test user may not
+	// read: GetRuntimeUsage then answers 404 (CHE-3579).
+	runtimeID := testRuntimeID
 	var agentID string
 	if err := testPool.QueryRow(ctx, `
 		SELECT id FROM agent WHERE workspace_id = $1 LIMIT 1
