@@ -279,3 +279,90 @@ describe("chat drafts survive an app cold start", () => {
     });
   });
 });
+
+describe("a send is in flight while the workspace changes", () => {
+  beforeEach(() => {
+    disk.clear();
+    vi.useFakeTimers();
+  });
+  afterEach(() => vi.useRealTimers());
+
+  // Workspace A new-chat send is open, then the user opens workspace B and
+  // types in B's new chat.
+  async function switchDuringSend() {
+    const run = await coldStart();
+    const s = run.useChatDraftsStore.getState();
+    await s.hydrate("u1:wsA");
+    s.setDraft(run.DRAFT_NEW_SESSION, "from A");
+    const token = s.beginSend(run.DRAFT_NEW_SESSION, "from A");
+    s.setDraft(run.DRAFT_NEW_SESSION, "");
+    await s.hydrate("u1:wsB");
+    s.setDraft(run.DRAFT_NEW_SESSION, "from B");
+    await vi.advanceTimersByTimeAsync(1000);
+    return { run, s, token };
+  }
+
+  async function draftsAfterRestart(scope: string, newKey: string) {
+    const next = await coldStart();
+    await next.useChatDraftsStore.getState().hydrate(scope);
+    return next.useChatDraftsStore.getState().drafts[newKey];
+  }
+
+  it("keeps the other workspace's submitted text out of the new chat", async () => {
+    const { run } = await switchDuringSend();
+    expect(
+      run.useChatDraftsStore.getState().drafts[run.DRAFT_NEW_SESSION],
+    ).toBe("from B");
+    expect(await draftsAfterRestart("u1:wsB", run.DRAFT_NEW_SESSION)).toBe(
+      "from B",
+    );
+    expect(await draftsAfterRestart("u1:wsA", run.DRAFT_NEW_SESSION)).toBe(
+      "from A",
+    );
+  });
+
+  it("a late success settles the original workspace only", async () => {
+    const { run, s, token } = await switchDuringSend();
+    s.finishSend(token, true);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(
+      run.useChatDraftsStore.getState().drafts[run.DRAFT_NEW_SESSION],
+    ).toBe("from B");
+    expect(await draftsAfterRestart("u1:wsB", run.DRAFT_NEW_SESSION)).toBe(
+      "from B",
+    );
+    expect(
+      await draftsAfterRestart("u1:wsA", run.DRAFT_NEW_SESSION),
+    ).toBeUndefined();
+  });
+
+  it("a late failure keeps the text in the original workspace only", async () => {
+    const { run, s, token } = await switchDuringSend();
+    s.finishSend(token, false);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(
+      run.useChatDraftsStore.getState().drafts[run.DRAFT_NEW_SESSION],
+    ).toBe("from B");
+    expect(await draftsAfterRestart("u1:wsB", run.DRAFT_NEW_SESSION)).toBe(
+      "from B",
+    );
+    expect(await draftsAfterRestart("u1:wsA", run.DRAFT_NEW_SESSION)).toBe(
+      "from A",
+    );
+  });
+
+  it("ignores an input write that belongs to the workspace that was left", async () => {
+    const { run, s } = await switchDuringSend();
+    // The old composer restores its text after a failure, with the scope it
+    // was rendered in.
+    s.setDraft(run.DRAFT_NEW_SESSION, "stale restore", "u1:wsA");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(
+      run.useChatDraftsStore.getState().drafts[run.DRAFT_NEW_SESSION],
+    ).toBe("from B");
+    expect(await draftsAfterRestart("u1:wsB", run.DRAFT_NEW_SESSION)).toBe(
+      "from B",
+    );
+  });
+});
+

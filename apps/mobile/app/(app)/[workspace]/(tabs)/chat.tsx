@@ -248,6 +248,7 @@ export default function ChatTab() {
   const draftKey = activeSessionId ?? DRAFT_NEW_SESSION;
   const draft = useChatDraftsStore((s) => s.drafts[draftKey] ?? "");
   const setDraft = useChatDraftsStore((s) => s.setDraft);
+  const draftScope = useChatDraftsStore((s) => s.scopeId);
   const promoteNewDraft = useChatDraftsStore((s) => s.promoteNewDraft);
   const beginSend = useChatDraftsStore((s) => s.beginSend);
   const finishSend = useChatDraftsStore((s) => s.finishSend);
@@ -799,7 +800,7 @@ export default function ChatTab() {
         ) : null}
         <ChatComposer
           value={draft}
-          onChangeText={(next) => setDraft(draftKey, next)}
+          onChangeText={(next) => setDraft(draftKey, next, draftScope)}
           onSend={handleSend}
           onSendStart={(text) => beginSend(draftKey, text)}
           onSendSettled={finishSend}
