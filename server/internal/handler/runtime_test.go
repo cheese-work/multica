@@ -95,13 +95,10 @@ func TestGetRuntimeUsage_BucketsByUsageTime(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	// Pick a runtime bound to the fixture workspace.
-	var runtimeID string
-	if err := testPool.QueryRow(ctx, `
-		SELECT id FROM agent_runtime WHERE workspace_id = $1 LIMIT 1
-	`, testWorkspaceID).Scan(&runtimeID); err != nil {
-		t.Fatalf("fetch runtime: %v", err)
-	}
+	// Use the seeded runtime by id: other tests leave runtimes in this
+	// workspace that the access check refuses, so an unordered LIMIT 1
+	// picks one of them at random and the handler returns 404.
+	runtimeID := testRuntimeID
 	var agentID string
 	if err := testPool.QueryRow(ctx, `
 		SELECT id FROM agent WHERE workspace_id = $1 LIMIT 1
