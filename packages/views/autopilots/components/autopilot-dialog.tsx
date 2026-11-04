@@ -59,7 +59,7 @@ import type {
   AutopilotExecutionMode,
   AutopilotTrigger,
 } from "@multica/core/types";
-import { TitleEditor, ContentEditor, type TitleEditorRef } from "../../editor";
+import { TitleEditor, ContentEditor, type ContentEditorRef, type TitleEditorRef } from "../../editor";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { SegmentedToggle } from "../../common/segmented-toggle";
 import { ProjectPicker } from "../../projects/components/project-picker";
@@ -369,6 +369,7 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
   // so filling the field clears its error without a second submit.
   const [showErrors, setShowErrors] = useState(false);
   const titleEditorRef = useRef<TitleEditorRef>(null);
+  const descriptionEditorRef = useRef<ContentEditorRef>(null);
   const assigneeTriggerRef = useRef<HTMLButtonElement>(null);
   const assigneeErrorId = useId();
 
@@ -383,6 +384,11 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
       return;
     }
     setSubmitting(true);
+    // The runbook state lags the editor by its debounce: take any text typed
+    // just before Save, and keep it in the draft in case the save fails.
+    const pendingRunbook = descriptionEditorRef.current?.flushPendingUpdate() ?? null;
+    if (pendingRunbook !== null) setDescription(pendingRunbook);
+    const runbook = pendingRunbook ?? description;
     try {
       if (scheduleWillBeWritten && !(await scheduleGate.ensureAccepted(schedule))) {
         setSubmitting(false);
@@ -391,7 +397,7 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
       if (isCreate) {
         const fields = {
           title: title.trim(),
-          description: description.trim() || undefined,
+          description: runbook.trim() || undefined,
           project_id: projectId,
           assignee_type: assigneeType,
           assignee_id: assigneeId,
@@ -408,7 +414,7 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
           await updateAutopilot.mutateAsync({
             id: autopilotId,
             ...fields,
-            description: description.trim() || null,
+            description: runbook.trim() || null,
           });
         } else {
           autopilotId = (await createAutopilot.mutateAsync(fields)).id;
@@ -459,7 +465,7 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
         await updateAutopilot.mutateAsync({
           id: props.autopilotId,
           title: title.trim(),
-          description: description.trim() || null,
+          description: runbook.trim() || null,
           project_id: projectId,
           assignee_type: assigneeType,
           assignee_id: assigneeId,
@@ -695,6 +701,7 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
             <div className="flex-1 min-h-0 px-6 pb-6 flex flex-col lg:h-full">
               <div className="min-h-[200px] lg:min-h-0 lg:h-full overflow-y-auto rounded-lg border border-border bg-background transition-colors focus-within:border-input px-4 py-3">
                 <ContentEditor
+                  ref={descriptionEditorRef}
                   defaultValue={seed.description ?? initial.description ?? ""}
                   placeholder={t(($) => $.dialog.description_placeholder)}
                   onUpdate={setDescription}

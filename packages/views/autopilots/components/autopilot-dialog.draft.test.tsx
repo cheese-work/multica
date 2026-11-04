@@ -87,6 +87,7 @@ vi.mock("../../editor", () => ({
   // Mirrors the real editor's lifecycle: `onUpdate` is debounced, and a pending
   // update is dropped on unmount unless `flushPendingOnUnmount` is set.
   ContentEditor: ({
+    ref,
     defaultValue,
     placeholder,
     onUpdate,
@@ -98,6 +99,17 @@ vi.mock("../../editor", () => ({
     const pending = useRef<string | null>(null);
     const onUpdateRef = useRef(onUpdate);
     onUpdateRef.current = onUpdate;
+    // Same contract as the real handle: the latest text if an update is still
+    // pending, and null when the host already has everything.
+    useImperativeHandle(ref, () => ({
+      flushPendingUpdate: () => {
+        if (pending.current === null) return null;
+        clearTimeout(timer.current);
+        const md = pending.current;
+        pending.current = null;
+        return md;
+      },
+    }));
     useEffect(
       () => () => {
         clearTimeout(timer.current);
@@ -252,11 +264,43 @@ describe("AutopilotDialog draft persistence", () => {
     // Submit while that runbook update is still pending in the editor.
     await user.click(createButton());
     await waitFor(() => expect(mockCreateTrigger).toHaveBeenCalled());
+    // The request carries the text typed right before Save, not the lagging state.
+    expect(mockCreateAutopilot).toHaveBeenCalledWith(
+      expect.objectContaining({ description: "Summarise the inbox" }),
+    );
     first.unmount();
 
     renderCreateDialog();
     expect(screen.getByLabelText("title")).toHaveValue("");
     expect(screen.getByLabelText("runbook")).toHaveValue("");
+  });
+
+  it("keeps the runbook typed just before a Save that fails", async () => {
+    const user = userEvent.setup();
+    mockCreateAutopilot.mockRejectedValueOnce(new Error("nope"));
+    const first = renderCreateDialog();
+    await user.type(screen.getByLabelText("title"), "Daily digest");
+    await user.click(assigneeTrigger());
+    await user.click(await screen.findByRole("button", { name: /Scout/ }));
+    await user.type(screen.getByLabelText("runbook"), "Summarise the inbox");
+    await user.click(createButton());
+    await waitFor(() => expect(mockCreateAutopilot).toHaveBeenCalledTimes(1));
+    first.unmount();
+
+    renderCreateDialog();
+    expect(screen.getByLabelText("runbook")).toHaveValue("Summarise the inbox");
+  });
+
+  it("saves the runbook typed just before Save on an edit", async () => {
+    const user = userEvent.setup();
+    mockUpdateAutopilot.mockResolvedValue({ id: "ap-1" });
+    renderEditDialog();
+    await user.type(screen.getByLabelText("runbook"), "Fresh steps");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mockUpdateAutopilot).toHaveBeenCalled());
+    expect(mockUpdateAutopilot).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "ap-1", description: "Fresh steps" }),
+    );
   });
 
   it("retries a failed trigger on the autopilot it already created", async () => {
