@@ -29,6 +29,16 @@ interface AuthState {
   setUser: (user: User) => void;
 }
 
+// Draft cleanup must never keep the user signed in: drafts are scoped per user
+// on disk, so a failed delete leaves them unreadable by the next account.
+async function clearDraftsOnSessionEnd() {
+  try {
+    await clearAllDrafts();
+  } catch (err) {
+    console.warn("[auth] could not delete saved drafts", err);
+  }
+}
+
 export const useAuthStore = create<AuthState>((set) => ({
   user: null,
   isLoading: true,
@@ -58,7 +68,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         invalidateSessionEpoch();
         await clearToken();
         api.setToken(null);
-        await clearAllDrafts();
+        await clearDraftsOnSessionEnd();
       }
       set({ user: null, isLoading: false });
     }
@@ -88,7 +98,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     await clearToken();
     api.setToken(null);
     // Unsent drafts belong to the account that is leaving.
-    await clearAllDrafts();
+    await clearDraftsOnSessionEnd();
     set({ user: null });
   },
 

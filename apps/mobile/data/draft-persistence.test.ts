@@ -129,4 +129,23 @@ describe("draft persistence", () => {
     storage.data.set(goodKey.replace("good", "bad"), "{not json");
     expect(await p.loadAll("ws1", "")).toEqual({ good: "ok" });
   });
+
+  it("clearAll rejects when the disk delete fails, and later work still runs", async () => {
+    const storage = memoryStorage();
+    const p = createDraftPersistence({ storage, now });
+    p.save("ws1", "a", "1");
+    await p.flush();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const multiRemove = vi
+      .spyOn(storage, "multiRemove")
+      .mockRejectedValueOnce(new Error("disk full"));
+
+    await expect(p.clearAll()).rejects.toThrow("disk full");
+    expect(multiRemove).toHaveBeenCalledTimes(1);
+
+    // The queue is not stuck: a retry succeeds.
+    await p.clearAll();
+    expect(storage.data.size).toBe(0);
+    warn.mockRestore();
+  });
 });

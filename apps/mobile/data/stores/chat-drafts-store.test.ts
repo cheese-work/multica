@@ -1,3 +1,4 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // In-memory stand-in for the native AsyncStorage module. It outlives
@@ -126,5 +127,44 @@ describe("chat drafts survive an app cold start", () => {
     const run2 = await coldStart();
     await run2.useChatDraftsStore.getState().hydrate("ws1");
     expect(run2.useChatDraftsStore.getState().drafts).toEqual({});
+  });
+
+  it("logout with a failed disk delete reports it and still empties memory", async () => {
+    const run1 = await coldStart();
+    await run1.useChatDraftsStore.getState().hydrate("user1:ws1");
+    run1.useChatDraftsStore.getState().setDraft("session-a", "private");
+    await vi.advanceTimersByTimeAsync(1000);
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const realMultiRemove = AsyncStorage.multiRemove;
+    AsyncStorage.multiRemove = async () => {
+      throw new Error("disk full");
+    };
+    await expect(run1.clearAllDrafts()).rejects.toThrow("disk full");
+    AsyncStorage.multiRemove = realMultiRemove;
+    warn.mockRestore();
+    expect(run1.useChatDraftsStore.getState().drafts).toEqual({});
+
+    // The drafts are still on disk, but another account's scope never sees them.
+    const run2 = await coldStart();
+    await run2.useChatDraftsStore.getState().hydrate("user2:ws1");
+    expect(run2.useChatDraftsStore.getState().drafts).toEqual({});
+  });
+
+  it("keeps text typed after the composer's optimistic clear on submit", async () => {
+    const run1 = await coldStart();
+    const s = run1.useChatDraftsStore.getState();
+    await s.hydrate("user1:ws1");
+    s.setDraft("session-a", "first message");
+    s.setDraft("session-a", ""); // composer empties the input on submit
+    s.setDraft("session-a", "second message"); // typed while the send is pending
+    // A successful send must not touch the draft: nothing is called here.
+    await vi.advanceTimersByTimeAsync(1000);
+
+    const run2 = await coldStart();
+    await run2.useChatDraftsStore.getState().hydrate("user1:ws1");
+    expect(run2.useChatDraftsStore.getState().drafts["session-a"]).toBe(
+      "second message",
+    );
   });
 });

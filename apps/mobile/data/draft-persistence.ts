@@ -13,7 +13,8 @@
  * Writes are debounced per draft (a keystroke must not hit disk) and all disk
  * operations are serialized, so a remove or logout wipe always lands after a
  * write that was already in flight. Disk errors are logged and swallowed: a
- * failed draft write must never break typing.
+ * failed draft write must never break typing. The one exception is `clearAll`
+ * (logout): it rejects when the delete fails so the caller can tell.
  */
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
@@ -42,7 +43,8 @@ export interface DraftPersistence {
   sweepExpired(): Promise<void>;
   /** Write every pending draft now (call when the app is backgrounded). */
   flush(): Promise<void>;
-  /** Delete every draft of every scope and drop pending writes. */
+  /** Delete every draft of every scope and drop pending writes. Rejects when
+   *  the disk delete fails. */
   clearAll(): Promise<void>;
 }
 
@@ -79,16 +81,22 @@ export function createDraftPersistence(options: {
   >();
   let queue: Promise<unknown> = Promise.resolve();
 
-  function enqueue(operation: () => Promise<void>): Promise<void> {
+  // The returned promise rejects only when `rethrow` is set. The queue itself
+  // never rejects, so one failed operation cannot stall the ones after it.
+  function enqueue(
+    operation: () => Promise<void>,
+    rethrow = false,
+  ): Promise<void> {
     const run = async () => {
       try {
         await operation();
       } catch (err) {
         console.warn("[drafts] storage operation failed", err);
+        if (rethrow) throw err;
       }
     };
     const result = queue.then(run);
-    queue = result;
+    queue = result.catch(() => undefined);
     return result;
   }
 
@@ -172,7 +180,7 @@ export function createDraftPersistence(options: {
           k.startsWith(PREFIX),
         );
         if (keys.length > 0) await storage.multiRemove(keys);
-      });
+      }, true);
     },
   };
 }
@@ -190,7 +198,8 @@ export function registerDraftCleanup(cleanup: () => void): void {
   cleanups.add(cleanup);
 }
 
-/** Logout: empty every in-memory draft store and delete all drafts on disk. */
+/** Logout: empty every in-memory draft store and delete all drafts on disk.
+ *  Rejects when the disk delete fails; memory is already empty by then. */
 export async function clearAllDrafts(): Promise<void> {
   cleanups.forEach((cleanup) => cleanup());
   await draftPersistence.clearAll();
