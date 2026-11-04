@@ -3,6 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Loader2, Save } from "@multica/ui/icons";
 import type { Agent } from "@multica/core/types";
+import { usePersistedDraft } from "@multica/core/drafts";
+import {
+  EMPTY_AGENT_INSTRUCTIONS_DRAFT,
+  useAgentInstructionsDraftStore,
+} from "@multica/core/agents";
 import { Button } from "@multica/ui/components/ui/button";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { ReadonlyContent } from "../../../editor/readonly-content";
@@ -21,7 +26,12 @@ export function InstructionsTab({
   onDirtyChange?: (dirty: boolean) => void;
 }) {
   const { t } = useT("agents");
-  const [value, setValue] = useState(agent.instructions ?? "");
+  const [draft, setDraft, clearDraft] = usePersistedDraft(
+    useAgentInstructionsDraftStore,
+    agent.id,
+    EMPTY_AGENT_INSTRUCTIONS_DRAFT,
+  );
+  const [value, setValue] = useState(draft.value ?? agent.instructions ?? "");
   const [mode, setMode] = useState<EditorMode>("write");
   const [saving, setSaving] = useState(false);
   const [systemOpen, setSystemOpen] = useState(false);
@@ -30,6 +40,14 @@ export function InstructionsTab({
   const localRef = useRef(value);
   localRef.current = value;
   const isDirty = value !== persisted;
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+
+  // Mirror edits into the keyed draft; an edit equal to the saved value is no draft.
+  const edit = (next: string) => {
+    setValue(next);
+    setDraft({ value: next === persisted ? null : next });
+  };
 
   // A system agent's prompt has two halves: the product half ships with the
   // backend and updates on deploy, so it is shown read-only; the editable
@@ -59,7 +77,7 @@ export function InstructionsTab({
       switchingAgents ||
       (!wasLocallyDirty && previous.instructions !== persisted)
     ) {
-      setValue(persisted);
+      setValue(switchingAgents ? (draftRef.current.value ?? persisted) : persisted);
     }
   }, [agent.id, persisted, saving]);
 
@@ -72,6 +90,7 @@ export function InstructionsTab({
     setSaving(true);
     try {
       await onSave({ instructions: value });
+      clearDraft();
     } catch {
       // toast handled by parent
     } finally {
@@ -146,7 +165,7 @@ export function InstructionsTab({
             autoComplete="off"
             aria-label={fieldLabel}
             value={value}
-            onChange={(event) => setValue(event.target.value)}
+            onChange={(event) => edit(event.target.value)}
             placeholder={
               hasSystemLayer
                 ? t(($) => $.tab_body.instructions.workspace_notes_placeholder)
@@ -182,7 +201,10 @@ export function InstructionsTab({
                 size="sm"
                 variant="ghost"
                 disabled={saving}
-                onClick={() => setValue(persisted)}
+                onClick={() => {
+                  setValue(persisted);
+                  clearDraft();
+                }}
               >
                 {t(($) => $.tab_body.common.discard)}
               </Button>

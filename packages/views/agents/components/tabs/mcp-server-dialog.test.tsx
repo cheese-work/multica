@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
 import type { ComponentProps, ReactNode } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, afterEach } from "vitest";
+import { resetAllRegisteredDrafts } from "@multica/core/drafts";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { I18nProvider } from "@multica/core/i18n/react";
@@ -45,6 +46,8 @@ function renderDialog(overrides: Partial<ComponentProps<typeof McpServerDialog>>
   const view = render(<McpServerDialog {...props} />, { wrapper: Wrapper });
   return { ...view, onSave: props.onSave, onOpenChange: props.onOpenChange };
 }
+
+afterEach(() => resetAllRegisteredDrafts());
 
 describe("McpServerDialog", () => {
   it.each(["context7.dev", "legacy server", " padded "])(
@@ -234,5 +237,45 @@ describe("McpServerDialog", () => {
       url: "https://example.test/mcp",
       headers: { First: "one", Updated: "four" },
     });
+  });
+
+  it("restores a half-filled dialog after close and reopen, without env or header values", async () => {
+    const user = userEvent.setup();
+    const props = {
+      server: null,
+      existingNames: new Set<string>(),
+      onSave: vi.fn().mockResolvedValue(undefined),
+      onOpenChange: vi.fn(),
+      draftKey: "agent-1:new",
+    };
+    const view = render(<McpServerDialog open {...props} />, { wrapper: Wrapper });
+    await user.type(screen.getByLabelText("Server name"), "half-done");
+    await user.type(screen.getByLabelText("Command"), "uvx");
+
+    view.rerender(<McpServerDialog open={false} {...props} />);
+    view.rerender(<McpServerDialog open {...props} />);
+
+    expect(screen.getByLabelText("Server name")).toHaveValue("half-done");
+    expect(screen.getByLabelText("Command")).toHaveValue("uvx");
+  });
+
+  it("clears the draft after a successful save", async () => {
+    const user = userEvent.setup();
+    const props = {
+      server: null,
+      existingNames: new Set<string>(),
+      onSave: vi.fn().mockResolvedValue(undefined),
+      onOpenChange: vi.fn(),
+      draftKey: "agent-1:saved",
+    };
+    const view = render(<McpServerDialog open {...props} />, { wrapper: Wrapper });
+    await user.type(screen.getByLabelText("Server name"), "saved-one");
+    await user.type(screen.getByLabelText("Command"), "uvx");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(props.onSave).toHaveBeenCalled());
+
+    view.rerender(<McpServerDialog open={false} {...props} />);
+    view.rerender(<McpServerDialog open {...props} />);
+    expect(screen.getByLabelText("Server name")).toHaveValue("");
   });
 });

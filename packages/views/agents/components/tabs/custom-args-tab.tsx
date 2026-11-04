@@ -11,6 +11,11 @@ import {
 } from "@multica/ui/icons";
 import type { Agent, RuntimeDevice } from "@multica/core/types";
 import { createSafeId } from "@multica/core/utils";
+import { usePersistedDraft } from "@multica/core/drafts";
+import {
+  EMPTY_AGENT_CUSTOM_ARGS_DRAFT,
+  useAgentCustomArgsDraftStore,
+} from "@multica/core/agents";
 import { Button } from "@multica/ui/components/ui/button";
 import { IconButton } from "@multica/ui/components/common/icon-button";
 import { Input } from "@multica/ui/components/ui/input";
@@ -55,8 +60,13 @@ export function CustomArgsTab({
   onDirtyChange?: (dirty: boolean) => void;
 }) {
   const { t } = useT("agents");
-  const [entries, setEntries] = useState<ArgEntry[]>(
-    argsToEntries(agent.custom_args ?? []),
+  const [draft, setDraft, clearDraft] = usePersistedDraft(
+    useAgentCustomArgsDraftStore,
+    agent.id,
+    EMPTY_AGENT_CUSTOM_ARGS_DRAFT,
+  );
+  const [entries, setEntries] = useState<ArgEntry[]>(() =>
+    argsToEntries(draft.args ?? agent.custom_args ?? []),
   );
   const [editor, setEditor] = useState<EditorState>(null);
   const [editorValue, setEditorValue] = useState("");
@@ -70,6 +80,13 @@ export function CustomArgsTab({
   useEffect(() => {
     onDirtyChange?.(dirty);
   }, [dirty, onDirtyChange]);
+
+  // Keep the unsaved list across unmount; no edit relative to the server, no draft.
+  const argsKey = JSON.stringify(currentArgs);
+  useEffect(() => {
+    if (dirty) setDraft({ args: JSON.parse(argsKey) });
+    else clearDraft();
+  }, [dirty, argsKey, setDraft, clearDraft]);
 
   useEffect(() => {
     if (editor) editorInputRef.current?.focus();
@@ -115,6 +132,7 @@ export function CustomArgsTab({
     setSaving(true);
     try {
       await onSave({ custom_args: currentArgs });
+      clearDraft();
       toast.success(t(($) => $.tab_body.custom_args.saved_toast));
     } catch (err) {
       toast.error(

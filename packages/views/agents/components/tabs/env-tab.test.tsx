@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, afterEach } from "vitest";
+import { resetAllRegisteredDrafts } from "@multica/core/drafts";
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Agent } from "@multica/core/types";
@@ -56,6 +57,8 @@ function renderTab() {
     </I18nProvider>,
   );
 }
+
+afterEach(() => resetAllRegisteredDrafts());
 
 describe("EnvTab", () => {
   beforeEach(() => {
@@ -424,5 +427,24 @@ describe("EnvTab values that bulk text cannot represent", () => {
     expect(updateAgentEnv.mock.calls[0]?.[1]).toEqual({
       custom_env: { TRICKY: 'foo" #bar', NEW: "" },
     });
+  });
+
+  it("keeps typed key names across remount but never persists values", async () => {
+    getAgentEnv.mockResolvedValue({ custom_env: {} });
+    const user = userEvent.setup();
+    const first = renderTab();
+    await user.click(screen.getByRole("button", { name: /reveal & edit/i }));
+    await user.type(screen.getByPlaceholderText("KEY"), "DRAFT_KEY");
+    await user.type(screen.getByPlaceholderText("value"), "s3cret-value");
+    first.unmount();
+
+    expect(JSON.stringify({ ...localStorage })).not.toContain("s3cret-value");
+
+    renderTab();
+    await user.click(screen.getByRole("button", { name: /reveal & edit/i }));
+    expect(
+      screen.getAllByPlaceholderText("KEY").map((i) => (i as HTMLInputElement).value),
+    ).toEqual(["DRAFT_KEY"]);
+    expect(screen.getByPlaceholderText("value")).toHaveValue("");
   });
 });

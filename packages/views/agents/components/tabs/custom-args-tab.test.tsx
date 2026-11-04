@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, afterEach } from "vitest";
+import { resetAllRegisteredDrafts } from "@multica/core/drafts";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Agent, RuntimeDevice } from "@multica/core/types";
@@ -65,6 +66,8 @@ function renderTab(
   return { ...result, onSave };
 }
 
+afterEach(() => resetAllRegisteredDrafts());
+
 describe("CustomArgsTab", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -120,5 +123,22 @@ describe("CustomArgsTab", () => {
     await user.click(screen.getByRole("button", { name: /^save$/i }));
 
     expect(onSave).toHaveBeenCalledWith({ custom_args: ["value with spaces"] });
+  });
+
+  it("keeps unsaved arguments across unmount and remount, clears them after save", async () => {
+    const user = userEvent.setup();
+    const first = renderTab({ id: "agent-args", custom_args: [] });
+    await user.click(screen.getByRole("button", { name: /add argument/i }));
+    await user.type(screen.getByRole("textbox", { name: /new argument/i }), "--draft");
+    await user.click(screen.getByRole("button", { name: /^add$/i }));
+    first.unmount();
+
+    const second = renderTab({ id: "agent-args", custom_args: [] });
+    expect(screen.getByText("--draft")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+    second.unmount();
+    renderTab({ id: "agent-args", custom_args: [] });
+    expect(screen.queryByText("--draft")).not.toBeInTheDocument();
   });
 });
