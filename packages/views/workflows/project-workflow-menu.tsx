@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight, ListTree, Settings, Workflow } from "lucide-react";
+import { ChevronDown, ChevronRight, ListTree, Settings, Workflow } from "@multica/ui/icons";
 import { useFeatureEnabled } from "@multica/core/config";
 import { PROJECT_WORKFLOWS_V1_FLAG } from "@multica/core/feature-flags";
 import { useWorkspaceId } from "@multica/core/hooks";

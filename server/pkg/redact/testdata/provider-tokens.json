@@ -1,0 +1,10 @@
+[
+  {"name": "slack app-level token", "parts": ["log xapp", "-1-A0123456789-abcdefghij end"], "want": "log [REDACTED SLACK TOKEN] end"},
+  {"name": "slack config token", "parts": ["log xoxe", "-1-abcdefghijkl end"], "want": "log [REDACTED SLACK TOKEN] end"},
+  {"name": "stripe live secret key", "parts": ["key sk_", "live_0123456789abcdefABCD end"], "want": "key [REDACTED STRIPE KEY] end"},
+  {"name": "stripe live restricted key", "parts": ["key rk_", "live_0123456789abcdefABCD end"], "want": "key [REDACTED STRIPE KEY] end"},
+  {"name": "stripe publishable key stays", "parts": ["key pk_", "live_0123456789abcdefABCD end"], "want": "key pk_live_0123456789abcdefABCD end"},
+  {"name": "bearer trailing equals", "parts": ["Authorization: Bearer abc.def-ghi", "=="], "want": "Authorization: Bearer [REDACTED]"},
+  {"name": "github classic token", "parts": ["t ghp_", "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij end"], "want": "t [REDACTED GITHUB TOKEN] end"},
+  {"name": "connection string uppercase scheme", "parts": ["POSTGRES://user:pass@host/db"], "want": "[REDACTED CONNECTION STRING]@host/db"}
+]

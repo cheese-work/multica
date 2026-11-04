@@ -12,7 +12,7 @@ SELECT answer.content_snapshot, answer.effective_at, answer.created_at,
 FROM decision_request request
 JOIN decision_answer answer ON answer.decision_request_id = request.id AND answer.disclaimed_at IS NULL
 JOIN member ON member.workspace_id = request.workspace_id AND member.user_id = request.human_user_id
-WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.id = sqlc.arg('id')
+WHERE request.authority = 'human' AND request.workspace_id = sqlc.arg('workspace_id') AND request.id = sqlc.arg('id')
   AND request.status = 'answered'
 FOR UPDATE OF answer;
 

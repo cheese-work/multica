@@ -2,6 +2,7 @@ package issueworkflow
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -24,6 +25,8 @@ const (
 	GuardAgentVerdict     = "agent_verdict"
 	GuardPRChecksGreen    = "pr.checks_green"
 	GuardPRChecksRed      = "pr.checks_red"
+	GuardPRChecksInfraRed = "pr.checks_infra_red"
+	GuardPRChecksFlaky    = "pr.checks_flaky"
 	GuardPRReady          = "pr.ready"
 	GuardPRMerged         = "pr.merged"
 	GuardPRClosedUnmerged = "pr.closed_unmerged"
@@ -31,6 +34,7 @@ const (
 	GuardPRReviewApproved = "pr.review_approved"
 	GuardChildrenDone     = "children_done"
 	GuardIssueStatus      = "issue_status"
+	GuardWebhook          = "webhook"
 )
 
 // Edge is one exit of a step. Timeout and OnTimeout are required for guards
@@ -49,9 +53,13 @@ type Guard struct {
 }
 
 var guardArity = map[string]int{
-	GuardAgentDone: 0, GuardAgentVerdict: 1, GuardPRChecksGreen: 0, GuardPRChecksRed: 0, GuardPRReady: 0,
+	GuardAgentDone: 0, GuardAgentVerdict: 1, GuardPRChecksGreen: 0, GuardPRChecksRed: 0, GuardPRChecksInfraRed: 0, GuardPRChecksFlaky: 0, GuardPRReady: 0,
 	GuardPRMerged: 0, GuardPRClosedUnmerged: 0, GuardPRReviewChanges: 0, GuardPRReviewApproved: 0, GuardChildrenDone: 0, GuardIssueStatus: 2,
+	GuardWebhook: 1,
 }
+
+// webhookNameRe is the endpoint name a webhook guard may reference.
+var webhookNameRe = regexp.MustCompile(`^[a-z0-9_-]{1,32}$`)
 
 // ParseGuard parses "kind" or "kind(arg, ...)".
 func ParseGuard(s string) (Guard, error) {
@@ -77,6 +85,9 @@ func ParseGuard(s string) (Guard, error) {
 	if kind == GuardAgentVerdict && args[0] != "PASS" && args[0] != "CHANGES" {
 		return Guard{}, fmt.Errorf("agent_verdict takes PASS or CHANGES, not %q", args[0])
 	}
+	if kind == GuardWebhook && !webhookNameRe.MatchString(args[0]) {
+		return Guard{}, fmt.Errorf("webhook takes an endpoint name of 1-32 chars from a-z, 0-9, _ and -, not %q", args[0])
+	}
 	for _, a := range args {
 		if a == "" {
 			return Guard{}, fmt.Errorf("guard %q has an empty argument", s)
@@ -87,7 +98,7 @@ func ParseGuard(s string) (Guard, error) {
 
 // needsTimeout reports whether a guard waits on an outside fact.
 func (g Guard) needsTimeout() bool {
-	return strings.HasPrefix(g.Kind, "pr.")
+	return strings.HasPrefix(g.Kind, "pr.") || g.Kind == GuardWebhook
 }
 
 // readsFacts reports whether stored facts decide the guard; the agent guards
@@ -177,9 +188,20 @@ type PRFact struct {
 	HeadFresh    bool
 	// HeadSHA is the head the checks snapshot belongs to when HeadFresh.
 	HeadSHA string
+	// PRHead is the PR's own newest head, whether or not a checks snapshot
+	// has caught up with it.
+	PRHead string
 	// Review is the latest human review decision on the PR's current head:
 	// approved, changes_requested, or empty.
 	Review string
+	// RedCause says why the checks are red (CHE-3257): "pr" (a required check
+	// fails on this head and not on the base), "infra" (a required red is also
+	// red on the base, or green on a re-run of this head), "optional" (only
+	// non-required checks fail), "unknown" (the cause could not be read). Empty
+	// means no per-check evidence is stored; the red is then the PR's. "flaky"
+	// marks a green snapshot whose required check was red earlier on this same
+	// head and passed on a rerun.
+	RedCause string
 }
 
 // Facts are the stored facts guards are checked against. PRs cover the issue
@@ -189,6 +211,9 @@ type Facts struct {
 	PRs           []PRFact
 	ChildrenDone  bool
 	IssueStatuses map[string]string
+	// Webhooks holds the names of this step's webhook endpoints that received
+	// a success call at or after the issue entered the step.
+	Webhooks map[string]bool
 }
 
 // FirstMatch returns the first edge, in list order, whose guard holds for the
@@ -208,8 +233,12 @@ func (f Facts) holds(g Guard) bool {
 	case GuardPRChecksGreen:
 		return f.anyPR(func(p PRFact) bool { return p.open() && p.HeadFresh && p.ChecksRollup == "SUCCESS" })
 	case GuardPRChecksRed:
+		return f.anyPR(func(p PRFact) bool { return p.red() && (p.RedCause == "" || p.RedCause == "pr") })
+	case GuardPRChecksInfraRed:
+		return f.anyPR(func(p PRFact) bool { return p.red() && p.RedCause == "infra" })
+	case GuardPRChecksFlaky:
 		return f.anyPR(func(p PRFact) bool {
-			return p.open() && p.HeadFresh && (p.ChecksRollup == "FAILURE" || p.ChecksRollup == "ERROR")
+			return p.open() && p.HeadFresh && p.ChecksRollup == "SUCCESS" && p.RedCause == "flaky"
 		})
 	case GuardPRReady:
 		return f.anyPR(func(p PRFact) bool { return p.State == "open" })
@@ -227,8 +256,15 @@ func (f Facts) holds(g Guard) bool {
 		return f.ChildrenDone
 	case GuardIssueStatus:
 		return f.IssueStatuses[g.Args[0]] == g.Args[1]
+	case GuardWebhook:
+		return f.Webhooks[g.Args[0]]
 	}
 	return false
+}
+
+// red: the newest head's checks failed.
+func (p PRFact) red() bool {
+	return p.open() && p.HeadFresh && (p.ChecksRollup == "FAILURE" || p.ChecksRollup == "ERROR")
 }
 
 func (p PRFact) open() bool { return p.State == "open" || p.State == "draft" }
@@ -392,4 +428,15 @@ func CheckAgentMove(def Definition, from, to string) error {
 		return nil
 	}
 	return &MoveNotAllowedError{From: from, To: to, Allowed: moves}
+}
+
+// VerdictOf names the verdict ("CHANGES" or "PASS") that moving from a step to
+// a status delivers, or "" when no agent_verdict exit leads there.
+func (d Definition) VerdictOf(from, to string) string {
+	for _, e := range d.EdgesOf(from) {
+		if g, err := ParseGuard(e.Guard); err == nil && g.Kind == GuardAgentVerdict && e.To == to {
+			return g.Args[0]
+		}
+	}
+	return ""
 }

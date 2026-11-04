@@ -44,6 +44,8 @@ COPY --from=deps /app ./
 COPY package.json turbo.json pnpm-workspace.yaml ./
 COPY apps/web/ apps/web/
 COPY packages/ packages/
+# packages/views imports the shared redaction rules from the server tree
+COPY server/pkg/redact/provider-rules.json server/pkg/redact/provider-rules.json
 
 # Re-link after source overlay (fixes any symlinks overwritten by COPY)
 RUN --mount=type=cache,target=/pnpm/store,sharing=locked pnpm install --frozen-lockfile --offline --store-dir=/pnpm/store

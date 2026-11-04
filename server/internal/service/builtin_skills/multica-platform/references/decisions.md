@@ -10,13 +10,21 @@ multica decision request --issue <issue> --for <user-id> --class <class> --ask-f
 multica decision list --issue <issue> --output json
 multica decision get <decision-id> --output json
 multica decision withdraw <decision-id> --reason "no longer needed"
+multica decision feed --output json   # sweep PAT with the decisions:feed scope only
+multica decision feed ack <answer-id> --version <n>
+multica issue human-in-charge <issue> --output json   # who to address; `human` is null when nobody is eligible
 ```
 
 - `--ask-file` is UTF-8 JSON: `agent_did`, `decision`, `options`,
   `recommendation`, `default_if_no_reply`, `source_issue_id`,
-  `source_comment_id`.
+  `source_comment_id`. An ask that approves a file adds `subject:
+  "artifact_approval"` and `artifacts[]` (`attachment_id`, `label`, `sha256`);
+  the server checks each hash.
 - `--class` takes one of the classes `decision request --help` lists. Which
   class a situation belongs to is workspace policy.
+- `issue human-in-charge` needs a running task on the issue. It returns the
+  first creator, requester, project lead or workspace owner who is an active
+  member and may invoke you, with `source`; otherwise `human: null` and a `reason`.
 - `--for` is the named person's user or workspace member id (a real UUID). It
   may be omitted only when an open intent already names the person.
 - `--parent <comment-id>` replies under a comment; it is not allowed with an
@@ -46,7 +54,14 @@ issue (status or a wakeup on the answer) and end the run; do not poll.
 
 ## Recording the answer
 
-When the person answers in a DM, record it on the issue:
+Only a `reversible` answer is recorded this way. For every other class
+(`spend`, `deploy`, `publish`, `irreversible`, `product_direction`) the person
+answers on the decision card. The server refuses `--decision-record` for them,
+whether the source is a DM message or a member comment, and whether the record
+is asked or unprompted. The error carries the card URL when a card exists. Do
+not retry with another class: a record cannot change the request's class.
+
+When the person answers a `reversible` ask in a DM, record it on the issue:
 
 ```bash
 multica issue comment add <issue> --decision-record \
@@ -71,12 +86,42 @@ multica issue comment add <issue> --decision-record \
 ## Record states
 
 A record is pending until the agent is woken, then effective, or disclaimed
-by the person. `reversible` records wake at once. Every other class waits 10
-minutes. The person can disclaim while it is pending and after it is
+by the person. `reversible` records wake at once. No other class has a record
+(see above), so there is no 10-minute wait to plan for. The person can disclaim while it is pending and after it is
 effective; an effective record sends the agent a retraction. A disclaim
 reopens a live asked request, and cancels the request of an unprompted record
 or an archived DM. Times shown to people
 are ICT. User-facing description: `docs/decision-records.md` in the repo.
+
+## Agent decision reliance
+
+```bash
+multica decision rely --issue <issue> --gate <gate> --candidate-sha256 <sha256> --purpose "Work relying on this decision"
+```
+
+This command requires a running task token for the same issue. It registers
+reliance on an effective agent settlement under the decision lock. A successful
+`decided: true` response requires the reliance transaction to commit. Lookup
+alone is display only and never grants authorization. A workspace creates
+effective agent settlements only while its agent decisions setting is on
+(default off).
+
+## Agent decision brief and setting
+
+```bash
+multica decision brief
+multica decision brief --format markdown
+multica decision agent-setting --enabled=true
+```
+
+`brief` reads the feed for the daily brief section "Agents decided — veto?":
+each record with its link, veto line and 24 hour review target (a target, not
+an expiry; a veto still works later), notice delivery failures, and pilot
+metrics. `--format markdown` prints that section ready to paste into the brief,
+outside Needs you, with times in ICT; it prints nothing when the setting is off and there is nothing to show. Each veto line already names the reading
+owner as undo owner. `agent-setting` turns the workspace setting on or off; only a
+workspace owner can. One excluded-category decision turns it off by itself and
+`brief` shows the stop reason. Existing records stay vetoable.
 
 ## Decision-bound writes (agent changes a governed field)
 

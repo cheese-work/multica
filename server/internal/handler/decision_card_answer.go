@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/commentguard"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
@@ -78,7 +79,7 @@ func (handler *Handler) AnswerDecisionRequest(writer http.ResponseWriter, reques
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "member", actorID)
 	handler.publishDecisionAnswerUpdated(workspaceID, "member", actorID, result.Answer.ID, result.Request.IssueID, decisionAnswerState(result.Answer.WokenAt, result.Answer.DisclaimedAt))
 	for _, message := range []db.ChatMessage{result.AnswerMessage, result.Message} {
-		handler.publishChat(protocol.EventChatMessage, workspaceID, "member", actorID, uuidToString(message.ChatSessionID), protocol.ChatMessagePayload{
+		handler.publishChatFor(protocol.EventChatMessage, workspaceID, "member", actorID, uuidToString(result.Request.HumanUserID), uuidToString(message.ChatSessionID), protocol.ChatMessagePayload{
 			MessageKind:   message.MessageKind,
 			ChatSessionID: uuidToString(message.ChatSessionID), MessageID: uuidToString(message.ID), Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt),
 		})
@@ -109,6 +110,13 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	}
 	defer transaction.Rollback(ctx)
 	queries := handler.Queries.WithTx(transaction)
+	// First lock of the transaction, so recovery (which holds the user row
+	// FOR UPDATE) is ordered before or after the whole answer, never inside it.
+	if err := holdCurrentSession(ctx, transaction, queries, userID, request.Header.Get(auth.SessionGenerationHeader)); errors.Is(err, errSessionRevoked) {
+		return empty, decisionIntentRefusal{http.StatusUnauthorized, "session revoked"}
+	} else if err != nil {
+		return empty, err
+	}
 	if _, err := queries.LockWorkspaceForChatSessionCreate(ctx, workspaceID); err != nil {
 		return empty, err
 	}
@@ -158,6 +166,9 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if err != nil {
 		return empty, err
 	}
+	if err := refuseGatedAnswerWhileRecovering(ctx, queries, workspace, decision, userID); err != nil {
+		return empty, err
+	}
 	effectiveAt, err := queries.DecisionRecordEffectiveAt(ctx, db.DecisionRecordEffectiveAtParams{WorkspaceID: workspaceID, ID: decision.ID})
 	if err != nil {
 		return empty, err
@@ -173,7 +184,7 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if err != nil {
 		return empty, err
 	}
-	answer, err := queries.CreateDecisionAnswer(ctx, db.CreateDecisionAnswerParams{DecisionRequestID: decision.ID, SourceChatSessionID: session.ID, ChatMessageIds: []pgtype.UUID{answerMessage.ID}, ContentSnapshot: content, EffectiveAt: effectiveAt, IssueCommentID: commentID, WakeAt: effectiveAt, ChosenOptionIndex: chosen, ReplyText: pgtype.Text{String: strings.TrimSpace(input.Text), Valid: true}})
+	answer, err := queries.CreateDecisionAnswer(ctx, db.CreateDecisionAnswerParams{DecisionRequestID: decision.ID, AnsweredByUserID: userID, AnswerSource: pgtype.Text{String: "card", Valid: true}, SourceChatSessionID: session.ID, ChatMessageIds: []pgtype.UUID{answerMessage.ID}, ContentSnapshot: content, EffectiveAt: effectiveAt, IssueCommentID: commentID, WakeAt: effectiveAt, ChosenOptionIndex: chosen, ReplyText: pgtype.Text{String: strings.TrimSpace(input.Text), Valid: true}})
 	if err != nil {
 		return empty, err
 	}
@@ -185,7 +196,7 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 		}
 	}
 	card := fmt.Sprintf("Answered on the decision card: [open the card](/%s/chat?session=%s&message=%s)", workspace.Slug, uuidToString(session.ID), uuidToString(decision.PingMessageID))
-	comment, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: commentID, IssueID: issue.ID, WorkspaceID: workspaceID, AuthorType: "agent", AuthorID: decision.AskingAgentID, ParentID: decision.IssueCommentID, Content: blockQuote(content) + "\n\n" + card, Type: "comment", DecisionAnswerID: answer.ID, DecisionCommentKind: pgtype.Text{String: "quote", Valid: true}})
+	comment, err := queries.CreateComment(ctx, db.CreateCommentParams{ID: commentID, IssueID: issue.ID, WorkspaceID: workspaceID, AuthorType: "agent", AuthorID: decision.AskingAgentID, ParentID: decision.IssueCommentID, Content: blockQuote(cardAnswerQuoteText(input)) + "\n\n" + card, Type: "comment", DecisionAnswerID: answer.ID, DecisionCommentKind: pgtype.Text{String: "quote", Valid: true}})
 	if err != nil {
 		return empty, err
 	}
@@ -234,6 +245,21 @@ func cardAnswerContent(decision db.DecisionRequest, input decisionCardAnswerInpu
 		return text, nil
 	}
 	return "", decisionIntentRefusal{http.StatusBadRequest, "an answer needs an option or text"}
+}
+
+// cardAnswerQuoteText is the text the issue quote carries. It labels the choice
+// and the note, so a later reader cannot take the note for a second option. The
+// DM row and the answer snapshot stay the bare label, which approval matching
+// relies on (answerIsApproval).
+func cardAnswerQuoteText(input decisionCardAnswerInput) string {
+	text := strings.TrimSpace(input.Text)
+	switch {
+	case input.Option != "" && text != "":
+		return "Chose: " + input.Option + "\n\nNote: " + text
+	case input.Option != "":
+		return "Chose: " + input.Option
+	}
+	return text
 }
 
 // cardOptionIndex is the 0-based position of the chosen option on the card, or

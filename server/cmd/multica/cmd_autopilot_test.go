@@ -989,7 +989,7 @@ func TestAutopilotRunStarted(t *testing.T) {
 // run records no human, or whose human holds nothing here.
 //
 // It runs the real cli.FormatError for the same reason: FormatError collapses
-// every 403 into "no access", which for an agent caller is a statement about
+// specific autopilot refusal codes into generic copy, which is a statement about
 // the WRONG person — the fact worth printing is that the refusal belongs to
 // whoever asked (MUL-7108).
 func TestAutopilotWriteRequestError_SurfacesRefusalToTheUser(t *testing.T) {
@@ -1038,13 +1038,13 @@ func TestAutopilotWriteRequestError_SurfacesRefusalToTheUser(t *testing.T) {
 		})
 	}
 
-	// A 403 this command has not opted into keeps the deliberately vague copy,
-	// and the action name still says which call failed.
-	t.Run("unrecognized 403 keeps the generic copy", func(t *testing.T) {
+	// Other 403 responses retain the shared server-message formatting,
+	// and the wrapped error still names the failed action.
+	t.Run("unrecognized 403 shows the server reason", func(t *testing.T) {
 		err := autopilotWriteRequestError("delete autopilot", forbidden(`{"error":"some other resource is off limits"}`))
 		got := cli.FormatError(err, false)
-		if strings.Contains(got, "some other resource is off limits") {
-			t.Errorf("output = %q, must not echo an un-opted-in 403 body", got)
+		if !strings.Contains(got, "Access denied: some other resource is off limits") {
+			t.Errorf("output = %q, want the shared 403 server reason", got)
 		}
 		if !strings.Contains(err.Error(), "delete autopilot") {
 			t.Errorf("error = %q, want it to name the failed action", err.Error())
@@ -1057,9 +1057,8 @@ func TestAutopilotWriteRequestError_SurfacesRefusalToTheUser(t *testing.T) {
 // when a manual trigger is refused.
 //
 // It runs the real cli.FormatError, because the defect it guards is precisely
-// that FormatError collapses a 403 into generic "no access" copy: the handler
-// can name the cause perfectly and the user still learns nothing. Asserting only
-// that the code was matched would not catch a regression in that collapse.
+// that autopilot guidance reaches the user through the shared formatter.
+// Asserting only that the code was matched would not catch lost guidance.
 func TestAutopilotTriggerRequestError_SurfacesRefusalToTheUser(t *testing.T) {
 	forbidden := func(body string) error {
 		return &cli.HTTPError{
@@ -1090,13 +1089,12 @@ func TestAutopilotTriggerRequestError_SurfacesRefusalToTheUser(t *testing.T) {
 		}
 	})
 
-	// A 403 this command has not opted into keeps the deliberately vague copy:
-	// the opt-out is per-code, not "surface every 403 body".
-	t.Run("unrecognized 403 keeps the generic copy", func(t *testing.T) {
+	// Other 403 responses retain the shared server-message formatting.
+	t.Run("unrecognized 403 shows the server reason", func(t *testing.T) {
 		got := cli.FormatError(autopilotTriggerRequestError(forbidden(
 			`{"error":"some other resource is off limits"}`)), false)
-		if strings.Contains(got, "some other resource is off limits") {
-			t.Errorf("output = %q, must not echo an un-opted-in 403 body", got)
+		if !strings.Contains(got, "Access denied: some other resource is off limits") {
+			t.Errorf("output = %q, want the shared 403 server reason", got)
 		}
 	})
 }

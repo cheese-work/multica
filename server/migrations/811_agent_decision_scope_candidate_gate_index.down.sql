@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS agent_decision_scope_candidate_gate_uidx;

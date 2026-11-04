@@ -23,6 +23,7 @@ function makeMachine(
     deviceInfo: "dev.local · x86_64 macOS",
     cliVersion: "1.0.0",
     launchedBy: null,
+    update: { available: false, serverCommit: "", serverVersion: "", reason: "" },
     mode: "local",
     section: "local",
     isCurrent: true,

@@ -1,0 +1,72 @@
+<!doctype html><html><head><meta charset=utf-8><style>
+*{margin:0;box-sizing:border-box}
+body{font:14px/1.45 "Helvetica Neue",Arial,"Liberation Sans","DejaVu Sans",sans-serif;background:#d9d9d4;color:#1c1c1a;padding:24px}
+h1{font-size:18px;font-weight:600;margin-bottom:2px}.sub{color:#3d3d38;max-width:1500px;margin-bottom:6px}
+.cols{display:flex;gap:48px;align-items:flex-start;margin-top:12px}
+.lab{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#3d3d38;margin:16px 0 6px}
+.row2{display:grid;grid-template-columns:repeat(2,auto);gap:16px;justify-content:start}
+.pane{padding:16px;border-radius:14px;background:var(--pg);color:var(--tx)}
+.t-l{--pg:#efefec;--cd:#fff;--bd:#e0e0db;--tx:#1c1c1a;--mu:#5f5f5a;--ac:#2f4fd0;--acb:#eaeefd;--sf:#f6f6f4;--ok:#17713a;--okb:#e0f3e6;--wn:#8a5200;--wnb:#fdf1dc;--er:#b3201f;--erb:#fdecec;--ad:#e3f4e8;--ade:#17713a;--dl:#fdecec;--dle:#b3201f;--ln:#8d8d86;--btn:#2f4fd0;--dis:#c9ccd8;--dtx:#4a4d5c}
+.t-d{--pg:#121316;--cd:#1c1d21;--bd:#35373d;--tx:#ececea;--mu:#a9aaa4;--ac:#9db0ff;--acb:#262c4a;--sf:#25262b;--ok:#7fd89a;--okb:#1d3a29;--wn:#f2bb66;--wnb:#3a2d14;--er:#ff9b99;--erb:#43201f;--ad:#183624;--ade:#7fd89a;--dl:#431f21;--dle:#ff9b99;--ln:#8c8d87;--btn:#4561e0;--dis:#3a3d4a;--dtx:#b4b7c6}
+.card{width:var(--w);background:var(--cd);border:1px solid var(--bd);border-radius:12px;overflow:hidden}
+.hd{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;padding:8px 12px;border-bottom:1px solid var(--bd);font-size:13px}
+.hd a{color:var(--tx);text-decoration:underline;text-underline-offset:2px}
+.pill{border-radius:99px;padding:1px 8px;font-size:11px;font-weight:600}.po{background:var(--wnb);color:var(--wn)}.ansd{background:var(--okb);color:var(--ok)}
+.chip{border:1px solid var(--bd);border-radius:99px;padding:0 10px;min-height:28px;display:inline-flex;align-items:center;font-weight:600}
+.bd{padding:12px;display:grid;gap:12px}.mu{color:var(--mu);font-size:12px}
+.you{border:1px solid var(--bd);background:var(--sf);border-radius:10px;padding:10px;display:grid;gap:8px}
+.you h3{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--mu);font-weight:700}
+.file{display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap}
+.fi{flex:none;width:36px;height:36px;border-radius:8px;background:var(--acb);color:var(--ac);display:grid;place-items:center}
+.fm{flex:1;min-width:150px;display:grid;gap:2px;justify-items:start}.fm b{font-size:14px}
+code{font:12px "DejaVu Sans Mono",Menlo,Consolas,monospace}
+.ok{color:var(--ok);font-style:normal;font-weight:600;display:inline-flex;gap:3px;align-items:center}
+.tag{display:inline-flex;align-items:center;gap:4px;border-radius:99px;padding:1px 8px;font-size:11px;font-weight:600}.tag.w{background:var(--wnb);color:var(--wn)}.tag.g{background:var(--okb);color:var(--ok)}
+.dl{min-height:44px;padding:0 14px;border:1px solid var(--ln);border-radius:8px;display:inline-flex;gap:6px;align-items:center;font-weight:600;font-size:13px;color:var(--tx);background:var(--cd)}
+.vw{border:1px solid var(--bd);border-radius:10px;overflow:hidden;background:var(--cd)}
+.tabs{display:flex;gap:2px;padding:0 4px;border-bottom:1px solid var(--bd);overflow-x:auto}
+.tab{min-height:44px;padding:0 10px;border:0;border-bottom:3px solid transparent;background:none;color:var(--mu);font:600 13px inherit;display:inline-flex;gap:6px;align-items:center;white-space:nowrap}
+.tab[aria-selected=true]{color:var(--tx);border-bottom-color:var(--ac)}
+.hint{padding:8px 12px;color:var(--mu);font-size:12px}
+.db{padding:10px 12px;display:grid;gap:8px}
+.sg{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;font-size:12px}
+.df{border:1px solid var(--bd);border-radius:8px;overflow:auto;max-height:300px;font:12px/1.5 "DejaVu Sans Mono",Menlo,Consolas,monospace;background:var(--cd)}
+.hh{padding:3px 10px;background:var(--sf);color:var(--mu)}
+.l{display:grid;grid-template-columns:32px 18px 1fr;white-space:pre-wrap;word-break:break-word}.l i{font-style:normal;color:var(--mu);text-align:right;padding-right:6px}.l s{text-decoration:none;text-align:center;font-weight:700}
+.l.a{background:var(--ad)}.l.a s{color:var(--ade)}.l.d{background:var(--dl)}.l.d s{color:var(--dle)}
+.gap{padding:2px 10px;color:var(--mu);text-align:center;font-style:italic;border-top:1px dashed var(--bd);border-bottom:1px dashed var(--bd)}
+.md{border:1px solid var(--bd);border-radius:8px;padding:10px 12px;max-height:240px;overflow:auto;background:var(--cd);font-size:13px;line-height:1.5;display:grid;gap:6px}
+.md h4{font-size:16px}.md h5{font-size:13px;margin-top:4px}.md ul{padding-left:18px}
+.sk{height:12px;border-radius:6px;background:var(--bd);animation:p 1.4s ease-in-out infinite}@keyframes p{50%{opacity:.45}}
+.bn{border-radius:8px;padding:8px 10px;font-size:12px;font-weight:600;display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}.bn.er{background:var(--erb);color:var(--er)}
+.ghost{min-height:36px;padding:0 12px;border:1px solid var(--ln);border-radius:8px;background:var(--cd);font:600 13px inherit;color:var(--tx);display:inline-flex;align-items:center}
+.ask p{margin:2px 0}.rows{display:grid;gap:6px}
+.row{display:flex;gap:10px;align-items:center;min-height:44px;padding:8px 10px;border:1px solid var(--bd);border-radius:8px}
+.rd{flex:none;width:16px;height:16px;border:2px solid var(--ln);border-radius:50%}
+.em{font-style:normal;font-size:11px;font-weight:600;color:var(--ok);background:var(--okb);border-radius:99px;padding:0 7px;margin-left:6px}
+.ft{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.btn{min-height:36px;padding:0 16px;border:0;border-radius:8px;background:var(--dis);color:var(--dtx);font:600 13px inherit}
+.done{border:1px solid var(--bd);background:var(--okb);border-radius:10px;padding:10px 12px;display:grid;gap:4px}.done .dt{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--ok)}
+</style></head><body>
+<h1>B · Tabbed viewer — "You are approving" card (CHE-2606 L2)</h1>
+<p class=sub>Same first section as A: "You are approving" with one file card per artifact. Below it, one viewer with two tabs: "Changes since …" and "Preview". The viewer is closed by default and shows a one-line hint; selecting a tab opens it, selecting the open tab again closes it. Card without artifacts is unchanged (state 7).</p>
+<p class=sub>Build notes: role=tablist with arrow-key movement; tabpanel holds a focusable scroll region. Diff lines carry a + or − mark, never colour alone. One viewer instead of two disclosure rows keeps the open card shorter (compare state 2 with A). With one artifact and nothing to compare, only the Preview tab shows (state 6).</p>
+<div class=cols><div id=dk><div class=lab style="font-size:13px">Desktop · 540px card · light left, dark right</div></div><div id=ph><div class=lab style="font-size:13px">Phone · 358px card</div></div></div>
+<script>
+const I={doc:'<svg width=18 height=18 viewBox="0 0 24 24" fill=none stroke=currentColor stroke-width=2 aria-hidden=true><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg>',
+dl:'<svg width=16 height=16 viewBox="0 0 24 24" fill=none stroke=currentColor stroke-width=2 aria-hidden=true><path d="M12 4v11m0 0l-4-4m4 4l4-4M5 20h14"/></svg>',
+chk:'<svg width=13 height=13 viewBox="0 0 24 24" fill=none stroke=currentColor stroke-width=3 aria-hidden=true><path d="M5 12l5 5 9-10"/></svg>',
+chat:'<svg width=16 height=16 viewBox="0 0 24 24" fill=none stroke=currentColor stroke-width=2 aria-hidden=true><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'};
+const L=(n,t,k)=>`<div class="l ${k}"><i>${n}</i><s>${k=='a'?'+':k=='d'?'−':''}</s><code>${t}</code></div>`;
+const DIFF=`<div class=hh>@@ Card states · lines 22–27 @@</div>`+L(22,'- Open: radio list, answer box, Send.','')+L(23,'- Answered: recorded answer, Disclaim.','')+L('','- Conflict: draft is discarded silently.','d')+L(24,'- Conflict: draft is kept under the closed card.','a')+L(25,'- Offline: Send waits; the answer is kept.','a')+L(26,'- Disclaimed: card stays closed.','')+`<div class=gap>41 unchanged lines hidden</div><div class=hh>@@ Keyboard · lines 68–70 @@</div>`+L(68,'## Keyboard','')+L('','Enter sends.','d')+L(69,'Enter sends; Shift+Enter adds a line.','a')+L(70,'Arrow keys move between options.','');
+const diffBody=s=>s=='load'?`<div role=status aria-label="Loading changes" style="display:grid;gap:8px"><div class=sk style="width:60%"></div><div class=sk></div><div class=sk style="width:85%"></div><div class=sk style="width:40%"></div></div>`:s=='err'?`<div class="bn er" role=alert><span>Could not load the changes. Download the files to read them.</span><button class=ghost>Try again</button></div>`:`<p class=sg><span class="tag g">${I.chk}Revision 4 signed by Sol</span><span>Rev 5 adds these 2 changes.</span></p><div class=df role=region aria-label="Text changes since revision 4, changed hunks only" tabindex=0>${DIFF}</div>`;
+const PREV=`<div class=md role=region aria-label="Rendered preview of design-rev5.md" tabindex=0><h4>Decision card, revision 5</h4><p>The card shows the file being approved before the answer box.</p><h5>Card states</h5><ul><li>Open: radio list, answer box, Send.</li><li>Answered: recorded answer, Disclaim.</li><li>Conflict: draft is kept under the closed card.</li><li>Offline: Send waits; the answer is kept.</li><li>Disclaimed: card stays closed.</li></ul><h5>Keyboard</h5><p>Enter sends; Shift+Enter adds a line. Arrow keys move between options.</p></div><p class=mu>Rendered from design-rev5.md. Scroll to read all 214 lines.</p>`;
+const viewer=s=>{const sel=s.d=='prev'?'p':s.d?'d':'';return `<div class=vw><div class=tabs role=tablist aria-label="Read the file">${s.a==2?`<button class=tab role=tab aria-selected=${sel=='d'}>Changes since Rev 4<span class=mu>+3 −2</span></button>`:''}<button class=tab role=tab aria-selected=${sel=='p'}>Preview</button></div>${sel?`<div class=db role=tabpanel>${sel=='p'?PREV:diffBody(s.d)}</div>`:`<div class=hint>Select a tab to read the file here.</div>`}</div>`};
+const you=s=>`<section class=you aria-label="${s.ans?'You approved':'You are approving'}"><h3>${s.ans?'You approved':'You are approving'}</h3><div class=file><i class=fi>${I.doc}</i><div class=fm><b>Design revision 5</b><span class=mu>design-rev5.md · 18.4 KB</span><span class=mu>SHA <code>3f9a2c1</code> · <em class=ok>${I.chk}Hash verified</em></span>${s.a==2?'<span class="tag w">Revision 5 is not signed yet</span>':''}</div><a class=dl>${I.dl}Download</a></div>${viewer(s)}</section>`;
+const ask=`<div class=ask><p><b>Decision</b> Approve design revision 5 for the decision card?</p><p class=mu>If wrong: the card UI is built from a design Cheese did not intend.</p></div>`;
+const rows=`<div class=rows role=radiogroup aria-label="Decision options"><label class=row><i class=rd></i><span><b>A · Approve revision 5</b><em class=em>Recommended</em></span></label><label class=row><i class=rd></i><span><b>B · Ask for changes</b></span></label></div><div class=ft><span class=mu>Enter sends · Shift+Enter for a new line</span><button class=btn disabled>Send</button></div>`;
+const card=s=>{const a=!!s.ans;return `<section class=card><div class=hd>${I.chat}<b>Decision request</b><span class="pill ${a?'ansd':'po'}">${a?'Answered':'Open'}</span><span class=chip>CHE-2595</span><a>Source comment</a>${a?'<a>Recorded on CHE-2595</a>':''}</div><div class=bd>${s.a?you(s):''}${ask}${a?`<div class=done><div class=dt>Answer recorded</div><div><b>A</b> · Approve revision 5</div><div class=mu>Posted on CHE-2595 at 22:07 ICT. Assignee woken once.</div></div>`:rows}<time class=mu>30 Oct 2026, 16:20 ICT</time></div></section>`};
+const S=[['1 · Collapsed (default)',{a:2}],['2 · Changes open',{a:2,d:'diff'}],['3 · Preview open',{a:2,d:'prev'}],['4 · Loading changes',{a:2,d:'load'}],['5 · Changes failed to load',{a:2,d:'err'}],['6 · First revision (nothing to compare)',{a:1}],['7 · No artifacts (renders as today)',{a:0}],['8 · Answered (record of what was approved)',{a:2,ans:1}]];
+const draw=(el,w,ids)=>ids.forEach(i=>{const[n,s]=S[i];el.insertAdjacentHTML('beforeend',`<div class=lab>${n}</div><div class=row2 style="--w:${w}px"><div class="pane t-l">${card(s)}</div><div class="pane t-d">${card(s)}</div></div>`)});
+draw(document.getElementById('dk'),540,[0,1,2,3,4,5,6,7]);draw(document.getElementById('ph'),358,[0,1,2,4]);
+</script></body></html>

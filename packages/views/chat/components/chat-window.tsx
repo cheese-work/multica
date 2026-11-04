@@ -17,7 +17,7 @@ import {
   PinOff,
   Loader2,
   Square,
-} from "lucide-react";
+} from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
 import { cn } from "@multica/ui/lib/utils";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@multica/ui/components/ui/tooltip";
@@ -76,6 +76,7 @@ import {
   useUpdateChatSession,
 } from "@multica/core/chat/mutations";
 import { useChatStore } from "@multica/core/chat";
+import { useCommentComposerStore } from "@multica/core/issues/stores/comment-composer-store";
 import { getChatSessionMenuItems } from "@multica/core/chat/commands";
 import { upsertChatMessageToCaches } from "@multica/core/chat/message-cache";
 import { chatQuickActionsPendingOptions } from "@multica/core/chat/queries";
@@ -176,8 +177,11 @@ export function ChatWindow() {
     handleEditQueuedTask,
     handleRemoveQueuedTask,
     handleClearQueuedTasks,
-    handleSendQueuedTaskNow,
+    steerQueuedChatTask,
+    handleSteerQueuedTask,
+    handleStopAndSendQueuedTask,
   } = useChatTaskActions(activeSessionId, enqueueLocalRestore);
+  const runningAgentReply = useCommentComposerStore((s) => s.runningAgentReply);
   // Nonce handed to ChatInput to pull focus into the compose box: when a new
   // chat starts (⊕ or switching agent), and whenever the window itself opens.
   const windowRef = useRef<HTMLDivElement>(null);
@@ -599,6 +603,15 @@ export function ChatWindow() {
           toast.error(t(($) => $.input.attachment_bind_failed_toast));
         }
       }
+      // `running_agent_reply = steer`: add the follow-up to the running reply
+      // when the run can take it; otherwise it stays queued (CHE-2820).
+      if (
+        result.queued === true &&
+        runningAgentReply === "steer" &&
+        pendingTask?.head_supplement === "capable"
+      ) {
+        await steerQueuedChatTask(sessionId, result.task_id);
+      }
       qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
       qc.invalidateQueries({ queryKey: chatKeys.messagesPage(sessionId) });
       return true;
@@ -613,6 +626,8 @@ export function ChatWindow() {
       pendingTaskId,
       ensureSession,
       cancelChatTask,
+      steerQueuedChatTask,
+      runningAgentReply,
       qc,
       setActiveSession,
       t,
@@ -1021,7 +1036,9 @@ export function ChatWindow() {
       <ChatQueue
         tasks={queuedTasks}
         headStatus={pendingTask?.status}
-        onSendNow={handleSendQueuedTaskNow}
+        headSupplement={pendingTask?.head_supplement}
+        onSteer={handleSteerQueuedTask}
+        onStopAndSend={handleStopAndSendQueuedTask}
         sendNowDisabled={isAgentAccessRevoked}
         onEdit={handleEditQueuedTask}
         onRemove={handleRemoveQueuedTask}

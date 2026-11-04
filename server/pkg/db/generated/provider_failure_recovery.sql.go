@@ -226,26 +226,31 @@ func (q *Queries) FindLatestScheduledAutopilotTaskForTrigger(ctx context.Context
 const recordProviderFailureRecovery = `-- name: RecordProviderFailureRecovery :execrows
 INSERT INTO provider_failure_recovery (
     failed_task_id, trigger_kind, trigger_id, condition_key, failed_at,
-    probe_at, probe_status, changed_condition, recovery_run_id, recovery_task_id
+    probe_at, probe_status, changed_condition, recovery_run_id, recovery_task_id,
+    recovery_wakeup_id, recovery_wakeup_revision
 )
 VALUES (
     $1, $2, $3, $4, $5,
-    $6, $7, $8, $9, $10
+    $6::timestamptz, $7::integer,
+    $8, $9, $10,
+    $11::uuid, $12::bigint
 )
 ON CONFLICT (failed_task_id) DO NOTHING
 `
 
 type RecordProviderFailureRecoveryParams struct {
-	FailedTaskID     pgtype.UUID        `json:"failed_task_id"`
-	TriggerKind      string             `json:"trigger_kind"`
-	TriggerID        pgtype.UUID        `json:"trigger_id"`
-	ConditionKey     string             `json:"condition_key"`
-	FailedAt         pgtype.Timestamptz `json:"failed_at"`
-	ProbeAt          pgtype.Timestamptz `json:"probe_at"`
-	ProbeStatus      int32              `json:"probe_status"`
-	ChangedCondition string             `json:"changed_condition"`
-	RecoveryRunID    pgtype.UUID        `json:"recovery_run_id"`
-	RecoveryTaskID   pgtype.UUID        `json:"recovery_task_id"`
+	FailedTaskID           pgtype.UUID        `json:"failed_task_id"`
+	TriggerKind            string             `json:"trigger_kind"`
+	TriggerID              pgtype.UUID        `json:"trigger_id"`
+	ConditionKey           string             `json:"condition_key"`
+	FailedAt               pgtype.Timestamptz `json:"failed_at"`
+	ProbeAt                pgtype.Timestamptz `json:"probe_at"`
+	ProbeStatus            pgtype.Int4        `json:"probe_status"`
+	ChangedCondition       string             `json:"changed_condition"`
+	RecoveryRunID          pgtype.UUID        `json:"recovery_run_id"`
+	RecoveryTaskID         pgtype.UUID        `json:"recovery_task_id"`
+	RecoveryWakeupID       pgtype.UUID        `json:"recovery_wakeup_id"`
+	RecoveryWakeupRevision pgtype.Int8        `json:"recovery_wakeup_revision"`
 }
 
 func (q *Queries) RecordProviderFailureRecovery(ctx context.Context, arg RecordProviderFailureRecoveryParams) (int64, error) {
@@ -260,6 +265,8 @@ func (q *Queries) RecordProviderFailureRecovery(ctx context.Context, arg RecordP
 		arg.ChangedCondition,
 		arg.RecoveryRunID,
 		arg.RecoveryTaskID,
+		arg.RecoveryWakeupID,
+		arg.RecoveryWakeupRevision,
 	)
 	if err != nil {
 		return 0, err

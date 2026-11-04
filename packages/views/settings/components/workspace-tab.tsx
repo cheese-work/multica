@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Copy } from "lucide-react";
+import { Copy } from "@multica/ui/icons";
 import { Input } from "@multica/ui/components/ui/input";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { Button } from "@multica/ui/components/ui/button";
@@ -64,6 +64,7 @@ import {
   SettingsTab,
   type SettingsSaveStatus,
 } from "./settings-layout";
+import { IdleGuardRows } from "./idle-guard-rows";
 import { useAutoSave } from "./use-auto-save";
 
 interface WorkspaceDetailsDraft {
@@ -611,6 +612,8 @@ export function WorkspaceTab() {
               ) : null}
             </SettingsRow>
           )}
+
+          <IdleGuardRows workspace={workspace} canEdit={isOwner} />
 
           <SettingsRow
             anchor="slug"

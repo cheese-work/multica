@@ -24,7 +24,7 @@ import {
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { Virtuoso } from "react-virtuoso";
-import { ChevronRight, EyeOff, GripVertical, MoreHorizontal, Pencil, Plus } from "lucide-react";
+import { ChevronRight, EyeOff, GripVertical, MoreHorizontal, Pencil, Plus } from "@multica/ui/icons";
 import { useQuery, useQueries, useQueryClient } from "@tanstack/react-query";
 import type {
   Issue,
@@ -678,6 +678,7 @@ function SwimLaneViewImpl({
     // Needed to evaluate the project-status predicate: an Issue only carries
     // `project_id`. Absent → the predicate is a no-op, never match-none.
     projectStatusById: activeFiltersProp?.projectStatusById,
+    workflowFilters: activeFiltersProp?.workflowFilters ?? [],
     labelFilters: activeFiltersProp?.labelFilters ?? [],
     // Carry the "Show sub-issues" toggle through to the extra-children merge
     // path (see `filterIssues(extra, activeFilters)` below); otherwise batch /

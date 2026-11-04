@@ -653,5 +653,66 @@
       "cancel": "취소",
       "done": "Qoder 연결을 해제했습니다"
     }
+  },
+  "machine_pause": {
+    "title": "기기",
+    "taking_work": "작업 수락 중",
+    "tasks_running_other": "작업 {{count}}개 실행 중",
+    "offline": "오프라인",
+    "offline_last_seen": "마지막 접속 {{time}}. 일시중지하면 새 작업은 계속 중단됩니다.",
+    "pause": "일시중지",
+    "resume": "재개",
+    "menu_hint": "새 작업을 받지 않습니다. 실행 중인 작업은 끝까지 진행됩니다. 일시중지는 자동으로 끝납니다.",
+    "reasons": {
+      "maintenance": {
+        "name": "점검",
+        "label": "점검",
+        "hint": "예정된 작업. 2시간 후 종료"
+      },
+      "incident": {
+        "name": "장애",
+        "label": "장애",
+        "hint": "문제가 발생했습니다. 30분 후 종료"
+      },
+      "suspended": {
+        "name": "사용 중지",
+        "label": "사용 중지",
+        "hint": "서비스 중단. 30분 후 종료"
+      }
+    },
+    "paused": "일시중지됨: {{reason}}",
+    "paused_offline": "일시중지됨: {{reason}} · 오프라인",
+    "draining_other": "작업 정리 중: {{count}}개 남음",
+    "draining_offline_other": "작업 정리 중: {{count}}개 남음 (마지막 보고 {{time}})",
+    "safe_to_shut_down": "안전하게 종료할 수 있습니다",
+    "paused_by": "{{name}}, {{time}}",
+    "ends_in": "{{duration}} 후 종료 ({{time}})",
+    "duration": {
+      "hours_minutes": "{{hours}}시간 {{minutes}}분",
+      "hours": "{{hours}}시간",
+      "minutes": "{{minutes}}분"
+    },
+    "ended": "{{reason}} 일시중지가 {{time}}에 끝났습니다. {{machine}}이(가) 다시 작업을 받습니다.",
+    "ended_offline": "{{reason}} 일시중지가 {{time}}에 끝났습니다. {{machine}}은(는) 다시 연결되면 작업을 받습니다.",
+    "no_rights": "기기 소유자와 워크스페이스 소유자만 일시중지하거나 재개할 수 있습니다.",
+    "no_rights_ask": "기기 소유자와 워크스페이스 소유자만 일시중지하거나 재개할 수 있습니다. {{names}}에게 문의하세요.",
+    "error": {
+      "title": "기기 상태를 불러오지 못했습니다",
+      "hint": "불러올 때까지 일시중지와 재개를 사용할 수 없습니다.",
+      "alert": "기기 상태를 불러오지 못했습니다. 연결을 확인하고 다시 시도하세요.",
+      "retry": "다시 시도"
+    },
+    "toast": {
+      "pause_failed": "기기를 일시중지하지 못했습니다",
+      "resume_failed": "기기를 재개하지 못했습니다"
+    },
+    "banner": {
+      "paused": "{{machine}}이(가) 일시중지됨: {{reason}}.",
+      "tasks_left_other": "작업 {{count}}개 남음.",
+      "tasks_left_stale_other": "작업 {{count}}개 남음 (오프라인, 개수가 오래되었을 수 있음).",
+      "drained": "안전하게 종료할 수 있습니다.",
+      "ends_in": "{{duration}} 후 종료됩니다.",
+      "ends_soon": "{{duration}} 후 종료됩니다. 그 뒤 {{machine}}이(가) 다시 작업을 받습니다."
+    }
   }
 }

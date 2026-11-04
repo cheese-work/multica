@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/jackc/pgx/v5"
@@ -11,7 +12,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
-	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // advanceIssueOnCIGreen moves an issue one workflow step when the checks of a
@@ -91,68 +91,70 @@ func (h *Handler) advanceIssueOnCIGreen(ctx context.Context, issueID pgtype.UUID
 // and whether the move started a run for the next step's handler, so the caller
 // does not wake the same owner twice.
 func (h *Handler) moveIssueOnEdge(ctx context.Context, issue db.Issue, to, source string, extra map[string]any, startHandler bool) (moved, ranHandler bool) {
-	params := db.UpdateIssueParams{
-		ID:               issue.ID,
-		ExpectedRevision: pgtype.Int8{Int64: issue.Revision, Valid: true},
-		Status:           pgtype.Text{String: to, Valid: true},
-		AssigneeType:     issue.AssigneeType,
-		AssigneeID:       issue.AssigneeID,
-		StartDate:        issue.StartDate,
-		DueDate:          issue.DueDate,
-		ParentIssueID:    issue.ParentIssueID,
-		ProjectID:        issue.ProjectID,
-		Stage:            issue.Stage,
+	moved, ranHandler, err := h.tryMoveIssueOnEdge(ctx, issue, to, source, extra, startHandler)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		slog.Warn("workflow edge: move failed", "err", err, "issue_id", uuidToString(issue.ID), "to", to, "source", source)
 	}
-	handoff, write, err := h.decideIssueWorkflow(ctx, issue, &params, true, false, false, workflowCaller{})
-	if err != nil {
-		slog.Warn("workflow edge: workflow refused the move", "err", err, "issue_id", uuidToString(issue.ID), "to", to, "source", source)
-		return false, false
-	}
-	updated, err := h.updateIssueWithStatusGuard(ctx, issue.WorkspaceID, to, params, write)
-	if err != nil {
-		if !errors.Is(err, pgx.ErrNoRows) {
-			slog.Warn("workflow edge: status write failed", "err", err, "issue_id", uuidToString(issue.ID), "to", to, "source", source)
-		}
-		return false, false
-	}
+	return moved, ranHandler
+}
 
-	assigneeChanged := handoff != nil &&
-		(issue.AssigneeType.String != updated.AssigneeType.String || uuidToString(issue.AssigneeID) != uuidToString(updated.AssigneeID))
-	var willRun bool
-	var trigger service.IssueRunTrigger
-	if handoff != nil && startHandler {
-		trigger, willRun = h.IssueService.WillEnqueueRun(ctx, service.IssueTriggerInput{
-			Issue: updated, PrevStatus: issue.Status, AssigneeChanged: true, StatusChanged: true, EnteredHandoffStep: true,
-		}, service.IssueTriggerProbe{})
+// tryMoveIssueOnEdge is moveIssueOnEdge for a caller that needs the reason a
+// move did not happen: pgx.ErrNoRows means a concurrent writer won.
+func (h *Handler) tryMoveIssueOnEdge(ctx context.Context, issue db.Issue, to, source string, extra map[string]any, startHandler bool) (moved, ranHandler bool, err error) {
+	// The lock holds through the commit, so a person's move cannot read this
+	// issue's status between this write and its grant. The block an exhausted
+	// budget causes neither grants nor needs it: it runs under the refused
+	// admission's locks, after that admission wrote the window's ledger row, and
+	// the boundary lock comes before those locks everywhere else.
+	// The overlay can call the network: build it before any lock or transaction.
+	overlay := h.prepareEdgeRunOverlay(ctx, issue, to, startHandler)
+	release := func() {}
+	if source != "run_budget" {
+		if release, err = h.lockRunBudgetBoundary(ctx, issue.ID); err != nil {
+			return false, false, fmt.Errorf("run budget boundary: %w", err)
+		}
 	}
-	payload := map[string]any{
-		"issue":            h.issueResponseWithCategory(ctx, updated),
-		"assignee_changed": assigneeChanged,
-		"status_changed":   true,
-		"prev_status":      issue.Status,
-		"creator_type":     issue.CreatorType,
-		"creator_id":       uuidToString(issue.CreatorID),
-		"source":           source,
+	defer release()
+	tx, err := h.beginWakeupWrite(ctx)
+	if err != nil {
+		return false, false, err
 	}
-	for k, v := range extra {
-		payload[k] = v
+	defer tx.Rollback(ctx)
+	move, err := h.moveIssueOnEdgeTx(ctx, h.Queries.WithTx(tx), issue, to, source, extra, startHandler, overlay)
+	if err != nil {
+		var notConfirmed *service.StopNotConfirmedError
+		if errors.As(err, &notConfirmed) {
+			// The move holds the issue row; the activity row needs a key-share lock on it.
+			_ = tx.Rollback(ctx)
+			h.recordStopNotConfirmed(ctx, issue, "system", "", notConfirmed)
+		}
+		return false, false, err
 	}
-	if assigneeChanged {
-		payload["prev_assignee_type"] = textToPtr(issue.AssigneeType)
-		payload["prev_assignee_id"] = uuidToPtr(issue.AssigneeID)
+	if err := tx.Commit(ctx); err != nil {
+		return false, false, fmt.Errorf("commit edge move: %w", err)
 	}
-	if handoff != nil {
-		payload["workflow_handoff"] = workflowHandoffPayload(updated, handoff, h.workflowHandoffBrief(ctx, updated, handoff), willRun, "")
+	release()
+	if move.RunRefused != nil && !errors.Is(move.RunRefused, service.ErrDuplicatePendingTask) {
+		slog.Debug("workflow edge: run refused", "err", move.RunRefused, "issue_id", uuidToString(issue.ID), "to", to, "source", source)
 	}
-	h.publish(protocol.EventIssueUpdated, uuidToString(updated.WorkspaceID), "system", "", payload)
-	if willRun {
-		h.IssueService.CancelStaleStepRuns(ctx, updated, trigger.AgentID)
-		ranHandler = h.dispatchIssueRun(ctx, updated, trigger, "system", "", "")
+	ranHandler = move.AfterCommit(ctx)
+	return true, ranHandler, nil
+}
+
+// edgeMoveCause maps the source of an edge move to the cause kind its history
+// row carries.
+func edgeMoveCause(source string) string {
+	switch source {
+	case "workflow_edge":
+		return "workflow_edge"
+	case "ci_green_advance":
+		return "ci_advance"
+	case "run_budget":
+		return "run_budget"
+	case "idle_started_guard":
+		return "watchdog"
 	}
-	if updated.ParentIssueID.Valid || issue.ParentIssueID.Valid {
-		h.processChildEvents(ctx, updated.ParentIssueID, issue.ParentIssueID)
-	}
-	return true, ranHandler
+	return "system"
 }
 
 // issueResponseWithCategory is the issue as clients receive it on an update.

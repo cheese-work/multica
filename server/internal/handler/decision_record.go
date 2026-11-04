@@ -16,6 +16,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/internal/weblink"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
@@ -277,6 +278,9 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 					if err != nil {
 						return empty, err
 					}
+					if decision.EscalationClass != "reversible" {
+						return empty, handler.cardOnlyRefusal(ctx, queries, issue.WorkspaceID, decision.ChatSessionID)
+					}
 					return decisionRecordResult{Request: decision, Answer: answer, Comment: comment, Message: message, Replayed: true}, nil
 				}
 				if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -287,6 +291,12 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 		}
 		if input.EscalationClass != "" && input.EscalationClass != decision.EscalationClass {
 			return empty, decisionIntentRefusal{http.StatusBadRequest, "a record cannot change the request's class"}
+		}
+		if err := requireRequestAuthority(ctx, queries, issue, decision, http.StatusForbidden); err != nil {
+			return empty, err
+		}
+		if decision.EscalationClass != "reversible" {
+			return empty, handler.cardOnlyRefusal(ctx, queries, issue.WorkspaceID, decision.ChatSessionID)
 		}
 		ping, err := queries.GetChatMessage(ctx, decision.PingMessageID)
 		if errors.Is(err, pgx.ErrNoRows) || err == nil && ping.ChatSessionID != decision.ChatSessionID {
@@ -302,7 +312,13 @@ func (handler *Handler) createAskedDecisionRecordTx(request *http.Request, issue
 		} else if err != nil {
 			return empty, err
 		}
-		decision, err = queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: agentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, IssueCommentID: commentID, EscalationClass: input.EscalationClass, Origin: "unprompted"})
+		if err := requireDecisionAuthority(ctx, queries, issue, session.CreatorID, input.EscalationClass, http.StatusForbidden); err != nil {
+			return empty, err
+		}
+		if input.EscalationClass != "reversible" {
+			return empty, handler.cardOnlyRefusal(ctx, queries, issue.WorkspaceID, pgtype.UUID{})
+		}
+		decision, err = queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: agentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, IssueCommentID: commentID, EscalationClass: input.EscalationClass, Origin: "unprompted", ProjectID: issue.ProjectID})
 		if err != nil {
 			return empty, err
 		}
@@ -499,4 +515,23 @@ func (handler *Handler) persistDecisionRecord(ctx context.Context, queries *db.Q
 
 func blockQuote(text string) string {
 	return "> " + strings.ReplaceAll(text, "\n", "\n> ")
+}
+
+// cardOnlyRefusal refuses a decision record for any class but reversible: the
+// person answers those on the decision card. cardSessionID is the request's DM
+// lane; an unprompted record has no card yet, so the message carries no URL.
+func (handler *Handler) cardOnlyRefusal(ctx context.Context, queries *db.Queries, workspaceID, cardSessionID pgtype.UUID) error {
+	message := "decision records are for reversible decisions only; the person answers every other class on the decision card"
+	if cardSessionID.Valid {
+		workspace, err := queries.GetWorkspace(ctx, workspaceID)
+		if err != nil {
+			return err
+		}
+		link := weblink.Chat(workspace.Slug, uuidToString(cardSessionID))
+		if absolute := weblink.Build(handler.cfg.AppURL, link); absolute != "" {
+			link = absolute
+		}
+		message += ": " + link
+	}
+	return decisionIntentRefusal{http.StatusForbidden, message}
 }

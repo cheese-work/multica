@@ -15,7 +15,7 @@ SELECT w.id,w.workspace_id,w.issue_id,w.agent_id,w.created_by,w.source_task_id,w
  w.interval_seconds,w.cron_expression,w.timezone,w.next_fire_at,w.enabled,w.disabled_at,w.revision,
  w.last_task_id,w.last_error,w.created_at,w.updated_at,a.name AS agent_name,source.name AS filter_agent_name,t.status AS last_task_status,
  w.expires_at,w.expiry_seconds,w.on_timeout,w.timed_out_at,
- w.condition,w.max_fires,w.fire_count,w.paused_reason,
+ w.condition,w.max_fires,w.fire_count,w.paused_reason,w.default_rule_key,
  (w.source_task_id IS NOT NULL)::bool AS created_by_agent,creator.name AS created_by_name,
  (CASE WHEN creator_agent.id IS NOT NULL THEN creator_agent.id END)::uuid AS source_agent_id,creator_agent.name AS source_agent_name
 FROM issue_wakeup w JOIN agent a ON a.id=w.agent_id AND a.workspace_id=w.workspace_id
@@ -174,6 +174,16 @@ INSERT INTO issue_wakeup_receipt(id,wakeup_id,revision,event_key,event_type,payl
 VALUES(@id,@wakeup_id,@revision,@event_key,@event_type,@payload)
 ON CONFLICT(wakeup_id,revision,event_key) DO UPDATE SET event_key=EXCLUDED.event_key RETURNING *;
 -- name: ConsumeWakeupReceipts :exec
+-- Tying receipts to a task hands that task their taint (CHE-2216 plan 3.7; the
+-- receipt keeps every comment it has held, migration 831). A new wakeup task and
+-- a merge into a queued one both end here; the task trigger keeps what it had.
+WITH receipt_taint AS (
+ SELECT COALESCE(array_agg(DISTINCT x ORDER BY x),'{}')::text[] AS ids
+ FROM issue_wakeup_receipt r,unnest(r.taint_ids) AS x WHERE r.id=ANY(@ids::uuid[])
+), tainted AS (
+ UPDATE agent_task_queue SET taint_ids=(SELECT ids FROM receipt_taint)
+ WHERE id=sqlc.narg(task_id)::uuid AND cardinality((SELECT ids FROM receipt_taint))>0
+)
 UPDATE issue_wakeup_receipt SET task_id=sqlc.narg(task_id),processed_at=now() WHERE id=ANY(@ids::uuid[]);
 -- name: MarkWakeupReceiptsDeferred :many
 -- Active-run defer: stamps the facts a running target held back and returns

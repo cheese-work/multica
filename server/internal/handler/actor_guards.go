@@ -2,6 +2,9 @@ package handler
 
 import (
 	"net/http"
+	"regexp"
+
+	"github.com/multica-ai/multica/server/internal/dispatch"
 )
 
 // RequireHumanActor rejects machine credentials on human-only route groups.
@@ -35,6 +38,21 @@ func RequireHumanOrTaskToken(next http.Handler) http.Handler {
 	})
 }
 
+// RequireInteractiveSession admits only an interactive web or desktop session.
+// A PAT, cloud PAT, cli_jwt and task token all read as another actor source, and
+// Auth overwrites any client-supplied X-Actor-Source, so a forged header fails
+// here too. For routes that spend budget, which no credential an agent host can
+// read may authorize (CHE-2798 S1a).
+func RequireInteractiveSession(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Actor-Source") != "interactive_jwt" {
+			writeError(w, http.StatusForbidden, "this endpoint is only available to an interactive session; approve in the web app")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // isMachineCredentialActor centralizes the authoritative actor-source check so
 // sensitive handlers can keep a fail-closed backstop in addition to their
 // router middleware. Unknown actor sources intentionally remain human-equivalent
@@ -49,4 +67,27 @@ func isMachineCredentialActor(r *http.Request) bool {
 	default:
 		return false
 	}
+}
+
+// recoveryWritable lists the only writes a budget recovery run may make: record
+// why the issue is blocked (comment, summary, status move, attachment). Any other
+// write is refused, so an enqueue path nobody listed cannot start work for it.
+var recoveryWritable = regexp.MustCompile(`^(PUT /api/issues/[^/]+|POST /api/issues/[^/]+/(move|comments)|(PUT|DELETE) /api/issues/[^/]+/metadata/[^/]+|PUT /api/comments/[^/]+|(POST|DELETE) /api/comments/[^/]+/resolve|POST /api/upload-file)$`)
+
+// RejectRecoveryWrites is deny-by-default for a budget recovery run's task token
+// (CHE-2297 L3): reads pass, writes pass only if recoveryWritable names them.
+func RejectRecoveryWrites(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if dispatch.BudgetRecoveryCaller(r.Context()) {
+			switch r.Method {
+			case http.MethodGet, http.MethodHead, http.MethodOptions:
+			default:
+				if !recoveryWritable.MatchString(r.Method + " " + r.URL.Path) {
+					writeError(w, http.StatusForbidden, errRecoveryCaused)
+					return
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }

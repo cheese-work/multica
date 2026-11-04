@@ -38,11 +38,11 @@ func writeDecisionError(writer http.ResponseWriter, err error, operation string)
 }
 
 // authorizeDecisionTask locks and re-reads the issue, then proves the caller is
-// authorID's running, non-chat task on this open issue and that the agent is
-// the issue's assignee or an assigned squad's member.
+// authorID's running, non-chat task on this open issue. Issue assignment
+// does not grant or revoke a task's decision authority.
 func (handler *Handler) authorizeDecisionTask(request *http.Request, queries *db.Queries, issue db.Issue, authorType string, authorID pgtype.UUID) (db.Issue, db.Agent, db.AgentTaskQueue, error) {
 	ctx := request.Context()
-	deny := decisionIntentRefusal{http.StatusForbidden, "decision intent requires a running assigned issue task on this issue"}
+	deny := decisionIntentRefusal{http.StatusForbidden, "decision intent requires a running non-chat issue task on this issue"}
 	if request.Header.Get("X-Actor-Source") != "task_token" || authorType != "agent" {
 		return issue, db.Agent{}, db.AgentTaskQueue{}, deny
 	}
@@ -80,23 +80,7 @@ func (handler *Handler) authorizeDecisionTask(request *http.Request, queries *db
 	if task.Status != "running" || task.ChatSessionID.Valid || task.IssueID != issue.ID || task.AgentID != authorID {
 		return issue, db.Agent{}, db.AgentTaskQueue{}, deny
 	}
-	assigned := issue.AssigneeType.String == "agent" && issue.AssigneeID == task.AgentID
-	if issue.AssigneeType.String == "squad" && issue.AssigneeID.Valid {
-		squad, err := queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: issue.AssigneeID, WorkspaceID: issue.WorkspaceID})
-		if errors.Is(err, pgx.ErrNoRows) || (err == nil && squad.ArchivedAt.Valid) {
-			return issue, db.Agent{}, db.AgentTaskQueue{}, deny
-		}
-		if err != nil {
-			return issue, db.Agent{}, db.AgentTaskQueue{}, err
-		}
-		assigned, err = queries.IsSquadMember(ctx, db.IsSquadMemberParams{SquadID: squad.ID, MemberType: "agent", MemberID: task.AgentID})
-		if err != nil {
-			return issue, db.Agent{}, db.AgentTaskQueue{}, err
-		}
-	}
-	if !assigned {
-		return issue, db.Agent{}, db.AgentTaskQueue{}, deny
-	}
+
 	agent, err := queries.GetAgent(ctx, task.AgentID)
 	if err != nil {
 		return issue, agent, task, err
@@ -151,6 +135,9 @@ func (handler *Handler) prepareDecisionIntent(request *http.Request, queries *db
 			continue
 		}
 		if err := handler.checkDecisionTarget(request, queries, issue, agent, humanID); err != nil {
+			return issue, nil, err
+		}
+		if err := requireDecisionAuthority(request.Context(), queries, issue, humanID, "reversible", http.StatusBadRequest); err != nil {
 			return issue, nil, err
 		}
 		seen[humanID] = true

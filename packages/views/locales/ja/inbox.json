@@ -80,7 +80,8 @@
     "quick_create_unconfirmed": "エージェントでの作成結果は未確認",
     "autopilot_paused": "自動化を一時停止しました",
     "children_done": "サブタスクがすべて終わりました",
-    "autopilot_quota_exceeded": "自動化の実行上限に達しました"
+    "autopilot_quota_exceeded": "自動化の実行上限に達しました",
+    "machine_drained": "シャットダウンして問題ありません"
   },
   "labels": {
     "set_status_to": "ステータスを変更:",

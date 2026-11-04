@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { X, Trash2 } from "lucide-react";
+import { X, Trash2 } from "@multica/ui/icons";
 import { toast } from "sonner";
 import { Button } from "@multica/ui/components/ui/button";
 import {
@@ -36,6 +36,7 @@ import {
 } from "../../workflows/batch-handoff-confirm-dialog";
 import { useNotifyCatalogUnresolved } from "../../workflows/use-notify-catalog-unresolved";
 import { StatusPicker, PriorityPicker, AssigneePicker } from "./pickers";
+import { BatchWorkflowPicker } from "./batch-workflow-picker";
 import { useT } from "../../i18n";
 import { cn } from "@multica/ui/lib/utils";
 import {
@@ -44,6 +45,7 @@ import {
 } from "@multica/ui/lib/motion";
 import { useIssueSurfaceActionsOptional } from "../surface/actions-context";
 import { useIssueSurfaceSelection } from "../surface/selection-context";
+import { useRegisterCommandBarContext } from "../../search/register-context";
 
 export function BatchActionToolbar({
   issues,
@@ -90,6 +92,13 @@ export function BatchActionToolbar({
   );
   const count = selectedIssues.length;
 
+  useRegisterCommandBarContext(
+    useMemo(
+      () => (count > 0 ? { kind: "issues", issues: selectedIssues, clearSelection: clear } : null),
+      [count, selectedIssues, clear],
+    ),
+  );
+
   // Reflect the real shared value of the selected issues in each picker; fall
   // back to an empty (no-checkmark) state when the selection is mixed, instead
   // of asserting a hardcoded default.
@@ -114,12 +123,23 @@ export function BatchActionToolbar({
     enabled: count > 0 && selectedIssues.some((i) => i.project_id !== null),
   });
   const notifyCatalogUnresolved = useNotifyCatalogUnresolved();
+  // One override shared by the whole selection is listed by the picker itself,
+  // handoffs included, instead of being cut down from the project's list.
+  // (CHE-2822)
+  const sharedWorkflowId = useMemo(() => {
+    const first = selectedIssues[0]?.workflow_id ?? null;
+    return first && selectedIssues.every((i) => i.workflow_id === first) ? first : null;
+  }, [selectedIssues]);
+  // Differing effective workflows (overrides, or an override beside its
+  // project's) list the whole catalog narrowed to the keys they share; the
+  // project's own list would hide a shared status it lacks.
+  const sameWorkflow = !!sharedWorkflowId || !selectedIssues.some((i) => i.workflow_id);
   const allowedStatuses = useMemo(
     () =>
-      sharedProjectId && !selectedIssues.some((i) => i.workflow_id)
+      sharedWorkflowId || (sharedProjectId && !selectedIssues.some((i) => i.workflow_id))
         ? null
         : sharedWorkflowStatusKeys(workflows, projects, selectedIssues),
-    [sharedProjectId, workflows, projects, selectedIssues],
+    [sharedWorkflowId, sharedProjectId, workflows, projects, selectedIssues],
   );
 
   const [statusOpen, setStatusOpen] = useState(false);
@@ -377,7 +397,8 @@ export function BatchActionToolbar({
           status={common.status}
           // No shared project spans projects (or none): not the Default-only
           // list of a single issue outside a project. (MUL-8121)
-          projectId={sharedProjectId ?? undefined}
+          projectId={sameWorkflow ? (sharedProjectId ?? undefined) : undefined}
+          workflowId={sharedWorkflowId}
           allowedStatuses={allowedStatuses}
           onUpdate={handleBatchStatus}
           open={statusOpen}
@@ -409,6 +430,12 @@ export function BatchActionToolbar({
           triggerRender={<Button variant="ghost" size="sm" disabled={loading} />}
           trigger={t(($) => $.batch.assignee)}
           align="center"
+        />
+
+        {/* Workflow */}
+        <BatchWorkflowPicker
+          issues={selectedIssues}
+          onApplied={clearSelectionOnApply ? clear : undefined}
         />
 
         {/* Delete */}

@@ -40,7 +40,7 @@ import {
   type CSSProperties,
   type RefObject,
 } from "react";
-import { Check, Copy, Frame, Maximize2, Minus, Plus } from "lucide-react";
+import { Check, Copy, Frame, Maximize2, Minus, Plus } from "@multica/ui/icons";
 import { parse, stringify } from "yaml";
 import type { MermaidConfig } from "mermaid";
 import { useMermaidOrientationSetting } from "@multica/core/workspace/mermaid-orientation";

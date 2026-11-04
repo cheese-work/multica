@@ -20,9 +20,9 @@ WITH touched_issue AS (
 ), inserted_comment AS (
     INSERT INTO comment (id,issue_id,workspace_id,author_type,author_id,content,type,github_notify_only)
     SELECT $3,touched_issue.id,touched_issue.workspace_id,'system','00000000-0000-0000-0000-000000000000',$4,'comment',true
-    FROM touched_issue RETURNING id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, github_notify_only
+    FROM touched_issue RETURNING id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, github_notify_only, taint_ids, external_read
 )
-SELECT inserted_comment.id, inserted_comment.issue_id, inserted_comment.author_type, inserted_comment.author_id, inserted_comment.content, inserted_comment.type, inserted_comment.created_at, inserted_comment.updated_at, inserted_comment.parent_id, inserted_comment.workspace_id, inserted_comment.resolved_at, inserted_comment.resolved_by_type, inserted_comment.resolved_by_id, inserted_comment.source_task_id, inserted_comment.quick_action_id, inserted_comment.via_plugin_id, inserted_comment.revision, inserted_comment.recovery_settled_at, inserted_comment.deleted_at, inserted_comment.suppressed_agent_ids, inserted_comment.decision_request_id, inserted_comment.decision_answer_id, inserted_comment.decision_intent_id, inserted_comment.decision_comment_kind, inserted_comment.github_notify_only,touched_issue.revision AS issue_revision
+SELECT inserted_comment.id, inserted_comment.issue_id, inserted_comment.author_type, inserted_comment.author_id, inserted_comment.content, inserted_comment.type, inserted_comment.created_at, inserted_comment.updated_at, inserted_comment.parent_id, inserted_comment.workspace_id, inserted_comment.resolved_at, inserted_comment.resolved_by_type, inserted_comment.resolved_by_id, inserted_comment.source_task_id, inserted_comment.quick_action_id, inserted_comment.via_plugin_id, inserted_comment.revision, inserted_comment.recovery_settled_at, inserted_comment.deleted_at, inserted_comment.suppressed_agent_ids, inserted_comment.decision_request_id, inserted_comment.decision_answer_id, inserted_comment.decision_intent_id, inserted_comment.decision_comment_kind, inserted_comment.github_notify_only, inserted_comment.taint_ids, inserted_comment.external_read,touched_issue.revision AS issue_revision
 FROM inserted_comment JOIN touched_issue ON touched_issue.id=inserted_comment.issue_id
 `
 
@@ -59,6 +59,8 @@ type CreateGitHubNotifyCommentRow struct {
 	DecisionIntentID    pgtype.UUID        `json:"decision_intent_id"`
 	DecisionCommentKind pgtype.Text        `json:"decision_comment_kind"`
 	GithubNotifyOnly    bool               `json:"github_notify_only"`
+	TaintIds            []string           `json:"taint_ids"`
+	ExternalRead        bool               `json:"external_read"`
 	IssueRevision       int64              `json:"issue_revision"`
 }
 
@@ -96,6 +98,8 @@ func (q *Queries) CreateGitHubNotifyComment(ctx context.Context, arg CreateGitHu
 		&i.DecisionIntentID,
 		&i.DecisionCommentKind,
 		&i.GithubNotifyOnly,
+		&i.TaintIds,
+		&i.ExternalRead,
 		&i.IssueRevision,
 	)
 	return i, err
@@ -129,8 +133,112 @@ func (q *Queries) DenyPendingGitHubWebhookRevisions(ctx context.Context, arg Den
 	return err
 }
 
+const findGitHubWebhookRevisionForIntake = `-- name: FindGitHubWebhookRevisionForIntake :one
+SELECT revision.state, revision.reason,
+       (SELECT count(*) FROM github_webhook_dispatch receipt
+        WHERE receipt.workspace_id = revision.workspace_id AND receipt.revision_id = revision.id
+          AND receipt.task_id IS NOT NULL)::int AS tasks
+FROM github_webhook_revision revision
+WHERE revision.workspace_id = $1 AND revision.installation_id = $2 AND revision.repository_id = $3
+  AND revision.object_kind = $4 AND revision.object_id = $5 AND revision.body_hash = $6
+  AND revision.event = $7 AND revision.action = $8 AND revision.sender_id = $9 AND revision.author_id = $10
+  AND revision.review_state = $11
+  AND revision.object_created_at IS NOT DISTINCT FROM $12::timestamptz
+  AND revision.object_updated_at IS NOT DISTINCT FROM $13::timestamptz
+  AND revision.object_submitted_at IS NOT DISTINCT FROM $14::timestamptz
+ORDER BY revision.created_at DESC, revision.id DESC
+LIMIT 1
+`
+
+type FindGitHubWebhookRevisionForIntakeParams struct {
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	InstallationID    int64              `json:"installation_id"`
+	RepositoryID      int64              `json:"repository_id"`
+	ObjectKind        string             `json:"object_kind"`
+	ObjectID          int64              `json:"object_id"`
+	BodyHash          string             `json:"body_hash"`
+	Event             string             `json:"event"`
+	Action            string             `json:"action"`
+	SenderID          int64              `json:"sender_id"`
+	AuthorID          int64              `json:"author_id"`
+	ReviewState       string             `json:"review_state"`
+	ObjectCreatedAt   pgtype.Timestamptz `json:"object_created_at"`
+	ObjectUpdatedAt   pgtype.Timestamptz `json:"object_updated_at"`
+	ObjectSubmittedAt pgtype.Timestamptz `json:"object_submitted_at"`
+}
+
+type FindGitHubWebhookRevisionForIntakeRow struct {
+	State  string `json:"state"`
+	Reason string `json:"reason"`
+	Tasks  int32  `json:"tasks"`
+}
+
+// Same identity match as ListGitHubWebhookRevisionsForWork, scoped to one
+// workspace and without FOR UPDATE, so a redelivery resolves to its canonical
+// revision. tasks counts the runs that revision started.
+func (q *Queries) FindGitHubWebhookRevisionForIntake(ctx context.Context, arg FindGitHubWebhookRevisionForIntakeParams) (FindGitHubWebhookRevisionForIntakeRow, error) {
+	row := q.db.QueryRow(ctx, findGitHubWebhookRevisionForIntake,
+		arg.WorkspaceID,
+		arg.InstallationID,
+		arg.RepositoryID,
+		arg.ObjectKind,
+		arg.ObjectID,
+		arg.BodyHash,
+		arg.Event,
+		arg.Action,
+		arg.SenderID,
+		arg.AuthorID,
+		arg.ReviewState,
+		arg.ObjectCreatedAt,
+		arg.ObjectUpdatedAt,
+		arg.ObjectSubmittedAt,
+	)
+	var i FindGitHubWebhookRevisionForIntakeRow
+	err := row.Scan(&i.State, &i.Reason, &i.Tasks)
+	return i, err
+}
+
+const getGitHubIntakePinForTask = `-- name: GetGitHubIntakePinForTask :one
+SELECT COALESCE(pull.branch, '')::text AS branch, COALESCE(pull.head_repo_same, false)::boolean AS head_repo_same,
+       COALESCE(pull.repo_owner, '')::text AS repo_owner, COALESCE(pull.repo_name, '')::text AS repo_name, COALESCE(pull.html_url, '')::text AS html_url
+FROM github_webhook_dispatch receipt
+LEFT JOIN github_webhook_revision revision ON revision.id = receipt.revision_id AND revision.workspace_id = receipt.workspace_id
+LEFT JOIN github_pull_request pull ON pull.id = revision.pull_request_id AND pull.workspace_id = receipt.workspace_id
+WHERE receipt.workspace_id = $1 AND receipt.task_id = $2 AND receipt.state = 'dispatched'
+LIMIT 1
+`
+
+type GetGitHubIntakePinForTaskParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	TaskID      pgtype.UUID `json:"task_id"`
+}
+
+type GetGitHubIntakePinForTaskRow struct {
+	Branch       string `json:"branch"`
+	HeadRepoSame bool   `json:"head_repo_same"`
+	RepoOwner    string `json:"repo_owner"`
+	RepoName     string `json:"repo_name"`
+	HtmlUrl      string `json:"html_url"`
+}
+
+// The PR an intake item dispatched this task for (CHE-2216 plan 3.6). No row
+// means the task is not an intake run; a receipt whose PR is gone still is one,
+// with an empty pin.
+func (q *Queries) GetGitHubIntakePinForTask(ctx context.Context, arg GetGitHubIntakePinForTaskParams) (GetGitHubIntakePinForTaskRow, error) {
+	row := q.db.QueryRow(ctx, getGitHubIntakePinForTask, arg.WorkspaceID, arg.TaskID)
+	var i GetGitHubIntakePinForTaskRow
+	err := row.Scan(
+		&i.Branch,
+		&i.HeadRepoSame,
+		&i.RepoOwner,
+		&i.RepoName,
+		&i.HtmlUrl,
+	)
+	return i, err
+}
+
 const getGitHubRouteIssue = `-- name: GetGitHubRouteIssue :one
-SELECT issue.id, issue.workspace_id, issue.title, issue.description, issue.status, issue.priority, issue.assignee_type, issue.assignee_id, issue.creator_type, issue.creator_id, issue.parent_issue_id, issue.acceptance_criteria, issue.context_refs, issue.position, issue.due_date, issue.created_at, issue.updated_at, issue.number, issue.project_id, issue.origin_type, issue.origin_id, issue.first_executed_at, issue.start_date, issue.metadata, issue.stage, issue.properties, issue.revision, issue.last_activity_at, issue.triage_state, issue.duplicate_of_issue_id, issue.workflow_id, issue.requested_by_id, issue.max_runs_override FROM issue
+SELECT issue.id, issue.workspace_id, issue.title, issue.description, issue.status, issue.priority, issue.assignee_type, issue.assignee_id, issue.creator_type, issue.creator_id, issue.parent_issue_id, issue.acceptance_criteria, issue.context_refs, issue.position, issue.due_date, issue.created_at, issue.updated_at, issue.number, issue.project_id, issue.origin_type, issue.origin_id, issue.first_executed_at, issue.start_date, issue.metadata, issue.stage, issue.properties, issue.revision, issue.last_activity_at, issue.triage_state, issue.duplicate_of_issue_id, issue.workflow_id, issue.requested_by_id, issue.max_runs_override, issue.description_external_read FROM issue
 JOIN issue_pull_request link ON link.issue_id=issue.id
 JOIN github_pull_request pull ON pull.id=link.pull_request_id AND pull.workspace_id=issue.workspace_id
 JOIN github_installation installation ON installation.workspace_id=issue.workspace_id AND installation.installation_id=pull.installation_id
@@ -188,6 +296,7 @@ func (q *Queries) GetGitHubRouteIssue(ctx context.Context, arg GetGitHubRouteIss
 		&i.WorkflowID,
 		&i.RequestedByID,
 		&i.MaxRunsOverride,
+		&i.DescriptionExternalRead,
 	)
 	return i, err
 }
@@ -497,6 +606,57 @@ func (q *Queries) ListGitHubReconcilePullRequests(ctx context.Context) ([]ListGi
 	return items, nil
 }
 
+const listGitHubWebhookIntakeScan = `-- name: ListGitHubWebhookIntakeScan :many
+SELECT delivery_guid, event, state, reason, received_at, payload
+FROM github_webhook_intake
+WHERE received_at >= $1
+ORDER BY received_at, delivery_guid
+LIMIT $2
+`
+
+type ListGitHubWebhookIntakeScanParams struct {
+	ReceivedAt pgtype.Timestamptz `json:"received_at"`
+	Limit      int32              `json:"limit"`
+}
+
+type ListGitHubWebhookIntakeScanRow struct {
+	DeliveryGuid string             `json:"delivery_guid"`
+	Event        string             `json:"event"`
+	State        string             `json:"state"`
+	Reason       string             `json:"reason"`
+	ReceivedAt   pgtype.Timestamptz `json:"received_at"`
+	Payload      []byte             `json:"payload"`
+}
+
+// Intake rows for the read-only intake check (CHE-2669). Selects the payload so
+// the handler can resolve the workspace; the handler never returns it.
+func (q *Queries) ListGitHubWebhookIntakeScan(ctx context.Context, arg ListGitHubWebhookIntakeScanParams) ([]ListGitHubWebhookIntakeScanRow, error) {
+	rows, err := q.db.Query(ctx, listGitHubWebhookIntakeScan, arg.ReceivedAt, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGitHubWebhookIntakeScanRow{}
+	for rows.Next() {
+		var i ListGitHubWebhookIntakeScanRow
+		if err := rows.Scan(
+			&i.DeliveryGuid,
+			&i.Event,
+			&i.State,
+			&i.Reason,
+			&i.ReceivedAt,
+			&i.Payload,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGitHubWebhookRevisionsForWork = `-- name: ListGitHubWebhookRevisionsForWork :many
 SELECT workspace_id, installation_id, repository_id, pull_request_id, pr_number, object_kind, object_id, body_hash, source_delivery_guid, event, action, sender_id, author_id, author_login, author_type, head_sha, review_state, object_created_at, object_updated_at, object_submitted_at, state, reason, created_at, updated_at, id FROM github_webhook_revision
 WHERE installation_id = $1 AND repository_id = $2
@@ -594,7 +754,7 @@ UNION ALL
 SELECT 'revision'::text, id::text, state, reason,
        EXTRACT(EPOCH FROM (now() - created_at))::bigint
 FROM github_webhook_revision
-WHERE state = 'unsigned' AND created_at < now() - $1::bigint * interval '1 second'
+WHERE (state = 'unsigned' OR (state = 'deferred' AND reason = 'approved_snapshot')) AND created_at < now() - $1::bigint * interval '1 second'
 ORDER BY 5 DESC
 `
 

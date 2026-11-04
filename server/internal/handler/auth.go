@@ -178,6 +178,7 @@ func (h *Handler) issueJWT(user db.User, method string) (string, error) {
 		"email": user.Email,
 		"name":  user.Name,
 		"sid":   sid,
+		"gen":   user.SessionGeneration,
 		"exp":   time.Now().Add(auth.AuthTokenTTL()).Unix(),
 		"iat":   time.Now().Unix(),
 		"amr":   method,
@@ -767,18 +768,28 @@ func (h *Handler) issueHandoffToken(w http.ResponseWriter, r *http.Request, meth
 		return
 	}
 
-	user, err := h.Queries.GetUser(r.Context(), parseUUID(userID))
-	if err != nil {
+	// The token carries the stored generation, so it is read and signed under
+	// the same share lock that compares it with the caller's.
+	var tokenString string
+	err := h.withCurrentSession(r, userID, func(queries *db.Queries) error {
+		user, err := queries.GetUser(r.Context(), parseUUID(userID))
+		if err != nil {
+			return err
+		}
+		tokenString, err = h.issueJWT(user, method)
+		return err
+	})
+	switch {
+	case errors.Is(err, errSessionRevoked):
+		writeError(w, http.StatusUnauthorized, "session revoked")
+		return
+	case errors.Is(err, pgx.ErrNoRows):
 		writeError(w, http.StatusNotFound, "user not found")
 		return
-	}
-
-	tokenString, err := h.issueJWT(user, method)
-	if err != nil {
-		if errors.Is(err, auth.ErrTemporarilyDisabledUser) {
-			writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
-			return
-		}
+	case errors.Is(err, auth.ErrTemporarilyDisabledUser):
+		writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
+		return
+	case err != nil:
 		slog.Warn("auth-token: failed to issue JWT", append(logger.RequestAttrs(r), "error", err, "user_id", userID)...)
 		writeError(w, http.StatusInternalServerError, "failed to generate token")
 		return
@@ -788,6 +799,15 @@ func (h *Handler) issueHandoffToken(w http.ResponseWriter, r *http.Request, meth
 }
 
 func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
+	if err := h.endPushSession(r); err != nil {
+		// The session's end is not confirmed (not recorded, or an admitted send is
+		// not shown to be over): no success, and the cookie stays so the client can
+		// retry. The marker, if it was written, stays too.
+		slog.Warn("Logout: could not end the push session", append(logger.RequestAttrs(r), "error", err)...)
+		w.Header().Set("Retry-After", "5")
+		writeError(w, http.StatusServiceUnavailable, "could not finish ending this session's push subscriptions; try again")
+		return
+	}
 	auth.ClearAuthCookies(w)
 	writeJSON(w, http.StatusOK, map[string]string{"message": "logged out"})
 }

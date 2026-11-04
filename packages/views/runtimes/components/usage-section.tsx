@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { BarChart3, ChevronRight, AlertCircle } from "lucide-react";
+import { BarChart3, ChevronRight, AlertCircle } from "@multica/ui/icons";
 import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Button } from "@multica/ui/components/ui/button";
@@ -359,7 +359,10 @@ function WhenChart({
   const pricings = useCustomPricingStore((s) => s.pricings);
 
   const { dailyCostStack, dailyTokens } = useMemo(
-    () => aggregateByDate(filtered),
+    () => {
+      void pricings;
+      return aggregateByDate(filtered);
+    },
     [filtered, pricings],
   );
   // Weekly aggregation builds exactly N trailing calendar weeks anchored at
@@ -369,7 +372,10 @@ function WhenChart({
   // aggregate surfaced old populated weeks instead of in-range empty ones.
   const weekCount = Math.max(1, Math.ceil(days / 7));
   const { weeklyTokens, weeklyCostStack } = useMemo(
-    () => aggregateByWeek(usage, tz, weekCount),
+    () => {
+      void pricings;
+      return aggregateByWeek(usage, tz, weekCount);
+    },
     [usage, tz, weekCount, pricings],
   );
 
@@ -675,11 +681,17 @@ function CostByBlock({
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
 
   const byAgent = useMemo(
-    () => aggregateCostByAgent(byAgentRows),
+    () => {
+      void pricings;
+      return aggregateCostByAgent(byAgentRows);
+    },
     [byAgentRows, pricings],
   );
   const byModel = useMemo(
-    () => aggregateCostByModel(usage),
+    () => {
+      void pricings;
+      return aggregateCostByModel(usage);
+    },
     [usage, pricings],
   );
 

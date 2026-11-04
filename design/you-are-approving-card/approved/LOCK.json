@@ -1,0 +1,25 @@
+{
+  "provider": "doop",
+  "base_url": "https://congvc-c00.taila6fa8a.ts.net:34443/",
+  "canvas_or_project_id": "MJ4yJPTHt6",
+  "page_id": "MJ4yJPTHt6:page1",
+  "screens": [
+    {
+      "screen": "you-are-approving-card (direction B, tabbed viewer; desktop 540 and phone 358, light and dark)",
+      "frame_id": "t8_q2WrMLL",
+      "updatedAt": "2026-10-30T12:12:16.518Z",
+      "content_sha256": "6cf42b1df272e475b061b9a48e5f3185e9597ecce91dc35b9eef623a3f087982"
+    }
+  ],
+  "export_sha256": "09ead89b1b2e0199320a13dcc7671dbd99aac2ebfe79e123af3c147f171b6a32",
+  "export_sha256_method": "sha256 of the line '<sha256>  <file>' for export_files, sorted by file name",
+  "export_files": {
+    "approving-card-b.html": "6cf42b1df272e475b061b9a48e5f3185e9597ecce91dc35b9eef623a3f087982"
+  },
+  "export_transform": "none: the frame HTML is self-contained (system font stack, inline SVG, no external fetch); written as read from doop, without the trailing newline",
+  "exported_at": "2026-10-30 22:57 ICT",
+  "exported_by": "x99-claude-sonnet-design / claude-sonnet-5-5 / x99",
+  "issue": "CHE-2656",
+  "selection_id": "01a18d7e-2504-73ce-9bba-a1cf0ef5c649",
+  "ux_verdict_id": "01a18cc3-3989-77c8-b495-e8bd0114dfc0"
+}

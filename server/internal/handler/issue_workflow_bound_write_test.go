@@ -86,8 +86,8 @@ func newBoundWorkflowWriteFrom(t *testing.T, initial, field string, edit func(ma
 
 	fixture := newCardFixture(t)
 	options := `[{"label":"` + decisiontx.ApproveWriteLabel + `","what_happens":"apply"},{"label":"Reject","what_happens":"drop"}]`
-	dbfx.Exec(t, `UPDATE decision_request SET options = $2::jsonb, ask = $3 WHERE id = $1`,
-		fixture.decision.ID, options, decisiontx.BoundWriteDecision(field, before, canonicalStepsHash(t, wf.ID, after)))
+	dbfx.Exec(t, `UPDATE decision_request SET options = $2::jsonb WHERE id = $1`, fixture.decision.ID, options)
+	storeBoundWriteCard(t, fixture.decision.ID, decisiontx.BoundWriteDecision(field, before, canonicalStepsHash(t, wf.ID, after)))
 	dbfx.Exec(t, `UPDATE member SET role = 'owner' WHERE workspace_id = $1 AND user_id = $2`, fixture.issue.WorkspaceID, parseUUID(fixture.humanID))
 	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: decisiontx.ApproveWriteLabel}); err != nil {
 		t.Fatal(err)

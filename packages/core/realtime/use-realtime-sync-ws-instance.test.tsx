@@ -217,6 +217,23 @@ describe("useRealtimeSync — ws instance change", () => {
     }
   });
 
+  it("refetches the runtime list on a drain refresh from another workspace's task", () => {
+    vi.useFakeTimers();
+    try {
+      const ws = createMockWs();
+      renderHook(() => useRealtimeSync(ws, stores), { wrapper: createWrapper(qc) });
+      const onAny = vi.mocked(ws.onAny).mock.calls[0]![0];
+
+      invalidateSpy.mockClear();
+      onAny({ type: "daemon:register", payload: { action: "drain" } } as never);
+      vi.advanceTimersByTime(100);
+
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: runtimeKeys.all("ws-1") });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("invalidates per-issue caches (no wsId in key) on ws instance change", () => {
     // These keys are not under the ["issues", wsId] prefix, so they need
     // their own invalidation on recovery — otherwise events missed while

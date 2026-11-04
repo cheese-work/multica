@@ -80,6 +80,47 @@ describe("runtime machine grouping", () => {
     expect(machines[0]?.launchedBy).toBe("desktop");
   });
 
+  it("takes the update status from the online daemon, not a stale offline report", () => {
+    const machines = buildRuntimeMachines(
+      [
+        makeRuntime({
+          id: "rt-online",
+          provider: "claude",
+          update_available: true,
+          server_commit: "0123456789abcdef0123456789abcdef01234567",
+          server_version: "0.7.1-20261029-2357",
+        }),
+        makeRuntime({
+          id: "rt-stale",
+          provider: "copilot",
+          status: "offline",
+          last_seen_at: new Date(NOW - 4 * 24 * 60 * 60_000).toISOString(),
+          update_available: false,
+          update_reason: "unknown_commit",
+        }),
+      ],
+      { now: NOW },
+    );
+
+    expect(machines[0]?.update).toEqual({
+      available: true,
+      serverCommit: "0123456789abcdef0123456789abcdef01234567",
+      serverVersion: "0.7.1-20261029-2357",
+      reason: "",
+    });
+  });
+
+  it("reports no update for a machine whose runtimes carry no status", () => {
+    const machines = buildRuntimeMachines([makeRuntime({ id: "rt-old" })], { now: NOW });
+
+    expect(machines[0]?.update).toEqual({
+      available: false,
+      serverCommit: "",
+      serverVersion: "",
+      reason: "",
+    });
+  });
+
   it("uses a machine-wide custom name as the machine title, over the local name", () => {
     const machines = buildRuntimeMachines(
       [

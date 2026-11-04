@@ -106,11 +106,32 @@ the field. The source issue must match `--issue`. The source comment must exist
 on that issue in the selected workspace and must not be deleted. The API
 accepts the same object as `ask` in `POST /api/decisions`.
 
+An ask that approves a file adds two optional fields. `subject` is
+`artifact_approval`; it requires at least one entry in `artifacts[]`. Each
+artifact has `attachment_id`, `label`, `sha256` (64 lowercase hex characters),
+and optionally `supersedes_attachment_id`, `signed_by` and
+`supersedes_signed_by` (each `reviewer` and the signed review `comment_id`;
+`supersedes_signed_by` needs `supersedes_attachment_id` and names who signed
+the file the diff is measured against). The server refuses the request when an attachment
+is not on the source issue in the workspace, or when the stored bytes do not
+hash to `sha256`. Both signatures are recorded as given and are not checked against
+the comment. `GET /api/decisions/{id}/artifacts` returns each artifact with its
+file card and, when it supersedes an earlier text attachment, the changed
+hunks only (`diff.hunks`, lines prefixed ` `, `-` or `+`). `diff.problem` is
+`not_text`, `too_large` or `unavailable` when no hunks can be shown.
+
 Advisory lint: the CLI prints a `hint:` line on stderr, and the API returns
 `hints[]`, when `context_eli10`, `stakes_if_wrong` or an option's
 `what_happens` holds a commit SHA or an internal code such as `L2` or `RGS-1`,
-or when `context_eli10` is not two to five sentences. Hints never block a
-request.
+or when `context_eli10` is not two to five sentences. A hint also appears
+when `decision` looks like several questions (two or more `?` or `？`, or
+wording such as "answer 1 to 5"), and when a `human_steps` action or command
+leaves values implicit ("etc."). One question per request is enforced by
+structure: one `decision` field, typed `options[]` and typed `human_steps[]`.
+Wording never refuses a request. `agent_did` needs at least 10 letters after
+links, IDs and hex values are removed; the bound counts characters, not
+space-separated words, so text written without spaces is measured fairly.
+Hints never block a request.
 
 The server renders the fields and source links into the stored ask, issue
 comment and DM message. The stored request also retains `source_comment_id`

@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { useDefaultLayout } from "react-resizable-panels";
-import { ArrowLeft, MessageSquare } from "lucide-react";
+import { ArrowLeft, MessageSquare } from "@multica/ui/icons";
 import { toast } from "sonner";
 import { Button } from "@multica/ui/components/ui/button";
 import {
@@ -19,11 +19,11 @@ import {
   subscribeToWorkspaceRehydration,
 } from "@multica/core/platform";
 import { useChatStore } from "@multica/core/chat";
-import { chatQuickActionsPendingOptions } from "@multica/core/chat/queries";
+import { chatKeys, chatQuickActionsPendingOptions } from "@multica/core/chat/queries";
 import { useRegenerateChatQuickActions } from "@multica/core/chat/mutations";
 import { useQuickActionsPendingTimeout } from "@multica/core/chat/use-quick-actions-pending-timeout";
 import { useQuickActionsFailureToast } from "./components/use-quick-actions-failure-toast";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Agent, ChatSearchHit, ChatSession } from "@multica/core/types";
 import { PageHeader } from "../layout/page-header";
 import { useBackOrReplace, useNavigation } from "../navigation";
@@ -49,6 +49,7 @@ import { InteractiveLoginBanner } from "./components/interactive-login-banner";
 import { ChatAnnotationContext } from "./components/chat-annotation-context";
 import { useChatAnnotations } from "./components/use-chat-annotations";
 import { useQuoteRequest } from "./components/use-quote-request";
+import { useRegisterCommandBarContext } from "../search/register-context";
 
 /**
  * Chat tab — the first-class two-pane surface (thread list on the left,
@@ -80,6 +81,7 @@ export function ChatPage() {
   const workspaceSlug = useRequiredWorkspaceSlug();
   const wsPaths = useWorkspacePaths();
   const workspace = useCurrentWorkspace();
+  const qc = useQueryClient();
   // App Router can retain this page after navigation. Once the URL belongs
   // to another route, this instance must stop reconciling shared chat state.
   // Also check the live workspace mirror in each effect: the incoming layout
@@ -287,6 +289,29 @@ export function ChatPage() {
     }
   };
 
+  // The command bar calls the page's own handlers so archiving or re-scoping
+  // from it moves the pane exactly like the header controls do.
+  const commandBarHandlersRef = useRef({ handleArchive, changeProjectContext });
+  useEffect(() => {
+    commandBarHandlersRef.current = { handleArchive, changeProjectContext };
+  });
+  const commandBarSession = c.currentSession ?? null;
+  useRegisterCommandBarContext(
+    useMemo(
+      () =>
+        commandBarSession
+          ? {
+              kind: "chat",
+              session: commandBarSession,
+              archive: (session: ChatSession) => commandBarHandlersRef.current.handleArchive(session),
+              changeProject: (projectId: string | null) =>
+                commandBarHandlersRef.current.changeProjectContext(projectId),
+            }
+          : null,
+      [commandBarSession],
+    ),
+  );
+
   // URL → new chat: `?agent=<id>` is the deep link used by "DM" entry points
   // (e.g. the agent detail page) to land on a fresh compose bound to that
   // agent. The permission-filtered agent list loads async, so the intent is
@@ -401,6 +426,12 @@ export function ChatPage() {
           renameRequest={renameRequest}
           autoCompactThresholdPct={autoCompactThresholdPct}
           onCompact={() => void c.handleSend("/compact")}
+          onSetPreset={(name) =>
+            // The server answers /preset without a session event: refetch so the picker shows the new choice.
+            void c.handleSend(`/preset ${name}`).then((sent) => {
+              if (sent && workspace) void qc.invalidateQueries({ queryKey: chatKeys.sessions(workspace.id) });
+            })
+          }
         />
       )}
       {c.showSkeleton ? (
@@ -471,7 +502,9 @@ export function ChatPage() {
       <ChatQueue
         tasks={queuedTasks}
         headStatus={c.pendingTask?.status}
-        onSendNow={c.handleSendQueuedTaskNow}
+        headSupplement={c.pendingTask?.head_supplement}
+        onSteer={c.handleSteerQueuedTask}
+        onStopAndSend={c.handleStopAndSendQueuedTask}
         sendNowDisabled={c.isAgentAccessRevoked}
         onEdit={c.handleEditQueuedTask}
         onRemove={c.handleRemoveQueuedTask}

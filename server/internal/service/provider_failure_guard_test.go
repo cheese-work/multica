@@ -262,7 +262,7 @@ func TestProviderFailureOwnerNoticeIsIdempotent(t *testing.T) {
 		ConditionKey:     "head-a",
 		FailedAt:         pgtype.Timestamptz{Time: time.Now().UTC().Add(-90 * time.Minute), Valid: true},
 		ProbeAt:          pgtype.Timestamptz{Time: time.Now().UTC().Add(-30 * time.Minute), Valid: true},
-		ProbeStatus:      http.StatusUnauthorized,
+		ProbeStatus:      pgtype.Int4{Int32: http.StatusUnauthorized, Valid: true},
 		ChangedCondition: providerFailureChangedState,
 		RecoveryTaskID:   parseTestUUID(t, recoveryTaskID),
 	}); err != nil {

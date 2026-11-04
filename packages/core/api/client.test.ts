@@ -37,7 +37,9 @@ describe("ApiClient decision cards", () => {
     };
     const fetchMock = vi.fn().mockResolvedValue(json([row]));
     vi.stubGlobal("fetch", fetchMock);
-    expect(await new ApiClient("https://api.example.test").listOpenDecisionRequests()).toEqual([row]);
+    expect(await new ApiClient("https://api.example.test").listOpenDecisionRequests()).toEqual([
+      { ...row, options: [], source_comment_id: null },
+    ]);
     expect(fetchMock.mock.calls[0]![0]).toBe("https://api.example.test/api/decisions/open");
   });
 
@@ -46,6 +48,20 @@ describe("ApiClient decision cards", () => {
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json(body)));
       expect(await new ApiClient("https://api.example.test").listOpenDecisionRequests()).toEqual([]);
     }
+  });
+
+  it("keeps options and the source comment, and drops malformed options", async () => {
+    const row = {
+      id: "ask", issue_id: "issue", issue_identifier: "CHE-1", asking_agent_id: "agent", ask: "Approve?",
+      escalation_class: "spend", created_at: "2026-10-29T04:00:00Z", chat_session_id: "dm", source_comment_id: "c1",
+    };
+    const options = [{ label: "Ship it", what_happens: "Merges" }, { label: "Hold" }];
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json([{ ...row, options }])));
+    expect(await new ApiClient("https://api.example.test").listOpenDecisionRequests()).toMatchObject([
+      { source_comment_id: "c1", options },
+    ]);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json([{ ...row, options: "nope" }])));
+    expect(await new ApiClient("https://api.example.test").listOpenDecisionRequests()).toMatchObject([{ options: [] }]);
   });
 
   it("keeps asks with missing optional jump metadata", async () => {
@@ -3330,5 +3346,80 @@ describe("ApiClient shared credential across windows", () => {
     await expect(client.markOnboardingComplete()).rejects.toBeInstanceOf(ApiError);
 
     expect(onUnauthorized).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ApiClient machine pause", () => {
+  const pause = {
+    reason: "incident",
+    paused_by: null,
+    paused_at: "2026-10-30T07:20:00Z",
+    expires_at: "2026-10-30T07:50:00Z",
+  };
+
+  it("PUTs the reason and parses the pause", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(pause), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await new ApiClient("https://api.example.test").pauseRuntimeMachine("rt-1", "incident");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.example.test/api/runtimes/rt-1/pause");
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("PUT");
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ reason: "incident" });
+    expect(result).toEqual(pause);
+  });
+
+  it("tolerates a malformed pause body from the server", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify("nope"), { status: 200, headers: { "Content-Type": "application/json" } }),
+      ),
+    );
+    const result = await new ApiClient("https://api.example.test").pauseRuntimeMachine("rt-1", "maintenance");
+    expect(result.reason).toBe("maintenance");
+  });
+
+  it("DELETEs the pause and accepts 204", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await new ApiClient("https://api.example.test").resumeRuntimeMachine("rt-1");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.example.test/api/runtimes/rt-1/pause");
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("DELETE");
+  });
+});
+
+describe("ApiClient chat supplements", () => {
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+  const receipt = {
+    message_id: "m1", chat_session_id: "s1", task_id: "t1", status: "pending",
+    failure_reason: null, delivered_at: null, acked_after_resend_at: null, resent_task_id: null,
+  };
+
+  it("steers a queued follow-up with a POST to the steer route", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json(receipt));
+    vi.stubGlobal("fetch", fetchMock);
+    const out = await new ApiClient("https://api.example.test").steerChatTask("s1", "t2");
+    expect(fetchMock.mock.calls[0]![0]).toBe("https://api.example.test/api/chat/sessions/s1/tasks/t2/steer");
+    expect(fetchMock.mock.calls[0]![1]?.method).toBe("POST");
+    expect(out.status).toBe("pending");
+  });
+
+  it("resends without confirmation by default", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({ task_id: "t3", supplement: receipt }));
+    vi.stubGlobal("fetch", fetchMock);
+    const out = await new ApiClient("https://api.example.test").resendChatSupplement("s1", "m1");
+    expect(fetchMock.mock.calls[0]![0]).toBe("https://api.example.test/api/chat/sessions/s1/messages/m1/supplement/resend");
+    expect(fetchMock.mock.calls[0]![1]?.method).toBe("POST");
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]?.body as string)).toEqual({ confirm_possible_duplicate: false });
+    expect(out.task_id).toBe("t3");
+  });
+
+  it("sends the duplicate confirmation only when the caller passes it", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({ task_id: "t3", supplement: receipt }));
+    vi.stubGlobal("fetch", fetchMock);
+    await new ApiClient("https://api.example.test").resendChatSupplement("s1", "m1", { confirmPossibleDuplicate: true });
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]?.body as string)).toEqual({ confirm_possible_duplicate: true });
   });
 });

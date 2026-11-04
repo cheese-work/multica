@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS agent_decision_reliance_instance_idx;

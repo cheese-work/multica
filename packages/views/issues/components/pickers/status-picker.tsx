@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { CircleEqual, CornerDownRight } from "lucide-react";
+import { CircleEqual, CornerDownRight } from "@multica/ui/icons";
 import type { IssueStatus, UpdateIssueRequest } from "@multica/core/types";
 import { STATUS_CONFIG } from "@multica/core/issues/config";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
@@ -33,6 +33,7 @@ export function StatusPicker({
   onMarkDuplicate,
   isDuplicate,
   projectId,
+  workflowId,
   allowedStatuses,
   issue,
 }: {
@@ -67,6 +68,8 @@ export function StatusPicker({
    * (MUL-8121) Omit (`undefined`) when the surface spans projects.
    */
   projectId?: string | null;
+  /** The issue's own workflow override; it replaces the project's. (CHE-2822) */
+  workflowId?: string | null;
   /**
    * Narrows the options to these keys — for a selection spanning projects,
    * the statuses every selected issue's workflow allows. Null offers all.
@@ -101,7 +104,7 @@ export function StatusPicker({
     catalog,
     resolved: workflowResolved,
     retry: retryCatalog,
-  } = useIssueStatusOptions(wsId, projectId, status);
+  } = useIssueStatusOptions(wsId, projectId, status, workflowId);
   const notifyCatalogUnresolved = useNotifyCatalogUnresolved();
   const allOptions = useMemo(
     () => (allowedStatuses ? projectOptions.filter((o) => allowedStatuses.has(o.key)) : projectOptions),
@@ -197,7 +200,7 @@ export function StatusPicker({
             // For an existing issue in a project, wait until the workflow has resolved:
             // a workflow that is merely unloaded reads as "no handoff", and the server
             // would still apply the real one with no confirmation shown.
-            if (issue && projectId && !workflowResolved) {
+            if (issue && (projectId || workflowId) && !workflowResolved) {
               notifyCatalogUnresolved(() => retryCatalog?.());
               return;
             }

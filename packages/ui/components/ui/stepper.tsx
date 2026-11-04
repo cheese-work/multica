@@ -9,7 +9,6 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useRef,
   useState,
 } from "react"
 import { mergeProps } from "@base-ui/react/merge-props"
@@ -32,7 +31,7 @@ interface StepperContextValue {
   setActiveStep: (step: number) => void
   stepsCount: number
   orientation: StepperOrientation
-  registerTrigger: (node: HTMLButtonElement | null) => void
+  registerTrigger: (node: HTMLButtonElement) => () => void
   triggerNodes: HTMLButtonElement[]
   focusNext: (currentIdx: number) => void
   focusPrev: (currentIdx: number) => void
@@ -73,6 +72,9 @@ interface StepperProps extends HTMLAttributes<HTMLDivElement> {
   indicators?: StepIndicators
 }
 
+// Stable default: an inline `{}` would change identity every render.
+const NO_INDICATORS: StepIndicators = {}
+
 function Stepper({
   defaultValue = 1,
   value,
@@ -80,23 +82,24 @@ function Stepper({
   orientation = "horizontal",
   className,
   children,
-  indicators = {},
+  indicators = NO_INDICATORS,
   ...props
 }: StepperProps) {
   const [activeStep, setActiveStep] = useState(defaultValue)
   const [triggerNodes, setTriggerNodes] = useState<HTMLButtonElement[]>([])
 
-  // Register/unregister triggers
-  const registerTrigger = useCallback((node: HTMLButtonElement | null) => {
-    setTriggerNodes((prev) => {
-      if (node && !prev.includes(node)) {
-        return [...prev, node]
-      } else if (!node && prev.includes(node!)) {
-        return prev.filter((n) => n !== node)
-      } else {
-        return prev
-      }
-    })
+  // Register a trigger node (kept in DOM order); returns its unregister fn
+  const registerTrigger = useCallback((node: HTMLButtonElement) => {
+    setTriggerNodes((prev) =>
+      prev.includes(node)
+        ? prev
+        : [...prev, node].sort((a, b) =>
+            a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING
+              ? -1
+              : 1
+          )
+    )
+    return () => setTriggerNodes((prev) => prev.filter((n) => n !== node))
   }, [])
 
   const handleSetActiveStep = useCallback(
@@ -112,15 +115,27 @@ function Stepper({
   const currentStep = value ?? activeStep
 
   // Keyboard navigation logic
-  const focusTrigger = (idx: number) => {
-    if (triggerNodes[idx]) triggerNodes[idx].focus()
-  }
-  const focusNext = (currentIdx: number) =>
-    focusTrigger((currentIdx + 1) % triggerNodes.length)
-  const focusPrev = (currentIdx: number) =>
-    focusTrigger((currentIdx - 1 + triggerNodes.length) % triggerNodes.length)
-  const focusFirst = () => focusTrigger(0)
-  const focusLast = () => focusTrigger(triggerNodes.length - 1)
+  const focusTrigger = useCallback(
+    (idx: number) => {
+      if (triggerNodes[idx]) triggerNodes[idx].focus()
+    },
+    [triggerNodes]
+  )
+  const focusNext = useCallback(
+    (currentIdx: number) =>
+      focusTrigger((currentIdx + 1) % triggerNodes.length),
+    [focusTrigger, triggerNodes.length]
+  )
+  const focusPrev = useCallback(
+    (currentIdx: number) =>
+      focusTrigger((currentIdx - 1 + triggerNodes.length) % triggerNodes.length),
+    [focusTrigger, triggerNodes.length]
+  )
+  const focusFirst = useCallback(() => focusTrigger(0), [focusTrigger])
+  const focusLast = useCallback(
+    () => focusTrigger(triggerNodes.length - 1),
+    [focusTrigger, triggerNodes.length]
+  )
 
   // Context value
   const contextValue = useMemo<StepperContextValue>(
@@ -147,7 +162,12 @@ function Stepper({
       children,
       orientation,
       registerTrigger,
+      focusNext,
+      focusPrev,
+      focusFirst,
+      focusLast,
       triggerNodes,
+      indicators,
     ]
   )
 
@@ -240,19 +260,22 @@ function StepperTrigger({
   const id = `stepper-tab-${step}`
   const panelId = `stepper-panel-${step}`
 
-  // Register this trigger for keyboard navigation
-  const btnRef = useRef<HTMLButtonElement>(null)
+  // Register this trigger for keyboard navigation. A state ref re-registers
+  // when `render` swaps the underlying node.
+  const [btnNode, setBtnNode] = useState<HTMLButtonElement | null>(null)
+  const btnRef = useCallback(
+    (node: HTMLElement | null) => setBtnNode(node as HTMLButtonElement | null),
+    []
+  )
   useEffect(() => {
-    if (btnRef.current) {
-      registerTrigger(btnRef.current)
-    }
-  }, [btnRef.current])
+    if (!btnNode) return undefined
+    return registerTrigger(btnNode)
+  }, [btnNode, registerTrigger])
 
   // Find our index among triggers for navigation
   const myIdx = useMemo(
-    () =>
-      triggerNodes.findIndex((n: HTMLButtonElement) => n === btnRef.current),
-    [triggerNodes, btnRef.current]
+    () => triggerNodes.findIndex((n: HTMLButtonElement) => n === btnNode),
+    [triggerNodes, btnNode]
   )
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>) => {

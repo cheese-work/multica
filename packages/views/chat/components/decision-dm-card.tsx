@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Loader2, MessageSquareQuote, RefreshCw, Undo2 } from "lucide-react";
+import { Loader2, MessageSquareQuote, RefreshCw, Undo2 } from "@multica/ui/icons";
 import { Button, buttonVariants } from "@multica/ui/components/ui/button";
 import {
   AlertDialog,

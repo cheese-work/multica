@@ -61,13 +61,29 @@ workspace's own change process before running it.
 
 ```bash
 multica issue budget get <issue-id> --output json
-multica issue budget raise <issue-id> --runs <total> --output json
 ```
 
 - `get` shows the runs used in the issue's budget window, the limit in force,
   its state and what a suggested raise would leave.
-- `raise` sets this issue's own cap to `--runs` total runs. `--runs` must be
-  above the cap now in force (the workflow's, or an earlier raise). Other
-  issues on the workflow keep the workflow's cap.
-- `raise` is members only; the server rejects an agent. An agent that hit the
-  cap reports the blocker and asks a person; it never raises its own budget.
+- `multica issue budget raise` and `multica issue budget top-up` only print a
+  pointer to the web app and send nothing: the server takes a raise or top-up
+  only from an interactive web or desktop session. Approve in the web app; until
+  then, a person moves the status in the web app, which opens a new run window.
+  An agent that hit the cap reports the blocker and asks a person; it never
+  raises its own budget.
+
+## Inbound webhook endpoints
+
+A step guard `webhook(name)` waits for a signed event posted to a named
+endpoint of the workflow. Writes are owner/admin only; the secret is printed
+once by `create` and `rotate` and cannot be read back.
+
+```bash
+multica workflow webhook create <workflow-id> --name <name> [--rate-per-min 60]
+multica workflow webhook rotate <workflow-id> --name <name>    # old secret valid 24 h
+multica workflow webhook disable <workflow-id> --name <name>   # cannot be undone
+multica workflow webhook list <workflow-id>                    # never shows secrets
+```
+
+`--name` is the name written in `webhook(name)`: 1-32 characters of
+`a-z`, `0-9`, `_` or `-`. `--rate-per-min` is 1-6000.

@@ -30,6 +30,39 @@ type Ask struct {
 	DefaultIfNoReply string      `json:"default_if_no_reply"`
 	SourceIssueID    string      `json:"source_issue_id"`
 	SourceCommentID  string      `json:"source_comment_id"`
+	HumanSteps       []HumanStep `json:"human_steps"`
+	Probes           []string    `json:"probes"`
+	AfterDone        string      `json:"after_done"`
+	Subject          string      `json:"subject,omitempty"`
+	Artifacts        []Artifact  `json:"artifacts,omitempty"`
+	// WhyHuman, Steps and DoneWhen are the action-kind fields (CHE-2394).
+	WhyHuman string   `json:"why_human,omitempty"`
+	Steps    []string `json:"steps,omitempty"`
+	DoneWhen string   `json:"done_when,omitempty"`
+	// Kind is set by DecodeAskKind; the stored kind is its own column, so it is not fingerprinted.
+	Kind string `json:"-"`
+	// AskedBy is the asking agent's name, set by the server for a new request;
+	// it is not caller input, so it is never decoded or fingerprinted.
+	AskedBy string `json:"-"`
+}
+
+// Artifact is a file the human approves. The server checks that it is an
+// attachment of the source issue and that its stored bytes hash to SHA256.
+type Artifact struct {
+	AttachmentID           string             `json:"attachment_id"`
+	Label                  string             `json:"label"`
+	SHA256                 string             `json:"sha256"`
+	SupersedesAttachmentID string             `json:"supersedes_attachment_id,omitempty"`
+	SignedBy               *ArtifactSignature `json:"signed_by,omitempty"`
+	// SupersedesSignedBy is the signature of the superseded revision, so a diff
+	// can say who signed the file it is measured against.
+	SupersedesSignedBy *ArtifactSignature `json:"supersedes_signed_by,omitempty"`
+}
+
+// ArtifactSignature names the reviewer agent and the signed review comment.
+type ArtifactSignature struct {
+	Reviewer  string `json:"reviewer"`
+	CommentID string `json:"comment_id"`
 }
 
 // AskError carries a fixed, field-named message. It never echoes decoder text,
@@ -41,12 +74,82 @@ func (err *AskError) Error() string { return err.Field + " " + err.Problem }
 const askOptionShape = "must be an object with label, what_happens, pros, cons, cost_or_time"
 
 var (
-	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "default_if_no_reply", "source_issue_id", "source_comment_id"}
+	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "default_if_no_reply", "source_issue_id", "source_comment_id", "human_steps", "probes", "after_done", "subject", "artifacts"}
 	optionFields = []string{"label", "what_happens", "pros", "cons", "cost_or_time"}
+	// actionFields is the whole action ask: no options, recommendation, decision or stakes.
+	actionFields = []string{"context_eli10", "agent_did", "why_human", "steps", "done_when", "default_if_no_reply", "source_issue_id", "source_comment_id"}
 	safeKey      = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
 )
 
 func errAskObject() error { return &AskError{"ask", "must be one JSON object"} }
+
+// Request kinds. A decision asks the person to choose; an action asks them to do
+// something an agent cannot (CHE-2394).
+const (
+	KindDecision = "decision"
+	KindAction   = "action"
+)
+
+// DecodeAskKind decodes an ask with the strict decoder of its kind.
+func DecodeAskKind(raw []byte, kind string) (Ask, error) {
+	switch kind {
+	case KindDecision:
+		return DecodeAsk(raw)
+	case KindAction:
+		return decodeActionAsk(raw)
+	}
+	return Ask{}, &AskError{"kind", "must be decision or action"}
+}
+
+func decodeActionAsk(raw []byte) (Ask, error) {
+	ask := Ask{Kind: KindAction}
+	fields, err := decodeObject(raw)
+	if err != nil {
+		return ask, errAskObject()
+	}
+	if err := rejectUnknown("ask", fields, actionFields); err != nil {
+		return ask, err
+	}
+	for _, field := range []struct {
+		name string
+		into *string
+	}{
+		{"context_eli10", &ask.ContextELI10}, {"agent_did", &ask.AgentDid}, {"why_human", &ask.WhyHuman}, {"done_when", &ask.DoneWhen},
+		{"default_if_no_reply", &ask.DefaultIfNoReply}, {"source_issue_id", &ask.SourceIssueID}, {"source_comment_id", &ask.SourceCommentID},
+	} {
+		if err := decodeString("ask."+field.name, fields[field.name], field.into); err != nil {
+			return ask, err
+		}
+	}
+	if err := decodeStrings("ask.steps", fields["steps"], &ask.Steps); err != nil {
+		return ask, err
+	}
+	return ask, ask.validateAction()
+}
+
+func (ask Ask) validateAction() error {
+	for _, field := range []struct{ name, value string }{
+		{"context_eli10", ask.ContextELI10}, {"agent_did", ask.AgentDid}, {"why_human", ask.WhyHuman},
+		{"done_when", ask.DoneWhen}, {"default_if_no_reply", ask.DefaultIfNoReply},
+	} {
+		if strings.TrimSpace(field.value) == "" {
+			return &AskError{"ask." + field.name, "is required"}
+		}
+	}
+	if !slices.ContainsFunc(ask.Steps, func(step string) bool { return strings.TrimSpace(step) != "" }) {
+		return &AskError{"ask.steps", "requires at least one nonblank item"}
+	}
+	for _, field := range []struct{ name, value string }{
+		{"source_issue_id", ask.SourceIssueID}, {"source_comment_id", ask.SourceCommentID},
+	} {
+		if _, err := util.ParseUUID(field.value); err != nil {
+			return &AskError{"ask." + field.name, "must be a UUID"}
+		}
+	}
+	return ask.validateReadable()
+}
+
+func (ask Ask) isAction() bool { return ask.Kind == KindAction || len(ask.Steps) > 0 }
 
 // DecodeAsk is the one decoder for the CLI and the server. It then validates.
 func DecodeAsk(raw []byte) (Ask, error) {
@@ -65,12 +168,22 @@ func DecodeAsk(raw []byte) (Ask, error) {
 		{"context_eli10", &ask.ContextELI10}, {"agent_did", &ask.AgentDid}, {"decision", &ask.Decision},
 		{"stakes_if_wrong", &ask.StakesIfWrong}, {"recommendation", &ask.Recommendation},
 		{"default_if_no_reply", &ask.DefaultIfNoReply}, {"source_issue_id", &ask.SourceIssueID}, {"source_comment_id", &ask.SourceCommentID},
+		{"after_done", &ask.AfterDone}, {"subject", &ask.Subject},
 	} {
 		if err := decodeString("ask."+field.name, fields[field.name], field.into); err != nil {
 			return ask, err
 		}
 	}
 	if err := decodeOptions(fields["options"], &ask.Options); err != nil {
+		return ask, err
+	}
+	if err := decodeSteps(fields["human_steps"], &ask.HumanSteps); err != nil {
+		return ask, err
+	}
+	if err := decodeStrings("ask.probes", fields["probes"], &ask.Probes); err != nil {
+		return ask, err
+	}
+	if err := decodeArtifacts(fields["artifacts"], &ask.Artifacts); err != nil {
 		return ask, err
 	}
 	return ask, ask.Validate()
@@ -216,15 +329,68 @@ func (ask Ask) Validate() error {
 			return &AskError{"ask." + field.name, "must be a UUID"}
 		}
 	}
-	return nil
+	if err := ask.validateReadable(); err != nil {
+		return err
+	}
+	if err := ask.validateHumanSteps(); err != nil {
+		return err
+	}
+	return ask.validateArtifacts()
 }
 
 func (ask Ask) Content(workspaceSlug string) string {
-	labels := make([]string, len(ask.Options))
-	for index, option := range ask.Options {
-		labels[index] = option.Label
+	if ask.isAction() {
+		return ask.actionContent(workspaceSlug)
 	}
-	commentPath := util.WorkspaceIssuePath(workspaceSlug, ask.SourceIssueID)
-	return fmt.Sprintf("**Agent did**\n%s\n\n**Decision**\n%s\n\n**Stakes if wrong**\n%s\n\n**Options**\n- %s\n\n**Recommendation**\n%s\n\n**Default if no reply**\n%s\n\n**Source**\n[Issue](mention://issue/%s) · [Comment](%s#comment-%s)",
-		ask.AgentDid, ask.Decision, ask.StakesIfWrong, strings.Join(labels, "\n- "), ask.Recommendation, ask.DefaultIfNoReply, ask.SourceIssueID, commentPath, ask.SourceCommentID)
+	var options strings.Builder
+	for _, option := range ask.Options {
+		fmt.Fprintf(&options, "- **%s**: %s\n", option.Label, option.WhatHappens)
+		for _, pro := range option.Pros {
+			fmt.Fprintf(&options, "  - Pro: %s\n", pro)
+		}
+		for _, con := range option.Cons {
+			fmt.Fprintf(&options, "  - Con: %s\n", con)
+		}
+		fmt.Fprintf(&options, "  - Cost or time: %s\n", option.CostOrTime)
+	}
+	return fmt.Sprintf("**Context**\n%s\n\n**Decision**\n%s\n\n**What is at stake**\n%s\n\n**Options**\n%s\n**Recommendation**\n%s\n\n**Default if no reply**\n%s%s\n\n%s<details>\n<summary>Details</summary>\n\n%s**Agent did**\n%s\n\n</details>\n\nInvestigate in issue: [Issue](mention://issue/%s) · [Comment](%s#comment-%s)",
+		ask.ContextELI10, ask.Decision, ask.StakesIfWrong, options.String(), ask.Recommendation, ask.DefaultIfNoReply, ask.artifactsContent(), ask.humanStepSections(), ask.askedByLine(), ask.AgentDid, ask.SourceIssueID, util.WorkspaceIssuePath(workspaceSlug, ask.SourceIssueID), ask.SourceCommentID)
+}
+
+func (ask Ask) askedByLine() string {
+	if ask.AskedBy == "" {
+		return ""
+	}
+	return "**Asked by** " + ask.AskedBy + "\n\n"
+}
+
+// askSourceTail is the per-run provenance link that ends Content().
+var askSourceTail = regexp.MustCompile(`\n\nInvestigate in issue: [^\n]*$`)
+
+// WithoutSourceTail drops the provenance link, so two renders of the same
+// decision from different source comments compare equal.
+func WithoutSourceTail(content string) string {
+	return askSourceTail.ReplaceAllString(content, "")
+}
+
+// artifactsContent lists each artifact before the source link, so the re-ask
+// check, which compares the text without that link, tells two files apart.
+func (ask Ask) artifactsContent() string {
+	if len(ask.Artifacts) == 0 {
+		return ""
+	}
+	lines := make([]string, len(ask.Artifacts))
+	for index, artifact := range ask.Artifacts {
+		lines[index] = fmt.Sprintf("- %s · `%s` · sha256 `%s`", artifact.Label, artifact.AttachmentID, artifact.SHA256)
+	}
+	return "\n\n**Artifacts**\n" + strings.Join(lines, "\n")
+}
+
+func (ask Ask) actionContent(workspaceSlug string) string {
+	var steps strings.Builder
+	for index, step := range ask.Steps {
+		fmt.Fprintf(&steps, "%d. %s\n", index+1, step)
+	}
+	return fmt.Sprintf("**Context**\n%s\n\n**Why you**\n%s\n\n**Steps**\n%s\n**Done when**\n%s\n\n**Default if no reply**\n%s\n\n%s<details>\n<summary>Details</summary>\n\n**Agent did**\n%s\n\n</details>\n\nInvestigate in issue: [Issue](mention://issue/%s) · [Comment](%s#comment-%s)",
+		ask.ContextELI10, ask.WhyHuman, steps.String(), ask.DoneWhen, ask.DefaultIfNoReply, ask.askedByLine(), ask.AgentDid, ask.SourceIssueID, util.WorkspaceIssuePath(workspaceSlug, ask.SourceIssueID), ask.SourceCommentID)
 }

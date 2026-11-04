@@ -263,9 +263,9 @@ func TestTaskFailureClassifiers(t *testing.T) {
 		// Transient mid-stream provider disconnect (MUL-4910): retryable, and
 		// resume-safe so the retry continues the truncated conversation.
 		{reason: "agent_error.provider_network", wantType: "agent_error", wantResumeOK: true, wantRetry: true},
-		// Capacity/rate-limit failures keep their existing user-retry posture.
-		// Correcting a misleading auth label must not enable an automatic resend.
-		{reason: "agent_error.provider_capacity_or_rate_limit", wantType: "agent_error", wantResumeOK: true, wantRetry: false},
+		// 429 / concurrency-limit failures get one deferred retry (CHE-1732,
+		// Cheese's decision of 29 Oct 2026); schedule in provider_capacity_retry_test.go.
+		{reason: "agent_error.provider_capacity_or_rate_limit", wantType: "agent_error", wantResumeOK: true, wantRetry: true},
 		{reason: "runtime_recovery", wantType: "runtime", wantResumeOK: true, wantRetry: true},
 		{reason: "iteration_limit", wantType: "agent_output", wantResumeOK: false, wantRetry: false},
 		{reason: "api_invalid_request", wantType: "agent_error", wantResumeOK: false, wantRetry: false},

@@ -52,8 +52,11 @@ type AgentConversationStarter struct {
 }
 
 type AgentResponse struct {
-	ID          string `json:"id"`
-	WorkspaceID string `json:"workspace_id"`
+	// StalePresets is set only on an agent update response: presets the
+	// update left unable to run (CHE-2249 E5).
+	StalePresets []stalePreset `json:"stale_presets,omitempty"`
+	ID           string        `json:"id"`
+	WorkspaceID  string        `json:"workspace_id"`
 	// RuntimeID is the empty string when the agent is unbound — it kept its
 	// configuration and history when its runtime was deleted, and needs a new
 	// runtime before it can run again (MUL-5559). The wire type stays a string
@@ -141,6 +144,10 @@ type AgentResponse struct {
 	UpdatedAt                        string                 `json:"updated_at"`
 	ArchivedAt                       *string                `json:"archived_at"`
 	ArchivedBy                       *string                `json:"archived_by"`
+	// SchedulingPausedAt / SchedulingPausedBy are set while an owner or admin
+	// holds this agent's claims. Both null when scheduling runs.
+	SchedulingPausedAt *string `json:"scheduling_paused_at"`
+	SchedulingPausedBy *string `json:"scheduling_paused_by"`
 }
 
 // runtimeConfigGatewayTokenMask is the placeholder the API substitutes for
@@ -242,6 +249,8 @@ func (h *Handler) agentToResponse(a db.Agent) AgentResponse {
 		UpdatedAt:                timestampToString(a.UpdatedAt),
 		ArchivedAt:               timestampToPtr(a.ArchivedAt),
 		ArchivedBy:               uuidToPtr(a.ArchivedBy),
+		SchedulingPausedAt:       timestampToPtr(a.SchedulingPausedAt),
+		SchedulingPausedBy:       uuidToPtr(a.SchedulingPausedBy),
 	}
 }
 
@@ -385,10 +394,41 @@ type TaskCancellationActor struct {
 	Name string `json:"name,omitempty"`
 }
 
+// TaskPresetSettings are one tier of a run's settings. A null field = unset,
+// "" = an empty string was stored.
+type TaskPresetSettings struct {
+	Model         *string  `json:"model"`
+	ThinkingLevel *string  `json:"thinking_level"`
+	ServiceTier   *string  `json:"service_tier"`
+	ContextArgs   []string `json:"context_args"`
+}
+
+type TaskPresetApplied struct {
+	TaskPresetSettings
+	ReportedAt string `json:"reported_at"`
+}
+
+type TaskPresetSkip struct {
+	Level  string `json:"level"`
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
+}
+
+// TaskPresetRun separates what the claim asked for (Claimed) from what the
+// daemon reported running (Applied, null until it reports).
+type TaskPresetRun struct {
+	Name    string             `json:"name"`
+	Source  string             `json:"source"`
+	Skips   []TaskPresetSkip   `json:"skips"`
+	Claimed TaskPresetSettings `json:"claimed"`
+	Applied *TaskPresetApplied `json:"applied"`
+}
+
 type AgentTaskResponse struct {
 	RequireCredentialIsolation bool                    `json:"require_credential_isolation,omitempty"`
 	CredentialExecutionBinding *credentialexec.Binding `json:"credential_execution_binding,omitempty"`
 	StartClaimSupported        bool                    `json:"start_claim_supported,omitempty"`
+	AppliedSettingsSupported   bool                    `json:"applied_settings_supported,omitempty"`
 	CancelledByCommentChange   bool                    `json:"cancelled_by_comment_change,omitempty"`
 	CancelledBy                *TaskCancellationActor  `json:"cancelled_by,omitempty"`
 	// ClaimedModel is the model the daemon was told to run when it claimed this
@@ -398,6 +438,8 @@ type AgentTaskResponse struct {
 	// missing key means a server that predates the field. It attests the claim,
 	// not the upstream model that actually served the run.
 	ClaimedModel *string `json:"claimed_model"`
+	// PresetRun is present only when the claim recorded a preset selection.
+	PresetRun *TaskPresetRun `json:"preset_run,omitempty"`
 
 	ID                   string                 `json:"id"`
 	AgentID              string                 `json:"agent_id"`
@@ -633,6 +675,25 @@ type AgentTaskResponse struct {
 	// owning user; the daemon must not fall back to its own credential. See
 	// MUL-3292.
 	AuthToken string `json:"auth_token,omitempty"`
+
+	// Profile, Scopes, Epoch and TaintIDs are claim-only (CHE-2216 plan 3.1): a
+	// launch hint, re-checked per operation. Mirror fields: internal/daemon/types.go.
+	Profile  string   `json:"profile,omitempty"`
+	Scopes   []string `json:"scopes,omitempty"`
+	Epoch    int64    `json:"epoch,omitempty"`
+	TaintIDs []string `json:"taint_ids,omitempty"`
+	// PinnedBaseSHA and PinnedHeadSHA are claim-only (CHE-2216 plan 3.5): the
+	// elevated run's pinned commits. Mirror fields: internal/daemon/types.go.
+	PinnedBaseSHA string `json:"pinned_base_sha,omitempty"`
+	PinnedHeadSHA string `json:"pinned_head_sha,omitempty"`
+
+	// IntakeRun, PinnedBranch and PinnedRepo are claim-only (CHE-2216 plan 3.6):
+	// a run an intake item dispatched, the same-repository PR head ref it is
+	// pinned to and that PR's repository as host/owner/name.
+	// Mirror fields: internal/daemon/types.go.
+	IntakeRun    bool   `json:"intake_run,omitempty"`
+	PinnedBranch string `json:"pinned_branch,omitempty"`
+	PinnedRepo   string `json:"pinned_repo,omitempty"`
 }
 
 // TaskAttribution is the wire shape of a run's accountable-human provenance
@@ -919,6 +980,7 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		WorkspaceID:            workspaceID,
 		Status:                 t.Status,
 		ClaimedModel:           textToPtr(t.ClaimedModel),
+		PresetRun:              taskPresetRun(t),
 		Priority:               t.Priority,
 		DispatchedAt:           timestampToPtr(t.DispatchedAt),
 		StartedAt:              timestampToPtr(t.StartedAt),
@@ -2645,8 +2707,11 @@ func (h *Handler) updatedAgentResponse(w http.ResponseWriter, r *http.Request, u
 	}
 	slog.Info("agent updated", append(logger.RequestAttrs(r), "agent_id", id, "workspace_id", uuidToString(updated.WorkspaceID))...)
 	userID := requestUserID(r)
+	stale := h.stalePresetsOf(r.Context(), updated)
 	actorType, actorID := h.resolveActor(r, userID, uuidToString(updated.WorkspaceID))
 	h.publish(protocol.EventAgentStatus, uuidToString(updated.WorkspaceID), actorType, actorID, map[string]any{"agent": broadcastAgentResponse(resp)})
+	// After the broadcast: subscribers get the agent, not this one caller's warning.
+	resp.StalePresets = stale
 	redactAgentResponseForActor(&resp, actorType)
 	// Workspace admins / non-owner members pass canManageAgent for legitimate
 	// admin actions (e.g. bulk reassigning agents off a leaving member's
@@ -3078,6 +3143,11 @@ func (h *Handler) ListAgentTasks(w http.ResponseWriter, r *http.Request) {
 			taskIDs[i] = t.ID
 		}
 	}
+	if err := h.redactForeignChatTaskContent(r.Context(), requestUserID(r), tasks, resp); err != nil {
+		slog.Warn("list agent tasks: resolve chat owners failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+		writeError(w, http.StatusInternalServerError, "failed to list agent tasks")
+		return
+	}
 	h.hydrateTaskSupplementMetadata(r.Context(), r, agent.WorkspaceID, tasks, resp)
 	h.hydrateTaskAttributions(r.Context(), attributionsOf(resp))
 	if includeUsage {
@@ -3367,13 +3437,59 @@ func (h *Handler) ListWorkspaceAgentTaskSnapshot(w http.ResponseWriter, r *http.
 	}
 
 	resp := make([]AgentTaskResponse, 0, len(tasks))
+	kept := make([]db.AgentTaskQueue, 0, len(tasks))
 	for _, t := range tasks {
 		if _, ok := allowed[uuidToString(t.AgentID)]; !ok {
 			continue
 		}
 		resp = append(resp, taskToResponse(t, workspaceID))
+		kept = append(kept, t)
+	}
+	if err := h.redactForeignChatTaskContent(r.Context(), requestUserID(r), kept, resp); err != nil {
+		slog.Warn("agent task snapshot: resolve chat owners failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to list agent task snapshot")
+		return
 	}
 	h.hydrateTaskAttributions(r.Context(), attributionsOf(resp))
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func jsonStrings(b []byte) []string {
+	out := []string{}
+	_ = json.Unmarshal(b, &out)
+	return out
+}
+
+// taskPresetRun reads the preset snapshot columns. A malformed stored JSON
+// column degrades to empty rather than failing the task response.
+func taskPresetRun(t db.AgentTaskQueue) *TaskPresetRun {
+	if !t.PresetName.Valid {
+		return nil
+	}
+	skips := []TaskPresetSkip{}
+	_ = json.Unmarshal(t.PresetSkips, &skips)
+	run := &TaskPresetRun{
+		Name:   t.PresetName.String,
+		Source: t.PresetSource.String,
+		Skips:  skips,
+		Claimed: TaskPresetSettings{
+			Model:         textToPtr(t.ClaimedModel),
+			ThinkingLevel: textToPtr(t.ClaimedThinkingLevel),
+			ServiceTier:   textToPtr(t.ClaimedServiceTier),
+			ContextArgs:   jsonStrings(t.ClaimedContextArgs),
+		},
+	}
+	if t.AppliedReportedAt.Valid {
+		run.Applied = &TaskPresetApplied{
+			TaskPresetSettings: TaskPresetSettings{
+				Model:         textToPtr(t.AppliedModel),
+				ThinkingLevel: textToPtr(t.AppliedThinkingLevel),
+				ServiceTier:   textToPtr(t.AppliedServiceTier),
+				ContextArgs:   jsonStrings(t.AppliedContextArgs),
+			},
+			ReportedAt: timestampToString(t.AppliedReportedAt),
+		}
+	}
+	return run
 }

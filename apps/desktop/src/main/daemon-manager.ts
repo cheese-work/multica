@@ -1,4 +1,4 @@
-import { app, ipcMain, BrowserWindow, shell } from "electron";
+import { app, ipcMain, BrowserWindow, shell, dialog, type MessageBoxOptions } from "electron";
 import { execFile } from "child_process";
 import {
   readFile,
@@ -24,6 +24,8 @@ import type {
 import { daemonStatusAlive } from "../shared/daemon-types";
 import { ensureManagedCli, managedCliPath } from "./cli-bootstrap";
 import { decideVersionAction } from "./version-decision";
+import { createDaemonQuitHandler } from "./daemon-quit";
+import { quitConfirmationOptions, quitFailureOptions } from "./daemon-quit-dialogs";
 import {
   prepareDaemonForInstall,
   type DaemonInstallPrep,
@@ -37,7 +39,7 @@ import {
   profilePidPath,
   profileUserIdPath,
 } from "./daemon-profile";
-import { probeProfileHealth } from "./daemon-port";
+import { probeProfileHealth, readDaemonPortRecord } from "./daemon-port";
 import { execDaemonStop, restartAfterStop } from "./daemon-stop";
 import {
   DaemonOperationGate,
@@ -94,6 +96,10 @@ let getMainWindow: () => BrowserWindow | null = () => null;
 let statusPollInProgress = false;
 let cachedCliBinary: string | null | undefined = undefined;
 let cliResolvePromise: Promise<string | null> | null = null;
+// True while resolveCliBinary has no usable local CLI and cannot download one
+// yet because the server URL or the profile token has not arrived. The result
+// is deliberately not cached; syncing either prerequisite re-runs bootstrap.
+let cliAwaitingDownloadPrereqs = false;
 let cachedCliBinaryVersion: string | null | undefined = undefined;
 // Set when a CLI version mismatch was detected but the running daemon is
 // busy executing tasks. The poll loop retries the check on each tick and
@@ -107,6 +113,10 @@ let desiredDaemonRunning = false;
 // Non-null while the Windows updater owns daemon shutdown and installation.
 let desiredRunningBeforeUpdateStop: boolean | null = null;
 const UPDATE_IN_PROGRESS = { success: false, error: "An update is being installed. Try again shortly." };
+let quitting = false;
+// Renderer recreation must not undo a failed-quit cancellation. Keep this
+// process-local until an explicit start/restart, without changing preferences.
+let autoStartSuppressedAfterQuit = false;
 // Once a foreign-OS daemon (for example WSL2) is observed on this profile, do
 // not replace it with a native daemon if its forwarded health endpoint drops.
 let externalDaemonObserved = false;
@@ -320,6 +330,7 @@ function invalidateActiveProfile(): void {
 
 function setDesiredDaemonRunning(desired: boolean, explicit = false): void {
   if (desired && desiredRunningBeforeUpdateStop !== null) return;
+  if (desired && explicit) autoStartSuppressedAfterQuit = false;
   if (desiredDaemonRunning === desired && !explicit) return;
   desiredDaemonRunning = desired;
   recoveryPolicy.reset();
@@ -501,13 +512,39 @@ async function probeCliBinary(
 }
 
 /**
+ * The server URL and profile token the CLI download needs. `null` until the
+ * renderer has reported the URL and the token has been synced to the profile.
+ */
+async function cliDownloadPrereqs(): Promise<{
+  serverUrl: string;
+  token: string;
+} | null> {
+  const serverUrl = targetApiBaseUrl;
+  if (!serverUrl) return null;
+  const active = await ensureActiveProfile();
+  if (!active) return null;
+  const { token } = await readProfileConfig(active.name);
+  return typeof token === "string" && token ? { serverUrl, token } : null;
+}
+
+/** Re-runs the CLI bootstrap that was deferred for missing download prerequisites. */
+function retryDeferredCliBootstrap(): void {
+  if (!cliAwaitingDownloadPrereqs || cachedCliBinary !== undefined) return;
+  lifecycleOperations
+    .runForeground(() => bootstrapCli())
+    .catch((err) => console.warn("[daemon] deferred CLI bootstrap failed:", err));
+}
+
+/**
  * Returns a usable `multica` binary path. Priority:
  *   1. Cached result from a previous successful resolve.
  *   2. Bundled binary shipped with the Desktop app (`bundle-cli.mjs`).
  *   3. Managed binary already installed in userData (`managedCliPath`).
  *   4. Download + install latest release into userData.
  *   5. `multica` on PATH (dev convenience / user-installed via brew).
- * Returns `null` only when all of the above fail.
+ * Returns `null` only when all of the above fail. When the download cannot
+ * start yet (no server URL or token), returns `null` without caching it and
+ * without trying PATH, so the server build still wins once they arrive.
  *
  * Bundled is preferred so Desktop iterates in lockstep with Go changes in
  * the same repo — avoids the 404 / stale-API problem when the Desktop's
@@ -517,6 +554,7 @@ async function probeCliBinary(
  * installs are de-duplicated via `cliResolvePromise`.
  */
 async function resolveCliBinary(): Promise<string | null> {
+  if (quitting) return cachedCliBinary ?? null;
   if (cachedCliBinary !== undefined) return cachedCliBinary;
   if (cliResolvePromise) return cliResolvePromise;
 
@@ -542,9 +580,18 @@ async function resolveCliBinary(): Promise<string | null> {
       }
     }
 
+    const prereqs = await cliDownloadPrereqs();
+    if (!prereqs) {
+      cliAwaitingDownloadPrereqs = true;
+      return null;
+    }
+    cliAwaitingDownloadPrereqs = false;
+
     try {
       const installed = await ensureManagedCli({
         forceInstall: existsSync(managed),
+        serverUrl: prereqs.serverUrl,
+        token: prereqs.token,
       });
       const version = await probeCliBinary(installed, "managed");
       if (version) {
@@ -616,6 +663,7 @@ async function getCliBinaryVersion(): Promise<string | null> {
 async function ensureRunningDaemonVersionMatches(): Promise<
   "restarted" | "deferred" | "ok" | "not_running"
 > {
+  if (quitting || autoStartSuppressedAfterQuit) return "deferred";
   const active = await ensureActiveProfile();
   if (!active) return "not_running";
   const running = await fetchProfileHealth(active);
@@ -629,7 +677,11 @@ async function ensureRunningDaemonVersionMatches(): Promise<
   }
 
   const bundled = await getCliBinaryVersion();
-  if (desiredRunningBeforeUpdateStop !== null) {
+  if (
+    quitting ||
+    autoStartSuppressedAfterQuit ||
+    desiredRunningBeforeUpdateStop !== null
+  ) {
     pendingVersionRestart = true;
     return "deferred";
   }
@@ -965,6 +1017,7 @@ async function startDaemon(
   recoveryProfile?: ActiveProfile,
 ): Promise<{ success: boolean; error?: string }> {
   if (desiredRunningBeforeUpdateStop !== null) return UPDATE_IN_PROGRESS;
+  if (quitting) return { success: false, error: "Application is quitting" };
   const bin = await resolveCliBinary();
   if (!bin) return { success: false, error: "multica CLI is not installed" };
 
@@ -1008,6 +1061,7 @@ async function startDaemon(
   }
 
   if (desiredRunningBeforeUpdateStop !== null) return UPDATE_IN_PROGRESS;
+  if (quitting) return { success: false, error: "Application is quitting" };
   if (recoveryProfile) recoveryPolicy.recordRecoveryAttempt(Date.now());
   currentState = "starting";
   // Begin a fresh auth-probe window for this attempt.
@@ -1058,8 +1112,9 @@ async function lifecycleBlockedByForeignDaemon(): Promise<boolean> {
 }
 
 async function stopDaemon(
-  signal?: AbortSignal,
+  options: { force?: boolean; signal?: AbortSignal } = {},
 ): Promise<{ success: boolean; error?: string }> {
+  const { signal } = options;
   if (signal?.aborted) return { success: true };
   // Central lifecycle guard: a daemon running in an environment we can't drive
   // (e.g. Linux in WSL2 behind a Windows desktop) can't be stopped by the
@@ -1083,7 +1138,7 @@ async function stopDaemon(
   startingSince = null;
   sendStatus({ state: "stopping" });
 
-  const args = ["daemon", "stop", ...profileArgs(active.name)];
+  const args = ["daemon", "stop", ...(options.force ? ["--force"] : []), ...profileArgs(active.name)];
 
   const result = await execDaemonStop(bin, args);
   currentState = "stopped";
@@ -1093,6 +1148,7 @@ async function stopDaemon(
 
 async function restartDaemon(): Promise<{ success: boolean; error?: string }> {
   if (desiredRunningBeforeUpdateStop !== null) return UPDATE_IN_PROGRESS;
+  if (quitting) return { success: false, error: "Application is quitting" };
   // Same central, live-preflighted guard as stopDaemon: we can neither stop nor
   // start a daemon we don't manage, so don't try (user-switch, reauth,
   // first-workspace, and any future restart caller all route through here).
@@ -1124,6 +1180,12 @@ async function daemonPidIsConfirmedAbsent(profile: string): Promise<boolean> {
     console.warn("[daemon] recovery deferred: unable to read daemon PID:", err);
     return false;
   }
+}
+
+async function daemonProcessIsConfirmedAbsent(profile: string): Promise<boolean> {
+  const record = await readDaemonPortRecord(profile);
+  return await daemonPidIsConfirmedAbsent(profile)
+    && !(record && daemonProcessExists(record.pid));
 }
 
 async function attemptDaemonRecovery(active: ActiveProfile): Promise<void> {
@@ -1199,10 +1261,11 @@ function recoveryDecision(status: DaemonStatus) {
 }
 
 async function pollOnce(): Promise<void> {
-  if (statusPollInProgress) return;
+  if (quitting || statusPollInProgress) return;
   statusPollInProgress = true;
   try {
     const status = await fetchHealth();
+    if (quitting) return;
     currentState = status.state;
     observeDaemonBoundary(status);
     const decision = recoveryDecision(status);
@@ -1237,7 +1300,7 @@ async function pollOnce(): Promise<void> {
 }
 
 function startPolling(): void {
-  if (statusPollTimer || desiredRunningBeforeUpdateStop !== null) return;
+  if (quitting || statusPollTimer || desiredRunningBeforeUpdateStop !== null) return;
   void pollOnce();
   statusPollTimer = setInterval(() => void pollOnce(), POLL_INTERVAL_MS);
 }
@@ -1250,6 +1313,8 @@ function startPolling(): void {
 async function bootstrapCli(): Promise<void> {
   const bin = await resolveCliBinary();
   if (!bin) {
+    // Deferred, not failed: stay in "installing_cli" until the URL/token land.
+    if (cliAwaitingDownloadPrereqs) return;
     currentState = "cli_not_found";
     sendStatus({ state: "cli_not_found" });
     return;
@@ -1382,7 +1447,7 @@ export function prepareDaemonForUpdateInstall(options: {
       };
     },
     stop: async (signal) => {
-      const result = await lifecycleOperations.runForeground(() => stopDaemon(signal));
+      const result = await lifecycleOperations.runForeground(() => stopDaemon({ signal }));
       if (!result.success) throw new Error(result.error ?? "daemon stop failed");
     },
     processExists: daemonProcessExists,
@@ -1411,6 +1476,7 @@ export function setupDaemonManager(
       targetApiBaseUrl = normalized;
       invalidateActiveProfile();
       await pollOnce();
+      retryDeferredCliBootstrap();
     }
   });
   ipcMain.handle("daemon:start", () => {
@@ -1444,6 +1510,7 @@ export function setupDaemonManager(
     "daemon:sync-token",
     async (_event, token: string, userId: string) => {
       const result = await syncToken(token, userId);
+      retryDeferredCliBootstrap();
       if (result.userChanged) {
         await restartDaemonAfterUserSwitch(result.active);
       }
@@ -1488,14 +1555,17 @@ export function setupDaemonManager(
   );
   ipcMain.handle("daemon:auto-start", async () => {
     const prefs = await loadPrefs();
+    if (quitting || autoStartSuppressedAfterQuit) return;
     setDesiredDaemonRunning(prefs.autoStart);
     if (!prefs.autoStart) return;
     // Login auto-start is emitted once per session. Queue it behind bootstrap
     // instead of dropping it like a retryable poll operation.
     await lifecycleOperations.runForeground(async () => {
+      if (quitting || autoStartSuppressedAfterQuit) return;
       const bin = await resolveCliBinary();
       if (!bin) return;
       const health = await fetchHealth();
+      if (quitting || autoStartSuppressedAfterQuit) return;
       observeDaemonBoundary(health);
       if (health.state === "running") {
         // Daemon is up but may be running an older CLI than the one we just
@@ -1536,32 +1606,96 @@ export function setupDaemonManager(
   sendStatus({ state: "installing_cli" });
   void lifecycleOperations.runBackground(() => bootstrapCli());
 
-  let isQuitting = false;
-  app.on("before-quit", (event) => {
-    // The updater registers first and owns shutdown while its gate is pending.
-    // Do not issue a second stop or re-enter app.quit() before PID exit is known.
-    if (event.defaultPrevented || isQuitting) return;
-    setDesiredDaemonRunning(false);
-    stopPolling();
-    stopLogTail();
-
-    // The update gate already stopped the daemon or exhausted its deadline.
-    // Let its approved quit proceed without another stop/re-entrant quit.
-    if (desiredRunningBeforeUpdateStop !== null) return;
-
-    loadPrefs().then(async (prefs) => {
-      if (prefs.autoStop) {
-        isQuitting = true;
-        event.preventDefault();
-        try {
-          // stopDaemon no-ops for an externally-managed daemon (WSL2 etc.), so
-          // this is safe and instant in that case — the guard lives there. #3916
-          await stopDaemon();
-        } catch {
-          // Best-effort stop on quit
-        }
-        app.quit();
+  let desiredBeforeQuit = false;
+  const language = app.getPreferredSystemLanguages()[0] ?? "en";
+  let hiddenQuitWindows: BrowserWindow[] = [];
+  const hideQuitWindows = () => {
+    hiddenQuitWindows = BrowserWindow.getAllWindows().filter((window) =>
+      !window.isDestroyed() && window.isVisible(),
+    );
+    for (const window of hiddenQuitWindows) window.hide();
+  };
+  const restoreQuitWindows = () => {
+    for (const window of hiddenQuitWindows) {
+      if (!window.isDestroyed()) window.show();
+    }
+    hiddenQuitWindows = [];
+  };
+  const show = (options: MessageBoxOptions) => {
+    const window = getMainWindow();
+    return window && !window.isDestroyed() && window.isVisible()
+      ? dialog.showMessageBox(window, options) : dialog.showMessageBox(options);
+  };
+  const handleQuit = createDaemonQuitHandler({
+    loadPrefs,
+    pause: () => {
+      desiredBeforeQuit = desiredDaemonRunning;
+      quitting = true;
+      setDesiredDaemonRunning(false);
+      stopPolling();
+    },
+    resume: (restoreDesired) => {
+      restoreQuitWindows();
+      if (!restoreDesired) autoStartSuppressedAfterQuit = true;
+      quitting = false;
+      setDesiredDaemonRunning(restoreDesired && desiredBeforeQuit);
+      startPolling();
+      if (!getMainWindow()) app.emit("activate");
+    },
+    stop: async () => {
+      const active = await ensureActiveProfile();
+      if (!active) return true;
+      const health = await fetchProfileHealth(active);
+      if (isDaemonExternallyManaged(health?.os, normalizeHostOS(process.platform))) return true;
+      const healthy = daemonStatusAlive(health?.status);
+      const reportedRuns = health?.active_task_count;
+      const activeRuns = healthy && typeof reportedRuns === "number"
+        && Number.isSafeInteger(reportedRuns) && reportedRuns >= 0 ? reportedRuns : null;
+      let busy = healthy
+        ? activeRuns !== 0
+        : currentState === "running" || currentState === "starting";
+      if (!healthy && !busy) {
+        busy = !await daemonProcessIsConfirmedAbsent(active.name);
       }
-    });
+      if (busy && (await show(quitConfirmationOptions(language, activeRuns))).response !== 1) return false;
+      // Reuse the lifecycle queue: an earlier start must finish before stop.
+      // Do not queue behind an unresolved CLI installation during quit.
+      if (!cachedCliBinary) {
+        if (!healthy && await daemonProcessIsConfirmedAbsent(active.name)) return true;
+        throw new Error("Multica CLI is not available");
+      }
+      const window = getMainWindow();
+      window?.setProgressBar(2);
+      // Make the accepted quit visible even while a prior start or cleanup drains.
+      hideQuitWindows();
+      try {
+        const result = await lifecycleOperations.runForeground(() => stopDaemon({ force: true }));
+        if (!result.success) throw new Error(result.error ?? "Could not stop the daemon");
+      } finally {
+        if (window && !window.isDestroyed()) window.setProgressBar(-1);
+      }
+      return true;
+    },
+    confirmIgnore: async (error) => {
+      console.warn("[daemon] could not stop on quit:", error);
+      restoreQuitWindows();
+      const active = await ensureActiveProfile();
+      const health = active ? await fetchProfileHealth(active) : null;
+      const daemonStopped = Boolean(active && !daemonStatusAlive(health?.status)
+        && await daemonProcessIsConfirmedAbsent(active.name));
+      return (await show(quitFailureOptions(language, daemonStopped))).response === 1;
+    },
+    quit: () => { stopLogTail(); app.quit(); },
+  });
+  app.on("before-quit", (event) => {
+    // The Windows updater registers first and owns its pending or approved quit.
+    if (event.defaultPrevented) return;
+    if (desiredRunningBeforeUpdateStop !== null) {
+      setDesiredDaemonRunning(false);
+      stopPolling();
+      stopLogTail();
+      return;
+    }
+    handleQuit(event);
   });
 }

@@ -653,5 +653,66 @@
       "cancel": "キャンセル",
       "done": "Qoder の接続を解除しました"
     }
+  },
+  "machine_pause": {
+    "title": "マシン",
+    "taking_work": "作業を受け付け中",
+    "tasks_running_other": "実行中のタスク {{count}} 件",
+    "offline": "オフライン",
+    "offline_last_seen": "最終確認 {{time}}。一時停止していても新しい作業は止まります。",
+    "pause": "一時停止",
+    "resume": "再開",
+    "menu_hint": "新しい作業を受け付けません。実行中のタスクは完了まで続きます。一時停止は自動で終了します。",
+    "reasons": {
+      "maintenance": {
+        "name": "メンテナンス",
+        "label": "メンテナンス",
+        "hint": "予定された作業。2 時間後に終了"
+      },
+      "incident": {
+        "name": "障害",
+        "label": "障害",
+        "hint": "問題が発生しています。30 分後に終了"
+      },
+      "suspended": {
+        "name": "停止中",
+        "label": "停止中",
+        "hint": "サービス停止中。30 分後に終了"
+      }
+    },
+    "paused": "一時停止中: {{reason}}",
+    "paused_offline": "一時停止中: {{reason}} · オフライン",
+    "draining_other": "処理の完了待ち: 残り {{count}} 件",
+    "draining_offline_other": "処理の完了待ち: 残り {{count}} 件（最終報告 {{time}}）",
+    "safe_to_shut_down": "安全にシャットダウンできます",
+    "paused_by": "{{name}}、{{time}}",
+    "ends_in": "{{duration}}後に終了（{{time}}）",
+    "duration": {
+      "hours_minutes": "{{hours}} 時間 {{minutes}} 分",
+      "hours": "{{hours}} 時間",
+      "minutes": "{{minutes}} 分"
+    },
+    "ended": "{{reason}}の一時停止は {{time}} に終了しました。{{machine}} は再び作業を受け付けています。",
+    "ended_offline": "{{reason}}の一時停止は {{time}} に終了しました。{{machine}} は再接続すると作業を受け付けます。",
+    "no_rights": "一時停止と再開ができるのは、マシンの所有者とワークスペースの所有者のみです。",
+    "no_rights_ask": "一時停止と再開ができるのは、マシンの所有者とワークスペースの所有者のみです。{{names}} に依頼してください。",
+    "error": {
+      "title": "マシンの状態を読み込めませんでした",
+      "hint": "読み込めるまで、一時停止と再開は使えません。",
+      "alert": "マシンの状態を読み込めませんでした。接続を確認して再試行してください。",
+      "retry": "再試行"
+    },
+    "toast": {
+      "pause_failed": "マシンを一時停止できませんでした",
+      "resume_failed": "マシンを再開できませんでした"
+    },
+    "banner": {
+      "paused": "{{machine}} は一時停止中: {{reason}}。",
+      "tasks_left_other": "残り {{count}} 件。",
+      "tasks_left_stale_other": "残り {{count}} 件（オフライン、件数が古い可能性があります）。",
+      "drained": "安全にシャットダウンできます。",
+      "ends_in": "{{duration}}後に終了します。",
+      "ends_soon": "{{duration}}後に終了します。その後 {{machine}} は再び作業を受け付けます。"
+    }
   }
 }

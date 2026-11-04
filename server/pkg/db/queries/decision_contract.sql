@@ -6,7 +6,7 @@ FOR SHARE NOWAIT;
 -- name: FindDecisionRequestRetry :one
 SELECT request.* FROM decision_request request
 JOIN decision_intent intent ON intent.id = request.decision_intent_id AND intent.workspace_id = request.workspace_id
-WHERE request.workspace_id = sqlc.arg('workspace_id')
+WHERE request.authority = 'human' AND request.workspace_id = sqlc.arg('workspace_id')
   AND request.issue_id = sqlc.arg('issue_id') AND request.asking_agent_id = sqlc.arg('agent_id')
   AND intent.task_id = sqlc.arg('task_id') AND request.request_fingerprint = sqlc.arg('fingerprint')
   AND request.request_fingerprint <> '';
@@ -16,7 +16,7 @@ UPDATE decision_request
 SET status = 'cancelled', cancel_reason = 'agent_withdrawn', withdraw_reason = sqlc.arg('reason'),
     withdrawn_at = clock_timestamp(), withdrawn_by_task_id = sqlc.narg('task_id'), withdrawn_by_user_id = sqlc.narg('user_id'),
     cancel_notice_posted_at = clock_timestamp()
-WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND status = 'open'
+WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND status = 'open'
 RETURNING *;
 
 -- name: GetDecisionAnswerReference :one

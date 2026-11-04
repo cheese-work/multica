@@ -1,0 +1,17 @@
+issue: CHE-2488
+design: "Option B approved by Cheese on 2026-10-30 ICT; decision message 01a188e4-2785-7c10-b95b-59693a88b845"
+reference: "Issue attachment 01a188de-73cf-7d52-9629-3a084609b0b3"
+capture_status: "NOT-CAPTURED: local X99 captures exist, but this runtime has no doop MCP tools to create the required reference frame"
+pages:
+  - id: issue-relations-dialog
+    url: /:workspace/issues/:issue
+    keep: [relations-button, relations-dialog]
+    change:
+      - relations-report: "Replace the Mermaid canvas with native issue links, status KPIs, a bracketed hierarchy, phase ordering and Graph / List tabs"
+    remove: [relations-canvas-controls]
+    legacy_elements:
+      relations-canvas-controls: "Old Mermaid DiagramViewport zoom/pan/fit controls; replaced by native scrolling and the List tab"
+settings:
+  - "Existing relation filters remain persisted; mentions stay off by default and load only when enabled"
+  - "Depth remains 1 by default; selecting 2 adds the next hierarchy column"
+  - "Structural and mention query caches are separate and fresh for 30 seconds"

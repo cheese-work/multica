@@ -23,7 +23,7 @@ const (
 	ProvenanceMaxCommentsPerSource = 500
 	ProvenanceMaxRecords           = 5000
 	ProvenanceMaxRefLength         = 128
-	ProvenanceRedactionPolicy      = "redact.Text:v1"
+	ProvenanceRedactionPolicy      = "redact.Text:v2"
 )
 
 type ProvenanceExclusionReason string

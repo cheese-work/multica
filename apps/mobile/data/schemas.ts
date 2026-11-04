@@ -17,6 +17,7 @@ import type {
   Attachment,
   ChatMessage,
   ChatPendingTask,
+  ChatSupplement,
   ChatSession,
   ChatSessionUsage,
   Comment,
@@ -300,6 +301,27 @@ export const EMPTY_CHAT_SESSION_LIST: ChatSession[] = [];
 
 // `attachments` carried for parity rendering only — v1 doesn't author them on
 // mobile. AttachmentSchema is reused as-is.
+// Delivery receipt of a DM follow-up steered into the running task (CHE-2820).
+// Mirrors packages/core/api/schemas.ts: an unknown status degrades to
+// `uncertain`, which never reads as delivered or as safe to resend silently.
+export const ChatSupplementSchema: z.ZodType<ChatSupplement> = z.object({
+  message_id: z.string(),
+  chat_session_id: z.string(),
+  task_id: z.string(),
+  status: z
+    .enum(["pending", "delivering", "delivered", "uncertain", "failed"])
+    .catch("uncertain"),
+  failure_reason: z.string().nullable().catch(null),
+  delivered_at: z.string().nullable().catch(null),
+  acked_after_resend_at: z.string().nullable().catch(null),
+  resent_task_id: z.string().nullable().catch(null),
+}).loose();
+
+export const ResendChatSupplementResponseSchema = z.object({
+  task_id: z.string(),
+  supplement: ChatSupplementSchema,
+}).loose();
+
 export const ChatMessageSchema: z.ZodType<ChatMessage> = z.object({
   id: z.string(),
   chat_session_id: z.string(),
@@ -313,7 +335,10 @@ export const ChatMessageSchema: z.ZodType<ChatMessage> = z.object({
   attachments: z.array(AttachmentSchema).optional(),
   failure_reason: z.string().nullable().optional(),
   elapsed_ms: z.number().nullable().optional(),
-  message_kind: z.enum(["message", "no_response"]).catch("message").optional(),
+  message_kind: z
+    .enum(["message", "no_response", "continuation_summary"])
+    .catch("message")
+    .optional(),
   // One malformed optional suggestion must not erase an otherwise valid
   // conversation. The server validates these too; this is mixed-version and
   // corrupted-cache defense at the mobile boundary.
@@ -322,6 +347,8 @@ export const ChatMessageSchema: z.ZodType<ChatMessage> = z.object({
     prompt: z.string(),
     primary: z.boolean().optional(),
   }).loose()).catch([]).optional().default([]),
+  // A malformed receipt drops to "no receipt" rather than the whole message.
+  supplement: ChatSupplementSchema.optional().catch(undefined),
 }).loose();
 
 export const ChatMessageListSchema = z.array(ChatMessageSchema).default([]);
@@ -352,6 +379,11 @@ export const ChatPendingTaskSchema: z.ZodType<ChatPendingTask> = z.object({
   created_at: z.string().optional(),
   supports_queue: z.boolean().optional(),
   queued_tasks: ChatQueuedTasksSchema.optional(),
+  // Unknown or malformed degrades to `unsupported`; absent (older server) stays absent.
+  head_supplement: z
+    .enum(["capable", "starting", "unsupported"])
+    .optional()
+    .catch("unsupported"),
 }).loose();
 
 export const EMPTY_CHAT_PENDING_TASK: ChatPendingTask = {};
@@ -369,25 +401,26 @@ export const SendChatMessageResponseSchema: z.ZodType<SendChatMessageResponse> =
 // error). Mirrors web's TaskMessagePayload type and the WS `task:message`
 // payload so the mobile cache shape stays interchangeable with web's.
 export const TaskMessagePayloadSchema: z.ZodType<TaskMessagePayload> = z.object({
-  task_id: z.string(),
-  issue_id: z.string().default(""),
-  chat_session_id: z.string().optional(),
-  seq: z.number().default(0),
+  call_id: z.string().optional().catch(undefined),
+  task_id: z.string().default("").catch(""),
+  issue_id: z.string().default("").catch(""),
+  chat_session_id: z.string().optional().catch(undefined),
+  seq: z.number().default(0).catch(0),
   // Enum drift defense: unknown server-side types fall back to "text" so
   // the row still renders (as a plain markdown chunk) instead of crashing
   // the timeline. Matches root CLAUDE.md "Enum drift downgrades, not crashes".
   type: z
     .enum(["text", "thinking", "tool_use", "tool_result", "error"])
     .catch("text"),
-  tool: z.string().optional(),
-  content: z.string().optional(),
-  input: z.record(z.string(), z.unknown()).optional(),
-  output: z.string().optional(),
+  tool: z.string().optional().catch(undefined),
+  content: z.string().optional().catch(undefined),
+  input: z.record(z.string(), z.unknown()).optional().catch(undefined),
+  output: z.string().optional().catch(undefined),
   // Optional with no default: absent means no daemon measured this record's
   // completeness, which is not the same as measured-and-complete. `.catch`
   // keeps a malformed value from failing the row and emptying the transcript.
   output_truncated: z.boolean().optional().catch(undefined),
-  created_at: z.string().optional(),
+  created_at: z.string().optional().catch(undefined),
 }).loose();
 
 export const TaskMessageListSchema = z.array(TaskMessagePayloadSchema).default([]);
@@ -404,7 +437,7 @@ export const EMPTY_TASK_MESSAGE_LIST: TaskMessagePayload[] = [];
 // (root CLAUDE.md "Enum drift downgrades, not crashes"): unknown values fall
 // back to "title" so the row still renders without a snippet line.
 
-const SearchIssueResultSchema = IssueSchema.safeExtend({
+const SearchIssueResultSchema = IssueSchema.unwrap().safeExtend({
   match_source: z.enum(["title", "description", "comment"]).catch("title"),
   matched_snippet: z.string().optional(),
 });
@@ -446,7 +479,16 @@ export const AgentTaskSchema: z.ZodType<AgentTask> = z.object({
   runtime_id: z.string().default(""),
   issue_id: z.string().default(""),
   status: z
-    .enum(["queued", "dispatched", "running", "completed", "failed", "cancelled"])
+    .enum([
+      "queued",
+      "deferred",
+      "dispatched",
+      "waiting_local_directory",
+      "running",
+      "completed",
+      "failed",
+      "cancelled",
+    ])
     .catch("queued"),
   priority: z.number().default(0),
   dispatched_at: z.string().nullable().default(null),

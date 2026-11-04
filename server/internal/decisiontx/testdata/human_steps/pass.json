@@ -1,0 +1,43 @@
+{
+  "human_steps": [
+    {
+      "action": "Set the API URL secret",
+      "command": "gh secret set MULTICA_SERVER_URL -R cheese-work/multica-dotfiles --body 'https://congvc-c00.taila6fa8a.ts.net:19444'",
+      "values": [
+        {
+          "name": "MULTICA_SERVER_URL (API port 19444, not web port 19443)",
+          "value": "https://congvc-c00.taila6fa8a.ts.net:19444",
+          "source": "agent env MULTICA_SERVER_URL"
+        }
+      ],
+      "verify_done": "gh secret list -R cheese-work/multica-dotfiles shows MULTICA_SERVER_URL"
+    },
+    {
+      "action": "Set the workspace secret",
+      "command": "gh secret set MULTICA_WORKSPACE_ID -R cheese-work/multica-dotfiles --body 'f2b734e0-b6de-4414-8a27-a2f69b0ef843'",
+      "values": [
+        {
+          "name": "MULTICA_WORKSPACE_ID (UUID, not the slug cheese-work)",
+          "value": "f2b734e0-b6de-4414-8a27-a2f69b0ef843"
+        }
+      ],
+      "verify_done": "gh secret list -R cheese-work/multica-dotfiles shows MULTICA_WORKSPACE_ID"
+    },
+    {
+      "action": "Set the token secret. Paste the token at the prompt, never in chat",
+      "command": "gh secret set MULTICA_TOKEN -R cheese-work/multica-dotfiles",
+      "values": [
+        {
+          "name": "MULTICA_TOKEN (personal access token, starts with mul_, shown once at creation)",
+          "source": "web app Settings > API Tokens: https://congvc-c00.taila6fa8a.ts.net:19443/cheese-work/settings"
+        }
+      ],
+      "verify_done": "gh secret list -R cheese-work/multica-dotfiles shows MULTICA_TOKEN"
+    }
+  ],
+  "probes": [
+    "15:15 ICT: curl https://congvc-c00.taila6fa8a.ts.net:19444/health from both X99 runner containers returned 200",
+    "not verified: token write scope; the bot gets 403 on the secret list"
+  ],
+  "after_done": "x99-claude-sonnet re-runs skill-sync.yml on main and posts the run link"
+}

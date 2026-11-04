@@ -21,7 +21,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/attribution"
 	"github.com/multica-ai/multica/server/internal/commentguard"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
-	"github.com/multica-ai/multica/server/internal/governance/receipt"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -53,6 +52,11 @@ type CommentResponse struct {
 	DecisionRequestID   *string `json:"decision_request_id,omitempty"`
 	DecisionAnswerID    *string `json:"decision_answer_id,omitempty"`
 	DecisionCommentKind *string `json:"decision_comment_kind,omitempty"`
+	// SupersededByID is set on a thread root a later comment superseded;
+	// Supersedes lists, on the superseding comment, the threads it superseded
+	// and what happened to each. Both are omitted when empty.
+	SupersededByID *string           `json:"superseded_by_id,omitempty"`
+	Supersedes     []SupersedeResult `json:"supersedes,omitempty"`
 	DecisionCommentFields
 	// DeletedAt marks a tombstone: a comment deleted while it still had
 	// replies (#8296). Its content is empty and it carries no attachments or
@@ -126,8 +130,6 @@ type CommentTriggerOutcome struct {
 	Status     DispatchStatus     `json:"status"` // queued | coalesced | deferred | blocked
 	ReasonCode DispatchReasonCode `json:"reason_code"`
 }
-
-var ErrJevRouted = errors.New("jev routed")
 
 func commentToResponse(c db.Comment, reactions []ReactionResponse, attachments []AttachmentResponse) CommentResponse {
 	if reactions == nil {
@@ -381,14 +383,11 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 
 	var sinceTime pgtype.Timestamptz
 	if v := q.Get("since"); v != "" {
+		// RFC3339Nano parsing also accepts timestamps without fractional seconds.
 		t, err := time.Parse(time.RFC3339Nano, v)
 		if err != nil {
-			// Fall back to RFC3339 for backwards-compat with the original CLI.
-			t, err = time.Parse(time.RFC3339, v)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, "invalid since parameter; expected RFC3339 format")
-				return
-			}
+			writeError(w, http.StatusBadRequest, "invalid since parameter; expected RFC3339 format")
+			return
 		}
 		sinceTime = pgtype.Timestamptz{Time: t, Valid: true}
 	}
@@ -517,11 +516,8 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 	if beforeTimeStr != "" {
 		t, err := time.Parse(time.RFC3339Nano, beforeTimeStr)
 		if err != nil {
-			t, err = time.Parse(time.RFC3339, beforeTimeStr)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, "invalid before parameter; expected RFC3339 format")
-				return
-			}
+			writeError(w, http.StatusBadRequest, "invalid before parameter; expected RFC3339 format")
+			return
 		}
 		beforeCursor = pgtype.Timestamptz{Time: t, Valid: true}
 		uuid, perr := util.ParseUUID(beforeIDStr)
@@ -643,6 +639,8 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 			resp[i].ContentTruncated = &truncated
 		}
 	}
+
+	h.attachSupersessions(r.Context(), issue, resp)
 
 	// Emit the next cursor as response headers when the page is likely not
 	// the last one. The cursor's meaning is context-dependent: under recent
@@ -1442,8 +1440,17 @@ func keepRootConnected(byID map[string]db.Comment) []db.Comment {
 	return out
 }
 
+// SupersedeResult reports what posting a superseding comment did to one named
+// thread: resolved it, or left it open for SkippedReason.
+type SupersedeResult struct {
+	CommentID     string `json:"comment_id"`
+	Resolved      bool   `json:"resolved,omitempty"`
+	SkippedReason string `json:"skipped_reason,omitempty"`
+}
+
 type CreateCommentRequest struct {
 	Content          string   `json:"content"`
+	Supersedes       []string `json:"supersedes"`
 	DecisionIntent   bool     `json:"decision_intent"`
 	DecisionRecord   bool     `json:"decision_record"`
 	DecisionVeto     bool     `json:"decision_veto"`
@@ -1461,6 +1468,9 @@ type CreateCommentRequest struct {
 	// has ended, or cannot take additional input, is never swapped for another
 	// one: its agent keeps the normal trigger.
 	SteerTaskIDs []string `json:"steer_task_ids"`
+	// Steer adds the comment to the current running turn of every recipient
+	// that has no turn in SteerTaskIDs, with the same fallback.
+	Steer bool `json:"steer"`
 }
 
 type CommentTriggerPreviewRequest struct {
@@ -1759,6 +1769,12 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		parentComment = &parent
 	}
 
+	requestStart := time.Now()
+	supersedeTargets, ok := h.loadSupersedeTargets(w, r.Context(), issue, req.Supersedes, parentID)
+	if !ok {
+		return
+	}
+
 	attachmentIDs, ok := parseUUIDSliceOrBadRequest(w, req.AttachmentIDs, "attachment_ids")
 	if !ok {
 		return
@@ -1773,8 +1789,9 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	}
 	// A running turn receives text only, so a comment that carries files is
 	// always a normal trigger.
+	steer := commentSteerRequest{TaskIDs: steerTaskIDs, All: req.Steer}
 	if len(attachmentIDs) > 0 {
-		steerTaskIDs = nil
+		steer = commentSteerRequest{}
 	}
 
 	// Determine author identity: agent (via X-Agent-ID header) or member.
@@ -1786,6 +1803,12 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// here is what makes "no comment, no dispatch" true rather than "no comment,
 	// but the mention already woke someone".
 	if h.rejectMissingRequiredSourceLink(w, r, authorType, true, issue, req.Content, "content") {
+		return
+	}
+
+	// Same promise as above: a mention of an agent the author cannot reach is
+	// refused before the insert, so nothing is saved, published or enqueued.
+	if h.rejectInvalidAgentMentions(r.Context(), w, issue, req.Content, authorType, authorID, h.invokeOriginatorFromRequest(r, authorType, authorID), nil) {
 		return
 	}
 
@@ -1920,6 +1943,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	var cleared []db.Comment
 	var err error
 	var intentTargets []pgtype.UUID
+	var decisionAnnotation *agentDecisionAnnotation
 	// LockThreadForReplyAndClearResolution takes the thread lock and, still
 	// inside this transaction, clears any resolution held by the root or any
 	// reply in the thread — so a reply landing in a resolved thread reopens it
@@ -1932,6 +1956,38 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		qtx = h.Queries.WithTx(tx)
+		decisionAnnotation, err = prepareAgentDecision(r.Context(), tx, createParams, r.Header.Get("X-Actor-Source") == "task_token")
+		if err == nil && decisionAnnotation != nil && req.DecisionIntent {
+			err = agentDecisionRefusal("a protocol action cannot open a human decision intent")
+		}
+		if err != nil {
+			_ = tx.Rollback(r.Context())
+			var excluded agentDecisionExcludedError
+			if errors.As(err, &excluded) {
+				// Stop rule: the refusal rolled back with the comment, so the
+				// setting change commits on its own.
+				if stopErr := stopAgentDecisions(r.Context(), h.DB, createParams.WorkspaceID, excluded.reason); stopErr != nil {
+					slog.Warn("agent decision stop rule failed", "error", stopErr)
+				}
+			}
+			writeDecisionIntentError(w, err)
+			return
+		}
+		if decisionAnnotation != nil && decisionAnnotation.event == "void" {
+			// Refuse the comment, but retain the immutable rejected-attempt audit.
+			// Do this before reopening a thread or changing any human intent.
+			err = recordAgentDecisionVoid(r.Context(), tx, createParams, decisionAnnotation)
+			if err == nil {
+				err = tx.Commit(r.Context())
+			}
+			_ = tx.Rollback(r.Context())
+			if err != nil {
+				writeDecisionIntentError(w, err)
+			} else {
+				writeDecisionIntentError(w, agentDecisionRefusal("early reveal is void; the signer cannot retry"))
+			}
+			return
+		}
 		if req.DecisionIntent {
 			_, err = qtx.LockWorkspaceForChatSessionCreate(r.Context(), issue.WorkspaceID)
 		}
@@ -1967,6 +2023,9 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "issue not found")
 		return
 	}
+	if err == nil {
+		err = annotateAgentDecision(r.Context(), tx, created.ID, decisionAnnotation)
+	}
 	if err == nil && req.DecisionIntent {
 		err = createCommentDecisionIntent(r, qtx, created.Comment(), intentTargets)
 	}
@@ -1995,6 +2054,10 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		}
 
 	}
+	var supersedeOutcomes []supersedeOutcome
+	if err == nil && len(supersedeTargets) > 0 {
+		supersedeOutcomes, err = applySupersedes(r.Context(), qtx, created.Comment(), supersedeTargets, requestStart, authorType, createParams.AuthorID)
+	}
 	if err != nil {
 		slog.Warn("create comment failed", append(logger.RequestAttrs(r), "error", err, "issue_id", issueID)...)
 		writeError(w, http.StatusInternalServerError, "failed to create comment")
@@ -2015,6 +2078,9 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	resp := commentToResponse(comment, nil, groupedAtt[uuidToString(comment.ID)])
 	resp.IssueRevision = created.IssueRevision
 	resp.Hints = commentDecisionHints(comment, req.DecisionIntent)
+	for _, o := range supersedeOutcomes {
+		resp.Supersedes = append(resp.Supersedes, o.result)
+	}
 	slog.Info("comment created", append(logger.RequestAttrs(r), "comment_id", uuidToString(comment.ID), "issue_id", issueID)...)
 	commentEvent := map[string]any{
 		"comment":             resp,
@@ -2039,6 +2105,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// (TaskService.createAgentComment) — both reply paths use the same
 	// publisher.
 	h.TaskService.PublishThreadUnresolvedOnReply(cleared, uuidToString(issue.WorkspaceID), authorType, authorID)
+	h.publishSupersedeEvents(r, supersedeOutcomes, resp.ID, uuidToString(issue.WorkspaceID), authorType, authorID)
 
 	// Set after the websocket publish: web_url is for CLI callers, not the event.
 	resp.WebURL = h.workspaceWebURL(r.Context(), issue.WorkspaceID, func(ws db.Workspace) string {
@@ -2056,11 +2123,6 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	if kind, ok := parseStatusQuery(comment.Content); ok {
 		answer := h.buildStatusAnswer(r.Context(), issue, kind)
 		resp.StatusAnswer = &answer
-		// CHE-685: observe-only, after the response is fully decided. See
-		// the call below for the full contract; this earlier return path
-		// (a reserved status-query phrase) still creates a real comment row
-		// and must not silently skip receipt capture for it.
-		h.observeGovernanceReceipt(r, issue, comment, receipt.TriggerCreate)
 		writeJSON(w, http.StatusCreated, resp)
 		return
 	}
@@ -2069,17 +2131,10 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// The comment is already saved; a blocked mention must not fail the whole
 	// request. Surface the per-target outcomes so the client can show partial
 	// success instead of a silent no-op (MUL-4525 §2).
-	resp.TriggerOutcomes = h.triggerTasksForComment(r.Context(), issue, comment, parentComment, authorType, authorID, originatorUserID, suppressAgentIDs, steerTaskIDs)
-	if len(steerTaskIDs) > 0 {
+	resp.TriggerOutcomes = h.triggerTasksForComment(r.Context(), issue, comment, parentComment, authorType, authorID, originatorUserID, suppressAgentIDs, steer)
+	if !steer.empty() {
 		applyCommentSupplements(&resp, h.listCommentSupplements(r.Context(), issue.WorkspaceID, []pgtype.UUID{comment.ID})[uuidToString(comment.ID)])
 	}
-
-	// CHE-685: post-commit, best-effort Jev governance receipt capture.
-	// Runs strictly after triggerTasksForComment (native mention/task
-	// routing has already fully happened) and can never change resp or the
-	// status code below — see observeGovernanceReceipt's doc. Bounded to
-	// receipt.Budget (50ms) internally; never retried.
-	h.observeGovernanceReceipt(r, issue, comment, receipt.TriggerCreate)
 
 	writeJSON(w, http.StatusCreated, resp)
 }
@@ -2121,9 +2176,9 @@ func isNoteComment(content string) bool {
 // deferred / blocked from enqueue. UI-suppressed triggers (the user unchecked
 // them) are removed before enqueue and produce no outcome.
 //
-// steerTaskIDs are the running turns the author chose: a recipient whose chosen
+// steer names the running turns the author chose: a recipient whose chosen
 // turn is still running receives this comment there instead of a follow-up run.
-func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, comment db.Comment, parentComment *db.Comment, actorType, actorID, originatorUserID string, suppressAgentIDs, steerTaskIDs []pgtype.UUID) []CommentTriggerOutcome {
+func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, comment db.Comment, parentComment *db.Comment, actorType, actorID, originatorUserID string, suppressAgentIDs []pgtype.UUID, steer commentSteerRequest) []CommentTriggerOutcome {
 	if isNoteComment(comment.Content) || comment.Type == "jev_route" {
 		return nil
 	}
@@ -2136,7 +2191,7 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 		}
 	}
 	routingActorType, routingActorID := commentTriggerActor(comment, actorType, actorID)
-	triggers, targets := h.computeCommentAgentTriggers(ctx, issue, comment.Content, parentComment, routingActorType, routingActorID, commentTriggerComputeOptions{
+	triggers, targets := computeCommentTriggers(h, ctx, issue, comment.Content, parentComment, routingActorType, routingActorID, commentTriggerComputeOptions{
 		ExcludeTriggerCommentID: comment.ID,
 		AuthoringTaskID:         comment.SourceTaskID,
 		OriginatorUserID:        originatorUserID,
@@ -2145,7 +2200,7 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 	triggers = filterSuppressedCommentAgentTriggers(triggers, suppressAgentIDs)
 	h.noteBlockedRuntimeTargets(ctx, issue, targets)
 	gated := h.captureLeaderFallbackTriggers(ctx, issue, comment, routingActorType, triggers)
-	triggers, steered := h.steerCommentAgentTriggers(ctx, issue, comment, routingActorType, triggers, steerTaskIDs)
+	triggers, steered := h.steerCommentAgentTriggers(ctx, issue, comment, routingActorType, routingActorID, originatorUserID, triggers, steer)
 	enqueued := h.enqueueCommentAgentTriggers(ctx, issue, comment.ID, triggers)
 	for agentID, result := range steered {
 		enqueued[agentID] = result
@@ -2176,8 +2231,15 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 		reportedAgents[agentID] = struct{}{}
 	}
 	h.recordLeaderFallbackAdmissions(ctx, gated, enqueued)
-	return commentTriggerOutcomes(targets, enqueued)
+	outcomes := commentTriggerOutcomes(targets, enqueued)
+	h.noteCommentInvocationDenied(ctx, issue, comment, outcomes)
+	return outcomes
 }
+
+// computeCommentTriggers resolves a posted comment's triggers. Tests swap it to
+// reach trigger states no current route produces, such as a rate-limited
+// trigger without a mention target.
+var computeCommentTriggers = (*Handler).computeCommentAgentTriggers
 
 // noteBlockedRuntimeTargets leaves one system comment per agent refused for an
 // unusable runtime, whoever authored the trigger — see noteRuntimeUnusable for
@@ -2445,9 +2507,6 @@ func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Iss
 		}
 		task, err := h.enqueueSingleCommentTrigger(ctx, issue, triggerCommentID, trigger)
 		if err != nil {
-			if errors.Is(err, ErrJevRouted) {
-				return DispatchQueued, ReasonJevRouted
-			}
 			// Lost the enqueue race: a sibling task for this (issue, agent) now
 			// exists. Re-resolve as pending so the next attempt folds this
 			// comment into that sibling (queued) or durably registers it
@@ -2864,7 +2923,7 @@ func (h *Handler) propagateUncoveredCommentObligation(ctx context.Context, issue
 			return true
 		}
 		_, err = h.enqueueSingleCommentTrigger(ctx, issue, commentID, trigger)
-		if err == nil || errors.Is(err, ErrJevRouted) {
+		if err == nil {
 			return true
 		}
 		if !errors.Is(err, service.ErrDuplicatePendingTask) {
@@ -2905,6 +2964,18 @@ func (h *Handler) resolveCommentTriggerOriginator(ctx context.Context, issue db.
 	return authorType, authorID, leaderOriginator
 }
 
+// commentRunOrigin: only a comment a person wrote names its agents. An agent's
+// mention or reply is derived, so it stops at a spent run budget (CHE-2297 L2a);
+// a comment that cannot be read counts as derived.
+func (h *Handler) commentRunOrigin(ctx context.Context, commentID pgtype.UUID) service.RunOrigin {
+	if commentID.Valid {
+		if c, err := h.Queries.GetComment(ctx, commentID); err == nil && c.AuthorType == "member" {
+			return service.OriginNamed
+		}
+	}
+	return service.OriginDerived
+}
+
 // enqueueSingleCommentTrigger creates a fresh task for one computed trigger.
 // Split out of enqueueCommentAgentTriggers so the merge-not-drop path
 // (MUL-4195) can fall back to it when a pending task vanished mid-flight.
@@ -2917,20 +2988,7 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 	switch trigger.Source {
 	case commentTriggerSourceIssueAssignee:
 		if trigger.Squad != nil {
-			var handoffNote string
-			authorType, authorID, leaderOriginator := h.resolveCommentTriggerOriginator(ctx, issue, triggerCommentID)
-			if authorType == "member" && !trigger.NonLeaderAgentReply {
-				if routed, advisory := h.tryJevSquadRouting(ctx, issue, *trigger.Squad, authorType, authorID, leaderOriginator, triggerCommentID); routed {
-					return db.AgentTaskQueue{}, ErrJevRouted
-				} else if advisory != "" {
-					handoffNote = advisory
-				}
-			}
-			var actorUserID pgtype.UUID
-			if handoffNote != "" {
-				actorUserID = memberActorUserID(authorType, authorID)
-			}
-			task, err = h.enqueueCommentTriggerTask(ctx, issue, triggerCommentID, trigger, false, service.OriginDerived, handoffNote, actorUserID)
+			task, err = h.enqueueCommentTriggerTask(ctx, issue, triggerCommentID, trigger, false, service.OriginDerived, "", pgtype.UUID{})
 			if err != nil {
 				logCommentEnqueueFailure("enqueue squad leader task failed", err,
 					"issue_id", uuidToString(issue.ID),
@@ -2952,20 +3010,7 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 		}
 	case commentTriggerSourceMentionSquadLeader:
 		if trigger.Squad != nil {
-			var handoffNote string
-			authorType, authorID, leaderOriginator := h.resolveCommentTriggerOriginator(ctx, issue, triggerCommentID)
-			if authorType == "member" {
-				if routed, advisory := h.tryJevSquadRouting(ctx, issue, *trigger.Squad, authorType, authorID, leaderOriginator, triggerCommentID); routed {
-					return db.AgentTaskQueue{}, ErrJevRouted
-				} else if advisory != "" {
-					handoffNote = advisory
-				}
-			}
-			var actorUserID pgtype.UUID
-			if handoffNote != "" {
-				actorUserID = memberActorUserID(authorType, authorID)
-			}
-			task, err = h.enqueueCommentTriggerTask(ctx, issue, triggerCommentID, trigger, false, service.OriginNamed, handoffNote, actorUserID)
+			task, err = h.enqueueCommentTriggerTask(ctx, issue, triggerCommentID, trigger, false, h.commentRunOrigin(ctx, triggerCommentID), "", pgtype.UUID{})
 			if err != nil {
 				logCommentEnqueueFailure("enqueue squad leader mention task failed", err,
 					"issue_id", uuidToString(issue.ID),
@@ -2974,14 +3019,14 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 			}
 			return task, nil
 		}
-		if task, err = h.enqueueCommentTriggerTask(ctx, issue, triggerCommentID, trigger, false, service.OriginNamed, "", pgtype.UUID{}); err != nil {
+		if task, err = h.enqueueCommentTriggerTask(ctx, issue, triggerCommentID, trigger, false, h.commentRunOrigin(ctx, triggerCommentID), "", pgtype.UUID{}); err != nil {
 			logCommentEnqueueFailure("enqueue squad leader mention task failed", err,
 				"issue_id", uuidToString(issue.ID),
 				"agent_id", uuidToString(trigger.Agent.ID))
 			return task, err
 		}
 	case commentTriggerSourceMentionAgent:
-		if task, err = h.enqueueCommentTriggerTask(ctx, issue, triggerCommentID, trigger, false, service.OriginNamed, "", pgtype.UUID{}); err != nil {
+		if task, err = h.enqueueCommentTriggerTask(ctx, issue, triggerCommentID, trigger, false, h.commentRunOrigin(ctx, triggerCommentID), "", pgtype.UUID{}); err != nil {
 			logCommentEnqueueFailure("enqueue mention agent task failed", err,
 				"issue_id", uuidToString(issue.ID),
 				"agent_id", uuidToString(trigger.Agent.ID))
@@ -2993,7 +3038,7 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 		// the conversation path, the replied-to comment's own authoring task
 		// for the thread-parent path. Gating on the source as well would keep
 		// the thread-parent path demoted for no reason (MUL-7006).
-		task, err = h.enqueueCommentTriggerTask(ctx, issue, triggerCommentID, trigger, false, service.OriginNamed, "", pgtype.UUID{})
+		task, err = h.enqueueCommentTriggerTask(ctx, issue, triggerCommentID, trigger, false, h.commentRunOrigin(ctx, triggerCommentID), "", pgtype.UUID{})
 		if err != nil {
 			logCommentEnqueueFailure("enqueue routed comment agent task failed", err,
 				"issue_id", uuidToString(issue.ID),
@@ -3093,7 +3138,11 @@ func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issu
 		if actorType == "agent" && wakePolicyEnabled {
 			return h.resolveAgentCommentMentions(ctx, issue, mentions, parentComment, actorType, actorID, opts)
 		}
-		return h.resolveMentionedAgentCommentTriggers(ctx, issue, mentions, parentComment, actorType, actorID, opts)
+		triggers, targets := h.resolveMentionedAgentCommentTriggers(ctx, issue, mentions, parentComment, actorType, actorID, opts)
+		if actorType == "member" {
+			triggers = h.withBlockedAssignee(ctx, issue, triggers, actorType, actorID, opts)
+		}
+		return triggers, targets
 	}
 	if util.HasMentionAll(mentions) {
 		return nil, nil
@@ -3128,11 +3177,9 @@ func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issu
 		return nil, nil
 	}
 
-	// A member comment on a blocked squad-assigned issue is the input the squad
-	// is waiting on, wherever it sits in the thread tree, so it always reaches
-	// the leader once (CHE-1418: CHE-1048 waited 6.5h on a reply under a worker
-	// comment). Explicit mentions are routed above and keep their meaning.
-	return h.withBlockedSquadLeader(ctx, issue, h.routeMemberCommentTriggers(ctx, issue, parentComment, actorType, actorID, opts), actorType, actorID, opts), nil
+	// Member input on a blocked issue reaches its assignee as well as the
+	// thread's existing recipients, wherever the comment sits in the tree.
+	return h.withBlockedAssignee(ctx, issue, h.routeMemberCommentTriggers(ctx, issue, parentComment, actorType, actorID, opts), actorType, actorID, opts), nil
 }
 
 const agentCommentWakePolicySetting = "agent_comment_wake_policy_enabled"
@@ -3243,22 +3290,27 @@ func (h *Handler) routeMemberCommentTriggers(ctx context.Context, issue db.Issue
 	return nil
 }
 
-// withBlockedSquadLeader adds the assigned squad's leader to a member comment's
-// triggers while the issue is blocked, unless the leader is already there.
-func (h *Handler) withBlockedSquadLeader(ctx context.Context, issue db.Issue, triggers []commentAgentTrigger, actorType, actorID string, opts commentTriggerComputeOptions) []commentAgentTrigger {
-	if issue.Status != "blocked" || !issue.AssigneeType.Valid || issue.AssigneeType.String != "squad" {
+// withBlockedAssignee adds the current assignee (or squad leader) once while
+// keeping the thread's existing recipients and their routing sources.
+func (h *Handler) withBlockedAssignee(ctx context.Context, issue db.Issue, triggers []commentAgentTrigger, actorType, actorID string, opts commentTriggerComputeOptions) []commentAgentTrigger {
+	if issue.Status != "blocked" {
 		return triggers
 	}
-	leader, ok := h.routeAssignedSquadLeaderFallback(ctx, issue, actorType, actorID, opts)
+	assignee, ok := h.routeAssigneeFallback(ctx, issue, actorType, actorID, opts)
 	if !ok {
 		return triggers
 	}
-	for _, trigger := range triggers {
-		if trigger.Agent.ID == leader.Agent.ID {
+	for i, trigger := range triggers {
+		if trigger.Agent.ID == assignee.Agent.ID {
+			// Keep the routing source, but carry the assignment's leader role
+			// so the reply can fold into an already queued leader run.
+			if trigger.Squad == nil && assignee.Squad != nil {
+				triggers[i].Squad = assignee.Squad
+			}
 			return triggers
 		}
 	}
-	return append(triggers, leader)
+	return append(triggers, assignee)
 }
 
 func filterCommentAuthorTriggers(triggers []commentAgentTrigger, targets []commentMentionTarget, authorType, authorID string) ([]commentAgentTrigger, []commentMentionTarget) {
@@ -3953,6 +4005,14 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	if h.rejectMissingRequiredSourceLink(w, r, actorType, true, issueForSource, req.Content, "content") {
 		return
 	}
+	// Only agents this edit adds are checked: an old mention whose agent was
+	// archived since must not block an unrelated edit.
+	if existing.Content != req.Content {
+		triggerType, triggerID := commentTriggerActor(existing, actorType, actorID)
+		if h.rejectInvalidAgentMentions(r.Context(), w, issueForSource, req.Content, triggerType, triggerID, h.invokeOriginatorFromRequest(r, triggerType, triggerID), agentMentionIDs(existing.Content)) {
+			return
+		}
+	}
 	if req.ExpectedRevision != nil {
 		if *req.ExpectedRevision < 1 {
 			writeError(w, http.StatusBadRequest, "expected_revision must be a positive integer")
@@ -3987,6 +4047,7 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	// lineage is re-derived from the EDIT action itself (MUL-4857), never carried
 	// over from the comment's original authoring run.
 	sourceTaskID := existing.SourceTaskID
+	markExternalRead := false
 	var triggerIssue *db.Issue
 	var cancelled []db.AgentTaskQueue
 	if oldContent != req.Content {
@@ -4012,6 +4073,15 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 		} else {
 			sourceTaskID = pgtype.UUID{}
 		}
+		// The edit clears the lineage for a non-author, so the comment trigger
+		// cannot inherit the writer's external_read mark: carry it explicitly.
+		acting, hasActing, actingErr := service.ActingTask(h.actingTaskContext(r), h.Queries)
+		if actingErr != nil {
+			slog.Warn("read acting task for comment edit failed", "comment_id", uuidToString(existing.ID), "error", actingErr)
+			writeError(w, http.StatusInternalServerError, "failed to prepare comment edit")
+			return
+		}
+		markExternalRead = hasActing && acting.ExternalRead
 		// Legacy clients keep the existing cancel-before-update behavior. Strict
 		// revision writes defer cancellation until the conditional UPDATE wins,
 		// so a race that returns 409 cannot mutate the task queue.
@@ -4026,9 +4096,10 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updateParams := db.UpdateCommentParams{
-		ID:           commentUUID,
-		Content:      req.Content,
-		SourceTaskID: sourceTaskID,
+		ID:               commentUUID,
+		Content:          req.Content,
+		SourceTaskID:     sourceTaskID,
+		MarkExternalRead: pgtype.Bool{Bool: markExternalRead, Valid: markExternalRead},
 		// New text replaces the "don't start" choices completion replay keeps.
 		SuppressedAgentIds: suppressAgentIDs,
 	}
@@ -4136,7 +4207,7 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 		}
 
 		h.retriggerCancelledTaskSurvivors(r.Context(), issue, cancelled, existing.ID)
-		return h.triggerTasksForComment(r.Context(), issue, comment, parentComment, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), suppressAgentIDs, nil)
+		return h.triggerTasksForComment(r.Context(), issue, comment, parentComment, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), suppressAgentIDs, commentSteerRequest{})
 	}
 
 	// Fetch reactions and attachments for the updated comment.
@@ -4155,17 +4226,6 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	// The broadcast above intentionally omits trigger_outcomes — it is the
 	// editor's private feedback, not shared timeline state (MUL-4525 §2).
 	resp.TriggerOutcomes = retriggerEditedComment()
-
-	// CHE-685: post-commit, best-effort Jev governance receipt capture — the
-	// UpdateComment twin of CreateComment's hook. issueForSource (loaded
-	// unconditionally above, for the required-source-link check) is used
-	// rather than triggerIssue, which stays nil when content did not
-	// change: an edit that only touches attachments/expected_revision still
-	// commits a real comment mutation and must not silently skip capture.
-	// Runs strictly after retriggerEditedComment (native mention/task
-	// re-routing has already fully happened) and can never change resp or
-	// the status code below.
-	h.observeGovernanceReceipt(r, issueForSource, comment, receipt.TriggerEdit)
 
 	writeJSON(w, http.StatusOK, resp)
 }

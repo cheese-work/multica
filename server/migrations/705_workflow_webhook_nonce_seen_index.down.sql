@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS workflow_webhook_nonce_endpoint_seen_idx;

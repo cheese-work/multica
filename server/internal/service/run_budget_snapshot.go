@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -15,14 +16,23 @@ import (
 // runs used in the open window against the limit in force, and what a raise
 // would do. Token fields join it when CHE-2297 turns token accounting on.
 type RunBudgetSnapshot struct {
-	Budgeted        bool              `json:"budgeted"`
-	RunsUsed        int64             `json:"runs_used"`
-	RunsLimit       int               `json:"runs_limit"`
-	RunsSource      string            `json:"runs_source,omitempty"` // "workflow" or "issue"
-	WindowStartedAt time.Time         `json:"window_started_at"`
-	RunsState       string            `json:"runs_state,omitempty"`
-	State           string            `json:"state,omitempty"`
-	Blocking        []string          `json:"blocking"`
+	Budgeted bool  `json:"budgeted"`
+	RunsUsed int64 `json:"runs_used"`
+	// RunsLeft is the admitted balance: what the guard reads, so grants and
+	// refunds show here. Negative when named runs went past it.
+	RunsLeft        int64     `json:"runs_left"`
+	RunsLimit       int       `json:"runs_limit"`
+	RunsSource      string    `json:"runs_source,omitempty"` // "workflow" or "issue"
+	WindowStartedAt time.Time `json:"window_started_at"`
+	RunsState       string    `json:"runs_state,omitempty"`
+	State           string    `json:"state,omitempty"`
+	Blocking        []string  `json:"blocking"`
+	// TokensActive is true once the issue is activated for token accounting;
+	// the balance is then A credits minus the tokens used and held, and a
+	// negative balance is overshoot.
+	TokensActive    bool              `json:"tokens_active"`
+	TokensBalance   int64             `json:"tokens_balance"`
+	TokensOvershoot int64             `json:"tokens_overshoot"`
 	CanRaise        bool              `json:"can_raise"`
 	RaisePreview    *RunBudgetPreview `json:"raise_preview,omitempty"`
 }
@@ -42,35 +52,35 @@ const (
 	RunBudgetOver    = "over"
 )
 
-// NewRunBudgetSnapshot builds the snapshot from the counted runs and the limit
-// in force. The state is near from 80% of the limit, at_limit when the limit is
-// spent (the guard refuses the next derived run) and over when named runs went
-// past it.
-func NewRunBudgetSnapshot(used int64, limit int, source string, windowStart time.Time) RunBudgetSnapshot {
+// NewRunBudgetSnapshot builds the snapshot from the counted runs, the limit in
+// force and the admitted balance. The state is near once the balance is down to
+// 20% of the limit, at_limit when the balance is spent (the guard refuses the
+// next derived run) and over when named runs went past it.
+func NewRunBudgetSnapshot(used int64, limit int, left int64, source string, windowStart time.Time) RunBudgetSnapshot {
 	snap := RunBudgetSnapshot{
-		Budgeted: true, RunsUsed: used, RunsLimit: limit, RunsSource: source,
+		Budgeted: true, RunsUsed: used, RunsLeft: left, RunsLimit: limit, RunsSource: source,
 		WindowStartedAt: windowStart, Blocking: []string{},
 	}
 	switch {
-	case used > int64(limit):
+	case left < 0:
 		snap.RunsState = RunBudgetOver
-	case used == int64(limit):
+	case left == 0:
 		snap.RunsState = RunBudgetAtLimit
-	case used*5 >= int64(limit)*4:
+	case left*5 <= int64(limit):
 		snap.RunsState = RunBudgetNear
 	default:
 		snap.RunsState = RunBudgetOK
 	}
 	snap.State = snap.RunsState
-	if used >= int64(limit) {
+	if left < 1 {
 		snap.Blocking = append(snap.Blocking, "runs")
 	}
-	// Runs past the platform maximum still read as used; the clamp only keeps
-	// the raise math on int.
-	usedInt := int(min(used, int64(issueworkflow.MaxRunsPerIssueLimit)))
-	if room := MaxAllowedRaise(limit, usedInt); room > 0 {
-		add := SuggestedRaise(limit, usedInt)
-		if raise, err := PreviewRunBudgetRaise(limit, usedInt, add); err == nil {
+	// The raise starts from the admitted balance, not the task count: a grant, a
+	// refund or carried debt moves one and not the other.
+	base := raiseUsed(limit, left)
+	if room := MaxAllowedRaise(limit, base); room > 0 {
+		add := SuggestedRaise(limit, base)
+		if raise, err := PreviewRunBudgetRaise(limit, base, add); err == nil {
 			snap.CanRaise = true
 			snap.RaisePreview = &RunBudgetPreview{
 				AddRuns: add, BalanceAfter: raise.BalanceAfter, LimitAfter: raise.CreditedAfter, MaxAllowedAdd: room,
@@ -87,6 +97,13 @@ type runBudgetUsage struct {
 	Max    int
 	Source string
 	Since  time.Time
+	// TokenAllowance (A) and TokenReserve (E) are the workflow's stored token
+	// values; both are 0 while token accounting is off for the workflow.
+	TokenAllowance int64
+	TokenReserve   int64
+	// ActivationMoved is the balance change activation made in this call, so the
+	// usage report that activates can still be judged against 80%.
+	ActivationMoved int64
 }
 
 // loadRunBudgetUsage reads the issue's workflow cap and the runs counted in its
@@ -111,7 +128,10 @@ func loadRunBudgetUsage(ctx context.Context, q *db.Queries, issue db.Issue) (*ru
 	if err != nil {
 		return nil, fmt.Errorf("run budget: count runs: %w", err)
 	}
-	usage := &runBudgetUsage{Runs: runs, Max: def.EffectiveMaxRuns(), Source: "workflow", Since: since}
+	usage := &runBudgetUsage{
+		Runs: runs, Max: def.EffectiveMaxRuns(), Source: "workflow", Since: since,
+		TokenAllowance: def.TokenAllowance, TokenReserve: def.TokenReserve,
+	}
 	if issue.MaxRunsOverride.Valid && int(issue.MaxRunsOverride.Int32) > usage.Max {
 		usage.Max, usage.Source = int(issue.MaxRunsOverride.Int32), "issue"
 	}
@@ -121,9 +141,55 @@ func loadRunBudgetUsage(ctx context.Context, q *db.Queries, issue db.Issue) (*ru
 // LoadRunBudgetSnapshot reads one issue's budget. An issue that is not
 // budgeted gets a snapshot with Budgeted false.
 func LoadRunBudgetSnapshot(ctx context.Context, q *db.Queries, issue db.Issue) (RunBudgetSnapshot, error) {
-	usage, err := loadRunBudgetUsage(ctx, q, issue)
-	if err != nil || usage == nil {
+	// The read-only form of the balance admission reads: it writes no entry.
+	_, usage, left, err := openRunBudget(readOnlyRunBudget(ctx), q, issue.ID, pgtype.UUID{})
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && usage == nil) {
+		return RunBudgetSnapshot{Blocking: []string{}}, nil
+	}
+	if err != nil {
 		return RunBudgetSnapshot{Blocking: []string{}}, err
 	}
-	return NewRunBudgetSnapshot(usage.Runs, usage.Max, usage.Source, usage.Since), nil
+	snap := NewRunBudgetSnapshot(usage.Runs, usage.Max, left, usage.Source, usage.Since)
+	return withTokenBalance(ctx, q, issue, usage, snap)
 }
+
+// CurrentRunBudget reads the issue's cap and run balance as admission would
+// now, without writing. The exhaustion notice prices its raise from this, not
+// from the balance the refusal saw: a named run or a grant can land between.
+func CurrentRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID) (max int, balance int64, err error) {
+	_, usage, balance, err := openRunBudget(readOnlyRunBudget(ctx), q, issueID, pgtype.UUID{})
+	if err != nil {
+		return 0, 0, err
+	}
+	if usage == nil {
+		return 0, 0, pgx.ErrNoRows
+	}
+	return usage.Max, balance, nil
+}
+
+// withTokenBalance adds the token side to a snapshot once the issue is
+// activated. A negative balance is overshoot: runs already admitted spent past
+// it.
+func withTokenBalance(ctx context.Context, q *db.Queries, issue db.Issue, usage *runBudgetUsage, snap RunBudgetSnapshot) (RunBudgetSnapshot, error) {
+	if !usage.tokensStored() {
+		return snap, nil
+	}
+	if _, found, err := activationEpoch(ctx, q, issue.ID); err != nil || !found {
+		return snap, err
+	}
+	balance, err := q.SumIssueRunBudgetTokens(ctx, issue.ID)
+	if err != nil {
+		return snap, fmt.Errorf("run budget: token balance: %w", err)
+	}
+	snap.TokensActive, snap.TokensBalance = true, balance
+	if balance < 0 {
+		snap.TokensOvershoot = -balance
+	}
+	if balance <= 0 {
+		snap.Blocking = append(snap.Blocking, "tokens")
+	}
+	return snap, nil
+}
+
+// tokensStored reports whether the workflow stores both token values.
+func (u *runBudgetUsage) tokensStored() bool { return u.TokenAllowance > 0 && u.TokenReserve > 0 }

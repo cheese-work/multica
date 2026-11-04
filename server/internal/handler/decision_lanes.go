@@ -59,23 +59,7 @@ func (handler *Handler) decisionLaneWindow(request *http.Request, queries *db.Qu
 	if category == issuestatus.CategoryDone || category == issuestatus.CategoryClosed {
 		return agent, targetID, deny
 	}
-	assigned := issue.AssigneeType.String == "agent" && issue.AssigneeID == agent.ID
-	if issue.AssigneeType.String == "squad" && issue.AssigneeID.Valid {
-		squad, err := queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: issue.AssigneeID, WorkspaceID: issue.WorkspaceID})
-		if errors.Is(err, pgx.ErrNoRows) || (err == nil && squad.ArchivedAt.Valid) {
-			return agent, targetID, deny
-		}
-		if err != nil {
-			return agent, targetID, err
-		}
-		assigned, err = queries.IsSquadMember(ctx, db.IsSquadMemberParams{SquadID: squad.ID, MemberType: "agent", MemberID: agent.ID})
-		if err != nil {
-			return agent, targetID, err
-		}
-	}
-	if !assigned {
-		return agent, targetID, deny
-	}
+
 	intent, err := queries.GetDecisionIntentForTask(ctx, db.GetDecisionIntentForTaskParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, TaskID: task.ID, AgentID: agent.ID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return agent, targetID, deny

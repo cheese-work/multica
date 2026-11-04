@@ -462,6 +462,8 @@ Daemon behavior is configured via flags or environment variables:
 | Agent timeout | `--agent-timeout` | `MULTICA_AGENT_TIMEOUT` | `0` (no cap; bounded by the watchdogs) |
 | Agent idle watchdog | — | `MULTICA_AGENT_IDLE_WATCHDOG` | `2h` (`0` disables the whole watchdog suite) |
 | Agent tool watchdog | — | `MULTICA_AGENT_TOOL_WATCHDOG` | same as the idle watchdog (`0` = never force-stop during a tool call) |
+| Silence warn tier | — | `MULTICA_AGENT_SILENCE_WARN_AFTER` | `15m` (`0` = off; marks the transcript when a run has no message and no tool in flight; also marks a tool call running this long. Never stops the run) |
+| Silence alert tier | — | `MULTICA_AGENT_SILENCE_ALERT_AFTER` | `1h` (`0` = off; also posts one system comment on the issue; raised to the warn value if lower) |
 | Codex semantic inactivity timeout | `--codex-semantic-inactivity-timeout` | `MULTICA_CODEX_SEMANTIC_INACTIVITY_TIMEOUT` | same as the idle watchdog (Codex's timer is not tool-aware, so it tracks the larger of the idle / tool budgets) |
 | Codex first-turn no-progress timeout | — | `MULTICA_CODEX_FIRST_TURN_TIMEOUT` | `0` (keeps the built-in `60s` ceiling) |
 | Codex handshake timeout | `--codex-handshake-timeout` | `MULTICA_CODEX_HANDSHAKE_TIMEOUT` | `30s`; `thread/start` and `thread/resume`: `60s` (an explicit value overrides both budgets globally) |
@@ -892,6 +894,13 @@ multica issue comment add <issue-id> --content "Looks good, merging now"
 
 # Reply to a specific comment
 multica issue comment add <issue-id> --parent <comment-id> --content "Thanks!"
+
+# Add the comment to an agent's running turn instead of queueing a
+# follow-up run (--steer is repeatable; --steer-active picks every running
+# agent you may steer). You may steer an agent exactly when your comment could
+# start it; an agent never steers itself and adds at most 3 messages to one
+# run. Prints per run whether it was steered.
+multica issue comment add <issue-id> --content-file note.md --steer <run-id>
 
 # Delete a comment
 multica issue comment delete <comment-id>

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/daemon/broker"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
 	"github.com/multica-ai/multica/server/internal/util"
 )
@@ -89,9 +90,14 @@ type HealthResponse struct {
 	// MaintenanceHeld is true while an owner maintenance window holds update
 	// ownership and the claim barrier; MaintenanceExpiresAt is its lease
 	// expiry (RFC 3339). The window token is never reported. See maintenance.go.
-	MaintenanceHeld      bool              `json:"maintenance_held,omitempty"`
-	MaintenanceExpiresAt string            `json:"maintenance_expires_at,omitempty"`
-	Workspaces           []healthWorkspace `json:"workspaces"`
+	MaintenanceHeld      bool   `json:"maintenance_held,omitempty"`
+	MaintenanceExpiresAt string `json:"maintenance_expires_at,omitempty"`
+	// Paused is true while the server holds a machine pause for this daemon
+	// (CHE-2673); the daemon claims nothing until it lifts or expires.
+	Paused         bool              `json:"paused,omitempty"`
+	PauseReason    string            `json:"pause_reason,omitempty"`
+	PauseExpiresAt string            `json:"pause_expires_at,omitempty"`
+	Workspaces     []healthWorkspace `json:"workspaces"`
 }
 
 type healthWorkspace struct {
@@ -134,9 +140,19 @@ type activeRepoCheckoutTask struct {
 	AgentID     string
 	AgentName   string
 	WorkDir     string
+	// StableDir is the fixed cwd the agent sees instead of WorkDir (see stable_cwd.go); empty when off.
+	StableDir string
 	// IssueIdentifier is the task's issue key (e.g. CHE-1988); empty for
 	// tasks with no issue.
 	IssueIdentifier string
+	IntakeRun       bool
+	PinnedBranch    string
+	PinnedRepo      string
+	// Elevated tasks check out the synthetic base of their grant's pinned
+	// commit, never a worktree (CHE-2216 plan 3.5).
+	Elevated      bool
+	PinnedBaseSHA string
+	PinnedHeadSHA string
 }
 
 // registerActiveRepoCheckoutTask binds checkout identity to the active task.
@@ -377,6 +393,11 @@ func (d *Daemon) healthHandler(startedAt time.Time) http.HandlerFunc {
 			resp.MaintenanceHeld = true
 			resp.MaintenanceExpiresAt = expires.UTC().Format(time.RFC3339)
 		}
+		if p := d.heldPauseNow(); p != nil {
+			resp.Paused = true
+			resp.PauseReason = p.reason
+			resp.PauseExpiresAt = p.expiresAt.UTC().Format(time.RFC3339)
+		}
 		if reporter, ok := d.repoCache.(interface{ Activity() repocache.Activity }); ok {
 			activity := reporter.Activity()
 			resp.RepoMaintenanceActive = activity.MaintenanceActive
@@ -480,7 +501,7 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 			http.Error(w, "workdir is required", http.StatusBadRequest)
 			return
 		}
-		if req.CheckoutMode != "" && req.CheckoutMode != repoCheckoutModeIsolated {
+		if req.CheckoutMode != "" && req.CheckoutMode != repoCheckoutModeIsolated && req.CheckoutMode != repoCheckoutModeShared {
 			http.Error(w, "invalid checkout_mode", http.StatusBadRequest)
 			return
 		}
@@ -488,7 +509,7 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 			http.Error(w, "repo checkout task context does not match the active task", http.StatusForbidden)
 			return
 		}
-		authorizedWorkDir, authErr := authorizeRepoCheckoutWorkDir(activeTask.WorkDir, req.WorkDir)
+		authorizedWorkDir, authErr := authorizeRepoCheckoutWorkDir(activeTask.WorkDir, activeTask.hostPath(req.WorkDir))
 		if authErr != nil {
 			// The reason goes to both the agent and daemon.log: a refusal that
 			// says only "not owned" sent #8946 looking at ownership when the
@@ -516,6 +537,33 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 			return
 		}
 
+		// An intake run checks out its PR's repository at its PR's head ref and
+		// nothing else, whatever the request asks for, and this is decided before
+		// any cache operation. With no valid pin it checks out nothing.
+		pinnedBranch := ""
+		if activeTask.IntakeRun {
+			switch {
+			case !validPinnedBranch(activeTask.PinnedBranch) || activeTask.PinnedRepo == "":
+				d.logger.Warn("repo checkout rejected", "reason", "intake_run_unpinned", "task_id", activeTask.TaskID)
+				http.Error(w, "this run has no pull request head ref to check out", http.StatusForbidden)
+				return
+			case !pinAllowsRepo(activeTask.PinnedRepo, req.URL):
+				d.logger.Warn("repo checkout rejected", "reason", "intake_run_other_repo", "task_id", activeTask.TaskID)
+				http.Error(w, "this run is pinned to its pull request's repository", http.StatusForbidden)
+				return
+			}
+			pinnedBranch = activeTask.PinnedBranch
+		}
+
+		// An elevated run checks out the synthetic base of its grant's pinned
+		// commit and nothing else, whatever the request asks for. With no pin
+		// it checks out nothing.
+		if activeTask.Elevated && broker.PinnedSource(activeTask.PinnedBaseSHA, activeTask.PinnedHeadSHA) == "" {
+			d.logger.Warn("repo checkout rejected", "reason", "elevated_run_unpinned", "task_id", activeTask.TaskID)
+			http.Error(w, "this elevated run has no pinned commit to check out", http.StatusForbidden)
+			return
+		}
+
 		if err := d.ensureRepoReady(r.Context(), req.WorkspaceID, req.URL); err != nil {
 			if r.Context().Err() != nil {
 				d.logger.Debug("repo checkout readiness cancelled", "url", req.URL, "error", err)
@@ -530,9 +578,17 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 			return
 		}
 
+		if activeTask.Elevated {
+			d.serveElevatedCheckout(w, r.Context(), activeTask, req.URL, req.WorkDir)
+			return
+		}
+
 		checkoutRef := strings.TrimSpace(req.Ref)
 		if checkoutRef == "" {
 			checkoutRef = d.taskRepoDefaultRef(req.WorkspaceID, req.TaskID, req.URL)
+		}
+		if pinnedBranch != "" {
+			checkoutRef = pinnedBranch
 		}
 
 		params := repocache.WorktreeParams{
@@ -540,11 +596,13 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 			RepoURL:             req.URL,
 			WorkDir:             req.WorkDir,
 			Ref:                 checkoutRef,
+			Branch:              pinnedBranch,
 			AgentName:           req.AgentName,
 			TaskID:              req.TaskID,
 			IssueIdentifier:     activeTask.IssueIdentifier,
 			CoAuthoredByEnabled: d.workspaceCoAuthoredByEnabled(req.WorkspaceID),
 			IsolatedGitMetadata: req.CheckoutMode == repoCheckoutModeIsolated,
+			SharedObjects:       req.CheckoutMode == repoCheckoutModeShared,
 			Fresh:               req.Fresh,
 		}
 		if req.RetryBusy {

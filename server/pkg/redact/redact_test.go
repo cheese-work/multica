@@ -189,7 +189,7 @@ func TestRedactGenericCredentials(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := Text(tc.input)
-			if !strings.Contains(got, "[REDACTED CREDENTIAL]") {
+			if !strings.Contains(got, "=[REDACTED]") && !strings.Contains(got, ": [REDACTED]") {
 				t.Fatalf("expected credential redaction for %s, got: %s", tc.name, got)
 			}
 		})
@@ -282,16 +282,17 @@ func TestRedactPasswordEnvVar(t *testing.T) {
 	cases := []struct {
 		name  string
 		input string
+		want  string
 	}{
-		{"PASSWORD", "PASSWORD=hunter2"},
-		{"SECRET", "SECRET=mysecretvalue"},
-		{"TOKEN", "TOKEN=abc123xyz"},
+		{"PASSWORD", "PASSWORD=hunter2", "PASSWORD=[REDACTED]"},
+		{"SECRET", "SECRET=mysecretvalue", "SECRET=[REDACTED]"},
+		{"TOKEN", "TOKEN=abc123xyz", "TOKEN=[REDACTED]"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := Text(tc.input)
-			if !strings.Contains(got, "[REDACTED CREDENTIAL]") {
-				t.Fatalf("expected credential redaction for %s, got: %s", tc.name, got)
+			if got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
 			}
 		})
 	}
@@ -485,5 +486,52 @@ func TestRedactMultipleSecrets(t *testing.T) {
 	}
 	if strings.Contains(got, "ghp_") {
 		t.Fatal("GitHub token not redacted in multi-secret text")
+	}
+}
+
+// TestProviderTokenParity runs the fixture the TypeScript display fallback also
+// runs (packages/views/common/task-transcript/redact.test.ts), so both
+// implementations stay on the same provider rules.
+func TestProviderTokenParity(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile("testdata/provider-tokens.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		Name  string
+		Parts []string
+		Want  string
+	}
+	if err := json.Unmarshal(data, &cases); err != nil {
+		t.Fatal(err)
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.Name, func(t *testing.T) {
+			if got := Text(strings.Join(testCase.Parts, "")); got != testCase.Want {
+				t.Fatalf("got %q, want %q", got, testCase.Want)
+			}
+		})
+	}
+}
+
+// TestProseKeepsKeywordLabels is the CHE-2587 regression: the generic keyword
+// rule read the "Token:" column label in an agent's table cell as a credential.
+func TestProseKeepsKeywordLabels(t *testing.T) {
+	t.Parallel()
+	cell := "| Token: input, output, cache read, cache write, chi phí | Có. |"
+	if got := Prose(cell); got != cell {
+		t.Fatalf("prose mangled: got %q, want %q", got, cell)
+	}
+	if got := Text(cell); got == cell {
+		t.Fatalf("Text must keep the generic rule for machine output, got %q", got)
+	}
+}
+
+func TestProseStillRedactsProviderTokens(t *testing.T) {
+	t.Parallel()
+	got := Prose("pushed with " + asm("ghp_", strings.Repeat("A", 36)) + " today")
+	if want := "pushed with [REDACTED GITHUB TOKEN] today"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }

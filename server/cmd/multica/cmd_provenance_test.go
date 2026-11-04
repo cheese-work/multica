@@ -137,7 +137,7 @@ func TestProvenanceExportPostsExplicitScope(t *testing.T) {
 			"manifest_digest":  "man-digest",
 			"cutoff":           "2026-09-01T00:00:00Z",
 			"generated_at":     "2026-09-02T00:00:00Z",
-			"redaction_policy": "redact.Text:v1",
+			"redaction_policy": "redact.Text:v2",
 			"records":          []any{map[string]any{"kind": "issue", "id": "i1"}},
 			"exclusions":       []any{},
 		})

@@ -22,6 +22,9 @@ type Spec struct {
 	// HOME and TMPDIR are always set from Home and TempDir.
 	Env  []string
 	Argv []string
+	// EgressSocket is the host Unix socket of the egress proxy. When set, the
+	// run gets a loopback forwarder to it and proxy variables (see bridge.go).
+	EgressSocket string
 }
 
 var (
@@ -48,17 +51,31 @@ func DefaultDeny() []string {
 	return deny
 }
 
-// bind is one host directory mounted at its own path.
+// bind is one host path mounted at dest, or at its own path when dest is empty.
 type bind struct {
 	path string
+	dest string
 	ro   bool
 }
 
-// binds lists the spec's mounts in argument order.
-func (s Spec) binds() []bind {
+func (b bind) target() string {
+	if b.dest != "" {
+		return b.dest
+	}
+	return b.path
+}
+
+// binds lists the spec's mounts in argument order. bridgeExe is the helper
+// binary mounted when the spec has an egress socket.
+func (s Spec) binds(bridgeExe string) []bind {
 	bs := []bind{{path: s.WorkDir}, {path: s.Home}, {path: s.TempDir}}
 	for _, p := range s.ReadOnly {
 		bs = append(bs, bind{path: p, ro: true})
+	}
+	if s.EgressSocket != "" {
+		bs = append(bs,
+			bind{path: filepath.Dir(s.EgressSocket), dest: egressDir, ro: true},
+			bind{path: bridgeExe, dest: bridgeMount, ro: true})
 	}
 	return bs
 }
@@ -72,12 +89,12 @@ func (l *Launcher) Args(spec Spec) ([]string, error) {
 	if err := l.validate(spec); err != nil {
 		return nil, err
 	}
-	return spec.args(nil), nil
+	return spec.args(nil, l.bridgeExe()), nil
 }
 
 // args builds the argument vector. With pins, mount i names descriptor 3+i
 // (exec.Cmd.ExtraFiles order) instead of a host path.
-func (s Spec) args(pins []*os.File) []string {
+func (s Spec) args(pins []*os.File, bridgeExe string) []string {
 	args := []string{
 		"--unshare-user", "--unshare-pid", "--unshare-net", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup",
 		"--die-with-parent", "--new-session",
@@ -87,7 +104,7 @@ func (s Spec) args(pins []*os.File) []string {
 		args = append(args, "--ro-bind-try", p, p)
 	}
 	args = append(args, "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp")
-	for i, b := range s.binds() {
+	for i, b := range s.binds(bridgeExe) {
 		flag, src := "--bind", b.path
 		if b.ro {
 			flag = "--ro-bind"
@@ -95,22 +112,37 @@ func (s Spec) args(pins []*os.File) []string {
 		if pins != nil {
 			flag, src = flag+"-fd", strconv.Itoa(3+i)
 		}
-		args = append(args, flag, src, b.path)
+		args = append(args, flag, src, b.target())
 	}
 	args = append(args, "--chdir", s.WorkDir, "--")
-	return append(args, s.Argv...)
+	return append(args, s.command()...)
 }
 
 // environ is the exact environment handed to bwrap and, through it, to the
 // command. A non-nil empty slice means "empty", never "inherit".
 func (s Spec) environ() []string {
-	env := append(make([]string, 0, len(s.Env)+2), s.Env...)
-	return append(env, "HOME="+s.Home, "TMPDIR="+s.TempDir)
+	env := make([]string, 0, len(s.Env)+6)
+	for _, kv := range s.Env {
+		if s.EgressSocket != "" && isProxyVar(kv) {
+			continue
+		}
+		env = append(env, kv)
+	}
+	env = append(env, "HOME="+s.Home, "TMPDIR="+s.TempDir)
+	if s.EgressSocket != "" {
+		env = append(env, proxyEnv()...)
+	}
+	return env
 }
 
 func (l *Launcher) validate(spec Spec) error {
 	if len(spec.Argv) == 0 {
 		return errors.New("sandbox: empty command")
+	}
+	if spec.EgressSocket != "" {
+		if err := l.checkEgress(spec.EgressSocket); err != nil {
+			return err
+		}
 	}
 	for _, kv := range spec.Env {
 		name, _, ok := strings.Cut(kv, "=")
@@ -119,7 +151,7 @@ func (l *Launcher) validate(spec Spec) error {
 		}
 	}
 	writable := []string{spec.WorkDir, spec.Home, spec.TempDir}
-	for _, b := range spec.binds() {
+	for _, b := range spec.binds(l.bridgeExe()) {
 		p := b.path
 		if !filepath.IsAbs(p) || filepath.Clean(p) != p {
 			return fmt.Errorf("sandbox: path %q is not absolute and clean", p)
@@ -128,10 +160,13 @@ func (l *Launcher) validate(spec Spec) error {
 			return fmt.Errorf("sandbox: %s overlaps never-mounted path %s", p, bad)
 		}
 	}
-	for _, p := range spec.ReadOnly {
+	for _, b := range spec.binds(l.bridgeExe()) {
+		if !b.ro {
+			continue
+		}
 		for _, w := range writable {
-			if within(w, p) {
-				return fmt.Errorf("sandbox: read-only bind %s would expose writable dir %s", p, w)
+			if within(w, b.path) {
+				return fmt.Errorf("sandbox: read-only bind %s would expose writable dir %s", b.path, w)
 			}
 		}
 	}
@@ -180,7 +215,7 @@ func (l *Launcher) pinned(spec Spec) ([]string, []*os.File, error) {
 	}
 	var pins []*os.File
 	closeAll := func() { closeFiles(pins) }
-	for _, b := range spec.binds() {
+	for _, b := range spec.binds(l.bridgeExe()) {
 		f, real, err := pin(b.path)
 		if err != nil {
 			closeAll()
@@ -192,5 +227,5 @@ func (l *Launcher) pinned(spec Spec) ([]string, []*os.File, error) {
 			return nil, nil, fmt.Errorf("sandbox: %s resolves to %s, which overlaps never-mounted path %s", b.path, real, bad)
 		}
 	}
-	return spec.args(pins), pins, nil
+	return spec.args(pins, l.bridgeExe()), pins, nil
 }

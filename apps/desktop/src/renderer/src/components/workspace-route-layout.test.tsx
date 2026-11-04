@@ -91,6 +91,7 @@ vi.mock("@multica/views/workspace/use-workspace-seen", () => ({
 
 vi.mock("@multica/views/layout", () => ({
   WorkspacePresencePrefetch: () => null,
+  MachinePauseBanner: () => <div data-testid="machine-pause-banner" />,
 }));
 
 // The point of this whole test: assert the desktop layout mounts the
@@ -161,6 +162,15 @@ describe("WorkspaceRouteLayout", () => {
     const { queryByTestId } = renderLayout();
     expect(queryByTestId(state.modalAriaLabel)).not.toBeNull();
     expect(state.modalRenders).toBeGreaterThan(0);
+  });
+
+  it("mounts the machine pause banner above the page content", () => {
+    const { getByTestId } = renderLayout();
+    expect(
+      getByTestId("machine-pause-banner").compareDocumentPosition(
+        getByTestId("outlet"),
+      ) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it("suppresses SourceBackfillModal while a WindowOverlay is active", () => {

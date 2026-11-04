@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/multica-ai/multica/server/internal/cli"
@@ -25,7 +26,7 @@ var decisionGetCmd = &cobra.Command{
 }
 
 var decisionListCmd = &cobra.Command{
-	Use: "list", Short: "List decision requests on an issue", Args: cobra.NoArgs, RunE: runDecisionList,
+	Use: "list", Short: "List decision requests on an issue, or a member's open asks", Args: cobra.NoArgs, RunE: runDecisionList,
 }
 
 var decisionWithdrawCmd = &cobra.Command{
@@ -33,17 +34,25 @@ var decisionWithdrawCmd = &cobra.Command{
 }
 
 func init() {
-	for _, command := range []*cobra.Command{decisionRequestCmd, decisionListCmd} {
-		command.Flags().String("issue", "", "Issue UUID or identifier")
-		_ = command.MarkFlagRequired("issue")
-	}
+	decisionRequestCmd.Flags().String("issue", "", "Issue UUID or identifier")
+	_ = decisionRequestCmd.MarkFlagRequired("issue")
+	decisionListCmd.Flags().String("issue", "", "Issue UUID or identifier (or use --for with --state open)")
+	decisionListCmd.Flags().String("for", "", "Member's user ID: list that member's open asks workspace-wide (needs --state open)")
+	decisionListCmd.Flags().String("state", "", "With --for: open")
+	decisionListCmd.Flags().Bool("section", false, "With --for: print the evening brief section (Markdown) instead of JSON")
+	decisionListCmd.Flags().Int("older-than-hours", 24, "With --section: only asks open at least this long (24 is PROPOSED, not agreed)")
+	decisionListCmd.Flags().Int("max-lines", 5, "With --section: line budget for the section, header and omitted count included")
+	decisionListCmd.Flags().Int("brief-lines-used", 0, "With --section: brief lines used outside this section, including lines still to come; the section stays within the 30-line brief maximum")
+	decisionListCmd.Flags().StringSlice("exclude-issue", nil, "With --section: skip asks on these issue IDs (already listed in the 08:00 digest)")
 	decisionRequestCmd.Flags().String("session", "", "DM lane UUID from chat sessions --issue; must be eligible (it discussed this issue)")
 	decisionRequestCmd.Flags().Bool("new-dm", false, "Create a DM for this issue only, when no listed lane discussed it")
 	decisionRequestCmd.Flags().String("for", "", "Named person's user or workspace member ID (required unless an open intent names the person)")
 	decisionRequestCmd.Flags().String("parent", "", "Comment UUID to reply under (default: top-level; not allowed with an open intent)")
 	decisionRequestCmd.Flags().String("class", "", "reversible, spend, deploy, publish, irreversible, or product_direction")
-	decisionRequestCmd.Flags().String("ask-file", "", "UTF-8 JSON ask: context_eli10, agent_did, decision, stakes_if_wrong, options[{label, what_happens, pros[], cons[], cost_or_time}], recommendation, default_if_no_reply, source_issue_id, source_comment_id")
+	decisionRequestCmd.Flags().String("ask-file", "", "UTF-8 JSON ask: context_eli10, agent_did, decision, stakes_if_wrong, options[{label, what_happens, pros[], cons[], cost_or_time}], recommendation, default_if_no_reply, source_issue_id, source_comment_id. Refused: an inline numbered list (1. a 2. b on one line; use a Markdown list); a bare ID (full UUID outside a Markdown link destination, link it as [what it is](link)); an agent_did with fewer than 10 letters once links and IDs are removed. Advisory hints, never refusals: a decision that looks like several questions (send one request per question), and human_steps that leave values implicit. The list and ID rules cover context_eli10, decision, stakes_if_wrong, recommendation, default_if_no_reply, options[].label, options[].what_happens, options[].pros[], options[].cons[], options[].cost_or_time. For an ask that approves a file: subject \"artifact_approval\" with artifacts[{attachment_id, label, sha256, supersedes_attachment_id, signed_by{reviewer, comment_id}, supersedes_signed_by{reviewer, comment_id}}]. To ask a human to act also: human_steps[{action, command, values[{name, value, source}], verify_done}], probes[], after_done")
 	decisionRequestCmd.Flags().String("action-file", "", "Optional UTF-8 JSON privileged action Cheese approves on the card: {type, version, params, secret_slots[{slot, target}], expires_in_seconds}. Never put a secret value in it")
+	decisionRequestCmd.Flags().String("kind", "decision", "decision (default) asks the person to choose; action asks them to do something an agent cannot")
+	decisionRequestCmd.Flags().String("expires-in", "", "With --kind action: how long the ask stays open, e.g. 72h (default 72h, maximum 168h)")
 	decisionRequestCmd.Flags().String("footer-file", "", "Optional UTF-8 file appended to the issue comment only, e.g. RHC-2 lines")
 	for _, flag := range []string{"class", "ask-file"} {
 		_ = decisionRequestCmd.MarkFlagRequired(flag)
@@ -85,6 +94,11 @@ func runDecisionRequest(command *cobra.Command, _ []string) error {
 	footerPath, _ := command.Flags().GetString("footer-file")
 	actionPath, _ := command.Flags().GetString("action-file")
 	parentID, _ := command.Flags().GetString("parent")
+	kind, _ := command.Flags().GetString("kind")
+	expiresIn, _ := command.Flags().GetString("expires-in")
+	if err := checkRequestKind(kind, expiresIn, actionPath != ""); err != nil {
+		return err
+	}
 	if issueRef == "" || class == "" || askPath == "" {
 		return fmt.Errorf("--issue, --class, and --ask-file are required")
 	}
@@ -95,7 +109,7 @@ func runDecisionRequest(command *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	ask, err := decisiontx.DecodeAsk([]byte(askText))
+	ask, err := decisiontx.DecodeAskKind([]byte(askText), kind)
 	if err != nil {
 		return err
 	}
@@ -130,12 +144,43 @@ func runDecisionRequest(command *cobra.Command, _ []string) error {
 	if action != nil {
 		body["action"] = action
 	}
+	if kind == decisiontx.KindAction {
+		// The raw file goes up so the server's strict action decoder sees no empty decision fields.
+		body["kind"], body["ask"] = kind, json.RawMessage(askText)
+		if expiresIn != "" {
+			body["expires_in"] = expiresIn
+		}
+	}
 	var result map[string]any
 	if err := client.PostJSON(ctx, "/api/decisions", body, &result); err != nil {
 		return fmt.Errorf("request decision: %w", err)
 	}
 	printAskHints(command, decisiontx.LintAsk(ask), result)
 	return printDecisions(command, []map[string]any{result}, false)
+}
+
+// checkRequestKind refuses what the server would refuse, before any call. The
+// server stays the authority on the expiry bounds.
+func checkRequestKind(kind, expiresIn string, hasActionFile bool) error {
+	switch kind {
+	case decisiontx.KindDecision:
+		if expiresIn != "" {
+			return fmt.Errorf("--expires-in applies to --kind action only")
+		}
+		return nil
+	case decisiontx.KindAction:
+	default:
+		return fmt.Errorf("--kind must be decision or action")
+	}
+	if hasActionFile {
+		return fmt.Errorf("--action-file cannot be used with --kind action")
+	}
+	if expiresIn != "" {
+		if expiry, err := time.ParseDuration(expiresIn); err != nil || expiry <= 0 || expiry > 168*time.Hour {
+			return fmt.Errorf("--expires-in must be a duration above 0 and at most 168h, for example 72h")
+		}
+	}
+	return nil
 }
 
 // printAskHints writes each distinct advisory hint once on stderr and drops the
@@ -215,6 +260,12 @@ func runDecisionGet(command *cobra.Command, args []string) error {
 
 func runDecisionList(command *cobra.Command, _ []string) error {
 	issueRef, _ := command.Flags().GetString("issue")
+	if memberID, _ := command.Flags().GetString("for"); memberID != "" {
+		if issueRef != "" {
+			return fmt.Errorf("use --issue or --for, not both")
+		}
+		return runDecisionListOpenAsks(command, memberID)
+	}
 	if issueRef == "" {
 		return fmt.Errorf("--issue is required")
 	}

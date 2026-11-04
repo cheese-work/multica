@@ -108,6 +108,10 @@ type WorkspaceResponse struct {
 	AvatarURL   *string `json:"avatar_url"`
 	CreatedAt   string  `json:"created_at"`
 	UpdatedAt   string  `json:"updated_at"`
+	// SchedulingPausedAt / SchedulingPausedBy are set while an owner or admin
+	// holds claims for every agent in the workspace. Both null when scheduling runs.
+	SchedulingPausedAt *string `json:"scheduling_paused_at"`
+	SchedulingPausedBy *string `json:"scheduling_paused_by"`
 }
 
 func (h *Handler) workspaceToResponse(w db.Workspace) WorkspaceResponse {
@@ -137,6 +141,9 @@ func (h *Handler) workspaceToResponse(w db.Workspace) WorkspaceResponse {
 		AvatarURL:   h.resolveAvatarURLPtr(textToPtr(w.AvatarUrl)),
 		CreatedAt:   timestampToString(w.CreatedAt),
 		UpdatedAt:   timestampToString(w.UpdatedAt),
+
+		SchedulingPausedAt: timestampToPtr(w.SchedulingPausedAt),
+		SchedulingPausedBy: uuidToPtr(w.SchedulingPausedBy),
 	}
 }
 
@@ -297,6 +304,13 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Orders this membership against the passkey gate checks, as the joins do.
+	if err := qtx.LockUserForMembershipChange(r.Context(), parseUUID(userID)); err != nil {
+		slog.Warn("lock owner failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to add owner")
+		return
+	}
+
 	_, err = qtx.CreateMember(r.Context(), db.CreateMemberParams{
 		WorkspaceID: ws.ID,
 		UserID:      parseUUID(userID),
@@ -363,6 +377,9 @@ type UpdateWorkspaceRequest struct {
 	// overwrite, absent fields keep their saved value, null resets to the
 	// defaults. Raw for the same reason as CompactPrompt.
 	AutoCompact json.RawMessage `json:"auto_compact"`
+	// IdleStartedGuard patches settings.idle_started_guard alone (CHE-3296):
+	// named fields overwrite, absent fields keep their saved value. Owner only.
+	IdleStartedGuard json.RawMessage `json:"idle_started_guard"`
 	// GitHubReviewMembers and GitHubReviewAuthors each replace one settings
 	// map alone (CHE-2269); validateGitHubReviewMapping checks the entries.
 	GitHubReviewMembers json.RawMessage `json:"github_review_members"`
@@ -529,7 +546,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	if req.Settings != nil {
 		// What depends on the stored settings (the pause guard, the PR merge
 		// switch) is decided under the workspace row lock in saveWorkspace.
-		if err := validateCompactConfig(req.Settings); err != nil {
+		if err := errors.Join(validateCompactConfig(req.Settings), validateAskGuardSetting(req.Settings)); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -569,6 +586,17 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		} else {
 			params.AutoCompact = req.AutoCompact
 		}
+	}
+	if req.IdleStartedGuard != nil {
+		// The route admits admins; this switch is the owner's.
+		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {
+			return
+		}
+		if err := validateIdleGuardPatch(req.IdleStartedGuard); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		params.IdleStartedGuard = req.IdleStartedGuard
 	}
 	for _, mapping := range []struct {
 		field string
@@ -1341,6 +1369,16 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The sweep below removes the runtimes and the pauses this workspace set, which
+	// can lift a machine pause for the owner's other workspaces. Pause does not take
+	// the delete lock, so one can land after this read: note the machines, not the
+	// pauses, and refresh their other workspaces after commit regardless.
+	machines, err := qtx.ListMachinesOfWorkspace(r.Context(), requester.WorkspaceID)
+	if err != nil {
+		failWorkspaceDelete(w, r, workspaceID, "list workspace machines", err)
+		return
+	}
+
 	if _, err := qtx.LockChatSessionsByWorkspace(r.Context(), requester.WorkspaceID); err != nil {
 		failWorkspaceDelete(w, r, workspaceID, "lock chat sessions", err)
 		return
@@ -1559,6 +1597,9 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, runtimeID := range runtimeIDs {
 		h.NotifyRuntimeGone(uuidToString(runtimeID))
+	}
+	for _, machine := range machines {
+		PublishMachineRefresh(r.Context(), h.Queries, h.Bus, machine.MachineOwnerID, machine.DaemonID, pgtype.UUID{}, "", "member", requestUserID(r), "resume")
 	}
 	h.deleteS3Objects(r.Context(), append(sourceContextAttachmentURLs, sourceContextIntentURLs...))
 

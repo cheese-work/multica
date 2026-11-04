@@ -29,6 +29,8 @@ export type InboxItemType =
   // same Inbox model so read/archive/realtime behavior remains consistent.
   | "autopilot_paused"
   | "autopilot_quota_exceeded"
+  // A paused machine's last task finished; the daemon owner may shut it down.
+  | "machine_drained"
   // Sub-issues of an issue assigned to the recipient closed (the child_done
   // system rule notifies a member assignee instead of waking an agent).
   | "children_done";

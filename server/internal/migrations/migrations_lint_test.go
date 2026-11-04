@@ -2,6 +2,7 @@ package migrations
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -85,6 +86,60 @@ func TestMigrationNumericPrefixesAreUnique(t *testing.T) {
 			continue
 		}
 		stemByNumber[number] = stem
+	}
+}
+
+func TestProviderFailureRecoveryMigrationPrefixIsUnique(t *testing.T) {
+	files := migrationFilesForLint(t, "*.up.sql")
+	targetPrefix := ""
+
+	for _, file := range files {
+		stem, _, ok := splitMigrationFilename(filepath.Base(file))
+		if !ok || !strings.HasSuffix(stem, "_provider_failure_recovery_effects") {
+			continue
+		}
+		targetPrefix, _, _ = strings.Cut(stem, "_")
+		break
+	}
+	if targetPrefix == "" {
+		t.Fatal("provider failure recovery migration is missing")
+	}
+
+	for _, file := range files {
+		stem, _, ok := splitMigrationFilename(filepath.Base(file))
+		if !ok || strings.HasSuffix(stem, "_provider_failure_recovery_effects") {
+			continue
+		}
+		prefix, _, ok := strings.Cut(stem, "_")
+		if ok && prefix == targetPrefix {
+			t.Errorf("migration %s shares numeric prefix %s with provider_failure_recovery_effects", stem, targetPrefix)
+		}
+	}
+}
+
+func TestProviderFailureRecoveryWakeupIndexIsConcurrentSingleStatement(t *testing.T) {
+	const indexName = "provider_failure_recovery_wakeup_idx"
+	var indexFiles []string
+
+	for _, file := range migrationFilesForLint(t, "*.up.sql") {
+		body, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sql := strings.ToUpper(string(body))
+		if !strings.Contains(sql, "INDEX") || !strings.Contains(strings.ToLower(string(body)), indexName) {
+			continue
+		}
+		indexFiles = append(indexFiles, file)
+		if !strings.Contains(sql, "CREATE UNIQUE INDEX CONCURRENTLY") {
+			t.Errorf("%s must build %s with CREATE UNIQUE INDEX CONCURRENTLY", filepath.Base(file), indexName)
+		}
+		if n := strings.Count(sql, ";"); n != 1 {
+			t.Errorf("%s holds %d statements; a concurrent index build needs its own single-statement file", filepath.Base(file), n)
+		}
+	}
+	if len(indexFiles) != 1 {
+		t.Fatalf("want exactly one up migration creating %s, got %v", indexName, indexFiles)
 	}
 }
 

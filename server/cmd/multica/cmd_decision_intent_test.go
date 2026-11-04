@@ -4,12 +4,17 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
 func TestIssueCommentDecisionIntentFlag(test *testing.T) {
-	if issueCommentAddCmd.Flags().Lookup("decision-intent") == nil {
+	flag := issueCommentAddCmd.Flags().Lookup("decision-intent")
+	if flag == nil {
 		test.Fatal("comment add lacks --decision-intent")
+	}
+	if !strings.Contains(flag.Usage, "running non-chat issue tasks only") {
+		test.Fatalf("decision-intent help = %q, want running non-chat issue tasks only", flag.Usage)
 	}
 }
 

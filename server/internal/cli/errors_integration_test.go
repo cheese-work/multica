@@ -174,7 +174,7 @@ func TestHelperStatusErrorsAreClassified(t *testing.T) {
 		wantCopy string
 	}{
 		{http.StatusUnauthorized, ExitAuth, "multica login"},
-		{http.StatusForbidden, ExitAuth, "permission"},
+		{http.StatusForbidden, ExitAuth, "Access denied: title is required"},
 		{http.StatusNotFound, ExitNotFound, "not found"},
 		{http.StatusUnprocessableEntity, ExitValidation, "title is required"},
 		{http.StatusInternalServerError, ExitGeneric, "temporarily unavailable"},
@@ -183,8 +183,8 @@ func TestHelperStatusErrorsAreClassified(t *testing.T) {
 	for _, sc := range statusCases {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(sc.status)
-			// Validation responses carry a server message that FormatError
-			// should surface verbatim; other statuses ignore the body.
+			// Validation and forbidden responses carry a server message that
+			// FormatError should surface verbatim; other statuses here ignore it.
 			io.WriteString(w, `{"error":"title is required"}`)
 		}))
 

@@ -12,6 +12,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/auth"
+	"github.com/multica-ai/multica/server/internal/dispatch"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -28,11 +29,7 @@ func rejectTemporarilyDisabledUser(w http.ResponseWriter, r *http.Request, userI
 		"user_id", userID,
 		"auth_path", authPath,
 	)
-	if isGovernanceProposalRoute(r) {
-		writeGovernanceProposalProblem(w, r, http.StatusForbidden, "proposal_access_denied")
-	} else {
-		writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
-	}
+	writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
 	return true
 }
 
@@ -72,6 +69,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			// to convince a downstream handler that its request came
 			// from a non-task-token path.
 			r.Header.Del("X-Actor-Source")
+			r.Header.Del(auth.SessionGenerationHeader)
 			r.Header.Del("X-Task-Token-Purpose")
 			r.Header.Del("X-Governance-Case-ID")
 			r.Header.Del("X-Governance-Attempt-ID")
@@ -103,11 +101,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			// Cookie-based auth requires CSRF validation for state-changing methods.
 			if fromCookie && !auth.ValidateCSRF(r) {
 				slog.Debug("auth: CSRF validation failed", "path", r.URL.Path)
-				if isGovernanceProposalRoute(r) {
-					writeGovernanceProposalProblem(w, r, http.StatusForbidden, "csrf_validation_failed")
-				} else {
-					http.Error(w, `{"error":"CSRF validation failed"}`, http.StatusForbidden)
-				}
+				http.Error(w, `{"error":"CSRF validation failed"}`, http.StatusForbidden)
 				return
 			}
 
@@ -139,20 +133,6 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 						writeInvalidTaskToken(w, r)
 						return
 					}
-				case GovernanceProposalTaskPurpose:
-					if !tt.GovernanceCaseID.Valid || !tt.GovernanceAttemptID.Valid ||
-						!tt.GovernanceAttemptFence.Valid || !tt.GovernanceEvidenceEpoch.Valid ||
-						tt.GovernanceEvidenceEpoch.Int32 < 0 {
-						writeInvalidTaskToken(w, r)
-						return
-					}
-					if governanceProposalCapability(
-						r.Method, r.URL.Path, r.URL.RawPath, r.URL.RawQuery,
-						uuidToString(tt.GovernanceCaseID), uuidToString(tt.GovernanceAttemptID),
-					) == "" {
-						writeGovernanceProposalProblem(w, r, http.StatusForbidden, "proposal_token_scope_denied")
-						return
-					}
 				default:
 					writeInvalidTaskToken(w, r)
 					return
@@ -175,16 +155,22 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				r.Header.Set("X-Task-ID", uuidToString(tt.TaskID))
 				r.Header.Set("X-Workspace-ID", uuidToString(tt.WorkspaceID))
 				r.Header.Set("X-Task-Token-Purpose", tt.Purpose)
-				if tt.Purpose == GovernanceProposalTaskPurpose {
-					r.Header.Set("X-Governance-Case-ID", uuidToString(tt.GovernanceCaseID))
-					r.Header.Set("X-Governance-Attempt-ID", uuidToString(tt.GovernanceAttemptID))
-					r.Header.Set("X-Governance-Attempt-Fence", uuidToString(tt.GovernanceAttemptFence))
-					r.Header.Set("X-Governance-Evidence-Epoch", strconv.FormatInt(int64(tt.GovernanceEvidenceEpoch.Int32), 10))
-				}
 				// X-Actor-Source flags the auth path so resolveActor and
 				// any owner-only handler can deny without re-querying the
 				// token table.
 				r.Header.Set("X-Actor-Source", "task_token")
+				// The mark comes from the stored task, never a header. If it
+				// cannot be read the request is refused: a recovery run must
+				// not pass as an ordinary one.
+				recovery, err := queries.IsBudgetRecoveryTask(r.Context(), tt.TaskID)
+				if err != nil {
+					slog.Warn("auth: read task kind", "path", r.URL.Path, "error", err)
+					writeError(w, http.StatusInternalServerError, "failed to authenticate")
+					return
+				}
+				if recovery {
+					r = r.WithContext(dispatch.WithBudgetRecoveryCaller(r.Context()))
+				}
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -226,11 +212,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 					// 503 so callers (CLI / daemon) can retry — a 401
 					// here would tell them to throw out a valid token.
 					slog.Warn("auth: cloud pat verify unavailable", "path", r.URL.Path, "error", err)
-					if isGovernanceProposalRoute(r) {
-						writeGovernanceProposalProblem(w, r, http.StatusServiceUnavailable, "authentication_unavailable")
-					} else {
-						http.Error(w, `{"error":"cloud pat verifier unavailable"}`, http.StatusServiceUnavailable)
-					}
+					http.Error(w, `{"error":"cloud pat verifier unavailable"}`, http.StatusServiceUnavailable)
 					return
 				}
 				if rejectTemporarilyDisabledUser(w, r, identity.OwnerID, "", "cloud_pat") {
@@ -282,6 +264,14 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 					return
 				}
 
+				// A scoped PAT is a restricted credential: it reaches only the
+				// routes its scope names and is never cached, so a cache hit
+				// can never widen it to the owner's full access.
+				if len(pat.Scopes) > 0 && !scopedPATMayCall(r) {
+					writeError(w, http.StatusForbidden, "this token is restricted to its scope")
+					return
+				}
+
 				userID := uuidToString(pat.UserID)
 				if rejectTemporarilyDisabledUser(w, r, userID, "", "pat") {
 					return
@@ -296,7 +286,9 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				if pat.ExpiresAt.Valid {
 					expiresAt = pat.ExpiresAt.Time
 				}
-				patCache.Set(r.Context(), hash, userID, auth.TTLForExpiry(time.Now(), expiresAt))
+				if len(pat.Scopes) == 0 {
+					patCache.Set(r.Context(), hash, userID, auth.TTLForExpiry(time.Now(), expiresAt))
+				}
 
 				// Cache miss = TTL expired (or first use after revoke /
 				// process restart). Refresh last_used_at; subsequent hits
@@ -338,6 +330,9 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				return
 			}
 			r.Header.Set("X-User-ID", sub)
+			// The generation this JWT was signed with, for handlers that
+			// must recheck it inside their own transaction.
+			r.Header.Set(auth.SessionGenerationHeader, strconv.Itoa(int(auth.SessionGeneration(claims))))
 			r.Header.Set("X-Actor-Source", "cli_jwt")
 			if method, ok := claims["amr"].(string); ok && method == "interactive" {
 				r.Header.Set("X-Actor-Source", "interactive_jwt")
@@ -346,11 +341,21 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				r.Header.Set("X-User-Email", email)
 			}
 
+			// Revocation: a bumped user.session_generation kills every JWT
+			// minted before it. Nil queries exists only in JWT-only unit tests;
+			// production always wires a database.
+			if queries != nil && !checkSessionGeneration(w, r, claims, queries, !requiresFreshGeneration(r.URL.Path)) {
+				return
+			}
+
 			// Sliding session: a browser that keeps using the app keeps its
 			// cookie, instead of being logged out on the anniversary of its
 			// login. No-op until the session drops below half its TTL
 			// (MUL-7436).
-			r = renewCookieSession(w, r, claims, fromCookie, cfSigner)
+			r, ok = renewCookieSession(w, r, claims, fromCookie, cfSigner, queries)
+			if !ok {
+				return
+			}
 
 			next.ServeHTTP(w, r)
 		})
@@ -372,4 +377,19 @@ func extractToken(r *http.Request) (token string, fromCookie bool) {
 	}
 
 	return "", false
+}
+
+// scopedPATMayCall reports whether a scoped PAT may call this route. The only
+// scope today, decisions:feed, opens the answer feed and its ack and nothing else.
+func scopedPATMayCall(r *http.Request) bool {
+	path := r.URL.Path
+	switch r.Method {
+	case http.MethodGet:
+		return path == "/api/decisions/feed"
+	case http.MethodPost:
+		rest, found := strings.CutPrefix(path, "/api/decisions/feed/")
+		id, ack := strings.CutSuffix(rest, "/ack")
+		return found && ack && id != "" && !strings.Contains(id, "/")
+	}
+	return false
 }

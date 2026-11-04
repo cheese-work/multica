@@ -40,4 +40,7 @@ export const issueKeys = {
   // markdown renderer to resolve `mc://file/<id>` URIs to download_url.
   attachments: (wsId: string | null, id: string) =>
     [...issueKeys.all(wsId), "attachments", id] as const,
+  // Comment-ID chip preview (issue identifier, author, first line).
+  commentPreview: (wsId: string | null, commentId: string) =>
+    [...issueKeys.all(wsId), "comment-preview", commentId] as const,
 };

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { IssueRelations } from "../types";
-import { filterRelations } from "./relations";
+import { filterRelations, issueRelationsOptions } from "./relations";
 
 const node = (id: string) => ({ id, identifier: id.toUpperCase(), title: id, status: "todo" });
 const graph: IssueRelations = {
@@ -14,6 +14,13 @@ const graph: IssueRelations = {
 };
 
 describe("filterRelations", () => {
+  it("caches structural relations and isolates the opt-in mentions cache", () => {
+    const structural = issueRelationsOptions("workspace", "root", 1);
+    const mentions = issueRelationsOptions("workspace", "root", 1, true);
+    expect(structural.staleTime).toBeGreaterThan(0);
+    expect(mentions.queryKey).not.toEqual(structural.queryKey);
+    expect(issueRelationsOptions("other", "root", 1).queryKey).not.toEqual(structural.queryKey);
+  });
   it("keeps everything when nothing is hidden", () => {
     expect(filterRelations(graph, "root", [])).toEqual(graph);
   });

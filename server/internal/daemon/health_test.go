@@ -818,6 +818,15 @@ func TestRepoCheckoutReturnsRetryableBusyToCapableClient(t *testing.T) {
 
 func newRepoCheckoutTestDaemon(t *testing.T, workspaceID, repoURL, workDir string, cache repoCacheBackend) *Daemon {
 	t.Helper()
+	return newRepoCheckoutTestDaemonWithRepos(t, workspaceID, []string{repoURL}, workDir, cache)
+}
+
+func newRepoCheckoutTestDaemonWithRepos(t *testing.T, workspaceID string, repoURLs []string, workDir string, cache repoCacheBackend) *Daemon {
+	t.Helper()
+	repos := make([]RepoData, 0, len(repoURLs))
+	for _, u := range repoURLs {
+		repos = append(repos, RepoData{URL: u})
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/daemon/workspaces/"+workspaceID+"/repos" {
 			http.NotFound(w, r)
@@ -825,7 +834,7 @@ func newRepoCheckoutTestDaemon(t *testing.T, workspaceID, repoURL, workDir strin
 		}
 		json.NewEncoder(w).Encode(WorkspaceReposResponse{
 			WorkspaceID:  workspaceID,
-			Repos:        []RepoData{{URL: repoURL}},
+			Repos:        repos,
 			ReposVersion: "v1",
 		})
 	}))
@@ -835,7 +844,7 @@ func newRepoCheckoutTestDaemon(t *testing.T, workspaceID, repoURL, workDir strin
 		client:    NewClient(srv.URL),
 		repoCache: cache,
 		workspaces: map[string]*workspaceState{
-			workspaceID: newWorkspaceState(workspaceID, nil, "", []RepoData{{URL: repoURL}}, nil),
+			workspaceID: newWorkspaceState(workspaceID, nil, "", repos, nil),
 		},
 		logger: slog.Default(),
 	}

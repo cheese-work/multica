@@ -85,11 +85,14 @@ LIMIT 1;
 -- name: RecordProviderFailureRecovery :execrows
 INSERT INTO provider_failure_recovery (
     failed_task_id, trigger_kind, trigger_id, condition_key, failed_at,
-    probe_at, probe_status, changed_condition, recovery_run_id, recovery_task_id
+    probe_at, probe_status, changed_condition, recovery_run_id, recovery_task_id,
+    recovery_wakeup_id, recovery_wakeup_revision
 )
 VALUES (
     @failed_task_id, @trigger_kind, @trigger_id, @condition_key, @failed_at,
-    @probe_at, @probe_status, @changed_condition, sqlc.narg(recovery_run_id), sqlc.narg(recovery_task_id)
+    sqlc.narg('probe_at')::timestamptz, sqlc.narg('probe_status')::integer,
+    @changed_condition, sqlc.narg(recovery_run_id), sqlc.narg(recovery_task_id),
+    sqlc.narg('recovery_wakeup_id')::uuid, sqlc.narg('recovery_wakeup_revision')::bigint
 )
 ON CONFLICT (failed_task_id) DO NOTHING;
 

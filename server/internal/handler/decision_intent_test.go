@@ -20,23 +20,24 @@ import (
 )
 
 type intentFixture struct {
-	agentID, issueID, taskID, humanID string
+	agentID, issueID, taskID, humanID, agentName string
 }
 
 func newIntentFixture(test *testing.T) intentFixture {
 	test.Helper()
-	agentID := createHandlerTestAgent(test, "decision-intent-"+uuid.NewString()[:8], []byte("[]"))
+	agentName := "decision-intent-" + uuid.NewString()[:8]
+	agentID := createHandlerTestAgent(test, agentName, []byte("[]"))
 	issueID := dbfx.Issue(test, "intent issue", testutil.Cols{"assignee_type": "agent", "assignee_id": agentID})
 	taskID := dbfx.Task(test, agentID, testutil.Cols{"issue_id": issueID, "status": "running", "runtime_id": handlerTestRuntimeID(test)})
 	humanID := dbfx.User(test, "Asked human", "intent-"+uuid.NewString()+"@test.invalid")
-	dbfx.Insert(test, "member", testutil.Cols{"workspace_id": testWorkspaceID, "user_id": humanID, "role": "member"})
+	dbfx.Insert(test, "member", testutil.Cols{"workspace_id": testWorkspaceID, "user_id": humanID, "role": "owner"})
 	test.Cleanup(func() {
 		_, err := testPool.Exec(context.Background(), `DELETE FROM decision_intent WHERE issue_id = $1`, issueID)
 		if err != nil {
 			test.Error(err)
 		}
 	})
-	return intentFixture{agentID, issueID, taskID, humanID}
+	return intentFixture{agentID, issueID, taskID, humanID, agentName}
 }
 
 func (fixture intentFixture) mention() string {
@@ -108,7 +109,7 @@ func TestDecisionIntentAllowAndStamp(test *testing.T) {
 }
 
 func TestDecisionIntentRefusalsCreateNothing(test *testing.T) {
-	for _, refusal := range []string{"chat", "other_issue", "other_agent", "non_assignee", "stopped", "terminal", "pat", "cloud_pat", "interactive_jwt", "cli_jwt", "unstamped", "no_target", "unknown_member", "private_agent"} {
+	for _, refusal := range []string{"chat", "other_issue", "other_agent", "stopped", "terminal", "pat", "cloud_pat", "interactive_jwt", "cli_jwt", "unstamped", "no_target", "unknown_member", "private_agent"} {
 		test.Run(refusal, func(test *testing.T) {
 			fixture := newIntentFixture(test)
 			source, taskID, content, want := "task_token", fixture.taskID, fixture.mention(), http.StatusForbidden
@@ -120,8 +121,6 @@ func TestDecisionIntentRefusalsCreateNothing(test *testing.T) {
 				dbfx.Exec(test, `UPDATE agent_task_queue SET issue_id = $1 WHERE id = $2`, dbfx.Issue(test, "other issue"), taskID)
 			case "other_agent":
 				taskID = dbfx.Task(test, createHandlerTestAgent(test, "other agent", []byte("[]")), testutil.Cols{"issue_id": fixture.issueID, "status": "running", "runtime_id": handlerTestRuntimeID(test)})
-			case "non_assignee":
-				dbfx.Exec(test, `UPDATE issue SET assignee_id = $1 WHERE id = $2`, uuid.NewString(), fixture.issueID)
 			case "stopped":
 				dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, taskID)
 			case "terminal":
@@ -151,7 +150,7 @@ func TestDecisionIntentRefusalsCreateNothing(test *testing.T) {
 func TestDecisionIntentSupersedesAndKeepsTargets(test *testing.T) {
 	fixture := newIntentFixture(test)
 	secondHuman := dbfx.User(test, "Second human", "intent-"+uuid.NewString()+"@test.invalid")
-	dbfx.Insert(test, "member", testutil.Cols{"workspace_id": testWorkspaceID, "user_id": secondHuman, "role": "member"})
+	dbfx.Insert(test, "member", testutil.Cols{"workspace_id": testWorkspaceID, "user_id": secondHuman, "role": "owner"})
 	content := fixture.mention() + " " + fixture.mention() + " [@Second](mention://member/" + secondHuman + ")"
 	var first CommentResponse
 	fixture.post(test, "task_token", fixture.taskID, content, nil).Want(http.StatusCreated).JSON(&first)

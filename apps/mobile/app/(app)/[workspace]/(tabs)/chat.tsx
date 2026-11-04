@@ -100,6 +100,7 @@ import { ChatTitleButton } from "@/components/chat/chat-title-button";
 import { ChatSessionActions } from "@/components/chat/chat-session-actions";
 import { ChatMessageList } from "@/components/chat/chat-message-list";
 import { ChatComposer } from "@/components/chat/chat-composer";
+import { QueuedFollowUps } from "@/components/chat/queued-follow-ups";
 import { AgentPickerSheet } from "@/components/chat/agent-picker-sheet";
 import { NoAgentBanner } from "@/components/chat/no-agent-banner";
 import { OfflineBanner } from "@/components/chat/offline-banner";
@@ -724,6 +725,7 @@ export default function ChatTab() {
       >
         <ChatMessageList
           messages={visibleMessages}
+          sessionId={activeSessionId}
           loading={messagesLoading}
           hasSessions={sessions.length > 0}
           agent={currentAgent}
@@ -784,6 +786,15 @@ export default function ChatTab() {
           />
         ) : currentAgent ? (
           <RuntimeRequiredBanner agentName={currentAgent.name} />
+        ) : null}
+        {activeSessionId ? (
+          <QueuedFollowUps
+            sessionId={activeSessionId}
+            tasks={pendingTask?.queued_tasks ?? []}
+            headStatus={pendingTask?.status}
+            headSupplement={pendingTask?.head_supplement}
+            noPermission={accessRevoked}
+          />
         ) : null}
         <ChatComposer
           value={draft}

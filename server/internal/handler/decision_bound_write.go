@@ -45,10 +45,13 @@ func verifyDecisionBinding(ctx context.Context, qtx *db.Queries, allowed delegat
 	}
 	request, err := qtx.LockDecisionRequest(ctx, db.LockDecisionRequestParams{WorkspaceID: workspaceID, ID: decisionID})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return refuse(http.StatusNotFound, "decision request not found")
+		return refuse(http.StatusNotFound, "human decision request not found")
 	}
 	if err != nil {
 		return err
+	}
+	if request.Authority != "human" {
+		return refuse(http.StatusForbidden, "decision requires human authority")
 	}
 	answer, err := qtx.GetDecisionBindingAnswer(ctx, db.GetDecisionBindingAnswerParams{WorkspaceID: workspaceID, ID: decisionID})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -60,7 +63,7 @@ func verifyDecisionBinding(ctx context.Context, qtx *db.Queries, allowed delegat
 	switch {
 	case answer.HumanRole != "owner":
 		return refuse(http.StatusForbidden, "the decision's human is not a workspace owner")
-	case !askDeclaresChange(request.Ask, field, beforeSHA, afterSHA):
+	case !askDeclaresChange(request.AskJson, field, beforeSHA, afterSHA):
 		return refuse(http.StatusForbidden, "the ask does not name this field, before_sha256 and after_sha256")
 	case !answerIsApproval(request.Options, answer.ContentSnapshot):
 		return refuse(http.StatusForbidden, "the answer is not the approve option")
@@ -83,16 +86,21 @@ func verifyDecisionBinding(ctx context.Context, qtx *db.Queries, allowed delegat
 	return nil
 }
 
-// askDeclaresChange is true when the ask is exactly the decisiontx.BoundWriteDecision
-// text for this field and these hashes. The field line binds the approval to
-// one field: another field holding the same bytes is not approved. A hash that
-// appears elsewhere in the ask does not count.
-func askDeclaresChange(ask, field, beforeSHA, afterSHA string) bool {
-	if !strings.HasPrefix(ask, decisiontx.BoundWriteHeading(field)) {
+// askDeclaresChange is true when the decision text of the structured ask
+// (ask_json) is exactly the decisiontx.BoundWriteDecision text for this field
+// and these hashes. The stored ask is the rendered card, which starts with the
+// "Agent did" section, so it cannot carry the check. The field line binds the
+// approval to one field: another field holding the same bytes is not approved.
+// A hash that appears in any other section of the card does not count.
+func askDeclaresChange(askJSON []byte, field, beforeSHA, afterSHA string) bool {
+	var ask struct {
+		Decision string `json:"decision"`
+	}
+	if json.Unmarshal(askJSON, &ask) != nil || !strings.HasPrefix(ask.Decision, decisiontx.BoundWriteHeading(field)) {
 		return false
 	}
 	declared := map[string]string{}
-	for _, match := range declaredHashLine.FindAllStringSubmatch(ask, -1) {
+	for _, match := range declaredHashLine.FindAllStringSubmatch(ask.Decision, -1) {
 		if _, repeated := declared[match[1]]; repeated {
 			return false
 		}

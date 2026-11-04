@@ -72,6 +72,9 @@ func (reconciler githubReconciler) runOnce(ctx context.Context) {
 	if _, err := reconciler.alertStale(ctx); err != nil {
 		slog.Warn("github: stale intake scan failed", "reason", "database_error")
 	}
+	if _, err := reconciler.settleApproved(ctx); err != nil {
+		slog.Warn("github: approved revision scan failed", "reason", "database_error")
+	}
 	if reconciler.redeliverEnabled {
 		if _, err := reconciler.redeliver(ctx); err != nil {
 			slog.Warn("github: delivery redelivery pass failed", "reason", "github_api_error")
@@ -156,8 +159,8 @@ func redeliverableAttempt(attempts []ghsnapshot.DeliveryAttempt, now time.Time) 
 
 // recordUnsigned is R3: a review or comment on an open, same-repository linked
 // PR whose newest stored revision has a different body is recorded as
-// `unsigned`. The worker never dispatches it; exact-snapshot approval is a
-// separate slice.
+// `unsigned`. The worker never dispatches it; only exact-snapshot approval
+// (github_approval.go) can admit it.
 func (reconciler githubReconciler) recordUnsigned(ctx context.Context) (int, error) {
 	queries := reconciler.handler.Queries
 	pulls, err := queries.ListGitHubReconcilePullRequests(ctx)

@@ -66,7 +66,7 @@ func (handler *Handler) WithdrawDecision(writer http.ResponseWriter, request *ht
 		handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, actorType, actorID)
 		if result.Message.ID.Valid {
 			message := result.Message
-			handler.publishChat(protocol.EventChatMessage, workspaceID, actorType, actorID, uuidToString(message.ChatSessionID), protocol.ChatMessagePayload{ChatSessionID: uuidToString(message.ChatSessionID), MessageID: uuidToString(message.ID), Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt), MessageKind: message.MessageKind})
+			handler.publishChatFor(protocol.EventChatMessage, workspaceID, actorType, actorID, uuidToString(result.Request.HumanUserID), uuidToString(message.ChatSessionID), protocol.ChatMessagePayload{ChatSessionID: uuidToString(message.ChatSessionID), MessageID: uuidToString(message.ID), Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt), MessageKind: message.MessageKind})
 		}
 	}
 	writeJSON(writer, http.StatusOK, result.Request)
@@ -76,6 +76,9 @@ func (handler *Handler) withdrawDecisionRequestTx(request *http.Request, located
 	ctx := request.Context()
 	empty := decisionRequestResult{}
 	deny := decisionIntentRefusal{http.StatusForbidden, "only the asking agent's running task or the named human can withdraw this ask"}
+	if isServerDecision(located) {
+		return empty, decisionIntentRefusal{http.StatusForbidden, "the platform opened this request; it cannot be withdrawn"}
+	}
 	actorType := "member"
 	actorID, err := util.ParseUUID(request.Header.Get("X-User-ID"))
 	if err != nil {

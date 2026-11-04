@@ -46,17 +46,38 @@ type Normalized struct {
 	SecretSlots []SecretSlot
 }
 
+// Target is the kind of row an action reads or changes. The zero value is an
+// agent.
+type Target string
+
+const (
+	TargetAgent Target = ""
+	TargetIssue Target = "issue"
+	// TargetWorkflow is a workflow of the request's workspace, named by
+	// params.workflow_id.
+	TargetWorkflow Target = "workflow"
+)
+
 // Definition is one allowlisted action. Execution is added with the extracted
 // handler cores; this slice owns validation, lifetime and class.
 type Definition struct {
 	Type       string
 	Version    int
 	MinClass   string
+	Target     Target
 	DefaultTTL time.Duration
 	MaxTTL     time.Duration
 
-	normalize func(params json.RawMessage, slots []SecretSlot) (json.RawMessage, []SecretSlot, error)
+	// RequiresPreview stores a server-computed preview in the preconditions and
+	// makes approval present that preview's digest.
+	RequiresPreview bool
+
+	// Normalize is exported so a package that owns an executor can register
+	// its action type.
+	Normalize NormalizeFunc
 }
+
+type NormalizeFunc func(params json.RawMessage, slots []SecretSlot) (json.RawMessage, []SecretSlot, error)
 
 // TTL resolves a requested lifetime (0 = default) within the action's maximum.
 func (d *Definition) TTL(requested time.Duration) (time.Duration, error) {
@@ -71,14 +92,15 @@ func (d *Definition) TTL(requested time.Duration) (time.Duration, error) {
 
 var registry = map[string]*Definition{}
 
-func register(def *Definition) {
+// Register adds an allowlisted action type; a repeat replaces the earlier one.
+func Register(def *Definition) {
 	def.DefaultTTL, def.MaxTTL = 24*time.Hour, 72*time.Hour
 	registry[def.Type+"@"+strconv.Itoa(def.Version)] = def
 }
 
 func init() {
-	register(&Definition{Type: "agent.copy", Version: 1, MinClass: "reversible", normalize: normalizeAgentCopy})
-	register(&Definition{Type: "agent.env.patch", Version: 1, MinClass: "reversible", normalize: normalizeEnvPatch})
+	Register(&Definition{Type: "agent.copy", Version: 1, MinClass: "reversible", Normalize: normalizeAgentCopy})
+	Register(&Definition{Type: "agent.env.patch", Version: 1, MinClass: "reversible", Normalize: normalizeEnvPatch})
 }
 
 func Lookup(typ string, version int) (*Definition, bool) {
@@ -93,7 +115,7 @@ func Normalize(req Request) (Normalized, error) {
 	if !ok {
 		return Normalized{}, &Error{Code: CodeUnknownAction, Message: "unknown action type or version"}
 	}
-	params, slots, err := def.normalize(req.Params, req.SecretSlots)
+	params, slots, err := def.Normalize(req.Params, req.SecretSlots)
 	if err != nil {
 		return Normalized{}, err
 	}

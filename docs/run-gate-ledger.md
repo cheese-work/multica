@@ -21,7 +21,7 @@ Not captured: `child_done`, `pr_needs_attention`, assignment runs, failure callb
 - State pins: `issue_revision`, `issue_status`, `pr_head_sha` (comment: the issue's reviewed head; wakeup: the head on the PR event, NULL for a merge that carries none).
 - Time: `event_time` (comment: `comment.created_at`; wakeup: when the input was recorded).
 - Queue at capture: `queue_snapshot` (live tasks of `agent_id` on the issue, newest first, at most 20), `active_task_id` (the first dispatched, running or waiting one), `native_fold_eligible` and `native_fold_task_id`.
-- Producer disposition: `admission_status` and `admission_reason`, copied from what the comment enqueue path returned (`queued`, `coalesced`, `deferred`, `blocked`, `jev_routed` reason). NULL until it returned, NULL for a trigger with no result, always NULL for wakeups.
+- Producer disposition: `admission_status` and `admission_reason`, copied from what the comment enqueue path returned (`queued`, `coalesced`, `deferred`, `blocked` reason). NULL until it returned, NULL for a trigger with no result, always NULL for wakeups.
 
 ## What the columns do not say
 

@@ -78,6 +78,36 @@ func requireRequestRefusal(test *testing.T, err error) {
 	}
 }
 
+func TestDecisionNonAssigneeIssueTaskFlow(test *testing.T) {
+	for _, assignee := range []string{"member", "other_agent", "other_squad", "unassigned"} {
+		test.Run(assignee, func(test *testing.T) {
+			fixture := newRequestCoreFixture(test, false)
+			var kind, id any
+			switch assignee {
+			case "member":
+				kind, id = "member", fixture.humanID
+			case "other_agent":
+				kind, id = "agent", createHandlerTestAgent(test, "Assigned agent", []byte("[]"))
+			case "other_squad":
+				kind, id = "squad", dbfx.Insert(test, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": "Other squad", "creator_id": testUserID, "leader_id": createHandlerTestAgent(test, "Other leader", []byte("[]"))})
+			}
+			dbfx.Exec(test, `UPDATE issue SET assignee_type = $1, assignee_id = $2 WHERE id = $3`, kind, id, fixture.issueID)
+			// The mention-triggered task must open its own intent, discover its
+			// own lane and send, regardless of the current issue assignee.
+			fixture.intentID, fixture.tagID = openLaneIntent(test, fixture.intentFixture, fixture.mention())
+			testutil.Call(test, testHandler.ListChatSessions, laneRequest(fixture.intentFixture, "&for="+fixture.humanID)).Want(http.StatusOK)
+			result, err := testHandler.createDecisionRequest(fixture.request(), fixture.issue, fixture.input())
+			if err != nil {
+				test.Fatal(err)
+			}
+			if result.Request.AskingAgentID != parseUUID(fixture.agentID) || result.Comment.SourceTaskID != parseUUID(fixture.taskID) {
+				test.Fatalf("wrong request provenance: %+v", result.Request)
+			}
+			fixture.assertCounts(test, 1)
+		})
+	}
+}
+
 func TestDecisionRequestCoreRoundTrip(test *testing.T) {
 	for _, squad := range []bool{false, true} {
 		test.Run(map[bool]string{false: "agent", true: "squad"}[squad], func(test *testing.T) {
@@ -122,7 +152,7 @@ func TestDecisionRequestCoreRoundTrip(test *testing.T) {
 }
 
 func TestDecisionRequestCoreRefusals(test *testing.T) {
-	for _, reason := range []string{"pat", "cloud_pat", "cli_jwt", "interactive_jwt", "unstamped", "missing_task", "invalid_task", "missing_agent", "invalid_agent", "other_task", "other_agent", "chat_task", "other_issue", "non_assignee", "archived_agent", "private_agent", "missing_member", "untagged", "other_session_agent", "other_workspace", "archived_lane", "channel_origin", "channel_binding", "intro_lane", "missing_lane", "closed_intent", "sealed_intent", "missing_intent", "wrong_tag_author", "wrong_tag_task", "empty_ask", "invalid_class", "terminal"} {
+	for _, reason := range []string{"pat", "cloud_pat", "cli_jwt", "interactive_jwt", "unstamped", "missing_task", "invalid_task", "missing_agent", "invalid_agent", "other_task", "other_agent", "chat_task", "other_issue", "archived_agent", "private_agent", "missing_member", "untagged", "other_session_agent", "other_workspace", "archived_lane", "channel_origin", "channel_binding", "intro_lane", "missing_lane", "closed_intent", "sealed_intent", "missing_intent", "wrong_tag_author", "wrong_tag_task", "empty_ask", "invalid_class", "terminal"} {
 		test.Run(reason, func(test *testing.T) {
 			fixture := newRequestCoreFixture(test, false)
 			request, input := fixture.request(), fixture.input()
@@ -147,8 +177,6 @@ func TestDecisionRequestCoreRefusals(test *testing.T) {
 				dbfx.Exec(test, `UPDATE agent_task_queue SET chat_session_id = $1 WHERE id = $2`, fixture.sessionID, fixture.taskID)
 			case "other_issue":
 				dbfx.Exec(test, `UPDATE agent_task_queue SET issue_id = $1 WHERE id = $2`, dbfx.Issue(test, "wrong issue"), fixture.taskID)
-			case "non_assignee":
-				dbfx.Exec(test, `UPDATE issue SET assignee_type = NULL, assignee_id = NULL WHERE id = $1`, fixture.issueID)
 			case "archived_agent":
 				dbfx.Exec(test, `UPDATE agent SET archived_at = now() WHERE id = $1`, fixture.agentID)
 			case "private_agent":
@@ -611,4 +639,120 @@ func TestDecisionRequestMatchingAskKeepsEachTargetsAskComment(test *testing.T) {
 			test.Fatalf("request %s lost its ask comment link", uuidToString(stored.ID))
 		}
 	}
+}
+
+func enableActionRequests(test *testing.T, enabled bool) {
+	test.Helper()
+	previous := testHandler.ActionRequestsEnabled
+	testHandler.ActionRequestsEnabled = enabled
+	test.Cleanup(func() { testHandler.ActionRequestsEnabled = previous })
+}
+
+func (fixture requestCoreFixture) actionBody() map[string]any {
+	return map[string]any{
+		"issue_id": fixture.issueID, "session_id": fixture.sessionID, "escalation_class": "reversible", "kind": "action",
+		"ask": map[string]any{
+			"context_eli10": "A property is missing. Only the workspace owner can create it.", "agent_did": "Checked that the property is missing.",
+			"why_human": "Owner-only: property create needs the workspace owner.", "steps": []string{"Run `multica property create --name Readiness`."},
+			"done_when": "The Readiness property is listed.", "default_if_no_reply": "Continue without the property.",
+			"source_issue_id": fixture.issueID, "source_comment_id": fixture.tagID,
+		},
+	}
+}
+
+func (fixture requestCoreFixture) postAction(body map[string]any) *http.Request {
+	request := newRequest(http.MethodPost, "/api/decisions", body)
+	request.Header.Set("X-Actor-Source", "task_token")
+	request.Header.Set("X-Agent-ID", fixture.agentID)
+	request.Header.Set("X-Task-ID", fixture.taskID)
+	return request
+}
+
+func TestDecisionRequestActionKindIsStored(test *testing.T) {
+	enableActionRequests(test, true)
+	fixture := newRequestCoreFixture(test, false)
+	body := fixture.actionBody()
+	body["expires_in"] = "48h"
+	var created map[string]any
+	testutil.Call(test, testHandler.RequestDecision, fixture.postAction(body)).Want(http.StatusCreated).JSON(&created)
+	var kind string
+	var hours float64
+	var options string
+	dbfx.QueryRow(test, `SELECT kind, extract(epoch FROM expires_at - created_at) / 3600, options::text FROM decision_request WHERE id = $1`, created["id"]).Scan(&kind, &hours, &options)
+	if kind != "action" || hours < 47.99 || hours > 48.01 || options != "[]" {
+		test.Fatalf("stored kind=%q expiry=%.2fh options=%s", kind, hours, options)
+	}
+	if ask, _ := created["ask"].(string); !strings.Contains(ask, "Run `multica property create --name Readiness`.") {
+		test.Fatalf("action ask not rendered: %v", created["ask"])
+	}
+}
+
+func TestDecisionRequestActionDefaultExpiryIs72Hours(test *testing.T) {
+	enableActionRequests(test, true)
+	fixture := newRequestCoreFixture(test, false)
+	var created map[string]any
+	testutil.Call(test, testHandler.RequestDecision, fixture.postAction(fixture.actionBody())).Want(http.StatusCreated).JSON(&created)
+	var hours float64
+	dbfx.QueryRow(test, `SELECT extract(epoch FROM expires_at - created_at) / 3600 FROM decision_request WHERE id = $1`, created["id"]).Scan(&hours)
+	if hours < 71.99 || hours > 72.01 {
+		test.Fatalf("default expiry = %.2fh, want 72h", hours)
+	}
+}
+
+func TestDecisionRequestDecisionKindKeepsNoExpiry(test *testing.T) {
+	fixture := newRequestCoreFixture(test, false)
+	var created map[string]any
+	testutil.Call(test, testHandler.RequestDecision, fixture.apiRequest()).Want(http.StatusCreated).JSON(&created)
+	var kind string
+	var expires *time.Time
+	dbfx.QueryRow(test, `SELECT kind, expires_at FROM decision_request WHERE id = $1`, created["id"]).Scan(&kind, &expires)
+	if kind != "decision" || expires != nil {
+		test.Fatalf("decision request stored kind=%q expires_at=%v", kind, expires)
+	}
+}
+
+func TestDecisionRequestActionRefusals(test *testing.T) {
+	enableActionRequests(test, true)
+	cases := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{"action envelope", func(body map[string]any) { body["action"] = map[string]any{"type": "noop", "version": 1} }},
+		{"expires_in zero", func(body map[string]any) { body["expires_in"] = "0" }},
+		{"expires_in negative", func(body map[string]any) { body["expires_in"] = "-1h" }},
+		{"expires_in malformed", func(body map[string]any) { body["expires_in"] = "soon" }},
+		{"expires_in 169h", func(body map[string]any) { body["expires_in"] = "169h" }},
+		{"options in action ask", func(body map[string]any) { body["ask"].(map[string]any)["options"] = []any{} }},
+		{"no steps", func(body map[string]any) { delete(body["ask"].(map[string]any), "steps") }},
+		{"unknown kind", func(body map[string]any) { body["kind"] = "bogus" }},
+		{"expires_in on a decision", func(body map[string]any) { body["kind"] = "decision"; body["expires_in"] = "24h" }},
+	}
+	for _, tc := range cases {
+		test.Run(tc.name, func(test *testing.T) {
+			fixture := newRequestCoreFixture(test, false)
+			body := fixture.actionBody()
+			tc.mutate(body)
+			testutil.Call(test, testHandler.RequestDecision, fixture.postAction(body)).Want(http.StatusBadRequest)
+			fixture.assertCounts(test, 0)
+		})
+	}
+}
+
+func TestDecisionRequestExpires168HoursIsAccepted(test *testing.T) {
+	enableActionRequests(test, true)
+	fixture := newRequestCoreFixture(test, false)
+	body := fixture.actionBody()
+	body["expires_in"] = "168h"
+	testutil.Call(test, testHandler.RequestDecision, fixture.postAction(body)).Want(http.StatusCreated)
+}
+
+func TestDecisionRequestActionGate(test *testing.T) {
+	enableActionRequests(test, false)
+	fixture := newRequestCoreFixture(test, false)
+	var refused map[string]string
+	testutil.Call(test, testHandler.RequestDecision, fixture.postAction(fixture.actionBody())).Want(http.StatusBadRequest).JSON(&refused)
+	if refused["code"] != "action_requests_unavailable" {
+		test.Fatalf("gate response = %+v", refused)
+	}
+	fixture.assertCounts(test, 0)
 }

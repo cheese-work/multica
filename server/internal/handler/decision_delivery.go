@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"reflect"
 	"sort"
 	"strings"
@@ -277,6 +278,19 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 			return false, err
 		}
 	}
+	if snapshot.kind == "" && eligible {
+		for _, request := range snapshot.requests {
+			if request.Status == "cancelled" {
+				continue
+			}
+			var refusal decisionIntentRefusal
+			if err := requireRequestAuthority(ctx, queries, snapshot.issue, request, http.StatusConflict); errors.As(err, &refusal) {
+				eligible = false
+			} else if err != nil {
+				return false, err
+			}
+		}
+	}
 	if snapshot.kind == "" {
 		for _, answer := range snapshot.answers {
 			sources = append(sources, answer.ChatMessageIds...)
@@ -312,6 +326,11 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 	if !reflect.DeepEqual(current, snapshot) {
 		return true, nil
 	}
+	if snapshot.kind == "" {
+		if refused, err := handler.refuseGatedAgentRecords(ctx, transaction, queries, snapshot); err != nil || refused {
+			return false, err
+		}
+	}
 	if snapshot.group && !snapshot.intent.SealedAt.Valid {
 		if _, err := decisiontx.SealInvalidIntent(ctx, queries, snapshot.intent); err != nil {
 			return false, err
@@ -332,11 +351,31 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 	if err != nil {
 		return false, err
 	}
+	var unparked *db.Issue
+	if snapshot.kind == "" {
+		if _, err := queries.LockDecisionIssue(ctx, db.LockDecisionIssueParams{WorkspaceID: workspaceID, ID: snapshot.issue.ID}); err != nil {
+			return false, err
+		}
+		locked, err := queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{WorkspaceID: workspaceID, ID: snapshot.issue.ID})
+		if err != nil {
+			return false, err
+		}
+		if restored, ok, err := unparkIssueAfterDecision(ctx, queries, locked, snapshot.answers); err != nil {
+			return false, err
+		} else if ok {
+			unparked = &restored
+		}
+	}
 	switch snapshot.issue.Status {
 	case "done", "cancelled", "agent_accepted", "approved":
 		eligible = false
 	}
 	eligible = eligible && (!asking.ArchivedAt.Valid || (snapshot.kind == "" || snapshot.kind == "retraction") && snapshot.recipient.ID.Valid && !snapshot.recipient.ArchivedAt.Valid)
+	if eligible && snapshot.recipient.ID.Valid && isServerDecision(snapshot.request) {
+		// The platform picked this asker, not the person, so the answer runs the
+		// agent only when that person could have invoked it themselves.
+		eligible = handler.canInvokeAgent(ctx, snapshot.recipient, "member", uuidToString(snapshot.request.HumanUserID), "", uuidToString(workspaceID))
+	}
 	outcome := "skipped_ineligible"
 	var queued db.AgentTaskQueue
 	var comments, cleared []db.Comment
@@ -348,7 +387,7 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 					'actor_type', 'member', 'actor_id', r.human_user_id, 'decision_answer_id', a.id))
 					FROM decision_answer a JOIN decision_request r ON r.id = a.decision_request_id
 					JOIN comment c ON c.id = a.issue_comment_id
-					WHERE a.id = $2 AND r.workspace_id = $3 AND r.issue_id = $1 AND c.issue_id = $1
+					WHERE r.authority = 'human' AND a.id = $2 AND r.workspace_id = $3 AND r.issue_id = $1 AND c.issue_id = $1
 					AND a.disclaimed_at IS NULL AND c.deleted_at IS NULL`, snapshot.issue.ID, answer.ID, workspaceID); err != nil {
 					return false, err
 				}
@@ -419,6 +458,9 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 	}
 	if err := transaction.Commit(ctx); err != nil {
 		return false, err
+	}
+	if unparked != nil {
+		handler.publishDecisionStatusChange(ctx, snapshot.issue, *unparked, "decision_answer")
 	}
 	if queued.ID.Valid {
 		handler.TaskService.PublishTaskEnqueued(ctx, queued)

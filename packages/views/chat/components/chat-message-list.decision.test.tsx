@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
@@ -269,5 +269,32 @@ describe("ChatMessageList — jump to a message", () => {
   it("does nothing without a jump target", () => {
     renderList({ messages: [message("a")] });
     expect(scrollToIndex).not.toHaveBeenCalled();
+  });
+});
+
+describe("ChatMessageList — a card answer bubble", () => {
+  const chosen = card({ chosen_option_index: 0, option_label: "Enabled" });
+
+  it("option plus note: one chip and one note, no repeated option paragraph", () => {
+    renderList({ messages: [message("a", { content: "Enabled\n\nEnabled. 17:31 ICT", decision_quotes: [chosen] })] });
+    const bubble = screen.getByTestId("chat-user-message");
+    expect(within(bubble).getAllByTestId("decision-answer-chip")).toHaveLength(1);
+    expect(within(bubble).getByTestId("decision-answer-chip")).toHaveTextContent("Chose: Enabled");
+    expect(within(bubble).getByTestId("decision-answer-note")).toHaveTextContent("Enabled. 17:31 ICT");
+    expect(bubble.textContent).not.toMatch(/^Enabled\s*Enabled/);
+  });
+
+  it("option only: the chip and no note", () => {
+    renderList({ messages: [message("a", { content: "Enabled", decision_quotes: [chosen] })] });
+    const bubble = screen.getByTestId("chat-user-message");
+    expect(within(bubble).getByTestId("decision-answer-chip")).toHaveTextContent("Chose: Enabled");
+    expect(within(bubble).queryByTestId("decision-answer-note")).toBeNull();
+  });
+
+  it("text only: the text as today, no chip", () => {
+    renderList({ messages: [message("a", { content: "Ship C instead.", decision_quotes: [card()] })] });
+    const bubble = screen.getByTestId("chat-user-message");
+    expect(bubble).toHaveTextContent("Ship C instead.");
+    expect(within(bubble).queryByTestId("decision-answer-chip")).toBeNull();
   });
 });

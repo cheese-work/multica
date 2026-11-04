@@ -35,18 +35,18 @@ func TestCardOptionAnswerRecordsOnThatCardWithoutDMRun(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	if result.Request.Status != "answered" || result.Answer.AnsweredByTaskID.Valid || !result.Answer.WakeAt.Valid || result.Answer.ContentSnapshot != "Option B" {
+	if result.Request.Status != "answered" || result.Answer.AnswerSource != "card" || result.Answer.AnsweredByTaskID.Valid || result.Answer.AnsweredByUserID != parseUUID(fixture.humanID) || result.Answer.SourceChatSessionID != parseUUID(fixture.sessionID) || len(result.Answer.ChatMessageIds) != 1 || !result.Answer.WakeAt.Valid || result.Answer.ContentSnapshot != "Option B" || !result.Answer.ChosenOptionIndex.Valid || result.Answer.ChosenOptionIndex.Int32 != 1 {
 		test.Fatalf("wrong answered state: %+v %+v", result.Request, result.Answer)
 	}
 	if count := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id IN (SELECT id FROM decision_request WHERE issue_id = $1)`, fixture.issueID); count != 1 {
 		test.Fatalf("answers on the issue = %d, want 1", count)
 	}
-	if result.Comment.DecisionCommentKind.String != "quote" || result.Comment.ParentID != parseUUID(fixture.parentID) || !strings.Contains(result.Comment.Content, "> Option B") || !strings.Contains(result.Comment.Content, "/chat?session="+fixture.sessionID) {
+	if result.Comment.DecisionCommentKind.String != "quote" || result.Comment.ParentID != parseUUID(fixture.parentID) || !strings.Contains(result.Comment.Content, "> Chose: Option B") || !strings.Contains(result.Comment.Content, "/chat?session="+fixture.sessionID) {
 		test.Fatalf("quote lacks the option or the card link: %+v", result.Comment)
 	}
 	var role, sentVia string
 	var taskless bool
-	dbfx.QueryRow(test, `SELECT role, sent_via, task_id IS NULL FROM chat_message WHERE id = $1`, result.Answer.ChatMessageIds[0]).Scan(&role, &sentVia, &taskless)
+	dbfx.QueryRow(test, `SELECT role, sent_via, task_id IS NULL FROM chat_message WHERE id = ANY($1)`, result.Answer.ChatMessageIds).Scan(&role, &sentVia, &taskless)
 	if role != "user" || sentVia != "interactive_jwt" || !taskless {
 		test.Fatalf("answer message = %s/%s/taskless=%v", role, sentVia, taskless)
 	}
@@ -67,6 +67,56 @@ func TestCardOptionAnswerRecordsOnThatCardWithoutDMRun(test *testing.T) {
 	}
 }
 
+func TestCardAnswerWithUnsealedIntentWakesCompletedAskingTask(test *testing.T) {
+	resetDecisionLease(test)
+	fixture := newAskedRecordFixture(test)
+	dbfx.Exec(test, `UPDATE decision_request SET options = $2::jsonb WHERE id = $1`, fixture.decision.ID, cardOptions)
+	dbfx.Exec(test, `INSERT INTO decision_intent_target (decision_intent_id, human_user_id) VALUES ($1, $2)`, fixture.intentID, testUserID)
+	dbfx.Exec(test, `UPDATE decision_intent SET sealed_at = NULL, consumed_at = NULL, consumed_by_request_id = NULL WHERE id = $1`, fixture.intentID)
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, fixture.taskID, fixture.chatTaskID)
+	result, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "Option B"})
+	if err != nil {
+		test.Fatal(err)
+	}
+	if dbfx.Count(test, `SELECT count(*) FROM decision_intent WHERE id = $1 AND sealed_at IS NULL`, fixture.intentID) != 1 {
+		test.Fatal("fixture intent was sealed before the card answer")
+	}
+	_, runner := newDecisionRunnerFixture(test)
+	decisionPass(test, runner)
+
+	stored, err := testHandler.Queries.GetDecisionAnswer(context.Background(), db.GetDecisionAnswerParams{WorkspaceID: fixture.issue.WorkspaceID, ID: result.Answer.ID})
+	if err != nil {
+		test.Fatal(err)
+	}
+	if !stored.WokenAt.Valid || stored.WakeOutcome.String != "run_enqueued" {
+		test.Fatalf("card answer wake=%v outcome=%q, want a delivered run", stored.WokenAt.Valid, stored.WakeOutcome.String)
+	}
+	if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND status = 'queued' AND trigger_comment_id = $2`, fixture.issueID, result.Comment.ID); count != 1 {
+		test.Fatalf("card answer runs=%d, want 1", count)
+	}
+}
+
+func TestProductDirectionCardAnswerWakesCompletedAskingTask(test *testing.T) {
+	fixture := newCardFixture(test)
+	dbfx.Exec(test, `UPDATE decision_request SET escalation_class = 'product_direction' WHERE id = $1`, fixture.decision.ID)
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, fixture.taskID, fixture.chatTaskID)
+	result, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "Option B"})
+	if err != nil {
+		test.Fatal(err)
+	}
+	dbfx.Exec(test, `UPDATE decision_answer SET wake_at = clock_timestamp() - interval '1 second' WHERE id = $1`, result.Answer.ID)
+	handler, _ := newDecisionRunnerFixture(test)
+	if err := deliverDecisionForTest(handler, fixture); err != nil {
+		test.Fatalf("deliver product-direction card answer: %v", err)
+	}
+	if count := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE id = $1 AND woken_at IS NOT NULL`, result.Answer.ID); count != 1 {
+		test.Fatalf("delivered product-direction card answers=%d, want 1", count)
+	}
+	if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND status = 'queued' AND trigger_comment_id = $2`, fixture.issueID, result.Comment.ID); count != 1 {
+		test.Fatalf("product-direction card answer runs=%d, want 1", count)
+	}
+}
+
 func TestCardTextAnswerRecordsTheText(test *testing.T) {
 	fixture := newCardFixture(test)
 	result, err := fixture.answerOnCard(decisionCardAnswerInput{Text: "  Neither.\nShip C instead.  "})
@@ -80,8 +130,11 @@ func TestCardTextAnswerRecordsTheText(test *testing.T) {
 
 func TestCardOptionPlusTextRecordsBoth(test *testing.T) {
 	both, err := newCardFixture(test).answerOnCard(decisionCardAnswerInput{Option: "Option A", Text: "but wait a day"})
-	if err != nil || both.Answer.ContentSnapshot != "Option A\n\nbut wait a day" {
+	if err != nil || both.Answer.ContentSnapshot != "Option A\n\nbut wait a day" || !both.Answer.ChosenOptionIndex.Valid || both.Answer.ChosenOptionIndex.Int32 != 0 || both.Answer.ReplyText.String != "but wait a day" {
 		test.Fatalf("option plus text = %+v, %v", both.Answer, err)
+	}
+	if !strings.Contains(both.Comment.Content, "> Chose: Option A\n> \n> Note: but wait a day") {
+		test.Fatalf("quote does not label both parts: %q", both.Comment.Content)
 	}
 }
 

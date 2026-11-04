@@ -1409,7 +1409,8 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 		}
 	}
 	if pr.HeadRepoSame && pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha && pr.ChecksRollupState.Valid &&
-		(pr.ChecksRollupState.String == "FAILURE" || pr.ChecksRollupState.String == "ERROR") {
+		(pr.ChecksRollupState.String == "FAILURE" || pr.ChecksRollupState.String == "ERROR") &&
+		(pr.State == "open" || pr.State == "draft") {
 		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
 		for _, issueID := range issueIDs {
 			if err := wakeup.TriggerPullRequestWakeup(ctx, issueID, service.PullRequestWakeupInput{
@@ -1523,6 +1524,7 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to process pull_request event")
 			return
 		}
+		h.configSyncOnPullRequest(ctx, body)
 	case "workflow_run":
 		if err := h.handleWorkflowRunEvent(ctx, body); err != nil {
 			slog.Error("github: workflow_run event failed", "err", err, "delivery_guid", deliveryGUID)
@@ -1794,6 +1796,15 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error
 	// authoritative CI + mergeability snapshot for that head. The webhook is
 	// only the doorbell — its own mergeable/checks payload is not used for
 	// display anymore (MUL-5265).
+	if p.Action == "edited" && baseRefChanged(p.Changes) {
+		// The stored API verdict describes the old base. A failed clear must
+		// fail the delivery so GitHub redelivers it.
+		if err := h.Queries.InvalidateGitHubPRMergeState(ctx, db.InvalidateGitHubPRMergeStateParams{
+			InstallationID: p.Installation.ID, RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name, PrNumber: p.PullRequest.Number,
+		}); err != nil {
+			errs = append(errs, fmt.Errorf("github: invalidate merge state of retargeted pull request: %w", err))
+		}
+	}
 	h.PRRefresh.Enqueue(p.Installation.ID, p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number)
 	if p.Action == "closed" && p.PullRequest.Merged {
 		h.PRRefresh.RefreshConflictWatchers(ctx, p.Installation.ID, p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number)
@@ -2153,15 +2164,27 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 			return fmt.Errorf("github: apply pr %s lifecycle: %w", state, err)
 		}
 	}
+	var autoCompleteErrs []error
 	if githubFeaturesEnabled(ws) && pr.HeadRepoSame && !linkPolicy.indeterminate {
-		if state == "merged" && prevState != "merged" {
+		// An owed closed-PR replay runs after an earlier attempt may have failed
+		// past the commit: the links are unchanged but the auto-completion they
+		// owe may not have run (CHE-3402). A plain redelivery stays a no-op.
+		if state == "merged" && (prevState != "merged" || isOwedClosedReplay(ctx)) {
 			for _, issueID := range closingIssueIDs {
 				touched[issueID] = struct{}{}
 			}
 		}
 		resolver := issuestatus.NewResolver(wsID)
 		for issueID := range touched {
-			h.maybeAutoCompleteIssue(ctx, wsID, issueID, resolver)
+			err := h.autoCompleteIssue(ctx, wsID, issueID, resolver)
+			switch {
+			case err == nil:
+			case isOwedClosedReplay(ctx):
+				// Fail the replay so its marker stays and the sweep retries.
+				autoCompleteErrs = append(autoCompleteErrs, fmt.Errorf("github: auto-complete issue %s: %w", uuidToString(issueID), err))
+			default:
+				slog.Warn("pr auto-complete failed", "err", err, "issue_id", uuidToString(issueID))
+			}
 		}
 	}
 	// A PR sent back to draft (CHE-1417): the rule itself decides whether the
@@ -2181,25 +2204,26 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
 		attention.RepoOwner, attention.RepoName, attention.Number, attention.URL = p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number, p.PullRequest.HTMLURL
 		attention.HeadSHA, attention.BaseBranch, attention.HeadBranch = p.PullRequest.Head.SHA, p.PullRequest.Base.Ref, p.PullRequest.Head.Ref
-		return dispatchMergedPRWakeups(issueIDs, func(issueID pgtype.UUID) error {
+		return errors.Join(append(autoCompleteErrs, dispatchMergedPRWakeups(issueIDs, func(issueID pgtype.UUID) error {
 			return wakeup.TriggerPullRequestWakeup(ctx, issueID, attention)
 		}, func() {
 			h.publish(protocol.EventPullRequestUpdated, workspaceID, "system", "", map[string]any{
 				"pull_request":     githubPullRequestToResponse(pr, h.PRRefresh.Enabled()),
 				"linked_issue_ids": linkedIssueIDs,
 			})
-		})
+		}))...)
 	}
 	h.publish(protocol.EventPullRequestUpdated, workspaceID, "system", "", map[string]any{
 		"pull_request":     githubPullRequestToResponse(pr, h.PRRefresh.Enabled()),
 		"linked_issue_ids": linkedIssueIDs,
 	})
-	return nil
+	return errors.Join(autoCompleteErrs...)
 }
 
 // refreshOpenPRsOnBase asks for a fresh snapshot of every open PR on the base
 // a merge just moved (CHE-1417). Their merge state can turn DIRTY or BEHIND
 // without a pull_request event of their own; the refresh is what notices it.
+// A stack child, based on the merged PR's head branch, is included (CHE-2796).
 // Their stored merge state is cleared first, so a PR the refresh queue drops
 // is undecided and the snapshot sweep refreshes it. A failed clear is returned:
 // the old decided verdicts would stay outside the sweep, so the delivery must
@@ -2211,6 +2235,7 @@ func (h *Handler) refreshOpenPRsOnBase(ctx context.Context, p *ghPullRequestPayl
 	rows, err := h.Queries.InvalidateOpenGitHubPRMergeStateOnBase(ctx, db.InvalidateOpenGitHubPRMergeStateOnBaseParams{
 		InstallationID: p.Installation.ID, RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name,
 		MergedPrNumber: p.PullRequest.Number, BaseRef: pgtype.Text{String: p.PullRequest.Base.Ref, Valid: true},
+		HeadRef: pgtype.Text{String: p.PullRequest.Head.Ref, Valid: true},
 	})
 	if err != nil {
 		return fmt.Errorf("github: invalidate merge state of open pull requests on merged base: %w", err)
@@ -2776,11 +2801,25 @@ func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, worksp
 		}
 	}
 
-	updated, err := h.Queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		slog.Warn("github: advance issue to done: begin failed", "err", err)
+		return
+	}
+	defer tx.Rollback(ctx)
+	qtx := h.Queries.WithTx(tx)
+	updated, err := qtx.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
 		ID:          issue.ID,
 		Status:      "done",
 		WorkspaceID: issue.WorkspaceID,
 	})
+	var recorded *db.ActivityLog
+	if err == nil {
+		recorded, err = recordSystemStatusChange(ctx, qtx, issue, updated, service.StatusCausePRMerged, nil)
+	}
+	if err == nil {
+		err = tx.Commit(ctx)
+	}
 	if err != nil {
 		slog.Warn("github: advance issue to done failed", "err", err)
 		return
@@ -2792,7 +2831,7 @@ func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, worksp
 	prefix := h.getIssuePrefix(ctx, issue.WorkspaceID)
 	resp := issueToResponse(updated, prefix)
 	h.fillStatusCategory(ctx, updated.WorkspaceID, &resp)
-	h.publish(protocol.EventIssueUpdated, workspaceID, "system", "", map[string]any{
+	h.publishSystemStatusChange(workspaceID, recorded, map[string]any{
 		"issue":          resp,
 		"status_changed": true,
 		"prev_status":    issue.Status,

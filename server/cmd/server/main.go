@@ -615,6 +615,7 @@ func main() {
 	// so subscribers must be written first within the same synchronous event dispatch.
 	registerSubscriberListeners(bus, pool)
 	registerActivityListeners(bus, queries)
+	registerMachinePauseListeners(bus, queries)
 	registerNotificationListeners(bus, queries)
 
 	metricsConfig := obsmetrics.ConfigFromEnv()
@@ -765,6 +766,8 @@ func main() {
 	// Source-context cleanup is object-store work, so it gets its own goroutine
 	// instead of a slot in the runtime sweep tick.
 	go runSourceContextSweeper(sweepCtx, taskSvc)
+	go runWebhookNonceSweeper(sweepCtx, queries)
+	go h.RunElevationFenceSweeper(sweepCtx)
 	go heartbeatScheduler.Run(sweepCtx)
 	go runAutopilotFailureMonitor(autopilotCtx, queries, bus, envFailureMonitorConfig())
 	if autopilotSvc.QuotaEnabled() {
@@ -780,6 +783,7 @@ func main() {
 	if h.DecisionWorker != nil {
 		go h.DecisionWorker.Run(sweepCtx)
 	}
+	pushWorker := startPushWorker(sweepCtx, pool, queries)
 	if h.SeatCapacityWorker != nil {
 		go h.SeatCapacityWorker.Run(sweepCtx)
 	}
@@ -835,7 +839,10 @@ func main() {
 	// missing because of an unusual partial-migration state — by
 	// logging them on the tick that fails and retrying on the next
 	// cycle, so a temporary outage does not crash the server.
-	schedulerMgr := scheduler.NewManager(pool, scheduler.Options{})
+	// TickInterval 10 s: the ops snapshot sampler runs a 30 s plan, and a tick
+	// every 30 s lets jitter skip a plan (CHE-2586 L1). Other jobs only pay a
+	// cheap due-plan check per tick.
+	schedulerMgr := scheduler.NewManager(pool, scheduler.Options{TickInterval: 10 * time.Second})
 	if err := schedulerMgr.Register(scheduler.TaskUsageHourlyJob(pool)); err != nil {
 		slog.Warn("scheduler: failed to register task_usage_hourly rollup job", "error", err)
 	}
@@ -851,11 +858,19 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.IssueWakeupJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register issue wakeups", "error", err)
 	}
+	// CHE-1082: the legacy backfill that opens scoped wakeup definition writes.
+	// It runs from the deploy that ships it, so activation needs no manual step.
+	if err := schedulerMgr.Register(scheduler.WakeupDefinitionActivationJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
+		slog.Error("scheduler: register wakeup definition activation", "error", err)
+	}
 	if err := schedulerMgr.Register(scheduler.ChatWakeupJob(&service.ChatWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register chat wakeups", "error", err)
 	}
 	if err := schedulerMgr.Register(scheduler.ChildEventSweepJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register child-done sweep", "error", err)
+	}
+	if err := schedulerMgr.Register(scheduler.IdleStartedGuardJob(h)); err != nil {
+		slog.Error("scheduler: register idle started guard", "error", err)
 	}
 	if err := schedulerMgr.Register(scheduler.AutopilotScheduleDispatchJob(pool, queries, autopilotSvc)); err != nil {
 		slog.Warn("scheduler: failed to register autopilot_schedule_dispatch job", "error", err)
@@ -871,13 +886,20 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.ProvenanceExportRetentionJob(queries, pool)); err != nil {
 		slog.Warn("scheduler: failed to register provenance_export_retention job", "error", err)
 	}
-	if err := schedulerMgr.Register(scheduler.GovernanceCaseEvidenceRetentionJob(queries, pool)); err != nil {
-		slog.Warn("scheduler: failed to register governance_case_evidence_retention job", "error", err)
-	}
 	// CHE-2147: the workflow run/job mirror behind the github_run wakeup
 	// condition is a 30-day cache; drop rows with no event for that long.
 	if err := schedulerMgr.Register(scheduler.GitHubWorkflowRetentionJob(queries)); err != nil {
 		slog.Warn("scheduler: failed to register github_workflow_retention job", "error", err)
+	}
+	// CHE-2586 L1: ops page snapshots (30 s sampler, 5 min rollup, retention).
+	for _, job := range []scheduler.JobSpec{
+		scheduler.OpsSnapshotSamplerJob(queries),
+		scheduler.OpsSnapshotRollupJob(queries),
+		scheduler.OpsRetentionJob(queries),
+	} {
+		if err := schedulerMgr.Register(job); err != nil {
+			slog.Warn("scheduler: failed to register ops job", "job", job.Name, "error", err)
+		}
 	}
 	go func() {
 		_ = schedulerMgr.Run(sweepCtx)
@@ -965,6 +987,11 @@ func main() {
 		JoinDecisionWorker: func() {
 			if h.DecisionWorker != nil && !h.DecisionWorker.WaitWithTimeout(5*time.Second) {
 				slog.Warn("decision worker did not exit within shutdown timeout")
+			}
+		},
+		JoinPushWorker: func() {
+			if pushWorker != nil && !pushWorker.WaitWithTimeout(5*time.Second) {
+				slog.Warn("push worker did not exit within shutdown timeout")
 			}
 		},
 		JoinTelegram: func() {

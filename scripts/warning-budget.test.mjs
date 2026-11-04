@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
 import { fileURLToPath } from "node:url"
-import { warningCounts, warningRegressions } from "./warning-budget.mjs"
+import { scanBaselines, warningCounts, warningRegressions } from "./warning-budget.mjs"
 
 const fixture = JSON.parse(readFileSync(new URL("./fixtures/warnings/new-warning.json", import.meta.url)))
 
@@ -159,7 +159,7 @@ else if (endpoint.includes('/actions/workflows/3/runs?')) {
 else if (endpoint.includes('/jobs?')) {
   const baseline = endpoint.includes('/runs/1/')
   const older = endpoint.includes('/runs/3/')
-  const name = renamed ? (scenario.includes('cursor') ? 'cursor-background-lifecycle' : 'installer') + ' (' + (baseline ? 'ubuntu-latest' : 'ubuntu-24.04') + ')' : !baseline&&!older&&scenario.startsWith('pr-only')?'image-budget':'frontend-build'
+  const name = renamed ? (scenario.includes('cursor') ? 'cursor-background-lifecycle' : 'installer') + ' (' + (baseline ? 'ubuntu-latest' : 'ubuntu-24.04') + ')' : !baseline&&!older&&scenario==='pr-only-source-guard'?'upstream-update-source-guard':!baseline&&!older&&scenario.startsWith('pr-only')?'image-budget':'frontend-build'
   result = {jobs:[{id:older?13:baseline?11:12,name,status:scenario==='incomplete'?'in_progress':'completed',conclusion:baseline&&skipped?'skipped':'success',check_run_url:'https://api.github.com/check-runs/'+(older?23:baseline?21:22)}]}
   if (scenario.startsWith('cache-warm') && !baseline && !older) result.jobs.push(...['push-go-cache-warm', 'push-turbo-cache-warm'].map(name => ({name,status:'in_progress',conclusion:null})))
 } else if (endpoint.includes('/annotations?')) result = []
@@ -176,7 +176,7 @@ else if (endpoint.endsWith('/logs')) {
 } else throw new Error('Unexpected API request '+endpoint)
 process.stdout.write(JSON.stringify(result))
 `, { mode: 0o700 })
-    for (const [scenario, expected] of [["cache-warm", 0], ["cache-warm-new-warning", 1], ["new-warning", 1], ["unchanged", 0], ["missing-baseline", 1], ["incomplete", 1], ["ansi-warning", 1], ["skipped-baseline", 0], ["skipped-baseline-new-warning", 1], ["paged-baseline", 0], ["missing-job", 1], ["pr-only-warning", 1], ["pr-only-clean", 0], ["renamed-cursor", 0], ["renamed-cursor-extra-warning", 1], ["renamed-installer", 0], ["renamed-installer-extra-warning", 1]]) {
+    for (const [scenario, expected] of [["cache-warm", 0], ["cache-warm-new-warning", 1], ["new-warning", 1], ["unchanged", 0], ["missing-baseline", 1], ["incomplete", 1], ["ansi-warning", 1], ["skipped-baseline", 0], ["skipped-baseline-new-warning", 1], ["paged-baseline", 0], ["missing-job", 1], ["pr-only-warning", 1], ["pr-only-clean", 0], ["pr-only-source-guard", 0], ["renamed-cursor", 0], ["renamed-cursor-extra-warning", 1], ["renamed-installer", 0], ["renamed-installer-extra-warning", 1]]) {
       const result = spawnSync(process.execPath, [command], { cwd: directory, encoding: "utf8", env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, GITHUB_REPOSITORY: "cheese-work/multica", GITHUB_RUN_ID: "2", BUDGET_FIXTURE: scenario, GITHUB_STEP_SUMMARY: "" } })
       assert.equal(result.status, expected, `${scenario}: ${result.stderr}`)
       if (["new-warning", "ansi-warning", "cache-warm-new-warning"].includes(scenario)) {
@@ -194,7 +194,7 @@ process.stdout.write(JSON.stringify(result))
       }
       if (scenario.startsWith("pr-only")) {
         const report = JSON.parse(readFileSync(join(directory, "warning-budget-report.json")))
-        assert.deepEqual(report.zero_baseline_jobs, ["image-budget"])
+        assert.deepEqual(report.zero_baseline_jobs, [scenario === "pr-only-source-guard" ? "upstream-update-source-guard" : "image-budget"])
         assert.deepEqual(report.baseline, {})
       }
       if (scenario.startsWith("renamed-")) {
@@ -207,4 +207,34 @@ process.stdout.write(JSON.stringify(result))
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+function scan(listJobs, log = () => {}) {
+  const pending = new Set(["frontend-build"])
+  const jobBaselines = { "frontend-build": null }
+  const baselineJobs = []
+  const runs = [{ id: 3, html_url: "run-3", head_sha: "c" }, { id: 2, html_url: "run-2", head_sha: "b" }]
+  const baseline = scanBaselines(runs, { pending, jobBaselines, baselineJobs, listJobs, collect: (job) => ({ name: job.name }), log })
+  return { baseline, jobBaselines, pending }
+}
+const okJobs = [{ name: "frontend-build", status: "completed", conclusion: "success" }]
+const httpError = (status) => Object.assign(new Error("Command failed: gh api"), { stderr: `gh: Bad Gateway (HTTP ${status})\n` })
+
+test("a baseline run whose jobs API returns 5xx is skipped for the next older run", () => {
+  const logs = []
+  const { baseline, jobBaselines, pending } = scan((run) => { if (run.id === 3) throw httpError(502); return okJobs }, (line) => logs.push(line))
+  assert.equal(baseline.id, 2)
+  assert.equal(jobBaselines["frontend-build"].run, "run-2")
+  assert.equal(pending.size, 0)
+  assert.match(logs.join("\n"), /run 3/)
+})
+
+test("a non-5xx jobs API error still fails loudly", () => {
+  assert.throws(() => scan(() => { throw httpError(404) }), /Command failed/)
+  assert.throws(() => scan(() => { throw new SyntaxError("Unexpected token") }), /Unexpected token/)
+})
+
+test("malformed JSON whose message contains an HTTP 5xx marker still fails loudly", () => {
+  const malformed = () => { try { JSON.parse("(HTTP 502)") } catch (error) { return error } }
+  assert.throws(() => scan(() => { throw malformed() }), SyntaxError)
 })

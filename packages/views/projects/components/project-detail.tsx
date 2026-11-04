@@ -1,8 +1,9 @@
 "use client";
 
 import { useMemo, useState, useCallback, useRef, useEffect } from "react";
+import { useRegisterCommandBarContext } from "../../search/register-context";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
-import { Check, ChevronRight, Link2, MoreHorizontal, PanelRight, Pin, PinOff, Trash2, UserMinus } from "lucide-react";
+import { Check, ChevronRight, Link2, MoreHorizontal, PanelRight, Pin, PinOff, Trash2, UserMinus } from "@multica/ui/icons";
 import { useQuery } from "@tanstack/react-query";
 import { cn } from "@multica/ui/lib/utils";
 import { copyText } from "@multica/ui/lib/clipboard";
@@ -28,6 +29,7 @@ import { currentPath, useNavigation } from "../../navigation";
 import { TitleEditor, ContentEditor, type ContentEditorRef } from "../../editor";
 import { PriorityIcon } from "../../issues/components/priority-icon";
 import { ProjectResourcesSection } from "./project-resources-section";
+import { ProjectWakeupsSection } from "./project-wakeups-section";
 import { ProjectStartDatePicker } from "./project-start-date-picker";
 import { ProjectDueDatePicker } from "./project-due-date-picker";
 import { ProjectWorkflowControl } from "../../workflows/project-workflow-row";
@@ -124,19 +126,27 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
   const router = useNavigation();
   const userId = useAuthStore((s) => s.user?.id);
   const { data: project, isLoading } = useQuery(projectDetailOptions(wsId, projectId));
+  useRegisterCommandBarContext(
+    useMemo(() => (project ? { kind: "project", project } : null), [project]),
+  );
   const recordRecentContext = useRecentContextStore((s) => s.recordVisit);
+  const recentId = project?.id;
+  const recentTitle = project?.title;
+  const recentDescription = project?.description;
+  const recentIcon = project?.icon;
+  const recentStatus = project?.status;
   useEffect(() => {
-    if (project) {
+    if (recentId !== undefined && recentTitle !== undefined && recentStatus !== undefined) {
       recordRecentContext(wsId, {
         type: "project",
-        id: project.id,
-        label: project.title,
-        subtitle: project.description ?? undefined,
-        icon: project.icon,
-        projectStatus: project.status,
+        id: recentId,
+        label: recentTitle,
+        subtitle: recentDescription ?? undefined,
+        icon: recentIcon ?? null,
+        projectStatus: recentStatus,
       });
     }
-  }, [project?.id, project?.title, project?.description, project?.icon, project?.status, recordRecentContext, wsId]);
+  }, [recentId, recentTitle, recentDescription, recentIcon, recentStatus, recordRecentContext, wsId]);
   const issueTab = useIssuesScope(`project:${projectId}`);
   const issueScope = useMemo(
     () => ({ type: "project" as const, projectId, actorKind: issueTab }),
@@ -489,6 +499,9 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
 
       {/* Resources */}
       <ProjectResourcesSection projectId={projectId} />
+
+      {/* Wakeups */}
+      <ProjectWakeupsSection projectId={projectId} canManage={isWorkspaceAdmin} />
     </div>
   );
 

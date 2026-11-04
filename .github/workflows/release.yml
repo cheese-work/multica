@@ -99,6 +99,8 @@ jobs:
           # continue accepting newer patches within Go 1.27.
           go-version: "~1.27.3"
           check-latest: true
+          # CHE-2418 B6: X99 keeps GOMODCACHE and GOCACHE on its own disk (bind-mounted ~/go and ~/.cache).
+          cache: ${{ runner.environment != 'self-hosted' }}
           cache-dependency-path: server/go.sum
 
       - name: Record Go toolchain

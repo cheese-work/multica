@@ -1,7 +1,7 @@
 -- name: ListDecisionWakeCandidates :many
 SELECT request.* FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
-WHERE request.status = 'answered' AND EXISTS (
+WHERE request.authority = 'human' AND request.status = 'answered' AND EXISTS (
     SELECT 1 FROM decision_answer answer
     WHERE answer.decision_request_id = request.id AND answer.disclaimed_at IS NULL
       AND answer.woken_at IS NULL AND answer.wake_at <= clock_timestamp()
@@ -29,13 +29,13 @@ SELECT clock_timestamp()::timestamptz;
 
 -- name: ListDecisionDeliveryRequests :many
 SELECT * FROM decision_request
-WHERE workspace_id = sqlc.arg('workspace_id')
+WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id')
   AND (decision_intent_id = sqlc.narg('intent_id')::uuid OR id = sqlc.narg('request_id')::uuid)
 ORDER BY id;
 
 -- name: ListDecisionDeliveryAnswers :many
 SELECT answer.* FROM decision_answer answer
-JOIN decision_request request ON request.id = answer.decision_request_id
+JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
 WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.id = ANY(sqlc.arg('request_ids')::uuid[])
   AND request.status = 'answered' AND answer.disclaimed_at IS NULL
 ORDER BY answer.id;
@@ -67,7 +67,7 @@ FOR KEY SHARE;
 UPDATE decision_answer answer
 SET woken_at = clock_timestamp(), wake_outcome = sqlc.arg('outcome')
 FROM decision_request request
-WHERE request.id = answer.decision_request_id AND request.workspace_id = sqlc.arg('workspace_id')
+WHERE request.authority = 'human' AND request.id = answer.decision_request_id AND request.workspace_id = sqlc.arg('workspace_id')
   AND answer.id = sqlc.arg('id') AND answer.woken_at IS NULL AND answer.disclaimed_at IS NULL;
 
 -- name: AcknowledgeDecisionGroupWake :execrows

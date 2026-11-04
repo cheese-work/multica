@@ -31,6 +31,8 @@ func TestParseGuard(t *testing.T) {
 		{"pr.review_approved", Guard{Kind: "pr.review_approved"}},
 		{"children_done", Guard{Kind: "children_done"}},
 		{" issue_status(CHE-1, done) ", Guard{Kind: "issue_status", Args: []string{"CHE-1", "done"}}},
+		{"webhook(ci)", Guard{Kind: "webhook", Args: []string{"ci"}}},
+		{"webhook( deploy_2-a )", Guard{Kind: "webhook", Args: []string{"deploy_2-a"}}},
 	}
 	for _, c := range cases {
 		got, err := ParseGuard(c.in)
@@ -38,7 +40,8 @@ func TestParseGuard(t *testing.T) {
 			t.Errorf("ParseGuard(%q) = %+v, %v; want %+v", c.in, got, err, c.want)
 		}
 	}
-	for _, bad := range []string{"", "pr.checks_blue", "agent_verdict(MAYBE)", "agent_verdict", "issue_status(CHE-1)", "pr.merged(1)", "agent_done)"} {
+	for _, bad := range []string{"", "pr.checks_blue", "agent_verdict(MAYBE)", "agent_verdict", "issue_status(CHE-1)", "pr.merged(1)", "agent_done)",
+		"webhook", "webhook()", "webhook(CI)", "webhook(a b)", "webhook(a,b)", "webhook(" + strings.Repeat("a", 33) + ")"} {
 		if _, err := ParseGuard(bad); err == nil {
 			t.Errorf("ParseGuard(%q) accepted", bad)
 		}
@@ -96,6 +99,8 @@ func TestValidateEdges(t *testing.T) {
 		{"no blocked, no default", []Edge{{To: "done", Guard: "pr.merged", Timeout: "1h"}}, func() Definition {
 			return Definition{Steps: stepsFor(ArrangeKeys([]string{"code_review"}))}
 		}, "on_timeout"},
+		{"webhook needs timeout", []Edge{{To: "done", Guard: "webhook(ci)", OnTimeout: "blocked"}}, nil, "timeout"},
+		{"webhook with timeout", []Edge{{To: "done", Guard: "webhook(ci)", Timeout: "72h", OnTimeout: "blocked"}}, nil, ""},
 		{"review guard needs timeout", []Edge{{To: "implement", Guard: "pr.review_changes_requested", OnTimeout: "blocked"}}, nil, "timeout"},
 		{"review guard valid", []Edge{{To: "implement", Guard: "pr.review_changes_requested", Timeout: "72h", OnTimeout: "blocked"}}, nil, ""},
 		{"too many edges", make([]Edge, MaxEdgesPerStep+1), nil, "at most"},
@@ -303,6 +308,31 @@ func TestEffectiveMaxRunsDefaultsWhenUnset(t *testing.T) {
 	}
 }
 
+func TestWebhookGuardHoldsOnlyForTheNamedEndpoint(t *testing.T) {
+	edges := []Edge{{To: "done", Guard: "webhook(ci)", Timeout: "1h"}}
+	if _, ok := FirstMatch(edges, Facts{Webhooks: map[string]bool{"ci": true}}); !ok {
+		t.Error("a success call for ci must fire webhook(ci)")
+	}
+	if _, ok := FirstMatch(edges, Facts{Webhooks: map[string]bool{"deploy": true}}); ok {
+		t.Error("a call for another endpoint must not fire webhook(ci)")
+	}
+	if _, ok := FirstMatch(edges, Facts{}); ok {
+		t.Error("no call must not fire the guard")
+	}
+	if got := FactEdges(edges); len(got) != 1 {
+		t.Errorf("webhook edges are watched by the engine, got %d", len(got))
+	}
+}
+
+func TestWebhookGuardTimesOutLikeAPRGuard(t *testing.T) {
+	entered := time.Date(2026, 10, 27, 9, 0, 0, 0, time.UTC)
+	edges := []Edge{{To: "done", Guard: "webhook(ci)", Timeout: "1h", OnTimeout: "implement"}}
+	d, move, _ := Decide(edges, Facts{}, entered, entered.Add(2*time.Hour), true)
+	if !move || d.To != "implement" || d.Reason != ReasonTimeout {
+		t.Errorf("a sender that never calls must hit on_timeout, got %+v move=%v", d, move)
+	}
+}
+
 const subWorkflowID = "0f0e0d0c-0b0a-4908-8706-050403020100"
 
 func subWorkflowDefinition(sub *SubWorkflow, edges []Edge) Definition {
@@ -356,5 +386,69 @@ func TestSubWorkflowSurvivesStorage(t *testing.T) {
 	}
 	if len(out) != 1 || out[0].SubWorkflow == nil || *out[0].SubWorkflow != *in[0].SubWorkflow {
 		t.Fatalf("stored and read back %+v, want %+v", out, in[0].SubWorkflow)
+	}
+}
+
+// CHE-3257: pr.checks_red fires only for a red the PR caused on a required
+// check; a required red that is also red on the base or green on a re-run is infra and fires
+// pr.checks_infra_red; a red on non-required checks only fires neither.
+func TestChecksRedSplitsPRCausedFromInfraAndOptional(t *testing.T) {
+	red := PRFact{State: "open", ChecksRollup: "FAILURE", HeadFresh: true}
+	withCause := func(cause string) PRFact { p := red; p.RedCause = cause; return p }
+	edges := []Edge{
+		{To: "in_progress", Guard: "pr.checks_red"},
+		{To: "blocked", Guard: "pr.checks_infra_red"},
+	}
+	cases := []struct {
+		name string
+		pr   PRFact
+		want string
+	}{
+		{"no per-check evidence stored", red, "in_progress"},
+		{"PR-caused required red", withCause("pr"), "in_progress"},
+		{"infra or flaky required red", withCause("infra"), "blocked"},
+		{"red on non-required checks only", withCause("optional"), ""},
+		{"unreadable cause is not the PR's", withCause("unknown"), ""},
+		{"stale head ignored", PRFact{State: "open", ChecksRollup: "FAILURE", RedCause: "infra"}, ""},
+	}
+	for _, c := range cases {
+		got, ok := FirstMatch(edges, Facts{PRs: []PRFact{c.pr}})
+		if c.want == "" && ok || c.want != "" && got.To != c.want {
+			t.Errorf("%s: got %+v ok=%v, want %q", c.name, got, ok, c.want)
+		}
+	}
+	if g, err := ParseGuard("pr.checks_infra_red"); err != nil || !g.needsTimeout() {
+		t.Errorf("pr.checks_infra_red must parse and need a timeout: %v", err)
+	}
+}
+
+// CHE-3257: a required check that was red on this head and is green now on the
+// same head (a rerun) is flaky. pr.checks_flaky holds only on a fresh green
+// snapshot carrying that mark, so an issue already sent to in_progress by
+// pr.checks_red can still be parked in blocked.
+func TestChecksFlakyHoldsOnlyOnGreenRerunOfTheSameHead(t *testing.T) {
+	edges := []Edge{{To: "blocked", Guard: "pr.checks_flaky"}}
+	green := PRFact{State: "open", ChecksRollup: "SUCCESS", HeadFresh: true, RedCause: "flaky"}
+	stale, plain, red := green, green, green
+	stale.HeadFresh = false
+	plain.RedCause = ""
+	red.ChecksRollup = "FAILURE"
+	cases := []struct {
+		name string
+		pr   PRFact
+		want bool
+	}{
+		{"green rerun of a red head", green, true},
+		{"green and never red", plain, false},
+		{"stale head", stale, false},
+		{"still red", red, false},
+	}
+	for _, c := range cases {
+		if _, ok := FirstMatch(edges, Facts{PRs: []PRFact{c.pr}}); ok != c.want {
+			t.Errorf("%s: matched=%v, want %v", c.name, ok, c.want)
+		}
+	}
+	if g, err := ParseGuard("pr.checks_flaky"); err != nil || !g.needsTimeout() {
+		t.Errorf("pr.checks_flaky must parse and need a timeout: %v", err)
 	}
 }

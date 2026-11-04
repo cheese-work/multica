@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Trash2 } from "lucide-react";
+import { Trash2 } from "@multica/ui/icons";
 import { api } from "@multica/core/api";
 import { deriveGitHubReviewMappings } from "@multica/core/github";
 import { useWorkspaceId } from "@multica/core/hooks";

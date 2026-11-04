@@ -107,8 +107,8 @@ class BuildCacheTests(unittest.TestCase):
             self.assertIn('-modcacherw', environment.get('GOFLAGS', ''))
 
     def test_turbo_caches_restore_branch_and_lockfile_generations(self):
-        workflow = yaml.safe_load((ROOT / '.github/workflows/ci.yml').read_text())
-        caches = [step['with'] for job in workflow['jobs'].values() for step in job.get('steps', [])
+        workflows = [yaml.safe_load((ROOT / f'.github/workflows/{name}').read_text()) for name in ['ci.yml', 'main-build.yml']]
+        caches = [step['with'] for workflow in workflows for job in workflow['jobs'].values() for step in job.get('steps', [])
                   if str(step.get('with', {}).get('key', '')).startswith('turbo-')]
         self.assertGreater(len(caches), 0)
         for cache in caches:

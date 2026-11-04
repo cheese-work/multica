@@ -9,6 +9,7 @@ import type { SupportedLocale } from "@multica/core/i18n";
 import type { AgentRuntime, AgentTask } from "@multica/core/types/agent";
 import { useTranscriptViewStore } from "@multica/core/agents/stores";
 import { renderWithI18n } from "../../test/i18n";
+import enAgents from "../../locales/en/agents.json";
 import { AgentTranscriptDialog } from "./agent-transcript-dialog";
 import type { TimelineItem } from "./build-timeline";
 
@@ -250,9 +251,9 @@ afterEach(() => {
 
 describe("AgentTranscriptDialog", () => {
   it.each([
-    { type: "text", label: "Agent", icon: ".lucide-bot" },
-    { type: "thinking", label: "Thinking", icon: ".lucide-brain" },
-    { type: "error", label: "Error", icon: ".lucide-circle-alert" },
+    { type: "text", label: "Agent", icon: ".icon-bot" },
+    { type: "thinking", label: "Thinking", icon: ".icon-brain" },
+    { type: "error", label: "Error", icon: ".icon-circle-alert" },
   ] as const)("labels a $type step correctly when opened from the timeline", ({ type, label, icon }) => {
     renderDialog([
       { seq: 1, type, content: "Final delivered reply", created_at: baseTask.started_at! },
@@ -268,6 +269,87 @@ describe("AgentTranscriptDialog", () => {
       expect(within(inspector).queryByText("Error")).not.toBeInTheDocument();
       expect(inspector.querySelector(".text-destructive, .bg-destructive")).toBeNull();
     }
+  });
+
+  describe("watchdog markers", () => {
+    const at = (seconds: number) =>
+      new Date(Date.parse(baseTask.started_at!) + seconds * 1000).toISOString();
+
+    it("renders silence_warn as a muted row with the silent minutes", () => {
+      renderDialog([
+        { seq: 1, type: "text", content: "Working on it", created_at: at(0) },
+        { seq: 2, type: "silence_warn", content: "No agent activity for 15m0s", created_at: at(900) },
+      ]);
+
+      expect(screen.getByText("No output for 15 min")).toBeInTheDocument();
+    });
+
+    it("badges the matching running call with tool_stalled and not other calls", () => {
+      renderDialog(
+        [
+          { seq: 1, type: "tool_use", tool: "Bash", callId: "A", input: { command: "slow-A" }, created_at: at(0) },
+          { seq: 2, type: "tool_use", tool: "Bash", callId: "B", input: { command: "fast-B" }, created_at: at(1) },
+          { seq: 3, type: "tool_stalled", tool: "Bash", callId: "A", content: "Tool call running for 20m0s with no result", created_at: at(1200) },
+        ],
+        { task: liveTask, isLive: true },
+      );
+
+      expect(
+        within(screen.getByRole("button", { name: /slow-A/ })).getByText("Still running past 20 min"),
+      ).toBeInTheDocument();
+      expect(
+        within(screen.getByRole("button", { name: /fast-B/ })).queryByText(/Still running past/),
+      ).not.toBeInTheDocument();
+    });
+
+    it("badges a stalled call inside a folded group, on the header and the expanded row", () => {
+      renderDialog(
+        [1, 2, 3].map((n) => ({
+          seq: n,
+          type: "tool_use" as const,
+          tool: "Read",
+          callId: `R${n}`,
+          input: { file_path: `/f${n}` },
+          created_at: at(n),
+        })).concat([
+          { seq: 4, type: "tool_stalled" as never, tool: "Read", callId: "R2", input: undefined as never, content: "Tool call running for 20m0s with no result", created_at: at(1200) } as never,
+        ]),
+        { task: liveTask, isLive: true },
+      );
+
+      const header = screen.getByRole("button", { name: /3 calls/ });
+      expect(within(header).getByText("Still running past 20 min")).toBeInTheDocument();
+      fireEvent.click(header);
+      expect(screen.getAllByText("Still running past 20 min")).toHaveLength(2);
+    });
+
+    it("does not say still running for a stalled call in a stopped run", () => {
+      renderDialog([
+        { seq: 1, type: "tool_use", tool: "Bash", callId: "A", input: { command: "slow-A" }, created_at: at(0) },
+        { seq: 2, type: "tool_stalled", tool: "Bash", callId: "A", content: "Tool call running for 20m0s with no result", created_at: at(1200) },
+      ], { task: { ...baseTask, status: "cancelled" } });
+
+      expect(screen.queryByText(/Still running/)).not.toBeInTheDocument();
+      expect(screen.getByText("Ran past 20 min with no result")).toBeInTheDocument();
+    });
+
+    it("drops the stalled badge once the call has a result", () => {
+      renderDialog([
+        { seq: 1, type: "tool_use", tool: "Bash", callId: "A", input: { command: "slow-A" }, created_at: at(0) },
+        { seq: 2, type: "tool_stalled", tool: "Bash", callId: "A", content: "Tool call running for 20m0s with no result", created_at: at(1200) },
+        { seq: 3, type: "tool_result", tool: "Bash", callId: "A", output: "done", created_at: at(1300) },
+      ]);
+
+      expect(screen.queryByText(/Still running past/)).not.toBeInTheDocument();
+    });
+
+    it("keeps rendering an unknown future type instead of throwing", () => {
+      renderDialog([
+        { seq: 1, type: "future_marker" as TimelineItem["type"], content: "Something new", created_at: at(0) },
+      ]);
+
+      expect(screen.getByText("Something new")).toBeInTheDocument();
+    });
   });
 
   it("shows what was asked, whole, under the header", () => {
@@ -438,10 +520,10 @@ describe("AgentTranscriptDialog", () => {
     ]);
 
     const agentFacet = screen.getByRole("menuitemcheckbox", { name: "Agent" });
-    expect(agentFacet.querySelector(".lucide-bot")).not.toBeNull();
+    expect(agentFacet.querySelector(".icon-bot")).not.toBeNull();
 
     const proseRow = screen.getByTestId("rich-content").closest(".group");
-    expect(proseRow?.querySelector(".lucide-bot")).not.toBeNull();
+    expect(proseRow?.querySelector(".icon-bot")).not.toBeNull();
   });
 
   it("names a tool facet the way its rows do, keeping the prefix in the key", () => {
@@ -1163,5 +1245,24 @@ describe("tool output completeness", () => {
 
     expect(screen.queryByText(/only the beginning was kept/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/cannot be confirmed|completeness/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("AgentTranscriptDialog preset run", () => {
+  it("shows the run's preset in the run details", async () => {
+    renderDialog([], {
+      task: {
+        ...baseTask,
+        preset_run: {
+          name: "fast",
+          source: "dm",
+          skips: [],
+          claimed: { model: "gpt-6.1-sol", thinking_level: null, service_tier: null, context_args: [] },
+          applied: null,
+        },
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: enAgents.transcript.run_info }));
+    expect(await screen.findByText("fast · dm")).toBeInTheDocument();
   });
 });

@@ -1,6 +1,8 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { api } from "@multica/core/api";
+import { useConfigStore } from "@multica/core/config";
 import {
   Tabs,
   TabsContent,
@@ -9,34 +11,61 @@ import {
 } from "@multica/ui/components/ui/tabs";
 
 /**
- * The Multica CLI install commands, one per platform family.
+ * The Multica CLI install command, one per platform family.
  *
  * Three surfaces render install instructions — the runtimes "add computer"
  * dialog, onboarding's CLI card, and the landing download page. They read the
- * commands from here instead of each hardcoding a string, which is how Windows
- * silently went missing from all of them while scripts/install.ps1 sat in the
- * repo. The scripts' own headers are the source of truth.
+ * command from here instead of each hardcoding a string.
+ *
+ * The script comes from the server the user is connecting to
+ * (`GET /api/daemon/install.sh`, CHE-2641), never from upstream: it installs
+ * the server's own build. The server builds Linux and macOS only, so there is
+ * no Windows entry.
  */
-export const CLI_INSTALL_COMMANDS = {
-  macosLinux:
-    "curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash",
-  windows:
-    "irm https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.ps1 | iex",
-} as const;
+export function cliInstallCommand(serverUrl: string): string {
+  return `curl -fsSL ${serverUrl}/api/daemon/install.sh | bash`;
+}
 
-export type CliInstallPlatform = keyof typeof CLI_INSTALL_COMMANDS;
+const trimUrl = (url: string) => url.trim().replace(/\/+$/, "");
 
-/** Tab order. macOS / Linux stays first so the default matches the old single command. */
+/** Placeholder shown until the page origin is known (server render). */
+const SERVER_URL_PLACEHOLDER = "https://<your-multica-server>";
+
+function configuredApiBaseUrl(): string {
+  try {
+    return api.getBaseUrl();
+  } catch {
+    return ""; // no ApiClient on this surface (e.g. the landing page)
+  }
+}
+
+/**
+ * The server to install from: the operator's configured server URL, else the
+ * API client's base URL, else the page origin.
+ */
+function useInstallServerUrl(): string {
+  const configured = useConfigStore((s) => s.daemonServerUrl);
+  const [origin, setOrigin] = useState("");
+  useEffect(() => setOrigin(window.location.origin), []);
+  return (
+    trimUrl(configured) ||
+    trimUrl(configuredApiBaseUrl()) ||
+    trimUrl(origin) ||
+    SERVER_URL_PLACEHOLDER
+  );
+}
+
+export type CliInstallPlatform = "macosLinux";
+
+/** Tab order. */
 const PLATFORMS = [
   "macosLinux",
-  "windows",
 ] as const satisfies readonly CliInstallPlatform[];
 
 export interface CliInstallCommandLabels {
   /** Accessible name for the platform switch. */
   group: string;
   macosLinux: string;
-  windows: string;
 }
 
 /**
@@ -58,6 +87,7 @@ export function CliInstallCommand({
   classNames?: { list?: string; trigger?: string };
   children: (command: string) => ReactNode;
 }) {
+  const command = cliInstallCommand(useInstallServerUrl());
   return (
     <Tabs defaultValue={PLATFORMS[0]}>
       <TabsList
@@ -77,7 +107,7 @@ export function CliInstallCommand({
       </TabsList>
       {PLATFORMS.map((platform) => (
         <TabsContent key={platform} value={platform}>
-          {children(CLI_INSTALL_COMMANDS[platform])}
+          {children(command)}
         </TabsContent>
       ))}
     </Tabs>

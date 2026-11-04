@@ -131,6 +131,25 @@ func TestFormatErrorChineseLocale(t *testing.T) {
 	}
 }
 
+func TestFormatErrorForbiddenUsesServerMessage(t *testing.T) {
+	for _, tc := range []struct{ lang, prefix string }{{"en_US.UTF-8", "Access denied: "}, {"zh_CN.UTF-8", "访问被拒绝："}} {
+		t.Run(tc.lang, func(t *testing.T) {
+			withLang(t, tc.lang)
+			const reason = "decision intent requires a running issue task"
+			err := &HTTPError{StatusCode: 403, Body: `{"error":"` + reason + `"}`}
+			if got := FormatError(fmt.Errorf("request decision: %w", err), false); got != tc.prefix+reason {
+				t.Fatalf("got %q, want server refusal %q", got, tc.prefix+reason)
+			}
+			for _, body := range []string{"", "<html>Forbidden</html>", `{}`, `{"error":""}`} {
+				err.Body = body
+				if got := FormatError(err, false); got != messageFor(KindForbidden, DetectLanguage()) {
+					t.Errorf("body %q: got %q, want generic fallback", body, got)
+				}
+			}
+		})
+	}
+}
+
 func TestFormatErrorValidationUsesServerMessage(t *testing.T) {
 	withLang(t, "en_US.UTF-8")
 	httpErr := &HTTPError{

@@ -325,8 +325,9 @@ LIMIT @page_limit;
 -- head_sha stamps the commit under review into the task's context JSONB so the
 -- reviewer-loop dedup (HasPendingTaskForIssueAndAgent) can tell a pending run
 -- against an OLD head apart from a fresh request against a NEW head (TEN-356).
--- Empty/absent head_sha leaves context NULL, preserving pre-TEN-356 behavior for
--- issues with no linked PR. Issue-linked tasks never hit quick-create context
+-- Empty/absent head_sha leaves context NULL unless fresh_rerun is requested.
+-- fresh_rerun disables source session/workdir reuse without losing rerun lineage.
+-- Issue-linked tasks never hit quick-create context
 -- parsing (parseQuickCreateContext short-circuits on IssueID.Valid), so this
 -- key rides harmlessly alongside.
 -- id is minted by the application as a UUIDv7 (pkg/dbid) so consecutive
@@ -357,7 +358,7 @@ INSERT INTO agent_task_queue (
     coalesced_comment_ids, trigger_summary, force_fresh_session, is_leader_task, handoff_note,
     squad_id, context, originator_user_id, accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
     originator_source, delegated_from_task_id, rule_version_id, rerun_of_task_id, trigger_evidence_kind, trigger_evidence_ref_id,
-    workflow_step, pull_request_id, id
+    workflow_step, pull_request_id, taint_ids, id
 )
 SELECT
     $1, $2, $3, 'queued', $4, sqlc.narg(trigger_comment_id),
@@ -367,11 +368,15 @@ SELECT
     COALESCE(sqlc.narg('is_leader_task')::boolean, FALSE),
     sqlc.narg(handoff_note),
     sqlc.narg(squad_id),
-    CASE
+    NULLIF(CASE
         WHEN COALESCE(sqlc.narg('head_sha')::text, '') <> ''
         THEN jsonb_build_object('head_sha', sqlc.narg('head_sha')::text)
-        ELSE NULL
-    END,
+        ELSE '{}'::jsonb
+    END || CASE
+        WHEN COALESCE(sqlc.narg('fresh_rerun')::boolean, FALSE)
+        THEN '{"fresh_rerun":true}'::jsonb
+        ELSE '{}'::jsonb
+    END, '{}'::jsonb),
     sqlc.narg(originator_user_id),
     sqlc.narg(accountable_user_id),
     sqlc.narg(runtime_mcp_overlay),
@@ -397,6 +402,9 @@ SELECT
         AND COALESCE(sqlc.narg('head_sha')::text, '') <> ''
         AND pr.head_sha = sqlc.narg('head_sha')::text
       ORDER BY pr.pr_updated_at DESC LIMIT 1)),
+    -- The assigning task's taint (migration 831): the trigger unions in every
+    -- other source, but only the request knows which task is acting.
+    COALESCE(sqlc.narg('taint_ids')::text[], '{}'),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, $3, $2)
   AND (NOT COALESCE(sqlc.narg('gate_required')::boolean, FALSE) OR EXISTS (SELECT 1 FROM review_claim))
@@ -810,17 +818,23 @@ SET status = 'dispatched',
     preset_name = NULL, preset_source = NULL, preset_skips = NULL,
     claimed_model = NULL, claimed_thinking_level = NULL,
     claimed_service_tier = NULL, claimed_context_args = NULL,
+    applied_model = NULL, applied_thinking_level = NULL,
+    applied_service_tier = NULL, applied_context_args = NULL, applied_reported_at = NULL,
     prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision),
-    chat_compaction_epoch = COALESCE(
-        chat_compaction_epoch,
-        (SELECT cs.compaction_epoch FROM chat_session cs WHERE cs.id = agent_task_queue.chat_session_id)
-    )
+    -- Unconditional: a requeued never-started task rebases on re-claim. A task
+    -- already started never reaches this statement.
+    chat_compaction_epoch = (SELECT cs.compaction_epoch FROM chat_session cs WHERE cs.id = agent_task_queue.chat_session_id)
 WHERE id = (
     SELECT atq.id FROM agent_task_queue atq
     WHERE atq.agent_id = @agent_id
       AND atq.runtime_id = @runtime_id
       AND atq.status = 'queued'
       AND (atq.context->>'wakeup_id' IS NULL OR EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.id=(atq.context->>'wakeup_id')::uuid AND w.disabled_at IS NULL AND w.revision=(atq.context->>'wakeup_revision')::bigint))
+      -- Rule E (CHE-2819): share-lock the DM row without waiting. A compact
+      -- holds it FOR NO KEY UPDATE, so a chat task of that DM is skipped for
+      -- this poll and stays queued. Held to commit, the share lock also keeps a
+      -- compact from committing between this claim and its epoch rebase.
+      AND (atq.chat_session_id IS NULL OR EXISTS (SELECT 1 FROM chat_session cs WHERE cs.id = atq.chat_session_id FOR SHARE SKIP LOCKED))
       AND EXISTS (
           SELECT 1
           FROM agent a
@@ -828,6 +842,12 @@ WHERE id = (
           WHERE a.id = atq.agent_id
             -- A task's persisted runtime is not authority after an agent rebind.
             AND a.runtime_id = atq.runtime_id
+            -- Scheduling pause: neither the agent nor its workspace is paused.
+            AND a.scheduling_paused_at IS NULL
+            AND NOT EXISTS (
+                SELECT 1 FROM workspace pw
+                WHERE pw.id = a.workspace_id AND pw.scheduling_paused_at IS NOT NULL
+            )
             -- Queued private-runtime rows are claimable so the handler can
             -- settle an owner mismatch through the existing FailTask path
             -- before daemon delivery. Public runtimes remain shareable across
@@ -862,6 +882,20 @@ WHERE id = (
     FOR UPDATE SKIP LOCKED
 )
 RETURNING *;
+
+-- name: RebaseClaimedChatTaskEpoch :exec
+-- Runs in the claim transaction right after ClaimAgentTask. The claim statement
+-- can hold a snapshot older than a compact that committed just before the claim
+-- took its DM lock, so the epoch it stamped may be one behind. This statement
+-- reads the DM on a fresh snapshot; the claim's FOR SHARE lock keeps any later
+-- compact out until commit, so the stamp is final for the whole claim.
+UPDATE agent_task_queue
+SET chat_compaction_epoch = cs.compaction_epoch
+FROM chat_session cs
+WHERE agent_task_queue.id = $1
+  AND cs.id = agent_task_queue.chat_session_id
+  AND agent_task_queue.status = 'dispatched'
+  AND agent_task_queue.started_at IS NULL;
 
 -- name: SetTaskDeliveredCommentIDs :one
 -- Replace (rather than append to) the delivery receipt for this claim. A stale
@@ -910,20 +944,31 @@ WHERE id = @task_id
 -- queue so another poll can retry immediately instead of waiting for stale
 -- dispatch recovery. The dispatched_at CAS prevents an old handler from
 -- rolling back a newer reclaim.
+-- Writes one requeue_claim_failure agent_task_event row for the ops page.
+WITH upd AS (
 UPDATE agent_task_queue
 SET status = 'queued',
     dispatched_at = NULL,
     preset_name = NULL, preset_source = NULL, preset_skips = NULL,
     claimed_model = NULL, claimed_thinking_level = NULL,
     claimed_service_tier = NULL, claimed_context_args = NULL,
+    applied_model = NULL, applied_thinking_level = NULL,
+    applied_service_tier = NULL, applied_context_args = NULL, applied_reported_at = NULL,
     prepare_lease_expires_at = NULL,
     delivered_comment_ids = '{}'
-WHERE id = @task_id
-  AND runtime_id = @runtime_id
-  AND status = 'dispatched'
-  AND started_at IS NULL
-  AND dispatched_at = @dispatched_at
-RETURNING *;
+WHERE agent_task_queue.id = @task_id
+  AND agent_task_queue.runtime_id = @runtime_id
+  AND agent_task_queue.status = 'dispatched'
+  AND agent_task_queue.started_at IS NULL
+  AND agent_task_queue.dispatched_at = @dispatched_at
+RETURNING *
+),
+ev AS (
+    INSERT INTO agent_task_event (workspace_id, task_id, runtime_id, kind)
+    SELECT r.workspace_id, upd.id, upd.runtime_id, 'requeue_claim_failure'
+    FROM upd JOIN agent_runtime r ON r.id = upd.runtime_id
+)
+SELECT * FROM upd;
 
 -- name: ReclaimStaleDispatchedTaskForRuntime :one
 -- Re-delivers a task whose previous claim likely succeeded server-side but
@@ -931,11 +976,15 @@ RETURNING *;
 -- with no `started_at`, so the daemon has not acknowledged it via StartTask.
 -- Refresh dispatched_at so the server-side dispatch timeout measures from the
 -- recovered delivery attempt.
+-- Writes one stale_reclaim agent_task_event row for the ops page.
+WITH upd AS (
 UPDATE agent_task_queue
 SET dispatched_at = now(),
     preset_name = NULL, preset_source = NULL, preset_skips = NULL,
     claimed_model = NULL, claimed_thinking_level = NULL,
     claimed_service_tier = NULL, claimed_context_args = NULL,
+    applied_model = NULL, applied_thinking_level = NULL,
+    applied_service_tier = NULL, applied_context_args = NULL, applied_reported_at = NULL,
     prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision)
 WHERE id = (
     SELECT atq.id FROM agent_task_queue atq
@@ -972,7 +1021,14 @@ WHERE id = (
     LIMIT 1
     FOR UPDATE SKIP LOCKED
 )
-RETURNING *;
+RETURNING *
+),
+ev AS (
+    INSERT INTO agent_task_event (workspace_id, task_id, runtime_id, kind)
+    SELECT r.workspace_id, upd.id, upd.runtime_id, 'stale_reclaim'
+    FROM upd JOIN agent_runtime r ON r.id = upd.runtime_id
+)
+SELECT * FROM upd;
 
 -- name: ReclaimStaleDispatchedTasksForRuntimes :many
 -- Batch variant of ReclaimStaleDispatchedTaskForRuntime (MUL-4257): re-delivers
@@ -983,7 +1039,7 @@ RETURNING *;
 -- prepare lease) and the same dispatched_at refresh; only the runtime filter
 -- (= ANY) and the LIMIT (max_tasks instead of 1) differ.
 -- MATERIALIZED pins the candidate set so nested-loop rescans cannot exceed
--- max_tasks.
+-- max_tasks. Writes one stale_reclaim agent_task_event row per task.
 WITH candidates AS MATERIALIZED (
     SELECT atq.id FROM agent_task_queue atq
     WHERE atq.runtime_id = ANY(@runtime_ids::uuid[])
@@ -1018,15 +1074,25 @@ WITH candidates AS MATERIALIZED (
     ORDER BY atq.priority DESC, atq.dispatched_at ASC
     LIMIT @max_tasks::int
     FOR UPDATE SKIP LOCKED
-)
+),
+upd AS (
 UPDATE agent_task_queue
 SET dispatched_at = now(),
     preset_name = NULL, preset_source = NULL, preset_skips = NULL,
     claimed_model = NULL, claimed_thinking_level = NULL,
     claimed_service_tier = NULL, claimed_context_args = NULL,
+    applied_model = NULL, applied_thinking_level = NULL,
+    applied_service_tier = NULL, applied_context_args = NULL, applied_reported_at = NULL,
     prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision)
 WHERE id IN (SELECT id FROM candidates)
-RETURNING *;
+RETURNING *
+),
+ev AS (
+    INSERT INTO agent_task_event (workspace_id, task_id, runtime_id, kind)
+    SELECT r.workspace_id, upd.id, upd.runtime_id, 'stale_reclaim'
+    FROM upd JOIN agent_runtime r ON r.id = upd.runtime_id
+)
+SELECT * FROM upd;
 
 -- name: ExtendAgentTaskPrepareLease :one
 -- Keeps a dispatched task protected while the daemon resolves/cache/materializes
@@ -1039,22 +1105,6 @@ WHERE id = $1
   AND runtime_id = $2
   AND status IN ('dispatched', 'waiting_local_directory')
   AND started_at IS NULL
-RETURNING *;
-
--- name: StartAgentTask :one
--- Legacy single-winner transition; generation-aware callers lock the claim first.
--- Transitions a task to running. Accepts either 'dispatched' (the normal
--- claim → run flow) or 'waiting_local_directory' (the daemon held the row in
--- a wait state while another task owned the local_directory path lock; once
--- the lock was acquired the daemon flips here). wait_reason is cleared on
--- the transition so a future read can't conflate "currently waiting" with
--- "previously waited".
-UPDATE agent_task_queue
-SET status = 'running',
-    started_at = now(),
-    wait_reason = NULL,
-    prepare_lease_expires_at = NULL
-WHERE agent_task_queue.id = $1 AND agent_task_queue.status IN ('dispatched', 'waiting_local_directory')
 RETURNING *;
 
 -- name: LockAgentTaskStartClaim :one
@@ -1078,8 +1128,9 @@ FOR UPDATE;
 -- alongside the status.
 --
 -- The CHECK only allows the transition from 'dispatched' so a daemon can't
--- mark an already-running or terminal task as waiting; the StartAgentTask
--- mutation handles the reverse transition once the lock is acquired.
+-- mark an already-running or terminal task as waiting; the
+-- StartAgentTaskWithSupplement mutation handles the reverse transition once
+-- the lock is acquired.
 UPDATE agent_task_queue
 SET status = 'waiting_local_directory',
     wait_reason = $2,
@@ -1216,6 +1267,19 @@ WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
   )
 ORDER BY terminal_at DESC
 LIMIT 1;
+
+-- name: InheritSessionTaint :one
+-- Resuming a session continues its transcript, so the claimed task takes the
+-- taint of every task that ran in it (CHE-2216 plan 3.7). The trigger on
+-- agent_task_queue keeps what the task already had.
+UPDATE agent_task_queue t
+SET taint_ids = COALESCE((
+    SELECT array_agg(DISTINCT x ORDER BY x)
+    FROM agent_task_queue s, unnest(s.taint_ids) AS x
+    WHERE s.agent_id = t.agent_id AND s.issue_id = t.issue_id AND s.session_id = sqlc.arg(session_id)::text
+), '{}')
+WHERE t.id = $1
+RETURNING t.taint_ids;
 
 -- name: GetLatestTaskRolloutMissing :one
 -- Reports whether the most recent terminal task for (agent_id, issue_id)
@@ -1905,6 +1969,23 @@ WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
     AND workflow_step <> sqlc.arg('step')::text
   );
 
+-- name: LastVerdictHeadSHA :one
+-- PR head of the issue's latest review verdict, PASS or CHANGES (CHE-3243): a
+-- review dispatched for that head, with nothing pushed since, would only repeat
+-- it. Earlier verdicts do not count: a head the PR returned to was not looked
+-- at since.
+SELECT COALESCE((
+  SELECT details->>'head_sha' FROM activity_log
+  WHERE issue_id = $1 AND action IN ('review_changes_requested', 'review_passed')
+  ORDER BY created_at DESC, id DESC LIMIT 1
+), '')::text AS head_sha;
+
+-- name: CountChangesVerdictsForPR :one
+-- Changes-requested rounds of one PR lineage; a replacement PR starts at zero.
+SELECT count(*) FROM activity_log
+WHERE issue_id = $1 AND action = 'review_changes_requested'
+  AND COALESCE(details->>'pull_request_id', '') = sqlc.arg('pull_request_id')::text;
+
 -- name: ListStalePendingStepTasks :many
 -- The runs HasPendingTaskForIssueAndAgentAtStep ignores: pending
 -- assignment-level runs of one agent stamped for a step the issue has left.
@@ -1930,6 +2011,33 @@ WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
 -- issue off, a run without a step is not enough: the brief and the permission
 -- to move the issue come from the step stamp.
 SELECT count(*) > 0 AS has_queued FROM agent_task_queue
+WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'
+  AND context->>'wakeup_id' IS NULL
+  AND trigger_comment_id IS NULL
+  AND (
+    COALESCE(sqlc.narg('head_sha')::text, '') = ''
+    OR context->>'head_sha' = sqlc.narg('head_sha')::text
+  )
+  AND CASE
+    WHEN sqlc.arg('step_hands_off')::bool THEN workflow_step = sqlc.arg('step')::text
+    ELSE workflow_step IS NULL OR workflow_step = sqlc.arg('step')::text
+  END;
+
+-- name: TaintPendingRunsOnIssue :exec
+-- Before a tainted writer assigns the issue: every run that has left the
+-- queue or is about to still reads the issue afterwards, so each takes the
+-- writer's taint (the task trigger unions it with what the run has).
+UPDATE agent_task_queue SET taint_ids = sqlc.arg('taint_ids')::text[]
+WHERE issue_id = $1 AND status IN ('queued', 'dispatched');
+
+-- name: GetTaskTaintIDs :one
+SELECT taint_ids FROM agent_task_queue WHERE id = $1;
+
+-- name: TaintQueuedRunCarryingIssueWrite :execrows
+-- HasQueuedRunCarryingIssueWrite for a write made by a tainted task: the
+-- queued run that stands in for it takes the writer's taint (the task trigger
+-- unions it with what the run has) and the row count says whether one exists.
+UPDATE agent_task_queue SET taint_ids = sqlc.arg('taint_ids')::text[]
 WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'
   AND context->>'wakeup_id' IS NULL
   AND trigger_comment_id IS NULL
@@ -2558,6 +2666,21 @@ SELECT EXISTS (
     )
 );
 
+-- name: HasPendingAssignmentTaskForAgent :one
+-- Whether the agent holds the issue's assignment-level pending slot: exactly
+-- the rows idx_one_pending_task_per_issue_agent_thread keeps one of. A caller
+-- inside a transaction checks it before the insert, because the unique
+-- violation would abort the transaction.
+SELECT EXISTS (
+  SELECT 1 FROM agent_task_queue
+  WHERE issue_id = $1 AND agent_id = $2
+    AND comment_thread_id IS NULL
+    AND (
+      status IN ('queued', 'dispatched')
+      OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+    )
+);
+
 -- name: HasActiveTaskForIssueAndAgentInThread :one
 -- Active execution and pending work in this comment thread only.
 SELECT count(*) > 0 AS has_active FROM agent_task_queue
@@ -2603,6 +2726,12 @@ WHERE atq.runtime_id = $1
       JOIN agent_runtime r ON r.id = atq.runtime_id
       WHERE a.id = atq.agent_id
         AND a.runtime_id = atq.runtime_id
+        -- Scheduling pause: neither the agent nor its workspace is paused.
+        AND a.scheduling_paused_at IS NULL
+        AND NOT EXISTS (
+            SELECT 1 FROM workspace pw
+            WHERE pw.id = a.workspace_id AND pw.scheduling_paused_at IS NOT NULL
+        )
         AND (
             r.visibility = 'public'
             OR r.visibility = 'private'
@@ -2724,6 +2853,12 @@ WHERE atq.runtime_id = ANY(@runtime_ids::uuid[])
       JOIN agent_runtime r ON r.id = atq.runtime_id
       WHERE a.id = atq.agent_id
         AND a.runtime_id = atq.runtime_id
+        -- Scheduling pause: neither the agent nor its workspace is paused.
+        AND a.scheduling_paused_at IS NULL
+        AND NOT EXISTS (
+            SELECT 1 FROM workspace pw
+            WHERE pw.id = a.workspace_id AND pw.scheduling_paused_at IS NOT NULL
+        )
         AND (
             r.visibility = 'public'
             OR r.visibility = 'private'
@@ -3169,3 +3304,34 @@ WHERE id = @id
   AND runtime_id = @runtime_id
   AND dispatched_at = @dispatched_at
   AND status = 'dispatched';
+
+-- name: SetTaskAppliedSettings :execrows
+-- The daemon-reported launch selection for one claim generation (CHE-2248):
+-- what the daemon passed to the CLI after its own fallbacks and drops, not what
+-- the provider served. Written once per generation; a duplicate matches no row
+-- and the handler tells an identical retry from a conflicting one.
+UPDATE agent_task_queue
+SET applied_model = @applied_model, applied_thinking_level = @applied_thinking_level,
+    applied_service_tier = @applied_service_tier, applied_context_args = @applied_context_args,
+    applied_reported_at = now()
+WHERE id = @id
+  AND runtime_id = @runtime_id
+  AND dispatched_at = @dispatched_at
+  AND status IN ('dispatched', 'waiting_local_directory', 'running')
+  AND applied_reported_at IS NULL;
+
+-- name: PauseAgentScheduling :one
+-- Pause claim for one agent. A second pause keeps the first actor and time
+-- (COALESCE) yet still returns the row. Enqueue, coalescing and running tasks are
+-- untouched; only ClaimAgentTask and its candidate lists skip the agent.
+UPDATE agent
+SET scheduling_paused_at = COALESCE(scheduling_paused_at, now()),
+    scheduling_paused_by = COALESCE(scheduling_paused_by, @actor_id)
+WHERE id = @id AND workspace_id = @workspace_id
+RETURNING *;
+
+-- name: ResumeAgentScheduling :one
+UPDATE agent
+SET scheduling_paused_at = NULL, scheduling_paused_by = NULL
+WHERE id = @id AND workspace_id = @workspace_id
+RETURNING *;

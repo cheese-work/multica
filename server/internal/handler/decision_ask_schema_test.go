@@ -45,6 +45,15 @@ func TestDecisionAskSchemaErrorsNameTheField(test *testing.T) {
 		{"option without what_happens", func(ask map[string]any) { delete(ask["options"].([]any)[1].(map[string]any), "what_happens") }, "ask.options[1].what_happens is required"},
 		{"pros as a string", func(ask map[string]any) { ask["options"].([]any)[0].(map[string]any)["pros"] = "Safer" }, "ask.options[0].pros must be a list of strings"},
 		{"unknown key", func(ask map[string]any) { ask["extra_field"] = "x" }, "ask.extra_field is not a known field"},
+		{"step names a secret without a value", func(ask map[string]any) {
+			ask["human_steps"] = []any{map[string]any{"action": "Set MULTICA_TOKEN", "verify_done": "gh secret list shows it"}}
+			ask["probes"] = []string{"not verified: nothing probed"}
+			ask["after_done"] = "x99-claude-sonnet re-runs the workflow"
+		}, "ask.human_steps[0] names MULTICA_TOKEN without a values entry"},
+		{"steps without probes", func(ask map[string]any) {
+			ask["human_steps"] = []any{map[string]any{"action": "Merge the PR", "verify_done": "PR shows Merged"}}
+			ask["after_done"] = "x99-claude-sonnet starts the next slice"
+		}, "ask.probes requires at least one item"},
 	}
 	for _, tc := range cases {
 		test.Run(tc.name, func(test *testing.T) {

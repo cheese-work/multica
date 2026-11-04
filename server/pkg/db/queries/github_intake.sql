@@ -166,5 +166,45 @@ UNION ALL
 SELECT 'revision'::text, id::text, state, reason,
        EXTRACT(EPOCH FROM (now() - created_at))::bigint
 FROM github_webhook_revision
-WHERE state = 'unsigned' AND created_at < now() - sqlc.arg(min_age_seconds)::bigint * interval '1 second'
+WHERE (state = 'unsigned' OR (state = 'deferred' AND reason = 'approved_snapshot')) AND created_at < now() - sqlc.arg(min_age_seconds)::bigint * interval '1 second'
 ORDER BY 5 DESC;
+
+-- name: GetGitHubIntakePinForTask :one
+-- The PR an intake item dispatched this task for (CHE-2216 plan 3.6). No row
+-- means the task is not an intake run; a receipt whose PR is gone still is one,
+-- with an empty pin.
+SELECT COALESCE(pull.branch, '')::text AS branch, COALESCE(pull.head_repo_same, false)::boolean AS head_repo_same,
+       COALESCE(pull.repo_owner, '')::text AS repo_owner, COALESCE(pull.repo_name, '')::text AS repo_name, COALESCE(pull.html_url, '')::text AS html_url
+FROM github_webhook_dispatch receipt
+LEFT JOIN github_webhook_revision revision ON revision.id = receipt.revision_id AND revision.workspace_id = receipt.workspace_id
+LEFT JOIN github_pull_request pull ON pull.id = revision.pull_request_id AND pull.workspace_id = receipt.workspace_id
+WHERE receipt.workspace_id = $1 AND receipt.task_id = $2 AND receipt.state = 'dispatched'
+LIMIT 1;
+
+-- name: ListGitHubWebhookIntakeScan :many
+-- Intake rows for the read-only intake check (CHE-2669). Selects the payload so
+-- the handler can resolve the workspace; the handler never returns it.
+SELECT delivery_guid, event, state, reason, received_at, payload
+FROM github_webhook_intake
+WHERE received_at >= $1
+ORDER BY received_at, delivery_guid
+LIMIT $2;
+
+-- name: FindGitHubWebhookRevisionForIntake :one
+-- Same identity match as ListGitHubWebhookRevisionsForWork, scoped to one
+-- workspace and without FOR UPDATE, so a redelivery resolves to its canonical
+-- revision. tasks counts the runs that revision started.
+SELECT revision.state, revision.reason,
+       (SELECT count(*) FROM github_webhook_dispatch receipt
+        WHERE receipt.workspace_id = revision.workspace_id AND receipt.revision_id = revision.id
+          AND receipt.task_id IS NOT NULL)::int AS tasks
+FROM github_webhook_revision revision
+WHERE revision.workspace_id = $1 AND revision.installation_id = $2 AND revision.repository_id = $3
+  AND revision.object_kind = $4 AND revision.object_id = $5 AND revision.body_hash = $6
+  AND revision.event = $7 AND revision.action = $8 AND revision.sender_id = $9 AND revision.author_id = $10
+  AND revision.review_state = $11
+  AND revision.object_created_at IS NOT DISTINCT FROM sqlc.narg(object_created_at)::timestamptz
+  AND revision.object_updated_at IS NOT DISTINCT FROM sqlc.narg(object_updated_at)::timestamptz
+  AND revision.object_submitted_at IS NOT DISTINCT FROM sqlc.narg(object_submitted_at)::timestamptz
+ORDER BY revision.created_at DESC, revision.id DESC
+LIMIT 1;

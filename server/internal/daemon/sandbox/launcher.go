@@ -21,6 +21,7 @@ type Launcher struct {
 	BwrapPath  string   // default: "bwrap" from PATH
 	CgroupRoot string   // default: the daemon's own cgroup
 	Deny       []string // extra never-mounted paths, on top of DefaultDeny (always enforced)
+	BridgeExe  string   // binary that serves BridgeHelperArg; default: this executable
 	Logger     *slog.Logger
 
 	mu      sync.Mutex

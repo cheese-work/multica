@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY agent_decision_reliance_instance_idx ON decision_agent_reliance (workspace_id, instance_id);

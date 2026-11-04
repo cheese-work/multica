@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ArrowRight, Check } from "lucide-react";
+import { ArrowRight, Check } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
 import {
   Dialog,
@@ -72,7 +72,6 @@ export function WorkflowMappingDialog({
   useEffect(() => {
     if (!plan) return;
     setMapping(Object.fromEntries(plan.required.map((r) => [r.status_key, suggested(r)])));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plan]);
 
   // The destinations changed: keep a choice that is still valid, replace one that is not.

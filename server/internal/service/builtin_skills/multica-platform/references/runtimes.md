@@ -33,7 +33,22 @@ multica runtime delete <runtime-id>
 multica repo checkout <url>
 multica repo checkout <url> --ref <branch-or-sha>
 multica repo checkout <url> --fresh
+multica git push [origin] [HEAD|branch]
+multica git pr create --title T --base main [--body B] [--draft]
+multica git pr edit|ready|comment --number N [--title T] [--body B]
 ```
+
+`multica git push` pushes the checked-out task branch through the run's push
+broker socket (`MULTICA_BROKER_SOCKET`). The run holds no credential. The
+broker accepts only the pinned branch, never a force, tag or delete, and the
+command refuses `--force`, `--force-with-lease` and `-f`. Without a broker
+socket it fails with "no push broker".
+
+`multica git pr` operates on the run's own pull request through the same
+broker: create (head is always the task branch, base must be one the broker
+allows), edit title or body, mark ready, comment. A PR whose head is not the
+task branch of the task repository is refused. There is no merge and no
+review approval.
 
 Runtime and repo commands affect active agent execution. Do not restart daemons,
 update runtimes, or check out arbitrary repos just to test.

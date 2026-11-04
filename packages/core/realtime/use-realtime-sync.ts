@@ -121,6 +121,7 @@ import type {
   ChatQuickActionsPendingState,
   ChatQuickActionsFailureState,
   ChatCancelFinalizedPayload,
+  ChatSupplementUpdatedPayload,
   ChatMessage,
   ChatMessageEventPayload,
   ChatPendingTask,
@@ -128,6 +129,7 @@ import type {
   ChatSession,
   ChatSessionCreatedPayload,
   InvitationCreatedPayload,
+  AgentRuntime,
 } from "../types";
 
 const chatWsLogger = createLogger("chat.ws");
@@ -186,6 +188,17 @@ export function applyDecisionAnswerUpdated(
   if (payload.source_issue_id) qc.invalidateQueries({ queryKey: issueKeys.timeline(payload.source_issue_id) });
   qc.invalidateQueries({ queryKey: chatKeys.messagesAll() });
   qc.invalidateQueries({ queryKey: chatKeys.messagesPageAll() });
+}
+
+/**
+ * A task started or ended. A paused machine shows "N tasks left" from the
+ * runtime list, which no heartbeat refreshes, so refetch it while a pause is on
+ * screen. Without a pause the list is left alone: task events are frequent.
+ */
+export function refreshRuntimesWhilePaused(qc: QueryClient, wsId: string) {
+  const lists = qc.getQueriesData<AgentRuntime[]>({ queryKey: runtimeKeys.list(wsId) });
+  const paused = lists.some(([, runtimes]) => runtimes?.some((runtime) => runtime.pause));
+  if (paused) qc.invalidateQueries({ queryKey: runtimeKeys.list(wsId) });
 }
 
 /**
@@ -1004,6 +1017,7 @@ export function useRealtimeSync(
         const wsId = getCurrentWsId();
         if (!wsId) return;
         qc.invalidateQueries({ queryKey: agentTaskSnapshotKeys.list(wsId) });
+        refreshRuntimesWhilePaused(qc, wsId);
         // Working-agent projections have their own bounded refresh below.
         // 30d activity series shares the same lifecycle signal — any task
         // completion / failure shifts the histogram. (Dispatch alone
@@ -1100,7 +1114,7 @@ export function useRealtimeSync(
       "subscriber:added", "subscriber:removed",
       "daemon:heartbeat",
       // Chat events are handled explicitly below; do not double-invalidate.
-      "chat:message", "chat:done", "chat:quick_actions", "chat:cancel_finalized", "chat:session_read",
+      "chat:message", "chat:done", "chat:quick_actions", "chat:cancel_finalized", "chat:session_read", "chat:supplement_updated",
       "chat:session_created", "chat:session_deleted", "chat:session_updated",
       // task:message stays out of the prefix path because it fires per
       // streamed message during a long run — invalidating the snapshot on
@@ -1298,6 +1312,7 @@ export function useRealtimeSync(
       invalidateTimeline(comment.issue_id);
       const wsId = getCurrentWsId();
       if (wsId) {
+        qc.invalidateQueries({ queryKey: issueKeys.commentPreview(wsId, comment.id) });
         invalidateLastActivitySortedIssueLists(qc, wsId);
         if (issue_revision) {
           onIssueAuxiliaryRevision(qc, wsId, comment.issue_id, issue_revision);
@@ -1308,11 +1323,12 @@ export function useRealtimeSync(
     });
 
     const unsubCommentDeleted = ws.on("comment:deleted", (p) => {
-      const { issue_id, issue_revision } = p as CommentDeletedPayload;
+      const { comment_id, issue_id, issue_revision } = p as CommentDeletedPayload;
       if (!issue_id) return;
       invalidateTimeline(issue_id);
       const wsId = getCurrentWsId();
       if (wsId) {
+        qc.invalidateQueries({ queryKey: issueKeys.commentPreview(wsId, comment_id) });
         invalidateLastActivitySortedIssueLists(qc, wsId);
         if (issue_revision) {
           onIssueAuxiliaryRevision(qc, wsId, issue_id, issue_revision);
@@ -1705,6 +1721,16 @@ export function useRealtimeSync(
       }
     });
 
+    // A steered follow-up changed delivery state (CHE-2820). The receipt and the
+    // head task's steer capability are server-authored, so refetch both.
+    const unsubChatSupplementUpdated = ws.on("chat:supplement_updated", (p) => {
+      const sessionId = (p as ChatSupplementUpdatedPayload | undefined)?.supplement?.chat_session_id;
+      if (typeof sessionId !== "string" || sessionId.length === 0) return;
+      qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
+      qc.invalidateQueries({ queryKey: chatKeys.messagesPage(sessionId) });
+      qc.invalidateQueries({ queryKey: chatKeys.pendingTask(sessionId) });
+    });
+
     // Lifecycle events are invalidation hints. They intentionally omit queue
     // previews and message ids, so only the pending-task endpoint can author
     // the complete queue shape.
@@ -1944,6 +1970,7 @@ export function useRealtimeSync(
       unsubChatDone();
       unsubChatQuickActions();
       unsubChatCancelFinalized();
+      unsubChatSupplementUpdated();
       unsubTaskQueued();
       unsubTaskDispatch();
       unsubTaskRunning();

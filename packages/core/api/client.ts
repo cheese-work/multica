@@ -1,6 +1,6 @@
 import type { ZodType } from "zod";
-import type { OpenDecisionRequest } from "../types/decision";
-import { AgentRuntimeSchema, EMPTY_RUNTIME } from "../runtimes/schema";
+import type { DecisionArtifact, OpenDecisionRequest } from "../types/decision";
+import { AgentRuntimeSchema, EMPTY_RUNTIME, RuntimePauseSchema } from "../runtimes/schema";
 import type { IssueWakeup, IssueWakeupInput, IssueWakeupSummaryRow, PausedWakeup, SystemWakeup, WakeupRun, WorkspaceSystemWakeup } from "../types/issue-wakeup";
 import type { WorkspaceWakeupPage, WorkspaceWakeupFilters, WakeupDefinition, WakeupDefinitionConfig, WakeupDefinitionList, WakeupDefinitionScope, WakeupEffectiveRule } from "../types/issue-wakeup";
 import { WorkspaceWakeupPageSchema, IssueWakeupSchema, IssueWakeupSummaryRowSchema, PausedWakeupSchema, SystemWakeupSchema, WakeupRunSchema, WorkspaceSystemWakeupSchema, WakeupDefinitionSchema, WakeupDefinitionListSchema, WakeupEffectiveRuleSchema } from "./schemas";
@@ -36,6 +36,7 @@ import type {
   IssueTableRowsRequest,
   IssueTableRowsResponse,
   Agent,
+  AgentPreset,
   MikaBootstrapResponse,
   CreateAgentRequest,
   AgentBuilderRuntimeSwitch,
@@ -52,6 +53,8 @@ import type {
   WorkspaceWorkingAgentMineRelation,
   WorkspaceWorkingAgentType,
   AgentRuntime,
+  RuntimePause,
+  RuntimePauseReason,
   RuntimeProfile,
   CreateRuntimeProfileRequest,
   UpdateRuntimeProfileRequest,
@@ -67,10 +70,6 @@ import type {
   Workspace,
   WorkspaceRepo,
   WorkspaceExportPrivacy,
-  WorkspaceGovernanceConfig,
-  WorkspaceGovernanceRollback,
-  WorkspaceJevGovernancePatch,
-  JevCredentialPresence,
   WorkspaceMcpServer,
   MemberWithUser,
   User,
@@ -115,6 +114,8 @@ import type {
   ChatDraftRestoresResponse,
   ChatPendingTask,
   PrioritizeQueuedChatTaskResponse,
+  ChatSupplement,
+  ResendChatSupplementResponse,
   PendingChatTasksResponse,
   HasPendingChatTasksResponse,
   SendChatMessageResponse,
@@ -252,6 +253,7 @@ import type {
   PurchaseWorkspaceSeatsResponse,
   CreateWorkspaceSubscriptionPortalResponse,
   SourceContextPreview,
+  CommentPreview,
   CreateCommentSubIssueManualRequest,
   CreateCommentSubIssueAgentRequest,
   CreateCommentSubIssueRequest,
@@ -272,8 +274,14 @@ import { createRequestId, createSafeId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseWithFallback } from "./schema";
 import {
+  PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
+  PasskeyRevokedSchema, parsePasskeyResponse,
+  type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart,
+} from "./passkey-schema";
+import {
   RuntimeProfileSchema,
   OpenDecisionRequestListSchema,
+  DecisionArtifactListSchema,
   RuntimeProfileListSchema,
   AgentTaskListSchema,
   AgentTaskPageSchema,
@@ -296,6 +304,9 @@ import {
   EMPTY_CHAT_CONTINUE_RESPONSE,
   EMPTY_CHAT_FORK_RESPONSE,
   PrioritizeQueuedChatTaskResponseSchema,
+  ChatSupplementSchema,
+  EMPTY_CHAT_SUPPLEMENT,
+  ResendChatSupplementResponseSchema,
   SendChatMessageResponseSchema,
   StartMikaOnboardingResponseSchema,
   ChildIssuesResponseSchema,
@@ -362,6 +373,7 @@ import {
   IssueSchema,
   AgentTaskSchema,
   SourceContextPreviewSchema,
+  CommentPreviewSchema,
   CommentSubIssueTaskResponseSchema,
   ListWebhookDeliveriesResponseSchema,
   RuntimeHourlyActivityListSchema,
@@ -398,8 +410,6 @@ import {
   PurchaseWorkspaceSeatsResponseSchema,
   CreateWorkspaceSubscriptionPortalResponseSchema,
   WorkspaceExportPrivacySchema,
-  WorkspaceGovernanceConfigSchema,
-  JevCredentialPresenceSchema,
   DingTalkInstallationSchema,
   ListDingTalkInstallationsResponseSchema,
   ListDingTalkGroupsResponseSchema,
@@ -484,6 +494,8 @@ import {
   MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
   SkillSchema,
   EMPTY_SKILL,
+  AgentPresetListSchema,
+  PresetCompletionsSchema,
   SkillSummaryListSchema,
   EMPTY_SKILL_SUMMARY_LIST,
   SkillImportResultSchema,
@@ -1559,6 +1571,18 @@ export class ApiClient {
     });
   }
 
+  async getCommentPreview(commentId: string): Promise<CommentPreview> {
+    const raw = await this.fetch<unknown>(`/api/comments/${commentId}/preview`);
+    const preview = parseWithFallback<CommentPreview | null>(
+      raw,
+      CommentPreviewSchema,
+      null,
+      { endpoint: "GET /api/comments/:id/preview" },
+    );
+    if (!preview) throw new Error("Invalid comment preview response");
+    return preview;
+  }
+
   async getCommentSubIssuePreview(anchorCommentId: string): Promise<SourceContextPreview> {
     const raw = await this.fetch<unknown>(`/api/comments/${anchorCommentId}/sub-issue-preview`);
     const preview = parseWithFallback<SourceContextPreview | null>(
@@ -1682,9 +1706,10 @@ export class ApiClient {
     );
   }
 
-  async getIssueRelations(workspaceId: string, id: string, depth: 1 | 2 = 1, signal?: AbortSignal): Promise<IssueRelations> {
+  async getIssueRelations(workspaceId: string, id: string, depth: 1 | 2 = 1, signal?: AbortSignal, includeMentions = false): Promise<IssueRelations> {
     const { IssueRelationsResponseSchema } = await import("./issue-relations-schema");
     const params = new URLSearchParams({ workspace_id: workspaceId, depth: String(depth) });
+    if (includeMentions) params.set("include", "mentions");
     const raw = await this.fetch<unknown>(`/api/issues/${id}/relations?${params}`, { signal });
     const graph = parseWithFallback<IssueRelations | null>(raw, IssueRelationsResponseSchema, null, { endpoint: "GET /api/issues/:id/relations" });
     if (!graph) throw new Error("Invalid issue relations response");
@@ -2526,6 +2551,29 @@ export class ApiClient {
     return parseWithFallback(raw, AgentRuntimeSchema, EMPTY_RUNTIME, { endpoint: "updateRuntime" });
   }
 
+  // Pause the whole machine hosting this runtime (CHE-2430). Only the machine
+  // owner and the workspace owner may call it; the server answers 403 otherwise.
+  async pauseRuntimeMachine(
+    runtimeId: string,
+    reason: RuntimePauseReason,
+  ): Promise<RuntimePause> {
+    const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}/pause`, {
+      method: "PUT",
+      body: JSON.stringify({ reason }),
+    });
+    return parseWithFallback(
+      raw,
+      RuntimePauseSchema,
+      { reason, paused_by: null, paused_at: "", expires_at: "" },
+      { endpoint: "pauseRuntimeMachine" },
+    );
+  }
+
+  // Idempotent: resuming a machine that is not paused still answers 204.
+  async resumeRuntimeMachine(runtimeId: string): Promise<void> {
+    await this.fetch(`/api/runtimes/${runtimeId}/pause`, { method: "DELETE" });
+  }
+
   // Confirmed counterpart to a runtime access restriction PATCH. The PATCH
   // returns a structured 409 when teammates still have bound agents or active
   // tasks on the runtime; callers present that plan, then submit its exact
@@ -3206,7 +3254,7 @@ export class ApiClient {
     });
   }
 
-  async updateWorkspace(id: string, data: { name?: string; description?: string; context?: string; settings?: Record<string, unknown>; repos?: WorkspaceRepo[]; issue_prefix?: string; avatar_url?: string; compact_prompt?: string | null; wakeups_paused?: boolean; auto_compact?: { enabled?: boolean; threshold_pct?: number } | null; github_review_members?: Record<string, string>; github_review_authors?: Record<string, string> }): Promise<Workspace> {
+  async updateWorkspace(id: string, data: { name?: string; description?: string; context?: string; settings?: Record<string, unknown>; repos?: WorkspaceRepo[]; issue_prefix?: string; avatar_url?: string; compact_prompt?: string | null; wakeups_paused?: boolean; auto_compact?: { enabled?: boolean; threshold_pct?: number } | null; idle_started_guard?: { mode?: "off" | "shadow" | "act"; after_hours?: number }; github_review_members?: Record<string, string>; github_review_authors?: Record<string, string> }): Promise<Workspace> {
     return this.fetch(`/api/workspaces/${id}`, {
       method: "PATCH",
       body: JSON.stringify(data),
@@ -3241,45 +3289,6 @@ export class ApiClient {
       { method: "PATCH", body: JSON.stringify(data) },
     );
     return WorkspaceExportPrivacySchema.parse(raw);
-  }
-
-  // CHE-1839: the Jev / Governance tab reads and writes the workspace governance
-  // config. Any member may read; only owners and admins may write (the server
-  // enforces both). Responses parse strictly, see WorkspaceGovernanceConfigSchema.
-  async getGovernanceConfig(id: string): Promise<WorkspaceGovernanceConfig> {
-    const raw = await this.fetch<unknown>(`/api/workspaces/${id}/governance/config`);
-    return WorkspaceGovernanceConfigSchema.parse(raw);
-  }
-
-  async patchGovernanceConfig(
-    id: string,
-    patch: WorkspaceJevGovernancePatch | WorkspaceGovernanceRollback,
-  ): Promise<WorkspaceGovernanceConfig> {
-    const raw = await this.fetch<unknown>(`/api/workspaces/${id}/governance/config`, {
-      method: "PATCH",
-      body: JSON.stringify(patch),
-    });
-    return WorkspaceGovernanceConfigSchema.parse(raw);
-  }
-
-  // CHE-1853: the Jev provider key. Presence is readable by any member; set,
-  // replace and delete are owner/admin only. There is no read endpoint for the
-  // key, and the key is sent once in a request body that is never logged here.
-  async getJevCredential(id: string): Promise<JevCredentialPresence> {
-    const raw = await this.fetch<unknown>(`/api/workspaces/${id}/jev/credential`);
-    return JevCredentialPresenceSchema.parse(raw);
-  }
-
-  async putJevCredential(id: string, apiKey: string): Promise<JevCredentialPresence> {
-    const raw = await this.fetch<unknown>(`/api/workspaces/${id}/jev/credential`, {
-      method: "PUT",
-      body: JSON.stringify({ api_key: apiKey }),
-    });
-    return JevCredentialPresenceSchema.parse(raw);
-  }
-
-  async deleteJevCredential(id: string): Promise<void> {
-    await this.fetch(`/api/workspaces/${id}/jev/credential`, { method: "DELETE" });
   }
 
   async listPluginInstallations(workspaceId: string): Promise<PluginInstallationListResponse> {
@@ -3809,6 +3818,21 @@ export class ApiClient {
     });
   }
 
+  async listAgentPresets(agentId: string): Promise<AgentPreset[]> {
+    const raw = await this.fetch<unknown>(`/api/agents/${agentId}/presets`);
+    return parseWithFallback<AgentPreset[]>(raw, AgentPresetListSchema, [], {
+      endpoint: "GET /api/agents/:id/presets",
+    });
+  }
+
+  /** `/preset <TAB>` source: `base`, `reset`, then the presets that can run now. */
+  async getAgentPresetCompletions(agentId: string): Promise<string[]> {
+    const raw = await this.fetch<unknown>(`/api/agents/${agentId}/presets/completions`);
+    return parseWithFallback(raw, PresetCompletionsSchema, { names: [] }, {
+      endpoint: "GET /api/agents/:id/presets/completions",
+    }).names;
+  }
+
   async listAgentSkills(agentId: string): Promise<SkillSummary[]> {
     return this.fetch(`/api/agents/${agentId}/skills`);
   }
@@ -4069,6 +4093,53 @@ export class ApiClient {
     await this.fetch(`/api/decision-requests/${encodeURIComponent(requestId)}/answer`, { method: "POST", body: JSON.stringify(input) });
   }
 
+  /** The files a decision request approves, with the changed hunks against the revision each supersedes. */
+  async listDecisionArtifacts(requestId: string): Promise<DecisionArtifact[]> {
+    const raw: unknown = await this.fetch(`/api/decisions/${encodeURIComponent(requestId)}/artifacts`);
+    return parseWithFallback(raw, DecisionArtifactListSchema, { artifacts: [] }, {
+      endpoint: "GET /api/decisions/:id/artifacts",
+    }).artifacts;
+  }
+
+  // Passkey and decision-action ceremonies. Responses are strict: a drifted shape throws
+  // (see parsePasskeyResponse) so a malformed body is never read as an approval.
+  private async passkeyPost<T>(path: string, schema: Parameters<typeof parsePasskeyResponse<T>>[1], body?: unknown): Promise<T> {
+    const raw: unknown = await this.fetch(path, { method: "POST", ...(body !== undefined && { body: JSON.stringify(body) }) });
+    return parsePasskeyResponse(raw, schema, `POST ${path}`);
+  }
+
+  startPasskeyEnrollment(): Promise<PasskeyEnrollStart> {
+    return this.passkeyPost("/api/passkeys/enroll/start", PasskeyEnrollStartSchema);
+  }
+
+  async finishPasskeyEnrollment(input: { ceremony_id: string; code: string; attestation: unknown }): Promise<void> {
+    await this.passkeyPost("/api/passkeys/enroll/finish", PasskeyEnrolledSchema, input);
+  }
+
+  challengePasskeyRevocation(passkeyId: string): Promise<PasskeyChallenge> {
+    return this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke/challenge`, PasskeyChallengeSchema);
+  }
+
+  async revokePasskey(passkeyId: string, assertion: PasskeyAssertionEnvelope): Promise<void> {
+    await this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke`, PasskeyRevokedSchema, { assertion });
+  }
+
+  challengeDecisionAction(actionId: string): Promise<PasskeyChallenge> {
+    return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/challenge`, PasskeyChallengeSchema);
+  }
+
+  approveDecisionAction(
+    actionId: string,
+    input: { payload_sha256: string; assertion: PasskeyAssertionEnvelope; secrets?: Record<string, string> },
+  ): Promise<PasskeyDecisionOutcome> {
+    return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/approve`, PasskeyDecisionOutcomeSchema, input);
+  }
+
+  async getDecisionActionOutcome(actionId: string): Promise<PasskeyDecisionOutcome> {
+    const raw: unknown = await this.fetch(`/api/decision-actions/${encodeURIComponent(actionId)}/outcome`);
+    return parsePasskeyResponse(raw, PasskeyDecisionOutcomeSchema, "GET /api/decision-actions/:id/outcome");
+  }
+
   async listOpenDecisionRequests(): Promise<OpenDecisionRequest[]> {
     const raw: unknown = await this.fetch("/api/decisions/open");
     return parseWithFallback(raw, OpenDecisionRequestListSchema, [], {
@@ -4200,6 +4271,48 @@ export class ApiClient {
       PrioritizeQueuedChatTaskResponseSchema,
       EMPTY_PRIORITIZE_QUEUED_CHAT_TASK_RESPONSE,
       { endpoint: "POST /api/chat/sessions/:id/queued-tasks/:taskId/prioritize" },
+    );
+  }
+
+  /**
+   * Adds a queued follow-up to the running task instead of stopping it. The
+   * server answers 409 with a stable `code` when the run cannot take it; the
+   * follow-up then stays queued.
+   */
+  async steerChatTask(sessionId: string, taskId: string): Promise<ChatSupplement> {
+    const raw = await this.fetch<unknown>(
+      `/api/chat/sessions/${sessionId}/tasks/${taskId}/steer`,
+      { method: "POST" },
+    );
+    return parseWithFallback(raw, ChatSupplementSchema, EMPTY_CHAT_SUPPLEMENT, {
+      endpoint: "POST /api/chat/sessions/:id/tasks/:taskId/steer",
+    });
+  }
+
+  /**
+   * Sends a steered message that did not arrive as a new queued run. Pass
+   * `confirmPossibleDuplicate` only after the user accepted the duplicate
+   * warning for an `uncertain` receipt; the server refuses it otherwise.
+   */
+  async resendChatSupplement(
+    sessionId: string,
+    messageId: string,
+    options: { confirmPossibleDuplicate?: boolean } = {},
+  ): Promise<ResendChatSupplementResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/chat/sessions/${sessionId}/messages/${messageId}/supplement/resend`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          confirm_possible_duplicate: options.confirmPossibleDuplicate === true,
+        }),
+      },
+    );
+    return parseWithFallback(
+      raw,
+      ResendChatSupplementResponseSchema,
+      { task_id: "", supplement: EMPTY_CHAT_SUPPLEMENT },
+      { endpoint: "POST /api/chat/sessions/:id/messages/:messageId/supplement/resend" },
     );
   }
 

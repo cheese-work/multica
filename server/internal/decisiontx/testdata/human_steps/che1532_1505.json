@@ -1,0 +1,12 @@
+{
+  "human_steps": [
+    {
+      "action": "Set the repo secrets MULTICA_TOKEN, MULTICA_SERVER_URL and MULTICA_WORKSPACE_ID",
+      "command": "gh secret set MULTICA_TOKEN …",
+      "values": [],
+      "verify_done": "gh secret list shows the three secrets"
+    }
+  ],
+  "probes": ["not verified: nothing was probed before asking"],
+  "after_done": "x99-claude-sonnet re-runs skill-sync.yml"
+}

@@ -3,7 +3,7 @@
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { formatDateOnly } from "@multica/core/issues/date";
 import { useActorName } from "@multica/core/workspace/hooks";
-import { StatusIcon, PriorityIcon } from "../../issues/components";
+import { StatusIcon, PriorityIcon } from "../../issues/components/visuals";
 import type { InboxItem, InboxItemType, IssueStatus, IssuePriority } from "@multica/core/types";
 import { getQuickCreateOutcomeDetail } from "./inbox-display";
 import { useLocale, useT } from "../../i18n";
@@ -37,6 +37,7 @@ export function useTypeLabels(): Record<InboxItemType, string> {
     quick_create_unconfirmed: t(($) => $.types.quick_create_unconfirmed),
     autopilot_paused: t(($) => $.types.autopilot_paused),
     autopilot_quota_exceeded: t(($) => $.types.autopilot_quota_exceeded),
+    machine_drained: t(($) => $.types.machine_drained),
     children_done: t(($) => $.types.children_done),
   };
 }
