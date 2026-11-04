@@ -152,6 +152,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"dm_progress_lane":                   workspaceDelete, // CHE-3369 C1 lane row; no FK, swept by DeleteWorkspaceIssueRoots.
 	"issue_wakeup_pr_event":              workspaceDelete,
 	"issue_ci_advance":                   workspaceDelete,
+	"stage_queue_waiting":                workspaceDelete, // CHE-3611 refused-PR ledger; issue_id and agent_id FKs ON DELETE CASCADE remove its rows with the workspace.
 	"issue_wakeup_receipt":               workspaceDelete,
 	"issue_child_event":                  workspaceDelete,
 	"issue_view":                         workspaceDelete,
