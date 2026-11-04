@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -30,6 +31,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -409,16 +411,17 @@ const (
 
 // signState produces an opaque token that binds a workspace and return target
 // to a short-lived install flow.
-// Format: "<workspaceID>.<returnTo>.<issuedAtUnix>.<nonce>.<sigHex>".
+// Format: "<workspaceID>.<returnTo>.<issuedAtUnix>.<nonce>.<originB64>.<sigHex>"
+// (originB64 is the base64url browser origin that started the flow, or empty).
 func signState(workspaceID string) (string, error) {
-	return signStateForReturn(workspaceID, githubReturnToGitHub)
+	return signStateForReturn(workspaceID, githubReturnToGitHub, "")
 }
 
-func signStateForReturn(workspaceID, returnTo string) (string, error) {
-	return signStateForReturnAt(workspaceID, returnTo, time.Now())
+func signStateForReturn(workspaceID, returnTo, origin string) (string, error) {
+	return signStateForReturnAt(workspaceID, returnTo, origin, time.Now())
 }
 
-func signStateForReturnAt(workspaceID, returnTo string, now time.Time) (string, error) {
+func signStateForReturnAt(workspaceID, returnTo, origin string, now time.Time) (string, error) {
 	secret := githubWebhookSecret()
 	if secret == "" {
 		return "", errors.New("github integration is not configured")
@@ -435,6 +438,7 @@ func signStateForReturnAt(workspaceID, returnTo string, now time.Time) (string, 
 		returnTo,
 		strconv.FormatInt(now.Unix(), 10),
 		hex.EncodeToString(nonceBytes),
+		base64.RawURLEncoding.EncodeToString([]byte(origin)),
 	}, ".")
 	return payload + "." + signGitHubState(secret, payload), nil
 }
@@ -446,40 +450,44 @@ func signGitHubState(secret, payload string) string {
 }
 
 func verifyState(token string) (string, bool) {
-	workspaceID, _, ok := verifyStateWithReturn(token)
+	workspaceID, _, _, ok := verifyStateWithReturn(token)
 	return workspaceID, ok
 }
 
-func verifyStateWithReturn(token string) (workspaceID, returnTo string, ok bool) {
+func verifyStateWithReturn(token string) (workspaceID, returnTo, origin string, ok bool) {
 	return verifyStateWithReturnAt(token, time.Now())
 }
 
-func verifyStateWithReturnAt(token string, now time.Time) (workspaceID, returnTo string, ok bool) {
+func verifyStateWithReturnAt(token string, now time.Time) (workspaceID, returnTo, origin string, ok bool) {
 	secret := githubWebhookSecret()
 	if secret == "" {
-		return "", "", false
+		return "", "", "", false
 	}
 	parts := strings.Split(token, ".")
-	if len(parts) != 5 {
-		return "", "", false
+	if len(parts) != 6 {
+		return "", "", "", false
 	}
 	workspaceID, returnTo = parts[0], parts[1]
 	if !isAllowedGitHubReturnTo(returnTo) {
-		return "", "", false
+		return "", "", "", false
 	}
-	payload := strings.Join(parts[:4], ".")
-	if !hmac.Equal([]byte(signGitHubState(secret, payload)), []byte(parts[4])) {
-		return "", "", false
+	payload := strings.Join(parts[:5], ".")
+	if !hmac.Equal([]byte(signGitHubState(secret, payload)), []byte(parts[5])) {
+		return "", "", "", false
 	}
 	issuedAt, err := strconv.ParseInt(parts[2], 10, 64)
 	if err != nil {
-		return "", "", false
+		return "", "", "", false
 	}
 	age := now.Sub(time.Unix(issuedAt, 0))
 	if age > githubStateMaxAge || age < -githubStateClockSkew {
-		return "", "", false
+		return "", "", "", false
 	}
-	return workspaceID, returnTo, true
+	rawOrigin, err := base64.RawURLEncoding.DecodeString(parts[4])
+	if err != nil {
+		return "", "", "", false
+	}
+	return workspaceID, returnTo, string(rawOrigin), true
 }
 
 func isAllowedGitHubReturnTo(returnTo string) bool {
@@ -514,7 +522,7 @@ func (h *Handler) GitHubConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slug := githubAppSlug()
-	state, err := signStateForReturn(workspaceID, returnTo)
+	state, err := signStateForReturn(workspaceID, returnTo, util.RequestOrigin(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to sign state")
 		return
@@ -545,12 +553,12 @@ func (h *Handler) GitHubSetupCallback(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, settingsURL+"&github_error=missing_params", http.StatusFound)
 		return
 	}
-	workspaceID, returnTo, ok := verifyStateWithReturn(state)
+	workspaceID, returnTo, origin, ok := verifyStateWithReturn(state)
 	if !ok {
 		http.Redirect(w, r, settingsURL+"&github_error=invalid_state", http.StatusFound)
 		return
 	}
-	settingsURL = githubSettingsURL(frontend, returnTo)
+	settingsURL = githubSettingsURL(util.ReturnOrigin(origin, frontend), returnTo)
 	if installationIDStr == "" {
 		http.Redirect(w, r, settingsURL+"&github_error=missing_params", http.StatusFound)
 		return
@@ -2187,15 +2195,27 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 			return fmt.Errorf("github: apply pr %s lifecycle: %w", state, err)
 		}
 	}
+	var autoCompleteErrs []error
 	if githubFeaturesEnabled(ws) && pr.HeadRepoSame && !linkPolicy.indeterminate {
-		if state == "merged" && prevState != "merged" {
+		// An owed closed-PR replay runs after an earlier attempt may have failed
+		// past the commit: the links are unchanged but the auto-completion they
+		// owe may not have run (CHE-3402). A plain redelivery stays a no-op.
+		if state == "merged" && (prevState != "merged" || isOwedClosedReplay(ctx)) {
 			for _, issueID := range closingIssueIDs {
 				touched[issueID] = struct{}{}
 			}
 		}
 		resolver := issuestatus.NewResolver(wsID)
 		for issueID := range touched {
-			h.maybeAutoCompleteIssue(ctx, wsID, issueID, resolver)
+			err := h.autoCompleteIssue(ctx, wsID, issueID, resolver)
+			switch {
+			case err == nil:
+			case isOwedClosedReplay(ctx):
+				// Fail the replay so its marker stays and the sweep retries.
+				autoCompleteErrs = append(autoCompleteErrs, fmt.Errorf("github: auto-complete issue %s: %w", uuidToString(issueID), err))
+			default:
+				slog.Warn("pr auto-complete failed", "err", err, "issue_id", uuidToString(issueID))
+			}
 		}
 	}
 	// A PR sent back to draft (CHE-1417): the rule itself decides whether the
@@ -2215,20 +2235,20 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
 		attention.RepoOwner, attention.RepoName, attention.Number, attention.URL = p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number, p.PullRequest.HTMLURL
 		attention.HeadSHA, attention.BaseBranch, attention.HeadBranch = p.PullRequest.Head.SHA, p.PullRequest.Base.Ref, p.PullRequest.Head.Ref
-		return dispatchMergedPRWakeups(issueIDs, func(issueID pgtype.UUID) error {
+		return errors.Join(append(autoCompleteErrs, dispatchMergedPRWakeups(issueIDs, func(issueID pgtype.UUID) error {
 			return wakeup.TriggerPullRequestWakeup(ctx, issueID, attention)
 		}, func() {
 			h.publish(protocol.EventPullRequestUpdated, workspaceID, "system", "", map[string]any{
 				"pull_request":     githubPullRequestToResponse(pr, h.PRRefresh.Enabled()),
 				"linked_issue_ids": linkedIssueIDs,
 			})
-		})
+		}))...)
 	}
 	h.publish(protocol.EventPullRequestUpdated, workspaceID, "system", "", map[string]any{
 		"pull_request":     githubPullRequestToResponse(pr, h.PRRefresh.Enabled()),
 		"linked_issue_ids": linkedIssueIDs,
 	})
-	return nil
+	return errors.Join(autoCompleteErrs...)
 }
 
 // refreshOpenPRsOnBase asks for a fresh snapshot of every open PR on the base

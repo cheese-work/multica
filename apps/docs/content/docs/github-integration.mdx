@@ -226,14 +226,21 @@ Repository permissions:
 |---|---|
 | Metadata | Read-only |
 | Pull requests | Read-only |
-| Members | Read-only; required to verify that the connecting user is an active organization admin |
+| Actions | Read-only; needed by `--until-gh-run` wakeups |
 | Checks | Read-only; used to show CI status |
 | Commit statuses | Read-only; used to aggregate legacy-status CI |
+
+Organization permissions:
+
+| Permission | Level |
+|---|---|
+| Members | Read-only; required to verify that the connecting user is an active organization admin |
 
 Subscribe to these events:
 
 - **Pull request**;
-- **Pull request review**, if human review wakeups are configured;
+- **Pull request review**, **Pull request review comment**, and **Issue comment**, if human review wakeups are configured;
+- **Workflow run** and **Workflow job**, needed by `--until-gh-run` wakeups;
 - **Check suite**, **Check run**, and **Status**, which trigger CI and mergeability refreshes.
 
 PR snapshots use the Pull requests, Checks, and Commit statuses REST APIs. Contents access is not required.
@@ -268,7 +275,7 @@ Generate the private key under the GitHub App's **Private keys → Generate a pr
 
 All six GitHub values are required for the connect button. During a new connection, Multica exchanges GitHub's user-authorization code, resolves the installation as the App, and then requires either an exact personal-account ID and login match or an active organization admin membership. Visibility in a user's installation list is not treated as proof of organization authority. Verification errors fail closed. The temporary user token is revoked after the check.
 
-When adding the Members permission to an App that is already installed, approve the permission change in every target organization before connecting it to a new workspace.
+When adding the Members or Actions permission to an App that is already installed, approve the permission change in every target organization before connecting it to a new workspace. Existing installations must accept the new permission; until they do, `--until-gh-run` wakeups receive no workflow events.
 
 Optionally set `GITHUB_ALLOWED_ACCOUNT_IDS` to a comma-separated list of numeric GitHub account IDs (the `id` of the user or organization, not its login). Left unset or empty, any account that passes the check above can connect. Once set, Multica refuses to bind an installation whose account ID is not listed. The setup callback redirects with `github_error=installation_not_allowed` and creates no binding. A code-less **Redirect on update** callback is judged against the account ID already stored for that binding. A binding with no stored account ID is refused, which fails closed. A malformed value, such as a login, stops the server at startup.
 
@@ -293,6 +300,7 @@ This change needs no database migration. Restart the API server with the new env
 - **Connect button disabled**: check that `GITHUB_APP_SLUG`, `GITHUB_WEBHOOK_SECRET`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_ID`, and `GITHUB_APP_PRIVATE_KEY` reached the API process.
 - **Connect fails right after installing**: enable **Request user authorization (OAuth) during installation**, set both callback and setup URLs to `/api/github/setup`, and grant Members read-only. The connecting user must own the personal account or be an active admin of the organization.
 - **Webhook returns 401**: confirm the GitHub App and the API use the same webhook secret, then redeliver from GitHub's **Recent Deliveries**.
+- **PR still open in Multica after it merged on GitHub**: the `closed` webhook was lost. With `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY` configured, the next CI refresh reads the PR from GitHub and records the merge or close as if the webhook had arrived. Open the issue to start a refresh, or wait for the periodic background refresh. Without the credentials, redeliver the event from **Recent Deliveries**.
 - **PR not linked**: check that the repository is in the App's authorized scope, auto-linking is on, the identifier belongs to the current workspace, and nobody removed the PR from the issue.
 - **Identifier in the body but not linked**: put it right after a closing keyword (`Closes MUL-123`), or in the branch name or PR title, or link the PR by hand.
 - **No CI status**: confirm `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY` are configured, and that the App has read-only Pull requests, Checks, and Commit statuses permissions with the matching events subscribed. Contents access is not required. If permissions were added to an installed App, each installation owner must approve them on GitHub before they take effect.

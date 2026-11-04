@@ -291,34 +291,43 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 	var cancelledWakeups []db.AgentTaskQueue
 	moveGuard := issueMoveGuardFrom(ctx)
 	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil || moveGuard != nil || statusRecordFrom(ctx) != nil || len(issueWriteTaint(ctx)) > 0 || ctx.Value(issueWriteExternalReadKey{}) != nil, func(q *db.Queries) error {
-		if err := wf.lockProject(ctx, q); err != nil {
-			return err
-		}
-		if params.DuplicateOfIssueID.Valid {
-			if err := lockAndCheckDuplicateMark(ctx, q, workspaceID, params.ID, params.DuplicateOfIssueID); err != nil {
-				return err
-			}
-		}
-		if err := wf.lockIssueAndVerify(ctx, h, q); err != nil {
-			return err
-		}
-		if moveGuard != nil {
-			if err := moveGuard(ctx, q, &params); err != nil {
-				return err
-			}
-		}
-		var innerErr error
-		issue, cancelledWakeups, innerErr = updateIssueStoppingWakeups(ctx, q, params)
-		if innerErr != nil {
-			return innerErr
-		}
-		return wf.recordVerdict(ctx, q, issue)
+		var err error
+		issue, cancelledWakeups, err = h.writeIssueLocked(ctx, q, workspaceID, params, wf)
+		return err
 	})
 	if err != nil {
 		return issue, err
 	}
 	h.broadcastCancelledWakeups(ctx, workspaceID, cancelledWakeups)
 	return issue, nil
+}
+
+// writeIssueLocked is the body of an issue write inside the caller's
+// transaction, which already holds the status-archive guard: project lock,
+// workflow re-check under the issue row lock, then the write. The caller
+// broadcasts the returned wakeups after commit.
+func (h *Handler) writeIssueLocked(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, params db.UpdateIssueParams, wf *workflowWrite) (db.Issue, []db.AgentTaskQueue, error) {
+	if err := wf.lockProject(ctx, q); err != nil {
+		return db.Issue{}, nil, err
+	}
+	if params.DuplicateOfIssueID.Valid {
+		if err := lockAndCheckDuplicateMark(ctx, q, workspaceID, params.ID, params.DuplicateOfIssueID); err != nil {
+			return db.Issue{}, nil, err
+		}
+	}
+	if err := wf.lockIssueAndVerify(ctx, h, q); err != nil {
+		return db.Issue{}, nil, err
+	}
+	if moveGuard := issueMoveGuardFrom(ctx); moveGuard != nil {
+		if err := moveGuard(ctx, q, &params); err != nil {
+			return db.Issue{}, nil, err
+		}
+	}
+	issue, cancelledWakeups, err := updateIssueStoppingWakeups(ctx, q, params)
+	if err != nil {
+		return issue, nil, err
+	}
+	return issue, cancelledWakeups, wf.recordVerdict(ctx, q, issue)
 }
 
 // updateIssueStoppingWakeups writes params and, when the write moves the issue
@@ -1331,36 +1340,55 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 	args[len(args)-1] = offset
 
 	var results []searchResult
-	err := runSearchQuery(ctx, h.TxStarter, sqlQuery, args, func(rows pgx.Rows) error {
-		for rows.Next() {
-			sr, err := scanSearchIssue(rows)
-			if err != nil {
-				return fmt.Errorf("scan: %w", err)
+	// runSearch fills results from one search statement and writes the error
+	// response itself, returning false when the request is already answered.
+	runSearch := func(sqlQuery string, args []any) bool {
+		err := runSearchQuery(ctx, h.TxStarter, sqlQuery, args, func(rows pgx.Rows) error {
+			for rows.Next() {
+				sr, err := scanSearchIssue(rows)
+				if err != nil {
+					return fmt.Errorf("scan: %w", err)
+				}
+				results = append(results, sr)
 			}
-			results = append(results, sr)
+			return rows.Err()
+		})
+		if err != nil {
+			if writeSearchCancellation(w, r, err) {
+				return false
+			}
+			// Statement-timeout surfaces as SQLSTATE 57014. Return a 503
+			// so the frontend can distinguish a timeout ("try a more
+			// specific query") from a generic 500. This is the fail-fast
+			// path when GIN search indexes are absent or the database is
+			// overloaded; see runSearchQuery header for context.
+			if isSearchStatementTimeout(err) {
+				slog.Warn("search issues timed out",
+					"workspace_id", workspaceID,
+					"query_length", len([]rune(q)),
+					"timeout", searchStatementTimeout)
+				writeError(w, http.StatusServiceUnavailable, "search timed out; please refine your query or try again")
+				return false
+			}
+			slog.Warn("search issues failed", "error", err, "workspace_id", workspaceID, "query_length", len([]rune(q)))
+			writeError(w, http.StatusInternalServerError, "failed to search issues")
+			return false
 		}
-		return rows.Err()
-	})
-	if err != nil {
-		if writeSearchCancellation(w, r, err) {
-			return
-		}
-		// Statement-timeout surfaces as SQLSTATE 57014. Return a 503
-		// so the frontend can distinguish a timeout ("try a more
-		// specific query") from a generic 500. This is the fail-fast
-		// path when GIN search indexes are absent or the database is
-		// overloaded; see runSearchQuery header for context.
-		if isSearchStatementTimeout(err) {
-			slog.Warn("search issues timed out",
-				"workspace_id", workspaceID,
-				"query_length", len([]rune(q)),
-				"timeout", searchStatementTimeout)
-			writeError(w, http.StatusServiceUnavailable, "search timed out; please refine your query or try again")
-			return
-		}
-		slog.Warn("search issues failed", "error", err, "workspace_id", workspaceID, "query_length", len([]rune(q)))
-		writeError(w, http.StatusInternalServerError, "failed to search issues")
+		return true
+	}
+
+	if !runSearch(sqlQuery, args) {
 		return
+	}
+	// Typo tolerance is a fallback: a query with any normal hit never pays for it.
+	if shouldRunFuzzyFallback(q, hasNum, offset, len(results)) {
+		fuzzyQuery, fuzzyArgs := buildFuzzySearchQuery(foldDiacritics(q), includeClosed, terminalStatusKeys)
+		fuzzyArgs[1] = wsUUID
+		fuzzyArgs[len(fuzzyArgs)-2] = limit
+		fuzzyArgs[len(fuzzyArgs)-1] = offset
+		if !runSearch(fuzzyQuery, fuzzyArgs) {
+			return
+		}
 	}
 	if writeSearchCancellation(w, r, ctx.Err()) {
 		return
@@ -4413,10 +4441,13 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		defer releaseMove()
 	}
 	// Status history is written in the status transaction. A duplicate mark
-	// keeps the listener's richer row until it migrates.
+	// keeps the listener's richer row until it migrates; it gets the same
+	// trigger instead.
+	statusTrigger := statusTriggerFromRequest(r, actorType, actorID)
+	statusTrigger.Version = service.StatusTriggerVersion
 	var statusRec *statusRecord
 	if !params.DuplicateOfIssueID.Valid && !prevIssue.DuplicateOfIssueID.Valid {
-		statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTriggerFromRequest(r, actorType, actorID)}
+		statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTrigger}
 		if handoff != nil {
 			statusRec.handoffWorkflow = handoff.def.Name
 		}
@@ -4559,6 +4590,11 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		} else {
 			updatedPayload["status_trigger"] = trigger
 		}
+	}
+	// A handoff row already carries the validated trigger; a duplicate mark that
+	// reopens straight into a handled step must not replace it.
+	if _, resolved := updatedPayload["status_trigger"]; !resolved && duplicateOfPointer(issue.Status, issue.DuplicateOfIssueID) != duplicateOfPointer(prevIssue.Status, prevIssue.DuplicateOfIssueID) {
+		updatedPayload["status_trigger"] = statusTrigger
 	}
 	h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, updatedPayload)
 	h.publishRecordedStatusActivity(statusRec, actorType, actorID)
@@ -4970,6 +5006,9 @@ func (h *Handler) deleteIssuesAndCollectAttachmentURLs(ctx context.Context, issu
 			}
 		} else if !errors.Is(contextErr, pgx.ErrNoRows) {
 			return issueDeleteResult{}, fmt.Errorf("load issue source context for delete: %w", contextErr)
+		}
+		if err := qtx.DeleteDMProgressForIssue(ctx, db.DeleteDMProgressForIssueParams{IssueID: issue.ID, WorkspaceID: issue.WorkspaceID}); err != nil {
+			return issueDeleteResult{}, fmt.Errorf("delete dm progress follows: %w", err)
 		}
 		if err := qtx.DeleteIssue(ctx, db.DeleteIssueParams{ID: issue.ID, WorkspaceID: issue.WorkspaceID}); err != nil {
 			return issueDeleteResult{}, fmt.Errorf("delete issue: %w", err)
