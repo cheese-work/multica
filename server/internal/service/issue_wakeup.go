@@ -1929,10 +1929,11 @@ func (s *IssueWakeupService) dispatchWorkflowEdges(ctx context.Context, w db.Iss
 
 // waiverFollowupRecorded reports whether this waiver's own result comment exists.
 // The marker carries the decision instance, so another waiver's result on the
-// same issue does not end this check.
+// same issue does not end this check. Only the agent that runs the check can
+// record its result: a marker from a member or another agent ends nothing.
 func waiverFollowupRecorded(ctx context.Context, tx pgx.Tx, w db.IssueWakeup) (bool, error) {
 	var recorded bool
-	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM comment WHERE issue_id=$1 AND starts_with(content, $2))`,
-		w.IssueID, "Follow-up result ("+util.UUIDToString(w.FollowupInstanceID)+"):").Scan(&recorded)
+	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM comment WHERE issue_id=$1 AND author_type='agent' AND author_id=$3 AND starts_with(content, $2))`,
+		w.IssueID, "Follow-up result ("+util.UUIDToString(w.FollowupInstanceID)+"):", w.AgentID).Scan(&recorded)
 	return recorded, err
 }

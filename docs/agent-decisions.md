@@ -64,8 +64,9 @@ the instruction then tells the author to read the Crashlytics crash rate for tha
 signature after the release (firebase-crashlytics MCP). A closed issue accepts no new
 wakeup, so a crash-fix check is not one-shot: it repeats every 72 hours, with no run cap,
 until the result is recorded. The result comment starts with
-`Follow-up result (<decision instance>):`; the platform then disables that waiver's
-wakeup before the next run. Another waiver's result on the same issue does not end this
+`Follow-up result (<decision instance>):`, posted by the agent that runs the check; the
+platform then disables that waiver's wakeup before the next run. A marker from a member or
+another agent ends nothing. Another waiver's result on the same issue does not end this
 check. A run that finds the fix unreleased posts nothing. If the change will never ship,
 the author records that as the result.
 `followup_check` is limited to 2000 bytes. A refused or unsettled proposal creates no

@@ -300,6 +300,25 @@ func TestAgentDecisionOtherWaiversResultDoesNotEndThisFollowup(t *testing.T) {
 	}
 }
 
+// Only the agent that runs the check can record its result: a member or another
+// agent posting the marker early must not end the check.
+func TestAgentDecisionFollowupIgnoresResultFromOtherAuthors(t *testing.T) {
+	f := testFirstRedFixture(t)
+	f.scope["crash_signature"] = crashSignature
+	settleTestFirstRed(t, f)
+	marker := "Follow-up result (" + f.instance + "): all good."
+	dbfx.Exec(t, `INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content) VALUES ($1,$2,'member',$3,$4)`, testWorkspaceID, f.issueID, testUserID, marker)
+	dbfx.Exec(t, `INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content) VALUES ($1,$2,'agent',$3,$4)`, testWorkspaceID, f.issueID, f.peerID, marker)
+	dbfx.Exec(t, `UPDATE issue_wakeup SET next_fire_at = now() - interval '1 minute' WHERE followup_instance_id=$1`, f.instance)
+	runWakeupTick(t)
+	if n := dueFollowupRuns(t, f, f.instance); n != 1 {
+		t.Fatalf("%d runs after marker comments from other authors, want 1", n)
+	}
+	if got := followups(t, f); len(got) != 1 || !got[0].Enabled {
+		t.Fatalf("follow-up after other authors' marker: %+v, want enabled", got)
+	}
+}
+
 func insertOrdinaryWakeup(t *testing.T, f agentDecisionFixture) string {
 	t.Helper()
 	w, err := testHandler.Queries.CreateIssueWakeup(t.Context(), db.CreateIssueWakeupParams{
