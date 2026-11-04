@@ -97,6 +97,18 @@ test("one failing PR does not stop the rest; the run reports failure at the end"
   assert.deepEqual(f.log.updates, [[9]]);
 });
 
+test("authorOf is the agent in the branch name, not whoever the issue is assigned to", async () => {
+  const { authorOf } = await load();
+  assert.equal(authorOf({ head: { ref: "agent/x99-claude-sonnet-200k/che-1-abc" } }), "x99-claude-sonnet-200k");
+  assert.equal(authorOf({ head: { ref: "topic/che-1" } }), undefined);
+});
+
+test("--pr limits the run to the listed PRs", async () => {
+  const f = fakes({ prs: [pr(10), pr(11)] });
+  await (await load()).syncPrs({ ...f, repo: "o/r", base: "main", only: [11], print: () => {} });
+  assert.deepEqual(f.log.updates, [[11, "sha11"]]);
+});
+
 test("issueIdOf reads the identifier from branch, then title, then body", async () => {
   const { issueIdOf } = await load();
   assert.equal(issueIdOf({ head: { ref: "agent/a/che-3609-xyz" }, title: "", body: "" }), "CHE-3609");

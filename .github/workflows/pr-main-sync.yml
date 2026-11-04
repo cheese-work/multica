@@ -26,6 +26,9 @@ concurrency:
 
 jobs:
   sync:
+    # Off until C3 (diff-keyed evidence, CHE-3610) ships: a merge of main voids head-keyed PASS evidence.
+    # Enable with the repository variable PR_MAIN_SYNC_ENABLED=true. Manual dispatch always runs.
+    if: github.event_name == 'workflow_dispatch' || vars.PR_MAIN_SYNC_ENABLED == 'true'
     runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 10
     steps:
