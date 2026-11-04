@@ -2,8 +2,10 @@ package ghsnapshot
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"math/rand"
+	"slices"
 	"sync"
 	"time"
 
@@ -43,6 +45,10 @@ var (
 	maxChaseAttempts     = 12
 	queueBuffer          = 2048
 
+	// closedReplayTimeout bounds one owed closed-PR replay in the sweep, so a
+	// hung GitHub call cannot hold up the other sweeps (CHE-3402).
+	closedReplayTimeout = 30 * time.Second
+
 	// CHE-1665: decided snapshots are re-checked once they are this old, and
 	// the first sweep runs this long after start, so snapshots that went stale
 	// while the server was down drain without waiting a whole interval.
@@ -68,6 +74,7 @@ type Manager struct {
 	readSelector *dbreader.Selector
 	pool         TxBeginner
 	onApplied    func(ctx context.Context, prID pgtype.UUID)
+	onClosed     func(ctx context.Context, installationID int64, owner, repo string, number int32) error
 
 	concurrency   int
 	viewTTL       time.Duration
@@ -116,14 +123,14 @@ type Manager struct {
 // snapshot was actually written (guard passed), so the handler can broadcast a
 // realtime PR update. Passing a nil client yields a disabled (no-op) manager.
 func NewManager(client *Client, queries *db.Queries, pool TxBeginner, onApplied func(ctx context.Context, prID pgtype.UUID)) *Manager {
-	return newManager(client, queries, pool, FetchPRSnapshot, onApplied)
+	return newManager(client, queries, pool, fetchEnrichedSnapshot, onApplied)
 }
 
 // NewManagerWithFetcher wires the normal refresh lifecycle with a supplied
 // snapshot fetcher. Production callers should normally use NewManager.
 func NewManagerWithFetcher(client *Client, queries *db.Queries, pool TxBeginner, fetch func(context.Context, *Client, int64, string, string, int32) (*PRSnapshot, error), onApplied func(ctx context.Context, prID pgtype.UUID)) *Manager {
 	if fetch == nil {
-		fetch = FetchPRSnapshot
+		fetch = fetchEnrichedSnapshot
 	}
 	return newManager(client, queries, pool, fetch, onApplied)
 }
@@ -159,6 +166,12 @@ func newManager(client *Client, queries *db.Queries, pool TxBeginner, fetch func
 	return manager
 }
 
+// SetOnClosed registers the callback for a PR that GitHub reports closed while
+// a mirrored row is still open or draft. Call it before Start.
+func (manager *Manager) SetOnClosed(onClosed func(ctx context.Context, installationID int64, owner, repo string, number int32) error) {
+	manager.onClosed = onClosed
+}
+
 // SetReadSelector opts the refresh worker into the API server's configured
 // replica routing. It must be called before Start; managers used by tests and
 // primary-only deployments retain the safe primary default from NewManager.
@@ -170,6 +183,9 @@ func (manager *Manager) SetReadSelector(selector *dbreader.Selector) {
 
 // Enabled reports whether the pipeline will actually do anything.
 func (manager *Manager) Enabled() bool { return manager != nil && manager.client.Enabled() }
+
+// Client returns the shared GitHub App client (nil-safe: check Enabled first).
+func (manager *Manager) Client() *Client { return manager.client }
 
 // Start launches the worker pool and the TTL sweeper under ctx. No-op (and
 // safe) when the manager is disabled.
@@ -337,7 +353,9 @@ func (manager *Manager) process(ctx context.Context, addr address) {
 
 	anyApplied := false
 	anyOpenApplied := false
+	staleOpen := false
 	for _, row := range rows {
+		staleOpen = staleOpen || (snap.Closed && (row.State == "open" || row.State == "draft"))
 		applied, err := manager.applySnapshot(ctx, row.ID, snap)
 		if err != nil {
 			slog.Warn("ghsnapshot: apply snapshot failed", "err", err.Error())
@@ -352,6 +370,15 @@ func (manager *Manager) process(ctx context.Context, addr address) {
 		}
 		if manager.onApplied != nil {
 			manager.onApplied(ctx, row.ID)
+		}
+	}
+
+	// The pull_request delivery that closed this PR never landed (CHE-3402).
+	// GitHub does not redeliver it on its own, so the row would stay open.
+	if staleOpen && manager.onClosed != nil {
+		var rl *RateLimitError
+		if err := manager.onClosed(ctx, addr.InstallationID, addr.Owner, addr.Repo, addr.Number); errors.As(err, &rl) {
+			manager.extendRateLimit(addr.InstallationID, rl.RetryAfter)
 		}
 	}
 
@@ -505,10 +532,19 @@ func (manager *Manager) applySnapshot(ctx context.Context, prID pgtype.UUID, sna
 		// rows. Nothing is written.
 		return false, nil
 	}
+	redBefore, err := q.ListGitHubPRRedCheckNames(ctx, db.ListGitHubPRRedCheckNamesParams{PrID: prID, HeadSha: snap.HeadSHA})
+	if err != nil {
+		return false, err
+	}
 	if err := q.DeleteGitHubPRCheckRuns(ctx, prID); err != nil {
 		return false, err
 	}
 	for i, c := range snap.Contexts {
+		if !isFailing(c) && slices.Contains(redBefore, c.Name) {
+			// Red earlier on this same head, rerunning or green now (CHE-3257).
+			// Carried through a pending rerun so the mark is still there on green.
+			c.RedCause = CauseFlaky
+		}
 		if err := q.InsertGitHubPRCheckRun(ctx, db.InsertGitHubPRCheckRunParams{
 			PrID:            prID,
 			HeadSha:         snap.HeadSHA,
@@ -518,6 +554,7 @@ func (manager *Manager) applySnapshot(ctx context.Context, prID pgtype.UUID, sna
 			Conclusion:      textOrNull(c.Conclusion),
 			DetailsUrl:      textOrNull(c.DetailsURL),
 			IsStatusContext: c.IsStatusContext,
+			RedCause:        textOrNull(c.RedCause),
 		}); err != nil {
 			return false, err
 		}
@@ -593,6 +630,57 @@ func (manager *Manager) sweepOnce(ctx context.Context) {
 	manager.sweepUndecided(ctx)
 	manager.sweepRecheck(ctx)
 	manager.sweepConflictWatched(ctx)
+	manager.sweepClosedReplays(ctx)
+}
+
+// sweepClosedReplays hands every closed-PR replay still owed back to the
+// callback (CHE-3402). A replay is written down before it starts and removed
+// when it finishes, so one that failed after the mirror row committed, or died
+// with the process, is retried here: that PR is no longer open, so the refresh
+// would not report it again.
+func (manager *Manager) sweepClosedReplays(ctx context.Context) {
+	if manager.onClosed == nil {
+		return
+	}
+	owed, err := manager.queries.ClaimGitHubPRClosedReplays(ctx, int32(manager.sweepMaxRows))
+	if err != nil {
+		slog.Warn("ghsnapshot: claim owed closed replays failed", "err", err.Error())
+		return
+	}
+	for _, r := range owed {
+		addr := address{InstallationID: r.InstallationID, Owner: r.RepoOwner, Repo: r.RepoName, Number: r.PrNumber}
+		manager.replayOwedClosed(ctx, addr)
+	}
+}
+
+// replayOwedClosed runs one owed replay under the refresh pipeline's outbound
+// rules: skipped while its installation is rate limited, skipped (marker kept)
+// when no workspace that mirrors the PR has GitHub enabled, bounded by
+// closedReplayTimeout, and a rate limit it hits starts the installation cooldown.
+func (manager *Manager) replayOwedClosed(ctx context.Context, addr address) {
+	if manager.rateLimitPause(addr.InstallationID) > 0 {
+		return
+	}
+	rows, err := manager.listRows(ctx, db.ListGitHubPRRowsByAddressParams{
+		InstallationID: addr.InstallationID,
+		RepoOwner:      addr.Owner,
+		RepoName:       addr.Repo,
+		PrNumber:       addr.Number,
+	})
+	if err != nil {
+		slog.Warn("ghsnapshot: owed closed replay eligibility check failed", "err", err.Error())
+		return
+	}
+	if len(rows) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, closedReplayTimeout)
+	defer cancel()
+	err = manager.onClosed(ctx, addr.InstallationID, addr.Owner, addr.Repo, addr.Number)
+	var rl *RateLimitError
+	if errors.As(err, &rl) {
+		manager.extendRateLimit(addr.InstallationID, rl.RetryAfter)
+	}
 }
 
 func (manager *Manager) sweepUndecided(ctx context.Context) {

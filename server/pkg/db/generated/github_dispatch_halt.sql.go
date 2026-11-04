@@ -50,6 +50,88 @@ func (q *Queries) HaltGitHubDispatch(ctx context.Context, arg HaltGitHubDispatch
 	return err
 }
 
+const hasUnfinishedGitHubDispatchHaltSweep = `-- name: HasUnfinishedGitHubDispatchHaltSweep :one
+SELECT EXISTS (SELECT 1 FROM github_dispatch_halt_audit WHERE workspace_id = $1 AND halted AND (sweep_pending OR sweep_failed))
+`
+
+// Read by a restore under the exclusive lock, after it reran the sweeps it knew of: a sweep still
+// pending or failed now means a halt committed in between, and the restore is refused.
+func (q *Queries) HasUnfinishedGitHubDispatchHaltSweep(ctx context.Context, workspaceID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, hasUnfinishedGitHubDispatchHaltSweep, workspaceID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const listAbandonedGitHubDispatchHaltSweeps = `-- name: ListAbandonedGitHubDispatchHaltSweeps :many
+SELECT id, scope, created_at FROM github_dispatch_halt_audit
+WHERE workspace_id = $1 AND halted AND (sweep_failed OR (sweep_pending AND created_at <= now() - interval '10 minutes'))
+ORDER BY created_at
+`
+
+type ListAbandonedGitHubDispatchHaltSweepsRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	Scope     string             `json:"scope"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+// A sweep that failed, or is still pending after ten minutes (a crash), is unfinished: the next
+// restore runs it again first. A successful rerun clears sweep_failed and sweep_pending.
+func (q *Queries) ListAbandonedGitHubDispatchHaltSweeps(ctx context.Context, workspaceID pgtype.UUID) ([]ListAbandonedGitHubDispatchHaltSweepsRow, error) {
+	rows, err := q.db.Query(ctx, listAbandonedGitHubDispatchHaltSweeps, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAbandonedGitHubDispatchHaltSweepsRow{}
+	for rows.Next() {
+		var i ListAbandonedGitHubDispatchHaltSweepsRow
+		if err := rows.Scan(&i.ID, &i.Scope, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGitHubDispatchHaltAudit = `-- name: ListGitHubDispatchHaltAudit :many
+SELECT id, workspace_id, scope, halted, actor_id, actor_source, runs_revoked, sweep_failed, sweep_pending, created_at FROM github_dispatch_halt_audit WHERE workspace_id = $1 ORDER BY created_at DESC, id DESC LIMIT 20
+`
+
+func (q *Queries) ListGitHubDispatchHaltAudit(ctx context.Context, workspaceID pgtype.UUID) ([]GithubDispatchHaltAudit, error) {
+	rows, err := q.db.Query(ctx, listGitHubDispatchHaltAudit, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GithubDispatchHaltAudit{}
+	for rows.Next() {
+		var i GithubDispatchHaltAudit
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Scope,
+			&i.Halted,
+			&i.ActorID,
+			&i.ActorSource,
+			&i.RunsRevoked,
+			&i.SweepFailed,
+			&i.SweepPending,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGitHubDispatchHalts = `-- name: ListGitHubDispatchHalts :many
 SELECT workspace_id, scope, halted_by, halted_at FROM github_dispatch_halt WHERE workspace_id = $1 ORDER BY scope
 `
@@ -91,24 +173,32 @@ WHERE i.workspace_id = $1
         SELECT 1 FROM issue_wakeup w
         WHERE w.id = t.trigger_evidence_ref_id AND w.system_rule LIKE 'pr\_%'))
   )
-  AND EXISTS (
-    SELECT 1 FROM issue_pull_request link
-    JOIN github_pull_request pr ON pr.id = link.pull_request_id
-    WHERE link.issue_id = i.id
-      AND $2::text IN ('*', lower(pr.repo_owner), lower(pr.repo_owner || '/' || pr.repo_name))
-  )
+  AND CASE
+    WHEN t.context ? 'github_dispatch_repo' THEN
+      $2::text IN ('*', split_part(t.context->>'github_dispatch_repo', '/', 1), t.context->>'github_dispatch_repo')
+    ELSE EXISTS (
+      SELECT 1 FROM issue_pull_request link
+      JOIN github_pull_request pr ON pr.id = link.pull_request_id
+      WHERE link.issue_id = i.id
+        AND $2::text IN ('*', lower(pr.repo_owner), lower(pr.repo_owner || '/' || pr.repo_name))
+    )
+  END
+  AND t.created_at < $3::timestamptz
 `
 
 type ListGitHubTriggeredActiveTasksParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	Scope       string      `json:"scope"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Scope       string             `json:"scope"`
+	Before      pgtype.Timestamptz `json:"before"`
 }
 
-// Live runs started by a GitHub event inside a scope: a PR system wakeup
+// Live runs started by a GitHub event inside a scope, created before the halt that asked for the sweep
+// (a sweep that outlives its lease then never reaches a run started after a restore): a PR system wakeup
 // (pr_merged, pr_checks_*, pr_needs_attention), a PR review wakeup, or a CI-green
-// workflow handoff (marked by MarkGitHubDispatchRun). The scope is matched against the repos of the issue's linked PRs.
+// workflow handoff (marked by MarkGitHubDispatchRun). The scope is matched against
+// the repo that triggered the run when recorded, else the repos of the issue's linked PRs.
 func (q *Queries) ListGitHubTriggeredActiveTasks(ctx context.Context, arg ListGitHubTriggeredActiveTasksParams) ([]pgtype.UUID, error) {
-	rows, err := q.db.Query(ctx, listGitHubTriggeredActiveTasks, arg.WorkspaceID, arg.Scope)
+	rows, err := q.db.Query(ctx, listGitHubTriggeredActiveTasks, arg.WorkspaceID, arg.Scope, arg.Before)
 	if err != nil {
 		return nil, err
 	}
@@ -127,13 +217,36 @@ func (q *Queries) ListGitHubTriggeredActiveTasks(ctx context.Context, arg ListGi
 	return items, nil
 }
 
+const lockGitHubDispatchHaltExclusive = `-- name: LockGitHubDispatchHaltExclusive :exec
+SELECT pg_advisory_xact_lock(hashtextextended('github_dispatch_halt:' || $1::uuid::text, 0))
+`
+
+// Taken by a switch change; waits for in-flight dispatches and blocks new ones until it commits.
+func (q *Queries) LockGitHubDispatchHaltExclusive(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockGitHubDispatchHaltExclusive, workspaceID)
+	return err
+}
+
+const lockGitHubDispatchHaltShared = `-- name: LockGitHubDispatchHaltShared :exec
+SELECT pg_advisory_xact_lock_shared(hashtextextended('github_dispatch_halt:' || $1::uuid::text, 0))
+`
+
+// Held by a dispatch until its transaction ends, so a switch change cannot slip
+// between the dispatch's check and its commit.
+func (q *Queries) LockGitHubDispatchHaltShared(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockGitHubDispatchHaltShared, workspaceID)
+	return err
+}
+
 const markGitHubDispatchRun = `-- name: MarkGitHubDispatchRun :exec
 UPDATE agent_task_queue SET context = COALESCE(context, '{}'::jsonb) || jsonb_build_object('github_dispatch', $1::text)
-WHERE id = $2 AND issue_id = $3
+  || CASE WHEN $2::text = '' THEN '{}'::jsonb ELSE jsonb_build_object('github_dispatch_repo', lower($2::text)) END
+WHERE id = $3 AND issue_id = $4
 `
 
 type MarkGitHubDispatchRunParams struct {
 	Source  string      `json:"source"`
+	Repo    string      `json:"repo"`
 	TaskID  pgtype.UUID `json:"task_id"`
 	IssueID pgtype.UUID `json:"issue_id"`
 }
@@ -141,9 +254,50 @@ type MarkGitHubDispatchRunParams struct {
 // Tags one run as started by a GitHub event, for a workflow handoff that
 // carries no wakeup or review marker of its own. The caller names the exact
 // task its enqueue created, so a later run of the issue is never tagged.
+// A non-empty repo ("owner/repo") records the repo that triggered the run, so the
+// sweep matches that repo even after the issue's PR links change.
 func (q *Queries) MarkGitHubDispatchRun(ctx context.Context, arg MarkGitHubDispatchRunParams) error {
-	_, err := q.db.Exec(ctx, markGitHubDispatchRun, arg.Source, arg.TaskID, arg.IssueID)
+	_, err := q.db.Exec(ctx, markGitHubDispatchRun,
+		arg.Source,
+		arg.Repo,
+		arg.TaskID,
+		arg.IssueID,
+	)
 	return err
+}
+
+const recordGitHubDispatchHaltAudit = `-- name: RecordGitHubDispatchHaltAudit :one
+INSERT INTO github_dispatch_halt_audit (workspace_id, scope, halted, actor_id, actor_source, sweep_pending, created_at)
+VALUES ($1, $2, $3, $4, $5, $3, clock_timestamp())
+RETURNING id, created_at
+`
+
+type RecordGitHubDispatchHaltAuditParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Scope       string      `json:"scope"`
+	Halted      bool        `json:"halted"`
+	ActorID     pgtype.UUID `json:"actor_id"`
+	ActorSource string      `json:"actor_source"`
+}
+
+type RecordGitHubDispatchHaltAuditRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+// created_at is the clock at the insert, under the exclusive admission lock: every admission that
+// started before the halt finished before it, so the sweep's cutoff covers all their runs.
+func (q *Queries) RecordGitHubDispatchHaltAudit(ctx context.Context, arg RecordGitHubDispatchHaltAuditParams) (RecordGitHubDispatchHaltAuditRow, error) {
+	row := q.db.QueryRow(ctx, recordGitHubDispatchHaltAudit,
+		arg.WorkspaceID,
+		arg.Scope,
+		arg.Halted,
+		arg.ActorID,
+		arg.ActorSource,
+	)
+	var i RecordGitHubDispatchHaltAuditRow
+	err := row.Scan(&i.ID, &i.CreatedAt)
+	return i, err
 }
 
 const resumeGitHubDispatch = `-- name: ResumeGitHubDispatch :execrows
@@ -161,4 +315,19 @@ func (q *Queries) ResumeGitHubDispatch(ctx context.Context, arg ResumeGitHubDisp
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const setGitHubDispatchHaltAuditSweep = `-- name: SetGitHubDispatchHaltAuditSweep :exec
+UPDATE github_dispatch_halt_audit SET runs_revoked = $2, sweep_failed = $3, sweep_pending = false WHERE id = $1
+`
+
+type SetGitHubDispatchHaltAuditSweepParams struct {
+	ID          pgtype.UUID `json:"id"`
+	RunsRevoked int32       `json:"runs_revoked"`
+	SweepFailed bool        `json:"sweep_failed"`
+}
+
+func (q *Queries) SetGitHubDispatchHaltAuditSweep(ctx context.Context, arg SetGitHubDispatchHaltAuditSweepParams) error {
+	_, err := q.db.Exec(ctx, setGitHubDispatchHaltAuditSweep, arg.ID, arg.RunsRevoked, arg.SweepFailed)
+	return err
 }
