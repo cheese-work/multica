@@ -1125,11 +1125,6 @@ type DmProgressFollow struct {
 	ReportingRootID    pgtype.UUID        `json:"reporting_root_id"`
 }
 
-type DmProgressFollowTop struct {
-	StartID    pgtype.UUID `json:"start_id"`
-	TopIssueID pgtype.UUID `json:"top_issue_id"`
-}
-
 type DmProgressLane struct {
 	LineageID       pgtype.UUID        `json:"lineage_id"`
 	WorkspaceID     pgtype.UUID        `json:"workspace_id"`

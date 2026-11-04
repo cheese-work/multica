@@ -14,24 +14,28 @@ CREATE TABLE dm_progress_data_incident (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TEMP TABLE dm_progress_follow_top AS
+-- One incident per follow whose walk never reaches a parentless top.
+INSERT INTO dm_progress_data_incident (workspace_id, issue_id, follow_id, kind)
 WITH RECURSIVE walk AS (
     SELECT id AS start_id, id, issue_id, parent_follow_id FROM dm_progress_follow
     UNION ALL
     SELECT w.start_id, f.id, f.issue_id, f.parent_follow_id
     FROM walk w JOIN dm_progress_follow f ON f.id = w.parent_follow_id
 ) CYCLE id SET is_cycle USING path
-SELECT start_id, issue_id AS top_issue_id FROM walk WHERE NOT is_cycle AND parent_follow_id IS NULL;
-
-INSERT INTO dm_progress_data_incident (workspace_id, issue_id, follow_id, kind)
 SELECT f.workspace_id, f.issue_id, f.id, 'parent_cycle'
 FROM dm_progress_follow f
-WHERE NOT EXISTS (SELECT 1 FROM dm_progress_follow_top t WHERE t.start_id = f.id);
+WHERE NOT EXISTS (SELECT 1 FROM walk w WHERE w.start_id = f.id AND NOT w.is_cycle AND w.parent_follow_id IS NULL);
 
+WITH RECURSIVE walk AS (
+    SELECT id AS start_id, id, issue_id, parent_follow_id FROM dm_progress_follow
+    UNION ALL
+    SELECT w.start_id, f.id, f.issue_id, f.parent_follow_id
+    FROM walk w JOIN dm_progress_follow f ON f.id = w.parent_follow_id
+) CYCLE id SET is_cycle USING path
 UPDATE dm_progress_follow f
-SET reporting_root_id = COALESCE((SELECT t.top_issue_id FROM dm_progress_follow_top t WHERE t.start_id = f.id), f.issue_id);
-
-DROP TABLE dm_progress_follow_top;
+SET reporting_root_id = COALESCE(
+    (SELECT w.issue_id FROM walk w WHERE w.start_id = f.id AND NOT w.is_cycle AND w.parent_follow_id IS NULL),
+    f.issue_id);
 
 ALTER TABLE dm_progress_follow ALTER COLUMN reporting_root_id SET NOT NULL;
 
