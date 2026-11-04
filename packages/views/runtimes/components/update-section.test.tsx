@@ -195,6 +195,28 @@ describe("UpdateSection progress", () => {
     expect(screen.getByText("Downloading")).toBeInTheDocument();
   });
 
+  // The daemon (CHE-3569) sends "downloading" for bytes and the CLI's own
+  // phase lines ("Verifying sha256", ...) verbatim for the rest.
+  it.each([
+    ["downloading", "Downloading"],
+    ["Verifying sha256", "Verifying"],
+    ["Probing --version", "Verifying"],
+    ["Installing", "Installing"],
+    ["Installed", "Installing"],
+  ])("labels the daemon phase %j as %s", async (phase, label) => {
+    initiateUpdate.mockResolvedValue({ id: "upd-1" });
+    getUpdateResult.mockResolvedValue({
+      status: "running",
+      progress: { phase, bytes_done: 1, bytes_total: 2 },
+    });
+    renderSection({ runtimeId: "runtime-1", updateStatus: UPDATE });
+
+    fireEvent.click(screen.getByRole("button", { name: "Update" }));
+
+    await screen.findByRole("progressbar", {}, POLL);
+    expect(screen.getByText(label)).toBeInTheDocument();
+  });
+
   it("falls back to the spinner status when the daemon reports no progress", async () => {
     initiateUpdate.mockResolvedValue({ id: "upd-1" });
     getUpdateResult.mockResolvedValue({ status: "running" });

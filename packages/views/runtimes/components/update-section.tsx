@@ -32,11 +32,17 @@ const statusConfig: Record<
   timeout: { icon: XCircle, color: "text-warning" },
 };
 
-// Phases the daemon reports; an unknown one shows the bar without a label.
-const PROGRESS_PHASES = ["download", "verify", "install"] as const;
-type ProgressPhase = (typeof PROGRESS_PHASES)[number];
-const isProgressPhase = (phase: string): phase is ProgressPhase =>
-  (PROGRESS_PHASES as readonly string[]).includes(phase);
+type ProgressPhase = "download" | "verify" | "install";
+
+// The daemon sends "downloading" for bytes and the CLI's own phase lines
+// ("Verifying sha256", "Probing --version", "Installing", "Installed")
+// verbatim. Unknown phases show the bar with the generic status text.
+function progressPhase(phase: string): ProgressPhase | null {
+  if (/^download/i.test(phase)) return "download";
+  if (/^(verif|prob)/i.test(phase)) return "verify";
+  if (/^install/i.test(phase)) return "install";
+  return null;
+}
 
 interface UpdateSectionProps {
   /** Null for a read-only viewer who cannot use a runtime as the command channel. */
@@ -176,6 +182,7 @@ export function UpdateSection({
   const Icon = config?.icon;
   const isActive = status === "pending" || status === "running";
   // An unknown total (0) renders an indeterminate bar rather than a fake percent.
+  const phaseKey = progress ? progressPhase(progress.phase) : null;
   const progressValue =
     progress && progress.bytes_total > 0
       ? Math.min(100, Math.round((progress.bytes_done / progress.bytes_total) * 100))
@@ -261,8 +268,8 @@ export function UpdateSection({
       {isActive && progress && (
         <Progress value={progressValue} className="max-w-xs gap-1">
           <ProgressLabel className="text-caption text-muted-foreground">
-            {isProgressPhase(progress.phase)
-              ? t(($) => $.update.phase[progress.phase as ProgressPhase])
+            {phaseKey
+              ? t(($) => $.update.phase[phaseKey])
               : t(($) => $.update.status[status])}
           </ProgressLabel>
           {progressValue !== null && (
