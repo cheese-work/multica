@@ -1,15 +1,18 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
+	"github.com/multica-ai/multica/server/internal/passkey/passkeytest"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -213,7 +216,7 @@ func TestSettingsPatchRequestRefusals(test *testing.T) {
 		{"denylisted key", http.StatusForbidden, "denylisted", map[string]any{"delegated_governed_writes": map[string]any{}}, nil},
 		{"unknown key", http.StatusForbidden, "denylisted", map[string]any{"never_heard_of_it": 1}, nil},
 		{"server-stamped pause key", http.StatusForbidden, "denylisted", map[string]any{"wakeups_paused_by": "x"}, nil},
-		{"pause switch needs its own flow", http.StatusForbidden, "denylisted", map[string]any{"wakeups_paused": true}, nil},
+		{"pause switch is not a boolean", http.StatusBadRequest, "invalid_params", map[string]any{"wakeups_paused": "yes"}, nil},
 		{"atomic: one denied key among allowed", http.StatusForbidden, "denylisted", map[string]any{"compact_prompt": "new", "delegated_governed_writes": 1}, nil},
 		{"atomic: one invalid value among valid", http.StatusBadRequest, "invalid_params", map[string]any{"compact_prompt": "new", "github_wake_on_pr_merge": "yes"}, nil},
 		{"compact_prompt wrong type", http.StatusBadRequest, "invalid_params", map[string]any{"compact_prompt": 5}, nil},
@@ -316,6 +319,22 @@ func TestSettingsPatchApproveRefusals(test *testing.T) {
 	})
 }
 
+// approveRaw posts the approval and returns the status and body without
+// failing the test, so concurrent callers can report both outcomes.
+func (request settingsRequest) approveRaw(test *testing.T, handler *Handler) (int, string) {
+	test.Helper()
+	raw, err := json.Marshal(request.claim(test))
+	if err != nil {
+		test.Error(err)
+		return 0, ""
+	}
+	call := request.action.decide("approve", request.action.humanID, "interactive_jwt")
+	call.Body = readerCloser{bytes.NewReader(raw)}
+	recorder := httptest.NewRecorder()
+	handler.ApproveDecisionAction(recorder, call)
+	return recorder.Code, recorder.Body.String()
+}
+
 func TestSettingsPatchConcurrentApprovalsApplyOnce(test *testing.T) {
 	first, _ := requestSettings(test, http.StatusCreated, map[string]any{"compact_prompt": "new"}, nil)
 	other := map[string]any{"compact_prompt": "other"}
@@ -324,13 +343,13 @@ func TestSettingsPatchConcurrentApprovalsApplyOnce(test *testing.T) {
 	})
 	makeApproverOwner(test, first.action, "owner")
 	handler := withVerifier(acceptingVerifier)
-	statuses := make([]int, 2)
+	statuses, bodies := make([]int, 2), make([]string, 2)
 	var group sync.WaitGroup
 	for i, request := range []settingsRequest{first, second} {
 		group.Add(1)
 		go func() {
 			defer group.Done()
-			statuses[i] = approveStatus(test, handler, configRequest{action: request.action})
+			statuses[i], bodies[i] = request.approveRaw(test, handler)
 		}()
 	}
 	group.Wait()
@@ -338,4 +357,173 @@ func TestSettingsPatchConcurrentApprovalsApplyOnce(test *testing.T) {
 	if applied != 1 {
 		test.Fatalf("applied %d times (statuses %v), want exactly 1", applied, statuses)
 	}
+	winner := 0
+	if statuses[1] == http.StatusOK {
+		winner = 1
+	}
+	if statuses[winner] != http.StatusOK {
+		test.Fatalf("statuses %v; one approval must succeed", statuses)
+	}
+	// The loser meets either the busy try-lock or the winner's new value.
+	if loser := 1 - winner; statuses[loser] != http.StatusConflict || !(strings.Contains(bodies[loser], "precondition_drift") || strings.Contains(bodies[loser], "busy_retry")) {
+		test.Fatalf("loser got %d %s; want 409 precondition_drift or busy_retry", statuses[loser], bodies[loser])
+	}
+}
+
+func TestSettingsPatchSecondRequestOnTheSameBaseDrifts(test *testing.T) {
+	first, _ := requestSettings(test, http.StatusCreated, map[string]any{"compact_prompt": "new"}, nil)
+	other := map[string]any{"compact_prompt": "other"}
+	second, _ := fileSettings(test, http.StatusCreated, map[string]any{
+		"workspace_id": testWorkspaceID, "settings": other, "base_sha256": first.base, "after_sha256": patchDigest(test, other),
+	})
+	handler := withVerifier(acceptingVerifier)
+	first.approveOwner(test, handler, http.StatusOK)
+	mustContain(test, second.approveOwner(test, handler, http.StatusConflict), "precondition_drift")
+	if got := storedSettings(test); string(got["compact_prompt"]) != `"new"` {
+		test.Fatalf("the losing approval changed settings: %v", got)
+	}
+}
+
+func TestSettingsPatchApprovesWithARealPasskey(test *testing.T) {
+	request, _ := requestSettings(test, http.StatusCreated, map[string]any{"compact_prompt": "new"}, nil)
+	device, keyID := request.action.enrollPasskey(test)
+	makeApproverOwner(test, request.action, "owner")
+	handler := passkeyHandler(test)
+	issued := request.action.issue(test, handler)
+	claim := request.claim(test)
+	claim["assertion"] = request.action.assertion(test, device, issued, passkeyStart+1)
+	request.action.approve(test, handler, claim, http.StatusOK)
+	if got := storedSettings(test); string(got["compact_prompt"]) != `"new"` {
+		test.Fatalf("settings after a signed approval: %v", got)
+	}
+	var used string
+	dbfx.QueryRow(test, `SELECT webauthn_credential_id::text FROM decision_action WHERE id = $1`, request.action.actionID).Scan(&used)
+	if used != keyID {
+		test.Fatalf("recorded credential %s, want %s", used, keyID)
+	}
+	claim["assertion"] = request.action.assertion(test, device, issued, passkeyStart+2)
+	request.action.approve(test, handler, claim, http.StatusConflict)
+	if n := request.action.activityCount(test, "config_change_applied"); n != 1 {
+		test.Fatalf("config_change_applied rows = %d after a replay, want 1", n)
+	}
+}
+
+func TestSettingsPatchRefusesWithoutAValidAssertion(test *testing.T) {
+	handler := passkeyHandler(test)
+	for name, assertion := range map[string]func(settingsRequest, *passkeytest.Authenticator, issuedChallenge) any{
+		"missing": func(settingsRequest, *passkeytest.Authenticator, issuedChallenge) any { return nil },
+		"signed for another challenge": func(request settingsRequest, device *passkeytest.Authenticator, issued issuedChallenge) any {
+			issued.Options.PublicKey.Challenge = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+			return request.action.assertion(test, device, issued, passkeyStart+1)
+		},
+	} {
+		test.Run(name, func(test *testing.T) {
+			request, _ := requestSettings(test, http.StatusCreated, map[string]any{"compact_prompt": "new"}, nil)
+			device, _ := request.action.enrollPasskey(test)
+			makeApproverOwner(test, request.action, "owner")
+			issued := request.action.issue(test, handler)
+			claim := request.claim(test)
+			claim["assertion"] = assertion(request, device, issued)
+			request.action.approve(test, handler, claim, http.StatusForbidden)
+			request.assertNotApplied(test)
+		})
+	}
+	test.Run("assertion issued for another action", func(test *testing.T) {
+		request, _ := requestSettings(test, http.StatusCreated, map[string]any{"compact_prompt": "new"}, nil)
+		request.action.enrollPasskey(test)
+		makeApproverOwner(test, request.action, "owner")
+		otherPatch := map[string]any{"compact_prompt": "other"}
+		other, _ := fileSettings(test, http.StatusCreated, map[string]any{
+			"workspace_id": testWorkspaceID, "settings": otherPatch, "base_sha256": request.base, "after_sha256": patchDigest(test, otherPatch),
+		})
+		otherDevice, _ := other.action.enrollPasskey(test)
+		makeApproverOwner(test, other.action, "owner")
+		issued := other.action.issue(test, handler)
+		claim := request.claim(test)
+		claim["assertion"] = other.action.assertion(test, otherDevice, issued, passkeyStart+1)
+		request.action.approve(test, handler, claim, http.StatusForbidden)
+		request.assertNotApplied(test)
+	})
+	test.Run("owner role revoked after the challenge", func(test *testing.T) {
+		request, _ := requestSettings(test, http.StatusCreated, map[string]any{"compact_prompt": "new"}, nil)
+		device, _ := request.action.enrollPasskey(test)
+		makeApproverOwner(test, request.action, "owner")
+		issued := request.action.issue(test, handler)
+		dbfx.Exec(test, `UPDATE member SET role = 'member' WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, request.action.humanID)
+		claim := request.claim(test)
+		claim["assertion"] = request.action.assertion(test, device, issued, passkeyStart+1)
+		request.action.approve(test, handler, claim, http.StatusForbidden)
+		request.assertNotApplied(test)
+	})
+}
+
+// seedPause stores the settings, then files and approves a patch of the pause
+// switch; it returns the approval handler's action.
+func approvePause(test *testing.T, seed string, patch, after map[string]any) settingsRequest {
+	test.Helper()
+	setWorkspaceSettings(test, seed)
+	request, _ := fileSettings(test, http.StatusCreated, map[string]any{
+		"workspace_id": testWorkspaceID, "settings": patch,
+		"base_sha256": liveSettingsDigest(test, wakeupsPausedKey), "after_sha256": patchDigest(test, after),
+	})
+	request.approveOwner(test, withVerifier(acceptingVerifier), http.StatusOK)
+	return request
+}
+
+func workspaceActivityCount(test *testing.T, action string) int {
+	test.Helper()
+	return dbfx.Count(test, `SELECT count(*) FROM activity_log WHERE workspace_id = $1 AND action = $2`, testWorkspaceID, action)
+}
+
+func TestSettingsPatchPausesWithTheServerStamp(test *testing.T) {
+	before := workspaceActivityCount(test, wakeupsPausedAction)
+	request := approvePause(test, seededSettings, map[string]any{wakeupsPausedKey: true}, map[string]any{wakeupsPausedKey: true})
+	got := storedSettings(test)
+	if string(got[wakeupsPausedKey]) != `true` || string(got[wakeupsPausedByKey]) != `"`+request.action.humanID+`"` || len(got[wakeupsPausedAtKey]) == 0 {
+		test.Fatalf("pause not stamped by the approver: %v", got)
+	}
+	if string(got["compact_prompt"]) != `"old"` {
+		test.Fatalf("an unnamed key changed: %v", got)
+	}
+	if after := workspaceActivityCount(test, wakeupsPausedAction); after != before+1 {
+		test.Fatalf("wakeups_paused activity rows %d, want %d", after, before+1)
+	}
+	test.Cleanup(func() {
+		dbfx.Exec(test, `DELETE FROM activity_log WHERE workspace_id = $1 AND action = $2`, testWorkspaceID, wakeupsPausedAction)
+	})
+}
+
+func TestSettingsPatchPauseOfAPausedWorkspaceKeepsTheStamp(test *testing.T) {
+	seed := `{"wakeups_paused":true,"wakeups_paused_by":"earlier","wakeups_paused_at":"2026-01-01T00:00:00Z"}`
+	before := workspaceActivityCount(test, wakeupsPausedAction)
+	approvePause(test, seed, map[string]any{wakeupsPausedKey: true}, map[string]any{wakeupsPausedKey: true})
+	got := storedSettings(test)
+	if string(got[wakeupsPausedByKey]) != `"earlier"` || string(got[wakeupsPausedAtKey]) != `"2026-01-01T00:00:00Z"` {
+		test.Fatalf("the stamp of the earlier pause changed: %v", got)
+	}
+	if after := workspaceActivityCount(test, wakeupsPausedAction); after != before {
+		test.Fatalf("a pause that did not flip wrote an activity row")
+	}
+}
+
+func TestSettingsPatchResumeClearsThePauseAndSettles(test *testing.T) {
+	seed := `{"compact_prompt":"old","wakeups_paused":true,"wakeups_paused_by":"earlier","wakeups_paused_at":"2026-01-01T00:00:00Z"}`
+	before := workspaceActivityCount(test, wakeupsResumedAction)
+	// false and null are one resume: an unpaused workspace stores no switch.
+	approvePause(test, seed, map[string]any{wakeupsPausedKey: false}, map[string]any{wakeupsPausedKey: nil})
+	got := storedSettings(test)
+	for _, key := range []string{wakeupsPausedKey, wakeupsPausedByKey, wakeupsPausedAtKey} {
+		if _, present := got[key]; present {
+			test.Fatalf("%s survived the resume: %v", key, got)
+		}
+	}
+	if len(got[wakeupsResumedAtKey]) == 0 || string(got["compact_prompt"]) != `"old"` {
+		test.Fatalf("resume did not settle or changed an unnamed key: %v", got)
+	}
+	if after := workspaceActivityCount(test, wakeupsResumedAction); after != before+1 {
+		test.Fatalf("wakeups_resumed activity rows %d, want %d", after, before+1)
+	}
+	test.Cleanup(func() {
+		dbfx.Exec(test, `DELETE FROM activity_log WHERE workspace_id = $1 AND action = $2`, testWorkspaceID, wakeupsResumedAction)
+	})
 }

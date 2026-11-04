@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -81,7 +84,7 @@ var objectMergeSettings = map[string]bool{"auto_compact": true, "idle_started_gu
 var settingsBoolKeys = []string{
 	"github_auto_link_prs_enabled", "github_pr_sidebar_enabled", "co_authored_by_enabled",
 	"github_wake_on_pr_merge", "github_wake_on_ci_failure", "github_wake_on_ci_success", "github_wake_on_pr_attention",
-	"system_wakeup_child_done", "agent_comment_wake_policy_enabled",
+	"system_wakeup_child_done", "agent_comment_wake_policy_enabled", wakeupsPausedKey,
 }
 
 func settingsInvalid(format string, args ...any) error {
@@ -151,6 +154,16 @@ func settingsPatchAfter(stored, patch map[string]json.RawMessage) (map[string]js
 		if err := validateSettingsPatchValue(key, value); err != nil {
 			return nil, err
 		}
+		if key == wakeupsPausedKey {
+			// An unpaused workspace stores no switch (reconcileWakeupsPause), so
+			// false reads back as unset, the same as null.
+			if bytes.Equal(bytes.TrimSpace(value), []byte("true")) {
+				after[key] = value
+			} else {
+				after[key] = nil
+			}
+			continue
+		}
 		if !objectMergeSettings[key] {
 			after[key] = value
 			continue
@@ -216,11 +229,6 @@ func readSettingsPatch(ctx context.Context, queries *db.Queries, workspaceID pgt
 	if decisionaction.CheckConfigChange(read.Field, keys) != nil {
 		return read, nil // the core refuses with the denylist code
 	}
-	if slices.Contains(keys, wakeupsPausedKey) {
-		// The pause switch stamps who and when and settles held wakeups on
-		// resume (reconcileWakeupsPause); the ordinary settings write owns that.
-		return read, decisionIntentRefusal{http.StatusForbidden, decisionaction.CodeDenylisted + ": wakeups_paused cannot be changed through a settings patch"}
-	}
 	workspace, err := loadWorkspaceTarget(ctx, queries, workspaceID, raw, http.StatusBadRequest, false)
 	if err != nil {
 		return read, err
@@ -274,8 +282,49 @@ func applySettingsPatch(ctx context.Context, execution decisionActionExecution, 
 	if err != nil {
 		return err
 	}
-	_, err = execution.Queries.UpdateWorkspace(ctx, db.UpdateWorkspaceParams{ID: workspace.ID, Settings: encoded})
+	pauseAction := ""
+	if _, names := params.Settings[wakeupsPausedKey]; names {
+		if encoded, pauseAction, err = reconcileSettingsPatchPause(workspace.Settings, encoded, uuidToString(execution.Approver.UserID)); err != nil {
+			return err
+		}
+	}
+	ws, err := execution.Queries.UpdateWorkspace(ctx, db.UpdateWorkspaceParams{ID: workspace.ID, Settings: encoded})
+	if err != nil || pauseAction == "" {
+		return err
+	}
+	if pauseAction == wakeupsResumedAction {
+		// The same settle the ordinary resume runs, in the approval transaction.
+		if err := (&service.IssueWakeupService{Tasks: &service.TaskService{Queries: execution.Queries}}).SettleWakeupsOnResume(ctx, execution.Tx, ws.ID); err != nil {
+			return err
+		}
+	}
+	_, err = execution.Queries.CreateActivity(ctx, db.CreateActivityParams{
+		ID: dbid.NewV7(), WorkspaceID: ws.ID, ActorType: pgtype.Text{String: "member", Valid: true}, ActorID: execution.Approver.UserID,
+		Action: pauseAction, Details: []byte(`{}`),
+	})
 	return err
+}
+
+// reconcileSettingsPatchPause lets the pause switch of the patched settings go
+// through the ordinary rule: the server stamps who paused and when, a pause of
+// a paused workspace keeps its stamp, and a resume removes the switch. It
+// returns the settings to store and the activity action of a flip.
+func reconcileSettingsPatchPause(storedRaw, patchedRaw []byte, approverID string) ([]byte, string, error) {
+	var stored, patched map[string]any
+	if err := json.Unmarshal(storedRaw, &stored); err != nil {
+		return nil, "", err
+	}
+	if err := json.Unmarshal(patchedRaw, &patched); err != nil {
+		return nil, "", err
+	}
+	// The patch leaves the pause stamps alone; the rule rewrites them.
+	patched[wakeupsPausedKey] = patched[wakeupsPausedKey] == true
+	action, err := reconcileWakeupsPause(stored, patched, approverID, time.Now())
+	if err != nil {
+		return nil, "", err
+	}
+	out, err := json.Marshal(patched)
+	return out, action, err
 }
 
 // publishSettingsPatch announces the committed settings to clients and wakes
