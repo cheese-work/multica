@@ -1340,36 +1340,55 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 	args[len(args)-1] = offset
 
 	var results []searchResult
-	err := runSearchQuery(ctx, h.TxStarter, sqlQuery, args, func(rows pgx.Rows) error {
-		for rows.Next() {
-			sr, err := scanSearchIssue(rows)
-			if err != nil {
-				return fmt.Errorf("scan: %w", err)
+	// runSearch fills results from one search statement and writes the error
+	// response itself, returning false when the request is already answered.
+	runSearch := func(sqlQuery string, args []any) bool {
+		err := runSearchQuery(ctx, h.TxStarter, sqlQuery, args, func(rows pgx.Rows) error {
+			for rows.Next() {
+				sr, err := scanSearchIssue(rows)
+				if err != nil {
+					return fmt.Errorf("scan: %w", err)
+				}
+				results = append(results, sr)
 			}
-			results = append(results, sr)
+			return rows.Err()
+		})
+		if err != nil {
+			if writeSearchCancellation(w, r, err) {
+				return false
+			}
+			// Statement-timeout surfaces as SQLSTATE 57014. Return a 503
+			// so the frontend can distinguish a timeout ("try a more
+			// specific query") from a generic 500. This is the fail-fast
+			// path when GIN search indexes are absent or the database is
+			// overloaded; see runSearchQuery header for context.
+			if isSearchStatementTimeout(err) {
+				slog.Warn("search issues timed out",
+					"workspace_id", workspaceID,
+					"query_length", len([]rune(q)),
+					"timeout", searchStatementTimeout)
+				writeError(w, http.StatusServiceUnavailable, "search timed out; please refine your query or try again")
+				return false
+			}
+			slog.Warn("search issues failed", "error", err, "workspace_id", workspaceID, "query_length", len([]rune(q)))
+			writeError(w, http.StatusInternalServerError, "failed to search issues")
+			return false
 		}
-		return rows.Err()
-	})
-	if err != nil {
-		if writeSearchCancellation(w, r, err) {
-			return
-		}
-		// Statement-timeout surfaces as SQLSTATE 57014. Return a 503
-		// so the frontend can distinguish a timeout ("try a more
-		// specific query") from a generic 500. This is the fail-fast
-		// path when GIN search indexes are absent or the database is
-		// overloaded; see runSearchQuery header for context.
-		if isSearchStatementTimeout(err) {
-			slog.Warn("search issues timed out",
-				"workspace_id", workspaceID,
-				"query_length", len([]rune(q)),
-				"timeout", searchStatementTimeout)
-			writeError(w, http.StatusServiceUnavailable, "search timed out; please refine your query or try again")
-			return
-		}
-		slog.Warn("search issues failed", "error", err, "workspace_id", workspaceID, "query_length", len([]rune(q)))
-		writeError(w, http.StatusInternalServerError, "failed to search issues")
+		return true
+	}
+
+	if !runSearch(sqlQuery, args) {
 		return
+	}
+	// Typo tolerance is a fallback: a query with any normal hit never pays for it.
+	if shouldRunFuzzyFallback(q, hasNum, offset, len(results)) {
+		fuzzyQuery, fuzzyArgs := buildFuzzySearchQuery(foldDiacritics(q), includeClosed, terminalStatusKeys)
+		fuzzyArgs[1] = wsUUID
+		fuzzyArgs[len(fuzzyArgs)-2] = limit
+		fuzzyArgs[len(fuzzyArgs)-1] = offset
+		if !runSearch(fuzzyQuery, fuzzyArgs) {
+			return
+		}
 	}
 	if writeSearchCancellation(w, r, ctx.Err()) {
 		return
@@ -4987,6 +5006,9 @@ func (h *Handler) deleteIssuesAndCollectAttachmentURLs(ctx context.Context, issu
 			}
 		} else if !errors.Is(contextErr, pgx.ErrNoRows) {
 			return issueDeleteResult{}, fmt.Errorf("load issue source context for delete: %w", contextErr)
+		}
+		if err := qtx.DeleteDMProgressForIssue(ctx, db.DeleteDMProgressForIssueParams{IssueID: issue.ID, WorkspaceID: issue.WorkspaceID}); err != nil {
+			return issueDeleteResult{}, fmt.Errorf("delete dm progress follows: %w", err)
 		}
 		if err := qtx.DeleteIssue(ctx, db.DeleteIssueParams{ID: issue.ID, WorkspaceID: issue.WorkspaceID}); err != nil {
 			return issueDeleteResult{}, fmt.Errorf("delete issue: %w", err)

@@ -215,6 +215,18 @@ multica issue wakeup runs MUL-123 <wakeup-id>
 
 Creating one from a terminal as a member requires `--agent-id`; an agent creating one inside its own run wakes itself by default.
 
+### Following progress in a DM
+
+A DM follows the issues its agent creates for you. Members manage follows only in a DM they created, with `--chat`. An agent runs `multica issue follow <issue>` without `--chat`: the DM comes from its own task, and a task with no DM is refused. Child issues inherit their parent's active follow.
+
+```bash
+multica issue follow MUL-123 --chat <chat-session-id>
+multica issue mute-follow MUL-123 --chat <chat-session-id>
+multica issue unmute-follow MUL-123 --chat <chat-session-id>
+multica issue unfollow MUL-123 --chat <chat-session-id>
+multica issue follows --chat <chat-session-id>
+```
+
 ## Agents and skills
 
 ```bash
