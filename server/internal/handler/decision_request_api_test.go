@@ -38,10 +38,16 @@ func testAskOption(label string) decisiontx.AskOption {
 	return decisiontx.AskOption{Label: label, WhatHappens: label + " happens.", Pros: []string{"A pro"}, Cons: []string{"A con"}, CostOrTime: "No extra time"}
 }
 
-func (fixture requestCoreFixture) structuredAsk() decisiontx.Ask {
+// unorderedAsk is the ask as an agent sends it: the recommended option is not first.
+func (fixture requestCoreFixture) unorderedAsk() decisiontx.Ask {
 	ask := structuredDecisionAsk(fixture.issueID, fixture.tagID, fixture.input().Ask)
 	ask.AskedBy = fixture.agentName // the stored ask names the asking agent
 	return ask
+}
+
+// structuredAsk is the ask as the server stores it: recommended option first (CHE-3628).
+func (fixture requestCoreFixture) structuredAsk() decisiontx.Ask {
+	return fixture.unorderedAsk().RecommendedFirst()
 }
 
 func TestDecisionRequestAPIRoundTrip(test *testing.T) {

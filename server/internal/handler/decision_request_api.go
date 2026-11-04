@@ -58,6 +58,8 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusBadRequest, err.Error())
 		return
 	}
+	// The recommended option is shown first (CHE-3628); asks without a named recommendation keep their order.
+	parsed = parsed.RecommendedFirst()
 	hints := decisiontx.LintAsk(parsed)
 	sourceIssueID, ok := parseUUIDOrBadRequest(writer, parsed.SourceIssueID, "ask.source_issue_id")
 	if !ok {

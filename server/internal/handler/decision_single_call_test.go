@@ -29,7 +29,7 @@ func newSingleCallFixture(test *testing.T) singleCallFixture {
 	sourceID := dbfx.Insert(test, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": fixture.issueID, "author_type": "agent", "author_id": fixture.agentID, "source_task_id": fixture.taskID, "content": "Scoped source context."})
 	details := structuredDecisionAsk(fixture.issueID, sourceID, "Approve the reversible change?")
 	details.AskedBy = fixture.agentName // the stored ask names the asking agent
-	return singleCallFixture{intentFixture: fixture, ask: details.Content(handlerTestWorkspaceSlug), footer: "Next owner: none", sourceID: sourceID, details: details}
+	return singleCallFixture{intentFixture: fixture, ask: details.RecommendedFirst().Content(handlerTestWorkspaceSlug), footer: "Next owner: none", sourceID: sourceID, details: details}
 }
 
 func (fixture singleCallFixture) body() map[string]any {
