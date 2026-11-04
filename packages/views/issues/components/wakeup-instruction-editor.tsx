@@ -2,6 +2,8 @@
 
 import { useId, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { usePersistedDraft } from "@multica/core/drafts";
+import { EMPTY_TEXT_EDIT, useWakeupInstructionDraftStore } from "@multica/core/issues/stores";
 import { Pencil } from "@multica/ui/icons";
 import {
   issueWakeupsOptions,
@@ -140,7 +142,10 @@ function InstructionForm({
   // Keep the editing snapshot through query refreshes; a stale save conflicts
   // instead of replacing another person's changes or silently resetting drafts.
   const [original] = useState(wakeup);
-  const [value, setValue] = useState(wakeup.instruction);
+  // The unsent prompt survives closing the dialog. It is dropped when the rule
+  // changed since it was started, so a restore never overwrites another edit.
+  const [draft, setDraft, clearDraft] = usePersistedDraft(useWakeupInstructionDraftStore, wakeup.id, EMPTY_TEXT_EDIT);
+  const value = draft.value !== null && draft.base === original.instruction ? draft.value : original.instruction;
   const [error, setError] = useState("");
   const busy = useRef(false);
   const mutation = useEditWakeupInstruction(workspaceId, wakeup.issue_id);
@@ -165,6 +170,7 @@ function InstructionForm({
             expected_instruction: original.instruction,
             revision: original.revision ?? 0,
           });
+          clearDraft();
           onSaved();
         } catch (err) {
           setError(text.error(err, t(($) => $.wakeups.instruction_save_error)));
@@ -186,7 +192,7 @@ function InstructionForm({
         aria-invalid={!!error}
         aria-describedby={error ? `${id}-error` : undefined}
         onChange={(event) => {
-          setValue(event.target.value);
+          setDraft({ value: event.target.value, base: original.instruction });
           setError("");
         }}
         onKeyDown={(event) => {
@@ -202,7 +208,7 @@ function InstructionForm({
         </p>
       )}
       <div className="flex justify-end gap-2">
-        <Button type="button" variant="outline" disabled={mutation.isPending} onClick={onCancel}>
+        <Button type="button" variant="outline" disabled={mutation.isPending} onClick={() => { clearDraft(); onCancel(); }}>
           {t(($) => $.wakeups.instruction_cancel)}
         </Button>
         <Button type="submit" disabled={mutation.isPending || value.trim() === original.instruction}>

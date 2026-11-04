@@ -16,6 +16,7 @@ import { NextSelfMention, useMentionsViewer } from "../../rich-content/next-self
 import { MediaSourceProvider } from "../../media/media-context";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
+import { usePersistedDraft } from "@multica/core/drafts";
 import { AppLink, useBackOrReplace } from "../../navigation";
 import { IssueDuplicateBanner, IssueDuplicatesSection, isDuplicateIssue } from "./issue-duplicates";
 import {
@@ -170,6 +171,8 @@ import {
   useResolvedExpandStore,
   useSubIssuesCollapseStore,
   useSubIssueDisplayStore,
+  useIssueTitleDraftStore,
+  EMPTY_TEXT_EDIT,
   SUB_ISSUE_ROW_PROPERTY_KEYS,
   type SubIssueRowProperties,
   type SubIssueRowPropertyKey,
@@ -3090,6 +3093,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // keeps this single eager editor affordable; title and composers stay lazy.
   const titleEditorRef = useRef<TitleEditorRef>(null);
   const titleBaseRef = useRef<string | undefined>(issue?.title);
+  // An unsaved title edit outlives the page and the editor; it is cleared only once the server accepts it.
+  const [titleDraft, setTitleDraft, clearTitleDraft] = usePersistedDraft(useIssueTitleDraftStore, id, EMPTY_TEXT_EDIT);
   const [titleConflictDraft, setTitleConflictDraft] = useState<string | null>(null);
   // Bumped when a conflicting title draft is discarded. TitleEditor reads its
   // text from `defaultValue` at mount and exposes no imperative setter, so
@@ -3106,7 +3111,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const descPendingUploadsRef = useRef<File[]>([]);
   useEffect(() => {
     setTitleConflictDraft(null);
-    titleBaseRef.current = undefined;
+    // A restored edit keeps the title it started from, so a title that moved meanwhile still conflicts.
+    titleBaseRef.current = useIssueTitleDraftStore.getState().getDraft(id)?.base ?? undefined;
     descriptionSaveInFlightRef.current = false;
     descriptionSaveIssueIdRef.current = id;
     pendingDescriptionSaveRef.current = null;
@@ -3114,7 +3120,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     descPendingUploadsRef.current = [];
     setDescriptionFocused(false);
   }, [id]);
-  const titleLazy = useLazyEditor({ editorRef: titleEditorRef, resetKey: id });
+  const titleLazy = useLazyEditor({ editorRef: titleEditorRef, resetKey: id, initialActive: titleDraft.value !== null });
   const uploadIntoExpandedDescription = useCallback(
     (file: File) => {
       if (descriptionExpanded) {
@@ -4182,12 +4188,17 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               <TitleEditor
                 key={`title-${id}-${titleResetToken}`}
                 ref={titleEditorRef}
-                defaultValue={titleConflictDraft ?? issue.title}
+                defaultValue={titleConflictDraft ?? titleDraft.value ?? issue.title}
                 placeholder={t(($) => $.detail.title_placeholder)}
                 className={cn("w-full leading-snug", titleSizeClass)}
                 onReady={titleLazy.onReady}
+                onChange={(value) => {
+                  if (value.trim() === issue.title) clearTitleDraft();
+                  else setTitleDraft({ value, base: titleBaseRef.current ?? issue.title });
+                }}
                 onBlur={(value) => {
                   const trimmed = value.trim();
+                  if (!trimmed || trimmed === issue.title) clearTitleDraft();
                   if (trimmed && trimmed !== issue.title) {
                     handleUpdateField({
                       title: trimmed,
@@ -4195,6 +4206,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                     }, {
                       onSuccess: (serverIssue) => {
                         setTitleConflictDraft(null);
+                        clearTitleDraft();
                         titleBaseRef.current = serverIssue.title;
                       },
                       onError: (error) => {
@@ -4249,6 +4261,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                     // discarding writes nothing. The remount is what puts it
                     // back into the editor (see titleResetToken).
                     setTitleConflictDraft(null);
+                    clearTitleDraft();
                     titleBaseRef.current = issue.title;
                     setTitleResetToken((token) => token + 1);
                   }}
@@ -4269,6 +4282,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                       {
                         onSuccess: (serverIssue) => {
                           setTitleConflictDraft(null);
+                          clearTitleDraft();
                           titleBaseRef.current = serverIssue.title;
                         },
                       },

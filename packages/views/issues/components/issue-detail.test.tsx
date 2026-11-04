@@ -9,6 +9,7 @@ import { issueStatusKeys } from "@multica/core/issue-statuses";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { toast } from "sonner";
 import { useResolvedExpandStore } from "@multica/core/issues/stores/resolved-expand-store";
+import { useIssueTitleDraftStore } from "@multica/core/issues/stores/unsent-edit-drafts";
 // Imported from the barrel (not the submodule path) so this is the exact
 // same module instance issue-detail.tsx reads through the barrel mock below
 // — the submodule path resolves to a second, disconnected instance under
@@ -480,6 +481,11 @@ vi.mock("@multica/core/issues/stores", async () => ({
   ...(await vi.importActual<
     typeof import("@multica/core/issues/stores/issue-disclosure-store")
   >("@multica/core/issues/stores/issue-disclosure-store")),
+  // Real store: the title edit draft must survive the unmount/remount the
+  // "restores an unsaved title edit" test performs.
+  ...(await vi.importActual<
+    typeof import("@multica/core/issues/stores/unsent-edit-drafts")
+  >("@multica/core/issues/stores/unsent-edit-drafts")),
   useRecentIssuesStore: Object.assign(
     (selector?: any) => {
       const state = { byWorkspace: {}, recordVisit: mockRecordVisit, pruneWorkspaces: vi.fn() };
@@ -624,6 +630,7 @@ vi.mock("react-virtuoso", () => ({
 // jsdom's HTMLElement.prototype.scrollIntoView is a no-op stub; replace it
 // with a spy so the deep-link effect's call can be observed.
 beforeEach(() => {
+  useIssueTitleDraftStore.setState({ drafts: {} });
   virtualWindow.size = Infinity;
   virtualWindow.initialIndex = 0;
   Object.defineProperty(Range.prototype, "getClientRects", { configurable: true, value: () => [{ width: 0, height: 0 }] });
@@ -4788,6 +4795,20 @@ describe("IssueDetail (shared)", () => {
     expect(await screen.findByDisplayValue("Implement authentication")).toBeVisible();
     // Taking the server version is local-only: the server already holds it.
     expect(mockApiObj.updateIssue).toHaveBeenCalledTimes(callsBeforeDiscard);
+  });
+
+  it("restores an unsaved title edit after the page unmounts and remounts", async () => {
+    mockApiObj.updateIssue.mockRejectedValueOnce(new Error("offline"));
+    const first = renderIssueDetail();
+    fireEvent.click(await screen.findByRole("button", { name: "Implement authentication" }));
+    const editor = await screen.findByTestId("title-editor");
+    fireEvent.change(editor, { target: { value: "Half-typed title" } });
+    fireEvent.blur(editor);
+    await waitFor(() => expect(mockApiObj.updateIssue).toHaveBeenCalled());
+    first.unmount();
+
+    renderIssueDetail();
+    expect(await screen.findByDisplayValue("Half-typed title")).toBeVisible();
   });
 
   describe("sub-issues list", () => {
