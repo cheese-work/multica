@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { QueryClientProvider, QueryObserver } from "@tanstack/react-query";
+import { InfiniteQueryObserver, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -105,6 +105,31 @@ describe("useRealtimeSync — task:running on an issue", () => {
     const unsub = mount("dm-1");
     await vi.advanceTimersByTimeAsync(0);
     expect(fetches).toEqual({ "dm-1": 1 });
+    unsub();
+  });
+
+  it("refetches a DM with three loaded pages once per page, not once per event", async () => {
+    const pageFetches = { n: 0 };
+    queryClient.setQueryData(chatKeys.messagesPage("dm-1"), {
+      pages: [0, 1, 2].map((i) => ({ messages: [message("dm-1", i === 2 ? "X" : undefined)], limit: 1, has_more: i < 2, next_cursor: i < 2 ? { created_at: `c${i}`, id: `${i}` } : null })),
+      pageParams: [null, 1, 2],
+    });
+    const unsub = new InfiniteQueryObserver(queryClient, {
+      queryKey: chatKeys.messagesPage("dm-1"),
+      queryFn: async ({ pageParam }: { pageParam: unknown }) => {
+        pageFetches.n++;
+        return { messages: [message("dm-1", "X")], limit: 1, has_more: pageParam !== 2, next_cursor: pageParam !== 2 ? { created_at: "c", id: "i" } : null };
+      },
+      initialPageParam: null as unknown,
+      getNextPageParam: (last: { has_more: boolean }) => (last.has_more ? 2 : undefined),
+      staleTime: Infinity,
+    }).subscribe(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    pageFetches.n = 0;
+    act(() => { for (let i = 0; i < 10; i++) run("X"); });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(pageFetches.n).toBeLessThanOrEqual(3);
+    expect(pageFetches.n).toBeGreaterThan(0);
     unsub();
   });
 });
