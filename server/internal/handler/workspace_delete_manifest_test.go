@@ -82,6 +82,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"client_usage_daily":                 workspaceDeleteDetach,
 	"comment":                            workspaceDelete,
 	"comment_reaction":                   workspaceDelete,
+	"comment_search_text":                workspaceDelete, // CHE-2943 derived; the comment delete trigger removes it, no FK.
 	"comment_supersession":               workspaceDelete,
 	"comment_trigger_rate_limit":         workspaceDelete,
 	"contact_sales_inquiry":              workspaceDeleteKeep,
@@ -102,6 +103,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"decision_intent_target":             workspaceDeleteWorker,
 	"decision_request":                   workspaceDeleteWorker,
 	"decision_worker_lease":              workspaceDeleteKeep,
+	"wakeup_definition_activation":       workspaceDeleteKeep,
 	"dingtalk_group_presence":            workspaceDelete,
 	"dingtalk_bot_identity":              workspaceDelete,
 	"dingtalk_group_route":               workspaceDelete,
@@ -111,6 +113,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"github_pending_check_suite":         workspaceDelete,
 	"github_route_grant":                 workspaceDelete,
 	"github_pending_installation":        workspaceDeleteKeep,
+	"github_pr_closed_replay":            workspaceDeleteKeep, // CHE-3402 retry marker keyed by installation address (shared across workspaces); no workspace_id. A replay with no routed workspace is a no-op that clears it.
 	"github_pull_request":                workspaceDelete,
 	"github_pull_request_check_run":      workspaceDelete,
 	"github_pull_request_check_suite":    workspaceDelete,
@@ -145,6 +148,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"issue_checkpoint":                   workspaceDelete,
 	"issue_wakeup":                       workspaceDelete,
 	"issue_wakeup_definition":            workspaceDelete,
+	"dm_progress_follow":                 workspaceDelete, // CHE-3369 C1 follow state; no FK, swept by DeleteWorkspaceIssueRoots.
+	"dm_progress_lane":                   workspaceDelete, // CHE-3369 C1 lane row; no FK, swept by DeleteWorkspaceIssueRoots.
 	"issue_wakeup_pr_event":              workspaceDelete,
 	"issue_ci_advance":                   workspaceDelete,
 	"issue_wakeup_receipt":               workspaceDelete,
@@ -163,6 +168,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"issue_reaction":                     workspaceDelete,
 	"issue_source_context":               workspaceDelete,
 	"issue_source_context_object_intent": workspaceDeleteSettle,
+	"issue_search_text":                  workspaceDelete, // CHE-2943 derived; the issue delete trigger removes it, no FK.
 	"issue_status":                       workspaceDelete,
 	"issue_workflow":                     workspaceDelete,
 	"issue_subscriber":                   workspaceDelete,
@@ -253,6 +259,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"workflow_webhook_event":             workspaceDelete, // CHE-2031
 	"workflow_webhook_nonce":             workspaceDelete, // CHE-2031 no workspace_id; deleted through its endpoint.
 	"workspace":                          workspaceDelete,
+	"workspace_config_sync":              workspaceDelete,
+	"ask_guard_event":                    workspaceDelete,
 	"workspace_invitation":               workspaceDelete,
 	"workspace_share_link":               workspaceDelete,
 }

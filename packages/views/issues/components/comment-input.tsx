@@ -21,13 +21,14 @@ import { useStopRunsBeforeSend } from "./use-stop-runs-before-send";
 import { useCommentUploads } from "./use-comment-uploads";
 import { useQuickActionMenu } from "../hooks/use-quick-action-menu";
 import { useStickyComposer } from "../hooks/use-sticky-composer";
+import type { InvalidMentionRejection } from "../invalid-agent-mentions-copy";
 
 interface CommentInputProps {
   issueId: string;
   /** Resolves true on success, false on failure. The composer keeps the text
    *  (editor locked + button spinning) until this settles, then clears only on
    *  success — a failed send must not silently discard the user's draft. */
-  onSubmit: (content: string, attachmentIds?: string[], suppressAgentIds?: string[], steerTaskIds?: string[]) => Promise<string | boolean>;
+  onSubmit: (content: string, attachmentIds?: string[], suppressAgentIds?: string[], steerTaskIds?: string[]) => Promise<string | boolean | InvalidMentionRejection>;
   /** Called after the server accepts the comment and the composer is cleared. */
   onAccepted?: (commentId: string) => void;
   onEditAnnotation?: (id: string) => boolean;
@@ -192,9 +193,14 @@ function CommentInput({ issueId, onSubmit, onAccepted, onEditAnnotation }: Comme
         activeIds.length > 0 ? activeIds : undefined,
         suppressAgentIds.length > 0 ? suppressAgentIds : undefined,
         steerTaskIds.length > 0 ? steerTaskIds : undefined,
-      ).then((commentId) => {
-        acceptedCommentIdRef.current = typeof commentId === "string" ? commentId : null;
-        return !!commentId;
+      ).then((result) => {
+        // Server refused a mention: keep the draft and flag the refused chips.
+        if (typeof result === "object") {
+          editorRef.current?.flagMentions(result.invalidMentionIds);
+          return false;
+        }
+        acceptedCommentIdRef.current = typeof result === "string" ? result : null;
+        return !!result;
       });
     },
     onAccepted: () => {

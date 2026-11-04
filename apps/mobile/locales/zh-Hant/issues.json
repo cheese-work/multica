@@ -293,6 +293,11 @@
   "comments.composer_pill": "新增評論，輸入 @ 提及...",
   "resources.branch_hint": "執行會從這個分支開始，並針對它建立 Pull Request。留空則使用倉庫預設分支。",
   "resources.commit": "這是提交 ID，不是分支。執行會回傳到起始分支。如需一次性修訂，請給 multica repo checkout 傳入 --ref。",
+  "workflow": {
+    "title": "工作流程",
+    "follow_project": "跟隨專案",
+    "failed_title": "無法變更工作流程"
+  },
   "workflow_handoff": {
     "check_failed_title": "無法確認交接",
     "check_failed_message": "沒有做任何修改。{{message}}",

@@ -126,6 +126,11 @@ type TaskService struct {
 	// each unique index the rerun insert can hit is exercised
 	// deterministically (TestRerunIssueRetryLoop*).
 	testHookBeforeRerunEnqueue func()
+
+	// committed is the service a txScoped copy was made from; the work that
+	// follows a commit runs on it, not on the copy whose Queries is the
+	// transaction.
+	committed *TaskService
 }
 
 type SourceContextObjectStore interface {
@@ -400,6 +405,10 @@ type runtimeMCPOverlayData struct {
 	Overlay       json.RawMessage
 	ConnectedApps json.RawMessage
 }
+
+// PreparedRuntimeMCPOverlay is an overlay built before a transaction opens, for
+// the run that transaction inserts.
+type PreparedRuntimeMCPOverlay = preparedRuntimeMCPOverlay
 
 type preparedRuntimeMCPOverlay struct {
 	agentID          pgtype.UUID
@@ -1341,6 +1350,30 @@ func (s *TaskService) prepareCommentTriggerRuntimeMCPOverlay(ctx context.Context
 		originatorUserID: attr.UserID,
 		data:             s.buildRuntimeMCPOverlay(ctx, attr.UserID, agent),
 	}, nil
+}
+
+// PrepareIssueRunOverlay builds, outside any transaction, the overlay of the
+// run an assignment of issue to its agent inserts. Nil means there is nothing
+// to prepare, or that the insert will refuse and report why; the insert reads
+// the attribution again and uses the overlay only for the agent and
+// originator it was built for.
+func (s *TaskService) PrepareIssueRunOverlay(ctx context.Context, issue db.Issue, actorUserID pgtype.UUID) *PreparedRuntimeMCPOverlay {
+	if s.Composio == nil || !featureflags.ComposioMCPAppsEnabled(ctx, s.FeatureFlags) || !issue.AssigneeID.Valid {
+		return nil
+	}
+	agent, err := s.Queries.GetAgent(ctx, issue.AssigneeID)
+	if err != nil || agent.ArchivedAt.Valid || !agent.RuntimeID.Valid {
+		return nil
+	}
+	attr, err := s.applyAttributionFallback(ctx, s.attributionForIssueTask(ctx, issue, pgtype.UUID{}, attribution.SourceCommentSource, actorUserID), agent)
+	if err != nil {
+		return nil
+	}
+	return &preparedRuntimeMCPOverlay{
+		agentID:          agent.ID,
+		originatorUserID: attr.UserID,
+		data:             s.buildRuntimeMCPOverlay(ctx, attr.UserID, agent),
+	}
 }
 
 // EnqueueDeferredChannelIssueTask persists the assigned task for a media-backed
@@ -7438,12 +7471,7 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 							"error", checkErr,
 						)
 					} else if !hasActive {
-						updatedIssue, updateErr := s.Queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
-							SourceTaskID: t.ID,
-							ID:           t.IssueID,
-							Status:       "todo",
-							WorkspaceID:  issue.WorkspaceID,
-						})
+						updatedIssue, activity, updateErr := s.resetIssueForFailedTask(ctx, issue, t)
 						if updateErr != nil {
 							slog.Warn("handle failed tasks: reset stuck issue failed",
 								"issue_id", issueKey,
@@ -7455,6 +7483,7 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 							// it here too. Without it the board / status-filter
 							// caches keep showing the issue as in_progress until
 							// the next write touches it (#4648 / MUL-3782).
+							(&IssueWakeupService{Tasks: s}).publishWakeupActivities(wakeupActivity{row: activity, actorType: "system", details: activity.Details})
 							s.broadcastIssueUpdated(ctx, updatedIssue, issue.Status)
 						}
 					}
@@ -7475,6 +7504,20 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 	}
 	s.notifyTasksFinished(tasks)
 	return retried
+}
+
+// resetIssueForFailedTask runs ResetIssueForFailedTask in its own transaction.
+func (s *TaskService) resetIssueForFailedTask(ctx context.Context, issue db.Issue, t db.AgentTaskQueue) (db.Issue, db.ActivityLog, error) {
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return db.Issue{}, db.ActivityLog{}, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	updated, activity, err := ResetIssueForFailedTask(ctx, s.Queries.WithTx(tx), issue, t)
+	if err != nil {
+		return db.Issue{}, db.ActivityLog{}, err
+	}
+	return updated, activity, tx.Commit(ctx)
 }
 
 const (
@@ -8917,17 +8960,27 @@ func (s *TaskService) broadcastChatDone(ctx context.Context, task db.AgentTaskQu
 // realtime-staleness fix (#4648 / MUL-3782); folding those side effects in
 // would mean unifying the payload type and is left as a follow-up.
 func (s *TaskService) broadcastIssueUpdated(ctx context.Context, issue db.Issue, prevStatus string) {
+	s.broadcastIssueUpdatedWith(ctx, issue, prevStatus, nil)
+}
+
+// broadcastIssueUpdatedWith adds extra payload keys, such as the activity_id
+// of a status row the writer already committed.
+func (s *TaskService) broadcastIssueUpdatedWith(ctx context.Context, issue db.Issue, prevStatus string, extra map[string]any) {
 	prefix := s.getIssuePrefix(issue.WorkspaceID)
+	payload := map[string]any{
+		"issue":          IssueToMapResolved(ctx, s.Queries, issue, prefix),
+		"status_changed": prevStatus != issue.Status,
+		"prev_status":    prevStatus,
+	}
+	for k, v := range extra {
+		payload[k] = v
+	}
 	s.Bus.Publish(events.Event{
 		Type:        protocol.EventIssueUpdated,
 		WorkspaceID: util.UUIDToString(issue.WorkspaceID),
 		ActorType:   "system",
 		ActorID:     "",
-		Payload: map[string]any{
-			"issue":          IssueToMapResolved(ctx, s.Queries, issue, prefix),
-			"status_changed": prevStatus != issue.Status,
-			"prev_status":    prevStatus,
-		},
+		Payload:     payload,
 	})
 }
 

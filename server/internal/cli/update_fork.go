@@ -65,6 +65,7 @@ type ForkUpdate struct {
 	Name      string // platform key, e.g. linux-amd64
 	Digest    string // lowercase hex sha256 of the binary
 	Size      int64
+	Progress  *Progress // optional; nil is silent
 }
 
 func (u *ForkUpdate) String() string {
@@ -162,22 +163,31 @@ func ApplyForkUpdateTo(ctx context.Context, u *ForkUpdate, timeout time.Duration
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("download binary: HTTP %d from the server", resp.StatusCode)
 	}
-	bin, err := io.ReadAll(io.LimitReader(resp.Body, forkMaxBytes+1))
+	total := resp.ContentLength
+	if total <= 0 {
+		total = u.Size
+	}
+	bin, err := io.ReadAll(u.Progress.Wrap(io.LimitReader(resp.Body, forkMaxBytes+1), total))
+	u.Progress.Finish()
 	if err != nil {
 		return "", fmt.Errorf("download binary: %w", err)
 	}
 	if len(bin) > forkMaxBytes {
 		return "", fmt.Errorf("binary exceeds %d bytes", forkMaxBytes)
 	}
+	u.Progress.Phase("Verifying sha256")
 	if err := verifyAssetSHA256(bin, u.Digest, u.Name); err != nil {
 		return "", fmt.Errorf("verify download: %w", err)
 	}
+	u.Progress.Phase("Probing --version")
 	if err := probeForkBinary(ctx, bin, u.HeadSHA); err != nil {
 		return "", fmt.Errorf("probe binary: %w", err)
 	}
+	u.Progress.Phase("Installing")
 	if err := installBinary(exePath, bin); err != nil {
 		return "", err
 	}
+	u.Progress.Phase("Installed")
 	return fmt.Sprintf("Installed %s over %s", u, exePath), nil
 }
 

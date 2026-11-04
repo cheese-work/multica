@@ -1458,6 +1458,37 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 			return commit()
 		}
 	}
+	// CHE-3590: the PR is as it was when the last run on this rule started.
+	inputFingerprint := ""
+	// Returning to draft is an event, not a state: each conversion is new, and
+	// the skip consumes the whole batch, not only its newest fact.
+	if !holdsDraftReturn(receipts) &&
+		(w.SystemRule.String == SystemRulePRChecksFailed || w.SystemRule.String == SystemRulePRAttention) {
+		if inputFingerprint, err = prStateFingerprint(ctx, tx, issue.ID); err != nil {
+			return err
+		}
+		// An edited rule (instruction or settings) is not what the last run answered.
+		if inputFingerprint != "" {
+			inputFingerprint += fmt.Sprintf("|%d|%s", w.Revision, w.Instruction)
+		}
+		// A conflict against a newer base commit is a new fact, not a repeat.
+		if baseSHA, _ := facts["base_sha"].(string); baseSHA != "" && inputFingerprint != "" {
+			inputFingerprint += "|" + baseSHA
+		}
+		lastTask, unchanged, err := unchangedSinceLastRun(ctx, tx, issue.ID, agent.ID, "wakeup_system", w.SystemRule.String, inputFingerprint)
+		if err != nil {
+			return err
+		}
+		if unchanged {
+			if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
+				return err
+			}
+			if err := note(wakeupActivitySkipped, skippedUnchangedDetails(w.SystemRule.String, lastTask)); err != nil {
+				return err
+			}
+			return commit()
+		}
+	}
 	recent, err := q.CountRecentWakeupTasks(ctx, db.CountRecentWakeupTasksParams{WakeupID: util.UUIDToString(w.ID), IssueID: w.IssueID, Since: pgtype.Timestamptz{Time: now.Add(-time.Hour), Valid: true}})
 	if err != nil {
 		return err
@@ -1517,6 +1548,9 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	taskContext := map[string]any{"wakeup_id": util.UUIDToString(w.ID), "wakeup_revision": w.Revision, "wakeup_evidence": evidence, "wakeup_system": w.SystemRule.String}
 	if deferring {
 		taskContext[wakeupIsolatedKey] = true
+	}
+	if inputFingerprint != "" {
+		taskContext[wakeupFingerprintKey] = inputFingerprint
 	}
 	contextJSON, _ := json.Marshal(taskContext)
 	task, err = q.CreateWakeupTask(ctx, db.CreateWakeupTaskParams{
