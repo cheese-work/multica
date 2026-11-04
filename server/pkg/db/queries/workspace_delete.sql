@@ -750,6 +750,10 @@ WITH deleted_wakeup_pr_events AS (
  DELETE FROM issue_wakeup WHERE workspace_id=$1
 ), deleted_wakeup_definitions AS (
  DELETE FROM issue_wakeup_definition WHERE workspace_id=$1
+), deleted_dm_progress_follows AS (
+ DELETE FROM dm_progress_follow WHERE workspace_id=$1
+), deleted_dm_progress_lanes AS (
+ DELETE FROM dm_progress_lane WHERE workspace_id=$1
 ), deleted_wakeup_aggregate_reservations AS (
  DELETE FROM wakeup_aggregate_reservation WHERE workspace_id=$1
 ), deleted_wakeup_aggregate_budgets AS (
