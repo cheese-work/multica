@@ -64,6 +64,7 @@ import {
   SettingsTab,
   type SettingsSaveStatus,
 } from "./settings-layout";
+import { IdleGuardRows } from "./idle-guard-rows";
 import { useAutoSave } from "./use-auto-save";
 
 interface WorkspaceDetailsDraft {
@@ -611,6 +612,8 @@ export function WorkspaceTab() {
               ) : null}
             </SettingsRow>
           )}
+
+          <IdleGuardRows workspace={workspace} canEdit={isOwner} />
 
           <SettingsRow
             anchor="slug"
