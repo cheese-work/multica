@@ -1363,6 +1363,7 @@
       "auto_stop_description": "デスクトップ版を閉じるとデーモンを停止します。",
       "cli_status": "CLI の状態",
       "cli_checking": "確認中…",
+      "cli_download_progress": "ランタイムをダウンロード中… {{done}} / {{total}} MB",
       "cli_installed": "multica CLI はインストール済みで PATH から利用できます。",
       "cli_missing": "multica CLI が見つかりません。デーモンを管理するにはインストールしてください。",
       "installation_guide": "インストールガイド",

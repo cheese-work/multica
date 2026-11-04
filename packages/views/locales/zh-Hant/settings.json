@@ -1333,6 +1333,7 @@
       "auto_stop_description": "關閉桌面端時停止守護程序。",
       "cli_status": "CLI 狀態",
       "cli_checking": "檢查中...",
+      "cli_download_progress": "正在下載執行環境... {{done}} / {{total}} MB",
       "cli_installed": "multica CLI 已安裝，並可透過 PATH 呼叫。",
       "cli_missing": "未找到 multica CLI。安裝後才能管理守護程序。",
       "installation_guide": "安裝指南",

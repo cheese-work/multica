@@ -1370,6 +1370,7 @@
       "auto_stop_description": "Arrêter le daemon à la fermeture de Desktop.",
       "cli_status": "État du CLI",
       "cli_checking": "Vérification…",
+      "cli_download_progress": "Téléchargement du runtime… {{done}} / {{total}} Mo",
       "cli_installed": "Le CLI multica est installé et disponible dans PATH.",
       "cli_missing": "CLI multica introuvable. Installez-le pour activer la gestion du démon.",
       "installation_guide": "Guide d'installation",
