@@ -2,6 +2,7 @@ import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { useQuery } from "@tanstack/react-query";
+import { ApiError } from "@multica/core/api";
 import { renderWithI18n } from "../../test/i18n";
 import { IssueHoverCard } from "./issue-hover-card";
 
@@ -30,7 +31,11 @@ vi.mock("@multica/core/issue-statuses/hooks", () => ({
   }),
 }));
 
-vi.mock("@multica/core/issues/queries", () => ({
+vi.mock("@multica/core/issues/queries", async () => ({
+  // The real predicate, so the card branches on the same ApiError statuses.
+  isIssueNotFoundError: (
+    await vi.importActual<typeof import("@multica/core/issues/queries")>("@multica/core/issues/queries")
+  ).isIssueNotFoundError,
   issueDetailOptions: (_workspaceId: string, issueId: string) => ({
     queryKey: ["issue", issueId],
   }),
@@ -174,7 +179,7 @@ const NOT_FOUND_TEXT = "This issue does not exist or has been deleted in this wo
 /** The three query states the card body branches on, as react-query reports them. */
 type DetailState =
   | { phase: "pending" }
-  | { phase: "error" }
+  | { phase: "error"; error?: unknown }
   | { phase: "success"; issue: Issue | undefined };
 
 interface Fixtures {
@@ -209,6 +214,7 @@ function mockQueries(detail: DetailState, fixtures: Fixtures = {}): void {
         data: detail.phase === "success" ? detail.issue : undefined,
         isPending: detail.phase === "pending",
         isError: detail.phase === "error",
+        error: detail.phase === "error" ? detail.error : null,
       } as unknown as ReturnType<typeof useQuery>;
     }
     if (key === "issue" && id === PARENT_ISSUE.id) return settled(PARENT_ISSUE);
@@ -575,11 +581,23 @@ describe("IssueHoverCard", () => {
   });
 
   it("replaces the skeleton with the not-found state when the detail query fails", async () => {
-    mockQueries({ phase: "error" });
+    mockQueries({ phase: "error", error: new ApiError("not found", 404, "Not Found") });
 
     await openFailedCard();
 
     expect(screen.queryByTestId("issue-hover-card-skeleton")).not.toBeInTheDocument();
+    expect(screen.getByText("MUL-7")).toBeInTheDocument();
+  });
+
+  it("says the issue could not load, not that it is gone, when the fetch fails", async () => {
+    mockQueries({ phase: "error", error: new TypeError("Failed to fetch") });
+    const user = userEvent.setup();
+    renderCard("MUL-7");
+
+    await user.hover(screen.getByText("MUL-3405"));
+
+    expect(await screen.findByText("Couldn't load this issue")).toBeInTheDocument();
+    expect(screen.queryByText(NOT_FOUND_TEXT)).not.toBeInTheDocument();
     expect(screen.getByText("MUL-7")).toBeInTheDocument();
   });
 

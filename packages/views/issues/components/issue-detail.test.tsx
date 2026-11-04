@@ -2,6 +2,7 @@ import { forwardRef, useEffect, useRef, useState, useImperativeHandle, useSyncEx
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ApiError } from "@multica/core/api";
 import type { Attachment, AgentTask, Issue, IssueStatusEntry, Label, TimelineEntry } from "@multica/core/types";
 import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 import { issueKeys } from "@multica/core/issues/queries";
@@ -443,7 +444,9 @@ const mockApiObj = vi.hoisted(() => ({
   listProjects: vi.fn().mockResolvedValue({ projects: [] }),
 }));
 
-vi.mock("@multica/core/api", () => ({
+vi.mock("@multica/core/api", async () => ({
+  // The real class: the issue queries branch on `instanceof ApiError`.
+  ApiError: (await vi.importActual<typeof import("@multica/core/api/client")>("@multica/core/api/client")).ApiError,
   api: mockApiObj,
   getApi: () => mockApiObj,
   setApiInstance: vi.fn(),
@@ -1398,7 +1401,7 @@ describe("IssueDetail (shared)", () => {
   });
 
   it("keeps the peek's host controls when the issue cannot be loaded", async () => {
-    mockApiObj.getIssue.mockRejectedValue(new Error("Not found"));
+    mockApiObj.getIssue.mockRejectedValue(new ApiError("Not found", 404, "Not Found"));
     renderPeek("nonexistent-id");
     await waitFor(() => {
       expect(
@@ -1406,6 +1409,21 @@ describe("IssueDetail (shared)", () => {
       ).toBeInTheDocument();
     });
     expect(screen.getByRole("button", { name: "Close preview" })).toBeInTheDocument();
+  });
+
+  // CHE-3535: a failed fetch is not a deleted issue.
+  it("offers Retry, not not-found, when the fetch fails for a reason other than 404", async () => {
+    mockApiObj.getIssue.mockRejectedValue(new ApiError("unauthorized", 401, "Unauthorized"));
+    renderPeek("issue-1");
+    expect(await screen.findByText("Couldn't load this issue")).toBeInTheDocument();
+    expect(
+      screen.queryByText("This issue does not exist or has been deleted in this workspace."),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Close preview" })).toBeInTheDocument();
+
+    mockApiObj.getIssue.mockResolvedValue(mockIssue);
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.queryByText("Couldn't load this issue")).not.toBeInTheDocument());
   });
 
   it("renders the peek variant as one column with property pills and host actions", async () => {
@@ -2974,7 +2992,7 @@ describe("IssueDetail (shared)", () => {
   });
 
   it("shows 'not found' message when issue does not exist", async () => {
-    mockApiObj.getIssue.mockRejectedValue(new Error("Not found"));
+    mockApiObj.getIssue.mockRejectedValue(new ApiError("Not found", 404, "Not Found"));
 
     renderIssueDetail("nonexistent-id");
 
@@ -2986,7 +3004,7 @@ describe("IssueDetail (shared)", () => {
   });
 
   it("shows 'Back' button when issue is not found and no onDelete prop", async () => {
-    mockApiObj.getIssue.mockRejectedValue(new Error("Not found"));
+    mockApiObj.getIssue.mockRejectedValue(new ApiError("Not found", 404, "Not Found"));
 
     renderIssueDetail("nonexistent-id");
 

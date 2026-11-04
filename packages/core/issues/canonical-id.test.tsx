@@ -2,10 +2,10 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { setApiInstance } from "../api";
+import { ApiError, setApiInstance } from "../api";
 import type { ApiClient } from "../api/client";
 import type { Issue } from "../types";
 import { createQueryClient } from "../query-client";
@@ -207,7 +207,7 @@ describe("useCanonicalIssue", () => {
   });
 
   it("reports a nonexistent identifier as terminally not-found", async () => {
-    getIssue.mockRejectedValue(new Error("issue not found"));
+    getIssue.mockRejectedValue(new ApiError("issue not found", 404, "Not Found"));
 
     const { result } = renderHook(() => useCanonicalIssue("ws-1", "ZZZ-134"), {
       wrapper: createWrapper(qc),
@@ -234,7 +234,7 @@ describe("useCanonicalIssue", () => {
       // 1 can only mean a remount refetched.
       defaultOptions: { queries: { staleTime: Infinity, retry: false } },
     });
-    getIssue.mockRejectedValue(new Error("issue not found"));
+    getIssue.mockRejectedValue(new ApiError("issue not found", 404, "Not Found"));
 
     const { result, rerender } = renderHook(() => useCanonicalIssue("ws-1", "ZZZ-134"), {
       wrapper: createWrapper(noRetry),
@@ -250,6 +250,103 @@ describe("useCanonicalIssue", () => {
     expect(result.current.notFound).toBe(true);
 
     noRetry.clear();
+  });
+
+  // CHE-3535: over a lossy link one failed fetch used to read as "deleted".
+  describe("when the lookup fails", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("reports a 404 as not-found after a single request", async () => {
+      getIssue.mockRejectedValue(new ApiError("issue not found", 404, "Not Found"));
+      const { result } = renderHook(() => useCanonicalIssue("ws-1", "ZZZ-134"), {
+        wrapper: createWrapper(qc),
+      });
+
+      await waitFor(() => expect(result.current.notFound).toBe(true));
+      expect(result.current.loadFailed).toBe(false);
+      expect(getIssue).toHaveBeenCalledTimes(1);
+    });
+
+    it("reports a 403 as not-found", async () => {
+      getIssue.mockRejectedValue(new ApiError("forbidden", 403, "Forbidden"));
+      const { result } = renderHook(() => useCanonicalIssue("ws-1", "ZZZ-134"), {
+        wrapper: createWrapper(qc),
+      });
+
+      await waitFor(() => expect(result.current.notFound).toBe(true));
+      expect(result.current.loadFailed).toBe(false);
+    });
+
+    it("reports a network error as a load failure, not not-found", async () => {
+      vi.useFakeTimers();
+      getIssue.mockRejectedValue(new TypeError("Failed to fetch"));
+      const { result } = renderHook(() => useCanonicalIssue("ws-1", "TRS-134"), {
+        wrapper: createWrapper(qc),
+      });
+
+      // Backoff spans seconds; step past all retries.
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(result.current.loadFailed).toBe(true);
+      expect(result.current.notFound).toBe(false);
+      expect(result.current.isResolving).toBe(false);
+      expect(getIssue.mock.calls.length).toBeGreaterThan(2);
+    });
+
+    it("reports a 5xx as a load failure", async () => {
+      vi.useFakeTimers();
+      getIssue.mockRejectedValue(new ApiError("bad gateway", 502, "Bad Gateway"));
+      const { result } = renderHook(() => useCanonicalIssue("ws-1", "TRS-134"), {
+        wrapper: createWrapper(qc),
+      });
+
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(result.current.loadFailed).toBe(true);
+      expect(result.current.notFound).toBe(false);
+    });
+
+    it("renders the issue when one network failure is followed by success", async () => {
+      vi.useFakeTimers();
+      getIssue.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+      const { result } = renderHook(() => useCanonicalIssue("ws-1", "TRS-134"), {
+        wrapper: createWrapper(qc),
+      });
+
+      // Still resolving, never failed, while the retry is pending.
+      await vi.advanceTimersByTimeAsync(10);
+      expect(result.current.isResolving).toBe(true);
+      expect(result.current.loadFailed).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(result.current.canonicalId).toBe(ISSUE_UUID);
+      expect(result.current.issue).toEqual(issue);
+      expect(result.current.loadFailed).toBe(false);
+      expect(result.current.notFound).toBe(false);
+    });
+
+    it("recovers when retry() succeeds after a load failure", async () => {
+      vi.useFakeTimers();
+      getIssue.mockRejectedValue(new TypeError("Failed to fetch"));
+      const { result } = renderHook(() => useCanonicalIssue("ws-1", "TRS-134"), {
+        wrapper: createWrapper(qc),
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(result.current.loadFailed).toBe(true);
+
+      getIssue.mockReset();
+      getIssue.mockResolvedValue(issue);
+      await act(async () => {
+        result.current.retry();
+        await vi.advanceTimersByTimeAsync(100);
+      });
+
+      expect(result.current.issue).toEqual(issue);
+      expect(result.current.loadFailed).toBe(false);
+    });
   });
 
   it("stays idle without a workspace id", () => {

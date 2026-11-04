@@ -9,7 +9,7 @@ import { useActorName } from "@multica/core/workspace/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useNavigation } from "../../navigation";
 import { TranscriptButton } from "../../common/task-transcript";
-import { IssueDetail, IssueDetailSkeleton, IssueNotFound } from "./issue-detail";
+import { IssueDetail, IssueDetailSkeleton, IssueLoadFailed, IssueNotFound } from "./issue-detail";
 import { IssuePeekHost } from "./issue-peek";
 
 interface IssueDetailRouteProps {
@@ -103,7 +103,7 @@ function RequestedRun({ issueId, runId, path }: { issueId: string; runId: string
  */
 export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
   const wsId = useWorkspaceId();
-  const { canonicalId, issue, isResolving, notFound, authoritative } = useCanonicalIssue(wsId, routeId);
+  const { canonicalId, issue, isResolving, notFound, loadFailed, retry, authoritative } = useCanonicalIssue(wsId, routeId);
   const highlight = useCommentHighlightHash();
   const { searchParams } = useNavigation();
   const paths = useWorkspacePaths();
@@ -117,6 +117,7 @@ export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
   // `IssueDetail` would mount a second observer on the query that just failed,
   // refetch it, and restart this component's resolve/remount cycle — an
   // unbounded request loop that never settles. See `CanonicalIssue.notFound`.
+  if (loadFailed) return <IssueLoadFailed showBackLink={!onDelete} onRetry={retry} />;
   if (notFound || !canonicalId) return <IssueNotFound showBackLink={!onDelete} />;
 
   // The page hosts a side peek so Shift+Click on an issue mention in the

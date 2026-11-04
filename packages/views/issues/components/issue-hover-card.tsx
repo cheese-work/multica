@@ -15,7 +15,7 @@ import {
   UserRound,
   type IconComponent,
 } from "@multica/ui/icons";
-import { childIssueProgressOptions, issueDetailOptions } from "@multica/core/issues/queries";
+import { childIssueProgressOptions, isIssueNotFoundError, issueDetailOptions } from "@multica/core/issues/queries";
 import { formatDateOnly, isPastDateOnly } from "@multica/core/issues/date";
 import { agentTaskSnapshotOptions } from "@multica/core/agents";
 import { issuePullRequestsOptions } from "@multica/core/github";
@@ -130,10 +130,13 @@ function IssueHoverCardBody({
   const issue = detail.data;
 
   // Terminal state for every way the detail can fail to arrive: an error after
-  // retries, a deleted issue, or a mention the viewer cannot read. Named with
+  // retries, a deleted issue, or a mention the viewer cannot read. Only a
+  // 404/403 or an empty result says the issue is gone; any other error says it
+  // could not load. Named with
   // the identifier the way the chip degrades, so the card still says which
   // issue it is about.
   if (detail.isError || !issue) {
+    const loadFailed = detail.isError && !isIssueNotFoundError(detail.error);
     return (
       <div className="flex flex-col gap-1.5">
         {fallbackLabel && (
@@ -141,7 +144,9 @@ function IssueHoverCardBody({
             {fallbackLabel}
           </span>
         )}
-        <p className="text-caption text-muted-foreground">{t(($) => $.detail.not_found)}</p>
+        <p className="text-caption text-muted-foreground">
+          {loadFailed ? t(($) => $.detail.load_failed) : t(($) => $.detail.not_found)}
+        </p>
       </div>
     );
   }

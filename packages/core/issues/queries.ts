@@ -464,6 +464,35 @@ export function projectGanttIssuesOptions(
   });
 }
 
+/**
+ * True when the server answered that this issue is not readable here: 404 for
+ * a missing issue or foreign workspace prefix, 403 for one outside the
+ * workspace. Any other failure (network, timeout, 401, 5xx) says nothing about
+ * the issue, so callers must not present it as deleted.
+ */
+export function isIssueNotFoundError(err: unknown): boolean {
+  return err instanceof ApiError && (err.status === 404 || err.status === 403);
+}
+
+const ISSUE_FETCH_MAX_RETRIES = 3;
+
+/**
+ * Retry policy for the issue page's own lookups (route resolve, detail view):
+ * network failures and transient statuses back off and retry, so one dropped
+ * request does not reach the error state. A definite answer (404, 403, other
+ * 4xx) will not change, so it settles at once. Chips, cards and lists keep the
+ * app-wide default.
+ */
+export function retryIssueFetch(failureCount: number, err: Error): boolean {
+  if (failureCount >= ISSUE_FETCH_MAX_RETRIES) return false;
+  if (!(err instanceof ApiError)) return true;
+  return err.status >= 500 || err.status === 408 || err.status === 429;
+}
+
+export function issueFetchRetryDelay(attempt: number): number {
+  return Math.min(1000 * 2 ** attempt, 8000);
+}
+
 export function issueDetailOptions(wsId: string, id: string) {
   return queryOptions({
     queryKey: issueKeys.detail(wsId, id),
@@ -491,6 +520,8 @@ export function issueDetailViewOptions(wsId: string, id: string, listRow?: Issue
   return queryOptions({
     queryKey: issueKeys.detail(wsId, id),
     queryFn: () => api.getIssue(id),
+    retry: retryIssueFetch,
+    retryDelay: issueFetchRetryDelay,
     refetchOnMount: authoritative ? false : "always",
     initialData: () => (listRow?.description != null ? listRow : undefined),
   });

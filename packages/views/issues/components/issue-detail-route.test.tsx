@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, renderHook, waitFor } from "@testing-library/react";
+import { render, renderHook, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { setApiInstance } from "@multica/core/api";
+import { ApiError, setApiInstance } from "@multica/core/api";
 import type { ApiClient } from "@multica/core/api/client";
 import { NavigationProvider } from "../../navigation";
 import type { NavigationAdapter } from "../../navigation";
+import { renderWithI18n } from "../../test/i18n";
 import { IssueDetail } from "./issue-detail";
 import {
   IssueDetailRoute,
@@ -127,7 +129,7 @@ describe("IssueDetailRoute with an identifier that names no issue", () => {
     expect(vi.isMockFunction(IssueDetail)).toBe(false);
     replace.mockClear();
     push.mockClear();
-    const getIssue = vi.fn().mockRejectedValue(new Error("issue not found"));
+    const getIssue = vi.fn().mockRejectedValue(new ApiError("issue not found", 404, "Not Found"));
     setApiInstance({ getIssue } as unknown as ApiClient);
     const qc = new QueryClient({
       defaultOptions: { queries: { staleTime: Infinity, retry: false } },
@@ -178,5 +180,67 @@ describe("IssueDetailRoute with an identifier that names no issue", () => {
     // A failed resolve must never rewrite the URL.
     expect(replace).not.toHaveBeenCalled();
     qc.clear();
+  });
+});
+
+// CHE-3535: a failed fetch is not a deleted issue. Over a lossy Tailscale link
+// one dropped request used to render "does not exist" with no way out.
+describe("IssueDetailRoute when the lookup cannot reach the server", () => {
+  const NOT_FOUND = "This issue does not exist or has been deleted in this workspace.";
+  const adapter: NavigationAdapter = {
+    push,
+    replace,
+    back: vi.fn(),
+    pathname: "/acme/issues/CHE-9",
+    searchParams: new URLSearchParams(),
+    hash: "",
+    getShareableUrl: (p: string) => `https://app.multica.com${p}`,
+  };
+
+  function renderRoute(qc: QueryClient) {
+    return renderWithI18n(
+      <QueryClientProvider client={qc}>
+        <NavigationProvider value={adapter}>
+          <IssueDetailRoute routeId="CHE-9" />
+        </NavigationProvider>
+      </QueryClientProvider>,
+    );
+  }
+
+  // Retry off at the client keeps the test fast; the hook's own retry policy
+  // is covered in core. `retry` on the query options still wins, so the 404
+  // case stays a single request and the network case is stubbed to settle.
+  const newClient = () =>
+    new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+
+  it("shows a retry state, not not-found, and re-requests on Retry", async () => {
+    const getIssue = vi
+      .fn()
+      .mockRejectedValue(new ApiError("unauthorized", 401, "Unauthorized"));
+    // A 401 is neither retried nor "not found": the session, not the issue, failed.
+    setApiInstance({ getIssue } as unknown as ApiClient);
+    renderRoute(newClient());
+
+    expect(await screen.findByText("Couldn't load this issue")).toBeInTheDocument();
+    expect(screen.queryByText(NOT_FOUND)).not.toBeInTheDocument();
+    expect(getIssue).toHaveBeenCalledTimes(1);
+
+    const user = userEvent.setup();
+    getIssue.mockClear();
+    getIssue.mockRejectedValue(new ApiError("unauthorized", 401, "Unauthorized"));
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(getIssue).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("Couldn't load this issue")).toBeInTheDocument();
+  });
+
+  it("still shows not-found for a 404", async () => {
+    const getIssue = vi.fn().mockRejectedValue(new ApiError("not found", 404, "Not Found"));
+    setApiInstance({ getIssue } as unknown as ApiClient);
+    renderRoute(newClient());
+
+    expect(await screen.findByText(NOT_FOUND)).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't load this issue")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(getIssue).toHaveBeenCalledTimes(1);
   });
 });
