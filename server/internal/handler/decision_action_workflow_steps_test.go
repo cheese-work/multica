@@ -1,9 +1,11 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -111,6 +113,58 @@ func stepsWorkflow(test *testing.T) (id, digest string) {
 	}
 	dbfx.Exec(test, `UPDATE issue_workflow SET steps = $2::jsonb WHERE id = $1`, id, string(encoded))
 	return id, liveStepsDigest(test, id)
+}
+
+// editHandler points one step at another handler.
+func editHandler(statusKey, handlerType, handlerID string) stepEdit {
+	return func(steps []IssueWorkflowStepPayload) {
+		for i := range steps {
+			if steps[i].StatusKey == statusKey {
+				steps[i].Handler = IssueWorkflowHandlerPayload{Type: handlerType, ID: handlerID}
+			}
+		}
+	}
+}
+
+// stepsAgent inserts an agent for a handler test. archived and private shape
+// the two refusals; a private agent here has no owner, so nobody may invoke it.
+func stepsAgent(test *testing.T, workspaceID string, archived, private bool) string {
+	test.Helper()
+	mode := "public_to"
+	if private {
+		mode = "private"
+	}
+	var id string
+	dbfx.QueryRow(test, `INSERT INTO agent (workspace_id, name, description, runtime_mode, runtime_config, runtime_id, visibility, permission_mode, max_concurrent_tasks, archived_at)
+		VALUES ($1, 'steps-handler-' || gen_random_uuid()::text, '', 'cloud', '{}'::jsonb, $2, 'workspace', $3, 1, CASE WHEN $4 THEN now() END) RETURNING id`,
+		workspaceID, handlerTestRuntimeID(test), mode, archived).Scan(&id)
+	dbfx.Cleanup(test, `DELETE FROM agent WHERE id = $1`, id)
+	if !private {
+		dbfx.Exec(test, `INSERT INTO agent_invocation_target (agent_id, target_type, target_id) VALUES ($1, 'workspace', $2)`, id, workspaceID)
+	}
+	return id
+}
+
+// stepsParamsUnchecked is stepsParamsRaw for an edit of the live steps: the
+// server must refuse it, so no after digest is computed.
+func stepsParamsUnchecked(test *testing.T, workflowID string, edit stepEdit) map[string]any {
+	test.Helper()
+	var raw []byte
+	dbfx.QueryRow(test, `SELECT steps FROM issue_workflow WHERE id = $1`, workflowID).Scan(&raw)
+	live, err := issueworkflow.DecodeSteps(raw)
+	if err != nil {
+		test.Fatal(err)
+	}
+	payload := make([]IssueWorkflowStepPayload, len(live))
+	for i, step := range live {
+		payload[i] = stepToPayload(step)
+	}
+	edit(payload)
+	sent, err := json.Marshal(payload)
+	if err != nil {
+		test.Fatal(err)
+	}
+	return stepsParamsRaw(test, workflowID, string(sent))
 }
 
 // requestSteps asks for workflow.steps.set with params and expects status.
@@ -236,6 +290,20 @@ func TestWorkflowStepsSetRequestRefusals(test *testing.T) {
 		{"new status creation", http.StatusBadRequest, "invalid_params", func(id string) map[string]any {
 			return stepsParamsRaw(test, id, `[{"new_status":{"name":"Brand new"}}]`)
 		}},
+		{"handler agent does not exist", http.StatusBadRequest, "invalid_handler", func(id string) map[string]any {
+			return stepsParamsUnchecked(test, id, editHandler("todo", "agent", "11111111-2222-4333-8444-555555555555"))
+		}},
+		{"handler agent of another workspace", http.StatusBadRequest, "invalid_handler", func(id string) map[string]any {
+			var foreign string
+			dbfx.QueryRow(test, `SELECT workspace_id FROM issue_workflow WHERE id = $1`, foreignWorkspaceWorkflow(test)).Scan(&foreign)
+			return stepsParamsUnchecked(test, id, editHandler("todo", "agent", stepsAgent(test, foreign, false, false)))
+		}},
+		{"handler agent is archived", http.StatusBadRequest, "invalid_handler", func(id string) map[string]any {
+			return stepsParamsUnchecked(test, id, editHandler("todo", "agent", stepsAgent(test, testWorkspaceID, true, false)))
+		}},
+		{"handler member is not in the workspace", http.StatusBadRequest, "invalid_handler", func(id string) map[string]any {
+			return stepsParamsUnchecked(test, id, editHandler("todo", "member", "11111111-2222-4333-8444-555555555555"))
+		}},
 		{"unknown param field", http.StatusBadRequest, "invalid_params", func(id string) map[string]any {
 			params := stepsParams(test, id, editInstructions("todo", "x"))
 			params["name"] = "renamed"
@@ -341,6 +409,31 @@ func TestWorkflowStepsSetApprovalRefusals(test *testing.T) {
 	})
 }
 
+func TestWorkflowStepsSetApprovalRefusesAHandlerTheApproverCannotInvoke(test *testing.T) {
+	workflowID, _ := stepsWorkflow(test)
+	unowned := stepsAgent(test, testWorkspaceID, false, true)
+	// The request admits any agent of the workspace; the approver's invoke
+	// right is judged at approval.
+	params := stepsParams(test, workflowID, func(steps []IssueWorkflowStepPayload) {
+		editInstructions("todo", "do A better")(steps)
+		editHandler("todo", "agent", unowned)(steps)
+	})
+	live := liveStepsDigest(test, workflowID)
+	request, _ := requestSteps(test, http.StatusCreated, workflowID, params)
+	handler := withVerifier(acceptingVerifier)
+	body := request.approveOwner(test, handler, http.StatusOK)
+	mustContain(test, body, "invalid_handler")
+	if n := dbfx.Count(test, `SELECT count(*) FROM decision_action WHERE id = $1 AND state = 'failed' AND error_code = 'invalid_handler'`, request.action.actionID); n != 1 {
+		test.Fatalf("action is not failed with invalid_handler: %s", body)
+	}
+	if got := liveStepsDigest(test, workflowID); got != live {
+		test.Fatalf("workflow digest %s, want unchanged %s", got, live)
+	}
+	if n := request.action.activityCount(test, "config_change_applied"); n != 0 {
+		test.Fatalf("config_change_applied rows = %d, want 0", n)
+	}
+}
+
 func TestWorkflowStepsSetSecondApprovalIsNotPending(test *testing.T) {
 	request := newStepsRequest(test)
 	handler := withVerifier(acceptingVerifier)
@@ -358,12 +451,13 @@ func TestWorkflowStepsSetConcurrentApprovalsOnTheSameBaseApplyOnce(test *testing
 	makeApproverOwner(test, first.action, "owner")
 	handler := withVerifier(acceptingVerifier)
 	statuses := make([]int, 2)
+	bodies := make([]string, 2)
 	var group sync.WaitGroup
 	for i, request := range []configRequest{first, second} {
 		group.Add(1)
 		go func() {
 			defer group.Done()
-			statuses[i] = approveStatus(test, handler, request)
+			statuses[i], bodies[i] = approveResult(test, handler, request)
 		}()
 	}
 	group.Wait()
@@ -371,9 +465,35 @@ func TestWorkflowStepsSetConcurrentApprovalsOnTheSameBaseApplyOnce(test *testing
 	if applied != 1 || (statuses[0] != http.StatusOK && statuses[1] != http.StatusOK) {
 		test.Fatalf("applied %d times (statuses %v), want exactly 1 and one 200", applied, statuses)
 	}
+	// The loser is refused as drifted. A try-lock may answer busy_retry first;
+	// the retry then runs after the winner committed.
+	for i, request := range []configRequest{first, second} {
+		if statuses[i] == http.StatusOK {
+			continue
+		}
+		if strings.Contains(bodies[i], "busy_retry") {
+			bodies[i] = request.action.approve(test, handler, request.claim(test), http.StatusConflict)
+		}
+		mustContain(test, bodies[i], "precondition_drift")
+	}
 	for i, request := range []configRequest{first, second} {
 		if statuses[i] != http.StatusOK {
 			request.action.assertUntouched(test)
 		}
 	}
+}
+
+// approveResult is approveStatus with the response body.
+func approveResult(test *testing.T, handler *Handler, request configRequest) (int, string) {
+	test.Helper()
+	raw, err := json.Marshal(request.claim(test))
+	if err != nil {
+		test.Error(err)
+		return 0, ""
+	}
+	call := request.action.decide("approve", request.action.humanID, "interactive_jwt")
+	call.Body = readerCloser{bytes.NewReader(raw)}
+	recorder := httptest.NewRecorder()
+	handler.ApproveDecisionAction(recorder, call)
+	return recorder.Code, recorder.Body.String()
 }

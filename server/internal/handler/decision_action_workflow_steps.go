@@ -57,6 +57,20 @@ func init() {
 			if err != nil {
 				return err
 			}
+			live, err := issueworkflow.DecodeSteps(workflow.Steps)
+			if err != nil {
+				return err
+			}
+			// The approver stands in for the editor: they may hand work only to what
+			// they could assign it to themselves. A refusal rolls the approval back.
+			approver := uuidToString(execution.Approver.UserID)
+			workspaceID := uuidToString(workflow.WorkspaceID)
+			gate := func(agent db.Agent) bool {
+				return (&Handler{Queries: execution.Queries}).canInvokeAgent(ctx, agent, "member", approver, approver, workspaceID)
+			}
+			if status, message := validateChangedHandlers(ctx, execution.Queries, workflow.WorkspaceID, live, after, gate); status != 0 {
+				return actionFailure{Code: "invalid_handler", Message: message}
+			}
 			encoded, err := issueworkflow.EncodeSteps(after)
 			if err != nil {
 				return err
@@ -151,6 +165,9 @@ func workflowStepsAfter(ctx context.Context, queries *db.Queries, workflow db.Is
 			return nil, invalidWorkflowSteps("status_removed", "this action may not remove a status; use the workflow editor")
 		}
 	}
+	if status, message := validateChangedHandlers(ctx, queries, workflow.WorkspaceID, live, steps, func(db.Agent) bool { return true }); status != 0 {
+		return nil, decisionIntentRefusal{status, "invalid_handler: " + message}
+	}
 	if message, err := workflowSteps.subWorkflowTargetsMessage(ctx, queries, workflow.WorkspaceID, workflow.ID, steps); err != nil {
 		return nil, err
 	} else if message != "" {
@@ -166,4 +183,36 @@ func workflowStepsAfter(ctx context.Context, queries *db.Queries, workflow db.Is
 		return nil, errors.Join(errors.New("encode workflow steps"), err)
 	}
 	return issueworkflow.DecodeSteps(encoded)
+}
+
+// validateChangedHandlers is validateHandoffHandlers for a write with no HTTP
+// caller: every handler the steps add must be a member, agent or squad of the
+// workspace that is not archived, and canInvoke must admit each agent. Only
+// changed handlers are checked, so an edit never fails on a handler someone
+// else picked. The request has no approver yet, so it passes a gate that admits
+// everyone and leaves the invoke check to the approval.
+func validateChangedHandlers(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, previous, steps []issueworkflow.Step, canInvoke func(db.Agent) bool) (int, string) {
+	before := map[issueworkflow.Handler]bool{}
+	for _, step := range previous {
+		before[step.Handler] = true
+	}
+	checker := &Handler{Queries: queries}
+	for _, step := range steps {
+		switch step.Handler.Type {
+		case issueworkflow.HandlerAgent, issueworkflow.HandlerSquad, issueworkflow.HandlerMember:
+		default:
+			continue
+		}
+		if before[step.Handler] {
+			continue
+		}
+		id, err := parseUUIDString(step.Handler.ID)
+		if err != nil {
+			return http.StatusBadRequest, "invalid handler id"
+		}
+		if status, message := checker.validateAssignee(ctx, uuidToString(workspaceID), pgtype.Text{String: step.Handler.Type, Valid: true}, id, canInvoke); status != 0 {
+			return status, message
+		}
+	}
+	return 0, ""
 }
