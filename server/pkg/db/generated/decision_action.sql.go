@@ -690,6 +690,26 @@ func (q *Queries) LockPendingDecisionAction(ctx context.Context, arg LockPending
 	return i, err
 }
 
+const lockWorkflowTargetNowait = `-- name: LockWorkflowTargetNowait :one
+SELECT id FROM issue_workflow
+WHERE id = $1 AND workspace_id = $2
+FOR UPDATE NOWAIT
+`
+
+type LockWorkflowTargetNowaitParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// The row a config change reads and writes is locked the same way, so an
+// ordinary edit cannot commit between the approval's read and its write.
+func (q *Queries) LockWorkflowTargetNowait(ctx context.Context, arg LockWorkflowTargetNowaitParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockWorkflowTargetNowait, arg.ID, arg.WorkspaceID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const lockWorkspaceKeyShareNowait = `-- name: LockWorkspaceKeyShareNowait :one
 
 SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE NOWAIT

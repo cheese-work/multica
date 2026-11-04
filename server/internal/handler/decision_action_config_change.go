@@ -23,13 +23,17 @@ import (
 //     only compares with its own;
 //   - the preview, its digest and both digests are stored in the hash-covered
 //     preconditions, and the denylist, drift and digests are checked again at
-//     approval, under a try-lock per field and target.
+//     approval, under a try-lock per field and target plus a row lock on the target.
 //
 // Concrete actions register through registerConfigChange. Their Definition
 // must set RequiresPreview.
 
 // configChange is the per-action part of the shared core.
 type configChange struct {
+	// Lock takes the target row FOR UPDATE NOWAIT before the approval's first
+	// read, so an ordinary edit cannot commit between that read and Apply. The
+	// core calls it first; a busy row answers busy_retry.
+	Lock func(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, params json.RawMessage) error
 	// Read returns the live value, the value the params would write and the
 	// digests of both, resolved inside the workspace. Called at request and
 	// again, under the lock, at approval and after Apply.
@@ -57,6 +61,9 @@ type configChangeRead struct {
 var configChanges = map[string]configChange{}
 
 func registerConfigChange(actionType string, change configChange) {
+	if change.Lock == nil {
+		panic("config change " + actionType + " must lock its target row")
+	}
 	configChanges[actionType] = change
 	decisionActionExecutors[actionType] = func(ctx context.Context, execution decisionActionExecution) (json.RawMessage, error) {
 		return executeConfigChange(ctx, change, execution)
@@ -64,7 +71,7 @@ func registerConfigChange(actionType string, change configChange) {
 }
 
 // configChangeLockKey names the try-lock that serialises approvals of one field
-// on one target.
+// on one target; the row lock in configChange.Lock covers ordinary edits.
 func configChangeLockKey(workspaceID, field, targetID string) string {
 	return workspaceID + ":config:" + field + ":" + targetID
 }
@@ -164,8 +171,8 @@ func configChangeDiff(read configChangeRead) ([]decisiontx.DiffHunk, error) {
 	return hunks, err
 }
 
-// executeConfigChange runs in the approval savepoint. It takes the try-lock,
-// reads and checks everything again, applies, reads the result back in the same
+// executeConfigChange runs in the approval savepoint. It takes the try-lock and
+// the target row lock, reads and checks everything again, applies, reads the result back in the same
 // transaction and writes the audit row. A readback that is not the approved
 // value fails the action, which undoes the write.
 func executeConfigChange(ctx context.Context, change configChange, execution decisionActionExecution) (json.RawMessage, error) {
@@ -185,6 +192,11 @@ func executeConfigChange(ctx context.Context, change configChange, execution dec
 	}
 	if !locked {
 		return nil, errBusyRetry
+	}
+	// The row lock comes before the first read: an ordinary edit holds the row
+	// until it commits, so it cannot land between this read and Apply.
+	if err := change.Lock(ctx, queries, action.WorkspaceID, action.Params); err != nil {
+		return nil, err
 	}
 	var claim configChangeClaim
 	if err := json.Unmarshal(action.Params, &claim); err != nil {

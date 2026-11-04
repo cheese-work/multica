@@ -26,6 +26,13 @@ SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE NOWAIT;
 -- name: TryLockConfigChange :one
 SELECT pg_try_advisory_xact_lock(hashtextextended(sqlc.arg('key')::text, 0))::boolean;
 
+-- The row a config change reads and writes is locked the same way, so an
+-- ordinary edit cannot commit between the approval's read and its write.
+-- name: LockWorkflowTargetNowait :one
+SELECT id FROM issue_workflow
+WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id')
+FOR UPDATE NOWAIT;
+
 -- name: LockDecisionSessionNowait :one
 SELECT id FROM chat_session
 WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')

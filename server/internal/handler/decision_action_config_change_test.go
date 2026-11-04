@@ -33,6 +33,9 @@ var (
 	// prove the server recomputes the agent's after digest at approval.
 	configAfterSuffix atomic.Value
 	configPublished   atomic.Int32
+	// configBeforeApply runs inside the approval just before Apply writes, where
+	// a competing ordinary edit would land if the target row were not locked.
+	configBeforeApply atomic.Pointer[func()]
 )
 
 func registerConfigAction(test *testing.T) {
@@ -40,6 +43,7 @@ func registerConfigAction(test *testing.T) {
 	configField.Store("workflow.instructions")
 	configAfterSuffix.Store("")
 	configPublished.Store(0)
+	configBeforeApply.Store(nil)
 	decisionaction.Register(&decisionaction.Definition{
 		Type: configAction, Version: 1, MinClass: "spend", Target: decisionaction.TargetWorkflow, RequiresPreview: true,
 		Normalize: func(raw json.RawMessage, slots []decisionaction.SecretSlot) (json.RawMessage, []decisionaction.SecretSlot, error) {
@@ -47,6 +51,14 @@ func registerConfigAction(test *testing.T) {
 		},
 	})
 	registerConfigChange(configAction, configChange{
+		Lock: func(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, params json.RawMessage) error {
+			workflow, err := loadWorkflowTarget(ctx, queries, workspaceID, params, http.StatusConflict)
+			if err != nil {
+				return err
+			}
+			_, err = queries.LockWorkflowTargetNowait(ctx, db.LockWorkflowTargetNowaitParams{ID: workflow.ID, WorkspaceID: workspaceID})
+			return err
+		},
 		Read: func(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, params json.RawMessage) (configChangeRead, error) {
 			workflow, err := loadWorkflowTarget(ctx, queries, workspaceID, params, http.StatusBadRequest)
 			if err != nil {
@@ -74,6 +86,9 @@ func registerConfigAction(test *testing.T) {
 			}, nil
 		},
 		Apply: func(ctx context.Context, execution decisionActionExecution, read configChangeRead) error {
+			if hook := configBeforeApply.Load(); hook != nil {
+				(*hook)()
+			}
 			var wanted struct {
 				SetInstructions map[string]string `json:"set_instructions"`
 			}
@@ -485,4 +500,65 @@ func TestConfigChangeBusyTargetAnswersBusyRetry(test *testing.T) {
 func holdAdvisoryLock(test *testing.T, key string) {
 	test.Helper()
 	holdRow(test, `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, key)
+}
+
+// ordinaryEdit changes the workflow the way the workflow editor does: a plain
+// UPDATE in its own transaction, with a short lock timeout so a blocked write
+// fails fast. It reports whether the edit committed.
+func ordinaryEdit(test *testing.T, workflowID string) bool {
+	test.Helper()
+	ctx := context.Background()
+	tx, err := testPool.Begin(ctx)
+	if err != nil {
+		test.Error(err)
+		return false
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '300ms'`); err != nil {
+		test.Error(err)
+		return false
+	}
+	if _, err := tx.Exec(ctx, `UPDATE issue_workflow SET description = 'ordinary edit' WHERE id = $1`, workflowID); err != nil {
+		return false
+	}
+	return tx.Commit(ctx) == nil
+}
+
+func TestConfigChangeLocksTheTargetRowBeforeItReads(test *testing.T) {
+	request, _ := requestConfig(test, http.StatusCreated, nil)
+	var slipped atomic.Bool
+	hook := func() { slipped.Store(ordinaryEdit(test, request.workflowID)) }
+	configBeforeApply.Store(&hook)
+	request.approveOwner(test, withVerifier(acceptingVerifier), http.StatusOK)
+	if slipped.Load() {
+		test.Fatal("an ordinary edit committed in the middle of the approval and the approval then overwrote it")
+	}
+	if got := liveStepsDigest(test, request.workflowID); got == request.base {
+		test.Fatal("approval did not apply")
+	}
+	var description string
+	dbfx.QueryRow(test, `SELECT description FROM issue_workflow WHERE id = $1`, request.workflowID).Scan(&description)
+	if description == "ordinary edit" {
+		test.Fatal("the ordinary edit was written during the approval")
+	}
+}
+
+func TestConfigChangeRefusesWhileAnOrdinaryEditIsInFlight(test *testing.T) {
+	request, _ := requestConfig(test, http.StatusCreated, nil)
+	ctx := context.Background()
+	edit, err := testPool.Begin(ctx)
+	if err != nil {
+		test.Fatal(err)
+	}
+	test.Cleanup(func() { _ = edit.Rollback(ctx) })
+	if _, err := edit.Exec(ctx, `UPDATE issue_workflow SET description = 'ordinary edit' WHERE id = $1`, request.workflowID); err != nil {
+		test.Fatal(err)
+	}
+	mustContain(test, request.approveOwner(test, withVerifier(acceptingVerifier), http.StatusConflict), "busy_retry")
+	request.assertNotApplied(test, request.base)
+	if err := edit.Commit(ctx); err != nil {
+		test.Fatal(err)
+	}
+	// The edit left the steps alone, so the approval now applies on the same base.
+	request.action.approve(test, withVerifier(acceptingVerifier), request.claim(test), http.StatusOK)
 }
