@@ -4811,6 +4811,26 @@ describe("IssueDetail (shared)", () => {
     expect(await screen.findByDisplayValue("Half-typed title")).toBeVisible();
   });
 
+  it("keeps a newer title edit when an earlier save succeeds while the user keeps typing", async () => {
+    let finishSave!: (issue: unknown) => void;
+    mockApiObj.updateIssue.mockImplementationOnce(
+      () => new Promise((resolve) => { finishSave = resolve; }),
+    );
+    const first = renderIssueDetail();
+    fireEvent.click(await screen.findByRole("button", { name: "Implement authentication" }));
+    const editor = await screen.findByTestId("title-editor");
+    fireEvent.change(editor, { target: { value: "First title" } });
+    fireEvent.blur(editor);
+    await waitFor(() => expect(mockApiObj.updateIssue).toHaveBeenCalled());
+    fireEvent.change(editor, { target: { value: "First title, then more" } });
+    finishSave({ ...mockIssue, title: "First title" });
+    await waitFor(() => expect(mockApiObj.updateIssue).toHaveBeenCalledTimes(1));
+    first.unmount();
+
+    renderIssueDetail();
+    expect(await screen.findByDisplayValue("First title, then more")).toBeVisible();
+  });
+
   describe("sub-issues list", () => {
     it("places the decision banner after title, description and sub-issues, before activity", async () => {
       mockApiObj.listChildIssues.mockResolvedValue({

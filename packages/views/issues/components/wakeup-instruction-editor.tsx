@@ -142,10 +142,11 @@ function InstructionForm({
   // Keep the editing snapshot through query refreshes; a stale save conflicts
   // instead of replacing another person's changes or silently resetting drafts.
   const [original] = useState(wakeup);
-  // The unsent prompt survives closing the dialog. It is dropped when the rule
-  // changed since it was started, so a restore never overwrites another edit.
+  // The unsent prompt survives closing the dialog. It keeps the prompt it started
+  // from, so saving after the rule changed conflicts instead of overwriting it.
   const [draft, setDraft, clearDraft] = usePersistedDraft(useWakeupInstructionDraftStore, wakeup.id, EMPTY_TEXT_EDIT);
-  const value = draft.value !== null && draft.base === original.instruction ? draft.value : original.instruction;
+  const value = draft.value ?? original.instruction;
+  const expectedInstruction = draft.base ?? original.instruction;
   const [error, setError] = useState("");
   const busy = useRef(false);
   const mutation = useEditWakeupInstruction(workspaceId, wakeup.issue_id);
@@ -167,7 +168,7 @@ function InstructionForm({
           await mutation.mutateAsync({
             id: wakeup.id,
             instruction,
-            expected_instruction: original.instruction,
+            expected_instruction: expectedInstruction,
             revision: original.revision ?? 0,
           });
           clearDraft();
@@ -192,7 +193,7 @@ function InstructionForm({
         aria-invalid={!!error}
         aria-describedby={error ? `${id}-error` : undefined}
         onChange={(event) => {
-          setDraft({ value: event.target.value, base: original.instruction });
+          setDraft({ value: event.target.value, base: expectedInstruction });
           setError("");
         }}
         onKeyDown={(event) => {

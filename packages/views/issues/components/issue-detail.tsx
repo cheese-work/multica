@@ -4206,7 +4206,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                     }, {
                       onSuccess: (serverIssue) => {
                         setTitleConflictDraft(null);
-                        clearTitleDraft();
+                        // Typing resumed while this save was in flight: that newer text is still unsent.
+                        const latest = useIssueTitleDraftStore.getState().getDraft(id)?.value;
+                        if (latest == null || latest.trim() === trimmed) clearTitleDraft();
                         titleBaseRef.current = serverIssue.title;
                       },
                       onError: (error) => {

@@ -56,6 +56,19 @@ it("restores an unsaved prompt after the editor unmounts and remounts", async ()
   mount();
   expect(await open()).toHaveValue("half-typed prompt");
 });
+it("shows an unsent prompt even when the saved prompt changed, and saving it conflicts instead of overwriting", async () => {
+  mount();
+  fireEvent.change(await open(), { target: { value: "my draft" } });
+  cleanup();
+  rule = { ...rule, instruction: "someone else's edit", revision: 3 };
+  edit.mockRejectedValue({ status: 409 });
+  mount();
+  const input = await open();
+  expect(input).toHaveValue("my draft");
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(edit).toHaveBeenCalledWith("issue", "wake", { instruction: "my draft", expected_instruction: "Check CI", revision: 3 }));
+  expect(screen.getByRole("textbox", { name: "What to do when woken" })).toHaveValue("my draft");
+});
 it("keeps the draft after a conflict and never silently uses the refreshed revision", async () => {
   const client = mount();
   const input = await open();
