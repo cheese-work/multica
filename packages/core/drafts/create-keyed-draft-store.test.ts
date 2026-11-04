@@ -183,4 +183,27 @@ describe("createKeyedDraftStore", () => {
     expect(persisted("ws-b")).toEqual(["issue-2"]);
     expect(Object.keys(useStore.getState().drafts).sort()).toEqual(["issue-1", "issue-3"]);
   });
+
+  it("reads right after a workspace switch, before rehydration, never show the old workspace's drafts", async () => {
+    setCurrentWorkspace("ws-a", "id-a");
+    const { useStore } = build("k_ws_read", memoryStorage(), { workspaceScoped: true });
+    await flush();
+    useStore.getState().setDraft("k", { text: "in A" });
+    setCurrentWorkspace("ws-b", "id-b");
+    await flush();
+    useStore.getState().setDraft("k", { text: "in B" });
+
+    // Memory still holds B's map while the slug is A (rehydration is queued):
+    // reads must be empty, not B's draft.
+    setCurrentWorkspace("ws-a", "id-a");
+    expect(useStore.getState().getDraft("k")).toBeUndefined();
+    expect(useStore.getState().hasDraft("k")).toBe(false);
+    await flush();
+    expect(useStore.getState().getDraft("k")?.text).toBe("in A");
+
+    setCurrentWorkspace("ws-c", "id-c"); // no draft in C
+    expect(useStore.getState().getDraft("k")).toBeUndefined();
+    await flush();
+    expect(useStore.getState().hasDraft("k")).toBe(false);
+  });
 });

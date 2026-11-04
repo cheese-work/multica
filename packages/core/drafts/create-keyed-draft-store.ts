@@ -76,18 +76,21 @@ export function createKeyedDraftStore<TData extends object>(
   };
 
   // Slug the in-memory map was loaded from. `setCurrentWorkspace` changes the
-  // slug synchronously but rehydrates in a microtask; a write in that gap would
-  // persist the old workspace's map under the new slug.
+  // slug synchronously but rehydrates in a microtask. In that gap the map
+  // belongs to the old workspace: reads treat it as empty (never leak it into
+  // the new workspace) and writes rehydrate first (never persist it under the
+  // new slug).
   let loadedSlug: string | null = null;
+  const isStale = () => workspaceScoped && getCurrentSlug() !== loadedSlug;
   const syncToWorkspace = () => {
-    if (workspaceScoped && getCurrentSlug() !== loadedSlug) useStore.persist.rehydrate();
+    if (isStale()) useStore.persist.rehydrate();
   };
 
   const useStore = create<KeyedDraftStore<TData>>()(
     persist(
       (set, get) => ({
         drafts: {},
-        getDraft: (key) => get().drafts[key]?.data,
+        getDraft: (key) => (isStale() ? undefined : get().drafts[key]?.data),
         setDraft: (key, patch) => {
           syncToWorkspace();
           set((s) => {
@@ -108,7 +111,7 @@ export function createKeyedDraftStore<TData extends object>(
             return { drafts: rest };
           });
         },
-        hasDraft: (key) => key in get().drafts,
+        hasDraft: (key) => !isStale() && key in get().drafts,
       }),
       {
         name: config.storageKey,

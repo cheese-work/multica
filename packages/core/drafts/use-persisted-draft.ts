@@ -15,7 +15,7 @@ export function usePersistedDraft<TData extends object>(
   key: string,
   empty: TData,
 ): [TData, (patch: Partial<TData>) => void, () => void] {
-  const draft = store((s) => s.drafts[key]?.data ?? empty);
+  const draft = store((s) => s.getDraft(key) ?? empty);
   const setDraft = useCallback(
     (patch: Partial<TData>) => store.getState().setDraft(key, patch),
     [store, key],
