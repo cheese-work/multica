@@ -1437,6 +1437,10 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		{
+			name: "delete dm progress follows",
+			run:  func() error { return qtx.DeleteDMProgressByWorkspace(ctx, requester.WorkspaceID) },
+		},
+		{
 			name: "delete chat pins",
 			run:  func() error { return qtx.DeleteChatPinnedAgentsByWorkspace(ctx, requester.WorkspaceID) },
 		},
