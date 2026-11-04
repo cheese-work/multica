@@ -1290,7 +1290,10 @@ func (s *TaskService) EnqueueCommentTriggeredTask(ctx context.Context, issue db.
 		task, attr, err = s.enqueueMentionTaskWithQueriesAndOverlay(ctx, queries, issue, agentID, triggerCommentID, nil, isLeader, squadID, false, handoffNote, actorUserID, pgtype.UUID{}, origin, preparedOverlay)
 	}
 	if err != nil {
-		return db.AgentTaskQueue{}, err
+		// A stage refusal must outlive this transaction: roll back, then
+		// write the queue mark on the pool.
+		_ = tx.Rollback(ctx)
+		return db.AgentTaskQueue{}, s.recordStageRefusal(ctx, err)
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO comment_trigger_rate_limit (issue_id, agent_id, triggered_at)
 		VALUES ($1, $2, now())

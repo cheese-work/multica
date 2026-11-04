@@ -435,3 +435,43 @@ func TestStageQueueReleaseCarriesTheRequestersTaint(t *testing.T) {
 		t.Fatalf("released run taint = %v, want [ext-1 ext-2]", taint)
 	}
 }
+
+// The comment-triggered enqueue opens its own transaction. Its stage refusal
+// rolls back with it, so the refusal is written again afterwards, with the
+// requester, the trigger comment and the taint (CHE-3611).
+func TestStageQueueCommentTriggeredRefusalStaysOnRecordAndReleases(t *testing.T) {
+	f := newStageFixture(t, stagequeue.Limits{stagequeue.StageReview: 1})
+	svc := f.service(t)
+	actor := f.User(t, "Requester", fmt.Sprintf("stage-comment-actor-%d@multica.test", time.Now().UnixNano()))
+	f.Member(t, f.WorkspaceID, actor, "member")
+	runA := f.run(t, f.reviewIssue(t, "PR A", 3*time.Hour), "running")
+	b := f.reviewIssue(t, "PR B", 1*time.Hour)
+	issueB, err := f.q.GetIssue(context.Background(), util.MustParseUUID(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	comment := f.Comment(t, b, "please review", testutil.Cols{"author_id": actor})
+	taintedTask := f.run(t, f.Issue(t, "elsewhere", testutil.Cols{"status": "in_progress"}), "running")
+	f.Exec(t, `UPDATE agent_task_queue SET taint_ids = ARRAY['ext-1'] WHERE id = $1`, taintedTask)
+	ctx := WithActingTask(context.Background(), util.MustParseUUID(taintedTask))
+
+	_, err = svc.EnqueueCommentTriggeredTask(ctx, issueB, util.MustParseUUID(f.agentID), util.MustParseUUID(comment),
+		true, false, pgtype.UUID{}, "", util.MustParseUUID(actor), OriginDerived)
+	if !errors.Is(err, ErrStageQueueFull) {
+		t.Fatalf("comment-triggered enqueue of B while A runs: err = %v, want ErrStageQueueFull", err)
+	}
+	if got := f.tasksOn(t, b); got != 0 {
+		t.Fatalf("B has %d tasks after a refusal, want 0", got)
+	}
+	if got := f.marks(t, b); got != 1 {
+		t.Fatalf("B has %d refusal rows after the rollback, want 1", got)
+	}
+	f.Exec(t, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, runA)
+	if err := svc.ReleaseStageQueues(context.Background()); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	originator, taint := f.releasedTask(t, b)
+	if originator != actor || len(taint) != 1 || taint[0] != "ext-1" {
+		t.Fatalf("released run originator %q taint %v, want the requester %q with [ext-1]", originator, taint, actor)
+	}
+}
