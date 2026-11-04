@@ -390,7 +390,11 @@ func TestACutThatTakesAValuesNameTakesTheValueToo(t *testing.T) {
 		"connect with password = 'hunter2' and then 甲乙丙",
 		`connect with "password": "hunter2" and then 甲乙丙`,
 	} {
-		n := len([]rune(s)) - len([]rune(s[:strings.Index(s, "word")]))
+		at := strings.Index(s, "word")
+		if at < 0 {
+			t.Fatalf("no %q in %q", "word", s)
+		}
+		n := len([]rune(s)) - len([]rune(s[:at]))
 		got := redactSecrets(cutRawThinking(s, n))
 		if strings.Contains(got, "hunter2") {
 			t.Errorf("cut %q: the value survived without its name: %q", s, got)
