@@ -82,7 +82,7 @@ func TestCardOptionAnswerRecordsOnThatCardWithoutDMRun(test *testing.T) {
 func TestCardAnswerWithUnsealedIntentWakesCompletedAskingTask(test *testing.T) {
 	resetDecisionLease(test)
 	fixture := newAskedRecordFixture(test)
-	dbfx.Exec(test, `UPDATE decision_request SET options = $2::jsonb WHERE id = $1`, fixture.decision.ID, cardOptions)
+	dbfx.Exec(test, `UPDATE decision_request SET options = $2::jsonb, ask_json = $3::jsonb WHERE id = $1`, fixture.decision.ID, cardOptions, cardAskJSON)
 	dbfx.Exec(test, `INSERT INTO decision_intent_target (decision_intent_id, human_user_id) VALUES ($1, $2)`, fixture.intentID, testUserID)
 	dbfx.Exec(test, `UPDATE decision_intent SET sealed_at = NULL, consumed_at = NULL, consumed_by_request_id = NULL WHERE id = $1`, fixture.intentID)
 	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, fixture.taskID, fixture.chatTaskID)
