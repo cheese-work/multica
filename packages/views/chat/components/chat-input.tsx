@@ -23,9 +23,7 @@ import { DeferredContentEditor as ContentEditor } from "./deferred-content-edito
 import { ChatAddMenu } from "./chat-add-menu";
 import { CHAT_COLUMN, CHAT_GUTTER } from "./chat-column";
 import { useVisualViewportKeyboard } from "./use-visual-viewport-keyboard";
-
-/** Share of the visible viewport the composer may take while the soft keyboard is open. */
-const KEYBOARD_COMPOSER_MAX_RATIO = 0.4;
+import { keyboardComposerMaxHeight } from "./keyboard-composer-cap";
 import { useChatStore, DRAFT_NEW_SESSION } from "@multica/core/chat";
 import { attachmentToDraftUpload, type DraftUpload } from "@multica/core/drafts";
 import { createLogger } from "@multica/core/logger";
@@ -824,7 +822,7 @@ export function ChatInput({
       // the keyboard (CHE-3534). While it is up, cap by the visible strip
       // instead so the message list keeps the rest. Always written, so the
       // cap clears when the keyboard closes.
-      style={{ maxHeight: keyboard ? Math.floor(keyboard.viewportHeight * KEYBOARD_COMPOSER_MAX_RATIO) : undefined }}
+      style={{ maxHeight: keyboardComposerMaxHeight(keyboard?.viewportHeight) }}
       className={cn(
         // The composer grows with the draft up to half the surface it sits on
         // — a fixed 160px cap made long drafts unreadable in a five-line
