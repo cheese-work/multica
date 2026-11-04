@@ -856,7 +856,13 @@
     "idle_guard_act": "Act",
     "idle_guard_hours_label": "超過（小時）",
     "idle_guard_hours_invalid": "請輸入 1 到 72 的整數。",
-    "idle_guard_readonly": "{{mode}}，{{hours}} 小時後"
+    "idle_guard_readonly": "{{mode}}，{{hours}} 小時後",
+    "routing_agent_label": "路由智慧體",
+    "routing_agent_hint": "處理僅路由的工作流程步驟：待辦、受阻、已合併和待決策。未設定則沿用各步驟自己的智慧體。",
+    "routing_fallback_label": "備用智慧體",
+    "routing_fallback_hint": "路由智慧體因服務商錯誤失敗時，接手該路由步驟。",
+    "routing_agent_none": "無",
+    "routing_agent_unknown": "未知智慧體"
   },
   "delete_workspace_dialog": {
     "title": "刪除工作區",

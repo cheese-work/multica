@@ -282,6 +282,8 @@ import {
   RuntimeProfileSchema,
   AgentDecisionSettingSchema,
   type AgentDecisionSetting,
+  RoutingAgentSettingSchema,
+  type RoutingAgentSetting,
   OpenDecisionRequestListSchema,
   DecisionArtifactListSchema,
   RuntimeProfileListSchema,
@@ -3268,6 +3270,23 @@ export class ApiClient {
     const raw: unknown = await this.fetch("/api/agent-decisions/brief");
     return parseWithFallback<AgentDecisionSetting | null>(raw, AgentDecisionSettingSchema, null, {
       endpoint: "GET /api/agent-decisions/brief",
+    });
+  }
+
+  // CHE-3627: null when the response is malformed, so a guessed value is never
+  // shown or saved back over the real one.
+  async getRoutingAgent(workspaceId: string): Promise<RoutingAgentSetting | null> {
+    const raw: unknown = await this.fetch(`/api/workspaces/${workspaceId}/routing-agent`);
+    return parseWithFallback<RoutingAgentSetting | null>(raw, RoutingAgentSettingSchema, null, {
+      endpoint: "GET /api/workspaces/{id}/routing-agent",
+    });
+  }
+
+  // Owner/admin + human-actor only; replaces the whole setting.
+  async updateRoutingAgent(workspaceId: string, config: RoutingAgentSetting): Promise<RoutingAgentSetting> {
+    return this.fetch(`/api/workspaces/${workspaceId}/routing-agent`, {
+      method: "PUT",
+      body: JSON.stringify(config),
     });
   }
 
