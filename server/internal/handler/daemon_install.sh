@@ -110,10 +110,10 @@ fetch() {
   local path=$1 out=$2 code
   if [ $# -ge 3 ] && [ -t 2 ]; then
     printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" |
-      curl -sS --config - --max-filesize "$MAX_BYTES" -o "$out" -w '%{http_code}' "$SERVER_URL$path" >"$out.code" &
+      curl -sS --config - --max-filesize "$MAX_BYTES" -o "$out" -w '%{http_code}' "$SERVER_URL$path" >"$out.code" 2>"$out.err" &
     bg_pid=$!
     render_progress "$bg_pid" "$out" "$3"
-    if wait "$bg_pid"; then code="$(cat "$out.code")"; else bg_pid=""; fail "cannot reach $SERVER_URL"; fi
+    if wait "$bg_pid"; then code="$(cat "$out.code")"; else bg_pid=""; cat "$out.err" >&2; fail "cannot reach $SERVER_URL"; fi
     bg_pid=""
   else
     code="$(printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" |

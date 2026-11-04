@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -35,7 +36,6 @@ type ttyRun struct {
 	err      error
 	took     time.Duration
 	bgPIDLog string
-	shellPID string
 }
 
 // runInstallTTY runs the served script under script(1), so stderr is a TTY.
@@ -151,16 +151,12 @@ func TestInstallScriptTTYEndsLineBeforeFailure(t *testing.T) {
 	if i < 1 || r.out[i-1] != '\n' {
 		t.Fatalf("failure message does not start its own line:\n%q", r.out)
 	}
-	if ee, ok := r.err.(*exec.ExitError); !ok || ee.ExitCode() != 1 {
-		t.Fatalf("exit = %v, want 1", r.err)
-	}
+	wantExit1(t, r.err)
 }
 
 func TestInstallScriptTTYDigestMismatchKeepsMessageAndExit(t *testing.T) {
 	r := runInstallTTY(t, newProgressFake(t, strings.Repeat("0", 64)), 0, 0)
-	if ee, ok := r.err.(*exec.ExitError); !ok || ee.ExitCode() != 1 {
-		t.Fatalf("exit = %v, want 1", r.err)
-	}
+	wantExit1(t, r.err)
 	i := strings.Index(r.out, "✗ sha256 mismatch")
 	if i < 1 || r.out[i-1] != '\n' {
 		t.Fatalf("mismatch message does not start its own line:\n%q", r.out)
@@ -197,5 +193,13 @@ func TestInstallScriptNonTTYOutputUnchanged(t *testing.T) {
 		runtime.GOOS+"-"+runtime.GOARCH, r.bin, filepath.Dir(r.bin), f.srv.URL)
 	if r.out != want {
 		t.Fatalf("non-TTY output changed:\n got %q\nwant %q", r.out, want)
+	}
+}
+
+func wantExit1(t *testing.T, err error) {
+	t.Helper()
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) || ee.ExitCode() != 1 {
+		t.Fatalf("exit = %v, want 1", err)
 	}
 }
