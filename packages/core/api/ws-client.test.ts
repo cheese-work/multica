@@ -2,10 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WSClient } from "./ws-client";
 import type { WSMessage } from "../types/events";
 
-// Capture URL passed to WebSocket so we can assert the connect-time
-// query string.  We don't simulate the full WS lifecycle here — only the
-// upgrade URL construction, which is what carries client identity.
+// Capture the WebSocket instance and upgrade URL for protocol-level tests.
 class FakeWebSocket {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSING = 2;
+  static readonly CLOSED = 3;
   static lastUrl: string | null = null;
   static lastInstance: FakeWebSocket | null = null;
   // Fields read by WSClient.connect()/disconnect(), all no-op here.
@@ -18,7 +20,10 @@ class FakeWebSocket {
     FakeWebSocket.lastUrl = url;
     FakeWebSocket.lastInstance = this;
   }
-  close() {}
+  close() {
+    this.readyState = 3;
+    this.onclose?.();
+  }
   sent: string[] = [];
   send(frame: string) {
     this.sent.push(frame);
@@ -230,6 +235,7 @@ describe("WSClient", () => {
     }
 
     function simulateDisconnect() {
+      FakeWebSocket.lastInstance!.readyState = WebSocket.CLOSED;
       FakeWebSocket.lastInstance!.onclose?.();
     }
 
@@ -242,6 +248,68 @@ describe("WSClient", () => {
         data: JSON.stringify({ type: "auth_ack" }),
       });
     }
+
+    it("reconnects a half-open socket when a probe gets no pong", () => {
+      const ws = new WSClient("ws://example.test/ws");
+      ws.setAuth("tok", "acme");
+      const onReconnect = vi.fn();
+      ws.onReconnect(onReconnect);
+      ws.connect();
+      const deadSocket = FakeWebSocket.lastInstance!;
+      deadSocket.readyState = WebSocket.OPEN;
+
+      ws.probe();
+      expect(deadSocket.sent).toContain(
+        JSON.stringify({ type: "ping" }),
+      );
+
+      vi.advanceTimersByTime(5000);
+      expect(deadSocket.readyState).toBe(WebSocket.CLOSED);
+      expect(deadSocket.onclose).toBeNull();
+      expect(FakeWebSocket.lastInstance).not.toBe(deadSocket);
+      expect(onReconnect).not.toHaveBeenCalled();
+
+      simulateAuthAck();
+      expect(onReconnect).toHaveBeenCalledTimes(1);
+    });
+
+    it("reconnects immediately when a probe finds a closed socket with backoff pending", () => {
+      const ws = new WSClient("ws://example.test/ws");
+      ws.setAuth("tok", "acme");
+      const onReconnect = vi.fn();
+      ws.onReconnect(onReconnect);
+      ws.connect();
+      const oldSocket = FakeWebSocket.lastInstance!;
+      simulateDisconnect();
+
+      ws.probe();
+      expect(FakeWebSocket.lastInstance).not.toBe(oldSocket);
+      expect(vi.getTimerCount()).toBe(0);
+      simulateAuthAck();
+      expect(onReconnect).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps a live socket when pong arrives and throttles probes for 5 seconds", () => {
+      const ws = new WSClient("ws://example.test/ws");
+      const onReconnect = vi.fn();
+      const onAny = vi.fn();
+      ws.onReconnect(onReconnect);
+      ws.onAny(onAny);
+      ws.connect();
+      const liveSocket = FakeWebSocket.lastInstance!;
+      liveSocket.readyState = WebSocket.OPEN;
+
+      ws.probe();
+      ws.probe();
+      expect(liveSocket.sent).toEqual([JSON.stringify({ type: "ping" })]);
+      liveSocket.onmessage?.({ data: JSON.stringify({ type: "pong" }) });
+      vi.advanceTimersByTime(5000);
+
+      expect(FakeWebSocket.lastInstance).toBe(liveSocket);
+      expect(onReconnect).not.toHaveBeenCalled();
+      expect(onAny).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    });
 
     it("uses ~1000ms base delay for the first reconnect attempt", () => {
       // Pin Math.random so jitter is deterministic: random()=0.5 → jitter=0.
