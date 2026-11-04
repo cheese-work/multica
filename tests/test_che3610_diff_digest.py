@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import importlib.util
+import io
+import json
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("security_gate", ROOT / "scripts/security-gate/security_gate.py")
@@ -118,6 +122,22 @@ class DiffDigestTest(unittest.TestCase):
         v, err = sg.parse_verdict(verdict(self.h1, "xyz"))
         self.assertIsNone(v)
         self.assertIn("Diff-Digest", err)
+
+    def test_print_digest_gives_lanes_the_digest_to_record_and_compare(self):
+        """Browser/device lanes record this beside their PASS; the same value on a later head keeps it."""
+        def run(base, head):
+            pull = json.dumps({"head": {"sha": head}, "base": {"sha": base}})
+            argv = ["x", "--repo", self.tmp.name, "--github", "o/r", "--pr", "918", "--default-branch", "main", "--print-digest"]
+            out = io.StringIO()
+            with mock.patch.object(sg, "_gh", return_value=pull), mock.patch("sys.argv", argv), redirect_stdout(out):
+                self.assertEqual(sg.main(), 0)
+            return json.loads(out.getvalue())
+
+        first = run(self.base, self.h1)
+        self.assertEqual(first, {"head": self.h1, "digest": self.d1})
+        m = self.advance_main("other.txt", "o2\n")
+        h2 = self.merge_main()
+        self.assertEqual(run(m, h2), {"head": h2, "digest": self.d1})  # clean merge: same digest, PASS kept
 
 
 if __name__ == "__main__":

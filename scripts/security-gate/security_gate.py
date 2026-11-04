@@ -402,6 +402,8 @@ def main() -> int:
     ap.add_argument("--run-url", default="")
     ap.add_argument("--semgrep", action="store_true", help="scan the PR's added lines against the committed baseline")
     ap.add_argument("--write-baseline", action="store_true", help="scan the default branch HEAD and rewrite the baseline")
+    ap.add_argument("--print-digest", action="store_true",
+                    help="print the PR's head and diff digest as JSON, for any lane that records a PASS (CHE-3610)")
     ap.add_argument("--post", action="store_true", help="write the commit status (default: print only)")
     a = ap.parse_args()
     if a.write_baseline:
@@ -410,6 +412,11 @@ def main() -> int:
             json.dump({"configs": list(SEMGREP_CONFIGS), "findings": fps}, f, indent=1)
             f.write("\n")
         print(f"baseline: {len(fps)} ERROR finding(s)")
+        return 0
+    if a.print_digest:
+        pull = json.loads(_gh(f"repos/{a.github}/pulls/{a.pr}"))
+        head = pull["head"]["sha"]
+        print(json.dumps({"head": head, "digest": pr_diff_digest(a.repo, pull["base"]["sha"], head)}))
         return 0
     with open(f"{a.repo}/{TRUSTED_AUTHORS}") as f:
         registry = json.load(f)
