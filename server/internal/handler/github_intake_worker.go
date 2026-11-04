@@ -293,7 +293,19 @@ func (worker githubIntakeWorker) dispatch(ctx context.Context, queries *db.Queri
 	}
 	key := fmt.Sprintf("github.intake:%s:%s", uuidToString(revision.ID), uuidToString(issue.ID))
 	commentID := pgtype.UUID{Bytes: uuid.NewSHA1(uuid.NameSpaceURL, []byte(key)), Valid: true}
-	if !worker.dispatchEnabled {
+	// Held until this transaction ends: a switch change waits for us, or we see it.
+	if err := queries.LockGitHubDispatchHaltShared(ctx, revision.WorkspaceID); err != nil {
+		return nil, err
+	}
+	pull, err := queries.GetGitHubPullRequestInWorkspace(ctx, db.GetGitHubPullRequestInWorkspaceParams{ID: revision.PullRequestID, WorkspaceID: revision.WorkspaceID})
+	if err != nil {
+		return nil, err
+	}
+	halted, err := queries.GitHubDispatchHalted(ctx, db.GitHubDispatchHaltedParams{WorkspaceID: revision.WorkspaceID, RepoOwner: pull.RepoOwner, RepoName: pull.RepoName})
+	if err != nil {
+		return nil, err
+	}
+	if !worker.dispatchEnabled || halted {
 		content, err := githubNotifyContent(ctx, queries, revision)
 		if err != nil {
 			return nil, err
@@ -304,6 +316,9 @@ func (worker githubIntakeWorker) dispatch(ctx context.Context, queries *db.Queri
 		}
 		publication.comment = db.CreateCommentRow(created)
 		publication.state, publication.reason = "projected", "gate_g_closed"
+		if halted {
+			publication.reason = "kill_switch"
+		}
 	} else {
 		params, err := worker.handler.TaskService.PrepareTaskForMention(ctx, queries, issue, target.AgentID, commentID, route.UserID, service.OriginDerived)
 		if err != nil {
@@ -318,6 +333,10 @@ func (worker githubIntakeWorker) dispatch(ctx context.Context, queries *db.Queri
 		}
 		publication.task, err = worker.handler.TaskService.EnqueuePreparedTaskForMentionInTx(ctx, queries, issue, params, service.OriginDerived)
 		if err != nil {
+			return nil, err
+		}
+		// The kill switch sweep finds a live run by this mark.
+		if err := queries.MarkGitHubDispatchRun(ctx, db.MarkGitHubDispatchRunParams{TaskID: publication.task.ID, IssueID: issue.ID, Source: "intake", Repo: pull.RepoOwner + "/" + pull.RepoName}); err != nil {
 			return nil, err
 		}
 		publication.state, publication.reason = "dispatched", "admitted"
