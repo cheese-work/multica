@@ -11,7 +11,8 @@ on:
 
 # actions: write is only for `gh run rerun --failed` on the main qualification run. A separate file from
 # cd-queue-watch.yml, whose tests pin it to read-only permissions. Like that alarm: GitHub-hosted runner,
-# no concurrency group, so a dead deploy or X99 runner cannot suppress it.
+# no concurrency group, so a dead deploy or X99 runner cannot suppress it. The live C00 revision check runs on X99
+# in its own schedule-only file, cd-live-revision.yml.
 permissions:
   contents: read
   actions: write
@@ -31,26 +32,3 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 deploy/cd/check-deploy-freshness.py
-
-  # C00's API is tailnet only, so this job runs on an existing X99 runner. It catches what run history cannot: a
-  # rollback on C00. The job above stays on a GitHub-hosted runner, so a dead X99 runner cannot silence the stall alarm.
-  # Main only (CHE-3634 review): the default runner group serves every workflow, and a repo writer can manually dispatch
-  # any branch, so an unreviewed script would otherwise run on a tailnet-connected X99 runner. Read-only token.
-  # This file has no manual-dispatch trigger: the schedule runs from the default branch only. The if: is branch YAML, so
-  # it is not an admission control; restricting the runner group to main workflows is org-owner config (CHE-3634 follow-up).
-  live-revision:
-    runs-on: [self-hosted, linux, x64, cheese-x99]
-    timeout-minutes: 5
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    permissions:
-      contents: read
-      actions: read
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - name: Alarm when C00 does not run main's head 90 min after merge
-        env:
-          GH_TOKEN: ${{ github.token }}
-          C00_API_URL: ${{ vars.C00_API_URL || 'https://congvc-c00.taila6fa8a.ts.net:19444' }}
-        run: python3 deploy/cd/check-deploy-freshness.py --live

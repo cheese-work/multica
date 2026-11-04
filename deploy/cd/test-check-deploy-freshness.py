@@ -220,30 +220,34 @@ class MainTest(unittest.TestCase):
 
 
 class WorkflowFileTest(unittest.TestCase):
-    def test_workflow_shape(self):
-        text = (Path(__file__).parents[2] / ".github/workflows/cd-freshness-watch.yml").read_text()
-        job = text.split("live-revision:")
-        self.assertIn("runs-on: ubuntu-24.04", job[0])
-        self.assertNotIn("self-hosted", job[0])  # the history alarm stays independent of X99 and C00 runners
-        self.assertIn("cheese-x99", job[1])  # tailnet reach for the live revision
-        self.assertIn("check-deploy-freshness.py --live", job[1])
+    def read(self, name):
+        return (Path(__file__).parents[2] / ".github/workflows" / name).read_text()
+
+    def test_history_alarm_stays_off_x99(self):
+        text = self.read("cd-freshness-watch.yml")
+        self.assertIn("runs-on: ubuntu-24.04", text)
+        self.assertNotIn("self-hosted", text)  # independent of X99 and C00 runners
+        self.assertNotIn("cheese-x99", text)
         self.assertIn("actions: write", text)
         self.assertIn("cron:", text)
-        self.assertIn("github.event_name != 'pull_request'", text)
-        # CHE-3634 review P1: a repo writer can workflow_dispatch any branch. The tailnet-connected X99 job and the
-        # write-token step must only run main's reviewed code, and the X99 job gets a read-only token.
-        # Round 3: the guard lives in branch YAML, so also add no manual path: only the schedule (default branch) or a
-        # PR (job skipped) can start this file. Runner-group admission is org-owner config, tracked separately.
         self.assertNotIn("workflow_dispatch", text)
-        main_only = "github.ref == 'refs/heads/main'"
-        live = job[1].split("steps:")[0]
-        self.assertIn(main_only, live)
-        self.assertIn("permissions:\n      contents: read\n      actions: read", live)
-        self.assertNotIn("actions: write", job[1])
-        rerun_step = text.split("Rerun a failed main build once")[1].split("run:")[0]
-        self.assertIn(main_only, rerun_step)
+        self.assertIn("github.event_name != 'pull_request' && github.ref == 'refs/heads/main'", text)
         self.assertIn("python3 deploy/cd/test-check-deploy-freshness.py", text)
         self.assertIn("python3 deploy/cd/check-deploy-freshness.py", text)
+
+    def test_live_revision_job_is_schedule_only_on_x99(self):
+        # CHE-3634 security review: the tailnet-connected X99 job lives in its own file with `schedule` as the only
+        # trigger, so a branch or a pull request cannot start it from this file (a schedule runs the default branch only).
+        # An if: in branch YAML is not an admission control; runner-group admission is org-owner config (CHE-3644).
+        text = self.read("cd-live-revision.yml")
+        on = text.split("\njobs:")[0]
+        self.assertIn("schedule:", on)
+        for trigger in ("pull_request", "workflow_dispatch", "push", "workflow_run", "issue_comment"):
+            self.assertNotIn(trigger + ":", on)
+        self.assertIn("cheese-x99", text)
+        self.assertIn("check-deploy-freshness.py --live", text)
+        self.assertIn("permissions:\n  contents: read\n  actions: read", text)
+        self.assertNotIn("actions: write", text)
 
 
 if __name__ == "__main__":
