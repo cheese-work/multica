@@ -28,8 +28,8 @@ func TestACredentialNeverReachesTheBubble(t *testing.T) {
 		},
 		{
 			name:   "mcp tool argument",
-			in:     `api_token=ghp_ABCdefGHIjklMNOpqrSTUvwxYZ0123456789, project=ACME`,
-			gone:   "ghp_ABCdefGHIjklMNOpqrSTUvwxYZ0123456789",
+			in:     `api_token=ghp_` + "ABCdefGHIjklMNOpqrSTUvwxYZ0123456789" + `, project=ACME`,
+			gone:   "ghp_" + "ABCdefGHIjklMNOpqrSTUvwxYZ0123456789",
 			intact: "ACME",
 		},
 		{
@@ -52,8 +52,8 @@ func TestACredentialNeverReachesTheBubble(t *testing.T) {
 		},
 		{
 			name:   "aws key with no label at all",
-			in:     `aws s3 ls --profile AKIAIOSFODNN7EXAMPLE`,
-			gone:   "AKIAIOSFODNN7EXAMPLE",
+			in:     `aws s3 ls --profile AKIA` + "IOSFODNN7EXAMPLE",
+			gone:   "AKIA" + "IOSFODNN7EXAMPLE",
 			intact: "aws s3 ls",
 		},
 		{
@@ -442,8 +442,8 @@ func TestTheSecretRunLengthStaysAboveTheOrdinaryIdentifiers(t *testing.T) {
 // REVERSE VERIFICATION: split words on the URL delimiters alone again, and the
 // pipe, semicolon, redirect and $( cases fail.
 func TestACredentialGluedToShellPunctuationIsRedacted(t *testing.T) {
-	const key = "sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
-	const gh = "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+	const key = "sk-proj-" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+	const gh = "ghp_" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
 	for _, tc := range []struct{ name, in, gone string }{
 		{"pipe", "echo " + key + "|base64", key},
 		{"semicolon", "export K=x;echo " + key + ";ls", key},
