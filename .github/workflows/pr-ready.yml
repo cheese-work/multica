@@ -1,32 +1,28 @@
-# Required `pr-ready` check (CHE-3440). Canonical copy: cheese-work/dotfiles-agents .github/workflows/pr-ready.yml;
-# tests live there (tests/test_che3440_pr_ready.py). Fails while the PR body says the work is unfinished.
-# Register `pr-ready` as a required check only after a readback of the check on a real PR and a real queue run
-# (cheese-work/dotfiles-agents docs/pr-ready.md); this file alone blocks nothing.
+# Required `pr-ready` check, PR half (CHE-3440). Canonical copy: cheese-work/dotfiles-agents
+# .github/workflows/pr-ready.yml; tests live there (tests/test_che3440_pr_ready.py). The merge-queue half is
+# pr-ready-queue.yml. Fails while the PR body says the work is unfinished OR no trusted cross-lab PASS names the
+# current head (docs/pr-ready.md). Register `pr-ready` as a required check only after a readback of the check on a
+# real PR and a real queue run; this file alone blocks nothing.
 #
-# SECURITY — same boundary as security-gate.yml: `pull_request_target` runs this definition from the default branch,
-# and the job checks out the DEFAULT branch only. Nothing from a PR head is fetched, checked out or run; the body is
-# read through the API as data. Permissions are read-only and there is no secret. `merge_group` runs the definition
-# of the queue commit, so a PR that edits THIS file is judged by the default branch's copy at PR time but by its own
-# copy in the queue; the script run is always the default branch's. Closing that gap needs an org-level required
-# workflow rule (docs/pr-ready.md in dotfiles-agents).
-# A PR body edit made after the queue commit is built does not re-run `merge_group`: authors flip Status to Ready
-# BEFORE enqueueing. REQUIRE_SECURITY_GATE=1 also demands a `security-gate` success on each queued PR's head.
+# SECURITY: `pull_request_target` runs THIS definition from the default branch, and the job checks out the DEFAULT
+# branch only. Nothing from a PR head is fetched, checked out or run; the body and comments are read through the API
+# as data. Permissions are read-only and there is no secret. The merge_group trigger is NOT here: GitHub runs a
+# merge_group workflow from the queue commit, which a queued PR can edit, so that half lives in its own file on a
+# GitHub-hosted runner and never on a self-hosted one.
 
 name: pr-ready
 
 on:
   pull_request_target:
     types: [opened, edited, synchronize, reopened, ready_for_review]
-  merge_group:
-    types: [checks_requested]
 
 permissions:
   contents: read
   pull-requests: read
-  statuses: read
+  issues: read
 
 concurrency:
-  group: pr-ready-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}
+  group: pr-ready-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -38,11 +34,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       EVENT: ${{ github.event_name }}
       REPO: ${{ github.repository }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
-      BASE_SHA: ${{ github.event.merge_group.base_sha }}
-      HEAD_SHA: ${{ github.event.merge_group.head_sha }}
-      HEAD_REF: ${{ github.event.merge_group.head_ref }}
-      REQUIRE_SECURITY_GATE: "1"
     steps:
       - name: Discard a reused workspace
         run: |
@@ -52,5 +45,5 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
-      - name: Judge the PR body and the merge group
-        run: python3 .github/scripts/pr_ready.py
+      - name: Judge the PR body and the verdict
+        run: python3 .github/pr-ready/pr_ready.py
