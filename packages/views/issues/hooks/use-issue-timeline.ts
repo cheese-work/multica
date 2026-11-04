@@ -155,6 +155,7 @@ export function useIssueTimeline(issueId: string, userId?: string) {
       (payload: unknown) => {
         const { comment } = payload as CommentCreatedPayload;
         if (comment.issue_id !== issueId) return;
+        void qc.cancelQueries({ queryKey: issueKeys.timeline(issueId) });
         qc.setQueryData<TLCache>(issueKeys.timeline(issueId), (old) => {
           const entry = commentToTimelineEntry(comment);
           if (!old) return [entry];

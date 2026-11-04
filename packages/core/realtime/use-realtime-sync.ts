@@ -14,6 +14,7 @@ import { issueKeys } from "../issues/queries";
 import { projectKeys } from "../projects/queries";
 import { isDecisionLifecycleMessage } from "../chat/unread";
 import { pinKeys } from "../pins/queries";
+import { vcsKeys } from "../vcs/queries";
 import { autopilotKeys } from "../autopilots/queries";
 import { runtimeKeys } from "../runtimes/queries";
 import { labelKeys } from "../labels/queries";
@@ -722,7 +723,7 @@ function invalidateWorkspaceScopedQueries(qc: QueryClient): void {
     qc.invalidateQueries({ queryKey: agentActivityKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: agentRunCountsKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: chatKeys.all(wsId) });
-    qc.invalidateQueries({ queryKey: ["pins", wsId] });
+    qc.invalidateQueries({ queryKey: pinKeys.workspace(wsId) });
     qc.invalidateQueries({ queryKey: notificationPreferenceKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: githubKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: larkKeys.all(wsId) });
@@ -730,7 +731,7 @@ function invalidateWorkspaceScopedQueries(qc: QueryClient): void {
     qc.invalidateQueries({ queryKey: dingtalkKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: wecomKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: telegramKeys.all(wsId) });
-    qc.invalidateQueries({ queryKey: ["vcs", wsId] });
+    qc.invalidateQueries({ queryKey: vcsKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: labelKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: propertyKeys.all(wsId) });
     // A catalog edit missed while disconnected would otherwise sit behind the
@@ -772,7 +773,7 @@ function invalidateWorkspaceScopedQueries(qc: QueryClient): void {
   // a mounted composer recovers the prompt without a remount.
   qc.invalidateQueries({ queryKey: chatKeys.draftRestoresAll() });
   // PR rows are keyed by issue rather than workspace and refresh on PR events.
-  qc.invalidateQueries({ queryKey: ["github", "pull-requests"] });
+  qc.invalidateQueries({ queryKey: githubKeys.pullRequestsAll() });
   qc.invalidateQueries({ queryKey: workspaceKeys.list() });
 }
 
@@ -1008,7 +1009,7 @@ export function useRealtimeSync(
       },
       vcs_connection: () => {
         const wsId = getCurrentWsId();
-        if (wsId) qc.invalidateQueries({ queryKey: ["vcs", wsId] });
+        if (wsId) qc.invalidateQueries({ queryKey: vcsKeys.all(wsId) });
       },
       wecom_installation: () => {
         const wsId = getCurrentWsId();
@@ -1021,7 +1022,7 @@ export function useRealtimeSync(
       pull_request: () => {
         // PR list is keyed by issue id, not workspace, so we invalidate all
         // PR queries — the open issue detail page will refetch its own list.
-        qc.invalidateQueries({ queryKey: ["github", "pull-requests"] });
+        qc.invalidateQueries({ queryKey: githubKeys.pullRequestsAll() });
       },
       // Powers the agent presence cache: any task lifecycle change
       // (dispatch / completed / failed / cancelled) refreshes the

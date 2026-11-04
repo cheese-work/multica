@@ -121,6 +121,8 @@ export function upsertChatMessageToCaches(
   message: ChatMessage,
   { seedIfMissing = false }: UpsertChatMessageOptions = {},
 ): void {
+  void qc.cancelQueries({ queryKey: chatKeys.messages(sessionId) });
+  void qc.cancelQueries({ queryKey: chatKeys.messagesPage(sessionId) });
   qc.setQueryData<ChatMessage[] | undefined>(chatKeys.messages(sessionId), (old) => {
     if (!old) return seedIfMissing ? [message] : old;
     return upsertIntoList(old, message);

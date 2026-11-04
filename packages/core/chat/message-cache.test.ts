@@ -107,6 +107,35 @@ describe("upsertChatMessageToCaches", () => {
     expect(qc.getQueryData<ChatMessage[]>(flatKey)?.[0]).toBe(existing);
   });
 
+  it("keeps a WebSocket upsert when older message fetches resolve afterward", async () => {
+    const old = message({ id: "msg-old" });
+    const incoming = message({ id: "msg-new" });
+    const qc = qcWith([old], [page([old])]);
+    let resolveFlat!: (messages: ChatMessage[]) => void;
+    let resolvePage!: (page: ChatMessagesPage) => void;
+    const flatFetch = qc.fetchQuery({
+      queryKey: flatKey,
+      queryFn: () => new Promise<ChatMessage[]>((resolve) => { resolveFlat = resolve; }),
+    }).catch(() => undefined);
+    const pageFetch = qc.fetchInfiniteQuery({
+      queryKey: pageKey,
+      initialPageParam: null,
+      queryFn: () => new Promise<ChatMessagesPage>((resolve) => { resolvePage = resolve; }),
+      getNextPageParam: () => undefined,
+    }).catch(() => undefined);
+
+    expect(qc.getQueryState(flatKey)?.fetchStatus).toBe("fetching");
+    expect(qc.getQueryState(pageKey)?.fetchStatus).toBe("fetching");
+    upsertChatMessageToCaches(qc, sessionId, incoming);
+    resolveFlat([old]);
+    resolvePage(page([old]));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await Promise.all([flatFetch, pageFetch]);
+
+    expect(flatIds(qc)).toEqual(["msg-old", "msg-new"]);
+    expect(pageIds(qc)).toEqual([["msg-old", "msg-new"]]);
+  });
+
   it("leaves an unfetched cache alone by default", () => {
     const qc = qcWith(null);
 
