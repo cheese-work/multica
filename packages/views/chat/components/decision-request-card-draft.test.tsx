@@ -1,5 +1,5 @@
-import { screen } from "@testing-library/react";
-import { forwardRef } from "react";
+import { act, screen } from "@testing-library/react";
+import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@multica/core/api";
@@ -31,19 +31,65 @@ const api = vi.hoisted(() => ({
   listDecisionArtifacts: vi.fn(),
   listOpenDecisionRequests: vi.fn(),
   listTasksByIssue: vi.fn(),
+  uploadFile: vi.fn(),
 }));
 vi.mock("@multica/core/api", async (importActual) => ({
   ...(await importActual<typeof import("@multica/core/api")>()),
   api,
 }));
 
-type EditorProps = { defaultValue?: string; ariaLabel?: string; onUpdate?: (markdown: string) => void; onSubmit?: () => void };
+type EditorProps = {
+  defaultValue?: string;
+  ariaLabel?: string;
+  flushPendingOnUnmount?: boolean;
+  onUpdate?: (markdown: string, base?: string) => void;
+  onSubmit?: () => void;
+  onUploadFile?: (file: File, uploadId: string) => Promise<{ id: string; filename: string; url: string } | null>;
+};
+// Stand-in for Tiptap with the two contracts the card relies on: an update reaches `onUpdate` through
+// a timer that unmount drops unless `flushPendingOnUnmount` is set (an upload still in flight is
+// re-emitted when it settles, same opt-in), and `adoptContent` replaces the text.
+const uploads = vi.hoisted(() => ({ settle: undefined as undefined | (() => Promise<void>) }));
+const editorHandle = vi.hoisted(() => ({ current: undefined as undefined | { uploadFile: (file: File) => void } }));
 vi.mock("./lazy-content-editor", () => ({
   LazyContentEditor: forwardRef(function MockEditor(props: EditorProps, ref) {
-    const handle = { hasActiveUploads: () => false, getMarkdown: () => props.defaultValue ?? "" };
-    if (typeof ref === "function") ref(handle as never);
-    else if (ref) (ref as { current: unknown }).current = handle;
-    return <textarea aria-label={props.ariaLabel} defaultValue={props.defaultValue ?? ""} onChange={(event) => props.onUpdate?.(event.target.value)} />;
+    const box = useRef<HTMLTextAreaElement>(null);
+    const pending = useRef<string | null>(null);
+    const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+    const latest = useRef(props);
+    latest.current = props;
+    useEffect(() => () => {
+      clearTimeout(timer.current);
+      if (latest.current.flushPendingOnUnmount && pending.current !== null) latest.current.onUpdate?.(pending.current);
+    }, []);
+    useImperativeHandle(ref, () => {
+      const handle = {
+      hasActiveUploads: () => false,
+      getMarkdown: () => box.current?.value ?? "",
+      adoptContent: (md: string) => { if (box.current) box.current.value = md; },
+      uploadFile: (file: File) => {
+        const done = latest.current.onUploadFile?.(file, "u1");
+        uploads.settle = async () => {
+          const att = await done;
+          if (att && latest.current.flushPendingOnUnmount) latest.current.onUpdate?.(`${box.current?.value ?? ""}\n\n![${att.filename}](${att.url})`);
+        };
+      },
+      };
+      editorHandle.current = handle;
+      return handle as never;
+    });
+    return (
+      <textarea
+        ref={box}
+        aria-label={props.ariaLabel}
+        defaultValue={props.defaultValue ?? ""}
+        onChange={(event) => {
+          pending.current = event.target.value;
+          clearTimeout(timer.current);
+          timer.current = setTimeout(() => { pending.current = null; latest.current.onUpdate?.(event.target.value); }, 200);
+        }}
+      />
+    );
   }),
 }));
 
@@ -52,6 +98,7 @@ const card = (id: string): RequestCard => ({
   id, issue_id: "issue", issue_identifier: "CHE-1", source_comment_id: "source",
   ask: "Pick one.", state: "open", created_at: "2026-10-26T23:30:00Z", options,
 });
+const notes = () => screen.getAllByRole("textbox", { name: "Add a note (optional)" });
 const note = () => screen.getByRole("textbox", { name: "Add a note (optional)" });
 
 const chat = (value: RequestCard) => (
@@ -145,5 +192,41 @@ describe("decision card draft survives remount", () => {
 
     renderWithI18n(chat(card("discard")));
     expect(screen.getByRole("radio", { name: /Option A/ })).not.toBeChecked();
+  });
+  it("keeps the last edit when the card unmounts before the editor's update timer fires", async () => {
+    const user = userEvent.setup();
+    const first = renderWithI18n(chat(card("pending")));
+    await user.type(note(), "last words");
+    first.unmount();
+
+    renderWithI18n(chat(card("pending")));
+    expect(note()).toHaveValue("last words");
+  });
+
+  it("keeps an attachment whose upload settles after the card unmounted", async () => {
+    const user = userEvent.setup();
+    let resolveUpload: (v: unknown) => void = () => { throw new Error("not started"); };
+    api.uploadFile.mockReturnValue(new Promise((r) => { resolveUpload = r; }));
+    const first = renderWithI18n(chat(card("upload")));
+    await user.type(note(), "see");
+    await vi.waitFor(() => expect(useDecisionAnswerDraftStore.getState().hasDraft("decision:upload")).toBe(true), { timeout: 2000 });
+    act(() => editorHandle.current?.uploadFile(new File(["x"], "shot.png", { type: "image/png" })));
+    first.unmount();
+    resolveUpload({ id: "att", filename: "shot.png", url: "/api/attachments/att/download", download_url: "/api/attachments/att/download" });
+    await act(async () => { await uploads.settle?.(); });
+    await vi.waitFor(() => expect(useDecisionAnswerDraftStore.getState().getDraft("decision:upload")?.text).toContain("shot.png"));
+  });
+
+  it("two mounted surfaces for one request stay in step, and sending from the other sends the note", async () => {
+    api.listOpenDecisionRequests.mockResolvedValue([{ ...card("both"), asking_agent_id: "a", asking_agent_name: "Terra", escalation_class: "spend", chat_session_id: "s", message_id: null }]);
+    const user = userEvent.setup();
+    renderWithI18n(<>{chat(card("both"))}{banner()}</>);
+    await vi.waitFor(() => expect(notes()).toHaveLength(2));
+    const [inChat, inBanner] = notes() as [HTMLElement, HTMLElement];
+    await user.type(inChat, "typed in chat");
+    await vi.waitFor(() => expect(inBanner).toHaveValue("typed in chat"));
+    await user.click(screen.getAllByRole("radio", { name: /Option B/ })[1] as HTMLElement);
+    await user.click(screen.getAllByRole("button", { name: "Send" })[1] as HTMLElement);
+    await vi.waitFor(() => expect(api.answerDecisionRequest).toHaveBeenCalledWith("both", { option: "Option B", text: "typed in chat" }));
   });
 });

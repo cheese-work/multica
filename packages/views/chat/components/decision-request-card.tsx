@@ -60,13 +60,28 @@ function DecisionAnswerForm({
   const online = useOnline();
   const sendShortcut = formatShortcut(useShortcut("send"));
   const { option, text } = draft;
+  const draftKey = decisionAnswerDraftKey(card.id);
+  // What this editor last reported. A stored text that differs came from the other surface
+  // showing the same request, and is adopted so a send from here cannot overwrite it.
+  const emitted = useRef(text);
   const setOption = (next: string) => onDraftChange({ option: next });
-  const setText = (next: string) => onDraftChange({ text: next });
+  const setText = (next: string) => {
+    emitted.current = next;
+    onDraftChange({ text: next });
+  };
   const group = useId();
   const textId = useId();
   const editorRef = useRef<ContentEditorRef>(null);
   const uploadGate = useUploadGate(editorRef);
   const { uploadWithToast } = useEditorUpload();
+  useEffect(() => {
+    // Read the store, not the render's `text`: a render can lag behind a newer edit.
+    const stored = useDecisionAnswerDraftStore.getState().getDraft(draftKey)?.text ?? "";
+    const editor = editorRef.current;
+    if (stored === emitted.current || !editor || editor.hasActiveUploads()) return;
+    emitted.current = stored;
+    editor.adoptContent(stored);
+  }, [text, draftKey]);
   const tooLong = answerBytes(text) > MAX_ANSWER_BYTES;
   const canSend = online && !answer.isPending && !uploadGate.uploading && !tooLong && (option !== "" || text.trim() !== "");
   const send = () => {
@@ -76,7 +91,9 @@ function DecisionAnswerForm({
     // Enter can arrive while an upload placeholder is still in the document.
     const sendable = online && !answer.isPending && !uploadGate.uploading && !uploadGate.isBlocked()
       && answerBytes(live) <= MAX_ANSWER_BYTES && (option !== "" || live.trim() !== "");
-    if (sendable) onSend(live);
+    if (!sendable) return;
+    emitted.current = live;
+    onSend(live);
   };
 
   return (
@@ -133,6 +150,7 @@ function DecisionAnswerForm({
             onUploadFile={(file) => uploadWithToast(file, { issueId: card.issue_id })}
             onUploadingChange={uploadGate.onUploadingChange}
             debounceMs={0}
+            flushPendingOnUnmount
             showBubbleMenu={false}
             className="max-h-60 overflow-y-auto"
           />
