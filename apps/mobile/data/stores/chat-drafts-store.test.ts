@@ -167,4 +167,115 @@ describe("chat drafts survive an app cold start", () => {
       "second message",
     );
   });
+
+  describe("a send is in flight", () => {
+    // The composer empties the input on submit; the draft must stay on disk
+    // until the send succeeds. `begin` mirrors the composer's submit order.
+    function submit(store: { beginSend: (k: string, t: string) => string; setDraft: (k: string, t: string) => void }, key: string, text: string) {
+      const token = store.beginSend(key, text);
+      store.setDraft(key, "");
+      return token;
+    }
+
+    it("restores the submitted text after a restart mid-send", async () => {
+      const run1 = await coldStart();
+      const s = run1.useChatDraftsStore.getState();
+      await s.hydrate("u1:ws1");
+      s.setDraft("session-a", "submitted");
+      submit(s, "session-a", "submitted");
+      await vi.advanceTimersByTimeAsync(1000);
+
+      const run2 = await coldStart();
+      await run2.useChatDraftsStore.getState().hydrate("u1:ws1");
+      expect(run2.useChatDraftsStore.getState().drafts["session-a"]).toBe(
+        "submitted",
+      );
+    });
+
+    it("restores submitted text and later edits together after a restart", async () => {
+      const run1 = await coldStart();
+      const s = run1.useChatDraftsStore.getState();
+      await s.hydrate("u1:ws1");
+      s.setDraft("session-a", "submitted");
+      submit(s, "session-a", "submitted");
+      s.setDraft("session-a", "typed later");
+      await vi.advanceTimersByTimeAsync(1000);
+
+      const run2 = await coldStart();
+      await run2.useChatDraftsStore.getState().hydrate("u1:ws1");
+      expect(run2.useChatDraftsStore.getState().drafts["session-a"]).toBe(
+        "submitted\ntyped later",
+      );
+    });
+
+    it("drops the submitted text on success and keeps later edits", async () => {
+      const run1 = await coldStart();
+      const s = run1.useChatDraftsStore.getState();
+      await s.hydrate("u1:ws1");
+      s.setDraft("session-a", "submitted");
+      const token = submit(s, "session-a", "submitted");
+      s.setDraft("session-a", "typed later");
+      s.finishSend(token, true);
+      await vi.advanceTimersByTimeAsync(1000);
+
+      const run2 = await coldStart();
+      await run2.useChatDraftsStore.getState().hydrate("u1:ws1");
+      expect(run2.useChatDraftsStore.getState().drafts["session-a"]).toBe(
+        "typed later",
+      );
+    });
+
+    it("clears everything on success when nothing was typed", async () => {
+      const run1 = await coldStart();
+      const s = run1.useChatDraftsStore.getState();
+      await s.hydrate("u1:ws1");
+      s.setDraft("session-a", "submitted");
+      const token = submit(s, "session-a", "submitted");
+      s.finishSend(token, true);
+      await vi.advanceTimersByTimeAsync(1000);
+
+      const run2 = await coldStart();
+      await run2.useChatDraftsStore.getState().hydrate("u1:ws1");
+      expect(run2.useChatDraftsStore.getState().drafts).toEqual({});
+    });
+
+    it("does not duplicate the text when a failed send is restored", async () => {
+      const run1 = await coldStart();
+      const s = run1.useChatDraftsStore.getState();
+      await s.hydrate("u1:ws1");
+      s.setDraft("session-a", "submitted");
+      const token = submit(s, "session-a", "submitted");
+      s.setDraft("session-a", "submitted"); // composer restores on failure
+      s.finishSend(token, false);
+      await vi.advanceTimersByTimeAsync(1000);
+
+      const run2 = await coldStart();
+      await run2.useChatDraftsStore.getState().hydrate("u1:ws1");
+      expect(run2.useChatDraftsStore.getState().drafts["session-a"]).toBe(
+        "submitted",
+      );
+    });
+
+    it("follows the new-chat draft onto the created session", async () => {
+      const run1 = await coldStart();
+      const s = run1.useChatDraftsStore.getState();
+      await s.hydrate("u1:ws1");
+      s.setDraft(run1.DRAFT_NEW_SESSION, "first message");
+      const token = submit(s, run1.DRAFT_NEW_SESSION, "first message");
+      s.promoteNewDraft("session-new");
+      await vi.advanceTimersByTimeAsync(1000);
+
+      const midSend = await coldStart();
+      await midSend.useChatDraftsStore.getState().hydrate("u1:ws1");
+      expect(midSend.useChatDraftsStore.getState().drafts).toEqual({
+        "session-new": "first message",
+      });
+
+      s.finishSend(token, true);
+      await vi.advanceTimersByTimeAsync(1000);
+      const run3 = await coldStart();
+      await run3.useChatDraftsStore.getState().hydrate("u1:ws1");
+      expect(run3.useChatDraftsStore.getState().drafts).toEqual({});
+    });
+  });
 });

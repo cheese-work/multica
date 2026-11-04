@@ -249,6 +249,8 @@ export default function ChatTab() {
   const draft = useChatDraftsStore((s) => s.drafts[draftKey] ?? "");
   const setDraft = useChatDraftsStore((s) => s.setDraft);
   const promoteNewDraft = useChatDraftsStore((s) => s.promoteNewDraft);
+  const beginSend = useChatDraftsStore((s) => s.beginSend);
+  const finishSend = useChatDraftsStore((s) => s.finishSend);
 
   // ── Realtime ───────────────────────────────────────────────────────────
   useChatSessionRealtime(activeSessionId, () => {
@@ -799,6 +801,8 @@ export default function ChatTab() {
           value={draft}
           onChangeText={(next) => setDraft(draftKey, next)}
           onSend={handleSend}
+          onSendStart={(text) => beginSend(draftKey, text)}
+          onSendSettled={finishSend}
           onStop={handleStop}
           sending={sending}
           allowStop={pendingTask?.status !== "queued"}

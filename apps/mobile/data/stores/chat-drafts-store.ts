@@ -12,6 +12,7 @@
  *   - DRAFT_NEW_SESSION sentinel for the not-yet-created new-chat input
  */
 import { create } from "zustand";
+import { mergeRestoredText } from "../../lib/merge-restored-text";
 import {
   draftPersistence,
   registerDraftCleanup,
@@ -31,6 +32,12 @@ interface ChatDraftsState {
   /** Switch to a workspace: drop the previous workspace's drafts from memory
    *  and load this workspace's drafts from disk. */
   hydrate: (workspaceId: string) => Promise<void>;
+  /** The composer is about to empty its input to submit `text`. Keep that
+   *  text on disk until `finishSend`; returns the token to settle with. */
+  beginSend: (sessionId: string, text: string) => string;
+  /** The send settled. Success drops the submitted text from disk; failure
+   *  leaves whatever the input holds now (the composer restores it). */
+  finishSend: (token: string, ok: boolean) => void;
   /** Empty memory and detach from disk (logout). */
   reset: () => void;
 }
@@ -42,15 +49,62 @@ let scope: string | null = null;
 let touchedDuringHydrate = new Set<string>();
 let hydrating = false;
 
+// Submitted text whose send has not settled yet. The in-memory draft is empty
+// during the send; the disk entry keeps this text so a kill mid-send loses
+// nothing.
+const inflight = new Map<string, { sessionId: string; text: string }>();
+let nextToken = 0;
+
+/** Disk value: a plain string, or `{ text, sending }` while a send is open. */
+interface DiskDraft {
+  text: string;
+  sending: string;
+}
+
+function pendingText(sessionId: string): string {
+  let joined = "";
+  for (const entry of inflight.values()) {
+    if (entry.sessionId === sessionId) {
+      joined = joined ? `${joined}\n${entry.text}` : entry.text;
+    }
+  }
+  return joined;
+}
+
 function persist(sessionId: string, text: string | null) {
   if (hydrating) touchedDuringHydrate.add(sessionId);
   if (scope === null) return;
-  if (text === null) draftPersistence.remove(scope, DISK_PREFIX + sessionId);
-  else draftPersistence.save(scope, DISK_PREFIX + sessionId, text);
+  const key = DISK_PREFIX + sessionId;
+  const sending = pendingText(sessionId);
+  if (sending) {
+    const value: DiskDraft = { text: text ?? "", sending };
+    draftPersistence.save(scope, key, value);
+  } else if (text === null) draftPersistence.remove(scope, key);
+  else draftPersistence.save(scope, key, text);
+}
+
+function restoredText(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  if (typeof value !== "object" || value === null) return null;
+  const { text, sending } = value as Partial<DiskDraft>;
+  if (typeof text !== "string" || typeof sending !== "string") return null;
+  return mergeRestoredText(sending, text);
 }
 
 export const useChatDraftsStore = create<ChatDraftsState>((set, get) => ({
   drafts: {},
+  beginSend: (sessionId, text) => {
+    const token = String(++nextToken);
+    inflight.set(token, { sessionId, text });
+    persist(sessionId, get().drafts[sessionId] ?? null);
+    return token;
+  },
+  finishSend: (token, _ok) => {
+    const entry = inflight.get(token);
+    if (!entry) return;
+    inflight.delete(token);
+    persist(entry.sessionId, get().drafts[entry.sessionId] ?? null);
+  },
   setDraft: (sessionId, text) => {
     const current = get().drafts;
     // Skip the set when the value is identical — Zustand would still emit
@@ -78,8 +132,22 @@ export const useChatDraftsStore = create<ChatDraftsState>((set, get) => ({
   },
   promoteNewDraft: (newSessionId) => {
     const current = get().drafts;
+    // An open send follows the draft onto the created session.
+    let repointed = false;
+    for (const entry of inflight.values()) {
+      if (entry.sessionId === DRAFT_NEW_SESSION) {
+        entry.sessionId = newSessionId;
+        repointed = true;
+      }
+    }
     const pending = current[DRAFT_NEW_SESSION];
-    if (!pending) return;
+    if (!pending) {
+      if (repointed) {
+        persist(newSessionId, current[newSessionId] ?? null);
+        persist(DRAFT_NEW_SESSION, null);
+      }
+      return;
+    }
     const next = { ...current, [newSessionId]: pending };
     delete next[DRAFT_NEW_SESSION];
     set({ drafts: next });
@@ -96,7 +164,7 @@ export const useChatDraftsStore = create<ChatDraftsState>((set, get) => ({
     hydrating = true;
     set({ drafts: {} });
     void draftPersistence.sweepExpired();
-    const onDisk = await draftPersistence.loadAll<string>(
+    const onDisk = await draftPersistence.loadAll<unknown>(
       workspaceId,
       DISK_PREFIX,
     );
@@ -104,9 +172,10 @@ export const useChatDraftsStore = create<ChatDraftsState>((set, get) => ({
     if (scope !== workspaceId) return;
     hydrating = false;
     const restored: Record<string, string> = {};
-    for (const [key, text] of Object.entries(onDisk)) {
+    for (const [key, value] of Object.entries(onDisk)) {
       const sessionId = key.slice(DISK_PREFIX.length);
-      if (typeof text === "string" && !touchedDuringHydrate.has(sessionId)) {
+      const text = restoredText(value);
+      if (text && !touchedDuringHydrate.has(sessionId)) {
         restored[sessionId] = text;
       }
     }
@@ -116,6 +185,7 @@ export const useChatDraftsStore = create<ChatDraftsState>((set, get) => ({
     scope = null;
     hydrating = false;
     touchedDuringHydrate = new Set();
+    inflight.clear();
     set({ drafts: {} });
   },
 }));
