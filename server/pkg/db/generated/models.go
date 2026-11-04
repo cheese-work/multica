@@ -1054,6 +1054,8 @@ type DecisionRequest struct {
 	AskJson               []byte             `json:"ask_json"`
 	Authority             string             `json:"authority"`
 	ProjectID             pgtype.UUID        `json:"project_id"`
+	Kind                  string             `json:"kind"`
+	ExpiresAt             pgtype.Timestamptz `json:"expires_at"`
 }
 
 type DecisionWorkerLease struct {
@@ -1185,6 +1187,15 @@ type GithubPendingInstallation struct {
 	AccountAvatarUrl pgtype.Text        `json:"account_avatar_url"`
 	ReceivedAt       pgtype.Timestamptz `json:"received_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+}
+
+type GithubPrClosedReplay struct {
+	InstallationID int64              `json:"installation_id"`
+	RepoOwner      string             `json:"repo_owner"`
+	RepoName       string             `json:"repo_name"`
+	PrNumber       int32              `json:"pr_number"`
+	RequestedAt    pgtype.Timestamptz `json:"requested_at"`
+	AttemptedAt    pgtype.Timestamptz `json:"attempted_at"`
 }
 
 type GithubPullRequest struct {

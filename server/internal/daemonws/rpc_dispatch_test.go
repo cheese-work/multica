@@ -3,9 +3,11 @@ package daemonws
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -227,5 +229,49 @@ func TestRPCDispatch_ServerTimeoutCancelsHandler(t *testing.T) {
 	case <-cancelled:
 	case <-time.After(2 * time.Second):
 		t.Fatal("handler context was not cancelled at the server-side TimeoutMs deadline")
+	}
+}
+
+func TestSessionRecheck_ClosesAnIdleSocketOnTheNextPing(t *testing.T) {
+	for name, recheck := range map[string]func(context.Context) error{
+		"revoked":    func(context.Context) error { return errors.New("stale session") },
+		"unreadable": func(context.Context) error { return errors.New("storage down") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			old := pingPeriod
+			pingPeriod = 20 * time.Millisecond
+			t.Cleanup(func() { pingPeriod = old })
+			conn := dialRPCTestConn(t, NewHub(), ClientIdentity{UserID: "u-1", SessionRecheck: recheck})
+			conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+			if _, _, err := conn.ReadMessage(); err == nil {
+				t.Fatal("expected the server to close the socket")
+			} else if ne, ok := err.(interface{ Timeout() bool }); ok && ne.Timeout() {
+				t.Fatalf("socket stayed open: %v", err)
+			}
+		})
+	}
+}
+
+func TestSessionRecheck_RefusesEveryFrameKindOnceRevoked(t *testing.T) {
+	var revoked atomic.Bool
+	hub := NewHub()
+	hub.SetRPCHandler(func(context.Context, ClientIdentity, string, json.RawMessage) (int, json.RawMessage, error) {
+		return http.StatusOK, json.RawMessage(`{}`), nil
+	})
+	conn := dialRPCTestConn(t, hub, ClientIdentity{UserID: "u-2", SessionRecheck: func(context.Context) error {
+		if revoked.Load() {
+			return errors.New("stale session")
+		}
+		return nil
+	}})
+	if resp := sendRPCRequest(t, conn, protocol.RPCRequestPayload{RequestID: "a", Method: "tasks.claim"}); resp.Status != http.StatusOK {
+		t.Fatalf("current session: status %d", resp.Status)
+	}
+	revoked.Store(true)
+	frame, _ := json.Marshal(protocol.Message{Type: protocol.EventDaemonRPCRequest, Payload: mustMarshalRaw(protocol.RPCRequestPayload{RequestID: "b", Method: "tasks.claim"})})
+	conn.WriteMessage(websocket.TextMessage, frame)
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, _, err := conn.ReadMessage(); err == nil {
+		t.Fatal("a revoked session got a response")
 	}
 }
