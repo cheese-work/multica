@@ -289,3 +289,28 @@ WHERE w.id = gpr.workspace_id
   AND gpr.repo_owner = sqlc.arg('repo_owner')
   AND gpr.repo_name = sqlc.arg('repo_name')
   AND gpr.pr_number = sqlc.arg('pr_number');
+
+-- name: MarkGitHubPRClosedReplayPending :exec
+-- CHE-3402: written before a closed-PR replay starts, so a failure after the
+-- mirror row commits still leaves a retry marker.
+INSERT INTO github_pr_closed_replay (installation_id, repo_owner, repo_name, pr_number)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT DO NOTHING;
+
+-- name: ClearGitHubPRClosedReplayPending :exec
+DELETE FROM github_pr_closed_replay
+WHERE installation_id = $1 AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4;
+
+-- name: ClaimGitHubPRClosedReplays :many
+-- Least recently attempted first. Claiming stamps attempted_at, so replays that
+-- keep failing rotate behind newer ones instead of pinning the batch.
+UPDATE github_pr_closed_replay AS owed
+SET attempted_at = now()
+WHERE (owed.installation_id, owed.repo_owner, owed.repo_name, owed.pr_number) IN (
+    SELECT c.installation_id, c.repo_owner, c.repo_name, c.pr_number
+    FROM github_pr_closed_replay AS c
+    ORDER BY c.attempted_at
+    LIMIT $1
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING owed.installation_id, owed.repo_owner, owed.repo_name, owed.pr_number;

@@ -190,6 +190,21 @@ multica issue wakeup runs MUL-123 <wakeup-id>
 
 Créer un réveil depuis un terminal en tant que membre demande `--agent-id` ; un agent qui en crée un pendant sa propre exécution se réveille lui-même par défaut.
 
+### Suivre la progression dans un DM
+
+Un DM suit les tickets que son agent crée pour vous. Les membres gèrent les suivis uniquement dans un DM qu'ils ont créé, avec `--chat`. Un agent exécute `multica issue follow <issue>` sans `--chat` : le DM vient de sa propre tâche, et une tâche sans DM est refusée. Les sous-tickets héritent du suivi actif de leur parent.
+
+```bash
+multica issue follow MUL-123 --chat <chat-session-id>
+multica issue mute-follow MUL-123 --chat <chat-session-id>
+multica issue unmute-follow MUL-123 --chat <chat-session-id>
+multica issue unfollow MUL-123 --chat <chat-session-id>
+multica issue unfollow MUL-123 --chat <chat-session-id> --scope root
+multica issue follows --chat <chat-session-id>
+```
+
+`unfollow` met fin au suivi de ce ticket. Avec `--scope root`, il met aussi fin aux suivis que ses sous-tickets en ont hérités ; un sous-ticket suivi manuellement reste suivi. Un sous-ticket que vous avez cessé de suivre n'est pas suivi à nouveau à la création d'un autre sous-ticket.
+
 ## Agents et skills
 
 ```bash

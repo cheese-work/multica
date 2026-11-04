@@ -7,6 +7,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -335,8 +336,8 @@ func TestStateRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("signState: %v", err)
 	}
-	if parts := strings.Split(tok, "."); len(parts) != 5 {
-		t.Fatalf("default return state has %d parts, want timestamped 5-part format", len(parts))
+	if parts := strings.Split(tok, "."); len(parts) != 6 {
+		t.Fatalf("default return state has %d parts, want timestamped 6-part format", len(parts))
 	}
 	got, ok := verifyState(tok)
 	if !ok {
@@ -364,14 +365,14 @@ func TestStateRoundTripWithRepositoryReturnTarget(t *testing.T) {
 	t.Setenv("GITHUB_WEBHOOK_SECRET", "test-secret-123")
 	wsID := "11111111-2222-3333-4444-555555555555"
 
-	tok, err := signStateForReturn(wsID, githubReturnToRepositories)
+	tok, err := signStateForReturn(wsID, githubReturnToRepositories, "")
 	if err != nil {
 		t.Fatalf("signStateForReturn: %v", err)
 	}
-	if parts := strings.Split(tok, "."); len(parts) != 5 {
-		t.Fatalf("repository return state has %d parts, want timestamped 5-part format", len(parts))
+	if parts := strings.Split(tok, "."); len(parts) != 6 {
+		t.Fatalf("repository return state has %d parts, want timestamped 6-part format", len(parts))
 	}
-	gotWorkspaceID, gotReturnTo, ok := verifyStateWithReturn(tok)
+	gotWorkspaceID, gotReturnTo, _, ok := verifyStateWithReturn(tok)
 	if !ok {
 		t.Fatal("verifyStateWithReturn rejected a freshly-signed token")
 	}
@@ -386,7 +387,7 @@ func TestStateRoundTripWithRepositoryReturnTarget(t *testing.T) {
 	}
 
 	tampered := strings.Replace(tok, ".repositories.", ".github.", 1)
-	if _, _, ok := verifyStateWithReturn(tampered); ok {
+	if _, _, _, ok := verifyStateWithReturn(tampered); ok {
 		t.Error("tampered return target should fail verification")
 	}
 }
@@ -420,7 +421,7 @@ func TestGitHubConnectRepositoryReturnTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse install URL: %v", err)
 	}
-	_, returnTo, ok := verifyStateWithReturn(installURL.Query().Get("state"))
+	_, returnTo, _, ok := verifyStateWithReturn(installURL.Query().Get("state"))
 	if !ok || returnTo != githubReturnToRepositories {
 		t.Fatalf("signed return target = %q, valid=%v, want repositories", returnTo, ok)
 	}
@@ -442,7 +443,7 @@ func TestGitHubSetupCallbackRepositoryReturnTarget(t *testing.T) {
 	t.Setenv("GITHUB_WEBHOOK_SECRET", "test-secret-123")
 	t.Setenv("FRONTEND_ORIGIN", "https://app.multica.test/")
 	wsID := "11111111-2222-3333-4444-555555555555"
-	state, err := signStateForReturn(wsID, githubReturnToRepositories)
+	state, err := signStateForReturn(wsID, githubReturnToRepositories, "")
 	if err != nil {
 		t.Fatalf("signStateForReturn: %v", err)
 	}
@@ -3807,5 +3808,71 @@ func TestWebhook_UninstallDeletesAllBindings(t *testing.T) {
 	}
 	if !seen[testWorkspaceID] || !seen[uuidToString(wsB.ID)] {
 		t.Errorf("deleted broadcasts must cover both workspaces; saw %v", seen)
+	}
+}
+
+// CHE-3622: setup callback returns to the origin that started the install,
+// only when it is in CORS_ALLOWED_ORIGINS; otherwise FRONTEND_ORIGIN.
+func TestGitHubSetupCallbackReturnsToStartingOrigin(t *testing.T) {
+	t.Setenv("GITHUB_WEBHOOK_SECRET", "test-secret-123")
+	t.Setenv("FRONTEND_ORIGIN", "https://ts.test:19443")
+	t.Setenv("CORS_ALLOWED_ORIGINS", "https://ts.test:19443,https://multica.congvc.dev")
+	wsID := "11111111-2222-3333-4444-555555555555"
+	cases := []struct{ name, origin, wantPrefix string }{
+		{"allow-listed origin", "https://multica.congvc.dev", "https://multica.congvc.dev/settings?tab=repositories&"},
+		{"origin outside allow-list", "https://evil.example", "https://ts.test:19443/settings?tab=repositories&"},
+		{"no origin", "", "https://ts.test:19443/settings?tab=repositories&"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			state, err := signStateForReturn(wsID, githubReturnToRepositories, c.origin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodGet, "/api/github/setup?installation_id=nan&state="+url.QueryEscape(state), nil)
+			rec := httptest.NewRecorder()
+			(&Handler{}).GitHubSetupCallback(rec, req)
+			if loc := rec.Header().Get("Location"); !strings.HasPrefix(loc, c.wantPrefix) {
+				t.Fatalf("redirect = %q, want prefix %q", loc, c.wantPrefix)
+			}
+		})
+	}
+}
+
+func TestGitHubStateCarriesOriginAndRejectsTamper(t *testing.T) {
+	t.Setenv("GITHUB_WEBHOOK_SECRET", "test-secret-123")
+	wsID := "11111111-2222-3333-4444-555555555555"
+	tok, err := signStateForReturn(wsID, githubReturnToGitHub, "https://multica.congvc.dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, got, ok := verifyStateWithReturn(tok); !ok || got != "https://multica.congvc.dev" {
+		t.Fatalf("origin = %q ok=%v, want multica.congvc.dev", got, ok)
+	}
+	// Swap the origin segment for another valid one; signature must fail.
+	parts := strings.Split(tok, ".")
+	parts[4] = base64.RawURLEncoding.EncodeToString([]byte("https://evil.example"))
+	if _, _, _, ok := verifyStateWithReturn(strings.Join(parts, ".")); ok {
+		t.Fatal("tampered origin accepted")
+	}
+	// Connect handler signs the request's Origin header into the state.
+	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/"+wsID+"/github/connect", nil)
+	req.Header.Set("Origin", "https://multica.congvc.dev")
+	req = withURLParam(req, "id", wsID)
+	t.Setenv("GITHUB_APP_SLUG", "multica-test")
+	t.Setenv("GITHUB_APP_CLIENT_ID", "test-client-id")
+	t.Setenv("GITHUB_APP_CLIENT_SECRET", "test-client-secret")
+	t.Setenv("GITHUB_APP_ID", "12345")
+	pemBytes, _ := generateTestRSAKeyPEM(t)
+	t.Setenv("GITHUB_APP_PRIVATE_KEY", string(pemBytes))
+	rec := httptest.NewRecorder()
+	(&Handler{}).GitHubConnect(rec, req)
+	var body GitHubConnectResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil || body.URL == "" {
+		t.Fatalf("connect: %d %s", rec.Code, rec.Body.String())
+	}
+	u, _ := url.Parse(body.URL)
+	if _, _, got, ok := verifyStateWithReturn(u.Query().Get("state")); !ok || got != "https://multica.congvc.dev" {
+		t.Fatalf("connect state origin = %q ok=%v", got, ok)
 	}
 }

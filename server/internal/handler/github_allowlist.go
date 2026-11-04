@@ -23,21 +23,20 @@ type githubAllowlist struct {
 }
 
 // parseGitHubAllowedAccountIDs reads a comma-separated list of numeric GitHub
-// account ids. Blank entries are skipped; any other non-numeric entry is an
-// error so a typo cannot silently widen or narrow the policy.
+// account ids. Only a blank value turns the policy off. Any other malformed
+// list, including an empty entry ("11,," or ","), is an error so a typo cannot
+// silently disable or narrow the policy.
 func parseGitHubAllowedAccountIDs(raw string) (githubAllowlist, error) {
 	var list githubAllowlist
+	if strings.TrimSpace(raw) == "" {
+		return list, nil
+	}
+	list.ids = map[int64]struct{}{}
 	for _, entry := range strings.Split(raw, ",") {
 		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
 		id, err := strconv.ParseInt(entry, 10, 64)
 		if err != nil || id <= 0 {
 			return githubAllowlist{}, fmt.Errorf("%s: %q is not a numeric GitHub account id", githubAllowedAccountIDsEnv, entry)
-		}
-		if list.ids == nil {
-			list.ids = map[int64]struct{}{}
 		}
 		list.ids[id] = struct{}{}
 	}
