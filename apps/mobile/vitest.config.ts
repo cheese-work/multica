@@ -15,6 +15,8 @@ import path from "node:path";
 // monorepo organises vitest suites.
 // The run cancel button has headless callback/prop tests with native modules
 // mocked; these do not verify native rendering.
+// `data/stores/use-form-drafts.test.ts` opts into jsdom per file and drives the
+// form-draft hooks with renderHook; it covers hook state, not native rendering.
 // App configuration tests also run here to cover native prebuild options
 // across environment variants without loading React Native.
 export default defineConfig({

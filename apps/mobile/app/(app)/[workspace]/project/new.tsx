@@ -15,7 +15,7 @@
  * On success: dismiss modal → navigate to the new project's detail page so
  * the user can immediately add a lead / attach issues / configure properties.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback } from "react";
 import {
   Alert,
   InteractionManager,
@@ -27,7 +27,6 @@ import {
   View,
 } from "react-native";
 import { Stack, router } from "expo-router";
-import type { ProjectPriority, ProjectStatus } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { AutosizeTextArea } from "@/components/ui/autosize-textarea";
 import {
@@ -41,12 +40,8 @@ import {
   projectStatusLabel,
 } from "@/lib/project-status";
 import { useCreateProject } from "@/data/mutations/projects";
-import {
-  NEW_PROJECT_KEY,
-  useFormDraftsStore,
-} from "@/data/stores/form-drafts-store";
 import { useNewProjectDraftStore } from "@/data/stores/new-project-draft-store";
-import { useRestoredFormDraft } from "@/data/stores/use-form-draft";
+import { useNewProjectDraft } from "@/data/stores/use-form-drafts";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useT } from "@/lib/i18n";
 
@@ -61,63 +56,27 @@ const NEW_PROJECT_PICKER_PATHNAMES = {
   priority: "/[workspace]/new-project-picker/priority",
 } as const satisfies Record<NewProjectPickerField, string>;
 
-type NewProjectFormDraft = {
-  title: string;
-  icon: string;
-  description: string;
-  status: ProjectStatus;
-  priority: ProjectPriority;
-};
-
 export default function NewProject() {
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const { t } = useT("projects");
   const create = useCreateProject();
 
-  const [title, setTitle] = useState("");
-  const [icon, setIcon] = useState("");
-  const [description, setDescription] = useState("");
+  const {
+    title,
+    setTitle,
+    icon,
+    setIcon,
+    description,
+    setDescription,
+    restored,
+    dirty,
+    settle,
+  } = useNewProjectDraft();
   const status = useNewProjectDraftStore((s) => s.status);
   const priority = useNewProjectDraftStore((s) => s.priority);
   const resetDraft = useNewProjectDraftStore((s) => s.reset);
 
-  // The unsent form is saved as a draft: closing the modal keeps it; only a
-  // successful create or an explicit discard clears it.
-  const restored = useRestoredFormDraft<NewProjectFormDraft>(
-    NEW_PROJECT_KEY,
-    useCallback((draft) => {
-      setTitle(draft.title);
-      setIcon(draft.icon);
-      setDescription(draft.description);
-      useNewProjectDraftStore.setState({
-        status: draft.status,
-        priority: draft.priority,
-      });
-    }, []),
-  );
-
-  const dirty =
-    title.length > 0 ||
-    icon.length > 0 ||
-    description.length > 0 ||
-    status !== "planned" ||
-    priority !== "none";
-
-  useEffect(() => {
-    if (!restored) return;
-    const { setDraft, clearDraft } = useFormDraftsStore.getState();
-    if (dirty) {
-      setDraft(NEW_PROJECT_KEY, {
-        title,
-        icon,
-        description,
-        status,
-        priority,
-      } satisfies NewProjectFormDraft);
-    } else clearDraft(NEW_PROJECT_KEY);
-  }, [restored, dirty, title, icon, description, status, priority]);
-
-  const canCreate = title.trim().length > 0 && !create.isPending;
+  const canCreate = restored && title.trim().length > 0 && !create.isPending;
 
   const openPicker = useCallback(
     (field: NewProjectPickerField) => {
@@ -133,7 +92,7 @@ export default function NewProject() {
   const onCancel = useCallback(() => {
     if (!dirty) {
       resetDraft();
-      useFormDraftsStore.getState().clearDraft(NEW_PROJECT_KEY);
+      settle();
       router.back();
       return;
     }
@@ -147,13 +106,13 @@ export default function NewProject() {
           style: "destructive",
           onPress: () => {
             resetDraft();
-            useFormDraftsStore.getState().clearDraft(NEW_PROJECT_KEY);
+            settle();
             router.back();
           },
         },
       ],
     );
-  }, [dirty, resetDraft, t]);
+  }, [dirty, resetDraft, settle, t]);
 
   const onCreate = useCallback(() => {
     if (!canCreate) return;
@@ -168,7 +127,7 @@ export default function NewProject() {
       {
         onSuccess: (project) => {
           resetDraft();
-          useFormDraftsStore.getState().clearDraft(NEW_PROJECT_KEY);
+          settle();
           router.back();
           // Wait for the modal dismiss animation to finish before pushing
           // the detail screen. `InteractionManager` resolves once iOS
@@ -197,6 +156,7 @@ export default function NewProject() {
     priority,
     wsSlug,
     resetDraft,
+    settle,
     t,
   ]);
 
@@ -238,6 +198,7 @@ export default function NewProject() {
             <TextInput
               value={icon}
               onChangeText={(v) => setIcon(v.slice(0, 4))}
+              editable={restored}
               placeholder="📦"
               placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
               className="text-2xl text-foreground bg-secondary/50 rounded-md px-3 py-2 self-start min-w-[60px] text-center"
@@ -249,6 +210,7 @@ export default function NewProject() {
             <TextInput
               value={title}
               onChangeText={setTitle}
+              editable={restored}
                 placeholder={t("form.title_placeholder")}
               placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
               className="text-base text-foreground bg-secondary/50 rounded-md px-3 py-2"
@@ -261,6 +223,7 @@ export default function NewProject() {
             <AutosizeTextArea
               value={description}
               onChangeText={setDescription}
+              editable={restored}
                   placeholder={t("form.description_placeholder")}
               className="bg-secondary/50 rounded-md px-3 py-2"
               minHeight={MIN_BODY_INPUT_HEIGHT_PX}

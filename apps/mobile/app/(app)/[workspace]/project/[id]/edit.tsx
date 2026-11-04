@@ -6,7 +6,7 @@
  * Cancel/dismiss flow: header Cancel + iOS drag-down gesture both check
  * dirty state and pop an Alert if there are unsaved edits.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback } from "react";
 import {
   Alert,
   KeyboardAvoidingView,
@@ -26,12 +26,7 @@ import {
 } from "@/components/ui/input-tokens";
 import { projectDetailOptions } from "@/data/queries/projects";
 import { useUpdateProject } from "@/data/mutations/projects";
-import {
-  projectEditKey,
-  readFormDraft,
-  useFormDraftsStore,
-  type EditDraft,
-} from "@/data/stores/form-drafts-store";
+import { useProjectEditDraft } from "@/data/stores/use-form-drafts";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useT } from "@/lib/i18n";
 
@@ -42,44 +37,20 @@ export default function EditProject() {
   const detail = useQuery(projectDetailOptions(wsId, id));
   const update = useUpdateProject(id);
 
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [icon, setIcon] = useState("");
-  const [seeded, setSeeded] = useState(false);
-  const draftKey = projectEditKey(id);
-  const draftsReady = useFormDraftsStore((s) => s.ready);
-  // Set once a save succeeded, so the persist effect cannot re-save the draft.
-  const settled = useRef(false);
-
-  // Seed once when data arrives, before committing the form. Background
-  // refetches must not overwrite edits already in progress. Waits for the
-  // saved draft to load; it wins over the server values.
-  if (detail.data && draftsReady && !seeded) {
-    const draft = readFormDraft<EditDraft>(draftKey);
-    setTitle(draft?.title ?? detail.data.title);
-    setDescription(draft?.description ?? detail.data.description ?? "");
-    setIcon(draft?.icon ?? detail.data.icon ?? "");
-    setSeeded(true);
-  }
-
-  const dirty = useMemo(() => {
-    if (!detail.data) return false;
-    return (
-      title.trim() !== detail.data.title ||
-      description.trim() !== (detail.data.description ?? "") ||
-      icon.trim() !== (detail.data.icon ?? "")
-    );
-  }, [detail.data, title, description, icon]);
+  const {
+    title,
+    setTitle,
+    description,
+    setDescription,
+    icon,
+    setIcon,
+    restored,
+    dirty,
+    settle,
+  } = useProjectEditDraft(id, detail.data);
 
   const canSave =
-    seeded && title.trim().length > 0 && dirty && !update.isPending;
-
-  useEffect(() => {
-    if (!seeded || settled.current) return;
-    const { setDraft, clearDraft } = useFormDraftsStore.getState();
-    if (dirty) setDraft(draftKey, { title, description, icon });
-    else clearDraft(draftKey);
-  }, [seeded, dirty, title, description, icon, draftKey]);
+    restored && title.trim().length > 0 && dirty && !update.isPending;
 
   const onCancel = useCallback(() => {
     if (!dirty) {
@@ -95,14 +66,13 @@ export default function EditProject() {
           text: t("common:actions.discard"),
           style: "destructive",
           onPress: () => {
-            settled.current = true;
-            useFormDraftsStore.getState().clearDraft(draftKey);
+            settle();
             router.back();
           },
         },
       ],
     );
-  }, [dirty, draftKey, t]);
+  }, [dirty, settle, t]);
 
   const onSave = useCallback(() => {
     if (!canSave) return;
@@ -113,8 +83,7 @@ export default function EditProject() {
     };
     update.mutate(patch, {
       onSuccess: () => {
-        settled.current = true;
-        useFormDraftsStore.getState().clearDraft(draftKey);
+        settle();
         router.back();
       },
       onError: (err) => {
@@ -124,7 +93,7 @@ export default function EditProject() {
         );
       },
     });
-  }, [canSave, title, description, icon, update, draftKey, t]);
+  }, [canSave, title, description, icon, update, settle, t]);
 
   const headerLeft = useCallback(() => {
     return (
@@ -160,7 +129,7 @@ export default function EditProject() {
           contentContainerClassName="px-4 pt-4 pb-6 gap-4"
           keyboardShouldPersistTaps="handled"
         >
-          {!detail.data ? (
+          {!detail.data || !restored ? (
             <Text className="text-sm text-muted-foreground">
               {t("common:states.loading")}
             </Text>
