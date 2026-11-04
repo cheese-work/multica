@@ -38,11 +38,12 @@ type followupRow struct {
 	ID, AgentID, Kind, Mode, Instruction string
 	Enabled                              bool
 	DueInFuture                          bool
+	IntervalSeconds, MaxFires            int64
 }
 
 func followups(t *testing.T, f agentDecisionFixture) []followupRow {
 	t.Helper()
-	rows, err := testPool.Query(t.Context(), `SELECT id::text, agent_id::text, kind, mode, instruction, enabled, COALESCE(next_fire_at > now(), false)
+	rows, err := testPool.Query(t.Context(), `SELECT id::text, agent_id::text, kind, mode, instruction, enabled, COALESCE(next_fire_at > now(), false), COALESCE(interval_seconds, 0), COALESCE(max_fires, 0)
 		FROM issue_wakeup WHERE issue_id=$1 AND followup_instance_id=$2`, f.issueID, f.instance)
 	if err != nil {
 		t.Fatalf("read follow-ups: %v", err)
@@ -51,7 +52,7 @@ func followups(t *testing.T, f agentDecisionFixture) []followupRow {
 	var out []followupRow
 	for rows.Next() {
 		var r followupRow
-		if err := rows.Scan(&r.ID, &r.AgentID, &r.Kind, &r.Mode, &r.Instruction, &r.Enabled, &r.DueInFuture); err != nil {
+		if err := rows.Scan(&r.ID, &r.AgentID, &r.Kind, &r.Mode, &r.Instruction, &r.Enabled, &r.DueInFuture, &r.IntervalSeconds, &r.MaxFires); err != nil {
 			t.Fatal(err)
 		}
 		out = append(out, r)
@@ -70,7 +71,7 @@ func TestAgentDecisionWaiverCreatesExactlyOneFollowupWakeup(t *testing.T) {
 		t.Fatalf("%d follow-ups after the waiver, want exactly 1", len(got))
 	}
 	w := got[0]
-	if w.Kind != "at" || w.Mode != "once" || !w.Enabled || !w.DueInFuture || w.AgentID != f.writerID {
+	if w.Kind != "at" || w.Mode != "once" || w.MaxFires != 0 || !w.Enabled || !w.DueInFuture || w.AgentID != f.writerID {
 		t.Fatalf("follow-up: %+v, want an enabled one-shot timed wakeup for the author", w)
 	}
 	for _, want := range []string{"add a regression test when the rename lands behind a flag", "Follow-up result:", "WAIVED"} {
@@ -124,6 +125,50 @@ func TestAgentDecisionCrashFixFollowupNamesSignature(t *testing.T) {
 		if !strings.Contains(got[0].Instruction, want) {
 			t.Fatalf("crash-fix instruction lacks %q:\n%s", want, got[0].Instruction)
 		}
+	}
+}
+
+// A closed issue accepts no new wakeup, so a fix that is not released yet must
+// not depend on the agent creating one: the follow-up repeats by itself.
+func TestAgentDecisionCrashFixFollowupRetriesWithoutNewWakeup(t *testing.T) {
+	f := testFirstRedFixture(t)
+	f.scope["crash_signature"] = crashSignature
+	settleTestFirstRed(t, f)
+	w := followups(t, f)[0]
+	if w.Kind != "every" || w.Mode != "continuous" || w.IntervalSeconds != 72*3600 || w.MaxFires != 8 || !w.Enabled {
+		t.Fatalf("crash-fix follow-up: %+v, want an enabled repeat every 72h capped at 8 runs", w)
+	}
+	for _, banned := range []string{"wakeup create", "create one more wakeup"} {
+		if strings.Contains(w.Instruction, banned) {
+			t.Fatalf("instruction sends the agent to a closed-issue wakeup (%q):\n%s", banned, w.Instruction)
+		}
+	}
+	for _, want := range []string{"not released yet", "72 hours", "already has a comment that starts with `Follow-up result:`"} {
+		if !strings.Contains(w.Instruction, want) {
+			t.Fatalf("instruction lacks %q:\n%s", want, w.Instruction)
+		}
+	}
+}
+
+// Unreleased on the first run, released on the second, on a closed issue.
+func TestAgentDecisionCrashFixFollowupRunsAgainOnClosedIssue(t *testing.T) {
+	f := testFirstRedFixture(t)
+	f.scope["crash_signature"] = crashSignature
+	settleTestFirstRed(t, f)
+	closeIssue(t, f.issueID)
+	runs := func() int {
+		return dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_id'=(SELECT id::text FROM issue_wakeup WHERE followup_instance_id=$2)`, f.issueID, f.instance)
+	}
+	for round := 1; round <= 2; round++ {
+		dbfx.Exec(t, `UPDATE issue_wakeup SET next_fire_at = now() - interval '1 minute' WHERE followup_instance_id=$1`, f.instance)
+		runWakeupTick(t)
+		if n := runs(); n != round {
+			t.Fatalf("after round %d: %d runs, want %d", round, n, round)
+		}
+		if got := followups(t, f); len(got) != 1 || !got[0].Enabled || !got[0].DueInFuture {
+			t.Fatalf("after round %d: %+v, want one enabled follow-up due later", round, got)
+		}
+		dbfx.Exec(t, `UPDATE agent_task_queue SET status='completed', completed_at=now() WHERE issue_id=$1 AND context->>'wakeup_id'=(SELECT id::text FROM issue_wakeup WHERE followup_instance_id=$2)`, f.issueID, f.instance)
 	}
 }
 

@@ -13,8 +13,13 @@ import (
 )
 
 // Unprovable now can be provable later: the check runs this long after the
-// waiver took effect. A change that is not released yet re-arms its own wakeup.
-const agentDecisionFollowupDelay = 7 * 24 * time.Hour
+// waiver took effect. A crash-fix check repeats on its own while the fix is not
+// released, because a closed issue accepts no new wakeup.
+const (
+	agentDecisionFollowupDelay     = 7 * 24 * time.Hour
+	agentDecisionFollowupRetry     = 72 * time.Hour
+	agentDecisionFollowupRetryRuns = 8
+)
 
 const agentDecisionFollowupCheckMax = 2000
 
@@ -26,7 +31,8 @@ func agentDecisionFollowupInstruction(instance string, p agentDecisionProposal) 
 	fmt.Fprintf(&b, "Why red was impossible: %s\nWeaker evidence then (%s).\n\n", strings.TrimSpace(p.RedImpossibleReason), p.WeakerEvidenceKind)
 	if p.CrashSignature != "" {
 		fmt.Fprintf(&b, "This change fixes crash signature %s. After the release that carries the fix, read the Crashlytics crash rate for that signature (firebase-crashlytics MCP) and compare it with the rate before the fix. ", p.CrashSignature)
-		b.WriteString("If the fix is not released yet, create one more wakeup on this issue (`multica issue wakeup create <issue> --after 72h`) and stop.\n")
+		b.WriteString("This check repeats every 72 hours, at most 8 runs. If this issue already has a comment that starts with `Follow-up result:`, stop without any change. ")
+		b.WriteString("If the fix is not released yet, stop without a comment and wait for the next run.\n")
 		fmt.Fprintf(&b, "Also run the check the waiver names: %s\n\n", strings.TrimSpace(p.FollowupCheck))
 	} else {
 		fmt.Fprintf(&b, "Check: %s\n\n", strings.TrimSpace(p.FollowupCheck))
@@ -51,9 +57,16 @@ func createWaiverFollowup(ctx context.Context, tx pgx.Tx, workspaceID, issueID p
 			return fmt.Errorf("no member to own the follow-up check: %w", err)
 		}
 	}
-	_, err := tx.Exec(ctx, `INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,created_by,instruction,kind,mode,event_types,timezone,next_fire_at,followup_instance_id)
- VALUES($1,$2,$3,$4,$5,$6,'at','once','{}','UTC',clock_timestamp()+$7::interval,$8)
+	// A crash-fix check may find the fix unreleased: it repeats by itself.
+	kind, mode := "at", "once"
+	var interval, maxFires any
+	if scope.Proposal.CrashSignature != "" {
+		kind, mode = "every", "continuous"
+		interval, maxFires = int64(agentDecisionFollowupRetry/time.Second), agentDecisionFollowupRetryRuns
+	}
+	_, err := tx.Exec(ctx, `INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,created_by,instruction,kind,mode,event_types,timezone,next_fire_at,followup_instance_id,interval_seconds,max_fires)
+ VALUES($1,$2,$3,$4,$5,$6,$9,$10,'{}','UTC',clock_timestamp()+$7::interval,$8,$11,$12)
  ON CONFLICT (followup_instance_id) WHERE followup_instance_id IS NOT NULL DO NOTHING`,
-		dbid.NewV7(), workspaceID, issueID, scope.Author.AgentID, member, agentDecisionFollowupInstruction(instance, scope.Proposal), agentDecisionFollowupDelay.String(), instance)
+		dbid.NewV7(), workspaceID, issueID, scope.Author.AgentID, member, agentDecisionFollowupInstruction(instance, scope.Proposal), agentDecisionFollowupDelay.String(), instance, kind, mode, interval, maxFires)
 	return err
 }

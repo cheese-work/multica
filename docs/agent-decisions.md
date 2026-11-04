@@ -61,8 +61,10 @@ marked with `followup_instance_id` (unique per record), so closing the issue doe
 disable it: the check is meant to run after release. A proposal may add
 `crash_signature` (a Crashlytics issue id: 1-128 letters, digits, `.`, `:`, `_`, `-`);
 the instruction then tells the author to read the Crashlytics crash rate for that
-signature after the release (firebase-crashlytics MCP) and to re-arm with
-`multica issue wakeup create <issue> --after 72h` while the fix is unreleased.
+signature after the release (firebase-crashlytics MCP). A closed issue accepts no new
+wakeup, so a crash-fix check is not one-shot: it repeats every 72 hours, at most 8 runs.
+A run that finds the fix unreleased posts nothing; once a `Follow-up result:` comment
+exists, later runs stop without a change.
 `followup_check` is limited to 2000 bytes. A refused or unsettled proposal creates no
 wakeup.
 
