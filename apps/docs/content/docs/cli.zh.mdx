@@ -190,6 +190,21 @@ multica issue wakeup runs MUL-123 <wakeup-id>
 
 在终端里以成员身份创建时需要 `--agent-id`；智能体在自己的运行中创建时默认唤醒它自己。
 
+### 在 DM 中关注进度
+
+DM 会关注其智能体为你创建的 issue。成员只能在自己创建的 DM 中用 `--chat` 管理关注。智能体不带 `--chat` 运行 `multica issue follow <issue>`：DM 来自它自己的任务，没有 DM 的任务会被拒绝。子 issue 继承父 issue 的有效关注。
+
+```bash
+multica issue follow MUL-123 --chat <chat-session-id>
+multica issue mute-follow MUL-123 --chat <chat-session-id>
+multica issue unmute-follow MUL-123 --chat <chat-session-id>
+multica issue unfollow MUL-123 --chat <chat-session-id>
+multica issue unfollow MUL-123 --chat <chat-session-id> --scope root
+multica issue follows --chat <chat-session-id>
+```
+
+`unfollow` 结束该 issue 的关注。加上 `--scope root` 还会结束其子 issue 从它继承的关注；单独手动关注的子 issue 仍保持关注。已取消关注的子 issue 不会因之后创建新的子 issue 而被再次关注。
+
 ## 智能体和 skill
 
 ```bash
