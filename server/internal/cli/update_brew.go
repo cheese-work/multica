@@ -45,6 +45,7 @@ func UpdateViaBrewWithProgress(p *Progress) (string, error) {
 		done <- result{out, err}
 	}()
 
+	var sampler brewSampler
 	tick := time.NewTicker(brewPollInterval)
 	defer tick.Stop()
 	for {
@@ -57,7 +58,7 @@ func UpdateViaBrewWithProgress(p *Progress) (string, error) {
 			p.Phase("Installed")
 			return string(r.out), nil
 		case <-tick.C:
-			if n := brewDownloadedBytes(paths, hits); n > 0 {
+			if n := brewDownloadedBytes(paths, hits); sampler.report(n) {
 				p.Set(n, 0)
 			}
 		}
@@ -93,4 +94,14 @@ func brewDownloadedBytes(paths []string, hits map[string]bool) int64 {
 		}
 	}
 	return sum
+}
+
+// brewSampler decides which samples reach Progress: none until the first
+// nonzero one, then all, so a drop to zero (a retry deleted the only partial
+// file) still resets the rate baseline.
+type brewSampler struct{ seen bool }
+
+func (s *brewSampler) report(n int64) bool {
+	s.seen = s.seen || n > 0
+	return s.seen
 }

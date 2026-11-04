@@ -212,3 +212,20 @@ func TestUpdateViaBrewDaemonRunsOnlyUpgrade(t *testing.T) {
 		t.Fatalf("daemon path ran %q, want only today's single upgrade", calls)
 	}
 }
+
+func TestBrewSamplerReportsDropToZeroAfterData(t *testing.T) {
+	var s brewSampler
+	for _, tc := range []struct {
+		n    int64
+		want bool
+	}{
+		{0, false},      // nothing downloaded yet: no line
+		{2 << 20, true}, // partial file grows
+		{0, true},       // retry deleted the only partial file: the drop must reach Progress
+		{1 << 20, true}, // restart
+	} {
+		if got := s.report(tc.n); got != tc.want {
+			t.Fatalf("report(%d) = %v, want %v", tc.n, got, tc.want)
+		}
+	}
+}
