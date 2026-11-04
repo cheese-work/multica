@@ -647,6 +647,105 @@ func (q *Queries) LockDecisionSessionNowait(ctx context.Context, arg LockDecisio
 	return id, err
 }
 
+const lockDecisionSquadNowait = `-- name: LockDecisionSquadNowait :one
+SELECT id, workspace_id, name, description, leader_id, creator_id, created_at, updated_at, archived_at, archived_by, avatar_url, instructions FROM squad
+WHERE workspace_id = $1 AND id = $2
+FOR UPDATE NOWAIT
+`
+
+type LockDecisionSquadNowaitParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+// The squad a squad-target action changes, locked in its workspace.
+func (q *Queries) LockDecisionSquadNowait(ctx context.Context, arg LockDecisionSquadNowaitParams) (Squad, error) {
+	row := q.db.QueryRow(ctx, lockDecisionSquadNowait, arg.WorkspaceID, arg.ID)
+	var i Squad
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.Description,
+		&i.LeaderID,
+		&i.CreatorID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ArchivedAt,
+		&i.ArchivedBy,
+		&i.AvatarUrl,
+		&i.Instructions,
+	)
+	return i, err
+}
+
+const lockDecisionWorkflowNowait = `-- name: LockDecisionWorkflowNowait :one
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve FROM issue_workflow
+WHERE workspace_id = $1 AND id = $2
+FOR UPDATE NOWAIT
+`
+
+type LockDecisionWorkflowNowaitParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) LockDecisionWorkflowNowait(ctx context.Context, arg LockDecisionWorkflowNowaitParams) (IssueWorkflow, error) {
+	row := q.db.QueryRow(ctx, lockDecisionWorkflowNowait, arg.WorkspaceID, arg.ID)
+	var i IssueWorkflow
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.Description,
+		&i.InitialStatusKey,
+		&i.Steps,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.IsDefault,
+		&i.OwnerID,
+		&i.MaxRunsPerIssue,
+		&i.IncludeChildPrs,
+		&i.RunBudgetSince,
+		&i.RunBudgetTokenAllowance,
+		&i.RunBudgetTokenReserve,
+	)
+	return i, err
+}
+
+const lockDecisionWorkspaceNowait = `-- name: LockDecisionWorkspaceNowait :one
+SELECT id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days, decision_passkey_gate, policy_revision, scheduling_paused_at, scheduling_paused_by FROM workspace WHERE id = $1 FOR NO KEY UPDATE NOWAIT
+`
+
+// A workspace-target action rewrites a column of the row row 1 holds FOR KEY
+// SHARE; take the stronger mode the update needs, once.
+func (q *Queries) LockDecisionWorkspaceNowait(ctx context.Context, id pgtype.UUID) (Workspace, error) {
+	row := q.db.QueryRow(ctx, lockDecisionWorkspaceNowait, id)
+	var i Workspace
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Slug,
+		&i.Description,
+		&i.Settings,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Context,
+		&i.Repos,
+		&i.IssuePrefix,
+		&i.IssueCounter,
+		&i.AvatarUrl,
+		&i.AttributionFailClosed,
+		&i.ExportRedactionMode,
+		&i.ExportManifestRetentionDays,
+		&i.DecisionPasskeyGate,
+		&i.PolicyRevision,
+		&i.SchedulingPausedAt,
+		&i.SchedulingPausedBy,
+	)
+	return i, err
+}
+
 const lockPendingDecisionAction = `-- name: LockPendingDecisionAction :one
 SELECT id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at FROM decision_action
 WHERE workspace_id = $1 AND decision_request_id = $2 AND state = 'pending'
