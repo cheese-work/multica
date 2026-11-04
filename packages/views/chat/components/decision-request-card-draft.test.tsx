@@ -1,3 +1,5 @@
+import { resetAllRegisteredDrafts } from "@multica/core/drafts";
+import { setCurrentWorkspace } from "@multica/core/platform";
 import { act, screen } from "@testing-library/react";
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import userEvent from "@testing-library/user-event";
@@ -55,6 +57,7 @@ vi.mock("./lazy-content-editor", () => ({
   LazyContentEditor: forwardRef(function MockEditor(props: EditorProps, ref) {
     const box = useRef<HTMLTextAreaElement>(null);
     const pending = useRef<string | null>(null);
+    const lastValue = useRef(props.defaultValue ?? "");
     const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
     const latest = useRef(props);
     latest.current = props;
@@ -66,12 +69,12 @@ vi.mock("./lazy-content-editor", () => ({
       const handle = {
       hasActiveUploads: () => false,
       getMarkdown: () => box.current?.value ?? "",
-      adoptContent: (md: string) => { if (box.current) box.current.value = md; },
+      adoptContent: (md: string) => { lastValue.current = md; if (box.current) box.current.value = md; },
       uploadFile: (file: File) => {
         const done = latest.current.onUploadFile?.(file, "u1");
         uploads.settle = async () => {
           const att = await done;
-          if (att && latest.current.flushPendingOnUnmount) latest.current.onUpdate?.(`${box.current?.value ?? ""}\n\n![${att.filename}](${att.url})`);
+          if (att && latest.current.flushPendingOnUnmount) latest.current.onUpdate?.(`${lastValue.current}\n\n![${att.filename}](${att.url})`, lastValue.current);
         };
       },
       };
@@ -84,7 +87,7 @@ vi.mock("./lazy-content-editor", () => ({
         aria-label={props.ariaLabel}
         defaultValue={props.defaultValue ?? ""}
         onChange={(event) => {
-          pending.current = event.target.value;
+          pending.current = lastValue.current = event.target.value;
           clearTimeout(timer.current);
           timer.current = setTimeout(() => { pending.current = null; latest.current.onUpdate?.(event.target.value); }, 200);
         }}
@@ -215,6 +218,52 @@ describe("decision card draft survives remount", () => {
     resolveUpload({ id: "att", filename: "shot.png", url: "/api/attachments/att/download", download_url: "/api/attachments/att/download" });
     await act(async () => { await uploads.settle?.(); });
     await vi.waitFor(() => expect(useDecisionAnswerDraftStore.getState().getDraft("decision:upload")?.text).toContain("shot.png"));
+  });
+
+  const startUpload = async (id: string) => {
+    let resolveUpload: (v: unknown) => void = () => { throw new Error("not started"); };
+    api.uploadFile.mockReturnValue(new Promise((r) => { resolveUpload = r; }));
+    const user = userEvent.setup();
+    const first = renderWithI18n(chat(card(id)));
+    await user.type(note(), "see");
+    await vi.waitFor(() => expect(useDecisionAnswerDraftStore.getState().hasDraft(`decision:${id}`)).toBe(true), { timeout: 2000 });
+    act(() => editorHandle.current?.uploadFile(new File(["x"], "shot.png", { type: "image/png" })));
+    first.unmount();
+    await act(async () => { await Promise.resolve(); });
+    return {
+      user,
+      settle: async () => {
+        resolveUpload({ id: "att", filename: "shot.png", url: "/api/attachments/att/download", download_url: "/api/attachments/att/download" });
+        await act(async () => { await uploads.settle?.(); });
+      },
+    };
+  };
+  const stored = (id: string) => useDecisionAnswerDraftStore.getState().getDraft(`decision:${id}`)?.text;
+
+  it("a late upload keeps the note edited after the card was reopened", async () => {
+    const { user, settle } = await startUpload("late-edit");
+    renderWithI18n(chat(card("late-edit")));
+    await user.type(note(), " and more");
+    await vi.waitFor(() => expect(stored("late-edit")).toBe("see and more"), { timeout: 2000 });
+    await settle();
+    expect(stored("late-edit")).toContain("see and more");
+    expect(stored("late-edit")).toContain("shot.png");
+  });
+
+  it("a late upload writes nothing after logout", async () => {
+    const { settle } = await startUpload("late-logout");
+    resetAllRegisteredDrafts();
+    await settle();
+    expect(stored("late-logout")).toBeUndefined();
+  });
+
+  it("a late upload writes nothing into a different workspace", async () => {
+    setCurrentWorkspace("acme", "ws-a");
+    const { settle } = await startUpload("late-ws");
+    setCurrentWorkspace("other", "ws-b");
+    await settle();
+    expect(stored("late-ws")).toBeUndefined();
+    setCurrentWorkspace(null, null);
   });
 
   it("two mounted surfaces for one request stay in step, and sending from the other sends the note", async () => {

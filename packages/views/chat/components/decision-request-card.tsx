@@ -7,6 +7,8 @@ import { useAnswerDecisionRequest } from "@multica/core/issues/decision-answer";
 import {
   type DecisionAnswerDraft as AnswerDraft,
   EMPTY_DECISION_ANSWER_DRAFT as EMPTY_DRAFT,
+  appendLateDecisionNote,
+  captureDecisionDraftScope,
   decisionAnswerDraftKey,
   useDecisionAnswerDraftStore,
 } from "@multica/core/issues/stores/decision-answer-draft-store";
@@ -64,6 +66,14 @@ function DecisionAnswerForm({
   // What this editor last reported. A stored text that differs came from the other surface
   // showing the same request, and is adopted so a send from here cannot overwrite it.
   const emitted = useRef(text);
+  // After unmount the editor can still report a settled upload. It must append, not replace,
+  // and only within the workspace and session it was started in. The flag flips after the
+  // unmount flush, which belongs to the card and is applied as usual.
+  const scope = useRef(captureDecisionDraftScope());
+  const unmounted = useRef(false);
+  useEffect(() => () => queueMicrotask(() => { unmounted.current = true; }), []);
+  const onEditorUpdate = (next: string, base?: string) =>
+    unmounted.current ? appendLateDecisionNote(scope.current, card.id, base ?? "", next) : setText(next);
   const setOption = (next: string) => onDraftChange({ option: next });
   const setText = (next: string) => {
     emitted.current = next;
@@ -145,7 +155,7 @@ function DecisionAnswerForm({
             defaultValue={text}
             ariaLabel={card.options?.length ? t(($) => $.decision.answer_note) : t(($) => $.decision.answer_text)}
             ariaDescribedBy={`${textId}-hint`}
-            onUpdate={setText}
+            onUpdate={onEditorUpdate}
             onSubmit={send}
             onUploadFile={(file) => uploadWithToast(file, { issueId: card.issue_id })}
             onUploadingChange={uploadGate.onUploadingChange}
