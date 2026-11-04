@@ -1,14 +1,26 @@
 /**
  * @vitest-environment jsdom
  */
-import { QueryClient, QueryClientProvider, QueryObserver, type InvalidateQueryFilters, type QueryKey } from "@tanstack/react-query";
+import {
+  InfiniteQueryObserver,
+  QueryClient,
+  QueryClientProvider,
+  QueryObserver,
+  type InvalidateQueryFilters,
+  type QueryKey,
+} from "@tanstack/react-query";
 import { cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import type { WSClient } from "../api/ws-client";
 import { defaultStorage } from "../platform/storage";
-import { issueKeys } from "../issues/queries";
-import { chatKeys } from "../chat/queries";
+import { issueKeys, issueTimelineOptions } from "../issues/queries";
+import {
+  chatKeys,
+  chatMessagesOptions,
+  chatMessagesPageOptions,
+  chatSessionsOptions,
+} from "../chat/queries";
 import { runtimeKeys } from "../runtimes/queries";
 import { workspaceWorkingAgentsKeys } from "../agents/queries";
 import { workspaceKeys } from "../workspace/queries";
@@ -126,16 +138,13 @@ describe("useRealtimeSync — ws instance change", () => {
     const ws2 = createMockWs();
     rerender({ ws: ws2 });
 
-    // Should have called invalidateQueries for all workspace-scoped keys
-    // (17 workspace-scoped [incl. property definitions and workflows] + 6
-    // per-issue prefixes + the workspace working-agents projection + 6
-    // per-chat prefixes + 1 workspaceKeys.list() + 1 cross-workspace inbox
-    // unread summary = 32 calls).
+    // Should invalidate workspace-scoped and event-fed account-level keys,
+    // plus the cross-workspace inbox summary.
     //
     // Awaited rather than counted synchronously: the inbox unread summary
     // refresh cancels any in-flight request before invalidating (see
     // onInboxSummaryInvalidate), so that one lands after the synchronous ones.
-    await waitFor(() => expect(invalidateSpy).toHaveBeenCalledTimes(33));
+    await waitFor(() => expect(invalidateSpy).toHaveBeenCalledTimes(45));
   });
 
   it("does not re-invalidate when rerendered with the same ws instance", () => {
@@ -297,6 +306,147 @@ describe("useRealtimeSync — ws instance change", () => {
     expect(calls).toContainEqual(chatKeys.messagesPageAll());
     expect(calls).toContainEqual(chatKeys.pendingTaskAll());
     expect(calls).toContainEqual(chatKeys.wakeupsAll());
+  });
+
+  it("invalidates event-fed account and integration caches on reconnect", async () => {
+    const ws = createMockWs();
+    renderHook(() => useRealtimeSync(ws, stores), { wrapper: createWrapper(qc) });
+    invalidateSpy.mockClear();
+    vi.mocked(ws.onReconnect).mock.calls[0]?.[0]?.();
+
+    await waitFor(() => expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["invitations", "mine"] }));
+    const keys = invalidateSpy.mock.calls.map(
+      (call: [{ queryKey?: unknown }, ...unknown[]]) => call[0].queryKey,
+    );
+    expect(keys).toContainEqual(["pins", "ws-1"]);
+    expect(keys).toContainEqual(["notification-preferences", "ws-1"]);
+    expect(keys).toContainEqual(["github", "ws-1"]);
+    expect(keys).toContainEqual(["github", "pull-requests"]);
+    expect(keys).toContainEqual(["lark", "ws-1"]);
+    expect(keys).toContainEqual(["slack", "ws-1"]);
+    expect(keys).toContainEqual(["dingtalk", "ws-1"]);
+    expect(keys).toContainEqual(["wecom", "ws-1"]);
+    expect(keys).toContainEqual(["telegram", "ws-1"]);
+    expect(keys).toContainEqual(["vcs", "ws-1"]);
+    expect(keys).toContainEqual(["issues", "comment-trigger-preview"]);
+  });
+
+  it("refetches mounted issue timeline and DM caches on reconnect", async () => {
+    const timelineEntry = { type: "comment", id: "comment-1" };
+    const message = {
+      id: "message-1",
+      chat_session_id: "session-1",
+      role: "assistant",
+      content: "hello",
+      task_id: null,
+      created_at: "2026-11-04T00:00:00Z",
+    };
+    const session = {
+      id: "session-1",
+      workspace_id: "ws-1",
+      agent_id: "agent-1",
+      creator_id: "u1",
+      title: "DM",
+      status: "active",
+      has_unread: true,
+      unread_count: 1,
+      created_at: "2026-11-04T00:00:00Z",
+      updated_at: "2026-11-04T00:00:00Z",
+    };
+    const listTimeline = vi.fn().mockResolvedValue([]);
+    const listChatMessages = vi.fn().mockResolvedValue([]);
+    const listChatMessagesPage = vi.fn().mockResolvedValue({
+      messages: [], limit: 50, has_more: false,
+    });
+    const listChatSessions = vi.fn().mockResolvedValue([]);
+    setApiInstance({ listTimeline, listChatMessages, listChatMessagesPage, listChatSessions } as unknown as ApiClient);
+
+    const observers = [
+      new QueryObserver(qc, issueTimelineOptions("issue-1")),
+      new QueryObserver(qc, chatMessagesOptions("session-1")),
+      new InfiniteQueryObserver(qc, chatMessagesPageOptions("session-1")),
+      new QueryObserver(qc, chatSessionsOptions("ws-1")),
+    ];
+    const unsubscribers = observers.map((observer) => observer.subscribe(() => undefined));
+    const ws = createMockWs();
+    renderHook(() => useRealtimeSync(ws, stores), { wrapper: createWrapper(qc) });
+    await waitFor(() => {
+      expect(listTimeline).toHaveBeenCalledTimes(1);
+      expect(listChatMessages).toHaveBeenCalledTimes(1);
+      expect(listChatMessagesPage).toHaveBeenCalledTimes(1);
+      expect(listChatSessions).toHaveBeenCalledTimes(1);
+    });
+
+    listTimeline.mockResolvedValue([timelineEntry]);
+    listChatMessages.mockResolvedValue([message]);
+    listChatMessagesPage.mockResolvedValue({ messages: [message], limit: 50, has_more: false });
+    listChatSessions.mockResolvedValue([session]);
+    const reconnect = vi.mocked(ws.onReconnect).mock.calls[0]?.[0];
+    reconnect?.();
+
+    try {
+      await waitFor(() => {
+        expect(qc.getQueryData(issueKeys.timeline("issue-1"))).toEqual([timelineEntry]);
+        expect(qc.getQueryData(chatKeys.messages("session-1"))).toEqual([message]);
+        expect(qc.getQueryData(chatKeys.messagesPage("session-1"))).toMatchObject({
+          pages: [{ messages: [message] }],
+        });
+        expect(qc.getQueryData(chatKeys.sessions("ws-1"))).toEqual([session]);
+      });
+    } finally {
+      unsubscribers.forEach((unsubscribe) => unsubscribe());
+      setApiInstance(undefined as unknown as ApiClient);
+    }
+  });
+
+  it("does not fetch inactive issue or DM caches on reconnect", async () => {
+    const listTimeline = vi.fn().mockResolvedValue([]);
+    const listChatMessages = vi.fn().mockResolvedValue([]);
+    const listChatMessagesPage = vi.fn().mockResolvedValue({ messages: [], limit: 50, has_more: false });
+    const listChatSessions = vi.fn().mockResolvedValue([]);
+    setApiInstance({ listTimeline, listChatMessages, listChatMessagesPage, listChatSessions } as unknown as ApiClient);
+    qc.setQueryData(issueKeys.timeline("issue-2"), []);
+    qc.setQueryData(chatKeys.messages("session-2"), []);
+    qc.setQueryData(chatKeys.messagesPage("session-2"), {
+      pages: [{ messages: [], limit: 50, has_more: false }], pageParams: [null],
+    });
+    qc.setQueryData(chatKeys.sessions("ws-1"), []);
+    const ws = createMockWs();
+    renderHook(() => useRealtimeSync(ws, stores), { wrapper: createWrapper(qc) });
+    vi.mocked(ws.onReconnect).mock.calls[0]?.[0]?.();
+
+    await waitFor(() => expect(qc.getQueryState(issueKeys.timeline("issue-2"))?.isInvalidated).toBe(true));
+    expect(listTimeline).not.toHaveBeenCalled();
+    expect(listChatMessages).not.toHaveBeenCalled();
+    expect(listChatMessagesPage).not.toHaveBeenCalled();
+    expect(listChatSessions).not.toHaveBeenCalled();
+    setApiInstance(undefined as unknown as ApiClient);
+  });
+
+  it("keeps a comment written during reconnect refetch when the older response resolves", async () => {
+    let resolveRefetch!: (value: unknown[]) => void;
+    const oldTimeline = [{ type: "comment", id: "old-comment" }];
+    const newComment = { type: "comment", id: "new-comment" };
+    const listTimeline = vi.fn()
+      .mockResolvedValueOnce(oldTimeline)
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveRefetch = resolve; }));
+    setApiInstance({ listTimeline } as unknown as ApiClient);
+    const observer = new QueryObserver(qc, issueTimelineOptions("issue-race"));
+    const unsubscribe = observer.subscribe(() => undefined);
+    const ws = createMockWs();
+    renderHook(() => useRealtimeSync(ws, stores), { wrapper: createWrapper(qc) });
+    await waitFor(() => expect(listTimeline).toHaveBeenCalledTimes(1));
+
+    vi.mocked(ws.onReconnect).mock.calls[0]?.[0]?.();
+    await waitFor(() => expect(listTimeline).toHaveBeenCalledTimes(2));
+    const commentCreated = vi.mocked(ws.on).mock.calls.find(([event]) => event === "comment:created")?.[1];
+    commentCreated?.({ comment: { id: "new-comment", issue_id: "issue-race" } });
+    qc.setQueryData(issueKeys.timeline("issue-race"), [oldTimeline[0], newComment]);
+    resolveRefetch([oldTimeline[0]]);
+
+    await waitFor(() => expect(qc.getQueryData(issueKeys.timeline("issue-race"))).toEqual([oldTimeline[0], newComment]));
+    unsubscribe();
+    setApiInstance(undefined as unknown as ApiClient);
   });
 
   it("invalidates one issue attachment cache after detached channel media binds", () => {

@@ -713,6 +713,7 @@ function invalidateWorkspaceScopedQueries(qc: QueryClient): void {
     qc.invalidateQueries({ queryKey: workspaceKeys.squads(wsId) });
     qc.invalidateQueries({ queryKey: workspaceKeys.skills(wsId) });
     qc.invalidateQueries({ queryKey: workspaceKeys.invitations(wsId) });
+    qc.invalidateQueries({ queryKey: workspaceKeys.myInvitations() });
     qc.invalidateQueries({ queryKey: projectKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: autopilotKeys.all(wsId) });
@@ -721,6 +722,15 @@ function invalidateWorkspaceScopedQueries(qc: QueryClient): void {
     qc.invalidateQueries({ queryKey: agentActivityKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: agentRunCountsKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: chatKeys.all(wsId) });
+    qc.invalidateQueries({ queryKey: ["pins", wsId] });
+    qc.invalidateQueries({ queryKey: notificationPreferenceKeys.all(wsId) });
+    qc.invalidateQueries({ queryKey: githubKeys.all(wsId) });
+    qc.invalidateQueries({ queryKey: larkKeys.all(wsId) });
+    qc.invalidateQueries({ queryKey: slackKeys.all(wsId) });
+    qc.invalidateQueries({ queryKey: dingtalkKeys.all(wsId) });
+    qc.invalidateQueries({ queryKey: wecomKeys.all(wsId) });
+    qc.invalidateQueries({ queryKey: telegramKeys.all(wsId) });
+    qc.invalidateQueries({ queryKey: ["vcs", wsId] });
     qc.invalidateQueries({ queryKey: labelKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: propertyKeys.all(wsId) });
     // A catalog edit missed while disconnected would otherwise sit behind the
@@ -740,6 +750,9 @@ function invalidateWorkspaceScopedQueries(qc: QueryClient): void {
   // get marked stale here and refetch on next mount; the one mounted issue
   // refetches immediately, same as its own useWSReconnect already does.
   qc.invalidateQueries({ queryKey: issueKeys.timelineAll() });
+  // Task lifecycle events refresh comment-trigger previews because their
+  // verdict depends on whether the target agent already has pending work.
+  qc.invalidateQueries({ queryKey: issueKeys.commentTriggerPreviewAll() });
   qc.invalidateQueries({ queryKey: issueKeys.reactionsAll() });
   qc.invalidateQueries({ queryKey: issueKeys.subscribersAll() });
   qc.invalidateQueries({ queryKey: issueKeys.usageAll() });
@@ -758,6 +771,8 @@ function invalidateWorkspaceScopedQueries(qc: QueryClient): void {
   // what the durable draft-restore rows exist for (#5219) — re-pull them so
   // a mounted composer recovers the prompt without a remount.
   qc.invalidateQueries({ queryKey: chatKeys.draftRestoresAll() });
+  // PR rows are keyed by issue rather than workspace and refresh on PR events.
+  qc.invalidateQueries({ queryKey: ["github", "pull-requests"] });
   qc.invalidateQueries({ queryKey: workspaceKeys.list() });
 }
 
