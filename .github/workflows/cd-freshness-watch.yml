@@ -32,3 +32,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 deploy/cd/check-deploy-freshness.py
+
+  # C00's API is tailnet only, so this job runs on an existing X99 runner. It catches what run history cannot: a
+  # rollback on C00. The job above stays on a GitHub-hosted runner, so a dead X99 runner cannot silence the stall alarm.
+  live-revision:
+    runs-on: [self-hosted, linux, x64, cheese-x99]
+    timeout-minutes: 5
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Alarm when C00 does not run main's head 90 min after merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          C00_API_URL: ${{ vars.C00_API_URL || 'https://congvc-c00.taila6fa8a.ts.net:19444' }}
+        run: python3 deploy/cd/check-deploy-freshness.py --live

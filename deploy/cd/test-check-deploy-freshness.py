@@ -76,6 +76,50 @@ class DecideTest(unittest.TestCase):
         self.assertFalse(decide(SHA, head_at(5), NOW, [], [])["alert"])
 
 
+class LiveTest(unittest.TestCase):
+    """Run history cannot see a rollback done on C00, so the live revision is the only proof of what runs now."""
+
+    def test_running_the_head_clears_the_alarm(self):
+        self.assertEqual(fresh.decide_live(SHA, head_at(600), NOW, SHA[:7]), {"alert": False, "deployed": True})
+
+    def test_rolled_back_to_an_older_commit_alerts_after_90_minutes(self):
+        self.assertTrue(fresh.decide_live(SHA, head_at(120), NOW, "d43d0c9")["alert"])
+        self.assertFalse(fresh.decide_live(SHA, head_at(89), NOW, "d43d0c9")["alert"])
+
+    def test_unreadable_live_revision_alerts_after_90_minutes(self):
+        self.assertTrue(fresh.decide_live(SHA, head_at(120), NOW, None)["alert"])
+        self.assertFalse(fresh.decide_live(SHA, head_at(10), NOW, None)["alert"])
+
+    def test_live_commit_is_read_from_api_config_and_compared_with_the_short_head(self):
+        resp = MagicMock(); resp.read.return_value = json.dumps({"server_commit": "d43d0c9"}).encode()
+        resp.__enter__.return_value = resp
+        with patch.object(fresh.urllib.request, "urlopen", return_value=resp) as op:
+            self.assertEqual(fresh.live_commit("https://c00.test:19444/"), "d43d0c9")
+        self.assertEqual(op.call_args.args[0], "https://c00.test:19444/api/config")
+
+    def test_unreachable_endpoint_reads_as_none(self):
+        with patch.object(fresh.urllib.request, "urlopen", side_effect=OSError("timed out")):
+            self.assertIsNone(fresh.live_commit("https://c00.test:19444"))
+
+    def run_live(self, live, minutes_ago):
+        commit = {"sha": SHA, "commit": {"committer": {"date": head_at(minutes_ago).isoformat()}}}
+        out = io.StringIO()
+        with patch.dict(fresh.os.environ, {"GITHUB_REPOSITORY": "cheese-work/multica", "C00_API_URL": "https://c00.test"}), \
+                patch.object(fresh, "gh_api", return_value=json.dumps(commit)), patch.object(fresh, "utcnow", return_value=NOW), \
+                patch.object(fresh, "live_commit", return_value=live), contextlib.redirect_stdout(out):
+            rc = fresh.main(["--live"])
+        return rc, out.getvalue()
+
+    def test_main_live_rollback_after_a_successful_deploy_alerts(self):
+        rc, out = self.run_live("d43d0c9", 120)
+        self.assertEqual(rc, 1)
+        self.assertIn("::error::", out)
+        self.assertIn("d43d0c9", out)
+
+    def test_main_live_healthy_is_silent(self):
+        self.assertEqual(self.run_live(SHA[:7], 600), (0, "main %s runs on C00 (live revision %s).\n" % (SHA[:9], SHA[:7])))
+
+
 class RateLimitTest(unittest.TestCase):
     def err(self, text):
         return subprocess.CalledProcessError(1, "gh", stderr=text)
@@ -178,8 +222,11 @@ class MainTest(unittest.TestCase):
 class WorkflowFileTest(unittest.TestCase):
     def test_workflow_shape(self):
         text = (Path(__file__).parents[2] / ".github/workflows/cd-freshness-watch.yml").read_text()
-        self.assertIn("runs-on: ubuntu-24.04", text)
-        self.assertNotIn("self-hosted", text)
+        job = text.split("live-revision:")
+        self.assertIn("runs-on: ubuntu-24.04", job[0])
+        self.assertNotIn("self-hosted", job[0])  # the history alarm stays independent of X99 and C00 runners
+        self.assertIn("cheese-x99", job[1])  # tailnet reach for the live revision
+        self.assertIn("check-deploy-freshness.py --live", job[1])
         self.assertIn("actions: write", text)
         self.assertIn("cron:", text)
         self.assertIn("github.event_name != 'pull_request'", text)

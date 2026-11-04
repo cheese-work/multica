@@ -7,6 +7,8 @@ Two rules for the current main head:
 2. Head merged >= 90 min ago and no successful `CD deploy to C00` run named for it whose `deploy` job succeeded
    (manual dispatches named by ref, not SHA, do not count; a run with the deploy job skipped does not count) -> ::error:: with the run
    URL and the first error line.
+`--live`: compare the revision C00 reports on /api/config (env C00_API_URL, tailnet only, so it runs on an X99
+runner) with main's head; catches a rollback, which run history cannot see.
 GitHub rate limits (403/429) wait for the reset time (capped) and retry instead of failing the alarm.
 """
 import datetime as dt
@@ -15,6 +17,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.request
 
 MAX_WAIT = 600  # seconds per rate-limit wait; the job's 15 min timeout bounds the total
 RETRIES = 2
@@ -74,15 +77,44 @@ def first_error(repo, run):
     return "no error line available"
 
 
+def live_commit(base_url):
+    """Short commit C00's server reports on /api/config, or None when it cannot be read (tailnet only)."""
+    try:
+        with urllib.request.urlopen(f"{base_url.rstrip('/')}/api/config", timeout=15) as resp:
+            return json.loads(resp.read()).get("server_commit") or None
+    except (OSError, ValueError):
+        return None
+
+
+def decide_live(sha, head_time, now, live):
+    # Run history cannot see a rollback done on C00 (cutover.sh rollback leaves the old successful deploy run in
+    # the API), so what runs now is the only proof. server_commit is the 7-char short SHA.
+    deployed = live == sha[:7]
+    return {"alert": not deployed and now - head_time >= DEPLOY_DEADLINE, "deployed": deployed}
+
+
 def deploy_job_succeeded(repo, run):
     jobs = json.loads(gh_api("api", f"repos/{repo}/actions/runs/{run['id']}/jobs?per_page=100"))["jobs"]
     return any(j["name"] == "deploy" and j["conclusion"] == "success" for j in jobs)
 
 
-def main():
+def main_live(sha, head_time, now):
+    live = live_commit(os.environ["C00_API_URL"])
+    d = decide_live(sha, head_time, now, live)
+    if d["alert"]:
+        age = int((now - head_time).total_seconds() // 60)
+        print(f"::error::main {sha[:9]} is not what C00 runs {age} min after merge (limit 90): live revision {live or 'unreadable'}")
+        return 1
+    print(f"main {sha[:9]} runs on C00 (live revision {live})." if d["deployed"] else f"C00 runs {live or 'an unreadable revision'}, inside the 90 min window.")
+    return 0
+
+
+def main(argv=()):
     repo = os.environ["GITHUB_REPOSITORY"]
     commit = json.loads(gh_api("api", f"repos/{repo}/commits/main"))
     sha, head_time, now = commit["sha"], parse(commit["commit"]["committer"]["date"]), utcnow()
+    if "--live" in argv:
+        return main_live(sha, head_time, now)
     runs = lambda wf, query: json.loads(gh_api("api", f"repos/{repo}/actions/workflows/{wf}/runs?{query}&per_page=100"))["workflow_runs"]
     d = decide(sha, head_time, now, runs("cd-qualification.yml", f"head_sha={sha}"), runs("cd-deploy.yml", "status=success"),
                lambda run: deploy_job_succeeded(repo, run))
@@ -100,4 +132,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))
