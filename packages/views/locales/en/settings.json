@@ -1375,6 +1375,7 @@
       "auto_stop_description": "Stop the daemon when Desktop closes.",
       "cli_status": "CLI Status",
       "cli_checking": "Checking…",
+      "cli_download_progress": "Downloading runtime… {{done}} / {{total}} MB",
       "cli_installed": "multica CLI is installed and available in PATH.",
       "cli_missing": "multica CLI not found. Install it to enable daemon management.",
       "installation_guide": "Installation Guide",
