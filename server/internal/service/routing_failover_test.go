@@ -2,10 +2,13 @@ package service
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	dbfx "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // Routing agent failover (CHE-3627): when the routing agent's run dies on a
@@ -104,5 +107,72 @@ func TestRoutingFailoverIgnoresCasesThatAreNotARoutingProviderFailure(t *testing
 				t.Fatal("the issue was reassigned")
 			}
 		})
+	}
+}
+
+func failedSource(t *testing.T, svc *TaskService, f *delegatedFailureFixture) db.AgentTaskQueue {
+	t.Helper()
+	task, err := svc.Queries.GetAgentTask(context.Background(), util.MustParseUUID(f.sourceTask))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return task
+}
+
+func TestRoutingFailoverSkipsAnIssueThatMovedAfterTheSnapshot(t *testing.T) {
+	cases := map[string]string{
+		"status changed":   `UPDATE issue SET status = 'in_review' WHERE id = $1`,
+		"assignee changed": `UPDATE issue SET assignee_id = '%s' WHERE id = $1`,
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			f, svc, rows := routingFailoverFixture(t, "todo")
+			snapshot, err := svc.Queries.GetIssue(context.Background(), util.MustParseUUID(f.issueID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if name == "assignee changed" {
+				change = strings.Replace(change, "%s", f.worker, 1)
+			}
+			rows.Exec(t, change, f.issueID)
+			err = svc.handStepToFallback(context.Background(), snapshot, failedSource(t, svc, f), util.MustParseUUID(f.worker), "note")
+			if !errors.Is(err, errRoutingStepMoved) {
+				t.Fatalf("err = %v, want errRoutingStepMoved", err)
+			}
+			if got := fallbackRuns(t, rows, f, f.worker); got != 0 {
+				t.Fatalf("fallback runs = %d, want 0", got)
+			}
+			if name == "status changed" {
+				if got := rows.Count(t, `SELECT count(*) FROM issue WHERE id = $1 AND assignee_id = $2`, f.issueID, f.coordinator); got != 1 {
+					t.Fatal("the issue was reassigned")
+				}
+			}
+		})
+	}
+}
+
+func TestRoutingFailoverKeepsFieldsChangedAfterTheSnapshot(t *testing.T) {
+	f, svc, rows := routingFailoverFixture(t, "todo")
+	snapshot, err := svc.Queries.GetIssue(context.Background(), util.MustParseUUID(f.issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows.Exec(t, `UPDATE issue SET due_date = '2030-01-02', stage = 4 WHERE id = $1`, f.issueID)
+	if err := svc.handStepToFallback(context.Background(), snapshot, failedSource(t, svc, f), util.MustParseUUID(f.worker), "note"); err != nil {
+		t.Fatal(err)
+	}
+	if got := rows.Count(t, `SELECT count(*) FROM issue WHERE id = $1 AND due_date = '2030-01-02' AND stage = 4 AND assignee_id = $2`, f.issueID, f.worker); got != 1 {
+		t.Fatalf("locked-row fields were overwritten or the issue was not handed over, count = %d", got)
+	}
+}
+
+func TestRoutingFailoverKeepsTheAssigneeWhenTheEnqueueFails(t *testing.T) {
+	f, svc, rows := routingFailoverFixture(t, "todo")
+	// A queued run for the fallback already exists, so the insert is rejected.
+	rows.Exec(t, `INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority)
+		VALUES ($1, $2, $3, 'queued', 0)`, f.worker, f.runtimeID, f.issueID)
+	failSource(t, svc, f, providerDown)
+	if got := rows.Count(t, `SELECT count(*) FROM issue WHERE id = $1 AND assignee_id = $2`, f.issueID, f.coordinator); got != 1 {
+		t.Fatal("the issue stayed with the fallback agent after the enqueue failed")
 	}
 }

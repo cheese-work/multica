@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"github.com/jackc/pgx/v5/pgtype"
 	"log/slog"
 	"slices"
@@ -137,34 +138,71 @@ func (s *TaskService) failOverRoutingTask(ctx context.Context, failed db.AgentTa
 	if err != nil || agent.ArchivedAt.Valid {
 		return
 	}
-	// The fallback takes the step over as its assignee. A mention would queue it
-	// as an observer: the workflow brief gives step instructions and status
-	// commands only to the issue's assignee. Every other field is written back
-	// unchanged, as the public edit path does.
-	owned, err := s.Queries.UpdateIssue(ctx, db.UpdateIssueParams{
-		ID:                 issue.ID,
-		SourceTaskID:       failed.ID,
-		AssigneeType:       pgtype.Text{String: "agent", Valid: true},
-		AssigneeID:         fallback,
-		StartDate:          issue.StartDate,
-		DueDate:            issue.DueDate,
-		ParentIssueID:      issue.ParentIssueID,
-		PreserveProject:    pgtype.Bool{Bool: true, Valid: true},
-		Stage:              issue.Stage,
-		DuplicateOfIssueID: issue.DuplicateOfIssueID,
-	})
-	if err != nil {
-		slog.Warn("routing failover: hand the step to the fallback agent failed",
-			"issue_id", util.UUIDToString(issue.ID), "fallback_agent_id", util.UUIDToString(fallback), "error", err)
-		return
-	}
 	note := "Routing failover: the routing agent's run failed with a provider error (" + failureReason + "). You are the fallback agent and now own this step."
-	if _, err := s.EnqueueTaskForIssueWithHandoff(ctx, owned, note, pgtype.UUID{}); err != nil {
-		slog.Warn("routing failover: enqueue fallback run failed",
+	if err := s.handStepToFallback(ctx, issue, failed, fallback, note); err != nil {
+		slog.Warn("routing failover: hand the step to the fallback agent failed; the issue keeps its assignee",
 			"issue_id", util.UUIDToString(issue.ID), "fallback_agent_id", util.UUIDToString(fallback), "error", err)
 		return
 	}
 	slog.Info("routing failover: fallback agent queued",
 		"issue_id", util.UUIDToString(issue.ID), "failed_agent_id", util.UUIDToString(failed.AgentID),
 		"fallback_agent_id", util.UUIDToString(fallback), "reason", failureReason)
+}
+
+var errRoutingStepMoved = errors.New("the issue changed since the routing run failed")
+
+// handStepToFallback makes fallback the issue's assignee and queues its run in
+// one transaction. The fallback must own the step: the workflow brief gives step
+// instructions and status commands only to the assignee, and a mention would
+// queue an observer. snapshot is the issue as read before the transaction; the
+// locked row is re-checked against it, so a status, assignee or project change
+// in between skips the failover, and the write carries the locked row's other
+// fields. A refused or failed enqueue rolls the assignee back.
+func (s *TaskService) handStepToFallback(ctx context.Context, snapshot db.Issue, failed db.AgentTaskQueue, fallback pgtype.UUID, note string) error {
+	next := snapshot
+	next.AssigneeType = pgtype.Text{String: "agent", Valid: true}
+	next.AssigneeID = fallback
+	params, _, err := s.prepareIssueTaskWithQueriesAndOverlay(readOnlyRunBudget(ctx), s.Queries, next, pgtype.UUID{}, nil, false, note, pgtype.UUID{}, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived, nil)
+	if err != nil {
+		return err
+	}
+	params.FreshRerun = pgtype.Bool{Bool: false, Valid: true}
+	var owned db.Issue
+	var task db.AgentTaskQueue
+	txCtx, notifyAfterCommit := deferEnqueuedTaskHook(ctx)
+	err = s.runInTx(ctx, func(q *db.Queries) error {
+		locked, err := q.LockIssueForDescriptionUpdate(txCtx, db.LockIssueForDescriptionUpdateParams{ID: snapshot.ID, WorkspaceID: snapshot.WorkspaceID})
+		if err != nil {
+			return err
+		}
+		if locked.AssigneeID != failed.AgentID || locked.Status != snapshot.Status || locked.ProjectID != snapshot.ProjectID {
+			return errRoutingStepMoved
+		}
+		owned, err = q.UpdateIssue(txCtx, db.UpdateIssueParams{
+			ID:                 locked.ID,
+			SourceTaskID:       failed.ID,
+			AssigneeType:       next.AssigneeType,
+			AssigneeID:         fallback,
+			StartDate:          locked.StartDate,
+			DueDate:            locked.DueDate,
+			ParentIssueID:      locked.ParentIssueID,
+			PreserveProject:    pgtype.Bool{Bool: true, Valid: true},
+			Stage:              locked.Stage,
+			DuplicateOfIssueID: locked.DuplicateOfIssueID,
+		})
+		if err != nil {
+			return err
+		}
+		task, err = s.insertPreparedIssueTask(txCtx, q, owned, params, pgtype.Timestamptz{}, OriginDerived)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	notifyAfterCommit()
+	s.PublishTaskEnqueued(ctx, task)
+	if s.Bus != nil {
+		s.broadcastIssueUpdated(ctx, owned, snapshot.Status)
+	}
+	return nil
 }
