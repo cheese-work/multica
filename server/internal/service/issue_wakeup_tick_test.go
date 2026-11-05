@@ -384,7 +384,24 @@ func TestDrainTickRetriesTransientLockTimeout(t *testing.T) {
 		defer holder.Rollback(ctx)
 		_, err = holder.Exec(ctx, "SELECT 1 FROM issue_wakeup WHERE id=$1 FOR UPDATE", w.ID)
 		locked <- err
-		time.Sleep(400 * time.Millisecond)
+		// Release once a second blocked statement has started: the first one
+		// timed out, so the pass that follows it is the retry. A deadline
+		// keeps a missing retry from hanging the test.
+		waits := map[string]bool{}
+		for deadline := time.Now().Add(10 * time.Second); len(waits) < 2 && time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+			rows, qerr := f.Pool.Query(ctx, `SELECT query_start::text FROM pg_stat_activity
+				WHERE wait_event_type = 'Lock' AND datname = current_database()`)
+			if qerr != nil {
+				return
+			}
+			for rows.Next() {
+				var started string
+				if rows.Scan(&started) == nil {
+					waits[started] = true
+				}
+			}
+			rows.Close()
+		}
 	}()
 	if err := <-locked; err != nil {
 		t.Fatal(err)
