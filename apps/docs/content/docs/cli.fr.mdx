@@ -199,8 +199,11 @@ multica issue follow MUL-123 --chat <chat-session-id>
 multica issue mute-follow MUL-123 --chat <chat-session-id>
 multica issue unmute-follow MUL-123 --chat <chat-session-id>
 multica issue unfollow MUL-123 --chat <chat-session-id>
+multica issue unfollow MUL-123 --chat <chat-session-id> --scope root
 multica issue follows --chat <chat-session-id>
 ```
+
+`unfollow` met fin au suivi de ce ticket. Avec `--scope root`, il met aussi fin aux suivis que ses sous-tickets en ont hérités ; un sous-ticket suivi manuellement reste suivi. Un sous-ticket que vous avez cessé de suivre n'est pas suivi à nouveau à la création d'un autre sous-ticket.
 
 ## Agents et skills
 

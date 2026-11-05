@@ -22,6 +22,10 @@ import "../feedback/draft-store";
 import "../agents/manual-draft-store";
 import "../skills/draft-stores";
 import "../issue-workflows/draft-stores";
+import "../squads/stores/create-squad-draft-store";
+import "../autopilots/stores/draft-stores";
+import "../quick-actions/draft-store";
+import "../settings/draft-stores";
 import { registerDraftCleanup } from "./cleanup-registry";
 
 // Retired: drafts for a running turn now live in the thread's reply draft.

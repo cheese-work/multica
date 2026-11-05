@@ -55,6 +55,65 @@ class BuildCacheTests(unittest.TestCase):
         self.assertIn('RUN --mount=type=cache,target=/app/apps/web/.next/cache', web)
         self.assertLess(web.index('pnpm install --frozen-lockfile --offline'), web.index('ARG NEXT_PUBLIC_APP_VERSION'))
 
+    def test_broken_named_builder_is_removed_before_setup(self):
+        steps = self.workflow['jobs']['build-images']['steps']
+        before_setup = steps[:next(i for i, step in enumerate(steps) if step.get('id') == 'buildx')]
+        recovery = '\n'.join(step.get('run', '') for step in before_setup
+                             if 'docker buildx' in step.get('run', ''))
+        for image in ['backend', 'web']:
+            for state in ['healthy', 'bootstrap-failed', 'node-error', 'wrong-driver', 'absent']:
+                with self.subTest(image=image, state=state), tempfile.TemporaryDirectory() as directory:
+                    workspace = Path(directory)
+                    docker = workspace / 'docker'
+                    docker.write_text('''#!/usr/bin/env bash
+set -eu
+case "$1 $2" in
+  'buildx ls')
+    # Real buildx: ls takes --format only; json prints one object per builder.
+    [ "$3" = --format ] || exit 125
+    case "$4" in
+      '{{.Name}}')
+        echo unrelated-builder
+        [ "$STUB_STATE" = absent ] || echo "$BUILDX_NAME"
+        ;;
+      json)
+        echo '{"Name":"unrelated-builder","Driver":"docker","Nodes":[{}]}'
+        if [ "$STUB_STATE" = node-error ]; then
+          echo '{"Name":"'"$BUILDX_NAME"'","Driver":"docker-container","Nodes":[{"Err":"dead context"}]}'
+        elif [ "$STUB_STATE" = wrong-driver ]; then
+          echo '{"Name":"'"$BUILDX_NAME"'","Driver":"docker","Nodes":[{}]}'
+        elif [ "$STUB_STATE" != absent ]; then
+          echo '{"Name":"'"$BUILDX_NAME"'","Driver":"docker-container","Nodes":[{}]}'
+        fi
+        ;;
+      *) exit 125 ;;
+    esac
+    ;;
+  'buildx inspect')
+    # Real buildx: inspect has no --format flag.
+    [ "$3" = "$BUILDX_NAME" ] && [ "${4:-}" = --bootstrap ] && [ "$#" -eq 4 ] || exit 125
+    [ "$STUB_STATE" != bootstrap-failed ] || exit 1
+    ;;
+  'buildx rm') printf '%s\\n' "$*" >> "$REMOVALS" ;;
+  *) exit 2 ;;
+esac
+''')
+                    docker.chmod(0o755)
+                    removals = workspace / 'removals'
+                    name = f'multica-cd-{image}-v1'
+                    result = subprocess.run(['bash', '-euo', 'pipefail', '-c', recovery], cwd=ROOT,
+                                            env={**os.environ, 'PATH': f'{workspace}:{os.environ["PATH"]}',
+                                                 'BUILDX_NAME': name, 'STUB_STATE': state,
+                                                 'REMOVALS': str(removals)}, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    removed = removals.read_text() if removals.exists() else ''
+                    if state in ['bootstrap-failed', 'node-error', 'wrong-driver']:
+                        self.assertIn(name, removed, 'broken named builder was retained')
+                        self.assertEqual(len(removed.splitlines()), 1)
+                    else:
+                        self.assertEqual(removed, '')
+                    self.assertNotIn('unrelated-builder', removed)
+
     def test_go_module_cache_is_available_to_every_consumer(self):
         backend = (ROOT / 'Dockerfile').read_text()
         consumers = [line for line in backend.splitlines() if line.startswith('RUN ') and

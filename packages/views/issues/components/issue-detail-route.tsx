@@ -103,7 +103,7 @@ function RequestedRun({ issueId, runId, path }: { issueId: string; runId: string
  */
 export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
   const wsId = useWorkspaceId();
-  const { canonicalId, issue, isResolving, notFound, authoritative } = useCanonicalIssue(wsId, routeId);
+  const { canonicalId, issue, isResolving, notFound, loadError, retry, authoritative } = useCanonicalIssue(wsId, routeId);
   const highlight = useCommentHighlightHash();
   const { searchParams } = useNavigation();
   const paths = useWorkspacePaths();
@@ -117,6 +117,7 @@ export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
   // `IssueDetail` would mount a second observer on the query that just failed,
   // refetch it, and restart this component's resolve/remount cycle — an
   // unbounded request loop that never settles. See `CanonicalIssue.notFound`.
+  if (loadError) return <IssueNotFound showBackLink={!onDelete} onRetry={retry} />;
   if (notFound || !canonicalId) return <IssueNotFound showBackLink={!onDelete} />;
 
   // The page hosts a side peek so Shift+Click on an issue mention in the
