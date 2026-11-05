@@ -41,7 +41,6 @@ import { useIssueRealtime } from "@/data/realtime/use-issue-realtime";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useViewedIssuesStore } from "@/data/viewed-issues-store";
 import { useCommentSelectStore } from "@/data/comment-select-store";
-import { useReplyTargetStore } from "@/data/stores/reply-target-store";
 import { useT } from "@/lib/i18n";
 
 export default function IssueDetail() {
@@ -78,14 +77,13 @@ export default function IssueDetail() {
     }
   }, [wsId, id]);
 
-  // Screen-scoped composer state — clear on unmount so re-entering the
-  // issue starts from a clean slate (no stale text-selection comment id,
-  // no stale "Replying to X" target). Both stores are singletons used by
-  // the long-press action sheet.
+  // Screen-scoped state — clear on unmount so re-entering the issue starts
+  // from a clean slate (no stale text-selection comment id). The "Replying
+  // to X" target is cleared by the composer, which saves it in the issue's
+  // draft first; clearing it here would be saved as a discard.
   useEffect(() => {
     return () => {
       useCommentSelectStore.getState().clear();
-      useReplyTargetStore.getState().clear();
     };
   }, []);
 

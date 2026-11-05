@@ -138,6 +138,23 @@ jobs:
 
       # The Docker driver on X99 cannot emit provenance or SBOM attestations.
       # Keep those release requirements and use an isolated BuildKit container.
+      - name: Remove a broken persistent Buildx builder
+        timeout-minutes: 3
+        env:
+          BUILDX_NAME: multica-cd-${{ matrix.image }}-v1
+        shell: bash
+        run: |
+          set -euo pipefail
+          if docker buildx ls --format '{{.Name}}' | grep -Fxq "$BUILDX_NAME"; then
+            # `buildx inspect` has no --format; use its exit status to bootstrap,
+            # then read driver and node errors from `buildx ls --format json`.
+            if ! timeout 120 docker buildx inspect "$BUILDX_NAME" --bootstrap >/dev/null \
+              || ! docker buildx ls --format json | jq -se --arg n "$BUILDX_NAME" \
+                'map(select(.Name == $n)) | length == 1 and (.[0] | .Driver == "docker-container" and ((.Nodes // []) | length > 0) and all(.Nodes[]; (.Err // "") == ""))' >/dev/null; then
+              docker buildx rm --force "$BUILDX_NAME"
+            fi
+          fi
+
       - name: Set up attestation-capable Buildx builder
         id: buildx
         uses: docker/setup-buildx-action@v4

@@ -406,6 +406,20 @@ describe("RepositoriesSection", () => {
     expect(mockNavReplace).toHaveBeenCalledWith("/acme/settings?tab=repositories");
   });
 
+  it("explains an installation refused by the account allowlist", async () => {
+    searchParamsRef.current = new URLSearchParams(
+      "tab=repositories&github_error=installation_not_allowed",
+    );
+
+    render(<RepositoriesSection />, { wrapper: Wrapper });
+
+    await waitFor(() => {
+      expect(mockToastError).toHaveBeenCalledWith(
+        "This GitHub account is not allowed on this deployment.",
+      );
+    });
+  });
+
   it("clears the GitHub callback query after an empty installation result", async () => {
     searchParamsRef.current = new URLSearchParams("tab=repositories&github_connected=1");
 

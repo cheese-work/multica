@@ -55,14 +55,18 @@ type decisionActionExecution struct {
 	Workflow  db.IssueWorkflow
 	Squad     db.Squad
 	Workspace db.Workspace
+	// CredentialID is the passkey credential that signed this approval and
+	// IssueID the issue the request sits on; both go into a config-change audit.
+	CredentialID, IssueID pgtype.UUID
 }
 
 type decisionActionExecutor func(ctx context.Context, execution decisionActionExecution) (json.RawMessage, error)
 
 // decisionActionExecutors maps an allowlisted action type to its core.
 var decisionActionExecutors = map[string]decisionActionExecutor{
-	"agent.env.patch": executeEnvPatchAction,
-	"agent.copy":      executeAgentCopyAction,
+	"agent.env.patch":        executeEnvPatchAction,
+	"agent.copy":             executeAgentCopyAction,
+	"issue.run_budget.raise": executeRunBudgetRaiseAction,
 }
 
 // decisionActionPermitted applies the rule of the action's own HTTP path to
@@ -142,7 +146,11 @@ func (handler *Handler) approveDecisionAction(ctx context.Context, caller decisi
 	if err := checkSecretValues(preview, body.Secrets); err != nil {
 		return empty, err
 	}
-	action, err := handler.approveDecisionActionTx(ctx, caller, body, executor, located, target, decisionActionRuntime(preview))
+	var queueKey string
+	if change, queued := configChanges[preview.ActionType]; queued && change.QueueField != "" && target.Valid {
+		queueKey = configChangeLockKey(uuidToString(caller.workspaceID), change.QueueField, uuidToString(target))
+	}
+	action, err := handler.approveDecisionActionTx(ctx, caller, body, executor, located, target, decisionActionRuntime(preview), queueKey)
 	var uncertain uncertainCommit
 	if errors.As(err, &uncertain) {
 		return handler.readbackAfterUncertainCommit(ctx, caller)
@@ -153,13 +161,20 @@ func (handler *Handler) approveDecisionAction(ctx context.Context, caller decisi
 
 // approveDecisionActionTx runs the approve lock sequence (plan 3.2, rows 1 to
 // 12) and executes the action inside a savepoint.
-func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller decisionActionCaller, body approveBody, executor decisionActionExecutor, located db.DecisionRequest, target, runtimeID pgtype.UUID) (db.DecisionAction, error) {
+func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller decisionActionCaller, body approveBody, executor decisionActionExecutor, located db.DecisionRequest, target, runtimeID pgtype.UUID, queueKey string) (db.DecisionAction, error) {
 	empty := db.DecisionAction{}
 	transaction, err := handler.beginActionTx(ctx, 2*time.Second)
 	if err != nil {
 		return empty, err
 	}
 	defer transaction.Rollback(context.WithoutCancel(ctx))
+	// Before any other lock, so the wait cannot sit in a lock cycle; the
+	// config change's own try-lock later in this transaction is re-entrant.
+	if queueKey != "" {
+		if _, err := transaction.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, queueKey); err != nil {
+			return empty, err
+		}
+	}
 	queries := handler.Queries.WithTx(transaction)
 	if _, err := queries.LockWorkspaceKeyShareNowait(ctx, caller.workspaceID); err != nil {
 		return empty, err
@@ -320,6 +335,7 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	finish, summary, err := executeInSavepoint(ctx, transaction, queries, executor, decisionActionExecution{
 		Queries: queries, Approver: verifiedApprover{UserID: caller.userID, DecisionActionID: action.ID},
 		Action: action, Agent: targetAgent, Runtime: runtime, Secrets: body.Secrets, Workflow: workflow, Squad: squad, Workspace: workspace,
+		CredentialID: credential, IssueID: current.IssueID,
 	})
 	if err != nil {
 		return empty, err
@@ -398,7 +414,7 @@ func decisionActionTarget(action db.DecisionAction) (pgtype.UUID, bool) {
 	}
 	var raw string
 	switch action.ActionType {
-	case "agent.env.patch":
+	case "agent.env.patch", agentInstructionsAction:
 		raw = params.AgentID
 	case "agent.copy":
 		raw = params.SourceAgentID
@@ -481,6 +497,10 @@ func checkPreviewDigest(action db.DecisionAction, claimed string) error {
 }
 
 func checkPreconditions(action db.DecisionAction, agent db.Agent) error {
+	if _, ok := configChanges[action.ActionType]; ok {
+		// The config-change core checks its own digests under the row lock.
+		return nil
+	}
 	var drifted bool
 	if action.ActionType == "agent.copy" {
 		var err error
@@ -602,6 +622,12 @@ func lockDecisionThreadAndIssue(ctx context.Context, queries *db.Queries, worksp
 // publishDecisionActionExecuted sends the realtime event of what the action
 // changed. It is idempotent.
 func (handler *Handler) publishDecisionActionExecuted(ctx context.Context, action db.DecisionAction) error {
+	if change, ok := configChanges[action.ActionType]; ok {
+		if change.Publish == nil {
+			return nil
+		}
+		return change.Publish(ctx, handler, action)
+	}
 	if action.ActionType == "agent.copy" {
 		return handler.publishAgentCopyCreated(ctx, action)
 	}

@@ -27,6 +27,7 @@ import { useRichContentScrollRoot } from "../../rich-content/scroll-root";
 
 const TEST_RESOURCES = { en: { agents: enAgents, common: enCommon, issues: enIssues } };
 
+const mockNavigation = vi.hoisted(() => ({ current: null as null | object }));
 const mockViewport = vi.hoisted(() => ({ isMobile: false }));
 const mockLocalDirectoryHint = vi.hoisted(() => vi.fn());
 // The banner has its own suite; here only its place in the page matters.
@@ -215,6 +216,7 @@ vi.mock("../../navigation", () => ({
     pathname: "/issues/issue-1",
     getShareableUrl: (p: string) => `https://app.multica.com${p}`,
   }),
+  useOptionalNavigation: () => mockNavigation.current,
   useBackOrReplace: () => vi.fn(),
   NavigationProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
@@ -1034,6 +1036,34 @@ describe("IssueDetail (shared)", () => {
     fireEvent.click(menuButton!);
 
     expect(screen.queryByText("Create sub-issue from here")).not.toBeInTheDocument();
+  });
+
+  // A cold visit to /issues/:id?focus=wakeups: the sidebar and the Wakeups
+  // heading do not exist until the issue has loaded, so the deep link must
+  // survive the skeleton and be consumed only once the page can receive it.
+  it("keeps the wakeups deep link through the loading skeleton and consumes it once loaded", async () => {
+    const replace = vi.fn();
+    mockNavigation.current = {
+      push: vi.fn(),
+      replace,
+      back: vi.fn(),
+      pathname: "/acme/issues/issue-1",
+      searchParams: new URLSearchParams("focus=wakeups"),
+      hash: "",
+      getShareableUrl: (p: string) => p,
+    };
+    try {
+      let resolveIssue!: (issue: Issue) => void;
+      mockApiObj.getIssue.mockReturnValue(new Promise<Issue>((resolve) => { resolveIssue = resolve; }));
+      renderIssueDetail();
+      await Promise.resolve();
+      expect(replace).not.toHaveBeenCalled();
+
+      resolveIssue(mockIssue);
+      await waitFor(() => expect(replace).toHaveBeenCalledWith("/acme/issues/issue-1"));
+    } finally {
+      mockNavigation.current = null;
+    }
   });
 
   it("shows loading skeleton while data is loading", () => {
@@ -2986,9 +3016,9 @@ describe("IssueDetail (shared)", () => {
     });
   });
 
-  // Regression (CHE-3411): a 403/5xx on a decision-card link read as "deleted".
+  // Regression (CHE-3411): a 5xx/401 on a decision-card link read as "deleted".
   it("offers a retry, not the deleted message, when the load fails with a non-404", async () => {
-    mockApiObj.getIssue.mockRejectedValueOnce(new ApiError("boom", 500, "Internal Server Error"));
+    mockApiObj.getIssue.mockRejectedValueOnce(new ApiError("unauthorized", 401, "Unauthorized"));
 
     renderIssueDetail("issue-1");
 

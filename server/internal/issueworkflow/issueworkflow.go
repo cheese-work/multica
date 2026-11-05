@@ -190,6 +190,18 @@ type Step struct {
 	// Entry are the conditions a status write must meet to put an issue into
 	// this step (CHE-2295); none means no gate.
 	Entry []EntryGate `json:"entry,omitempty"`
+	// DynamicAssignment says the step's assignee is chosen at run time, so it
+	// has no handler. Lint-only: the dispatcher ignores it.
+	DynamicAssignment bool `json:"dynamic_assignment,omitempty"`
+	// LintWaive silences lint rules on this step, each with its reason. A
+	// waived finding is still reported, marked waived.
+	LintWaive []LintWaiver `json:"lint_waive,omitempty"`
+}
+
+// LintWaiver waives one lint rule on a step.
+type LintWaiver struct {
+	Rule   string `json:"rule"`
+	Reason string `json:"reason"`
 }
 
 // SubWorkflow names the workflow a sub-workflow step starts and the stage its
@@ -242,6 +254,9 @@ type storedStep struct {
 	Edges         []Edge       `json:"edges,omitempty"`
 	SubWorkflow   *SubWorkflow `json:"sub_workflow,omitempty"`
 	Entry         []EntryGate  `json:"entry,omitempty"`
+
+	DynamicAssignment bool         `json:"dynamic_assignment,omitempty"`
+	LintWaive         []LintWaiver `json:"lint_waive,omitempty"`
 }
 
 // Decode parses a stored workflow row.
@@ -286,6 +301,9 @@ func DecodeSteps(raw []byte) ([]Step, error) {
 			Edges:            s.Edges,
 			SubWorkflow:      s.SubWorkflow,
 			Entry:            s.Entry,
+
+			DynamicAssignment: s.DynamicAssignment,
+			LintWaive:         s.LintWaive,
 		}
 		if s.Handler != nil && s.Handler.Type != "" {
 			steps[i].Handler = *s.Handler
@@ -307,7 +325,7 @@ func DecodeKeys(raw []byte) ([]string, error) {
 func EncodeSteps(steps []Step) ([]byte, error) {
 	stored := make([]storedStep, len(steps))
 	for i, s := range steps {
-		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen, Edges: s.Edges, SubWorkflow: s.SubWorkflow, Entry: s.Entry}
+		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen, Edges: s.Edges, SubWorkflow: s.SubWorkflow, Entry: s.Entry, DynamicAssignment: s.DynamicAssignment, LintWaive: s.LintWaive}
 		if s.HandsOff() {
 			h := s.Handler
 			stored[i].Handler = &h

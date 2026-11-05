@@ -272,6 +272,7 @@ func TestMoveIssueOnEdgeTxReadsOnlyThroughTheCallersTransaction(t *testing.T) {
 	}
 	defer small.Close()
 	h := New(db.New(small), small, realtime.NewHub(), events.New(), service.NewEmailService(), nil, nil, analytics.NoopClient{}, Config{})
+	t.Cleanup(giveBackRunBudgetHooks)
 	provider := featureflag.NewStaticProvider()
 	provider.Set(featureflags.ComposioMCPApps, featureflag.Rule{Default: true})
 	h.TaskService.FeatureFlags = featureflag.NewService(provider)
@@ -320,6 +321,7 @@ func TestTryMoveIssueOnEdgeKeepsTheComposioOverlayOnTheRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := New(db.New(testPool), testPool, realtime.NewHub(), events.New(), service.NewEmailService(), nil, nil, analytics.NoopClient{}, Config{})
+	t.Cleanup(giveBackRunBudgetHooks)
 	provider := featureflag.NewStaticProvider()
 	provider.Set(featureflags.ComposioMCPApps, featureflag.Rule{Default: true})
 	h.TaskService.FeatureFlags = featureflag.NewService(provider)
