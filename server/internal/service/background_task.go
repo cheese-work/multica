@@ -116,6 +116,12 @@ func (s *TaskService) EnqueueBackgroundTask(ctx context.Context, in BackgroundTa
 			return db.AgentTaskQueue{}, fmt.Errorf("lock member background agents: %w", err)
 		}
 	}
+	// Every workspace settings write is an UPDATE of this row, so holding it to
+	// commit serializes the workspace chain read and the insert with them. It is
+	// the lock that does not block the FOR KEY SHARE of rows referencing it.
+	if err := s.Queries.WithTx(tx).LockWorkspaceSettingsForWakeupDefinition(ctx, in.WorkspaceID); err != nil {
+		return db.AgentTaskQueue{}, fmt.Errorf("lock workspace settings: %w", err)
+	}
 	target, err := in.Resolve(ctx)
 	if err != nil {
 		return db.AgentTaskQueue{}, err
@@ -181,8 +187,8 @@ func (s *TaskService) EnqueueBackgroundTask(ctx context.Context, in BackgroundTa
 // checkChainStillNames mirrors bgagents.Resolve on the stored values, in the
 // insert transaction: the source's chain must hold the agent in the slot, and a
 // workspace-sourced task needs the member to have no personal chain for the job.
-// The member lock covers personal writes; this also catches a workspace write
-// that committed after the resolver read.
+// The member lock covers personal writes and the workspace row lock covers
+// workspace writes; this re-read is the guard if a resolver still read stale.
 func (s *TaskService) checkChainStillNames(ctx context.Context, q *db.Queries, in BackgroundTaskInput, t BackgroundTarget) error {
 	chain := func(raw []byte, scope bgagents.Scope) bgagents.Chain {
 		cfg, err := bgagents.Parse(raw, scope)

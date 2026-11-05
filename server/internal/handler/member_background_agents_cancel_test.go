@@ -13,6 +13,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/bgagents"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -280,4 +281,35 @@ func TestEnqueueResolvesAfterAnInFlightRoundTrip(t *testing.T) {
 	if task.ID == old.ID {
 		t.Fatal("the enqueue reused the cancelled task")
 	}
+}
+
+// A workspace write that arrives after the resolver read the workspace chain
+// waits for the enqueue to commit, then cancels the task it inserted. Without
+// the workspace lock the write commits first and the old task escapes.
+func TestWorkspaceWriteWaitsForAnInFlightEnqueue(t *testing.T) {
+	f := memberBGFixture(t, "pcx-wslock")
+	f.setWorkspace(t, title(f.a1))
+	var write chan *testutil.Response
+	var early *testutil.Response
+	task, err := testHandler.TaskService.EnqueueBackgroundTask(t.Context(), service.BackgroundTaskInput{
+		Job: bgagents.DMTitle, WorkspaceID: util.MustParseUUID(f.ws), MemberID: util.MustParseUUID(testUserID), Input: "x",
+		Resolve: liveTarget(f.ws, func(bgagents.Resolution) {
+			write = make(chan *testutil.Response, 1)
+			go func() { write <- putBG(t, f.ws, title(f.a2), nil) }()
+			select {
+			case early = <-write:
+				t.Error("the workspace write committed between the chain read and the insert")
+			case <-time.After(300 * time.Millisecond):
+			}
+		}),
+	})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	dbfx.Cleanup(t, "DELETE FROM agent_task_queue WHERE id=$1", util.UUIDToString(task.ID))
+	if early == nil {
+		early = <-write
+	}
+	early.Want(http.StatusOK)
+	f.wantStatus(t, "task enqueued under the replaced workspace chain", task, "cancelled")
 }
