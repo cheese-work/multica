@@ -61,7 +61,7 @@ func TestWF004UnusableAgent(t *testing.T) {
 
 func TestWF005RuntimeNotQualified(t *testing.T) {
 	codex := func(version string) Env {
-		return Env{Agents: map[string]Agent{"a": {Provider: "codex", RuntimeVersion: version, RuntimeOnline: true}}}
+		return Env{Agents: map[string]Agent{"a": {Provider: "codex", RuntimeID: x99Codex, RuntimeVersion: version, RuntimeOnline: true}}}
 	}
 	if fs := LintWith(clean(), codex("0.166.0")); !has(fs, "WF005", "todo") {
 		t.Fatalf("codex 0.166.0: want WF005@todo, got %v", rules(fs))
@@ -74,9 +74,42 @@ func TestWF005RuntimeNotQualified(t *testing.T) {
 			t.Fatalf("codex %q is qualified, got %v", v, rules(fs))
 		}
 	}
-	// A provider the config does not list is not write-gated.
+	// A listed provider with a wildcard entry is qualified.
 	if fs := LintWith(clean(), Env{Agents: map[string]Agent{"a": good}}); countRule(fs, "WF005") != 0 {
 		t.Fatalf("claude: want no WF005, got %v", rules(fs))
+	}
+}
+
+const x99Codex = "bc0835c7-a25d-4a16-a3bc-e2921d092ed9"
+
+func TestWF005SeedBindsCodexToX99(t *testing.T) {
+	at := func(rt string) Env {
+		return Env{Agents: map[string]Agent{"a": {Provider: "codex", RuntimeID: rt, RuntimeVersion: "0.155.1", RuntimeOnline: true}}}
+	}
+	if fs := LintWith(clean(), at(x99Codex)); countRule(fs, "WF005") != 0 {
+		t.Fatalf("X99 codex 0.155.1: want no WF005, got %v", rules(fs))
+	}
+	for name, rt := range map[string]string{"C00": "a596f781-3a60-414c-b346-ebc11d72451c", "missing": ""} {
+		if fs := LintWith(clean(), at(rt)); !has(fs, "WF005", "todo") {
+			t.Fatalf("codex 0.155.1 on %s runtime: want WF005, got %v", name, rules(fs))
+		}
+	}
+}
+
+func TestWF005FailsClosed(t *testing.T) {
+	for _, provider := range []string{"typo-provider", ""} {
+		env := Env{Agents: map[string]Agent{"a": {Provider: provider, RuntimeVersion: "1.0.0", RuntimeOnline: true}}}
+		if fs := LintWith(clean(), env); !has(fs, "WF005", "todo") {
+			t.Fatalf("provider %q is not listed: want WF005, got %v", provider, rules(fs))
+		}
+	}
+	q := qualifiedRuntimes{"empty": {}}
+	if q.qualifies(Agent{Provider: "empty", RuntimeVersion: "1.0.0"}) {
+		t.Fatal("an empty list qualifies nothing")
+	}
+	q = qualifiedRuntimes{"any": {{Version: "*"}}}
+	if !q.qualifies(Agent{Provider: "any", RuntimeVersion: "9.9"}) || !q.qualifies(Agent{Provider: "any"}) {
+		t.Fatal(`version "*" qualifies any version of the provider`)
 	}
 }
 
