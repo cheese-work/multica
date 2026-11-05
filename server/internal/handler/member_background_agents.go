@@ -16,8 +16,8 @@ import (
 
 // A member's own background-agent chains live in member_setting under this
 // key (CHE-4111). Every read is keyed by the caller's identity: no route takes
-// a user id, so one member cannot read another's row. Writes arrive in a later
-// step.
+// a user id, so one member cannot read another's row. Writes are in
+// member_background_agents_write.go.
 const memberBackgroundAgentsKey = "background_agents"
 
 // GetMyBackgroundAgents returns the caller's own value, or {} when unset.
@@ -66,7 +66,11 @@ func userScopedJob(job bgagents.Job) *bgagents.Error {
 
 // memberBackgroundAgents returns the caller's stored value, nil when unset.
 func (h *Handler) memberBackgroundAgents(ctx context.Context, ws, user pgtype.UUID) ([]byte, error) {
-	row, err := h.Queries.GetMemberSetting(ctx, db.GetMemberSettingParams{WorkspaceID: ws, UserID: user, Key: memberBackgroundAgentsKey})
+	return h.memberBackgroundAgentsWith(ctx, h.Queries, ws, user)
+}
+
+func (h *Handler) memberBackgroundAgentsWith(ctx context.Context, q *db.Queries, ws, user pgtype.UUID) ([]byte, error) {
+	row, err := q.GetMemberSetting(ctx, db.GetMemberSettingParams{WorkspaceID: ws, UserID: user, Key: memberBackgroundAgentsKey})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

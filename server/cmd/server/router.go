@@ -1856,6 +1856,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// unchanged machine write stays accepted.
 					r.Put("/background-agents", h.UpdateBackgroundAgents)
 					r.Delete("/background-agents", h.ResetBackgroundAgents)
+					// CHE-4113: personal background agents. The handler refuses a machine
+					// actor itself (stable code; unchanged writes stay accepted) and, until
+					// CHE-4114, every effective human write (409).
+					r.Put("/me/background-agents", h.UpdateMyBackgroundAgents)
+					r.Delete("/me/background-agents/{job}", h.ResetMyBackgroundAgent)
 					// CHE-2490: admin-written protected-path policy for the push broker.
 					r.With(handler.RequireHumanActor).Put("/protected-path-policies/{name}", h.SetProtectedPathPolicy)
 					// Curating the shared MCP library is an admin action.
