@@ -839,7 +839,7 @@ test("each entry gets the first deploy that contains it; duplicates, rollbacks a
   ];
   const out = generateEntries({ prs, firstParent, deployments }, { versionOf: (s) => `v-${Number(s)}` });
   assert.deepEqual(out.deploys.map(({ sha: s, version, deployedAt, hiddenCount, live }) => [Number(s), version, deployedAt, hiddenCount, live ?? false]), [
-    [5, "v-5", "2026-10-12T22:00:00.000Z", 0, true],
+    [5, "v-5", "2026-10-13T06:00:00.000Z", 0, true], // commit time 22:00Z the day before, clamped to the newest earlier deploy
     [4, "v-4", "2026-10-13T05:00:00.000Z", 1, false], // PR 3 (missing) sits newer than deploy 2
     [2, "v-2", "2026-10-13T02:00:00.000Z", 1, false], // PR 2 (none)
     [1, "v-1", "2026-10-13T06:00:00.000Z", 0, false],
@@ -867,4 +867,11 @@ test("without deployments the output has no deploys field and entries have no de
   assert.equal(out.deploys, undefined);
   assert.equal("deploy" in out.entries[0], false);
   assert.equal("deploys" in JSON.parse(serializeEntries(out)), false);
+});
+
+test("Live is never dated before a later-deployed previous build", async () => {
+  const { generateEntries } = await load();
+  const firstParent = [2, 1].map((n) => ({ sha: sha(n), message: "", time: `2026-10-13T0${n}:00:00Z` }));
+  const out = generateEntries({ prs: [], firstParent, deployments: [{ sha: sha(1), state: "SUCCESS", createdAt: "2026-10-13T09:00:00Z" }] }, { versionOf: (s) => s });
+  assert.deepEqual(out.deploys.map((d) => [Number(d.sha), d.deployedAt]), [[2, "2026-10-13T09:00:00.000Z"], [1, "2026-10-13T09:00:00.000Z"]]);
 });

@@ -48,6 +48,11 @@ describe("fork changelog deploys parser", () => {
     expect(liveVersion(parseForkChangelog(doc([entry(1, "live")], undefined)))).toBeUndefined();
   });
 
+  it("liveVersion stays the Live divider's version when a previous deploy lands on a later ICT day", () => {
+    const later = [deploy("c", "live-v", "2026-11-05T07:26:00Z", 0, true), deploy("b", "prev-v", "2026-11-05T18:00:00Z")];
+    expect(liveVersion(parseForkChangelog(doc([entry(1, "live")], later)))).toBe("live-v");
+  });
+
   it("still rejects an invalid entry", () => {
     expect(parseForkChangelog(doc([{ ...entry(1, "live"), date: "2000-01-01" }], three)).status).toBe("unavailable");
   });

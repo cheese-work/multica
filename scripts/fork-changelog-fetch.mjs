@@ -16,15 +16,19 @@ export function versionLabel(sha, { cwd = process.cwd() } = {}) {
   return `${upstream}-${stamp}`;
 }
 
+// GitHub flips a superseded deployment to INACTIVE, so "latest status" hides prior successes:
+// a deployment counts when any status was SUCCESS, dated at the earliest one.
 export const deploymentsFromGraphql = (json) =>
-  (json?.data?.repository?.deployments?.nodes ?? [])
-    .filter((node) => node?.commitOid && node.latestStatus)
-    .map((node) => ({ sha: node.commitOid, state: node.latestStatus.state, createdAt: node.latestStatus.createdAt }));
+  (json?.data?.repository?.deployments?.nodes ?? []).flatMap((node) => {
+    const successes = (node?.statuses?.nodes ?? []).filter((status) => status?.state === "SUCCESS" && status.createdAt)
+      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+    return node?.commitOid && successes.length ? [{ sha: node.commitOid, state: "SUCCESS", createdAt: successes[0].createdAt }] : [];
+  });
 
 // Pages the c00-production deployments (newest first) through GraphQL; throws on any failure.
 export async function fetchDeployments({ token, repository, fetchImpl = fetch, signal }) {
   const [owner, name] = repository.split("/");
-  const query = `query($owner:String!,$name:String!,$after:String){repository(owner:$owner,name:$name){deployments(environments:["${DEPLOY_ENVIRONMENT}"],first:100,after:$after,orderBy:{field:CREATED_AT,direction:DESC}){pageInfo{hasNextPage endCursor} nodes{commitOid latestStatus{state createdAt}}}}}`;
+  const query = `query($owner:String!,$name:String!,$after:String){repository(owner:$owner,name:$name){deployments(environments:["${DEPLOY_ENVIRONMENT}"],first:100,after:$after,orderBy:{field:CREATED_AT,direction:DESC}){pageInfo{hasNextPage endCursor} nodes{commitOid statuses(first:20){nodes{state createdAt}}}}}}`;
   const all = [];
   for (let after = null, pages = 0; pages < 20; pages += 1) {
     const response = await fetchImpl("https://api.github.com/graphql", {
@@ -98,8 +102,19 @@ export async function fetchChangelog({
       let deploymentList = null;
       let dividerWarning = null;
       if (deployments) {
-        try { deploymentList = await deployments(controller.signal); } catch (error) {
+        // Dividers get half the remaining budget, so a slow read cannot cost the entries.
+        const budget = new AbortController();
+        let budgetTimer;
+        const budgetExpired = new Promise((_, reject) => {
+          budgetTimer = setTimeout(() => { budget.abort(); reject(new Error("deployment read exceeded its time budget")); }, Math.max(0, deadlineMs - (performance.now() - started)) / 2);
+        });
+        const abortWithParent = () => budget.abort();
+        controller.signal.addEventListener("abort", abortWithParent, { once: true });
+        try { deploymentList = await Promise.race([deployments(budget.signal), budgetExpired]); } catch (error) {
           dividerWarning = `Deploy dividers unavailable for this build: ${error.message}`;
+        } finally {
+          clearTimeout(budgetTimer);
+          controller.signal.removeEventListener("abort", abortWithParent);
         }
       }
       checkDeadline();

@@ -155,7 +155,7 @@ export function parseForkChangelog(contents: string): ForkChangelog {
 }
 
 // The build stamp shows the same name as the Live divider.
-export const liveVersion = (fork: ForkChangelog) => fork.releases.find((release) => release.deploys)?.deploys?.[0]?.version;
+export const liveVersion = (fork: ForkChangelog) => fork.releases.flatMap((release) => release.deploys ?? []).find((deploy) => deploy.live)?.version;
 
 export function mergeChangelogReleases(upstream: readonly ChangelogRelease[], fork: ForkChangelog) {
   return [...upstream, ...fork.releases].sort((left, right) =>

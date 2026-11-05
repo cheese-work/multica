@@ -237,7 +237,8 @@ function planDeploys(commits, deployments, options) {
     if (!(at >= (earliest.get(sha) ?? Infinity))) earliest.set(sha, at);
   }
   const versionOf = options.versionOf ?? ((sha) => sha.slice(0, 7));
-  const liveTime = Date.parse(commits[0]?.time ?? "");
+  // Live is the newest build: never dated before a previous deploy that finished later.
+  const liveTime = Math.max(Date.parse(commits[0]?.time ?? ""), ...earliest.values());
   const deploys = [
     { sha: commits[0].sha, version: versionOf(commits[0].sha), deployedAt: new Date(Number.isNaN(liveTime) ? (options.now ?? new Date()) : liveTime).toISOString(), hiddenCount: 0, live: true },
     ...[...earliest].sort((a, b) => index.get(a[0]) - index.get(b[0]))
