@@ -41,6 +41,7 @@ import { useIssueRealtime } from "@/data/realtime/use-issue-realtime";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useViewedIssuesStore } from "@/data/viewed-issues-store";
 import { useCommentSelectStore } from "@/data/comment-select-store";
+import { classifyIssueLoadError } from "@/lib/issue-load-error";
 import { useT } from "@/lib/i18n";
 
 export default function IssueDetail() {
@@ -95,6 +96,7 @@ export default function IssueDetail() {
   }, [detail, qc, wsId, id]);
 
   const issue = detail.data;
+  const loadErrorKind = classifyIssueLoadError(detail.error);
   const deleteIssue = useDeleteIssue();
   const userId = useAuthStore((s) => s.user?.id ?? null);
   const { data: pins } = useQuery(pinListOptions(wsId, userId));
@@ -197,13 +199,17 @@ export default function IssueDetail() {
         </View>
       ) : detail.error || !issue ? (
         <View className="flex-1 items-center justify-center px-6 gap-3">
+          {loadErrorKind === "data" && (
+            <Text className="text-sm font-medium text-center">{issue?.identifier ?? id}</Text>
+          )}
           <Text className="text-sm text-destructive text-center">
-            {t("errors.load_failed", {
-              message:
-                detail.error instanceof Error
-                  ? detail.error.message
-                  : "not found",
-            })}
+            {loadErrorKind === "data"
+              ? t("errors.data_error")
+              : loadErrorKind === "not_found"
+                ? t("errors.not_found")
+                : t("errors.load_failed", {
+                    message: detail.error instanceof Error ? detail.error.message : "",
+                  })}
           </Text>
           <Button variant="outline" onPress={() => detail.refetch()}>
             <Text>{t("common:actions.retry")}</Text>

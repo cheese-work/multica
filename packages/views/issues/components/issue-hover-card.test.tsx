@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { useQuery } from "@tanstack/react-query";
 import { ApiError } from "@multica/core/api/client";
+import { SchemaValidationError } from "@multica/core/api/schema";
 import { renderWithI18n } from "../../test/i18n";
 import { IssueHoverCard } from "./issue-hover-card";
 
@@ -593,6 +594,19 @@ describe("IssueHoverCard", () => {
 
     await screen.findByText("Couldn't load this issue.");
     expect(screen.queryByText(NOT_FOUND_TEXT)).not.toBeInTheDocument();
+  });
+
+  it("says the data is unreadable on a schema validation error", async () => {
+    mockQueries({
+      phase: "error",
+      error: new SchemaValidationError("GET /api/issues/:id", ["metadata.decision_park"]),
+    });
+    const user = userEvent.setup();
+    renderCard("MUL-7");
+    await user.hover(screen.getByText("MUL-3405"));
+
+    await screen.findByText("This issue has data the app cannot read.");
+    expect(screen.queryByText("Couldn't load this issue.")).not.toBeInTheDocument();
   });
 
   it("replaces the skeleton with the not-found state when the query settles with no issue", async () => {
