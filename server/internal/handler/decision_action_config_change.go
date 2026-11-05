@@ -110,16 +110,23 @@ type configChangeWant struct{ Field, TargetID, Before string }
 
 // checkConfigChange applies the rules shared by the request and the approval,
 // in this order: denylist, governed blocks, drift of the live value, and the
-// agent's after digest against the server's own. status is the code for the
-// two refusals that differ between the request (400) and the approval (409).
-func checkConfigChange(read configChangeRead, claim configChangeClaim, want configChangeWant, status int) error {
+// agent's after digest against the server's own. An action with a stale-base
+// code checks drift before the governed blocks: a block a person edited after
+// the request is a changed base, not a fault of the proposal. status is the
+// code for the two refusals that differ between the request (400) and the
+// approval (409).
+func checkConfigChange(read configChangeRead, claim configChangeClaim, want configChangeWant, status int, driftFirst bool) error {
 	if err := decisionaction.CheckConfigChange(read.Field, read.Keys); err != nil {
 		return decisionIntentRefusal{http.StatusForbidden, decisionaction.CodeDenylisted + ": " + err.Error()}
+	}
+	drifted := read.Field != want.Field || read.TargetID != want.TargetID || read.LiveSHA256 != want.Before
+	if driftFirst && drifted {
+		return errPreconditionDrift
 	}
 	if !read.HumanBlocksIntact {
 		return decisionIntentRefusal{status, "governed_blocks_changed: a governed:human block may not change"}
 	}
-	if read.Field != want.Field || read.TargetID != want.TargetID || read.LiveSHA256 != want.Before {
+	if drifted {
 		return errPreconditionDrift
 	}
 	if read.AfterSHA256 != claim.AfterSHA256 {
@@ -150,7 +157,7 @@ func configChangePreconditions(ctx context.Context, queries *db.Queries, workspa
 	if change.ServerAfter {
 		claim.AfterSHA256 = read.AfterSHA256
 	}
-	if err := checkConfigChange(read, claim, configChangeWant{read.Field, read.TargetID, claim.BaseSHA256}, http.StatusBadRequest); err != nil {
+	if err := checkConfigChange(read, claim, configChangeWant{read.Field, read.TargetID, claim.BaseSHA256}, http.StatusBadRequest, change.StaleBaseCode != ""); err != nil {
 		return nil, err
 	}
 	diff, err := configChangeDiff(read)
@@ -240,7 +247,7 @@ func executeConfigChange(ctx context.Context, change configChange, execution dec
 	if change.ServerAfter {
 		claim.AfterSHA256 = read.AfterSHA256
 	}
-	if err := checkConfigChange(read, claim, configChangeWant{stored.Field, stored.TargetID, stored.BeforeSHA256}, http.StatusConflict); err != nil {
+	if err := checkConfigChange(read, claim, configChangeWant{stored.Field, stored.TargetID, stored.BeforeSHA256}, http.StatusConflict, change.StaleBaseCode != ""); err != nil {
 		return nil, change.staleBase(err)
 	}
 	execution.Agent, execution.Workflow = db.Agent{}, db.IssueWorkflow{}
@@ -276,7 +283,7 @@ func executeConfigChange(ctx context.Context, change configChange, execution dec
 
 // staleBase turns drift at approval into the action's own failure code, when it has one.
 func (change configChange) staleBase(err error) error {
-	if change.StaleBaseCode != "" && err == errPreconditionDrift {
+	if change.StaleBaseCode != "" && errors.Is(err, errPreconditionDrift) {
 		return actionFailure{Code: change.StaleBaseCode, Message: "the target changed since the request; ask again"}
 	}
 	return err

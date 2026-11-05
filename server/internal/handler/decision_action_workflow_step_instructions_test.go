@@ -215,6 +215,35 @@ func TestStepInstructionsSetEditBetweenProposeAndApproveFailsStaleBase(test *tes
 	}
 }
 
+// A person edits the protected block of the target step after the request. The
+// approval must report the changed base, not blame the proposal for the block.
+func TestStepInstructionsSetHumanEditOfProtectedBlockAfterRequestFailsStaleBase(test *testing.T) {
+	workflowID, _ := stepsWorkflow(test)
+	steps := storedSteps(test, workflowID)
+	for i := range steps {
+		if steps[i].StatusKey == "in_review" {
+			steps[i].Instructions = governedAgentText
+		}
+	}
+	encoded, err := issueworkflow.EncodeSteps(steps)
+	if err != nil {
+		test.Fatal(err)
+	}
+	dbfx.Exec(test, `UPDATE issue_workflow SET steps = $2::jsonb WHERE id = $1`, workflowID, string(encoded))
+	edited := strings.Replace(governedAgentText, "role: author", "role: author, reviewer", 1)
+	request, _ := requestStepInstructions(test, http.StatusCreated, true, workflowID, stepInstructionsParams(test, workflowID, "in_review", edited))
+	dbfx.Exec(test, `UPDATE issue_workflow SET steps = replace(steps::text, 'never merge', 'merge freely')::jsonb WHERE id = $1`, workflowID)
+	drifted := liveStepsDigest(test, workflowID)
+	body := request.approveOwner(test, withVerifier(acceptingVerifier), http.StatusOK)
+	mustContain(test, body, "stale_base")
+	if n := dbfx.Count(test, `SELECT count(*) FROM decision_action WHERE id = $1 AND state = 'failed' AND error_code = 'stale_base'`, request.action.actionID); n != 1 {
+		test.Fatalf("action is not failed with stale_base: %s", body)
+	}
+	if got := liveStepsDigest(test, workflowID); got != drifted {
+		test.Fatalf("workflow digest %s, want unchanged %s", got, drifted)
+	}
+}
+
 func TestStepInstructionsSetReplayedApprovalChangesNothing(test *testing.T) {
 	request := newStepInstructionsRequest(test)
 	handler := withVerifier(acceptingVerifier)
