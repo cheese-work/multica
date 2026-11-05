@@ -405,6 +405,60 @@ describe("WorkspaceTab — automatic updates", () => {
     expect(screen.getByText("On, at 70%")).toBeInTheDocument();
   });
 
+  // CHE-3706: settings.harness_profile (UI "Runtime profile") saves through its
+  // own request field.
+  it("shows the personal runtime profile when nothing is saved", () => {
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    expect(screen.getByRole("combobox", { name: "Runtime profile" })).toHaveTextContent("Personal");
+  });
+
+  it("shows a saved managed runtime profile", () => {
+    workspaceRef.current = { ...workspaceRef.current, settings: { harness_profile: "managed" } };
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    expect(screen.getByRole("combobox", { name: "Runtime profile" })).toHaveTextContent("Managed");
+  });
+
+  it("falls back to personal for a malformed saved runtime profile", () => {
+    workspaceRef.current = {
+      ...workspaceRef.current,
+      settings: { harness_profile: "managed_sandbox" },
+    };
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    expect(screen.getByRole("combobox", { name: "Runtime profile" })).toHaveTextContent("Personal");
+  });
+
+  it("saves only the chosen runtime profile", async () => {
+    const user = setupUser();
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    await user.click(screen.getByRole("combobox", { name: "Runtime profile" }));
+    await user.click(await screen.findByRole("option", { name: "Managed" }));
+
+    await waitFor(() => {
+      expect(mockUpdateWorkspace).toHaveBeenCalledWith("workspace-1", {
+        harness_profile: "managed",
+      });
+    });
+    for (const [, payload] of mockUpdateWorkspace.mock.calls) {
+      expect(Object.keys(payload)).toEqual(["harness_profile"]);
+    }
+  });
+
+  it("shows regular members the runtime profile read-only", () => {
+    membersRef.current = [
+      { user_id: "user-1", role: "member" },
+      { user_id: "user-2", role: "owner", name: "Grace Hopper" },
+    ];
+    workspaceRef.current = { ...workspaceRef.current, settings: { harness_profile: "managed" } };
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    expect(screen.queryByRole("combobox", { name: "Runtime profile" })).toBeNull();
+    expect(screen.getByText("Managed")).toBeInTheDocument();
+  });
+
   // CHE-3296: settings.idle_started_guard saves through its own request field,
   // for the owner only.
   it("shows the idle guard defaults when nothing is saved", () => {

@@ -45,6 +45,7 @@ import { RuntimePicker } from "./inspector/runtime-picker";
 import { ThinkingSettingField } from "./inspector/thinking-prop-row";
 import { ServiceTierSettingField } from "./inspector/service-tier-setting-field";
 import { AgentPresetsSection } from "./inspector/agent-presets-section";
+import { RuntimeProfileField } from "./inspector/runtime-profile-field";
 
 interface InspectorProps {
   agent: Agent;
@@ -401,6 +402,25 @@ export function AgentDetailInspector({
                     }
                   />
                 </>
+              )}
+              {qoderRuntime ? null : (
+                <SettingsRow
+                  label={ts(($) => $.workspace.runtime_profile_label)}
+                  size="select-wide"
+                >
+                  <RuntimeProfileField
+                    value={agent.runtime_config?.harness_profile}
+                    canEdit={canEdit}
+                    // runtime_config is replaced as a whole on the server, so
+                    // keep every other key.
+                    onChange={(profile) => {
+                      const { harness_profile: _drop, ...rest } = agent.runtime_config ?? {};
+                      update({
+                        runtime_config: profile ? { ...rest, harness_profile: profile } : rest,
+                      });
+                    }}
+                  />
+                </SettingsRow>
               )}
               <SettingsRow
                 label={t(($) => $.inspector.prop_concurrency)}

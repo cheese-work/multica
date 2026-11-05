@@ -37,6 +37,7 @@
     "./workspace/wakeups-pause": "./workspace/wakeups-pause.ts",
     "./workspace/wakeup-definitions": "./workspace/wakeup-definitions.ts",
     "./workspace/auto-compact": "./workspace/auto-compact.ts",
+    "./workspace/harness-profile": "./workspace/harness-profile.ts",
     "./workspace/mermaid-orientation": "./workspace/mermaid-orientation.ts",
     "./issue-statuses": "./issue-statuses/index.ts",
     "./issue-statuses/queries": "./issue-statuses/queries.ts",
