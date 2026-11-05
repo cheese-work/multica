@@ -23,7 +23,7 @@ Supersedes in part: CHE-2908 and CHE-2917 (re-planned onto this framework). Does
 
 Other checked facts:
 
-- `server/pkg/llm` is upstream code (multica-ai). It stays unchanged. Jobs 1 and 2 keep it only as the "today" path (see Resolution).
+- `server/pkg/llm` is upstream code (multica-ai). It stays unchanged. Jobs 1 and 2 stop calling it in layers 3 and 4 (decision 4). Nothing else in this plan touches the package.
 - No per-user settings store exists. `user` has no settings column; `member` has none. A per-user override therefore needs one new generic table (see Per-user store).
 - Precedent for a task with no issue, chat or autopilot link: `EnqueueQuickCreateTask` (`service/task.go:2074`). Precedent for a nullable task discriminator: `regenerate_quick_actions_for` (`pkg/db/queries/chat.sql`).
 - Task completion already carries `result` JSONB and an `output` string (`handler/daemon.go`).
@@ -43,7 +43,7 @@ flowchart LR
   P -- provider failure or unreachable --> F[Fallback agent]
   P -- ok --> V[Server validates output]
   F -- ok --> V
-  F -- fail --> D[Today's path: deterministic title / no pills / DM agent / assignee]
+  F -- fail --> D[No-agent path: deterministic title / no pills / DM agent / assignee]
   V --> O[Write: title CAS / pills / compaction / route]
 ```
 
@@ -64,7 +64,7 @@ Workspace scope: `workspace.settings.background_agents` (JSONB inside the existi
 
 - Job keys are a closed server-side catalog (`dm_title`, `quick_actions`, `compact`, `routing`). An unknown key is a 400. Adding a job is a code change plus one catalog row.
 - A chain has two slots, no more. The shape matches PR #989, so `routing` maps one-to-one.
-- `null` for `agent_id` means "off": the job runs on today's path. Defaults: every job off. New workspaces behave exactly as today.
+- `null` for `agent_id` means "no agent": the job runs on its no-agent path (table under Resolution). Defaults: every job unset. For `dm_title` and `quick_actions` that means the deterministic title and no pills, never a direct LLM call. An owner sets an agent to turn the generated title and pills on. `compact` and `routing` keep their agent-based behaviour today.
 - Eligibility of a workspace-scope agent (ENG-8 from CHE-2894): workspace-visible (not private), not archived, on a workspace runtime. Checked at write time and again at resolve time. An agent that fails the resolve-time check is skipped as if unreachable.
 - `routing` extras (`statuses`, `overrides`) stay as defined by PR #989. They apply to the `routing` job only.
 
@@ -83,20 +83,22 @@ For a trigger on job `J` for user `U` (the DM creator, where `J` is user-scoped)
 
 1. User chain for `J`, if the value exists and `agent_id` is set.
 2. Else workspace chain for `J`, if `agent_id` is set.
-3. Else today's path.
+3. Else the no-agent path.
 
-Within a chain: primary, then fallback. A slot that is unset, ineligible, archived, or unreachable (below) is skipped. When both slots are skipped or fail, today's path runs. A user chain that exists but fails entirely does not fall through to the workspace chain: the user's explicit choice is respected, and today's path runs. Reversible default; Cheese may veto.
+Within a chain: primary, then fallback. A slot that is unset, ineligible, archived, or unreachable (below) is skipped. When both slots are skipped or fail, the no-agent path runs. A user chain that exists but fails entirely does not fall through to the workspace chain: the user's explicit choice is respected, and the no-agent path runs. Reversible default; Cheese may veto.
 
-Today's path per job:
+No-agent path per job:
 
-| Job | Today's path when no agent ran |
+| Job | No-agent path (no agent set, or no agent ran) |
 | --- | --- |
-| `dm_title` | Deterministic title from the first message (60 characters). If `MULTICA_LLM_*` is configured and the job is off, the direct LLM call stays as today. |
-| `quick_actions` | If `MULTICA_LLM_*` is configured and the job is off, the direct call stays. Otherwise no pills. |
+| `dm_title` | Deterministic title from the first message (60 characters). No LLM call. |
+| `quick_actions` | No pills. No LLM call. |
 | `compact` | The DM's own agent runs compaction, as today. |
 | `routing` | The step's own handler agent, as today. |
 
-The direct `MULTICA_LLM_*` path is kept only for the two jobs that have it today and only while their setting is off. When a job's agent chain is set, the server does not use the direct path for that job. The direct path is not removed by this plan (upstream code, fork-cost rule). Removal is a separate decision.
+End state: no background job calls a model directly (decision 4). Layer 3 removes the direct call from `maybeGenerateChatTitleAsync`. Layer 4 removes it from the quick-actions generator. Each layer replaces the call site; it adds no shim, dual path or flag. `server/pkg/llm` and the `MULTICA_LLM_*` variables stay in the tree because they are upstream code. Removing the package is a separate decision.
+
+Migration for a workspace that relies on the direct call today: an owner sets the `dm_title` and `quick_actions` agents before the layer 3 and 4 builds deploy. Each of those PRs states this step in its Conditions. Without it, titles fall back to the 60-character cut and pills stop. That is the intended no-agent behaviour, and it is a visible change for those workspaces.
 
 ## Execution model
 
@@ -114,8 +116,8 @@ One task shape for all jobs, so failover, audit and cancellation are written onc
 Same rules as PR #989 `failOverRoutingTask`, generalised:
 
 1. Fail over only when the primary's run failed on a provider error and no retry was queued, or the primary was unreachable (below).
-2. One failover per trigger. The fallback's failure ends the chain; today's path runs.
-3. A task that is not a provider failure (agent said nothing usable, output failed sanitising) does not fail over. The result is "nothing usable": today's path for that trigger.
+2. One failover per trigger. The fallback's failure ends the chain; the no-agent path runs.
+3. A task that is not a provider failure (agent said nothing usable, output failed sanitising) does not fail over. The result is "nothing usable": the no-agent path for that trigger.
 4. Unreachable means: the agent's runtime has no live daemon heartbeat at enqueue time, or the task is still unclaimed after the job's claim deadline (table below). The server cancels the unclaimed task and moves to the next slot. No task is left queued behind an offline daemon.
 5. The failed run stays visible. A warning is logged with job, slot and reason. No transcript text in logs.
 6. After a routing failover the fallback keeps the issue (PR #989 behaviour, unchanged). Other jobs hold no ownership, so nothing needs reassigning.
@@ -145,7 +147,7 @@ Per-job deadlines (targets for review; measurement is a layer-1 task, see Eviden
 ## Quick actions
 
 - Runs as `bg:quick_actions` with the chain. The existing process-wide concurrency ceiling (16) and drop-not-queue rule stay.
-- Risk: today's budget is 8 s end to end, and a daemon-claimed agent run adds claim and startup time that is not measured here. Planner default: while the job's chain is set, the client's pending window rises from 8 s to the job's run deadline (20 s). If measurement in layer 4 shows the agent path cannot meet an acceptable latency, the job stays off by default and Cheese decides (see Open questions).
+- Risk: today's budget is 8 s end to end, and a daemon-claimed agent run adds claim and startup time that is not measured here. Planner default: while the job's chain is set, the client's pending window rises from 8 s to the job's run deadline (20 s). If measurement in layer 4 shows the agent path cannot meet an acceptable latency, the owner leaves the job unset and Cheese decides (see Open questions).
 
 ## Compact
 
@@ -172,7 +174,7 @@ Per-job deadlines (targets for review; measurement is a layer-1 task, see Eviden
 
 ## UI
 
-- Settings > Workspace: a "Background agents" section with one row per job: "Agent" and "Fallback agent" selects (owner/admin; members see read-only), a one-line description, and the job's today's-path note ("Off: uses the title cut" and so on). The existing compact picker (CHE-2917) and the routing selects (PR #989) become rows in this section.
+- Settings > Workspace: a "Background agents" section with one row per job: "Agent" and "Fallback agent" selects (owner/admin; members see read-only), a one-line description, and the job's no-agent note ("No agent: uses the title cut" and so on). The existing compact picker (CHE-2917) and the routing selects (PR #989) become rows in this section.
 - Settings > Preferences (personal): the same rows for user-scoped jobs, labelled "Use workspace default" when unset.
 - A DM shows "Compacting with <agent>" as plan v3 requires. Title and quick-action runs show no UI beyond the runs list.
 - Strings in all six locales; entries in the settings search index.
@@ -203,7 +205,7 @@ No measurement exists yet for the agent path. The numbers below are budgets for 
 | `compact` | 1 per compact | DM agent run | unchanged by default | existing plan |
 | `routing` | per routing step | baseline 4 Nov 2026: routing steps USD 164/day; Tofu plus Sonnet routing incl. wakeups USD 367/day | PR #989 3-day measurement | CHE-3627 |
 
-Cost risk: `quick_actions` fires after every assistant reply. An agent run costs more than a bare completion because of task setup. Layer 4 records USD per 100 replies for the agent path against the direct path before the default changes. Spend stays inside the Standing Budgets of the workspace; a chain default is never turned on by a layer, only by an owner.
+Cost risk: `quick_actions` fires after every assistant reply. An agent run costs more than a bare completion because of task setup. Layer 4 records USD per 100 replies for the agent path, with the old direct call as the baseline, before an owner sets the quick-actions agent. Spend stays inside the Standing Budgets of the workspace; a chain default is never turned on by a layer, only by an owner.
 
 ## Offline daemon
 
@@ -215,7 +217,7 @@ Cost risk: `quick_actions` fires after every assistant reply. An agent run costs
 
 ## Layers
 
-Each layer is at most 2 hours, test-first (observed red then green in the PR body), and a stacked PR on the previous layer's head. Layers 3 and 4 may run in parallel after layer 2. Layer 7 and the compact user override stay gated by CHE-2905 (security).
+Each layer is at most 2 hours, test-first (observed red then green in the PR body), and a stacked PR on the previous layer's head. Layers 3 and 4 may run in parallel after layer 2. Layer 7 and the compact user override need a fresh security review of this plan's changed assumptions (fallback agent, user scope, renamed event) before they are admitted. CHE-2905's PASS covers PR #768 head `17470060c06360519fcd4715a15fca58777de748` only.
 
 | # | Layer | Content | Estimate |
 | --- | --- | --- | --- |
@@ -225,7 +227,7 @@ Each layer is at most 2 hours, test-first (observed red then green in the PR bod
 | 4 | Quick actions | `bg:quick_actions` job, pending window, sanitising, concurrency ceiling, latency and cost measurement script. | 2 h |
 | 5 | `member_setting` and CLI | Migration, user scope read/write, `canInvokeAgent` check, `multica workspace/me background-agents`, aliases. | 2 h |
 | 6 | Routing migration | Re-point PR #989 setting to `background_agents.routing`, alias route, idempotent copy, read-back, tests. Starts after PR #989 merges. | 1.5 h |
-| 7 | Compact onto framework | Re-plan CHE-2908 onto layers 1 and 2: `compact` job, SEC-1/2/3, event rename, cancel on change. Gated by CHE-2905. | 2 h |
+| 7 | Compact onto framework | Re-plan CHE-2908 onto layers 1 and 2: `compact` job, SEC-1/2/3, event rename, cancel on change. Needs the fresh security review noted above. | 2 h |
 | 8 | Settings UI | "Background agents" section and personal rows, strings in six locales, search index; picker for CHE-2917's disclosure and warnings. Needs approved design (design-loop). | 2 h |
 | 9 | Docs and rollout | `apps/docs` pages in five locales, CLI docs, one 3-day measurement per enabled job. | 1.5 h |
 
@@ -251,9 +253,9 @@ flowchart LR
 
 ## Open questions (planner defaults, reversible)
 
-1. Quick actions on the agent path may miss the 8 s feel. Default: pending window 20 s while the chain is set; job stays off until layer 4 measures. Veto: keep quick actions on the direct path and drop job 2 from the framework.
-2. A user chain that fails entirely falls to today's path, not to the workspace chain. Veto: fall through to the workspace chain.
-3. The direct `MULTICA_LLM_*` path stays for jobs 1 and 2 while their setting is off. Veto: remove it in a follow-up and require an agent for those jobs.
+1. Quick actions on the agent path may miss the 8 s feel. Default: pending window 20 s while the chain is set; the owner leaves the job unset (no pills) until layer 4 measures. Veto: drop job 2 from the framework and decide pills separately.
+2. A user chain that fails entirely falls to the no-agent path, not to the workspace chain. Veto: fall through to the workspace chain.
+3. Layers 3 and 4 remove the direct LLM call from jobs 1 and 2 at once, per decision 4. Veto: keep a transitional direct path for one release.
 4. Per-user override for `compact` waits for a security re-check of plan v3's single-agent assumption.
 5. Title milestones beyond the three listed (agent switch, idle) are not in v1.
 
