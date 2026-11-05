@@ -69,6 +69,7 @@ Docs ship with the change. A PR that adds or changes user-visible behavior, a CL
 - Optimistic field patches require a predictable result, rare failure, trivial rollback, and staying on the current screen. Snapshot before patching, roll back on failure, and invalidate uncertain projections on settle.
 - Create/delete/leave and confirmation flows await the server before navigation or cleanup; do not optimistically delete entities. Exceptions: workspace leave (known debt under Desktop Rules) and mobile inbox mark-read (mobile instructions).
 - Message sends use visible pending state and retry on failure.
+- Authored input (drafts, notes, choices) persists through the keyed draft store (`packages/core/drafts/`) until a confirmed send or explicit discard; component state alone is not enough in virtualized lists, dialogs or routes.
 
 ## API Compatibility
 

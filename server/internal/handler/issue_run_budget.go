@@ -40,6 +40,21 @@ func (h *Handler) GetIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, snap)
 }
 
+// GetIssueStageQueue returns where the issue's stage run stands in its owner's
+// WIP queue (CHE-3611): admitted, or queued at a position behind the PRs ahead.
+func (h *Handler) GetIssueStageQueue(w http.ResponseWriter, r *http.Request) {
+	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	snap, err := service.LoadStageQueueSnapshot(r.Context(), h.Queries, issue)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read the stage queue")
+		return
+	}
+	writeJSON(w, http.StatusOK, snap)
+}
+
 // RaiseIssueRunBudget lifts one issue's run cap (CHE-2226) so a person can pay
 // for more runs on that issue without raising the cap of every issue on the
 // workflow. Members only: the actor comes from the authenticated request, never
