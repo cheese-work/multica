@@ -2077,7 +2077,10 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 			roots[i] = db.Issue{ID: r.ID, WorkspaceID: r.WorkspaceID, Number: r.Number, Status: r.Status, DueDate: r.DueDate, ParentIssueID: r.ParentIssueID}
 		}
 		var err error
-		if projections, err = h.effectiveDueFor(ctx, wsUUID, prefix, roots); err != nil {
+		if projections, err = h.effectiveDueFor(ctx, wsUUID, prefix, roots); errors.Is(err, errEffectiveDueTooBroad) {
+			writeError(w, http.StatusBadRequest, "too many related issues to sort by effective_due; narrow the filter (project, status, assignee)")
+			return
+		} else if err != nil {
 			slog.Warn("ListIssues effective_due failed", "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to resolve sort")
 			return

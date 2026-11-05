@@ -182,3 +182,49 @@ func TestEffectiveDueCycleBehindConvergingPaths(t *testing.T) {
 		t.Fatalf("cycle diagnostic %v, want %s and %s", members, bv.Identifier, cv.Identifier)
 	}
 }
+
+// One parent, 900 children, every child waiting on the parent: 901 roots, each
+// reaching all 901 nodes through one big cycle. The walk, the retained cycle
+// members and the response must stay bounded.
+func TestEffectiveDueGraphWorkIsBounded(t *testing.T) {
+	parent := dbfx.Issue(t, "bound parent", testutil.Cols{"due_date": "2026-12-01"})
+	agent := dbfx.Agent(t, "bound watcher", "")
+	var child string
+	for i := 0; i < 900; i++ {
+		child = dbfx.Issue(t, fmt.Sprintf("bound child %d", i), testutil.Cols{"parent_issue_id": parent})
+		dbfx.Insert(t, "issue_wakeup", testutil.Cols{"id": testutil.Raw("gen_random_uuid()"), "workspace_id": testWorkspaceID, "issue_id": child, "agent_id": agent, "created_by": testUserID, "instruction": "resume", "kind": "event", "mode": "once", "event_types": testutil.Raw(`ARRAY['issue.status_changed']`),
+			"condition": fmt.Sprintf(`{"type":"other_issue","issue_id":%q,"state":"done"}`, parent)})
+	}
+	for _, id := range []string{parent, child} {
+		v := readDue(t, id)
+		if v.diag("graph_limit") == nil {
+			t.Fatalf("want graph_limit diagnostic, got %+v", v.Diagnostics)
+		}
+		for _, d := range v.Diagnostics {
+			if len(d.Members) > 20 {
+				t.Fatalf("cycle members must be capped at 20, got %d", len(d.Members))
+			}
+		}
+		if v.EffectiveDue == nil || *v.EffectiveDue != "2026-12-01" {
+			t.Fatalf("date from nodes seen so far must stay, got %v", v.EffectiveDue)
+		}
+	}
+}
+
+// A narrow root filter must not bound the related nodes loaded: past the node
+// budget the list is refused (400), like the row cap.
+func TestListSortEffectiveDueNodeBudget(t *testing.T) {
+	old := effectiveDueMaxNodes
+	effectiveDueMaxNodes = 10
+	t.Cleanup(func() { effectiveDueMaxNodes = old })
+	project := dbfx.Project(t, "sort effective due node budget")
+	parent := dbfx.Issue(t, "budget parent", testutil.Cols{"project_id": project})
+	for i := 0; i < 12; i++ {
+		watchDone(t, dbfx.Issue(t, fmt.Sprintf("budget watcher %d", i)), parent, "done")
+	}
+	req := newRequest("GET", "/api/issues?sort=effective_due&limit=1&project_id="+project, nil)
+	w := testutil.Call(t, testHandler.ListIssues, req).Want(http.StatusBadRequest)
+	if !strings.Contains(w.Body.String(), "narrow") {
+		t.Fatalf("400 must tell the caller to narrow the filter, got %s", w.Body.String())
+	}
+}

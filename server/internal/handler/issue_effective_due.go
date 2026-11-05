@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sort"
 	"strconv"
@@ -17,8 +18,22 @@ import (
 // up to this many hops away (parent or done-prerequisite edges).
 const effectiveDueMaxDepth = 10
 
+// Graph work bounds, so one request cannot amplify into unbounded CPU, memory or
+// DB work: nodes visited per root, cycle members reported per diagnostic, and
+// nodes held in memory per call (a var so tests can lower it).
+const (
+	effectiveDueMaxVisited = 500
+	effectiveDueMaxMembers = 20
+)
+
+var effectiveDueMaxNodes = 10000
+
+// errEffectiveDueTooBroad means the related graph exceeds effectiveDueMaxNodes.
+var errEffectiveDueTooBroad = errors.New("effective_due graph too large")
+
 // DueDiagnostic explains why a projection may be incomplete. Type is "cycle"
-// (Members lists the cycle's issue keys) or "depth_limit".
+// (Members lists up to effectiveDueMaxMembers of the cycle's issue keys),
+// "depth_limit" or "graph_limit" (the walk stopped at effectiveDueMaxVisited).
 type DueDiagnostic struct {
 	Type    string   `json:"type"`
 	Members []string `json:"members,omitempty"`
@@ -73,6 +88,10 @@ func (h *Handler) effectiveDueFor(ctx context.Context, wsID pgtype.UUID, prefix 
 			}
 			nodes[watched].prereqs = append(nodes[watched].prereqs, watcher)
 			next = append(next, watcher)
+			if len(nodes)+len(next) > effectiveDueMaxNodes {
+				rows.Close()
+				return nil, errEffectiveDueTooBroad
+			}
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {
@@ -88,6 +107,9 @@ func (h *Handler) effectiveDueFor(ctx context.Context, wsID pgtype.UUID, prefix 
 			if !loaded[id] && !slices.Contains(frontier, id) {
 				frontier = append(frontier, id)
 			}
+		}
+		if len(nodes)+len(frontier) > effectiveDueMaxNodes {
+			return nil, errEffectiveDueTooBroad
 		}
 		if err := h.loadDueNodes(ctx, wsID, nodes, frontier); err != nil {
 			return nil, err
@@ -175,7 +197,7 @@ func walkEffectiveDue(prefix string, nodes map[pgtype.UUID]*dueNode, open func(p
 		return edges
 	}
 	seen := map[pgtype.UUID]bool{root: true}
-	depthLimited := false
+	depthLimited, visitLimited := false, false
 	for queue := []dueStep{{id: root, path: []pgtype.UUID{root}}}; len(queue) > 0; queue = queue[1:] {
 		cur := queue[0]
 		n := nodes[cur.id]
@@ -198,6 +220,10 @@ func walkEffectiveDue(prefix string, nodes map[pgtype.UUID]*dueNode, open func(p
 				depthLimited = true
 				continue
 			}
+			if len(seen) >= effectiveDueMaxVisited {
+				visitLimited = true
+				continue
+			}
 			seen[e.to] = true
 			queue = append(queue, dueStep{
 				id:   e.to,
@@ -213,10 +239,13 @@ func walkEffectiveDue(prefix string, nodes map[pgtype.UUID]*dueNode, open func(p
 		}
 		return to
 	}, key) {
-		out.diagnostics = append(out.diagnostics, DueDiagnostic{Type: "cycle", Members: members})
+		out.diagnostics = append(out.diagnostics, DueDiagnostic{Type: "cycle", Members: members[:min(len(members), effectiveDueMaxMembers)]})
 	}
 	if depthLimited {
 		out.diagnostics = append(out.diagnostics, DueDiagnostic{Type: "depth_limit"})
+	}
+	if visitLimited {
+		out.diagnostics = append(out.diagnostics, DueDiagnostic{Type: "graph_limit"})
 	}
 	if best != nil {
 		out.date = bestDate
