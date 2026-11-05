@@ -3856,6 +3856,19 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				}
 			}
 
+			// Both resume paths above end here. The resumed transcript holds
+			// whatever tainted input earlier turns read (a fired issue watch
+			// stamps only its own turn), so the claimed task takes that taint
+			// before the profile is finalized. If it cannot be recorded, start
+			// fresh rather than run a resume the transcript has not earned.
+			if resp.PriorSessionID != "" {
+				if h.inheritChatSessionTaint(r.Context(), task, resp.PriorSessionID) {
+					applyRunProfile()
+				} else {
+					resp.PriorSessionID = ""
+				}
+			}
+
 			// MUL-5305: continuity-gap disclosure is independent of whether
 			// either pointer field needed fallback, so this query stays
 			// unconditional for non-force-fresh chat claims.
@@ -7365,6 +7378,22 @@ func (h *Handler) inheritSessionTaint(ctx context.Context, task *db.AgentTaskQue
 	})
 	if err != nil {
 		slog.Warn("daemon claim: could not record session taint; starting fresh",
+			"task_id", uuidToString(task.ID), "error", err)
+		return false
+	}
+	task.TaintIds = taint
+	return true
+}
+
+// inheritChatSessionTaint is inheritSessionTaint for a DM task, whose session
+// is keyed on its chat rather than an issue (CHE-3702).
+func (h *Handler) inheritChatSessionTaint(ctx context.Context, task *db.AgentTaskQueue, sessionID string) bool {
+	taint, err := h.Queries.InheritChatSessionTaint(ctx, db.InheritChatSessionTaintParams{
+		ID:        task.ID,
+		SessionID: sessionID,
+	})
+	if err != nil {
+		slog.Warn("daemon claim: could not record chat session taint; starting fresh",
 			"task_id", uuidToString(task.ID), "error", err)
 		return false
 	}

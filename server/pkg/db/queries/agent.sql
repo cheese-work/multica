@@ -1281,6 +1281,19 @@ SET taint_ids = COALESCE((
 WHERE t.id = $1
 RETURNING t.taint_ids;
 
+-- name: InheritChatSessionTaint :one
+-- InheritSessionTaint for a DM: a chat task has no issue, so the session is
+-- keyed on the chat it ran in (CHE-3702). A fired issue watch stamps taint on
+-- its own turn, and every later turn that resumes that transcript carries it.
+UPDATE agent_task_queue t
+SET taint_ids = COALESCE((
+    SELECT array_agg(DISTINCT x ORDER BY x)
+    FROM agent_task_queue s, unnest(s.taint_ids) AS x
+    WHERE s.agent_id = t.agent_id AND s.chat_session_id = t.chat_session_id AND s.session_id = sqlc.arg(session_id)::text
+), '{}')
+WHERE t.id = $1
+RETURNING t.taint_ids;
+
 -- name: GetLatestTaskRolloutMissing :one
 -- Reports whether the most recent terminal task for (agent_id, issue_id)
 -- withheld its Codex session because the rollout was missing (MUL-5305). When

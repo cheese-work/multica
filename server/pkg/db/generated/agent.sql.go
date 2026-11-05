@@ -6498,6 +6498,32 @@ func (q *Queries) HasTaskForIssue(ctx context.Context, issueID pgtype.UUID) (boo
 	return exists, err
 }
 
+const inheritChatSessionTaint = `-- name: InheritChatSessionTaint :one
+UPDATE agent_task_queue t
+SET taint_ids = COALESCE((
+    SELECT array_agg(DISTINCT x ORDER BY x)
+    FROM agent_task_queue s, unnest(s.taint_ids) AS x
+    WHERE s.agent_id = t.agent_id AND s.chat_session_id = t.chat_session_id AND s.session_id = $2::text
+), '{}')
+WHERE t.id = $1
+RETURNING t.taint_ids
+`
+
+type InheritChatSessionTaintParams struct {
+	ID        pgtype.UUID `json:"id"`
+	SessionID string      `json:"session_id"`
+}
+
+// InheritSessionTaint for a DM: a chat task has no issue, so the session is
+// keyed on the chat it ran in (CHE-3702). A fired issue watch stamps taint on
+// its own turn, and every later turn that resumes that transcript carries it.
+func (q *Queries) InheritChatSessionTaint(ctx context.Context, arg InheritChatSessionTaintParams) ([]string, error) {
+	row := q.db.QueryRow(ctx, inheritChatSessionTaint, arg.ID, arg.SessionID)
+	var taint_ids []string
+	err := row.Scan(&taint_ids)
+	return taint_ids, err
+}
+
 const inheritSessionTaint = `-- name: InheritSessionTaint :one
 UPDATE agent_task_queue t
 SET taint_ids = COALESCE((
