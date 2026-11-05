@@ -83,6 +83,8 @@ import { PropertyIcon } from "../../common/property-icon";
 import type { Attachment, Issue, IssueProperty, IssueStatus, IssueStatusCategory, IssuePriority, TimelineEntry, UpdateIssueRequest } from "@multica/core/types";
 import { contentReferencesAttachment } from "@multica/core/types";
 import { isBuiltInIssueStatus } from "@multica/core/issue-statuses";
+import { isSchemaValidationError } from "@multica/core/api/schema";
+import { isIssueUuid, isNotFoundError } from "@multica/core/issues/canonical-id";
 import { commentLandingTarget, isDeletedComment } from "@multica/core/issues/comment-deletion";
 import { formatDateOnly, isPastDateOnly } from "@multica/core/issues/date";
 import { useUpdateIssue } from "@multica/core/issues/mutations";
@@ -127,6 +129,7 @@ import {
 import { collectThreadParticipants, collectThreadReplies, deriveThreadResolution } from "./thread-utils";
 import { IssueAgentHeaderChip } from "./issue-agent-header-chip";
 import { IssueWakeupHeaderChip } from "./issue-wakeup-header-chip";
+import { useWakeupsFocus } from "./use-wakeups-focus";
 import { IssueInboxRestoreButton } from "./issue-inbox-restore-button";
 import { ExecutionLogSection } from "./execution-log-section";
 import { WakeupsSection } from "./wakeups-section";
@@ -1231,8 +1234,17 @@ export function IssueNotFound({
   showBackLink = true,
   leading,
   trailing,
+  onRetry,
+  dataError,
+  issueKey,
 }: {
   showBackLink?: boolean;
+  /** The response arrived but failed schema validation: say the data is unreadable, not "connection". */
+  dataError?: boolean;
+  /** Identifier shown above the data-error message so the user knows which issue it is. */
+  issueKey?: string;
+  /** Set when the load failed for a reason other than a 404: says so and offers a retry. */
+  onRetry?: () => void;
   /**
    * Host-supplied way back, mirrored from `IssueDetailProps.leadingAction`. A
    * host that hands its whole screen to this component (the inbox, on a phone)
@@ -1256,7 +1268,13 @@ export function IssueNotFound({
         </div>
       )}
       <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 text-body text-muted-foreground">
-        <p>{t(($) => $.detail.not_found)}</p>
+        {dataError && issueKey && <p className="font-medium">{issueKey}</p>}
+        <p>{t(($) => (dataError ? $.detail.data_error : onRetry ? $.detail.load_failed : $.detail.not_found))}</p>
+        {onRetry && (
+          <Button variant="outline" size="sm" onClick={onRetry}>
+            {t(($) => $.detail.retry)}
+          </Button>
+        )}
         {showBackLink && (
           <Button variant="outline" size="sm" onClick={() => backOrReplace(paths.issues())}>
             <ChevronLeft className="mr-1 h-3.5 w-3.5" />
@@ -1610,7 +1628,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const lastHighlightRequestTokenRef = useRef(highlightRequestToken);
 
   // Issue data from TQ — uses detail query, seeded from list cache if available.
-  const { data: issue = null, isLoading: issueLoading, refetch: refetchIssue } = useQuery(
+  const { data: issue = null, error: issueError, isLoading: issueLoading, refetch: refetchIssue } = useQuery(
     issueDetailViewOptions(wsId, id, allIssues.find((i) => i.id === id), authoritative),
   );
   const descriptionSourceId = `description:${id}`;
@@ -3429,6 +3447,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     });
   }, [handleToggleSidebar, id, sidebarOpen]);
 
+  // `?focus=wakeups` lands on the same section as the header chip, once the
+  // issue has loaded and the section exists.
+  useWakeupsFocus(id, openWakeups, !loading && !!issue);
+
   useRightSidebarShortcut(rightSidebarShortcutTargetRef, handleToggleSidebar);
 
   const scrollAnchor = useIssueDetailScrollAnchor({
@@ -3477,7 +3499,16 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   }
 
   if (!issue) {
-    return <IssueNotFound showBackLink={!onDelete} leading={leadingAction} trailing={trailingActions} />;
+    return (
+      <IssueNotFound
+        showBackLink={!onDelete}
+        leading={leadingAction}
+        trailing={trailingActions}
+        onRetry={issueError && !isNotFoundError(issueError) ? () => void refetchIssue() : undefined}
+        dataError={isSchemaValidationError(issueError)}
+        issueKey={isIssueUuid(id) ? undefined : id}
+      />
+    );
   }
 
   const persistDescriptionSave = (
@@ -3764,6 +3795,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         issueId={issue.id}
         closed={["done", "closed"].includes(resolveStatusCategory(issue.status))}
         defaultAgentId={issue.assignee_type === "agent" ? (issue.assignee_id ?? undefined) : undefined}
+        projectId={issue.project_id ?? undefined}
       />
       <PluginPanelSection issueId={issue.id} />
 

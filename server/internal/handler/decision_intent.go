@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/passkey"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -27,8 +28,11 @@ func writeDecisionIntentError(writer http.ResponseWriter, err error) {
 
 func writeDecisionError(writer http.ResponseWriter, err error, operation string) {
 	var refusal decisionIntentRefusal
+	var proofRefusal passkey.Refusal
 	if errors.As(err, &refusal) {
 		writeError(writer, refusal.status, refusal.message)
+	} else if errors.As(err, &proofRefusal) {
+		writeError(writer, proofRefusal.Status, proofRefusal.Message)
 	} else if decisiontx.IsRetryable(err) {
 		writer.Header().Set("Retry-After", "1")
 		writeError(writer, http.StatusServiceUnavailable, operation+" is busy; retry")
@@ -98,7 +102,7 @@ func (handler *Handler) checkDecisionTarget(request *http.Request, queries *db.Q
 		}
 		return err
 	}
-	if !handler.canInvokeAgent(ctx, agent, "member", uuidToString(humanID), "", uuidToString(issue.WorkspaceID)) {
+	if allowed, _ := handler.invokeAgentDecisionVia(ctx, queries, agent, "member", uuidToString(humanID), "", uuidToString(issue.WorkspaceID)); !allowed {
 		return decisionIntentRefusal{http.StatusBadRequest, "named person cannot invoke the asking agent: " + uuidToString(humanID)}
 	}
 	return nil
