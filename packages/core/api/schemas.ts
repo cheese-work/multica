@@ -2460,6 +2460,8 @@ export const CancelTaskResponseSchema = z.lazy(() => AgentTaskSchema.unwrap().ex
 }).loose());
 
 const ChatLastMessageSchema = z.lazy(() => z.object({
+  id: z.string().uuid().optional().catch(undefined),
+  task_id: z.string().uuid().optional().catch(undefined),
   content: z.string().default(""),
   role: z.enum(["user", "assistant"]).catch("assistant"),
   created_at: z.string().default(""),
@@ -4362,3 +4364,11 @@ export const RuntimeProfileSchema = z.lazy(() => z
     runtime_type: profile.runtime_type || profile.protocol_family,
   })));
 export const RuntimeProfileListSchema = z.lazy(() => z.array(RuntimeProfileSchema));
+
+// GET /api/agent-decisions/brief carries more (decisions, pilot); the Settings
+// switch reads only the setting and the automatic-stop record.
+export const AgentDecisionSettingSchema = z.lazy(() => z.object({
+  enabled: z.boolean(),
+  stopped: z.object({ reason: z.string().catch("") }).nullish().transform((v) => v ?? null),
+}).loose());
+export type AgentDecisionSetting = z.infer<typeof AgentDecisionSettingSchema>;

@@ -69,7 +69,7 @@ import {
   EMPTY_PLUGIN_INSTALLATION_LIST,
   EMPTY_PLUGIN_PREVIEW,
 } from "./schemas";
-import { IssueViewSchema, IssueViewListSchema } from "./schemas";
+import { IssueViewSchema, IssueViewListSchema, AgentDecisionSettingSchema } from "./schemas";
 import {
   ListIssueStatusesResponseSchema,
   IssueStatusEntrySchema,
@@ -169,6 +169,8 @@ describe("ChatSessionSchema", () => {
   });
 
   it("drops one malformed list item without hiding the other Chats", () => {
+    const latestMessageId = "00000000-0000-4000-8000-000000000002";
+    const latestMessageTaskId = "00000000-0000-4000-8000-000000000003";
     const parsed = ChatSessionListSchema.parse([
       baseSession,
       { ...baseSession, id: 42 },
@@ -176,6 +178,8 @@ describe("ChatSessionSchema", () => {
         ...baseSession,
         id: "onboarding-chat",
         last_message: {
+          id: latestMessageId,
+          task_id: latestMessageTaskId,
           content: "Welcome",
           role: "assistant",
           created_at: "2026-08-18T00:00:00Z",
@@ -186,6 +190,8 @@ describe("ChatSessionSchema", () => {
 
     expect(parsed.map((session) => session.id)).toEqual(["chat-1", "onboarding-chat"]);
     expect(parsed[1]?.last_message?.message_kind).toBe("onboarding_opening");
+    expect(parsed[1]?.last_message?.id).toBe(latestMessageId);
+    expect(parsed[1]?.last_message?.task_id).toBe(latestMessageTaskId);
   });
 });
 describe("IssueSchema (via ListIssuesResponseSchema)", () => {
@@ -2567,5 +2573,26 @@ describe("CommentPreviewSchema", () => {
     expect(ok.author_name).toBe("");
     expect(ok.preview).toBe("");
     expect(CommentPreviewSchema.safeParse({ comment_id: "c" }).success).toBe(false);
+  });
+});
+
+describe("AgentDecisionSettingSchema", () => {
+  it("keeps enabled and the stop reason, and ignores the rest of the brief", () => {
+    const parsed = AgentDecisionSettingSchema.parse({
+      enabled: false,
+      stopped: { reason: "excluded category", at: "2026-11-02T00:00:00Z" },
+      decisions: [],
+    });
+    expect(parsed.enabled).toBe(false);
+    expect(parsed.stopped).toEqual({ reason: "excluded category" });
+  });
+
+  it("reads a missing or null stop record as no stop", () => {
+    expect(AgentDecisionSettingSchema.parse({ enabled: true }).stopped).toBeNull();
+    expect(AgentDecisionSettingSchema.parse({ enabled: true, stopped: null }).stopped).toBeNull();
+  });
+
+  it("falls back to null when enabled is missing instead of guessing a value", () => {
+    expect(parseWithFallback({}, AgentDecisionSettingSchema, null, { endpoint: "t" })).toBeNull();
   });
 });
