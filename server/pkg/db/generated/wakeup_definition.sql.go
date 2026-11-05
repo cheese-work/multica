@@ -83,7 +83,7 @@ func (q *Queries) FindWaitingIssueLeaderRun(ctx context.Context, arg FindWaiting
 }
 
 const getWakeupDefinition = `-- name: GetWakeupDefinition :one
-SELECT workspace_id, scope_kind, scope_id, rule_key, root, config, revision, created_by, updated_by, created_at, updated_at, event_types, sweep_revision, sweep_cursor, sweep_done, sweep_baseline, sweep_attempts, sweep_retry_at, sweep_error FROM issue_wakeup_definition
+SELECT workspace_id, scope_kind, scope_id, rule_key, root, config, revision, created_by, updated_by, created_at, updated_at, event_types, sweep_revision, sweep_cursor, sweep_done, sweep_baseline, sweep_attempts, sweep_retry_at, sweep_error, pending_approval FROM issue_wakeup_definition
 WHERE workspace_id= $1 AND scope_kind= $2 AND scope_id= $3 AND rule_key= $4
 `
 
@@ -122,26 +122,28 @@ func (q *Queries) GetWakeupDefinition(ctx context.Context, arg GetWakeupDefiniti
 		&i.SweepAttempts,
 		&i.SweepRetryAt,
 		&i.SweepError,
+		&i.PendingApproval,
 	)
 	return i, err
 }
 
 const insertWakeupDefinition = `-- name: InsertWakeupDefinition :one
-INSERT INTO issue_wakeup_definition(workspace_id,scope_kind,scope_id,rule_key,root,config,event_types,created_by,updated_by)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$8)
+INSERT INTO issue_wakeup_definition(workspace_id,scope_kind,scope_id,rule_key,root,config,event_types,pending_approval,created_by,updated_by)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
 ON CONFLICT (workspace_id,scope_kind,scope_id,rule_key) DO NOTHING
-RETURNING workspace_id, scope_kind, scope_id, rule_key, root, config, revision, created_by, updated_by, created_at, updated_at, event_types, sweep_revision, sweep_cursor, sweep_done, sweep_baseline, sweep_attempts, sweep_retry_at, sweep_error
+RETURNING workspace_id, scope_kind, scope_id, rule_key, root, config, revision, created_by, updated_by, created_at, updated_at, event_types, sweep_revision, sweep_cursor, sweep_done, sweep_baseline, sweep_attempts, sweep_retry_at, sweep_error, pending_approval
 `
 
 type InsertWakeupDefinitionParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	ScopeKind   string      `json:"scope_kind"`
-	ScopeID     pgtype.UUID `json:"scope_id"`
-	RuleKey     string      `json:"rule_key"`
-	Root        bool        `json:"root"`
-	Config      []byte      `json:"config"`
-	EventTypes  []string    `json:"event_types"`
-	Actor       pgtype.UUID `json:"actor"`
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	ScopeKind       string      `json:"scope_kind"`
+	ScopeID         pgtype.UUID `json:"scope_id"`
+	RuleKey         string      `json:"rule_key"`
+	Root            bool        `json:"root"`
+	Config          []byte      `json:"config"`
+	EventTypes      []string    `json:"event_types"`
+	PendingApproval bool        `json:"pending_approval"`
+	Actor           pgtype.UUID `json:"actor"`
 }
 
 // Never replaces: a definition that already exists yields no row.
@@ -154,6 +156,7 @@ func (q *Queries) InsertWakeupDefinition(ctx context.Context, arg InsertWakeupDe
 		arg.Root,
 		arg.Config,
 		arg.EventTypes,
+		arg.PendingApproval,
 		arg.Actor,
 	)
 	var i IssueWakeupDefinition
@@ -177,6 +180,7 @@ func (q *Queries) InsertWakeupDefinition(ctx context.Context, arg InsertWakeupDe
 		&i.SweepAttempts,
 		&i.SweepRetryAt,
 		&i.SweepError,
+		&i.PendingApproval,
 	)
 	return i, err
 }
@@ -318,13 +322,13 @@ func (q *Queries) ListIssueLabelIDs(ctx context.Context, issueID pgtype.UUID) ([
 }
 
 const listWakeupDefinitionsForRule = `-- name: ListWakeupDefinitionsForRule :many
-SELECT d.workspace_id, d.scope_kind, d.scope_id, d.rule_key, d.root, d.config, d.revision, d.created_by, d.updated_by, d.created_at, d.updated_at, d.event_types, d.sweep_revision, d.sweep_cursor, d.sweep_done, d.sweep_baseline, d.sweep_attempts, d.sweep_retry_at, d.sweep_error FROM issue_wakeup_definition d
+SELECT d.workspace_id, d.scope_kind, d.scope_id, d.rule_key, d.root, d.config, d.revision, d.created_by, d.updated_by, d.created_at, d.updated_at, d.event_types, d.sweep_revision, d.sweep_cursor, d.sweep_done, d.sweep_baseline, d.sweep_attempts, d.sweep_retry_at, d.sweep_error, d.pending_approval FROM issue_wakeup_definition d
 WHERE d.workspace_id= $1 AND d.scope_kind='workspace' AND d.scope_id= $1 AND d.rule_key= $2
 UNION ALL
-SELECT d.workspace_id, d.scope_kind, d.scope_id, d.rule_key, d.root, d.config, d.revision, d.created_by, d.updated_by, d.created_at, d.updated_at, d.event_types, d.sweep_revision, d.sweep_cursor, d.sweep_done, d.sweep_baseline, d.sweep_attempts, d.sweep_retry_at, d.sweep_error FROM issue_wakeup_definition d
+SELECT d.workspace_id, d.scope_kind, d.scope_id, d.rule_key, d.root, d.config, d.revision, d.created_by, d.updated_by, d.created_at, d.updated_at, d.event_types, d.sweep_revision, d.sweep_cursor, d.sweep_done, d.sweep_baseline, d.sweep_attempts, d.sweep_retry_at, d.sweep_error, d.pending_approval FROM issue_wakeup_definition d
 WHERE d.workspace_id= $1 AND d.scope_kind='project' AND d.scope_id= $3::uuid AND d.rule_key= $2
 UNION ALL
-SELECT d.workspace_id, d.scope_kind, d.scope_id, d.rule_key, d.root, d.config, d.revision, d.created_by, d.updated_by, d.created_at, d.updated_at, d.event_types, d.sweep_revision, d.sweep_cursor, d.sweep_done, d.sweep_baseline, d.sweep_attempts, d.sweep_retry_at, d.sweep_error FROM issue_wakeup_definition d
+SELECT d.workspace_id, d.scope_kind, d.scope_id, d.rule_key, d.root, d.config, d.revision, d.created_by, d.updated_by, d.created_at, d.updated_at, d.event_types, d.sweep_revision, d.sweep_cursor, d.sweep_done, d.sweep_baseline, d.sweep_attempts, d.sweep_retry_at, d.sweep_error, d.pending_approval FROM issue_wakeup_definition d
 WHERE d.workspace_id= $1 AND d.scope_kind='issue' AND d.scope_id= $4 AND d.rule_key= $2
 `
 
@@ -373,6 +377,7 @@ func (q *Queries) ListWakeupDefinitionsForRule(ctx context.Context, arg ListWake
 			&i.SweepAttempts,
 			&i.SweepRetryAt,
 			&i.SweepError,
+			&i.PendingApproval,
 		); err != nil {
 			return nil, err
 		}
@@ -385,7 +390,7 @@ func (q *Queries) ListWakeupDefinitionsForRule(ctx context.Context, arg ListWake
 }
 
 const listWakeupDefinitionsInScope = `-- name: ListWakeupDefinitionsInScope :many
-SELECT workspace_id, scope_kind, scope_id, rule_key, root, config, revision, created_by, updated_by, created_at, updated_at, event_types, sweep_revision, sweep_cursor, sweep_done, sweep_baseline, sweep_attempts, sweep_retry_at, sweep_error FROM issue_wakeup_definition
+SELECT workspace_id, scope_kind, scope_id, rule_key, root, config, revision, created_by, updated_by, created_at, updated_at, event_types, sweep_revision, sweep_cursor, sweep_done, sweep_baseline, sweep_attempts, sweep_retry_at, sweep_error, pending_approval FROM issue_wakeup_definition
 WHERE workspace_id= $1 AND scope_kind= $2 AND scope_id= $3
 ORDER BY created_at,rule_key LIMIT 100
 `
@@ -426,6 +431,7 @@ func (q *Queries) ListWakeupDefinitionsInScope(ctx context.Context, arg ListWake
 			&i.SweepAttempts,
 			&i.SweepRetryAt,
 			&i.SweepError,
+			&i.PendingApproval,
 		); err != nil {
 			return nil, err
 		}
@@ -607,14 +613,15 @@ func (q *Queries) RetireCustomizedSystemWakeup(ctx context.Context, arg RetireCu
 
 const updateWakeupDefinition = `-- name: UpdateWakeupDefinition :one
 UPDATE issue_wakeup_definition
-SET config= $1,event_types= $2,revision=revision+1,updated_by= $3,updated_at=clock_timestamp()
-WHERE workspace_id= $4 AND scope_kind= $5 AND scope_id= $6 AND rule_key= $7 AND revision= $8
-RETURNING workspace_id, scope_kind, scope_id, rule_key, root, config, revision, created_by, updated_by, created_at, updated_at, event_types, sweep_revision, sweep_cursor, sweep_done, sweep_baseline, sweep_attempts, sweep_retry_at, sweep_error
+SET config= $1,event_types= $2,pending_approval= $3,revision=revision+1,updated_by= $4,updated_at=clock_timestamp()
+WHERE workspace_id= $5 AND scope_kind= $6 AND scope_id= $7 AND rule_key= $8 AND revision= $9
+RETURNING workspace_id, scope_kind, scope_id, rule_key, root, config, revision, created_by, updated_by, created_at, updated_at, event_types, sweep_revision, sweep_cursor, sweep_done, sweep_baseline, sweep_attempts, sweep_retry_at, sweep_error, pending_approval
 `
 
 type UpdateWakeupDefinitionParams struct {
 	Config           []byte      `json:"config"`
 	EventTypes       []string    `json:"event_types"`
+	PendingApproval  bool        `json:"pending_approval"`
 	Actor            pgtype.UUID `json:"actor"`
 	WorkspaceID      pgtype.UUID `json:"workspace_id"`
 	ScopeKind        string      `json:"scope_kind"`
@@ -628,6 +635,7 @@ func (q *Queries) UpdateWakeupDefinition(ctx context.Context, arg UpdateWakeupDe
 	row := q.db.QueryRow(ctx, updateWakeupDefinition,
 		arg.Config,
 		arg.EventTypes,
+		arg.PendingApproval,
 		arg.Actor,
 		arg.WorkspaceID,
 		arg.ScopeKind,
@@ -656,6 +664,7 @@ func (q *Queries) UpdateWakeupDefinition(ctx context.Context, arg UpdateWakeupDe
 		&i.SweepAttempts,
 		&i.SweepRetryAt,
 		&i.SweepError,
+		&i.PendingApproval,
 	)
 	return i, err
 }
