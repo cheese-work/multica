@@ -96,3 +96,25 @@ func TestDecisionWakeQueriesAllocateAndInsert(test *testing.T) {
 		test.Fatalf("wake_seq not increasing: %v", seqs)
 	}
 }
+
+// The tables have no foreign key, so the decision worker's orphan cleanup
+// deletes wake events and receipts with the request they belong to.
+func TestDecisionWakeRowsLeaveWithOrphanedRequest(test *testing.T) {
+	fixture, _ := readyDecisionDelivery(test)
+	dbfx.Exec(test, `INSERT INTO decision_wake_event (id, request_id, seq, type) VALUES (gen_random_uuid(), $1, 1, 'answered')`, fixture.decision.ID)
+	dbfx.Exec(test, `INSERT INTO decision_wake_receipt (id, event_id, event_seq, recipient_agent_id, role)
+		SELECT gen_random_uuid(), id, 1, $2, 'requester' FROM decision_wake_event WHERE request_id = $1`, fixture.decision.ID, fixture.agentID)
+	test.Cleanup(func() {
+		dbfx.Exec(test, `DELETE FROM decision_wake_receipt WHERE event_id IN (SELECT id FROM decision_wake_event WHERE request_id = $1)`, fixture.decision.ID)
+		dbfx.Exec(test, `DELETE FROM decision_wake_event WHERE request_id = $1`, fixture.decision.ID)
+	})
+	dbfx.Exec(test, `DELETE FROM issue WHERE id = $1`, fixture.issue.ID)
+	if err := testHandler.cleanupDecisionOrphans(context.Background(), fixture.issue.WorkspaceID, fixture.issue.ID); err != nil {
+		test.Fatal(err)
+	}
+	events := dbfx.Count(test, `SELECT count(*) FROM decision_wake_event WHERE request_id = $1`, fixture.decision.ID)
+	receipts := dbfx.Count(test, `SELECT count(*) FROM decision_wake_receipt WHERE recipient_agent_id = $1 AND event_seq = 1`, fixture.agentID)
+	if events != 0 || receipts != 0 {
+		test.Fatalf("orphan cleanup left %d events and %d receipts", events, receipts)
+	}
+}
