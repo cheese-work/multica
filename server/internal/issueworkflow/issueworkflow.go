@@ -656,6 +656,8 @@ type Humans struct {
 	Requester      pgtype.UUID
 	LeadNotMember  bool
 	WorkspaceOwner pgtype.UUID
+	// RoutingAgent, when valid, replaces an agent handler (CHE-3627).
+	RoutingAgent pgtype.UUID
 }
 
 // ResolveHandler turns a step's handler into a concrete assignee for one
@@ -664,6 +666,9 @@ type Humans struct {
 func ResolveHandler(step Step, project db.Project, issueCreatorType string, issueCreatorID pgtype.UUID, humans Humans) (assigneeType string, assigneeID pgtype.UUID, ok bool) {
 	switch step.Handler.Type {
 	case HandlerAgent, HandlerSquad, HandlerMember:
+		if step.Handler.Type == HandlerAgent && humans.RoutingAgent.Valid {
+			return HandlerAgent, humans.RoutingAgent, true
+		}
 		var id pgtype.UUID
 		if err := id.Scan(step.Handler.ID); err != nil || !id.Valid {
 			return "", pgtype.UUID{}, false
