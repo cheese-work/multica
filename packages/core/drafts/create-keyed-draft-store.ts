@@ -57,6 +57,12 @@ export interface KeyedDraftStore<TData> {
    * (stale generation) it is dropped.
    */
   setDraftIn: (origin: DraftOrigin, key: string, patch: Partial<TData>) => void;
+  /**
+   * True when this tab holds the key but shared storage no longer does: another tab logged out
+   * or deleted the workspace and cleared storage, and this tab has not heard of it. A delayed
+   * write that persisted its in-memory copy would bring the cleared draft back.
+   */
+  isClearedElsewhere: (key: string) => boolean;
   /** `clearDraft` for a delayed clear; see {@link KeyedDraftStore.setDraftIn}. */
   clearDraftIn: (origin: DraftOrigin, key: string) => void;
 }
@@ -148,6 +154,17 @@ export function createKeyedDraftStore<TData extends object>(
           });
         },
         hasDraft: (key) => !isStale() && key in get().drafts,
+        isClearedElsewhere: (key) => {
+          const slug = getCurrentSlug();
+          if (isStale() || !(key in get().drafts) || (workspaceScoped && !slug)) return false;
+          try {
+            const raw = backing.getItem(workspaceScoped ? `${config.storageKey}:${slug}` : config.storageKey);
+            const persisted = raw ? (JSON.parse(raw) as { state?: { drafts?: Drafts } }) : null;
+            return !persisted?.state?.drafts?.[key];
+          } catch {
+            return false; // unreadable entry: do not guess
+          }
+        },
         setDraftIn: ({ slug, generation }, key, patch) => {
           if (generation !== getDraftGeneration(slug)) return;
           if (!inOtherWorkspace(slug)) return get().setDraft(key, patch);

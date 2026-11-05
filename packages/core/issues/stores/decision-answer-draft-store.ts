@@ -1,4 +1,4 @@
-import type { DraftOrigin } from "../../drafts/cleanup-registry";
+import { getDraftGeneration, type DraftOrigin } from "../../drafts/cleanup-registry";
 import { createKeyedDraftStore } from "../../drafts/create-keyed-draft-store";
 
 /**
@@ -24,11 +24,15 @@ export const useDecisionAnswerDraftStore = createKeyedDraftStore<DecisionAnswerD
 
 /**
  * Adds an attachment link to the end of the stored note, as a delayed write that belongs to
- * `origin`; a link already there stays single.
+ * `origin`; a link already there stays single. Dropped when another tab cleared the draft.
  */
 export function appendDecisionAttachment(origin: DraftOrigin, requestId: string, markdown: string): void {
   const key = decisionAnswerDraftKey(requestId);
   const store = useDecisionAnswerDraftStore.getState();
+  if (origin.generation !== getDraftGeneration(origin.slug)) return;
+  // Another tab's logout wiped shared storage before this tab heard of it: do not persist the
+  // note this tab still holds.
+  if (store.isClearedElsewhere(key)) return store.clearDraft(key);
   const text = store.getDraft(key)?.text ?? "";
   if (text.includes(markdown)) return;
   store.setDraftIn(origin, key, { text: `${text.trimEnd()}\n\n${markdown}`.trim() });
