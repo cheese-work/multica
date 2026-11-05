@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -209,4 +210,55 @@ func (h *Handler) LintIssueWorkflows(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"workflows": res, "total": len(res)})
+}
+
+// lintProposedSave lints the workflow as a save would leave it. The live
+// runtime check (WF012) is skipped: a save is not the moment to judge which
+// runtimes happen to be online. Statuses come from catalog, which already
+// holds the statuses this save created.
+func (h *Handler) lintProposedSave(ctx context.Context, wsUUID pgtype.UUID, current db.IssueWorkflow, proposed issueworkflow.Definition, catalog map[string]issueworkflow.CatalogEntry, projects []db.Project) ([]workflowlint.Finding, error) {
+	all, err := h.Queries.ListIssueWorkflows(ctx, wsUUID)
+	if err != nil {
+		return nil, err
+	}
+	env, byWorkflow, err := h.workflowLintEnv(ctx, wsUUID, all)
+	if err != nil {
+		return nil, err
+	}
+	env.Live = false
+	env.Statuses = make(map[string]string, len(catalog))
+	for key, entry := range catalog {
+		env.Statuses[key] = entry.Name
+	}
+	id := uuidToString(current.ID)
+	projectIDs := make([]string, len(projects))
+	for i, p := range projects {
+		projectIDs[i] = uuidToString(p.ID)
+	}
+	byWorkflow[id] = projectIDs
+	defs := decodeRows(all)
+	defs[id] = proposed
+	row := current
+	row.Name = proposed.Name
+	return lintRows([]db.IssueWorkflow{row}, defs, env, byWorkflow)[0].Findings, nil
+}
+
+func unwaivedErrors(findings []workflowlint.Finding) []workflowlint.Finding {
+	var out []workflowlint.Finding
+	for _, f := range findings {
+		if f.Level == workflowlint.LevelError && !f.Waived {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// writeLintRefusal answers a save that has unwaived lint errors and no
+// lint_override: 422 with each error and its fix hint.
+func writeLintRefusal(w http.ResponseWriter, errs []workflowlint.Finding) {
+	writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+		"error":    fmt.Sprintf("the workflow has %d lint error(s); fix them, or save again with lint_override and a reason", len(errs)),
+		"code":     "workflow_lint_errors",
+		"findings": errs,
+	})
 }

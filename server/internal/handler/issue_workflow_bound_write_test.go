@@ -78,8 +78,9 @@ func newBoundWorkflowWriteFrom(t *testing.T, initial, field string, edit func(ma
 	resetDecisionLease(t)
 	wf := createTestWorkflowSteps(t, "Bound write "+workflowTestSuffix(), []map[string]any{
 		{"status_key": "backlog"},
+		leadStep("todo"),
 		{"status_key": "in_progress", "handler": map[string]any{"type": "member", "id": testUserID}, "instructions": initial},
-		{"status_key": "blocked"},
+		leadStep("blocked"),
 	})
 	before := canonicalStepsHash(t, wf.ID, liveSteps(t, wf.ID))
 	after := editedSteps(t, wf.ID, "in_progress", edit)
@@ -388,8 +389,9 @@ func TestBoundWorkflowApprovalDoesNotCarryToAnotherWorkflow(t *testing.T) {
 	write := newBoundWorkflowWrite(t, "workflow.instructions", edit, "workflow.instructions")
 	other := createTestWorkflowSteps(t, "Bound write twin "+workflowTestSuffix(), []map[string]any{
 		{"status_key": "backlog"},
+		leadStep("todo"),
 		{"status_key": "in_progress", "handler": map[string]any{"type": "member", "id": testUserID}},
-		{"status_key": "blocked"},
+		leadStep("blocked"),
 	})
 	body := write.body(t, write.steps(t, edit))
 

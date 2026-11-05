@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -96,4 +98,34 @@ func printLintTable(results []lintResult) {
 		cli.PrintTable(os.Stdout, []string{"WORKFLOW", "RULE", "LEVEL", "STEP", "MESSAGE"}, rows)
 	}
 	fmt.Printf("%d workflow(s): %d error(s), %d warning(s), %d info (unwaived)\n", len(results), errs, warns, infos)
+}
+
+// lintRefusal formats the 422 a save gets when it has unwaived lint errors:
+// each error with its fix hint, then how to override. "" when body is not that
+// refusal.
+func lintRefusal(body string) string {
+	var refusal struct {
+		Code     string        `json:"code"`
+		Findings []lintFinding `json:"findings"`
+	}
+	if json.Unmarshal([]byte(body), &refusal) != nil || refusal.Code != "workflow_lint_errors" {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "workflow not saved: %d lint error(s)\n", len(refusal.Findings))
+	for _, f := range refusal.Findings {
+		fmt.Fprintf(&b, "  %s step %q: %s\n    fix: %s\n", f.Rule, f.Step, f.Message, f.Hint)
+	}
+	b.WriteString("Fix them, or save again with --lint-override \"<reason>\".")
+	return b.String()
+}
+
+// printSaveLintFindings prints the findings a save returned (warnings, info and
+// waived errors) to stderr, so stdout stays the workflow readback.
+func printSaveLintFindings(wf map[string]any) {
+	raw, _ := wf["lint_findings"].([]any)
+	for _, r := range raw {
+		f, _ := r.(map[string]any)
+		fmt.Fprintf(os.Stderr, "%s %s step %q: %s\n", strVal(f, "level"), strVal(f, "rule"), strVal(f, "step"), strVal(f, "message"))
+	}
 }

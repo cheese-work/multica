@@ -84,6 +84,17 @@ UPDATE issue_workflow SET
         ELSE NULLIF(sqlc.narg('max_runs_per_issue')::int, 0)
     END,
     include_child_prs = COALESCE(sqlc.narg('include_child_prs')::boolean, include_child_prs),
+    -- A save that was linted records its override (null when it passed clean);
+    -- any other write keeps the last one.
+    lint_override_reason = CASE
+        WHEN sqlc.arg('lint_checked')::boolean THEN sqlc.narg('lint_override_reason')::text
+        ELSE lint_override_reason
+    END,
+    lint_overridden_at = CASE
+        WHEN NOT sqlc.arg('lint_checked')::boolean THEN lint_overridden_at
+        WHEN sqlc.narg('lint_override_reason')::text IS NULL THEN NULL
+        ELSE now()
+    END,
     updated_at = now()
 WHERE id = sqlc.arg('id')::uuid
   AND workspace_id = sqlc.arg('workspace_id')::uuid

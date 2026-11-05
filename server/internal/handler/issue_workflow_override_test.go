@@ -289,7 +289,7 @@ func TestEditWorkflowKeepsStatusesHeldByOverriddenIssues(t *testing.T) {
 	issueID := dbfx.Issue(t, "holds in_progress", testutil.Cols{"status": "in_progress"})
 	setIssueOverride(t, issueID, wf.ID)
 
-	patch := withURLParam(workflowRequest("PATCH", "/api/issue-workflows/"+wf.ID, map[string]any{"steps": statusSteps("backlog", "blocked")}), "id", wf.ID)
+	patch := withURLParam(workflowEditRequest("PATCH", "/api/issue-workflows/"+wf.ID, map[string]any{"steps": statusSteps("backlog", "blocked")}), "id", wf.ID)
 	if code := testutil.Call(t, testHandler.UpdateIssueWorkflow, patch).Want(http.StatusConflict).Map()["code"]; code != "workflow_in_use" {
 		t.Fatalf("code = %v, want workflow_in_use", code)
 	}

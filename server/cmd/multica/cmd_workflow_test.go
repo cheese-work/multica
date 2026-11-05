@@ -365,3 +365,53 @@ func TestWorkflowLintNeedsOneTarget(t *testing.T) {
 		t.Fatal("an id together with --all must fail")
 	}
 }
+
+func TestWorkflowUpdateListsLintErrorsAndSendsOverride(t *testing.T) {
+	var patched map[string]any
+	refuse := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		patched = nil
+		_ = json.NewDecoder(r.Body).Decode(&patched)
+		if refuse && patched["lint_override"] == nil {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"code":"workflow_lint_errors","error":"x","findings":[{"rule":"WF002","level":"error","step":"in_progress","message":"\"in_progress\" has no handler.","hint":"Give the step a handler."}]}`))
+			return
+		}
+		fix := workflowFixture()
+		fix["lint_findings"] = []any{map[string]any{"rule": "WF014", "level": "warning", "step": "", "message": "max_runs_per_issue is not set."}}
+		_ = json.NewEncoder(w).Encode(fix)
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+
+	newCmd := func() *cobra.Command {
+		cmd := newWorkflowRulesCmd()
+		cmd.Flags().String("lint-override", "", "")
+		_ = cmd.Flags().Set("steps-file", writeTemp(t, `[{"status_key":"in_progress"}]`))
+		return cmd
+	}
+	_, err := captureStdout(t, func() error { return runWorkflowUpdate(newCmd(), []string{testWorkflowID}) })
+	if err == nil {
+		t.Fatal("want the save refused")
+	}
+	for _, want := range []string{"WF002", "in_progress", "Give the step a handler.", "--lint-override"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal lacks %q:\n%v", want, err)
+		}
+	}
+
+	cmd := newCmd()
+	_ = cmd.Flags().Set("lint-override", "assigned at run time")
+	if _, err := captureStdout(t, func() error { return runWorkflowUpdate(cmd, []string{testWorkflowID}) }); err != nil {
+		t.Fatalf("override save: %v", err)
+	}
+	if patched["lint_override"] != "assigned at run time" {
+		t.Fatalf("sent %v, want lint_override", patched)
+	}
+
+	cmd = newCmd()
+	_ = cmd.Flags().Set("lint-override", "  ")
+	if err := runWorkflowUpdate(cmd, []string{testWorkflowID}); err == nil {
+		t.Fatal("a blank reason must fail before any request")
+	}
+}

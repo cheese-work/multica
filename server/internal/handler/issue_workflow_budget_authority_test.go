@@ -16,7 +16,7 @@ func TestWorkflowBudgetFieldsNeedInteractiveSession(t *testing.T) {
 	}
 	wf := createTestWorkflowSteps(t, "Budget authority "+workflowTestSuffix(), statusSteps("backlog", "in_progress", "blocked"))
 	put := func(source string, body map[string]any) *testutil.Response {
-		req := withURLParam(workflowRequest("PUT", "/api/issue-workflows/"+wf.ID, body), "id", wf.ID)
+		req := withURLParam(workflowEditRequest("PUT", "/api/issue-workflows/"+wf.ID, body), "id", wf.ID)
 		if source != "" {
 			req.Header.Set("X-Actor-Source", source)
 		}

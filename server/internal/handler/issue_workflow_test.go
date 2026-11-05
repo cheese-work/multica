@@ -260,7 +260,7 @@ func TestDefaultWorkflowIsEditableButNotDeletable(t *testing.T) {
 	issueID := dbfx.Issue(t, "stays on in_review", testutil.Cols{"project_id": projectID, "status": "in_review"})
 
 	var updated IssueWorkflowResponse
-	req := withURLParam(workflowRequest("PATCH", "/api/issue-workflows/"+def.ID, map[string]any{
+	req := withURLParam(workflowEditRequest("PATCH", "/api/issue-workflows/"+def.ID, map[string]any{
 		"name": "Renamed", "steps": statusSteps("backlog", "in_progress", "blocked"),
 	}), "id", def.ID)
 	testutil.Call(t, testHandler.UpdateIssueWorkflow, req).Want(http.StatusOK).JSON(&updated)
@@ -531,7 +531,7 @@ func TestWorkflowOwnerPermissions(t *testing.T) {
 	novel := "Member status " + workflowTestSuffix()
 	patchSteps := func(as func(*http.Request) *http.Request, body map[string]any) *testutil.Response {
 		return testutil.Call(t, testHandler.UpdateIssueWorkflow,
-			withURLParam(as(workflowRequest("PATCH", "/api/issue-workflows/"+wf.ID, body)), "id", wf.ID))
+			withURLParam(as(workflowEditRequest("PATCH", "/api/issue-workflows/"+wf.ID, body)), "id", wf.ID))
 	}
 	patchSteps(asOwner, newSteps(novel)).Want(http.StatusForbidden)
 	createBody := newSteps(novel)
@@ -613,7 +613,7 @@ func TestWorkflowWithoutBacklogOrBlocked(t *testing.T) {
 	setProjectWorkflow(t, other, map[string]any{"workflow_id": full.ID}).Want(http.StatusOK)
 	stuck := dbfx.Issue(t, "stuck", testutil.Cols{"project_id": other, "status": "blocked"})
 	edit := func(body map[string]any) *testutil.Response {
-		return testutil.Call(t, testHandler.UpdateIssueWorkflow, withURLParam(workflowRequest("PATCH", "/api/issue-workflows/"+full.ID, body), "id", full.ID))
+		return testutil.Call(t, testHandler.UpdateIssueWorkflow, withURLParam(workflowEditRequest("PATCH", "/api/issue-workflows/"+full.ID, body), "id", full.ID))
 	}
 	var conflict struct {
 		Plan workflowMappingPlan `json:"plan"`
@@ -777,7 +777,7 @@ func TestArchiveStatusGuardsNamedWorkflowsOnly(t *testing.T) {
 	}
 	testutil.Call(t, testHandler.ListIssueWorkflows, workflowRequest("GET", "/api/issue-workflows", nil)).Want(http.StatusOK).JSON(&list)
 	def := list.Workflows[0]
-	patch := withURLParam(workflowRequest("PATCH", "/api/issue-workflows/"+def.ID, map[string]any{
+	patch := withURLParam(workflowEditRequest("PATCH", "/api/issue-workflows/"+def.ID, map[string]any{
 		"steps": statusSteps("in_progress", loose.Key),
 	}), "id", def.ID)
 	testutil.Call(t, testHandler.UpdateIssueWorkflow, patch).Want(http.StatusOK)

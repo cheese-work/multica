@@ -22,6 +22,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/workflowlint"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -94,6 +95,9 @@ type IssueWorkflowStepPayload struct {
 	// Entry are the step's entry gates; see issueworkflow.EntryGate. Omitted
 	// keeps the stored gates, [] clears them.
 	Entry []issueworkflow.EntryGate `json:"entry,omitempty"`
+	// DynamicAssignment and LintWaive: see issueworkflow.Step.
+	DynamicAssignment bool                       `json:"dynamic_assignment,omitempty"`
+	LintWaive         []issueworkflow.LintWaiver `json:"lint_waive,omitempty"`
 }
 
 type IssueWorkflowResponse struct {
@@ -117,6 +121,13 @@ type IssueWorkflowResponse struct {
 	// IncludeChildPRs says whether a parent's PR guards also read the PRs of
 	// its direct children.
 	IncludeChildPRs bool `json:"include_child_prs"`
+	// LintFindings are the warnings and info a save produced; a save with an
+	// unwaived error is refused unless it carries lint_override.
+	LintFindings []workflowlint.Finding `json:"lint_findings,omitempty"`
+	// LintOverrideReason and LintOverriddenAt record the last save that went
+	// through despite unwaived lint errors.
+	LintOverrideReason *string `json:"lint_override_reason,omitempty"`
+	LintOverriddenAt   *string `json:"lint_overridden_at,omitempty"`
 }
 
 // StatusMappingRequirement names a status some issues are on that the target
@@ -153,6 +164,9 @@ func stepToPayload(s issueworkflow.Step) IssueWorkflowStepPayload {
 		Edges:            s.Edges,
 		SubWorkflow:      s.SubWorkflow,
 		Entry:            s.Entry,
+
+		DynamicAssignment: s.DynamicAssignment,
+		LintWaive:         s.LintWaive,
 	}
 }
 
@@ -168,6 +182,9 @@ func payloadToStep(statusKey string, in IssueWorkflowStepPayload) issueworkflow.
 		Edges:            in.Edges,
 		SubWorkflow:      in.SubWorkflow,
 		Entry:            in.Entry,
+
+		DynamicAssignment: in.DynamicAssignment,
+		LintWaive:         in.LintWaive,
 	}
 }
 
@@ -194,6 +211,9 @@ func issueWorkflowToResponse(row db.IssueWorkflow, def issueworkflow.Definition,
 
 		MaxRunsPerIssue: maxRunsPtr(row.MaxRunsPerIssue),
 		IncludeChildPRs: row.IncludeChildPrs,
+
+		LintOverrideReason: textPtr(row.LintOverrideReason),
+		LintOverriddenAt:   timestampToPtr(row.LintOverriddenAt),
 	}
 }
 
@@ -388,6 +408,9 @@ type IssueWorkflowStepInput struct {
 	SubWorkflow *issueworkflow.SubWorkflow `json:"sub_workflow,omitempty"`
 	// Entry: see IssueWorkflowStepPayload.
 	Entry []issueworkflow.EntryGate `json:"entry,omitempty"`
+	// DynamicAssignment and LintWaive: see IssueWorkflowStepPayload.
+	DynamicAssignment bool                       `json:"dynamic_assignment,omitempty"`
+	LintWaive         []issueworkflow.LintWaiver `json:"lint_waive,omitempty"`
 }
 
 type IssueWorkflowWriteRequest struct {
@@ -418,6 +441,9 @@ type IssueWorkflowWriteRequest struct {
 	// IncludeChildPRs sets whether a parent's PR guards read its children's
 	// PRs. Omitted keeps the stored value (true for a new workflow).
 	IncludeChildPRs *bool `json:"include_child_prs,omitempty"`
+	// LintOverride saves the steps despite unwaived lint errors. It must give
+	// the reason, which the workflow stores. Not accepted from an agent task.
+	LintOverride *string `json:"lint_override,omitempty"`
 }
 
 var newStatusDefaultColor = map[string]string{
@@ -451,6 +477,9 @@ func resolveStepInputs(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID,
 			Edges:            in.Edges,
 			SubWorkflow:      in.SubWorkflow,
 			Entry:            in.Entry,
+
+			DynamicAssignment: in.DynamicAssignment,
+			LintWaive:         in.LintWaive,
 		}
 		if in.Handler != nil {
 			step.Handler = issueworkflow.Handler{Type: in.Handler.Type, ID: in.Handler.ID}
@@ -807,11 +836,15 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", ruleMsg)
 		return
 	}
+	if req.LintOverride != nil && strings.TrimSpace(*req.LintOverride) == "" {
+		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", "lint_override needs a reason")
+		return
+	}
 	if refuseUnboundMachineWrite(w, r, req.DecisionBindingFields) {
 		return
 	}
 	machine := isMachineCredentialActor(r)
-	if machine && (req.Steps == nil || req.Name != nil || req.Description != nil || req.IncludeChildPRs != nil || len(req.StatusMapping) > 0 || req.DryRun) {
+	if machine && (req.Steps == nil || req.Name != nil || req.Description != nil || req.IncludeChildPRs != nil || len(req.StatusMapping) > 0 || req.DryRun || req.LintOverride != nil) {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", "a decision-bound write carries steps and expected_version only")
 		return
 	}
@@ -979,6 +1012,33 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Lint gate: an unwaived error refuses the save unless it carries a
+	// reason. A dry run writes nothing, so it is not gated. It runs after the
+	// authority checks, so a 403 or 409 is never masked by a 422.
+	lintChecked := !req.DryRun && (req.Steps != nil || req.MaxRunsPerIssue != nil)
+	var lintFindings []workflowlint.Finding
+	var lintOverride pgtype.Text
+	if lintChecked {
+		proposed := issueworkflow.Definition{ID: current.ID, Name: name, IsDefault: current.IsDefault, Steps: steps, IncludeChildPRs: current.IncludeChildPrs}
+		proposed.MaxRunsPerIssue = int(current.MaxRunsPerIssue.Int32)
+		if maxRuns.Valid {
+			proposed.MaxRunsPerIssue = int(maxRuns.Int32)
+		}
+		lintFindings, err = h.lintProposedSave(ctx, wsUUID, current, proposed, catalog, projects)
+		if err != nil {
+			slog.Warn("UpdateIssueWorkflow lint failed", append(logger.RequestAttrs(r), "error", err)...)
+			writeError(w, http.StatusInternalServerError, "failed to lint workflow")
+			return
+		}
+		if errs := unwaivedErrors(lintFindings); len(errs) > 0 {
+			if req.LintOverride == nil {
+				writeLintRefusal(w, errs)
+				return
+			}
+			lintOverride = pgtype.Text{String: strings.TrimSpace(*req.LintOverride), Valid: true}
+		}
+	}
+
 	raw, err := issueworkflow.EncodeSteps(steps)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save workflow")
@@ -993,6 +1053,9 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		Steps:            raw,
 		MaxRunsPerIssue:  maxRuns,
 		IncludeChildPrs:  includeChildPRs,
+
+		LintChecked:        lintChecked,
+		LintOverrideReason: lintOverride,
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -1021,7 +1084,9 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		h.publishIssueStatusChanged(workspaceID, member, "created", false)
 	}
 	h.publishIssueWorkflowChanged(workspaceID, member, "updated")
-	h.writeIssueWorkflow(w, r, http.StatusOK, row)
+	resp := h.issueWorkflowResponse(ctx, row)
+	resp.LintFindings = lintFindings
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) DeleteIssueWorkflow(w http.ResponseWriter, r *http.Request) {

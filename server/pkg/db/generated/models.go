@@ -2110,6 +2110,8 @@ type IssueWorkflow struct {
 	RunBudgetSince          pgtype.Timestamptz `json:"run_budget_since"`
 	RunBudgetTokenAllowance pgtype.Int8        `json:"run_budget_token_allowance"`
 	RunBudgetTokenReserve   pgtype.Int8        `json:"run_budget_token_reserve"`
+	LintOverrideReason      pgtype.Text        `json:"lint_override_reason"`
+	LintOverriddenAt        pgtype.Timestamptz `json:"lint_overridden_at"`
 }
 
 type LarkBindingToken struct {

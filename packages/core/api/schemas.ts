@@ -607,6 +607,8 @@ export const IssueWorkflowSchema = z.lazy(() => z.object({
   // Full-precision updated_at; a save names the version it edited. Absent from
   // an older server, which then keeps last-writer-wins.
   version: z.string().default(""),
+  lint_override_reason: z.string().nullable().default(null),
+  lint_overridden_at: z.string().nullable().default(null),
 }).loose());
 
 export const ListIssueWorkflowsResponseSchema = z.lazy(() => z.object({
@@ -628,6 +630,8 @@ export const EMPTY_ISSUE_WORKFLOW: IssueWorkflow = {
   created_at: "",
   updated_at: "",
   version: "",
+  lint_override_reason: null,
+  lint_overridden_at: null,
 };
 
 export const IssueWorkflowMappingPlanSchema = z.lazy(() => z.object({

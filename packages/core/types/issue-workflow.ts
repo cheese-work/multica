@@ -90,6 +90,21 @@ export interface IssueWorkflow {
   updated_at: string;
   /** Full-precision updated_at; empty from a server that predates it. */
   version?: string;
+  /** Why the last save went through lint errors; null when it was clean. */
+  lint_override_reason?: string | null;
+  lint_overridden_at?: string | null;
+  /** Findings a save returned (warnings, info, waived errors); only on a save response. */
+  lint_findings?: IssueWorkflowLintFinding[];
+}
+
+export interface IssueWorkflowLintFinding {
+  rule: string;
+  level: "error" | "warning" | "info";
+  step?: string;
+  message: string;
+  hint?: string;
+  waived?: boolean;
+  waive_reason?: string;
 }
 
 export interface ListIssueWorkflowsResponse {
@@ -120,6 +135,8 @@ export interface IssueWorkflowWriteRequest {
   /** 1 to 1000 sets the run budget, 0 restores the default; omit to keep it. */
   max_runs_per_issue?: number;
   include_child_prs?: boolean;
+  /** A save with unwaived lint errors is refused (422) unless it carries a reason here. */
+  lint_override?: string;
   /** Destination for issues on statuses an edit removes, keyed by removed status. */
   status_mapping?: Record<string, string>;
   dry_run?: boolean;

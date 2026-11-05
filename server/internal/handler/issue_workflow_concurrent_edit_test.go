@@ -9,7 +9,7 @@ import (
 
 func patchWorkflow(t *testing.T, id string, body map[string]any) *testutil.Response {
 	t.Helper()
-	return testutil.Call(t, testHandler.UpdateIssueWorkflow, withURLParam(workflowRequest("PATCH", "/api/issue-workflows/"+id, body), "id", id))
+	return testutil.Call(t, testHandler.UpdateIssueWorkflow, withURLParam(workflowEditRequest("PATCH", "/api/issue-workflows/"+id, body), "id", id))
 }
 
 // workflowVersion is the version token a workflow response carries. updated_at
@@ -86,4 +86,25 @@ func TestUpdateIssueWorkflowChecksEditRightsBeforeTheVersion(t *testing.T) {
 
 	req := asOther(workflowRequest("PATCH", "/api/issue-workflows/"+wf.ID, map[string]any{"description": "x", "expected_version": "stale"}))
 	testutil.Call(t, testHandler.UpdateIssueWorkflow, withURLParam(req, "id", wf.ID)).Want(http.StatusForbidden)
+}
+
+// withLintOverride lets a fixture save through the lint gate: these tests
+// exercise other behavior on bare statuses. The gate has its own tests.
+func withLintOverride(body map[string]any) map[string]any {
+	_, hasSteps := body["steps"]
+	_, hasRuns := body["max_runs_per_issue"]
+	if !hasSteps && !hasRuns {
+		return body
+	}
+	out := make(map[string]any, len(body)+1)
+	for k, v := range body {
+		out[k] = v
+	}
+	out["lint_override"] = "test fixture"
+	return out
+}
+
+// workflowEditRequest is workflowRequest with the lint override a fixture needs.
+func workflowEditRequest(method, path string, body map[string]any) *http.Request {
+	return workflowRequest(method, path, withLintOverride(body))
 }

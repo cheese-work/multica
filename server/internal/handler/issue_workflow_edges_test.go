@@ -391,7 +391,7 @@ func TestWorkflowRunRulesPersistAndPreserve(t *testing.T) {
 	update := func(body map[string]any) IssueWorkflowResponse {
 		t.Helper()
 		var out IssueWorkflowResponse
-		req := withURLParam(workflowRequest("PUT", "/api/issue-workflows/"+wf.ID, body), "id", wf.ID)
+		req := withURLParam(workflowEditRequest("PUT", "/api/issue-workflows/"+wf.ID, body), "id", wf.ID)
 		req.Header.Set("X-Actor-Source", "interactive_jwt")
 		testutil.Call(t, testHandler.UpdateIssueWorkflow, req).Want(http.StatusOK).JSON(&out)
 		return out

@@ -105,7 +105,7 @@ VALUES (
     true
 )
 ON CONFLICT (workspace_id) WHERE is_default DO NOTHING
-RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve
+RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, lint_override_reason, lint_overridden_at
 `
 
 type CreateDefaultIssueWorkflowParams struct {
@@ -139,6 +139,8 @@ func (q *Queries) CreateDefaultIssueWorkflow(ctx context.Context, arg CreateDefa
 			&i.RunBudgetSince,
 			&i.RunBudgetTokenAllowance,
 			&i.RunBudgetTokenReserve,
+			&i.LintOverrideReason,
+			&i.LintOverriddenAt,
 		); err != nil {
 			return nil, err
 		}
@@ -162,7 +164,7 @@ VALUES (
     NULLIF($7::int, 0),
     COALESCE($8::boolean, true)
 )
-RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve
+RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, lint_override_reason, lint_overridden_at
 `
 
 type CreateIssueWorkflowParams struct {
@@ -204,6 +206,8 @@ func (q *Queries) CreateIssueWorkflow(ctx context.Context, arg CreateIssueWorkfl
 		&i.RunBudgetSince,
 		&i.RunBudgetTokenAllowance,
 		&i.RunBudgetTokenReserve,
+		&i.LintOverrideReason,
+		&i.LintOverriddenAt,
 	)
 	return i, err
 }
@@ -239,7 +243,7 @@ func (q *Queries) DeleteIssueWorkflowsForWorkspace(ctx context.Context, workspac
 }
 
 const getDefaultIssueWorkflow = `-- name: GetDefaultIssueWorkflow :one
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve FROM issue_workflow
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, lint_override_reason, lint_overridden_at FROM issue_workflow
 WHERE workspace_id = $1::uuid
   AND is_default
 `
@@ -263,12 +267,14 @@ func (q *Queries) GetDefaultIssueWorkflow(ctx context.Context, workspaceID pgtyp
 		&i.RunBudgetSince,
 		&i.RunBudgetTokenAllowance,
 		&i.RunBudgetTokenReserve,
+		&i.LintOverrideReason,
+		&i.LintOverriddenAt,
 	)
 	return i, err
 }
 
 const getIssueWorkflow = `-- name: GetIssueWorkflow :one
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve FROM issue_workflow
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, lint_override_reason, lint_overridden_at FROM issue_workflow
 WHERE id = $1::uuid
   AND workspace_id = $2::uuid
 `
@@ -297,6 +303,8 @@ func (q *Queries) GetIssueWorkflow(ctx context.Context, arg GetIssueWorkflowPara
 		&i.RunBudgetSince,
 		&i.RunBudgetTokenAllowance,
 		&i.RunBudgetTokenReserve,
+		&i.LintOverrideReason,
+		&i.LintOverriddenAt,
 	)
 	return i, err
 }
@@ -356,7 +364,7 @@ func (q *Queries) ListIssueWorkflowNamesUsingStatusKey(ctx context.Context, arg 
 
 const listIssueWorkflows = `-- name: ListIssueWorkflows :many
 
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve FROM issue_workflow
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, lint_override_reason, lint_overridden_at FROM issue_workflow
 WHERE workspace_id = $1::uuid
 ORDER BY is_default DESC, lower(name), created_at, id
 `
@@ -390,6 +398,8 @@ func (q *Queries) ListIssueWorkflows(ctx context.Context, workspaceID pgtype.UUI
 			&i.RunBudgetSince,
 			&i.RunBudgetTokenAllowance,
 			&i.RunBudgetTokenReserve,
+			&i.LintOverrideReason,
+			&i.LintOverriddenAt,
 		); err != nil {
 			return nil, err
 		}
@@ -877,21 +887,34 @@ UPDATE issue_workflow SET
         ELSE NULLIF($5::int, 0)
     END,
     include_child_prs = COALESCE($6::boolean, include_child_prs),
+    -- A save that was linted records its override (null when it passed clean);
+    -- any other write keeps the last one.
+    lint_override_reason = CASE
+        WHEN $7::boolean THEN $8::text
+        ELSE lint_override_reason
+    END,
+    lint_overridden_at = CASE
+        WHEN NOT $7::boolean THEN lint_overridden_at
+        WHEN $8::text IS NULL THEN NULL
+        ELSE now()
+    END,
     updated_at = now()
-WHERE id = $7::uuid
-  AND workspace_id = $8::uuid
-RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve
+WHERE id = $9::uuid
+  AND workspace_id = $10::uuid
+RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, lint_override_reason, lint_overridden_at
 `
 
 type UpdateIssueWorkflowParams struct {
-	Name             string      `json:"name"`
-	Description      string      `json:"description"`
-	InitialStatusKey string      `json:"initial_status_key"`
-	Steps            []byte      `json:"steps"`
-	MaxRunsPerIssue  pgtype.Int4 `json:"max_runs_per_issue"`
-	IncludeChildPrs  pgtype.Bool `json:"include_child_prs"`
-	ID               pgtype.UUID `json:"id"`
-	WorkspaceID      pgtype.UUID `json:"workspace_id"`
+	Name               string      `json:"name"`
+	Description        string      `json:"description"`
+	InitialStatusKey   string      `json:"initial_status_key"`
+	Steps              []byte      `json:"steps"`
+	MaxRunsPerIssue    pgtype.Int4 `json:"max_runs_per_issue"`
+	IncludeChildPrs    pgtype.Bool `json:"include_child_prs"`
+	LintChecked        bool        `json:"lint_checked"`
+	LintOverrideReason pgtype.Text `json:"lint_override_reason"`
+	ID                 pgtype.UUID `json:"id"`
+	WorkspaceID        pgtype.UUID `json:"workspace_id"`
 }
 
 func (q *Queries) UpdateIssueWorkflow(ctx context.Context, arg UpdateIssueWorkflowParams) (IssueWorkflow, error) {
@@ -902,6 +925,8 @@ func (q *Queries) UpdateIssueWorkflow(ctx context.Context, arg UpdateIssueWorkfl
 		arg.Steps,
 		arg.MaxRunsPerIssue,
 		arg.IncludeChildPrs,
+		arg.LintChecked,
+		arg.LintOverrideReason,
 		arg.ID,
 		arg.WorkspaceID,
 	)
@@ -922,6 +947,8 @@ func (q *Queries) UpdateIssueWorkflow(ctx context.Context, arg UpdateIssueWorkfl
 		&i.RunBudgetSince,
 		&i.RunBudgetTokenAllowance,
 		&i.RunBudgetTokenReserve,
+		&i.LintOverrideReason,
+		&i.LintOverriddenAt,
 	)
 	return i, err
 }

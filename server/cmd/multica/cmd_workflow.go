@@ -59,7 +59,13 @@ Run rules change with their own flags, with or without --steps-file; a rule
 flag left out keeps its value. --max-runs-per-issue N (1 to 1000) caps the runs
 one issue can use before the engine blocks it (0 restores the default of 15);
 --include-child-prs=false stops PR guards from reading the PRs of sub-issues.
-Prints the server's readback.`,
+Prints the server's readback.
+
+A save that changes steps or run rules is linted first (see "workflow lint").
+An error that is not waived refuses the save and the command lists each error
+with its fix hint. Fix them, or save again with --lint-override "<reason>"; the
+reason is stored with the workflow. Warnings and info never block and are
+printed to stderr. A decision-bound agent write cannot override.`,
 	Args: exactArgs(1),
 	RunE: runWorkflowUpdate,
 }
@@ -86,6 +92,7 @@ func init() {
 	workflowUpdateCmd.Flags().String("steps-file", "", "JSON file holding the full steps array (required unless a rule flag is given)")
 	workflowUpdateCmd.Flags().Int("max-runs-per-issue", 0, "Runs one issue can use before it is blocked, 1-1000 (0 restores the default)")
 	workflowUpdateCmd.Flags().Bool("include-child-prs", true, "Whether PR guards also read the PRs of sub-issues")
+	workflowUpdateCmd.Flags().String("lint-override", "", "Save despite lint errors, recording this reason with the workflow")
 	workflowUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 	for _, c := range []*cobra.Command{workflowUpdateCmd, workflowSetInstructionsCmd} {
 		c.Flags().String("decision-id", "", "CHE-2448 decision path: id of the decision request Cheese answered for this exact change. The CLI sends decision_id, before_sha256 and after_sha256 and takes the steps from the live workflow read. Agent task tokens only.")
@@ -177,6 +184,13 @@ func runWorkflowUpdate(cmd *cobra.Command, args []string) error {
 	if len(body) == 0 {
 		return errors.New("give --steps-file, --max-runs-per-issue or --include-child-prs")
 	}
+	if cmd.Flags().Changed("lint-override") {
+		reason, _ := cmd.Flags().GetString("lint-override")
+		if strings.TrimSpace(reason) == "" {
+			return errors.New("--lint-override needs a reason")
+		}
+		body["lint_override"] = reason
+	}
 	if err := checkWorkflowBindingFlags(cmd); err != nil {
 		return err
 	}
@@ -217,6 +231,7 @@ func runWorkflowUpdate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	printSaveLintFindings(wf)
 	return printWorkflow(cmd, wf)
 }
 
@@ -302,6 +317,11 @@ func patchWorkflow(ctx context.Context, client *cli.APIClient, id string, body m
 		var httpErr *cli.HTTPError
 		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusForbidden && body["decision_id"] == nil {
 			return nil, fmt.Errorf("update workflow: only a workspace owner or admin can edit workflows (server said: %s)", httpErr.Body)
+		}
+		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusUnprocessableEntity {
+			if refusal := lintRefusal(httpErr.Body); refusal != "" {
+				return nil, errors.New(refusal)
+			}
 		}
 		return nil, fmt.Errorf("update workflow: %w", err)
 	}
