@@ -56,16 +56,25 @@ export function ScopedWakeupRules({
   scope,
   canManage,
   toggleLabel,
+  revealSignal = 0,
 }: {
   workspaceId: string;
   scope: EditableWakeupScope;
   canManage: boolean;
+  /** Each increase opens the collapsed toggle and brings it into view (a deep link). */
+  revealSignal?: number;
   /** Puts the rules behind a collapsed toggle with this label; the drafts survive a collapse. */
   toggleLabel?: string;
 }) {
   const { t } = useT("settings");
   const bodyId = useId();
   const [open, setOpen] = useState(!toggleLabel);
+  const toggleRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (!revealSignal) return;
+    setOpen(true);
+    toggleRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [revealSignal]);
   const project = scope.kind === "project";
   const { data } = useQuery(wakeupDefinitionsOptions(workspaceId, scope));
   // A saved rule empties the form: a new key remounts it.
@@ -114,6 +123,7 @@ export function ScopedWakeupRules({
   return (
     <div>
       <button
+        ref={toggleRef}
         type="button"
         aria-expanded={open}
         aria-controls={bodyId}
