@@ -251,3 +251,21 @@ func TestBackgroundAgentsOwnerAdminWriteMemberRead(t *testing.T) {
 	dbfx.Exec(t, `UPDATE member SET role='admin' WHERE workspace_id=$1`, wsID)
 	putBG(t, wsID, map[string]any{"dm_title": map[string]any{"agent_id": a}}, nil).Want(http.StatusOK)
 }
+
+// An agent archived after the last human save must not turn an unchanged
+// machine write into a 400; a changed machine write is still refused.
+func TestBackgroundAgentsUnchangedMachineWriteSkipsEligibility(t *testing.T) {
+	wsID, a, b, _ := bgFixture(t, "bg-archived")
+	val := map[string]any{"dm_title": map[string]any{"agent_id": a}}
+	putBG(t, wsID, val, nil).Want(http.StatusOK)
+	dbfx.Exec(t, `UPDATE agent SET archived_at = now() WHERE id = $1`, a)
+	rows, events := bgRows(t, wsID), len(bgEventsFor(wsID))
+	m := machine("task_token")
+	putBG(t, wsID, val, m).Want(http.StatusOK)
+	wantCode(t, putBG(t, wsID, map[string]any{"dm_title": map[string]any{"agent_id": b}}, m), http.StatusForbidden, "background_agents_human_only")
+	if bgRows(t, wsID) != rows || len(bgEventsFor(wsID)) != events {
+		t.Fatal("machine write left a row or an event")
+	}
+	// A human still gets the eligibility check.
+	wantCode(t, putBG(t, wsID, val, nil), http.StatusBadRequest, "agent_not_eligible")
+}
