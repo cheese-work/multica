@@ -110,7 +110,7 @@ var otherWriteFamilies = map[string]writeFamily{
 	"api/cloud-subscriptions":      {5, byHuman},
 	"api/contact-sales":            {1, byPublic},
 	"api/daemon":                   {35, byDaemon},
-	"api/decision-actions":         {3, byHuman},
+	"api/decision-actions":         {4, byHuman + "; the one run-token route, POST /proposals, requires a running task on its issue_id (ProposeDecisionAction)"},
 	"api/decision-answers":         {1, byHuman},
 	"api/decision-requests":        {3, byHuman},
 	"api/dingtalk":                 {1, byPublic},
