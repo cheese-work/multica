@@ -10,6 +10,7 @@ import {
   Pencil,
   Pin,
   PinOff,
+  Settings2,
   Trash2,
   UserRound,
 } from "@multica/ui/icons";
@@ -44,6 +45,7 @@ import { isImeComposing } from "@multica/core/utils";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { AppLink } from "../../navigation";
 import { BreadcrumbHeader } from "../../layout/breadcrumb-header";
+import { useNavigation } from "../../navigation";
 import { useT } from "../../i18n";
 import { ChatContextMeter } from "./chat-context-meter";
 import { ChatPresetPicker } from "./chat-preset-picker";
@@ -96,6 +98,7 @@ export function ChatSessionHeader({
   const { t } = useT("chat");
   const { t: tCommon } = useT("common");
   const wsPaths = useWorkspacePaths();
+  const { push } = useNavigation();
   const updateSession = useUpdateChatSession();
   const deleteSession = useDeleteChatSession();
   const setArchived = useSetChatSessionArchived();
@@ -356,6 +359,15 @@ export function ChatSessionHeader({
                   >
                     <UserRound className="h-4 w-4" />
                     {t(($) => $.header.view_profile)}
+                  </DropdownMenuItem>
+                )}
+                {agent && (
+                  <DropdownMenuItem
+                    data-testid="chat-more-menu-agent-settings"
+                    onClick={() => push(`${wsPaths.agentDetail(agent.id)}?view=general`)}
+                  >
+                    <Settings2 className="h-4 w-4" />
+                    {t(($) => $.header.agent_settings)}
                   </DropdownMenuItem>
                 )}
                 {onCompact && !isArchived ? (

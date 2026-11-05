@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ShimmerText } from "@multica/ui/components/common/shimmer-text";
-import { UnicodeSpinner } from "@multica/ui/components/common/unicode-spinner";
+import { MulticaIcon } from "@multica/ui/components/common/multica-icon";
 import type { AgentAvailability } from "@multica/core/agents";
 import type { ChatPendingTask, TaskMessagePayload } from "@multica/core/types";
 import { formatElapsedSecs } from "../lib/format";
@@ -166,22 +166,12 @@ function useResolveStage(): (
   };
 }
 
-// Read once: the spinner ticks frames in JS, so CSS alone cannot calm it.
-function prefersReducedMotion(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches
-  );
-}
-
 export function TaskStatusPill({
   pendingTask,
   taskMessages,
   availability,
 }: Props) {
   const resolveStage = useResolveStage();
-  const [reducedMotion] = useState(prefersReducedMotion);
   // Anchor: locked on first render. Once set we never reassign — otherwise
   // the timer would visibly snap backwards when an optimistic-seeded
   // `Date.now()` anchor is later replaced by a server-side created_at that
@@ -224,7 +214,7 @@ export function TaskStatusPill({
       aria-live="polite"
     >
       {!stage.static && (
-        <UnicodeSpinner name="breathe" className="opacity-70" paused={reducedMotion} />
+        <MulticaIcon mode="think" size={16} />
       )}
       <span className="truncate">
         <ShimmerText active={!stage.static}>
