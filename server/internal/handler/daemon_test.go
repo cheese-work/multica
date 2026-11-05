@@ -1422,7 +1422,7 @@ func TestCancelTask_TaskBelongsToDifferentIssue_Returns404(t *testing.T) {
 
 	var agentID, runtimeID string
 	dbfx.QueryRow(t,
-		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
+		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 ORDER BY created_at ASC LIMIT 1`,
 		testWorkspaceID,
 	).Scan(&agentID, &runtimeID)
 
@@ -1470,7 +1470,7 @@ func TestCancelTask_SameIssue_Succeeds(t *testing.T) {
 
 	var agentID, runtimeID string
 	dbfx.QueryRow(t,
-		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
+		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 ORDER BY created_at ASC LIMIT 1`,
 		testWorkspaceID,
 	).Scan(&agentID, &runtimeID)
 
@@ -2165,7 +2165,7 @@ func TestClaimTask_ProjectGithubReposOverrideWorkspaceRepos(t *testing.T) {
 	// Agent + runtime + queued task in this project.
 	var agentID, runtimeID string
 	dbfx.QueryRow(t,
-		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
+		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 ORDER BY created_at ASC LIMIT 1`,
 		testWorkspaceID,
 	).Scan(&agentID, &runtimeID)
 
@@ -2231,7 +2231,7 @@ func TestClaimTask_ProjectDescriptionInjected(t *testing.T) {
 
 	var agentID, runtimeID string
 	dbfx.QueryRow(t,
-		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
+		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 ORDER BY created_at ASC LIMIT 1`,
 		testWorkspaceID,
 	).Scan(&agentID, &runtimeID)
 
@@ -2320,7 +2320,7 @@ func TestClaimTask_ProjectWithoutRepos_FallsBackToWorkspaceRepos(t *testing.T) {
 
 	var agentID, runtimeID string
 	dbfx.QueryRow(t,
-		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
+		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 ORDER BY created_at ASC LIMIT 1`,
 		testWorkspaceID,
 	).Scan(&agentID, &runtimeID)
 
@@ -2506,7 +2506,7 @@ func TestClaimTaskByRuntime_TaskWorkspaceMismatch_CancelsAndRejects(t *testing.T
 	// Local agent/runtime (belongs to testWorkspace).
 	var localAgentID, localRuntimeID string
 	dbfx.QueryRow(t,
-		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
+		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 ORDER BY created_at ASC LIMIT 1`,
 		testWorkspaceID,
 	).Scan(&localAgentID, &localRuntimeID)
 
@@ -3907,7 +3907,7 @@ func TestGetChatSessionGCCheck(t *testing.T) {
 	ctx := context.Background()
 
 	var agentID string
-	dbfx.QueryRow(t, `SELECT id FROM agent WHERE workspace_id = $1 LIMIT 1`, testWorkspaceID).Scan(&agentID)
+	dbfx.QueryRow(t, `SELECT id FROM agent WHERE workspace_id = $1 ORDER BY created_at ASC LIMIT 1`, testWorkspaceID).Scan(&agentID)
 
 	sessionID := dbfx.ChatSession(t, agentID, testutil.Cols{
 		"title": "gc-check fixture",
@@ -3954,7 +3954,7 @@ func TestGetAutopilotRunGCCheck(t *testing.T) {
 	ctx := context.Background()
 
 	var agentID string
-	dbfx.QueryRow(t, `SELECT id FROM agent WHERE workspace_id = $1 LIMIT 1`, testWorkspaceID).Scan(&agentID)
+	dbfx.QueryRow(t, `SELECT id FROM agent WHERE workspace_id = $1 ORDER BY created_at ASC LIMIT 1`, testWorkspaceID).Scan(&agentID)
 
 	autopilotID := dbfx.Insert(t, "autopilot", testutil.Cols{
 		"workspace_id":    testWorkspaceID,

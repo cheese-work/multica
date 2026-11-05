@@ -111,7 +111,7 @@ func TestClaimTask_IssueProjectInForeignWorkspace_DegradesToWorkspaceRepos(t *te
 
 	var agentID, runtimeID string
 	dbfx.QueryRow(t,
-		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
+		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 ORDER BY created_at ASC LIMIT 1`,
 		testWorkspaceID,
 	).Scan(&agentID, &runtimeID)
 
@@ -242,7 +242,7 @@ func TestClaimTask_ProjectResourceFromForeignWorkspace_IsFilteredOut(t *testing.
 
 	var agentID, runtimeID string
 	dbfx.QueryRow(t,
-		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
+		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 ORDER BY created_at ASC LIMIT 1`,
 		testWorkspaceID,
 	).Scan(&agentID, &runtimeID)
 
@@ -293,7 +293,7 @@ func TestClaimTask_AutopilotRunOnlyForeignWorkspace_CancelsTask(t *testing.T) {
 
 	var localAgentID, localRuntimeID string
 	dbfx.QueryRow(t,
-		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
+		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 ORDER BY created_at ASC LIMIT 1`,
 		testWorkspaceID,
 	).Scan(&localAgentID, &localRuntimeID)
 
@@ -387,7 +387,7 @@ func TestBuildClaimedTaskResponse_SourceLoadFailure_PreservesTaskAndEmitsNoConte
 
 	var agentID, runtimeID string
 	dbfx.QueryRow(t,
-		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
+		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 ORDER BY created_at ASC LIMIT 1`,
 		testWorkspaceID,
 	).Scan(&agentID, &runtimeID)
 
@@ -496,7 +496,7 @@ func TestRejectClaimSourceLoad_MissingRow_CancelsTask(t *testing.T) {
 
 	var agentID, runtimeID string
 	dbfx.QueryRow(t,
-		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
+		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 ORDER BY created_at ASC LIMIT 1`,
 		testWorkspaceID,
 	).Scan(&agentID, &runtimeID)
 

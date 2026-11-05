@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -145,8 +146,11 @@ func TestChatSessionsListOwnForUserCredentials(test *testing.T) {
 				request.Header.Set("X-Actor-Source", source)
 				var sessions []ChatSessionResponse
 				testutil.Call(test, testHandler.ListChatSessions, request).Want(http.StatusOK).JSON(&sessions)
-				found := false
+				found, archivedFound := false, false
 				for _, session := range sessions {
+					if session.ID == archivedID {
+						archivedFound = true
+					}
 					if session.ID == otherSessionID {
 						test.Fatalf("%s: listed another user's session: %+v", path, session)
 					}
@@ -162,6 +166,9 @@ func TestChatSessionsListOwnForUserCredentials(test *testing.T) {
 				}
 				if !found {
 					test.Fatalf("%s: own session %s missing from %+v", path, ownID, sessions)
+				}
+				if strings.Contains(path, "status=all") && !archivedFound {
+					test.Fatalf("%s: archived session %s missing, redaction not exercised", path, archivedID)
 				}
 			}
 		})
