@@ -61,10 +61,11 @@ WITH RECURSIVE walk AS (
 SELECT NOT EXISTS (SELECT 1 FROM walk WHERE walk.parent_issue_id IS NULL)::boolean AS loops;
 
 -- name: InsertDMProgressDataIncident :exec
--- One incident per follow and kind, however often the child event repeats.
+-- One incident per follow and kind, however often the child event repeats. The
+-- unique index on (follow_id, kind) dedups without scanning the table.
 INSERT INTO dm_progress_data_incident (workspace_id, issue_id, follow_id, kind)
-SELECT $1, $2, $3, $4
-WHERE NOT EXISTS (SELECT 1 FROM dm_progress_data_incident WHERE follow_id = $3 AND kind = $4);
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (follow_id, kind) DO NOTHING;
 
 -- name: CountDMProgressDescendants :one
 -- Tracked descendants of a reporting root in one lane. (issue_id, lineage_id) is

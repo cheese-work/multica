@@ -132,3 +132,16 @@ func TestDMProgress_ChildOfReparentedIssueKeepsTheStoredRoot(t *testing.T) {
 		t.Fatalf("child of a detached issue reports to %s, want the stored root %s", got, root)
 	}
 }
+
+// SEC-2: incident dedup is a unique index on (follow_id, kind), so the insert
+// never scans the incident table (it ran under the workspace counter lock).
+func TestDMProgress_IncidentFollowKindIsUniqueByIndex(t *testing.T) {
+	const insert = `INSERT INTO dm_progress_data_incident (workspace_id, issue_id, follow_id, kind) VALUES ($1, gen_random_uuid(), $2, 'parent_cycle')`
+	var follow string
+	dbfx.QueryRow(t, `SELECT gen_random_uuid()::text`).Scan(&follow)
+	dbfx.Cleanup(t, `DELETE FROM dm_progress_data_incident WHERE follow_id = $1`, follow)
+	dbfx.Exec(t, insert, testWorkspaceID, follow)
+	if _, err := testPool.Exec(t.Context(), insert, testWorkspaceID, follow); err == nil || !strings.Contains(err.Error(), "SQLSTATE 23505") {
+		t.Fatalf("duplicate (follow_id, kind) err = %v, want a unique violation", err)
+	}
+}

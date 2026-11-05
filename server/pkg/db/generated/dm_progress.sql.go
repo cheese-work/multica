@@ -221,8 +221,8 @@ func (q *Queries) GetNativeChatSession(ctx context.Context, id pgtype.UUID) (Cha
 
 const insertDMProgressDataIncident = `-- name: InsertDMProgressDataIncident :exec
 INSERT INTO dm_progress_data_incident (workspace_id, issue_id, follow_id, kind)
-SELECT $1, $2, $3, $4
-WHERE NOT EXISTS (SELECT 1 FROM dm_progress_data_incident WHERE follow_id = $3 AND kind = $4)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (follow_id, kind) DO NOTHING
 `
 
 type InsertDMProgressDataIncidentParams struct {
@@ -232,7 +232,8 @@ type InsertDMProgressDataIncidentParams struct {
 	Kind        string      `json:"kind"`
 }
 
-// One incident per follow and kind, however often the child event repeats.
+// One incident per follow and kind, however often the child event repeats. The
+// unique index on (follow_id, kind) dedups without scanning the table.
 func (q *Queries) InsertDMProgressDataIncident(ctx context.Context, arg InsertDMProgressDataIncidentParams) error {
 	_, err := q.db.Exec(ctx, insertDMProgressDataIncident,
 		arg.WorkspaceID,
