@@ -20,6 +20,8 @@ const API = 'https://api.github.com/repos';
 const OVERLAP_MS = 10 * 60_000;
 const FOLLOWUP_MS = 7 * 24 * 3_600_000;
 const SEEN_MAX = 500;
+const WAKE_BUDGET = 3; // review wakeups per PR per 24 h; outside editors cannot spend unlimited agent runs
+const DAY_MS = 24 * 3_600_000;
 const COLS = ['pr', 'issue', 'head', 'state', 'watermark', 'convergence', 'notes'];
 const REF = /^([\w.-]+\/[\w.-]+)#(\d+)$/;
 const PAGE = 100;
@@ -135,7 +137,7 @@ async function pollOpen(row, prev, { get, now, self }) {
     prEtag: prRes.status === 200 ? prRes.etag : prev.prEtag,
     pages: closed ? {} : { ...prev.pages, ...pages },
     seen: [...prev.seen, ...incoming.map((e) => e.key)].slice(-SEEN_MAX),
-    lastResponseAt, pr, followedUp: prev.followedUp,
+    lastResponseAt, pr, followedUp: prev.followedUp, wakes: prev.wakes,
   };
   const overlay = { head: pr.head.sha, state: row.state, watermark: incoming.reduce((a, e) => (e.at > a ? e.at : a), watermark), notes: row.notes };
 
@@ -147,6 +149,10 @@ async function pollOpen(row, prev, { get, now, self }) {
     Object.assign(overlay, { state: 'closed unmerged', notes: 'closed unmerged upstream; reason to be recorded from the PR thread' });
     text = instructions.closed({ ...row, ...overlay });
   } else if (actionable.length) {
+    const recent = (prev.wakes ?? []).filter((t) => now.getTime() - Date.parse(t) < DAY_MS);
+    // Over budget: hold. Nothing is committed, so the events are found again and go out together later.
+    if (recent.length >= WAKE_BUDGET) return {};
+    next.wakes = [...recent, now.toISOString()];
     text = instructions.review(row, actionable, watermark);
   } else if (!prev.followedUp && now.getTime() - Date.parse(lastResponseAt) >= FOLLOWUP_MS) {
     next.followedUp = now.toISOString();
@@ -168,7 +174,7 @@ async function pollIntegration(row, { get, now }) {
 
 const keyOf = (pr, text) => createHash('sha1').update(`${pr}\n${text}`).digest('hex').slice(0, 12);
 
-// State shape: { rows: {pr: overlay}, prs: {pr: poll state}, pending: [outbox], backoffUntil?, stale? }
+// State shape: { rows: {pr: overlay}, prs: {pr: poll state}, pending: [outbox], rejected?: [last 20], backoffUntil?, stale? }
 // `deliver(issue, text, key)` must be idempotent per key; `save(state)` must be atomic.
 export async function watch({ md, state, now, self, get, deliver, save }) {
   state = { ...state, rows: { ...state.rows }, prs: { ...state.prs }, pending: [...(state.pending ?? [])] };
@@ -182,15 +188,19 @@ export async function watch({ md, state, now, self, get, deliver, save }) {
     if (next) state.prs[pr] = next;
   };
 
-  // A permanent rejection (the server will never accept this instruction) is recorded in
-  // `dropped` and counts as handled: retrying it would block this PR forever.
+  // A permanent rejection (the server will never accept this exact instruction) leaves the outbox
+  // WITHOUT committing anything: the transition is not acknowledged, so the next poll finds the same
+  // event again and builds a fresh instruction from the current template. The rejection is recorded
+  // in `rejected` and marks monitoring stale for this run. Returns whether the delivery was sent.
   const send = async (p) => {
     try {
       await deliver(p.issue, p.text, p.key);
+      return true;
     } catch (error) {
       if (!error.permanent) throw error;
-      state.dropped = [...(state.dropped ?? []), { pr: p.pr, key: p.key, at: now.toISOString(), error: error.message }].slice(-20);
-      errors.push(`${p.pr}: delivery rejected permanently, dropped: ${error.message}`);
+      state.rejected = [...(state.rejected ?? []), { pr: p.pr, key: p.key, at: now.toISOString(), error: error.message }].slice(-20);
+      errors.push(`${p.pr}: delivery rejected permanently, not acknowledged: ${error.message}`);
+      return false;
     }
   };
 
@@ -199,7 +209,7 @@ export async function watch({ md, state, now, self, get, deliver, save }) {
   const stuck = [];
   for (const p of state.pending) {
     try {
-      await send(p);
+      if (!(await send(p))) continue;
     } catch (error) {
       errors.push(`${p.pr}: delivery failed: ${error.message}`);
       stuck.push(p);
@@ -223,8 +233,9 @@ export async function watch({ md, state, now, self, get, deliver, save }) {
       // Save the delivery before attempting it; the commit happens only after it worked.
       state.pending.push({ ...change, issue: row.issue, text: result.text, key: keyOf(row.pr, result.text) });
       persist();
-      await send(state.pending.at(-1));
-      commit(state.pending.pop());
+      const sent = await send(state.pending.at(-1));
+      const done = state.pending.pop();
+      if (sent) commit(done);
       persist();
     } catch (error) {
       errors.push(`${row.pr}: ${error.message}`);

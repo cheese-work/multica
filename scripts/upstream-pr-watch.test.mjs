@@ -298,29 +298,55 @@ test('a very large batch stays far below the 12,000 byte wakeup limit and is del
   assert.equal(r.saved.pending.length, 0);
 });
 
-test('permanent delivery rejection: dropped and recorded, committed so it is not resent, other rows continue', async () => {
+test('permanent rejection acknowledges nothing: no commit, rejection recorded, other rows continue, the event is re-found and delivered next run', async () => {
   const OTHER = '| multica-ai/multica#11 | CHE-2 | aaa | open | 2026-11-01T00:00:00Z | - | - |';
   const md = ledgerOf(`${OPEN}\n${OTHER}`);
   const both = (over) => ({ ...world(over), ...Object.fromEntries(Object.entries(world(over)).map(([k, v]) => [k.replace('10', '11'), v])) });
   const w = both({ [REVIEWS]: { etag: 'r2', body: [review()] } });
   const sent = [];
   const deliver = async (issue, _t, key) => {
-    if (issue === 'CHE-1') throw Object.assign(new Error('instruction must contain 1-12000 bytes'), { permanent: true });
-    sent.push(key);
+    if (issue === 'CHE-1' && !sent.includes('ok')) throw Object.assign(new Error('instruction must contain 1-12000 bytes'), { permanent: true });
+    sent.push(issue);
   };
   const first = await run(w, { md, deliver });
   assert.equal(first.ok, false);
   assert.equal(first.saved.pending.length, 0);
-  assert.equal(sent.length, 1);
-  assert.equal(first.saved.dropped.length, 1);
-  assert.equal(first.saved.dropped[0].pr, PR);
+  assert.deepEqual(sent, ['CHE-2']);
+  assert.equal(first.saved.rows[PR], undefined);
+  assert.equal(first.saved.prs[PR], undefined);
+  assert.equal(first.saved.rejected.length, 1);
+  assert.equal(first.saved.rejected[0].pr, PR);
   assert.match(first.saved.stale.error, /rejected permanently/);
-  assert.equal(first.row.watermark, '2026-11-01T10:00:00Z');
-  // Next run: the dropped event is not redelivered and the row is polled normally again.
+  sent.push('ok');
   const second = await run(both({ [REVIEWS]: { etag: 'r2', body: [review()] } }), { ...again(first), md, deliver });
-  assert.equal(second.ok, true);
+  assert.deepEqual(sent.filter((x) => x === 'CHE-1'), ['CHE-1']);
+  assert.equal(second.row.watermark, '2026-11-01T10:00:00Z');
   assert.equal(second.saved.stale, undefined);
+});
+
+test('a queued oversized delivery from an older version is discarded uncommitted and regenerated with the fixed template', async () => {
+  const legacy = { pr: PR, issue: 'CHE-1', key: 'oldkey', text: 'x'.repeat(13000), overlay: { head: 'aaa', state: 'merged upstream', watermark: '2026-11-01T20:00:00Z', notes: 'm' }, next: { pages: {}, seen: [] } };
+  const sent = [];
+  const deliver = async (_i, text, key) => { if (Buffer.byteLength(text) > 12000) throw Object.assign(new Error('too big'), { permanent: true }); sent.push({ text, key }); };
+  const r = await run(world({ [`${API}/pulls/10`]: { etag: 'p2', body: pr({ state: 'closed', merged: true, merge_commit_sha: 'deadbeef0' }) } }), { state: { pending: [legacy] }, deliver });
+  assert.equal(r.saved.rejected.length, 1);
   assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /merged \(merge SHA deadbeef0\)/);
+  assert.notEqual(sent[0].key, 'oldkey');
+  assert.equal(r.row.state, 'merged upstream');
+  assert.equal(r.saved.pending.length, 0);
+});
+
+test('edit spam: at most 3 review wakeups per PR per 24 h; held events go out together once the window frees', async () => {
+  const hour = (n) => new Date(NOW.getTime() + n * 3_600_000);
+  const edit = (n) => world({ [COMMENTS]: { etag: `i${n}`, body: [{ id: 1, user: { login: 'bohan' }, body: `v${n}`, updated_at: new Date(NOW.getTime() + n * 3_600_000 - 1800_000).toISOString() }] } });
+  let r = await run(edit(1), { now: hour(1) });
+  const sends = [r.dispatched.length];
+  for (const n of [2, 3, 4, 5]) { r = await run(edit(n), { ...again(r), now: hour(n) }); sends.push(r.dispatched.length); }
+  assert.deepEqual(sends, [1, 1, 1, 0, 0]);
+  assert.equal(r.saved.stale, undefined);
+  r = await run(edit(30), { ...again(r), now: hour(30) });
+  assert.equal(r.dispatched.length, 1);
 });
 
 // ---- real delivery contract (injected `multica`) ---------------------------
