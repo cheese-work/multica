@@ -48,17 +48,6 @@ export interface KeyedDraftStore<TData> {
   setDraft: (key: string, patch: Partial<TData>) => void;
   /** Call on successful send/submit or explicit discard — never on failure. */
   clearDraft: (key: string) => void;
-  /**
-   * `setDraft` into the workspace `slug`, which may not be the active one: an async result (an
-   * upload) that settles after the user moved to another workspace still belongs to the draft it
-   * started in. The active workspace's in-memory state is never touched for another slug, and
-   * nothing is written under a slug that has no persisted namespace to write to.
-   */
-  patchDraftIn: (
-    slug: string | null,
-    key: string,
-    patch: Partial<TData> | ((current: TData) => Partial<TData>),
-  ) => void;
   hasDraft: (key: string) => boolean;
   /**
    * `setDraft` for a delayed write that belongs to `origin` (an editor flushing
@@ -157,32 +146,6 @@ export function createKeyedDraftStore<TData extends object>(
             const drafts = withoutKey(s.drafts, key);
             return drafts === s.drafts ? s : { drafts };
           });
-        },
-        patchDraftIn: (slug, key, patch) => {
-          if (!workspaceScoped || slug === getCurrentSlug()) {
-            const current = get().getDraft(key) ?? empty();
-            get().setDraft(key, typeof patch === "function" ? patch(current) : patch);
-            return;
-          }
-          if (!slug) return;
-          const name = `${config.storageKey}:${slug}`;
-          let version = 0;
-          let stored: Record<string, KeyedDraftEntry<TData>> | undefined;
-          try {
-            const parsed = JSON.parse(backing.getItem(name) ?? "null") as
-              | { state?: { drafts?: Record<string, KeyedDraftEntry<TData>> }; version?: number }
-              | null;
-            version = parsed?.version ?? 0;
-            stored = parsed?.state?.drafts;
-          } catch {
-            // Unreadable namespace: treat it as empty rather than losing the result.
-          }
-          const drafts = prune(stored);
-          const current = drafts[key]?.data ?? empty();
-          const data = { ...current, ...(typeof patch === "function" ? patch(current) : patch) };
-          if (config.hasMeaningful(data)) drafts[key] = { data, updatedAt: Date.now() };
-          else delete drafts[key];
-          backing.setItem(name, JSON.stringify({ state: { drafts }, version }));
         },
         hasDraft: (key) => !isStale() && key in get().drafts,
         setDraftIn: ({ slug, generation }, key, patch) => {

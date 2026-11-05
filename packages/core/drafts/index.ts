@@ -6,7 +6,6 @@ export {
 export {
   registerDraftCleanup,
   clearRegisteredWorkspaceDrafts,
-  onWorkspaceDraftsCleared,
   resetAllRegisteredDrafts,
   type DraftCleanupEntry,
 } from "./cleanup-registry";
@@ -42,5 +41,6 @@ export {
   settlePendingUpload,
   invalidatePendingUploads,
   usePendingUploadCount,
+  useUploadCancelledNotice,
   type UploadTicket,
 } from "./pending-uploads";

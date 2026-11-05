@@ -38,12 +38,6 @@ export interface DraftCleanupEntry {
 }
 
 const entries = new Map<string, DraftCleanupEntry>();
-const workspaceClearedListeners = new Set<(slug: string) => void>();
-
-/** Runs when a workspace's persisted drafts are removed (workspace delete or leave). */
-export function onWorkspaceDraftsCleared(listener: (slug: string) => void): void {
-  workspaceClearedListeners.add(listener);
-}
 
 /**
  * Cleanup generations. Logout and workspace delete bump them; a delayed draft
@@ -85,7 +79,6 @@ export function clearRegisteredWorkspaceDrafts(
   slug: string,
 ): void {
   workspaceGenerations.set(slug, (workspaceGenerations.get(slug) ?? 0) + 1);
-  workspaceClearedListeners.forEach((listener) => listener(slug));
   for (const entry of entries.values()) {
     if (entry.workspaceScoped) {
       adapter.removeItem(`${entry.storageKey}:${slug}`);

@@ -2,12 +2,13 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setCurrentWorkspace } from "../platform/workspace-storage";
-import { clearRegisteredWorkspaceDrafts, resetAllRegisteredDrafts } from "./cleanup-registry";
+import { clearRegisteredWorkspaceDrafts, currentDraftOrigin, resetAllRegisteredDrafts } from "./cleanup-registry";
 import {
   beginPendingUpload,
   invalidatePendingUploads,
   settlePendingUpload,
   usePendingUploadCount,
+  useUploadCancelledNotice,
 } from "./pending-uploads";
 
 const memoryAdapter = () => ({ getItem: () => null, setItem: () => {}, removeItem: () => {}, keys: () => [] as string[] });
@@ -48,35 +49,47 @@ describe("pending uploads", () => {
     expect(write).not.toHaveBeenCalled();
   });
 
-  it("settles in the workspace the upload started in, even while another is active", () => {
-    let ticket!: ReturnType<typeof beginPendingUpload>;
-    const { result } = renderHook(() => usePendingUploadCount("k"));
-    act(() => { ticket = beginPendingUpload("k"); });
-    act(() => setCurrentWorkspace("other", "ws-b"));
-    expect(renderHook(() => usePendingUploadCount("k")).result.current).toBe(0);
-    const write = vi.fn();
-    act(() => settlePendingUpload(ticket, write));
-    expect(write).toHaveBeenCalledOnce();
-    expect(ticket.slug).toBe("acme");
-    act(() => setCurrentWorkspace("acme", "ws-a"));
-    expect(result.current).toBe(0);
-  });
-
-  it("keeps the count while another workspace is active, and shows it again on return", () => {
-    act(() => { beginPendingUpload("k"); });
-    act(() => setCurrentWorkspace("other", "ws-b"));
-    expect(renderHook(() => usePendingUploadCount("k")).result.current).toBe(0);
-    act(() => setCurrentWorkspace("acme", "ws-a"));
-    expect(renderHook(() => usePendingUploadCount("k")).result.current).toBe(1);
-  });
-
-  it("writes nothing after that workspace's drafts were cleared, even for a recycled generation", () => {
+  it("cancels an upload when another workspace becomes active, with a notice on return", async () => {
+    const { result: count } = renderHook(() => usePendingUploadCount("k"));
+    const { result: notice } = renderHook(() => useUploadCancelledNotice("k"));
     let ticket!: ReturnType<typeof beginPendingUpload>;
     act(() => { ticket = beginPendingUpload("k"); });
-    clearRegisteredWorkspaceDrafts(memoryAdapter(), "acme");
-    act(() => { beginPendingUpload("k"); });
+    await act(async () => { setCurrentWorkspace("other", "ws-b"); await Promise.resolve(); });
+    expect(ticket.signal.aborted).toBe(true);
     const write = vi.fn();
     act(() => settlePendingUpload(ticket, write));
     expect(write).not.toHaveBeenCalled();
+    await act(async () => { setCurrentWorkspace("acme", "ws-a"); await Promise.resolve(); });
+    expect(count.current).toBe(0);
+    expect(notice.current).toBe(true);
+    act(() => { beginPendingUpload("k"); });
+    expect(notice.current).toBe(false);
+  });
+
+  it("does not write when the ticket's workspace is no longer active, even before the cancel runs", () => {
+    let ticket!: ReturnType<typeof beginPendingUpload>;
+    act(() => { ticket = beginPendingUpload("k"); });
+    setCurrentWorkspace("other", "ws-b");
+    const write = vi.fn();
+    settlePendingUpload(ticket, write);
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("shows no notice when the upload had already settled before the switch", async () => {
+    const { result: notice } = renderHook(() => useUploadCancelledNotice("k"));
+    let ticket!: ReturnType<typeof beginPendingUpload>;
+    act(() => { ticket = beginPendingUpload("k"); });
+    act(() => settlePendingUpload(ticket));
+    await act(async () => { setCurrentWorkspace("other", "ws-b"); await Promise.resolve(); });
+    await act(async () => { setCurrentWorkspace("acme", "ws-a"); await Promise.resolve(); });
+    expect(notice.current).toBe(false);
+  });
+
+  it("writes nothing after that workspace's drafts were cleared", () => {
+    let ticket!: ReturnType<typeof beginPendingUpload>;
+    act(() => { ticket = beginPendingUpload("k"); });
+    clearRegisteredWorkspaceDrafts(memoryAdapter(), "acme");
+    // The ticket stays valid; the draft store drops the write through the stale origin.
+    expect(ticket.origin.generation).not.toBe(currentDraftOrigin("acme").generation);
   });
 });

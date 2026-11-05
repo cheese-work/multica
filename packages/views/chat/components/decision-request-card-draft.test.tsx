@@ -285,28 +285,53 @@ describe("decision card draft survives remount", () => {
     await act(async () => { await Promise.resolve(); });
   };
 
-  it("a workspace round trip during an upload ends with the attachment in the original workspace only", async () => {
+  // Cheese decision (CHE-3521): an upload still running when the workspace changes is cancelled.
+  // It writes into neither workspace, and the card says so when it is shown again.
+  const NOTICE = "Upload cancelled because you switched workspace. Attach the file again.";
+
+  it("a workspace switch during an upload cancels it: nothing is written to either workspace", async () => {
     await inWorkspace("acme");
     const { settle } = await startUpload("late-ws");
+    const signal = api.uploadFile.mock.calls[0]?.[2] as AbortSignal | undefined;
     await inWorkspace("other");
+    expect(signal?.aborted).toBe(true);
     await settle();
-    expect(stored("late-ws")).toBeUndefined();
     expect(window.localStorage.getItem("multica_decision_answer_drafts:other")).toBeNull();
     await inWorkspace("acme");
-    expect(stored("late-ws")).toMatch(/^see\n\n!\[shot\.png\]/);
+    expect(stored("late-ws")).toBe("see");
+    expect(occurrences(stored("late-ws"))).toBe(0);
     setCurrentWorkspace(null, null);
   });
 
-  it("Send is disabled after returning to the original workspace until the upload settles", async () => {
+  it("the note typed before the upload survives a switch away and back during the upload", async () => {
     await inWorkspace("acme");
-    const { user, settle } = await startUpload("late-ws-gate");
+    const { settle } = await startUpload("late-ws-note");
+    await inWorkspace("other");
+    await inWorkspace("acme");
+    await settle();
+    renderWithI18n(chat(card("late-ws-note")));
+    expect(note()).toHaveValue("see");
+    setCurrentWorkspace(null, null);
+  });
+
+  it("after the switch back the card shows the notice and Send is not gated", async () => {
+    await inWorkspace("acme");
+    const { user } = await startUpload("late-ws-gate");
     await inWorkspace("other");
     await inWorkspace("acme");
     renderWithI18n(chat(card("late-ws-gate")));
+    expect(screen.getByText(NOTICE)).toBeInTheDocument();
     await user.click(screen.getByRole("radio", { name: /Option A/ }));
-    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+    setCurrentWorkspace(null, null);
+  });
+
+  it("an upload that settles in the same workspace shows no notice", async () => {
+    await inWorkspace("acme");
+    const { settle } = await startUpload("late-same");
     await settle();
-    await vi.waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeEnabled());
+    renderWithI18n(chat(card("late-same")));
+    expect(screen.queryByText(NOTICE)).toBeNull();
     setCurrentWorkspace(null, null);
   });
 

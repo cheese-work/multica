@@ -17,6 +17,7 @@ import {
   settlePendingUpload,
   usePendingUploadCount,
   usePersistedDraft,
+  useUploadCancelledNotice,
 } from "@multica/core/drafts";
 import { chatKeys } from "@multica/core/chat/queries";
 import { useWorkspacePaths } from "@multica/core/paths";
@@ -97,17 +98,18 @@ function DecisionAnswerForm({
   const uploadGate = useUploadGate(editorRef);
   const { uploadWithToast } = useEditorUpload();
   const uploadsPending = usePendingUploadCount(draftKey) > 0;
+  const uploadCancelled = useUploadCancelledNotice(draftKey);
   // The upload outlives this card. If the card closed first, the attachment goes straight into
   // the stored note (append only), unless the draft was sent, discarded or logged out meanwhile.
   const uploadFile = async (file: File) => {
     const ticket = beginPendingUpload(draftKey);
     let result: Awaited<ReturnType<typeof uploadWithToast>> = null;
     try {
-      result = await uploadWithToast(file, { issueId: card.issue_id });
+      result = await uploadWithToast(file, { issueId: card.issue_id, signal: ticket.signal });
       return result;
     } finally {
       settlePendingUpload(ticket, () => {
-        if (result && closing.current) appendDecisionAttachment(ticket.slug, card.id, attachmentMarkdown(result));
+        if (result && closing.current) appendDecisionAttachment(ticket.origin, card.id, attachmentMarkdown(result));
       });
     }
   };
@@ -196,6 +198,7 @@ function DecisionAnswerForm({
       <p id={`${textId}-hint`} className="text-caption text-muted-foreground">
         {t(($) => $.decision.answer_hint, { shortcut: sendShortcut })}
       </p>
+      {uploadCancelled && <p role="status" className="text-caption text-destructive">{t(($) => $.decision.answer_upload_cancelled)}</p>}
       {tooLong && <p role="alert" className="text-caption text-destructive">{t(($) => $.decision.answer_too_long)}</p>}
       <div className="flex flex-wrap items-center gap-2">
         <Button type="submit" size="sm" disabled={!canSend} className="disabled:opacity-70">
