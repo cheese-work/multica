@@ -744,6 +744,18 @@ running at the deadline is recorded as running and refused as "has not
 completed". Run 35822016641 (`5c834a2f`) is the case: the snapshot at
 05:37 UTC had no `backend` run, which then passed at 05:55.
 
+The commit and check-run reads retry HTTP 403 rate limits and HTTP 429,
+honoring `Retry-After` or `X-RateLimit-Reset` within the checks deadline.
+Ordinary permission errors and a reset beyond the deadline fail closed.
+Each paginated response is buffered until every page succeeds, so a failed
+page cannot leave a partial check snapshot. `candidate-preflight.sh` shares
+one deadline across its current-candidate checks and the recorder through
+the internal `CHECKS_DEADLINE` variable.
+
+Before Buildx setup, qualification inspects only its named persistent
+builder. A failed bootstrap, node error, or incompatible driver removes that
+builder so setup can recreate it. Healthy builders retain their cache.
+
 `admission.mjs` is not weakened to make this fit: it still refuses
 build-evidence, still requires the manifest to bind the exact tuple it is
 verified against, and still requires `backend`, `frontend`, `mobile` and

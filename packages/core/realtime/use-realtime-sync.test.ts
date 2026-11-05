@@ -95,12 +95,12 @@ describe("applyChatDoneToCache", () => {
     }
   });
 
-  it("writes the assistant message before clearing pending task", () => {
+  it.each(["dispatched", "running"] as const)("writes the assistant message before clearing a %s pending task", (status) => {
     const qc = createQueryClient();
     qc.setQueryData<ChatMessage[]>(messagesKey, [userMessage()]);
     qc.setQueryData<ChatPendingTask>(pendingKey, {
       task_id: taskId,
-      status: "running",
+      status,
     });
 
     const setQueryData = vi.spyOn(qc, "setQueryData");
@@ -1391,13 +1391,18 @@ describe("applyDecisionAnswerUpdated", () => {
 });
 
 describe("applyIssueRunStarted", () => {
-  it("refreshes every DM message list so a decision card sees the run that just started", () => {
+  it("invalidates only DMs holding a decision card for a started issue", () => {
     const qc = createQueryClient();
+    const msg = (issue_id?: string) =>
+      ({ id: "m", decision_quotes: issue_id ? [{ issue_id }] : [] }) as unknown as ChatMessage;
+    qc.setQueryData(chatKeys.messages("dm-1"), [msg("X")]);
+    qc.setQueryData(chatKeys.messages("dm-2"), [msg("Z")]);
+    qc.setQueryData(chatKeys.messagesPage("dm-1"), { pages: [{ messages: [msg("X")] }], pageParams: [null] });
+    qc.setQueryData(chatKeys.messagesPage("dm-3"), { pages: [{ messages: [msg()] }], pageParams: [null] });
     const spy = vi.spyOn(qc, "invalidateQueries");
-    applyIssueRunStarted(qc);
+    applyIssueRunStarted(qc, new Set(["X"]));
     const keys = spy.mock.calls.map(([filters]) => filters?.queryKey);
-    expect(keys).toContainEqual(chatKeys.messagesAll());
-    expect(keys).toContainEqual(chatKeys.messagesPageAll());
+    expect(keys).toEqual([chatKeys.messages("dm-1"), chatKeys.messagesPage("dm-1")]);
   });
 });
 
