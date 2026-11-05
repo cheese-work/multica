@@ -59,6 +59,10 @@ describe("redactMcpJsonText", () => {
     ['{"command": "npx", "env": {"API_KEY": "s3cret"}, "args": ["-y"', "npx"],
     ['{"url": "https://a.test",\n  "token": "s3cr', "https://a.test"],
     ['{"options": [{"api-token":\n"s3cret"}], "url": "https', "options"],
+    ['{"url": "https://a.test", "token": Bearer s3cret', "https://a.test"],
+    ['{"url": "https://a.test", "token": Bearer s3cret, "x": 1', "https://a.test"],
+    ['{"url": "https://a.test", "token": Bearer "s3cret" tail', "https://a.test"],
+    ['{"url": "https://a.test", "token": Bearer\ts3cret }', "https://a.test"],
   ])("keeps unfinished text but never the credential value: %s", (text, kept) => {
     const out = redactMcpJsonText(text);
     expect(out).not.toContain("s3cret");

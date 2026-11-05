@@ -44,8 +44,12 @@ function valueEnd(text: string, start: number): number {
     }
     return text.length;
   }
+  // A bare value (number, literal, or malformed text such as `Bearer abc`) runs
+  // to the next separator or line break, so whitespace inside it cannot leak a suffix.
   let i = start;
-  while (i < text.length && !/[\s,}\]]/.test(text[i]!)) i++;
+  while (i < text.length && !/[\n\r,}\]]/.test(text[i]!)) {
+    i = text[i] === '"' ? stringEnd(text, i) : i + 1;
+  }
   return i;
 }
 
