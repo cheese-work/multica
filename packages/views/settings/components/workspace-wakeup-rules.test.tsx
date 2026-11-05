@@ -1,5 +1,7 @@
+import { resetAllRegisteredDrafts } from "@multica/core/drafts";
+import { useWakeupRuleDraftStore } from "@multica/core/settings/draft-stores";
 import { beforeEach, expect, it, vi } from "vitest";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { api, ApiError } from "@multica/core/api";
 import type { WakeupDefinition } from "@multica/core/types";
@@ -278,3 +280,35 @@ it.each([
   expect(trigger(preview.mock.calls[0]![1].config)).toMatchObject({ condition: { value: typed } });
   expect(trigger(create.mock.calls[0]![1].config)).toEqual(trigger(preview.mock.calls[0]![1].config));
 });
+
+it("restores the unsent new rule name and fields after a remount (CHE-3527)", async () => {
+  const first = mount();
+  await fillAndName();
+  first.unmount();
+
+  mount();
+  expect(await screen.findByRole("textbox", { name: "Rule name" })).toHaveValue("Watch updates");
+  expect(screen.getByText("draft:agent-1|Look at it|7")).toBeInTheDocument();
+});
+
+it("locks the form while a rule is being created, so a late edit cannot be lost (CHE-3527)", async () => {
+  let finish!: () => void;
+  create.mockReturnValue(new Promise((r) => (finish = () => r(existing as never))) as never);
+  mount();
+  await fillAndName();
+  fireEvent.click(screen.getByRole("button", { name: "Create rule" }));
+
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "Rule name" })).toBeDisabled());
+  expect(screen.getByRole("button", { name: "Fill fields" })).toBeDisabled();
+  finish();
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "Rule name" })).toHaveValue(""));
+});
+
+it("shows a draft that reaches the store after the form mounted (CHE-3527)", async () => {
+  mount();
+  expect(await screen.findByRole("textbox", { name: "Rule name" })).toHaveValue("");
+  act(() => useWakeupRuleDraftStore.getState().setDraft("workspace:ws:new", { name: "Late draft" }));
+  expect(screen.getByRole("textbox", { name: "Rule name" })).toHaveValue("Late draft");
+});
+
+beforeEach(() => resetAllRegisteredDrafts());

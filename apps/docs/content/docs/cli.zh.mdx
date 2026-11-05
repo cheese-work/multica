@@ -199,8 +199,11 @@ multica issue follow MUL-123 --chat <chat-session-id>
 multica issue mute-follow MUL-123 --chat <chat-session-id>
 multica issue unmute-follow MUL-123 --chat <chat-session-id>
 multica issue unfollow MUL-123 --chat <chat-session-id>
+multica issue unfollow MUL-123 --chat <chat-session-id> --scope root
 multica issue follows --chat <chat-session-id>
 ```
+
+`unfollow` 结束该 issue 的关注。加上 `--scope root` 还会结束其子 issue 从它继承的关注；单独手动关注的子 issue 仍保持关注。已取消关注的子 issue 不会因之后创建新的子 issue 而被再次关注。
 
 ## 智能体和 skill
 

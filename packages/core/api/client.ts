@@ -275,11 +275,13 @@ import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseWithFallback } from "./schema";
 import {
   PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
-  PasskeyRevokedSchema, parsePasskeyResponse,
-  type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart,
+  PasskeyListSchema, PasskeyRevokeCodeStartSchema, PasskeyRevokedSchema, parsePasskeyResponse,
+  type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart, type PasskeySummary,
 } from "./passkey-schema";
 import {
   RuntimeProfileSchema,
+  AgentDecisionSettingSchema,
+  type AgentDecisionSetting,
   OpenDecisionRequestListSchema,
   DecisionArtifactListSchema,
   RuntimeProfileListSchema,
@@ -3261,6 +3263,22 @@ export class ApiClient {
     });
   }
 
+  // Null when the response is malformed: callers must not show a guessed value.
+  async getAgentDecisionSetting(): Promise<AgentDecisionSetting | null> {
+    const raw: unknown = await this.fetch("/api/agent-decisions/brief");
+    return parseWithFallback<AgentDecisionSetting | null>(raw, AgentDecisionSettingSchema, null, {
+      endpoint: "GET /api/agent-decisions/brief",
+    });
+  }
+
+  // Owner + human-actor only; the server clears an earlier stop when turned on.
+  async setAgentDecisionsEnabled(enabled: boolean): Promise<{ enabled: boolean }> {
+    return this.fetch("/api/agent-decisions/setting", {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    });
+  }
+
   // CHE-766: owner/admin + human-actor only, kill-switch gated server-side
   // (server/internal/handler/workspace_export_privacy.go). A disabled flag or
   // absent ACL surfaces here as a thrown ApiError (403/503), not a parsed
@@ -4112,12 +4130,28 @@ export class ApiClient {
     return this.passkeyPost("/api/passkeys/enroll/start", PasskeyEnrollStartSchema);
   }
 
-  async finishPasskeyEnrollment(input: { ceremony_id: string; code: string; attestation: unknown }): Promise<void> {
+  async listPasskeys(): Promise<PasskeySummary[]> {
+    const raw: unknown = await this.fetch("/api/passkeys");
+    return parsePasskeyResponse(raw, PasskeyListSchema, "GET /api/passkeys").passkeys;
+  }
+
+  async finishPasskeyEnrollment(input: {
+    ceremony_id: string; code: string; attestation: unknown; assertion?: PasskeyAssertionEnvelope;
+  }): Promise<void> {
     await this.passkeyPost("/api/passkeys/enroll/finish", PasskeyEnrolledSchema, input);
   }
 
   challengePasskeyRevocation(passkeyId: string): Promise<PasskeyChallenge> {
     return this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke/challenge`, PasskeyChallengeSchema);
+  }
+
+  // Sole-key path: the target is the only active key, so no other key can sign. A mailed code stands in.
+  startPasskeyRevocationByCode(passkeyId: string): Promise<{ ceremony_id: string; expires_at: string }> {
+    return this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke/code`, PasskeyRevokeCodeStartSchema);
+  }
+
+  async confirmPasskeyRevocationByCode(passkeyId: string, input: { ceremony_id: string; code: string }): Promise<void> {
+    await this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke/confirm`, PasskeyRevokedSchema, input);
   }
 
   async revokePasskey(passkeyId: string, assertion: PasskeyAssertionEnvelope): Promise<void> {

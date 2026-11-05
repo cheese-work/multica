@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -11,16 +12,16 @@ import (
 )
 
 type dmFollowRow struct {
-	Lineage, Owner, Source, State, LastStatus string
-	Muted                                     bool
-	HasParent                                 bool
+	Lineage, Owner, State, LastStatus string
+	Reasons                           []string
+	Muted                             bool
 }
 
 func followRows(t *testing.T, issueID string) []dmFollowRow {
 	t.Helper()
 	rows, err := testPool.Query(t.Context(), `
-		SELECT lineage_id::text, owner_user_id::text, source, state, last_rendered_status,
-		       muted_at IS NOT NULL, parent_follow_id IS NOT NULL
+		SELECT lineage_id::text, owner_user_id::text, reasons, state, last_rendered_status,
+		       muted_at IS NOT NULL
 		FROM dm_progress_follow WHERE issue_id = $1 ORDER BY created_at`, issueID)
 	if err != nil {
 		t.Fatalf("query follows: %v", err)
@@ -29,7 +30,7 @@ func followRows(t *testing.T, issueID string) []dmFollowRow {
 	var out []dmFollowRow
 	for rows.Next() {
 		var r dmFollowRow
-		if err := rows.Scan(&r.Lineage, &r.Owner, &r.Source, &r.State, &r.LastStatus, &r.Muted, &r.HasParent); err != nil {
+		if err := rows.Scan(&r.Lineage, &r.Owner, &r.Reasons, &r.State, &r.LastStatus, &r.Muted); err != nil {
 			t.Fatal(err)
 		}
 		out = append(out, r)
@@ -113,7 +114,7 @@ func TestDMProgress_AgentCreateInDMFollowsOrigin(t *testing.T) {
 		t.Fatalf("follows = %+v, want exactly one origin follow", rows)
 	}
 	got := rows[0]
-	if got.Lineage != dm || got.Owner != testUserID || got.Source != "origin" || got.State != "active" || got.Muted || got.LastStatus != "todo" {
+	if got.Lineage != dm || got.Owner != testUserID || !slices.Equal(got.Reasons, []string{"origin"}) || got.State != "active" || got.Muted || got.LastStatus != "todo" {
 		t.Errorf("follow = %+v, want origin/active in lineage %s owned by %s with baseline status todo", got, dm, testUserID)
 	}
 }
@@ -177,8 +178,8 @@ func TestDMProgress_ChildInheritsFollow(t *testing.T) {
 
 	child := createDMIssue(t, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{"title": "child", "parent_issue_id": parent}))
 	rows := followRows(t, child)
-	if len(rows) != 1 || rows[0].Lineage != dm || rows[0].Owner != testUserID || rows[0].Source != "child" || !rows[0].HasParent || rows[0].Muted {
-		t.Fatalf("child follows = %+v, want one child follow in lineage %s with a parent link", rows, dm)
+	if len(rows) != 1 || rows[0].Lineage != dm || rows[0].Owner != testUserID || !slices.Equal(rows[0].Reasons, []string{"inherited:" + parent}) || rows[0].Muted {
+		t.Fatalf("child follows = %+v, want one child follow in lineage %s inherited from %s", rows, dm, parent)
 	}
 
 	dbfx.Exec(t, `UPDATE dm_progress_follow SET muted_at = now() WHERE issue_id = $1`, parent)
@@ -221,7 +222,7 @@ func TestDMProgress_MemberFollowsOnlyOwnDM(t *testing.T) {
 	testutil.Call(t, testHandler.FollowIssueProgress, progressReq("POST", issue, "", own)).Want(http.StatusOK)
 	testutil.Call(t, testHandler.FollowIssueProgress, progressReq("POST", issue, "", own)).Want(http.StatusOK)
 	rows := followRows(t, issue)
-	if len(rows) != 1 || rows[0].Lineage != own || rows[0].Source != "manual" || rows[0].Owner != testUserID {
+	if len(rows) != 1 || rows[0].Lineage != own || !slices.Equal(rows[0].Reasons, []string{"manual"}) || rows[0].Owner != testUserID {
 		t.Fatalf("follows = %+v, want one manual follow in %s", rows, own)
 	}
 }
@@ -282,7 +283,7 @@ func TestDMProgress_AgentFollowsOnlyItsTaskDM(t *testing.T) {
 	}
 
 	testutil.Call(t, testHandler.FollowIssueProgress, withURLParam(w.agentReq("POST", "/api/issues/"+issue+"/progress-follow", task, nil), "id", issue)).Want(http.StatusOK)
-	if rows := followRows(t, issue); len(rows) != 1 || rows[0].Lineage != dm || rows[0].Source != "manual" {
+	if rows := followRows(t, issue); len(rows) != 1 || rows[0].Lineage != dm || !slices.Equal(rows[0].Reasons, []string{"manual"}) {
 		t.Fatalf("follows = %+v, want one manual follow in %s", rows, dm)
 	}
 
@@ -324,7 +325,7 @@ func TestDMProgress_OwnerWhoLeftTheWorkspaceGetsNoInheritedFollow(t *testing.T) 
 	dm := w.dm(t, other)
 	parent := dbfx.Issue(t, "parent of a departed owner")
 	dbfx.Exec(t, `INSERT INTO dm_progress_lane (lineage_id, workspace_id, owner_user_id) VALUES ($1, $2, $3)`, dm, testWorkspaceID, other)
-	dbfx.Exec(t, `INSERT INTO dm_progress_follow (workspace_id, issue_id, lineage_id, owner_user_id, source, last_rendered_status) VALUES ($1, $2, $3, $4, 'origin', 'todo')`, testWorkspaceID, parent, dm, other)
+	dbfx.Exec(t, `INSERT INTO dm_progress_follow (workspace_id, issue_id, lineage_id, owner_user_id, reasons, last_rendered_status) VALUES ($1, $2, $3, $4, '{origin}', 'todo')`, testWorkspaceID, parent, dm, other)
 	dbfx.Exec(t, `DELETE FROM member WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, other)
 
 	child := createDMIssue(t, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{"title": "child", "parent_issue_id": parent}))
