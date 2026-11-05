@@ -89,12 +89,16 @@ export function beginPendingUpload(key: string): UploadTicket {
 /**
  * Ends an upload. `onCurrent` runs first, and only when nothing invalidated the ticket and its
  * workspace is still the active one, so the pending count never drops before the result is written.
+ * A result dropped because its workspace is no longer active leaves the cancelled notice.
  */
 export function settlePendingUpload(ticket: UploadTicket, onCurrent?: () => void): void {
   const id = entryId(ticket.slug, ticket.key);
   const entry = entries.get(id);
   if (ticket.epoch !== epoch || !entry || entry.generation !== ticket.generation) return;
   if (ticket.slug === getCurrentSlug()) onCurrent?.();
+  // Settled after the switch but before the slug notification ran: that notification will see
+  // nothing pending, so the notice has to be recorded here.
+  else cancelled.add(id);
   entry.controllers.delete(ticket.controller);
   entries.set(id, { ...entry, pending: Math.max(0, entry.pending - 1) });
   emit();

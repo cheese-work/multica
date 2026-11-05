@@ -75,6 +75,22 @@ describe("pending uploads", () => {
     expect(write).not.toHaveBeenCalled();
   });
 
+  it("keeps the notice when the upload settles after the switch but before the cancel notification", async () => {
+    const { result: count } = renderHook(() => usePendingUploadCount("k"));
+    const { result: notice } = renderHook(() => useUploadCancelledNotice("k"));
+    let ticket!: ReturnType<typeof beginPendingUpload>;
+    act(() => { ticket = beginPendingUpload("k"); });
+    const write = vi.fn();
+    // Slug changes; subscribers are notified in a later microtask. The upload settles in between.
+    setCurrentWorkspace("other", "ws-b");
+    act(() => settlePendingUpload(ticket, write));
+    await act(async () => { await Promise.resolve(); });
+    expect(write).not.toHaveBeenCalled();
+    await act(async () => { setCurrentWorkspace("acme", "ws-a"); await Promise.resolve(); });
+    expect(count.current).toBe(0);
+    expect(notice.current).toBe(true);
+  });
+
   it("shows no notice when the upload had already settled before the switch", async () => {
     const { result: notice } = renderHook(() => useUploadCancelledNotice("k"));
     let ticket!: ReturnType<typeof beginPendingUpload>;
