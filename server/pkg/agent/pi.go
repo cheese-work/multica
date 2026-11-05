@@ -1215,6 +1215,13 @@ func (b *piBackend) preparePiMcpExtension(raw json.RawMessage) (string, error) {
 	return writePiMcpExtension(raw)
 }
 
+// PiAcceptsMCP reports whether the pi runtime would start with a managed MCP
+// config, by the same check the backend applies at launch.
+func PiAcceptsMCP(cliVersion string, builtinRuntime bool) bool {
+	b := &piBackend{cfg: Config{CLIVersion: cliVersion, BuiltinRuntime: builtinRuntime}}
+	return b.validatePiMcpVersion() == nil
+}
+
 func (b *piBackend) validatePiMcpVersion() error {
 	// Custom runtime profiles only promise Pi's JSON protocol, not the vendor's
 	// version scheme. Their explicit extension load remains the capability

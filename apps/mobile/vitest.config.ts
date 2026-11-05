@@ -13,6 +13,9 @@ import path from "node:path";
 //
 // Co-located test files (foo.ts + foo.test.ts) match how the rest of the
 // monorepo organises vitest suites.
+// The composer draft test renders the real composers with react-test-renderer
+// and every native module mocked: it checks that a draft survives unmount and
+// remount, not native rendering.
 // The run cancel button has headless callback/prop tests with native modules
 // mocked; these do not verify native rendering.
 // The form-draft tests (`data/stores/use-form-drafts.test.ts` and
@@ -37,6 +40,7 @@ export default defineConfig({
       "data/**/*.test.ts",
       "data/**/*.test.tsx",
       "components/issue/run-cancel-button.test.ts",
+      "components/composer/composer-draft.test.tsx",
     ],
     passWithNoTests: true,
   },

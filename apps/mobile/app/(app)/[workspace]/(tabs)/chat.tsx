@@ -804,6 +804,7 @@ export default function ChatTab() {
           />
         ) : null}
         <ChatComposer
+          draftKey={draftKey}
           value={draft}
           onChangeText={(next) => setDraft(draftKey, next, draftScope)}
           onSend={handleSend}
