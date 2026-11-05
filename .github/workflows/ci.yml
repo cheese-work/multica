@@ -1,13 +1,14 @@
 name: CI
 
 on:
-  # A PR stacked on an agent/** base runs CI once it is non-draft; a draft opts in with the `run-ci` label.
-  # A PR with CI results (main base, non-draft or run-ci) runs on every type below: a skipped run would replace
-  # its earlier results on the same head and hide a failure (CHE-3989). One run condition gates every job and
-  # the concurrency group: keep the copies in step (scripts/ci-stacked-pr.test.mjs).
+  # A PR stacked on an agent/** base runs CI once it is non-draft. A draft opts in with the `run-ci` label, and a
+  # retarget to main re-runs CI; both go through ci-dispatch.yml (workflow_dispatch). `labeled` and `edited` stay
+  # out of these types on purpose: a skipped run would replace the earlier results of the same head, and a full
+  # run would cancel the running CI of every main PR on a title edit or label (CHE-3989).
+  # One run condition gates every job and the concurrency group: keep the copies in step (scripts/ci-stacked-pr.test.mjs).
   pull_request:
     branches: [main, "agent/**"]
-    types: [opened, synchronize, reopened, ready_for_review, labeled, edited]
+    types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
     types: [checks_requested]
   schedule:

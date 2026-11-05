@@ -1,0 +1,26 @@
+name: CI Dispatch
+
+# CHE-3989: starts ci.yml with workflow_dispatch on the PR head branch for two events that must not run ci.yml
+# itself (a skipped run would hide earlier results, a full one would cancel the running CI of any main PR):
+#   - the `run-ci` label on a PR whose base is not main (opt-in for a stacked draft);
+#   - a retarget to main (`edited` with a base change).
+# Title, body and other label events skip this one job only; they touch no ci.yml check.
+on:
+  pull_request:
+    types: [labeled, edited]
+
+permissions: {}
+
+jobs:
+  dispatch:
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository && ((github.event.action == 'labeled' && github.event.label.name == 'run-ci' && github.event.pull_request.base.ref != 'main') || (github.event.action == 'edited' && github.event.changes.base != null && github.event.pull_request.base.ref == 'main')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      actions: write
+    steps:
+      - name: Start CI on the head branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$HEAD_REF"
