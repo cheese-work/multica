@@ -55,6 +55,21 @@ func (h *Handler) GenerateChannelChatTitle(workspaceID, creatorID, sessionID pgt
 	h.maybeGenerateChatTitleAsync(uuidToString(workspaceID), uuidToString(creatorID), sessionID, currentTitle, sourceText)
 }
 
+// maybeGenerateChatTitleAsync runs queueChatTitleJob off the caller's path: the
+// workspace read and the enqueue can take up to chatTitleGenTimeout, which must
+// not delay the first-message response or the channel inbound turn. A panic is
+// logged and dropped; the fallback title stands.
+func (h *Handler) maybeGenerateChatTitleAsync(workspaceID, userID string, sessionID pgtype.UUID, currentTitle, sourceText string) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("dm title job panicked", "session_id", uuidToString(sessionID), "panic", r)
+			}
+		}()
+		h.queueChatTitleJob(workspaceID, userID, sessionID, currentTitle, sourceText)
+	}()
+}
+
 // chatTitleSystemPrompt instructs the model to condense the opening of a
 // conversation into a short, language-matched title. The rules mirror the
 // acceptance criteria in MUL-4295: no quotes, no trailing punctuation, no
@@ -77,17 +92,17 @@ Rules:
 - Do NOT prefix it with a label such as "Title:", in any language.
 - Do NOT end with a period or any trailing punctuation.`
 
-// maybeGenerateChatTitleAsync queues the dm_title background job for a chat
-// session's opening message and returns once the task is queued. It is the
-// entry point wired into the first-user-message path of SendChatMessage.
+// queueChatTitleJob queues the dm_title background job for a chat session's
+// opening message and returns once the task is queued. maybeGenerateChatTitleAsync
+// calls it from the first-user-message path of SendChatMessage and the channel hook.
 //
-//   - Non-blocking: the title is written later, when the daemon completes the
-//     task. No LLM call runs in this process.
+//   - Non-blocking for users: the title is written later, when the daemon
+//     completes the task. No LLM call runs in this process.
 //   - Silent fallback: with no dm_title agent configured or reachable, nothing is
 //     queued and the deterministic first-message title stays.
 //   - No clobber: the task carries currentTitle as its guard, and writeDMTitle
 //     writes by compare-and-swap, so a rename during the run wins.
-func (h *Handler) maybeGenerateChatTitleAsync(workspaceID, userID string, sessionID pgtype.UUID, currentTitle, sourceText string) {
+func (h *Handler) queueChatTitleJob(workspaceID, userID string, sessionID pgtype.UUID, currentTitle, sourceText string) {
 	if strings.TrimSpace(sourceText) == "" {
 		return
 	}
@@ -103,11 +118,13 @@ func (h *Handler) maybeGenerateChatTitleAsync(workspaceID, userID string, sessio
 		return
 	}
 	member, _ := util.ParseUUID(userID)
+	// The cap bounds the whole queued input; the message gets what the prompt leaves.
+	prefix := chatTitleSystemPrompt + "\n\nThe user's opening message:\n"
 	message := []rune(sourceText)
-	if len(message) > chatTitleJobInputMaxRunes {
-		message = message[:chatTitleJobInputMaxRunes]
+	if room := chatTitleJobInputMaxRunes - len([]rune(prefix)); len(message) > room {
+		message = message[:max(room, 0)]
 	}
-	input := chatTitleSystemPrompt + "\n\nThe user's opening message:\n" + string(message)
+	input := prefix + string(message)
 	_, err = h.TaskService.EnqueueBackgroundChain(ctx, service.BackgroundTaskInput{
 		Job: bgagents.DMTitle, WorkspaceID: ws, MemberID: member, SourceChatSessionID: sessionID,
 		Source: source, Input: input, Guard: currentTitle,

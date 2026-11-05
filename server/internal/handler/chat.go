@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/chattitle"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
@@ -31,7 +32,7 @@ const chatSessionTitleMaxLen = 200
 
 // chatTitleFallbackMaxLen is the runes cut of the deterministic fallback DM
 // title (no agent, or the agent chain failed). Matches the client CHAT_TITLE_MAX.
-const chatTitleFallbackMaxLen = 60
+const chatTitleFallbackMaxLen = chattitle.FallbackMaxLen
 
 // Chat Sessions
 
