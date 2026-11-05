@@ -1795,6 +1795,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// for the same reason as GitHub installations; connect /
 					// disconnect are admin-gated in the group below.
 					r.Get("/vcs/connections", h.ListVCSConnections)
+					r.Get("/background-agents", h.GetBackgroundAgents)
 					r.Get("/qoder", h.GetQoderConnection)
 					r.Get("/qoder/agents", h.ListQoderAgents)
 					// Custom runtime profiles — listing/reading is member-visible
@@ -1849,6 +1850,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// CHE-3627: routing agent. Human owner/admin only.
 					r.With(handler.RequireHumanActor).Get("/routing-agent", h.GetRoutingAgent)
 					r.With(handler.RequireHumanActor).Put("/routing-agent", h.UpdateRoutingAgent)
+					// CHE-4098: background agents. Owner/admin only; the handler refuses a
+					// machine actor itself so the refusal carries a stable code and an
+					// unchanged machine write stays accepted.
+					r.Put("/background-agents", h.UpdateBackgroundAgents)
+					r.Delete("/background-agents", h.ResetBackgroundAgents)
 					// CHE-2490: admin-written protected-path policy for the push broker.
 					r.With(handler.RequireHumanActor).Put("/protected-path-policies/{name}", h.SetProtectedPathPolicy)
 					// Curating the shared MCP library is an admin action.
