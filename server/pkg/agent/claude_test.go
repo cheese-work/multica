@@ -1325,3 +1325,27 @@ func TestBuildClaudeArgsManagedSkillSettingsWins(t *testing.T) {
 		t.Fatalf("unrelated custom arg was dropped: %v", args)
 	}
 }
+
+func TestBuildClaudeArgs_AppendSystemPromptFile(t *testing.T) {
+	base := buildClaudeArgs(ExecOptions{}, slog.Default())
+	for _, a := range base {
+		if a == "--append-system-prompt-file" {
+			t.Fatalf("flag present without opt-in: %v", base)
+		}
+	}
+	args := buildClaudeArgs(ExecOptions{AppendSystemPromptFile: "/tmp/brief.md"}, slog.Default())
+	idx := -1
+	for i, a := range args {
+		if a == "--append-system-prompt-file" {
+			idx = i
+		}
+	}
+	if idx < 0 || idx+1 >= len(args) || args[idx+1] != "/tmp/brief.md" {
+		t.Fatalf("want --append-system-prompt-file /tmp/brief.md in %v", args)
+	}
+	// The opt-out path must stay byte-identical to today's launch.
+	without := buildClaudeArgs(ExecOptions{AppendSystemPromptFile: ""}, slog.Default())
+	if strings.Join(without, "\x00") != strings.Join(base, "\x00") {
+		t.Fatalf("personal args drifted: %v vs %v", without, base)
+	}
+}

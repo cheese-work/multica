@@ -3095,6 +3095,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		ThinkingLevel:         preset.Settings.ThinkingLevel,
 		ServiceTier:           preset.Settings.ServiceTier,
 		RuntimeConfig:         runtimeConfig,
+		HarnessProfile:        h.resolveClaimHarnessProfile(r.Context(), agent),
 		DisabledRuntimeSkills: disabledRuntimeSkillsFor(agent.DisabledRuntimeSkills, runtimeID, runtime.Provider),
 	}
 	// Snapshot the agent's persistent OpenClaw model override for this claim.
@@ -7404,4 +7405,18 @@ func (h *Handler) chatPointerIsCurrent(ctx context.Context, cs db.ChatSession) b
 		return false
 	}
 	return current
+}
+
+// resolveClaimHarnessProfile reads the workspace default and applies the agent
+// override. A failed workspace read degrades to the agent value alone, which
+// resolves to personal (today's behavior) when unset.
+func (h *Handler) resolveClaimHarnessProfile(ctx context.Context, agent db.Agent) string {
+	var workspaceSettings []byte
+	if ws, err := h.Queries.GetWorkspace(ctx, agent.WorkspaceID); err != nil {
+		slog.Warn("daemon claim: load workspace for harness profile failed; using agent value only",
+			"agent_id", uuidToString(agent.ID), "error", err)
+	} else {
+		workspaceSettings = ws.Settings
+	}
+	return service.ResolveHarnessProfile(workspaceSettings, agent.RuntimeConfig)
 }

@@ -913,6 +913,9 @@ type TaskAgentData struct {
 	// (issue #3260). Other providers ignore the payload entirely. Sent
 	// raw so the daemon can evolve its schema without a server roundtrip.
 	RuntimeConfig json.RawMessage `json:"runtime_config,omitempty"`
+	// HarnessProfile is the resolved Runtime profile (agent override >
+	// workspace default > personal), see service.ResolveHarnessProfile.
+	HarnessProfile string `json:"harness_profile,omitempty"`
 }
 
 // visibleTaskHistory omits unused assignee fallbacks created by older versions.

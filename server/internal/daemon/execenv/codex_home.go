@@ -46,6 +46,10 @@ var codexModelsCacheConfigFiles = []string{
 // CodexHomeOptions carries optional inputs for prepareCodexHomeWithOpts that
 // affect the generated per-task config.toml.
 type CodexHomeOptions struct {
+	// Managed (CHE-3706) builds the home from an allowlist: no personal
+	// instructions.md, no shared plugin cache. Skills are handled by
+	// prepareManagedCodex.
+	Managed bool
 	// CodexVersion is the detected Codex CLI version (e.g. "0.121.0"). Empty
 	// means unknown; on macOS, unknown is treated as "probably broken" so the
 	// daemon falls back to danger-full-access for network access. See
@@ -244,6 +248,9 @@ func prepareCodexHomeWithOpts(codexHome string, opts CodexHomeOptions, logger *s
 	// stale or absent copy as "unconfigured" and loosen (MUL-4957).
 	var configSyncErr error
 	for _, name := range codexCopiedFiles {
+		if opts.Managed && name == "instructions.md" {
+			continue // personal instructions are not part of the managed allowlist
+		}
 		src := filepath.Join(sharedHome, name)
 		dst := filepath.Join(codexHome, name)
 		if err := syncCopiedFile(src, dst); err != nil {
@@ -279,8 +286,10 @@ func prepareCodexHomeWithOpts(codexHome string, opts CodexHomeOptions, logger *s
 		}
 	}
 
-	if err := exposeSharedCodexPluginCache(codexHome, sharedHome); err != nil {
-		logger.Warn("execenv: codex-home plugin cache exposure failed", "error", err)
+	if !opts.Managed {
+		if err := exposeSharedCodexPluginCache(codexHome, sharedHome); err != nil {
+			logger.Warn("execenv: codex-home plugin cache exposure failed", "error", err)
+		}
 	}
 
 	// Write a daemon-managed sandbox block into config.toml. On macOS we may

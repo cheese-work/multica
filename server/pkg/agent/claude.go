@@ -1224,6 +1224,9 @@ func buildClaudeArgs(opts ExecOptions, logger *slog.Logger) []string {
 	// Claude Code loads the per-task CLAUDE.md the daemon writes into the
 	// workdir, so inlining the same runtime brief would duplicate it on every
 	// turn. Verified against Claude Code 2.1.220 (MUL-5392).
+	if opts.AppendSystemPromptFile != "" {
+		args = append(args, "--append-system-prompt-file", opts.AppendSystemPromptFile)
+	}
 	if opts.ResumeSessionID != "" {
 		args = append(args, "--resume", opts.ResumeSessionID)
 	}

@@ -7927,6 +7927,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Prepare isolated execution environment.
 	// Repos are passed as metadata only — the agent checks them out on demand
 	// via `multica repo checkout <url>`.
+	harnessProfile := managedHarnessProfile(task.Agent, provider, taskLog)
 	taskCtx := execenv.TaskContextForEnv{
 		IssueID:             task.IssueID,
 		TriggerCommentID:    task.TriggerCommentID,
@@ -8291,6 +8292,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			// locked and the directory we use could differ.
 			WorkDir:               priorWorkDir,
 			Provider:              provider,
+			HarnessProfile:        harnessProfile,
 			CodexVersion:          codexVersion,
 			CodexBinaryPath:       codexBinaryPath,
 			ResumeSessionID:       task.PriorSessionID,
@@ -8343,6 +8345,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			// it implies; preparation must not try to take it again.
 			EnvRootPreclaimed:     true,
 			Provider:              provider,
+			HarnessProfile:        harnessProfile,
 			CodexVersion:          codexVersion,
 			CodexBinaryPath:       codexBinaryPath,
 			OpenclawBin:           openclawBin,
@@ -8647,7 +8650,27 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 
 	// Inject runtime-specific config (meta skill) so the agent discovers .agent_context/.
-	runtimeBrief, err := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
+	var managedClaude execenv.ManagedClaudeHome
+	isManagedClaude := harnessProfile == execenv.HarnessProfileManaged && provider == "claude"
+	// injectBrief writes the runtime brief. Managed Claude delivers it through
+	// --append-system-prompt-file (no workdir CLAUDE.md); everything else is
+	// unchanged.
+	injectBrief := func() (string, error) {
+		if !isManagedClaude {
+			return execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
+		}
+		brief := execenv.RuntimeBrief(provider, taskCtx)
+		return brief, os.WriteFile(managedClaude.BriefPath, []byte(brief), 0o600)
+	}
+	var runtimeBrief string
+	if isManagedClaude {
+		// A managed failure must not fall back to the personal config.
+		managedClaude, err = execenv.PrepareManagedClaudeHome(env.RootDir, execenv.SourceClaudeConfigDir(), execenv.RuntimeBrief(provider, taskCtx), taskCtx.AgentSkills, effectiveMcpConfig)
+		if err != nil {
+			return TaskResult{}, fmt.Errorf("prepare managed claude home: %w", err)
+		}
+	}
+	runtimeBrief, err = injectBrief()
 	if err != nil {
 		d.logger.Warn("execenv: inject runtime config failed (non-fatal)", "error", err)
 	}
@@ -8766,6 +8789,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		agentCustomEnv = task.Agent.CustomEnv
 	}
 	layerCustomEnvAndHermesHome(agentEnv, agentCustomEnv, env.HermesHome, d.logger)
+	if isManagedClaude {
+		// Set after custom_env so a configured value cannot point the run back
+		// at the personal config home.
+		agentEnv["CLAUDE_CONFIG_DIR"] = managedClaude.ConfigDir
+	}
 	// CHE-2216 A2b: per-run HOME and read-only provider credential copy. Set
 	// after custom_env so a configured HOME cannot point the run back at the
 	// daemon user's home. A no-op unless MULTICA_SANDBOX_MODE is on or audit.
@@ -8852,7 +8880,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}()
 	retiredSessionID = gateOpenCodeResumeToSaneClock(ctx, &task, &taskCtx, provider, backendConfig, env.WorkDir, effectiveMcpConfig, taskLog)
 	if retiredSessionID != "" {
-		freshBrief, briefErr := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
+		freshBrief, briefErr := injectBrief()
 		if briefErr != nil {
 			return TaskResult{}, fmt.Errorf("prepare fresh OpenCode session after clock check: %w", briefErr)
 		}
@@ -8978,6 +9006,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		OpenclawMode:           openclawMode,
 		OpenclawModelOverride:  openclawModelOverride,
 		ClaudeSettingsPath:     env.ClaudeSettingsPath,
+		AppendSystemPromptFile: managedClaude.BriefPath,
 		QwenpawWorkspace:       env.QwenpawWorkspace,
 	}
 	// Some providers do not reliably load the per-task runtime config files we
@@ -9093,7 +9122,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		task.PriorSessionResumeUnavailable = true
 		execOpts.ResumeContinuityNotice = ""
 		taskCtx.PriorSessionResumed = false
-		if freshBrief, briefErr := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx); briefErr != nil {
+		if freshBrief, briefErr := injectBrief(); briefErr != nil {
 			taskLog.Warn("execenv: re-inject cold runtime config for fresh retry failed (non-fatal)", "error", briefErr)
 		} else {
 			runtimeBrief = freshBrief
@@ -11103,4 +11132,19 @@ func defaultArgsForProvider(cfg Config, provider string) []string {
 		return nil
 	}
 	return append([]string(nil), args...)
+}
+
+// managedHarnessProfile returns the harness profile this task launches with.
+// Only providers with a managed adapter honor "managed"; others log and stay
+// personal (CHE-3706).
+func managedHarnessProfile(agentData *AgentData, provider string, logger *slog.Logger) string {
+	if agentData == nil || agentData.HarnessProfile != execenv.HarnessProfileManaged {
+		return ""
+	}
+	switch provider {
+	case "claude", "codex":
+		return execenv.HarnessProfileManaged
+	}
+	logger.Warn("harness profile managed is not implemented for provider; launching personal", "provider", provider)
+	return ""
 }
