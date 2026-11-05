@@ -45,7 +45,7 @@ export function DeploySections({ release }: { release: ChangelogRelease }) {
               <span aria-hidden="true">──</span>
               <span>{deploy.live ? `${deploy.version} · Live` : `${deploy.version} · ${ictTime(deploy.deployedAt)}`}</span>
               {(level === "live" || level === "previous") && (
-                <span className={`rounded px-1.5 py-0.5 text-xs font-semibold uppercase tracking-wide ${chipStyle[level]}`}>{level === "live" ? "Live" : "Previous"}</span>
+                <span className={`rounded-sm px-1.5 py-0.5 text-xs font-semibold uppercase tracking-wide ${chipStyle[level]}`}>{level === "live" ? "Live" : "Previous"}</span>
               )}
               <span aria-hidden="true">──</span>
             </div>
