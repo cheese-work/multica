@@ -89,6 +89,9 @@ type Broker struct {
 	open    map[*elevOp]struct{} // authorized, not yet acknowledged by the server
 	changed chan struct{}        // closed and replaced when open or its state changes
 
+	rdmu  sync.Mutex // guards reads
+	reads []grant    // read tokens handed to the run, revoked by Close
+
 	beforeWrite, afterWrite func() // test hooks around the remote write
 }
 
@@ -115,6 +118,7 @@ func New(p Pin, socket string, log *slog.Logger) (*Broker, error) {
 	mux.HandleFunc("GET /pin", b.handlePin)
 	mux.HandleFunc("POST /push", b.track(b.handlePush))
 	mux.HandleFunc("POST /pr", b.track(b.handlePR))
+	mux.HandleFunc("POST /readtoken", b.track(b.handleReadToken))
 	b.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := b.srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
@@ -150,6 +154,7 @@ func (b *Broker) Close() error {
 	err := b.srv.Close()
 	_ = os.Remove(b.socket)
 	b.ops.Wait()
+	b.revokeReads()
 	b.stop()
 	b.wg.Wait()
 	return err
@@ -345,14 +350,22 @@ func basicAuthEnv(token string) []string {
 // status to answer with if that fails. The operation deadline starts once the
 // token exists, because that is when the credential is live.
 func (b *Broker) mint(ctx context.Context, pr bool) (grant, int, error) {
+	perms := map[string]string{"contents": "write"}
+	if pr {
+		perms["pull_requests"] = "write"
+	}
+	return b.mintWith(ctx, perms)
+}
+
+func (b *Broker) mintWith(ctx context.Context, perms map[string]string) (grant, int, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	id, _ := b.pin.repoID() // checked in New
-	g, err := b.pin.Tokens.mint(ctx, id, pr)
+	g, err := b.pin.Tokens.mint(ctx, id, perms)
 	if err != nil {
 		return grant{}, http.StatusBadGateway, err
 	}
-	b.log.Info("broker token minted", "repo", b.pin.Repo, "token", g.id(), "expires_at", g.expires, "pr", pr)
+	b.log.Info("broker token minted", "repo", b.pin.Repo, "token", g.id(), "expires_at", g.expires, "perms", perms)
 	return g, 0, nil
 }
 

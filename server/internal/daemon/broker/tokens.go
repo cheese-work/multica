@@ -77,13 +77,14 @@ func (t *Tokens) call(ctx context.Context, method, path, auth string, body any) 
 	return t.client().Do(req)
 }
 
-// mint asks for a token naming one repository. A PR operation also gets
-// pull_requests write; a push gets contents write only.
-func (t *Tokens) mint(ctx context.Context, repoID int64, pr bool) (grant, error) {
-	perms := map[string]string{"contents": "write"}
-	if pr {
-		perms["pull_requests"] = "write"
-	}
+// readPerms is the restricted read token (plan 3.9): read-only, no write.
+var readPerms = map[string]string{
+	"contents": "read", "pull_requests": "read", "issues": "read",
+	"checks": "read", "actions": "read", "metadata": "read",
+}
+
+// mint asks for a token naming one repository with exactly perms.
+func (t *Tokens) mint(ctx context.Context, repoID int64, perms map[string]string) (grant, error) {
 	now := time.Now()
 	appJWT, err := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
 		"iat": now.Add(-60 * time.Second).Unix(), // clock skew
@@ -188,4 +189,41 @@ func or(d, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+// handleReadToken hands the run a read-only token for its own repository. The
+// token is the one credential that enters the sandbox (plan 3.2); the broker
+// keeps its own copy and revokes it when the run ends. An elevated run reads
+// through the read proxy instead, so it gets none.
+func (b *Broker) handleReadToken(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case b.pin.Tokens == nil:
+		http.Error(w, "this run has no GitHub access", http.StatusNotImplemented)
+		return
+	case b.pin.Elevation != nil:
+		http.Error(w, "an elevated run reads through the read proxy", http.StatusForbidden)
+		return
+	}
+	g, status, err := b.mintWith(r.Context(), readPerms)
+	if err != nil {
+		b.log.Warn("broker read token", "task", b.pin.Task, "repo", b.pin.Repo, "status", status, "error", err)
+		http.Error(w, err.Error(), status)
+		return
+	}
+	b.rdmu.Lock()
+	b.reads = append(b.reads, g)
+	b.rdmu.Unlock()
+	_ = json.NewEncoder(w).Encode(ReadToken{Token: g.token, ExpiresAt: g.expires})
+}
+
+// revokeReads drops every read token handed out. Close calls it after the last
+// request has finished, so no new token can appear behind it.
+func (b *Broker) revokeReads() {
+	b.rdmu.Lock()
+	reads := b.reads
+	b.reads = nil
+	b.rdmu.Unlock()
+	for _, g := range reads {
+		b.revoke(g)
+	}
 }
