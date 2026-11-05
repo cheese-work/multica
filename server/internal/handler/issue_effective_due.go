@@ -3,8 +3,10 @@ package handler
 import (
 	"context"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
@@ -40,8 +42,9 @@ type dueNode struct {
 // from itself, its open parent, or any open issue waiting on it to be done.
 // Computed on read: the reachable graph is loaded level by level (one query
 // pair per level, at most effectiveDueMaxDepth+1 levels) and walked in memory.
-// Closed issues get no entry. Correct for one root; a batch of roots would need
-// each root's own depth budget when loading (L1b).
+// Closed issues get no entry. Batch-safe: a node's level in the shared frontier
+// is its distance to the nearest root, so every node within a root's own depth
+// budget is loaded and the walk applies each root's depth limit itself.
 func (h *Handler) effectiveDueFor(ctx context.Context, wsID pgtype.UUID, prefix string, roots []db.Issue) (map[pgtype.UUID]dueProjection, error) {
 	nodes := map[pgtype.UUID]*dueNode{}
 	frontier := make([]pgtype.UUID, 0, len(roots))
@@ -308,4 +311,48 @@ func (h *Handler) fillEffectiveDue(ctx context.Context, issue db.Issue, resp *Is
 		}
 		resp.Diagnostics = p.diagnostics
 	}
+}
+
+var ict = time.FixedZone("ICT", 7*3600)
+
+// dueInstant is the instant a YYYY-MM-DD due date expires: the last moment of
+// that day in ICT (UTC+7).
+func dueInstant(date string) (time.Time, bool) {
+	d, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return time.Date(d.Year(), d.Month(), d.Day(), 23, 59, 59, 999999999, ict), true
+}
+
+// sortRowsByEffectiveDue orders rows: dated first by expiry instant, then source
+// (own, parent, prereq_of), then lowest issue number. Undated rows keep the
+// order they arrive in, which the caller sets to priority then oldest.
+func sortRowsByEffectiveDue(rows []db.ListIssuesRow, proj map[pgtype.UUID]dueProjection) {
+	rank := map[string]int{"own": 0, "parent": 1, "prereq_of": 2}
+	type sortKey struct {
+		at   time.Time
+		rank int
+		ok   bool
+	}
+	keys := make(map[pgtype.UUID]sortKey, len(rows))
+	for _, r := range rows {
+		p := proj[r.ID]
+		at, ok := dueInstant(p.date)
+		keys[r.ID] = sortKey{at, rank[strings.SplitN(p.source, ":", 2)[0]], ok}
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		a, b := keys[rows[i].ID], keys[rows[j].ID]
+		switch {
+		case a.ok != b.ok:
+			return a.ok
+		case !a.ok:
+			return false
+		case !a.at.Equal(b.at):
+			return a.at.Before(b.at)
+		case a.rank != b.rank:
+			return a.rank < b.rank
+		}
+		return rows[i].Number < rows[j].Number
+	})
 }

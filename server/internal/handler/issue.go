@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -1713,8 +1714,15 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	sortIsExpr := false
 	sortIsProperty := false
 	sortByStatus := false
+	sortByEffectiveDue := false
 	if s := r.URL.Query().Get("sort"); s != "" {
 		switch s {
+		case "effective_due":
+			// Dates are computed on read, so the page is cut after sorting.
+			// Fetch order is the undated order: priority, then oldest.
+			sortCol = "CASE i.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END"
+			sortIsExpr = true
+			sortByEffectiveDue = true
 		case "position", "title", "created_at", "updated_at", "start_date", "due_date":
 			sortCol = s
 		case "last_activity":
@@ -1755,7 +1763,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	if sortCol == "last_activity_at" {
 		sortDir = "DESC"
 	}
-	if sortCol != "position" {
+	if sortCol != "position" && !sortByEffectiveDue {
 		if d := r.URL.Query().Get("direction"); d != "" {
 			switch strings.ToLower(d) {
 			case "asc":
@@ -1969,12 +1977,20 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	// LIMIT/OFFSET requests, duplicating or dropping rows at page boundaries.
 	if sortCol == "last_activity_at" {
 		orderBy += ", i.id DESC"
+	} else if sortByEffectiveDue {
+		orderBy += ", i.created_at ASC, i.id ASC"
 	} else {
 		orderBy += ", i.created_at DESC, i.id DESC"
 	}
 
-	offsetRef := addArg(int64(offset))
-	limitRef := addArg(int64(limit))
+	fetchOffset, fetchLimit := int64(offset), int64(limit)
+	if sortByEffectiveDue {
+		// ponytail: loads the whole filtered set to sort it; fine for a
+		// project-scoped list, add a cap or SQL-side date if one grows huge.
+		fetchOffset, fetchLimit = 0, math.MaxInt32
+	}
+	offsetRef := addArg(fetchOffset)
+	limitRef := addArg(fetchLimit)
 
 	query := fmt.Sprintf(`SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
@@ -2046,6 +2062,21 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 	}
 
 	prefix := h.getIssuePrefix(ctx, wsUUID)
+	var projections map[pgtype.UUID]dueProjection
+	if sortByEffectiveDue {
+		roots := make([]db.Issue, len(issues))
+		for i, r := range issues {
+			roots[i] = db.Issue{ID: r.ID, WorkspaceID: r.WorkspaceID, Number: r.Number, Status: r.Status, DueDate: r.DueDate, ParentIssueID: r.ParentIssueID}
+		}
+		var err error
+		if projections, err = h.effectiveDueFor(ctx, wsUUID, prefix, roots); err != nil {
+			slog.Warn("ListIssues effective_due failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to resolve sort")
+			return
+		}
+		sortRowsByEffectiveDue(issues, projections)
+		issues = issues[min(offset, len(issues)):min(offset+limit, len(issues))]
+	}
 	ids := make([]pgtype.UUID, len(issues))
 	for i, issue := range issues {
 		ids[i] = issue.ID
@@ -2054,6 +2085,12 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 	resp := make([]IssueResponse, len(issues))
 	for i, issue := range issues {
 		resp[i] = issueListRowToResponse(issue, prefix)
+		if p, ok := projections[issue.ID]; ok {
+			if p.date != "" {
+				resp[i].EffectiveDue, resp[i].DueSource = &p.date, p.source
+			}
+			resp[i].Diagnostics = p.diagnostics
+		}
 		labels := labelsMap[resp[i].ID]
 		if labels == nil {
 			labels = []LabelResponse{}
