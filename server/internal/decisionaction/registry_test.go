@@ -143,3 +143,59 @@ func mustLookup(t *testing.T, typ string, version int) *Definition {
 	}
 	return def
 }
+
+const (
+	budgetIssue  = "66666666-6666-6666-6666-666666666666"
+	budgetWindow = "2026-11-01T05:22:39.123456Z"
+)
+
+func raiseRequest(params string) Request {
+	return Request{Type: "issue.run_budget.raise", Version: 1, Params: json.RawMessage(params)}
+}
+
+func TestRunBudgetRaiseIsASpendAction(t *testing.T) {
+	def, ok := Lookup("issue.run_budget.raise", 1)
+	if !ok || def.MinClass != "spend" || def.Target != TargetIssue {
+		t.Fatalf("definition = %+v, found %v; want a spend-class issue-target action", def, ok)
+	}
+}
+
+func TestRunBudgetRaiseNormalizesAndCoversRefusalIDInTheHash(t *testing.T) {
+	base := `{"issue_id":"` + budgetIssue + `","new_cap":40,"window_id":"` + budgetWindow + `"}`
+	withRefusal := `{"issue_id":"` + budgetIssue + `","new_cap":40,"window_id":"` + budgetWindow + `","refusal_id":"` + agentA + `"}`
+	hash := func(params string) string {
+		t.Helper()
+		normalized, err := Normalize(raiseRequest(params))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(normalized.Params)
+	}
+	if got := hash(base); strings.Contains(got, "refusal_id") {
+		t.Fatalf("params %s carry a refusal_id nobody sent", got)
+	}
+	if got := hash(withRefusal); !strings.Contains(got, `"refusal_id":"`+agentA+`"`) {
+		t.Fatalf("params %s lack the refusal_id", got)
+	}
+}
+
+func TestRunBudgetRaiseRefusals(t *testing.T) {
+	for name, params := range map[string]string{
+		"extra field":      `{"issue_id":"` + budgetIssue + `","new_cap":40,"window_id":"` + budgetWindow + `","admin":true}`,
+		"bad issue id":     `{"issue_id":"x","new_cap":40,"window_id":"` + budgetWindow + `"}`,
+		"cap below one":    `{"issue_id":"` + budgetIssue + `","new_cap":0,"window_id":"` + budgetWindow + `"}`,
+		"cap over maximum": `{"issue_id":"` + budgetIssue + `","new_cap":1001,"window_id":"` + budgetWindow + `"}`,
+		"missing window":   `{"issue_id":"` + budgetIssue + `","new_cap":40}`,
+		"window not rfc":   `{"issue_id":"` + budgetIssue + `","new_cap":40,"window_id":"yesterday"}`,
+		"window not exact": `{"issue_id":"` + budgetIssue + `","new_cap":40,"window_id":"2026-11-01T12:22:39.100+07:00"}`,
+		"bad refusal id":   `{"issue_id":"` + budgetIssue + `","new_cap":40,"window_id":"` + budgetWindow + `","refusal_id":"x"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Normalize(raiseRequest(params))
+			var e *Error
+			if !errors.As(err, &e) || e.Code != CodeInvalidParams {
+				t.Fatalf("err = %v; want invalid_params", err)
+			}
+		})
+	}
+}

@@ -1447,6 +1447,7 @@
       "source_workspace": "工作區",
       "source_project": "專案",
       "source_default": "預設值",
+      "open_project": "在專案規則中編輯",
       "override": "覆寫",
       "override_label": "覆寫{{rule}}",
       "edit": "編輯覆寫",

@@ -18,8 +18,9 @@ multica issue human-in-charge <issue> --output json   # who to address; `human` 
 ```
 
 - `--ask-file` is UTF-8 JSON: `agent_did`, `decision`, `options`,
-  `recommendation`, `default_if_no_reply`, `source_issue_id`,
-  `source_comment_id`. An ask that approves a file adds `subject:
+  `recommendation`, `recommended_option` (the exact label of the recommended
+  option; required with two or more options, the server puts it first),
+  `default_if_no_reply`, `source_issue_id`, `source_comment_id`. An ask that approves a file adds `subject:
   "artifact_approval"` and `artifacts[]` (`attachment_id`, `label`, `sha256`);
   the server checks each hash.
 - `agent decision ask` is the one-step form for a running task: the task names

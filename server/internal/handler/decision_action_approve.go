@@ -64,10 +64,10 @@ type decisionActionExecutor func(ctx context.Context, execution decisionActionEx
 
 // decisionActionExecutors maps an allowlisted action type to its core.
 var decisionActionExecutors = map[string]decisionActionExecutor{
-	"agent.env.patch": executeEnvPatchAction,
-	"agent.copy":      executeAgentCopyAction,
-
-	runBudgetTopUpType: executeRunBudgetTopUpAction,
+	"agent.env.patch":        executeEnvPatchAction,
+	"agent.copy":             executeAgentCopyAction,
+	"issue.run_budget.raise": executeRunBudgetRaiseAction,
+	runBudgetTopUpType:       executeRunBudgetTopUpAction,
 }
 
 // decisionActionPermitted applies the rule of the action's own HTTP path to

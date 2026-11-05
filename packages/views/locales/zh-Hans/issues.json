@@ -1490,6 +1490,7 @@
       "source_workspace": "工作区",
       "source_project": "项目",
       "source_default": "默认值",
+      "open_project": "在项目规则中编辑",
       "override": "覆盖",
       "override_label": "覆盖{{rule}}",
       "edit": "编辑覆盖",

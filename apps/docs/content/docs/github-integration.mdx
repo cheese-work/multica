@@ -277,6 +277,14 @@ All six GitHub values are required for the connect button. During a new connecti
 
 When adding the Members or Actions permission to an App that is already installed, approve the permission change in every target organization before connecting it to a new workspace. Existing installations must accept the new permission; until they do, `--until-gh-run` wakeups receive no workflow events.
 
+Optionally set `GITHUB_ALLOWED_ACCOUNT_IDS` to a comma-separated list of numeric GitHub account IDs (the `id` of the user or organization, not its login). Left unset or empty, any account that passes the check above can connect. Once set, Multica refuses to bind an installation whose account ID is not listed. The setup callback redirects with `github_error=installation_not_allowed` and creates no binding. A code-less **Redirect on update** callback is judged against the account ID already stored for that binding. A binding with no stored account ID is refused, which fails closed. A malformed value, such as a login, stops the server at startup.
+
+```dotenv
+GITHUB_ALLOWED_ACCOUNT_IDS=1234567,7654321
+```
+
+GitHub `deleted` and `suspend` events always remove the binding, whatever the list says.
+
 </Step>
 <Step>
 

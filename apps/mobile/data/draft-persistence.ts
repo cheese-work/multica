@@ -13,8 +13,9 @@
  * Writes are debounced per draft (a keystroke must not hit disk) and all disk
  * operations are serialized, so a remove or logout wipe always lands after a
  * write that was already in flight. Disk errors are logged and swallowed: a
- * failed draft write must never break typing. The one exception is `clearAll`
- * (logout): it rejects when the delete fails so the caller can tell.
+ * failed draft write must never break typing. The exceptions are `clearAll`
+ * (logout) and `clearScope` (workspace deleted): they reject when the delete
+ * fails so the caller can tell.
  */
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
@@ -43,6 +44,12 @@ export interface DraftPersistence {
   sweepExpired(): Promise<void>;
   /** Write every pending draft now (call when the app is backgrounded). */
   flush(): Promise<void>;
+  /** Workspace ids that have drafts on disk for `userId` (scope
+   *  `<userId>:<workspaceId>`). */
+  workspaceIds(userId: string): Promise<string[]>;
+  /** Delete every draft of one scope and drop its pending writes. Rejects
+   *  when the disk delete fails. */
+  clearScope(scope: string): Promise<void>;
   /** Delete every draft of every scope and drop pending writes. Rejects when
    *  the disk delete fails. */
   clearAll(): Promise<void>;
@@ -172,6 +179,32 @@ export function createDraftPersistence(options: {
       await queue;
     },
 
+    async workspaceIds(userId) {
+      const base = diskKey(userId, "");
+      const ids = new Set<string>();
+      await enqueue(async () => {
+        for (const k of await storage.getAllKeys()) {
+          if (k.startsWith(base)) ids.add(k.slice(base.length).split(":")[0]);
+        }
+      });
+      return [...ids];
+    },
+
+    clearScope(scope) {
+      const base = diskKey(scope, "");
+      for (const [k, { timer }] of pending) {
+        if (!k.startsWith(base)) continue;
+        clearTimeout(timer);
+        pending.delete(k);
+      }
+      return enqueue(async () => {
+        const keys = (await storage.getAllKeys()).filter((k) =>
+          k.startsWith(base),
+        );
+        if (keys.length > 0) await storage.multiRemove(keys);
+      }, true);
+    },
+
     clearAll() {
       for (const { timer } of pending.values()) clearTimeout(timer);
       pending.clear();
@@ -203,4 +236,35 @@ export function registerDraftCleanup(cleanup: () => void): void {
 export async function clearAllDrafts(): Promise<void> {
   cleanups.forEach((cleanup) => cleanup());
   await draftPersistence.clearAll();
+}
+
+const scopeCleanups = new Set<(scope: string) => void>();
+
+/** Stores that hold drafts in memory register a hook here so a deleted
+ *  workspace is dropped from memory as well as from disk. */
+export function registerScopeCleanup(cleanup: (scope: string) => void): void {
+  scopeCleanups.add(cleanup);
+}
+
+/** Workspace deleted: drop the drafts of one scope (user + workspace) from
+ *  memory and disk. Other workspaces keep theirs. */
+export async function clearScopeDrafts(scope: string): Promise<void> {
+  scopeCleanups.forEach((cleanup) => cleanup(scope));
+  await draftPersistence.clearScope(scope);
+}
+
+/** A workspace deleted while this device was offline never sent its
+ *  `workspace:deleted` event. Given the user's settled, successfully fetched
+ *  workspace list, drop the drafts of every other workspace of that user.
+ *  Nothing happens without a list (failed or pending fetch). An empty list
+ *  is a valid answer: the user's last workspace was deleted. */
+export async function reconcileWorkspaceDrafts(
+  userId: string,
+  workspaces: readonly { id: string }[] | null | undefined,
+): Promise<void> {
+  if (!workspaces) return;
+  const live = new Set(workspaces.map((w) => w.id));
+  for (const id of await draftPersistence.workspaceIds(userId)) {
+    if (!live.has(id)) await clearScopeDrafts(`${userId}:${id}`);
+  }
 }
