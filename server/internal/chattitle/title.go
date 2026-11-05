@@ -6,7 +6,9 @@ import (
 	"unicode"
 )
 
-const deterministicTitleLimit = 30
+// FallbackMaxLen is the rune cut (ellipsis included) of the deterministic
+// fallback title. It matches the client CHAT_TITLE_MAX.
+const FallbackMaxLen = 60
 
 var (
 	markdownFence = regexp.MustCompile("```.*?```")
@@ -18,7 +20,7 @@ var (
 // Derive mirrors the existing first-party deterministic title policy for
 // channel-created Chats. Go slices valid Unicode code points rather than UTF-16
 // code units, while preserving the same first-line, Markdown, whitespace, and
-// 30-character single-ellipsis behavior.
+// single-ellipsis behavior at FallbackMaxLen characters.
 func Derive(body string) string {
 	line := ""
 	for _, candidate := range strings.Split(body, "\n") {
@@ -35,8 +37,8 @@ func Derive(body string) string {
 		return ""
 	}
 	runes := []rune(line)
-	if len(runes) <= deterministicTitleLimit {
+	if len(runes) <= FallbackMaxLen {
 		return line
 	}
-	return strings.TrimRightFunc(string(runes[:deterministicTitleLimit-1]), unicode.IsSpace) + "…"
+	return strings.TrimRightFunc(string(runes[:FallbackMaxLen-1]), unicode.IsSpace) + "…"
 }

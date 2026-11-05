@@ -99,7 +99,7 @@ func TestDMTitleJobWritesSanitizedTitle(t *testing.T) {
 	hits := countLLM(t)
 	wsID, _, sid := dmTitleFixture(t, "dmt-happy", "first message")
 
-	testHandler.maybeGenerateChatTitleAsync(wsID, testUserID, util.MustParseUUID(sid), "first message", "first message")
+	testHandler.queueChatTitleJob(wsID, testUserID, util.MustParseUUID(sid), "first message", "first message")
 
 	tasks := dmTitleTasks(t, sid)
 	if len(tasks) != 1 || tasks[0].Status != "queued" {
@@ -122,14 +122,18 @@ func TestDMTitleJobInputIsCapped(t *testing.T) {
 	wsID, _, sid := dmTitleFixture(t, "dmt-cap", "x")
 	long := strings.Repeat("字", 5000)
 
-	testHandler.maybeGenerateChatTitleAsync(wsID, testUserID, util.MustParseUUID(sid), "x", long)
+	testHandler.queueChatTitleJob(wsID, testUserID, util.MustParseUUID(sid), "x", long)
 
 	tasks := dmTitleTasks(t, sid)
 	if len(tasks) != 1 {
 		t.Fatalf("tasks = %+v, want one", tasks)
 	}
-	if n := strings.Count(tasks[0].Input, "字"); n != chatTitleJobInputMaxRunes {
-		t.Fatalf("message runes in input = %d, want %d", n, chatTitleJobInputMaxRunes)
+	in := tasks[0].Input
+	if n := len([]rune(in)); n != chatTitleJobInputMaxRunes {
+		t.Fatalf("queued input runes = %d, want the full input capped at %d", n, chatTitleJobInputMaxRunes)
+	}
+	if !strings.HasPrefix(in, chatTitleSystemPrompt) || !strings.Contains(in, "字") {
+		t.Fatalf("capped input lost the prompt or the message: %.80q", in)
 	}
 }
 
@@ -137,7 +141,7 @@ func TestDMTitleJobInputIsCapped(t *testing.T) {
 func TestDMTitleJobRenameDuringRunWins(t *testing.T) {
 	requireDB(t)
 	wsID, _, sid := dmTitleFixture(t, "dmt-rename", "first message")
-	testHandler.maybeGenerateChatTitleAsync(wsID, testUserID, util.MustParseUUID(sid), "first message", "first message")
+	testHandler.queueChatTitleJob(wsID, testUserID, util.MustParseUUID(sid), "first message", "first message")
 	tasks := dmTitleTasks(t, sid)
 	if len(tasks) != 1 {
 		t.Fatalf("tasks = %+v, want one", tasks)
@@ -160,7 +164,7 @@ func TestDMTitleJobRenameDuringRunWins(t *testing.T) {
 func TestDMTitleJobRenameBackToOriginalWins(t *testing.T) {
 	requireDB(t)
 	wsID, _, sid := dmTitleFixture(t, "dmt-aba", "Original")
-	testHandler.maybeGenerateChatTitleAsync(wsID, testUserID, util.MustParseUUID(sid), "Original", "Opening message")
+	testHandler.queueChatTitleJob(wsID, testUserID, util.MustParseUUID(sid), "Original", "Opening message")
 	tasks := dmTitleTasks(t, sid)
 	if len(tasks) != 1 {
 		t.Fatalf("tasks = %+v, want one", tasks)
@@ -182,7 +186,7 @@ func TestDMTitleJobRenameBackToOriginalWins(t *testing.T) {
 func TestDMTitleJobUnusableOutputKeepsTitle(t *testing.T) {
 	requireDB(t)
 	wsID, _, sid := dmTitleFixture(t, "dmt-empty", "first message")
-	testHandler.maybeGenerateChatTitleAsync(wsID, testUserID, util.MustParseUUID(sid), "first message", "first message")
+	testHandler.queueChatTitleJob(wsID, testUserID, util.MustParseUUID(sid), "first message", "first message")
 	tasks := dmTitleTasks(t, sid)
 	if len(tasks) != 1 {
 		t.Fatalf("tasks = %+v, want one", tasks)
@@ -215,7 +219,7 @@ func TestDMTitleJobNoAgentKeepsFallbackTitle(t *testing.T) {
 			wsID, rt, sid := dmTitleFixture(t, "dmt-none-"+strings.ReplaceAll(c.name, " ", "-"), fallback)
 			c.setup(wsID, rt)
 
-			testHandler.maybeGenerateChatTitleAsync(wsID, testUserID, util.MustParseUUID(sid), fallback, fallback+" and more text")
+			testHandler.queueChatTitleJob(wsID, testUserID, util.MustParseUUID(sid), fallback, fallback+" and more text")
 
 			if tasks := dmTitleTasks(t, sid); len(tasks) != 0 {
 				t.Fatalf("tasks = %+v, want none", tasks)
@@ -249,7 +253,11 @@ func TestChannelChatTitleQueuesJobAndPublishesTitle(t *testing.T) {
 	const current = "Investigate the login redirect"
 	testHandler.GenerateChannelChatTitle(util.MustParseUUID(wsID), util.MustParseUUID(testUserID), util.MustParseUUID(sid), current, current)
 
-	tasks := dmTitleTasks(t, sid)
+	// The hook queues off the caller's path; wait for the task row.
+	var tasks []dmTitleTask
+	for deadline := time.Now().Add(5 * time.Second); len(tasks) == 0 && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		tasks = dmTitleTasks(t, sid)
+	}
 	if len(tasks) != 1 || !strings.HasSuffix(tasks[0].Input, "\n"+current) {
 		t.Fatalf("tasks = %+v, want one whose input ends with the current turn", tasks)
 	}
