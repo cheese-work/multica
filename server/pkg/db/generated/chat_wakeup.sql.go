@@ -302,12 +302,19 @@ func (q *Queries) ListDueChatWakeups(ctx context.Context, limit int32) ([]ChatWa
 const listPendingChatIssueWatches = `-- name: ListPendingChatIssueWatches :many
 SELECT id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at, title, issue_id, event_type, filter_actor_type, filter_actor_id, until_status, on_timeout FROM chat_wakeup
 WHERE status = 'pending' AND issue_id IS NOT NULL
+  AND (created_at, id) > ($1::timestamptz, $2::uuid)
 ORDER BY created_at, id
-LIMIT $1
+LIMIT $3
 `
 
-func (q *Queries) ListPendingChatIssueWatches(ctx context.Context, limit int32) ([]ChatWakeup, error) {
-	rows, err := q.db.Query(ctx, listPendingChatIssueWatches, limit)
+type ListPendingChatIssueWatchesParams struct {
+	AfterCreatedAt pgtype.Timestamptz `json:"after_created_at"`
+	AfterID        pgtype.UUID        `json:"after_id"`
+	PageSize       int32              `json:"page_size"`
+}
+
+func (q *Queries) ListPendingChatIssueWatches(ctx context.Context, arg ListPendingChatIssueWatchesParams) ([]ChatWakeup, error) {
+	rows, err := q.db.Query(ctx, listPendingChatIssueWatches, arg.AfterCreatedAt, arg.AfterID, arg.PageSize)
 	if err != nil {
 		return nil, err
 	}

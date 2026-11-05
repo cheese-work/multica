@@ -46,8 +46,9 @@ WHERE fired_task_id = ANY(@task_ids::uuid[]);
 -- name: ListPendingChatIssueWatches :many
 SELECT * FROM chat_wakeup
 WHERE status = 'pending' AND issue_id IS NOT NULL
+  AND (created_at, id) > (@after_created_at::timestamptz, @after_id::uuid)
 ORDER BY created_at, id
-LIMIT $1;
+LIMIT @page_size;
 
 -- First comment on the issue after the watch was set that passes the actor filter.
 -- name: FirstMatchingIssueComment :one
