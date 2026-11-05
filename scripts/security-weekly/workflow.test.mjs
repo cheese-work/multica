@@ -19,7 +19,7 @@ test("token stays read-only: no write permission anywhere, no secrets", () => {
 
 test("every job runs on a GitHub-hosted runner and nothing builds an image", () => {
   const lines = wf.split("\n").filter((l) => /^\s+runs-on:/.test(l));
-  assert.ok(lines.length >= 7, "semgrep, govulncheck, pnpm-audit, gitleaks, codeql, image-scan, summary");
+  assert.ok(lines.length >= 6, "semgrep, govulncheck, pnpm-audit, gitleaks, codeql, image-scan");
   for (const l of lines) assert.match(l, /runs-on: ubuntu-24\.04\s*$/, l.trim());
   assert.doesNotMatch(wf, /docker (buildx )?build|docker\/build-push-action|cheese-x99|self-hosted/);
 });
@@ -55,14 +55,32 @@ test("CodeQL Go builds (autobuild); only javascript-typescript may use build-mod
   assert.match(job, /if: matrix\.language == 'go'[\s\S]*setup-go/);
 });
 
-test("summary job plans triage read-only: full history, upstream fetched, triage.json uploaded with the summary", () => {
-  const job = wf.slice(wf.indexOf("  summary:"));
-  assert.match(job, /fetch-depth: 0/);
-  assert.match(job, /git fetch[^\n]*upstream/);
-  assert.match(job, /node scripts\/security-weekly\/triage\.mjs out\/summary\.json out\/triage\.json/);
-  assert.ok(job.indexOf("triage.mjs") < job.indexOf("upload-artifact"), "triage.json must exist before upload");
+// Luna's FAIL on b7242fd47: this repo is public, so every artifact and step summary is world-readable. Finding detail
+// (ids, severities, upstream-shared labels) must not appear before the private upstream report.
+const uploads = [...wf.matchAll(/uses: actions\/upload-artifact@[^\n]*\n((?:\s+[a-z-]+:[^\n]*\n)+)/g)].map((m) => m[1]);
+
+test("every uploaded artifact is sealed: path is *.gpg only", () => {
+  assert.ok(uploads.length >= 6, "one per scanner job");
+  for (const u of uploads) assert.match(u, /path: [^\n]*\.gpg\s*\n/, u);
+  assert.doesNotMatch(wf, /path: out\/|weekly-summary|triage\.json/);
 });
 
-test("the triage apply step is not in the workflow: filing issues needs credentials the scan must not hold", () => {
-  assert.doesNotMatch(wf, /triage\.mjs --apply|multica issue create/);
+test("every scanner job seals its report before upload", () => {
+  const seals = wf.match(/bash scripts\/security-weekly\/seal\.sh /g) ?? [];
+  assert.equal(seals.length, uploads.length);
+});
+
+test("no finding detail reaches a step summary or the log", () => {
+  assert.doesNotMatch(wf, /GITHUB_STEP_SUMMARY[^\n]*(lines\.txt|newHighCritical|triage|summary\.json)/);
+  assert.doesNotMatch(wf, /summarize\.mjs|triage\.mjs/, "summary and triage run on X99 after unsealing");
+});
+
+test("the recipient file is a PGP public key, never a private one", () => {
+  const key = read("scripts/security-weekly/recipient.asc");
+  assert.match(key, /^-----BEGIN PGP PUBLIC KEY BLOCK-----/);
+  assert.doesNotMatch(key, /PRIVATE/);
+});
+
+test("filing issues needs credentials the scan must not hold: no apply step in the workflow", () => {
+  assert.doesNotMatch(wf, /--apply|multica issue create/);
 });
