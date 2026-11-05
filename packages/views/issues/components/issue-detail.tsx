@@ -128,6 +128,7 @@ import {
 import { collectThreadParticipants, collectThreadReplies, deriveThreadResolution } from "./thread-utils";
 import { IssueAgentHeaderChip } from "./issue-agent-header-chip";
 import { IssueWakeupHeaderChip } from "./issue-wakeup-header-chip";
+import { useWakeupsFocus } from "./use-wakeups-focus";
 import { IssueInboxRestoreButton } from "./issue-inbox-restore-button";
 import { ExecutionLogSection } from "./execution-log-section";
 import { WakeupsSection } from "./wakeups-section";
@@ -3438,6 +3439,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     });
   }, [handleToggleSidebar, id, sidebarOpen]);
 
+  // `?focus=wakeups` lands on the same section as the header chip, once the
+  // issue has loaded and the section exists.
+  useWakeupsFocus(id, openWakeups, !loading && !!issue);
+
   useRightSidebarShortcut(rightSidebarShortcutTargetRef, handleToggleSidebar);
 
   const scrollAnchor = useIssueDetailScrollAnchor({
@@ -3780,6 +3785,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         issueId={issue.id}
         closed={["done", "closed"].includes(resolveStatusCategory(issue.status))}
         defaultAgentId={issue.assignee_type === "agent" ? (issue.assignee_id ?? undefined) : undefined}
+        projectId={issue.project_id ?? undefined}
       />
       <PluginPanelSection issueId={issue.id} />
 
