@@ -144,6 +144,7 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
+	"942_issue_workflow_lint_override_log_idx":                  "idx_issue_workflow_lint_override_workflow",
 	"937_system1_observation_decision_subject_idx":              "system1_observation_decision_subject",
 	"938_system1_observation_precedent_idx":                     "system1_observation_precedent",
 	"939_system1_observation_routing_subject_idx":               "system1_observation_routing_subject",
