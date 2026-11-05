@@ -19,6 +19,9 @@ permissions: {}
 
 jobs:
   dispatch:
+    # The action in the name keeps a skipped run (a title edit, an unrelated label) from sharing a name with, and
+    # hiding in `gh pr checks`, the dispatch that is running or failed on the same commit.
+    name: dispatch (${{ github.event.action }})
     if: ${{ github.event.pull_request.head.repo.full_name == github.repository && ((github.event.pull_request.base.ref != 'main' && ((github.event.action == 'labeled' && github.event.label.name == 'run-ci') || (github.event.action != 'labeled' && github.event.action != 'edited' && (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci'))))) || (github.event.action == 'edited' && github.event.changes.base != null && github.event.pull_request.base.ref == 'main')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90

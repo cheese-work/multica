@@ -96,6 +96,10 @@ test("the dispatch job fails when no dispatched run shows up", () => {
   assert.notEqual(runDispatch({ dispatchCreatesRun: false }).status, 0);
 });
 
+test("the dispatch job name carries the event action, so a skipped run never shares a name with a real one", () => {
+  assert.match(dispatch, /^ {4}name: dispatch \(\$\{\{ github\.event\.action \}\}\)$/m);
+});
+
 test("the dispatch job has a per-PR cancelling group and enough time to watch a full CI run", () => {
   assert.match(dispatch, /concurrency:\n {6}group: ci-dispatch-\$\{\{ github\.event\.pull_request\.number \}\}\n {6}cancel-in-progress: true/);
   assert.ok(Number(dispatch.match(/timeout-minutes: (\d+)/)?.[1]) >= 60);
