@@ -30,8 +30,8 @@ var (
 	// the output before writing anything.
 	ErrInvalidBackgroundOutput = errors.New("invalid background task output")
 	// ErrBackgroundChainChanged is returned by EnqueueBackgroundTask when the
-	// member's or workspace's chain no longer names the agent in the slot the
-	// caller resolved. The caller resolves again.
+	// workspace's chain changed between the resolver's read and the insert. The
+	// caller enqueues again.
 	ErrBackgroundChainChanged = errors.New("background task: the agent chain changed")
 )
 
@@ -58,12 +58,23 @@ type BackgroundWriter func(ctx context.Context, q *db.Queries, task db.AgentTask
 type BackgroundTaskInput struct {
 	Job         bgagents.Job
 	WorkspaceID pgtype.UUID
-	AgentID     pgtype.UUID
 	MemberID    pgtype.UUID // the DM creator; zero when the task is not member-attributable
-	Source      bgagents.Source
-	Slot        bgagents.SlotName
 	Input       string
+	// Resolve picks the chain slot. EnqueueBackgroundTask calls it after taking
+	// the member's lock, so a personal write is either fully visible to it or
+	// waits for the insert and then cancels the row (CHE-4114).
+	Resolve BackgroundResolver
 }
+
+// BackgroundTarget is the chain slot a job run goes to.
+type BackgroundTarget struct {
+	AgentID pgtype.UUID
+	Source  bgagents.Source
+	Slot    bgagents.SlotName
+}
+
+// BackgroundResolver resolves the chain for one enqueue, under the member lock.
+type BackgroundResolver func(ctx context.Context) (BackgroundTarget, error)
 
 type backgroundTaskContext struct {
 	Type         string `json:"type"`
@@ -79,16 +90,40 @@ type backgroundTaskContext struct {
 
 // EnqueueBackgroundTask queues an output-only job on the chain agent's runtime:
 // no issue, no chat. Only the catalog's output_only jobs qualify. The claim is
-// restricted to that runtime by ClaimAgentTask.
+// restricted to that runtime by ClaimAgentTask. The chain is resolved and the
+// row inserted under the member's lock (CHE-4114): a personal write that
+// committed before the lock is seen by the resolver, and one that has not yet
+// committed waits for this insert, then cancels the row. Without a member there
+// is no personal chain to serialize with.
 func (s *TaskService) EnqueueBackgroundTask(ctx context.Context, in BackgroundTaskInput) (db.AgentTaskQueue, error) {
 	spec, ok := bgagents.SpecFor(in.Job)
 	if !ok || spec.Runner != bgagents.OutputOnly {
 		return db.AgentTaskQueue{}, fmt.Errorf("%w: %q", ErrBackgroundJobNotOutputOnly, in.Job)
 	}
-	if in.Source != bgagents.UserSource && in.Source != bgagents.WorkspaceSource {
-		return db.AgentTaskQueue{}, fmt.Errorf("background task: chain source must be user or workspace, got %q", in.Source)
+	if in.Resolve == nil {
+		return db.AgentTaskQueue{}, errors.New("background task: a chain resolver is required")
 	}
-	agent, err := s.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: in.AgentID, WorkspaceID: in.WorkspaceID})
+	if s.TxStarter == nil {
+		return db.AgentTaskQueue{}, errors.New("background task enqueue requires transaction support")
+	}
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return db.AgentTaskQueue{}, fmt.Errorf("begin background enqueue: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if in.MemberID.Valid {
+		if err := LockMemberBackgroundAgents(ctx, tx, in.WorkspaceID, in.MemberID); err != nil {
+			return db.AgentTaskQueue{}, fmt.Errorf("lock member background agents: %w", err)
+		}
+	}
+	target, err := in.Resolve(ctx)
+	if err != nil {
+		return db.AgentTaskQueue{}, err
+	}
+	if target.Source != bgagents.UserSource && target.Source != bgagents.WorkspaceSource {
+		return db.AgentTaskQueue{}, fmt.Errorf("background task: chain source must be user or workspace, got %q", target.Source)
+	}
+	agent, err := s.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: target.AgentID, WorkspaceID: in.WorkspaceID})
 	if err != nil {
 		return db.AgentTaskQueue{}, fmt.Errorf("load agent: %w", err)
 	}
@@ -104,7 +139,7 @@ func (s *TaskService) EnqueueBackgroundTask(ctx context.Context, in BackgroundTa
 	}
 	payload := backgroundTaskContext{
 		Type: BackgroundTaskContextType, Job: string(in.Job), WorkspaceID: util.UUIDToString(in.WorkspaceID),
-		ChainSource: string(in.Source), Slot: string(in.Slot),
+		ChainSource: string(target.Source), Slot: string(target.Slot),
 		ClaimSeconds: int(spec.ClaimDeadline.Seconds()), RunSeconds: int(spec.RunDeadline.Seconds()),
 		Input: input,
 	}
@@ -122,57 +157,33 @@ func (s *TaskService) EnqueueBackgroundTask(ctx context.Context, in BackgroundTa
 		return db.AgentTaskQueue{}, err
 	}
 	attrSource, _, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
-	task, err := s.insertUnderCurrentChain(ctx, in, db.CreateBackgroundTaskParams{
-		ID: dbid.NewV7(), AgentID: in.AgentID, RuntimeID: agent.RuntimeID, Priority: priorityToInt("low"),
+	q := s.Queries.WithTx(tx)
+	if err := s.checkChainStillNames(ctx, q, in, target); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
+	task, err := q.CreateBackgroundTask(ctx, db.CreateBackgroundTaskParams{
+		ID: dbid.NewV7(), AgentID: target.AgentID, RuntimeID: agent.RuntimeID, Priority: priorityToInt("low"),
 		Context: contextJSON, Purpose: pgtype.Text{String: bgagents.Purpose(in.Job), Valid: true},
 		OriginatorUserID: in.MemberID, AccountableUserID: attr.AccountableUserID,
 		OriginatorSource: attrSource, TriggerEvidenceKind: attrEvidenceKind, TriggerEvidenceRefID: attrEvidenceRef,
 	})
-	if err != nil {
-		return db.AgentTaskQueue{}, err
-	}
-	s.RecordHumanDelegation(ctx, attr)
-	s.NotifyTaskEnqueued(ctx, task)
-	return task, nil
-}
-
-// insertUnderCurrentChain inserts the task under the member's lock, after
-// re-reading the chains: a personal write that committed since the caller
-// resolved the chain is seen here, and one that has not yet committed waits for
-// this insert, then cancels the row (CHE-4114). Without a member there is no
-// personal chain to serialize with; only the workspace chain is checked.
-func (s *TaskService) insertUnderCurrentChain(ctx context.Context, in BackgroundTaskInput, p db.CreateBackgroundTaskParams) (db.AgentTaskQueue, error) {
-	if s.TxStarter == nil {
-		return db.AgentTaskQueue{}, errors.New("background task enqueue requires transaction support")
-	}
-	tx, err := s.TxStarter.Begin(ctx)
-	if err != nil {
-		return db.AgentTaskQueue{}, fmt.Errorf("begin background enqueue: %w", err)
-	}
-	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	if in.MemberID.Valid {
-		if err := LockMemberBackgroundAgents(ctx, tx, in.WorkspaceID, in.MemberID); err != nil {
-			return db.AgentTaskQueue{}, fmt.Errorf("lock member background agents: %w", err)
-		}
-	}
-	q := s.Queries.WithTx(tx)
-	if err := s.checkChainStillNames(ctx, q, in); err != nil {
-		return db.AgentTaskQueue{}, err
-	}
-	task, err := q.CreateBackgroundTask(ctx, p)
 	if err != nil {
 		return db.AgentTaskQueue{}, fmt.Errorf("create background task: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return db.AgentTaskQueue{}, fmt.Errorf("commit background enqueue: %w", err)
 	}
+	s.RecordHumanDelegation(ctx, attr)
+	s.NotifyTaskEnqueued(ctx, task)
 	return task, nil
 }
 
-// checkChainStillNames mirrors bgagents.Resolve on the stored values: the
-// source's chain must still hold the agent in the slot, and a workspace-sourced
-// task needs the member to have no personal chain for the job.
-func (s *TaskService) checkChainStillNames(ctx context.Context, q *db.Queries, in BackgroundTaskInput) error {
+// checkChainStillNames mirrors bgagents.Resolve on the stored values, in the
+// insert transaction: the source's chain must hold the agent in the slot, and a
+// workspace-sourced task needs the member to have no personal chain for the job.
+// The member lock covers personal writes; this also catches a workspace write
+// that committed after the resolver read.
+func (s *TaskService) checkChainStillNames(ctx context.Context, q *db.Queries, in BackgroundTaskInput, t BackgroundTarget) error {
 	chain := func(raw []byte, scope bgagents.Scope) bgagents.Chain {
 		cfg, err := bgagents.Parse(raw, scope)
 		if err != nil {
@@ -189,7 +200,7 @@ func (s *TaskService) checkChainStillNames(ctx context.Context, q *db.Queries, i
 		personal = chain(row.Value, bgagents.UserScope)
 	}
 	current := personal
-	if in.Source == bgagents.WorkspaceSource {
+	if t.Source == bgagents.WorkspaceSource {
 		ws, err := q.GetWorkspace(ctx, in.WorkspaceID)
 		if err != nil {
 			return fmt.Errorf("read workspace background agents: %w", err)
@@ -202,10 +213,10 @@ func (s *TaskService) checkChainStillNames(ctx context.Context, q *db.Queries, i
 		}
 	}
 	slotAgent := current.AgentID
-	if in.Slot == bgagents.Fallback {
+	if t.Slot == bgagents.Fallback {
 		slotAgent = current.FallbackAgentID
 	}
-	if slotAgent == "" || slotAgent != util.UUIDToString(in.AgentID) {
+	if slotAgent == "" || slotAgent != util.UUIDToString(t.AgentID) {
 		return ErrBackgroundChainChanged
 	}
 	return nil

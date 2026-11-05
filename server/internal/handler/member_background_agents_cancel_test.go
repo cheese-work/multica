@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/multica-ai/multica/server/internal/bgagents"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -16,11 +19,30 @@ import (
 
 // Personal writes cancel the member's tasks (CHE-4114).
 
+// fixedTarget resolves to a slot chosen before the enqueue: a stale resolution.
+func fixedTarget(agent string, src bgagents.Source) service.BackgroundResolver {
+	return func(context.Context) (service.BackgroundTarget, error) {
+		return service.BackgroundTarget{AgentID: util.MustParseUUID(agent), Source: src, Slot: bgagents.Primary}, nil
+	}
+}
+
+// liveTarget resolves the member's chain as production does, first slot wins.
+func liveTarget(ws string, then func(bgagents.Resolution)) service.BackgroundResolver {
+	return func(ctx context.Context) (service.BackgroundTarget, error) {
+		r, err := testHandler.ResolveBackgroundAgents(ctx, util.MustParseUUID(ws), util.MustParseUUID(testUserID), bgagents.DMTitle)
+		if err != nil || len(r.Chain) == 0 {
+			return service.BackgroundTarget{}, errors.Join(err, errors.New("no chain"))
+		}
+		then(r)
+		return service.BackgroundTarget{AgentID: util.MustParseUUID(r.Chain[0].AgentID), Source: r.Source, Slot: r.Chain[0].Slot}, nil
+	}
+}
+
 func (f memberBG) enqueueFor(t *testing.T, member, agent string, job bgagents.Job, src bgagents.Source) db.AgentTaskQueue {
 	t.Helper()
 	task, err := testHandler.TaskService.EnqueueBackgroundTask(context.Background(), service.BackgroundTaskInput{
-		Job: job, WorkspaceID: util.MustParseUUID(f.ws), AgentID: util.MustParseUUID(agent),
-		MemberID: util.MustParseUUID(member), Source: src, Slot: bgagents.Primary, Input: "hello",
+		Job: job, WorkspaceID: util.MustParseUUID(f.ws),
+		MemberID: util.MustParseUUID(member), Input: "hello", Resolve: fixedTarget(agent, src),
 	})
 	if err != nil {
 		t.Fatalf("enqueue: %v", err)
@@ -146,8 +168,8 @@ func TestEnqueueRefusesAChainThatChangedUnderIt(t *testing.T) {
 	// lands before the insert. The insert must not escape the cancel.
 	f.put(t, testUserID, title(f.a2), nil).Want(http.StatusOK)
 	stale, err := testHandler.TaskService.EnqueueBackgroundTask(context.Background(), service.BackgroundTaskInput{
-		Job: bgagents.DMTitle, WorkspaceID: util.MustParseUUID(f.ws), AgentID: util.MustParseUUID(f.a1),
-		MemberID: util.MustParseUUID(testUserID), Source: bgagents.WorkspaceSource, Slot: bgagents.Primary, Input: "x",
+		Job: bgagents.DMTitle, WorkspaceID: util.MustParseUUID(f.ws),
+		MemberID: util.MustParseUUID(testUserID), Input: "x", Resolve: fixedTarget(f.a1, bgagents.WorkspaceSource),
 	})
 	if err == nil {
 		dbfx.Cleanup(t, "DELETE FROM agent_task_queue WHERE id=$1", util.UUIDToString(stale.ID))
@@ -161,11 +183,13 @@ func equalJSON(a, b any) bool {
 	return string(x) == string(y)
 }
 
-func TestEnqueueWaitsForAnInFlightPersonalWrite(t *testing.T) {
-	f := memberBGFixture(t, "pcx-lock")
-	f.setWorkspace(t, title(f.a1))
+// enqueueBehindInFlightWrite starts an enqueue while an uncommitted personal
+// write holds the member lock, runs inWrite inside that write, commits it, and
+// returns what the resolver saw and the enqueue's result. The resolver must
+// run only after the commit.
+func (f memberBG) enqueueBehindInFlightWrite(t *testing.T, inWrite func(ctx context.Context, tx pgx.Tx)) (bgagents.Resolution, db.AgentTaskQueue, error) {
+	t.Helper()
 	ctx := t.Context()
-	// An in-flight write: holds the member lock and has not committed yet.
 	tx, err := testHandler.TxStarter.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -174,30 +198,86 @@ func TestEnqueueWaitsForAnInFlightPersonalWrite(t *testing.T) {
 	if err := service.LockMemberBackgroundAgents(ctx, tx, util.MustParseUUID(f.ws), util.MustParseUUID(testUserID)); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
+	var committed atomic.Bool
+	var seen bgagents.Resolution
+	type result struct {
+		task db.AgentTaskQueue
+		err  error
+	}
+	done := make(chan result, 1)
 	go func() {
 		task, err := testHandler.TaskService.EnqueueBackgroundTask(ctx, service.BackgroundTaskInput{
-			Job: bgagents.DMTitle, WorkspaceID: util.MustParseUUID(f.ws), AgentID: util.MustParseUUID(f.a1),
-			MemberID: util.MustParseUUID(testUserID), Source: bgagents.WorkspaceSource, Slot: bgagents.Primary, Input: "x",
+			Job: bgagents.DMTitle, WorkspaceID: util.MustParseUUID(f.ws), MemberID: util.MustParseUUID(testUserID), Input: "x",
+			Resolve: liveTarget(f.ws, func(r bgagents.Resolution) {
+				if !committed.Load() {
+					t.Error("the chain was resolved before the in-flight write committed")
+				}
+				seen = r
+			}),
 		})
-		if err == nil {
-			dbfx.Cleanup(t, "DELETE FROM agent_task_queue WHERE id=$1", util.UUIDToString(task.ID))
-		}
-		done <- err
+		done <- result{task, err}
 	}()
 	select {
-	case err := <-done:
-		t.Fatalf("enqueue did not wait for the write's lock: %v", err)
+	case r := <-done:
+		t.Fatalf("enqueue did not wait for the write's lock: %v", r.err)
 	case <-time.After(300 * time.Millisecond):
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO member_setting (workspace_id, user_id, key, value) VALUES ($1,$2,'background_agents',$3)`,
-		util.MustParseUUID(f.ws), util.MustParseUUID(testUserID), []byte(mustJSON(t, title(f.a2)))); err != nil {
-		t.Fatal(err)
-	}
+	inWrite(ctx, tx)
+	committed.Store(true)
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-done; !errors.Is(err, service.ErrBackgroundChainChanged) {
-		t.Fatalf("enqueue after the write committed = %v, want ErrBackgroundChainChanged", err)
+	r := <-done
+	if r.err == nil {
+		dbfx.Cleanup(t, "DELETE FROM agent_task_queue WHERE id=$1", util.UUIDToString(r.task.ID))
+	}
+	return seen, r.task, r.err
+}
+
+func (f memberBG) setUserIn(t *testing.T, ctx context.Context, tx pgx.Tx, value map[string]any) {
+	t.Helper()
+	if _, err := tx.Exec(ctx, `UPDATE member_setting SET value=$3 WHERE workspace_id=$1 AND user_id=$2 AND key='background_agents'`,
+		util.MustParseUUID(f.ws), util.MustParseUUID(testUserID), []byte(mustJSON(t, value))); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A fallback-only write commits while an enqueue waits: the enqueue resolves
+// after it, so it sees the new chain instead of inserting under a stale one.
+func TestEnqueueResolvesAfterAnInFlightFallbackWrite(t *testing.T) {
+	f := memberBGFixture(t, "pcx-lock")
+	f.setUser(t, testUserID, title(f.a1))
+	seen, task, err := f.enqueueBehindInFlightWrite(t, func(ctx context.Context, tx pgx.Tx) {
+		f.setUserIn(t, ctx, tx, map[string]any{"dm_title": map[string]any{"agent_id": f.a1, "fallback_agent_id": f.a2}})
+	})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if len(seen.Chain) != 2 || seen.Chain[1].AgentID != f.a2 {
+		t.Fatalf("resolver saw %+v, want the committed fallback %s", seen.Chain, f.a2)
+	}
+	f.wantStatus(t, "task enqueued after the write", task, "queued")
+}
+
+// A -> B -> A commits while an enqueue waits: the old A task is cancelled and
+// stays so; the enqueue resolves after the round trip and gets a new task.
+func TestEnqueueResolvesAfterAnInFlightRoundTrip(t *testing.T) {
+	f := memberBGFixture(t, "pcx-rt")
+	f.setUser(t, testUserID, title(f.a1))
+	old := f.enqueueFor(t, testUserID, f.a1, bgagents.DMTitle, bgagents.UserSource)
+	_, task, err := f.enqueueBehindInFlightWrite(t, func(ctx context.Context, tx pgx.Tx) {
+		f.setUserIn(t, ctx, tx, title(f.a2))
+		if _, err := service.CancelBackgroundTasksForMember(ctx, testHandler.Queries.WithTx(tx), util.MustParseUUID(f.ws), util.MustParseUUID(testUserID), string(bgagents.DMTitle)); err != nil {
+			t.Fatal(err)
+		}
+		f.setUserIn(t, ctx, tx, title(f.a1))
+	})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	f.wantStatus(t, "task queued under the first A", old, "cancelled")
+	f.wantStatus(t, "task enqueued after the round trip", task, "queued")
+	if task.ID == old.ID {
+		t.Fatal("the enqueue reused the cancelled task")
 	}
 }
