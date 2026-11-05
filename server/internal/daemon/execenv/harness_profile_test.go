@@ -2,7 +2,6 @@ package execenv
 
 import (
 	"encoding/json"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -129,7 +128,7 @@ func TestPrepareManagedCodex_ExcludesPersonalDiscovery(t *testing.T) {
 
 	envRoot := t.TempDir()
 	codexHome := filepath.Join(envRoot, "codex-home")
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	logger := discardLogger()
 	if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{GOOS: "linux", Managed: true}, logger); err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +179,7 @@ func TestPersonalCodexHomeUnchanged(t *testing.T) {
 	writeFile(t, filepath.Join(userHome, ".agents", "skills", "uni", "SKILL.md"), "x")
 
 	codexHome := filepath.Join(t.TempDir(), "codex-home")
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	logger := discardLogger()
 	if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{GOOS: "linux"}, logger); err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +242,7 @@ func TestPrepareManagedCodex_AllowlistsConfig(t *testing.T) {
 
 	envRoot := t.TempDir()
 	codexHome := filepath.Join(envRoot, "codex-home")
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	logger := discardLogger()
 	// Reuse case: the home already exists from a personal launch.
 	if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{GOOS: "linux"}, logger); err != nil {
 		t.Fatal(err)
@@ -301,7 +300,7 @@ func TestPrepareCodexHome_PersonalKeepsPersonalConfigVerbatim(t *testing.T) {
 	writeFile(t, filepath.Join(shared, "instructions.md"), "personal")
 
 	codexHome := filepath.Join(t.TempDir(), "codex-home")
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	logger := discardLogger()
 	if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{GOOS: "linux"}, logger); err != nil {
 		t.Fatal(err)
 	}
