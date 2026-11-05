@@ -20,6 +20,7 @@ import type {
 } from "../types";
 import { ALL_STATUSES } from "./config";
 import { issueColumnCategory } from "./status-category";
+import { isSchemaValidationError } from "../api/schema";
 
 export function issueTasksOptions(issueId: string) {
   return queryOptions({
@@ -193,9 +194,25 @@ export const issueKeys = {
   tasksAll: () => ["issues", "tasks"] as const,
   /** Per-issue task list (issue-detail Execution log section). */
   tasks: (issueId: string) => [...issueKeys.tasksAll(), issueId] as const,
+  commentPreview: (wsId: string, commentId: string) =>
+    [...issueKeys.all(wsId), "comment-preview", commentId] as const,
   sourceContextPreview: (wsId: string, anchorCommentId: string) =>
     ["source-context", "preview", wsId, anchorCommentId] as const,
 };
+
+/**
+ * Resolve a comment UUID to its issue + first-line preview. A 404 (unknown,
+ * deleted, or another workspace) is a stable answer, so it is not retried.
+ */
+export function commentPreviewOptions(wsId: string, commentId: string) {
+  return queryOptions({
+    queryKey: issueKeys.commentPreview(wsId, commentId),
+    queryFn: () => api.getCommentPreview(commentId),
+    enabled: !!wsId,
+    retry: false,
+    staleTime: 5 * 60 * 1000,
+  });
+}
 
 export function sourceContextPreviewOptions(
   wsId: string,
@@ -448,10 +465,61 @@ export function projectGanttIssuesOptions(
   });
 }
 
+const ISSUE_FETCH_MAX_RETRIES = 3;
+
+/**
+ * Retry policy for the issue page's own lookups (route resolve, detail view):
+ * network failures and transient statuses back off and retry, so one dropped
+ * request does not reach the error state. A definite answer (404, other 4xx)
+ * will not change, so it settles at once. Chips, cards and lists keep the
+ * app-wide default.
+ */
+export function retryIssueFetch(failureCount: number, err: Error): boolean {
+  if (failureCount >= ISSUE_FETCH_MAX_RETRIES) return false;
+  // Unreadable data will not change on retry.
+  if (isSchemaValidationError(err)) return false;
+  // Duck-typed on `status`, like `isNotFoundError`: holds across module
+  // boundaries and test mocks. No status means a network failure.
+  const status = (err as { status?: unknown }).status;
+  if (typeof status !== "number") return true;
+  return status >= 500 || status === 408 || status === 429;
+}
+
+export function issueFetchRetryDelay(attempt: number): number {
+  return Math.min(1000 * 2 ** attempt, 8000);
+}
+
 export function issueDetailOptions(wsId: string, id: string) {
   return queryOptions({
     queryKey: issueKeys.detail(wsId, id),
     queryFn: () => api.getIssue(id),
+  });
+}
+
+/**
+ * The detail view's own observer on the detail entry.
+ *
+ * List rows and issue-created realtime payloads intentionally omit the
+ * detail-only source-context snapshot. They can still seed this query via
+ * `initialData`, so the view always reconciles with the authoritative detail
+ * endpoint when it mounts. Without this, the global Infinity staleTime hides
+ * source context until a full page refresh.
+ *
+ * `authoritative` says the entry is the detail endpoint's own response, read a
+ * moment ago by the route's identifier lookup, so the mount skips reading it
+ * again.
+ *
+ * Only seed when the description is present; the list API omits it, so a
+ * partial list row must not masquerade as a hydrated issue detail.
+ */
+export function issueDetailViewOptions(wsId: string, id: string, listRow?: Issue, authoritative = false) {
+  return queryOptions({
+    queryKey: issueKeys.detail(wsId, id),
+    queryFn: () => api.getIssue(id),
+    retry: retryIssueFetch,
+    retryDelay: issueFetchRetryDelay,
+    refetchOnMount: authoritative ? false : "always",
+    initialData: () => (listRow?.description != null ? listRow : undefined),
   });
 }
 

@@ -450,7 +450,6 @@ export function ChatPage() {
           sessions={c.sessionsLoaded ? c.sessions : undefined}
           pendingTask={c.pendingTask}
           availability={c.availability}
-          firstItemIndex={c.firstItemIndex}
           hasOlderMessages={c.hasOlderMessages}
           isFetchingOlderMessages={c.isFetchingOlderMessages}
           onLoadOlderMessages={() => void c.fetchOlderMessages()}
@@ -502,7 +501,9 @@ export function ChatPage() {
       <ChatQueue
         tasks={queuedTasks}
         headStatus={c.pendingTask?.status}
-        onSendNow={c.handleSendQueuedTaskNow}
+        headSupplement={c.pendingTask?.head_supplement}
+        onSteer={c.handleSteerQueuedTask}
+        onStopAndSend={c.handleStopAndSendQueuedTask}
         sendNowDisabled={c.isAgentAccessRevoked}
         onEdit={c.handleEditQueuedTask}
         onRemove={c.handleRemoveQueuedTask}

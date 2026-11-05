@@ -17,6 +17,7 @@ import type {
   Attachment,
   ChatMessage,
   ChatPendingTask,
+  ChatSupplement,
   ChatSession,
   ChatSessionUsage,
   Comment,
@@ -300,6 +301,27 @@ export const EMPTY_CHAT_SESSION_LIST: ChatSession[] = [];
 
 // `attachments` carried for parity rendering only — v1 doesn't author them on
 // mobile. AttachmentSchema is reused as-is.
+// Delivery receipt of a DM follow-up steered into the running task (CHE-2820).
+// Mirrors packages/core/api/schemas.ts: an unknown status degrades to
+// `uncertain`, which never reads as delivered or as safe to resend silently.
+export const ChatSupplementSchema: z.ZodType<ChatSupplement> = z.object({
+  message_id: z.string(),
+  chat_session_id: z.string(),
+  task_id: z.string(),
+  status: z
+    .enum(["pending", "delivering", "delivered", "uncertain", "failed"])
+    .catch("uncertain"),
+  failure_reason: z.string().nullable().catch(null),
+  delivered_at: z.string().nullable().catch(null),
+  acked_after_resend_at: z.string().nullable().catch(null),
+  resent_task_id: z.string().nullable().catch(null),
+}).loose();
+
+export const ResendChatSupplementResponseSchema = z.object({
+  task_id: z.string(),
+  supplement: ChatSupplementSchema,
+}).loose();
+
 export const ChatMessageSchema: z.ZodType<ChatMessage> = z.object({
   id: z.string(),
   chat_session_id: z.string(),
@@ -325,6 +347,8 @@ export const ChatMessageSchema: z.ZodType<ChatMessage> = z.object({
     prompt: z.string(),
     primary: z.boolean().optional(),
   }).loose()).catch([]).optional().default([]),
+  // A malformed receipt drops to "no receipt" rather than the whole message.
+  supplement: ChatSupplementSchema.optional().catch(undefined),
 }).loose();
 
 export const ChatMessageListSchema = z.array(ChatMessageSchema).default([]);
@@ -355,6 +379,11 @@ export const ChatPendingTaskSchema: z.ZodType<ChatPendingTask> = z.object({
   created_at: z.string().optional(),
   supports_queue: z.boolean().optional(),
   queued_tasks: ChatQueuedTasksSchema.optional(),
+  // Unknown or malformed degrades to `unsupported`; absent (older server) stays absent.
+  head_supplement: z
+    .enum(["capable", "starting", "unsupported"])
+    .optional()
+    .catch("unsupported"),
 }).loose();
 
 export const EMPTY_CHAT_PENDING_TASK: ChatPendingTask = {};
@@ -408,7 +437,7 @@ export const EMPTY_TASK_MESSAGE_LIST: TaskMessagePayload[] = [];
 // (root CLAUDE.md "Enum drift downgrades, not crashes"): unknown values fall
 // back to "title" so the row still renders without a snippet line.
 
-const SearchIssueResultSchema = IssueSchema.safeExtend({
+const SearchIssueResultSchema = IssueSchema.unwrap().safeExtend({
   match_source: z.enum(["title", "description", "comment"]).catch("title"),
   matched_snippet: z.string().optional(),
 });

@@ -190,6 +190,21 @@ multica issue wakeup runs MUL-123 <wakeup-id>
 
 在终端里以成员身份创建时需要 `--agent-id`；智能体在自己的运行中创建时默认唤醒它自己。
 
+### 在 DM 中关注进度
+
+DM 会关注其智能体为你创建的 issue。成员只能在自己创建的 DM 中用 `--chat` 管理关注。智能体不带 `--chat` 运行 `multica issue follow <issue>`：DM 来自它自己的任务，没有 DM 的任务会被拒绝。子 issue 继承父 issue 的有效关注。
+
+```bash
+multica issue follow MUL-123 --chat <chat-session-id>
+multica issue mute-follow MUL-123 --chat <chat-session-id>
+multica issue unmute-follow MUL-123 --chat <chat-session-id>
+multica issue unfollow MUL-123 --chat <chat-session-id>
+multica issue unfollow MUL-123 --chat <chat-session-id> --scope root
+multica issue follows --chat <chat-session-id>
+```
+
+`unfollow` 结束该 issue 的关注。加上 `--scope root` 还会结束其子 issue 从它继承的关注；单独手动关注的子 issue 仍保持关注。已取消关注的子 issue 不会因之后创建新的子 issue 而被再次关注。
+
 ## 智能体和 skill
 
 ```bash
@@ -278,6 +293,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 
 - `--lead` 接受成员或智能体的名称。`--default-branch-hint` 只告诉智能体仓库的默认分支，不会切换分支。
 - 工作区的 `--context` 会提供给工作区里的每个智能体。`--slug` 创建后不能修改；`--issue-prefix` 会转成大写，修改它会给所有现有任务重新编号，外部引用里的旧编号随之失效。
+- `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]` 指定接手纯路由工作流步骤的智能体（默认为 `todo`、`blocked`、`merged`、`need_decision`；用 `--routing-statuses` 修改，用 `--routing-overrides todo=<agent-id>` 把某个状态交给另一个智能体）。该智能体被归档，或其运行因提供商错误失败时，由备用智能体接手。覆盖键写成 `<workflow-id>:<status>` 时，只对该工作流生效。`none` 表示关闭该项。只有人类所有者或管理员可以修改，每次修改都会记入活动日志。
 - `--issue-title-template` 只替换 `{{date}}`（UTC，`YYYY-MM-DD`），其他 `{{...}}` 会被拒绝。定时触发器的 `--timezone` 默认 UTC。
 
 ## 命令概览

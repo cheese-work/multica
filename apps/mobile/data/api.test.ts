@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "./api";
+import { classifyIssueLoadError } from "@/lib/issue-load-error";
+import type { SchemaValidationError } from "@/lib/parse-response";
 
 // api.ts refuses to load without a base URL; set it before the import runs.
 vi.hoisted(() => {
@@ -36,6 +38,52 @@ describe("api.deleteComment", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledWith(url, expect.objectContaining({ method: "DELETE" }));
+  });
+});
+
+describe("api.getCommentPreview", () => {
+  const body = {
+    comment_id: "c1",
+    issue_id: "i1",
+    issue_identifier: "CHE-1",
+    author_type: "agent",
+    author_id: "a1",
+    author_name: "Luna",
+    preview: "hello",
+  };
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("GETs /api/comments/{id}/preview and returns the parsed body", async () => {
+    fetchMock.mockResolvedValue(Response.json(body));
+
+    await expect(api.getCommentPreview("c1")).resolves.toMatchObject(body);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.test/api/comments/c1/preview",
+      expect.anything(),
+    );
+  });
+
+  it("returns null on 404 (unreadable or unknown comment)", async () => {
+    fetchMock.mockResolvedValue(Response.json({ error: "not found" }, { status: 404 }));
+
+    await expect(api.getCommentPreview("c1")).resolves.toBeNull();
+  });
+
+  it("returns null on a malformed body instead of a half-filled chip", async () => {
+    fetchMock.mockResolvedValue(Response.json({ issue_id: "i1" }));
+
+    await expect(api.getCommentPreview("c1")).resolves.toBeNull();
   });
 });
 
@@ -144,5 +192,123 @@ describe("api chat DM stats, pin, and archive endpoints", () => {
       }),
     );
     expect(session.pinned).toBe(true);
+  });
+});
+
+describe("api chat supplements", () => {
+  const fetchMock = vi.fn();
+  const receipt = {
+    message_id: "m1",
+    chat_session_id: "s1",
+    task_id: "t1",
+    status: "pending",
+    failure_reason: null,
+    delivered_at: null,
+    acked_after_resend_at: null,
+    resent_task_id: null,
+  };
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("steers a queued follow-up with a POST to the steer route", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(receipt), { status: 200 }));
+
+    const result = await api.steerChatTask("s1", "t1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.test/api/chat/sessions/s1/tasks/t1/steer",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(result.status).toBe("pending");
+  });
+
+  it.each([
+    [undefined, false],
+    [{ confirmPossibleDuplicate: true }, true],
+  ])("resends with confirm_possible_duplicate only when asked (%j)", async (opts, expected) => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ task_id: "t2", supplement: receipt }), { status: 200 }),
+    );
+
+    await api.resendChatSupplement("s1", "m1", opts);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("https://api.example.test/api/chat/sessions/s1/messages/m1/supplement/resend");
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({ confirm_possible_duplicate: expected });
+  });
+});
+
+describe("api.listWorkspacesChecked", () => {
+  const fetchMock = vi.fn();
+  const respond = (body: unknown) =>
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(body), { status: 200 }));
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("validates a real list", async () => {
+    respond([{ id: "ws1", slug: "a" }]);
+    const result = await api.listWorkspacesChecked();
+    expect(result.validated).toBe(true);
+    expect(result.workspaces.map((w) => w.id)).toEqual(["ws1"]);
+  });
+
+  it("validates a real empty list", async () => {
+    respond([]);
+    expect(await api.listWorkspacesChecked()).toEqual({ workspaces: [], validated: true });
+  });
+
+  it.each([
+    ["an object", { oops: 1 }],
+    ["null", null],
+    ["a list with a broken item", [{ id: "ws1" }, { slug: "no-id" }]],
+  ])("falls back to an unvalidated empty list for %s", async (_name, body) => {
+    respond(body);
+    expect(await api.listWorkspacesChecked()).toEqual({ workspaces: [], validated: false });
+  });
+});
+
+describe("api.getIssue schema failure", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("throws a typed error naming the failing path instead of returning an empty issue", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ id: "i1", metadata: { decision_park: { a: 1 } } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    const err = await api.getIssue("i1").catch((e: unknown) => e);
+
+    expect(classifyIssueLoadError(err)).toBe("data");
+    expect((err as SchemaValidationError).paths).toContain("metadata.decision_park");
+    expect(String(warn.mock.calls[0]?.[0])).toContain("metadata.decision_park");
   });
 });

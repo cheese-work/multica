@@ -224,6 +224,12 @@ vi.mock("./project-resources-section", () => ({
   ProjectResourcesSection: () => null,
 }));
 
+vi.mock("./project-wakeups-section", () => ({
+  ProjectWakeupsSection: ({ projectId, canManage }: { projectId: string; canManage: boolean }) => (
+    <div data-testid="project-wakeups" data-project={projectId} data-can-manage={String(canManage)} />
+  ),
+}));
+
 vi.mock("./project-start-date-picker", () => ({
   ProjectStartDatePicker: () => null,
 }));
@@ -318,6 +324,20 @@ describe("ProjectDetail sharing", () => {
     expect(mocks.copyText).toHaveBeenCalledWith(
       "https://app.example/test-workspace/projects/project-1",
     );
+  });
+});
+
+describe("ProjectDetail wakeups", () => {
+  it.each([
+    ["admin", "true"],
+    ["member", "false"],
+  ])("puts the project's wakeup rules in the sidebar for a %s (manage: %s)", (role, canManage) => {
+    mocks.role = role;
+    renderProjectDetail();
+
+    const section = screen.getByTestId("project-wakeups");
+    expect(section).toHaveAttribute("data-project", PROJECT.id);
+    expect(section).toHaveAttribute("data-can-manage", canManage);
   });
 });
 

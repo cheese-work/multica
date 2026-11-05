@@ -20,6 +20,8 @@ const (
 	PurposeRevoke          Purpose = "passkey_revoke"
 )
 
+var issuable = map[Purpose]bool{PurposeDecisionApprove: true, PurposeRevoke: true, PurposeGateChange: true, PurposeEnroll: true, PurposeDecisionAnswer: true}
+
 const ChallengeTTL = 5 * time.Minute
 
 // ErrBusy: another request holds or just took the user's open challenge. The
@@ -41,7 +43,7 @@ type Challenge struct {
 // the stored session data. The swap is one transaction, so a failure keeps the
 // old challenge usable.
 func IssueChallenge(ctx context.Context, pool Beginner, userID pgtype.UUID, purpose Purpose, subjectID pgtype.UUID, build func(nonce []byte) ([]byte, error)) (Challenge, error) {
-	if purpose != PurposeDecisionApprove && purpose != PurposeRevoke {
+	if !issuable[purpose] {
 		return Challenge{}, fmt.Errorf("passkey: unknown purpose %q", purpose)
 	}
 	nonce := make([]byte, 32)

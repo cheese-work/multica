@@ -3685,6 +3685,14 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 
 	// Chat task: populate workspace/session info from the chat_session table.
 	if task.ChatSessionID.Valid {
+		// Rule E: a reclaimed delivery never passed ClaimAgentTask's rebase, and
+		// the epoch it was stamped under may predate a compact. Restamp it
+		// before any payload read; an active task blocks further compacts, so
+		// the epoch stays fixed from here.
+		if rebaseErr := h.Queries.RebaseClaimedChatTaskEpoch(r.Context(), task.ID); rebaseErr != nil {
+			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
+				h.rejectClaimSourceLoad(r.Context(), task, rebaseErr, "chat epoch rebase", uuidToString(task.ChatSessionID))
+		}
 		cs, chatErr := h.Queries.GetChatSession(r.Context(), task.ChatSessionID)
 		if chatErr != nil {
 			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
@@ -3754,7 +3762,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			// otherwise a single failed turn would silently drop the entire
 			// conversation memory on the next message. The fallback also
 			// requires runtime to match.
-			if cs.SessionID.Valid && cs.RuntimeID.Valid && cs.RuntimeID == task.RuntimeID {
+			if cs.SessionID.Valid && cs.RuntimeID.Valid && cs.RuntimeID == task.RuntimeID && h.chatPointerIsCurrent(r.Context(), cs) {
 				resp.PriorSessionID = cs.SessionID.String
 			}
 			if cs.WorkDir.Valid {
@@ -3855,6 +3863,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			missing, err := h.Queries.GetLatestChatTaskRolloutMissing(r.Context(), db.GetLatestChatTaskRolloutMissingParams{
 				ChatSessionID:          cs.ID,
 				ChannelContextRevision: contextRevision,
+				CompactionEpoch:        cs.CompactionEpoch,
 			})
 			h.Metrics.ObserveChatClaimRolloutMissingQuery(time.Since(started).Seconds())
 			if err == nil && missing {
@@ -3906,9 +3915,21 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				attsByMessage[mid] = append(attsByMessage[mid], a)
 			}
 		}
+		resentUncertain, resentErr := h.resentUncertainChatMessages(r.Context(), task.ID, unanswered)
+		if resentErr != nil {
+			slog.Error("chat claim: load resent chat supplements failed; preserving task for redelivery",
+				"task_id", uuidToString(task.ID),
+				"chat_session_id", uuidToString(cs.ID),
+				"error", resentErr)
+			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+				outcome: "error_chat_supplement_load",
+				status:  http.StatusInternalServerError,
+				message: "failed to load chat supplements",
+			}
+		}
 		for _, m := range unanswered {
-			if strings.TrimSpace(m.Content) != "" {
-				parts = append(parts, m.Content)
+			if text := withResentUncertainNotice(m.Content, resentUncertain[uuidToString(m.ID)]); strings.TrimSpace(text) != "" {
+				parts = append(parts, text)
 			}
 			for _, a := range attsByMessage[uuidToString(m.ID)] {
 				resp.ChatMessageAttachments = append(resp.ChatMessageAttachments, ChatAttachmentMeta{
@@ -3971,7 +3992,22 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			resp.ChatDecisionContext = decisions
 		}
 
-		if cs.ForkedFromSessionID.Valid && resp.PriorSessionID == "" {
+		if cs.CompactionEpoch > 0 && resp.PriorSessionID == "" {
+			// An in-place /compact cleared the resume session: seed this turn
+			// with the summary and what was said since. It outranks the fork and
+			// continuation blocks, which describe history the summary replaced.
+			block, err := h.compactionSeedBlock(r.Context(), cs, unanswered)
+			if err != nil {
+				slog.Error("chat claim: build compaction seed failed; preserving task for redelivery",
+					"task_id", uuidToString(task.ID), "chat_session_id", uuidToString(cs.ID), "error", err)
+				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+					outcome: "error_chat_compaction_seed", status: http.StatusInternalServerError, message: "failed to build compaction seed",
+				}
+			}
+			if block != "" {
+				resp.ChatMessage = block + "\n\nCurrent message:\n\n" + resp.ChatMessage
+			}
+		} else if cs.ForkedFromSessionID.Valid && resp.PriorSessionID == "" {
 			block, inlined, err := h.forkContextBlock(r.Context(), cs, unanswered, hasLocalDirectory(resp.ProjectResources))
 			if err != nil {
 				slog.Error("chat claim: build fork context block failed; preserving task for redelivery",
@@ -4917,6 +4953,7 @@ func (h *Handler) StartTask(w http.ResponseWriter, r *http.Request) {
 	}
 	offered := service.TaskStartCapabilities{
 		Supplement:     slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementV1),
+		ChatSupplement: slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementChatV1),
 		PREvent:        slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementPREventV1),
 		ProcessCleanup: slices.Contains(req.Capabilities, protocol.DaemonCapabilityPiProcessCleanupV1),
 	}
@@ -4957,12 +4994,14 @@ func (h *Handler) StartTask(w http.ResponseWriter, r *http.Request) {
 	// A daemon must use this response rather than its own offer: an old server
 	// ignores the offer and omits the field, which keeps daemon-first rollouts
 	// fail closed without requiring synchronized deployment.
-	if task.IssueID.Valid {
+	if task.IssueID.Valid || task.ChatSessionID.Valid {
 		if capability, capabilityErr := h.Queries.GetTaskSupplementCapability(r.Context(), task.ID); capabilityErr == nil {
 			resp.SupplementCapability = capability.Capability
 		} else if !errors.Is(capabilityErr, pgx.ErrNoRows) {
 			slog.Warn("start task: failed to load negotiated supplement capability", "task_id", taskID, "error", capabilityErr)
 		}
+	}
+	if task.IssueID.Valid {
 		if capability, capabilityErr := h.Queries.GetTaskPREventCapability(r.Context(), task.ID); capabilityErr == nil {
 			resp.PREventCapability = capability.Capability
 		} else if !errors.Is(capabilityErr, pgx.ErrNoRows) {
@@ -7364,4 +7403,21 @@ func (h *Handler) MarkTaskExternalRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// chatPointerIsCurrent reports whether the DM's resume pointer may seed a
+// claim. A DM that never compacted has nothing stale to name; after a compact
+// the pointer must trace back to a task of the current epoch. A failed lookup
+// reads as not current: the claim then resolves the session from task rows.
+func (h *Handler) chatPointerIsCurrent(ctx context.Context, cs db.ChatSession) bool {
+	if cs.CompactionEpoch == 0 {
+		return true
+	}
+	current, err := h.Queries.ChatSessionPointerIsCurrent(ctx, cs.ID)
+	if err != nil {
+		slog.Warn("chat claim: pointer epoch check failed; ignoring the pointer",
+			"chat_session_id", uuidToString(cs.ID), "error", err)
+		return false
+	}
+	return current
 }

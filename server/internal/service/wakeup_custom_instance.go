@@ -75,13 +75,7 @@ func customInstanceEnded(w db.IssueWakeup) bool {
 func (s *IssueWakeupService) ensureScopedInstance(ctx context.Context, b *scopedIssueBatch, r *scopedRule, target wakeTarget, baseline bool) (db.IssueWakeup, string, error) {
 	q, tx, issue := b.q, b.tx, b.issue
 	cfg := r.eff.Config
-	mode, maxFires := "continuous", pgtype.Int4{}
-	if cfg.Mode.Set {
-		mode = cfg.Mode.Value
-	}
-	if cfg.MaxFires.Set {
-		maxFires = pgtype.Int4{Int32: int32(cfg.MaxFires.Value), Valid: true}
-	}
+	mode, maxFires := r.instanceFields()
 	// created_at is set here, to the microsecond the database stores, so a relative
 	// end computed now and one recomputed later from created_at agree exactly.
 	now := time.Now().Truncate(time.Microsecond)
@@ -89,13 +83,26 @@ func (s *IssueWakeupService) ensureScopedInstance(ctx context.Context, b *scoped
 	if r.condition != nil {
 		next = pgtype.Timestamptz{Time: now, Valid: true}
 	}
+	var placed wakeupScheduled
+	if r.schedule != nil {
+		var err error
+		if placed, err = scheduleOf(r.schedule.Kind, r.schedule.Spec, now, now); err != nil {
+			return db.IssueWakeup{}, scopedOutcomeInvalid, nil
+		}
+		next = placed.Next
+	}
 	r.events = append([]string{}, r.events...) // a condition without hint events subscribes to none
 	existing, err := q.GetDefaultWakeupInstance(ctx, db.GetDefaultWakeupInstanceParams{IssueID: issue.ID, RuleKey: r.key})
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
+		if placed.Elapsed {
+			// A one-shot whose instant passed before the issue came in is not owed.
+			return db.IssueWakeup{}, scopedOutcomeNoMatch, nil
+		}
 		created, err := q.CreateDefaultWakeupInstance(ctx, db.CreateDefaultWakeupInstanceParams{
 			ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AgentID: target.Agent.ID, CreatedBy: r.member,
-			Instruction: cfg.Instruction.Value, Mode: mode, EventTypes: r.events, MaxFires: maxFires,
+			Instruction: cfg.Instruction.Value, Kind: r.schedule.instanceKind(), Mode: mode, EventTypes: r.events, MaxFires: maxFires,
+			IntervalSeconds: r.schedule.intervalSeconds(), CronExpression: r.schedule.cronExpression(), Timezone: r.schedule.timezone(),
 			RuleKey: scopedText(r.key), ScopeKind: scopedText(string(r.root.Scope)), ScopeID: r.root.ScopeID, Fingerprint: scopedText(r.eff.Fingerprint),
 			Condition: r.condition, NextFireAt: next, ExpiresAt: customExpiry(cfg, now), CreatedAt: pgtype.Timestamptz{Time: now, Valid: true},
 		})
@@ -122,7 +129,13 @@ func (s *IssueWakeupService) ensureScopedInstance(ctx context.Context, b *scoped
 		return db.IssueWakeup{}, scopedOutcomeInstanceOff, nil
 	}
 	// A default pool that was full is retried, as capacity may have freed; an
-	// instance a retired rule left idle is applied again like a new one.
+	// instance a retired rule left idle is applied again like a new one. A
+	// schedule instance first moves to its next future occurrence.
+	if live, err := settleScheduledInstance(ctx, q, existing, now); err != nil {
+		return db.IssueWakeup{}, "", err
+	} else if !live {
+		return db.IssueWakeup{}, scopedOutcomeInstanceOff, nil
+	}
 	admission, err := ApplyDefaultWakeupInstance(ctx, tx, existing.ID)
 	if err != nil {
 		return db.IssueWakeup{}, "", err
@@ -145,6 +158,17 @@ func (b *scopedIssueBatch) rebase(ctx context.Context, w db.IssueWakeup, r *scop
 	if r.condition != nil {
 		next = pgtype.Timestamptz{Time: now, Valid: true}
 	}
+	// A schedule edit restarts the schedule from now; any other edit keeps the tick.
+	// A one-shot that has no instant left is over, so no edit gives it a new one.
+	spent := r.schedule != nil && w.Kind == wakeupTriggerKindAt && r.schedule.instanceKind() == wakeupTriggerKindAt && !w.NextFireAt.Valid
+	keepNext := spent || r.schedule != nil && scheduleUnchanged(w, r.schedule)
+	if r.schedule != nil && !keepNext {
+		placed, err := scheduleOf(r.schedule.Kind, r.schedule.Spec, now, now)
+		if err != nil {
+			return w, err
+		}
+		next = placed.Next
+	}
 	// An expiry that still says the same keeps the end it has: the end an instance
 	// would get from this configuration is compared exactly, with no tolerance (the
 	// instance's created_at is the basis of a relative end, see create).
@@ -156,9 +180,11 @@ func (b *scopedIssueBatch) rebase(ctx context.Context, w db.IssueWakeup, r *scop
 	// served, in every transaction. A changed configuration moves it to the new
 	// revision, and delivers afresh.
 	preserved := keepExpiry && w.AgentID == target.Agent.ID && w.CreatedBy == r.member && w.Instruction == cfg.Instruction.Value && w.Mode == mode &&
-		slices.Equal(w.EventTypes, r.events) && w.MaxFires == maxFires && sameInstanceCondition(w.Condition, r.condition)
+		slices.Equal(w.EventTypes, r.events) && w.MaxFires == maxFires && sameInstanceCondition(w.Condition, r.condition) &&
+		(r.schedule == nil && w.Kind == wakeupTriggerKindEvent || keepNext)
 	out, err := b.q.RebaseDefaultWakeupInstance(ctx, db.RebaseDefaultWakeupInstanceParams{
 		ID: w.ID, AgentID: target.Agent.ID, CreatedBy: r.member, Instruction: cfg.Instruction.Value, Mode: mode,
+		Kind: r.schedule.instanceKind(), IntervalSeconds: r.schedule.intervalSeconds(), CronExpression: r.schedule.cronExpression(), Timezone: r.schedule.timezone(), KeepNext: keepNext,
 		EventTypes: r.events, MaxFires: maxFires, Fingerprint: scopedText(r.eff.Fingerprint), Preserved: preserved,
 		Condition: r.condition, ConditionState: state, NextFireAt: next, ExpiresAt: expires,
 	})

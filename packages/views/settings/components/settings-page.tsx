@@ -46,6 +46,7 @@ import { WorkspaceAvatar } from "../../workspace/workspace-avatar";
 import { AccountTab } from "./account-tab";
 import { PreferencesTab } from "./preferences-tab";
 import { TokensTab } from "./tokens-tab";
+import { PasskeysTab } from "./passkeys-tab";
 import { WorkspaceTab } from "./workspace-tab";
 import { MembersTab } from "./members-tab";
 import { CodeTab } from "./code-tab";
@@ -171,6 +172,7 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
               ? [entry("apps", t(($) => $.page.tabs.apps), Plug, <ConnectedAppsTab />)]
               : []),
             entry("tokens", t(($) => $.page.tabs.tokens), KeyRound, <TokensTab />),
+            entry("passkeys", t(($) => $.page.tabs.passkeys), Lock, <PasskeysTab />),
           ],
         },
       ],

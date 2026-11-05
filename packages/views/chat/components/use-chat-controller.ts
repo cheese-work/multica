@@ -34,6 +34,7 @@ import {
   useSetChatSessionProject,
 } from "@multica/core/chat/mutations";
 import { useChatStore } from "@multica/core/chat";
+import { useCommentComposerStore } from "@multica/core/issues/stores/comment-composer-store";
 import { upsertChatMessageToCaches } from "@multica/core/chat/message-cache";
 import {
   enqueuePendingChatTask,
@@ -188,8 +189,6 @@ export function seedAcceptedPendingTask(
   qc.invalidateQueries({ queryKey: chatKeys.pendingTask(sessionId) });
 }
 
-const CHAT_VIRTUOSO_INITIAL_FIRST_ITEM_INDEX = 1_000_000;
-
 
 /**
  * Layout-agnostic chat controller. Holds every piece of chat conversation
@@ -248,13 +247,6 @@ export function useChatController(opts?: { isActive?: boolean }) {
   const showSkeleton =
     !!activeSessionId && (messagesLoading || pendingTaskLoading);
   const messages = hideQueuedChatMessages(allMessages, pendingTask);
-  const olderMessageCount = messagePages
-    .slice(1)
-    .reduce((sum, page) => sum + page.messages.length, 0);
-  const firstItemIndex =
-    messages.length > 0
-      ? CHAT_VIRTUOSO_INITIAL_FIRST_ITEM_INDEX - olderMessageCount
-      : 0;
   const pendingTaskId = pendingTask?.task_id ?? null;
   const stopRequestedBeforeTaskRef = useRef(false);
   // Durable deferred-cancellation draft restores (#5219). The whole lifecycle —
@@ -274,8 +266,11 @@ export function useChatController(opts?: { isActive?: boolean }) {
     handleEditQueuedTask,
     handleRemoveQueuedTask,
     handleClearQueuedTasks,
-    handleSendQueuedTaskNow,
+    steerQueuedChatTask,
+    handleSteerQueuedTask,
+    handleStopAndSendQueuedTask,
   } = useChatTaskActions(activeSessionId, enqueueLocalRestore);
+  const runningAgentReply = useCommentComposerStore((s) => s.runningAgentReply);
   // Nonce handed to ChatInput to pull focus into the compose box when a new
   // chat starts. Bumped by handleNewChat / handleStartNewChat only, so
   // selecting an existing chat or a deep link never steals focus.
@@ -668,6 +663,17 @@ export function useChatController(opts?: { isActive?: boolean }) {
           toast.error(t(($) => $.input.attachment_bind_failed_toast));
         }
       }
+      // `running_agent_reply = steer`: add the follow-up to the running reply
+      // right away. Only a capable run is steered; a starting or unsupported one
+      // keeps the message queued. A refused steer leaves it queued too, so the
+      // send itself still succeeded.
+      if (
+        result.queued === true &&
+        runningAgentReply === "steer" &&
+        pendingTask?.head_supplement === "capable"
+      ) {
+        await steerQueuedChatTask(sessionId, result.task_id);
+      }
       qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
       qc.invalidateQueries({ queryKey: chatKeys.messagesPage(sessionId) });
       return true;
@@ -682,6 +688,8 @@ export function useChatController(opts?: { isActive?: boolean }) {
       isAgentRuntimeBound,
       ensureSession,
       cancelChatTask,
+      steerQueuedChatTask,
+      runningAgentReply,
       qc,
       setActiveSession,
       t,
@@ -868,7 +876,6 @@ export function useChatController(opts?: { isActive?: boolean }) {
     showSkeleton,
     messagesLoaded,
     hasMessages,
-    firstItemIndex,
     hasOlderMessages: !!hasOlderMessages,
     isFetchingOlderMessages,
     fetchOlderMessages,
@@ -883,7 +890,8 @@ export function useChatController(opts?: { isActive?: boolean }) {
     // actions
     handleSend,
     handleStop,
-    handleSendQueuedTaskNow,
+    handleSteerQueuedTask,
+    handleStopAndSendQueuedTask,
     handleEditQueuedTask,
     handleRemoveQueuedTask,
     handleClearQueuedTasks,

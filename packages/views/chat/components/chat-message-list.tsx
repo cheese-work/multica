@@ -34,8 +34,8 @@ import { MediaSourceProvider } from "../../media/media-context";
 import { RichContentScrollRootProvider } from "../../rich-content/scroll-root";
 import { NextSelfMention, useMentionsViewer } from "../../rich-content/next-self-mention";
 import { copyText } from "@multica/ui/lib/clipboard";
-import { AttachmentList } from "../../issues/components/comment-card";
-import { PreviewSequenceProvider, collectPreviewSequence } from "../../editor";
+import { AttachmentList } from "../../issues/components/attachment-list";
+import { PreviewSequenceProvider, collectPreviewSequence } from "../../editor/preview-sequence-context";
 import type { AgentAvailability } from "@multica/core/agents";
 import { resolveFailureReasonKey } from "@multica/core/agents";
 import type {
@@ -74,6 +74,8 @@ import { DecisionWithdrawalCard } from "./decision-withdrawal-card";
 import { WakeupEventRow, WakeupReplyRail } from "./wakeup-event-row";
 import { stripWakeupHeader } from "@multica/core/chat/wakeup";
 import { ContinuationBlock } from "./continuation-block";
+import { ChatSupplementStatus } from "./chat-supplement-status";
+import { useChatFirstItemIndex } from "./use-chat-first-item-index";
 import { predecessorChain } from "../lib/predecessor-chain";
 
 // ─── Public component ────────────────────────────────────────────────────
@@ -104,7 +106,6 @@ interface ChatMessageListProps {
   pendingTask: ChatPendingTask | null | undefined;
   /** Resolved presence; pass `undefined` while loading to keep the pill copy neutral. */
   availability: AgentAvailability | undefined;
-  firstItemIndex?: number;
   hasOlderMessages?: boolean;
   isFetchingOlderMessages?: boolean;
   onLoadOlderMessages?: () => void;
@@ -193,14 +194,20 @@ type ChatRenderItem =
   | { key: string; kind: "live"; taskId: string };
 
 /**
- * Row key for a persisted message. Assistant turns carrying a task_id key on
- * the task so they can inherit the live row; everything else keys on its own
- * id.
+ * Row key for a persisted message. The assistant reply carrying a task_id keys
+ * on the task so it can inherit the live row; everything else keys on its own
+ * id. A compact turn persists a compaction summary under the same task_id as
+ * its reply, so the summary never claims the task key, and `claimed` makes any
+ * other repeat fall back to its own id: duplicate keys orphan Virtuoso's rows.
  */
-function messageRowKey(message: ChatMessage): string {
-  return message.role === "assistant" && message.task_id
-    ? `task:${message.task_id}`
-    : message.id;
+function messageRowKey(message: ChatMessage, claimed: Set<string>): string {
+  if (message.role !== "assistant" || !message.task_id || message.message_kind === "compaction_summary") {
+    return message.id;
+  }
+  const key = `task:${message.task_id}`;
+  if (claimed.has(key)) return message.id;
+  claimed.add(key);
+  return key;
 }
 
 function ChatListHeader({ context }: { context?: ChatListContext }) {
@@ -377,7 +384,6 @@ export function ChatMessageList({
   sessions,
   pendingTask,
   availability,
-  firstItemIndex = 0,
   hasOlderMessages = false,
   isFetchingOlderMessages = false,
   onLoadOlderMessages,
@@ -473,6 +479,7 @@ export function ChatMessageList({
     [messages, hasOlderMessages],
   );
   const renderItems: ChatRenderItem[] = useMemo(() => {
+    const claimedKeys = new Set<string>();
     const items: ChatRenderItem[] = messages
       .filter(
         (message) =>
@@ -483,7 +490,7 @@ export function ChatMessageList({
           !(message.message_kind === "decision_reference" && message.decision_ref),
       )
       .map((message, i, visible) => ({
-        key: messageRowKey(message),
+        key: messageRowKey(message, claimedKeys),
         kind: "message" as const,
         message,
         taskId: message.task_id ?? null,
@@ -580,6 +587,7 @@ export function ChatMessageList({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flashId, scrollContainerEl]);
 
+  const firstItemIndex = useChatFirstItemIndex(renderItems.map((item) => item.key));
   const firstIndex = renderItems.length > 0 ? firstItemIndex : 0;
   const liveEndKey = renderItems[renderItems.length - 1]?.key ?? null;
   const firstItem = renderItems[0];
@@ -1012,6 +1020,7 @@ const MessageBubble = memo(function MessageBubble({
           />
         </div>
         <MessageTime iso={message.created_at} className="mt-0.5 block text-right" />
+        {message.supplement ? <ChatSupplementStatus supplement={message.supplement} /> : null}
         {message.decision_quotes?.map((card) => (
           <DecisionDmCard key={card.answer_id} card={card} />
         ))}

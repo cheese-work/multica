@@ -135,7 +135,15 @@ func guardIssueRunGate(ctx context.Context, q *db.Queries, issueID pgtype.UUID, 
 	if state.Valid {
 		return ReviewGate{}, ErrIssueInTriage
 	}
-	return guardRunBudget(ctx, q, issueID, target)
+	gate, err := guardRunBudget(ctx, q, issueID, target)
+	if err != nil {
+		return ReviewGate{}, err
+	}
+	// After the budget: a run the budget refuses never takes a stage slot.
+	if err := guardStageQueue(ctx, q, issueID, target); err != nil {
+		return ReviewGate{}, err
+	}
+	return gate, nil
 }
 
 // TriageContextType marks a task as a Triage run in its context JSONB

@@ -3,6 +3,8 @@ import { createAuthStore } from "../auth";
 import { configStore } from "../config";
 import type { StorageAdapter, User } from "../types";
 import { ApiClient, ApiError, CHAT_DRAFT_RESTORE_CAPABILITY, clientErrorMessage } from "./client";
+import { isSchemaValidationError, setSchemaLogger, type SchemaValidationError } from "./schema";
+import { noopLogger } from "../logger";
 import { EMPTY_PLUGIN_PACKAGE_LIST, EMPTY_PLUGIN_PREVIEW, EMPTY_PLUGIN_SURFACE_LAUNCH } from "./schemas";
 
 afterEach(() => {
@@ -3386,5 +3388,61 @@ describe("ApiClient machine pause", () => {
     await new ApiClient("https://api.example.test").resumeRuntimeMachine("rt-1");
     expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.example.test/api/runtimes/rt-1/pause");
     expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("DELETE");
+  });
+});
+
+describe("ApiClient chat supplements", () => {
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+  const receipt = {
+    message_id: "m1", chat_session_id: "s1", task_id: "t1", status: "pending",
+    failure_reason: null, delivered_at: null, acked_after_resend_at: null, resent_task_id: null,
+  };
+
+  it("steers a queued follow-up with a POST to the steer route", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json(receipt));
+    vi.stubGlobal("fetch", fetchMock);
+    const out = await new ApiClient("https://api.example.test").steerChatTask("s1", "t2");
+    expect(fetchMock.mock.calls[0]![0]).toBe("https://api.example.test/api/chat/sessions/s1/tasks/t2/steer");
+    expect(fetchMock.mock.calls[0]![1]?.method).toBe("POST");
+    expect(out.status).toBe("pending");
+  });
+
+  it("resends without confirmation by default", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({ task_id: "t3", supplement: receipt }));
+    vi.stubGlobal("fetch", fetchMock);
+    const out = await new ApiClient("https://api.example.test").resendChatSupplement("s1", "m1");
+    expect(fetchMock.mock.calls[0]![0]).toBe("https://api.example.test/api/chat/sessions/s1/messages/m1/supplement/resend");
+    expect(fetchMock.mock.calls[0]![1]?.method).toBe("POST");
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]?.body as string)).toEqual({ confirm_possible_duplicate: false });
+    expect(out.task_id).toBe("t3");
+  });
+
+  it("sends the duplicate confirmation only when the caller passes it", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({ task_id: "t3", supplement: receipt }));
+    vi.stubGlobal("fetch", fetchMock);
+    await new ApiClient("https://api.example.test").resendChatSupplement("s1", "m1", { confirmPossibleDuplicate: true });
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]?.body as string)).toEqual({ confirm_possible_duplicate: true });
+  });
+});
+
+describe("ApiClient getIssue schema failure", () => {
+  it("throws a typed error that names the failing path and logs it as text", async () => {
+    const warn = vi.fn();
+    setSchemaLogger({ debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ id: "i1", metadata: { decision_park: { a: 1 } } }), {
+          status: 200, headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+    const err = await new ApiClient("https://api.example.test").getIssue("i1").catch((e: unknown) => e);
+    expect(isSchemaValidationError(err)).toBe(true);
+    expect((err as SchemaValidationError).endpoint).toBe("GET /api/issues/:id");
+    expect((err as SchemaValidationError).paths).toContain("metadata.decision_park");
+    expect(String(warn.mock.calls[0]?.[0])).toContain("metadata.decision_park");
+    setSchemaLogger(noopLogger);
   });
 });
