@@ -211,13 +211,50 @@ func (s *TaskService) enqueueChatQuickActions(ctx context.Context, task db.Agent
 	if err != nil {
 		return false, true, fmt.Errorf("load chat session: %w", err)
 	}
+	res := s.quickActionsResolution(ctx, cs)
+	if len(res.Chain) == 0 {
+		return false, true, nil
+	}
+	prompt, err := s.buildChatQuickActionsPrompt(ctx, target, chatInputOwnerID(task))
+	if err != nil {
+		return false, true, err
+	}
+	in := BackgroundTaskInput{
+		Job: bgagents.QuickActions, WorkspaceID: cs.WorkspaceID, MemberID: cs.CreatorID, SourceChatSessionID: cs.ID,
+		Source: res.Source,
+		// The daemon builds an output-only prompt from the input alone, so the
+		// instructions travel with the conversation.
+		Input:        chatQuickActionsSystemPrompt + "\n\n" + prompt,
+		TargetTaskID: task.ID, Refresh: refresh,
+	}
+	return s.admitQuickActions(ctx, in, res.Chain)
+}
+
+// admitQuickActions applies the two admission gates and the insert as one step
+// across every server instance. A transaction-scoped advisory lock serialises
+// admissions for the job: without it, concurrent requests all read "under the
+// ceiling" or "no pass for this DM" and all insert, so a burst could exceed 16
+// paid jobs or queue duplicates for one DM. The lock transaction stays open
+// until the insert has committed on the pool, so the next admission sees the row.
+func (s *TaskService) admitQuickActions(ctx context.Context, in BackgroundTaskInput, chain []bgagents.Candidate) (queued, failed bool, err error) {
+	if s.TxStarter == nil {
+		return false, true, errors.New("quick actions admission requires transaction support")
+	}
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return false, true, fmt.Errorf("begin quick actions admission: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", bgagents.Purpose(bgagents.QuickActions)); err != nil {
+		return false, true, fmt.Errorf("lock quick actions admission: %w", err)
+	}
 	purpose := pgtype.Text{String: bgagents.Purpose(bgagents.QuickActions), Valid: true}
-	active, err := s.Queries.HasActiveBackgroundTaskForSession(ctx, db.HasActiveBackgroundTaskForSessionParams{Purpose: purpose, SourceChatSessionID: cs.ID})
+	active, err := s.Queries.HasActiveBackgroundTaskForSession(ctx, db.HasActiveBackgroundTaskForSessionParams{Purpose: purpose, SourceChatSessionID: in.SourceChatSessionID})
 	if err != nil {
 		return false, true, fmt.Errorf("check active quick actions task: %w", err)
 	}
 	if active {
-		slog.Info("chat quick actions pass skipped: one already active for this session", "chat_session_id", util.UUIDToString(cs.ID))
+		slog.Info("chat quick actions pass skipped: one already active for this session", "chat_session_id", util.UUIDToString(in.SourceChatSessionID))
 		return false, false, nil
 	}
 	count, err := s.Queries.CountActiveBackgroundTasksByPurpose(ctx, purpose)
@@ -228,23 +265,7 @@ func (s *TaskService) enqueueChatQuickActions(ctx context.Context, task db.Agent
 		slog.Warn("chat quick actions pass shed: concurrency ceiling reached", "ceiling", chatQuickActionsMaxConcurrent)
 		return false, false, nil
 	}
-	res := s.quickActionsResolution(ctx, cs)
-	if len(res.Chain) == 0 {
-		return false, true, nil
-	}
-	prompt, err := s.buildChatQuickActionsPrompt(ctx, target, chatInputOwnerID(task))
-	if err != nil {
-		return false, true, err
-	}
-	_, err = s.EnqueueBackgroundChain(ctx, BackgroundTaskInput{
-		Job: bgagents.QuickActions, WorkspaceID: cs.WorkspaceID, MemberID: cs.CreatorID, SourceChatSessionID: cs.ID,
-		Source: res.Source,
-		// The daemon builds an output-only prompt from the input alone, so the
-		// instructions travel with the conversation.
-		Input:        chatQuickActionsSystemPrompt + "\n\n" + prompt,
-		TargetTaskID: task.ID, Refresh: refresh,
-	}, res.Chain)
-	if err != nil {
+	if _, err := s.EnqueueBackgroundChain(ctx, in, chain); err != nil {
 		if errors.Is(err, ErrNoReachableBackgroundAgent) {
 			return false, true, nil
 		}

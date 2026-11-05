@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 
 	dbfx "github.com/multica-ai/multica/server/internal/testutil"
@@ -127,6 +128,61 @@ func TestQuickActionsOnePassPerSession(t *testing.T) {
 	q.svc.GenerateChatQuickActionsAsync(q.turn, ChatQuickActionsRefresh)
 	if got := q.tasks(t); got != 1 {
 		t.Fatalf("two passes for one DM queued %d task(s), want 1", got)
+	}
+}
+
+// newTurn adds a second DM with its own finished chat turn.
+func (q *quickActionsFixture) newTurn(t *testing.T) db.AgentTaskQueue {
+	t.Helper()
+	dm := q.rows.ChatSession(t, q.primary)
+	id := q.rows.Task(t, q.primary, dbfx.Cols{"status": "completed", "chat_session_id": dm, "runtime_id": q.primaryRuntime})
+	q.rows.Insert(t, "chat_message", dbfx.Cols{"chat_session_id": dm, "role": "assistant", "task_id": id, "content": "I can refactor parser.go."})
+	turn, err := q.svc.Queries.GetAgentTask(context.Background(), util.MustParseUUID(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return turn
+}
+
+// fire runs one pass per turn at the same moment.
+func (q *quickActionsFixture) fire(turns []db.AgentTaskQueue) {
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for _, turn := range turns {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			q.svc.GenerateChatQuickActionsAsync(turn, ChatQuickActionsAutomatic)
+		}()
+	}
+	close(start)
+	wg.Wait()
+}
+
+func TestQuickActionsConcurrentPassesRespectTheCeiling(t *testing.T) {
+	q := newQuickActionsFixture(t)
+	q.configure(t)
+	for range chatQuickActionsMaxConcurrent - 1 {
+		q.rows.Task(t, q.primary, dbfx.Cols{"purpose": "bg:quick_actions", "status": "queued", "runtime_id": q.primaryRuntime})
+	}
+	turns := []db.AgentTaskQueue{q.turn}
+	for range 7 {
+		turns = append(turns, q.newTurn(t))
+	}
+
+	q.fire(turns)
+	if got := q.tasks(t); got != chatQuickActionsMaxConcurrent {
+		t.Fatalf("8 racing passes with one free slot left %d active tasks, want exactly %d", got, chatQuickActionsMaxConcurrent)
+	}
+}
+
+func TestQuickActionsConcurrentPassesForOneSessionQueueOnce(t *testing.T) {
+	q := newQuickActionsFixture(t)
+	q.configure(t)
+	q.fire([]db.AgentTaskQueue{q.turn, q.turn, q.turn, q.turn, q.turn, q.turn, q.turn, q.turn})
+	if got := q.tasks(t); got != 1 {
+		t.Fatalf("8 racing passes for one DM queued %d task(s), want 1", got)
 	}
 }
 
