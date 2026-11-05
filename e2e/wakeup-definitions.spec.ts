@@ -1,11 +1,12 @@
 import "./env";
 
 import { execFile } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { expect, test } from "@playwright/test";
+import { _electron, expect, test } from "@playwright/test";
 import pg from "pg";
 import { createTestApi } from "./helpers";
 
@@ -24,8 +25,25 @@ test("workspace, project and issue wakeup defaults resolve and show on every sur
   const api = await createTestApi();
   const db = new pg.Client(process.env.DATABASE_URL);
   await db.connect();
+  // Everything the test writes outside the API client is tracked here so the
+  // cleanup removes exactly that, in this workspace, and nothing else.
+  let workspaceId: string | undefined;
+  let settingsBefore: unknown;
+  let hadWorkspaceDefinition = true;
+  let projectId: string | undefined;
+  let issueId: string | undefined;
+  let agentId: string | undefined;
+  let wakeupId: string | undefined;
   try {
     const workspace = (await api.getWorkspaces())[0]!;
+    workspaceId = workspace.id;
+    // A built-in rule write at workspace scope merges into workspace.settings.
+    settingsBefore = (await db.query(`SELECT settings FROM workspace WHERE id=$1`, [workspace.id])).rows[0].settings;
+    hadWorkspaceDefinition =
+      (await db.query(`SELECT 1 FROM issue_wakeup_definition WHERE workspace_id=$1 AND scope_kind='workspace' AND rule_key=$2`, [workspace.id, RULE]))
+        .rowCount! > 0;
+    // The test writes with revision 0, so it needs a clean slate to create.
+    expect(hadWorkspaceDefinition).toBe(false);
     const headers = {
       Authorization: `Bearer ${api.getToken()}`,
       "X-Workspace-ID": workspace.id,
@@ -38,6 +56,8 @@ test("workspace, project and issue wakeup defaults resolve and show on every sur
 
     const project = await api.createProject("Wakeup defaults project");
     const issue = await api.createIssue("Wakeup defaults issue", { project_id: project.id });
+    projectId = project.id;
+    issueId = issue.id;
     const wsPath = `/api/wakeup-definitions/${RULE}`;
     const projectPath = `/api/projects/${project.id}/wakeup-definitions/${RULE}`;
     const issuePath = `/api/issues/${issue.id}/wakeup-definitions/${RULE}`;
@@ -95,17 +115,19 @@ test("workspace, project and issue wakeup defaults resolve and show on every sur
     // Runtime state: a paused instance of the rule rides on the issue response
     // and on the CLI list, and shows on the issue page.
     // The list joins the agent, so the instance needs one.
-    const agentId = (
+    agentId = (
       await db.query(
         `INSERT INTO agent(workspace_id,name,runtime_mode,visibility) VALUES($1,'Wakeup defaults agent','local','workspace') RETURNING id`,
         [workspace.id],
       )
     ).rows[0].id;
-    await db.query(
-      `INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,instruction,kind,mode,event_types,enabled,paused_reason,system_rule)
-       VALUES(gen_random_uuid(),$1,$2,$3,'','event','continuous','{pr.merged}',true,'loop',$4)`,
-      [workspace.id, issue.id, agentId, RULE],
-    );
+    wakeupId = (
+      await db.query(
+        `INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,instruction,kind,mode,event_types,enabled,paused_reason,system_rule)
+         VALUES(gen_random_uuid(),$1,$2,$3,'','event','continuous','{pr.merged}',true,'loop',$4) RETURNING id`,
+        [workspace.id, issue.id, agentId, RULE],
+      )
+    ).rows[0].id;
     eff = await effective();
     expect(eff.execution.paused_reason).toBe("loop");
     expect(eff.execution.instance_id).toBeTruthy();
@@ -114,14 +136,50 @@ test("workspace, project and issue wakeup defaults resolve and show on every sur
     await expect(row).toContainText("Paused", { timeout: 30_000 });
 
     const cli = process.env.MULTICA_CLI;
-    if (cli) {
-      const { stdout } = await run(cli, ["issue", "wakeup", "list", issue.id, "--output", "json"], {
+    // The CLI lists runtime instances only; it has no read command for scoped definitions.
+    const cliList = async () => {
+      const { stdout } = await run(cli!, ["issue", "wakeup", "list", issue.id, "--output", "json"], {
         // A cwd outside any agent workdir keeps the CLI from reading a task marker.
         cwd: mkdtempSync(join(tmpdir(), "wakeup-cli-")),
         env: { ...cleanEnv(), MULTICA_SERVER_URL: API, MULTICA_WORKSPACE_ID: workspace.id, MULTICA_TOKEN: api.getToken()! },
       });
-      const rows = JSON.parse(stdout) as Array<{ paused_reason?: string }>;
-      expect(rows.filter((r) => r.paused_reason === "loop"), stdout).toHaveLength(1);
+      return (JSON.parse(stdout) as Array<{ id?: string; paused_reason?: string }>).filter((r) => r.paused_reason === "loop");
+    };
+    if (cli) expect(await cliList()).toHaveLength(1);
+
+    // Desktop: the built Electron client, isolated profile, same server. Opt in
+    // with WAKEUP_DESKTOP=1 after `electron-vite build` with VITE_API_URL set.
+    if (process.env.WAKEUP_DESKTOP === "1") {
+      const home = mkdtempSync(join(tmpdir(), "wakeup-desktop-"));
+      mkdirSync(join(home, ".multica"), { recursive: true });
+      writeFileSync(join(home, ".multica", "desktop_prefs.json"), JSON.stringify({ autoStart: false, autoStop: false }));
+      const env = { ...cleanEnv(), HOME: home, XDG_CONFIG_HOME: join(home, "config"), DESKTOP_APP_SUFFIX: "CHE3667", ELECTRON_DISABLE_SECURITY_WARNINGS: "true" } as Record<string, string>;
+      const app = await _electron.launch({
+        executablePath: createRequire(resolve("apps/desktop/package.json"))("electron"),
+        args: [resolve("apps/desktop"), "--ozone-platform=headless", "--no-sandbox", "--disable-gpu"],
+        env,
+      });
+      try {
+        const win = await app.firstWindow();
+        await win.waitForLoadState("domcontentloaded");
+        const path = `/${workspace.slug}/issues/${issue.id}`;
+        await win.evaluate(({ token, slug, path }) => {
+          localStorage.setItem("multica_token", token);
+          localStorage.setItem("multica_tabs", JSON.stringify({ version: 5, state: {
+            activeWorkspaceSlug: slug, byWorkspace: { [slug]: {
+              activeTabId: "wakeups", tabs: [{ id: "wakeups", url: path, resourceKey: path, title: "Wakeup defaults issue", pinned: false, history: { stack: [path], index: 0 }, memento: { scroll: {}, view: {} } }],
+              browsingHistory: [path], browsingHistoryTitles: {}, recentTabIds: [],
+            } },
+          } }));
+        }, { token: api.getToken()!, slug: workspace.slug, path });
+        await win.reload();
+        const deskRow = win.getByRole("list", { name: "Default wakeups" }).getByRole("listitem", { name: "When the linked PR merges" });
+        await expect(deskRow).toBeVisible({ timeout: 90_000 });
+        await expect(deskRow).toContainText("Overridden on this issue");
+        await expect(deskRow).toContainText("Paused");
+      } finally {
+        await app.close();
+      }
     }
 
     // Reset from the UI: the workspace/project value comes back, the instance stays.
@@ -131,10 +189,26 @@ test("workspace, project and issue wakeup defaults resolve and show on every sur
     eff = await effective();
     expect(eff.enabled).toBe(true);
     expect(eff.execution.instance_id).toBe(instanceId);
+    // The same instance is still the one the CLI lists after the reset.
+    if (cli) expect((await cliList()).map((r) => r.id)).toEqual([instanceId]);
   } finally {
+    if (workspaceId) {
+      if (wakeupId) await db.query(`DELETE FROM issue_wakeup WHERE id=$1 AND workspace_id=$2`, [wakeupId, workspaceId]);
+      if (agentId) await db.query(`DELETE FROM agent WHERE id=$1 AND workspace_id=$2`, [agentId, workspaceId]);
+      for (const scopeId of [issueId, projectId]) {
+        if (scopeId) {
+          await db.query(`DELETE FROM issue_wakeup_definition WHERE workspace_id=$1 AND scope_id=$2 AND rule_key=$3`, [workspaceId, scopeId, RULE]);
+        }
+      }
+      // The workspace row exists only because this run wrote it.
+      if (!hadWorkspaceDefinition) {
+        await db.query(`DELETE FROM issue_wakeup_definition WHERE workspace_id=$1 AND scope_kind='workspace' AND scope_id=$1 AND rule_key=$2`, [workspaceId, RULE]);
+      }
+      if (settingsBefore !== undefined) {
+        await db.query(`UPDATE workspace SET settings=$1::jsonb WHERE id=$2`, [JSON.stringify(settingsBefore), workspaceId]);
+      }
+    }
     await api.cleanup();
-    await db.query(`DELETE FROM agent WHERE name = 'Wakeup defaults agent'`);
-    await db.query(`DELETE FROM issue_wakeup_definition WHERE rule_key = $1`, [RULE]);
     await db.end();
   }
 });
