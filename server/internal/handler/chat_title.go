@@ -67,9 +67,7 @@ func (h *Handler) GenerateChannelChatTitle(workspaceID, creatorID, sessionID pgt
 // Chinese pills for English conversations (MUL-5689). The label prefixes this
 // used to enumerate are still stripped for real by chatTitleLabelPrefixes,
 // which is where that guarantee belongs.
-const chatTitleSystemPrompt = `You write a very short title that summarizes the topic of a chat conversation, given the user's opening message.
-
-Rules:
+const chatTitleRules = `Rules:
 - Output ONLY the title text — nothing else, no explanation.
 - Keep it short: a few words, ideally under 8, never a full sentence.
 - Write the title in the SAME language as the user's message, and in no other.
@@ -77,17 +75,40 @@ Rules:
 - Do NOT prefix it with a label such as "Title:", in any language.
 - Do NOT end with a period or any trailing punctuation.`
 
+const chatTitleSystemPrompt = `You write a very short title that summarizes the topic of a chat conversation, given the user's opening message.
+
+` + chatTitleRules
+
+// chatTitleMilestonePrompt re-titles a DM at a milestone (CHE-4107): the first
+// message after a compaction, or the first message of a fork. Same language
+// rule and no language names, for the reason above.
+const chatTitleMilestonePrompt = `You update the title of a chat conversation, given its current title and the user's newest message. That message starts a new phase of the conversation.
+
+If the current title still describes the conversation, output it unchanged. Otherwise write a new title for the topic now under discussion.
+
+` + chatTitleRules
+
 // maybeGenerateChatTitleAsync queues the dm_title background job for a chat
 // session's opening message and returns once the task is queued. It is the
 // entry point wired into the first-user-message path of SendChatMessage.
+func (h *Handler) maybeGenerateChatTitleAsync(workspaceID, userID string, sessionID pgtype.UUID, currentTitle, sourceText string) {
+	h.enqueueDMTitle(workspaceID, userID, sessionID, dmTitleOpening, currentTitle, sourceText, pgtype.UUID{})
+}
+
+// enqueueDMTitle queues one dm_title job and returns once the task is queued.
 //
 //   - Non-blocking: the title is written later, when the daemon completes the
 //     task. No LLM call runs in this process.
 //   - Silent fallback: with no dm_title agent configured or reachable, nothing is
-//     queued and the deterministic first-message title stays.
+//     queued and the current title stays.
 //   - No clobber: the task carries currentTitle as its guard, and writeDMTitle
-//     writes by compare-and-swap, so a rename during the run wins.
-func (h *Handler) maybeGenerateChatTitleAsync(workspaceID, userID string, sessionID pgtype.UUID, currentTitle, sourceText string) {
+//     writes by compare-and-swap, so a manual rename always wins.
+//   - Idempotent: a milestone trigger carries its source message id; a job for the
+//     same (session, milestone, message) is queued once.
+//     ponytail: check-then-insert, so two truly concurrent triggers can both
+//     queue; one extra job is harmless (the CAS makes the second a no-op or a
+//     same-title write). Add a unique index if that ever matters.
+func (h *Handler) enqueueDMTitle(workspaceID, userID string, sessionID pgtype.UUID, milestone dmTitleMilestone, currentTitle, sourceText string, sourceMessageID pgtype.UUID) {
 	if strings.TrimSpace(sourceText) == "" {
 		return
 	}
@@ -98,6 +119,15 @@ func (h *Handler) maybeGenerateChatTitleAsync(workspaceID, userID string, sessio
 	ctx, cancel := context.WithTimeout(context.Background(), chatTitleGenTimeout)
 	defer cancel()
 
+	sourceMessage := ""
+	if sourceMessageID.Valid {
+		sourceMessage = uuidToString(sourceMessageID)
+		if queued, err := h.Queries.DMTitleJobExists(ctx, db.DMTitleJobExistsParams{
+			SessionID: sessionID, Milestone: string(milestone), SourceMessageID: sourceMessage,
+		}); err != nil || queued {
+			return
+		}
+	}
 	chain, source := h.dmTitleChain(ctx, ws)
 	if len(chain) == 0 {
 		return
@@ -108,14 +138,18 @@ func (h *Handler) maybeGenerateChatTitleAsync(workspaceID, userID string, sessio
 		message = message[:chatTitleJobInputMaxRunes]
 	}
 	input := chatTitleSystemPrompt + "\n\nThe user's opening message:\n" + string(message)
+	if milestone != dmTitleOpening {
+		input = chatTitleMilestonePrompt + "\n\nCurrent title:\n" + currentTitle + "\n\nThe user's newest message:\n" + string(message)
+	}
 	_, err = h.TaskService.EnqueueBackgroundChain(ctx, service.BackgroundTaskInput{
 		Job: bgagents.DMTitle, WorkspaceID: ws, MemberID: member, SourceChatSessionID: sessionID,
 		Source: source, Input: input, Guard: currentTitle,
+		Milestone: string(milestone), SourceMessageID: sourceMessage,
 	}, chain)
 	if err != nil {
-		// ErrNoReachableBackgroundAgent included: the fallback title stands.
-		slog.Warn("dm title job not queued; keeping original title",
-			"session_id", uuidToString(sessionID), "error", err)
+		// ErrNoReachableBackgroundAgent included: the current title stands.
+		slog.Warn("dm title job not queued; keeping current title",
+			"session_id", uuidToString(sessionID), "milestone", milestone, "error", err)
 	}
 }
 
@@ -281,3 +315,12 @@ func stripSurroundingQuotes(s string) string {
 		}
 	}
 }
+
+// dmTitleMilestone names the conversation event that triggers a dm_title job.
+type dmTitleMilestone string
+
+const (
+	dmTitleOpening    dmTitleMilestone = "opening"
+	dmTitleCompaction dmTitleMilestone = "compaction"
+	dmTitleFork       dmTitleMilestone = "fork"
+)

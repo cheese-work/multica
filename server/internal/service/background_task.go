@@ -55,6 +55,10 @@ type BackgroundTaskInput struct {
 	// Guard is opaque state the job's writer compares at completion (dm_title:
 	// the title the DM had when the job was queued).
 	Guard string
+	// Milestone and SourceMessageID key a job's idempotence (dm_title: the
+	// conversation event and the message that raised it); empty when unused.
+	Milestone       string
+	SourceMessageID string
 }
 
 // BackgroundTaskContext is the JSON stored in the task context; the claim
@@ -71,6 +75,8 @@ type BackgroundTaskContext struct {
 	RunSeconds      int    `json:"run_deadline_seconds"`
 	Input           string `json:"input"`
 	Guard           string `json:"guard,omitempty"`
+	Milestone       string `json:"milestone,omitempty"`
+	SourceMessageID string `json:"source_message_id,omitempty"`
 }
 
 // EnqueueBackgroundTask queues an output-only job on the chain agent's runtime:
@@ -106,6 +112,7 @@ func (s *TaskService) EnqueueBackgroundTask(ctx context.Context, in BackgroundTa
 		ChainSource: string(in.Source), Slot: string(in.Slot),
 		ClaimSeconds: int(spec.ClaimDeadline.Seconds()), RunSeconds: int(spec.RunDeadline.Seconds()),
 		Input: input, Guard: in.Guard,
+		Milestone: in.Milestone, SourceMessageID: in.SourceMessageID,
 	}
 	if in.FallbackAgentID.Valid {
 		payload.FallbackAgentID = util.UUIDToString(in.FallbackAgentID)
