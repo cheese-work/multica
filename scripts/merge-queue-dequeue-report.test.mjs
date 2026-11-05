@@ -42,6 +42,13 @@ test("buildStatus names the base and the first failing test, within 140 chars", 
   );
 });
 
+test("buildStatus never says 'unknown': falls back to the failed job, then to GitHub's reason", async () => {
+  const { buildStatus } = await load();
+  const base = { baseSha: "a".repeat(40), targetUrl: "u" };
+  assert.equal(buildStatus({ ...base, lines: [], jobs: ["backend-tests"] }).description, "failed in merge queue on main@aaaaaaa: backend-tests");
+  assert.equal(buildStatus({ ...base, lines: [] }).description, "failed in merge queue on main@aaaaaaa: failed_checks");
+});
+
 function extractLines() {
   return ["route_write_scope_audit_test.go:192: x", "--- FAIL: TestRouterWriteRoutesAuditedAgainstTaskWriteScope (0.02s)"];
 }
@@ -72,16 +79,17 @@ test("buildComment carries marker, SHAs, jobs, failing lines, run URL and attemp
   }
 });
 
-const fakeApi = (reason, { timeline, existingComment = false } = {}) => {
+const fakeApi = (reason, { timeline, existingComment = false, runStates = [{ status: "completed", conclusion: "failure" }] } = {}) => {
   const writes = [];
-  const run = { id: 7, html_url: "https://example/run/7", conclusion: "failure", head_branch: "gh-readonly-queue/main/pr-842-" + "c".repeat(40) };
+  let polls = 0;
+  const run = { id: 7, html_url: "https://example/run/7", head_branch: "gh-readonly-queue/main/pr-842-" + "c".repeat(40) };
   return {
     writes,
     graphql: async () => ({
       repository: { pullRequest: { headRefOid: "h".repeat(40), timelineItems: { nodes: timeline ?? [push, removal(reason)] } } },
     }),
     get: async (path) => {
-      if (path.includes("/actions/runs?")) return { workflow_runs: [run] };
+      if (path.includes("/actions/runs?")) return { workflow_runs: [{ ...run, ...runStates[Math.min(polls++, runStates.length - 1)] }] };
       if (path.includes("/jobs?")) return { jobs: [{ id: 9, name: "backend-tests", conclusion: "failure", html_url: "https://example/job/9" }, { id: 10, name: "lint", conclusion: "success", html_url: "u" }] };
       if (path.includes("/issues/842/comments")) return existingComment ? [{ id: 55, body: "<!-- merge-queue-dequeue-report -->\nold" }] : [];
       throw new Error("unexpected GET " + path);
@@ -98,6 +106,24 @@ test("report: failed_checks writes one sticky comment and one head status", asyn
   assert.deepEqual(api.writes.map((w) => `${w.method} ${w.path}`), ["POST /repos/o/r/issues/842/comments", `POST /repos/o/r/statuses/${"h".repeat(40)}`]);
   assert.equal(api.writes[1].body.state, "failure");
   assert.ok(api.writes[0].body.body.includes("TestRouterWriteRoutesAuditedAgainstTaskWriteScope"));
+});
+
+test("report: queue run still in progress at dequeue time is waited for, not reported as unknown", async () => {
+  const { report } = await load();
+  const api = fakeApi("failed_checks", { runStates: [{ status: "in_progress", conclusion: null }, { status: "in_progress", conclusion: null }, { status: "completed", conclusion: "failure" }] });
+  const sleeps = [];
+  await report({ api, repo: "o/r", pr: 842, sleep: async (ms) => sleeps.push(ms) });
+  assert.equal(sleeps.length, 2);
+  assert.match(api.writes[1].body.description, /TestRouterWriteRoutesAuditedAgainstTaskWriteScope/);
+  assert.doesNotMatch(api.writes[1].body.description, /unknown/);
+});
+
+test("report: a run that never finishes still reports its already-failed jobs, never 'unknown'", async () => {
+  const { report } = await load();
+  const api = fakeApi("failed_checks", { runStates: [{ status: "in_progress", conclusion: null }] });
+  await report({ api, repo: "o/r", pr: 842, sleep: async () => {} });
+  assert.doesNotMatch(api.writes[1].body.description, /unknown/);
+  assert.match(api.writes[1].body.description, /TestRouter/);
 });
 
 test("report: manual removal writes nothing", async () => {

@@ -12,6 +12,9 @@ const FAILED_CHECKS = "failed_checks";
 const MAX_LINES = 20;
 const MAX_JOBS = 5;
 const STATUS_MAX = 140;
+// GitHub dequeues on the first failed check; the merge_group run is usually still going. Wait for it to finish.
+const POLL_MS = 30_000;
+const MAX_POLLS = 20;
 // ponytail: line-anchored so a passing test's "handler panic:" WARN is not reported.
 const FAILURE_LINE = /^(\s*--- FAIL|FAIL\t|panic:|##\[error\])/;
 const TEST_FILE_LINE = /^\s*\S+_test\.go:\d+:/;
@@ -30,11 +33,12 @@ export function extractFailures(log, cap = MAX_LINES) {
   return out.slice(0, cap);
 }
 
-const firstFailingTest = (lines) =>
-  lines.find((l) => l.startsWith("--- FAIL"))?.replace(/^--- FAIL:\s*(\S+).*/, "$1") ?? lines[0] ?? "unknown";
+// Never "unknown": fall back to the failed job, then to the reason GitHub gave for the removal.
+const firstFailingTest = (lines, jobs) =>
+  lines.find((l) => l.startsWith("--- FAIL"))?.replace(/^--- FAIL:\s*(\S+).*/, "$1") ?? lines[0] ?? jobs[0] ?? FAILED_CHECKS;
 
-export function buildStatus({ baseSha, lines, targetUrl }) {
-  const description = `failed in merge queue on main@${baseSha.slice(0, 7)}: ${firstFailingTest(lines)}`;
+export function buildStatus({ baseSha, lines, jobs = [], targetUrl }) {
+  const description = `failed in merge queue on main@${baseSha.slice(0, 7)}: ${firstFailingTest(lines, jobs)}`;
   return { state: "failure", context: CONTEXT, description: description.slice(0, STATUS_MAX), target_url: targetUrl };
 }
 
@@ -69,7 +73,7 @@ const QUERY = `query($owner:String!,$name:String!,$pr:Int!){repository(owner:$ow
   timelineItems(last:100,itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT,PULL_REQUEST_COMMIT,HEAD_REF_FORCE_PUSHED_EVENT]){nodes{__typename ... on RemovedFromMergeQueueEvent{reason createdAt beforeCommit{oid}}}}
 }}}`;
 
-export async function report({ api, repo, pr, dryRun = false, eventIndex = -1, eventHeadSha, print = console.log }) {
+export async function report({ api, repo, pr, dryRun = false, eventIndex = -1, eventHeadSha, print = console.log, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   const [owner, name] = repo.split("/");
   const { pullRequest } = (await api.graphql(QUERY, { owner, name, pr })).repository;
   let timeline = pullRequest.timelineItems.nodes;
@@ -84,8 +88,14 @@ export async function report({ api, repo, pr, dryRun = false, eventIndex = -1, e
   const headSha = pullRequest.headRefOid;
   if (eventHeadSha && eventHeadSha !== headSha) return;
   const queueSha = last.beforeCommit.oid;
-  const runs = (await api.get(`/repos/${repo}/actions/runs?event=merge_group&head_sha=${queueSha}&per_page=20`)).workflow_runs
-    .filter((r) => r.conclusion === "failure");
+  const fetchRuns = async () => (await api.get(`/repos/${repo}/actions/runs?event=merge_group&head_sha=${queueSha}&per_page=20`)).workflow_runs;
+  let allRuns = await fetchRuns();
+  for (let i = 0; i < MAX_POLLS && allRuns.some((r) => r.status !== "completed"); i++) {
+    await sleep(POLL_MS);
+    allRuns = await fetchRuns();
+  }
+  // A run that is still going after the wait keeps its already-failed jobs.
+  const runs = allRuns.filter((r) => r.conclusion === "failure" || r.status !== "completed");
   const failures = [];
   for (const run of runs) {
     const { jobs } = await api.get(`/repos/${repo}/actions/runs/${run.id}/jobs?filter=latest&per_page=100`);
@@ -102,7 +112,7 @@ export async function report({ api, repo, pr, dryRun = false, eventIndex = -1, e
     headSha, baseSha, runUrls, failures,
     attempts: countAttempts(timeline),
   });
-  const status = buildStatus({ baseSha, lines, targetUrl: runUrls[0] ?? "" });
+  const status = buildStatus({ baseSha, lines, jobs: failures.map((f) => f.job), targetUrl: runUrls[0] ?? "" });
 
   if (dryRun) {
     print(`--- sticky comment (PR #${pr}) ---\n${comment}`);
