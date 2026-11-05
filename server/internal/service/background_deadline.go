@@ -67,5 +67,17 @@ func (s *TaskService) SweepBackgroundDeadlines(ctx context.Context, batch int) (
 		}
 		failed++
 	}
+	// Claimed in time but never started: same claim timeout, counted from the claim.
+	unstarted, err := s.Queries.ListStartExpiredBackgroundTasks(ctx, int32(batch))
+	if err != nil {
+		return len(unclaimed), failed, err
+	}
+	for _, task := range unstarted {
+		if _, err := s.FailTask(ctx, task.ID, "background task was not started before its start bound", "", "", "", taskfailure.ReasonBgClaimTimeout.String(), false, "", ""); err != nil {
+			slog.Warn("background sweep: fail unstarted claim", "task_id", util.UUIDToString(task.ID), "error", err)
+			continue
+		}
+		failed++
+	}
 	return len(unclaimed), failed, nil
 }

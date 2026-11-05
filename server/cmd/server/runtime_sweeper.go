@@ -31,6 +31,9 @@ const (
 	// delegatedFailureRecoverySweepInterval keeps the low-probability durable
 	// recovery scan off the latency-sensitive runtime liveness path.
 	delegatedFailureRecoverySweepInterval = 5 * time.Minute
+	// backgroundDeadlineSweepInterval: the shortest background deadline is 5 s
+	// (quick_actions claim), so a deadline overshoots by at most about a second.
+	backgroundDeadlineSweepInterval = time.Second
 	// staleThresholdSeconds marks runtimes offline if no heartbeat for this
 	// long. The heartbeat timing derivation lives with the shared service
 	// constant so every task release path uses the same eligibility window.
@@ -175,7 +178,6 @@ func runtimeSweepRound(ctx context.Context, queries *db.Queries, liveness handle
 	sweepExpiredRuntimeReconnectRetries(ctx, queries, taskSvc, reconnectGrace)
 	sweepStaleTasks(ctx, queries, taskSvc, bus, reconnectGrace)
 	sweepExpiredQueuedTasks(ctx, queries, taskSvc, reconnectGrace)
-	sweepBackgroundDeadlines(ctx, taskSvc)
 	sweepDeferredChatFinalizations(ctx, queries, taskSvc)
 	taskSvc.CancelExpiredBudgetRecoveryRuns(ctx)
 }
@@ -183,6 +185,15 @@ func runtimeSweepRound(ctx context.Context, queries *db.Queries, liveness handle
 func runDelegatedFailureRecoverySweeper(ctx context.Context, taskSvc *service.TaskService) {
 	runPeriodicSweep(ctx, delegatedFailureRecoverySweepInterval, func() {
 		sweepPendingDelegatedFailureRecoveries(ctx, taskSvc)
+	})
+}
+
+// runBackgroundDeadlineSweeper enforces output-only background deadlines on
+// their own one-second tick (CHE-4103): the shortest deadline is 5 s, so the
+// 30 s runtime sweep cannot carry it.
+func runBackgroundDeadlineSweeper(ctx context.Context, taskSvc *service.TaskService) {
+	runPeriodicSweep(ctx, backgroundDeadlineSweepInterval, func() {
+		sweepBackgroundDeadlines(ctx, taskSvc)
 	})
 }
 

@@ -871,6 +871,14 @@ WHERE id = (
     WHERE atq.agent_id = @agent_id
       AND atq.runtime_id = @runtime_id
       AND atq.status = 'queued'
+      -- CHE-4103: an output_only background task past its claim deadline is
+      -- never handed out; the deadline sweep cancels it. Same expression as
+      -- CancelUnclaimedBackgroundTasks, so a claim and the sweep cannot disagree.
+      AND (
+          atq.context->>'type' IS DISTINCT FROM 'background'
+          OR COALESCE((atq.context->>'claim_deadline_seconds')::int, 0) <= 0
+          OR atq.created_at >= now() - make_interval(secs => (atq.context->>'claim_deadline_seconds')::double precision)
+      )
       AND (atq.context->>'wakeup_id' IS NULL OR EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.id=(atq.context->>'wakeup_id')::uuid AND w.disabled_at IS NULL AND w.revision=(atq.context->>'wakeup_revision')::bigint))
       -- Rule E (CHE-2819): share-lock the DM row without waiting. A compact
       -- holds it FOR NO KEY UPDATE, so a chat task of that DM is skipped for
@@ -1652,6 +1660,19 @@ SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
 FROM victims v
 WHERE t.id = v.id AND t.status = 'queued'
 RETURNING t.*;
+
+-- name: ListStartExpiredBackgroundTasks :many
+-- Output-only background tasks claimed in time but not started within the claim
+-- deadline again, counted from the claim (CHE-4103). StartAgentTaskWithSupplement
+-- refuses the same rows, so they cannot start while they wait for the sweep.
+SELECT * FROM agent_task_queue
+WHERE status IN ('dispatched', 'waiting_local_directory')
+  AND purpose LIKE 'bg:%'
+  AND context->>'type' = 'background'
+  AND (context->>'claim_deadline_seconds')::int > 0
+  AND dispatched_at < now() - make_interval(secs => (context->>'claim_deadline_seconds')::double precision)
+ORDER BY dispatched_at ASC
+LIMIT @max_per_tick::int;
 
 -- name: ListRunExpiredBackgroundTasks :many
 -- Output-only background tasks running past the run deadline their context

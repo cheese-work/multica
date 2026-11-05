@@ -3,7 +3,11 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/bgagents"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -193,5 +197,78 @@ func TestBackgroundLateCompletionOfAnExpiredAttemptWritesNothing(t *testing.T) {
 				t.Fatalf("status after the late completion = %q, want %q", status, c.wantStatus)
 			}
 		})
+	}
+}
+
+func (b *bgFailoverFixture) claim(t *testing.T) (db.AgentTaskQueue, error) {
+	t.Helper()
+	return db.New(b.pool).ClaimAgentTask(context.Background(), db.ClaimAgentTaskParams{
+		PrepareLeaseSecs: 60, AgentID: util.MustParseUUID(b.primary), RuntimeID: util.MustParseUUID(b.primaryRuntime), RuntimeStaleSecs: 3600,
+	})
+}
+
+// A task past its claim deadline is never handed to a daemon, even before the
+// sweep cancels it: the claim itself refuses it (CHE-4103 review round 1).
+func TestBackgroundClaimRefusesATaskPastItsClaimDeadline(t *testing.T) {
+	b := newBGFailoverFixture(t)
+	task := b.enqueue(t)
+	b.age(t, task, 11)
+	if claimed, err := b.claim(t); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("claim of a task past its 10 s claim deadline = %v, %v; want no rows", claimed.ID, err)
+	}
+
+	fresh := newBGFailoverFixture(t)
+	fresh.enqueue(t)
+	if _, err := fresh.claim(t); err != nil {
+		t.Fatalf("claim inside the claim deadline: %v", err)
+	}
+}
+
+// A task claimed in time that never starts must not sit dispatched for minutes:
+// the start bound is the claim deadline again, counted from the claim.
+func TestBackgroundSweepFailsADispatchedTaskThatNeverStarts(t *testing.T) {
+	b := newBGFailoverFixture(t)
+	task := b.enqueue(t)
+	if _, err := b.claim(t); err != nil {
+		t.Fatal(err)
+	}
+	b.rows.Exec(t, `UPDATE agent_task_queue SET dispatched_at = now() - interval '9 seconds' WHERE id = $1`, util.UUIDToString(task.ID))
+	if cancelled, failed := b.sweep(t); cancelled != 0 || failed != 0 {
+		t.Fatalf("a claim inside the start bound was swept: %d/%d", cancelled, failed)
+	}
+
+	b.rows.Exec(t, `UPDATE agent_task_queue SET dispatched_at = now() - interval '11 seconds' WHERE id = $1`, util.UUIDToString(task.ID))
+	if _, failed := b.sweep(t); failed != 1 {
+		t.Fatalf("sweep failed=%d, want 1", failed)
+	}
+	if status, reason := b.status(t, task); status != "failed" || reason != "bg_claim_timeout" {
+		t.Fatalf("status/reason = %q/%q, want failed/bg_claim_timeout", status, reason)
+	}
+	if got := b.queued(t, b.fallback); got != 1 {
+		t.Fatalf("fallback runs queued = %d, want 1", got)
+	}
+}
+
+// The start is fenced too: an expired dispatched attempt cannot become running
+// between the deadline and the sweep.
+func TestBackgroundStartRefusedPastTheStartBound(t *testing.T) {
+	b := newBGFailoverFixture(t)
+	task := b.enqueue(t)
+	if _, err := b.claim(t); err != nil {
+		t.Fatal(err)
+	}
+	b.rows.Exec(t, `UPDATE agent_task_queue SET dispatched_at = now() - interval '11 seconds' WHERE id = $1`, util.UUIDToString(task.ID))
+	var dispatched pgtype.Timestamptz
+	if err := b.pool.QueryRow(context.Background(), `SELECT dispatched_at FROM agent_task_queue WHERE id = $1`, task.ID).Scan(&dispatched); err != nil {
+		t.Fatal(err)
+	}
+	_, err := b.svc.StartTaskForClaim(context.Background(), db.LockAgentTaskStartClaimParams{
+		ID: task.ID, RuntimeID: util.MustParseUUID(b.primaryRuntime), DispatchedAt: dispatched,
+	})
+	if !errors.Is(err, ErrBackgroundAttemptExpired) {
+		t.Fatalf("start past the start bound = %v, want ErrBackgroundAttemptExpired", err)
+	}
+	if status, _ := b.status(t, task); status != "dispatched" {
+		t.Fatalf("status after the refused start = %q, want dispatched", status)
 	}
 }
