@@ -365,9 +365,12 @@ export function WakeupsSection({
   issueId,
   closed = false,
   defaultAgentId,
+  projectId,
 }: {
   issueId: string;
   closed?: boolean;
+  /** The issue's project, when it has one: inherited project rules link to it. */
+  projectId?: string;
   /** Preselected target for a new wakeup: the issue's agent assignee. */
   defaultAgentId?: string;
 }) {
@@ -488,7 +491,7 @@ export function WakeupsSection({
               {historyOpen && history.map(row)}
             </>
           )}
-          {!closed && <IssueWakeupDefaults workspaceId={workspaceId} issueId={issueId} />}
+          {!closed && <IssueWakeupDefaults workspaceId={workspaceId} issueId={issueId} projectId={projectId} />}
         </div>
       )}
     </section>
