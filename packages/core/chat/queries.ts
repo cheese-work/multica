@@ -15,14 +15,23 @@ import type {
  * clear it — a shared deadline survives chat-surface switches instead of
  * re-arming a fresh window on each remount.
  *
- * Sized from the server's own budget: suggestions come from a background
- * agent job with a 5s claim deadline and a 20s run deadline, leaving room for
- * the write and the realtime broadcast. Keep this above both deadlines
- * (`quick_actions` in the backend bgagents catalog) — a window shorter than
- * the work it waits on makes every slow-but-successful pass look like a
- * failure, then silently swap the pills in afterwards.
+ * While the workspace's `quick_actions` agent chain is set, suggestions come
+ * from a background job with a 20s run deadline (`quick_actions` in the
+ * backend bgagents catalog), so the window equals that deadline. Without a
+ * chain the old direct-call budget of 8s applies. A window shorter than the
+ * work it waits on makes every slow-but-successful pass look like a failure,
+ * then silently swaps the pills in afterwards. The window is a UI bound, not
+ * enforcement: the server sweep owns the deadlines. Failure stays silent for
+ * the automatic pass; only an explicit refresh reports it.
  */
-export const QUICK_ACTIONS_PENDING_TIMEOUT_MS = 30_000;
+export const QUICK_ACTIONS_PENDING_CHAIN_MS = 20_000;
+export const QUICK_ACTIONS_PENDING_NO_CHAIN_MS = 8_000;
+
+export function quickActionsPendingWindowMs(chainSet: boolean): number {
+  return chainSet
+    ? QUICK_ACTIONS_PENDING_CHAIN_MS
+    : QUICK_ACTIONS_PENDING_NO_CHAIN_MS;
+}
 
 // NOTE on workspace scoping:
 // `wsId` is used only as part of queryKey for cache isolation per workspace.

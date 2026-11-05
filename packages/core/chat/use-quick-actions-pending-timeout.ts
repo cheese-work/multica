@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { chatKeys, QUICK_ACTIONS_PENDING_TIMEOUT_MS } from "./queries";
+import { chatKeys, quickActionsPendingWindowMs } from "./queries";
 import type { ChatQuickActionsPendingState } from "../types/chat";
 
 /**
@@ -34,12 +34,13 @@ export function useQuickActionsPendingTimeout(
         (current) =>
           current && current.message_id === messageId ? null : current,
       );
-    // Remaining time to this marker's absolute deadline; an old marker without
+    // Remaining time to this marker's absolute deadline (a marker exists only
+    // once a job was enqueued, so the chain is set); an old marker without
     // one falls back to a full window. Already-past deadlines clear next tick.
     const remaining =
       expiresAt != null
         ? expiresAt - Date.now()
-        : QUICK_ACTIONS_PENDING_TIMEOUT_MS;
+        : quickActionsPendingWindowMs(true);
     const timer = setTimeout(clear, Math.max(0, remaining));
     return () => clearTimeout(timer);
   }, [qc, sessionId, messageId, expiresAt]);

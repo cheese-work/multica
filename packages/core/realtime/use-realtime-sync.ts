@@ -66,7 +66,7 @@ import {
   isTaskMessageTimelineHeld,
   mergeTaskMessagesBySeq,
   sortChatSessions,
-  QUICK_ACTIONS_PENDING_TIMEOUT_MS,
+  quickActionsPendingWindowMs,
 } from "../chat/queries";
 import { useChatStore } from "../chat";
 import { parseWithFallback } from "../api/schema";
@@ -326,7 +326,7 @@ export function applyChatDoneToCache(
       ? {
           message_id: messageId,
           task_id: taskId,
-          expires_at: Date.now() + QUICK_ACTIONS_PENDING_TIMEOUT_MS,
+          expires_at: Date.now() + quickActionsPendingWindowMs(true),
         }
       : null,
   );
