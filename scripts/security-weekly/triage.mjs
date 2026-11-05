@@ -21,7 +21,7 @@ const SHARED = {
 
 export function plan(summaries, has) {
   return summaries
-    .filter((s) => !s.notRun && !s.baseline) // a baseline run is listed on the issue, never filed one by one
+    .filter((s) => !s.notRun) // a scanner with no previous scheduled summary files its findings too, marked baseline
     .flatMap((s) => (s.newFindings ?? []).map(({ id, severity }) => {
       const upstreamShared = SHARED[s.scanner]?.(id, has) ?? null;
       const lines = [
@@ -32,7 +32,7 @@ export function plan(summaries, has) {
       } else if (upstreamShared === null) {
         lines.push("", "Upstream sharing is unknown for this scanner. Check the package or file against upstream before any report.");
       }
-      return { scanner: s.scanner, id, severity, upstreamShared, title: `${s.scanner} ${severity}: ${id}`, body: lines.join("\n") };
+      return { scanner: s.scanner, id, severity, upstreamShared, baseline: !!s.baseline, title: `${s.scanner} ${severity}: ${id}`, body: lines.join("\n") };
     }));
 }
 
@@ -43,7 +43,8 @@ export const issueArgs = (e, { assigneeId, project, descriptionFile }) => [
   "--assignee-id", assigneeId,
   "--project", project,
   "--priority", e.severity === "critical" ? "urgent" : "high",
-  "--status", "todo",
+  // Baseline findings predate the scan: park them in backlog so a first run of hundreds starts no agent run per finding.
+  "--status", e.baseline ? "backlog" : "todo",
   "--property", "Readiness=ready",
 ];
 

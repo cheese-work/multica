@@ -21,14 +21,25 @@ test("summarize: new high/critical carry their severity and a first run is flagg
   assert.deepEqual(next.newFindings, [{ id: "c|c.go#1", severity: "critical" }]);
 });
 
-test("plan: one entry per new high/critical finding; baseline and NOT RUN scanners file nothing", () => {
+test("plan: one entry per new high/critical finding; a NOT RUN scanner files nothing", () => {
   const summaries = [
     sum("semgrep", [{ id: "r|a.go#1", severity: "high" }, { id: "r|a.go#2", severity: "high" }], prev("semgrep")),
-    sum("codeql", [{ id: "q|a.go#1", severity: "high" }], undefined),
     { scanner: "trivy", notRun: true, why: "no report", ids: [] },
   ];
   const entries = plan(summaries, never);
   assert.deepEqual(entries.map((e) => `${e.scanner}:${e.id}`), ["semgrep:r|a.go#1", "semgrep:r|a.go#2"]);
+  assert.ok(entries.every((e) => e.baseline === false));
+});
+
+test("plan: the first scheduled run (no previous summary) files its high/critical findings, marked baseline", () => {
+  const entries = plan([sum("codeql", [{ id: "q|a.go|h#1", severity: "high" }, { id: "q|a.go|l#1", severity: "low" }], undefined)], never);
+  assert.deepEqual(entries.map((e) => `${e.scanner}:${e.id}:${e.baseline}`), ["codeql:q|a.go|h#1:true"]);
+});
+
+test("issueArgs: a baseline finding is parked in backlog (no agent run per finding); a later new one is todo", () => {
+  const status = (baseline) => { const a = issueArgs({ ...entry("semgrep", "a", "high", false), baseline }, { assigneeId: "s", project: "p", descriptionFile: "d.md" }); return a[a.indexOf("--status") + 1]; };
+  assert.equal(status(true), "backlog");
+  assert.equal(status(false), "todo");
 });
 
 test("plan: upstream-shared is decided per scanner kind", () => {
@@ -94,6 +105,7 @@ test("CLI end to end: summary.json -> triage.json -> `multica issue create` per 
   const summary = { summaries: [
     { ...sum("semgrep", [{ id: "r|ours.go|h#1", severity: "high" }], prev("semgrep")) },
     { ...sum("gitleaks", [{ id: "abc123:x.ts:k:1", severity: "high" }], prev("gitleaks")) },
+    { ...sum("trivy", [{ id: "web|CVE-1|zlib", severity: "critical" }], undefined) }, // first scheduled run for this scanner
   ] };
   writeFileSync(join(dir, "summary.json"), JSON.stringify(summary));
   const here = new URL("./triage.mjs", import.meta.url).pathname;
@@ -103,6 +115,8 @@ test("CLI end to end: summary.json -> triage.json -> `multica issue create` per 
   const filed = spawnSync("node", [here, "--apply", join(dir, "triage.json"), "squad-1", "proj-1"], { cwd: dir, env, encoding: "utf8" });
   assert.equal(filed.status, 0, filed.stderr);
   const calls = readFileSync(log, "utf8").trim().split("\n");
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
+  assert.equal(calls.filter((c) => c.includes("--status backlog")).length, 1);
+  assert.ok(calls.find((c) => c.includes("CVE-1")).includes("--status backlog"));
   assert.ok(calls.every((c) => c.startsWith("issue create ") && c.includes("--assignee-id squad-1") && c.includes("--project proj-1")));
 });
