@@ -121,8 +121,9 @@ type IssueWorkflowResponse struct {
 	// IncludeChildPRs says whether a parent's PR guards also read the PRs of
 	// its direct children.
 	IncludeChildPRs bool `json:"include_child_prs"`
-	// LintFindings are the warnings and info a save produced; a save with an
-	// unwaived error is refused unless it carries lint_override.
+	// LintFindings are the findings of the last save, stored with the workflow
+	// and read back with it. A save with an unwaived error is refused unless
+	// it carries lint_override.
 	LintFindings []workflowlint.Finding `json:"lint_findings,omitempty"`
 	// LintOverrideReason and LintOverriddenAt record the last save that went
 	// through despite unwaived lint errors.
@@ -214,7 +215,18 @@ func issueWorkflowToResponse(row db.IssueWorkflow, def issueworkflow.Definition,
 
 		LintOverrideReason: textPtr(row.LintOverrideReason),
 		LintOverriddenAt:   timestampToPtr(row.LintOverriddenAt),
+		LintFindings:       storedLintFindings(row.LintFindings),
 	}
+}
+
+// storedLintFindings reads back the findings saved with a workflow. A value
+// that does not decode reads as none: it is a display field, not a gate.
+func storedLintFindings(raw []byte) []workflowlint.Finding {
+	var out []workflowlint.Finding
+	if len(raw) == 0 || json.Unmarshal(raw, &out) != nil {
+		return nil
+	}
+	return out
 }
 
 func maxRunsPtr(v pgtype.Int4) *int {
@@ -1012,10 +1024,11 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// Lint gate: an unwaived error refuses the save unless it carries a
-	// reason. A dry run writes nothing, so it is not gated. It runs after the
-	// authority checks, so a 403 or 409 is never masked by a 422.
-	lintChecked := !req.DryRun && (req.Steps != nil || req.MaxRunsPerIssue != nil)
+	// Lint gate: every save lints the workflow as it would be left, and an
+	// unwaived error refuses the save unless it carries a reason. A dry run
+	// writes nothing, so it is not gated. It runs after the authority checks,
+	// so a 403 or 409 is never masked by a 422.
+	lintChecked := !req.DryRun
 	var lintFindings []workflowlint.Finding
 	var lintOverride pgtype.Text
 	if lintChecked {
@@ -1044,6 +1057,14 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to save workflow")
 		return
 	}
+	if lintFindings == nil {
+		lintFindings = []workflowlint.Finding{}
+	}
+	findingsRaw, err := json.Marshal(lintFindings)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save workflow")
+		return
+	}
 	row, err := qtx.UpdateIssueWorkflow(ctx, db.UpdateIssueWorkflowParams{
 		ID:               current.ID,
 		WorkspaceID:      wsUUID,
@@ -1056,6 +1077,7 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 
 		LintChecked:        lintChecked,
 		LintOverrideReason: lintOverride,
+		LintFindings:       findingsRaw,
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -1065,6 +1087,18 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("UpdateIssueWorkflow failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to save workflow")
 		return
+	}
+	if lintOverride.Valid {
+		// The row keeps only the last override; this log keeps every one with
+		// the version it let through.
+		if err := qtx.InsertIssueWorkflowLintOverride(ctx, db.InsertIssueWorkflowLintOverrideParams{
+			WorkspaceID: wsUUID, WorkflowID: row.ID, Version: row.UpdatedAt,
+			Reason: lintOverride.String, ActorID: member.UserID,
+		}); err != nil {
+			slog.Warn("UpdateIssueWorkflow override log failed", append(logger.RequestAttrs(r), "error", err)...)
+			writeError(w, http.StatusInternalServerError, "failed to save workflow")
+			return
+		}
 	}
 	changed, cancelledWakeups, err := remapIssues(ctx, qtx, wsUUID, projectIDs, plan, req.StatusMapping, uuidToString(member.UserID))
 	if err != nil {
@@ -1084,9 +1118,7 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		h.publishIssueStatusChanged(workspaceID, member, "created", false)
 	}
 	h.publishIssueWorkflowChanged(workspaceID, member, "updated")
-	resp := h.issueWorkflowResponse(ctx, row)
-	resp.LintFindings = lintFindings
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, h.issueWorkflowResponse(ctx, row))
 }
 
 func (h *Handler) DeleteIssueWorkflow(w http.ResponseWriter, r *http.Request) {

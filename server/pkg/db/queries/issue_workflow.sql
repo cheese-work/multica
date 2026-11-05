@@ -95,10 +95,26 @@ UPDATE issue_workflow SET
         WHEN sqlc.narg('lint_override_reason')::text IS NULL THEN NULL
         ELSE now()
     END,
+    -- The findings of the last linted save, read back with the workflow.
+    lint_findings = CASE
+        WHEN sqlc.arg('lint_checked')::boolean THEN sqlc.arg('lint_findings')::jsonb
+        ELSE lint_findings
+    END,
     updated_at = now()
 WHERE id = sqlc.arg('id')::uuid
   AND workspace_id = sqlc.arg('workspace_id')::uuid
 RETURNING *;
+
+-- name: InsertIssueWorkflowLintOverride :exec
+INSERT INTO issue_workflow_lint_override (workspace_id, workflow_id, version, reason, actor_id)
+VALUES (sqlc.arg('workspace_id')::uuid, sqlc.arg('workflow_id')::uuid, sqlc.arg('version')::timestamptz,
+        sqlc.arg('reason')::text, sqlc.arg('actor_id')::uuid);
+
+-- name: ListIssueWorkflowLintOverrides :many
+SELECT * FROM issue_workflow_lint_override
+WHERE workflow_id = sqlc.arg('workflow_id')::uuid
+  AND workspace_id = sqlc.arg('workspace_id')::uuid
+ORDER BY version DESC;
 
 -- name: DeleteIssueWorkflow :execrows
 DELETE FROM issue_workflow
@@ -241,3 +257,7 @@ ON CONFLICT (issue_id, head_sha) DO NOTHING;
 -- name: ReleaseIssueCIAdvance :exec
 DELETE FROM issue_ci_advance
 WHERE issue_id = sqlc.arg('issue_id')::uuid AND head_sha = sqlc.arg('head_sha')::text;
+
+-- name: DeleteIssueWorkflowLintOverridesForWorkspace :exec
+-- Workspace teardown only; the log outlives a deleted workflow.
+DELETE FROM issue_workflow_lint_override WHERE workspace_id = sqlc.arg('workspace_id')::uuid;

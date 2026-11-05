@@ -105,7 +105,7 @@ VALUES (
     true
 )
 ON CONFLICT (workspace_id) WHERE is_default DO NOTHING
-RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, lint_override_reason, lint_overridden_at
+RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, lint_override_reason, lint_overridden_at, lint_findings
 `
 
 type CreateDefaultIssueWorkflowParams struct {
@@ -141,6 +141,7 @@ func (q *Queries) CreateDefaultIssueWorkflow(ctx context.Context, arg CreateDefa
 			&i.RunBudgetTokenReserve,
 			&i.LintOverrideReason,
 			&i.LintOverriddenAt,
+			&i.LintFindings,
 		); err != nil {
 			return nil, err
 		}
@@ -164,7 +165,7 @@ VALUES (
     NULLIF($7::int, 0),
     COALESCE($8::boolean, true)
 )
-RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, lint_override_reason, lint_overridden_at
+RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, lint_override_reason, lint_overridden_at, lint_findings
 `
 
 type CreateIssueWorkflowParams struct {
@@ -208,6 +209,7 @@ func (q *Queries) CreateIssueWorkflow(ctx context.Context, arg CreateIssueWorkfl
 		&i.RunBudgetTokenReserve,
 		&i.LintOverrideReason,
 		&i.LintOverriddenAt,
+		&i.LintFindings,
 	)
 	return i, err
 }
@@ -232,6 +234,16 @@ func (q *Queries) DeleteIssueWorkflow(ctx context.Context, arg DeleteIssueWorkfl
 	return result.RowsAffected(), nil
 }
 
+const deleteIssueWorkflowLintOverridesForWorkspace = `-- name: DeleteIssueWorkflowLintOverridesForWorkspace :exec
+DELETE FROM issue_workflow_lint_override WHERE workspace_id = $1::uuid
+`
+
+// Workspace teardown only; the log outlives a deleted workflow.
+func (q *Queries) DeleteIssueWorkflowLintOverridesForWorkspace(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteIssueWorkflowLintOverridesForWorkspace, workspaceID)
+	return err
+}
+
 const deleteIssueWorkflowsForWorkspace = `-- name: DeleteIssueWorkflowsForWorkspace :exec
 DELETE FROM issue_workflow WHERE workspace_id = $1::uuid
 `
@@ -243,7 +255,7 @@ func (q *Queries) DeleteIssueWorkflowsForWorkspace(ctx context.Context, workspac
 }
 
 const getDefaultIssueWorkflow = `-- name: GetDefaultIssueWorkflow :one
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, lint_override_reason, lint_overridden_at FROM issue_workflow
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, lint_override_reason, lint_overridden_at, lint_findings FROM issue_workflow
 WHERE workspace_id = $1::uuid
   AND is_default
 `
@@ -269,12 +281,13 @@ func (q *Queries) GetDefaultIssueWorkflow(ctx context.Context, workspaceID pgtyp
 		&i.RunBudgetTokenReserve,
 		&i.LintOverrideReason,
 		&i.LintOverriddenAt,
+		&i.LintFindings,
 	)
 	return i, err
 }
 
 const getIssueWorkflow = `-- name: GetIssueWorkflow :one
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, lint_override_reason, lint_overridden_at FROM issue_workflow
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, lint_override_reason, lint_overridden_at, lint_findings FROM issue_workflow
 WHERE id = $1::uuid
   AND workspace_id = $2::uuid
 `
@@ -305,6 +318,7 @@ func (q *Queries) GetIssueWorkflow(ctx context.Context, arg GetIssueWorkflowPara
 		&i.RunBudgetTokenReserve,
 		&i.LintOverrideReason,
 		&i.LintOverriddenAt,
+		&i.LintFindings,
 	)
 	return i, err
 }
@@ -325,6 +339,71 @@ func (q *Queries) HasLiveTaskForIssue(ctx context.Context, issueID pgtype.UUID) 
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const insertIssueWorkflowLintOverride = `-- name: InsertIssueWorkflowLintOverride :exec
+INSERT INTO issue_workflow_lint_override (workspace_id, workflow_id, version, reason, actor_id)
+VALUES ($1::uuid, $2::uuid, $3::timestamptz,
+        $4::text, $5::uuid)
+`
+
+type InsertIssueWorkflowLintOverrideParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	WorkflowID  pgtype.UUID        `json:"workflow_id"`
+	Version     pgtype.Timestamptz `json:"version"`
+	Reason      string             `json:"reason"`
+	ActorID     pgtype.UUID        `json:"actor_id"`
+}
+
+func (q *Queries) InsertIssueWorkflowLintOverride(ctx context.Context, arg InsertIssueWorkflowLintOverrideParams) error {
+	_, err := q.db.Exec(ctx, insertIssueWorkflowLintOverride,
+		arg.WorkspaceID,
+		arg.WorkflowID,
+		arg.Version,
+		arg.Reason,
+		arg.ActorID,
+	)
+	return err
+}
+
+const listIssueWorkflowLintOverrides = `-- name: ListIssueWorkflowLintOverrides :many
+SELECT id, workspace_id, workflow_id, version, reason, actor_id, created_at FROM issue_workflow_lint_override
+WHERE workflow_id = $1::uuid
+  AND workspace_id = $2::uuid
+ORDER BY version DESC
+`
+
+type ListIssueWorkflowLintOverridesParams struct {
+	WorkflowID  pgtype.UUID `json:"workflow_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) ListIssueWorkflowLintOverrides(ctx context.Context, arg ListIssueWorkflowLintOverridesParams) ([]IssueWorkflowLintOverride, error) {
+	rows, err := q.db.Query(ctx, listIssueWorkflowLintOverrides, arg.WorkflowID, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []IssueWorkflowLintOverride{}
+	for rows.Next() {
+		var i IssueWorkflowLintOverride
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.WorkflowID,
+			&i.Version,
+			&i.Reason,
+			&i.ActorID,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listIssueWorkflowNamesUsingStatusKey = `-- name: ListIssueWorkflowNamesUsingStatusKey :many
@@ -364,7 +443,7 @@ func (q *Queries) ListIssueWorkflowNamesUsingStatusKey(ctx context.Context, arg 
 
 const listIssueWorkflows = `-- name: ListIssueWorkflows :many
 
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, lint_override_reason, lint_overridden_at FROM issue_workflow
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, lint_override_reason, lint_overridden_at, lint_findings FROM issue_workflow
 WHERE workspace_id = $1::uuid
 ORDER BY is_default DESC, lower(name), created_at, id
 `
@@ -400,6 +479,7 @@ func (q *Queries) ListIssueWorkflows(ctx context.Context, workspaceID pgtype.UUI
 			&i.RunBudgetTokenReserve,
 			&i.LintOverrideReason,
 			&i.LintOverriddenAt,
+			&i.LintFindings,
 		); err != nil {
 			return nil, err
 		}
@@ -898,10 +978,15 @@ UPDATE issue_workflow SET
         WHEN $8::text IS NULL THEN NULL
         ELSE now()
     END,
+    -- The findings of the last linted save, read back with the workflow.
+    lint_findings = CASE
+        WHEN $7::boolean THEN $9::jsonb
+        ELSE lint_findings
+    END,
     updated_at = now()
-WHERE id = $9::uuid
-  AND workspace_id = $10::uuid
-RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, lint_override_reason, lint_overridden_at
+WHERE id = $10::uuid
+  AND workspace_id = $11::uuid
+RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, lint_override_reason, lint_overridden_at, lint_findings
 `
 
 type UpdateIssueWorkflowParams struct {
@@ -913,6 +998,7 @@ type UpdateIssueWorkflowParams struct {
 	IncludeChildPrs    pgtype.Bool `json:"include_child_prs"`
 	LintChecked        bool        `json:"lint_checked"`
 	LintOverrideReason pgtype.Text `json:"lint_override_reason"`
+	LintFindings       []byte      `json:"lint_findings"`
 	ID                 pgtype.UUID `json:"id"`
 	WorkspaceID        pgtype.UUID `json:"workspace_id"`
 }
@@ -927,6 +1013,7 @@ func (q *Queries) UpdateIssueWorkflow(ctx context.Context, arg UpdateIssueWorkfl
 		arg.IncludeChildPrs,
 		arg.LintChecked,
 		arg.LintOverrideReason,
+		arg.LintFindings,
 		arg.ID,
 		arg.WorkspaceID,
 	)
@@ -949,6 +1036,7 @@ func (q *Queries) UpdateIssueWorkflow(ctx context.Context, arg UpdateIssueWorkfl
 		&i.RunBudgetTokenReserve,
 		&i.LintOverrideReason,
 		&i.LintOverriddenAt,
+		&i.LintFindings,
 	)
 	return i, err
 }

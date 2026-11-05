@@ -93,7 +93,7 @@ export interface IssueWorkflow {
   /** Why the last save went through lint errors; null when it was clean. */
   lint_override_reason?: string | null;
   lint_overridden_at?: string | null;
-  /** Findings a save returned (warnings, info, waived errors); only on a save response. */
+  /** Findings of the last save (warnings, info, waived errors); stored and returned on every read. */
   lint_findings?: IssueWorkflowLintFinding[];
 }
 

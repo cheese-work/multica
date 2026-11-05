@@ -91,11 +91,6 @@ func TestUpdateIssueWorkflowChecksEditRightsBeforeTheVersion(t *testing.T) {
 // withLintOverride lets a fixture save through the lint gate: these tests
 // exercise other behavior on bare statuses. The gate has its own tests.
 func withLintOverride(body map[string]any) map[string]any {
-	_, hasSteps := body["steps"]
-	_, hasRuns := body["max_runs_per_issue"]
-	if !hasSteps && !hasRuns {
-		return body
-	}
 	out := make(map[string]any, len(body)+1)
 	for k, v := range body {
 		out[k] = v

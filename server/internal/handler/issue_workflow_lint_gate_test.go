@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -143,10 +144,62 @@ func TestWorkflowSaveWaivedErrorDoesNotBlock(t *testing.T) {
 	}
 }
 
-func TestWorkflowDescriptionEditIsNotGated(t *testing.T) {
+// A rename or description edit saves the workflow as it stands, so it is
+// linted too: it cannot slip an invalid workflow past the gate.
+func TestWorkflowDescriptionEditIsGated(t *testing.T) {
 	seedTestCatalog(t)
 	wf := createTestWorkflowSteps(t, "Gate desc "+workflowTestSuffix(), cleanSteps())
 	saveWorkflow(t, wf.ID, map[string]any{"steps": brokenSteps(), "lint_override": "known gap"}).Want(http.StatusOK)
-	// The stored steps still carry errors; a rename-only edit must not be refused.
-	saveWorkflow(t, wf.ID, map[string]any{"description": "still editable"}).Want(http.StatusOK)
+
+	saveWorkflow(t, wf.ID, map[string]any{"description": "still broken"}).Want(http.StatusUnprocessableEntity)
+	saveWorkflow(t, wf.ID, map[string]any{"description": "still broken", "lint_override": "rename only"}).Want(http.StatusOK)
+}
+
+// The audit record outlives the next save: each override stays in the log with
+// the version it let through, even after a clean save clears the row.
+func TestWorkflowLintOverrideLogKeepsEveryReason(t *testing.T) {
+	seedTestCatalog(t)
+	wf := createTestWorkflowSteps(t, "Gate log "+workflowTestSuffix(), cleanSteps())
+
+	v1 := workflowVersion(t, saveWorkflow(t, wf.ID, map[string]any{"steps": brokenSteps(), "lint_override": "first reason"}).Want(http.StatusOK))
+	saveWorkflow(t, wf.ID, map[string]any{"steps": cleanSteps()}).Want(http.StatusOK)
+	saveWorkflow(t, wf.ID, map[string]any{"steps": brokenSteps(), "lint_override": "second reason"}).Want(http.StatusOK)
+	saveWorkflow(t, wf.ID, map[string]any{"steps": cleanSteps()}).Want(http.StatusOK)
+
+	rows, err := testPool.Query(context.Background(),
+		`SELECT reason, to_char(version AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US') FROM issue_workflow_lint_override WHERE workflow_id = $1 ORDER BY version`, wf.ID)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	defer rows.Close()
+	var reasons, versions []string
+	for rows.Next() {
+		var reason, version string
+		if err := rows.Scan(&reason, &version); err != nil {
+			t.Fatal(err)
+		}
+		reasons, versions = append(reasons, reason), append(versions, version)
+	}
+	if len(reasons) != 2 || reasons[0] != "first reason" || reasons[1] != "second reason" {
+		t.Fatalf("log = %v, want both reasons in order", reasons)
+	}
+	if !strings.HasPrefix(v1, versions[0]) {
+		t.Fatalf("first log row is for version %s, want the saved version %s", versions[0], v1)
+	}
+}
+
+// Warnings are stored with the workflow, so a later read still shows them.
+func TestWorkflowLintFindingsAreReadBack(t *testing.T) {
+	seedTestCatalog(t)
+	wf := createTestWorkflowSteps(t, "Gate readback "+workflowTestSuffix(), brokenSteps()[:1])
+	saveWorkflow(t, wf.ID, map[string]any{"steps": cleanSteps()}).Want(http.StatusOK)
+
+	var out IssueWorkflowResponse
+	testutil.Call(t, testHandler.GetIssueWorkflow, withURLParam(workflowRequest("GET", "/api/issue-workflows/"+wf.ID, nil), "id", wf.ID)).Want(http.StatusOK).JSON(&out)
+	for _, f := range out.LintFindings {
+		if f.Rule == "WF014" && f.Level == "warning" {
+			return
+		}
+	}
+	t.Fatalf("want the stored WF014 warning on a plain read, got %+v", out.LintFindings)
 }

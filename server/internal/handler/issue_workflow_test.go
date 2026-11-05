@@ -476,7 +476,7 @@ func TestWorkflowOwnerPermissions(t *testing.T) {
 
 	patch := func(as func(*http.Request) *http.Request, id, name string) *testutil.Response {
 		return testutil.Call(t, testHandler.UpdateIssueWorkflow,
-			withURLParam(as(workflowRequest("PATCH", "/api/issue-workflows/"+id, map[string]any{"name": name})), "id", id))
+			withURLParam(as(workflowEditRequest("PATCH", "/api/issue-workflows/"+id, map[string]any{"name": name})), "id", id))
 	}
 	handoff := func(as func(*http.Request) *http.Request) *testutil.Response {
 		return testutil.Call(t, testHandler.SetIssueWorkflowHandoff,
