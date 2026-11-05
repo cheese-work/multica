@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import type { StoreApi, UseBoundStore } from "zustand";
 import { getCurrentSlug } from "../platform/workspace-storage";
+import { currentDraftOrigin } from "./cleanup-registry";
 import type { KeyedDraftStore } from "./create-keyed-draft-store";
 
 /**
@@ -14,7 +15,8 @@ import type { KeyedDraftStore } from "./create-keyed-draft-store";
  * Writes are bound to the workspace the component last rendered in. A late
  * write (an editor flushing on unmount, an upload settling) after the route
  * moved to another workspace lands in the originating workspace's drafts, never
- * the current one's.
+ * the current one's. A write that outlives logout or a workspace delete is
+ * dropped, so it cannot bring back a draft that cleanup removed.
  */
 export function usePersistedDraft<TData extends object>(
   store: UseBoundStore<StoreApi<KeyedDraftStore<TData>>>,
@@ -23,14 +25,15 @@ export function usePersistedDraft<TData extends object>(
 ): [TData, (patch: Partial<TData>) => void, () => void] {
   const draft = store((s) => s.getDraft(key) ?? empty);
   const slug = getCurrentSlug();
+  const generation = currentDraftOrigin(slug).generation;
   const setDraft = useCallback(
     (patch: Partial<TData>) => {
-      store.getState().setDraftIn(slug, key, patch);
+      store.getState().setDraftIn({ slug, generation }, key, patch);
     },
-    [store, key, slug],
+    [store, key, slug, generation],
   );
   const clearDraft = useCallback(() => {
-    store.getState().clearDraftIn(slug, key);
-  }, [store, key, slug]);
+    store.getState().clearDraftIn({ slug, generation }, key);
+  }, [store, key, slug, generation]);
   return [draft, setDraft, clearDraft];
 }

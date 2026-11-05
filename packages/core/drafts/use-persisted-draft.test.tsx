@@ -4,6 +4,7 @@ import { act, renderHook } from "@testing-library/react";
 import { createKeyedDraftStore } from "./create-keyed-draft-store";
 import { usePersistedDraft } from "./use-persisted-draft";
 import { setCurrentWorkspace } from "../platform/workspace-storage";
+import { clearRegisteredWorkspaceDrafts, resetAllRegisteredDrafts } from "./cleanup-registry";
 
 interface Sample {
   text: string;
@@ -95,7 +96,7 @@ describe("usePersistedDraft", () => {
       setCurrentWorkspace("ws-a", "id-a");
       await settle();
       const hookA = renderHook(() => usePersistedDraft(store, "create", EMPTY));
-      return { store, hookA, settle };
+      return { store, hookA, settle, values };
     }
 
     it("lands an editor flush in the originating workspace, never the current one", async () => {
@@ -147,6 +148,59 @@ describe("usePersistedDraft", () => {
       setCurrentWorkspace("ws-a", "id-a");
       await settle();
       expect(store.getState().getDraft("create")).toBeUndefined();
+    });
+
+    describe("after cleanup", () => {
+      const adapterOf = (values: Map<string, string>) => ({
+        getItem: (k: string) => values.get(k) ?? null,
+        setItem: (k: string, v: string) => void values.set(k, v),
+        removeItem: (k: string) => void values.delete(k),
+        keys: () => [...values.keys()],
+      });
+
+      it("logout, then a late editor flush: the draft does not come back", async () => {
+        const { store, hookA, settle, values } = await setup();
+        act(() => hookA.result.current[1]({ text: "private" }));
+        const lateFlush = hookA.result.current[1];
+
+        resetAllRegisteredDrafts(); // logout: memory first, then persisted keys
+        clearRegisteredWorkspaceDrafts(adapterOf(values), "ws-a");
+        act(() => lateFlush({ text: "private, late" }));
+        hookA.unmount();
+        await settle();
+
+        expect(store.getState().getDraft("create")).toBeUndefined();
+        expect([...values.keys()].filter((k) => k.startsWith("h_late"))).toEqual([]);
+      });
+
+      it("workspace delete after a switch, then a late upload settle: stays deleted", async () => {
+        const { store, hookA, settle, values } = await setup();
+        act(() => hookA.result.current[1]({ text: "A" }));
+        const lateUpload = hookA.result.current[1];
+
+        setCurrentWorkspace("ws-b", "id-b");
+        await settle();
+        clearRegisteredWorkspaceDrafts(adapterOf(values), "ws-a"); // A deleted
+        act(() => lateUpload({ text: "A with upload" }));
+        await settle();
+
+        setCurrentWorkspace("ws-a", "id-a");
+        await settle();
+        expect(store.getState().getDraft("create")).toBeUndefined();
+      });
+
+      it("a late clear after cleanup is a no-op and a fresh render writes again", async () => {
+        const { store, hookA, settle, values } = await setup();
+        resetAllRegisteredDrafts();
+        clearRegisteredWorkspaceDrafts(adapterOf(values), "ws-a");
+        act(() => hookA.result.current[2]());
+        hookA.unmount();
+
+        const next = renderHook(() => usePersistedDraft(store, "create", EMPTY));
+        act(() => next.result.current[1]({ text: "new session" }));
+        await settle();
+        expect(store.getState().getDraft("create")).toEqual({ text: "new session" });
+      });
     });
   });
 });

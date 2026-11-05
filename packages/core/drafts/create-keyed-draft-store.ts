@@ -7,7 +7,7 @@ import {
 } from "../platform/workspace-storage";
 import { defaultStorage } from "../platform/storage";
 import type { StorageAdapter } from "../types/storage";
-import { registerDraftCleanup } from "./cleanup-registry";
+import { getDraftGeneration, registerDraftCleanup, type DraftOrigin } from "./cleanup-registry";
 
 /**
  * Keyed sibling of {@link createDraftStore}: one persisted store holding many
@@ -50,14 +50,15 @@ export interface KeyedDraftStore<TData> {
   clearDraft: (key: string) => void;
   hasDraft: (key: string) => boolean;
   /**
-   * `setDraft` for a write that belongs to workspace `slug`, which may no longer
-   * be the current one (an editor flushing on unmount, an upload settling after
-   * a workspace switch). Writes into `slug`'s persisted namespace; never touches
-   * the current workspace's drafts.
+   * `setDraft` for a delayed write that belongs to `origin` (an editor flushing
+   * on unmount, an upload settling). After a workspace switch it writes into the
+   * origin workspace's persisted namespace and never touches the current
+   * workspace's drafts. After logout or workspace delete cleared the origin
+   * (stale generation) it is dropped.
    */
-  setDraftIn: (slug: string | null, key: string, patch: Partial<TData>) => void;
-  /** `clearDraft` for workspace `slug`; see {@link KeyedDraftStore.setDraftIn}. */
-  clearDraftIn: (slug: string | null, key: string) => void;
+  setDraftIn: (origin: DraftOrigin, key: string, patch: Partial<TData>) => void;
+  /** `clearDraft` for a delayed clear; see {@link KeyedDraftStore.setDraftIn}. */
+  clearDraftIn: (origin: DraftOrigin, key: string) => void;
 }
 
 export const KEYED_DRAFT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -147,11 +148,13 @@ export function createKeyedDraftStore<TData extends object>(
           });
         },
         hasDraft: (key) => !isStale() && key in get().drafts,
-        setDraftIn: (slug, key, patch) => {
+        setDraftIn: ({ slug, generation }, key, patch) => {
+          if (generation !== getDraftGeneration(slug)) return;
           if (!inOtherWorkspace(slug)) return get().setDraft(key, patch);
           if (slug) updateOtherWorkspace(slug, (d) => withPatch(d, key, patch));
         },
-        clearDraftIn: (slug, key) => {
+        clearDraftIn: ({ slug, generation }, key) => {
+          if (generation !== getDraftGeneration(slug)) return;
           if (!inOtherWorkspace(slug)) return get().clearDraft(key);
           if (slug) updateOtherWorkspace(slug, (d) => withoutKey(d, key));
         },
