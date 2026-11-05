@@ -30,7 +30,7 @@ test("main-build.yml runs on push to main, one at a time, and holds the moved jo
     assert.ok(jobIds(mainBuild).includes(job), `${job} missing from main-build.yml`);
     assert.ok(!jobIds(ci).includes(job), `${job} still in ci.yml`);
   }
-  assert.doesNotMatch(ci.match(/^  warning-budget:\n    needs: \[(.+)\]$/m)[1], /daemon-artifact|cache-warm/);
+  assert.doesNotMatch(ci.match(/^  warning-budget:\n(?:    name: .+\n)?    needs: \[(.+)\]$/m)[1], /daemon-artifact|cache-warm/);
 });
 
 test("cache warm jobs wait for the merge-group signal and the daemon artifact builds both architectures", () => {
