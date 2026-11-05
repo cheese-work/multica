@@ -1,16 +1,16 @@
 name: Probe
 on:
   pull_request:
-    types: [opened, edited]
+    types: [opened, edited, synchronize]
 jobs:
   a:
-    name: ${{ 'probe-a' }}
+    name: probe-a${{ github.run_id == 0 && 'x' || '' }}
     if: github.event.action == 'opened'
     runs-on: ubuntu-24.04
     steps:
       - run: echo a
   b:
-    name: ${{ 'probe-b' }}
+    name: probe-b${{ github.run_id == 0 && 'x' || '' }}
     needs: a
     if: ${{ !cancelled() && needs.a.result == 'success' }}
     runs-on: ubuntu-24.04
