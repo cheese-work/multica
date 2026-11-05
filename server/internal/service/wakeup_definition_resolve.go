@@ -107,6 +107,10 @@ type EffectiveWakeupConfig struct {
 	// Fingerprint identifies the inputs the resolution depends on; see
 	// ResolveWakeupConfig.
 	Fingerprint string
+	// Held is set when the rule would be on once an admin approves its pending
+	// root. Execution ignores it; write-time checks treat the rule as on, so a
+	// writer proves access to what the approved rule will run.
+	Held bool
 }
 
 // Enabled reports the configured on/off state. A rule that never set it, a
@@ -156,6 +160,9 @@ func ResolveWakeupConfig(in WakeupResolveInput) (EffectiveWakeupConfig, error) {
 	out.Config = mergeWakeupPatch(out.Config, baseline, WakeupScopeBuiltin, out.Sources)
 	seen := false
 	var pending WakeupScope
+	// approved tracks what the rule would be once an admin enables the pending
+	// root: that layer on, then each later layer's own enabled applied.
+	approved := false
 	for _, l := range layers {
 		if l.def == nil {
 			continue
@@ -171,7 +178,9 @@ func ResolveWakeupConfig(in WakeupResolveInput) (EffectiveWakeupConfig, error) {
 		}
 		seen = true
 		if l.def.Pending {
-			pending = l.slot
+			pending, approved = l.slot, true
+		} else if e := l.def.Patch.Enabled; pending != "" && e.Set {
+			approved = !e.Null && e.Value
 		}
 		out.Config = mergeWakeupPatch(out.Config, l.def.Patch, l.slot, out.Sources)
 		if p := l.def.Patch.AggregateLimit; p.Set && !p.Null {
@@ -184,6 +193,7 @@ func ResolveWakeupConfig(in WakeupResolveInput) (EffectiveWakeupConfig, error) {
 	if pending != "" {
 		// A later scope may re-enable a rule a human disabled, never one still
 		// waiting for an admin.
+		out.Held = out.Applicable && approved
 		out.Config.Enabled = wakeupField[bool]{Set: true}
 		out.Sources["enabled"] = pending
 	}

@@ -165,9 +165,10 @@ func loadWakeupChain(ctx context.Context, q *db.Queries, ref WakeupScopeRef, key
 // resolves to. A sparse patch (an instruction, a mode, a filter) inherits its
 // target from an ancestor, and its text would run on that agent, so naming no
 // target does not make it the writer's to steer. A rule the proposal leaves
-// disabled runs nothing and needs no proof. An unreadable target fails closed.
+// disabled runs nothing and needs no proof, but one held only by a pending root
+// does: the admin's approval would start it. An unreadable target fails closed.
 func (s *IssueWakeupService) authorizeResolvedTarget(ctx context.Context, q *db.Queries, ws, member pgtype.UUID, eff EffectiveWakeupConfig) error {
-	if !eff.Enabled() {
+	if !eff.Enabled() && !eff.Held {
 		return nil
 	}
 	kind, id := WakeupPatchTarget(eff.Config)
