@@ -91,9 +91,15 @@ type IssueResponse struct {
 	Stage     *int32  `json:"stage"`
 	StartDate *string `json:"start_date"`
 	DueDate   *string `json:"due_date"`
-	CreatedAt string  `json:"created_at"`
-	UpdatedAt string  `json:"updated_at"`
-	Revision  int64   `json:"revision"`
+	// EffectiveDue, DueSource and Diagnostics are the read-only deadline
+	// projection (see issue_effective_due.go). Detail-only for now; absent
+	// when nothing is inherited or the issue is closed.
+	EffectiveDue *string         `json:"effective_due,omitempty"`
+	DueSource    string          `json:"due_source,omitempty"`
+	Diagnostics  []DueDiagnostic `json:"diagnostics,omitempty"`
+	CreatedAt    string          `json:"created_at"`
+	UpdatedAt    string          `json:"updated_at"`
+	Revision     int64           `json:"revision"`
 	// LastActivityAt is the latest semantic issue activity. It stays nullable
 	// while the operator-run historical backfill is incomplete.
 	LastActivityAt *string `json:"last_activity_at"`
@@ -2702,6 +2708,7 @@ func (h *Handler) GetIssue(w http.ResponseWriter, r *http.Request) {
 	resp := issueToResponse(issue, prefix)
 	resp.WebURL = h.workspaceWebURL(r.Context(), issue.WorkspaceID, func(ws db.Workspace) string { return weblink.Issue(ws.Slug, resp.Identifier) })
 	h.fillStatusCategory(r.Context(), issue.WorkspaceID, &resp)
+	h.fillEffectiveDue(r.Context(), issue, &resp)
 	detailLabels := h.labelsByIssue(r.Context(), issue.WorkspaceID, []pgtype.UUID{issue.ID})[uuidToString(issue.ID)]
 	if detailLabels == nil {
 		detailLabels = []LabelResponse{}
