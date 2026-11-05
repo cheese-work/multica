@@ -4018,6 +4018,20 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				}
 			}
 			if block != "" {
+				// The summary replaces a transcript that may have read tainted
+				// input, and the resume pointer that carried its taint is gone.
+				// Take the chat's taint before the profile is finalized; if it
+				// cannot be recorded, keep the task queued rather than seed it.
+				taint, err := h.Queries.InheritChatSeedTaint(r.Context(), task.ID)
+				if err != nil {
+					slog.Error("chat claim: record compaction seed taint failed; preserving task for redelivery",
+						"task_id", uuidToString(task.ID), "chat_session_id", uuidToString(cs.ID), "error", err)
+					return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+						outcome: "error_chat_compaction_taint", status: http.StatusInternalServerError, message: "failed to record compaction seed taint",
+					}
+				}
+				task.TaintIds = taint
+				applyRunProfile()
 				resp.ChatMessage = block + "\n\nCurrent message:\n\n" + resp.ChatMessage
 			}
 		} else if cs.ForkedFromSessionID.Valid && resp.PriorSessionID == "" {

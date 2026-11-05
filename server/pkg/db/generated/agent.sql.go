@@ -6502,6 +6502,28 @@ func (q *Queries) HasTaskForIssue(ctx context.Context, issueID pgtype.UUID) (boo
 	return exists, err
 }
 
+const inheritChatSeedTaint = `-- name: InheritChatSeedTaint :one
+UPDATE agent_task_queue t
+SET taint_ids = COALESCE((
+    SELECT array_agg(DISTINCT x ORDER BY x)
+    FROM agent_task_queue s, unnest(s.taint_ids) AS x
+    WHERE s.agent_id = t.agent_id AND s.chat_session_id = t.chat_session_id
+), '{}')
+WHERE t.id = $1
+RETURNING t.taint_ids
+`
+
+// InheritChatSessionTaint for a task whose fresh session is seeded from an
+// in-place compaction summary (CHE-3702). The summary and the messages since
+// were written by earlier turns of this DM and the resume pointer is gone, so
+// the taint comes from every task of the chat, not from one session id.
+func (q *Queries) InheritChatSeedTaint(ctx context.Context, id pgtype.UUID) ([]string, error) {
+	row := q.db.QueryRow(ctx, inheritChatSeedTaint, id)
+	var taint_ids []string
+	err := row.Scan(&taint_ids)
+	return taint_ids, err
+}
+
 const inheritChatSessionTaint = `-- name: InheritChatSessionTaint :one
 UPDATE agent_task_queue t
 SET taint_ids = COALESCE((

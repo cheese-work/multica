@@ -111,3 +111,35 @@ func TestChatClaimTaintReachesDelegateOfLaterTask(t *testing.T) {
 
 	claimRestrictedWithTaint(t, delegateRuntime, []string{"t1"})
 }
+
+// CHE-3702 round 11: an in-place /compact drops the resume pointer, so the next
+// task starts a fresh session seeded from the summary. The summary was written
+// by a tainted turn, so that task carries the taint too, and so does a delegate
+// of it.
+func TestChatClaimCompactionSeedInheritsTaintAndReachesDelegate(t *testing.T) {
+	ctx := context.Background()
+	agentID, runtimeID, _ := createRuntimeGuardAgent(t, ctx)
+	chatSessionID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "taint compaction", "compaction_epoch": 1})
+	compactTask := dbfx.Task(t, agentID, testutil.Cols{
+		"status": "completed", "runtime_id": runtimeID, "chat_session_id": chatSessionID,
+		"session_id": "sess-tainted", "taint_ids": []string{"t1"},
+		"started_at": testutil.Raw("now() - interval '1 minute'"), "completed_at": testutil.Raw("now()"),
+	})
+	dbfx.Insert(t, "chat_message", testutil.Cols{
+		"chat_session_id": chatSessionID, "role": "assistant", "message_kind": "compaction_summary",
+		"task_id": compactTask, "content": "summary of attacker-influenced content",
+	})
+	dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": chatSessionID, "role": "user", "content": "a later, clean message"})
+	dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "chat_session_id": chatSessionID, "priority": 1000})
+
+	dm := claimChatTaintTask(t, runtimeID)
+	wantChatTaint(t, dm, "")
+
+	delegateRuntime := createClaimReclaimRuntime(t, ctx, "Compaction taint delegate runtime")
+	delegateAgent, issueID := createClaimReclaimAgentAndIssue(t, ctx, delegateRuntime, "Compaction taint delegate agent")
+	insertGrant(t, issueID, testWorkspaceID, []string{"docker"}, "1 minute", "1 hour", false)
+	taskID := createDispatchedClaimFixtureTask(t, ctx, delegateAgent, delegateRuntime, issueID, "120 seconds", false)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET delegated_from_task_id = $2 WHERE id = $1`, taskID, dm.ID)
+
+	claimRestrictedWithTaint(t, delegateRuntime, []string{"t1"})
+}
