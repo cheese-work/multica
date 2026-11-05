@@ -18,6 +18,10 @@ import path from "node:path";
 // remount, not native rendering.
 // The run cancel button has headless callback/prop tests with native modules
 // mocked; these do not verify native rendering.
+// The form-draft tests (`data/stores/use-form-drafts.test.ts` and
+// `*-screen.test.tsx`) opt into jsdom per file. The screen tests render the real
+// screens with react-native swapped for DOM stubs (`data/stores/test-support/`);
+// they cover wiring and state, not native rendering.
 // App configuration tests also run here to cover native prebuild options
 // across environment variants without loading React Native.
 export default defineConfig({
@@ -34,8 +38,10 @@ export default defineConfig({
       "plugins/**/*.test.ts",
       "lib/**/*.test.ts",
       "data/**/*.test.ts",
+      "data/**/*.test.tsx",
       "components/issue/run-cancel-button.test.ts",
       "components/composer/composer-draft.test.tsx",
+      "components/issue/issue-detail-load-error.test.tsx",
     ],
     passWithNoTests: true,
   },

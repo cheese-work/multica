@@ -52,9 +52,25 @@ func (h *Handler) ConfigureGitHubAllowlist(raw string) error {
 		return err
 	}
 	h.githubAllowlist = list
-	if list.ids == nil && isGitHubConfigured() {
-		slog.Warn("github: " + githubAllowedAccountIDsEnv + " is unset; any GitHub account may bind an installation")
+	h.PRRefresh.SetInstallationFilter(h.githubRefreshAllowed)
+	if list.ids == nil {
+		slog.Warn(githubAllowedAccountIDsEnv + " is unset; every GitHub App installation is allowed")
 	}
+	// The refresh pipeline also selects rows by address; keep it off denied
+	// bindings that share an installation with an allowed one.
+	h.PRRefresh.SetWorkspaceFilter(func(ctx context.Context, q *db.Queries, installationID int64) (map[pgtype.UUID]bool, error) {
+		rows, err := q.ListGitHubInstallationsByInstallationIDForShare(ctx, installationID)
+		if err != nil {
+			return nil, err
+		}
+		set := make(map[pgtype.UUID]bool, len(rows))
+		for _, row := range rows {
+			if h.githubInstallationAllowed(row) {
+				set[row.WorkspaceID] = true
+			}
+		}
+		return set, nil
+	})
 	return nil
 }
 
@@ -88,6 +104,37 @@ func (h *Handler) allowedGitHubInstallations(ctx context.Context, installationID
 		}
 	}
 	return allowed, nil
+}
+
+// anyGitHubInstallationAllowed reports whether at least one binding passes the
+// policy.
+func (h *Handler) anyGitHubInstallationAllowed(rows []db.GithubInstallation) bool {
+	for _, row := range rows {
+		if h.githubInstallationAllowed(row) {
+			return true
+		}
+	}
+	return false
+}
+
+// workspaceIDsOf lists the workspace of each binding.
+func workspaceIDsOf(rows []db.GithubInstallation) []pgtype.UUID {
+	ids := make([]pgtype.UUID, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.WorkspaceID)
+	}
+	return ids
+}
+
+// allowedWorkspaceIDs lists the workspaces of the bindings that pass the policy.
+func (h *Handler) allowedWorkspaceIDs(rows []db.GithubInstallation) []pgtype.UUID {
+	ids := make([]pgtype.UUID, 0, len(rows))
+	for _, row := range rows {
+		if h.githubInstallationAllowed(row) {
+			ids = append(ids, row.WorkspaceID)
+		}
+	}
+	return ids
 }
 
 // githubAccountIDParam maps a trusted id (0 = none) to a nullable column value.
