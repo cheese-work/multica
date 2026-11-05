@@ -33,7 +33,7 @@ func TestIssueDecisionParkMigrationMovesTheParkOutOfMetadata(test *testing.T) {
 	migrate := func(direction string) {
 		test.Helper()
 		if err := runMigrations(ctx, pool, runOptions{
-			Direction: direction, Files: realMigrationFiles(test, []string{"947_issue_decision_park"}, direction),
+			Direction: direction, Files: realMigrationFiles(test, []string{"950_issue_decision_park"}, direction),
 			SchemaMigrationsTable: schema + ".schema_migrations",
 			AdvisoryLockKey:       int64(rand.Uint64()&0x7fffffffffffffff) | 1,
 			Hooks:                 hooksForDirection(direction), Conditions: conditionsForDirection(direction),
