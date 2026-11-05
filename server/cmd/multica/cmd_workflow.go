@@ -36,6 +36,15 @@ var workflowGetCmd = &cobra.Command{
 	RunE:  runWorkflowGet,
 }
 
+var workflowLintCmd = &cobra.Command{
+	Use:   "lint [<id>]",
+	Short: "Lint one workflow, or every workflow with --all",
+	Long: `Run the workflow lint rules against the live server. Waived findings are
+listed but do not count. Exits non-zero when any workflow has an unwaived error.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: runWorkflowLint,
+}
+
 var workflowUpdateCmd = &cobra.Command{
 	Use:   "update <id>",
 	Short: "Replace a workflow's steps or change its run rules (owner/admin only)",
@@ -67,11 +76,13 @@ anything when --status matches no step or more than one.`,
 }
 
 func init() {
-	workflowCmd.AddCommand(workflowListCmd, workflowGetCmd, workflowUpdateCmd, workflowSetInstructionsCmd)
+	workflowCmd.AddCommand(workflowListCmd, workflowGetCmd, workflowLintCmd, workflowUpdateCmd, workflowSetInstructionsCmd)
 
 	workflowListCmd.Flags().String("output", "table", "Output format: table or json")
 	workflowListCmd.Flags().Bool("full-id", false, "Show full UUIDs in table output")
 	workflowGetCmd.Flags().String("output", "json", "Output format: table or json")
+	workflowLintCmd.Flags().Bool("all", false, "Lint every workflow in the workspace")
+	workflowLintCmd.Flags().String("output", "table", "Output format: table or json")
 	workflowUpdateCmd.Flags().String("steps-file", "", "JSON file holding the full steps array (required unless a rule flag is given)")
 	workflowUpdateCmd.Flags().Int("max-runs-per-issue", 0, "Runs one issue can use before it is blocked, 1-1000 (0 restores the default)")
 	workflowUpdateCmd.Flags().Bool("include-child-prs", true, "Whether PR guards also read the PRs of sub-issues")

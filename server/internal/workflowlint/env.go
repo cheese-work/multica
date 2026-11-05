@@ -39,6 +39,9 @@ type Env struct {
 	Live bool
 	// Usage turns on WF013. Nil skips it.
 	Usage *Usage
+	// Statuses is the workspace status catalog, status key to display name.
+	// It turns on WF009 and WF010, which read step instructions. Nil skips them.
+	Statuses map[string]string
 }
 
 // The two JSON files below are the only place that names a qualified runtime
@@ -112,12 +115,13 @@ func (m labMap) of(a Agent) (string, bool) {
 	return lab, ok
 }
 
-// LintWith is Lint plus the agent, runtime and usage rules (WF004-006, 012, 013).
+// LintWith is Lint plus the agent, runtime and usage rules (WF004-006, 009, 010, 012, 013).
 func LintWith(def issueworkflow.Definition, env Env) []Finding {
 	l := linter{def: def, reached: reachedStatuses(def)}
 	for _, s := range def.Steps {
 		l.lintStep(s)
 		l.lintHandler(s, env)
+		l.lintInstructions(s, env)
 	}
 	l.lintRunBudget()
 	l.lintLabs(env)
