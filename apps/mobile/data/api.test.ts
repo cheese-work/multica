@@ -328,7 +328,7 @@ describe("api.getIssue schema failure", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
-        new Response(JSON.stringify({ id: "i1", metadata: { decision_park: { a: 1 } } }), {
+        new Response(JSON.stringify({ id: "i1", number: "not-a-number" }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         }),
@@ -338,7 +338,7 @@ describe("api.getIssue schema failure", () => {
     const err = await api.getIssue("i1").catch((e: unknown) => e);
 
     expect(classifyIssueLoadError(err)).toBe("data");
-    expect((err as SchemaValidationError).paths).toContain("metadata.decision_park");
-    expect(String(warn.mock.calls[0]?.[0])).toContain("metadata.decision_park");
+    expect((err as SchemaValidationError).paths).toContain("number");
+    expect(String(warn.mock.calls[0]?.[0])).toContain("number");
   });
 });
