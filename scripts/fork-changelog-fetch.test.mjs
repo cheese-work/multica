@@ -151,3 +151,46 @@ test("per-PR content warnings are logged as notes, not annotations", async (cont
   assert.equal(notes.length, 1);
   assert.match(notes[0], /#1: More than one Changelog line/);
 });
+
+// CHE-4015
+import { execFileSync } from "node:child_process";
+import { deploymentsFromGraphql, versionLabel } from "./fork-changelog-fetch.mjs";
+
+test("versionLabel is UPSTREAM_VERSION plus the release stamp of the commit time (ICT)", (context) => {
+  const dir = mkdtempSync(join(tmpdir(), "fork-label-"));
+  context.after(() => rmSync(dir, { recursive: true, force: true }));
+  const git = (...args) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", env: { ...process.env, GIT_COMMITTER_DATE: "2026-11-05T07:26:00Z", GIT_AUTHOR_DATE: "2026-11-05T07:26:00Z" } }).trim();
+  git("init", "-q");
+  writeFileSync(join(dir, "UPSTREAM_VERSION"), "0.7.2\n");
+  git("add", ".");
+  git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "x");
+  assert.equal(versionLabel(git("rev-parse", "HEAD"), { cwd: dir }), "0.7.2-20261105-1426");
+});
+
+test("deploymentsFromGraphql keeps sha, latest state and time", () => {
+  assert.deepEqual(deploymentsFromGraphql({ data: { repository: { deployments: { nodes: [
+    { commitOid: "a", latestStatus: { state: "SUCCESS", createdAt: "t" } },
+    { commitOid: "b", latestStatus: null },
+  ] } } } }), [{ sha: "a", state: "SUCCESS", createdAt: "t" }]);
+});
+
+test("a deployment-read failure writes entries without deploys, warns and still succeeds", async (context) => {
+  const data = fixture(context, { deployments: async () => { throw new Error("deployments: HTTP 403"); } });
+  const result = await fetchChangelog(data.options);
+  assert.equal(result.entries.length, 1);
+  assert.equal("deploys" in JSON.parse(readFileSync(data.out, "utf8")), false);
+  assert.equal(data.warnings.length, 1);
+  assert.match(data.warnings[0], /Deploy dividers unavailable.*HTTP 403/);
+  assert.match(readFileSync(data.summaryPath, "utf8"), /Deploy dividers unavailable/);
+});
+
+test("deployments are bucketed into the written file", async (context) => {
+  const data = fixture(context, {
+    firstParent: [{ sha, message: "", time: "2026-10-13T00:00:00Z" }],
+    versionOf: () => "0.7.2-20261013-0700",
+    deployments: async () => [],
+  });
+  const result = await fetchChangelog(data.options);
+  assert.deepEqual(JSON.parse(readFileSync(data.out, "utf8")).deploys.map((d) => [d.version, d.live]), [["0.7.2-20261013-0700", true]]);
+  assert.equal(result.entries[0].deploy, "live");
+});
