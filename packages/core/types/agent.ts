@@ -105,6 +105,12 @@ export interface RuntimeDevice {
    * Null/absent when the runtime has no daemon or the server predates pause.
    */
   daemon_running_tasks?: number | null;
+  /**
+   * Runtime-wide cap on tasks running at once across every agent bound to
+   * this runtime (GitHub #9626). `null` means no runtime cap; each agent's
+   * own limit still applies. Older backends omit the field.
+   */
+  max_concurrent_tasks?: number | null;
   last_seen_at: string | null;
   created_at: string;
   updated_at: string;

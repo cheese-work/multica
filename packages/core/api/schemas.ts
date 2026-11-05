@@ -50,6 +50,8 @@ import type {
   WecomInstallation,
   ListLarkInstallationsResponse,
   ListWecomInstallationsResponse,
+  BeginWecomInstallResponse,
+  WecomInstallStatusResponse,
   RedeemWecomBindingTokenResponse,
   TelegramInstallation,
   ListTelegramInstallationsResponse,
@@ -3203,21 +3205,23 @@ export const EMPTY_INBOX_UNREAD_SUMMARY: InboxWorkspaceUnread[] = [];
 // unread dot. `outcome` stays a string so a future kind still lights the dot;
 // on malformed JSON parseWithFallback returns the empty list, which hides it.
 
-export const IssueUnreadPageSchema = z
-  .object({
-    items: z.array(
-      z
-        .object({
-          issue_id: z.string(),
-          outcome: z.string(),
-          agent_id: z.string().nullish().transform((v) => v ?? null),
-          created_at: z.string(),
-        })
-        .loose(),
-    ),
-    next_cursor: z.string().nullish().transform((v) => v ?? null),
-  })
-  .loose();
+export const IssueUnreadPageSchema = z.lazy(() =>
+  z
+    .object({
+      items: z.array(
+        z
+          .object({
+            issue_id: z.string(),
+            outcome: z.string(),
+            agent_id: z.string().nullish().transform((v) => v ?? null),
+            created_at: z.string(),
+          })
+          .loose(),
+      ),
+      next_cursor: z.string().nullish().transform((v) => v ?? null),
+    })
+    .loose(),
+);
 
 export const EMPTY_ISSUE_UNREAD_PAGE: { items: IssueUnread[]; next_cursor: string | null } = {
   items: [],
@@ -3937,11 +3941,46 @@ export const ListWecomInstallationsResponseSchema = z.lazy(() => z.object({
   installations: z.array(WecomInstallationSchema).default([]),
   configured: z.boolean().default(false),
   install_supported: z.boolean().optional(),
+  // The settings tab gates the QR install entry point on this, so it is
+  // declared and validated here rather than left to pass through the loose
+  // object unchecked.
+  scan_install_supported: z.boolean().optional(),
 }).loose());
 
 export const EMPTY_LIST_WECOM_INSTALLATIONS_RESPONSE: ListWecomInstallationsResponse = {
   installations: [],
   configured: false,
+};
+
+export const BeginWecomInstallResponseSchema = z.lazy(() => z.object({
+  session_id: z.string(),
+  status: z.string().default("error"),
+  poll_interval_seconds: z.number().optional().default(1),
+}).loose());
+
+// A malformed begin response degrades to a terminal error rather than a session
+// the client would poll forever with an empty id.
+export const MALFORMED_BEGIN_WECOM_INSTALL_RESPONSE: BeginWecomInstallResponse = {
+  session_id: "",
+  status: "error",
+  poll_interval_seconds: 1,
+};
+
+export const WecomInstallStatusResponseSchema = z.lazy(() => z.object({
+  status: z.string().default("error"),
+  qr_code_url: z.string().optional(),
+  expires_in_seconds: z.number().optional(),
+  poll_interval_seconds: z.number().optional().default(2),
+  installation_id: z.string().optional(),
+  error_reason: z.string().optional(),
+}).loose());
+
+// Same reasoning: an unparseable status stops the poll loop instead of leaving
+// the dialog spinning on a response nobody can read.
+export const MALFORMED_WECOM_INSTALL_STATUS_RESPONSE: WecomInstallStatusResponse = {
+  status: "error",
+  poll_interval_seconds: 2,
+  error_reason: "internal_error",
 };
 
 export const RedeemWecomBindingTokenResponseSchema = z.lazy(() => z.object({
