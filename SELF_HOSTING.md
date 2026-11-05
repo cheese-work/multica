@@ -575,17 +575,17 @@ Before merge, record a real Brave preview screenshot and an issue-selection roun
 
 ## Agent run-budget cap (CHE-3251)
 
-An agent may raise or top up the run budget of another agent's issue, inside a daily and a monthly cap. The feature is **off by default**: with any limit unset, `POST /api/issues/{id}/run-budget[/top-up]` from an agent task token returns 403 with `reason: "disabled"`. A person's raise is never capped.
+An agent may raise or top up the run budget of another agent's issue, inside a daily and a monthly cap. The feature is **off by default and cannot be enabled yet**: it stays off, with all four limits set or not, until the metered-limit check ships in a later change. An agent task-token call to `POST /api/issues/{id}/run-budget[/top-up]` returns 403 with `reason: "disabled"`. A person's raise is never capped.
 
 | Setting | Effect |
 | --- | --- |
 | `MULTICA_AGENT_RUN_BUDGET_USD_PER_RUN` | USD one run is priced at when it is counted against the caps. |
 | `MULTICA_AGENT_RUN_BUDGET_DAILY_USD` | USD agents may add per ICT calendar day, instance-wide. |
 | `MULTICA_AGENT_RUN_BUDGET_MONTHLY_USD` | USD agents may add per ICT calendar month, instance-wide. Unused credit still counts. |
-| `MULTICA_AGENT_RUN_BUDGET_METERED_LIMIT_USD` | Metered-API limit the agent share is measured against (checked in a later change). |
+| `MULTICA_AGENT_RUN_BUDGET_METERED_LIMIT_USD` | Metered-API limit the agent share is measured against (parsed and validated now; enforced in a later change). |
 
-Set all four to enable it. Each must be a positive number with at most six decimals; an invalid value stops the server at start. Days and months use ICT (UTC+7).
+Setting all four does not enable agent grants yet. Do not rely on this feature until the later change lands and this section says to enable it. Each must be a positive number with at most six decimals; an invalid value stops the server at start. Days and months use ICT (UTC+7).
 
 An agent is refused with 429 (`reason: "daily"` or `"monthly_share"`, plus `remaining_usd`, `remaining_runs`, `resets_at` and a `Retry-After` header) when the raise would pass a cap. An agent is also refused when it is not on a live task, is on a recovery run, is the issue's own assignee, or belongs to another workspace.
 
-This is admission control with a USD 30 margin, not a hard cap. Runs already admitted keep running, and the gate does not kill them. No per-run cost upper bound is measured. The only backstop is the 20% headroom between USD 120 and the USD 150 limit; the platform does not hard-stop at USD 150. The caps count runs, not what each run costs. The metered-limit check (`MULTICA_AGENT_RUN_BUDGET_METERED_LIMIT_USD`) is added in a later change; until then only the daily and monthly caps apply. Re-check the real cost per run by 2026-12-04 before and after you enable this.
+This is admission control with a USD 30 margin, not a hard cap. Runs already admitted keep running, and the gate does not kill them. No per-run cost upper bound is measured. The only backstop is the 20% headroom between USD 120 and the USD 150 limit; the platform does not hard-stop at USD 150. The caps count runs, not what each run costs. The metered-limit check (`MULTICA_AGENT_RUN_BUDGET_METERED_LIMIT_USD`) is added in a later change, and agent grants stay refused until it exists. Re-check the real cost per run by 2026-12-04 before and after you enable this once it can be enabled.

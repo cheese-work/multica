@@ -26,10 +26,18 @@ type AgentRunBudgetConfig struct {
 	DailyMicroUSD        int64 // agent-added credit per ICT day
 	MonthlyMicroUSD      int64 // agent-added credit per ICT month, used or not
 	MeteredLimitMicroUSD int64 // monthly metered-API limit; checked by the admission gate (CHE-3251 PR B)
+
+	// meteredGateReady is true only once the metered-limit checks (CHE-3251
+	// PR B) exist. Nothing sets it in production code yet, so agent grants stay
+	// refused with reason "disabled" even when all four limits are set: this
+	// layer enforces the daily and monthly caps but not the metered limit, and
+	// enabling it without that check would grant credit the metered limit
+	// never bounds. PR B sets it where it wires the checks in.
+	meteredGateReady bool
 }
 
 func (c AgentRunBudgetConfig) Enabled() bool {
-	return c.PerRunMicroUSD > 0 && c.DailyMicroUSD > 0 && c.MonthlyMicroUSD > 0 && c.MeteredLimitMicroUSD > 0
+	return c.meteredGateReady && c.PerRunMicroUSD > 0 && c.DailyMicroUSD > 0 && c.MonthlyMicroUSD > 0 && c.MeteredLimitMicroUSD > 0
 }
 
 var agentRunBudgetEnv = []struct {
