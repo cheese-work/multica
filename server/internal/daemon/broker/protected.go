@@ -176,6 +176,15 @@ const (
 
 var errTooManyCommits = errors.New("push adds too many commits")
 
+// realBase is the commit the pushed history sits on: the real parent for a
+// synthetic-base run, the pinned base otherwise.
+func (b *Broker) realBase() string {
+	if b.pin.Synthetic != nil {
+		return b.pin.Synthetic.Parent
+	}
+	return b.pin.Base
+}
+
 // commitReceipts lists the commits the bundle added on top of the pinned base
 // with the SHA-256 of each raw message. One git process serves all objects and
 // its output is hashed as a stream, so a huge message costs time, not memory.
@@ -184,7 +193,7 @@ func (b *Broker) commitReceipts(ctx context.Context, work, sha string) ([]Commit
 	if limit <= 0 {
 		limit = defaultMaxCommits
 	}
-	list, err := b.git(ctx, work, nil, "rev-list", "--reverse", "--max-count="+strconv.Itoa(limit+1), sha, "^"+b.pin.Base)
+	list, err := b.git(ctx, work, nil, "rev-list", "--reverse", "--max-count="+strconv.Itoa(limit+1), sha, "^"+b.realBase())
 	if err != nil {
 		return nil, fmt.Errorf("receipt: %s", firstLine(list))
 	}
