@@ -885,6 +885,16 @@ test("CHE-4016: the failure message lists at most 5 user-facing files", () => {
   assert.match(res.stdout, /and 3 more/);
 });
 
+test("CHE-4016: a file name with CR or LF cannot forge workflow annotations", () => {
+  const res = noneCheck("fix: b", ["packages/views/a\r::error::forged.tsx", "packages/views/b\n::warning::forged2.tsx"]);
+  assert.equal(res.status, 1);
+  assert.doesNotMatch(res.stdout, /\r/, "no raw CR in the output");
+  const commands = res.stdout.split("\n").filter((line) => line.startsWith("::"));
+  assert.equal(commands.length, 1, `only the real error command: ${JSON.stringify(commands)}`);
+  assert.match(commands[0], /^::error::/);
+  assert.match(commands[0], /%0D::error::forged\.tsx/);
+});
+
 test("CHE-4016: a real sentence on a user-facing PR still passes and the files are not required", () => {
   const dir = tmp();
   const event = join(dir, "event.json");

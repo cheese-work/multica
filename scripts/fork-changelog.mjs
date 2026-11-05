@@ -340,6 +340,9 @@ function readFiles(path) {
   }
 }
 
+// Workflow-command data: escape %, CR and LF so a file name or PR text cannot start a forged command.
+const escapeAnnotation = (text) => String(text).replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+
 function runCheck(eventPath, filesPath, options, env) {
   const { pull_request: pr } = JSON.parse(readFileSync(eventPath, "utf8"));
   if (!pr) throw new Error("The event has no pull_request");
@@ -349,10 +352,10 @@ function runCheck(eventPath, filesPath, options, env) {
   }
   const input = { number: pr.number, title: pr.title ?? "", body: pr.body ?? "", headRef: pr.head?.ref ?? "" };
   const check = formatCheck(evaluatePr(input, options), readFiles(filesPath));
-  console.log(check.line);
-  for (const message of check.warnings) console.log(`::warning::${message}`);
+  console.log(check.line.replace(/[\r\n]+/g, " "));
+  for (const message of check.warnings) console.log(`::warning::${escapeAnnotation(message)}`);
   if (check.failing) {
-    console.log(`::error::${check.error ?? 'This PR has no valid Changelog line (feat/fix/perf need one; any line over 140 characters fails). Add "Changelog: <sentence>" or "Changelog: none" (none is only for internal-only changes).'}`);
+    console.log(`::error::${escapeAnnotation(check.error ?? 'This PR has no valid Changelog line (feat/fix/perf need one; any line over 140 characters fails). Add "Changelog: <sentence>" or "Changelog: none" (none is only for internal-only changes).')}`);
   }
   if (env.GITHUB_STEP_SUMMARY) {
     const lines = ["### Fork changelog", "", "```text", check.line.replace(/`/g, "'"), "```"];
