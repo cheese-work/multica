@@ -53,7 +53,7 @@ _run_installer() {
   local tmp="$1"
   local out="$tmp/install.out"
   local err="$tmp/install.err"
-  if ! PATH="$tmp/stub-bin:$tmp/install-bin:/usr/bin:/bin" \
+  if ! env -u HOMEBREW_NO_AUTO_UPDATE PATH="$tmp/stub-bin:$tmp/install-bin:/usr/bin:/bin" \
     MULTICA_BIN_DIR="$tmp/install-bin" \
     MULTICA_TEST_ARCHIVE="$tmp/multica.tar.gz" \
     bash "$ROOT_DIR/scripts/install.sh" >"$out" 2>"$err"; then
