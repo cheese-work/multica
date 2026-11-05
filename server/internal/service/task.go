@@ -8714,6 +8714,11 @@ func (s *TaskService) broadcastTaskDispatch(ctx context.Context, task db.AgentTa
 	if payload == nil {
 		payload = map[string]any{}
 	}
+	// This event fans out to the whole workspace. A background task's input is
+	// the DM owner's text, so only the workload metadata goes out.
+	if payload["type"] == BackgroundTaskContextType || strings.HasPrefix(task.Purpose.String, "bg:") {
+		delete(payload, "input")
+	}
 	payload["task_id"] = util.UUIDToString(task.ID)
 	payload["runtime_id"] = util.UUIDToString(task.RuntimeID)
 	payload["issue_id"] = util.UUIDToString(task.IssueID)
