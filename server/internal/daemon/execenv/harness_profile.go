@@ -236,6 +236,14 @@ func writeManagedCodexConfig(src, dst string) error {
 			kept[k] = v
 		}
 	}
+	// Native Windows sandbox opt-in: without it the sandbox policy falls back to
+	// danger-full-access. Only the `sandbox` selector is kept from [windows].
+	if win, ok := all["windows"].(map[string]any); ok {
+		// Any value is copied: an unknown one stays undecidable and fails closed.
+		if mode, ok := win["sandbox"]; ok {
+			kept["windows"] = map[string]any{"sandbox": mode}
+		}
+	}
 	out, err := toml.Marshal(kept)
 	if err != nil {
 		return fmt.Errorf("encode managed codex config: %w", err)

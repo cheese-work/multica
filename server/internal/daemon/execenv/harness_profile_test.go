@@ -435,3 +435,38 @@ func TestPersonalCodexHomeGolden(t *testing.T) {
 		t.Errorf("personal codex config.toml drifted\n got:\n%s\nwant:\n%s", cfg, wantCfg)
 	}
 }
+
+// A managed Codex home keeps the user's native Windows sandbox opt-in. Dropping
+// it makes the sandbox policy fall back to danger-full-access (CHE-3706 review).
+func TestPrepareManagedCodex_KeepsWindowsNativeSandbox(t *testing.T) {
+	for _, mode := range []string{"unelevated", "elevated"} {
+		t.Run(mode, func(t *testing.T) {
+			userHome := t.TempDir()
+			t.Setenv("HOME", userHome)
+			shared := filepath.Join(userHome, ".codex")
+			t.Setenv("CODEX_HOME", shared)
+			writeFile(t, filepath.Join(shared, "config.toml"),
+				"model = \"gpt-x\"\n\n[windows]\nsandbox = \""+mode+"\"\nother = \"drop-me\"\n")
+
+			codexHome := filepath.Join(t.TempDir(), "codex-home")
+			opts := CodexHomeOptions{GOOS: "windows", Managed: true}
+			if err := prepareCodexHomeWithOpts(codexHome, opts, discardLogger()); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := os.ReadFile(filepath.Join(codexHome, "config.toml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := string(raw)
+			if strings.Contains(cfg, "danger-full-access") {
+				t.Errorf("native sandbox %q dropped, policy loosened:\n%s", mode, cfg)
+			}
+			if !strings.Contains(cfg, `sandbox = '`+mode+`'`) && !strings.Contains(cfg, `sandbox = "`+mode+`"`) {
+				t.Errorf("windows.sandbox %q missing:\n%s", mode, cfg)
+			}
+			if strings.Contains(cfg, "drop-me") {
+				t.Errorf("non-allowlisted windows key survived:\n%s", cfg)
+			}
+		})
+	}
+}
