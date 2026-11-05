@@ -197,6 +197,15 @@ func (handler *Handler) agentCopyPreview(ctx context.Context, action db.Decision
 			current = runtimeLabel{id: runtime.ID, name: runtime.Name, provider: runtime.Provider}
 		}
 	}
+	targets, err := handler.Queries.ListAgentInvocationTargets(ctx, source.ID)
+	if err != nil {
+		return nil, err
+	}
+	skills, err := handler.Queries.ListAgentSkills(ctx, source.ID)
+	if err != nil {
+		return nil, err
+	}
+	access, skillNames := inheritedAccess(source, targets), inheritedSkills(skills)
 	proposedInstructions := source.Instructions
 	if params.Instructions != nil {
 		proposedInstructions = *params.Instructions
@@ -217,7 +226,29 @@ func (handler *Handler) agentCopyPreview(ctx context.Context, action db.Decision
 		{"Max concurrent tasks", fmt.Sprint(source.MaxConcurrentTasks), fmt.Sprint(maxConcurrent)},
 		{"Conversation starters", startersLabel(source.ConversationStarters), startersParamsLabel(params.ConversationStarters)},
 		{"Avatar", source.AvatarUrl.String, avatarLabel(params.AvatarURL)},
+		{"Who can invoke", access, access},
+		{"Skills", skillNames, skillNames},
 	}, nil
+}
+
+// inheritedAccess and inheritedSkills show what a copy takes over unchanged
+// from the source: permission mode, invocation targets and skills.
+func inheritedAccess(source db.Agent, targets []db.AgentInvocationTarget) string {
+	labels := make([]string, len(targets))
+	for i, target := range targets {
+		labels[i] = target.TargetType + ":" + uuidToString(target.TargetID)
+	}
+	sort.Strings(labels)
+	return source.PermissionMode + ": " + orNone(strings.Join(labels, ", "))
+}
+
+func inheritedSkills(skills []db.Skill) string {
+	names := make([]string, len(skills))
+	for i, skill := range skills {
+		names[i] = skill.Name
+	}
+	sort.Strings(names)
+	return orNone(strings.Join(names, ", "))
 }
 
 type runtimeLabel struct {

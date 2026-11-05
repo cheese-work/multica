@@ -137,6 +137,28 @@ func TestCardPreviewForAgentCopyDisclosesEverythingTheCopyRuns(test *testing.T) 
 	}
 }
 
+func TestCardPreviewForAgentCopyDisclosesInheritedAccessAndSkills(test *testing.T) {
+	action := newPendingCopy(test, "che2959 inherit copy", nil)
+	var skillID string
+	dbfx.QueryRow(test, `INSERT INTO skill (workspace_id, name, description, content, config, created_by)
+		VALUES ($1, 'che2959 inherited skill', '', '# x', '{}'::jsonb, $2) RETURNING id`, testWorkspaceID, testUserID).Scan(&skillID)
+	dbfx.Cleanup(test, `DELETE FROM agent_skill WHERE skill_id = '`+skillID+`'`)
+	dbfx.Cleanup(test, `DELETE FROM skill WHERE id = '`+skillID+`'`)
+	dbfx.Exec(test, `INSERT INTO agent_skill (agent_id, skill_id) VALUES ($1, $2)`, action.agentID, skillID)
+	dbfx.Exec(test, `UPDATE agent SET permission_mode = 'public_to' WHERE id = $1`, action.agentID)
+	dbfx.Exec(test, `INSERT INTO agent_invocation_target (agent_id, target_type, target_id) VALUES ($1, 'workspace', $2) ON CONFLICT DO NOTHING`, action.agentID, testWorkspaceID)
+	fields := previewFields(test, action.cardAction(test))
+	want := map[string]string{
+		"Who can invoke": "public_to: workspace:" + testWorkspaceID,
+		"Skills":         "che2959 inherited skill",
+	}
+	for label, inherited := range want {
+		if got := fields[label]; len(got) != 2 || got[0] != inherited || got[1] != inherited {
+			test.Errorf("%s = %v, want %q kept from the source", label, got, inherited)
+		}
+	}
+}
+
 func TestCardActionIsAbsentForARequestWithoutAnAction(test *testing.T) {
 	fixture := newAskedRecordFixture(test)
 	if card := testHandler.decisionCardAction(context.Background(), parseUUID(testWorkspaceID), fixture.decision.ID); card != nil {
