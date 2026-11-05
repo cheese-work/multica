@@ -538,7 +538,7 @@ func TestResolveWorkspaceByIDOrSlug(t *testing.T) {
 func resetWorkspaceUpdateFlags(t *testing.T) {
 	t.Helper()
 	flags := workspaceUpdateCmd.Flags()
-	for _, name := range []string{"name", "description", "context", "context-file", "issue-prefix", "expected-before-digest", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours"} {
+	for _, name := range []string{"name", "description", "context", "context-file", "issue-prefix", "expected-before-digest", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"} {
 		_ = flags.Set(name, "")
 		if f := flags.Lookup(name); f != nil {
 			f.Changed = false
@@ -1276,5 +1276,37 @@ func TestBuildWorkspaceUpdateBodyIdleGuard(t *testing.T) {
 		if _, err := buildWorkspaceUpdateBody(workspaceUpdateCmd); err == nil {
 			t.Errorf("hours %q: expected an error", hours)
 		}
+	}
+}
+
+func TestMergeRoutingFlagsKeepsUnnamedFields(t *testing.T) {
+	resetWorkspaceUpdateFlags(t)
+	current := map[string]any{"agent_id": "a1", "fallback_agent_id": "f1", "statuses": []any{"todo"}, "overrides": map[string]any{"todo": "o1"}}
+	setStringFlag(t, "routing-agent", "a2")
+	next, err := mergeRoutingFlags(workspaceUpdateCmd, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next["agent_id"] != "a2" || next["fallback_agent_id"] != "f1" || len(next["statuses"].([]any)) != 1 || next["overrides"].(map[string]any)["todo"] != "o1" {
+		t.Fatalf("merge = %v", next)
+	}
+
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "routing-fallback-agent", "none")
+	setStringFlag(t, "routing-statuses", "todo,blocked")
+	setStringFlag(t, "routing-overrides", "todo=o2, blocked=o3")
+	next, err = mergeRoutingFlags(workspaceUpdateCmd, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	overrides := next["overrides"].(map[string]string)
+	if next["fallback_agent_id"] != "" || len(next["statuses"].([]string)) != 2 || overrides["todo"] != "o2" || overrides["blocked"] != "o3" {
+		t.Fatalf("merge = %v", next)
+	}
+
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "routing-overrides", "todo")
+	if _, err := mergeRoutingFlags(workspaceUpdateCmd, current); err == nil {
+		t.Fatal("malformed override accepted")
 	}
 }
