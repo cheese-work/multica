@@ -2296,21 +2296,6 @@ WHERE t.chat_session_id = ANY($1::uuid[])
   AND COALESCE(t.chat_compaction_epoch, 0) = cs.compaction_epoch
 ORDER BY t.chat_session_id, t.completed_at DESC, t.id DESC;
 
--- name: LockChatSessionsOfActiveCompactionTasks :many
--- CHE-2908 (SEC-1 rule 4): first lock of a compact chain change. Takes the DM
--- rows of the workspace's live compaction tasks in id order, so the change keeps
--- the chat_session -> agent_task_queue order every chat writer uses and two
--- changes cannot deadlock on each other.
-SELECT cs.id FROM chat_session cs
-WHERE cs.workspace_id = $1
-  AND cs.id IN (
-    SELECT t.chat_session_id FROM agent_task_queue t
-    WHERE t.task_kind = 'compact'
-      AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
-  )
-ORDER BY cs.id
-FOR UPDATE;
-
 -- name: CancelCompactionTasksByWorkspace :many
 -- CHE-2908 (SEC-1 rule 4): a compact chain change cancels every live compaction
 -- task of the workspace, whichever agent it was queued for, so a task queued

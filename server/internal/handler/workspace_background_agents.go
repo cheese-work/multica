@@ -102,16 +102,12 @@ func (h *Handler) UpdateBackgroundAgents(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "failed to read request body")
 		return
 	}
-	// A machine write is accepted only when it changes nothing, so it never
-	// needs the eligibility check: an agent archived since the last human save
-	// must not turn an unchanged machine PUT into a 400.
-	machine := h.backgroundAgentsMachine(r, member)
-	next, bad := h.canonicalBackgroundAgents(r.Context(), member.WorkspaceID, body, !machine)
+	next, bad := canonicalBackgroundAgents(body)
 	if bad != nil {
 		writeErrorCode(w, http.StatusBadRequest, bad.Code, bad.Msg)
 		return
 	}
-	h.saveBackgroundAgents(w, r, member, machine, next)
+	h.saveBackgroundAgents(w, r, member, h.backgroundAgentsMachine(r, member), next)
 }
 
 // ResetBackgroundAgents clears every job.
@@ -135,6 +131,11 @@ func (h *Handler) saveBackgroundAgents(w http.ResponseWriter, r *http.Request, m
 		writeBackgroundAgentsRefused(w)
 		return
 	}
+	var bad *bgagents.Error
+	if errors.As(err, &bad) {
+		writeErrorCode(w, http.StatusBadRequest, bad.Code, bad.Msg)
+		return
+	}
 	if err != nil {
 		slog.Warn("update background agents failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", id)...)
 		writeError(w, http.StatusInternalServerError, "failed to update background agents")
@@ -151,7 +152,12 @@ func (h *Handler) saveBackgroundAgents(w http.ResponseWriter, r *http.Request, m
 
 // writeBackgroundAgents writes the value and one activity row per changed job
 // in one transaction under the workspace row lock. The machine check runs
-// against the locked stored value, so a refused write stores nothing. A change
+// against the locked stored value, so a refused write stores nothing. A human
+// write checks ENG-8 eligibility in the same transaction, holding a shared lock
+// on each agent, so an archive cannot land between the check and the write. A
+// machine write is accepted only when it changes nothing, so it never needs the
+// check: an agent archived since the last human save must not turn an unchanged
+// machine PUT into a 400. A change
 // of the compact job cancels every live compaction task in the same
 // transaction (SEC-1 rule 4), so no task queued under the old chain delivers a
 // transcript; the cancelled rows come back for the post-commit broadcast.
@@ -170,6 +176,11 @@ func (h *Handler) writeBackgroundAgents(ctx context.Context, member db.Member, m
 	_ = json.Unmarshal(storedJSON, &stored) // stored settings that are not an object start over as one
 	if stored == nil {
 		stored = map[string]any{}
+	}
+	if !machine {
+		if bad := checkBackgroundAgentsEligible(ctx, q, member.WorkspaceID, next); bad != nil {
+			return nil, nil, bad
+		}
 	}
 	prev := bgValue(stored[backgroundAgentsKey])
 	var changes []bgChange
@@ -219,9 +230,13 @@ func (h *Handler) writeBackgroundAgents(ctx context.Context, member db.Member, m
 
 // cancelCompactionTasks cancels the workspace's live compaction tasks. Lock
 // order is workspace, chat_session, then agent_task_queue, as every chat
-// writer takes it.
+// writer takes it. Every DM of the workspace is locked, not only those with a
+// visible live task: an enqueue holds its DM lock with a task it has not yet
+// committed, which the sweep cannot see. Waiting on that lock makes the task
+// visible before the sweep runs; an enqueue that starts after it reads the new
+// chain.
 func cancelCompactionTasks(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID) ([]db.AgentTaskQueue, error) {
-	if _, err := q.LockChatSessionsOfActiveCompactionTasks(ctx, workspaceID); err != nil {
+	if _, err := q.LockChatSessionsByWorkspace(ctx, workspaceID); err != nil {
 		return nil, err
 	}
 	cancelled, err := q.CancelCompactionTasksByWorkspace(ctx, workspaceID)
@@ -247,9 +262,9 @@ func sortedUnionKeys(a, b map[string]any) []string {
 
 // canonicalBackgroundAgents validates body for workspace scope and returns the
 // value as it is stored: lower-case agent ids, empty fields dropped, JSON-typed
-// so it compares equal to what a read gives back. With checkEligible, every
-// agent must be ENG-8 eligible in this workspace.
-func (h *Handler) canonicalBackgroundAgents(ctx context.Context, ws pgtype.UUID, body []byte, checkEligible bool) (map[string]any, *bgagents.Error) {
+// so it compares equal to what a read gives back. It reads nothing from the
+// database; checkBackgroundAgentsEligible does the ENG-8 check.
+func canonicalBackgroundAgents(body []byte) (map[string]any, *bgagents.Error) {
 	cfg, err := bgagents.Parse(body, bgagents.WorkspaceScope)
 	if err != nil {
 		var bad *bgagents.Error
@@ -262,12 +277,6 @@ func (h *Handler) canonicalBackgroundAgents(ctx context.Context, ws pgtype.UUID,
 		id, err := util.ParseUUID(raw)
 		if err != nil {
 			return "", &bgagents.Error{Code: bgagents.CodeInvalidAgentID, Msg: field + " must be an agent id"}
-		}
-		if checkEligible {
-			agent, err := h.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: id, WorkspaceID: ws})
-			if err != nil || !bgagents.WorkspaceEligible(agent) {
-				return "", &bgagents.Error{Code: codeAgentNotEligible, Msg: field + " must be a workspace-visible agent with a runtime in this workspace: " + raw}
-			}
 		}
 		return uuidToString(id), nil
 	}
@@ -308,4 +317,37 @@ func (h *Handler) canonicalBackgroundAgents(ctx context.Context, ws pgtype.UUID,
 	var typed map[string]any
 	_ = json.Unmarshal(raw, &typed)
 	return typed, nil
+}
+
+// checkBackgroundAgentsEligible is ENG-8 for every agent in next. Each agent row
+// is read FOR SHARE inside the caller's transaction.
+func checkBackgroundAgentsEligible(ctx context.Context, q *db.Queries, ws pgtype.UUID, next map[string]any) *bgagents.Error {
+	check := func(field string, raw any) *bgagents.Error {
+		s, _ := raw.(string)
+		id, err := util.ParseUUID(s)
+		if err == nil {
+			var agent db.Agent
+			if agent, err = q.LockAgentInWorkspaceShared(ctx, db.LockAgentInWorkspaceSharedParams{ID: id, WorkspaceID: ws}); err == nil && bgagents.WorkspaceEligible(agent) {
+				return nil
+			}
+		}
+		return &bgagents.Error{Code: codeAgentNotEligible, Msg: field + " must be a workspace-visible agent with a runtime in this workspace: " + s}
+	}
+	for _, job := range sortedUnionKeys(next, nil) {
+		chain, _ := next[job].(map[string]any)
+		for _, field := range []string{"agent_id", "fallback_agent_id"} {
+			if raw, ok := chain[field]; ok {
+				if bad := check(job+"."+field, raw); bad != nil {
+					return bad
+				}
+			}
+		}
+		overrides, _ := chain["overrides"].(map[string]any)
+		for _, key := range sortedUnionKeys(overrides, nil) {
+			if bad := check(job+".overrides."+key, overrides[key]); bad != nil {
+				return bad
+			}
+		}
+	}
+	return nil
 }

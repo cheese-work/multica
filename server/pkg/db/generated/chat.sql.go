@@ -4372,42 +4372,6 @@ func (q *Queries) LockChatSessionsByWorkspace(ctx context.Context, workspaceID p
 	return items, nil
 }
 
-const lockChatSessionsOfActiveCompactionTasks = `-- name: LockChatSessionsOfActiveCompactionTasks :many
-SELECT cs.id FROM chat_session cs
-WHERE cs.workspace_id = $1
-  AND cs.id IN (
-    SELECT t.chat_session_id FROM agent_task_queue t
-    WHERE t.task_kind = 'compact'
-      AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
-  )
-ORDER BY cs.id
-FOR UPDATE
-`
-
-// CHE-2908 (SEC-1 rule 4): first lock of a compact chain change. Takes the DM
-// rows of the workspace's live compaction tasks in id order, so the change keeps
-// the chat_session -> agent_task_queue order every chat writer uses and two
-// changes cannot deadlock on each other.
-func (q *Queries) LockChatSessionsOfActiveCompactionTasks(ctx context.Context, workspaceID pgtype.UUID) ([]pgtype.UUID, error) {
-	rows, err := q.db.Query(ctx, lockChatSessionsOfActiveCompactionTasks, workspaceID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []pgtype.UUID{}
-	for rows.Next() {
-		var id pgtype.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		items = append(items, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const markChatSessionExplicitlyCreated = `-- name: MarkChatSessionExplicitlyCreated :one
 UPDATE chat_session
 SET explicitly_created_at = COALESCE(explicitly_created_at, now())
