@@ -143,3 +143,52 @@ func TestChatClaimCompactionSeedInheritsTaintAndReachesDelegate(t *testing.T) {
 
 	claimRestrictedWithTaint(t, delegateRuntime, []string{"t1"})
 }
+
+// CHE-3702 round 12: a fork and a continuation also start a fresh session seeded
+// with another DM's content (a copied transcript, or its summary). The source
+// DM's tainted turns reach the new task, and so a delegate of it.
+func TestChatClaimForkAndContinuationSeedInheritTaintAndReachDelegate(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		link     string
+		seedKind string
+		seedBody string
+	}{
+		{name: "fork", link: "forked_from_session_id"},
+		{name: "continuation", link: "continued_from_session_id", seedKind: "continuation_summary", seedBody: "summary of attacker-influenced content"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			agentID, runtimeID, _ := createRuntimeGuardAgent(t, ctx)
+			sourceID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "taint source " + tc.name})
+			dbfx.Task(t, agentID, testutil.Cols{
+				"status": "completed", "runtime_id": runtimeID, "chat_session_id": sourceID,
+				"session_id": "sess-tainted", "taint_ids": []string{"t1"},
+				"started_at": testutil.Raw("now() - interval '1 minute'"), "completed_at": testutil.Raw("now()"),
+			})
+			dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": sourceID, "role": "assistant", "content": "attacker-influenced reply"})
+
+			childID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "taint " + tc.name, tc.link: sourceID})
+			if tc.name == "fork" {
+				dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": childID, "role": "assistant", "content": "attacker-influenced reply"})
+			} else {
+				dbfx.Insert(t, "chat_message", testutil.Cols{
+					"chat_session_id": childID, "role": "assistant", "message_kind": tc.seedKind, "content": tc.seedBody,
+				})
+			}
+			dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": childID, "role": "user", "content": "a later, clean message"})
+			dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "chat_session_id": childID, "priority": 1000})
+
+			dm := claimChatTaintTask(t, runtimeID)
+			wantChatTaint(t, dm, "")
+
+			delegateRuntime := createClaimReclaimRuntime(t, ctx, "Seed taint delegate runtime "+tc.name)
+			delegateAgent, issueID := createClaimReclaimAgentAndIssue(t, ctx, delegateRuntime, "Seed taint delegate agent "+tc.name)
+			insertGrant(t, issueID, testWorkspaceID, []string{"docker"}, "1 minute", "1 hour", false)
+			taskID := createDispatchedClaimFixtureTask(t, ctx, delegateAgent, delegateRuntime, issueID, "120 seconds", false)
+			dbfx.Exec(t, `UPDATE agent_task_queue SET delegated_from_task_id = $2 WHERE id = $1`, taskID, dm.ID)
+
+			claimRestrictedWithTaint(t, delegateRuntime, []string{"t1"})
+		})
+	}
+}

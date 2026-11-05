@@ -6507,16 +6507,23 @@ UPDATE agent_task_queue t
 SET taint_ids = COALESCE((
     SELECT array_agg(DISTINCT x ORDER BY x)
     FROM agent_task_queue s, unnest(s.taint_ids) AS x
-    WHERE s.agent_id = t.agent_id AND s.chat_session_id = t.chat_session_id
+    WHERE s.chat_session_id IN (
+        SELECT t.chat_session_id
+        UNION
+        SELECT c.forked_from_session_id FROM chat_session c WHERE c.id = t.chat_session_id
+        UNION
+        SELECT c.continued_from_session_id FROM chat_session c WHERE c.id = t.chat_session_id
+    )
 ), '{}')
 WHERE t.id = $1
 RETURNING t.taint_ids
 `
 
-// InheritChatSessionTaint for a task whose fresh session is seeded from an
-// in-place compaction summary (CHE-3702). The summary and the messages since
-// were written by earlier turns of this DM and the resume pointer is gone, so
-// the taint comes from every task of the chat, not from one session id.
+// InheritChatSessionTaint for a task whose fresh session is seeded from other
+// DM content (CHE-3702): an in-place compaction summary, a fork's copied
+// transcript or a continuation summary. The resume pointer that carried the
+// taint is gone, so the taint comes from every task of this chat and of the
+// DM it was forked or continued from.
 func (q *Queries) InheritChatSeedTaint(ctx context.Context, id pgtype.UUID) ([]string, error) {
 	row := q.db.QueryRow(ctx, inheritChatSeedTaint, id)
 	var taint_ids []string
