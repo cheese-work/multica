@@ -221,6 +221,8 @@ type RuntimeRecoveryNotifier interface {
 }
 
 type Handler struct {
+	// githubAllowlist is the GITHUB_ALLOWED_ACCOUNT_IDS policy (CHE-3418).
+	githubAllowlist githubAllowlist
 	// workflowWriter overrides how workflow deliveries are stored; nil means the
 	// default transaction-per-workspace writer. Tests inject faults through it.
 	workflowWriter workflowWriter

@@ -109,6 +109,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"dingtalk_group_route":               workspaceDelete,
 	"feedback":                           workspaceDeleteDetach,
 	"github_dispatch_halt":               workspaceDelete,
+	"github_dispatch_halt_audit":         workspaceDelete,
 	"github_installation":                workspaceDelete,
 	"github_pending_check_suite":         workspaceDelete,
 	"github_route_grant":                 workspaceDelete,
@@ -261,6 +262,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"workspace":                          workspaceDelete,
 	"workspace_config_sync":              workspaceDelete,
 	"ask_guard_event":                    workspaceDelete,
+	"system1_observation":                workspaceDelete, // CHE-3628 no FK.
 	"workspace_invitation":               workspaceDelete,
 	"workspace_share_link":               workspaceDelete,
 }

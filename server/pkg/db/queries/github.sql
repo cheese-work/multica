@@ -21,12 +21,14 @@ WHERE id = $1;
 
 -- name: CreateGitHubInstallation :one
 INSERT INTO github_installation (
-    workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id
+    workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, account_id
 ) VALUES (
-    $1, $2, $3, $4, sqlc.narg('account_avatar_url'), sqlc.narg('connected_by_id')
+    $1, $2, $3, $4, sqlc.narg('account_avatar_url'), sqlc.narg('connected_by_id'), sqlc.narg('account_id')
 )
 ON CONFLICT (workspace_id, installation_id) DO UPDATE SET
     account_login = EXCLUDED.account_login,
+    -- A code-less refresh carries no trusted id; keep the stored one.
+    account_id = COALESCE(EXCLUDED.account_id, github_installation.account_id),
     account_type = EXCLUDED.account_type,
     account_avatar_url = EXCLUDED.account_avatar_url,
     connected_by_id = EXCLUDED.connected_by_id,
@@ -51,9 +53,23 @@ UPDATE github_installation
 SET account_login = $2,
     account_type = $3,
     account_avatar_url = sqlc.narg('account_avatar_url'),
+    account_id = COALESCE(sqlc.narg('account_id'), account_id),
     updated_at = now()
 WHERE installation_id = $1
 RETURNING *;
+
+-- name: ListGitHubInstallationsMissingAccountID :many
+-- Startup backfill input: rows bound before the trusted account_id existed.
+SELECT * FROM github_installation
+WHERE account_id IS NULL
+ORDER BY created_at ASC, id ASC;
+
+-- name: SetGitHubInstallationAccountIDByInstallationID :execrows
+-- Fill only a null id, so a backfill can never overwrite one captured from a
+-- verified bind or a signed lifecycle event.
+UPDATE github_installation
+SET account_id = $2
+WHERE installation_id = $1 AND account_id IS NULL;
 
 -- name: UpsertPendingGitHubInstallation :one
 INSERT INTO github_pending_installation (

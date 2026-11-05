@@ -58,6 +58,12 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusBadRequest, err.Error())
 		return
 	}
+	// The recommended option is shown first (CHE-3628); an ask with two or more options must identify it.
+	parsed, err = parsed.RequireRecommendedFirst()
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, err.Error())
+		return
+	}
 	hints := decisiontx.LintAsk(parsed)
 	sourceIssueID, ok := parseUUIDOrBadRequest(writer, parsed.SourceIssueID, "ask.source_issue_id")
 	if !ok {

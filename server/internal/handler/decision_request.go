@@ -498,6 +498,9 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 	if err != nil {
 		return empty, err
 	}
+	if err := recordDecisionObservation(ctx, queries, issue, created, input.Parsed); err != nil {
+		return empty, err
+	}
 	var action *db.DecisionAction
 	if input.Action != nil {
 		stored, err := createDecisionAction(ctx, queries, issue, created, intent.TaskID, input.Action)

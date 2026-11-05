@@ -1030,6 +1030,7 @@
     "github_not_configured": "이 배포에는 GitHub 연결이 설정되어 있지 않습니다.",
     "github_browse_not_configured": "저장소를 탐색하려면 GITHUB_APP_ID와 GITHUB_APP_PRIVATE_KEY가 필요합니다.",
     "github_connect_failed": "GitHub에 연결하지 못했습니다. 다시 시도해 주세요.",
+    "github_installation_not_allowed": "이 GitHub 계정은 이 배포 환경에서 허용되지 않습니다.",
     "github_picker_title": "GitHub 저장소 선택",
     "github_picker_description": "기존 수동 설정은 변경되지 않습니다.",
     "github_account": "GitHub 계정",
