@@ -131,12 +131,15 @@ const gh = (args, input) => {
   return r.stdout;
 };
 
+// Newer gh (runner) refuses output with terminal escape sequences; job logs carry ANSI colour, clean() strips it.
+export const logArgs = (path) => ["api", "--allow-escape-sequences", path];
+
 export const ghApi = {
   graphql: async (query, vars) =>
     JSON.parse(gh(["api", "graphql", "-f", `query=${query}`, ...Object.entries(vars).flatMap(([k, v]) => [typeof v === "number" ? "-F" : "-f", `${k}=${v}`])])).data,
   // ponytail: first page only (100); a PR with >100 comments could miss its sticky comment.
   get: async (path) => JSON.parse(gh(["api", path])),
-  text: async (path) => gh(["api", path]),
+  text: async (path) => gh(logArgs(path)),
   send: async (method, path, body) => gh(["api", "-X", method, path, "--input", "-"], JSON.stringify(body)),
 };
 

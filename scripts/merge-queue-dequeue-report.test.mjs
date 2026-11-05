@@ -126,6 +126,11 @@ test("report: a run that never finishes still reports its already-failed jobs, n
   assert.match(api.writes[1].body.description, /TestRouter/);
 });
 
+test("job logs are fetched with --allow-escape-sequences (newer gh refuses ANSI logs; clean() strips them)", async () => {
+  const { logArgs } = await load();
+  assert.deepEqual(logArgs("/repos/o/r/actions/jobs/1/logs"), ["api", "--allow-escape-sequences", "/repos/o/r/actions/jobs/1/logs"]);
+});
+
 test("report: manual removal writes nothing", async () => {
   const { report } = await load();
   const api = fakeApi("manual");
