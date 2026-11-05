@@ -105,11 +105,24 @@ Migration for a workspace that relies on the direct call today: an owner sets th
 One task shape for all jobs, so failover, audit and cancellation are written once.
 
 - A background task is a row in `agent_task_queue` with a new nullable `purpose` text column (`bg:dm_title`, `bg:quick_actions`, `bg:compact`; `routing` keeps its existing workflow-step task and only reuses the chain resolver and failover). The same column is the one CHE-2894 plan v3 already specified for compaction (`purpose = 'compaction'`); this plan renames that value to `bg:compact` and the first layer to land adds the column.
-- The task has no issue, no autopilot run and, for `dm_title` and `quick_actions`, no `chat_session_id`. The job input travels in the task `context` JSONB (precedent: quick-create). `compact` keeps `chat_session_id` as plan v3 ENG-1 requires.
+- The task has no issue and no autopilot run. For `dm_title` and `quick_actions` it has no `chat_session_id` (so it never joins DM serialization), but it always carries `source_chat_session_id` (see Privacy of DM-derived tasks). The job input travels in the task `context` JSONB (precedent: quick-create). `compact` keeps `chat_session_id` as plan v3 ENG-1 requires and also sets `source_chat_session_id`.
 - Input is bounded by the server: `dm_title` gets the user's message text (cap 2,000 characters, so a pasted log cannot become model input); `quick_actions` gets the last 6 messages with the existing budgets (`chatQuickActionsLatestBudget` and siblings, unchanged). The agent gets no tools beyond a read-only brief and no workspace access beyond the task's own context.
 - Output is a short text in the existing task `output` field. The server, not the agent, validates and writes: `dm_title` runs `sanitizeChatTitle` and the CAS; `quick_actions` runs `sanitizeChatQuickActions`. An agent never calls a write API for these jobs. This keeps the write path server-owned and the CHE-2908 security rule intact (no agent-reachable route changes a title or a setting).
 - Claim restriction: a `bg:*` task is claimed only by a runtime of the chain's agent. It never joins DM serialization (`chat_session_id IS NULL` for title and quick actions), so a title job never delays a user's turn.
-- Run records: each background task is a normal task, so it shows in the runs list and in usage. Cost per job is read from existing task usage grouped by `purpose`.
+- Run records: each background task is a normal task, so its row shows in the runs list and in usage. Its content is creator-private (next section). Cost per job is read from existing task usage grouped by `purpose`.
+
+## Privacy of DM-derived tasks
+
+A DM is creator-private, and so is everything its tasks produce (`handler/chat_task_privacy.go`). Today `redactForeignChatTaskContent` clears `result` and `error` for a task only when `chat_session_id` is set and the viewer is not the session creator. A `bg:*` task with no `chat_session_id` would skip that check, and its title text, pills or error text would be readable by any member who can list the shared agent's runs. The spec closes this as follows.
+
+1. **Provenance column.** New nullable `agent_task_queue.source_chat_session_id` (UUID, no foreign key, per the repo rule). It is set at enqueue for every background task derived from a DM, in the same transaction as the enqueue. It is independent of scheduling: it does not change serialization, claim or `chat_session_id` semantics.
+2. **One owner rule.** The privacy owner session of a task is `COALESCE(chat_session_id, source_chat_session_id)`. The redaction function uses it. A task whose owner session cannot be resolved stays "foreign" (the existing rule). A background task derived from a DM with neither column set is a bug: the enqueue helper rejects it and a test asserts it.
+3. **Failover inherits.** A fallback attempt copies `source_chat_session_id` from the failed attempt inside the failover transaction. Every attempt in a chain has the same owner.
+4. **Creator-only surfaces.** For a DM-derived task, a viewer who is not the session creator gets no `result`, no `error`, no `context` (it holds DM text), no transcript or task messages, and no event payload that echoes them. Layer 2b audits every route that returns task content: the two task lists that call the redactor today (`handler/agent.go`, agent task list and its second list path), the task messages and transcript routes, run events, and websocket payloads. It lists them in the PR body. Row metadata (id, status, purpose, timing, usage totals) stays visible, as workload views need it.
+5. **Logs.** Background-task logs carry job, slot and reason only, never DM text or agent output.
+6. **Regression test (two members).** Member A owns a DM and triggers `dm_title`, `quick_actions` and `compact` tasks, including a failed primary with a fallback attempt. Member B, in the same workspace, lists the agent's tasks and requests each task's messages and events. Expected: B sees row metadata only, never result, error, context, messages or events content. A sees everything. A negative control: a task with `source_chat_session_id` unset is rejected at enqueue.
+
+Reason for a new column instead of reusing `chat_session_id`: setting `chat_session_id` would put title and pill jobs into DM serialization and the chat unread queries (`040_chat_unread_since`), so a title job could delay a user's turn.
 
 ## Failover rules
 
@@ -171,6 +184,7 @@ Per-job deadlines (targets for review; measurement is a layer-1 task, see Eviden
 - A change to a job's agent cancels that job's non-terminal background tasks in the same transaction (generalised SEC-1 rule 4), so a task queued under A never runs under B's authority.
 - Agent output for non-compact jobs is treated as untrusted text: sanitised, length-capped, written only through the server path above.
 - `member_setting` reads and writes are scoped to the calling member. No route reads another member's row.
+- DM-derived task content stays creator-private. See Privacy of DM-derived tasks.
 
 ## UI
 
@@ -217,12 +231,13 @@ Cost risk: `quick_actions` fires after every assistant reply. An agent run costs
 
 ## Layers
 
-Each layer is at most 2 hours, test-first (observed red then green in the PR body), and a stacked PR on the previous layer's head. Layers 3 and 4 may run in parallel after layer 2. Layer 7 and the compact user override need a fresh security review of this plan's changed assumptions (fallback agent, user scope, renamed event) before they are admitted. CHE-2905's PASS covers PR #768 head `17470060c06360519fcd4715a15fca58777de748` only.
+Each layer is at most 2 hours, test-first (observed red then green in the PR body), and a stacked PR on the previous layer's head. Layers 3 and 4 may run in parallel after layer 2b. Layer 7 and the compact user override need a fresh security review of this plan's changed assumptions (fallback agent, user scope, renamed event) before they are admitted. CHE-2905's PASS covers PR #768 head `17470060c06360519fcd4715a15fca58777de748` only.
 
 | # | Layer | Content | Estimate |
 | --- | --- | --- | --- |
 | 1 | Core resolver | `background_agents` schema, catalog, validation, eligibility, resolution order, human-only write guard, activity record, `GET/PUT` route, tests. No job uses it yet. | 2 h |
 | 2 | Task shape and failover | `agent_task_queue.purpose`, `bg:*` enqueue, claim restriction, reachability check, claim deadline, one-failover rule (generalises `failOverRoutingTask`), output path, cancel on change. Tests with a fake runtime. | 2 h |
+| 2b | DM-task privacy | `source_chat_session_id` column and enqueue guard, owner rule in the redactor, failover inheritance, audit of every task-content route, two-member regression test. Lands before any job (layers 3, 4, 7) enqueues a DM-derived task. | 1.5 h |
 | 3 | DM title | 60-character constant (client, server), milestone triggers, trigger-key idempotence, CAS write, tests for rename-wins, offline fallback and fork child. | 2 h |
 | 4 | Quick actions | `bg:quick_actions` job, pending window, sanitising, concurrency ceiling, latency and cost measurement script. | 2 h |
 | 5 | `member_setting` and CLI | Migration, user scope read/write, `canInvokeAgent` check, `multica workspace/me background-agents`, aliases. | 2 h |
@@ -231,15 +246,16 @@ Each layer is at most 2 hours, test-first (observed red then green in the PR bod
 | 8 | Settings UI | "Background agents" section and personal rows, strings in six locales, search index; picker for CHE-2917's disclosure and warnings. Needs approved design (design-loop). | 2 h |
 | 9 | Docs and rollout | `apps/docs` pages in five locales, CLI docs, one 3-day measurement per enabled job. | 1.5 h |
 
-Total about 17 h across 9 layers. Layers 1 to 4 deliver Cheese's title decisions; the rest finish the framework.
+Total about 18.5 h across 10 layers. Layers 1 to 4 deliver Cheese's title decisions; the rest finish the framework.
 
 ```mermaid
 flowchart LR
   L1[1 Resolver] --> L2[2 Task shape + failover]
-  L2 --> L3[3 DM title]
-  L2 --> L4[4 Quick actions]
+  L2 --> L2b[2b DM-task privacy]
+  L2b --> L3[3 DM title]
+  L2b --> L4[4 Quick actions]
   L1 --> L5[5 member_setting + CLI]
-  L2 --> L7[7 Compact]
+  L2b --> L7[7 Compact]
   P989[PR 989 merged] --> L6[6 Routing migration]
   L1 --> L6
   L1 --> L8[8 UI]
