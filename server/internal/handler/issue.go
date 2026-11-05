@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -1512,6 +1511,10 @@ func (h *Handler) QueryIssues(w http.ResponseWriter, r *http.Request) {
 	h.ListIssues(w, r)
 }
 
+// effectiveDueMaxCandidates bounds the rows loaded and projected for
+// sort=effective_due. Var so tests can lower it.
+var effectiveDueMaxCandidates = 2000
+
 func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -1985,9 +1988,9 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 
 	fetchOffset, fetchLimit := int64(offset), int64(limit)
 	if sortByEffectiveDue {
-		// ponytail: loads the whole filtered set to sort it; fine for a
-		// project-scoped list, add a cap or SQL-side date if one grows huge.
-		fetchOffset, fetchLimit = 0, math.MaxInt32
+		// ponytail: loads the whole filtered set to sort it, bounded by
+		// effectiveDueMaxCandidates; SQL-side date if that is ever too low.
+		fetchOffset, fetchLimit = 0, int64(effectiveDueMaxCandidates)+1
 	}
 	offsetRef := addArg(fetchOffset)
 	limitRef := addArg(fetchLimit)
@@ -2047,6 +2050,11 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 	if err := rows.Err(); err != nil {
 		slog.Warn("ListIssues rows failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to list issues")
+		return
+	}
+	if sortByEffectiveDue && len(issues) > effectiveDueMaxCandidates {
+		// Refuse, never truncate: a sort over a partial set is a wrong order.
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("too many issues to sort by effective_due (max %d); narrow the filter (project, status, assignee)", effectiveDueMaxCandidates))
 		return
 	}
 

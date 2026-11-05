@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -96,5 +98,26 @@ func TestListSortEffectiveDueHugeOffset(t *testing.T) {
 	testutil.Call(t, testHandler.ListIssues, req).Want(http.StatusOK).JSON(&resp)
 	if len(resp.Issues) != 0 || resp.Total != 1 {
 		t.Fatalf("want empty page with total 1, got %d issues, total %d", len(resp.Issues), resp.Total)
+	}
+}
+
+// A candidate set above the cap is refused (400), never silently truncated:
+// a truncated sort would return a wrong order. Exactly the cap still sorts.
+func TestListSortEffectiveDueCap(t *testing.T) {
+	old := effectiveDueMaxCandidates
+	effectiveDueMaxCandidates = 3
+	t.Cleanup(func() { effectiveDueMaxCandidates = old })
+	project := dbfx.Project(t, "sort effective due cap")
+	for i := 0; i < 3; i++ {
+		dbfx.Issue(t, fmt.Sprintf("cap %d", i), testutil.Cols{"project_id": project})
+	}
+	if got := listSorted(t, project); len(got) != 3 {
+		t.Fatalf("exactly cap issues must sort, got %v", got)
+	}
+	dbfx.Issue(t, "cap over", testutil.Cols{"project_id": project})
+	req := newRequest("GET", "/api/issues?sort=effective_due&limit=1&project_id="+project, nil)
+	w := testutil.Call(t, testHandler.ListIssues, req).Want(http.StatusBadRequest)
+	if !strings.Contains(w.Body.String(), "narrow") {
+		t.Fatalf("400 must tell the caller to narrow the filter, got %s", w.Body.String())
 	}
 }
