@@ -228,7 +228,7 @@ func run(ctx context.Context, args []string, envPort string, out, stderr io.Writ
 		"status": "port job",
 		"run":    "port job max-batches max-seconds max-retries resume",
 		"pause":  "port job revision", "resume": "port job revision", "cancel": "port job revision",
-		"configure":        "port job revision batch-size delay-ms lock-timeout-ms statement-timeout-ms",
+		"configure": "port job revision batch-size delay-ms lock-timeout-ms statement-timeout-ms",
 		"recover-passkeys": "port email",
 	}
 	flags, ok := allowed[action]
