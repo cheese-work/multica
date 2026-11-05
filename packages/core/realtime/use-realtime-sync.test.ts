@@ -95,12 +95,12 @@ describe("applyChatDoneToCache", () => {
     }
   });
 
-  it("writes the assistant message before clearing pending task", () => {
+  it.each(["dispatched", "running"] as const)("writes the assistant message before clearing a %s pending task", (status) => {
     const qc = createQueryClient();
     qc.setQueryData<ChatMessage[]>(messagesKey, [userMessage()]);
     qc.setQueryData<ChatPendingTask>(pendingKey, {
       task_id: taskId,
-      status: "running",
+      status,
     });
 
     const setQueryData = vi.spyOn(qc, "setQueryData");
