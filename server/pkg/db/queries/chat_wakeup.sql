@@ -50,20 +50,29 @@ WHERE status = 'pending' AND issue_id IS NOT NULL
 ORDER BY created_at, id
 LIMIT @page_size;
 
--- First comment on the issue after the watch was set that passes the actor filter.
+-- First live comment on the issue after the watch was set that passes the actor
+-- filter. It only names the comment: the send transaction reads the text.
 -- name: FirstMatchingIssueComment :one
-SELECT id, author_type, author_id, content FROM comment
+SELECT id FROM comment
 WHERE issue_id = @issue_id AND type = 'comment' AND created_at > @since
+  AND deleted_at IS NULL
   AND (@actor_type::text = '' OR author_type = @actor_type)
   AND (@actor_id::uuid IS NULL OR author_id = @actor_id)
 ORDER BY created_at, id
 LIMIT 1;
 
 -- name: LockChatWatchSourceComment :one
--- The DM turn a watch fires quotes this comment, so the send transaction takes
--- its taint here and holds a share lock: the comment cannot be deleted before
--- the turn commits. A missing row means it was deleted after the tick read it.
-SELECT taint_ids FROM comment WHERE id = sqlc.arg('comment_id')::uuid FOR SHARE;
+-- The only read of the text a fired watch quotes. The send transaction takes the
+-- text and the taint here under a share lock, so the comment cannot be edited,
+-- tombstoned or deleted before the turn commits. No row means it was deleted or
+-- tombstoned after the tick named it (or is not on the watch's issue): the
+-- caller sends nothing.
+SELECT id, author_type, author_id, content, taint_ids FROM comment
+WHERE id = sqlc.arg('comment_id')::uuid
+  AND issue_id = sqlc.arg('issue_id')::uuid
+  AND workspace_id = sqlc.arg('workspace_id')::uuid
+  AND deleted_at IS NULL
+FOR SHARE;
 
 -- name: StampChatTaskWatchSource :exec
 -- The task names the quoted comment as its trigger evidence and carries the

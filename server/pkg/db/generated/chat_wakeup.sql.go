@@ -169,8 +169,9 @@ func (q *Queries) DropChatWakeup(ctx context.Context, id pgtype.UUID) error {
 }
 
 const firstMatchingIssueComment = `-- name: FirstMatchingIssueComment :one
-SELECT id, author_type, author_id, content FROM comment
+SELECT id FROM comment
 WHERE issue_id = $1 AND type = 'comment' AND created_at > $2
+  AND deleted_at IS NULL
   AND ($3::text = '' OR author_type = $3)
   AND ($4::uuid IS NULL OR author_id = $4)
 ORDER BY created_at, id
@@ -184,29 +185,18 @@ type FirstMatchingIssueCommentParams struct {
 	ActorID   pgtype.UUID        `json:"actor_id"`
 }
 
-type FirstMatchingIssueCommentRow struct {
-	ID         pgtype.UUID `json:"id"`
-	AuthorType string      `json:"author_type"`
-	AuthorID   pgtype.UUID `json:"author_id"`
-	Content    string      `json:"content"`
-}
-
-// First comment on the issue after the watch was set that passes the actor filter.
-func (q *Queries) FirstMatchingIssueComment(ctx context.Context, arg FirstMatchingIssueCommentParams) (FirstMatchingIssueCommentRow, error) {
+// First live comment on the issue after the watch was set that passes the actor
+// filter. It only names the comment: the send transaction reads the text.
+func (q *Queries) FirstMatchingIssueComment(ctx context.Context, arg FirstMatchingIssueCommentParams) (pgtype.UUID, error) {
 	row := q.db.QueryRow(ctx, firstMatchingIssueComment,
 		arg.IssueID,
 		arg.Since,
 		arg.ActorType,
 		arg.ActorID,
 	)
-	var i FirstMatchingIssueCommentRow
-	err := row.Scan(
-		&i.ID,
-		&i.AuthorType,
-		&i.AuthorID,
-		&i.Content,
-	)
-	return i, err
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
 }
 
 const listChatWakeupsByFiredTasks = `-- name: ListChatWakeupsByFiredTasks :many
@@ -398,17 +388,44 @@ func (q *Queries) ListPendingChatWakeups(ctx context.Context, chatSessionID pgty
 }
 
 const lockChatWatchSourceComment = `-- name: LockChatWatchSourceComment :one
-SELECT taint_ids FROM comment WHERE id = $1::uuid FOR SHARE
+SELECT id, author_type, author_id, content, taint_ids FROM comment
+WHERE id = $1::uuid
+  AND issue_id = $2::uuid
+  AND workspace_id = $3::uuid
+  AND deleted_at IS NULL
+FOR SHARE
 `
 
-// The DM turn a watch fires quotes this comment, so the send transaction takes
-// its taint here and holds a share lock: the comment cannot be deleted before
-// the turn commits. A missing row means it was deleted after the tick read it.
-func (q *Queries) LockChatWatchSourceComment(ctx context.Context, commentID pgtype.UUID) ([]string, error) {
-	row := q.db.QueryRow(ctx, lockChatWatchSourceComment, commentID)
-	var taint_ids []string
-	err := row.Scan(&taint_ids)
-	return taint_ids, err
+type LockChatWatchSourceCommentParams struct {
+	CommentID   pgtype.UUID `json:"comment_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+type LockChatWatchSourceCommentRow struct {
+	ID         pgtype.UUID `json:"id"`
+	AuthorType string      `json:"author_type"`
+	AuthorID   pgtype.UUID `json:"author_id"`
+	Content    string      `json:"content"`
+	TaintIds   []string    `json:"taint_ids"`
+}
+
+// The only read of the text a fired watch quotes. The send transaction takes the
+// text and the taint here under a share lock, so the comment cannot be edited,
+// tombstoned or deleted before the turn commits. No row means it was deleted or
+// tombstoned after the tick named it (or is not on the watch's issue): the
+// caller sends nothing.
+func (q *Queries) LockChatWatchSourceComment(ctx context.Context, arg LockChatWatchSourceCommentParams) (LockChatWatchSourceCommentRow, error) {
+	row := q.db.QueryRow(ctx, lockChatWatchSourceComment, arg.CommentID, arg.IssueID, arg.WorkspaceID)
+	var i LockChatWatchSourceCommentRow
+	err := row.Scan(
+		&i.ID,
+		&i.AuthorType,
+		&i.AuthorID,
+		&i.Content,
+		&i.TaintIds,
+	)
+	return i, err
 }
 
 const setChatWakeupFiredTask = `-- name: SetChatWakeupFiredTask :exec

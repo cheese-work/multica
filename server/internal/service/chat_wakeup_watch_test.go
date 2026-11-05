@@ -409,16 +409,100 @@ func TestChatWatchDropsWhenQuotedCommentIsDeletedBeforeSend(t *testing.T) {
 		t.Fatal(err)
 	}
 	hit, err := f.svc.watchHit(ctx, w)
-	if err != nil || hit.what == "" || !hit.comment.Valid {
+	if err != nil || !hit.comment.Valid {
 		t.Fatalf("watchHit = %+v, %v; want the comment", hit, err)
 	}
 	if _, err := f.pool.Exec(ctx, `DELETE FROM comment WHERE id = $1`, commentID); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.svc.fire(ctx, w, chatWatchContent(w, hit.what), hit.comment); err != nil {
+	if err := f.svc.fire(ctx, w, chatWatchContent(w, "captured: read an untrusted page"), hit.comment); err != nil {
 		t.Fatalf("fire: %v", err)
 	}
 	if got := f.status(t, w); got != "cancelled" || f.queuedTurns(t) != 0 {
 		t.Fatalf("status = %q, queued = %d; want cancelled, 0", got, f.queuedTurns(t))
+	}
+}
+
+// A comment with a reply is tombstoned on delete: the row stays, its text is
+// cleared. A tombstone that lands after the tick named the comment must not be
+// sent, nor the text read before it. The turn passes text captured earlier to
+// prove it is never what is delivered.
+func TestChatWatchDropsWhenQuotedCommentIsTombstonedBeforeSend(t *testing.T) {
+	f := newChatWakeupFixture(t)
+	w, err := f.watch(t, ChatWakeupInput{Event: "comment.created", ActorType: "agent", ActorID: util.MustParseUUID(f.agentID)})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	ctx := context.Background()
+	var commentID string
+	if err := f.pool.QueryRow(ctx,
+		`INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content)
+		 SELECT id, workspace_id, 'agent', $2::uuid, 'secret the author deleted' FROM issue WHERE id = $1 RETURNING id::text`,
+		f.issueID, f.agentID).Scan(&commentID); err != nil {
+		t.Fatal(err)
+	}
+	hit, err := f.svc.watchHit(ctx, w)
+	if err != nil || !hit.comment.Valid {
+		t.Fatalf("watchHit = %+v, %v; want the comment", hit, err)
+	}
+	if _, err := f.pool.Exec(ctx,
+		`INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, parent_id)
+		 SELECT issue_id, workspace_id, 'member', $2::uuid, 'a reply', id FROM comment WHERE id = $1`,
+		commentID, f.userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(ctx, `UPDATE comment SET content = '', deleted_at = now() WHERE id = $1`, commentID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.fire(ctx, w, chatWatchContent(w, "captured: secret the author deleted"), hit.comment); err != nil {
+		t.Fatalf("fire: %v", err)
+	}
+	if got := f.status(t, w); got != "cancelled" || f.queuedTurns(t) != 0 {
+		t.Fatalf("status = %q, queued = %d; want cancelled, 0", got, f.queuedTurns(t))
+	}
+}
+
+// A comment edited after the tick named it is quoted as it reads at send time,
+// not as it read at the tick; a tombstone is never named by the tick.
+func TestChatWatchQuotesCommentAsEditedAndSkipsTombstones(t *testing.T) {
+	f := newChatWakeupFixture(t)
+	w, err := f.watch(t, ChatWakeupInput{Event: "comment.created", ActorType: "agent", ActorID: util.MustParseUUID(f.agentID)})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	ctx := context.Background()
+	var tomb, live string
+	if err := f.pool.QueryRow(ctx,
+		`INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, deleted_at)
+		 SELECT id, workspace_id, 'agent', $2::uuid, '', now() FROM issue WHERE id = $1 RETURNING id::text`,
+		f.issueID, f.agentID).Scan(&tomb); err != nil {
+		t.Fatal(err)
+	}
+	if hit, err := f.svc.watchHit(ctx, w); err != nil || hit.comment.Valid {
+		t.Fatalf("watchHit on a tombstone = %+v, %v; want no hit", hit, err)
+	}
+	if err := f.pool.QueryRow(ctx,
+		`INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content)
+		 SELECT id, workspace_id, 'agent', $2::uuid, 'first draft' FROM issue WHERE id = $1 RETURNING id::text`,
+		f.issueID, f.agentID).Scan(&live); err != nil {
+		t.Fatal(err)
+	}
+	hit, err := f.svc.watchHit(ctx, w)
+	if err != nil || !hit.comment.Valid {
+		t.Fatalf("watchHit = %+v, %v; want the live comment", hit, err)
+	}
+	if _, err := f.pool.Exec(ctx, `UPDATE comment SET content = 'edited text' WHERE id = $1`, live); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.fire(ctx, w, "", hit.comment); err != nil {
+		t.Fatalf("fire: %v", err)
+	}
+	var body string
+	if err := f.pool.QueryRow(ctx,
+		`SELECT content FROM chat_message WHERE chat_session_id = $1 ORDER BY created_at DESC LIMIT 1`, f.sessionID).Scan(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "> edited text") || strings.Contains(body, "first draft") {
+		t.Fatalf("turn = %q; want the edited text only", body)
 	}
 }

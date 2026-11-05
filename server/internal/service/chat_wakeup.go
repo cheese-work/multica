@@ -39,7 +39,7 @@ var (
 	ErrChatWakeupNotFound     = errors.New("chat wakeup: no such pending wakeup")
 	ErrChatWatchInvalid       = errors.New("chat wakeup: an issue watch needs exactly one of an event (comment.created) or a status, and an actor filter needs a member or agent type")
 	errChatWatchAccessRevoked = errors.New("chat wakeup: the DM's human left the workspace")
-	errChatWatchSourceGone    = errors.New("chat wakeup: the quoted comment was deleted before the send")
+	errChatWatchSourceGone    = errors.New("chat wakeup: the quoted comment was deleted or tombstoned before the send")
 	ErrChatWatchIssueAccess   = errors.New("chat wakeup: the issue is not readable by this DM's human")
 )
 
@@ -223,11 +223,13 @@ func chatWakeupContent(instruction string) string {
 	return "[Scheduled wakeup — you set this earlier in this DM; no person wrote this message.]\nInstruction: " + instruction
 }
 
-// fire sends the turn. A turn that quotes a comment passes its id: the DM task takes the comment's taint.
+// fire sends the turn. A turn that quotes a comment passes only its id and an
+// empty content: the text and taint are read under lock in the send transaction,
+// so the turn never carries text read earlier.
 func (s *ChatWakeupService) fire(ctx context.Context, w db.ChatWakeup, content string, sourceComment pgtype.UUID) error {
 	q := s.Tasks.Queries
 	drop := func() error { return q.DropChatWakeup(ctx, w.ID) }
-	if content == "" { // an expired watch that was not asked to wake the DM
+	if content == "" && !sourceComment.Valid { // an expired watch that was not asked to wake the DM
 		return drop()
 	}
 
@@ -271,17 +273,20 @@ func (s *ChatWakeupService) fire(ctx context.Context, w db.ChatWakeup, content s
 			return err
 		}
 		var taint []string
+		turn := content
 		if sourceComment.Valid {
-			var err error
-			if taint, err = qtx.LockChatWatchSourceComment(ctx, sourceComment); errors.Is(err, pgx.ErrNoRows) {
+			c, err := qtx.LockChatWatchSourceComment(ctx, db.LockChatWatchSourceCommentParams{CommentID: sourceComment, IssueID: w.IssueID, WorkspaceID: w.WorkspaceID})
+			if errors.Is(err, pgx.ErrNoRows) {
 				return errChatWatchSourceGone
 			} else if err != nil {
 				return err
 			}
+			taint = c.TaintIds
+			turn = chatWatchContent(w, chatWatchCommentEvent(w.IssueID, c))
 		}
 		var err error
 		sent, err = s.Tasks.SendDirectChatMessageTx(ctx, qtx, plan, session, session.CreatorID,
-			content, nil, "", pgtype.UUID{}, chatWakeupSentVia)
+			turn, nil, "", pgtype.UUID{}, chatWakeupSentVia)
 		if err != nil {
 			return err
 		}
