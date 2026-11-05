@@ -46,3 +46,11 @@ test("each scanner writes the report name summarize.mjs reads", () => {
 test("downloaded scanner binaries are checksum-pinned", () => {
   assert.equal((wf.match(/sha256sum -c/g) ?? []).length, 2, "gitleaks and trivy");
 });
+
+test("CodeQL Go builds (autobuild); only javascript-typescript may use build-mode none", () => {
+  const job = wf.slice(wf.indexOf("  codeql:"), wf.indexOf("  image-scan:"));
+  assert.match(job, /language: go\s+build-mode: autobuild/);
+  assert.match(job, /language: javascript-typescript\s+build-mode: none/);
+  assert.match(job, /build-mode: \$\{\{ matrix\.build-mode \}\}/);
+  assert.match(job, /if: matrix\.language == 'go'[\s\S]*setup-go/);
+});
