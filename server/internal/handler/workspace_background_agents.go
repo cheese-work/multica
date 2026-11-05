@@ -15,6 +15,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/bgagents"
 	"github.com/multica-ai/multica/server/internal/logger"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -129,7 +130,7 @@ func (h *Handler) backgroundAgentsMachine(r *http.Request, member db.Member) boo
 
 func (h *Handler) saveBackgroundAgents(w http.ResponseWriter, r *http.Request, member db.Member, machine bool, next map[string]any) {
 	id := uuidToString(member.WorkspaceID)
-	changes, err := h.writeBackgroundAgents(r.Context(), member, machine, next)
+	changes, cancelled, err := h.writeBackgroundAgents(r.Context(), member, machine, next)
 	if errors.Is(err, errBackgroundAgentsHumanOnly) {
 		writeBackgroundAgentsRefused(w)
 		return
@@ -139,6 +140,7 @@ func (h *Handler) saveBackgroundAgents(w http.ResponseWriter, r *http.Request, m
 		writeError(w, http.StatusInternalServerError, "failed to update background agents")
 		return
 	}
+	h.TaskService.BroadcastCancelledTasks(r.Context(), id, cancelled)
 	for _, c := range changes {
 		h.publish(protocol.EventWorkspaceBackgroundAgentChanged, id, "member", requestUserID(r), map[string]any{
 			"job": c.Job, "scope": string(bgagents.WorkspaceScope), "from": c.From, "to": c.To,
@@ -149,17 +151,20 @@ func (h *Handler) saveBackgroundAgents(w http.ResponseWriter, r *http.Request, m
 
 // writeBackgroundAgents writes the value and one activity row per changed job
 // in one transaction under the workspace row lock. The machine check runs
-// against the locked stored value, so a refused write stores nothing.
-func (h *Handler) writeBackgroundAgents(ctx context.Context, member db.Member, machine bool, next map[string]any) ([]bgChange, error) {
+// against the locked stored value, so a refused write stores nothing. A change
+// of the compact job cancels every live compaction task in the same
+// transaction (SEC-1 rule 4), so no task queued under the old chain delivers a
+// transcript; the cancelled rows come back for the post-commit broadcast.
+func (h *Handler) writeBackgroundAgents(ctx context.Context, member db.Member, machine bool, next map[string]any) ([]bgChange, []db.AgentTaskQueue, error) {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer tx.Rollback(ctx)
 	q := h.Queries.WithTx(tx)
 	storedJSON, err := q.LockWorkspaceSettings(ctx, member.WorkspaceID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var stored map[string]any
 	_ = json.Unmarshal(storedJSON, &stored) // stored settings that are not an object start over as one
@@ -174,10 +179,10 @@ func (h *Handler) writeBackgroundAgents(ctx context.Context, member db.Member, m
 		}
 	}
 	if len(changes) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if machine {
-		return nil, errBackgroundAgentsHumanOnly
+		return nil, nil, errBackgroundAgentsHumanOnly
 	}
 	if len(next) == 0 {
 		delete(stored, backgroundAgentsKey)
@@ -186,24 +191,44 @@ func (h *Handler) writeBackgroundAgents(ctx context.Context, member db.Member, m
 	}
 	settings, err := json.Marshal(stored)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if _, err := q.UpdateWorkspace(ctx, db.UpdateWorkspaceParams{ID: member.WorkspaceID, Settings: settings}); err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	var cancelled []db.AgentTaskQueue
+	if slices.ContainsFunc(changes, func(c bgChange) bool { return c.Job == string(bgagents.Compact) }) {
+		if cancelled, err = cancelCompactionTasks(ctx, q, member.WorkspaceID); err != nil {
+			return nil, nil, err
+		}
 	}
 	for _, c := range changes {
 		details, err := json.Marshal(map[string]any{"job": c.Job, "scope": bgagents.WorkspaceScope, "from": c.From, "to": c.To})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if _, err := q.CreateActivity(ctx, db.CreateActivityParams{
 			ID: dbid.NewV7(), WorkspaceID: member.WorkspaceID, ActorType: strToText("member"), ActorID: member.UserID,
 			Action: backgroundAgentsActivity, Details: details,
 		}); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	return changes, tx.Commit(ctx)
+	return changes, cancelled, tx.Commit(ctx)
+}
+
+// cancelCompactionTasks cancels the workspace's live compaction tasks. Lock
+// order is workspace, chat_session, then agent_task_queue, as every chat
+// writer takes it.
+func cancelCompactionTasks(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID) ([]db.AgentTaskQueue, error) {
+	if _, err := q.LockChatSessionsOfActiveCompactionTasks(ctx, workspaceID); err != nil {
+		return nil, err
+	}
+	cancelled, err := q.CancelCompactionTasksByWorkspace(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return cancelled, service.SettleTerminalTaskState(ctx, q, cancelled...)
 }
 
 func sortedUnionKeys(a, b map[string]any) []string {
