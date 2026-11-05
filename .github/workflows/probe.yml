@@ -1,0 +1,24 @@
+name: Probe
+on:
+  pull_request:
+    types: [opened, edited]
+jobs:
+  a:
+    name: ${{ 'probe-a' }}
+    if: github.event.action == 'opened'
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo a
+  b:
+    name: ${{ 'probe-b' }}
+    needs: a
+    if: ${{ !cancelled() && needs.a.result == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo b
+  c:
+    name: probe-c
+    if: github.event.action == 'opened'
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo c
