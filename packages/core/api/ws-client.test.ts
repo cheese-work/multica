@@ -289,6 +289,35 @@ describe("WSClient", () => {
       expect(onReconnect).toHaveBeenCalledTimes(1);
     });
 
+    it.each([
+      ["CONNECTING", FakeWebSocket.CONNECTING],
+      ["CLOSING", FakeWebSocket.CLOSING],
+    ])("retires a superseded %s socket before reconnecting", (_state, readyState) => {
+      const ws = new WSClient("wss://example.test/ws");
+      const onAny = vi.fn();
+      ws.onAny(onAny);
+      ws.connect();
+      const oldSocket = FakeWebSocket.lastInstance!;
+      oldSocket.readyState = readyState;
+
+      ws.probe();
+      const replacement = FakeWebSocket.lastInstance!;
+      expect(replacement).not.toBe(oldSocket);
+
+      oldSocket.onmessage?.({
+        data: JSON.stringify({ type: "issue:updated", payload: {} }),
+      });
+      oldSocket.onclose?.();
+
+      expect(onAny).not.toHaveBeenCalled();
+      expect(oldSocket.readyState).toBe(WebSocket.CLOSED);
+      expect(oldSocket.onopen).toBeNull();
+      expect(oldSocket.onmessage).toBeNull();
+      expect(oldSocket.onclose).toBeNull();
+      expect(oldSocket.onerror).toBeNull();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
     it("keeps a live socket when pong arrives and throttles probes for 5 seconds", () => {
       const ws = new WSClient("wss://example.test/ws");
       const onReconnect = vi.fn();

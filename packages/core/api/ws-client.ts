@@ -209,6 +209,15 @@ export class WSClient {
       this.probeTimer = null;
       if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+      const socket = this.ws;
+      if (socket) {
+        socket.onopen = null;
+        socket.onmessage = null;
+        socket.onclose = null;
+        socket.onerror = null;
+        socket.close();
+      }
+      this.ws = null;
       this.connect();
       return;
     }
