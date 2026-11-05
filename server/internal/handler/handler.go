@@ -255,6 +255,8 @@ type Handler struct {
 	// ApprovalVerifier proves a human approved a decision action. Nil until
 	// the passkey verifier is wired; approve then fails closed.
 	ApprovalVerifier ApprovalVerifier
+	// ProposalGuard admits agent action proposals. Nil refuses them all (C2).
+	ProposalGuard ProposalGuard
 	// Passkeys issues and verifies approval challenges. Nil leaves passkeys
 	// off (MULTICA_WEBAUTHN_* unset).
 	Passkeys              *passkey.Service
@@ -1065,10 +1067,10 @@ func countOwners(members []db.Member) int {
 }
 
 func (h *Handler) getWorkspaceMember(ctx context.Context, userID, workspaceID string) (db.Member, error) {
-	return getWorkspaceMemberWith(ctx, h.Queries, userID, workspaceID)
+	return workspaceMemberVia(ctx, h.Queries, userID, workspaceID)
 }
 
-func getWorkspaceMemberWith(ctx context.Context, q *db.Queries, userID, workspaceID string) (db.Member, error) {
+func workspaceMemberVia(ctx context.Context, queries *db.Queries, userID, workspaceID string) (db.Member, error) {
 	userUUID, err := util.ParseUUID(userID)
 	if err != nil {
 		return db.Member{}, err
@@ -1077,7 +1079,7 @@ func getWorkspaceMemberWith(ctx context.Context, q *db.Queries, userID, workspac
 	if err != nil {
 		return db.Member{}, err
 	}
-	return q.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
+	return queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
 		UserID:      userUUID,
 		WorkspaceID: wsUUID,
 	})

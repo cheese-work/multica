@@ -101,7 +101,7 @@ func (h *Handler) eligibleHumanInCharge(ctx context.Context, q *db.Queries, issu
 	if err != nil {
 		return false, err
 	}
-	return h.invokeAgentDecisionWith(ctx, q, asking, "member", uuidToString(userID), "", uuidToString(issue.WorkspaceID))
+	return h.invokeAgentDecisionVia(ctx, q, asking, "member", uuidToString(userID), "", uuidToString(issue.WorkspaceID))
 }
 
 // GetHumanInCharge answers an agent's running task: who it should ask for a

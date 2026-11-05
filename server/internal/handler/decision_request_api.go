@@ -126,6 +126,12 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeDecisionError(writer, err, "decision request")
 		return
 	}
+	handler.writeDecisionResult(writer, request, issue, result, hints)
+}
+
+// writeDecisionResult answers a replay with 200, or publishes the events of a
+// new request and answers 201.
+func (handler *Handler) writeDecisionResult(writer http.ResponseWriter, request *http.Request, issue db.Issue, result decisionRequestResult, hints []string) {
 	if result.Replayed {
 		action, err := handler.replayedDecisionAction(request.Context(), issue, result.Request)
 		if err != nil {

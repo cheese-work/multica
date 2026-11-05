@@ -1056,6 +1056,7 @@ type DecisionRequest struct {
 	ProjectID             pgtype.UUID        `json:"project_id"`
 	Kind                  string             `json:"kind"`
 	ExpiresAt             pgtype.Timestamptz `json:"expires_at"`
+	ProposalFingerprint   pgtype.Text        `json:"proposal_fingerprint"`
 	AnswerRevision        int32              `json:"answer_revision"`
 }
 
@@ -1810,6 +1811,24 @@ type IssueDependency struct {
 	Type             string      `json:"type"`
 }
 
+type IssueIdleGuard struct {
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	State         string             `json:"state"`
+	Kind          string             `json:"kind"`
+	FromStatus    string             `json:"from_status"`
+	ToStatus      string             `json:"to_status"`
+	IdleSince     pgtype.Timestamptz `json:"idle_since"`
+	MovedAt       pgtype.Timestamptz `json:"moved_at"`
+	Attempts      int32              `json:"attempts"`
+	AlertID       pgtype.UUID        `json:"alert_id"`
+	CommentID     pgtype.UUID        `json:"comment_id"`
+	Error         string             `json:"error"`
+	AlertAttempts int32              `json:"alert_attempts"`
+	AlertAt       pgtype.Timestamptz `json:"alert_at"`
+	AlertError    string             `json:"alert_error"`
+}
+
 type IssueLabel struct {
 	ID           pgtype.UUID        `json:"id"`
 	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
@@ -2081,25 +2100,26 @@ type IssueWakeup struct {
 }
 
 type IssueWakeupDefinition struct {
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	ScopeKind     string             `json:"scope_kind"`
-	ScopeID       pgtype.UUID        `json:"scope_id"`
-	RuleKey       string             `json:"rule_key"`
-	Root          bool               `json:"root"`
-	Config        []byte             `json:"config"`
-	Revision      int64              `json:"revision"`
-	CreatedBy     pgtype.UUID        `json:"created_by"`
-	UpdatedBy     pgtype.UUID        `json:"updated_by"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
-	EventTypes    []string           `json:"event_types"`
-	SweepRevision int64              `json:"sweep_revision"`
-	SweepCursor   pgtype.UUID        `json:"sweep_cursor"`
-	SweepDone     bool               `json:"sweep_done"`
-	SweepBaseline bool               `json:"sweep_baseline"`
-	SweepAttempts int32              `json:"sweep_attempts"`
-	SweepRetryAt  pgtype.Timestamptz `json:"sweep_retry_at"`
-	SweepError    pgtype.Text        `json:"sweep_error"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	ScopeKind       string             `json:"scope_kind"`
+	ScopeID         pgtype.UUID        `json:"scope_id"`
+	RuleKey         string             `json:"rule_key"`
+	Root            bool               `json:"root"`
+	Config          []byte             `json:"config"`
+	Revision        int64              `json:"revision"`
+	CreatedBy       pgtype.UUID        `json:"created_by"`
+	UpdatedBy       pgtype.UUID        `json:"updated_by"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	EventTypes      []string           `json:"event_types"`
+	SweepRevision   int64              `json:"sweep_revision"`
+	SweepCursor     pgtype.UUID        `json:"sweep_cursor"`
+	SweepDone       bool               `json:"sweep_done"`
+	SweepBaseline   bool               `json:"sweep_baseline"`
+	SweepAttempts   int32              `json:"sweep_attempts"`
+	SweepRetryAt    pgtype.Timestamptz `json:"sweep_retry_at"`
+	SweepError      pgtype.Text        `json:"sweep_error"`
+	PendingApproval bool               `json:"pending_approval"`
 }
 
 type IssueWakeupPrEvent struct {
