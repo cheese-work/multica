@@ -195,7 +195,7 @@ func TestReserveProviderFailureRecoveryAndApplyRequiresOwner(t *testing.T) {
 	}{
 		{"task_retry owner, task effect", o.failedTask(t, nil), db.RecordProviderFailureRecoveryParams{RecoveryTaskID: dbid.NewV7()}, true},
 		{"wakeup_rearm owner, wakeup effect", o.failedTask(t, wakeupContext(t, rearmWakeup)),
-			db.RecordProviderFailureRecoveryParams{RecoveryWakeupID: dbid.NewV7(), RecoveryWakeupRevision: pgtype.Int8{Int64: 1, Valid: true}}, true},
+			db.RecordProviderFailureRecoveryParams{RecoveryWakeupID: parseTestUUID(t, rearmWakeup), RecoveryWakeupRevision: pgtype.Int8{Int64: 1, Valid: true}}, true},
 		{"task_retry owner, wakeup effect", o.failedTask(t, nil),
 			db.RecordProviderFailureRecoveryParams{RecoveryWakeupID: dbid.NewV7(), RecoveryWakeupRevision: pgtype.Int8{Int64: 1, Valid: true}}, false},
 		{"wakeup_rearm owner, task effect", o.failedTask(t, wakeupContext(t, o.wakeup(t, "event", "once", nil))), db.RecordProviderFailureRecoveryParams{RecoveryTaskID: dbid.NewV7()}, false},
