@@ -379,6 +379,16 @@ describe("McpServerDialog", () => {
       expect(restored).not.toContain("s3cret-partial");
     });
 
+    it("keeps non-secret fields on both sides of a credential after reopen", async () => {
+      const { type, reopen } = await setup(null, "agent-1:both-sides");
+      type('{"headers": {"Authorization": "s3cret-both"}, "url": "https://example.test", "note": "unsaved",');
+      expect(JSON.stringify(useMcpDialogDraftStore.getState())).not.toContain("s3cret-both");
+      const restored = reopen();
+      expect(restored).toContain("https://example.test");
+      expect(restored).toContain("unsaved");
+      expect(restored).not.toContain("s3cret-both");
+    });
+
     it("keeps a saved credential inside an array through an unfinished draft, reopen and save", async () => {
       const server = managedServer({
         name: "remote",
@@ -390,7 +400,7 @@ describe("McpServerDialog", () => {
       const restored = reopen();
       expect(restored).not.toContain("typed-s3cret");
       fireEvent.change(screen.getByLabelText("MCP server JSON configuration"), {
-        target: { value: restored + '"token": null, "name": "b"}]}' },
+        target: { value: restored + "]}" },
       });
       await userEvent.setup().click(screen.getByRole("button", { name: /save/i }));
       await vi.waitFor(() => expect(props.onSave).toHaveBeenCalled());
@@ -412,7 +422,7 @@ describe("McpServerDialog", () => {
       const restored = reopen();
       expect(restored).not.toContain("typed-s3cret");
       fireEvent.change(screen.getByLabelText("MCP server JSON configuration"), {
-        target: { value: restored + '"headers": null}' },
+        target: { value: restored.replace(/"headers": null/, '"headers": null') + "}" },
       });
       await userEvent.setup().click(screen.getByRole("button", { name: /save/i }));
       await vi.waitFor(() => expect(props.onSave).toHaveBeenCalled());
