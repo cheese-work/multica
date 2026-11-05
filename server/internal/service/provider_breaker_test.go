@@ -54,6 +54,61 @@ func TestRecordProviderSuccessIgnoresNonCompletedTasks(t *testing.T) {
 	}
 }
 
+func TestCompleteTaskWritesProviderSuccessEvidenceOnlyForCompletedTasksWithBreaker(t *testing.T) {
+	d := newDeliveryFixture(t)
+	ctx := context.Background()
+	pool := d.f.Pool
+	agentID := util.MustParseUUID(d.agentID)
+	if _, err := pool.Exec(ctx, `UPDATE agent SET model='gpt-5.6-sol' WHERE id=$1`, agentID); err != nil {
+		t.Fatal(err)
+	}
+	var workspaceID pgtype.UUID
+	if err := pool.QueryRow(ctx, `SELECT workspace_id FROM agent WHERE id=$1`, agentID).Scan(&workspaceID); err != nil {
+		t.Fatal(err)
+	}
+	complete := func(task pgtype.UUID) {
+		t.Helper()
+		if !d.complete(t, task, "") {
+			t.Fatal("completion did not transition the running task")
+		}
+	}
+	complete(d.runningTask(t, nil))
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM provider_breaker WHERE workspace_id=$1 AND provider='openai'`, workspaceID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("completion without breaker state or hold created %d rows, want 0", count)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO provider_breaker (workspace_id, provider, state) VALUES ($1, 'openai', 'open')`, workspaceID); err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range []string{"failed", "cancelled"} {
+		task := d.runningTask(t, nil)
+		if _, err := pool.Exec(ctx, `UPDATE agent_task_queue SET status=$1, completed_at=now() WHERE id=$2`, status, task); err != nil {
+			t.Fatal(err)
+		}
+		if d.complete(t, task, "") {
+			t.Fatalf("completion transitioned a %s task", status)
+		}
+		var lastSuccess pgtype.Timestamptz
+		if err := pool.QueryRow(ctx, `SELECT last_success_at FROM provider_breaker WHERE workspace_id=$1 AND provider='openai'`, workspaceID).Scan(&lastSuccess); err != nil {
+			t.Fatal(err)
+		}
+		if lastSuccess.Valid {
+			t.Fatalf("%s task wrote success evidence at %s", status, lastSuccess.Time)
+		}
+	}
+	complete(d.runningTask(t, nil))
+	var lastSuccess pgtype.Timestamptz
+	if err := pool.QueryRow(ctx, `SELECT last_success_at FROM provider_breaker WHERE workspace_id=$1 AND provider='openai'`, workspaceID).Scan(&lastSuccess); err != nil {
+		t.Fatal(err)
+	}
+	if !lastSuccess.Valid {
+		t.Fatal("successful completion did not record provider evidence")
+	}
+}
+
 func TestProviderBreakerAdmitReadsPersistedState(t *testing.T) {
 	pool := newResolveOriginatorPool(t)
 	ctx := context.Background()
