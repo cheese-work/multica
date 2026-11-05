@@ -41,6 +41,7 @@ export function issueViewDefinitionFromState(state: IssueViewState): IssueViewDe
       negatedFilters: effectiveNegatedFilters(state),
       propertyFilters: state.propertyFilters,
       advancedFilter: pruneAdvancedFilter(state.advancedFilter),
+      agentRunningFilter: state.agentRunningFilter,
     },
     display: {
       showSubIssues: state.showSubIssues,
@@ -151,6 +152,7 @@ export function modifiedFilterDimensions(
     }
   }
   if (seed.advancedFilter !== live.advancedFilter) modified.add("advanced");
+  if (seed.agentRunningFilter !== live.agentRunningFilter) modified.add("agentRunning");
   return modified;
 }
 

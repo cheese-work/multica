@@ -220,6 +220,8 @@
     "relation_assigned": "自分が担当",
     "relation_created": "自分が作成",
     "relation_my_agents": "自分のエージェントが担当",
+    "section_agent_status": "エージェントの状態",
+    "agent_status_running": "実行中",
     "operator_label": "条件",
     "operator_is": "一致",
     "operator_is_not": "除外",
@@ -1004,6 +1006,9 @@
     "copy_link": "リンクをコピー",
     "copy_workdir_path": "ローカルの作業ディレクトリのパスをコピー",
     "copy_project_directory_path": "プロジェクトディレクトリのパスをコピー",
+    "copy_identifier": "識別子をコピー",
+    "identifier_copied": "{{identifier}} をコピーしました",
+    "stop_agent_run": "{{name}} の実行を停止",
     "relations": "関係",
     "create_sub_issue": "サブタスクを作成",
     "set_parent_issue": "親タスクを設定...",
@@ -1690,8 +1695,6 @@
       "picker_more": "「設定 → ワークフロー」でワークフローを追加できます。"
     },
     "picker": {
-      "header": "{{workflow}} · プロジェクト「{{project}}」に従う",
-      "header_no_project": "{{workflow}} のステータス · プロジェクトなし",
       "footer": "このタスクのワークフローのステータスだけを表示しています。右側はそのステータスに入ったときの引き継ぎ先です。"
     },
     "confirm": {
