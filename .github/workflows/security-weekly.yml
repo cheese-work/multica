@@ -1,0 +1,234 @@
+# CHE-3701: weekly full-tree security scan of the fork. Informational: findings never fail a job; a scanner that
+# cannot run does, so a broken scan is never read as clean. Read-only token, GitHub-hosted runners, no secrets, no image build.
+# `security-weekly-summary` carries one line per scanner (new / fixed / total by severity) for the Monday brief.
+# security-gate.yml still gates PR diffs; this covers the whole tree, dependencies and the published images.
+name: security-weekly
+
+on:
+  schedule:
+    - cron: "0 16 * * 0" # Sunday 23:00 ICT, so results land in the Monday brief
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/security-weekly.yml
+      - scripts/security-weekly/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-weekly-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+  TRIVY_VERSION: "0.76.1"
+  TRIVY_SHA256: c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0
+
+jobs:
+  semgrep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Scan the whole tree with the security-gate rule packs
+        run: |
+          python3 -m venv "$RUNNER_TEMP/semgrep"
+          "$RUNNER_TEMP/semgrep/bin/pip" install --quiet semgrep==1.183.0
+          "$RUNNER_TEMP/semgrep/bin/semgrep" scan --metrics=off --disable-version-check --disable-nosem --quiet --json --timeout 30 \
+            --config p/default --config p/golang --config p/gosec --config p/typescript --config p/python --config p/kotlin . > semgrep.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: weekly-report-semgrep
+          path: semgrep.json
+          if-no-files-found: error
+          retention-days: 14
+
+  govulncheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "~1.27.3"
+          check-latest: true
+          cache-dependency-path: server/go.sum
+      - name: Scan Go dependencies
+        working-directory: server
+        # exit 3 = vulnerabilities found, which is a result; any other non-zero is a scanner failure
+        run: go tool govulncheck ./... > ../govulncheck.txt || [ $? -eq 3 ]
+      - uses: actions/upload-artifact@v7
+        with:
+          name: weekly-report-govulncheck
+          path: govulncheck.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  pnpm-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: bash scripts/setup-pnpm.sh
+      - name: Audit pnpm-lock.yaml
+        # exit 1 = advisories found; the report must still parse and carry `advisories`
+        run: |
+          pnpm audit --json > pnpm-audit.json || true
+          node -e 'if (!JSON.parse(require("fs").readFileSync("pnpm-audit.json", "utf8")).advisories) process.exit(1)'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: weekly-report-pnpm-audit
+          path: pnpm-audit.json
+          if-no-files-found: error
+          retention-days: 14
+
+  gitleaks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan the full history
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/gitleaks.tgz" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" git --no-banner --redact --exit-code 0 --report-format json --report-path gitleaks.json .
+      - uses: actions/upload-artifact@v7
+        with:
+          name: weekly-report-gitleaks
+          path: gitleaks.json
+          if-no-files-found: error
+          retention-days: 14
+
+  codeql:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      security-events: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [go, javascript-typescript]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+      # upload: never keeps the token read-only and avoids a clash with a repo-level default setup.
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          upload: never
+          output: codeql-out
+      - run: cp codeql-out/*.sarif "codeql-${{ matrix.language }}.sarif"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: weekly-report-codeql-${{ matrix.language }}
+          path: codeql-${{ matrix.language }}.sarif
+          if-no-files-found: error
+          retention-days: 14
+
+  image-scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Find the latest qualified image digests
+        # cd-qualification.yml publishes backend/web to GHCR and records their digests in cd-build-evidence-<sha> (30 days).
+        # This job only pulls manifests to scan them: nothing is built here.
+        run: |
+          run_id="$(gh run list --workflow cd-qualification.yml --branch main --status success --limit 1 --json databaseId,headSha --jq '.[0].databaseId')"
+          sha="$(gh run list --workflow cd-qualification.yml --branch main --status success --limit 1 --json headSha --jq '.[0].headSha')"
+          [ -n "$run_id" ] || { echo "no successful cd-qualification run"; exit 1; }
+          gh run download "$run_id" --name "cd-build-evidence-$sha" --dir evidence
+          for image in backend web; do
+            digest="$(node -p "require('./evidence/cd-image-provenance.json').images['$image'].digest")"
+            echo "$digest" | grep -Eq '^sha256:[a-f0-9]{64}$'
+            echo "${image^^}_REF=ghcr.io/${GITHUB_REPOSITORY_OWNER}/multica-${image}@${digest}" >> "$GITHUB_ENV"
+          done
+          echo "qualified source: $sha" >> "$GITHUB_STEP_SUMMARY"
+      - name: Scan both images
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ github.token }}
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/trivy.tgz" "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  $RUNNER_TEMP/trivy.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/trivy.tgz" -C "$RUNNER_TEMP" trivy
+          "$RUNNER_TEMP/trivy" image --image-src remote --scanners vuln --quiet --format json --output trivy-backend.json "$BACKEND_REF"
+          "$RUNNER_TEMP/trivy" image --image-src remote --scanners vuln --quiet --format json --output trivy-web.json "$WEB_REF"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: weekly-report-trivy
+          path: trivy-*.json
+          if-no-files-found: error
+          retention-days: 14
+
+  summary:
+    needs: [semgrep, govulncheck, pnpm-audit, gitleaks, codeql, image-scan]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: weekly-report-*
+          path: reports
+          merge-multiple: true
+      - name: Fetch last week's summary
+        # A missing artifact (first run, expired) only means every finding reads as new.
+        run: |
+          prev="$(gh run list --workflow security-weekly.yml --event schedule --limit 5 --json databaseId --jq "map(select(.databaseId != ${GITHUB_RUN_ID})) | .[0].databaseId // empty")"
+          if [ -n "$prev" ]; then gh run download "$prev" --name weekly-summary --dir previous || true; fi
+          [ -f previous/summary.json ] || echo "no previous summary" >> "$GITHUB_STEP_SUMMARY"
+      - name: One line per scanner
+        run: |
+          mkdir -p out
+          set +e
+          node scripts/security-weekly/summarize.mjs reports "$( [ -f previous/summary.json ] && echo previous/summary.json || echo - )" out/summary.json | tee out/lines.txt
+          rc=${PIPESTATUS[0]}
+          { echo '### Weekly security scan'; echo '```'; cat out/lines.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          node -e 'const s=require("./out/summary.json").summaries.filter((x)=>x.newHighCritical?.length); for (const x of s) console.log(`new high/critical ${x.scanner}: ${x.newHighCritical.join(", ")}`)' | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+      - uses: actions/upload-artifact@v7
+        if: ${{ always() }}
+        with:
+          name: weekly-summary
+          path: out/
+          if-no-files-found: error
+          retention-days: 90
