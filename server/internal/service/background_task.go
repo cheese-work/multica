@@ -133,6 +133,9 @@ func (s *TaskService) writeBackgroundOutput(ctx context.Context, q *db.Queries, 
 	if !task.Purpose.Valid || write == nil {
 		return nil
 	}
+	if backgroundRunExpired(task) {
+		return fmt.Errorf("%w: %s", ErrBackgroundAttemptExpired, util.UUIDToString(task.ID))
+	}
 	err := write(ctx, q, task, result)
 	if errors.Is(err, ErrInvalidBackgroundOutput) {
 		slog.Warn("background task output rejected", "task_id", util.UUIDToString(task.ID), "purpose", task.Purpose.String, "error", err)

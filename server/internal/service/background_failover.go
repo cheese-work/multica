@@ -79,8 +79,8 @@ func (s *TaskService) backgroundAgentReachable(ctx context.Context, job bgagents
 }
 
 // failOverBackgroundTask is the failure rule for a background task whose run
-// failed and will not be retried. A provider failure on the primary slot runs
-// the fallback once, if it is still reachable. Any other outcome ends the
+// failed and will not be retried. A provider failure or a missed claim or run
+// deadline on the primary slot runs the fallback once, if it is still reachable. Any other outcome ends the
 // chain: a fallback failure, a non-provider failure, or no reachable fallback.
 // The chain then runs the job's no-agent path. Best effort, like routing.
 func (s *TaskService) failOverBackgroundTask(ctx context.Context, failed db.AgentTaskQueue, failureReason string) {
@@ -89,7 +89,7 @@ func (s *TaskService) failOverBackgroundTask(ctx context.Context, failed db.Agen
 		return
 	}
 	job, slot := bgagents.Job(c.Job), bgagents.SlotName(c.Slot)
-	if providerFailureReasons[failureReason] && slot == bgagents.Primary && c.FallbackAgentID != "" {
+	if (providerFailureReasons[failureReason] || backgroundDeadlineReasons[failureReason]) && slot == bgagents.Primary && c.FallbackAgentID != "" {
 		workspaceID, _ := util.ParseUUID(c.WorkspaceID)
 		if s.backgroundAgentReachable(ctx, job, workspaceID, c.FallbackAgentID) {
 			next := BackgroundTaskInput{

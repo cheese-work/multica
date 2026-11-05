@@ -1628,6 +1628,44 @@ WHERE retry.id = victims.id
   )
 RETURNING retry.*;
 
+-- name: CancelUnclaimedBackgroundTasks :many
+-- Output-only background tasks still queued past the claim deadline their
+-- context carries (CHE-4103). The status and the deadline are re-checked in the
+-- update, so a claim that lands meanwhile wins. SKIP LOCKED keeps two server
+-- instances from cancelling the same task.
+WITH victims AS (
+    SELECT id FROM agent_task_queue
+    WHERE status = 'queued'
+      AND purpose LIKE 'bg:%'
+      AND context->>'type' = 'background'
+      AND (context->>'claim_deadline_seconds')::int > 0
+      AND created_at < now() - make_interval(secs => (context->>'claim_deadline_seconds')::double precision)
+    ORDER BY created_at ASC
+    LIMIT @max_per_tick::int
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE agent_task_queue t
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
+    error = 'background task was not claimed before its claim deadline',
+    failure_reason = 'bg_claim_timeout',
+    cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
+FROM victims v
+WHERE t.id = v.id AND t.status = 'queued'
+RETURNING t.*;
+
+-- name: ListRunExpiredBackgroundTasks :many
+-- Output-only background tasks running past the run deadline their context
+-- carries. A job with no run deadline (0) is never listed. The caller fails each
+-- one through FailTask, which guards the status.
+SELECT * FROM agent_task_queue
+WHERE status = 'running'
+  AND purpose LIKE 'bg:%'
+  AND context->>'type' = 'background'
+  AND (context->>'run_deadline_seconds')::int > 0
+  AND started_at < now() - make_interval(secs => (context->>'run_deadline_seconds')::double precision)
+ORDER BY started_at ASC
+LIMIT @max_per_tick::int;
+
 -- name: CancelAgentTask :one
 -- Automatic cancellation without an explicit persisted failure reason. Unlike
 -- CancelAgentTaskByUser, this deliberately leaves recovery inputs replayable.

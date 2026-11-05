@@ -175,6 +175,7 @@ func runtimeSweepRound(ctx context.Context, queries *db.Queries, liveness handle
 	sweepExpiredRuntimeReconnectRetries(ctx, queries, taskSvc, reconnectGrace)
 	sweepStaleTasks(ctx, queries, taskSvc, bus, reconnectGrace)
 	sweepExpiredQueuedTasks(ctx, queries, taskSvc, reconnectGrace)
+	sweepBackgroundDeadlines(ctx, taskSvc)
 	sweepDeferredChatFinalizations(ctx, queries, taskSvc)
 	taskSvc.CancelExpiredBudgetRecoveryRuns(ctx)
 }
@@ -656,6 +657,28 @@ func sweepExpiredQueuedTasks(ctx context.Context, queries *db.Queries, taskSvc *
 	slog.Info("task sweeper: expired stale queued tasks", "count", len(failedTasks))
 	taskSvc.CaptureQueuedExpiredTasks(ctx, failedTasks)
 	taskSvc.HandleFailedTasks(ctx, failedTasks)
+	return
+}
+
+// sweepBackgroundDeadlines enforces the claim and run deadlines of output-only
+// background tasks (CHE-4103): the overdue task is cancelled or failed and its
+// chain moves to the next slot or the job's no-agent path.
+func sweepBackgroundDeadlines(ctx context.Context, taskSvc *service.TaskService) (stats runtimeSweepStageStats) {
+	startedAt := time.Now()
+	defer func() {
+		observeRuntimeSweepStage(taskServiceMetrics(taskSvc), obsmetrics.RuntimeSweepStageBackgroundDeadlines, startedAt, stats)
+	}()
+
+	cancelled, failed, err := taskSvc.SweepBackgroundDeadlines(ctx, queuedExpireBatchSize)
+	stats.candidates = cancelled + failed
+	stats.changed = cancelled + failed
+	if err != nil {
+		slog.Warn("task sweeper: background deadlines failed", "error", err)
+		return
+	}
+	if stats.changed > 0 {
+		slog.Info("task sweeper: enforced background deadlines", "claim_expired", cancelled, "run_expired", failed)
+	}
 	return
 }
 
