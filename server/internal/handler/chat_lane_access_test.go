@@ -133,29 +133,36 @@ func listsOwnChats(caller string) bool {
 func TestChatSessionsListOwnForUserCredentials(test *testing.T) {
 	agentID := createHandlerTestAgent(test, "own-list", []byte("[]"))
 	ownID := createHandlerTestChatSession(test, agentID)
+	archivedID := dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": agentID, "creator_id": testUserID, "title": "archived", "status": "archived"})
 	otherUserID := dbfx.Insert(test, "user", testutil.Cols{"name": "Own List Other", "email": "own-list-other@multica.ai"})
 	otherSessionID := dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": agentID, "creator_id": otherUserID, "title": "not yours"})
 	dbfx.Insert(test, "chat_message", testutil.Cols{"chat_session_id": ownID, "role": "assistant", "content": "unread reply", "created_at": time.Now().Add(time.Minute)})
+	dbfx.Insert(test, "chat_message", testutil.Cols{"chat_session_id": archivedID, "role": "assistant", "content": "archived reply", "created_at": time.Now().Add(time.Minute)})
 	for _, source := range []string{"pat", "cli_jwt"} {
 		test.Run(source, func(test *testing.T) {
-			request := withChatTestWorkspaceCtx(test, newRequest(http.MethodGet, "/api/chat/sessions", nil))
-			request.Header.Set("X-Actor-Source", source)
-			var sessions []ChatSessionResponse
-			testutil.Call(test, testHandler.ListChatSessions, request).Want(http.StatusOK).JSON(&sessions)
-			found := false
-			for _, session := range sessions {
-				if session.ID == otherSessionID {
-					test.Fatalf("listed another user's session: %+v", session)
-				}
-				if session.ID == ownID {
-					found = true
-					if session.UnreadCount != 1 || !session.HasUnread {
-						test.Fatalf("own session unread = %d/%v, want 1/true", session.UnreadCount, session.HasUnread)
+			for _, path := range []string{"/api/chat/sessions", "/api/chat/sessions?status=all"} {
+				request := withChatTestWorkspaceCtx(test, newRequest(http.MethodGet, path, nil))
+				request.Header.Set("X-Actor-Source", source)
+				var sessions []ChatSessionResponse
+				testutil.Call(test, testHandler.ListChatSessions, request).Want(http.StatusOK).JSON(&sessions)
+				found := false
+				for _, session := range sessions {
+					if session.ID == otherSessionID {
+						test.Fatalf("%s: listed another user's session: %+v", path, session)
+					}
+					if session.LastMessage != nil {
+						test.Fatalf("%s: session %s exposes last_message %+v", path, session.ID, session.LastMessage)
+					}
+					if session.ID == ownID {
+						found = true
+						if session.UnreadCount != 1 || !session.HasUnread {
+							test.Fatalf("%s: own session unread = %d/%v, want 1/true", path, session.UnreadCount, session.HasUnread)
+						}
 					}
 				}
-			}
-			if !found {
-				test.Fatalf("own session %s missing from %+v", ownID, sessions)
+				if !found {
+					test.Fatalf("%s: own session %s missing from %+v", path, ownID, sessions)
+				}
 			}
 		})
 	}

@@ -242,6 +242,13 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 			resp = append(resp, chatSessionListRowToResponse(s))
 		}
 	}
+	// Transcript reads reject PAT and CLI credentials, so their list stays
+	// metadata-only: the last-message preview would leak message content.
+	if r.Header.Get("X-Actor-Source") != "interactive_jwt" {
+		for i := range resp {
+			resp[i].LastMessage = nil
+		}
+	}
 	if err := h.hydrateChatSessionChannelMetadata(r.Context(), resp); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load chat channel metadata")
 		return
