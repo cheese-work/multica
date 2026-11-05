@@ -195,20 +195,20 @@ func TestHumanLookupFailuresAreNotTreatedAsMissingPeople(t *testing.T) {
 	})
 	t.Run("requester membership", func(t *testing.T) {
 		step := issueworkflow.Step{Handler: issueworkflow.Handler{Type: issueworkflow.HandlerHumanByRole}}
-		if _, err := testHandler.workflowHumans(canceled, step, db.Project{}, parseUUID(testWorkspaceID), parseUUID(member)); err == nil {
+		if _, err := testHandler.workflowHumans(canceled, testHandler.Queries, step, db.Project{}, parseUUID(testWorkspaceID), parseUUID(member)); err == nil {
 			t.Fatal("workflowHumans returned no error for a failed membership lookup")
 		}
 	})
 	t.Run("member project lead membership", func(t *testing.T) {
 		step := issueworkflow.Step{Handler: issueworkflow.Handler{Type: issueworkflow.HandlerHumanByRole}}
 		project := db.Project{LeadType: pgtype.Text{String: "member", Valid: true}, LeadID: parseUUID(member)}
-		if _, err := testHandler.workflowHumans(canceled, step, project, parseUUID(testWorkspaceID), pgtype.UUID{}); err == nil {
+		if _, err := testHandler.workflowHumans(canceled, testHandler.Queries, step, project, parseUUID(testWorkspaceID), pgtype.UUID{}); err == nil {
 			t.Fatal("workflowHumans returned no error for a failed membership lookup")
 		}
 	})
 	t.Run("workspace owner", func(t *testing.T) {
 		step := issueworkflow.Step{Handler: issueworkflow.Handler{Type: issueworkflow.HandlerHumanByRole}}
-		if _, err := testHandler.workflowHumans(canceled, step, db.Project{}, parseUUID(testWorkspaceID), pgtype.UUID{}); err == nil {
+		if _, err := testHandler.workflowHumans(canceled, testHandler.Queries, step, db.Project{}, parseUUID(testWorkspaceID), pgtype.UUID{}); err == nil {
 			t.Fatal("workflowHumans returned no error for a failed owner lookup")
 		}
 	})
