@@ -336,3 +336,64 @@ func TestSetChatContinuationSourceStoresSourceTaint(t *testing.T) {
 		t.Fatalf("stored chat taint = %v, want [t1 t2]", stored)
 	}
 }
+
+// CHE-3702 round 15: during a schema-preserving rollback the predecessor binary
+// forks without writing chat_session.taint_ids, and migration 974's backfill
+// has already run. After the re-upgrade the claim must still find the taint on
+// the live source chain, and repair the stored column so a later delete of the
+// source cannot lose it.
+func TestChatClaimSeedTaintRepairsRowsWrittenByThePredecessor(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		link     string
+		seedKind string
+		deep     bool
+	}{
+		{name: "fork", link: "forked_from_session_id"},
+		{name: "continuation", link: "continued_from_session_id", seedKind: "continuation_summary"},
+		{name: "fork of fork", link: "forked_from_session_id", deep: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			agentID, runtimeID, _ := createRuntimeGuardAgent(t, ctx)
+			rootID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "predecessor root"})
+			dbfx.Task(t, agentID, testutil.Cols{
+				"status": "completed", "runtime_id": runtimeID, "chat_session_id": rootID,
+				"session_id": "sess-tainted", "taint_ids": []string{"t1"},
+				"started_at": testutil.Raw("now() - interval '1 minute'"), "completed_at": testutil.Raw("now()"),
+			})
+			dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": rootID, "role": "assistant", "content": "attacker-influenced reply"})
+			parentID := rootID
+			if tc.deep {
+				// The predecessor wrote every link with an empty taint_ids.
+				parentID = dbfx.ChatSession(t, agentID, testutil.Cols{"title": "predecessor middle", tc.link: rootID})
+				dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": parentID, "role": "assistant", "content": "attacker-influenced reply"})
+			}
+			leafID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "predecessor leaf", tc.link: parentID})
+			seed := testutil.Cols{"chat_session_id": leafID, "role": "assistant", "content": "attacker-influenced reply"}
+			if tc.seedKind != "" {
+				seed["message_kind"] = tc.seedKind
+			}
+			dbfx.Insert(t, "chat_message", seed)
+			dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": leafID, "role": "user", "content": "a later, clean message"})
+			dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "chat_session_id": leafID, "priority": 1000})
+
+			dm := claimChatTaintTask(t, runtimeID)
+			wantChatTaint(t, dm, "")
+
+			var stored []string
+			dbfx.QueryRow(t, `SELECT taint_ids FROM chat_session WHERE id = $1`, leafID).Scan(&stored)
+			if !reflect.DeepEqual(stored, []string{"t1"}) {
+				t.Fatalf("stored chat taint after the claim = %v, want [t1] (repair on read)", stored)
+			}
+
+			// The repaired column keeps the taint once the source chain is gone.
+			dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'failed', completed_at = now() WHERE id = $1`, dm.ID)
+			dbfx.Exec(t, `UPDATE agent_task_queue SET chat_session_id = NULL WHERE chat_session_id = ANY($1)`, []string{rootID, parentID})
+			dbfx.Exec(t, `DELETE FROM chat_session WHERE id = ANY($1)`, []string{rootID, parentID})
+			dbfx.Exec(t, `UPDATE agent_task_queue SET chat_session_id = NULL WHERE chat_session_id = $1 AND id = $2`, leafID, dm.ID)
+			dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "chat_session_id": leafID, "priority": 1000})
+			wantChatTaint(t, claimChatTaintTask(t, runtimeID), "")
+		})
+	}
+}

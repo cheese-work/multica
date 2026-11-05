@@ -6503,10 +6503,32 @@ func (q *Queries) HasTaskForIssue(ctx context.Context, issueID pgtype.UUID) (boo
 }
 
 const inheritChatSeedTaint = `-- name: InheritChatSeedTaint :one
+WITH RECURSIVE ancestry(id) AS (
+    SELECT t0.chat_session_id FROM agent_task_queue t0 WHERE t0.id = $1
+    UNION
+    SELECT unnest(ARRAY[c.forked_from_session_id, c.continued_from_session_id])
+    FROM chat_session c JOIN ancestry a ON c.id = a.id
+),
+inherited AS (
+    SELECT COALESCE(array_agg(DISTINCT x ORDER BY x), '{}')::text[] AS ids FROM (
+        SELECT unnest(c.taint_ids) AS x FROM chat_session c
+        WHERE c.id IN (SELECT id FROM ancestry WHERE id IS NOT NULL)
+        UNION ALL
+        SELECT unnest(s.taint_ids) FROM agent_task_queue s
+        WHERE s.chat_session_id IN (SELECT id FROM ancestry WHERE id IS NOT NULL)
+          AND s.chat_session_id IS DISTINCT FROM (SELECT t1.chat_session_id FROM agent_task_queue t1 WHERE t1.id = $1)
+    ) u
+),
+repaired AS (
+    UPDATE chat_session c
+    SET taint_ids = (SELECT ids FROM inherited)
+    WHERE c.id = (SELECT t2.chat_session_id FROM agent_task_queue t2 WHERE t2.id = $1)
+      AND c.taint_ids IS DISTINCT FROM (SELECT ids FROM inherited)
+)
 UPDATE agent_task_queue t
 SET taint_ids = COALESCE((
     SELECT array_agg(DISTINCT x ORDER BY x) FROM (
-        SELECT unnest(c.taint_ids) AS x FROM chat_session c WHERE c.id = t.chat_session_id
+        SELECT unnest((SELECT ids FROM inherited)) AS x
         UNION ALL
         SELECT unnest(s.taint_ids) FROM agent_task_queue s WHERE s.chat_session_id = t.chat_session_id
     ) u
@@ -6518,9 +6540,18 @@ RETURNING t.taint_ids
 // InheritChatSessionTaint for a task whose fresh session is seeded from other
 // DM content (CHE-3702): an in-place compaction summary, a fork's copied
 // transcript or a continuation summary. The resume pointer that carried the
-// taint is gone, so the taint is the chat's own tasks plus the taint stored on
-// the chat when it copied its source (chat_session.taint_ids), which survives
-// the source being deleted.
+// taint is gone, so the taint is the union of:
+//   - the taint stored on this chat and on every chat of its fork and
+//     continuation ancestry (chat_session.taint_ids), which survives a source
+//     being deleted;
+//   - the tasks of every ancestor still alive. This covers a row written by a
+//     binary that does not fill taint_ids (a schema-preserving rollback), and a
+//     fork made before any turn ran, which passes its ancestors on.
+//   - this chat's own tasks.
+//
+// UNION drops repeated ids, so a cyclic chain ends. "inherited" (everything
+// except the chat's own tasks) is written back to the chat, so a later delete
+// of the source cannot lose what the walk found.
 func (q *Queries) InheritChatSeedTaint(ctx context.Context, id pgtype.UUID) ([]string, error) {
 	row := q.db.QueryRow(ctx, inheritChatSeedTaint, id)
 	var taint_ids []string
