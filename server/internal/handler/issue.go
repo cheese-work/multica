@@ -2085,6 +2085,15 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 			writeError(w, http.StatusInternalServerError, "failed to resolve sort")
 			return
 		}
+		for _, p := range projections {
+			for _, d := range p.diagnostics {
+				if d.Type == "graph_limit" {
+					// Refuse, never sort: an unknown date is not "no date".
+					writeError(w, http.StatusBadRequest, "an issue's deadline graph is too large to sort by effective_due; narrow the filter (project, status, assignee)")
+					return
+				}
+			}
+		}
 		sortRowsByEffectiveDue(issues, projections)
 		start := min(offset, len(issues)) // bound before adding: offset+limit can overflow
 		issues = issues[start : start+min(limit, len(issues)-start)]

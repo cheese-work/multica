@@ -231,3 +231,23 @@ func TestListSortEffectiveDueNodeBudget(t *testing.T) {
 		t.Fatalf("400 must tell the caller to narrow the filter, got %s", w.Body.String())
 	}
 }
+
+// A root whose walk hit the visit limit has an unknown date, not "no date":
+// sorting it as undated could bury urgent work behind later deadlines, so the
+// list is refused (400), like the row cap and node budget.
+func TestListSortEffectiveDueGraphLimit(t *testing.T) {
+	project := dbfx.Project(t, "sort effective due graph limit")
+	parent := dbfx.Issue(t, "limit parent", testutil.Cols{"project_id": project, "due_date": "2026-12-01"})
+	agent := dbfx.Agent(t, "limit watcher", "")
+	for i := 0; i < 900; i++ {
+		child := dbfx.Issue(t, fmt.Sprintf("limit child %d", i), testutil.Cols{"project_id": project, "parent_issue_id": parent})
+		dbfx.Insert(t, "issue_wakeup", testutil.Cols{"id": testutil.Raw("gen_random_uuid()"), "workspace_id": testWorkspaceID, "issue_id": child, "agent_id": agent, "created_by": testUserID, "instruction": "resume", "kind": "event", "mode": "once", "event_types": testutil.Raw(`ARRAY['issue.status_changed']`),
+			"condition": fmt.Sprintf(`{"type":"other_issue","issue_id":%q,"state":"done"}`, parent)})
+	}
+	dbfx.Issue(t, "limit competitor", testutil.Cols{"project_id": project, "due_date": "2026-12-05"})
+	req := newRequest("GET", "/api/issues?sort=effective_due&limit=1&project_id="+project, nil)
+	w := testutil.Call(t, testHandler.ListIssues, req).Want(http.StatusBadRequest)
+	if !strings.Contains(w.Body.String(), "narrow") {
+		t.Fatalf("400 must tell the caller to narrow the filter, got %s", w.Body.String())
+	}
+}
