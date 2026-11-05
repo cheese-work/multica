@@ -6,9 +6,8 @@ import test from "node:test";
 const read = (path) => (existsSync(new URL(`../../${path}`, import.meta.url)) ? readFileSync(new URL(`../../${path}`, import.meta.url), "utf8") : "");
 const wf = read(".github/workflows/security-weekly.yml");
 
-test("runs Sunday 23:00 ICT (16:00 UTC) and on demand", () => {
+test("runs Sunday 23:00 ICT (16:00 UTC)", () => {
   assert.match(wf, /cron: "0 16 \* \* 0"/);
-  assert.match(wf, /^  workflow_dispatch:/m);
 });
 
 test("token stays read-only: no write permission anywhere, no secrets", () => {
@@ -96,4 +95,16 @@ test("every job that seals checks out the repo first (seal.sh lives in the tree)
 test("never runs on a pull request: a PR could swap recipient.asc and read the sealed reports", () => {
   assert.doesNotMatch(wf, /^\s*pull_request(_target)?:/m);
   assert.match(wf, /^on:\n  schedule:/m);
+});
+
+// Terra and luna FAIL on f3b0150f8: workflow_dispatch lets a writer pick a branch (gh workflow run --ref). The run then
+// uses that branch's workflow file, checkout and recipient.asc, so an in-file guard cannot stop it. Only `schedule`
+// is pinned by GitHub to the default branch, so it is the sole trigger.
+test("schedule is the only trigger: GitHub runs it on the default branch only", () => {
+  assert.match(wf, /^on:\n  schedule:\n    - cron: "[^"]+"[^\n]*\n\n/m);
+  assert.doesNotMatch(wf, /^\s*(workflow_dispatch|workflow_call|push|repository_dispatch|workflow_run):/m);
+});
+
+test("nothing is written to a step summary", () => {
+  assert.doesNotMatch(wf, /GITHUB_STEP_SUMMARY/);
 });
