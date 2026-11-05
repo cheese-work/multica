@@ -9103,6 +9103,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			if providerNeedsInlineSystemPrompt(provider) {
 				execOpts.SystemPrompt = runtimeBrief
 			}
+			if provider == "codex" {
+				// The rewritten brief has a new size; the later -c wins.
+				execOpts.ExtraArgs = append(execOpts.ExtraArgs, codexBriefBudget(env.RootDir, env.WorkDir, runtimeBrief, taskLog)...)
+			}
 		}
 		freshPrompt := BuildPrompt(task, provider, promptOptions...)
 
