@@ -1781,6 +1781,24 @@ type IssueDependency struct {
 	Type             string      `json:"type"`
 }
 
+type IssueIdleGuard struct {
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	State         string             `json:"state"`
+	Kind          string             `json:"kind"`
+	FromStatus    string             `json:"from_status"`
+	ToStatus      string             `json:"to_status"`
+	IdleSince     pgtype.Timestamptz `json:"idle_since"`
+	MovedAt       pgtype.Timestamptz `json:"moved_at"`
+	Attempts      int32              `json:"attempts"`
+	AlertID       pgtype.UUID        `json:"alert_id"`
+	CommentID     pgtype.UUID        `json:"comment_id"`
+	Error         string             `json:"error"`
+	AlertAttempts int32              `json:"alert_attempts"`
+	AlertAt       pgtype.Timestamptz `json:"alert_at"`
+	AlertError    string             `json:"alert_error"`
+}
+
 type IssueLabel struct {
 	ID           pgtype.UUID        `json:"id"`
 	WorkspaceID  pgtype.UUID        `json:"workspace_id"`

@@ -54,7 +54,7 @@ func (fixture idleActFixture) status(test *testing.T) string {
 func (fixture idleActFixture) receipt(test *testing.T, field string) string {
 	test.Helper()
 	var value string
-	dbfx.QueryRow(test, `SELECT COALESCE(metadata -> 'idle_guard' ->> $1, '') FROM issue WHERE id = $2`, field, fixture.issue).Scan(&value)
+	dbfx.QueryRow(test, `SELECT COALESCE(to_jsonb(g) ->> $1, '') FROM issue i LEFT JOIN issue_idle_guard g ON g.issue_id = i.id WHERE i.id = $2`, field, fixture.issue).Scan(&value)
 	return value
 }
 
@@ -192,5 +192,25 @@ func TestIdleStartedGuardActModeStillOffWhenOff(test *testing.T) {
 	fixture.sweep(test)
 	if got := fixture.status(test); got != "in_progress" {
 		test.Fatalf("status = %q with the guard off", got)
+	}
+}
+
+// CHE-3947: the receipt lives in issue_idle_guard. issue.metadata holds only
+// string, number and bool values, so the issue still opens in the client.
+func TestIdleStartedGuardReceiptStaysOutOfIssueMetadata(test *testing.T) {
+	fixture := newIdleActFixture(test, 5)
+	dbfx.Exec(test, `UPDATE comment SET content = 'finished my part' WHERE issue_id = $1`, fixture.issue)
+	fixture.sweep(test)
+	if got := fixture.status(test); got != "blocked" {
+		test.Fatalf("status = %q, want blocked", got)
+	}
+	if got := dbfx.Count(test, `SELECT count(*) FROM issue i, jsonb_each(i.metadata) e WHERE i.id = $1 AND jsonb_typeof(e.value) NOT IN ('string','number','boolean')`, fixture.issue); got != 0 {
+		test.Fatalf("issue.metadata holds %d non-primitive values, want 0", got)
+	}
+	if got := dbfx.Count(test, `SELECT count(*) FROM issue WHERE id = $1 AND metadata ? 'idle_guard'`, fixture.issue); got != 0 {
+		test.Fatal("issue.metadata still carries idle_guard")
+	}
+	if got := dbfx.Count(test, `SELECT count(*) FROM issue_idle_guard WHERE issue_id = $1 AND state = 'notified' AND kind = 'no_continuation' AND from_status = 'in_progress' AND to_status = 'blocked' AND moved_at IS NOT NULL AND comment_id IS NOT NULL AND alert_id IS NOT NULL`, fixture.issue); got != 1 {
+		test.Fatalf("issue_idle_guard rows = %d, want 1 filled receipt", got)
 	}
 }
