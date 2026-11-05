@@ -159,3 +159,47 @@ func TestReadTokenRevokeAlerts(t *testing.T) {
 		t.Fatal("no alert for a read token left live")
 	}
 }
+
+func TestReadTokenCap(t *testing.T) {
+	t.Parallel()
+	r, f, _ := readRig(t, nil)
+	for range maxReadTokens {
+		if _, err := GetReadToken(context.Background(), r.socket); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := GetReadToken(context.Background(), r.socket); err == nil || !strings.Contains(err.Error(), "429") {
+		t.Fatalf("err %v, want 429 past %d tokens", err, maxReadTokens)
+	}
+	if len(f.minted) != maxReadTokens {
+		t.Fatalf("minted %d, want %d", len(f.minted), maxReadTokens)
+	}
+}
+
+// A stalled revoke endpoint must not stretch shutdown by one timeout per
+// token, and every token left live must raise an alert.
+func TestReadTokenStalledRevokeIsBounded(t *testing.T) {
+	t.Parallel()
+	const timeout = 300 * time.Millisecond
+	got := make(chan Alert, maxReadTokens)
+	r, f, b := readRig(t, func(p *Pin) {
+		p.Tokens.RevokeTimeout = timeout
+		p.Tokens.RetryFor = time.Minute
+		p.Tokens.Alert = func(a Alert) { got <- a }
+	})
+	for range maxReadTokens {
+		if _, err := GetReadToken(context.Background(), r.socket); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.stallRevoke = true
+	start := time.Now()
+	b.Close()
+	// Serial revocation needs at least maxReadTokens*timeout for the first pass alone.
+	if took := time.Since(start); took >= (maxReadTokens-1)*timeout+timeout/2 {
+		t.Fatalf("Close took %v with %d stalled tokens, want well under %v", took, maxReadTokens, maxReadTokens*timeout)
+	}
+	if len(got) != maxReadTokens {
+		t.Fatalf("%d alerts, want %d", len(got), maxReadTokens)
+	}
+}

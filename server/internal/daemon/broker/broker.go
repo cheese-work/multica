@@ -89,8 +89,9 @@ type Broker struct {
 	open    map[*elevOp]struct{} // authorized, not yet acknowledged by the server
 	changed chan struct{}        // closed and replaced when open or its state changes
 
-	rdmu  sync.Mutex // guards reads
-	reads []grant    // read tokens handed to the run, revoked by Close
+	rdmu    sync.Mutex // guards reads
+	reads   []grant    // read tokens handed to the run, revoked by Close
+	pending int        // mints in flight that hold a slot under maxReadTokens
 
 	beforeWrite, afterWrite func() // test hooks around the remote write
 }
