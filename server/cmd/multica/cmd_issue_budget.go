@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -12,8 +13,9 @@ import (
 	"github.com/multica-ai/multica/server/internal/cli"
 )
 
-// multica issue budget raise / top-up only point to the web app: the server
-// takes both from an interactive session alone (CHE-2798 S1a).
+// multica issue budget raise / top-up call the run-budget API. The server takes
+// them from a person's interactive session, or from an agent's task token while
+// the agent cap is on and has room (CHE-3251); everything else gets a 403.
 
 var issueBudgetCmd = &cobra.Command{
 	Use:   "budget",
@@ -22,10 +24,11 @@ var issueBudgetCmd = &cobra.Command{
 
 var issueBudgetRaiseCmd = &cobra.Command{
 	Use:   "raise <issue-id>",
-	Short: "Raise one issue's run cap (approve in the web app)",
-	Long:  "Not available from the CLI: approve a raise in the web app. Until then, move the status in the web app.",
-	Args:  exactArgs(1),
-	RunE:  runIssueBudgetRaise,
+	Short: "Raise one issue's run cap to a total",
+	Long: "Sets the issue's own run cap to --runs in total. An agent may raise another agent's issue inside the daily and monthly agent cap; " +
+		"a refusal names the reason, what is left and when the cap resets. A person's PAT is refused: approve in the web app.",
+	Args: exactArgs(1),
+	RunE: runIssueBudgetRaise,
 }
 
 var issueBudgetGetCmd = &cobra.Command{
@@ -38,10 +41,11 @@ var issueBudgetGetCmd = &cobra.Command{
 
 var issueBudgetTopUpCmd = &cobra.Command{
 	Use:   "top-up <issue-id>",
-	Short: "Open a new run window on an issue (approve in the web app)",
-	Long:  "Not available from the CLI: approve a top-up in the web app. Until then, move the status in the web app.",
-	Args:  exactArgs(1),
-	RunE:  runIssueBudgetTopUp,
+	Short: "Open a new run window on an issue",
+	Long: "Opens a new run window worth the cap in force. An agent may top up another agent's issue inside the daily and monthly agent cap; " +
+		"a refusal names the reason, what is left and when the cap resets. A person's PAT is refused: approve in the web app.",
+	Args: exactArgs(1),
+	RunE: runIssueBudgetTopUp,
 }
 
 func init() {
@@ -49,17 +53,97 @@ func init() {
 	issueBudgetCmd.AddCommand(issueBudgetTopUpCmd)
 	issueBudgetGetCmd.Flags().String("output", "table", "Output format: table or json")
 	issueBudgetCmd.AddCommand(issueBudgetGetCmd)
-	issueBudgetRaiseCmd.Flags().Int("runs", 0, "Total runs the issue may use (ignored; raise in the web app)")
+	issueBudgetRaiseCmd.Flags().Int("runs", 0, "Total runs the issue may use (required)")
 	issueBudgetRaiseCmd.Flags().String("output", "table", "Output format: table or json")
 	issueBudgetCmd.AddCommand(issueBudgetRaiseCmd)
 	issueCmd.AddCommand(issueBudgetCmd)
 }
 
-// errBudgetWebApp is what raise and top-up return: the server accepts both only
-// from an interactive session, which no CLI credential is (CHE-2798 S1a).
-var errBudgetWebApp = errors.New("a run-budget raise or top-up is not available from the CLI: approve in the web app; until then move the status in the web app")
+// budgetRefusal is the part of a 403/429 body the CLI explains.
+type budgetRefusal struct {
+	Error         string  `json:"error"`
+	Reason        string  `json:"reason"`
+	LimitUSD      float64 `json:"limit_usd"`
+	UsedUSD       float64 `json:"used_usd"`
+	RemainingUSD  float64 `json:"remaining_usd"`
+	RemainingRuns int64   `json:"remaining_runs"`
+	RequestedRuns int64   `json:"requested_runs"`
+	ResetsAt      string  `json:"resets_at"`
+}
 
-func runIssueBudgetRaise(*cobra.Command, []string) error { return errBudgetWebApp }
+// explainBudgetError spells a cap refusal out; any other error passes through.
+func explainBudgetError(action string, err error) error {
+	var httpErr *cli.HTTPError
+	if !errors.As(err, &httpErr) || (httpErr.StatusCode != http.StatusForbidden && httpErr.StatusCode != http.StatusTooManyRequests) {
+		return fmt.Errorf("%s: %w", action, err)
+	}
+	var r budgetRefusal
+	if json.Unmarshal([]byte(httpErr.Body), &r) != nil || r.Error == "" {
+		return fmt.Errorf("%s: %w", action, err)
+	}
+	msg := fmt.Sprintf("%s refused: %s", action, r.Error)
+	if r.Reason != "" {
+		msg += " (" + r.Reason + ")"
+	}
+	if r.Reason == "daily" || r.Reason == "monthly_share" {
+		msg += fmt.Sprintf(": used $%.2f of $%.2f, $%.2f left (%d runs), asked for %d runs, resets %s",
+			r.UsedUSD, r.LimitUSD, r.RemainingUSD, r.RemainingRuns, r.RequestedRuns, r.ResetsAt)
+	}
+	return errors.New(msg)
+}
+
+func printBudgetResult(cmd *cobra.Command, raw json.RawMessage, line string) error {
+	if output, _ := cmd.Flags().GetString("output"); output == "json" {
+		return cli.PrintJSON(os.Stdout, raw)
+	}
+	fmt.Fprintln(os.Stdout, line)
+	return nil
+}
+
+func runIssueBudgetRaise(cmd *cobra.Command, args []string) error {
+	runs, _ := cmd.Flags().GetInt("runs")
+	if runs <= 0 {
+		return errors.New("--runs is required and must be positive")
+	}
+	return postIssueBudget(cmd, args[0], "/run-budget", map[string]int{"runs": runs}, "raise",
+		func(raw json.RawMessage, ref string) string {
+			var out struct {
+				MaxRuns         int `json:"max_runs"`
+				PreviousMaxRuns int `json:"previous_max_runs"`
+			}
+			_ = json.Unmarshal(raw, &out)
+			return fmt.Sprintf("%s run cap raised from %d to %d", ref, out.PreviousMaxRuns, out.MaxRuns)
+		})
+}
+
+func runIssueBudgetTopUp(cmd *cobra.Command, args []string) error {
+	return postIssueBudget(cmd, args[0], "/run-budget/top-up", map[string]int{}, "top-up",
+		func(raw json.RawMessage, ref string) string {
+			var out struct {
+				MaxRuns int `json:"max_runs"`
+			}
+			_ = json.Unmarshal(raw, &out)
+			return fmt.Sprintf("%s opened a new window of %d runs", ref, out.MaxRuns)
+		})
+}
+
+func postIssueBudget(cmd *cobra.Command, issueArg, suffix string, body any, action string, line func(json.RawMessage, string) string) error {
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+	ref, err := resolveIssueRef(ctx, client, issueArg)
+	if err != nil {
+		return fmt.Errorf("resolve issue: %w", err)
+	}
+	var raw json.RawMessage
+	if err := client.PostJSON(ctx, "/api/issues/"+ref.ID+suffix, body, &raw); err != nil {
+		return explainBudgetError(action, err)
+	}
+	return printBudgetResult(cmd, raw, line(raw, ref.Display))
+}
 
 // issueBudgetSnapshot is the part of GET /api/issues/{id}/run-budget the CLI
 // prints; the server's service.RunBudgetSnapshot is the full contract. The CLI
@@ -111,5 +195,3 @@ func runIssueBudgetGet(cmd *cobra.Command, args []string) error {
 	}
 	return nil
 }
-
-func runIssueBudgetTopUp(*cobra.Command, []string) error { return errBudgetWebApp }

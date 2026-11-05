@@ -20,7 +20,8 @@ import (
 
 // TestRunBudgetRoutesInteractiveOnly sends every credential kind through the
 // real router and Auth middleware (CHE-2798 S1a): raise and top-up open spend,
-// so only an interactive session reaches the handler.
+// so only an interactive session or an agent task token reaches the handler,
+// and the task token is refused while the agent cap is off (the default).
 func TestRunBudgetRoutesInteractiveOnly(t *testing.T) {
 	if testPool == nil {
 		t.Skip("no database connection")
@@ -106,7 +107,19 @@ func TestRunBudgetRoutesInteractiveOnly(t *testing.T) {
 		{"pat", testServer.URL, false, bearer(pat)},
 		{"cloud pat", cloudRouter.URL, false, bearer("mcn_che2824")},
 		{"cli_jwt", testServer.URL, false, bearer(cliJWT)},
-		{"task token", testServer.URL, false, bearer(taskToken)},
+		// The task token reaches the handler (CHE-3251) but the agent feature is
+		// off by default, so it is still refused and writes nothing.
+		{"task token, agent feature off", testServer.URL, false, bearer(taskToken)},
+		{"forged task_token header on cli_jwt", testServer.URL, false, func(r *http.Request) {
+			bearer(cliJWT)(r)
+			r.Header.Set("X-Actor-Source", "task_token")
+			r.Header.Set("X-Agent-ID", agentID)
+		}},
+		{"forged task_token header on pat", testServer.URL, false, func(r *http.Request) {
+			bearer(pat)(r)
+			r.Header.Set("X-Actor-Source", "task_token")
+			r.Header.Set("X-Agent-ID", agentID)
+		}},
 		{"forged header on cli_jwt", testServer.URL, false, func(r *http.Request) {
 			bearer(cliJWT)(r)
 			r.Header.Set("X-Actor-Source", "interactive_jwt")

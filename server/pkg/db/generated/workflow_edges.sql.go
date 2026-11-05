@@ -211,6 +211,18 @@ func (q *Queries) ListMemberStatusChangesAfter(ctx context.Context, arg ListMemb
 	return items, nil
 }
 
+const lockAgentRunBudgetCap = `-- name: LockAgentRunBudgetCap :exec
+SELECT pg_advisory_xact_lock(hashtextextended('agent_run_budget_cap', 0))
+`
+
+// One lock for the whole instance: agent-added run credit is capped across all
+// issues, so two raises on different issues must read and write one at a time.
+// It is taken after the issue's own lock, never before.
+func (q *Queries) LockAgentRunBudgetCap(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, lockAgentRunBudgetCap)
+	return err
+}
+
 const raiseIssueMaxRuns = `-- name: RaiseIssueMaxRuns :one
 UPDATE issue SET max_runs_override = $1::int
 WHERE id = $2::uuid AND workspace_id = $3::uuid
@@ -255,6 +267,21 @@ type ScheduleWorkflowEdgesParams struct {
 func (q *Queries) ScheduleWorkflowEdges(ctx context.Context, arg ScheduleWorkflowEdgesParams) error {
 	_, err := q.db.Exec(ctx, scheduleWorkflowEdges, arg.NextFireAt, arg.ID)
 	return err
+}
+
+const sumAgentAddedRuns = `-- name: SumAgentAddedRuns :one
+SELECT COALESCE(SUM((details->>'runs_added')::bigint), 0)::bigint AS runs FROM activity_log
+WHERE actor_type = 'agent' AND action IN ('run_budget_raised', 'run_budget_top_up')
+  AND created_at >= $1::timestamptz
+`
+
+// Runs agents added to run budgets since a point, across the instance. Rows
+// without runs_added (a person's, or written before the cap) add nothing.
+func (q *Queries) SumAgentAddedRuns(ctx context.Context, since pgtype.Timestamptz) (int64, error) {
+	row := q.db.QueryRow(ctx, sumAgentAddedRuns, since)
+	var runs int64
+	err := row.Scan(&runs)
+	return runs, err
 }
 
 const xactStatus = `-- name: XactStatus :one

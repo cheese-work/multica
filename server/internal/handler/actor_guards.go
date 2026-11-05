@@ -53,6 +53,21 @@ func RequireInteractiveSession(next http.Handler) http.Handler {
 	})
 }
 
+// RequireInteractiveOrTaskToken admits an interactive session or an agent's task
+// token, and nothing else: a PAT, cloud PAT and cli_jwt stay out, and Auth
+// overwrites any client-supplied X-Actor-Source, so a forged header fails too.
+// For the run-budget routes an agent may use inside the agent cap (CHE-3251);
+// the handler decides which agent and how much.
+func RequireInteractiveOrTaskToken(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if src := r.Header.Get("X-Actor-Source"); src != "interactive_jwt" && src != "task_token" {
+			writeError(w, http.StatusForbidden, "this endpoint is only available to an interactive session or an agent task; approve in the web app")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // isMachineCredentialActor centralizes the authoritative actor-source check so
 // sensitive handlers can keep a fail-closed backstop in addition to their
 // router middleware. Unknown actor sources intentionally remain human-equivalent

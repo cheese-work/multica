@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,14 +18,18 @@ func newIssueBudgetRaiseTestCmd() *cobra.Command {
 	return c
 }
 
-const budgetWebAppPointer = "approve in the web app; until then move the status in the web app"
-
-// refusingBudgetServer fails the test on any request: a raise or top-up from
-// the CLI is a web-app action, so the CLI must not send one (CHE-2798 S1a).
-func refusingBudgetServer(t *testing.T) {
+// budgetServer answers every POST with status/body and records it.
+func budgetServer(t *testing.T, status int, body any, got *struct{ Path, Body string }) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Errorf("CLI sent %s %s; a budget raise or top-up is approved in the web app", r.Method, r.URL.Path)
+		if r.Method == http.MethodPost {
+			b, _ := io.ReadAll(r.Body)
+			got.Path, got.Body = r.URL.Path, strings.TrimSpace(string(b))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_ = json.NewEncoder(w).Encode(body)
+			return
+		}
 		http.NotFound(w, r)
 	}))
 	t.Cleanup(srv.Close)
@@ -33,13 +38,72 @@ func refusingBudgetServer(t *testing.T) {
 	t.Setenv("MULTICA_TOKEN", "mat_test-token")
 }
 
-func TestRunIssueBudgetRaisePointsToTheWebApp(t *testing.T) {
-	refusingBudgetServer(t)
+func TestRunIssueBudgetRaisePostsTheTotal(t *testing.T) {
+	var got struct{ Path, Body string }
+	budgetServer(t, 200, map[string]any{"max_runs": 20, "previous_max_runs": 10}, &got)
+	cmd := newIssueBudgetRaiseTestCmd()
+	_ = cmd.Flags().Set("runs", "20")
+	out, err := captureStdout(t, func() error { return runIssueBudgetRaise(cmd, []string{testIssueUUID}) })
+	if err != nil {
+		t.Fatalf("raise: %v", err)
+	}
+	if got.Path != "/api/issues/"+testIssueUUID+"/run-budget" || got.Body != `{"runs":20}` {
+		t.Fatalf("sent %s %s", got.Path, got.Body)
+	}
+	if !strings.Contains(out, "from 10 to 20") {
+		t.Fatalf("out = %q", out)
+	}
+}
+
+func TestRunIssueBudgetRaiseNeedsRuns(t *testing.T) {
+	var got struct{ Path, Body string }
+	budgetServer(t, 200, map[string]any{}, &got)
+	if err := runIssueBudgetRaise(newIssueBudgetRaiseTestCmd(), []string{testIssueUUID}); err == nil || got.Path != "" {
+		t.Fatalf("err = %v, sent %q; want a local error and no request", err, got.Path)
+	}
+}
+
+func TestRunIssueBudgetRaiseExplainsACapRefusal(t *testing.T) {
+	var got struct{ Path, Body string }
+	budgetServer(t, 429, map[string]any{
+		"error": "agent run-budget cap reached", "reason": "daily", "limit_usd": 10.0, "used_usd": 9.5,
+		"remaining_usd": 0.5, "remaining_runs": 2, "requested_runs": 5, "resets_at": "2026-11-07T00:00:00+07:00",
+	}, &got)
 	cmd := newIssueBudgetRaiseTestCmd()
 	_ = cmd.Flags().Set("runs", "20")
 	err := runIssueBudgetRaise(cmd, []string{testIssueUUID})
-	if err == nil || !strings.Contains(err.Error(), budgetWebAppPointer) {
-		t.Fatalf("raise err = %v, want the web-app pointer", err)
+	if err == nil {
+		t.Fatal("want a refusal")
+	}
+	for _, want := range []string{"agent run-budget cap reached", "daily", "$0.50 left (2 runs)", "asked for 5 runs", "resets 2026-11-07T00:00:00+07:00"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("err %q lacks %q", err, want)
+		}
+	}
+}
+
+func TestRunIssueBudgetTopUpPostsAndReports(t *testing.T) {
+	var got struct{ Path, Body string }
+	budgetServer(t, 200, map[string]any{"max_runs": 10}, &got)
+	cmd := &cobra.Command{Use: "top-up"}
+	cmd.Flags().String("output", "table", "")
+	out, err := captureStdout(t, func() error { return runIssueBudgetTopUp(cmd, []string{testIssueUUID}) })
+	if err != nil {
+		t.Fatalf("top-up: %v", err)
+	}
+	if got.Path != "/api/issues/"+testIssueUUID+"/run-budget/top-up" || !strings.Contains(out, "10 runs") {
+		t.Fatalf("sent %s, out %q", got.Path, out)
+	}
+}
+
+func TestRunIssueBudgetTopUpReportsADisabledAgentCap(t *testing.T) {
+	var got struct{ Path, Body string }
+	budgetServer(t, 403, map[string]any{"error": "agents cannot raise a run budget on this server", "reason": "disabled"}, &got)
+	cmd := &cobra.Command{Use: "top-up"}
+	cmd.Flags().String("output", "table", "")
+	err := runIssueBudgetTopUp(cmd, []string{testIssueUUID})
+	if err == nil || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("err = %v, want the disabled reason", err)
 	}
 }
 
@@ -109,15 +173,5 @@ func TestRunIssueBudgetGetJSONKeepsEveryServerField(t *testing.T) {
 	out, err := captureStdout(t, func() error { return runIssueBudgetGet(cmd, []string{testIssueUUID}) })
 	if err != nil || !strings.Contains(out, "runs_source") {
 		t.Fatalf("out = %q err = %v", out, err)
-	}
-}
-
-func TestRunIssueBudgetTopUpPointsToTheWebApp(t *testing.T) {
-	refusingBudgetServer(t)
-	cmd := &cobra.Command{Use: "top-up"}
-	cmd.Flags().String("output", "table", "")
-	err := runIssueBudgetTopUp(cmd, []string{testIssueUUID})
-	if err == nil || !strings.Contains(err.Error(), budgetWebAppPointer) {
-		t.Fatalf("top-up err = %v, want the web-app pointer", err)
 	}
 }

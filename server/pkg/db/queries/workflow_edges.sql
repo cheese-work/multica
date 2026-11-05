@@ -95,6 +95,19 @@ WHERE id = sqlc.arg('id')::uuid AND workspace_id = sqlc.arg('workspace_id')::uui
   AND sqlc.arg('runs')::int > COALESCE(max_runs_override, sqlc.arg('workflow_max')::int)
 RETURNING max_runs_override;
 
+-- name: LockAgentRunBudgetCap :exec
+-- One lock for the whole instance: agent-added run credit is capped across all
+-- issues, so two raises on different issues must read and write one at a time.
+-- It is taken after the issue's own lock, never before.
+SELECT pg_advisory_xact_lock(hashtextextended('agent_run_budget_cap', 0));
+
+-- name: SumAgentAddedRuns :one
+-- Runs agents added to run budgets since a point, across the instance. Rows
+-- without runs_added (a person's, or written before the cap) add nothing.
+SELECT COALESCE(SUM((details->>'runs_added')::bigint), 0)::bigint AS runs FROM activity_log
+WHERE actor_type = 'agent' AND action IN ('run_budget_raised', 'run_budget_top_up')
+  AND created_at >= sqlc.arg('since')::timestamptz;
+
 -- name: ListMemberStatusChangesAfter :many
 -- Every time a person moved the issue's status or topped up its run budget after
 -- a point: each one opened a run-budget window, whether or not anything was admitted in it.

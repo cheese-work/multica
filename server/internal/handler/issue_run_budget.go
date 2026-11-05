@@ -57,8 +57,9 @@ func (h *Handler) GetIssueStageQueue(w http.ResponseWriter, r *http.Request) {
 
 // RaiseIssueRunBudget lifts one issue's run cap (CHE-2226) so a person can pay
 // for more runs on that issue without raising the cap of every issue on the
-// workflow. Members only: the actor comes from the authenticated request, never
-// from the body, and an agent cannot spend its own budget.
+// workflow. The actor comes from the authenticated request, never from the
+// body. A person is not capped; an agent that is not the issue's assignee is,
+// by the instance-wide daily and monthly agent cap (CHE-3251).
 func (h *Handler) RaiseIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
 	if !ok {
@@ -69,7 +70,11 @@ func (h *Handler) RaiseIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	actorType, actorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
-	if actorType != "member" {
+	if actorType == "agent" {
+		if !h.admitAgentRunBudgetCaller(w, r, issue, actorID) {
+			return
+		}
+	} else if actorType != "member" {
 		writeError(w, http.StatusForbidden, "only a person can raise an issue's run budget")
 		return
 	}
@@ -116,6 +121,14 @@ func (h *Handler) RaiseIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, fmt.Sprintf("the cap changed while raising it; it is now %d", current))
 		return
 	}
+	if actorType == "agent" {
+		if ok, err := h.checkAgentRunBudgetCap(w, r, qtx, req.Runs-current); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to raise the run budget")
+			return
+		} else if !ok {
+			return
+		}
+	}
 	raised, err := qtx.RaiseIssueMaxRuns(r.Context(), db.RaiseIssueMaxRunsParams{
 		ID: issue.ID, WorkspaceID: issue.WorkspaceID, Runs: int32(req.Runs), WorkflowMax: int32(workflowMax),
 	})
@@ -127,7 +140,11 @@ func (h *Handler) RaiseIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to raise the run budget")
 		return
 	}
-	body, _ := json.Marshal(map[string]any{"from": current, "to": raised.Int32})
+	details := map[string]any{"from": current, "to": raised.Int32}
+	if actorType == "agent" {
+		details["runs_added"] = int(raised.Int32) - current
+	}
+	body, _ := json.Marshal(details)
 	activity, err := qtx.CreateActivity(r.Context(), db.CreateActivityParams{
 		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, ActorType: pgtype.Text{String: actorType, Valid: true},
 		ActorID: parseUUID(actorID), Action: "run_budget_raised", Details: body,
@@ -149,8 +166,8 @@ func (h *Handler) RaiseIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 
 // TopUpIssueRunBudget opens a new run-budget window on the issue without a
 // status move (CHE-2297 L2d): the window credit is the cap in force, and the
-// token allowance follows once token accounting is active. Members only, for
-// the same reason as a raise: an agent cannot pay for its own runs. The
+// token allowance follows once token accounting is active. A person is not
+// capped; an agent is, as for a raise, and cannot top up its own issue. The
 // activity row is the window's start, so it commits with the credit.
 func (h *Handler) TopUpIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
@@ -164,7 +181,11 @@ func (h *Handler) TopUpIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 	actorType, actorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
 	// resolveActor calls a machine credential without agent headers a member, so
 	// the credential check is separate (the route carries RequireHumanActor too).
-	if actorType != "member" || isMachineCredentialActor(r) {
+	if actorType == "agent" {
+		if !h.admitAgentRunBudgetCaller(w, r, issue, actorID) {
+			return
+		}
+	} else if actorType != "member" || isMachineCredentialActor(r) {
 		writeError(w, http.StatusForbidden, "only a person can top up an issue's run budget")
 		return
 	}
@@ -199,6 +220,16 @@ func (h *Handler) TopUpIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "the issue has no workflow run budget to top up")
 		return
 	}
+	details := []byte("{}")
+	if actorType == "agent" {
+		if ok, err := h.checkAgentRunBudgetCap(w, r, qtx, max); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to top up the run budget")
+			return
+		} else if !ok {
+			return
+		}
+		details, _ = json.Marshal(map[string]any{"runs_added": max})
+	}
 	// The transaction began before the wait for the lock, so now() would sort
 	// this boundary before any move recorded during the wait.
 	startedAt, err := qtx.RunBudgetBoundaryClock(r.Context())
@@ -208,7 +239,7 @@ func (h *Handler) TopUpIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := qtx.CreateActivity(r.Context(), db.CreateActivityParams{
 		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, ActorType: pgtype.Text{String: actorType, Valid: true},
-		ActorID: parseUUID(actorID), Action: "run_budget_top_up", Details: []byte("{}"),
+		ActorID: parseUUID(actorID), Action: "run_budget_top_up", Details: details,
 		CreatedAt: startedAt,
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to record the run budget top-up")

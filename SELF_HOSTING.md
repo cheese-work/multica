@@ -572,3 +572,20 @@ Reverse proxies must preserve the browser-visible scheme, hostname and port in f
 Contributors can run `make up`, sign in with the development email/code shown by the managed environment, and discover the engine on its localhost web port. Plain localhost HTTP is enough for local Chromium testing; reproducing the production Secure cookie needs an HTTPS preview. A browser's own suggestion setting disables fetches independently of the operator switch.
 
 Before merge, record a real Brave preview screenshot and an issue-selection round trip. After Cheese merges and the normal C00 release runs, verify both served templates, re-discover the C00 engine, and record Cheese's screenshot/selection plus query-free outcomes and latency. Agents never merge or deploy production for this check.
+
+## Agent run-budget cap (CHE-3251)
+
+An agent may raise or top up the run budget of another agent's issue, inside a daily and a monthly cap. The feature is **off by default**: with any limit unset, `POST /api/issues/{id}/run-budget[/top-up]` from an agent task token returns 403 with `reason: "disabled"`. A person's raise is never capped.
+
+| Setting | Effect |
+| --- | --- |
+| `MULTICA_AGENT_RUN_BUDGET_USD_PER_RUN` | USD one run is priced at when it is counted against the caps. |
+| `MULTICA_AGENT_RUN_BUDGET_DAILY_USD` | USD agents may add per ICT calendar day, instance-wide. |
+| `MULTICA_AGENT_RUN_BUDGET_MONTHLY_USD` | USD agents may add per ICT calendar month, instance-wide. Unused credit still counts. |
+| `MULTICA_AGENT_RUN_BUDGET_METERED_LIMIT_USD` | Metered-API limit the agent share is measured against (checked in a later change). |
+
+Set all four to enable it. Each must be a positive number with at most six decimals; an invalid value stops the server at start. Days and months use ICT (UTC+7).
+
+An agent is refused with 429 (`reason: "daily"` or `"monthly_share"`, plus `remaining_usd`, `remaining_runs`, `resets_at` and a `Retry-After` header) when the raise would pass a cap. An agent is also refused when it is not on a live task, is on a recovery run, is the issue's own assignee, or belongs to another workspace.
+
+This is admission control with a USD 30 margin, not a hard cap. Runs already admitted keep running, and the gate does not kill them. No per-run cost upper bound is measured. The only backstop is the 20% headroom between USD 120 and the USD 150 limit; the platform does not hard-stop at USD 150. The caps count runs, not what each run costs. The metered-limit check (`MULTICA_AGENT_RUN_BUDGET_METERED_LIMIT_USD`) is added in a later change; until then only the daily and monthly caps apply. Re-check the real cost per run by 2026-12-04 before and after you enable this.

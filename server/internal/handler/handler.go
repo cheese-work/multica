@@ -221,6 +221,9 @@ type RuntimeRecoveryNotifier interface {
 }
 
 type Handler struct {
+	// AgentRunBudget is the cap on what agents may add to run budgets (CHE-3251).
+	// The zero value is off.
+	AgentRunBudget AgentRunBudgetConfig
 	// githubAllowlist is the GITHUB_ALLOWED_ACCOUNT_IDS policy (CHE-3418).
 	githubAllowlist githubAllowlist
 	// workflowWriter overrides how workflow deliveries are stored; nil means the
