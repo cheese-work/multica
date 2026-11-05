@@ -3,7 +3,10 @@ name: CI Dispatch
 # CHE-3989 (CHE-3987 S2): CI for a PR whose base is `agent/**`, and for a PR retargeted to `main`.
 # ci.yml stays main-only on purpose. A pull_request run of ci.yml for a stacked draft would be skipped and
 # would shadow the dispatched results in the PR check list, and `labeled` or `edited` runs of ci.yml would cancel
-# or skip the CI of every main PR. This workflow only starts ci.yml (workflow_dispatch) on the head branch.
+# or skip the CI of every main PR. This workflow starts ci.yml (workflow_dispatch) on the head branch, then watches
+# that run: dispatch is the PR-visible result, red when the dispatched run fails or is cancelled (workflow_dispatch
+# results never reach the PR check list). A newer push cancels the older watcher; the dispatched run's own
+# concurrency group cancels its older run.
 #   - non-draft stacked PR: every push, reopen and ready_for_review
 #   - draft stacked PR: nothing until the `run-ci` label is on it (label it, or push after it is labeled)
 #   - retarget to main: one run
@@ -18,12 +21,32 @@ jobs:
   dispatch:
     if: ${{ github.event.pull_request.head.repo.full_name == github.repository && ((github.event.pull_request.base.ref != 'main' && ((github.event.action == 'labeled' && github.event.label.name == 'run-ci') || (github.event.action != 'labeled' && github.event.action != 'edited' && (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci'))))) || (github.event.action == 'edited' && github.event.changes.base != null && github.event.pull_request.base.ref == 'main')) }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    timeout-minutes: 90
+    concurrency:
+      group: ci-dispatch-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     permissions:
       actions: write
     steps:
-      - name: Start CI on the head branch
+      - name: Start CI on the head branch and report its result
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
-        run: gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$HEAD_REF"
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          list() {
+            gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch "$HEAD_REF" --event workflow_dispatch --limit 50 \
+              --json databaseId,headSha --jq ".[] | select(.headSha == \"$HEAD_SHA\") | .databaseId" | sort
+          }
+          before="$(list)"
+          gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$HEAD_REF"
+          id=""
+          for _ in $(seq 24); do
+            sleep 5
+            id="$(comm -13 <(echo "$before") <(list) | head -n 1)"
+            [ -z "$id" ] || break
+          done
+          [ -n "$id" ] || { echo "::error::The dispatched CI run did not appear for $HEAD_SHA"; exit 1; }
+          echo "Watching CI run $id"
+          gh run watch "$id" --repo "$GITHUB_REPOSITORY" --exit-status --interval 30

@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 // CHE-3989 (CHE-3987 S2): a PR whose base is `agent/**` gets CI through .github/workflows/ci-dispatch.yml, which
@@ -41,6 +44,62 @@ test("ci-dispatch.yml fires on the PR events, needs no branch filter, and starts
   assert.doesNotMatch(dispatch, /^    branches:/m);
   assert.match(dispatch, /actions: write/);
   assert.match(dispatch, /gh workflow run ci\.yml .*--ref "\$HEAD_REF"/);
+});
+
+// The dispatch job is the PR-visible result of the dispatched ci.yml run (workflow_dispatch results never reach the
+// PR check list), so it must wait for that run and fail when the run fails. These tests run the job's own script
+// against a stub `gh`.
+const SCRIPT = (() => {
+  const block = dispatch.match(/^ {8}run: \|\n((?: {10}.*\n|\n)+)/m)?.[1] ?? "";
+  return block.replace(/^ {10}/gm, "");
+})();
+
+const runDispatch = ({ watchExit = 0, dispatchCreatesRun = true } = {}) => {
+  const dir = mkdtempSync(join(tmpdir(), "ci-dispatch-"));
+  const stub = (name, body) => {
+    writeFileSync(join(dir, name), `#!/usr/bin/env bash\n${body}\n`);
+    chmodSync(join(dir, name), 0o755);
+  };
+  writeFileSync(join(dir, "runs"), "11\n");
+  stub("sleep", "exit 0");
+  stub(
+    "gh",
+    `echo "$*" >> "${dir}/calls"
+case "$1 $2" in
+  "run list") cat "${dir}/runs" ;;
+  "workflow run") ${dispatchCreatesRun ? `echo 12 >> "${dir}/runs"` : "true"} ;;
+  "run watch") exit ${watchExit} ;;
+esac`,
+  );
+  const result = spawnSync("bash", ["-c", SCRIPT], {
+    env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, GITHUB_REPOSITORY: "cheese-work/multica", HEAD_REF: "agent/x/che-1", HEAD_SHA: "abc", GH_TOKEN: "t" },
+    encoding: "utf8",
+  });
+  const calls = existsSync(join(dir, "calls")) ? readFileSync(join(dir, "calls"), "utf8") : "";
+  return { status: result.status, calls, stderr: result.stderr };
+};
+
+test("the dispatch job waits for the dispatched run (not an older one) and passes when it passes", () => {
+  assert.ok(SCRIPT, "ci-dispatch.yml has no `run: |` script");
+  const { status, calls } = runDispatch();
+  assert.equal(status, 0);
+  assert.match(calls, /workflow run ci\.yml/);
+  assert.match(calls, /run watch 12 .*--exit-status/);
+  assert.doesNotMatch(calls, /run watch 11/);
+});
+
+test("the dispatch job fails when the dispatched CI run fails or is cancelled", () => {
+  assert.notEqual(runDispatch({ watchExit: 1 }).status, 0);
+});
+
+test("the dispatch job fails when no dispatched run shows up", () => {
+  assert.notEqual(runDispatch({ dispatchCreatesRun: false }).status, 0);
+});
+
+test("the dispatch job has a per-PR cancelling group and enough time to watch a full CI run", () => {
+  assert.match(dispatch, /concurrency:\n {6}group: ci-dispatch-\$\{\{ github\.event\.pull_request\.number \}\}\n {6}cancel-in-progress: true/);
+  assert.ok(Number(dispatch.match(/timeout-minutes: (\d+)/)?.[1]) >= 60);
+  assert.doesNotMatch(dispatch, /continue-on-error|\|\| true/);
 });
 
 test("a non-draft stacked PR starts CI on every push-type event", () => {
