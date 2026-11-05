@@ -121,7 +121,7 @@ func TestIdleStartedGuardActRefusedEpisodeEndsWhenAnOpenRequestIsTheWait(test *t
 // alertDue ends the cooldown that follows a failed alert admission.
 func (fixture idleActFixture) alertDue(test *testing.T) {
 	test.Helper()
-	dbfx.Exec(test, `UPDATE issue SET metadata = jsonb_set(metadata, '{idle_guard,alert_at}', '"2020-01-01T00:00:00Z"') WHERE id = $1`, fixture.issue)
+	dbfx.Exec(test, `UPDATE issue_idle_guard SET alert_at = '2020-01-01T00:00:00Z' WHERE issue_id = $1`, fixture.issue)
 }
 
 func (fixture idleActFixture) archiveLeaderSquad(test *testing.T, archived bool) {
