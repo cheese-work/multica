@@ -70,6 +70,9 @@ type TaskService struct {
 	// BackgroundWriters maps a task purpose (bgagents.Purpose) to the writer
 	// that completion dispatches to. Nil: no background output is written.
 	BackgroundWriters map[string]BackgroundWriter
+	// BackgroundNoAgent maps a task purpose to the path that runs when the
+	// job's chain ends without an output. Nil: the job has no such path.
+	BackgroundNoAgent map[string]BackgroundNoAgentPath
 	// EmptyClaim caches "this runtime has no queued task" so the daemon
 	// poll path can skip a Postgres scan on the steady-state empty case.
 	// Optional — a nil cache disables the fast path and every claim
@@ -6282,7 +6285,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		s.createAgentComment(ctx, task.IssueID, task.AgentID, redact.Text(errMsg), "system", task.TriggerCommentID, task.ID)
 	}
 	if retried == nil {
-		s.failOverRoutingTask(ctx, task, failureReason)
+		s.failOverTask(ctx, task, failureReason)
 	}
 	// CHE-607: errMsg above is the proximate cause (e.g. a stream disconnect) —
 	// on its own it says nothing about why the auto-retry that would normally
