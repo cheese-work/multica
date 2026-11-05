@@ -1,8 +1,12 @@
 name: CI
 
 on:
+  # A PR stacked on an agent/** base runs CI once it is non-draft; a draft opts in with the `run-ci` label.
+  # Other edits, labels and ready events on main-based PRs start nothing (CHE-3989). One run condition gates
+  # every job and the concurrency group: keep the copies in step (scripts/ci-stacked-pr.test.mjs).
   pull_request:
-    branches: [main]
+    branches: [main, "agent/**"]
+    types: [opened, synchronize, reopened, ready_for_review, labeled, edited]
   merge_group:
     types: [checks_requested]
   schedule:
@@ -10,13 +14,13 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ (github.event_name != 'pull_request' || (((github.event.action == 'opened' || github.event.action == 'synchronize' || github.event.action == 'reopened') && (github.base_ref == 'main' || (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci')))) || (github.base_ref != 'main' && github.event.action == 'ready_for_review') || (github.base_ref != 'main' && github.event.action == 'labeled' && github.event.label.name == 'run-ci') || (github.event.action == 'edited' && github.event.changes.base != null && (github.base_ref == 'main' || (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci')))))) && (github.event.pull_request.number || github.ref) || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   warning-budget:
     needs: [migration-prefix-check, cursor-background-lifecycle, changes, sqlc-check, frontend-build, frontend-test, frontend-views-test, locale-parity, frontend, backend-tests, backend-agent-tests, go-vulnerability-scan, go-lint, backend, image-budget, installer, script-checks, deploy-cd, frontend-quality]
-    if: ${{ always() && !cancelled() }}
+    if: ${{ always() && !cancelled() && needs.changes.result != 'skipped' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -44,7 +48,7 @@ jobs:
           retention-days: 14
 
   migration-prefix-check:
-    if: github.event_name == 'pull_request'
+    if: ${{ github.event_name == 'pull_request' && (github.event_name != 'pull_request' || (((github.event.action == 'opened' || github.event.action == 'synchronize' || github.event.action == 'reopened') && (github.base_ref == 'main' || (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci')))) || (github.base_ref != 'main' && github.event.action == 'ready_for_review') || (github.base_ref != 'main' && github.event.action == 'labeled' && github.event.label.name == 'run-ci') || (github.event.action == 'edited' && github.event.changes.base != null && (github.base_ref == 'main' || (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci')))))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 1
     permissions:
@@ -68,6 +72,7 @@ jobs:
   # release or install-script URLs in packages, apps and server. Not gated by
   # ci-scope: a TS-only change can reintroduce the URL.
   upstream-update-source-guard:
+    if: ${{ github.event_name != 'pull_request' || (((github.event.action == 'opened' || github.event.action == 'synchronize' || github.event.action == 'reopened') && (github.base_ref == 'main' || (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci')))) || (github.base_ref != 'main' && github.event.action == 'ready_for_review') || (github.base_ref != 'main' && github.event.action == 'labeled' && github.event.label.name == 'run-ci') || (github.event.action == 'edited' && github.event.changes.base != null && (github.base_ref == 'main' || (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci'))))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     permissions:
@@ -130,6 +135,7 @@ jobs:
   # a `go test -race` run. The outputs are consumed by the focused jobs
   # below.
   changes:
+    if: ${{ github.event_name != 'pull_request' || (((github.event.action == 'opened' || github.event.action == 'synchronize' || github.event.action == 'reopened') && (github.base_ref == 'main' || (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci')))) || (github.base_ref != 'main' && github.event.action == 'ready_for_review') || (github.base_ref != 'main' && github.event.action == 'labeled' && github.event.label.name == 'run-ci') || (github.event.action == 'edited' && github.event.changes.base != null && (github.base_ref == 'main' || (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci'))))) }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -158,7 +164,7 @@ jobs:
           node-version: 22
 
       - name: Test CI selection and gates
-        run: node --test scripts/ci-scope.test.mjs scripts/check-image-budget.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/pr-changelog-line.test.mjs scripts/pr-issue-link-check.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/fork-sync-guard.test.mjs scripts/ci-runners.test.mjs scripts/ci-required-jobs.test.mjs scripts/ci-locale-parity.test.mjs scripts/ci-vitest-timeout.test.mjs scripts/merge-queue-dequeue-report.test.mjs scripts/pr-main-sync.test.mjs scripts/page-load-report.test.mjs scripts/phone-network.test.mjs deploy/cd/release-manifest.test.mjs deploy/cd/drift-receipt.test.mjs
+        run: node --test scripts/ci-scope.test.mjs scripts/check-image-budget.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/pr-changelog-line.test.mjs scripts/pr-issue-link-check.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/fork-sync-guard.test.mjs scripts/ci-runners.test.mjs scripts/ci-required-jobs.test.mjs scripts/ci-stacked-pr.test.mjs scripts/ci-locale-parity.test.mjs scripts/ci-vitest-timeout.test.mjs scripts/merge-queue-dequeue-report.test.mjs scripts/pr-main-sync.test.mjs scripts/page-load-report.test.mjs scripts/phone-network.test.mjs deploy/cd/release-manifest.test.mjs deploy/cd/drift-receipt.test.mjs
 
       - name: Filter paths
         id: filter
@@ -415,7 +421,7 @@ jobs:
   # Preserve the aggregate check names while validating intentional skips.
   frontend:
     needs: [changes, frontend-build, frontend-test, frontend-views-test, locale-parity, frontend-quality]
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && needs.changes.result != 'skipped' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -763,7 +769,7 @@ jobs:
   # SQL verification, and the vulnerability scan to run independently.
   backend:
     needs: [changes, backend-tests, backend-agent-tests, sqlc-check, go-vulnerability-scan, go-lint, script-checks, installer, deploy-cd]
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && needs.changes.result != 'skipped' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
