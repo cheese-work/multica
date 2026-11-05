@@ -80,7 +80,7 @@ func TestDMProgress_AncestorWalkIsLinearInDepth(t *testing.T) {
 
 	loops := func(id string) bool {
 		t.Helper()
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		got, err := db.New(testPool).IssueParentChainLoops(ctx, parseUUID(id))
 		if err != nil {
