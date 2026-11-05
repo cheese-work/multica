@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, UserPlus, X } from "@multica/ui/icons";
 import { api } from "@multica/core/api";
@@ -86,7 +86,11 @@ export function CreateSquadModal({ onClose }: { onClose: () => void }) {
   const { name, description, avatarUrl, leaderId, members: selectedMembers } = draft;
   const setName = (v: string) => patchDraft({ name: v });
   const setDescription = (v: string) => patchDraft({ description: v });
-  const setAvatarUrl = (v: string | null) => patchDraft({ avatarUrl: v });
+  // An upload can settle after a successful create; it must not recreate the draft.
+  const createdRef = useRef(false);
+  const setAvatarUrl = (v: string | null) => {
+    if (!createdRef.current) patchDraft({ avatarUrl: v });
+  };
   const setSelectedMembers = (v: SelectedMember[]) => patchDraft({ members: v });
   const [creating, setCreating] = useState(false);
 
@@ -140,6 +144,7 @@ export function CreateSquadModal({ onClose }: { onClose: () => void }) {
         });
       }
 
+      createdRef.current = true;
       clearDraft();
       onClose();
       toast.success(t(($) => $.create_squad.toast_created));

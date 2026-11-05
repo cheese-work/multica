@@ -525,4 +525,20 @@ describe("CreateSquadModal", () => {
     renderModal();
     expect(screen.getByPlaceholderText(/e\.g\. Frontend Team/i)).toHaveValue("");
   });
+
+  it("a late avatar upload after a successful create does not bring the draft back", async () => {
+    mocks.createSquad.mockResolvedValueOnce(makeSquad());
+    renderModal();
+    fireEvent.change(screen.getByPlaceholderText(/e\.g\. Frontend Team/i), {
+      target: { value: "Platform" },
+    });
+    fireEvent.click(firstMatch("MineAgentOne"));
+    fireEvent.click(getSubmitButton());
+    await waitFor(() => expect(mocks.navigationPush).toHaveBeenCalled());
+    expect(useCreateSquadDraftStore.getState().getDraft("create")).toBeUndefined();
+
+    fireEvent.click(screen.getByTestId("avatar-picker"));
+
+    expect(useCreateSquadDraftStore.getState().getDraft("create")).toBeUndefined();
+  });
 });
