@@ -179,3 +179,40 @@ func TestReanchorChatInputAcrossFloor(t *testing.T) {
 		t.Errorf("second reanchor changed order: %v", again)
 	}
 }
+
+// A batch older than a later decision ask card must not be restamped past it:
+// the answer binding trusts "after the ping" as proof the human replied to it.
+func TestReanchorChatInputAcrossFloorSkipsBatchOlderThanAskCard(t *testing.T) {
+	fx := newCompactFixture(t)
+	sid := parseTestUUID(t, fx.sessionID)
+	tid := parseTestUUID(t, fx.taskID)
+	u1 := seedChatMessage(t, fx.sessionID, "user", fx.taskID)
+	if status, body := postCompact(t, fx.token, "Summary."); status != http.StatusOK {
+		t.Fatalf("compact = %d %s, want 200", status, body)
+	}
+	var cardID string
+	if err := testPool.QueryRow(ctx(), `
+		INSERT INTO chat_message (chat_session_id, role, content, decision_request_ids)
+		VALUES ($1, 'assistant', 'ask', ARRAY[gen_random_uuid()]) RETURNING id::text`, fx.sessionID).Scan(&cardID); err != nil {
+		t.Fatal(err)
+	}
+	var before time.Time
+	if err := testPool.QueryRow(ctx(), `SELECT created_at FROM chat_message WHERE id = $1`, u1).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.New(testPool).ReanchorChatInputAcrossFloor(ctx(), db.ReanchorChatInputAcrossFloorParams{
+		ChatSessionID: sid, InputTaskID: tid, DispatchedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var after, cardAt time.Time
+	if err := testPool.QueryRow(ctx(), `SELECT created_at FROM chat_message WHERE id = $1`, u1).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if err := testPool.QueryRow(ctx(), `SELECT created_at FROM chat_message WHERE id = $1`, cardID).Scan(&cardAt); err != nil {
+		t.Fatal(err)
+	}
+	if !after.Equal(before) || after.After(cardAt) {
+		t.Errorf("batch restamped past ask card: before=%v after=%v card=%v", before, after, cardAt)
+	}
+}

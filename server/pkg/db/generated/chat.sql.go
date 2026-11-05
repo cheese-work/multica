@@ -4794,6 +4794,21 @@ WITH batch AS (
       AND m.role = 'user'
       AND cs.segment_floor_id IS NOT NULL
       AND (m.created_at, m.id) <= (cs.segment_floor_at, cs.segment_floor_id)
+      AND NOT EXISTS (
+        SELECT 1
+        FROM chat_message card
+        WHERE card.chat_session_id = m.chat_session_id
+          AND (card.created_at, card.id) > (m.created_at, m.id)
+          AND (
+            cardinality(card.decision_request_ids) > 0
+            OR card.id IN (
+              SELECT request.ping_message_id
+              FROM decision_request request
+              WHERE request.chat_session_id = m.chat_session_id
+                AND request.ping_message_id IS NOT NULL
+            )
+          )
+      )
 ), base AS (
     SELECT GREATEST($3::timestamptz, max(created_at) + interval '1 microsecond') AS at
     FROM chat_message WHERE chat_session_id = $1
@@ -4814,7 +4829,10 @@ type ReanchorChatInputAcrossFloorParams struct {
 // query touches. If the batch sits at or before the DM's segment floor, move it
 // just after the latest row so the question stays beside its answer. Order is
 // kept with distinct microsecond offsets. No-op without a floor or when the
-// batch is already above it. Caller runs it in the claim transaction.
+// batch is already above it. A batch older than a decision ask card stays put:
+// decision answers trust "after the ask" as proof of a reply, so restamping old
+// input past a later card would let it pass as a fresh answer. Caller runs it
+// in the claim transaction.
 func (q *Queries) ReanchorChatInputAcrossFloor(ctx context.Context, arg ReanchorChatInputAcrossFloorParams) error {
 	_, err := q.db.Exec(ctx, reanchorChatInputAcrossFloor, arg.ChatSessionID, arg.InputTaskID, arg.DispatchedAt)
 	return err
