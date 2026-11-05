@@ -13,7 +13,9 @@ import type { WakeupDefinition, WakeupDefinitionConfig, WakeupDefinitionScope, W
 import { Button } from "@multica/ui/components/ui/button";
 import { Switch } from "@multica/ui/components/ui/switch";
 import { Textarea } from "@multica/ui/components/ui/textarea";
+import { useWorkspacePaths } from "@multica/core/paths";
 import { useT } from "../../i18n";
+import { AppLink } from "../../navigation";
 import { useWakeupText } from "./wakeup-presentation";
 
 const MAX_INSTRUCTION_BYTES = 4000;
@@ -25,7 +27,7 @@ const PLATFORM_RULES = ["pr_merged", "pr_checks_failed", "pr_needs_attention"] a
  * what this issue overrides. It renders only when the server accepts definition
  * writes, so an older server shows nothing new.
  */
-export function IssueWakeupDefaults({ workspaceId, issueId }: { workspaceId: string; issueId: string }) {
+export function IssueWakeupDefaults({ workspaceId, issueId, projectId }: { workspaceId: string; issueId: string; projectId?: string }) {
   const { t } = useT("issues");
   const scope: WakeupDefinitionScope = { kind: "issue", id: issueId };
   const { data } = useQuery(wakeupDefinitionsOptions(workspaceId, scope));
@@ -45,6 +47,7 @@ export function IssueWakeupDefaults({ workspaceId, issueId }: { workspaceId: str
             workspaceId={workspaceId}
             scope={scope}
             ruleKey={key}
+            projectId={projectId}
             override={overrides.find((d) => d.rule_key === key) ?? null}
           />
         ))}
@@ -58,13 +61,16 @@ function DefaultRule({
   scope,
   ruleKey,
   override,
+  projectId,
 }: {
   workspaceId: string;
   scope: WakeupDefinitionScope;
   ruleKey: string;
   override: WakeupDefinition | null;
+  projectId?: string;
 }) {
   const { t } = useT("issues");
+  const paths = useWorkspacePaths();
   const text = useWakeupText();
   const remove = useDeleteWakeupDefinition(workspaceId, scope);
   // The override as it was when the edit opened: a refetch must not move the
@@ -92,7 +98,17 @@ function DefaultRule({
         <span className="min-w-0 flex-1 break-words">{title}</span>
         <span className={`shrink-0 text-caption ${state === "on" ? "text-muted-foreground" : "text-warning"}`}>{stateText}</span>
       </div>
-      <p className="text-caption text-muted-foreground">{origin}</p>
+      <p className="text-caption text-muted-foreground">
+        {origin}
+        {!override && projectId && inheritedFrom(rule) === "project" && (
+          <>
+            {" · "}
+            <AppLink href={paths.projectWakeups(projectId)} className="underline underline-offset-2 hover:text-foreground">
+              {t(($) => $.wakeups.defaults.open_project)}
+            </AppLink>
+          </>
+        )}
+      </p>
       {editing ? (
         <OverrideForm
           workspaceId={workspaceId}
@@ -243,8 +259,12 @@ function ruleTitle(t: Translate, ruleKey: string, rule: WakeupEffectiveRule) {
 }
 
 /** The scope a rule's on/off, or failing that its instruction, is inherited from. */
+function inheritedFrom(rule: WakeupEffectiveRule) {
+  return rule.sources.enabled ?? rule.sources.instruction;
+}
+
 function sourceName(t: Translate, rule: WakeupEffectiveRule) {
-  const source = rule.sources.enabled ?? rule.sources.instruction;
+  const source = inheritedFrom(rule);
   return source === "workspace"
     ? t(($) => $.wakeups.defaults.source_workspace)
     : source === "project"
