@@ -410,3 +410,25 @@ func (q *Queries) SetChatWakeupFiredTask(ctx context.Context, arg SetChatWakeupF
 	_, err := q.db.Exec(ctx, setChatWakeupFiredTask, arg.ID, arg.FiredTaskID)
 	return err
 }
+
+const stampChatTaskWatchSource = `-- name: StampChatTaskWatchSource :exec
+UPDATE agent_task_queue SET
+    taint_ids = COALESCE((SELECT c.taint_ids FROM comment c WHERE c.id = $1::uuid), '{}'),
+    trigger_evidence_kind = 'comment',
+    trigger_evidence_ref_id = $1::uuid
+WHERE id = $2::uuid
+`
+
+type StampChatTaskWatchSourceParams struct {
+	CommentID pgtype.UUID `json:"comment_id"`
+	TaskID    pgtype.UUID `json:"task_id"`
+}
+
+// The DM turn a watch fires reads the matched comment, so the task names it as
+// its trigger evidence and takes its taint, read here in the task's own
+// transaction (the task trigger unions it with what the task has). Taint only
+// grows, so this is never older than what the watch read.
+func (q *Queries) StampChatTaskWatchSource(ctx context.Context, arg StampChatTaskWatchSourceParams) error {
+	_, err := q.db.Exec(ctx, stampChatTaskWatchSource, arg.CommentID, arg.TaskID)
+	return err
+}

@@ -58,3 +58,14 @@ WHERE issue_id = @issue_id AND type = 'comment' AND created_at > @since
   AND (@actor_id::uuid IS NULL OR author_id = @actor_id)
 ORDER BY created_at, id
 LIMIT 1;
+
+-- name: StampChatTaskWatchSource :exec
+-- The DM turn a watch fires reads the matched comment, so the task names it as
+-- its trigger evidence and takes its taint, read here in the task's own
+-- transaction (the task trigger unions it with what the task has). Taint only
+-- grows, so this is never older than what the watch read.
+UPDATE agent_task_queue SET
+    taint_ids = COALESCE((SELECT c.taint_ids FROM comment c WHERE c.id = sqlc.arg('comment_id')::uuid), '{}'),
+    trigger_evidence_kind = 'comment',
+    trigger_evidence_ref_id = sqlc.arg('comment_id')::uuid
+WHERE id = sqlc.arg('task_id')::uuid;

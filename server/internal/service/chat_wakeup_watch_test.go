@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -270,7 +271,7 @@ func TestChatWatchFireRechecksMembershipInTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.removeMember(t)
-	if err := f.svc.fire(context.Background(), w, chatWatchContent(w, "Event: a comment")); err != nil {
+	if err := f.svc.fire(context.Background(), w, chatWatchContent(w, "Event: a comment"), pgtype.UUID{}); err != nil {
 		t.Fatalf("fire: %v", err)
 	}
 	if got := f.status(t, w); got != "cancelled" || f.queuedTurns(t) != 0 {
@@ -325,5 +326,68 @@ func TestChatWatchTickIsBoundedAndResumes(t *testing.T) {
 	f.tick(t)
 	if got := fired(); got != 5 {
 		t.Fatalf("fired watches after 3 ticks = %d, want 5 (the scan resumes, not restarts)", got)
+	}
+}
+
+// A tainted comment that fires a watch must not reach a clean DM task: the
+// task names the comment as its trigger evidence and carries its taint, and
+// work the task delegates inherits that taint (so the elevation fence refuses it).
+func TestChatWatchTaintedCommentTaintsDMTaskAndItsDelegates(t *testing.T) {
+	f := newChatWakeupFixture(t)
+	w, err := f.watch(t, ChatWakeupInput{Event: "comment.created", ActorType: "agent", ActorID: util.MustParseUUID(f.agentID)})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	ctx := context.Background()
+	var commentID string
+	if err := f.pool.QueryRow(ctx,
+		`INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, taint_ids)
+		 SELECT id, workspace_id, 'agent', $2::uuid, 'read an untrusted page', ARRAY['ext-1'] FROM issue WHERE id = $1 RETURNING id::text`,
+		f.issueID, f.agentID).Scan(&commentID); err != nil {
+		t.Fatal(err)
+	}
+	f.tick(t)
+	if got := f.status(t, w); got != "fired" {
+		t.Fatalf("status = %q, want fired", got)
+	}
+	var taint []string
+	var kind, ref string
+	var taskID string
+	if err := f.pool.QueryRow(ctx, `
+		SELECT id::text, taint_ids, COALESCE(trigger_evidence_kind, ''), COALESCE(trigger_evidence_ref_id::text, '')
+		FROM agent_task_queue WHERE chat_session_id = $1 AND status = 'queued'`, f.sessionID).Scan(&taskID, &taint, &kind, &ref); err != nil {
+		t.Fatal(err)
+	}
+	if len(taint) != 1 || taint[0] != "ext-1" || kind != "comment" || ref != commentID {
+		t.Fatalf("DM task taint = %v, evidence = %q/%q; want [ext-1], comment/%s", taint, kind, ref, commentID)
+	}
+	var delegated []string
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, delegated_from_task_id)
+		VALUES ($1, $2, $3, 'queued', 2, $4) RETURNING taint_ids`,
+		f.agentID, f.runtimeID, f.issueID, taskID).Scan(&delegated); err != nil {
+		t.Fatal(err)
+	}
+	if len(delegated) != 1 || delegated[0] != "ext-1" {
+		t.Fatalf("delegated task taint = %v, want [ext-1]", delegated)
+	}
+}
+
+// A clean comment leaves the DM task clean.
+func TestChatWatchCleanCommentLeavesDMTaskClean(t *testing.T) {
+	f := newChatWakeupFixture(t)
+	w, err := f.watch(t, ChatWakeupInput{Event: "comment.created"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.comment(t, "agent", f.agentID, "all good")
+	f.tick(t)
+	if got := f.status(t, w); got != "fired" {
+		t.Fatalf("status = %q, want fired", got)
+	}
+	var n int
+	if err := f.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM agent_task_queue WHERE chat_session_id = $1 AND status = 'queued' AND cardinality(taint_ids) > 0`, f.sessionID).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("tainted DM tasks = %d, err = %v; want 0", n, err)
 	}
 }

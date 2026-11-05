@@ -206,7 +206,7 @@ func (s *ChatWakeupService) Tick(ctx context.Context) error {
 		if w.IssueID.Valid {
 			err = s.handleWatch(ctx, w, true)
 		} else {
-			err = s.fire(ctx, w, expiryContent(w))
+			err = s.fire(ctx, w, expiryContent(w), pgtype.UUID{})
 		}
 		if err != nil {
 			slog.Warn("chat wakeup fire failed", "wakeup_id", util.UUIDToString(w.ID), "error", err)
@@ -222,7 +222,8 @@ func chatWakeupContent(instruction string) string {
 	return "[Scheduled wakeup — you set this earlier in this DM; no person wrote this message.]\nInstruction: " + instruction
 }
 
-func (s *ChatWakeupService) fire(ctx context.Context, w db.ChatWakeup, content string) error {
+// fire sends the turn. A turn that quotes a comment passes its id: the DM task takes the comment's taint.
+func (s *ChatWakeupService) fire(ctx context.Context, w db.ChatWakeup, content string, sourceComment pgtype.UUID) error {
 	q := s.Tasks.Queries
 	drop := func() error { return q.DropChatWakeup(ctx, w.ID) }
 	if content == "" { // an expired watch that was not asked to wake the DM
@@ -273,6 +274,11 @@ func (s *ChatWakeupService) fire(ctx context.Context, w db.ChatWakeup, content s
 			content, nil, "", pgtype.UUID{}, chatWakeupSentVia)
 		if err != nil {
 			return err
+		}
+		if sourceComment.Valid {
+			if err := qtx.StampChatTaskWatchSource(ctx, db.StampChatTaskWatchSourceParams{TaskID: sent.Task.ID, CommentID: sourceComment}); err != nil {
+				return err
+			}
 		}
 		claimed = true
 		return qtx.SetChatWakeupFiredTask(ctx, db.SetChatWakeupFiredTaskParams{ID: w.ID, FiredTaskID: sent.Task.ID})
