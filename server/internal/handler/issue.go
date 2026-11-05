@@ -2075,7 +2075,8 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 			return
 		}
 		sortRowsByEffectiveDue(issues, projections)
-		issues = issues[min(offset, len(issues)):min(offset+limit, len(issues))]
+		start := min(offset, len(issues)) // bound before adding: offset+limit can overflow
+		issues = issues[start : start+min(limit, len(issues)-start)]
 	}
 	ids := make([]pgtype.UUID, len(issues))
 	for i, issue := range issues {

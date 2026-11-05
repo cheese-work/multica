@@ -83,3 +83,18 @@ func TestListSortEffectiveDue(t *testing.T) {
 		}
 	}
 }
+
+// An offset near MaxInt64 must give an empty page, not an overflow panic.
+func TestListSortEffectiveDueHugeOffset(t *testing.T) {
+	project := dbfx.Project(t, "sort effective due offset")
+	dbfx.Issue(t, "only", testutil.Cols{"project_id": project})
+	var resp struct {
+		Issues []struct{} `json:"issues"`
+		Total  int        `json:"total"`
+	}
+	req := newRequest("GET", "/api/issues?sort=effective_due&offset=9223372036854775807&project_id="+project, nil)
+	testutil.Call(t, testHandler.ListIssues, req).Want(http.StatusOK).JSON(&resp)
+	if len(resp.Issues) != 0 || resp.Total != 1 {
+		t.Fatalf("want empty page with total 1, got %d issues, total %d", len(resp.Issues), resp.Total)
+	}
+}
