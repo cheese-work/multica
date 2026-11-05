@@ -1913,6 +1913,20 @@ UPDATE chat_session
 SET last_read_at = sqlc.arg('message_created_at')::timestamptz - interval '1 microsecond'
 WHERE id = $1;
 
+-- name: MarkChatSessionUnread :exec
+-- Places the read cursor just before the latest assistant message that counts
+-- toward unread_count, so unread_count is at least 1. No such message: no-op.
+UPDATE chat_session cs
+SET last_read_at = latest.created_at - interval '1 microsecond'
+FROM (
+  SELECT max(m.created_at) AS created_at
+  FROM chat_message m
+  WHERE m.chat_session_id = sqlc.arg('id')
+    AND m.role = 'assistant'
+    AND m.message_kind NOT IN ('decision_cancel_notice', 'decision_reference')
+) latest
+WHERE cs.id = sqlc.arg('id') AND latest.created_at IS NOT NULL;
+
 -- name: ChatSessionHasUserMessage :one
 -- Reports whether a session has any human (role='user') message yet. Used to
 -- scope the is_agent_intro self-introduction prompt to the very first,
