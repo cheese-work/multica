@@ -1,11 +1,14 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
@@ -119,5 +122,48 @@ func TestListSortEffectiveDueCap(t *testing.T) {
 	w := testutil.Call(t, testHandler.ListIssues, req).Want(http.StatusBadRequest)
 	if !strings.Contains(w.Body.String(), "narrow") {
 		t.Fatalf("400 must tell the caller to narrow the filter, got %s", w.Body.String())
+	}
+}
+
+type issueQueryRecorder struct {
+	dbExecutor
+	queries []string
+}
+
+func (r *issueQueryRecorder) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	r.queries = append(r.queries, sql)
+	return r.dbExecutor.Query(ctx, sql, args...)
+}
+
+// The candidate set (up to effectiveDueMaxCandidates+1 rows) is read narrow:
+// no description, metadata or properties. Those load only for the returned
+// page, so a one-row sort cannot materialize every candidate's large fields.
+func TestListSortEffectiveDueCandidatesAreNarrow(t *testing.T) {
+	project := dbfx.Project(t, "sort effective due narrow")
+	for i, due := range []string{"2026-12-03", "2026-12-01", "2026-12-02"} {
+		dbfx.Issue(t, fmt.Sprintf("narrow %d", i), testutil.Cols{"project_id": project, "due_date": due, "description": fmt.Sprintf("body %d", i)})
+	}
+	rec := &issueQueryRecorder{dbExecutor: testHandler.DB}
+	h := *testHandler
+	h.DB = rec
+	var resp struct {
+		Issues []struct {
+			Title       string  `json:"title"`
+			Description *string `json:"description"`
+		} `json:"issues"`
+	}
+	req := newRequest("GET", "/api/issues?sort=effective_due&limit=1&offset=1&project_id="+project, nil)
+	testutil.Call(t, h.ListIssues, req).Want(http.StatusOK).JSON(&resp)
+	if len(resp.Issues) != 1 || resp.Issues[0].Title != "narrow 2" || resp.Issues[0].Description == nil || *resp.Issues[0].Description != "body 2" {
+		t.Fatalf("page must be the second-earliest issue with its description, got %+v", resp.Issues)
+	}
+	for _, q := range rec.queries {
+		if strings.Contains(q, "ORDER BY") && strings.Contains(q, "FROM issue i") {
+			for _, col := range []string{"i.description", "i.metadata", "i.properties"} {
+				if strings.Contains(q, col) {
+					t.Fatalf("candidate query must not read %s: %s", col, q)
+				}
+			}
+		}
 	}
 }

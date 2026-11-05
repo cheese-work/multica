@@ -1511,6 +1511,68 @@ func (h *Handler) QueryIssues(w http.ResponseWriter, r *http.Request) {
 	h.ListIssues(w, r)
 }
 
+// listIssueColumns is the ListIssues select list. narrow nulls the large
+// description/metadata/properties columns for the effective_due candidate read.
+func listIssueColumns(narrow bool) string {
+	description, metadata, properties := "i.description", "i.metadata", "i.properties"
+	if narrow {
+		description, metadata, properties = "NULL::text", "NULL::jsonb", "NULL::jsonb"
+	}
+	return `i.id, i.workspace_id, i.title, ` + description + `, i.status, i.priority,
+       i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
+       i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, ` + metadata + `, i.stage, ` + properties + `,
+       i.revision, i.duplicate_of_issue_id`
+}
+
+func scanListIssueRows(rows pgx.Rows) ([]db.ListIssuesRow, error) {
+	var issues []db.ListIssuesRow
+	for rows.Next() {
+		var row db.ListIssuesRow
+		if err := rows.Scan(
+			&row.ID, &row.WorkspaceID, &row.Title, &row.Description, &row.Status, &row.Priority,
+			&row.AssigneeType, &row.AssigneeID, &row.CreatorType, &row.CreatorID,
+			&row.ParentIssueID, &row.Position, &row.StartDate, &row.DueDate,
+			&row.CreatedAt, &row.UpdatedAt, &row.LastActivityAt, &row.Number, &row.ProjectID,
+			&row.Metadata, &row.Stage, &row.Properties, &row.Revision, &row.DuplicateOfIssueID,
+		); err != nil {
+			return nil, err
+		}
+		issues = append(issues, row)
+	}
+	return issues, rows.Err()
+}
+
+// fullListIssueRows re-reads page (already sorted) with every column, keeping order.
+func (h *Handler) fullListIssueRows(ctx context.Context, wsUUID pgtype.UUID, page []db.ListIssuesRow) ([]db.ListIssuesRow, error) {
+	if len(page) == 0 {
+		return page, nil
+	}
+	ids := make([]pgtype.UUID, len(page))
+	for i, r := range page {
+		ids[i] = r.ID
+	}
+	rows, err := h.DB.Query(ctx, `SELECT `+listIssueColumns(false)+` FROM issue i WHERE i.workspace_id = $1 AND i.id = ANY($2)`, wsUUID, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	full, err := scanListIssueRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[pgtype.UUID]db.ListIssuesRow, len(full))
+	for _, r := range full {
+		byID[r.ID] = r
+	}
+	out := page[:0:0]
+	for _, r := range page {
+		if f, ok := byID[r.ID]; ok { // a row deleted mid-request just drops out
+			out = append(out, f)
+		}
+	}
+	return out, nil
+}
+
 // effectiveDueMaxCandidates bounds the rows loaded and projected for
 // sort=effective_due. Var so tests can lower it.
 var effectiveDueMaxCandidates = 2000
@@ -1995,14 +2057,11 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	offsetRef := addArg(fetchOffset)
 	limitRef := addArg(fetchLimit)
 
-	query := fmt.Sprintf(`SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
-       i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
-       i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-	   i.revision, i.duplicate_of_issue_id
+	query := fmt.Sprintf(`SELECT %s
 FROM issue i
 WHERE %s
 ORDER BY %s
-LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
+LIMIT %s OFFSET %s`, listIssueColumns(sortByEffectiveDue), whereSql, orderBy, limitRef, offsetRef)
 
 	rows, err := h.DB.Query(ctx, query, args...)
 	if err != nil {
@@ -2012,43 +2071,9 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 	}
 	defer rows.Close()
 
-	var issues []db.ListIssuesRow
-	for rows.Next() {
-		var row db.ListIssuesRow
-		if err := rows.Scan(
-			&row.ID,
-			&row.WorkspaceID,
-			&row.Title,
-			&row.Description,
-			&row.Status,
-			&row.Priority,
-			&row.AssigneeType,
-			&row.AssigneeID,
-			&row.CreatorType,
-			&row.CreatorID,
-			&row.ParentIssueID,
-			&row.Position,
-			&row.StartDate,
-			&row.DueDate,
-			&row.CreatedAt,
-			&row.UpdatedAt,
-			&row.LastActivityAt,
-			&row.Number,
-			&row.ProjectID,
-			&row.Metadata,
-			&row.Stage,
-			&row.Properties,
-			&row.Revision,
-			&row.DuplicateOfIssueID,
-		); err != nil {
-			slog.Warn("ListIssues scan failed", "error", err)
-			writeError(w, http.StatusInternalServerError, "failed to list issues")
-			return
-		}
-		issues = append(issues, row)
-	}
-	if err := rows.Err(); err != nil {
-		slog.Warn("ListIssues rows failed", "error", err)
+	issues, err := scanListIssueRows(rows)
+	if err != nil {
+		slog.Warn("ListIssues scan failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to list issues")
 		return
 	}
@@ -2097,6 +2122,13 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 		sortRowsByEffectiveDue(issues, projections)
 		start := min(offset, len(issues)) // bound before adding: offset+limit can overflow
 		issues = issues[start : start+min(limit, len(issues)-start)]
+		// Candidates were read without description/metadata/properties; load
+		// those only for the page, so a deep sort cannot buffer 2,001 large rows.
+		if issues, err = h.fullListIssueRows(ctx, wsUUID, issues); err != nil {
+			slog.Warn("ListIssues page fetch failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to list issues")
+			return
+		}
 	}
 	ids := make([]pgtype.UUID, len(issues))
 	for i, issue := range issues {
