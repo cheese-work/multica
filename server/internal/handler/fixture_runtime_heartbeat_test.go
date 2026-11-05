@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"testing"
 	"time"
@@ -28,7 +29,9 @@ func keepRuntimeFresh(ctx context.Context, pool *pgxpool.Pool, runtimeID string,
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				_, _ = pool.Exec(ctx, `UPDATE agent_runtime SET last_seen_at = now() WHERE id = $1`, runtimeID)
+				if _, err := pool.Exec(ctx, `UPDATE agent_runtime SET last_seen_at = now() WHERE id = $1`, runtimeID); err != nil && ctx.Err() == nil {
+					log.Printf("keepRuntimeFresh: %v", err)
+				}
 			}
 		}
 	}()
@@ -49,7 +52,13 @@ func TestFixtureRuntimeStaysClaimablePastFreshnessWindow(t *testing.T) {
 	})
 	stop := keepRuntimeFresh(context.Background(), testPool, testRuntimeID, 10*time.Millisecond)
 	defer stop()
-	time.Sleep(100 * time.Millisecond)
+	deadline := time.Now().Add(5 * time.Second)
+	for dbfx.Count(t, `SELECT count(*) FROM agent_runtime WHERE id = $1 AND last_seen_at > now() - interval '60 seconds'`, testRuntimeID) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("heartbeat did not refresh last_seen_at")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	agentID := createHandlerTestAgent(t, "Heartbeat claim agent", nil)
 	issueID := dbfx.Issue(t, "heartbeat claim", testutil.Cols{"priority": "medium", "number": 88011})

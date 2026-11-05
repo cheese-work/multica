@@ -13,9 +13,18 @@ import (
 
 // drainTick runs one pass over the workspace with room to finish: these tests
 // pin which rules a pass reaches, not how fast a loaded CI machine runs them.
+// A rule row held past dispatch's 50ms lock wait fails that pass and keeps its
+// pending hint, and the scheduler's next pass fires it; so a lock timeout (and
+// only that) repeats the pass, up to three times.
 func drainTick(t *testing.T, s *IssueWakeupService, ws pgtype.UUID) {
 	t.Helper()
-	if err := s.tickWith(context.Background(), []pgtype.UUID{ws}, tickLimits{budget: 5 * time.Minute, inputBudget: 5 * time.Minute}); err != nil {
+	var err error
+	for range 3 {
+		if err = s.tickWith(context.Background(), []pgtype.UUID{ws}, tickLimits{budget: 5 * time.Minute, inputBudget: 5 * time.Minute}); !isLockTimeout(err) {
+			break
+		}
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 }
@@ -349,5 +358,40 @@ func TestPendingWakeupInputsReportsAnIncompleteScan(t *testing.T) {
 	cancel()
 	if _, err := s.pendingInputs(ctx, []pgtype.UUID{parseTestUUID(t, f.WorkspaceID)}, wakeupPendingScanPage); err == nil {
 		t.Fatal("a scan whose context ended reported a complete result")
+	}
+}
+
+// A rule whose row another writer holds past dispatch's 50ms lock wait fails
+// that pass and keeps its pending hint; the next pass fires it. drainTick
+// must ride out that transient lock timeout, as the scheduler's next pass does.
+func TestDrainTickRetriesTransientLockTimeout(t *testing.T) {
+	f, s, issue, reviewer := conditionFixture(t)
+	ctx := context.Background()
+	ws := parseTestUUID(t, f.WorkspaceID)
+	w := wakeCreate(t, f, s, issue, WakeupInput{AgentID: reviewer, Kind: "event", Instruction: "Review it",
+		Condition: condition(t, map[string]any{"type": "issue_field", "field": "status", "value": "in_review"})})
+	f.Exec(t, "UPDATE issue_wakeup SET next_fire_at=now()-interval '1 second' WHERE id=$1", w.ID)
+	f.Exec(t, "UPDATE issue SET status='in_review' WHERE id=$1", issue)
+
+	locked, released := make(chan error, 1), make(chan struct{})
+	go func() {
+		defer close(released)
+		holder, err := f.Pool.Begin(ctx)
+		if err != nil {
+			locked <- err
+			return
+		}
+		defer holder.Rollback(ctx)
+		_, err = holder.Exec(ctx, "SELECT 1 FROM issue_wakeup WHERE id=$1 FOR UPDATE", w.ID)
+		locked <- err
+		time.Sleep(400 * time.Millisecond)
+	}()
+	if err := <-locked; err != nil {
+		t.Fatal(err)
+	}
+	drainTick(t, s, ws)
+	<-released
+	if n := wakeRuns(t, f, w.ID); n != 1 {
+		t.Fatalf("reviewer runs after the lock cleared = %d, want 1", n)
 	}
 }
