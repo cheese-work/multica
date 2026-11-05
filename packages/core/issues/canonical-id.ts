@@ -1,7 +1,12 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Issue } from "../types";
-import { issueDetailOptions, issueKeys } from "./queries";
+import {
+  issueDetailOptions,
+  issueFetchRetryDelay,
+  issueKeys,
+  retryIssueFetch,
+} from "./queries";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -80,6 +85,8 @@ export function useCanonicalIssue(wsId: string, routeId: string): CanonicalIssue
 
   const resolve = useQuery({
     ...issueDetailOptions(wsId, routeId),
+    retry: retryIssueFetch,
+    retryDelay: issueFetchRetryDelay,
     enabled: resolveEnabled,
   });
 

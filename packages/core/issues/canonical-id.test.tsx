@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { setApiInstance } from "../api";
@@ -253,12 +253,13 @@ describe("useCanonicalIssue", () => {
   });
 
   // Regression (CHE-3411): any failed resolution used to read as "deleted".
-  // A 5xx or a timeout says nothing about whether the issue exists.
+  // A 401 or a timeout says nothing about whether the issue exists.
   it("reports a non-404 failure as a retryable load error, not not-found", async () => {
     const noRetry = new QueryClient({
       defaultOptions: { queries: { staleTime: Infinity, retry: false } },
     });
-    getIssue.mockRejectedValueOnce(new ApiError("boom", 500, "Internal Server Error"));
+    // A 401 is not retried by the lookup policy, so it settles at once.
+    getIssue.mockRejectedValueOnce(new ApiError("unauthorized", 401, "Unauthorized"));
 
     const { result } = renderHook(() => useCanonicalIssue("ws-1", "TRS-134"), {
       wrapper: createWrapper(noRetry),
@@ -273,6 +274,66 @@ describe("useCanonicalIssue", () => {
     expect(result.current.loadError).toBe(false);
 
     noRetry.clear();
+  });
+
+  // CHE-3535: over a lossy link one dropped request must not reach the error
+  // state. The route's lookup backs off and retries transient failures.
+  describe("transient lookup failures", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("renders the issue when network failures are followed by success", async () => {
+      vi.useFakeTimers();
+      getIssue
+        .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+        .mockRejectedValueOnce(new ApiError("bad gateway", 502, "Bad Gateway"))
+        .mockResolvedValue(issue);
+
+      const { result } = renderHook(() => useCanonicalIssue("ws-1", "TRS-134"), {
+        wrapper: createWrapper(qc),
+      });
+
+      // Still resolving, never failed, while backoff is pending.
+      await act(() => vi.advanceTimersByTimeAsync(10));
+      expect(result.current.isResolving).toBe(true);
+      expect(result.current.loadError).toBe(false);
+
+      await act(() => vi.advanceTimersByTimeAsync(10_000));
+
+      expect(result.current.canonicalId).toBe(ISSUE_UUID);
+      expect(result.current.issue).toEqual(issue);
+      expect(result.current.loadError).toBe(false);
+      expect(result.current.notFound).toBe(false);
+      expect(getIssue).toHaveBeenCalledTimes(3);
+    });
+
+    it("settles on a load error after bounded retries of a persistent failure", async () => {
+      vi.useFakeTimers();
+      getIssue.mockRejectedValue(new TypeError("Failed to fetch"));
+
+      const { result } = renderHook(() => useCanonicalIssue("ws-1", "TRS-134"), {
+        wrapper: createWrapper(qc),
+      });
+      await act(() => vi.advanceTimersByTimeAsync(60_000));
+
+      expect(result.current.loadError).toBe(true);
+      expect(result.current.notFound).toBe(false);
+      expect(getIssue).toHaveBeenCalledTimes(4);
+    });
+
+    it("does not retry a 404", async () => {
+      vi.useFakeTimers();
+      getIssue.mockRejectedValue(new ApiError("not found", 404, "Not Found"));
+
+      const { result } = renderHook(() => useCanonicalIssue("ws-1", "ZZZ-134"), {
+        wrapper: createWrapper(qc),
+      });
+      await act(() => vi.advanceTimersByTimeAsync(60_000));
+
+      expect(result.current.notFound).toBe(true);
+      expect(getIssue).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("stays idle without a workspace id", () => {

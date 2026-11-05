@@ -65,6 +65,7 @@ func (tx *prConditionTx) Exec(_ context.Context, sql string, args ...any) (pgcon
 		tx.writes++
 	case strings.Contains(sql, "SetWakeupConditionState"):
 		tx.next = args[1].(pgtype.Timestamptz)
+	case strings.Contains(sql, "LockGitHubDispatchHaltShared"):
 	default:
 		return pgconn.CommandTag{}, fmt.Errorf("unexpected write: %s", sql)
 	}

@@ -1056,6 +1056,7 @@ type DecisionRequest struct {
 	ProjectID             pgtype.UUID        `json:"project_id"`
 	Kind                  string             `json:"kind"`
 	ExpiresAt             pgtype.Timestamptz `json:"expires_at"`
+	AnswerRevision        int32              `json:"answer_revision"`
 }
 
 type DecisionWorkerLease struct {
@@ -1106,13 +1107,12 @@ type DmProgressFollow struct {
 	IssueID            pgtype.UUID        `json:"issue_id"`
 	LineageID          pgtype.UUID        `json:"lineage_id"`
 	OwnerUserID        pgtype.UUID        `json:"owner_user_id"`
-	Source             string             `json:"source"`
 	State              string             `json:"state"`
 	MutedAt            pgtype.Timestamptz `json:"muted_at"`
 	LastRenderedStatus string             `json:"last_rendered_status"`
 	LastImmediateAt    pgtype.Timestamptz `json:"last_immediate_at"`
-	ParentFollowID     pgtype.UUID        `json:"parent_follow_id"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	Reasons            []string           `json:"reasons"`
 }
 
 type DmProgressLane struct {
@@ -1154,6 +1154,19 @@ type GithubDispatchHalt struct {
 	HaltedAt    pgtype.Timestamptz `json:"halted_at"`
 }
 
+type GithubDispatchHaltAudit struct {
+	ID           pgtype.UUID        `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	Scope        string             `json:"scope"`
+	Halted       bool               `json:"halted"`
+	ActorID      pgtype.UUID        `json:"actor_id"`
+	ActorSource  string             `json:"actor_source"`
+	RunsRevoked  int32              `json:"runs_revoked"`
+	SweepFailed  bool               `json:"sweep_failed"`
+	SweepPending bool               `json:"sweep_pending"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
 type GithubInstallation struct {
 	ID               pgtype.UUID        `json:"id"`
 	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
@@ -1164,6 +1177,7 @@ type GithubInstallation struct {
 	ConnectedByID    pgtype.UUID        `json:"connected_by_id"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	AccountID        pgtype.Int8        `json:"account_id"`
 }
 
 type GithubPendingCheckSuite struct {
@@ -2773,6 +2787,15 @@ type StageGeneration struct {
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 }
 
+type StageQueueWaiting struct {
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	AgentID          pgtype.UUID        `json:"agent_id"`
+	QueuedAt         pgtype.Timestamptz `json:"queued_at"`
+	ActorUserID      pgtype.UUID        `json:"actor_user_id"`
+	TriggerCommentID pgtype.UUID        `json:"trigger_comment_id"`
+	TaintIds         []string           `json:"taint_ids"`
+}
+
 type SysCronExecution struct {
 	ID           pgtype.UUID        `json:"id"`
 	JobName      string             `json:"job_name"`
@@ -2796,6 +2819,30 @@ type SysCronExecution struct {
 	ErrorMsg     pgtype.Text        `json:"error_msg"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+}
+
+type System1Observation struct {
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	Kind                string             `json:"kind"`
+	SubjectID           pgtype.UUID        `json:"subject_id"`
+	Class               string             `json:"class"`
+	DecisionSource      pgtype.Text        `json:"decision_source"`
+	Inputs              []byte             `json:"inputs"`
+	OptionCount         int32              `json:"option_count"`
+	RecommendedIndex    pgtype.Int4        `json:"recommended_index"`
+	AgentConfidence     pgtype.Float4      `json:"agent_confidence"`
+	PredictedKey        pgtype.Text        `json:"predicted_key"`
+	PredictedConfidence pgtype.Float4      `json:"predicted_confidence"`
+	PredictedPrecedents pgtype.Int4        `json:"predicted_precedents"`
+	PredictedAt         pgtype.Timestamptz `json:"predicted_at"`
+	ChoiceKey           pgtype.Text        `json:"choice_key"`
+	ChosenIndex         pgtype.Int4        `json:"chosen_index"`
+	AnsweredAt          pgtype.Timestamptz `json:"answered_at"`
+	TimeToAnswerMs      pgtype.Int8        `json:"time_to_answer_ms"`
+	Outcome             pgtype.Text        `json:"outcome"`
+	ReversedAt          pgtype.Timestamptz `json:"reversed_at"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 }
 
 type TaskElevation struct {
