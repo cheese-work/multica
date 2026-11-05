@@ -193,7 +193,8 @@ func noteRunInserted(ctx context.Context, q *db.Queries, issueID, taskID pgtype.
 	}
 	// A failed read leaves Xid 0: the handler then only counts committed runs.
 	xid, _ := q.CurrentXactID(ctx)
-	go (*hook)(context.WithoutCancel(ctx), RunBudgetEvent{IssueID: issue.ID, Kind: RunBudgetKindWarn80, Runs: usage.Runs, Max: usage.Max, Since: usage.Since, Xid: xid})
+	event := RunBudgetEvent{IssueID: issue.ID, Kind: RunBudgetKindWarn80, Runs: usage.Runs, Max: usage.Max, Since: usage.Since, Xid: xid}
+	goRunBudgetHook(func() { (*hook)(context.WithoutCancel(ctx), event) })
 	return nil
 }
 
@@ -265,10 +266,11 @@ func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID, tar
 	if hook := onRunBudgetExhausted.Load(); hook != nil {
 		// The guard runs inside the enqueue transaction; the hook writes the
 		// issue on its own connection after the caller is done with it.
-		go (*hook)(context.WithoutCancel(ctx), RunBudgetExhausted{
+		exhausted := RunBudgetExhausted{
 			IssueID: issue.ID, Runs: runs, Max: max, Balance: balance, Since: usage.Since,
 			Status: issue.Status, Target: target, TokensSpent: tokensSpent && balance >= 1, Tokens: tokens,
-		})
+		}
+		goRunBudgetHook(func() { (*hook)(context.WithoutCancel(ctx), exhausted) })
 	}
 	return ReviewGate{}, ErrRunBudgetExhausted
 }
