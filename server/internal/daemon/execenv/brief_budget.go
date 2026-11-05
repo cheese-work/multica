@@ -6,12 +6,14 @@ import "strings"
 // silently drops everything past it when it loads AGENTS.md (CHE-3687).
 const CodexProjectDocDefaultBytes = 32 * 1024
 
-// codexProjectDocHeadroom leaves room for a repository's own AGENTS.md, which
-// Codex concatenates under the same cap.
+// codexProjectDocHeadroom is slack over the instruction files the daemon can
+// see (separators, and a file added between the stat and the Codex launch).
 const codexProjectDocHeadroom = 16 * 1024
 
 // CodexProjectDocLimit returns the project_doc_max_bytes the daemon passes to
-// Codex for an AGENTS.md of fileBytes: never below Codex's default.
+// Codex for fileBytes of instruction files (the brief plus the parent
+// AGENTS.md files Codex concatenates under the same cap): never below Codex's
+// default.
 func CodexProjectDocLimit(fileBytes int) int {
 	return max(CodexProjectDocDefaultBytes, fileBytes+codexProjectDocHeadroom)
 }
@@ -25,10 +27,13 @@ type BriefSection struct {
 // BriefReceipt records how big the brief is and where the bytes go, so later
 // brief cuts can be measured. Truncated is true when LimitBytes would cut it.
 type BriefReceipt struct {
-	TotalBytes int            `json:"total_bytes"`
-	LimitBytes int            `json:"limit_bytes"`
-	Truncated  bool           `json:"truncated"`
-	Sections   []BriefSection `json:"sections"`
+	TotalBytes int `json:"total_bytes"`
+	// ParentBytes is the size of the other AGENTS.md files Codex loads under
+	// the same cap; Truncated counts them.
+	ParentBytes int            `json:"parent_bytes"`
+	LimitBytes  int            `json:"limit_bytes"`
+	Truncated   bool           `json:"truncated"`
+	Sections    []BriefSection `json:"sections"`
 }
 
 // NewBriefReceipt splits brief on `## ` headings outside code fences. Text
