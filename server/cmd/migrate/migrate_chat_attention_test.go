@@ -15,9 +15,9 @@ import (
 // chatAttentionVersions lists the migrations this layer owns, in order.
 var chatAttentionVersions = []string{
 	"970_chat_attention",
-	"971_chat_session_chain_root_idx",
-	"972_chat_attention_item_one_open_later_idx",
-	"973_chat_attention_item_open_idx",
+	"975_chat_session_chain_root_idx",
+	"976_chat_attention_item_one_open_later_idx",
+	"977_chat_attention_item_open_idx",
 }
 
 // versionsFor orders the versions as the runner would: up ascending, down descending.
@@ -33,7 +33,7 @@ func versionsFor(direction string) []string {
 // CREATE [UNIQUE] INDEX CONCURRENTLY in its own single-statement file.
 func TestChatAttentionMigrationsFollowRepoRules(t *testing.T) {
 	t.Parallel()
-	files, err := filepath.Glob(filepath.Join("..", "..", "migrations", "97[0-3]_*chat*.up.sql"))
+	files, err := filepath.Glob(filepath.Join("..", "..", "migrations", "97[05-7]_*chat*.up.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -37,7 +37,7 @@ UPDATE chat_session SET chain_root_session_id = id WHERE chain_root_session_id I
 --   unseen explicit mark-unseen
 -- No foreign keys (repo rule): workspace, user, session and task ids are soft references.
 -- An item must outlive the DM it was created in when the chain is continued; workspace
--- delete removes items and marks in application code. Indexes: 971-973, built CONCURRENTLY.
+-- delete removes items and marks in application code. Indexes: 975-977, built CONCURRENTLY.
 CREATE TABLE IF NOT EXISTS chat_attention_item (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     workspace_id uuid NOT NULL,
