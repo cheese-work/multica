@@ -80,25 +80,47 @@ type BackgroundTaskContext struct {
 // no issue, no chat. Only the catalog's output_only jobs qualify. The claim is
 // restricted to that runtime by ClaimAgentTask.
 func (s *TaskService) EnqueueBackgroundTask(ctx context.Context, in BackgroundTaskInput) (db.AgentTaskQueue, error) {
+	params, attr, err := s.prepareBackgroundTask(ctx, in)
+	if err != nil {
+		return db.AgentTaskQueue{}, err
+	}
+	task, err := s.Queries.CreateBackgroundTask(ctx, params)
+	if err != nil {
+		return db.AgentTaskQueue{}, fmt.Errorf("create background task: %w", err)
+	}
+	s.announceBackgroundTask(ctx, attr, task)
+	return task, nil
+}
+
+// announceBackgroundTask runs once the task row has committed.
+func (s *TaskService) announceBackgroundTask(ctx context.Context, attr attribution.Result, task db.AgentTaskQueue) {
+	s.RecordHumanDelegation(ctx, attr)
+	s.NotifyTaskEnqueued(ctx, task)
+}
+
+// prepareBackgroundTask validates the job and does every pool read the insert
+// needs, so a caller can run the insert on a transaction it already holds
+// (the quick-actions admission lock) without a second connection.
+func (s *TaskService) prepareBackgroundTask(ctx context.Context, in BackgroundTaskInput) (db.CreateBackgroundTaskParams, attribution.Result, error) {
 	spec, ok := bgagents.SpecFor(in.Job)
 	if !ok || spec.Runner != bgagents.OutputOnly {
-		return db.AgentTaskQueue{}, fmt.Errorf("%w: %q", ErrBackgroundJobNotOutputOnly, in.Job)
+		return db.CreateBackgroundTaskParams{}, attribution.Result{}, fmt.Errorf("%w: %q", ErrBackgroundJobNotOutputOnly, in.Job)
 	}
 	if in.Source != bgagents.UserSource && in.Source != bgagents.WorkspaceSource {
-		return db.AgentTaskQueue{}, fmt.Errorf("background task: chain source must be user or workspace, got %q", in.Source)
+		return db.CreateBackgroundTaskParams{}, attribution.Result{}, fmt.Errorf("background task: chain source must be user or workspace, got %q", in.Source)
 	}
 	agent, err := s.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: in.AgentID, WorkspaceID: in.WorkspaceID})
 	if err != nil {
-		return db.AgentTaskQueue{}, fmt.Errorf("load agent: %w", err)
+		return db.CreateBackgroundTaskParams{}, attribution.Result{}, fmt.Errorf("load agent: %w", err)
 	}
 	if agent.ArchivedAt.Valid {
-		return db.AgentTaskQueue{}, errors.New("agent is archived")
+		return db.CreateBackgroundTaskParams{}, attribution.Result{}, errors.New("agent is archived")
 	}
 	if !agent.RuntimeID.Valid {
-		return db.AgentTaskQueue{}, errors.New("agent has no runtime")
+		return db.CreateBackgroundTaskParams{}, attribution.Result{}, errors.New("agent has no runtime")
 	}
 	if spec.UserScoped && !in.SourceChatSessionID.Valid {
-		return db.AgentTaskQueue{}, fmt.Errorf("%w: %q", ErrBackgroundMissingSourceSession, in.Job)
+		return db.CreateBackgroundTaskParams{}, attribution.Result{}, fmt.Errorf("%w: %q", ErrBackgroundMissingSourceSession, in.Job)
 	}
 	input := in.Input
 	if r := []rune(input); len(r) > BackgroundInputMaxRunes {
@@ -121,28 +143,22 @@ func (s *TaskService) EnqueueBackgroundTask(ctx context.Context, in BackgroundTa
 	}
 	contextJSON, err := json.Marshal(payload)
 	if err != nil {
-		return db.AgentTaskQueue{}, fmt.Errorf("marshal background context: %w", err)
+		return db.CreateBackgroundTaskParams{}, attribution.Result{}, fmt.Errorf("marshal background context: %w", err)
 	}
 	// The member who owns the DM is the direct_human originator; a task with no
 	// member degrades to owner_fallback like quick-create (MUL-4302 §3.5).
 	attr, err := s.applyAttributionFallback(ctx, attribution.DirectHumanRun(in.MemberID, "", pgtype.UUID{}), agent)
 	if err != nil {
-		return db.AgentTaskQueue{}, err
+		return db.CreateBackgroundTaskParams{}, attribution.Result{}, err
 	}
 	attrSource, _, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
-	task, err := s.Queries.CreateBackgroundTask(ctx, db.CreateBackgroundTaskParams{
+	return db.CreateBackgroundTaskParams{
 		ID: dbid.NewV7(), AgentID: in.AgentID, RuntimeID: agent.RuntimeID, Priority: priorityToInt("low"),
 		Context: contextJSON, Purpose: pgtype.Text{String: bgagents.Purpose(in.Job), Valid: true},
 		SourceChatSessionID: in.SourceChatSessionID,
 		OriginatorUserID:    in.MemberID, AccountableUserID: attr.AccountableUserID,
 		OriginatorSource: attrSource, TriggerEvidenceKind: attrEvidenceKind, TriggerEvidenceRefID: attrEvidenceRef,
-	})
-	if err != nil {
-		return db.AgentTaskQueue{}, fmt.Errorf("create background task: %w", err)
-	}
-	s.RecordHumanDelegation(ctx, attr)
-	s.NotifyTaskEnqueued(ctx, task)
-	return task, nil
+	}, attr, nil
 }
 
 // writeBackgroundOutput runs inside the completion transaction. A purpose with

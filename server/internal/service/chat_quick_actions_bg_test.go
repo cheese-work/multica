@@ -6,7 +6,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/multica-ai/multica/server/internal/events"
 	dbfx "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -242,5 +246,46 @@ func TestQuickActionsContextAnchorsOnTargetTurn(t *testing.T) {
 	q.complete(t, `{"actions":[{"label":"Next","prompt":"do the next thing","primary":true}]}`)
 	if got := q.pills(t); !strings.Contains(got, "Next") {
 		t.Fatalf("target turn pills = %s", got)
+	}
+}
+
+// The admission lock holds one connection. Every read and the insert must run
+// on that connection: with more concurrent admissions than pool connections, a
+// path that goes back to the pool deadlocks until the enqueue deadline.
+func TestQuickActionsAdmissionDoesNotStarveASmallPool(t *testing.T) {
+	q := newQuickActionsFixture(t)
+	q.configure(t)
+	cfg := q.pool.Config().Copy()
+	cfg.MaxConns = 2
+	small, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(small.Close)
+	svc := NewTaskService(db.New(small), small, nil, events.New())
+
+	turns := []db.AgentTaskQueue{q.turn}
+	for range 5 {
+		turns = append(turns, q.newTurn(t))
+	}
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	began := time.Now()
+	for _, turn := range turns {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			svc.GenerateChatQuickActionsAsync(turn, ChatQuickActionsAutomatic)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if took := time.Since(began); took > chatQuickActionsEnqueueTimeout/2 {
+		t.Fatalf("%d admissions on a 2-connection pool took %s: the lock transaction starved the pool", len(turns), took)
+	}
+	if got := q.tasks(t); got != len(turns) {
+		t.Fatalf("%d admissions on a 2-connection pool queued %d tasks, want %d", len(turns), got, len(turns))
 	}
 }

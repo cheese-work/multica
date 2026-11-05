@@ -31,6 +31,16 @@ type BackgroundNoAgentPath func(ctx context.Context, task db.AgentTaskQueue)
 // candidate that is unreachable now is skipped, not queued behind. The caller
 // runs the no-agent path on ErrNoReachableBackgroundAgent.
 func (s *TaskService) EnqueueBackgroundChain(ctx context.Context, in BackgroundTaskInput, chain []bgagents.Candidate) (db.AgentTaskQueue, error) {
+	in, err := s.pickBackgroundCandidate(ctx, in, chain)
+	if err != nil {
+		return db.AgentTaskQueue{}, err
+	}
+	return s.EnqueueBackgroundTask(ctx, in)
+}
+
+// pickBackgroundCandidate stamps the first reachable candidate (and its
+// fallback) onto the input, or returns ErrNoReachableBackgroundAgent.
+func (s *TaskService) pickBackgroundCandidate(ctx context.Context, in BackgroundTaskInput, chain []bgagents.Candidate) (BackgroundTaskInput, error) {
 	for i, c := range chain {
 		if !s.backgroundAgentReachable(ctx, in.Job, in.WorkspaceID, c.AgentID) {
 			logBackgroundFailover(in.Job, c.Slot, "unreachable")
@@ -40,9 +50,9 @@ func (s *TaskService) EnqueueBackgroundChain(ctx context.Context, in BackgroundT
 		if c.Slot == bgagents.Primary && i+1 < len(chain) {
 			in.FallbackAgentID = util.MustParseUUID(chain[i+1].AgentID)
 		}
-		return s.EnqueueBackgroundTask(ctx, in)
+		return in, nil
 	}
-	return db.AgentTaskQueue{}, ErrNoReachableBackgroundAgent
+	return in, ErrNoReachableBackgroundAgent
 }
 
 // backgroundAgentReachable mirrors what the claim needs: an eligible agent on a
