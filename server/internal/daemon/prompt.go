@@ -277,6 +277,11 @@ func BuildPrompt(task Task, provider string, options ...PromptOption) string {
 		apply(&opts)
 	}
 	body := buildPromptBody(task, provider)
+	// A background job prompt is the bounded input only (CHE-4100): none of the
+	// run-scoped blocks below, which carry the originator's name and email.
+	if task.BackgroundJob != "" {
+		return body
+	}
 	// Run-scoped context is appended, never prepended: everything ahead of it
 	// is stable across runs of a resumed session, and appending keeps it after
 	// the cached prefix (MUL-5377).

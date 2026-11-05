@@ -70,3 +70,28 @@ func TestTaskRunTimeoutTightensBackgroundOnly(t *testing.T) {
 		t.Errorf("zero default: got %v", got)
 	}
 }
+
+// CHE-4100 review P1: a member-attributed background task carries the
+// originator's name and email on the claim. The generic per-turn blocks must
+// not append them (or any other run context) to a background prompt.
+func TestBuildPromptBackgroundOmitsPerTurnContext(t *testing.T) {
+	task := Task{
+		ID:              "t1",
+		WorkspaceID:     "ws1",
+		BackgroundJob:   "dm_title",
+		BackgroundInput: "hello world",
+		InitiatorName:   "Ada Lovelace",
+		InitiatorEmail:  "ada@example.com",
+		CheckpointBlock: "CHECKPOINT-BLOCK",
+		WakeupJoined:    "JOINED-WAKEUP",
+	}
+	got := BuildPrompt(task, "claude")
+	if !strings.Contains(got, "hello world") {
+		t.Fatalf("prompt lacks the input:\n%s", got)
+	}
+	for _, banned := range []string{"Ada Lovelace", "ada@example.com", "CHECKPOINT-BLOCK", "JOINED-WAKEUP"} {
+		if strings.Contains(got, banned) {
+			t.Fatalf("background prompt must not contain %q:\n%s", banned, got)
+		}
+	}
+}
