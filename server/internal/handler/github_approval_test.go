@@ -400,3 +400,29 @@ func TestGitHubApprovalProjectsForAListedInstallation(t *testing.T) {
 		t.Fatalf("revision = %s/%s, want projected/gate_g_closed", state, reason)
 	}
 }
+
+// With the policy off, a binding removed after approval is a revoked target
+// (the pre-existing outcome), never an allowlist denial.
+func TestGitHubApprovalSettlementPolicyOffIgnoresAMissingBinding(t *testing.T) {
+	f := newApprovalFixture(t)
+	hash := f.snapshotHash(t)
+	reads := 0
+	f.fixture.handler.readApprovalSnapshot = func(ctx context.Context, installationID int64, owner, repo string, number int32, kind string, id int64) (ghsnapshot.ApprovalSnapshot, error) {
+		reads++
+		if reads > 1 {
+			return ghsnapshot.ApprovalSnapshot{}, errors.New("github down")
+		}
+		return f.reader.read(ctx, installationID, owner, repo, number, kind, id)
+	}
+	if recorder := f.call(t, http.MethodPost, "/approve", map[string]string{"snapshot_hash": hash}); recorder.Code != http.StatusOK {
+		t.Fatalf("approve = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	f.fixture.handler.readApprovalSnapshot = f.reader.read
+	dbfx.Exec(t, `DELETE FROM github_installation WHERE installation_id=$1`, approvalInstallationID)
+	if _, err := reconcilerForTest(f.fixture, &fakeReconcileAPI{}).settleApproved(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if state, reason := f.revisionState(t); state != "denied" || reason != "target_binding_revoked" {
+		t.Fatalf("revision = %s/%s, want denied/target_binding_revoked", state, reason)
+	}
+}

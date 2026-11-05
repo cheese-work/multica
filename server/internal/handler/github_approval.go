@@ -315,7 +315,8 @@ func (h *Handler) settleApprovedRevision(ctx context.Context, workspaceID, revis
 	if err != nil {
 		return err
 	}
-	allowedNow := false
+	// Policy off allows every installation, bound or not (as workspaceAllowed does).
+	allowedNow := h.githubAllowlist.ids == nil
 	for _, binding := range bindings {
 		allowedNow = allowedNow || (binding.WorkspaceID == workspaceID && h.githubInstallationAllowed(binding))
 	}
