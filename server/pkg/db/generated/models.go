@@ -1056,6 +1056,7 @@ type DecisionRequest struct {
 	ProjectID             pgtype.UUID        `json:"project_id"`
 	Kind                  string             `json:"kind"`
 	ExpiresAt             pgtype.Timestamptz `json:"expires_at"`
+	ProposalFingerprint   pgtype.Text        `json:"proposal_fingerprint"`
 	AnswerRevision        int32              `json:"answer_revision"`
 }
 
