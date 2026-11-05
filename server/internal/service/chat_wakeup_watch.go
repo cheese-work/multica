@@ -22,6 +22,9 @@ const (
 // chatWatchTickBatch is the page size of one tick's watch scan (a var so tests can shrink it).
 var chatWatchTickBatch int32 = 100
 
+// chatWatchTickPages caps the pages one tick scans (a var so tests can shrink it).
+var chatWatchTickPages = 5
+
 func validChatWatch(in ChatWakeupInput) bool {
 	if (in.Event == "") == (in.UntilStatus == "") || (in.Event != "" && in.Event != chatWatchEventComment) {
 		return false
@@ -62,34 +65,77 @@ func chatWatchContent(w db.ChatWakeup, what string) string {
 	return "[Issue watch — you set this earlier in this DM; no person wrote this message.]\nInstruction: " + w.Instruction + "\n" + what
 }
 
-// tickWatches fires every pending issue watch whose event or status has arrived.
-// A watch that cannot be checked or fired stays pending for the next tick.
+// tickWatches scans at most chatWatchTickPages pages of pending issue watches
+// and fires those whose event or status has arrived. The keyset cursor is kept
+// between ticks, so a backlog longer than one tick is covered over several
+// ticks instead of every tick restarting at the oldest watch. A watch that
+// cannot be checked or fired stays pending for a later tick.
 func (s *ChatWakeupService) tickWatches(ctx context.Context) error {
+	s.watchMu.Lock()
+	defer s.watchMu.Unlock()
 	q := s.Tasks.Queries
 	var errs []error
-	// Keyset pages over (created_at, id) so no watch waits behind a full batch.
-	after := db.ListPendingChatIssueWatchesParams{AfterCreatedAt: pgtype.Timestamptz{Valid: true}, PageSize: chatWatchTickBatch}
-	for {
+	after := s.watchAfter
+	if !after.AfterCreatedAt.Valid {
+		after.AfterCreatedAt = pgtype.Timestamptz{Valid: true}
+	}
+	after.PageSize = chatWatchTickBatch
+	for range chatWatchTickPages {
+		if err := ctx.Err(); err != nil {
+			s.watchAfter = after
+			return errors.Join(append(errs, err)...)
+		}
 		watches, err := q.ListPendingChatIssueWatches(ctx, after)
 		if err != nil {
+			s.watchAfter = after
 			return errors.Join(append(errs, fmt.Errorf("list chat issue watches: %w", err))...)
 		}
 		for _, w := range watches {
-			what, err := s.watchHit(ctx, w)
-			if err == nil && what != "" {
-				err = s.fire(ctx, w, chatWatchContent(w, what))
-			}
-			if err != nil {
+			if err := s.handleWatch(ctx, w, false); err != nil {
 				slog.Warn("chat issue watch failed", "wakeup_id", util.UUIDToString(w.ID), "error", err)
 				errs = append(errs, err)
 			}
 		}
 		if int32(len(watches)) < chatWatchTickBatch {
+			s.watchAfter = db.ListPendingChatIssueWatchesParams{} // end of the backlog: start over next tick
 			return errors.Join(errs...)
 		}
 		last := watches[len(watches)-1]
 		after.AfterCreatedAt, after.AfterID = last.CreatedAt, last.ID
 	}
+	s.watchAfter = after
+	return errors.Join(errs...)
+}
+
+// handleWatch fires a watch for its event, or for its expiry when expired and
+// no event arrived (an event that came in time beats the expiry). It never
+// reads the issue or sends anything for a DM whose human left the workspace:
+// the watch is dropped instead.
+func (s *ChatWakeupService) handleWatch(ctx context.Context, w db.ChatWakeup, expired bool) error {
+	q := s.Tasks.Queries
+	session, err := q.GetChatSession(ctx, w.ChatSessionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return q.DropChatWakeup(ctx, w.ID)
+	}
+	if err != nil {
+		return fmt.Errorf("load chat session: %w", err)
+	}
+	if _, err := q.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: session.CreatorID, WorkspaceID: w.WorkspaceID}); errors.Is(err, pgx.ErrNoRows) {
+		return q.DropChatWakeup(ctx, w.ID)
+	} else if err != nil {
+		return fmt.Errorf("check DM member: %w", err)
+	}
+	what, err := s.watchHit(ctx, w)
+	if err != nil {
+		return err
+	}
+	if what != "" {
+		return s.fire(ctx, w, chatWatchContent(w, what))
+	}
+	if expired {
+		return s.fire(ctx, w, expiryContent(w))
+	}
+	return nil
 }
 
 // watchHit describes the matching event, or "" when none yet.

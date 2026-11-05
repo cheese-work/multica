@@ -208,3 +208,122 @@ func TestChatWatchTickFiresBeyondOneBatch(t *testing.T) {
 		}
 	}
 }
+
+func (f chatWakeupFixture) removeMember(t *testing.T) {
+	t.Helper()
+	if _, err := f.pool.Exec(context.Background(),
+		`DELETE FROM member WHERE user_id = $1 AND workspace_id = (SELECT workspace_id FROM chat_session WHERE id = $2)`,
+		f.userID, f.sessionID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A creator who left the workspace can no longer read the issue: the watch is
+// dropped, the issue comment is not read, and the DM gets no turn.
+func TestChatWatchDropsWhenCreatorLeavesWorkspace(t *testing.T) {
+	f := newChatWakeupFixture(t)
+	event, err := f.watch(t, ChatWakeupInput{Event: "comment.created"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := f.watch(t, ChatWakeupInput{UntilStatus: "in_review"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.comment(t, "member", f.userID, "secret plan")
+	if _, err := f.pool.Exec(context.Background(), `UPDATE issue SET status = 'in_review' WHERE id = $1`, f.issueID); err != nil {
+		t.Fatal(err)
+	}
+	f.removeMember(t)
+	f.tick(t)
+	for _, w := range []db.ChatWakeup{event, status} {
+		if got := f.status(t, w); got != "cancelled" {
+			t.Fatalf("watch status = %q, want cancelled", got)
+		}
+	}
+	if n := f.queuedTurns(t); n != 0 {
+		t.Fatalf("queued turns = %d, want 0", n)
+	}
+}
+
+// A watch that timed out is dropped too: its turn would still run the stored instruction.
+func TestChatWatchTimeoutDropsWhenCreatorLeavesWorkspace(t *testing.T) {
+	f := newChatWakeupFixture(t)
+	w, err := f.watch(t, ChatWakeupInput{Event: "comment.created", WakeOnTimeout: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.makeDue(t, w)
+	f.removeMember(t)
+	f.tick(t)
+	if got := f.status(t, w); got != "cancelled" || f.queuedTurns(t) != 0 {
+		t.Fatalf("status = %q, queued = %d; want cancelled, 0", got, f.queuedTurns(t))
+	}
+}
+
+// The creator leaves after the tick's read but before the send: fire re-checks
+// membership inside its transaction, so the turn is still not delivered.
+func TestChatWatchFireRechecksMembershipInTransaction(t *testing.T) {
+	f := newChatWakeupFixture(t)
+	w, err := f.watch(t, ChatWakeupInput{Event: "comment.created"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.removeMember(t)
+	if err := f.svc.fire(context.Background(), w, chatWatchContent(w, "Event: a comment")); err != nil {
+		t.Fatalf("fire: %v", err)
+	}
+	if got := f.status(t, w); got != "cancelled" || f.queuedTurns(t) != 0 {
+		t.Fatalf("status = %q, queued = %d; want cancelled, 0", got, f.queuedTurns(t))
+	}
+}
+
+// A backlog larger than one tick's scan budget neither stalls timed wakeups nor
+// restarts at the front: each tick resumes where the last stopped.
+func TestChatWatchTickIsBoundedAndResumes(t *testing.T) {
+	oldBatch, oldPages := chatWatchTickBatch, chatWatchTickPages
+	chatWatchTickBatch, chatWatchTickPages = 1, 2
+	t.Cleanup(func() { chatWatchTickBatch, chatWatchTickPages = oldBatch, oldPages })
+	f := newChatWakeupFixture(t)
+	var watches []db.ChatWakeup
+	for range 5 {
+		var w db.ChatWakeup
+		if err := f.pool.QueryRow(context.Background(), `
+			INSERT INTO chat_wakeup (workspace_id, chat_session_id, agent_id, instruction, fire_at, issue_id, event_type)
+			SELECT workspace_id, $1, $2, 'relay', now() + interval '1 hour', $3, 'comment.created' FROM issue WHERE id = $3
+			RETURNING id`, f.sessionID, f.agentID, f.issueID).Scan(&w.ID); err != nil {
+			t.Fatal(err)
+		}
+		watches = append(watches, w)
+	}
+	var timed db.ChatWakeup
+	if err := f.pool.QueryRow(context.Background(), `
+		INSERT INTO chat_wakeup (workspace_id, chat_session_id, agent_id, instruction, fire_at)
+		SELECT workspace_id, $1, $2, 'plain wakeup', now() - interval '1 second' FROM issue WHERE id = $3
+		RETURNING id`, f.sessionID, f.agentID, f.issueID).Scan(&timed.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.comment(t, "member", f.userID, "result")
+
+	fired := func() int {
+		n := 0
+		for _, w := range watches {
+			if f.status(t, w) == "fired" {
+				n++
+			}
+		}
+		return n
+	}
+	f.tick(t)
+	if got := f.status(t, timed); got != "fired" {
+		t.Fatalf("timed wakeup = %q after one tick, want fired", got)
+	}
+	if got := fired(); got != 2 {
+		t.Fatalf("fired watches after tick 1 = %d, want 2 (two pages of one)", got)
+	}
+	f.tick(t)
+	f.tick(t)
+	if got := fired(); got != 5 {
+		t.Fatalf("fired watches after 3 ticks = %d, want 5 (the scan resumes, not restarts)", got)
+	}
+}

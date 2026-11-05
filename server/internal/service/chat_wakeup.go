@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -37,6 +38,7 @@ var (
 	ErrChatWakeupTitleTooLong = errors.New("chat wakeup: title is too long")
 	ErrChatWakeupNotFound     = errors.New("chat wakeup: no such pending wakeup")
 	ErrChatWatchInvalid       = errors.New("chat wakeup: an issue watch needs exactly one of an event (comment.created) or a status, and an actor filter needs a member or agent type")
+	errChatWatchAccessRevoked = errors.New("chat wakeup: the DM's human left the workspace")
 	ErrChatWatchIssueAccess   = errors.New("chat wakeup: the issue is not readable by this DM's human")
 )
 
@@ -45,6 +47,10 @@ var (
 // it is currently running in.
 type ChatWakeupService struct {
 	Tasks *TaskService
+
+	// Resume point of the pending-watch scan, kept between ticks (see tickWatches).
+	watchMu    sync.Mutex
+	watchAfter db.ListPendingChatIssueWatchesParams
 }
 
 type ChatWakeupInput struct {
@@ -191,18 +197,24 @@ func (s *ChatWakeupService) CancelInSession(ctx context.Context, sessionID, wake
 // Tick fires every due wakeup. One wakeup's failure never blocks the others;
 // a wakeup that could not fire stays pending and is retried on the next tick.
 func (s *ChatWakeupService) Tick(ctx context.Context) error {
-	// Issue watches first: an event that arrived in time beats the expiry.
-	errs := []error{s.tickWatches(ctx)}
 	due, err := s.Tasks.Queries.ListDueChatWakeups(ctx, chatWakeupTickBatch)
 	if err != nil {
 		return fmt.Errorf("list due chat wakeups: %w", err)
 	}
+	var errs []error
 	for _, w := range due {
-		if err := s.fire(ctx, w, expiryContent(w)); err != nil {
+		if w.IssueID.Valid {
+			err = s.handleWatch(ctx, w, true)
+		} else {
+			err = s.fire(ctx, w, expiryContent(w))
+		}
+		if err != nil {
 			slog.Warn("chat wakeup fire failed", "wakeup_id", util.UUIDToString(w.ID), "error", err)
 			errs = append(errs, err)
 		}
 	}
+	// Timed wakeups come first and are bounded, so a long watch backlog cannot starve them.
+	errs = append(errs, s.tickWatches(ctx))
 	return errors.Join(errs...)
 }
 
@@ -242,6 +254,15 @@ func (s *ChatWakeupService) fire(ctx context.Context, w db.ChatWakeup, content s
 	var sent DirectChatSendResult
 	claimed := false
 	err = s.Tasks.runInTx(ctx, func(qtx *db.Queries) error {
+		if w.IssueID.Valid {
+			// A member removal that lands after the tick's check waits on this lock
+			// and finds the watch already delivered; one that landed before is seen here.
+			if _, err := qtx.LockMemberByUserAndWorkspace(ctx, db.LockMemberByUserAndWorkspaceParams{UserID: session.CreatorID, WorkspaceID: w.WorkspaceID}); errors.Is(err, pgx.ErrNoRows) {
+				return errChatWatchAccessRevoked
+			} else if err != nil {
+				return err
+			}
+		}
 		if _, err := qtx.ClaimChatWakeup(ctx, w.ID); errors.Is(err, pgx.ErrNoRows) {
 			return nil // another tick or a cancel got there first
 		} else if err != nil {
@@ -257,7 +278,7 @@ func (s *ChatWakeupService) fire(ctx context.Context, w db.ChatWakeup, content s
 		return qtx.SetChatWakeupFiredTask(ctx, db.SetChatWakeupFiredTaskParams{ID: w.ID, FiredTaskID: sent.Task.ID})
 	})
 	switch {
-	case errors.Is(err, ErrChatSessionArchived), errors.Is(err, ErrChatTaskAgentArchived), errors.Is(err, ErrChatTaskAgentNoRuntime):
+	case errors.Is(err, errChatWatchAccessRevoked), errors.Is(err, ErrChatSessionArchived), errors.Is(err, ErrChatTaskAgentArchived), errors.Is(err, ErrChatTaskAgentNoRuntime):
 		return drop()
 	case err != nil:
 		return err // includes ErrChatCompacting: stays pending, retried next tick
