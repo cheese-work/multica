@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/bgagents"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -18,7 +19,7 @@ import (
 // key (CHE-4111). Every read is keyed by the caller's identity: no route takes
 // a user id, so one member cannot read another's row. Writes are in
 // member_background_agents_write.go.
-const memberBackgroundAgentsKey = "background_agents"
+const memberBackgroundAgentsKey = service.MemberBackgroundAgentsKey
 
 // GetMyBackgroundAgents returns the caller's own value, or {} when unset.
 // ?job= validates against the user-scoped catalog first: routing is
