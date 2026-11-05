@@ -59,8 +59,9 @@ type qualifiedEntry struct {
 	Note      string `json:"note,omitempty"`
 }
 
-// qualifiedRuntimes lists, per provider, the runtimes that may write. A
-// provider that is not listed is not write-gated.
+// qualifiedRuntimes lists, per provider, the runtime versions that were
+// qualified to write. Only recorded qualifications belong here. An empty
+// runtime_id means any runtime of the provider.
 type qualifiedRuntimes map[string][]qualifiedEntry
 
 var qualified = mustLoad[qualifiedRuntimes](qualifiedJSON)
@@ -85,17 +86,13 @@ var versionRe = regexp.MustCompile(`\d+(?:\.\d+)+`)
 // version pulls the version number out of what a runtime reports.
 func version(reported string) string { return versionRe.FindString(reported) }
 
-// gated reports whether the provider has a qualified list.
-func (q qualifiedRuntimes) gated(provider string) bool { return len(q[provider]) > 0 }
-
-// qualifies reports whether the agent's runtime may write.
+// qualifies reports whether the agent's runtime may write. It fails closed:
+// a provider with no entry, or no entry matching its exact version, is not
+// qualified.
 func (q qualifiedRuntimes) qualifies(a Agent) bool {
-	if !q.gated(a.Provider) {
-		return true
-	}
 	v := version(a.RuntimeVersion)
 	for _, e := range q[a.Provider] {
-		if v != "" && v == e.Version && (e.RuntimeID == "" || e.RuntimeID == a.RuntimeID) {
+		if (v != "" && v == e.Version) && (e.RuntimeID == "" || e.RuntimeID == a.RuntimeID) {
 			return true
 		}
 	}

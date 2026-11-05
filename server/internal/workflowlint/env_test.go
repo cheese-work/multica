@@ -11,8 +11,8 @@ func agentH(id string) issueworkflow.Handler {
 	return issueworkflow.Handler{Type: issueworkflow.HandlerAgent, ID: id}
 }
 
-// good is a runtime-healthy Claude agent.
-var good = Agent{Provider: "claude", RuntimeID: "rt-c", RuntimeVersion: "2.1.0", RuntimeOnline: true}
+// good is a healthy agent on the one recorded qualified runtime (CHE-735).
+var good = Agent{Provider: "codex", RuntimeID: x99Codex, RuntimeVersion: "0.155.1", RuntimeOnline: true}
 
 // withHandler returns clean() with the handler of step key replaced.
 func withHandler(key string, h issueworkflow.Handler) issueworkflow.Definition {
@@ -61,7 +61,7 @@ func TestWF004UnusableAgent(t *testing.T) {
 
 func TestWF005RuntimeNotQualified(t *testing.T) {
 	codex := func(version string) Env {
-		return Env{Agents: map[string]Agent{"a": {Provider: "codex", RuntimeVersion: version, RuntimeOnline: true}}}
+		return Env{Agents: map[string]Agent{"a": {Provider: "codex", RuntimeID: x99Codex, RuntimeVersion: version, RuntimeOnline: true}}}
 	}
 	if fs := LintWith(clean(), codex("0.166.0")); !has(fs, "WF005", "todo") {
 		t.Fatalf("codex 0.166.0: want WF005@todo, got %v", rules(fs))
@@ -74,9 +74,46 @@ func TestWF005RuntimeNotQualified(t *testing.T) {
 			t.Fatalf("codex %q is qualified, got %v", v, rules(fs))
 		}
 	}
-	// A provider the config does not list is not write-gated.
-	if fs := LintWith(clean(), Env{Agents: map[string]Agent{"a": good}}); countRule(fs, "WF005") != 0 {
-		t.Fatalf("claude: want no WF005, got %v", rules(fs))
+	// No qualification is recorded for Claude, so any Claude version fails WF005.
+	for _, v := range []string{"2.1.0", ""} {
+		env := Env{Agents: map[string]Agent{"a": {Provider: "claude", RuntimeVersion: v, RuntimeOnline: true}}}
+		if fs := LintWith(clean(), env); !has(fs, "WF005", "todo") {
+			t.Fatalf("claude %q has no recorded qualification: want WF005, got %v", v, rules(fs))
+		}
+	}
+}
+
+const x99Codex = "bc0835c7-a25d-4a16-a3bc-e2921d092ed9"
+
+func TestWF005SeedBindsCodexToX99(t *testing.T) {
+	at := func(rt string) Env {
+		return Env{Agents: map[string]Agent{"a": {Provider: "codex", RuntimeID: rt, RuntimeVersion: "0.155.1", RuntimeOnline: true}}}
+	}
+	if fs := LintWith(clean(), at(x99Codex)); countRule(fs, "WF005") != 0 {
+		t.Fatalf("X99 codex 0.155.1: want no WF005, got %v", rules(fs))
+	}
+	for name, rt := range map[string]string{"C00": "a596f781-3a60-414c-b346-ebc11d72451c", "missing": ""} {
+		if fs := LintWith(clean(), at(rt)); !has(fs, "WF005", "todo") {
+			t.Fatalf("codex 0.155.1 on %s runtime: want WF005, got %v", name, rules(fs))
+		}
+	}
+}
+
+func TestWF005FailsClosed(t *testing.T) {
+	for _, provider := range []string{"typo-provider", ""} {
+		env := Env{Agents: map[string]Agent{"a": {Provider: provider, RuntimeVersion: "1.0.0", RuntimeOnline: true}}}
+		if fs := LintWith(clean(), env); !has(fs, "WF005", "todo") {
+			t.Fatalf("provider %q is not listed: want WF005, got %v", provider, rules(fs))
+		}
+	}
+	q := qualifiedRuntimes{"empty": {}}
+	if q.qualifies(Agent{Provider: "empty", RuntimeVersion: "1.0.0"}) {
+		t.Fatal("an empty list qualifies nothing")
+	}
+	// "*" is not a wildcard: a version that was never qualified never passes.
+	q = qualifiedRuntimes{"any": {{Version: "*"}}}
+	if q.qualifies(Agent{Provider: "any", RuntimeVersion: "9.9"}) || q.qualifies(Agent{Provider: "any"}) {
+		t.Fatal(`version "*" must not qualify an unlisted version`)
 	}
 }
 
@@ -211,7 +248,7 @@ func TestWF013Unused(t *testing.T) {
 }
 
 func TestEmbeddedConfigsParse(t *testing.T) {
-	if len(qualified["codex"]) == 0 || qualified["codex"][0].Version != "0.155.1" {
+	if len(qualified) != 1 || len(qualified["codex"]) == 0 || qualified["codex"][0].Version != "0.155.1" {
 		t.Fatalf("seed: want codex 0.155.1, got %v", qualified)
 	}
 	if lab, ok := labs.of(Agent{Provider: "codex"}); !ok || lab != "OpenAI" {
