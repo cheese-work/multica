@@ -1259,6 +1259,7 @@
     "github_not_configured": "當前部署尚未配置 GitHub 連線。",
     "github_browse_not_configured": "瀏覽倉庫需要配置 GITHUB_APP_ID 和 GITHUB_APP_PRIVATE_KEY。",
     "github_connect_failed": "無法連線 GitHub，請重試。",
+    "github_installation_not_allowed": "此 GitHub 帳號不允許在此部署中使用。",
     "github_picker_title": "選擇 GitHub 倉庫",
     "github_picker_description": "已有手動配置不受影響。",
     "github_account": "GitHub 帳號",

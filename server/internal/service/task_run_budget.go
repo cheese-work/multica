@@ -28,6 +28,12 @@ import (
 // run_budget_exhausted; background callers log it and drop the trigger.
 var ErrRunBudgetExhausted = errors.New("the issue used its workflow's run budget, so nothing derived from it runs")
 
+// ErrStageQueueFull is returned by an enqueue path when the PR's bottleneck
+// stage already runs its capacity of PRs (CHE-3611). The PR waits in the stage
+// queue; handlers render it as 409 stage_queue_full and background callers
+// drop the trigger, which the stage's next free slot re-issues.
+var ErrStageQueueFull = errors.New("the stage is at capacity, so the PR is queued")
+
 // statusMerged is the "Code Accepted" status: a linked PR merged. It sits in the
 // started category, so the budget names it besides the done and closed ones.
 const statusMerged = "merged"
@@ -45,6 +51,11 @@ type RunTarget struct {
 	AgentID   pgtype.UUID
 	Trigger   string
 	ReviewRun bool
+	// ActorUserID and TriggerCommentID name who asked for the run and the
+	// comment that asked. A stage refusal keeps them so the release starts the
+	// run under the same attribution (CHE-3611).
+	ActorUserID      pgtype.UUID
+	TriggerCommentID pgtype.UUID
 }
 
 // ReviewGate is what the guard hands the enqueue: the PR head the run reviews
@@ -78,6 +89,7 @@ func createAgentTask(ctx context.Context, q *db.Queries, p db.CreateAgentTaskPar
 		return db.AgentTaskQueue{}, err
 	}
 	p.TaintIds = append(p.TaintIds, acting...)
+	p.TaintIds = append(p.TaintIds, stageTaint(ctx)...)
 	task, err := q.CreateAgentTask(ctx, p)
 	if errors.Is(err, pgx.ErrNoRows) && p.GateRequired.Bool {
 		return db.AgentTaskQueue{}, ErrDuplicatePendingTask

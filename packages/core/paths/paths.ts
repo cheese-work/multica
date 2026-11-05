@@ -22,6 +22,12 @@ const encode = (id: string) => encodeURIComponent(id);
  */
 export const AGENT_FOCUS_CONVERSATION_STARTERS = "conversation_starters";
 
+/**
+ * `?focus=` value that sends a project or issue page to its wakeup rules:
+ * the page reveals them and clears the param.
+ */
+export const FOCUS_WAKEUPS = "wakeups";
+
 function workspaceScoped(slug: string) {
   const ws = `/${encode(slug)}`;
   return {
@@ -32,6 +38,11 @@ function workspaceScoped(slug: string) {
     issueDetail: (id: string) => `${ws}/issues/${encode(id)}`,
     projects: () => `${ws}/projects`,
     projectDetail: (id: string) => `${ws}/projects/${encode(id)}`,
+    // Deep links to the wakeup rules on a project's or an issue's own page.
+    projectWakeups: (id: string) =>
+      `${ws}/projects/${encode(id)}?focus=${FOCUS_WAKEUPS}`,
+    issueWakeups: (id: string) =>
+      `${ws}/issues/${encode(id)}?focus=${FOCUS_WAKEUPS}`,
     autopilots: () => `${ws}/autopilots`,
     autopilotDetail: (id: string) => `${ws}/autopilots/${encode(id)}`,
     agents: () => `${ws}/agents`,

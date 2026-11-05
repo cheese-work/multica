@@ -1532,7 +1532,34 @@
       "rate": "more than 12 runs in an hour"
     },
     "paused_banner": "Wakeups paused by {{name}} at {{time}}",
-    "paused_banner_anonymous": "Wakeups paused at {{time}}"
+    "paused_banner_anonymous": "Wakeups paused at {{time}}",
+    "defaults": {
+      "title": "Default wakeups",
+      "rule_pr_merged": "When the linked PR merges",
+      "rule_pr_checks_failed": "When PR checks fail",
+      "rule_pr_needs_attention": "When the linked PR needs attention",
+      "state_on": "On",
+      "state_disabled": "Disabled",
+      "state_paused": "Paused: {{reason}}",
+      "inherited": "Inherited from {{source}}",
+      "overridden": "Overridden on this issue",
+      "source_workspace": "workspace",
+      "source_project": "project",
+      "source_default": "the default",
+      "open_project": "Edit in project rules",
+      "override": "Override",
+      "override_label": "Override {{rule}}",
+      "edit": "Edit override",
+      "edit_label": "Edit override {{rule}}",
+      "reset": "Reset",
+      "reset_label": "Reset {{rule}}",
+      "save": "Save override",
+      "saving": "Saving…",
+      "cancel": "Cancel",
+      "save_error": "Could not save the override.",
+      "reset_error": "Could not reset the rule.",
+      "conflict_error": "Someone changed this rule first. Your edits are kept; reload to see theirs."
+    }
   },
   "duplicates": {
     "banner_prefix": "Duplicate of",

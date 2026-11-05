@@ -2450,6 +2450,8 @@ export const CancelTaskResponseSchema = z.lazy(() => AgentTaskSchema.unwrap().ex
 }).loose());
 
 const ChatLastMessageSchema = z.lazy(() => z.object({
+  id: z.string().uuid().optional().catch(undefined),
+  task_id: z.string().uuid().optional().catch(undefined),
   content: z.string().default(""),
   role: z.enum(["user", "assistant"]).catch("assistant"),
   created_at: z.string().default(""),
