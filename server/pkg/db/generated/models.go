@@ -2228,6 +2228,14 @@ type MemberDelegationDay struct {
 	ActivityDate pgtype.Date `json:"activity_date"`
 }
 
+type MemberSetting struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	UserID      pgtype.UUID        `json:"user_id"`
+	Key         string             `json:"key"`
+	Value       []byte             `json:"value"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
 type NotificationChannelPreference struct {
 	ID          pgtype.UUID        `json:"id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
