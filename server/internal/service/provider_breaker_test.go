@@ -164,6 +164,9 @@ func TestRecordProviderSuccessSkipsUnneededWriteAndPreservesHold(t *testing.T) {
 	if count != 0 {
 		t.Fatalf("success without a breaker row or hold created %d rows, want 0", count)
 	}
+	if err := lockTx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
 
 	setWorkspaceProviderHold(t, pool, workspaceID, agentID, "gpt-5.6-sol", "openai")
 	if err := recordProviderSuccess(ctx, q, task); err != nil {
