@@ -74,4 +74,37 @@ describe("usePersistedDraft", () => {
     });
     expect(hook.result.current[0]).toBe(EMPTY);
   });
+  it("drops a write that fires after the workspace changed (late unmount flush)", async () => {
+    const values = new Map<string, string>();
+    const store = createKeyedDraftStore<Sample>({
+      storageKey: "h_late",
+      emptyData: EMPTY,
+      hasMeaningful: (d) => d.text.length > 0,
+      storage: {
+        getItem: (k) => values.get(k) ?? null,
+        setItem: (k, v) => void values.set(k, v),
+        removeItem: (k) => void values.delete(k),
+        keys: () => [...values.keys()],
+      },
+    });
+    setCurrentWorkspace("ws-a", "id-a");
+    await new Promise((r) => queueMicrotask(() => r(null)));
+    const hookA = renderHook(() => usePersistedDraft(store, "create", EMPTY));
+    const lateWriteFromA = hookA.result.current[1];
+
+    // Route switches A -> B before A's component cleanup runs its late flush.
+    setCurrentWorkspace("ws-b", "id-b");
+    act(() => lateWriteFromA({ text: "A runbook" }));
+    hookA.unmount();
+    await act(async () => {
+      await new Promise((r) => queueMicrotask(() => r(null)));
+    });
+
+    expect(store.getState().getDraft("create")).toBeUndefined();
+    setCurrentWorkspace("ws-a", "id-a");
+    await act(async () => {
+      await new Promise((r) => queueMicrotask(() => r(null)));
+    });
+    expect(store.getState().getDraft("create")).toBeUndefined();
+  });
 });
