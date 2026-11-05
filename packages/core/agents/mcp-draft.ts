@@ -6,8 +6,11 @@
  * config, so those values are typed again.
  *
  * A restored draft never brings saved credentials back onto an edit that moved
- * the destination or removed a credential (`credentialsDropped`): the user
- * would otherwise send an old token to a new host, or find a deleted one again.
+ * the destination or removed a credential (`credentialsDropped`), nor onto a
+ * draft whose destination differs from the server saved now (`destinationMoved`,
+ * checked on restore: the saved server may have changed since the draft was
+ * made). The user would otherwise send a token to a host it was not saved for,
+ * or find a deleted one again.
  *
  * Text that does not parse yet (an unfinished edit) is not stored: finding
  * where a malformed credential value ends is a guess, and a wrong guess leaks.
@@ -119,20 +122,29 @@ function hasNullAncestor(creds: Set<string>, path: string): boolean {
   return false;
 }
 
+const destinationKey = (dest: Json) => JSON.stringify(dest, Object.keys(dest).sort());
+
+/** Whether `current` points at a different destination (url, command, args, type) than `saved`. */
+export function destinationMoved(saved: Json, current: Json): boolean {
+  const savedDest: Json = {};
+  const dest: Json = {};
+  collect(saved, "", false, savedDest, new Set());
+  collect(current, "", false, dest, new Set());
+  return destinationKey(savedDest) !== destinationKey(dest);
+}
+
 /**
- * Whether `current` moved a destination (url, command, args, type) or lost a
- * credential that `saved` holds. A `null` placeholder counts as still present.
+ * Whether `current` moved a destination or lost a credential that `saved`
+ * holds. A `null` placeholder counts as still present.
  */
 export function credentialsDropped(saved: Json, current: Json): boolean {
-  const savedDest: Json = {};
   const savedCreds = new Set<string>();
-  collect(saved, "", false, savedDest, savedCreds);
+  collect(saved, "", false, {}, savedCreds);
   if (savedCreds.size === 0) return false;
-  const dest: Json = {};
   const creds = new Set<string>();
-  collect(current, "", false, dest, creds);
+  collect(current, "", false, {}, creds);
   return (
-    JSON.stringify(savedDest, Object.keys(savedDest).sort()) !== JSON.stringify(dest, Object.keys(dest).sort()) ||
+    destinationMoved(saved, current) ||
     [...savedCreds].some((path) => !creds.has(path) && !hasNullAncestor(creds, path))
   );
 }

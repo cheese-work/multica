@@ -500,4 +500,87 @@ describe("McpServerDialog", () => {
     await vi.waitFor(() => expect(props.onSave).toHaveBeenCalled());
     expect(props.onSave).toHaveBeenCalledWith("remote", { type: "http", url: "https://b.test" });
   });
+
+  it("does not carry a saved oauth secret to a new URL typed in the form", async () => {
+    const server = managedServer({
+      name: "remote",
+      config: {
+        type: "http",
+        url: "https://a.test",
+        headers: { Authorization: "saved" },
+        oauth: { clientSecret: "saved-client-secret" },
+        note: "keep",
+      },
+      transport: "http",
+    });
+    const props = {
+      server,
+      existingNames: new Set(["remote"]),
+      onSave: vi.fn().mockResolvedValue(undefined),
+      onOpenChange: vi.fn(),
+      draftKey: "agent-1:remote-oauth",
+    };
+    const view = render(<McpServerDialog open {...props} />, { wrapper: Wrapper });
+    fireEvent.change(screen.getByLabelText("Server URL"), { target: { value: "https://b.test" } });
+    view.rerender(<McpServerDialog open={false} {...props} />);
+    view.rerender(<McpServerDialog open {...props} />);
+    await userEvent.setup().click(screen.getByRole("button", { name: /save/i }));
+    await vi.waitFor(() => expect(props.onSave).toHaveBeenCalled());
+    expect(props.onSave).toHaveBeenCalledWith("remote", { type: "http", url: "https://b.test", note: "keep" });
+  });
+
+  describe("a draft made against an older saved server", () => {
+    it("does not give the newer saved token to a form draft on another URL", async () => {
+      const old = managedServer({ name: "remote", config: { type: "http", url: "https://a.test" }, transport: "http" });
+      const props = {
+        server: old,
+        existingNames: new Set(["remote"]),
+        onSave: vi.fn().mockResolvedValue(undefined),
+        onOpenChange: vi.fn(),
+        draftKey: "agent-1:remote-stale-form",
+      };
+      const view = render(<McpServerDialog open {...props} />, { wrapper: Wrapper });
+      fireEvent.change(screen.getByLabelText("Server URL"), { target: { value: "https://b.test" } });
+      view.rerender(<McpServerDialog open={false} {...props} />);
+      const newer = managedServer({
+        name: "remote",
+        config: {
+          type: "http",
+          url: "https://c.test",
+          headers: { Authorization: "newer-token" },
+          oauth: { clientSecret: "newer-secret" },
+        },
+        transport: "http",
+      });
+      view.rerender(<McpServerDialog open {...props} server={newer} />);
+      await userEvent.setup().click(screen.getByRole("button", { name: /save/i }));
+      await vi.waitFor(() => expect(props.onSave).toHaveBeenCalled());
+      expect(props.onSave).toHaveBeenCalledWith("remote", { type: "http", url: "https://b.test" });
+    });
+
+    it("does not give the newer saved token to a JSON draft on another URL", async () => {
+      const old = managedServer({ name: "remote", config: { type: "sse", url: "https://a.test" }, transport: "sse" });
+      const props = {
+        server: old,
+        existingNames: new Set(["remote"]),
+        onSave: vi.fn().mockResolvedValue(undefined),
+        onOpenChange: vi.fn(),
+        draftKey: "agent-1:remote-stale-json",
+      };
+      const view = render(<McpServerDialog open {...props} />, { wrapper: Wrapper });
+      fireEvent.change(screen.getByLabelText("MCP server JSON configuration"), {
+        target: { value: '{"type": "sse", "url": "https://b.test", "note": "x"}' },
+      });
+      view.rerender(<McpServerDialog open={false} {...props} />);
+      const newer = managedServer({
+        name: "remote",
+        config: { type: "sse", url: "https://c.test", headers: { Authorization: "newer-token" } },
+        transport: "sse",
+      });
+      view.rerender(<McpServerDialog open {...props} server={newer} />);
+      await userEvent.setup().click(screen.getByRole("button", { name: /save/i }));
+      await vi.waitFor(() => expect(props.onSave).toHaveBeenCalled());
+      expect(props.onSave).toHaveBeenCalledWith("remote", { type: "sse", url: "https://b.test", note: "x" });
+    });
+  });
 });

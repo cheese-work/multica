@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   credentialsDropped,
+  destinationMoved,
   fillRedactedSecrets,
   redactMcpJsonText,
   restoreMcpSecrets,
@@ -118,5 +119,17 @@ describe("credentialsDropped", () => {
   });
   it("is false when nothing was saved", () => {
     expect(credentialsDropped({}, { url: "https://b.test" })).toBe(false);
+  });
+});
+
+describe("destinationMoved", () => {
+  it("compares url, command, args and type only", () => {
+    const saved = { type: "http", url: "https://a.test", headers: { Authorization: "x" } };
+    expect(destinationMoved(saved, { type: "http", url: "https://a.test", note: "n" })).toBe(false);
+    expect(destinationMoved(saved, { type: "http", url: "https://b.test" })).toBe(true);
+    expect(destinationMoved({ command: "uvx", args: ["a"] }, { command: "uvx", args: ["b"] })).toBe(true);
+  });
+  it("ignores a url inside a credential subtree", () => {
+    expect(destinationMoved({ url: "u", oauth: { url: "x" } }, { url: "u", oauth: { url: "y" } })).toBe(false);
   });
 });

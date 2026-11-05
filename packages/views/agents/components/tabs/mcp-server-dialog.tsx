@@ -9,6 +9,7 @@ import {
 } from "react";
 import {
   credentialsDropped,
+  destinationMoved,
   fillRedactedSecrets,
   redactMcpJsonText,
   restoreMcpSecrets,
@@ -317,18 +318,24 @@ export function McpServerDialog({
         ? undefined
         : useMcpDialogDraftStore.getState().getDraft(draftKey);
     const savedJson = saved?.json ? parseJsonObject(saved.json) : null;
-    // An edit that moved the destination or removed a credential reopens without the saved ones.
-    const dropped = saved?.dropCredentials === true;
-    const baseConfig = dropped ? stripMcpSecrets(base.config) : base.config;
-    const seeded: McpFormState = {
+    // Saved credentials stay out when the draft removed one, or points somewhere
+    // other than the server saved now (that server may have changed since).
+    const draftForm: McpFormState = {
       ...base.form,
-      env: dropped ? [] : base.form.env,
-      headers: dropped ? [] : base.form.headers,
       transport: saved?.transport ?? base.form.transport,
       command: saved?.command ?? base.form.command,
       args: saved?.args ?? base.form.args,
       url: saved?.url ?? base.form.url,
     };
+    const dropped =
+      saved?.dropCredentials === true ||
+      (saved !== undefined &&
+        (destinationMoved(configFromForm(base.form), configFromForm(draftForm)) ||
+          (savedJson !== null && destinationMoved(base.config, savedJson))));
+    const baseConfig = dropped ? stripMcpSecrets(base.config) : base.config;
+    const seeded: McpFormState = dropped
+      ? { ...draftForm, env: [], headers: [], extras: stripMcpSecrets(draftForm.extras) }
+      : draftForm;
     seededForm.current = seeded;
     setName(saved?.name ?? base.name);
     setForm(seeded);
