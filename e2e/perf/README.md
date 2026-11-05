@@ -65,6 +65,12 @@ pnpm exec playwright test --config=playwright.perf.config.ts chip-stability --pr
 (touch, mobile). Geometry limits are shared; layout-shift limits are keyed by
 profile in the spec. Soft assertions: one run reports every requirement.
 
+`compact-thread-reply.spec.ts` (R5, CHE-1935) opens a compact thread, focuses
+the reply box (click on `desktop`, `tap` on `phone`) and types one character.
+It asserts the fold state, reply-box top and viewport scroll are unchanged
+(<= 1 px) and gates the raw layout-shift sum, because standard CLS drops
+shifts within 500 ms of input.
+
 ## Page-load baseline (CHE-2976)
 
 Cold load of five routes (issue list, issue detail, chat, inbox, projects) on

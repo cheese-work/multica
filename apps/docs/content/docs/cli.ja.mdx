@@ -199,8 +199,11 @@ multica issue follow MUL-123 --chat <chat-session-id>
 multica issue mute-follow MUL-123 --chat <chat-session-id>
 multica issue unmute-follow MUL-123 --chat <chat-session-id>
 multica issue unfollow MUL-123 --chat <chat-session-id>
+multica issue unfollow MUL-123 --chat <chat-session-id> --scope root
 multica issue follows --chat <chat-session-id>
 ```
+
+`unfollow` はその issue のフォローを終了します。`--scope root` を付けると、子 issue がそこから継承したフォローも終了します。個別に手動でフォローした子 issue はフォローされたままです。フォローを外した子 issue は、後から子 issue が作成されても再びフォローされません。
 
 ## エージェントとスキル
 

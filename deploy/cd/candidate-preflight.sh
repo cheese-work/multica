@@ -3,6 +3,7 @@ set -euo pipefail
 
 source_sha=$1
 checks_path=$2
+export CHECKS_DEADLINE=${CHECKS_DEADLINE:-$(( $(date +%s) + ${CHECKS_WAIT_SECONDS:-3600} ))}
 
 echo 'eligible=false' >> "$GITHUB_OUTPUT"
 printf '## C00 deploy candidate `%s`\n\n' "$source_sha" >> "$GITHUB_STEP_SUMMARY"
