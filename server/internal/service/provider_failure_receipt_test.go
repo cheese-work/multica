@@ -204,3 +204,89 @@ func TestRecoveryReceiptAbsentWhenNothingReserved(t *testing.T) {
 		t.Fatalf("receipts before=%d after=%d, want one from the winning reservation only", before, after)
 	}
 }
+
+// A real failure, reservation, effect and receipt share one transaction.
+// Commit keeps all four; rollback leaves none, including the failure itself.
+func TestRecoveryReceiptSharesTransactionWithFailureReservationAndRealEffect(t *testing.T) {
+	for _, kind := range []providerFailureOwner{providerOwnerTaskRetry, providerOwnerWakeupRearm} {
+		for _, commit := range []bool{true, false} {
+			name := string(kind) + map[bool]string{true: "/commit", false: "/rollback"}[commit]
+			t.Run(name, func(t *testing.T) {
+				o := newOwnerFixture(t)
+				o.cleanupReceipts(t)
+				ctx := context.Background()
+				var wakeup string
+				var failed string
+				var effect db.RecordProviderFailureRecoveryParams
+				if kind == providerOwnerWakeupRearm {
+					wakeup = o.wakeup(t, "at", "once", nil)
+					failed = o.failedTask(t, wakeupContext(t, wakeup))
+					effect = o.wakeupRearmEffect(failed, wakeup, 2)
+				} else {
+					failed = o.failedTask(t, nil)
+					effect = o.taskRetryEffect(failed)
+				}
+				// The task is still running; the transaction below is what fails it.
+				if _, err := o.Pool.Exec(ctx, `UPDATE agent_task_queue SET status='running', started_at=now(), completed_at=NULL, failure_reason=NULL WHERE id=$1`, failed); err != nil {
+					t.Fatal(err)
+				}
+				effectTask := util.UUIDToString(effect.RecoveryTaskID)
+				if kind == providerOwnerTaskRetry {
+					o.Cleanup(t, "DELETE FROM agent_task_queue WHERE id=$1", effectTask)
+				}
+
+				tx := o.begin(t)
+				if _, err := tx.Exec(ctx, `UPDATE agent_task_queue SET status='failed', failure_reason='agent_error.provider_server_error', completed_at=now() WHERE id=$1`, failed); err != nil {
+					t.Fatal(err)
+				}
+				reserved, _, err := reserveProviderFailureRecoveryAndApply(ctx, tx, effect, func(ctx context.Context, sp pgx.Tx) error {
+					if kind == providerOwnerWakeupRearm {
+						_, err := sp.Exec(ctx, `UPDATE issue_wakeup SET next_fire_at=now()+interval '1 minute', revision=2 WHERE id=$1`, wakeup)
+						return err
+					}
+					_, err := db.New(sp).CreateRetryTask(ctx, db.CreateRetryTaskParams{ID: effect.FailedTaskID, NewTaskID: effect.RecoveryTaskID})
+					return err
+				})
+				if err != nil || !reserved {
+					t.Fatalf("reserved=%t err=%v, want reserved", reserved, err)
+				}
+				end := tx.Rollback
+				if commit {
+					end = tx.Commit
+				}
+				if err := end(ctx); err != nil {
+					t.Fatal(err)
+				}
+				var status string
+				var reservations, retryChildren, rearmed int
+				scan := func(sql string, dst any, args ...any) {
+					t.Helper()
+					if err := o.Pool.QueryRow(ctx, sql, args...).Scan(dst); err != nil {
+						t.Fatal(err)
+					}
+				}
+				scan(`SELECT status FROM agent_task_queue WHERE id=$1`, &status, failed)
+				scan(`SELECT count(*) FROM provider_failure_recovery WHERE failed_task_id=$1`, &reservations, failed)
+				if kind == providerOwnerTaskRetry {
+					scan(`SELECT count(*) FROM agent_task_queue WHERE id=$1`, &retryChildren, effectTask)
+				}
+				if wakeup != "" {
+					scan(`SELECT count(*) FROM issue_wakeup WHERE id=$1 AND revision=2 AND next_fire_at IS NOT NULL`, &rearmed, wakeup)
+				}
+				wantRows := map[providerFailureOwner]int{providerOwnerTaskRetry: 1, providerOwnerWakeupRearm: 2}[kind]
+				got := o.receipts(t, o.Pool)
+				if commit {
+					wantEffect := map[providerFailureOwner]int{providerOwnerTaskRetry: 1, providerOwnerWakeupRearm: 0}[kind]
+					wantRearmed := map[providerFailureOwner]int{providerOwnerTaskRetry: 0, providerOwnerWakeupRearm: 1}[kind]
+					if status != "failed" || reservations != 1 || retryChildren != wantEffect || rearmed != wantRearmed || len(got) != wantRows {
+						t.Fatalf("after commit: status=%s reservations=%d retryChildren=%d rearmed=%d receipts=%+v, want failed, 1, %d, %d, %d receipts",
+							status, reservations, retryChildren, rearmed, got, wantEffect, wantRearmed, wantRows)
+					}
+				} else if status != "running" || reservations != 0 || retryChildren != 0 || rearmed != 0 || len(got) != 0 {
+					t.Fatalf("after rollback: status=%s reservations=%d retryChildren=%d rearmed=%d receipts=%+v, want running and nothing else",
+						status, reservations, retryChildren, rearmed, got)
+				}
+			})
+		}
+	}
+}
