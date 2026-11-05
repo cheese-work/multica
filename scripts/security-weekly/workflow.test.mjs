@@ -92,3 +92,8 @@ test("every job that seals checks out the repo first (seal.sh lives in the tree)
     if (j.includes("seal.sh")) assert.match(j, /uses: actions\/checkout@/, j.split("\n")[0]);
   }
 });
+
+test("never runs on a pull request: a PR could swap recipient.asc and read the sealed reports", () => {
+  assert.doesNotMatch(wf, /^\s*pull_request(_target)?:/m);
+  assert.match(wf, /^on:\n  schedule:/m);
+});

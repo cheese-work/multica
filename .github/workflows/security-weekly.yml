@@ -2,17 +2,13 @@
 # cannot run does, so a broken scan is never read as clean. Read-only token, GitHub-hosted runners, no secrets, no image build.
 # This repo is public, so artifacts and logs are world-readable: every report is sealed (scripts/security-weekly/seal.sh) to a
 # key only X99 holds, and nothing about findings is printed. The Monday brief unseals, summarizes and files on X99
-# (scripts/security-weekly/weekly.sh). security-gate.yml still gates PR diffs; this covers the whole tree, dependencies and images.
+# (scripts/security-weekly/weekly.sh). No pull_request trigger: a PR could replace recipient.asc and read its own sealed reports. security-gate.yml still gates PR diffs; this covers the whole tree, dependencies and images.
 name: security-weekly
 
 on:
   schedule:
     - cron: "0 16 * * 0" # Sunday 23:00 ICT, so results land in the Monday brief
   workflow_dispatch:
-  pull_request:
-    paths:
-      - .github/workflows/security-weekly.yml
-      - scripts/security-weekly/**
 
 permissions:
   contents: read
