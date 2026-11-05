@@ -448,6 +448,7 @@
       "issue": "任務",
       "notifications": "通知",
       "tokens": "API Token",
+      "passkeys": "通行金鑰",
       "general": "常規",
       "github": "GitHub",
       "labs": "實驗室",
@@ -743,6 +744,38 @@
     },
     "focused_delivery": "僅接收決策和分配給我的 issue 通知"
   },
+  "passkeys": {
+    "title": "通行金鑰",
+    "purpose": "通行金鑰使用此裝置或安全金鑰為敏感核准簽章。",
+    "description": "核准受保護的決策時，通行金鑰用於證明是你本人。請在不同裝置上至少保留兩個。",
+    "desktop_note": "通行金鑰綁定於網頁版，請在瀏覽器中管理。",
+    "open_in_browser": "在瀏覽器中開啟",
+    "add": "新增通行金鑰",
+    "code_hint": "我們已寄送驗證碼到你的信箱。輸入驗證碼，然後依瀏覽器提示建立通行金鑰。",
+    "code_label": "信箱驗證碼",
+    "confirm": "確認",
+    "cancel": "取消",
+    "empty": "尚無通行金鑰。",
+    "load_failed": "無法載入通行金鑰。請重新整理頁面再試。",
+    "item_title": "通行金鑰 {{number}}",
+    "item_meta": "新增於 {{created}} · {{lastUsed}}",
+    "last_used_with_date": "上次使用 {{date}}",
+    "last_used_never": "從未使用",
+    "suspect": "可疑",
+    "revoke_code_hint": "我們已寄送用於移除此通行金鑰的驗證碼到你的信箱。輸入驗證碼以確認。",
+    "revoke_aria": "吊銷通行金鑰 {{number}}",
+    "toast_enrolled": "通行金鑰已新增",
+    "toast_enroll_failed": "新增通行金鑰失敗",
+    "toast_revoked": "通行金鑰已吊銷",
+    "toast_revoke_failed": "吊銷通行金鑰失敗",
+    "revoke_dialog": {
+      "title": "吊銷通行金鑰",
+      "description": "該通行金鑰將被移除，不能再用於核准決策。需要使用另一個通行金鑰簽章確認。",
+      "cancel": "取消",
+      "confirm": "吊銷",
+      "use_code": "改用信箱驗證碼"
+    }
+  },
   "tokens": {
     "title": "API Token",
     "description": "個人訪問 token 讓 CLI 和外部整合可以代表你的帳號進行身份驗證。可透過 multica login --token 使用，或在呼叫 API 時作為 Bearer token 傳送。",
@@ -856,7 +889,13 @@
     "idle_guard_act": "Act",
     "idle_guard_hours_label": "超過（小時）",
     "idle_guard_hours_invalid": "請輸入 1 到 72 的整數。",
-    "idle_guard_readonly": "{{mode}}，{{hours}} 小時後"
+    "idle_guard_readonly": "{{mode}}，{{hours}} 小時後",
+    "routing_agent_label": "路由智慧體",
+    "routing_agent_hint": "處理僅路由的工作流程步驟：待辦、受阻、已合併和待決策。未設定則沿用各步驟自己的智慧體。",
+    "routing_fallback_label": "備用智慧體",
+    "routing_fallback_hint": "路由智慧體因服務商錯誤失敗時，接手該路由步驟。",
+    "routing_agent_none": "無",
+    "routing_agent_unknown": "未知智慧體"
   },
   "delete_workspace_dialog": {
     "title": "刪除工作區",

@@ -3070,14 +3070,13 @@ func TestWebhook_InstallationCreatedRefreshesUnknownLogin(t *testing.T) {
 	}
 }
 
-// TestSetupCallback_ConsumesPendingInstallationCreated covers the inverse
-// race to TestWebhook_InstallationCreatedRefreshesUnknownLogin: GitHub can
-// deliver installation.created before the setup callback has created the local
-// workspace binding. The webhook cannot broadcast yet, but it must not be lost;
-// after the callback independently verifies the installation and authorizing
-// organization admin, it clears the pending snapshot without letting stale
-// webhook metadata override the authoritative App lookup.
-func TestSetupCallback_ConsumesPendingInstallationCreated(t *testing.T) {
+// TestSetupCallback_UnboundInstallationCreatedStoresNothing covers the race
+// where GitHub delivers installation.created before the setup callback has
+// created the local workspace binding. The webhook must not store a pending
+// snapshot for an unbound installation (CHE-3414); the callback independently
+// verifies the installation and authorizing organization admin through the
+// App API and binds from that authoritative lookup alone.
+func TestSetupCallback_UnboundInstallationCreatedStoresNothing(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("handler test fixture not initialized (no DB?)")
 	}
@@ -3148,13 +3147,13 @@ func TestSetupCallback_ConsumesPendingInstallationCreated(t *testing.T) {
 		t.Fatalf("webhook: expected 202, got %d (%s)", rec.Code, rec.Body.String())
 	}
 
-	var pendingLogin string
+	var pendingBefore int
 	dbfx.QueryRow(t,
-		`SELECT account_login FROM github_pending_installation WHERE installation_id = $1`,
+		`SELECT count(*) FROM github_pending_installation WHERE installation_id = $1`,
 		installationID,
-	).Scan(&pendingLogin)
-	if pendingLogin != "pending-octocat" {
-		t.Fatalf("pending account_login = %q, want pending-octocat", pendingLogin)
+	).Scan(&pendingBefore)
+	if pendingBefore != 0 {
+		t.Fatalf("unbound installation.created stored %d pending rows, want 0", pendingBefore)
 	}
 
 	state, err := signState(testWorkspaceID)
@@ -3198,7 +3197,7 @@ func TestSetupCallback_ConsumesPendingInstallationCreated(t *testing.T) {
 		installationID,
 	).Scan(&pendingCount)
 	if pendingCount != 0 {
-		t.Fatalf("pending installation row should be consumed, got count %d", pendingCount)
+		t.Fatalf("setup callback left %d pending rows, want 0", pendingCount)
 	}
 }
 
