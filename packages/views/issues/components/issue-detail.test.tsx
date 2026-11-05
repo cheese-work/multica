@@ -4877,6 +4877,54 @@ describe("IssueDetail (shared)", () => {
     expect(await screen.findByDisplayValue("First title, then more")).toBeVisible();
   });
 
+  it("keeps a title edit that returns to the old title while another title save is in flight", async () => {
+    let finishSave!: (issue: unknown) => void;
+    mockApiObj.updateIssue.mockImplementationOnce(
+      () => new Promise((resolve) => { finishSave = resolve; }),
+    );
+    const first = renderIssueDetail();
+    fireEvent.click(await screen.findByRole("button", { name: "Implement authentication" }));
+    const editor = await screen.findByTestId("title-editor");
+    fireEvent.change(editor, { target: { value: "Saved title" } });
+    fireEvent.blur(editor);
+    await waitFor(() => expect(mockApiObj.updateIssue).toHaveBeenCalledTimes(1));
+    // The editor goes back to the title the server still holds, then the save lands.
+    fireEvent.change(editor, { target: { value: "Implement authentication" } });
+    finishSave({ ...mockIssue, title: "Saved title" });
+    await waitFor(() =>
+      expect(useIssueTitleDraftStore.getState().getDraft(mockIssue.id)?.value).toBe("Implement authentication"),
+    );
+    first.unmount();
+
+    renderIssueDetail();
+    expect(await screen.findByDisplayValue("Implement authentication")).toBeVisible();
+  });
+
+  it("keeps a title edit that matches the in-flight title when that save then fails", async () => {
+    let failSave!: (error: unknown) => void;
+    mockApiObj.updateIssue.mockImplementationOnce(
+      () => new Promise((_resolve, reject) => { failSave = reject; }),
+    );
+    const first = renderIssueDetail();
+    fireEvent.click(await screen.findByRole("button", { name: "Implement authentication" }));
+    const editor = await screen.findByTestId("title-editor");
+    fireEvent.change(editor, { target: { value: "Saved title" } });
+    fireEvent.blur(editor);
+    await waitFor(() => expect(mockApiObj.updateIssue).toHaveBeenCalledTimes(1));
+    // The optimistic cache already shows "Saved title"; typing it again must not drop the draft.
+    fireEvent.change(editor, { target: { value: "Other" } });
+    fireEvent.change(editor, { target: { value: "Saved title" } });
+    fireEvent.blur(editor);
+    failSave(new Error("offline"));
+    await waitFor(() =>
+      expect(useIssueTitleDraftStore.getState().getDraft(mockIssue.id)?.value).toBe("Saved title"),
+    );
+    first.unmount();
+
+    renderIssueDetail();
+    expect(await screen.findByDisplayValue("Saved title")).toBeVisible();
+  });
+
   describe("sub-issues list", () => {
     it("places the decision banner after title, description and sub-issues, before activity", async () => {
       mockApiObj.listChildIssues.mockResolvedValue({

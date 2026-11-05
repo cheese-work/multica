@@ -3106,6 +3106,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // An unsaved title edit outlives the page and the editor; it is cleared only once the server accepts it.
   const [titleDraft, setTitleDraft, clearTitleDraft] = usePersistedDraft(useIssueTitleDraftStore, id, EMPTY_TEXT_EDIT);
   const [titleConflictDraft, setTitleConflictDraft] = useState<string | null>(null);
+  // While a title save is in flight the cache already shows the new title, and a failure rolls it back.
+  // Matching `issue.title` then proves nothing, so the draft is kept until the save settles.
+  const titleSavesInFlightRef = useRef(0);
   // Bumped when a conflicting title draft is discarded. TitleEditor reads its
   // text from `defaultValue` at mount and exposes no imperative setter, so
   // remounting is the only way to put the server's title back in the editor.
@@ -3121,6 +3124,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const descPendingUploadsRef = useRef<File[]>([]);
   useEffect(() => {
     setTitleConflictDraft(null);
+    titleSavesInFlightRef.current = 0;
     // A restored edit keeps the title it started from, so a title that moved meanwhile still conflicts.
     titleBaseRef.current = useIssueTitleDraftStore.getState().getDraft(id)?.base ?? undefined;
     descriptionSaveInFlightRef.current = false;
@@ -4215,25 +4219,29 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                 className={cn("w-full leading-snug", titleSizeClass)}
                 onReady={titleLazy.onReady}
                 onChange={(value) => {
-                  if (value.trim() === issue.title) clearTitleDraft();
+                  if (value.trim() === issue.title && titleSavesInFlightRef.current === 0) clearTitleDraft();
                   else setTitleDraft({ value, base: titleBaseRef.current ?? issue.title });
                 }}
                 onBlur={(value) => {
                   const trimmed = value.trim();
-                  if (!trimmed || trimmed === issue.title) clearTitleDraft();
+                  if ((!trimmed || trimmed === issue.title) && titleSavesInFlightRef.current === 0) clearTitleDraft();
                   if (trimmed && trimmed !== issue.title) {
+                    titleSavesInFlightRef.current += 1;
                     handleUpdateField({
                       title: trimmed,
                       title_base: titleBaseRef.current,
                     }, {
                       onSuccess: (serverIssue) => {
+                        titleSavesInFlightRef.current = Math.max(0, titleSavesInFlightRef.current - 1);
                         setTitleConflictDraft(null);
-                        // Typing resumed while this save was in flight: that newer text is still unsent.
-                        const latest = useIssueTitleDraftStore.getState().getDraft(id)?.value;
-                        if (latest == null || latest.trim() === trimmed) clearTitleDraft();
+                        // Edits made while this save was in flight are still unsent, even one that
+                        // went back to the old title. Only text the server now holds is done.
+                        const latest = useIssueTitleDraftStore.getState().getDraft(id)?.value?.trim();
+                        if (latest == null || latest === trimmed || latest === serverIssue.title) clearTitleDraft();
                         titleBaseRef.current = serverIssue.title;
                       },
                       onError: (error) => {
+                        titleSavesInFlightRef.current = Math.max(0, titleSavesInFlightRef.current - 1);
                         if (errorCode(error) === "revision_conflict") {
                           setTitleConflictDraft(trimmed);
                         }
