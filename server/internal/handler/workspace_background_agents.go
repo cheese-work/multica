@@ -157,10 +157,12 @@ func (h *Handler) saveBackgroundAgents(w http.ResponseWriter, r *http.Request, m
 // on each agent, so an archive cannot land between the check and the write. A
 // machine write is accepted only when it changes nothing, so it never needs the
 // check: an agent archived since the last human save must not turn an unchanged
-// machine PUT into a 400. A change
-// of the compact job cancels every live compaction task in the same
-// transaction (SEC-1 rule 4), so no task queued under the old chain delivers a
-// transcript; the cancelled rows come back for the post-commit broadcast.
+// machine PUT into a 400. A change of the compact job cancels every live
+// compaction task in the same transaction (SEC-1 rule 4), so no task queued
+// under the old chain delivers a transcript; the cancelled rows come back for
+// the post-commit broadcast. Lock order is workspace, every chat_session of the
+// workspace, then agents (FOR SHARE), then agent_task_queue: the order of a chat
+// enqueue. An enqueue's uncommitted task is therefore visible to the sweep.
 func (h *Handler) writeBackgroundAgents(ctx context.Context, member db.Member, machine bool, next map[string]any) ([]bgChange, []db.AgentTaskQueue, error) {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
@@ -177,11 +179,6 @@ func (h *Handler) writeBackgroundAgents(ctx context.Context, member db.Member, m
 	if stored == nil {
 		stored = map[string]any{}
 	}
-	if !machine {
-		if bad := checkBackgroundAgentsEligible(ctx, q, member.WorkspaceID, next); bad != nil {
-			return nil, nil, bad
-		}
-	}
 	prev := bgValue(stored[backgroundAgentsKey])
 	var changes []bgChange
 	for _, job := range sortedUnionKeys(prev, next) {
@@ -189,11 +186,24 @@ func (h *Handler) writeBackgroundAgents(ctx context.Context, member db.Member, m
 			changes = append(changes, bgChange{job, prev[job], next[job]})
 		}
 	}
+	if machine {
+		if len(changes) == 0 {
+			return nil, nil, nil
+		}
+		return nil, nil, errBackgroundAgentsHumanOnly
+	}
+	compactChanged := slices.ContainsFunc(changes, func(c bgChange) bool { return c.Job == string(bgagents.Compact) })
+	if compactChanged {
+		// Before any agent lock, as every chat enqueue orders them.
+		if _, err := q.LockChatSessionsByWorkspace(ctx, member.WorkspaceID); err != nil {
+			return nil, nil, err
+		}
+	}
+	if bad := checkBackgroundAgentsEligible(ctx, q, member.WorkspaceID, next); bad != nil {
+		return nil, nil, bad
+	}
 	if len(changes) == 0 {
 		return nil, nil, nil
-	}
-	if machine {
-		return nil, nil, errBackgroundAgentsHumanOnly
 	}
 	if len(next) == 0 {
 		delete(stored, backgroundAgentsKey)
@@ -208,7 +218,7 @@ func (h *Handler) writeBackgroundAgents(ctx context.Context, member db.Member, m
 		return nil, nil, err
 	}
 	var cancelled []db.AgentTaskQueue
-	if slices.ContainsFunc(changes, func(c bgChange) bool { return c.Job == string(bgagents.Compact) }) {
+	if compactChanged {
 		if cancelled, err = cancelCompactionTasks(ctx, q, member.WorkspaceID); err != nil {
 			return nil, nil, err
 		}
@@ -228,17 +238,11 @@ func (h *Handler) writeBackgroundAgents(ctx context.Context, member db.Member, m
 	return changes, cancelled, tx.Commit(ctx)
 }
 
-// cancelCompactionTasks cancels the workspace's live compaction tasks. Lock
-// order is workspace, chat_session, then agent_task_queue, as every chat
-// writer takes it. Every DM of the workspace is locked, not only those with a
-// visible live task: an enqueue holds its DM lock with a task it has not yet
-// committed, which the sweep cannot see. Waiting on that lock makes the task
-// visible before the sweep runs; an enqueue that starts after it reads the new
-// chain.
+// cancelCompactionTasks cancels the workspace's live compaction tasks. The
+// caller has already locked every chat_session of the workspace (see
+// writeBackgroundAgents), so an in-flight enqueue's task is committed and
+// visible here.
 func cancelCompactionTasks(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID) ([]db.AgentTaskQueue, error) {
-	if _, err := q.LockChatSessionsByWorkspace(ctx, workspaceID); err != nil {
-		return nil, err
-	}
 	cancelled, err := q.CancelCompactionTasksByWorkspace(ctx, workspaceID)
 	if err != nil {
 		return nil, err

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -109,5 +110,45 @@ func TestBackgroundAgentsWriteRevalidatesAnAgentArchivedMidWrite(t *testing.T) {
 	}
 	if got := storedBG(t, wsID); got == nil {
 		t.Fatal("the stored value was cleared by a refused write")
+	}
+}
+
+// A chat enqueue locks the DM, then the agent FOR UPDATE (service.enqueueChatTaskTx).
+// The compact change must take its locks in the same order, so an enqueue for the
+// newly chosen agent and the change never wait on each other. A change that held
+// the agent FOR SHARE while it waited for the DM lock would deadlock here and
+// PostgreSQL would abort one side.
+func TestBackgroundAgentsCompactChangeAndEnqueueForTheSameAgentDoNotDeadlock(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	wsID, a, b, _ := bgFixture(t, "bg-lock-order")
+	putBG(t, wsID, map[string]any{"compact": map[string]any{"agent_id": a}}, nil).Want(http.StatusOK)
+	sessionID := dbfx.ChatSession(t, b, testutil.Cols{"workspace_id": wsID})
+
+	tx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin enqueue tx: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT id FROM chat_session WHERE id = $1 FOR UPDATE`, sessionID); err != nil {
+		t.Fatalf("lock chat session: %v", err)
+	}
+
+	done, result := putBGAsync(wsID, map[string]any{"compact": map[string]any{"agent_id": b}})
+	if !waitForBlockedBackend(t, done) {
+		t.Fatal("the compact change finished while an enqueue held the DM lock")
+	}
+	// The enqueue now reaches for the agent. It must not wait on the change.
+	if _, err := tx.Exec(ctx, `SELECT id FROM agent WHERE id = $1 FOR UPDATE`, b); err != nil {
+		t.Fatalf("enqueue lock agent: %v (deadlock with the compact change)", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit enqueue tx: %v", err)
+	}
+	if code, _ := result(); code != http.StatusOK {
+		t.Fatalf("PUT status = %d, want 200", code)
 	}
 }
