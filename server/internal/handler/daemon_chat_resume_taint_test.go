@@ -5,8 +5,12 @@ import (
 	"net/http"
 	"reflect"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // CHE-3702 round 8: a fired watch stamps its taint on its own DM task only.
@@ -168,7 +172,8 @@ func TestChatClaimForkAndContinuationSeedInheritTaintAndReachDelegate(t *testing
 			})
 			dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": sourceID, "role": "assistant", "content": "attacker-influenced reply"})
 
-			childID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "taint " + tc.name, tc.link: sourceID})
+			// taint_ids is what SetChatForkSource / SetChatContinuationSource store at copy time.
+			childID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "taint " + tc.name, tc.link: sourceID, "taint_ids": []string{"t1"}})
 			if tc.name == "fork" {
 				dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": childID, "role": "assistant", "content": "attacker-influenced reply"})
 			} else {
@@ -194,8 +199,9 @@ func TestChatClaimForkAndContinuationSeedInheritTaintAndReachDelegate(t *testing
 }
 
 // CHE-3702 round 13: a taint-free middle link (a fork made before any task ran)
-// must not cut the chain. The seeded task takes the taint of the whole fork and
-// continuation ancestry, and a delegate of it claims restricted.
+// must not cut the chain. The middle chat carries the root's stored taint, so the
+// leaf copies it from the middle, and a delegate of the seeded task claims
+// restricted.
 func TestChatClaimSeedTaintWalksTaskLessAncestry(t *testing.T) {
 	for _, tc := range []struct{ name, lastLink string }{
 		{name: "fork of fork", lastLink: "forked_from_session_id"},
@@ -211,9 +217,9 @@ func TestChatClaimSeedTaintWalksTaskLessAncestry(t *testing.T) {
 				"started_at": testutil.Raw("now() - interval '1 minute'"), "completed_at": testutil.Raw("now()"),
 			})
 			dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": rootID, "role": "assistant", "content": "attacker-influenced reply"})
-			middleID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "ancestry middle, no task", "forked_from_session_id": rootID})
+			middleID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "ancestry middle, no task", "forked_from_session_id": rootID, "taint_ids": []string{"t1"}})
 			dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": middleID, "role": "assistant", "content": "attacker-influenced reply"})
-			leafID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "ancestry leaf", tc.lastLink: middleID})
+			leafID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "ancestry leaf", tc.lastLink: middleID, "taint_ids": []string{"t1"}})
 			kind := testutil.Cols{"chat_session_id": leafID, "role": "assistant", "content": "attacker-influenced reply"}
 			if tc.lastLink == "continued_from_session_id" {
 				kind["message_kind"] = "continuation_summary"
@@ -233,5 +239,100 @@ func TestChatClaimSeedTaintWalksTaskLessAncestry(t *testing.T) {
 
 			claimRestrictedWithTaint(t, delegateRuntime, []string{"t1"})
 		})
+	}
+}
+
+func forkDM(t *testing.T, sourceID, key, message string) string {
+	t.Helper()
+	extra := map[string]any{}
+	if message != "" {
+		extra["message"] = message
+	}
+	var child ChatForkResponse
+	testutil.Call(t, testHandler.ForkChatSession, forkChatRequest(t, sourceID, key, extra)).Want(http.StatusCreated).JSON(&child)
+	cleanupChatFork(t, child.Session.ID)
+	return child.Session.ID
+}
+
+func deleteDM(t *testing.T, sessionID string) {
+	t.Helper()
+	req := withChatTestWorkspaceCtx(t, withURLParams(newRequest(http.MethodDelete, "/api/chat/sessions/"+sessionID, nil), "sessionId", sessionID))
+	testutil.Call(t, testHandler.DeleteChatSession, req).Want(http.StatusNoContent)
+}
+
+// CHE-3702 round 14: a fork copies the source transcript, so the copy keeps
+// the source's taint after the source is deleted. DeleteChatSession detaches
+// the source's tasks from the chat, so the taint has to live on the chat that
+// holds the copy. The claim of a later turn must stay restricted, and so must
+// a delegate of it.
+func TestChatClaimSeedTaintSurvivesSourceDeletion(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		middleLinks  bool
+		deleteMiddle bool
+	}{
+		{name: "delete the source of a fork"},
+		{name: "fork of fork, delete the source and the middle", middleLinks: true, deleteMiddle: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			agentID, rootID, runtimeID, _ := setupDirectChatSession(t, ctx, "Taint root")
+			dbfx.Task(t, agentID, testutil.Cols{
+				"status": "completed", "runtime_id": runtimeID, "chat_session_id": rootID,
+				"session_id": "sess-tainted", "taint_ids": []string{"t1"},
+				"started_at": testutil.Raw("now() - interval '1 minute'"), "completed_at": testutil.Raw("now()"),
+			})
+			forkMessage(t, rootID, testutil.Cols{"role": "user", "content": "a question", "created_at": testutil.Raw("now() - interval '2 minutes'")})
+			forkMessage(t, rootID, testutil.Cols{"role": "assistant", "content": "attacker-influenced reply", "created_at": testutil.Raw("now() - interval '1 minute'")})
+
+			leafID := ""
+			if tc.middleLinks {
+				middleID := forkDM(t, rootID, "middle", "")
+				leafID = forkDM(t, middleID, "leaf", "Next step")
+				deleteDM(t, rootID)
+				deleteDM(t, middleID)
+			} else {
+				leafID = forkDM(t, rootID, "leaf", "Next step")
+				deleteDM(t, rootID)
+			}
+			if got := dbfx.Count(t, `SELECT count(*) FROM chat_session WHERE id = $1`, leafID); got != 1 {
+				t.Fatalf("leaf DM missing after the deletes: %d rows", got)
+			}
+
+			dm := claimChatTaintTask(t, runtimeID)
+			wantChatTaint(t, dm, "")
+
+			delegateRuntime := createClaimReclaimRuntime(t, ctx, "Deleted-source delegate runtime "+tc.name)
+			delegateAgent, issueID := createClaimReclaimAgentAndIssue(t, ctx, delegateRuntime, "Deleted-source delegate agent "+tc.name)
+			insertGrant(t, issueID, testWorkspaceID, []string{"docker"}, "1 minute", "1 hour", false)
+			taskID := createDispatchedClaimFixtureTask(t, ctx, delegateAgent, delegateRuntime, issueID, "120 seconds", false)
+			dbfx.Exec(t, `UPDATE agent_task_queue SET delegated_from_task_id = $2 WHERE id = $1`, taskID, dm.ID)
+
+			claimRestrictedWithTaint(t, delegateRuntime, []string{"t1"})
+		})
+	}
+}
+
+// SetChatContinuationSource stores the source's taint on the successor, from the
+// source chat and from its tasks.
+func TestSetChatContinuationSourceStoresSourceTaint(t *testing.T) {
+	ctx := context.Background()
+	agentID, runtimeID, _ := createRuntimeGuardAgent(t, ctx)
+	sourceID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "continuation source", "taint_ids": []string{"t2"}})
+	dbfx.Task(t, agentID, testutil.Cols{
+		"status": "completed", "runtime_id": runtimeID, "chat_session_id": sourceID,
+		"taint_ids":  []string{"t1"},
+		"started_at": testutil.Raw("now() - interval '1 minute'"), "completed_at": testutil.Raw("now()"),
+	})
+	childID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "continuation child"})
+	if _, err := testHandler.Queries.SetChatContinuationSource(ctx, db.SetChatContinuationSourceParams{
+		ID: parseUUID(childID), ContinuedFromSessionID: parseUUID(sourceID), SummaryCreatedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var stored []string
+	dbfx.QueryRow(t, `SELECT taint_ids FROM chat_session WHERE id = $1`, childID).Scan(&stored)
+	if !reflect.DeepEqual(stored, []string{"t1", "t2"}) {
+		t.Fatalf("stored chat taint = %v, want [t1 t2]", stored)
 	}
 }

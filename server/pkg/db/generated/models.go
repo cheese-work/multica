@@ -655,6 +655,7 @@ type ChatSession struct {
 	CompactionEpoch        int64              `json:"compaction_epoch"`
 	PresetName             pgtype.Text        `json:"preset_name"`
 	DecisionTopicID        pgtype.UUID        `json:"decision_topic_id"`
+	TaintIds               []string           `json:"taint_ids"`
 }
 
 type ChatTaskSupplement struct {

@@ -1298,21 +1298,16 @@ RETURNING t.taint_ids;
 -- InheritChatSessionTaint for a task whose fresh session is seeded from other
 -- DM content (CHE-3702): an in-place compaction summary, a fork's copied
 -- transcript or a continuation summary. The resume pointer that carried the
--- taint is gone, so the taint comes from every task of this chat and of every
--- DM in its fork and continuation ancestry. A link with no task of its own
--- (a fork made before any turn ran) still passes its ancestors on. UNION
--- drops repeated ids, so a cyclic chain ends.
-WITH RECURSIVE ancestry(id) AS (
-    SELECT t0.chat_session_id FROM agent_task_queue t0 WHERE t0.id = $1
-    UNION
-    SELECT unnest(ARRAY[c.forked_from_session_id, c.continued_from_session_id])
-    FROM chat_session c JOIN ancestry a ON c.id = a.id
-)
+-- taint is gone, so the taint is the chat's own tasks plus the taint stored on
+-- the chat when it copied its source (chat_session.taint_ids), which survives
+-- the source being deleted.
 UPDATE agent_task_queue t
 SET taint_ids = COALESCE((
-    SELECT array_agg(DISTINCT x ORDER BY x)
-    FROM agent_task_queue s, unnest(s.taint_ids) AS x
-    WHERE s.chat_session_id IN (SELECT id FROM ancestry WHERE id IS NOT NULL)
+    SELECT array_agg(DISTINCT x ORDER BY x) FROM (
+        SELECT unnest(c.taint_ids) AS x FROM chat_session c WHERE c.id = t.chat_session_id
+        UNION ALL
+        SELECT unnest(s.taint_ids) FROM agent_task_queue s WHERE s.chat_session_id = t.chat_session_id
+    ) u
 ), '{}')
 WHERE t.id = $1
 RETURNING t.taint_ids;

@@ -515,7 +515,7 @@ func TestForkChatSessionAuthorizationAndValidation(test *testing.T) {
 				test.Fatalf("empty rejection = %s", response.Text())
 			}
 			after, err := testHandler.Queries.GetChatSession(context.Background(), parseUUID(sourceID))
-			if err != nil || before != after || dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE forked_from_session_id = $1`, sourceID) != 0 {
+			if err != nil || !reflect.DeepEqual(before, after) || dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE forked_from_session_id = $1`, sourceID) != 0 {
 				test.Fatalf("rejected fork changed source or created a child: %+v, %v", after, err)
 			}
 		})
