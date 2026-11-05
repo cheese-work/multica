@@ -338,7 +338,7 @@ describe("McpServerDialog", () => {
 
     expect(
       JSON.parse((screen.getByLabelText("MCP server JSON configuration") as HTMLTextAreaElement).value),
-    ).toEqual({ type: "sse", url: "https://b.test", headers: { Authorization: "saved" } });
+    ).toEqual({ type: "sse", url: "https://b.test" });
   });
 
   describe("JSON drafts that are not a finished server yet", () => {
@@ -403,7 +403,7 @@ describe("McpServerDialog", () => {
       expect(JSON.parse(reopen())).toEqual({ type: "sse", url: "https://example.test" });
     });
 
-    it("keeps a saved credential inside an array through draft, reopen and save", async () => {
+    it("drops a saved credential inside an array when the destination moved", async () => {
       const server = managedServer({
         name: "remote",
         config: { type: "sse", url: "https://a.test", options: [{ token: "saved", name: "a" }] },
@@ -418,7 +418,7 @@ describe("McpServerDialog", () => {
       expect(props.onSave).toHaveBeenCalledWith("remote", {
         type: "sse",
         url: "https://b.test",
-        options: [{ token: "saved", name: "b" }],
+        options: [{ name: "b" }],
       });
     });
 
@@ -434,11 +434,70 @@ describe("McpServerDialog", () => {
       expect(restored).not.toContain("typed-s3cret");
       await userEvent.setup().click(screen.getByRole("button", { name: /save/i }));
       await vi.waitFor(() => expect(props.onSave).toHaveBeenCalled());
-      expect(props.onSave).toHaveBeenCalledWith("remote", {
+      expect(props.onSave).toHaveBeenCalledWith("remote", { type: "sse", url: "https://b.test" });
+    });
+
+    it("does not bring a removed credential back, on the same or a new destination", async () => {
+      const server = managedServer({
+        name: "remote",
+        config: { type: "sse", url: "https://a.test", headers: { Authorization: "saved" } },
+        transport: "sse",
+      });
+      const { type, reopen, props } = await setup(server, "agent-1:remote-removed");
+      type('{"type": "sse", "url": "https://b.test"}');
+      expect(JSON.parse(reopen())).toEqual({ type: "sse", url: "https://b.test" });
+      await userEvent.setup().click(screen.getByRole("button", { name: /save/i }));
+      await vi.waitFor(() => expect(props.onSave).toHaveBeenCalled());
+      expect(props.onSave).toHaveBeenCalledWith("remote", { type: "sse", url: "https://b.test" });
+    });
+
+    it("does not bring a removed credential back when only the credential was removed", async () => {
+      const server = managedServer({
+        name: "remote",
+        config: { type: "sse", url: "https://a.test", headers: { Authorization: "saved" } },
+        transport: "sse",
+      });
+      const { type, reopen } = await setup(server, "agent-1:remote-removed-only");
+      type('{"type": "sse", "url": "https://a.test", "note": "x"}');
+      expect(JSON.parse(reopen())).toEqual({ type: "sse", url: "https://a.test", note: "x" });
+    });
+
+    it("keeps the saved credential while the destination and credential are untouched", async () => {
+      const server = managedServer({
+        name: "remote",
+        config: { type: "sse", url: "https://a.test", headers: { Authorization: "saved" } },
+        transport: "sse",
+      });
+      const { type, reopen } = await setup(server, "agent-1:remote-kept");
+      type('{"type": "sse", "url": "https://a.test", "headers": {"Authorization": "saved"}, "note": "x"}');
+      expect(JSON.parse(reopen())).toEqual({
         type: "sse",
-        url: "https://b.test",
+        url: "https://a.test",
         headers: { Authorization: "saved" },
+        note: "x",
       });
     });
+  });
+
+  it("does not carry saved headers to a new URL typed in the form", async () => {
+    const server = managedServer({
+      name: "remote",
+      config: { type: "http", url: "https://a.test", headers: { Authorization: "saved" } },
+      transport: "http",
+    });
+    const props = {
+      server,
+      existingNames: new Set(["remote"]),
+      onSave: vi.fn().mockResolvedValue(undefined),
+      onOpenChange: vi.fn(),
+      draftKey: "agent-1:remote-form",
+    };
+    const view = render(<McpServerDialog open {...props} />, { wrapper: Wrapper });
+    fireEvent.change(screen.getByLabelText("Server URL"), { target: { value: "https://b.test" } });
+    view.rerender(<McpServerDialog open={false} {...props} />);
+    view.rerender(<McpServerDialog open {...props} />);
+    await userEvent.setup().click(screen.getByRole("button", { name: /save/i }));
+    await vi.waitFor(() => expect(props.onSave).toHaveBeenCalled());
+    expect(props.onSave).toHaveBeenCalledWith("remote", { type: "http", url: "https://b.test" });
   });
 });

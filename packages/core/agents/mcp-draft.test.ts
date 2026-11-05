@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  credentialsDropped,
   fillRedactedSecrets,
   redactMcpJsonText,
   restoreMcpSecrets,
@@ -95,5 +96,27 @@ describe("fillRedactedSecrets", () => {
 
   it("drops a placeholder that has no saved value", () => {
     expect(fillRedactedSecrets({}, { url: "u", headers: null })).toEqual({ url: "u" });
+  });
+});
+
+describe("credentialsDropped", () => {
+  const saved = { type: "http", url: "https://a.test", headers: { A: "x", B: "y" } };
+
+  it("is false while destination and credentials are untouched", () => {
+    expect(credentialsDropped(saved, { ...saved, note: "n" })).toBe(false);
+  });
+  it("is true when the destination changed", () => {
+    expect(credentialsDropped(saved, { ...saved, url: "https://b.test" })).toBe(true);
+    expect(credentialsDropped({ command: "a", env: { K: "v" } }, { command: "b", env: { K: "v" } })).toBe(true);
+  });
+  it("is true when any saved credential is gone", () => {
+    expect(credentialsDropped(saved, { type: "http", url: "https://a.test" })).toBe(true);
+    expect(credentialsDropped(saved, { ...saved, headers: { A: "x" } })).toBe(true);
+  });
+  it("treats a null placeholder as still present", () => {
+    expect(credentialsDropped(saved, { ...saved, headers: null })).toBe(false);
+  });
+  it("is false when nothing was saved", () => {
+    expect(credentialsDropped({}, { url: "https://b.test" })).toBe(false);
   });
 });

@@ -79,6 +79,8 @@ export interface McpDialogDraft {
   url: string | null;
   /** JSON editor text, credential-named keys removed (`mcp-draft.ts`). Set means JSON mode. */
   json: string | null;
+  /** Set when the edit moved the destination or removed a credential: saved credentials stay out on reopen. */
+  dropCredentials: true | null;
 }
 export const EMPTY_MCP_DIALOG_DRAFT: McpDialogDraft = {
   name: null,
@@ -87,6 +89,7 @@ export const EMPTY_MCP_DIALOG_DRAFT: McpDialogDraft = {
   args: null,
   url: null,
   json: null,
+  dropCredentials: null,
 };
 export const useMcpDialogDraftStore = createKeyedDraftStore<McpDialogDraft>({
   storageKey: "multica:agents:mcp-dialog-draft",

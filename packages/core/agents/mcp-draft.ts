@@ -5,6 +5,10 @@
  * saved server config when the draft is restored. A new server has no saved
  * config, so those values are typed again.
  *
+ * A restored draft never brings saved credentials back onto an edit that moved
+ * the destination or removed a credential (`credentialsDropped`): the user
+ * would otherwise send an old token to a new host, or find a deleted one again.
+ *
  * Text that does not parse yet (an unfinished edit) is not stored: finding
  * where a malformed credential value ends is a guess, and a wrong guess leaks.
  */
@@ -86,4 +90,49 @@ function fillValue(saved: unknown, value: unknown): unknown {
     return value.map((item, index) => fillValue(Array.isArray(saved) ? saved[index] : undefined, item));
   }
   return isObject(value) ? fillRedactedSecrets(isObject(saved) ? saved : {}, value) : value;
+}
+
+const DESTINATION_KEY = /^(url|uri|endpoint|command|args|type)$/i;
+
+function collect(value: unknown, path: string, secret: boolean, dest: Json, creds: Set<string>): void {
+  if (value === null && secret) creds.add(`${path}.*`);
+  if (Array.isArray(value)) {
+    value.forEach((item, i) => collect(item, `${path}[${i}]`, secret, dest, creds));
+    return;
+  }
+  if (isObject(value)) {
+    for (const [key, v] of Object.entries(value)) {
+      const child = `${path}.${key}`;
+      const childSecret = secret || SECRET_KEY.test(key);
+      if (childSecret) creds.add(child);
+      else if (DESTINATION_KEY.test(key)) dest[child] = v;
+      collect(v, child, childSecret, dest, creds);
+    }
+  }
+}
+
+/** A `null` placeholder stands for the whole saved subtree below it. */
+function hasNullAncestor(creds: Set<string>, path: string): boolean {
+  for (let end = path.lastIndexOf("."); end > 0; end = path.lastIndexOf(".", end - 1)) {
+    if (creds.has(`${path.slice(0, end)}.*`)) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether `current` moved a destination (url, command, args, type) or lost a
+ * credential that `saved` holds. A `null` placeholder counts as still present.
+ */
+export function credentialsDropped(saved: Json, current: Json): boolean {
+  const savedDest: Json = {};
+  const savedCreds = new Set<string>();
+  collect(saved, "", false, savedDest, savedCreds);
+  if (savedCreds.size === 0) return false;
+  const dest: Json = {};
+  const creds = new Set<string>();
+  collect(current, "", false, dest, creds);
+  return (
+    JSON.stringify(savedDest, Object.keys(savedDest).sort()) !== JSON.stringify(dest, Object.keys(dest).sort()) ||
+    [...savedCreds].some((path) => !creds.has(path) && !hasNullAncestor(creds, path))
+  );
 }

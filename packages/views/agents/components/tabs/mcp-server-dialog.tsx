@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import {
+  credentialsDropped,
   fillRedactedSecrets,
   redactMcpJsonText,
   restoreMcpSecrets,
@@ -316,8 +317,13 @@ export function McpServerDialog({
         ? undefined
         : useMcpDialogDraftStore.getState().getDraft(draftKey);
     const savedJson = saved?.json ? parseJsonObject(saved.json) : null;
+    // An edit that moved the destination or removed a credential reopens without the saved ones.
+    const dropped = saved?.dropCredentials === true;
+    const baseConfig = dropped ? stripMcpSecrets(base.config) : base.config;
     const seeded: McpFormState = {
       ...base.form,
+      env: dropped ? [] : base.form.env,
+      headers: dropped ? [] : base.form.headers,
       transport: saved?.transport ?? base.form.transport,
       command: saved?.command ?? base.form.command,
       args: saved?.args ?? base.form.args,
@@ -332,7 +338,7 @@ export function McpServerDialog({
       saved?.json && !savedJson
         ? saved.json
         : JSON.stringify(
-            savedJson ? restoreMcpSecrets(base.config, savedJson) : base.config,
+            savedJson ? restoreMcpSecrets(baseConfig, savedJson) : baseConfig,
             null,
             2,
           ),
@@ -368,6 +374,9 @@ export function McpServerDialog({
         patch.json = redacted === baseline ? null : redacted;
       }
     }
+    // What the user is about to save. Unparseable JSON leaves the flag as it was.
+    const working = mode === "form" ? configFromForm(form) : parseJsonObject(jsonText);
+    if (working) patch.dropCredentials = credentialsDropped(seed.config, working) ? true : null;
     useMcpDialogDraftStore.getState().setDraft(draftKey, patch);
   }, [open, draftKey, name, form, mode, jsonText, server, replacementMode]);
 
