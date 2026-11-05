@@ -45,6 +45,30 @@ export function onWorkspaceDraftsCleared(listener: (slug: string) => void): void
   workspaceClearedListeners.add(listener);
 }
 
+/**
+ * Cleanup generations. Logout and workspace delete bump them; a delayed draft
+ * write (editor flush on unmount, upload settling) carries the generation it
+ * was created under and is dropped once that is stale, so it cannot recreate a
+ * draft cleanup just removed. A plain workspace switch bumps nothing.
+ */
+let sessionGeneration = 0;
+const workspaceGenerations = new Map<string, number>();
+
+/** Where a draft write belongs: its workspace and the cleanup generation then. */
+export interface DraftOrigin {
+  slug: string | null;
+  generation: number;
+}
+
+/** Strictly increases whenever logout or a delete of `slug` clears its drafts. */
+export function getDraftGeneration(slug: string | null): number {
+  return sessionGeneration + (slug ? (workspaceGenerations.get(slug) ?? 0) : 0);
+}
+
+export function currentDraftOrigin(slug: string | null): DraftOrigin {
+  return { slug, generation: getDraftGeneration(slug) };
+}
+
 /** Register a draft store for workspace/logout cleanup. Idempotent per key. */
 export function registerDraftCleanup(entry: DraftCleanupEntry): void {
   entries.set(entry.storageKey, entry);
@@ -60,6 +84,7 @@ export function clearRegisteredWorkspaceDrafts(
   adapter: StorageAdapter,
   slug: string,
 ): void {
+  workspaceGenerations.set(slug, (workspaceGenerations.get(slug) ?? 0) + 1);
   workspaceClearedListeners.forEach((listener) => listener(slug));
   for (const entry of entries.values()) {
     if (entry.workspaceScoped) {
@@ -75,6 +100,7 @@ export function clearRegisteredWorkspaceDrafts(
  * auth is cleared, so no draft survives into the next login on the same tab.
  */
 export function resetAllRegisteredDrafts(): void {
+  sessionGeneration += 1;
   // Abort in-flight uploads BEFORE clearing drafts: an upload that settles
   // after the draft is wiped must not resurrect a placeholder, and its bytes
   // must never bind an attachment under the next session (MUL-5181).

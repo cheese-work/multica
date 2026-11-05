@@ -20,6 +20,7 @@
 # fresh receipt in its step summary; it attaches no check to the pull request. Merge decisions use the latest receipt
 # for the exact head, re-verified with `verify`.
 #
+# Runner (CHE-3603): GitHub-hosted. The repo is public, so minutes are free, and 61 queued runs no longer block X99 runners.
 # The classifier excludes its own check name from the required-check set, so it is never its own evidence.
 
 name: mechanical-tier
@@ -40,7 +41,7 @@ permissions:
 jobs:
   find:
     name: mechanical-tier-find
-    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       targets: ${{ steps.find.outputs.targets }}
@@ -95,7 +96,7 @@ jobs:
     name: mechanical-tier
     needs: find
     if: needs.find.outputs.targets != '[]'
-    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false

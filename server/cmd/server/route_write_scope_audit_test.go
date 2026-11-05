@@ -27,9 +27,11 @@ type writeFamily struct {
 
 // scopedWriteRoutes are every write of the families that can change an issue
 // without naming it in an /api/issues path; the middleware resolves each one to
-// its issue (task_token_write_scope_indirect.go). The three human-only or
-// per-user ones (comment sub-issues, feed ack, retry-source-context) resolve to
-// no issue and are pinned so a change is reviewed.
+// its issue (task_token_write_scope_indirect.go). The four human-only,
+// per-user or task-derived ones (comment sub-issues, feed ack,
+// retry-source-context, decision ask) resolve to no issue and are pinned so a
+// change is reviewed; decision ask names its issue only through the running
+// task, never a body field.
 var scopedWriteRoutes = []string{
 	"DELETE /api/attachments/{id}",
 	"DELETE /api/comments/{commentId}/",
@@ -44,6 +46,7 @@ var scopedWriteRoutes = []string{
 	"POST /api/decisions/feed/{id}/ack",
 	"POST /api/tasks/{taskId}/retry-source-context",
 	"POST /api/decisions/",
+	"POST /api/decisions/ask",
 	"POST /api/decisions/{id}/withdraw",
 	"POST /api/plugin-bridge/v1/hooks/{key}",
 	"POST /api/plugin-bridge/v1/issues/{issue_ref}/comments",
@@ -99,7 +102,7 @@ var otherWriteFamilies = map[string]writeFamily{
 	"api/agents":                   {22, byWorkspace},
 	"api/auth":                     {2, byPublic},
 	"api/autopilots":               {12, byWorkspace},
-	"api/chat":                     {19, byOwnRow},
+	"api/chat":                     {20, byOwnRow},
 	"api/cli-token":                {1, byHuman},
 	"api/client-usage":             {1, byHuman},
 	"api/cloud-billing":            {2, byHuman},
@@ -109,7 +112,7 @@ var otherWriteFamilies = map[string]writeFamily{
 	"api/daemon":                   {35, byDaemon},
 	"api/decision-actions":         {3, byHuman},
 	"api/decision-answers":         {1, byHuman},
-	"api/decision-requests":        {2, byHuman},
+	"api/decision-requests":        {3, byHuman},
 	"api/dingtalk":                 {1, byPublic},
 	"api/feedback":                 {1, byOwnRow},
 	"api/github":                   {1, byWorkspace},
