@@ -9034,6 +9034,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if providerNeedsInlineSystemPrompt(provider) {
 		execOpts.SystemPrompt = runtimeBrief
 	}
+	if provider == "codex" {
+		execOpts.ExtraArgs = append(execOpts.ExtraArgs, codexBriefBudget(env.RootDir, env.WorkDir, runtimeBrief, taskLog)...)
+	}
 
 	// A quick-actions refresh task from a server that predates server-side
 	// generation (MUL-5573). This daemon no longer has a suggestion pass to run
@@ -9128,6 +9131,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			runtimeBrief = freshBrief
 			if providerNeedsInlineSystemPrompt(provider) {
 				execOpts.SystemPrompt = runtimeBrief
+			}
+			if provider == "codex" {
+				// The rewritten brief has a new size; the later -c wins.
+				execOpts.ExtraArgs = append(execOpts.ExtraArgs, codexBriefBudget(env.RootDir, env.WorkDir, runtimeBrief, taskLog)...)
 			}
 		}
 		freshPrompt := BuildPrompt(task, provider, promptOptions...)
