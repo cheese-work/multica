@@ -30,6 +30,7 @@ var testPool *pgxpool.Pool
 var testUserID string
 var testWorkspaceID string
 var testRuntimeID string
+var testSeededAgentID string
 
 // dbfx builds the rows these tests act on and removes them again when the test
 // that asked for them ends. New tests build fixtures through it rather than
@@ -175,6 +176,7 @@ func setupHandlerTestFixture(ctx context.Context, pool *pgxpool.Pool) (string, s
 	`, seededAgentID, workspaceID); err != nil {
 		return "", "", err
 	}
+	testSeededAgentID = seededAgentID
 
 	return userID, workspaceID, nil
 }
