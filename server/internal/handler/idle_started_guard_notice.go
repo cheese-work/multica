@@ -247,7 +247,7 @@ func (handler *Handler) retryIdleGuardMove(ctx context.Context, settings idleGua
 }
 
 func (handler *Handler) endIdleGuardEpisode(ctx context.Context, workspaceID, issueID pgtype.UUID) error {
-	return handler.Queries.DeleteIssueIdleGuard(ctx, db.DeleteIssueIdleGuardParams{WorkspaceID: workspaceID, IssueID: issueID})
+	return deleteIdleGuardReceipt(ctx, handler.Queries, workspaceID, issueID)
 }
 
 func issueMetadataString(issue db.Issue, key string) string {

@@ -332,7 +332,7 @@ func (handler *Handler) giveUpIdleMove(ctx context.Context, settings idleGuardSe
 		return err
 	}
 	if waiting {
-		if err := q.DeleteIssueIdleGuard(ctx, db.DeleteIssueIdleGuardParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID}); err != nil {
+		if err := deleteIdleGuardReceipt(ctx, q, issue.WorkspaceID, issue.ID); err != nil {
 			return err
 		}
 		return tx.Commit(ctx)

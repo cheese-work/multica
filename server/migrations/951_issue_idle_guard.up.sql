@@ -20,8 +20,6 @@ CREATE TABLE issue_idle_guard (
     alert_error    text NOT NULL DEFAULT ''
 );
 
-CREATE INDEX issue_idle_guard_workspace_idx ON issue_idle_guard (workspace_id);
-
 INSERT INTO issue_idle_guard (issue_id, workspace_id, state, kind, from_status, to_status, idle_since, moved_at,
                               attempts, alert_id, comment_id, error, alert_attempts, alert_at, alert_error)
 SELECT i.id, i.workspace_id,
@@ -40,5 +38,10 @@ SELECT i.id, i.workspace_id,
        COALESCE(i.metadata -> 'idle_guard' ->> 'alert_error', '')
 FROM issue i
 WHERE jsonb_typeof(i.metadata -> 'idle_guard') = 'object';
+
+-- The continuation watchdog reads the status of a notified episode as a primitive.
+UPDATE issue i SET metadata = jsonb_set(i.metadata, '{idle_guard_notified_to}', to_jsonb(g.to_status))
+FROM issue_idle_guard g
+WHERE g.issue_id = i.id AND g.state = 'notified' AND g.to_status <> '';
 
 UPDATE issue SET metadata = metadata - 'idle_guard' WHERE metadata ? 'idle_guard';

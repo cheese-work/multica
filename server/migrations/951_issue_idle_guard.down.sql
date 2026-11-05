@@ -14,4 +14,6 @@ UPDATE issue i SET metadata = jsonb_set(i.metadata, '{idle_guard}', jsonb_strip_
     'alert_error', NULLIF(g.alert_error, ''))))
 FROM issue_idle_guard g WHERE g.issue_id = i.id;
 
+UPDATE issue SET metadata = metadata - 'idle_guard_notified_to' WHERE metadata ? 'idle_guard_notified_to';
+
 DROP TABLE issue_idle_guard;

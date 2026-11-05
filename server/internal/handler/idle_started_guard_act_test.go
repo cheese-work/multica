@@ -214,3 +214,43 @@ func TestIdleStartedGuardReceiptStaysOutOfIssueMetadata(test *testing.T) {
 		test.Fatalf("issue_idle_guard rows = %d, want 1 filled receipt", got)
 	}
 }
+
+// The continuation watchdog (multica-dotfiles) reads one primitive metadata key to
+// tell an issue the guard already escalated from a stalled one.
+func (fixture idleActFixture) notifiedTo(test *testing.T) string {
+	test.Helper()
+	var value string
+	dbfx.QueryRow(test, `SELECT COALESCE(metadata ->> 'idle_guard_notified_to', '') FROM issue WHERE id = $1`, fixture.issue).Scan(&value)
+	return value
+}
+
+func TestIdleStartedGuardNotifiedSignalFollowsReceipt(test *testing.T) {
+	fixture := newIdleActFixture(test, 5)
+	dbfx.Exec(test, `UPDATE squad SET archived_at = clock_timestamp() WHERE id = $1`, fixture.squad)
+	fixture.sweepFailing(test)
+	if fixture.receipt(test, "state") != "moved" || fixture.notifiedTo(test) != "" {
+		test.Fatalf("state = %q, signal = %q, want moved and no signal", fixture.receipt(test, "state"), fixture.notifiedTo(test))
+	}
+	dbfx.Exec(test, `UPDATE squad SET archived_at = NULL WHERE id = $1`, fixture.squad)
+	fixture.sweep(test)
+	if got, want := fixture.notifiedTo(test), fixture.status(test); got != want || want == "" {
+		test.Fatalf("signal = %q, want the status %q the guard notified at", got, want)
+	}
+}
+
+func TestIdleStartedGuardNotifiedSignalClearsWhenEpisodeEnds(test *testing.T) {
+	fixture := newIdleActFixture(test, 5)
+	fixture.sweep(test)
+	if fixture.notifiedTo(test) == "" {
+		test.Fatal("setup: a notified episode left no signal")
+	}
+	dbfx.Exec(test, `UPDATE issue SET status = 'in_progress' WHERE id = $1`, fixture.issue)
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed', created_at = now() - interval '6 hours', completed_at = now() - interval '6 hours' WHERE issue_id = $1 AND agent_id = $2`, fixture.issue, fixture.leader)
+	dbfx.Exec(test, `UPDATE comment SET created_at = now() - interval '6 hours' WHERE issue_id = $1`, fixture.issue)
+	dbfx.Exec(test, `UPDATE activity_log SET created_at = now() - interval '6 hours' WHERE issue_id = $1`, fixture.issue)
+	dbfx.Exec(test, `UPDATE issue SET created_at = now() - interval '7 hours' WHERE id = $1`, fixture.issue)
+	fixture.sweep(test)
+	if got := fixture.notifiedTo(test); got != "" && got != fixture.status(test) {
+		test.Fatalf("signal = %q for an issue now in %q", got, fixture.status(test))
+	}
+}
