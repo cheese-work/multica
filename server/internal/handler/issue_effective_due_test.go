@@ -191,7 +191,11 @@ func TestEffectiveDueGraphWorkIsBounded(t *testing.T) {
 	agent := dbfx.Agent(t, "bound watcher", "")
 	var child string
 	for i := 0; i < 900; i++ {
-		child = dbfx.Issue(t, fmt.Sprintf("bound child %d", i), testutil.Cols{"parent_issue_id": parent})
+		cols := testutil.Cols{"parent_issue_id": parent}
+		if i == 899 {
+			cols["due_date"] = "2026-11-01" // the earliest deadline sits among the nodes the walk may drop
+		}
+		child = dbfx.Issue(t, fmt.Sprintf("bound child %d", i), cols)
 		dbfx.Insert(t, "issue_wakeup", testutil.Cols{"id": testutil.Raw("gen_random_uuid()"), "workspace_id": testWorkspaceID, "issue_id": child, "agent_id": agent, "created_by": testUserID, "instruction": "resume", "kind": "event", "mode": "once", "event_types": testutil.Raw(`ARRAY['issue.status_changed']`),
 			"condition": fmt.Sprintf(`{"type":"other_issue","issue_id":%q,"state":"done"}`, parent)})
 	}
@@ -205,9 +209,8 @@ func TestEffectiveDueGraphWorkIsBounded(t *testing.T) {
 				t.Fatalf("cycle members must be capped at 20, got %d", len(d.Members))
 			}
 		}
-		if v.EffectiveDue == nil || *v.EffectiveDue != "2026-12-01" {
-			t.Fatalf("date from nodes seen so far must stay, got %v", v.EffectiveDue)
-		}
+		// A date from a partial walk can miss the true earliest deadline: publish none.
+		v.wantNone(t)
 	}
 }
 

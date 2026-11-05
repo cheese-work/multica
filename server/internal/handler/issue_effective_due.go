@@ -33,7 +33,7 @@ var errEffectiveDueTooBroad = errors.New("effective_due graph too large")
 
 // DueDiagnostic explains why a projection may be incomplete. Type is "cycle"
 // (Members lists up to effectiveDueMaxMembers of the cycle's issue keys),
-// "depth_limit" or "graph_limit" (the walk stopped at effectiveDueMaxVisited).
+// "depth_limit" or "graph_limit" (the walk stopped at effectiveDueMaxVisited and no date is published).
 type DueDiagnostic struct {
 	Type    string   `json:"type"`
 	Members []string `json:"members,omitempty"`
@@ -247,7 +247,9 @@ func walkEffectiveDue(prefix string, nodes map[pgtype.UUID]*dueNode, open func(p
 	if visitLimited {
 		out.diagnostics = append(out.diagnostics, DueDiagnostic{Type: "graph_limit"})
 	}
-	if best != nil {
+	// A walk cut at effectiveDueMaxVisited may have dropped the earliest date, so
+	// it publishes none rather than a wrong one; graph_limit tells the caller why.
+	if best != nil && !visitLimited {
 		out.date = bestDate
 		out.source = "own"
 		if len(best.kind) > 0 {
