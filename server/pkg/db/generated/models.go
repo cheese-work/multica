@@ -1774,6 +1774,17 @@ type IssueCiAdvance struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+type IssueDecisionPark struct {
+	IssueID        pgtype.UUID        `json:"issue_id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	PriorStatus    string             `json:"prior_status"`
+	ToStatus       string             `json:"to_status"`
+	ReadinessID    pgtype.Text        `json:"readiness_id"`
+	PriorReadiness []byte             `json:"prior_readiness"`
+	SetValue       []byte             `json:"set_value"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
 type IssueDependency struct {
 	ID               pgtype.UUID `json:"id"`
 	IssueID          pgtype.UUID `json:"issue_id"`
