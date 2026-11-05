@@ -36,6 +36,8 @@ var (
 	ErrChatWakeupTooLong      = errors.New("chat wakeup: instruction is too long")
 	ErrChatWakeupTitleTooLong = errors.New("chat wakeup: title is too long")
 	ErrChatWakeupNotFound     = errors.New("chat wakeup: no such pending wakeup")
+	ErrChatWatchInvalid       = errors.New("chat wakeup: an issue watch needs exactly one of an event (comment.created) or a status, and an actor filter needs a member or agent type")
+	ErrChatWatchIssueAccess   = errors.New("chat wakeup: the issue is not readable by this DM's human")
 )
 
 // ChatWakeupService schedules one-shot turns an agent asks for in its own web
@@ -50,6 +52,14 @@ type ChatWakeupInput struct {
 	At          time.Time
 	Title       string
 	Instruction string
+
+	// Issue watch (optional): fire on an event or status of one issue; At is then the expiry.
+	IssueID       pgtype.UUID
+	Event         string // "comment.created"
+	ActorType     string // member | agent, with ActorID, filters Event
+	ActorID       pgtype.UUID
+	UntilStatus   string
+	WakeOnTimeout bool
 }
 
 // session resolves the active web DM that a running chat task belongs to.
@@ -84,7 +94,10 @@ func (s *ChatWakeupService) Create(ctx context.Context, in ChatWakeupInput) (db.
 	instruction := strings.TrimSpace(in.Instruction)
 	title := strings.TrimSpace(in.Title)
 	now := time.Now()
+	watching := in.IssueID.Valid
 	switch {
+	case watching && !validChatWatch(in):
+		return db.ChatWakeup{}, ErrChatWatchInvalid
 	case instruction == "":
 		return db.ChatWakeup{}, ErrChatWakeupEmpty
 	case len(instruction) > MaxChatWakeupInstruction:
@@ -112,6 +125,15 @@ func (s *ChatWakeupService) Create(ctx context.Context, in ChatWakeupInput) (db.
 		if locked.Status != "active" {
 			return ErrChatWakeupNotOwner
 		}
+		if watching {
+			// "Readable by the DM's human" is workspace membership, the same bar the issue loaders use.
+			if _, err := qtx.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: in.IssueID, WorkspaceID: session.WorkspaceID}); err != nil {
+				return watchAccessErr(err)
+			}
+			if _, err := qtx.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: session.CreatorID, WorkspaceID: session.WorkspaceID}); err != nil {
+				return watchAccessErr(err)
+			}
+		}
 		pending, err := qtx.CountPendingChatWakeups(ctx, session.ID)
 		if err != nil {
 			return fmt.Errorf("count pending wakeups: %w", err)
@@ -127,6 +149,12 @@ func (s *ChatWakeupService) Create(ctx context.Context, in ChatWakeupInput) (db.
 			Instruction:     instruction,
 			FireAt:          pgtype.Timestamptz{Time: in.At, Valid: true},
 			CreatedByTaskID: in.TaskID,
+			IssueID:         in.IssueID,
+			EventType:       in.Event,
+			FilterActorType: in.ActorType,
+			FilterActorID:   in.ActorID,
+			UntilStatus:     in.UntilStatus,
+			OnTimeout:       onTimeout(in.WakeOnTimeout),
 		})
 		return err
 	})
@@ -163,13 +191,14 @@ func (s *ChatWakeupService) CancelInSession(ctx context.Context, sessionID, wake
 // Tick fires every due wakeup. One wakeup's failure never blocks the others;
 // a wakeup that could not fire stays pending and is retried on the next tick.
 func (s *ChatWakeupService) Tick(ctx context.Context) error {
+	// Issue watches first: an event that arrived in time beats the expiry.
+	errs := []error{s.tickWatches(ctx)}
 	due, err := s.Tasks.Queries.ListDueChatWakeups(ctx, chatWakeupTickBatch)
 	if err != nil {
 		return fmt.Errorf("list due chat wakeups: %w", err)
 	}
-	var errs []error
 	for _, w := range due {
-		if err := s.fire(ctx, w); err != nil {
+		if err := s.fire(ctx, w, expiryContent(w)); err != nil {
 			slog.Warn("chat wakeup fire failed", "wakeup_id", util.UUIDToString(w.ID), "error", err)
 			errs = append(errs, err)
 		}
@@ -181,9 +210,12 @@ func chatWakeupContent(instruction string) string {
 	return "[Scheduled wakeup — you set this earlier in this DM; no person wrote this message.]\nInstruction: " + instruction
 }
 
-func (s *ChatWakeupService) fire(ctx context.Context, w db.ChatWakeup) error {
+func (s *ChatWakeupService) fire(ctx context.Context, w db.ChatWakeup, content string) error {
 	q := s.Tasks.Queries
 	drop := func() error { return q.DropChatWakeup(ctx, w.ID) }
+	if content == "" { // an expired watch that was not asked to wake the DM
+		return drop()
+	}
 
 	session, err := q.GetChatSession(ctx, w.ChatSessionID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -217,7 +249,7 @@ func (s *ChatWakeupService) fire(ctx context.Context, w db.ChatWakeup) error {
 		}
 		var err error
 		sent, err = s.Tasks.SendDirectChatMessageTx(ctx, qtx, plan, session, session.CreatorID,
-			chatWakeupContent(w.Instruction), nil, "", pgtype.UUID{}, chatWakeupSentVia)
+			content, nil, "", pgtype.UUID{}, chatWakeupSentVia)
 		if err != nil {
 			return err
 		}

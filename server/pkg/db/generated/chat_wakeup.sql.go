@@ -14,7 +14,7 @@ import (
 const cancelChatWakeup = `-- name: CancelChatWakeup :one
 UPDATE chat_wakeup SET status = 'cancelled', resolved_at = now()
 WHERE id = $1 AND chat_session_id = $2 AND status = 'pending'
-RETURNING id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at, title
+RETURNING id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at, title, issue_id, event_type, filter_actor_type, filter_actor_id, until_status, on_timeout
 `
 
 type CancelChatWakeupParams struct {
@@ -38,18 +38,25 @@ func (q *Queries) CancelChatWakeup(ctx context.Context, arg CancelChatWakeupPara
 		&i.CreatedAt,
 		&i.ResolvedAt,
 		&i.Title,
+		&i.IssueID,
+		&i.EventType,
+		&i.FilterActorType,
+		&i.FilterActorID,
+		&i.UntilStatus,
+		&i.OnTimeout,
 	)
 	return i, err
 }
 
 const claimChatWakeup = `-- name: ClaimChatWakeup :one
 UPDATE chat_wakeup SET status = 'fired', resolved_at = now()
-WHERE id = $1 AND status = 'pending' AND fire_at <= now()
-RETURNING id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at, title
+WHERE id = $1 AND status = 'pending' AND (fire_at <= now() OR issue_id IS NOT NULL)
+RETURNING id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at, title, issue_id, event_type, filter_actor_type, filter_actor_id, until_status, on_timeout
 `
 
 // ClaimChatWakeup is the fire gate: only one caller flips a pending row, and it
-// holds the row lock until its transaction ends.
+// holds the row lock until its transaction ends. An issue watch may be claimed
+// before fire_at (its expiry) when its event arrived.
 func (q *Queries) ClaimChatWakeup(ctx context.Context, id pgtype.UUID) (ChatWakeup, error) {
 	row := q.db.QueryRow(ctx, claimChatWakeup, id)
 	var i ChatWakeup
@@ -66,6 +73,12 @@ func (q *Queries) ClaimChatWakeup(ctx context.Context, id pgtype.UUID) (ChatWake
 		&i.CreatedAt,
 		&i.ResolvedAt,
 		&i.Title,
+		&i.IssueID,
+		&i.EventType,
+		&i.FilterActorType,
+		&i.FilterActorID,
+		&i.UntilStatus,
+		&i.OnTimeout,
 	)
 	return i, err
 }
@@ -83,9 +96,10 @@ func (q *Queries) CountPendingChatWakeups(ctx context.Context, chatSessionID pgt
 }
 
 const createChatWakeup = `-- name: CreateChatWakeup :one
-INSERT INTO chat_wakeup (workspace_id, chat_session_id, agent_id, title, instruction, fire_at, created_by_task_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at, title
+INSERT INTO chat_wakeup (workspace_id, chat_session_id, agent_id, title, instruction, fire_at, created_by_task_id,
+    issue_id, event_type, filter_actor_type, filter_actor_id, until_status, on_timeout)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+RETURNING id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at, title, issue_id, event_type, filter_actor_type, filter_actor_id, until_status, on_timeout
 `
 
 type CreateChatWakeupParams struct {
@@ -96,6 +110,12 @@ type CreateChatWakeupParams struct {
 	Instruction     string             `json:"instruction"`
 	FireAt          pgtype.Timestamptz `json:"fire_at"`
 	CreatedByTaskID pgtype.UUID        `json:"created_by_task_id"`
+	IssueID         pgtype.UUID        `json:"issue_id"`
+	EventType       string             `json:"event_type"`
+	FilterActorType string             `json:"filter_actor_type"`
+	FilterActorID   pgtype.UUID        `json:"filter_actor_id"`
+	UntilStatus     string             `json:"until_status"`
+	OnTimeout       string             `json:"on_timeout"`
 }
 
 func (q *Queries) CreateChatWakeup(ctx context.Context, arg CreateChatWakeupParams) (ChatWakeup, error) {
@@ -107,6 +127,12 @@ func (q *Queries) CreateChatWakeup(ctx context.Context, arg CreateChatWakeupPara
 		arg.Instruction,
 		arg.FireAt,
 		arg.CreatedByTaskID,
+		arg.IssueID,
+		arg.EventType,
+		arg.FilterActorType,
+		arg.FilterActorID,
+		arg.UntilStatus,
+		arg.OnTimeout,
 	)
 	var i ChatWakeup
 	err := row.Scan(
@@ -122,6 +148,12 @@ func (q *Queries) CreateChatWakeup(ctx context.Context, arg CreateChatWakeupPara
 		&i.CreatedAt,
 		&i.ResolvedAt,
 		&i.Title,
+		&i.IssueID,
+		&i.EventType,
+		&i.FilterActorType,
+		&i.FilterActorID,
+		&i.UntilStatus,
+		&i.OnTimeout,
 	)
 	return i, err
 }
@@ -136,8 +168,49 @@ func (q *Queries) DropChatWakeup(ctx context.Context, id pgtype.UUID) error {
 	return err
 }
 
+const firstMatchingIssueComment = `-- name: FirstMatchingIssueComment :one
+SELECT id, author_type, author_id, content FROM comment
+WHERE issue_id = $1 AND type = 'comment' AND created_at > $2
+  AND ($3::text = '' OR author_type = $3)
+  AND ($4::uuid IS NULL OR author_id = $4)
+ORDER BY created_at, id
+LIMIT 1
+`
+
+type FirstMatchingIssueCommentParams struct {
+	IssueID   pgtype.UUID        `json:"issue_id"`
+	Since     pgtype.Timestamptz `json:"since"`
+	ActorType string             `json:"actor_type"`
+	ActorID   pgtype.UUID        `json:"actor_id"`
+}
+
+type FirstMatchingIssueCommentRow struct {
+	ID         pgtype.UUID `json:"id"`
+	AuthorType string      `json:"author_type"`
+	AuthorID   pgtype.UUID `json:"author_id"`
+	Content    string      `json:"content"`
+}
+
+// First comment on the issue after the watch was set that passes the actor filter.
+func (q *Queries) FirstMatchingIssueComment(ctx context.Context, arg FirstMatchingIssueCommentParams) (FirstMatchingIssueCommentRow, error) {
+	row := q.db.QueryRow(ctx, firstMatchingIssueComment,
+		arg.IssueID,
+		arg.Since,
+		arg.ActorType,
+		arg.ActorID,
+	)
+	var i FirstMatchingIssueCommentRow
+	err := row.Scan(
+		&i.ID,
+		&i.AuthorType,
+		&i.AuthorID,
+		&i.Content,
+	)
+	return i, err
+}
+
 const listChatWakeupsByFiredTasks = `-- name: ListChatWakeupsByFiredTasks :many
-SELECT id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at, title FROM chat_wakeup
+SELECT id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at, title, issue_id, event_type, filter_actor_type, filter_actor_id, until_status, on_timeout FROM chat_wakeup
 WHERE fired_task_id = ANY($1::uuid[])
 `
 
@@ -163,6 +236,12 @@ func (q *Queries) ListChatWakeupsByFiredTasks(ctx context.Context, taskIds []pgt
 			&i.CreatedAt,
 			&i.ResolvedAt,
 			&i.Title,
+			&i.IssueID,
+			&i.EventType,
+			&i.FilterActorType,
+			&i.FilterActorID,
+			&i.UntilStatus,
+			&i.OnTimeout,
 		); err != nil {
 			return nil, err
 		}
@@ -175,7 +254,7 @@ func (q *Queries) ListChatWakeupsByFiredTasks(ctx context.Context, taskIds []pgt
 }
 
 const listDueChatWakeups = `-- name: ListDueChatWakeups :many
-SELECT id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at, title FROM chat_wakeup
+SELECT id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at, title, issue_id, event_type, filter_actor_type, filter_actor_id, until_status, on_timeout FROM chat_wakeup
 WHERE status = 'pending' AND fire_at <= now()
 ORDER BY fire_at, id
 LIMIT $1
@@ -203,6 +282,58 @@ func (q *Queries) ListDueChatWakeups(ctx context.Context, limit int32) ([]ChatWa
 			&i.CreatedAt,
 			&i.ResolvedAt,
 			&i.Title,
+			&i.IssueID,
+			&i.EventType,
+			&i.FilterActorType,
+			&i.FilterActorID,
+			&i.UntilStatus,
+			&i.OnTimeout,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPendingChatIssueWatches = `-- name: ListPendingChatIssueWatches :many
+SELECT id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at, title, issue_id, event_type, filter_actor_type, filter_actor_id, until_status, on_timeout FROM chat_wakeup
+WHERE status = 'pending' AND issue_id IS NOT NULL
+ORDER BY created_at, id
+LIMIT $1
+`
+
+func (q *Queries) ListPendingChatIssueWatches(ctx context.Context, limit int32) ([]ChatWakeup, error) {
+	rows, err := q.db.Query(ctx, listPendingChatIssueWatches, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChatWakeup{}
+	for rows.Next() {
+		var i ChatWakeup
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.ChatSessionID,
+			&i.AgentID,
+			&i.Instruction,
+			&i.FireAt,
+			&i.Status,
+			&i.CreatedByTaskID,
+			&i.FiredTaskID,
+			&i.CreatedAt,
+			&i.ResolvedAt,
+			&i.Title,
+			&i.IssueID,
+			&i.EventType,
+			&i.FilterActorType,
+			&i.FilterActorID,
+			&i.UntilStatus,
+			&i.OnTimeout,
 		); err != nil {
 			return nil, err
 		}
@@ -215,7 +346,7 @@ func (q *Queries) ListDueChatWakeups(ctx context.Context, limit int32) ([]ChatWa
 }
 
 const listPendingChatWakeups = `-- name: ListPendingChatWakeups :many
-SELECT id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at, title FROM chat_wakeup
+SELECT id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at, title, issue_id, event_type, filter_actor_type, filter_actor_id, until_status, on_timeout FROM chat_wakeup
 WHERE chat_session_id = $1 AND status = 'pending'
 ORDER BY fire_at, id
 `
@@ -242,6 +373,12 @@ func (q *Queries) ListPendingChatWakeups(ctx context.Context, chatSessionID pgty
 			&i.CreatedAt,
 			&i.ResolvedAt,
 			&i.Title,
+			&i.IssueID,
+			&i.EventType,
+			&i.FilterActorType,
+			&i.FilterActorID,
+			&i.UntilStatus,
+			&i.OnTimeout,
 		); err != nil {
 			return nil, err
 		}

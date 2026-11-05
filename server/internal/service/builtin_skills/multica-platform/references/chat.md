@@ -49,16 +49,28 @@ changed it, without reading the DM's contents. JSON carries `id`, `title`,
 ```bash
 multica chat wakeup create --after 25m --instruction "check the deploy and report" --output json
 multica chat wakeup create --at 2026-11-01T09:00:00+07:00 --instruction "..." --output json
+multica chat wakeup create --issue CHE-1 --event comment.created --filter-actor-type agent \
+  --filter-actor-id <agent-id> --expires-in 2h --on-timeout wake --instruction "relay the reply" --output json
+multica chat wakeup create --issue CHE-1 --until-status in_review --instruction "..." --output json
 multica chat wakeup list --output json                  # pending wakeups of the current DM
 multica chat wakeup cancel <wakeup-id>
 ```
 
 - Give exactly one of `--after <duration>` (`25m`, `2h`) or `--at <RFC3339>`.
   `--instruction` is required: it is what the scheduled turn does when it fires.
+- `--issue <id>` replaces `--after`/`--at`: the DM wakes once when the issue gets
+  a `--event comment.created` (narrow it with `--filter-actor-type member|agent`
+  and `--filter-actor-id`) or reaches `--until-status`. Give exactly one of the
+  two. The refresh turn quotes the comment (id, author) or the new status, so
+  you can relay it without the human asking. Matching is checked about every 30s.
+- A watch gives up after `--expires-in` (at most 24h, default 24h). `--on-timeout
+  wake` sends a "timed out" turn; the default `drop` ends it silently. You and
+  the DM's human must be able to read the issue. It counts toward the 3-pending
+  cap and shows in the Scheduled chip, where the human can cancel it.
 - The wakeup starts a new turn in this DM later; finish the current turn
   instead of waiting for it.
-- These are DM wakeups. Issue wakeups use `multica issue wakeup`
-  (see [wakeups.md](wakeups.md)).
+- These are DM wakeups, including the issue watch above. To start an agent run
+  on an issue, use `multica issue wakeup` (see [wakeups.md](wakeups.md)).
 
 ## DM lanes for decisions
 

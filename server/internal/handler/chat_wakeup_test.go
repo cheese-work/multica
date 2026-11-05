@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -207,5 +208,31 @@ func TestChatMessagesCarryScheduledWakeup(t *testing.T) {
 			t.Fatalf("%s: %d %s %v", name, w.Code, w.Body.String(), err)
 		}
 		check(name, page.Messages)
+	}
+}
+
+func TestChatWakeupResponseIncludesIssueWatch(t *testing.T) {
+	issueID, actorID := uuid.NewString(), uuid.NewString()
+	row := db.ChatWakeup{IssueID: util.MustParseUUID(issueID), EventType: "comment.created", FilterActorType: "agent", FilterActorID: util.MustParseUUID(actorID), OnTimeout: "wake"}
+	out, err := json.Marshal(chatWakeupToResponse(row))
+	for _, want := range []string{`"issue_id":"` + issueID + `"`, `"event":"comment.created"`, `"filter_actor_type":"agent"`, `"filter_actor_id":"` + actorID + `"`, `"on_timeout":"wake"`} {
+		if err != nil || !strings.Contains(string(out), want) {
+			t.Fatalf("response = %s, %v; want %s", out, err, want)
+		}
+	}
+	plain, _ := json.Marshal(chatWakeupToResponse(db.ChatWakeup{Instruction: "x"}))
+	if strings.Contains(string(plain), "issue_id") {
+		t.Fatalf("timed wakeup response = %s, want no watch fields", plain)
+	}
+}
+
+func TestCreateChatWakeupWatchRejectsUnknownIssue(t *testing.T) {
+	req := newRequest(http.MethodPost, "/api/chat/wakeups", map[string]any{"issue": uuid.NewString(), "event": "comment.created", "instruction": "relay"})
+	req.Header.Set("X-Actor-Source", "task_token")
+	req.Header.Set("X-Task-ID", uuid.NewString())
+	w := httptest.NewRecorder()
+	testHandler.CreateChatWakeup(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d body = %s, want 404", w.Code, w.Body.String())
 	}
 }
