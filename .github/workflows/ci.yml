@@ -1,8 +1,12 @@
 name: CI
 
 on:
+  # CHE-3989: stacked PRs (base agent/**) run here too, so every run is PR-associated and uses the merge commit.
+  # A draft stacked PR starts no jobs unless it carries the run-ci label. Events that change nothing skip every job
+  # and use their own concurrency group, so they never cancel a real run.
   pull_request:
-    branches: [main]
+    branches: [main, 'agent/**']
+    types: [opened, synchronize, reopened, ready_for_review, labeled, edited]
   merge_group:
     types: [checks_requested]
   schedule:
@@ -10,13 +14,14 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ (github.event_name != 'pull_request' || ((github.event.action == 'opened' || github.event.action == 'synchronize' || github.event.action == 'reopened') && (github.event.pull_request.base.ref == 'main' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci'))) || (github.event.action == 'ready_for_review' && github.event.pull_request.base.ref != 'main') || (github.event.action == 'labeled' && github.event.label.name == 'run-ci' && github.event.pull_request.base.ref != 'main' && github.event.pull_request.draft) || (github.event.action == 'edited' && github.event.changes.base != null && (github.event.pull_request.base.ref == 'main' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci')))) && 'run' || 'noop' }}
   cancel-in-progress: true
 
 jobs:
   warning-budget:
+    name: warning-budget${{ github.run_id == 0 && 'x' || '' }}
     needs: [migration-prefix-check, cursor-background-lifecycle, changes, sqlc-check, frontend-build, frontend-test, frontend-views-test, locale-parity, frontend, backend-tests, backend-agent-tests, go-vulnerability-scan, go-lint, backend, image-budget, installer, script-checks, deploy-cd, frontend-quality]
-    if: ${{ always() && !cancelled() }}
+    if: ${{ always() && !cancelled() && needs.changes.result != 'skipped' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -44,7 +49,8 @@ jobs:
           retention-days: 14
 
   migration-prefix-check:
-    if: github.event_name == 'pull_request'
+    name: migration-prefix-check${{ github.run_id == 0 && 'x' || '' }}
+    if: ${{ github.event_name == 'pull_request' && (github.event_name != 'pull_request' || ((github.event.action == 'opened' || github.event.action == 'synchronize' || github.event.action == 'reopened') && (github.event.pull_request.base.ref == 'main' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci'))) || (github.event.action == 'ready_for_review' && github.event.pull_request.base.ref != 'main') || (github.event.action == 'labeled' && github.event.label.name == 'run-ci' && github.event.pull_request.base.ref != 'main' && github.event.pull_request.draft) || (github.event.action == 'edited' && github.event.changes.base != null && (github.event.pull_request.base.ref == 'main' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci')))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 1
     permissions:
@@ -68,6 +74,8 @@ jobs:
   # release or install-script URLs in packages, apps and server. Not gated by
   # ci-scope: a TS-only change can reintroduce the URL.
   upstream-update-source-guard:
+    name: upstream-update-source-guard${{ github.run_id == 0 && 'x' || '' }}
+    if: ${{ github.event_name != 'pull_request' || ((github.event.action == 'opened' || github.event.action == 'synchronize' || github.event.action == 'reopened') && (github.event.pull_request.base.ref == 'main' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci'))) || (github.event.action == 'ready_for_review' && github.event.pull_request.base.ref != 'main') || (github.event.action == 'labeled' && github.event.label.name == 'run-ci' && github.event.pull_request.base.ref != 'main' && github.event.pull_request.draft) || (github.event.action == 'edited' && github.event.changes.base != null && (github.event.pull_request.base.ref == 'main' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci'))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     permissions:
@@ -98,6 +106,7 @@ jobs:
   # Windows leg removed org-wide per CHE-522 (Cheese: Linux CI only, no
   # Windows jobs or artifacts).
   cursor-background-lifecycle:
+    name: cursor-background-lifecycle${{ github.run_id == 0 && 'x' || '' }}
     needs: changes
     if: ${{ needs.changes.outputs.backend == 'true' }}
     runs-on: ${{ matrix.os }}
@@ -130,6 +139,8 @@ jobs:
   # a `go test -race` run. The outputs are consumed by the focused jobs
   # below.
   changes:
+    name: changes${{ github.run_id == 0 && 'x' || '' }}
+    if: ${{ github.event_name != 'pull_request' || ((github.event.action == 'opened' || github.event.action == 'synchronize' || github.event.action == 'reopened') && (github.event.pull_request.base.ref == 'main' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci'))) || (github.event.action == 'ready_for_review' && github.event.pull_request.base.ref != 'main') || (github.event.action == 'labeled' && github.event.label.name == 'run-ci' && github.event.pull_request.base.ref != 'main' && github.event.pull_request.draft) || (github.event.action == 'edited' && github.event.changes.base != null && (github.event.pull_request.base.ref == 'main' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci'))) }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -158,7 +169,7 @@ jobs:
           node-version: 22
 
       - name: Test CI selection and gates
-        run: node --test scripts/ci-scope.test.mjs scripts/check-image-budget.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/pr-changelog-line.test.mjs scripts/pr-issue-link-check.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/fork-sync-guard.test.mjs scripts/ci-runners.test.mjs scripts/ci-required-jobs.test.mjs scripts/ci-locale-parity.test.mjs scripts/ci-vitest-timeout.test.mjs scripts/merge-queue-dequeue-report.test.mjs scripts/pr-main-sync.test.mjs scripts/page-load-report.test.mjs scripts/phone-network.test.mjs deploy/cd/release-manifest.test.mjs deploy/cd/drift-receipt.test.mjs
+        run: node --test scripts/ci-scope.test.mjs scripts/check-image-budget.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/pr-changelog-line.test.mjs scripts/pr-issue-link-check.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/fork-sync-guard.test.mjs scripts/ci-runners.test.mjs scripts/ci-required-jobs.test.mjs scripts/ci-stacked-pr.test.mjs scripts/ci-locale-parity.test.mjs scripts/ci-vitest-timeout.test.mjs scripts/merge-queue-dequeue-report.test.mjs scripts/pr-main-sync.test.mjs scripts/page-load-report.test.mjs scripts/phone-network.test.mjs deploy/cd/release-manifest.test.mjs deploy/cd/drift-receipt.test.mjs
 
       - name: Filter paths
         id: filter
@@ -184,6 +195,7 @@ jobs:
         run: node scripts/ci-scope.mjs decide
 
   sqlc-check:
+    name: sqlc-check${{ github.run_id == 0 && 'x' || '' }}
     needs: changes
     if: ${{ needs.changes.outputs.push_full == 'true' }}
     runs-on: ubuntu-24.04
@@ -217,6 +229,7 @@ jobs:
   # the remaining suites continue in parallel on another. The extra setup
   # increases total runner-minutes but reduces wall-clock feedback time.
   frontend-build:
+    name: frontend-build${{ github.run_id == 0 && 'x' || '' }}
     needs: changes
     if: ${{ needs.changes.outputs.push_full == 'true' }}
     runs-on: ubuntu-24.04
@@ -281,6 +294,7 @@ jobs:
         uses: ./.github/actions/frontend-quality
 
   frontend-test:
+    name: frontend-test${{ github.run_id == 0 && 'x' || '' }}
     needs: changes
     if: ${{ needs.changes.outputs.push_full == 'true' }}
     runs-on: ubuntu-24.04
@@ -387,6 +401,7 @@ jobs:
   # synced with, so this job merges the newest main into the PR first, then
   # runs just the parity file (no build, no other tests).
   locale-parity:
+    name: locale-parity${{ github.run_id == 0 && 'x' || '' }}
     needs: changes
     if: ${{ needs.changes.outputs.frontend == 'true' }}
     runs-on: ubuntu-24.04
@@ -420,8 +435,9 @@ jobs:
 
   # Preserve the aggregate check names while validating intentional skips.
   frontend:
+    name: frontend${{ github.run_id == 0 && 'x' || '' }}
     needs: [changes, frontend-build, frontend-test, frontend-views-test, locale-parity, frontend-quality]
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && needs.changes.result != 'skipped' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -475,6 +491,7 @@ jobs:
   # than embedded, so a schema change is invisible to a test binary's hash and
   # a cached "ok" from an untouched package could mask a real failure.
   backend-tests:
+    name: backend-tests${{ github.run_id == 0 && 'x' || '' }}
     needs: [changes, migration-prefix-check]
     if: ${{ !cancelled() && needs.changes.outputs.push_full == 'true' }}
     # Stays off cheese-x99 (CHE-748): this is the only job in the repo that
@@ -664,6 +681,7 @@ jobs:
   # The retired paid runner runs 6.6.141 and fails them with EINVAL,
   # confirmed by a live kernel probe in CHE-522.
   backend-agent-tests:
+    name: backend-agent-tests${{ github.run_id == 0 && 'x' || '' }}
     needs: changes
     if: ${{ needs.changes.outputs.backend == 'true' }}
     runs-on: ubuntu-24.04  # CHE-522: do NOT move to Blacksmith.
@@ -709,6 +727,7 @@ jobs:
   # Keep the live vulnerability database from hiding build and test results.
   # The aggregate backend job below still treats both jobs as one merge gate.
   go-vulnerability-scan:
+    name: go-vulnerability-scan${{ github.run_id == 0 && 'x' || '' }}
     needs: changes
     if: ${{ needs.changes.outputs.push_full == 'true' }}
     runs-on: ubuntu-24.04
@@ -737,6 +756,7 @@ jobs:
   # that backlog stays visible. Pull requests only — a push to main has no
   # merge base to diff against, and its branch was already checked.
   go-lint:
+    name: go-lint${{ github.run_id == 0 && 'x' || '' }}
     needs: changes
     if: ${{ needs.changes.outputs.push_full == 'true' }}
     # GitHub-hosted (CHE-748): no service containers, no X99-only
@@ -774,8 +794,9 @@ jobs:
   # Preserve the existing required-check name while allowing tests, generated
   # SQL verification, and the vulnerability scan to run independently.
   backend:
+    name: backend${{ github.run_id == 0 && 'x' || '' }}
     needs: [changes, backend-tests, backend-agent-tests, sqlc-check, go-vulnerability-scan, go-lint, script-checks, installer, deploy-cd]
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && needs.changes.result != 'skipped' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -791,6 +812,7 @@ jobs:
   # built or tested in CI until a macOS runner is provisioned by its owner.
 
   image-budget:
+    name: image-budget${{ github.run_id == 0 && 'x' || '' }}
     # Soft gate against the 21.7MB of raw PNG/JPG that MUL-6352 cleared out:
     # a bitmap added or grown past 300KB fails until the PR description says
     # why. Pull requests only — a push to main has no description to read,
@@ -812,6 +834,7 @@ jobs:
         run: node scripts/check-image-budget.mjs --base merge-parent
 
   installer:
+    name: installer${{ github.run_id == 0 && 'x' || '' }}
     # Stub-driven shell tests for scripts/install.sh. Kept off the heavy
     # backend job so installer regressions surface independently. The macOS
     # leg (BSD vs GNU `tar` / `sed` / `mktemp`) is halted (CHE-1012): no free
@@ -861,6 +884,7 @@ jobs:
         run: bash scripts/install-cli-from-ref.test.sh
 
   script-checks:
+    name: script-checks${{ github.run_id == 0 && 'x' || '' }}
     needs: changes
     # Sync-head exclusion lives here, not only in candidate-controlled
     # scripts/ci-scope.mjs (CHE-1381).
@@ -925,6 +949,7 @@ jobs:
         run: bash scripts/makefile-build.test.sh
 
   deploy-cd:
+    name: deploy-cd${{ github.run_id == 0 && 'x' || '' }}
     # deploy/cd/test-deploy.sh's fixtures (CHE-765): stub-driven, like
     # scripts/install.test.sh above — deploy.sh talks to mocked `docker`,
     # `docker compose`, `curl`, and `sleep` binaries on a scripted PATH, so
@@ -973,6 +998,7 @@ jobs:
         run: bash deploy/cd/test-quiescence-cli-timeout.sh
 
   frontend-quality:
+    name: frontend-quality${{ github.run_id == 0 && 'x' || '' }}
     needs: changes
     # Sync-head exclusion lives here, not only in candidate-controlled
     # scripts/ci-scope.mjs (CHE-1381).
