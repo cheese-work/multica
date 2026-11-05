@@ -244,3 +244,42 @@ describe("api chat supplements", () => {
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({ confirm_possible_duplicate: expected });
   });
 });
+
+describe("api.listWorkspacesChecked", () => {
+  const fetchMock = vi.fn();
+  const respond = (body: unknown) =>
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(body), { status: 200 }));
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("validates a real list", async () => {
+    respond([{ id: "ws1", slug: "a" }]);
+    const result = await api.listWorkspacesChecked();
+    expect(result.validated).toBe(true);
+    expect(result.workspaces.map((w) => w.id)).toEqual(["ws1"]);
+  });
+
+  it("validates a real empty list", async () => {
+    respond([]);
+    expect(await api.listWorkspacesChecked()).toEqual({ workspaces: [], validated: true });
+  });
+
+  it.each([
+    ["an object", { oops: 1 }],
+    ["null", null],
+    ["a list with a broken item", [{ id: "ws1" }, { slug: "no-id" }]],
+  ])("falls back to an unvalidated empty list for %s", async (_name, body) => {
+    respond(body);
+    expect(await api.listWorkspacesChecked()).toEqual({ workspaces: [], validated: false });
+  });
+});

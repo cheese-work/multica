@@ -44,6 +44,7 @@ import {
   downloadBlob,
   renderSvgToPngBlob,
 } from "./utils/mermaid-export";
+import { hashString } from "./utils/hash-string";
 import type { Size } from "./utils/zoom-transform";
 import { MediaLinkAction, ViewerActions } from "../media/media-context";
 
@@ -308,6 +309,12 @@ function MermaidViewerContent({
           >
             {viewerDocument && (
               <iframe
+                // Keyed by the document: the viewer swaps document and layout
+                // together when it redraws the chart in another direction, and
+                // some engines keep the old document when only `srcdoc`
+                // changes — the old drawing then shows at natural size, cut off
+                // by a frame sized for the new one (CHE-3032).
+                key={hashString(viewerDocument)}
                 className="mermaid-viewer-frame"
                 sandbox=""
                 srcDoc={viewerDocument}

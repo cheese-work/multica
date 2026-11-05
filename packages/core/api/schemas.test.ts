@@ -171,6 +171,8 @@ describe("ChatSessionSchema", () => {
   });
 
   it("drops one malformed list item without hiding the other Chats", () => {
+    const latestMessageId = "00000000-0000-4000-8000-000000000002";
+    const latestMessageTaskId = "00000000-0000-4000-8000-000000000003";
     const parsed = ChatSessionListSchema.parse([
       baseSession,
       { ...baseSession, id: 42 },
@@ -178,6 +180,8 @@ describe("ChatSessionSchema", () => {
         ...baseSession,
         id: "onboarding-chat",
         last_message: {
+          id: latestMessageId,
+          task_id: latestMessageTaskId,
           content: "Welcome",
           role: "assistant",
           created_at: "2026-08-18T00:00:00Z",
@@ -188,6 +192,8 @@ describe("ChatSessionSchema", () => {
 
     expect(parsed.map((session) => session.id)).toEqual(["chat-1", "onboarding-chat"]);
     expect(parsed[1]?.last_message?.message_kind).toBe("onboarding_opening");
+    expect(parsed[1]?.last_message?.id).toBe(latestMessageId);
+    expect(parsed[1]?.last_message?.task_id).toBe(latestMessageTaskId);
   });
 });
 describe("IssueSchema (via ListIssuesResponseSchema)", () => {

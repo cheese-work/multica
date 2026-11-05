@@ -199,8 +199,11 @@ multica issue follow MUL-123 --chat <chat-session-id>
 multica issue mute-follow MUL-123 --chat <chat-session-id>
 multica issue unmute-follow MUL-123 --chat <chat-session-id>
 multica issue unfollow MUL-123 --chat <chat-session-id>
+multica issue unfollow MUL-123 --chat <chat-session-id> --scope root
 multica issue follows --chat <chat-session-id>
 ```
+
+`unfollow` はその issue のフォローを終了します。`--scope root` を付けると、子 issue がそこから継承したフォローも終了します。個別に手動でフォローした子 issue はフォローされたままです。フォローを外した子 issue は、後から子 issue が作成されても再びフォローされません。
 
 ## エージェントとスキル
 
@@ -290,6 +293,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 
 - `--lead` にはメンバーまたはエージェントの名前を指定します。`--default-branch-hint` はリポジトリの既定ブランチをエージェントに伝えるだけで、ブランチは切り替えません。
 - ワークスペースの `--context` は、ワークスペース内のすべてのエージェントに渡されます。`--slug` は作成後に変更できません。`--issue-prefix` は大文字に変換され、変更すると既存のすべてのタスクが振り直され、外部から参照している古い番号は使えなくなります。
+- `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]` は、ルーティングだけを行うワークフローのステップ（既定は `todo`、`blocked`、`merged`、`need_decision`。`--routing-statuses` で変更し、`--routing-overrides todo=<agent-id>` で特定のステータスを別のエージェントに振り分け）を担当するエージェントを指定します。このエージェントがアーカイブされた場合、またはその実行がプロバイダーのエラーで失敗した場合、フォールバックのエージェントが引き継ぎます。上書きのキーを `<workflow-id>:<status>` にすると、その上書きは 1 つのワークフローに限定されます。`none` でその項目をオフにします。変更できるのは人間のオーナーまたは管理者のみで、変更はすべてアクティビティログに記録されます。
 - `--issue-title-template` で置き換えられるのは `{{date}}`（UTC、`YYYY-MM-DD`）だけで、ほかの `{{...}}` は拒否されます。スケジュールトリガーの `--timezone` は既定で UTC です。
 
 ## コマンド概要

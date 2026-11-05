@@ -23,6 +23,31 @@ cat >"$stub_dir/gh" <<'EOF'
 # `gh api <path> ...`: the commit endpoint returns a server-only file list;
 # check-runs returns the next queued poll response, repeating the last.
 case "$2" in
+  # Inject a rate limit on either request, including a partially written page.
+  *)
+    endpoint=commit
+    [[ "$2" != */check-runs* ]] || endpoint=checks
+    if [ "${RATE_ENDPOINT:-}" = "$endpoint" ] && [ ! -f "$STUB_DIR/rate-seen" ]; then
+      touch "$STUB_DIR/rate-seen"
+      if [ "$endpoint" = checks ]; then
+        echo 'HTTP/2.0 200 OK'
+        echo
+        echo '{"name":"backend","conclusion":"failure","id":999}'
+      fi
+      echo "HTTP/2.0 ${RATE_STATUS:-403} Forbidden"
+      echo "X-RateLimit-Remaining: ${RATE_REMAINING:-0}"
+      echo "X-RateLimit-Reset: $(( $(date +%s) + ${RATE_RESET_OFFSET:--1} ))"
+      [ -z "${RATE_RETRY_AFTER:-}" ] || echo "Retry-After: $RATE_RETRY_AFTER"
+      echo
+      echo "gh: ${RATE_MESSAGE:-API rate limit exceeded for installation} (HTTP ${RATE_STATUS:-403})" >&2
+      exit 1
+    fi
+    ;;
+esac
+if [[ " $* " == *' --include '* ]]; then
+  printf 'HTTP/2.0 200 OK\r\nContent-Type: application/json\r\n\r\n'
+fi
+case "$2" in
   */check-runs*)
     count=$(( $(cat "$STUB_DIR/polls") + 1 ))
     echo "$count" >"$STUB_DIR/polls"
@@ -93,5 +118,36 @@ expect mobile-excluded mobile undefined 1
 WAIT=0 replay deadline "cd-qualification=success frontend=success backend=null"
 expect deadline backend null 1
 grep -q "still pending after 0s: backend" "$tmp_dir/deadline.log"
+
+for endpoint in commit checks; do
+  rm -f "$stub_dir/rate-seen"
+  if ! RATE_ENDPOINT="$endpoint" replay "rate-$endpoint" "cd-qualification=success frontend=success backend=success"; then
+    echo "rate-$endpoint: recorder must retry the rate-limited request" >&2
+    exit 1
+  fi
+  expect "rate-$endpoint" backend success 1
+done
+
+rm -f "$stub_dir/rate-seen"
+RATE_ENDPOINT=commit RATE_STATUS=429 RATE_RETRY_AFTER=0 replay rate-429 "cd-qualification=success frontend=success backend=success"
+expect rate-429 backend success 1
+
+rm -f "$stub_dir/rate-seen"
+RATE_ENDPOINT=commit RATE_REMAINING=1 RATE_RETRY_AFTER=0 replay secondary-rate "cd-qualification=success frontend=success backend=success"
+expect secondary-rate backend success 1
+
+rm -f "$stub_dir/rate-seen"
+if RATE_ENDPOINT=commit RATE_REMAINING=1 RATE_MESSAGE='Resource not accessible by integration' \
+  replay permission-denied "cd-qualification=success frontend=success backend=success"; then
+  echo 'permission-denied: a normal 403 must not be retried' >&2
+  exit 1
+fi
+
+rm -f "$stub_dir/rate-seen"
+if RATE_ENDPOINT=commit RATE_RESET_OFFSET=3600 WAIT=0 \
+  replay rate-deadline "cd-qualification=success frontend=success backend=success"; then
+  echo 'rate-deadline: a reset outside the deadline must fail closed' >&2
+  exit 1
+fi
 
 echo "record-checks fixtures passed"

@@ -295,3 +295,26 @@ func TestScheduleChaseBounded(t *testing.T) {
 		t.Fatal("chase past the cap must stop and clear attempts")
 	}
 }
+
+// CHE-3419: an installation that fails the allowlist policy is never queued;
+// the denial is logged once per sweep interval, and an allowed one is unchanged.
+func TestEnqueueSkipsDisallowedInstallation(t *testing.T) {
+	m := NewManager(enabledClient(t), nil, nil, nil)
+	now := time.Unix(30000, 0)
+	m.now = func() time.Time { return now }
+	m.SetInstallationFilter(func(id int64) bool { return id == 1 })
+
+	m.Enqueue(2, "o", "r", 7)
+	m.Enqueue(2, "o", "r", 8)
+	if len(m.queue) != 0 || len(m.active) != 0 {
+		t.Fatalf("disallowed installation queued %d items (active %d), want 0", len(m.queue), len(m.active))
+	}
+	m.Enqueue(1, "o", "r", 7)
+	if len(m.queue) != 1 {
+		t.Fatalf("allowed installation queued %d items, want 1", len(m.queue))
+	}
+	m.MaybeEnqueueOnView(2, "o", "r", 9, time.Time{}, false)
+	if len(m.queue) != 1 {
+		t.Fatalf("view trigger queued a disallowed installation: queue=%d", len(m.queue))
+	}
+}
