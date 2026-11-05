@@ -164,3 +164,21 @@ func TestEffectiveDueDepthLimit(t *testing.T) {
 		t.Fatalf("want depth_limit diagnostic, got %+v", v.Diagnostics)
 	}
 }
+
+// B and C both wait on A and on each other: the B<->C cycle is reachable from A
+// only through cross edges, after both were already reached directly.
+func TestEffectiveDueCycleBehindConvergingPaths(t *testing.T) {
+	a := dbfx.Issue(t, "due converge a")
+	b := dbfx.Issue(t, "due converge b", testutil.Cols{"due_date": "2026-12-01"})
+	c := dbfx.Issue(t, "due converge c")
+	watchDone(t, b, a, "done")
+	watchDone(t, c, a, "done")
+	watchDone(t, c, b, "done")
+	watchDone(t, b, c, "done")
+	av, bv, cv := readDue(t, a), readDue(t, b), readDue(t, c)
+	av.want(t, "2026-12-01", "prereq_of:"+bv.Identifier)
+	members := av.diag("cycle")
+	if len(members) != 3 || !strings.Contains(strings.Join(members, ","), bv.Identifier) || !strings.Contains(strings.Join(members, ","), cv.Identifier) {
+		t.Fatalf("cycle diagnostic %v, want %s and %s", members, bv.Identifier, cv.Identifier)
+	}
+}

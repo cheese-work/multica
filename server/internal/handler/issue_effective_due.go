@@ -154,8 +154,24 @@ func walkEffectiveDue(prefix string, nodes map[pgtype.UUID]*dueNode, open func(p
 	var best *dueStep
 	var bestDate string
 	var out dueProjection
+	type edge struct {
+		to   pgtype.UUID
+		kind string
+	}
+	neighbors := func(id pgtype.UUID) []edge {
+		n := nodes[id]
+		var edges []edge
+		if n.parent.Valid && open(n.parent) {
+			edges = append(edges, edge{n.parent, "parent"})
+		}
+		for _, w := range n.prereqs {
+			if open(w) {
+				edges = append(edges, edge{w, "prereq_of"})
+			}
+		}
+		return edges
+	}
 	seen := map[pgtype.UUID]bool{root: true}
-	cycles := map[string]bool{}
 	depthLimited := false
 	for queue := []dueStep{{id: root, path: []pgtype.UUID{root}}}; len(queue) > 0; queue = queue[1:] {
 		cur := queue[0]
@@ -171,32 +187,7 @@ func walkEffectiveDue(prefix string, nodes map[pgtype.UUID]*dueNode, open func(p
 				best, bestDate = &cur, date
 			}
 		}
-		type edge struct {
-			to   pgtype.UUID
-			kind string
-		}
-		var edges []edge
-		if n.parent.Valid && open(n.parent) {
-			edges = append(edges, edge{n.parent, "parent"})
-		}
-		for _, w := range n.prereqs {
-			if open(w) {
-				edges = append(edges, edge{w, "prereq_of"})
-			}
-		}
-		for _, e := range edges {
-			if at := slices.Index(cur.path, e.to); at >= 0 {
-				members := make([]string, 0, len(cur.path)-at)
-				for _, id := range cur.path[at:] {
-					members = append(members, key(id))
-				}
-				slices.Sort(members)
-				if k := strings.Join(members, ","); !cycles[k] {
-					cycles[k] = true
-					out.diagnostics = append(out.diagnostics, DueDiagnostic{Type: "cycle", Members: members})
-				}
-				continue
-			}
+		for _, e := range neighbors(cur.id) {
 			if seen[e.to] {
 				continue
 			}
@@ -211,6 +202,15 @@ func walkEffectiveDue(prefix string, nodes map[pgtype.UUID]*dueNode, open func(p
 				kind: append(slices.Clone(cur.kind), e.kind),
 			})
 		}
+	}
+	for _, members := range reachableCycles(seen, func(id pgtype.UUID) []pgtype.UUID {
+		var to []pgtype.UUID
+		for _, e := range neighbors(id) {
+			to = append(to, e.to)
+		}
+		return to
+	}, key) {
+		out.diagnostics = append(out.diagnostics, DueDiagnostic{Type: "cycle", Members: members})
 	}
 	if depthLimited {
 		out.diagnostics = append(out.diagnostics, DueDiagnostic{Type: "depth_limit"})
@@ -230,6 +230,61 @@ func walkEffectiveDue(prefix string, nodes map[pgtype.UUID]*dueNode, open func(p
 		}
 	}
 	return out
+}
+
+// reachableCycles returns one sorted member list per cycle among the reached
+// nodes: each strongly connected component of two or more nodes, plus any node
+// with an edge to itself (Tarjan). A path-only check misses a cycle whose
+// members were all reached first by other paths.
+func reachableCycles(reached map[pgtype.UUID]bool, next func(pgtype.UUID) []pgtype.UUID, key func(pgtype.UUID) string) [][]string {
+	index, low := map[pgtype.UUID]int{}, map[pgtype.UUID]int{}
+	onStack := map[pgtype.UUID]bool{}
+	var stack []pgtype.UUID
+	var found [][]string
+	var visit func(v pgtype.UUID)
+	visit = func(v pgtype.UUID) {
+		index[v] = len(index) + 1
+		low[v] = index[v]
+		stack = append(stack, v)
+		onStack[v] = true
+		selfLoop := false
+		for _, w := range next(v) {
+			if !reached[w] {
+				continue
+			}
+			selfLoop = selfLoop || w == v
+			if index[w] == 0 {
+				visit(w)
+				low[v] = min(low[v], low[w])
+			} else if onStack[w] {
+				low[v] = min(low[v], index[w])
+			}
+		}
+		if low[v] != index[v] {
+			return
+		}
+		var members []string
+		for {
+			w := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			onStack[w] = false
+			members = append(members, key(w))
+			if w == v {
+				break
+			}
+		}
+		if len(members) > 1 || selfLoop {
+			slices.Sort(members)
+			found = append(found, members)
+		}
+	}
+	for v := range reached {
+		if index[v] == 0 {
+			visit(v)
+		}
+	}
+	slices.SortFunc(found, func(a, b []string) int { return strings.Compare(strings.Join(a, ","), strings.Join(b, ",")) })
+	return found
 }
 
 func kindOf(s *dueStep) string {
