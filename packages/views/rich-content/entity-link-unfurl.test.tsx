@@ -153,6 +153,49 @@ describe("bare entity URLs in readonly content", () => {
     ).not.toBeNull();
   });
 
+  // Agents (and older messages) write `[CHE-123](<app issue URL>)`. The label
+  // is the identifier itself, so the chip loses nothing the author said.
+  it("renders a link labelled with its own issue identifier as an issue chip", () => {
+    resolvedIssue = { id: ISSUE_ID, identifier: "MUL-1" } as Issue;
+
+    const { getByTestId } = renderContent(
+      `[MUL-1](${APP_ORIGIN}/acme/issues/MUL-1)`,
+    );
+
+    expect(getByTestId("issue-chip").textContent).toBe(ISSUE_ID);
+  });
+
+  it("keeps an identifier-labelled in-app link when the issue does not resolve", () => {
+    const { container, queryByTestId } = renderContent(
+      `[MUL-404](${APP_ORIGIN}/acme/issues/MUL-404)`,
+    );
+
+    expect(queryByTestId("issue-chip")).toBeNull();
+    expect(container.querySelector("a")?.textContent).toBe("MUL-404");
+  });
+
+  it("leaves an identifier label on a different issue's URL alone", () => {
+    resolvedIssue = { id: ISSUE_ID, identifier: "MUL-1" } as Issue;
+
+    const { queryByTestId, container } = renderContent(
+      `[MUL-2](${APP_ORIGIN}/acme/issues/MUL-1)`,
+    );
+
+    expect(queryByTestId("issue-chip")).toBeNull();
+    expect(container.querySelector("a")?.textContent).toBe("MUL-2");
+  });
+
+  it("leaves an identifier-labelled external link alone", () => {
+    resolvedIssue = { id: ISSUE_ID, identifier: "MUL-1" } as Issue;
+
+    const { queryByTestId, container } = renderContent(
+      `[MUL-1](https://example.com/acme/issues/MUL-1)`,
+    );
+
+    expect(queryByTestId("issue-chip")).toBeNull();
+    expect(container.querySelector("a")?.textContent).toBe("MUL-1");
+  });
+
   it("leaves a link the author labelled alone", () => {
     // Replacing this with a chip would throw away "Roadmap" — the author said
     // what they wanted the link to read as.

@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -30,6 +31,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -409,16 +411,17 @@ const (
 
 // signState produces an opaque token that binds a workspace and return target
 // to a short-lived install flow.
-// Format: "<workspaceID>.<returnTo>.<issuedAtUnix>.<nonce>.<sigHex>".
+// Format: "<workspaceID>.<returnTo>.<issuedAtUnix>.<nonce>.<originB64>.<sigHex>"
+// (originB64 is the base64url browser origin that started the flow, or empty).
 func signState(workspaceID string) (string, error) {
-	return signStateForReturn(workspaceID, githubReturnToGitHub)
+	return signStateForReturn(workspaceID, githubReturnToGitHub, "")
 }
 
-func signStateForReturn(workspaceID, returnTo string) (string, error) {
-	return signStateForReturnAt(workspaceID, returnTo, time.Now())
+func signStateForReturn(workspaceID, returnTo, origin string) (string, error) {
+	return signStateForReturnAt(workspaceID, returnTo, origin, time.Now())
 }
 
-func signStateForReturnAt(workspaceID, returnTo string, now time.Time) (string, error) {
+func signStateForReturnAt(workspaceID, returnTo, origin string, now time.Time) (string, error) {
 	secret := githubWebhookSecret()
 	if secret == "" {
 		return "", errors.New("github integration is not configured")
@@ -435,6 +438,7 @@ func signStateForReturnAt(workspaceID, returnTo string, now time.Time) (string, 
 		returnTo,
 		strconv.FormatInt(now.Unix(), 10),
 		hex.EncodeToString(nonceBytes),
+		base64.RawURLEncoding.EncodeToString([]byte(origin)),
 	}, ".")
 	return payload + "." + signGitHubState(secret, payload), nil
 }
@@ -446,40 +450,44 @@ func signGitHubState(secret, payload string) string {
 }
 
 func verifyState(token string) (string, bool) {
-	workspaceID, _, ok := verifyStateWithReturn(token)
+	workspaceID, _, _, ok := verifyStateWithReturn(token)
 	return workspaceID, ok
 }
 
-func verifyStateWithReturn(token string) (workspaceID, returnTo string, ok bool) {
+func verifyStateWithReturn(token string) (workspaceID, returnTo, origin string, ok bool) {
 	return verifyStateWithReturnAt(token, time.Now())
 }
 
-func verifyStateWithReturnAt(token string, now time.Time) (workspaceID, returnTo string, ok bool) {
+func verifyStateWithReturnAt(token string, now time.Time) (workspaceID, returnTo, origin string, ok bool) {
 	secret := githubWebhookSecret()
 	if secret == "" {
-		return "", "", false
+		return "", "", "", false
 	}
 	parts := strings.Split(token, ".")
-	if len(parts) != 5 {
-		return "", "", false
+	if len(parts) != 6 {
+		return "", "", "", false
 	}
 	workspaceID, returnTo = parts[0], parts[1]
 	if !isAllowedGitHubReturnTo(returnTo) {
-		return "", "", false
+		return "", "", "", false
 	}
-	payload := strings.Join(parts[:4], ".")
-	if !hmac.Equal([]byte(signGitHubState(secret, payload)), []byte(parts[4])) {
-		return "", "", false
+	payload := strings.Join(parts[:5], ".")
+	if !hmac.Equal([]byte(signGitHubState(secret, payload)), []byte(parts[5])) {
+		return "", "", "", false
 	}
 	issuedAt, err := strconv.ParseInt(parts[2], 10, 64)
 	if err != nil {
-		return "", "", false
+		return "", "", "", false
 	}
 	age := now.Sub(time.Unix(issuedAt, 0))
 	if age > githubStateMaxAge || age < -githubStateClockSkew {
-		return "", "", false
+		return "", "", "", false
 	}
-	return workspaceID, returnTo, true
+	rawOrigin, err := base64.RawURLEncoding.DecodeString(parts[4])
+	if err != nil {
+		return "", "", "", false
+	}
+	return workspaceID, returnTo, string(rawOrigin), true
 }
 
 func isAllowedGitHubReturnTo(returnTo string) bool {
@@ -514,7 +522,7 @@ func (h *Handler) GitHubConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slug := githubAppSlug()
-	state, err := signStateForReturn(workspaceID, returnTo)
+	state, err := signStateForReturn(workspaceID, returnTo, util.RequestOrigin(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to sign state")
 		return
@@ -545,12 +553,12 @@ func (h *Handler) GitHubSetupCallback(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, settingsURL+"&github_error=missing_params", http.StatusFound)
 		return
 	}
-	workspaceID, returnTo, ok := verifyStateWithReturn(state)
+	workspaceID, returnTo, origin, ok := verifyStateWithReturn(state)
 	if !ok {
 		http.Redirect(w, r, settingsURL+"&github_error=invalid_state", http.StatusFound)
 		return
 	}
-	settingsURL = githubSettingsURL(frontend, returnTo)
+	settingsURL = githubSettingsURL(util.ReturnOrigin(origin, frontend), returnTo)
 	if installationIDStr == "" {
 		http.Redirect(w, r, settingsURL+"&github_error=missing_params", http.StatusFound)
 		return
@@ -587,6 +595,26 @@ func (h *Handler) GitHubSetupCallback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The policy judges the numeric account id: the verified one for a bind with
+	// a code, the stored one for a code-less update (which carries none).
+	candidate := db.GithubInstallation{
+		WorkspaceID:    wsUUID,
+		InstallationID: installationID,
+		AccountID:      githubAccountIDParam(verified.Account.ID),
+	}
+	if code == "" {
+		candidate = existing
+	}
+	if !h.githubInstallationAllowed(candidate) {
+		slog.Warn("github: refused installation bind outside allowlist",
+			"installation_id", installationID,
+			"account_id", candidate.AccountID.Int64,
+			"workspace_id", workspaceID,
+		)
+		http.Redirect(w, r, settingsURL+"&github_error=installation_not_allowed", http.StatusFound)
+		return
+	}
+
 	connectedBy := pgtype.UUID{}
 	if code == "" {
 		connectedBy = existing.ConnectedByID
@@ -607,6 +635,7 @@ func (h *Handler) GitHubSetupCallback(w http.ResponseWriter, r *http.Request) {
 		AccountType:      verified.Account.Type,
 		AccountAvatarUrl: avatar,
 		ConnectedByID:    connectedBy,
+		AccountID:        githubAccountIDParam(verified.Account.ID),
 	})
 	if err != nil {
 		slog.Error("github: failed to persist installation", "err", err, "installation_id", installationID)
@@ -1429,7 +1458,7 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
 		for _, issueID := range issueIDs {
 			// A move that already started the next handler is the wake.
-			if h.advanceIssueOnCIGreen(ctx, issueID, pr.SnapshotHeadSha, pr.State) {
+			if h.advanceIssueOnCIGreenUnlessHalted(ctx, pr, issueID) {
 				continue
 			}
 			if err := wakeup.TriggerPullRequestWakeup(ctx, issueID, service.PullRequestWakeupInput{
@@ -1568,6 +1597,7 @@ type ghInstallationPayload struct {
 	Installation struct {
 		ID      int64 `json:"id"`
 		Account struct {
+			ID        int64  `json:"id"`
 			Login     string `json:"login"`
 			Type      string `json:"type"`
 			AvatarURL string `json:"avatar_url"`
@@ -1623,33 +1653,33 @@ func (h *Handler) handleInstallationEvent(ctx context.Context, body []byte) {
 			return
 		}
 
-		// We don't know which workspace(s) this maps to from the webhook
-		// alone. If no setup callback has created a workspace binding yet,
-		// keep the account metadata and let the callback consume it after it
-		// creates github_installation.
-		existing, err := h.Queries.ListGitHubInstallationsByInstallationID(ctx, p.Installation.ID)
+		// A signed delivery proves GitHub sent it, not that anyone here wants
+		// the installation. Only an existing workspace binding (made by the setup
+		// callback, which verifies the installing user) may be refreshed; with no
+		// binding nothing is stored, whatever the account.
+		bound, err := h.Queries.ListGitHubInstallationsByInstallationID(ctx, p.Installation.ID)
 		if err != nil {
 			slog.Warn("github: lookup installation failed", "err", err, "installation_id", p.Installation.ID)
 			return
 		}
-		if len(existing) == 0 {
-			if _, err := h.Queries.UpsertPendingGitHubInstallation(ctx, db.UpsertPendingGitHubInstallationParams{
-				InstallationID:   p.Installation.ID,
-				AccountLogin:     login,
-				AccountType:      accountType,
-				AccountAvatarUrl: ptrToText(avatar),
-			}); err != nil {
-				slog.Warn("github: store pending installation failed", "err", err, "installation_id", p.Installation.ID)
-			}
+		if len(bound) == 0 {
 			return
 		}
-		// Refresh the account display metadata across every workspace binding;
+		if !h.anyGitHubInstallationAllowed(bound) {
+			slog.Warn("github: installation event ignored; binding denied by allowlist",
+				"installation_id", p.Installation.ID, "action", p.Action)
+			return
+		}
+		// Refresh the account display metadata on the allowed bindings only; a
+		// denied binding on a shared installation keeps its stored account.
 		// workspace_id and connected_by_id are left untouched.
 		refreshed, err := h.Queries.UpdateGitHubInstallationAccountByInstallationID(ctx, db.UpdateGitHubInstallationAccountByInstallationIDParams{
 			InstallationID:   p.Installation.ID,
 			AccountLogin:     login,
 			AccountType:      accountType,
 			AccountAvatarUrl: ptrToText(avatar),
+			AccountID:        githubAccountIDParam(p.Installation.Account.ID),
+			WorkspaceIds:     h.allowedWorkspaceIDs(bound),
 		})
 		if err != nil {
 			slog.Warn("github: refresh installation failed", "err", err)
@@ -1665,6 +1695,9 @@ func (h *Handler) handleInstallationEvent(ctx context.Context, body []byte) {
 		// the user already loaded the page) would stay visibly stale
 		// until the user manually refreshes. One broadcast per bound workspace.
 		for _, inst := range refreshed {
+			if !h.githubInstallationAllowed(inst) {
+				continue
+			}
 			h.publish(protocol.EventGitHubInstallationCreated, uuidToString(inst.WorkspaceID), "system", "", map[string]any{
 				"installation": githubInstallationToBroadcast(inst),
 			})
@@ -1747,7 +1780,7 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error
 	if p.Installation.ID == 0 {
 		return nil
 	}
-	insts, err := h.Queries.ListGitHubInstallationsByInstallationID(ctx, p.Installation.ID)
+	insts, err := h.allowedGitHubInstallations(ctx, p.Installation.ID)
 	if err != nil {
 		// CHE-374 review round 2, item 5: a real DB error here (as opposed to
 		// "no installation row exists", which is len(insts)==0 below and stays
@@ -1761,8 +1794,8 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error
 		return fmt.Errorf("list installations by installation id: %w", err)
 	}
 	if len(insts) == 0 {
-		// Webhook from an installation we never wired up — nothing we
-		// can attribute to a workspace, so drop it silently.
+		// Webhook from an installation we never wired up, or one the account
+		// allowlist denies — nothing we may attribute to a workspace, so drop it.
 		return nil
 	}
 	// #4855 lets one GitHub App installation bind to several workspaces. A
@@ -1801,6 +1834,7 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error
 		// fail the delivery so GitHub redelivers it.
 		if err := h.Queries.InvalidateGitHubPRMergeState(ctx, db.InvalidateGitHubPRMergeStateParams{
 			InstallationID: p.Installation.ID, RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name, PrNumber: p.PullRequest.Number,
+			WorkspaceIds: workspaceIDsOf(insts),
 		}); err != nil {
 			errs = append(errs, fmt.Errorf("github: invalidate merge state of retargeted pull request: %w", err))
 		}
@@ -1810,7 +1844,7 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error
 		h.PRRefresh.RefreshConflictWatchers(ctx, p.Installation.ID, p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number)
 	}
 	if p.PullRequest.Merged {
-		if err := h.refreshOpenPRsOnBase(ctx, &p); err != nil {
+		if err := h.refreshOpenPRsOnBase(ctx, &p, insts); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -1990,6 +2024,9 @@ func (h *Handler) triggerPRRefreshFromCIEvent(ctx context.Context, body []byte) 
 		return
 	}
 	if p.Installation.ID == 0 || p.Repository.Name == "" {
+		return
+	}
+	if allowed, err := h.allowedGitHubInstallations(ctx, p.Installation.ID); err != nil || len(allowed) == 0 {
 		return
 	}
 	owner, repo := p.Repository.Owner.Login, p.Repository.Name
@@ -2228,12 +2265,13 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 // is undecided and the snapshot sweep refreshes it. A failed clear is returned:
 // the old decided verdicts would stay outside the sweep, so the delivery must
 // fail and GitHub's redelivery retries it.
-func (h *Handler) refreshOpenPRsOnBase(ctx context.Context, p *ghPullRequestPayload) error {
+func (h *Handler) refreshOpenPRsOnBase(ctx context.Context, p *ghPullRequestPayload, insts []db.GithubInstallation) error {
 	if !h.PRRefresh.Enabled() || p.PullRequest.Base.Ref == "" {
 		return nil
 	}
 	rows, err := h.Queries.InvalidateOpenGitHubPRMergeStateOnBase(ctx, db.InvalidateOpenGitHubPRMergeStateOnBaseParams{
-		InstallationID: p.Installation.ID, RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name,
+		InstallationID: p.Installation.ID, WorkspaceIds: workspaceIDsOf(insts),
+		RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name,
 		MergedPrNumber: p.PullRequest.Number, BaseRef: pgtype.Text{String: p.PullRequest.Base.Ref, Valid: true},
 		HeadRef: pgtype.Text{String: p.PullRequest.Head.Ref, Valid: true},
 	})

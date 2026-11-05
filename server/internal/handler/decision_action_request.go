@@ -285,6 +285,9 @@ func workflowPreconditions(ctx context.Context, queries *db.Queries, workspaceID
 // issue, workflow, squad or workspace the action names, otherwise the agent's
 // snapshot.
 func actionPreconditions(ctx context.Context, queries *db.Queries, issue db.Issue, draft *decisionActionDraft) (map[string]any, error) {
+	if change, ok := configChanges[draft.Type]; ok {
+		return configChangePreconditions(ctx, queries, issue.WorkspaceID, draft, change)
+	}
 	switch draft.Definition.Target {
 	case decisionaction.TargetIssue:
 		if err := checkIssueTarget(draft.Params, issue.ID, http.StatusBadRequest); err != nil {
