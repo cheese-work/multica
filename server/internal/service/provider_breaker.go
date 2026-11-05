@@ -139,7 +139,7 @@ func recordProviderSuccess(ctx context.Context, queries *db.Queries, task db.Age
 	if !ok {
 		return nil
 	}
-	version, exists, err := providerBreakerVersion(ctx, queries, agent.WorkspaceID, provider)
+	_, exists, err := providerBreakerVersion(ctx, queries, agent.WorkspaceID, provider)
 	if err != nil {
 		return err
 	}
@@ -156,7 +156,7 @@ func recordProviderSuccess(ctx context.Context, queries *db.Queries, task db.Age
 	if err := queries.LockProviderBreakerTrip(ctx, lockKey); err != nil {
 		return fmt.Errorf("lock provider breaker success: %w", err)
 	}
-	version, _, err = providerBreakerVersion(ctx, queries, agent.WorkspaceID, provider)
+	version, _, err := providerBreakerVersion(ctx, queries, agent.WorkspaceID, provider)
 	if err != nil {
 		return err
 	}
