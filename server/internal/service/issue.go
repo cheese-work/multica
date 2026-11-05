@@ -379,8 +379,9 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 		}
 	}
 
-	// Project workflow (MUL-7420): an issue created in a project whose named
-	// workflow does not list the requested status starts on todo instead.
+	// Project workflow (MUL-7420, MUL-8250): an issue created in a project
+	// whose named workflow does not list the requested status starts on todo
+	// instead; outside any project the stored Default limits it the same way.
 	// The HTTP create path already rejects an explicit status outside the
 	// workflow; this keeps the other creators (channels, captured comments)
 	// inside it too, and the project switches that commit after that check.
@@ -390,7 +391,15 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	if err != nil {
 		return IssueCreateResult{}, err
 	}
-	if def != nil && !def.IsDefault && !def.Has(p.Status) {
+	if def == nil && !p.WorkflowID.Valid {
+		// No project and no override: only a stored Default limits the status.
+		if outside, err := issueworkflow.OutsideProject(ctx, qtx, p.WorkspaceID); err != nil {
+			return IssueCreateResult{}, err
+		} else if outside != nil && outside.Limits() && !outside.Has(p.Status) {
+			p.Status = issueworkflow.StartStatus
+		}
+	}
+	if def != nil && def.Limits() && !def.Has(p.Status) {
 		// An override is the caller's explicit choice: a status it does not
 		// list is an error, never a silent restart.
 		if p.WorkflowID.Valid {

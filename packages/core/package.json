@@ -62,6 +62,7 @@
     "./issues/comment-trigger-outcomes": "./issues/comment-trigger-outcomes.ts",
     "./issues/invalid-agent-mentions": "./issues/invalid-agent-mentions.ts",
     "./issues/run-steering": "./issues/run-steering.ts",
+    "./issues/unread": "./issues/unread.ts",
     "./issues/date": "./issues/date.ts",
     "./issues/ws-updaters": "./issues/ws-updaters.ts",
     "./issues/sidebar-list": "./issues/sidebar-list.ts",

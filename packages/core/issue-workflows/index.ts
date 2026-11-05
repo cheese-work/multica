@@ -5,6 +5,7 @@ export {
   resolveIssueWorkflow,
   NO_HANDOFF_BINDING,
   type IssueWorkflowResolution,
+  issueStatusWorkflow,
   sharedWorkflowStatusKeys,
   defaultWorkflow,
   isFixedWorkflowStatus,

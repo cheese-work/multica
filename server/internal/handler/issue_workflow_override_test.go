@@ -131,6 +131,43 @@ func TestIssueOutsideAProjectHasNoWorkflowWithoutAnOverride(t *testing.T) {
 	updateIssueForTest(t, issueID, map[string]any{"status": "in_progress"}).Want(http.StatusOK)
 }
 
+// A stored Default (MUL-8250) limits issues outside a project, but an
+// override on such an issue is the workflow that judges it. Taking the
+// upstream resolution unchanged would judge it by the Default and let the
+// move through. (CHE-3459)
+func TestOverrideBeatsStoredDefaultOutsideAProject(t *testing.T) {
+	seedTestCatalog(t)
+	resetDefaultWorkflow(t)
+	testutil.Call(t, testHandler.ListIssueWorkflows, workflowRequest("GET", "/api/issue-workflows", nil)).Want(http.StatusOK)
+	wf := createTestWorkflow(t, "Beats Default "+workflowTestSuffix(), "in_review")
+	issueID := dbfx.Issue(t, "override beats default", testutil.Cols{"status": "todo"})
+	updateIssueForTest(t, issueID, map[string]any{"status": "in_progress"}).Want(http.StatusOK)
+	updateIssueForTest(t, issueID, map[string]any{"status": "todo"}).Want(http.StatusOK)
+	setIssueOverride(t, issueID, wf.ID)
+
+	if code := updateIssueForTest(t, issueID, map[string]any{"status": "in_progress"}).Want(http.StatusBadRequest).Map()["code"]; code != "status_not_in_workflow" {
+		t.Fatalf("code = %v, want status_not_in_workflow: the override, not the stored Default, judges the move", code)
+	}
+	updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}).Want(http.StatusOK)
+}
+
+// Creating with an override that omits the requested status is an error, not
+// the silent restart on todo a Default or project workflow gets. (CHE-3459)
+func TestServiceCreateWithOverrideRefusesAnUnlistedStatus(t *testing.T) {
+	seedTestCatalog(t)
+	resetDefaultWorkflow(t)
+	testutil.Call(t, testHandler.ListIssueWorkflows, workflowRequest("GET", "/api/issue-workflows", nil)).Want(http.StatusOK)
+	wf := createTestWorkflow(t, "Create unlisted "+workflowTestSuffix())
+	_, err := testHandler.IssueService.Create(context.Background(), service.IssueCreateParams{
+		WorkspaceID: util.MustParseUUID(testWorkspaceID), Title: "override omits status " + workflowTestSuffix(),
+		Status: "in_progress", Priority: "none", CreatorType: "member", CreatorID: util.MustParseUUID(testUserID),
+		WorkflowID: util.MustParseUUID(wf.ID),
+	}, service.IssueCreateOpts{})
+	if err == nil {
+		t.Fatal("create with an override that omits in_progress succeeded; want a status_not_in_workflow error")
+	}
+}
+
 // Outside a project an override still applies its status list, but a handler
 // relative to the project (the lead) has nobody to resolve to.
 func TestOverrideOutsideAProjectResolvesNoRelativeHandler(t *testing.T) {
