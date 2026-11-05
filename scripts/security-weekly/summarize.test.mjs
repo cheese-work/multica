@@ -1,19 +1,32 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { normalize, summarize, line, run } from "./summarize.mjs";
 
-test("semgrep: ERROR is high, WARNING medium, INFO low; id is rule|path#n, never the line", () => {
+// A throwaway checkout: finding ids hash the flagged source text, so the files must exist.
+const repo = (files) => {
+  const root = mkdtempSync(join(tmpdir(), "sw-repo-"));
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(join(root, path), text);
+  }
+  return root;
+};
+
+test("semgrep: ERROR is high, WARNING medium, INFO low; id is rule|path|content hash, never the line", () => {
+  const root = repo({ "a.go": "bad()\n", "b.ts": "\nbad()\n", "c.py": "bad()\n" });
   const raw = { results: [
-    { check_id: "r.a", path: "a.go", start: { line: 1 }, extra: { severity: "ERROR" } },
-    { check_id: "r.b", path: "b.ts", start: { line: 9 }, extra: { severity: "WARNING" } },
-    { check_id: "r.c", path: "c.py", start: { line: 11 }, extra: { severity: "INFO" } },
+    { check_id: "r.a", path: "a.go", start: { line: 1 }, end: { line: 1 }, extra: { severity: "ERROR" } },
+    { check_id: "r.b", path: "b.ts", start: { line: 2 }, end: { line: 2 }, extra: { severity: "WARNING" } },
+    { check_id: "r.c", path: "c.py", start: { line: 1 }, end: { line: 1 }, extra: { severity: "INFO" } },
   ] };
-  assert.deepEqual(normalize("semgrep", raw), [
-    { id: "r.a|a.go#1", severity: "high" }, { id: "r.b|b.ts#1", severity: "medium" }, { id: "r.c|c.py#1", severity: "low" },
-  ]);
+  const out = normalize("semgrep", raw, root);
+  assert.deepEqual(out.map((i) => i.severity).sort(), ["high", "low", "medium"]);
+  const a = out.find((i) => i.id.startsWith("r.a|"));
+  assert.match(a.id, /^r\.a\|a\.go\|[0-9a-f]{12}#1$/);
+  assert.equal(a.id.split("|")[2], out.find((i) => i.id.startsWith("r.b|")).id.split("|")[2]); // same text, same hash
 });
 
 test("govulncheck text: one reachable vulnerability per distinct GO id, rated high", () => {
@@ -115,37 +128,47 @@ test("run: codeql with only one language, or trivy with only one image, is `not 
   assert.ok(lines.includes("trivy: NOT RUN (missing trivy-web.json)"));
 });
 
-const sg = (line, path = "a.go") => ({ check_id: "r.a", path, start: { line }, extra: { severity: "ERROR" } });
+const sg = (line, path = "a.go") => ({ check_id: "r.a", path, start: { line }, end: { line }, extra: { severity: "ERROR" } });
 const cq = (line, uri = "a.go") => ({ ruleId: "go/sql", level: "error", locations: [{ physicalLocation: { artifactLocation: { uri }, region: { startLine: line } } }] });
 const cqSarif = (...results) => ({ runs: [{ tool: { driver: { rules: [{ id: "go/sql", properties: { "security-severity": "8.0" } }] } }, results }] });
-const ids = (scanner, raw) => normalize(scanner, raw).map((i) => i.id);
+const text = (...lines) => lines.join("\n") + "\n";
+const scan = (scanner, raw, root, prev) => summarize(scanner, normalize(scanner, raw, root), prev);
 
-test("semgrep: two instances of one rule in one file are two findings, a line shift changes nothing", () => {
-  const before = summarize("semgrep", normalize("semgrep", { results: [sg(10)] }), undefined);
-  const shifted = summarize("semgrep", normalize("semgrep", { results: [sg(14)] }), before);
-  assert.equal(shifted.new.length + shifted.fixed.length, 0);
-  const added = summarize("semgrep", normalize("semgrep", { results: [sg(14), sg(80)] }), before);
-  assert.equal(added.total, 2);
-  assert.equal(added.new.length, 1);
-  assert.equal(added.newHighCritical.length, 1);
+for (const [scanner, mk, wrap] of [["semgrep", sg, (...r) => ({ results: r })], ["codeql", cq, cqSarif]]) {
+  test(`${scanner}: replacing an occurrence with a different one of the same rule in the same file is new + fixed`, () => {
+    const was = scan(scanner, wrap(mk(2)), repo({ "a.go": text("x", "old(input)", "y") }), undefined);
+    const now = scan(scanner, wrap(mk(3)), repo({ "a.go": text("x", "y", "other(input)") }), was);
+    assert.equal(now.total, 1);
+    assert.equal(now.new.length, 1);
+    assert.equal(now.fixed.length, 1);
+    assert.equal(now.newHighCritical.length, 1);
+  });
+
+  test(`${scanner}: a line shift or whitespace edit with the same flagged text changes nothing`, () => {
+    const was = scan(scanner, wrap(mk(2)), repo({ "a.go": text("x", "old(input)") }), undefined);
+    const now = scan(scanner, wrap(mk(5)), repo({ "a.go": text("a", "b", "c", "d", "    old(input)  ") }), was);
+    assert.equal(now.new.length + now.fixed.length, 0);
+    assert.equal(now.total, 1);
+  });
+
+  test(`${scanner}: an added occurrence is new and a removed one is fixed; identical text counts twice`, () => {
+    const one = scan(scanner, wrap(mk(1)), repo({ "a.go": text("old(input)", "keep") }), undefined);
+    const two = scan(scanner, wrap(mk(1), mk(3)), repo({ "a.go": text("old(input)", "keep", "extra(input)") }), one);
+    assert.deepEqual([two.total, two.new.length, two.fixed.length, two.newHighCritical.length], [2, 1, 0, 1]);
+    const back = scan(scanner, wrap(mk(1)), repo({ "a.go": text("old(input)", "keep") }), two);
+    assert.deepEqual([back.total, back.new.length, back.fixed.length], [1, 0, 1]);
+    const dup = scan(scanner, wrap(mk(1), mk(2)), repo({ "a.go": text("same(input)", "same(input)") }), undefined);
+    assert.equal(dup.total, 2);
+  });
+}
+
+test("semgrep: ids do not depend on report order", () => {
+  const root = repo({ "a.go": text("one()", "two()") });
+  assert.deepEqual(normalize("semgrep", { results: [sg(2), sg(1)] }, root).map((i) => i.id).sort(),
+    normalize("semgrep", { results: [sg(1), sg(2)] }, root).map((i) => i.id).sort());
 });
 
-test("semgrep: a removed same-file instance is fixed, and ids do not depend on report order", () => {
-  const two = summarize("semgrep", normalize("semgrep", { results: [sg(80), sg(10)] }), undefined);
-  assert.deepEqual(ids("semgrep", { results: [sg(80), sg(10)] }), ids("semgrep", { results: [sg(10), sg(80)] }));
-  const one = summarize("semgrep", normalize("semgrep", { results: [sg(10)] }), two);
-  assert.equal(one.total, 1);
-  assert.equal(one.fixed.length, 1);
-  assert.equal(one.new.length, 0);
-});
-
-test("codeql: two results of one rule in one file are two findings; a new second one is new", () => {
-  const before = summarize("codeql", normalize("codeql", cqSarif(cq(5))), undefined);
-  const added = summarize("codeql", normalize("codeql", cqSarif(cq(5), cq(70))), before);
-  assert.equal(added.total, 2);
-  assert.equal(added.new.length, 1);
-  assert.equal(added.newHighCritical.length, 1);
-  const removed = summarize("codeql", normalize("codeql", cqSarif(cq(5))), added);
-  assert.equal(removed.fixed.length, 1);
-  assert.equal(removed.new.length, 0);
+test("a flagged file that cannot be read still yields an id (rule|path), never a crash", () => {
+  const ids = normalize("semgrep", { results: [sg(4, "gone.go")] }, repo({})).map((i) => i.id);
+  assert.deepEqual(ids, ["r.a|gone.go|#1"]);
 });
