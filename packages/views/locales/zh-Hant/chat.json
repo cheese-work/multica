@@ -307,7 +307,6 @@
     "undo": "復原"
   },
   "header": {
-    "view_profile": "檢視智慧體資料",
     "rename": "重新命名會話",
     "delete": "刪除會話",
     "archive": "歸檔會話",
@@ -316,6 +315,7 @@
     "context_meter_warning": "下一次回復後將壓縮",
     "compact_now": "立即壓縮",
     "more_actions": "更多操作",
+    "view_profile": "查看智慧體資料",
     "statistics": "統計",
     "pin": "置頂對話",
     "unpin": "取消置頂對話",
