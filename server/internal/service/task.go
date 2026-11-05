@@ -8912,6 +8912,26 @@ func (s *TaskService) ResolveTaskScopeChecked(ctx context.Context, task db.Agent
 	if qc, ok := s.parseQuickCreateContext(task); ok {
 		return TaskScope{WorkspaceID: qc.WorkspaceID}, nil
 	}
+	// Background tasks: a DM-derived one belongs to its source session's
+	// creator (spec §Privacy of DM-derived tasks), so its message events reach
+	// only that member. A bg task with no source session keeps an empty owner;
+	// callers treat that as "no private room", never as "workspace-wide".
+	if strings.HasPrefix(task.Purpose.String, "bg:") {
+		if task.SourceChatSessionID.Valid {
+			cs, err := s.Queries.GetChatSession(ctx, task.SourceChatSessionID)
+			if err == nil {
+				return TaskScope{
+					WorkspaceID:        util.UUIDToString(cs.WorkspaceID),
+					ChatSessionOwnerID: util.UUIDToString(cs.CreatorID),
+				}, nil
+			}
+			note(err)
+		}
+		var c BackgroundTaskContext
+		if json.Unmarshal(task.Context, &c) == nil && c.Type == BackgroundTaskContextType && c.WorkspaceID != "" {
+			return TaskScope{WorkspaceID: c.WorkspaceID}, nil
+		}
+	}
 	if lookupErr != nil {
 		return TaskScope{}, fmt.Errorf("resolve task workspace: %w", lookupErr)
 	}
