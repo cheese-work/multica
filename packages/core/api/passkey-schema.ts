@@ -5,9 +5,19 @@ import { parseWithFallback } from "./schema";
 // reads the inner fields, so only the wrapper is required here.
 const OptionsSchema = z.object({ publicKey: z.record(z.string(), z.unknown()) });
 
-export const PasskeyEnrollStartSchema = z.object({ ceremony_id: z.string(), options: OptionsSchema, expires_at: z.string() });
 export const PasskeyChallengeSchema = z.object({ challenge_id: z.string(), options: OptionsSchema, expires_at: z.string() });
+// `assertion` is present when the workspace gate blocks and the user already has a passkey.
+export const PasskeyEnrollStartSchema = z.object({
+  ceremony_id: z.string(), options: OptionsSchema, expires_at: z.string(), assertion: PasskeyChallengeSchema.optional(),
+});
+export const PasskeyListSchema = z.object({
+  passkeys: z.array(z.object({
+    id: z.string(), created_at: z.string(), last_used_at: z.string().nullable(), transports: z.array(z.string()),
+    state: z.enum(["active", "suspect"]),
+  })),
+});
 export const PasskeyEnrolledSchema = z.object({ enrolled: z.literal(true) });
+export const PasskeyRevokeCodeStartSchema = z.object({ ceremony_id: z.string(), expires_at: z.string() });
 export const PasskeyRevokedSchema = z.object({ revoked: z.literal(true) });
 export const PasskeyDecisionOutcomeSchema = z.object({
   id: z.string(),
@@ -20,6 +30,7 @@ export const PasskeyDecisionOutcomeSchema = z.object({
 /** What the server verifies for revoke and approve: the challenge it answers plus the WebAuthn credential. */
 export type PasskeyAssertionEnvelope = { challenge_id: string; credential: unknown };
 export type PasskeyEnrollStart = z.infer<typeof PasskeyEnrollStartSchema>;
+export type PasskeySummary = z.infer<typeof PasskeyListSchema>["passkeys"][number];
 export type PasskeyChallenge = z.infer<typeof PasskeyChallengeSchema>;
 export type PasskeyDecisionOutcome = z.infer<typeof PasskeyDecisionOutcomeSchema>;
 

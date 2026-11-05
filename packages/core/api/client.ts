@@ -275,8 +275,8 @@ import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseWithFallback } from "./schema";
 import {
   PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
-  PasskeyRevokedSchema, parsePasskeyResponse,
-  type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart,
+  PasskeyListSchema, PasskeyRevokeCodeStartSchema, PasskeyRevokedSchema, parsePasskeyResponse,
+  type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart, type PasskeySummary,
 } from "./passkey-schema";
 import {
   RuntimeProfileSchema,
@@ -4149,12 +4149,28 @@ export class ApiClient {
     return this.passkeyPost("/api/passkeys/enroll/start", PasskeyEnrollStartSchema);
   }
 
-  async finishPasskeyEnrollment(input: { ceremony_id: string; code: string; attestation: unknown }): Promise<void> {
+  async listPasskeys(): Promise<PasskeySummary[]> {
+    const raw: unknown = await this.fetch("/api/passkeys");
+    return parsePasskeyResponse(raw, PasskeyListSchema, "GET /api/passkeys").passkeys;
+  }
+
+  async finishPasskeyEnrollment(input: {
+    ceremony_id: string; code: string; attestation: unknown; assertion?: PasskeyAssertionEnvelope;
+  }): Promise<void> {
     await this.passkeyPost("/api/passkeys/enroll/finish", PasskeyEnrolledSchema, input);
   }
 
   challengePasskeyRevocation(passkeyId: string): Promise<PasskeyChallenge> {
     return this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke/challenge`, PasskeyChallengeSchema);
+  }
+
+  // Sole-key path: the target is the only active key, so no other key can sign. A mailed code stands in.
+  startPasskeyRevocationByCode(passkeyId: string): Promise<{ ceremony_id: string; expires_at: string }> {
+    return this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke/code`, PasskeyRevokeCodeStartSchema);
+  }
+
+  async confirmPasskeyRevocationByCode(passkeyId: string, input: { ceremony_id: string; code: string }): Promise<void> {
+    await this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke/confirm`, PasskeyRevokedSchema, input);
   }
 
   async revokePasskey(passkeyId: string, assertion: PasskeyAssertionEnvelope): Promise<void> {

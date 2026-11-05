@@ -2493,16 +2493,46 @@ SELECT cs.id, cs.workspace_id, cs.agent_id, cs.creator_id, cs.title, cs.session_
                       AND m.created_at > cs.last_read_at)
        END::int AS unread_count,
        COALESCE(lm.content, '') AS last_message_content,
+       lm.id AS last_message_id,
+       lm.task_id AS last_message_task_id,
        COALESCE(lm.role, '') AS last_message_role,
        lm.created_at AS last_message_at,
        lm.failure_reason AS last_message_failure_reason,
        COALESCE(lm.message_kind, '') AS last_message_kind
 FROM chat_session cs
 LEFT JOIN LATERAL (
-  SELECT content, role, created_at, failure_reason, message_kind
+  SELECT id, task_id, content, role, created_at, failure_reason, message_kind
     FROM chat_message m
    WHERE m.chat_session_id = cs.id
      AND m.message_kind NOT IN ('channel_command', 'decision_cancel_notice', 'decision_reference')
+     -- Keep archived previews aligned with ListChatMessagesPage too.
+     AND NOT (
+       m.role = 'user'
+       AND EXISTS (
+         SELECT 1
+         FROM agent_task_queue AS task
+         WHERE task.chat_session_id = m.chat_session_id
+           AND task.status = 'queued'
+           AND task.id = m.task_id
+           AND task.id <> (
+             SELECT head.id
+             FROM agent_task_queue AS head
+             WHERE head.chat_session_id = m.chat_session_id
+               AND head.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+               AND head.regenerate_quick_actions_for IS NULL
+             ORDER BY
+               CASE
+                 WHEN head.status IN ('dispatched', 'running', 'waiting_local_directory') THEN 0
+                 WHEN head.status = 'deferred' THEN 1
+                 ELSE 2
+               END,
+               head.priority DESC,
+               head.created_at ASC,
+               head.id ASC
+             LIMIT 1
+           )
+       )
+     )
    ORDER BY m.created_at DESC
    LIMIT 1
 ) lm ON true
@@ -2552,6 +2582,8 @@ type ListAllChatSessionsByCreatorRow struct {
 	DecisionTopicID          pgtype.UUID        `json:"decision_topic_id"`
 	UnreadCount              int32              `json:"unread_count"`
 	LastMessageContent       string             `json:"last_message_content"`
+	LastMessageID            pgtype.UUID        `json:"last_message_id"`
+	LastMessageTaskID        pgtype.UUID        `json:"last_message_task_id"`
 	LastMessageRole          string             `json:"last_message_role"`
 	LastMessageAt            pgtype.Timestamptz `json:"last_message_at"`
 	LastMessageFailureReason pgtype.Text        `json:"last_message_failure_reason"`
@@ -2608,6 +2640,8 @@ func (q *Queries) ListAllChatSessionsByCreator(ctx context.Context, arg ListAllC
 			&i.DecisionTopicID,
 			&i.UnreadCount,
 			&i.LastMessageContent,
+			&i.LastMessageID,
+			&i.LastMessageTaskID,
 			&i.LastMessageRole,
 			&i.LastMessageAt,
 			&i.LastMessageFailureReason,
@@ -3344,16 +3378,46 @@ SELECT cs.id, cs.workspace_id, cs.agent_id, cs.creator_id, cs.title, cs.session_
             AND m.message_kind NOT IN ('decision_cancel_notice', 'decision_reference')
             AND m.created_at > cs.last_read_at)::int AS unread_count,
        COALESCE(lm.content, '') AS last_message_content,
+       lm.id AS last_message_id,
+       lm.task_id AS last_message_task_id,
        COALESCE(lm.role, '') AS last_message_role,
        lm.created_at AS last_message_at,
        lm.failure_reason AS last_message_failure_reason,
        COALESCE(lm.message_kind, '') AS last_message_kind
 FROM chat_session cs
 LEFT JOIN LATERAL (
-  SELECT content, role, created_at, failure_reason, message_kind
+  SELECT id, task_id, content, role, created_at, failure_reason, message_kind
     FROM chat_message m
    WHERE m.chat_session_id = cs.id
      AND m.message_kind NOT IN ('channel_command', 'decision_cancel_notice', 'decision_reference')
+     -- Keep the preview aligned with the queued-follow-up rule in ListChatMessagesPage.
+     AND NOT (
+       m.role = 'user'
+       AND EXISTS (
+         SELECT 1
+         FROM agent_task_queue AS task
+         WHERE task.chat_session_id = m.chat_session_id
+           AND task.status = 'queued'
+           AND task.id = m.task_id
+           AND task.id <> (
+             SELECT head.id
+             FROM agent_task_queue AS head
+             WHERE head.chat_session_id = m.chat_session_id
+               AND head.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+               AND head.regenerate_quick_actions_for IS NULL
+             ORDER BY
+               CASE
+                 WHEN head.status IN ('dispatched', 'running', 'waiting_local_directory') THEN 0
+                 WHEN head.status = 'deferred' THEN 1
+                 ELSE 2
+               END,
+               head.priority DESC,
+               head.created_at ASC,
+               head.id ASC
+             LIMIT 1
+           )
+       )
+     )
    ORDER BY m.created_at DESC
    LIMIT 1
 ) lm ON true
@@ -3403,6 +3467,8 @@ type ListChatSessionsByCreatorRow struct {
 	DecisionTopicID          pgtype.UUID        `json:"decision_topic_id"`
 	UnreadCount              int32              `json:"unread_count"`
 	LastMessageContent       string             `json:"last_message_content"`
+	LastMessageID            pgtype.UUID        `json:"last_message_id"`
+	LastMessageTaskID        pgtype.UUID        `json:"last_message_task_id"`
 	LastMessageRole          string             `json:"last_message_role"`
 	LastMessageAt            pgtype.Timestamptz `json:"last_message_at"`
 	LastMessageFailureReason pgtype.Text        `json:"last_message_failure_reason"`
@@ -3455,6 +3521,8 @@ func (q *Queries) ListChatSessionsByCreator(ctx context.Context, arg ListChatSes
 			&i.DecisionTopicID,
 			&i.UnreadCount,
 			&i.LastMessageContent,
+			&i.LastMessageID,
+			&i.LastMessageTaskID,
 			&i.LastMessageRole,
 			&i.LastMessageAt,
 			&i.LastMessageFailureReason,
@@ -4254,6 +4322,26 @@ type MarkChatSessionReadBeforeParams struct {
 // transaction as the session, so that message counts as unread (CHE-1662).
 func (q *Queries) MarkChatSessionReadBefore(ctx context.Context, arg MarkChatSessionReadBeforeParams) error {
 	_, err := q.db.Exec(ctx, markChatSessionReadBefore, arg.ID, arg.MessageCreatedAt)
+	return err
+}
+
+const markChatSessionUnread = `-- name: MarkChatSessionUnread :exec
+UPDATE chat_session cs
+SET last_read_at = latest.created_at - interval '1 microsecond'
+FROM (
+  SELECT max(m.created_at) AS created_at
+  FROM chat_message m
+  WHERE m.chat_session_id = $1
+    AND m.role = 'assistant'
+    AND m.message_kind NOT IN ('decision_cancel_notice', 'decision_reference')
+) latest
+WHERE cs.id = $1 AND latest.created_at IS NOT NULL
+`
+
+// Places the read cursor just before the latest assistant message that counts
+// toward unread_count, so unread_count is at least 1. No such message: no-op.
+func (q *Queries) MarkChatSessionUnread(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markChatSessionUnread, id)
 	return err
 }
 

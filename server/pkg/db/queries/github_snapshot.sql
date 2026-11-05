@@ -251,7 +251,8 @@ SELECT * FROM github_pull_request WHERE id = $1;
 -- name: InvalidateOpenGitHubPRMergeStateOnBase :many
 -- CHE-1417: a merge moves its base branch, which can make other open PRs on
 -- that base DIRTY or BEHIND without any pull_request event of their own. Their
--- stored merge state no longer describes the base, so it is cleared: the
+-- stored merge state no longer describes the base, so it is cleared (only on the
+-- workspaces the caller passes, i.e. the allowlisted bindings): the
 -- merge handler refreshes the returned PRs, and one the refresh queue drops is
 -- undecided, so ListStaleUndecidedGitHubPRs picks it up. A row whose base is
 -- not known yet (no snapshot since the column was added) is included.
@@ -262,6 +263,7 @@ SET api_mergeable          = NULL,
     api_merge_state_status = NULL,
     updated_at             = now()
 WHERE installation_id = sqlc.arg('installation_id')
+  AND workspace_id = ANY(sqlc.arg('workspace_ids')::uuid[])
   AND repo_owner = sqlc.arg('repo_owner')
   AND repo_name = sqlc.arg('repo_name')
   AND state IN ('open', 'draft')
@@ -283,6 +285,7 @@ FROM workspace w
 WHERE w.id = gpr.workspace_id
   AND (w.settings ->> 'github_enabled') IS DISTINCT FROM 'false'
   AND gpr.installation_id = sqlc.arg('installation_id')
+  AND gpr.workspace_id = ANY(sqlc.arg('workspace_ids')::uuid[])
   AND gpr.repo_owner = sqlc.arg('repo_owner')
   AND gpr.repo_name = sqlc.arg('repo_name')
   AND gpr.pr_number = sqlc.arg('pr_number');

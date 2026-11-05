@@ -60,7 +60,8 @@ jobs:
       (github.event.comment.user.id == 282619718 && github.event.comment.user.type == 'Bot' &&
       (startsWith(github.event.comment.body, 'Security-Gate-Verdict:') ||
       (github.event.action == 'edited' && startsWith(github.event.changes.body.from, 'Security-Gate-Verdict:'))))))
-    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99-gate"]') || fromJSON('["ubuntu-latest"]') }}
+    # CHE-3604: GitHub-hosted runner, so the X99 hook described above no longer applies; the `if:` above is the only comment filter.
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
       PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
