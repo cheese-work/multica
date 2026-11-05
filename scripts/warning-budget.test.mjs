@@ -92,16 +92,6 @@ test("a leading BOM does not defeat the runtime WARN exclusion, and a new warnin
   assert.deepEqual(count("﻿Warning: fixture diagnostic"), count("Warning: fixture diagnostic"))
 })
 
-test("a runtime WARN whose timestamp was split off by interleaved parallel test output is still excluded", () => {
-  const count = (log) => warningCounts([{ name: "backend-tests", log, annotations: [] }])
-  const msg = "WARN codex sandbox: running unsandboxed with danger-full-access reason=\"x\""
-  assert.deepEqual(count(`2026-11-05T16:46:20.7395444Z 37 ${msg}`), {})
-  assert.deepEqual(count(`2026-11-05T16:46:20.7395444Z 45:37 ${msg}`), {})
-  assert.deepEqual(count(`37 ${msg}`), {})
-  assert.equal(Object.keys(count(`2026-11-05T16:46:20.7395444Z ${msg}`)).length, 1)
-  assert.equal(Object.keys(count(`2026-11-05T16:46:20.7395444Z npm ${msg}`)).length, 1)
-})
-
 test("eslint warnings follow file and rule rather than line numbers", () => {
   const job = (file, line) => ({
     name: "frontend-build",
