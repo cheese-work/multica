@@ -7,7 +7,7 @@ Each agent CLI has its own knobs for where it reads personal config.
 
 - Values: `personal` (default, today's behavior), `managed`.
 - Resolution: agent `runtime_config.harness_profile` > workspace `settings.harness_profile` > `personal`.
-- UI: Settings > Workspace (default), agent page > Execution (override, "Workspace default" clears it).
+- UI: Settings > Workspace (default), agent inspector, Runtime profile row (override, "Workspace default" clears it).
 - `managed + sandbox` (CHE-1067) is reserved. The server rejects `managed_sandbox`.
 - Name: the UI says "Runtime profile". The key is `harness_profile` because `runtime_profile` already means a daemon runtime profile.
 - Rollback: set the profile back to `personal`. The next task launches as before.
@@ -30,7 +30,7 @@ Each managed adapter writes `<env>/launch-receipt.json`:
 - `env_keys`: env keys the adapter set
 - `files_seeded`: files placed in the generated home
 - `skills`, `mcp_servers`: names loaded
-- `excluded_paths`: personal discovery paths that exist and were not used
+- `excluded_paths`: personal discovery paths not used. Claude and the shared Codex home list only paths that exist; Codex always lists `$HOME/.agents/skills`.
 
 The receipt holds names and paths only, never file contents or credentials.
 
