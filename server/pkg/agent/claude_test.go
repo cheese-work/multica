@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -1347,5 +1348,29 @@ func TestBuildClaudeArgs_AppendSystemPromptFile(t *testing.T) {
 	without := buildClaudeArgs(ExecOptions{AppendSystemPromptFile: ""}, slog.Default())
 	if strings.Join(without, "\x00") != strings.Join(base, "\x00") {
 		t.Fatalf("personal args drifted: %v vs %v", without, base)
+	}
+}
+
+// Golden captured from origin/main 86b9d79 (before the runtime-profile
+// change). Pins the `personal` launch args; passes on base and head.
+func TestBuildClaudeArgs_PersonalGolden(t *testing.T) {
+	rich := ExecOptions{
+		Model: "claude-x", MaxTurns: 7, SystemPrompt: "sys", ResumeSessionID: "sess-1",
+		McpConfig:          json.RawMessage(`{"mcpServers":{}}`),
+		ClaudeSettingsPath: "/tmp/s.json",
+		CustomArgs:         []string{"--foo", "bar"},
+	}
+	cases := []struct {
+		name string
+		opts ExecOptions
+		want []string
+	}{
+		{"rich", rich, []string{"-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--disallowedTools", "AskUserQuestion", "--strict-mcp-config", "--model", "claude-x", "--max-turns", "7", "--resume", "sess-1", "--foo", "bar", "--settings", "/tmp/s.json"}},
+		{"empty", ExecOptions{}, []string{"-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--disallowedTools", "AskUserQuestion"}},
+	}
+	for _, c := range cases {
+		if got := buildClaudeArgs(c.opts, slog.New(slog.NewTextHandler(io.Discard, nil))); !slices.Equal(got, c.want) {
+			t.Errorf("%s: personal args drifted from origin/main golden\n got: %q\nwant: %q", c.name, got, c.want)
+		}
 	}
 }
