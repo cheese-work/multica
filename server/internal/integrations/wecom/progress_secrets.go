@@ -137,7 +137,12 @@ var multicaTokenPartial = regexp.MustCompile(`(?i)^(?:mat|mul|mdt)_[0-9a-f]+$`)
 // awsPositionalPattern catches `aws configure set aws_secret_access_key <v>`,
 // where the value follows the name after a space, so assignmentPattern misses
 // it, and a 40-character AWS secret is under minSecretRunLen.
-var awsPositionalPattern = regexp.MustCompile(`(?i)(\b(?:aws_)?(?:secret_access_key|session_token)\s+)([^\s"']+)`)
+//
+// The name and the value may each be quoted, and a shell line continuation
+// (`\` then a newline) may sit between them, so the separator allows quotes
+// and backslashes and the value is whatever follows up to the next quote or
+// space.
+var awsPositionalPattern = regexp.MustCompile(`(?i)(\b(?:aws_)?(?:secret_access_key|session_token)["']?[\s\\]+["']?)([^\s"']+)`)
 
 // redactSecrets rewrites every credential it can recognise in s.
 //
