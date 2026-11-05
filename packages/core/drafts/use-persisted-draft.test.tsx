@@ -74,37 +74,79 @@ describe("usePersistedDraft", () => {
     });
     expect(hook.result.current[0]).toBe(EMPTY);
   });
-  it("drops a write that fires after the workspace changed (late unmount flush)", async () => {
-    const values = new Map<string, string>();
-    const store = createKeyedDraftStore<Sample>({
-      storageKey: "h_late",
-      emptyData: EMPTY,
-      hasMeaningful: (d) => d.text.length > 0,
-      storage: {
-        getItem: (k) => values.get(k) ?? null,
-        setItem: (k, v) => void values.set(k, v),
-        removeItem: (k) => void values.delete(k),
-        keys: () => [...values.keys()],
-      },
-    });
-    setCurrentWorkspace("ws-a", "id-a");
-    await new Promise((r) => queueMicrotask(() => r(null)));
-    const hookA = renderHook(() => usePersistedDraft(store, "create", EMPTY));
-    const lateWriteFromA = hookA.result.current[1];
+  describe("late write after a workspace switch", () => {
+    async function setup() {
+      const values = new Map<string, string>();
+      const store = createKeyedDraftStore<Sample>({
+        storageKey: "h_late",
+        emptyData: EMPTY,
+        hasMeaningful: (d) => d.text.length > 0,
+        storage: {
+          getItem: (k) => values.get(k) ?? null,
+          setItem: (k, v) => void values.set(k, v),
+          removeItem: (k) => void values.delete(k),
+          keys: () => [...values.keys()],
+        },
+      });
+      const settle = () =>
+        act(async () => {
+          await new Promise((r) => queueMicrotask(() => r(null)));
+        });
+      setCurrentWorkspace("ws-a", "id-a");
+      await settle();
+      const hookA = renderHook(() => usePersistedDraft(store, "create", EMPTY));
+      return { store, hookA, settle };
+    }
 
-    // Route switches A -> B before A's component cleanup runs its late flush.
-    setCurrentWorkspace("ws-b", "id-b");
-    act(() => lateWriteFromA({ text: "A runbook" }));
-    hookA.unmount();
-    await act(async () => {
-      await new Promise((r) => queueMicrotask(() => r(null)));
+    it("lands an editor flush in the originating workspace, never the current one", async () => {
+      const { store, hookA, settle } = await setup();
+      const lateWriteFromA = hookA.result.current[1];
+
+      // Route switches A -> B before A's component cleanup runs its late flush.
+      setCurrentWorkspace("ws-b", "id-b");
+      act(() => lateWriteFromA({ text: "A runbook" }));
+      hookA.unmount();
+      await settle();
+
+      expect(store.getState().getDraft("create")).toBeUndefined(); // B stays empty
+
+      setCurrentWorkspace("ws-a", "id-a");
+      await settle();
+      expect(store.getState().getDraft("create")).toEqual({ text: "A runbook" });
     });
 
-    expect(store.getState().getDraft("create")).toBeUndefined();
-    setCurrentWorkspace("ws-a", "id-a");
-    await act(async () => {
-      await new Promise((r) => queueMicrotask(() => r(null)));
+    it("keeps an upload that settles after the switch in the originating workspace", async () => {
+      const { store, hookA, settle } = await setup();
+      act(() => hookA.result.current[1]({ text: "before" }));
+      const uploadSettles = hookA.result.current[1];
+
+      setCurrentWorkspace("ws-b", "id-b");
+      await settle();
+      store.getState().setDraft("create", { text: "B own draft" });
+      act(() => uploadSettles({ text: "A with upload" }));
+      await settle();
+
+      expect(store.getState().getDraft("create")).toEqual({ text: "B own draft" });
+      setCurrentWorkspace("ws-a", "id-a");
+      await settle();
+      expect(store.getState().getDraft("create")).toEqual({ text: "A with upload" });
     });
-    expect(store.getState().getDraft("create")).toBeUndefined();
+
+    it("a late clear removes A's draft, not B's draft under the same key", async () => {
+      const { store, hookA, settle } = await setup();
+      act(() => hookA.result.current[1]({ text: "A" }));
+      const lateClear = hookA.result.current[2];
+
+      setCurrentWorkspace("ws-b", "id-b");
+      await settle();
+      store.getState().setDraft("create", { text: "B own draft" });
+      act(() => lateClear());
+      await settle();
+
+      expect(store.getState().getDraft("create")).toEqual({ text: "B own draft" });
+      setCurrentWorkspace("ws-a", "id-a");
+      await settle();
+      expect(store.getState().getDraft("create")).toBeUndefined();
+    });
   });
 });

@@ -12,9 +12,9 @@ import type { KeyedDraftStore } from "./create-keyed-draft-store";
  * fallback, and a fresh object per render would re-render on every store touch.
  *
  * Writes are bound to the workspace the component last rendered in. A late
- * write (an editor flushing on unmount after the route already moved to another
- * workspace) is dropped, because the store always writes to the *current*
- * workspace and would plant the old workspace's text in the new one.
+ * write (an editor flushing on unmount, an upload settling) after the route
+ * moved to another workspace lands in the originating workspace's drafts, never
+ * the current one's.
  */
 export function usePersistedDraft<TData extends object>(
   store: UseBoundStore<StoreApi<KeyedDraftStore<TData>>>,
@@ -25,14 +25,12 @@ export function usePersistedDraft<TData extends object>(
   const slug = getCurrentSlug();
   const setDraft = useCallback(
     (patch: Partial<TData>) => {
-      if (getCurrentSlug() !== slug) return;
-      store.getState().setDraft(key, patch);
+      store.getState().setDraftIn(slug, key, patch);
     },
     [store, key, slug],
   );
   const clearDraft = useCallback(() => {
-    if (getCurrentSlug() !== slug) return;
-    store.getState().clearDraft(key);
+    store.getState().clearDraftIn(slug, key);
   }, [store, key, slug]);
   return [draft, setDraft, clearDraft];
 }

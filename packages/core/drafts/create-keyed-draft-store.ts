@@ -49,6 +49,15 @@ export interface KeyedDraftStore<TData> {
   /** Call on successful send/submit or explicit discard — never on failure. */
   clearDraft: (key: string) => void;
   hasDraft: (key: string) => boolean;
+  /**
+   * `setDraft` for a write that belongs to workspace `slug`, which may no longer
+   * be the current one (an editor flushing on unmount, an upload settling after
+   * a workspace switch). Writes into `slug`'s persisted namespace; never touches
+   * the current workspace's drafts.
+   */
+  setDraftIn: (slug: string | null, key: string, patch: Partial<TData>) => void;
+  /** `clearDraft` for workspace `slug`; see {@link KeyedDraftStore.setDraftIn}. */
+  clearDraftIn: (slug: string | null, key: string) => void;
 }
 
 export const KEYED_DRAFT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -75,6 +84,38 @@ export function createKeyedDraftStore<TData extends object>(
     return out;
   };
 
+  type Drafts = Record<string, KeyedDraftEntry<TData>>;
+  const withPatch = (drafts: Drafts, key: string, patch: Partial<TData>): Drafts => {
+    const data = { ...(drafts[key]?.data ?? empty()), ...patch };
+    if (!config.hasMeaningful(data)) return withoutKey(drafts, key);
+    return { ...drafts, [key]: { data, updatedAt: Date.now() } };
+  };
+  const withoutKey = (drafts: Drafts, key: string): Drafts => {
+    if (!(key in drafts)) return drafts;
+    const { [key]: _dropped, ...rest } = drafts;
+    return rest;
+  };
+
+  // Read-modify-write one other workspace's persisted namespace directly. The
+  // in-memory map belongs to the current workspace and is left alone.
+  const updateOtherWorkspace = (slug: string, update: (d: Drafts) => Drafts) => {
+    const name = `${config.storageKey}:${slug}`;
+    let persisted: { state?: { drafts?: Drafts }; version?: number } | null = null;
+    try {
+      const raw = backing.getItem(name);
+      persisted = raw ? JSON.parse(raw) : null;
+    } catch {
+      persisted = null; // unreadable entry: start that namespace over
+    }
+    const drafts = update(prune(persisted?.state?.drafts));
+    backing.setItem(
+      name,
+      JSON.stringify({ state: { drafts }, version: persisted?.version ?? 0 }),
+    );
+  };
+  const inOtherWorkspace = (slug: string | null) =>
+    workspaceScoped && slug !== getCurrentSlug();
+
   // Slug the in-memory map was loaded from. `setCurrentWorkspace` changes the
   // slug synchronously but rehydrates in a microtask. In that gap the map
   // belongs to the old workspace: reads treat it as empty (never leak it into
@@ -94,24 +135,26 @@ export function createKeyedDraftStore<TData extends object>(
         setDraft: (key, patch) => {
           syncToWorkspace();
           set((s) => {
-            const data = { ...(s.drafts[key]?.data ?? empty()), ...patch };
-            if (!config.hasMeaningful(data)) {
-              if (!(key in s.drafts)) return s;
-              const { [key]: _dropped, ...rest } = s.drafts;
-              return { drafts: rest };
-            }
-            return { drafts: { ...s.drafts, [key]: { data, updatedAt: Date.now() } } };
+            const drafts = withPatch(s.drafts, key, patch);
+            return drafts === s.drafts ? s : { drafts };
           });
         },
         clearDraft: (key) => {
           syncToWorkspace();
           set((s) => {
-            if (!(key in s.drafts)) return s;
-            const { [key]: _dropped, ...rest } = s.drafts;
-            return { drafts: rest };
+            const drafts = withoutKey(s.drafts, key);
+            return drafts === s.drafts ? s : { drafts };
           });
         },
         hasDraft: (key) => !isStale() && key in get().drafts,
+        setDraftIn: (slug, key, patch) => {
+          if (!inOtherWorkspace(slug)) return get().setDraft(key, patch);
+          if (slug) updateOtherWorkspace(slug, (d) => withPatch(d, key, patch));
+        },
+        clearDraftIn: (slug, key) => {
+          if (!inOtherWorkspace(slug)) return get().clearDraft(key);
+          if (slug) updateOtherWorkspace(slug, (d) => withoutKey(d, key));
+        },
       }),
       {
         name: config.storageKey,
