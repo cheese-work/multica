@@ -44,6 +44,7 @@ export const issueArgs = (e, { assigneeId, project, descriptionFile }) => [
   "--project", project,
   "--priority", e.severity === "critical" ? "urgent" : "high",
   "--status", "todo",
+  "--property", "Readiness=ready",
 ];
 
 // Upstream lookups run against the `upstream` remote's default branch (fetched by the caller).
@@ -56,18 +57,28 @@ export const upstreamLookups = (ref = "upstream/main") => !git("rev-parse", "--v
   commit: (c) => git("merge-base", "--is-ancestor", c, ref),
 };
 
+// Files one issue per entry. A failed create (multica refuses an active duplicate by default) never stops the rest;
+// the failed entries are returned so the caller can report them and exit red.
+export function apply(entries, { assigneeId, project, run = (args) => execFileSync("multica", args, { stdio: "inherit" }) }) {
+  const dir = mkdtempSync(join(process.cwd(), ".triage-"));
+  const failed = [];
+  try {
+    for (const e of entries) {
+      const descriptionFile = join(dir, "d.md");
+      writeFileSync(descriptionFile, e.body);
+      try { run(issueArgs(e, { assigneeId, project, descriptionFile })); } catch (err) {
+        console.error(`triage: could not file ${e.scanner} ${e.id}: ${err.message}`);
+        failed.push(e);
+      }
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+  return failed;
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   if (process.argv[2] === "--apply") {
     const [, , , file, assigneeId, project] = process.argv;
-    const dir = mkdtempSync(join(process.cwd(), ".triage-"));
-    try {
-      for (const e of JSON.parse(readFileSync(file, "utf8"))) {
-        const descriptionFile = join(dir, "d.md");
-        writeFileSync(descriptionFile, e.body);
-        // multica refuses an active duplicate by default, so a re-run files nothing twice.
-        execFileSync("multica", issueArgs(e, { assigneeId, project, descriptionFile }), { stdio: "inherit" });
-      }
-    } finally { rmSync(dir, { recursive: true, force: true }); }
+    if (apply(JSON.parse(readFileSync(file, "utf8")), { assigneeId, project }).length) process.exitCode = 1;
   } else {
     const [summaryPath, out] = process.argv.slice(2);
     const entries = plan(JSON.parse(readFileSync(summaryPath, "utf8")).summaries, upstreamLookups());

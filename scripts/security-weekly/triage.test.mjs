@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { summarize } from "./summarize.mjs";
-import { plan, issueArgs } from "./triage.mjs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { plan, issueArgs, apply } from "./triage.mjs";
 
 const never = { path: () => false, pkg: () => false, commit: () => false };
 const sum = (scanner, items, prev) => summarize(scanner, items, prev);
@@ -58,4 +62,47 @@ test("plan: when upstream cannot be read every lookup is unknown, never `not sha
   const unknown = { path: () => null, pkg: () => null, commit: () => null };
   const [e] = plan([sum("semgrep", [{ id: "r|a.go#1", severity: "high" }], prev("semgrep"))], unknown);
   assert.equal(e.upstreamShared, null);
+});
+
+const entry = (scanner, id, severity, shared) => ({ scanner, id, severity, upstreamShared: shared, title: `${scanner} ${severity}: ${id}`, body: `body of ${id}` });
+
+test("apply: files every entry, a failing create does not stop the rest, and the failure is returned", () => {
+  const seen = [];
+  const run = (args) => {
+    const body = readFileSync(args[args.indexOf("--description-file") + 1], "utf8");
+    seen.push({ title: args[args.indexOf("--title") + 1], body });
+    if (body === "body of a") throw new Error("duplicate");
+  };
+  const failed = apply([entry("semgrep", "a", "high", false), entry("codeql", "b", "critical", true)], { assigneeId: "squad", project: "proj", run });
+  assert.deepEqual(seen.map((x) => x.title), ["Security weekly: semgrep high: a", "[upstream-private] Security weekly: codeql critical: b"]);
+  assert.deepEqual(seen.map((x) => x.body), ["body of a", "body of b"]);
+  assert.deepEqual(failed.map((e) => e.id), ["a"]);
+});
+
+test("issueArgs: created ready, so the squad picks it up without a triage step", () => {
+  const a = issueArgs(entry("semgrep", "a", "high", false), { assigneeId: "s", project: "p", descriptionFile: "d.md" });
+  assert.equal(a[a.indexOf("--property") + 1], "Readiness=ready");
+});
+
+test("CLI end to end: summary.json -> triage.json -> `multica issue create` per new high/critical, upstream-private titled", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sw-e2e-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  const log = join(dir, "calls.log");
+  writeFileSync(join(bin, "multica"), `#!/bin/sh\nprintf '%s\\n' "$*" >> ${log}\n`);
+  chmodSync(join(bin, "multica"), 0o755);
+  const summary = { summaries: [
+    { ...sum("semgrep", [{ id: "r|ours.go|h#1", severity: "high" }], prev("semgrep")) },
+    { ...sum("gitleaks", [{ id: "abc123:x.ts:k:1", severity: "high" }], prev("gitleaks")) },
+  ] };
+  writeFileSync(join(dir, "summary.json"), JSON.stringify(summary));
+  const here = new URL("./triage.mjs", import.meta.url).pathname;
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
+  const planned = spawnSync("node", [here, join(dir, "summary.json"), join(dir, "triage.json")], { cwd: dir, env, encoding: "utf8" });
+  assert.equal(planned.status, 0, planned.stderr);
+  const filed = spawnSync("node", [here, "--apply", join(dir, "triage.json"), "squad-1", "proj-1"], { cwd: dir, env, encoding: "utf8" });
+  assert.equal(filed.status, 0, filed.stderr);
+  const calls = readFileSync(log, "utf8").trim().split("\n");
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every((c) => c.startsWith("issue create ") && c.includes("--assignee-id squad-1") && c.includes("--project proj-1")));
 });
