@@ -49,14 +49,15 @@ RETURNING *;
 
 -- name: IssueParentChainLoops :one
 -- Whether the parent chain above an issue loops. The walk is iterative with no
--- depth limit; the CYCLE clause stops it at a repeated issue, so a corrupt chain
--- terminates. A looping chain never reaches an issue without a parent.
+-- depth limit. UNION (not UNION ALL) drops a row the walk has already produced,
+-- so a repeated issue ends the walk through a hash lookup: linear in depth, no
+-- per-row path array. A looping chain never reaches an issue without a parent.
 WITH RECURSIVE walk AS (
     SELECT i.id, i.parent_issue_id FROM issue i WHERE i.id = $1
-    UNION ALL
+    UNION
     SELECT i.id, i.parent_issue_id
     FROM walk w JOIN issue i ON i.id = w.parent_issue_id
-) CYCLE id SET is_cycle USING path
+)
 SELECT NOT EXISTS (SELECT 1 FROM walk WHERE walk.parent_issue_id IS NULL)::boolean AS loops;
 
 -- name: InsertDMProgressDataIncident :exec

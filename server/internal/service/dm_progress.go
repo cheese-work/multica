@@ -158,6 +158,11 @@ func InheritProgressFollows(ctx context.Context, q *db.Queries, parent, child db
 	if err != nil {
 		return err
 	}
+	// Nothing to inherit: skip the ancestor walk, which runs under the workspace
+	// issue-counter lock on child creation (SEC-1).
+	if len(parentFollows) == 0 {
+		return nil
+	}
 	// A looping parent chain has no top: the child reports to itself.
 	chain, err := q.IssueParentChainLoops(ctx, child.ID)
 	if err != nil {
