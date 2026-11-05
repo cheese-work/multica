@@ -16,6 +16,9 @@ import (
 // docs/cheese-work/harness-isolation-knobs.md.
 const HarnessProfileManaged = "managed"
 
+// HarnessProfilePersonal is today's launch: the user's own config home.
+const HarnessProfilePersonal = "personal"
+
 // LaunchReceiptFile is written into the env root by every managed adapter.
 const LaunchReceiptFile = "launch-receipt.json"
 

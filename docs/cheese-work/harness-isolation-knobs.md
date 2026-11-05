@@ -38,6 +38,9 @@ The receipt holds names and paths only, never file contents or credentials.
 
 - Provider without a managed adapter: the daemon logs a warning and launches as `personal`.
 - Managed preparation fails: the task fails. It never falls back to `personal`, so a managed agent never silently runs with personal config.
+- Old daemon (no `runtime-profile-v1` capability): the server fails the task with a clear message instead of handing it over. Update the daemon or set the profile to `personal`.
+- Managed on a provider without a managed adapter, or an unknown profile value: the daemon fails the task. No silent `personal` launch.
+- Managed Claude with no saved MCP config gets an explicit empty set, so `--strict-mcp-config` is always set.
 
 ## Known loss: Hindsight hooks
 

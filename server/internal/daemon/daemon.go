@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -7927,7 +7928,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Prepare isolated execution environment.
 	// Repos are passed as metadata only — the agent checks them out on demand
 	// via `multica repo checkout <url>`.
-	harnessProfile := managedHarnessProfile(task.Agent, provider, taskLog)
+	harnessProfile, err := managedHarnessProfile(task.Agent, provider)
+	if err != nil {
+		return TaskResult{}, err
+	}
 	taskCtx := execenv.TaskContextForEnv{
 		IssueID:             task.IssueID,
 		TriggerCommentID:    task.TriggerCommentID,
@@ -11144,24 +11148,38 @@ func defaultArgsForProvider(cfg Config, provider string) []string {
 // agentMcpConfigForProfile merges the personal runtime MCP servers into the
 // agent config. A managed task gets only the servers assigned to the agent, so
 // an unassigned personal server and its credentials never reach it (CHE-3706).
+// Managed Claude with no saved config gets an explicit empty set: buildClaudeArgs
+// omits --strict-mcp-config for a null/absent config, which would let Claude
+// discover MCP servers from the user's own files.
 func agentMcpConfigForProfile(provider, profile string, agentConfig json.RawMessage) (json.RawMessage, error) {
 	if profile == execenv.HarnessProfileManaged {
+		if provider == "claude" {
+			if t := bytes.TrimSpace(agentConfig); len(t) == 0 || bytes.Equal(t, []byte("null")) {
+				return json.RawMessage(`{}`), nil
+			}
+		}
 		return agentConfig, nil
 	}
 	return mergeRuntimeAndAgentMcpConfig(provider, agentConfig)
 }
 
-// managedHarnessProfile returns the harness profile this task launches with.
-// Only providers with a managed adapter honor "managed"; others log and stay
-// personal (CHE-3706).
-func managedHarnessProfile(agentData *AgentData, provider string, logger *slog.Logger) string {
-	if agentData == nil || agentData.HarnessProfile != execenv.HarnessProfileManaged {
-		return ""
+// managedHarnessProfile returns the harness profile this task launches with:
+// "" for personal, "managed" for a provider with a managed adapter. Anything
+// else — managed on a provider without an adapter, or an unknown value — is an
+// error, never a silent personal launch (CHE-3706).
+func managedHarnessProfile(agentData *AgentData, provider string) (string, error) {
+	if agentData == nil {
+		return "", nil
 	}
-	switch provider {
-	case "claude", "codex":
-		return execenv.HarnessProfileManaged
+	switch agentData.HarnessProfile {
+	case "", execenv.HarnessProfilePersonal:
+		return "", nil
+	case execenv.HarnessProfileManaged:
+		switch provider {
+		case "claude", "codex":
+			return execenv.HarnessProfileManaged, nil
+		}
+		return "", fmt.Errorf("runtime profile %q is not implemented for provider %q; refusing to launch with the personal config", agentData.HarnessProfile, provider)
 	}
-	logger.Warn("harness profile managed is not implemented for provider; launching personal", "provider", provider)
-	return ""
+	return "", fmt.Errorf("unknown runtime profile %q; refusing to launch with the personal config", agentData.HarnessProfile)
 }

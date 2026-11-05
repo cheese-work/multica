@@ -2,31 +2,53 @@ package daemon
 
 import (
 	"encoding/json"
-	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
+
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 func TestManagedHarnessProfile(t *testing.T) {
-	log := slog.Default()
 	cases := []struct {
 		name     string
 		agent    *AgentData
 		provider string
 		want     string
+		wantErr  bool
 	}{
-		{"nil agent is personal", nil, "claude", ""},
-		{"empty is personal", &AgentData{}, "claude", ""},
-		{"personal stays personal", &AgentData{HarnessProfile: "personal"}, "codex", ""},
-		{"managed claude", &AgentData{HarnessProfile: "managed"}, "claude", "managed"},
-		{"managed codex", &AgentData{HarnessProfile: "managed"}, "codex", "managed"},
-		{"managed unsupported provider falls back", &AgentData{HarnessProfile: "managed"}, "gemini", ""},
+		{"nil agent is personal", nil, "claude", "", false},
+		{"empty is personal", &AgentData{}, "claude", "", false},
+		{"personal stays personal", &AgentData{HarnessProfile: "personal"}, "codex", "", false},
+		{"personal on any provider", &AgentData{HarnessProfile: "personal"}, "gemini", "", false},
+		{"managed claude", &AgentData{HarnessProfile: "managed"}, "claude", "managed", false},
+		{"managed codex", &AgentData{HarnessProfile: "managed"}, "codex", "managed", false},
+		{"managed unsupported provider fails closed", &AgentData{HarnessProfile: "managed"}, "gemini", "", true},
+		{"unknown profile fails closed", &AgentData{HarnessProfile: "locked-down"}, "claude", "", true},
 	}
 	for _, c := range cases {
-		if got := managedHarnessProfile(c.agent, c.provider, log); got != c.want {
-			t.Errorf("%s: got %q want %q", c.name, got, c.want)
+		got, err := managedHarnessProfile(c.agent, c.provider)
+		if got != c.want || (err != nil) != c.wantErr {
+			t.Errorf("%s: got %q err=%v, want %q wantErr=%v", c.name, got, err, c.want, c.wantErr)
 		}
+	}
+}
+
+// Managed Claude with a null or absent agent MCP config must still get an
+// explicit empty set, or buildClaudeArgs omits --strict-mcp-config and Claude
+// discovers the user's own MCP servers (CHE-3706 review). pkg/agent's
+// TestBuildClaudeArgsUsesStrictMCPForManagedConfig pins {} -> --strict-mcp-config.
+func TestAgentMcpConfigForProfile_ManagedClaudeNullIsExplicitEmpty(t *testing.T) {
+	for _, in := range []json.RawMessage{nil, json.RawMessage(``), json.RawMessage(`null`), json.RawMessage(" null \n")} {
+		got, err := agentMcpConfigForProfile("claude", "managed", in)
+		if err != nil || string(got) != `{}` {
+			t.Errorf("managed claude %q: got %q err=%v, want {}", in, got, err)
+		}
+	}
+	// Other providers and personal are unchanged.
+	if got, _ := agentMcpConfigForProfile("codex", "managed", nil); got != nil {
+		t.Errorf("managed codex null: got %q, want unchanged nil", got)
 	}
 }
 
@@ -71,5 +93,12 @@ func TestAgentMcpConfigForProfile(t *testing.T) {
 		if _, ok := s["assigned"]; ok != c.wantAssigned {
 			t.Errorf("%s: assigned server present=%v want %v (%v)", c.name, ok, c.wantAssigned, s)
 		}
+	}
+}
+
+// The server hands managed tasks only to daemons advertising this capability.
+func TestDaemonAdvertisesRuntimeProfileCapability(t *testing.T) {
+	if !slices.Contains(daemonCommonCapabilities(), protocol.DaemonCapabilityRuntimeProfileV1) {
+		t.Fatal("daemon must advertise runtime-profile-v1")
 	}
 }
