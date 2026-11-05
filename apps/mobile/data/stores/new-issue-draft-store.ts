@@ -21,6 +21,7 @@
  */
 import { useEffect, useRef } from "react";
 import { create } from "zustand";
+import { registerDraftCleanup } from "../draft-persistence";
 import type {
   IssuePriority,
   IssueStatus,
@@ -62,6 +63,9 @@ export const useNewIssueDraftStore = create<NewIssueDraftState>((set) => ({
   setProject: (next) => set({ project: next }),
   reset: () => set({ ...INITIAL }),
 }));
+
+// Logout: the next account must not inherit this account's picker choices.
+registerDraftCleanup(() => useNewIssueDraftStore.getState().reset());
 
 /**
  * Clears the new-issue draft store whenever the active workspace id

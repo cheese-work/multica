@@ -192,6 +192,16 @@ interface NewIssueValues {
   project: Project | null;
 }
 
+const CLEAN_NEW_ISSUE: NewIssueValues = {
+  title: "",
+  description: "",
+  status: "todo",
+  priority: "none",
+  assignee: null,
+  dueDate: null,
+  project: null,
+};
+
 export function useNewIssueDraft() {
   const [title, setTitle] = useState("");
   const description = useMentionInput();
@@ -217,6 +227,9 @@ export function useNewIssueDraft() {
   const { restored, settle } = usePersistedForm<NewIssueValues>({
     key: NEW_ISSUE_KEY,
     enabled: true,
+    // No saved draft in this scope: start clean, never keep picker values
+    // left in the singleton by another session.
+    seed: CLEAN_NEW_ISSUE,
     apply: (v) => {
       setTitle(v.title);
       setDescriptionText(v.description);
@@ -268,6 +281,13 @@ export function useNewProjectDraft() {
   const { restored, settle } = usePersistedForm<NewProjectValues>({
     key: NEW_PROJECT_KEY,
     enabled: true,
+    seed: {
+      title: "",
+      icon: "",
+      description: "",
+      status: "planned",
+      priority: "none",
+    },
     apply: (v) => {
       setTitle(v.title);
       setIcon(v.icon);

@@ -15,7 +15,12 @@ vi.mock("@react-native-async-storage/async-storage", () => ({
   },
 }));
 
-import { useFormDraftsStore } from "./form-drafts-store";
+import { clearAllDrafts } from "../draft-persistence";
+import {
+  NEW_ISSUE_KEY,
+  readFormDraft,
+  useFormDraftsStore,
+} from "./form-drafts-store";
 import {
   useIssueEditDraft,
   useNewIssueDraft,
@@ -24,6 +29,7 @@ import {
 } from "./use-form-drafts";
 import { useNewIssueDraftStore } from "./new-issue-draft-store";
 import { useNewProjectDraftStore } from "./new-project-draft-store";
+import type { Project } from "@multica/core/types";
 
 const SCOPE = "u:ws1";
 const issueRecord = { title: "Server title", description: "server body" };
@@ -167,5 +173,35 @@ describe("form screens keep unsent input across unmount and remount", () => {
     await hydrate();
     expect(screen.result.current.restored).toBe(true);
     expect(screen.result.current.title).toBe("Saved");
+  });
+
+  const projectOfA = {
+    id: "pA",
+    title: "A private project",
+    icon: "🔒",
+  } as unknown as Project;
+
+  it("logout clears the picker stores, so the next account never sees them", async () => {
+    // Account A picks a private project and a status, closes the form, logs out.
+    useNewIssueDraftStore.getState().setProject(projectOfA);
+    useNewIssueDraftStore.getState().setStatus("in_progress");
+    useNewProjectDraftStore.getState().setPriority("urgent");
+    await clearAllDrafts();
+
+    expect(useNewIssueDraftStore.getState().project).toBeNull();
+    expect(useNewIssueDraftStore.getState().status).toBe("todo");
+    expect(useNewProjectDraftStore.getState().priority).toBe("none");
+  });
+
+  it("a new-issue form with no saved draft opens with clean pickers", async () => {
+    // Stale picker value from another session; nothing saved in this scope.
+    useNewIssueDraftStore.getState().setProject(projectOfA);
+    useNewIssueDraftStore.getState().setPriority("high");
+    const screen = renderHook(() => useNewIssueDraft());
+    expect(screen.result.current.restored).toBe(true);
+    expect(useNewIssueDraftStore.getState().project).toBeNull();
+    expect(useNewIssueDraftStore.getState().priority).toBe("none");
+    await settle();
+    expect(readFormDraft(NEW_ISSUE_KEY)).toBeUndefined();
   });
 });

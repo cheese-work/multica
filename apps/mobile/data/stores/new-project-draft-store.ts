@@ -20,6 +20,7 @@
  */
 import { useEffect, useRef } from "react";
 import { create } from "zustand";
+import { registerDraftCleanup } from "../draft-persistence";
 import type { ProjectPriority, ProjectStatus } from "@multica/core/types";
 
 interface NewProjectDraftState {
@@ -41,6 +42,9 @@ export const useNewProjectDraftStore = create<NewProjectDraftState>((set) => ({
   setPriority: (next) => set({ priority: next }),
   reset: () => set({ ...INITIAL }),
 }));
+
+// Logout: the next account must not inherit this account's picker choices.
+registerDraftCleanup(() => useNewProjectDraftStore.getState().reset());
 
 /**
  * Clears the new-project draft store whenever the active workspace id
