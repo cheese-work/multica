@@ -196,6 +196,8 @@ const settled = (data: unknown) =>
  * The detail fixture carries `isPending`/`isError` explicitly because the body
  * branches on them, not on `data` alone.
  */
+const refetch = vi.fn();
+
 function mockQueries(detail: DetailState, fixtures: Fixtures = {}): void {
   mockUseQuery.mockImplementation((options: unknown) => {
     const { queryKey, enabled, select } = options as {
@@ -212,6 +214,7 @@ function mockQueries(detail: DetailState, fixtures: Fixtures = {}): void {
         isPending: detail.phase === "pending",
         isError: detail.phase === "error",
         error: detail.phase === "error" ? detail.error : undefined,
+        refetch,
       } as unknown as ReturnType<typeof useQuery>;
     }
     if (key === "issue" && id === PARENT_ISSUE.id) return settled(PARENT_ISSUE);
@@ -607,6 +610,19 @@ describe("IssueHoverCard", () => {
 
     await screen.findByText("This issue has data the app cannot read.");
     expect(screen.queryByText("Couldn't load this issue.")).not.toBeInTheDocument();
+  });
+
+  it("offers a retry on a schema validation error", async () => {
+    mockQueries({
+      phase: "error",
+      error: new SchemaValidationError("GET /api/issues/:id", ["metadata.decision_park"]),
+    });
+    const user = userEvent.setup();
+    renderCard("MUL-7");
+    await user.hover(screen.getByText("MUL-3405"));
+
+    await user.click(await screen.findByRole("button", { name: "Retry" }));
+    expect(refetch).toHaveBeenCalledTimes(1);
   });
 
   it("replaces the skeleton with the not-found state when the query settles with no issue", async () => {

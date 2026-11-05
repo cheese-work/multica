@@ -44,6 +44,9 @@ import { useCommentSelectStore } from "@/data/comment-select-store";
 import { classifyIssueLoadError } from "@/lib/issue-load-error";
 import { useT } from "@/lib/i18n";
 
+// The route id is a UUID when opened from lists; the identifier is unknown after a failed load.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export default function IssueDetail() {
   // `highlight` + `h` come from inbox deep-link (apps/mobile/app/(app)/
   // [workspace]/(tabs)/inbox.tsx). `highlight` is the target comment id;
@@ -199,8 +202,8 @@ export default function IssueDetail() {
         </View>
       ) : detail.error || !issue ? (
         <View className="flex-1 items-center justify-center px-6 gap-3">
-          {loadErrorKind === "data" && (
-            <Text className="text-sm font-medium text-center">{issue?.identifier ?? id}</Text>
+          {loadErrorKind === "data" && !UUID_RE.test(id) && (
+            <Text className="text-sm font-medium text-center">{id}</Text>
           )}
           <Text className="text-sm text-destructive text-center">
             {loadErrorKind === "data"

@@ -84,7 +84,7 @@ import type { Attachment, Issue, IssueProperty, IssueStatus, IssueStatusCategory
 import { contentReferencesAttachment } from "@multica/core/types";
 import { isBuiltInIssueStatus } from "@multica/core/issue-statuses";
 import { isSchemaValidationError } from "@multica/core/api/schema";
-import { isNotFoundError } from "@multica/core/issues/canonical-id";
+import { isIssueUuid, isNotFoundError } from "@multica/core/issues/canonical-id";
 import { commentLandingTarget, isDeletedComment } from "@multica/core/issues/comment-deletion";
 import { formatDateOnly, isPastDateOnly } from "@multica/core/issues/date";
 import { useUpdateIssue } from "@multica/core/issues/mutations";
@@ -3506,6 +3506,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         trailing={trailingActions}
         onRetry={issueError && !isNotFoundError(issueError) ? () => void refetchIssue() : undefined}
         dataError={isSchemaValidationError(issueError)}
+        issueKey={isIssueUuid(id) ? undefined : id}
       />
     );
   }
