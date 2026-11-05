@@ -169,7 +169,10 @@ class ReceiptRefreshAfterCi(unittest.TestCase):
         self.assertEqual(classify["needs"], "find")
         self.assertEqual(classify["strategy"]["matrix"]["include"], "${{ fromJSON(needs.find.outputs.targets) }}")
         self.assertFalse(classify["strategy"]["fail-fast"])
-        self.assertEqual(classify["concurrency"], {"group": "mechanical-tier-${{ matrix.head }}", "cancel-in-progress": False})
+        # CHE-3990: no concurrency at all. GitHub keeps one running and one pending job per group, so a third event on
+        # a head cancels the pending job even with cancel-in-progress: false, and a cancelled run is the latest red check.
+        self.assertNotIn("concurrency", classify)
+        self.assertNotIn("concurrency", wf)
         self.assertEqual(classify["env"]["HEAD_SHA"], "${{ matrix.head }}")
         self.assertEqual(classify["env"]["PR_NUMBER"], "${{ matrix.pr }}")
 
