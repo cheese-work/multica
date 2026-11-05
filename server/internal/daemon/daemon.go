@@ -6532,6 +6532,11 @@ func (d *Daemon) sendTerminalTaskReport(ctx context.Context, report terminalTask
 func gcMetaForTask(task Task) (execenv.GCMeta, bool) {
 	meta := execenv.GCMeta{WorkspaceID: task.WorkspaceID, TaskID: task.ID}
 	switch {
+	case task.BackgroundJob != "":
+		// No issue, chat or autopilot parent: the task row alone says when
+		// the dir is done, as for quick-create.
+		meta.Kind = execenv.GCKindBackground
+		meta.TaskID = task.ID
 	case task.ChatSessionID != "":
 		meta.Kind = execenv.GCKindChat
 		meta.ChatSessionID = task.ChatSessionID
@@ -7960,6 +7965,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		AutopilotSource:                  task.AutopilotSource,
 		AutopilotTriggerPayload:          strings.TrimSpace(string(task.AutopilotTriggerPayload)),
 		QuickCreatePrompt:                task.QuickCreatePrompt,
+		BackgroundJob:                    task.BackgroundJob,
 		IsSquadLeader:                    taskIsSquadLeader(task),
 		RequestingUserName:               task.RequestingUserName,
 		RequestingUserProfileDescription: task.RequestingUserProfileDescription,
@@ -8948,7 +8954,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		Cwd:                        env.WorkDir,
 		Model:                      model,
 		ThreadName:                 deriveTaskThreadName(task),
-		Timeout:                    d.cfg.AgentTimeout,
+		Timeout:                    taskRunTimeout(d.cfg.AgentTimeout, task),
 		SemanticInactivityTimeout:  d.cfg.CodexSemanticInactivityTimeout,
 		FirstTurnNoProgressTimeout: d.cfg.CodexFirstTurnNoProgressTimeout,
 		IdleWatchdogTimeout:        idleWatchdogTimeout,

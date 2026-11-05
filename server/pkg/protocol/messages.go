@@ -25,6 +25,13 @@ const (
 	// from immutable historical source context.
 	DaemonCapabilitySourceContextQuickCreateV1 = "source_context_quick_create_v1"
 
+	// DaemonCapabilityBackgroundOutputOnlyV1 advertises that the daemon can run an
+	// output_only background task (CHE-4100): a prompt built from the task's
+	// bounded context input, returning text in the task output. The server hands
+	// such a task only to a runtime that lists this; a daemon without it never
+	// sees one (chat_compaction tasks are unaffected).
+	DaemonCapabilityBackgroundOutputOnlyV1 = "background_output_only_v1"
+
 	// DaemonCapabilityRPCV1 advertises that the daemon can carry
 	// request/response RPCs over the WebSocket control connection (MUL-4257).
 	// Gated so only daemons+servers that both support it route claim over WS;

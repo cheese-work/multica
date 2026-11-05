@@ -196,6 +196,7 @@ type TaskContextForEnv struct {
 	AutopilotSource         string
 	AutopilotTriggerPayload string
 	QuickCreatePrompt       string // non-empty for quick-create tasks
+	BackgroundJob           string // non-empty for output_only background tasks (CHE-4100): read-only brief
 	IsSquadLeader           bool   // true when THIS TASK runs the agent in the squad-leader role (may exit silently on no_action); derived from the claim's is_leader_task / squad_id, never sniffed from instructions text (MUL-5811)
 	// WorkspaceContext is the workspace-level system prompt (workspace.context
 	// in the DB). Rendered into the brief as `## Workspace Context` when
@@ -1095,6 +1096,7 @@ const (
 	GCKindChat         GCMetaKind = "chat"
 	GCKindAutopilotRun GCMetaKind = "autopilot_run"
 	GCKindQuickCreate  GCMetaKind = "quick_create"
+	GCKindBackground   GCMetaKind = "background"
 )
 
 // GCMeta is persisted to .gc_meta.json inside the env root so the GC loop

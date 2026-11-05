@@ -521,7 +521,7 @@ func (d *Daemon) shouldCleanTaskDirForKind(ctx context.Context, taskDir string, 
 		return d.gcDecisionChat(ctx, taskDir, meta)
 	case execenv.GCKindAutopilotRun:
 		return d.gcDecisionAutopilotRun(ctx, taskDir, meta)
-	case execenv.GCKindQuickCreate:
+	case execenv.GCKindQuickCreate, execenv.GCKindBackground:
 		return d.gcDecisionQuickCreate(ctx, taskDir, meta)
 	default:
 		// Unknown kind: fall back to mtime-based orphan cleanup so a future
@@ -842,7 +842,7 @@ func (d *Daemon) gcDecisionQuickCreate(ctx context.Context, taskDir string, meta
 	if isAgentTaskTerminal(status.Status) {
 		d.logger.Info("gc: eligible for cleanup",
 			"dir", filepath.Base(taskDir),
-			"kind", "quick_create",
+			"kind", string(meta.Kind),
 			"task", meta.TaskID,
 			"status", status.Status,
 		)
