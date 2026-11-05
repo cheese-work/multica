@@ -101,6 +101,10 @@ func (h *Handler) CreateChatWakeup(w http.ResponseWriter, r *http.Request) {
 	watch := service.ChatWakeupInput{}
 	switch {
 	case req.Issue != "":
+		if req.AfterSeconds != 0 || req.At != "" {
+			writeError(w, http.StatusBadRequest, "an issue watch takes expires_in_seconds, not after_seconds or at")
+			return
+		}
 		issue, ok := h.chatWatchIssue(w, r, req.Issue)
 		if !ok {
 			return
