@@ -33,6 +33,7 @@ type TimelineEntry struct {
 
 	// Comment-only fields
 	Content     *string `json:"content,omitempty"`
+	Withheld    bool    `json:"withheld,omitempty"`
 	ParentID    *string `json:"parent_id,omitempty"`
 	UpdatedAt   *string `json:"updated_at,omitempty"`
 	Revision    int64   `json:"revision,omitempty"`
@@ -303,9 +304,14 @@ func (h *Handler) commentsToEntries(r *http.Request, comments []db.Comment) []Ti
 	viewer := decisionViewer(r)
 	decisions := h.decisionCommentFields(r.Context(), comments[0].WorkspaceID, comments, viewer)
 
+	readFilter := h.newReadFilter(r)
 	out := make([]TimelineEntry, len(comments))
 	for i, c := range comments {
 		content := c.Content
+		withheld := readFilter.withholds(commentWithheld(c))
+		if withheld {
+			content = h.commentStub(r.Context(), c)
+		}
 		commentType := c.Type
 		updatedAt := timestampToString(c.UpdatedAt)
 		cid := uuidToString(c.ID)
@@ -315,6 +321,7 @@ func (h *Handler) commentsToEntries(r *http.Request, comments []db.Comment) []Ti
 			ActorType:      c.AuthorType,
 			ActorID:        uuidToString(c.AuthorID),
 			Content:        &content,
+			Withheld:       withheld,
 			CommentType:    &commentType,
 			QuickActionID:  uuidToPtr(c.QuickActionID),
 			ParentID:       uuidToPtr(c.ParentID),

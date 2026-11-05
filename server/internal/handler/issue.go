@@ -39,15 +39,16 @@ import (
 
 // IssueResponse is the JSON response for an issue.
 type IssueResponse struct {
-	TriggerOutcomes []CommentTriggerOutcome `json:"trigger_outcomes,omitempty"`
-	ID              string                  `json:"id"`
-	WorkspaceID     string                  `json:"workspace_id"`
-	Number          int32                   `json:"number"`
-	Identifier      string                  `json:"identifier"`
-	WebURL          string                  `json:"web_url,omitempty"`
-	Title           string                  `json:"title"`
-	Description     *string                 `json:"description"`
-	Status          string                  `json:"status"`
+	TriggerOutcomes     []CommentTriggerOutcome `json:"trigger_outcomes,omitempty"`
+	ID                  string                  `json:"id"`
+	WorkspaceID         string                  `json:"workspace_id"`
+	Number              int32                   `json:"number"`
+	Identifier          string                  `json:"identifier"`
+	WebURL              string                  `json:"web_url,omitempty"`
+	Title               string                  `json:"title"`
+	Description         *string                 `json:"description"`
+	DescriptionWithheld bool                    `json:"description_withheld,omitempty"`
+	Status              string                  `json:"status"`
 	// StatusCategory encodes lifecycle using the legacy seven-value wire enum. It is
 	// omitted when an endpoint cannot resolve a custom status, so consumers must
 	// fall back to their catalog rather than treat a blank as "no category".
@@ -2701,6 +2702,10 @@ func (h *Handler) GetIssue(w http.ResponseWriter, r *http.Request) {
 	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
 	resp := issueToResponse(issue, prefix)
 	resp.WebURL = h.workspaceWebURL(r.Context(), issue.WorkspaceID, func(ws db.Workspace) string { return weblink.Issue(ws.Slug, resp.Identifier) })
+	if h.newReadFilter(r).withholds(issue.DescriptionExternalRead) {
+		stub := h.descriptionStub(issue, resp)
+		resp.Description, resp.DescriptionWithheld = &stub, true
+	}
 	h.fillStatusCategory(r.Context(), issue.WorkspaceID, &resp)
 	detailLabels := h.labelsByIssue(r.Context(), issue.WorkspaceID, []pgtype.UUID{issue.ID})[uuidToString(issue.ID)]
 	if detailLabels == nil {
@@ -2767,9 +2772,14 @@ func (h *Handler) ListChildIssues(w http.ResponseWriter, r *http.Request) {
 	// built-in statuses still cost no query, and a list full of custom ones
 	// costs one catalog read rather than one per row.
 	statusResolver := issuestatus.NewResolver(issue.WorkspaceID)
+	readFilter := h.newReadFilter(r)
 	resp := make([]IssueResponse, len(children))
 	for i, child := range children {
 		resp[i] = issueToResponse(child, prefix)
+		if readFilter.withholds(child.DescriptionExternalRead) {
+			stub := h.descriptionStub(child, resp[i])
+			resp[i].Description, resp[i].DescriptionWithheld = &stub, true
+		}
 		resp[i].StatusCategory = issuestatus.WireCategory(child.Status, statusResolver.Category(r.Context(), h.Queries, child.Status))
 		labels := labelsMap[resp[i].ID]
 		if labels == nil {
@@ -2853,9 +2863,14 @@ func (h *Handler) ListChildrenByParents(w http.ResponseWriter, r *http.Request) 
 	// built-in statuses still cost no query, and a list full of custom ones
 	// costs one catalog read rather than one per row.
 	statusResolver := issuestatus.NewResolver(wsUUID)
+	readFilter := h.newReadFilter(r)
 	resp := make([]IssueResponse, len(children))
 	for i, child := range children {
 		resp[i] = issueToResponse(child, prefix)
+		if readFilter.withholds(child.DescriptionExternalRead) {
+			stub := h.descriptionStub(child, resp[i])
+			resp[i].Description, resp[i].DescriptionWithheld = &stub, true
+		}
 		resp[i].StatusCategory = issuestatus.WireCategory(child.Status, statusResolver.Category(r.Context(), h.Queries, child.Status))
 		labels := labelsMap[resp[i].ID]
 		if labels == nil {
