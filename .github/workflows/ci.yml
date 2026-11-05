@@ -2,8 +2,9 @@ name: CI
 
 on:
   # A PR stacked on an agent/** base runs CI once it is non-draft; a draft opts in with the `run-ci` label.
-  # Other edits, labels and ready events on main-based PRs start nothing (CHE-3989). One run condition gates
-  # every job and the concurrency group: keep the copies in step (scripts/ci-stacked-pr.test.mjs).
+  # A PR with CI results (main base, non-draft or run-ci) runs on every type below: a skipped run would replace
+  # its earlier results on the same head and hide a failure (CHE-3989). One run condition gates every job and
+  # the concurrency group: keep the copies in step (scripts/ci-stacked-pr.test.mjs).
   pull_request:
     branches: [main, "agent/**"]
     types: [opened, synchronize, reopened, ready_for_review, labeled, edited]
@@ -14,7 +15,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ (github.event_name != 'pull_request' || (((github.event.action == 'opened' || github.event.action == 'synchronize' || github.event.action == 'reopened') && (github.base_ref == 'main' || (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci')))) || (github.base_ref != 'main' && github.event.action == 'ready_for_review') || (github.base_ref != 'main' && github.event.action == 'labeled' && github.event.label.name == 'run-ci') || (github.event.action == 'edited' && github.event.changes.base != null && (github.base_ref == 'main' || (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci')))))) && (github.event.pull_request.number || github.ref) || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ (github.event_name != 'pull_request' || (github.base_ref == 'main' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci'))) && (github.event.pull_request.number || github.ref) || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -48,7 +49,7 @@ jobs:
           retention-days: 14
 
   migration-prefix-check:
-    if: ${{ github.event_name == 'pull_request' && (github.event_name != 'pull_request' || (((github.event.action == 'opened' || github.event.action == 'synchronize' || github.event.action == 'reopened') && (github.base_ref == 'main' || (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci')))) || (github.base_ref != 'main' && github.event.action == 'ready_for_review') || (github.base_ref != 'main' && github.event.action == 'labeled' && github.event.label.name == 'run-ci') || (github.event.action == 'edited' && github.event.changes.base != null && (github.base_ref == 'main' || (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci')))))) }}
+    if: ${{ github.event_name == 'pull_request' && (github.event_name != 'pull_request' || (github.base_ref == 'main' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci'))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 1
     permissions:
@@ -72,7 +73,7 @@ jobs:
   # release or install-script URLs in packages, apps and server. Not gated by
   # ci-scope: a TS-only change can reintroduce the URL.
   upstream-update-source-guard:
-    if: ${{ github.event_name != 'pull_request' || (((github.event.action == 'opened' || github.event.action == 'synchronize' || github.event.action == 'reopened') && (github.base_ref == 'main' || (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci')))) || (github.base_ref != 'main' && github.event.action == 'ready_for_review') || (github.base_ref != 'main' && github.event.action == 'labeled' && github.event.label.name == 'run-ci') || (github.event.action == 'edited' && github.event.changes.base != null && (github.base_ref == 'main' || (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci'))))) }}
+    if: ${{ github.event_name != 'pull_request' || (github.base_ref == 'main' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     permissions:
@@ -135,7 +136,7 @@ jobs:
   # a `go test -race` run. The outputs are consumed by the focused jobs
   # below.
   changes:
-    if: ${{ github.event_name != 'pull_request' || (((github.event.action == 'opened' || github.event.action == 'synchronize' || github.event.action == 'reopened') && (github.base_ref == 'main' || (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci')))) || (github.base_ref != 'main' && github.event.action == 'ready_for_review') || (github.base_ref != 'main' && github.event.action == 'labeled' && github.event.label.name == 'run-ci') || (github.event.action == 'edited' && github.event.changes.base != null && (github.base_ref == 'main' || (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci'))))) }}
+    if: ${{ github.event_name != 'pull_request' || (github.base_ref == 'main' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci')) }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read

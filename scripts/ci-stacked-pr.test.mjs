@@ -4,7 +4,7 @@ import test from "node:test";
 
 // CHE-3989 (CHE-3987 S2): CI runs for PRs stacked on an `agent/**` base, but a draft stacked PR runs
 // nothing until it is non-draft or carries the `run-ci` label. Static checks plus an evaluation of the
-// one run-condition expression that gates every job. Main-based PR behavior is unchanged.
+// one run-condition expression that gates every job. Opened, synchronize and reopened on a main base run as before.
 const path = new URL("../.github/workflows/ci.yml", import.meta.url);
 const ci = existsSync(path) ? readFileSync(path, "utf8") : "";
 const on = ci.slice(ci.indexOf("\non:\n"), ci.indexOf("\nconcurrency:"));
@@ -63,18 +63,39 @@ test("the run-ci label opts a draft stacked PR in, on the label event and on lat
   assert.equal(evaluate({ action: "synchronize", base: "agent/x/che-1", draft: true, labels: ["run-ci"] }), true);
 });
 
-test("a retarget to main runs CI again; other edits and labels do not", () => {
-  assert.equal(evaluate({ action: "edited", base: "main", draft: true, changes: { base: { ref: { from: "agent/x/che-1" } } } }), true);
-  assert.equal(evaluate({ action: "edited", base: "main", changes: { title: { from: "old" } } }), false);
-  assert.equal(evaluate({ action: "edited", base: "main", changes: { body: { from: "old" } } }), false);
-  assert.equal(evaluate({ action: "labeled", base: "main", labels: ["run-ci"], label: "run-ci" }), false);
-  assert.equal(evaluate({ action: "labeled", base: "agent/x/che-1", labels: ["bug"], label: "bug" }), false);
+// A skipped run replaces the earlier check results of the same names on the same head, so a skipped
+// event could hide a failed `backend`, `frontend` or `backend-tests`. A PR that has CI results (main base,
+// non-draft, or run-ci) therefore runs CI on every trigger type; only a draft stacked PR without the label
+// skips, and a draft cannot merge.
+const TYPES = ["opened", "synchronize", "reopened", "ready_for_review", "labeled", "edited"];
+const CI_STATES = [
+  { name: "main draft", base: "main", draft: true },
+  { name: "main non-draft", base: "main", draft: false },
+  { name: "stacked non-draft", base: "agent/x/che-1", draft: false },
+  { name: "stacked draft with run-ci", base: "agent/x/che-1", draft: true, labels: ["run-ci"] },
+];
+
+test("a PR that has CI results never gets a skipped run, whatever the event", () => {
+  for (const state of CI_STATES) {
+    for (const action of TYPES) {
+      assert.equal(evaluate({ ...state, action, label: "bug", changes: { title: { from: "old" } } }), true, `${state.name} ${action}`);
+    }
+  }
 });
 
-test("main-based PR behavior is unchanged", () => {
+test("a retarget to main runs CI again", () => {
+  assert.equal(evaluate({ action: "edited", base: "main", draft: true, changes: { base: { ref: { from: "agent/x/che-1" } } } }), true);
+});
+
+test("a draft stacked PR stays skipped on edits and labels, also after a retarget to another agent/** base", () => {
+  const draft = { base: "agent/x/che-2", draft: true, labels: ["bug"] };
+  assert.equal(evaluate({ ...draft, action: "edited", changes: { base: { ref: { from: "agent/x/che-1" } } } }), false);
+  assert.equal(evaluate({ ...draft, action: "labeled", label: "bug" }), false);
+});
+
+test("main-based opened, synchronize and reopened run as before", () => {
   for (const draft of [true, false]) {
     for (const action of ["opened", "synchronize", "reopened"]) assert.equal(evaluate({ action, draft }), true, `${action} draft=${draft}`);
-    assert.equal(evaluate({ action: "ready_for_review", draft }), false, "ready_for_review on main stays quiet");
   }
 });
 
