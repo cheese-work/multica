@@ -6517,13 +6517,24 @@ inherited AS (
         SELECT unnest(s.taint_ids) FROM agent_task_queue s
         WHERE s.chat_session_id IN (SELECT id FROM ancestry WHERE id IS NOT NULL)
           AND s.chat_session_id IS DISTINCT FROM (SELECT t1.chat_session_id FROM agent_task_queue t1 WHERE t1.id = $1)
+        UNION ALL
+        SELECT 'unrecoverable-ancestry'
+        WHERE EXISTS (
+            SELECT 1 FROM chat_session c
+            JOIN ancestry a ON a.id = c.id
+            JOIN LATERAL unnest(ARRAY[c.forked_from_session_id, c.continued_from_session_id]) AS p(id) ON p.id IS NOT NULL
+            WHERE NOT c.taint_verified
+              AND NOT EXISTS (SELECT 1 FROM chat_session m WHERE m.id = p.id)
+        )
     ) u
 ),
 repaired AS (
     UPDATE chat_session c
-    SET taint_ids = (SELECT ids FROM inherited)
+    SET taint_ids = (SELECT ids FROM inherited),
+        taint_verified = true
     WHERE c.id = (SELECT t2.chat_session_id FROM agent_task_queue t2 WHERE t2.id = $1)
-      AND c.taint_ids IS DISTINCT FROM (SELECT ids FROM inherited)
+      AND (c.taint_ids IS DISTINCT FROM (SELECT ids FROM inherited)
+           OR (NOT c.taint_verified AND (c.forked_from_session_id IS NOT NULL OR c.continued_from_session_id IS NOT NULL)))
 )
 UPDATE agent_task_queue t
 SET taint_ids = COALESCE((
@@ -6549,6 +6560,13 @@ RETURNING t.taint_ids
 //     fork made before any turn ran, which passes its ancestors on.
 //   - this chat's own tasks.
 //
+// A chat in the ancestry that is not taint_verified and links to a chat that no
+// longer exists has copied history nobody can account for (a predecessor fork
+// whose source was deleted before the first claim). That adds the synthetic
+// taint 'unrecoverable-ancestry', so the task is restricted and so is every
+// delegate. taint_verified defaults to false, so a row inserted by a binary that
+// predates the column stays unverified. Writing the result back verifies the
+// chat, which also stores the synthetic taint for any later fork of it.
 // UNION drops repeated ids, so a cyclic chain ends. "inherited" (everything
 // except the chat's own tasks) is written back to the chat, so a later delete
 // of the source cannot lose what the walk found.

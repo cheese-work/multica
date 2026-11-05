@@ -397,3 +397,90 @@ func TestChatClaimSeedTaintRepairsRowsWrittenByThePredecessor(t *testing.T) {
 		})
 	}
 }
+
+const unrecoverableTaint = "unrecoverable-ancestry"
+
+// CHE-3702 round 16: a fork written by the predecessor binary has empty
+// taint_ids and no verified mark. If its source is deleted before the first
+// claim after re-upgrade, nothing can say what the copy held, so the claim
+// fails closed: restricted, with a synthetic taint that a delegate inherits.
+func TestChatClaimSeedFailsClosedWhenPredecessorForkLostItsSource(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		link     string
+		seedKind string
+	}{
+		{name: "fork", link: "forked_from_session_id"},
+		{name: "continuation", link: "continued_from_session_id", seedKind: "continuation_summary"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			agentID, runtimeID, _ := createRuntimeGuardAgent(t, ctx)
+			rootID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "predecessor source"})
+			dbfx.Task(t, agentID, testutil.Cols{
+				"status": "completed", "runtime_id": runtimeID, "chat_session_id": rootID,
+				"session_id": "sess-tainted", "taint_ids": []string{"t1"},
+				"started_at": testutil.Raw("now() - interval '1 minute'"), "completed_at": testutil.Raw("now()"),
+			})
+			dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": rootID, "role": "assistant", "content": "attacker-influenced reply"})
+			leafID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "predecessor fork", tc.link: rootID})
+			seed := testutil.Cols{"chat_session_id": leafID, "role": "assistant", "content": "attacker-influenced reply"}
+			if tc.seedKind != "" {
+				seed["message_kind"] = tc.seedKind
+			}
+			dbfx.Insert(t, "chat_message", seed)
+			dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": leafID, "role": "user", "content": "a later, clean message"})
+
+			// The source is deleted while the predecessor binary is still serving.
+			dbfx.Exec(t, `UPDATE agent_task_queue SET chat_session_id = NULL WHERE chat_session_id = $1`, rootID)
+			dbfx.Exec(t, `DELETE FROM chat_session WHERE id = $1`, rootID)
+
+			dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "chat_session_id": leafID, "priority": 1000})
+			dm := claimChatTaintTask(t, runtimeID)
+			if dm.Profile != "restricted" || !reflect.DeepEqual(dm.TaintIDs, []string{unrecoverableTaint}) {
+				t.Fatalf("claim = %+v, want restricted with taint [%s]", dm, unrecoverableTaint)
+			}
+
+			delegateRuntime := createClaimReclaimRuntime(t, ctx, "Unrecoverable taint delegate runtime")
+			delegateAgent, issueID := createClaimReclaimAgentAndIssue(t, ctx, delegateRuntime, "Unrecoverable taint delegate agent")
+			insertGrant(t, issueID, testWorkspaceID, []string{"docker"}, "1 minute", "1 hour", false)
+			taskID := createDispatchedClaimFixtureTask(t, ctx, delegateAgent, delegateRuntime, issueID, "120 seconds", false)
+			dbfx.Exec(t, `UPDATE agent_task_queue SET delegated_from_task_id = $2 WHERE id = $1`, taskID, dm.ID)
+			claimRestrictedWithTaint(t, delegateRuntime, []string{unrecoverableTaint})
+		})
+	}
+}
+
+// A fork of an unlinked chat is complete, a fork of an unverified linked chat
+// is left for the claim to resolve, and the claim verifies what it repaired.
+func TestChatForkTaintVerifiedFollowsTheSource(t *testing.T) {
+	ctx := context.Background()
+	agentID, runtimeID, _ := createRuntimeGuardAgent(t, ctx)
+	verified := func(id string) bool {
+		var v bool
+		dbfx.QueryRow(t, `SELECT taint_verified FROM chat_session WHERE id = $1`, id).Scan(&v)
+		return v
+	}
+	rootID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "verified root"})
+	dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": rootID, "role": "user", "content": "hi"})
+	forkID := forkDM(t, rootID, "verified-1", "")
+	if !verified(forkID) {
+		t.Fatal("fork of an unlinked chat must be verified")
+	}
+
+	predecessorID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "predecessor fork", "forked_from_session_id": rootID})
+	dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": predecessorID, "role": "user", "content": "hi"})
+	if verified(predecessorID) {
+		t.Fatal("a row written without the column must stay unverified")
+	}
+	childID := forkDM(t, predecessorID, "verified-2", "")
+	if verified(childID) {
+		t.Fatal("fork of an unverified linked chat must stay unverified")
+	}
+
+	dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "chat_session_id": predecessorID, "priority": 1000})
+	claimChatTaintTask(t, runtimeID)
+	if !verified(predecessorID) {
+		t.Fatal("a repaired chat must be verified")
+	}
+}

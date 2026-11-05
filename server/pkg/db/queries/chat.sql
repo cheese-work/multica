@@ -17,7 +17,9 @@ WHERE id = $1;
 
 -- name: SetChatContinuationSource :one
 -- taint_ids: the source's taint at this moment (CHE-3702), kept on this chat so
--- deleting the source cannot erase it.
+-- deleting the source cannot erase it. taint_verified follows the source: a
+-- copy of an unlinked or verified chat is complete, a copy of an unverified
+-- linked chat is left for the claim to resolve.
 UPDATE chat_session
 SET continued_from_session_id = $2,
     taint_ids = COALESCE((
@@ -27,6 +29,10 @@ SET continued_from_session_id = $2,
             SELECT unnest(q.taint_ids) FROM agent_task_queue q WHERE q.chat_session_id = $2
         ) u
     ), '{}'),
+    taint_verified = COALESCE((
+        SELECT s.taint_verified OR (s.forked_from_session_id IS NULL AND s.continued_from_session_id IS NULL)
+        FROM chat_session s WHERE s.id = $2
+    ), false),
     last_read_at = sqlc.arg('summary_created_at')::timestamptz - interval '1 microsecond',
     pinned_at = sqlc.narg('pinned_at')
 WHERE chat_session.id = $1
@@ -118,6 +124,10 @@ SET forked_from_session_id = sqlc.arg(forked_from_session_id),
             SELECT unnest(q.taint_ids) FROM agent_task_queue q WHERE q.chat_session_id = sqlc.arg(forked_from_session_id)
         ) u
     ), '{}'),
+    taint_verified = COALESCE((
+        SELECT s.taint_verified OR (s.forked_from_session_id IS NULL AND s.continued_from_session_id IS NULL)
+        FROM chat_session s WHERE s.id = sqlc.arg(forked_from_session_id)
+    ), false),
     fork_idempotency_key = sqlc.arg(fork_idempotency_key),
     fork_last_message_id = sqlc.arg(fork_last_message_id),
     fork_source_message_id = sqlc.arg(fork_source_message_id),

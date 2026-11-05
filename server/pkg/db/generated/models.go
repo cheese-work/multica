@@ -656,6 +656,7 @@ type ChatSession struct {
 	PresetName             pgtype.Text        `json:"preset_name"`
 	DecisionTopicID        pgtype.UUID        `json:"decision_topic_id"`
 	TaintIds               []string           `json:"taint_ids"`
+	TaintVerified          bool               `json:"taint_verified"`
 }
 
 type ChatTaskSupplement struct {
