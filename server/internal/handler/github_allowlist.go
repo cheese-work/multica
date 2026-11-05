@@ -53,6 +53,9 @@ func (h *Handler) ConfigureGitHubAllowlist(raw string) error {
 	}
 	h.githubAllowlist = list
 	h.PRRefresh.SetInstallationFilter(h.githubRefreshAllowed)
+	if list.ids == nil {
+		slog.Warn(githubAllowedAccountIDsEnv + " is unset; every GitHub App installation is allowed")
+	}
 	// The refresh pipeline also selects rows by address; keep it off denied
 	// bindings that share an installation with an allowed one.
 	h.PRRefresh.SetWorkspaceFilter(func(ctx context.Context, q *db.Queries, installationID int64) (map[pgtype.UUID]bool, error) {

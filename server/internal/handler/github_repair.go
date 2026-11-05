@@ -161,6 +161,16 @@ func isOwedClosedReplay(ctx context.Context) bool {
 // delivery. The fork check stays in that path; only the base repository must
 // match the row.
 func (h *Handler) replayClosedPullRequest(ctx context.Context, installationID int64, owner, name string, number int32) error {
+	// The refresh selected its rows before the fetch; a binding revoked or
+	// denied since then leaves nothing to replay into (CHE-3414). Skip before
+	// any GitHub call or owed marker.
+	allowed, err := h.allowedGitHubInstallations(ctx, installationID)
+	if err != nil {
+		return fmt.Errorf("github: list allowed bindings: %w", err)
+	}
+	if len(allowed) == 0 {
+		return nil
+	}
 	fetch := h.fetchPullRequestJSON
 	if fetch == nil {
 		fetch = h.PRRefresh.FetchPullRequest
