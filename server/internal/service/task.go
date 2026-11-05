@@ -67,6 +67,9 @@ type TaskService struct {
 	// FeatureFlags is the server-side toggle router. Nil is valid and returns
 	// each call site's default.
 	FeatureFlags *featureflag.Service
+	// BackgroundWriters maps a task purpose (bgagents.Purpose) to the writer
+	// that completion dispatches to. Nil: no background output is written.
+	BackgroundWriters map[string]BackgroundWriter
 	// EmptyClaim caches "this runtime has no queued task" so the daemon
 	// poll path can skip a Postgres scan on the steady-state empty case.
 	// Optional — a nil cache disables the fast path and every claim
@@ -5407,6 +5410,9 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 		// finished obligation looking pending forever.
 		if err := SettleTerminalTaskState(ctx, qtx, t); err != nil {
 			return err
+		}
+		if err := s.writeBackgroundOutput(ctx, qtx, t, result); err != nil {
+			return fmt.Errorf("write background task output: %w", err)
 		}
 
 		if t.ChatSessionID.Valid {

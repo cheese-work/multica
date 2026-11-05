@@ -15,6 +15,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/bgagents"
 	"github.com/multica-ai/multica/server/internal/logger"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -121,7 +122,7 @@ func (h *Handler) ResetBackgroundAgents(w http.ResponseWriter, r *http.Request) 
 func (h *Handler) saveBackgroundAgents(w http.ResponseWriter, r *http.Request, member db.Member, next map[string]any) {
 	id := uuidToString(member.WorkspaceID)
 	actorType, _ := h.resolveActor(r, requestUserID(r), id)
-	changes, err := h.writeBackgroundAgents(r.Context(), member, isGovernedFieldMachineActor(r, actorType), next)
+	changes, cancelled, err := h.writeBackgroundAgents(r.Context(), member, isGovernedFieldMachineActor(r, actorType), next)
 	if errors.Is(err, errBackgroundAgentsHumanOnly) {
 		writeBackgroundAgentsRefused(w)
 		return
@@ -131,6 +132,7 @@ func (h *Handler) saveBackgroundAgents(w http.ResponseWriter, r *http.Request, m
 		writeError(w, http.StatusInternalServerError, "failed to update background agents")
 		return
 	}
+	h.TaskService.BroadcastCancelledTasks(r.Context(), id, cancelled)
 	for _, c := range changes {
 		h.publish(protocol.EventWorkspaceBackgroundAgentChanged, id, "member", requestUserID(r), map[string]any{
 			"job": c.Job, "scope": string(bgagents.WorkspaceScope), "from": c.From, "to": c.To,
@@ -142,16 +144,16 @@ func (h *Handler) saveBackgroundAgents(w http.ResponseWriter, r *http.Request, m
 // writeBackgroundAgents writes the value and one activity row per changed job
 // in one transaction under the workspace row lock. The machine check runs
 // against the locked stored value, so a refused write stores nothing.
-func (h *Handler) writeBackgroundAgents(ctx context.Context, member db.Member, machine bool, next map[string]any) ([]bgChange, error) {
+func (h *Handler) writeBackgroundAgents(ctx context.Context, member db.Member, machine bool, next map[string]any) ([]bgChange, []db.AgentTaskQueue, error) {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer tx.Rollback(ctx)
 	q := h.Queries.WithTx(tx)
 	storedJSON, err := q.LockWorkspaceSettings(ctx, member.WorkspaceID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var stored map[string]any
 	_ = json.Unmarshal(storedJSON, &stored) // stored settings that are not an object start over as one
@@ -166,10 +168,10 @@ func (h *Handler) writeBackgroundAgents(ctx context.Context, member db.Member, m
 		}
 	}
 	if len(changes) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if machine {
-		return nil, errBackgroundAgentsHumanOnly
+		return nil, nil, errBackgroundAgentsHumanOnly
 	}
 	if len(next) == 0 {
 		delete(stored, backgroundAgentsKey)
@@ -178,24 +180,35 @@ func (h *Handler) writeBackgroundAgents(ctx context.Context, member db.Member, m
 	}
 	settings, err := json.Marshal(stored)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if _, err := q.UpdateWorkspace(ctx, db.UpdateWorkspaceParams{ID: member.WorkspaceID, Settings: settings}); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for _, c := range changes {
 		details, err := json.Marshal(map[string]any{"job": c.Job, "scope": bgagents.WorkspaceScope, "from": c.From, "to": c.To})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if _, err := q.CreateActivity(ctx, db.CreateActivityParams{
 			ID: dbid.NewV7(), WorkspaceID: member.WorkspaceID, ActorType: strToText("member"), ActorID: member.UserID,
 			Action: backgroundAgentsActivity, Details: details,
 		}); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	return changes, tx.Commit(ctx)
+	// A changed job drops the queued work its old workspace chain produced; a
+	// user-sourced task keeps running. Same transaction, so a failed cancel
+	// rolls the setting back too.
+	var cancelled []db.AgentTaskQueue
+	for _, c := range changes {
+		rows, err := service.CancelBackgroundTasksForJob(ctx, q, member.WorkspaceID, c.Job)
+		if err != nil {
+			return nil, nil, err
+		}
+		cancelled = append(cancelled, rows...)
+	}
+	return changes, cancelled, tx.Commit(ctx)
 }
 
 func sortedUnionKeys(a, b map[string]any) []string {
