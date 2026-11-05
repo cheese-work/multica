@@ -7,8 +7,7 @@ import (
 	"testing"
 )
 
-// chat_attention_mark has no workspace_id and no FK to the workspace, so only an
-// explicit statement removes it; the item table cascades.
+// The attention tables have no foreign keys (repo rule), so explicit statements remove both.
 func TestDeleteWorkspace_RemovesChatAttentionRows(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")

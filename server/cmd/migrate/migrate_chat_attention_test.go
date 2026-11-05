@@ -3,9 +3,63 @@ package main
 import (
 	"context"
 	"math/rand/v2"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 )
+
+// chatAttentionVersions lists the migrations this layer owns, in order.
+var chatAttentionVersions = []string{
+	"970_chat_attention",
+	"971_chat_session_chain_root_idx",
+	"972_chat_attention_item_one_open_later_idx",
+	"973_chat_attention_item_open_idx",
+}
+
+// versionsFor orders the versions as the runner would: up ascending, down descending.
+func versionsFor(direction string) []string {
+	v := append([]string(nil), chatAttentionVersions...)
+	if direction == "down" {
+		slices.Reverse(v)
+	}
+	return v
+}
+
+// Repo AGENTS.md "Database and Migration Rules": no foreign keys or cascades; every index is
+// CREATE [UNIQUE] INDEX CONCURRENTLY in its own single-statement file.
+func TestChatAttentionMigrationsFollowRepoRules(t *testing.T) {
+	t.Parallel()
+	files, err := filepath.Glob(filepath.Join("..", "..", "migrations", "97[0-3]_*chat*.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != len(chatAttentionVersions) {
+		t.Errorf("want %d chat attention up files, got %v", len(chatAttentionVersions), files)
+	}
+	comment := regexp.MustCompile(`(?m)--.*$`)
+	for _, f := range files {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sql := strings.ToUpper(comment.ReplaceAllString(string(raw), ""))
+		if strings.Contains(sql, "REFERENCES") || strings.Contains(sql, "CASCADE") {
+			t.Errorf("%s: foreign key or cascade", f)
+		}
+		if strings.Contains(sql, "INDEX") {
+			if !strings.Contains(sql, "INDEX CONCURRENTLY") {
+				t.Errorf("%s: index not built CONCURRENTLY", f)
+			}
+			if n := strings.Count(sql, ";"); n != 1 {
+				t.Errorf("%s: want one statement, got %d", f, n)
+			}
+		}
+	}
+}
 
 // CHE-4145: 970 back-fills chain_root_session_id from continued_from_session_id, defaults new
 // rows to their own id, and reverses cleanly.
@@ -37,7 +91,7 @@ func TestChatAttentionMigrationBackfillTriggerAndDown(t *testing.T) {
 		t.Helper()
 		if err := runMigrations(ctx, pool, runOptions{
 			Direction:             direction,
-			Files:                 realMigrationFiles(t, []string{"970_chat_attention"}, direction),
+			Files:                 realMigrationFiles(t, versionsFor(direction), direction),
 			SchemaMigrationsTable: schema + ".schema_migrations",
 			AdvisoryLockKey:       int64(rand.Uint64()&0x7fffffffffffffff) | 1,
 			Hooks:                 hooksForDirection(direction),

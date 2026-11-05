@@ -31,20 +31,19 @@ UPDATE chat_session s SET chain_root_session_id = w.root
 FROM walk w WHERE s.id = w.id AND s.chain_root_session_id IS NULL;
 UPDATE chat_session SET chain_root_session_id = id WHERE chain_root_session_id IS NULL;
 
-CREATE INDEX IF NOT EXISTS idx_chat_session_chain_root ON chat_session (chain_root_session_id);
-
 -- What Cheese owes in a DM that is not a decision_request. kind:
 --   ask    agent outcome `question`
 --   later  explicit "check later", at most one open per chain and user
 --   unseen explicit mark-unseen
--- Session and task ids are soft references (no FK): an item must outlive the
--- DM it was created in when the chain is continued.
+-- No foreign keys (repo rule): workspace, user, session and task ids are soft references.
+-- An item must outlive the DM it was created in when the chain is continued; workspace
+-- delete removes items and marks in application code. Indexes: 971-973, built CONCURRENTLY.
 CREATE TABLE IF NOT EXISTS chat_attention_item (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    workspace_id uuid NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+    workspace_id uuid NOT NULL,
     chain_root_session_id uuid NOT NULL,
     chat_session_id uuid NOT NULL,
-    user_id uuid NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+    user_id uuid NOT NULL,
     agent_id uuid,
     kind text NOT NULL CHECK (kind IN ('ask', 'later', 'unseen')),
     opened_at timestamptz NOT NULL DEFAULT clock_timestamp(),
@@ -62,18 +61,10 @@ CREATE TABLE IF NOT EXISTS chat_attention_item (
     CONSTRAINT chat_attention_item_resolved_iff CHECK ((resolved_by IS NOT NULL) = (resolved_at IS NOT NULL))
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS chat_attention_item_one_open_later_idx
-    ON chat_attention_item (chain_root_session_id, user_id)
-    WHERE kind = 'later' AND resolved_at IS NULL;
-
-CREATE INDEX IF NOT EXISTS chat_attention_item_open_idx
-    ON chat_attention_item (user_id, workspace_id)
-    WHERE resolved_at IS NULL;
-
 -- Presentation marks keyed by subject key (`item:<id>`, `decision:<id>@<rev>`,
 -- `turn:<task_id>`): no session column, so a mark means the same from every DM.
 CREATE TABLE IF NOT EXISTS chat_attention_mark (
-    user_id uuid NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+    user_id uuid NOT NULL,
     subject_key text NOT NULL,
     chain_root_session_id uuid NOT NULL,
     snoozed_until timestamptz,
