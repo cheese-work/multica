@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -68,7 +67,7 @@ func requireNoRecentRejection(ctx context.Context, queries *db.Queries, proposal
 // quote and never reaches a binding fact.
 func cleanProposalReason(reason string) string {
 	var out strings.Builder
-	for _, char := range bytes.Runes([]byte(reason)) {
+	for _, char := range reason {
 		if char == '\n' || (char != utf8.RuneError && !unicode.IsControl(char) && !unicode.Is(unicode.Cf, char)) {
 			out.WriteRune(char)
 		}
