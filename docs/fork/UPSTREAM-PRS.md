@@ -10,7 +10,7 @@ Ledger for open upstream PRs (CHE-3676 process v2). One row per PR. `scripts/ups
 | State | `open`, `merged upstream`, `closed unmerged`, `integrated into fork main` |
 | Watermark | Timestamp of the newest event seen (`-` before the first poll) |
 | Convergence PR | Fork PR that takes upstream's version after a merge (`owner/repo#number`, `-` until it exists); the watcher reports `integrated into fork main` when it merges |
-| Notes | Merge SHA, or close reason |
+| Notes | Merge SHA, or close reason (the agent writes it after reading the PR thread; the watcher never copies outside text into a row) |
 
 Add a row when Cheese approves a new upstream PR (scope A, once per PR).
 
