@@ -51,12 +51,18 @@ func lintResponse(row db.IssueWorkflow, findings []workflowlint.Finding) Workflo
 }
 
 // workflowLintEnv loads what the agent, runtime, usage and instruction rules
-// look at, once for every workflow in rows.
-func (h *Handler) workflowLintEnv(ctx context.Context, wsUUID pgtype.UUID, rows []db.IssueWorkflow) (workflowlint.Env, map[string][]string, error) {
+// look at, once for every workflow in rows. A nil catalog is loaded from the
+// pool; a save passes the catalog its own transaction already holds, because
+// loading it again through the pool would wait on the transaction's
+// uncommitted status seed and never return.
+func (h *Handler) workflowLintEnv(ctx context.Context, wsUUID pgtype.UUID, rows []db.IssueWorkflow, catalog map[string]issueworkflow.CatalogEntry) (workflowlint.Env, map[string][]string, error) {
 	env := workflowlint.Env{Live: true}
-	catalog, err := h.workflowStatusCatalog(ctx, h.Queries, wsUUID)
-	if err != nil {
-		return env, nil, err
+	if catalog == nil {
+		var err error
+		catalog, err = h.workflowStatusCatalog(ctx, h.Queries, wsUUID)
+		if err != nil {
+			return env, nil, err
+		}
 	}
 	env.Statuses = make(map[string]string, len(catalog))
 	for key, entry := range catalog {
@@ -149,7 +155,7 @@ func (h *Handler) lintWorkflows(w http.ResponseWriter, r *http.Request, wsUUID p
 	// Usage and cross-references are judged against every workflow of the
 	// workspace, whichever subset is linted.
 	defs := decodeRows(all)
-	env, byWorkflow, err := h.workflowLintEnv(r.Context(), wsUUID, all)
+	env, byWorkflow, err := h.workflowLintEnv(r.Context(), wsUUID, all, nil)
 	if err != nil {
 		slog.Warn("workflow lint env failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to lint workflows")
@@ -221,15 +227,11 @@ func (h *Handler) lintProposedSave(ctx context.Context, wsUUID pgtype.UUID, curr
 	if err != nil {
 		return nil, err
 	}
-	env, byWorkflow, err := h.workflowLintEnv(ctx, wsUUID, all)
+	env, byWorkflow, err := h.workflowLintEnv(ctx, wsUUID, all, catalog)
 	if err != nil {
 		return nil, err
 	}
 	env.Live = false
-	env.Statuses = make(map[string]string, len(catalog))
-	for key, entry := range catalog {
-		env.Statuses[key] = entry.Name
-	}
 	id := uuidToString(current.ID)
 	projectIDs := make([]string, len(projects))
 	for i, p := range projects {
