@@ -7842,6 +7842,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if task.WorkspaceID == "" {
 		return TaskResult{}, fmt.Errorf("refusing to spawn agent: task has no workspace_id (task_id=%s)", task.ID)
 	}
+	// CHE-4101: an output_only background task never enters the full pipeline.
+	if task.BackgroundJob != "" {
+		return d.runBackgroundTask(ctx, task, provider, taskLog)
+	}
 
 	prepareTimeout := d.effectiveTaskPrepareTimeout()
 	prepareCtx, cancelPrepare := context.WithTimeoutCause(ctx, prepareTimeout, errTaskPrepareTimeout)
