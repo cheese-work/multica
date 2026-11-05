@@ -1511,17 +1511,24 @@ func (h *Handler) QueryIssues(w http.ResponseWriter, r *http.Request) {
 	h.ListIssues(w, r)
 }
 
-// listIssueColumns is the ListIssues select list. narrow nulls the large
-// description/metadata/properties columns for the effective_due candidate read.
-func listIssueColumns(narrow bool) string {
-	description, metadata, properties := "i.description", "i.metadata", "i.properties"
-	if narrow {
-		description, metadata, properties = "NULL::text", "NULL::jsonb", "NULL::jsonb"
-	}
-	return `i.id, i.workspace_id, i.title, ` + description + `, i.status, i.priority,
+// listIssueColumns is the full ListIssues select list.
+const listIssueColumns = `i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
-       i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, ` + metadata + `, i.stage, ` + properties + `,
+       i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
        i.revision, i.duplicate_of_issue_id`
+
+var narrowColumns = strings.NewReplacer(
+	"i.description,", "NULL::text,",
+	"i.metadata,", "NULL::jsonb,",
+	"i.properties,", "NULL::jsonb,",
+)
+
+// narrowListIssueColumns nulls the large description/metadata/properties
+// columns in the select list of a ListIssues query (the part before FROM);
+// the WHERE clause is left alone.
+func narrowListIssueColumns(query string) string {
+	selectList, rest, _ := strings.Cut(query, "\nFROM issue i")
+	return narrowColumns.Replace(selectList) + "\nFROM issue i" + rest
 }
 
 func scanListIssueRows(rows pgx.Rows) ([]db.ListIssuesRow, error) {
@@ -1551,7 +1558,7 @@ func (h *Handler) fullListIssueRows(ctx context.Context, wsUUID pgtype.UUID, pag
 	for i, r := range page {
 		ids[i] = r.ID
 	}
-	rows, err := h.DB.Query(ctx, `SELECT `+listIssueColumns(false)+` FROM issue i WHERE i.workspace_id = $1 AND i.id = ANY($2)`, wsUUID, ids)
+	rows, err := h.DB.Query(ctx, `SELECT `+listIssueColumns+` FROM issue i WHERE i.workspace_id = $1 AND i.id = ANY($2)`, wsUUID, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -2057,11 +2064,17 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	offsetRef := addArg(fetchOffset)
 	limitRef := addArg(fetchLimit)
 
-	query := fmt.Sprintf(`SELECT %s
+	query := fmt.Sprintf(`SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
+       i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
+       i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
+	   i.revision, i.duplicate_of_issue_id
 FROM issue i
 WHERE %s
 ORDER BY %s
-LIMIT %s OFFSET %s`, listIssueColumns(sortByEffectiveDue), whereSql, orderBy, limitRef, offsetRef)
+LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
+	if sortByEffectiveDue {
+		query = narrowListIssueColumns(query)
+	}
 
 	rows, err := h.DB.Query(ctx, query, args...)
 	if err != nil {
