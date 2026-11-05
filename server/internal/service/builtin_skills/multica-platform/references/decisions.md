@@ -7,6 +7,8 @@ what counts as needing one is workspace policy, not platform behavior.
 
 ```bash
 multica decision request --issue <issue> --for <user-id> --class <class> --ask-file ./ask.json
+multica agent decision ask --class <class> --ask-file ./ask.json   # in a run: no issue, no --for
+multica decision ask --class <class> --ask-file ./ask.json          # same command
 multica decision list --issue <issue> --output json
 multica decision get <decision-id> --output json
 multica decision withdraw <decision-id> --reason "no longer needed"
@@ -16,10 +18,15 @@ multica issue human-in-charge <issue> --output json   # who to address; `human` 
 ```
 
 - `--ask-file` is UTF-8 JSON: `agent_did`, `decision`, `options`,
-  `recommendation`, `default_if_no_reply`, `source_issue_id`,
-  `source_comment_id`. An ask that approves a file adds `subject:
+  `recommendation`, `recommended_option` (the exact label of the recommended
+  option; required with two or more options, the server puts it first),
+  `default_if_no_reply`, `source_issue_id`, `source_comment_id`. An ask that approves a file adds `subject:
   "artifact_approval"` and `artifacts[]` (`attachment_id`, `label`, `sha256`);
   the server checks each hash.
+- `agent decision ask` is the one-step form for a running task: the task names
+  the issue, and the server picks the issue's requester (or a member creator)
+  and the DM lane. With no such person it refuses; use `decision request --for`.
+  The MCP tool `decision_ask` takes the same ask.
 - `--class` takes one of the classes `decision request --help` lists. Which
   class a situation belongs to is workspace policy.
 - `issue human-in-charge` needs a running task on the issue. It returns the

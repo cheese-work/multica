@@ -1,5 +1,6 @@
 "use client";
 
+import { isNotFoundError } from "@multica/core/issues/canonical-id";
 import { issueStatusCategory } from "@multica/core/issues";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useStatusLabel } from "./../utils/status-label";
@@ -141,7 +142,9 @@ function IssueHoverCardBody({
             {fallbackLabel}
           </span>
         )}
-        <p className="text-caption text-muted-foreground">{t(($) => $.detail.not_found)}</p>
+        <p className="text-caption text-muted-foreground">
+          {t(($) => (detail.isError && !isNotFoundError(detail.error) ? $.detail.card_load_failed : $.detail.not_found))}
+        </p>
       </div>
     );
   }
