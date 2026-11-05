@@ -192,3 +192,46 @@ func TestChatClaimForkAndContinuationSeedInheritTaintAndReachDelegate(t *testing
 		})
 	}
 }
+
+// CHE-3702 round 13: a taint-free middle link (a fork made before any task ran)
+// must not cut the chain. The seeded task takes the taint of the whole fork and
+// continuation ancestry, and a delegate of it claims restricted.
+func TestChatClaimSeedTaintWalksTaskLessAncestry(t *testing.T) {
+	for _, tc := range []struct{ name, lastLink string }{
+		{name: "fork of fork", lastLink: "forked_from_session_id"},
+		{name: "continuation of fork", lastLink: "continued_from_session_id"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			agentID, runtimeID, _ := createRuntimeGuardAgent(t, ctx)
+			rootID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "ancestry root"})
+			dbfx.Task(t, agentID, testutil.Cols{
+				"status": "completed", "runtime_id": runtimeID, "chat_session_id": rootID,
+				"session_id": "sess-tainted", "taint_ids": []string{"t1"},
+				"started_at": testutil.Raw("now() - interval '1 minute'"), "completed_at": testutil.Raw("now()"),
+			})
+			dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": rootID, "role": "assistant", "content": "attacker-influenced reply"})
+			middleID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "ancestry middle, no task", "forked_from_session_id": rootID})
+			dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": middleID, "role": "assistant", "content": "attacker-influenced reply"})
+			leafID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "ancestry leaf", tc.lastLink: middleID})
+			kind := testutil.Cols{"chat_session_id": leafID, "role": "assistant", "content": "attacker-influenced reply"}
+			if tc.lastLink == "continued_from_session_id" {
+				kind["message_kind"] = "continuation_summary"
+			}
+			dbfx.Insert(t, "chat_message", kind)
+			dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": leafID, "role": "user", "content": "a later, clean message"})
+			dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "chat_session_id": leafID, "priority": 1000})
+
+			dm := claimChatTaintTask(t, runtimeID)
+			wantChatTaint(t, dm, "")
+
+			delegateRuntime := createClaimReclaimRuntime(t, ctx, "Ancestry delegate runtime "+tc.name)
+			delegateAgent, issueID := createClaimReclaimAgentAndIssue(t, ctx, delegateRuntime, "Ancestry delegate agent "+tc.name)
+			insertGrant(t, issueID, testWorkspaceID, []string{"docker"}, "1 minute", "1 hour", false)
+			taskID := createDispatchedClaimFixtureTask(t, ctx, delegateAgent, delegateRuntime, issueID, "120 seconds", false)
+			dbfx.Exec(t, `UPDATE agent_task_queue SET delegated_from_task_id = $2 WHERE id = $1`, taskID, dm.ID)
+
+			claimRestrictedWithTaint(t, delegateRuntime, []string{"t1"})
+		})
+	}
+}
