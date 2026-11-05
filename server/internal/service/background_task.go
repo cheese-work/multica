@@ -52,6 +52,11 @@ type BackgroundTaskInput struct {
 	// when this run holds the last slot.
 	FallbackAgentID pgtype.UUID
 	Input           string
+	// TargetTaskID and Refresh describe the thing the output attaches to; a job
+	// that needs them (quick_actions: the chat turn and whether a user asked)
+	// sets them, and a failover copies them to the fallback run.
+	TargetTaskID pgtype.UUID
+	Refresh      bool
 }
 
 // BackgroundTaskContext is the JSON stored in the task context; the claim
@@ -67,6 +72,8 @@ type BackgroundTaskContext struct {
 	ClaimSeconds    int    `json:"claim_deadline_seconds"`
 	RunSeconds      int    `json:"run_deadline_seconds"`
 	Input           string `json:"input"`
+	TargetTaskID    string `json:"target_task_id,omitempty"`
+	Refresh         bool   `json:"refresh,omitempty"`
 }
 
 // EnqueueBackgroundTask queues an output-only job on the chain agent's runtime:
@@ -101,7 +108,10 @@ func (s *TaskService) EnqueueBackgroundTask(ctx context.Context, in BackgroundTa
 		Type: BackgroundTaskContextType, Job: string(in.Job), WorkspaceID: util.UUIDToString(in.WorkspaceID),
 		ChainSource: string(in.Source), Slot: string(in.Slot),
 		ClaimSeconds: int(spec.ClaimDeadline.Seconds()), RunSeconds: int(spec.RunDeadline.Seconds()),
-		Input: input,
+		Input: input, Refresh: in.Refresh,
+	}
+	if in.TargetTaskID.Valid {
+		payload.TargetTaskID = util.UUIDToString(in.TargetTaskID)
 	}
 	if in.FallbackAgentID.Valid {
 		payload.FallbackAgentID = util.UUIDToString(in.FallbackAgentID)
@@ -152,6 +162,20 @@ func (s *TaskService) writeBackgroundOutput(ctx context.Context, q *db.Queries, 
 		return nil
 	}
 	return err
+}
+
+// backgroundOutputText is the agent's text in a finished output-only task's
+// result: the TaskCompleteRequest JSON ({"output": "..."}), or a bare JSON string.
+func backgroundOutputText(result []byte) string {
+	var req struct {
+		Output string `json:"output"`
+	}
+	if json.Unmarshal(result, &req) == nil {
+		return req.Output
+	}
+	var text string
+	_ = json.Unmarshal(result, &text)
+	return text
 }
 
 // CancelBackgroundTasksForJob cancels, in the caller's transaction, the job's

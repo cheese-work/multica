@@ -3111,6 +3111,19 @@ func (q *Queries) CompleteAgentTask(ctx context.Context, arg CompleteAgentTaskPa
 	return i, err
 }
 
+const countActiveBackgroundTasksByPurpose = `-- name: CountActiveBackgroundTasksByPurpose :one
+SELECT count(*) FROM agent_task_queue
+WHERE purpose = $1 AND status IN ('queued', 'dispatched', 'running')
+`
+
+// Admission ceiling for a drop-not-queue background job (CHE-4108).
+func (q *Queries) CountActiveBackgroundTasksByPurpose(ctx context.Context, purpose pgtype.Text) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveBackgroundTasksByPurpose, purpose)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countChangesVerdictsForPR = `-- name: CountChangesVerdictsForPR :one
 SELECT count(*) FROM activity_log
 WHERE issue_id = $1 AND action = 'review_changes_requested'
@@ -6513,6 +6526,27 @@ func (q *Queries) GetWorkspaceAgentRunCounts(ctx context.Context, workspaceID pg
 		return nil, err
 	}
 	return items, nil
+}
+
+const hasActiveBackgroundTaskForSession = `-- name: HasActiveBackgroundTaskForSession :one
+SELECT EXISTS (
+    SELECT 1 FROM agent_task_queue
+    WHERE purpose = $1 AND source_chat_session_id = $2
+      AND status IN ('queued', 'dispatched', 'running')
+)
+`
+
+type HasActiveBackgroundTaskForSessionParams struct {
+	Purpose             pgtype.Text `json:"purpose"`
+	SourceChatSessionID pgtype.UUID `json:"source_chat_session_id"`
+}
+
+// One pass per DM: a job already queued or running for the session.
+func (q *Queries) HasActiveBackgroundTaskForSession(ctx context.Context, arg HasActiveBackgroundTaskForSessionParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasActiveBackgroundTaskForSession, arg.Purpose, arg.SourceChatSessionID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const hasActiveTaskForIssue = `-- name: HasActiveTaskForIssue :one

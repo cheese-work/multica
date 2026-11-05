@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -18,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/attribution"
+	"github.com/multica-ai/multica/server/internal/bgagents"
 	"github.com/multica-ai/multica/server/internal/chattitle"
 	"github.com/multica-ai/multica/server/internal/commentguard"
 	"github.com/multica-ai/multica/server/internal/dmnotify"
@@ -90,21 +90,8 @@ type TaskService struct {
 	// every Multica deployment that hasn't enabled Composio behaves
 	// exactly as before. Wired in router.go after composiointeg.NewService
 	// succeeds; the concrete type is *composio.Service.
-	Composio ComposioOverlayBuilder
-	// QuickActions generates chat follow-up suggestions through the
-	// server-internal LLM layer. Optional: nil (or a disabled client) turns the
-	// whole feature off — no pending marker, no pills — which is the expected
-	// state for a self-hosted deployment with no MULTICA_LLM_* configuration.
-	// Wired in router.go from the same *llm.Client that backs chat auto-titling.
-	QuickActions         ChatQuickActionsLLM
+	Composio             ComposioOverlayBuilder
 	ProviderFailureProbe ProviderFailureProbe
-	// quickActionsInFlight (chat session id -> struct{}{}) and
-	// quickActionsRunning admit suggestion passes: one per session, and a
-	// process-wide ceiling. Both zero values are usable, so a TaskService built
-	// without NewTaskService still gates correctly rather than deadlocking or
-	// shedding everything.
-	quickActionsInFlight sync.Map
-	quickActionsRunning  atomic.Int64
 
 	analyticsContextMu    sync.Mutex
 	analyticsContextCache map[string]analytics.TaskContext
@@ -377,7 +364,13 @@ func NewTaskService(q *db.Queries, tx TxStarter, hub *realtime.Hub, bus *events.
 	if len(wakeups) > 0 {
 		wakeup = wakeups[0]
 	}
-	return &TaskService{Queries: q, TxStarter: tx, Hub: hub, Bus: bus, Wakeup: wakeup}
+	s := &TaskService{Queries: q, TxStarter: tx, Hub: hub, Bus: bus, Wakeup: wakeup}
+	quickActions := bgagents.Purpose(bgagents.QuickActions)
+	s.BackgroundWriters = map[string]BackgroundWriter{quickActions: writeQuickActionsOutput}
+	s.BackgroundNoAgent = map[string]BackgroundNoAgentPath{quickActions: func(ctx context.Context, task db.AgentTaskQueue) {
+		s.resolveQuickActionsTask(ctx, task, false)
+	}}
+	return s
 }
 
 var trivialDoneMarkers = []string{
@@ -2347,12 +2340,11 @@ var ErrChatTaskAgentNoRuntime = errors.New("chat task: agent has no runtime")
 // or the latest turn is a no_response / failure with nothing to suggest from).
 var ErrChatQuickActionsNoTurn = errors.New("chat quick actions: no assistant turn to regenerate")
 
-// ErrChatQuickActionsUnavailable signals that the deployment has no LLM layer
-// configured (no MULTICA_LLM_API_KEY / MULTICA_LLM_BASE_URL), so suggestions
-// cannot be generated at all. Automatic generation degrades silently in that
-// case; an explicit refresh gets this error so the client can say why nothing
-// happened.
-var ErrChatQuickActionsUnavailable = errors.New("chat quick actions: llm layer not configured")
+// ErrChatQuickActionsUnavailable signals that the workspace has no quick_actions
+// agent configured, so suggestions cannot be generated at all. Automatic
+// generation degrades silently in that case; an explicit refresh gets this error
+// so the client can say why nothing happened.
+var ErrChatQuickActionsUnavailable = errors.New("chat quick actions: no quick_actions agent configured")
 
 // ErrChatQuickActionsStale signals the turn the client asked to refresh is no
 // longer the session's latest assistant turn (a newer reply landed since the
@@ -2722,9 +2714,8 @@ func (s *TaskService) FinalizeChatTaskEnqueue(ctx context.Context, task db.Agent
 
 // RegenerateChatQuickActions runs a fresh suggestion pass for the session's
 // latest assistant turn, letting the user refresh the quick-action pills
-// without sending a new message (MUL-5149). Generation happens server-side
-// through the same LLM path as the automatic pass, so this enqueues no agent
-// task and resumes no provider session — it just validates the target. It
+// without sending a new message (MUL-5149). It only validates the target; the
+// pass itself is the same bg:quick_actions task as the automatic one. It
 // returns the target assistant message id (so the client can anchor its pending
 // placeholder there) and the turn's task row, which the caller hands to
 // GenerateChatQuickActionsAsync.
@@ -2732,7 +2723,7 @@ func (s *TaskService) FinalizeChatTaskEnqueue(ctx context.Context, task db.Agent
 // This is an explicit user action, so it ignores the per-device quick-actions
 // toggle (which only gates automatic generation at send time).
 func (s *TaskService) RegenerateChatQuickActions(ctx context.Context, chatSession db.ChatSession, expectedMessageID pgtype.UUID) (targetMessageID pgtype.UUID, targetTask db.AgentTaskQueue, err error) {
-	if s.QuickActions == nil || !s.QuickActions.Enabled() {
+	if len(s.quickActionsResolution(ctx, chatSession).Chain) == 0 {
 		return pgtype.UUID{}, db.AgentTaskQueue{}, ErrChatQuickActionsUnavailable
 	}
 
@@ -2768,12 +2759,15 @@ func (s *TaskService) RegenerateChatQuickActions(ctx context.Context, chatSessio
 	if busy {
 		return pgtype.UUID{}, db.AgentTaskQueue{}, ErrChatQuickActionsBusy
 	}
-	// A refresh no longer creates a task row, so the check above cannot see a
-	// generation already running for this session — a second refresh (or one
-	// racing the automatic pass) would otherwise be accepted, spend a second
-	// upstream call, and race the first to write the same row. Refuse it here
-	// so the client rolls its optimistic marker back instead.
-	if s.chatQuickActionsInFlight(chatSession.ID) {
+	// The chat-task check above does not see a bg:quick_actions pass: a second
+	// refresh (or one racing the automatic pass) would be accepted and then
+	// dropped by the per-session gate. Refuse it here so the client rolls its
+	// optimistic marker back instead.
+	running, err := s.chatQuickActionsInFlight(ctx, chatSession.ID)
+	if err != nil {
+		return pgtype.UUID{}, db.AgentTaskQueue{}, fmt.Errorf("check active quick actions task: %w", err)
+	}
+	if running {
 		return pgtype.UUID{}, db.AgentTaskQueue{}, ErrChatQuickActionsBusy
 	}
 
@@ -5572,6 +5566,14 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 	// parsing the agent's stdout for an identifier.
 	if qc, ok := s.parseQuickCreateContext(task); ok {
 		s.notifyQuickCreateCompleted(ctx, task, qc, result)
+	}
+
+	// A finished quick_actions task resolves the client's pending skeleton once
+	// its pills are committed. An output the sanitiser rejected wrote nothing,
+	// so an explicit refresh reports failure.
+	if task.Purpose.String == bgagents.Purpose(bgagents.QuickActions) {
+		written := len(cleanChatQuickActions(backgroundOutputText(result))) > 0
+		s.resolveQuickActionsTask(ctx, task, written)
 	}
 
 	// For chat tasks, broadcast chat:done AFTER commit. The single assistant

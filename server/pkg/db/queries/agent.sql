@@ -531,6 +531,19 @@ SELECT
 WHERE lock_task_owner_rows($1, NULL, $2)
 RETURNING *;
 
+-- name: CountActiveBackgroundTasksByPurpose :one
+-- Admission ceiling for a drop-not-queue background job (CHE-4108).
+SELECT count(*) FROM agent_task_queue
+WHERE purpose = $1 AND status IN ('queued', 'dispatched', 'running');
+
+-- name: HasActiveBackgroundTaskForSession :one
+-- One pass per DM: a job already queued or running for the session.
+SELECT EXISTS (
+    SELECT 1 FROM agent_task_queue
+    WHERE purpose = $1 AND source_chat_session_id = $2
+      AND status IN ('queued', 'dispatched', 'running')
+);
+
 -- name: CancelBackgroundTasksByPurposeAndSource :many
 -- A workspace-scope change to one job cancels that job's non-terminal tasks
 -- whose chain came from the workspace setting. User-sourced tasks are left alone.

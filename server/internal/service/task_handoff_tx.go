@@ -40,7 +40,8 @@ func (s *TaskService) TxScoped(q *db.Queries) *TaskService {
 		FeatureFlags:         s.FeatureFlags,
 		EmptyClaim:           s.EmptyClaim,
 		ReclaimCheck:         s.ReclaimCheck,
-		QuickActions:         s.QuickActions,
+		BackgroundWriters:    s.BackgroundWriters,
+		BackgroundNoAgent:    s.BackgroundNoAgent,
 		ProviderFailureProbe: s.ProviderFailureProbe,
 		committed:            s.afterCommit(),
 	}

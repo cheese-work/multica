@@ -536,10 +536,6 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	}
 	taskSvc.Analytics = analyticsClient
 	taskSvc.SourceContextStorage = store
-	// Chat follow-up suggestions run through the same internal LLM layer that
-	// backs auto-titling. A deployment with no MULTICA_LLM_* configuration gets
-	// a disabled client, which turns the feature off rather than failing.
-	taskSvc.QuickActions = llmClient
 	h := &Handler{
 		Queries:                      queries,
 		ReadSelector:                 dbreader.NewPrimaryOnly(queries),

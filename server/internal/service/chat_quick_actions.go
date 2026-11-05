@@ -197,12 +197,10 @@ func truncateChatQuickAction(value string, maxRunes int) string {
 // pass — and therefore whether the chat:done broadcast should tell clients to
 // expect a chat:quick_actions supplement.
 //
-// The decision is the server's own: suggestions are generated here now, so
-// nothing the daemon reports can grant or withhold them.
+// The decision is the server's own: nothing the daemon reports can grant or
+// withhold suggestions. With no quick_actions agent in the workspace chain there
+// is no task and no pills, so clients must not be told to wait.
 func (s *TaskService) chatQuickActionsEligible(ctx context.Context, task db.AgentTaskQueue, msg *db.ChatMessage) bool {
-	if s.QuickActions == nil || !s.QuickActions.Enabled() {
-		return false
-	}
 	if !task.ChatSessionID.Valid {
 		return false
 	}
@@ -224,7 +222,22 @@ func (s *TaskService) chatQuickActionsEligible(ctx context.Context, task db.Agen
 			return false
 		}
 	}
-	return true
+	cs, err := s.Queries.GetChatSession(ctx, task.ChatSessionID)
+	if err != nil {
+		return false
+	}
+	return len(s.quickActionsResolution(ctx, cs).Chain) > 0
+}
+
+// cleanChatQuickActions parses an agent's raw output into sanitised actions;
+// nil when nothing usable remains.
+func cleanChatQuickActions(raw string) []protocol.ChatQuickAction {
+	actions := parseChatQuickActionsOutput(raw)
+	for i := range actions {
+		actions[i].Label = redact.Prose(actions[i].Label)
+		actions[i].Prompt = redact.Prose(actions[i].Prompt)
+	}
+	return actions
 }
 
 // SupplementChatQuickActions attaches a suggestion pass's raw output to the
@@ -242,11 +255,7 @@ func (s *TaskService) SupplementChatQuickActions(ctx context.Context, task db.Ag
 	if !task.ChatSessionID.Valid {
 		return nil
 	}
-	actions := parseChatQuickActionsOutput(raw)
-	for i := range actions {
-		actions[i].Label = redact.Prose(actions[i].Label)
-		actions[i].Prompt = redact.Prose(actions[i].Prompt)
-	}
+	actions := cleanChatQuickActions(raw)
 
 	var msg db.ChatMessage
 	var err error

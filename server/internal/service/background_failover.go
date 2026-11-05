@@ -95,8 +95,9 @@ func (s *TaskService) failOverBackgroundTask(ctx context.Context, failed db.Agen
 			next := BackgroundTaskInput{
 				Job: job, WorkspaceID: workspaceID, AgentID: util.MustParseUUID(c.FallbackAgentID),
 				Source: bgagents.Source(c.ChainSource), Slot: bgagents.Fallback, Input: c.Input,
-				SourceChatSessionID: failed.SourceChatSessionID,
+				SourceChatSessionID: failed.SourceChatSessionID, Refresh: c.Refresh,
 			}
+			next.TargetTaskID, _ = util.ParseUUID(c.TargetTaskID)
 			next.MemberID, _ = util.ParseUUID(c.MemberID)
 			if _, err := s.EnqueueBackgroundTask(ctx, next); err == nil {
 				logBackgroundFailover(job, slot, failureReason)

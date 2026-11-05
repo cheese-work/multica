@@ -12,26 +12,16 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/bgagents"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
-// Budgets for one suggestion pass. The whole call is a nicety attached to a
-// reply the user already has, so it is bounded tightly: a slow pass is worse
-// than no pass, because the client holds a skeleton placeholder until it
-// resolves (QUICK_ACTIONS_PENDING_TIMEOUT_MS on the frontend is sized from
-// chatQuickActionsTimeout plus room for the write and the broadcast).
-const (
-	chatQuickActionsTimeout     = 8 * time.Second
-	chatQuickActionsTemperature = 0.3
-	// Output cap. GenerateJSON disables GPT-5.6 reasoning for this
-	// latency-sensitive utility call, so the whole budget is available for the
-	// JSON response. The headroom keeps verbose or multibyte actions from being
-	// cut off mid-object; sanitizeChatQuickActions still applies the product's
-	// visible size limits.
-	chatQuickActionsMaxCompletionTokens = 2048
-)
+// Quick actions are a bg:quick_actions background job (CHE-4013): a pass queues
+// one output-only task on the workspace's quick_actions chain, and the completion
+// writer attaches the sanitised result to the turn's assistant message. With no
+// agent configured there is no task and no pills.
 
 // Context window for the pass. Suggestions are about where the conversation
 // goes next, so only the tail matters — older turns cost tokens and latency
@@ -52,13 +42,10 @@ const (
 	chatQuickActionsPreviousMax = 6
 )
 
-// chatQuickActionsMaxConcurrent bounds how many suggestion passes may be in
-// flight process-wide. Generation is spawned from request handling with no
-// queue behind it, so without a ceiling a burst of chat traffic (or a client
-// looping the refresh endpoint) scales goroutines, upstream connections, and
-// model spend without limit. Passes over the ceiling are dropped, not queued:
-// a suggestion that arrives after the client's pending window has expired is
-// worth nothing, so shedding beats backlogging.
+// chatQuickActionsMaxConcurrent bounds how many quick_actions tasks may be
+// active at once, across the deployment. Passes over the ceiling are dropped, not
+// queued: a suggestion that arrives after the client's pending window has
+// expired is worth nothing, so shedding beats backlogging.
 const chatQuickActionsMaxConcurrent = 16
 
 // ChatQuickActionsOrigin says which caller asked for a pass. It decides how a
@@ -73,22 +60,6 @@ const (
 	ChatQuickActionsAutomatic ChatQuickActionsOrigin = iota
 	ChatQuickActionsRefresh
 )
-
-// ChatQuickActionsLLM is the seam TaskService uses to generate follow-up
-// suggestions, satisfied by *llm.Client. It is an interface (not the concrete
-// client) so tests can drive the whole path — prompt rendering, parsing,
-// persistence, broadcast — without an HTTP upstream, mirroring how
-// ComposioOverlayBuilder and TaskWakeupNotifier are injected.
-//
-// A nil ChatQuickActionsLLM, or one whose Enabled() is false, disables the
-// feature entirely: no pending marker is raised and no pills are generated.
-// That is the expected state for a self-hosted deployment with no
-// MULTICA_LLM_API_KEY / MULTICA_LLM_BASE_URL, and matches how chat auto-titling
-// already degrades.
-type ChatQuickActionsLLM interface {
-	Enabled() bool
-	GenerateJSON(ctx context.Context, model, systemPrompt, userPrompt string, temperature float64, maxCompletionTokens int64) (string, error)
-}
 
 // chatQuickActionsSystemPrompt is the entire instruction set for the pass. It
 // is a system prompt (stable across calls, so upstream prompt caching applies);
@@ -170,158 +141,182 @@ No prose, no markdown, no code fences.`
 // which point a "never emit CJK" clause forbids the user's own script.
 const chatQuickActionsLanguageRule = `LANGUAGE RULE: Write every "label" and "prompt" in the same language as the most recent [user] message above. Ignore the agent's reply, older messages, the system instructions, and ALREADY SUGGESTED when choosing the language. If there is no [user] message, use the latest [agent] message.`
 
-// GenerateChatQuickActionsForTask runs one suggestion pass for a completed chat
-// turn and attaches the result to that turn's assistant row, broadcasting
-// chat:quick_actions. It is the synchronous core shared by the automatic
-// post-completion pass and the explicit refresh, and is safe to call directly
-// from tests.
-//
-// origin decides failure reporting: a refresh surfaces failed=true so the user
-// who pressed the button learns it did not work, while the automatic pass
-// resolves the placeholder quietly. Reporting an automatic failure would pop a
-// "couldn't refresh" toast for an action the user never took.
-func (s *TaskService) GenerateChatQuickActionsForTask(ctx context.Context, task db.AgentTaskQueue, origin ChatQuickActionsOrigin) error {
-	if s.QuickActions == nil || !s.QuickActions.Enabled() {
-		return nil
-	}
-	if !task.ChatSessionID.Valid {
-		return nil
-	}
+// chatQuickActionsEnqueueTimeout bounds the gate queries and the enqueue; the
+// agent's run has its own deadline from the job catalog.
+const chatQuickActionsEnqueueTimeout = 10 * time.Second
 
-	// Resolve the target turn FIRST and anchor everything to it. The context
-	// window, the write, and the broadcast must all describe the same assistant
-	// message: this runs on a detached goroutine, so by the time it executes the
-	// session may already have moved on by a full turn.
-	target, err := s.Queries.GetChatMessageByTaskAssistant(ctx, task.ID)
+// quickActionsResolution is the quick_actions chain for a session's workspace.
+// Only the workspace chain exists so far; the per-user chain arrives with
+// CHE-4111. An empty Chain means no agent: no task and no pills.
+func (s *TaskService) quickActionsResolution(ctx context.Context, cs db.ChatSession) bgagents.Resolution {
+	ws, err := s.Queries.GetWorkspace(ctx, cs.WorkspaceID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			// No assistant row to attach to (no_response, channel empty-drop).
-			// No client is waiting either — the pending flag is only raised for
-			// a written ordinary message.
-			return nil
-		}
-		return fmt.Errorf("load chat quick actions target: %w", err)
+		return bgagents.Resolution{Source: bgagents.NoAgent}
+	}
+	var settings struct {
+		BackgroundAgents json.RawMessage `json:"background_agents"`
+	}
+	if json.Unmarshal(ws.Settings, &settings) != nil || len(settings.BackgroundAgents) == 0 {
+		return bgagents.Resolution{Source: bgagents.NoAgent}
+	}
+	cfg, err := bgagents.Parse(settings.BackgroundAgents, bgagents.WorkspaceScope)
+	if err != nil {
+		return bgagents.Resolution{Source: bgagents.NoAgent}
+	}
+	return bgagents.Resolve(bgagents.QuickActions, nil, cfg, func(_ bgagents.Source, agentID string) bool {
+		return s.backgroundAgentReachable(ctx, bgagents.QuickActions, cs.WorkspaceID, agentID)
+	})
+}
+
+// GenerateChatQuickActionsAsync queues one quick_actions task for a completed
+// chat turn. The reply is already delivered and the daemon does the work, so the
+// caller never waits on it. The pass is dropped (placeholder resolved, no task)
+// when the deployment is at the concurrency ceiling or the session already has a
+// pass active. origin decides failure reporting: an explicit refresh surfaces
+// failed=true so the user who pressed the button learns it did not work, while
+// the automatic pass resolves the placeholder quietly.
+func (s *TaskService) GenerateChatQuickActionsAsync(task db.AgentTaskQueue, origin ChatQuickActionsOrigin) {
+	ctx, cancel := context.WithTimeout(context.Background(), chatQuickActionsEnqueueTimeout)
+	defer cancel()
+	refresh := origin == ChatQuickActionsRefresh
+	queued, failed, err := s.enqueueChatQuickActions(ctx, task, refresh)
+	if err != nil {
+		slog.Warn("chat quick actions enqueue failed", "task_id", util.UUIDToString(task.ID), "error", err)
+	}
+	if !queued {
+		s.resolveChatQuickActionsPlaceholder(ctx, task, failed && refresh)
+	}
+}
+
+// enqueueChatQuickActions reports whether a task was queued. failed marks an
+// outcome the user would call a failure (no usable agent, an error) as opposed to
+// a deliberate drop.
+func (s *TaskService) enqueueChatQuickActions(ctx context.Context, task db.AgentTaskQueue, refresh bool) (queued, failed bool, err error) {
+	if !task.ChatSessionID.Valid {
+		return false, false, nil
+	}
+	// Resolve the target turn FIRST and anchor everything to it: by the time the
+	// agent answers, the session may already have moved on by a full turn.
+	target, err := s.Queries.GetChatMessageByTaskAssistant(ctx, task.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, false, nil // no assistant row (no_response, channel empty-drop): no client waits
+	}
+	if err != nil {
+		return false, true, fmt.Errorf("load chat quick actions target: %w", err)
 	}
 	if target.MessageKind != protocol.ChatMessageKindMessage || strings.TrimSpace(target.Content) == "" {
-		// Nothing to build suggestions on. Resolve the placeholder rather than
-		// leaving the client's skeleton to time out.
-		return s.SupplementChatQuickActions(ctx, task, "", false)
+		return false, false, nil
 	}
-
+	cs, err := s.Queries.GetChatSession(ctx, task.ChatSessionID)
+	if err != nil {
+		return false, true, fmt.Errorf("load chat session: %w", err)
+	}
+	purpose := pgtype.Text{String: bgagents.Purpose(bgagents.QuickActions), Valid: true}
+	active, err := s.Queries.HasActiveBackgroundTaskForSession(ctx, db.HasActiveBackgroundTaskForSessionParams{Purpose: purpose, SourceChatSessionID: cs.ID})
+	if err != nil {
+		return false, true, fmt.Errorf("check active quick actions task: %w", err)
+	}
+	if active {
+		slog.Info("chat quick actions pass skipped: one already active for this session", "chat_session_id", util.UUIDToString(cs.ID))
+		return false, false, nil
+	}
+	count, err := s.Queries.CountActiveBackgroundTasksByPurpose(ctx, purpose)
+	if err != nil {
+		return false, true, fmt.Errorf("count active quick actions tasks: %w", err)
+	}
+	if count >= chatQuickActionsMaxConcurrent {
+		slog.Warn("chat quick actions pass shed: concurrency ceiling reached", "ceiling", chatQuickActionsMaxConcurrent)
+		return false, false, nil
+	}
+	res := s.quickActionsResolution(ctx, cs)
+	if len(res.Chain) == 0 {
+		return false, true, nil
+	}
 	prompt, err := s.buildChatQuickActionsPrompt(ctx, target, chatInputOwnerID(task))
 	if err != nil {
-		return err
+		return false, true, err
 	}
-
-	raw, err := s.QuickActions.GenerateJSON(ctx,
-		"", // deployment default: MULTICA_LLM_DEFAULT_MODEL, else llm.FallbackModel
-		chatQuickActionsSystemPrompt,
-		prompt,
-		chatQuickActionsTemperature,
-		chatQuickActionsMaxCompletionTokens,
-	)
+	_, err = s.EnqueueBackgroundChain(ctx, BackgroundTaskInput{
+		Job: bgagents.QuickActions, WorkspaceID: cs.WorkspaceID, MemberID: cs.CreatorID, SourceChatSessionID: cs.ID,
+		Source: res.Source,
+		// The daemon builds an output-only prompt from the input alone, so the
+		// instructions travel with the conversation.
+		Input:        chatQuickActionsSystemPrompt + "\n\n" + prompt,
+		TargetTaskID: task.ID, Refresh: refresh,
+	}, res.Chain)
 	if err != nil {
-		// Resolve the placeholder either way; only an explicit refresh reports
-		// the failure to the user (see origin).
-		if suppErr := s.SupplementChatQuickActions(ctx, task, "", origin == ChatQuickActionsRefresh); suppErr != nil {
-			slog.Warn("chat quick actions failure broadcast failed",
-				"task_id", util.UUIDToString(task.ID),
-				"error", suppErr,
-			)
+		if errors.Is(err, ErrNoReachableBackgroundAgent) {
+			return false, true, nil
 		}
-		return fmt.Errorf("generate chat quick actions: %w", err)
+		return false, true, fmt.Errorf("enqueue quick actions task: %w", err)
 	}
-	return s.SupplementChatQuickActions(ctx, task, raw, false)
+	return true, false, nil
 }
 
-// GenerateChatQuickActionsAsync runs GenerateChatQuickActionsForTask on a
-// detached goroutine and returns immediately. Used on the completion path,
-// where the user's reply is already delivered and must never wait on this, and
-// on the refresh path, which answers 202 before the pass runs.
-//
-// Two admission gates before anything is spawned:
-//
-//   - One pass per chat session. Concurrent passes on one session would race to
-//     write the same row and burn duplicate spend for a single visible outcome
-//     — two refreshes of one turn, or a refresh overlapping the automatic pass.
-//   - A process-wide ceiling (chatQuickActionsMaxConcurrent).
-//
-// A rejected pass still resolves the client's placeholder, so a skeleton never
-// hangs waiting for work that was never started.
-//
-// The goroutine owns its own context: the caller's is typically an HTTP request
-// context that is cancelled the moment the completion callback returns.
-func (s *TaskService) GenerateChatQuickActionsAsync(task db.AgentTaskQueue, origin ChatQuickActionsOrigin) {
-	if s.QuickActions == nil || !s.QuickActions.Enabled() {
-		return
-	}
-	sessionKey := util.UUIDToString(task.ChatSessionID)
-	if sessionKey == "" {
-		return
-	}
-	if _, inFlight := s.quickActionsInFlight.LoadOrStore(sessionKey, struct{}{}); inFlight {
-		slog.Info("chat quick actions pass skipped: one already running for this session",
-			"chat_session_id", sessionKey, "task_id", util.UUIDToString(task.ID))
-		s.resolveChatQuickActionsPlaceholder(task)
-		return
-	}
-	if s.quickActionsRunning.Add(1) > chatQuickActionsMaxConcurrent {
-		s.quickActionsRunning.Add(-1)
-		s.quickActionsInFlight.Delete(sessionKey)
-		slog.Warn("chat quick actions pass shed: process-wide concurrency ceiling reached",
-			"ceiling", chatQuickActionsMaxConcurrent, "task_id", util.UUIDToString(task.ID))
-		s.resolveChatQuickActionsPlaceholder(task)
-		return
-	}
-
-	go func() {
-		defer func() {
-			s.quickActionsRunning.Add(-1)
-			s.quickActionsInFlight.Delete(sessionKey)
-		}()
-		// Panic containment: this goroutine is detached from the HTTP request,
-		// so chi's Recoverer middleware is not in the call stack and a panic
-		// here would take down the whole server process. Suggestions are a
-		// nicety — swallow, log, and leave the turn's pills as they are.
-		defer func() {
-			if rec := recover(); rec != nil {
-				slog.Error("chat quick actions generation panicked",
-					"task_id", util.UUIDToString(task.ID),
-					"panic", rec,
-				)
-			}
-		}()
-
-		ctx, cancel := context.WithTimeout(context.Background(), chatQuickActionsTimeout)
-		defer cancel()
-
-		if err := s.GenerateChatQuickActionsForTask(ctx, task, origin); err != nil {
-			slog.Warn("chat quick actions generation failed",
-				"task_id", util.UUIDToString(task.ID),
-				"chat_session_id", sessionKey,
-				"error", err,
-			)
-		}
-	}()
+// chatQuickActionsInFlight reports whether a quick_actions task is already
+// active for this session. The refresh endpoint checks it so a duplicate request
+// is refused with a 409 the client can act on, instead of being accepted and
+// dropped by the gate in enqueueChatQuickActions.
+func (s *TaskService) chatQuickActionsInFlight(ctx context.Context, sessionID pgtype.UUID) (bool, error) {
+	return s.Queries.HasActiveBackgroundTaskForSession(ctx, db.HasActiveBackgroundTaskForSessionParams{
+		Purpose: pgtype.Text{String: bgagents.Purpose(bgagents.QuickActions), Valid: true}, SourceChatSessionID: sessionID,
+	})
 }
 
-// chatQuickActionsInFlight reports whether a pass is already running for this
-// session. The refresh endpoint checks it so a duplicate request is refused
-// with a 409 the client can act on, instead of being accepted and silently
-// dropped by the admission gate in GenerateChatQuickActionsAsync.
-func (s *TaskService) chatQuickActionsInFlight(sessionID pgtype.UUID) bool {
-	_, running := s.quickActionsInFlight.Load(util.UUIDToString(sessionID))
-	return running
+// quickActionsTarget reads back the chat turn a quick_actions task attaches to.
+func quickActionsTarget(task db.AgentTaskQueue) (BackgroundTaskContext, pgtype.UUID, bool) {
+	var c BackgroundTaskContext
+	if json.Unmarshal(task.Context, &c) != nil {
+		return c, pgtype.UUID{}, false
+	}
+	target, err := util.ParseUUID(c.TargetTaskID)
+	return c, target, err == nil
+}
+
+// writeQuickActionsOutput is the bg:quick_actions completion writer. It runs in
+// the completion transaction: an output the sanitiser rejects writes nothing and
+// does not fail over (ErrInvalidBackgroundOutput).
+func writeQuickActionsOutput(ctx context.Context, q *db.Queries, task db.AgentTaskQueue, result []byte) error {
+	_, target, ok := quickActionsTarget(task)
+	if !ok {
+		return ErrInvalidBackgroundOutput
+	}
+	actions := cleanChatQuickActions(backgroundOutputText(result))
+	if len(actions) == 0 {
+		return ErrInvalidBackgroundOutput
+	}
+	encoded, err := json.Marshal(actions)
+	if err != nil {
+		return fmt.Errorf("marshal chat quick actions: %w", err)
+	}
+	if _, err := q.SetChatMessageQuickActionsByTask(ctx, db.SetChatMessageQuickActionsByTaskParams{TaskID: target, QuickActions: encoded}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrInvalidBackgroundOutput
+		}
+		return fmt.Errorf("attach chat quick actions: %w", err)
+	}
+	return nil
+}
+
+// resolveQuickActionsTask ends the client's pending skeleton for a finished or
+// ended quick_actions task by rebroadcasting the turn's current pills. failed
+// marks an explicit refresh that produced nothing. Used after the completion
+// commit and by the no-agent path.
+func (s *TaskService) resolveQuickActionsTask(ctx context.Context, task db.AgentTaskQueue, written bool) {
+	c, target, ok := quickActionsTarget(task)
+	if !ok || !task.SourceChatSessionID.Valid {
+		return
+	}
+	// The turn's own session is the bg task's source session: SupplementChatQuickActions
+	// reads and broadcasts under task.ChatSessionID.
+	turn := db.AgentTaskQueue{ID: target, ChatSessionID: task.SourceChatSessionID}
+	s.resolveChatQuickActionsPlaceholder(ctx, turn, c.Refresh && !written)
 }
 
 // resolveChatQuickActionsPlaceholder ends a client's pending skeleton without
-// generating anything, rebroadcasting the turn's current pills. Used when a
-// pass is refused admission — the placeholder was already raised by chat:done,
-// and leaving it to expire would show a spinner for work that never started.
-func (s *TaskService) resolveChatQuickActionsPlaceholder(task db.AgentTaskQueue) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := s.SupplementChatQuickActions(ctx, task, "", false); err != nil {
+// generating anything, rebroadcasting the turn's current pills.
+func (s *TaskService) resolveChatQuickActionsPlaceholder(ctx context.Context, task db.AgentTaskQueue, failed bool) {
+	if err := s.SupplementChatQuickActions(ctx, task, "", failed); err != nil {
 		slog.Warn("chat quick actions placeholder resolve failed",
 			"task_id", util.UUIDToString(task.ID), "error", err)
 	}

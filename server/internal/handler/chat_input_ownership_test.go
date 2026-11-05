@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
-	"strings"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/service"
@@ -929,92 +928,26 @@ func TestCompleteTask_ChatQuickActionsSupplement(t *testing.T) {
 	}
 }
 
-// stubChatQuickActionsLLM is an enabled ChatQuickActionsLLM that never dials an
-// upstream, so the refresh gates below can be exercised on a deployment-shaped
-// TaskService (RegenerateChatQuickActions refuses outright when the LLM layer
-// is unconfigured).
-type stubChatQuickActionsLLM struct {
-	// lastPrompt records the rendered conversation the pass was given, so a
-	// test can assert WHICH turn the suggestions were built from.
-	lastPrompt *string
-}
-
-func (stubChatQuickActionsLLM) Enabled() bool { return true }
-
-func (s stubChatQuickActionsLLM) GenerateJSON(_ context.Context, _, _, userPrompt string, _ float64, _ int64) (string, error) {
-	if s.lastPrompt != nil {
-		*s.lastPrompt = userPrompt
+// installQuickActionsAgent gives the workspace a reachable bg:quick_actions
+// agent so RegenerateChatQuickActions is not refused for lack of one, and
+// returns the undo. Scoped tightly around the synchronous Regenerate calls:
+// CompleteTask would otherwise queue a pass for every finished turn.
+func installQuickActionsAgent(t *testing.T, ctx context.Context, agentID, runtimeID, sessionID string) func() {
+	t.Helper()
+	var prev []byte
+	if err := testPool.QueryRow(ctx, `SELECT settings FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&prev); err != nil {
+		t.Fatalf("read workspace settings: %v", err)
 	}
-	return `{"actions":[{"label":"Next","prompt":"do the next thing","primary":true}]}`, nil
-}
-
-// TestChatQuickActions_ContextAnchorsOnTargetTurn pins the anchoring contract:
-// generation runs on a detached goroutine, so by the time it executes the
-// session may already carry a newer turn. The context it builds must end at the
-// assistant turn the pills are written to — not at whatever is newest when the
-// read happens.
-//
-// Without the anchor, a user who types a follow-up in the second after the
-// reply lands leaves the window ending on a user row with no reply to build on,
-// and that turn silently never gets pills.
-func TestChatQuickActions_ContextAnchorsOnTargetTurn(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
+	dbfx.Exec(t, `UPDATE agent_runtime SET provider = 'claude', status = 'online', last_seen_at = now(),
+		metadata = jsonb_build_object('capabilities', jsonb_build_array($2::text)) WHERE id = $1`,
+		runtimeID, protocol.DaemonCapabilityBackgroundOutputOnlyV1)
+	dbfx.Exec(t, `UPDATE workspace SET settings = jsonb_build_object('background_agents',
+		jsonb_build_object('quick_actions', jsonb_build_object('agent_id', $2::text))) WHERE id = $1`,
+		testWorkspaceID, agentID)
+	return func() {
+		testPool.Exec(ctx, `UPDATE workspace SET settings = $2 WHERE id = $1`, testWorkspaceID, prev)
+		testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE purpose = 'bg:quick_actions' AND source_chat_session_id = $1`, sessionID)
 	}
-	ctx := context.Background()
-	agentID, sessionID, _, _ := setupDirectChatSession(t, ctx, "quick-actions anchor")
-
-	taskID := sendDirectChat(t, ctx, agentID, sessionID, "first question")
-	markTaskRunning(t, ctx, taskID)
-	task, err := testHandler.TaskService.CompleteTask(
-		ctx, parseUUID(taskID), completeResult(t, "ANCHOR REPLY"), "", "", "", false, "", "")
-	if err != nil {
-		t.Fatalf("complete turn 1: %v", err)
-	}
-
-	// The race: a newer user message lands before the pass reads the session.
-	sendDirectChat(t, ctx, agentID, sessionID, "NEWER USER MESSAGE")
-
-	var prompt string
-	prev := testHandler.TaskService.QuickActions
-	testHandler.TaskService.QuickActions = stubChatQuickActionsLLM{lastPrompt: &prompt}
-	defer func() { testHandler.TaskService.QuickActions = prev }()
-
-	if err := testHandler.TaskService.GenerateChatQuickActionsForTask(
-		ctx, *task, service.ChatQuickActionsAutomatic); err != nil {
-		t.Fatalf("generate quick actions: %v", err)
-	}
-
-	if !strings.Contains(prompt, "ANCHOR REPLY") {
-		t.Fatalf("context must end at the target reply, got:\n%s", prompt)
-	}
-	if strings.Contains(prompt, "NEWER USER MESSAGE") {
-		t.Fatalf("context must exclude turns newer than the target, got:\n%s", prompt)
-	}
-
-	// And the pills land on the target turn, not the newer one.
-	rows := assistantRows(t, ctx, sessionID)
-	if len(rows) != 1 {
-		t.Fatalf("expected one assistant row, got %d", len(rows))
-	}
-	var actions []protocol.ChatQuickAction
-	if err := json.Unmarshal(rows[0].QuickActions, &actions); err != nil {
-		t.Fatalf("decode quick actions: %v", err)
-	}
-	if len(actions) != 1 || actions[0].Label != "Next" {
-		t.Fatalf("target turn quick actions = %+v", actions)
-	}
-}
-
-// installStubQuickActions enables suggestion generation and returns the undo.
-// Scoped tightly around the synchronous RegenerateChatQuickActions calls rather
-// than installed for a whole test: CompleteTask starts a background pass when
-// the feature is on, and a goroutine writing quick_actions mid-test would race
-// these assertions.
-func installStubQuickActions() func() {
-	prev := testHandler.TaskService.QuickActions
-	testHandler.TaskService.QuickActions = stubChatQuickActionsLLM{}
-	return func() { testHandler.TaskService.QuickActions = prev }
 }
 
 // TestRegenerateChatQuickActions_StaleTargetRejected pins the ack-alignment
@@ -1028,7 +961,7 @@ func TestRegenerateChatQuickActions_StaleTargetRejected(t *testing.T) {
 		t.Skip("database not available")
 	}
 	ctx := context.Background()
-	agentID, sessionID, _, _ := setupDirectChatSession(t, ctx, "regen stale chat")
+	agentID, sessionID, runtimeID, _ := setupDirectChatSession(t, ctx, "regen stale chat")
 
 	// Turn 1: a resumable assistant reply (session_id + runtime bound) is latest.
 	t1 := sendDirectChat(t, ctx, agentID, sessionID, "first question")
@@ -1047,7 +980,7 @@ func TestRegenerateChatQuickActions_StaleTargetRejected(t *testing.T) {
 	m1 := rows[0].ID
 
 	// Refreshing the current latest turn is accepted and targets exactly it.
-	restore := installStubQuickActions()
+	restore := installQuickActionsAgent(t, ctx, agentID, runtimeID, sessionID)
 	target, _, err := testHandler.TaskService.RegenerateChatQuickActions(ctx, session, m1)
 	restore()
 	if err != nil {
@@ -1074,7 +1007,7 @@ func TestRegenerateChatQuickActions_StaleTargetRejected(t *testing.T) {
 	m2 := rows[1].ID
 
 	// Refreshing the now-stale m1 is refused; refreshing the new latest m2 works.
-	restore = installStubQuickActions()
+	restore = installQuickActionsAgent(t, ctx, agentID, runtimeID, sessionID)
 	defer restore()
 	if _, _, err := testHandler.TaskService.RegenerateChatQuickActions(ctx, session, m1); !errors.Is(err, service.ErrChatQuickActionsStale) {
 		t.Fatalf("stale-target regenerate error = %v, want ErrChatQuickActionsStale", err)
@@ -1095,7 +1028,7 @@ func TestRegenerateChatQuickActions_ActiveTurnRejected(t *testing.T) {
 		t.Skip("database not available")
 	}
 	ctx := context.Background()
-	agentID, sessionID, _, _ := setupDirectChatSession(t, ctx, "regen busy chat")
+	agentID, sessionID, runtimeID, _ := setupDirectChatSession(t, ctx, "regen busy chat")
 
 	// Turn 1 completes with a resumable session → m1 is the latest assistant turn.
 	t1 := sendDirectChat(t, ctx, agentID, sessionID, "first")
@@ -1118,7 +1051,7 @@ func TestRegenerateChatQuickActions_ActiveTurnRejected(t *testing.T) {
 	t2 := sendDirectChat(t, ctx, agentID, sessionID, "second")
 	markTaskRunning(t, ctx, t2)
 
-	restore := installStubQuickActions()
+	restore := installQuickActionsAgent(t, ctx, agentID, runtimeID, sessionID)
 	defer restore()
 	if _, _, err := testHandler.TaskService.RegenerateChatQuickActions(ctx, session, m1); !errors.Is(err, service.ErrChatQuickActionsBusy) {
 		t.Fatalf("busy-session regenerate error = %v, want ErrChatQuickActionsBusy", err)
@@ -1138,7 +1071,7 @@ func TestRegenerateChatQuickActions_DeferredActiveTurnRejected(t *testing.T) {
 		t.Skip("database not available")
 	}
 	ctx := context.Background()
-	agentID, sessionID, _, _ := setupDirectChatSession(t, ctx, "regen deferred chat")
+	agentID, sessionID, runtimeID, _ := setupDirectChatSession(t, ctx, "regen deferred chat")
 
 	t1 := sendDirectChat(t, ctx, agentID, sessionID, "first")
 	markTaskRunning(t, ctx, t1)
@@ -1164,7 +1097,7 @@ func TestRegenerateChatQuickActions_DeferredActiveTurnRejected(t *testing.T) {
 		t.Fatalf("defer turn 2: %v", err)
 	}
 
-	restore := installStubQuickActions()
+	restore := installQuickActionsAgent(t, ctx, agentID, runtimeID, sessionID)
 	defer restore()
 	if _, _, err := testHandler.TaskService.RegenerateChatQuickActions(ctx, session, m1); !errors.Is(err, service.ErrChatQuickActionsBusy) {
 		t.Fatalf("deferred-active regenerate error = %v, want ErrChatQuickActionsBusy", err)
