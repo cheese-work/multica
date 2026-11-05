@@ -302,6 +302,14 @@ func prepareCodexHomeWithOpts(codexHome string, opts CodexHomeOptions, logger *s
 		if err := exposeSharedCodexPluginCache(codexHome, sharedHome); err != nil {
 			logger.Warn("execenv: codex-home plugin cache exposure failed", "error", err)
 		}
+	} else {
+		// A reused personal home still links the shared cache; managed excludes it.
+		link := filepath.Join(codexHome, "plugins", "cache")
+		if fi, err := os.Lstat(link); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			if err := os.Remove(link); err != nil {
+				return fmt.Errorf("remove shared plugin cache link: %w", err)
+			}
+		}
 	}
 
 	// Write a daemon-managed sandbox block into config.toml. On macOS we may

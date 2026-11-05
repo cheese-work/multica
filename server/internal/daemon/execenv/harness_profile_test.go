@@ -318,3 +318,70 @@ func TestPrepareCodexHome_PersonalKeepsPersonalConfigVerbatim(t *testing.T) {
 		}
 	}
 }
+
+// The managed config.toml can hold provider credentials (inline bearer token),
+// so it must never be group- or world-readable, including after the later
+// sandbox/skill-strip rewrites (CHE-3706 review).
+func TestPrepareManagedCodex_ConfigIsOwnerOnly(t *testing.T) {
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	shared := filepath.Join(userHome, ".codex")
+	t.Setenv("CODEX_HOME", shared)
+	writeFile(t, filepath.Join(shared, "config.toml"), `model_provider = "corp"
+
+[model_providers.corp]
+base_url = "https://llm.example.com/v1"
+experimental_bearer_token = "sk-secret-token"
+`)
+	envRoot := t.TempDir()
+	codexHome := filepath.Join(envRoot, "codex-home")
+	logger := discardLogger()
+	// Personal first (copies the file 0644), then managed on the reused home.
+	for _, managed := range []bool{false, true} {
+		if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{GOOS: "linux", Managed: managed}, logger); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(codexHome, "config.toml")
+	raw, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(raw), "sk-secret-token") {
+		t.Fatalf("provider credential not kept (err=%v):\n%s", err, raw)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Errorf("managed config.toml mode = %o, want 600", perm)
+	}
+}
+
+// A home first prepared as personal links the shared plugin cache. Switching
+// the same home to managed must remove that link, since the receipt lists the
+// path as excluded (CHE-3706 review).
+func TestPrepareManagedCodex_RemovesStalePluginCacheLink(t *testing.T) {
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	shared := filepath.Join(userHome, ".codex")
+	t.Setenv("CODEX_HOME", shared)
+	writeFile(t, filepath.Join(shared, "config.toml"), "model = \"x\"\n")
+	writeFile(t, filepath.Join(shared, "plugins", "cache", "p", "plugin.json"), "{}")
+	codexHome := filepath.Join(t.TempDir(), "codex-home")
+	logger := discardLogger()
+	if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{GOOS: "linux"}, logger); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(codexHome, "plugins", "cache")
+	if _, err := os.Lstat(link); err != nil {
+		t.Fatalf("personal launch did not link the plugin cache: %v", err)
+	}
+	if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{GOOS: "linux", Managed: true}, logger); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(link); err == nil {
+		t.Error("shared plugin cache link survived in managed home")
+	}
+	if _, err := os.Stat(filepath.Join(shared, "plugins", "cache", "p", "plugin.json")); err != nil {
+		t.Errorf("removing the link touched the shared cache: %v", err)
+	}
+}

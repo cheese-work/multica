@@ -240,5 +240,6 @@ func writeManagedCodexConfig(src, dst string) error {
 	if err != nil {
 		return fmt.Errorf("encode managed codex config: %w", err)
 	}
-	return os.WriteFile(dst, out, 0o644)
+	// 0600: model_providers may carry credentials; later rewrites keep the mode.
+	return os.WriteFile(dst, out, 0o600)
 }
