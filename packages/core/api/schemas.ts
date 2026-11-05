@@ -1550,9 +1550,20 @@ export const IssueTriggerPreviewSchema = z.lazy(() => z.object({
 }).loose());
 
 // Metadata is primitive-only by API/DB contract. Stay lenient on shape:
-// unknown keys land as `unknown` to a caller, but the field itself defaults
-// to {} so consumers never need to nil-guard `issue.metadata`.
-const IssueMetadataSchema = z.lazy(() => z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).default({}));
+// the field defaults to {} so consumers never need to nil-guard
+// `issue.metadata`, and a non-primitive entry is dropped rather than failing
+// the whole issue. The server's decision park stores an object under
+// `decision_park`; rejecting it made GET /api/issues/:id "malformed", which the
+// detail view shows as "does not exist" (CHE-3472).
+const IssueMetadataSchema = z.lazy(() => z.preprocess(
+  (raw) =>
+    typeof raw === "object" && raw !== null && !Array.isArray(raw)
+      ? Object.fromEntries(
+          Object.entries(raw).filter(([, v]) => ["string", "number", "boolean"].includes(typeof v)),
+        )
+      : raw,
+  z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).default({}),
+));
 
 const SourceContextAttachmentSchema = z.lazy(() => z.object({
   id: z.string(),
