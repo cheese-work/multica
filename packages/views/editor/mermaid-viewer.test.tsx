@@ -101,6 +101,40 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("MermaidViewer document swap (CHE-3032)", () => {
+  it("mounts a fresh iframe when the document changes, so the old drawing cannot stay under the new layout", () => {
+    // The viewer redraws the chart in the direction its canvas width picks,
+    // which swaps document and layout together. Some engines keep the old
+    // document when only `srcdoc` changes, leaving the previous diagram at
+    // natural size, clipped by an iframe sized for the new one.
+    const props = {
+      open: true,
+      onOpenChange: () => {},
+      chart: CHART,
+      svg: SVG,
+      exportBackground: "rgb(240, 240, 240)",
+      exportFontFamily: "Inter, sans-serif",
+    };
+    const { rerender } = render(
+      <MermaidViewer {...props} viewerDocument={VIEWER_DOC} layout={LAYOUT} />,
+    );
+    const before = document.querySelector<HTMLIFrameElement>(".mermaid-viewer-frame");
+
+    const nextDoc = "<!doctype html><html><body>wide</body></html>";
+    rerender(
+      <MermaidViewer
+        {...props}
+        viewerDocument={nextDoc}
+        layout={{ width: 1200, height: 300 }}
+      />,
+    );
+    const after = document.querySelector<HTMLIFrameElement>(".mermaid-viewer-frame");
+
+    expect(after?.srcdoc).toBe(nextDoc);
+    expect(after).not.toBe(before);
+  });
+});
+
 describe("MermaidViewer closing", () => {
   it("closes via the explicit X button", async () => {
     render(<Harness />);

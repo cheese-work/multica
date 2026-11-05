@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	composio "github.com/multica-ai/multica/server/internal/integrations/composio"
+	"github.com/multica-ai/multica/server/internal/util"
 )
 
 // Composio integration handlers (MUL-3720, Stage 2 MVP). A Composio connection
@@ -86,7 +87,7 @@ func (h *Handler) ComposioConnectInit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	redirectURL, err := h.Composio.BeginConnect(r.Context(), userUUID, req.ToolkitSlug)
+	redirectURL, err := h.Composio.BeginConnect(r.Context(), userUUID, req.ToolkitSlug, util.RequestOrigin(r))
 	if err != nil {
 		if errors.Is(err, composio.ErrToolkitNotSupported) {
 			writeError(w, http.StatusBadRequest, "toolkit not supported")
@@ -118,15 +119,15 @@ func (h *Handler) ComposioCallback(w http.ResponseWriter, r *http.Request) {
 	status := q.Get("status")
 	connectedAccountID := q.Get("connected_account_id")
 
-	slug, err := h.Composio.CompleteCallback(r.Context(), state, status, connectedAccountID)
+	slug, origin, err := h.Composio.CompleteCallback(r.Context(), state, status, connectedAccountID)
 	if err != nil {
 		// Every failure (tampered/expired state, non-success status, write
 		// error) collapses to the generic failure redirect — we never tell the
 		// browser which check failed.
-		http.Redirect(w, r, h.Composio.CallbackRedirect(slug, false), http.StatusFound)
+		http.Redirect(w, r, h.Composio.CallbackRedirect(slug, false, origin), http.StatusFound)
 		return
 	}
-	http.Redirect(w, r, h.Composio.CallbackRedirect(slug, true), http.StatusFound)
+	http.Redirect(w, r, h.Composio.CallbackRedirect(slug, true, origin), http.StatusFound)
 }
 
 // ListComposioConnections (GET /api/integrations/composio/connections) returns

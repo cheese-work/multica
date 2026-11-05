@@ -91,9 +91,15 @@ type IssueResponse struct {
 	Stage     *int32  `json:"stage"`
 	StartDate *string `json:"start_date"`
 	DueDate   *string `json:"due_date"`
-	CreatedAt string  `json:"created_at"`
-	UpdatedAt string  `json:"updated_at"`
-	Revision  int64   `json:"revision"`
+	// EffectiveDue, DueSource and Diagnostics are the read-only deadline
+	// projection (see issue_effective_due.go). Detail-only for now; absent
+	// when nothing is inherited or the issue is closed.
+	EffectiveDue *string         `json:"effective_due,omitempty"`
+	DueSource    string          `json:"due_source,omitempty"`
+	Diagnostics  []DueDiagnostic `json:"diagnostics,omitempty"`
+	CreatedAt    string          `json:"created_at"`
+	UpdatedAt    string          `json:"updated_at"`
+	Revision     int64           `json:"revision"`
 	// LastActivityAt is the latest semantic issue activity. It stays nullable
 	// while the operator-run historical backfill is incomplete.
 	LastActivityAt *string `json:"last_activity_at"`
@@ -896,31 +902,78 @@ type searchResult struct {
 	matchedCommentContent string
 }
 
-// buildSearchQuery builds a two-stage, workspace-scoped candidate pipeline for issue search.
-// Search patterns are lowercased and escaped in Go so every flag uses the same
-// case-insensitive LIKE semantics as the legacy query. The pipeline deliberately
-// trades the title, description, and comment content GIN fast paths for one
-// predictable pass over each relation within the selected workspace.
 // searchCommentSource scopes the name "comment" to the stored folded text for
 // one CTE body, so the comment scan reads one narrow table instead of joining
 // comment to its side table. content is the folded text; content_accents is the
 // lowered unfolded text where folding changed it, for the exact-diacritic rank.
-const searchCommentSource = `comment AS (
+//
+// A comment that matches none of the patterns sets no flag in the aggregate
+// below, so the trigram predicate (CHE-3164) drops it here, where the GIN index
+// on content_folded can serve it, instead of after reading every comment of the
+// workspace. The patterns are the same ones the flags use.
+func searchCommentSource(wsParam string, likeParams []string) string {
+	return fmt.Sprintf(`comment AS (
 			SELECT comment_id AS id, issue_id, workspace_id, created_at,
 				content_folded AS content, content_accents
 			FROM comment_search_text
-		)`
+			WHERE workspace_id = %s AND (%s)
+		)`, wsParam, foldedLikeAny("content_folded", likeParams))
+}
 
 // searchIssueSource exposes the stored folded text as title and description,
 // next to the raw text that the exact-diacritic ranking compares against.
-const searchIssueSource = `(
+//
+// Only issues that can be eligible are read (CHE-3164): a title or description
+// that matches a pattern (one arm per folded column, so each OR stays cheap
+// enough for the planner to pick that column's GIN index), an issue that has a
+// matching comment (comment_matches), or the issue whose number was searched.
+// Every eligibility rule below needs at least one of these, so the flags that
+// follow are computed on those rows instead of every issue of the workspace.
+func searchIssueSource(wsParam string, likeParams []string, numParam string) string {
+	candidates := fmt.Sprintf(`SELECT issue_id FROM issue_search_text
+			WHERE workspace_id = %[1]s AND (%[2]s)
+			UNION
+			SELECT issue_id FROM issue_search_text
+			WHERE workspace_id = %[1]s AND (%[3]s)
+			UNION
+			SELECT issue_id FROM comment_matches`,
+		wsParam, foldedLikeAny("title_folded", likeParams), foldedLikeAny("description_folded", likeParams))
+	if numParam != "" {
+		candidates += fmt.Sprintf(`
+			UNION
+			SELECT id FROM issue WHERE workspace_id = %s AND number = %s`, wsParam, numParam)
+	}
+	return fmt.Sprintf(`(
 		SELECT i.id, i.workspace_id, i.status, i.updated_at, i.number,
 			ist.title_folded AS title, ist.description_folded AS description,
 			ist.title_accents, ist.description_accents
-		FROM issue i
+		FROM (
+			%s
+		) candidate
+		JOIN issue i ON i.id = candidate.issue_id AND i.workspace_id = %s
 		JOIN issue_search_text ist ON ist.issue_id = i.id AND ist.workspace_id = i.workspace_id
-	)`
+	)`, candidates, wsParam)
+}
 
+// foldedLikeAny is column LIKE p for any of the patterns.
+func foldedLikeAny(column string, likeParams []string) string {
+	predicates := make([]string, len(likeParams))
+	for i, param := range likeParams {
+		predicates[i] = column + " LIKE " + param
+	}
+	return strings.Join(predicates, " OR ")
+}
+
+// buildSearchQuery builds a two-stage, workspace-scoped candidate pipeline for issue search.
+// Search patterns are lowercased and escaped in Go so every flag uses the same
+// case-insensitive LIKE semantics as the legacy query.
+//
+// Every scan of the stored folded text keeps its workspace_id equality and adds
+// the same LIKE patterns the flags use (CHE-3164). The workspace btree still
+// bounds the worst case, which is the MUL-4059 plan this pipeline was built for;
+// the trigram GIN indexes let the planner skip rows that no pattern can match
+// when that is cheaper. Cost is the planner's call, so the SQL never forces an
+// index, and the eligibility rules and ranking read the same flags as before.
 func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, includeClosed bool, terminalStatusKeys []string) (string, []any) {
 	// The stored search text is lowered and diacritic-folded (search_fold), so the
 	// patterns are folded the same way. The lowered-only query is kept to rank a
@@ -954,6 +1007,10 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 			termContainsParams = append(termContainsParams, nextArg("%"+escapeLike(term)+"%"))
 		}
 	}
+
+	// Every flag below needs one of these patterns to match (or the searched
+	// number to equal), so the sources use them to skip rows no flag can hit.
+	textLikeParams := append([]string{phraseContainsParam}, termContainsParams...)
 
 	numParam := ""
 	if hasNum {
@@ -1063,7 +1120,7 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		) lowered_issue_description ON TRUE
 		WHERE %s
 	)`, strings.Join(issueFlagColumns, ",\n\t\t\t"),
-		searchIssueSource, titleMatchExpr, issueWhere)
+		searchIssueSource(wsParam, textLikeParams, numParam), titleMatchExpr, issueWhere)
 
 	// Comments are also scanned once, workspace-first. This intentionally avoids
 	// the legacy planner choice between global content GIN postings and repeated
@@ -1133,7 +1190,7 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		) aggregated_comments
 		WHERE %s
 	)`,
-		searchCommentSource,
+		searchCommentSource(wsParam, textLikeParams),
 		strings.Join(commentFlagColumns, ",\n\t\t\t\t"),
 		wsParam,
 		strings.Join(commentCandidateFlags, " OR "),
@@ -1274,8 +1331,8 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	JOIN issue i ON i.id = pc.issue_id AND i.workspace_id = %s
 	LEFT JOIN comment c ON c.id = pc.snippet_comment_id AND c.workspace_id = %s
 	ORDER BY pc.cancelled_rank, pc.relevance_rank, pc.status_rank, pc.diacritic_rank, pc.updated_at DESC, pc.issue_id ASC`,
-		issueMatchesCTE,
 		commentMatchesCTE,
+		issueMatchesCTE,
 		rankedCandidatesCTE,
 		pageCandidatesCTE,
 		wsParam,
@@ -2651,6 +2708,7 @@ func (h *Handler) GetIssue(w http.ResponseWriter, r *http.Request) {
 	resp := issueToResponse(issue, prefix)
 	resp.WebURL = h.workspaceWebURL(r.Context(), issue.WorkspaceID, func(ws db.Workspace) string { return weblink.Issue(ws.Slug, resp.Identifier) })
 	h.fillStatusCategory(r.Context(), issue.WorkspaceID, &resp)
+	h.fillEffectiveDue(r.Context(), issue, &resp)
 	detailLabels := h.labelsByIssue(r.Context(), issue.WorkspaceID, []pgtype.UUID{issue.ID})[uuidToString(issue.ID)]
 	if detailLabels == nil {
 		detailLabels = []LabelResponse{}
@@ -3526,7 +3584,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		if req.AssigneeType == nil && req.AssigneeID == nil {
 			if step, ok := createWorkflow.Step(status); ok && step.HandsOff() {
 				handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
-				humans, err := h.workflowHumans(r.Context(), step, createWorkflowProject, wsUUID, requestedByID)
+				humans, err := h.workflowHumans(r.Context(), h.Queries, step, createWorkflowProject, wsUUID, requestedByID)
 				if err != nil {
 					slog.Error("create issue: resolve workflow handler", append(logger.RequestAttrs(r), "error", err)...)
 					writeError(w, http.StatusInternalServerError, "failed to resolve workflow handler")
@@ -4504,6 +4562,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	assigneeChanged := (req.AssigneeType != nil || req.AssigneeID != nil || handoff != nil) &&
 		(prevIssue.AssigneeType.String != issue.AssigneeType.String || uuidToString(prevIssue.AssigneeID) != uuidToString(issue.AssigneeID))
 	if assigneeChanged {
+		h.recordSystem1Routing(r.Context(), prevIssue, issue, handoff, actorType)
 		h.followDecisionSteward(r.Context(), issue)
 	}
 	statusChanged := (req.Status != nil || params.Status.Valid) && prevIssue.Status != issue.Status
