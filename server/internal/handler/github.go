@@ -595,6 +595,26 @@ func (h *Handler) GitHubSetupCallback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The policy judges the numeric account id: the verified one for a bind with
+	// a code, the stored one for a code-less update (which carries none).
+	candidate := db.GithubInstallation{
+		WorkspaceID:    wsUUID,
+		InstallationID: installationID,
+		AccountID:      githubAccountIDParam(verified.Account.ID),
+	}
+	if code == "" {
+		candidate = existing
+	}
+	if !h.githubInstallationAllowed(candidate) {
+		slog.Warn("github: refused installation bind outside allowlist",
+			"installation_id", installationID,
+			"account_id", candidate.AccountID.Int64,
+			"workspace_id", workspaceID,
+		)
+		http.Redirect(w, r, settingsURL+"&github_error=installation_not_allowed", http.StatusFound)
+		return
+	}
+
 	connectedBy := pgtype.UUID{}
 	if code == "" {
 		connectedBy = existing.ConnectedByID
