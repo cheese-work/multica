@@ -116,6 +116,11 @@ export function useSettingsSearchIndex(
         description: t(($) => $.tokens.purpose),
       },
       {
+        tab: "passkeys",
+        title: t(($) => $.page.tabs.passkeys),
+        description: t(($) => $.passkeys.purpose),
+      },
+      {
         tab: "shortcuts",
         title: t(($) => $.page.tabs.shortcuts),
         description: t(($) => $.shortcuts.description),
