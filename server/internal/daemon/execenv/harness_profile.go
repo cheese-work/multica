@@ -3,6 +3,7 @@ package execenv
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -165,12 +166,7 @@ func prepareManagedCodex(envRoot, codexHome string, skills []SkillContextForEnv,
 		return fmt.Errorf("resolve user home: %w", err)
 	}
 	universalDir := filepath.Join(userHome, ".agents", "skills")
-	var universal []RuntimeSkillRefForEnv
-	if entries, err := os.ReadDir(universalDir); err == nil {
-		for _, e := range entries {
-			universal = append(universal, RuntimeSkillRefForEnv{Root: "universal", Key: e.Name()})
-		}
-	}
+	universal := listUniversalSkillKeys(universalDir)
 	if err := ensureCodexDisabledSkillsConfig(filepath.Join(codexHome, "config.toml"), codexHome, universal, skills); err != nil {
 		return fmt.Errorf("disable personal codex skills: %w", err)
 	}
@@ -253,4 +249,30 @@ func writeManagedCodexConfig(src, dst string) error {
 	}
 	// 0600: model_providers may carry credentials; later rewrites keep the mode.
 	return os.WriteFile(dst, out, 0o600)
+}
+
+// listUniversalSkillKeys returns one disable key per SKILL.md under root at
+// any depth (key = slash-relative skill dir). Codex discovers skills
+// recursively, so top-level names alone leave nested skills enabled. Symlinked
+// dirs are not walked (cycle safety) but are checked for their own SKILL.md.
+func listUniversalSkillKeys(root string) []RuntimeSkillRefForEnv {
+	var keys []RuntimeSkillRefForEnv
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || path == root {
+			return nil
+		}
+		if !d.IsDir() && d.Type()&fs.ModeSymlink == 0 {
+			return nil
+		}
+		if info, statErr := os.Stat(filepath.Join(path, "SKILL.md")); statErr != nil || info.IsDir() {
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return nil
+		}
+		keys = append(keys, RuntimeSkillRefForEnv{Root: "universal", Key: filepath.ToSlash(rel)})
+		return nil
+	})
+	return keys
 }

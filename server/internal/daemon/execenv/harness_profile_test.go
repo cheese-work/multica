@@ -115,6 +115,38 @@ func TestPrepareManagedClaudeHome_NoCredentialsIsNotAnError(t *testing.T) {
 	}
 }
 
+func TestPrepareManagedCodex_DisablesNestedUniversalSkills(t *testing.T) {
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	shared := filepath.Join(userHome, ".codex")
+	t.Setenv("CODEX_HOME", shared)
+	writeFile(t, filepath.Join(shared, "auth.json"), `{"a":1}`)
+	root := filepath.Join(userHome, ".agents", "skills")
+	nested := filepath.Join(root, "release", "reporter", "SKILL.md")
+	top := filepath.Join(root, "top", "SKILL.md")
+	writeFile(t, nested, "---\nname: reporter\ndescription: d\n---\n")
+	writeFile(t, top, "---\nname: top\ndescription: d\n---\n")
+
+	envRoot := t.TempDir()
+	codexHome := filepath.Join(envRoot, "codex-home")
+	logger := discardLogger()
+	if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{GOOS: "linux", Managed: true}, logger); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareManagedCodex(envRoot, codexHome, nil, nil, logger); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := os.ReadFile(filepath.Join(codexHome, "config.toml"))
+	for _, want := range []string{nested, top} {
+		if !strings.Contains(string(cfg), filepath.ToSlash(want)) {
+			t.Errorf("skill file %s not disabled in config.toml:\n%s", want, cfg)
+		}
+	}
+	if strings.Contains(string(cfg), filepath.ToSlash(filepath.Join(root, "release", "SKILL.md"))) {
+		t.Errorf("config.toml disables non-existent release/SKILL.md:\n%s", cfg)
+	}
+}
+
 func TestPrepareManagedCodex_ExcludesPersonalDiscovery(t *testing.T) {
 	userHome := t.TempDir()
 	t.Setenv("HOME", userHome)
