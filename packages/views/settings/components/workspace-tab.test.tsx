@@ -1,3 +1,4 @@
+import { resetAllRegisteredDrafts } from "@multica/core/drafts";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
@@ -83,6 +84,12 @@ vi.mock("../../navigation", () => ({
 
 vi.mock("./agent-decisions-row", () => ({
   AgentDecisionsRow: () => <div data-testid="agent-decisions-row" />,
+}));
+
+vi.mock("./routing-agent-rows", () => ({
+  RoutingAgentRows: ({ canEdit }: { canEdit: boolean }) => (
+    <div data-testid="routing-agent-rows" data-can-edit={String(canEdit)} />
+  ),
 }));
 
 vi.mock("./delete-workspace-dialog", () => ({
@@ -305,6 +312,17 @@ describe("WorkspaceTab — automatic updates", () => {
     render(<WorkspaceTab />, { wrapper: I18nWrapper });
 
     expect(screen.queryByTestId("agent-decisions-row") !== null).toBe(shown);
+  });
+
+  it.each([
+    ["owner", "true"],
+    ["admin", "true"],
+    ["member", "false"],
+  ] as const)("lets a %s edit the routing agent: %s", (role, canEdit) => {
+    membersRef.current = [{ user_id: "user-1", role, name: "Ada" }];
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    expect(screen.getByTestId("routing-agent-rows")).toHaveAttribute("data-can-edit", canEdit);
   });
 
   // CHE-1806: settings.auto_compact saves through its own request field.
@@ -569,4 +587,22 @@ describe("WorkspaceTab — automatic updates", () => {
     expect(screen.queryByRole("spinbutton", { name: "After (hours)" })).toBeNull();
     expect(screen.getByText("Shadow, after 6 h")).toBeInTheDocument();
   });
+  it("restores name, description, context and compact prompt after unmount", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const first = render(<WorkspaceTab />, { wrapper: I18nWrapper });
+    const nameInput = screen.getByDisplayValue("Test Workspace");
+    await user.clear(nameInput);
+    await user.type(nameInput, "Unsent name");
+    // Leave before the auto-save debounce fires.
+    first.unmount();
+
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+    expect(screen.getByDisplayValue("Unsent name")).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
 });
+
+
+beforeEach(() => resetAllRegisteredDrafts());

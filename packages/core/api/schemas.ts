@@ -2449,6 +2449,8 @@ export const CancelTaskResponseSchema = z.lazy(() => AgentTaskSchema.unwrap().ex
 }).loose());
 
 const ChatLastMessageSchema = z.lazy(() => z.object({
+  id: z.string().uuid().optional().catch(undefined),
+  task_id: z.string().uuid().optional().catch(undefined),
   content: z.string().default(""),
   role: z.enum(["user", "assistant"]).catch("assistant"),
   created_at: z.string().default(""),
@@ -4359,3 +4361,13 @@ export const AgentDecisionSettingSchema = z.lazy(() => z.object({
   stopped: z.object({ reason: z.string().catch("") }).nullish().transform((v) => v ?? null),
 }).loose());
 export type AgentDecisionSetting = z.infer<typeof AgentDecisionSettingSchema>;
+
+// CHE-3627: GET/PUT /api/workspaces/{id}/routing-agent. The server sends null
+// for an empty list or map, so both default to empty here.
+export const RoutingAgentSettingSchema = z.lazy(() => z.object({
+  agent_id: z.string().catch(""),
+  fallback_agent_id: z.string().catch(""),
+  statuses: z.array(z.string()).nullish().transform((v) => v ?? []),
+  overrides: z.record(z.string(), z.string()).nullish().transform((v) => v ?? {}),
+}).loose());
+export type RoutingAgentSetting = z.infer<typeof RoutingAgentSettingSchema>;

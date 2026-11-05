@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "./api";
+import { classifyIssueLoadError } from "@/lib/issue-load-error";
+import type { SchemaValidationError } from "@/lib/parse-response";
 
 // api.ts refuses to load without a base URL; set it before the import runs.
 vi.hoisted(() => {
@@ -242,5 +244,71 @@ describe("api chat supplements", () => {
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe("https://api.example.test/api/chat/sessions/s1/messages/m1/supplement/resend");
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({ confirm_possible_duplicate: expected });
+  });
+});
+
+describe("api.listWorkspacesChecked", () => {
+  const fetchMock = vi.fn();
+  const respond = (body: unknown) =>
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(body), { status: 200 }));
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("validates a real list", async () => {
+    respond([{ id: "ws1", slug: "a" }]);
+    const result = await api.listWorkspacesChecked();
+    expect(result.validated).toBe(true);
+    expect(result.workspaces.map((w) => w.id)).toEqual(["ws1"]);
+  });
+
+  it("validates a real empty list", async () => {
+    respond([]);
+    expect(await api.listWorkspacesChecked()).toEqual({ workspaces: [], validated: true });
+  });
+
+  it.each([
+    ["an object", { oops: 1 }],
+    ["null", null],
+    ["a list with a broken item", [{ id: "ws1" }, { slug: "no-id" }]],
+  ])("falls back to an unvalidated empty list for %s", async (_name, body) => {
+    respond(body);
+    expect(await api.listWorkspacesChecked()).toEqual({ workspaces: [], validated: false });
+  });
+});
+
+describe("api.getIssue schema failure", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("throws a typed error naming the failing path instead of returning an empty issue", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ id: "i1", metadata: { decision_park: { a: 1 } } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    const err = await api.getIssue("i1").catch((e: unknown) => e);
+
+    expect(classifyIssueLoadError(err)).toBe("data");
+    expect((err as SchemaValidationError).paths).toContain("metadata.decision_park");
+    expect(String(warn.mock.calls[0]?.[0])).toContain("metadata.decision_park");
   });
 });
