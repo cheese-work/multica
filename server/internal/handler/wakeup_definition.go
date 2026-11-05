@@ -196,12 +196,16 @@ func (a wakeupDefinitionAPI) caller(w http.ResponseWriter, r *http.Request, writ
 	if !write {
 		return c, true
 	}
+	// The one agent write: create a workspace or project rule, stored disabled
+	// by save. A task token is the agent's own credential and the server sets
+	// its agent id, so it may do this; any other machine credential may not.
+	agentMayCreate := agentCreate && a.kind != service.WakeupScopeIssue && c.actorType == "agent" && c.actorID != ""
 	switch {
-	case isMachineCredentialActor(r):
+	case isMachineCredentialActor(r) && !(agentMayCreate && r.Header.Get("X-Actor-Source") == "task_token"):
 		// A task token or cloud-node PAT carries its owner's user id and role, so
 		// the checks below would otherwise let it write as that human.
 		writeError(w, http.StatusForbidden, "machine credentials cannot manage wakeup definitions")
-	case c.actorType == "agent" && !(agentCreate && a.kind != service.WakeupScopeIssue):
+	case c.actorType == "agent" && !agentMayCreate:
 		writeError(w, http.StatusForbidden, "agents can only create workspace and project wakeup definitions")
 	case a.kind != service.WakeupScopeIssue && !roleAllowed(member.Role, "owner", "admin"):
 		writeError(w, http.StatusForbidden, "only owners and admins can manage workspace and project wakeup definitions")

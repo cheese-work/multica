@@ -131,6 +131,18 @@ func asUser(userID string) wdAs {
 
 // asAgentRun speaks as an agent from inside one of its live runs, which the
 // owner's session header still backs: the actor is the agent.
+// asTaskTokenRun is a real agent run: the auth middleware stamps the task-token
+// source, agent, task and bound workspace from the token row.
+func (k *wdKit) asTaskTokenRun() wdAs {
+	agentID := dbfx.Agent(k.t, "wd token agent", handlerTestRuntimeID(k.t))
+	taskID := dbfx.Task(k.t, agentID, testutil.Cols{"status": "running", "runtime_id": handlerTestRuntimeID(k.t), "originator_user_id": testUserID, "accountable_user_id": testUserID})
+	return func(r *http.Request) *http.Request {
+		r.Header.Set("X-Actor-Source", "task_token")
+		r.Header.Set("X-Workspace-ID", testWorkspaceID)
+		return asRun(r, agentID, taskID)
+	}
+}
+
 func (k *wdKit) asAgentRun() wdAs {
 	agentID := dbfx.Agent(k.t, "wd actor agent", handlerTestRuntimeID(k.t))
 	taskID := dbfx.Task(k.t, agentID, testutil.Cols{"status": "running", "runtime_id": handlerTestRuntimeID(k.t), "originator_user_id": testUserID, "accountable_user_id": testUserID})
@@ -1299,5 +1311,30 @@ func TestWakeupDefinitionAgentCreatesDisabledRule(t *testing.T) {
 	k.issue().put("child_done", 0, cfg(map[string]any{"name": "x"}), agentRun).Want(http.StatusForbidden)
 	if n := wdCount(t); n != 0 {
 		t.Fatalf("%d definitions persisted by an agent at issue scope", n)
+	}
+}
+
+// A real agent run (task token) can create a disabled workspace or project
+// rule, and nothing else. A cloud-node PAT still cannot.
+func TestWakeupDefinitionTaskTokenAgentCreatesDisabledRule(t *testing.T) {
+	k := newWakeupDefinitionKit(t)
+	run := k.asTaskTokenRun()
+	own := handlerTestAgentID(t)
+	for _, s := range []wdScope{k.workspace(), k.project()} {
+		wipeWakeupDefinitions(t)
+		body := cfg(map[string]any{"enabled": true, "trigger": map[string]any{"kind": "pr_merged"}, "instruction": "x", "target": map[string]any{"type": "agent", "id": own}})
+		created := decodeDefinition(t, s.create(body, run).Want(http.StatusCreated))
+		if enabled := string(configKeys(t, created.Config)["enabled"]); enabled != "false" {
+			t.Fatalf("%s: task-token rule enabled = %s, want false", s.kind, enabled)
+		}
+		s.put(created.RuleKey, created.Revision, body, run).Want(http.StatusForbidden)
+		s.del(created.RuleKey, strconv.FormatInt(int64(created.Revision), 10), run).Want(http.StatusForbidden)
+		s.preview("", body, run).Want(http.StatusForbidden)
+		s.create(body, asActorSource("cloud_pat")).Want(http.StatusForbidden)
+	}
+	wipeWakeupDefinitions(t)
+	k.issue().put("child_done", 0, cfg(map[string]any{"name": "x"}), run).Want(http.StatusForbidden)
+	if n := wdCount(t); n != 0 {
+		t.Fatalf("%d definitions persisted by a task-token agent outside create", n)
 	}
 }
