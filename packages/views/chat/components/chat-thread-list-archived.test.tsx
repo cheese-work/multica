@@ -26,6 +26,7 @@ vi.mock("@multica/core/chat", () => ({
 vi.mock("@multica/core/chat/mutations", () => ({
   useDeleteChatSession: () => ({ mutate: vi.fn(), isPending: false }),
   useSetChatSessionPinned: () => ({ mutate: pinMutate, mutateAsync: vi.fn(), isPending: false }),
+  useMarkChatSessionUnread: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
   useSetChatSessionArchived: () => ({ mutate: vi.fn(), mutateAsync: archiveAsync, isPending: false }),
 }));
 vi.mock("@tanstack/react-query", async (importOriginal) => {

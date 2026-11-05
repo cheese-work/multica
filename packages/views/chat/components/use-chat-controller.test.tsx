@@ -916,6 +916,16 @@ describe("useChatController auto mark-read", () => {
     expect(h.markReadMutate).toHaveBeenCalledWith("sA");
   });
 
+  it("does NOT mark read a session the viewer just marked as unseen", () => {
+    h.store.activeSessionId = "sA";
+    (h.store as { autoReadSuppressedId?: string | null }).autoReadSuppressedId = "sA";
+    renderHook(() => useChatController());
+
+    act(() => vi.advanceTimersByTime(1));
+    expect(h.markReadMutate).not.toHaveBeenCalled();
+    delete (h.store as { autoReadSuppressedId?: string | null }).autoReadSuppressedId;
+  });
+
   it("does NOT mark read a session that was only momentarily active on mount", () => {
     // Mount restores sA as active (persisted, unread)...
     h.store.activeSessionId = "sA";

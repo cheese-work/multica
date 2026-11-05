@@ -304,6 +304,8 @@
     "archive_failed": "无法归档此会话",
     "unarchive_failed": "无法取消归档此会话",
     "pin_failed": "无法更新置顶状态",
+    "unseen": "标记为未读",
+    "unseen_failed": "无法将此对话标记为未读",
     "undo": "撤销"
   },
   "header": {
@@ -319,6 +321,7 @@
     "statistics": "统计",
     "pin": "置顶会话",
     "unpin": "取消置顶会话",
+    "unseen": "标记为未读",
     "preset": { "label": "预设", "inherit": "继承", "base": "基础" }
   },
   "scheduled": {
