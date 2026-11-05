@@ -11,8 +11,8 @@ func agentH(id string) issueworkflow.Handler {
 	return issueworkflow.Handler{Type: issueworkflow.HandlerAgent, ID: id}
 }
 
-// good is a runtime-healthy Claude agent.
-var good = Agent{Provider: "claude", RuntimeID: "rt-c", RuntimeVersion: "2.1.0", RuntimeOnline: true}
+// good is a healthy agent on the one recorded qualified runtime (CHE-735).
+var good = Agent{Provider: "codex", RuntimeID: x99Codex, RuntimeVersion: "0.155.1", RuntimeOnline: true}
 
 // withHandler returns clean() with the handler of step key replaced.
 func withHandler(key string, h issueworkflow.Handler) issueworkflow.Definition {
@@ -74,9 +74,12 @@ func TestWF005RuntimeNotQualified(t *testing.T) {
 			t.Fatalf("codex %q is qualified, got %v", v, rules(fs))
 		}
 	}
-	// A listed provider with a wildcard entry is qualified.
-	if fs := LintWith(clean(), Env{Agents: map[string]Agent{"a": good}}); countRule(fs, "WF005") != 0 {
-		t.Fatalf("claude: want no WF005, got %v", rules(fs))
+	// No qualification is recorded for Claude, so any Claude version fails WF005.
+	for _, v := range []string{"2.1.0", ""} {
+		env := Env{Agents: map[string]Agent{"a": {Provider: "claude", RuntimeVersion: v, RuntimeOnline: true}}}
+		if fs := LintWith(clean(), env); !has(fs, "WF005", "todo") {
+			t.Fatalf("claude %q has no recorded qualification: want WF005, got %v", v, rules(fs))
+		}
 	}
 }
 
@@ -107,9 +110,10 @@ func TestWF005FailsClosed(t *testing.T) {
 	if q.qualifies(Agent{Provider: "empty", RuntimeVersion: "1.0.0"}) {
 		t.Fatal("an empty list qualifies nothing")
 	}
+	// "*" is not a wildcard: a version that was never qualified never passes.
 	q = qualifiedRuntimes{"any": {{Version: "*"}}}
-	if !q.qualifies(Agent{Provider: "any", RuntimeVersion: "9.9"}) || !q.qualifies(Agent{Provider: "any"}) {
-		t.Fatal(`version "*" qualifies any version of the provider`)
+	if q.qualifies(Agent{Provider: "any", RuntimeVersion: "9.9"}) || q.qualifies(Agent{Provider: "any"}) {
+		t.Fatal(`version "*" must not qualify an unlisted version`)
 	}
 }
 
@@ -244,7 +248,7 @@ func TestWF013Unused(t *testing.T) {
 }
 
 func TestEmbeddedConfigsParse(t *testing.T) {
-	if len(qualified["codex"]) == 0 || qualified["codex"][0].Version != "0.155.1" {
+	if len(qualified) != 1 || len(qualified["codex"]) == 0 || qualified["codex"][0].Version != "0.155.1" {
 		t.Fatalf("seed: want codex 0.155.1, got %v", qualified)
 	}
 	if lab, ok := labs.of(Agent{Provider: "codex"}); !ok || lab != "OpenAI" {

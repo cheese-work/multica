@@ -56,8 +56,9 @@ type qualifiedEntry struct {
 	Note      string `json:"note,omitempty"`
 }
 
-// qualifiedRuntimes lists, per provider, the runtimes that may write. Version
-// "*" means any version; an empty runtime_id means any runtime of the provider.
+// qualifiedRuntimes lists, per provider, the runtime versions that were
+// qualified to write. Only recorded qualifications belong here. An empty
+// runtime_id means any runtime of the provider.
 type qualifiedRuntimes map[string][]qualifiedEntry
 
 var qualified = mustLoad[qualifiedRuntimes](qualifiedJSON)
@@ -83,12 +84,12 @@ var versionRe = regexp.MustCompile(`\d+(?:\.\d+)+`)
 func version(reported string) string { return versionRe.FindString(reported) }
 
 // qualifies reports whether the agent's runtime may write. It fails closed:
-// a provider with no entry, or no matching entry, is not qualified. An entry
-// with version "*" qualifies any version of that provider.
+// a provider with no entry, or no entry matching its exact version, is not
+// qualified.
 func (q qualifiedRuntimes) qualifies(a Agent) bool {
 	v := version(a.RuntimeVersion)
 	for _, e := range q[a.Provider] {
-		if (e.Version == "*" || (v != "" && v == e.Version)) && (e.RuntimeID == "" || e.RuntimeID == a.RuntimeID) {
+		if (v != "" && v == e.Version) && (e.RuntimeID == "" || e.RuntimeID == a.RuntimeID) {
 			return true
 		}
 	}
