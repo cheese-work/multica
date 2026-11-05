@@ -5398,6 +5398,9 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 			return err
 		}
 		task = t
+		if err := recordProviderSuccess(ctx, qtx, t); err != nil {
+			return err
+		}
 		change, err = syncQoderIssue(ctx, qtx, t, true)
 		if err != nil {
 			return err
@@ -5975,6 +5978,11 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			return err
 		}
 		task = t
+		if t.Status == "failed" && failureReason == taskfailure.ReasonAgentProviderServerError.String() {
+			if err := recordProviderServerFailure(ctx, qtx, t); err != nil {
+				return err
+			}
+		}
 
 		// Keep resume-unsafe sessions on the task row for observability, but
 		// do not promote them to the chat-level resume pointer.

@@ -19,3 +19,16 @@ func TestProviderBreakerTripThresholdAndWindow(t *testing.T) {
 		t.Fatal("a failure outside the window must not count")
 	}
 }
+
+func TestProviderBreakerDisposition(t *testing.T) {
+	for _, state := range []string{"open", "half_open", "draining"} {
+		if got := providerBreakerDisposition(state); got != "hold" {
+			t.Errorf("state %q: disposition = %q, want hold", state, got)
+		}
+	}
+	for _, state := range []string{"closed", "unknown"} {
+		if got := providerBreakerDisposition(state); got != "normal" {
+			t.Errorf("state %q: disposition = %q, want normal", state, got)
+		}
+	}
+}
