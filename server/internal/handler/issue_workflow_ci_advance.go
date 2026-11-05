@@ -14,6 +14,30 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
+// advanceIssueOnCIGreenUnlessHalted runs the CI-green advance while holding the
+// kill switch's shared lock, so a switch change either waits for the advance and
+// sweeps the run it starts, or commits first and the advance does not start
+// (CHE-2223). The advance writes through the pool; the held transaction only
+// carries the lock. A halted or failed check reports false: the caller's own
+// wakeup path then drops the event.
+func (h *Handler) advanceIssueOnCIGreenUnlessHalted(ctx context.Context, pr db.GithubPullRequest, issueID pgtype.UUID) (ranHandler bool) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		slog.Warn("ci advance: lock failed", "err", err, "issue_id", uuidToString(issueID))
+		return false
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	q := h.Queries.WithTx(tx)
+	if err := q.LockGitHubDispatchHaltShared(ctx, pr.WorkspaceID); err != nil {
+		slog.Warn("ci advance: lock failed", "err", err, "issue_id", uuidToString(issueID))
+		return false
+	}
+	if halted, err := q.GitHubDispatchHalted(ctx, db.GitHubDispatchHaltedParams{WorkspaceID: pr.WorkspaceID, RepoOwner: pr.RepoOwner, RepoName: pr.RepoName}); err != nil || halted {
+		return false
+	}
+	return h.advanceIssueOnCIGreen(ctx, issueID, pr.SnapshotHeadSha, pr.State)
+}
+
 // advanceIssueOnCIGreen moves an issue one workflow step when the checks of a
 // linked PR pass on headSHA and the issue's current step has an edge that
 // fact satisfies (advance_on_ci_green stands for a pr.checks_green edge to the
@@ -69,7 +93,7 @@ func (h *Handler) advanceIssueOnCIGreen(ctx context.Context, issueID pgtype.UUID
 		if task.IssueID != issue.ID {
 			return
 		}
-		if err := h.Queries.MarkGitHubDispatchRun(ctx, db.MarkGitHubDispatchRunParams{TaskID: task.ID, IssueID: issue.ID, Source: "ci_green"}); err != nil {
+		if err := h.Queries.MarkGitHubDispatchRun(ctx, db.MarkGitHubDispatchRunParams{TaskID: task.ID, IssueID: issue.ID, Source: "ci_green", Repo: ""}); err != nil {
 			slog.Warn("ci advance: mark run failed", "err", err, "issue_id", uuidToString(issueID))
 		}
 	})
