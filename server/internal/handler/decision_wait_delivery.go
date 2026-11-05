@@ -472,12 +472,12 @@ func ackEpisodeItems(ctx context.Context, queries *db.Queries, snapshot decision
 		switch {
 		case episodeLiveAnswer(answer) && live[answer.DecisionRequestID]:
 			rows, err := queries.AcknowledgeDecisionWake(ctx, db.AcknowledgeDecisionWakeParams{WorkspaceID: workspaceID, ID: answer.ID, Outcome: text})
-			if err = exactlyOne(rows, err, "wake"); err != nil {
+			if err := exactlyOne(rows, err, "wake"); err != nil {
 				return false, err
 			}
 		case episodePendingRetraction(answer):
 			rows, err := queries.AcknowledgeDecisionRetraction(ctx, db.AcknowledgeDecisionRetractionParams{WorkspaceID: workspaceID, ID: answer.ID, Outcome: text})
-			if err = exactlyOne(rows, err, "retraction"); err != nil {
+			if err := exactlyOne(rows, err, "retraction"); err != nil {
 				return false, err
 			}
 		}
@@ -485,7 +485,7 @@ func ackEpisodeItems(ctx context.Context, queries *db.Queries, snapshot decision
 	for _, request := range snapshot.requests {
 		if episodePendingReask(request) {
 			rows, err := queries.AcknowledgeDecisionReask(ctx, db.AcknowledgeDecisionReaskParams{WorkspaceID: workspaceID, ID: request.ID, Outcome: text})
-			if err = exactlyOne(rows, err, "re-ask"); err != nil {
+			if err := exactlyOne(rows, err, "re-ask"); err != nil {
 				return false, err
 			}
 		}
@@ -493,7 +493,7 @@ func ackEpisodeItems(ctx context.Context, queries *db.Queries, snapshot decision
 	for _, intent := range snapshot.intents {
 		if slices.Contains(wait.GroupAckIntentIds, intent.ID) {
 			rows, err := queries.AcknowledgeDecisionGroupWake(ctx, db.AcknowledgeDecisionGroupWakeParams{WorkspaceID: workspaceID, ID: intent.ID})
-			if err = exactlyOne(rows, err, "group"); err != nil {
+			if err := exactlyOne(rows, err, "group"); err != nil {
 				return false, err
 			}
 		} else if !intent.GroupWokenAt.Valid {
