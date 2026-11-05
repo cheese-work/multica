@@ -93,7 +93,13 @@ func Decide(f Facts) Action {
 	}
 	if s, pos, in := stackOf(n.Number); in {
 		if pos > 0 && byNum[s.PRs[pos-1]].Head == n.Base {
-			return Action{}
+			// Same per-ancestor checks as the walk: a stacked N whose
+			// base PR is closed, merged or ambiguous is still reported.
+			if base, code := baseOf(f.PRs, n); code != "" {
+				return report(code)
+			} else if base.Number == s.PRs[pos-1] {
+				return Action{}
+			}
 		}
 		return report(InOtherStack)
 	}
@@ -104,27 +110,10 @@ func Decide(f Facts) Action {
 		if cur.Base == f.Default {
 			return Action{Kind: Create, PRs: reversed(chain)}
 		}
-		var open []PR
-		closed := false
-		for _, p := range f.PRs {
-			if p.Head != cur.Base || p.Fork {
-				continue
-			}
-			if p.State == Open {
-				open = append(open, p)
-			} else if p.State == Closed {
-				closed = true
-			}
+		a, code := baseOf(f.PRs, cur)
+		if code != "" {
+			return report(code)
 		}
-		switch {
-		case len(open) > 1:
-			return report(AmbiguousBase)
-		case len(open) == 0 && closed:
-			return report(ClosedAncestor)
-		case len(open) == 0: // merged, fork-only or no PR: base is stale
-			return report(StaleBase)
-		}
-		a := open[0]
 		if seen[a.Head] {
 			return report(Cycle)
 		}
@@ -141,6 +130,33 @@ func Decide(f Facts) Action {
 		chain = append(chain, a.Number)
 		cur = a
 	}
+}
+
+// baseOf finds the single open same-repo PR whose head is cur's base.
+// A non-empty code means the base is not usable: closed_ancestor,
+// ambiguous_base, or stale_base (merged, fork-only or no PR).
+func baseOf(prs []PR, cur PR) (PR, Code) {
+	var open []PR
+	closed := false
+	for _, p := range prs {
+		if p.Head != cur.Base || p.Fork {
+			continue
+		}
+		if p.State == Open {
+			open = append(open, p)
+		} else if p.State == Closed {
+			closed = true
+		}
+	}
+	switch {
+	case len(open) > 1:
+		return PR{}, AmbiguousBase
+	case len(open) == 0 && closed:
+		return PR{}, ClosedAncestor
+	case len(open) == 0:
+		return PR{}, StaleBase
+	}
+	return open[0], ""
 }
 
 func reversed(s []int) []int {
