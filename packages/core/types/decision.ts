@@ -38,6 +38,22 @@ export interface DecisionRequestCard {
   record_comment_id?: string | null;
   /** Latest answer, kept after a disclaim so the card can say so. */
   answer?: DecisionRequestAnswer;
+  /** The pending executable action behind an open request, if any. */
+  action?: DecisionRequestAction;
+}
+
+/** What an executable action would change, rendered by the server from the values its executor checks. */
+export interface DecisionActionPreview {
+  fields: { label: string; current: string; proposed: string }[];
+  sha256: string;
+}
+
+export interface DecisionRequestAction {
+  id: string;
+  action_type: string;
+  payload_sha256: string;
+  /** Absent for an unknown action type, a stale window or an older server: the card then offers no approval. */
+  preview?: DecisionActionPreview;
 }
 
 /** The run that resumed the issue after the answer was recorded. */

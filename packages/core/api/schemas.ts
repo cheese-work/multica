@@ -1044,6 +1044,18 @@ const DecisionCardSchema = z.lazy(() => z.object({
   request_message_id: z.string().optional().catch(undefined),
 }).loose());
 
+// A malformed preview degrades to none (the card says details are unavailable and
+// offers no approval); an action without an id or digest cannot be approved, so it is dropped.
+const DecisionActionSchema = z.lazy(() => z.object({
+  id: z.string(),
+  action_type: z.string().catch(""),
+  payload_sha256: z.string(),
+  preview: z.object({
+    fields: z.array(z.object({ label: z.string(), current: z.string(), proposed: z.string() }).loose()).min(1),
+    sha256: z.string(),
+  }).loose().optional().catch(undefined),
+}).loose());
+
 const DecisionRequestCardSchema = z.lazy(() => z.object({
   id: z.string(),
   issue_id: z.string(),
@@ -1064,6 +1076,7 @@ const DecisionRequestCardSchema = z.lazy(() => z.object({
     option_label: z.string().optional().catch(undefined),
     answered_at: z.string().default(""),
   }).loose().optional().catch(undefined),
+  action: DecisionActionSchema.optional().catch(undefined),
 }).loose());
 
 export const DecisionArtifactListSchema = z.lazy(() => z.object({
