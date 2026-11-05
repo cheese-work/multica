@@ -4325,6 +4325,26 @@ func (q *Queries) MarkChatSessionReadBefore(ctx context.Context, arg MarkChatSes
 	return err
 }
 
+const markChatSessionUnread = `-- name: MarkChatSessionUnread :exec
+UPDATE chat_session cs
+SET last_read_at = latest.created_at - interval '1 microsecond'
+FROM (
+  SELECT max(m.created_at) AS created_at
+  FROM chat_message m
+  WHERE m.chat_session_id = $1
+    AND m.role = 'assistant'
+    AND m.message_kind NOT IN ('decision_cancel_notice', 'decision_reference')
+) latest
+WHERE cs.id = $1 AND latest.created_at IS NOT NULL
+`
+
+// Places the read cursor just before the latest assistant message that counts
+// toward unread_count, so unread_count is at least 1. No such message: no-op.
+func (q *Queries) MarkChatSessionUnread(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markChatSessionUnread, id)
+	return err
+}
+
 const markChatTaskCompact = `-- name: MarkChatTaskCompact :one
 UPDATE agent_task_queue
 SET task_kind = 'compact',

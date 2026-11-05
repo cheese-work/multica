@@ -985,3 +985,49 @@ func TestRESTSnapshotRefreshMarksGreenRerunOfRedHeadAsFlaky(t *testing.T) {
 		}
 	}
 }
+
+// A binding that becomes disallowed after row selection and before the write
+// must not receive the snapshot.
+func TestProcessRevalidatesWorkspaceFilterAtWrite(t *testing.T) {
+	pool := testDBPool(t)
+	q := db.New(pool)
+	ctx := context.Background()
+
+	const installationID = 555444
+	const repoName = "revalidate-repo"
+	const prNumber = int32(78)
+
+	ws := seedWorkspaceWithSettings(t, pool, `{}`)
+	pr := seedPRForWorkspace(t, q, ws, installationID, repoName, prNumber, "A")
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM github_pull_request_check_run WHERE pr_id=$1`, pr.ID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM github_pull_request WHERE id=$1`, pr.ID)
+	})
+
+	applied := 0
+	m := NewManager(enabledClient(t), q, pool, func(context.Context, pgtype.UUID) { applied++ })
+	m.jitter = func() time.Duration { return 0 }
+	m.ctx = ctx
+	m.fetch = func(context.Context, *Client, int64, string, string, int32) (*PRSnapshot, error) {
+		return &PRSnapshot{HeadSHA: "A", Mergeable: "MERGEABLE", MergeStateStatus: "CLEAN"}, nil
+	}
+	// Calls 1 and 2 are the pre-fetch and post-fetch row selections; the
+	// binding is revoked right after the second one, before the write.
+	var filterCalls atomic.Int32
+	m.SetWorkspaceFilter(func(context.Context, *db.Queries, int64) (map[pgtype.UUID]bool, error) {
+		if filterCalls.Add(1) > 2 {
+			return map[pgtype.UUID]bool{}, nil
+		}
+		return map[pgtype.UUID]bool{ws: true}, nil
+	})
+
+	m.process(ctx, address{InstallationID: installationID, Owner: "o", Repo: repoName, Number: prNumber})
+
+	got, err := q.GetGitHubPullRequestByID(ctx, pr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SnapshotHeadSha != "" || got.ApiMergeable.Valid || applied != 0 {
+		t.Fatalf("snapshot written after the binding was revoked: applied=%d row=%+v", applied, got)
+	}
+}
