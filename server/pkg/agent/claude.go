@@ -1189,7 +1189,9 @@ var claudeBlockedArgs = map[string]blockedArgMode{
 // buildClaudeOutputOnlyArgs is the whole launch line of an output_only
 // background job (CHE-4101). It ignores McpConfig, ResumeSessionID,
 // ClaudeSettingsPath, ExtraArgs and CustomArgs, so no setting can re-enable a
-// tool. `--bare` is avoided: it requires ANTHROPIC_API_KEY.
+// tool. `--safe-mode` disables host CLAUDE.md, settings hooks, skills, plugins
+// and MCP servers while keeping OAuth auth; `--bare` is avoided because it
+// requires ANTHROPIC_API_KEY.
 func buildClaudeOutputOnlyArgs(opts ExecOptions) []string {
 	args := []string{
 		"-p",
@@ -1200,6 +1202,7 @@ func buildClaudeOutputOnlyArgs(opts ExecOptions) []string {
 		"--strict-mcp-config",
 		"--disable-slash-commands",
 		"--no-session-persistence",
+		"--safe-mode",
 	}
 	if opts.Model != "" {
 		args = append(args, "--model", opts.Model)
