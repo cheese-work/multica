@@ -5,8 +5,8 @@
  * saved server config when the draft is restored. A new server has no saved
  * config, so those values are typed again.
  *
- * Text that does not parse yet (an unfinished edit) is kept too: a scanner
- * replaces each credential key's value with `null` without needing valid JSON.
+ * Text that does not parse yet (an unfinished edit) is kept up to its first
+ * credential key.
  */
 const SECRET_KEY = /env|header|token|secret|passw|auth|key|credential|cookie/i;
 
@@ -27,32 +27,6 @@ export function stripMcpSecrets(value: Json): Json {
   return out;
 }
 
-/** The end index of the JSON value starting at `start`; text length if it never closes. */
-function valueEnd(text: string, start: number): number {
-  const first = text[start];
-  if (first === '"') return stringEnd(text, start);
-  if (first === "{" || first === "[") {
-    let depth = 0;
-    for (let i = start; i < text.length; i++) {
-      const c = text[i];
-      if (c === '"') i = stringEnd(text, i) - 1;
-      else if (c === "{" || c === "[") depth++;
-      else if (c === "}" || c === "]") {
-        depth--;
-        if (depth === 0) return i + 1;
-      }
-    }
-    return text.length;
-  }
-  // A bare value (number, literal, or malformed text such as `Bearer abc`) runs
-  // to the next separator or line break, so whitespace inside it cannot leak a suffix.
-  let i = start;
-  while (i < text.length && !/[\n\r,}\]]/.test(text[i]!)) {
-    i = text[i] === '"' ? stringEnd(text, i) : i + 1;
-  }
-  return i;
-}
-
 function stringEnd(text: string, start: number): number {
   for (let i = start + 1; i < text.length; i++) {
     if (text[i] === "\\") i++;
@@ -61,42 +35,51 @@ function stringEnd(text: string, start: number): number {
   return text.length;
 }
 
-/** JSON editor text with every credential key's value replaced by `null`. Works on unfinished JSON. */
+/**
+ * JSON editor text that is safe to store. Valid JSON is redacted by key. Text
+ * that does not parse (an unfinished edit) fails closed: everything from the
+ * first credential-like key to the end is dropped, because where its value ends
+ * cannot be told reliably (multiline PEM, `Bearer x`, a missing quote).
+ */
 export function redactMcpJsonText(text: string): string {
   try {
     const parsed: unknown = JSON.parse(text);
     if (isObject(parsed)) return JSON.stringify(stripMcpSecrets(parsed), null, 2);
   } catch {
-    // Not valid yet: scan instead.
+    // Not valid yet: cut at the first credential key.
   }
-  let out = "";
+  const cut = firstSecretKeyStart(text);
+  return cut < 0 ? text : text.slice(0, cut);
+}
+
+/** Start index of the first key, quoted or bare, whose name looks like a credential; -1 if none. */
+function firstSecretKeyStart(text: string): number {
+  const bareWord = /[\w.-]+/y;
   let i = 0;
   while (i < text.length) {
-    if (text[i] !== '"') {
-      out += text[i++];
-      continue;
+    const c = text[i]!;
+    if (c === '"') {
+      const end = stringEnd(text, i);
+      if (/^\s*:/.test(text.slice(end)) && isSecretKey(text.slice(i, end))) return i;
+      i = end;
+    } else if (/[\w.-]/.test(c)) {
+      bareWord.lastIndex = i;
+      const end = i + bareWord.exec(text)![0].length;
+      if (/^['"]?\s*:/.test(text.slice(end)) && SECRET_KEY.test(text.slice(i, end))) return i;
+      i = end;
+    } else {
+      i++;
     }
-    const end = stringEnd(text, i);
-    const literal = text.slice(i, end);
-    out += literal;
-    i = end;
-    let j = i;
-    while (j < text.length && /\s/.test(text[j]!)) j++;
-    if (text[j] !== ":") continue;
-    let key = literal.slice(1, literal.endsWith('"') && literal.length > 1 ? -1 : undefined);
-    try {
-      key = JSON.parse(literal) as string;
-    } catch {
-      // Unterminated or malformed key: match its raw text.
-    }
-    if (!SECRET_KEY.test(key)) continue;
-    let k = j + 1;
-    while (k < text.length && /\s/.test(text[k]!)) k++;
-    if (k >= text.length) continue;
-    out += `${text.slice(i, j + 1)} null`;
-    i = valueEnd(text, k);
   }
-  return out;
+  return -1;
+}
+
+function isSecretKey(literal: string): boolean {
+  try {
+    return SECRET_KEY.test(JSON.parse(literal) as string);
+  } catch {
+    return SECRET_KEY.test(literal); // Unterminated or malformed key: match its raw text.
+  }
 }
 
 function restoreValue(saved: unknown, draft: unknown): unknown {

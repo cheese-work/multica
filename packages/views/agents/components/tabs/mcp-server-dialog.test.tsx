@@ -390,7 +390,7 @@ describe("McpServerDialog", () => {
       const restored = reopen();
       expect(restored).not.toContain("typed-s3cret");
       fireEvent.change(screen.getByLabelText("MCP server JSON configuration"), {
-        target: { value: restored + "]}" },
+        target: { value: restored + '"token": null, "name": "b"}]}' },
       });
       await userEvent.setup().click(screen.getByRole("button", { name: /save/i }));
       await vi.waitFor(() => expect(props.onSave).toHaveBeenCalled());
@@ -412,7 +412,7 @@ describe("McpServerDialog", () => {
       const restored = reopen();
       expect(restored).not.toContain("typed-s3cret");
       fireEvent.change(screen.getByLabelText("MCP server JSON configuration"), {
-        target: { value: restored.replace(/"headers": null/, '"headers": null') + "}" },
+        target: { value: restored + '"headers": null}' },
       });
       await userEvent.setup().click(screen.getByRole("button", { name: /save/i }));
       await vi.waitFor(() => expect(props.onSave).toHaveBeenCalled());
