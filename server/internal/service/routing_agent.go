@@ -138,6 +138,14 @@ func (s *TaskService) failOverRoutingTask(ctx context.Context, failed db.AgentTa
 	if err != nil || agent.ArchivedAt.Valid {
 		return
 	}
+	// The fallback brings its owner's connected apps. Judge it by the invocation
+	// policy every other trigger uses, against the human behind the run that
+	// failed; a run with no human originator fails closed.
+	if !CanMemberInvokeAgent(ctx, s.Queries, agent, failed.OriginatorUserID, issue.WorkspaceID) {
+		slog.Warn("routing failover: the failed run's originator may not invoke the fallback agent; the issue keeps its assignee",
+			"issue_id", util.UUIDToString(issue.ID), "fallback_agent_id", util.UUIDToString(fallback))
+		return
+	}
 	note := "Routing failover: the routing agent's run failed with a provider error (" + failureReason + "). You are the fallback agent and now own this step."
 	if err := s.handStepToFallback(ctx, issue, failed, fallback, note); err != nil {
 		slog.Warn("routing failover: hand the step to the fallback agent failed; the issue keeps its assignee",
@@ -162,7 +170,7 @@ func (s *TaskService) handStepToFallback(ctx context.Context, snapshot db.Issue,
 	next := snapshot
 	next.AssigneeType = pgtype.Text{String: "agent", Valid: true}
 	next.AssigneeID = fallback
-	params, _, err := s.prepareIssueTaskWithQueriesAndOverlay(readOnlyRunBudget(ctx), s.Queries, next, pgtype.UUID{}, nil, false, note, pgtype.UUID{}, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived, nil)
+	params, _, err := s.prepareIssueTaskWithQueriesAndOverlay(readOnlyRunBudget(ctx), s.Queries, next, pgtype.UUID{}, nil, false, note, failed.OriginatorUserID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived, nil)
 	if err != nil {
 		return err
 	}

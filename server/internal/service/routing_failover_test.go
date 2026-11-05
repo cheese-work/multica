@@ -176,3 +176,62 @@ func TestRoutingFailoverKeepsTheAssigneeWhenTheEnqueueFails(t *testing.T) {
 		t.Fatal("the issue stayed with the fallback agent after the enqueue failed")
 	}
 }
+
+// ownWorkerByAnotherMember makes the fallback agent a private agent of a second
+// workspace member; the failed run's originator stays the first member.
+func ownWorkerByAnotherMember(t *testing.T, rows *dbfx.Fixture, f *delegatedFailureFixture) string {
+	t.Helper()
+	var other string
+	if err := f.pool.QueryRow(context.Background(),
+		`INSERT INTO "user" (name, email) VALUES ('Fallback Owner', $1) RETURNING id`,
+		"fallback-owner-"+f.sourceTask+"@multica.test").Scan(&other); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.pool.Exec(context.Background(), `DELETE FROM "user" WHERE id = $1`, other) })
+	rows.Exec(t, `INSERT INTO member (workspace_id, user_id, role) VALUES ($1, $2, 'member')`, f.workspaceID, other)
+	rows.Exec(t, `UPDATE agent SET owner_id = $2, permission_mode = 'private' WHERE id = $1`, f.worker, other)
+	return other
+}
+
+func TestRoutingFailoverNeedsTheOriginatorToBeAbleToInvokeTheFallback(t *testing.T) {
+	cases := []struct {
+		name    string
+		setup   func(t *testing.T, rows *dbfx.Fixture, f *delegatedFailureFixture)
+		wantRun bool
+	}{
+		{name: "private fallback of another member is refused", setup: func(t *testing.T, rows *dbfx.Fixture, f *delegatedFailureFixture) {
+			ownWorkerByAnotherMember(t, rows, f)
+		}},
+		{name: "public_to fallback that does not target the originator is refused", setup: func(t *testing.T, rows *dbfx.Fixture, f *delegatedFailureFixture) {
+			other := ownWorkerByAnotherMember(t, rows, f)
+			rows.Exec(t, `UPDATE agent SET permission_mode = 'public_to' WHERE id = $1`, f.worker)
+			rows.Exec(t, `INSERT INTO agent_invocation_target (agent_id, target_type, target_id) VALUES ($1, 'member', $2)`, f.worker, other)
+		}},
+		{name: "run with no human originator is refused", setup: func(t *testing.T, rows *dbfx.Fixture, f *delegatedFailureFixture) {
+			rows.Exec(t, `UPDATE agent_task_queue SET originator_user_id = NULL WHERE id = $1`, f.sourceTask)
+		}},
+		{name: "public_to fallback that targets the originator runs", wantRun: true, setup: func(t *testing.T, rows *dbfx.Fixture, f *delegatedFailureFixture) {
+			ownWorkerByAnotherMember(t, rows, f)
+			rows.Exec(t, `UPDATE agent SET permission_mode = 'public_to' WHERE id = $1`, f.worker)
+			rows.Exec(t, `INSERT INTO agent_invocation_target (agent_id, target_type, target_id) VALUES ($1, 'member', $2)`, f.worker, f.userID)
+		}},
+		{name: "fallback owned by the originator runs", wantRun: true, setup: func(*testing.T, *dbfx.Fixture, *delegatedFailureFixture) {}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, svc, rows := routingFailoverFixture(t, "todo")
+			tc.setup(t, rows, f)
+			failSource(t, svc, f, providerDown)
+			wantRuns, wantAssignee := 0, f.coordinator
+			if tc.wantRun {
+				wantRuns, wantAssignee = 1, f.worker
+			}
+			if got := fallbackRuns(t, rows, f, f.worker); got != wantRuns {
+				t.Fatalf("fallback runs = %d, want %d", got, wantRuns)
+			}
+			if got := rows.Count(t, `SELECT count(*) FROM issue WHERE id = $1 AND assignee_id = $2`, f.issueID, wantAssignee); got != 1 {
+				t.Fatalf("issue assignee is not %s", wantAssignee)
+			}
+		})
+	}
+}
