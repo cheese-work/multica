@@ -358,7 +358,7 @@ func (a wakeupDefinitionAPI) save(w http.ResponseWriter, r *http.Request, ruleKe
 	if c.actorType == "agent" {
 		patch.Disable()
 	}
-	saved, err := a.service().SaveWakeupDefinition(r.Context(), c.ref, c.member, service.WakeupDefinitionWrite{RuleKey: ruleKey, Revision: int64(body.Revision), Patch: patch})
+	saved, err := a.service().SaveWakeupDefinition(r.Context(), c.ref, c.member, service.WakeupDefinitionWrite{RuleKey: ruleKey, Revision: int64(body.Revision), Patch: patch, Pending: c.actorType == "agent"})
 	if err != nil {
 		wakeupError(w, err)
 		return

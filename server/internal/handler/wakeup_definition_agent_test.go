@@ -87,3 +87,35 @@ func TestWakeupDefinitionRealTaskTokenCreatesDisabledRule(t *testing.T) {
 	created := decodeDefinition(t, call("POST", "/api/wakeup-definitions", body).Want(http.StatusCreated))
 	call("PUT", "/api/wakeup-definitions/"+created.RuleKey, wdBody(created.Revision, cfg(map[string]any{"enabled": true}))).Want(http.StatusForbidden)
 }
+
+// An agent-created root waits for a human admin. A member's issue override must
+// not switch it on in the meantime; the admin's own write lifts the veto, and a
+// root a human disabled keeps the documented re-enable-below behaviour.
+func TestWakeupDefinitionAgentRootVetoesIssueOverride(t *testing.T) {
+	k := newWakeupDefinitionKit(t)
+	member := wdMember(t, "WD Override Member", "member")
+	body := cfg(map[string]any{"enabled": true, "trigger": map[string]any{"kind": "pr_merged"}, "instruction": "x", "target": map[string]any{"type": "agent", "id": handlerTestAgentID(t)}})
+	override := cfg(map[string]any{"enabled": true})
+	agentRun := k.asAgentRun()
+	for _, s := range []wdScope{k.workspace(), k.project()} {
+		wipeWakeupDefinitions(t)
+		root := decodeDefinition(t, s.create(body, agentRun).Want(http.StatusCreated))
+		k.issue().put(root.RuleKey, 0, override, asUser(member)).Want(http.StatusOK)
+		if eff := k.issue().effective(root.RuleKey); eff.Enabled {
+			t.Fatalf("%s: a member's issue override enabled an unapproved agent rule: %+v", s.kind, eff)
+		}
+		// The human admin enables the root; the override below it now counts.
+		s.put(root.RuleKey, root.Revision, body).Want(http.StatusOK)
+		if eff := k.issue().effective(root.RuleKey); !eff.Enabled {
+			t.Fatalf("%s: admin-approved rule stayed disabled: %+v", s.kind, eff)
+		}
+	}
+	// A human-created disabled root is not an agent proposal: unchanged.
+	wipeWakeupDefinitions(t)
+	off := cfg(map[string]any{"enabled": false, "trigger": map[string]any{"kind": "pr_merged"}, "instruction": "x", "target": map[string]any{"type": "agent", "id": handlerTestAgentID(t)}})
+	human := decodeDefinition(t, k.workspace().create(off).Want(http.StatusCreated))
+	k.issue().put(human.RuleKey, 0, override, asUser(member)).Want(http.StatusOK)
+	if eff := k.issue().effective(human.RuleKey); !eff.Enabled {
+		t.Fatalf("human-disabled root no longer re-enabled by an issue override: %+v", eff)
+	}
+}

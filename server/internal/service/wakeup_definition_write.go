@@ -70,6 +70,8 @@ type WakeupDefinitionWrite struct {
 	RuleKey  string
 	Revision int64
 	Patch    WakeupConfigPatch
+	// Pending: an agent proposes this definition; it waits for a human admin.
+	Pending bool
 }
 
 // WakeupEffectiveRule is a resolved rule plus the fields the viewed scope sets
@@ -289,13 +291,15 @@ func (s *IssueWakeupService) SaveWakeupDefinition(ctx context.Context, ref Wakeu
 	if err := s.authorizeWakeupRefs(ctx, q, ref.WorkspaceID, member, refs); err != nil {
 		return WakeupDefinitionView{}, err
 	}
+	// A human admin lifts the hold by writing the definition enabled.
+	pending := w.Pending || existing.PendingApproval && !(patch.Enabled.Set && patch.Enabled.Value)
 	candidate := patch
 	if aliased {
 		if candidate, err = workspaceAliasReadback(in.settings, w.RuleKey, patch); err != nil {
 			return WakeupDefinitionView{}, err
 		}
 	}
-	eff, err := resolveWakeupProposal(in, ref, &WakeupDefinition{Scope: ref.Kind, ScopeID: ref.ID, Root: root, Patch: candidate})
+	eff, err := resolveWakeupProposal(in, ref, &WakeupDefinition{Scope: ref.Kind, ScopeID: ref.ID, Root: root, Pending: pending, Patch: candidate})
 	if err != nil {
 		return WakeupDefinitionView{}, err
 	}
@@ -329,11 +333,11 @@ func (s *IssueWakeupService) SaveWakeupDefinition(ctx context.Context, ref Wakeu
 	switch {
 	case keep && !found:
 		row, err = q.InsertWakeupDefinition(ctx, db.InsertWakeupDefinitionParams{
-			WorkspaceID: ref.WorkspaceID, ScopeKind: string(ref.Kind), ScopeID: ref.ID, RuleKey: w.RuleKey, Root: root, Config: raw, EventTypes: WakeupEventSelector(rest), Actor: member,
+			WorkspaceID: ref.WorkspaceID, ScopeKind: string(ref.Kind), ScopeID: ref.ID, RuleKey: w.RuleKey, Root: root, Config: raw, EventTypes: WakeupEventSelector(rest), PendingApproval: pending, Actor: member,
 		})
 	case keep:
 		row, err = q.UpdateWakeupDefinition(ctx, db.UpdateWakeupDefinitionParams{
-			WorkspaceID: ref.WorkspaceID, ScopeKind: string(ref.Kind), ScopeID: ref.ID, RuleKey: w.RuleKey, ExpectedRevision: existing.Revision, Config: raw, EventTypes: WakeupEventSelector(rest), Actor: member,
+			WorkspaceID: ref.WorkspaceID, ScopeKind: string(ref.Kind), ScopeID: ref.ID, RuleKey: w.RuleKey, ExpectedRevision: existing.Revision, Config: raw, EventTypes: WakeupEventSelector(rest), PendingApproval: pending, Actor: member,
 		})
 	case found:
 		var n int64

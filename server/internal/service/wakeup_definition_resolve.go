@@ -41,6 +41,9 @@ type WakeupDefinition struct {
 	Revision int64
 	// Root marks the definition that created a custom rule.
 	Root bool
+	// Pending marks a definition an agent proposed that no human admin has
+	// enabled yet: its rule stays disabled in every scope below it.
+	Pending bool
 	// UpdatedBy is the member whose last write this is; execution asks again
 	// whether they may use the target the definition names.
 	UpdatedBy pgtype.UUID
@@ -58,7 +61,7 @@ func WakeupDefinitionFromRow(row db.IssueWakeupDefinition) (WakeupDefinition, er
 	if err != nil {
 		return WakeupDefinition{}, fmt.Errorf("wakeup definition %s: %w", row.RuleKey, err)
 	}
-	return WakeupDefinition{Scope: scope, ScopeID: row.ScopeID, Revision: row.Revision, Root: row.Root, UpdatedBy: row.UpdatedBy, Patch: patch}, nil
+	return WakeupDefinition{Scope: scope, ScopeID: row.ScopeID, Revision: row.Revision, Root: row.Root, Pending: row.PendingApproval, UpdatedBy: row.UpdatedBy, Patch: patch}, nil
 }
 
 // WakeupResolveInput carries one rule's definitions for one issue. The caller
@@ -152,6 +155,7 @@ func ResolveWakeupConfig(in WakeupResolveInput) (EffectiveWakeupConfig, error) {
 	out := EffectiveWakeupConfig{RuleKey: in.RuleKey, Applicable: true, Sources: map[string]WakeupScope{}}
 	out.Config = mergeWakeupPatch(out.Config, baseline, WakeupScopeBuiltin, out.Sources)
 	seen := false
+	var pending WakeupScope
 	for _, l := range layers {
 		if l.def == nil {
 			continue
@@ -166,6 +170,9 @@ func ResolveWakeupConfig(in WakeupResolveInput) (EffectiveWakeupConfig, error) {
 			out.Applicable, out.Inapplicable = false, WakeupInapplicableNoRoot
 		}
 		seen = true
+		if l.def.Pending {
+			pending = l.slot
+		}
 		out.Config = mergeWakeupPatch(out.Config, l.def.Patch, l.slot, out.Sources)
 		if p := l.def.Patch.AggregateLimit; p.Set && !p.Null {
 			out.AggregateCaps = append(out.AggregateCaps, WakeupAggregateCap{Scope: l.slot, ScopeID: l.def.ScopeID, Limit: p.Value})
@@ -173,6 +180,12 @@ func ResolveWakeupConfig(in WakeupResolveInput) (EffectiveWakeupConfig, error) {
 	}
 	if !seen && !builtin {
 		out.Applicable, out.Inapplicable = false, WakeupInapplicableNoRoot
+	}
+	if pending != "" {
+		// A later scope may re-enable a rule a human disabled, never one still
+		// waiting for an admin.
+		out.Config.Enabled = wakeupField[bool]{Set: true}
+		out.Sources["enabled"] = pending
 	}
 	if !out.Applicable {
 		out.AggregateCaps = nil
