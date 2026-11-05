@@ -81,6 +81,9 @@ func TestWF010MoveWithoutEdge(t *testing.T) {
 		"key":          "Then move the issue to blocked and say why.",
 		"straight":     "Move straight to Cancelled when it is a duplicate.",
 		"cli form":     "Run: multica issue status <this issue> blocked",
+		// Two moves on one line: the second must not hide behind the first.
+		"second move on the line":  "PASS: move this issue to Done; move to Blocked.",
+		"second move after a stop": "Move this issue to Done. Otherwise move it to Cancelled.",
 	}
 	for name, text := range cases {
 		t.Run(name, func(t *testing.T) {
