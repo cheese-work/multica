@@ -248,11 +248,23 @@ func prepareCodexHomeWithOpts(codexHome string, opts CodexHomeOptions, logger *s
 	// stale or absent copy as "unconfigured" and loosen (MUL-4957).
 	var configSyncErr error
 	for _, name := range codexCopiedFiles {
-		if opts.Managed && name == "instructions.md" {
-			continue // personal instructions are not part of the managed allowlist
-		}
 		src := filepath.Join(sharedHome, name)
 		dst := filepath.Join(codexHome, name)
+		if opts.Managed {
+			// Personal instructions and the legacy config.json are not in the
+			// managed allowlist; config.toml is rebuilt from it.
+			var err error
+			switch name {
+			case "config.toml":
+				err = writeManagedCodexConfig(src, dst)
+			default:
+				err = os.RemoveAll(dst)
+			}
+			if err != nil {
+				return fmt.Errorf("prepare managed codex %s: %w", name, err)
+			}
+			continue
+		}
 		if err := syncCopiedFile(src, dst); err != nil {
 			logger.Warn("execenv: codex-home sync failed", "file", name, "error", err)
 			if name == "config.toml" {

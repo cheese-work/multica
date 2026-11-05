@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 // HarnessProfileManaged selects the generated per-task config home (CHE-3706).
@@ -173,7 +175,7 @@ func prepareManagedCodex(envRoot, codexHome string, skills []SkillContextForEnv,
 	if _, err := writeLaunchReceipt(envRoot, LaunchReceipt{
 		Provider:      "codex",
 		EnvKeys:       []string{"CODEX_HOME"},
-		FilesSeeded:   existingPaths(codexHome, append(append([]string{}, codexSymlinkedFiles...), "config.toml", "config.json")...),
+		FilesSeeded:   existingPaths(codexHome, append(append([]string{}, codexSymlinkedFiles...), "config.toml")...),
 		Skills:        skillNames(skills),
 		McpServers:    mcpServerNames(mcpConfig),
 		ExcludedPaths: append(existingPaths(sharedHome, "instructions.md", "skills", filepath.Join("plugins", "cache")), universalDir),
@@ -184,4 +186,59 @@ func prepareManagedCodex(envRoot, codexHome string, skills []SkillContextForEnv,
 		logger.Info("execenv: managed codex home prepared", "codex_home", codexHome)
 	}
 	return nil
+}
+
+// managedCodexConfigKeys is the top-level allowlist for a managed
+// config.toml: provider, model and credential-store selection only. Everything
+// else the personal file can carry (mcp_servers, hooks, plugins, skills.config,
+// profiles, notify, instruction-file keys, ...) is dropped.
+var managedCodexConfigKeys = map[string]bool{
+	"model":                          true,
+	"model_provider":                 true,
+	"model_providers":                true,
+	"model_reasoning_effort":         true,
+	"model_reasoning_summary":        true,
+	"model_verbosity":                true,
+	"model_context_window":           true,
+	"model_auto_compact_token_limit": true,
+	"model_catalog_json":             true,
+	"service_tier":                   true,
+	"openai_base_url":                true,
+	"chatgpt_base_url":               true,
+	"oss_provider":                   true,
+	"preferred_auth_method":          true,
+	"forced_login_method":            true,
+	"forced_chatgpt_workspace_id":    true,
+	"cli_auth_credentials_store":     true,
+}
+
+// writeManagedCodexConfig replaces dst with the allowlisted subset of the
+// personal config at src. A missing src leaves no dst, so a reused home
+// previously prepared as personal cannot keep stale personal config.
+func writeManagedCodexConfig(src, dst string) error {
+	if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove stale managed config: %w", err)
+	}
+	raw, err := os.ReadFile(src)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read personal codex config: %w", err)
+	}
+	var all map[string]any
+	if err := toml.Unmarshal(raw, &all); err != nil {
+		return fmt.Errorf("parse personal codex config: %w", err)
+	}
+	kept := map[string]any{}
+	for k, v := range all {
+		if managedCodexConfigKeys[k] {
+			kept[k] = v
+		}
+	}
+	out, err := toml.Marshal(kept)
+	if err != nil {
+		return fmt.Errorf("encode managed codex config: %w", err)
+	}
+	return os.WriteFile(dst, out, 0o644)
 }

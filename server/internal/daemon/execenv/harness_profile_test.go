@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 func readReceipt(t *testing.T, envRoot string) LaunchReceipt {
@@ -143,7 +145,7 @@ func TestPrepareManagedCodex_ExcludesPersonalDiscovery(t *testing.T) {
 		t.Errorf("credentials missing: %v", err)
 	}
 	cfg, _ := os.ReadFile(filepath.Join(codexHome, "config.toml"))
-	if !strings.Contains(string(cfg), `model = "x"`) {
+	if !strings.Contains(string(cfg), `model = 'x'`) {
 		t.Error("provider config not seeded")
 	}
 	if !strings.Contains(string(cfg), filepath.ToSlash(universal)) || !strings.Contains(string(cfg), "enabled = false") {
@@ -197,5 +199,123 @@ func TestPersonalCodexHomeUnchanged(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(codexHome), LaunchReceiptFile)); err == nil {
 		t.Error("personal profile wrote a launch receipt")
+	}
+}
+
+const personalCodexConfig = `model = "gpt-x"
+model_provider = "corp"
+model_reasoning_effort = "high"
+model_instructions_file = "personal-instructions.md"
+experimental_instructions_file = "legacy-instructions.md"
+notify = ["/home/me/notify.sh"]
+profile = "mine"
+
+[model_providers.corp]
+name = "Corp"
+base_url = "https://llm.example.com/v1"
+env_key = "CORP_KEY"
+
+[mcp_servers.personal-mcp]
+command = "personal-mcp"
+
+[plugins."p@market"]
+enabled = true
+
+[profiles.mine]
+model = "other"
+
+[hooks]
+on_start = "personal-hook"
+`
+
+// A managed Codex home carries provider config only: no personal MCP servers,
+// instruction files, hooks, plugins, profiles or notify command, even when the
+// home was first prepared as personal and is reused (CHE-3706 review).
+func TestPrepareManagedCodex_AllowlistsConfig(t *testing.T) {
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	shared := filepath.Join(userHome, ".codex")
+	t.Setenv("CODEX_HOME", shared)
+	writeFile(t, filepath.Join(shared, "auth.json"), `{"a":1}`)
+	writeFile(t, filepath.Join(shared, "config.toml"), personalCodexConfig)
+	writeFile(t, filepath.Join(shared, "personal-instructions.md"), "personal system prompt")
+	writeFile(t, filepath.Join(shared, "legacy-instructions.md"), "legacy system prompt")
+
+	envRoot := t.TempDir()
+	codexHome := filepath.Join(envRoot, "codex-home")
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	// Reuse case: the home already exists from a personal launch.
+	if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{GOOS: "linux"}, logger); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{GOOS: "linux", Managed: true}, logger); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareManagedCodex(envRoot, codexHome, nil, nil, logger); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(codexHome, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := string(raw)
+	var parsed struct {
+		Model          string `toml:"model"`
+		ModelProvider  string `toml:"model_provider"`
+		ModelProviders map[string]struct {
+			BaseURL string `toml:"base_url"`
+			EnvKey  string `toml:"env_key"`
+		} `toml:"model_providers"`
+	}
+	if err := toml.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("managed config.toml does not parse: %v\n%s", err, cfg)
+	}
+	corp := parsed.ModelProviders["corp"]
+	if parsed.Model != "gpt-x" || parsed.ModelProvider != "corp" || corp.BaseURL != "https://llm.example.com/v1" || corp.EnvKey != "CORP_KEY" {
+		t.Errorf("provider config not kept: %+v\n%s", parsed, cfg)
+	}
+	for _, drop := range []string{"personal-mcp", "model_instructions_file", "experimental_instructions_file", "notify", "p@market", "profiles", "personal-hook", `profile =`} {
+		if strings.Contains(cfg, drop) {
+			t.Errorf("personal config %q survived in managed config.toml:\n%s", drop, cfg)
+		}
+	}
+	for _, name := range []string{"instructions.md", "config.json"} {
+		if _, err := os.Stat(filepath.Join(codexHome, name)); err == nil {
+			t.Errorf("personal file %s present in managed home", name)
+		}
+	}
+}
+
+// Regression: a personal Codex launch keeps the whole personal config and the
+// instruction files it references, exactly as before the profile existed.
+// Passes before and after CHE-3706 by design.
+func TestPrepareCodexHome_PersonalKeepsPersonalConfigVerbatim(t *testing.T) {
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	shared := filepath.Join(userHome, ".codex")
+	t.Setenv("CODEX_HOME", shared)
+	writeFile(t, filepath.Join(shared, "config.toml"), personalCodexConfig)
+	writeFile(t, filepath.Join(shared, "personal-instructions.md"), "personal system prompt")
+	writeFile(t, filepath.Join(shared, "legacy-instructions.md"), "legacy system prompt")
+	writeFile(t, filepath.Join(shared, "instructions.md"), "personal")
+
+	codexHome := filepath.Join(t.TempDir(), "codex-home")
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{GOOS: "linux"}, logger); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(codexHome, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Only the sandbox-managed blocks are daemon-added; the personal bytes follow verbatim.
+	if !strings.HasSuffix(string(got), personalCodexConfig) {
+		t.Errorf("personal config.toml bytes changed:\n%s", got)
+	}
+	for _, name := range []string{"personal-instructions.md", "legacy-instructions.md", "instructions.md"} {
+		if _, err := os.Stat(filepath.Join(codexHome, name)); err != nil {
+			t.Errorf("personal file %s no longer copied: %v", name, err)
+		}
 	}
 }
