@@ -211,6 +211,12 @@ func (q *Queries) DeleteWorkspaceComments(ctx context.Context, workspaceID pgtyp
 
 const deleteWorkspaceCommunicationRoots = `-- name: DeleteWorkspaceCommunicationRoots :exec
 WITH
+deleted_attention_marks AS (
+    DELETE FROM chat_attention_mark
+    WHERE chain_root_session_id IN (
+        SELECT id FROM chat_session WHERE chat_session.workspace_id = $1
+    )
+),
 deleted_sessions AS (
     DELETE FROM chat_session WHERE chat_session.workspace_id = $1
 ),
@@ -227,6 +233,8 @@ deleted_channel_installations AS (
 DELETE FROM lark_installation WHERE lark_installation.workspace_id = $1
 `
 
+// chat_attention_mark has no workspace_id and no workspace FK; its chain root is
+// one of this workspace's sessions. Items cascade from the workspace.
 func (q *Queries) DeleteWorkspaceCommunicationRoots(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteWorkspaceCommunicationRoots, workspaceID)
 	return err
