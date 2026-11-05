@@ -377,6 +377,9 @@ type UpdateWorkspaceRequest struct {
 	// overwrite, absent fields keep their saved value, null resets to the
 	// defaults. Raw for the same reason as CompactPrompt.
 	AutoCompact json.RawMessage `json:"auto_compact"`
+	// HarnessProfile sets settings.harness_profile alone (CHE-3706); null
+	// removes it so the workspace falls back to personal.
+	HarnessProfile json.RawMessage `json:"harness_profile"`
 	// IdleStartedGuard patches settings.idle_started_guard alone (CHE-3296):
 	// named fields overwrite, absent fields keep their saved value. Owner only.
 	IdleStartedGuard json.RawMessage `json:"idle_started_guard"`
@@ -585,6 +588,22 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 			params.AutoCompactReset = pgtype.Bool{Bool: true, Valid: true}
 		} else {
 			params.AutoCompact = req.AutoCompact
+		}
+	}
+	if req.HarnessProfile != nil {
+		var profile any
+		err := json.Unmarshal(req.HarnessProfile, &profile)
+		if err == nil {
+			err = validateHarnessProfileConfig(map[string]any{"harness_profile": profile})
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if text, ok := profile.(string); ok {
+			params.HarnessProfile = pgtype.Text{String: text, Valid: true}
+		} else {
+			params.HarnessProfileReset = pgtype.Bool{Bool: true, Valid: true}
 		}
 	}
 	if req.IdleStartedGuard != nil {
