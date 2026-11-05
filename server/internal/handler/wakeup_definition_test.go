@@ -228,8 +228,8 @@ func TestWakeupDefinitionAccessMatrix(t *testing.T) {
 			}
 		}
 	}
-	// An agent can read what it may see but cannot create a root default.
-	k.workspace().create(cfg(map[string]any{"trigger": map[string]any{"kind": "pr_merged"}, "instruction": "x"}), agentRun).Want(http.StatusForbidden)
+	// An agent can read what it may see; its disabled-only create is covered by
+	// TestWakeupDefinitionAgentCreatesDisabledRule.
 	k.project().create(cfg(map[string]any{"trigger": map[string]any{"kind": "pr_merged"}, "instruction": "x"}), asUser(member)).Want(http.StatusForbidden)
 	k.workspace().list(agentRun)
 }
@@ -1257,5 +1257,47 @@ func TestWakeupListsExposeTheOriginOfADefaultDerivedInstance(t *testing.T) {
 	}
 	if !derived || !local {
 		t.Fatalf("workspace list: derived=%v local=%v, want the origin on the derived row and null on the local one: %s", derived, local, ws.Body.String())
+	}
+}
+
+// ---- agent-created rules are stored disabled -------------------------------
+
+// An agent may propose a workspace or project rule, but it is stored disabled
+// until a human admin enables it. The agent cannot enable, edit or delete any
+// rule, and issue scope stays human-only.
+func TestWakeupDefinitionAgentCreatesDisabledRule(t *testing.T) {
+	k := newWakeupDefinitionKit(t)
+	agentRun := k.asAgentRun()
+	own := handlerTestAgentID(t)
+	for _, s := range []wdScope{k.workspace(), k.project()} {
+		wipeWakeupDefinitions(t)
+		// The agent asks for an enabled rule; the server stores it disabled.
+		body := cfg(map[string]any{"enabled": true, "trigger": map[string]any{"kind": "pr_merged"}, "instruction": "x", "target": map[string]any{"type": "agent", "id": own}})
+		created := decodeDefinition(t, s.create(body, agentRun).Want(http.StatusCreated))
+		if enabled := string(configKeys(t, created.Config)["enabled"]); enabled != "false" {
+			t.Fatalf("%s: agent-created rule enabled = %s, want false: %s", s.kind, enabled, created.Config)
+		}
+		var stored bool
+		dbfx.QueryRow(t, `SELECT (config->>'enabled')::boolean FROM issue_wakeup_definition WHERE workspace_id = $1 AND rule_key = $2`, testWorkspaceID, created.RuleKey).Scan(&stored)
+		if stored {
+			t.Fatalf("%s: stored rule is enabled", s.kind)
+		}
+		if eff := s.effective(created.RuleKey); eff.Enabled {
+			t.Fatalf("%s: effective rule is enabled", s.kind)
+		}
+		// The agent cannot enable, edit or delete it.
+		enable := cfg(map[string]any{"enabled": true})
+		s.put(created.RuleKey, created.Revision, enable, agentRun).Want(http.StatusForbidden)
+		s.del(created.RuleKey, strconv.FormatInt(int64(created.Revision), 10), agentRun).Want(http.StatusForbidden)
+		// A human admin still enables it.
+		enabled := decodeDefinition(t, s.put(created.RuleKey, created.Revision, body).Want(http.StatusOK))
+		if got := string(configKeys(t, enabled.Config)["enabled"]); got != "true" {
+			t.Fatalf("%s: human enable left enabled = %s", s.kind, got)
+		}
+	}
+	wipeWakeupDefinitions(t)
+	k.issue().put("child_done", 0, cfg(map[string]any{"name": "x"}), agentRun).Want(http.StatusForbidden)
+	if n := wdCount(t); n != 0 {
+		t.Fatalf("%d definitions persisted by an agent at issue scope", n)
 	}
 }
