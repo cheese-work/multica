@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { api, ApiError } from "@multica/core/api";
 import type { WakeupDefinition, WakeupEffectiveRule } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
+import { NavigationProvider } from "../../navigation";
 import { IssueWakeupDefaults } from "./issue-wakeup-defaults";
 
 vi.mock("@multica/core/api", async (importOriginal) => ({
@@ -19,6 +20,10 @@ vi.mock("@multica/core/api", async (importOriginal) => ({
 
 // The shared wakeup wording reads the workspace and the viewer's time zone.
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws" }));
+vi.mock("@multica/core/paths", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@multica/core/paths")>();
+  return { ...actual, useWorkspacePaths: () => actual.paths.workspace("acme") };
+});
 vi.mock("../../common/use-viewing-timezone", () => ({ useViewingTimezone: () => "UTC" }));
 vi.mock("./wakeup-condition-names", () => ({
   useConditionNames: () => ({ status: (key: string) => key, label: () => undefined, property: () => undefined, actor: (_type: string, id: string) => id }),
@@ -53,11 +58,16 @@ function resolve(byKey: Record<string, WakeupEffectiveRule>) {
   effectiveRule.mockImplementation(async (_scope, key) => byKey[key] ?? { ...inherited, rule_key: key });
 }
 
+let projectId: string | undefined;
 function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return renderWithI18n(
     <QueryClientProvider client={client}>
-      <IssueWakeupDefaults workspaceId="ws" issueId="issue-1" />
+      <NavigationProvider
+        value={{ push: vi.fn(), replace: vi.fn(), back: vi.fn(), pathname: "/acme/issues/issue-1", searchParams: new URLSearchParams(), hash: "", getShareableUrl: (path: string) => path }}
+      >
+        <IssueWakeupDefaults workspaceId="ws" issueId="issue-1" projectId={projectId} />
+      </NavigationProvider>
     </QueryClientProvider>,
   );
 }
@@ -73,6 +83,7 @@ function ruleItem(name: string) {
 
 beforeEach(() => {
   mounted = false;
+  projectId = undefined;
   list.mockReset().mockResolvedValue({ definitions: [], capabilities: open });
   effectiveRule.mockReset();
   resolve({});
@@ -219,4 +230,20 @@ it("groups the rules under one labelled list", async () => {
   await ruleItem("When the linked PR merges");
   const group = screen.getByRole("list", { name: "Default wakeups" });
   expect(within(group).getAllByRole("listitem")).toHaveLength(3);
+});
+
+it("links a project-sourced default to the project's wakeup rules", async () => {
+  projectId = "proj-1";
+  resolve({ pr_merged: { ...inherited, sources: { enabled: "project", instruction: "project" } } });
+  const item = await ruleItem("When the linked PR merges");
+  expect(within(item).getByRole("link", { name: "Edit in project rules" })).toHaveAttribute("href", "/acme/projects/proj-1?focus=wakeups");
+});
+
+it("offers no project link for a workspace default, an override, or an issue without a project", async () => {
+  projectId = "proj-1";
+  resolve({ pr_merged: inherited, pr_checks_failed: { ...inherited, rule_key: "pr_checks_failed", sources: { enabled: "project" } } });
+  list.mockResolvedValue({ definitions: [{ ...overrideDefinition, rule_key: "pr_checks_failed" }], capabilities: open });
+  const workspaceRule = await ruleItem("When the linked PR merges");
+  expect(within(workspaceRule).queryByRole("link")).not.toBeInTheDocument();
+  expect(within(await screen.findByRole("listitem", { name: /checks/i })).queryByRole("link")).not.toBeInTheDocument();
 });

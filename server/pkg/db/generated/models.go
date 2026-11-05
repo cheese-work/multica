@@ -2787,6 +2787,15 @@ type StageGeneration struct {
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 }
 
+type StageQueueWaiting struct {
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	AgentID          pgtype.UUID        `json:"agent_id"`
+	QueuedAt         pgtype.Timestamptz `json:"queued_at"`
+	ActorUserID      pgtype.UUID        `json:"actor_user_id"`
+	TriggerCommentID pgtype.UUID        `json:"trigger_comment_id"`
+	TaintIds         []string           `json:"taint_ids"`
+}
+
 type SysCronExecution struct {
 	ID           pgtype.UUID        `json:"id"`
 	JobName      string             `json:"job_name"`
