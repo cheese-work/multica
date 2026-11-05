@@ -147,6 +147,70 @@ func TestPrepareManagedCodex_DisablesNestedUniversalSkills(t *testing.T) {
 	}
 }
 
+func TestPrepareManagedCodex_DisablesSymlinkedUniversalSkills(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, userHome, external string) (logical, canonical []string)
+	}{
+		{"symlinked grouping dir", func(t *testing.T, userHome, external string) ([]string, []string) {
+			writeFile(t, filepath.Join(external, "group", "inner", "SKILL.md"), "---\nname: inner\ndescription: d\n---\n")
+			root := filepath.Join(userHome, ".agents", "skills")
+			if err := os.MkdirAll(root, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(external, "group"), filepath.Join(root, "linked")); err != nil {
+				t.Fatal(err)
+			}
+			return []string{filepath.Join(root, "linked", "inner", "SKILL.md")}, []string{filepath.Join(external, "group", "inner", "SKILL.md")}
+		}},
+		{"symlinked universal root", func(t *testing.T, userHome, external string) ([]string, []string) {
+			writeFile(t, filepath.Join(external, "root", "a", "b", "SKILL.md"), "---\nname: b\ndescription: d\n---\n")
+			if err := os.MkdirAll(filepath.Join(userHome, ".agents"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(external, "root"), filepath.Join(userHome, ".agents", "skills")); err != nil {
+				t.Fatal(err)
+			}
+			return []string{filepath.Join(userHome, ".agents", "skills", "a", "b", "SKILL.md")}, []string{filepath.Join(external, "root", "a", "b", "SKILL.md")}
+		}},
+		{"symlink cycle terminates", func(t *testing.T, userHome, external string) ([]string, []string) {
+			root := filepath.Join(userHome, ".agents", "skills")
+			writeFile(t, filepath.Join(root, "g", "s", "SKILL.md"), "---\nname: s\ndescription: d\n---\n")
+			if err := os.Symlink(root, filepath.Join(root, "g", "loop")); err != nil {
+				t.Fatal(err)
+			}
+			return []string{filepath.Join(root, "g", "s", "SKILL.md")}, nil
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			userHome := t.TempDir()
+			external := t.TempDir()
+			t.Setenv("HOME", userHome)
+			shared := filepath.Join(userHome, ".codex")
+			t.Setenv("CODEX_HOME", shared)
+			writeFile(t, filepath.Join(shared, "auth.json"), `{"a":1}`)
+			logical, canonical := tc.setup(t, userHome, external)
+
+			envRoot := t.TempDir()
+			codexHome := filepath.Join(envRoot, "codex-home")
+			logger := discardLogger()
+			if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{GOOS: "linux", Managed: true}, logger); err != nil {
+				t.Fatal(err)
+			}
+			if err := prepareManagedCodex(envRoot, codexHome, nil, nil, logger); err != nil {
+				t.Fatal(err)
+			}
+			cfg, _ := os.ReadFile(filepath.Join(codexHome, "config.toml"))
+			for _, want := range append(logical, canonical...) {
+				if !strings.Contains(string(cfg), filepath.ToSlash(want)) {
+					t.Errorf("%s not disabled in config.toml:\n%s", want, cfg)
+				}
+			}
+		})
+	}
+}
+
 func TestPrepareManagedCodex_ExcludesPersonalDiscovery(t *testing.T) {
 	userHome := t.TempDir()
 	t.Setenv("HOME", userHome)

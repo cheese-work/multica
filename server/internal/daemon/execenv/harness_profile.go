@@ -3,9 +3,9 @@ package execenv
 import (
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 
@@ -166,9 +166,12 @@ func prepareManagedCodex(envRoot, codexHome string, skills []SkillContextForEnv,
 		return fmt.Errorf("resolve user home: %w", err)
 	}
 	universalDir := filepath.Join(userHome, ".agents", "skills")
-	universal := listUniversalSkillKeys(universalDir)
+	universal, universalCanonical := listUniversalSkills(universalDir)
 	if err := ensureCodexDisabledSkillsConfig(filepath.Join(codexHome, "config.toml"), codexHome, universal, skills); err != nil {
 		return fmt.Errorf("disable personal codex skills: %w", err)
+	}
+	if err := appendDisabledCodexSkillPaths(filepath.Join(codexHome, "config.toml"), universalCanonical); err != nil {
+		return fmt.Errorf("disable canonical personal codex skills: %w", err)
 	}
 	sharedHome := resolveSharedCodexHome()
 	if _, err := writeLaunchReceipt(envRoot, LaunchReceipt{
@@ -251,28 +254,45 @@ func writeManagedCodexConfig(src, dst string) error {
 	return os.WriteFile(dst, out, 0o600)
 }
 
-// listUniversalSkillKeys returns one disable key per SKILL.md under root at
-// any depth (key = slash-relative skill dir). Codex discovers skills
-// recursively, so top-level names alone leave nested skills enabled. Symlinked
-// dirs are not walked (cycle safety) but are checked for their own SKILL.md.
-func listUniversalSkillKeys(root string) []RuntimeSkillRefForEnv {
-	var keys []RuntimeSkillRefForEnv
-	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || path == root {
-			return nil
+// maxUniversalSkillDepth bounds the walk below ~/.agents/skills.
+const maxUniversalSkillDepth = 12
+
+// listUniversalSkills returns, for every SKILL.md under root at any depth, a
+// disable key (slash-relative skill dir) and the canonical SKILL.md path.
+// Codex discovers skills recursively and may report either the logical or the
+// canonical path, so both are disabled. Symlinked root, grouping dirs and skill
+// dirs are followed; a dir already on the current ancestor chain is skipped
+// (cycle protection) and depth is capped.
+func listUniversalSkills(root string) (keys []RuntimeSkillRefForEnv, canonical []string) {
+	var walk func(dir, rel string, ancestors map[string]bool, depth int)
+	walk = func(dir, rel string, ancestors map[string]bool, depth int) {
+		real, err := filepath.EvalSymlinks(dir)
+		if err != nil || ancestors[real] || depth > maxUniversalSkillDepth {
+			return
 		}
-		if !d.IsDir() && d.Type()&fs.ModeSymlink == 0 {
-			return nil
+		ancestors[real] = true
+		defer delete(ancestors, real)
+		if rel != "" {
+			if info, err := os.Stat(filepath.Join(dir, "SKILL.md")); err == nil && !info.IsDir() {
+				keys = append(keys, RuntimeSkillRefForEnv{Root: "universal", Key: rel})
+				logical := filepath.Join(dir, "SKILL.md")
+				if file, err := filepath.EvalSymlinks(logical); err == nil && file != logical {
+					canonical = append(canonical, file)
+				}
+			}
 		}
-		if info, statErr := os.Stat(filepath.Join(path, "SKILL.md")); statErr != nil || info.IsDir() {
-			return nil
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
 		}
-		rel, relErr := filepath.Rel(root, path)
-		if relErr != nil {
-			return nil
+		for _, e := range entries {
+			child := filepath.Join(dir, e.Name())
+			if info, err := os.Stat(child); err != nil || !info.IsDir() {
+				continue
+			}
+			walk(child, path.Join(rel, e.Name()), ancestors, depth+1)
 		}
-		keys = append(keys, RuntimeSkillRefForEnv{Root: "universal", Key: filepath.ToSlash(rel)})
-		return nil
-	})
-	return keys
+	}
+	walk(root, "", map[string]bool{}, 0)
+	return keys, canonical
 }
