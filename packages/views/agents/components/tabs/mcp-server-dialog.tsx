@@ -358,10 +358,9 @@ export function McpServerDialog({
         JSON.stringify(value) === JSON.stringify(base[field as keyof typeof base]) ? null : value,
       ]),
     );
-    // Only finished JSON is stored, credentials withheld. Half-typed text leaves
-    // the last stored JSON as it was.
+    // Only finished JSON is stored, credentials withheld. Half-typed or empty
+    // text leaves the last stored JSON as it was.
     if (mode !== "json") patch.json = null;
-    else if (jsonText.trim() === "") patch.json = null;
     else {
       const redacted = redactMcpJsonText(jsonText);
       if (redacted !== null) {

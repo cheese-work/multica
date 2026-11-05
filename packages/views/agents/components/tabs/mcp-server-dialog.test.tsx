@@ -396,6 +396,13 @@ describe("McpServerDialog", () => {
       expect(JSON.parse(restored)).toEqual({ type: "sse", url: "https://example.test" });
     });
 
+    it("keeps the last complete JSON after the editor is cleared", async () => {
+      const { type, reopen } = await setup(null, "agent-1:cleared");
+      type('{"type":"sse","url":"https://example.test"}');
+      type("");
+      expect(JSON.parse(reopen())).toEqual({ type: "sse", url: "https://example.test" });
+    });
+
     it("keeps a saved credential inside an array through draft, reopen and save", async () => {
       const server = managedServer({
         name: "remote",
