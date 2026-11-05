@@ -416,7 +416,7 @@ func TestAuditReplayAfterInterruptionBetweenChunks(t *testing.T) {
 	a.q = q
 	// The interrupted process never releases its lease — it stops existing.
 	// Expiry is what frees the turn, and expiry is database time, so the test
-	// shortens the lease and really waits for it.
+	// expires the lease in the database (lapseLeases).
 	a.leaseTTL = testLeaseTTL
 	e := telegramTestEventFor(3, 2, strings.Repeat("A", maxMessageUnits)+"tail")
 	a.enqueueTerminalReply(e)
