@@ -1674,6 +1674,7 @@ type InboxItem struct {
 	ChatMessageID pgtype.UUID        `json:"chat_message_id"`
 	DedupeKey     pgtype.Text        `json:"dedupe_key"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	Section       pgtype.Text        `json:"section"`
 }
 
 type InstanceTelemetryState struct {
@@ -2909,7 +2910,8 @@ type TaskUsage struct {
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 	// Provider-reported cost in 1e-10 USD. NULL when the provider reports none; those rows are priced client-side from the static rate table.
-	CostUsdTicks pgtype.Int8 `json:"cost_usd_ticks"`
+	CostUsdTicks  pgtype.Int8 `json:"cost_usd_ticks"`
+	CreditsMicros pgtype.Int8 `json:"credits_micros"`
 }
 
 type TaskUsageHourly struct {

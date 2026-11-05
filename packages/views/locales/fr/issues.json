@@ -166,6 +166,9 @@
     "breadcrumb_title": "Tâches",
     "breadcrumb_workspace_fallback": "Espace de travail",
     "empty_title": "Aucune tâche pour l'instant",
+    "empty_description": "Une tâche est un travail concret confié à un membre ou à un agent. Assignée à un agent, elle démarre seule sur votre runtime.",
+    "break_down_with_chat": "Découper avec le chat",
+    "break_down_prompt": "Voici ce que je veux accomplir. Posez-moi les questions nécessaires, puis découpez-le en tâches dans cet espace de travail :\n\n",
     "move_failed": "Échec du déplacement de la tâche"
   },
   "status": {
@@ -460,7 +463,7 @@
       }
     },
     "search_placeholder": "Rechercher des tâches...",
-    "search_empty": "Aucune tâche ne correspond à votre recherche."
+    "search_empty": "Aucune tâche ne correspond à votre recherche"
   },
   "list": {
     "empty_status": "Aucune tâche",
@@ -503,6 +506,7 @@
     "load_failed": "Impossible de charger cette tâche. Vérifiez votre connexion et réessayez.",
     "card_load_failed": "Impossible de charger cette tâche.",
     "retry": "Réessayer",
+    "not_found_title": "Tâche introuvable",
     "breadcrumb_project_unknown": "Projet inconnu",
     "back": "Retour",
     "title_placeholder": "Titre de la tâche",
@@ -991,6 +995,7 @@
     "col_tokens": "Tokens",
     "col_cost": "Coût",
     "tokens_count": "{{tokens}} tokens",
+    "credits_count": "{{credits}} crédits {{provider}}",
     "details_toggle": "Détails de l'exécution",
     "detail_breakdown": "Détail du coût",
     "detail_total": "Total",
@@ -2038,7 +2043,8 @@
       "star": "Ajouter {{name}} à la barre latérale",
       "unstar": "Retirer {{name}} de la barre latérale",
       "row_actions": "Actions pour {{name}}",
-      "no_matches": "Aucune vue ne correspond"
+      "empty_title": "Aucune vue enregistrée pour l'instant",
+      "empty_description": "Réglez les filtres et l'affichage d'une liste de tâches, puis enregistrez-les comme vue."
     }
   }
 }
