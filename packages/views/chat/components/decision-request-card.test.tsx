@@ -561,7 +561,7 @@ describe("DecisionRequestCard answering", () => {
         { label: "Run cap", current: "10", proposed: "30" },
         { label: "Runs left", current: "0", proposed: "20" },
       ],
-      sha256: "digest",
+      sha256: "d".repeat(64),
     };
     const action = { id: "action", action_type: "issue.run_budget.raise", payload_sha256: "payload", preview };
     const show = (value: RequestCard["action"]) => renderCard({ ...card, action: value });
@@ -580,10 +580,21 @@ describe("DecisionRequestCard answering", () => {
 
     it.each([
       ["missing", undefined],
-      ["empty", { fields: [], sha256: "digest" }],
+      ["empty", { fields: [], sha256: "d".repeat(64) }],
+      ["digestless", { ...preview, sha256: "" }],
+      ["not a sha-256 digest", { ...preview, sha256: "digest" }],
+      ["partly malformed", { ...preview, fields: [{ label: "Run cap" }] } as unknown as typeof preview],
     ])("says details are unavailable and keeps Approve disabled when the preview is %s", (_name, bad) => {
       show({ ...action, preview: bad });
       expect(screen.getByText("Details unavailable")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Approve with passkey" })).toBeDisabled();
+      expect(getDecisionActionOutcome).not.toHaveBeenCalled();
+    });
+
+    it("keeps Approve disabled for an action type this client does not know, even with fields", () => {
+      show({ ...action, action_type: "future.thing" });
+      expect(screen.getByText("Details unavailable")).toBeInTheDocument();
+      expect(screen.queryByTestId("decision-request-action-preview")).toBeNull();
       expect(screen.getByRole("button", { name: "Approve with passkey" })).toBeDisabled();
       expect(getDecisionActionOutcome).not.toHaveBeenCalled();
     });

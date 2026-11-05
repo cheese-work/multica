@@ -4,6 +4,7 @@ import { Loader2, MessageSquareQuote } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
 import { ApiError } from "@multica/core/api";
 import { useAnswerDecisionRequest } from "@multica/core/issues/decision-answer";
+import { approvablePreview } from "@multica/core/issues/decision-action-preview";
 import { chatKeys } from "@multica/core/chat/queries";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { formatShortcut, useShortcut } from "@multica/core/shortcuts";
@@ -156,13 +157,13 @@ function DecisionAnswerForm({
   );
 }
 
-// What the approval would change, shown before Approve exists. No preview, or
-// one with no fields, means the server could not vouch for the action: say so and
-// keep Approve disabled.
+// What the approval would change, shown before Approve exists. No usable preview
+// (missing, empty, malformed, bad digest, unknown action type) means the server
+// could not vouch for the action: say so and keep Approve disabled.
 function ActionPreview({ action }: { action: NonNullable<RequestCard["action"]> }) {
   const { t } = useT("chat");
-  const fields = action.preview?.fields;
-  if (!fields?.length) {
+  const fields = approvablePreview(action)?.fields;
+  if (!fields) {
     return (
       <div className="space-y-1">
         <p role="status" className="text-label text-warning">{t(($) => $.decision.action_unavailable)}</p>

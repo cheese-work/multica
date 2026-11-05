@@ -49,6 +49,7 @@
     "./issues": "./issues/index.ts",
     "./issues/batch": "./issues/batch.ts",
     "./issues/canonical-id": "./issues/canonical-id.ts",
+    "./issues/decision-action-preview": "./issues/decision-action-preview.ts",
     "./issues/queries": "./issues/queries.ts",
     "./issues/relations": "./issues/relations.ts",
     "./issues/wakeups": "./issues/wakeups.ts",

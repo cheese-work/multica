@@ -51,7 +51,8 @@ describe("DM decision cards", () => {
 
   describe("action preview", () => {
     const request = { id: "request", issue_id: "issue", ask: "Ask", created_at: bubble.created_at, state: "open" };
-    const preview = { fields: [{ label: "Run cap", current: "10", proposed: "30" }], sha256: "abc" };
+    const digest = "a".repeat(64);
+    const preview = { fields: [{ label: "Run cap", current: "10", proposed: "30" }], sha256: digest };
     const action = { id: "action", action_type: "issue.run_budget.raise", payload_sha256: "payload", preview };
     const parse = (value: unknown) => ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, action: value } }).decision_request?.action;
 
@@ -65,13 +66,23 @@ describe("DM decision cards", () => {
       expect(parse(bare)?.id).toBe("action");
       for (const bad of [
         "x",
-        { fields: "x", sha256: "abc" },
-        { fields: [{ label: "Run cap", current: 10, proposed: "30" }], sha256: "abc" },
+        { fields: "x", sha256: digest },
+        { fields: [{ label: "Run cap", current: 10, proposed: "30" }], sha256: digest },
         { fields: [{ label: "Run cap", current: "10", proposed: "30" }] },
-        { fields: [], sha256: "abc" },
+        { fields: [], sha256: digest },
+        { ...preview, sha256: "abc" },
+        { ...preview, sha256: "A".repeat(64) },
       ]) {
         expect(parse({ ...action, preview: bad })?.preview).toBeUndefined();
         expect(parse({ ...action, preview: bad })?.payload_sha256).toBe("payload");
+      }
+    });
+
+    it("drops the preview of an action type this client does not know", () => {
+      expect(parse({ ...action, action_type: "future.thing" })?.preview).toBeUndefined();
+      expect(parse({ ...action, action_type: undefined })?.preview).toBeUndefined();
+      for (const known of ["issue.run_budget.raise", "issue.run_budget.top_up", "agent.env.patch", "agent.copy"]) {
+        expect(parse({ ...action, action_type: known })?.preview).toEqual(preview);
       }
     });
 
