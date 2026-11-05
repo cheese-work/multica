@@ -33,6 +33,9 @@ REPLACE-THIS-LINE-WITH-YOUR-DISPOSITION
        Changelog: Refactor X store
        Changelog: CHE-123 add Y
      In a stack, only the PR that lands on `main` carries the line, for the whole stack.
+     `Changelog: none` is only for internal-only changes (CI, scripts, docs, tests). A
+     feat, fix or perf PR that changes user-facing code fails the check with `none`:
+     write the sentence, or use a non-user-facing type (ci, test, chore).
      Upstream-sync PRs use `Changelog: none`. -->
 
 Changelog: <one user-facing sentence, or none>
