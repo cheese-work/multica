@@ -491,6 +491,7 @@
     "not_found": "このタスクはこのワークスペースに存在しないか、削除されています。",
     "load_failed": "このタスクを読み込めませんでした。接続を確認して再試行してください。",
     "card_load_failed": "このタスクを読み込めませんでした。",
+    "data_error": "このタスクにはアプリが読み取れないデータが含まれています。",
     "retry": "再試行",
     "breadcrumb_project_unknown": "不明なプロジェクト",
     "back": "戻る",
@@ -1473,7 +1474,34 @@
       "rate": "1 時間に 12 回を超えて起動"
     },
     "paused_banner": "{{name}} が {{time}} にウェイクアップを一時停止しました",
-    "paused_banner_anonymous": "ウェイクアップは {{time}} に一時停止されました"
+    "paused_banner_anonymous": "ウェイクアップは {{time}} に一時停止されました",
+    "defaults": {
+      "title": "既定のウェイクアップ",
+      "rule_pr_merged": "リンクされた PR がマージされたとき",
+      "rule_pr_checks_failed": "PR のチェックが失敗したとき",
+      "rule_pr_needs_attention": "リンクされた PR に対応が必要なとき",
+      "state_on": "オン",
+      "state_disabled": "無効",
+      "state_paused": "一時停止中: {{reason}}",
+      "inherited": "{{source}}から継承",
+      "overridden": "この Issue で上書き中",
+      "source_workspace": "ワークスペース",
+      "source_project": "プロジェクト",
+      "source_default": "既定値",
+      "open_project": "プロジェクトのルールで編集",
+      "override": "上書き",
+      "override_label": "{{rule}}を上書き",
+      "edit": "上書きを編集",
+      "edit_label": "{{rule}}の上書きを編集",
+      "reset": "リセット",
+      "reset_label": "{{rule}}をリセット",
+      "save": "上書きを保存",
+      "saving": "保存中…",
+      "cancel": "キャンセル",
+      "save_error": "上書きを保存できませんでした。",
+      "reset_error": "ルールをリセットできませんでした。",
+      "conflict_error": "他の人が先にこのルールを変更しました。編集内容は保持されています。再読み込みして相手の変更を確認してください。"
+    }
   },
   "duplicates": {
     "banner_prefix": "重複元:",

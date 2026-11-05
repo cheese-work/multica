@@ -1672,6 +1672,32 @@ export function useRealtimeSync(
       const id = getCurrentWsId();
       if (id) qc.invalidateQueries({ queryKey: chatKeys.sessions(id) });
     };
+    const sessionsQuery = () => {
+      const wsId = getCurrentWsId();
+      return wsId ? qc.getQueryCache().find({ queryKey: chatKeys.sessions(wsId), exact: true }) : undefined;
+    };
+    const unsubSessionListCache = qc.getQueryCache().subscribe((event) => {
+      if (event.type !== "updated" || event.action.type !== "success" || sessionsQuery() !== event.query) return;
+
+      const sessions = event.query.state.data as ChatSession[] | undefined;
+      for (const session of sessions ?? []) {
+        const lastMessage = session.last_message;
+        if (!lastMessage?.id) continue;
+
+        const pageKey = chatKeys.messagesPage(session.id);
+        const page = qc.getQueryData<InfiniteData<ChatMessagesPage>>(pageKey);
+        if (page && !page.pages.some((item) => item.messages.some((message) => message.id === lastMessage.id))) {
+          qc.invalidateQueries({ queryKey: pageKey });
+        }
+
+        const pending = qc.getQueryData<ChatPendingTask>(chatKeys.pendingTask(session.id));
+        if ((pending?.status === "dispatched" || pending?.status === "running") &&
+          lastMessage.role !== "user" && lastMessage.task_id === pending.task_id && pending.created_at &&
+          Date.parse(lastMessage.created_at) > Date.parse(pending.created_at)) {
+          qc.invalidateQueries({ queryKey: chatKeys.pendingTask(session.id) });
+        }
+      }
+    });
     const invalidateOpenDecisions = () => {
       const id = getCurrentWsId();
       if (id) qc.invalidateQueries({ queryKey: chatKeys.openDecisions(id) });
@@ -2020,6 +2046,7 @@ export function useRealtimeSync(
       unsubTaskCompleted();
       unsubTaskFailed();
       unsubChatSessionRead();
+      unsubSessionListCache();
       unsubChatSessionCreated();
       unsubChatSessionDeleted();
       unsubChatSessionUpdated();

@@ -272,16 +272,18 @@ import type {
 import { type Logger, noopLogger } from "../logger";
 import { createRequestId, createSafeId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
-import { parseWithFallback } from "./schema";
+import { parseOrThrow, parseWithFallback } from "./schema";
 import {
   PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
-  PasskeyRevokedSchema, parsePasskeyResponse,
-  type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart,
+  PasskeyListSchema, PasskeyRevokeCodeStartSchema, PasskeyRevokedSchema, parsePasskeyResponse,
+  type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart, type PasskeySummary,
 } from "./passkey-schema";
 import {
   RuntimeProfileSchema,
   AgentDecisionSettingSchema,
   type AgentDecisionSetting,
+  RoutingAgentSettingSchema,
+  type RoutingAgentSetting,
   OpenDecisionRequestListSchema,
   DecisionArtifactListSchema,
   RuntimeProfileListSchema,
@@ -1512,14 +1514,9 @@ export class ApiClient {
       `/api/issues/${encodeURIComponent(id)}`,
       options?.signal ? { signal: options.signal } : undefined,
     );
-    const issue = parseWithFallback<Issue | null>(raw, IssueSchema, null, {
-      endpoint: "GET /api/issues/:id",
-    });
-    if (!issue) {
-      // parseWithFallback already logged the zod issues + raw payload.
-      throw new Error("GET /api/issues/:id returned a malformed issue");
-    }
-    return issue;
+    // Throws SchemaValidationError (logged with the failing paths) so the UI
+    // can tell unreadable data from a network failure.
+    return parseOrThrow<Issue>(raw, IssueSchema, { endpoint: "GET /api/issues/:id" });
   }
 
   async createIssue(
@@ -3273,6 +3270,23 @@ export class ApiClient {
     });
   }
 
+  // CHE-3627: null when the response is malformed, so a guessed value is never
+  // shown or saved back over the real one.
+  async getRoutingAgent(workspaceId: string): Promise<RoutingAgentSetting | null> {
+    const raw: unknown = await this.fetch(`/api/workspaces/${workspaceId}/routing-agent`);
+    return parseWithFallback<RoutingAgentSetting | null>(raw, RoutingAgentSettingSchema, null, {
+      endpoint: "GET /api/workspaces/{id}/routing-agent",
+    });
+  }
+
+  // Owner/admin + human-actor only; replaces the whole setting.
+  async updateRoutingAgent(workspaceId: string, config: RoutingAgentSetting): Promise<RoutingAgentSetting> {
+    return this.fetch(`/api/workspaces/${workspaceId}/routing-agent`, {
+      method: "PUT",
+      body: JSON.stringify(config),
+    });
+  }
+
   // Owner + human-actor only; the server clears an earlier stop when turned on.
   async setAgentDecisionsEnabled(enabled: boolean): Promise<{ enabled: boolean }> {
     return this.fetch("/api/agent-decisions/setting", {
@@ -4132,12 +4146,28 @@ export class ApiClient {
     return this.passkeyPost("/api/passkeys/enroll/start", PasskeyEnrollStartSchema);
   }
 
-  async finishPasskeyEnrollment(input: { ceremony_id: string; code: string; attestation: unknown }): Promise<void> {
+  async listPasskeys(): Promise<PasskeySummary[]> {
+    const raw: unknown = await this.fetch("/api/passkeys");
+    return parsePasskeyResponse(raw, PasskeyListSchema, "GET /api/passkeys").passkeys;
+  }
+
+  async finishPasskeyEnrollment(input: {
+    ceremony_id: string; code: string; attestation: unknown; assertion?: PasskeyAssertionEnvelope;
+  }): Promise<void> {
     await this.passkeyPost("/api/passkeys/enroll/finish", PasskeyEnrolledSchema, input);
   }
 
   challengePasskeyRevocation(passkeyId: string): Promise<PasskeyChallenge> {
     return this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke/challenge`, PasskeyChallengeSchema);
+  }
+
+  // Sole-key path: the target is the only active key, so no other key can sign. A mailed code stands in.
+  startPasskeyRevocationByCode(passkeyId: string): Promise<{ ceremony_id: string; expires_at: string }> {
+    return this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke/code`, PasskeyRevokeCodeStartSchema);
+  }
+
+  async confirmPasskeyRevocationByCode(passkeyId: string, input: { ceremony_id: string; code: string }): Promise<void> {
+    await this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke/confirm`, PasskeyRevokedSchema, input);
   }
 
   async revokePasskey(passkeyId: string, assertion: PasskeyAssertionEnvelope): Promise<void> {

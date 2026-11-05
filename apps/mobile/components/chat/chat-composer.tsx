@@ -37,6 +37,9 @@ import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/i18n";
 
 interface Props {
+  /** Chat session id, or the new-chat sentinel. Keys the composer draft
+   *  (mention chips + attachments); the text stays in `value`. */
+  draftKey: string;
   /** Current draft text (controlled). Empty string = no draft. */
   value: string;
   /** Fired on every keystroke. The caller writes to the drafts store. */
@@ -69,6 +72,7 @@ interface Props {
 const IS_IOS = process.env.EXPO_OS === "ios";
 
 export function ChatComposer({
+  draftKey,
   value,
   onChangeText,
   onSend,
@@ -113,6 +117,7 @@ export function ChatComposer({
   return (
     <View testID="mobile-chat-composer">
       <MessageComposer
+        draftKey={`chat:${draftKey}`}
         value={value}
         onChangeText={onChangeText}
         onSubmit={onSubmit}

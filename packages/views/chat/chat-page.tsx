@@ -465,7 +465,6 @@ export function ChatPage() {
           sessions={c.sessionsLoaded ? c.sessions : undefined}
           pendingTask={c.pendingTask}
           availability={c.availability}
-          firstItemIndex={c.firstItemIndex}
           hasOlderMessages={c.hasOlderMessages}
           isFetchingOlderMessages={c.isFetchingOlderMessages}
           onLoadOlderMessages={() => void c.fetchOlderMessages()}

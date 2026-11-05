@@ -49,6 +49,7 @@ vi.mock("./channels-tab", async () => {
 });
 vi.mock("./preferences-tab", stub("PreferencesTab"));
 vi.mock("./tokens-tab", stub("TokensTab"));
+vi.mock("./passkeys-tab", stub("PasskeysTab"));
 vi.mock("./workspace-tab", stub("WorkspaceTab"));
 vi.mock("./members-tab", stub("MembersTab"));
 vi.mock("./code-tab", stub("CodeTab"));
@@ -404,6 +405,14 @@ describe("SettingsPage information architecture", () => {
       within(personal).getByRole("link", { name: "Connected apps" }),
     ).toHaveAttribute("aria-current", "page");
     expect(screen.getByText("ConnectedAppsTab")).toBeInTheDocument();
+  });
+
+  it("lists Passkeys under the personal pages", () => {
+    navigationState.search = "tab=passkeys";
+    renderWithI18n(<SettingsPage />);
+    const personal = within(nav()).getByRole("region", { name: /Personal/ });
+    expect(within(personal).getByRole("link", { name: "Passkeys" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByText("PasskeysTab")).toBeInTheDocument();
   });
 
   it("marks pages a member can only view", () => {
