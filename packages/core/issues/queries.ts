@@ -20,6 +20,7 @@ import type {
 } from "../types";
 import { ALL_STATUSES } from "./config";
 import { issueColumnCategory } from "./status-category";
+import { isSchemaValidationError } from "../api/schema";
 
 export function issueTasksOptions(issueId: string) {
   return queryOptions({
@@ -475,6 +476,8 @@ const ISSUE_FETCH_MAX_RETRIES = 3;
  */
 export function retryIssueFetch(failureCount: number, err: Error): boolean {
   if (failureCount >= ISSUE_FETCH_MAX_RETRIES) return false;
+  // Unreadable data will not change on retry.
+  if (isSchemaValidationError(err)) return false;
   // Duck-typed on `status`, like `isNotFoundError`: holds across module
   // boundaries and test mocks. No status means a network failure.
   const status = (err as { status?: unknown }).status;

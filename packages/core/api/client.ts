@@ -272,7 +272,7 @@ import type {
 import { type Logger, noopLogger } from "../logger";
 import { createRequestId, createSafeId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
-import { parseWithFallback } from "./schema";
+import { parseOrThrow, parseWithFallback } from "./schema";
 import {
   PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
   PasskeyListSchema, PasskeyRevokeCodeStartSchema, PasskeyRevokedSchema, parsePasskeyResponse,
@@ -282,6 +282,8 @@ import {
   RuntimeProfileSchema,
   AgentDecisionSettingSchema,
   type AgentDecisionSetting,
+  RoutingAgentSettingSchema,
+  type RoutingAgentSetting,
   OpenDecisionRequestListSchema,
   DecisionArtifactListSchema,
   RuntimeProfileListSchema,
@@ -1510,14 +1512,9 @@ export class ApiClient {
       `/api/issues/${encodeURIComponent(id)}`,
       options?.signal ? { signal: options.signal } : undefined,
     );
-    const issue = parseWithFallback<Issue | null>(raw, IssueSchema, null, {
-      endpoint: "GET /api/issues/:id",
-    });
-    if (!issue) {
-      // parseWithFallback already logged the zod issues + raw payload.
-      throw new Error("GET /api/issues/:id returned a malformed issue");
-    }
-    return issue;
+    // Throws SchemaValidationError (logged with the failing paths) so the UI
+    // can tell unreadable data from a network failure.
+    return parseOrThrow<Issue>(raw, IssueSchema, { endpoint: "GET /api/issues/:id" });
   }
 
   async createIssue(
@@ -3268,6 +3265,23 @@ export class ApiClient {
     const raw: unknown = await this.fetch("/api/agent-decisions/brief");
     return parseWithFallback<AgentDecisionSetting | null>(raw, AgentDecisionSettingSchema, null, {
       endpoint: "GET /api/agent-decisions/brief",
+    });
+  }
+
+  // CHE-3627: null when the response is malformed, so a guessed value is never
+  // shown or saved back over the real one.
+  async getRoutingAgent(workspaceId: string): Promise<RoutingAgentSetting | null> {
+    const raw: unknown = await this.fetch(`/api/workspaces/${workspaceId}/routing-agent`);
+    return parseWithFallback<RoutingAgentSetting | null>(raw, RoutingAgentSettingSchema, null, {
+      endpoint: "GET /api/workspaces/{id}/routing-agent",
+    });
+  }
+
+  // Owner/admin + human-actor only; replaces the whole setting.
+  async updateRoutingAgent(workspaceId: string, config: RoutingAgentSetting): Promise<RoutingAgentSetting> {
+    return this.fetch(`/api/workspaces/${workspaceId}/routing-agent`, {
+      method: "PUT",
+      body: JSON.stringify(config),
     });
   }
 
