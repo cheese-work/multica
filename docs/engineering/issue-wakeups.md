@@ -723,9 +723,13 @@ replace the inherited value whole. User-facing docs and curl examples:
 and `.../effective`. Revisions are decimal strings; a stale write returns 409.
 
 **Write gates.** Closed activation gate: 403 `wakeup_definition_writes_closed`
-(reads and previews stay open). Agents and machine credentials: 403, nothing
-stored. Workspace and project writes need owner or admin; issue scope allows
-any member.
+(reads and previews stay open). Agents (task token) may only `POST` a
+workspace or project rule: the server stores it `enabled:false` with
+`pending_approval=true` (migration 946) and resolution keeps it, and every scope
+below it, disabled until an owner or admin writes it enabled. Agent edit,
+delete, preview and issue-scope writes: 403. Other machine credentials: 403,
+nothing stored. Workspace and project writes need owner or admin; issue scope
+allows any member. CLI: `multica wakeup-definition create [--project]`.
 
 **Runtime state.** `execution{instance_id,enabled,paused_reason}` is returned
 at issue scope only, from the per-issue `issue_wakeup` instance. Resetting an
@@ -739,6 +743,7 @@ the settings.
 
 **Regression coverage.** `wakeup_definition_qualification_test.go` runs
 inherited, override, disabled and runtime states through the workspace,
-project and issue handlers, and checks agent writes store nothing.
-`cmd_issue_wakeup_test.go` covers CLI list passthrough of default origin and
-state. The CLI has no scoped-definition commands.
+project and issue handlers, and checks that an agent proposal is stored
+disabled, that a member's issue override does not enable it and that an admin
+write does. `cmd_issue_wakeup_test.go` covers CLI list passthrough of default
+origin and state; CHE-3671 covers `wakeup-definition create`.

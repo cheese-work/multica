@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strconv"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/service"
@@ -73,17 +74,38 @@ func TestWakeupDefinitionChainReportsInheritanceOverrideDisableAndRuntime(t *tes
 	}
 }
 
-// Agents never author a definition, so none can broaden a default; an admin
-// session writes the same rule right after (CHE-1082 15 Oct scope amendment).
-func TestWakeupDefinitionAgentWriteIsRefusedAndStoresNothing(t *testing.T) {
+// An agent proposes a workspace or project rule; the server stores it disabled
+// and no one below it can switch it on until a human admin enables it. An agent
+// cannot edit, delete or write at issue scope (CHE-1082 15 Oct scope amendment,
+// built in CHE-3671).
+func TestWakeupDefinitionAgentProposalIsStoredDisabledUntilAnAdminEnables(t *testing.T) {
 	k := newWakeupDefinitionKit(t)
 	restoreWorkspaceSettings(t)
 	agent := k.asAgentRun()
-	for _, s := range []wdScope{k.workspace(), k.project(), k.issue()} {
-		s.put(service.SystemRulePRMerged, 0, cfg(map[string]any{"enabled": true}), agent).Want(http.StatusForbidden)
+	member := wdMember(t, "WD Qualification Member", "member")
+	body := cfg(map[string]any{"enabled": true, "trigger": map[string]any{"kind": "pr_merged"}, "instruction": "x", "target": map[string]any{"type": "agent", "id": handlerTestAgentID(t)}})
+	for _, s := range []wdScope{k.workspace(), k.project()} {
+		wipeWakeupDefinitions(t)
+		root := decodeDefinition(t, s.create(body, agent).Want(http.StatusCreated))
+		if enabled := string(configKeys(t, root.Config)["enabled"]); enabled != "false" {
+			t.Fatalf("%s: agent proposal stored enabled = %s, want false", s.kind, enabled)
+		}
+		if n := wdCount(t); n != 1 {
+			t.Fatalf("%s: %d definitions stored, want 1", s.kind, n)
+		}
+		// The agent cannot edit or delete its proposal, or write at issue scope.
+		s.put(root.RuleKey, root.Revision, body, agent).Want(http.StatusForbidden)
+		s.del(root.RuleKey, strconv.FormatInt(int64(root.Revision), 10), agent).Want(http.StatusForbidden)
+		k.issue().put(root.RuleKey, 0, cfg(map[string]any{"enabled": true}), agent).Want(http.StatusForbidden)
+		// A member's issue override does not switch the proposal on.
+		k.issue().put(root.RuleKey, 0, cfg(map[string]any{"enabled": true}), asUser(member)).Want(http.StatusOK)
+		if eff := k.issue().effective(root.RuleKey); eff.Enabled {
+			t.Fatalf("%s: proposal ran before an admin enabled it: %+v", s.kind, eff)
+		}
+		// The admin enables the root; the chain now reports it enabled.
+		s.put(root.RuleKey, root.Revision, body).Want(http.StatusOK)
+		if eff := k.issue().effective(root.RuleKey); !eff.Enabled {
+			t.Fatalf("%s: admin-enabled rule stayed disabled: %+v", s.kind, eff)
+		}
 	}
-	if n := wdCount(t); n != 0 {
-		t.Fatalf("a refused agent write stored %d definitions", n)
-	}
-	k.workspace().put(service.SystemRulePRMerged, 0, cfg(map[string]any{"enabled": true})).Want(http.StatusOK)
 }
