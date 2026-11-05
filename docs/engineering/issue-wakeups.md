@@ -707,3 +707,38 @@ Migrations 557–560 are additive (new columns, a table with its trigger, and tw
 concurrent indexes). Deploy them before the server and the server before the
 clients; older clients ignore the new fields, and older servers read as "no
 condition, not paused" in new clients.
+
+## Scoped wakeup definitions (qualification)
+
+Workspace, project and issue scopes store sparse `"v":1` patches in
+`issue_wakeup_definition`. Resolution order: built-in baseline, workspace,
+project, issue. `enabled:false` disables at that scope; nested objects
+(`trigger`, `target`, `schedule`, `filters`, `rate_limit`, `active_run`)
+replace the inherited value whole. User-facing docs and curl examples:
+`apps/docs/content/docs/issue-wakeups.mdx` (`#defaults`, all five locales).
+
+**Routes.** `/api/wakeup-definitions/{key}` (workspace),
+`/api/projects/{id}/wakeup-definitions/{key}`,
+`/api/issues/{id}/wakeup-definitions/{key}`; each has list, `PUT`, `DELETE`
+and `.../effective`. Revisions are decimal strings; a stale write returns 409.
+
+**Write gates.** Closed activation gate: 403 `wakeup_definition_writes_closed`
+(reads and previews stay open). Agents and machine credentials: 403, nothing
+stored. Workspace and project writes need owner or admin; issue scope allows
+any member.
+
+**Runtime state.** `execution{instance_id,enabled,paused_reason}` is returned
+at issue scope only, from the per-issue `issue_wakeup` instance. Resetting an
+override keeps the instance id.
+
+**Workspace aliases.** Workspace-scope `enabled` and `instruction` of the
+built-in rules mirror `workspace.settings` keys (`github_wake_on_pr_merge`,
+`github_wake_on_ci_failure`, `system_wakeup_child_done`,
+`system_wakeup_child_done_instruction`). A test that writes them must restore
+the settings.
+
+**Regression coverage.** `wakeup_definition_qualification_test.go` runs
+inherited, override, disabled and runtime states through the workspace,
+project and issue handlers, and checks agent writes store nothing.
+`cmd_issue_wakeup_test.go` covers CLI list passthrough of default origin and
+state. The CLI has no scoped-definition commands.
