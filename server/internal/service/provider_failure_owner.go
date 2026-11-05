@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 // providerFailureOwner names the one mechanism allowed to recover a failed task.
@@ -23,6 +24,9 @@ const (
 	providerOwnerWakeupRearm providerFailureOwner = "wakeup_rearm"
 	providerOwnerTaskRetry   providerFailureOwner = "task_retry"
 )
+
+// providerRecoveryActivityReserved is the timeline action of a recovery receipt.
+const providerRecoveryActivityReserved = "provider_recovery_reserved"
 
 // providerFailureOwnerDecision carries the rule that decided, so tests and
 // notices can tell a cap (rules 1 and 2) from a guard-owned task (rule 3).
@@ -102,8 +106,58 @@ func reserveProviderFailureRecoveryAndApply(ctx context.Context, tx pgx.Tx, rese
 	if decision.Owner != kind {
 		return false, decision, nil
 	}
-	reserved, err := applyProviderFailureReservation(ctx, tx, reservation, apply)
+	reserved, err := applyProviderFailureReservation(ctx, tx, reservation, func(ctx context.Context, sp pgx.Tx) error {
+		if err := apply(ctx, sp); err != nil {
+			return err
+		}
+		return writeProviderRecoveryReceipt(ctx, db.New(sp), reservation, kind)
+	})
 	return reserved, decision, err
+}
+
+// writeProviderRecoveryReceipt records the timeline receipt of one reserved
+// recovery effect (CHE-1732 M0c). It runs inside the reservation savepoint, so
+// it commits with the failure, the reservation and the effect and rolls back
+// with them. A wakeup effect also records the wakeup's own `wakeup_rearmed`
+// generation event. Both rows are inert data; nothing is published here.
+func writeProviderRecoveryReceipt(ctx context.Context, q *db.Queries, reservation db.RecordProviderFailureRecoveryParams, kind providerFailureOwner) error {
+	target, err := q.GetProviderFailureNoticeTarget(ctx, reservation.FailedTaskID)
+	if err != nil {
+		return fmt.Errorf("load provider recovery receipt target: %w", err)
+	}
+	failed := util.UUIDToString(reservation.FailedTaskID)
+	details := map[string]any{"failed_task_id": failed, "effect_kind": string(kind), "reservation": failed}
+	var wakeup db.IssueWakeup
+	switch kind {
+	case providerOwnerTaskRetry:
+		details["effect_ref"] = util.UUIDToString(reservation.RecoveryTaskID)
+	case providerOwnerWakeupRearm:
+		wakeup, err = q.GetIssueWakeup(ctx, db.GetIssueWakeupParams{ID: reservation.RecoveryWakeupID, WorkspaceID: target.WorkspaceID})
+		if err != nil {
+			return fmt.Errorf("load re-armed wakeup: %w", err)
+		}
+		details["effect_ref"] = util.UUIDToString(reservation.RecoveryWakeupID)
+		details["wakeup_revision"] = reservation.RecoveryWakeupRevision.Int64
+	default:
+		return fmt.Errorf("provider recovery receipt: unexpected effect kind %q", kind)
+	}
+	raw, err := json.Marshal(details)
+	if err != nil {
+		return err
+	}
+	if _, err := q.CreateActivity(ctx, db.CreateActivityParams{
+		ID: dbid.NewV7(), WorkspaceID: target.WorkspaceID, IssueID: target.IssueID,
+		ActorType: pgtype.Text{String: "system", Valid: true}, Action: providerRecoveryActivityReserved, Details: raw,
+	}); err != nil {
+		return fmt.Errorf("record provider recovery receipt: %w", err)
+	}
+	if kind != providerOwnerWakeupRearm {
+		return nil
+	}
+	_, err = recordWakeupActivity(ctx, q, wakeup, wakeupActivityRearmed, "system", pgtype.UUID{}, map[string]any{
+		"failed_task_id": failed, "wakeup_revision": reservation.RecoveryWakeupRevision.Int64,
+	})
+	return err
 }
 
 // notifyProviderFailureCap tells the failed run's accountable user, once, that

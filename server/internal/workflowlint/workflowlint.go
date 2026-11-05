@@ -33,16 +33,9 @@ type Finding struct {
 	WaiveReason string `json:"waive_reason,omitempty"`
 }
 
-// Lint returns the findings for def: step findings in step order, then
-// workflow-wide ones.
-func Lint(def issueworkflow.Definition) []Finding {
-	l := linter{def: def, reached: reachedStatuses(def)}
-	for _, s := range def.Steps {
-		l.lintStep(s)
-	}
-	l.lintRunBudget()
-	return l.findings
-}
+// Lint returns the structural findings for def. LintWith adds the agent,
+// runtime and usage rules.
+func Lint(def issueworkflow.Definition) []Finding { return LintWith(def, Env{}) }
 
 type linter struct {
 	def      issueworkflow.Definition
