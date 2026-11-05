@@ -45,7 +45,8 @@ export function warningCounts(jobs) {
         if (/##\[endgroup\]/.test(line)) commandHeader = false
         continue
       }
-      if (/^(?:\d{4}-\d\d-\d\dT\S+\s+)?\d{4}\/\d\d\/\d\d \d\d:\d\d:\d\d(?:\.\d+)?\s+WARN\s/.test(line)) continue
+      // Parallel tests can interleave stdout and split the timestamp, leaving only its tail ("37 WARN ...").
+      if (/^(?:\d{4}-\d\d-\d\dT\S+\s+)?(?:\d{4}\/\d\d\/\d\d \d\d:\d\d:\d\d(?:\.\d+)?|(?:\d{1,2}[:/ ])*\d{1,2}(?:\.\d+)?)\s+WARN\s/.test(line)) continue
       const message = normalize(line)
       if (/^(?:\/|[A-Za-z]:\/|(?:\.\.?\/)?(?:apps|packages|server|scripts)\/).+\.[cm]?[jt]sx?$/.test(message)) {
         eslintFile = sourcePath(message)
