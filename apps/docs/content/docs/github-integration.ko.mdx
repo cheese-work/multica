@@ -237,6 +237,14 @@ Private key는 GitHub App의 **Private keys → Generate a private key**에서 �
 
 기존 App에 Members 또는 Actions 권한을 추가하는 경우 새 워크스페이스에 연결하기 전에 대상 organization마다 권한 변경을 승인해야 합니다. 기존 installation은 새 권한을 수락해야 하며, 수락하기 전에는 `--until-gh-run` wakeup이 workflow 이벤트를 받지 못합니다.
 
+필요하면 `GITHUB_ALLOWED_ACCOUNT_IDS`에 GitHub 계정의 숫자 ID(login이 아니라 사용자 또는 organization의 `id`)를 쉼표로 구분해 설정합니다. 설정하지 않거나 비워 두면 위 검증을 통과한 모든 계정이 연결할 수 있습니다. 설정하면 계정 ID가 목록에 없는 installation의 연결을 Multica가 거부합니다. setup callback은 `github_error=installation_not_allowed`로 리디렉션하고 binding을 만들지 않습니다. code가 없는 **Redirect on update** callback은 해당 binding에 이미 저장된 계정 ID로 판단합니다. 저장된 계정 ID가 없는 binding은 거부됩니다(fail closed). login처럼 잘못된 값은 시작 시 서버를 중지시킵니다.
+
+```dotenv
+GITHUB_ALLOWED_ACCOUNT_IDS=1234567,7654321
+```
+
+GitHub의 `deleted`와 `suspend` 이벤트는 목록과 관계없이 항상 binding을 삭제합니다.
+
 </Step>
 <Step>
 

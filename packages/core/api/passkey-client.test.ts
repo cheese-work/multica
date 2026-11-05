@@ -26,6 +26,31 @@ describe("ApiClient passkeys", () => {
     expect(JSON.parse(finish.call().init.body)).toEqual({ ceremony_id: "c", code: "123456", attestation });
   });
 
+  it("sends the gate assertion with enrollment finish", async () => {
+    const finish = client({ enrolled: true });
+    await finish.api.finishPasskeyEnrollment({ ceremony_id: "c", code: "1", attestation: {}, assertion: envelope });
+    expect(JSON.parse(finish.call().init.body).assertion).toEqual(envelope);
+  });
+
+  it("lists the caller's passkeys", async () => {
+    const list = client({ passkeys: [{ id: "p1", created_at: "t", last_used_at: null, transports: [], state: "suspect" }] });
+    expect(await list.api.listPasskeys()).toEqual([{ id: "p1", created_at: "t", last_used_at: null, transports: [], state: "suspect" }]);
+    expect(list.call().url).toBe("https://api.example.test/api/passkeys");
+    await expect(client({ passkeys: "x" }).api.listPasskeys()).rejects.toThrow(/unexpected/);
+  });
+
+  it("revokes a passkey with a mailed code", async () => {
+    const start = client({ ceremony_id: "c", expires_at: "t" });
+    expect(await start.api.startPasskeyRevocationByCode("p/1")).toEqual({ ceremony_id: "c", expires_at: "t" });
+    expect(start.call()).toMatchObject({ url: "https://api.example.test/api/passkeys/p%2F1/revoke/code", init: { method: "POST" } });
+
+    const confirm = client({ revoked: true });
+    await confirm.api.confirmPasskeyRevocationByCode("p/1", { ceremony_id: "c", code: "123456" });
+    expect(confirm.call().url).toBe("https://api.example.test/api/passkeys/p%2F1/revoke/confirm");
+    expect(JSON.parse(confirm.call().init.body)).toEqual({ ceremony_id: "c", code: "123456" });
+    await expect(client({ revoked: false }).api.confirmPasskeyRevocationByCode("p", { ceremony_id: "c", code: "1" })).rejects.toThrow(/unexpected/);
+  });
+
   it("opens a revoke challenge and revokes with the assertion", async () => {
     const challenge = client({ challenge_id: "c", options, expires_at: "t" });
     await challenge.api.challengePasskeyRevocation("p/1");

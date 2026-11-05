@@ -229,6 +229,86 @@ function Get-InstalledCliVersion {
     return $null
 }
 
+# Terminal progress only when stderr is not redirected. Pipes, CI and
+# non-interactive hosts keep the plain Invoke-WebRequest path and stay quiet.
+function Test-ProgressEnabled {
+    return -not [Console]::IsErrorRedirected
+}
+
+function Write-Phase {
+    param([string]$Msg)
+    if (Test-ProgressEnabled) { Write-Host "    $Msg" -ForegroundColor DarkGray }
+}
+
+function Format-Megabytes {
+    param([double]$Bytes)
+    return ($Bytes / 1MB).ToString("0.0", [System.Globalization.CultureInfo]::InvariantCulture)
+}
+
+# Copy Source to Destination, drawing Write-Progress at most 5 times a second.
+# Total <= 0 means unknown size: show MB done and rate instead of a percent.
+function Copy-StreamWithProgress {
+    param(
+        [Parameter(Mandatory = $true)]$Source,
+        [Parameter(Mandatory = $true)]$Destination,
+        [long]$Total = -1,
+        [string]$Activity = "Downloading",
+        [scriptblock]$ElapsedMs
+    )
+
+    $clock = [System.Diagnostics.Stopwatch]::StartNew()
+    if (-not $ElapsedMs) { $ElapsedMs = { $clock.ElapsedMilliseconds } }
+    $buffer = New-Object byte[] 81920
+    $done = 0L
+    $lastMs = $null
+    try {
+        while (($read = $Source.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $Destination.Write($buffer, 0, $read)
+            $done += $read
+            $nowMs = & $ElapsedMs
+            if ($null -ne $lastMs -and ($nowMs - $lastMs) -lt 200) { continue }
+            $lastMs = $nowMs
+            if ($Total -gt 0) {
+                $percent = [Math]::Min(100, [int][Math]::Floor($done * 100 / $Total))
+                Write-Progress -Activity $Activity -PercentComplete $percent `
+                    -Status "$(Format-Megabytes $done) / $(Format-Megabytes $Total) MB"
+            } else {
+                $rate = if ($nowMs -gt 0) { $done / ($nowMs / 1000) } else { 0 }
+                Write-Progress -Activity $Activity `
+                    -Status "$(Format-Megabytes $done) MB  $(Format-Megabytes $rate) MB/s"
+            }
+        }
+    } finally {
+        Write-Progress -Activity $Activity -Completed
+    }
+}
+
+function Get-CliArchive {
+    param([string]$Url, [string]$OutFile)
+
+    if (-not (Test-ProgressEnabled)) {
+        Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing
+        return
+    }
+
+    $request = [System.Net.WebRequest]::Create($Url)
+    $request.UserAgent = "multica-install"
+    $response = $request.GetResponse()
+    try {
+        $source = $response.GetResponseStream()
+        $dest = [System.IO.File]::Create($OutFile)
+        try {
+            Copy-StreamWithProgress -Source $source -Destination $dest `
+                -Total $response.ContentLength -Activity "Downloading Multica CLI"
+        } finally {
+            $dest.Dispose()
+            $source.Dispose()
+        }
+    } finally {
+        $response.Dispose()
+    }
+}
+
 # ---------------------------------------------------------------------------
 # CLI Installation
 # ---------------------------------------------------------------------------
@@ -255,12 +335,13 @@ function Install-CliBinary {
 
     Write-Info "Downloading $url ..."
     try {
-        Invoke-WebRequest -Uri $url -OutFile (Join-Path $tmpDir "multica.zip") -UseBasicParsing
+        Get-CliArchive -Url $url -OutFile (Join-Path $tmpDir "multica.zip")
     } catch {
         Remove-Item $tmpDir -Recurse -Force
         Write-Fail "Failed to download CLI binary: $_"
     }
 
+    Write-Phase "Verifying SHA256"
     # Verify SHA256 checksum
     $checksumUrl = "https://github.com/multica-ai/multica/releases/download/$latest/checksums.txt"
     try {
@@ -294,6 +375,7 @@ function Install-CliBinary {
         Write-Warn "Could not download checksums.txt - skipping verification."
     }
 
+    Write-Phase "Installing"
     Expand-Archive -Path (Join-Path $tmpDir "multica.zip") -DestinationPath $tmpDir -Force
 
     $binDir = Join-Path $env:USERPROFILE ".multica\bin"
@@ -314,6 +396,7 @@ function Install-CliBinary {
     Remove-Item $tmpDir -Recurse -Force
 
     Add-ToUserPath $binDir
+    Write-Phase "Installed"
     Write-Ok "Multica CLI installed to $binDir\multica.exe"
 }
 

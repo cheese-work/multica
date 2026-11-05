@@ -23,7 +23,7 @@ func TestDecisionRequestPersistsDecodedAsk(test *testing.T) {
 	var raw []byte
 	dbfx.QueryRow(test, `SELECT ask_json FROM decision_request WHERE id = $1`, created["id"]).Scan(&raw)
 	var stored decisiontx.Ask
-	if err := json.Unmarshal(raw, &stored); err != nil || len(stored.Options) != 2 || stored.Options[1].Label != "Hold" || stored.Options[1].Pros[0] != "A pro" || stored.Recommendation != "Hold" {
+	if err := json.Unmarshal(raw, &stored); err != nil || len(stored.Options) != 2 || stored.Options[0].Label != "Hold" || stored.Options[1].Pros[0] != "A pro" || stored.Recommendation != "Hold" {
 		test.Fatalf("ask_json = %s (%v)", raw, err)
 	}
 }
