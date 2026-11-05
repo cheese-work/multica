@@ -106,9 +106,18 @@ test("every job name is the id plus a context-dependent suffix that is empty in 
   for (const id of jobIds) {
     const name = job(id).match(/^    name: (.+)$/m)?.[1];
     assert.ok(name, `${id} has no name`);
-    if (name.includes("matrix.")) continue;
+    if (name.includes("matrix.")) continue; // checked by the matrix-name test below
     assert.equal(name, `${id}${NAME_SUFFIX}`, id);
   }
+});
+
+// A job with a matrix and no `name:` is reported as `<id> (<matrix values>)`. warning-budget matches job names exactly
+// against successful main runs, so an overridden name must keep that matrix suffix or no baseline matches (CHE-3989).
+test("matrix jobs keep the default `<id> (<os>)` name in a real run", () => {
+  const SUFFIX = "${{ github.run_id == 0 && 'x' || '' }}";
+  const matrixJobs = jobIds.filter((id) => /^      matrix:\n        os:/m.test(job(id)));
+  assert.deepEqual(matrixJobs.sort(), ["cursor-background-lifecycle", "installer"]);
+  for (const id of matrixJobs) assert.equal(job(id).match(/^    name: (.+)$/m)?.[1], `${id}${SUFFIX} (\${{ matrix.os }})`, id);
 });
 
 test("ci.yml still runs this test", () => {

@@ -106,7 +106,7 @@ jobs:
   # Windows leg removed org-wide per CHE-522 (Cheese: Linux CI only, no
   # Windows jobs or artifacts).
   cursor-background-lifecycle:
-    name: cursor-background-lifecycle${{ github.run_id == 0 && 'x' || '' }}
+    name: cursor-background-lifecycle${{ github.run_id == 0 && 'x' || '' }} (${{ matrix.os }})
     needs: changes
     if: ${{ needs.changes.outputs.backend == 'true' }}
     runs-on: ${{ matrix.os }}
@@ -834,7 +834,7 @@ jobs:
         run: node scripts/check-image-budget.mjs --base merge-parent
 
   installer:
-    name: installer${{ github.run_id == 0 && 'x' || '' }}
+    name: installer${{ github.run_id == 0 && 'x' || '' }} (${{ matrix.os }})
     # Stub-driven shell tests for scripts/install.sh. Kept off the heavy
     # backend job so installer regressions surface independently. The macOS
     # leg (BSD vs GNU `tar` / `sed` / `mktemp`) is halted (CHE-1012): no free
