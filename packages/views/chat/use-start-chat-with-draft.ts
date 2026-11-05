@@ -33,7 +33,11 @@ export function useStartChatWithDraft(): ((draft: string) => void) | null {
       if (!agentId) return;
       // The `?agent=` deep link starts a fresh compose, which keeps the
       // new-chat draft slot, so the text lands in the composer it opens.
-      useChatStore.getState().setInputDraft(DRAFT_NEW_SESSION, draft);
+      // Unsent input survives: never replace a non-empty draft.
+      const store = useChatStore.getState();
+      if (!store.inputDrafts[DRAFT_NEW_SESSION]?.trim()) {
+        store.setInputDraft(DRAFT_NEW_SESSION, draft);
+      }
       push(`${paths.chat()}?agent=${encodeURIComponent(agentId)}`);
     },
     [agentId, paths, push],
