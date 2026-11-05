@@ -67,6 +67,7 @@ import {
 } from "./settings-layout";
 import { IdleGuardRows } from "./idle-guard-rows";
 import { RuntimeProfileRow } from "./runtime-profile-row";
+import { RoutingAgentRows } from "./routing-agent-rows";
 import { useAutoSave } from "./use-auto-save";
 import { useSettingsDraft } from "./use-settings-draft";
 import { useWorkspaceSettingsDraftStore } from "@multica/core/settings/draft-stores";
@@ -631,6 +632,7 @@ export function WorkspaceTab() {
 
           {isOwner ? <AgentDecisionsRow wsId={workspace.id} /> : null}
           <IdleGuardRows workspace={workspace} canEdit={isOwner} />
+          <RoutingAgentRows wsId={workspace.id} canEdit={canManageWorkspace} />
 
           <SettingsRow
             anchor="slug"
