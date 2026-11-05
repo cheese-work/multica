@@ -250,6 +250,7 @@ func init() {
 		"POST /api/workspaces/{id}/decision-gate/challenge",
 		"PUT /api/agents/{id}/presets/default",
 		"PUT /api/workspaces/{id}/decision-gate",
+		"PUT /api/workspaces/{id}/routing-agent",
 	} {
 		auditPendingL5b[route] = true
 	}
