@@ -131,11 +131,8 @@ func TestLoadChatAttention(t *testing.T) {
 	if _, ok := byCanon[x1]; ok {
 		t.Fatalf("old DM x1 listed separately")
 	}
-	if _, ok := byCanon[y]; ok && byCanon[y].StaleLevel != AttentionNone {
-		t.Fatalf("archived chain coloured: %+v", byCanon[y])
-	}
-	if len(byCanon[y].Keys) != 0 {
-		t.Fatalf("archived chain listed: %+v", byCanon[y])
+	if got, ok := byCanon[y]; ok { // A14: absent from the list, not merely empty
+		t.Fatalf("archived chain listed: %+v", got)
 	}
 
 	// C2: only the latest finished turn of Z, uncoloured.

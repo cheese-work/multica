@@ -234,7 +234,7 @@ func LoadChatAttention(ctx context.Context, q *db.Queries, workspaceID, userID p
 	out := make([]ChatAttention, 0, len(chains))
 	for _, c := range chains {
 		root := util.UUIDToString(c.RootID)
-		if len(subjects[root]) == 0 {
+		if c.Archived || len(subjects[root]) == 0 { // A14: an archived chain is not listed
 			continue
 		}
 		out = append(out, ProjectChatAttention(ChatAttentionChain{
