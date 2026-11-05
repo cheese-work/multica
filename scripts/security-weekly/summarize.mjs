@@ -9,6 +9,12 @@ const SCANNERS = ["semgrep", "govulncheck", "pnpm-audit", "gitleaks", "codeql", 
 const LEVELS = { error: "high", warning: "medium" };
 const band = (score) => (score >= 9 ? "critical" : score >= 7 ? "high" : score >= 4 ? "medium" : "low");
 
+// Every part must report: a half-run scanner (one CodeQL language, one image) is NOT RUN, not a smaller total.
+const REQUIRED = {
+  codeql: ["codeql-go.sarif", "codeql-javascript-typescript.sarif"],
+  trivy: ["trivy-backend.json", "trivy-web.json"],
+};
+
 const NORMALIZERS = {
   semgrep: (raw) => raw.results.map((r) => ({
     id: `${r.check_id}|${r.path}`,
@@ -40,7 +46,12 @@ const NORMALIZERS = {
 
 export const normalize = (scanner, raw) => NORMALIZERS[scanner](raw);
 
-export function summarize(scanner, items, prev) {
+const RANK = { critical: 3, high: 2, medium: 1, low: 0 };
+export function summarize(scanner, rawItems, prev) {
+  // One finding per id (worst severity wins) so total, by-severity and new count the same thing.
+  const worst = new Map();
+  for (const i of rawItems) if (!worst.has(i.id) || RANK[i.severity] > RANK[worst.get(i.id).severity]) worst.set(i.id, i);
+  const items = [...worst.values()];
   const ids = [...new Set(items.map((i) => i.id))].sort();
   const before = new Set(prev?.ids ?? []);
   const bySeverity = Object.fromEntries(SEVERITIES.map((s) => [s, items.filter((i) => i.severity === s).length]));
@@ -63,6 +74,8 @@ export function run(dir, previous) {
     const mine = files.filter((f) => f === `${scanner}.json` || f === `${scanner}.txt` || f.startsWith(`${scanner}-`));
     const notRun = (why) => ({ scanner, notRun: true, why, ids: prev?.ids ?? [] });
     if (!mine.length) return notRun("no report");
+    const missing = (REQUIRED[scanner] ?? []).find((f) => !files.includes(f));
+    if (missing) return notRun(`missing ${missing}`);
     try {
       const items = mine.flatMap((f) => {
         const text = readFileSync(join(dir, f), "utf8");

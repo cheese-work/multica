@@ -93,3 +93,24 @@ test("run: an unreadable report is `not run`, never zero findings", () => {
   writeFileSync(join(dir, "semgrep.json"), "{not json");
   assert.ok(run(dir, undefined).lines.includes("semgrep: NOT RUN (unreadable report)"));
 });
+
+test("summarize: findings sharing an id count once, so new never exceeds total", () => {
+  const s = summarize("semgrep", [
+    { id: "r.a|a.go", severity: "high" },
+    { id: "r.a|a.go", severity: "high" },
+    { id: "r.b|b.go", severity: "low" },
+  ], undefined);
+  assert.equal(s.total, 2);
+  assert.deepEqual(s.bySeverity, { critical: 0, high: 1, medium: 0, low: 1 });
+  assert.equal(s.new.length, 2);
+});
+
+test("run: codeql with only one language, or trivy with only one image, is `not run`", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sw-"));
+  const sarif = JSON.stringify({ runs: [{ tool: { driver: { rules: [] } }, results: [] }] });
+  writeFileSync(join(dir, "codeql-javascript-typescript.sarif"), sarif);
+  writeFileSync(join(dir, "trivy-backend.json"), JSON.stringify({ Results: [] }));
+  const { lines } = run(dir, undefined);
+  assert.ok(lines.includes("codeql: NOT RUN (missing codeql-go.sarif)"));
+  assert.ok(lines.includes("trivy: NOT RUN (missing trivy-web.json)"));
+});
