@@ -3084,6 +3084,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		// resp was snapshotted before this write; report what is now stored.
 		resp.ClaimedModel = &preset.Settings.Model
 	}
+	harnessProfile, err := h.resolveClaimHarnessProfile(r.Context(), agent)
+	if err != nil {
+		slog.Error("daemon claim: resolve harness profile failed; preserving task for redelivery",
+			"task_id", uuidToString(task.ID), "agent_id", uuidToString(agent.ID), "error", err)
+		return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
+			&claimBuildFailure{outcome: "error_harness_profile", status: http.StatusInternalServerError, message: "failed to resolve harness profile"}
+	}
 	resp.Agent = &TaskAgentData{
 		ID:                    uuidToString(agent.ID),
 		Name:                  agent.Name,
@@ -3095,7 +3102,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		ThinkingLevel:         preset.Settings.ThinkingLevel,
 		ServiceTier:           preset.Settings.ServiceTier,
 		RuntimeConfig:         runtimeConfig,
-		HarnessProfile:        h.resolveClaimHarnessProfile(r.Context(), agent),
+		HarnessProfile:        harnessProfile,
 		DisabledRuntimeSkills: disabledRuntimeSkillsFor(agent.DisabledRuntimeSkills, runtimeID, runtime.Provider),
 	}
 	// Snapshot the agent's persistent OpenClaw model override for this claim.
@@ -7407,16 +7414,17 @@ func (h *Handler) chatPointerIsCurrent(ctx context.Context, cs db.ChatSession) b
 	return current
 }
 
-// resolveClaimHarnessProfile reads the workspace default and applies the agent
-// override. A failed workspace read degrades to the agent value alone, which
-// resolves to personal (today's behavior) when unset.
-func (h *Handler) resolveClaimHarnessProfile(ctx context.Context, agent db.Agent) string {
-	var workspaceSettings []byte
-	if ws, err := h.Queries.GetWorkspace(ctx, agent.WorkspaceID); err != nil {
-		slog.Warn("daemon claim: load workspace for harness profile failed; using agent value only",
-			"agent_id", uuidToString(agent.ID), "error", err)
-	} else {
-		workspaceSettings = ws.Settings
+// resolveClaimHarnessProfile applies the agent override, then the workspace
+// default. An explicit agent value needs no workspace read. Otherwise a failed
+// read is an error: launching personal when the workspace default may be
+// managed would silently drop the isolation the workspace asked for.
+func (h *Handler) resolveClaimHarnessProfile(ctx context.Context, agent db.Agent) (string, error) {
+	if profile, ok := service.AgentHarnessProfile(agent.RuntimeConfig); ok {
+		return profile, nil
 	}
-	return service.ResolveHarnessProfile(workspaceSettings, agent.RuntimeConfig)
+	ws, err := h.Queries.GetWorkspace(ctx, agent.WorkspaceID)
+	if err != nil {
+		return "", fmt.Errorf("load workspace for harness profile: %w", err)
+	}
+	return service.ResolveHarnessProfile(ws.Settings, agent.RuntimeConfig), nil
 }

@@ -20,18 +20,33 @@ func ValidHarnessProfile(v string) bool {
 	return v == HarnessProfilePersonal || v == HarnessProfileManaged
 }
 
+// layerHarnessProfile reads one layer's stored profile; ok is false for
+// null, empty and unknown values, which inherit the layer below.
+func layerHarnessProfile(raw []byte) (string, bool) {
+	var layer struct {
+		Profile string `json:"harness_profile"`
+	}
+	if json.Unmarshal(raw, &layer) != nil || !ValidHarnessProfile(layer.Profile) {
+		return "", false
+	}
+	return layer.Profile, true
+}
+
+// AgentHarnessProfile returns the agent's own override; ok is false when it
+// inherits the workspace default.
+func AgentHarnessProfile(agentConfig []byte) (string, bool) {
+	return layerHarnessProfile(agentConfig)
+}
+
 // ResolveHarnessProfile: agent override > workspace default > personal.
 // Null, empty and unknown stored values inherit; the value is validated on
 // write, so this only guards legacy data.
 func ResolveHarnessProfile(workspaceSettings, agentConfig []byte) string {
-	profile := HarnessProfilePersonal
-	for _, raw := range [][]byte{workspaceSettings, agentConfig} {
-		var layer struct {
-			Profile string `json:"harness_profile"`
-		}
-		if json.Unmarshal(raw, &layer) == nil && ValidHarnessProfile(layer.Profile) {
-			profile = layer.Profile
-		}
+	if profile, ok := layerHarnessProfile(agentConfig); ok {
+		return profile
 	}
-	return profile
+	if profile, ok := layerHarnessProfile(workspaceSettings); ok {
+		return profile
+	}
+	return HarnessProfilePersonal
 }
