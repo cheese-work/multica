@@ -95,3 +95,27 @@ func TestElevatedPushRefusals(t *testing.T) {
 		})
 	}
 }
+
+// A compressible oversized commit message must be refused before translate
+// reads the decompressed object into daemon memory.
+func TestElevatedPushRefusesOversizedCommit(t *testing.T) {
+	t.Parallel()
+	s := newSynRig(t)
+	s.start(t)
+	if err := os.WriteFile(filepath.Join(s.syn, "big.txt"), []byte("1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	msg := filepath.Join(t.TempDir(), "msg")
+	if err := os.WriteFile(msg, bytes.Repeat([]byte("a"), maxCommitBytes+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, s.syn, "add", ".")
+	git(t, s.syn, "commit", "-q", "-F", msg)
+	err := Push(context.Background(), s.socket, s.syn, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "(413)") {
+		t.Fatalf("Push error = %v, want status 413", err)
+	}
+	if got := s.remoteRef(t, s.pin.Ref); got != "" {
+		t.Fatalf("remote gained %s at %s", s.pin.Ref, got)
+	}
+}

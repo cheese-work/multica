@@ -11,6 +11,8 @@ import (
 	"strings"
 )
 
+var errCommitTooLarge = errors.New("push contains an oversized commit")
+
 var errNotTranslatable = errors.New("push history does not start at the synthetic base")
 
 // epochIdent pins the synthetic root's author and time, as MaterializeSyntheticBase does.
@@ -57,6 +59,15 @@ func (b *Broker) translate(ctx context.Context, work, sha, msgFile string) (stri
 	}
 	mapped := map[string]string{s.Root: s.Parent}
 	for _, old := range shas {
+		// The size comes from the object header, so a compressed bomb is
+		// refused before its decompressed bytes reach daemon memory.
+		size, err := b.git(ctx, work, nil, "cat-file", "-s", old)
+		if err != nil {
+			return "", http.StatusInternalServerError, fmt.Errorf("translate: %s", firstLine(size))
+		}
+		if n, err := strconv.Atoi(size); err != nil || n > maxCommitBytes {
+			return "", http.StatusRequestEntityTooLarge, errCommitTooLarge
+		}
 		raw, err := rawGit(ctx, work, nil, "cat-file", "commit", old)
 		if err != nil {
 			return "", http.StatusInternalServerError, fmt.Errorf("translate: %w", err)

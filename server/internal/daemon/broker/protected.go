@@ -168,10 +168,12 @@ func walkStatus(err error) int {
 }
 
 // defaultMaxCommits caps the commits one push may add; maxCommitHeader caps the
-// header block of one commit (everything before its message).
+// header block of one commit (everything before its message); maxCommitBytes
+// caps one whole raw commit object that translate reads into memory.
 const (
 	defaultMaxCommits = 1000
 	maxCommitHeader   = 64 << 10
+	maxCommitBytes    = 1 << 20
 )
 
 var errTooManyCommits = errors.New("push adds too many commits")
