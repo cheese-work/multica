@@ -94,7 +94,7 @@ func (s *TaskService) failOverBackgroundTask(ctx context.Context, failed db.Agen
 		if s.backgroundAgentReachable(ctx, job, workspaceID, c.FallbackAgentID) {
 			next := BackgroundTaskInput{
 				Job: job, WorkspaceID: workspaceID, AgentID: util.MustParseUUID(c.FallbackAgentID),
-				Source: bgagents.Source(c.ChainSource), Slot: bgagents.Fallback, Input: c.Input,
+				Source: bgagents.Source(c.ChainSource), Slot: bgagents.Fallback, Input: c.Input, Guard: c.Guard,
 				SourceChatSessionID: failed.SourceChatSessionID,
 			}
 			next.MemberID, _ = util.ParseUUID(c.MemberID)
