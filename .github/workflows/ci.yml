@@ -1,14 +1,8 @@
 name: CI
 
 on:
-  # A PR stacked on an agent/** base runs CI once it is non-draft. A draft opts in with the `run-ci` label, and a
-  # retarget to main re-runs CI; both go through ci-dispatch.yml (workflow_dispatch). `labeled` and `edited` stay
-  # out of these types on purpose: a skipped run would replace the earlier results of the same head, and a full
-  # run would cancel the running CI of every main PR on a title edit or label (CHE-3989).
-  # One run condition gates every job and the concurrency group: keep the copies in step (scripts/ci-stacked-pr.test.mjs).
   pull_request:
-    branches: [main, "agent/**"]
-    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
   merge_group:
     types: [checks_requested]
   schedule:
@@ -16,13 +10,13 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ (github.event_name != 'pull_request' || (github.base_ref == 'main' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci'))) && (github.event.pull_request.number || github.ref) || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   warning-budget:
     needs: [migration-prefix-check, cursor-background-lifecycle, changes, sqlc-check, frontend-build, frontend-test, frontend-views-test, locale-parity, frontend, backend-tests, backend-agent-tests, go-vulnerability-scan, go-lint, backend, image-budget, installer, script-checks, deploy-cd, frontend-quality]
-    if: ${{ always() && !cancelled() && needs.changes.result != 'skipped' }}
+    if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -50,7 +44,7 @@ jobs:
           retention-days: 14
 
   migration-prefix-check:
-    if: ${{ github.event_name == 'pull_request' && (github.event_name != 'pull_request' || (github.base_ref == 'main' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci'))) }}
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 1
     permissions:
@@ -74,7 +68,6 @@ jobs:
   # release or install-script URLs in packages, apps and server. Not gated by
   # ci-scope: a TS-only change can reintroduce the URL.
   upstream-update-source-guard:
-    if: ${{ github.event_name != 'pull_request' || (github.base_ref == 'main' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     permissions:
@@ -137,7 +130,6 @@ jobs:
   # a `go test -race` run. The outputs are consumed by the focused jobs
   # below.
   changes:
-    if: ${{ github.event_name != 'pull_request' || (github.base_ref == 'main' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci')) }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -423,7 +415,7 @@ jobs:
   # Preserve the aggregate check names while validating intentional skips.
   frontend:
     needs: [changes, frontend-build, frontend-test, frontend-views-test, locale-parity, frontend-quality]
-    if: ${{ !cancelled() && needs.changes.result != 'skipped' }}
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -771,7 +763,7 @@ jobs:
   # SQL verification, and the vulnerability scan to run independently.
   backend:
     needs: [changes, backend-tests, backend-agent-tests, sqlc-check, go-vulnerability-scan, go-lint, script-checks, installer, deploy-cd]
-    if: ${{ !cancelled() && needs.changes.result != 'skipped' }}
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6

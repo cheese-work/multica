@@ -1,19 +1,22 @@
 name: CI Dispatch
 
-# CHE-3989: starts ci.yml with workflow_dispatch on the PR head branch for two events that must not run ci.yml
-# itself (a skipped run would hide earlier results, a full one would cancel the running CI of any main PR):
-#   - the `run-ci` label on a PR whose base is not main (opt-in for a stacked draft);
-#   - a retarget to main (`edited` with a base change).
-# Title, body and other label events skip this one job only; they touch no ci.yml check.
+# CHE-3989 (CHE-3987 S2): CI for a PR whose base is `agent/**`, and for a PR retargeted to `main`.
+# ci.yml stays main-only on purpose. A pull_request run of ci.yml for a stacked draft would be skipped and
+# would shadow the dispatched results in the PR check list, and `labeled` or `edited` runs of ci.yml would cancel
+# or skip the CI of every main PR. This workflow only starts ci.yml (workflow_dispatch) on the head branch.
+#   - non-draft stacked PR: every push, reopen and ready_for_review
+#   - draft stacked PR: nothing until the `run-ci` label is on it (label it, or push after it is labeled)
+#   - retarget to main: one run
+# Keep the `if` in step with scripts/ci-stacked-pr.test.mjs.
 on:
   pull_request:
-    types: [labeled, edited]
+    types: [opened, synchronize, reopened, ready_for_review, labeled, edited]
 
 permissions: {}
 
 jobs:
   dispatch:
-    if: ${{ github.event.pull_request.head.repo.full_name == github.repository && ((github.event.action == 'labeled' && github.event.label.name == 'run-ci' && github.event.pull_request.base.ref != 'main') || (github.event.action == 'edited' && github.event.changes.base != null && github.event.pull_request.base.ref == 'main')) }}
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository && ((github.event.pull_request.base.ref != 'main' && ((github.event.action == 'labeled' && github.event.label.name == 'run-ci') || (github.event.action != 'labeled' && github.event.action != 'edited' && (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci'))))) || (github.event.action == 'edited' && github.event.changes.base != null && github.event.pull_request.base.ref == 'main')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     permissions:
