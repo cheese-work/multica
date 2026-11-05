@@ -102,12 +102,16 @@ func (h *Handler) UpdateBackgroundAgents(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "failed to read request body")
 		return
 	}
-	next, bad := h.canonicalBackgroundAgents(r.Context(), member.WorkspaceID, body)
+	// A machine write is accepted only when it changes nothing, so it never
+	// needs the eligibility check: an agent archived since the last human save
+	// must not turn an unchanged machine PUT into a 400.
+	machine := h.backgroundAgentsMachine(r, member)
+	next, bad := h.canonicalBackgroundAgents(r.Context(), member.WorkspaceID, body, !machine)
 	if bad != nil {
 		writeErrorCode(w, http.StatusBadRequest, bad.Code, bad.Msg)
 		return
 	}
-	h.saveBackgroundAgents(w, r, member, next)
+	h.saveBackgroundAgents(w, r, member, machine, next)
 }
 
 // ResetBackgroundAgents clears every job.
@@ -116,13 +120,17 @@ func (h *Handler) ResetBackgroundAgents(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	h.saveBackgroundAgents(w, r, member, map[string]any{})
+	h.saveBackgroundAgents(w, r, member, h.backgroundAgentsMachine(r, member), map[string]any{})
 }
 
-func (h *Handler) saveBackgroundAgents(w http.ResponseWriter, r *http.Request, member db.Member, next map[string]any) {
+func (h *Handler) backgroundAgentsMachine(r *http.Request, member db.Member) bool {
+	actorType, _ := h.resolveActor(r, requestUserID(r), uuidToString(member.WorkspaceID))
+	return isGovernedFieldMachineActor(r, actorType)
+}
+
+func (h *Handler) saveBackgroundAgents(w http.ResponseWriter, r *http.Request, member db.Member, machine bool, next map[string]any) {
 	id := uuidToString(member.WorkspaceID)
-	actorType, _ := h.resolveActor(r, requestUserID(r), id)
-	changes, cancelled, err := h.writeBackgroundAgents(r.Context(), member, isGovernedFieldMachineActor(r, actorType), next)
+	changes, cancelled, err := h.writeBackgroundAgents(r.Context(), member, machine, next)
 	if errors.Is(err, errBackgroundAgentsHumanOnly) {
 		writeBackgroundAgentsRefused(w)
 		return
@@ -227,9 +235,9 @@ func sortedUnionKeys(a, b map[string]any) []string {
 
 // canonicalBackgroundAgents validates body for workspace scope and returns the
 // value as it is stored: lower-case agent ids, empty fields dropped, JSON-typed
-// so it compares equal to what a read gives back. Every agent must be ENG-8
-// eligible in this workspace.
-func (h *Handler) canonicalBackgroundAgents(ctx context.Context, ws pgtype.UUID, body []byte) (map[string]any, *bgagents.Error) {
+// so it compares equal to what a read gives back. With checkEligible, every
+// agent must be ENG-8 eligible in this workspace.
+func (h *Handler) canonicalBackgroundAgents(ctx context.Context, ws pgtype.UUID, body []byte, checkEligible bool) (map[string]any, *bgagents.Error) {
 	cfg, err := bgagents.Parse(body, bgagents.WorkspaceScope)
 	if err != nil {
 		var bad *bgagents.Error
@@ -243,9 +251,11 @@ func (h *Handler) canonicalBackgroundAgents(ctx context.Context, ws pgtype.UUID,
 		if err != nil {
 			return "", &bgagents.Error{Code: bgagents.CodeInvalidAgentID, Msg: field + " must be an agent id"}
 		}
-		agent, err := h.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: id, WorkspaceID: ws})
-		if err != nil || !bgagents.WorkspaceEligible(agent) {
-			return "", &bgagents.Error{Code: codeAgentNotEligible, Msg: field + " must be a workspace-visible agent with a runtime in this workspace: " + raw}
+		if checkEligible {
+			agent, err := h.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: id, WorkspaceID: ws})
+			if err != nil || !bgagents.WorkspaceEligible(agent) {
+				return "", &bgagents.Error{Code: codeAgentNotEligible, Msg: field + " must be a workspace-visible agent with a runtime in this workspace: " + raw}
+			}
 		}
 		return uuidToString(id), nil
 	}
