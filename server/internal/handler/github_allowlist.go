@@ -52,6 +52,7 @@ func (h *Handler) ConfigureGitHubAllowlist(raw string) error {
 		return err
 	}
 	h.githubAllowlist = list
+	h.PRRefresh.SetInstallationFilter(h.githubRefreshAllowed)
 	if list.ids == nil {
 		slog.Warn(githubAllowedAccountIDsEnv + " is unset; every GitHub App installation is allowed")
 	}

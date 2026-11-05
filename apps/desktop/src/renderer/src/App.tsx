@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { CoreProvider } from "@multica/core/platform";
+import type { WSClient } from "@multica/core/api/ws-client";
 import { pickLocale, type SupportedLocale } from "@multica/core/i18n";
 import { useAuthStore } from "@multica/core/auth";
 import { workspaceKeys } from "@multica/core/workspace/queries";
@@ -48,6 +49,24 @@ const HTML_LANG: Record<SupportedLocale, string> = {
   ja: "ja-JP",
   fr: "fr-FR",
 };
+
+function watchWSLifecycle(client: WSClient) {
+  const onVisible = () => {
+    if (document.visibilityState === "visible") client.probe();
+  };
+  const onOnline = () => client.probe();
+  const onPageShow = (event: PageTransitionEvent) => {
+    if (event.persisted) client.probe();
+  };
+  document.addEventListener("visibilitychange", onVisible);
+  window.addEventListener("online", onOnline);
+  window.addEventListener("pageshow", onPageShow);
+  return () => {
+    document.removeEventListener("visibilitychange", onVisible);
+    window.removeEventListener("online", onOnline);
+    window.removeEventListener("pageshow", onPageShow);
+  };
+}
 
 
 /**
@@ -465,6 +484,7 @@ export default function App() {
             windowContext.kind === "main" ? handleSessionExpired : undefined
           }
           identity={identity}
+          onWSClientReady={watchWSLifecycle}
           locale={locale}
           resources={resources}
           localeAdapter={localeAdapter}
