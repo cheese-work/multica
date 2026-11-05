@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "./api";
+import { classifyIssueLoadError } from "@/lib/issue-load-error";
+import type { SchemaValidationError } from "@/lib/parse-response";
 
 // api.ts refuses to load without a base URL; set it before the import runs.
 vi.hoisted(() => {
@@ -311,5 +313,32 @@ describe("api.listWorkspacesChecked", () => {
   ])("falls back to an unvalidated empty list for %s", async (_name, body) => {
     respond(body);
     expect(await api.listWorkspacesChecked()).toEqual({ workspaces: [], validated: false });
+  });
+});
+
+describe("api.getIssue schema failure", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("throws a typed error naming the failing path instead of returning an empty issue", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ id: "i1", metadata: { decision_park: { a: 1 } } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    const err = await api.getIssue("i1").catch((e: unknown) => e);
+
+    expect(classifyIssueLoadError(err)).toBe("data");
+    expect((err as SchemaValidationError).paths).toContain("metadata.decision_park");
+    expect(String(warn.mock.calls[0]?.[0])).toContain("metadata.decision_park");
   });
 });

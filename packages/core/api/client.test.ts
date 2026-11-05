@@ -3,6 +3,8 @@ import { createAuthStore } from "../auth";
 import { configStore } from "../config";
 import type { StorageAdapter, User } from "../types";
 import { ApiClient, ApiError, CHAT_DRAFT_RESTORE_CAPABILITY, clientErrorMessage } from "./client";
+import { isSchemaValidationError, setSchemaLogger, type SchemaValidationError } from "./schema";
+import { noopLogger } from "../logger";
 import { EMPTY_PLUGIN_PACKAGE_LIST, EMPTY_PLUGIN_PREVIEW, EMPTY_PLUGIN_SURFACE_LAUNCH } from "./schemas";
 
 afterEach(() => {
@@ -3450,5 +3452,26 @@ describe("ApiClient chat supplements", () => {
     vi.stubGlobal("fetch", fetchMock);
     await new ApiClient("https://api.example.test").resendChatSupplement("s1", "m1", { confirmPossibleDuplicate: true });
     expect(JSON.parse(fetchMock.mock.calls[0]![1]?.body as string)).toEqual({ confirm_possible_duplicate: true });
+  });
+});
+
+describe("ApiClient getIssue schema failure", () => {
+  it("throws a typed error that names the failing path and logs it as text", async () => {
+    const warn = vi.fn();
+    setSchemaLogger({ debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ id: "i1", metadata: { decision_park: { a: 1 } } }), {
+          status: 200, headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+    const err = await new ApiClient("https://api.example.test").getIssue("i1").catch((e: unknown) => e);
+    expect(isSchemaValidationError(err)).toBe(true);
+    expect((err as SchemaValidationError).endpoint).toBe("GET /api/issues/:id");
+    expect((err as SchemaValidationError).paths).toContain("metadata.decision_park");
+    expect(String(warn.mock.calls[0]?.[0])).toContain("metadata.decision_park");
+    setSchemaLogger(noopLogger);
   });
 });
