@@ -43,6 +43,9 @@ func TestChatLaneReadAccess(test *testing.T) {
 			if endpoint.list && caller.name == "other_chat" {
 				continue
 			}
+			if endpoint.list && (caller.source == "pat" || caller.source == "cli_jwt") {
+				caller.want = http.StatusOK
+			}
 			test.Run(endpoint.name+"/"+caller.name, func(test *testing.T) {
 				req := newRequest(http.MethodGet, "/api/chat/sessions", nil)
 				req = withChatTestWorkspaceCtx(test, req)
@@ -96,9 +99,12 @@ func TestChatLaneAuthCannotBeForged(test *testing.T) {
 				if caller == "interactive_jwt" || caller == "own_chat" {
 					want = http.StatusOK
 				}
+				if endpoint.name == "list" && listsOwnChats(caller) {
+					want = http.StatusOK
+				}
 				protected := middleware.Auth(testHandler.Queries, nil, verifier, nil)(endpoint.handler)
 				response := testutil.Call(test, protected.ServeHTTP, req).Want(want)
-				if caller == "cli_jwt" || caller == "legacy_jwt" || caller == "unknown_jwt" {
+				if endpoint.name != "list" && (caller == "cli_jwt" || caller == "legacy_jwt" || caller == "unknown_jwt") {
 					var refusal map[string]string
 					response.JSON(&refusal)
 					if refusal["code"] != "interactive_login_required" {
@@ -111,5 +117,46 @@ func TestChatLaneAuthCannotBeForged(test *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// listsOwnChats names the user credentials that may list their own DMs
+// (CHE-3950); task and cloud-node credentials stay refused.
+func listsOwnChats(caller string) bool {
+	switch caller {
+	case "pat", "cli_jwt", "legacy_jwt", "unknown_jwt":
+		return true
+	}
+	return false
+}
+
+func TestChatSessionsListOwnForUserCredentials(test *testing.T) {
+	agentID := createHandlerTestAgent(test, "own-list", []byte("[]"))
+	ownID := createHandlerTestChatSession(test, agentID)
+	otherUserID := dbfx.Insert(test, "user", testutil.Cols{"name": "Own List Other", "email": "own-list-other@multica.ai"})
+	otherSessionID := dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": agentID, "creator_id": otherUserID, "title": "not yours"})
+	dbfx.Insert(test, "chat_message", testutil.Cols{"chat_session_id": ownID, "role": "assistant", "content": "unread reply", "created_at": time.Now().Add(time.Minute)})
+	for _, source := range []string{"pat", "cli_jwt"} {
+		test.Run(source, func(test *testing.T) {
+			request := withChatTestWorkspaceCtx(test, newRequest(http.MethodGet, "/api/chat/sessions", nil))
+			request.Header.Set("X-Actor-Source", source)
+			var sessions []ChatSessionResponse
+			testutil.Call(test, testHandler.ListChatSessions, request).Want(http.StatusOK).JSON(&sessions)
+			found := false
+			for _, session := range sessions {
+				if session.ID == otherSessionID {
+					test.Fatalf("listed another user's session: %+v", session)
+				}
+				if session.ID == ownID {
+					found = true
+					if session.UnreadCount != 1 || !session.HasUnread {
+						test.Fatalf("own session unread = %d/%v, want 1/true", session.UnreadCount, session.HasUnread)
+					}
+				}
+			}
+			if !found {
+				test.Fatalf("own session %s missing from %+v", ownID, sessions)
+			}
+		})
 	}
 }

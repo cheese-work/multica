@@ -155,6 +155,7 @@ func (handler *Handler) listDecisionLanes(writer http.ResponseWriter, request *h
 					lane.ReferencedAt = row.ReferencedAt.Time.UTC().Format(time.RFC3339Nano)
 				}
 				lane.Eligible = row.ReferencedAt.Valid || row.DecisionTopicID == topic.ID
+				lane.Unseen = row.Unseen
 				response = append(response, lane)
 			}
 		}

@@ -1285,7 +1285,12 @@ func (q *Queries) ListDecisionLaneMentions(ctx context.Context, arg ListDecision
 }
 
 const listDecisionLanes = `-- name: ListDecisionLanes :many
-SELECT session.id, session.title, session.updated_at, session.decision_topic_id, ref.referenced_at::timestamptz AS referenced_at
+SELECT session.id, session.title, session.updated_at, session.decision_topic_id, ref.referenced_at::timestamptz AS referenced_at,
+       EXISTS (SELECT 1 FROM chat_message unread
+               WHERE unread.chat_session_id = session.id
+                 AND unread.role = 'assistant'
+                 AND unread.message_kind NOT IN ('decision_cancel_notice', 'decision_reference')
+                 AND unread.created_at > session.last_read_at) AS unseen
 FROM chat_session session
 LEFT JOIN LATERAL (
     SELECT max(refs.referenced_at) AS referenced_at FROM (
@@ -1327,6 +1332,7 @@ type ListDecisionLanesRow struct {
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 	DecisionTopicID pgtype.UUID        `json:"decision_topic_id"`
 	ReferencedAt    pgtype.Timestamptz `json:"referenced_at"`
+	Unseen          bool               `json:"unseen"`
 }
 
 // With issue_id, lanes that name the issue (a message mention or a decision
@@ -1355,6 +1361,7 @@ func (q *Queries) ListDecisionLanes(ctx context.Context, arg ListDecisionLanesPa
 			&i.UpdatedAt,
 			&i.DecisionTopicID,
 			&i.ReferencedAt,
+			&i.Unseen,
 		); err != nil {
 			return nil, err
 		}
