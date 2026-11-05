@@ -9,7 +9,7 @@ import test from "node:test";
 const read = (name) => readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), "utf8");
 const runsOn = (text) => text.split("\n").filter((line) => /^\s+runs-on:/.test(line));
 
-for (const name of ["ci.yml", "pr-changelog-check.yml", "pr-close-target-check.yml"]) {
+for (const name of ["ci.yml", "main-build.yml", "pr-changelog-check.yml", "pr-close-target-check.yml"]) {
   test(`${name} runs every job on GitHub-hosted runners`, () => {
     const lines = runsOn(read(name));
     assert.ok(lines.length > 0);
@@ -29,4 +29,26 @@ test("PR close target validates edited events using trusted code without an edit
 
 test("ci.yml matrix runners are GitHub-hosted labels", () => {
   assert.doesNotMatch(read("ci.yml"), /^\s+os:.*(cheese-x99|self-hosted)/m);
+});
+
+// CHE-2418 B6: X99 runners bind-mount ~/go and ~/.cache from the host's nvme disk, so a Go job
+// there already has a warm GOMODCACHE and GOCACHE. setup-go's own cache would download and
+// upload the same files through actions/cache. GitHub-hosted runners have no such disk and keep it.
+// PR runs never reach X99 (see the tests above), so this local cache is only ever written by
+// trusted default-branch and tag runs: a PR cannot plant objects that a release build reads.
+test("release.yml leaves the Go cache to the disk on a self-hosted runner", () => {
+  const workflow = read("release.yml");
+  const verify = workflow.slice(workflow.indexOf("\n  verify:"), workflow.indexOf("\n  release:"));
+  assert.match(verify, /cheese-x99/);
+  assert.match(verify, /uses: actions\/setup-go@[^\n]+\n\s+with:[\s\S]*?\n\s+cache: \$\{\{ runner\.environment != 'self-hosted' \}\}/);
+});
+
+// CHE-3604: the gate is a light job (median 1.5 min), so it runs on a GitHub-hosted runner, free
+// for this public repository. CHE-3128 had moved it to a dedicated X99 lane. The trust boundary
+// is unchanged: the job runs the default-branch definition and the `if:` filter still applies.
+test("security-gate.yml runs on a GitHub-hosted runner", () => {
+  const [line, ...rest] = runsOn(read("security-gate.yml"));
+  assert.equal(rest.length, 0);
+  assert.match(line, /runs-on: ubuntu-latest\s*(#.*)?$/);
+  assert.doesNotMatch(line, /cheese-x99|self-hosted/);
 });

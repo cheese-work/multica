@@ -479,6 +479,18 @@ multica issue subscriber remove <issue-id> [--user <name> | --user-id <uuid>]
 - **Subscribers** default to the caller. `--user` is a fuzzy name match;
   prefer `--user-id`, which cannot match the wrong person.
 
+## DM progress follows
+
+A follow makes a DM show an issue's progress cards. Members pass
+`--chat <chat-session-id>` for a DM they created. Agents pass no `--chat`: the
+lane comes from the DM that started the task, and a task with no DM is refused.
+
+- `multica issue follow <issue-id>` starts following.
+- `multica issue unfollow <issue-id>` stops following.
+- `multica issue mute-follow <issue-id>` mutes the cards, keeping the follow.
+- `multica issue unmute-follow <issue-id>` turns the cards back on.
+- `multica issue follows --chat <chat-session-id>` lists the follows in a DM.
+
 ## Issue wakeups
 
 `multica issue wakeup` persists event/time work. See [wakeups.md](wakeups.md)

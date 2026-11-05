@@ -50,6 +50,9 @@ type Started struct {
 	CeremonyID pgtype.UUID
 	Options    json.RawMessage
 	ExpiresAt  time.Time
+	// Assertion is set when the decision gate blocks and the user already has a
+	// passkey: an existing one must sign the finish.
+	Assertion *Issued
 }
 
 func (service *Service) deliverable() bool {
@@ -95,6 +98,10 @@ func (service *Service) StartEnrollment(ctx context.Context, userID pgtype.UUID,
 	if err != nil {
 		return Started{}, err
 	}
+	needsAssertion, err := service.enrollNeedsAssertion(ctx, userID, rows)
+	if err != nil {
+		return Started{}, err
+	}
 	excluded := make([]protocol.CredentialDescriptor, len(rows))
 	for i, row := range rows {
 		excluded[i] = protocol.CredentialDescriptor{Type: protocol.PublicKeyCredentialType, CredentialID: row.CredentialID}
@@ -122,7 +129,13 @@ func (service *Service) StartEnrollment(ctx context.Context, userID pgtype.UUID,
 	if err != nil {
 		return Started{}, err
 	}
-	return Started{CeremonyID: row.ID, Options: options, ExpiresAt: row.ExpiresAt.Time}, nil
+	started := Started{CeremonyID: row.ID, Options: options, ExpiresAt: row.ExpiresAt.Time}
+	if needsAssertion {
+		if started.Assertion, err = service.issueEnrollAssertion(ctx, userID, row.ID, rows); err != nil {
+			return Started{}, err
+		}
+	}
+	return started, nil
 }
 
 const (
@@ -206,7 +219,7 @@ func conflict(message string) Refusal { return Refusal{Status: http.StatusConfli
 // both hold, stores the credential for the ceremony's user. A wrong code or a
 // rejected attestation spends one of the ceremony's five attempts, and that
 // spend commits even though the call fails.
-func (service *Service) FinishEnrollment(ctx context.Context, userID, ceremonyID pgtype.UUID, code string, attestation []byte, email string) error {
+func (service *Service) FinishEnrollment(ctx context.Context, userID, ceremonyID pgtype.UUID, code string, attestation []byte, assertion json.RawMessage, email string) error {
 	if !service.deliverable() {
 		return ErrDeliveryUnavailable
 	}
@@ -255,6 +268,10 @@ func (service *Service) FinishEnrollment(ctx context.Context, userID, ceremonyID
 		return reject(forbidden("attestation_rejected: the passkey response was refused"))
 	}
 
+	if err := service.requireEnrollAssertion(ctx, tx, queries, userID, ceremony.ID, assertion); err != nil {
+		return err
+	}
+
 	transports := make([]string, len(credential.Transport))
 	for i, transport := range credential.Transport {
 		transports[i] = string(transport)
@@ -273,6 +290,9 @@ func (service *Service) FinishEnrollment(ctx context.Context, userID, ceremonyID
 		return err
 	}
 	if err := writeEvent(ctx, queries, userID, eventEnrolled, map[string]any{"passkey_id": uuid.UUID(stored.ID.Bytes).String()}); err != nil {
+		return err
+	}
+	if err := queries.LeavePasskeyRecovery(ctx, userID); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {

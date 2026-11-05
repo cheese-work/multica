@@ -38,6 +38,7 @@ import { ChatTimeline } from "./chat-timeline";
 import { CommentAttachmentList } from "@/components/issue/comment-attachment-list";
 import { CompactionDivider } from "./compaction-divider";
 import { StatusPill } from "./status-pill";
+import { SupplementStatus } from "./supplement-status";
 import {
   Collapsible,
   CollapsibleContent,
@@ -322,12 +323,15 @@ function MessageRow({
     );
     if (isSelecting) return body;
     return (
-      <Pressable
-        onLongPress={longPress.onLongPress}
-        delayLongPress={500}
-      >
-        {body}
-      </Pressable>
+      <>
+        <Pressable
+          onLongPress={longPress.onLongPress}
+          delayLongPress={500}
+        >
+          {body}
+        </Pressable>
+        {message.supplement ? <SupplementStatus supplement={message.supplement} /> : null}
+      </>
     );
   }
 

@@ -9,6 +9,7 @@ import { issueStatusKeys } from "@multica/core/issue-statuses";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { toast } from "sonner";
 import { useResolvedExpandStore } from "@multica/core/issues/stores/resolved-expand-store";
+import { ApiError } from "@multica/core/api/client";
 // Imported from the barrel (not the submodule path) so this is the exact
 // same module instance issue-detail.tsx reads through the barrel mock below
 // — the submodule path resolves to a second, disconnected instance under
@@ -26,8 +27,13 @@ import { useRichContentScrollRoot } from "../../rich-content/scroll-root";
 
 const TEST_RESOURCES = { en: { agents: enAgents, common: enCommon, issues: enIssues } };
 
+const mockNavigation = vi.hoisted(() => ({ current: null as null | object }));
 const mockViewport = vi.hoisted(() => ({ isMobile: false }));
 const mockLocalDirectoryHint = vi.hoisted(() => vi.fn());
+// The banner has its own suite; here only its place in the page matters.
+vi.mock("./issue-decision-banner", () => ({
+  IssueDecisionBanner: () => <div data-testid="decision-banner" />,
+}));
 vi.mock("../../projects/components/local-directory-hint", () => ({
   LocalDirectoryHint: (props: unknown) => {
     mockLocalDirectoryHint(props);
@@ -210,6 +216,7 @@ vi.mock("../../navigation", () => ({
     pathname: "/issues/issue-1",
     getShareableUrl: (p: string) => `https://app.multica.com${p}`,
   }),
+  useOptionalNavigation: () => mockNavigation.current,
   useBackOrReplace: () => vi.fn(),
   NavigationProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
@@ -1031,6 +1038,34 @@ describe("IssueDetail (shared)", () => {
     expect(screen.queryByText("Create sub-issue from here")).not.toBeInTheDocument();
   });
 
+  // A cold visit to /issues/:id?focus=wakeups: the sidebar and the Wakeups
+  // heading do not exist until the issue has loaded, so the deep link must
+  // survive the skeleton and be consumed only once the page can receive it.
+  it("keeps the wakeups deep link through the loading skeleton and consumes it once loaded", async () => {
+    const replace = vi.fn();
+    mockNavigation.current = {
+      push: vi.fn(),
+      replace,
+      back: vi.fn(),
+      pathname: "/acme/issues/issue-1",
+      searchParams: new URLSearchParams("focus=wakeups"),
+      hash: "",
+      getShareableUrl: (p: string) => p,
+    };
+    try {
+      let resolveIssue!: (issue: Issue) => void;
+      mockApiObj.getIssue.mockReturnValue(new Promise<Issue>((resolve) => { resolveIssue = resolve; }));
+      renderIssueDetail();
+      await Promise.resolve();
+      expect(replace).not.toHaveBeenCalled();
+
+      resolveIssue(mockIssue);
+      await waitFor(() => expect(replace).toHaveBeenCalledWith("/acme/issues/issue-1"));
+    } finally {
+      mockNavigation.current = null;
+    }
+  });
+
   it("shows loading skeleton while data is loading", () => {
     // Make the API hang to keep loading state
     mockApiObj.getIssue.mockReturnValue(new Promise(() => {}));
@@ -1039,6 +1074,18 @@ describe("IssueDetail (shared)", () => {
     expect(
       screen.getAllByRole("generic").some((el) => el.getAttribute("data-slot") === "skeleton"),
     ).toBe(true);
+  });
+
+  // The list is only a seed for rows another view already loaded. Opening an
+  // issue must not pay for a workspace-wide list request to read a cache.
+  it("does not request the workspace issue list", async () => {
+    mockApiObj.getIssue.mockResolvedValue(mockIssue);
+    renderIssueDetail();
+    await waitFor(() => {
+      expect(screen.getByText("Implement authentication")).toBeInTheDocument();
+    });
+
+    expect(mockApiObj.listIssues).not.toHaveBeenCalled();
   });
 
   it("gives the skeleton the same horizontal gutters as the loaded column", async () => {
@@ -1382,7 +1429,7 @@ describe("IssueDetail (shared)", () => {
   });
 
   it("keeps the peek's host controls when the issue cannot be loaded", async () => {
-    mockApiObj.getIssue.mockRejectedValue(new Error("Not found"));
+    mockApiObj.getIssue.mockRejectedValue(new ApiError("Not found", 404, "Not Found"));
     renderPeek("nonexistent-id");
     await waitFor(() => {
       expect(
@@ -2958,7 +3005,7 @@ describe("IssueDetail (shared)", () => {
   });
 
   it("shows 'not found' message when issue does not exist", async () => {
-    mockApiObj.getIssue.mockRejectedValue(new Error("Not found"));
+    mockApiObj.getIssue.mockRejectedValue(new ApiError("Not found", 404, "Not Found"));
 
     renderIssueDetail("nonexistent-id");
 
@@ -2969,8 +3016,23 @@ describe("IssueDetail (shared)", () => {
     });
   });
 
+  // Regression (CHE-3411): a 5xx/401 on a decision-card link read as "deleted".
+  it("offers a retry, not the deleted message, when the load fails with a non-404", async () => {
+    mockApiObj.getIssue.mockRejectedValueOnce(new ApiError("unauthorized", 401, "Unauthorized"));
+
+    renderIssueDetail("issue-1");
+
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expect(
+      screen.queryByText("This issue does not exist or has been deleted in this workspace."),
+    ).not.toBeInTheDocument();
+    mockApiObj.getIssue.mockResolvedValue(mockIssue);
+    fireEvent.click(retry);
+    expect(await screen.findByText(mockIssue.title)).toBeInTheDocument();
+  });
+
   it("shows 'Back' button when issue is not found and no onDelete prop", async () => {
-    mockApiObj.getIssue.mockRejectedValue(new Error("Not found"));
+    mockApiObj.getIssue.mockRejectedValue(new ApiError("Not found", 404, "Not Found"));
 
     renderIssueDetail("nonexistent-id");
 
@@ -4775,6 +4837,21 @@ describe("IssueDetail (shared)", () => {
   });
 
   describe("sub-issues list", () => {
+    it("places the decision banner after title, description and sub-issues, before activity", async () => {
+      mockApiObj.listChildIssues.mockResolvedValue({
+        issues: [{ ...mockIssue, id: "child-1", number: 11, identifier: "TES-11", title: "Fix login flow", parent_issue_id: "issue-1" }],
+      });
+      renderIssueDetail();
+      const banner = await screen.findByTestId("decision-banner");
+      const subIssue = await screen.findByText("Fix login flow");
+      const description = document.querySelector("[data-description-editor]")!;
+      const activity = screen.getByText("Activity", { selector: "h2" });
+      const follows = (a: Node, b: Node) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+      expect(follows(description, banner)).toBe(true);
+      expect(follows(subIssue, banner)).toBe(true);
+      expect(follows(banner, activity)).toBe(true);
+    });
+
     beforeEach(() => {
       useSubIssueDisplayStore.setState({
         rowProperties: { ...DEFAULT_SUB_ISSUE_ROW_PROPERTIES },

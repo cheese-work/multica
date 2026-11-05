@@ -5,14 +5,11 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { TriangleAlert } from "@multica/ui/icons";
 import { toast } from "sonner";
 import { cn } from "@multica/ui/lib/utils";
-import {
-  ContentEditor,
-  type ContentEditorRef,
-  useFileDropZone,
-  FileDropOverlay,
-  useUploadGate,
-  useComposerSubmit,
-} from "../../editor";
+import type { ContentEditorRef } from "../../editor/content-editor";
+import { useFileDropZone } from "../../editor/use-file-drop-zone";
+import { FileDropOverlay } from "../../editor/file-drop-overlay";
+import { useUploadGate } from "../../editor/use-upload-gate";
+import { useComposerSubmit } from "../../editor/use-composer-submit";
 import { PASTE_AS_FILE_THRESHOLD } from "../../editor/paste-as-file";
 import { parseForkCommand } from "../../editor/extensions/parse-fork-command";
 import { parseDmClientCommandAttempt } from "../../editor/extensions/parse-dm-client-command";
@@ -22,6 +19,7 @@ import {
   type UploadDraftBinding,
 } from "../../editor/use-coordinated-uploads";
 import { SubmitButton } from "@multica/ui/components/common/submit-button";
+import { DeferredContentEditor as ContentEditor } from "./deferred-content-editor";
 import { ChatAddMenu } from "./chat-add-menu";
 import { CHAT_COLUMN, CHAT_GUTTER } from "./chat-column";
 import { useChatStore, DRAFT_NEW_SESSION } from "@multica/core/chat";
@@ -83,6 +81,8 @@ interface ChatInputProps {
   onArchive?: () => void | boolean | Promise<void | boolean>;
   onPin?: () => void | boolean | Promise<void | boolean>;
   onUnarchive?: () => void | boolean | Promise<void | boolean>;
+  /** The open, active DM's agent: offers `/preset <name>` completions for its presets. */
+  presetAgentId?: string;
   /** The open DM is archived: a send asks to unarchive first. Turns `/compact` off. */
   sessionArchived?: boolean;
   /** Identifies the composer for UI checks; the floating window overrides it. */
@@ -214,6 +214,7 @@ export function ChatInput({
   onArchive,
   onPin,
   onUnarchive,
+  presetAgentId,
   sessionArchived,
   testId = "chat-composer",
   restoreDraftRequest,
@@ -458,6 +459,7 @@ export function ChatInput({
   // started) so the user can type immediately. The editor's `focus()` latches
   // through to `onCreate` when it isn't mounted yet, so this works even on the
   // first render of a freshly-mounted compose box. `0` is inert on purpose.
+  // The composer loads its editor on demand; this call is what summons it.
   useEffect(() => {
     if (!focusRequest) return;
     editorRef.current?.focus();
@@ -906,6 +908,8 @@ export function ChatInput({
             // intentionally tracks neither the session nor the agent.
             key={editorKey}
             ref={editorRef}
+            // Queued file/quote calls made before the editor chunk loads are bound to this draft.
+            draftKey={draftKey}
             value={inputDraft}
             placeholder={placeholder}
             onUpdate={(md) => {
@@ -931,6 +935,7 @@ export function ChatInput({
             enableArchiveCommand={!!onArchive}
             enablePinCommand={!!onPin}
             enableUnarchiveCommand={!!onUnarchive}
+            presetAgentId={presetAgentId}
             enableCompactCommand={!sessionArchived}
             // The bubble menu carries the only affordance that can strip
             // formatting — "Normal text" (setParagraph) plus the mark/list

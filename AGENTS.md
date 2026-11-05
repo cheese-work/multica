@@ -55,7 +55,7 @@ Run these from the repository root:
 | Combined web/backend verification | `make check` |
 | Mobile | Commands in [apps/mobile/AGENTS.md](apps/mobile/AGENTS.md#verification) |
 
-Docs-only changes can use link/reference checks and `git diff --check`; state that code tests were not run.
+Docs ship with the change. A PR that adds or changes user-visible behavior, a CLI flag, an env var, a GitHub App permission or event, or a self-host requirement updates the matching page under `apps/docs/content/docs/` in the same PR, in every locale (`.mdx`, `.fr`, `.ja`, `.ko`, `.zh`). A new App permission or webhook event also updates the **Self-hosting setup** section of `github-integration.mdx` (App permissions, subscribed events). A purely internal change skips docs and says why in the PR checklist. Docs-only changes can use link/reference checks and `git diff --check`; state that code tests were not run.
 
 ## State Rules
 
@@ -69,6 +69,7 @@ Docs-only changes can use link/reference checks and `git diff --check`; state th
 - Optimistic field patches require a predictable result, rare failure, trivial rollback, and staying on the current screen. Snapshot before patching, roll back on failure, and invalidate uncertain projections on settle.
 - Create/delete/leave and confirmation flows await the server before navigation or cleanup; do not optimistically delete entities. Exceptions: workspace leave (known debt under Desktop Rules) and mobile inbox mark-read (mobile instructions).
 - Message sends use visible pending state and retry on failure.
+- Authored input (drafts, notes, choices) persists through the keyed draft store (`packages/core/drafts/`) until a confirmed send or explicit discard; component state alone is not enough in virtualized lists, dialogs or routes.
 
 ## API Compatibility
 

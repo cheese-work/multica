@@ -211,27 +211,7 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 			if _, ok := allowed[uuidToString(s.AgentID)]; !ok {
 				continue
 			}
-			resp = append(resp, ChatSessionResponse{
-				ID:                     uuidToString(s.ID),
-				ContinuedIntoSessionID: uuidToPtr(s.ContinuedIntoSessionID),
-				ContinuedFromSessionID: uuidToPtr(s.ContinuedFromSessionID),
-				ForkedFromSessionID:    uuidToPtr(s.ForkedFromSessionID),
-				ForkLastMessageID:      uuidToPtr(s.ForkLastMessageID),
-				ForkSourceMessageID:    uuidToPtr(s.ForkSourceMessageID),
-				ForkMessageCount:       int4ToPtr(s.ForkMessageCount),
-				WorkspaceID:            uuidToString(s.WorkspaceID),
-				AgentID:                uuidToString(s.AgentID),
-				CreatorID:              uuidToString(s.CreatorID),
-				ProjectID:              uuidToPtr(s.ProjectID),
-				Title:                  s.Title,
-				Status:                 s.Status,
-				HasUnread:              s.UnreadCount > 0,
-				UnreadCount:            int(s.UnreadCount),
-				LastMessage:            buildChatLastMessage(s.LastMessageAt, s.LastMessageContent, s.LastMessageRole, s.LastMessageFailureReason, s.LastMessageKind),
-				Pinned:                 s.PinnedAt.Valid,
-				CreatedAt:              timestampToString(s.CreatedAt),
-				UpdatedAt:              timestampToString(s.UpdatedAt),
-			})
+			resp = append(resp, chatSessionListRowToResponse(db.ListChatSessionsByCreatorRow(s)))
 		}
 	} else {
 		rows, err := h.Queries.ListChatSessionsByCreator(r.Context(), db.ListChatSessionsByCreatorParams{
@@ -247,27 +227,7 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 			if _, ok := allowed[uuidToString(s.AgentID)]; !ok {
 				continue
 			}
-			resp = append(resp, ChatSessionResponse{
-				ID:                     uuidToString(s.ID),
-				ContinuedIntoSessionID: uuidToPtr(s.ContinuedIntoSessionID),
-				ContinuedFromSessionID: uuidToPtr(s.ContinuedFromSessionID),
-				ForkedFromSessionID:    uuidToPtr(s.ForkedFromSessionID),
-				ForkLastMessageID:      uuidToPtr(s.ForkLastMessageID),
-				ForkSourceMessageID:    uuidToPtr(s.ForkSourceMessageID),
-				ForkMessageCount:       int4ToPtr(s.ForkMessageCount),
-				WorkspaceID:            uuidToString(s.WorkspaceID),
-				AgentID:                uuidToString(s.AgentID),
-				CreatorID:              uuidToString(s.CreatorID),
-				ProjectID:              uuidToPtr(s.ProjectID),
-				Title:                  s.Title,
-				Status:                 s.Status,
-				HasUnread:              s.UnreadCount > 0,
-				UnreadCount:            int(s.UnreadCount),
-				LastMessage:            buildChatLastMessage(s.LastMessageAt, s.LastMessageContent, s.LastMessageRole, s.LastMessageFailureReason, s.LastMessageKind),
-				Pinned:                 s.PinnedAt.Valid,
-				CreatedAt:              timestampToString(s.CreatedAt),
-				UpdatedAt:              timestampToString(s.UpdatedAt),
-			})
+			resp = append(resp, chatSessionListRowToResponse(s))
 		}
 	}
 	if err := h.hydrateChatSessionChannelMetadata(r.Context(), resp); err != nil {
@@ -818,10 +778,25 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := qtx.DeleteChatTaskSupplementsBySession(r.Context(), db.DeleteChatTaskSupplementsBySessionParams{
+		ChatSessionID: session.ID, WorkspaceID: session.WorkspaceID,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete chat supplements")
+		return
+	}
+
 	// Same no-FK chore, for the agent configuration a builder conversation was
 	// editing. A no-op for ordinary chats, which never have one.
 	if err := qtx.DeleteAgentBuilderDraft(r.Context(), session.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete agent builder draft")
+		return
+	}
+
+	// Same no-FK chore for the DM progress lane this session roots, and its follows.
+	if err := qtx.DeleteDMProgressForLineage(r.Context(), db.DeleteDMProgressForLineageParams{
+		LineageID: session.ID, WorkspaceID: session.WorkspaceID,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete dm progress follows")
 		return
 	}
 
@@ -1329,11 +1304,13 @@ func (h *Handler) chatMessageResponses(ctx context.Context, workspaceID string, 
 	requests := h.decisionRequestsForMessages(ctx, workspaceID, messages)
 
 	wakeups := h.scheduledWakeupsForMessages(ctx, messages)
+	supplements := h.chatSupplementsForMessages(ctx, workspaceID, messages)
 
 	resp := make([]ChatMessageResponse, len(messages))
 	for i, m := range messages {
 		resp[i] = chatMessageToResponse(m, groupedAtt[uuidToString(m.ID)])
 		resp[i].ScheduledWakeup = wakeups[uuidToString(m.ID)]
+		resp[i].Supplement = supplements[uuidToString(m.ID)]
 		if cards := requests[uuidToString(m.ID)]; len(cards) > 0 {
 			if m.MessageKind == protocol.ChatMessageKindDecisionCancelNotice {
 				resp[i].DecisionRequests = cards
@@ -1471,6 +1448,10 @@ type PendingChatTaskResponse struct {
 	WaitReason    string                   `json:"wait_reason,omitempty"`
 	SupportsQueue bool                     `json:"supports_queue"`
 	QueuedTasks   []QueuedChatTaskResponse `json:"queued_tasks,omitempty"`
+	// HeadSupplement says whether a queued follow-up can be steered into the
+	// head task now: capable, starting (negotiation unknown yet) or
+	// unsupported. Absent when there is no head task.
+	HeadSupplement string `json:"head_supplement,omitempty"`
 }
 
 // waitReasonForStatus gates the stored hold text on the status it describes.
@@ -1843,12 +1824,13 @@ func (h *Handler) GetPendingChatTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, PendingChatTaskResponse{
-		TaskID:        uuidToString(head.ID),
-		Status:        head.Status,
-		CreatedAt:     timestampToString(head.CreatedAt),
-		WaitReason:    waitReasonForStatus(head.Status, head.WaitReason),
-		SupportsQueue: true,
-		QueuedTasks:   queued,
+		TaskID:         uuidToString(head.ID),
+		Status:         head.Status,
+		CreatedAt:      timestampToString(head.CreatedAt),
+		WaitReason:     waitReasonForStatus(head.Status, head.WaitReason),
+		SupportsQueue:  true,
+		QueuedTasks:    queued,
+		HeadSupplement: h.headSupplementState(r.Context(), head.ID, head.Status),
 	})
 }
 
@@ -2122,6 +2104,9 @@ type ChatSessionResponse struct {
 	// Pinned marks a chat the user has stuck to the top of the list. Populated
 	// by list endpoints and by the pin/unpin + single-session responses.
 	Pinned bool `json:"pinned"`
+	// PresetName is the DM's explicit preset choice: null = inherit, "base" or
+	// a preset name = chosen.
+	PresetName *string `json:"preset_name"`
 	// ChannelSource is present only for Chats created from an external channel.
 	// IsCurrentChannelRoute distinguishes the active route generation from an
 	// older Chat that remains readable and writable in Multica.
@@ -2213,6 +2198,8 @@ func (h *Handler) hydrateChatSessionChannelMetadata(ctx context.Context, session
 // render the IM-style conversation list (name + snippet + time). nil when the
 // session has no messages yet.
 type ChatLastMessage struct {
+	ID            *string `json:"id,omitempty"`
+	TaskID        *string `json:"task_id,omitempty"`
 	Content       string  `json:"content"`
 	Role          string  `json:"role"`
 	CreatedAt     string  `json:"created_at"`
@@ -2224,11 +2211,13 @@ type ChatLastMessage struct {
 
 // buildChatLastMessage assembles the preview from list-row columns; returns nil
 // when there is no last message (the LEFT JOIN produced a NULL timestamp).
-func buildChatLastMessage(at pgtype.Timestamptz, content, role string, failure pgtype.Text, kind string) *ChatLastMessage {
+func buildChatLastMessage(id, taskID pgtype.UUID, at pgtype.Timestamptz, content, role string, failure pgtype.Text, kind string) *ChatLastMessage {
 	if !at.Valid || kind == protocol.ChatMessageKindOnboardingKickoff {
 		return nil
 	}
 	return &ChatLastMessage{
+		ID:            uuidToPtr(id),
+		TaskID:        uuidToPtr(taskID),
 		Content:       content,
 		Role:          role,
 		CreatedAt:     timestampToString(at),
@@ -2276,6 +2265,9 @@ type ChatMessageResponse struct {
 	// CarriedFromSessionID names the earlier DM a reply's run ran in, set only
 	// when a rollover wrote that reply into this DM (CHE-2119). Nil otherwise.
 	CarriedFromSessionID *string `json:"carried_from_session_id,omitempty"`
+	// Supplement is the delivery receipt of a user message steered into a
+	// running task. Absent for messages that were never steered.
+	Supplement *ChatSupplementResponse `json:"supplement,omitempty"`
 }
 
 type ScheduledWakeupResponse struct {
@@ -2285,6 +2277,34 @@ type ScheduledWakeupResponse struct {
 	Instruction string `json:"instruction"`
 	FireAt      string `json:"fire_at"`
 	CreatedAt   string `json:"created_at"`
+}
+
+// chatSessionListRowToResponse maps one interactive list row. Both list
+// queries return the same shape, so the first converts to the second's row type
+// and every list field is mapped here once.
+func chatSessionListRowToResponse(s db.ListChatSessionsByCreatorRow) ChatSessionResponse {
+	return ChatSessionResponse{
+		ID:                     uuidToString(s.ID),
+		ContinuedIntoSessionID: uuidToPtr(s.ContinuedIntoSessionID),
+		ContinuedFromSessionID: uuidToPtr(s.ContinuedFromSessionID),
+		ForkedFromSessionID:    uuidToPtr(s.ForkedFromSessionID),
+		ForkLastMessageID:      uuidToPtr(s.ForkLastMessageID),
+		ForkSourceMessageID:    uuidToPtr(s.ForkSourceMessageID),
+		ForkMessageCount:       int4ToPtr(s.ForkMessageCount),
+		WorkspaceID:            uuidToString(s.WorkspaceID),
+		AgentID:                uuidToString(s.AgentID),
+		CreatorID:              uuidToString(s.CreatorID),
+		ProjectID:              uuidToPtr(s.ProjectID),
+		Title:                  s.Title,
+		Status:                 s.Status,
+		HasUnread:              s.UnreadCount > 0,
+		UnreadCount:            int(s.UnreadCount),
+		LastMessage:            buildChatLastMessage(s.LastMessageID, s.LastMessageTaskID, s.LastMessageAt, s.LastMessageContent, s.LastMessageRole, s.LastMessageFailureReason, s.LastMessageKind),
+		Pinned:                 s.PinnedAt.Valid,
+		PresetName:             textToPtr(s.PresetName),
+		CreatedAt:              timestampToString(s.CreatedAt),
+		UpdatedAt:              timestampToString(s.UpdatedAt),
+	}
 }
 
 func chatSessionToResponse(s db.ChatSession) ChatSessionResponse {
@@ -2303,6 +2323,7 @@ func chatSessionToResponse(s db.ChatSession) ChatSessionResponse {
 		Title:                  s.Title,
 		Status:                 s.Status,
 		Pinned:                 s.PinnedAt.Valid,
+		PresetName:             textToPtr(s.PresetName),
 		CreatedAt:              timestampToString(s.CreatedAt),
 		UpdatedAt:              timestampToString(s.UpdatedAt),
 	}

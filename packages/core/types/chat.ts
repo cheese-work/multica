@@ -23,6 +23,7 @@ export type ChatMessageKind =
   | "onboarding_kickoff"
   | "onboarding_opening"
   | "continuation_summary"
+  | "compaction_summary"
   | "compact_notice"
   | "compaction_summary"
   | "decision_request"
@@ -74,6 +75,10 @@ export interface ChatQuickActionsFailureState {
 
 /** Preview of a session's most recent message, for the IM-style list. */
 export interface ChatLastMessage {
+  /** Message identity lets an open detail detect a missed realtime update. */
+  id?: string;
+  /** Task identity distinguishes a reply from an earlier queued turn. */
+  task_id?: string;
   content: string;
   role: "user" | "assistant";
   created_at: string;
@@ -118,6 +123,9 @@ export interface ChatSession {
   /** True when the user has pinned this chat to the top of the list.
    *  Optional so older clients / non-list payloads stay valid. */
   pinned?: boolean;
+  /** The DM's explicit preset: null = inherit, "base" or a preset name = chosen.
+   *  Absent on older servers. */
+  preset_name?: string | null;
   /** Present for Chats created by an external Channel. Historical Chats keep
    *  their source even after a newer route generation becomes current. */
   channel_source?: ChatChannelSource;
@@ -279,6 +287,8 @@ export interface ChatMessage {
   decision_requests?: import("./decision").DecisionRequestCard[];
   /** Set when this message is a fired chat wakeup; absent on older servers. */
   scheduled_wakeup?: ChatScheduledWakeup | null;
+  /** Delivery receipt of a user message steered into a running task; absent otherwise. */
+  supplement?: ChatSupplement;
 }
 
 export interface ChatMessagesCursor {
@@ -409,6 +419,40 @@ export interface ChatQueuedTask {
   content?: string;
 }
 
+/**
+ * Delivery state of a DM follow-up steered into the running task (CHE-2820).
+ * `pending`/`delivering`: added to the run; `delivered`: the agent read it;
+ * `uncertain`: claimed but never confirmed (it may have arrived); `failed`:
+ * never claimed before the turn ended, so it is safe to send as a new run.
+ */
+export type ChatSupplementStatus =
+  | "pending"
+  | "delivering"
+  | "delivered"
+  | "uncertain"
+  | "failed";
+
+export interface ChatSupplement {
+  message_id: string;
+  chat_session_id: string;
+  task_id: string;
+  status: ChatSupplementStatus;
+  failure_reason: string | null;
+  delivered_at: string | null;
+  /** Set when the read confirmation landed after a resend: the agent may see the message twice. */
+  acked_after_resend_at: string | null;
+  /** Set once the message was resent as a new queued run. */
+  resent_task_id: string | null;
+}
+
+export interface ResendChatSupplementResponse {
+  task_id: string;
+  supplement: ChatSupplement;
+}
+
+/** Whether the head task of a DM can take a steered follow-up now. */
+export type ChatHeadSupplement = "capable" | "starting" | "unsupported";
+
 export interface PrioritizeQueuedChatTaskResponse {
   task_id: string;
   /** Server-authoritative task to stop after the selected task is prioritized. */
@@ -429,6 +473,12 @@ export interface ChatPendingTask {
   wait_reason?: string;
   /** Explicit capability gate; absent on servers predating follow-up queues. */
   supports_queue?: boolean;
+  /**
+   * Whether a queued follow-up can be steered into the head task. `starting`
+   * means the run has not negotiated yet: wait, do not read it as unsupported.
+   * Absent on servers predating steering, which render as unsupported.
+   */
+  head_supplement?: ChatHeadSupplement;
   /**
    * Ordered follow-ups behind the root task. The root may itself still have
    * database status `queued` before claim, but is never duplicated here.

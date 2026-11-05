@@ -210,6 +210,8 @@ vi.mock("@tanstack/react-query", async (importOriginal) => ({
   useQueryClient: () => ({
     fetchQuery: vi.fn(),
     prefetchQuery: vi.fn(),
+    isFetching: () => 0,
+    getQueryCache: () => ({ subscribe: () => () => {} }),
     invalidateQueries: invitationApi.invalidateQueries,
   }),
 }));

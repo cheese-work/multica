@@ -2148,6 +2148,8 @@ func (d *Daemon) run(ctx context.Context, healthLn net.Listener) error {
 		"heartbeat_interval", d.cfg.HeartbeatInterval,
 		"agent_timeout", d.cfg.AgentTimeout,
 		"idle_watchdog", d.cfg.AgentIdleWatchdog,
+		"silence_warn_after", d.cfg.AgentSilenceWarnAfter,
+		"silence_alert_after", d.cfg.AgentSilenceAlertAfter,
 		// Logged explicitly because it is normally derived from idle_watchdog:
 		// without it an operator cannot read the tool budget actually in effect.
 		"tool_watchdog", d.cfg.AgentToolWatchdog,
@@ -8104,10 +8106,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// on the issue, which is the same rule that makes a failing tool call a
 	// tool error rather than a task error.
 	pluginHookConfig, pluginHookServer, pluginHookErr := startTaskPluginHookMCP(
-		ctx, task.ID, task.PluginHookTools,
-		func(callCtx context.Context, taskID, installationID, hookKey string, input json.RawMessage) (json.RawMessage, error) {
+		ctx, task.ID, taskHookTools(task, decisionAskReachable(provider, resolvedVersion, !usesCustomProfileCommand)),
+		taskHookInvoker(task, d.client, func(callCtx context.Context, taskID, installationID, hookKey string, input json.RawMessage) (json.RawMessage, error) {
 			return d.client.InvokeAgentPluginHook(callCtx, task.RemoteMCPDaemonToken, taskID, installationID, hookKey, input)
-		},
+		}),
 		taskLog,
 	)
 	if pluginHookErr != nil {
@@ -8599,13 +8601,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		taskCapabilities = append(taskCapabilities, protocol.DaemonCapabilityPiProcessCleanupV1)
 	}
 	var cursorHookCommand []string
-	supplementSupported := agent.SupportsTaskSupplement(provider, resolvedVersion) && task.IssueID != ""
+	supplementSupported := agent.SupportsTaskSupplement(provider, resolvedVersion) && (task.IssueID != "" || task.ChatSessionID != "")
 	if supplementSupported && provider == "cursor" {
 		cursorHookCommand, supplementSupported = cursorSupplementHookCommand(env)
 	}
 	if supplementSupported {
-		taskCapabilities = append(taskCapabilities,
-			protocol.DaemonCapabilityTaskSupplementV1, protocol.DaemonCapabilityTaskSupplementPREventV1)
+		taskCapabilities = append(taskCapabilities, taskSupplementCapabilities(task)...)
 	}
 	negotiation, err := d.startTaskWithCurrentClaim(prepareCtx, task, taskCapabilities...)
 	if err != nil {
@@ -9805,6 +9806,34 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		go d.runIdleWatchdog(watchdogCtx, idleWindow, d.cfg.AgentToolWatchdog, &lastActivityAt, watchdogToolCount, &idleWatchdogFired, &idleWatchdogThreshold, agentCancel, session.Messages, session.InterruptBackgroundTools, terminalObserved, taskLog)
 	}
 
+	// Silence tiers run beside the idle watchdog but never stop the run. Markers
+	// post straight to the transcript (the drain batch is private to its
+	// goroutine); a failed marker or alert is logged and dropped.
+	var toolCalls toolCallRegistry
+	if d.cfg.AgentSilenceWarnAfter > 0 || d.cfg.AgentSilenceAlertAfter > 0 {
+		sw := &silenceWatchdog{
+			warn: d.cfg.AgentSilenceWarnAfter, alert: d.cfg.AgentSilenceAlertAfter,
+			last: &lastActivityAt, inFlight: watchdogToolCount, calls: toolCalls.running,
+			now: awakeclock.Now, log: taskLog,
+			mark: func(typ, content, callID, tool string) {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				err := d.client.ReportTaskMessages(ctx, taskID, []TaskMessageData{{
+					Seq: int(msgSeq.Add(1)), Type: typ, Content: content, CallID: callID, Tool: tool, CreatedAt: time.Now(),
+				}})
+				if err != nil {
+					taskLog.Warn("failed to report silence marker", "type", typ, "error", err)
+				}
+			},
+			raise: func(segmentID string, silentFor time.Duration) error {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				return d.client.ReportSilenceAlert(ctx, taskID, segmentID, silentFor)
+			},
+		}
+		go sw.run(watchdogCtx)
+	}
+
 	// drainFinished closes after the drain goroutine has flushed the last
 	// message batch, so the result hand-off below can wait for the transcript
 	// tail to be persisted.
@@ -9980,6 +10009,7 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 					sealPendingLocked()
 					if msg.CallID != "" {
 						callIDToTool[msg.CallID] = msg.Tool
+						toolCalls.start(transcriptCallID(msg.CallID), msg.Tool, awakeclock.Now())
 					}
 					s := msgSeq.Add(1)
 					batch = append(batch, TaskMessageData{
@@ -10019,6 +10049,7 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 					output, outputTruncated := toolOutputPreview(msg.Output)
 					mu.Lock()
 					sealPendingLocked()
+					toolCalls.finish(transcriptCallID(msg.CallID))
 					toolName := msg.Tool
 					if toolName == "" && msg.CallID != "" {
 						toolName = callIDToTool[msg.CallID]
