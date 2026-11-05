@@ -189,8 +189,9 @@ function childrenToLabel(children: ReactNode): string | undefined {
  *
  * Three conditions, each load-bearing:
  *   - BARE: the visible text is the URL itself, which is what the linkify
- *     preprocessor emits for a pasted URL. `[路线图](…/projects/<id>)` carries a
- *     label the author chose, and replacing it with a chip would discard it.
+ *     preprocessor emits for a pasted URL, or (issues only) the issue's own
+ *     identifier. `[路线图](…/projects/<id>)` carries a label the author chose,
+ *     and replacing it with a chip would discard it.
  *   - SAME WORKSPACE: a chip resolves its title against the CURRENT workspace,
  *     so unfurling a link into another workspace would turn a working link into
  *     a permanently empty chip. A slug-less path is current-workspace already.
@@ -204,9 +205,13 @@ function unfurlableEntityLink(
   currentSlug: string | null,
   appOrigin: string | null,
 ): WorkspaceEntityRef | null {
-  if (childrenToLabel(children) !== href) return null;
+  const label = childrenToLabel(children);
   const entity = parseWorkspaceEntityLink(href, appOrigin);
   if (!entity) return null;
+  // A link labelled with its own issue identifier (`[CHE-1](…/issues/CHE-1)`,
+  // what agents write) says nothing the chip does not, so it unfurls too.
+  const labelIsOwnIdentifier = entity.kind === "issue" && label === entity.id;
+  if (label !== href && !labelIsOwnIdentifier) return null;
   if (entity.slug !== null && entity.slug !== currentSlug) return null;
   return entity;
 }

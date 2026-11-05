@@ -2295,3 +2295,12 @@ WHERE t.chat_session_id = ANY($1::uuid[])
   AND t.status = 'completed'
   AND COALESCE(t.chat_compaction_epoch, 0) = cs.compaction_epoch
 ORDER BY t.chat_session_id, t.completed_at DESC, t.id DESC;
+
+-- name: GetLatestCompactionSummary :one
+-- The newest in-place compaction summary of a DM: the seed of its next turn
+-- while the resume pointer is empty. Messages after it are the post-boundary
+-- history.
+SELECT * FROM chat_message
+WHERE chat_session_id = $1 AND message_kind = 'compaction_summary'
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
