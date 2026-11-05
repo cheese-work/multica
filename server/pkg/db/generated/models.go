@@ -244,6 +244,7 @@ type AgentTaskQueue struct {
 	AppliedReportedAt         pgtype.Timestamptz `json:"applied_reported_at"`
 	ExternalRead              bool               `json:"external_read"`
 	Purpose                   pgtype.Text        `json:"purpose"`
+	SourceChatSessionID       pgtype.UUID        `json:"source_chat_session_id"`
 }
 
 type AgentToLabel struct {

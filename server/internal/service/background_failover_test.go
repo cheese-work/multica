@@ -24,6 +24,7 @@ type bgFailoverFixture struct {
 	rows                      *dbfx.Fixture
 	primary, fallback         string
 	primaryRuntime, fbRuntime string
+	dm                        string   // the DM every task of this fixture derives from
 	noAgentCalls              []string // slot of each task that ended the chain
 }
 
@@ -45,6 +46,7 @@ func newBGFailoverFixture(t *testing.T) *bgFailoverFixture {
 		primary: f.coordinator, fallback: f.worker, primaryRuntime: runtime("bg-primary"), fbRuntime: runtime("bg-fallback")}
 	rows.Exec(t, `UPDATE agent SET runtime_id = $2, visibility = 'workspace' WHERE id = $1`, b.primary, b.primaryRuntime)
 	rows.Exec(t, `UPDATE agent SET runtime_id = $2, visibility = 'workspace' WHERE id = $1`, b.fallback, b.fbRuntime)
+	b.dm = rows.ChatSession(t, b.primary)
 	svc.BackgroundNoAgent = map[string]BackgroundNoAgentPath{
 		bgagents.Purpose(bgagents.DMTitle): func(_ context.Context, task db.AgentTaskQueue) {
 			var c BackgroundTaskContext
@@ -58,7 +60,7 @@ func newBGFailoverFixture(t *testing.T) *bgFailoverFixture {
 func (b *bgFailoverFixture) input() BackgroundTaskInput {
 	return BackgroundTaskInput{
 		Job: bgagents.DMTitle, WorkspaceID: util.MustParseUUID(b.workspaceID), MemberID: util.MustParseUUID(b.userID),
-		Source: bgagents.UserSource, Input: "hello",
+		SourceChatSessionID: util.MustParseUUID(b.dm), Source: bgagents.UserSource, Input: "hello",
 	}
 }
 
@@ -195,5 +197,22 @@ func TestBackgroundBadOutputDoesNotFailOver(t *testing.T) {
 	}
 	if got := b.queued(t, b.fallback); got != 0 {
 		t.Fatalf("bad output failed over: %d fallback runs", got)
+	}
+}
+
+// CHE-4104: the fallback attempt keeps the DM the primary came from, written in
+// the same insert as the row itself.
+func TestBackgroundFailoverCopiesSourceSession(t *testing.T) {
+	b := newBGFailoverFixture(t)
+	dm := b.dm
+	primary := b.enqueue(t)
+	b.fail(t, primary, providerDown)
+	var got *string
+	if err := b.pool.QueryRow(context.Background(), `SELECT source_chat_session_id::text FROM agent_task_queue
+		WHERE agent_id = $1 AND purpose = 'bg:dm_title'`, b.fallback).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || *got != dm {
+		t.Fatalf("fallback source_chat_session_id = %v, want %s", got, dm)
 	}
 }

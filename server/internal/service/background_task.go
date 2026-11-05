@@ -28,6 +28,9 @@ var (
 	// ErrInvalidBackgroundOutput is returned by a BackgroundWriter that rejected
 	// the output before writing anything.
 	ErrInvalidBackgroundOutput = errors.New("invalid background task output")
+	// ErrBackgroundMissingSourceSession: a DM-derived task needs the DM it came
+	// from, or its content could not be kept private to that DM's owner.
+	ErrBackgroundMissingSourceSession = errors.New("background task: DM-derived task has no source chat session")
 )
 
 // BackgroundWriter validates a finished output-only task's result and writes
@@ -40,8 +43,11 @@ type BackgroundTaskInput struct {
 	WorkspaceID pgtype.UUID
 	AgentID     pgtype.UUID
 	MemberID    pgtype.UUID // the DM creator; zero when the task is not member-attributable
-	Source      bgagents.Source
-	Slot        bgagents.SlotName
+	// SourceChatSessionID is the DM the task derives from; required for a
+	// user-scoped (DM-derived) job. It decides who may read the task's content.
+	SourceChatSessionID pgtype.UUID
+	Source              bgagents.Source
+	Slot                bgagents.SlotName
 	// FallbackAgentID is the agent a provider failure of this run moves to; zero
 	// when this run holds the last slot.
 	FallbackAgentID pgtype.UUID
@@ -84,6 +90,9 @@ func (s *TaskService) EnqueueBackgroundTask(ctx context.Context, in BackgroundTa
 	if !agent.RuntimeID.Valid {
 		return db.AgentTaskQueue{}, errors.New("agent has no runtime")
 	}
+	if spec.UserScoped && !in.SourceChatSessionID.Valid {
+		return db.AgentTaskQueue{}, fmt.Errorf("%w: %q", ErrBackgroundMissingSourceSession, in.Job)
+	}
 	input := in.Input
 	if r := []rune(input); len(r) > BackgroundInputMaxRunes {
 		input = string(r[:BackgroundInputMaxRunes])
@@ -114,7 +123,8 @@ func (s *TaskService) EnqueueBackgroundTask(ctx context.Context, in BackgroundTa
 	task, err := s.Queries.CreateBackgroundTask(ctx, db.CreateBackgroundTaskParams{
 		ID: dbid.NewV7(), AgentID: in.AgentID, RuntimeID: agent.RuntimeID, Priority: priorityToInt("low"),
 		Context: contextJSON, Purpose: pgtype.Text{String: bgagents.Purpose(in.Job), Valid: true},
-		OriginatorUserID: in.MemberID, AccountableUserID: attr.AccountableUserID,
+		SourceChatSessionID: in.SourceChatSessionID,
+		OriginatorUserID:    in.MemberID, AccountableUserID: attr.AccountableUserID,
 		OriginatorSource: attrSource, TriggerEvidenceKind: attrEvidenceKind, TriggerEvidenceRefID: attrEvidenceRef,
 	})
 	if err != nil {
