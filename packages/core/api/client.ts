@@ -4395,6 +4395,10 @@ export class ApiClient {
     await this.fetch(`/api/chat/sessions/${sessionId}/read`, { method: "POST" });
   }
 
+  async markChatSessionUnread(sessionId: string): Promise<void> {
+    await this.fetch(`/api/chat/sessions/${sessionId}/unread`, { method: "POST" });
+  }
+
   // Advertises the durable draft-restore capability (#5219). The server only
   // defers the empty-transcript judgment — and therefore only withholds the
   // synchronous restore from the response — for clients that send this; without
