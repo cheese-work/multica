@@ -53,6 +53,7 @@ import {
 import type { Workspace } from "@multica/core/types";
 import { AvatarUploadControl } from "../../common/avatar-upload-control";
 import { useNavigation } from "../../navigation";
+import { AgentDecisionsRow } from "./agent-decisions-row";
 import { DeleteWorkspaceDialog } from "./delete-workspace-dialog";
 import { useT } from "../../i18n";
 import {
@@ -64,6 +65,7 @@ import {
   SettingsTab,
   type SettingsSaveStatus,
 } from "./settings-layout";
+import { IdleGuardRows } from "./idle-guard-rows";
 import { useAutoSave } from "./use-auto-save";
 
 interface WorkspaceDetailsDraft {
@@ -611,6 +613,9 @@ export function WorkspaceTab() {
               ) : null}
             </SettingsRow>
           )}
+
+          {isOwner ? <AgentDecisionsRow wsId={workspace.id} /> : null}
+          <IdleGuardRows workspace={workspace} canEdit={isOwner} />
 
           <SettingsRow
             anchor="slug"

@@ -114,6 +114,8 @@ import type {
   ChatDraftRestoresResponse,
   ChatPendingTask,
   PrioritizeQueuedChatTaskResponse,
+  ChatSupplement,
+  ResendChatSupplementResponse,
   PendingChatTasksResponse,
   HasPendingChatTasksResponse,
   SendChatMessageResponse,
@@ -251,6 +253,7 @@ import type {
   PurchaseWorkspaceSeatsResponse,
   CreateWorkspaceSubscriptionPortalResponse,
   SourceContextPreview,
+  CommentPreview,
   CreateCommentSubIssueManualRequest,
   CreateCommentSubIssueAgentRequest,
   CreateCommentSubIssueRequest,
@@ -277,6 +280,8 @@ import {
 } from "./passkey-schema";
 import {
   RuntimeProfileSchema,
+  AgentDecisionSettingSchema,
+  type AgentDecisionSetting,
   OpenDecisionRequestListSchema,
   DecisionArtifactListSchema,
   RuntimeProfileListSchema,
@@ -301,6 +306,9 @@ import {
   EMPTY_CHAT_CONTINUE_RESPONSE,
   EMPTY_CHAT_FORK_RESPONSE,
   PrioritizeQueuedChatTaskResponseSchema,
+  ChatSupplementSchema,
+  EMPTY_CHAT_SUPPLEMENT,
+  ResendChatSupplementResponseSchema,
   SendChatMessageResponseSchema,
   StartMikaOnboardingResponseSchema,
   ChildIssuesResponseSchema,
@@ -367,6 +375,7 @@ import {
   IssueSchema,
   AgentTaskSchema,
   SourceContextPreviewSchema,
+  CommentPreviewSchema,
   CommentSubIssueTaskResponseSchema,
   ListWebhookDeliveriesResponseSchema,
   RuntimeHourlyActivityListSchema,
@@ -1562,6 +1571,18 @@ export class ApiClient {
       method: "POST",
       body: JSON.stringify(data),
     });
+  }
+
+  async getCommentPreview(commentId: string): Promise<CommentPreview> {
+    const raw = await this.fetch<unknown>(`/api/comments/${commentId}/preview`);
+    const preview = parseWithFallback<CommentPreview | null>(
+      raw,
+      CommentPreviewSchema,
+      null,
+      { endpoint: "GET /api/comments/:id/preview" },
+    );
+    if (!preview) throw new Error("Invalid comment preview response");
+    return preview;
   }
 
   async getCommentSubIssuePreview(anchorCommentId: string): Promise<SourceContextPreview> {
@@ -3235,10 +3256,26 @@ export class ApiClient {
     });
   }
 
-  async updateWorkspace(id: string, data: { name?: string; description?: string; context?: string; settings?: Record<string, unknown>; repos?: WorkspaceRepo[]; issue_prefix?: string; avatar_url?: string; compact_prompt?: string | null; wakeups_paused?: boolean; auto_compact?: { enabled?: boolean; threshold_pct?: number } | null; github_review_members?: Record<string, string>; github_review_authors?: Record<string, string> }): Promise<Workspace> {
+  async updateWorkspace(id: string, data: { name?: string; description?: string; context?: string; settings?: Record<string, unknown>; repos?: WorkspaceRepo[]; issue_prefix?: string; avatar_url?: string; compact_prompt?: string | null; wakeups_paused?: boolean; auto_compact?: { enabled?: boolean; threshold_pct?: number } | null; idle_started_guard?: { mode?: "off" | "shadow" | "act"; after_hours?: number }; github_review_members?: Record<string, string>; github_review_authors?: Record<string, string> }): Promise<Workspace> {
     return this.fetch(`/api/workspaces/${id}`, {
       method: "PATCH",
       body: JSON.stringify(data),
+    });
+  }
+
+  // Null when the response is malformed: callers must not show a guessed value.
+  async getAgentDecisionSetting(): Promise<AgentDecisionSetting | null> {
+    const raw: unknown = await this.fetch("/api/agent-decisions/brief");
+    return parseWithFallback<AgentDecisionSetting | null>(raw, AgentDecisionSettingSchema, null, {
+      endpoint: "GET /api/agent-decisions/brief",
+    });
+  }
+
+  // Owner + human-actor only; the server clears an earlier stop when turned on.
+  async setAgentDecisionsEnabled(enabled: boolean): Promise<{ enabled: boolean }> {
+    return this.fetch("/api/agent-decisions/setting", {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
     });
   }
 
@@ -4252,6 +4289,48 @@ export class ApiClient {
       PrioritizeQueuedChatTaskResponseSchema,
       EMPTY_PRIORITIZE_QUEUED_CHAT_TASK_RESPONSE,
       { endpoint: "POST /api/chat/sessions/:id/queued-tasks/:taskId/prioritize" },
+    );
+  }
+
+  /**
+   * Adds a queued follow-up to the running task instead of stopping it. The
+   * server answers 409 with a stable `code` when the run cannot take it; the
+   * follow-up then stays queued.
+   */
+  async steerChatTask(sessionId: string, taskId: string): Promise<ChatSupplement> {
+    const raw = await this.fetch<unknown>(
+      `/api/chat/sessions/${sessionId}/tasks/${taskId}/steer`,
+      { method: "POST" },
+    );
+    return parseWithFallback(raw, ChatSupplementSchema, EMPTY_CHAT_SUPPLEMENT, {
+      endpoint: "POST /api/chat/sessions/:id/tasks/:taskId/steer",
+    });
+  }
+
+  /**
+   * Sends a steered message that did not arrive as a new queued run. Pass
+   * `confirmPossibleDuplicate` only after the user accepted the duplicate
+   * warning for an `uncertain` receipt; the server refuses it otherwise.
+   */
+  async resendChatSupplement(
+    sessionId: string,
+    messageId: string,
+    options: { confirmPossibleDuplicate?: boolean } = {},
+  ): Promise<ResendChatSupplementResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/chat/sessions/${sessionId}/messages/${messageId}/supplement/resend`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          confirm_possible_duplicate: options.confirmPossibleDuplicate === true,
+        }),
+      },
+    );
+    return parseWithFallback(
+      raw,
+      ResendChatSupplementResponseSchema,
+      { task_id: "", supplement: EMPTY_CHAT_SUPPLEMENT },
+      { endpoint: "POST /api/chat/sessions/:id/messages/:messageId/supplement/resend" },
     );
   }
 

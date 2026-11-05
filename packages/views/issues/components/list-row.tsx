@@ -18,6 +18,7 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import { propertyListOptions } from "@multica/core/properties";
 import { CustomPropertyValueDisplay } from "./pickers/custom-property-picker";
 import { ProjectIcon } from "../../projects/components/project-icon";
+import { WorkflowPill } from "./workflow-pill";
 import { PriorityIcon } from "./priority-icon";
 import { ProgressRing } from "./progress-ring";
 import { IssueActionsContextMenu } from "../actions";
@@ -183,6 +184,7 @@ function ListRowContent({
               </span>
             )}
           </span>
+          <WorkflowPill workflowId={issue.workflow_id} />
           {showProject && (
             <span className="inline-flex shrink-0 items-center gap-1 text-caption text-muted-foreground max-w-[140px]">
               <ProjectIcon project={project} size="sm" />

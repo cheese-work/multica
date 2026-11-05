@@ -83,6 +83,7 @@ import { PropertyIcon } from "../../common/property-icon";
 import type { Attachment, Issue, IssueProperty, IssueStatus, IssueStatusCategory, IssuePriority, TimelineEntry, UpdateIssueRequest } from "@multica/core/types";
 import { contentReferencesAttachment } from "@multica/core/types";
 import { isBuiltInIssueStatus } from "@multica/core/issue-statuses";
+import { isNotFoundError } from "@multica/core/issues/canonical-id";
 import { commentLandingTarget, isDeletedComment } from "@multica/core/issues/comment-deletion";
 import { formatDateOnly, isPastDateOnly } from "@multica/core/issues/date";
 import { useUpdateIssue } from "@multica/core/issues/mutations";
@@ -127,6 +128,7 @@ import {
 import { collectThreadParticipants, collectThreadReplies, deriveThreadResolution } from "./thread-utils";
 import { IssueAgentHeaderChip } from "./issue-agent-header-chip";
 import { IssueWakeupHeaderChip } from "./issue-wakeup-header-chip";
+import { useWakeupsFocus } from "./use-wakeups-focus";
 import { IssueInboxRestoreButton } from "./issue-inbox-restore-button";
 import { ExecutionLogSection } from "./execution-log-section";
 import { WakeupsSection } from "./wakeups-section";
@@ -152,7 +154,7 @@ import { IssueHierarchy } from "./hierarchy/hierarchy-minimap";
 import { useRecentContextStore } from "@multica/core/chat";
 import { useRegisterCommandBarContext } from "../../search/register-context";
 import { useModalStore } from "@multica/core/modals";
-import { issueListOptions, issueDetailOptions, childIssuesOptions, childIssueProgressOptions, issueAttachmentsOptions } from "@multica/core/issues/queries";
+import { issueListOptions, issueDetailOptions, issueDetailViewOptions, childIssuesOptions, childIssueProgressOptions, issueAttachmentsOptions } from "@multica/core/issues/queries";
 import { projectDetailOptions } from "@multica/core/projects/queries";
 import { ProjectIcon } from "../../projects/components/project-icon";
 import { issueLabelsOptions } from "@multica/core/labels";
@@ -205,6 +207,7 @@ import { useInPageFind } from "../hooks/use-in-page-find";
 import { useIssueDisclosureReveal } from "../hooks/use-issue-disclosure-reveal";
 import { useStickyComposer } from "../hooks/use-sticky-composer";
 import { FindBar } from "./find-bar";
+import { issueHighlightMementoKey } from "./issue-highlight-key";
 import {
   AnimatedRightSidebar,
   getAnimatedRightSidebarInitialOpen,
@@ -213,16 +216,7 @@ import {
   useRightSidebarShortcut,
 } from "../../layout/animated-right-sidebar";
 
-/**
- * Memento entry recording that the comment-highlight deep link for this
- * issue already landed on the current route (value: the consumed comment
- * id). Lets a remount that merely restores the view (tab switch back) skip
- * the jump-and-highlight, while a fresh selection — which clears the entry
- * (see InboxPage.handleSelect) — runs it again.
- */
-export function issueHighlightMementoKey(issueId: string): string {
-  return `highlight:${issueId}`;
-}
+export { issueHighlightMementoKey };
 
 // Shared by the subscribe button and the unsubscribe menu trigger so the two
 // stay one control visually — they occupy the same slot and only differ in
@@ -975,6 +969,7 @@ function SubIssueRow({
           status={child.status}
           onUpdate={handleUpdate}
           projectId={child.project_id}
+          workflowId={child.workflow_id}
           issue={child}
           align="start"
           trigger={
@@ -1204,6 +1199,11 @@ interface IssueDetailProps {
    */
   highlightRequestToken?: number;
   /**
+   * The cached issue is the detail endpoint's own response, read a moment ago
+   * by the route, so mounting skips reading it again.
+   */
+  authoritative?: boolean;
+  /**
    * Far-left header slot, replacing the mobile sidebar trigger. A host that
    * embeds this detail one level deep (the inbox, on a phone) passes its own
    * "back" control here instead of stacking a second 48px bar above us — the
@@ -1233,8 +1233,11 @@ export function IssueNotFound({
   showBackLink = true,
   leading,
   trailing,
+  onRetry,
 }: {
   showBackLink?: boolean;
+  /** Set when the load failed for a reason other than a 404: says so and offers a retry. */
+  onRetry?: () => void;
   /**
    * Host-supplied way back, mirrored from `IssueDetailProps.leadingAction`. A
    * host that hands its whole screen to this component (the inbox, on a phone)
@@ -1258,7 +1261,12 @@ export function IssueNotFound({
         </div>
       )}
       <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 text-body text-muted-foreground">
-        <p>{t(($) => $.detail.not_found)}</p>
+        <p>{t(($) => (onRetry ? $.detail.load_failed : $.detail.not_found))}</p>
+        {onRetry && (
+          <Button variant="outline" size="sm" onClick={onRetry}>
+            {t(($) => $.detail.retry)}
+          </Button>
+        )}
         {showBackLink && (
           <Button variant="outline" size="sm" onClick={() => backOrReplace(paths.issues())}>
             <ChevronLeft className="mr-1 h-3.5 w-3.5" />
@@ -1347,7 +1355,7 @@ export function IssueDetailSkeleton({
 
 // IssueDetail
 
-export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId, highlightRequestToken, leadingAction, variant = "page", trailingActions }: IssueDetailProps) {
+export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId, highlightRequestToken, authoritative, leadingAction, variant = "page", trailingActions }: IssueDetailProps) {
   const isPeek = variant === "peek";
   const { t } = useT("issues");
   const { t: tCommon } = useT("common");
@@ -1369,7 +1377,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     members.find((m) => m.user_id === user?.id)?.role ?? null;
   const canModerateComments =
     currentUserRole === "owner" || currentUserRole === "admin";
-  const { data: allIssues = [] } = useQuery(issueListOptions(wsId));
+  // Cache read only: the list seeds the row another view already loaded, and
+  // is never worth its own workspace-wide request.
+  const { data: allIssues = [] } = useQuery({ ...issueListOptions(wsId), enabled: false });
   const { getActorName } = useActorName();
   const resolveStatusLabel = useStatusLabel(wsId);
   // Activity and issue visuals share the catalog's custom geometry and color;
@@ -1610,21 +1620,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const lastHighlightRequestTokenRef = useRef(highlightRequestToken);
 
   // Issue data from TQ — uses detail query, seeded from list cache if available.
-  // Only seed when description is present; the list API omits it, so a partial
-  // list row must not masquerade as a hydrated issue detail.
-  const { data: issue = null, isLoading: issueLoading, refetch: refetchIssue } = useQuery({
-    ...issueDetailOptions(wsId, id),
-    // List rows and issue-created realtime payloads intentionally omit the
-    // detail-only source-context snapshot. They can still seed this query via
-    // initialData, so always reconcile with the authoritative detail endpoint
-    // when the detail view mounts. Without this, the global Infinity staleTime
-    // hides source context until a full page refresh.
-    refetchOnMount: "always",
-    initialData: () => {
-      const cached = allIssues.find((i) => i.id === id);
-      return cached?.description != null ? cached : undefined;
-    },
-  });
+  const { data: issue = null, error: issueError, isLoading: issueLoading, refetch: refetchIssue } = useQuery(
+    issueDetailViewOptions(wsId, id, allIssues.find((i) => i.id === id), authoritative),
+  );
   const descriptionSourceId = `description:${id}`;
   const descriptionAnnotations = useCommentAnnotations({
     draftKey: `new:${id}`,
@@ -2712,8 +2710,22 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       jumpToMinimapTarget(commentId);
       return;
     }
-    container.scrollTop = Math.max(0, container.scrollTop + element.getBoundingClientRect().top - container.getBoundingClientRect().top - 16);
+    // Highlighting a reply force-opens its compact thread, which mounts the
+    // hidden replies above the target after this scroll — so re-align until
+    // the offset stops moving (same settle loop as the pending reply jump).
     flashJumpTarget(commentId);
+    let frames = 0;
+    let last = -1;
+    const align = () => {
+      const target = document.getElementById(`comment-${commentId}`) ?? element;
+      const offset = target.getBoundingClientRect().top - container.getBoundingClientRect().top;
+      container.scrollTop = Math.max(0, container.scrollTop + offset - 16);
+      if (Math.abs(offset - last) > 1 && ++frames < 30) {
+        last = offset;
+        requestAnimationFrame(align);
+      }
+    };
+    align();
   }, [scrollContainerEl, flashJumpTarget, jumpToMinimapTarget]);
   const [pendingAnnotationEdit, setPendingAnnotationEdit] = useState<{
     rootId: string; sourceCommentId: string; annotationId: string;
@@ -3427,6 +3439,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     });
   }, [handleToggleSidebar, id, sidebarOpen]);
 
+  // `?focus=wakeups` lands on the same section as the header chip, once the
+  // issue has loaded and the section exists.
+  useWakeupsFocus(id, openWakeups, !loading && !!issue);
+
   useRightSidebarShortcut(rightSidebarShortcutTargetRef, handleToggleSidebar);
 
   const scrollAnchor = useIssueDetailScrollAnchor({
@@ -3475,7 +3491,14 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   }
 
   if (!issue) {
-    return <IssueNotFound showBackLink={!onDelete} leading={leadingAction} trailing={trailingActions} />;
+    return (
+      <IssueNotFound
+        showBackLink={!onDelete}
+        leading={leadingAction}
+        trailing={trailingActions}
+        onRetry={issueError && !isNotFoundError(issueError) ? () => void refetchIssue() : undefined}
+      />
+    );
   }
 
   const persistDescriptionSave = (
@@ -3561,6 +3584,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               onUpdate={handleUpdateField}
               align="start"
               projectId={issue.project_id}
+              workflowId={issue.workflow_id}
               issue={issue}
               onMarkDuplicate={actions.openMarkDuplicate}
               isDuplicate={isDuplicateIssue(issue)}
@@ -3761,6 +3785,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         issueId={issue.id}
         closed={["done", "closed"].includes(resolveStatusCategory(issue.status))}
         defaultAgentId={issue.assignee_type === "agent" ? (issue.assignee_id ?? undefined) : undefined}
+        projectId={issue.project_id ?? undefined}
       />
       <PluginPanelSection issueId={issue.id} />
 
