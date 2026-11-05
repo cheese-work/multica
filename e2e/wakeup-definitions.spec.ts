@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { _electron, expect, test } from "@playwright/test";
+import { _electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import pg from "pg";
 import { createTestApi } from "./helpers";
 
@@ -34,6 +34,7 @@ test("workspace, project and issue wakeup defaults resolve and show on every sur
   let issueId: string | undefined;
   let agentId: string | undefined;
   let wakeupId: string | undefined;
+  let app: ElectronApplication | undefined;
   try {
     const workspace = (await api.getWorkspaces())[0]!;
     workspaceId = workspace.id;
@@ -77,17 +78,63 @@ test("workspace, project and issue wakeup defaults resolve and show on every sur
     }, api.getToken());
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.goto(`/${workspace.slug}/issues/${issue.id}`, { waitUntil: "domcontentloaded" });
-    const row = page.getByRole("list", { name: "Default wakeups" }).getByRole("listitem", { name: "When the linked PR merges" });
-    await expect(row).toBeVisible({ timeout: 60_000 });
+
+    // Surfaces that render the issue page: the web page, plus the built Electron
+    // client when WAKEUP_DESKTOP=1 (after `electron-vite build` with VITE_API_URL
+    // set), with an isolated profile against the same server.
+    const surfaces: Page[] = [page];
+    if (process.env.WAKEUP_DESKTOP === "1") {
+      const home = mkdtempSync(join(tmpdir(), "wakeup-desktop-"));
+      mkdirSync(join(home, ".multica"), { recursive: true });
+      writeFileSync(join(home, ".multica", "desktop_prefs.json"), JSON.stringify({ autoStart: false, autoStop: false }));
+      const env = { ...cleanEnv(), HOME: home, XDG_CONFIG_HOME: join(home, "config"), DESKTOP_APP_SUFFIX: "CHE3667", ELECTRON_DISABLE_SECURITY_WARNINGS: "true" } as Record<string, string>;
+      app = await _electron.launch({
+        executablePath: createRequire(resolve("apps/desktop/package.json"))("electron"),
+        args: [resolve("apps/desktop"), "--ozone-platform=headless", "--no-sandbox", "--disable-gpu"],
+        env,
+      });
+      const win = await app.firstWindow();
+      await win.waitForLoadState("domcontentloaded");
+      const path = `/${workspace.slug}/issues/${issue.id}`;
+      await win.evaluate(({ token, slug, path }) => {
+        localStorage.setItem("multica_token", token);
+        localStorage.setItem("multica_tabs", JSON.stringify({ version: 5, state: {
+          activeWorkspaceSlug: slug, byWorkspace: { [slug]: {
+            activeTabId: "wakeups", tabs: [{ id: "wakeups", url: path, resourceKey: path, title: "Wakeup defaults issue", pinned: false, history: { stack: [path], index: 0 }, memento: { scroll: {}, view: {} } }],
+            browsingHistory: [path], browsingHistoryTitles: {}, recentTabIds: [],
+          } },
+        } }));
+      }, { token: api.getToken()!, slug: workspace.slug, path });
+      surfaces.push(win);
+    }
+    const rowOf = (p: Page) => p.getByRole("list", { name: "Default wakeups" }).getByRole("listitem", { name: "When the linked PR merges" });
+    // Reload every surface and check the same row text on each.
+    const expectState = async (...texts: string[]) => {
+      for (const p of surfaces) {
+        await p.reload({ waitUntil: "domcontentloaded" });
+        for (const text of texts) await expect(rowOf(p)).toContainText(text, { timeout: 90_000 });
+      }
+    };
+    // Drive an issue override or reset through one surface's UI.
+    const override = async (p: Page) => {
+      await rowOf(p).getByRole("button", { name: /^Override/ }).click();
+      await p.getByRole("switch").last().click();
+      await p.getByRole("button", { name: "Save override" }).click();
+      await expect(rowOf(p)).toContainText("Overridden on this issue", { timeout: 30_000 });
+    };
+    const reset = async (p: Page) => {
+      await rowOf(p).getByRole("button", { name: /^Reset/ }).click();
+      await expect(rowOf(p)).toContainText("Inherited from project", { timeout: 30_000 });
+    };
+    const web = page;
+    const last = surfaces[surfaces.length - 1]!;
 
     // Inherited from the built-in default.
-    await expect(row).toContainText("Inherited from the default");
-    await expect(row).toContainText("On");
+    await expectState("Inherited from the default", "On");
 
     // Workspace default (owner write).
     expect((await put(wsPath, "0", { enabled: true, instruction: "workspace text" })).status).toBe(200);
-    await page.reload({ waitUntil: "domcontentloaded" });
-    await expect(row).toContainText("Inherited from workspace", { timeout: 30_000 });
+    await expectState("Inherited from workspace");
     let eff = await effective();
     expect(eff.enabled).toBe(true);
     expect(eff.sources.instruction).toBe("workspace");
@@ -95,18 +142,14 @@ test("workspace, project and issue wakeup defaults resolve and show on every sur
     // A project override beats the workspace for the fields it sets; the row's
     // source label follows the "enabled" field.
     expect((await put(projectPath, "0", { enabled: true, instruction: "project text" })).status).toBe(200);
-    await page.reload({ waitUntil: "domcontentloaded" });
-    await expect(row).toContainText("Inherited from project", { timeout: 30_000 });
+    await expectState("Inherited from project");
     eff = await effective();
     expect(eff.sources.instruction).toBe("project");
     expect(eff.sources.enabled).toBe("project");
 
-    // Issue override from the UI: switch the rule off for this issue only.
-    await row.getByRole("button", { name: /^Override/ }).click();
-    await page.getByRole("switch").last().click();
-    await page.getByRole("button", { name: "Save override" }).click();
-    await expect(row).toContainText("Overridden on this issue", { timeout: 30_000 });
-    await expect(row).toContainText("Disabled");
+    // Issue override from the web UI: switch the rule off for this issue only.
+    await override(web);
+    await expectState("Overridden on this issue", "Disabled");
     eff = await effective();
     expect(eff.enabled).toBe(false);
     expect(eff.sources.enabled).toBe("issue");
@@ -132,8 +175,7 @@ test("workspace, project and issue wakeup defaults resolve and show on every sur
     expect(eff.execution.paused_reason).toBe("loop");
     expect(eff.execution.instance_id).toBeTruthy();
     expect((await effective(projectPath)).execution ?? null).toBeNull();
-    await page.reload({ waitUntil: "domcontentloaded" });
-    await expect(row).toContainText("Paused", { timeout: 30_000 });
+    await expectState("Overridden on this issue", "Paused");
 
     const cli = process.env.MULTICA_CLI;
     // The CLI lists runtime instances only; it has no read command for scoped definitions.
@@ -147,51 +189,27 @@ test("workspace, project and issue wakeup defaults resolve and show on every sur
     };
     if (cli) expect(await cliList()).toHaveLength(1);
 
-    // Desktop: the built Electron client, isolated profile, same server. Opt in
-    // with WAKEUP_DESKTOP=1 after `electron-vite build` with VITE_API_URL set.
-    if (process.env.WAKEUP_DESKTOP === "1") {
-      const home = mkdtempSync(join(tmpdir(), "wakeup-desktop-"));
-      mkdirSync(join(home, ".multica"), { recursive: true });
-      writeFileSync(join(home, ".multica", "desktop_prefs.json"), JSON.stringify({ autoStart: false, autoStop: false }));
-      const env = { ...cleanEnv(), HOME: home, XDG_CONFIG_HOME: join(home, "config"), DESKTOP_APP_SUFFIX: "CHE3667", ELECTRON_DISABLE_SECURITY_WARNINGS: "true" } as Record<string, string>;
-      const app = await _electron.launch({
-        executablePath: createRequire(resolve("apps/desktop/package.json"))("electron"),
-        args: [resolve("apps/desktop"), "--ozone-platform=headless", "--no-sandbox", "--disable-gpu"],
-        env,
-      });
-      try {
-        const win = await app.firstWindow();
-        await win.waitForLoadState("domcontentloaded");
-        const path = `/${workspace.slug}/issues/${issue.id}`;
-        await win.evaluate(({ token, slug, path }) => {
-          localStorage.setItem("multica_token", token);
-          localStorage.setItem("multica_tabs", JSON.stringify({ version: 5, state: {
-            activeWorkspaceSlug: slug, byWorkspace: { [slug]: {
-              activeTabId: "wakeups", tabs: [{ id: "wakeups", url: path, resourceKey: path, title: "Wakeup defaults issue", pinned: false, history: { stack: [path], index: 0 }, memento: { scroll: {}, view: {} } }],
-              browsingHistory: [path], browsingHistoryTitles: {}, recentTabIds: [],
-            } },
-          } }));
-        }, { token: api.getToken()!, slug: workspace.slug, path });
-        await win.reload();
-        const deskRow = win.getByRole("list", { name: "Default wakeups" }).getByRole("listitem", { name: "When the linked PR merges" });
-        await expect(deskRow).toBeVisible({ timeout: 90_000 });
-        await expect(deskRow).toContainText("Overridden on this issue");
-        await expect(deskRow).toContainText("Paused");
-      } finally {
-        await app.close();
-      }
-    }
-
-    // Reset from the UI: the workspace/project value comes back, the instance stays.
+    // Reset through the last surface's UI (desktop when present): the project
+    // value comes back and the paused instance stays.
     const instanceId = eff.execution.instance_id;
-    await row.getByRole("button", { name: /^Reset/ }).click();
-    await expect(row).toContainText("Inherited from project", { timeout: 30_000 });
+    await reset(last);
+    await expectState("Inherited from project", "Paused");
     eff = await effective();
     expect(eff.enabled).toBe(true);
     expect(eff.execution.instance_id).toBe(instanceId);
     // The same instance is still the one the CLI lists after the reset.
     if (cli) expect((await cliList()).map((r) => r.id)).toEqual([instanceId]);
+
+    // Override again through the last surface, then reset through the web.
+    // The row shows the paused runtime state over the disabled setting.
+    await override(last);
+    await expectState("Overridden on this issue", "Paused");
+    expect((await effective()).sources.enabled).toBe("issue");
+    await reset(web);
+    await expectState("Inherited from project");
+    expect((await effective()).enabled).toBe(true);
   } finally {
+    await app?.close();
     if (workspaceId) {
       if (wakeupId) await db.query(`DELETE FROM issue_wakeup WHERE id=$1 AND workspace_id=$2`, [wakeupId, workspaceId]);
       if (agentId) await db.query(`DELETE FROM agent WHERE id=$1 AND workspace_id=$2`, [agentId, workspaceId]);
