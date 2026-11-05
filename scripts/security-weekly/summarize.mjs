@@ -15,11 +15,24 @@ const REQUIRED = {
   trivy: ["trivy-backend.json", "trivy-web.json"],
 };
 
+// Stable per-instance id: `<key>#<n>`, n = rank by line within the same rule+file. Lines move between runs, so the
+// line is never in the id; the rank still counts a second instance as new and a removed one as fixed.
+// ponytail: removing the first of two instances renumbers the second (reads as fixed #2); total stays right.
+const instances = (found) => {
+  const seen = new Map();
+  return [...found].sort((a, b) => a.line - b.line).map(({ key, severity }) => {
+    const n = (seen.get(key) ?? 0) + 1;
+    seen.set(key, n);
+    return { id: `${key}#${n}`, severity };
+  });
+};
+
 const NORMALIZERS = {
-  semgrep: (raw) => raw.results.map((r) => ({
-    id: `${r.check_id}|${r.path}`,
+  semgrep: (raw) => instances(raw.results.map((r) => ({
+    key: `${r.check_id}|${r.path}`,
+    line: r.start?.line ?? 0,
     severity: { ERROR: "high", WARNING: "medium" }[r.extra.severity] ?? "low",
-  })),
+  }))),
   // govulncheck reports only vulnerabilities the code can reach; it carries no severity, so each counts as high.
   govulncheck: (text) => [...new Set([...text.matchAll(/^Vulnerability #\d+: (GO-\d+-\d+)/gm)].map((m) => m[1]))]
     .map((id) => ({ id, severity: "high" })),
@@ -30,13 +43,15 @@ const NORMALIZERS = {
   gitleaks: (raw) => raw.map((l) => ({ id: l.Fingerprint ?? `${l.RuleID}|${l.File}`, severity: "high" })),
   codeql: (sarif) => sarif.runs.flatMap((r) => {
     const scores = new Map((r.tool.driver.rules ?? []).map((x) => [x.id, Number(x.properties?.["security-severity"])]));
-    return (r.results ?? []).map((x) => {
+    return instances((r.results ?? []).map((x) => {
       const score = scores.get(x.ruleId);
+      const loc = x.locations?.[0]?.physicalLocation;
       return {
-        id: `${x.ruleId}|${x.locations?.[0]?.physicalLocation?.artifactLocation?.uri ?? ""}`,
+        key: `${x.ruleId}|${loc?.artifactLocation?.uri ?? ""}`,
+        line: loc?.region?.startLine ?? 0,
         severity: Number.isFinite(score) ? band(score) : (LEVELS[x.level] ?? "low"),
       };
-    });
+    }));
   }),
   trivy: (raw) => (raw.Results ?? []).flatMap((r) => (r.Vulnerabilities ?? []).map((v) => ({
     id: `${r.Target}|${v.VulnerabilityID}|${v.PkgName}`,
@@ -57,10 +72,11 @@ export function summarize(scanner, rawItems, prev) {
   const bySeverity = Object.fromEntries(SEVERITIES.map((s) => [s, items.filter((i) => i.severity === s).length]));
   const fresh = items.filter((i) => !before.has(i.id));
   return {
-    scanner, total: items.length, bySeverity, ids,
+    scanner, baseline: !prev, total: items.length, bySeverity, ids,
     new: [...new Set(fresh.map((i) => i.id))].sort(),
     fixed: [...before].filter((id) => !ids.includes(id)).sort(),
     newHighCritical: [...new Set(fresh.filter((i) => i.severity === "critical" || i.severity === "high").map((i) => i.id))].sort(),
+    newFindings: fresh.filter((i) => i.severity === "critical" || i.severity === "high").sort((a, b) => (a.id < b.id ? -1 : 1)),
   };
 }
 

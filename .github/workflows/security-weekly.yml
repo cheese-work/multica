@@ -211,6 +211,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
@@ -226,6 +227,11 @@ jobs:
           prev="$(gh run list --workflow security-weekly.yml --event schedule --limit 5 --json databaseId --jq "map(select(.databaseId != ${GITHUB_RUN_ID})) | .[0].databaseId // empty")"
           if [ -n "$prev" ]; then gh run download "$prev" --name weekly-summary --dir previous || true; fi
           [ -f previous/summary.json ] || echo "no previous summary" >> "$GITHUB_STEP_SUMMARY"
+      - name: Fetch upstream for shared-code classification
+        # Failure leaves upstream/main unresolved; triage then reports "unknown", never "not shared".
+        run: |
+          git remote add upstream https://github.com/multica-ai/multica.git
+          git fetch --quiet --filter=blob:none upstream main:refs/remotes/upstream/main || echo "upstream fetch failed" >> "$GITHUB_STEP_SUMMARY"
       - name: One line per scanner
         run: |
           mkdir -p out
@@ -235,6 +241,11 @@ jobs:
           { echo '### Weekly security scan'; echo '```'; cat out/lines.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           node -e 'const s=require("./out/summary.json").summaries.filter((x)=>x.newHighCritical?.length); for (const x of s) console.log(`new high/critical ${x.scanner}: ${x.newHighCritical.join(", ")}`)' | tee -a "$GITHUB_STEP_SUMMARY"
           exit "$rc"
+      - name: Plan one issue per new high/critical finding
+        # Plan only. Filing needs multica credentials, so the Monday-brief routine on X99 applies out/triage.json.
+        if: ${{ !cancelled() && hashFiles('out/summary.json') != '' }}
+        run: |
+          node scripts/security-weekly/triage.mjs out/summary.json out/triage.json | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         if: ${{ always() }}
         with:

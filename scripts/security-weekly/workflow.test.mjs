@@ -54,3 +54,15 @@ test("CodeQL Go builds (autobuild); only javascript-typescript may use build-mod
   assert.match(job, /build-mode: \$\{\{ matrix\.build-mode \}\}/);
   assert.match(job, /if: matrix\.language == 'go'[\s\S]*setup-go/);
 });
+
+test("summary job plans triage read-only: full history, upstream fetched, triage.json uploaded with the summary", () => {
+  const job = wf.slice(wf.indexOf("  summary:"));
+  assert.match(job, /fetch-depth: 0/);
+  assert.match(job, /git fetch[^\n]*upstream/);
+  assert.match(job, /node scripts\/security-weekly\/triage\.mjs out\/summary\.json out\/triage\.json/);
+  assert.ok(job.indexOf("triage.mjs") < job.indexOf("upload-artifact"), "triage.json must exist before upload");
+});
+
+test("the triage apply step is not in the workflow: filing issues needs credentials the scan must not hold", () => {
+  assert.doesNotMatch(wf, /triage\.mjs --apply|multica issue create/);
+});

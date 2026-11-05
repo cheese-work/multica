@@ -5,14 +5,14 @@ import { join } from "node:path";
 import test from "node:test";
 import { normalize, summarize, line, run } from "./summarize.mjs";
 
-test("semgrep: ERROR is high, WARNING medium, INFO low; id ignores line numbers", () => {
+test("semgrep: ERROR is high, WARNING medium, INFO low; id is rule|path#n, never the line", () => {
   const raw = { results: [
     { check_id: "r.a", path: "a.go", start: { line: 1 }, extra: { severity: "ERROR" } },
     { check_id: "r.b", path: "b.ts", start: { line: 9 }, extra: { severity: "WARNING" } },
-    { check_id: "r.c", path: "c.py", start: { line: 3 }, extra: { severity: "INFO" } },
+    { check_id: "r.c", path: "c.py", start: { line: 11 }, extra: { severity: "INFO" } },
   ] };
   assert.deepEqual(normalize("semgrep", raw), [
-    { id: "r.a|a.go", severity: "high" }, { id: "r.b|b.ts", severity: "medium" }, { id: "r.c|c.py", severity: "low" },
+    { id: "r.a|a.go#1", severity: "high" }, { id: "r.b|b.ts#1", severity: "medium" }, { id: "r.c|c.py#1", severity: "low" },
   ]);
 });
 
@@ -113,4 +113,39 @@ test("run: codeql with only one language, or trivy with only one image, is `not 
   const { lines } = run(dir, undefined);
   assert.ok(lines.includes("codeql: NOT RUN (missing codeql-go.sarif)"));
   assert.ok(lines.includes("trivy: NOT RUN (missing trivy-web.json)"));
+});
+
+const sg = (line, path = "a.go") => ({ check_id: "r.a", path, start: { line }, extra: { severity: "ERROR" } });
+const cq = (line, uri = "a.go") => ({ ruleId: "go/sql", level: "error", locations: [{ physicalLocation: { artifactLocation: { uri }, region: { startLine: line } } }] });
+const cqSarif = (...results) => ({ runs: [{ tool: { driver: { rules: [{ id: "go/sql", properties: { "security-severity": "8.0" } }] } }, results }] });
+const ids = (scanner, raw) => normalize(scanner, raw).map((i) => i.id);
+
+test("semgrep: two instances of one rule in one file are two findings, a line shift changes nothing", () => {
+  const before = summarize("semgrep", normalize("semgrep", { results: [sg(10)] }), undefined);
+  const shifted = summarize("semgrep", normalize("semgrep", { results: [sg(14)] }), before);
+  assert.equal(shifted.new.length + shifted.fixed.length, 0);
+  const added = summarize("semgrep", normalize("semgrep", { results: [sg(14), sg(80)] }), before);
+  assert.equal(added.total, 2);
+  assert.equal(added.new.length, 1);
+  assert.equal(added.newHighCritical.length, 1);
+});
+
+test("semgrep: a removed same-file instance is fixed, and ids do not depend on report order", () => {
+  const two = summarize("semgrep", normalize("semgrep", { results: [sg(80), sg(10)] }), undefined);
+  assert.deepEqual(ids("semgrep", { results: [sg(80), sg(10)] }), ids("semgrep", { results: [sg(10), sg(80)] }));
+  const one = summarize("semgrep", normalize("semgrep", { results: [sg(10)] }), two);
+  assert.equal(one.total, 1);
+  assert.equal(one.fixed.length, 1);
+  assert.equal(one.new.length, 0);
+});
+
+test("codeql: two results of one rule in one file are two findings; a new second one is new", () => {
+  const before = summarize("codeql", normalize("codeql", cqSarif(cq(5))), undefined);
+  const added = summarize("codeql", normalize("codeql", cqSarif(cq(5), cq(70))), before);
+  assert.equal(added.total, 2);
+  assert.equal(added.new.length, 1);
+  assert.equal(added.newHighCritical.length, 1);
+  const removed = summarize("codeql", normalize("codeql", cqSarif(cq(5))), added);
+  assert.equal(removed.fixed.length, 1);
+  assert.equal(removed.new.length, 0);
 });
