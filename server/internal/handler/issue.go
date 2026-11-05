@@ -1631,6 +1631,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 		}
 
 		prefix := h.getIssuePrefix(ctx, wsUUID)
+		rf := h.newReadFilter(r)
 		ids := make([]pgtype.UUID, len(issues))
 		var originals []pgtype.UUID
 		for i, issue := range issues {
@@ -1642,6 +1643,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 		resp := make([]IssueResponse, len(issues))
 		for i, issue := range issues {
 			resp[i] = openIssueRowToResponse(issue, prefix)
+			rf.stubDescriptionOf(h, issue.DescriptionExternalRead, issue.Description, issue.CreatorType, issue.CreatorID, &resp[i])
 			fillOpen(&resp[i])
 			labels := labelsMap[resp[i].ID]
 			if labels == nil {
@@ -1984,7 +1986,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	query := fmt.Sprintf(`SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-	   i.revision, i.duplicate_of_issue_id
+	   i.revision, i.duplicate_of_issue_id, i.description_external_read
 FROM issue i
 WHERE %s
 ORDER BY %s
@@ -2026,6 +2028,7 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 			&row.Properties,
 			&row.Revision,
 			&row.DuplicateOfIssueID,
+			&row.DescriptionExternalRead,
 		); err != nil {
 			slog.Warn("ListIssues scan failed", "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to list issues")
@@ -2051,6 +2054,7 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 	}
 
 	prefix := h.getIssuePrefix(ctx, wsUUID)
+	rf := h.newReadFilter(r)
 	ids := make([]pgtype.UUID, len(issues))
 	for i, issue := range issues {
 		ids[i] = issue.ID
@@ -2059,6 +2063,7 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 	resp := make([]IssueResponse, len(issues))
 	for i, issue := range issues {
 		resp[i] = issueListRowToResponse(issue, prefix)
+		rf.stubDescriptionOf(h, issue.DescriptionExternalRead, issue.Description, issue.CreatorType, issue.CreatorID, &resp[i])
 		labels := labelsMap[resp[i].ID]
 		if labels == nil {
 			labels = []LabelResponse{}
@@ -2584,7 +2589,7 @@ WITH ranked AS (
 		i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
 		i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
 		i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at,
-		i.number, i.project_id, i.metadata, i.stage, i.properties, i.revision, i.duplicate_of_issue_id,
+		i.number, i.project_id, i.metadata, i.stage, i.properties, i.revision, i.duplicate_of_issue_id, i.description_external_read,
 		COUNT(*) OVER (PARTITION BY i.assignee_type, i.assignee_id) AS group_total,
 		ROW_NUMBER() OVER (
 			PARTITION BY i.assignee_type, i.assignee_id
@@ -2597,7 +2602,7 @@ SELECT
 	id, workspace_id, title, description, status, priority,
 	assignee_type, assignee_id, creator_type, creator_id,
 	parent_issue_id, position, start_date, due_date, created_at, updated_at, last_activity_at,
-	number, project_id, metadata, stage, properties, revision, duplicate_of_issue_id, group_total
+	number, project_id, metadata, stage, properties, revision, duplicate_of_issue_id, description_external_read, group_total
 FROM ranked
 WHERE rn > %s AND rn <= %s + %s
 ORDER BY
@@ -2647,6 +2652,7 @@ ORDER BY
 			&row.Properties,
 			&row.Revision,
 			&row.DuplicateOfIssueID,
+			&row.DescriptionExternalRead,
 			&row.GroupTotal,
 		); err != nil {
 			slog.Warn("ListGroupedIssues scan failed", "error", err)
@@ -2669,6 +2675,7 @@ ORDER BY
 	}
 	labelsMap := h.labelsByIssue(ctx, wsUUID, ids)
 	prefix := h.getIssuePrefix(ctx, wsUUID)
+	rf := h.newReadFilter(r)
 	// One Resolver for the whole page — a per-row filler would query the
 	// catalog once per custom-status row. (MUL-6243)
 	fillGrouped := h.newStatusCategoryFiller(ctx, wsUUID, originals...)
@@ -2691,6 +2698,7 @@ ORDER BY
 		}
 
 		issue := issueListRowToResponse(row.ListIssuesRow, prefix)
+		rf.stubDescriptionOf(h, row.DescriptionExternalRead, row.Description, row.CreatorType, row.CreatorID, &issue)
 		fillGrouped(&issue)
 		labels := labelsMap[issue.ID]
 		if labels == nil {
@@ -2735,6 +2743,9 @@ func (h *Handler) GetIssue(w http.ResponseWriter, r *http.Request) {
 		IssueID:     issue.ID,
 		WorkspaceID: issue.WorkspaceID,
 	})
+	if err == nil {
+		attachments = h.readableAttachments(r, attachments)
+	}
 	if err == nil && len(attachments) > 0 {
 		mode := attachmentURLModeFromRequest(r)
 		resp.Attachments = make([]AttachmentResponse, len(attachments))
@@ -3729,6 +3740,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		if len(atts) == 0 {
 			return nil
 		}
+		atts = h.readableAttachments(r, atts)
 		out := make([]AttachmentResponse, len(atts))
 		for i, a := range atts {
 			out[i] = h.attachmentToResponse(a, attachmentMode)

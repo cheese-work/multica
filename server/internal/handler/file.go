@@ -342,7 +342,7 @@ func (h *Handler) groupAttachments(r *http.Request, commentIDs []pgtype.UUID) ma
 	}
 	mode := attachmentURLModeFromRequest(r)
 	grouped := make(map[string][]AttachmentResponse, len(commentIDs))
-	for _, a := range attachments {
+	for _, a := range h.readableAttachments(r, attachments) {
 		cid := uuidToString(a.CommentID)
 		grouped[cid] = append(grouped[cid], h.attachmentToResponse(a, mode))
 	}
@@ -667,6 +667,7 @@ func (h *Handler) ListAttachments(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mode := attachmentURLModeFromRequest(r)
+	attachments = h.readableAttachments(r, attachments)
 	resp := make([]AttachmentResponse, len(attachments))
 	for i, a := range attachments {
 		resp[i] = h.attachmentToResponse(a, mode)

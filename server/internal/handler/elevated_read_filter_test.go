@@ -320,3 +320,132 @@ func TestElevatedTokenTimelineWithholdsActivityDetails(t *testing.T) {
 		t.Errorf("member must still read activity details: %s", member.Text())
 	}
 }
+
+// markedListIssue marks the claimed issue's description and gives it a status,
+// assignee and project every list shape can filter on. It returns the unique
+// body and the project id.
+func markedListIssue(t *testing.T, f elevatedFixture) (body, projectID string) {
+	t.Helper()
+	projectID = dbfx.Insert(t, "project", testutil.Cols{"workspace_id": testWorkspaceID, "title": "list-" + f.issueID[:8]})
+	body = hostileBody + " " + f.issueID[:8]
+	dbfx.Exec(t, `UPDATE issue SET description = $2, description_external_read = true, status = 'todo',
+		assignee_type = 'member', assignee_id = $3, project_id = $4 WHERE id = $1`, f.issueID, body, testUserID, projectID)
+	return body, projectID
+}
+
+func TestElevatedTokenListsStubMarkedDescriptions(t *testing.T) {
+	f := claimElevated(t, "multica_cross_issue")
+	body, projectID := markedListIssue(t, f)
+	q := "workspace_id=" + testWorkspaceID + "&assignee_id=" + testUserID + "&project_id=" + projectID
+	lists := map[string]struct {
+		route http.HandlerFunc
+		path  string
+	}{
+		"normal":    {testHandler.ListIssues, "/api/issues?" + q + "&status=todo&limit=100"},
+		"open_only": {testHandler.ListIssues, "/api/issues?" + q + "&open_only=true"},
+		"grouped":   {testHandler.ListGroupedIssues, "/api/issues/grouped?" + q + "&group_by=assignee&statuses=todo&limit=100&assignee_filters=member:" + testUserID},
+	}
+	for name, l := range lists {
+		elevated := elevatedGet(t, l.route, l.path, nil, f.taskID).Want(http.StatusOK)
+		if strings.Contains(elevated.Text(), body) || !strings.Contains(elevated.Text(), "withheld: untrusted issue description; id="+f.issueID) {
+			t.Errorf("%s list: elevated token must get the stub only: %s", name, elevated.Text())
+		}
+		member := testutil.Call(t, l.route, newRequest("GET", l.path, nil)).Want(http.StatusOK)
+		if !strings.Contains(member.Text(), body) {
+			t.Errorf("%s list: member must read the full description: %s", name, member.Text())
+		}
+	}
+	// the table rows route reads the same rows
+	rows := func(req *http.Request) string {
+		return testutil.Call(t, testHandler.ListIssueTableRows, req).Want(http.StatusOK).Text()
+	}
+	tableReq := func() *http.Request {
+		return newRequest(http.MethodPost, "/api/issues/table/rows", issueTableRowsRequest{
+			Query: issueTableQuerySpec{Scope: issueTableScope{Kind: "project", ProjectID: projectID}, Sort: issueTableSortRequest{Field: "position", Direction: "asc"}},
+			Group: issueTableGroupSpec{Kind: "none"}, Page: issueTablePageRequest{Limit: 10},
+		})
+	}
+	if got := rows(asElevatedToken(tableReq(), f.taskID)); strings.Contains(got, body) || !strings.Contains(got, "withheld: untrusted issue description") {
+		t.Errorf("table rows: elevated token must get the stub only: %s", got)
+	}
+	if got := rows(tableReq()); !strings.Contains(got, body) {
+		t.Errorf("table rows: member must read the full description: %s", got)
+	}
+}
+
+// attachmentFixture inserts one marked and one clean attachment on the issue
+// and one marked attachment on a comment.
+func attachmentFixture(t *testing.T, f elevatedFixture) (markedID, cleanID, commentID string) {
+	t.Helper()
+	add := func(name string, extra testutil.Cols) string {
+		cols := testutil.Cols{
+			"workspace_id": testWorkspaceID, "issue_id": f.issueID, "uploader_type": "member", "uploader_id": testUserID,
+			"filename": name, "url": "https://cdn.example.test/" + name, "content_type": "text/plain", "size_bytes": 12,
+		}
+		for k, v := range extra {
+			cols[k] = v
+		}
+		return dbfx.Insert(t, "attachment", cols)
+	}
+	markedID = add("intake.txt", testutil.Cols{"external_read": true})
+	cleanID = add("plain.txt", nil)
+	commentID = dbfx.Comment(t, f.issueID, "see attachment")
+	add("comment-intake.txt", testutil.Cols{"external_read": true, "comment_id": commentID})
+	return markedID, cleanID, commentID
+}
+
+func TestElevatedTokenBulkAttachmentResponsesSuppressMarked(t *testing.T) {
+	for _, mode := range []string{"public-storage", "cloudfront"} {
+		t.Run(mode, func(t *testing.T) {
+			if mode == "cloudfront" {
+				orig := testHandler.CFSigner
+				testHandler.CFSigner = testCloudFrontSigner(t)
+				t.Cleanup(func() { testHandler.CFSigner = orig })
+			}
+			f := claimElevated(t, "multica_cross_issue")
+			markedID, cleanID, _ := attachmentFixture(t, f)
+			routes := map[string]struct {
+				route  http.HandlerFunc
+				path   string
+				params []string
+			}{
+				"attachment list": {testHandler.ListAttachments, "/api/issues/" + f.issueID + "/attachments", []string{"id", f.issueID}},
+				"issue detail":    {testHandler.GetIssue, "/api/issues/" + f.issueID, []string{"id", f.issueID}},
+				"comment list":    {testHandler.ListComments, "/api/issues/" + f.issueID + "/comments", []string{"id", f.issueID}},
+				"timeline":        {testHandler.ListTimeline, "/api/issues/" + f.issueID + "/timeline", []string{"id", f.issueID}},
+			}
+			for name, rt := range routes {
+				elevated := elevatedGet(t, rt.route, rt.path, nil, f.taskID, rt.params...).Want(http.StatusOK).Text()
+				for _, leak := range []string{markedID, "intake.txt", "comment-intake.txt", "cdn.example.test/intake.txt"} {
+					if strings.Contains(elevated, leak) {
+						t.Errorf("%s (%s): elevated response leaks marked attachment %q: %s", name, mode, leak, elevated)
+					}
+				}
+				if name == "attachment list" && !strings.Contains(elevated, cleanID) {
+					t.Errorf("%s (%s): unmarked attachment must stay: %s", name, mode, elevated)
+				}
+				member := testutil.Call(t, rt.route, func() *http.Request {
+					req := newRequest("GET", rt.path, nil)
+					for i := 0; i+1 < len(rt.params); i += 2 {
+						req = withURLParam(req, rt.params[i], rt.params[i+1])
+					}
+					return req
+				}()).Want(http.StatusOK).Text()
+				if !strings.Contains(member, markedID) && !strings.Contains(member, "comment-intake.txt") {
+					t.Errorf("%s (%s): member must still see marked attachments: %s", name, mode, member)
+				}
+			}
+		})
+	}
+}
+
+func TestElevationLookupErrorSuppressesBulkAttachments(t *testing.T) {
+	f := claimElevated(t, "multica_cross_issue")
+	markedID, _, _ := attachmentFixture(t, f)
+	// an unreadable task id makes the lookup fail; the reader counts as elevated
+	req := withURLParam(newRequest("GET", "/api/issues/"+f.issueID+"/attachments", nil), "id", f.issueID)
+	req = testutil.WithHeaders(req, "X-Actor-Source", "task_token", "X-Task-ID", "not-a-uuid")
+	if got := testutil.Call(t, testHandler.ListAttachments, req).Want(http.StatusOK).Text(); strings.Contains(got, markedID) {
+		t.Errorf("failed lookup must suppress marked attachments: %s", got)
+	}
+}

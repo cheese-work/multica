@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/weblink"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -86,12 +87,12 @@ func (h *Handler) commentStub(ctx context.Context, c db.Comment) string {
 }
 
 // descriptionStub builds the stub for an issue description.
-func (h *Handler) descriptionStub(i db.Issue, resp IssueResponse) string {
+func (h *Handler) descriptionStub(desc pgtype.Text, creatorType string, creatorID pgtype.UUID, resp IssueResponse) string {
 	body := ""
-	if i.Description.Valid {
-		body = i.Description.String
+	if desc.Valid {
+		body = desc.String
 	}
-	return withheldStub("issue description", resp.ID, i.CreatorType, uuidToString(i.CreatorID), body, resp.WebURL)
+	return withheldStub("issue description", resp.ID, creatorType, uuidToString(creatorID), body, resp.WebURL)
 }
 
 // stubDescription replaces resp.Description with a stub when issue's description
@@ -99,8 +100,17 @@ func (h *Handler) descriptionStub(i db.Issue, resp IssueResponse) string {
 // calls it, so no representation (list, search, write response) hands the text
 // back.
 func (f *readFilter) stubDescription(h *Handler, i db.Issue, resp *IssueResponse) {
-	if f.withholds(i.DescriptionExternalRead) {
-		stub := h.descriptionStub(i, *resp)
+	f.stubDescriptionOf(h, i.DescriptionExternalRead, i.Description, i.CreatorType, i.CreatorID, resp)
+}
+
+// stubDescriptionOf is stubDescription for list rows, which are not db.Issue.
+func (f *readFilter) stubDescriptionOf(h *Handler, marked bool, desc pgtype.Text, creatorType string, creatorID pgtype.UUID, resp *IssueResponse) {
+	if f.withholds(marked) {
+		if resp.WebURL == "" {
+			ws, _ := util.ParseUUID(resp.WorkspaceID)
+			resp.WebURL = h.workspaceWebURL(f.r.Context(), ws, func(w db.Workspace) string { return weblink.Issue(w.Slug, resp.Identifier) })
+		}
+		stub := h.descriptionStub(desc, creatorType, creatorID, *resp)
 		resp.Description, resp.DescriptionWithheld = &stub, true
 	}
 }
@@ -113,4 +123,19 @@ func (h *Handler) denyWithheldAttachment(w http.ResponseWriter, r *http.Request,
 		return true
 	}
 	return false
+}
+
+// readableAttachments drops marked attachments for an elevated reader. Bulk
+// responses carry the stored URL, a CloudFront-signed download URL and a
+// markdown URL, each of which fetches the bytes, so metadata alone cannot stay.
+// A failed elevation lookup counts as elevated (fail closed).
+func (h *Handler) readableAttachments(r *http.Request, atts []db.Attachment) []db.Attachment {
+	rf := h.newReadFilter(r)
+	out := make([]db.Attachment, 0, len(atts))
+	for _, a := range atts {
+		if !rf.withholds(a.ExternalRead) {
+			out = append(out, a)
+		}
+	}
+	return out
 }
