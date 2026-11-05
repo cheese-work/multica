@@ -243,6 +243,7 @@ type AgentTaskQueue struct {
 	AppliedContextArgs        []byte             `json:"applied_context_args"`
 	AppliedReportedAt         pgtype.Timestamptz `json:"applied_reported_at"`
 	ExternalRead              bool               `json:"external_read"`
+	Purpose                   pgtype.Text        `json:"purpose"`
 }
 
 type AgentToLabel struct {
