@@ -347,8 +347,9 @@ export interface IssueViewState {
   advancedFilter: AdvancedFilterGroup | null;
   dateFilter: IssueDateFilter | null;
   // When true, the list only shows issues that currently have at least one
-  // agent task in `running` status. Saved into views and persisted like the
-  // other filters.
+  // agent task in `running` status. Saved into views, but not persisted across
+  // reloads: running state changes second-to-second, a persisted toggle would
+  // let users return to an empty list with no obvious cause.
   agentRunningFilter: boolean;
   sortBy: SortField;
   sortDirection: SortDirection;
@@ -811,7 +812,11 @@ export const viewStorePersistOptions = (name: string) => ({
   name,
   storage: createJSONStorage(() => createWorkspaceAwareStorage(defaultStorage)),
   partialize: (state: IssueViewState) => ({
-    // `dateFilter` is intentionally not persisted: relative presets such
+    // NOTE: `agentRunningFilter` is intentionally NOT persisted — running
+    // state changes second-to-second, and a stored toggle would let users
+    // return to an unexplained empty list. Keep it ephemeral. See the
+    // field comment on IssueViewState.
+    // `dateFilter` is also intentionally not persisted: relative presets such
     // as Today would otherwise become stale after a calendar-day rollover.
     viewMode: state.viewMode,
     grouping: state.grouping,
@@ -830,7 +835,6 @@ export const viewStorePersistOptions = (name: string) => ({
     negatedFilters: state.negatedFilters,
     propertyFilters: state.propertyFilters,
     advancedFilter: state.advancedFilter,
-    agentRunningFilter: state.agentRunningFilter,
     sortBy: state.sortBy,
     sortDirection: state.sortDirection,
     sortDirections: state.sortDirections,
@@ -968,6 +972,7 @@ export function mergeViewStatePersisted<T extends IssueViewState>(
     advancedFilter: p.advancedFilter === undefined
       ? current.advancedFilter
       : sanitizeAdvancedFilter(p.advancedFilter),
+    // Read for saved-view definitions; `partialize` never writes it.
     agentRunningFilter: p.agentRunningFilter === undefined
       ? current.agentRunningFilter
       : p.agentRunningFilter === true,
