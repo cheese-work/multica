@@ -17,8 +17,9 @@ import (
 
 // moveRe matches the words that lead into a status: "move ... to" with a short
 // gap, or the CLI form. Group 1 is the text after "to"; group 2 is the text
-// after the CLI form's issue argument.
-var moveRe = regexp.MustCompile("(?i)\\bmove\\b[^.:;\\n]{0,40}?\\bto\\b[\\s`\"'(]*([^\\n]*)|\\bissue status\\s+(?:<[^>]*>|\\S+)\\s+[`\"']?([^\\n]*)")
+// after the CLI form's issue argument. Both stop at the next sentence break, so
+// a later move on the same line is matched on its own.
+var moveRe = regexp.MustCompile("(?i)\\bmove\\b[^.:;\\n]{0,40}?\\bto\\b[\\s`\"'(]*([^.;\\n]*)|\\bissue status\\s+(?:<[^>]*>|\\S+)\\s+[`\"']?([^.;\\n]*)")
 
 // negationRe finds a prohibition in the clause before a move.
 var negationRe = regexp.MustCompile(`(?i)\b(never|not|don't|dont|without)\b`)
