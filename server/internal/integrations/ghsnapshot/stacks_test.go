@@ -77,6 +77,11 @@ func TestStacksTypedErrors(t *testing.T) {
 		{"422", 422, `{"message":"Validation Failed"}`, nil, func(e error) bool { return errors.Is(e, ErrStacksConflict) }},
 		{"unknown field", 200, `{"number":9,"base":{"ref":"main"},"open":true,"pull_requests":[],"surprise":1}`, nil, func(e error) bool { return errors.Is(e, ErrStacksSchema) }},
 		{"missing pull_requests", 200, `{"number":9,"base":{"ref":"main"},"open":true}`, nil, func(e error) bool { return errors.Is(e, ErrStacksSchema) }},
+		{"missing open", 200, `{"number":9,"base":{"ref":"main"},"pull_requests":[]}`, nil, func(e error) bool { return errors.Is(e, ErrStacksSchema) }},
+		{"null open", 200, `{"number":9,"base":{"ref":"main"},"open":null,"pull_requests":[]}`, nil, func(e error) bool { return errors.Is(e, ErrStacksSchema) }},
+		{"missing draft", 200, `{"number":9,"base":{"ref":"main"},"open":true,"pull_requests":[{"number":3,"state":"open","merged_at":null,"head":{"ref":"a","sha":"s3"}}]}`, nil, func(e error) bool { return errors.Is(e, ErrStacksSchema) }},
+		{"null draft", 200, `{"number":9,"base":{"ref":"main"},"open":true,"pull_requests":[{"number":3,"state":"open","draft":null,"merged_at":null,"head":{"ref":"a","sha":"s3"}}]}`, nil, func(e error) bool { return errors.Is(e, ErrStacksSchema) }},
+		{"missing merged_at", 200, `{"number":9,"base":{"ref":"main"},"open":true,"pull_requests":[{"number":3,"state":"open","draft":false,"head":{"ref":"a","sha":"s3"}}]}`, nil, func(e error) bool { return errors.Is(e, ErrStacksSchema) }},
 		{"not json", 200, `<html>`, nil, func(e error) bool { return errors.Is(e, ErrStacksSchema) }},
 		{"rate limit", 403, `{"message":"rate limit"}`, map[string]string{"X-RateLimit-Remaining": "0", "Retry-After": "7"}, func(e error) bool {
 			var rl *RateLimitError
@@ -90,12 +95,16 @@ func TestStacksTypedErrors(t *testing.T) {
 				if status == 200 && (call.name == "CreateStack" || call.name == "AddToStack") {
 					status = 201
 				}
+				body := tc.body
+				if call.name == "StacksForPR" && strings.HasPrefix(body, "{") && status == 200 {
+					body = "[" + body + "]" // the list endpoint wraps stacks in an array
+				}
 				c, _ := stacksAPI(t, func(w http.ResponseWriter, _ *http.Request) {
 					for k, v := range tc.header {
 						w.Header().Set(k, v)
 					}
 					w.WriteHeader(status)
-					_, _ = w.Write([]byte(tc.body))
+					_, _ = w.Write([]byte(body))
 				})
 				err := call.run(c)
 				if err == nil || !tc.check(err) {

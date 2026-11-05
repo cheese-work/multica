@@ -52,15 +52,15 @@ type stackWire struct {
 	Base      struct {
 		Ref string `json:"ref"`
 	} `json:"base"`
-	Open         bool          `json:"open"`
+	Open         *bool         `json:"open"` // nil = missing or null: schema error
 	PullRequests []stackPRWire `json:"pull_requests"`
 }
 
 type stackPRWire struct {
-	Number   int     `json:"number"`
-	State    string  `json:"state"`
-	Draft    bool    `json:"draft"`
-	MergedAt *string `json:"merged_at"`
+	Number   int             `json:"number"`
+	State    string          `json:"state"`
+	Draft    *bool           `json:"draft"`     // nil = missing or null: schema error
+	MergedAt json.RawMessage `json:"merged_at"` // nil = missing: schema error; `null` = not merged
 	Head     struct {
 		Ref string `json:"ref"`
 		SHA string `json:"sha"`
@@ -80,17 +80,19 @@ func decodeStrict(raw []byte, v any) error {
 }
 
 func (w stackWire) stack() (Stack, error) {
-	if w.Number <= 0 || w.Base.Ref == "" || w.PullRequests == nil {
+	if w.Number <= 0 || w.Base.Ref == "" || w.Open == nil || w.PullRequests == nil {
 		return Stack{}, ErrStacksSchema
 	}
-	s := Stack{Number: w.Number, BaseRef: w.Base.Ref, Open: w.Open, PullRequests: make([]StackPR, 0, len(w.PullRequests))}
+	s := Stack{Number: w.Number, BaseRef: w.Base.Ref, Open: *w.Open, PullRequests: make([]StackPR, 0, len(w.PullRequests))}
 	for _, p := range w.PullRequests {
-		if p.Number <= 0 || p.State == "" || p.Head.Ref == "" || p.Head.SHA == "" {
+		if p.Number <= 0 || p.State == "" || p.Draft == nil || p.MergedAt == nil || p.Head.Ref == "" || p.Head.SHA == "" {
 			return Stack{}, ErrStacksSchema
 		}
-		pr := StackPR{Number: p.Number, State: p.State, Draft: p.Draft, HeadRef: p.Head.Ref, HeadSHA: p.Head.SHA}
-		if p.MergedAt != nil {
-			pr.MergedAt = *p.MergedAt
+		pr := StackPR{Number: p.Number, State: p.State, Draft: *p.Draft, HeadRef: p.Head.Ref, HeadSHA: p.Head.SHA}
+		if string(p.MergedAt) != "null" {
+			if err := json.Unmarshal(p.MergedAt, &pr.MergedAt); err != nil {
+				return Stack{}, ErrStacksSchema
+			}
 		}
 		s.PullRequests = append(s.PullRequests, pr)
 	}
