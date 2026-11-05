@@ -15,6 +15,7 @@ const STATUS_MAX = 140;
 // GitHub dequeues on the first failed check; the merge_group run is usually still going. Wait for it to finish.
 const POLL_MS = 30_000;
 const MAX_POLLS = 20;
+const WAIT_MIN = (POLL_MS * MAX_POLLS) / 60_000;
 // ponytail: line-anchored so a passing test's "handler panic:" WARN is not reported.
 const FAILURE_LINE = /^(\s*--- FAIL|FAIL\t|panic:|##\[error\])/;
 const TEST_FILE_LINE = /^\s*\S+_test\.go:\d+:/;
@@ -37,8 +38,10 @@ export function extractFailures(log, cap = MAX_LINES) {
 const firstFailingTest = (lines, jobs) =>
   lines.find((l) => l.startsWith("--- FAIL"))?.replace(/^--- FAIL:\s*(\S+).*/, "$1") ?? lines[0] ?? jobs[0] ?? FAILED_CHECKS;
 
-export function buildStatus({ baseSha, lines, jobs = [], targetUrl }) {
-  const description = `failed in merge queue on main@${baseSha.slice(0, 7)}: ${firstFailingTest(lines, jobs)}`;
+// `note` (timeout wording) leads, so the 140-char cut never drops it.
+export function buildStatus({ baseSha, lines, jobs = [], targetUrl, note }) {
+  const base = `failed in merge queue on main@${baseSha.slice(0, 7)}: ${firstFailingTest(lines, jobs)}`;
+  const description = note ? `${note}; ${base}` : base;
   return { state: "failure", context: CONTEXT, description: description.slice(0, STATUS_MAX), target_url: targetUrl };
 }
 
@@ -49,7 +52,7 @@ const isRemoval = (n) => n.__typename === "RemovedFromMergeQueueEvent";
 const sinceLastPush = (nodes) => nodes.slice(nodes.findLastIndex((n) => PUSHES.has(n.__typename)) + 1);
 export const countAttempts = (nodes) => sinceLastPush(nodes).filter((n) => isRemoval(n) && n.reason === FAILED_CHECKS).length;
 
-export function buildComment({ headSha, baseSha, attempts, failures, runUrls }) {
+export function buildComment({ headSha, baseSha, attempts, failures, runUrls, note }) {
   const jobs = failures
     .map((f) => `### [${f.job}](${f.jobUrl})\n\`\`\`\n${f.lines.join("\n") || "(no failing lines found in the log)"}\n\`\`\``)
     .join("\n\n");
@@ -61,6 +64,7 @@ export function buildComment({ headSha, baseSha, attempts, failures, runUrls }) 
     `- main base of the queue commit: \`${baseSha.slice(0, 7)}\``,
     `- Failed attempts for this head: ${attempts}`,
     `- Runs: ${runUrls.join(", ")}`,
+    ...(note ? ["", `**${note}**`] : []),
     "",
     jobs,
     "",
@@ -75,25 +79,36 @@ const QUERY = `query($owner:String!,$name:String!,$pr:Int!){repository(owner:$ow
 
 export async function report({ api, repo, pr, dryRun = false, eventIndex = -1, eventHeadSha, print = console.log, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   const [owner, name] = repo.split("/");
-  const { pullRequest } = (await api.graphql(QUERY, { owner, name, pr })).repository;
-  let timeline = pullRequest.timelineItems.nodes;
-  if (eventIndex !== -1) {
-    if (!dryRun) throw new Error("replaying an older removal needs --dry-run");
-    timeline = timeline.slice(0, timeline.indexOf(timeline.filter(isRemoval).at(eventIndex)) + 1);
-  }
-  // Fail closed: report only when the removal is the newest timeline item, so no push or later removal followed it.
-  const last = timeline.at(-1);
-  if (!last || !isRemoval(last) || last.reason !== FAILED_CHECKS) return;
-
-  const headSha = pullRequest.headRefOid;
-  if (eventHeadSha && eventHeadSha !== headSha) return;
-  const queueSha = last.beforeCommit.oid;
+  // Fail closed: the removal must be the newest timeline item (no push or later removal followed it) and the head must
+  // still be the one from the event. Re-run after every wait: the PR can move while the queue run finishes.
+  const current = async () => {
+    const { pullRequest } = (await api.graphql(QUERY, { owner, name, pr })).repository;
+    let timeline = pullRequest.timelineItems.nodes;
+    if (eventIndex !== -1) {
+      if (!dryRun) throw new Error("replaying an older removal needs --dry-run");
+      timeline = timeline.slice(0, timeline.indexOf(timeline.filter(isRemoval).at(eventIndex)) + 1);
+    }
+    const last = timeline.at(-1);
+    if (!last || !isRemoval(last) || last.reason !== FAILED_CHECKS) return null;
+    if (eventHeadSha && eventHeadSha !== pullRequest.headRefOid) return null;
+    return { timeline, headSha: pullRequest.headRefOid, queueSha: last.beforeCommit.oid };
+  };
+  let state = await current();
+  if (!state) return;
+  const { queueSha, headSha: startHead } = state;
   const fetchRuns = async () => (await api.get(`/repos/${repo}/actions/runs?event=merge_group&head_sha=${queueSha}&per_page=20`)).workflow_runs;
+  // GitHub can dequeue before the merge_group run exists: an empty list is "not started yet", not "no failure".
+  const settled = (runs) => runs.length > 0 && runs.every((r) => r.status === "completed");
   let allRuns = await fetchRuns();
-  for (let i = 0; i < MAX_POLLS && allRuns.some((r) => r.status !== "completed"); i++) {
+  for (let i = 0; i < MAX_POLLS && !settled(allRuns); i++) {
     await sleep(POLL_MS);
+    state = await current();
+    if (!state || state.queueSha !== queueSha || state.headSha !== startHead) return;
     allRuns = await fetchRuns();
   }
+  const timedOut = !settled(allRuns);
+  const note = !timedOut ? undefined : allRuns.length ? `merge_group run still running after ${WAIT_MIN} min` : `no merge_group run found after ${WAIT_MIN} min`;
+  const { timeline, headSha } = state;
   // A run that is still going after the wait keeps its already-failed jobs.
   const runs = allRuns.filter((r) => r.conclusion === "failure" || r.status !== "completed");
   const failures = [];
@@ -107,12 +122,13 @@ export async function report({ api, repo, pr, dryRun = false, eventIndex = -1, e
   // Queue branch name carries the main SHA the entry was built on.
   const baseSha = runs[0]?.head_branch.match(/pr-\d+-([0-9a-f]{40})$/)?.[1] ?? queueSha;
   const lines = failures.flatMap((f) => f.lines);
-  const runUrls = runs.map((r) => r.html_url);
+  // No run to link: point at the queue commit so the reader can look.
+  const runUrls = runs.length ? runs.map((r) => r.html_url) : timedOut ? [`https://github.com/${repo}/commit/${queueSha}`] : [];
   const comment = buildComment({
-    headSha, baseSha, runUrls, failures,
+    headSha, baseSha, runUrls, failures, note,
     attempts: countAttempts(timeline),
   });
-  const status = buildStatus({ baseSha, lines, jobs: failures.map((f) => f.job), targetUrl: runUrls[0] ?? "" });
+  const status = buildStatus({ baseSha, lines, jobs: failures.map((f) => f.job), targetUrl: runUrls[0] ?? "", note });
 
   if (dryRun) {
     print(`--- sticky comment (PR #${pr}) ---\n${comment}`);
