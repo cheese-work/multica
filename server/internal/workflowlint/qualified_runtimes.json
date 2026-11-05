@@ -1,0 +1,5 @@
+{
+  "codex": [
+    {"version": "0.155.1", "note": "CHE-735: X99 runtime qualified for workspace-write"}
+  ]
+}
