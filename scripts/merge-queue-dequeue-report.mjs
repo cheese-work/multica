@@ -115,10 +115,30 @@ export async function report({ api, repo, pr, dryRun = false, eventIndex = -1, e
   await api.send("POST", `/repos/${repo}/statuses/${headSha}`, status);
 }
 
+const ATTEMPTS = 3;
+const MAX_WAIT_MS = 10 * 60 * 1000;
+const FALLBACK_WAIT_MS = 60 * 1000;
+const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const isRateLimit = (stderr) => /rate limit/i.test(stderr) && /HTTP (403|429)/.test(stderr);
+
+export class RateLimitError extends Error {}
+
+// Wait until the core limit resets (cap 10 min); if the reset time is unreadable, wait a fixed minute.
+const waitForReset = () => {
+  const r = spawnSync("gh", ["api", "rate_limit", "-q", ".resources.core.reset"], { encoding: "utf8" });
+  const reset = Number(r.stdout);
+  sleep(r.status === 0 && Number.isFinite(reset) ? Math.min(Math.max(reset * 1000 - Date.now(), 0), MAX_WAIT_MS) : FALLBACK_WAIT_MS);
+};
+
 const gh = (args, input) => {
-  const r = spawnSync("gh", args, { input, encoding: "utf8", maxBuffer: 1 << 28 });
-  if (r.status !== 0) throw new Error(`gh ${args.join(" ")} failed: ${r.stderr}`);
-  return r.stdout;
+  for (let attempt = 1; ; attempt++) {
+    const r = spawnSync("gh", args, { input, encoding: "utf8", maxBuffer: 1 << 28 });
+    if (r.status === 0) return r.stdout;
+    const message = `gh ${args.join(" ")} failed: ${r.stderr}`;
+    if (!isRateLimit(r.stderr)) throw new Error(message);
+    if (attempt === ATTEMPTS) throw Object.assign(new RateLimitError(message), { call: args[1] });
+    waitForReset();
+  }
 };
 
 export const ghApi = {
@@ -132,5 +152,12 @@ export const ghApi = {
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const arg = (k) => (process.argv.includes(k) ? process.argv[process.argv.indexOf(k) + 1] : undefined);
-  await report({ api: ghApi, repo: arg("--repo"), pr: Number(arg("--pr")), dryRun: process.argv.includes("--dry-run"), eventHeadSha: arg("--head-sha"), eventIndex: Number(arg("--event") ?? -1) });
+  const pr = Number(arg("--pr"));
+  try {
+    await report({ api: ghApi, repo: arg("--repo"), pr, dryRun: process.argv.includes("--dry-run"), eventHeadSha: arg("--head-sha"), eventIndex: Number(arg("--event") ?? -1) });
+  } catch (e) {
+    // Advisory report: a GitHub rate limit is infrastructure, not a PR fault, so it must not paint the PR red.
+    if (!(e instanceof RateLimitError)) throw e;
+    console.log(`::warning::merge-queue dequeue report skipped for PR #${pr}: GitHub rate limit persisted after ${ATTEMPTS} attempts on gh api ${e.call}`);
+  }
 }
