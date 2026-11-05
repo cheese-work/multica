@@ -104,6 +104,9 @@ type providerFailureRecoveryAttempt struct {
 	Scope        providerFailureRecoveryScope
 	SkipReason   string
 	ReturnOwner  bool
+	// Cap is set when the reservation was refused by a recovery cap. The caller
+	// sends the notice after its transaction outcome (notifyProviderFailureAttemptCap).
+	Cap *providerFailureOwnerDecision
 }
 
 func providerTriggerConditionKey(payload []byte) string {
@@ -239,13 +242,20 @@ func (s *TaskService) notifyProviderFailureOwner(
 		)
 		return
 	}
-	if rows != 1 || s.Bus == nil {
+	if rows == 1 {
+		s.publishProviderFailureNotice(ctx, q, attempt.FailedTaskID, workspaceID)
+	}
+}
+
+// publishProviderFailureNotice announces a freshly inserted notice to its recipient.
+func (s *TaskService) publishProviderFailureNotice(ctx context.Context, q *db.Queries, failedTaskID, workspaceID pgtype.UUID) {
+	if s.Bus == nil {
 		return
 	}
-	item, err := q.GetInboxItem(ctx, attempt.FailedTaskID)
+	item, err := q.GetInboxItem(ctx, failedTaskID)
 	if err != nil {
 		slog.Warn("provider recovery owner notice readback failed",
-			"failed_task_id", util.UUIDToString(attempt.FailedTaskID),
+			"failed_task_id", util.UUIDToString(failedTaskID),
 			"error", err,
 		)
 		return
@@ -294,6 +304,14 @@ func (s *TaskService) reserveProviderFailureRecovery(ctx context.Context, q *db.
 	if latest == nil || latest.ID != attempt.FailedTaskID || latest.Status != "failed" || !latest.FailureReason.Valid || latest.FailureReason.String != "agent_error.provider_server_error" || latest.IsRecovery {
 		return false, nil
 	}
+	decision, err := resolveProviderFailureOwner(ctx, q, attempt.FailedTaskID)
+	if err != nil {
+		return false, err
+	}
+	if decision.Capped() {
+		attempt.Cap = &decision
+		return false, nil
+	}
 	rows, err := q.RecordProviderFailureRecovery(ctx, db.RecordProviderFailureRecoveryParams{
 		FailedTaskID:     attempt.FailedTaskID,
 		TriggerKind:      attempt.Scope.Kind,
@@ -312,11 +330,11 @@ func (s *TaskService) reserveProviderFailureRecovery(ctx context.Context, q *db.
 	return rows == 1, nil
 }
 
-// reserveProviderFailureRecoveryAndApply runs the reservation and apply inside
+// applyProviderFailureReservation runs the reservation and apply inside
 // one savepoint of the caller's transaction. A failed apply or a refused
 // duplicate effect rolls back only the savepoint, so the caller's own writes
 // and transaction stay usable; the caller decides whether to roll back.
-func reserveProviderFailureRecoveryAndApply(ctx context.Context, tx pgx.Tx, reservation db.RecordProviderFailureRecoveryParams, apply func(context.Context, pgx.Tx) error) (bool, error) {
+func applyProviderFailureReservation(ctx context.Context, tx pgx.Tx, reservation db.RecordProviderFailureRecoveryParams, apply func(context.Context, pgx.Tx) error) (bool, error) {
 	if tx == nil {
 		return false, errors.New("provider failure recovery reservation requires a transaction")
 	}
