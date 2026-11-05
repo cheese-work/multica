@@ -238,7 +238,7 @@ func TestResolveSkillBundleHTTP2SlowDownloadUsesContextDeadline(t *testing.T) {
 // before the TLS and HTTP/2 handshake completes (CHE-4008).
 func slowConnectionSetup(t *testing.T, client *http.Client, delay time.Duration) {
 	t.Helper()
-	transport := client.Transport.(*http.Transport) //nolint:errcheck // newHTTP2TestClient installs an *http.Transport
+	transport := client.Transport.(*http.Transport)
 	var dialer net.Dialer
 	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 		select {
