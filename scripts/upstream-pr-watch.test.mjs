@@ -216,6 +216,32 @@ test('delivery failure: nothing is committed, the next run retries from the save
   assert.equal(third.dispatched.length, 0);
 });
 
+test('an undeliverable issue does not stop other rows: they are polled and delivered, the stuck one is retried', async () => {
+  const OTHER = '| multica-ai/multica#11 | CHE-2 | aaa | open | 2026-11-01T00:00:00Z | - | - |';
+  const md = ledgerOf(`${OPEN}\n${OTHER}`);
+  const both = (over) => ({ ...world(over), ...Object.fromEntries(Object.entries(world(over)).map(([k, v]) => [k.replace('10', '11'), v])) });
+  const w = both({ [REVIEWS]: { etag: 'r2', body: [review()] } });
+  const sent = [];
+  const deliver = async (issue, text, key) => { if (issue === 'CHE-1') throw new Error('not assigned to an agent'); sent.push({ issue, key }); };
+  const first = await run(w, { md, deliver });
+  assert.equal(first.ok, false);
+  assert.deepEqual(sent.map((d) => d.issue), ['CHE-2']);
+  assert.deepEqual(first.saved.pending.map((p) => p.pr), [PR]);
+  assert.ok(first.saved.rows['multica-ai/multica#11']);
+  assert.match(first.saved.stale.error, /not assigned to an agent/);
+  // Next run: #10 is still stuck in the outbox, yet #11's new review is polled and delivered.
+  const second = await run(both({ [REVIEWS]: { etag: 'r3', body: [review(), review({ id: 9, body: 'second round', submitted_at: '2026-11-01T12:00:00Z' })] } }), { ...again(first), md, deliver });
+  assert.equal(second.ok, false);
+  assert.equal(sent.length, 2);
+  assert.match(second.saved.stale.error, /multica-ai\/multica#10: delivery failed/);
+  assert.equal(second.saved.pending.length, 1);
+  assert.equal(second.calls.filter((c) => c.includes('/10') || c.includes('issues/10')).length, 0);
+  const fixed = await run(both(), { ...again(second), md });
+  assert.equal(fixed.ok, true);
+  assert.equal(fixed.saved.pending.length, 0);
+  assert.equal(fixed.saved.stale, undefined);
+});
+
 test('a crash after delivery but before the commit re-sends with the same key (deliver dedupes)', async () => {
   const w = world({ [REVIEWS]: { etag: 'r2', body: [review()] } });
   const keys = [];

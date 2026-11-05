@@ -174,25 +174,27 @@ export async function watch({ md, state, now, self, get, deliver, save }) {
     if (next) state.prs[pr] = next;
   };
 
-  // A delivery that failed (or was cut short) earlier goes first, exactly as saved.
-  while (state.pending.length) {
-    const p = state.pending[0];
+  // A delivery that failed (or was cut short) earlier goes first, exactly as saved. A delivery
+  // that fails again stays in the outbox and marks monitoring stale; it never stops other rows.
+  const stuck = [];
+  for (const p of state.pending) {
     try {
       await deliver(p.issue, p.text, p.key);
     } catch (error) {
-      state.stale = { since: state.stale?.since ?? now.toISOString(), error: `${p.pr}: delivery failed: ${error.message}` };
-      persist();
-      return { ok: false, state };
+      errors.push(`${p.pr}: delivery failed: ${error.message}`);
+      stuck.push(p);
+      continue;
     }
     commit(p);
-    state.pending.shift();
+    state.pending = state.pending.filter((q) => q !== p);
     persist();
   }
+  state.pending = stuck;
 
   for (const ledgerRow of parseLedger(md).rows) {
     const row = effective(ledgerRow, state.rows[ledgerRow.pr]);
     const live = row.state === 'open' || (row.state === 'merged upstream' && REF.test(row.convergence));
-    if (!live) continue;
+    if (!live || state.pending.some((p) => p.pr === row.pr)) continue;
     try {
       const prev = { pages: {}, seen: [], ...state.prs[row.pr] };
       const result = row.state === 'open' ? await pollOpen(row, prev, { get, now, self: norm }) : await pollIntegration(row, { get, now });

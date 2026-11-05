@@ -16,7 +16,7 @@ Add a row when Cheese approves a new upstream PR (scope A, once per PR).
 
 ## Run
 
-Owner: the `congvc` user on X99. Unit files are in `deploy/upstream-watch/`; installed copies live in `~/.config/systemd/user/` (`upstream-pr-watch.timer`, every 15 minutes, `Persistent=true`; linger is on). `run.sh` is installed to `~/.local/share/upstream-pr-watch/`; it keeps a private checkout of `UPSTREAM_WATCH_REF` (default `main`), so ledger edits take effect after they merge.
+Owner: the `congvc` user on X99. Unit files are in `deploy/upstream-watch/`; installed copies live in `~/.config/systemd/user/` (`upstream-pr-watch.timer`, every 15 minutes, `Persistent=true`; linger is on). `run.sh` is installed to `~/.local/share/upstream-pr-watch/`; it keeps a private checkout and runs `main`. `UPSTREAM_WATCH_REF` (a systemd drop-in) pins another branch only until `main` carries `scripts/upstream-pr-watch.mjs`, or while that branch still exists; after the watcher PR lands, or if the branch is deleted, `run.sh` uses `main` by itself, so ledger rows merged to `main` are picked up without touching the unit.
 
 ```
 install -m755 deploy/upstream-watch/run.sh ~/.local/share/upstream-pr-watch/run.sh
