@@ -185,7 +185,7 @@ func (service *TaskService) UpdateProject(ctx context.Context, workspaceID pgtyp
 	return project, nil
 }
 
-func (service *IssueWakeupService) settleInactiveProjectRule(ctx context.Context, tx pgx.Tx, queries *db.Queries, rule db.IssueWakeup) error {
+func (s *IssueWakeupService) settleInactiveProjectRule(ctx context.Context, tx pgx.Tx, queries *db.Queries, rule db.IssueWakeup) error {
 	if err := queries.DiscardWakeupReceipts(ctx, rule.ID); err != nil {
 		return err
 	}
@@ -194,7 +194,7 @@ func (service *IssueWakeupService) settleInactiveProjectRule(ctx context.Context
 		return err
 	}
 	if len(rule.Condition) > 0 {
-		if err := service.baselineCondition(ctx, tx, queries, rule, now); err != nil {
+		if err := s.baselineCondition(ctx, tx, queries, rule, now); err != nil {
 			return err
 		}
 	} else if rule.Kind == "at" && rule.NextFireAt.Valid && !rule.NextFireAt.Time.After(now) {
@@ -207,20 +207,20 @@ func (service *IssueWakeupService) settleInactiveProjectRule(ctx context.Context
 	return queries.NoteWakeupFailure(ctx, db.NoteWakeupFailureParams{ID: rule.ID, LastError: pgtype.Text{String: ErrProjectInactive.Error(), Valid: true}})
 }
 
-func (service *IssueWakeupService) settleInactiveProject(ctx context.Context, previous db.IssueWakeup) (bool, error) {
-	status, err := service.Tasks.Queries.GetIssueProjectStatus(ctx, previous.IssueID)
+func (s *IssueWakeupService) settleInactiveProject(ctx context.Context, previous db.IssueWakeup) (bool, error) {
+	status, err := s.Tasks.Queries.GetIssueProjectStatus(ctx, previous.IssueID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil || !ProjectInactive(status) {
 		return false, err
 	}
-	tx, err := service.Tasks.TxStarter.Begin(ctx)
+	tx, err := s.Tasks.TxStarter.Begin(ctx)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback(ctx)
-	queries := service.Tasks.Queries.WithTx(tx)
+	queries := s.Tasks.Queries.WithTx(tx)
 	if _, err := queries.LockWorkspaceForChatSessionCreate(ctx, previous.WorkspaceID); err != nil {
 		return false, err
 	}
@@ -235,7 +235,7 @@ func (service *IssueWakeupService) settleInactiveProject(ctx context.Context, pr
 	if rule.Revision != previous.Revision {
 		return true, tx.Commit(ctx)
 	}
-	if err := service.settleInactiveProjectRule(ctx, tx, queries, rule); err != nil {
+	if err := s.settleInactiveProjectRule(ctx, tx, queries, rule); err != nil {
 		return false, err
 	}
 	return true, tx.Commit(ctx)

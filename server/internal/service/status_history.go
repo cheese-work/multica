@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -15,6 +16,16 @@ import (
 // StatusCauseUIOrAPI is the cause of a status move a person or client made
 // through the issue API.
 const StatusCauseUIOrAPI = "ui_or_api"
+
+// StatusCauseTaskReset is the cause of the background move that returns a
+// stuck in_progress issue to todo after its run failed.
+const StatusCauseTaskReset = "task_reset"
+
+// StatusCauseWorkflowRemap is the cause of a status move a workflow edit or a
+// project workflow switch made to fit an issue to the new workflow. It is the
+// platform's administrative move, never a person's: it opens no run-budget
+// window.
+const StatusCauseWorkflowRemap = "workflow_remap"
 
 // Causes of the background writers that move a status without a request:
 // a merged PR (auto-complete or the GitHub merge hook) and a Qoder Cloud run.
@@ -96,6 +107,33 @@ func RecordStatusChange(ctx context.Context, qtx *db.Queries, issue db.Issue, fr
 		Action:      "status_changed",
 		Details:     body,
 	})
+}
+
+// ResetIssueForFailedTask moves an issue whose run failed back to todo and
+// records the move, both with q. Callers with a transaction pass its queries so
+// the row commits with the status.
+func ResetIssueForFailedTask(ctx context.Context, q *db.Queries, issue db.Issue, task db.AgentTaskQueue) (db.Issue, db.ActivityLog, error) {
+	updated, err := q.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+		SourceTaskID: task.ID,
+		ID:           issue.ID,
+		Status:       "todo",
+		WorkspaceID:  issue.WorkspaceID,
+	})
+	if err != nil {
+		return db.Issue{}, db.ActivityLog{}, err
+	}
+	row, err := RecordStatusChange(ctx, q, updated, issue.Status, updated.Status, StatusTrigger{
+		Cause: StatusCause{
+			Kind: StatusCauseTaskReset,
+			By:   StatusCauseActor{Type: "system"},
+			Ref:  map[string]string{"run_id": util.UUIDToString(task.ID)},
+		},
+		Channel: "unknown",
+	}, nil)
+	if err != nil {
+		return db.Issue{}, db.ActivityLog{}, fmt.Errorf("record status change: %w", err)
+	}
+	return updated, row, nil
 }
 
 // ResolveStatusTrigger stamps the trigger version and checks the handoff

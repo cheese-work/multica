@@ -22,6 +22,7 @@ const (
 	ctxKeyDaemonAuthPath
 	ctxKeyDaemonTokenHash
 	ctxKeyDaemonTokenOwnerID
+	ctxKeySessionRecheck
 )
 
 // Daemon auth path labels exposed via context for slow-log attribution.
@@ -50,6 +51,14 @@ func DaemonIDFromContext(ctx context.Context) string {
 func DaemonAuthPathFromContext(ctx context.Context) string {
 	p, _ := ctx.Value(ctxKeyDaemonAuthPath).(string)
 	return p
+}
+
+// DaemonSessionRecheckFromContext returns the check a long-lived connection
+// runs to learn that the JWT behind it was revoked after it connected. Nil for
+// every credential but a JWT.
+func DaemonSessionRecheckFromContext(ctx context.Context) func(context.Context) error {
+	f, _ := ctx.Value(ctxKeySessionRecheck).(func(context.Context) error)
+	return f
 }
 
 // WithDaemonContext returns a new context with the daemon workspace ID and daemon ID set.
@@ -337,11 +346,16 @@ func DaemonAuth(queries *db.Queries, patCache *auth.PATCache, daemonCache *auth.
 			if rejectTemporarilyDisabledUser(w, r, sub, email, DaemonAuthPathJWT) {
 				return
 			}
-			if !checkSessionGeneration(w, r, claims, queries, true) {
+			// A daemon route claims work and opens sockets for the JWT's owner,
+			// so it reads the stored generation, not the 30 s cache.
+			if !checkSessionGeneration(w, r, claims, queries, false) {
 				return
 			}
 			r.Header.Set("X-User-ID", sub)
 			ctx := context.WithValue(r.Context(), ctxKeyDaemonAuthPath, DaemonAuthPathJWT)
+			ctx = context.WithValue(ctx, ctxKeySessionRecheck, func(c context.Context) error {
+				return auth.CheckSessionGeneration(c, queries, claims, false)
+			})
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
