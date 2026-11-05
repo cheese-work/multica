@@ -18,6 +18,8 @@
     "./issue-views": "./issue-views/index.ts",
     "./issues/components": "./issues/components/index.ts",
     "./issues/components/issues-page": "./issues/components/issues-page.tsx",
+    "./issues/components/status-icon": "./issues/components/status-icon.tsx",
+    "./issues/components/priority-icon": "./issues/components/priority-icon.tsx",
     "./issues/hooks": "./issues/hooks/index.ts",
     "./issues/utils/filter": "./issues/utils/filter.ts",
     "./issues/utils/sort": "./issues/utils/sort.ts",

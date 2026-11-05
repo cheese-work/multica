@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -619,7 +620,7 @@ func TestProjectWorkflowSetMappingRequiredPrintsFullPlanJSON(t *testing.T) {
 	out, err := captureStdout(t, func() error {
 		return runProjectWorkflowSet(cmd, []string{testProjectUUID, testWorkflowUUID})
 	})
-	if err != errSilent {
+	if !errors.Is(err, errSilent) {
 		t.Fatalf("err = %v, want errSilent so the command exits non-zero without printing twice", err)
 	}
 	var got map[string]any
@@ -649,7 +650,7 @@ func TestWorkflowUpdateMappingRequiredPrintsPlanTable(t *testing.T) {
 	out, err := captureStdout(t, func() error {
 		return runWorkflowUpdate(cmd, []string{testWorkflowUUID})
 	})
-	if err != errSilent {
+	if !errors.Is(err, errSilent) {
 		t.Fatalf("err = %v, want errSilent", err)
 	}
 	for _, want := range []string{"qa", "in_review", "blocked", "todo"} {
@@ -670,7 +671,7 @@ func TestProjectWorkflowSetOtherConflictKeepsDefaultError(t *testing.T) {
 	out, err := captureStdout(t, func() error {
 		return runProjectWorkflowSet(cmd, []string{testProjectUUID, "default"})
 	})
-	if err == nil || err == errSilent {
+	if err == nil || errors.Is(err, errSilent) {
 		t.Fatalf("err = %v, want the HTTP error for the default formatter", err)
 	}
 	if out != "" {
@@ -712,7 +713,7 @@ func TestProjectWorkflowSetMappingRequiredKeepsLargePlan(t *testing.T) {
 	out, err := captureStdout(t, func() error {
 		return runProjectWorkflowSet(cmd, []string{testProjectUUID, testWorkflowUUID})
 	})
-	if err != errSilent {
+	if !errors.Is(err, errSilent) {
 		t.Fatalf("err = %v, want errSilent", err)
 	}
 	var got map[string]any

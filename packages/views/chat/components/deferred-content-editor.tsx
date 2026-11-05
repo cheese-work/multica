@@ -91,9 +91,10 @@ export const DeferredContentEditor = forwardRef<ContentEditorRef, DeferredConten
         blur: () => inner.current?.blur(),
         hasActiveUploads: () => inner.current?.hasActiveUploads() ?? false,
         flushPendingUpdate: () => inner.current?.flushPendingUpdate() ?? null,
-        flagMentions: (ids) => inner.current?.flagMentions(ids),
         insertUploadPlaceholder: (upload) => inner.current?.insertUploadPlaceholder(upload) ?? false,
         settleUploadPlaceholder: (id, result) => inner.current?.settleUploadPlaceholder(id, result) ?? false,
+        // The stand-in is plain text with no mention chips, so there is nothing to flag before the editor loads.
+        flagMentions: (ids) => inner.current?.flagMentions(ids),
         focus: () => whenReady((e) => e.focus()),
         focusAtCoords: (coords) => whenReady((e) => e.focusAtCoords(coords)),
         focusAtAnchor: (anchor) => whenReady((e) => e.focusAtAnchor(anchor)),

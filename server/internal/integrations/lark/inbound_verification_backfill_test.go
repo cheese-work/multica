@@ -3,6 +3,7 @@ package lark
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -256,14 +257,14 @@ func TestLegacyReceiptRolloutBounds(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err = backfillLegacyInboundReceipts(ctx, store)
-	if err != context.Canceled || calls != legacyReceiptMaxBatches {
+	if !errors.Is(err, context.Canceled) || calls != legacyReceiptMaxBatches {
 		t.Fatal("cancellation did not stop rollout")
 	}
 	calls = 0
 	failure := context.DeadlineExceeded
 	store = legacyBackfillFunc(func(context.Context, int32) (int64, error) { calls++; return 0, failure })
 	_, err = backfillLegacyInboundReceipts(context.Background(), store)
-	if err != failure || calls != 1 {
+	if !errors.Is(err, failure) || calls != 1 {
 		t.Fatal("retried failed batch without a bound")
 	}
 }
