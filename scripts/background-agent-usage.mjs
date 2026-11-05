@@ -4,8 +4,11 @@
 //   DATABASE_URL=... node scripts/background-agent-usage.mjs [--days 3] [--json]
 //
 // Reply = a completed task. Failed attempts add cost and failover but no reply.
-// USD is what the provider charged (task_usage.cost_usd_ticks, 1e-10 USD); a
-// purpose with no provider-priced task reports null, never 0.
+// USD is what the provider charged (task_usage.cost_usd_ticks, 1e-10 USD), divided by
+// the replies that carry a price; unpriced replies are counted and shown, and a
+// purpose with no priced reply reports null, never 0.
+// The connection reaches psql through PG* environment variables, never argv, and
+// failures print only psql's own message, never the command or the URL.
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
@@ -41,16 +44,19 @@ export function summarize(rows) {
     groups.get(row.purpose).push(row);
   }
   return [...groups].sort(([a], [b]) => a.localeCompare(b)).map(([purpose, tasks]) => {
-    const replies = tasks.filter((t) => t.status === 'completed').length;
+    const done = tasks.filter((t) => t.status === 'completed');
+    const replies = done.length;
+    const pricedReplies = done.filter((t) => Number(t.cost_usd_ticks) > 0).length;
     const ticks = tasks.reduce((sum, t) => sum + Number(t.cost_usd_ticks), 0);
     return {
       purpose,
       tasks: tasks.length,
       replies,
+      unpricedReplies: replies - pricedReplies,
       failed: tasks.filter((t) => t.status === 'failed').length,
       claimSeconds: stats(tasks.map((t) => seconds(t.created_at, t.dispatched_at ?? t.started_at))),
       runSeconds: stats(tasks.map((t) => seconds(t.started_at, t.completed_at))),
-      usdPer100Replies: ticks > 0 && replies > 0 ? (ticks / TICKS_PER_USD / replies) * 100 : null,
+      usdPer100Replies: ticks > 0 && pricedReplies > 0 ? (ticks / TICKS_PER_USD / pricedReplies) * 100 : null,
     };
   });
 }
@@ -59,21 +65,51 @@ const cell = (s) => (s ? `${s.p50}/${s.p95}` : '-');
 
 export function renderReport(groups) {
   const lines = groups.map((g) => [
-    g.purpose.padEnd(18), String(g.tasks).padEnd(6), String(g.replies).padEnd(8), String(g.failed).padEnd(7),
+    g.purpose.padEnd(18), String(g.tasks).padEnd(6), String(g.replies).padEnd(8), String(g.unpricedReplies).padEnd(9), String(g.failed).padEnd(7),
     cell(g.claimSeconds).padEnd(11), cell(g.runSeconds).padEnd(11),
     g.usdPer100Replies === null ? 'n/a' : g.usdPer100Replies.toFixed(2),
   ].join(' '));
-  const head = ['purpose'.padEnd(18), 'tasks'.padEnd(6), 'replies'.padEnd(8), 'failed'.padEnd(7),
+  const head = ['purpose'.padEnd(18), 'tasks'.padEnd(6), 'replies'.padEnd(8), 'unpriced'.padEnd(9), 'failed'.padEnd(7),
     'claim p50/95'.padEnd(11), 'run p50/95'.padEnd(11), 'USD/100'].join(' ');
   return [head, ...lines].join('\n') + '\n';
+}
+
+const run = promisify(execFile);
+
+// psql reads the connection from PG* variables, so the URL never appears in argv
+// (visible in `ps`) or in an execFile error message.
+export async function queryRows(databaseUrl, days, exec = run) {
+  let url;
+  try {
+    url = new URL(databaseUrl);
+  } catch {
+    throw new Error('DATABASE_URL is not a valid connection URL');
+  }
+  const env = { ...process.env };
+  for (const k of Object.keys(env)) if (k.startsWith('PG')) delete env[k];
+  Object.assign(env, {
+    PGHOST: url.hostname,
+    PGPORT: url.port,
+    PGUSER: decodeURIComponent(url.username),
+    PGPASSWORD: decodeURIComponent(url.password),
+    PGDATABASE: decodeURIComponent(url.pathname.slice(1)),
+    PGSSLMODE: url.searchParams.get('sslmode') ?? '',
+  });
+  for (const k of Object.keys(env)) if (env[k] === '' && k.startsWith('PG')) delete env[k];
+  try {
+    const { stdout } = await exec('psql', ['-At', '-c', QUERY(days)], { env });
+    return JSON.parse(stdout);
+  } catch (e) {
+    const detail = String(e.stderr ?? '').trim().split('\n').pop();
+    throw new Error(`psql failed${detail ? `: ${detail}` : ''}`);
+  }
 }
 
 async function main(argv) {
   const days = argv.includes('--days') ? argv[argv.indexOf('--days') + 1] : '3';
   if (!/^\d+$/.test(days)) throw new Error('--days must be a whole number');
   if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required');
-  const { stdout } = await promisify(execFile)('psql', [process.env.DATABASE_URL, '-At', '-c', QUERY(days)]);
-  const groups = summarize(JSON.parse(stdout));
+  const groups = summarize(await queryRows(process.env.DATABASE_URL, days));
   process.stdout.write(argv.includes('--json') ? `${JSON.stringify(groups, null, 2)}\n` : renderReport(groups));
 }
 
