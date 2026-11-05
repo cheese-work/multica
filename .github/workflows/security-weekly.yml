@@ -177,6 +177,9 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - name: Find the latest qualified image digests
         # cd-qualification.yml publishes backend/web to GHCR and records their digests in cd-build-evidence-<sha> (30 days).
         # This job only pulls manifests to scan them: nothing is built here.

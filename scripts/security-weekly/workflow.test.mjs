@@ -84,3 +84,11 @@ test("the recipient file is a PGP public key, never a private one", () => {
 test("filing issues needs credentials the scan must not hold: no apply step in the workflow", () => {
   assert.doesNotMatch(wf, /--apply|multica issue create/);
 });
+
+test("every job that seals checks out the repo first (seal.sh lives in the tree)", () => {
+  const jobs = wf.split(/^  (?=[a-z-]+:\n    runs-on:)/m).slice(1);
+  assert.ok(jobs.length >= 6);
+  for (const j of jobs) {
+    if (j.includes("seal.sh")) assert.match(j, /uses: actions\/checkout@/, j.split("\n")[0]);
+  }
+});
