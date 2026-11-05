@@ -64,6 +64,7 @@ func (ask Ask) WithExcerpts(load func(commentID string) (string, error)) (Ask, e
 	}
 	ask.ContextELI10, ask.Decision, ask.StakesIfWrong = add(ask.ContextELI10), add(ask.Decision), add(ask.StakesIfWrong)
 	ask.Recommendation, ask.DefaultIfNoReply = add(ask.Recommendation), add(ask.DefaultIfNoReply)
+	ask.WhyHuman, ask.DoneWhen, ask.Steps = add(ask.WhyHuman), add(ask.DoneWhen), mapStrings(ask.Steps, add)
 	ask.Options = slices.Clone(ask.Options)
 	for index, option := range ask.Options {
 		option.Label, option.WhatHappens, option.CostOrTime = add(option.Label), add(option.WhatHappens), add(option.CostOrTime)

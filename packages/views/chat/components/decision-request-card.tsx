@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { Suspense, useEffect, useId, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Loader2, MessageSquareQuote } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
@@ -9,7 +9,10 @@ import { useWorkspacePaths } from "@multica/core/paths";
 import { formatShortcut, useShortcut } from "@multica/core/shortcuts";
 import type { DecisionRequestCard as RequestCard } from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
-import { ContentEditor, useEditorUpload, useUploadGate, type ContentEditorRef } from "../../editor";
+import type { ContentEditorRef } from "../../editor/content-editor";
+import { useEditorUpload } from "../../editor/use-editor-upload";
+import { useUploadGate } from "../../editor/use-upload-gate";
+import { LazyContentEditor as ContentEditor } from "./lazy-content-editor";
 import { RichContent } from "../../rich-content";
 import { useT } from "../../i18n";
 import { AppLink } from "../../navigation";
@@ -118,19 +121,21 @@ function DecisionAnswerForm({
         {card.options?.length ? t(($) => $.decision.answer_note) : t(($) => $.decision.answer_text)}
       </span>
       <div className="rounded-lg border border-surface-border px-2 py-1.5 focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-ring">
-        <ContentEditor
-          ref={editorRef}
-          defaultValue={text}
-          ariaLabel={card.options?.length ? t(($) => $.decision.answer_note) : t(($) => $.decision.answer_text)}
-          ariaDescribedBy={`${textId}-hint`}
-          onUpdate={setText}
-          onSubmit={send}
-          onUploadFile={(file) => uploadWithToast(file, { issueId: card.issue_id })}
-          onUploadingChange={uploadGate.onUploadingChange}
-          debounceMs={0}
-          showBubbleMenu={false}
-          className="max-h-60 overflow-y-auto"
-        />
+        <Suspense fallback={null}>
+          <ContentEditor
+            ref={editorRef}
+            defaultValue={text}
+            ariaLabel={card.options?.length ? t(($) => $.decision.answer_note) : t(($) => $.decision.answer_text)}
+            ariaDescribedBy={`${textId}-hint`}
+            onUpdate={setText}
+            onSubmit={send}
+            onUploadFile={(file) => uploadWithToast(file, { issueId: card.issue_id })}
+            onUploadingChange={uploadGate.onUploadingChange}
+            debounceMs={0}
+            showBubbleMenu={false}
+            className="max-h-60 overflow-y-auto"
+          />
+        </Suspense>
       </div>
       <p id={`${textId}-hint`} className="text-caption text-muted-foreground">
         {t(($) => $.decision.answer_hint, { shortcut: sendShortcut })}

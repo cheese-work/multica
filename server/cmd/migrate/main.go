@@ -144,8 +144,15 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
+	"893_issue_search_text_title_trgm_idx":                      "idx_issue_search_text_title_trgm",
+	"894_issue_search_text_description_trgm_idx":                "idx_issue_search_text_description_trgm",
+	"895_comment_search_text_content_trgm_idx":                  "idx_comment_search_text_content_trgm",
+	"937_system1_observation_decision_subject_idx":              "system1_observation_decision_subject",
+	"938_system1_observation_precedent_idx":                     "system1_observation_precedent",
+	"939_system1_observation_routing_subject_idx":               "system1_observation_routing_subject",
 	"888_issue_search_text_workspace_idx":                       "idx_issue_search_text_workspace",
 	"889_comment_search_text_workspace_idx":                     "idx_comment_search_text_workspace",
+	"906_ask_guard_event_operation_key":                         "idx_ask_guard_event_operation_key",
 	"865_idx_recovery_claim_workspace_issue":                    "recovery_claim_workspace_issue_idx",
 	"864_idx_recovery_claim_failed_task":                        "recovery_claim_failed_task_idx",
 	"861_agent_task_event_index":                                "idx_agent_task_event_ws_runtime_at",
@@ -243,6 +250,8 @@ var concurrentIndexCleanups = map[string]string{
 	"587_wakeup_aggregate_reservation_identity_index":           "wakeup_aggregate_reservation_identity_idx",
 	"588_wakeup_aggregate_reservation_window_index":             "wakeup_aggregate_reservation_window_idx",
 	"589_wakeup_aggregate_blocked_index":                        "issue_wakeup_aggregate_blocked_idx",
+	"923_dm_progress_follow_issue_lineage_idx":                  "idx_dm_progress_follow_issue_lineage",
+	"924_dm_progress_follow_lineage_idx":                        "idx_dm_progress_follow_lineage",
 	"591_wakeup_aggregate_reservation_age_index":                "wakeup_aggregate_reservation_age_idx",
 	"632_wakeup_scoped_event_id_index":                          "wakeup_scoped_event_id_idx",
 	"633_wakeup_scoped_event_pending_index":                     "wakeup_scoped_event_pending_idx",

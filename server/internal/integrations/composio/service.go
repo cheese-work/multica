@@ -238,7 +238,7 @@ func toolkitLogoURL(slug, upstreamLogoURL string) string {
 //
 // The composio_user_id sent to Composio is the Multica user id verbatim — the
 // invariant the rest of the integration relies on.
-func (s *Service) BeginConnect(ctx context.Context, userID pgtype.UUID, toolkitSlug string) (string, error) {
+func (s *Service) BeginConnect(ctx context.Context, userID pgtype.UUID, toolkitSlug, origin string) (string, error) {
 	slug := strings.ToLower(strings.TrimSpace(toolkitSlug))
 	authConfigID, err := s.authConfigForToolkit(ctx, slug)
 	if err != nil {
@@ -256,6 +256,7 @@ func (s *Service) BeginConnect(ctx context.Context, userID pgtype.UUID, toolkitS
 		UserID:       composioUserID,
 		ToolkitSlug:  slug,
 		AuthConfigID: authConfigID,
+		Origin:       origin,
 		Exp:          s.now().Add(s.stateTTL).Unix(),
 	})
 	if err != nil {
@@ -285,23 +286,23 @@ func (s *Service) BeginConnect(ctx context.Context, userID pgtype.UUID, toolkitS
 //
 // Idempotency: the upsert is keyed on (user_id, connected_account_id), so a
 // duplicate callback re-activates the same row instead of creating a second.
-func (s *Service) CompleteCallback(ctx context.Context, state, status, connectedAccountID string) (string, error) {
+func (s *Service) CompleteCallback(ctx context.Context, state, status, connectedAccountID string) (slug, origin string, err error) {
 	claims, err := verifyState(s.secret, state, s.now())
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	if !strings.EqualFold(strings.TrimSpace(status), "success") {
 		// Honor the state for the redirect slug, but do not write an active row.
-		return claims.ToolkitSlug, ErrConnectNotSuccessful
+		return claims.ToolkitSlug, claims.Origin, ErrConnectNotSuccessful
 	}
 	if strings.TrimSpace(connectedAccountID) == "" {
-		return claims.ToolkitSlug, errors.New("composio: callback missing connected_account_id")
+		return claims.ToolkitSlug, claims.Origin, errors.New("composio: callback missing connected_account_id")
 	}
 
 	userID, err := util.ParseUUID(claims.UserID)
 	if err != nil {
-		return claims.ToolkitSlug, fmt.Errorf("composio: state has invalid user id: %w", err)
+		return claims.ToolkitSlug, claims.Origin, fmt.Errorf("composio: state has invalid user id: %w", err)
 	}
 
 	// The auth_config_id was resolved at BeginConnect and signed into the state,
@@ -321,7 +322,7 @@ func (s *Service) CompleteCallback(ctx context.Context, state, status, connected
 	// composio_user_id == multica user id invariant) and was created under the
 	// toolkit's auth config. Any mismatch fails closed with ErrAccountVerification.
 	if err := s.verifyAccountOwnership(ctx, connectedAccountID, claims.UserID, authConfigID); err != nil {
-		return claims.ToolkitSlug, err
+		return claims.ToolkitSlug, claims.Origin, err
 	}
 
 	if _, err := s.store.UpsertUserComposioConnection(ctx, db.UpsertUserComposioConnectionParams{
@@ -332,9 +333,9 @@ func (s *Service) CompleteCallback(ctx context.Context, state, status, connected
 		// Invariant: composio_user_id == Multica user id.
 		ComposioUserID: claims.UserID,
 	}); err != nil {
-		return claims.ToolkitSlug, fmt.Errorf("composio: upsert connection: %w", err)
+		return claims.ToolkitSlug, claims.Origin, fmt.Errorf("composio: upsert connection: %w", err)
 	}
-	return claims.ToolkitSlug, nil
+	return claims.ToolkitSlug, claims.Origin, nil
 }
 
 // ListConnections returns the user's active connections.
@@ -459,14 +460,14 @@ func (s *Service) CreateMCPSession(ctx context.Context, userID pgtype.UUID) (*MC
 // the Composio tab. The older `/settings/integrations` path was NOT a real
 // route and 404'd after the legacy rewrite. When FrontendBaseURL is unset it
 // returns a site-relative path.
-func (s *Service) CallbackRedirect(slug string, success bool) string {
+func (s *Service) CallbackRedirect(slug string, success bool, origin string) string {
 	var path string
 	if success {
 		path = "/settings?tab=integrations&connected=" + url.QueryEscape(slug)
 	} else {
 		path = "/settings?tab=integrations&error=composio_connect_failed"
 	}
-	return s.frontendURL + path
+	return util.ReturnOrigin(origin, s.frontendURL) + path
 }
 
 // rowToConnection maps a DB row to the API-facing Connection view.

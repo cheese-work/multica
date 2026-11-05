@@ -8,11 +8,10 @@
  * back without prop-drilling through the router. A small Zustand store is
  * the minimum-viable cross-screen channel.
  *
- * Lifecycle: `reset()` runs from `new-issue.tsx` when the user dismisses
- * the modal (either submit succeeds or they cancel) so the next open
- * starts clean. Seed-from-comment params still go through local useState
- * inside the screen (description text is a controlled input that doesn't
- * cross routes); only the attribute-chip values live here.
+ * Lifecycle: `reset()` runs from `new-issue.tsx` after a successful create.
+ * Closing the modal keeps the chips: the screen saves them with the title and
+ * description through `form-drafts-store` and restores them on the next open
+ * (also after an app cold start).
  *
  * Workspace lifecycle: this draft is workspace-scoped (e.g. an `assignee`
  * id only resolves in the workspace whose memberlist seeded it). When the
@@ -22,6 +21,7 @@
  */
 import { useEffect, useRef } from "react";
 import { create } from "zustand";
+import { registerDraftCleanup } from "../draft-persistence";
 import type {
   IssuePriority,
   IssueStatus,
@@ -63,6 +63,9 @@ export const useNewIssueDraftStore = create<NewIssueDraftState>((set) => ({
   setProject: (next) => set({ project: next }),
   reset: () => set({ ...INITIAL }),
 }));
+
+// Logout: the next account must not inherit this account's picker choices.
+registerDraftCleanup(() => useNewIssueDraftStore.getState().reset());
 
 /**
  * Clears the new-issue draft store whenever the active workspace id

@@ -790,9 +790,17 @@ func main() {
 	if h.TelegramOutbound != nil {
 		h.TelegramOutbound.Start(sweepCtx)
 	}
+	// CHE-3418: a malformed GITHUB_ALLOWED_ACCOUNT_IDS must stop startup. It also
+	// installs the refresh pipeline's workspace filter, so it runs before the
+	// workers start.
+	if err := h.ConfigureGitHubAllowlistFromEnv(); err != nil {
+		slog.Error("invalid GitHub allowlist", "error", err)
+		os.Exit(1)
+	}
 	// GitHub PR-card API snapshot pipeline (MUL-5265): worker pool + TTL sweeper.
 	// No-op when unconfigured (no App private key).
 	h.PRRefresh.Start(sweepCtx)
+	go h.BackfillGitHubAccountIDs(sweepCtx)
 	go h.RunGitHubIntakeWorker(sweepCtx)
 	// CHE-2301: relink same-repository PRs the old fork-flag check rejected.
 	go func() {
@@ -858,8 +866,16 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.IssueWakeupJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register issue wakeups", "error", err)
 	}
+	// CHE-1082: the legacy backfill that opens scoped wakeup definition writes.
+	// It runs from the deploy that ships it, so activation needs no manual step.
+	if err := schedulerMgr.Register(scheduler.WakeupDefinitionActivationJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
+		slog.Error("scheduler: register wakeup definition activation", "error", err)
+	}
 	if err := schedulerMgr.Register(scheduler.ChatWakeupJob(&service.ChatWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register chat wakeups", "error", err)
+	}
+	if err := schedulerMgr.Register(scheduler.StageQueueReleaseJob(taskSvc)); err != nil {
+		slog.Error("scheduler: register stage queue release", "error", err)
 	}
 	if err := schedulerMgr.Register(scheduler.ChildEventSweepJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register child-done sweep", "error", err)

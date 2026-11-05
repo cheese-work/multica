@@ -792,6 +792,14 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Same no-FK chore for the DM progress lane this session roots, and its follows.
+	if err := qtx.DeleteDMProgressForLineage(r.Context(), db.DeleteDMProgressForLineageParams{
+		LineageID: session.ID, WorkspaceID: session.WorkspaceID,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete dm progress follows")
+		return
+	}
+
 	// The DM is going away, so the notifications it raised close with it.
 	closedRecords, err := qtx.MarkDMRepliesRead(r.Context(), db.MarkDMRepliesReadParams{ChatSessionID: session.ID, RecipientID: session.CreatorID})
 	if err != nil {
@@ -2219,6 +2227,8 @@ func (h *Handler) hydrateChatSessionChannelMetadata(ctx context.Context, session
 // render the IM-style conversation list (name + snippet + time). nil when the
 // session has no messages yet.
 type ChatLastMessage struct {
+	ID            *string `json:"id,omitempty"`
+	TaskID        *string `json:"task_id,omitempty"`
 	Content       string  `json:"content"`
 	Role          string  `json:"role"`
 	CreatedAt     string  `json:"created_at"`
@@ -2230,11 +2240,13 @@ type ChatLastMessage struct {
 
 // buildChatLastMessage assembles the preview from list-row columns; returns nil
 // when there is no last message (the LEFT JOIN produced a NULL timestamp).
-func buildChatLastMessage(at pgtype.Timestamptz, content, role string, failure pgtype.Text, kind string) *ChatLastMessage {
+func buildChatLastMessage(id, taskID pgtype.UUID, at pgtype.Timestamptz, content, role string, failure pgtype.Text, kind string) *ChatLastMessage {
 	if !at.Valid || kind == protocol.ChatMessageKindOnboardingKickoff {
 		return nil
 	}
 	return &ChatLastMessage{
+		ID:            uuidToPtr(id),
+		TaskID:        uuidToPtr(taskID),
 		Content:       content,
 		Role:          role,
 		CreatedAt:     timestampToString(at),
@@ -2316,7 +2328,7 @@ func chatSessionListRowToResponse(s db.ListChatSessionsByCreatorRow) ChatSession
 		Status:                 s.Status,
 		HasUnread:              s.UnreadCount > 0,
 		UnreadCount:            int(s.UnreadCount),
-		LastMessage:            buildChatLastMessage(s.LastMessageAt, s.LastMessageContent, s.LastMessageRole, s.LastMessageFailureReason, s.LastMessageKind),
+		LastMessage:            buildChatLastMessage(s.LastMessageID, s.LastMessageTaskID, s.LastMessageAt, s.LastMessageContent, s.LastMessageRole, s.LastMessageFailureReason, s.LastMessageKind),
 		Pinned:                 s.PinnedAt.Valid,
 		PresetName:             textToPtr(s.PresetName),
 		CreatedAt:              timestampToString(s.CreatedAt),

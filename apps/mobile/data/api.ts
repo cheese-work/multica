@@ -63,6 +63,7 @@ import type {
   Workspace,
   WorkspaceSubscriptionSummary,
   WorkflowHandoffPreview,
+  ListIssueWorkflowsResponse,
 } from "@multica/core/types";
 import {
   AppConfigSchema,
@@ -76,6 +77,7 @@ import {
   IssueSchema,
   ListIssuesResponseSchema,
   ListIssueStatusesResponseSchema,
+  ListIssueWorkflowsResponseSchema,
   TimelineEntriesSchema,
   WorkflowHandoffPreviewSchema,
   WorkspaceSubscriptionSummarySchema,
@@ -502,12 +504,25 @@ class ApiClient {
   async listWorkspaces(opts?: {
     signal?: AbortSignal;
   }): Promise<Workspace[]> {
+    return (await this.listWorkspacesChecked(opts)).workspaces;
+  }
+
+  /** `validated` is false when the response did not match the schema and the
+   *  empty fallback was returned instead. Only a validated list may be taken
+   *  as the user's real workspaces (draft cleanup relies on it). */
+  async listWorkspacesChecked(opts?: {
+    signal?: AbortSignal;
+  }): Promise<{ workspaces: Workspace[]; validated: boolean }> {
     const raw = await this.fetch<unknown>("/api/workspaces", {
       signal: opts?.signal,
     });
-    return parseWithFallback(raw, WorkspaceListSchema, EMPTY_WORKSPACE_LIST, {
-      endpoint: "listWorkspaces",
-    });
+    const workspaces = parseWithFallback(
+      raw,
+      WorkspaceListSchema,
+      EMPTY_WORKSPACE_LIST,
+      { endpoint: "listWorkspaces" },
+    );
+    return { workspaces, validated: Array.isArray(raw) && workspaces !== EMPTY_WORKSPACE_LIST };
   }
 
   // --- Inbox ---
@@ -1025,6 +1040,28 @@ class ApiClient {
       EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
       { ...opts, endpoint: "GET /api/issue-statuses" },
     );
+  }
+
+  /**
+   * Workspace workflows, for the statuses an issue offers under its project's
+   * or its own workflow (CHE-2822). An empty fallback reads as "unknown": the
+   * status picker then offers the whole catalog and the server still judges.
+   */
+  async listIssueWorkflows(opts?: { signal?: AbortSignal }): Promise<ListIssueWorkflowsResponse> {
+    return this.fetchValidated(
+      "/api/issue-workflows",
+      ListIssueWorkflowsResponseSchema,
+      { workflows: [], total: 0 },
+      { ...opts, endpoint: "GET /api/issue-workflows" },
+    ) as Promise<ListIssueWorkflowsResponse>;
+  }
+
+  /** Sets (or, with null, clears) the workflow an issue follows instead of its project's. */
+  async setIssueWorkflow(id: string, workflowId: string | null): Promise<void> {
+    await this.fetch<unknown>(`/api/issues/${id}/workflow`, {
+      method: "PUT",
+      body: JSON.stringify({ workflow_id: workflowId }),
+    });
   }
 
   // --- Projects ---
