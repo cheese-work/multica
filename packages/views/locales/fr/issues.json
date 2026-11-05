@@ -1546,6 +1546,7 @@
       "source_workspace": "l’espace de travail",
       "source_project": "le projet",
       "source_default": "la valeur par défaut",
+      "open_project": "Modifier dans les règles du projet",
       "override": "Remplacer",
       "override_label": "Remplacer {{rule}}",
       "edit": "Modifier le remplacement",

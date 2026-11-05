@@ -15,6 +15,15 @@ SELECT * FROM github_installation
 WHERE installation_id = $1
 ORDER BY created_at ASC, id ASC;
 
+-- name: ListGitHubInstallationsByInstallationIDForShare :many
+-- Same rows as ListGitHubInstallationsByInstallationID, share-locked until the
+-- transaction ends: a concurrent delete or account change of a binding waits, so
+-- a policy check made inside the transaction still holds when it commits.
+SELECT * FROM github_installation
+WHERE installation_id = $1
+ORDER BY created_at ASC, id ASC
+FOR SHARE;
+
 -- name: GetGitHubInstallationByID :one
 SELECT * FROM github_installation
 WHERE id = $1;
@@ -46,9 +55,10 @@ DELETE FROM github_installation WHERE installation_id = $1
 RETURNING id, workspace_id;
 
 -- name: UpdateGitHubInstallationAccountByInstallationID :many
--- Refresh the GitHub account display metadata across every workspace binding of
--- an installation (fired by installation.created/new_permissions_accepted/
--- unsuspend). Leaves workspace_id and connected_by_id untouched.
+-- Refresh the GitHub account display metadata on the given workspace bindings
+-- of an installation (fired by installation.created/new_permissions_accepted/
+-- unsuspend). Callers pass only the bindings the allowlist permits. Leaves
+-- workspace_id and connected_by_id untouched.
 UPDATE github_installation
 SET account_login = $2,
     account_type = $3,
@@ -56,6 +66,7 @@ SET account_login = $2,
     account_id = COALESCE(sqlc.narg('account_id'), account_id),
     updated_at = now()
 WHERE installation_id = $1
+  AND workspace_id = ANY(sqlc.arg('workspace_ids')::uuid[])
 RETURNING *;
 
 -- name: ListGitHubInstallationsMissingAccountID :many

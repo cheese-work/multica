@@ -393,6 +393,9 @@ deleted_config_sync AS (
 deleted_ask_guard_events AS (
     DELETE FROM ask_guard_event WHERE workspace_id = $1
 ),
+deleted_system1_observations AS (
+    DELETE FROM system1_observation WHERE workspace_id = $1
+),
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
 ),
@@ -704,6 +707,7 @@ WHERE channel_media_pending_object.workspace_id = $1
 // CHE-3045 L5b wait episodes: workspace-owned leaf, no FK.
 // CHE-3284 config-sync enrollment: workspace-owned leaf, no FK.
 // CHE-3345 ask guard events: workspace-owned leaf, no FK.
+// CHE-3628 shadow System 1 observations: workspace-owned leaf, no FK.
 // CHE-488 durable stage-completion-wake bookkeeping (stage_generation,
 // stage_completion_wake). Deleted before the parent issues below so neither
 // statement depends on FK cascade ordering.

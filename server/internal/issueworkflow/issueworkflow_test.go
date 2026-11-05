@@ -536,3 +536,21 @@ func TestCheckAgentMoveRefusesEveryMoveOffAFactOnlyStep(t *testing.T) {
 		t.Errorf("in_review → cancelled refused: %v", err)
 	}
 }
+
+func TestStepLintFieldsRoundTrip(t *testing.T) {
+	in := []Step{{
+		StatusKey: "in_progress", Handler: Handler{Type: HandlerNone}, DynamicAssignment: true,
+		LintWaive: []LintWaiver{{Rule: "WF002", Reason: "assigned at run time"}},
+	}}
+	raw, err := EncodeSteps(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := DecodeSteps(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(in, out) {
+		t.Fatalf("round trip lost lint fields: want %+v, got %+v", in, out)
+	}
+}
