@@ -370,38 +370,38 @@ describe("McpServerDialog", () => {
       expect(JSON.parse(reopen())).toEqual({ type: "sse", note: "half done" });
     });
 
-    it("keeps unfinished JSON text without its credential values", async () => {
+    it.each([
+      ['{"url": "https://example.test", "headers": {"Authorization": "Bearer s3cret-partial"', "example.test"],
+      ['{"password": abc, region: synthetic-s3cret', "region"],
+    ])("stores none of half-typed JSON: %s", async (text, field) => {
       const { type, reopen } = await setup(null, "agent-1:partial");
-      type('{"url": "https://example.test", "headers": {"Authorization": "Bearer s3cret-partial"');
-      expect(JSON.stringify(useMcpDialogDraftStore.getState())).not.toContain("s3cret-partial");
+      type(text);
+      const stored = JSON.stringify(useMcpDialogDraftStore.getState());
+      expect(stored).not.toContain("s3cret");
+      expect(stored).not.toContain(field);
       const restored = reopen();
-      expect(restored).toContain("https://example.test");
-      expect(restored).not.toContain("s3cret-partial");
+      expect(restored).not.toContain("s3cret");
+      expect(restored).not.toContain(field);
     });
 
-    it("keeps non-secret fields on both sides of a credential after reopen", async () => {
-      const { type, reopen } = await setup(null, "agent-1:both-sides");
-      type('{"headers": {"Authorization": "s3cret-both"}, "url": "https://example.test", "note": "unsaved",');
-      expect(JSON.stringify(useMcpDialogDraftStore.getState())).not.toContain("s3cret-both");
+    it("keeps the last complete JSON while a later edit is half-typed", async () => {
+      const { type, reopen } = await setup(null, "agent-1:last-complete");
+      type('{"type":"sse","url":"https://example.test"}');
+      type('{"type":"sse","url":"https://example.test","token": s3cret-half, x');
       const restored = reopen();
-      expect(restored).toContain("https://example.test");
-      expect(restored).toContain("unsaved");
-      expect(restored).not.toContain("s3cret-both");
+      expect(JSON.parse(restored)).toEqual({ type: "sse", url: "https://example.test" });
     });
 
-    it("keeps a saved credential inside an array through an unfinished draft, reopen and save", async () => {
+    it("keeps a saved credential inside an array through draft, reopen and save", async () => {
       const server = managedServer({
         name: "remote",
         config: { type: "sse", url: "https://a.test", options: [{ token: "saved", name: "a" }] },
         transport: "sse",
       });
       const { type, reopen, props } = await setup(server, "agent-1:remote-array");
-      type('{"type": "sse", "url": "https://b.test", "options": [{"token": "typed-s3cret", "name": "b"}');
+      type('{"type": "sse", "url": "https://b.test", "options": [{"token": "typed-s3cret", "name": "b"}]}');
       const restored = reopen();
       expect(restored).not.toContain("typed-s3cret");
-      fireEvent.change(screen.getByLabelText("MCP server JSON configuration"), {
-        target: { value: restored + "]}" },
-      });
       await userEvent.setup().click(screen.getByRole("button", { name: /save/i }));
       await vi.waitFor(() => expect(props.onSave).toHaveBeenCalled());
       expect(props.onSave).toHaveBeenCalledWith("remote", {
@@ -411,19 +411,16 @@ describe("McpServerDialog", () => {
       });
     });
 
-    it("keeps the saved credentials when an unfinished draft of an edited server is completed", async () => {
+    it("keeps the saved credentials of an edited server through draft, reopen and save", async () => {
       const server = managedServer({
         name: "remote",
         config: { type: "sse", url: "https://a.test", headers: { Authorization: "saved" } },
         transport: "sse",
       });
       const { type, reopen, props } = await setup(server, "agent-1:remote-partial");
-      type('{"type": "sse", "url": "https://b.test", "headers": {"Authorization": "typed-s3cret"');
+      type('{"type": "sse", "url": "https://b.test", "headers": {"Authorization": "typed-s3cret"}}');
       const restored = reopen();
       expect(restored).not.toContain("typed-s3cret");
-      fireEvent.change(screen.getByLabelText("MCP server JSON configuration"), {
-        target: { value: restored.replace(/"headers": null/, '"headers": null') + "}" },
-      });
       await userEvent.setup().click(screen.getByRole("button", { name: /save/i }));
       await vi.waitFor(() => expect(props.onSave).toHaveBeenCalled());
       expect(props.onSave).toHaveBeenCalledWith("remote", {

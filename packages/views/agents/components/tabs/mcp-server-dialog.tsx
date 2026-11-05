@@ -358,12 +358,16 @@ export function McpServerDialog({
         JSON.stringify(value) === JSON.stringify(base[field as keyof typeof base]) ? null : value,
       ]),
     );
-    // JSON text is kept as typed, finished or not, with credential values withheld.
+    // Only finished JSON is stored, credentials withheld. Half-typed text leaves
+    // the last stored JSON as it was.
     if (mode !== "json") patch.json = null;
+    else if (jsonText.trim() === "") patch.json = null;
     else {
       const redacted = redactMcpJsonText(jsonText);
-      const baseline = JSON.stringify(stripMcpSecrets(seed.config), null, 2);
-      patch.json = redacted.trim() === "" || redacted === baseline ? null : redacted;
+      if (redacted !== null) {
+        const baseline = JSON.stringify(stripMcpSecrets(seed.config), null, 2);
+        patch.json = redacted === baseline ? null : redacted;
+      }
     }
     useMcpDialogDraftStore.getState().setDraft(draftKey, patch);
   }, [open, draftKey, name, form, mode, jsonText, server, replacementMode]);

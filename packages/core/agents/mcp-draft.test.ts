@@ -48,49 +48,29 @@ describe("stripMcpSecrets in arrays", () => {
 
 describe("redactMcpJsonText", () => {
   it("strips a parsable object without needing a url or command", () => {
-    expect(JSON.parse(redactMcpJsonText('{"name":"x","options":[{"token":"s"}]}'))).toEqual({
+    expect(JSON.parse(redactMcpJsonText('{"name":"x","options":[{"token":"s"}]}')!)).toEqual({
       name: "x",
       options: [{}],
     });
   });
 
-  it.each([
-    ['{"url": "https://a.test", "headers": {"Authorization": "Bearer s3cret"', "https://a.test"],
-    ['{"command": "npx", "env": {"API_KEY": "s3cret"}, "args": ["-y"', "npx"],
-    ['{"url": "https://a.test",\n  "token": "s3cr', "https://a.test"],
-    ['{"options": [{"api-token":\n"s3cret"}], "url": "https', "options"],
-    ['{"url": "https://a.test", "token": Bearer s3cret', "https://a.test"],
-    ['{"url": "https://a.test", "token": Bearer "s3cret" tail', "https://a.test"],
-    ['{"url": "https://a.test", "token": Bearer\ts3cret }', "https://a.test"],
-    ['{"url": "https://a.test", "token": Bearer\ns3cret', "https://a.test"],
-    ['{"url": "https://a.test", "private_key": -----BEGIN KEY-----\ns3cretbody\nmore3cret\n-----END KEY-----', "https://a.test"],
-    ['{"url": "https://a.test", "token": "s3cret" "x": "y"', "https://a.test"],
-    ['{"url": "https://a.test", "t\\u006fken": s3cret', "https://a.test"],
-    ['{"url": "https://a.test", token: s3cret', "https://a.test"],
-    ["{'url': 'https://a.test', 'token': s3cret", "https://a.test"],
-  ])("keeps unfinished text but never the credential value: %s", (text, kept) => {
-    const out = redactMcpJsonText(text);
-    expect(out).not.toContain("s3cret");
-    expect(out).not.toContain("s3cr");
-    expect(out).toContain(kept);
+  it("strips credential keys from a finished object by key name", () => {
+    expect(
+      JSON.parse(redactMcpJsonText('{"url":"https://a.test","headers":{"Authorization":"s3cret"},"note":"x"}')!),
+    ).toEqual({ url: "https://a.test", note: "x" });
   });
 
   it.each([
-    '{"headers":{"Authorization":"s3cret"},"url":"https://a.test","note":"unsaved",',
-    '{"url":"https://a.test","token": Bearer s3cret, "note":"unsaved",',
-    '{"url":"https://a.test","private_key": -----BEGIN KEY-----\ns3cretbody\n-----END KEY-----,\n"note":"unsaved",',
-    '{"url":"https://a.test","token": Bearer\ts3cret,\n"note":"unsaved",',
-    '{"url":"https://a.test","mcp": {"api_key": s3cret\nx}, "note":"unsaved",',
-    '{"url":"https://a.test","options": [{"token": "s3cret", "name": "n"}], "note":"unsaved",',
-  ])("keeps the non-secret fields on both sides of a credential: %s", (text) => {
-    const out = redactMcpJsonText(text);
-    expect(out).not.toContain("s3cret");
-    expect(out).toContain('"url":"https://a.test"');
-    expect(out).toContain('"note":"unsaved"');
-  });
-
-  it("does not treat a value that mentions a credential word as a key", () => {
-    expect(redactMcpJsonText('{"url": "https://a.test/token", "x"')).toContain("https://a.test/token");
+    '{"url": "https://a.test", "headers": {"Authorization": "Bearer s3cret"',
+    '{"password": abc, region: synthetic_secret',
+    '{"url": "https://a.test", "token": Bearer s3cret, "note": "x"}',
+    '{"url": "https://a.test", "private_key": -----BEGIN KEY-----\ns3cretbody\n-----END KEY-----',
+    '{"url": "https://a.test", token: s3cret',
+    '[1, 2',
+    '"s3cret"',
+    "",
+  ])("returns null instead of guessing where a credential ends: %s", (text) => {
+    expect(redactMcpJsonText(text)).toBeNull();
   });
 });
 

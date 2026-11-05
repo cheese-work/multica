@@ -5,8 +5,8 @@
  * saved server config when the draft is restored. A new server has no saved
  * config, so those values are typed again.
  *
- * Text that does not parse yet (an unfinished edit) is kept too: a scanner
- * replaces each credential key's value with `null` without needing valid JSON.
+ * Text that does not parse yet (an unfinished edit) is not stored: finding
+ * where a malformed credential value ends is a guess, and a wrong guess leaks.
  */
 const SECRET_KEY = /env|header|token|secret|passw|auth|key|credential|cookie/i;
 
@@ -27,116 +27,18 @@ export function stripMcpSecrets(value: Json): Json {
   return out;
 }
 
-function stringEnd(text: string, start: number): number {
-  for (let i = start + 1; i < text.length; i++) {
-    if (text[i] === "\\") i++;
-    else if (text[i] === '"') return i + 1;
-  }
-  return text.length;
-}
-
 /**
- * JSON editor text that is safe to store. Valid JSON is redacted by key. Text
- * that does not parse (an unfinished edit) goes through a tolerant scanner that
- * replaces only each credential key's value with `null` and keeps every other
- * field, before and after it. Where a malformed value ends is a guess, so every
- * ambiguity swallows more text, never less.
+ * JSON editor text that is safe to store: a finished object with credential keys
+ * removed. Text that is not valid JSON yet, or not an object, returns null.
  */
-export function redactMcpJsonText(text: string): string {
+export function redactMcpJsonText(text: string): string | null {
   try {
     const parsed: unknown = JSON.parse(text);
     if (isObject(parsed)) return JSON.stringify(stripMcpSecrets(parsed), null, 2);
   } catch {
-    // Not valid yet: scan instead.
+    // Not valid yet.
   }
-  let out = "";
-  let i = 0;
-  while (i < text.length) {
-    const key = keyAt(text, i);
-    if (!key) {
-      out += text[i++];
-      continue;
-    }
-    out += text.slice(i, key.end);
-    i = key.end;
-    if (!key.secret) continue;
-    const colon = text.indexOf(":", key.end);
-    out += text.slice(i, colon + 1);
-    i = colon + 1;
-    let k = i;
-    while (k < text.length && /\s/.test(text[k]!)) k++;
-    if (k >= text.length) continue;
-    out += " null";
-    i = valueEnd(text, k);
-  }
-  return out;
-}
-
-/** A quoted or bare key starting at `i` (followed by a colon), or a skipped string or word; null on any other character. */
-function keyAt(text: string, i: number): { end: number; secret: boolean } | null {
-  const c = text[i]!;
-  if (c === '"') {
-    const end = stringEnd(text, i);
-    if (!/^\s*:/.test(text.slice(end))) return { end, secret: false };
-    return { end, secret: isSecretKey(text.slice(i, end)) };
-  }
-  if (!/[\w.-]/.test(c)) return null;
-  let end = i;
-  while (end < text.length && /[\w.-]/.test(text[end]!)) end++;
-  const isKey = /^['"]?\s*:/.test(text.slice(end));
-  return { end, secret: isKey && SECRET_KEY.test(text.slice(i, end)) };
-}
-
-/** A `,` that starts another field: a key and a colon follow. */
-const FIELD_AHEAD = /^\s*(?:"(?:[^"\\]|\\.)*"\s*|'[^']*'\s*|[\w.-]+[ \t]*):/;
-
-/**
- * The end index of the value starting at `start`. A container ends at its
- * matching close. Anything else (a string, a number, or malformed text such as
- * `Bearer abc` or a multiline PEM) ends at a `,` that starts another field, an
- * unmatched `}` or `]`, or the end of the text.
- */
-function valueEnd(text: string, start: number): number {
-  const first = text[start];
-  if (first === "{" || first === "[") return containerEnd(text, start);
-  let depth = 0;
-  let i = start;
-  while (i < text.length) {
-    const c = text[i]!;
-    if (c === '"') {
-      i = stringEnd(text, i);
-      continue;
-    }
-    if (c === "{" || c === "[") depth++;
-    else if (c === "}" || c === "]") {
-      if (depth === 0) return i;
-      depth--;
-    } else if (c === "," && depth === 0 && FIELD_AHEAD.test(text.slice(i + 1))) return i;
-    i++;
-  }
-  return text.length;
-}
-
-function containerEnd(text: string, start: number): number {
-  let depth = 0;
-  for (let i = start; i < text.length; i++) {
-    const c = text[i];
-    if (c === '"') i = stringEnd(text, i) - 1;
-    else if (c === "{" || c === "[") depth++;
-    else if (c === "}" || c === "]") {
-      depth--;
-      if (depth === 0) return i + 1;
-    }
-  }
-  return text.length;
-}
-
-function isSecretKey(literal: string): boolean {
-  try {
-    return SECRET_KEY.test(JSON.parse(literal) as string);
-  } catch {
-    return SECRET_KEY.test(literal); // Unterminated or malformed key: match its raw text.
-  }
+  return null;
 }
 
 function restoreValue(saved: unknown, draft: unknown): unknown {
