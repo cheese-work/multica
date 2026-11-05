@@ -22,6 +22,7 @@ import "../feedback/draft-store";
 import "../agents/manual-draft-store";
 import "../skills/draft-stores";
 import "../issue-workflows/draft-stores";
+import "../squads/stores/draft-store";
 import "../squads/stores/create-squad-draft-store";
 import "../autopilots/stores/draft-stores";
 import "../quick-actions/draft-store";
