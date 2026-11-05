@@ -21,12 +21,16 @@ type AskOption struct {
 }
 
 type Ask struct {
-	ContextELI10     string      `json:"context_eli10"`
-	AgentDid         string      `json:"agent_did"`
-	Decision         string      `json:"decision"`
-	StakesIfWrong    string      `json:"stakes_if_wrong"`
-	Options          []AskOption `json:"options"`
-	Recommendation   string      `json:"recommendation"`
+	ContextELI10   string      `json:"context_eli10"`
+	AgentDid       string      `json:"agent_did"`
+	Decision       string      `json:"decision"`
+	StakesIfWrong  string      `json:"stakes_if_wrong"`
+	Options        []AskOption `json:"options"`
+	Recommendation string      `json:"recommendation"`
+	// RecommendedOption is the exact label of the recommended option (CHE-3628). Required with two or more options; the server moves it first. The recommendation prose is never read for order.
+	RecommendedOption string `json:"recommended_option,omitempty"`
+	// Confidence is the asking agent's own 0..1 confidence that its recommendation is right (optional, CHE-3628).
+	Confidence       *float64    `json:"confidence,omitempty"`
 	DefaultIfNoReply string      `json:"default_if_no_reply"`
 	SourceIssueID    string      `json:"source_issue_id"`
 	SourceCommentID  string      `json:"source_comment_id"`
@@ -74,7 +78,7 @@ func (err *AskError) Error() string { return err.Field + " " + err.Problem }
 const askOptionShape = "must be an object with label, what_happens, pros, cons, cost_or_time"
 
 var (
-	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "default_if_no_reply", "source_issue_id", "source_comment_id", "human_steps", "probes", "after_done", "subject", "artifacts"}
+	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "recommended_option", "confidence", "default_if_no_reply", "source_issue_id", "source_comment_id", "human_steps", "probes", "after_done", "subject", "artifacts"}
 	optionFields = []string{"label", "what_happens", "pros", "cons", "cost_or_time"}
 	// actionFields is the whole action ask: no options, recommendation, decision or stakes.
 	actionFields = []string{"context_eli10", "agent_did", "why_human", "steps", "done_when", "default_if_no_reply", "source_issue_id", "source_comment_id"}
@@ -166,13 +170,16 @@ func DecodeAsk(raw []byte) (Ask, error) {
 		into *string
 	}{
 		{"context_eli10", &ask.ContextELI10}, {"agent_did", &ask.AgentDid}, {"decision", &ask.Decision},
-		{"stakes_if_wrong", &ask.StakesIfWrong}, {"recommendation", &ask.Recommendation},
+		{"stakes_if_wrong", &ask.StakesIfWrong}, {"recommendation", &ask.Recommendation}, {"recommended_option", &ask.RecommendedOption},
 		{"default_if_no_reply", &ask.DefaultIfNoReply}, {"source_issue_id", &ask.SourceIssueID}, {"source_comment_id", &ask.SourceCommentID},
 		{"after_done", &ask.AfterDone}, {"subject", &ask.Subject},
 	} {
 		if err := decodeString("ask."+field.name, fields[field.name], field.into); err != nil {
 			return ask, err
 		}
+	}
+	if err := decodeConfidence(fields["confidence"], &ask.Confidence); err != nil {
+		return ask, err
 	}
 	if err := decodeOptions(fields["options"], &ask.Options); err != nil {
 		return ask, err
@@ -187,6 +194,18 @@ func DecodeAsk(raw []byte) (Ask, error) {
 		return ask, err
 	}
 	return ask, ask.Validate()
+}
+
+func decodeConfidence(raw json.RawMessage, into **float64) error {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var value float64
+	if err := json.Unmarshal(raw, &value); err != nil || value < 0 || value > 1 {
+		return &AskError{"ask.confidence", "must be a number from 0 to 1"}
+	}
+	*into = &value
+	return nil
 }
 
 func decodeObject(raw []byte) (map[string]json.RawMessage, error) {

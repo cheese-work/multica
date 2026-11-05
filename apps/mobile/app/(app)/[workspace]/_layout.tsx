@@ -3,6 +3,7 @@ import type { ComponentProps } from "react";
 import { Redirect, Stack, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { workspaceListOptions } from "@/data/queries/workspaces";
+import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { RealtimeProvider } from "@/data/realtime/realtime-provider";
 import { useInboxRealtime } from "@/data/realtime/use-inbox-realtime";
@@ -20,6 +21,7 @@ import { useNewIssueDraftResetOnWorkspaceChange } from "@/data/stores/new-issue-
 import { useNewProjectDraftResetOnWorkspaceChange } from "@/data/stores/new-project-draft-store";
 import { useChatSessionPickerResetOnWorkspaceChange } from "@/data/stores/chat-session-picker-store";
 import { useChatSessionActionsResetOnWorkspaceChange } from "@/data/stores/chat-session-actions-store";
+import { useDraftLifecycle } from "@/data/stores/use-draft-lifecycle";
 import { useT } from "@/lib/i18n";
 
 /**
@@ -110,6 +112,7 @@ export default function WorkspaceLayout() {
   const { t } = useT("navigation");
   const { data: workspaces, isLoading } = useQuery(workspaceListOptions());
   const setCurrentWorkspace = useWorkspaceStore((s) => s.setCurrentWorkspace);
+  const userId = useAuthStore((s) => s.user?.id ?? null);
 
   const matched = workspaces?.find((w) => w.slug === slug);
 
@@ -126,6 +129,7 @@ export default function WorkspaceLayout() {
   useNewProjectDraftResetOnWorkspaceChange(matched?.id ?? null);
   useChatSessionPickerResetOnWorkspaceChange(matched?.id ?? null);
   useChatSessionActionsResetOnWorkspaceChange(matched?.id ?? null);
+  useDraftLifecycle(userId, matched?.id ?? null);
 
   // Wait for the workspaces list before deciding membership — otherwise a
   // valid deep link would briefly redirect away on cold start.

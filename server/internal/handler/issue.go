@@ -4555,6 +4555,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	assigneeChanged := (req.AssigneeType != nil || req.AssigneeID != nil || handoff != nil) &&
 		(prevIssue.AssigneeType.String != issue.AssigneeType.String || uuidToString(prevIssue.AssigneeID) != uuidToString(issue.AssigneeID))
 	if assigneeChanged {
+		h.recordSystem1Routing(r.Context(), prevIssue, issue, handoff, actorType)
 		h.followDecisionSteward(r.Context(), issue)
 	}
 	statusChanged := (req.Status != nil || params.Status.Valid) && prevIssue.Status != issue.Status

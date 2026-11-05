@@ -39,6 +39,7 @@ import { WakeupControl } from "./wakeup-control";
 import { WakeupsPausedBanner } from "./wakeups-paused-banner";
 import { WakeupCreate } from "./wakeup-create";
 import { SystemWakeupRow } from "./system-wakeup-row";
+import { IssueWakeupDefaults } from "./issue-wakeup-defaults";
 import { TranscriptButton } from "../../common/task-transcript";
 import { useViewingTimezone } from "../../common/use-viewing-timezone";
 import { useLocale, useT } from "../../i18n";
@@ -487,6 +488,7 @@ export function WakeupsSection({
               {historyOpen && history.map(row)}
             </>
           )}
+          {!closed && <IssueWakeupDefaults workspaceId={workspaceId} issueId={issueId} />}
         </div>
       )}
     </section>
