@@ -8116,10 +8116,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// on the issue, which is the same rule that makes a failing tool call a
 	// tool error rather than a task error.
 	pluginHookConfig, pluginHookServer, pluginHookErr := startTaskPluginHookMCP(
-		ctx, task.ID, task.PluginHookTools,
-		func(callCtx context.Context, taskID, installationID, hookKey string, input json.RawMessage) (json.RawMessage, error) {
+		ctx, task.ID, taskHookTools(task, decisionAskReachable(provider, resolvedVersion, !usesCustomProfileCommand)),
+		taskHookInvoker(task, d.client, func(callCtx context.Context, taskID, installationID, hookKey string, input json.RawMessage) (json.RawMessage, error) {
 			return d.client.InvokeAgentPluginHook(callCtx, task.RemoteMCPDaemonToken, taskID, installationID, hookKey, input)
-		},
+		}),
 		taskLog,
 	)
 	if pluginHookErr != nil {
@@ -9015,6 +9015,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if providerNeedsInlineSystemPrompt(provider) {
 		execOpts.SystemPrompt = runtimeBrief
 	}
+	if provider == "codex" {
+		execOpts.ExtraArgs = append(execOpts.ExtraArgs, codexBriefBudget(env.RootDir, env.WorkDir, runtimeBrief, taskLog)...)
+	}
 
 	// A quick-actions refresh task from a server that predates server-side
 	// generation (MUL-5573). This daemon no longer has a suggestion pass to run
@@ -9109,6 +9112,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			runtimeBrief = freshBrief
 			if providerNeedsInlineSystemPrompt(provider) {
 				execOpts.SystemPrompt = runtimeBrief
+			}
+			if provider == "codex" {
+				// The rewritten brief has a new size; the later -c wins.
+				execOpts.ExtraArgs = append(execOpts.ExtraArgs, codexBriefBudget(env.RootDir, env.WorkDir, runtimeBrief, taskLog)...)
 			}
 		}
 		freshPrompt := BuildPrompt(task, provider, promptOptions...)

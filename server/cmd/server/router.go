@@ -1846,6 +1846,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// CHE-2454: delegated governed writes. Human owner/admin only.
 					r.With(handler.RequireHumanActor).Get("/delegated-writes", h.GetDelegatedWrites)
 					r.With(handler.RequireHumanActor).Put("/delegated-writes", h.UpdateDelegatedWrites)
+					// CHE-3627: routing agent. Human owner/admin only.
+					r.With(handler.RequireHumanActor).Get("/routing-agent", h.GetRoutingAgent)
+					r.With(handler.RequireHumanActor).Put("/routing-agent", h.UpdateRoutingAgent)
 					// CHE-2490: admin-written protected-path policy for the push broker.
 					r.With(handler.RequireHumanActor).Put("/protected-path-policies/{name}", h.SetProtectedPathPolicy)
 					// Curating the shared MCP library is an admin action.
@@ -2171,6 +2174,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/timeline", h.ListTimeline)
 					r.Get("/workflow-handoff", h.PreviewWorkflowHandoff)
 					r.Get("/run-budget", h.GetIssueRunBudget)
+					r.Get("/stage-queue", h.GetIssueStageQueue)
 					r.With(handler.RequireInteractiveSession).Post("/run-budget", h.RaiseIssueRunBudget)
 					r.With(handler.RequireInteractiveSession).Post("/run-budget/top-up", h.TopUpIssueRunBudget)
 					// CHE-2489: a person widens one issue's runs; machine credentials never reach the handler.
@@ -2668,6 +2672,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.With(denyRunToken).Post("/tasks/{taskId}/steer", h.SteerChatTask)
 					r.Post("/messages/{messageId}/supplement/resend", h.ResendChatSupplement)
 					r.Post("/read", h.MarkChatSessionRead)
+					r.Post("/unread", h.MarkChatSessionUnread)
 					// Deferred-cancellation draft restores (#5219):
 					// creator-only fetch + idempotent consume.
 					r.Get("/draft-restores", h.ListChatDraftRestores)
@@ -2722,9 +2727,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 			r.Route("/api/decisions", func(r chi.Router) {
 				r.Post("/", h.RequestDecision)
+				r.Post("/ask", h.AskDecision)
 				r.Get("/", h.ListDecisions)
 				r.With(handler.RequireHumanActor).Get("/open", h.ListOpenDecisions)
 				r.Get("/feed", h.ListDecisionFeed)
+				r.Get("/shadow-report", h.GetSystem1Report)
 				r.Post("/feed/{id}/ack", h.AckDecisionFeed)
 				r.Get("/open-asks", h.ListOpenDecisionAsks)
 				r.Get("/{id}", h.GetDecision)
@@ -2735,6 +2742,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/class", h.RaiseDecisionClass)
 			r.With(handler.RequireHumanActor).Post("/api/decision-actions/{id}/reject", h.RejectDecisionAction)
 			r.With(handler.RequireHumanActor).Post("/api/decision-actions/{id}/challenge", h.ChallengeDecisionAction)
+			r.With(handler.RequireHumanActor).Get("/api/passkeys", h.ListPasskeys)
 			r.With(handler.RequireHumanActor).Post("/api/passkeys/enroll/start", h.StartPasskeyEnrollment)
 			r.With(handler.RequireHumanActor).Post("/api/passkeys/enroll/finish", h.FinishPasskeyEnrollment)
 			r.With(handler.RequireHumanActor).Post("/api/passkeys/{id}/revoke/challenge", h.ChallengePasskeyRevocation)
@@ -2744,6 +2752,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.With(handler.RequireHumanActor).Post("/api/decision-actions/{id}/approve", h.ApproveDecisionAction)
 			r.With(handler.RequireHumanActor).Get("/api/decision-actions/{id}/outcome", h.GetDecisionActionOutcome)
 			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/answer", h.AnswerDecisionRequest)
+			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/answer/challenge", h.ChallengeDecisionAnswer)
 
 			// Notification preferences
 			r.Route("/api/notification-preferences", func(r chi.Router) {
