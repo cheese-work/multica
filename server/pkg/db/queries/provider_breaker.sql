@@ -12,12 +12,12 @@ WHERE a.workspace_id = @workspace_id
 ORDER BY COALESCE(t.completed_at, t.created_at) DESC;
 
 -- name: OpenProviderBreaker :execrows
-INSERT INTO provider_breaker (workspace_id, provider, state, opened_at, next_probe_at, trip_evidence, last_5xx_at)
-VALUES (@workspace_id, @provider, 'open', now(), now() + interval '300 seconds', @trip_evidence, now())
+INSERT INTO provider_breaker (workspace_id, provider, state, opened_at, next_probe_at, cool_off_s, trip_evidence, last_5xx_at)
+VALUES (@workspace_id, @provider, 'open', now(), now() + make_interval(secs => @cool_off_seconds::int), @cool_off_seconds, @trip_evidence, now())
 ON CONFLICT (workspace_id, provider) DO UPDATE SET
     state = CASE WHEN provider_breaker.state = 'closed' THEN 'open' ELSE provider_breaker.state END,
     opened_at = CASE WHEN provider_breaker.state = 'closed' THEN now() ELSE provider_breaker.opened_at END,
-    next_probe_at = CASE WHEN provider_breaker.state = 'closed' THEN now() + interval '300 seconds' ELSE provider_breaker.next_probe_at END,
+    next_probe_at = CASE WHEN provider_breaker.state = 'closed' THEN now() + make_interval(secs => provider_breaker.cool_off_s) ELSE provider_breaker.next_probe_at END,
     trip_evidence = CASE WHEN provider_breaker.state = 'closed' THEN EXCLUDED.trip_evidence ELSE provider_breaker.trip_evidence END,
     last_5xx_at = now(), version = provider_breaker.version + 1
 WHERE provider_breaker.version = @expected_version;

@@ -95,20 +95,21 @@ func (q *Queries) LockProviderBreakerTrip(ctx context.Context, lockKey string) e
 }
 
 const openProviderBreaker = `-- name: OpenProviderBreaker :execrows
-INSERT INTO provider_breaker (workspace_id, provider, state, opened_at, next_probe_at, trip_evidence, last_5xx_at)
-VALUES ($1, $2, 'open', now(), now() + interval '300 seconds', $3, now())
+INSERT INTO provider_breaker (workspace_id, provider, state, opened_at, next_probe_at, cool_off_s, trip_evidence, last_5xx_at)
+VALUES ($1, $2, 'open', now(), now() + make_interval(secs => $3::int), $3, $4, now())
 ON CONFLICT (workspace_id, provider) DO UPDATE SET
     state = CASE WHEN provider_breaker.state = 'closed' THEN 'open' ELSE provider_breaker.state END,
     opened_at = CASE WHEN provider_breaker.state = 'closed' THEN now() ELSE provider_breaker.opened_at END,
-    next_probe_at = CASE WHEN provider_breaker.state = 'closed' THEN now() + interval '300 seconds' ELSE provider_breaker.next_probe_at END,
+    next_probe_at = CASE WHEN provider_breaker.state = 'closed' THEN now() + make_interval(secs => provider_breaker.cool_off_s) ELSE provider_breaker.next_probe_at END,
     trip_evidence = CASE WHEN provider_breaker.state = 'closed' THEN EXCLUDED.trip_evidence ELSE provider_breaker.trip_evidence END,
     last_5xx_at = now(), version = provider_breaker.version + 1
-WHERE provider_breaker.version = $4
+WHERE provider_breaker.version = $5
 `
 
 type OpenProviderBreakerParams struct {
 	WorkspaceID     pgtype.UUID   `json:"workspace_id"`
 	Provider        string        `json:"provider"`
+	CoolOffSeconds  int32         `json:"cool_off_seconds"`
 	TripEvidence    []pgtype.UUID `json:"trip_evidence"`
 	ExpectedVersion int64         `json:"expected_version"`
 }
@@ -117,6 +118,7 @@ func (q *Queries) OpenProviderBreaker(ctx context.Context, arg OpenProviderBreak
 	result, err := q.db.Exec(ctx, openProviderBreaker,
 		arg.WorkspaceID,
 		arg.Provider,
+		arg.CoolOffSeconds,
 		arg.TripEvidence,
 		arg.ExpectedVersion,
 	)

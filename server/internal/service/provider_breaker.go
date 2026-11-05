@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 const (
 	providerBreakerThreshold = 3
 	providerBreakerWindow    = 5 * time.Minute
+	providerBreakerCoolOff   = 300
 )
 
 func providerBreakerShouldTrip(failures []time.Time, now time.Time, threshold int, window time.Duration) bool {
@@ -25,7 +27,7 @@ func providerBreakerShouldTrip(failures []time.Time, now time.Time, threshold in
 	cutoff := now.Add(-window)
 	count := 0
 	for _, failedAt := range failures {
-		if !failedAt.Before(cutoff) && !failedAt.After(now) {
+		if !failedAt.Before(cutoff) {
 			count++
 			if count >= threshold {
 				return true
@@ -114,17 +116,21 @@ func recordProviderServerFailure(ctx context.Context, queries *db.Queries, task 
 	if err != nil {
 		return err
 	}
-	changed, err := queries.OpenProviderBreaker(ctx, db.OpenProviderBreakerParams{WorkspaceID: agent.WorkspaceID, Provider: provider, TripEvidence: evidence, ExpectedVersion: version})
+	changed, err := queries.OpenProviderBreaker(ctx, db.OpenProviderBreakerParams{WorkspaceID: agent.WorkspaceID, Provider: provider, TripEvidence: evidence, ExpectedVersion: version, CoolOffSeconds: providerBreakerCoolOff})
 	if err != nil {
 		return fmt.Errorf("open provider breaker: %w", err)
 	}
 	if changed != 1 {
-		return fmt.Errorf("open provider breaker: version compare-and-swap failed")
+		slog.Warn("provider breaker trip skipped after concurrent version change", "provider", provider)
+		return nil
 	}
 	return nil
 }
 
 func recordProviderSuccess(ctx context.Context, queries *db.Queries, task db.AgentTaskQueue) error {
+	if task.Status != "completed" {
+		return nil
+	}
 	agent, err := queries.GetAgent(ctx, task.AgentID)
 	if err != nil {
 		return fmt.Errorf("load agent for provider success: %w", err)
@@ -132,10 +138,6 @@ func recordProviderSuccess(ctx context.Context, queries *db.Queries, task db.Age
 	provider, ok := ResolveModelProvider(agent.Model.String)
 	if !ok {
 		return nil
-	}
-	lockKey := fmt.Sprintf("%x:%s", agent.WorkspaceID.Bytes, provider)
-	if err := queries.LockProviderBreakerTrip(ctx, lockKey); err != nil {
-		return fmt.Errorf("lock provider breaker success: %w", err)
 	}
 	version, exists, err := providerBreakerVersion(ctx, queries, agent.WorkspaceID, provider)
 	if err != nil {
@@ -150,12 +152,21 @@ func recordProviderSuccess(ctx context.Context, queries *db.Queries, task db.Age
 			return nil
 		}
 	}
+	lockKey := fmt.Sprintf("%x:%s", agent.WorkspaceID.Bytes, provider)
+	if err := queries.LockProviderBreakerTrip(ctx, lockKey); err != nil {
+		return fmt.Errorf("lock provider breaker success: %w", err)
+	}
+	version, _, err = providerBreakerVersion(ctx, queries, agent.WorkspaceID, provider)
+	if err != nil {
+		return err
+	}
 	changed, err := queries.RecordProviderSuccess(ctx, db.RecordProviderSuccessParams{WorkspaceID: agent.WorkspaceID, Provider: provider, ExpectedVersion: version})
 	if err != nil {
 		return fmt.Errorf("record provider success: %w", err)
 	}
 	if changed != 1 {
-		return fmt.Errorf("record provider success: version compare-and-swap failed")
+		slog.Warn("provider success evidence skipped after concurrent version change", "provider", provider)
+		return nil
 	}
 	return nil
 }
