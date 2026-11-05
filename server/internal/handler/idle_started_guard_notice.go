@@ -246,8 +246,18 @@ func (handler *Handler) retryIdleGuardMove(ctx context.Context, settings idleGua
 	return handler.actOnIdleFinding(ctx, settings, idleGuardFinding{WorkspaceID: workspaceID, IssueID: issueID, Status: idle[0].Status, IdleSince: idle[0].IdleSince.Time, settings: settings})
 }
 
+// endIdleGuardEpisode deletes the receipt and clears the watchdog signal in one
+// transaction, so a failed clear leaves the receipt for the next scan to retry.
 func (handler *Handler) endIdleGuardEpisode(ctx context.Context, workspaceID, issueID pgtype.UUID) error {
-	return deleteIdleGuardReceipt(ctx, handler.Queries, workspaceID, issueID)
+	tx, err := handler.TxStarter.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := deleteIdleGuardReceipt(ctx, handler.Queries.WithTx(tx), workspaceID, issueID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func issueMetadataString(issue db.Issue, key string) string {

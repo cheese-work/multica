@@ -254,3 +254,22 @@ func TestIdleStartedGuardNotifiedSignalClearsWhenEpisodeEnds(test *testing.T) {
 		test.Fatalf("signal = %q for an issue now in %q", got, fixture.status(test))
 	}
 }
+
+// Ending an episode deletes the receipt and clears the watchdog signal together:
+// if the signal cannot be cleared, the receipt stays so a later scan retries.
+func TestIdleStartedGuardEndEpisodeKeepsReceiptWhenSignalClearFails(test *testing.T) {
+	fixture := newIdleActFixture(test, 5)
+	fixture.sweep(test)
+	if fixture.notifiedTo(test) == "" {
+		test.Fatal("setup: a notified episode left no signal")
+	}
+	dbfx.Exec(test, `CREATE FUNCTION pg_temp.refuse() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'refused'; END $$`)
+	dbfx.Exec(test, `CREATE TRIGGER refuse_issue_update BEFORE UPDATE ON issue FOR EACH ROW WHEN (OLD.id = '`+fixture.issue+`') EXECUTE FUNCTION pg_temp.refuse()`)
+	test.Cleanup(func() { dbfx.Exec(test, `DROP TRIGGER IF EXISTS refuse_issue_update ON issue`) })
+	if err := testHandler.endIdleGuardEpisode(context.Background(), parseUUID(testWorkspaceID), parseUUID(fixture.issue)); err == nil {
+		test.Fatal("ending the episode reported no error although the signal could not be cleared")
+	}
+	if dbfx.Count(test, `SELECT count(*) FROM issue_idle_guard WHERE issue_id = $1`, fixture.issue) != 1 {
+		test.Fatal("the receipt row was deleted although the signal clear failed; no later scan can retry")
+	}
+}
