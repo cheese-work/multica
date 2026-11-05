@@ -1,3 +1,4 @@
+import { resetAllRegisteredDrafts } from "@multica/core/drafts";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
@@ -569,4 +570,22 @@ describe("WorkspaceTab — automatic updates", () => {
     expect(screen.queryByRole("spinbutton", { name: "After (hours)" })).toBeNull();
     expect(screen.getByText("Shadow, after 6 h")).toBeInTheDocument();
   });
+  it("restores name, description, context and compact prompt after unmount", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const first = render(<WorkspaceTab />, { wrapper: I18nWrapper });
+    const nameInput = screen.getByDisplayValue("Test Workspace");
+    await user.clear(nameInput);
+    await user.type(nameInput, "Unsent name");
+    // Leave before the auto-save debounce fires.
+    first.unmount();
+
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+    expect(screen.getByDisplayValue("Unsent name")).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
 });
+
+
+beforeEach(() => resetAllRegisteredDrafts());

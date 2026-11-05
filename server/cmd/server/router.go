@@ -2669,6 +2669,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.With(denyRunToken).Post("/tasks/{taskId}/steer", h.SteerChatTask)
 					r.Post("/messages/{messageId}/supplement/resend", h.ResendChatSupplement)
 					r.Post("/read", h.MarkChatSessionRead)
+					r.Post("/unread", h.MarkChatSessionUnread)
 					// Deferred-cancellation draft restores (#5219):
 					// creator-only fetch + idempotent consume.
 					r.Get("/draft-restores", h.ListChatDraftRestores)
@@ -2738,6 +2739,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/class", h.RaiseDecisionClass)
 			r.With(handler.RequireHumanActor).Post("/api/decision-actions/{id}/reject", h.RejectDecisionAction)
 			r.With(handler.RequireHumanActor).Post("/api/decision-actions/{id}/challenge", h.ChallengeDecisionAction)
+			r.With(handler.RequireHumanActor).Get("/api/passkeys", h.ListPasskeys)
 			r.With(handler.RequireHumanActor).Post("/api/passkeys/enroll/start", h.StartPasskeyEnrollment)
 			r.With(handler.RequireHumanActor).Post("/api/passkeys/enroll/finish", h.FinishPasskeyEnrollment)
 			r.With(handler.RequireHumanActor).Post("/api/passkeys/{id}/revoke/challenge", h.ChallengePasskeyRevocation)
