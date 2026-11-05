@@ -4,7 +4,7 @@ import type { ComponentProps, ReactNode } from "react";
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { resetAllRegisteredDrafts } from "@multica/core/drafts";
 import { useMcpDialogDraftStore } from "@multica/core/agents";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../../locales/en/common.json";
@@ -48,7 +48,11 @@ function renderDialog(overrides: Partial<ComponentProps<typeof McpServerDialog>>
   return { ...view, onSave: props.onSave, onOpenChange: props.onOpenChange };
 }
 
-afterEach(() => resetAllRegisteredDrafts());
+// Unmount first: a mounted draft hook would write its draft back after the reset.
+afterEach(() => {
+  cleanup();
+  resetAllRegisteredDrafts();
+});
 
 describe("McpServerDialog", () => {
   it.each(["context7.dev", "legacy server", " padded "])(

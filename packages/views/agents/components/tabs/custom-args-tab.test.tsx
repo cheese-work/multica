@@ -2,7 +2,7 @@
 
 import { beforeEach, describe, expect, it, vi, afterEach } from "vitest";
 import { resetAllRegisteredDrafts } from "@multica/core/drafts";
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Agent, RuntimeDevice } from "@multica/core/types";
 import { I18nProvider } from "@multica/core/i18n/react";
@@ -66,7 +66,11 @@ function renderTab(
   return { ...result, onSave };
 }
 
-afterEach(() => resetAllRegisteredDrafts());
+// Unmount first: a mounted draft hook would write its draft back after the reset.
+afterEach(() => {
+  cleanup();
+  resetAllRegisteredDrafts();
+});
 
 describe("CustomArgsTab", () => {
   beforeEach(() => {

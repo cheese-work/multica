@@ -3,7 +3,7 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { resetAllRegisteredDrafts } from "@multica/core/drafts";
 import { useState } from "react";
-import { act, screen, waitFor } from "@testing-library/react";
+import { cleanup, act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Agent } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
@@ -48,7 +48,11 @@ function renderInspector(onUpdate = vi.fn().mockRejectedValue(new Error("offline
   );
 }
 
-afterEach(() => resetAllRegisteredDrafts());
+// Unmount first: a mounted draft hook would write its draft back after the reset.
+afterEach(() => {
+  cleanup();
+  resetAllRegisteredDrafts();
+});
 
 describe("AgentDetailInspector drafts", () => {
   it("keeps an unsaved name and description across unmount and remount", async () => {
