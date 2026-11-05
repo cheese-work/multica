@@ -236,3 +236,20 @@ test("cli: HTTP 500 still fails the job", () => {
   assert.notEqual(r.status, 0);
   assert.doesNotMatch(r.stdout, /::warning::/);
 });
+
+test("waitMs: waits until the reset, capped at 10 min, 60 s when unreadable", async () => {
+  const { waitMs } = await load();
+  const now = 1_000_000_000_000;
+  const at = (s) => String(now / 1000 + s);
+  assert.equal(waitMs(at(-30), now), 0);
+  assert.equal(waitMs(at(90), now), 90_000);
+  assert.equal(waitMs(at(3600), now), 600_000);
+  for (const bad of ["", "\n", "null", "abc"]) assert.equal(waitMs(bad, now), 60_000, JSON.stringify(bad));
+});
+
+test("callName names the endpoint of a read, a write and a GraphQL call", async () => {
+  const { callName } = await load();
+  assert.equal(callName(["api", "graphql", "-f", "query=q"]), "graphql");
+  assert.equal(callName(["api", "/repos/o/r/actions/runs?event=merge_group"]), "/repos/o/r/actions/runs?event=merge_group");
+  assert.equal(callName(["api", "-X", "POST", "/repos/o/r/issues/1/comments", "--input", "-"]), "/repos/o/r/issues/1/comments");
+});

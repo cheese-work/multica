@@ -123,11 +123,18 @@ const isRateLimit = (stderr) => /rate limit/i.test(stderr) && /HTTP (403|429)/.t
 
 export class RateLimitError extends Error {}
 
-// Wait until the core limit resets (cap 10 min); if the reset time is unreadable, wait a fixed minute.
-const waitForReset = () => {
-  const r = spawnSync("gh", ["api", "rate_limit", "-q", ".resources.core.reset"], { encoding: "utf8" });
-  const reset = Number(r.stdout);
-  sleep(r.status === 0 && Number.isFinite(reset) ? Math.min(Math.max(reset * 1000 - Date.now(), 0), MAX_WAIT_MS) : FALLBACK_WAIT_MS);
+// Wait until the limit resets (cap 10 min); a missing or unreadable reset time waits a fixed minute.
+export const waitMs = (resetEpoch, now = Date.now()) => {
+  const reset = Number(resetEpoch);
+  return resetEpoch.trim() && Number.isFinite(reset) ? Math.min(Math.max(reset * 1000 - now, 0), MAX_WAIT_MS) : FALLBACK_WAIT_MS;
+};
+export const callName = (args) => args.find((a) => a === "graphql" || a.startsWith("/")) ?? args.join(" ");
+
+// GraphQL has its own limit bucket; every REST call shares `core`.
+const waitForReset = (call) => {
+  const resource = call === "graphql" ? "graphql" : "core";
+  const r = spawnSync("gh", ["api", "rate_limit", "-q", `.resources.${resource}.reset`], { encoding: "utf8" });
+  sleep(waitMs(r.status === 0 ? r.stdout : ""));
 };
 
 const gh = (args, input) => {
@@ -136,8 +143,8 @@ const gh = (args, input) => {
     if (r.status === 0) return r.stdout;
     const message = `gh ${args.join(" ")} failed: ${r.stderr}`;
     if (!isRateLimit(r.stderr)) throw new Error(message);
-    if (attempt === ATTEMPTS) throw Object.assign(new RateLimitError(message), { call: args[1] });
-    waitForReset();
+    if (attempt === ATTEMPTS) throw Object.assign(new RateLimitError(message), { call: callName(args) });
+    waitForReset(callName(args));
   }
 };
 
