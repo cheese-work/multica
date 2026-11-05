@@ -124,6 +124,21 @@ var flagPattern = regexp.MustCompile(
 	`(?i)(--(?:pass(?:word|wd|phrase)?|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[= ])` +
 		`("[^"]*"|'[^']*'|[^\s,;&"']+)`)
 
+// multicaTokenPattern catches the application's own credentials, which
+// auth/jwt.go issues as prefix + 40 lowercase hex: mat_ (task), mul_ (personal
+// access) and mdt_ (daemon). One case and under minSecretRunLen, so shape never
+// flags them, and a bare prefix like `mul_` would swallow identifiers
+// (`mul_add`), so the hex tail is part of the rule.
+var multicaTokenPattern = regexp.MustCompile(`(?i)\b(?:mat|mul|mdt)_[0-9a-f]{40,}`)
+
+// multicaTokenPartial is the same token while it is still arriving.
+var multicaTokenPartial = regexp.MustCompile(`(?i)^(?:mat|mul|mdt)_[0-9a-f]+$`)
+
+// awsPositionalPattern catches `aws configure set aws_secret_access_key <v>`,
+// where the value follows the name after a space, so assignmentPattern misses
+// it, and a 40-character AWS secret is under minSecretRunLen.
+var awsPositionalPattern = regexp.MustCompile(`(?i)(\b(?:aws_)?(?:secret_access_key|session_token)\s+)([^\s"']+)`)
+
 // redactSecrets rewrites every credential it can recognise in s.
 //
 // Order matters only in that the URL form must run before the assignment form,
@@ -138,6 +153,8 @@ func redactSecrets(s string) string {
 	s = queryParamPattern.ReplaceAllString(s, "${1}"+secretMask)
 	s = flagPattern.ReplaceAllString(s, "${1}"+secretMask)
 	s = basicAuthPattern.ReplaceAllString(s, "${1}${2}:"+secretMask)
+	s = awsPositionalPattern.ReplaceAllString(s, "${1}"+secretMask)
+	s = multicaTokenPattern.ReplaceAllString(s, secretMask)
 	// bearerPattern first: "Authorization: Bearer <token>" is an assignment
 	// whose value is the SCHEME, not the secret. Letting the assignment rule
 	// have it turns a readable header into "Authorization: ███ ███" and hides
@@ -299,6 +316,9 @@ func isTokenRune(r rune) bool {
 func mayStillBeASecret(run string) bool {
 	if len(run) < 8 {
 		return false
+	}
+	if multicaTokenPartial.MatchString(run) {
+		return true
 	}
 	var upper, lower, digit bool
 	for _, r := range run {
