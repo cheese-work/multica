@@ -1757,6 +1757,46 @@ func (q *Queries) GetLatestAssistantChatMessageForSession(ctx context.Context, c
 	return i, err
 }
 
+const getLatestCompactionSummary = `-- name: GetLatestCompactionSummary :one
+SELECT id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via, decision_answer_id, lineage_message_ids, decision_request_ids FROM chat_message
+WHERE chat_session_id = $1 AND message_kind = 'compaction_summary'
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+// The newest in-place compaction summary of a DM: the seed of its next turn
+// while the resume pointer is empty. Messages after it are the post-boundary
+// history.
+func (q *Queries) GetLatestCompactionSummary(ctx context.Context, chatSessionID pgtype.UUID) (ChatMessage, error) {
+	row := q.db.QueryRow(ctx, getLatestCompactionSummary, chatSessionID)
+	var i ChatMessage
+	err := row.Scan(
+		&i.ID,
+		&i.ChatSessionID,
+		&i.Role,
+		&i.Content,
+		&i.TaskID,
+		&i.CreatedAt,
+		&i.FailureReason,
+		&i.ElapsedMs,
+		&i.MessageKind,
+		&i.ChannelMediaPendingUntil,
+		&i.ChannelIngested,
+		&i.QuickActions,
+		&i.ChannelContextRevision,
+		&i.ChannelOutboundType,
+		&i.ChannelOutboundInstallationID,
+		&i.ChannelOutboundChatID,
+		&i.ChannelOutboundMessageIds,
+		&i.ChannelTypingSettled,
+		&i.SentVia,
+		&i.DecisionAnswerID,
+		&i.LineageMessageIds,
+		&i.DecisionRequestIds,
+	)
+	return i, err
+}
+
 const getOldestActiveChatSessionForCreatorAgent = `-- name: GetOldestActiveChatSessionForCreatorAgent :one
 SELECT id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id, title_manually_set, compaction_epoch, preset_name, decision_topic_id FROM chat_session
 WHERE workspace_id = $1
@@ -4322,6 +4362,26 @@ type MarkChatSessionReadBeforeParams struct {
 // transaction as the session, so that message counts as unread (CHE-1662).
 func (q *Queries) MarkChatSessionReadBefore(ctx context.Context, arg MarkChatSessionReadBeforeParams) error {
 	_, err := q.db.Exec(ctx, markChatSessionReadBefore, arg.ID, arg.MessageCreatedAt)
+	return err
+}
+
+const markChatSessionUnread = `-- name: MarkChatSessionUnread :exec
+UPDATE chat_session cs
+SET last_read_at = latest.created_at - interval '1 microsecond'
+FROM (
+  SELECT max(m.created_at) AS created_at
+  FROM chat_message m
+  WHERE m.chat_session_id = $1
+    AND m.role = 'assistant'
+    AND m.message_kind NOT IN ('decision_cancel_notice', 'decision_reference')
+) latest
+WHERE cs.id = $1 AND latest.created_at IS NOT NULL
+`
+
+// Places the read cursor just before the latest assistant message that counts
+// toward unread_count, so unread_count is at least 1. No such message: no-op.
+func (q *Queries) MarkChatSessionUnread(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markChatSessionUnread, id)
 	return err
 }
 

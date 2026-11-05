@@ -1846,6 +1846,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// CHE-2454: delegated governed writes. Human owner/admin only.
 					r.With(handler.RequireHumanActor).Get("/delegated-writes", h.GetDelegatedWrites)
 					r.With(handler.RequireHumanActor).Put("/delegated-writes", h.UpdateDelegatedWrites)
+					// CHE-3627: routing agent. Human owner/admin only.
+					r.With(handler.RequireHumanActor).Get("/routing-agent", h.GetRoutingAgent)
+					r.With(handler.RequireHumanActor).Put("/routing-agent", h.UpdateRoutingAgent)
 					// CHE-2490: admin-written protected-path policy for the push broker.
 					r.With(handler.RequireHumanActor).Put("/protected-path-policies/{name}", h.SetProtectedPathPolicy)
 					// Curating the shared MCP library is an admin action.
@@ -2669,6 +2672,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.With(denyRunToken).Post("/tasks/{taskId}/steer", h.SteerChatTask)
 					r.Post("/messages/{messageId}/supplement/resend", h.ResendChatSupplement)
 					r.Post("/read", h.MarkChatSessionRead)
+					r.Post("/unread", h.MarkChatSessionUnread)
 					// Deferred-cancellation draft restores (#5219):
 					// creator-only fetch + idempotent consume.
 					r.Get("/draft-restores", h.ListChatDraftRestores)
