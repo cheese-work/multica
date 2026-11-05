@@ -2171,6 +2171,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/timeline", h.ListTimeline)
 					r.Get("/workflow-handoff", h.PreviewWorkflowHandoff)
 					r.Get("/run-budget", h.GetIssueRunBudget)
+					r.Get("/stage-queue", h.GetIssueStageQueue)
 					r.With(handler.RequireInteractiveSession).Post("/run-budget", h.RaiseIssueRunBudget)
 					r.With(handler.RequireInteractiveSession).Post("/run-budget/top-up", h.TopUpIssueRunBudget)
 					// CHE-2489: a person widens one issue's runs; machine credentials never reach the handler.
