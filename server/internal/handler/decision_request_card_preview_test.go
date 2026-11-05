@@ -107,6 +107,36 @@ func TestCardPreviewForAgentCopyNamesSourceAndCopy(test *testing.T) {
 	}
 }
 
+func TestCardPreviewForAgentCopyDisclosesEverythingTheCopyRuns(test *testing.T) {
+	action := newPendingCopy(test, "che2959 loud copy", map[string]any{
+		"instructions":          "new prompt text",
+		"custom_args":           []string{"--flag-one", "--flag-two"},
+		"model":                 "model-x",
+		"max_concurrent_tasks":  7,
+		"description":           "a loud copy",
+		"conversation_starters": []map[string]string{{"label": "go", "prompt": "do it"}},
+	})
+	fields := previewFields(test, action.cardAction(test))
+	want := map[string]string{
+		"Instructions":          "new prompt text",
+		"Custom args":           "--flag-one --flag-two",
+		"Model":                 "model-x",
+		"Max concurrent tasks":  "7",
+		"Description":           "a loud copy",
+		"Conversation starters": "go: do it",
+	}
+	for label, proposed := range want {
+		if got := fields[label]; len(got) != 2 || got[1] != proposed {
+			test.Errorf("%s = %v, want proposed %q", label, got, proposed)
+		}
+	}
+	for _, label := range []string{"Runtime", "Thinking level", "Service tier", "Avatar"} {
+		if _, found := fields[label]; !found {
+			test.Errorf("copy preview hides %q: %v", label, fields)
+		}
+	}
+}
+
 func TestCardActionIsAbsentForARequestWithoutAnAction(test *testing.T) {
 	fixture := newAskedRecordFixture(test)
 	if card := testHandler.decisionCardAction(context.Background(), parseUUID(testWorkspaceID), fixture.decision.ID); card != nil {

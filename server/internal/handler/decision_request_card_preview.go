@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/agentconfig"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -170,8 +171,9 @@ func (handler *Handler) envPatchPreview(ctx context.Context, action db.DecisionA
 	return fields, nil
 }
 
-// agentCopyPreview names the source agent and the copy; the copy never
-// carries the source's env or MCP config.
+// agentCopyPreview lists every setting the copy will run with, next to the
+// source's value: the approver signs the whole execution profile, not only the
+// name. The copy never carries the source's env or MCP config.
 func (handler *Handler) agentCopyPreview(ctx context.Context, action db.DecisionAction) ([]ActionPreviewField, error) {
 	var params decisionaction.AgentCopyParams
 	if err := json.Unmarshal(action.Params, &params); err != nil {
@@ -181,14 +183,95 @@ func (handler *Handler) agentCopyPreview(ctx context.Context, action db.Decision
 	if err != nil {
 		return nil, err
 	}
-	instructions := "copied from the source"
+	runtimeID, err := parseUUIDStrict(params.RuntimeID)
+	if err != nil {
+		return nil, fmt.Errorf("copy target runtime: %w", err)
+	}
+	target, err := handler.Queries.GetAgentRuntime(ctx, runtimeID)
+	if err != nil {
+		return nil, err
+	}
+	current := runtimeLabel{id: source.RuntimeID}
+	if source.RuntimeID.Valid {
+		if runtime, err := handler.Queries.GetAgentRuntime(ctx, source.RuntimeID); err == nil {
+			current = runtimeLabel{id: runtime.ID, name: runtime.Name, provider: runtime.Provider}
+		}
+	}
+	proposedInstructions := source.Instructions
 	if params.Instructions != nil {
-		instructions = "replaced by the request"
+		proposedInstructions = *params.Instructions
+	}
+	maxConcurrent := params.MaxConcurrentTasks
+	if maxConcurrent == 0 {
+		maxConcurrent = agentconfig.DefaultMaxConcurrentTasks
 	}
 	return []ActionPreviewField{
 		{"Agent", source.Name, params.Name},
-		{"Instructions", "source instructions", instructions},
+		{"Runtime", current.String(), runtimeLabel{id: target.ID, name: target.Name, provider: target.Provider}.String()},
+		{"Instructions", source.Instructions, proposedInstructions},
+		{"Description", source.Description, params.Description},
+		{"Model", orDefault(source.Model.String), orDefault(params.Model)},
+		{"Thinking level", orDefault(source.ThinkingLevel.String), orDefault(params.ThinkingLevel)},
+		{"Service tier", orDefault(source.ServiceTier.String), orDefault(params.ServiceTier)},
+		{"Custom args", orNone(strings.Join(unmarshalArgs(source.CustomArgs), " ")), orNone(strings.Join(params.CustomArgs, " "))},
+		{"Max concurrent tasks", fmt.Sprint(source.MaxConcurrentTasks), fmt.Sprint(maxConcurrent)},
+		{"Conversation starters", startersLabel(source.ConversationStarters), startersParamsLabel(params.ConversationStarters)},
+		{"Avatar", source.AvatarUrl.String, avatarLabel(params.AvatarURL)},
 	}, nil
+}
+
+type runtimeLabel struct {
+	id             pgtype.UUID
+	name, provider string
+}
+
+func (label runtimeLabel) String() string {
+	if label.name == "" {
+		return uuidToString(label.id)
+	}
+	return fmt.Sprintf("%s (%s)", label.name, label.provider)
+}
+
+func orDefault(value string) string {
+	if value == "" {
+		return "default"
+	}
+	return value
+}
+
+func orNone(value string) string {
+	if value == "" {
+		return "none"
+	}
+	return value
+}
+
+func unmarshalArgs(raw []byte) []string {
+	var args []string
+	_ = json.Unmarshal(raw, &args)
+	return args
+}
+
+func startersParamsLabel(starters []decisionaction.ConversationStarter) string {
+	parts := make([]string, len(starters))
+	for i, starter := range starters {
+		parts[i] = starter.Label + ": " + starter.Prompt
+	}
+	return orNone(strings.Join(parts, "; "))
+}
+
+func startersLabel(raw []byte) string {
+	var starters []decisionaction.ConversationStarter
+	_ = json.Unmarshal(raw, &starters)
+	return startersParamsLabel(starters)
+}
+
+// avatarLabel: a copy without a named image gets a random emoji.
+func avatarLabel(requested *string) string {
+	if requested == nil || *requested == "" {
+		return "random emoji"
+	}
+	return *requested
 }
 
 func (handler *Handler) agentForAction(ctx context.Context, workspaceID pgtype.UUID, agentID string) (db.Agent, error) {
