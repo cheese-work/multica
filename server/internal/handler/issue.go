@@ -1319,7 +1319,7 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
 		i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position,
 		i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id,
-		i.revision, i.duplicate_of_issue_id,
+		i.revision, i.duplicate_of_issue_id, i.description_external_read,
 		pc.match_source,
 		COALESCE(c.content, '') AS matched_comment_content
 	FROM page_candidates pc
@@ -1452,6 +1452,7 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		originals = appendDuplicateOriginal(originals, sr.issue.Status, sr.issue.DuplicateOfIssueID)
 	}
 	fillSearch := h.newStatusCategoryFiller(ctx, wsUUID, originals...)
+	searchFilter := h.newReadFilter(r)
 	resp := make([]SearchIssueResponse, len(results))
 	for i, sr := range results {
 		sir := SearchIssueResponse{
@@ -1459,8 +1460,11 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 			MatchSource:   sr.matchSource,
 		}
 		fillSearch(&sir.IssueResponse)
+		searchFilter.stubDescription(h, sr.issue, &sir.IssueResponse)
 		// Always populate comment snippet when a matching comment exists
-		if sr.matchedCommentContent != "" {
+		// The search row does not say whether the matched comment is marked, so
+		// an elevated reader gets no comment snippet at all.
+		if sr.matchedCommentContent != "" && !searchFilter.withholds(true) {
 			snippet := extractSnippet(sr.matchedCommentContent, q)
 			sir.MatchedCommentSnippet = &snippet
 			// Keep backward compat: also set MatchedSnippet for comment-source matches
@@ -1470,7 +1474,7 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		// Populate description snippet when description matches
 		if sr.matchSource == "description" || descriptionContains(sr.issue.Description, q, terms) {
-			if sr.issue.Description.Valid && sr.issue.Description.String != "" {
+			if sr.issue.Description.Valid && sr.issue.Description.String != "" && !searchFilter.withholds(sr.issue.DescriptionExternalRead) {
 				snippet := extractSnippet(sr.issue.Description.String, q)
 				sir.MatchedDescriptionSnippet = &snippet
 			}
@@ -2702,10 +2706,7 @@ func (h *Handler) GetIssue(w http.ResponseWriter, r *http.Request) {
 	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
 	resp := issueToResponse(issue, prefix)
 	resp.WebURL = h.workspaceWebURL(r.Context(), issue.WorkspaceID, func(ws db.Workspace) string { return weblink.Issue(ws.Slug, resp.Identifier) })
-	if h.newReadFilter(r).withholds(issue.DescriptionExternalRead) {
-		stub := h.descriptionStub(issue, resp)
-		resp.Description, resp.DescriptionWithheld = &stub, true
-	}
+	h.newReadFilter(r).stubDescription(h, issue, &resp)
 	h.fillStatusCategory(r.Context(), issue.WorkspaceID, &resp)
 	detailLabels := h.labelsByIssue(r.Context(), issue.WorkspaceID, []pgtype.UUID{issue.ID})[uuidToString(issue.ID)]
 	if detailLabels == nil {
@@ -2776,10 +2777,7 @@ func (h *Handler) ListChildIssues(w http.ResponseWriter, r *http.Request) {
 	resp := make([]IssueResponse, len(children))
 	for i, child := range children {
 		resp[i] = issueToResponse(child, prefix)
-		if readFilter.withholds(child.DescriptionExternalRead) {
-			stub := h.descriptionStub(child, resp[i])
-			resp[i].Description, resp[i].DescriptionWithheld = &stub, true
-		}
+		readFilter.stubDescription(h, child, &resp[i])
 		resp[i].StatusCategory = issuestatus.WireCategory(child.Status, statusResolver.Category(r.Context(), h.Queries, child.Status))
 		labels := labelsMap[resp[i].ID]
 		if labels == nil {
@@ -2867,10 +2865,7 @@ func (h *Handler) ListChildrenByParents(w http.ResponseWriter, r *http.Request) 
 	resp := make([]IssueResponse, len(children))
 	for i, child := range children {
 		resp[i] = issueToResponse(child, prefix)
-		if readFilter.withholds(child.DescriptionExternalRead) {
-			stub := h.descriptionStub(child, resp[i])
-			resp[i].Description, resp[i].DescriptionWithheld = &stub, true
-		}
+		readFilter.stubDescription(h, child, &resp[i])
 		resp[i].StatusCategory = issuestatus.WireCategory(child.Status, statusResolver.Category(r.Context(), h.Queries, child.Status))
 		labels := labelsMap[resp[i].ID]
 		if labels == nil {
@@ -3784,7 +3779,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to create issue")
 			return
 		}
-		markedWriter = acting && actor.ExternalRead
+		markedWriter = acting && (actor.ExternalRead || len(actor.TaintIds) > 0)
 	}
 	res, err := h.IssueService.Create(r.Context(), service.IssueCreateParams{
 		WorkspaceID:     wsUUID,
@@ -3846,6 +3841,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	if errors.Is(err, service.ErrActiveDuplicate) {
 		dup := *res.DuplicateIssue
 		existing := issueToResponse(dup, h.getIssuePrefix(r.Context(), dup.WorkspaceID))
+		h.newReadFilter(r).stubDescription(h, dup, &existing)
 		h.fillStatusCategory(r.Context(), dup.WorkspaceID, &existing)
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"code":  "active_duplicate_issue",
@@ -3893,6 +3889,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	slog.Info("issue created", append(logger.RequestAttrs(r), "issue_id", uuidToString(issue.ID), "title", issue.Title, "status", issue.Status, "workspace_id", workspaceID)...)
 
 	resp := issueToResponse(issue, prefix)
+	h.newReadFilter(r).stubDescription(h, issue, &resp)
 	resp.WebURL = h.workspaceWebURL(r.Context(), issue.WorkspaceID, func(ws db.Workspace) string { return weblink.Issue(ws.Slug, resp.Identifier) })
 	fillCreated(&resp)
 	h.fillProjectTriggerOutcome(r.Context(), issue, &resp)
@@ -4563,6 +4560,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 
 	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
 	resp := issueToResponse(issue, prefix)
+	h.newReadFilter(r).stubDescription(h, issue, &resp)
 	slog.Info("issue updated", append(logger.RequestAttrs(r), "issue_id", id, "workspace_id", workspaceID)...)
 	h.fillProjectTriggerOutcome(r.Context(), issue, &resp)
 
@@ -5259,6 +5257,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	// once after the loop against the final state (MUL-4155), not per child
 	// against a mid-batch snapshot.
 	var changedParents []pgtype.UUID
+	batchFilter := h.newReadFilter(r)
 	for _, issueID := range req.IssueIDs {
 		issueUUID, err := util.ParseUUID(issueID)
 		if err != nil {
@@ -5518,6 +5517,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		// reloaded issue so the batch result and event carry the stored one.
 		issue = h.postEntryWarning(r.Context(), workflowWrite, issue)
 		resp := issueToResponse(issue, prefix)
+		batchFilter.stubDescription(h, issue, &resp)
 
 		fillBatch(&resp)
 		h.fillProjectTriggerOutcome(r.Context(), issue, &resp)

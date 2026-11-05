@@ -469,7 +469,7 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "upload failed")
 			return
 		}
-		if acting && actor.ExternalRead {
+		if acting && (actor.ExternalRead || len(actor.TaintIds) > 0) {
 			params.ExternalRead = pgtype.Bool{Bool: true, Valid: true}
 		}
 
@@ -796,6 +796,9 @@ func (h *Handler) loadAttachmentForRequest(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusNotFound, "attachment not found")
 		return db.Attachment{}, false
 	}
+	if h.denyWithheldAttachment(w, r, att) {
+		return db.Attachment{}, false
+	}
 
 	return att, true
 }
@@ -843,14 +846,16 @@ func (h *Handler) loadAttachmentForDownload(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusNotFound, "attachment not found")
 		return db.Attachment{}, false
 	}
-	if h.MembershipCache.Get(r.Context(), userID, workspaceID) {
-		return att, true
+	if !h.MembershipCache.Get(r.Context(), userID, workspaceID) {
+		if _, err := h.getWorkspaceMember(r.Context(), userID, workspaceID); err != nil {
+			writeError(w, http.StatusNotFound, "attachment not found")
+			return db.Attachment{}, false
+		}
+		h.MembershipCache.Set(r.Context(), userID, workspaceID)
 	}
-	if _, err := h.getWorkspaceMember(r.Context(), userID, workspaceID); err != nil {
-		writeError(w, http.StatusNotFound, "attachment not found")
+	if h.denyWithheldAttachment(w, r, att) {
 		return db.Attachment{}, false
 	}
-	h.MembershipCache.Set(r.Context(), userID, workspaceID)
 	return att, true
 }
 

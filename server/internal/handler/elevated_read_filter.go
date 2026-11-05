@@ -93,3 +93,24 @@ func (h *Handler) descriptionStub(i db.Issue, resp IssueResponse) string {
 	}
 	return withheldStub("issue description", resp.ID, i.CreatorType, uuidToString(i.CreatorID), body, resp.WebURL)
 }
+
+// stubDescription replaces resp.Description with a stub when issue's description
+// is marked and the reader is elevated. Every route that returns a description
+// calls it, so no representation (list, search, write response) hands the text
+// back.
+func (f *readFilter) stubDescription(h *Handler, i db.Issue, resp *IssueResponse) {
+	if f.withholds(i.DescriptionExternalRead) {
+		stub := h.descriptionStub(i, *resp)
+		resp.Description, resp.DescriptionWithheld = &stub, true
+	}
+}
+
+// denyWithheldAttachment answers 403 for an elevated reader asking for the
+// bytes of a marked attachment (plan 3.7: no representation of a marked body).
+func (h *Handler) denyWithheldAttachment(w http.ResponseWriter, r *http.Request, att db.Attachment) bool {
+	if att.ExternalRead && h.elevatedReader(r) {
+		writeError(w, http.StatusForbidden, "attachment withheld: untrusted content is not readable by an elevated run")
+		return true
+	}
+	return false
+}

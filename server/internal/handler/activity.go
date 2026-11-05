@@ -270,8 +270,15 @@ func (h *Handler) ListTimeline(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) mergeTimeline(r *http.Request, comments []db.Comment, activities []db.ActivityLog, ascending bool) []TimelineEntry {
 	out := make([]TimelineEntry, 0, len(comments)+len(activities))
 	out = append(out, h.commentsToEntries(r, comments)...)
+	activityFilter := h.newReadFilter(r)
 	for _, a := range activities {
-		out = append(out, activityToEntry(a))
+		entry := activityToEntry(a)
+		// Details can quote text an external source wrote and carry no mark of
+		// their own, so an elevated reader gets the action and no details.
+		if activityFilter.withholds(true) {
+			entry.Details = nil
+		}
+		out = append(out, entry)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CreatedAt != out[j].CreatedAt {

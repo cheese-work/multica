@@ -170,3 +170,153 @@ func TestElevatedTokenReadsStubForMarkedDescription(t *testing.T) {
 		t.Errorf("member read of marked description = %v, want full text", full.Description)
 	}
 }
+
+func elevatedGet(t *testing.T, h http.HandlerFunc, path string, body any, taskID string, params ...string) *testutil.Response {
+	t.Helper()
+	method := "GET"
+	if body != nil {
+		method = "PUT"
+	}
+	req := newRequest(method, path, body)
+	for i := 0; i+1 < len(params); i += 2 {
+		req = withURLParam(req, params[i], params[i+1])
+	}
+	return testutil.Call(t, h, asElevatedToken(req, taskID))
+}
+
+func TestElevatedTokenSearchStubsMarkedBodies(t *testing.T) {
+	f := claimElevated(t, "multica_cross_issue")
+	needle := "needlexyz" + f.issueID[:8]
+	dbfx.Exec(t, `UPDATE issue SET description = $2, description_external_read = true WHERE id = $1`, f.issueID, hostileBody+" "+needle)
+	dbfx.Comment(t, f.issueID, hostileBody+" "+needle+" (comment)", testutil.Cols{"external_read": true})
+
+	res := elevatedGet(t, testHandler.SearchIssues, "/api/issues/search?q="+needle+"&include_closed=true", nil, f.taskID)
+	res.Want(http.StatusOK)
+	if strings.Contains(res.Text(), hostileBody) {
+		t.Errorf("search leaks a marked body to an elevated token: %s", res.Text())
+	}
+}
+
+func TestElevatedTokenUpdateIssueResponseStubsMarkedDescription(t *testing.T) {
+	f := claimElevated(t, "multica_cross_issue")
+	dbfx.Exec(t, `UPDATE issue SET description = $2, description_external_read = true WHERE id = $1`, f.issueID, hostileBody)
+
+	res := elevatedGet(t, testHandler.UpdateIssue, "/api/issues/"+f.issueID, map[string]any{"priority": "low"}, f.taskID, "id", f.issueID)
+	res.Want(http.StatusOK)
+	if strings.Contains(res.Text(), hostileBody) {
+		t.Errorf("update response leaks a marked description: %s", res.Text())
+	}
+}
+
+func TestElevatedTokenCommentPreviewStubsMarkedComment(t *testing.T) {
+	f := claimElevated(t, "multica_cross_issue")
+	c := seedReaderComments(t, f.issueID)
+	for _, id := range []string{c.marked, c.tainted} {
+		res := elevatedGet(t, testHandler.GetCommentPreview, "/api/comments/"+id+"/preview", nil, f.taskID, "commentId", id)
+		res.Want(http.StatusOK)
+		if strings.Contains(res.Text(), hostileBody) {
+			t.Errorf("preview leaks marked comment %s: %s", id, res.Text())
+		}
+	}
+}
+
+// A writer that is tainted but not external_read still wrote untrusted text:
+// the description it saves must read as a stub to an elevated run.
+func TestTaintedOnlyWriterDescriptionIsWithheld(t *testing.T) {
+	f := claimElevated(t, "multica_cross_issue")
+	writer := dbfx.Task(t, seededReadyAgentID(t), testutil.Cols{"status": "running", "runtime_id": handlerTestRuntimeID(t), "issue_id": f.issueID, "taint_ids": []string{"intake-1"}})
+
+	req := asElevatedToken(withURLParam(newRequest("PUT", "/api/issues/"+f.issueID, map[string]any{"description": hostileBody}), "id", f.issueID), writer)
+	testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK)
+
+	get := withURLParam(newRequest("GET", "/api/issues/"+f.issueID, nil), "id", f.issueID)
+	var got IssueResponse
+	testutil.Call(t, testHandler.GetIssue, asElevatedToken(get, f.taskID)).Want(http.StatusOK).JSON(&got)
+	if got.Description == nil {
+		t.Fatal("description is nil")
+	}
+	assertStub(t, "tainted-writer description", *got.Description, got.DescriptionWithheld, f.issueID, hostileBody)
+}
+
+func TestTaintedOnlyWriterCreatedIssueDescriptionIsWithheld(t *testing.T) {
+	f := claimElevated(t, "multica_cross_issue")
+	writer := dbfx.Task(t, seededReadyAgentID(t), testutil.Cols{"status": "running", "runtime_id": handlerTestRuntimeID(t), "issue_id": f.issueID, "taint_ids": []string{"intake-1"}})
+
+	req := testutil.WithHeaders(asElevatedToken(newRequest("POST", "/api/issues", map[string]any{"title": "child " + f.issueID[:8], "description": hostileBody, "parent_issue_id": f.issueID}), writer), "X-Agent-ID", seededReadyAgentID(t))
+	var created IssueResponse
+	testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated).JSON(&created)
+
+	get := withURLParam(newRequest("GET", "/api/issues/"+created.ID, nil), "id", created.ID)
+	var got IssueResponse
+	testutil.Call(t, testHandler.GetIssue, asElevatedToken(get, f.taskID)).Want(http.StatusOK).JSON(&got)
+	if got.Description == nil {
+		t.Fatal("description is nil")
+	}
+	assertStub(t, "tainted-writer created description", *got.Description, got.DescriptionWithheld, created.ID, hostileBody)
+
+	list := elevatedGet(t, testHandler.ListChildIssues, "/api/issues/"+f.issueID+"/children", nil, f.taskID, "id", f.issueID)
+	list.Want(http.StatusOK)
+	if !strings.Contains(list.Text(), created.ID) || strings.Contains(list.Text(), hostileBody) {
+		t.Errorf("child list must contain the tainted-writer child as a stub only: %s", list.Text())
+	}
+}
+
+func TestElevatedTokenCannotReadMarkedAttachment(t *testing.T) {
+	f := claimElevated(t, "multica_cross_issue")
+	marked := dbfx.Insert(t, "attachment", testutil.Cols{
+		"workspace_id": testWorkspaceID, "issue_id": f.issueID, "uploader_type": "member", "uploader_id": testUserID,
+		"filename": "intake.txt", "url": "https://cdn.example.test/intake.txt", "content_type": "text/plain", "size_bytes": 12,
+		"external_read": true,
+	})
+	clean := dbfx.Insert(t, "attachment", testutil.Cols{
+		"workspace_id": testWorkspaceID, "issue_id": f.issueID, "uploader_type": "member", "uploader_id": testUserID,
+		"filename": "plain.txt", "url": "https://cdn.example.test/plain.txt", "content_type": "text/plain", "size_bytes": 12,
+	})
+	routes := map[string]http.HandlerFunc{
+		"metadata": testHandler.GetAttachmentByID,
+		"content":  testHandler.GetAttachmentContent,
+	}
+	for name, route := range routes {
+		get := func(id string) *http.Request {
+			return withURLParam(newRequest("GET", "/api/attachments/"+id, nil), "id", id)
+		}
+		denied := testutil.Call(t, route, asElevatedToken(get(marked), f.taskID)).Want(http.StatusForbidden)
+		if !strings.Contains(denied.Text(), "attachment withheld") {
+			t.Errorf("%s: elevated token not denied by the read filter: %s", name, denied.Text())
+		}
+		if res := testutil.Call(t, route, get(marked)); strings.Contains(res.Text(), "attachment withheld") {
+			t.Errorf("%s: member was denied a marked attachment", name)
+		}
+		if res := testutil.Call(t, route, asElevatedToken(get(clean), f.taskID)); strings.Contains(res.Text(), "attachment withheld") {
+			t.Errorf("%s: elevated token was denied an unmarked attachment", name)
+		}
+	}
+	// the by-id download route resolves the workspace from the attachment
+	dl := func() *http.Request {
+		return withURLParam(newRequest("GET", "/api/attachments/"+marked+"/download", nil), "id", marked)
+	}
+	for name, route := range map[string]http.HandlerFunc{"download-meta": testHandler.GetAttachmentForDownload, "download": testHandler.DownloadAttachment} {
+		res := testutil.Call(t, route, asElevatedToken(dl(), f.taskID)).Want(http.StatusForbidden)
+		if !strings.Contains(res.Text(), "attachment withheld") {
+			t.Errorf("%s: elevated token not denied by the read filter: %s", name, res.Text())
+		}
+	}
+}
+
+func TestElevatedTokenTimelineWithholdsActivityDetails(t *testing.T) {
+	f := claimElevated(t, "multica_cross_issue")
+	dbfx.Insert(t, "activity_log", testutil.Cols{
+		"workspace_id": testWorkspaceID, "issue_id": f.issueID, "actor_type": "member", "actor_id": testUserID,
+		"action":  "description_updated",
+		"details": testutil.Raw(`'{"note":"` + hostileBody + `"}'::jsonb`),
+	})
+	path := "/api/issues/" + f.issueID + "/timeline"
+	elevated := elevatedGet(t, testHandler.ListTimeline, path, nil, f.taskID, "id", f.issueID).Want(http.StatusOK)
+	if strings.Contains(elevated.Text(), hostileBody) || !strings.Contains(elevated.Text(), "description_updated") {
+		t.Errorf("elevated timeline must keep the action and drop details: %s", elevated.Text())
+	}
+	member := testutil.Call(t, testHandler.ListTimeline, withURLParam(newRequest("GET", path, nil), "id", f.issueID)).Want(http.StatusOK)
+	if !strings.Contains(member.Text(), hostileBody) {
+		t.Errorf("member must still read activity details: %s", member.Text())
+	}
+}
