@@ -1048,6 +1048,7 @@ const DecisionRequestCardSchema = z.lazy(() => z.object({
   id: z.string(),
   issue_id: z.string(),
   issue_identifier: z.string().default(""),
+  issue_title: z.string().optional().catch(undefined),
   source_comment_id: z.string().nullish().catch(undefined),
   ask: z.string(),
   asking_agent_name: z.string().optional().catch(undefined),
