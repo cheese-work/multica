@@ -59,13 +59,18 @@ WHERE issue_id = @issue_id AND type = 'comment' AND created_at > @since
 ORDER BY created_at, id
 LIMIT 1;
 
+-- name: LockChatWatchSourceComment :one
+-- The DM turn a watch fires quotes this comment, so the send transaction takes
+-- its taint here and holds a share lock: the comment cannot be deleted before
+-- the turn commits. A missing row means it was deleted after the tick read it.
+SELECT taint_ids FROM comment WHERE id = sqlc.arg('comment_id')::uuid FOR SHARE;
+
 -- name: StampChatTaskWatchSource :exec
--- The DM turn a watch fires reads the matched comment, so the task names it as
--- its trigger evidence and takes its taint, read here in the task's own
--- transaction (the task trigger unions it with what the task has). Taint only
--- grows, so this is never older than what the watch read.
+-- The task names the quoted comment as its trigger evidence and carries the
+-- taint LockChatWatchSourceComment read (the task trigger unions it with what
+-- the task has).
 UPDATE agent_task_queue SET
-    taint_ids = COALESCE((SELECT c.taint_ids FROM comment c WHERE c.id = sqlc.arg('comment_id')::uuid), '{}'),
+    taint_ids = sqlc.arg('taint_ids')::text[],
     trigger_evidence_kind = 'comment',
     trigger_evidence_ref_id = sqlc.arg('comment_id')::uuid
 WHERE id = sqlc.arg('task_id')::uuid;

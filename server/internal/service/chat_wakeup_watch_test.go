@@ -391,3 +391,34 @@ func TestChatWatchCleanCommentLeavesDMTaskClean(t *testing.T) {
 		t.Fatalf("tainted DM tasks = %d, err = %v; want 0", n, err)
 	}
 }
+
+// The quoted comment is deleted after the tick read it but before the turn is
+// sent: its taint can no longer be read, so nothing is delivered (fail closed).
+func TestChatWatchDropsWhenQuotedCommentIsDeletedBeforeSend(t *testing.T) {
+	f := newChatWakeupFixture(t)
+	w, err := f.watch(t, ChatWakeupInput{Event: "comment.created", ActorType: "agent", ActorID: util.MustParseUUID(f.agentID)})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	ctx := context.Background()
+	var commentID string
+	if err := f.pool.QueryRow(ctx,
+		`INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, taint_ids)
+		 SELECT id, workspace_id, 'agent', $2::uuid, 'read an untrusted page', ARRAY['ext-1'] FROM issue WHERE id = $1 RETURNING id::text`,
+		f.issueID, f.agentID).Scan(&commentID); err != nil {
+		t.Fatal(err)
+	}
+	hit, err := f.svc.watchHit(ctx, w)
+	if err != nil || hit.what == "" || !hit.comment.Valid {
+		t.Fatalf("watchHit = %+v, %v; want the comment", hit, err)
+	}
+	if _, err := f.pool.Exec(ctx, `DELETE FROM comment WHERE id = $1`, commentID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.fire(ctx, w, chatWatchContent(w, hit.what), hit.comment); err != nil {
+		t.Fatalf("fire: %v", err)
+	}
+	if got := f.status(t, w); got != "cancelled" || f.queuedTurns(t) != 0 {
+		t.Fatalf("status = %q, queued = %d; want cancelled, 0", got, f.queuedTurns(t))
+	}
+}

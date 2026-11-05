@@ -397,6 +397,20 @@ func (q *Queries) ListPendingChatWakeups(ctx context.Context, chatSessionID pgty
 	return items, nil
 }
 
+const lockChatWatchSourceComment = `-- name: LockChatWatchSourceComment :one
+SELECT taint_ids FROM comment WHERE id = $1::uuid FOR SHARE
+`
+
+// The DM turn a watch fires quotes this comment, so the send transaction takes
+// its taint here and holds a share lock: the comment cannot be deleted before
+// the turn commits. A missing row means it was deleted after the tick read it.
+func (q *Queries) LockChatWatchSourceComment(ctx context.Context, commentID pgtype.UUID) ([]string, error) {
+	row := q.db.QueryRow(ctx, lockChatWatchSourceComment, commentID)
+	var taint_ids []string
+	err := row.Scan(&taint_ids)
+	return taint_ids, err
+}
+
 const setChatWakeupFiredTask = `-- name: SetChatWakeupFiredTask :exec
 UPDATE chat_wakeup SET fired_task_id = $2 WHERE id = $1
 `
@@ -413,22 +427,22 @@ func (q *Queries) SetChatWakeupFiredTask(ctx context.Context, arg SetChatWakeupF
 
 const stampChatTaskWatchSource = `-- name: StampChatTaskWatchSource :exec
 UPDATE agent_task_queue SET
-    taint_ids = COALESCE((SELECT c.taint_ids FROM comment c WHERE c.id = $1::uuid), '{}'),
+    taint_ids = $1::text[],
     trigger_evidence_kind = 'comment',
-    trigger_evidence_ref_id = $1::uuid
-WHERE id = $2::uuid
+    trigger_evidence_ref_id = $2::uuid
+WHERE id = $3::uuid
 `
 
 type StampChatTaskWatchSourceParams struct {
+	TaintIds  []string    `json:"taint_ids"`
 	CommentID pgtype.UUID `json:"comment_id"`
 	TaskID    pgtype.UUID `json:"task_id"`
 }
 
-// The DM turn a watch fires reads the matched comment, so the task names it as
-// its trigger evidence and takes its taint, read here in the task's own
-// transaction (the task trigger unions it with what the task has). Taint only
-// grows, so this is never older than what the watch read.
+// The task names the quoted comment as its trigger evidence and carries the
+// taint LockChatWatchSourceComment read (the task trigger unions it with what
+// the task has).
 func (q *Queries) StampChatTaskWatchSource(ctx context.Context, arg StampChatTaskWatchSourceParams) error {
-	_, err := q.db.Exec(ctx, stampChatTaskWatchSource, arg.CommentID, arg.TaskID)
+	_, err := q.db.Exec(ctx, stampChatTaskWatchSource, arg.TaintIds, arg.CommentID, arg.TaskID)
 	return err
 }

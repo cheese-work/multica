@@ -39,6 +39,7 @@ var (
 	ErrChatWakeupNotFound     = errors.New("chat wakeup: no such pending wakeup")
 	ErrChatWatchInvalid       = errors.New("chat wakeup: an issue watch needs exactly one of an event (comment.created) or a status, and an actor filter needs a member or agent type")
 	errChatWatchAccessRevoked = errors.New("chat wakeup: the DM's human left the workspace")
+	errChatWatchSourceGone    = errors.New("chat wakeup: the quoted comment was deleted before the send")
 	ErrChatWatchIssueAccess   = errors.New("chat wakeup: the issue is not readable by this DM's human")
 )
 
@@ -269,6 +270,15 @@ func (s *ChatWakeupService) fire(ctx context.Context, w db.ChatWakeup, content s
 		} else if err != nil {
 			return err
 		}
+		var taint []string
+		if sourceComment.Valid {
+			var err error
+			if taint, err = qtx.LockChatWatchSourceComment(ctx, sourceComment); errors.Is(err, pgx.ErrNoRows) {
+				return errChatWatchSourceGone
+			} else if err != nil {
+				return err
+			}
+		}
 		var err error
 		sent, err = s.Tasks.SendDirectChatMessageTx(ctx, qtx, plan, session, session.CreatorID,
 			content, nil, "", pgtype.UUID{}, chatWakeupSentVia)
@@ -276,7 +286,7 @@ func (s *ChatWakeupService) fire(ctx context.Context, w db.ChatWakeup, content s
 			return err
 		}
 		if sourceComment.Valid {
-			if err := qtx.StampChatTaskWatchSource(ctx, db.StampChatTaskWatchSourceParams{TaskID: sent.Task.ID, CommentID: sourceComment}); err != nil {
+			if err := qtx.StampChatTaskWatchSource(ctx, db.StampChatTaskWatchSourceParams{TaskID: sent.Task.ID, CommentID: sourceComment, TaintIds: taint}); err != nil {
 				return err
 			}
 		}
@@ -284,7 +294,7 @@ func (s *ChatWakeupService) fire(ctx context.Context, w db.ChatWakeup, content s
 		return qtx.SetChatWakeupFiredTask(ctx, db.SetChatWakeupFiredTaskParams{ID: w.ID, FiredTaskID: sent.Task.ID})
 	})
 	switch {
-	case errors.Is(err, errChatWatchAccessRevoked), errors.Is(err, ErrChatSessionArchived), errors.Is(err, ErrChatTaskAgentArchived), errors.Is(err, ErrChatTaskAgentNoRuntime):
+	case errors.Is(err, errChatWatchAccessRevoked), errors.Is(err, errChatWatchSourceGone), errors.Is(err, ErrChatSessionArchived), errors.Is(err, ErrChatTaskAgentArchived), errors.Is(err, ErrChatTaskAgentNoRuntime):
 		return drop()
 	case err != nil:
 		return err // includes ErrChatCompacting: stays pending, retried next tick
