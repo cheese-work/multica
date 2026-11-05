@@ -1546,6 +1546,7 @@
       "source_workspace": "workspace",
       "source_project": "project",
       "source_default": "the default",
+      "open_project": "Edit in project rules",
       "override": "Override",
       "override_label": "Override {{rule}}",
       "edit": "Edit override",
