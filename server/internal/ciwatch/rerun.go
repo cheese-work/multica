@@ -9,9 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/multica-ai/multica/server/internal/ghbudget"
 )
 
@@ -57,11 +54,8 @@ const rerunCost = 2
 type Rerunner struct {
 	API          RerunAPI
 	Budget       *ghbudget.Ledger
-	Pool         *pgxpool.Pool
 	Installation func(ctx context.Context, a Action) (int64, error)
-	// Notify sends the one P4 notification after a permission 403.
-	Notify func(ctx context.Context, a Action, reason string) error
-	Now    func() time.Time
+	Now          func() time.Time
 }
 
 func (r *Rerunner) notSent(err error) error {
@@ -71,6 +65,25 @@ func (r *Rerunner) notSent(err error) error {
 	}
 	return &NotSentError{DueAt: r.Now().Add(RerunDelay), Err: err}
 }
+
+// What the POST answered. Stored on the row (post_outcome) before anything is
+// done about it, so a restart can still route it (RerunFollowup).
+const (
+	OutcomePermission = "permission" // 403, not a rate limit
+	OutcomeRateLimit  = "rate_limit" // 429, or 403 with a rate-limit signal
+	OutcomeRejected   = "rejected"   // any other 4xx
+	OutcomeServer     = "server"     // 5xx: the rerun may have landed
+)
+
+// PostError is a POST that was sent and answered with something other than
+// 2xx. The ledger stores Outcome and parks the row as ambiguous.
+type PostError struct {
+	Outcome string
+	Err     error
+}
+
+func (e *PostError) Error() string { return e.Err.Error() }
+func (e *PostError) Unwrap() error { return e.Err }
 
 // Execute: everything before mark() is read-only and returns NotSentError; the
 // POST happens once, after expected_attempt and post_started_at are stored.
@@ -112,45 +125,25 @@ func (r *Rerunner) Execute(ctx context.Context, a Action, mark func(expectedAtte
 		return RemoteOutcome{}, fmt.Errorf("rerun POST: %w", err)
 	}
 	_ = res.Complete(ctx, resp.Header)
-	switch {
-	case resp.Status >= 200 && resp.Status < 300:
+	if resp.Status >= 200 && resp.Status < 300 {
 		return RemoteOutcome{State: StateDone, DestinationID: strconv.Itoa(expected)}, nil
-	case resp.Status == http.StatusForbidden && isRateLimited(resp):
+	}
+	outcome := OutcomeRejected
+	switch {
+	case resp.Status == http.StatusTooManyRequests || resp.Status == http.StatusForbidden && isRateLimited(resp):
+		outcome = OutcomeRateLimit
 		_, _ = r.Budget.RecordLimited(ctx, inst, resp.Header)
 	case resp.Status == http.StatusForbidden:
-		if err := r.permissionDenied(ctx, a, resp.Message); err != nil {
-			return RemoteOutcome{}, fmt.Errorf("rerun POST HTTP 403 (%s); shadow switch: %w", resp.Message, err)
-		}
+		outcome = OutcomePermission
+	case resp.Status >= 500:
+		outcome = OutcomeServer
 	}
-	return RemoteOutcome{}, fmt.Errorf("rerun POST HTTP %d: %s", resp.Status, resp.Message)
+	return RemoteOutcome{}, &PostError{Outcome: outcome, Err: fmt.Errorf("rerun POST HTTP %d: %s", resp.Status, resp.Message)}
 }
 
 func isRateLimited(resp RerunResponse) bool {
 	return resp.Header.Get("Retry-After") != "" || resp.Header.Get("X-RateLimit-Remaining") == "0" ||
 		strings.Contains(strings.ToLower(resp.Message), "rate limit")
-}
-
-// permissionDenied puts P1 of the repo back to shadow, audits it, and sends
-// the one P4 notification. It runs inside the single Execute of the action.
-func (r *Rerunner) permissionDenied(ctx context.Context, a Action, msg string) error {
-	tx, err := r.Pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err = tx.Exec(ctx, `WITH old AS (
-			SELECT id, p1_mode FROM ci_watch_config
-			WHERE workspace_id=$1::uuid AND repo_owner=lower($2) AND repo_name=lower($3) AND p1_mode<>'shadow' FOR UPDATE),
-		upd AS (UPDATE ci_watch_config c SET p1_mode='shadow', updated_at=$4 FROM old WHERE c.id=old.id RETURNING c.id)
-		INSERT INTO ci_watch_config_audit (workspace_id, config_id, actor_type, actor_id, field, old_value, new_value, changed_at)
-		SELECT $1::uuid, old.id, 'system', '00000000-0000-0000-0000-000000000000', 'p1_mode', old.p1_mode, 'shadow', $4 FROM old`,
-		a.WorkspaceID, a.RepoOwner, a.RepoName, r.Now()); err != nil {
-		return err
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return err
-	}
-	return r.Notify(ctx, a, "rerun-failed-jobs returned 403 (permission): "+msg)
 }
 
 // Reconcile is read-only: the rerun landed when run_attempt reached the value
@@ -201,8 +194,13 @@ type Route struct {
 	Action   Action
 }
 
-// ScheduleP1 claims the one rerun of the original run, or escalates: a repeat
-// failure (run_attempt > 1) or an already claimed rerun never gets a second one.
+// ScheduleP1 claims the one rerun of the original run, or escalates. Delivery
+// of the same failure can repeat, so only one thing changes anything:
+//   - run_attempt 1: the first call schedules the rerun; a repeat does nothing.
+//   - run_attempt > 1: the rerun already happened and failed again. The first
+//     call schedules the one P2/P4 action; a repeat does nothing.
+//
+// A zero Route means "nothing new to do".
 func ScheduleP1(ctx context.Context, l *Ledger, run Run, class Class, signature string, resetAt, now time.Time) (Route, error) {
 	escalate, ok := EscalationAfterRerun(class)
 	if !ok {
@@ -212,18 +210,16 @@ func ScheduleP1(ctx context.Context, l *Ledger, run Run, class Class, signature 
 		OriginalRunID: run.RunID, Kind: ActionRerun, Protocol: "P1", SignatureHash: signature,
 		DueAt: DueForRerun(class, now, resetAt), RunCompletedAt: now}
 	if run.RunAttempt > 1 {
-		a, err := l.find(ctx, n)
-		if errors.Is(err, pgx.ErrNoRows) { // reran by hand, nothing of ours scheduled
-			err = nil
+		n.Kind, n.Protocol, n.DueAt = escalationKind(escalate), escalate, now
+		a, inserted, err := l.escalate(ctx, nil, n)
+		if err != nil || !inserted {
+			return Route{}, err
 		}
-		return Route{Protocol: escalate, Action: a}, err
+		return Route{Protocol: escalate, Action: a}, nil
 	}
 	a, inserted, err := l.Schedule(ctx, n)
-	if err != nil {
+	if err != nil || !inserted {
 		return Route{}, err
-	}
-	if !inserted {
-		return Route{Protocol: escalate, Action: a}, nil
 	}
 	return Route{Protocol: "P1", Action: a}, nil
 }

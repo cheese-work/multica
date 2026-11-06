@@ -47,7 +47,6 @@ type rerunEnv struct {
 	rr        *Rerunner
 	remaining atomic.Int32
 	reset     atomic.Int64 // unix seconds
-	notified  atomic.Int32
 	inst      int64
 }
 
@@ -59,9 +58,8 @@ func newRerunEnv(t *testing.T) *rerunEnv {
 	budget := ghbudget.New(e.pool, ghbudget.FetcherFunc(func(context.Context, int64) (int, time.Time, error) {
 		return int(e.remaining.Load()), time.Unix(e.reset.Load(), 0), nil
 	}), ghbudget.WithClock(e.clock.Now), ghbudget.WithJitter(func() time.Duration { return 0 }))
-	e.rr = &Rerunner{API: e.gh, Budget: budget, Pool: e.pool, Now: e.clock.Now,
-		Installation: func(context.Context, Action) (int64, error) { return e.inst, nil },
-		Notify:       func(context.Context, Action, string) error { e.notified.Add(1); return nil }}
+	e.rr = &Rerunner{API: e.gh, Budget: budget, Now: e.clock.Now,
+		Installation: func(context.Context, Action) (int64, error) { return e.inst, nil }}
 	e.ledger.RegisterRemote(ActionRerun, e.rr)
 	t.Cleanup(func() {
 		ctx := context.Background()
@@ -106,6 +104,23 @@ func (e *rerunEnv) wantPosts(t *testing.T, n int32) {
 	if got := e.gh.posts.Load(); got != n {
 		t.Fatalf("POSTs = %d, want %d", got, n)
 	}
+}
+
+// followup runs the recovery step a worker has for classified POST failures.
+func (e *rerunEnv) followup(t *testing.T) {
+	t.Helper()
+	if _, err := e.ledger.RerunFollowup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// escalations counts the P2/P4 actions scheduled for one original run.
+func (e *rerunEnv) escalations(t *testing.T, runID int64, kind string) int {
+	t.Helper()
+	var n int
+	_ = e.pool.QueryRow(context.Background(), `SELECT count(*) FROM ci_watch_action WHERE workspace_id=$1::uuid
+		AND original_run_id=$2 AND action_kind=$3`, e.ws, runID, kind).Scan(&n)
+	return n
 }
 
 func accepted() (RerunResponse, error) { return RerunResponse{Status: 201}, nil }
@@ -183,55 +198,174 @@ func TestRerunRestartMidPostReconcilesWithoutPosting(t *testing.T) {
 	e.wantPosts(t, 0)
 }
 
-func TestRerunPermission403SwitchesP1ToShadowAndNotifiesOnce(t *testing.T) {
-	e := newRerunEnv(t)
-	ctx := context.Background()
-	if _, err := e.pool.Exec(ctx, `INSERT INTO ci_watch_config (workspace_id, repo_owner, repo_name, mode, p1_mode)
+func (e *rerunEnv) enableP1(t *testing.T) {
+	t.Helper()
+	if _, err := e.pool.Exec(context.Background(), `INSERT INTO ci_watch_config (workspace_id, repo_owner, repo_name, mode, p1_mode)
 		VALUES ($1::uuid,'o',$2,'act','act')`, e.ws, e.repo); err != nil {
 		t.Fatal(err)
 	}
-	e.gh.post = func() (RerunResponse, error) {
-		return RerunResponse{Status: 403, Message: "Resource not accessible by integration"}, nil
-	}
-	a := e.schedule(t, 1006)
-	e.runOne(t)
-	e.settleAll(t)
-	var p1 string
-	var audits int
-	_ = e.pool.QueryRow(ctx, `SELECT p1_mode FROM ci_watch_config WHERE workspace_id=$1::uuid`, e.ws).Scan(&p1)
+}
+
+func (e *rerunEnv) p1Audits(t *testing.T) (mode string, audits int) {
+	t.Helper()
+	ctx := context.Background()
+	_ = e.pool.QueryRow(ctx, `SELECT p1_mode FROM ci_watch_config WHERE workspace_id=$1::uuid`, e.ws).Scan(&mode)
 	_ = e.pool.QueryRow(ctx, `SELECT count(*) FROM ci_watch_config_audit WHERE workspace_id=$1::uuid AND field='p1_mode'
 		AND old_value='act' AND new_value='shadow'`, e.ws).Scan(&audits)
-	if p1 != "shadow" || audits != 1 || e.notified.Load() != 1 {
-		t.Fatalf("p1_mode=%s audits=%d notified=%d", p1, audits, e.notified.Load())
+	return mode, audits
+}
+
+func permission403() (RerunResponse, error) {
+	return RerunResponse{Status: 403, Message: "Resource not accessible by integration"}, nil
+}
+
+func TestRerunPermission403IsStoredThenFollowupSwitchesShadowAndNotifiesOnce(t *testing.T) {
+	e := newRerunEnv(t)
+	e.enableP1(t)
+	e.gh.post = permission403
+	a := e.schedule(t, 1006)
+	e.runOne(t)
+	if got := e.get(t, a.ID); got.State != StateAmbiguous || got.PostOutcome != OutcomePermission {
+		t.Fatalf("after 403: %+v", got)
 	}
-	if got := e.get(t, a.ID); got.State != StateFailed {
-		t.Fatalf("row: %+v", got)
+	e.followup(t)
+	e.followup(t) // a second pass finds nothing left to do
+	mode, audits := e.p1Audits(t)
+	if mode != "shadow" || audits != 1 || e.escalations(t, 1006, ActionInboxNotify) != 1 {
+		t.Fatalf("p1_mode=%s audits=%d notices=%d", mode, audits, e.escalations(t, 1006, ActionInboxNotify))
+	}
+	e.settleAll(t)
+	e.followup(t)
+	if _, audits := e.p1Audits(t); audits != 1 || e.escalations(t, 1006, ActionInboxNotify) != 1 {
+		t.Fatalf("effects repeated: audits=%d notices=%d", audits, e.escalations(t, 1006, ActionInboxNotify))
 	}
 	e.wantPosts(t, 1)
 }
 
-func TestRerunRateLimit403DoesNotSwitchShadowAndBacksOff(t *testing.T) {
+func TestRerunPermission403FollowupFailureLosesNothingAndRetries(t *testing.T) {
+	e := newRerunEnv(t)
+	e.enableP1(t)
+	e.gh.post = permission403
+	e.schedule(t, 1014)
+	e.runOne(t)
+	dead, cancel := context.WithCancel(context.Background())
+	cancel() // the database call fails at the first boundary
+	if _, err := e.ledger.RerunFollowup(dead); err == nil {
+		t.Fatal("want an error from a cancelled context")
+	}
+	if mode, audits := e.p1Audits(t); mode != "act" || audits != 0 || e.escalations(t, 1014, ActionInboxNotify) != 0 {
+		t.Fatalf("half applied: p1_mode=%s audits=%d", mode, audits)
+	}
+	e.followup(t) // the next pass, after a restart, does both
+	if mode, audits := e.p1Audits(t); mode != "shadow" || audits != 1 || e.escalations(t, 1014, ActionInboxNotify) != 1 {
+		t.Fatalf("p1_mode=%s audits=%d notices=%d", mode, audits, e.escalations(t, 1014, ActionInboxNotify))
+	}
+	e.wantPosts(t, 1)
+}
+
+func TestRerunFollowupConcurrentWorkersApplyEffectsOnce(t *testing.T) {
+	e := newRerunEnv(t)
+	e.enableP1(t)
+	e.gh.post = permission403
+	e.schedule(t, 1021)
+	e.runOne(t)
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := e.ledger.RerunFollowup(context.Background()); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if mode, audits := e.p1Audits(t); mode != "shadow" || audits != 1 || e.escalations(t, 1021, ActionInboxNotify) != 1 {
+		t.Fatalf("p1_mode=%s audits=%d notices=%d", mode, audits, e.escalations(t, 1021, ActionInboxNotify))
+	}
+	e.wantPosts(t, 1)
+}
+
+func TestRerunRateLimit403BacksOffThenFollowupEscalatesToP4WithoutShadow(t *testing.T) {
 	e := newRerunEnv(t)
 	ctx := context.Background()
-	if _, err := e.pool.Exec(ctx, `INSERT INTO ci_watch_config (workspace_id, repo_owner, repo_name, mode, p1_mode)
-		VALUES ($1::uuid,'o',$2,'act','act')`, e.ws, e.repo); err != nil {
-		t.Fatal(err)
-	}
+	e.enableP1(t)
 	e.gh.post = func() (RerunResponse, error) {
 		h := http.Header{"Retry-After": []string{"600"}}
 		return RerunResponse{Status: 403, Header: h, Message: "You have exceeded a secondary rate limit"}, nil
 	}
 	a := e.schedule(t, 1007)
 	e.runOne(t)
-	var p1 string
 	var backoff *time.Time
-	_ = e.pool.QueryRow(ctx, `SELECT p1_mode FROM ci_watch_config WHERE workspace_id=$1::uuid`, e.ws).Scan(&p1)
 	_ = e.pool.QueryRow(ctx, `SELECT backoff_until FROM gh_installation_budget WHERE installation_id=$1`, e.inst).Scan(&backoff)
-	if p1 != "act" || e.notified.Load() != 0 || backoff == nil || !backoff.After(e.clock.Now().Add(9*time.Minute)) {
-		t.Fatalf("p1_mode=%s notified=%d backoff=%v", p1, e.notified.Load(), backoff)
+	if backoff == nil || !backoff.After(e.clock.Now().Add(9*time.Minute)) {
+		t.Fatalf("backoff=%v", backoff)
 	}
-	if got := e.get(t, a.ID); got.State != StateAmbiguous {
+	if got := e.get(t, a.ID); got.State != StateAmbiguous || got.PostOutcome != OutcomeRateLimit {
 		t.Fatalf("row: %+v", got)
+	}
+	e.followup(t)
+	e.followup(t)
+	if mode, _ := e.p1Audits(t); mode != "act" || e.escalations(t, 1007, ActionInboxNotify) != 1 {
+		t.Fatalf("p1_mode=%s notices=%d", mode, e.escalations(t, 1007, ActionInboxNotify))
+	}
+	e.wantPosts(t, 1)
+}
+
+func Test5xxPostEscalatesToP2OnlyAfterReconcileFindsNothing(t *testing.T) {
+	e := newRerunEnv(t)
+	e.gh.post = func() (RerunResponse, error) { return RerunResponse{Status: 502, Message: "bad gateway"}, nil }
+	a := e.schedule(t, 1015)
+	e.runOne(t)
+	e.followup(t) // may have landed: nothing yet
+	if e.escalations(t, 1015, ActionIssueCreate) != 0 {
+		t.Fatal("escalated before reconcile")
+	}
+	e.settleAll(t)
+	if got := e.get(t, a.ID); got.State != StateFailed || got.PostOutcome != OutcomeServer {
+		t.Fatalf("row: %+v", got)
+	}
+	e.followup(t)
+	e.followup(t)
+	if e.escalations(t, 1015, ActionIssueCreate) != 1 || e.escalations(t, 1015, ActionInboxNotify) != 0 {
+		t.Fatalf("P2 issues=%d", e.escalations(t, 1015, ActionIssueCreate))
+	}
+	e.wantPosts(t, 1)
+}
+
+func Test5xxPostThatLandedNeverEscalates(t *testing.T) {
+	e := newRerunEnv(t)
+	e.gh.post = func() (RerunResponse, error) { return RerunResponse{Status: 500}, nil }
+	e.schedule(t, 1016)
+	e.runOne(t)
+	e.gh.setAttempt(2)
+	e.settleAll(t)
+	e.followup(t)
+	if e.escalations(t, 1016, ActionIssueCreate)+e.escalations(t, 1016, ActionInboxNotify) != 0 {
+		t.Fatal("escalated a rerun that landed")
+	}
+	e.wantPosts(t, 1)
+}
+
+func TestTimeoutPostAndRestartMidPostEscalateToP2WhenNotLanded(t *testing.T) {
+	e := newRerunEnv(t)
+	ctx := context.Background()
+	e.gh.post = func() (RerunResponse, error) { return RerunResponse{}, context.DeadlineExceeded }
+	e.schedule(t, 1017)
+	e.runOne(t)
+	// a second action: the worker died after the POST, so no outcome was stored
+	b := e.schedule(t, 1018)
+	if _, err := e.pool.Exec(ctx, `UPDATE ci_watch_action SET state='executing', lease_epoch=1, expected_attempt=2,
+		post_started_at=$2, lease_until=$2 WHERE id=$1`, b.ID, e.clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	e.settleAll(t)
+	e.followup(t)
+	e.followup(t)
+	for _, run := range []int64{1017, 1018} {
+		if e.escalations(t, run, ActionIssueCreate) != 1 {
+			t.Fatalf("run %d: P2 issues=%d", run, e.escalations(t, run, ActionIssueCreate))
+		}
 	}
 	e.wantPosts(t, 1)
 }
@@ -321,7 +455,7 @@ func TestEscalationAfterRerun(t *testing.T) {
 	}
 }
 
-func TestScheduleP1SecondFailureEscalatesInsteadOfSecondRerun(t *testing.T) {
+func TestScheduleP1DuplicateDeliveryOfAttempt1DoesNothing(t *testing.T) {
 	e := newRerunEnv(t)
 	ctx := context.Background()
 	run := Run{WorkspaceID: e.ws, RepoOwner: "o", RepoName: e.repo, RunID: 1011, RunAttempt: 1}
@@ -329,14 +463,64 @@ func TestScheduleP1SecondFailureEscalatesInsteadOfSecondRerun(t *testing.T) {
 	if err != nil || r1.Protocol != "P1" || r1.Action.State != StateScheduled {
 		t.Fatalf("first: %+v %v", r1, err)
 	}
+	var wg sync.WaitGroup
+	routes := make(chan Route, 6)
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r, err := ScheduleP1(ctx, e.ledger, run, ClassRateLimit, "sig", time.Time{}, e.clock.Now())
+			if err != nil {
+				t.Error(err)
+			}
+			routes <- r
+		}()
+	}
+	wg.Wait()
+	close(routes)
+	for r := range routes {
+		if r.Protocol != "" {
+			t.Fatalf("redelivery of attempt 1 routed to %q", r.Protocol)
+		}
+	}
+	if e.escalations(t, 1011, ActionInboxNotify)+e.escalations(t, 1011, ActionIssueCreate) != 0 {
+		t.Fatal("a scheduled rerun was escalated")
+	}
+}
+
+func TestScheduleP1SecondFailureEscalatesOnceWithAnAction(t *testing.T) {
+	e := newRerunEnv(t)
+	ctx := context.Background()
+	run := Run{WorkspaceID: e.ws, RepoOwner: "o", RepoName: e.repo, RunID: 1019, RunAttempt: 1}
+	if _, err := ScheduleP1(ctx, e.ledger, run, ClassRateLimit, "sig", time.Time{}, e.clock.Now()); err != nil {
+		t.Fatal(err)
+	}
 	run.RunAttempt = 2 // the rerun failed too: same original run id
 	r2, err := ScheduleP1(ctx, e.ledger, run, ClassRateLimit, "sig", time.Time{}, e.clock.Now())
-	if err != nil || r2.Protocol != "P4" || r2.Action.ID != r1.Action.ID {
+	if err != nil || r2.Protocol != "P4" || r2.Action.Kind != ActionInboxNotify || r2.Action.OriginalRunID != 1019 {
 		t.Fatalf("second rate-limit failure: %+v %v", r2, err)
 	}
-	r3, err := ScheduleP1(ctx, e.ledger, run, ClassTransient, "sig", time.Time{}, e.clock.Now())
-	if err != nil || r3.Protocol != "P2" {
-		t.Fatalf("second transient failure: %+v %v", r3, err)
+	for i := 0; i < 2; i++ { // redelivered attempt 2, either class
+		for _, c := range []Class{ClassRateLimit, ClassTransient} {
+			if r, err := ScheduleP1(ctx, e.ledger, run, c, "sig", time.Time{}, e.clock.Now()); err != nil || r.Protocol != "" {
+				t.Fatalf("redelivery: %+v %v", r, err)
+			}
+		}
+	}
+	if e.escalations(t, 1019, ActionInboxNotify) != 1 || e.escalations(t, 1019, ActionIssueCreate) != 0 {
+		t.Fatal("want exactly one escalation")
+	}
+}
+
+func TestScheduleP1SecondTransientFailureEscalatesToP2Issue(t *testing.T) {
+	e := newRerunEnv(t)
+	run := Run{WorkspaceID: e.ws, RepoOwner: "o", RepoName: e.repo, RunID: 1020, RunAttempt: 2}
+	r, err := ScheduleP1(context.Background(), e.ledger, run, ClassTransient, "sig", time.Time{}, e.clock.Now())
+	if err != nil || r.Protocol != "P2" || r.Action.Kind != ActionIssueCreate || r.Action.SignatureHash != "sig" {
+		t.Fatalf("%+v %v", r, err)
+	}
+	if e.escalations(t, 1020, ActionRerun) != 0 {
+		t.Fatal("a repeat failure scheduled a second rerun")
 	}
 }
 
@@ -345,19 +529,5 @@ func TestScheduleP1RefusesStartupFailureWithNoJobsClass(t *testing.T) {
 	run := Run{WorkspaceID: e.ws, RepoOwner: "o", RepoName: e.repo, RunID: 1012, RunAttempt: 1}
 	if _, err := ScheduleP1(context.Background(), e.ledger, run, ClassConfig, "", time.Time{}, e.clock.Now()); err == nil {
 		t.Fatal("config_or_secret must never be scheduled for a rerun")
-	}
-}
-
-func TestScheduleP1RepeatFailureWithNoRerunOfOursEscalatesWithoutScheduling(t *testing.T) {
-	e := newRerunEnv(t)
-	run := Run{WorkspaceID: e.ws, RepoOwner: "o", RepoName: e.repo, RunID: 1013, RunAttempt: 2}
-	r, err := ScheduleP1(context.Background(), e.ledger, run, ClassTransient, "", time.Time{}, e.clock.Now())
-	if err != nil || r.Protocol != "P2" || r.Action.ID != "" || e.count(t, "x") != 0 {
-		t.Fatalf("%+v %v", r, err)
-	}
-	var n int
-	_ = e.pool.QueryRow(context.Background(), `SELECT count(*) FROM ci_watch_action WHERE workspace_id=$1::uuid`, e.ws).Scan(&n)
-	if n != 0 {
-		t.Fatalf("%d rows scheduled", n)
 	}
 }

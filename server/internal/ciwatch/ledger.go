@@ -69,6 +69,7 @@ type Action struct {
 	Attempts, ReconcileAttempts          int
 	ExpectedAttempt                      *int
 	DestinationID, Reason, Diagnostic    string
+	PostOutcome                          string
 }
 
 type Verdict struct {
@@ -152,12 +153,13 @@ var errFenced = errors.New("ciwatch: lease epoch changed")
 
 const actionCols = `id::text, workspace_id::text, repo_owner, repo_name, original_run_id, action_kind, state,
 	lease_epoch, protocol, signature_hash, due_at, run_completed_at, lease_until, attempts,
-	reconcile_attempts, expected_attempt, post_started_at, COALESCE(destination_id,''), reason, diagnostic`
+	reconcile_attempts, expected_attempt, post_started_at, COALESCE(destination_id,''), reason, diagnostic,
+	post_outcome`
 
 func scanAction(r pgx.Row) (a Action, err error) {
 	err = r.Scan(&a.ID, &a.WorkspaceID, &a.RepoOwner, &a.RepoName, &a.OriginalRunID, &a.Kind, &a.State,
 		&a.LeaseEpoch, &a.Protocol, &a.SignatureHash, &a.DueAt, &a.RunCompletedAt, &a.LeaseUntil, &a.Attempts,
-		&a.ReconcileAttempts, &a.ExpectedAttempt, &a.PostStartedAt, &a.DestinationID, &a.Reason, &a.Diagnostic)
+		&a.ReconcileAttempts, &a.ExpectedAttempt, &a.PostStartedAt, &a.DestinationID, &a.Reason, &a.Diagnostic, &a.PostOutcome)
 	return a, err
 }
 
@@ -420,9 +422,23 @@ func (l *Ledger) postRemote(ctx context.Context, a Action, ex RemoteExecutor) er
 		return uerr
 	}
 	if err != nil {
-		_, uerr := l.pool.Exec(ctx, `UPDATE ci_watch_action SET state='ambiguous', reason=$2, diagnostic=$3,
-			due_at=$4, lease_until=NULL, updated_at=$5 WHERE id=$1::uuid AND lease_epoch=$6 AND state='executing'`,
-			a.ID, ReasonPostError, diagnostic(err), now.Add(ReconcileGap), now, a.LeaseEpoch)
+		// The POST was sent: keep what the answer was (post_outcome) so a restart
+		// can still route it. A failed write is retried; it never POSTs again.
+		var pe *PostError
+		outcome := ""
+		if errors.As(err, &pe) {
+			outcome = pe.Outcome
+		}
+		var uerr error
+		for i := 0; i < 3; i++ {
+			_, uerr = l.pool.Exec(ctx, `UPDATE ci_watch_action SET state='ambiguous', reason=$2, diagnostic=$3,
+				due_at=$4, lease_until=NULL, updated_at=$5, post_outcome=$7
+				WHERE id=$1::uuid AND lease_epoch=$6 AND state='executing'`,
+				a.ID, ReasonPostError, diagnostic(err), now.Add(ReconcileGap), now, a.LeaseEpoch, outcome)
+			if uerr == nil || ctx.Err() != nil {
+				break
+			}
+		}
 		return uerr
 	}
 	// A 0-row update means recovery already moved the row; reconcile owns it.
@@ -430,13 +446,6 @@ func (l *Ledger) postRemote(ctx context.Context, a Action, ex RemoteExecutor) er
 		lease_until=NULL, updated_at=$5 WHERE id=$1::uuid AND lease_epoch=$6 AND state='executing'`,
 		a.ID, out.State, out.Reason, out.DestinationID, now, a.LeaseEpoch)
 	return uerr
-}
-
-// find reads the action of n's (repo, original run, kind) without creating it.
-func (l *Ledger) find(ctx context.Context, n NewAction) (Action, error) {
-	return scanAction(l.pool.QueryRow(ctx, `SELECT `+actionCols+` FROM ci_watch_action
-		WHERE workspace_id=$1::uuid AND repo_owner=$2 AND repo_name=$3 AND original_run_id=$4 AND action_kind=$5`,
-		n.WorkspaceID, n.RepoOwner, n.RepoName, n.OriginalRunID, n.Kind))
 }
 
 // Sweep recovers `executing` rows past their lease that nobody holds. Remote
