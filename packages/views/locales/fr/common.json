@@ -159,9 +159,9 @@
     "check": "Vérifier le résultat",
     "panel": {
       "title": "Demande de budget d'exécutions",
-      "raise_cap": "Porter le plafond à {{cap}} exécutions pour cette fenêtre.",
-      "top_up": "Recharger le budget d'exécutions de cette fenêtre.",
-      "other": "Approbation de {{type}}.",
+      "raise_cap": "Porter le plafond d'exécutions de {{issue}} à {{cap}} pour cette fenêtre.",
+      "top_up": "Recharger le budget d'exécutions de {{issue}} pour cette fenêtre.",
+      "mismatch": "Cette approbation n'est pas une demande de budget d'exécutions pour cette tâche ; elle ne peut pas être approuvée ici.",
       "unreadable": "Cette approbation ne vous est pas accessible, ou elle n'existe plus."
     }
   }

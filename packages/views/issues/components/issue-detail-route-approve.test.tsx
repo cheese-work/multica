@@ -32,7 +32,7 @@ describe("IssueDetailRoute approval deep link", () => {
   beforeEach(() => {
     replace.mockClear();
     getDecisionAction.mockReset().mockResolvedValue({
-      id: "act-1", action_type: "issue.run_budget.raise", action_version: 1, params: { new_cap: 9 },
+      id: "act-1", action_type: "issue.run_budget.raise", action_version: 1, params: { issue_id: issueId, window_id: "w1", new_cap: 9 },
       payload_sha256: "abc", expires_at: "2026-11-07T00:00:00Z", state: "pending",
     });
     setApiInstance({
@@ -66,7 +66,29 @@ describe("IssueDetailRoute approval deep link", () => {
     renderWithI18n(route("approve=act-1"));
     expect(await screen.findByRole("button", { name: "Approve with passkey" })).toBeTruthy();
     expect(getDecisionAction).toHaveBeenCalledWith("act-1");
-    expect(screen.getByText(/9/)).toBeTruthy();
+    expect(screen.getByText(/TRS-134 to 9 runs/)).toBeTruthy();
+  });
+
+  it("offers no approval when the action targets another issue", async () => {
+    getDecisionAction.mockResolvedValue({
+      id: "act-1", action_type: "issue.run_budget.raise", action_version: 1,
+      params: { issue_id: "11111111-1111-4111-8111-111111111111", window_id: "w1", new_cap: 9 },
+      payload_sha256: "abc", expires_at: "2026-11-07T00:00:00Z", state: "pending",
+    });
+    renderWithI18n(route("approve=act-1"));
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+  });
+
+  it("offers no approval for an action that is not a run-budget request", async () => {
+    getDecisionAction.mockResolvedValue({
+      id: "act-1", action_type: "environment.patch", action_version: 1,
+      params: { issue_id: issueId, patch: { MULTICA_TOKEN: "x" } },
+      payload_sha256: "abc", expires_at: "2026-11-07T00:00:00Z", state: "pending",
+    });
+    renderWithI18n(route("approve=act-1"));
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
   });
 
   it("shows nothing without ?approve=", async () => {

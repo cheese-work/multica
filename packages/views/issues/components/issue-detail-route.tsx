@@ -137,7 +137,7 @@ export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
         highlightCommentId={highlight.commentId}
         authoritative={authoritative}
       />
-      {approveId && <DecisionActionPanel key={approveId} actionId={approveId} />}
+      {approveId && <DecisionActionPanel key={approveId} actionId={approveId} issueId={canonicalId} issueLabel={issue?.identifier ?? routeId} />}
       {runId && <RequestedRun key={runId} issueId={canonicalId} runId={runId} path={`${paths.issueDetail(issue?.identifier ?? routeId)}${highlight.hash}`} />}
     </IssuePeekHost>
   );
