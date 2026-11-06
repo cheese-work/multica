@@ -4,6 +4,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Attachment, AgentTask, Issue, IssueStatusEntry, Label, TimelineEntry } from "@multica/core/types";
 import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
+import { ApiClient } from "@multica/core/api/client";
 import { issueKeys } from "@multica/core/issues/queries";
 import { issueStatusKeys } from "@multica/core/issue-statuses";
 import { I18nProvider } from "@multica/core/i18n/react";
@@ -1407,6 +1408,30 @@ describe("IssueDetail (shared)", () => {
 
     expect(screen.queryByTestId("panel-group")).not.toBeInTheDocument();
     expect(screen.queryByText("Properties")).not.toBeInTheDocument();
+  });
+
+  // CHE-3472: a card-parked issue carries an object in metadata.decision_park.
+  // The page must open it, not show "does not exist". getIssue runs the real
+  // client (fetch + schema parse) instead of the module mock.
+  it("opens an issue whose metadata carries the decision-park object", async () => {
+    const parked = {
+      ...mockIssue,
+      metadata: { decision_park: { status: "blocked", to: "need_decision", set: "opt" }, status_summary: "Blocked" },
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(parked), {
+      status: 200, headers: { "Content-Type": "application/json" },
+    })));
+    mockApiObj.getIssue.mockImplementation((id: string) => new ApiClient("https://api.example.test").getIssue(id));
+
+    renderIssueDetail();
+
+    await waitFor(() => {
+      expect(screen.getByText("Implement authentication")).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByText("This issue does not exist or has been deleted in this workspace."),
+    ).not.toBeInTheDocument();
+    vi.unstubAllGlobals();
   });
 
   // The peek's close button lives in the host's trailing controls, so every
