@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -852,6 +854,11 @@ type SendChatMessageRequest struct {
 	Content           string   `json:"content"`
 	AttachmentIDs     []string `json:"attachment_ids"`
 	DecisionRequestID string   `json:"decision_request_id"`
+	// ClientMessageID makes the send idempotent per DM: a retry with the same id
+	// (after a timeout) returns the stored message and writes nothing.
+	ClientMessageID string `json:"client_message_id"`
+	// AskIDs are the open asks this message answers (attention T2b).
+	AskIDs []string `json:"ask_ids"`
 }
 
 type SendChatMessageResponse struct {
@@ -902,6 +909,11 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	askIDs, ok := parseUUIDSliceOrBadRequest(w, req.AskIDs, "ask_ids")
+	if !ok {
+		return
+	}
+	askIDs = slices.CompactFunc(slices.SortedFunc(slices.Values(askIDs), func(a, b pgtype.UUID) int { return bytes.Compare(a.Bytes[:], b.Bytes[:]) }), func(a, b pgtype.UUID) bool { return a == b })
 	var decisionRequestID pgtype.UUID
 	if req.DecisionRequestID != "" {
 		decisionRequestID, ok = parseUUIDOrBadRequest(w, req.DecisionRequestID, "decision_request_id")
@@ -930,6 +942,10 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 
 	agent, actorType, actorID, ok := h.preflightChatSend(w, r, session, userID, workspaceID)
 	if !ok {
+		return
+	}
+	if decisionRequestID.Valid && req.ClientMessageID != "" {
+		writeError(w, http.StatusBadRequest, "client_message_id cannot be combined with a decision reply")
 		return
 	}
 	// /preset needs the same permission as any send, so it comes after the gate.
@@ -978,7 +994,8 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	if decisionRequestID.Valid {
 		sent, err = h.sendChatDecisionReply(r, session, agent, parseUUID(userID), decisionRequestID, req.Content, attachmentIDs)
 	} else {
-		sent, err = h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), r.Header.Get("X-Actor-Source"))
+		sent, err = h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), r.Header.Get("X-Actor-Source"),
+			service.DirectChatSendOptions{ClientMessageID: req.ClientMessageID, HumanSend: true, AskIDs: askIDs})
 	}
 	if err != nil {
 		var refusal decisionIntentRefusal
@@ -993,6 +1010,8 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "chat agent is archived")
 		case errors.Is(err, service.ErrChatTaskAgentNoRuntime):
 			writeError(w, http.StatusConflict, "chat agent has no runtime")
+		case errors.Is(err, service.ErrChatAskNotOpen):
+			writeError(w, http.StatusBadRequest, "ask_ids must be your open asks in this chat")
 		case errors.Is(err, service.ErrChatCompacting):
 			// Both keys: `code` for API consumers, `reason_code` for the web
 			// client's existing send-error mapping.
@@ -1005,6 +1024,13 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	msg := sent.Message
 	task := sent.Task
+	if sent.Replayed { // the first attempt already did the side effects below
+		writeJSON(w, http.StatusOK, SendChatMessageResponse{
+			MessageID: uuidToString(msg.ID), TaskID: uuidToString(task.ID), SupportsQueue: true,
+			CreatedAt: timestampToString(msg.CreatedAt), AttachmentIDs: uuidStringsOrEmpty(sent.BoundAttachmentIDs),
+		})
+		return
+	}
 	currentTitle := session.Title
 	if sent.InitialTitle != "" {
 		currentTitle = sent.InitialTitle

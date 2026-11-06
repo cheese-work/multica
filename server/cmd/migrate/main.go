@@ -154,6 +154,7 @@ var concurrentIndexCleanups = map[string]string{
 	"975_chat_session_chain_root_idx":                           "idx_chat_session_chain_root",
 	"976_chat_attention_item_one_open_later_idx":                "chat_attention_item_one_open_later_idx",
 	"977_chat_attention_item_open_idx":                          "chat_attention_item_open_idx",
+	"979_chat_message_client_message_id_idx":                    "chat_message_client_message_id_idx",
 	"971_dm_progress_data_incident_follow_kind_idx":             "idx_dm_progress_data_incident_follow_kind",
 	"944_decision_wake_event_request_seq_idx":                   "decision_wake_event_request_seq_uidx",
 	"945_decision_wake_receipt_event_recipient_idx":             "decision_wake_receipt_event_recipient_uidx",

@@ -35,3 +35,24 @@ ORDER BY s.chain_root_session_id, t.created_at DESC, t.id DESC;
 
 -- name: ListChatAttentionMarks :many
 SELECT subject_key, snoozed_until, acked_at FROM chat_attention_mark WHERE user_id = $1;
+
+-- Write side of a DM send (CHE-4146). Both run in the message transaction.
+
+-- name: ResolveChatAttentionOnHumanSend :exec
+-- T2: a persisted send from Cheese settles "check later" and "unseen" for the whole chain.
+UPDATE chat_attention_item
+SET resolved_at = clock_timestamp(), resolved_by = 'human_send'
+WHERE chain_root_session_id = $1 AND user_id = $2
+  AND kind IN ('later', 'unseen') AND resolved_at IS NULL;
+
+-- name: ListOpenChatAttentionAsksByID :many
+-- The ids that are this user's open asks in this chain; a send may target only these.
+SELECT id FROM chat_attention_item
+WHERE id = ANY(@ids::uuid[]) AND chain_root_session_id = @chain_root_session_id AND user_id = @user_id
+  AND kind = 'ask' AND resolved_at IS NULL;
+
+-- name: SetChatAttentionAsksWaiting :exec
+-- T2b: the targeted asks wait on the task that consumes this send. They stay open.
+UPDATE chat_attention_item
+SET waiting_message_id = @message_id, waiting_task_id = @task_id
+WHERE id = ANY(@ids::uuid[]) AND kind = 'ask' AND resolved_at IS NULL;

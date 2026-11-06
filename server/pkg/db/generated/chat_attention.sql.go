@@ -218,3 +218,74 @@ func (q *Queries) ListChatAttentionMarks(ctx context.Context, userID pgtype.UUID
 	}
 	return items, nil
 }
+
+const listOpenChatAttentionAsksByID = `-- name: ListOpenChatAttentionAsksByID :many
+SELECT id FROM chat_attention_item
+WHERE id = ANY($1::uuid[]) AND chain_root_session_id = $2 AND user_id = $3
+  AND kind = 'ask' AND resolved_at IS NULL
+`
+
+type ListOpenChatAttentionAsksByIDParams struct {
+	Ids                []pgtype.UUID `json:"ids"`
+	ChainRootSessionID pgtype.UUID   `json:"chain_root_session_id"`
+	UserID             pgtype.UUID   `json:"user_id"`
+}
+
+// The ids that are this user's open asks in this chain; a send may target only these.
+func (q *Queries) ListOpenChatAttentionAsksByID(ctx context.Context, arg ListOpenChatAttentionAsksByIDParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listOpenChatAttentionAsksByID, arg.Ids, arg.ChainRootSessionID, arg.UserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const resolveChatAttentionOnHumanSend = `-- name: ResolveChatAttentionOnHumanSend :exec
+
+UPDATE chat_attention_item
+SET resolved_at = clock_timestamp(), resolved_by = 'human_send'
+WHERE chain_root_session_id = $1 AND user_id = $2
+  AND kind IN ('later', 'unseen') AND resolved_at IS NULL
+`
+
+type ResolveChatAttentionOnHumanSendParams struct {
+	ChainRootSessionID pgtype.UUID `json:"chain_root_session_id"`
+	UserID             pgtype.UUID `json:"user_id"`
+}
+
+// Write side of a DM send (CHE-4146). Both run in the message transaction.
+// T2: a persisted send from Cheese settles "check later" and "unseen" for the whole chain.
+func (q *Queries) ResolveChatAttentionOnHumanSend(ctx context.Context, arg ResolveChatAttentionOnHumanSendParams) error {
+	_, err := q.db.Exec(ctx, resolveChatAttentionOnHumanSend, arg.ChainRootSessionID, arg.UserID)
+	return err
+}
+
+const setChatAttentionAsksWaiting = `-- name: SetChatAttentionAsksWaiting :exec
+UPDATE chat_attention_item
+SET waiting_message_id = $1, waiting_task_id = $2
+WHERE id = ANY($3::uuid[]) AND kind = 'ask' AND resolved_at IS NULL
+`
+
+type SetChatAttentionAsksWaitingParams struct {
+	MessageID pgtype.UUID   `json:"message_id"`
+	TaskID    pgtype.UUID   `json:"task_id"`
+	Ids       []pgtype.UUID `json:"ids"`
+}
+
+// T2b: the targeted asks wait on the task that consumes this send. They stay open.
+func (q *Queries) SetChatAttentionAsksWaiting(ctx context.Context, arg SetChatAttentionAsksWaitingParams) error {
+	_, err := q.db.Exec(ctx, setChatAttentionAsksWaiting, arg.MessageID, arg.TaskID, arg.Ids)
+	return err
+}

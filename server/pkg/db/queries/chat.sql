@@ -16,12 +16,13 @@ SELECT * FROM chat_session
 WHERE id = $1;
 
 -- name: SetChatContinuationSource :one
-UPDATE chat_session
+UPDATE chat_session AS s
 SET continued_from_session_id = $2,
+    chain_root_session_id = COALESCE((SELECT p.chain_root_session_id FROM chat_session p WHERE p.id = $2), s.chain_root_session_id),
     last_read_at = sqlc.arg('summary_created_at')::timestamptz - interval '1 microsecond',
     pinned_at = sqlc.narg('pinned_at')
-WHERE id = $1
-RETURNING *;
+WHERE s.id = $1
+RETURNING s.*;
 
 -- name: ArchiveContinuedChatSession :one
 UPDATE chat_session
@@ -811,7 +812,7 @@ WHERE id = $1;
 INSERT INTO chat_message (
     chat_session_id, role, content, task_id, failure_reason, elapsed_ms,
     message_kind, quick_actions, channel_media_pending_until, channel_ingested,
-    channel_context_revision, id, sent_via, decision_answer_id
+    channel_context_revision, id, sent_via, decision_answer_id, client_message_id
 )
 VALUES (
     $1, $2, $3, sqlc.narg(task_id), sqlc.narg(failure_reason), sqlc.narg(elapsed_ms),
@@ -830,7 +831,8 @@ VALUES (
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()),
     CASE WHEN COALESCE(sqlc.narg(channel_ingested)::boolean, FALSE) THEN 'channel'
          ELSE COALESCE(NULLIF(sqlc.narg(sent_via)::text, ''), 'system') END,
-    sqlc.narg(decision_answer_id)
+    sqlc.narg(decision_answer_id),
+    sqlc.narg(client_message_id)
 )
 RETURNING *;
 
@@ -1498,6 +1500,11 @@ WHERE message.chat_session_id = $1
   AND (message.created_at, message.id) >= (sqlc.arg('after_created_at')::timestamptz, sqlc.arg('after_id')::uuid)
 ORDER BY message.created_at ASC, message.id ASC
 LIMIT $2;
+
+-- name: GetChatMessageByClientID :one
+-- Replay lookup for an idempotent send (CHE-4146); served by chat_message_client_message_id_idx.
+SELECT * FROM chat_message
+WHERE chat_session_id = $1 AND client_message_id = $2;
 
 -- name: GetChatMessage :one
 SELECT * FROM chat_message
