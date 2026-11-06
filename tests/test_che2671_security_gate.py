@@ -355,8 +355,8 @@ class MergeGroupStepTest(unittest.TestCase):
                'touch "$LOG"\n'
                'case "$*" in\n'  # PRIOR: the security-gate state already on the queue commit; RL_PRIOR=1 rate limits that read
                '  *commits/*/status*) [ -n "${RL_PRIOR:-}" ] && { ' + RATE_LIMITED + '; }; echo "${PRIOR:-none}" ;;\n'
-               '  *commits/*) [ "${RL_PARENTS:-0}" -gt "$(grep -c "^rl-parents" "$LOG" || true)" ] && { echo rl-parents >> "$LOG"; ' + RATE_LIMITED + '; }\n'
-               '              printf "%s\\n" $PARENTS ;;\n'
+               '  *commits/*) [ "${RL_PARENTS:-0}" -gt "$(grep -c "^rl-parents" "$LOG" || true)" ] && [ "${RL_PARENTS_ON:-$(grep -c "^parents" "$LOG" || true)}" = "$(grep -c "^parents" "$LOG" || true)" ] && { echo rl-parents >> "$LOG"; ' + RATE_LIMITED + '; }\n'
+               '              echo parents >> "$LOG"; printf "%s\\n" $PARENTS ;;\n'
                '  *statuses/*) [ -n "${RL_POST_AFTER:-}" ] && [ "$(grep -c "^gh .*statuses/" "$LOG" || true)" -ge "$RL_POST_AFTER" ] && { echo rl-post >> "$LOG"; ' + RATE_LIMITED + '; }\n'
                '               [ "${RL_POST:-0}" -gt "$(grep -c "^rl-post" "$LOG" || true)" ] && { echo rl-post >> "$LOG"; ' + RATE_LIMITED + '; }\n'
                '               echo "gh $*" >> "$LOG" ;;\n'
@@ -368,6 +368,7 @@ class MergeGroupStepTest(unittest.TestCase):
                  'n=$(grep -c "^gate " "$LOG")\n'  # this is the Nth read: STATES answers per read, FAIL_AT makes one read error out
                  '[ "$n" = "${FAIL_AT:-}" ] && exit 1\n'
                  '[ "$n" = "${RL_AT:-}" ] && { echo "rate limited" >&2; exit 75; }\n'
+                 '[ -n "${REVOKE_ON_SLEEP:-}" ] && grep -q "^sleep" "$LOG" && STATE=failure\n'  # revoked during a retry wait
                  'if [ -n "${STATES:-}" ]; then STATE=$(echo $STATES | cut -d" " -f$n); fi\n'
                  'echo \'{"context": "security-gate", "sha": "\'$HEAD\'", "state": "\'$STATE\'", "description": "PASS on x"}\'\n')
 
@@ -377,7 +378,7 @@ class MergeGroupStepTest(unittest.TestCase):
         self.assertEqual(len(gate), 1)
         return gate[0]["run"]
 
-    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success", script="", states="", fail_at="", rl_at="", rl_parents=0, rl_post=0, rl_post_after="", prior="none", rl_prior="", attempt="1"):
+    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success", script="", states="", fail_at="", rl_at="", rl_parents=0, rl_post=0, rl_post_after="", rl_parents_on="", revoke_on_sleep="", prior="none", rl_prior="", attempt="1"):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             (tmp / "bin").mkdir()
@@ -391,9 +392,9 @@ class MergeGroupStepTest(unittest.TestCase):
                 f'exec {sys.executable} "$@"\n')
             for path in (tmp / "bin/gh", tmp / "bin/sleep", tmp / "bin/python3", tmp / "scripts/security-gate/gate.sh"):
                 path.chmod(0o755)
-            env = {**os.environ, "PATH": f"{tmp / 'bin'}:{os.environ['PATH']}", "LOG": str(tmp / "log"), "HEAD": HEAD,
+            env = {**os.environ, **({"RL_PARENTS_ON": str(rl_parents_on)} if rl_parents_on != "" else {}), "PATH": f"{tmp / 'bin'}:{os.environ['PATH']}", "LOG": str(tmp / "log"), "HEAD": HEAD,
                    "STATE": state, "STATES": states, "FAIL_AT": str(fail_at), "RL_AT": str(rl_at),
-                   "RL_PARENTS": str(rl_parents), "RL_POST": str(rl_post), "RL_POST_AFTER": str(rl_post_after), "PRIOR": prior, "RL_PRIOR": rl_prior, "GITHUB_RUN_ATTEMPT": str(attempt), "PARENTS": " ".join(parents), "MERGE_GROUP_REF": ref, "MERGE_GROUP_SHA": self.QUEUE,
+                   "RL_PARENTS": str(rl_parents), "RL_POST": str(rl_post), "RL_POST_AFTER": str(rl_post_after), "REVOKE_ON_SLEEP": revoke_on_sleep, "PRIOR": prior, "RL_PRIOR": rl_prior, "GITHUB_RUN_ATTEMPT": str(attempt), "PARENTS": " ".join(parents), "MERGE_GROUP_REF": ref, "MERGE_GROUP_SHA": self.QUEUE,
                    "PR_NUMBER": "", "GH_TOKEN": "t", "DEFAULT_BRANCH": "main", "GITHUB_REPOSITORY": "o/r",
                    "GITHUB_SERVER_URL": "https://github.com", "GITHUB_RUN_ID": "7"}
             done = subprocess.run(["bash", "-c", self.step_run()], cwd=tmp, env=env, capture_output=True, text=True)
@@ -460,6 +461,15 @@ class MergeGroupStepTest(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(len([l for l in log if l.startswith("sleep")]), 2, log)
         self.assertIn("state=success", self.posted(log)[0], log)
+
+    def test_an_approval_revoked_while_the_final_parent_lookup_waits_is_never_published_as_success(self):
+        # CHE-4251 review round 3 P1: the parent lookup (up to 300 s of backoff) ran after the verdict read, so a
+        # revocation during the wait was overwritten by the cached success. The lookup comes first now.
+        done, log = self.run_step(rl_parents=2, rl_parents_on=1, revoke_on_sleep="1")
+        self.assertEqual(done.returncode, 0, (done.stderr, log))
+        self.assertGreaterEqual(len([l for l in log if l.startswith("sleep")]), 2, log)  # the lookup did wait
+        self.assertNotIn("state=success", " ".join(self.posted(log)), log)
+        self.assertIn("state=failure", self.posted(log)[-1], log)
 
     def test_a_parent_lookup_still_rate_limited_after_the_retries_posts_pending(self):
         done, log = self.run_step(rl_parents=999)

@@ -175,12 +175,14 @@ jobs:
           # non-zero on error (no `set -e` inside an `if`), so the callers below can fail closed.
           evaluate() {
             local out parents
+            # The immutable parent list comes first: its retries may wait up to 300 s, and the verdict read below is the
+            # one that gets published, so a revocation during that wait is never overwritten by a cached success.
+            parents="$(gh_retry api "repos/$GITHUB_REPOSITORY/commits/$MERGE_GROUP_SHA" --jq '.parents[].sha')" || return $?
             out="$(python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$pr" \
               --default-branch "$DEFAULT_BRANCH" $sg --run-url "$run_url")" || return $?
             head="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["sha"])' "$out")" || return 1
             state="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["state"])' "$out")" || return 1
             desc="#$pr: $(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["description"])' "$out")" || return 1
-            parents="$(gh_retry api "repos/$GITHUB_REPOSITORY/commits/$MERGE_GROUP_SHA" --jq '.parents[].sha')" || return $?
             if ! grep -qx "$head" <<<"$parents"; then
               state=failure desc="#$pr head ${head:0:12} is not a parent of ${MERGE_GROUP_SHA:0:12}"
             fi
