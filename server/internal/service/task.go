@@ -2838,9 +2838,25 @@ type DirectChatSendResult struct {
 	BoundAttachmentIDs []pgtype.UUID
 	Queued             bool
 	InitialTitle       string
+	// Replayed marks a send whose client_message_id was already stored: nothing
+	// was written and Message / Task / BoundAttachmentIDs are the original rows.
+	Replayed bool
+}
+
+// DirectChatSendOptions carries what only a send from the human owner of the DM
+// adds to the message transaction. The zero value is a plain send (wakeups, forks).
+type DirectChatSendOptions struct {
+	// ClientMessageID makes the send idempotent per DM: a repeat returns the stored message.
+	ClientMessageID string
+	// HumanSend applies the attention transitions: T2 always, T2b for AskIDs.
+	HumanSend bool
+	AskIDs    []pgtype.UUID
 }
 
 var ErrChatSessionAlreadyStarted = errors.New("chat session already has a user message")
+
+// ErrChatAskNotOpen: a send targeted an ask that is not this user's open ask in this DM's chain.
+var ErrChatAskNotOpen = errors.New("ask is not an open ask of this chat")
 
 // SendDirectChatMessage atomically persists one web/mobile direct-chat turn:
 // the owning task (which claims its own input batch via chat_input_task_id), the
@@ -2863,11 +2879,13 @@ func (s *TaskService) SendDirectChatMessage(
 	uploaderType string,
 	uploaderID pgtype.UUID,
 	sentVia string,
+	opts DirectChatSendOptions,
 ) (*DirectChatSendResult, error) {
 	plan, err := s.PlanDirectChatSend(ctx, session.ID, agent, initiatorUserID)
 	if err != nil {
 		return nil, err
 	}
+	plan.Options = opts
 	var out DirectChatSendResult
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		var err error
@@ -2879,6 +2897,9 @@ func (s *TaskService) SendDirectChatMessage(
 			"agent_id", util.UUIDToString(session.AgentID),
 			"error", err)
 		return nil, err
+	}
+	if out.Replayed {
+		return &out, nil
 	}
 	s.RecordHumanDelegation(ctx, plan.Attribution)
 	s.NotifyDirectChatSent(ctx, out.Task)
@@ -2893,6 +2914,8 @@ type DirectChatSendPlan struct {
 	attrSource       pgtype.Text
 	attrEvidenceKind pgtype.Text
 	attrEvidenceRef  pgtype.UUID
+	// Options are set by the caller after planning; the zero value is a plain send.
+	Options DirectChatSendOptions
 }
 
 // PlanDirectChatSend resolves the overlay and attribution of a direct-chat send
@@ -2948,6 +2971,18 @@ func (s *TaskService) SendDirectChatMessageTx(
 		currentSession, err := qtx.GetChatSession(ctx, session.ID)
 		if err != nil {
 			return fmt.Errorf("reload chat session: %w", err)
+		}
+		// A repeat of a stored send returns the original rows. Under the session
+		// lock, so a retry racing its own first attempt waits for it and sees it.
+		if plan.Options.ClientMessageID != "" {
+			replayed, found, err := s.replayDirectChatSend(ctx, qtx, session, plan.Options.ClientMessageID)
+			if err != nil {
+				return err
+			}
+			if found {
+				out = replayed
+				return nil
+			}
 		}
 		if currentSession.Status != "active" {
 			return ErrChatSessionArchived
@@ -3049,18 +3084,24 @@ func (s *TaskService) SendDirectChatMessageTx(
 		// Create the user message already owned by this task (task_id = task.id),
 		// so it belongs to this immutable input batch the instant it exists.
 		msg, err := qtx.CreateChatMessage(ctx, db.CreateChatMessageParams{
-			ID:            dbid.NewV7(),
-			ChatSessionID: session.ID,
-			Role:          "user",
-			Content:       content,
-			TaskID:        task.ID,
-			MessageKind:   pgtype.Text{String: protocol.ChatMessageKindMessage, Valid: true},
-			SentVia:       pgtype.Text{String: sentVia, Valid: sentVia != ""},
+			ID:              dbid.NewV7(),
+			ChatSessionID:   session.ID,
+			Role:            "user",
+			Content:         content,
+			TaskID:          task.ID,
+			MessageKind:     pgtype.Text{String: protocol.ChatMessageKindMessage, Valid: true},
+			SentVia:         pgtype.Text{String: sentVia, Valid: sentVia != ""},
+			ClientMessageID: pgtype.Text{String: plan.Options.ClientMessageID, Valid: plan.Options.ClientMessageID != ""},
 		})
 		if err != nil {
 			return fmt.Errorf("create user chat message: %w", err)
 		}
 		out.Message = msg
+		if plan.Options.HumanSend {
+			if err := applyHumanSendAttention(ctx, qtx, currentSession, initiatorUserID, plan.Options.AskIDs, msg.ID, task.ID); err != nil {
+				return err
+			}
+		}
 
 		if len(attachmentIDs) > 0 {
 			bound, err := qtx.LinkAttachmentsToChatMessage(ctx, db.LinkAttachmentsToChatMessageParams{
@@ -3110,6 +3151,72 @@ func (s *TaskService) SendDirectChatMessageTx(
 		return nil
 	}()
 	return out, err
+}
+
+// replayDirectChatSend loads the rows a stored send with this client_message_id wrote.
+func (s *TaskService) replayDirectChatSend(ctx context.Context, qtx *db.Queries, session db.ChatSession, clientMessageID string) (DirectChatSendResult, bool, error) {
+	msg, err := qtx.GetChatMessageByClientID(ctx, db.GetChatMessageByClientIDParams{
+		ChatSessionID: session.ID, ClientMessageID: pgtype.Text{String: clientMessageID, Valid: true},
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return DirectChatSendResult{}, false, nil
+	} else if err != nil {
+		return DirectChatSendResult{}, false, fmt.Errorf("look up client message: %w", err)
+	}
+	out := DirectChatSendResult{Message: msg, Replayed: true}
+	if msg.TaskID.Valid {
+		if out.Task, err = qtx.GetAgentTask(ctx, msg.TaskID); err != nil {
+			return DirectChatSendResult{}, false, fmt.Errorf("load replayed task: %w", err)
+		}
+	}
+	attachments, err := qtx.ListAttachmentsByChatMessage(ctx, db.ListAttachmentsByChatMessageParams{ChatMessageID: msg.ID, WorkspaceID: session.WorkspaceID})
+	if err != nil {
+		return DirectChatSendResult{}, false, fmt.Errorf("list replayed attachments: %w", err)
+	}
+	for _, a := range attachments {
+		out.BoundAttachmentIDs = append(out.BoundAttachmentIDs, a.ID)
+	}
+	return out, true, nil
+}
+
+// ReplayDirectChatSend reads back a stored send for clientMessageID, so a retry is confirmed
+// before the readiness checks that guard a new send. q may be a transaction's queries.
+func (s *TaskService) ReplayDirectChatSend(ctx context.Context, q *db.Queries, session db.ChatSession, clientMessageID string) (DirectChatSendResult, bool, error) {
+	return s.replayDirectChatSend(ctx, q, session, clientMessageID)
+}
+
+// applyHumanSendAttention is T2 and T2b of the DM attention model: the owner's send settles
+// "check later" / "unseen" for the chain, and the asks it targets wait on the task that consumes it.
+func applyHumanSendAttention(ctx context.Context, qtx *db.Queries, session db.ChatSession, userID pgtype.UUID, askIDs []pgtype.UUID, messageID, taskID pgtype.UUID) error {
+	if err := qtx.ResolveChatAttentionOnHumanSend(ctx, db.ResolveChatAttentionOnHumanSendParams{
+		ChainRootSessionID: session.ChainRootSessionID, UserID: userID,
+	}); err != nil {
+		return fmt.Errorf("resolve attention on send: %w", err)
+	}
+	if len(askIDs) == 0 { // no target: wait only when the chain has exactly one open ask
+		open, err := qtx.ListOpenChatAttentionAsks(ctx, db.ListOpenChatAttentionAsksParams{ChainRootSessionID: session.ChainRootSessionID, UserID: userID})
+		if err != nil {
+			return fmt.Errorf("list open asks: %w", err)
+		}
+		if len(open) != 1 {
+			return nil
+		}
+		askIDs = open
+	} else {
+		open, err := qtx.ListOpenChatAttentionAsksByID(ctx, db.ListOpenChatAttentionAsksByIDParams{
+			Ids: askIDs, ChainRootSessionID: session.ChainRootSessionID, UserID: userID,
+		})
+		if err != nil {
+			return fmt.Errorf("check targeted asks: %w", err)
+		}
+		if len(open) != len(askIDs) { // AskIDs are deduplicated by the caller
+			return ErrChatAskNotOpen
+		}
+	}
+	if err := qtx.SetChatAttentionAsksWaiting(ctx, db.SetChatAttentionAsksWaitingParams{Ids: askIDs, MessageID: messageID, TaskID: taskID}); err != nil {
+		return fmt.Errorf("mark targeted asks waiting: %w", err)
+	}
+	return nil
 }
 
 // NotifyDirectChatSent announces a committed direct-chat task.
@@ -3279,15 +3386,10 @@ func distinctAgentIDs(cancelled []db.AgentTaskQueue) []pgtype.UUID {
 //
 // Returns the cancelled rows so callers can report counts / log them.
 func (s *TaskService) CancelTasksForAgent(ctx context.Context, agentID pgtype.UUID) ([]db.AgentTaskQueue, error) {
-	var cancelled []db.AgentTaskQueue
-	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
-		var err error
-		cancelled, err = qtx.CancelAgentTasksByAgent(ctx, agentID)
-		if err != nil {
-			return err
-		}
-		return SettleTerminalTaskState(ctx, qtx, cancelled...)
-	}); err != nil {
+	cancelled, err := s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+		return qtx.CancelAgentTasksByAgent(ctx, agentID)
+	})
+	if err != nil {
 		return nil, err
 	}
 	for _, t := range cancelled {
@@ -7387,16 +7489,67 @@ func (s *TaskService) CancelTasksForArchivedAgent(ctx context.Context, agentID p
 	return cancelled, nil
 }
 
+// terminateTasksInTx ends a batch of tasks and settles them in one tx, holding the chat_session row
+// of every chat task in the batch first. The one lock order is chat_session -> runtime -> agent ->
+// agent_task_queue (chat enqueue takes the session, then the agent; see lockChatSessionForTaskWrite). A report that reads a task's status under that session row, such as
+// RecordChatOutcome, then sees a status that cannot change until it commits.
+//
+// The batch UPDATE picks its own rows, so the sessions are only known after it ran. Each pass runs
+// it in a savepoint; if it touched chat sessions not yet held, the pass is rolled back (releasing
+// its task row locks), those sessions are locked in id order, and it runs again. Every pass that
+// repeats holds at least one more session, so the loop ends.
 func (s *TaskService) terminateTasksInTx(ctx context.Context, fail func(*db.Queries) ([]db.AgentTaskQueue, error)) ([]db.AgentTaskQueue, error) {
-	var failed []db.AgentTaskQueue
-	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
-		var err error
-		failed, err = fail(qtx)
+	if s.TxStarter == nil {
+		failed, err := fail(s.Queries)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		return SettleTerminalTaskState(ctx, qtx, failed...)
-	}); err != nil {
+		return failed, SettleTerminalTaskState(ctx, s.Queries, failed...)
+	}
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	qtx := s.Queries.WithTx(tx)
+
+	held := map[pgtype.UUID]bool{}
+	var failed []db.AgentTaskQueue
+	for {
+		sp, err := tx.Begin(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("begin savepoint: %w", err)
+		}
+		failed, err = fail(s.Queries.WithTx(sp))
+		if err != nil {
+			_ = sp.Rollback(ctx)
+			return nil, err
+		}
+		var need []pgtype.UUID
+		for _, t := range failed {
+			if t.ChatSessionID.Valid && !held[t.ChatSessionID] {
+				held[t.ChatSessionID] = true
+				need = append(need, t.ChatSessionID)
+			}
+		}
+		if len(need) == 0 {
+			if err := sp.Commit(ctx); err != nil {
+				return nil, fmt.Errorf("release savepoint: %w", err)
+			}
+			break
+		}
+		if err := sp.Rollback(ctx); err != nil {
+			return nil, fmt.Errorf("rollback savepoint: %w", err)
+		}
+		if _, err := qtx.LockChatSessionsByIDs(ctx, need); err != nil {
+			return nil, fmt.Errorf("lock chat sessions: %w", err)
+		}
+	}
+	if err := SettleTerminalTaskState(ctx, qtx, failed...); err != nil {
+		_ = tx.Rollback(ctx)
+		return nil, s.recordStageRefusal(ctx, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return failed, nil
@@ -7491,7 +7644,7 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 							// caches keep showing the issue as in_progress until
 							// the next write touches it (#4648 / MUL-3782).
 							(&IssueWakeupService{Tasks: s}).publishWakeupActivities(wakeupActivity{row: activity, actorType: "system", details: activity.Details})
-							s.broadcastIssueUpdated(ctx, updatedIssue, issue.Status)
+							s.broadcastIssueUpdatedWith(ctx, updatedIssue, issue.Status, map[string]any{"activity_id": util.UUIDToString(activity.ID)})
 						}
 					}
 				}
@@ -7553,6 +7706,9 @@ func SettleTerminalTaskState(ctx context.Context, q *db.Queries, tasks ...db.Age
 		if err := settleCompactionTask(ctx, q, task); err != nil {
 			return err
 		}
+	}
+	if err := settleChatTurns(ctx, q, tasks); err != nil {
+		return err
 	}
 	if _, err := q.SettleTerminalTaskSupplements(ctx, taskIDs); err != nil {
 		return fmt.Errorf("settle terminal task supplements: %w", err)
@@ -8969,7 +9125,8 @@ func (s *TaskService) broadcastChatDone(ctx context.Context, task db.AgentTaskQu
 // handler.IssueResponse and skip a map, so a background status reset does not
 // emit status-change activity / notifications. That is intentional for the
 // realtime-staleness fix (#4648 / MUL-3782); folding those side effects in
-// would mean unifying the payload type and is left as a follow-up.
+// would mean unifying the payload type and is left as a follow-up. A writer that
+// recorded a status row names it with broadcastIssueUpdatedWith.
 func (s *TaskService) broadcastIssueUpdated(ctx context.Context, issue db.Issue, prevStatus string) {
 	s.broadcastIssueUpdatedWith(ctx, issue, prevStatus, nil)
 }

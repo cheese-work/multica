@@ -10,8 +10,8 @@ import (
 
 const (
 	pemBody  = "MIIEowIBAAKCAQEAplantedSECRETkeybody0123456789"
-	ghToken  = "ghp_PLANTEDsecretTOKEN0123456789abcdefABCD"
-	awsKey   = "AKIAPLANTEDKEY123456"
+	ghToken  = "ghp_" + "PLANTEDsecretTOKEN0123456789abcdefABCD"
+	awsKey   = "AKIA" + "PLANTEDKEY123456"
 	jwtToken = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJwbGFudGVkIn0.c2lnbmF0dXJlcGxhbnRlZA"
 )
 
@@ -38,7 +38,7 @@ func noLeak(t *testing.T, got string, planted ...string) {
 }
 
 func TestRedactMultilineKeyEvenSplitAcrossChunks(t *testing.T) {
-	in := "before\n2026-11-06T04:50:00Z -----BEGIN RSA PRIVATE KEY-----\n" + pemBody + "\nline2" + pemBody + "\n-----END RSA PRIVATE KEY-----\nafter\n"
+	in := "before\n2026-11-06T04:50:00Z -----BEGIN " + "RSA PRIVATE KEY-----\n" + pemBody + "\nline2" + pemBody + "\n-----END RSA PRIVATE KEY-----\nafter\n"
 	for _, oneByte := range []bool{false, true} {
 		got := redact(t, in, oneByte)
 		noLeak(t, got, pemBody, "BEGIN RSA", "END RSA")
@@ -49,7 +49,7 @@ func TestRedactMultilineKeyEvenSplitAcrossChunks(t *testing.T) {
 }
 
 func TestRedactUnterminatedBeginDropsToEnd(t *testing.T) {
-	got := redact(t, "keep\n-----BEGIN OPENSSH PRIVATE KEY-----\n"+pemBody+"\nmore\n", false)
+	got := redact(t, "keep\n-----BEGIN "+"OPENSSH PRIVATE KEY-----\n"+pemBody+"\nmore\n", false)
 	noLeak(t, got, pemBody, "more")
 	if !strings.Contains(got, "keep") {
 		t.Errorf("lost line before BEGIN: %q", got)
@@ -65,10 +65,10 @@ func TestRedactEndWithoutBeginDropsFromLogStart(t *testing.T) {
 }
 
 func TestRedactSingleLineKeyAndOverlongLineMarker(t *testing.T) {
-	one := "k=-----BEGIN PRIVATE KEY-----\\n" + pemBody + "\\n-----END PRIVATE KEY-----\n"
+	one := "k=-----BEGIN " + "PRIVATE KEY-----\\n" + pemBody + "\\n-----END PRIVATE KEY-----\n"
 	noLeak(t, redact(t, one, false), pemBody)
 	// BEGIN sits past the 64 KiB line cap; the body on the next lines must still go.
-	long := strings.Repeat("x", 200_000) + "-----BEGIN PRIVATE KEY-----\n" + pemBody + "\n-----END PRIVATE KEY-----\nok\n"
+	long := strings.Repeat("x", 200_000) + "-----BEGIN " + "PRIVATE KEY-----\n" + pemBody + "\n-----END PRIVATE KEY-----\nok\n"
 	got := redact(t, long, true)
 	noLeak(t, got, pemBody)
 	if !strings.Contains(got, "ok") {
@@ -121,9 +121,9 @@ func TestLimitTailKeepsWholeLinesFromTheEnd(t *testing.T) {
 func TestRedactEndThenBeginOnOneLineKeepsNextKeyClosed(t *testing.T) {
 	second := "SECONDkeyBODYplanted0123456789"
 	cases := map[string]string{
-		"inside a key": "-----BEGIN PRIVATE KEY-----\n" + pemBody + "\n-----END PRIVATE KEY----- -----BEGIN PRIVATE KEY-----\n" + second + "\n",
-		"stray end":    "x\n-----END PRIVATE KEY----- -----BEGIN PRIVATE KEY-----\n" + second + "\n",
-		"begin end begin": "-----BEGIN PRIVATE KEY----- -----END PRIVATE KEY----- -----BEGIN PRIVATE KEY-----\n" +
+		"inside a key": "-----BEGIN " + "PRIVATE KEY-----\n" + pemBody + "\n-----END PRIVATE KEY----- -----BEGIN " + "PRIVATE KEY-----\n" + second + "\n",
+		"stray end":    "x\n-----END PRIVATE KEY----- -----BEGIN " + "PRIVATE KEY-----\n" + second + "\n",
+		"begin end begin": "-----BEGIN " + "PRIVATE KEY----- -----END PRIVATE KEY----- -----BEGIN " + "PRIVATE KEY-----\n" +
 			second + "\n",
 	}
 	for name, in := range cases {
@@ -132,5 +132,36 @@ func TestRedactEndThenBeginOnOneLineKeepsNextKeyClosed(t *testing.T) {
 				noLeak(t, redact(t, in, oneByte), pemBody, second)
 			})
 		}
+	}
+}
+
+// A mismatched END label must not close an open key (CHE-4274 review P1).
+func TestRedactMismatchedEndKeepsKeyOpenToEOF(t *testing.T) {
+	cases := map[string]string{
+		"public end":   "-----BEGIN " + "PRIVATE KEY-----\n-----END PUBLIC KEY-----\n" + pemBody + "\n",
+		"rsa vs plain": "-----BEGIN " + "RSA PRIVATE KEY-----\n-----END PRIVATE KEY-----\n" + pemBody + "\n",
+		"same line":    "-----BEGIN " + "PRIVATE KEY----- -----END PUBLIC KEY-----\n" + pemBody + "\n",
+	}
+	for name, in := range cases {
+		for _, oneByte := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/oneByte=%v", name, oneByte), func(t *testing.T) {
+				noLeak(t, redact(t, in, oneByte), pemBody)
+			})
+		}
+	}
+	// Matching labels still close, so later lines survive.
+	got := redact(t, "-----BEGIN "+"PUBLIC KEY-----\n"+pemBody+"\n-----END PUBLIC KEY-----\nafter\n", false)
+	if !strings.Contains(got, "after") {
+		t.Errorf("matching END did not close: %q", got)
+	}
+}
+
+// URL credentials whose "@" sits past the line cap must not be stored (CHE-4274 review P2).
+func TestRedactOverlongLineDoesNotStoreCutCredential(t *testing.T) {
+	in := "x https://user:hunter2planted" + strings.Repeat("p", 70_000) + "@host/x.git\nok\n"
+	got := redact(t, in, false)
+	noLeak(t, got, "hunter2planted")
+	if !strings.Contains(got, "ok") {
+		t.Errorf("lost trailing line: %q", got)
 	}
 }

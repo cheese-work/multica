@@ -27,6 +27,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -247,8 +248,8 @@ func (client *Client) restPost(ctx context.Context, installationID int64, path s
 	return client.restDo(ctx, installationID, http.MethodPost, path, raw, http.StatusCreated)
 }
 
-func (client *Client) restDo(ctx context.Context, installationID int64, method, path string, payload []byte, okStatus int) (json.RawMessage, error) {
-	body, _, err := client.restDoFull(ctx, installationID, method, path, payload, okStatus)
+func (client *Client) restDo(ctx context.Context, installationID int64, method, path string, payload []byte, okStatus ...int) (json.RawMessage, error) {
+	body, _, err := client.restDoFull(ctx, installationID, method, path, payload, okStatus...)
 	return body, err
 }
 
@@ -257,7 +258,7 @@ func (client *Client) restDoHeader(ctx context.Context, installationID int64, pa
 	return client.restDoFull(ctx, installationID, http.MethodGet, path, nil, http.StatusOK)
 }
 
-func (client *Client) restDoFull(ctx context.Context, installationID int64, method, path string, payload []byte, okStatus int) (json.RawMessage, http.Header, error) {
+func (client *Client) restDoFull(ctx context.Context, installationID int64, method, path string, payload []byte, okStatus ...int) (json.RawMessage, http.Header, error) {
 	token, err := client.installationToken(ctx, installationID)
 	if err != nil {
 		return nil, nil, err
@@ -290,7 +291,7 @@ func (client *Client) restDoFull(ctx context.Context, installationID int64, meth
 	if isRateLimited(resp, body) {
 		return nil, nil, rateLimitFromResponse(resp, client.now())
 	}
-	if resp.StatusCode != okStatus {
+	if !slices.Contains(okStatus, resp.StatusCode) {
 		return nil, nil, &StatusError{Status: resp.StatusCode}
 	}
 	if len(body) > maxBody {
