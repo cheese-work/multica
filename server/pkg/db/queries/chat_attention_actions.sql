@@ -60,10 +60,12 @@ WHERE user_id = @user_id AND ack_batch_id = @batch_id;
 SELECT EXISTS (SELECT 1 FROM chat_attention_item WHERE id = @id) AS item_exists;
 
 -- name: ReplaceOpenLaterAndUnseen :exec
+-- The open later is always replaced. An unseen item is replaced only when the request named it:
+-- one marked after the displayed snapshot is a new obligation and stays open.
 UPDATE chat_attention_item
 SET resolved_at = clock_timestamp(), resolved_by = 'replaced'
-WHERE chain_root_session_id = @chain_root AND user_id = @user_id
-  AND kind IN ('later', 'unseen') AND resolved_at IS NULL;
+WHERE chain_root_session_id = @chain_root AND user_id = @user_id AND resolved_at IS NULL
+  AND (kind = 'later' OR (kind = 'unseen' AND id = ANY(@sent_item_ids::uuid[])));
 
 -- name: InsertLaterAttentionItem :exec
 INSERT INTO chat_attention_item (id, workspace_id, chain_root_session_id, chat_session_id, user_id, kind, due_at)

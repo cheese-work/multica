@@ -329,8 +329,83 @@ func TestMarkChatSessionUnread_OpensUnseenItem(t *testing.T) {
 		t.Fatalf("open unseen items = %d, want 1", n)
 	}
 
-	wantCode(t, f.post(testHandler.ChatAttentionLater, "later", map[string]any{"subject_keys": []string{}, "request_id": uuid.NewString()}), http.StatusOK)
+	var unseenID string
+	dbfx.QueryRow(t, `SELECT id FROM chat_attention_item WHERE chat_session_id = $1 AND kind = 'unseen' AND resolved_at IS NULL`, f.sessionID).Scan(&unseenID)
+	wantCode(t, f.post(testHandler.ChatAttentionLater, "later", map[string]any{"subject_keys": []string{service.ItemKey(unseenID)}, "request_id": uuid.NewString()}), http.StatusOK)
 	if dbfx.Count(t, openUnseen, f.sessionID) != 0 {
 		t.Fatal("Để sau must turn the unseen item into the later item")
+	}
+}
+
+// Review finding P1 (E19 for Để sau): an unseen item marked after the displayed snapshot is not in
+// the sent keys, so a delayed Để sau must leave it open and visible.
+func TestChatAttentionLater_KeepsUnseenMarkedAfterSnapshot(t *testing.T) {
+	f := newAttnFx(t)
+	ask := f.item("ask", testUserID, 5*time.Hour)
+	arrived := f.item("unseen", testUserID, time.Minute)
+
+	rec := f.post(testHandler.ChatAttentionLater, "later", map[string]any{
+		"subject_keys": []string{service.ItemKey(ask)}, "duration_seconds": 7200, "request_id": uuid.NewString(),
+	})
+	wantCode(t, rec, http.StatusOK)
+	view, _ := attnOne(t, rec)
+	if f.resolved(arrived) != nil || !has(view.Keys, service.ItemKey(arrived)) || has(view.Keys, service.ItemKey(ask)) {
+		t.Fatalf("unseen marked after the snapshot must stay open and visible; ask hidden: %+v", view)
+	}
+}
+
+func (f *attnFx) keysAt(at time.Time) []string {
+	f.t.Helper()
+	rows, err := service.LoadChatAttention(context.Background(), testHandler.Queries, util.MustParseUUID(testWorkspaceID), util.MustParseUUID(testUserID), at)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.RootID == f.sessionID {
+			return r.Keys
+		}
+	}
+	return nil
+}
+
+// A19: Để sau snoozes the decision revision it displayed. A new decision and a reopened
+// (answer_revision +1) decision are different subjects and show at once.
+func TestChatAttentionLater_DecisionSnoozeIsPerRevision(t *testing.T) {
+	f := newAttnFx(t)
+	d1 := f.decision()
+	wantCode(t, f.post(testHandler.ChatAttentionLater, "later", map[string]any{
+		"subject_keys": []string{service.DecisionKey(d1, 1)}, "duration_seconds": 7200, "request_id": uuid.NewString(),
+	}), http.StatusOK)
+	if got := f.keysAt(time.Now()); has(got, service.DecisionKey(d1, 1)) {
+		t.Fatalf("D1 must be hidden until due: %v", got)
+	}
+	if dbfx.Count(t, `SELECT count(*) FROM decision_request WHERE id = $1 AND status = 'open'`, d1) != 1 {
+		t.Fatal("Để sau must not resolve the decision")
+	}
+	d2 := f.decision()
+	if got := f.keysAt(time.Now()); !has(got, service.DecisionKey(d2, 1)) || has(got, service.DecisionKey(d1, 1)) {
+		t.Fatalf("D2 visible, D1 still hidden: %v", got)
+	}
+	dbfx.Exec(t, `UPDATE decision_request SET answer_revision = 2 WHERE id = $1`, d1)
+	if got := f.keysAt(time.Now()); !has(got, service.DecisionKey(d1, 2)) || has(got, service.DecisionKey(d1, 1)) {
+		t.Fatalf("reopened D1@2 visible: %v", got)
+	}
+	if got := f.keysAt(time.Now().Add(3 * time.Hour)); !has(got, service.DecisionKey(d2, 1)) {
+		t.Fatalf("D2 still visible after due: %v", got)
+	}
+}
+
+// A20: Xong tất cả acknowledges the displayed unclassified turn; the next turn is a new subject.
+func TestChatAttentionXongAll_NextUnclassifiedTurnStaysVisible(t *testing.T) {
+	f := newAttnFx(t)
+	t1 := f.turn()
+	if !has(f.keysAt(time.Now()), service.TurnKey(t1)) {
+		t.Fatal("T1 must be listed before Xong tất cả")
+	}
+	wantCode(t, f.call(testHandler.ChatAttentionXongAll, "/api/chat/attention/xong-all", map[string]any{"subject_keys": []string{service.TurnKey(t1)}}), http.StatusOK)
+	t2 := f.turn()
+	got := f.keysAt(time.Now())
+	if has(got, service.TurnKey(t1)) || !has(got, service.TurnKey(t2)) {
+		t.Fatalf("T1 acknowledged, T2 visible: %v", got)
 	}
 }

@@ -289,17 +289,20 @@ func (q *Queries) ReopenXongBatchItems(ctx context.Context, arg ReopenXongBatchI
 const replaceOpenLaterAndUnseen = `-- name: ReplaceOpenLaterAndUnseen :exec
 UPDATE chat_attention_item
 SET resolved_at = clock_timestamp(), resolved_by = 'replaced'
-WHERE chain_root_session_id = $1 AND user_id = $2
-  AND kind IN ('later', 'unseen') AND resolved_at IS NULL
+WHERE chain_root_session_id = $1 AND user_id = $2 AND resolved_at IS NULL
+  AND (kind = 'later' OR (kind = 'unseen' AND id = ANY($3::uuid[])))
 `
 
 type ReplaceOpenLaterAndUnseenParams struct {
-	ChainRoot pgtype.UUID `json:"chain_root"`
-	UserID    pgtype.UUID `json:"user_id"`
+	ChainRoot   pgtype.UUID   `json:"chain_root"`
+	UserID      pgtype.UUID   `json:"user_id"`
+	SentItemIds []pgtype.UUID `json:"sent_item_ids"`
 }
 
+// The open later is always replaced. An unseen item is replaced only when the request named it:
+// one marked after the displayed snapshot is a new obligation and stays open.
 func (q *Queries) ReplaceOpenLaterAndUnseen(ctx context.Context, arg ReplaceOpenLaterAndUnseenParams) error {
-	_, err := q.db.Exec(ctx, replaceOpenLaterAndUnseen, arg.ChainRoot, arg.UserID)
+	_, err := q.db.Exec(ctx, replaceOpenLaterAndUnseen, arg.ChainRoot, arg.UserID, arg.SentItemIds)
 	return err
 }
 

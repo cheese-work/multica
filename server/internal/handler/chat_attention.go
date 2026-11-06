@@ -441,7 +441,7 @@ func (h *Handler) setLater(ctx context.Context, ws, user pgtype.UUID, session db
 		return internal
 	}
 	if !seen {
-		if err := qtx.ReplaceOpenLaterAndUnseen(ctx, db.ReplaceOpenLaterAndUnseenParams{ChainRoot: session.ChainRootSessionID, UserID: user}); err != nil {
+		if err := qtx.ReplaceOpenLaterAndUnseen(ctx, db.ReplaceOpenLaterAndUnseenParams{ChainRoot: session.ChainRootSessionID, UserID: user, SentItemIds: s.items}); err != nil {
 			return internal
 		}
 		if err := qtx.InsertLaterAttentionItem(ctx, db.InsertLaterAttentionItemParams{
