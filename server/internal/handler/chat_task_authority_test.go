@@ -635,6 +635,50 @@ func TestChatTaskAuthorityRetryAndSettingsWriteTakeLocksInOneOrder(t *testing.T)
 	}
 }
 
+// FailTask retries in its own transaction, which already holds the session when
+// it reaches the retry guard. It must take the workspace first all the same, or
+// a settings write holding the workspace and waiting for the sessions deadlocks
+// against it and one side rolls back.
+func TestChatTaskAuthorityFailTaskAndSettingsWriteTakeLocksInOneOrder(t *testing.T) {
+	a := newAuthorityFixture(t)
+	ctx := context.Background()
+	id := a.task(a.compactAgent, "running", taskPurposeCompaction)
+
+	tx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	q := testHandler.Queries.WithTx(tx)
+	if _, err := q.LockWorkspaceSettings(ctx, parseUUID(testWorkspaceID)); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := testHandler.TaskService.FailTask(ctx, parseUUID(id), "timed out", "", "", "", "timeout", false, "", "")
+		done <- err
+	}()
+	time.Sleep(300 * time.Millisecond) // let the failure reach its first lock
+
+	lockCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if _, err := q.LockChatSessionsByWorkspace(lockCtx, parseUUID(testWorkspaceID)); err != nil {
+		t.Fatalf("settings write could not lock the sessions behind a failing task: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("FailTask error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("FailTask did not finish after the settings write committed")
+	}
+}
+
 // The history and thread routes take the same authority check as the messages
 // route: a compaction task whose agent is no longer the current compact agent
 // reads nothing, even though its token still binds it to the DM session.

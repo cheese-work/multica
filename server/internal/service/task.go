@@ -5940,6 +5940,13 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			if err := requireActiveTaskProject(ctx, qtx, parent); err != nil {
 				wantRetry = false
 			}
+			// SEC-1 rule 4: the retry guard below locks the workspace, which
+			// must come before the session lock taken next.
+			if wantRetry && parent.Purpose.Valid && parent.Purpose.String == "compaction" && parent.ChatSessionID.Valid {
+				if _, err := lockCompactionRetryWorkspace(ctx, qtx, parent); err != nil {
+					return err
+				}
+			}
 		}
 		if err := lockChatSessionForTaskWrite(ctx, qtx, taskID); err != nil {
 			return err
@@ -6515,18 +6522,29 @@ func compactionRetryRevoked(ctx context.Context, q *db.Queries, parent db.AgentT
 	if !parent.ChatSessionID.Valid || !parent.Purpose.Valid || parent.Purpose.String != "compaction" {
 		return false, nil
 	}
-	session, err := q.GetChatSession(ctx, parent.ChatSessionID)
+	workspaceID, err := lockCompactionRetryWorkspace(ctx, q, parent)
 	if err != nil {
-		return true, err
-	}
-	workspaceID := session.WorkspaceID
-	if _, err := q.LockWorkspaceForChatSessionCreate(ctx, workspaceID); err != nil {
 		return true, err
 	}
 	if _, err := q.LockChatSessionShared(ctx, parent.ChatSessionID); err != nil {
 		return true, err
 	}
 	return q.CompactChainChangedSince(ctx, db.CompactChainChangedSinceParams{WorkspaceID: workspaceID, CreatedAt: parent.CreatedAt})
+}
+
+// lockCompactionRetryWorkspace takes the workspace row of a compaction task's
+// session. A caller that locks the session itself (FailTask) calls it first, so
+// the workspace-then-session order holds on every path. Not a compaction task:
+// no-op.
+func lockCompactionRetryWorkspace(ctx context.Context, q *db.Queries, parent db.AgentTaskQueue) (pgtype.UUID, error) {
+	session, err := q.GetChatSession(ctx, parent.ChatSessionID)
+	if err != nil {
+		return pgtype.UUID{}, err
+	}
+	if _, err := q.LockWorkspaceForChatSessionCreate(ctx, session.WorkspaceID); err != nil {
+		return pgtype.UUID{}, err
+	}
+	return session.WorkspaceID, nil
 }
 
 // refuseRetryForProviderHold checks the just-created retry child's agent
