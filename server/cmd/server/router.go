@@ -2185,6 +2185,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/stage-queue", h.GetIssueStageQueue)
 					r.With(handler.RequireInteractiveSession).Post("/run-budget", h.RaiseIssueRunBudget)
 					r.With(handler.RequireInteractiveSession).Post("/run-budget/top-up", h.TopUpIssueRunBudget)
+					r.With(handler.RequireHumanActor).Post("/run-budget/requests", h.RequestIssueRunBudgetAction)
 					// CHE-2489: a person widens one issue's runs; machine credentials never reach the handler.
 					r.With(handler.RequireHumanActor).Post("/capability-grants", h.CreateRunCapabilityGrant)
 					// CHE-2514: a person clears the taint that keeps one issue's runs restricted.

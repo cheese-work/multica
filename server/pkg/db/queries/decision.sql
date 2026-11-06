@@ -517,3 +517,8 @@ SELECT (member.role = 'owner')::boolean AS is_owner,
     ), false)::boolean AS is_delegate
 FROM member
 WHERE member.workspace_id = sqlc.arg('workspace_id') AND member.user_id = sqlc.arg('user_id');
+
+-- name: FindOpenServerDecisionRequest :one
+SELECT * FROM decision_request
+WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id') AND human_user_id = sqlc.arg('human_user_id')
+  AND request_fingerprint = sqlc.arg('fingerprint') AND status = 'open';
