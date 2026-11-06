@@ -12,7 +12,7 @@ import (
 )
 
 const getDecisionCancelMessageForRequest = `-- name: GetDecisionCancelMessageForRequest :one
-SELECT id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via, decision_answer_id, lineage_message_ids, decision_request_ids FROM chat_message
+SELECT id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via, decision_answer_id, lineage_message_ids, decision_request_ids, client_message_id FROM chat_message
 WHERE chat_session_id = $1
     AND $2::uuid = ANY(decision_request_ids)
     AND message_kind = 'decision_cancel_notice'
@@ -50,13 +50,14 @@ func (q *Queries) GetDecisionCancelMessageForRequest(ctx context.Context, arg Ge
 		&i.DecisionAnswerID,
 		&i.LineageMessageIds,
 		&i.DecisionRequestIds,
+		&i.ClientMessageID,
 	)
 	return i, err
 }
 
 const listDecisionRequestCards = `-- name: ListDecisionRequestCards :many
 SELECT request.id AS request_id, message.id AS message_id, request.issue_id,
-    COALESCE(workspace.issue_prefix, 'MUL')::text AS issue_prefix, issue.number AS issue_number,
+    COALESCE(workspace.issue_prefix, 'MUL')::text AS issue_prefix, issue.number AS issue_number, issue.title AS issue_title,
     source.id AS source_comment_id, request.ask, request.status, request.created_at,
     request.withdraw_reason, request.cancel_reason, request.options,
     COALESCE(request.withdrawn_at, request.cancel_notice_posted_at) AS withdrawn_at,
@@ -109,6 +110,7 @@ type ListDecisionRequestCardsRow struct {
 	IssueID                 pgtype.UUID        `json:"issue_id"`
 	IssuePrefix             string             `json:"issue_prefix"`
 	IssueNumber             int32              `json:"issue_number"`
+	IssueTitle              string             `json:"issue_title"`
 	SourceCommentID         pgtype.UUID        `json:"source_comment_id"`
 	Ask                     string             `json:"ask"`
 	Status                  string             `json:"status"`
@@ -145,6 +147,7 @@ func (q *Queries) ListDecisionRequestCards(ctx context.Context, arg ListDecision
 			&i.IssueID,
 			&i.IssuePrefix,
 			&i.IssueNumber,
+			&i.IssueTitle,
 			&i.SourceCommentID,
 			&i.Ask,
 			&i.Status,

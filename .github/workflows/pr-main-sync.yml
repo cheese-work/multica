@@ -1,0 +1,43 @@
+name: PR main sync
+
+# Merges `main` into open PR branches that are behind it, so a PR does not wait for an author run
+# only to update its base. Conflicts push nothing and open one task for the PR author.
+#
+# Trust boundary: runs only the default-branch script (push to main / manual), never PR code.
+# Runs on the X99 runner because it needs the authenticated `gh` (pushes made with the Actions
+# token would not start CI on the PR) and `multica` CLIs.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Print what would happen without pushing or creating tasks
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# A newer main push supersedes a running sync; the next run sees the newest main anyway.
+concurrency:
+  group: pr-main-sync
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    # Off until C3 (diff-keyed evidence, CHE-3610) ships: a merge of main voids head-keyed PASS evidence.
+    # Enable with the repository variable PR_MAIN_SYNC_ENABLED=true. Manual dispatch runs without it,
+    # but only as a forced dry run: no live merge happens while the switch is off.
+    if: github.event_name == 'workflow_dispatch' || vars.PR_MAIN_SYNC_ENABLED == 'true'
+    runs-on: [self-hosted, linux, x64, cheese-x99]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Merge main into behind PR branches
+        env:
+          DRY_RUN: ${{ (vars.PR_MAIN_SYNC_ENABLED != 'true' || (github.event_name == 'workflow_dispatch' && inputs.dry_run)) && '--dry-run' || '' }}
+        run: node scripts/pr-main-sync.mjs --repo "$GITHUB_REPOSITORY" --base "${{ github.event.repository.default_branch }}" $DRY_RUN

@@ -114,13 +114,14 @@ func (h *Handler) saveWorkspace(ctx context.Context, params db.UpdateWorkspacePa
 		reconcilePRMergeSettings(stored, incoming)
 		reconcileDelegatedWrites(stored, incoming)
 		reconcileAgentDecisionJev(stored, incoming)
+		reconcileRoutingAgent(stored, incoming)
 		if action, err = reconcileWakeupsPause(stored, incoming, userID, time.Now()); err != nil {
 			return db.Workspace{}, "", activity, settingsRejectedError{err.Error()}
 		}
-	} else if stored[wakeupsPausedKey] == true || stored[delegatedWritesKey] != nil || stored[agentDecisionJevKey] != nil {
+	} else if stored[wakeupsPausedKey] == true || stored[delegatedWritesKey] != nil || stored[agentDecisionJevKey] != nil || stored[routingAgentKey] != nil {
 		// A non-object body would replace the whole blob and clear the pause, the
 		// delegated-writes setting or the Jev registration with no record. Other callers may still store one.
-		return db.Workspace{}, "", activity, settingsRejectedError{"settings must be an object while wakeups are paused, delegated writes are set or a Jev agent is registered"}
+		return db.Workspace{}, "", activity, settingsRejectedError{"settings must be an object while wakeups are paused, delegated writes are set, a Jev agent is registered or a routing agent is set"}
 	}
 	params.Settings, _ = json.Marshal(settings)
 	ws, err := q.UpdateWorkspace(ctx, params)
