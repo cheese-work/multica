@@ -166,3 +166,42 @@ func TestPRDequeuedConditionFiresOncePerDequeue(t *testing.T) {
 		t.Fatalf("after a second dequeue: %d, want 2", got)
 	}
 }
+
+// A dequeue saved before an operator halts dispatch must not start a run while
+// the repository is halted, nor replay after the halt lifts (CHE-4231 security).
+func TestPRDequeuedConditionHonorsDispatchHalt(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	const installationID int64 = 423105
+	fx := newPRMergeWebhookFixture(t, installationID)
+	agentID := createHandlerTestAgent(t, "CHE-4231 dequeued halt", nil)
+	setIssueAssigneeDirect(t, fx.child.ID, "agent", agentID)
+	ruleID := createRule(t, fx.child.ID, agentID, pgtype.UUID{}, service.WakeupInput{
+		Instruction: "Handle dequeue", Kind: "event",
+		Condition: json.RawMessage(`{"type":"pull_request","event":"dequeued"}`),
+	})
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM github_dispatch_halt WHERE workspace_id = $1`, testWorkspaceID)
+	})
+	met := func() int {
+		return dbfx.Count(t, `SELECT count(*) FROM issue_wakeup_receipt WHERE wakeup_id=$1 AND event_type='condition.met'`, ruleID)
+	}
+	due := func() {
+		dbfx.Exec(t, `UPDATE issue_wakeup SET next_fire_at=now()-interval '1 minute' WHERE id=$1`, ruleID)
+		runWakeupTick(t)
+	}
+
+	body := buildDequeuedPRWebhookBody(fx.child.Identifier+": queued", 423116, installationID)
+	postSignedGitHubWebhook(t, fx.secret, body, "guid-4231-halt-1")
+	setHalt(t, "acme/widget", true, false)
+	due()
+	if got := met(); got != 0 {
+		t.Fatalf("halted repo: dequeue condition fired %d times, want 0", got)
+	}
+	setHalt(t, "acme/widget", false, false)
+	due()
+	if got := met(); got != 0 {
+		t.Fatalf("resume replayed the dropped dequeue: %d, want 0", got)
+	}
+}

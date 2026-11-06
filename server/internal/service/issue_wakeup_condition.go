@@ -305,7 +305,7 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 		return met, fingerprint, observed, nil
 	case "pull_request":
 		if c.Event == "dequeued" {
-			return evaluatePRDequeued(ctx, tx, w)
+			return evaluatePRDequeued(ctx, tx, q, w)
 		}
 		// Without the snapshot client GitHub rows are never refreshed, so their
 		// checks and mergeability neither satisfy nor stall the rule. Self-hosted VCS rows carry
@@ -903,8 +903,8 @@ func withoutPRs(fingerprint string, identities []string) string {
 // received since this rule was created. A dequeue is an event, not a state the
 // snapshot holds, and the delivery GUID in each receipt key makes every
 // dequeue a new fingerprint.
-func evaluatePRDequeued(ctx context.Context, tx pgx.Tx, w db.IssueWakeup) (bool, string, map[string]any, error) {
-	rows, err := tx.Query(ctx, `SELECT r.event_key, pr.pr_number, r.payload->>'head_sha', r.payload->>'reason'
+func evaluatePRDequeued(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.IssueWakeup) (bool, string, map[string]any, error) {
+	rows, err := tx.Query(ctx, `SELECT r.event_key, pr.pr_number, pr.id::text, pr.repo_owner, pr.repo_name, r.payload->>'head_sha', r.payload->>'reason'
 		FROM issue_wakeup dw JOIN issue_wakeup_receipt r ON r.wakeup_id=dw.id
 		JOIN github_pull_request pr ON lower(pr.repo_owner)=lower(r.payload->>'repo_owner') AND lower(pr.repo_name)=lower(r.payload->>'repo_name') AND pr.pr_number=(r.payload->>'pr_number')::int
 		JOIN issue_pull_request ipr ON ipr.pull_request_id=pr.id AND ipr.issue_id=dw.issue_id
@@ -916,18 +916,34 @@ func evaluatePRDequeued(ctx context.Context, tx pgx.Tx, w db.IssueWakeup) (bool,
 	defer rows.Close()
 	var keys []string
 	var prs []map[string]any
+	var repos [][2]string
+	var linked []linkedPR
 	for rows.Next() {
-		var key string
+		var key, id, repoOwner, repoName string
 		var number int32
 		var head, reason pgtype.Text
-		if err := rows.Scan(&key, &number, &head, &reason); err != nil {
+		if err := rows.Scan(&key, &number, &id, &repoOwner, &repoName, &head, &reason); err != nil {
 			return false, "", nil, err
 		}
-		keys = append(keys, key)
+		// The key starts with the PR number, like the other pull_request keys,
+		// so a halted repository's dequeues are consumed by conditionDropped.
+		keys = append(keys, fmt.Sprintf("%d@%s", number, key))
 		prs = append(prs, map[string]any{"number": number, "head_sha": head.String, "reason": reason.String})
+		repos = append(repos, [2]string{repoOwner, repoName})
+		linked = append(linked, linkedPR{number: fmt.Sprintf("%d", number), id: id, repo: [2]string{repoOwner, repoName}})
 	}
 	if err := rows.Err(); err != nil {
 		return false, "", nil, err
 	}
-	return len(keys) > 0, "pr:" + strings.Join(keys, ","), map[string]any{"pull_requests": prs}, nil
+	// The kill switch (CHE-2220) consumes a halted repository's dequeues: they
+	// stay in the fingerprint, so lifting the halt does not replay them.
+	prs, haltedPRs, err := splitHaltedPRs(ctx, q, w.WorkspaceID, prs, repos, linked)
+	if err != nil {
+		return false, "", nil, err
+	}
+	observed := map[string]any{"pull_requests": prs}
+	if len(haltedPRs) > 0 {
+		observed[haltedPRsField] = haltedPRs
+	}
+	return len(keys) > 0, "pr:" + strings.Join(keys, ","), observed, nil
 }
