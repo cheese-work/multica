@@ -81,7 +81,7 @@ jobs:
       - name: Test the upstream-main mirror script
         run: bash scripts/mirror-upstream-main.test.sh
       - name: Test the upstream-main rulesets
-        run: node --test scripts/mirror-rulesets.test.mjs
+        run: node --test scripts/mirror-rulesets.test.mjs scripts/mirror-workflow.test.mjs
       - name: Check no upstream update source
         run: bash scripts/check-no-upstream-update-source.sh
 
