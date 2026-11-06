@@ -185,6 +185,30 @@ class DiffDigestTest(unittest.TestCase):
         self.assertIsNone(v)
         self.assertIn("Diff-Digest", err)
 
+    def test_waiver_for_diff_survives_a_main_only_merge_and_dies_on_a_pr_edit(self):
+        """CHE-4326: a test-first waiver recorded as `waived_for_diff` follows the diff like a PASS does."""
+        waiver = {"waived_for_diff": self.d1}
+        m = self.advance_main("other.txt", "o2\n")
+        h2 = self.merge_main()
+        self.assertTrue(sg.waiver_applies(waiver, h2, self.r.digest(m, h2)))
+        self.r.write("pr.txt", "l1\nPR2\n" + "".join(f"l{i}\n" for i in range(3, 11)))
+        h3 = self.r.commit("edit")
+        self.assertFalse(sg.waiver_applies(waiver, h3, self.r.digest(m, h3)))
+
+    def test_waiver_dies_when_a_main_merge_changes_a_pr_file(self):
+        m = self.advance_main("pr.txt", "".join(f"l{i}\n" for i in range(1, 10)) + "main\n")
+        h2 = self.merge_main()
+        self.assertFalse(sg.waiver_applies({"waived_for_diff": self.d1}, h2, self.r.digest(m, h2)))
+
+    def test_legacy_waived_for_head_still_needs_the_exact_head(self):
+        self.assertTrue(sg.waiver_applies({"waived_for_head": self.h1}, self.h1, self.d1))
+        self.assertFalse(sg.waiver_applies({"waived_for_head": self.h1}, "e" * 40, self.d1))
+
+    def test_waiver_without_a_usable_key_or_digest_never_applies(self):
+        self.assertFalse(sg.waiver_applies({}, self.h1, self.d1))
+        self.assertFalse(sg.waiver_applies({"waived_for_diff": self.d1}, self.h1, None))
+        self.assertFalse(sg.waiver_applies({"waived_for_diff": "xyz"}, self.h1, "xyz"))
+
     def test_print_digest_gives_lanes_the_digest_to_record_and_compare(self):
         """Browser/device lanes record this beside their PASS; the same value on a later head keeps it."""
         def run(base, head):
