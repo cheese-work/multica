@@ -7,6 +7,10 @@ const OptionsSchema = z.object({ publicKey: z.record(z.string(), z.unknown()) })
 
 export const PasskeyChallengeSchema = z.object({ challenge_id: z.string(), options: OptionsSchema, expires_at: z.string() });
 // `assertion` is present when the workspace gate blocks and the user already has a passkey.
+// The revisions the challenge binds; the answer must carry the same pair.
+export const PasskeyAnswerChallengeSchema = PasskeyChallengeSchema.extend({
+  answer_revision: z.number().int(), policy_revision: z.number().int(),
+});
 export const PasskeyEnrollStartSchema = z.object({
   ceremony_id: z.string(), options: OptionsSchema, expires_at: z.string(), assertion: PasskeyChallengeSchema.optional(),
 });
@@ -41,6 +45,7 @@ export type PasskeyEnrollStart = z.infer<typeof PasskeyEnrollStartSchema>;
 export type PasskeySummary = z.infer<typeof PasskeyListSchema>["passkeys"][number];
 export type PasskeyChallenge = z.infer<typeof PasskeyChallengeSchema>;
 export type DecisionActionView = z.infer<typeof DecisionActionViewSchema>;
+export type PasskeyAnswerChallenge = z.infer<typeof PasskeyAnswerChallengeSchema>;
 export type PasskeyDecisionOutcome = z.infer<typeof PasskeyDecisionOutcomeSchema>;
 
 /**

@@ -19,6 +19,17 @@ multica workflow get <workflow-id> --output json      # steps, instructions, rul
 (guarded exits: `[{"to","guard","timeout","on_timeout"}]`; PR guards need a
 `timeout`).
 
+## Lint a workflow
+
+```bash
+multica workflow lint <workflow-id> --output json
+multica workflow lint --all
+```
+
+Prints findings per rule (`WF###`, level, step, message, hint). Exit status is
+non-zero when any unwaived error exists; warnings and infos do not fail it.
+Give a workflow id or `--all`, not both.
+
 ## Change one step's instructions
 
 ```bash

@@ -274,9 +274,9 @@ import { createRequestId, createSafeId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseOrThrow, parseWithFallback } from "./schema";
 import {
-  DecisionActionViewSchema, PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
+  DecisionActionViewSchema, PasskeyAnswerChallengeSchema, PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
   PasskeyListSchema, PasskeyRevokeCodeStartSchema, PasskeyRevokedSchema, parsePasskeyResponse,
-  type DecisionActionView, type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart, type PasskeySummary,
+  type DecisionActionView, type PasskeyAnswerChallenge, type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart, type PasskeySummary,
 } from "./passkey-schema";
 import {
   RuntimeProfileSchema,
@@ -4123,7 +4123,11 @@ export class ApiClient {
     await this.fetch(`/api/decision-answers/${answerId}/disclaim`, { method: "POST" });
   }
 
-  async answerDecisionRequest(requestId: string, input: { option?: string; text?: string }): Promise<void> {
+  /** A gated class also sends the revisions from `challengeDecisionAnswer` and the signed assertion. */
+  async answerDecisionRequest(
+    requestId: string,
+    input: { option?: string; text?: string; answer_revision?: number; policy_revision?: number; assertion?: PasskeyAssertionEnvelope },
+  ): Promise<void> {
     await this.fetch(`/api/decision-requests/${encodeURIComponent(requestId)}/answer`, { method: "POST", body: JSON.stringify(input) });
   }
 
@@ -4172,6 +4176,11 @@ export class ApiClient {
 
   async revokePasskey(passkeyId: string, assertion: PasskeyAssertionEnvelope): Promise<void> {
     await this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke`, PasskeyRevokedSchema, { assertion });
+  }
+
+  /** Binds a challenge to exactly this option and trimmed text; the answer must repeat them. */
+  challengeDecisionAnswer(requestId: string, input: { option?: string; text?: string }): Promise<PasskeyAnswerChallenge> {
+    return this.passkeyPost(`/api/decision-requests/${encodeURIComponent(requestId)}/answer/challenge`, PasskeyAnswerChallengeSchema, input);
   }
 
   challengeDecisionAction(actionId: string): Promise<PasskeyChallenge> {

@@ -520,6 +520,30 @@ func duplicateOfPointer(status string, id pgtype.UUID) pgtype.UUID {
 	return id
 }
 
+// statusMoveRecorded keeps status_changed honest for the event: a write that
+// carried a status record but wrote no row lost the race to an identical
+// concurrent move (the locked status already matched), so it moved nothing.
+// Without this the event would claim a move no row names (CHE-2854).
+func statusMoveRecorded(statusChanged bool, rec *statusRecord) bool {
+	return statusChanged && (rec == nil || rec.activity != nil)
+}
+
+// duplicateRowNamesMove reports whether the duplicate_marked or
+// duplicate_unmarked row the listener writes stands in for this write's status
+// row (MUL-7349). It does not when the pointer is a leftover or its original
+// is gone: no duplicate row is written, so the status row records the move.
+func (h *Handler) duplicateRowNamesMove(ctx context.Context, params db.UpdateIssueParams, prev db.Issue) bool {
+	if params.DuplicateOfIssueID.Valid {
+		return true
+	}
+	mark := duplicateOfPointer(prev.Status, prev.DuplicateOfIssueID)
+	if !mark.Valid {
+		return false
+	}
+	_, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: mark, WorkspaceID: prev.WorkspaceID})
+	return err == nil
+}
+
 // duplicateOriginals memoises the originals a request's duplicates point at,
 // by id. A nil entry is an original that no longer exists (or could not be
 // read), so it is looked up once and then left off every response.
@@ -4619,13 +4643,13 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		releaseMove = release
 		defer releaseMove()
 	}
-	// Status history is written in the status transaction. A duplicate mark
-	// keeps the listener's richer row until it migrates; it gets the same
-	// trigger instead.
+	// Status history is written in the status transaction. A live duplicate
+	// mark change is named by the listener's duplicate row, which carries the
+	// same trigger instead.
 	statusTrigger := statusTriggerFromRequest(r, actorType, actorID)
 	statusTrigger.Version = service.StatusTriggerVersion
 	var statusRec *statusRecord
-	if !params.DuplicateOfIssueID.Valid && !prevIssue.DuplicateOfIssueID.Valid {
+	if !h.duplicateRowNamesMove(r.Context(), params, prevIssue) {
 		statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTrigger}
 		if handoff != nil {
 			statusRec.handoffWorkflow = handoff.def.Name
@@ -4729,7 +4753,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	updatedPayload := map[string]any{
 		"issue":               resp,
 		"assignee_changed":    assigneeChanged,
-		"status_changed":      statusChanged,
+		"status_changed":      statusMoveRecorded(statusChanged, statusRec),
 		"priority_changed":    priorityChanged,
 		"project_changed":     projectChanged,
 		"start_date_changed":  startDateChanged,
@@ -5582,7 +5606,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		// Same recording as UpdateIssue: the row commits with the status.
 		var statusRec *statusRecord
-		if !params.DuplicateOfIssueID.Valid && !prevIssue.DuplicateOfIssueID.Valid {
+		if !h.duplicateRowNamesMove(r.Context(), params, prevIssue) {
 			statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTriggerFromRequest(r, actorType, actorID)}
 			if handoff != nil {
 				statusRec.handoffWorkflow = handoff.def.Name
@@ -5669,7 +5693,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		batchPayload := map[string]any{
 			"issue":                      resp,
 			"assignee_changed":           assigneeChanged,
-			"status_changed":             statusChanged,
+			"status_changed":             statusMoveRecorded(statusChanged, statusRec),
 			"priority_changed":           priorityChanged,
 			"project_changed":            projectChanged,
 			"prev_status":                prevIssue.Status,

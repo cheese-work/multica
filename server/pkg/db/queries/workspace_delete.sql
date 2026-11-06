@@ -466,6 +466,10 @@ deleted_issue_checkpoints AS (
 deleted_governed_vote_records AS (
     DELETE FROM governed_vote_record WHERE workspace_id = $1
 ),
+-- CHE-3490 single-use PASS receipts: workspace-owned leaf, no dependents.
+deleted_governed_pass_receipts AS (
+    DELETE FROM governed_pass_receipt WHERE workspace_id = $1
+),
 -- CHE-1918 run-gate shadow ledger: workspace-owned, a leaf with no dependents
 -- and no FK. Outlives issues and receipts; goes with the workspace.
 deleted_run_gate_events AS (
@@ -737,6 +741,17 @@ WHERE chat_session_id IN (
 
 -- name: DeleteWorkspaceCommunicationRoots :exec
 WITH
+-- No foreign keys on the attention tables. Items carry workspace_id; marks have none, so
+-- their chain root is one of this workspace's sessions.
+deleted_attention_items AS (
+    DELETE FROM chat_attention_item WHERE workspace_id = $1
+),
+deleted_attention_marks AS (
+    DELETE FROM chat_attention_mark
+    WHERE chain_root_session_id IN (
+        SELECT id FROM chat_session WHERE chat_session.workspace_id = $1
+    )
+),
 deleted_sessions AS (
     DELETE FROM chat_session WHERE chat_session.workspace_id = $1
 ),

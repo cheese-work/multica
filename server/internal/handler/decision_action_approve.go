@@ -59,6 +59,9 @@ type decisionActionExecution struct {
 	// CredentialID is the passkey credential that signed this approval and
 	// IssueID the issue the request sits on; both go into a config-change audit.
 	CredentialID, IssueID pgtype.UUID
+	// Tx is the approval transaction Queries runs in, for a write that needs
+	// the transaction itself.
+	Tx pgx.Tx
 }
 
 type decisionActionExecutor func(ctx context.Context, execution decisionActionExecution) (json.RawMessage, error)
@@ -360,7 +363,7 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	finish, summary, err := executeInSavepoint(ctx, transaction, queries, executor, decisionActionExecution{
 		Queries: queries, Approver: verifiedApprover{UserID: caller.userID, DecisionActionID: action.ID},
 		Action: action, Agent: targetAgent, Runtime: runtime, Secrets: body.Secrets, Workflow: workflow, Squad: squad, Workspace: workspace,
-		CredentialID: credential, IssueID: current.IssueID,
+		CredentialID: credential, IssueID: current.IssueID, Tx: transaction,
 	})
 	if err != nil {
 		return empty, err
