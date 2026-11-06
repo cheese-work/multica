@@ -79,6 +79,19 @@ type proposalRequest struct {
 	// RecipientErr is the refusal of the named person, held back so an open
 	// proposal for that person is still reported as ineligible, not as a 400.
 	RecipientErr error
+	// ChatSessionID is the calling chat task's session when the proposal is
+	// made from a DM: the card renders there, for the session's creator.
+	ChatSessionID pgtype.UUID
+}
+
+// inDM and chatSession are nil-safe: most requests are not proposals.
+func (proposal *proposalRequest) inDM() bool { return proposal != nil && proposal.ChatSessionID.Valid }
+
+func (proposal *proposalRequest) chatSession() pgtype.UUID {
+	if proposal == nil {
+		return pgtype.UUID{}
+	}
+	return proposal.ChatSessionID
 }
 
 func (proposal *proposalRequest) identity(issue db.Issue, agentID, recipientID, sessionID pgtype.UUID) proposalIdentity {
@@ -109,6 +122,31 @@ func (proposal *proposalRequest) laneError(err error) error {
 		return proposalIneligible(err)
 	}
 	return err
+}
+
+// lockProposalDM locks the calling chat task's session and proves it is the
+// agent's own plain DM: active, not an intro, not a channel's.
+func lockProposalDM(ctx context.Context, queries *db.Queries, issue db.Issue, sessionID, agentID pgtype.UUID) (db.ChatSession, error) {
+	deny := decisionIntentRefusal{http.StatusForbidden, "decision request window or lane is unavailable"}
+	if _, err := queries.LockDecisionSession(ctx, db.LockDecisionSessionParams{WorkspaceID: issue.WorkspaceID, ID: sessionID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return db.ChatSession{}, deny
+		}
+		return db.ChatSession{}, err
+	}
+	session, err := queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{ID: sessionID, WorkspaceID: issue.WorkspaceID})
+	if err != nil {
+		return db.ChatSession{}, err
+	}
+	if session.AgentID != agentID || session.Status != "active" || session.ChannelOriginAt.Valid || session.IsAgentIntro {
+		return db.ChatSession{}, deny
+	}
+	if _, err := queries.GetChannelChatSessionBindingBySessionAny(ctx, session.ID); err == nil {
+		return db.ChatSession{}, deny
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return db.ChatSession{}, err
+	}
+	return session, nil
 }
 
 // findOpenProposal returns the open request holding this identity.
@@ -247,16 +285,13 @@ func (handler *Handler) ProposeDecisionAction(writer http.ResponseWriter, reques
 		return
 	}
 	agentID, agentErr := util.ParseUUID(request.Header.Get("X-Agent-ID"))
-	if _, taskErr := util.ParseUUID(request.Header.Get("X-Task-ID")); agentErr != nil || taskErr != nil {
+	taskID, taskErr := util.ParseUUID(request.Header.Get("X-Task-ID"))
+	if agentErr != nil || taskErr != nil {
 		writeError(writer, http.StatusForbidden, "action proposal requires this issue's running task")
 		return
 	}
-	recipient, ok := parseUUIDOrBadRequest(writer, body.For, "for")
+	recipient, chatSession, ok := handler.proposalRecipient(writer, request, issue, taskID, body.For)
 	if !ok {
-		return
-	}
-	if !recipient.Valid {
-		writeError(writer, http.StatusBadRequest, "for: a named person is required")
 		return
 	}
 	draft, err := draftDecisionAction(&decisionActionWire{Type: body.ActionType, Version: body.Version, Params: body.Params})
@@ -273,6 +308,11 @@ func (handler *Handler) ProposeDecisionAction(writer http.ResponseWriter, reques
 	} else {
 		recipient = resolved
 	}
+	if len(body.Reason) > maxProposalReasonBytes {
+		writeError(writer, http.StatusBadRequest, "reason is too long (1 KiB at most)")
+		return
+	}
+	body.Reason = cleanProposalReason(body.Reason)
 	ask, err := composeProposalAsk(uuidToString(issue.ID), draft, body.Reason)
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, "failed to compose proposal")
@@ -285,7 +325,7 @@ func (handler *Handler) ProposeDecisionAction(writer http.ResponseWriter, reques
 	paramsHash := sha256.Sum256(draft.Params)
 	input := decisionRequestInput{
 		HumanUserID: recipient, Ask: ask, EscalationClass: actionRequestClass("reversible", draft.Definition.MinClass), Action: draft,
-		Proposal: &proposalRequest{ActionType: draft.Type, Version: draft.Version, ParamsSHA256: hex.EncodeToString(paramsHash[:]), Reason: body.Reason, RecipientErr: recipientErr},
+		Proposal: &proposalRequest{ActionType: draft.Type, Version: draft.Version, ParamsSHA256: hex.EncodeToString(paramsHash[:]), Reason: body.Reason, RecipientErr: recipientErr, ChatSessionID: chatSession},
 	}
 	// A duplicate that committed first makes the second pass replay it.
 	var result decisionRequestResult
@@ -302,4 +342,39 @@ func (handler *Handler) ProposeDecisionAction(writer http.ResponseWriter, reques
 		return
 	}
 	handler.writeDecisionResult(writer, request, issue, result, nil)
+}
+
+// proposalRecipient names who is asked. An issue task names a person. A chat
+// task asks the creator of its own session, and may name only that person.
+func (handler *Handler) proposalRecipient(writer http.ResponseWriter, request *http.Request, issue db.Issue, taskID pgtype.UUID, named string) (recipient, chatSession pgtype.UUID, ok bool) {
+	task, err := handler.Queries.GetAgentTask(request.Context(), taskID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		writeError(writer, http.StatusInternalServerError, "failed to load task")
+		return recipient, chatSession, false
+	}
+	if err == nil && task.ChatSessionID.Valid {
+		session, err := handler.Queries.GetChatSessionInWorkspace(request.Context(), db.GetChatSessionInWorkspaceParams{ID: task.ChatSessionID, WorkspaceID: issue.WorkspaceID})
+		if err != nil {
+			writeError(writer, http.StatusForbidden, "decision request window or lane is unavailable")
+			return recipient, chatSession, false
+		}
+		if named != "" {
+			if recipient, ok = parseUUIDOrBadRequest(writer, named, "for"); !ok {
+				return recipient, chatSession, false
+			}
+			if resolved, err := handler.resolveDecisionRecipient(request.Context(), issue, recipient); err != nil || resolved != session.CreatorID {
+				writeError(writer, http.StatusForbidden, "for: a proposal from a chat goes to the chat's creator only")
+				return recipient, chatSession, false
+			}
+		}
+		return session.CreatorID, session.ID, true
+	}
+	if recipient, ok = parseUUIDOrBadRequest(writer, named, "for"); !ok {
+		return recipient, chatSession, false
+	}
+	if !recipient.Valid {
+		writeError(writer, http.StatusBadRequest, "for: a named person is required")
+		return recipient, chatSession, false
+	}
+	return recipient, chatSession, true
 }

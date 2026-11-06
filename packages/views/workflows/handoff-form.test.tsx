@@ -2,7 +2,8 @@
 
 import { cleanup, fireEvent, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetAllRegisteredDrafts } from "@multica/core/drafts";
 import { buildIssueStatusCatalog } from "@multica/core/issue-statuses";
 import { agentListOptions, memberListOptions } from "@multica/core/workspace/queries";
 import { projectListOptions } from "@multica/core/projects/queries";
@@ -43,6 +44,7 @@ function renderFields(step: IssueWorkflowStep, onPatch = vi.fn()) {
   return onPatch;
 }
 
+beforeEach(resetAllRegisteredDrafts);
 afterEach(cleanup);
 
 describe("HandoffFields", () => {

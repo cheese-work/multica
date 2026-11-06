@@ -16,11 +16,27 @@ SELECT * FROM chat_session
 WHERE id = $1;
 
 -- name: SetChatContinuationSource :one
+-- taint_ids: the source's taint at this moment (CHE-3702), kept on this chat so
+-- deleting the source cannot erase it. taint_verified follows the source: a
+-- copy of an unlinked or verified chat is complete, a copy of an unverified
+-- linked chat is left for the claim to resolve.
 UPDATE chat_session
 SET continued_from_session_id = $2,
+    taint_ids = COALESCE((
+        SELECT array_agg(DISTINCT x ORDER BY x) FROM (
+            SELECT unnest(s.taint_ids) AS x FROM chat_session s WHERE s.id = $2
+            UNION ALL
+            SELECT unnest(q.taint_ids) FROM agent_task_queue q WHERE q.chat_session_id = $2
+        ) u
+    ), '{}'),
+    taint_verified = COALESCE((
+        SELECT s.taint_verified OR (s.forked_from_session_id IS NULL AND s.continued_from_session_id IS NULL)
+        FROM chat_session s WHERE s.id = $2
+    ), false),
+    chain_root_session_id = COALESCE((SELECT p.chain_root_session_id FROM chat_session p WHERE p.id = $2), chat_session.chain_root_session_id),
     last_read_at = sqlc.arg('summary_created_at')::timestamptz - interval '1 microsecond',
     pinned_at = sqlc.narg('pinned_at')
-WHERE id = $1
+WHERE chat_session.id = $1
 RETURNING *;
 
 -- name: ArchiveContinuedChatSession :one
@@ -102,13 +118,24 @@ WHERE message.id = moved.id;
 -- of the last copied message; fork_source_message_id is the source row itself.
 UPDATE chat_session
 SET forked_from_session_id = sqlc.arg(forked_from_session_id),
+    taint_ids = COALESCE((
+        SELECT array_agg(DISTINCT x ORDER BY x) FROM (
+            SELECT unnest(s.taint_ids) AS x FROM chat_session s WHERE s.id = sqlc.arg(forked_from_session_id)
+            UNION ALL
+            SELECT unnest(q.taint_ids) FROM agent_task_queue q WHERE q.chat_session_id = sqlc.arg(forked_from_session_id)
+        ) u
+    ), '{}'),
+    taint_verified = COALESCE((
+        SELECT s.taint_verified OR (s.forked_from_session_id IS NULL AND s.continued_from_session_id IS NULL)
+        FROM chat_session s WHERE s.id = sqlc.arg(forked_from_session_id)
+    ), false),
     fork_idempotency_key = sqlc.arg(fork_idempotency_key),
     fork_last_message_id = sqlc.arg(fork_last_message_id),
     fork_source_message_id = sqlc.arg(fork_source_message_id),
     fork_message_count = sqlc.arg(fork_message_count),
     runtime_id = NULL,
     last_read_at = (SELECT max(m.created_at) FROM chat_message m WHERE m.chat_session_id = sqlc.arg(id))
-WHERE id = sqlc.arg(id)
+WHERE chat_session.id = sqlc.arg(id)
 RETURNING *;
 
 -- name: ListChatMessagesForFork :many
@@ -811,7 +838,7 @@ WHERE id = $1;
 INSERT INTO chat_message (
     chat_session_id, role, content, task_id, failure_reason, elapsed_ms,
     message_kind, quick_actions, channel_media_pending_until, channel_ingested,
-    channel_context_revision, id, sent_via, decision_answer_id
+    channel_context_revision, id, sent_via, decision_answer_id, client_message_id
 )
 VALUES (
     $1, $2, $3, sqlc.narg(task_id), sqlc.narg(failure_reason), sqlc.narg(elapsed_ms),
@@ -830,7 +857,8 @@ VALUES (
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()),
     CASE WHEN COALESCE(sqlc.narg(channel_ingested)::boolean, FALSE) THEN 'channel'
          ELSE COALESCE(NULLIF(sqlc.narg(sent_via)::text, ''), 'system') END,
-    sqlc.narg(decision_answer_id)
+    sqlc.narg(decision_answer_id),
+    sqlc.narg(client_message_id)
 )
 RETURNING *;
 
@@ -1499,6 +1527,11 @@ WHERE message.chat_session_id = $1
 ORDER BY message.created_at ASC, message.id ASC
 LIMIT $2;
 
+-- name: GetChatMessageByClientID :one
+-- Replay lookup for an idempotent send (CHE-4146); served by chat_message_client_message_id_idx.
+SELECT * FROM chat_message
+WHERE chat_session_id = $1 AND client_message_id = $2;
+
 -- name: GetChatMessage :one
 SELECT * FROM chat_message
 WHERE id = $1;
@@ -2002,6 +2035,34 @@ SELECT cs.id
 FROM agent_task_queue t
 JOIN chat_session cs ON cs.id = t.chat_session_id
 WHERE t.id = $1
+FOR UPDATE OF cs;
+
+-- name: LockChatSessionsByIDs :many
+-- Batch terminators lock the sessions of the chat tasks they are about to end.
+-- ORDER BY id keeps two batches from deadlocking against each other.
+SELECT id FROM chat_session
+WHERE id = ANY(@ids::uuid[])
+ORDER BY id
+FOR UPDATE;
+
+-- name: LockChatSessionsForRuntimes :many
+-- Session half of every runtime-wide teardown (member revocation, runtime
+-- delete). The one lock order is chat_session -> agent -> agent_task_queue:
+-- chat enqueue takes the session then the agent, so a teardown that archives or
+-- locks the runtime's agents must already hold the sessions of those agents,
+-- or the two deadlock. Covers sessions of agents bound to the runtimes and
+-- sessions of any active task pinned to them. ORDER BY id keeps two
+-- teardowns from deadlocking against each other.
+SELECT cs.id FROM chat_session cs
+WHERE cs.agent_id IN (SELECT a.id FROM agent a WHERE a.runtime_id = ANY(@runtime_ids::uuid[]))
+   OR EXISTS (
+        SELECT 1 FROM agent_task_queue task
+        WHERE task.chat_session_id = cs.id
+          AND task.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+          AND (task.runtime_id = ANY(@runtime_ids::uuid[])
+               OR task.agent_id IN (SELECT a.id FROM agent a WHERE a.runtime_id = ANY(@runtime_ids::uuid[])))
+   )
+ORDER BY cs.id
 FOR UPDATE OF cs;
 
 -- name: LockChatSessionsByWorkspace :many

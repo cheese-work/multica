@@ -19,17 +19,25 @@ export interface OpenDecisionRequest {
 export interface DecisionRequestOption {
   label: string;
   what_happens?: string;
+  pros?: string[];
+  cons?: string[];
+  cost_or_time?: string;
 }
 
 export interface DecisionRequestCard {
   id: string;
   issue_id: string;
   issue_identifier: string;
+  /** The source issue's title for the Source row; absent on an older server. */
+  issue_title?: string;
   source_comment_id?: string | null;
   ask: string;
   /** The asking agent's name; absent when the agent is gone or the server is older. */
   asking_agent_name?: string;
+  /** Answer buttons; empty for a request stored without a structured ask. */
   options?: DecisionRequestOption[];
+  /** 0-based into `options`: the option the ask's recommendation names. */
+  recommended_option_index?: number;
   state: "open" | "answered" | "withdrawn";
   created_at: string;
   withdrawn_at?: string | null;

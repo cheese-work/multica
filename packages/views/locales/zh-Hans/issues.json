@@ -1921,5 +1921,32 @@
     "timing_effective": "自 {{time}} 起生效",
     "timing_pending_window": "待生效。{{time}} 生效，{{minutes}} 分钟内可撤销。",
     "timing_pending_wake": "待生效。智能体被唤醒后立即生效。"
+  },
+  "status_history": {
+    "title": "状态历史",
+    "description": "此事项的所有状态变更，按时间从早到晚。",
+    "empty": "没有状态变更记录。",
+    "truncated": "较早的状态变更未显示。列表从服务器返回的最早一条开始。",
+    "trigger_not_recorded": "未记录触发来源",
+    "removed": "{{status}}（已移除）",
+    "handoff_comment": "交接评论",
+    "handoff_invalid": "交接链接无效",
+    "scrubber_label": "状态历史位置",
+    "position": "第 {{current}} 条，共 {{total}} 条",
+    "cause": {
+      "ui_or_api": "由人员变更",
+      "workflow_edge": "工作流转换",
+      "workflow_remap": "工作流重映射",
+      "pr_merged": "PR 已合并",
+      "ci_advance": "CI 推进",
+      "run_budget": "运行预算",
+      "decision": "决策",
+      "watchdog": "看门狗",
+      "task_reset": "失败运行重置",
+      "qoder": "Qoder",
+      "duplicate": "重复",
+      "system": "系统"
+    },
+    "open": "状态历史"
   }
 }

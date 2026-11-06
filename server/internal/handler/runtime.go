@@ -1340,6 +1340,12 @@ func (h *Handler) DeleteAgentRuntime(w http.ResponseWriter, r *http.Request) {
 	// Revalidate under the runtime row lock. Agent/task inserts take a
 	// KEY SHARE lock through their runtime FK, so no active agent can appear
 	// after this check and then be silently unbound by the teardown.
+	// Chat sessions first (session -> runtime -> agent -> task): a chat enqueue holds its session
+	// while it takes KEY SHARE on the runtime and locks the agent.
+	if _, err := qtx.LockChatSessionsForRuntimes(r.Context(), []pgtype.UUID{rt.ID}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to lock runtime chat sessions")
+		return
+	}
 	if _, err := qtx.LockAgentRuntime(r.Context(), rt.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to lock runtime")
 		return
@@ -1546,6 +1552,12 @@ func (h *Handler) UnbindAgentsAndDeleteRuntime(w http.ResponseWriter, r *http.Re
 	// UPDATE that would point a new/moved agent at this runtime now
 	// blocks until our tx finishes. This is the "兜底" lock that keeps
 	// new actives from appearing between our snapshot and our unbind.
+	// Chat sessions first (session -> runtime -> agent -> task): a chat enqueue holds its session
+	// while it takes KEY SHARE on the runtime and locks the agent.
+	if _, err := qtx.LockChatSessionsForRuntimes(r.Context(), []pgtype.UUID{rt.ID}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to lock runtime chat sessions")
+		return
+	}
 	if _, err := qtx.LockAgentRuntime(r.Context(), rt.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to lock runtime")
 		return
