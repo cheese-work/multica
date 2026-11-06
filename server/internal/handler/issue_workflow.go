@@ -1115,7 +1115,13 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		h.publishIssueStatusChanged(workspaceID, member, "created", false)
 	}
 	h.publishIssueWorkflowChanged(workspaceID, member, "updated")
-	writeJSON(w, http.StatusOK, h.issueWorkflowResponse(ctx, row))
+	resp := h.issueWorkflowResponse(ctx, row)
+	if lintChecked {
+		// The saver sees every finding of this save; the stored readback
+		// leaves the agent-derived ones out.
+		resp.LintFindings = lintFindings
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) DeleteIssueWorkflow(w http.ResponseWriter, r *http.Request) {

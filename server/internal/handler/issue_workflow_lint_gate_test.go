@@ -233,3 +233,22 @@ func TestWorkflowStoredFindingsLeaveOutRuntimeDetails(t *testing.T) {
 		t.Fatalf("the stored findings keep the runtime provider: %s", raw)
 	}
 }
+
+// The saver sees every finding in the save response, agent-derived ones
+// included; only the stored readback leaves them out.
+func TestWorkflowSaveResponseKeepsAgentFindings(t *testing.T) {
+	seedTestCatalog(t)
+	agentID := createHandlerTestAgent(t, "Gate response "+workflowTestSuffix(), nil)
+	wf := createTestWorkflowSteps(t, "Gate response "+workflowTestSuffix(), brokenSteps()[:1])
+	steps := cleanSteps()
+	steps[2] = map[string]any{"status_key": "in_progress", "handler": map[string]any{"type": "agent", "id": agentID}}
+
+	var out IssueWorkflowResponse
+	saveWorkflow(t, wf.ID, map[string]any{"steps": steps, "lint_override": "test"}).Want(http.StatusOK).JSON(&out)
+	for _, f := range out.LintFindings {
+		if f.Rule == "WF005" {
+			return
+		}
+	}
+	t.Fatalf("want the WF005 finding in the save response, got %+v", out.LintFindings)
+}
