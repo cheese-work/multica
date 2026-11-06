@@ -352,6 +352,7 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 		return false, err
 	}
 	var unparked *db.Issue
+	var unparkedActivity *db.ActivityLog
 	if snapshot.kind == "" {
 		if _, err := queries.LockDecisionIssue(ctx, db.LockDecisionIssueParams{WorkspaceID: workspaceID, ID: snapshot.issue.ID}); err != nil {
 			return false, err
@@ -360,10 +361,10 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 		if err != nil {
 			return false, err
 		}
-		if restored, ok, err := unparkIssueAfterDecision(ctx, queries, locked, snapshot.answers); err != nil {
+		if restored, recorded, err := unparkIssueAfterDecision(ctx, queries, locked, snapshot.answers); err != nil {
 			return false, err
-		} else if ok {
-			unparked = &restored
+		} else if recorded != nil {
+			unparked, unparkedActivity = &restored, recorded
 		}
 	}
 	switch snapshot.issue.Status {
@@ -460,7 +461,7 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 		return false, err
 	}
 	if unparked != nil {
-		handler.publishDecisionStatusChange(ctx, snapshot.issue, *unparked, "decision_answer")
+		handler.publishDecisionStatusChange(ctx, snapshot.issue, *unparked, unparkedActivity, "decision_answer")
 	}
 	if queued.ID.Valid {
 		handler.TaskService.PublishTaskEnqueued(ctx, queued)

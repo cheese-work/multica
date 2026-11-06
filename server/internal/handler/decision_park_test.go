@@ -45,18 +45,35 @@ func (fixture parkFixture) state(test *testing.T) (status, readiness, parkedFrom
 	return
 }
 
+// wantDecisionStatusRows fails unless the issue has exactly n status rows and
+// every one is a decision move (CHE-2854: the listener writes no stand-in).
+func wantDecisionStatusRows(test *testing.T, issueID string, n int) {
+	test.Helper()
+	rows := statusRows(test, issueID)
+	if len(rows) != n {
+		test.Fatalf("status_changed rows = %d, want %d", len(rows), n)
+	}
+	for _, row := range rows {
+		trigger, _ := row["trigger"].(map[string]any)
+		if cause, _ := trigger["cause"].(map[string]any); cause["kind"] != "decision" {
+			test.Fatalf("status row trigger = %v, want cause.kind decision", trigger)
+		}
+	}
+}
+
 func TestDecisionRequestParksTheIssue(test *testing.T) {
 	fixture := newParkFixture(test)
 	result, err := testHandler.createDecisionRequest(fixture.request(), fixture.issue, fixture.input())
 	if err != nil {
 		test.Fatal(err)
 	}
-	if !result.Parked {
+	if result.ParkedActivity == nil {
 		test.Fatal("result does not report the park")
 	}
 	if status, readiness, from := fixture.state(test); status != "need_decision" || readiness != "gate" || from != "in_progress" {
 		test.Fatalf("status=%q readiness=%q parked_from=%q, want need_decision/gate/in_progress", status, readiness, from)
 	}
+	wantDecisionStatusRows(test, fixture.issueID, 1)
 }
 
 func TestParkedIssueMetadataHoldsOnlyPrimitives(test *testing.T) {
@@ -96,8 +113,8 @@ func TestDecisionRequestKeepsTheFirstParkOfAnAlreadyParkedIssue(test *testing.T)
 	if err != nil {
 		test.Fatal(err)
 	}
-	if status, readiness, from := fixture.state(test); result.Parked || status != "need_decision" || readiness != "ready" || from != "" {
-		test.Fatalf("parked=%v status=%q readiness=%q parked_from=%q: an already parked issue must stay untouched", result.Parked, status, readiness, from)
+	if status, readiness, from := fixture.state(test); result.ParkedActivity != nil || status != "need_decision" || readiness != "ready" || from != "" {
+		test.Fatalf("parked=%v status=%q readiness=%q parked_from=%q: an already parked issue must stay untouched", result.ParkedActivity != nil, status, readiness, from)
 	}
 }
 
@@ -137,6 +154,7 @@ func TestDecisionAnswerRestoresTheParkedIssue(test *testing.T) {
 	if dbfx.Count(test, `SELECT count(*) FROM issue_decision_park WHERE issue_id = $1`, fixture.issueID) != 0 {
 		test.Fatal("the park record outlived the answer")
 	}
+	wantDecisionStatusRows(test, fixture.issueID, 2) // park, then restore
 }
 
 func TestDecisionCancellationRestoresTheParkedIssue(test *testing.T) {
@@ -152,6 +170,7 @@ func TestDecisionCancellationRestoresTheParkedIssue(test *testing.T) {
 	if status, readiness, from := fixture.state(test); status != "in_progress" || readiness != "ready" || from != "" {
 		test.Fatalf("status=%q readiness=%q parked_from=%q, want in_progress/ready and no record", status, readiness, from)
 	}
+	wantDecisionStatusRows(test, fixture.issueID, 2) // park, then restore
 }
 
 func TestDecisionAnswerKeepsAReadinessSetDuringTheWait(test *testing.T) {
