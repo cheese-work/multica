@@ -1162,6 +1162,15 @@ type DingtalkGroupRoute struct {
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 }
 
+type DmProgressDataIncident struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	FollowID    pgtype.UUID        `json:"follow_id"`
+	Kind        string             `json:"kind"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type DmProgressFollow struct {
 	ID                 pgtype.UUID        `json:"id"`
 	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
@@ -1174,6 +1183,7 @@ type DmProgressFollow struct {
 	LastImmediateAt    pgtype.Timestamptz `json:"last_immediate_at"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 	Reasons            []string           `json:"reasons"`
+	ReportingRootID    pgtype.UUID        `json:"reporting_root_id"`
 }
 
 type DmProgressLane struct {
@@ -2597,6 +2607,20 @@ type ProvenanceExportLog struct {
 	ExcludedCount  int32              `json:"excluded_count"`
 	Manifest       []byte             `json:"manifest"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+type ProviderBreaker struct {
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	Provider      string             `json:"provider"`
+	State         string             `json:"state"`
+	OpenedAt      pgtype.Timestamptz `json:"opened_at"`
+	NextProbeAt   pgtype.Timestamptz `json:"next_probe_at"`
+	CoolOffS      int32              `json:"cool_off_s"`
+	CanaryTaskID  pgtype.UUID        `json:"canary_task_id"`
+	TripEvidence  []pgtype.UUID      `json:"trip_evidence"`
+	Last5xxAt     pgtype.Timestamptz `json:"last_5xx_at"`
+	LastSuccessAt pgtype.Timestamptz `json:"last_success_at"`
+	Version       int64              `json:"version"`
 }
 
 type ProviderFailureRecovery struct {

@@ -2,6 +2,11 @@
 -- bottom-up deletion plan; the legacy foreign keys remain only as a
 -- compatibility safety net during the expand phase.
 
+-- name: DeleteProviderBreakersForWorkspace :exec
+-- Provider breaker state is workspace-owned; remove it explicitly before the
+-- workspace row instead of relying on the legacy FK cascade.
+DELETE FROM provider_breaker WHERE workspace_id = $1;
+
 -- name: SetWorkspaceTeardownMode :exec
 -- The setting is transaction-local. Migration 242 makes only the three DELETE
 -- dirty triggers skip their per-row work while this flag is on.
@@ -768,6 +773,8 @@ WITH deleted_wakeup_pr_events AS (
  DELETE FROM dm_progress_follow WHERE workspace_id=$1
 ), deleted_dm_progress_lanes AS (
  DELETE FROM dm_progress_lane WHERE workspace_id=$1
+), deleted_dm_progress_data_incidents AS (
+ DELETE FROM dm_progress_data_incident WHERE workspace_id=$1
 ), deleted_wakeup_aggregate_reservations AS (
  DELETE FROM wakeup_aggregate_reservation WHERE workspace_id=$1
 ), deleted_wakeup_aggregate_budgets AS (
