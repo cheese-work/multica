@@ -34,6 +34,25 @@ message. It compares after collapsing runs of whitespace, and it quotes the
 person's original text, not the agent's copy. Without an excerpt, the record
 quotes the whole message, as before.
 
+### Which messages can be a source
+
+The server accepts a DM message as a source when all of these hold:
+
+- It is in the same DM, written by the person in the interactive web app, and
+  not ingested from a channel.
+- It came after the request ping.
+- It was sent before the agent's answering turn started, **or** the person
+  steered it into that same turn and the provider confirmed delivery.
+
+A steered message is one the person sent while the turn ran. The server keeps
+a receipt for it, with a status. Only the `delivered` status makes the message
+a source, and only for the turn it was steered into. The server refuses
+`pending`, `delivering`, `uncertain` and `failed` receipts, and a message steered
+into a different turn.
+
+The next turn lists delivered steered messages next to the other message ids,
+marked `(steered)`, until a record quotes them.
+
 ## States
 
 ```mermaid
