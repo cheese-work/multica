@@ -26,6 +26,31 @@ describe("ApiClient passkeys", () => {
     expect(JSON.parse(finish.call().init.body)).toEqual({ ceremony_id: "c", code: "123456", attestation });
   });
 
+  it("sends the gate assertion with enrollment finish", async () => {
+    const finish = client({ enrolled: true });
+    await finish.api.finishPasskeyEnrollment({ ceremony_id: "c", code: "1", attestation: {}, assertion: envelope });
+    expect(JSON.parse(finish.call().init.body).assertion).toEqual(envelope);
+  });
+
+  it("lists the caller's passkeys", async () => {
+    const list = client({ passkeys: [{ id: "p1", created_at: "t", last_used_at: null, transports: [], state: "suspect" }] });
+    expect(await list.api.listPasskeys()).toEqual([{ id: "p1", created_at: "t", last_used_at: null, transports: [], state: "suspect" }]);
+    expect(list.call().url).toBe("https://api.example.test/api/passkeys");
+    await expect(client({ passkeys: "x" }).api.listPasskeys()).rejects.toThrow(/unexpected/);
+  });
+
+  it("revokes a passkey with a mailed code", async () => {
+    const start = client({ ceremony_id: "c", expires_at: "t" });
+    expect(await start.api.startPasskeyRevocationByCode("p/1")).toEqual({ ceremony_id: "c", expires_at: "t" });
+    expect(start.call()).toMatchObject({ url: "https://api.example.test/api/passkeys/p%2F1/revoke/code", init: { method: "POST" } });
+
+    const confirm = client({ revoked: true });
+    await confirm.api.confirmPasskeyRevocationByCode("p/1", { ceremony_id: "c", code: "123456" });
+    expect(confirm.call().url).toBe("https://api.example.test/api/passkeys/p%2F1/revoke/confirm");
+    expect(JSON.parse(confirm.call().init.body)).toEqual({ ceremony_id: "c", code: "123456" });
+    await expect(client({ revoked: false }).api.confirmPasskeyRevocationByCode("p", { ceremony_id: "c", code: "1" })).rejects.toThrow(/unexpected/);
+  });
+
   it("opens a revoke challenge and revokes with the assertion", async () => {
     const challenge = client({ challenge_id: "c", options, expires_at: "t" });
     await challenge.api.challengePasskeyRevocation("p/1");
@@ -50,6 +75,18 @@ describe("ApiClient passkeys", () => {
     const outcome = client({ id: "a1", state: "pending" });
     expect((await outcome.api.getDecisionActionOutcome("a1")).state).toBe("pending");
     expect(outcome.call().url).toBe("https://api.example.test/api/decision-actions/a1/outcome");
+  });
+
+  it("opens a card-answer challenge and returns the revisions it binds", async () => {
+    const challenge = client({ challenge_id: "c", options, expires_at: "t", answer_revision: 3, policy_revision: 2 });
+    expect((await challenge.api.challengeDecisionAnswer("r/1", { option: "A", text: "why" })).answer_revision).toBe(3);
+    expect(challenge.call().url).toBe("https://api.example.test/api/decision-requests/r%2F1/answer/challenge");
+    expect(JSON.parse(challenge.call().init.body)).toEqual({ option: "A", text: "why" });
+
+    const answer = client({});
+    await answer.api.answerDecisionRequest("r1", { option: "A", answer_revision: 3, policy_revision: 2, assertion: envelope });
+    expect(JSON.parse(answer.call().init.body)).toEqual({ option: "A", answer_revision: 3, policy_revision: 2, assertion: envelope });
+    await expect(client({ challenge_id: "c", options, expires_at: "t" }).api.challengeDecisionAnswer("r1", {})).rejects.toThrow(/unexpected/);
   });
 
   it("throws instead of reporting success on a malformed response", async () => {

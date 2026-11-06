@@ -34,6 +34,7 @@ vi.mock("./lazy-content-editor", async () => {
         flushPendingUpdate: () => null,
         adoptContent: (md: string) => void editor.calls.push(`adopt:${md}`),
         clearContent: () => void editor.calls.push("clear"),
+        flagMentions: (ids: string[]) => void editor.calls.push(`flag:${ids.join(",")}`),
       }) as unknown as ContentEditorRef);
       return (
         <div data-testid="live-editor">
@@ -110,6 +111,16 @@ describe("DeferredContentEditor", () => {
     await waitFor(() => expect(editor.calls).toContain("focus"));
   });
 
+  it("forwards flagMentions to the live editor and ignores it before the editor mounts", async () => {
+    const { ref } = setup({ value: "draft in progress" });
+    act(() => ref.current?.flagMentions(["early"]));
+    expect(editor.calls).not.toContain("flag:early");
+    expect(await screen.findByTestId("live-editor")).toBeInTheDocument();
+    await waitFor(() => expect(ref.current?.hasActiveUploads()).toBe(false));
+    act(() => ref.current?.flagMentions(["a", "b"]));
+    expect(editor.calls).toContain("flag:a,b");
+  });
+
   it("mounts without stealing focus when the draft already has text", async () => {
     setup({ value: "draft in progress" });
     expect(await screen.findByTestId("live-editor")).toBeInTheDocument();
@@ -145,6 +156,15 @@ describe("DeferredContentEditor", () => {
     const { ref } = setup({ value: "x" });
     await screen.findByTestId("live-editor");
     await waitFor(() => expect(ref.current!.getMarkdown()).toBe("live-md"));
+  });
+
+  it("flags mentions on the live editor and ignores the call while only the stand-in exists", async () => {
+    const { ref } = setup({ value: "x" });
+    expect(() => ref.current!.flagMentions(["early"])).not.toThrow();
+    await screen.findByTestId("live-editor");
+    ref.current!.flagMentions(["a", "b"]);
+    expect(editor.calls).toContain("flag:a,b");
+    expect(editor.calls).not.toContain("flag:early");
   });
 
   it("falls back to the stand-in when the chunk fails and retries with a fresh import on the next intent", async () => {

@@ -248,8 +248,10 @@ export default function ChatTab() {
   const draftKey = activeSessionId ?? DRAFT_NEW_SESSION;
   const draft = useChatDraftsStore((s) => s.drafts[draftKey] ?? "");
   const setDraft = useChatDraftsStore((s) => s.setDraft);
-  const clearDraft = useChatDraftsStore((s) => s.clearDraft);
+  const draftScope = useChatDraftsStore((s) => s.scopeId);
   const promoteNewDraft = useChatDraftsStore((s) => s.promoteNewDraft);
+  const beginSend = useChatDraftsStore((s) => s.beginSend);
+  const finishSend = useChatDraftsStore((s) => s.finishSend);
 
   // ── Realtime ───────────────────────────────────────────────────────────
   useChatSessionRealtime(activeSessionId, () => {
@@ -414,7 +416,6 @@ export default function ChatTab() {
     async (
       content: string,
       attachmentIds: string[] = [],
-      options: { clearDraft?: boolean } = {},
     ) => {
       if (!currentAgent) return;
       if (accessRevoked) {
@@ -422,14 +423,15 @@ export default function ChatTab() {
           t("alerts.no_permission_title"),
           t("alerts.no_permission_message"),
         );
-        return;
+        // Throw so the composer restores the text it cleared on submit.
+        throw new Error("chat send refused: access revoked");
       }
       if (!runtimeBound) {
         Alert.alert(
           t("alerts.runtime_title"),
           t("alerts.runtime_message"),
         );
-        return;
+        throw new Error("chat send refused: no runtime bound");
       }
 
       const isNewSession = !activeSessionId;
@@ -471,8 +473,12 @@ export default function ChatTab() {
           ),
       );
       if (isNewSession) {
-        promoteNewDraft(sessionId);
-        setActiveSessionId(sessionId);
+        // Session creation is async: promote in the scope the send started
+        // in, and do not select the session if the user switched away.
+        promoteNewDraft(sessionId, draftScope);
+        if (useChatDraftsStore.getState().scopeId === draftScope) {
+          setActiveSessionId(sessionId);
+        }
       }
 
       try {
@@ -502,9 +508,9 @@ export default function ChatTab() {
           queued: result.queued,
         });
         qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
-        if (options.clearDraft !== false) {
-          clearDraft(sessionId);
-        }
+        // No draft clear here: the composer already emptied the input on
+        // submit and restores it if this send throws. Clearing now would
+        // erase whatever the user typed while the request was pending.
       } catch (err) {
         qc.setQueryData<ChatMessage[]>(chatKeys.messages(sessionId), (old) =>
           old ? old.filter((m) => m.id !== optimistic.id) : old,
@@ -527,7 +533,7 @@ export default function ChatTab() {
       sendFailureMessage,
       t,
       promoteNewDraft,
-      clearDraft,
+      draftScope,
     ],
   );
 
@@ -535,7 +541,6 @@ export default function ChatTab() {
     async (
       content: string,
       attachmentIds: string[] = [],
-      options: { clearDraft?: boolean } = {},
     ) => {
       if (activeSession?.status === "archived") {
         const archivedSession = activeSession;
@@ -559,7 +564,7 @@ export default function ChatTab() {
           const confirmUnarchiveAndSend = () => {
             unarchiveThenSendOnce(
               () => handleUnarchive(archivedSession),
-              () => executeSend(content, attachmentIds, options),
+              () => executeSend(content, attachmentIds),
             ).then(resolve, reject);
           };
 
@@ -594,7 +599,7 @@ export default function ChatTab() {
         });
       }
 
-      return executeSend(content, attachmentIds, options);
+      return executeSend(content, attachmentIds);
     },
     [activeSession, sessions, t, handleUnarchive, executeSend],
   );
@@ -731,7 +736,9 @@ export default function ChatTab() {
           agent={currentAgent}
           onPickPrompt={(text) => setDraft(draftKey, text)}
           onQuickAction={(action) =>
-            handleSend(action.prompt, [], { clearDraft: false })
+            // A refused or failed send already alerted; the rejection only
+            // exists so the composer can restore its text.
+            handleSend(action.prompt, []).catch(() => {})
           }
           quickActionsDisabled={sending || disabled}
           pendingTask={pendingTask}
@@ -797,9 +804,12 @@ export default function ChatTab() {
           />
         ) : null}
         <ChatComposer
+          draftKey={draftKey}
           value={draft}
-          onChangeText={(next) => setDraft(draftKey, next)}
+          onChangeText={(next) => setDraft(draftKey, next, draftScope)}
           onSend={handleSend}
+          onSendStart={(text) => beginSend(draftKey, text)}
+          onSendSettled={finishSend}
           onStop={handleStop}
           sending={sending}
           allowStop={pendingTask?.status !== "queued"}

@@ -49,7 +49,8 @@ pnpm exec playwright test --config=playwright.perf.config.ts floating-chat-lifet
 It checks that closing removes the message list, keeps the real composer and
 an in-flight upload alive, shows messages received while closed on reopen, and
 survives an interrupted exit. It also checks that the message list's ancestor
-is never scaled. HTTP and WebSocket traffic is synthetic; no backend is needed.
+is never scaled, and that a reopened window never paints before its message
+list does. HTTP and WebSocket traffic is synthetic; no backend is needed.
 
 ## Layout-stability profiles
 
@@ -64,6 +65,12 @@ pnpm exec playwright test --config=playwright.perf.config.ts chip-stability --pr
 `desktop` is Chromium 1440x900 without touch; `phone` is `devices['Pixel 7']`
 (touch, mobile). Geometry limits are shared; layout-shift limits are keyed by
 profile in the spec. Soft assertions: one run reports every requirement.
+
+`compact-thread-reply.spec.ts` (R5, CHE-1935) opens a compact thread, focuses
+the reply box (click on `desktop`, `tap` on `phone`) and types one character.
+It asserts the fold state, reply-box top and viewport scroll are unchanged
+(<= 1 px) and gates the raw layout-shift sum, because standard CLS drops
+shifts within 500 ms of input.
 
 ## Page-load baseline (CHE-2976)
 

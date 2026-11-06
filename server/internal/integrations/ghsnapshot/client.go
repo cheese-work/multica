@@ -27,6 +27,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -244,7 +245,7 @@ func (client *Client) restPost(ctx context.Context, installationID int64, path s
 	return client.restDo(ctx, installationID, http.MethodPost, path, raw, http.StatusCreated)
 }
 
-func (client *Client) restDo(ctx context.Context, installationID int64, method, path string, payload []byte, okStatus int) (json.RawMessage, error) {
+func (client *Client) restDo(ctx context.Context, installationID int64, method, path string, payload []byte, okStatus ...int) (json.RawMessage, error) {
 	token, err := client.installationToken(ctx, installationID)
 	if err != nil {
 		return nil, err
@@ -277,7 +278,7 @@ func (client *Client) restDo(ctx context.Context, installationID int64, method, 
 	if isRateLimited(resp, body) {
 		return nil, rateLimitFromResponse(resp, client.now())
 	}
-	if resp.StatusCode != okStatus {
+	if !slices.Contains(okStatus, resp.StatusCode) {
 		return nil, &StatusError{Status: resp.StatusCode}
 	}
 	if len(body) > maxBody {

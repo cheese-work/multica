@@ -24,6 +24,7 @@ jobs:
     continue-on-error: true
     permissions:
       contents: read
+      deployments: read
       pull-requests: read
     env:
       FORK_CHANGELOG_START: '2026-10-11'
@@ -106,6 +107,10 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 1
 
+      - name: Use disposable build caches
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/build-cache-env.sh"
+
       - name: Download optional fork entries
         id: fork-entries
         uses: actions/download-artifact@v8
@@ -129,6 +134,7 @@ jobs:
           bash deploy/cd/test-admission.sh
           bash deploy/cd/test-record-checks.sh
           python3 deploy/cd/test-build-cache.py
+          python3 .github/scripts/test_cache_policy.py
           python3 deploy/cd/test-candidate-preflight.py
           python3 deploy/cd/test-deploy-approval.py
           bash deploy/cd/test-workflow-path-filters.sh
@@ -137,13 +143,29 @@ jobs:
 
       # The Docker driver on X99 cannot emit provenance or SBOM attestations.
       # Keep those release requirements and use an isolated BuildKit container.
+      - name: Remove a broken persistent Buildx builder
+        timeout-minutes: 3
+        env:
+          BUILDX_NAME: multica-cd-${{ matrix.image }}-v1
+        shell: bash
+        run: |
+          set -euo pipefail
+          if docker buildx ls --format '{{.Name}}' | grep -Fxq "$BUILDX_NAME"; then
+            # `buildx inspect` has no --format; use its exit status to bootstrap,
+            # then read driver and node errors from `buildx ls --format json`.
+            if ! timeout 120 docker buildx inspect "$BUILDX_NAME" --bootstrap >/dev/null \
+              || ! docker buildx ls --format json | jq -se --arg n "$BUILDX_NAME" \
+                'map(select(.Name == $n)) | length == 1 and (.[0] | .Driver == "docker-container" and ((.Nodes // []) | length > 0) and all(.Nodes[]; (.Err // "") == ""))' >/dev/null; then
+              docker buildx rm --force "$BUILDX_NAME"
+            fi
+          fi
+
       - name: Set up attestation-capable Buildx builder
         id: buildx
         uses: docker/setup-buildx-action@v4
         with:
-          name: multica-cd-${{ matrix.image }}-v1
           driver: docker-container
-          cleanup: false
+          cleanup: true
           buildkitd-config-inline: |
             [worker.oci]
               max-parallelism = 2
@@ -159,8 +181,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Expose GitHub cache runtime to Buildx
+        uses: actions/github-script@v8
+        with:
+          script: |
+            core.setSecret(process.env.ACTIONS_RUNTIME_TOKEN);
+            for (const name of ['ACTIONS_RUNTIME_TOKEN', 'ACTIONS_RESULTS_URL']) {
+              if (!process.env[name]) throw new Error(`Missing ${name}`);
+              core.exportVariable(name, process.env[name]);
+            }
+
       - name: Build and publish immutable amd64 backend
         if: matrix.image == 'backend'
+        env:
+          BUILDX_BUILDER: ${{ steps.buildx.outputs.name }}
         shell: bash
         run: |
           set -euo pipefail
@@ -173,6 +207,8 @@ jobs:
           build_stamp="$(sh scripts/release-stamp.sh "$build_date")"
           docker buildx build \
             --platform linux/amd64 \
+            --cache-from type=gha,scope=cd-${{ matrix.image }},version=2 \
+            --cache-to type=gha,mode=max,scope=cd-${{ matrix.image }},version=2 \
             --provenance=mode=max \
             --sbom=true \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
@@ -188,6 +224,8 @@ jobs:
 
       - name: Build and publish immutable amd64 web
         if: matrix.image == 'web'
+        env:
+          BUILDX_BUILDER: ${{ steps.buildx.outputs.name }}
         shell: bash
         run: |
           set -euo pipefail
@@ -200,6 +238,8 @@ jobs:
           build_stamp="$(sh scripts/release-stamp.sh "$build_date")"
           docker buildx build \
             --platform linux/amd64 \
+            --cache-from type=gha,scope=cd-${{ matrix.image }},version=2 \
+            --cache-to type=gha,mode=max,scope=cd-${{ matrix.image }},version=2 \
             --provenance=mode=max \
             --sbom=true \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
@@ -217,6 +257,7 @@ jobs:
       - name: Record immutable image inspection and web entries
         env:
           IMAGE_NAME: ${{ matrix.image }}
+          BUILDX_BUILDER: ${{ steps.buildx.outputs.name }}
         shell: bash
         run: |
           set -euo pipefail
@@ -242,13 +283,6 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Stop the persistent builder with a bounded shutdown budget
-        if: ${{ always() && steps.buildx.outputs.name != '' }}
-        timeout-minutes: 4
-        env:
-          BUILDER_NAME: ${{ steps.buildx.outputs.name }}
-        run: docker container stop --time 120 "buildx_buildkit_${BUILDER_NAME}0"
-
   cd-qualification:
     needs: build-images
     runs-on: [self-hosted, linux, x64, cheese-x99]
@@ -268,6 +302,10 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
+
+      - name: Use disposable build caches
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/build-cache-env.sh"
 
       - name: Download both immutable image results
         uses: actions/download-artifact@v8
