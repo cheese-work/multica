@@ -151,6 +151,9 @@ var concurrentIndexCleanups = map[string]string{
 	"937_system1_observation_decision_subject_idx":              "system1_observation_decision_subject",
 	"938_system1_observation_precedent_idx":                     "system1_observation_precedent",
 	"939_system1_observation_routing_subject_idx":               "system1_observation_routing_subject",
+	"971_dm_progress_data_incident_follow_kind_idx":             "idx_dm_progress_data_incident_follow_kind",
+	"944_decision_wake_event_request_seq_idx":                   "decision_wake_event_request_seq_uidx",
+	"945_decision_wake_receipt_event_recipient_idx":             "decision_wake_receipt_event_recipient_uidx",
 	"888_issue_search_text_workspace_idx":                       "idx_issue_search_text_workspace",
 	"889_comment_search_text_workspace_idx":                     "idx_comment_search_text_workspace",
 	"906_ask_guard_event_operation_key":                         "idx_ask_guard_event_operation_key",
@@ -514,6 +517,12 @@ type requiredConcurrentIndex struct {
 }
 
 var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
+	"971_dm_progress_data_incident_follow_kind_idx": {
+		IndexRegclass: "idx_dm_progress_data_incident_follow_kind",
+		TableRegclass: "dm_progress_data_incident",
+		Unique:        true,
+		Columns:       []string{"follow_id", "kind"},
+	},
 	"621_chat_fork_operation_index": {
 		IndexRegclass: "chat_session_fork_operation_idx",
 		TableRegclass: "chat_session",
