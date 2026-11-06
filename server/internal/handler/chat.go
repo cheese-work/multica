@@ -29,6 +29,10 @@ import (
 // meaningful summary, short enough to keep the dropdown row scannable.
 const chatSessionTitleMaxLen = 200
 
+// chatTitleFallbackMaxLen is the runes cut of the deterministic fallback DM
+// title (no agent, or the agent chain failed). Matches the client CHAT_TITLE_MAX.
+const chatTitleFallbackMaxLen = 60
+
 // Chat Sessions
 
 type CreateChatSessionRequest struct {
