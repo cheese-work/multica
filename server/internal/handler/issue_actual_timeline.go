@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -35,6 +36,15 @@ type issueActualTimelineEntry struct {
 	DueDate      *string                   `json:"due_date"`
 	Segments     []service.TimelineSegment `json:"segments"`
 }
+
+// Hard bounds on one request. Scope, filters and paging (S1b) are the way to
+// stay under them in a large workspace. Variables so tests can lower them.
+var (
+	timelineMaxIssues = 5000
+	timelineMaxRows   = 100000
+)
+
+var errTimelineTooLarge = errors.New("timeline result set too large")
 
 func (h *Handler) ListIssueActualTimeline(w http.ResponseWriter, r *http.Request) {
 	workspaceID := h.resolveWorkspaceID(r)
@@ -75,12 +85,19 @@ func (h *Handler) ListIssueActualTimeline(w http.ResponseWriter, r *http.Request
 		return service.TimelineCategoryUnknown
 	}
 
-	issues, order, err := h.loadTimelineIssues(r, wsUUID)
+	issues, order, err := h.loadTimelineIssues(r, wsUUID, from, to)
+	if errors.Is(err, errTimelineTooLarge) {
+		writeError(w, http.StatusUnprocessableEntity, "too many issues for this window; narrow the window")
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load issues")
 		return
 	}
-	if err := h.attachTimelineRows(r, wsUUID, issues); err != nil {
+	if err := h.attachTimelineRows(r, wsUUID, from, to, issues); errors.Is(err, errTimelineTooLarge) {
+		writeError(w, http.StatusUnprocessableEntity, "too much status history for this window; narrow the window")
+		return
+	} else if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load status history")
 		return
 	}
@@ -143,8 +160,15 @@ type timelineIssueRecord struct {
 	service.TimelineIssue
 }
 
-func (h *Handler) loadTimelineIssues(r *http.Request, ws pgtype.UUID) (map[string]*timelineIssueRecord, []string, error) {
-	rows, err := h.DB.Query(r.Context(), `SELECT id, status, created_at, start_date, due_date FROM issue WHERE workspace_id = $1 ORDER BY created_at, id`, ws)
+// timelineCandidates is the SQL prefilter shared by both loaders. An issue
+// created at or after the window end has no history, presence or active
+// interval in it; only its start/due markers can still select it (rule 3).
+const timelineCandidates = `i.workspace_id = $1 AND (i.created_at < $3
+	OR (i.start_date::timestamp >= $2 AT TIME ZONE 'UTC' AND i.start_date::timestamp < $3 AT TIME ZONE 'UTC')
+	OR (i.due_date::timestamp >= $2 AT TIME ZONE 'UTC' AND i.due_date::timestamp < $3 AT TIME ZONE 'UTC'))`
+
+func (h *Handler) loadTimelineIssues(r *http.Request, ws pgtype.UUID, from, to time.Time) (map[string]*timelineIssueRecord, []string, error) {
+	rows, err := h.DB.Query(r.Context(), `SELECT i.id, i.status, i.created_at, i.start_date, i.due_date FROM issue i WHERE `+timelineCandidates+` ORDER BY i.created_at, i.id LIMIT $4`, ws, from, to, timelineMaxIssues+1)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -166,6 +190,9 @@ func (h *Handler) loadTimelineIssues(r *http.Request, ws pgtype.UUID) (map[strin
 			Status: status, CreatedAt: createdAt, StartDate: dateUTC(start), DueDate: dateUTC(due),
 		}}
 		order = append(order, key)
+		if len(order) > timelineMaxIssues {
+			return nil, nil, errTimelineTooLarge
+		}
 	}
 	return issues, order, rows.Err()
 }
@@ -178,17 +205,21 @@ func dateUTC(d pgtype.Date) *time.Time {
 	return &t
 }
 
-func (h *Handler) attachTimelineRows(r *http.Request, ws pgtype.UUID, issues map[string]*timelineIssueRecord) error {
+func (h *Handler) attachTimelineRows(r *http.Request, ws pgtype.UUID, from, to time.Time, issues map[string]*timelineIssueRecord) error {
 	rows, err := h.DB.Query(r.Context(), `
-		SELECT issue_id, id, created_at, COALESCE(details->>'from', ''), COALESCE(details->>'to', '')
-		FROM activity_log
-		WHERE workspace_id = $1 AND action = 'status_changed' AND issue_id IS NOT NULL
-		ORDER BY issue_id, created_at, id`, ws)
+		SELECT a.issue_id, a.id, a.created_at, COALESCE(a.details->>'from', ''), COALESCE(a.details->>'to', '')
+		FROM activity_log a JOIN issue i ON i.id = a.issue_id
+		WHERE a.action = 'status_changed' AND `+timelineCandidates+`
+		ORDER BY a.issue_id, a.created_at, a.id LIMIT $4`, ws, from, to, timelineMaxRows+1)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
+	n := 0
 	for rows.Next() {
+		if n++; n > timelineMaxRows {
+			return errTimelineTooLarge
+		}
 		var (
 			issueID, id pgtype.UUID
 			at          time.Time

@@ -277,3 +277,39 @@ func TestTimelineRejectsBadRequests(t *testing.T) {
 		}
 	}
 }
+
+// The request must not load an unbounded slice of the workspace: issues the
+// window cannot select are filtered in SQL, and a hard cap rejects the rest.
+func TestTimelineBoundsWork(t *testing.T) {
+	seedTLIssue(t, tlIssue{status: "todo", created: 10 * day})
+	seedTLIssue(t, tlIssue{status: "todo", created: 11 * day})
+	oldIssues, oldRows := timelineMaxIssues, timelineMaxRows
+	t.Cleanup(func() { timelineMaxIssues, timelineMaxRows = oldIssues, oldRows })
+
+	post := func(from, to time.Duration) int {
+		now := time.Now()
+		body := map[string]any{"window": map[string]any{
+			"from": now.Add(-from).UTC().Format(time.RFC3339Nano),
+			"to":   now.Add(-to).UTC().Format(time.RFC3339Nano),
+		}}
+		w := httptest.NewRecorder()
+		testHandler.ListIssueActualTimeline(w, newRequest(http.MethodPost, "/api/issues/timeline", body))
+		return w.Code
+	}
+
+	timelineMaxIssues = 1
+	if got := post(30*day, 0); got != http.StatusUnprocessableEntity {
+		t.Fatalf("issue cap: got %d, want 422", got)
+	}
+	// Every fixture issue was created after this window ended, so none loads.
+	if got := post(2000*day, 1900*day); got != http.StatusOK {
+		t.Fatalf("prefiltered window: got %d, want 200", got)
+	}
+
+	timelineMaxIssues = oldIssues
+	timelineMaxRows = 0
+	seedTLIssue(t, tlIssue{status: "todo", created: 9 * day, rows: []tlRow{{ago: 8 * day, from: "backlog", to: "todo"}}})
+	if got := post(30*day, 0); got != http.StatusUnprocessableEntity {
+		t.Fatalf("row cap: got %d, want 422", got)
+	}
+}
