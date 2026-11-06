@@ -154,7 +154,8 @@ func elevatedSynRig(t *testing.T) (*synRig, *Broker, *fakeAuthority) {
 	a := &fakeAuthority{}
 	s.pin.Elevation = &Elevation{Authority: a, Scope: "repo_write:42", ReportFor: 100 * time.Millisecond}
 	s.advanceMain(t, "src/b.go", "package b\n", "upstream")
-	return s, s.start(t), a
+	b := s.start(t)
+	return s, b, a
 }
 
 // A refresh runs the same live per-operation authority as a push: the server's
