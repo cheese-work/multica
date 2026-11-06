@@ -158,6 +158,15 @@ describe("DeferredContentEditor", () => {
     await waitFor(() => expect(ref.current!.getMarkdown()).toBe("live-md"));
   });
 
+  it("flags mentions on the live editor and ignores the call while only the stand-in exists", async () => {
+    const { ref } = setup({ value: "x" });
+    expect(() => ref.current!.flagMentions(["early"])).not.toThrow();
+    await screen.findByTestId("live-editor");
+    ref.current!.flagMentions(["a", "b"]);
+    expect(editor.calls).toContain("flag:a,b");
+    expect(editor.calls).not.toContain("flag:early");
+  });
+
   it("falls back to the stand-in when the chunk fails and retries with a fresh import on the next intent", async () => {
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     editor.failNextLoad = true;

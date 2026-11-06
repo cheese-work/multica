@@ -328,7 +328,8 @@
     "cancel": "取消",
     "cancel_label": "取消 {{time}} 的排程跟進",
     "cancel_failed": "無法取消該跟進",
-    "load_failed": "無法載入已排程的跟進。重試"
+    "load_failed": "無法載入已排程的跟進。重試",
+    "watching_until": "監聽事項 · 截止 {{time}}"
   },
   "annotations": {
     "one_request": "請每次只發送針對一個決策請求的評論。",

@@ -1437,6 +1437,10 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		{
+			name: "delete dm progress follows",
+			run:  func() error { return qtx.DeleteDMProgressByWorkspace(ctx, requester.WorkspaceID) },
+		},
+		{
 			name: "delete chat pins",
 			run:  func() error { return qtx.DeleteChatPinnedAgentsByWorkspace(ctx, requester.WorkspaceID) },
 		},
@@ -1465,6 +1469,10 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 				_, err := tx.Exec(ctx, `DELETE FROM cloud_agent_connection WHERE provider='qoder_cloud' AND workspace_id=$1`, requester.WorkspaceID)
 				return err
 			},
+		},
+		{
+			name: "delete provider breakers",
+			run:  func() error { return qtx.DeleteProviderBreakersForWorkspace(ctx, requester.WorkspaceID) },
 		},
 		{
 			name: "delete leaf data",

@@ -56,7 +56,7 @@ func (q *Queries) GetDecisionCancelMessageForRequest(ctx context.Context, arg Ge
 
 const listDecisionRequestCards = `-- name: ListDecisionRequestCards :many
 SELECT request.id AS request_id, message.id AS message_id, request.issue_id,
-    COALESCE(workspace.issue_prefix, 'MUL')::text AS issue_prefix, issue.number AS issue_number,
+    COALESCE(workspace.issue_prefix, 'MUL')::text AS issue_prefix, issue.number AS issue_number, issue.title AS issue_title,
     source.id AS source_comment_id, request.ask, request.status, request.created_at,
     request.withdraw_reason, request.cancel_reason, request.options,
     (request.ask_json IS NOT NULL)::boolean AS has_ask_json, COALESCE(request.ask_json->>'recommendation', '')::text AS recommendation,
@@ -110,6 +110,7 @@ type ListDecisionRequestCardsRow struct {
 	IssueID                 pgtype.UUID        `json:"issue_id"`
 	IssuePrefix             string             `json:"issue_prefix"`
 	IssueNumber             int32              `json:"issue_number"`
+	IssueTitle              string             `json:"issue_title"`
 	SourceCommentID         pgtype.UUID        `json:"source_comment_id"`
 	Ask                     string             `json:"ask"`
 	Status                  string             `json:"status"`
@@ -148,6 +149,7 @@ func (q *Queries) ListDecisionRequestCards(ctx context.Context, arg ListDecision
 			&i.IssueID,
 			&i.IssuePrefix,
 			&i.IssueNumber,
+			&i.IssueTitle,
 			&i.SourceCommentID,
 			&i.Ask,
 			&i.Status,

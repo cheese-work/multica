@@ -1,6 +1,6 @@
 -- name: ListDecisionRequestCards :many
 SELECT request.id AS request_id, message.id AS message_id, request.issue_id,
-    COALESCE(workspace.issue_prefix, 'MUL')::text AS issue_prefix, issue.number AS issue_number,
+    COALESCE(workspace.issue_prefix, 'MUL')::text AS issue_prefix, issue.number AS issue_number, issue.title AS issue_title,
     source.id AS source_comment_id, request.ask, request.status, request.created_at,
     request.withdraw_reason, request.cancel_reason, request.options,
     (request.ask_json IS NOT NULL)::boolean AS has_ask_json, COALESCE(request.ask_json->>'recommendation', '')::text AS recommendation,

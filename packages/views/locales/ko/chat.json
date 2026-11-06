@@ -328,7 +328,8 @@
     "cancel": "취소",
     "cancel_label": "{{time}}에 예약된 후속 작업 취소",
     "cancel_failed": "후속 작업을 취소하지 못했습니다",
-    "load_failed": "예약된 후속 작업을 불러오지 못했습니다. 다시 시도"
+    "load_failed": "예약된 후속 작업을 불러오지 못했습니다. 다시 시도",
+    "watching_until": "이슈 감시 중 · {{time}}까지"
   },
   "annotations": {
     "one_request": "한 번에 하나의 결정 요청에 대한 댓글만 보내세요.",

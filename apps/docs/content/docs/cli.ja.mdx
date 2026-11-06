@@ -190,6 +190,21 @@ multica issue wakeup runs MUL-123 <wakeup-id>
 
 ターミナルからメンバーとして作成するときは `--agent-id` が必要です。エージェントが自分の実行の中で作成した場合は、既定でそのエージェント自身を起こします。
 
+### DM で進捗をフォローする
+
+DM は、エージェントがあなたのために作成した issue をフォローします。メンバーは自分が作成した DM でのみ `--chat` を付けてフォローを管理できます。エージェントは `--chat` なしで `multica issue follow <issue>` を実行します。DM は自分のタスクから決まり、DM のないタスクは拒否されます。子 issue は親の有効なフォローを引き継ぎます。
+
+```bash
+multica issue follow MUL-123 --chat <chat-session-id>
+multica issue mute-follow MUL-123 --chat <chat-session-id>
+multica issue unmute-follow MUL-123 --chat <chat-session-id>
+multica issue unfollow MUL-123 --chat <chat-session-id>
+multica issue unfollow MUL-123 --chat <chat-session-id> --scope root
+multica issue follows --chat <chat-session-id>
+```
+
+`unfollow` はその issue のフォローを終了します。`--scope root` を付けると、子 issue がそこから継承したフォローも終了します。個別に手動でフォローした子 issue はフォローされたままです。フォローを外した子 issue は、後から子 issue が作成されても再びフォローされません。
+
 ## エージェントとスキル
 
 ```bash
@@ -278,6 +293,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 
 - `--lead` にはメンバーまたはエージェントの名前を指定します。`--default-branch-hint` はリポジトリの既定ブランチをエージェントに伝えるだけで、ブランチは切り替えません。
 - ワークスペースの `--context` は、ワークスペース内のすべてのエージェントに渡されます。`--slug` は作成後に変更できません。`--issue-prefix` は大文字に変換され、変更すると既存のすべてのタスクが振り直され、外部から参照している古い番号は使えなくなります。
+- `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]` は、ルーティングだけを行うワークフローのステップ（既定は `todo`、`blocked`、`merged`、`need_decision`。`--routing-statuses` で変更し、`--routing-overrides todo=<agent-id>` で特定のステータスを別のエージェントに振り分け）を担当するエージェントを指定します。このエージェントがアーカイブされた場合、またはその実行がプロバイダーのエラーで失敗した場合、フォールバックのエージェントが引き継ぎます。上書きのキーを `<workflow-id>:<status>` にすると、その上書きは 1 つのワークフローに限定されます。`none` でその項目をオフにします。変更できるのは人間のオーナーまたは管理者のみで、変更はすべてアクティビティログに記録されます。
 - `--issue-title-template` で置き換えられるのは `{{date}}`（UTC、`YYYY-MM-DD`）だけで、ほかの `{{...}}` は拒否されます。スケジュールトリガーの `--timezone` は既定で UTC です。
 
 ## コマンド概要
@@ -346,7 +362,7 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 
 | コマンド | サブコマンド | 用途 | 主なフラグ |
 | --- | --- | --- | --- |
-| `issue` | `list` | タスクを一覧 | `--status`、`--priority`、`--assignee`、`--project`、`--metadata`（繰り返し可）、`--property`（繰り返し可、`"名前=値"` または `"Score>=3"`、`"Due<2026-01-01"`、`"Notes~=text"` のような比較；`__none__` は未設定に一致）、`--limit`、`--offset`、`--sort`（`property:<名前または id>` に対応）、`--full-id`、`--resolve-properties`（JSON のみ；保存された id に加えてプロパティ名・選択肢名・メンバー名を返します）、`--fields`（JSON のみ；カンマ区切りで残すフィールドを指定） |
+| `issue` | `list` | タスクを一覧 | `--status`、`--priority`、`--assignee`、`--project`、`--metadata`（繰り返し可）、`--property`（繰り返し可、`"名前=値"` または `"Score>=3"`、`"Due<2026-01-01"`、`"Notes~=text"` のような比較；`__none__` は未設定に一致）、`--limit`、`--offset`、`--sort`（`effective_due`：継承した最も早い期限の順に期限ありを先頭に並べる、および `property:<名前または id>` に対応）、`--full-id`、`--resolve-properties`（JSON のみ；保存された id に加えてプロパティ名・選択肢名・メンバー名を返します）、`--fields`（JSON のみ；カンマ区切りで残すフィールドを指定） |
 | | `get <id>` | 単一のタスクを表示 | `--resolve-properties`（JSON のみ；保存された id に加えてプロパティ名・選択肢名・メンバー名を返します） |
 | | `create` | タスクを作成 | `--title`（必須）、`--description` / `--description-stdin` / `--description-file`、`--status`、`--priority`、`--assignee`、`--parent`、`--stage`、`--project`、`--start-date`、`--due-date`、`--attachment`（繰り返し可）、`--property`（繰り返し可）、`--allow-duplicate`（同じタイトルの未完了タスクがあっても作成） |
 | | `update <id>` | タスクのフィールドを更新 | `create` と同系のフィールドに加え `--position`、`--no-start`、`--duplicate-of` |
