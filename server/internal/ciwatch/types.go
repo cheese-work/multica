@@ -39,7 +39,7 @@ const (
 	LabelSelfHealed      = "self_healed"
 )
 
-// Config is the part of ci_watch_config that routing steps 1 and 2 read.
+// Config is the part of the per-repo watch config that routing steps 1 and 2 read.
 type Config struct {
 	Mode             string   // off, shadow, act
 	Branches         []string // globs; empty = DefaultBranch only
@@ -87,7 +87,7 @@ type JobEvidence struct {
 	Excerpt string `json:"excerpt"`
 }
 
-// FailureEvent is the ci_failure_event row. Idempotency key: repo, run id, attempt.
+// FailureEvent is one stored failure event. Idempotency key: repo, run id, attempt.
 type FailureEvent struct {
 	WorkspaceID    string
 	RepoOwner      string

@@ -4,10 +4,13 @@ import (
 	"context"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/multica-ai/multica/server/internal/ciwatch"
 	"github.com/multica-ai/multica/server/internal/featureflags"
+	"github.com/multica-ai/multica/server/internal/ghbudget"
 	"github.com/multica-ai/multica/server/internal/integrations/ghrun"
+	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 )
 
 // ciWatcher records a completed workflow run for the CI failure watcher.
@@ -39,4 +42,16 @@ func (h *Handler) watchCompletedRun(ctx context.Context, workspace pgtype.UUID, 
 		RunID: event.RunID, RunAttempt: event.RunAttempt, WorkflowPath: event.WorkflowPath, WorkflowName: event.WorkflowName,
 		Event: event.Event, HeadBranch: event.HeadBranch, HeadSHA: event.HeadSHA, Conclusion: event.Conclusion,
 	}, event.DefaultBranch)
+}
+
+// enableCIWatch turns the watcher on for an App-backed GitHub client. The
+// installation ledger needs the pool, so a handler without one stays off. The
+// ci_watcher flag still gates every run.
+func (h *Handler) enableCIWatch(client *ghsnapshot.Client) {
+	pool, ok := h.TxStarter.(*pgxpool.Pool)
+	if !ok || !client.Enabled() {
+		return
+	}
+	ledger := ghbudget.New(pool, ghbudget.FetcherFunc(client.RateLimit))
+	h.ciWatch = h.newCIWatcher(ciwatch.AppGitHub{C: client}, ciwatch.LedgerBudget{L: ledger})
 }

@@ -611,6 +611,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		return err
 	})
 	taskSvc.PRSnapshotsEnabled = h.PRRefresh.Enabled()
+	h.enableCIWatch(ghClient)
 	if h.PRRefresh.Enabled() {
 		h.ConfigSyncGitHub = func(installationID int64, owner, repo string) ConfigSyncGitHub {
 			return ghsnapshot.NewConfigSyncReader(ghClient, installationID, owner, repo)
