@@ -14,7 +14,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // ConfigView is the whole ci_watch_config row an admin edits.
@@ -68,6 +67,8 @@ type WatchEvent struct {
 	Action   string `json:"action"`
 	State    string `json:"state"`
 	Outcome  string `json:"outcome"`
+	// WouldDo is what Shadow would have done: the routed protocol when no action row exists.
+	WouldDo string `json:"would_do"`
 }
 
 type TxBeginner interface {
@@ -423,17 +424,44 @@ func cancelForModeChange(ctx context.Context, tx pgx.Tx, ws, owner, name string,
 	return total, nil
 }
 
+// wouldDo renders what Shadow would have done for an observation: the routed
+// protocol and route (e.g. "P2 triage"); empty for P0 skips. It reads the
+// observation alias o. The failure leg blanks it when an action row exists.
+const wouldDo = `CASE WHEN o.choice_key IS NULL OR o.choice_key='P0' THEN ''
+		ELSE trim(o.choice_key||' '||COALESCE(o.inputs->>'route','')) END`
+
 // ListEvents returns the newest watcher events of one repo: failures seen and
 // breaker, cap and notification decisions.
 func ListEvents(ctx context.Context, q rowsQuerier, ws, owner, name string, limit int) ([]WatchEvent, error) {
 	if limit < 1 {
 		limit = 1
 	}
-	rows, err := q.Query(ctx, `SELECT at, kind, workflow, branch, run_id, run_attempt, detail, event FROM (
-			SELECT created_at AS at, 'ci_failure' AS kind, workflow_name AS workflow, head_branch AS branch, run_id, run_attempt, conclusion AS detail, event
-			FROM ci_failure_event WHERE workspace_id=$1::uuid AND repo_owner=$2 AND repo_name=$3
+	// Three legs: failures seen (joined to their observation and latest action),
+	// observations with no failure row (P0 skips such as owned_elsewhere), and
+	// breaker, cap and notification decisions. Observation and action are matched
+	// by repo and run id, never by run id alone.
+	rows, err := q.Query(ctx, `SELECT at, kind, workflow, branch, run_id, detail, event, class, protocol, action, state, outcome, would_do FROM (
+			SELECT f.created_at AS at, 'ci_failure' AS kind, f.workflow_name AS workflow, f.head_branch AS branch, f.run_id, f.conclusion AS detail, f.event,
+				COALESCE(o.class,'') AS class, COALESCE(NULLIF(a.protocol,''), o.choice_key, '') AS protocol,
+				COALESCE(a.action_kind,'') AS action, COALESCE(a.state,'') AS state,
+				COALESCE(o.outcome_label,'') AS outcome, CASE WHEN a.id IS NOT NULL THEN '' ELSE `+wouldDo+` END AS would_do
+			FROM ci_failure_event f
+			LEFT JOIN LATERAL (SELECT * FROM system1_observation o WHERE o.workspace_id=f.workspace_id AND o.kind='ci_event'
+				AND o.inputs->>'repo'=$2||'/'||$3 AND o.inputs->>'run_id'=f.run_id::text AND o.inputs->>'run_attempt'=f.run_attempt::text
+				ORDER BY o.created_at DESC LIMIT 1) o ON true
+			LEFT JOIN LATERAL (SELECT * FROM ci_watch_action a WHERE a.workspace_id=f.workspace_id AND a.repo_owner=f.repo_owner
+				AND a.repo_name=f.repo_name AND a.original_run_id=f.run_id ORDER BY a.updated_at DESC LIMIT 1) a ON true
+			WHERE f.workspace_id=$1::uuid AND f.repo_owner=$2 AND f.repo_name=$3
 			UNION ALL
-			SELECT created_at, kind, '', '', run_id, 0, detail, ''
+			SELECT o.created_at, 'ci_observed', COALESCE(o.inputs->>'workflow_path',''), COALESCE(o.inputs->>'branch',''),
+				COALESCE((o.inputs->>'run_id')::bigint, 0), COALESCE(o.inputs->>'conclusion',''), '',
+				o.class, COALESCE(o.choice_key,''), '', '', COALESCE(o.outcome_label,''), `+wouldDo+`
+			FROM system1_observation o
+			WHERE o.workspace_id=$1::uuid AND o.kind='ci_event' AND o.inputs->>'repo'=$2||'/'||$3
+				AND NOT EXISTS (SELECT 1 FROM ci_failure_event f WHERE f.workspace_id=o.workspace_id AND f.repo_owner=$2 AND f.repo_name=$3
+					AND f.run_id::text=o.inputs->>'run_id' AND f.run_attempt::text=o.inputs->>'run_attempt')
+			UNION ALL
+			SELECT created_at, kind, '', '', run_id, detail, '', '', '', '', '', '', ''
 			FROM ci_watch_event WHERE workspace_id=$1::uuid AND repo_owner=$2 AND repo_name=$3
 		) e ORDER BY at DESC, run_id DESC LIMIT $4`, ws, owner, name, limit)
 	if err != nil {
@@ -441,94 +469,12 @@ func ListEvents(ctx context.Context, q rowsQuerier, ws, owner, name string, limi
 	}
 	defer rows.Close()
 	out := []WatchEvent{}
-	attempts := []int32{}
 	for rows.Next() {
 		var e WatchEvent
-		var attempt int32
-		if err := rows.Scan(&e.At, &e.Kind, &e.Workflow, &e.Branch, &e.RunID, &attempt, &e.Detail, &e.Event); err != nil {
+		if err := rows.Scan(&e.At, &e.Kind, &e.Workflow, &e.Branch, &e.RunID, &e.Detail, &e.Event, &e.Class, &e.Protocol, &e.Action, &e.State, &e.Outcome, &e.WouldDo); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
-		attempts = append(attempts, attempt)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	rows.Close()
-	return out, enrichEvents(ctx, q, ws, owner, name, out, attempts)
-}
-
-// enrichEvents adds what the watcher classified (system-1 observation) and did
-// (latest ledger action) to each failure event. Two bounded lookups, keyed by
-// the page's run ids; events without a match keep empty fields.
-func enrichEvents(ctx context.Context, q rowsQuerier, ws, owner, name string, evs []WatchEvent, attempts []int32) error {
-	subjects := []pgtype.UUID{}
-	runs := []int64{}
-	for i, e := range evs {
-		if e.Kind != "ci_failure" {
-			continue
-		}
-		subjects = append(subjects, subjectID(Run{RepoOwner: owner, RepoName: name, RunID: e.RunID, RunAttempt: attempts[i]}))
-		runs = append(runs, e.RunID)
-	}
-	if len(runs) == 0 {
-		return nil
-	}
-	type obs struct{ class, protocol, outcome string }
-	bySubject := map[pgtype.UUID]obs{}
-	orows, err := q.Query(ctx, `SELECT DISTINCT ON (subject_id) subject_id, class, COALESCE(choice_key,''), COALESCE(outcome_label,'')
-		FROM system1_observation WHERE workspace_id=$1::uuid AND kind='ci_event' AND subject_id = ANY($2::uuid[])
-		ORDER BY subject_id, created_at DESC`, ws, subjects)
-	if err != nil {
-		return err
-	}
-	for orows.Next() {
-		var id pgtype.UUID
-		var o obs
-		if err := orows.Scan(&id, &o.class, &o.protocol, &o.outcome); err != nil {
-			orows.Close()
-			return err
-		}
-		bySubject[id] = o
-	}
-	orows.Close()
-	if err := orows.Err(); err != nil {
-		return err
-	}
-	type act struct{ protocol, kind, state string }
-	byRun := map[int64]act{}
-	arows, err := q.Query(ctx, `SELECT DISTINCT ON (original_run_id) original_run_id, protocol, action_kind, state
-		FROM ci_watch_action WHERE workspace_id=$1::uuid AND repo_owner=$2 AND repo_name=$3 AND original_run_id = ANY($4::bigint[])
-		ORDER BY original_run_id, updated_at DESC`, ws, owner, name, runs)
-	if err != nil {
-		return err
-	}
-	for arows.Next() {
-		var id int64
-		var a act
-		if err := arows.Scan(&id, &a.protocol, &a.kind, &a.state); err != nil {
-			arows.Close()
-			return err
-		}
-		byRun[id] = a
-	}
-	arows.Close()
-	if err := arows.Err(); err != nil {
-		return err
-	}
-	for i := range evs {
-		e := &evs[i]
-		if e.Kind != "ci_failure" {
-			continue
-		}
-		o := bySubject[subjectID(Run{RepoOwner: owner, RepoName: name, RunID: e.RunID, RunAttempt: attempts[i]})]
-		e.Class, e.Protocol, e.Outcome = o.class, o.protocol, o.outcome
-		if a, ok := byRun[e.RunID]; ok {
-			e.Action, e.State = a.kind, a.state
-			if a.protocol != "" {
-				e.Protocol = a.protocol
-			}
-		}
-	}
-	return nil
+	return out, rows.Err()
 }

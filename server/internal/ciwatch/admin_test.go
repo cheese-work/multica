@@ -361,32 +361,62 @@ func TestListEvents_RepoScopedNewestFirstLimited(t *testing.T) {
 	}
 }
 
-func TestListEvents_EnrichedWithClassProtocolActionOutcome(t *testing.T) {
+// The panel table shows class, protocol, action, state, outcome and what Shadow
+// would have done. Failure rows join their observation and latest action; a
+// run seen only as a P0 observation (owned elsewhere, merge_group) still shows.
+func TestListEvents_JoinsObservationAndAction(t *testing.T) {
 	e := newAdminEnv(t)
 	ctx := context.Background()
-	if _, err := e.pool.Exec(ctx, `INSERT INTO ci_failure_event (workspace_id, repo_owner, repo_name, run_id, run_attempt, workflow_name, head_branch, event, conclusion)
-		VALUES ($1,$2,$3,201,2,'CI','main','push','failure'), ($1,$2,$3,202,1,'CI','main','push','failure')`, e.ws, e.owner, e.name); err != nil {
+	t.Cleanup(func() { _, _ = e.pool.Exec(ctx, `DELETE FROM system1_observation WHERE workspace_id=$1`, e.ws) })
+	repo := e.owner + "/" + e.name
+	if _, err := e.pool.Exec(ctx, `INSERT INTO ci_failure_event (workspace_id, repo_owner, repo_name, run_id, run_attempt, workflow_name, head_branch, event, conclusion, created_at)
+		VALUES ($1,$2,$3,201,1,'CI','main','push','failure', now() - interval '3 min')`, e.ws, e.owner, e.name); err != nil {
 		t.Fatal(err)
 	}
-	subj := subjectID(Run{RepoOwner: e.owner, RepoName: e.name, RunID: 201, RunAttempt: 2})
-	if _, err := e.pool.Exec(ctx, `INSERT INTO system1_observation (workspace_id, kind, subject_id, class, choice_key, outcome_label)
-		VALUES ($1,'ci_event',$2,'flake','P1','rerun_green')`, e.ws, subj); err != nil {
+	obs := func(run int, class, choice, inputs string, outcome *string) {
+		t.Helper()
+		if _, err := e.pool.Exec(ctx, `INSERT INTO system1_observation (workspace_id, kind, subject_id, class, inputs, choice_key, outcome_label, created_at)
+			VALUES ($1,'ci_event',gen_random_uuid(),$2, ($3::jsonb || jsonb_build_object('repo',$4::text,'run_id',$5::bigint,'run_attempt',1)), $6, $7, now() - interval '1 min')`,
+			e.ws, class, inputs, repo, run, choice, outcome); err != nil {
+			t.Fatal(err)
+		}
+	}
+	green := "rerun_green"
+	obs(201, "infra_transient", "P1", `{"shadow_only":false}`, &green)
+	obs(202, "owned_elsewhere", "P0", `{"workflow_path":".github/workflows/cd-deploy.yml","branch":"main"}`, nil)
+	obs(203, "unknown", "P2", `{"route":"triage","shadow_only":true,"workflow_path":".github/workflows/ci.yml","branch":"main"}`, nil)
+	if _, err := e.pool.Exec(ctx, `INSERT INTO ci_watch_action (workspace_id, repo_owner, repo_name, original_run_id, action_kind, protocol, state, reason)
+		VALUES ($1,$2,$3,201,'rerun','P1','done','')`, e.ws, e.owner, e.name); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.pool.Exec(ctx, `INSERT INTO ci_watch_action (workspace_id, repo_owner, repo_name, original_run_id, action_kind, state, protocol, reason)
-		VALUES ($1,$2,$3,201,'rerun','done','P1','')`, e.ws, e.owner, e.name); err != nil {
+	// An observation of another repo with the same run id must not leak in.
+	if _, err := e.pool.Exec(ctx, `INSERT INTO system1_observation (workspace_id, kind, subject_id, class, inputs, choice_key)
+		VALUES ($1,'ci_event',gen_random_uuid(),'flaky','{"repo":"o/elsewhere","run_id":201,"run_attempt":1}','P3')`, e.ws); err != nil {
 		t.Fatal(err)
 	}
+
 	got, err := ListEvents(ctx, e.pool, e.ws, e.owner, e.name, 50)
-	if err != nil || len(got) != 2 {
-		t.Fatalf("events = %+v, %v", got, err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	byRun := map[int64]WatchEvent{got[0].RunID: got[0], got[1].RunID: got[1]}
-	r := byRun[201]
-	if r.Event != "push" || r.Class != "flake" || r.Protocol != "P1" || r.Action != "rerun" || r.State != "done" || r.Outcome != "rerun_green" {
-		t.Fatalf("enriched event = %+v", r)
+	byRun := map[int64]WatchEvent{}
+	for _, ev := range got {
+		byRun[ev.RunID] = ev
 	}
-	if bare := byRun[202]; bare.Event != "push" || bare.Class != "" || bare.Action != "" || bare.Outcome != "" {
-		t.Fatalf("event without observation/action = %+v", bare)
+	if len(got) != 3 {
+		t.Fatalf("want 3 events (one per run), got %d: %+v", len(got), got)
+	}
+	f := byRun[201]
+	if f.Kind != "ci_failure" || f.Event != "push" || f.Workflow != "CI" || f.Class != "infra_transient" || f.Protocol != "P1" ||
+		f.Action != "rerun" || f.State != "done" || f.Outcome != "rerun_green" || f.WouldDo != "" {
+		t.Fatalf("failure event = %+v", f)
+	}
+	p0 := byRun[202]
+	if p0.Kind != "ci_observed" || p0.Class != "owned_elsewhere" || p0.Protocol != "P0" || p0.Workflow != ".github/workflows/cd-deploy.yml" || p0.WouldDo != "" {
+		t.Fatalf("P0 event = %+v", p0)
+	}
+	u := byRun[203]
+	if u.Class != "unknown" || u.Protocol != "P2" || u.WouldDo != "P2 triage" || u.Action != "" {
+		t.Fatalf("unknown event = %+v", u)
 	}
 }
