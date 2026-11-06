@@ -95,6 +95,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"channel_task_delivery":              workspaceDelete,
 	"channel_typing_reaction":            workspaceDeleteSettle, // Source deletion makes retained anchors eligible for the cleanup worker.
 	"channel_user_binding":               workspaceDelete,
+	"chat_attention_item":                workspaceDelete, // no FK; removed by workspace_id in DeleteWorkspaceCommunicationRoots.
+	"chat_attention_mark":                workspaceDelete, // no workspace_id; keyed by chain root session, removed with the sessions.
 	"chat_draft_restore":                 workspaceDelete,
 	"chat_message":                       workspaceDelete,
 	"chat_pinned_agent":                  workspaceDelete,
