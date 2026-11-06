@@ -5,6 +5,7 @@
 // Run from a clean checkout of the default branch (the classifier must equal its base copy).
 //   node scripts/tier2-merge-card.mjs   send the card; run at 07:30, 12:30 and 20:00 ICT (autopilot b2b5403b, create_issue mode, paused until merge; Asia/Ho_Chi_Minh: `30 7,12 * * *` and
 //                                       `0 20 * * *`). CARD_DRY_RUN=1 prints the ask instead.
+//   Each run first withdraws the earlier merge card if still open, then posts a fresh one: a sent card cannot drop a moved head, the next run does.
 // No agent merges from this script: Cheese opens each PR link and merges it on GitHub (Tier 2 stays human, CHE-3612).
 // Env: CARD_ISSUE and CARD_COMMENT (UUIDs of the issue and of the comment the card hangs on), CARD_FOR (Cheese's member id), CARD_REPO (default cheese-work/multica).
 // The cross-lab PASS is the `security-gate` status: it is `success` only for a signed verdict on the exact head whose
@@ -45,12 +46,13 @@ export function eligible(prs) {
 export function renderAsk(prs, window, sourceIssueId, sourceCommentId) {
   const n = prs.length;
   const noun = `${n} Tier 2 PR${n === 1 ? '' : 's'}`;
-  const lines = prs.map((p) => `- [#${p.number}](${p.url}) \`${p.headSha}\` ${p.title}`);
+  // The link names the head: after a push the commit view no longer matches the head listed here.
+  const lines = prs.map((p) => `- [#${p.number} @ ${p.headSha.slice(0, 7)}](${p.url}/commits/${p.headSha}) \`${p.headSha}\` ${p.title}`);
   return {
     context_eli10: `${noun} on cheese-work/multica ${n === 1 ? 'is' : 'are'} ready for your ${window} ICT merge window. Each has green required checks and a cross-lab PASS on the exact head below. Open a PR link and merge it on GitHub.\n\n${lines.join('\n')}`,
     agent_did: `Checked every open PR into main on ${window} ICT: ready, Tier 2 receipt, required checks and PASS on the current head.`,
     decision: `Merge the ${noun} listed above?`,
-    stakes_if_wrong: 'You merge each PR yourself; every merge can be reverted. A PR whose head moves after this card is sent no longer has these checks and PASS, and is skipped.',
+    stakes_if_wrong: 'You merge each PR yourself; every merge can be reverted. A PR whose head moves after this card is sent no longer has these checks and PASS; the next run withdraws this card and lists only PRs whose head still holds.',
     options: [
       { label: 'I will merge them on GitHub', what_happens: 'You open each PR link above and merge it on GitHub. No agent merges. A PR whose head moves after this card no longer has these checks and PASS.', pros: ['Each PR gets your own look', 'No agent merges a Tier 2 PR'], cons: ['One click per PR'], cost_or_time: 'About 1 min per PR' },
       { label: 'Skip this window', what_happens: 'Nothing merges; the PRs appear again on the next card while their head holds.', pros: ['Time to read each diff'], cons: ['Longer wait to merge'], cost_or_time: 'Next window, up to about 12 h' },
@@ -108,23 +110,39 @@ async function main(args) {
   return sendCard(process.env.CARD_REPO ?? 'cheese-work/multica');
 }
 
-async function sendCard(repo) {
-  const ready = eligible(await collect(repo));
-  // A push during collection leaves the old head in `ready`; re-read the heads and drop any that moved.
-  const heads = new Map((await gh('pr', 'list', '--repo', repo, '--state', 'open', '--limit', '200', '--json', 'number,headRefOid')).map((x) => [x.number, x.headRefOid]));
+const CARD_TEXT = /ICT merge window/;
+// A sent card cannot change. Each run withdraws the still-open earlier merge card, so a stale head never stays listed.
+export const isOpenCard = (d) => d.status === 'open' && CARD_TEXT.test(d.ask ?? '');
+
+const liveIo = {
+  collect,
+  heads: async (repo) => new Map((await gh('pr', 'list', '--repo', repo, '--state', 'open', '--limit', '200', '--json', 'number,headRefOid')).map((x) => [x.number, x.headRefOid])),
+  openCards: async () => JSON.parse((await run('multica', ['decision', 'list', '--issue', process.env.CARD_ISSUE, '--output', 'json'], { maxBuffer: MAX_BUFFER })).stdout),
+  withdraw: (id) => run('multica', ['decision', 'withdraw', id, '--reason', 'Superseded by the next Tier 2 merge card run', '--output', 'json']),
+  post: async (ask) => {
+    const dir = mkdtempSync(join(tmpdir(), 'tier2-card-'));
+    try {
+      const askFile = join(dir, 'ask.json');
+      writeFileSync(askFile, JSON.stringify(ask));
+      await run('multica', ['decision', 'request', '--issue', process.env.CARD_ISSUE, '--for', process.env.CARD_FOR,
+        '--class', 'reversible', '--ask-file', askFile, '--output', 'json']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+};
+
+export async function sendCard(repo, io = liveIo) {
+  const dry = Boolean(process.env.CARD_DRY_RUN);
+  const ready = eligible(await io.collect(repo));
+  // Re-read the heads after collecting: a push during collection leaves the old head in `ready`.
+  const heads = await io.heads(repo);
   const fresh = ready.filter((p) => heads.get(p.number) === p.headSha);
-  if (!fresh.length) return console.error('no Tier 2 PR is ready; no card sent');
-  const ask = renderAsk(fresh, currentWindow(), process.env.CARD_ISSUE, process.env.CARD_COMMENT);
-  if (process.env.CARD_DRY_RUN) return console.log(JSON.stringify(ask, null, 2));
-  const dir = mkdtempSync(join(tmpdir(), 'tier2-card-'));
-  try {
-    const askFile = join(dir, 'ask.json');
-    writeFileSync(askFile, JSON.stringify(ask));
-    await run('multica', ['decision', 'request', '--issue', process.env.CARD_ISSUE, '--for', process.env.CARD_FOR,
-      '--class', 'reversible', '--ask-file', askFile, '--output', 'json']);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  const ask = fresh.length ? renderAsk(fresh, currentWindow(), process.env.CARD_ISSUE, process.env.CARD_COMMENT) : null;
+  if (dry) return console.log(ask ? JSON.stringify(ask, null, 2) : 'no Tier 2 PR is ready');
+  for (const d of (await io.openCards()).filter(isOpenCard)) await io.withdraw(d.id);
+  if (!ask) return console.error('no Tier 2 PR is ready; no card sent');
+  await io.post(ask);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) await main(process.argv.slice(2));

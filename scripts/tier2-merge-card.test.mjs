@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as card from './tier2-merge-card.mjs';
 
-const { currentWindow, eligible, renderAsk } = card;
+const { currentWindow, eligible, renderAsk, sendCard } = card;
 
 const HEAD = 'a'.repeat(40);
 const pr = (over = {}) => ({
@@ -40,7 +40,8 @@ test('a merged PR is never listed: merged PRs are not open and drop out of the i
 test('card shows exact heads and per-PR links', () => {
   const ask = renderAsk([pr(), pr({ number: 11, url: 'https://github.com/cheese-work/multica/pull/11', headSha: 'c'.repeat(40) })], '07:30');
   assert.match(ask.decision, /2 Tier 2 PRs/);
-  assert.ok(ask.context_eli10.includes(`[#10](https://github.com/cheese-work/multica/pull/10) \`${HEAD}\``));
+  // The link text and URL name the head, so a link followed after a push shows a different commit.
+  assert.ok(ask.context_eli10.includes(`[#10 @ ${HEAD.slice(0, 7)}](https://github.com/cheese-work/multica/pull/10/commits/${HEAD}) \`${HEAD}\``));
   assert.ok(ask.context_eli10.includes('`' + 'c'.repeat(40) + '`'));
   assert.ok(ask.options.length >= 2 && ask.recommendation && ask.default_if_no_reply);
   // `multica decision request` refuses two or more options without the exact label of the recommended one.
@@ -72,4 +73,41 @@ test('the card only lists: no agent merge step exists and no option has an agent
   const text = JSON.stringify(ask.options) + ask.decision + ask.recommendation + ask.default_if_no_reply;
   assert.doesNotMatch(text, /agent runs|--match-head-commit|tier2-merge-card\.mjs merge|gh pr merge/i);
   assert.match(ask.default_if_no_reply, /Nothing merges/);
+});
+
+// A sent card cannot change, so each run withdraws the still-open earlier card, re-reads the heads and posts a fresh one.
+const OLD_CARD = { id: 'card-1', status: 'open', ask: renderAsk([pr()], '07:30').context_eli10 };
+const harness = ({ cards = [OLD_CARD], collected, heads }) => {
+  const calls = [];
+  const io = {
+    collect: async () => collected,
+    heads: async () => new Map(heads),
+    openCards: async () => cards,
+    withdraw: async (id) => calls.push(['withdraw', id]),
+    post: async (ask) => calls.push(['post', ask]),
+  };
+  return { calls, run: () => sendCard('cheese-work/multica', io) };
+};
+
+test('a push after the card was sent: next run withdraws the old card and drops the moved PR', async () => {
+  const moved = 'b'.repeat(40);
+  const h = harness({ collected: [pr(), pr({ number: 11, url: 'https://github.com/cheese-work/multica/pull/11' })], heads: [[10, HEAD], [11, moved]] });
+  await h.run();
+  assert.deepEqual(h.calls.map((c) => c[0]), ['withdraw', 'post']);
+  assert.equal(h.calls[0][1], 'card-1');
+  assert.doesNotMatch(h.calls[1][1].context_eli10, /pull\/11/);
+  assert.match(h.calls[1][1].context_eli10, /pull\/10\/commits/);
+});
+
+test('with no PR left ready the old open card is still withdrawn and no new card is sent', async () => {
+  const h = harness({ collected: [pr({ securityGate: { sha: HEAD, state: 'pending' } })], heads: [[10, HEAD]] });
+  await h.run();
+  assert.deepEqual(h.calls, [['withdraw', 'card-1']]);
+});
+
+test('only open merge cards are withdrawn: answered and unrelated asks stay', async () => {
+  const cards = [OLD_CARD, { ...OLD_CARD, id: 'done', status: 'answered' }, { id: 'other', status: 'open', ask: 'Which option should the PR take?' }];
+  const h = harness({ cards, collected: [pr()], heads: [[10, HEAD]] });
+  await h.run();
+  assert.deepEqual(h.calls.filter((c) => c[0] === 'withdraw'), [['withdraw', 'card-1']]);
 });
