@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS decision_wake_event_request_seq_uidx;

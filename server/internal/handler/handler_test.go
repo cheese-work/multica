@@ -101,7 +101,9 @@ func TestMain(m *testing.M) {
 	}
 	dbfx = testutil.New(pool, testWorkspaceID, testUserID)
 
+	stopHeartbeat := keepRuntimeFresh(ctx, pool, testRuntimeID, service.RuntimeClaimFreshnessSeconds/5*time.Second)
 	code := m.Run()
+	stopHeartbeat()
 	if err := cleanupHandlerTestFixture(context.Background(), pool); err != nil {
 		fmt.Printf("Failed to clean up handler test fixture: %v\n", err)
 		if code == 0 {
