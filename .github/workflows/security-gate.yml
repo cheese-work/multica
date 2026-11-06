@@ -146,12 +146,14 @@ jobs:
           }
           # A write that stays rate limited before any success is on the queue commit leaves no status: the entry stays
           # pending and the job gets a warning, not a red mark. A success already on the commit (published by this run or
-          # an earlier one) or an unreadable earlier status keeps the job red, so a stale approval is never hidden.
+          # an earlier one) keeps the job red, so a stale approval is never hidden. An unreadable earlier status does the
+          # same on a re-run; on the first attempt no earlier run can have left a success, so a read that fails with the
+          # write (one shared quota) is a warning too.
           published_success=0
           earlier_not_success() {
             local s
             s="$(gh api "repos/$GITHUB_REPOSITORY/commits/$MERGE_GROUP_SHA/status" \
-              --jq '[.statuses[] | select(.context == "security-gate") | .state][0] // "none"')" || return 1
+              --jq '[.statuses[] | select(.context == "security-gate") | .state][0] // "none"')" || { [ "${GITHUB_RUN_ATTEMPT:-1}" = 1 ]; return; }
             [ "$s" != success ]
           }
           post() {

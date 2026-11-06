@@ -377,7 +377,7 @@ class MergeGroupStepTest(unittest.TestCase):
         self.assertEqual(len(gate), 1)
         return gate[0]["run"]
 
-    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success", script="", states="", fail_at="", rl_at="", rl_parents=0, rl_post=0, rl_post_after="", prior="none", rl_prior=""):
+    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success", script="", states="", fail_at="", rl_at="", rl_parents=0, rl_post=0, rl_post_after="", prior="none", rl_prior="", attempt="1"):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             (tmp / "bin").mkdir()
@@ -393,7 +393,7 @@ class MergeGroupStepTest(unittest.TestCase):
                 path.chmod(0o755)
             env = {**os.environ, "PATH": f"{tmp / 'bin'}:{os.environ['PATH']}", "LOG": str(tmp / "log"), "HEAD": HEAD,
                    "STATE": state, "STATES": states, "FAIL_AT": str(fail_at), "RL_AT": str(rl_at),
-                   "RL_PARENTS": str(rl_parents), "RL_POST": str(rl_post), "RL_POST_AFTER": str(rl_post_after), "PRIOR": prior, "RL_PRIOR": rl_prior, "PARENTS": " ".join(parents), "MERGE_GROUP_REF": ref, "MERGE_GROUP_SHA": self.QUEUE,
+                   "RL_PARENTS": str(rl_parents), "RL_POST": str(rl_post), "RL_POST_AFTER": str(rl_post_after), "PRIOR": prior, "RL_PRIOR": rl_prior, "GITHUB_RUN_ATTEMPT": str(attempt), "PARENTS": " ".join(parents), "MERGE_GROUP_REF": ref, "MERGE_GROUP_SHA": self.QUEUE,
                    "PR_NUMBER": "", "GH_TOKEN": "t", "DEFAULT_BRANCH": "main", "GITHUB_REPOSITORY": "o/r",
                    "GITHUB_SERVER_URL": "https://github.com", "GITHUB_RUN_ID": "7"}
             done = subprocess.run(["bash", "-c", self.step_run()], cwd=tmp, env=env, capture_output=True, text=True)
@@ -486,9 +486,17 @@ class MergeGroupStepTest(unittest.TestCase):
         self.assertEqual(self.posted(log), [], log)
 
     def test_a_rerun_whose_earlier_status_cannot_be_read_keeps_the_job_red(self):
-        # unknown earlier status fails closed, never a green job over a possible stale success
-        done, log = self.run_step(rl_post=999, rl_prior="1", states="failure failure failure")
+        # unknown earlier status on a re-run fails closed: attempt 1 left a success only if it got that far
+        done, log = self.run_step(rl_post=999, rl_prior="1", states="failure failure failure", attempt=2)
         self.assertNotEqual(done.returncode, 0, (done.stderr, log))
+
+    def test_a_first_attempt_that_cannot_write_or_read_the_status_is_not_a_failed_job(self):
+        # CHE-4242 review round 3 P1: shared quota exhaustion fails the write and the read together; on the first
+        # attempt no earlier run can have left a success on the queue commit, so the job gets a warning, not a red mark
+        done, log = self.run_step(rl_post=999, rl_prior="1", state="pending", states="pending pending pending")
+        self.assertEqual(done.returncode, 0, (done.stderr, log))
+        self.assertEqual(self.posted(log), [], log)
+        self.assertIn("::warning::", done.stderr)
 
     def test_a_rerun_over_an_earlier_non_success_stays_green_when_the_write_is_throttled(self):
         for prior in ("pending", "failure", "none"):
