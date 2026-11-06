@@ -2,6 +2,11 @@
 -- bottom-up deletion plan; the legacy foreign keys remain only as a
 -- compatibility safety net during the expand phase.
 
+-- name: DeleteProviderBreakersForWorkspace :exec
+-- Provider breaker state is workspace-owned; remove it explicitly before the
+-- workspace row instead of relying on the legacy FK cascade.
+DELETE FROM provider_breaker WHERE workspace_id = $1;
+
 -- name: SetWorkspaceTeardownMode :exec
 -- The setting is transaction-local. Migration 242 makes only the three DELETE
 -- dirty triggers skip their per-row work while this flag is on.
@@ -374,6 +379,13 @@ deleted_chat_wakeups AS (
 deleted_github_dispatch_halts AS (
     DELETE FROM github_dispatch_halt WHERE workspace_id = $1
 ),
+deleted_github_dispatch_halt_audits AS (
+    DELETE FROM github_dispatch_halt_audit WHERE workspace_id = $1
+),
+-- CHE-3045 L5b wait episodes: workspace-owned leaf, no FK.
+deleted_decision_waits AS (
+    DELETE FROM decision_wait WHERE workspace_id = $1
+),
 -- CHE-3284 config-sync enrollment: workspace-owned leaf, no FK.
 deleted_config_sync AS (
     DELETE FROM workspace_config_sync WHERE workspace_id = $1
@@ -381,6 +393,10 @@ deleted_config_sync AS (
 -- CHE-3345 ask guard events: workspace-owned leaf, no FK.
 deleted_ask_guard_events AS (
     DELETE FROM ask_guard_event WHERE workspace_id = $1
+),
+-- CHE-3628 shadow System 1 observations: workspace-owned leaf, no FK.
+deleted_system1_observations AS (
+    DELETE FROM system1_observation WHERE workspace_id = $1
 ),
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
@@ -445,6 +461,10 @@ deleted_issue_checkpoints AS (
 -- CHE-1862 vote-gate ledger: workspace-owned, a leaf with no dependents.
 deleted_governed_vote_records AS (
     DELETE FROM governed_vote_record WHERE workspace_id = $1
+),
+-- CHE-3490 single-use PASS receipts: workspace-owned leaf, no dependents.
+deleted_governed_pass_receipts AS (
+    DELETE FROM governed_pass_receipt WHERE workspace_id = $1
 ),
 -- CHE-1918 run-gate shadow ledger: workspace-owned, a leaf with no dependents
 -- and no FK. Outlives issues and receipts; goes with the workspace.
@@ -717,6 +737,17 @@ WHERE chat_session_id IN (
 
 -- name: DeleteWorkspaceCommunicationRoots :exec
 WITH
+-- No foreign keys on the attention tables. Items carry workspace_id; marks have none, so
+-- their chain root is one of this workspace's sessions.
+deleted_attention_items AS (
+    DELETE FROM chat_attention_item WHERE workspace_id = $1
+),
+deleted_attention_marks AS (
+    DELETE FROM chat_attention_mark
+    WHERE chain_root_session_id IN (
+        SELECT id FROM chat_session WHERE chat_session.workspace_id = $1
+    )
+),
 deleted_sessions AS (
     DELETE FROM chat_session WHERE chat_session.workspace_id = $1
 ),
@@ -750,6 +781,8 @@ WITH deleted_wakeup_pr_events AS (
  DELETE FROM dm_progress_follow WHERE workspace_id=$1
 ), deleted_dm_progress_lanes AS (
  DELETE FROM dm_progress_lane WHERE workspace_id=$1
+), deleted_dm_progress_data_incidents AS (
+ DELETE FROM dm_progress_data_incident WHERE workspace_id=$1
 ), deleted_wakeup_aggregate_reservations AS (
  DELETE FROM wakeup_aggregate_reservation WHERE workspace_id=$1
 ), deleted_wakeup_aggregate_budgets AS (

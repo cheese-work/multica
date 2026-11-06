@@ -1548,6 +1548,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 					return err
 				}
 				s.Tasks.notifyProviderFailureOwner(ctx, s.Tasks.Queries, recoveryAttempt, w.WorkspaceID, w.CreatedBy, w.IssueID)
+				s.Tasks.notifyProviderFailureAttemptCap(ctx, recoveryAttempt)
 				return nil
 			}
 		}

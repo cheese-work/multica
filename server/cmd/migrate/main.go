@@ -144,6 +144,20 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
+	"881_decision_request_proposal_fingerprint_idx":             "idx_decision_request_open_proposal",
+	"893_issue_search_text_title_trgm_idx":                      "idx_issue_search_text_title_trgm",
+	"894_issue_search_text_description_trgm_idx":                "idx_issue_search_text_description_trgm",
+	"895_comment_search_text_content_trgm_idx":                  "idx_comment_search_text_content_trgm",
+	"937_system1_observation_decision_subject_idx":              "system1_observation_decision_subject",
+	"938_system1_observation_precedent_idx":                     "system1_observation_precedent",
+	"939_system1_observation_routing_subject_idx":               "system1_observation_routing_subject",
+	"975_chat_session_chain_root_idx":                           "idx_chat_session_chain_root",
+	"976_chat_attention_item_one_open_later_idx":                "chat_attention_item_one_open_later_idx",
+	"977_chat_attention_item_open_idx":                          "chat_attention_item_open_idx",
+	"979_chat_message_client_message_id_idx":                    "chat_message_client_message_id_idx",
+	"971_dm_progress_data_incident_follow_kind_idx":             "idx_dm_progress_data_incident_follow_kind",
+	"944_decision_wake_event_request_seq_idx":                   "decision_wake_event_request_seq_uidx",
+	"945_decision_wake_receipt_event_recipient_idx":             "decision_wake_receipt_event_recipient_uidx",
 	"888_issue_search_text_workspace_idx":                       "idx_issue_search_text_workspace",
 	"889_comment_search_text_workspace_idx":                     "idx_comment_search_text_workspace",
 	"906_ask_guard_event_operation_key":                         "idx_ask_guard_event_operation_key",
@@ -497,6 +511,7 @@ var concurrentIndexCleanups = map[string]string{
 	"536_governance_receipt_workspace_comment_created_idx":      "idx_governance_receipt_workspace_comment_created",
 	"552_governance_concurrency_guard_identity":                 "governance_concurrency_guard_identity_uidx",
 	"553_governance_concurrency_hold_identity":                  "governance_concurrency_hold_identity_uidx",
+	"930_decision_wait_open_issue_idx":                          "decision_wait_open_issue_idx",
 }
 
 type requiredConcurrentIndex struct {
@@ -508,6 +523,12 @@ type requiredConcurrentIndex struct {
 }
 
 var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
+	"971_dm_progress_data_incident_follow_kind_idx": {
+		IndexRegclass: "idx_dm_progress_data_incident_follow_kind",
+		TableRegclass: "dm_progress_data_incident",
+		Unique:        true,
+		Columns:       []string{"follow_id", "kind"},
+	},
 	"621_chat_fork_operation_index": {
 		IndexRegclass: "chat_session_fork_operation_idx",
 		TableRegclass: "chat_session",

@@ -28,6 +28,11 @@ const maxDecisionCardTextBytes = 8 << 10
 type decisionCardAnswerInput struct {
 	Option string `json:"option"`
 	Text   string `json:"text"`
+	// A gated class also carries the revisions the person saw and the passkey
+	// assertion over them.
+	AnswerRevision int32           `json:"answer_revision,omitempty"`
+	PolicyRevision int32           `json:"policy_revision,omitempty"`
+	Assertion      json.RawMessage `json:"assertion,omitempty"`
 }
 
 // AnswerDecisionRequest records the request's human answering on the card. The
@@ -57,7 +62,7 @@ func (handler *Handler) AnswerDecisionRequest(writer http.ResponseWriter, reques
 		return
 	}
 	var input decisionCardAnswerInput
-	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 2*maxDecisionCardTextBytes)).Decode(&input); err != nil {
+	if err := decodeCardAnswer(writer, request, &input); err != nil {
 		writeError(writer, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -69,6 +74,7 @@ func (handler *Handler) AnswerDecisionRequest(writer http.ResponseWriter, reques
 		}
 	}
 	if err != nil {
+		handler.markSuspectAfterRefusal(request.Context(), err)
 		writeDecisionError(writer, err, "decision answer")
 		return
 	}
@@ -85,6 +91,10 @@ func (handler *Handler) AnswerDecisionRequest(writer http.ResponseWriter, reques
 		})
 	}
 	writeJSON(writer, http.StatusCreated, response)
+}
+
+func decodeCardAnswer(writer http.ResponseWriter, request *http.Request, input *decisionCardAnswerInput) error {
+	return json.NewDecoder(http.MaxBytesReader(writer, request.Body, 2*maxDecisionCardTextBytes)).Decode(input)
 }
 
 func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspaceID, requestID, userID pgtype.UUID, input decisionCardAnswerInput) (decisionRecordResult, error) {
@@ -169,6 +179,9 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if err := refuseGatedAnswerWhileRecovering(ctx, queries, workspace, decision, userID); err != nil {
 		return empty, err
 	}
+	if err := handler.verifyGatedAnswer(ctx, queries, workspace, decision, userID, request.Header.Get("X-Session-ID"), input); err != nil {
+		return empty, err
+	}
 	effectiveAt, err := queries.DecisionRecordEffectiveAt(ctx, db.DecisionRecordEffectiveAtParams{WorkspaceID: workspaceID, ID: decision.ID})
 	if err != nil {
 		return empty, err
@@ -208,7 +221,7 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if err := queries.TouchChatSession(ctx, session.ID); err != nil {
 		return empty, err
 	}
-	decision, err = queries.MarkDecisionRequestAnswered(ctx, db.MarkDecisionRequestAnsweredParams{WorkspaceID: workspaceID, ID: decision.ID})
+	decision, err = markDecisionRequestAnswered(ctx, queries, decision, answer)
 	if err != nil {
 		return empty, err
 	}
