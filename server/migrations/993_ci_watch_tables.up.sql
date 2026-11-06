@@ -4,7 +4,7 @@ SET LOCAL lock_timeout = '2s';
 -- or writes these tables unless the ci_watcher feature flag is on.
 --
 -- No foreign keys or cascades. repo_owner and repo_name are stored lowercased.
--- Unique and lookup indexes are built CONCURRENTLY in 987-992 (repo rule: one
+-- Unique and lookup indexes are built CONCURRENTLY in 994-999 (repo rule: one
 -- concurrent index per migration file, none inside the table migration).
 
 -- Per workspace repo settings, every field of the settings panel.
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS ci_watch_config (
     fix_owner_kind text CHECK (fix_owner_kind IN ('squad', 'agent')),
     fix_owner_id uuid,
     notify_member_id uuid,
-    max_reruns_per_day integer NOT NULL DEFAULT 1 CHECK (max_reruns_per_day >= 0),
+    max_reruns_per_original_run integer NOT NULL DEFAULT 1 CHECK (max_reruns_per_original_run >= 0),
     max_new_issues_per_day integer NOT NULL DEFAULT 5 CHECK (max_new_issues_per_day >= 0),
     max_owner_wakes_per_hour integer NOT NULL DEFAULT 6 CHECK (max_owner_wakes_per_hour >= 0),
     created_at timestamptz NOT NULL DEFAULT now(),
