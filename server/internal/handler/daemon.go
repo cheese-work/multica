@@ -3738,6 +3738,17 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
 				h.rejectClaimSourceLoad(r.Context(), task, deliveryErr, "channel task delivery", uuidToString(task.ID))
 		}
+		// The prompt lists the DM's open asks so the agent can name one in `multica chat reply-state`.
+		openAsks, asksErr := h.Queries.ListOpenChatAttentionAsksOfAgent(r.Context(), db.ListOpenChatAttentionAsksOfAgentParams{
+			ChainRootSessionID: cs.ChainRootSessionID, UserID: cs.CreatorID, AgentID: task.AgentID,
+		})
+		if asksErr != nil {
+			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
+				h.rejectClaimSourceLoad(r.Context(), task, asksErr, "chat open asks", uuidToString(task.ChatSessionID))
+		}
+		for _, id := range openAsks {
+			resp.ChatOpenAskIDs = append(resp.ChatOpenAskIDs, uuidToString(id))
+		}
 		// A web chat can opt into the same durable project context as an
 		// issue-bound task.
 		projectCtx, projectErr := h.resolveClaimProjectContext(r.Context(), cs.ProjectID, cs.WorkspaceID)
