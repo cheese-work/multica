@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -89,11 +90,22 @@ func printLintTable(results []lintResult) {
 			if f.Waived {
 				msg += " [waived: " + f.WaiveReason + "]"
 			}
-			rows = append(rows, []string{r.Workflow, f.Rule, f.Level, f.Step, msg})
+			rows = append(rows, []string{cleanCell(r.Workflow), f.Rule, f.Level, cleanCell(f.Step), cleanCell(msg)})
 		}
 	}
 	if len(rows) > 0 {
 		cli.PrintTable(os.Stdout, []string{"WORKFLOW", "RULE", "LEVEL", "STEP", "MESSAGE"}, rows)
 	}
 	fmt.Printf("%d workflow(s): %d error(s), %d warning(s), %d info (unwaived)\n", len(results), errs, warns, infos)
+}
+
+// cleanCell drops control characters, so a name a member chose cannot move the
+// cursor or set the title of another member's terminal.
+func cleanCell(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) {
+			return -1
+		}
+		return r
+	}, s)
 }

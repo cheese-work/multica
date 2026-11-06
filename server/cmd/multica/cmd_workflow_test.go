@@ -365,3 +365,18 @@ func TestWorkflowLintNeedsOneTarget(t *testing.T) {
 		t.Fatal("an id together with --all must fail")
 	}
 }
+
+// A member-chosen workflow name or message must not reach another member's
+// terminal as control characters.
+func TestWorkflowLintTableStripsControlCharacters(t *testing.T) {
+	results := []lintResult{{
+		Workflow: "evil\x1b]0;pwned\x07name",
+		Findings: []lintFinding{{Rule: "WF009", Level: "warning", Step: "todo\x1b[2J", Message: "bad\rmsg\x00"}},
+	}}
+	out, _ := captureStdout(t, func() error { printLintTable(results); return nil })
+	for _, r := range out {
+		if r < 0x20 && r != '\n' && r != '\t' || r == 0x7f {
+			t.Fatalf("control character %q reached the table:\n%q", r, out)
+		}
+	}
+}

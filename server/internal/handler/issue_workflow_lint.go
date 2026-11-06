@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -51,7 +52,7 @@ func lintResponse(row db.IssueWorkflow, findings []workflowlint.Finding) Workflo
 
 // workflowLintEnv loads what the agent, runtime, usage and instruction rules
 // look at, once for every workflow in rows.
-func (h *Handler) workflowLintEnv(ctx context.Context, wsUUID pgtype.UUID, rows []db.IssueWorkflow) (workflowlint.Env, map[string][]string, error) {
+func (h *Handler) workflowLintEnv(ctx context.Context, wsUUID pgtype.UUID, rows []db.IssueWorkflow, userID, role string) (workflowlint.Env, map[string][]string, error) {
 	env := workflowlint.Env{Live: true}
 	catalog, err := h.workflowStatusCatalog(ctx, h.Queries, wsUUID)
 	if err != nil {
@@ -74,14 +75,23 @@ func (h *Handler) workflowLintEnv(ctx context.Context, wsUUID pgtype.UUID, rows 
 	for _, rt := range runtimes {
 		runtimeByID[uuidToString(rt.ID)] = rt
 	}
+	targetsByAgent, ok := h.loadInvocationTargetsByAgent(ctx, agents)
+	if !ok {
+		return env, nil, errors.New("load agent invocation targets")
+	}
 	env.Agents = make(map[string]workflowlint.Agent, len(agents))
 	for _, a := range agents {
+		rt, hasRuntime := runtimeByID[uuidToString(a.RuntimeID)]
+		if lintAgentHidden(a, targetsByAgent[uuidToString(a.ID)], rt, userID, role) {
+			env.Agents[uuidToString(a.ID)] = workflowlint.Agent{Hidden: true}
+			continue
+		}
 		la := workflowlint.Agent{
 			Model:    a.Model.String,
 			Archived: a.ArchivedAt.Valid,
 			Paused:   a.SchedulingPausedAt.Valid,
 		}
-		if rt, ok := runtimeByID[uuidToString(a.RuntimeID)]; ok {
+		if hasRuntime {
 			la.Provider, la.RuntimeID, la.RuntimeOnline = rt.Provider, uuidToString(rt.ID), rt.Status == "online"
 			la.RuntimeVersion = runtimeVersion(rt.Metadata)
 		}
@@ -144,11 +154,11 @@ func decodeRows(rows []db.IssueWorkflow) map[string]issueworkflow.Definition {
 	return defs
 }
 
-func (h *Handler) lintWorkflows(w http.ResponseWriter, r *http.Request, wsUUID pgtype.UUID, rows []db.IssueWorkflow, all []db.IssueWorkflow) ([]WorkflowLintResponse, bool) {
+func (h *Handler) lintWorkflows(w http.ResponseWriter, r *http.Request, wsUUID pgtype.UUID, member db.Member, rows []db.IssueWorkflow, all []db.IssueWorkflow) ([]WorkflowLintResponse, bool) {
 	// Usage and cross-references are judged against every workflow of the
 	// workspace, whichever subset is linted.
 	defs := decodeRows(all)
-	env, byWorkflow, err := h.workflowLintEnv(r.Context(), wsUUID, all)
+	env, byWorkflow, err := h.workflowLintEnv(r.Context(), wsUUID, all, requestUserID(r), member.Role)
 	if err != nil {
 		slog.Warn("workflow lint env failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to lint workflows")
@@ -164,7 +174,8 @@ func (h *Handler) LintIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found"); !ok {
+	member, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found")
+	if !ok {
 		return
 	}
 	idUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workflow id")
@@ -181,7 +192,7 @@ func (h *Handler) LintIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to lint workflows")
 		return
 	}
-	res, ok := h.lintWorkflows(w, r, wsUUID, []db.IssueWorkflow{row}, all)
+	res, ok := h.lintWorkflows(w, r, wsUUID, member, []db.IssueWorkflow{row}, all)
 	if !ok {
 		return
 	}
@@ -195,7 +206,8 @@ func (h *Handler) LintIssueWorkflows(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found"); !ok {
+	member, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found")
+	if !ok {
 		return
 	}
 	rows, err := h.Queries.ListIssueWorkflows(r.Context(), wsUUID)
@@ -204,9 +216,30 @@ func (h *Handler) LintIssueWorkflows(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to lint workflows")
 		return
 	}
-	res, ok := h.lintWorkflows(w, r, wsUUID, rows, rows)
+	res, ok := h.lintWorkflows(w, r, wsUUID, member, rows, rows)
 	if !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"workflows": res, "total": len(res)})
+}
+
+// lintAgentHidden says whether the caller may not see the agent or the runtime
+// it is bound to. The lint engine then reports nothing about that agent, so a
+// finding cannot disclose a private agent's provider, version or state. The
+// rules match ListAgents and ListAgentRuntimes.
+func lintAgentHidden(agent db.Agent, targets []db.AgentInvocationTarget, rt db.AgentRuntime, userID, role string) bool {
+	if !memberAllowedToViewAgent(agent, targets, userID, role) {
+		return true
+	}
+	if roleAllowed(role, "owner", "admin") || uuidToString(rt.OwnerID) == userID || rt.Visibility == "public" {
+		return false
+	}
+	if rt.Visibility == "private" {
+		for _, id := range rt.SharedWith {
+			if uuidToString(id) == userID {
+				return false
+			}
+		}
+	}
+	return true
 }
