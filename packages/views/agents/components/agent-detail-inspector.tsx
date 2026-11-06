@@ -12,7 +12,10 @@ import {
   AGENT_DESCRIPTION_MAX_LENGTH,
   AGENT_MAX_CONCURRENT_TASKS_MAX,
   AGENT_MAX_CONCURRENT_TASKS_MIN,
+  EMPTY_AGENT_PROFILE_DRAFT,
+  useAgentProfileDraftStore,
 } from "@multica/core/agents";
+import { usePersistedDraft } from "@multica/core/drafts";
 import {
   isRuntimeUsableForUser,
   runtimeModelsOptions,
@@ -102,16 +105,39 @@ export function AgentDetailInspector({
     [agent.id, onUpdate],
   );
 
-  const [name, setName] = useState(agent.name);
-  const [description, setDescription] = useState(agent.description ?? "");
-  const [starters, setStarters] = useState<AgentConversationStarter[]>(
-    agent.conversation_starters ?? [],
+  const [profile, setProfile] = usePersistedDraft(
+    useAgentProfileDraftStore,
+    agent.id,
+    EMPTY_AGENT_PROFILE_DRAFT,
   );
+  const [name, setNameState] = useState(profile.name ?? agent.name);
+  const [description, setDescriptionState] = useState(
+    profile.description ?? agent.description ?? "",
+  );
+  const [starters, setStartersState] = useState<AgentConversationStarter[]>(
+    profile.starters ?? agent.conversation_starters ?? [],
+  );
+  // A field edited back to the saved value is no draft.
+  const setName = (next: string) => {
+    setNameState(next);
+    setProfile({ name: next === agent.name ? null : next });
+  };
+  const setDescription = (next: string) => {
+    setDescriptionState(next);
+    setProfile({ description: next === (agent.description ?? "") ? null : next });
+  };
+  const setStarters = (next: AgentConversationStarter[]) => {
+    setStartersState(next);
+    setProfile({
+      starters: startersEqual(next, agent.conversation_starters ?? []) ? null : next,
+    });
+  };
 
   useEffect(() => {
-    setName(agent.name);
-    setDescription(agent.description ?? "");
-    setStarters(agent.conversation_starters ?? []);
+    const saved = useAgentProfileDraftStore.getState().getDraft(agent.id);
+    setNameState(saved?.name ?? agent.name);
+    setDescriptionState(saved?.description ?? agent.description ?? "");
+    setStartersState(saved?.starters ?? agent.conversation_starters ?? []);
     // Reset only when moving to another agent. Cache updates from this form
     // must not erase a newer local draft while an autosave is in flight.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -131,8 +157,16 @@ export function AgentDetailInspector({
   const saveProfile = useCallback(
     async (next: ProfileDraft) => {
       await update({ name: next.name, description: next.description });
+      // Confirmed by the server (the parent rolls back and throws on failure).
+      // Drop only what was sent: a newer edit typed meanwhile stays a draft.
+      const current = useAgentProfileDraftStore.getState().getDraft(agent.id);
+      if (!current) return;
+      const sent: Partial<typeof current> = {};
+      if (current.name?.trim() === next.name) sent.name = null;
+      if (current.description === next.description) sent.description = null;
+      if (Object.keys(sent).length) setProfile(sent);
     },
-    [update],
+    [agent.id, setProfile, update],
   );
   const profileAutoSave = useAutoSave({
     value: profileDraft,
@@ -164,8 +198,12 @@ export function AgentDetailInspector({
   const saveStarters = useCallback(
     async (next: AgentConversationStarter[]) => {
       await update({ conversation_starters: next });
+      const current = useAgentProfileDraftStore.getState().getDraft(agent.id);
+      if (current?.starters && startersEqual(current.starters, next)) {
+        setProfile({ starters: null });
+      }
     },
-    [update],
+    [agent.id, setProfile, update],
   );
   const startersAutoSave = useAutoSave({
     value: starters,

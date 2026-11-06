@@ -140,3 +140,38 @@ jobs:
             read_verdict
             if [ "$state" != success ]; then post "$state" "$desc"; fi
           fi
+
+  # CHE-4250: a verdict that lands after CI changes required-check evidence, so the receipt needs a refresh. mechanical-tier
+  # no longer listens to this workflow (each comment run would start a run of its own, most of them empty). This job asks
+  # for one targeted refresh instead, and only for a real verdict run whose CI has already finished; while CI is still
+  # running, its completion takes the receipt. GITHUB_TOKEN can start `workflow_dispatch`, which `workflow_run` cannot
+  # do for events it made. Kept apart from the evaluation job: the only job-level write is `actions`, there is no
+  # checkout and nothing from the comment or the PR is executed or interpolated (PR number is digit-checked).
+  refresh-mechanical-tier:
+    name: refresh-mechanical-tier
+    needs: security-gate
+    if: always() && github.event_name == 'issue_comment' && needs.security-gate.result != 'skipped' && needs.security-gate.result != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.issue.number }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - name: Ask mechanical-tier for a fresh receipt
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || exit 0
+          repo="repos/$GITHUB_REPOSITORY"
+          head="$(gh api "$repo/pulls/$PR_NUMBER" --jq .head.sha)"
+          pending="$(gh api "$repo/actions/workflows/ci.yml/runs?head_sha=$head&per_page=100" \
+            --jq '[.workflow_runs[] | select(.status != "completed")] | length')"
+          if [ "$pending" -gt 0 ]; then
+            echo "CI is still running; its completion refreshes the receipt."
+            exit 0
+          fi
+          gh workflow run mechanical-tier.yml -R "$GITHUB_REPOSITORY" --ref "$DEFAULT_BRANCH" -f pr="$PR_NUMBER"

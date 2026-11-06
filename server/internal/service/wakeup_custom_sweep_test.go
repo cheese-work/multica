@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -670,20 +671,27 @@ func TestCustomActivationCaptureOverhead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const calls = 5000
-	if _, err := conn.Exec(ctx, `DO $$ DECLARE s timestamptz; b boolean; BEGIN s:=clock_timestamp();
+	// One sample is at the mercy of a neighbour on a shared runner (66µs idle,
+	// 1129µs once under load, CHE-3579). Load only adds time, so the cheapest
+	// of several samples is the probe's real cost.
+	const calls, samples = 1000, 5
+	best := math.MaxFloat64
+	for range samples {
+		if _, err := conn.Exec(ctx, `DO $$ DECLARE s timestamptz; b boolean; BEGIN s:=clock_timestamp();
  FOR i IN 1..`+strconv.Itoa(calls)+` LOOP b:=wakeup_scoped_event_wanted('`+k.issue+`','issue.activate'); END LOOP;
  PERFORM set_config('che1200.us',(extract(epoch FROM clock_timestamp()-s)*1000000)::text,false); END $$`); err != nil {
-		t.Fatal(err)
-	}
-	var micros float64
-	if err := conn.QueryRow(ctx, `SELECT current_setting('che1200.us')::float8`).Scan(&micros); err != nil {
-		t.Fatal(err)
+			t.Fatal(err)
+		}
+		var micros float64
+		if err := conn.QueryRow(ctx, `SELECT current_setting('che1200.us')::float8`).Scan(&micros); err != nil {
+			t.Fatal(err)
+		}
+		best = min(best, micros/calls)
 	}
 	conn.Release()
-	t.Logf("activation probe at the ceiling of 96 non-matching definitions: %.1fµs per call", micros/calls)
-	if micros/calls > 1000 {
-		t.Fatalf("the activation probe costs %.0fµs per call", micros/calls)
+	t.Logf("activation probe at the ceiling of 96 non-matching definitions: %.1fµs per call (best of %d)", best, samples)
+	if best > 1000 {
+		t.Fatalf("the activation probe costs %.0fµs per call", best)
 	}
 	ceiling(false)
 	k.mustSave(t, WakeupScopeProject, "", k.conditionRule(statusIsTodo))

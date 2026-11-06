@@ -45,6 +45,15 @@ var workflowGetCmd = &cobra.Command{
 	RunE:  runWorkflowGet,
 }
 
+var workflowLintCmd = &cobra.Command{
+	Use:   "lint [<id>]",
+	Short: "Lint one workflow, or every workflow with --all",
+	Long: `Run the workflow lint rules against the live server. Waived findings are
+listed but do not count. Exits non-zero when any workflow has an unwaived error.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: runWorkflowLint,
+}
+
 var workflowCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Create a workflow",
@@ -152,6 +161,7 @@ this way neither reassigns them nor starts runs.`,
 func init() {
 	workflowCmd.AddCommand(workflowListCmd)
 	workflowCmd.AddCommand(workflowGetCmd)
+	workflowCmd.AddCommand(workflowLintCmd)
 	workflowCmd.AddCommand(workflowCreateCmd)
 	workflowCmd.AddCommand(workflowUpdateCmd)
 	workflowCmd.AddCommand(workflowSetInstructionsCmd)
@@ -167,6 +177,8 @@ func init() {
 	workflowListCmd.Flags().Bool("full-id", false, "Show full UUIDs in table output")
 
 	workflowGetCmd.Flags().String("output", "json", "Output format: table or json")
+	workflowLintCmd.Flags().Bool("all", false, "Lint every workflow in the workspace")
+	workflowLintCmd.Flags().String("output", "table", "Output format: table or json")
 
 	workflowCreateCmd.Flags().String("name", "", "Workflow name (required)")
 	workflowCreateCmd.Flags().String("description", "", "Workflow description")
