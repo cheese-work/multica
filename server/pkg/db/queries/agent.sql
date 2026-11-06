@@ -1281,31 +1281,22 @@ SET taint_ids = COALESCE((
 WHERE t.id = $1
 RETURNING t.taint_ids;
 
--- name: InheritChatSessionTaint :one
--- InheritSessionTaint for a DM: a chat task has no issue, so the session is
--- keyed on the chat it ran in (CHE-3702). A fired issue watch stamps taint on
--- its own turn, and every later turn that resumes that transcript carries it.
-UPDATE agent_task_queue t
-SET taint_ids = COALESCE((
-    SELECT array_agg(DISTINCT x ORDER BY x)
-    FROM agent_task_queue s, unnest(s.taint_ids) AS x
-    WHERE s.agent_id = t.agent_id AND s.chat_session_id = t.chat_session_id AND s.session_id = sqlc.arg(session_id)::text
-), '{}')
-WHERE t.id = $1
-RETURNING t.taint_ids;
-
--- name: InheritChatSeedTaint :one
--- InheritChatSessionTaint for a task whose fresh session is seeded from other
--- DM content (CHE-3702): an in-place compaction summary, a fork's copied
--- transcript or a continuation summary. The resume pointer that carried the
--- taint is gone, so the taint is the union of:
+-- name: InheritChatTaint :one
+-- The one place a DM task takes the taint of the chat content it holds
+-- (CHE-3702): a fresh session seeded from a compaction summary, a fork's copied
+-- transcript or a continuation summary; a resumed session (session_id set); and
+-- a read of the chat transcript (`multica chat history`, session_id NULL). A
+-- seed has lost the resume pointer that carried the taint, a resume holds the
+-- transcript of a fork or continuation whose task rows are clean, so all of
+-- them take the union of:
 --   * the taint stored on this chat and on every chat of its fork and
 --     continuation ancestry (chat_session.taint_ids), which survives a source
 --     being deleted;
 --   * the tasks of every ancestor still alive. This covers a row written by a
 --     binary that does not fill taint_ids (a schema-preserving rollback), and a
 --     fork made before any turn ran, which passes its ancestors on.
---   * this chat's own tasks.
+--   * this chat's own tasks (for a resume, only those that ran in the resumed
+--     session; the other paths take them all).
 -- A chat in the ancestry that is not taint_verified and links to a chat that no
 -- longer exists has copied history nobody can account for (a predecessor fork
 -- whose source was deleted before the first claim). That adds the synthetic
@@ -1355,7 +1346,9 @@ SET taint_ids = COALESCE((
     SELECT array_agg(DISTINCT x ORDER BY x) FROM (
         SELECT unnest((SELECT ids FROM inherited)) AS x
         UNION ALL
-        SELECT unnest(s.taint_ids) FROM agent_task_queue s WHERE s.chat_session_id = t.chat_session_id
+        SELECT unnest(s.taint_ids) FROM agent_task_queue s
+        WHERE s.chat_session_id = t.chat_session_id
+          AND (sqlc.narg(session_id)::text IS NULL OR s.session_id = sqlc.narg(session_id)::text)
     ) u
 ), '{}')
 WHERE t.id = $1

@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"testing"
 	"time"
@@ -524,5 +525,172 @@ func TestUnrecoverableTaintIsPerOrphanAndClearsIndependently(t *testing.T) {
 	dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "chat_session_id": childID, "priority": 1000})
 	if dm := claimChatTaintTask(t, runtimeID); !reflect.DeepEqual(dm.TaintIDs, []string{wantA}) {
 		t.Fatalf("descendant taint = %v, want [%s]", dm.TaintIDs, wantA)
+	}
+}
+
+// delegateClaimsRestricted delegates from taskID to a clean issue with a live
+// grant and asserts the delegate claims restricted with the wanted taint.
+func delegateClaimsRestricted(t *testing.T, taskID, label string, want []string) {
+	t.Helper()
+	ctx := context.Background()
+	delegateRuntime := createClaimReclaimRuntime(t, ctx, "Delegate runtime "+label)
+	delegateAgent, issueID := createClaimReclaimAgentAndIssue(t, ctx, delegateRuntime, "Delegate agent "+label)
+	insertGrant(t, issueID, testWorkspaceID, []string{"docker"}, "1 minute", "1 hour", false)
+	delegateID := createDispatchedClaimFixtureTask(t, ctx, delegateAgent, delegateRuntime, issueID, "120 seconds", false)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET delegated_from_task_id = $2 WHERE id = $1`, delegateID, taskID)
+	claimRestrictedWithTaint(t, delegateRuntime, want)
+}
+
+// CHE-3702 round 18: a resumed DM session carries the transcript of a fork or
+// continuation. The task rows of that chat are clean, so the stored chat taint
+// and the ancestry check have to apply to the resume path too, not only to the
+// three seeds.
+func TestChatClaimResumeInheritsStoredChatTaintAndReachesDelegate(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, agentID string) (chatID string, want []string)
+	}{
+		{name: "stored taint", setup: func(t *testing.T, agentID string) (string, []string) {
+			sourceID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "resume source"})
+			return dbfx.ChatSession(t, agentID, testutil.Cols{
+				"title": "resume fork", "forked_from_session_id": sourceID, "taint_ids": []string{"t1"}, "taint_verified": true,
+			}), []string{"t1"}
+		}},
+		{name: "missing parent", setup: func(t *testing.T, agentID string) (string, []string) {
+			chatID := dbfx.ChatSession(t, agentID, testutil.Cols{
+				"title": "resume orphan", "forked_from_session_id": "00000000-0000-4000-8000-0000000000e1",
+			})
+			return chatID, []string{unrecoverableTaintOf(chatID)}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			agentID, runtimeID, _ := createRuntimeGuardAgent(t, ctx)
+			chatID, want := tc.setup(t, agentID)
+			dbfx.Exec(t, `UPDATE chat_session SET session_id = 'sess-fork', work_dir = '/fork', runtime_id = $2 WHERE id = $1`, chatID, runtimeID)
+			dbfx.Task(t, agentID, testutil.Cols{
+				"status": "completed", "runtime_id": runtimeID, "chat_session_id": chatID, "session_id": "sess-fork",
+				"started_at": testutil.Raw("now() - interval '1 minute'"), "completed_at": testutil.Raw("now()"),
+			})
+			dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": chatID, "role": "user", "content": "a later, clean message"})
+			dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "chat_session_id": chatID, "priority": 1000})
+
+			dm := claimChatTaintTask(t, runtimeID)
+			if dm.PriorSessionID != "sess-fork" || dm.Profile != "restricted" || !reflect.DeepEqual(dm.TaintIDs, want) {
+				t.Fatalf("claim = %+v, want resumed sess-fork, restricted with taint %v", dm, want)
+			}
+			delegateClaimsRestricted(t, dm.ID, tc.name, want)
+		})
+	}
+}
+
+// CHE-3702 round 18: `multica chat history` hands the chat transcript to the
+// reading task, so that task takes the chat's taint before content returns, and
+// a delegate of it is restricted.
+func TestChatHistoryReadMarksReadingTaskAndReachesDelegate(t *testing.T) {
+	ctx := context.Background()
+	agentID, runtimeID, _ := createRuntimeGuardAgent(t, ctx)
+	sourceID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "history source"})
+	chatID := dbfx.ChatSession(t, agentID, testutil.Cols{
+		"title": "history fork", "forked_from_session_id": sourceID, "taint_ids": []string{"t1"}, "taint_verified": true,
+	})
+	dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": chatID, "role": "assistant", "content": "attacker-influenced reply"})
+	taskID := dbfx.Task(t, agentID, testutil.Cols{"status": "running", "runtime_id": runtimeID, "chat_session_id": chatID})
+
+	w := httptest.NewRecorder()
+	testHandler.GetChatChannelHistory(w, withChatTestWorkspaceCtx(t, taskActorReq("/api/chat/history?limit=10", taskID)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("history status = %d: %s", w.Code, w.Body.String())
+	}
+	var stored []string
+	dbfx.QueryRow(t, `SELECT taint_ids FROM agent_task_queue WHERE id = $1`, taskID).Scan(&stored)
+	if !reflect.DeepEqual(stored, []string{"t1"}) {
+		t.Fatalf("reading task taint = %v, want [t1]", stored)
+	}
+	delegateClaimsRestricted(t, taskID, "history", []string{"t1"})
+}
+
+// CHE-3702 round 18 guard: every path by which chat content enters a task. The
+// only taint sits on the chat (chat_session.taint_ids); its task rows are clean,
+// so a path that skips the shared helper (recordChatTaint) leaves the task and
+// its delegate unrestricted. A new path that reads chat content belongs here.
+func TestEveryChatContentPathRestrictsADelegate(t *testing.T) {
+	cleanDone := testutil.Cols{
+		"status":     "completed",
+		"started_at": testutil.Raw("now() - interval '1 minute'"), "completed_at": testutil.Raw("now()"),
+	}
+	userMsg := func(chatID string) {
+		dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": chatID, "role": "user", "content": "a later, clean message"})
+	}
+	type chatPath struct {
+		name string
+		run  func(t *testing.T, agentID, runtimeID string) (taskID string)
+	}
+	claimed := func(cols testutil.Cols, seed func(t *testing.T, agentID, runtimeID, chatID string)) func(*testing.T, string, string) string {
+		return func(t *testing.T, agentID, runtimeID string) string {
+			cols["taint_ids"] = []string{"t1"}
+			cols["taint_verified"] = true
+			chatID := dbfx.ChatSession(t, agentID, cols)
+			seed(t, agentID, runtimeID, chatID)
+			userMsg(chatID)
+			dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "chat_session_id": chatID, "priority": 1000})
+			dm := claimChatTaintTask(t, runtimeID)
+			if dm.Profile != "restricted" || !reflect.DeepEqual(dm.TaintIDs, []string{"t1"}) {
+				t.Fatalf("claim = %+v, want restricted with taint [t1]", dm)
+			}
+			return dm.ID
+		}
+	}
+	read := func(handler func(http.ResponseWriter, *http.Request), target string) func(*testing.T, string, string) string {
+		return func(t *testing.T, agentID, runtimeID string) string {
+			chatID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "read path", "taint_ids": []string{"t1"}, "taint_verified": true})
+			dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": chatID, "role": "assistant", "content": "attacker-influenced reply"})
+			taskID := dbfx.Task(t, agentID, testutil.Cols{"status": "running", "runtime_id": runtimeID, "chat_session_id": chatID})
+			w := httptest.NewRecorder()
+			handler(w, withChatTestWorkspaceCtx(t, taskActorReq(target, taskID)))
+			if w.Code != http.StatusOK {
+				t.Fatalf("read status = %d: %s", w.Code, w.Body.String())
+			}
+			return taskID
+		}
+	}
+	for _, p := range []chatPath{
+		{"resume", claimed(testutil.Cols{"title": "p resume", "session_id": "sess-p", "work_dir": "/p"},
+			func(t *testing.T, agentID, runtimeID, chatID string) {
+				dbfx.Exec(t, `UPDATE chat_session SET runtime_id = $2 WHERE id = $1`, chatID, runtimeID)
+				c := testutil.Cols{"runtime_id": runtimeID, "chat_session_id": chatID, "session_id": "sess-p"}
+				for k, v := range cleanDone {
+					c[k] = v
+				}
+				dbfx.Task(t, agentID, c)
+			})},
+		{"compaction seed", claimed(testutil.Cols{"title": "p compaction", "compaction_epoch": 1},
+			func(t *testing.T, agentID, runtimeID, chatID string) {
+				c := testutil.Cols{"runtime_id": runtimeID, "chat_session_id": chatID, "session_id": "sess-p"}
+				for k, v := range cleanDone {
+					c[k] = v
+				}
+				dbfx.Insert(t, "chat_message", testutil.Cols{
+					"chat_session_id": chatID, "role": "assistant", "message_kind": "compaction_summary",
+					"task_id": dbfx.Task(t, agentID, c), "content": "summary",
+				})
+			})},
+		{"fork seed", claimed(testutil.Cols{"title": "p fork", "forked_from_session_id": "00000000-0000-4000-8000-0000000000e2"},
+			func(t *testing.T, agentID, runtimeID, chatID string) {
+				dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": chatID, "role": "assistant", "content": "copied reply"})
+			})},
+		{"continuation seed", claimed(testutil.Cols{"title": "p continuation", "continued_from_session_id": "00000000-0000-4000-8000-0000000000e3"},
+			func(t *testing.T, agentID, runtimeID, chatID string) {
+				dbfx.Insert(t, "chat_message", testutil.Cols{
+					"chat_session_id": chatID, "role": "assistant", "message_kind": "continuation_summary", "content": "summary",
+				})
+			})},
+		{"history read", read(testHandler.GetChatChannelHistory, "/api/chat/history?limit=10")},
+		{"thread read", read(testHandler.GetChatThread, "/api/chat/thread")},
+	} {
+		t.Run(p.name, func(t *testing.T) {
+			agentID, runtimeID, _ := createRuntimeGuardAgent(t, context.Background())
+			delegateClaimsRestricted(t, p.run(t, agentID, runtimeID), p.name, []string{"t1"})
+		})
 	}
 }

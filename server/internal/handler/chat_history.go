@@ -283,6 +283,14 @@ func (h *Handler) chatHistorySession(w http.ResponseWriter, r *http.Request) (ch
 		writeError(w, http.StatusBadRequest, "this task is not a chat task")
 		return chatHistoryScope{}, false
 	}
+	// The transcript returned below is chat content, so the reading task takes
+	// the chat's taint before any of it leaves (CHE-3702). Fail closed.
+	if err := h.recordChatTaint(r.Context(), &task, ""); err != nil {
+		slog.Error("chat history: record chat taint failed", append(logger.RequestAttrs(r),
+			"error", err, "task_id", uuidToString(task.ID))...)
+		writeError(w, http.StatusInternalServerError, "failed to record chat taint")
+		return chatHistoryScope{}, false
+	}
 	// Defense in depth: load the session and confirm it lives in the token's
 	// stamped workspace. The token→task binding already guarantees the agent can
 	// only reach its own task; this makes a future wiring regression fail closed.

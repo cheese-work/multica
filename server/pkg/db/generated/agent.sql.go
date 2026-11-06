@@ -6502,7 +6502,7 @@ func (q *Queries) HasTaskForIssue(ctx context.Context, issueID pgtype.UUID) (boo
 	return exists, err
 }
 
-const inheritChatSeedTaint = `-- name: InheritChatSeedTaint :one
+const inheritChatTaint = `-- name: InheritChatTaint :one
 WITH RECURSIVE ancestry(id) AS (
     SELECT t0.chat_session_id FROM agent_task_queue t0 WHERE t0.id = $1
     UNION
@@ -6538,24 +6538,35 @@ SET taint_ids = COALESCE((
     SELECT array_agg(DISTINCT x ORDER BY x) FROM (
         SELECT unnest((SELECT ids FROM inherited)) AS x
         UNION ALL
-        SELECT unnest(s.taint_ids) FROM agent_task_queue s WHERE s.chat_session_id = t.chat_session_id
+        SELECT unnest(s.taint_ids) FROM agent_task_queue s
+        WHERE s.chat_session_id = t.chat_session_id
+          AND ($2::text IS NULL OR s.session_id = $2::text)
     ) u
 ), '{}')
 WHERE t.id = $1
 RETURNING t.taint_ids
 `
 
-// InheritChatSessionTaint for a task whose fresh session is seeded from other
-// DM content (CHE-3702): an in-place compaction summary, a fork's copied
-// transcript or a continuation summary. The resume pointer that carried the
-// taint is gone, so the taint is the union of:
+type InheritChatTaintParams struct {
+	ID        pgtype.UUID `json:"id"`
+	SessionID pgtype.Text `json:"session_id"`
+}
+
+// The one place a DM task takes the taint of the chat content it holds
+// (CHE-3702): a fresh session seeded from a compaction summary, a fork's copied
+// transcript or a continuation summary; a resumed session (session_id set); and
+// a read of the chat transcript (`multica chat history`, session_id NULL). A
+// seed has lost the resume pointer that carried the taint, a resume holds the
+// transcript of a fork or continuation whose task rows are clean, so all of
+// them take the union of:
 //   - the taint stored on this chat and on every chat of its fork and
 //     continuation ancestry (chat_session.taint_ids), which survives a source
 //     being deleted;
 //   - the tasks of every ancestor still alive. This covers a row written by a
 //     binary that does not fill taint_ids (a schema-preserving rollback), and a
 //     fork made before any turn ran, which passes its ancestors on.
-//   - this chat's own tasks.
+//   - this chat's own tasks (for a resume, only those that ran in the resumed
+//     session; the other paths take them all).
 //
 // A chat in the ancestry that is not taint_verified and links to a chat that no
 // longer exists has copied history nobody can account for (a predecessor fork
@@ -6571,34 +6582,8 @@ RETURNING t.taint_ids
 // UNION drops repeated ids, so a cyclic chain ends. "inherited" (everything
 // except the chat's own tasks) is written back to the chat, so a later delete
 // of the source cannot lose what the walk found.
-func (q *Queries) InheritChatSeedTaint(ctx context.Context, id pgtype.UUID) ([]string, error) {
-	row := q.db.QueryRow(ctx, inheritChatSeedTaint, id)
-	var taint_ids []string
-	err := row.Scan(&taint_ids)
-	return taint_ids, err
-}
-
-const inheritChatSessionTaint = `-- name: InheritChatSessionTaint :one
-UPDATE agent_task_queue t
-SET taint_ids = COALESCE((
-    SELECT array_agg(DISTINCT x ORDER BY x)
-    FROM agent_task_queue s, unnest(s.taint_ids) AS x
-    WHERE s.agent_id = t.agent_id AND s.chat_session_id = t.chat_session_id AND s.session_id = $2::text
-), '{}')
-WHERE t.id = $1
-RETURNING t.taint_ids
-`
-
-type InheritChatSessionTaintParams struct {
-	ID        pgtype.UUID `json:"id"`
-	SessionID string      `json:"session_id"`
-}
-
-// InheritSessionTaint for a DM: a chat task has no issue, so the session is
-// keyed on the chat it ran in (CHE-3702). A fired issue watch stamps taint on
-// its own turn, and every later turn that resumes that transcript carries it.
-func (q *Queries) InheritChatSessionTaint(ctx context.Context, arg InheritChatSessionTaintParams) ([]string, error) {
-	row := q.db.QueryRow(ctx, inheritChatSessionTaint, arg.ID, arg.SessionID)
+func (q *Queries) InheritChatTaint(ctx context.Context, arg InheritChatTaintParams) ([]string, error) {
+	row := q.db.QueryRow(ctx, inheritChatTaint, arg.ID, arg.SessionID)
 	var taint_ids []string
 	err := row.Scan(&taint_ids)
 	return taint_ids, err

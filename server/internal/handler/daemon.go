@@ -3859,14 +3859,19 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			// Both resume paths above end here. The resumed transcript holds
 			// whatever tainted input earlier turns read (a fired issue watch
 			// stamps only its own turn), so the claimed task takes that taint
-			// before the profile is finalized. If it cannot be recorded, start
-			// fresh rather than run a resume the transcript has not earned.
+			// before the profile is finalized. A resumed fork or continuation
+			// also holds copied history, so the same helper as the seeds applies
+			// the stored chat taint and the ancestry check. If it cannot be
+			// recorded, keep the task queued rather than run the resume.
 			if resp.PriorSessionID != "" {
-				if h.inheritChatSessionTaint(r.Context(), task, resp.PriorSessionID) {
-					applyRunProfile()
-				} else {
-					resp.PriorSessionID = ""
+				if err := h.recordChatTaint(r.Context(), task, resp.PriorSessionID); err != nil {
+					slog.Error("chat claim: record resume taint failed; preserving task for redelivery",
+						"task_id", uuidToString(task.ID), "chat_session_id", uuidToString(cs.ID), "error", err)
+					return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+						outcome: "error_chat_seed_taint", status: http.StatusInternalServerError, message: "failed to record seed taint",
+					}
 				}
+				applyRunProfile()
 			}
 
 			// MUL-5305: continuity-gap disclosure is independent of whether
@@ -4011,15 +4016,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		// profile is finalized; if it cannot be recorded, keep the task queued
 		// rather than seed it.
 		seedWithTaint := func(block string) *claimBuildFailure {
-			taint, err := h.Queries.InheritChatSeedTaint(r.Context(), task.ID)
-			if err != nil {
+			if err := h.recordChatTaint(r.Context(), task, ""); err != nil {
 				slog.Error("chat claim: record seed taint failed; preserving task for redelivery",
 					"task_id", uuidToString(task.ID), "chat_session_id", uuidToString(cs.ID), "error", err)
 				return &claimBuildFailure{
 					outcome: "error_chat_seed_taint", status: http.StatusInternalServerError, message: "failed to record seed taint",
 				}
 			}
-			task.TaintIds = taint
 			applyRunProfile()
 			resp.ChatMessage = block + "\n\nCurrent message:\n\n" + resp.ChatMessage
 			return nil
@@ -7427,20 +7430,20 @@ func (h *Handler) inheritSessionTaint(ctx context.Context, task *db.AgentTaskQue
 	return true
 }
 
-// inheritChatSessionTaint is inheritSessionTaint for a DM task, whose session
-// is keyed on its chat rather than an issue (CHE-3702).
-func (h *Handler) inheritChatSessionTaint(ctx context.Context, task *db.AgentTaskQueue, sessionID string) bool {
-	taint, err := h.Queries.InheritChatSessionTaint(ctx, db.InheritChatSessionTaintParams{
+// recordChatTaint is the single path by which a DM task takes the taint of chat
+// content it holds (CHE-3702): a resumed session (sessionID set), a fresh
+// session seeded from a compaction summary, fork or continuation, and a read of
+// the chat transcript (sessionID empty). The caller fails closed on an error.
+func (h *Handler) recordChatTaint(ctx context.Context, task *db.AgentTaskQueue, sessionID string) error {
+	taint, err := h.Queries.InheritChatTaint(ctx, db.InheritChatTaintParams{
 		ID:        task.ID,
-		SessionID: sessionID,
+		SessionID: pgtype.Text{String: sessionID, Valid: sessionID != ""},
 	})
 	if err != nil {
-		slog.Warn("daemon claim: could not record chat session taint; starting fresh",
-			"task_id", uuidToString(task.ID), "error", err)
-		return false
+		return err
 	}
 	task.TaintIds = taint
-	return true
+	return nil
 }
 
 // MarkTaskExternalRead records that the run contacted a host other than the
