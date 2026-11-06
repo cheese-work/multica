@@ -7661,6 +7661,9 @@ func SettleTerminalTaskState(ctx context.Context, q *db.Queries, tasks ...db.Age
 			return err
 		}
 	}
+	if err := settleChatTurns(ctx, q, tasks); err != nil {
+		return err
+	}
 	if _, err := q.SettleTerminalTaskSupplements(ctx, taskIDs); err != nil {
 		return fmt.Errorf("settle terminal task supplements: %w", err)
 	}
