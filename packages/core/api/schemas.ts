@@ -1048,6 +1048,7 @@ const DecisionRequestCardSchema = z.lazy(() => z.object({
   id: z.string(),
   issue_id: z.string(),
   issue_identifier: z.string().default(""),
+  issue_title: z.string().optional().catch(undefined),
   source_comment_id: z.string().nullish().catch(undefined),
   ask: z.string(),
   asking_agent_name: z.string().optional().catch(undefined),
@@ -4361,3 +4362,13 @@ export const AgentDecisionSettingSchema = z.lazy(() => z.object({
   stopped: z.object({ reason: z.string().catch("") }).nullish().transform((v) => v ?? null),
 }).loose());
 export type AgentDecisionSetting = z.infer<typeof AgentDecisionSettingSchema>;
+
+// CHE-3627: GET/PUT /api/workspaces/{id}/routing-agent. The server sends null
+// for an empty list or map, so both default to empty here.
+export const RoutingAgentSettingSchema = z.lazy(() => z.object({
+  agent_id: z.string().catch(""),
+  fallback_agent_id: z.string().catch(""),
+  statuses: z.array(z.string()).nullish().transform((v) => v ?? []),
+  overrides: z.record(z.string(), z.string()).nullish().transform((v) => v ?? {}),
+}).loose());
+export type RoutingAgentSetting = z.infer<typeof RoutingAgentSettingSchema>;
