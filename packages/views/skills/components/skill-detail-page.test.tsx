@@ -8,6 +8,7 @@ import type { Skill } from "@multica/core/types";
 import { toast } from "sonner";
 import { renderWithI18n } from "../../test/i18n";
 import { NavigationProvider, type NavigationAdapter } from "../../navigation";
+import { resetAllRegisteredDrafts } from "@multica/core/drafts";
 
 const skillRef = vi.hoisted(() => ({ current: null as unknown }));
 const agentsRef = vi.hoisted(() => ({ current: [] as unknown[] }));
@@ -185,6 +186,7 @@ async function openMoreActions() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetAllRegisteredDrafts();
   skillRef.current = baseSkill;
   agentsRef.current = [];
   membersRef.current = [
