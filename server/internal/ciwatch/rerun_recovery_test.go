@@ -167,3 +167,113 @@ func TestRerunFollowupDoesNotSwitchShadowAgainAfterAnOperatorReenablesP1(t *test
 		t.Fatalf("an old 403 switched the repo back: p1_mode=%s", mode)
 	}
 }
+
+// Round 3 of CHE-4278 review: a P2 escalation must be executable, and a
+// reconciled-done row with no stored answer must still reach the Shadow switch.
+
+func (e *rerunEnv) scheduleSigned(t *testing.T, runID int64, sig string) Action {
+	t.Helper()
+	a, _, err := e.ledger.Schedule(context.Background(), e.action(runID, ActionRerun, sig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+func (e *rerunEnv) ownerState(t *testing.T, sig string) string {
+	t.Helper()
+	var s string
+	_ = e.pool.QueryRow(context.Background(), `SELECT state FROM ci_signature_owner WHERE workspace_id=$1::uuid AND signature_hash=$2`,
+		e.ws, sig).Scan(&s)
+	return s
+}
+
+func TestRerunFollowupP2IssueIsCreatedThroughExecution(t *testing.T) {
+	e := newRerunEnv(t)
+	e.enableP1(t)
+	e.ledger.RegisterLocal(ActionIssueCreate, e.insertEffect("issue"))
+	e.gh.post = func() (RerunResponse, error) { return RerunResponse{Status: 502}, nil }
+	e.scheduleSigned(t, 2020, "sig-2020")
+	e.runOne(t)
+	e.settleAll(t) // reconcile finds no rerun: failed/reconcile_not_found
+	e.followup(t)
+	e.settleAll(t) // RunOne executes the issue_create
+	if got := e.count(t, "issue"); got != 1 {
+		t.Fatalf("issues created = %d, want 1 (the issue_create action was cancelled as owned_elsewhere?)", got)
+	}
+	if s := e.ownerState(t, "sig-2020"); s != "open" {
+		t.Fatalf("owner state = %q", s)
+	}
+	e.wantPosts(t, 1)
+}
+
+func TestScheduleP1SecondFailureP2IssueIsCreatedThroughExecution(t *testing.T) {
+	e := newRerunEnv(t)
+	e.ledger.RegisterLocal(ActionIssueCreate, e.insertEffect("issue"))
+	run := Run{WorkspaceID: e.ws, RepoOwner: "o", RepoName: e.repo, RunID: 2021, RunAttempt: 2}
+	r, err := ScheduleP1(context.Background(), e.ledger, run, ClassTransient, "sig-2021", time.Time{}, e.clock.Now())
+	if err != nil || r.Protocol != "P2" {
+		t.Fatalf("route=%+v err=%v", r, err)
+	}
+	e.runOne(t)
+	if got := e.count(t, "issue"); got != 1 {
+		t.Fatalf("issues created = %d, want 1", got)
+	}
+}
+
+func TestRerunFollowupP2WithHeldOwnerAddsNoActionAndStillMarksTheRow(t *testing.T) {
+	e := newRerunEnv(t)
+	e.ledger.RegisterLocal(ActionIssueCreate, e.insertEffect("issue"))
+	if _, err := e.pool.Exec(context.Background(), `INSERT INTO ci_signature_owner (workspace_id, repo_owner, repo_name, signature_hash, state, created_at)
+		VALUES ($1::uuid,'o',$2,'sig-2022','open',$3)`, e.ws, e.repo, e.clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	e.gh.post = func() (RerunResponse, error) { return RerunResponse{Status: 502}, nil }
+	a := e.scheduleSigned(t, 2022, "sig-2022")
+	e.runOne(t)
+	e.settleAll(t)
+	e.followup(t)
+	if n := e.escalations(t, 2022, ActionIssueCreate); n != 0 {
+		t.Fatalf("issue_create rows = %d with the signature already owned", n)
+	}
+	var marked bool
+	_ = e.pool.QueryRow(context.Background(), `SELECT followup_at IS NOT NULL FROM ci_watch_action WHERE id=$1::uuid`, a.ID).Scan(&marked)
+	if !marked {
+		t.Fatal("row not marked: followup would retry forever")
+	}
+}
+
+func TestRerunUnknownOutcomeReconciledToDoneStillSwitchesShadowAndNotifies(t *testing.T) {
+	e := newRerunEnv(t)
+	e.enableP1(t)
+	e.gh.post = accepted
+	a := e.schedule(t, 2023)
+	// the worker died after a permission 403 and before storing it; an operator reran the run
+	if _, err := e.pool.Exec(context.Background(), `UPDATE ci_watch_action SET state='executing', lease_epoch=1,
+		expected_attempt=2, post_started_at=$2, lease_until=$2 WHERE id=$1`, a.ID, e.clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	e.gh.setAttempt(2)
+	e.settleAll(t)
+	if got := e.get(t, a.ID); got.State != StateDone || got.Reason != ReasonReconciled || got.PostOutcome != "" {
+		t.Fatalf("row: %+v", got)
+	}
+	e.followup(t)
+	e.followup(t)
+	if mode, audits := e.p1Audits(t); mode != "shadow" || audits != 1 || e.escalations(t, 2023, ActionInboxNotify) != 1 {
+		t.Fatalf("p1_mode=%s audits=%d", mode, audits)
+	}
+	e.wantPosts(t, 0)
+}
+
+func TestRerunAcceptedPostDoneRowIsNeverFollowedUp(t *testing.T) {
+	e := newRerunEnv(t)
+	e.enableP1(t)
+	e.gh.post = accepted
+	e.schedule(t, 2024)
+	e.runOne(t)
+	e.followup(t)
+	if mode, audits := e.p1Audits(t); mode != "act" || audits != 0 || e.escalations(t, 2024, ActionInboxNotify) != 0 {
+		t.Fatalf("a successful rerun was escalated: p1_mode=%s audits=%d", mode, audits)
+	}
+}

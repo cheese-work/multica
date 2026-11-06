@@ -4,9 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
+
+// EscalationReopenAfter: a signature closed inside this window is attached to,
+// not reopened, by an escalation.
+const EscalationReopenAfter = 24 * time.Hour
 
 func escalationKind(protocol string) string {
 	if protocol == "P4" {
@@ -17,7 +22,8 @@ func escalationKind(protocol string) string {
 
 // escalate schedules the one P2/P4 action of an original run, in tx when given.
 // P2 and P4 share the run, so any existing escalation (either kind, from any
-// source) means there is nothing to add: inserted=false.
+// source) means there is nothing to add: inserted=false. A P2 claims the
+// signature owner in the same tx; an owner already held also means inserted=false.
 func (l *Ledger) escalate(ctx context.Context, tx pgx.Tx, n NewAction) (Action, bool, error) {
 	own := tx == nil
 	if own {
@@ -32,19 +38,28 @@ func (l *Ledger) escalate(ctx context.Context, tx pgx.Tx, n NewAction) (Action, 
 		fmt.Sprintf("ci-escalate/%s/%s/%s/%d", n.WorkspaceID, n.RepoOwner+"/"+n.RepoName, "run", n.OriginalRunID)); err != nil {
 		return Action{}, false, err
 	}
+	var found bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM ci_watch_action WHERE workspace_id=$1::uuid AND repo_owner=$2
+			AND repo_name=$3 AND original_run_id=$4 AND action_kind IN ('inbox_notify','issue_create'))`,
+		n.WorkspaceID, n.RepoOwner, n.RepoName, n.OriginalRunID).Scan(&found); err != nil || found {
+		return Action{}, false, err
+	}
+	// RunOne cancels an issue_create that does not hold the signature owner, so
+	// claim it here, in the same tx as the insert. An owner already held means
+	// an issue exists to attach to.
+	if n.Kind == ActionIssueCreate && n.SignatureHash != "" {
+		owned, err := l.claimOwner(ctx, tx, n.WorkspaceID, n.RepoOwner, n.RepoName, n.SignatureHash, EscalationReopenAfter)
+		if err != nil || !owned {
+			return Action{}, false, err
+		}
+	}
 	var id string
 	err := tx.QueryRow(ctx, `INSERT INTO ci_watch_action (workspace_id, repo_owner, repo_name, original_run_id,
 			action_kind, protocol, signature_hash, due_at, run_completed_at, created_at, updated_at)
-		SELECT $1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10
-		WHERE NOT EXISTS (SELECT 1 FROM ci_watch_action WHERE workspace_id=$1::uuid AND repo_owner=$2
-			AND repo_name=$3 AND original_run_id=$4 AND action_kind IN ('inbox_notify','issue_create'))
-		ON CONFLICT (workspace_id, repo_owner, repo_name, original_run_id, action_kind) DO NOTHING
+		VALUES ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)
 		RETURNING id::text`,
 		n.WorkspaceID, n.RepoOwner, n.RepoName, n.OriginalRunID, n.Kind, n.Protocol, n.SignatureHash,
 		n.DueAt, n.RunCompletedAt, l.now()).Scan(&id)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Action{}, false, nil
-	}
 	if err != nil {
 		return Action{}, false, err
 	}
@@ -67,8 +82,10 @@ func (l *Ledger) escalate(ctx context.Context, tx pgx.Tx, n NewAction) (Action, 
 //   - server, rejected, no_answer: wait until read-only reconcile has finished
 //     and found no rerun (failed/reconcile_not_found). A rerun that landed is
 //     done and escalates nothing.
-//   - "" (answer never stored): once reconcile found no rerun it is treated as
-//     a possible permission denial: Shadow switch and P4.
+//   - "" (answer never stored): once reconcile ended the row (no rerun found,
+//     or done by reconcile because the attempt advanced) it is treated as a
+//     possible permission denial: Shadow switch and P4. A 2xx done row is
+//     never reconciled, so it is never routed.
 //
 // Returns true when it handled a row.
 func (l *Ledger) RerunFollowup(ctx context.Context) (bool, error) {
@@ -81,8 +98,9 @@ func (l *Ledger) RerunFollowup(ctx context.Context) (bool, error) {
 		WHERE action_kind='rerun' AND post_started_at IS NOT NULL AND followup_at IS NULL AND (
 			(post_outcome='permission' AND state IN ('ambiguous','failed','done'))
 			OR (post_outcome='rate_limit' AND state IN ('ambiguous','failed'))
-			OR (state='failed' AND reason=$1 AND post_outcome IN ('','server','rejected','no_answer')))
-		ORDER BY updated_at LIMIT 1 FOR UPDATE OF a SKIP LOCKED`, ReasonReconcileNotFound))
+			OR (state='failed' AND reason=$1 AND post_outcome IN ('','server','rejected','no_answer'))
+			OR (state='done' AND reason=$2 AND post_outcome=''))
+		ORDER BY updated_at LIMIT 1 FOR UPDATE OF a SKIP LOCKED`, ReasonReconcileNotFound, ReasonReconciled))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
