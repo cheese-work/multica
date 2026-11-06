@@ -15,7 +15,7 @@ import (
 
 // Needs a migrated database: DATABASE_URL=... go test ./internal/ciwatch -run Storm
 
-// fakeDest writes its rows into ci_test_effect inside the ledger's
+// fakeDest writes its rows into ciwatch_test.effect inside the ledger's
 // transaction, so a rollback removes them exactly as the real destinations do.
 type fakeDest struct {
 	e          *ledgerEnv
@@ -31,7 +31,7 @@ type fakeDest struct {
 
 func (d *fakeDest) put(ctx context.Context, tx pgx.Tx, kind string) (string, error) {
 	id := uuid.NewString()
-	_, err := tx.Exec(ctx, `INSERT INTO ci_test_effect (kind, ref) VALUES ($1, $2)`, kind, d.e.ws+"/"+id)
+	_, err := tx.Exec(ctx, `INSERT INTO ciwatch_test.effect (kind, ref) VALUES ($1, $2)`, kind, d.e.ws+"/"+id)
 	return id, err
 }
 

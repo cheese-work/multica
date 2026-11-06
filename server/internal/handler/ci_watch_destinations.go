@@ -67,7 +67,7 @@ func (d ciWatchDest) CreateIssue(ctx context.Context, tx pgx.Tx, s ciwatch.Issue
 	}
 	var task *db.AgentTaskQueue
 	if s.Wake {
-		if task, err = d.enqueueOwnerRun(ctx, qtx, issue); err != nil {
+		if task, err = d.enqueueOwnerRun(ctx, qtx, issue, s.CreatorID); err != nil {
 			return "", fmt.Errorf("enqueue owner run: %w", err)
 		}
 	}
@@ -82,17 +82,26 @@ func (d ciWatchDest) CreateIssue(ctx context.Context, tx pgx.Tx, s ciwatch.Issue
 }
 
 // enqueueOwnerRun enqueues the run of the issue's owner in the caller's tx: the agent
-// itself, or a squad's leader. It returns nil for an unassigned or member-owned issue.
-func (d ciWatchDest) enqueueOwnerRun(ctx context.Context, qtx *db.Queries, issue db.Issue) (*db.AgentTaskQueue, error) {
+// itself, or a squad's leader. It returns nil for an unassigned or member-owned issue,
+// and when the principal may not invoke the agent: the issue stays, no run starts.
+// The principal is the repo's configured notify member; permissions are read now,
+// not when the repo was configured, so a revoked grant or archived agent stops the wake.
+func (d ciWatchDest) enqueueOwnerRun(ctx context.Context, qtx *db.Queries, issue db.Issue, principal string) (*db.AgentTaskQueue, error) {
 	var task db.AgentTaskQueue
 	var err error
 	switch issue.AssigneeType.String {
 	case "agent":
+		if !d.mayInvoke(ctx, qtx, issue.AssigneeID, issue.WorkspaceID, principal) {
+			return nil, nil
+		}
 		task, err = d.h.TaskService.EnqueueIssueTaskInTx(ctx, qtx, issue)
 	case "squad":
 		var squad db.Squad
 		if squad, err = qtx.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: issue.AssigneeID, WorkspaceID: issue.WorkspaceID}); err != nil {
 			return nil, fmt.Errorf("load squad: %w", err)
+		}
+		if !d.mayInvoke(ctx, qtx, squad.LeaderID, issue.WorkspaceID, principal) {
+			return nil, nil
 		}
 		task, err = d.h.TaskService.EnqueueDecisionTaskInTx(ctx, qtx, issue, squad.LeaderID, squad.ID, pgtype.UUID{}, nil, "")
 	default:
@@ -102,6 +111,24 @@ func (d ciWatchDest) enqueueOwnerRun(ctx context.Context, qtx *db.Queries, issue
 		return nil, err
 	}
 	return &task, nil
+}
+
+// mayInvoke is true when the member principal is in the workspace and may invoke the
+// live, unarchived agent. Any lookup failure denies: an unknown answer is not a grant.
+func (d ciWatchDest) mayInvoke(ctx context.Context, qtx *db.Queries, agentID, workspaceID pgtype.UUID, principal string) bool {
+	if principal == "" {
+		return false
+	}
+	ws := util.UUIDToString(workspaceID)
+	agent, err := qtx.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: agentID, WorkspaceID: workspaceID})
+	if err != nil || agent.ArchivedAt.Valid {
+		return false
+	}
+	if _, err := workspaceMemberVia(ctx, qtx, principal, ws); err != nil {
+		return false
+	}
+	ok, err := d.h.invokeAgentDecisionVia(ctx, qtx, agent, "member", principal, "", ws)
+	return err == nil && ok
 }
 
 func writeIssueMetadata(ctx context.Context, tx pgx.Tx, id pgtype.UUID, m map[string]any) error {
@@ -139,7 +166,7 @@ func (d ciWatchDest) UpdateIssue(ctx context.Context, tx pgx.Tx, u ciwatch.Issue
 		return err
 	}
 	defer func() { _ = sp.Rollback(ctx) }()
-	task, err := d.enqueueOwnerRun(ctx, d.h.Queries.WithTx(sp), issue)
+	task, err := d.enqueueOwnerRun(ctx, d.h.Queries.WithTx(sp), issue, u.PrincipalID)
 	if errors.Is(err, service.ErrDuplicatePendingTask) || (err == nil && task == nil) {
 		return nil
 	}

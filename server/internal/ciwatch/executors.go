@@ -275,7 +275,7 @@ func (l *Ledger) issueComment(d Destinations) LocalEffect {
 		// An escalation (to incident, or from the low-key P3 issue to P2) raises
 		// the priority and wakes the owner, under the same hourly cap as creation.
 		if classChange && d.Issue != nil && (o.Kind == KindIncident || o.DigestClass == KindP3) {
-			up := IssueUpdate{WorkspaceID: a.WorkspaceID, IssueID: o.IssueID, Priority: "urgent"}
+			up := IssueUpdate{WorkspaceID: a.WorkspaceID, IssueID: o.IssueID, Priority: "urgent", PrincipalID: author}
 			if o.Kind == KindIncident && o.CheckKey == "" {
 				up.TitlePrefix = "incident(ci): "
 			}

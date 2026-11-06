@@ -225,7 +225,7 @@ func TestCIWatchUpdateIssue_Wake(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := dest.UpdateIssue(ctx, tx, ciwatch.IssueUpdate{WorkspaceID: testWorkspaceID, IssueID: id, Priority: "urgent", Wake: wake}); err != nil {
+		if err := dest.UpdateIssue(ctx, tx, ciwatch.IssueUpdate{WorkspaceID: testWorkspaceID, IssueID: id, Priority: "urgent", PrincipalID: testUserID, Wake: wake}); err != nil {
 			_ = tx.Rollback(ctx)
 			t.Fatal(err)
 		}
@@ -298,10 +298,12 @@ func TestCIWatchP3EscalatesToP2ThroughTheTaskPath(t *testing.T) {
 		}
 	})
 	ledger := ciwatch.NewLedger(testPool, ciwatch.NewStormRecheck(time.Now))
-	ledger.RegisterStormExecutors(testHandler.CIWatchDestinations())
+	dests := testHandler.CIWatchDestinations()
+	dests.RedMain = sameHolderClaims{} // the production claimer is not wired yet: red-main stays Shadow-only
+	ledger.RegisterStormExecutors(dests)
 	admit := func(run int64, protocol string) {
 		if _, err := ledger.Admit(ctx, ciwatch.Failure{WorkspaceID: testWorkspaceID, RepoOwner: "o", RepoName: repo,
-			RunID: run, SignatureHash: "sigP3esc", Protocol: protocol}); err != nil {
+			RunID: run, SignatureHash: "sigP3esc", Protocol: protocol, CheckName: "p3esc"}); err != nil {
 			t.Fatal(err)
 		}
 		for i := 0; i < 20; i++ {
