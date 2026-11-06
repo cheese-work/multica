@@ -52,7 +52,7 @@ func (s *TaskService) RecordChatOutcome(ctx context.Context, taskID pgtype.UUID,
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	q := s.Queries.WithTx(tx)
 
-	task, err := q.GetAgentTask(ctx, taskID)
+	task, err := q.LockAgentTaskForOutcome(ctx, taskID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrChatOutcomeTaskUnknown
 	} else if err != nil {

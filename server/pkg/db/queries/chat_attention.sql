@@ -68,6 +68,11 @@ WHERE id = ANY(@ids::uuid[]) AND kind = 'ask' AND resolved_at IS NULL;
 
 -- Agent outcomes and task end (CHE-4149). All run in one transaction per call.
 
+-- name: LockAgentTaskForOutcome :one
+-- Reads the task under a row lock, so an outcome waits for a settling transaction on the same task
+-- and then sees its final status. Same order as settlement: task row first, dependent rows after.
+SELECT * FROM agent_task_queue WHERE id = $1 FOR UPDATE;
+
 -- name: LockChatSessionForOutcome :one
 -- Serializes the outcomes of one DM so a retried "--new" cannot open two asks.
 SELECT id FROM chat_session WHERE id = $1 FOR UPDATE;

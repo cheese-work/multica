@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -416,5 +417,40 @@ func TestOutcomeNeedsARunningChatTask(t *testing.T) {
 	}
 	if st := dm.state(t, ask); st.ResolvedBy != nil {
 		t.Fatalf("a refused outcome resolved the ask (%s)", *st.ResolvedBy)
+	}
+}
+
+// An outcome that arrives while the task is settling must not land after the settlement: the
+// status check waits for the settling transaction, then refuses the finished task.
+func TestOutcomeRacingTaskSettlementIsRefusedAndChangesNothing(t *testing.T) {
+	dm := newAttentionDM(t)
+	ask := dm.item(t, "ask")
+	task := dm.sendRunning(t, "go")
+
+	settling, err := testPool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = settling.Rollback(context.Background()) }()
+	if _, err := settling.Exec(t.Context(), `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, task); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- dm.outcome(t, task, map[string]any{"kind": "done", "ask_ids": []string{ask}}) }()
+
+	select {
+	case w := <-done:
+		t.Fatalf("outcome finished while the task was still settling: %d %s", w.Code, w.Body.String())
+	case <-time.After(500 * time.Millisecond):
+	}
+	if err := settling.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if w := <-done; w.Code != http.StatusConflict {
+		t.Fatalf("outcome after settlement: %d %s, want 409", w.Code, w.Body.String())
+	}
+	if st := dm.state(t, ask); st.ResolvedBy != nil {
+		t.Fatalf("a delayed outcome resolved the ask after settlement (%s)", *st.ResolvedBy)
 	}
 }
