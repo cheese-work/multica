@@ -483,3 +483,65 @@ func TestRunIssueTimelineEmptyResultPrintsEmptyJSONArray(t *testing.T) {
 		t.Fatalf("entries = %v, want empty", entries)
 	}
 }
+
+// CHE-1768: the CLI passes recovery receipt rows through --output json with
+// their details intact, and --action selects them.
+func TestRunIssueTimelineJSONReturnsRecoveryReceiptRows(t *testing.T) {
+	receipt := map[string]any{
+		"type": "activity", "id": "r1", "actor_type": "system", "actor_id": "",
+		"created_at": "2026-11-05T09:00:00Z", "action": "provider_recovery_reserved",
+		"details": map[string]any{
+			"failed_task_id": "f1", "effect_kind": "wakeup_rearm", "effect_ref": "w1",
+			"wakeup_revision": float64(2), "reservation": "f1",
+		},
+	}
+	generation := map[string]any{
+		"type": "activity", "id": "r2", "actor_type": "system", "actor_id": "",
+		"created_at": "2026-11-05T09:00:00Z", "action": "wakeup_rearmed",
+		"details": map[string]any{"failed_task_id": "f1", "wakeup_revision": float64(2)},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/issues/CHE-1768":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "issue-uuid", "identifier": "CHE-1768"})
+		case "/api/issues/issue-uuid/timeline":
+			_ = json.NewEncoder(w).Encode(append(timelineFixture(), receipt, generation))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	cmd := newIssueTimelineTestCmd()
+	_ = cmd.Flags().Set("output", "json")
+	_ = cmd.Flags().Set("action", "provider_recovery_reserved,wakeup_rearmed")
+	_ = cmd.Flags().Set("activity-only", "true")
+
+	outR, outW, _ := os.Pipe()
+	oldOut := os.Stdout
+	os.Stdout = outW
+	outCh := make(chan []byte, 1)
+	go func() { b, _ := io.ReadAll(outR); outCh <- b }()
+	err := runIssueTimeline(cmd, []string{"CHE-1768"})
+	_ = outW.Close()
+	os.Stdout = oldOut
+	stdout := <-outCh
+	if err != nil {
+		t.Fatalf("runIssueTimeline: %v", err)
+	}
+	var entries []map[string]any
+	if err := json.Unmarshal(stdout, &entries); err != nil {
+		t.Fatalf("stdout is not clean JSON: %v\n%s", err, stdout)
+	}
+	if len(entries) != 2 || entries[0]["action"] != "provider_recovery_reserved" || entries[1]["action"] != "wakeup_rearmed" {
+		t.Fatalf("entries = %v, want the receipt then the generation event", entries)
+	}
+	d, _ := entries[0]["details"].(map[string]any)
+	if d["failed_task_id"] != "f1" || d["effect_kind"] != "wakeup_rearm" || d["effect_ref"] != "w1" || d["wakeup_revision"] != float64(2) || d["reservation"] != "f1" {
+		t.Fatalf("receipt details = %v", d)
+	}
+}
