@@ -6507,14 +6507,23 @@ func retryEligible(failureReason string, t db.AgentTaskQueue) bool {
 // created because the workspace's compact agent chain changed after the task
 // was created (SEC-1 rule 4). The change cancels live tasks only, so a task
 // that had already failed would otherwise retry as an active child, even after
-// A -> B -> A. Taking the chat_session lock first orders the check after a
-// change in flight. It fails closed: an error means no retry.
+// A -> B -> A. Taking the chat_session lock orders the check after a change in
+// flight. The workspace lock comes first, the order the settings write uses
+// (workspace, then sessions); the other order deadlocks with CreateRetryTask,
+// which also locks the workspace. It fails closed: an error means no retry.
 func compactionRetryRevoked(ctx context.Context, q *db.Queries, parent db.AgentTaskQueue) (bool, error) {
 	if !parent.ChatSessionID.Valid || !parent.Purpose.Valid || parent.Purpose.String != "compaction" {
 		return false, nil
 	}
-	workspaceID, err := q.LockChatSessionShared(ctx, parent.ChatSessionID)
+	session, err := q.GetChatSession(ctx, parent.ChatSessionID)
 	if err != nil {
+		return true, err
+	}
+	workspaceID := session.WorkspaceID
+	if _, err := q.LockWorkspaceForChatSessionCreate(ctx, workspaceID); err != nil {
+		return true, err
+	}
+	if _, err := q.LockChatSessionShared(ctx, parent.ChatSessionID); err != nil {
 		return true, err
 	}
 	return q.CompactChainChangedSince(ctx, db.CompactChainChangedSinceParams{WorkspaceID: workspaceID, CreatedAt: parent.CreatedAt})

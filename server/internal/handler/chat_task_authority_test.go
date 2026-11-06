@@ -576,6 +576,65 @@ func TestChatTaskAuthorityRetryAfterSlowSettingsTransactionIsRefused(t *testing.
 	}
 }
 
+// A retry admission and a settings write must take the workspace lock before
+// the chat_session lock. The retry holding the session lock while it waits for
+// the workspace (CreateRetryTask) against a settings write holding the workspace
+// and waiting for the session is a deadlock. Here the settings write holds the
+// workspace first, a retry starts, then the write asks for the session locks:
+// both must finish, and the retry must see the committed change.
+func TestChatTaskAuthorityRetryAndSettingsWriteTakeLocksInOneOrder(t *testing.T) {
+	a := newAuthorityFixture(t)
+	ctx := context.Background()
+	id := dbfx.Task(t, a.compactAgent, testutil.Cols{
+		"runtime_id": handlerTestRuntimeID(t), "status": "failed", "chat_session_id": a.session,
+		"purpose": taskPurposeCompaction, "task_kind": "compact",
+		"failure_reason": "timeout", "attempt": 1, "max_attempts": 2,
+		"completed_at": testutil.Raw("now()"),
+	})
+	parent, err := testHandler.Queries.GetAgentTask(ctx, parseUUID(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	q := testHandler.Queries.WithTx(tx)
+	if _, err := q.LockWorkspaceSettings(ctx, parseUUID(testWorkspaceID)); err != nil {
+		t.Fatal(err)
+	}
+
+	type result struct {
+		child *db.AgentTaskQueue
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		child, err := testHandler.TaskService.MaybeRetryFailedTask(ctx, parent)
+		done <- result{child, err}
+	}()
+	time.Sleep(300 * time.Millisecond) // let the retry reach its first lock
+
+	lockCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if _, err := q.LockChatSessionsByWorkspace(lockCtx, parseUUID(testWorkspaceID)); err != nil {
+		t.Fatalf("settings write could not lock the sessions behind a retry: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("retry error: %v", r.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("retry did not finish after the settings write committed")
+	}
+}
+
 // The history and thread routes take the same authority check as the messages
 // route: a compaction task whose agent is no longer the current compact agent
 // reads nothing, even though its token still binds it to the DM session.
