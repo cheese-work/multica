@@ -10,15 +10,18 @@
 # trust itself unless its bytes equal the base revision's copy, so a PR that edits the classifier or registry is
 # Tier 2 and cannot classify itself. Do not add a head checkout or a secret to this workflow.
 #
-# Refresh (CHE-3339): a receipt records required-check state at classification time, so one taken while CI is pending
-# stops verifying once CI finishes. `workflow_run` re-classifies when CI or security-gate completes. (A `status` or
-# `issue_comment` trigger would not work: events made with GITHUB_TOKEN start no workflow run, but `workflow_run` fires.)
-# security-gate also runs on issue_comment and merge_group, where `workflow_run.head_sha` is the default-branch SHA.
-# For those runs the `find` job reads the pull request number from the run title (security-gate.yml `run-name`;
-# `queue` or anything else names nothing). The pull request, base SHA and head SHA come from the API (the title is
-# only matched against a digits-only pattern), `find` checks nothing out, and each `mechanical-tier` job still checks out only its base. The run records the
-# fresh receipt in its step summary; it attaches no check to the pull request. Merge decisions use the latest receipt
-# for the exact head, re-verified with `verify`.
+# Refresh (CHE-3339, CHE-4250): a receipt records required-check state at classification time, so one taken while CI is
+# pending stops verifying once CI finishes. Only a receipt taken after CI finishes is useful, so `pull_request_target`
+# runs on reopen and ready only, and `workflow_run` re-classifies when CI completes. (A `status` or `issue_comment`
+# trigger would not work: events made with GITHUB_TOKEN start no workflow run, but `workflow_run` fires.)
+# A security verdict that lands after CI asks for a refresh through `workflow_dispatch` (security-gate.yml, job
+# `refresh-mechanical-tier`); it names one pull request. Runs for `main` and merge-queue branches are skipped at the
+# trigger: they have no open pull request for their head SHA.
+# `find` names every open pull request whose head is the run's head SHA (or the dispatched pull request's head SHA, so a
+# sibling PR on the same head is refreshed too). The pull request, base SHA and head SHA come from the API, `find` checks
+# nothing out, and each `mechanical-tier` job still checks out only its base. The dispatch input is matched against a
+# digits-only pattern before use. The run records the fresh receipt in its step summary; it attaches no check to the
+# pull request. Merge decisions use the latest receipt for the exact head, re-verified with `verify`.
 #
 # Runner (CHE-3603): GitHub-hosted. The repo is public, so minutes are free, and 61 queued runs no longer block X99 runners.
 # The classifier excludes its own check name from the required-check set, so it is never its own evidence.
@@ -27,14 +30,17 @@ name: mechanical-tier
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
-  # CHE-4250: security-gate completions (one per PR comment, mostly skipped) were ~40% of runs and each scanned every
-  # open PR. They stay a trigger, because a verdict that lands after CI changes required-check evidence, but a skipped
-  # run makes no API call and a real one reads one pull request (named in the run title).
+    types: [reopened, ready_for_review]
   workflow_run:
-    workflows: [CI, security-gate]
+    workflows: [CI]
     types: [completed]
-    branches-ignore: ['gh-readonly-queue/**']
+    branches-ignore: [main, 'gh-readonly-queue/**']
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number to re-classify
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -57,7 +63,7 @@ jobs:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha }}
       RUN_NAME: ${{ github.event.workflow_run.name }}
-      RUN_TITLE: ${{ github.event.workflow_run.display_title }}
+      INPUT_PR: ${{ github.event.inputs.pr }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Name the open pull requests to classify
@@ -68,13 +74,12 @@ jobs:
           if [ "$EVENT_NAME" = pull_request_target ]; then
             targets="[{\"pr\":$PR_NUMBER,\"base\":\"$BASE_SHA\",\"head\":\"$HEAD_SHA\"}]"
           else
+            if [ "$EVENT_NAME" = workflow_dispatch ]; then
+              [[ "$INPUT_PR" =~ ^[0-9]+$ ]] || { echo "pr must be digits only" >&2; exit 1; }
+              HEAD_SHA="$(gh api "$repo/pulls/$INPUT_PR" --jq .head.sha)"
+            fi
             numbers="$(gh api "$repo/commits/$HEAD_SHA/pulls" \
               --jq '.[] | select(.state == "open" and .head.sha == env.HEAD_SHA) | .number')"
-            if [ -z "$numbers" ] && [ "$RUN_NAME" = security-gate ]; then
-              # Comment and merge-queue gate runs report the default-branch SHA. security-gate.yml names the PR in
-              # `run-name` ("security-gate #<n>"), so read it from the title: no open-PR scan, one pull read below.
-              if [[ "$RUN_TITLE" =~ ^security-gate\ \#([0-9]+)$ ]]; then numbers="${BASH_REMATCH[1]}"; fi
-            fi
             # A matrix holds 256 jobs. Fail loudly rather than drop pull requests. The excess is not retried by a
             # re-run of the same event: re-run after fewer PRs are stale, or classify the rest by hand.
             if [ "$(echo $numbers | wc -w)" -gt 256 ]; then

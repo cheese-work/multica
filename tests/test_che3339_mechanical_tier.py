@@ -157,9 +157,10 @@ class ReceiptRefreshAfterCi(unittest.TestCase):
     def setUp(self):
         self.text = WORKFLOW.read_text()
 
-    def test_a_finished_ci_or_security_gate_run_re_runs_the_classifier(self):
+    def test_a_finished_ci_run_re_runs_the_classifier(self):
         # `status` events posted with GITHUB_TOKEN start no workflow run; workflow_run does fire for them.
-        self.assertRegex(self.text, r"(?m)^  workflow_run:\n    workflows: \[CI, security-gate\]\n    types: \[completed\]")
+        # A security verdict that lands later refreshes the receipt through workflow_dispatch (security-gate.yml, CHE-4250).
+        self.assertRegex(self.text, r"(?m)^  workflow_run:\n    workflows: \[CI\]\n    types: \[completed\]")
         self.assertNotRegex(self.text, r"(?m)^  status:")
         self.assertNotRegex(self.text, r"(?m)^  issue_comment:")
 
@@ -192,7 +193,7 @@ class ReceiptRefreshAfterCi(unittest.TestCase):
             out = Path(d) / "out"
             full = {**os.environ, "PATH": d + ":" + os.environ["PATH"], "GITHUB_REPOSITORY": "o/r",
                     "GITHUB_OUTPUT": str(out), "EVENT_NAME": event, "PR_NUMBER": "", "BASE_SHA": "", "HEAD_SHA": "",
-                    "RUN_NAME": "", "RUN_TITLE": "", "FIXTURE_FILE": str(Path(d) / "fixture.json"), **env}
+                    "RUN_NAME": "", "INPUT_PR": "", "FIXTURE_FILE": str(Path(d) / "fixture.json"), **env}
             done = subprocess.run(["bash", "-e", "-c", script], env=full, capture_output=True, text=True, timeout=120)
             targets = None
             if out.exists():
@@ -214,30 +215,95 @@ class ReceiptRefreshAfterCi(unittest.TestCase):
     def test_a_finished_run_for_a_pull_request_head_names_that_pull_request_from_the_api(self):
         self.assertEqual(self.find("workflow_run", HEAD_SHA=A, RUN_NAME="CI"), [{"pr": 7, "base": B, "head": A}])
 
-    def gate_find(self, title, fail=(), **kw):
-        fx = find_fixture(open_prs=range(100, 220), fresh=set(range(100, 220)))
-        fx["fail"] = list(fail)
-        return self.run_find("workflow_run", fx, HEAD_SHA="d" * 40, RUN_NAME="security-gate", RUN_TITLE=title, **kw)
-
-    def test_a_security_gate_run_names_the_one_pull_request_in_its_run_name_and_scans_nothing(self):
-        # CHE-4250: the scan listed every open PR and read each one's statuses on every comment-driven gate run.
-        scan = ["repos/o/r/pulls?state=open&per_page=100", f"repos/o/r/commits/{sha(100)}/statuses?per_page=100"]
-        done, targets = self.gate_find("security-gate #8", fail=scan)
-        self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(targets, [{"pr": 8, "base": B, "head": C}])
-
-    def test_a_security_gate_run_without_a_pull_request_number_names_nothing(self):
-        for title in ("security-gate #queue", "security-gate #8; id", "x security-gate #8", ""):
-            done, targets = self.gate_find(title)
-            self.assertEqual((done.returncode, targets), (0, []), title)
-
-    def test_a_failed_pull_request_read_fails_the_job_instead_of_dropping_it(self):
-        done, targets = self.gate_find("security-gate #8", fail=["repos/o/r/pulls/8"])
-        self.assertNotEqual(done.returncode, 0)
-        self.assertIsNone(targets)
-
-    def test_a_ci_run_with_no_open_pull_request_for_its_head_names_nothing_and_does_not_scan(self):
+    def test_a_ci_run_with_no_open_pull_request_for_its_head_names_nothing(self):
         self.assertEqual(self.find("workflow_run", HEAD_SHA="d" * 40, RUN_NAME="CI"), [])
 
     def test_a_pull_request_whose_head_moved_since_the_run_is_not_named(self):
         self.assertEqual(self.find("workflow_run", HEAD_SHA="e" * 40, RUN_NAME="CI"), [])
+
+    def shared_head_fixture(self):
+        fx = find_fixture()
+        sibling = {"number": 9, "state": "open", "head": {"sha": C}}
+        fx["pulls_for"][C] = [{"number": 8, "state": "open", "head": {"sha": C}}, sibling,
+                              {"number": 10, "state": "closed", "head": {"sha": C}}]
+        fx["pr"]["9"] = {"number": 9, "base": {"sha": B}, "head": {"sha": C}}
+        return fx
+
+    def test_a_dispatch_for_a_pull_request_names_it_and_every_open_pull_request_sharing_its_head(self):
+        # CHE-4250: a verdict changes the shared head's status, so a sibling's receipt goes stale with it.
+        got = self.find("workflow_dispatch", self.shared_head_fixture(), INPUT_PR="8")
+        self.assertEqual(sorted(t["pr"] for t in got), [8, 9])
+
+    def test_a_dispatch_reads_one_pull_request_and_scans_no_list(self):
+        fx = self.shared_head_fixture()
+        fx["fail"] = ["repos/o/r/pulls?state=open&per_page=100", f"repos/o/r/commits/{C}/statuses?per_page=100"]
+        done, targets = self.run_find("workflow_dispatch", fx, INPUT_PR="8")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(sorted(t["pr"] for t in targets), [8, 9])
+
+    def test_a_dispatch_input_that_is_not_a_number_is_refused(self):
+        for bad in ("", "8; id", "8 9", "$(id)", "x8"):
+            done, targets = self.run_find("workflow_dispatch", self.shared_head_fixture(), INPUT_PR=bad)
+            self.assertNotEqual(done.returncode, 0, bad)
+            self.assertIsNone(targets, bad)
+
+    def test_a_failed_pull_request_read_fails_the_job_instead_of_dropping_it(self):
+        fx = find_fixture()
+        fx["fail"] = ["repos/o/r/pulls/7"]
+        done, targets = self.run_find("workflow_run", fx, HEAD_SHA=A, RUN_NAME="CI")
+        self.assertNotEqual(done.returncode, 0, done.stdout)
+        self.assertIsNone(targets)
+
+    def test_more_pull_requests_than_a_matrix_can_hold_fails_the_job_instead_of_dropping_some(self):
+        fx = find_fixture()
+        fx["pulls_for"][A] = [{"number": n, "state": "open", "head": {"sha": A}} for n in range(100, 400)]
+        done, _ = self.run_find("workflow_run", fx, HEAD_SHA=A, RUN_NAME="CI")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("256", done.stdout + done.stderr)
+
+    def test_a_receipt_taken_while_ci_is_pending_fails_verify_once_ci_succeeds_and_a_fresh_one_passes(self):
+        mt, d, base, head = head_commit({"docs/note.md": "x\n"})
+        try:
+            pending = fake_gh(base, head, "in_progress", None)
+            done = fake_gh(base, head, "completed", "success")
+            early = mt.classify(d, base, head, ci=mt.fetch_ci(pending, "o/r", head, None, pr=7))
+            self.assertEqual(early["tier"], 1)
+            ok, why = mt.verify(early, d, ci=mt.fetch_ci(done, "o/r", head, None, pr=7))
+            self.assertFalse(ok, "a pending-CI receipt must not verify against finished CI")
+            self.assertIn("recomputed ci differs from the receipt", why)
+            fresh = mt.classify(d, base, head, ci=mt.fetch_ci(done, "o/r", head, None, pr=7))
+            self.assertEqual(fresh["tier"], 0, fresh["tier_reasons"])
+            self.assertEqual(mt.verify(fresh, d, ci=mt.fetch_ci(done, "o/r", head, None, pr=7)), (True, []))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+class MulticaPathsMapToTiers(unittest.TestCase):
+    def test_privileged_multica_paths_are_tier_2(self):
+        paths = ("server/migrations/999_x.up.sql", ".github/CODEOWNERS", ".github/workflows/ci.yml",
+                 "server/internal/auth/jwt.go", "server/internal/middleware/client.go",
+                 "server/internal/passkey/passkey.go", "scripts/security-gate/security_gate.py",
+                 "tests/test_che2671_security_gate.py", "scripts/mechanical-tier/mechanical_tier.py",
+                 "deploy/cd/run.sh", "Dockerfile", "server/internal/handler/issue.go",
+                 "packages/core/api/schema.ts", "AGENTS.md", "skills/x/SKILL.md")
+        self.assertEqual(protected({p: "x\n" for p in paths}), set(paths))
+
+    def test_build_install_release_and_daemon_execution_paths_are_tier_2(self):
+        paths = ("Makefile", "scripts/install.sh", "scripts/install.ps1", "scripts/install-cli-from-ref.sh",
+                 "scripts/build-daemon-binaries.sh", "scripts/daemon-artifact-version.sh",
+                 "apps/desktop/electron-builder.yml", "server/internal/daemon/daemon.go")
+        self.assertEqual(protected({p: "x\n" for p in paths}), set(paths))
+
+    def test_a_change_of_only_handler_tests_and_docs_is_not_flagged(self):
+        paths = ("server/internal/handler/issue_test.go", "docs/note.md", "tests/test_other.py",
+                 "scripts/install.test.sh", "scripts/daemon-artifact-version.test.mjs", "server/internal/daemon/daemon_test.go")
+        self.assertEqual(protected({p: "x\n" for p in paths}), set())
+
+    def test_registry_is_valid_and_has_no_active_waiver_claim(self):
+        reg = json.loads((TIER_DIR / "registry.json").read_text())
+        self.assertEqual(reg["schema"], 1)
+        self.assertEqual(reg["covered_scopes"], [])
+
+
+if __name__ == "__main__":
+    unittest.main()

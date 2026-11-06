@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -20,13 +23,20 @@ class MechanicalTierTriggers(unittest.TestCase):
     def setUp(self):
         self.doc = load("mechanical-tier.yml")
 
-    def test_a_finished_ci_or_security_gate_run_refreshes_a_receipt(self):
-        # A verdict that lands after CI changes required-check evidence; only this trigger refreshes the receipt.
-        self.assertEqual(self.doc["on"]["workflow_run"]["workflows"], ["CI", "security-gate"])
+    def test_a_finished_ci_run_refreshes_a_receipt(self):
+        self.assertEqual(self.doc["on"]["workflow_run"]["workflows"], ["CI"])
 
-    def test_merge_queue_ci_runs_do_not_refresh_a_receipt(self):
-        # A merge_group CI run has no open pull request for its head SHA; every one was an empty run.
-        self.assertEqual(self.doc["on"]["workflow_run"]["branches-ignore"], ["gh-readonly-queue/**"])
+    def test_merge_queue_and_default_branch_ci_runs_do_not_refresh_a_receipt(self):
+        # Neither has an open pull request for its head SHA; every one was an empty run.
+        self.assertEqual(self.doc["on"]["workflow_run"]["branches-ignore"], ["main", "gh-readonly-queue/**"])
+
+    def test_a_push_does_not_classify_while_ci_is_still_pending(self):
+        # A receipt taken before CI finishes cannot verify afterwards; the CI completion takes the useful one.
+        self.assertEqual(self.doc["on"]["pull_request_target"]["types"], ["reopened", "ready_for_review"])
+
+    def test_a_verdict_refresh_arrives_as_a_dispatch_naming_one_pull_request(self):
+        self.assertEqual(list(self.doc["on"]["workflow_dispatch"]["inputs"]), ["pr"])
+        self.assertTrue(self.doc["on"]["workflow_dispatch"]["inputs"]["pr"]["required"])
 
     def test_an_upstream_run_that_produced_no_result_makes_no_api_call(self):
         cond = self.doc["jobs"]["find"]["if"]
@@ -49,10 +59,64 @@ class CacheMaintenanceTriggers(unittest.TestCase):
         self.assertEqual(on["workflow_run"]["workflows"], ["Main Build"])
 
 
-class SecurityGateRunName(unittest.TestCase):
-    def test_run_name_carries_only_the_pull_request_number_for_mechanical_tier(self):
-        self.assertEqual(load("security-gate.yml")["run-name"],
-                         "security-gate #${{ github.event.pull_request.number || github.event.issue.number || 'queue' }}")
+FAKE_GH = r"""#!/bin/bash
+echo "$*" >> "$GH_LOG"
+case "$*" in
+  "api repos/o/r/pulls/"*) echo "$HEAD" ;;
+  "api repos/o/r/actions/workflows/ci.yml/runs?head_sha="*) echo "$PENDING" ;;
+  "workflow run "*) ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+"""
+
+
+class SecurityGateRefresh(unittest.TestCase):
+    def setUp(self):
+        self.doc = load("security-gate.yml")
+        self.job = self.doc["jobs"]["refresh-mechanical-tier"]
+
+    def refresh(self, pr="8", pending="0", event="issue_comment"):
+        script = self.job["steps"][0]["run"]
+        with tempfile.TemporaryDirectory() as d:
+            fake = Path(d) / "gh"
+            fake.write_text(FAKE_GH)
+            fake.chmod(0o755)
+            log = Path(d) / "log"
+            env = {**os.environ, "PATH": d + ":" + os.environ["PATH"], "GH_LOG": str(log), "HEAD": "c" * 40,
+                   "PENDING": pending, "PR_NUMBER": pr, "GITHUB_REPOSITORY": "o/r", "DEFAULT_BRANCH": "main"}
+            done = subprocess.run(["bash", "-e", "-c", script], env=env, capture_output=True, text=True, timeout=60)
+            return done, (log.read_text().splitlines() if log.exists() else [])
+
+    def test_a_finished_ci_run_gets_a_dispatch_for_the_pull_request(self):
+        done, calls = self.refresh()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(calls[-1], "workflow run mechanical-tier.yml -R o/r --ref main -f pr=8")
+
+    def test_a_running_ci_run_gets_no_dispatch_because_its_completion_refreshes_the_receipt(self):
+        done, calls = self.refresh(pending="1")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertFalse([c for c in calls if c.startswith("workflow run")])
+
+    def test_a_pull_request_number_that_is_not_digits_dispatches_nothing(self):
+        for bad in ("", "8; id", "$(id)"):
+            done, calls = self.refresh(pr=bad)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(calls, [], bad)
+
+    def test_only_a_verdict_comment_run_dispatches(self):
+        cond = self.job["if"]
+        self.assertIn("github.event_name == 'issue_comment'", cond)
+        self.assertIn("needs.security-gate.result", cond)
+
+    def test_the_job_holds_the_dispatch_permission_and_touches_no_pull_request_content(self):
+        self.assertEqual(self.job["needs"], "security-gate")
+        self.assertEqual(self.job["permissions"], {"actions": "write", "contents": "read", "pull-requests": "read"})
+        self.assertFalse(any("uses" in step for step in self.job["steps"]))
+
+    def test_the_evaluation_job_gains_no_permission(self):
+        self.assertEqual(self.doc["permissions"], {"contents": "read", "pull-requests": "read", "statuses": "write"})
+        self.assertNotIn("permissions", self.doc["jobs"]["security-gate"])
+        self.assertNotIn("run-name", self.doc)
 
 
 class SecurityGateComments(unittest.TestCase):
