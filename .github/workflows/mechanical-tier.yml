@@ -11,7 +11,7 @@
 # Tier 2 and cannot classify itself. Do not add a head checkout or a secret to this workflow.
 #
 # Refresh (CHE-3339): a receipt records required-check state at classification time, so one taken while CI is pending
-# stops verifying once CI finishes. `workflow_run` re-classifies when CI or security-gate completes. (A `status` or
+# stops verifying once CI finishes. `workflow_run` re-classifies when CI completes (CHE-4250: not security-gate). (A `status` or
 # `issue_comment` trigger would not work: events made with GITHUB_TOKEN start no workflow run, but `workflow_run` fires.)
 # security-gate also runs on issue_comment and merge_group, where `workflow_run.head_sha` is the default-branch SHA.
 # For those runs the `find` job checks every open pull request (paginated) and names those whose `security-gate`
@@ -28,9 +28,12 @@ name: mechanical-tier
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
+  # CHE-4250: CI only. security-gate completions (one per PR comment, mostly skipped) were ~40% of runs and each
+  # scanned every open PR. A gate verdict that lands after CI leaves the receipt stale until the next push or re-run.
   workflow_run:
-    workflows: [CI, security-gate]
+    workflows: [CI]
     types: [completed]
+    branches-ignore: ['gh-readonly-queue/**']
 
 permissions:
   contents: read
@@ -43,6 +46,8 @@ jobs:
     name: mechanical-tier-find
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # CHE-4250: a cancelled or skipped CI run has no result to refresh from; make no API call.
+    if: github.event_name != 'workflow_run' || !contains(fromJSON('["cancelled","skipped"]'), github.event.workflow_run.conclusion)
     outputs:
       targets: ${{ steps.find.outputs.targets }}
     env:

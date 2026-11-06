@@ -157,9 +157,9 @@ class ReceiptRefreshAfterCi(unittest.TestCase):
     def setUp(self):
         self.text = WORKFLOW.read_text()
 
-    def test_a_finished_ci_or_security_gate_run_re_runs_the_classifier(self):
+    def test_a_finished_ci_run_re_runs_the_classifier(self):
         # `status` events posted with GITHUB_TOKEN start no workflow run; workflow_run does fire for them.
-        self.assertRegex(self.text, r"(?m)^  workflow_run:\n    workflows: \[CI, security-gate\]\n    types: \[completed\]")
+        self.assertRegex(self.text, r"(?m)^  workflow_run:\n    workflows: \[CI\]\n    types: \[completed\]")
         self.assertNotRegex(self.text, r"(?m)^  status:")
         self.assertNotRegex(self.text, r"(?m)^  issue_comment:")
 
