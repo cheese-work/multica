@@ -115,9 +115,21 @@ jobs:
               sleep "$delay"; waited=$((waited + delay)); delay=$((delay * 2 > 60 ? 60 : delay * 2))
             done
           }
+          # A write that stays rate limited before any success is on the queue commit leaves no status: the entry stays
+          # pending and the job gets a warning, not a red mark. Once a success is published, a failed overwrite keeps the
+          # job red so a stale approval is never hidden.
+          published_success=0
           post() {
+            local rc=0
             gh_retry api "repos/$GITHUB_REPOSITORY/statuses/$MERGE_GROUP_SHA" -f "state=$1" -f context=security-gate \
-              -f "description=${2:0:140}" -f "target_url=$run_url" >/dev/null
+              -f "description=${2:0:140}" -f "target_url=$run_url" >/dev/null || rc=$?
+            if [ "$rc" = 0 ]; then
+              if [ "$1" = success ]; then published_success=1; else published_success=0; fi
+            elif [ "$rc" = 75 ] && [ "$published_success" = 0 ]; then
+              echo "::warning::security-gate: rate limited, status not written; re-run this check" >&2
+            else
+              return "$rc"
+            fi
           }
           re='^refs/heads/gh-readonly-queue/(.+)/pr-([0-9]+)-[0-9a-f]{40}$'
           if [[ ! $MERGE_GROUP_REF =~ $re ]] || [ "${BASH_REMATCH[1]}" != "$DEFAULT_BRANCH" ]; then

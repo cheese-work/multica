@@ -273,7 +273,14 @@ def _out(state: str, desc: str) -> tuple[str, str]:
 RATE_LIMIT_EXIT = 75  # EX_TEMPFAIL: the workflow maps it to a `pending` status, never `failure`
 RATE_LIMIT_MAX_WAIT = 480  # seconds of backoff for the whole run; the job timeout is 20 min
 RATE_LIMIT_RE = re.compile(r"rate limit|HTTP 429|too many requests", re.I)
+RATE_LIMIT_WRITE_RESERVE = 120  # seconds of the budget kept for the status write and the queue revocation
 _rate_limit_waited = 0
+
+
+def _reserve_write_budget() -> None:
+    """Reads may spend the budget, but a verdict that is already known must still get its writes attempted."""
+    global _rate_limit_waited
+    _rate_limit_waited = min(_rate_limit_waited, RATE_LIMIT_MAX_WAIT - RATE_LIMIT_WRITE_RESERVE)
 
 
 class RateLimited(subprocess.CalledProcessError):
@@ -440,7 +447,8 @@ def _main() -> int:
         try:
             h, st, d = gate_pr(a.repo, a.github, n, a.default_branch, trusted, humans, baseline)
         except RateLimited:
-            raise
+            # No verdict for the sibling: it holds the head at `pending`. A known failure still wins in combine().
+            h, st, d = head, "pending", "rate limited, retry"
         except Exception as e:  # an unreadable sibling must block, never skip the status write
             h, st, d = head, "failure", f"cannot evaluate: {type(e).__name__}"
         if h == head:
@@ -448,9 +456,16 @@ def _main() -> int:
     state, desc = _out(*combine(results))
     print(json.dumps({"context": CONTEXT, "sha": head, "state": state, "description": desc}))
     if a.post:
-        _post(a.github, head, state, desc, a.run_url)
-        if state != "success":
-            revoke_queue(a.github, a.pr, a.default_branch, a.run_url)
+        _reserve_write_budget()
+        limited = None
+        for write in (lambda: _post(a.github, head, state, desc, a.run_url),
+                      lambda: revoke_queue(a.github, a.pr, a.default_branch, a.run_url) if state != "success" else None):
+            try:
+                write()
+            except RateLimited as e:  # attempt the other write too, then report the rate limit
+                limited = e
+        if limited:
+            raise limited
     return 0
 
 

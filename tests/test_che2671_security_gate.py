@@ -303,17 +303,44 @@ class RateLimitTest(unittest.TestCase):
         self.assertEqual(sg.RATE_LIMIT_EXIT, 75)
         self.assertEqual(posted, [])
 
-    def test_a_rate_limited_sibling_pr_is_not_turned_into_a_failure(self):
+    def run_main_with_rate_limited_sibling(self, primary, post_error=None, revoke_error=None):
         def gate(repo, github, n, *rest):
             if n == 406:
                 raise sg.RateLimited(1, ["gh"])
-            return HEAD, "success", "PASS"
+            return HEAD, primary, "primary verdict"
         rows = json.dumps({"number": 406, "head": HEAD})
         argv = ["x", "--repo", str(ROOT), "--github", "o/r", "--pr", "405", "--default-branch", "main", "--post"]
         with mock.patch.object(sg, "gate_pr", side_effect=gate), mock.patch.object(sg, "_gh", return_value=rows), \
-                mock.patch.object(sg, "_post") as post, mock.patch("sys.argv", argv), mock.patch("builtins.print"):
-            self.assertEqual(sg.main(), sg.RATE_LIMIT_EXIT)
-        post.assert_not_called()
+                mock.patch.object(sg, "_post", side_effect=post_error) as post, \
+                mock.patch.object(sg, "revoke_queue", side_effect=revoke_error) as revoke, \
+                mock.patch("sys.argv", argv), mock.patch("builtins.print"):
+            return sg.main(), post, revoke
+
+    def test_a_rate_limited_sibling_does_not_hide_a_known_failure(self):
+        # CHE-4242 review P1: the primary FAIL must still be published and the queued successes revoked
+        rc, post, revoke = self.run_main_with_rate_limited_sibling("failure")
+        self.assertEqual(rc, 0)
+        self.assertEqual(post.call_args.args[2], "failure")
+        revoke.assert_called_once()
+
+    def test_a_rate_limited_sibling_of_a_pass_is_pending_never_success_or_failure(self):
+        rc, post, revoke = self.run_main_with_rate_limited_sibling("success")
+        self.assertEqual(rc, 0)
+        self.assertEqual(post.call_args.args[2], "pending")
+        self.assertIn("rate limited, retry", post.call_args.args[3])
+        revoke.assert_called_once()  # a status that is not success must not ride a carried success
+
+    def test_a_status_write_that_stays_rate_limited_still_attempts_the_revocation(self):
+        rc, post, revoke = self.run_main_with_rate_limited_sibling("failure", post_error=sg.RateLimited(1, ["gh"]))
+        self.assertEqual(rc, sg.RATE_LIMIT_EXIT)
+        revoke.assert_called_once()
+
+    def test_writes_keep_a_wait_reserve_after_the_reads_spent_the_budget(self):
+        sg._rate_limit_waited = sg.RATE_LIMIT_MAX_WAIT
+        run = self.fake_run([(1, "", self.LIMIT), (0, "ok", "")])
+        with mock.patch.object(sg.subprocess, "run", run), mock.patch.object(sg.time, "sleep"):
+            sg._reserve_write_budget()
+            self.assertEqual(sg._gh("x"), "ok")
 
 
 class MergeGroupStepTest(unittest.TestCase):
@@ -329,7 +356,8 @@ class MergeGroupStepTest(unittest.TestCase):
                'case "$*" in\n'
                '  *commits/*) [ "${RL_PARENTS:-0}" -gt "$(grep -c "^rl-parents" "$LOG" || true)" ] && { echo rl-parents >> "$LOG"; ' + RATE_LIMITED + '; }\n'
                '              printf "%s\\n" $PARENTS ;;\n'
-               '  *statuses/*) [ "${RL_POST:-0}" -gt "$(grep -c "^rl-post" "$LOG" || true)" ] && { echo rl-post >> "$LOG"; ' + RATE_LIMITED + '; }\n'
+               '  *statuses/*) [ -n "${RL_POST_AFTER:-}" ] && [ "$(grep -c "^gh .*statuses/" "$LOG" || true)" -ge "$RL_POST_AFTER" ] && { echo rl-post >> "$LOG"; ' + RATE_LIMITED + '; }\n'
+               '               [ "${RL_POST:-0}" -gt "$(grep -c "^rl-post" "$LOG" || true)" ] && { echo rl-post >> "$LOG"; ' + RATE_LIMITED + '; }\n'
                '               echo "gh $*" >> "$LOG" ;;\n'
                '  *) echo "gh $*" >> "$LOG" ;;\n'
                'esac\n')
@@ -348,7 +376,7 @@ class MergeGroupStepTest(unittest.TestCase):
         self.assertEqual(len(gate), 1)
         return gate[0]["run"]
 
-    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success", script="", states="", fail_at="", rl_at="", rl_parents=0, rl_post=0):
+    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success", script="", states="", fail_at="", rl_at="", rl_parents=0, rl_post=0, rl_post_after=""):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             (tmp / "bin").mkdir()
@@ -364,7 +392,7 @@ class MergeGroupStepTest(unittest.TestCase):
                 path.chmod(0o755)
             env = {**os.environ, "PATH": f"{tmp / 'bin'}:{os.environ['PATH']}", "LOG": str(tmp / "log"), "HEAD": HEAD,
                    "STATE": state, "STATES": states, "FAIL_AT": str(fail_at), "RL_AT": str(rl_at),
-                   "RL_PARENTS": str(rl_parents), "RL_POST": str(rl_post), "PARENTS": " ".join(parents), "MERGE_GROUP_REF": ref, "MERGE_GROUP_SHA": self.QUEUE,
+                   "RL_PARENTS": str(rl_parents), "RL_POST": str(rl_post), "RL_POST_AFTER": str(rl_post_after), "PARENTS": " ".join(parents), "MERGE_GROUP_REF": ref, "MERGE_GROUP_SHA": self.QUEUE,
                    "PR_NUMBER": "", "GH_TOKEN": "t", "DEFAULT_BRANCH": "main", "GITHUB_REPOSITORY": "o/r",
                    "GITHUB_SERVER_URL": "https://github.com", "GITHUB_RUN_ID": "7"}
             done = subprocess.run(["bash", "-c", self.step_run()], cwd=tmp, env=env, capture_output=True, text=True)
@@ -442,6 +470,19 @@ class MergeGroupStepTest(unittest.TestCase):
         done, log = self.run_step(rl_post=2)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn("state=success", self.posted(log)[0], log)
+
+    def test_a_status_write_that_stays_rate_limited_is_not_a_failed_job(self):
+        # CHE-4242 review P1: no status is written (the queue entry stays pending), the job is not red
+        done, log = self.run_step(rl_post=999, states="success success success")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.posted(log), [], log)
+        self.assertIn("::warning::", done.stderr)
+
+    def test_a_failure_that_cannot_replace_a_published_success_keeps_the_job_red(self):
+        # a success is already on the queue commit: a job that stays green would hide a stale approval
+        done, log = self.run_step(rl_post_after=1, states="success success failure")
+        self.assertIn("state=success", self.posted(log)[0], log)
+        self.assertNotEqual(done.returncode, 0, (done.stderr, log))
 
     def test_pr_head_that_is_not_a_parent_fails(self):
         done, log = self.run_step(parents=("d" * 40, OLD))
