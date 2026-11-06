@@ -146,8 +146,9 @@ func (s *stormEnv) destinations() Destinations {
 func (s *stormEnv) setCaps(t *testing.T, issuesPerDay, wakesPerHour int) {
 	t.Helper()
 	_, err := s.pool.Exec(context.Background(), `INSERT INTO ci_watch_config (workspace_id, repo_owner, repo_name, mode,
-			fix_owner_kind, fix_owner_id, notify_member_id, max_new_issues_per_day, max_owner_wakes_per_hour)
-		VALUES ($1,'o',$2,'act','agent',$3,$4,$5,$6)
+			fix_owner_kind, fix_owner_id, notify_member_id, authorized_by_member_id, authorized_at,
+			max_new_issues_per_day, max_owner_wakes_per_hour)
+		VALUES ($1,'o',$2,'act','agent',$3,$4,$4,now(),$5,$6)
 		ON CONFLICT (workspace_id, repo_owner, repo_name) DO UPDATE SET
 			max_new_issues_per_day=$5, max_owner_wakes_per_hour=$6`,
 		s.ws, s.repo, uuid.NewString(), uuid.NewString(), issuesPerDay, wakesPerHour)

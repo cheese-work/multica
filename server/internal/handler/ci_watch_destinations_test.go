@@ -281,7 +281,7 @@ func TestCIWatchP3EscalatesToP2ThroughTheTaskPath(t *testing.T) {
 	agentID := createHandlerTestAgent(t, "CI P3 Owner", nil)
 	repo := "p3esc-" + agentID[:8]
 	if _, err := testPool.Exec(ctx, `INSERT INTO ci_watch_config (workspace_id, repo_owner, repo_name, mode,
-			fix_owner_kind, fix_owner_id, notify_member_id) VALUES ($1,'o',$2,'act','agent',$3,$4)`,
+			fix_owner_kind, fix_owner_id, notify_member_id, authorized_by_member_id) VALUES ($1,'o',$2,'act','agent',$3,$4,$4)`,
 		testWorkspaceID, repo, agentID, testUserID); err != nil {
 		t.Fatal(err)
 	}

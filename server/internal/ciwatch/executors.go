@@ -26,6 +26,7 @@ func nonTransactional(what string) error {
 
 type watchConfig struct {
 	FixOwnerKind, FixOwnerID, NotifyMemberID string
+	AuthorizedByMemberID                     string
 	MaxNewIssuesPerDay, MaxOwnerWakesPerHour int
 }
 
@@ -33,10 +34,11 @@ type watchConfig struct {
 func loadConfig(ctx context.Context, q queryer, a Action) (watchConfig, error) {
 	c := watchConfig{MaxNewIssuesPerDay: 5, MaxOwnerWakesPerHour: 6}
 	err := q.QueryRow(ctx, `SELECT COALESCE(fix_owner_kind,''), COALESCE(fix_owner_id::text,''),
-			COALESCE(notify_member_id::text,''), max_new_issues_per_day, max_owner_wakes_per_hour
+			COALESCE(notify_member_id::text,''), COALESCE(authorized_by_member_id::text,''),
+			max_new_issues_per_day, max_owner_wakes_per_hour
 		FROM ci_watch_config WHERE workspace_id=$1::uuid AND repo_owner=$2 AND repo_name=$3`,
 		a.WorkspaceID, a.RepoOwner, a.RepoName).Scan(&c.FixOwnerKind, &c.FixOwnerID, &c.NotifyMemberID,
-		&c.MaxNewIssuesPerDay, &c.MaxOwnerWakesPerHour)
+		&c.AuthorizedByMemberID, &c.MaxNewIssuesPerDay, &c.MaxOwnerWakesPerHour)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return c, nil
 	}
@@ -50,13 +52,18 @@ func lockRepoCaps(ctx context.Context, tx pgx.Tx, a Action) error {
 	return err
 }
 
-// actor is the member a watcher issue, comment or notification is attributed to
-// and whose invocation permissions the wake is checked against. Only the repo's
-// configured notify member counts: a workspace-owner fallback would let any
-// repo's automation run as the owner. Without one the action fails closed.
+// actor is the member a watcher issue or comment is attributed to, whose invocation
+// permissions the wake is checked against, and who is accountable for the run. A
+// notify recipient is not enough: that member must also have authorized the watcher
+// for this repo (authorized_by_member_id), or anyone naming a member as recipient
+// could run automation as them. A workspace-owner fallback is out for the same
+// reason. Without a matching record the action fails closed.
 func (c watchConfig) actor() (string, error) {
 	if c.NotifyMemberID == "" {
 		return "", &PermanentError{Reason: ReasonNoPrincipal, Err: errors.New("no notify_member_id configured for the watcher")}
+	}
+	if c.AuthorizedByMemberID != c.NotifyMemberID {
+		return "", &PermanentError{Reason: ReasonNoPrincipal, Err: errors.New("the notify member has not authorized the watcher for this repo")}
 	}
 	return c.NotifyMemberID, nil
 }
@@ -182,6 +189,11 @@ func (l *Ledger) issueCreate(d Destinations) LocalEffect {
 		if err != nil {
 			return "", err
 		}
+		// First, so an unauthorized principal never takes the red-main claim.
+		creator, err := cfg.actor()
+		if err != nil {
+			return "", err
+		}
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,
 			ownerKey(a.WorkspaceID, a.RepoOwner, a.RepoName, a.SignatureHash)); err != nil {
 			return "", err
@@ -207,10 +219,6 @@ func (l *Ledger) issueCreate(d Destinations) LocalEffect {
 			return "", &PermanentError{Reason: ReasonRedMainClaimed, Err: errors.New("another holder owns the red-main check")}
 		}
 		f, err := readFailure(ctx, tx, a)
-		if err != nil {
-			return "", err
-		}
-		creator, err := cfg.actor()
 		if err != nil {
 			return "", err
 		}
@@ -340,9 +348,10 @@ func (l *Ledger) inboxNotify(d Destinations) LocalEffect {
 		if err != nil {
 			return "", err
 		}
-		member, err := cfg.actor()
-		if err != nil {
-			return "", err
+		// A recipient, not a principal: the notification acts as nobody, so no authorization is needed.
+		member := cfg.NotifyMemberID
+		if member == "" {
+			return "", &PermanentError{Reason: ReasonNoPrincipal, Err: errors.New("no notify_member_id configured for the watcher")}
 		}
 		f, err := readFailure(ctx, tx, a)
 		if err != nil {

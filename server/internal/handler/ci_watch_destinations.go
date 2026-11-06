@@ -88,13 +88,18 @@ func (d ciWatchDest) CreateIssue(ctx context.Context, tx pgx.Tx, s ciwatch.Issue
 // not when the repo was configured, so a revoked grant or archived agent stops the wake.
 func (d ciWatchDest) enqueueOwnerRun(ctx context.Context, qtx *db.Queries, issue db.Issue, principal string) (*db.AgentTaskQueue, error) {
 	var task db.AgentTaskQueue
-	var err error
+	// The task is attributed to the member the permission check ran against, not the
+	// issue creator (an adopted issue has another creator).
+	actor, err := util.ParseUUID(principal)
+	if err != nil {
+		return nil, nil
+	}
 	switch issue.AssigneeType.String {
 	case "agent":
 		if !d.mayInvoke(ctx, qtx, issue.AssigneeID, issue.WorkspaceID, principal) {
 			return nil, nil
 		}
-		task, err = d.h.TaskService.EnqueueIssueTaskInTx(ctx, qtx, issue)
+		task, err = d.h.TaskService.EnqueueIssueTaskInTxAs(ctx, qtx, issue, actor)
 	case "squad":
 		var squad db.Squad
 		if squad, err = qtx.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: issue.AssigneeID, WorkspaceID: issue.WorkspaceID}); err != nil {
@@ -103,7 +108,7 @@ func (d ciWatchDest) enqueueOwnerRun(ctx context.Context, qtx *db.Queries, issue
 		if !d.mayInvoke(ctx, qtx, squad.LeaderID, issue.WorkspaceID, principal) {
 			return nil, nil
 		}
-		task, err = d.h.TaskService.EnqueueDecisionTaskInTx(ctx, qtx, issue, squad.LeaderID, squad.ID, pgtype.UUID{}, nil, "")
+		task, err = d.h.TaskService.EnqueueDecisionTaskInTxAs(ctx, qtx, issue, squad.LeaderID, squad.ID, pgtype.UUID{}, nil, "", actor)
 	default:
 		return nil, nil
 	}

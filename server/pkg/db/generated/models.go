@@ -782,6 +782,8 @@ type CiWatchConfig struct {
 	MaxOwnerWakesPerHour    int32              `json:"max_owner_wakes_per_hour"`
 	CreatedAt               pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
+	AuthorizedByMemberID    pgtype.UUID        `json:"authorized_by_member_id"`
+	AuthorizedAt            pgtype.Timestamptz `json:"authorized_at"`
 }
 
 type CiWatchConfigAudit struct {
