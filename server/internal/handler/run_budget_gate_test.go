@@ -67,10 +67,16 @@ func waitForRunBudgetWarning(t *testing.T, c edgeCase) {
 func withoutRunBudgetWriters() (restore func()) {
 	service.SetOnRunBudgetEvent(nil)
 	service.SetOnRunBudgetExhausted(nil)
-	return func() {
-		service.SetOnRunBudgetEvent(testHandler.onRunBudgetEvent)
-		service.SetOnRunBudgetExhausted(testHandler.onRunBudgetExhausted)
-	}
+	return giveBackRunBudgetHooks
+}
+
+// giveBackRunBudgetHooks hands the process-wide budget hooks back to
+// testHandler. Every Handler New() registers them on its own bus, so a test that
+// builds a second Handler would leave them there for the run-budget tests that
+// share its shard.
+func giveBackRunBudgetHooks() {
+	service.SetOnRunBudgetEvent(testHandler.onRunBudgetEvent)
+	service.SetOnRunBudgetExhausted(testHandler.onRunBudgetExhausted)
 }
 
 func finishRuns(t *testing.T, c edgeCase) {
