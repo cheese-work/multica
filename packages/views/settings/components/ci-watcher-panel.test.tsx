@@ -287,6 +287,20 @@ describe("unsent edits", () => {
     expect(useCIWatchDraftStore.getState().getDraft(REPO)).toBeDefined();
   });
 
+  it("typed while a save is in flight survive the save response", async () => {
+    let finish: (c: CIWatchConfig) => void = () => {};
+    putConfig.mockImplementation(() => new Promise<CIWatchConfig>((r) => { finish = r; }));
+    mount();
+    fireEvent.change(await field("Branches"), { target: { value: "dev" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(putConfig).toHaveBeenCalled());
+    fireEvent.change(screen.getByLabelText("Branches"), { target: { value: "dev\nrelease" } });
+    await act(async () => finish({ ...saved, branches: ["dev"] } as CIWatchConfig));
+    expect(screen.getByLabelText("Branches")).toHaveValue("dev\nrelease");
+    expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
+    expect(useCIWatchDraftStore.getState().getDraft(REPO)).toBeDefined();
+  });
+
   it("are dropped on an explicit discard", async () => {
     mount();
     fireEvent.change(await field("Branches"), { target: { value: "dev" } });
