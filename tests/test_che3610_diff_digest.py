@@ -20,6 +20,7 @@ spec.loader.exec_module(sg)
 BOT = 282619718
 PR = {"head_ref": "agent/x99-claude-sonnet/che-3610-1c5d373a16a5", "author_id": BOT,
       "repo": "cheese-work/multica", "number": 918, "base_ref": "main", "default_branch": "main"}
+DIGEST_FOR_SERVER = r"^[0-9a-f]{64}$"  # sha256HexPattern, server/internal/handler/decision_bound_write.go
 DIFF = "+++ b/app.py\n@@ -1 +1,2 @@\n+x = 1\n"
 
 
@@ -185,30 +186,6 @@ class DiffDigestTest(unittest.TestCase):
         self.assertIsNone(v)
         self.assertIn("Diff-Digest", err)
 
-    def test_waiver_for_diff_survives_a_main_only_merge_and_dies_on_a_pr_edit(self):
-        """CHE-4326: a test-first waiver recorded as `waived_for_diff` follows the diff like a PASS does."""
-        waiver = {"waived_for_diff": self.d1}
-        m = self.advance_main("other.txt", "o2\n")
-        h2 = self.merge_main()
-        self.assertTrue(sg.waiver_applies(waiver, h2, self.r.digest(m, h2)))
-        self.r.write("pr.txt", "l1\nPR2\n" + "".join(f"l{i}\n" for i in range(3, 11)))
-        h3 = self.r.commit("edit")
-        self.assertFalse(sg.waiver_applies(waiver, h3, self.r.digest(m, h3)))
-
-    def test_waiver_dies_when_a_main_merge_changes_a_pr_file(self):
-        m = self.advance_main("pr.txt", "".join(f"l{i}\n" for i in range(1, 10)) + "main\n")
-        h2 = self.merge_main()
-        self.assertFalse(sg.waiver_applies({"waived_for_diff": self.d1}, h2, self.r.digest(m, h2)))
-
-    def test_legacy_waived_for_head_still_needs_the_exact_head(self):
-        self.assertTrue(sg.waiver_applies({"waived_for_head": self.h1}, self.h1, self.d1))
-        self.assertFalse(sg.waiver_applies({"waived_for_head": self.h1}, "e" * 40, self.d1))
-
-    def test_waiver_without_a_usable_key_or_digest_never_applies(self):
-        self.assertFalse(sg.waiver_applies({}, self.h1, self.d1))
-        self.assertFalse(sg.waiver_applies({"waived_for_diff": self.d1}, self.h1, None))
-        self.assertFalse(sg.waiver_applies({"waived_for_diff": "xyz"}, self.h1, "xyz"))
-
     def test_print_digest_gives_lanes_the_digest_to_record_and_compare(self):
         """Browser/device lanes record this beside their PASS; the same value on a later head keeps it."""
         def run(base, head):
@@ -224,6 +201,32 @@ class DiffDigestTest(unittest.TestCase):
         m = self.advance_main("other.txt", "o2\n")
         h2 = self.merge_main()
         self.assertEqual(run(m, h2), {"head": h2, "digest": self.d1})  # clean merge: same digest, PASS kept
+
+    def _print_digest(self, base, head):
+        pull = json.dumps({"head": {"sha": head}, "base": {"sha": base}})
+        argv = ["x", "--repo", self.tmp.name, "--github", "o/r", "--pr", "918", "--default-branch", "main", "--print-digest"]
+        out = io.StringIO()
+        with mock.patch.object(sg, "_gh", return_value=pull), mock.patch("sys.argv", argv), redirect_stdout(out):
+            self.assertEqual(sg.main(), 0)
+        return json.loads(out.getvalue())["digest"]
+
+    def test_waiver_candidate_follows_the_diff_through_a_main_merge_and_dies_on_a_pr_edit(self):
+        """CHE-4326. A test-first waiver is an agent decision bound to `candidate_sha256` (the server matches it
+        exactly, `rely`/lookup). Recorded with the PR diff digest as candidate, it is found again after a main-only
+        merge and not found after any change to the PR's own files."""
+        recorded = self._print_digest(self.base, self.h1)
+        self.assertRegex(recorded, DIGEST_FOR_SERVER)  # the server accepts only 64 lowercase hex
+        m = self.advance_main("other.txt", "o2\n")
+        h2 = self.merge_main()
+        self.assertEqual(self._print_digest(m, h2), recorded)
+        self.r.write("pr.txt", "l1\nPR2\n" + "".join(f"l{i}\n" for i in range(3, 11)))
+        h3 = self.r.commit("edit")
+        self.assertNotEqual(self._print_digest(m, h3), recorded)
+
+    def test_agent_decisions_doc_names_the_diff_digest_as_the_waiver_candidate(self):
+        doc = (ROOT / "docs/agent-decisions.md").read_text()
+        self.assertIn("security_gate.py --print-digest", doc)
+        self.assertIn("main-only merge", doc)
 
 
 if __name__ == "__main__":

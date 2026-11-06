@@ -77,16 +77,6 @@ def pr_diff_digest(repo: str, base: str, head: str) -> str:
     return hashlib.sha256(full).hexdigest()
 
 
-def waiver_applies(waiver: dict, head: str, digest: str | None) -> bool:
-    """A recorded test-first waiver counts for the live PR when it names this PR's own diff (`waived_for_diff`, 64 hex,
-    `--print-digest`) or, in the older form, this exact head (`waived_for_head`). A merge from the default branch that
-    leaves every PR file alone keeps the first; any change to a PR file voids it (CHE-4326)."""
-    d = waiver.get("waived_for_diff")
-    if d is not None:
-        return bool(digest) and DIGEST_RE.match(d) is not None and d == digest
-    return SHA_RE.match(waiver.get("waived_for_head", "")) is not None and waiver["waived_for_head"] == head
-
-
 def lab_of(name: str) -> str | None:
     n = name.lower()
     for lab, words in (("anthropic", ("claude",)), ("openai", ("codex", "gpt", "hermes")), ("google", ("gemini", "agy"))):
