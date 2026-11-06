@@ -170,8 +170,14 @@ func (h *Handler) verifyWorkflowReceipt(ctx context.Context, tx db.DBTX, r *http
 	if binding.AfterSHA256 != workflowStepsHash(workflowID, after) {
 		return decisionIntentRefusal{http.StatusForbidden, "after_sha256 does not match the steps this write would store"}
 	}
-	if _, allowed := h.delegatedWriteAllowed(ctx, workspaceID, writerID, workflowInstructionsField); !allowed {
+	requiresHuman, allowed := h.delegatedWriteAllowed(ctx, workspaceID, writerID, workflowInstructionsField)
+	if !allowed {
 		return deny("the writer is not delegated to write " + workflowInstructionsField)
+	}
+	if requiresHuman {
+		// A peer receipt is not a human decision: only an owner who set
+		// requires_human_decision to false opens this path.
+		return deny("the workspace requires a human decision for " + workflowInstructionsField)
 	}
 	_, reason, err := claimPassReceipt(ctx, tx, workspaceID, issueID, workflowID, writerID, r.Header.Get("X-Task-ID"), workflowInstructionsField, binding.BeforeSHA256, binding.AfterSHA256)
 	switch {

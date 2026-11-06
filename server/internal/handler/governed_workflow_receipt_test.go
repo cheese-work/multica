@@ -22,6 +22,10 @@ type workflowReceiptFixture struct {
 	after                                 string
 }
 
+// openReceiptDelegation is the owner's setting that lets a receipt alone write:
+// requires_human_decision stored as an explicit false.
+func openReceiptDelegation() receiptFixture { return receiptFixture{humanDecision: "false"} }
+
 func newWorkflowReceiptFixture(t *testing.T, initial string) workflowReceiptFixture {
 	t.Helper()
 	if testHandler == nil {
@@ -39,7 +43,7 @@ func newWorkflowReceiptFixture(t *testing.T, initial string) workflowReceiptFixt
 	r.label = "workflow.instructions:" + wf.ID
 	r.before = canonicalStepsHash(t, wf.ID, liveSteps(t, wf.ID))
 	r.propose(t, setInstructions("agent text"))
-	receiptFixture{}.delegate(t, r.writerID, "workflow.instructions")
+	openReceiptDelegation().delegate(t, r.writerID, "workflow.instructions")
 	return r
 }
 
@@ -202,11 +206,11 @@ func TestWorkflowPassReceipt_FailedChecksStayRefused(t *testing.T) {
 		}},
 		{name: "writer not in allowed_agents", setup: func(t *testing.T, r *workflowReceiptFixture) {
 			r.review(t)
-			receiptFixture{}.delegate(t, r.peerID, "workflow.instructions")
+			openReceiptDelegation().delegate(t, r.peerID, "workflow.instructions")
 		}},
 		{name: "field not in allowed_fields", setup: func(t *testing.T, r *workflowReceiptFixture) {
 			r.review(t)
-			receiptFixture{}.delegate(t, r.writerID, "project.description")
+			openReceiptDelegation().delegate(t, r.writerID, "project.description")
 		}},
 		{name: "receipt and decision together", setup: func(t *testing.T, r *workflowReceiptFixture) { r.review(t) },
 			mut: func(b map[string]any) { b["decision_id"] = "00000000-0000-0000-0000-000000000000" }},
@@ -237,7 +241,7 @@ func TestWorkflowPassReceipt_StepsFieldRefused(t *testing.T) {
 	r.propose(t, func(step map[string]any) { step["next_status_key"] = "done" })
 	r.label = "workflow.steps:" + r.workflowID
 	r.line = "Vote: PASS " + r.label + " " + r.after + " from " + r.before
-	receiptFixture{}.delegate(t, r.writerID, "workflow.steps")
+	openReceiptDelegation().delegate(t, r.writerID, "workflow.steps")
 	r.review(t)
 	r.wantRefused(t, r.patch(t, r.body()), "")
 }
@@ -254,4 +258,38 @@ func TestWorkflowPassReceipt_EditInsideAgentRegionWrites(t *testing.T) {
 	r.propose(t, setInstructions(strings.Replace(protectedStart, "old notes", "new notes", 1)))
 	r.review(t)
 	r.patch(t, r.body()).Want(http.StatusOK)
+}
+
+// requires_human_decision is the owner's policy: true or omitted keeps the
+// receipt-only write closed on both workflow routes; only explicit false opens it.
+func TestWorkflowPassReceipt_RequiresHumanDecision(t *testing.T) {
+	for _, extra := range []string{`"requires_human_decision": true`, ""} {
+		for _, route := range []string{"PATCH", "PUT handoff"} {
+			t.Run(route+" "+extra, func(t *testing.T) {
+				r := newWorkflowReceiptFixture(t, "")
+				r.review(t)
+				receiptFixture{}.delegateWith(t, r.writerID, "workflow.instructions", extra)
+				var resp *testutil.Response
+				if route == "PATCH" {
+					resp = r.patch(t, r.body())
+				} else {
+					var step map[string]any
+					for _, raw := range r.steps {
+						if s := raw.(map[string]any); s["status_key"] == "in_progress" {
+							step = s
+						}
+					}
+					for k, v := range r.body() {
+						if k != "steps" {
+							step[k] = v
+						}
+					}
+					req := r.agent("/api/issue-workflows/"+r.workflowID+"/handoffs/in_progress", step, "status", "in_progress")
+					req.Method = http.MethodPut
+					resp = testutil.Call(t, testHandler.SetIssueWorkflowHandoff, req)
+				}
+				r.wantRefused(t, resp, "")
+			})
+		}
+	}
 }
