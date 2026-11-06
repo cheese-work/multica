@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_dm_progress_data_incident_follow_kind;

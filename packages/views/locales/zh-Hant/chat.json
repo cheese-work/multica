@@ -328,7 +328,8 @@
     "cancel": "取消",
     "cancel_label": "取消 {{time}} 的排程跟進",
     "cancel_failed": "無法取消該跟進",
-    "load_failed": "無法載入已排程的跟進。重試"
+    "load_failed": "無法載入已排程的跟進。重試",
+    "watching_until": "監聽事項 · 截止 {{time}}"
   },
   "annotations": {
     "one_request": "請每次只發送針對一個決策請求的評論。",
@@ -382,6 +383,13 @@
     "action_unavailable": "無法顯示詳細資料",
     "action_approve": "使用通行金鑰核准",
     "action_preview": "核准後將變更的內容",
+    "answer_send_passkey": "使用通行金鑰傳送",
+    "answer_open_browser": "在瀏覽器中開啟",
+    "answer_passkey_needed": "此回答需要你的通行金鑰。再次傳送以確認。",
+    "answer_passkey_desktop": "此回答需要通行金鑰，只能在瀏覽器中使用。請在瀏覽器中開啟並回答。",
+    "answer_stale": "開啟後此請求已變更。請查看後再傳送。",
+    "answer_no_passkey": "回答此請求前，請先在設定中新增通行金鑰。",
+    "answer_passkey_failed": "通行金鑰步驟未完成。回答已保留，再次傳送即可重試。",
     "source_comment": "來源評論",
     "recorded_on": "已記錄到 {{issue}}",
     "quoted_in": "已引用到 {{issue}}",

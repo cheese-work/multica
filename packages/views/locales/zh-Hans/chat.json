@@ -328,7 +328,8 @@
     "cancel": "取消",
     "cancel_label": "取消 {{time}} 的计划跟进",
     "cancel_failed": "无法取消该跟进",
-    "load_failed": "无法加载已计划的跟进。重试"
+    "load_failed": "无法加载已计划的跟进。重试",
+    "watching_until": "监听事项 · 截止 {{time}}"
   },
   "annotations": {
     "one_request": "请每次只发送针对一个决策请求的评论。",
@@ -417,6 +418,13 @@
     "action_unavailable": "无法显示详情",
     "action_approve": "使用通行密钥批准",
     "action_preview": "批准后将更改的内容",
+    "answer_send_passkey": "使用通行密钥发送",
+    "answer_open_browser": "在浏览器中打开",
+    "answer_passkey_needed": "此回答需要你的通行密钥。再次发送以确认。",
+    "answer_passkey_desktop": "此回答需要通行密钥，只能在浏览器中使用。请在浏览器中打开并回答。",
+    "answer_stale": "打开后此请求已变更。请查看后再发送。",
+    "answer_no_passkey": "回答此请求前，请先在设置中添加通行密钥。",
+    "answer_passkey_failed": "通行密钥步骤未完成。回答已保留，再次发送即可重试。",
     "source_comment": "来源评论",
     "quoted_in": "已引用到 {{issue}}",
     "receipt_recorded": "已记录到 {{issue}}",

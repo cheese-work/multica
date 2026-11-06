@@ -65,7 +65,7 @@ const PREVIEW = {
   preview: "first line of the comment",
 };
 
-function adapter(): NavigationAdapter {
+function adapter(origin = APP_ORIGIN): NavigationAdapter {
   return {
     push: vi.fn(),
     replace: vi.fn(),
@@ -73,15 +73,15 @@ function adapter(): NavigationAdapter {
     pathname: "/",
     searchParams: new URLSearchParams(),
     hash: "",
-    getShareableUrl: (p) => `${APP_ORIGIN}${p}`,
+    getShareableUrl: (p) => `${origin}${p}`,
   };
 }
 
-function renderContent(content: string) {
+function renderContent(content: string, origin = APP_ORIGIN) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const result = render(
     <QueryClientProvider client={client}>
-      <NavigationProvider value={adapter()}>
+      <NavigationProvider value={adapter(origin)}>
         <RichContent content={content} />
       </NavigationProvider>
     </QueryClientProvider>,
@@ -212,5 +212,52 @@ describe("comment ID chips", () => {
 
     await waitFor(() => expect(container.querySelector("a")).toBeNull());
     expect(container.textContent).toContain(COMMENT_ID);
+  });
+
+  describe("comment URL as pasted by an agent (CHE-4260)", () => {
+    const ORIGIN = "https://c00.example.ts.net:19443";
+    const SHOT_ID = "01a1af03-f276-77de-8ab7-ab6b2277b854";
+    const url = `${ORIGIN}/acme/issues/CHE-4087#comment-${SHOT_ID}`;
+    const shotPreview = { ...PREVIEW, comment_id: SHOT_ID, issue_identifier: "CHE-4087" };
+    const chipSelector = `a[href="/acme/issues/${ISSUE_ID}#comment-${SHOT_ID}"]`;
+
+    it("chips a bare URL inside a list item, after a colon", async () => {
+      getCommentPreview.mockResolvedValue(shotPreview);
+      const { container } = renderContent(
+        `## State\n\n- Both of your answers are on CHE-4087: ${url}\n`,
+        ORIGIN,
+      );
+      const chip = await waitFor(() => {
+        const a = container.querySelector(chipSelector);
+        expect(a).not.toBeNull();
+        return a as HTMLElement;
+      });
+      expect(chip.textContent).toContain("CHE-4087");
+      expect(chip.textContent).toContain("Luna");
+      expect(container.textContent).not.toContain(ORIGIN);
+    });
+
+    it("chips a markdown link whose target is the URL", async () => {
+      getCommentPreview.mockResolvedValue(shotPreview);
+      const { container } = renderContent(`See [that comment](${url}) now`, ORIGIN);
+      await waitFor(() => expect(container.querySelector(chipSelector)).not.toBeNull());
+    });
+
+    it("leaves a foreign-host URL as the author wrote it", () => {
+      const foreign = `https://other.example.com/acme/issues/CHE-4087#comment-${SHOT_ID}`;
+      const { container } = renderContent(`See ${foreign} now`, ORIGIN);
+      const a = container.querySelector("a");
+      expect(a?.getAttribute("href")).toBe(foreign);
+      expect(getCommentPreview).not.toHaveBeenCalled();
+    });
+
+    it("keeps a forbidden comment as the plain link with no preview", async () => {
+      getCommentPreview.mockRejectedValue(new Error("403"));
+      const { container } = renderContent(`See ${url} now`, ORIGIN);
+      await waitFor(() => expect(getCommentPreview).toHaveBeenCalled());
+      const a = container.querySelector("a");
+      expect(a?.getAttribute("href")).toBe(url);
+      expect(a?.textContent).toBe(url);
+    });
   });
 });

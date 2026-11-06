@@ -46,6 +46,7 @@
     "./issue-workflows/queries": "./issue-workflows/queries.ts",
     "./issue-workflows/hooks": "./issue-workflows/hooks.ts",
     "./issue-workflows/mutations": "./issue-workflows/mutations.ts",
+    "./issue-workflows/draft-stores": "./issue-workflows/draft-stores.ts",
     "./issues": "./issues/index.ts",
     "./issues/batch": "./issues/batch.ts",
     "./issues/canonical-id": "./issues/canonical-id.ts",
@@ -192,6 +193,7 @@
     "./skills": "./skills/index.ts",
     "./skills/frontmatter": "./skills/frontmatter.ts",
     "./skills/pack-archive": "./skills/pack-archive.ts",
+    "./skills/draft-stores": "./skills/draft-stores.ts",
     "./skills/stores": "./skills/stores/index.ts",
     "./autopilots/stores": "./autopilots/stores/index.ts",
     "./runtimes/qoder": "./runtimes/qoder.ts"

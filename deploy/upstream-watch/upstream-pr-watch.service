@@ -1,0 +1,9 @@
+[Unit]
+Description=CHE-3958 upstream PR watcher (one poll)
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/share/upstream-pr-watch/run.sh
+TimeoutStartSec=10m
+Nice=10

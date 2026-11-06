@@ -32,12 +32,18 @@ type proposalView struct {
 func useProposalGuard(test *testing.T) *atomic.Int32 {
 	test.Helper()
 	calls := new(atomic.Int32)
+	restoreProposalGuard(test)
 	testHandler.ProposalGuard = func(context.Context, *db.Queries, ProposalAdmission) error {
 		calls.Add(1)
 		return nil
 	}
-	test.Cleanup(func() { testHandler.ProposalGuard = nil })
 	return calls
+}
+
+// restoreProposalGuard puts the handler's guard back when the test ends.
+func restoreProposalGuard(test *testing.T) {
+	previous := testHandler.ProposalGuard
+	test.Cleanup(func() { testHandler.ProposalGuard = previous })
 }
 
 func newProposalFixture(test *testing.T) singleCallFixture {
@@ -78,6 +84,8 @@ func (fixture singleCallFixture) proposalRows(test *testing.T) int {
 }
 
 func TestProposalWithoutGuardIsUnavailableAndWritesNothing(test *testing.T) {
+	restoreProposalGuard(test)
+	testHandler.ProposalGuard = nil
 	fixture := newProposalFixture(test)
 	response := testutil.Call(test, testHandler.ProposeDecisionAction, fixture.proposeRequest(fixture.proposal(test))).Want(http.StatusServiceUnavailable)
 	if !strings.Contains(response.Text(), "proposals_unavailable") {
@@ -326,11 +334,11 @@ func TestProposalAskKeepsAgentStringsInsideTheNoteQuote(test *testing.T) {
 
 func TestProposalGuardReceivesTheValidatedAction(test *testing.T) {
 	var admitted ProposalAdmission
+	restoreProposalGuard(test)
 	testHandler.ProposalGuard = func(_ context.Context, _ *db.Queries, admission ProposalAdmission) error {
 		admitted = admission
 		return nil
 	}
-	test.Cleanup(func() { testHandler.ProposalGuard = nil })
 	fixture := newProposalFixture(test)
 	body := fixture.proposal(test)
 	body["reason"] = "because"

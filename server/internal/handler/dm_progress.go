@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -87,7 +88,7 @@ func (h *Handler) FollowIssueProgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Explicit follow: no row back means it is already active.
-	if _, _, err := service.AddProgressFollow(r.Context(), qtx, lane, issue, []string{service.ReasonManual}, pgtype.Timestamptz{}); err != nil {
+	if _, _, err := service.AddProgressFollow(r.Context(), qtx, lane, issue, []string{service.ReasonManual}, issue.ID, pgtype.Timestamptz{}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to follow")
 		return
 	}
@@ -203,4 +204,19 @@ func (h *Handler) ListDMProgressFollows(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"follows": out})
+}
+
+// recordIssueMoved tells every lane that follows a reparented issue where it
+// went (CHE-3548). A move never edits follows or reporting roots: reporting
+// stays with the original commission, and the new parent's lane hears about
+// the issue only through an explicit follow. A detach has no new parent to
+// name, so it writes nothing. It runs on the update's own transaction: the
+// event commits or rolls back with the move, so a lane cannot miss a move.
+func recordIssueMoved(ctx context.Context, q *db.Queries, prevParent pgtype.UUID, moved db.Issue) error {
+	if !moved.ParentIssueID.Valid || prevParent == moved.ParentIssueID {
+		return nil
+	}
+	return q.InsertDMProgressMovedUnderEvents(ctx, db.InsertDMProgressMovedUnderEventsParams{
+		IssueID: moved.ID, WorkspaceID: moved.WorkspaceID, NewParentID: moved.ParentIssueID,
+	})
 }

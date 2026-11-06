@@ -328,7 +328,8 @@
     "cancel": "キャンセル",
     "cancel_label": "{{time}} に予約されたフォローアップをキャンセル",
     "cancel_failed": "フォローアップをキャンセルできませんでした",
-    "load_failed": "予約済みのフォローアップを読み込めませんでした。再試行"
+    "load_failed": "予約済みのフォローアップを読み込めませんでした。再試行",
+    "watching_until": "課題を監視中 · {{time}} まで"
   },
   "annotations": {
     "one_request": "決定リクエストへのコメントは、1件ずつ送信してください。",
@@ -417,6 +418,13 @@
     "action_unavailable": "詳細を表示できません",
     "action_approve": "パスキーで承認",
     "action_preview": "承認で変更される内容",
+    "answer_send_passkey": "パスキーで送信",
+    "answer_open_browser": "ブラウザで開く",
+    "answer_passkey_needed": "この回答にはパスキーが必要です。もう一度送信して確定してください。",
+    "answer_passkey_desktop": "この回答にはパスキーが必要で、ブラウザでのみ使えます。ブラウザで開いて回答してください。",
+    "answer_stale": "開いた後にこのリクエストが変更されました。内容を確認して再送信してください。",
+    "answer_no_passkey": "このリクエストに回答する前に、設定でパスキーを追加してください。",
+    "answer_passkey_failed": "パスキーの手順が完了しませんでした。回答は保持されています。再送信してください。",
     "source_comment": "元のコメント",
     "quoted_in": "{{issue}} に引用",
     "receipt_recorded": "{{issue}} に記録",

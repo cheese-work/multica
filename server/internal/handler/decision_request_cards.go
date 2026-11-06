@@ -17,6 +17,7 @@ type DecisionRequestCard struct {
 	ID              string  `json:"id"`
 	IssueID         string  `json:"issue_id"`
 	IssueIdentifier string  `json:"issue_identifier"`
+	IssueTitle      string  `json:"issue_title,omitempty"`
 	SourceCommentID *string `json:"source_comment_id,omitempty"`
 	Ask             string  `json:"ask"`
 	// AskingAgentName is the asking agent's current name; empty when the agent is gone.
@@ -94,8 +95,8 @@ func (handler *Handler) decisionRequestsForMessages(ctx context.Context, workspa
 	for _, row := range rows {
 		card := DecisionRequestCard{
 			ID: uuidToString(row.RequestID), IssueID: uuidToString(row.IssueID),
-			IssueIdentifier: fmt.Sprintf("%s-%d", row.IssuePrefix, row.IssueNumber),
-			Ask:             row.Ask, AskingAgentName: row.AskingAgentName, State: row.Status, CreatedAt: timestampToString(row.CreatedAt),
+			IssueIdentifier: fmt.Sprintf("%s-%d", row.IssuePrefix, row.IssueNumber), IssueTitle: row.IssueTitle,
+			Ask: row.Ask, AskingAgentName: row.AskingAgentName, State: row.Status, CreatedAt: timestampToString(row.CreatedAt),
 			Answer: decisionRequestAnswerFromRow(row),
 		}
 		if err := json.Unmarshal(row.Options, &card.Options); err != nil {
