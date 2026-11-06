@@ -41,59 +41,64 @@ export interface DraftCleanupEntry {
 const entries = new Map<string, DraftCleanupEntry>();
 
 /**
- * Cleanup generations. Logout and workspace delete bump them; a delayed draft
- * write (editor flush on unmount, upload settling) carries the generation it
- * was created under and is dropped once that is stale, so it cannot recreate a
- * draft cleanup just removed. A plain workspace switch bumps nothing.
+ * Draft sessions. Persisted drafts carry the session token they were written
+ * under, and a store reads a payload only when its token is the current one.
+ * Logout and workspace delete first end the session (a fresh random id in
+ * shared storage), then remove the stored drafts. Between those two steps, and
+ * for a write already in flight, old data still sits in storage but no reader
+ * accepts it, so no ordering of the steps can hand it to the next session.
  *
- * Each counter has two parts: this tab's memory and a copy in shared storage.
- * Another tab's logout is visible only through the shared part, so a write
- * checks it at write time. Cleanup itself never removes these keys.
+ * Delayed writes (editor flush on unmount, upload settling) carry the token
+ * they were created under and are dropped once it is stale. A plain workspace
+ * switch ends nothing. Cleanup never removes the id keys.
  */
+export const DRAFT_SESSION_KEY = "multica_draft_session";
+const workspaceKey = (slug: string) => `${DRAFT_SESSION_KEY}:${slug}`;
+
+/** Token before any session ended on this profile; also what unstamped (older) payloads count as. */
+export const NO_DRAFT_SESSION = "|";
+
+// Fallback when storage is unavailable: the ids this tab minted still guard this tab.
+const memoryIds = new Map<string, string>();
+const readId = (key: string): string => {
+  try {
+    const stored = defaultStorage.getItem(key);
+    if (stored) return stored;
+  } catch {
+    // see memoryIds
+  }
+  return memoryIds.get(key) ?? "";
+};
+const endSession = (key: string) => {
+  const id = globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+  memoryIds.set(key, id);
+  try {
+    defaultStorage.setItem(key, id);
+  } catch {
+    // see memoryIds
+  }
+};
+
+/** Where a draft write belongs: its workspace and the session token then. */
+export interface DraftOrigin {
+  slug: string | null;
+  session: string;
+}
+
+/** Changes whenever logout or a delete of `slug` ends the session of its drafts, in this tab or another. */
+export function draftSessionToken(slug: string | null): string {
+  return `${readId(DRAFT_SESSION_KEY)}|${slug ? readId(workspaceKey(slug)) : ""}`;
+}
+
 let sessionGeneration = 0;
 const workspaceGenerations = new Map<string, number>();
 
-/** Shared-storage counters, persisted so another tab's cleanup invalidates this tab's pending writes. */
-export const DRAFT_GENERATION_KEY = "multica_draft_generation";
-const sharedGeneration = (key: string): number => {
-  try {
-    return Number(defaultStorage.getItem(key)) || 0;
-  } catch {
-    return 0; // storage unavailable: the in-memory counters still guard this tab
-  }
-};
-const bumpShared = (key: string) => {
-  try {
-    defaultStorage.setItem(key, String(sharedGeneration(key) + 1));
-  } catch {
-    // see sharedGeneration
-  }
-};
-const workspaceKey = (slug: string) => `${DRAFT_GENERATION_KEY}:${slug}`;
-
-/** Where a draft write belongs: its workspace and the cleanup generation then. */
-export interface DraftOrigin {
-  slug: string | null;
-  generation: number;
-}
-
-/** Strictly increases whenever logout or a delete of `slug` clears its drafts, in this tab or another. */
-export function getDraftGeneration(slug: string | null): number {
-  return localDraftGeneration(slug) + sharedDraftGeneration(slug);
-}
-
-/** The shared-storage part of {@link getDraftGeneration}: what a cleanup in any tab, this one included, moved. */
-export function sharedDraftGeneration(slug: string | null): number {
-  return sharedGeneration(DRAFT_GENERATION_KEY) + (slug ? sharedGeneration(workspaceKey(slug)) : 0);
-}
-
-/** The part of {@link getDraftGeneration} that only this tab's own cleanup moves. */
+/** The part of the session that only this tab's own cleanup moves; tells a mounted hook to rebind. */
 export function localDraftGeneration(slug: string | null): number {
   return sessionGeneration + (slug ? (workspaceGenerations.get(slug) ?? 0) : 0);
 }
-
 export function currentDraftOrigin(slug: string | null): DraftOrigin {
-  return { slug, generation: getDraftGeneration(slug) };
+  return { slug, session: draftSessionToken(slug) };
 }
 
 /** Register a draft store for workspace/logout cleanup. Idempotent per key. */
@@ -112,7 +117,7 @@ export function clearRegisteredWorkspaceDrafts(
   slug: string,
 ): void {
   workspaceGenerations.set(slug, (workspaceGenerations.get(slug) ?? 0) + 1);
-  bumpShared(workspaceKey(slug));
+  endSession(workspaceKey(slug)); // before the removals: see "Draft sessions"
   for (const entry of entries.values()) {
     if (entry.workspaceScoped) {
       adapter.removeItem(`${entry.storageKey}:${slug}`);
@@ -128,7 +133,7 @@ export function clearRegisteredWorkspaceDrafts(
  */
 export function resetAllRegisteredDrafts(): void {
   sessionGeneration += 1;
-  bumpShared(DRAFT_GENERATION_KEY);
+  endSession(DRAFT_SESSION_KEY);
   // Abort in-flight uploads BEFORE clearing drafts: an upload that settles
   // after the draft is wiped must not resurrect a placeholder, and its bytes
   // must never bind an attachment under the next session (MUL-5181).
