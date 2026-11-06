@@ -7598,7 +7598,7 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 							// caches keep showing the issue as in_progress until
 							// the next write touches it (#4648 / MUL-3782).
 							(&IssueWakeupService{Tasks: s}).publishWakeupActivities(wakeupActivity{row: activity, actorType: "system", details: activity.Details})
-							s.broadcastIssueUpdated(ctx, updatedIssue, issue.Status)
+							s.broadcastIssueUpdatedWith(ctx, updatedIssue, issue.Status, map[string]any{"activity_id": util.UUIDToString(activity.ID)})
 						}
 					}
 				}
@@ -9076,7 +9076,8 @@ func (s *TaskService) broadcastChatDone(ctx context.Context, task db.AgentTaskQu
 // handler.IssueResponse and skip a map, so a background status reset does not
 // emit status-change activity / notifications. That is intentional for the
 // realtime-staleness fix (#4648 / MUL-3782); folding those side effects in
-// would mean unifying the payload type and is left as a follow-up.
+// would mean unifying the payload type and is left as a follow-up. A writer that
+// recorded a status row names it with broadcastIssueUpdatedWith.
 func (s *TaskService) broadcastIssueUpdated(ctx context.Context, issue db.Issue, prevStatus string) {
 	s.broadcastIssueUpdatedWith(ctx, issue, prevStatus, nil)
 }
