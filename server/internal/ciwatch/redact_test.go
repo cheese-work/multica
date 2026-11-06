@@ -134,3 +134,34 @@ func TestRedactEndThenBeginOnOneLineKeepsNextKeyClosed(t *testing.T) {
 		}
 	}
 }
+
+// A mismatched END label must not close an open key (CHE-4274 review P1).
+func TestRedactMismatchedEndKeepsKeyOpenToEOF(t *testing.T) {
+	cases := map[string]string{
+		"public end":   "-----BEGIN " + "PRIVATE KEY-----\n-----END PUBLIC KEY-----\n" + pemBody + "\n",
+		"rsa vs plain": "-----BEGIN " + "RSA PRIVATE KEY-----\n-----END PRIVATE KEY-----\n" + pemBody + "\n",
+		"same line":    "-----BEGIN " + "PRIVATE KEY----- -----END PUBLIC KEY-----\n" + pemBody + "\n",
+	}
+	for name, in := range cases {
+		for _, oneByte := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/oneByte=%v", name, oneByte), func(t *testing.T) {
+				noLeak(t, redact(t, in, oneByte), pemBody)
+			})
+		}
+	}
+	// Matching labels still close, so later lines survive.
+	got := redact(t, "-----BEGIN "+"PUBLIC KEY-----\n"+pemBody+"\n-----END PUBLIC KEY-----\nafter\n", false)
+	if !strings.Contains(got, "after") {
+		t.Errorf("matching END did not close: %q", got)
+	}
+}
+
+// URL credentials whose "@" sits past the line cap must not be stored (CHE-4274 review P2).
+func TestRedactOverlongLineDoesNotStoreCutCredential(t *testing.T) {
+	in := "x https://user:hunter2planted" + strings.Repeat("p", 70_000) + "@host/x.git\nok\n"
+	got := redact(t, in, false)
+	noLeak(t, got, "hunter2planted")
+	if !strings.Contains(got, "ok") {
+		t.Errorf("lost trailing line: %q", got)
+	}
+}
