@@ -119,22 +119,37 @@ SET reasons = array_remove(reasons, sqlc.arg('reason')::text),
 WHERE lineage_id = $1 AND state = 'active' AND sqlc.arg('reason')::text = ANY(reasons)
 RETURNING *;
 
+-- name: InsertDMProgressMovedUnderEvents :exec
+-- CHE-3548: one "moved under" row per lane that actively follows the moved
+-- issue. Follows are not touched; muted lanes still get the row.
+INSERT INTO dm_progress_lane_event (workspace_id, lineage_id, issue_id, kind, related_issue_id)
+SELECT f.workspace_id, f.lineage_id, f.issue_id, 'moved_under', sqlc.arg('new_parent_id')::uuid
+FROM dm_progress_follow AS f
+WHERE f.issue_id = $1 AND f.workspace_id = $2 AND f.state = 'active';
+
 -- name: DeleteDMProgressForIssue :exec
--- No FKs (repo rule): issue delete sweeps its follows here.
-DELETE FROM dm_progress_follow WHERE issue_id = $1 AND workspace_id = $2;
+-- No FKs (repo rule): issue delete sweeps its follows and lane events here.
+WITH gone AS (
+    DELETE FROM dm_progress_lane_event AS e WHERE e.issue_id = $1 AND e.workspace_id = $2
+)
+DELETE FROM dm_progress_follow AS f WHERE f.issue_id = $1 AND f.workspace_id = $2;
 
 -- name: DeleteDMProgressForLineage :exec
--- No FKs (repo rule): chat session delete sweeps its follows and lane here.
+-- No FKs (repo rule): chat session delete sweeps its follows, lane events and lane here.
 -- Callers hold the chat_session lock, so a new follow cannot slip in between.
 WITH gone AS (
     DELETE FROM dm_progress_follow AS f WHERE f.lineage_id = $1 AND f.workspace_id = $2
+), gone_events AS (
+    DELETE FROM dm_progress_lane_event AS e WHERE e.lineage_id = $1 AND e.workspace_id = $2
 )
 DELETE FROM dm_progress_lane AS l WHERE l.lineage_id = $1 AND l.workspace_id = $2;
 
 -- name: DeleteDMProgressByWorkspace :exec
--- No FKs (repo rule): workspace delete sweeps all three tables here.
+-- No FKs (repo rule): workspace delete sweeps all four tables here.
 WITH gone_follows AS (
     DELETE FROM dm_progress_follow AS f WHERE f.workspace_id = $1
+), gone_events AS (
+    DELETE FROM dm_progress_lane_event AS e WHERE e.workspace_id = $1
 ), gone_incidents AS (
     DELETE FROM dm_progress_data_incident AS i WHERE i.workspace_id = $1
 )

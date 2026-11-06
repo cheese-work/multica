@@ -87,4 +87,21 @@ for bad in 3 -1 abc 01; do
 done
 # A failing indexed shard fails the script.
 if SHARD_TEST_EXIT=1 MULTICA_HANDLER_SHARD_INDEX=1 run_shards >/dev/null 2>&1; then echo "failing indexed shard must fail the script" >&2; exit 1; fi
+
+# CHE-4243: each shard runs ~5-8 min on a healthy runner but ~10+ min on a slow
+# one, so the per-shard -test.timeout is 20m by default and overridable. It
+# must reach every shard, and a malformed value must fail before compiling.
+: >"$TEST_DIR/runs"
+run_shards >/dev/null
+[ "$(grep -c -- '-test.timeout=20m' "$TEST_DIR/runs")" -eq 3 ] || { echo "want -test.timeout=20m on all 3 shards by default" >&2; exit 1; }
+: >"$TEST_DIR/runs"
+MULTICA_HANDLER_SHARD_TIMEOUT=45m run_shards >/dev/null
+[ "$(grep -c -- '-test.timeout=45m' "$TEST_DIR/runs")" -eq 3 ] || { echo "MULTICA_HANDLER_SHARD_TIMEOUT must reach every shard" >&2; exit 1; }
+for bad in 0 abc 10 -5m 1h30m; do
+  : >"$TEST_DIR/builds"
+  if MULTICA_HANDLER_SHARD_TIMEOUT=$bad run_shards >/dev/null 2>&1; then
+    echo "MULTICA_HANDLER_SHARD_TIMEOUT=$bad must fail the script" >&2; exit 1
+  fi
+  [ ! -s "$TEST_DIR/builds" ] || { echo "MULTICA_HANDLER_SHARD_TIMEOUT=$bad must fail before compiling" >&2; exit 1; }
+done
 echo "go-test-handler-shards.test.sh: PASS"
