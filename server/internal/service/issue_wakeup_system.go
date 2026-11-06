@@ -94,9 +94,6 @@ type PullRequestWakeupInput struct {
 	Reason     string
 	MergeState string
 	EventAt    string
-	// DeliveryGUID is the webhook delivery of a pr_dequeued event: a redelivery
-	// repeats it, a later dequeue at the same head does not.
-	DeliveryGUID string
 }
 
 // prAcceptedStatuses are the issue statuses that record an accepted verdict.
@@ -179,11 +176,14 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		eventType = "pr.checks_passed"
 		eventKey += ":passed:" + in.HeadSHA
 	case SystemRulePRDequeued:
-		if in.HeadSHA == "" || in.DeliveryGUID == "" {
+		// Keyed on signed content only: head, GitHub's reason and the payload's
+		// updated_at. The delivery header is unsigned, so a resend under a new
+		// delivery ID is the same event; a later dequeue has a later updated_at.
+		if in.HeadSHA == "" || in.EventAt == "" {
 			return fmt.Errorf("invalid dequeued pull request input")
 		}
 		eventType = "pr.dequeued"
-		eventKey += ":dequeued:" + in.HeadSHA + ":" + in.DeliveryGUID
+		eventKey += ":dequeued:" + in.HeadSHA + ":" + in.Reason + ":" + in.EventAt
 	case SystemRulePRAttention:
 		// Once per head and base pair: DIRTY then BEHIND on the same pair is
 		// one wake; a retarget or a new head is a new pair. Each state has its

@@ -1547,7 +1547,7 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case "pull_request":
-		if err := h.handlePullRequestEvent(context.WithValue(ctx, prDeliveryGUIDKey{}, deliveryGUID), body); err != nil {
+		if err := h.handlePullRequestEvent(ctx, body); err != nil {
 			// Returning 5xx makes GitHub redeliver when mirroring or link writes fail.
 			slog.Error("github: pull_request event failed", "err", err, "delivery_guid", deliveryGUID)
 			writeError(w, http.StatusInternalServerError, "failed to process pull_request event")
@@ -1768,10 +1768,6 @@ type ghPullRequestPayload struct {
 		ID int64 `json:"id"`
 	} `json:"installation"`
 }
-
-// prDeliveryGUIDKey carries the webhook delivery GUID to the pull_request
-// handling. Replays from the repair sweep carry none.
-type prDeliveryGUIDKey struct{}
 
 func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error {
 	var p ghPullRequestPayload
@@ -2237,10 +2233,9 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	var attention service.PullRequestWakeupInput
 	switch {
 	case p.Action == "dequeued":
-		// Facts only (CHE-4231): GitHub's reason, never a re-queue. The
-		// delivery GUID makes a redelivery one wake and a later dequeue another.
-		guid, _ := ctx.Value(prDeliveryGUIDKey{}).(string)
-		attention = service.PullRequestWakeupInput{Rule: service.SystemRulePRDequeued, Reason: p.Reason, DeliveryGUID: guid}
+		// Facts only (CHE-4231): GitHub's reason, never a re-queue. EventAt is
+		// the signed updated_at, which keys the wake (not the unsigned header).
+		attention = service.PullRequestWakeupInput{Rule: service.SystemRulePRDequeued, Reason: p.Reason, EventAt: p.PullRequest.UpdatedAt}
 	case state == "merged":
 		attention = service.PullRequestWakeupInput{
 			Rule: service.SystemRulePRMerged, MergeCommit: p.PullRequest.MergeCommitSHA, DefaultBranch: p.Repository.DefaultBranch,

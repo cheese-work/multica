@@ -90,9 +90,17 @@ func TestPRDequeuedDuplicateDeliveryWakesOnce(t *testing.T) {
 	if got := readDequeuedWake(t, fx.child.ID); got.count != 1 {
 		t.Fatalf("same delivery GUID twice: %d receipts, want 1", got.count)
 	}
+	// The delivery header is unsigned. The same signed body resent under a new
+	// delivery ID is a replay, not a new dequeue (CHE-4231 security finding).
 	postSignedGitHubWebhook(t, fx.secret, body, "guid-4231-other")
+	if got := readDequeuedWake(t, fx.child.ID); got.count != 1 {
+		t.Fatalf("same signed body under a new delivery ID: %d receipts, want 1", got.count)
+	}
+	// A later dequeue is a different signed body (new updated_at), so it wakes again.
+	body["pull_request"].(map[string]any)["updated_at"] = "2026-11-06T05:00:00Z"
+	postSignedGitHubWebhook(t, fx.secret, body, "guid-4231-later")
 	if got := readDequeuedWake(t, fx.child.ID); got.count != 2 {
-		t.Fatalf("a new delivery GUID: %d receipts, want 2", got.count)
+		t.Fatalf("a later dequeue: %d receipts, want 2", got.count)
 	}
 }
 
@@ -160,6 +168,7 @@ func TestPRDequeuedConditionFiresOncePerDequeue(t *testing.T) {
 	if got := met(); got != 1 {
 		t.Fatalf("after one dequeue: %d, want 1", got)
 	}
+	body["pull_request"].(map[string]any)["updated_at"] = "2026-11-06T05:00:00Z"
 	postSignedGitHubWebhook(t, fx.secret, body, "guid-4231-cond-2")
 	due()
 	if got := met(); got != 2 {

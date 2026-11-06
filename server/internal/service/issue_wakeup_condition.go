@@ -901,7 +901,7 @@ func withoutPRs(fingerprint string, identities []string) string {
 // evaluatePRDequeued reads the dequeue facts the webhook recorded as receipts
 // of the issue's pr_dequeued rule (CHE-4231), for the PRs linked now and
 // received since this rule was created. A dequeue is an event, not a state the
-// snapshot holds, and the delivery GUID in each receipt key makes every
+// snapshot holds, and the updated_at in each receipt key makes every
 // dequeue a new fingerprint.
 func evaluatePRDequeued(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.IssueWakeup) (bool, string, map[string]any, error) {
 	rows, err := tx.Query(ctx, `SELECT r.event_key, pr.pr_number, pr.id::text, pr.repo_owner, pr.repo_name, r.payload->>'head_sha', r.payload->>'reason'
