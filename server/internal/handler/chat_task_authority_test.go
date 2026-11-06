@@ -485,3 +485,41 @@ func TestChatTaskAuthorityRetryChildOfCompactionTaskIsRevoked(t *testing.T) {
 	}
 	requireStatus(t, a.read(childID), http.StatusForbidden, codeChatTaskNotActive)
 }
+
+// Orphan recovery commits a failed task first and creates its retry later. A
+// compact chain change in between (A -> B -> A) found no live task to cancel,
+// so the retry must be refused at admission or it would come back active.
+func TestChatTaskAuthorityRetryAfterChainChangeIsRefused(t *testing.T) {
+	failed := func(a *authorityFixture) db.AgentTaskQueue {
+		id := dbfx.Task(a.t, a.compactAgent, testutil.Cols{
+			"runtime_id": handlerTestRuntimeID(a.t), "status": "failed", "chat_session_id": a.session,
+			"purpose": taskPurposeCompaction, "task_kind": "compact",
+			"failure_reason": "timeout", "attempt": 1, "max_attempts": 2,
+			"completed_at": testutil.Raw("now()"),
+		})
+		parent, err := testHandler.Queries.GetAgentTask(context.Background(), parseUUID(id))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return parent
+	}
+
+	t.Run("no chain change: retry is created", func(t *testing.T) {
+		a := newAuthorityFixture(t)
+		child, err := testHandler.TaskService.MaybeRetryFailedTask(context.Background(), failed(a))
+		if err != nil || child == nil {
+			t.Fatalf("child=%v err=%v, want a retry", child, err)
+		}
+	})
+
+	t.Run("A->B->A between failure and retry: refused", func(t *testing.T) {
+		a := newAuthorityFixture(t)
+		parent := failed(a)
+		a.setCompact(a.dmAgent)
+		a.setCompact(a.compactAgent)
+		child, err := testHandler.TaskService.MaybeRetryFailedTask(context.Background(), parent)
+		if err != nil || child != nil {
+			t.Fatalf("child=%v err=%v, want no retry after a chain change", child, err)
+		}
+	})
+}

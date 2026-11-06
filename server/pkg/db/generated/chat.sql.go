@@ -430,6 +430,32 @@ func (q *Queries) ClearChatSessionSessionIfMatches(ctx context.Context, arg Clea
 	return err
 }
 
+const compactChainChangedSince = `-- name: CompactChainChangedSince :one
+SELECT EXISTS (
+    SELECT 1 FROM activity_log
+    WHERE workspace_id = $1
+      AND action = 'background_agent_changed'
+      AND details->>'job' = 'compact'
+      AND created_at > $2
+) AS changed
+`
+
+type CompactChainChangedSinceParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+// CHE-2909 (SEC-1 rule 4): true when the workspace's compact agent chain
+// changed after a task was created. The change sweep cancels only live tasks,
+// so a task that had already failed would otherwise retry into the new chain
+// (A -> B -> A included).
+func (q *Queries) CompactChainChangedSince(ctx context.Context, arg CompactChainChangedSinceParams) (bool, error) {
+	row := q.db.QueryRow(ctx, compactChainChangedSince, arg.WorkspaceID, arg.CreatedAt)
+	var changed bool
+	err := row.Scan(&changed)
+	return changed, err
+}
+
 const compactChatSessionInPlace = `-- name: CompactChatSessionInPlace :one
 UPDATE chat_session
 SET compaction_epoch = compaction_epoch + 1, session_id = NULL, runtime_id = NULL, updated_at = now()
@@ -4318,6 +4344,20 @@ func (q *Queries) LockChatSessionForTask(ctx context.Context, id pgtype.UUID) (p
 	var id_2 pgtype.UUID
 	err := row.Scan(&id_2)
 	return id_2, err
+}
+
+const lockChatSessionShared = `-- name: LockChatSessionShared :one
+SELECT workspace_id FROM chat_session WHERE id = $1 FOR SHARE
+`
+
+// CHE-2909: retry admission takes the same chat_session lock a compact chain
+// change holds (LockChatSessionsByWorkspace, FOR UPDATE), so the check below
+// reads the committed outcome of any change in flight.
+func (q *Queries) LockChatSessionShared(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockChatSessionShared, id)
+	var workspace_id pgtype.UUID
+	err := row.Scan(&workspace_id)
+	return workspace_id, err
 }
 
 const lockChatSessionsBySystemRuntimeAgents = `-- name: LockChatSessionsBySystemRuntimeAgents :many

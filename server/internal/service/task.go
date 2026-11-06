@@ -6082,6 +6082,15 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			}
 		}
 		if createRetry {
+			// SEC-1 rule 4: skip, never abort — this transaction carries the
+			// parent's failed status.
+			if revoked, rerr := compactionRetryRevoked(ctx, qtx, t); rerr != nil || revoked {
+				slog.Info("fail task auto-retry skipped: compact chain changed or unreadable",
+					"task_id", util.UUIDToString(taskID), "error", rerr)
+				createRetry = false
+			}
+		}
+		if createRetry {
 			child, cerr := qtx.CreateRetryTask(ctx, db.CreateRetryTaskParams{
 				NewTaskID:            dbid.NewV7(),
 				ID:                   taskID,
@@ -6494,6 +6503,23 @@ func retryEligible(failureReason string, t db.AgentTaskQueue) bool {
 		(t.IssueID.Valid || t.ChatSessionID.Valid || isSourceContextQuickCreateTask(t))
 }
 
+// compactionRetryRevoked reports whether a compaction task's retry must not be
+// created because the workspace's compact agent chain changed after the task
+// was created (SEC-1 rule 4). The change cancels live tasks only, so a task
+// that had already failed would otherwise retry as an active child, even after
+// A -> B -> A. Taking the chat_session lock first orders the check after a
+// change in flight. It fails closed: an error means no retry.
+func compactionRetryRevoked(ctx context.Context, q *db.Queries, parent db.AgentTaskQueue) (bool, error) {
+	if !parent.ChatSessionID.Valid || !parent.Purpose.Valid || parent.Purpose.String != "compaction" {
+		return false, nil
+	}
+	workspaceID, err := q.LockChatSessionShared(ctx, parent.ChatSessionID)
+	if err != nil {
+		return true, err
+	}
+	return q.CompactChainChangedSince(ctx, db.CompactChainChangedSinceParams{WorkspaceID: workspaceID, CreatedAt: parent.CreatedAt})
+}
+
 // refuseRetryForProviderHold checks the just-created retry child's agent
 // against workspace provider holds and, if held, immediately cancels the
 // child in the SAME transaction that created it — so nothing outside this
@@ -6679,6 +6705,13 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	}
 	defer tx.Rollback(ctx)
 	qtx := s.Queries.WithTx(tx)
+	if revoked, rerr := compactionRetryRevoked(ctx, qtx, parent); rerr != nil {
+		return nil, fmt.Errorf("task auto-retry: check compaction authority: %w", rerr)
+	} else if revoked {
+		slog.Info("task auto-retry skipped: compact chain changed",
+			"parent_task_id", util.UUIDToString(parent.ID))
+		return nil, nil
+	}
 	if err := requireActiveTaskProject(ctx, qtx, parent); err != nil {
 		if IsProjectInactive(err) {
 			return nil, nil

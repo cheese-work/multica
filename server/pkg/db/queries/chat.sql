@@ -2311,3 +2311,22 @@ WHERE (task_kind = 'compact' OR purpose = 'compaction')
   AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
   AND chat_session_id IN (SELECT id FROM chat_session WHERE workspace_id = $1)
 RETURNING *;
+
+-- name: LockChatSessionShared :one
+-- CHE-2909: retry admission takes the same chat_session lock a compact chain
+-- change holds (LockChatSessionsByWorkspace, FOR UPDATE), so the check below
+-- reads the committed outcome of any change in flight.
+SELECT workspace_id FROM chat_session WHERE id = $1 FOR SHARE;
+
+-- name: CompactChainChangedSince :one
+-- CHE-2909 (SEC-1 rule 4): true when the workspace's compact agent chain
+-- changed after a task was created. The change sweep cancels only live tasks,
+-- so a task that had already failed would otherwise retry into the new chain
+-- (A -> B -> A included).
+SELECT EXISTS (
+    SELECT 1 FROM activity_log
+    WHERE workspace_id = $1
+      AND action = 'background_agent_changed'
+      AND details->>'job' = 'compact'
+      AND created_at > $2
+) AS changed;
