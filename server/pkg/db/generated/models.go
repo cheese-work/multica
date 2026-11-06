@@ -2588,6 +2588,20 @@ type ProvenanceExportLog struct {
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 }
 
+type ProviderBreaker struct {
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	Provider      string             `json:"provider"`
+	State         string             `json:"state"`
+	OpenedAt      pgtype.Timestamptz `json:"opened_at"`
+	NextProbeAt   pgtype.Timestamptz `json:"next_probe_at"`
+	CoolOffS      int32              `json:"cool_off_s"`
+	CanaryTaskID  pgtype.UUID        `json:"canary_task_id"`
+	TripEvidence  []pgtype.UUID      `json:"trip_evidence"`
+	Last5xxAt     pgtype.Timestamptz `json:"last_5xx_at"`
+	LastSuccessAt pgtype.Timestamptz `json:"last_success_at"`
+	Version       int64              `json:"version"`
+}
+
 type ProviderFailureRecovery struct {
 	FailedTaskID           pgtype.UUID        `json:"failed_task_id"`
 	TriggerKind            string             `json:"trigger_kind"`
