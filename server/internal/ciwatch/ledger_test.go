@@ -188,14 +188,6 @@ func TestLedgerDelayedInsertRace(t *testing.T) {
 			sig := ""
 			if tc.kind == ActionIssueCreate {
 				sig = "sig-" + e.repo
-				tx, _ := e.pool.Begin(ctx)
-				claimed, err := e.ledger.ClaimSignatureOwner(ctx, tx, e.ws, "o", e.repo, sig, 24*time.Hour)
-				if err != nil || !claimed {
-					t.Fatalf("claim: %v %v", claimed, err)
-				}
-				if err := tx.Commit(ctx); err != nil {
-					t.Fatal(err)
-				}
 			}
 			inserted, release := make(chan struct{}), make(chan struct{})
 			base := e.insertEffect(tc.effect)
@@ -205,7 +197,7 @@ func TestLedgerDelayedInsertRace(t *testing.T) {
 				<-release
 				return id, err
 			})
-			a, _, _ := e.ledger.Schedule(ctx, e.action(7, tc.kind, sig))
+			a := e.schedule(t, 7, tc.kind, sig)
 
 			var wgA sync.WaitGroup
 			wgA.Add(1)
@@ -518,74 +510,211 @@ func TestLedgerRestartMidPostBecomesAmbiguousAndReconcilesToDone(t *testing.T) {
 	}
 }
 
+// claim runs ClaimAndSchedule for the run and reports whether it claimed.
+func (e *ledgerEnv) claim(t *testing.T, run int64, sig string) (Action, bool) {
+	t.Helper()
+	a, ok, err := e.ledger.ClaimAndSchedule(context.Background(), e.action(run, ActionIssueCreate, sig), 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a, ok
+}
+
+// schedule inserts an action; issue_create goes through ClaimAndSchedule.
+func (e *ledgerEnv) schedule(t *testing.T, run int64, kind, sig string) Action {
+	t.Helper()
+	if kind == ActionIssueCreate {
+		a, ok := e.claim(t, run, sig)
+		if !ok {
+			t.Fatal("claim failed")
+		}
+		return a
+	}
+	a, _, err := e.ledger.Schedule(context.Background(), e.action(run, kind, sig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+func (e *ledgerEnv) ownerCount(t *testing.T, sig string) int {
+	t.Helper()
+	var n int
+	if err := e.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM ci_signature_owner WHERE workspace_id=$1 AND signature_hash=$2`, e.ws, sig).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
 func TestLedgerSignatureOwnerClaim(t *testing.T) {
 	e := newLedgerEnv(t)
-	ctx := context.Background()
 	sig := "sig-" + e.repo
 	var claimers atomic.Int32
 	var wg sync.WaitGroup
 	for i := 0; i < 5; i++ {
 		wg.Add(1)
-		go func() {
+		go func(run int64) {
 			defer wg.Done()
-			tx, err := e.pool.Begin(ctx)
-			if err != nil {
-				t.Error(err)
-				return
-			}
-			ok, err := e.ledger.ClaimSignatureOwner(ctx, tx, e.ws, "o", e.repo, sig, 24*time.Hour)
-			if err != nil {
-				t.Error(err)
-			}
-			if ok {
+			if _, ok := e.claim(t, run, sig); ok {
 				claimers.Add(1)
 			}
-			if err := tx.Commit(ctx); err != nil {
-				t.Error(err)
-			}
-		}()
+		}(int64(100 + i))
 	}
 	wg.Wait()
 	if claimers.Load() != 1 {
 		t.Fatalf("claimers = %d, want 1", claimers.Load())
 	}
+	var actions int
+	_ = e.pool.QueryRow(context.Background(), `SELECT count(*) FROM ci_watch_action WHERE workspace_id=$1`, e.ws).Scan(&actions)
+	if actions != 1 {
+		t.Fatalf("actions = %d, want 1", actions)
+	}
 
 	// cancelling an unrun issue_create releases its creating owner
+	ctx := context.Background()
 	sig2 := sig + "-2"
-	tx, _ := e.pool.Begin(ctx)
-	if ok, _ := e.ledger.ClaimSignatureOwner(ctx, tx, e.ws, "o", e.repo, sig2, 24*time.Hour); !ok {
-		t.Fatal("first claim")
-	}
-	_ = tx.Commit(ctx)
-	if _, _, err := e.ledger.Schedule(ctx, e.action(60, ActionIssueCreate, sig2)); err != nil {
-		t.Fatal(err)
-	}
-	if n, err := e.ledger.CancelScheduled(ctx, CancelFilter{WorkspaceID: e.ws, RepoOwner: "o", RepoName: e.repo}, ReasonOptedOut); err != nil || n != 1 {
+	e.schedule(t, 60, ActionIssueCreate, sig2)
+	if n, err := e.ledger.CancelScheduled(ctx, CancelFilter{WorkspaceID: e.ws, RepoOwner: "o", RepoName: e.repo}, ReasonOptedOut); err != nil || n != 2 {
 		t.Fatalf("cancel n=%d err=%v", n, err)
 	}
-	tx, _ = e.pool.Begin(ctx)
-	ok, err := e.ledger.ClaimSignatureOwner(ctx, tx, e.ws, "o", e.repo, sig2, 24*time.Hour)
-	_ = tx.Commit(ctx)
-	if err != nil || !ok {
-		t.Fatalf("claim after release: ok=%v err=%v", ok, err)
+	if _, ok := e.claim(t, 61, sig2); !ok {
+		t.Fatal("claim after release")
 	}
 
-	// an open owner is attached to, never claimed; a closed one inside the window too
+	// a closed owner inside the window is attached to; outside it reopens
 	if _, err := e.pool.Exec(ctx, `UPDATE ci_signature_owner SET state='closed', closed_at=$3 WHERE workspace_id=$1 AND signature_hash=$2`,
 		e.ws, sig2, e.clock.Now().Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	tx, _ = e.pool.Begin(ctx)
-	ok, _ = e.ledger.ClaimSignatureOwner(ctx, tx, e.ws, "o", e.repo, sig2, 24*time.Hour)
-	_ = tx.Commit(ctx)
-	if ok {
+	if _, ok := e.claim(t, 62, sig2); ok {
 		t.Fatal("claimed a signature closed one hour ago")
 	}
 	e.clock.Advance(25 * time.Hour)
-	tx, _ = e.pool.Begin(ctx)
-	ok, _ = e.ledger.ClaimSignatureOwner(ctx, tx, e.ws, "o", e.repo, sig2, 24*time.Hour)
-	_ = tx.Commit(ctx)
-	if !ok {
+	if _, ok := e.claim(t, 63, sig2); !ok {
 		t.Fatal("reopen after the window should claim")
+	}
+}
+
+// Duplicate delivery of a run whose issue_create was cancelled (opt-out) and
+// released its owner: the insert conflicts, so no new claim may be left behind.
+func TestLedgerDuplicateDeliveryAfterCancelLeavesNoStuckOwner(t *testing.T) {
+	e := newLedgerEnv(t)
+	ctx := context.Background()
+	sig := "dup-" + uuid.NewString()[:8]
+	first := e.schedule(t, 90, ActionIssueCreate, sig)
+	if n, err := e.ledger.CancelScheduled(ctx, CancelFilter{WorkspaceID: e.ws, RepoOwner: "o", RepoName: e.repo}, ReasonOptedOut); err != nil || n != 1 {
+		t.Fatalf("cancel n=%d err=%v", n, err)
+	}
+	if got := e.ownerCount(t, sig); got != 0 {
+		t.Fatalf("owner after cancel = %d, want 0", got)
+	}
+
+	dup, claimed := e.claim(t, 90, sig) // same run delivered again
+	if claimed || dup.ID != first.ID || dup.State != StateCancelled {
+		t.Fatalf("duplicate: claimed=%v id=%s state=%s, want existing cancelled %s", claimed, dup.ID, dup.State, first.ID)
+	}
+	if got := e.ownerCount(t, sig); got != 0 {
+		t.Fatalf("duplicate delivery left %d owner row(s), want 0", got)
+	}
+	// a different run of the same signature can still create the issue
+	if _, ok := e.claim(t, 91, sig); !ok {
+		t.Fatal("later run could not claim the signature")
+	}
+}
+
+// Concurrent duplicates of the same run: one claim, one action, one owner.
+func TestLedgerConcurrentDuplicateClaimAndSchedule(t *testing.T) {
+	e := newLedgerEnv(t)
+	sig := "cdup-" + uuid.NewString()[:8]
+	var claimers atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, ok := e.claim(t, 95, sig); ok {
+				claimers.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	var actions int
+	_ = e.pool.QueryRow(context.Background(), `SELECT count(*) FROM ci_watch_action WHERE workspace_id=$1`, e.ws).Scan(&actions)
+	if claimers.Load() != 1 || actions != 1 || e.ownerCount(t, sig) != 1 {
+		t.Fatalf("claimers=%d actions=%d owners=%d, want 1/1/1", claimers.Load(), actions, e.ownerCount(t, sig))
+	}
+}
+
+// A crash between the owner claim and the action insert leaves neither.
+func TestLedgerOwnerClaimAndScheduleAreAtomic(t *testing.T) {
+	e := newLedgerEnv(t)
+	ctx := context.Background()
+	sig := "atomic-" + uuid.NewString()[:8]
+	bad := e.action(70, ActionIssueCreate, sig)
+	cctx, cancel := context.WithCancel(ctx)
+	cancel() // worker dies: every statement fails, the tx cannot commit
+	if _, _, err := e.ledger.ClaimAndSchedule(cctx, bad, time.Hour); err == nil {
+		t.Fatal("expected an error from a dead context")
+	}
+	var actions int
+	_ = e.pool.QueryRow(ctx, `SELECT count(*) FROM ci_watch_action WHERE workspace_id=$1`, e.ws).Scan(&actions)
+	if e.ownerCount(t, sig) != 0 || actions != 0 {
+		t.Fatalf("after crash: owners=%d actions=%d, want 0/0", e.ownerCount(t, sig), actions)
+	}
+	// a mid-transaction failure after the claim: force the insert to fail
+	if _, err := e.pool.Exec(ctx, `ALTER TABLE ci_watch_action ADD CONSTRAINT ci_test_fail_insert CHECK (original_run_id <> 71) NOT VALID`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = e.pool.Exec(ctx, `ALTER TABLE ci_watch_action DROP CONSTRAINT IF EXISTS ci_test_fail_insert`)
+	})
+	if _, _, err := e.ledger.ClaimAndSchedule(ctx, e.action(71, ActionIssueCreate, sig), time.Hour); err == nil {
+		t.Fatal("expected the insert to fail")
+	}
+	if e.ownerCount(t, sig) != 0 {
+		t.Fatalf("failed insert left %d owner row(s), want 0", e.ownerCount(t, sig))
+	}
+	if _, err := e.pool.Exec(ctx, `ALTER TABLE ci_watch_action DROP CONSTRAINT ci_test_fail_insert`); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := e.claim(t, 71, sig); !ok {
+		t.Fatal("retry claim failed")
+	}
+	_ = e.pool.QueryRow(ctx, `SELECT count(*) FROM ci_watch_action WHERE workspace_id=$1`, e.ws).Scan(&actions)
+	if actions != 1 || e.ownerCount(t, sig) != 1 {
+		t.Fatalf("actions=%d owners=%d, want 1/1", actions, e.ownerCount(t, sig))
+	}
+}
+
+// After a POST and a crash, a restarted ledger that sweeps and runs before
+// the rerun executor registers must not turn the row back into work.
+func TestLedgerRestartBeforeRemoteRegistrationNeverReschedulesRerun(t *testing.T) {
+	e := newLedgerEnv(t)
+	ctx := context.Background()
+	a, _, _ := e.ledger.Schedule(ctx, e.action(80, ActionRerun, ""))
+	if _, err := e.pool.Exec(ctx, `UPDATE ci_watch_action SET state='executing', lease_epoch=1, lease_until=$2 WHERE id=$1`,
+		a.ID, e.clock.Now().Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	e.clock.Advance(3 * time.Minute)
+	// restarted process: nothing registered yet
+	if _, err := e.ledger.Sweep(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.get(t, a.ID); got.State != StateAmbiguous {
+		t.Fatalf("after sweep: %s, want ambiguous", got.State)
+	}
+	if ran, err := e.ledger.RunOne(ctx); err != nil || ran {
+		t.Fatalf("RunOne ran=%v err=%v before registration", ran, err)
+	}
+	r := &fakeRemote{found: []bool{true}, reconOut: RemoteOutcome{State: StateDone}}
+	e.ledger.RegisterRemote(ActionRerun, r)
+	e.clock.Advance(3 * time.Minute)
+	if _, err := e.ledger.ReconcileOne(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.get(t, a.ID); got.State != StateDone || r.executes != 0 {
+		t.Fatalf("final: %s executes=%d, want done/0", got.State, r.executes)
 	}
 }

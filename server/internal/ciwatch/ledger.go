@@ -37,7 +37,6 @@ const (
 
 const (
 	ReasonAttemptsExhausted = "attempts_exhausted"
-	ReasonNoExecutor        = "no_executor"
 	ReasonReconcileNotFound = "reconcile_not_found"
 	ReasonLeaseExpired      = "lease_expired"
 	ReasonPostError         = "post_error"
@@ -139,6 +138,26 @@ func (l *Ledger) RegisterRemote(kind string, e RemoteExecutor) {
 	l.mu.Unlock()
 }
 
+// remoteActionKinds are the kinds whose effect leaves this database. Recovery
+// classifies by this list, never by what is registered at restart time.
+var remoteActionKinds = []string{ActionRerun}
+
+// registeredKinds: a row of a kind with no executor yet waits (a restart can
+// run before registration); it is never failed or sent anywhere.
+func (l *Ledger) registeredKinds() []string {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	kinds := make([]string, 0, len(l.local)+len(l.remote))
+	for k := range l.local {
+		kinds = append(kinds, k)
+	}
+	for k := range l.remote {
+		kinds = append(kinds, k)
+	}
+	return kinds
+}
+
+// remoteKinds are the remote kinds that have an executor registered.
 func (l *Ledger) remoteKinds() []string {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
@@ -174,27 +193,58 @@ func diagnostic(err error) string {
 	return string(r)
 }
 
-// querier is what the pool and a transaction share, so Schedule can join the
-// caller's transaction (Admit schedules in the same tx as the breaker check).
-type querier interface {
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-}
-
 func (l *Ledger) Get(ctx context.Context, id string) (Action, error) {
 	return getAction(ctx, l.pool, id)
 }
 
-func getAction(ctx context.Context, q querier, id string) (Action, error) {
+func getAction(ctx context.Context, q queryer, id string) (Action, error) {
 	return scanAction(q.QueryRow(ctx, `SELECT `+actionCols+` FROM ci_watch_action WHERE id=$1::uuid`, id))
+}
+
+// queryer is satisfied by both the pool and a transaction.
+type queryer interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 // Schedule claims (repo, original run, kind). inserted=false returns the
 // existing row; only the inserting caller owns the action.
 func (l *Ledger) Schedule(ctx context.Context, n NewAction) (Action, bool, error) {
+	if n.Kind == ActionIssueCreate {
+		return Action{}, false, errors.New("ciwatch: issue_create goes through ClaimAndSchedule")
+	}
 	return l.schedule(ctx, l.pool, n)
 }
 
-func (l *Ledger) schedule(ctx context.Context, q querier, n NewAction) (Action, bool, error) {
+// ClaimAndSchedule is the only way to create an issue_create action. In one
+// transaction it claims the signature owner and inserts n. claimed=false means
+// nothing new was committed: the signature is already owned, or this
+// (repo, run, kind) was scheduled before (duplicate delivery, even after a
+// cancel) and the existing action is returned. A crash leaves neither row.
+func (l *Ledger) ClaimAndSchedule(ctx context.Context, n NewAction, reopenAfter time.Duration) (Action, bool, error) {
+	if n.Kind != ActionIssueCreate || n.SignatureHash == "" {
+		return Action{}, false, errors.New("ciwatch: ClaimAndSchedule needs an issue_create action with a signature")
+	}
+	tx, err := l.pool.Begin(ctx)
+	if err != nil {
+		return Action{}, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	owned, err := l.claimOwner(ctx, tx, n.WorkspaceID, n.RepoOwner, n.RepoName, n.SignatureHash, reopenAfter)
+	if err != nil {
+		return Action{}, false, err
+	}
+	if !owned {
+		a, err := l.existing(ctx, tx, n)
+		return a, false, err
+	}
+	a, inserted, err := l.schedule(ctx, tx, n)
+	if err != nil || !inserted {
+		return a, false, err // deferred Rollback drops the new claim
+	}
+	return a, true, tx.Commit(ctx)
+}
+
+func (l *Ledger) schedule(ctx context.Context, q queryer, n NewAction) (Action, bool, error) {
 	var id string
 	err := q.QueryRow(ctx, `
 		INSERT INTO ci_watch_action (workspace_id, repo_owner, repo_name, original_run_id, action_kind,
@@ -215,6 +265,18 @@ func (l *Ledger) schedule(ctx context.Context, q querier, n NewAction) (Action, 
 	}
 	a, err := getAction(ctx, q, id)
 	return a, inserted, err
+}
+
+// existing returns the action already scheduled for n's key, or the zero
+// Action when there is none.
+func (l *Ledger) existing(ctx context.Context, q queryer, n NewAction) (Action, error) {
+	a, err := scanAction(q.QueryRow(ctx, `SELECT `+actionCols+` FROM ci_watch_action
+		WHERE workspace_id=$1::uuid AND repo_owner=$2 AND repo_name=$3 AND original_run_id=$4 AND action_kind=$5`,
+		n.WorkspaceID, n.RepoOwner, n.RepoName, n.OriginalRunID, n.Kind))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Action{}, nil
+	}
+	return a, err
 }
 
 // settle ends a row held by tx, fenced on its epoch. A non-done end of an
@@ -255,7 +317,8 @@ func (l *Ledger) RunOne(ctx context.Context) (bool, error) {
 	defer func() { _ = tx.Rollback(ctx) }()
 	now := l.now()
 	a, err := scanAction(tx.QueryRow(ctx, `SELECT `+actionCols+` FROM ci_watch_action
-		WHERE state='scheduled' AND due_at<=$1 ORDER BY due_at LIMIT 1 FOR UPDATE SKIP LOCKED`, now))
+		WHERE state='scheduled' AND due_at<=$1 AND action_kind = ANY($2)
+		ORDER BY due_at LIMIT 1 FOR UPDATE SKIP LOCKED`, now, l.registeredKinds()))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -305,14 +368,12 @@ func (l *Ledger) run(ctx context.Context, tx pgx.Tx, a Action, now time.Time) (a
 	}
 
 	l.mu.RLock()
-	effect, isLocal := l.local[a.Kind]
+	effect := l.local[a.Kind]
 	remote, isRemote := l.remote[a.Kind]
 	l.mu.RUnlock()
 	switch {
 	case isRemote:
 		return l.claimRemote(ctx, tx, a, remote, now)
-	case !isLocal:
-		return nil, l.settle(ctx, tx, a, StateScheduled, StateFailed, ReasonNoExecutor, "", "")
 	}
 
 	a.LeaseEpoch++
@@ -467,7 +528,7 @@ func (l *Ledger) postRemote(ctx context.Context, a Action, ex RemoteExecutor) er
 // kinds become ambiguous (read-only reconcile); local kinds roll back to
 // scheduled under a new epoch. Rows locked by a live transaction are skipped.
 func (l *Ledger) Sweep(ctx context.Context) (int, error) {
-	now, remote := l.now(), l.remoteKinds()
+	now, remote := l.now(), remoteActionKinds
 	const lockedExpired = `id IN (SELECT id FROM ci_watch_action WHERE state='executing' AND lease_until<$1
 		AND %s FOR UPDATE SKIP LOCKED)`
 	amb, err := l.pool.Exec(ctx, `UPDATE ci_watch_action SET state='ambiguous', reason=$3, lease_until=NULL,
@@ -582,10 +643,10 @@ func (l *Ledger) cancelScheduled(ctx context.Context, tx pgx.Tx, f CancelFilter,
 	return len(cancelled), nil
 }
 
-// ClaimSignatureOwner makes the caller the one creator for (repo, signature)
+// claimOwner makes the caller the one creator for (repo, signature)
 // under an advisory lock held to the end of tx. false means an issue is being
 // created, is open, or was closed inside reopenAfter: attach to it instead.
-func (l *Ledger) ClaimSignatureOwner(ctx context.Context, tx pgx.Tx, ws, owner, repo, sig string, reopenAfter time.Duration) (bool, error) {
+func (l *Ledger) claimOwner(ctx context.Context, tx pgx.Tx, ws, owner, repo, sig string, reopenAfter time.Duration) (bool, error) {
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, ownerKey(ws, owner, repo, sig)); err != nil {
 		return false, err
 	}

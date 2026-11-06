@@ -30,7 +30,7 @@ type watchConfig struct {
 }
 
 // loadConfig reads the repo's caps and owners; a repo without a row gets the column defaults.
-func loadConfig(ctx context.Context, q querier, a Action) (watchConfig, error) {
+func loadConfig(ctx context.Context, q queryer, a Action) (watchConfig, error) {
 	c := watchConfig{MaxNewIssuesPerDay: 5, MaxOwnerWakesPerHour: 6}
 	err := q.QueryRow(ctx, `SELECT COALESCE(fix_owner_kind,''), COALESCE(fix_owner_id::text,''),
 			COALESCE(notify_member_id::text,''), max_new_issues_per_day, max_owner_wakes_per_hour
@@ -51,7 +51,7 @@ func lockRepoCaps(ctx context.Context, tx pgx.Tx, a Action) error {
 }
 
 // actor is the member a watcher issue or comment is attributed to.
-func (c watchConfig) actor(ctx context.Context, q querier, ws string) (string, error) {
+func (c watchConfig) actor(ctx context.Context, q queryer, ws string) (string, error) {
 	if c.NotifyMemberID != "" {
 		return c.NotifyMemberID, nil
 	}

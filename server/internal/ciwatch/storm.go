@@ -177,18 +177,34 @@ func (l *Ledger) attach(ctx context.Context, tx pgx.Tx, f Failure, kind string, 
 	case cur == KindIncident:
 		reopen = ReopenAfterIncident
 	}
-	claimed, err := l.ClaimSignatureOwner(ctx, tx, f.WorkspaceID, f.RepoOwner, f.RepoName, f.SignatureHash, reopen)
+	// A savepoint, so a duplicate issue_create (same run and kind scheduled
+	// before) drops the claim instead of leaving an orphan `creating` owner.
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		return Admission{}, err
+	}
+	defer func() { _ = sp.Rollback(ctx) }()
+	claimed, err := l.claimOwner(ctx, sp, f.WorkspaceID, f.RepoOwner, f.RepoName, f.SignatureHash, reopen)
 	if err != nil {
 		return Admission{}, err
 	}
 	if claimed {
-		if _, err := tx.Exec(ctx, `UPDATE ci_signature_owner SET kind=$5, fail_count=$6, last_run_url=$7, digest_class='',
+		if _, err := sp.Exec(ctx, `UPDATE ci_signature_owner SET kind=$5, fail_count=$6, last_run_url=$7, digest_class='',
 			last_digest_at=NULL WHERE workspace_id=$1::uuid AND repo_owner=$2 AND repo_name=$3 AND signature_hash=$4`,
 			f.WorkspaceID, f.RepoOwner, f.RepoName, f.SignatureHash, kind, initial, f.RunURL); err != nil {
 			return Admission{}, err
 		}
-		_, _, err := l.schedule(ctx, tx, l.newAction(f, ActionIssueCreate, strings.ToLower(f.Protocol)))
-		return Admission{Outcome: OutcomeScheduled}, err
+		_, inserted, err := l.schedule(ctx, sp, l.newAction(f, ActionIssueCreate, strings.ToLower(f.Protocol)))
+		if err != nil {
+			return Admission{}, err
+		}
+		if !inserted {
+			return Admission{Outcome: OutcomeDuplicate}, nil // deferred Rollback drops the claim
+		}
+		return Admission{Outcome: OutcomeScheduled}, sp.Commit(ctx)
+	}
+	if err := sp.Rollback(ctx); err != nil {
+		return Admission{}, err
 	}
 
 	var state string
