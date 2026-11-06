@@ -237,6 +237,16 @@ describe("RepositoriesSection", () => {
     expect(screen.queryByRole("button", { name: /Actions for/ })).toBeNull();
   });
 
+  it("offers the CI watcher on GitHub rows to managers only", () => {
+    const { unmount } = render(<RepositoriesSection />, { wrapper: Wrapper });
+    expect(screen.getByRole("button", { name: "CI watcher" })).toHaveAttribute("aria-expanded", "false");
+    unmount();
+
+    roleRef.current = "member";
+    render(<RepositoriesSection />, { wrapper: Wrapper });
+    expect(screen.queryByRole("button", { name: "CI watcher" })).toBeNull();
+  });
+
   it("starts GitHub connection with the signed repository return target", async () => {
     mockGetGitHubConnectURL.mockResolvedValue({
       configured: true,
