@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"syscall"
+	"unicode"
 )
 
 // ErrorKind is a coarse, user-facing classification of an error. The CLI's
@@ -588,6 +589,25 @@ func userMessage(err error, lang Language) string {
 // a bare code is kept only as a last resort so the user still gets something
 // greppable when no sentence is on offer.
 func extractServerMessage(body string) string {
+	return escapeControls(extractRawServerMessage(body))
+}
+
+// escapeControls renders control characters (C0, DEL, C1) as visible \xNN
+// escapes. A server message can carry text an outsider chose, such as a remote
+// skill's file name; printed raw, an ESC sequence would rewrite the terminal.
+func escapeControls(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			fmt.Fprintf(&b, `\x%02x`, r)
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func extractRawServerMessage(body string) string {
 	body = strings.TrimSpace(body)
 	if body == "" || body[0] != '{' {
 		return ""

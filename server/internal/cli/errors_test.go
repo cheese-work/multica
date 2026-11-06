@@ -763,3 +763,25 @@ func TestWithUserMessageUnlessNetwork(t *testing.T) {
 		}
 	})
 }
+
+// TestServerMessageEscapesTerminalControls: a server message can embed
+// attacker-chosen text (a remote skill's file name in a 413). Rendered raw,
+// an ESC sequence rewrites the terminal; it must reach stderr as literal text.
+func TestServerMessageEscapesTerminalControls(t *testing.T) {
+	body := `{"error":"file \u001b[2K\u001b[1Aall good\u009b31m big.txt exceeds the limit\nok"}`
+	err := &HTTPError{StatusCode: 413, Body: body}
+
+	for name, got := range map[string]string{
+		"FormatError":   FormatError(err, false),
+		"ServerMessage": ServerMessage(err),
+	} {
+		for _, r := range got {
+			if r < 0x20 || (r >= 0x7f && r < 0xa0) {
+				t.Errorf("%s emitted raw control %U in %q", name, r, got)
+			}
+		}
+	}
+	if got := ServerMessage(err); !strings.Contains(got, `\x1b[2K`) {
+		t.Errorf("escaped form should stay readable, got %q", got)
+	}
+}
