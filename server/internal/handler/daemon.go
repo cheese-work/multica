@@ -3856,6 +3856,24 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				}
 			}
 
+			// Both resume paths above end here. The resumed transcript holds
+			// whatever tainted input earlier turns read (a fired issue watch
+			// stamps only its own turn), so the claimed task takes that taint
+			// before the profile is finalized. A resumed fork or continuation
+			// also holds copied history, so the same helper as the seeds applies
+			// the stored chat taint and the ancestry check. If it cannot be
+			// recorded, keep the task queued rather than run the resume.
+			if resp.PriorSessionID != "" {
+				if err := h.recordChatTaint(r.Context(), task, resp.PriorSessionID); err != nil {
+					slog.Error("chat claim: record resume taint failed; preserving task for redelivery",
+						"task_id", uuidToString(task.ID), "chat_session_id", uuidToString(cs.ID), "error", err)
+					return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+						outcome: "error_chat_seed_taint", status: http.StatusInternalServerError, message: "failed to record seed taint",
+					}
+				}
+				applyRunProfile()
+			}
+
 			// MUL-5305: continuity-gap disclosure is independent of whether
 			// either pointer field needed fallback, so this query stays
 			// unconditional for non-force-fresh chat claims.
@@ -3863,6 +3881,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			missing, err := h.Queries.GetLatestChatTaskRolloutMissing(r.Context(), db.GetLatestChatTaskRolloutMissingParams{
 				ChatSessionID:          cs.ID,
 				ChannelContextRevision: contextRevision,
+				CompactionEpoch:        cs.CompactionEpoch,
 			})
 			h.Metrics.ObserveChatClaimRolloutMissingQuery(time.Since(started).Seconds())
 			if err == nil && missing {
@@ -3991,9 +4010,27 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			resp.ChatDecisionContext = decisions
 		}
 
-		// Branch order (CHE-2819): a compacted DM never reaches the fork block,
-		// whose history reads the unfiltered DM; the summary carries what mattered.
+		// A fresh session seeded from other DM content (a compaction summary, a
+		// fork's copied transcript, a continuation summary) lost the resume
+		// pointer that carried the source's taint. Take the taint before the
+		// profile is finalized; if it cannot be recorded, keep the task queued
+		// rather than seed it.
+		seedWithTaint := func(block string) *claimBuildFailure {
+			if err := h.recordChatTaint(r.Context(), task, ""); err != nil {
+				slog.Error("chat claim: record seed taint failed; preserving task for redelivery",
+					"task_id", uuidToString(task.ID), "chat_session_id", uuidToString(cs.ID), "error", err)
+				return &claimBuildFailure{
+					outcome: "error_chat_seed_taint", status: http.StatusInternalServerError, message: "failed to record seed taint",
+				}
+			}
+			applyRunProfile()
+			resp.ChatMessage = block + "\n\nCurrent message:\n\n" + resp.ChatMessage
+			return nil
+		}
+
 		if cs.SegmentFloorID.Valid && resp.PriorSessionID == "" {
+			// Branch order (CHE-2819): a compacted DM never reaches the fork block,
+			// whose history reads the unfiltered DM; the summary carries what mattered.
 			block, err := h.carryOverBlock(r.Context(), cs, unanswered)
 			if err != nil {
 				slog.Error("chat claim: build carry-over block failed; preserving task for redelivery",
@@ -4002,7 +4039,25 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 					outcome: "error_chat_carry_over", status: http.StatusInternalServerError, message: "failed to build carry-over context",
 				}
 			}
-			resp.ChatMessage = block + "\n\nCurrent message:\n\n" + resp.ChatMessage
+			if failure := seedWithTaint(block); failure != nil {
+				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, failure
+			}
+		} else if cs.CompactionEpoch > 0 && resp.PriorSessionID == "" {
+			// A DM compacted before segment floors existed: seed from the latest
+			// summary row. It still outranks the fork and continuation blocks.
+			block, err := h.compactionSeedBlock(r.Context(), cs, unanswered)
+			if err != nil {
+				slog.Error("chat claim: build compaction seed failed; preserving task for redelivery",
+					"task_id", uuidToString(task.ID), "chat_session_id", uuidToString(cs.ID), "error", err)
+				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+					outcome: "error_chat_compaction_seed", status: http.StatusInternalServerError, message: "failed to build compaction seed",
+				}
+			}
+			if block != "" {
+				if failure := seedWithTaint(block); failure != nil {
+					return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, failure
+				}
+			}
 		} else if cs.ForkedFromSessionID.Valid && resp.PriorSessionID == "" {
 			block, inlined, err := h.forkContextBlock(r.Context(), cs, unanswered, hasLocalDirectory(resp.ProjectResources))
 			if err != nil {
@@ -4014,7 +4069,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}
 			slog.Info("chat claim: fork context block added",
 				"task_id", uuidToString(task.ID), "chat_session_id", uuidToString(cs.ID), "inlined_messages", inlined)
-			resp.ChatMessage = block + "\n\nCurrent message:\n\n" + resp.ChatMessage
+			if failure := seedWithTaint(block); failure != nil {
+				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, failure
+			}
 		} else if cs.ContinuedFromSessionID.Valid && resp.PriorSessionID == "" {
 			summary, err := h.Queries.GetChatContinuationSummary(r.Context(), cs.ID)
 			if err != nil {
@@ -4022,7 +4079,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 					outcome: "error_chat_continuation_summary", status: http.StatusInternalServerError, message: "failed to load continuation summary",
 				}
 			}
-			resp.ChatMessage = "Continuation context from the previous DM:\n\n" + summary.Content + "\n\nCurrent message:\n\n" + resp.ChatMessage
+			if failure := seedWithTaint("Continuation context from the previous DM:\n\n" + summary.Content); failure != nil {
+				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, failure
+			}
 		}
 		if strings.TrimSpace(resp.ThreadName) == "" && resp.ChatMessage != "" {
 			resp.ThreadName = resp.ChatMessage
@@ -7382,6 +7441,22 @@ func (h *Handler) inheritSessionTaint(ctx context.Context, task *db.AgentTaskQue
 	}
 	task.TaintIds = taint
 	return true
+}
+
+// recordChatTaint is the single path by which a DM task takes the taint of chat
+// content it holds (CHE-3702): a resumed session (sessionID set), a fresh
+// session seeded from a compaction summary, fork or continuation, and a read of
+// the chat transcript (sessionID empty). The caller fails closed on an error.
+func (h *Handler) recordChatTaint(ctx context.Context, task *db.AgentTaskQueue, sessionID string) error {
+	taint, err := h.Queries.InheritChatTaint(ctx, db.InheritChatTaintParams{
+		ID:        task.ID,
+		SessionID: pgtype.Text{String: sessionID, Valid: sessionID != ""},
+	})
+	if err != nil {
+		return err
+	}
+	task.TaintIds = taint
+	return nil
 }
 
 // MarkTaskExternalRead records that the run contacted a host other than the

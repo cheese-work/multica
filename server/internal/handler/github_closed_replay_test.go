@@ -201,3 +201,28 @@ func TestGitHubReplayClosedPullRequestClearsMarkerWithoutRoutedWorkspace(t *test
 		t.Fatalf("owed replays = %d, want 0", owed)
 	}
 }
+
+// A replay for an installation with no allowed binding (revoked or denied after
+// the refresh selected the row) must not reach GitHub or record an owed marker.
+func TestGitHubReplayClosedPullRequestSkipsInstallationWithoutAllowedBinding(t *testing.T) {
+	fixture := newGitHubReviewFixture(t)
+	handler := *fixture.handler
+	fetches := 0
+	handler.fetchPullRequestJSON = func(context.Context, int64, string, string, int32) (json.RawMessage, error) {
+		fetches++
+		return nil, errors.New("must not fetch")
+	}
+	const unboundInstallation = 987654322
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM github_pr_closed_replay WHERE installation_id=$1`, int64(unboundInstallation))
+	})
+	if err := handler.replayClosedPullRequest(context.Background(), unboundInstallation, "acme", "widget", 2019); err != nil {
+		t.Fatal(err)
+	}
+	if fetches != 0 {
+		t.Fatalf("GitHub fetches = %d, want 0", fetches)
+	}
+	if owed := dbfx.Count(t, `SELECT count(*) FROM github_pr_closed_replay WHERE installation_id=$1`, int64(unboundInstallation)); owed != 0 {
+		t.Fatalf("owed replays = %d, want 0", owed)
+	}
+}

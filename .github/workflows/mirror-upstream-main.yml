@@ -1,0 +1,40 @@
+name: Mirror upstream-main
+
+# CHE-3955. Fast-forwards branch upstream-main to multica-ai/multica main.
+# The only writer of upstream-main. Runs only the reviewed mirror script from
+# the default branch; builds nothing and installs nothing.
+#
+# Failure notification: a failed scheduled run notifies the user who last
+# edited the cron line below (Actions notifications for failed workflows), and
+# shows a red run on the Actions tab. The owner keeps "Send notifications for
+# failed workflows only" enabled under Settings > Notifications > Actions.
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mirror-upstream-main
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: Fast-forward upstream-main
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: scripts/mirror-upstream-main.sh
+          sparse-checkout-cone-mode: false
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Fast-forward mirror
+        env:
+          TARGET_URL: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
+        run: bash scripts/mirror-upstream-main.sh

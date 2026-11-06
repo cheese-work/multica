@@ -18,7 +18,7 @@ const (
 	decisionAskDescription  = "Ask the person who requested this issue one decision. The server picks the " +
 		"person and the DM lane and parks the issue until they answer. Arguments: ask (context_eli10, " +
 		"agent_did, decision, stakes_if_wrong, options[{label, what_happens, pros, cons, cost_or_time}], " +
-		"recommendation, default_if_no_reply, source_issue_id, source_comment_id), escalation_class " +
+		"recommendation, recommended_option (exact label; required with two or more options), confidence (optional, 0-1), default_if_no_reply, source_issue_id, source_comment_id), escalation_class " +
 		"(reversible, spend, deploy, publish, irreversible or product_direction), optional footer."
 	decisionAskSchema = `{"type":"object","required":["ask","escalation_class"],"properties":{"ask":{"type":"object"},"escalation_class":{"type":"string"},"footer":{"type":"string"},"parent_id":{"type":"string"}},"additionalProperties":false}`
 )

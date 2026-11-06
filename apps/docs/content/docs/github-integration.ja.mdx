@@ -237,6 +237,14 @@ GITHUB_APP_PRIVATE_KEY=<complete PEM private key, including BEGIN/END lines and 
 
 既存の App に Members または Actions 権限を追加する場合、新しいワークスペースへ接続する前に対象 organization ごとに権限変更を承認してください。既存の installation は新しい権限を承認する必要があります。承認されるまで、`--until-gh-run` wakeup は workflow イベントを受け取りません。
 
+必要に応じて `GITHUB_ALLOWED_ACCOUNT_IDS` に、GitHub アカウントの数値 ID（login ではなく、ユーザーまたは organization の `id`）をカンマ区切りで設定します。未設定または空の場合は、上記の検証を通過したアカウントならどれでも接続できます。設定すると、アカウント ID が一覧にない installation の binding を Multica は拒否します。setup callback は `github_error=installation_not_allowed` でリダイレクトし、binding は作成しません。code のない **Redirect on update** の callback は、その binding に保存済みのアカウント ID で判定します。保存済みのアカウント ID がない binding は拒否されます（fail closed）。login など不正な値は、起動時にサーバーを停止させます。
+
+```dotenv
+GITHUB_ALLOWED_ACCOUNT_IDS=1234567,7654321
+```
+
+GitHub の `deleted` と `suspend` イベントは、一覧に関係なく常に binding を削除します。
+
 </Step>
 <Step>
 
