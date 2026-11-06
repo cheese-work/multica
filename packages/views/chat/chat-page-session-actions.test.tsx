@@ -153,7 +153,6 @@ vi.mock("./components/use-chat-controller", async () => {
         pendingTaskId: null,
         showSkeleton: false,
         hasMessages: false,
-        firstItemIndex: 0,
         hasOlderMessages: false,
         isFetchingOlderMessages: false,
         fetchOlderMessages: vi.fn(),

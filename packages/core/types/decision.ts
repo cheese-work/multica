@@ -25,6 +25,8 @@ export interface DecisionRequestCard {
   id: string;
   issue_id: string;
   issue_identifier: string;
+  /** The source issue's title for the Source row; absent on an older server. */
+  issue_title?: string;
   source_comment_id?: string | null;
   ask: string;
   /** The asking agent's name; absent when the agent is gone or the server is older. */
