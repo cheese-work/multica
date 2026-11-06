@@ -102,7 +102,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"decision_intent":                    workspaceDeleteWorker,
 	"decision_intent_target":             workspaceDeleteWorker,
 	"decision_request":                   workspaceDeleteWorker,
-	"decision_wait":                      workspaceDelete, // explicit workspace-scoped delete in DeleteWorkspaceLeafData; no FK.
+	"decision_wait":                      workspaceDelete,       // explicit workspace-scoped delete in DeleteWorkspaceLeafData; no FK.
 	"decision_wake_event":                workspaceDeleteWorker, // no FK; orphan cleanup deletes the rows with their request.
 	"decision_wake_receipt":              workspaceDeleteWorker, // no FK; orphan cleanup deletes the rows with their event's request.
 	"decision_worker_lease":              workspaceDeleteKeep,
