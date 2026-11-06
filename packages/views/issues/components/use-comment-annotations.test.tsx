@@ -1,6 +1,6 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useCommentDraftStore } from "@multica/core/issues/stores";
+import { useAnnotationNoteDraftStore, useCommentDraftStore } from "@multica/core/issues/stores";
 import type { TimelineEntry } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
 import { useCommentAnnotations } from "./use-comment-annotations";
@@ -73,6 +73,7 @@ function selectText(container: HTMLElement, input: "mouse" | "keyboard" = "mouse
 
 beforeEach(() => {
   useCommentDraftStore.setState({ drafts: {} });
+  useAnnotationNoteDraftStore.setState({ drafts: {} });
   // jsdom has no layout; give Floating UI a viewport for its real hide middleware.
   Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1024 });
   Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 768 });
@@ -262,6 +263,19 @@ describe("selection to reply", () => {
     expect(useCommentDraftStore.getState().getAnnotations(key)[0]?.note).toBe("Please explain");
     fireEvent.click(await screen.findByRole("button", { name: "Edit annotation 1" }));
     expect(await screen.findByRole("textbox", { name: "Comment" })).toHaveValue("Please explain");
+  });
+
+  it("restores an unconfirmed note after the hook unmounts and remounts", async () => {
+    const first = renderWithI18n(<Fixture />);
+    selectText(first.container);
+    fireEvent.click(await screen.findByRole("button", { name: "Add to reply" }));
+    fireEvent.change(await screen.findByRole("textbox", { name: "Comment" }), { target: { value: "Survives remount" } });
+    first.unmount();
+
+    const second = renderWithI18n(<Fixture />);
+    selectText(second.container);
+    fireEvent.click(await screen.findByRole("button", { name: "Add to reply" }));
+    expect(await screen.findByRole("textbox", { name: "Comment" })).toHaveValue("Survives remount");
   });
 
   it.each([false, true])("keeps dismissed drafts, confirms changes and cancels explicit edits (description: %s)", async (description) => {

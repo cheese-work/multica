@@ -440,6 +440,7 @@
     "not_found": "This issue does not exist or has been deleted in this workspace.",
     "load_failed": "Couldn't load this issue. Check your connection and retry.",
     "card_load_failed": "Couldn't load this issue.",
+    "data_error": "This issue has data the app cannot read.",
     "retry": "Retry",
     "breadcrumb_project_unknown": "Unknown project",
     "back": "Back",
