@@ -400,6 +400,9 @@ func TestChatClaimSeedTaintRepairsRowsWrittenByThePredecessor(t *testing.T) {
 
 const unrecoverableTaint = "unrecoverable-ancestry"
 
+// unrecoverableTaintOf is the id a chat that lost its source carries.
+func unrecoverableTaintOf(chatID string) string { return unrecoverableTaint + ":" + chatID }
+
 // CHE-3702 round 16: a fork written by the predecessor binary has empty
 // taint_ids and no verified mark. If its source is deleted before the first
 // claim after re-upgrade, nothing can say what the copy held, so the claim
@@ -437,8 +440,8 @@ func TestChatClaimSeedFailsClosedWhenPredecessorForkLostItsSource(t *testing.T) 
 
 			dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "chat_session_id": leafID, "priority": 1000})
 			dm := claimChatTaintTask(t, runtimeID)
-			if dm.Profile != "restricted" || !reflect.DeepEqual(dm.TaintIDs, []string{unrecoverableTaint}) {
-				t.Fatalf("claim = %+v, want restricted with taint [%s]", dm, unrecoverableTaint)
+			if dm.Profile != "restricted" || !reflect.DeepEqual(dm.TaintIDs, []string{unrecoverableTaintOf(leafID)}) {
+				t.Fatalf("claim = %+v, want restricted with taint [%s]", dm, unrecoverableTaintOf(leafID))
 			}
 
 			delegateRuntime := createClaimReclaimRuntime(t, ctx, "Unrecoverable taint delegate runtime")
@@ -446,7 +449,7 @@ func TestChatClaimSeedFailsClosedWhenPredecessorForkLostItsSource(t *testing.T) 
 			insertGrant(t, issueID, testWorkspaceID, []string{"docker"}, "1 minute", "1 hour", false)
 			taskID := createDispatchedClaimFixtureTask(t, ctx, delegateAgent, delegateRuntime, issueID, "120 seconds", false)
 			dbfx.Exec(t, `UPDATE agent_task_queue SET delegated_from_task_id = $2 WHERE id = $1`, taskID, dm.ID)
-			claimRestrictedWithTaint(t, delegateRuntime, []string{unrecoverableTaint})
+			claimRestrictedWithTaint(t, delegateRuntime, []string{unrecoverableTaintOf(leafID)})
 		})
 	}
 }
@@ -482,5 +485,44 @@ func TestChatForkTaintVerifiedFollowsTheSource(t *testing.T) {
 	claimChatTaintTask(t, runtimeID)
 	if !verified(predecessorID) {
 		t.Fatal("a repaired chat must be verified")
+	}
+}
+
+// The synthetic taint names the orphan, so a member clearing one orphan on an
+// issue does not suppress an unrelated orphan's taint on that issue.
+func TestUnrecoverableTaintIsPerOrphanAndClearsIndependently(t *testing.T) {
+	ctx := context.Background()
+	agentID, runtimeID, _ := createRuntimeGuardAgent(t, ctx)
+	issueRuntime := createClaimReclaimRuntime(t, ctx, "Orphan clear runtime")
+	issueAgent, issueID := createClaimReclaimAgentAndIssue(t, ctx, issueRuntime, "Orphan clear agent")
+
+	orphan := func(title string) (leafID string, taint []string) {
+		sourceID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": title + " source"})
+		leafID = dbfx.ChatSession(t, agentID, testutil.Cols{"title": title, "forked_from_session_id": sourceID})
+		dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": leafID, "role": "user", "content": "copied history"})
+		dbfx.Exec(t, `DELETE FROM chat_session WHERE id = $1`, sourceID)
+		dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "chat_session_id": leafID, "priority": 1000})
+		dm := claimChatTaintTask(t, runtimeID)
+		return leafID, dm.TaintIDs
+	}
+	leafA, taintA := orphan("orphan A")
+	leafB, taintB := orphan("orphan B")
+	wantA, wantB := unrecoverableTaintOf(leafA), unrecoverableTaintOf(leafB)
+	if !reflect.DeepEqual(taintA, []string{wantA}) || !reflect.DeepEqual(taintB, []string{wantB}) {
+		t.Fatalf("taints = %v and %v, want [%s] and [%s]", taintA, taintB, wantA, wantB)
+	}
+
+	dbfx.Task(t, issueAgent, testutil.Cols{"status": "completed", "runtime_id": issueRuntime, "issue_id": issueID, "taint_ids": taintA})
+	postClearIssueTaint(t, issueID, map[string]any{"taint_ids": taintA}, nil).Want(http.StatusOK)
+	dbfx.Task(t, issueAgent, testutil.Cols{"status": "completed", "runtime_id": issueRuntime, "issue_id": issueID, "taint_ids": taintB})
+	if got := issueTaintOf(t, issueID); !reflect.DeepEqual(got, []string{wantB}) {
+		t.Fatalf("issue taint = %v after clearing A then B arrived, want [%s]", got, wantB)
+	}
+
+	// A descendant of the same orphan shares its id.
+	childID := forkDM(t, leafA, "orphan-child", "")
+	dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "chat_session_id": childID, "priority": 1000})
+	if dm := claimChatTaintTask(t, runtimeID); !reflect.DeepEqual(dm.TaintIDs, []string{wantA}) {
+		t.Fatalf("descendant taint = %v, want [%s]", dm.TaintIDs, wantA)
 	}
 }

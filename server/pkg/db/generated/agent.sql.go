@@ -6518,14 +6518,11 @@ inherited AS (
         WHERE s.chat_session_id IN (SELECT id FROM ancestry WHERE id IS NOT NULL)
           AND s.chat_session_id IS DISTINCT FROM (SELECT t1.chat_session_id FROM agent_task_queue t1 WHERE t1.id = $1)
         UNION ALL
-        SELECT 'unrecoverable-ancestry'
-        WHERE EXISTS (
-            SELECT 1 FROM chat_session c
-            JOIN ancestry a ON a.id = c.id
-            JOIN LATERAL unnest(ARRAY[c.forked_from_session_id, c.continued_from_session_id]) AS p(id) ON p.id IS NOT NULL
-            WHERE NOT c.taint_verified
-              AND NOT EXISTS (SELECT 1 FROM chat_session m WHERE m.id = p.id)
-        )
+        SELECT 'unrecoverable-ancestry:' || c.id::text FROM chat_session c
+        JOIN ancestry a ON a.id = c.id
+        JOIN LATERAL unnest(ARRAY[c.forked_from_session_id, c.continued_from_session_id]) AS p(id) ON p.id IS NOT NULL
+        WHERE NOT c.taint_verified
+          AND NOT EXISTS (SELECT 1 FROM chat_session m WHERE m.id = p.id)
     ) u
 ),
 repaired AS (
@@ -6563,8 +6560,12 @@ RETURNING t.taint_ids
 // A chat in the ancestry that is not taint_verified and links to a chat that no
 // longer exists has copied history nobody can account for (a predecessor fork
 // whose source was deleted before the first claim). That adds the synthetic
-// taint 'unrecoverable-ancestry', so the task is restricted and so is every
-// delegate. taint_verified defaults to false, so a row inserted by a binary that
+// taint 'unrecoverable-ancestry:<id of that chat>', so the task is restricted
+// and so is every delegate. The id names the orphan: descendants of one orphan
+// share it (it is stored in chat_session.taint_ids and walks down), two
+// different orphans never do, so a member clearing one on an issue
+// (issue_taint_clear) does not hide the other. The format is stable; keep the
+// 'unrecoverable-ancestry:' prefix. taint_verified defaults to false, so a row inserted by a binary that
 // predates the column stays unverified. Writing the result back verifies the
 // chat, which also stores the synthetic taint for any later fork of it.
 // UNION drops repeated ids, so a cyclic chain ends. "inherited" (everything
