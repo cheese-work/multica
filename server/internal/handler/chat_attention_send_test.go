@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -406,4 +409,57 @@ func TestRetryOverlappingFirstSendWaitsForItInsteadOfRefusing(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("retry never returned")
 	}
+}
+
+// A keyed send must never hold one pool connection while it waits for another: concurrent
+// sends would fill the pool, each waiting on a second connection nobody can release. On a pool
+// of ONE connection that is a stall on the first request. Retries of a stored send and refused
+// new sends both finish.
+func TestKeyedSendNeverHoldsTwoPoolConnections(t *testing.T) {
+	dm := newAttentionDM(t)
+	dm.mustSend(t, "hello", map[string]any{"client_message_id": "attempt-1"})
+	dbfx.Exec(t, `UPDATE agent SET archived_at = now() WHERE id = $1`, dm.agentID) // every send now reaches a refusal
+
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		dsn = "postgres://multica:multica@localhost:5432/multica_test?sslmode=disable"
+	}
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.MaxConns = 1
+	one, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer one.Close()
+	h := *testHandler
+	h.Queries, h.TxStarter = db.New(one), one
+
+	send := func(id string) (int, string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		body := map[string]any{"content": "hello", "client_message_id": id}
+		req := withChatTestWorkspaceCtx(t, withURLParam(newRequest(http.MethodPost, "/api/chat/sessions/"+dm.sessionID+"/messages", body).WithContext(ctx), "sessionId", dm.sessionID))
+		w := httptest.NewRecorder()
+		h.SendChatMessage(w, req)
+		return w.Code, w.Body.String()
+	}
+	var wg sync.WaitGroup
+	for i, id := range []string{"attempt-1", "new-1", "attempt-1", "new-2"} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			code, body := send(id)
+			want := http.StatusConflict
+			if id == "attempt-1" {
+				want = http.StatusOK
+			}
+			if code != want {
+				t.Errorf("send %d (%s) on a one-connection pool: %d %s, want %d", i, id, code, body, want)
+			}
+		}()
+	}
+	wg.Wait()
 }
