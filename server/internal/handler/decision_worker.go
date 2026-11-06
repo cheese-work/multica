@@ -172,7 +172,7 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 			failures = errors.Join(failures, decisionAttempt(ctx, func() error {
 				result, err := stage.apply(ctx, request.WorkspaceID, request.ID)
 				if err == nil && len(result.Comments) > 0 {
-					worker.publishWithdrawal(result)
+					worker.handler.publishWithdrawal(result)
 				}
 				return err
 			}))
@@ -270,14 +270,14 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 	return errors.Join(failures, handler.checkDecisionWaits(ctx))
 }
 
-func (worker *DecisionWorker) publishWithdrawal(result decisiontx.Withdrawal) {
+func (handler *Handler) publishWithdrawal(result decisiontx.Withdrawal) {
 	workspaceID, agentID := uuidToString(result.Request.WorkspaceID), uuidToString(result.Request.AskingAgentID)
 	for _, comment := range result.Comments {
-		worker.handler.publish(protocol.EventCommentCreated, workspaceID, "agent", agentID, map[string]any{"comment": commentToResponse(comment, nil, nil)})
+		handler.publish(protocol.EventCommentCreated, workspaceID, "agent", agentID, map[string]any{"comment": commentToResponse(comment, nil, nil)})
 	}
-	worker.handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
+	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
 	if result.Answer.DisclaimedAt.Valid {
-		worker.handler.publishDecisionAnswerUpdated(workspaceID, "agent", agentID, result.Answer.ID, result.Request.IssueID, decisionStateDisclaimed)
+		handler.publishDecisionAnswerUpdated(workspaceID, "agent", agentID, result.Answer.ID, result.Request.IssueID, decisionStateDisclaimed)
 	}
 }
 

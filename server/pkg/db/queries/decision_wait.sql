@@ -80,6 +80,18 @@ UPDATE decision_wait SET
 WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id') AND closed_at IS NULL
 RETURNING *;
 
+-- name: SuspendDecisionWait :one
+-- The suspension write of a refusal (design §4.4.7): kind, clock, conflicting
+-- task and the restore target the capture rule chose. The caller runs it last,
+-- after the block write, so the status hook's flag change cannot override it.
+UPDATE decision_wait SET
+    phase = 'suspended', suspend_reason = sqlc.arg('suspend_reason'), suspended_at = now(),
+    refused_task_id = sqlc.narg('refused_task_id'), dispatch_refused_since = NULL,
+    restore_status = sqlc.arg('restore_status'), restore_assignee_type = sqlc.narg('restore_assignee_type'),
+    restore_assignee_id = sqlc.narg('restore_assignee_id'), restore_on_resume = sqlc.arg('restore_on_resume')
+WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id') AND closed_at IS NULL
+RETURNING *;
+
 -- name: MoveDecisionWaitStatus :one
 -- A non-episode status write: the restore flag goes false. In phase waiting,
 -- a new status that is not closed also suspends the episode as status_moved.
@@ -132,11 +144,19 @@ UPDATE decision_wait SET dispatch_refused_since = now()
 WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
   AND dispatch_refused_since IS NULL AND closed_at IS NULL AND phase = 'waiting';
 
+-- name: MarkDecisionWaitCloseRefused :exec
+-- A system close that cannot complete (no blocked step for no_resume_agent)
+-- demotes the episode in any phase, so suspended ones rotate out of the batch too.
+UPDATE decision_wait SET dispatch_refused_since = now()
+WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
+  AND dispatch_refused_since IS NULL AND closed_at IS NULL;
+
 -- name: ListDecisionEpisodeCandidates :many
--- Non-closed episodes that §6 can deliver now (design §4.4.1, clauses 2-4).
--- Closed-issue and unavailable-agent episodes are system-close candidates
--- (clause 1); the system close is L5d (design §11), so they stay out of the
--- batch here: an episode that cannot progress must not take a batch slot.
+-- Non-closed episodes that §6 can act on now (design §4.4.1). A closed issue
+-- or an unavailable asking agent makes the episode a system-close candidate
+-- (clause 1) whatever its requests say. Otherwise it is a candidate when it
+-- can deliver (clauses 2-4): an episode that cannot progress must not take a
+-- batch slot.
 -- Episodes with a refused dispatch sort last, in an order that rotates with
 -- the rotation argument, so a batch of persistent refusals cannot hold every
 -- slot while a later one could now dispatch. The run-budget resume condition
@@ -147,9 +167,11 @@ JOIN issue ON issue.id = wait.issue_id AND issue.workspace_id = wait.workspace_i
 JOIN agent asker ON asker.id = wait.asking_agent_id AND asker.workspace_id = wait.workspace_id
 LEFT JOIN project ON project.id = issue.project_id AND project.workspace_id = issue.workspace_id
 WHERE wait.closed_at IS NULL
-  AND issue.status NOT IN ('done', 'cancelled', 'agent_accepted', 'approved')
-  AND asker.archived_at IS NULL AND asker.runtime_id IS NOT NULL AND asker.kind <> 'system'
   AND (
+    issue.status IN ('done', 'cancelled', 'agent_accepted', 'approved')
+    OR asker.archived_at IS NOT NULL OR asker.runtime_id IS NULL OR asker.kind = 'system'
+    OR (
+  (
         (wait.phase = 'waiting' OR wait.suspend_reason = 'status_moved'
          OR (wait.suspend_reason = 'run_budget' AND (
              EXISTS (
@@ -185,6 +207,8 @@ WHERE wait.closed_at IS NULL
       JOIN decision_request bound ON bound.authority = 'human' AND bound.id = live.decision_request_id
       WHERE bound.id = ANY(wait.request_ids) AND bound.status = 'answered'
         AND live.disclaimed_at IS NULL AND live.woken_at IS NULL AND (live.wake_at IS NULL OR live.wake_at > clock_timestamp())
+  )
+    )
   )
 ORDER BY (wait.dispatch_refused_since IS NOT NULL),
   CASE WHEN wait.dispatch_refused_since IS NOT NULL THEN md5(wait.id::text || sqlc.arg('rotation')::bigint::text) END,
