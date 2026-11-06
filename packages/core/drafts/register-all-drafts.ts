@@ -17,9 +17,12 @@
 import "../issues/stores/draft-store";
 import "../issues/stores/quick-create-store";
 import "../issues/stores/comment-draft-store";
+import "../issues/stores/unsent-edit-drafts";
 import "../projects/draft-store";
 import "../feedback/draft-store";
 import "../agents/manual-draft-store";
+import "../skills/draft-stores";
+import "../issue-workflows/draft-stores";
 import "../squads/stores/draft-store";
 import "../squads/stores/create-squad-draft-store";
 import "../autopilots/stores/draft-stores";
