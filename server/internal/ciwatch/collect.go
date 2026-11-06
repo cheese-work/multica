@@ -149,6 +149,9 @@ func (c *Collector) Handle(ctx context.Context, in Input) (Result, error) {
 
 	jobs, ok := c.failedJobs(ctx, run, partial, stop)
 	ev.FailedJobCount = len(jobs)
+	for _, j := range jobs {
+		ev.RunnerLost = ev.RunnerLost || j.RunnerLost
+	}
 	if ok && len(jobs) == 0 {
 		partial(PartialNoJobs)
 	}

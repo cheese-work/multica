@@ -103,6 +103,7 @@ type FailureEvent struct {
 	PartialReason  string
 	FailedJobCount int
 	Jobs           []JobEvidence
+	RunnerLost     bool // a failed job's metadata shows runner loss; not stored, classified in memory
 }
 
 // Job is one entry of the jobs list.
@@ -111,6 +112,7 @@ type Job struct {
 	Name        string
 	Conclusion  string
 	CompletedAt time.Time
+	RunnerLost  bool // job metadata shows the runner vanished mid-job
 }
 
 // RateLimitError is what GitHub answered when it asked us to back off.
