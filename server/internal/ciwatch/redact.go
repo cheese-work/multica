@@ -100,7 +100,10 @@ func (l *lineScan) add(frag []byte) {
 		label := s[m[4]:m[5]]
 		switch {
 		case s[m[2]] == 'B':
-			l.open, l.label = true, label
+			// A nested BEGIN never replaces the outer label: only the outer END closes the key.
+			if !l.open {
+				l.open, l.label = true, label
+			}
 		case l.open && label == l.label:
 			l.open = false
 		case !l.open:

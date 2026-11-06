@@ -165,3 +165,24 @@ func TestRedactOverlongLineDoesNotStoreCutCredential(t *testing.T) {
 		t.Errorf("lost trailing line: %q", got)
 	}
 }
+
+// A nested BEGIN must not replace the open key's label (CHE-4274 review P1, round 3).
+func TestRedactNestedBeginKeepsOuterKeyOpen(t *testing.T) {
+	cases := map[string]string{
+		"separate lines": "-----BEGIN " + "PRIVATE KEY-----\n-----BEGIN " + "PUBLIC KEY-----\n-----END PUBLIC KEY-----\n" + pemBody + "\n",
+		"one line":       "-----BEGIN " + "PRIVATE KEY----- -----BEGIN " + "PUBLIC KEY----- -----END PUBLIC KEY-----\n" + pemBody + "\n",
+	}
+	for name, in := range cases {
+		for _, oneByte := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/oneByte=%v", name, oneByte), func(t *testing.T) {
+				noLeak(t, redact(t, in, oneByte), pemBody)
+			})
+		}
+	}
+	// The outer END still closes the key.
+	got := redact(t, "-----BEGIN "+"PRIVATE KEY-----\n-----BEGIN "+"PUBLIC KEY-----\n"+pemBody+"\n-----END PRIVATE KEY-----\nafter\n", false)
+	noLeak(t, got, pemBody)
+	if !strings.Contains(got, "after") {
+		t.Errorf("outer END did not close: %q", got)
+	}
+}
