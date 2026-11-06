@@ -2524,6 +2524,10 @@ export const ChatSessionSchema: z.ZodType<ChatSession> = z.lazy(() => z.object({
   context_tokens: z.number().nullable().optional().catch(undefined),
   context_window: z.number().nullable().optional().catch(undefined),
   is_current_channel_route: z.boolean().optional().catch(undefined),
+  attention_source: z.enum(["ask", "later", "unseen", "decision"]).nullable().optional().catch(null),
+  attention_since: z.string().nullable().optional().catch(undefined),
+  stale_level: z.enum(["none", "fresh", "yellow", "red"]).optional().catch("none"),
+  next_change_at: z.string().nullable().optional().catch(undefined),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
 }).loose());

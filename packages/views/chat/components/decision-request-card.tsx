@@ -16,7 +16,9 @@ import { LazyContentEditor as ContentEditor } from "./lazy-content-editor";
 import { RichContent } from "../../rich-content";
 import { CompactIssueChipsProvider } from "../../issues/compact-issue-chips-context";
 import { useT } from "../../i18n";
-import { AppLink } from "../../navigation";
+import { AppLink, useOptionalNavigation } from "../../navigation";
+import { openExternal } from "../../platform";
+import { isDesktopShell } from "../../platform/local-directory";
 import { useOnline } from "../../settings/components/use-online";
 import { AnnotatableAnswer } from "./annotatable-answer";
 import { DecisionArtifacts } from "./decision-artifacts";
@@ -33,6 +35,10 @@ const answerBytes = (text: string) => new TextEncoder().encode(text.trim()).leng
 
 const isConflict = (error: unknown) => error instanceof ApiError && error.status === 409;
 
+// The server prefixes a refusal with its code ("stale_answer: ..."); a 409 with one of these codes leaves the card open.
+const refusalCode = (error: unknown) => (error instanceof ApiError ? error.message.split(":")[0] ?? "" : "");
+const KEEPS_CARD_OPEN = ["stale_answer", "no_passkey", "busy_retry"];
+
 const EMPTY_DRAFT: AnswerDraft = { option: "", text: "" };
 const hasDraft = (draft: AnswerDraft) => draft.option !== "" || draft.text.trim() !== "";
 
@@ -48,6 +54,8 @@ function DecisionAnswerForm({
   onDraftChange,
   onSend,
   inIssue,
+  needsPasskey,
+  onOpenWeb,
 }: {
   card: RequestCard;
   draft: AnswerDraft;
@@ -55,9 +63,14 @@ function DecisionAnswerForm({
   onDraftChange: (draft: AnswerDraft) => void;
   onSend: (text: string, option?: string) => void;
   inIssue: boolean;
+  /** The server refused a bare answer: the next send runs the passkey ceremony. */
+  needsPasskey: boolean;
+  /** Desktop cannot run the ceremony; it opens the web page instead. */
+  onOpenWeb: () => void;
 }) {
   const { t } = useT("chat");
   const online = useOnline();
+  const handoff = needsPasskey && isDesktopShell();
   const sendShortcut = formatShortcut(useShortcut("send"));
   const { text } = draft;
   const setText = (next: string) => onDraftChange({ option: "", text: next });
@@ -66,15 +79,15 @@ function DecisionAnswerForm({
   const uploadGate = useUploadGate(editorRef);
   const { uploadWithToast } = useEditorUpload();
   const tooLong = answerBytes(text) > MAX_ANSWER_BYTES;
-  const canSubmit = online && !answer.isPending && !uploadGate.uploading && !tooLong;
-  const canSend = canSubmit && text.trim() !== "";
-  // An option click sends at once, with whatever note is in the box.
-  const send = (option?: string) => {
+  const canSubmit = !handoff && online && !answer.isPending && !uploadGate.uploading && !tooLong;
+  const canSend = canSubmit && (draft.option !== "" || text.trim() !== "");
+  // An option click sends at once, with whatever note is in the box. A retry keeps the kept choice.
+  const send = (option = draft.option) => {
     // onUpdate reaches `text` through a timer, so an Enter or click right after the last edit
     // (or a finished upload) would send stale text. Read the editor and send exactly that.
     const live = editorRef.current?.getMarkdown() ?? text;
     // Enter can arrive while an upload placeholder is still in the document.
-    const sendable = online && !answer.isPending && !uploadGate.uploading && !uploadGate.isBlocked()
+    const sendable = !handoff && online && !answer.isPending && !uploadGate.uploading && !uploadGate.isBlocked()
       && answerBytes(live) <= MAX_ANSWER_BYTES && (!!option || live.trim() !== "");
     if (sendable) onSend(live, option);
   };
@@ -131,7 +144,7 @@ function DecisionAnswerForm({
             ariaLabel={card.options?.length ? t(($) => $.decision.answer_note) : t(($) => $.decision.answer_text)}
             ariaDescribedBy={`${textId}-hint`}
             onUpdate={setText}
-            onSubmit={send}
+            onSubmit={() => send()}
             onUploadFile={(file) => uploadWithToast(file, { issueId: card.issue_id })}
             onUploadingChange={uploadGate.onUploadingChange}
             debounceMs={0}
@@ -147,15 +160,35 @@ function DecisionAnswerForm({
       <div className="flex flex-wrap items-center gap-2">
         <Button type="submit" size="sm" disabled={!canSend} className="disabled:opacity-70">
           {answer.isPending && <Loader2 className="size-4 animate-spin" aria-hidden />}
-          {t(($) => $.decision.answer_send)}
+          {t(($) => (needsPasskey ? $.decision.answer_send_passkey : $.decision.answer_send))}
         </Button>
+        {handoff && (
+          <Button type="button" size="sm" variant="outline" onClick={onOpenWeb}>{t(($) => $.decision.answer_open_browser)}</Button>
+        )}
         {!online && <span role="status" className="text-caption text-warning">{t(($) => $.decision.answer_offline)}</span>}
-        {answer.isError && !isConflict(answer.error) && (
-          <span role="alert" className="text-caption text-destructive">{t(($) => $.decision.answer_error)}</span>
+        {answer.isError && (!isConflict(answer.error) || KEEPS_CARD_OPEN.includes(refusalCode(answer.error))) && (
+          <span role="alert" className="text-caption text-destructive">
+            {answerErrorText(answer.error, needsPasskey, handoff, t)}
+          </span>
         )}
       </div>
     </form>
   );
+}
+
+function answerErrorText(
+  error: unknown,
+  needsPasskey: boolean,
+  handoff: boolean,
+  t: ReturnType<typeof useT<"chat">>["t"],
+) {
+  const code = refusalCode(error);
+  if (code === "assertion_required") return t(($) => (handoff ? $.decision.answer_passkey_desktop : $.decision.answer_passkey_needed));
+  if (code === "stale_answer") return t(($) => $.decision.answer_stale);
+  if (code === "no_passkey") return t(($) => $.decision.answer_no_passkey);
+  // Not an ApiError once the ceremony ran: the person cancelled it or the browser refused.
+  if (needsPasskey && !(error instanceof ApiError)) return t(($) => $.decision.answer_passkey_failed);
+  return t(($) => $.decision.answer_error);
 }
 
 /** The card can no longer take the answer (a 409, or it turned answered first): the draft is shown back, not sent. */
@@ -225,6 +258,8 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
   const issueHref = paths.issueDetail(card.issue_id);
   const [draft, setDraft] = useState<AnswerDraft>(EMPTY_DRAFT);
   const [refused, setRefused] = useState(false);
+  const [needsPasskey, setNeedsPasskey] = useState(false);
+  const navigation = useOptionalNavigation();
   // Remounting the form empties the editor after a send: the editor takes its draft once at mount.
   const [formKey, setFormKey] = useState(0);
   const answer = useAnswerDecisionRequest(card.issue_id);
@@ -232,13 +267,18 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
     // Keep what is sent as the draft, so a refused send shows back the same choice and text.
     setDraft({ option, text });
     answer.mutate(
-      { requestId: card.id, option: option || undefined, text: text.trim() || undefined },
+      { requestId: card.id, option: option || undefined, text: text.trim() || undefined, passkey: needsPasskey },
       {
         onSuccess: () => {
+          setNeedsPasskey(false);
           setDraft(EMPTY_DRAFT);
           setFormKey((key) => key + 1);
         },
-        onError: (error) => isConflict(error) && setRefused(true),
+        onError: (error) => {
+          const code = refusalCode(error);
+          if (code === "assertion_required") setNeedsPasskey(true);
+          else if (isConflict(error) && !KEEPS_CARD_OPEN.includes(code)) setRefused(true);
+        },
       },
     );
   };
@@ -323,7 +363,7 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
           <KeptDraft draft={draft} onDiscard={discardDraft} />
         ) : (
           card.state === "open" && (
-            <DecisionAnswerForm key={formKey} card={card} draft={draft} answer={answer} onDraftChange={setDraft} onSend={sendAnswer} inIssue={inIssue} />
+            <DecisionAnswerForm key={formKey} card={card} draft={draft} answer={answer} onDraftChange={setDraft} onSend={sendAnswer} inIssue={inIssue} needsPasskey={needsPasskey} onOpenWeb={() => navigation && openExternal(navigation.getShareableUrl(issueHref))} />
           )
         )}
         {shown === "picked_up" && card.answer?.run && (
