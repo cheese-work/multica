@@ -139,6 +139,15 @@ INSERT INTO issue_run_budget_entry (id, workspace_id, issue_id, window_id, kind,
 VALUES (sqlc.arg('id'), sqlc.arg('workspace_id'), sqlc.arg('issue_id'), 'agent', 'agent', sqlc.arg('event_key'), 0, 0, sqlc.arg('agent_delta'))
 ON CONFLICT (issue_id, kind, event_key) DO NOTHING;
 
+-- name: RestoreIssueAgentCredit :exec
+-- Gives back the run of agent credit a refunded run used up, once per task and
+-- only when the run did use credit (its debit entry exists).
+INSERT INTO issue_run_budget_entry (id, workspace_id, issue_id, window_id, kind, event_key, runs_delta, cap_delta, agent_delta)
+SELECT sqlc.arg('id'), d.workspace_id, d.issue_id, 'agent', 'agent', 'refund:' || sqlc.arg('task_key')::text, 0, 0, 1
+FROM issue_run_budget_entry d
+WHERE d.issue_id = sqlc.arg('issue_id')::uuid AND d.kind = 'agent' AND d.event_key = 'run:' || sqlc.arg('task_key')::text AND d.agent_delta = -1
+ON CONFLICT (issue_id, kind, event_key) DO NOTHING;
+
 -- name: SumIssueAgentCredit :one
 SELECT COALESCE(SUM(agent_delta), 0)::bigint FROM issue_run_budget_entry
 WHERE issue_id = sqlc.arg('issue_id')::uuid AND agent_delta <> 0;
@@ -171,11 +180,12 @@ WHERE u.created_at >= sqlc.arg('since')::timestamptz AND u.created_at < sqlc.arg
 GROUP BY u.model, (u.cost_usd_ticks IS NOT NULL);
 
 -- name: CountRunsInFlightWithoutUsage :one
--- Runs that started and have reported no usage yet, except one: queued or
--- running ones, and finished ones since `since` (a task that never reports
+-- Runs that started and have reported no usage yet, except one: queued,
+-- running or parked ones (a run waiting for its local directory has been
+-- admitted), and finished ones since `since` (a task that never reports
 -- stays counted until its usage arrives, or the month turns).
 SELECT COUNT(*)::bigint FROM agent_task_queue t
-WHERE (t.status IN ('queued', 'dispatched', 'running')
+WHERE (t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
        OR (t.started_at IS NOT NULL AND t.completed_at >= sqlc.arg('since')::timestamptz))
   AND t.id IS DISTINCT FROM sqlc.narg('except_task_id')::uuid
   AND NOT EXISTS (SELECT 1 FROM task_usage u WHERE u.task_id = t.id);

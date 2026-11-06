@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // The metered-spend checks of the agent run-budget cap (CHE-3251): a grant is
@@ -372,5 +373,54 @@ func TestHumanFundingAfterAgentCreditWasSpentIsNotGated(t *testing.T) {
 				t.Fatalf("run paid by a person = %v, want admitted past the ceiling", err)
 			}
 		})
+	}
+}
+
+// A task parked while it waits for its local directory has been admitted and
+// has reported no usage: it keeps its reservation, or a second run takes the
+// room and the parked one resumes without another metered check.
+func TestParkedRunKeepsItsReservation(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	meteredBudget(t)
+	before := position(t)
+	_, taskID, _ := raisingAgent(t)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status='waiting_local_directory' WHERE id=$1`, taskID)
+	if got := position(t).InFlight - before.InFlight; got != micro {
+		t.Fatalf("a run waiting for its local directory counts %d, want %d", got, micro)
+	}
+}
+
+// A superseded-head refund gives back the run and the agent credit that paid
+// for it: the replacement run is gated like the run it replaces.
+func TestRefundedAgentCreditRunIsStillGated(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	meteredBudget(t)
+	c := creditIssue(t, 3251050, 2)
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(c.issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := testHandler.TaskService.EnqueueTaskForIssue(ctx, issue)
+	if err != nil {
+		t.Fatalf("run on agent credit = %v, want admitted", err)
+	}
+	cancelled, err := testHandler.TaskService.CancelTaskWithReason(ctx, task.ID, "cancelled", service.FailureReasonSupersededHead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := inGrantTx(t, func(q *db.Queries) error { return service.RefundSupersededRun(ctx, q, *cancelled) }); err != nil {
+		t.Fatal(err)
+	}
+	if got := ledgerBalance(t, c.issueID); got != 1 {
+		t.Fatalf("balance after the refund = %d, want 1", got)
+	}
+	setCeiling(t, 0)
+	if err := enqueueOn(t, c); !errors.Is(err, service.ErrRunMeteredLimit) {
+		t.Fatalf("replacement run past the ceiling = %v, want ErrRunMeteredLimit", err)
 	}
 }

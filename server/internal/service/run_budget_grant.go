@@ -135,8 +135,13 @@ func RefundSupersededRun(ctx context.Context, q *db.Queries, task db.AgentTaskQu
 	if err != nil || !debited {
 		return err
 	}
-	return q.InsertIssueRunBudgetGrant(ctx, db.InsertIssueRunBudgetGrantParams{
+	if err := q.InsertIssueRunBudgetGrant(ctx, db.InsertIssueRunBudgetGrantParams{
 		ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID,
 		WindowID: windowID, Kind: RunBudgetKindRefund, EventKey: RunBudgetKindRefund + ":" + taskKey, RunsDelta: 1,
-	})
+	}); err != nil {
+		return err
+	}
+	// The run was paid by agent credit: that credit comes back with it, so the
+	// replacement run is gated like the run it replaces.
+	return q.RestoreIssueAgentCredit(ctx, db.RestoreIssueAgentCreditParams{ID: dbid.NewV7(), IssueID: issue.ID, TaskKey: taskKey})
 }

@@ -53,7 +53,7 @@ func (q *Queries) CountIssueRunsSinceExcept(ctx context.Context, arg CountIssueR
 
 const countRunsInFlightWithoutUsage = `-- name: CountRunsInFlightWithoutUsage :one
 SELECT COUNT(*)::bigint FROM agent_task_queue t
-WHERE (t.status IN ('queued', 'dispatched', 'running')
+WHERE (t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
        OR (t.started_at IS NOT NULL AND t.completed_at >= $1::timestamptz))
   AND t.id IS DISTINCT FROM $2::uuid
   AND NOT EXISTS (SELECT 1 FROM task_usage u WHERE u.task_id = t.id)
@@ -64,8 +64,9 @@ type CountRunsInFlightWithoutUsageParams struct {
 	ExceptTaskID pgtype.UUID        `json:"except_task_id"`
 }
 
-// Runs that started and have reported no usage yet, except one: queued or
-// running ones, and finished ones since `since` (a task that never reports
+// Runs that started and have reported no usage yet, except one: queued,
+// running or parked ones (a run waiting for its local directory has been
+// admitted), and finished ones since `since` (a task that never reports
 // stays counted until its usage arrives, or the month turns).
 func (q *Queries) CountRunsInFlightWithoutUsage(ctx context.Context, arg CountRunsInFlightWithoutUsageParams) (int64, error) {
 	row := q.db.QueryRow(ctx, countRunsInFlightWithoutUsage, arg.Since, arg.ExceptTaskID)
@@ -410,6 +411,27 @@ func (q *Queries) LockRunBudgetBlockMarker(ctx context.Context, arg LockRunBudge
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const restoreIssueAgentCredit = `-- name: RestoreIssueAgentCredit :exec
+INSERT INTO issue_run_budget_entry (id, workspace_id, issue_id, window_id, kind, event_key, runs_delta, cap_delta, agent_delta)
+SELECT $1, d.workspace_id, d.issue_id, 'agent', 'agent', 'refund:' || $2::text, 0, 0, 1
+FROM issue_run_budget_entry d
+WHERE d.issue_id = $3::uuid AND d.kind = 'agent' AND d.event_key = 'run:' || $2::text AND d.agent_delta = -1
+ON CONFLICT (issue_id, kind, event_key) DO NOTHING
+`
+
+type RestoreIssueAgentCreditParams struct {
+	ID      pgtype.UUID `json:"id"`
+	TaskKey string      `json:"task_key"`
+	IssueID pgtype.UUID `json:"issue_id"`
+}
+
+// Gives back the run of agent credit a refunded run used up, once per task and
+// only when the run did use credit (its debit entry exists).
+func (q *Queries) RestoreIssueAgentCredit(ctx context.Context, arg RestoreIssueAgentCreditParams) error {
+	_, err := q.db.Exec(ctx, restoreIssueAgentCredit, arg.ID, arg.TaskKey, arg.IssueID)
+	return err
 }
 
 const runBudgetBoundaryClock = `-- name: RunBudgetBoundaryClock :one
