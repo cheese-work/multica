@@ -68,6 +68,21 @@ func (c watchConfig) actor() (string, error) {
 	return c.NotifyMemberID, nil
 }
 
+// requireMember fails closed unless user is still a member of the workspace. It runs
+// in the write's own transaction and share-locks the member row, so a removal that
+// races the write blocks until the write commits instead of slipping between the
+// check and the write. An authorization record outlives the membership it was made
+// under; this is the check that the record cannot answer.
+func requireMember(ctx context.Context, tx pgx.Tx, workspaceID, user string) error {
+	var one int
+	err := tx.QueryRow(ctx, `SELECT 1 FROM member WHERE workspace_id=$1::uuid AND user_id=$2::uuid FOR SHARE`,
+		workspaceID, user).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &PermanentError{Reason: ReasonPrincipalRemoved, Err: errors.New("the watcher's member is no longer in the workspace")}
+	}
+	return err
+}
+
 // lockCheck serializes owners of one red-main check until the tx ends. Lock
 // order is always signature, then check, as in admit.
 func lockCheck(ctx context.Context, tx pgx.Tx, a Action, key string) error {
@@ -194,6 +209,9 @@ func (l *Ledger) issueCreate(d Destinations) LocalEffect {
 		if err != nil {
 			return "", err
 		}
+		if err := requireMember(ctx, tx, a.WorkspaceID, creator); err != nil {
+			return "", err
+		}
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,
 			ownerKey(a.WorkspaceID, a.RepoOwner, a.RepoName, a.SignatureHash)); err != nil {
 			return "", err
@@ -280,6 +298,9 @@ func (l *Ledger) issueComment(d Destinations) LocalEffect {
 		if err != nil {
 			return "", err
 		}
+		if err := requireMember(ctx, tx, a.WorkspaceID, author); err != nil {
+			return "", err
+		}
 		// An escalation (to incident, or from the low-key P3 issue to P2) raises
 		// the priority and wakes the owner, under the same hourly cap as creation.
 		if classChange && d.Issue != nil && (o.Kind == KindIncident || o.DigestClass == KindP3) {
@@ -352,6 +373,9 @@ func (l *Ledger) inboxNotify(d Destinations) LocalEffect {
 		member := cfg.NotifyMemberID
 		if member == "" {
 			return "", &PermanentError{Reason: ReasonNoPrincipal, Err: errors.New("no notify_member_id configured for the watcher")}
+		}
+		if err := requireMember(ctx, tx, a.WorkspaceID, member); err != nil {
+			return "", err
 		}
 		f, err := readFailure(ctx, tx, a)
 		if err != nil {

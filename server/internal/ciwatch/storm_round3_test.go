@@ -65,3 +65,84 @@ func TestStormDeauthorizedRecipientPostsNoDigestComment(t *testing.T) {
 		t.Fatalf("digest comments for an unauthorized recipient = %d, want 0", got)
 	}
 }
+
+// CHE-4279 review round 4: the principal must still be a workspace member at write
+// time. A matching authorization record is not enough once the member is removed.
+
+func (s *stormEnv) removeNotifyMember(t *testing.T) {
+	t.Helper()
+	if _, err := s.pool.Exec(context.Background(), `DELETE FROM member WHERE workspace_id=$1::uuid
+		AND user_id=(SELECT notify_member_id FROM ci_watch_config WHERE workspace_id=$1::uuid AND repo_name=$2)`, s.ws, s.repo); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStormRemovedMemberCreatesNoIssueAndTakesNoClaim(t *testing.T) {
+	s := newStormEnv(t)
+	s.removeNotifyMember(t)
+	s.admit(t, 931, "gone", "P2")
+	s.drain(t, true)
+	if got := s.count(t, "issue"); got != 0 {
+		t.Fatalf("issues for a removed member = %d, want 0", got)
+	}
+	if got := s.claims.claims.Load(); got != 0 {
+		t.Fatalf("red-main claims taken = %d, want 0", got)
+	}
+	if r := s.reasonOf(t, ActionIssueCreate, StateFailed); r != ReasonPrincipalRemoved {
+		t.Fatalf("reason = %q, want %q", r, ReasonPrincipalRemoved)
+	}
+}
+
+func TestStormRemovedMemberPostsNoDigestComment(t *testing.T) {
+	s := newStormEnv(t)
+	s.admit(t, 941, "goneDigest", "P2")
+	s.drain(t, false)
+	s.removeNotifyMember(t)
+	s.clock.Advance(DigestEvery + time.Hour)
+	s.admit(t, 942, "goneDigest", "P2")
+	s.drain(t, true)
+	if got := s.count(t, "comment"); got != 0 {
+		t.Fatalf("digest comments for a removed member = %d, want 0", got)
+	}
+}
+
+func TestStormRemovedMemberGetsNoNotification(t *testing.T) {
+	s := newStormEnv(t)
+	s.removeNotifyMember(t)
+	s.admit(t, 951, "goneNotify", "P4")
+	s.drain(t, true)
+	if len(s.d.notifies) != 0 {
+		t.Fatalf("notifications to a removed member = %d, want 0", len(s.d.notifies))
+	}
+}
+
+// A removal that lands after actor() but before the write must wait for the write:
+// the guard share-locks the member row for the rest of the transaction.
+func TestStormMemberRemovalWaitsForAnInFlightWrite(t *testing.T) {
+	s := newStormEnv(t)
+	ctx := context.Background()
+	var member string
+	if err := s.pool.QueryRow(ctx, `SELECT notify_member_id::text FROM ci_watch_config
+		WHERE workspace_id=$1::uuid AND repo_name=$2`, s.ws, s.repo).Scan(&member); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if err := requireMember(ctx, tx, s.ws, member); err != nil {
+		t.Fatal(err)
+	}
+	other, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Rollback(ctx)
+	if _, err := other.Exec(ctx, `SET LOCAL lock_timeout = '300ms'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.Exec(ctx, `DELETE FROM member WHERE workspace_id=$1::uuid AND user_id=$2::uuid`, s.ws, member); err == nil {
+		t.Fatal("member removal went through while a write held the membership check")
+	}
+}

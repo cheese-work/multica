@@ -145,13 +145,29 @@ func (s *stormEnv) destinations() Destinations {
 
 func (s *stormEnv) setCaps(t *testing.T, issuesPerDay, wakesPerHour int) {
 	t.Helper()
-	_, err := s.pool.Exec(context.Background(), `INSERT INTO ci_watch_config (workspace_id, repo_owner, repo_name, mode,
+	ctx := context.Background()
+	var member string
+	err := s.pool.QueryRow(ctx, `SELECT notify_member_id::text FROM ci_watch_config
+		WHERE workspace_id=$1::uuid AND repo_owner='o' AND repo_name=$2`, s.ws, s.repo).Scan(&member)
+	if err != nil { // first call: the recipient is a real workspace member
+		member = uuid.NewString()
+		if _, err := s.pool.Exec(ctx, `INSERT INTO "user" (id, name, email) VALUES ($1::uuid, 'ciwatch member', $2)`,
+			member, member+"@ciwatch.test"); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _, _ = s.pool.Exec(ctx, `DELETE FROM "user" WHERE id=$1::uuid`, member) })
+		if _, err := s.pool.Exec(ctx, `INSERT INTO member (workspace_id, user_id, role) VALUES ($1::uuid, $2::uuid, 'member')`,
+			s.ws, member); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err = s.pool.Exec(ctx, `INSERT INTO ci_watch_config (workspace_id, repo_owner, repo_name, mode,
 			fix_owner_kind, fix_owner_id, notify_member_id, authorized_by_member_id, authorized_at,
 			max_new_issues_per_day, max_owner_wakes_per_hour)
 		VALUES ($1,'o',$2,'act','agent',$3,$4,$4,now(),$5,$6)
 		ON CONFLICT (workspace_id, repo_owner, repo_name) DO UPDATE SET
 			max_new_issues_per_day=$5, max_owner_wakes_per_hour=$6`,
-		s.ws, s.repo, uuid.NewString(), uuid.NewString(), issuesPerDay, wakesPerHour)
+		s.ws, s.repo, uuid.NewString(), member, issuesPerDay, wakesPerHour)
 	if err != nil {
 		t.Fatal(err)
 	}

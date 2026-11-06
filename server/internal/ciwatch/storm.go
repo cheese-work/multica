@@ -19,6 +19,7 @@ const (
 	ReasonNonTransactional = "non_transactional_destination"
 	ReasonWakeCapped       = "wake_capped"
 	ReasonNoPrincipal      = "no_principal"
+	ReasonPrincipalRemoved = "principal_removed"
 	ReasonNoCheckKey       = "no_check_key"
 	ReasonRedMainClaimed   = "red_main_claimed_elsewhere"
 	StormThreshold         = 5
