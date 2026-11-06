@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -278,38 +279,82 @@ func TestTimelineRejectsBadRequests(t *testing.T) {
 	}
 }
 
-// The request must not load an unbounded slice of the workspace: issues the
-// window cannot select are filtered in SQL, and a hard cap rejects the rest.
-func TestTimelineBoundsWork(t *testing.T) {
-	seedTLIssue(t, tlIssue{status: "todo", created: 10 * day})
-	seedTLIssue(t, tlIssue{status: "todo", created: 11 * day})
-	oldIssues, oldRows := timelineMaxIssues, timelineMaxRows
-	t.Cleanup(func() { timelineMaxIssues, timelineMaxRows = oldIssues, oldRows })
-
-	post := func(from, to time.Duration) int {
-		now := time.Now()
-		body := map[string]any{"window": map[string]any{
-			"from": now.Add(-from).UTC().Format(time.RFC3339Nano),
-			"to":   now.Add(-to).UTC().Format(time.RFC3339Nano),
-		}}
-		w := httptest.NewRecorder()
-		testHandler.ListIssueActualTimeline(w, newRequest(http.MethodPost, "/api/issues/timeline", body))
-		return w.Code
+func postTimeline(from, to time.Duration) (int, []tlResult) {
+	now := time.Now()
+	body := map[string]any{"window": map[string]any{
+		"from": now.Add(-from).UTC().Format(time.RFC3339Nano),
+		"to":   now.Add(-to).UTC().Format(time.RFC3339Nano),
+	}}
+	w := httptest.NewRecorder()
+	testHandler.ListIssueActualTimeline(w, newRequest(http.MethodPost, "/api/issues/timeline", body))
+	var resp struct {
+		Issues []tlResult `json:"issues"`
 	}
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	return w.Code, resp.Issues
+}
 
-	timelineMaxIssues = 1
-	if got := post(30*day, 0); got != http.StatusUnprocessableEntity {
-		t.Fatalf("issue cap: got %d, want 422", got)
-	}
-	// Every fixture issue was created after this window ended, so none loads.
-	if got := post(2000*day, 1900*day); got != http.StatusOK {
-		t.Fatalf("prefiltered window: got %d, want 200", got)
-	}
+func restoreTimelineLimits(t *testing.T) {
+	oldIssues, oldRows, oldBatch := timelineMaxIssues, timelineMaxRows, timelineBatchSize
+	t.Cleanup(func() { timelineMaxIssues, timelineMaxRows, timelineBatchSize = oldIssues, oldRows, oldBatch })
+}
 
-	timelineMaxIssues = oldIssues
-	timelineMaxRows = 0
+// The result cap counts issues the window selects, not every older issue the
+// workspace holds: a large workspace with few matches must still answer.
+func TestTimelineCapCountsSelectedNotLoaded(t *testing.T) {
+	restoreTimelineLimits(t)
+	seedTLIssue(t, tlIssue{status: "todo", created: 300 * day, rows: []tlRow{{ago: 175 * day, from: "backlog", to: "todo"}}})
+	for i := 0; i < 3; i++ { // older issues the window does not select
+		seedTLIssue(t, tlIssue{status: "backlog", created: 300 * day})
+	}
+	code, selected := postTimeline(200*day, 150*day)
+	if code != http.StatusOK || len(selected) == 0 {
+		t.Fatalf("baseline: %d, %d selected", code, len(selected))
+	}
+	timelineMaxIssues = len(selected)
+	if code, _ := postTimeline(200*day, 150*day); code != http.StatusOK {
+		t.Fatalf("cap equal to selected count: got %d, want 200", code)
+	}
+	timelineMaxIssues = len(selected) - 1
+	if code, _ := postTimeline(200*day, 150*day); code != http.StatusUnprocessableEntity {
+		t.Fatalf("selected above cap: got %d, want 422", code)
+	}
+}
+
+// Issues load in keyset batches; a small batch must return the same result.
+func TestTimelineBatchesMatchSingleLoad(t *testing.T) {
+	restoreTimelineLimits(t)
+	for i := 0; i < 5; i++ {
+		seedTLIssue(t, tlIssue{status: "todo", created: 400 * day, rows: []tlRow{{ago: 375 * day, from: "backlog", to: "todo"}}})
+	}
+	_, whole := postTimeline(420*day, 350*day)
+	timelineBatchSize = 2
+	_, batched := postTimeline(420*day, 350*day)
+	if len(whole) < 5 || len(batched) != len(whole) {
+		t.Fatalf("whole %d, batched %d", len(whole), len(batched))
+	}
+	for i := range whole {
+		if whole[i].IssueID != batched[i].IssueID {
+			t.Fatalf("order differs at %d", i)
+		}
+	}
+}
+
+func TestTimelineRowCap(t *testing.T) {
+	restoreTimelineLimits(t)
 	seedTLIssue(t, tlIssue{status: "todo", created: 9 * day, rows: []tlRow{{ago: 8 * day, from: "backlog", to: "todo"}}})
-	if got := post(30*day, 0); got != http.StatusUnprocessableEntity {
-		t.Fatalf("row cap: got %d, want 422", got)
+	timelineMaxRows = 0
+	if code, _ := postTimeline(30*day, 0); code != http.StatusUnprocessableEntity {
+		t.Fatalf("row cap: got %d, want 422", code)
+	}
+}
+
+func TestTimelineRejectsOversizedBody(t *testing.T) {
+	pad := strings.Repeat("x", 1<<20)
+	body := map[string]any{"window": map[string]any{"from": "2020-01-01T00:00:00Z", "to": "2020-02-01T00:00:00Z"}, "pad": pad}
+	w := httptest.NewRecorder()
+	testHandler.ListIssueActualTimeline(w, newRequest(http.MethodPost, "/api/issues/timeline", body))
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("1 MiB body: got %d, want 413", w.Code)
 	}
 }

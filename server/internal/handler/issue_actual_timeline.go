@@ -37,11 +37,17 @@ type issueActualTimelineEntry struct {
 	Segments     []service.TimelineSegment `json:"segments"`
 }
 
-// Hard bounds on one request. Scope, filters and paging (S1b) are the way to
-// stay under them in a large workspace. Variables so tests can lower them.
+// Hard bounds on one request. Issues load in keyset batches, so memory holds
+// one batch plus the selected result, never the whole workspace. The cap counts
+// selected issues, so a window with few matches answers in a large workspace.
+// Scope, filters and paging (S1b) are the way to stay under the caps. Variables
+// so tests can lower them.
+const timelineMaxBody = 64 << 10
+
 var (
-	timelineMaxIssues = 5000
-	timelineMaxRows   = 100000
+	timelineMaxIssues = 5000   // selected issues per response
+	timelineMaxRows   = 200000 // status rows per batch
+	timelineBatchSize = 1000   // candidate issues per batch
 )
 
 var errTimelineTooLarge = errors.New("timeline result set too large")
@@ -52,9 +58,14 @@ func (h *Handler) ListIssueActualTimeline(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var req issueActualTimelineRequest
-	dec := json.NewDecoder(r.Body)
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, timelineMaxBody))
 	dec.DisallowUnknownFields() // an ignored scope or filter would return the wrong issues
 	if err := dec.Decode(&req); err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -85,37 +96,47 @@ func (h *Handler) ListIssueActualTimeline(w http.ResponseWriter, r *http.Request
 		return service.TimelineCategoryUnknown
 	}
 
-	issues, order, err := h.loadTimelineIssues(r, wsUUID, from, to)
-	if errors.Is(err, errTimelineTooLarge) {
-		writeError(w, http.StatusUnprocessableEntity, "too many issues for this window; narrow the window")
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load issues")
-		return
-	}
-	if err := h.attachTimelineRows(r, wsUUID, from, to, issues); errors.Is(err, errTimelineTooLarge) {
-		writeError(w, http.StatusUnprocessableEntity, "too much status history for this window; narrow the window")
-		return
-	} else if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load status history")
-		return
-	}
-
 	out := make([]issueActualTimelineEntry, 0)
-	for _, id := range order {
-		issue := issues[id]
-		tl, selected := service.BuildActualTimeline(issue.TimelineIssue, categoryOf, from, to, asOf)
-		if !selected {
-			continue
+	var cursor *timelineCursor
+	for {
+		batch, order, next, err := h.loadTimelineBatch(r, wsUUID, from, to, cursor)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load issues")
+			return
 		}
-		out = append(out, issueActualTimelineEntry{
-			IssueID: id, Status: issue.Status, History: tl.History, StartKnown: tl.StartKnown,
-			ActualStart: tl.ActualStart, ActualEnd: tl.ActualEnd,
-			PresenceFrom: tl.PresenceFrom, PresenceTo: tl.PresenceTo,
-			StartDate: dateString(issue.StartDate), DueDate: dateString(issue.DueDate),
-			Segments: nonNilSegments(tl.Segments),
-		})
+		if len(order) == 0 {
+			break
+		}
+		cursor = next
+		if err := h.attachTimelineRows(r, order, batch); errors.Is(err, errTimelineTooLarge) {
+			writeError(w, http.StatusUnprocessableEntity, "too much status history for this window; narrow the window")
+			return
+		} else if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load status history")
+			return
+		}
+		for _, uuid := range order {
+			id := util.UUIDToString(uuid)
+			issue := batch[id]
+			tl, selected := service.BuildActualTimeline(issue.TimelineIssue, categoryOf, from, to, asOf)
+			if !selected {
+				continue
+			}
+			if len(out) >= timelineMaxIssues {
+				writeError(w, http.StatusUnprocessableEntity, "too many issues for this window; narrow the window")
+				return
+			}
+			out = append(out, issueActualTimelineEntry{
+				IssueID: id, Status: issue.Status, History: tl.History, StartKnown: tl.StartKnown,
+				ActualStart: tl.ActualStart, ActualEnd: tl.ActualEnd,
+				PresenceFrom: tl.PresenceFrom, PresenceTo: tl.PresenceTo,
+				StartDate: dateString(issue.StartDate), DueDate: dateString(issue.DueDate),
+				Segments: nonNilSegments(tl.Segments),
+			})
+		}
+		if len(order) < timelineBatchSize {
+			break
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"as_of":  asOf,
@@ -167,14 +188,28 @@ const timelineCandidates = `i.workspace_id = $1 AND (i.created_at < $3
 	OR (i.start_date::timestamp >= $2 AT TIME ZONE 'UTC' AND i.start_date::timestamp < $3 AT TIME ZONE 'UTC')
 	OR (i.due_date::timestamp >= $2 AT TIME ZONE 'UTC' AND i.due_date::timestamp < $3 AT TIME ZONE 'UTC'))`
 
-func (h *Handler) loadTimelineIssues(r *http.Request, ws pgtype.UUID, from, to time.Time) (map[string]*timelineIssueRecord, []string, error) {
-	rows, err := h.DB.Query(r.Context(), `SELECT i.id, i.status, i.created_at, i.start_date, i.due_date FROM issue i WHERE `+timelineCandidates+` ORDER BY i.created_at, i.id LIMIT $4`, ws, from, to, timelineMaxIssues+1)
+// timelineCursor is the keyset position after the last loaded issue.
+type timelineCursor struct {
+	createdAt time.Time
+	id        pgtype.UUID
+}
+
+func (h *Handler) loadTimelineBatch(r *http.Request, ws pgtype.UUID, from, to time.Time, after *timelineCursor) (map[string]*timelineIssueRecord, []pgtype.UUID, *timelineCursor, error) {
+	var afterAt *time.Time
+	var afterID pgtype.UUID
+	if after != nil {
+		afterAt, afterID = &after.createdAt, after.id
+	}
+	rows, err := h.DB.Query(r.Context(), `SELECT i.id, i.status, i.created_at, i.start_date, i.due_date FROM issue i
+		WHERE `+timelineCandidates+` AND ($4::timestamptz IS NULL OR (i.created_at, i.id) > ($4::timestamptz, $5::uuid))
+		ORDER BY i.created_at, i.id LIMIT $6`, ws, from, to, afterAt, afterID, timelineBatchSize)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer rows.Close()
 	issues := map[string]*timelineIssueRecord{}
-	var order []string
+	var order []pgtype.UUID
+	var last *timelineCursor
 	for rows.Next() {
 		var (
 			id         pgtype.UUID
@@ -183,18 +218,15 @@ func (h *Handler) loadTimelineIssues(r *http.Request, ws pgtype.UUID, from, to t
 			start, due pgtype.Date
 		)
 		if err := rows.Scan(&id, &status, &createdAt, &start, &due); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		key := util.UUIDToString(id)
-		issues[key] = &timelineIssueRecord{service.TimelineIssue{
+		issues[util.UUIDToString(id)] = &timelineIssueRecord{service.TimelineIssue{
 			Status: status, CreatedAt: createdAt, StartDate: dateUTC(start), DueDate: dateUTC(due),
 		}}
-		order = append(order, key)
-		if len(order) > timelineMaxIssues {
-			return nil, nil, errTimelineTooLarge
-		}
+		order = append(order, id)
+		last = &timelineCursor{createdAt: createdAt, id: id}
 	}
-	return issues, order, rows.Err()
+	return issues, order, last, rows.Err()
 }
 
 func dateUTC(d pgtype.Date) *time.Time {
@@ -205,12 +237,12 @@ func dateUTC(d pgtype.Date) *time.Time {
 	return &t
 }
 
-func (h *Handler) attachTimelineRows(r *http.Request, ws pgtype.UUID, from, to time.Time, issues map[string]*timelineIssueRecord) error {
+func (h *Handler) attachTimelineRows(r *http.Request, ids []pgtype.UUID, issues map[string]*timelineIssueRecord) error {
 	rows, err := h.DB.Query(r.Context(), `
-		SELECT a.issue_id, a.id, a.created_at, COALESCE(a.details->>'from', ''), COALESCE(a.details->>'to', '')
-		FROM activity_log a JOIN issue i ON i.id = a.issue_id
-		WHERE a.action = 'status_changed' AND `+timelineCandidates+`
-		ORDER BY a.issue_id, a.created_at, a.id LIMIT $4`, ws, from, to, timelineMaxRows+1)
+		SELECT issue_id, id, created_at, COALESCE(details->>'from', ''), COALESCE(details->>'to', '')
+		FROM activity_log
+		WHERE action = 'status_changed' AND issue_id = ANY($1)
+		ORDER BY issue_id, created_at, id LIMIT $2`, ids, timelineMaxRows+1)
 	if err != nil {
 		return err
 	}
