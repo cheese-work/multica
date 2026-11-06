@@ -25,6 +25,7 @@ export type WSEventType =
   | "agent:archived"
   | "agent:restored"
   | "task:queued"
+  | "task:coalesced"
   | "task:dispatch"
   | "task:running"
   | "task:waiting_local_directory"
@@ -348,6 +349,17 @@ export interface TaskQueuedPayload {
   status: string;
 }
 
+// task:coalesced fires when a comment folds into a run that has not started.
+// The status is unchanged, but the run's trigger and covered comments changed,
+// which moves its block under the newest comment it answers.
+export interface TaskCoalescedPayload {
+  task_id: string;
+  agent_id: string;
+  issue_id: string;
+  chat_session_id?: string;
+  status: string;
+}
+
 export interface TaskDispatchPayload {
   task_id: string;
   agent_id: string;
@@ -624,6 +636,7 @@ export interface WSEventPayloadMap {
   "agent:archived": AgentArchivedPayload;
   "agent:restored": AgentRestoredPayload;
   "task:queued": TaskQueuedPayload;
+  "task:coalesced": TaskCoalescedPayload;
   "task:dispatch": TaskDispatchPayload;
   "task:running": TaskRunningPayload;
   "task:waiting_local_directory": TaskWaitingLocalDirectoryPayload;

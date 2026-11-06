@@ -11,6 +11,21 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteProviderBreakersForWorkspace = `-- name: DeleteProviderBreakersForWorkspace :exec
+
+DELETE FROM provider_breaker WHERE workspace_id = $1
+`
+
+// Workspace deletion is application-owned. These statements form a fixed,
+// bottom-up deletion plan; the legacy foreign keys remain only as a
+// compatibility safety net during the expand phase.
+// Provider breaker state is workspace-owned; remove it explicitly before the
+// workspace row instead of relying on the legacy FK cascade.
+func (q *Queries) DeleteProviderBreakersForWorkspace(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteProviderBreakersForWorkspace, workspaceID)
+	return err
+}
+
 const deleteTaskBatch = `-- name: DeleteTaskBatch :exec
 WITH
 batch AS MATERIALIZED (
@@ -260,6 +275,8 @@ WITH deleted_wakeup_pr_events AS (
  DELETE FROM dm_progress_follow WHERE workspace_id=$1
 ), deleted_dm_progress_lanes AS (
  DELETE FROM dm_progress_lane WHERE workspace_id=$1
+), deleted_dm_progress_data_incidents AS (
+ DELETE FROM dm_progress_data_incident WHERE workspace_id=$1
 ), deleted_wakeup_aggregate_reservations AS (
  DELETE FROM wakeup_aggregate_reservation WHERE workspace_id=$1
 ), deleted_wakeup_aggregate_budgets AS (
@@ -1418,13 +1435,9 @@ func (q *Queries) PrepareWorkspaceDeletionLinks(ctx context.Context, workspaceID
 }
 
 const setWorkspaceTeardownMode = `-- name: SetWorkspaceTeardownMode :exec
-
 SELECT set_config('multica.workspace_teardown', 'on', true)
 `
 
-// Workspace deletion is application-owned. These statements form a fixed,
-// bottom-up deletion plan; the legacy foreign keys remain only as a
-// compatibility safety net during the expand phase.
 // The setting is transaction-local. Migration 242 makes only the three DELETE
 // dirty triggers skip their per-row work while this flag is on.
 func (q *Queries) SetWorkspaceTeardownMode(ctx context.Context) error {
