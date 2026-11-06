@@ -1518,12 +1518,13 @@ const listIssueColumns = `i.id, i.workspace_id, i.title, i.description, i.status
        i.revision, i.duplicate_of_issue_id`
 
 var narrowColumns = strings.NewReplacer(
+	"i.title,", "''::text,", // Title scans into a string, so empty rather than NULL
 	"i.description,", "NULL::text,",
 	"i.metadata,", "NULL::jsonb,",
 	"i.properties,", "NULL::jsonb,",
 )
 
-// narrowListIssueColumns nulls the large description/metadata/properties
+// narrowListIssueColumns blanks the large title/description/metadata/properties
 // columns in the select list of a ListIssues query (the part before FROM);
 // the WHERE clause is left alone.
 func narrowListIssueColumns(query string) string {
@@ -2135,7 +2136,7 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 		sortRowsByEffectiveDue(issues, projections)
 		start := min(offset, len(issues)) // bound before adding: offset+limit can overflow
 		issues = issues[start : start+min(limit, len(issues)-start)]
-		// Candidates were read without description/metadata/properties; load
+		// Candidates were read without title/description/metadata/properties; load
 		// those only for the page, so a deep sort cannot buffer 2,001 large rows.
 		if issues, err = h.fullListIssueRows(ctx, wsUUID, issues); err != nil {
 			slog.Warn("ListIssues page fetch failed", "error", err)

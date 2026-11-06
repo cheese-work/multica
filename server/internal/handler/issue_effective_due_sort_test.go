@@ -136,7 +136,7 @@ func (r *issueQueryRecorder) Query(ctx context.Context, sql string, args ...any)
 }
 
 // The candidate set (up to effectiveDueMaxCandidates+1 rows) is read narrow:
-// no description, metadata or properties. Those load only for the returned
+// no title, description, metadata or properties. Those load only for the returned
 // page, so a one-row sort cannot materialize every candidate's large fields.
 func TestListSortEffectiveDueCandidatesAreNarrow(t *testing.T) {
 	project := dbfx.Project(t, "sort effective due narrow")
@@ -159,7 +159,7 @@ func TestListSortEffectiveDueCandidatesAreNarrow(t *testing.T) {
 	}
 	for _, q := range rec.queries {
 		if strings.Contains(q, "ORDER BY") && strings.Contains(q, "FROM issue i") {
-			for _, col := range []string{"i.description", "i.metadata", "i.properties"} {
+			for _, col := range []string{"i.title", "i.description", "i.metadata", "i.properties"} {
 				if strings.Contains(q, col) {
 					t.Fatalf("candidate query must not read %s: %s", col, q)
 				}
