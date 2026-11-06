@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/singleflight"
 )
@@ -197,7 +198,30 @@ func (r *Reservation) Recheck(ctx context.Context) error {
 	})
 }
 
-// Release deletes the reservation once the call returned. Safe to repeat.
+// Complete settles a reservation after the call returned. Pass the response
+// headers, or nil when the call failed or timed out. Usable rate headers are
+// merged into the ledger. Without them the call may still have cost budget, so
+// its cost is debited from the ledger instead: the count never rises on a
+// guess, and the floor holds across repeated header-less calls. The debit and
+// the delete share one transaction.
+func (r *Reservation) Complete(ctx context.Context, h http.Header) error {
+	return r.l.inLockedTx(ctx, r.inst, func(tx pgx.Tx) error {
+		if remaining, reset, ok := parseRateHeaders(h); ok {
+			if err := r.l.upsertObservation(ctx, tx, r.inst, remaining, reset); err != nil {
+				return err
+			}
+		} else if _, err := tx.Exec(ctx,
+			`UPDATE gh_installation_budget SET remaining = GREATEST(remaining - $2, 0) WHERE installation_id=$1`,
+			r.inst, r.cost); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `DELETE FROM gh_budget_reservation WHERE id=$1::uuid`, r.id)
+		return err
+	})
+}
+
+// Release deletes the reservation of a call that was never sent. A sent call
+// must use Complete so its cost is accounted. Safe to repeat.
 func (r *Reservation) Release(ctx context.Context) error {
 	_, err := r.l.pool.Exec(ctx, `DELETE FROM gh_budget_reservation WHERE id=$1::uuid`, r.id)
 	return err
@@ -312,13 +336,9 @@ func (l *Ledger) refreshLocked(ctx context.Context, inst int64) error {
 	if err != nil {
 		return err
 	}
-	_, err = conn.Exec(ctx,
-		`INSERT INTO gh_installation_budget (installation_id, remaining, reset_at, observed_at)
-		 VALUES ($1,$2,$3,$4)
-		 ON CONFLICT (installation_id) DO UPDATE
-		   SET remaining = EXCLUDED.remaining, reset_at = EXCLUDED.reset_at, observed_at = EXCLUDED.observed_at`,
-		inst, snap.Remaining, snap.ResetAt, now)
-	return err
+	// A header observation may have landed while RateLimit was in flight, so
+	// merge conservatively instead of overwriting.
+	return l.upsertObservation(ctx, conn, inst, snap.Remaining, snap.ResetAt)
 }
 
 // Observe folds the rate-limit headers of a successful watcher response into
@@ -335,9 +355,18 @@ func (l *Ledger) observeHeaders(ctx context.Context, inst int64, h http.Header) 
 	if !ok {
 		return nil
 	}
-	// Same window: keep the lower count, so a late response never raises it.
-	// Older window: ignore. Newer window: replace.
-	_, err := l.pool.Exec(ctx,
+	return l.upsertObservation(ctx, l.pool, inst, remaining, reset)
+}
+
+type execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// upsertObservation merges one reading into the ledger without ever raising
+// the count: same window keeps the lower count, an older window is ignored,
+// a newer window replaces.
+func (l *Ledger) upsertObservation(ctx context.Context, db execer, inst int64, remaining int, reset time.Time) error {
+	_, err := db.Exec(ctx,
 		`INSERT INTO gh_installation_budget AS b (installation_id, remaining, reset_at, observed_at)
 		 VALUES ($1,$2,$3,$4)
 		 ON CONFLICT (installation_id) DO UPDATE
