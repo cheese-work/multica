@@ -616,6 +616,19 @@ describe("DecisionRequestCard passkey-gated answering", () => {
     });
   });
 
+  it("keeps the clicked option when the note is edited before the passkey retry", async () => {
+    renderCard();
+    const user = userEvent.setup();
+    await pickAndSend(user);
+    await screen.findByRole("button", { name: "Send with passkey" });
+    await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), " more");
+    editor.live = "why more";
+    await user.click(screen.getByRole("button", { name: "Send with passkey" }));
+    await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalledTimes(2));
+    expect(challengeDecisionAnswer).toHaveBeenCalledWith("request", { option: "Option A", text: "why more" });
+    expect(answerDecisionRequest).toHaveBeenLastCalledWith("request", expect.objectContaining({ option: "Option A", text: "why more" }));
+  });
+
   it("keeps the draft and offers a retry when the passkey ceremony is cancelled", async () => {
     signPasskeyChallenge.mockRejectedValueOnce(new Error("passkey sign-in was cancelled"));
     renderCard();

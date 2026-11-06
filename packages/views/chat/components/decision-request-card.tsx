@@ -73,7 +73,7 @@ function DecisionAnswerForm({
   const handoff = needsPasskey && isDesktopShell();
   const sendShortcut = formatShortcut(useShortcut("send"));
   const { text } = draft;
-  const setText = (next: string) => onDraftChange({ option: "", text: next });
+  const setText = (next: string) => onDraftChange({ option: draft.option, text: next });
   const textId = useId();
   const editorRef = useRef<ContentEditorRef>(null);
   const uploadGate = useUploadGate(editorRef);
