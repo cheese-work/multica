@@ -655,6 +655,8 @@ type ChatSession struct {
 	CompactionEpoch        int64              `json:"compaction_epoch"`
 	PresetName             pgtype.Text        `json:"preset_name"`
 	DecisionTopicID        pgtype.UUID        `json:"decision_topic_id"`
+	TaintIds               []string           `json:"taint_ids"`
+	TaintVerified          bool               `json:"taint_verified"`
 }
 
 type ChatTaskSupplement struct {
@@ -687,6 +689,12 @@ type ChatWakeup struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	ResolvedAt      pgtype.Timestamptz `json:"resolved_at"`
 	Title           string             `json:"title"`
+	IssueID         pgtype.UUID        `json:"issue_id"`
+	EventType       string             `json:"event_type"`
+	FilterActorType string             `json:"filter_actor_type"`
+	FilterActorID   pgtype.UUID        `json:"filter_actor_id"`
+	UntilStatus     string             `json:"until_status"`
+	OnTimeout       string             `json:"on_timeout"`
 }
 
 type ClientUsageDaily struct {
