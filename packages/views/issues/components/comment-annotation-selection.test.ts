@@ -72,4 +72,28 @@ describe("comment annotation selection", () => {
     const first = root.querySelector("p")!.firstChild!;
     expect(captureCommentSelection(card, select(first, 5, first, 6))).toBeNull();
   });
+
+  it("captures a triple-click on the last block, whose range ends after the content root", () => {
+    const { card, root } = fixture();
+    const last = root.querySelector("p:last-child")!;
+    // Browsers report a triple-click as (block, 0) -> (next sibling or parent, offset).
+    const captured = captureCommentSelection(card, select(last, 0, card, 1));
+    expect(captured?.quote).toBe("Last");
+    expect(captured?.sourceCommentId).toBe("source");
+  });
+
+  it("captures a drag that starts in the text and ends in the content root padding", () => {
+    const { card, root } = fixture();
+    const first = root.querySelector("p")!.firstChild!;
+    const captured = captureCommentSelection(card, select(first, 2, root, root.childNodes.length));
+    expect(captured?.quote.startsWith("llo world")).toBe(true);
+    expect(captured?.quote.endsWith("Last")).toBe(true);
+  });
+
+  it("captures a drag that starts before the content root and ends in its text", () => {
+    const { card, root } = fixture();
+    const first = root.querySelector("p")!.firstChild!;
+    const captured = captureCommentSelection(card, select(card, 0, first, 5));
+    expect(captured?.quote).toBe("Hello");
+  });
 });

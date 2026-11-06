@@ -32,12 +32,26 @@ function contentRoot(node: Node): HTMLElement | null {
   return (node instanceof Element ? node : node.parentElement)?.closest<HTMLElement>("[data-comment-content]") ?? null;
 }
 
+/** The single commentable root a selection belongs to, with its range clamped inside that root.
+ * Browsers end a triple-click on the next block and a drag in padding or a gutter, so an endpoint
+ * outside every root is clamped to the root edge; a selection touching two roots has no owner.
+ */
+function clampToRoot(card: HTMLElement, range: Range): { root: HTMLElement; range: Range } | null {
+  const roots = Array.from(card.querySelectorAll<HTMLElement>("[data-comment-content]"))
+    .filter((node) => node.closest("[data-annotation-thread]") === card && range.intersectsNode(node));
+  const root = contentRoot(range.startContainer) ?? contentRoot(range.endContainer) ?? (roots.length === 1 ? roots[0]! : null);
+  if (!root || roots.some((node) => node !== root) || root.closest("[data-annotation-thread]") !== card) return null;
+  const clamped = range.cloneRange();
+  if (contentRoot(range.startContainer) !== root) clamped.setStart(root, 0);
+  if (contentRoot(range.endContainer) !== root) clamped.setEnd(root, root.childNodes.length);
+  return { root, range: clamped };
+}
+
 export function captureCommentSelection(card: HTMLElement, selection: Selection | null, editable = false) {
   if (!selection || selection.isCollapsed || selection.rangeCount !== 1) return null;
-  const range = selection.getRangeAt(0);
-  const root = contentRoot(range.startContainer);
-  if (!root || root !== contentRoot(range.endContainer) || !card.contains(root) ||
-    root.closest("[data-annotation-thread]") !== card) return null;
+  const owned = clampToRoot(card, selection.getRangeAt(0));
+  if (!owned) return null;
+  const { root, range } = owned;
   const { text, nodes } = indexCommentText(root, editable);
   const selected = nodes.filter(({ node }) => range.intersectsNode(node));
   const first = selected[0];
