@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
@@ -107,4 +108,21 @@ test("schedule is the only trigger: GitHub runs it on the default branch only", 
 
 test("nothing is written to a step summary", () => {
   assert.doesNotMatch(wf, /GITHUB_STEP_SUMMARY/);
+});
+
+// Luna's FAIL on cc18ed4c0: the encryption recipient must bind to the X99 key, not to whatever recipient.asc a PR ships.
+test("seal pins the X99 key fingerprint, which matches the shipped recipient.asc", () => {
+  const pin = wf.match(/^  SECURITY_WEEKLY_FPR: ([0-9A-F]{40})\s*$/m)?.[1];
+  assert.ok(pin, "workflow env pins SECURITY_WEEKLY_FPR as a literal");
+  const key = read("scripts/security-weekly/recipient.asc");
+  const out = execFileSync("gpg", ["--batch", "--with-colons", "--show-keys"], { input: key, encoding: "utf8" });
+  assert.equal(out.match(/^fpr:+([0-9A-F]{40}):/m)[1], pin);
+  assert.match(read("scripts/security-weekly/seal.sh"), /SECURITY_WEEKLY_FPR/);
+});
+
+test("CODEOWNERS makes the owner review any change to the recipient, the seal script or the workflow", () => {
+  const owners = read(".github/CODEOWNERS");
+  for (const p of ["/scripts/security-weekly/recipient.asc", "/scripts/security-weekly/seal.sh", "/.github/workflows/security-weekly.yml"]) {
+    assert.match(owners, new RegExp(`^${p.replace(/[.]/g, "\\.")}\\s+@congvc-dev`, "m"), p);
+  }
 });
