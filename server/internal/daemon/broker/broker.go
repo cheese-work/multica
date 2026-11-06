@@ -58,6 +58,16 @@ type Pin struct {
 	MaxPaths int `json:"-"`
 	// Elevation, when set, makes every push and PR operation an elevated one.
 	Elevation *Elevation `json:"-"`
+	// Synthetic, when set, marks an elevated run whose checkout is a synthetic
+	// base (plan 3.5): Base is then Synthetic.Root, and a push is translated
+	// onto the real history before any check or write.
+	Synthetic *Synthetic `json:"-"`
+}
+
+// Synthetic ties a synthetic root commit to the real commit whose tree it holds.
+type Synthetic struct {
+	Root   string // the synthetic root, SyntheticBase.Root
+	Parent string // the real commit that replaces it as a parent: SyntheticBase.Source
 }
 
 // gitEnv keeps host git config, hooks and prompts out of broker git runs.
@@ -288,8 +298,18 @@ func (b *Broker) push(r *http.Request) (sha string, status int, err error) {
 		return "", http.StatusBadRequest, errors.New("bundle must hold exactly the task branch")
 	}
 	sha = heads[0].sha
+	if b.pin.Synthetic != nil {
+		if status, err := b.seedRoot(ctx, work); err != nil {
+			return "", status, err
+		}
+	}
 	if out, err := b.git(ctx, work, nil, "-c", "transfer.fsckObjects=true", "bundle", "unbundle", bundle); err != nil {
 		return "", http.StatusBadRequest, fmt.Errorf("unbundle: %s", b.scrub(firstLine(out)))
+	}
+	if b.pin.Synthetic != nil {
+		if sha, status, err = b.translate(ctx, work, sha, filepath.Join(scratch, "msg")); err != nil {
+			return "", status, err
+		}
 	}
 	if status, err := b.checkProtected(ctx, work, defRef, sha, patterns, auth); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {

@@ -53,6 +53,7 @@ import {
 import type { Workspace } from "@multica/core/types";
 import { AvatarUploadControl } from "../../common/avatar-upload-control";
 import { useNavigation } from "../../navigation";
+import { AgentDecisionsRow } from "./agent-decisions-row";
 import { DeleteWorkspaceDialog } from "./delete-workspace-dialog";
 import { useT } from "../../i18n";
 import {
@@ -65,7 +66,10 @@ import {
   type SettingsSaveStatus,
 } from "./settings-layout";
 import { IdleGuardRows } from "./idle-guard-rows";
+import { RoutingAgentRows } from "./routing-agent-rows";
 import { useAutoSave } from "./use-auto-save";
+import { useSettingsDraft } from "./use-settings-draft";
+import { useWorkspaceSettingsDraftStore } from "@multica/core/settings/draft-stores";
 
 interface WorkspaceDetailsDraft {
   name: string;
@@ -149,26 +153,39 @@ export function WorkspaceTab() {
     navigation.push(resolvePostAuthDestination(remaining, hasOnboarded));
   };
 
-  const [name, setName] = useState(workspace?.name ?? "");
-  const [description, setDescription] = useState(workspace?.description ?? "");
-  const [context, setContext] = useState(workspace?.context ?? "");
   // CHE-1612: settings.compact_prompt saves through its own request field,
   // so this form never sends (and never drops) the rest of the settings.
-  const savedCompactPrompt =
-    typeof workspace?.settings?.compact_prompt === "string"
-      ? workspace.settings.compact_prompt
-      : "";
-  const [compactPrompt, setCompactPrompt] = useState(savedCompactPrompt);
-  // An untouched field follows a prompt saved elsewhere (the CLI); otherwise
-  // auto-save would write the stale draft back over it.
-  const [lastSavedCompactPrompt, setLastSavedCompactPrompt] =
-    useState(savedCompactPrompt);
-  if (savedCompactPrompt !== lastSavedCompactPrompt) {
-    setLastSavedCompactPrompt(savedCompactPrompt);
-    if (compactPrompt === lastSavedCompactPrompt) {
-      setCompactPrompt(savedCompactPrompt);
-    }
-  }
+  const savedFields = useMemo(
+    () => ({
+      name: workspace?.name ?? "",
+      description: workspace?.description ?? "",
+      context: workspace?.context ?? "",
+      compactPrompt:
+        typeof workspace?.settings?.compact_prompt === "string"
+          ? workspace.settings.compact_prompt
+          : "",
+    }),
+    [
+      workspace?.name,
+      workspace?.description,
+      workspace?.context,
+      workspace?.settings?.compact_prompt,
+    ],
+  );
+  // Unsent edits are kept per workspace and persisted, so they survive a
+  // remount or reload. An untouched field follows what is saved elsewhere (the
+  // CLI); an edited one is never overwritten until its save lands.
+  const [fields, setFields, confirmFields] = useSettingsDraft(
+    useWorkspaceSettingsDraftStore,
+    workspace?.id ?? "",
+    savedFields,
+  );
+  const { name, description, context, compactPrompt } = fields;
+  const savedCompactPrompt = savedFields.compactPrompt;
+  const setName = (name: string) => setFields({ name });
+  const setDescription = (description: string) => setFields({ description });
+  const setContext = (context: string) => setFields({ context });
+  const setCompactPrompt = (compactPrompt: string) => setFields({ compactPrompt });
   // CHE-1806: settings.auto_compact also saves through its own request field.
   // A null draft follows the saved value; an invalid draft is never sent.
   const autoCompact = readAutoCompact(workspace?.settings);
@@ -201,18 +218,11 @@ export function WorkspaceTab() {
   const isSoleOwner = isOwner && ownerCount <= 1;
   const isSoleMember = members.length <= 1;
 
-  // Reset form state only when the user switches to a different workspace.
-  // Keying on workspace?.id (not the object ref) avoids wiping unsaved edits
-  // when an unrelated mutation — e.g. avatar/logo upload — replaces the
-  // cached Workspace object via setQueryData.
+  // The persisted fields are keyed by workspace id, so switching workspaces
+  // swaps them; only the local threshold and prefix drafts need a reset.
   useEffect(() => {
-    setName(workspace?.name ?? "");
-    setDescription(workspace?.description ?? "");
-    setContext(workspace?.context ?? "");
-    setCompactPrompt(savedCompactPrompt);
     setThresholdDraft(null);
     setPrefixDraft(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally keyed on id only; see comment above
   }, [workspace?.id]);
 
   // Letters + digits only, uppercase, capped at 10 chars. The backend
@@ -252,6 +262,8 @@ export function WorkspaceTab() {
     value: detailsDraft,
     savedValue: savedDetails,
     onSave: saveDetails,
+    onSuccess: confirmFields,
+    onIdle: confirmFields,
     onError: (error) =>
       toast.error(
         error instanceof Error
@@ -278,6 +290,8 @@ export function WorkspaceTab() {
     value: compactPrompt,
     savedValue: savedCompactPrompt,
     onSave: saveCompactPrompt,
+    onSuccess: (compactPrompt) => confirmFields({ compactPrompt }),
+    onIdle: (compactPrompt) => confirmFields({ compactPrompt }),
     onError: (error) =>
       toast.error(
         error instanceof Error
@@ -613,7 +627,9 @@ export function WorkspaceTab() {
             </SettingsRow>
           )}
 
+          {isOwner ? <AgentDecisionsRow wsId={workspace.id} /> : null}
           <IdleGuardRows workspace={workspace} canEdit={isOwner} />
+          <RoutingAgentRows wsId={workspace.id} canEdit={canManageWorkspace} />
 
           <SettingsRow
             anchor="slug"

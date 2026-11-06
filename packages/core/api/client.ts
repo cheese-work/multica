@@ -272,14 +272,18 @@ import type {
 import { type Logger, noopLogger } from "../logger";
 import { createRequestId, createSafeId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
-import { parseWithFallback } from "./schema";
+import { parseOrThrow, parseWithFallback } from "./schema";
 import {
-  PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
-  PasskeyRevokedSchema, parsePasskeyResponse,
-  type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart,
+  PasskeyAnswerChallengeSchema, PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
+  PasskeyListSchema, PasskeyRevokeCodeStartSchema, PasskeyRevokedSchema, parsePasskeyResponse,
+  type PasskeyAnswerChallenge, type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart, type PasskeySummary,
 } from "./passkey-schema";
 import {
   RuntimeProfileSchema,
+  AgentDecisionSettingSchema,
+  type AgentDecisionSetting,
+  RoutingAgentSettingSchema,
+  type RoutingAgentSetting,
   OpenDecisionRequestListSchema,
   DecisionArtifactListSchema,
   RuntimeProfileListSchema,
@@ -423,6 +427,8 @@ import {
   RedeemWecomBindingTokenResponseSchema,
   EMPTY_WECOM_INSTALLATION,
   EMPTY_LIST_WECOM_INSTALLATIONS_RESPONSE,
+  ListLarkInstallationsResponseSchema,
+  EMPTY_LIST_LARK_INSTALLATIONS_RESPONSE,
   EMPTY_REDEEM_WECOM_BINDING_TOKEN_RESPONSE,
   TelegramInstallationSchema,
   ListTelegramInstallationsResponseSchema,
@@ -1508,14 +1514,9 @@ export class ApiClient {
       `/api/issues/${encodeURIComponent(id)}`,
       options?.signal ? { signal: options.signal } : undefined,
     );
-    const issue = parseWithFallback<Issue | null>(raw, IssueSchema, null, {
-      endpoint: "GET /api/issues/:id",
-    });
-    if (!issue) {
-      // parseWithFallback already logged the zod issues + raw payload.
-      throw new Error("GET /api/issues/:id returned a malformed issue");
-    }
-    return issue;
+    // Throws SchemaValidationError (logged with the failing paths) so the UI
+    // can tell unreadable data from a network failure.
+    return parseOrThrow<Issue>(raw, IssueSchema, { endpoint: "GET /api/issues/:id" });
   }
 
   async createIssue(
@@ -3261,6 +3262,39 @@ export class ApiClient {
     });
   }
 
+  // Null when the response is malformed: callers must not show a guessed value.
+  async getAgentDecisionSetting(): Promise<AgentDecisionSetting | null> {
+    const raw: unknown = await this.fetch("/api/agent-decisions/brief");
+    return parseWithFallback<AgentDecisionSetting | null>(raw, AgentDecisionSettingSchema, null, {
+      endpoint: "GET /api/agent-decisions/brief",
+    });
+  }
+
+  // CHE-3627: null when the response is malformed, so a guessed value is never
+  // shown or saved back over the real one.
+  async getRoutingAgent(workspaceId: string): Promise<RoutingAgentSetting | null> {
+    const raw: unknown = await this.fetch(`/api/workspaces/${workspaceId}/routing-agent`);
+    return parseWithFallback<RoutingAgentSetting | null>(raw, RoutingAgentSettingSchema, null, {
+      endpoint: "GET /api/workspaces/{id}/routing-agent",
+    });
+  }
+
+  // Owner/admin + human-actor only; replaces the whole setting.
+  async updateRoutingAgent(workspaceId: string, config: RoutingAgentSetting): Promise<RoutingAgentSetting> {
+    return this.fetch(`/api/workspaces/${workspaceId}/routing-agent`, {
+      method: "PUT",
+      body: JSON.stringify(config),
+    });
+  }
+
+  // Owner + human-actor only; the server clears an earlier stop when turned on.
+  async setAgentDecisionsEnabled(enabled: boolean): Promise<{ enabled: boolean }> {
+    return this.fetch("/api/agent-decisions/setting", {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    });
+  }
+
   // CHE-766: owner/admin + human-actor only, kill-switch gated server-side
   // (server/internal/handler/workspace_export_privacy.go). A disabled flag or
   // absent ACL surfaces here as a thrown ApiError (403/503), not a parsed
@@ -4089,7 +4123,11 @@ export class ApiClient {
     await this.fetch(`/api/decision-answers/${answerId}/disclaim`, { method: "POST" });
   }
 
-  async answerDecisionRequest(requestId: string, input: { option?: string; text?: string }): Promise<void> {
+  /** A gated class also sends the revisions from `challengeDecisionAnswer` and the signed assertion. */
+  async answerDecisionRequest(
+    requestId: string,
+    input: { option?: string; text?: string; answer_revision?: number; policy_revision?: number; assertion?: PasskeyAssertionEnvelope },
+  ): Promise<void> {
     await this.fetch(`/api/decision-requests/${encodeURIComponent(requestId)}/answer`, { method: "POST", body: JSON.stringify(input) });
   }
 
@@ -4112,7 +4150,14 @@ export class ApiClient {
     return this.passkeyPost("/api/passkeys/enroll/start", PasskeyEnrollStartSchema);
   }
 
-  async finishPasskeyEnrollment(input: { ceremony_id: string; code: string; attestation: unknown }): Promise<void> {
+  async listPasskeys(): Promise<PasskeySummary[]> {
+    const raw: unknown = await this.fetch("/api/passkeys");
+    return parsePasskeyResponse(raw, PasskeyListSchema, "GET /api/passkeys").passkeys;
+  }
+
+  async finishPasskeyEnrollment(input: {
+    ceremony_id: string; code: string; attestation: unknown; assertion?: PasskeyAssertionEnvelope;
+  }): Promise<void> {
     await this.passkeyPost("/api/passkeys/enroll/finish", PasskeyEnrolledSchema, input);
   }
 
@@ -4120,8 +4165,22 @@ export class ApiClient {
     return this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke/challenge`, PasskeyChallengeSchema);
   }
 
+  // Sole-key path: the target is the only active key, so no other key can sign. A mailed code stands in.
+  startPasskeyRevocationByCode(passkeyId: string): Promise<{ ceremony_id: string; expires_at: string }> {
+    return this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke/code`, PasskeyRevokeCodeStartSchema);
+  }
+
+  async confirmPasskeyRevocationByCode(passkeyId: string, input: { ceremony_id: string; code: string }): Promise<void> {
+    await this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke/confirm`, PasskeyRevokedSchema, input);
+  }
+
   async revokePasskey(passkeyId: string, assertion: PasskeyAssertionEnvelope): Promise<void> {
     await this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke`, PasskeyRevokedSchema, { assertion });
+  }
+
+  /** Binds a challenge to exactly this option and trimmed text; the answer must repeat them. */
+  challengeDecisionAnswer(requestId: string, input: { option?: string; text?: string }): Promise<PasskeyAnswerChallenge> {
+    return this.passkeyPost(`/api/decision-requests/${encodeURIComponent(requestId)}/answer/challenge`, PasskeyAnswerChallengeSchema, input);
   }
 
   challengeDecisionAction(actionId: string): Promise<PasskeyChallenge> {
@@ -5493,7 +5552,13 @@ export class ApiClient {
 
   // Lark integration
   async listLarkInstallations(workspaceId: string): Promise<ListLarkInstallationsResponse> {
-    return this.fetch(`/api/workspaces/${workspaceId}/lark/installations`);
+    const endpoint = `/api/workspaces/${workspaceId}/lark/installations`;
+    return parseWithFallback(
+      await this.fetch(endpoint),
+      ListLarkInstallationsResponseSchema,
+      EMPTY_LIST_LARK_INSTALLATIONS_RESPONSE,
+      { endpoint },
+    );
   }
 
   async beginLarkInstall(

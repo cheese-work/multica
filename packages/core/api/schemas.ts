@@ -48,6 +48,7 @@ import type {
   ListDingTalkGroupsResponse,
   RedeemDingTalkBindingTokenResponse,
   WecomInstallation,
+  ListLarkInstallationsResponse,
   ListWecomInstallationsResponse,
   RedeemWecomBindingTokenResponse,
   TelegramInstallation,
@@ -557,7 +558,7 @@ const IssueWorkflowHandlerSchema = z.lazy(() => z.object({
 }).loose());
 
 const ISSUE_WORKFLOW_HANDLER_TYPES = new Set<string>([
-  "none", "agent", "squad", "member", "project_lead", "creator", "human_by_role",
+  "none", "agent", "squad", "member", "project_lead", "creator", "human_by_role", "human_in_charge",
 ]);
 
 const IssueWorkflowEdgeSchema = z.lazy(() => z.object({
@@ -1048,10 +1049,18 @@ const DecisionRequestCardSchema = z.lazy(() => z.object({
   id: z.string(),
   issue_id: z.string(),
   issue_identifier: z.string().default(""),
+  issue_title: z.string().optional().catch(undefined),
   source_comment_id: z.string().nullish().catch(undefined),
   ask: z.string(),
   asking_agent_name: z.string().optional().catch(undefined),
-  options: z.array(z.object({ label: z.string(), what_happens: z.string().optional().catch(undefined) }).loose()).catch([]),
+  options: z.array(z.object({
+    label: z.string(),
+    what_happens: z.string().optional().catch(undefined),
+    pros: z.array(z.string()).optional().catch([]),
+    cons: z.array(z.string()).optional().catch([]),
+    cost_or_time: z.string().optional().catch(undefined),
+  }).loose()).catch([]),
+  recommended_option_index: z.number().int().nonnegative().optional().catch(undefined),
   state: z.enum(["open", "answered", "withdrawn"]).catch("open"),
   created_at: z.string(),
   withdrawn_at: z.string().nullish().catch(undefined),
@@ -1549,9 +1558,20 @@ export const IssueTriggerPreviewSchema = z.lazy(() => z.object({
 }).loose());
 
 // Metadata is primitive-only by API/DB contract. Stay lenient on shape:
-// unknown keys land as `unknown` to a caller, but the field itself defaults
-// to {} so consumers never need to nil-guard `issue.metadata`.
-const IssueMetadataSchema = z.lazy(() => z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).default({}));
+// the field defaults to {} so consumers never need to nil-guard
+// `issue.metadata`, and a non-primitive entry is dropped rather than failing
+// the whole issue. The server's decision park stores an object under
+// `decision_park`; rejecting it made GET /api/issues/:id "malformed", which the
+// detail view shows as "does not exist" (CHE-3472).
+const IssueMetadataSchema = z.lazy(() => z.preprocess(
+  (raw) =>
+    typeof raw === "object" && raw !== null && !Array.isArray(raw)
+      ? Object.fromEntries(
+          Object.entries(raw).filter(([, v]) => ["string", "number", "boolean"].includes(typeof v)),
+        )
+      : raw,
+  z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).default({}),
+));
 
 const SourceContextAttachmentSchema = z.lazy(() => z.object({
   id: z.string(),
@@ -1722,6 +1742,14 @@ export const IssueSchema = z.lazy(() => z.object({
   stage: z.number().nullable().default(null),
   start_date: z.string().nullable(),
   due_date: z.string().nullable(),
+  // Read-only deadline projection (CHE-3463). Additive: older backends and
+  // closed issues omit it, and a malformed value drops only itself.
+  effective_due: z.string().optional().catch(undefined),
+  due_source: z.string().optional().catch(undefined),
+  diagnostics: z
+    .array(z.object({ type: z.string(), members: z.array(z.string()).optional() }))
+    .optional()
+    .catch(undefined),
   metadata: IssueMetadataSchema,
   // Older backends predate custom properties; default {} so consumers never
   // nil-guard issue.properties.
@@ -2449,6 +2477,8 @@ export const CancelTaskResponseSchema = z.lazy(() => AgentTaskSchema.unwrap().ex
 }).loose());
 
 const ChatLastMessageSchema = z.lazy(() => z.object({
+  id: z.string().uuid().optional().catch(undefined),
+  task_id: z.string().uuid().optional().catch(undefined),
   content: z.string().default(""),
   role: z.enum(["user", "assistant"]).catch("assistant"),
   created_at: z.string().default(""),
@@ -2494,6 +2524,10 @@ export const ChatSessionSchema: z.ZodType<ChatSession> = z.lazy(() => z.object({
   context_tokens: z.number().nullable().optional().catch(undefined),
   context_window: z.number().nullable().optional().catch(undefined),
   is_current_channel_route: z.boolean().optional().catch(undefined),
+  attention_source: z.enum(["ask", "later", "unseen", "decision"]).nullable().optional().catch(null),
+  attention_since: z.string().nullable().optional().catch(undefined),
+  stale_level: z.enum(["none", "fresh", "yellow", "red"]).optional().catch("none"),
+  next_change_at: z.string().nullable().optional().catch(undefined),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
 }).loose());
@@ -2595,6 +2629,10 @@ const ChatWakeupSchema = z.lazy(() => z.object({
   fire_at: z.string(),
   instruction: z.string().default(""),
   status: z.string().default("pending"),
+  issue_id: z.string().optional().catch(undefined),
+  event: z.string().optional().catch(undefined),
+  until_status: z.string().optional().catch(undefined),
+  on_timeout: z.string().optional().catch(undefined),
 }).loose());
 
 export const ChatWakeupsSchema = z.lazy(() => z.array(ChatWakeupSchema));
@@ -4351,3 +4389,50 @@ export const RuntimeProfileSchema = z.lazy(() => z
     runtime_type: profile.runtime_type || profile.protocol_family,
   })));
 export const RuntimeProfileListSchema = z.lazy(() => z.array(RuntimeProfileSchema));
+
+// Receipt evidence is optional across mixed server/desktop versions. A malformed
+// timestamp must never render the binding as verified.
+export const LarkInstallationSchema = z.lazy(() => z.object({
+  id: z.string(),
+  workspace_id: z.string().default(""),
+  agent_id: z.string().default(""),
+  app_id: z.string().default(""),
+  bot_open_id: z.string().default(""),
+  installer_user_id: z.string().default(""),
+  tenant_key: z.string().nullable().optional(),
+  status: z.string().default("revoked"),
+  region: z.string().optional(),
+  installed_at: z.string().default(""),
+  created_at: z.string().default(""),
+  updated_at: z.string().default(""),
+  first_message_received_at: z.iso.datetime({ offset: true }).nullable().optional().catch(undefined),
+}).loose());
+
+export const ListLarkInstallationsResponseSchema = z.lazy(() => z.object({
+  installations: z.array(LarkInstallationSchema).default([]),
+  configured: z.boolean().default(false),
+  install_supported: z.boolean().optional(),
+}).loose());
+
+export const EMPTY_LIST_LARK_INSTALLATIONS_RESPONSE: ListLarkInstallationsResponse = {
+  installations: [],
+  configured: false,
+};
+
+// GET /api/agent-decisions/brief carries more (decisions, pilot); the Settings
+// switch reads only the setting and the automatic-stop record.
+export const AgentDecisionSettingSchema = z.lazy(() => z.object({
+  enabled: z.boolean(),
+  stopped: z.object({ reason: z.string().catch("") }).nullish().transform((v) => v ?? null),
+}).loose());
+export type AgentDecisionSetting = z.infer<typeof AgentDecisionSettingSchema>;
+
+// CHE-3627: GET/PUT /api/workspaces/{id}/routing-agent. The server sends null
+// for an empty list or map, so both default to empty here.
+export const RoutingAgentSettingSchema = z.lazy(() => z.object({
+  agent_id: z.string().catch(""),
+  fallback_agent_id: z.string().catch(""),
+  statuses: z.array(z.string()).nullish().transform((v) => v ?? []),
+  overrides: z.record(z.string(), z.string()).nullish().transform((v) => v ?? {}),
+}).loose());
+export type RoutingAgentSetting = z.infer<typeof RoutingAgentSettingSchema>;

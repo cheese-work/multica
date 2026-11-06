@@ -205,9 +205,9 @@ class WrapperTest(unittest.TestCase):
             return ""
 
         def fake_run(cmd, **kw):
-            if sibling_head in cmd[-1] and sibling_diff_error:
+            if sibling_head in os.fsdecode(cmd[-1]) and sibling_diff_error:
                 raise subprocess.CalledProcessError(128, cmd)  # fork head objects were never fetched
-            return subprocess.CompletedProcess(cmd, 0, stdout=CLEAN_DIFF)
+            return subprocess.CompletedProcess(cmd, 0, stdout=CLEAN_DIFF if kw.get("text") else CLEAN_DIFF.encode())
 
         argv = ["x", "--repo", str(ROOT), "--github", "cheese-work/multica-dotfiles", "--pr", "405",
                 "--default-branch", "main", "--post"]
@@ -387,7 +387,7 @@ class QueueRevocationTest(unittest.TestCase):
 
         argv = ["x", "--repo", str(ROOT), "--github", "cheese-work/multica", "--pr", "405",
                 "--default-branch", "main", "--post"]
-        fake_run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=CLEAN_DIFF)
+        fake_run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=CLEAN_DIFF if kw.get("text") else CLEAN_DIFF.encode())
         with mock.patch.object(sg, "_gh", fake_gh), mock.patch.object(sg.subprocess, "run", fake_run), \
                 mock.patch.object(sg.time, "sleep"), mock.patch("sys.argv", argv), mock.patch("builtins.print"):
             code = sg.main()
@@ -532,6 +532,53 @@ class WorkflowTest(unittest.TestCase):
         cond = self.doc["jobs"]["security-gate"]["if"]
         self.assertNotRegex(cond, r"author_association\s*!=\s*'NONE'")
         self.assertIn("startsWith(github.event.comment.body, 'Security-Gate-Verdict:')", cond)
+
+    VERDICT = "'Security-Gate-Verdict:'"
+
+    def test_plain_comment_schedules_no_job(self):
+        # CHE-3354: a comment without the verdict header queues nothing on the single gate runner, even from a trusted author
+        cond = self.doc["jobs"]["security-gate"]["if"]
+        self.assertIn(f"contains(github.event.comment.body, {self.VERDICT})", cond)
+
+    def test_removing_the_header_by_edit_still_runs_the_gate(self):
+        # CHE-3354: revocation by edit. On an edit the new body lacks the header; the old body is `changes.body.from`.
+        cond = self.doc["jobs"]["security-gate"]["if"]
+        self.assertIn(f"github.event.action == 'edited' && contains(github.event.changes.body.from, {self.VERDICT})", cond)
+
+    def test_plain_comment_gets_its_own_concurrency_group(self):
+        # CHE-3354: keep the ignored-group test in step with the `if:` so a plain comment cannot cancel a real run
+        group = self.doc["concurrency"]["group"]
+        self.assertIn(f"contains(github.event.comment.body, {self.VERDICT})", group)
+        self.assertIn("github.event.changes.body.from", group)
+
+    def test_trusted_bot_edit_that_drops_the_header_still_runs(self):
+        # CHE-3354 review P1: the bot revokes a PASS by editing it. The new body may lack the header; the old body had it.
+        old = f"startsWith(github.event.changes.body.from, {self.VERDICT})"
+        self.assertIn(old, self.doc["jobs"]["security-gate"]["if"])
+        self.assertIn(old, self.doc["concurrency"]["group"])
+
+    def _hook_rc(self, **ev):
+        event = {"action": ev.get("action", "created"), "comment": {"author_association": "NONE", "body": ev["body"],
+                 "user": {"id": ev.get("uid", BOT), "type": "Bot"}}}
+        if "old" in ev:
+            event["changes"] = {"body": {"from": ev["old"]}}
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "event.json"
+            f.write_text(json.dumps(event))
+            env = {"PATH": os.environ["PATH"], "GITHUB_EVENT_PATH": str(f), "GITHUB_EVENT_NAME": "issue_comment",
+                   "GITHUB_REPOSITORY": "cheese-work/multica"}
+            return subprocess.run(["sh", str(self.HOOK)], env=env, capture_output=True).returncode
+
+    def test_hook_admits_the_bot_edit_that_drops_the_header_and_nothing_wider(self):
+        if not self.HOOK.exists():
+            self.skipTest("runner hook not on this host")
+        v = "Security-Gate-Verdict: PASS"
+        self.assertEqual(self._hook_rc(body=v), 0)
+        self.assertEqual(self._hook_rc(body="FAIL now", action="edited", old=v), 0)
+        self.assertNotEqual(self._hook_rc(body="hello"), 0)
+        self.assertNotEqual(self._hook_rc(body="hello", action="edited", old="hello"), 0)
+        self.assertNotEqual(self._hook_rc(body="x", action="edited", old=v, uid=1), 0)
+        self.assertNotEqual(self._hook_rc(body="x", action="created", old=v), 0)
 
     def test_job_filter_matches_the_runner_hook_allow_list(self):
         if not self.HOOK.exists():
