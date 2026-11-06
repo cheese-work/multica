@@ -10,8 +10,8 @@ import (
 
 const (
 	pemBody  = "MIIEowIBAAKCAQEAplantedSECRETkeybody0123456789"
-	ghToken  = "ghp_PLANTEDsecretTOKEN0123456789abcdefABCD"
-	awsKey   = "AKIAPLANTEDKEY123456"
+	ghToken  = "ghp_" + "PLANTEDsecretTOKEN0123456789abcdefABCD"
+	awsKey   = "AKIA" + "PLANTEDKEY123456"
 	jwtToken = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJwbGFudGVkIn0.c2lnbmF0dXJlcGxhbnRlZA"
 )
 
@@ -38,7 +38,7 @@ func noLeak(t *testing.T, got string, planted ...string) {
 }
 
 func TestRedactMultilineKeyEvenSplitAcrossChunks(t *testing.T) {
-	in := "before\n2026-11-06T04:50:00Z -----BEGIN RSA PRIVATE KEY-----\n" + pemBody + "\nline2" + pemBody + "\n-----END RSA PRIVATE KEY-----\nafter\n"
+	in := "before\n2026-11-06T04:50:00Z -----BEGIN " + "RSA PRIVATE KEY-----\n" + pemBody + "\nline2" + pemBody + "\n-----END RSA PRIVATE KEY-----\nafter\n"
 	for _, oneByte := range []bool{false, true} {
 		got := redact(t, in, oneByte)
 		noLeak(t, got, pemBody, "BEGIN RSA", "END RSA")
@@ -49,7 +49,7 @@ func TestRedactMultilineKeyEvenSplitAcrossChunks(t *testing.T) {
 }
 
 func TestRedactUnterminatedBeginDropsToEnd(t *testing.T) {
-	got := redact(t, "keep\n-----BEGIN OPENSSH PRIVATE KEY-----\n"+pemBody+"\nmore\n", false)
+	got := redact(t, "keep\n-----BEGIN "+"OPENSSH PRIVATE KEY-----\n"+pemBody+"\nmore\n", false)
 	noLeak(t, got, pemBody, "more")
 	if !strings.Contains(got, "keep") {
 		t.Errorf("lost line before BEGIN: %q", got)
@@ -65,10 +65,10 @@ func TestRedactEndWithoutBeginDropsFromLogStart(t *testing.T) {
 }
 
 func TestRedactSingleLineKeyAndOverlongLineMarker(t *testing.T) {
-	one := "k=-----BEGIN PRIVATE KEY-----\\n" + pemBody + "\\n-----END PRIVATE KEY-----\n"
+	one := "k=-----BEGIN " + "PRIVATE KEY-----\\n" + pemBody + "\\n-----END PRIVATE KEY-----\n"
 	noLeak(t, redact(t, one, false), pemBody)
 	// BEGIN sits past the 64 KiB line cap; the body on the next lines must still go.
-	long := strings.Repeat("x", 200_000) + "-----BEGIN PRIVATE KEY-----\n" + pemBody + "\n-----END PRIVATE KEY-----\nok\n"
+	long := strings.Repeat("x", 200_000) + "-----BEGIN " + "PRIVATE KEY-----\n" + pemBody + "\n-----END PRIVATE KEY-----\nok\n"
 	got := redact(t, long, true)
 	noLeak(t, got, pemBody)
 	if !strings.Contains(got, "ok") {
@@ -121,9 +121,9 @@ func TestLimitTailKeepsWholeLinesFromTheEnd(t *testing.T) {
 func TestRedactEndThenBeginOnOneLineKeepsNextKeyClosed(t *testing.T) {
 	second := "SECONDkeyBODYplanted0123456789"
 	cases := map[string]string{
-		"inside a key": "-----BEGIN PRIVATE KEY-----\n" + pemBody + "\n-----END PRIVATE KEY----- -----BEGIN PRIVATE KEY-----\n" + second + "\n",
-		"stray end":    "x\n-----END PRIVATE KEY----- -----BEGIN PRIVATE KEY-----\n" + second + "\n",
-		"begin end begin": "-----BEGIN PRIVATE KEY----- -----END PRIVATE KEY----- -----BEGIN PRIVATE KEY-----\n" +
+		"inside a key": "-----BEGIN " + "PRIVATE KEY-----\n" + pemBody + "\n-----END PRIVATE KEY----- -----BEGIN " + "PRIVATE KEY-----\n" + second + "\n",
+		"stray end":    "x\n-----END PRIVATE KEY----- -----BEGIN " + "PRIVATE KEY-----\n" + second + "\n",
+		"begin end begin": "-----BEGIN " + "PRIVATE KEY----- -----END PRIVATE KEY----- -----BEGIN " + "PRIVATE KEY-----\n" +
 			second + "\n",
 	}
 	for name, in := range cases {

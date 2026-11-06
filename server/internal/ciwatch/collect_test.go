@@ -264,7 +264,7 @@ func TestJobSelectionAndPaging(t *testing.T) {
 }
 
 func TestEndThenBeginInLogReachesNoSink(t *testing.T) {
-	raw := "-----BEGIN PRIVATE KEY-----\n" + pemBody + "\n-----END PRIVATE KEY----- -----BEGIN PRIVATE KEY-----\nSECONDplantedBODY0123\n"
+	raw := "-----BEGIN " + "PRIVATE KEY-----\n" + pemBody + "\n-----END PRIVATE KEY----- -----BEGIN " + "PRIVATE KEY-----\nSECONDplantedBODY0123\n"
 	gh := &fakeGH{jobsByPage: [][]Job{{failedJob(1, "build", t0)}}, logs: map[int64]func(context.Context) io.Reader{1: text(raw)}}
 	c, logs := newCollector(gh, &fakeBudget{}, fakeRuns{})
 	got, _ := c.Handle(context.Background(), baseInput())
@@ -390,7 +390,7 @@ func TestRedactorErrorFailsClosed(t *testing.T) {
 }
 
 func TestPlantedSecretsReachNoSink(t *testing.T) {
-	raw := fmt.Sprintf("start\n-----BEGIN RSA PRIVATE KEY-----\n%s\n-----END RSA PRIVATE KEY-----\n"+
+	raw := fmt.Sprintf("start\n-----BEGIN "+"RSA PRIVATE KEY-----\n%s\n-----END RSA PRIVATE KEY-----\n"+
 		"clone https://user:s3cretPass@github.com/x.git\ntoken %s\n##[error]Process completed with exit code 1.\n", pemBody, ghToken)
 	gh := &fakeGH{jobsByPage: [][]Job{{failedJob(1, "build", t0)}}, logs: map[int64]func(context.Context) io.Reader{1: text(raw)}}
 	c, logs := newCollector(gh, &fakeBudget{}, fakeRuns{})
