@@ -359,9 +359,20 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 		}
 		fromStatus = prior.Status
 	}
+	var prevParent pgtype.UUID
+	if params.ParentIssueID.Valid {
+		prior, err := q.GetIssue(ctx, params.ID)
+		if err != nil {
+			return db.Issue{}, nil, fmt.Errorf("read issue parent: %w", err)
+		}
+		prevParent = prior.ParentIssueID
+	}
 	issue, err := q.UpdateIssue(ctx, params)
 	if err != nil {
 		return issue, nil, err
+	}
+	if err := recordIssueMoved(ctx, q, prevParent, issue); err != nil {
+		return db.Issue{}, nil, fmt.Errorf("record moved-under event: %w", err)
 	}
 	if recordStatus && fromStatus != issue.Status {
 		row, err := service.RecordStatusChange(ctx, q, issue, fromStatus, issue.Status, rec.trigger, rec.recordedHandoff(issue))
