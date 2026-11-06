@@ -44,6 +44,19 @@ Sets the DM title and posts a message announcing the new title and who
 changed it, without reading the DM's contents. JSON carries `id`, `title`,
 `previous_title` and `message_id`.
 
+## Unseen DMs
+
+```bash
+multica chat unseen --output json        # DMs with unread messages; each row has unseen: true
+multica chat mark-unseen <session-id>    # moves the read cursor so the DM shows unread again
+```
+
+`mark-unseen` is creator-only and a no-op when the DM has no assistant
+message. `unseen` lists your own DMs through the DM list endpoint. It works
+with an interactive sign-in, a PAT or a CLI sign-in and returns metadata only
+(no message preview). A task token gets a 403. `multica chat sessions` rows
+also carry `unseen` (JSON) and an `UNSEEN` column (table).
+
 ## Schedule a wakeup in this DM
 
 ```bash
