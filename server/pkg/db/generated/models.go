@@ -737,27 +737,27 @@ type CiWatchAction struct {
 }
 
 type CiWatchConfig struct {
-	ID                   pgtype.UUID        `json:"id"`
-	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
-	RepoOwner            string             `json:"repo_owner"`
-	RepoName             string             `json:"repo_name"`
-	Mode                 string             `json:"mode"`
-	Branches             []string           `json:"branches"`
-	Events               []string           `json:"events"`
-	WorkflowsInclude     []string           `json:"workflows_include"`
-	WorkflowsExclude     []string           `json:"workflows_exclude"`
-	P1Mode               string             `json:"p1_mode"`
-	P2Mode               string             `json:"p2_mode"`
-	P3Mode               string             `json:"p3_mode"`
-	P4Mode               string             `json:"p4_mode"`
-	FixOwnerKind         pgtype.Text        `json:"fix_owner_kind"`
-	FixOwnerID           pgtype.UUID        `json:"fix_owner_id"`
-	NotifyMemberID       pgtype.UUID        `json:"notify_member_id"`
-	MaxRerunsPerDay      int32              `json:"max_reruns_per_day"`
-	MaxNewIssuesPerDay   int32              `json:"max_new_issues_per_day"`
-	MaxOwnerWakesPerHour int32              `json:"max_owner_wakes_per_hour"`
-	CreatedAt            pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+	ID                      pgtype.UUID        `json:"id"`
+	WorkspaceID             pgtype.UUID        `json:"workspace_id"`
+	RepoOwner               string             `json:"repo_owner"`
+	RepoName                string             `json:"repo_name"`
+	Mode                    string             `json:"mode"`
+	Branches                []string           `json:"branches"`
+	Events                  []string           `json:"events"`
+	WorkflowsInclude        []string           `json:"workflows_include"`
+	WorkflowsExclude        []string           `json:"workflows_exclude"`
+	P1Mode                  string             `json:"p1_mode"`
+	P2Mode                  string             `json:"p2_mode"`
+	P3Mode                  string             `json:"p3_mode"`
+	P4Mode                  string             `json:"p4_mode"`
+	FixOwnerKind            pgtype.Text        `json:"fix_owner_kind"`
+	FixOwnerID              pgtype.UUID        `json:"fix_owner_id"`
+	NotifyMemberID          pgtype.UUID        `json:"notify_member_id"`
+	MaxRerunsPerOriginalRun int32              `json:"max_reruns_per_original_run"`
+	MaxNewIssuesPerDay      int32              `json:"max_new_issues_per_day"`
+	MaxOwnerWakesPerHour    int32              `json:"max_owner_wakes_per_hour"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
 }
 
 type CiWatchConfigAudit struct {
