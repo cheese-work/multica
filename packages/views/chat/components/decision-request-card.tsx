@@ -10,7 +10,7 @@ import {
   decisionAnswerDraftKey,
   useDecisionAnswerDraftStore,
 } from "@multica/core/issues/stores/decision-answer-draft-store";
-import { setUploadCancelledNotice, usePersistedDraft, useUploadCancelledNotice } from "@multica/core/drafts";
+import { usePersistedDraft, useUploadCancelledNotice } from "@multica/core/drafts";
 import { chatKeys } from "@multica/core/chat/queries";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { formatShortcut, useShortcut } from "@multica/core/shortcuts";
@@ -62,6 +62,8 @@ function DecisionAnswerForm({
   const sendShortcut = formatShortcut(useShortcut("send"));
   const { option, text } = draft;
   const draftKey = decisionAnswerDraftKey(card.id);
+  // Bound to the workspace this card mounted in, so cleanup after a workspace switch still files the notice there.
+  const [uploadCancelled, setUploadCancelled] = useUploadCancelledNotice(draftKey);
   // What this editor last reported. A stored text that differs came from the other surface
   // showing the same request, and is adopted so a send from here cannot overwrite it.
   const emitted = useRef(text);
@@ -81,9 +83,9 @@ function DecisionAnswerForm({
       running.forEach((controller) => controller.abort());
       running.clear();
       // In memory only: a storage write here could bring back a draft another tab just cleared.
-      setUploadCancelledNotice(draftKey, true);
+      setUploadCancelled(true);
     };
-  }, [draftKey]);
+  }, [setUploadCancelled]);
   const onEditorUpdate = (next: string) => { if (!closed.current) setText(next); };
   const setOption = (next: string) => onDraftChange({ option: next });
   const setText = (next: string) => {
@@ -95,11 +97,10 @@ function DecisionAnswerForm({
   const editorRef = useRef<ContentEditorRef>(null);
   const uploadGate = useUploadGate(editorRef);
   const { uploadWithToast } = useEditorUpload();
-  const uploadCancelled = useUploadCancelledNotice(draftKey);
   const uploadFile = async (file: File) => {
     const controller = new AbortController();
     uploads.current.add(controller);
-    setUploadCancelledNotice(draftKey, false);
+    setUploadCancelled(false);
     try {
       return await uploadWithToast(file, { issueId: card.issue_id, signal: controller.signal });
     } finally {
@@ -273,6 +274,7 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
   const validDate = !Number.isNaN(date.getTime());
   const issueHref = paths.issueDetail(card.issue_id);
   const [draft, setDraft, clearDraft] = usePersistedDraft(useDecisionAnswerDraftStore, decisionAnswerDraftKey(card.id), EMPTY_DRAFT);
+  const [, setUploadCancelled] = useUploadCancelledNotice(decisionAnswerDraftKey(card.id));
   const [refused, setRefused] = useState(false);
   // Remounting the form empties the editor after a send: the editor takes its draft once at mount.
   const [formKey, setFormKey] = useState(0);
@@ -286,7 +288,7 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
       .mutateAsync({ requestId: card.id, option: draft.option || undefined, text: text.trim() || undefined })
       .then(() => {
         clearDraft();
-        setUploadCancelledNotice(decisionAnswerDraftKey(card.id), false);
+        setUploadCancelled(false);
         setFormKey((key) => key + 1);
       })
       .catch((error: unknown) => {
@@ -295,7 +297,7 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
   };
   const discardDraft = () => {
     clearDraft();
-    setUploadCancelledNotice(decisionAnswerDraftKey(card.id), false);
+    setUploadCancelled(false);
     setRefused(false);
   };
 

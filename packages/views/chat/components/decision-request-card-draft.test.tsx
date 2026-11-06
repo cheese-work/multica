@@ -293,6 +293,23 @@ describe("decision card draft survives remount", () => {
     expect(draftKeys()).toEqual([]);
   });
 
+  it("workspace switch: the notice is kept for the card's own workspace, not the one switched to", async () => {
+    setCurrentWorkspace("acme", "ws-a");
+    await act(async () => { await Promise.resolve(); });
+    const { first } = await startUpload("ws-switch");
+    // Desktop route switch: the incoming layout sets the workspace in render, then the old card unmounts.
+    setCurrentWorkspace("beta", "ws-b");
+    first.unmount();
+    await act(async () => { await Promise.resolve(); });
+    const other = renderWithI18n(chat(card("ws-switch")));
+    expect(screen.queryByText(NOTICE)).toBeNull();
+    other.unmount();
+    setCurrentWorkspace("acme", "ws-a");
+    await act(async () => { await Promise.resolve(); });
+    renderWithI18n(chat(card("ws-switch")));
+    expect(screen.getByText(NOTICE)).toBeInTheDocument();
+  });
+
   it("logout clears the cancel notice", async () => {
     const { first } = await startUpload("notice-logout");
     first.unmount();

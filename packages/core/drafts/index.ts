@@ -36,4 +36,4 @@ export {
   type KeyedDraftStoreConfig,
 } from "./create-keyed-draft-store";
 export { usePersistedDraft } from "./use-persisted-draft";
-export { setUploadCancelledNotice, useUploadCancelledNotice } from "./upload-cancelled-notice";
+export { useUploadCancelledNotice } from "./upload-cancelled-notice";
