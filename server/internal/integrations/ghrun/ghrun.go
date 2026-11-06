@@ -42,6 +42,7 @@ type RunEvent struct {
 	InstallationID int64
 	RepoOwner      string
 	RepoName       string
+	DefaultBranch  string
 	RunID          int64
 	RunAttempt     int32
 	StatusRank     int32

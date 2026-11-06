@@ -39,7 +39,7 @@ func runEnvelope(test *testing.T, runID int64, action, status string) []byte {
 	}
 	return marshal(test, map[string]any{
 		"action": action, "workflow_run": run,
-		"repository":   map[string]any{"name": "multica", "owner": map[string]any{"login": "Cheese-Work"}},
+		"repository":   map[string]any{"name": "multica", "default_branch": "main", "owner": map[string]any{"login": "Cheese-Work"}},
 		"installation": map[string]any{"id": 77},
 	})
 }
@@ -94,7 +94,7 @@ func TestParseRunEventFromRealRuns(test *testing.T) {
 				test.Fatal("ParseRunEvent rejected a real run delivery")
 			}
 			if event.RunID != tc.runID || event.RunAttempt != 1 || event.InstallationID != 77 ||
-				event.RepoOwner != "Cheese-Work" || event.RepoName != "multica" {
+				event.RepoOwner != "Cheese-Work" || event.RepoName != "multica" || event.DefaultBranch != "main" {
 				test.Fatalf("identity = %+v", event)
 			}
 			if event.StatusRank != tc.wantRank || event.Conclusion != tc.wantConclude {
