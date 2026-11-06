@@ -538,3 +538,28 @@ func TestChatAttentionXongAll_OversizedBodyRefused(t *testing.T) {
 	big := strings.Repeat("x", attentionMaxBody+1)
 	wantCode(t, f.call(testHandler.ChatAttentionXongAll, "/api/chat/attention/xong-all", map[string]any{"subject_keys": []string{big}}), http.StatusRequestEntityTooLarge)
 }
+
+// A subject key whose id is a valid but noncanonical UUID (uppercase) names the same subject as the
+// canonical key. It must not panic, must dedupe with the canonical form, and the mark is stored under
+// the canonical key so it matches the projection.
+func TestChatAttentionXong_NoncanonicalIdsAreCanonicalized(t *testing.T) {
+	f := newAttnFx(t)
+	turn, decision, ask := f.turn(), f.decision(), f.item("ask", testUserID, time.Hour)
+	// The reported panic: an uppercase turn id alone finds no root in the canonical-keyed map.
+	wantCode(t, f.call(testHandler.ChatAttentionXongAll, "/api/chat/attention/xong-all", map[string]any{"subject_keys": []string{service.TurnKey(strings.ToUpper(turn))}}), http.StatusOK)
+	keys := []string{
+		service.TurnKey(strings.ToUpper(turn)), service.TurnKey(turn),
+		service.ItemKey(strings.ToUpper(ask)),
+		service.DecisionKey(strings.ToUpper(decision), 1),
+	}
+	wantCode(t, f.call(testHandler.ChatAttentionXongAll, "/api/chat/attention/xong-all", map[string]any{"subject_keys": keys}), http.StatusOK)
+	if dbfx.Count(t, `SELECT count(*) FROM chat_attention_mark WHERE user_id = $1 AND subject_key = $2 AND acked_at IS NOT NULL`, testUserID, service.TurnKey(turn)) != 1 {
+		t.Fatal("the turn mark must exist once under the canonical key")
+	}
+	if dbfx.Count(t, `SELECT count(*) FROM chat_attention_mark WHERE user_id = $1 AND subject_key <> lower(subject_key)`, testUserID) != 0 {
+		t.Fatal("no mark may be stored under a noncanonical key")
+	}
+	if f.resolved(ask) == nil {
+		t.Fatal("the ask named by its uppercase id must be resolved")
+	}
+}

@@ -128,27 +128,32 @@ func (h *Handler) loadAttentionSubjects(ctx context.Context, q *db.Queries, work
 	seen := map[string]bool{}
 	var itemIDs, decisionIDs, turnIDs []pgtype.UUID
 	var decisionKeys, turnKeys []string
-	for _, key := range rawKeys {
+	for _, rawKey := range rawKeys {
+		kind, rest, ok := strings.Cut(rawKey, ":")
+		if !ok {
+			return nil, &attentionFailure{http.StatusBadRequest, "invalid subject key: " + rawKey}
+		}
+		idPart, revision := rest, ""
+		if kind == "decision" {
+			var rev string
+			idPart, rev, ok = strings.Cut(rest, "@")
+			n, err := strconv.Atoi(rev)
+			if !ok || err != nil {
+				return nil, &attentionFailure{http.StatusBadRequest, "invalid subject key: " + rawKey}
+			}
+			revision = "@" + strconv.Itoa(n)
+		}
+		id, err := util.ParseUUID(idPart)
+		if err != nil {
+			return nil, &attentionFailure{http.StatusBadRequest, "invalid subject key: " + rawKey}
+		}
+		// Canonical form: every later lookup and stored mark uses it, so an uppercase or
+		// undashed id names the same subject as the lowercase one.
+		key := kind + ":" + uuidToString(id) + revision
 		if seen[key] {
 			continue
 		}
 		seen[key] = true
-		kind, rest, ok := strings.Cut(key, ":")
-		if !ok {
-			return nil, &attentionFailure{http.StatusBadRequest, "invalid subject key: " + key}
-		}
-		idPart := rest
-		if kind == "decision" {
-			var rev string
-			idPart, rev, ok = strings.Cut(rest, "@")
-			if _, err := strconv.Atoi(rev); !ok || err != nil {
-				return nil, &attentionFailure{http.StatusBadRequest, "invalid subject key: " + key}
-			}
-		}
-		id, err := util.ParseUUID(idPart)
-		if err != nil {
-			return nil, &attentionFailure{http.StatusBadRequest, "invalid subject key: " + key}
-		}
 		switch kind {
 		case "item":
 			itemIDs = append(itemIDs, id)
