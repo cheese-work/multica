@@ -11,12 +11,12 @@
 # Tier 2 and cannot classify itself. Do not add a head checkout or a secret to this workflow.
 #
 # Refresh (CHE-3339): a receipt records required-check state at classification time, so one taken while CI is pending
-# stops verifying once CI finishes. `workflow_run` re-classifies when CI completes (CHE-4250: not security-gate). (A `status` or
+# stops verifying once CI finishes. `workflow_run` re-classifies when CI or security-gate completes. (A `status` or
 # `issue_comment` trigger would not work: events made with GITHUB_TOKEN start no workflow run, but `workflow_run` fires.)
 # security-gate also runs on issue_comment and merge_group, where `workflow_run.head_sha` is the default-branch SHA.
-# For those runs the `find` job checks every open pull request (paginated) and names those whose `security-gate`
-# status was written at or after the run was created. The pull request, base SHA and head SHA come from the API (the event payload is not trusted for
-# them), `find` checks nothing out, and each `mechanical-tier` job still checks out only its base. The run records the
+# For those runs the `find` job reads the pull request number from the run title (security-gate.yml `run-name`;
+# `queue` or anything else names nothing). The pull request, base SHA and head SHA come from the API (the title is
+# only matched against a digits-only pattern), `find` checks nothing out, and each `mechanical-tier` job still checks out only its base. The run records the
 # fresh receipt in its step summary; it attaches no check to the pull request. Merge decisions use the latest receipt
 # for the exact head, re-verified with `verify`.
 #
@@ -28,10 +28,11 @@ name: mechanical-tier
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
-  # CHE-4250: CI only. security-gate completions (one per PR comment, mostly skipped) were ~40% of runs and each
-  # scanned every open PR. A gate verdict that lands after CI leaves the receipt stale until the next push or re-run.
+  # CHE-4250: security-gate completions (one per PR comment, mostly skipped) were ~40% of runs and each scanned every
+  # open PR. They stay a trigger, because a verdict that lands after CI changes required-check evidence, but a skipped
+  # run makes no API call and a real one reads one pull request (named in the run title).
   workflow_run:
-    workflows: [CI]
+    workflows: [CI, security-gate]
     types: [completed]
     branches-ignore: ['gh-readonly-queue/**']
 
@@ -56,7 +57,7 @@ jobs:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha }}
       RUN_NAME: ${{ github.event.workflow_run.name }}
-      RUN_CREATED: ${{ github.event.workflow_run.created_at }}
+      RUN_TITLE: ${{ github.event.workflow_run.display_title }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Name the open pull requests to classify
@@ -70,17 +71,9 @@ jobs:
             numbers="$(gh api "$repo/commits/$HEAD_SHA/pulls" \
               --jq '.[] | select(.state == "open" and .head.sha == env.HEAD_SHA) | .number')"
             if [ -z "$numbers" ] && [ "$RUN_NAME" = security-gate ]; then
-              # Comment and merge-queue gate runs report the default-branch SHA. The status they post lands on the PR head.
-              # Check every open PR (paginated); a limit here would leave a receipt stale with no retry.
-              # Capture each API read in an assignment so a failed request or page fails the job (set -e). A pipe or
-              # process substitution would hide the failure and leave a partial list.
-              open_prs="$(gh api "$repo/pulls?state=open&per_page=100" --paginate --jq '.[] | "\(.number) \(.head.sha)"')"
-              while read -r n head; do
-                if [ -z "$n" ]; then continue; fi
-                fresh="$(gh api "$repo/commits/$head/statuses?per_page=100" \
-                  --jq '[.[] | select(.context == "security-gate" and .updated_at >= env.RUN_CREATED)] | length')"
-                if [ "$fresh" -gt 0 ]; then numbers="$numbers $n"; fi
-              done <<< "$open_prs"
+              # Comment and merge-queue gate runs report the default-branch SHA. security-gate.yml names the PR in
+              # `run-name` ("security-gate #<n>"), so read it from the title: no open-PR scan, one pull read below.
+              if [[ "$RUN_TITLE" =~ ^security-gate\ \#([0-9]+)$ ]]; then numbers="${BASH_REMATCH[1]}"; fi
             fi
             # A matrix holds 256 jobs. Fail loudly rather than drop pull requests. The excess is not retried by a
             # re-run of the same event: re-run after fewer PRs are stale, or classify the rest by hand.

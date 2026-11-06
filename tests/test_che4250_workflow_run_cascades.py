@@ -20,9 +20,9 @@ class MechanicalTierTriggers(unittest.TestCase):
     def setUp(self):
         self.doc = load("mechanical-tier.yml")
 
-    def test_only_a_finished_ci_run_refreshes_a_receipt(self):
-        # security-gate runs on every PR comment; its completions were ~40% of mechanical-tier runs (CHE-4250).
-        self.assertEqual(self.doc["on"]["workflow_run"]["workflows"], ["CI"])
+    def test_a_finished_ci_or_security_gate_run_refreshes_a_receipt(self):
+        # A verdict that lands after CI changes required-check evidence; only this trigger refreshes the receipt.
+        self.assertEqual(self.doc["on"]["workflow_run"]["workflows"], ["CI", "security-gate"])
 
     def test_merge_queue_ci_runs_do_not_refresh_a_receipt(self):
         # A merge_group CI run has no open pull request for its head SHA; every one was an empty run.
@@ -42,9 +42,17 @@ class MechanicalTierTriggers(unittest.TestCase):
 
 
 class CacheMaintenanceTriggers(unittest.TestCase):
-    def test_runs_on_schedule_and_by_hand_only(self):
-        # The 6-hourly schedule bounds the cache budget; a run per completed CI run only burned API calls.
-        self.assertEqual(set(load("cache-maintenance.yml")["on"]), {"schedule", "workflow_dispatch"})
+    def test_runs_on_schedule_by_hand_and_after_main_build_only(self):
+        # A run per completed PR CI run only burned API calls; the schedule and Main Build bound the cache budget.
+        on = load("cache-maintenance.yml")["on"]
+        self.assertEqual(set(on), {"schedule", "workflow_dispatch", "workflow_run"})
+        self.assertEqual(on["workflow_run"]["workflows"], ["Main Build"])
+
+
+class SecurityGateRunName(unittest.TestCase):
+    def test_run_name_carries_only_the_pull_request_number_for_mechanical_tier(self):
+        self.assertEqual(load("security-gate.yml")["run-name"],
+                         "security-gate #${{ github.event.pull_request.number || github.event.issue.number || 'queue' }}")
 
 
 class SecurityGateComments(unittest.TestCase):

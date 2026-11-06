@@ -5,6 +5,10 @@ on:
   schedule:
     - cron: '17 */6 * * *'
   workflow_dispatch:
+  # CHE-4250: Main Build only. A run per completed PR CI run burned API calls; the schedule bounds the rest.
+  workflow_run:
+    workflows: ['Main Build']
+    types: [completed]
 
 permissions:
   contents: read

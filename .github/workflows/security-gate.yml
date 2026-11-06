@@ -18,6 +18,9 @@
 
 name: security-gate
 
+# CHE-4250: names the PR so mechanical-tier refreshes exactly that receipt after a verdict, with no open-PR scan.
+run-name: "security-gate #${{ github.event.pull_request.number || github.event.issue.number || 'queue' }}"
+
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review, edited]
