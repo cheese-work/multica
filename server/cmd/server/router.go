@@ -2118,6 +2118,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// Task-token write scoping (CHE-2216 A5a). Off until the A6 cutover:
 			// ordinary runs keep their ambient capabilities (risk decision 8).
 			r.Use(h.TaskTokenWriteScope(taskWriteScopeMode()))
+			// Every /api/chat* route is classed for task tokens (CHE-3702).
+			r.Use(h.ChatTaskTokenGate)
 
 			// Assignee frequency
 			r.Get("/api/assignee-frequency", h.GetAssigneeFrequency)
@@ -2317,8 +2319,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Route("/api/issue-workflows", func(r chi.Router) {
 				r.Get("/", h.ListIssueWorkflows)
 				r.Post("/", h.CreateIssueWorkflow)
+				r.Get("/lint", h.LintIssueWorkflows)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetIssueWorkflow)
+					r.Get("/lint", h.LintIssueWorkflow)
 					r.With(handler.RequireHumanOrTaskToken).Patch("/", h.UpdateIssueWorkflow)
 					r.With(handler.RequireHumanActor).Delete("/", h.DeleteIssueWorkflow)
 					r.With(handler.RequireHumanOrTaskToken).Put("/handoffs/{status}", h.SetIssueWorkflowHandoff)
