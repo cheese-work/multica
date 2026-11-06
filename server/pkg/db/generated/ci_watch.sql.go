@@ -11,6 +11,45 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const createSystem1CIObservation = `-- name: CreateSystem1CIObservation :execrows
+INSERT INTO system1_observation (workspace_id, kind, subject_id, class, decision_source, inputs, predicted_key, predicted_confidence, predicted_precedents, predicted_at, choice_key)
+SELECT workspace.id, 'ci_event', $1::uuid, $2::text, 'rule', $3::jsonb, $4::text, $5::real, $6::int, CASE WHEN $4::text IS NOT NULL THEN clock_timestamp() END, $7::text
+FROM workspace WHERE workspace.id = $8
+FOR KEY SHARE OF workspace
+ON CONFLICT (workspace_id, subject_id) WHERE kind = 'ci_event' DO NOTHING
+`
+
+type CreateSystem1CIObservationParams struct {
+	SubjectID           pgtype.UUID   `json:"subject_id"`
+	Class               string        `json:"class"`
+	Inputs              []byte        `json:"inputs"`
+	PredictedKey        pgtype.Text   `json:"predicted_key"`
+	PredictedConfidence pgtype.Float4 `json:"predicted_confidence"`
+	PredictedPrecedents pgtype.Int4   `json:"predicted_precedents"`
+	ChoiceKey           string        `json:"choice_key"`
+	WorkspaceID         pgtype.UUID   `json:"workspace_id"`
+}
+
+// One rule row per CI run attempt (subject_id is derived from the run key). A
+// redelivery, or a retry after a failed write, inserts nothing. FOR KEY SHARE
+// as in CreateSystem1Observation: no row for a workspace being deleted.
+func (q *Queries) CreateSystem1CIObservation(ctx context.Context, arg CreateSystem1CIObservationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, createSystem1CIObservation,
+		arg.SubjectID,
+		arg.Class,
+		arg.Inputs,
+		arg.PredictedKey,
+		arg.PredictedConfidence,
+		arg.PredictedPrecedents,
+		arg.ChoiceKey,
+		arg.WorkspaceID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteExpiredCIFailureEvents = `-- name: DeleteExpiredCIFailureEvents :execrows
 
 DELETE FROM ci_failure_event WHERE created_at < $1
