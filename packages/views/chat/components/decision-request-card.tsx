@@ -16,7 +16,7 @@ import { LazyContentEditor as ContentEditor } from "./lazy-content-editor";
 import { RichContent } from "../../rich-content";
 import { CompactIssueChipsProvider } from "../../issues/compact-issue-chips-context";
 import { useT } from "../../i18n";
-import { AppLink, useNavigation } from "../../navigation";
+import { AppLink, useOptionalNavigation } from "../../navigation";
 import { openExternal } from "../../platform";
 import { isDesktopShell } from "../../platform/local-directory";
 import { useOnline } from "../../settings/components/use-online";
@@ -257,7 +257,7 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
   const [draft, setDraft] = useState<AnswerDraft>(EMPTY_DRAFT);
   const [refused, setRefused] = useState(false);
   const [needsPasskey, setNeedsPasskey] = useState(false);
-  const navigation = useNavigation();
+  const navigation = useOptionalNavigation();
   // Remounting the form empties the editor after a send: the editor takes its draft once at mount.
   const [formKey, setFormKey] = useState(0);
   const answer = useAnswerDecisionRequest(card.issue_id);
@@ -361,7 +361,7 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
           <KeptDraft draft={draft} onDiscard={discardDraft} />
         ) : (
           card.state === "open" && (
-            <DecisionAnswerForm key={formKey} card={card} draft={draft} answer={answer} onDraftChange={setDraft} onSend={sendAnswer} inIssue={inIssue} needsPasskey={needsPasskey} onOpenWeb={() => openExternal(navigation.getShareableUrl(issueHref))} />
+            <DecisionAnswerForm key={formKey} card={card} draft={draft} answer={answer} onDraftChange={setDraft} onSend={sendAnswer} inIssue={inIssue} needsPasskey={needsPasskey} onOpenWeb={() => navigation && openExternal(navigation.getShareableUrl(issueHref))} />
           )
         )}
         {shown === "picked_up" && card.answer?.run && (

@@ -20,7 +20,7 @@ vi.mock("@multica/core/auth/webauthn", () => ({ signPasskeyChallenge }));
 
 vi.mock("../../navigation", async (importActual) => ({
   ...(await importActual<typeof import("../../navigation")>()),
-  useNavigation: () => ({ getShareableUrl: (path: string) => `https://app.test${path}` }),
+  useOptionalNavigation: () => ({ getShareableUrl: (path: string) => `https://app.test${path}` }),
   AppLink: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => <a href={href} {...rest}>{children}</a>,
 }));
 
