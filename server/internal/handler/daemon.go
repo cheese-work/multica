@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"slices"
 	"sort"
@@ -3083,6 +3084,18 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	if h.recordClaimSnapshot(r.Context(), task, preset, agentpreset.ContextArgsOf(runtime.Provider, customArgs)) {
 		// resp was snapshotted before this write; report what is now stored.
 		resp.ClaimedModel = &preset.Settings.Model
+	}
+	// CHE-4331: compaction env for Claude Code, derived from auto_compact at
+	// claim time; never stored in agent env, and the agent's own env wins.
+	if runtime.Provider == "claude" {
+		if ws, err := h.Queries.GetWorkspace(r.Context(), parseUUID(runtimeWorkspaceID)); err != nil {
+			slog.Warn("daemon claim: load workspace for auto-compact env failed", "task_id", uuidToString(task.ID), "error", err)
+		} else if extra := service.ClaudeCompactEnv(runtime.Provider, preset.Settings.Model, ws.Settings, agent.RuntimeConfig, customEnv); len(extra) > 0 {
+			if customEnv == nil {
+				customEnv = map[string]string{}
+			}
+			maps.Copy(customEnv, extra)
+		}
 	}
 	resp.Agent = &TaskAgentData{
 		ID:                    uuidToString(agent.ID),

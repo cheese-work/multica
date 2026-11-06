@@ -49,6 +49,9 @@ type AutoCompact struct {
 	ThresholdPct int
 	Tokens200k   int64
 	Tokens1M     int64
+	// Tokens1MSet is true when a layer saved threshold_tokens_1m; runs use the
+	// 400k cap instead of the DM's idle default otherwise.
+	Tokens1MSet bool
 }
 
 // ValidAutoCompactTokens reports whether v is a whole token count within
@@ -90,7 +93,7 @@ func ResolveAutoCompact(workspaceSettings, agentConfig []byte) AutoCompact {
 			rule.Tokens200k, tokenSet = int64(*l.Tokens200k), true
 		}
 		if l.Tokens1M != nil && ValidAutoCompactTokens(*l.Tokens1M, AutoCompactMaxTokens1M) {
-			rule.Tokens1M, tokenSet = int64(*l.Tokens1M), true
+			rule.Tokens1M, tokenSet, rule.Tokens1MSet = int64(*l.Tokens1M), true, true
 		}
 		if tokenSet {
 			rule.ThresholdPct = 0

@@ -31,7 +31,9 @@ func TestResolveAutoCompactPrecedence(t *testing.T) {
 		{"unparsable layer is skipped", `not json`, `{"auto_compact":{"threshold_pct":66}}`, pctRule(true, 66)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ResolveAutoCompact([]byte(tc.workspace), []byte(tc.agent)); got != tc.want {
+			got := ResolveAutoCompact([]byte(tc.workspace), []byte(tc.agent))
+			got.Tokens1MSet = false // covered by TestClaudeCompactEnv
+			if got != tc.want {
 				t.Fatalf("ResolveAutoCompact = %+v, want %+v", got, tc.want)
 			}
 		})

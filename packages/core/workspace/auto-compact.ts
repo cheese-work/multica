@@ -47,9 +47,12 @@ export function readAutoCompact(
 // CHE-4331: with no percent saved, the trigger is a token count chosen by the
 // model's window. Mirrors server/internal/service/auto_compact.go.
 const SMALL_WINDOW = 200_000;
-const MIN_TOKENS = 100_000;
-const MAX_TOKENS_200K = 200_000;
-const MAX_TOKENS_1M = 400_000;
+export const AUTO_COMPACT_MIN_TOKENS = 100_000;
+export const AUTO_COMPACT_MAX_TOKENS_200K = 200_000;
+export const AUTO_COMPACT_MAX_TOKENS_1M = 400_000;
+const MIN_TOKENS = AUTO_COMPACT_MIN_TOKENS;
+const MAX_TOKENS_200K = AUTO_COMPACT_MAX_TOKENS_200K;
+const MAX_TOKENS_1M = AUTO_COMPACT_MAX_TOKENS_1M;
 
 export interface ResolvedAutoCompact {
   enabled: boolean;
@@ -59,7 +62,7 @@ export interface ResolvedAutoCompact {
   tokens_1m: number;
 }
 
-function isValidTokens(value: unknown, max: number): value is number {
+export function isValidAutoCompactTokens(value: unknown, max: number): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= MIN_TOKENS && value <= max;
 }
 
@@ -80,11 +83,11 @@ export function resolveAutoCompact(
     const o = raw as Record<string, unknown>;
     if (typeof o.enabled === "boolean") rule.enabled = o.enabled;
     let tokenSet = false;
-    if (isValidTokens(o.threshold_tokens_200k, MAX_TOKENS_200K)) {
+    if (isValidAutoCompactTokens(o.threshold_tokens_200k, MAX_TOKENS_200K)) {
       rule.tokens_200k = o.threshold_tokens_200k;
       tokenSet = true;
     }
-    if (isValidTokens(o.threshold_tokens_1m, MAX_TOKENS_1M)) {
+    if (isValidAutoCompactTokens(o.threshold_tokens_1m, MAX_TOKENS_1M)) {
       rule.tokens_1m = o.threshold_tokens_1m;
       tokenSet = true;
     }
