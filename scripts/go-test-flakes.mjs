@@ -13,8 +13,8 @@ import { join } from "node:path";
 const MAX_FLAKES = 3;
 
 // --plan <gotestsum.json>: the first-pass failures of one run, for test-go.sh's job-wide rerun
-// decision. One `<package>\t<root test>` line per failed test (a failing subtest reruns through its
-// root test), or a single `!` when a rerun proves nothing: a panic, a timeout, a data race, or a
+// decision. One `<package>\t<root test>\t<leaf test>` line per failed leaf test (the budget counts
+// leaves; a failing subtest reruns through its root test), or a single `!` when a rerun proves nothing: a panic, a timeout, a data race, or a
 // package that failed with no failing test (build or TestMain failure).
 if (process.argv[2] === "--plan") {
   let events = [];
@@ -24,7 +24,7 @@ if (process.argv[2] === "--plan") {
     console.log("!");
     process.exit(0);
   }
-  const roots = new Set();
+  const failedTests = new Set();
   const failedPackages = new Set();
   const packagesWithFailedTest = new Set();
   let unsafe = false;
@@ -32,12 +32,20 @@ if (process.argv[2] === "--plan") {
     if (Action === "output" && /^panic: |WARNING: DATA RACE|race detected during execution|test timed out after/m.test(Output ?? "")) unsafe = true;
     if (Action !== "fail") continue;
     if (Test) {
-      roots.add(`${Package}\t${Test.split("/")[0]}`);
+      failedTests.add(`${Package}\t${Test}`);
       packagesWithFailedTest.add(Package);
     } else failedPackages.add(Package);
   }
   if (unsafe || [...failedPackages].some((p) => !packagesWithFailedTest.has(p))) console.log("!");
-  else for (const line of [...roots].sort()) console.log(line);
+  else {
+    // A failing subtest fails its parents too: keep the leaves only.
+    const leaves = [...failedTests].filter((k) => ![...failedTests].some((o) => o.startsWith(`${k}/`)));
+    const lines = leaves.map((k) => {
+      const [pkg, test] = k.split("\t");
+      return `${pkg}\t${test.split("/")[0]}\t${test}`;
+    });
+    for (const line of lines.sort()) console.log(line);
+  }
   process.exit(0);
 }
 

@@ -109,11 +109,17 @@ const plan = (events) => {
 };
 const out = (Output) => JSON.stringify({ Action: "output", Package: "p", Output });
 
-test("--plan lists the root test of every failed test once", () => {
+test("--plan lists every failed leaf test with its root test", () => {
   assert.equal(
     plan([ev("fail", "p", "TestB/sub"), ev("fail", "p", "TestB"), ev("fail", "p", "TestA"), ev("fail", "p")]),
-    "p\tTestA\np\tTestB\n",
+    "p\tTestA\tTestA\np\tTestB\tTestB/sub\n",
   );
+});
+
+test("--plan counts four sibling subtests of one root as four failures", () => {
+  const subs = [1, 2, 3, 4].map((i) => ev("fail", "p", `TestA/s${i}`));
+  const lines = plan([...subs, ev("fail", "p", "TestA"), ev("fail", "p")]).trim().split("\n");
+  assert.deepEqual(lines, [1, 2, 3, 4].map((i) => `p\tTestA\tTestA/s${i}`));
 });
 
 test("--plan prints ! for a panic, a race, a timeout, a package-level failure or a missing file", () => {

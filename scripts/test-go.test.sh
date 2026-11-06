@@ -185,16 +185,21 @@ budget_case() {
 budget_case "no failure" 0 0 "" FAKE_FAIL=
 budget_case "one regular failure reruns" 0 1 "" FAKE_FAIL=a:TestA
 # 2 regular + 1 shard failure = 3 in total: the shards are told to rerun, and so does the regular run.
-budget_case "3 split failures rerun" 0 2 rerun FAKE_FAIL="a:TestA b:TestB" FAKE_SHARD_FAIL='internal/handler\tTestH\n'
+budget_case "3 split failures rerun" 0 2 rerun FAKE_FAIL="a:TestA b:TestB" FAKE_SHARD_FAIL='internal/handler\tTestH\tTestH\n'
 # 2 regular + 2 shard failures = 4 in total: nobody reruns anything, the job fails.
-budget_case "4 split failures never rerun" 1 0 skip FAKE_FAIL="a:TestA b:TestB" FAKE_SHARD_FAIL='internal/handler\tTestH1\ninternal/handler\tTestH2\n'
+budget_case "4 split failures never rerun" 1 0 skip FAKE_FAIL="a:TestA b:TestB" FAKE_SHARD_FAIL='internal/handler\tTestH1\tTestH1\ninternal/handler\tTestH2\tTestH2\n'
 # 1 regular failure + 3 shard failures (4): the regular failure is not rerun either.
-budget_case "regular + 3 shard failures never rerun" 1 0 skip FAKE_FAIL=a:TestA FAKE_SHARD_FAIL='internal/handler\tT1\ninternal/handler\tT2\ninternal/handler\tT3\n'
+budget_case "regular + 3 shard failures never rerun" 1 0 skip FAKE_FAIL=a:TestA FAKE_SHARD_FAIL='internal/handler\tT1\tT1\ninternal/handler\tT2\tT2\ninternal/handler\tT3\tT3\n'
 # 4 failures in the regular packages alone.
 budget_case "4 regular failures never rerun" 1 0 "" FAKE_FAIL="a:T1 a:T2 b:T3 b:T4"
 # A shard that cannot be rerun (panic, race) vetoes the regular rerun, and a regular panic vetoes the shard rerun.
+# Subtests count one by one: four sibling failures under one root never rerun, three rerun once through the root.
+budget_case "4 sibling subtests never rerun" 1 0 "" FAKE_FAIL="a:TestA a:TestA/s1 a:TestA/s2 a:TestA/s3 a:TestA/s4"
+budget_case "3 sibling subtests rerun" 0 1 "" FAKE_FAIL="a:TestA a:TestA/s1 a:TestA/s2 a:TestA/s3"
+budget_case "regular subtest + 3 shard subtests never rerun" 1 0 skip FAKE_FAIL="a:TestA a:TestA/s1" \
+  FAKE_SHARD_FAIL='internal/handler\tTestH\tTestH/s1\ninternal/handler\tTestH\tTestH/s2\ninternal/handler\tTestH\tTestH/s3\n'
 budget_case "shard veto" 1 0 skip FAKE_FAIL=a:TestA FAKE_SHARD_FAIL='!\n'
-budget_case "regular race vetoes shards" 1 0 skip FAKE_FAIL=a:TestA FAKE_UNSAFE='WARNING: DATA RACE' FAKE_SHARD_FAIL='internal/handler\tTestH\n'
+budget_case "regular race vetoes shards" 1 0 skip FAKE_FAIL=a:TestA FAKE_UNSAFE='WARNING: DATA RACE' FAKE_SHARD_FAIL='internal/handler\tTestH\tTestH\n'
 budget_case "rerun fails again" 1 1 "" FAKE_FAIL=a:TestA FAKE_RERUN_FAIL=1
 
 # First pass and rerun call shapes, agent half (no shards).

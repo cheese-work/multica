@@ -66,13 +66,13 @@ run_go_test() {
 }
 
 # Failures of the first pass of run $1 (exit status $2) as plan lines
-# `<package>\t<root test>`, or `!` when a rerun proves nothing.
+# `<package>\t<root test>\t<leaf test>` (one per failed leaf, subtests included), or `!` when a rerun proves nothing.
 write_plan() {
   node "$FLAKES_SCRIPT" --plan "$flake_dir/go-test-$1.json" >"$flake_dir/plan-$1.txt"
   if [ "$2" -ne 0 ] && [ ! -s "$flake_dir/plan-$1.txt" ]; then echo '!' >"$flake_dir/plan-$1.txt"; fi
 }
 
-# Job-wide budget over the given plan files: no `!` line, 1 to 3 failed tests.
+# Job-wide budget over the given plan files: no `!` line, 1 to 3 failed leaf tests.
 rerun_allowed() {
   local lines
   lines=$(cat "$@" 2>/dev/null | sort -u)
@@ -88,7 +88,7 @@ rerun_failed() {
   shift 2
   for pkg in $(cut -f1 "$plan" | sort -u); do
     n=$((n + 1))
-    tests=$(awk -F'\t' -v p="$pkg" '$1 == p { print $2 }' "$plan" | paste -sd'|')
+    tests=$(awk -F'\t' -v p="$pkg" '$1 == p { print $2 }' "$plan" | sort -u | paste -sd'|')
     echo "rerunning failed tests once in $pkg: $tests"
     "$GUARD_SCRIPT" -- gotestsum --format standard-verbose --jsonfile "$flake_dir/go-test-$name-rerun-$n.json" \
       --packages "$pkg" -- "$@" -count=1 -run "^($tests)\$" || status=$?

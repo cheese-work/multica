@@ -116,9 +116,9 @@ export FIRST_OUT=$'--- FAIL: TestFlakyB (0.10s)\n    --- FAIL: TestFlakyB/sub (0
 
 # Fails once, decision rerun, passes on rerun: shard script passes, both tests recorded as flakes.
 RERUN_EXIT=0 rerun_case "flake" 0 1 rerun
-[ "$(published)" = "internal/handler:TestFlakyA,internal/handler:TestFlakyB" ] || { echo "published wrong: $(published)" >&2; exit 1; }
+[ "$(published)" = "internal/handler:TestFlakyA:TestFlakyA,internal/handler:TestFlakyB:TestFlakyB/sub" ] || { echo "published wrong: $(published)" >&2; exit 1; }
 [ -e "$TEST_DIR/flakes/handler-first-pass.done" ] || { echo "first-pass marker missing" >&2; exit 1; }
-[ "$(sort "$TEST_DIR/flakes/handler-flakes.txt")" = "$(printf 'internal/handler\tTestFlakyA\ninternal/handler\tTestFlakyB')" ] \
+[ "$(sort "$TEST_DIR/flakes/handler-flakes.txt")" = "$(printf 'internal/handler\tTestFlakyA\ninternal/handler\tTestFlakyB/sub')" ] \
   || { echo "flake file wrong:" >&2; cat "$TEST_DIR/flakes/handler-flakes.txt" >&2; exit 1; }
 
 # Fails again on rerun: real failure, nothing recorded.
@@ -127,10 +127,19 @@ RERUN_EXIT=1 rerun_case "fails twice" 1 1 rerun
 
 # The job-wide decision says skip (e.g. other runs also failed): publish, never rerun, fail.
 RERUN_EXIT=0 rerun_case "decision skip" 1 0 skip
-[ "$(published)" = "internal/handler:TestFlakyA,internal/handler:TestFlakyB" ] || { echo "skip: published wrong: $(published)" >&2; exit 1; }
+[ "$(published)" = "internal/handler:TestFlakyA:TestFlakyA,internal/handler:TestFlakyB:TestFlakyB/sub" ] || { echo "skip: published wrong: $(published)" >&2; exit 1; }
 
 # No decision arrives: fail instead of hanging or guessing.
 RERUN_EXIT=0 rerun_case "no decision" 1 0 ""
+
+# Four sibling subtests of one test are four failures: published one by one, rerun through their root.
+FIRST_OUT=$'--- FAIL: TestFlakyA (0s)\n    --- FAIL: TestFlakyA/s1 (0s)\n    --- FAIL: TestFlakyA/s2 (0s)\n    --- FAIL: TestFlakyA/s3 (0s)\n    --- FAIL: TestFlakyA/s4 (0s)\nFAIL' \
+  RERUN_RE='^(TestFlakyA)$' RERUN_EXIT=0 rerun_case "sibling subtests" 1 0 skip
+[ "$(published | tr ',' '\n' | wc -l | tr -d ' ')" = 4 ] || { echo "sibling subtests: want 4 published leaves, got $(published)" >&2; exit 1; }
+FIRST_OUT=$'--- FAIL: TestFlakyA (0s)\n    --- FAIL: TestFlakyA/s1 (0s)\n    --- FAIL: TestFlakyA/s2 (0s)\nFAIL' \
+  RERUN_RE='^(TestFlakyA)$' RERUN_EXIT=0 rerun_case "sibling subtests rerun by root" 0 1 rerun
+[ "$(sort "$TEST_DIR/flakes/handler-flakes.txt" | paste -sd, | tr '\t' ':')" = "internal/handler:TestFlakyA/s1,internal/handler:TestFlakyA/s2" ] \
+  || { echo "sibling flakes keep their own names:" >&2; cat "$TEST_DIR/flakes/handler-flakes.txt" >&2; exit 1; }
 
 # Failures in two shards are published together, so the job-wide count sees all of them.
 SECOND_OUT=$'--- FAIL: TestOther1 (0s)\n--- FAIL: TestOther2 (0s)\nFAIL' RERUN_EXIT=0 rerun_case "two shards" 1 0 skip
