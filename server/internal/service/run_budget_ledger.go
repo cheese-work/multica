@@ -169,6 +169,20 @@ func OpenRunBudgetWindowID(ctx context.Context, q *db.Queries, issueID pgtype.UU
 	return usage.Max, runBudgetWindowID(usage.Since), nil
 }
 
+// LockRunBudgetWindow is OpenRunBudgetWindow that also returns the id of the
+// window it opened (empty: the issue has no budget), so a caller can compare
+// the window a person approved against the one in force under the lock.
+func LockRunBudgetWindow(ctx context.Context, q *db.Queries, issueID pgtype.UUID) (string, error) {
+	_, usage, _, err := openRunBudget(ctx, q, issueID, pgtype.UUID{})
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && usage == nil) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return runBudgetWindowID(usage.Since), nil
+}
+
 // RecordRunBudgetRaise credits the runs a person added to the issue's cap. The
 // caller opened the window first (OpenRunBudgetWindow), so the raise is the
 // only difference between the ledger's cap and the issue's.
