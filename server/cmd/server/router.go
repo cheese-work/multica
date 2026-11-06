@@ -2679,12 +2679,17 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/messages/{messageId}/supplement/resend", h.ResendChatSupplement)
 					r.Post("/read", h.MarkChatSessionRead)
 					r.Post("/unread", h.MarkChatSessionUnread)
+					// DM attention (CHE-4147): human-only Xong / Để sau on the displayed keys.
+					r.With(denyRunToken).Post("/attention/xong", h.ChatAttentionXong)
+					r.With(denyRunToken).Post("/attention/later", h.ChatAttentionLater)
 					// Deferred-cancellation draft restores (#5219):
 					// creator-only fetch + idempotent consume.
 					r.Get("/draft-restores", h.ListChatDraftRestores)
 					r.Delete("/draft-restores/{restoreId}", h.ConsumeChatDraftRestore)
 				})
 			})
+			r.With(denyRunToken).Post("/api/chat/attention/xong-all", h.ChatAttentionXongAll)
+			r.With(denyRunToken).Post("/api/chat/attention/xong-all/{batchId}/undo", h.ChatAttentionUndoXongAll)
 			r.Get("/api/chat/pending-tasks", h.ListPendingChatTasks)
 			r.Get("/api/chat/pending-tasks/has-any", h.HasPendingChatTasks)
 

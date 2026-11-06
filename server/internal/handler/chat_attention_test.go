@@ -1,0 +1,336 @@
+package handler
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/internal/util"
+)
+
+// CHE-4147 (plan r4 T3-T5, acceptance A2 A6 A11 A13 A21 A24, C1): human attention endpoints.
+
+type attnFx struct {
+	t         *testing.T
+	agentID   string
+	sessionID string
+}
+
+func newAttnFx(t *testing.T) *attnFx {
+	t.Helper()
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "attn-"+t.Name(), []byte("[]"))
+	sessionID := chatSessionFor(t, agentID, testutil.Cols{})
+	dbfx.Cleanup(t, `DELETE FROM chat_attention_mark WHERE user_id = $1`, testUserID)
+	dbfx.Cleanup(t, `DELETE FROM chat_attention_item WHERE chat_session_id = $1`, sessionID)
+	return &attnFx{t: t, agentID: agentID, sessionID: sessionID}
+}
+
+func (f *attnFx) item(kind, user string, openedAgo time.Duration) string {
+	f.t.Helper()
+	cols := testutil.Cols{
+		"workspace_id": testWorkspaceID, "chain_root_session_id": f.sessionID, "chat_session_id": f.sessionID,
+		"user_id": user, "kind": kind,
+		"opened_at": testutil.Raw(fmt.Sprintf("now() - interval '%d seconds'", int(openedAgo.Seconds()))),
+	}
+	if kind == "ask" {
+		cols["agent_id"] = f.agentID
+	}
+	if kind == "later" {
+		cols["due_at"] = testutil.Raw("now() + interval '1 hour'")
+	}
+	return dbfx.Insert(f.t, "chat_attention_item", cols)
+}
+
+func (f *attnFx) decision() string {
+	f.t.Helper()
+	return dbfx.Insert(f.t, "decision_request", testutil.Cols{
+		"workspace_id": testWorkspaceID, "issue_id": dbfx.Issue(f.t, "Attn decision"), "asking_agent_id": f.agentID,
+		"human_user_id": testUserID, "chat_session_id": f.sessionID, "escalation_class": "reversible", "origin": "asked",
+	})
+}
+
+func (f *attnFx) turn() string {
+	f.t.Helper()
+	return dbfx.Insert(f.t, "agent_task_queue", testutil.Cols{
+		"agent_id": f.agentID, "runtime_id": handlerTestRuntimeID(f.t), "status": "completed", "priority": 2, "chat_session_id": f.sessionID,
+	})
+}
+
+func (f *attnFx) resolved(id string) (by *string) {
+	f.t.Helper()
+	dbfx.QueryRow(f.t, `SELECT resolved_by FROM chat_attention_item WHERE id = $1`, id).Scan(&by)
+	return by
+}
+
+func (f *attnFx) call(h http.HandlerFunc, path string, body any, params ...string) *httptest.ResponseRecorder {
+	f.t.Helper()
+	req := newRequest(http.MethodPost, path, body)
+	for i := 0; i+1 < len(params); i += 2 {
+		req = withURLParam(req, params[i], params[i+1])
+	}
+	rec := httptest.NewRecorder()
+	h(rec, withChatTestWorkspaceCtx(f.t, req))
+	return rec
+}
+
+func (f *attnFx) post(h http.HandlerFunc, verb string, body map[string]any) *httptest.ResponseRecorder {
+	return f.call(h, "/api/chat/sessions/"+f.sessionID+"/attention/"+verb, body, "sessionId", f.sessionID)
+}
+
+type attnView struct {
+	StaleLevel string   `json:"stale_level"`
+	Keys       []string `json:"keys"`
+}
+
+func attnOne(t *testing.T, rec *httptest.ResponseRecorder) (attnView, string) {
+	t.Helper()
+	var out struct {
+		BatchID   string   `json:"batch_id"`
+		Attention attnView `json:"attention"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode %s: %v", rec.Body.String(), err)
+	}
+	return out.Attention, out.BatchID
+}
+
+func wantCode(t *testing.T, rec *httptest.ResponseRecorder, code int) {
+	t.Helper()
+	if rec.Code != code {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, code, rec.Body.String())
+	}
+}
+
+func has(keys []string, k string) bool {
+	for _, x := range keys {
+		if x == k {
+			return true
+		}
+	}
+	return false
+}
+
+// A6 / E19: a delayed Xong carries old keys; the ask that arrived after is untouched.
+func TestChatAttentionXong_NewAskSurvivesDelayedKeys(t *testing.T) {
+	f := newAttnFx(t)
+	old := f.item("ask", testUserID, 5*time.Hour)
+	arrived := f.item("ask", testUserID, time.Minute)
+
+	rec := f.post(testHandler.ChatAttentionXong, "xong", map[string]any{"subject_keys": []string{service.ItemKey(old)}})
+	wantCode(t, rec, http.StatusOK)
+	view, _ := attnOne(t, rec)
+	if by := f.resolved(old); by == nil || *by != "xong" {
+		t.Fatalf("old ask resolved_by = %v, want xong", by)
+	}
+	if f.resolved(arrived) != nil || !has(view.Keys, service.ItemKey(arrived)) || has(view.Keys, service.ItemKey(old)) {
+		t.Fatalf("new ask must stay open and visible: %+v", view)
+	}
+	// Idempotent: a repeat of the same keys changes nothing.
+	wantCode(t, f.post(testHandler.ChatAttentionXong, "xong", map[string]any{"subject_keys": []string{service.ItemKey(old)}}), http.StatusOK)
+}
+
+// A21: a decision key in Xong is refused; the whole request changes nothing.
+func TestChatAttentionXong_DecisionKeyRefused(t *testing.T) {
+	f := newAttnFx(t)
+	ask := f.item("ask", testUserID, time.Hour)
+	d := f.decision()
+	rec := f.post(testHandler.ChatAttentionXong, "xong", map[string]any{"subject_keys": []string{service.ItemKey(ask), service.DecisionKey(d, 1)}})
+	wantCode(t, rec, http.StatusUnprocessableEntity)
+	if f.resolved(ask) != nil || dbfx.Count(t, `SELECT count(*) FROM decision_request WHERE id = $1 AND status = 'open'`, d) != 1 {
+		t.Fatal("rejected request must not change the ask or the decision")
+	}
+}
+
+// A24: another user's key is a 403 on Xong and Để sau; nothing changes.
+func TestChatAttentionKeysOfAnotherUserForbidden(t *testing.T) {
+	f := newAttnFx(t)
+	other := dbfx.User(t, "Attn Other", fmt.Sprintf("attn-other-%d@multica.ai", time.Now().UnixNano()))
+	foreign := f.item("ask", other, time.Hour)
+	mine := f.item("ask", testUserID, time.Hour)
+	keys := []string{service.ItemKey(mine), service.ItemKey(foreign)}
+
+	wantCode(t, f.post(testHandler.ChatAttentionXong, "xong", map[string]any{"subject_keys": keys}), http.StatusForbidden)
+	wantCode(t, f.post(testHandler.ChatAttentionLater, "later", map[string]any{"subject_keys": keys, "request_id": uuid.NewString()}), http.StatusForbidden)
+	wantCode(t, f.call(testHandler.ChatAttentionXongAll, "/api/chat/attention/xong-all", map[string]any{"subject_keys": keys}), http.StatusForbidden)
+	if f.resolved(mine) != nil || f.resolved(foreign) != nil ||
+		dbfx.Count(t, `SELECT count(*) FROM chat_attention_mark WHERE user_id = $1`, testUserID) != 0 ||
+		dbfx.Count(t, `SELECT count(*) FROM chat_attention_item WHERE chat_session_id = $1 AND kind = 'later'`, f.sessionID) != 0 {
+		t.Fatal("a forbidden request must change nothing")
+	}
+}
+
+// A2: /later 2h hides the ask for 2h, keeps it open, and it returns with its original age.
+func TestChatAttentionLater_HidesThenReturnsWithOriginalAge(t *testing.T) {
+	f := newAttnFx(t)
+	ask := f.item("ask", testUserID, 5*time.Hour)
+	var opened time.Time
+	dbfx.QueryRow(t, `SELECT opened_at FROM chat_attention_item WHERE id = $1`, ask).Scan(&opened)
+
+	rec := f.post(testHandler.ChatAttentionLater, "later", map[string]any{
+		"subject_keys": []string{service.ItemKey(ask)}, "duration_seconds": 7200, "request_id": uuid.NewString(),
+	})
+	wantCode(t, rec, http.StatusOK)
+	view, _ := attnOne(t, rec)
+	if f.resolved(ask) != nil || has(view.Keys, service.ItemKey(ask)) {
+		t.Fatalf("ask must stay open but hidden: %+v", view)
+	}
+	rows, err := service.LoadChatAttention(context.Background(), testHandler.Queries, util.MustParseUUID(testWorkspaceID), util.MustParseUUID(testUserID), time.Now().Add(3*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.RootID == f.sessionID {
+			if !has(r.Keys, service.ItemKey(ask)) || r.AttentionSince == nil || r.AttentionSince.After(opened.Add(time.Second)) {
+				t.Fatalf("after 3h the ask returns with its original age: %+v", r)
+			}
+			return
+		}
+	}
+	t.Fatal("chain missing from projection after 3h")
+}
+
+// C1: /later on a DM with no other obligation makes a later item that stays quiet until due.
+func TestChatAttentionLater_QuietUntilDue(t *testing.T) {
+	f := newAttnFx(t)
+	rec := f.post(testHandler.ChatAttentionLater, "later", map[string]any{"subject_keys": []string{}, "duration_seconds": 7200, "request_id": uuid.NewString()})
+	wantCode(t, rec, http.StatusOK)
+	view, _ := attnOne(t, rec)
+	if view.StaleLevel != "none" || len(view.Keys) != 0 {
+		t.Fatalf("later item must be quiet before due: %+v", view)
+	}
+	var id string
+	var due time.Time
+	dbfx.QueryRow(t, `SELECT id, due_at FROM chat_attention_item WHERE chat_session_id = $1 AND kind = 'later' AND resolved_at IS NULL`, f.sessionID).Scan(&id, &due)
+	if d := time.Until(due); d < 119*time.Minute || d > 121*time.Minute {
+		t.Fatalf("due_at = now+%v, want ~2h", d)
+	}
+}
+
+// A13: out-of-range durations are refused with the range; a retried request does not extend.
+func TestChatAttentionLater_RangeAndIdempotency(t *testing.T) {
+	f := newAttnFx(t)
+	for name, body := range map[string]map[string]any{
+		"30d":  {"duration_seconds": 30 * 86400},
+		"zero": {"duration_seconds": 0},
+		"past": {"until": time.Now().Add(-time.Hour).Format(time.RFC3339)},
+	} {
+		body["subject_keys"], body["request_id"] = []string{}, uuid.NewString()
+		rec := f.post(testHandler.ChatAttentionLater, "later", body)
+		if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "168h") {
+			t.Fatalf("%s: status %d, body %s; want 422 naming the 168h range", name, rec.Code, rec.Body.String())
+		}
+	}
+	if dbfx.Count(t, `SELECT count(*) FROM chat_attention_item WHERE chat_session_id = $1`, f.sessionID) != 0 {
+		t.Fatal("a rejected request must create nothing")
+	}
+
+	req := uuid.NewString()
+	wantCode(t, f.post(testHandler.ChatAttentionLater, "later", map[string]any{"subject_keys": []string{}, "duration_seconds": 3600, "request_id": req}), http.StatusOK)
+	var first time.Time
+	dbfx.QueryRow(t, `SELECT due_at FROM chat_attention_item WHERE chat_session_id = $1 AND kind = 'later' AND resolved_at IS NULL`, f.sessionID).Scan(&first)
+	time.Sleep(20 * time.Millisecond)
+	wantCode(t, f.post(testHandler.ChatAttentionLater, "later", map[string]any{"subject_keys": []string{}, "duration_seconds": 3600, "request_id": req}), http.StatusOK)
+	var again time.Time
+	dbfx.QueryRow(t, `SELECT due_at FROM chat_attention_item WHERE chat_session_id = $1 AND kind = 'later' AND resolved_at IS NULL`, f.sessionID).Scan(&again)
+	if !again.Equal(first) {
+		t.Fatalf("retry extended the reminder: %v -> %v", first, again)
+	}
+
+	// A new request replaces the open later: still exactly one open.
+	wantCode(t, f.post(testHandler.ChatAttentionLater, "later", map[string]any{"subject_keys": []string{}, "duration_seconds": 7200, "request_id": uuid.NewString()}), http.StatusOK)
+	if n := dbfx.Count(t, `SELECT count(*) FROM chat_attention_item WHERE chat_session_id = $1 AND kind = 'later' AND resolved_at IS NULL`, f.sessionID); n != 1 {
+		t.Fatalf("open later items = %d, want 1", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM chat_attention_item WHERE chat_session_id = $1 AND kind = 'later' AND resolved_by = 'replaced'`, f.sessionID); n != 1 {
+		t.Fatalf("replaced later items = %d, want 1", n)
+	}
+}
+
+// A11: Xong tất cả, then undo. Arrival after the snapshot and decisions are untouched.
+func TestChatAttentionXongAll_UndoRestoresOnlyItsBatch(t *testing.T) {
+	f := newAttnFx(t)
+	ask := f.item("ask", testUserID, 5*time.Hour)
+	unseen := f.item("unseen", testUserID, time.Hour)
+	d := f.decision()
+	turn := f.turn()
+	keys := []string{service.ItemKey(ask), service.ItemKey(unseen), service.DecisionKey(d, 1), service.TurnKey(turn)}
+	arrived := f.item("ask", testUserID, time.Minute)
+
+	rec := f.call(testHandler.ChatAttentionXongAll, "/api/chat/attention/xong-all", map[string]any{"subject_keys": keys})
+	wantCode(t, rec, http.StatusOK)
+	var done struct {
+		BatchID string `json:"batch_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &done); err != nil || done.BatchID == "" {
+		t.Fatalf("batch_id missing: %s", rec.Body.String())
+	}
+	acked := func() int {
+		return dbfx.Count(t, `SELECT count(*) FROM chat_attention_mark WHERE user_id = $1 AND subject_key = $2 AND acked_at IS NOT NULL`, testUserID, service.TurnKey(turn))
+	}
+	if f.resolved(ask) == nil || f.resolved(unseen) == nil || acked() != 1 {
+		t.Fatal("ask, unseen and turn must be resolved or acknowledged")
+	}
+	if f.resolved(arrived) != nil || dbfx.Count(t, `SELECT count(*) FROM decision_request WHERE id = $1 AND status = 'open'`, d) != 1 {
+		t.Fatal("arrival and decision must be untouched")
+	}
+
+	// A later Xong on another ask is a different batch; undoing the first must not reopen it.
+	other := f.item("ask", testUserID, 2*time.Hour)
+	wantCode(t, f.post(testHandler.ChatAttentionXong, "xong", map[string]any{"subject_keys": []string{service.ItemKey(other)}}), http.StatusOK)
+
+	wantCode(t, f.call(testHandler.ChatAttentionUndoXongAll, "/api/chat/attention/xong-all/"+done.BatchID+"/undo", nil, "batchId", done.BatchID), http.StatusOK)
+	if f.resolved(ask) != nil || f.resolved(unseen) != nil || acked() != 0 {
+		t.Fatal("undo must reopen the batch's rows and clear its acknowledgement")
+	}
+	if f.resolved(other) == nil || f.resolved(arrived) != nil {
+		t.Fatal("undo must not touch other batches or arrivals")
+	}
+}
+
+func TestChatAttentionXongAll_MaxKeys(t *testing.T) {
+	f := newAttnFx(t)
+	keys := make([]string, 501)
+	for i := range keys {
+		keys[i] = service.ItemKey(uuid.NewString())
+	}
+	wantCode(t, f.call(testHandler.ChatAttentionXongAll, "/api/chat/attention/xong-all", map[string]any{"subject_keys": keys}), http.StatusUnprocessableEntity)
+}
+
+// Mark-unread hook: explicit mark-unseen opens one unseen item; Để sau turns it into a later.
+func TestMarkChatSessionUnread_OpensUnseenItem(t *testing.T) {
+	f := newAttnFx(t)
+	unread := func() *httptest.ResponseRecorder {
+		req := withChatTestWorkspaceCtx(t, withURLParam(newRequest(http.MethodPost, "/api/chat/sessions/"+f.sessionID+"/unread", nil), "sessionId", f.sessionID))
+		rec := httptest.NewRecorder()
+		testHandler.MarkChatSessionUnread(rec, req)
+		return rec
+	}
+	openUnseen := `SELECT count(*) FROM chat_attention_item WHERE chat_session_id = $1 AND kind = 'unseen' AND resolved_at IS NULL`
+
+	wantCode(t, unread(), http.StatusNoContent)
+	if dbfx.Count(t, openUnseen, f.sessionID) != 0 {
+		t.Fatal("no assistant message: mark-unread stays a no-op")
+	}
+	dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": f.sessionID, "role": "assistant", "content": "hi"})
+	wantCode(t, unread(), http.StatusNoContent)
+	wantCode(t, unread(), http.StatusNoContent)
+	if n := dbfx.Count(t, openUnseen, f.sessionID); n != 1 {
+		t.Fatalf("open unseen items = %d, want 1", n)
+	}
+
+	wantCode(t, f.post(testHandler.ChatAttentionLater, "later", map[string]any{"subject_keys": []string{}, "request_id": uuid.NewString()}), http.StatusOK)
+	if dbfx.Count(t, openUnseen, f.sessionID) != 0 {
+		t.Fatal("Để sau must turn the unseen item into the later item")
+	}
+}
