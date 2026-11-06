@@ -207,3 +207,18 @@ func TestRedactAppliesSharedCredentialRules(t *testing.T) {
 		t.Errorf("lost plain line: %q", got)
 	}
 }
+
+// A provider-token-shaped username must not defeat URL-credential redaction:
+// replacing the username first would leave the password behind.
+func TestRedactURLCredentialsWithProviderShapedUsername(t *testing.T) {
+	const pw = "plantedPASSWORD99"
+	in := "git clone https://" + ghToken + ":" + pw + "@example.com/org/repo.git\n" +
+		"fetch https://" + awsKey + ":" + pw + "@example.com/x\n"
+	for _, oneByte := range []bool{false, true} {
+		got := redact(t, in, oneByte)
+		noLeak(t, got, pw, ghToken, awsKey)
+		if !strings.Contains(got, "@example.com/org/repo.git") {
+			t.Errorf("host/path must survive: %s", got)
+		}
+	}
+}

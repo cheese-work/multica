@@ -32,8 +32,10 @@ var (
 )
 
 func redactTokens(s string) string {
-	s = sharedredact.Text(s)
+	// URL credentials first: a provider-shaped username replaced by a
+	// placeholder with spaces would otherwise break this match and leave the password.
 	s = urlCreds.ReplaceAllString(s, "${1}"+tokenPlaceholer+"@")
+	s = sharedredact.Text(s)
 	s = tokenShape.ReplaceAllString(s, tokenPlaceholer)
 	return bearer.ReplaceAllString(s, "${1}"+tokenPlaceholer)
 }
