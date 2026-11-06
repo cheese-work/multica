@@ -57,7 +57,8 @@ run_shard_with_rerun() { # $1: shard index, $2: -test.run regex
   set -o pipefail
   run_shard "$2" 2>&1 | tee "$log" || shard_status=$?
   [ "$shard_status" -eq 1 ] || return "$shard_status"
-  grep -q '^panic: ' "$log" && return 1
+  # A panic or a race report is a real defect: a passing rerun must not hide it.
+  grep -qE '^panic: |^WARNING: DATA RACE|race detected during execution' "$log" && return 1
   failed=$(grep -oE '^--- FAIL: [A-Za-z0-9_]+' "$log" | sed 's/^--- FAIL: //' | sort -u) || true
   count=$(printf '%s' "$failed" | grep -c .) || true
   { [ "$count" -ge 1 ] && [ "$count" -le 3 ]; } || return 1

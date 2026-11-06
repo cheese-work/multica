@@ -11,8 +11,15 @@ const ev = (Action, Package, Test) => JSON.stringify({ Action, Package, ...(Test
 const run = (files) => {
   const dir = mkdtempSync(join(tmpdir(), "flakes-"));
   for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
-  const summary = execFileSync("node", [script, dir], { encoding: "utf8" });
-  return { summary, flakes: JSON.parse(readFileSync(join(dir, "flakes.json"), "utf8")) };
+  let summary;
+  let status = 0;
+  try {
+    summary = execFileSync("node", [script, dir], { encoding: "utf8" });
+  } catch (error) {
+    ({ status } = error);
+    summary = error.stdout;
+  }
+  return { summary, status, flakes: JSON.parse(readFileSync(join(dir, "flakes.json"), "utf8")) };
 };
 
 test("a test that fails then passes is one flake; steady tests are not", () => {
@@ -58,4 +65,28 @@ test("no flakes: empty list and a clear summary", () => {
   const { flakes, summary } = run({ "go-test-regular.json": ev("pass", "p", "TestOk") });
   assert.deepEqual(flakes.flakes, []);
   assert.match(summary, /No flaky tests/);
+});
+
+// Reruns are for flakes, not for a real break: more than 3 tests failing in one run fails the run even
+// when every rerun passed (the shards and the other packages rerun independently, so only this
+// job-wide count can see it). flakes.json and the summary are still written.
+const flakyRun = (n) => ({
+  "go-test-regular.json": Array.from({ length: n }, (_, i) => [ev("fail", "p", `TestF${i}`), ev("pass", "p", `TestF${i}`)]).flat().join("\n"),
+});
+
+test("3 flakes in one run pass; 4 fail the run but are still recorded", () => {
+  const ok = run(flakyRun(3));
+  assert.equal(ok.status, 0);
+  const bad = run(flakyRun(4));
+  assert.equal(bad.status, 1);
+  assert.equal(bad.flakes.flakes.length, 4);
+  assert.match(bad.summary, /more than 3/i);
+});
+
+test("flakes from the shards and the other packages count together", () => {
+  const { status } = run({
+    "go-test-regular.json": [ev("fail", "a", "TestA"), ev("pass", "a", "TestA"), ev("fail", "a", "TestB"), ev("pass", "a", "TestB")].join("\n"),
+    "handler-flakes.txt": "internal/handler\tTestH1\ninternal/handler\tTestH2\n",
+  });
+  assert.equal(status, 1);
 });

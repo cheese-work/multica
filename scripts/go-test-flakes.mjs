@@ -4,9 +4,13 @@
 // go-test-handler-shards.sh) in the given directory. A test with a fail event and a later pass event
 // in the same package is a flake. Writes <dir>/flakes.json for the flaky-quarantine job (CHE-3625)
 // and prints a markdown summary for $GITHUB_STEP_SUMMARY.
+// Budget: reruns absorb at most 3 flaky tests per job. The shards and the other packages rerun
+// independently, so only this job-wide count sees them together; more than 3 exits 1 (a run with
+// that many failures is a real break, not a flake). flakes.json is written either way.
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+const MAX_FLAKES = 3;
 const dir = process.argv[2];
 if (!dir) {
   console.error("usage: go-test-flakes.mjs <flake-dir>");
@@ -48,7 +52,12 @@ if (flakes.length === 0) {
   console.log("### Go test reruns\n\nNo flaky tests: nothing failed and then passed.");
 } else {
   const n = flakes.length;
-  console.log(`### Go test reruns\n\n${n} flaky test${n === 1 ? "" : "s"} failed, then passed on the one rerun. The job passed.\n`);
+  const over = n > MAX_FLAKES;
+  const verdict = over
+    ? `The job failed: more than ${MAX_FLAKES} tests failed in this job, which is a real break and not a flake.`
+    : "The job passed.";
+  console.log(`### Go test reruns\n\n${n} flaky test${n === 1 ? "" : "s"} failed, then passed on the one rerun. ${verdict}\n`);
+  if (over) process.exitCode = 1;
   console.log("| Package | Test |\n| --- | --- |");
   for (const f of flakes) console.log(`| \`${f.package}\` | \`${f.test}\` |`);
 }

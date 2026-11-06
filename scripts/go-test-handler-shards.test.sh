@@ -118,6 +118,10 @@ FIRST_OUT=$'--- FAIL: TestA (0s)\n--- FAIL: TestB (0s)\n--- FAIL: TestC (0s)\n--
 # A panic or timeout leaves later tests unrun, so a rerun of the named ones proves nothing.
 FIRST_OUT=$'--- FAIL: TestFlakyA (0s)\npanic: test timed out after 10m0s' FIRST_EXIT=2 RERUN_EXIT=0 rerun_case "panic" 1 0
 
+# A race report fails the test with exit 1 and a named --- FAIL. A passing rerun
+# would hide it, so a race is never rerun.
+FIRST_OUT=$'WARNING: DATA RACE\n--- FAIL: TestFlakyA (0s)\n    testing.go:1: race detected during execution of test\nFAIL' RERUN_EXIT=0 rerun_case "data race" 1 0
+
 # No named failure (TestMain, build): nothing to rerun.
 FIRST_OUT='FAIL' RERUN_EXIT=0 rerun_case "no names" 1 0
 
