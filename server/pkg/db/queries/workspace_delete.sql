@@ -415,6 +415,10 @@ deleted_ci_watch_actions AS (
 deleted_ci_signature_owners AS (
     DELETE FROM ci_signature_owner WHERE workspace_id = $1
 ),
+-- CHE-4279 storm-breaker event log: workspace-owned leaf, no FK.
+deleted_ci_watch_events AS (
+    DELETE FROM ci_watch_event WHERE workspace_id = $1
+),
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
 ),

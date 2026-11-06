@@ -66,24 +66,42 @@ func (d ciWatchDest) CreateIssue(ctx context.Context, tx pgx.Tx, s ciwatch.Issue
 		return "", err
 	}
 	var task *db.AgentTaskQueue
-	if s.Wake && issue.AssigneeType.String == "agent" {
-		t, err := d.h.TaskService.EnqueueIssueTaskInTx(ctx, qtx, issue)
-		if err != nil {
+	if s.Wake {
+		if task, err = d.enqueueOwnerRun(ctx, qtx, issue); err != nil {
 			return "", fmt.Errorf("enqueue owner run: %w", err)
 		}
-		task = &t
 	}
 	ciwatch.AfterCommit(ctx, func() {
-		// A squad owner's leader run starts from this event, so a capped wake withholds it.
-		if s.Wake || issue.AssigneeType.String != "squad" {
-			resp := issueToResponse(issue, d.h.getIssuePrefix(context.WithoutCancel(ctx), issue.WorkspaceID))
-			d.h.publish(protocol.EventIssueCreated, s.WorkspaceID, "member", s.CreatorID, map[string]any{"issue": resp})
-		}
+		resp := issueToResponse(issue, d.h.getIssuePrefix(context.WithoutCancel(ctx), issue.WorkspaceID))
+		d.h.publish(protocol.EventIssueCreated, s.WorkspaceID, "member", s.CreatorID, map[string]any{"issue": resp})
 		if task != nil {
 			d.h.TaskService.PublishTaskEnqueued(context.WithoutCancel(ctx), *task)
 		}
 	})
 	return util.UUIDToString(issue.ID), nil
+}
+
+// enqueueOwnerRun enqueues the run of the issue's owner in the caller's tx: the agent
+// itself, or a squad's leader. It returns nil for an unassigned or member-owned issue.
+func (d ciWatchDest) enqueueOwnerRun(ctx context.Context, qtx *db.Queries, issue db.Issue) (*db.AgentTaskQueue, error) {
+	var task db.AgentTaskQueue
+	var err error
+	switch issue.AssigneeType.String {
+	case "agent":
+		task, err = d.h.TaskService.EnqueueIssueTaskInTx(ctx, qtx, issue)
+	case "squad":
+		var squad db.Squad
+		if squad, err = qtx.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: issue.AssigneeID, WorkspaceID: issue.WorkspaceID}); err != nil {
+			return nil, fmt.Errorf("load squad: %w", err)
+		}
+		task, err = d.h.TaskService.EnqueueDecisionTaskInTx(ctx, qtx, issue, squad.LeaderID, squad.ID, pgtype.UUID{}, nil, "")
+	default:
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &task, nil
 }
 
 func writeIssueMetadata(ctx context.Context, tx pgx.Tx, id pgtype.UUID, m map[string]any) error {
@@ -104,11 +122,35 @@ func (d ciWatchDest) UpdateIssue(ctx context.Context, tx pgx.Tx, u ciwatch.Issue
 		return err
 	}
 	// Idempotent: the prefix is added once, and an already-urgent issue stays as is.
-	_, err = tx.Exec(ctx, `UPDATE issue SET
+	if _, err = tx.Exec(ctx, `UPDATE issue SET
 			title = CASE WHEN $2 <> '' AND left(title, length($2)) <> $2 THEN $2 || title ELSE title END,
 			priority = CASE WHEN $3 <> '' THEN $3 ELSE priority END, updated_at = now()
-		WHERE id = $1`, id, u.TitlePrefix, u.Priority)
-	return err
+		WHERE id = $1`, id, u.TitlePrefix, u.Priority); err != nil || !u.Wake {
+		return err
+	}
+	qtx := d.h.Queries.WithTx(tx)
+	issue, err := qtx.GetIssue(ctx, id)
+	if err != nil {
+		return err
+	}
+	// A savepoint: a run already pending for the owner is the wake's goal, not a failure.
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = sp.Rollback(ctx) }()
+	task, err := d.enqueueOwnerRun(ctx, d.h.Queries.WithTx(sp), issue)
+	if errors.Is(err, service.ErrDuplicatePendingTask) || (err == nil && task == nil) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("enqueue owner run: %w", err)
+	}
+	if err := sp.Commit(ctx); err != nil {
+		return err
+	}
+	ciwatch.AfterCommit(ctx, func() { d.h.TaskService.PublishTaskEnqueued(context.WithoutCancel(ctx), *task) })
+	return nil
 }
 
 func (d ciWatchDest) AddComment(ctx context.Context, tx pgx.Tx, s ciwatch.CommentSpec) (string, error) {
