@@ -931,6 +931,20 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// A stored send is confirmed before any refusal below (B4): a retry after the agent was
+	// archived must recover the first attempt, not 409. The in-tx check covers the race.
+	if req.ClientMessageID != "" {
+		stored, found, err := h.TaskService.ReplayDirectChatSend(r.Context(), h.Queries, session, req.ClientMessageID)
+		if err != nil {
+			slog.Warn("replay chat send lookup failed", append(logger.RequestAttrs(r), "error", err)...)
+			writeError(w, http.StatusInternalServerError, "failed to send chat message")
+			return
+		}
+		if found {
+			writeReplayedSend(w, &stored)
+			return
+		}
+	}
 	// Archived sessions are read-only: refuse to enqueue new agent work for
 	// them (see SetChatSessionArchived). The frontend disables the composer
 	// for status='archived' and only offers unarchive/delete there. Legacy
@@ -942,10 +956,6 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 
 	agent, actorType, actorID, ok := h.preflightChatSend(w, r, session, userID, workspaceID)
 	if !ok {
-		return
-	}
-	if decisionRequestID.Valid && req.ClientMessageID != "" {
-		writeError(w, http.StatusBadRequest, "client_message_id cannot be combined with a decision reply")
 		return
 	}
 	// /preset needs the same permission as any send, so it comes after the gate.
@@ -992,7 +1002,7 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	var sent *service.DirectChatSendResult
 	var err error
 	if decisionRequestID.Valid {
-		sent, err = h.sendChatDecisionReply(r, session, agent, parseUUID(userID), decisionRequestID, req.Content, attachmentIDs)
+		sent, err = h.sendChatDecisionReply(r, session, agent, parseUUID(userID), decisionRequestID, req.Content, attachmentIDs, req.ClientMessageID)
 	} else {
 		sent, err = h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), r.Header.Get("X-Actor-Source"),
 			service.DirectChatSendOptions{ClientMessageID: req.ClientMessageID, HumanSend: true, AskIDs: askIDs})
@@ -1025,10 +1035,7 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	msg := sent.Message
 	task := sent.Task
 	if sent.Replayed { // the first attempt already did the side effects below
-		writeJSON(w, http.StatusOK, SendChatMessageResponse{
-			MessageID: uuidToString(msg.ID), TaskID: uuidToString(task.ID), SupportsQueue: true,
-			CreatedAt: timestampToString(msg.CreatedAt), AttachmentIDs: uuidStringsOrEmpty(sent.BoundAttachmentIDs),
-		})
+		writeReplayedSend(w, sent)
 		return
 	}
 	currentTitle := session.Title
@@ -1094,6 +1101,14 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		Queued:        sent.Queued,
 		CreatedAt:     timestampToString(msg.CreatedAt),
 		AttachmentIDs: boundAttachmentIDs,
+	})
+}
+
+// writeReplayedSend answers a retry with the stored send's ids.
+func writeReplayedSend(w http.ResponseWriter, sent *service.DirectChatSendResult) {
+	writeJSON(w, http.StatusOK, SendChatMessageResponse{
+		MessageID: uuidToString(sent.Message.ID), TaskID: uuidToString(sent.Task.ID), SupportsQueue: true,
+		CreatedAt: timestampToString(sent.Message.CreatedAt), AttachmentIDs: uuidStringsOrEmpty(sent.BoundAttachmentIDs),
 	})
 }
 

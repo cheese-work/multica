@@ -3179,6 +3179,12 @@ func (s *TaskService) replayDirectChatSend(ctx context.Context, qtx *db.Queries,
 	return out, true, nil
 }
 
+// ReplayDirectChatSend reads back a stored send for clientMessageID, so a retry is confirmed
+// before the readiness checks that guard a new send. q may be a transaction's queries.
+func (s *TaskService) ReplayDirectChatSend(ctx context.Context, q *db.Queries, session db.ChatSession, clientMessageID string) (DirectChatSendResult, bool, error) {
+	return s.replayDirectChatSend(ctx, q, session, clientMessageID)
+}
+
 // applyHumanSendAttention is T2 and T2b of the DM attention model: the owner's send settles
 // "check later" / "unseen" for the chain, and the asks it targets wait on the task that consumes it.
 func applyHumanSendAttention(ctx context.Context, qtx *db.Queries, session db.ChatSession, userID pgtype.UUID, askIDs []pgtype.UUID, messageID, taskID pgtype.UUID) error {
@@ -3187,17 +3193,25 @@ func applyHumanSendAttention(ctx context.Context, qtx *db.Queries, session db.Ch
 	}); err != nil {
 		return fmt.Errorf("resolve attention on send: %w", err)
 	}
-	if len(askIDs) == 0 {
-		return nil
-	}
-	open, err := qtx.ListOpenChatAttentionAsksByID(ctx, db.ListOpenChatAttentionAsksByIDParams{
-		Ids: askIDs, ChainRootSessionID: session.ChainRootSessionID, UserID: userID,
-	})
-	if err != nil {
-		return fmt.Errorf("check targeted asks: %w", err)
-	}
-	if len(open) != len(askIDs) { // AskIDs are deduplicated by the caller
-		return ErrChatAskNotOpen
+	if len(askIDs) == 0 { // no target: wait only when the chain has exactly one open ask
+		open, err := qtx.ListOpenChatAttentionAsks(ctx, db.ListOpenChatAttentionAsksParams{ChainRootSessionID: session.ChainRootSessionID, UserID: userID})
+		if err != nil {
+			return fmt.Errorf("list open asks: %w", err)
+		}
+		if len(open) != 1 {
+			return nil
+		}
+		askIDs = open
+	} else {
+		open, err := qtx.ListOpenChatAttentionAsksByID(ctx, db.ListOpenChatAttentionAsksByIDParams{
+			Ids: askIDs, ChainRootSessionID: session.ChainRootSessionID, UserID: userID,
+		})
+		if err != nil {
+			return fmt.Errorf("check targeted asks: %w", err)
+		}
+		if len(open) != len(askIDs) { // AskIDs are deduplicated by the caller
+			return ErrChatAskNotOpen
+		}
 	}
 	if err := qtx.SetChatAttentionAsksWaiting(ctx, db.SetChatAttentionAsksWaitingParams{Ids: askIDs, MessageID: messageID, TaskID: taskID}); err != nil {
 		return fmt.Errorf("mark targeted asks waiting: %w", err)

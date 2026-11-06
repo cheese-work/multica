@@ -228,3 +228,109 @@ func TestContinuationSourceCopiesChainRoot(t *testing.T) {
 		t.Fatalf("continued DM chain root = %s, want predecessor's %s", got, dm.root)
 	}
 }
+
+// B4: a stored send is confirmed before any readiness refusal, so a retry after the agent was
+// archived (or the DM archived) still recovers the first attempt instead of a 409 / 400.
+func TestStoredSendReplaysEvenWhenAgentOrSessionIsNoLongerSendable(t *testing.T) {
+	for name, breakIt := range map[string]func(dm attentionDM){
+		"agent archived": func(dm attentionDM) { dbfx.Exec(t, `UPDATE agent SET archived_at = now() WHERE id = $1`, dm.agentID) },
+		"session archived": func(dm attentionDM) {
+			dbfx.Exec(t, `UPDATE chat_session SET status = 'archived' WHERE id = $1`, dm.sessionID)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dm := newAttentionDM(t)
+			extra := map[string]any{"client_message_id": "attempt-1"}
+			first := dm.mustSend(t, "hello", extra)
+			breakIt(dm)
+
+			if second := dm.mustSend(t, "hello", extra); second.MessageID != first.MessageID || second.TaskID != first.TaskID {
+				t.Fatalf("retry returned message %s task %s, want %s / %s", second.MessageID, second.TaskID, first.MessageID, first.TaskID)
+			}
+			// A new id is still refused: the refusal is only skipped for a stored send.
+			if w := dm.sendWith(t, "new", map[string]any{"client_message_id": "attempt-2"}); w.Code < 400 {
+				t.Fatalf("a new send was accepted (%d)", w.Code)
+			}
+		})
+	}
+}
+
+// B4 for decision replies: the reply message and its decision record replay together, and a
+// retry after the request is answered is not refused as "cannot accept another answer".
+func TestDecisionReplyWithClientMessageIDReplaysOnce(t *testing.T) {
+	dm := newAttentionDM(t)
+	requestID, _, _ := seedDMDecision(t, dm.agentID, dm.sessionID, "Ask", "open", "1 minute")
+	later := dm.item(t, "later")
+	post := func() *httptest.ResponseRecorder {
+		req := newRequest(http.MethodPost, "/api/chat/sessions/"+dm.sessionID+"/messages",
+			map[string]any{"content": "> Ask\n\n1", "decision_request_id": requestID, "client_message_id": "attempt-1"})
+		req.Header.Set("X-Actor-Source", "interactive_jwt")
+		w := httptest.NewRecorder()
+		testHandler.SendChatMessage(w, withChatTestWorkspaceCtx(t, withURLParam(req, "sessionId", dm.sessionID)))
+		return w
+	}
+
+	w := post()
+	if w.Code != http.StatusCreated {
+		t.Fatalf("decision reply with client_message_id: %d %s, want 201", w.Code, w.Body.String())
+	}
+	var first, second SendChatMessageResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &first)
+	st := dm.state(t, later)
+
+	w = post()
+	if w.Code != http.StatusOK {
+		t.Fatalf("retry of an answered decision reply: %d %s, want 200", w.Code, w.Body.String())
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &second)
+	if second.MessageID != first.MessageID || second.TaskID != first.TaskID {
+		t.Fatalf("retry returned message %s task %s, want %s / %s", second.MessageID, second.TaskID, first.MessageID, first.TaskID)
+	}
+	if n := dm.userMessageCount(t); n != 1 {
+		t.Fatalf("%d user messages, want 1", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1`, requestID); n != 1 {
+		t.Fatalf("%d decision answers, want 1", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE chat_session_id = $1`, dm.sessionID); n != 1 {
+		t.Fatalf("%d tasks, want 1", n)
+	}
+	if again := dm.state(t, later); *again.ResolvedAt != *st.ResolvedAt {
+		t.Fatalf("retry rewrote resolved_at %s -> %s", *st.ResolvedAt, *again.ResolvedAt)
+	}
+}
+
+// T2b single-ask fallback: with no ask_ids, exactly one open ask in the chain waits on the send;
+// zero asks change nothing; several asks are ambiguous and none waits.
+func TestSendWithoutAskIDsWaitsOnTheOnlyOpenAsk(t *testing.T) {
+	t.Run("one ask", func(t *testing.T) {
+		dm := newAttentionDM(t)
+		ask := dm.item(t, "ask")
+		res := dm.mustSend(t, "answer", nil)
+		st := dm.state(t, ask)
+		if st.WaitingMsg == nil || *st.WaitingMsg != res.MessageID || st.WaitingTsk == nil || *st.WaitingTsk != res.TaskID {
+			t.Fatalf("only ask waiting = %v / %v, want message %s task %s", st.WaitingMsg, st.WaitingTsk, res.MessageID, res.TaskID)
+		}
+		if st.ResolvedBy != nil {
+			t.Fatalf("the send resolved the ask (%s); only the agent's next outcome may", *st.ResolvedBy)
+		}
+	})
+	t.Run("several asks", func(t *testing.T) {
+		dm := newAttentionDM(t)
+		a, b := dm.item(t, "ask"), dm.item(t, "ask")
+		dm.mustSend(t, "answer", nil)
+		for _, id := range []string{a, b} {
+			if st := dm.state(t, id); st.WaitingMsg != nil || st.WaitingTsk != nil {
+				t.Fatalf("ambiguous ask %s was marked waiting", id)
+			}
+		}
+	})
+	t.Run("no ask", func(t *testing.T) {
+		dm := newAttentionDM(t)
+		later := dm.item(t, "later")
+		dm.mustSend(t, "hello", nil)
+		if st := dm.state(t, later); st.ResolvedBy == nil || *st.ResolvedBy != "human_send" {
+			t.Fatalf("later resolved_by = %v, want human_send", st.ResolvedBy)
+		}
+	})
+}

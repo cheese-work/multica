@@ -219,6 +219,38 @@ func (q *Queries) ListChatAttentionMarks(ctx context.Context, userID pgtype.UUID
 	return items, nil
 }
 
+const listOpenChatAttentionAsks = `-- name: ListOpenChatAttentionAsks :many
+SELECT id FROM chat_attention_item
+WHERE chain_root_session_id = $1 AND user_id = $2
+  AND kind = 'ask' AND resolved_at IS NULL
+`
+
+type ListOpenChatAttentionAsksParams struct {
+	ChainRootSessionID pgtype.UUID `json:"chain_root_session_id"`
+	UserID             pgtype.UUID `json:"user_id"`
+}
+
+// T2b single-ask fallback: every open ask of this user in this chain (the send waits only if there is one).
+func (q *Queries) ListOpenChatAttentionAsks(ctx context.Context, arg ListOpenChatAttentionAsksParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listOpenChatAttentionAsks, arg.ChainRootSessionID, arg.UserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listOpenChatAttentionAsksByID = `-- name: ListOpenChatAttentionAsksByID :many
 SELECT id FROM chat_attention_item
 WHERE id = ANY($1::uuid[]) AND chain_root_session_id = $2 AND user_id = $3

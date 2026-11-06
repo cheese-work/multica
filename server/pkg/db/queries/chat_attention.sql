@@ -51,6 +51,12 @@ SELECT id FROM chat_attention_item
 WHERE id = ANY(@ids::uuid[]) AND chain_root_session_id = @chain_root_session_id AND user_id = @user_id
   AND kind = 'ask' AND resolved_at IS NULL;
 
+-- name: ListOpenChatAttentionAsks :many
+-- T2b single-ask fallback: every open ask of this user in this chain (the send waits only if there is one).
+SELECT id FROM chat_attention_item
+WHERE chain_root_session_id = @chain_root_session_id AND user_id = @user_id
+  AND kind = 'ask' AND resolved_at IS NULL;
+
 -- name: SetChatAttentionAsksWaiting :exec
 -- T2b: the targeted asks wait on the task that consumes this send. They stay open.
 UPDATE chat_attention_item
