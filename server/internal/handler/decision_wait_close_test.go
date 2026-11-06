@@ -196,3 +196,34 @@ func TestDecisionEpisodeSystemCloseIsAtomic(t *testing.T) {
 		t.Fatalf("closed episodes after the retry = %+v, want one issue_closed", closed)
 	}
 }
+
+// Terra review P1 on CHE-3047: design §3.8 and §4.5 close an episode for
+// no_resume_agent only when the issue ends blocked. A workflow without a
+// blocked step cannot take that write, so nothing is closed or cancelled: the
+// answer stays deliverable and the issue is not stranded in need_decision.
+func TestDecisionEpisodeNoResumeAgentWithoutBlockedStepKeepsEpisodeOpen(t *testing.T) {
+	f := newEpisodeFixture(t, false)
+	f.enter(t)
+	answerID, _ := f.answerRequest(t, f.requestID, -time.Minute, false)
+	dbfx.Exec(t, `UPDATE issue_workflow SET steps = (SELECT jsonb_agg(s) FROM jsonb_array_elements(steps) s WHERE s ->> 'status_key' <> 'blocked')
+		WHERE id = (SELECT workflow_id FROM project WHERE id = (SELECT project_id FROM issue WHERE id = $1))`, f.issueID)
+	var runtimeID string
+	dbfx.QueryRow(t, `SELECT runtime_id::text FROM agent WHERE id = $1`, f.agentID).Scan(&runtimeID)
+	t.Cleanup(func() { dbfx.Exec(t, `UPDATE agent SET runtime_id = $2 WHERE id = $1`, f.agentID, runtimeID) })
+	dbfx.Exec(t, `UPDATE agent SET runtime_id = NULL WHERE id = $1`, f.agentID)
+
+	f.deliverEpisodeOnly(t)
+
+	if closed := f.closedEpisodes(t); len(closed) != 0 {
+		t.Fatalf("closed episodes = %+v, want none: the block cannot be written", closed)
+	}
+	if status, _ := f.requestState(t, f.requestID); status != "answered" {
+		t.Fatalf("request = %s, want answered (nothing cancelled)", status)
+	}
+	if woken, _ := f.answerState(t, answerID); woken {
+		t.Fatal("the answer was acknowledged although the episode did not close")
+	}
+	if status, _, _ := issueStatusAndAssignee(t, f.issueID); status != "need_decision" {
+		t.Fatalf("issue = %s, want unchanged need_decision", status)
+	}
+}

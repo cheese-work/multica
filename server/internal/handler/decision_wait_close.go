@@ -128,6 +128,19 @@ func (handler *Handler) closeDecisionEpisode(ctx context.Context, snapshot decis
 	if systemCloseReason(current) != reason {
 		return true, nil
 	}
+	// §4.5: no resume agent closes only with the issue blocked. A workflow without
+	// a blocked step cannot take that write, so the episode stays open and
+	// recoverable (answers deliverable) and retries behind the others.
+	if reason == "no_resume_agent" && current.issue.Status != issuestatus.Blocked {
+		def, _, err := issueworkflow.ForIssue(ctx, queries, current.issue.WorkspaceID, current.issue.WorkflowID, current.issue.ProjectID)
+		if err != nil {
+			return false, err
+		}
+		if def != nil && !def.Has(issuestatus.Blocked) {
+			transaction.Rollback(ctx)
+			return false, handler.Queries.MarkDecisionWaitDispatchRefused(ctx, db.MarkDecisionWaitDispatchRefusedParams{WorkspaceID: workspaceID, ID: wait.ID})
+		}
+	}
 	// The episode is claimed before any status write, so the write finds no open wait.
 	if rows, err := queries.ClaimDecisionWait(ctx, db.ClaimDecisionWaitParams{WorkspaceID: workspaceID, ID: wait.ID, CloseReason: pgtype.Text{String: reason, Valid: true}}); err != nil {
 		return false, err
@@ -179,13 +192,6 @@ func (handler *Handler) blockOnNoResumeAgent(ctx context.Context, queries *db.Qu
 	issue, err := queries.GetIssue(ctx, snapshot.issue.ID)
 	if err != nil {
 		return edgeMove{}, false, err
-	}
-	def, _, err := issueworkflow.ForIssue(ctx, queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
-	if err != nil {
-		return edgeMove{}, false, err
-	}
-	if def != nil && !def.Has(issuestatus.Blocked) {
-		return edgeMove{}, false, nil
 	}
 	move, err := handler.moveIssueOnEdgeTx(ctx, queries, issue, issuestatus.Blocked, "decision_wait", nil, false, nil)
 	if err != nil {

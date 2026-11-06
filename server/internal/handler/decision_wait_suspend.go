@@ -117,7 +117,11 @@ func (handler *Handler) suspensionComment(ctx context.Context, queries *db.Queri
 		fmt.Fprintf(&content, "Decision wait suspended (`dispatch_refused`): task %s of %s is active with squad `%s` (leader task: %t), which differs from the squad the answers resume in.\n",
 			uuidToString(conflict.ID), snapshot.recipient.Name, uuidToString(conflict.SquadID), conflict.IsLeaderTask)
 	}
-	fmt.Fprintf(&content, "Resuming agent: %s.\n", snapshot.recipient.Name)
+	human, err := queries.GetUser(ctx, snapshot.wait.HumanUserID)
+	if err != nil {
+		return "", err
+	}
+	fmt.Fprintf(&content, "Resuming agent: %s. Human in charge: %s.\n", snapshot.recipient.Name, human.Name)
 	for _, request := range snapshot.requests {
 		if request.Status == "open" {
 			fmt.Fprintf(&content, "- Request %s is still open.\n", uuidToString(request.ID))
