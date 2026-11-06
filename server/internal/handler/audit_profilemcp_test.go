@@ -592,6 +592,49 @@ func TestDisconnectQoderConnection_WritesAuditRows(t *testing.T) {
 	}
 }
 
+func TestDisconnectQoderConnection_RecordsRuntimeGoneOutsideStep(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	pmConnectQoder(t)
+	runtimeID := dbfx.Runtime(t, "QCA", testutil.Cols{"provider": "qoder_cloud", "runtime_mode": "cloud"})
+	notifier := &recordingRuntimeGoneNotifier{}
+	h := *testHandler
+	h.DaemonRuntimeGone = notifier
+	before := len(auditRowsFor(t, "qoder.disconnect", testWorkspaceID))
+
+	testutil.Call(t, h.DisconnectQoderConnection, pmDisconnectQoderRequest()).Want(200)
+
+	rows := auditRowsFor(t, "qoder.disconnect", testWorkspaceID)
+	if len(rows) != before+1 {
+		t.Fatalf("qoder.disconnect audit rows = %d; want %d", len(rows), before+1)
+	}
+	if got := rows[len(rows)-1].External; len(got) != 1 || got[0] != "runtime_gone_notice" {
+		t.Errorf("external_requested = %v; want [runtime_gone_notice]", got)
+	}
+	if len(notifier.runtimeIDs) != 1 || notifier.runtimeIDs[0] != runtimeID {
+		t.Errorf("runtime-gone notifications = %v; the outside step must still run inline", notifier.runtimeIDs)
+	}
+}
+
+func TestDisconnectQoderConnection_NoRuntimesRecordsNoOutsideStep(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	pmConnectQoder(t)
+	before := len(auditRowsFor(t, "qoder.disconnect", testWorkspaceID))
+
+	testutil.Call(t, testHandler.DisconnectQoderConnection, pmDisconnectQoderRequest()).Want(200)
+
+	rows := auditRowsFor(t, "qoder.disconnect", testWorkspaceID)
+	if len(rows) != before+1 {
+		t.Fatalf("qoder.disconnect audit rows = %d; want %d", len(rows), before+1)
+	}
+	if got := rows[len(rows)-1].External; len(got) != 0 {
+		t.Errorf("external_requested = %v; want empty when no runtime was removed", got)
+	}
+}
+
 func TestDisconnectQoderConnection_AuditInsertFailureKeepsConnection(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")

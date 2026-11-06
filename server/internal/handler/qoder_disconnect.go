@@ -103,9 +103,14 @@ func (h *Handler) DisconnectQoderConnection(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusConflict, "Qoder is stopped and still cancelling remote sessions; retry shortly")
 		return
 	}
+	var external []string
+	if len(runtimeIDs) > 0 {
+		external = []string{auditExternalRuntimeGone}
+	}
 	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
 		Kind: "qoder.disconnect", WorkspaceID: ws, TargetID: ws,
-		After: map[string]any{"runtimes_removed": len(runtimeIDs)},
+		After:    map[string]any{"runtimes_removed": len(runtimeIDs)},
+		External: external,
 	}); err != nil {
 		writeAuditFailure(w, r, err, "qoder.disconnect")
 		return
