@@ -444,3 +444,97 @@ func TestChatAttentionUndo_ScopedToRequestWorkspace(t *testing.T) {
 		t.Fatal("undo from the batch's own workspace must restore it")
 	}
 }
+
+// A member who lost access to a private agent must neither read nor change the attention of that
+// agent's DM: not through the response of Xong-all or undo, and not by naming its subject keys.
+func TestChatAttention_RevokedPrivateAgentIsInvisibleAndImmutable(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	privateAgent, _, memberID := privateAgentTestFixture(t)
+	publicAgent := createHandlerTestAgent(t, "attn-revoked-public", []byte("[]"))
+	privateSession := insertChatSessionAs(t, privateAgent, memberID)
+	publicSession := insertChatSessionAs(t, publicAgent, memberID)
+	dbfx.Cleanup(t, `DELETE FROM chat_attention_mark WHERE user_id = $1`, memberID)
+	dbfx.Cleanup(t, `DELETE FROM chat_attention_item WHERE user_id = $1`, memberID)
+	ask := func(session, agent string) string {
+		return dbfx.Insert(t, "chat_attention_item", testutil.Cols{
+			"workspace_id": testWorkspaceID, "chain_root_session_id": session, "chat_session_id": session,
+			"user_id": memberID, "kind": "ask", "agent_id": agent,
+		})
+	}
+	privateAsk, publicAsk := ask(privateSession, privateAgent), ask(publicSession, publicAgent)
+	closedBatch := uuid.NewString()
+	closed := dbfx.Insert(t, "chat_attention_item", testutil.Cols{
+		"workspace_id": testWorkspaceID, "chain_root_session_id": privateSession, "chat_session_id": privateSession,
+		"user_id": memberID, "kind": "ask", "agent_id": privateAgent,
+		"resolved_at": testutil.Raw("now()"), "resolved_by": "xong", "resolve_batch_id": closedBatch,
+	})
+
+	asMember := func(h http.HandlerFunc, path string, body any, params ...string) *httptest.ResponseRecorder {
+		req := newRequestAs(memberID, http.MethodPost, path, body)
+		for i := 0; i+1 < len(params); i += 2 {
+			req = withURLParam(req, params[i], params[i+1])
+		}
+		rec := httptest.NewRecorder()
+		h(rec, chatPendingCtxAs(t, req, memberID))
+		return rec
+	}
+	roots := func(rec *httptest.ResponseRecorder) []string {
+		var out struct {
+			Attention []struct {
+				RootID string   `json:"root_id"`
+				Keys   []string `json:"keys"`
+			} `json:"attention"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode %s: %v", rec.Body.String(), err)
+		}
+		var ids []string
+		for _, a := range out.Attention {
+			ids = append(ids, a.RootID)
+			if has(a.Keys, service.ItemKey(privateAsk)) {
+				t.Fatalf("response leaks the private agent's keys: %s", rec.Body.String())
+			}
+		}
+		return ids
+	}
+	openAsk := `SELECT count(*) FROM chat_attention_item WHERE id = $1 AND resolved_at IS NULL`
+
+	// Naming a revoked subject key changes nothing, even beside an allowed one.
+	for _, keys := range [][]string{{service.ItemKey(privateAsk)}, {service.ItemKey(publicAsk), service.ItemKey(privateAsk)}} {
+		rec := asMember(testHandler.ChatAttentionXongAll, "/api/chat/attention/xong-all", map[string]any{"subject_keys": keys})
+		wantCode(t, rec, http.StatusForbidden)
+	}
+	if dbfx.Count(t, openAsk, privateAsk) != 1 || dbfx.Count(t, openAsk, publicAsk) != 1 {
+		t.Fatal("a refused Xong-all must change nothing")
+	}
+
+	// The response of an allowed Xong-all carries the allowed chain only.
+	rec := asMember(testHandler.ChatAttentionXongAll, "/api/chat/attention/xong-all", map[string]any{"subject_keys": []string{service.ItemKey(publicAsk)}})
+	wantCode(t, rec, http.StatusOK)
+	for _, id := range roots(rec) {
+		if id == privateSession {
+			t.Fatalf("response lists the revoked chain: %s", rec.Body.String())
+		}
+	}
+
+	// Undo neither reopens the revoked chain's row nor reads it back.
+	rec = asMember(testHandler.ChatAttentionUndoXongAll, "/api/chat/attention/xong-all/"+closedBatch+"/undo", nil, "batchId", closedBatch)
+	wantCode(t, rec, http.StatusOK)
+	for _, id := range roots(rec) {
+		if id == privateSession {
+			t.Fatalf("undo response lists the revoked chain: %s", rec.Body.String())
+		}
+	}
+	if dbfx.Count(t, openAsk, closed) != 0 {
+		t.Fatal("undo must not reopen a row of a chain the member lost access to")
+	}
+}
+
+// A body past the size limit is refused before it is decoded.
+func TestChatAttentionXongAll_OversizedBodyRefused(t *testing.T) {
+	f := newAttnFx(t)
+	big := strings.Repeat("x", attentionMaxBody+1)
+	wantCode(t, f.call(testHandler.ChatAttentionXongAll, "/api/chat/attention/xong-all", map[string]any{"subject_keys": []string{big}}), http.StatusRequestEntityTooLarge)
+}

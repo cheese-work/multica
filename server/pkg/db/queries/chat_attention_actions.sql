@@ -20,6 +20,13 @@ JOIN chat_session s ON s.id = t.chat_session_id
 WHERE t.id = ANY(@ids::uuid[]) AND s.creator_id = @user_id AND s.workspace_id = @workspace_id
   AND s.chain_root_session_id IS NOT NULL;
 
+-- name: ListAttentionChainAgents :many
+-- The agent each of the user's DMs talks to (the canonical session of its chain), for the private-agent gate.
+SELECT chain_root_session_id AS root_id, agent_id
+FROM chat_session
+WHERE workspace_id = @workspace_id AND creator_id = @user_id AND continued_into_session_id IS NULL
+  AND chain_root_session_id IS NOT NULL;
+
 -- name: LockAttentionChain :exec
 -- Serialises writers of one chain's attention rows (open later, unseen) for the transaction.
 SELECT pg_advisory_xact_lock(hashtextextended(@chain_root::text, 0));
@@ -48,6 +55,7 @@ UPDATE chat_attention_item i
 SET resolved_at = NULL, resolved_by = NULL, resolve_batch_id = NULL
 WHERE i.resolve_batch_id = @batch_id AND i.user_id = @user_id AND i.workspace_id = @workspace_id
   AND i.resolved_by = 'xong'
+  AND NOT (i.chain_root_session_id = ANY(@hidden_roots::uuid[]))
   AND NOT (i.kind = 'later' AND EXISTS (
     SELECT 1 FROM chat_attention_item o
     WHERE o.chain_root_session_id = i.chain_root_session_id AND o.user_id = i.user_id
@@ -56,7 +64,8 @@ WHERE i.resolve_batch_id = @batch_id AND i.user_id = @user_id AND i.workspace_id
 -- name: ClearAttentionAckBatch :execrows
 UPDATE chat_attention_mark m SET acked_at = NULL, ack_batch_id = NULL
 WHERE m.user_id = @user_id AND m.ack_batch_id = @batch_id
-  AND m.chain_root_session_id IN (SELECT id FROM chat_session WHERE workspace_id = @workspace_id);
+  AND m.chain_root_session_id IN (SELECT id FROM chat_session WHERE workspace_id = @workspace_id)
+  AND NOT (m.chain_root_session_id = ANY(@hidden_roots::uuid[]));
 
 -- name: AttentionItemExists :one
 SELECT EXISTS (SELECT 1 FROM chat_attention_item WHERE id = @id) AS item_exists;

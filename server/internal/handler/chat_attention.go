@@ -26,6 +26,7 @@ const (
 	attentionMaxKeys     = 500
 	attentionLaterMax    = 168 * time.Hour
 	attentionLaterTarget = 2 * time.Hour
+	attentionMaxBody     = 256 << 10 // bytes; 500 keys need about 30 KB
 )
 
 type chatAttentionResponse struct {
@@ -69,9 +70,57 @@ type attentionFailure struct {
 
 func (f *attentionFailure) write(w http.ResponseWriter) { writeError(w, f.status, f.msg) }
 
+// attentionVisibility is the private-agent boundary for attention: the chains whose DM agent the
+// caller can still open (`visible`) and those they cannot (`hidden`, for SQL). A chain the caller
+// lost access to is neither listed nor actable, the same as the Chat session endpoints.
+type attentionVisibility struct {
+	visible map[string]bool
+	hidden  []pgtype.UUID
+}
+
+func (h *Handler) attentionVisibility(r *http.Request, userID, workspaceID string) (*attentionVisibility, *attentionFailure) {
+	rows, err := h.Queries.ListAttentionChainAgents(r.Context(), db.ListAttentionChainAgentsParams{WorkspaceID: parseUUID(workspaceID), UserID: parseUUID(userID)})
+	if err != nil {
+		return nil, &attentionFailure{http.StatusInternalServerError, "failed to resolve agent access"}
+	}
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	v := &attentionVisibility{visible: map[string]bool{}, hidden: []pgtype.UUID{}}
+	access := map[string]bool{} // by agent
+	for _, row := range rows {
+		agentID := uuidToString(row.AgentID)
+		ok, seen := access[agentID]
+		if !seen {
+			agent, err := h.Queries.GetAgent(r.Context(), row.AgentID)
+			ok = err == nil && h.canAccessPrivateAgent(r.Context(), agent, actorType, actorID, workspaceID)
+			access[agentID] = ok
+		}
+		if ok {
+			v.visible[uuidToString(row.RootID)] = true
+		} else {
+			v.hidden = append(v.hidden, row.RootID)
+		}
+	}
+	return v, nil
+}
+
+// decodeAttentionBody reads a bounded JSON body; false means the error response is written.
+func decodeAttentionBody(w http.ResponseWriter, r *http.Request, dst any) bool {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, attentionMaxBody)).Decode(dst); err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		} else {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+		}
+		return false
+	}
+	return true
+}
+
 // loadAttentionSubjects parses `item:`, `decision:` and `turn:` keys and proves the user owns each.
-// A malformed key is 400. An id that is not the user's (or does not exist) is 403.
-func (h *Handler) loadAttentionSubjects(ctx context.Context, q *db.Queries, workspaceID, userID pgtype.UUID, rawKeys []string) (*attentionSubjects, *attentionFailure) {
+// A malformed key is 400. An id that is not the user's, does not exist, or belongs to a DM whose
+// agent the user lost access to is 403.
+func (h *Handler) loadAttentionSubjects(ctx context.Context, q *db.Queries, workspaceID, userID pgtype.UUID, vis *attentionVisibility, rawKeys []string) (*attentionSubjects, *attentionFailure) {
 	if len(rawKeys) > attentionMaxKeys {
 		return nil, &attentionFailure{http.StatusUnprocessableEntity, fmt.Sprintf("at most %d subject keys per request", attentionMaxKeys)}
 	}
@@ -123,6 +172,9 @@ func (h *Handler) loadAttentionSubjects(ctx context.Context, q *db.Queries, work
 			return nil, forbidden
 		}
 		for _, r := range rows {
+			if !vis.visible[uuidToString(r.ChainRootSessionID)] {
+				return nil, forbidden
+			}
 			id := uuidToString(r.ID)
 			s.itemOpen[id], s.itemRoots[id] = !r.ResolvedAt.Valid, r.ChainRootSessionID
 		}
@@ -139,6 +191,9 @@ func (h *Handler) loadAttentionSubjects(ctx context.Context, q *db.Queries, work
 		s.decisions = decisionIDs
 		roots := map[string]string{}
 		for _, r := range rows {
+			if !vis.visible[uuidToString(r.ChainRootSessionID)] {
+				return nil, forbidden
+			}
 			roots[uuidToString(r.ID)] = uuidToString(r.ChainRootSessionID)
 		}
 		for _, key := range decisionKeys {
@@ -157,6 +212,9 @@ func (h *Handler) loadAttentionSubjects(ctx context.Context, q *db.Queries, work
 		s.turns = turnIDs
 		roots := map[string]string{}
 		for _, r := range rows {
+			if !vis.visible[uuidToString(r.ChainRootSessionID)] {
+				return nil, forbidden
+			}
 			roots[uuidToString(r.ID)] = uuidToString(r.ChainRootSessionID)
 		}
 		for _, key := range turnKeys {
@@ -244,12 +302,16 @@ func (h *Handler) ChatAttentionXong(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req attentionKeysRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeAttentionBody(w, r, &req) {
 		return
 	}
 	user, ws := parseUUID(userID), parseUUID(workspaceID)
-	subjects, fail := h.loadAttentionSubjects(r.Context(), h.Queries, ws, user, req.SubjectKeys)
+	vis, fail := h.attentionVisibility(r, userID, workspaceID)
+	if fail != nil {
+		fail.write(w)
+		return
+	}
+	subjects, fail := h.loadAttentionSubjects(r.Context(), h.Queries, ws, user, vis, req.SubjectKeys)
 	if fail != nil {
 		fail.write(w)
 		return
@@ -279,12 +341,16 @@ func (h *Handler) ChatAttentionXongAll(w http.ResponseWriter, r *http.Request) {
 	}
 	workspaceID := ctxWorkspaceID(r.Context())
 	var req attentionKeysRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeAttentionBody(w, r, &req) {
 		return
 	}
 	user, ws := parseUUID(userID), parseUUID(workspaceID)
-	subjects, fail := h.loadAttentionSubjects(r.Context(), h.Queries, ws, user, req.SubjectKeys)
+	vis, fail := h.attentionVisibility(r, userID, workspaceID)
+	if fail != nil {
+		fail.write(w)
+		return
+	}
+	subjects, fail := h.loadAttentionSubjects(r.Context(), h.Queries, ws, user, vis, req.SubjectKeys)
 	if fail != nil {
 		fail.write(w)
 		return
@@ -294,7 +360,7 @@ func (h *Handler) ChatAttentionXongAll(w http.ResponseWriter, r *http.Request) {
 		fail.write(w)
 		return
 	}
-	h.writeAttentionList(r.Context(), w, ws, user, batch)
+	h.writeAttentionList(r.Context(), w, ws, user, vis, batch)
 }
 
 // ChatAttentionUndoXongAll reopens what the batch closed. A row changed since (answered, sent to,
@@ -308,7 +374,13 @@ func (h *Handler) ChatAttentionUndoXongAll(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	user, ws := parseUUID(userID), parseUUID(ctxWorkspaceID(r.Context()))
+	workspaceID := ctxWorkspaceID(r.Context())
+	user, ws := parseUUID(userID), parseUUID(workspaceID)
+	vis, fail := h.attentionVisibility(r, userID, workspaceID)
+	if fail != nil {
+		fail.write(w)
+		return
+	}
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to start transaction")
@@ -316,11 +388,11 @@ func (h *Handler) ChatAttentionUndoXongAll(w http.ResponseWriter, r *http.Reques
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
-	if _, err := qtx.ReopenXongBatchItems(r.Context(), db.ReopenXongBatchItemsParams{BatchID: batch, UserID: user, WorkspaceID: ws}); err != nil {
+	if _, err := qtx.ReopenXongBatchItems(r.Context(), db.ReopenXongBatchItemsParams{BatchID: batch, UserID: user, WorkspaceID: ws, HiddenRoots: vis.hidden}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to reopen items")
 		return
 	}
-	if _, err := qtx.ClearAttentionAckBatch(r.Context(), db.ClearAttentionAckBatchParams{BatchID: batch, UserID: user, WorkspaceID: ws}); err != nil {
+	if _, err := qtx.ClearAttentionAckBatch(r.Context(), db.ClearAttentionAckBatchParams{BatchID: batch, UserID: user, WorkspaceID: ws, HiddenRoots: vis.hidden}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to clear acknowledgements")
 		return
 	}
@@ -328,10 +400,10 @@ func (h *Handler) ChatAttentionUndoXongAll(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "failed to commit")
 		return
 	}
-	h.writeAttentionList(r.Context(), w, ws, user, uuidToString(batch))
+	h.writeAttentionList(r.Context(), w, ws, user, vis, uuidToString(batch))
 }
 
-func (h *Handler) writeAttentionList(ctx context.Context, w http.ResponseWriter, ws, user pgtype.UUID, batch string) {
+func (h *Handler) writeAttentionList(ctx context.Context, w http.ResponseWriter, ws, user pgtype.UUID, vis *attentionVisibility, batch string) {
 	rows, err := service.LoadChatAttention(ctx, h.Queries, ws, user, time.Now())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to read attention")
@@ -339,7 +411,9 @@ func (h *Handler) writeAttentionList(ctx context.Context, w http.ResponseWriter,
 	}
 	out := make([]chatAttentionResponse, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, attentionResponse(r))
+		if vis.visible[r.RootID] {
+			out = append(out, attentionResponse(r))
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"batch_id": batch, "attention": out})
 }
@@ -391,8 +465,7 @@ func (h *Handler) ChatAttentionLater(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req chatAttentionLaterRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeAttentionBody(w, r, &req) {
 		return
 	}
 	requestID, err := util.ParseUUID(req.RequestID)
@@ -401,7 +474,12 @@ func (h *Handler) ChatAttentionLater(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user, ws := parseUUID(userID), parseUUID(workspaceID)
-	subjects, fail := h.loadAttentionSubjects(r.Context(), h.Queries, ws, user, req.SubjectKeys)
+	vis, fail := h.attentionVisibility(r, userID, workspaceID)
+	if fail != nil {
+		fail.write(w)
+		return
+	}
+	subjects, fail := h.loadAttentionSubjects(r.Context(), h.Queries, ws, user, vis, req.SubjectKeys)
 	if fail != nil {
 		fail.write(w)
 		return

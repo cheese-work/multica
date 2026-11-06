@@ -54,16 +54,23 @@ const clearAttentionAckBatch = `-- name: ClearAttentionAckBatch :execrows
 UPDATE chat_attention_mark m SET acked_at = NULL, ack_batch_id = NULL
 WHERE m.user_id = $1 AND m.ack_batch_id = $2
   AND m.chain_root_session_id IN (SELECT id FROM chat_session WHERE workspace_id = $3)
+  AND NOT (m.chain_root_session_id = ANY($4::uuid[]))
 `
 
 type ClearAttentionAckBatchParams struct {
-	UserID      pgtype.UUID `json:"user_id"`
-	BatchID     pgtype.UUID `json:"batch_id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	UserID      pgtype.UUID   `json:"user_id"`
+	BatchID     pgtype.UUID   `json:"batch_id"`
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	HiddenRoots []pgtype.UUID `json:"hidden_roots"`
 }
 
 func (q *Queries) ClearAttentionAckBatch(ctx context.Context, arg ClearAttentionAckBatchParams) (int64, error) {
-	result, err := q.db.Exec(ctx, clearAttentionAckBatch, arg.UserID, arg.BatchID, arg.WorkspaceID)
+	result, err := q.db.Exec(ctx, clearAttentionAckBatch,
+		arg.UserID,
+		arg.BatchID,
+		arg.WorkspaceID,
+		arg.HiddenRoots,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -94,6 +101,44 @@ func (q *Queries) InsertLaterAttentionItem(ctx context.Context, arg InsertLaterA
 		arg.DueAt,
 	)
 	return err
+}
+
+const listAttentionChainAgents = `-- name: ListAttentionChainAgents :many
+SELECT chain_root_session_id AS root_id, agent_id
+FROM chat_session
+WHERE workspace_id = $1 AND creator_id = $2 AND continued_into_session_id IS NULL
+  AND chain_root_session_id IS NOT NULL
+`
+
+type ListAttentionChainAgentsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	UserID      pgtype.UUID `json:"user_id"`
+}
+
+type ListAttentionChainAgentsRow struct {
+	RootID  pgtype.UUID `json:"root_id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+}
+
+// The agent each of the user's DMs talks to (the canonical session of its chain), for the private-agent gate.
+func (q *Queries) ListAttentionChainAgents(ctx context.Context, arg ListAttentionChainAgentsParams) ([]ListAttentionChainAgentsRow, error) {
+	rows, err := q.db.Query(ctx, listAttentionChainAgents, arg.WorkspaceID, arg.UserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAttentionChainAgentsRow{}
+	for rows.Next() {
+		var i ListAttentionChainAgentsRow
+		if err := rows.Scan(&i.RootID, &i.AgentID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listOwnedAttentionDecisions = `-- name: ListOwnedAttentionDecisions :many
@@ -268,6 +313,7 @@ UPDATE chat_attention_item i
 SET resolved_at = NULL, resolved_by = NULL, resolve_batch_id = NULL
 WHERE i.resolve_batch_id = $1 AND i.user_id = $2 AND i.workspace_id = $3
   AND i.resolved_by = 'xong'
+  AND NOT (i.chain_root_session_id = ANY($4::uuid[]))
   AND NOT (i.kind = 'later' AND EXISTS (
     SELECT 1 FROM chat_attention_item o
     WHERE o.chain_root_session_id = i.chain_root_session_id AND o.user_id = i.user_id
@@ -275,15 +321,21 @@ WHERE i.resolve_batch_id = $1 AND i.user_id = $2 AND i.workspace_id = $3
 `
 
 type ReopenXongBatchItemsParams struct {
-	BatchID     pgtype.UUID `json:"batch_id"`
-	UserID      pgtype.UUID `json:"user_id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	BatchID     pgtype.UUID   `json:"batch_id"`
+	UserID      pgtype.UUID   `json:"user_id"`
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	HiddenRoots []pgtype.UUID `json:"hidden_roots"`
 }
 
 // Undo: only rows this batch closed and nobody changed since. A later item stays closed
 // when the chain has since opened another one.
 func (q *Queries) ReopenXongBatchItems(ctx context.Context, arg ReopenXongBatchItemsParams) (int64, error) {
-	result, err := q.db.Exec(ctx, reopenXongBatchItems, arg.BatchID, arg.UserID, arg.WorkspaceID)
+	result, err := q.db.Exec(ctx, reopenXongBatchItems,
+		arg.BatchID,
+		arg.UserID,
+		arg.WorkspaceID,
+		arg.HiddenRoots,
+	)
 	if err != nil {
 		return 0, err
 	}
