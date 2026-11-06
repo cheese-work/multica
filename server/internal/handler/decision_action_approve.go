@@ -58,6 +58,9 @@ type decisionActionExecution struct {
 	// CredentialID is the passkey credential that signed this approval and
 	// IssueID the issue the request sits on; both go into a config-change audit.
 	CredentialID, IssueID pgtype.UUID
+	// Tx is the approval transaction Queries runs in, for a write that needs
+	// the transaction itself.
+	Tx pgx.Tx
 }
 
 type decisionActionExecutor func(ctx context.Context, execution decisionActionExecution) (json.RawMessage, error)
@@ -67,6 +70,7 @@ var decisionActionExecutors = map[string]decisionActionExecutor{
 	"agent.env.patch":        executeEnvPatchAction,
 	"agent.copy":             executeAgentCopyAction,
 	"issue.run_budget.raise": executeRunBudgetRaiseAction,
+	runBudgetTopUpType:       executeRunBudgetTopUpAction,
 }
 
 // decisionActionPermitted applies the rule of the action's own HTTP path to
@@ -151,7 +155,18 @@ func (handler *Handler) approveDecisionAction(ctx context.Context, caller decisi
 	if configured && change.QueueField != "" && target.Valid {
 		queueKey = configChangeLockKey(uuidToString(caller.workspaceID), change.QueueField, uuidToString(target))
 	}
-	action, err := handler.approveDecisionActionTx(ctx, caller, body, executor, located, target, decisionActionRuntime(preview), queueKey, configured && change.CatalogLock)
+	// A top-up opens a run-budget window, so it takes its turn behind any move
+	// that holds the issue's boundary, waiting before it holds a connection.
+	var boundaryIssue pgtype.UUID
+	if preview.ActionType == runBudgetTopUpType {
+		boundaryIssue = located.IssueID
+		leave, err := handler.enterRunBudgetBoundary(ctx, boundaryIssue)
+		if err != nil {
+			return empty, errBusyRetry
+		}
+		defer leave()
+	}
+	action, err := handler.approveDecisionActionTx(ctx, caller, body, executor, located, target, decisionActionRuntime(preview), queueKey, configured && change.CatalogLock, boundaryIssue)
 	var uncertain uncertainCommit
 	if errors.As(err, &uncertain) {
 		return handler.readbackAfterUncertainCommit(ctx, caller)
@@ -162,7 +177,7 @@ func (handler *Handler) approveDecisionAction(ctx context.Context, caller decisi
 
 // approveDecisionActionTx runs the approve lock sequence (plan 3.2, rows 1 to
 // 12) and executes the action inside a savepoint.
-func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller decisionActionCaller, body approveBody, executor decisionActionExecutor, located db.DecisionRequest, target, runtimeID pgtype.UUID, queueKey string, catalogLock bool) (db.DecisionAction, error) {
+func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller decisionActionCaller, body approveBody, executor decisionActionExecutor, located db.DecisionRequest, target, runtimeID pgtype.UUID, queueKey string, catalogLock bool, boundaryIssue pgtype.UUID) (db.DecisionAction, error) {
 	empty := db.DecisionAction{}
 	transaction, err := handler.beginActionTx(ctx, 2*time.Second)
 	if err != nil {
@@ -183,6 +198,14 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 		}
 	}
 	queries := handler.Queries.WithTx(transaction)
+	// The boundary lock comes before every row lock, the order a status move
+	// uses: it holds the boundary across its status write and its activity, so a
+	// top-up that took the issue row first could read the window between them.
+	if boundaryIssue.Valid {
+		if err := queries.LockIssueRunBudgetBoundary(ctx, boundaryIssue); err != nil {
+			return empty, err
+		}
+	}
 	if _, err := queries.LockWorkspaceKeyShareNowait(ctx, caller.workspaceID); err != nil {
 		return empty, err
 	}
@@ -342,7 +365,7 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	finish, summary, err := executeInSavepoint(ctx, transaction, queries, executor, decisionActionExecution{
 		Queries: queries, Approver: verifiedApprover{UserID: caller.userID, DecisionActionID: action.ID},
 		Action: action, Agent: targetAgent, Runtime: runtime, Secrets: body.Secrets, Workflow: workflow, Squad: squad, Workspace: workspace,
-		CredentialID: credential, IssueID: current.IssueID,
+		CredentialID: credential, IssueID: current.IssueID, Tx: transaction,
 	})
 	if err != nil {
 		return empty, err

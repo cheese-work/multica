@@ -7,6 +7,15 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  credentialsDropped,
+  destinationMoved,
+  fillRedactedSecrets,
+  redactMcpJsonText,
+  restoreMcpSecrets,
+  stripMcpSecrets,
+  useMcpDialogDraftStore,
+} from "@multica/core/agents";
 import { Globe2, Loader2, Plus, SquareTerminal, Trash2 } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
 import { IconButton } from "@multica/ui/components/common/icon-button";
@@ -175,6 +184,15 @@ function configFromForm(form: McpFormState): Record<string, unknown> {
   return config;
 }
 
+function parseJsonObject(text: string): Record<string, unknown> | null {
+  try {
+    const value = JSON.parse(text);
+    return isRecord(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 function parseServerJson(text: string):
   | { ok: true; value: Record<string, unknown> }
   | { ok: false; error: string } {
@@ -206,6 +224,31 @@ function formSupportsServer(server: ManagedMcpServer): boolean {
     : formCanExpressTransport(server.transport);
 }
 
+/** The dialog's starting state for a server, before any saved draft is laid over it. */
+function seedState(server: ManagedMcpServer | null, replacementMode: boolean) {
+  const config = replacementMode ? {} : (server?.config ?? {});
+  // A caller on an older backend may have only the safe transport summary.
+  // Seeding from `formFromConfig({})` there would open an HTTP form for a
+  // known stdio server, so take the transport from the summary.
+  const form = !server
+    ? emptyForm()
+    : Object.keys(config).length > 0
+      ? formFromConfig(config)
+      : { ...emptyForm(), transport: server.transport === "stdio" ? ("stdio" as const) : ("http" as const) };
+  return { name: server?.name ?? "", form, config };
+}
+
+/** The form fields kept as a draft. Env/header values are left out: they can hold tokens. */
+function draftFields(name: string, form: McpFormState) {
+  return {
+    name,
+    transport: form.transport,
+    command: form.command,
+    args: form.args,
+    url: form.url,
+  };
+}
+
 export function McpServerDialog({
   open,
   server,
@@ -213,6 +256,7 @@ export function McpServerDialog({
   lockName = false,
   replacementMode = false,
   hideNameWhenEditing = false,
+  draftKey,
   onOpenChange,
   onSave,
 }: {
@@ -236,6 +280,12 @@ export function McpServerDialog({
    * name still participates in validation and is passed back unchanged.
    */
   hideNameWhenEditing?: boolean;
+  /**
+   * Keeps an unsaved name / transport / command / args / URL / JSON text (credential
+   * keys stripped) across close and reopen, per key. Pass one that names the owner and the server. Omit to
+   * keep nothing.
+   */
+  draftKey?: string;
   onOpenChange: (open: boolean) => void;
   onSave: (name: string, config: Record<string, unknown>) => Promise<void>;
 }) {
@@ -254,30 +304,93 @@ export function McpServerDialog({
   const formId = `${fieldId}-form`;
   const nameHidden = replacementMode || (hideNameWhenEditing && server !== null);
 
+  const jsonResult = useMemo(() => parseServerJson(jsonText), [jsonText]);
+
+  // Form the seed effect just set; the persist effect below skips renders that
+  // still hold the previous state, which would overwrite the draft being restored.
+  const seededForm = useRef<McpFormState | null>(null);
+
   useEffect(() => {
     if (!open) return;
-    const config = replacementMode ? {} : (server?.config ?? {});
-    setName(server?.name ?? "");
-    // A caller on an older backend may have only the safe transport summary.
-    // Seeding from `formFromConfig({})` there would open an HTTP form for a
-    // known stdio server, so take the transport from the summary.
-    setForm(
-      !server
-        ? emptyForm()
-        : Object.keys(config).length > 0
-          ? formFromConfig(config)
-          : { ...emptyForm(), transport: server.transport === "stdio" ? "stdio" : "http" },
+    const base = seedState(server, replacementMode);
+    const saved =
+      draftKey === undefined
+        ? undefined
+        : useMcpDialogDraftStore.getState().getDraft(draftKey);
+    const savedJson = saved?.json ? parseJsonObject(saved.json) : null;
+    // Saved credentials stay out when the draft removed one, or points somewhere
+    // other than the server saved now (that server may have changed since).
+    const draftForm: McpFormState = {
+      ...base.form,
+      transport: saved?.transport ?? base.form.transport,
+      command: saved?.command ?? base.form.command,
+      args: saved?.args ?? base.form.args,
+      url: saved?.url ?? base.form.url,
+    };
+    const dropped =
+      saved?.dropCredentials === true ||
+      (saved !== undefined &&
+        (destinationMoved(configFromForm(base.form), configFromForm(draftForm)) ||
+          (savedJson !== null && destinationMoved(base.config, savedJson))));
+    const baseConfig = dropped ? stripMcpSecrets(base.config) : base.config;
+    const seeded: McpFormState = dropped
+      ? { ...draftForm, env: [], headers: [], extras: stripMcpSecrets(draftForm.extras) }
+      : draftForm;
+    seededForm.current = seeded;
+    setName(saved?.name ?? base.name);
+    setForm(seeded);
+    // Credential keys never reach storage; they come back from the saved config.
+    // Text that did not parse yet comes back as saved, credentials marked `null`.
+    setJsonText(
+      saved?.json && !savedJson
+        ? saved.json
+        : JSON.stringify(
+            savedJson ? restoreMcpSecrets(baseConfig, savedJson) : baseConfig,
+            null,
+            2,
+          ),
     );
-    setJsonText(JSON.stringify(config, null, 2));
-    setMode(server && !formSupportsServer(server) ? "json" : "form");
+    setMode(saved?.json || (server && !formSupportsServer(server)) ? "json" : "form");
     setSaveAttempted(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, replacementMode, server]);
+
+  // A field equal to the saved server's is no draft.
+  useEffect(() => {
+    if (!open || draftKey === undefined) return;
+    if (seededForm.current) {
+      if (form === seededForm.current) seededForm.current = null;
+      return;
+    }
+    const seed = seedState(server, replacementMode);
+    const base = draftFields(seed.name, seed.form);
+    const current = draftFields(name, form);
+    const patch: Record<string, unknown> = Object.fromEntries(
+      Object.entries(current).map(([field, value]) => [
+        field,
+        JSON.stringify(value) === JSON.stringify(base[field as keyof typeof base]) ? null : value,
+      ]),
+    );
+    // Only finished JSON is stored, credentials withheld. Half-typed or empty
+    // text leaves the last stored JSON as it was.
+    if (mode !== "json") patch.json = null;
+    else {
+      const redacted = redactMcpJsonText(jsonText);
+      if (redacted !== null) {
+        const baseline = JSON.stringify(stripMcpSecrets(seed.config), null, 2);
+        patch.json = redacted === baseline ? null : redacted;
+      }
+    }
+    // What the user is about to save. Unparseable JSON leaves the flag as it was.
+    const working = mode === "form" ? configFromForm(form) : parseJsonObject(jsonText);
+    if (working) patch.dropCredentials = credentialsDropped(seed.config, working) ? true : null;
+    useMcpDialogDraftStore.getState().setDraft(draftKey, patch);
+  }, [open, draftKey, name, form, mode, jsonText, server, replacementMode]);
 
   // The form is unavailable — not merely unselected — for entries it cannot
   // represent, so switching to it cannot rewrite them either.
   const formAvailable = replacementMode || !server || formSupportsServer(server);
 
-  const jsonResult = useMemo(() => parseServerJson(jsonText), [jsonText]);
   // Existing entries can originate from a runtime or API with a broader name
   // grammar. Configuration edits must retain that identity verbatim; only
   // newly entered names go through the create/rename validation below.
@@ -341,7 +454,11 @@ export function McpServerDialog({
     if (next === "json" && mode === "form") {
       setJsonText(JSON.stringify(configFromForm(form), null, 2));
     } else if (next === "form" && mode === "json" && jsonResult.ok) {
-      setForm(formFromConfig(jsonResult.value));
+      setForm(
+        formFromConfig(
+          replacementMode ? jsonResult.value : fillRedactedSecrets(server?.config ?? {}, jsonResult.value),
+        ),
+      );
     }
     setSaveAttempted(false);
     setMode(next);
@@ -362,11 +479,16 @@ export function McpServerDialog({
     }
     let config: Record<string, unknown>;
     if (mode === "form") config = configFromForm(form);
-    else if (jsonResult.ok) config = jsonResult.value;
-    else return;
+    else if (jsonResult.ok) {
+      // A restored draft marks withheld credentials as null; the saved ones go back in.
+      config = replacementMode
+        ? jsonResult.value
+        : fillRedactedSecrets(server?.config ?? {}, jsonResult.value);
+    } else return;
     setSaving(true);
     try {
       await onSave(submittedName, config);
+      if (draftKey !== undefined) useMcpDialogDraftStore.getState().clearDraft(draftKey);
       onOpenChange(false);
     } finally {
       setSaving(false);

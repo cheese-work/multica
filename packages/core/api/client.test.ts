@@ -27,6 +27,35 @@ describe("ApiClient status reorder", () => {
   });
 });
 
+describe("ApiClient getIssue", () => {
+  // CHE-3472: shape of the real GET /api/issues/<uuid> body for CHE-3357, an
+  // issue a decision card parked (metadata.decision_park is an object).
+  const parkedIssue = {
+    id: "01a1a0eb-718d-778e-9948-770bc5e04ad7", workspace_id: "f2b734e0-b6de-4414-8a27-a2f69b0ef843",
+    number: 3357, identifier: "CHE-3357", title: "Parked issue", description: "d",
+    status: "need_decision", status_category: "in_progress", status_name: "Need Decision",
+    priority: "medium", assignee_type: "agent", assignee_id: "a", creator_type: "agent", creator_id: "c",
+    requested_by_id: "r", parent_issue_id: "p", duplicate_of: null, project_id: "proj", workflow_id: null,
+    position: -87, stage: 1, start_date: null, due_date: null,
+    metadata: {
+      decision_park: { readiness: "r1", readiness_id: "r2", set: "s", status: "blocked", to: "need_decision" },
+      status_summary: "Blocked",
+    },
+    properties: { prop: "opt" }, labels: [], attachments: [],
+    created_at: "2026-11-03T10:19:07Z", updated_at: "2026-11-03T12:33:32Z", revision: 57,
+    last_activity_at: "2026-11-03T12:33:32.18713Z",
+  };
+
+  it("opens an issue whose metadata carries the decision-park object", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(parkedIssue), {
+      status: 200, headers: { "Content-Type": "application/json" },
+    })));
+    const issue = await new ApiClient("https://api.example.test").getIssue(parkedIssue.id);
+    expect(issue.identifier).toBe("CHE-3357");
+    expect(issue.metadata).toEqual({ status_summary: "Blocked" });
+  });
+});
+
 describe("ApiClient decision cards", () => {
   const json = (body: unknown, status = 200) =>
     new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -3433,7 +3462,7 @@ describe("ApiClient getIssue schema failure", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ id: "i1", metadata: { decision_park: { a: 1 } } }), {
+        new Response(JSON.stringify({ id: "i1", number: "not-a-number" }), {
           status: 200, headers: { "Content-Type": "application/json" },
         }),
       ),
@@ -3441,8 +3470,8 @@ describe("ApiClient getIssue schema failure", () => {
     const err = await new ApiClient("https://api.example.test").getIssue("i1").catch((e: unknown) => e);
     expect(isSchemaValidationError(err)).toBe(true);
     expect((err as SchemaValidationError).endpoint).toBe("GET /api/issues/:id");
-    expect((err as SchemaValidationError).paths).toContain("metadata.decision_park");
-    expect(String(warn.mock.calls[0]?.[0])).toContain("metadata.decision_park");
+    expect((err as SchemaValidationError).paths).toContain("number");
+    expect(String(warn.mock.calls[0]?.[0])).toContain("number");
     setSchemaLogger(noopLogger);
   });
 });
