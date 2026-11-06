@@ -1,0 +1,32 @@
+{
+  "provider": "doop",
+  "base_url": "https://congvc-c00.taila6fa8a.ts.net:34443/",
+  "canvas_or_project_id": "zGq4HKcar9",
+  "page_id": "zGq4HKcar9:che-3556",
+  "screens": [
+    {
+      "screen": "dm-side-panel (direction A, right rail with stacked sections; desktop 900 and phone 390; six sections, wave 1 open and wave 2 collapsed, 52 px collapsed rail, in-DM search overlay on the chat column)",
+      "frame_id": "stW-Rsfrx2",
+      "updatedAt": "2026-11-04T08:16:47.836Z",
+      "content_sha256": "5ca5288b813071503df3dbb10535f08d6b5dc8dc8d9e97755517caa83ea0226a"
+    },
+    {
+      "screen": "dm-side-panel v2 shared spec (DM header with avatar, title, agent name, in-DM search, Stats and actions menu; compact confirm; DM list row; applies to A, B and C)",
+      "frame_id": "PKZHxCx908",
+      "updatedAt": "2026-11-04T08:09:55.636Z",
+      "content_sha256": "4d209a6d9a68a5faa6a3ae5c1f1daa1ea31795775586c3eafe0645c6133cd038"
+    }
+  ],
+  "export_sha256": "157c357c5d32b9a53950022b0d3f4aaa543e06791c9b1e5d6a0f08cb9f15bb4d",
+  "export_sha256_method": "sha256 of the lines '<sha256>  <file>' for export_files, sorted by file name",
+  "export_files": {
+    "dm-side-panel-a-right-rail.html": "5ca5288b813071503df3dbb10535f08d6b5dc8dc8d9e97755517caa83ea0226a",
+    "dm-side-panel-shared-v2-header-search-list.html": "4d209a6d9a68a5faa6a3ae5c1f1daa1ea31795775586c3eafe0645c6133cd038"
+  },
+  "export_transform": "none: each frame HTML is self-contained (no external fetch, no data: URI); written as read from doop get_frame, UTF-8, without a trailing newline; character length equals htmlBytes from get_frame (32569 and 34758)",
+  "exported_at": "2026-11-04 18:50 ICT",
+  "exported_by": "x99-claude-sonnet-design / claude-sonnet-5-5 / x99",
+  "issue": "CHE-3556",
+  "selection_id": "01a1a658-df08-7a02-bf0d-f59f64125164",
+  "ux_verdict_id": "01a1a5a8-1671-76a5-85fd-f8eed35a57db"
+}
