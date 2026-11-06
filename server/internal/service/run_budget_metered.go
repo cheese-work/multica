@@ -69,7 +69,9 @@ func ReadMeteredPosition(ctx context.Context, q *db.Queries, now time.Time, perR
 	for _, r := range rows {
 		p.Spent += usageMicroUSD(r, perRun)
 	}
-	inFlight, err := q.CountRunsInFlightWithoutUsage(ctx, exceptTask)
+	inFlight, err := q.CountRunsInFlightWithoutUsage(ctx, db.CountRunsInFlightWithoutUsageParams{
+		Since: pgtype.Timestamptz{Time: start, Valid: true}, ExceptTaskID: exceptTask,
+	})
 	if err != nil {
 		return MeteredPosition{}, fmt.Errorf("metered spend: in flight: %w", err)
 	}
@@ -112,7 +114,7 @@ func RecordAgentRunCredit(ctx context.Context, q *db.Queries, issue db.Issue, ev
 // runs use the allowance first, so the last `credit` runs of the balance are
 // the agents'. A gate that is not installed, or a spend that cannot be read,
 // refuses.
-func admitMeteredRun(ctx context.Context, q *db.Queries, issueID, taskID pgtype.UUID, balance int64) error {
+func admitMeteredRun(ctx context.Context, q *db.Queries, workspaceID, issueID, taskID pgtype.UUID, balance int64) error {
 	credit, err := q.SumIssueAgentCredit(ctx, issueID)
 	if err != nil {
 		return fmt.Errorf("metered spend: issue credit: %w", err)
@@ -136,5 +138,10 @@ func admitMeteredRun(ctx context.Context, q *db.Queries, issueID, taskID pgtype.
 	if p.Spent+p.InFlight+gate.PerRunMicroUSD > MeteredCeiling(gate.LimitMicroUSD) {
 		return ErrRunMeteredLimit
 	}
-	return nil
+	// The run uses one run of the agents' credit up: a later raise or top-up
+	// by a person is the person's.
+	return q.InsertIssueAgentCreditEntry(ctx, db.InsertIssueAgentCreditEntryParams{
+		ID: dbid.NewV7(), WorkspaceID: workspaceID, IssueID: issueID,
+		EventKey: "run:" + util.UUIDToString(taskID), AgentDelta: -1,
+	})
 }

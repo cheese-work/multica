@@ -200,7 +200,7 @@ func debitRun(ctx context.Context, q *db.Queries, issueID, taskID pgtype.UUID) e
 	if err != nil {
 		return err
 	}
-	if err := admitMeteredRun(ctx, q, issue.ID, taskID, balance); err != nil {
+	if err := admitMeteredRun(ctx, q, issue.WorkspaceID, issue.ID, taskID, balance); err != nil {
 		return err
 	}
 	windowID := runBudgetWindowID(usage.Since)

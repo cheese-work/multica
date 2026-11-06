@@ -187,11 +187,12 @@ func (h *Handler) checkMeteredCeiling(w http.ResponseWriter, r *http.Request, q 
 		return false, err
 	}
 	ceiling, requested := service.MeteredCeiling(cfg.MeteredLimitMicroUSD), int64(runs)*cfg.PerRunMicroUSD
-	if p.Spent+p.Credit+requested <= ceiling {
+	if p.Spent+p.InFlight+p.Credit+requested <= ceiling {
 		return true, nil
 	}
 	_, resets := service.ICTMonth(now)
-	used, remaining := p.Spent+p.Credit, max(ceiling-p.Spent-p.Credit, 0)
+	used := p.Spent + p.InFlight + p.Credit
+	remaining := max(ceiling-used, 0)
 	w.Header().Set("Retry-After", strconv.Itoa(max(int(time.Until(resets).Seconds()), 1)))
 	writeJSON(w, http.StatusTooManyRequests, map[string]any{
 		"error": "agent run-budget cap reached", "reason": "monthly_limit",

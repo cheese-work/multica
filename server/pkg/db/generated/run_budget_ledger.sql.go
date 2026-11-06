@@ -53,14 +53,22 @@ func (q *Queries) CountIssueRunsSinceExcept(ctx context.Context, arg CountIssueR
 
 const countRunsInFlightWithoutUsage = `-- name: CountRunsInFlightWithoutUsage :one
 SELECT COUNT(*)::bigint FROM agent_task_queue t
-WHERE t.status IN ('queued', 'dispatched', 'running')
-  AND t.id IS DISTINCT FROM $1::uuid
+WHERE (t.status IN ('queued', 'dispatched', 'running')
+       OR (t.started_at IS NOT NULL AND t.completed_at >= $1::timestamptz))
+  AND t.id IS DISTINCT FROM $2::uuid
   AND NOT EXISTS (SELECT 1 FROM task_usage u WHERE u.task_id = t.id)
 `
 
-// Runs that started and have reported no usage yet, except one.
-func (q *Queries) CountRunsInFlightWithoutUsage(ctx context.Context, exceptTaskID pgtype.UUID) (int64, error) {
-	row := q.db.QueryRow(ctx, countRunsInFlightWithoutUsage, exceptTaskID)
+type CountRunsInFlightWithoutUsageParams struct {
+	Since        pgtype.Timestamptz `json:"since"`
+	ExceptTaskID pgtype.UUID        `json:"except_task_id"`
+}
+
+// Runs that started and have reported no usage yet, except one: queued or
+// running ones, and finished ones since `since` (a task that never reports
+// stays counted until its usage arrives, or the month turns).
+func (q *Queries) CountRunsInFlightWithoutUsage(ctx context.Context, arg CountRunsInFlightWithoutUsageParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countRunsInFlightWithoutUsage, arg.Since, arg.ExceptTaskID)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err

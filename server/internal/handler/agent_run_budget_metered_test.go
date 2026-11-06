@@ -254,7 +254,7 @@ func TestAgentRaiseIsRefusedPastTheMeteredCeiling(t *testing.T) {
 	c := budgetIssue(t, 3251047, 2)
 	_, _, asAgent := raisingAgent(t)
 	p := position(t)
-	committed := p.Spent + p.Credit
+	committed := p.Spent + p.InFlight + p.Credit
 
 	setCeiling(t, roundDown4(committed+micro-1))
 	w := raiseBudget(t, c.issueID, map[string]any{"runs": 3}, asAgent)
@@ -276,5 +276,101 @@ func TestAgentRaiseIsRefusedPastTheMeteredCeiling(t *testing.T) {
 	// The credit just granted now counts against the next grant.
 	if w := raiseBudget(t, c.issueID, map[string]any{"runs": 4}, asAgent); w.Code != http.StatusTooManyRequests {
 		t.Fatalf("second raise = %d, want 429 (the first one's credit counts): %s", w.Code, w.Body.String())
+	}
+}
+
+// A run that finished without reporting usage stays counted at the price of a
+// run until its usage arrives; a run that never started is not counted.
+func TestFinishedRunWithoutUsageStaysCountedUntilUsageArrives(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	meteredBudget(t)
+	before := position(t)
+	_, taskID, _ := raisingAgent(t)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status='completed', completed_at=now() WHERE id=$1`, taskID)
+	if got := position(t).InFlight - before.InFlight; got != micro {
+		t.Fatalf("a finished run with no usage counts %d, want %d", got, micro)
+	}
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status='cancelled', started_at=NULL WHERE id=$1`, taskID)
+	if got := position(t).InFlight - before.InFlight; got != 0 {
+		t.Fatalf("a run that never started counts %d, want 0", got)
+	}
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status='failed', started_at=now() WHERE id=$1`, taskID)
+	if got := position(t).InFlight - before.InFlight; got != micro {
+		t.Fatalf("a failed run with no usage counts %d, want %d", got, micro)
+	}
+	dbfx.Exec(t, `INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cost_usd_ticks) VALUES ($1, 'p', 'm', 1, 1, $2)`, taskID, 250_000*10_000)
+	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM task_usage WHERE task_id=$1`, taskID) })
+	after := position(t)
+	if after.InFlight != before.InFlight || after.Spent-before.Spent != 250_000 {
+		t.Fatalf("after late usage: in-flight +%d, spent +%d; want +0 and +250000", after.InFlight-before.InFlight, after.Spent-before.Spent)
+	}
+}
+
+// Grant time prices the runs that have not reported usage, like run time does.
+func TestAgentRaiseCountsRunsWithoutUsageAtTheCeiling(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	meteredBudget(t)
+	c := budgetIssue(t, 3251048, 2)
+	_, _, asAgent := raisingAgent(t) // its running task has reported no usage
+	p := position(t)
+	if p.InFlight < micro {
+		t.Fatalf("setup: in-flight = %d, want at least one run", p.InFlight)
+	}
+
+	setCeiling(t, roundUp4(p.Spent+p.Credit+micro)) // room only if in-flight runs were free
+	w := raiseBudget(t, c.issueID, map[string]any{"runs": 3}, asAgent)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("raise with in-flight runs over the ceiling = %d, want 429: %s", w.Code, w.Body.String())
+	}
+	if got := decodeRefusal(t, w); got.Reason != "monthly_limit" || got.UsedUSD != usd(p.Spent+p.InFlight+p.Credit) {
+		t.Fatalf("refusal = %+v, want monthly_limit with used %v", got, usd(p.Spent+p.InFlight+p.Credit))
+	}
+
+	setCeiling(t, roundUp4(p.Spent+p.InFlight+p.Credit+micro))
+	if w := raiseBudget(t, c.issueID, map[string]any{"runs": 3}, asAgent); w.Code != http.StatusOK {
+		t.Fatalf("raise exactly at the ceiling = %d, want 200: %s", w.Code, w.Body.String())
+	}
+}
+
+// Agent credit is used up by the run it pays for: a person's raise or top-up
+// after that is the person's, and is not gated at the ceiling.
+func TestHumanFundingAfterAgentCreditWasSpentIsNotGated(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	fund := map[string]func(*testing.T, edgeCase){
+		"raise": func(t *testing.T, c edgeCase) {
+			if w := raiseBudget(t, c.issueID, map[string]any{"runs": 4}, nil); w.Code != http.StatusOK {
+				t.Fatalf("member raise = %d: %s", w.Code, w.Body.String())
+			}
+		},
+		"top-up": func(t *testing.T, c edgeCase) {
+			if w := topUpBudget(t, c.issueID, nil); w.Code != http.StatusOK {
+				t.Fatalf("member top-up = %d: %s", w.Code, w.Body.String())
+			}
+		},
+	}
+	for name, run := range fund {
+		t.Run(name, func(t *testing.T) {
+			meteredBudget(t)
+			c := creditIssue(t, 3251049, 2)
+			before := position(t)
+			if err := enqueueOn(t, c); err != nil {
+				t.Fatalf("run on agent credit = %v, want admitted", err)
+			}
+			finishRuns(t, c)
+			if got := before.Credit - position(t).Credit; got != micro {
+				t.Fatalf("agent credit left dropped by %d, want %d (one run used)", got, micro)
+			}
+			run(t, c)
+			setCeiling(t, 0) // nothing is under the ceiling
+			if err := enqueueOn(t, c); err != nil {
+				t.Fatalf("run paid by a person = %v, want admitted past the ceiling", err)
+			}
+		})
 	}
 }
