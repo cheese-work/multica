@@ -252,6 +252,16 @@ func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.
 	return normalized, conditionHints(out), nil
 }
 
+// checksRollupIgnoringVerdict is the PR rollup a checks_finished rule reads.
+// The security-gate status stays PENDING until a cross-lab verdict exists, and
+// flows wait for finished checks before asking for it, so a PENDING rollup
+// whose only unfinished contexts are verdict statuses reads as SUCCESS. A
+// failing check already makes the rollup FAILURE, so only PENDING needs this.
+const checksRollupIgnoringVerdict = `CASE WHEN pr.checks_rollup_state='PENDING'
+	AND EXISTS (SELECT 1 FROM github_pull_request_check_run cr WHERE cr.pr_id=pr.id AND cr.head_sha=pr.snapshot_head_sha AND NOT (cr.is_status_context AND cr.name='security-gate'))
+	AND NOT EXISTS (SELECT 1 FROM github_pull_request_check_run cr WHERE cr.pr_id=pr.id AND cr.head_sha=pr.snapshot_head_sha AND cr.status<>'completed' AND NOT (cr.is_status_context AND cr.name='security-gate'))
+	THEN 'SUCCESS' ELSE COALESCE(pr.checks_rollup_state,'') END`
+
 // evaluateCondition reports whether the predicate holds, a fingerprint of the
 // satisfying facts (so a rule fires when they change, not on every tick) and a
 // small observation for the woken agent's trigger facts.
@@ -302,7 +312,7 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 		// base-branch move). On the same head that keeps the previous verdict,
 		// so a recompute does not read as resolved-then-conflicting again.
 		previous := conditionKeys(w.ConditionState)
-		rows, err := tx.Query(ctx, `SELECT pr.pr_number,pr.state,COALESCE(pr.snapshot_head_sha,''),COALESCE(pr.checks_rollup_state,''),pr.head_sha,COALESCE(pr.api_mergeable,''),pr.id::text,pr.repo_owner,pr.repo_name
+		rows, err := tx.Query(ctx, `SELECT pr.pr_number,pr.state,COALESCE(pr.snapshot_head_sha,''),`+checksRollupIgnoringVerdict+`,pr.head_sha,COALESCE(pr.api_mergeable,''),pr.id::text,pr.repo_owner,pr.repo_name
 			FROM github_pull_request pr JOIN issue_pull_request ipr ON ipr.pull_request_id=pr.id WHERE ipr.issue_id=$1`, w.IssueID)
 		if err != nil {
 			return false, "", nil, err
@@ -812,6 +822,10 @@ type linkedPR struct {
 // splitHaltedPRs returns the matching PRs outside halted repositories, and the
 // identities of all linked PRs inside them. repos[i] is the repository of prs[i].
 func splitHaltedPRs(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, prs []map[string]any, repos [][2]string, linked []linkedPR) (live []map[string]any, haltedPRs []string, err error) {
+	// Held to the end of the evaluation's transaction: a switch change waits for it, or is seen by it (CHE-2223).
+	if err := q.LockGitHubDispatchHaltShared(ctx, workspaceID); err != nil {
+		return nil, nil, err
+	}
 	halted := map[[2]string]bool{}
 	isHalted := func(repo [2]string) (bool, error) {
 		if h, ok := halted[repo]; ok {

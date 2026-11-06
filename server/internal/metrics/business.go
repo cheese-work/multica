@@ -691,7 +691,7 @@ func (m *BusinessMetrics) RecordLLMUsage(source, runtimeMode, rawProvider, model
 	}
 	source = NormalizeTaskSource(source)
 	runtimeMode = NormalizeRuntimeMode(runtimeMode)
-	price, priced := PriceForModelAlias(modelAlias)
+	price, priced := PriceForRuntimeModel(rawProvider, modelAlias)
 	if !priced {
 		provider := NormalizeRuntimeProvider(rawProvider)
 		alias := NormalizeModelAlias(modelAlias)

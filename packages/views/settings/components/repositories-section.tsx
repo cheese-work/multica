@@ -226,7 +226,11 @@ export function RepositoriesSection() {
     }
 
     if (githubError) {
-      toast.error(t(($) => $.repositories.github_connect_failed));
+      toast.error(
+        githubError === "installation_not_allowed"
+          ? t(($) => $.repositories.github_installation_not_allowed)
+          : t(($) => $.repositories.github_connect_failed),
+      );
     } else if (githubInstallations.length > 0 && githubBrowseConfigured) {
       setSelectedInstallationID(githubInstallations[0]!.id);
       setGitHubPickerOpen(true);

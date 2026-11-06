@@ -172,7 +172,7 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 			failures = errors.Join(failures, decisionAttempt(ctx, func() error {
 				result, err := stage.apply(ctx, request.WorkspaceID, request.ID)
 				if err == nil && len(result.Comments) > 0 {
-					worker.publishWithdrawal(result)
+					worker.handler.publishWithdrawal(result)
 				}
 				return err
 			}))
@@ -246,6 +246,17 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 			return handler.deliverDecisionItem(ctx, request.WorkspaceID, request.ID, "reask")
 		}))
 	}
+	waits, err := handler.Queries.ListDecisionEpisodeCandidates(ctx, db.ListDecisionEpisodeCandidatesParams{
+		BatchSize: decisionBatchSize, Rotation: time.Now().Unix() / int64(decisionWorkerTick/time.Second),
+	})
+	if err != nil {
+		return errors.Join(failures, err)
+	}
+	for _, wait := range waits {
+		failures = errors.Join(failures, decisionAttempt(ctx, func() error {
+			return handler.deliverDecisionItem(ctx, wait.WorkspaceID, wait.ID, "episode")
+		}))
+	}
 	recipients, err := handler.Queries.ListDecisionExpiryDigestRecipients(ctx, decisionBatchSize)
 	if err != nil {
 		return errors.Join(failures, err)
@@ -259,14 +270,14 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 	return errors.Join(failures, handler.checkDecisionWaits(ctx))
 }
 
-func (worker *DecisionWorker) publishWithdrawal(result decisiontx.Withdrawal) {
+func (handler *Handler) publishWithdrawal(result decisiontx.Withdrawal) {
 	workspaceID, agentID := uuidToString(result.Request.WorkspaceID), uuidToString(result.Request.AskingAgentID)
 	for _, comment := range result.Comments {
-		worker.handler.publish(protocol.EventCommentCreated, workspaceID, "agent", agentID, map[string]any{"comment": commentToResponse(comment, nil, nil)})
+		handler.publish(protocol.EventCommentCreated, workspaceID, "agent", agentID, map[string]any{"comment": commentToResponse(comment, nil, nil)})
 	}
-	worker.handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
+	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
 	if result.Answer.DisclaimedAt.Valid {
-		worker.handler.publishDecisionAnswerUpdated(workspaceID, "agent", agentID, result.Answer.ID, result.Request.IssueID, decisionStateDisclaimed)
+		handler.publishDecisionAnswerUpdated(workspaceID, "agent", agentID, result.Answer.ID, result.Request.IssueID, decisionStateDisclaimed)
 	}
 }
 
@@ -298,6 +309,12 @@ func (handler *Handler) cleanupDecisionOrphans(ctx context.Context, workspaceID,
 			return err
 		}
 		if err := queries.DeleteDecisionOrphanBoundWrite(ctx, db.DeleteDecisionOrphanBoundWriteParams{WorkspaceID: workspaceID, ID: requestID}); err != nil {
+			return err
+		}
+		if err := queries.DeleteDecisionOrphanWakeReceipts(ctx, db.DeleteDecisionOrphanWakeReceiptsParams{WorkspaceID: workspaceID, ID: requestID}); err != nil {
+			return err
+		}
+		if err := queries.DeleteDecisionOrphanWakeEvents(ctx, db.DeleteDecisionOrphanWakeEventsParams{WorkspaceID: workspaceID, ID: requestID}); err != nil {
 			return err
 		}
 		if err := queries.DeleteDecisionOrphanAgentUndo(ctx, db.DeleteDecisionOrphanAgentUndoParams{WorkspaceID: workspaceID, ID: requestID}); err != nil {

@@ -28,3 +28,11 @@ export {
   attachmentToDraftUpload,
   normalizeStoredUploads,
 } from "./draft-upload";
+export {
+  createKeyedDraftStore,
+  KEYED_DRAFT_TTL_MS,
+  type KeyedDraftEntry,
+  type KeyedDraftStore,
+  type KeyedDraftStoreConfig,
+} from "./create-keyed-draft-store";
+export { usePersistedDraft } from "./use-persisted-draft";
