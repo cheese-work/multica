@@ -272,7 +272,7 @@ import type {
 import { type Logger, noopLogger } from "../logger";
 import { createRequestId, createSafeId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
-import { parseWithFallback } from "./schema";
+import { parseOrThrow, parseWithFallback } from "./schema";
 import {
   PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
   PasskeyListSchema, PasskeyRevokeCodeStartSchema, PasskeyRevokedSchema, parsePasskeyResponse,
@@ -427,6 +427,8 @@ import {
   RedeemWecomBindingTokenResponseSchema,
   EMPTY_WECOM_INSTALLATION,
   EMPTY_LIST_WECOM_INSTALLATIONS_RESPONSE,
+  ListLarkInstallationsResponseSchema,
+  EMPTY_LIST_LARK_INSTALLATIONS_RESPONSE,
   EMPTY_REDEEM_WECOM_BINDING_TOKEN_RESPONSE,
   TelegramInstallationSchema,
   ListTelegramInstallationsResponseSchema,
@@ -1512,14 +1514,9 @@ export class ApiClient {
       `/api/issues/${encodeURIComponent(id)}`,
       options?.signal ? { signal: options.signal } : undefined,
     );
-    const issue = parseWithFallback<Issue | null>(raw, IssueSchema, null, {
-      endpoint: "GET /api/issues/:id",
-    });
-    if (!issue) {
-      // parseWithFallback already logged the zod issues + raw payload.
-      throw new Error("GET /api/issues/:id returned a malformed issue");
-    }
-    return issue;
+    // Throws SchemaValidationError (logged with the failing paths) so the UI
+    // can tell unreadable data from a network failure.
+    return parseOrThrow<Issue>(raw, IssueSchema, { endpoint: "GET /api/issues/:id" });
   }
 
   async createIssue(
@@ -5546,7 +5543,13 @@ export class ApiClient {
 
   // Lark integration
   async listLarkInstallations(workspaceId: string): Promise<ListLarkInstallationsResponse> {
-    return this.fetch(`/api/workspaces/${workspaceId}/lark/installations`);
+    const endpoint = `/api/workspaces/${workspaceId}/lark/installations`;
+    return parseWithFallback(
+      await this.fetch(endpoint),
+      ListLarkInstallationsResponseSchema,
+      EMPTY_LIST_LARK_INSTALLATIONS_RESPONSE,
+      { endpoint },
+    );
   }
 
   async beginLarkInstall(

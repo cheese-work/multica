@@ -93,6 +93,7 @@ export function WakeupCreateForm({
   const { draft, update, error, pending, submit } = useWakeupForm({
     workspaceId,
     defaultAgentId,
+    draftKey: issueId,
     save: create.mutateAsync,
     onSaved: onClose,
     onBusy,

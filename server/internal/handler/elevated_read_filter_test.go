@@ -341,9 +341,10 @@ func TestElevatedTokenListsStubMarkedDescriptions(t *testing.T) {
 		route http.HandlerFunc
 		path  string
 	}{
-		"normal":    {testHandler.ListIssues, "/api/issues?" + q + "&status=todo&limit=100"},
-		"open_only": {testHandler.ListIssues, "/api/issues?" + q + "&open_only=true"},
-		"grouped":   {testHandler.ListGroupedIssues, "/api/issues/grouped?" + q + "&group_by=assignee&statuses=todo&limit=100&assignee_filters=member:" + testUserID},
+		"normal":             {testHandler.ListIssues, "/api/issues?" + q + "&status=todo&limit=100"},
+		"open_only":          {testHandler.ListIssues, "/api/issues?" + q + "&open_only=true"},
+		"effective_due_sort": {testHandler.ListIssues, "/api/issues?" + q + "&status=todo&limit=100&sort=effective_due"},
+		"grouped":            {testHandler.ListGroupedIssues, "/api/issues/grouped?" + q + "&group_by=assignee&statuses=todo&limit=100&assignee_filters=member:" + testUserID},
 	}
 	for name, l := range lists {
 		elevated := elevatedGet(t, l.route, l.path, nil, f.taskID).Want(http.StatusOK)

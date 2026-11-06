@@ -2762,6 +2762,9 @@ func (h *Handler) mergeCommentIntoPendingTask(ctx context.Context, issue db.Issu
 		"new_trigger_comment_id", uuidToString(newTriggerCommentID),
 		"coalesced_count", len(row.CoalescedCommentIds))
 	h.TaskService.RecordHumanDelegation(ctx, attr)
+	// The run's status is unchanged, so no lifecycle event tells clients that it
+	// now answers this comment.
+	h.TaskService.BroadcastTaskCoalesced(ctx, row)
 	return commentMergeSucceeded
 }
 

@@ -1,7 +1,7 @@
 -- name: ListDecisionWakeCandidates :many
 SELECT request.* FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
-WHERE request.authority = 'human' AND request.status = 'answered' AND EXISTS (
+WHERE request.authority = 'human' AND request.kind <> 'action' AND request.status = 'answered' AND EXISTS (
     SELECT 1 FROM decision_answer answer
     WHERE answer.decision_request_id = request.id AND answer.disclaimed_at IS NULL
       AND answer.woken_at IS NULL AND answer.wake_at <= clock_timestamp()

@@ -330,6 +330,9 @@ func (h *Handler) writeIssueLocked(ctx context.Context, q *db.Queries, workspace
 			return db.Issue{}, nil, err
 		}
 	}
+	if err := h.applyDecisionEpisode(ctx, q, workspaceID, wf, &params); err != nil {
+		return db.Issue{}, nil, err
+	}
 	issue, cancelledWakeups, err := updateIssueStoppingWakeups(ctx, q, params)
 	if err != nil {
 		return issue, nil, err
@@ -360,9 +363,20 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 		}
 		fromStatus = prior.Status
 	}
+	var prevParent pgtype.UUID
+	if params.ParentIssueID.Valid {
+		prior, err := q.GetIssue(ctx, params.ID)
+		if err != nil {
+			return db.Issue{}, nil, fmt.Errorf("read issue parent: %w", err)
+		}
+		prevParent = prior.ParentIssueID
+	}
 	issue, err := q.UpdateIssue(ctx, params)
 	if err != nil {
 		return issue, nil, err
+	}
+	if err := recordIssueMoved(ctx, q, prevParent, issue); err != nil {
+		return db.Issue{}, nil, fmt.Errorf("record moved-under event: %w", err)
 	}
 	if recordStatus && fromStatus != issue.Status {
 		row, err := service.RecordStatusChange(ctx, q, issue, fromStatus, issue.Status, rec.trigger, rec.recordedHandoff(issue))
@@ -1516,6 +1530,80 @@ func (h *Handler) QueryIssues(w http.ResponseWriter, r *http.Request) {
 	h.ListIssues(w, r)
 }
 
+// listIssueColumns is the full ListIssues select list.
+const listIssueColumns = `i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
+       i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
+       i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
+       i.revision, i.duplicate_of_issue_id, i.description_external_read`
+
+var narrowColumns = strings.NewReplacer(
+	"i.title,", "''::text,", // Title scans into a string, so empty rather than NULL
+	"i.description,", "NULL::text,",
+	"i.metadata,", "NULL::jsonb,",
+	"i.properties,", "NULL::jsonb,",
+)
+
+// narrowListIssueColumns blanks the large title/description/metadata/properties
+// columns in the select list of a ListIssues query (the part before FROM);
+// the WHERE clause is left alone.
+func narrowListIssueColumns(query string) string {
+	selectList, rest, _ := strings.Cut(query, "\nFROM issue i")
+	return narrowColumns.Replace(selectList) + "\nFROM issue i" + rest
+}
+
+func scanListIssueRows(rows pgx.Rows) ([]db.ListIssuesRow, error) {
+	var issues []db.ListIssuesRow
+	for rows.Next() {
+		var row db.ListIssuesRow
+		if err := rows.Scan(
+			&row.ID, &row.WorkspaceID, &row.Title, &row.Description, &row.Status, &row.Priority,
+			&row.AssigneeType, &row.AssigneeID, &row.CreatorType, &row.CreatorID,
+			&row.ParentIssueID, &row.Position, &row.StartDate, &row.DueDate,
+			&row.CreatedAt, &row.UpdatedAt, &row.LastActivityAt, &row.Number, &row.ProjectID,
+			&row.Metadata, &row.Stage, &row.Properties, &row.Revision, &row.DuplicateOfIssueID, &row.DescriptionExternalRead,
+		); err != nil {
+			return nil, err
+		}
+		issues = append(issues, row)
+	}
+	return issues, rows.Err()
+}
+
+// fullListIssueRows re-reads page (already sorted) with every column, keeping order.
+func (h *Handler) fullListIssueRows(ctx context.Context, wsUUID pgtype.UUID, page []db.ListIssuesRow) ([]db.ListIssuesRow, error) {
+	if len(page) == 0 {
+		return page, nil
+	}
+	ids := make([]pgtype.UUID, len(page))
+	for i, r := range page {
+		ids[i] = r.ID
+	}
+	rows, err := h.DB.Query(ctx, `SELECT `+listIssueColumns+` FROM issue i WHERE i.workspace_id = $1 AND i.id = ANY($2)`, wsUUID, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	full, err := scanListIssueRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[pgtype.UUID]db.ListIssuesRow, len(full))
+	for _, r := range full {
+		byID[r.ID] = r
+	}
+	out := page[:0:0]
+	for _, r := range page {
+		if f, ok := byID[r.ID]; ok { // a row deleted mid-request just drops out
+			out = append(out, f)
+		}
+	}
+	return out, nil
+}
+
+// effectiveDueMaxCandidates bounds the rows loaded and projected for
+// sort=effective_due. Var so tests can lower it.
+var effectiveDueMaxCandidates = 2000
+
 func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -1720,8 +1808,15 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	sortIsExpr := false
 	sortIsProperty := false
 	sortByStatus := false
+	sortByEffectiveDue := false
 	if s := r.URL.Query().Get("sort"); s != "" {
 		switch s {
+		case "effective_due":
+			// Dates are computed on read, so the page is cut after sorting.
+			// Fetch order is the undated order: priority, then oldest.
+			sortCol = "CASE i.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END"
+			sortIsExpr = true
+			sortByEffectiveDue = true
 		case "position", "title", "created_at", "updated_at", "start_date", "due_date":
 			sortCol = s
 		case "last_activity":
@@ -1762,7 +1857,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	if sortCol == "last_activity_at" {
 		sortDir = "DESC"
 	}
-	if sortCol != "position" {
+	if sortCol != "position" && !sortByEffectiveDue {
 		if d := r.URL.Query().Get("direction"); d != "" {
 			switch strings.ToLower(d) {
 			case "asc":
@@ -1976,12 +2071,20 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	// LIMIT/OFFSET requests, duplicating or dropping rows at page boundaries.
 	if sortCol == "last_activity_at" {
 		orderBy += ", i.id DESC"
+	} else if sortByEffectiveDue {
+		orderBy += ", i.created_at ASC, i.id ASC"
 	} else {
 		orderBy += ", i.created_at DESC, i.id DESC"
 	}
 
-	offsetRef := addArg(int64(offset))
-	limitRef := addArg(int64(limit))
+	fetchOffset, fetchLimit := int64(offset), int64(limit)
+	if sortByEffectiveDue {
+		// ponytail: loads the whole filtered set to sort it, bounded by
+		// effectiveDueMaxCandidates; SQL-side date if that is ever too low.
+		fetchOffset, fetchLimit = 0, int64(effectiveDueMaxCandidates)+1
+	}
+	offsetRef := addArg(fetchOffset)
+	limitRef := addArg(fetchLimit)
 
 	query := fmt.Sprintf(`SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
@@ -1991,6 +2094,9 @@ FROM issue i
 WHERE %s
 ORDER BY %s
 LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
+	if sortByEffectiveDue {
+		query = narrowListIssueColumns(query)
+	}
 
 	rows, err := h.DB.Query(ctx, query, args...)
 	if err != nil {
@@ -2000,45 +2106,15 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 	}
 	defer rows.Close()
 
-	var issues []db.ListIssuesRow
-	for rows.Next() {
-		var row db.ListIssuesRow
-		if err := rows.Scan(
-			&row.ID,
-			&row.WorkspaceID,
-			&row.Title,
-			&row.Description,
-			&row.Status,
-			&row.Priority,
-			&row.AssigneeType,
-			&row.AssigneeID,
-			&row.CreatorType,
-			&row.CreatorID,
-			&row.ParentIssueID,
-			&row.Position,
-			&row.StartDate,
-			&row.DueDate,
-			&row.CreatedAt,
-			&row.UpdatedAt,
-			&row.LastActivityAt,
-			&row.Number,
-			&row.ProjectID,
-			&row.Metadata,
-			&row.Stage,
-			&row.Properties,
-			&row.Revision,
-			&row.DuplicateOfIssueID,
-			&row.DescriptionExternalRead,
-		); err != nil {
-			slog.Warn("ListIssues scan failed", "error", err)
-			writeError(w, http.StatusInternalServerError, "failed to list issues")
-			return
-		}
-		issues = append(issues, row)
-	}
-	if err := rows.Err(); err != nil {
-		slog.Warn("ListIssues rows failed", "error", err)
+	issues, err := scanListIssueRows(rows)
+	if err != nil {
+		slog.Warn("ListIssues scan failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to list issues")
+		return
+	}
+	if sortByEffectiveDue && len(issues) > effectiveDueMaxCandidates {
+		// Refuse, never truncate: a sort over a partial set is a wrong order.
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("too many issues to sort by effective_due (max %d); narrow the filter (project, status, assignee)", effectiveDueMaxCandidates))
 		return
 	}
 
@@ -2055,6 +2131,41 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 
 	prefix := h.getIssuePrefix(ctx, wsUUID)
 	rf := h.newReadFilter(r)
+	var projections map[pgtype.UUID]dueProjection
+	if sortByEffectiveDue {
+		roots := make([]db.Issue, len(issues))
+		for i, r := range issues {
+			roots[i] = db.Issue{ID: r.ID, WorkspaceID: r.WorkspaceID, Number: r.Number, Status: r.Status, DueDate: r.DueDate, ParentIssueID: r.ParentIssueID}
+		}
+		var err error
+		if projections, err = h.effectiveDueFor(ctx, wsUUID, prefix, roots); errors.Is(err, errEffectiveDueTooBroad) {
+			writeError(w, http.StatusBadRequest, "too many related issues to sort by effective_due; narrow the filter (project, status, assignee)")
+			return
+		} else if err != nil {
+			slog.Warn("ListIssues effective_due failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to resolve sort")
+			return
+		}
+		for _, p := range projections {
+			for _, d := range p.diagnostics {
+				if d.Type == "graph_limit" {
+					// Refuse, never sort: an unknown date is not "no date".
+					writeError(w, http.StatusBadRequest, "an issue's deadline graph is too large to sort by effective_due; narrow the filter (project, status, assignee)")
+					return
+				}
+			}
+		}
+		sortRowsByEffectiveDue(issues, projections)
+		start := min(offset, len(issues)) // bound before adding: offset+limit can overflow
+		issues = issues[start : start+min(limit, len(issues)-start)]
+		// Candidates were read without title/description/metadata/properties; load
+		// those only for the page, so a deep sort cannot buffer 2,001 large rows.
+		if issues, err = h.fullListIssueRows(ctx, wsUUID, issues); err != nil {
+			slog.Warn("ListIssues page fetch failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to list issues")
+			return
+		}
+	}
 	ids := make([]pgtype.UUID, len(issues))
 	for i, issue := range issues {
 		ids[i] = issue.ID
@@ -2064,6 +2175,12 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 	for i, issue := range issues {
 		resp[i] = issueListRowToResponse(issue, prefix)
 		rf.stubDescriptionOf(h, issue.DescriptionExternalRead, issue.Description, issue.CreatorType, issue.CreatorID, &resp[i])
+		if p, ok := projections[issue.ID]; ok {
+			if p.date != "" {
+				resp[i].EffectiveDue, resp[i].DueSource = &p.date, p.source
+			}
+			resp[i].Diagnostics = p.diagnostics
+		}
 		labels := labelsMap[resp[i].ID]
 		if labels == nil {
 			labels = []LabelResponse{}
@@ -4169,6 +4286,9 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 		}
 	}
 	refreshUntouchedNullableIssueParams(&params, current, rawFields, false)
+	if err := h.applyDecisionEpisode(ctx, qtx, workspaceID, wf, &params); err != nil {
+		return db.Issue{}, current, false, err
+	}
 
 	issue, cancelledWakeups, err := updateIssueStoppingWakeups(ctx, qtx, params)
 	if err != nil {
@@ -5524,6 +5644,11 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			}
 			if errors.Is(err, errBudgetRebinding) {
 				failed = append(failed, map[string]any{"id": issueID, "code": budgetRebindingCode})
+				continue
+			}
+			var refused *decisionEpisodeRefusal
+			if errors.As(err, &refused) {
+				failed = append(failed, map[string]any{"id": issueID, "code": "decision_episode_refused", "error": refused.Error()})
 				continue
 			}
 			slog.Warn("batch update issue failed", "issue_id", issueID, "error", err)
