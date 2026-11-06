@@ -1758,6 +1758,13 @@ func (s *TaskService) insertPreparedIssueTask(ctx context.Context, queries *db.Q
 	return task, nil
 }
 
+// EnqueueIssueTaskInTx enqueues the assignee's run for a just-created issue inside the
+// caller's transaction. The caller calls PublishTaskEnqueued only after commit.
+func (s *TaskService) EnqueueIssueTaskInTx(ctx context.Context, queries *db.Queries, issue db.Issue) (db.AgentTaskQueue, error) {
+	task, _, err := s.enqueueIssueTaskWithQueries(ctx, queries, issue, pgtype.UUID{}, nil, false, "", pgtype.UUID{}, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
+	return task, err
+}
+
 func (s *TaskService) EnqueueDecisionTaskInTx(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, squadID, triggerCommentID pgtype.UUID, commentIDs []pgtype.UUID, handoff string) (db.AgentTaskQueue, error) {
 	if squadID.Valid || issue.AssigneeType.String != "agent" || issue.AssigneeID != agentID {
 		task, _, err := s.enqueueMentionTaskWithQueries(ctx, queries, issue, agentID, triggerCommentID, commentIDs, squadID.Valid, squadID, false, handoff, pgtype.UUID{}, pgtype.UUID{}, OriginDerived)
