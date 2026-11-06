@@ -10,10 +10,12 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
+const runBudgetTopUpType = "issue.run_budget.top_up"
+
 // executeRunBudgetTopUpAction opens a new run-budget window for the approver,
-// like the direct top-up route. The approval holds the issue row; the window is
-// read under that lock, so a status move or top-up that landed since the request
-// ends the action instead of opening a second window.
+// like the direct top-up route. The approval holds the issue's boundary lock and
+// its row; the window is read under them, so a status move or top-up that
+// landed since the request ends the action instead of opening a second window.
 func executeRunBudgetTopUpAction(ctx context.Context, execution decisionActionExecution) (json.RawMessage, error) {
 	var params decisionaction.RunBudgetTopUpParams
 	if err := json.Unmarshal(execution.Action.Params, &params); err != nil {
