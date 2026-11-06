@@ -3,6 +3,7 @@
 // still merges: the card only lists the PRs. Tier 0/1 go through the agent merge lane, not this card.
 //
 // Run from a clean checkout of the default branch (the classifier must equal its base copy).
+//   node scripts/tier2-merge-card.mjs sweep   withdraw an open card whose listed PR head moved (autopilot, every 15 min, CARD_FOR only)
 //   node scripts/tier2-merge-card.mjs   send the card; run at 07:30, 12:30 and 20:00 ICT (autopilot b2b5403b, create_issue mode, paused until merge; Asia/Ho_Chi_Minh: `30 7,12 * * *` and
 //                                       `0 20 * * *`). CARD_DRY_RUN=1 prints the ask instead.
 //   Each run first withdraws the earlier merge card if still open, then posts a fresh one: a sent card cannot drop a moved head, the next run does.
@@ -52,7 +53,7 @@ export function renderAsk(prs, window, sourceIssueId, sourceCommentId) {
     context_eli10: `${noun} on cheese-work/multica ${n === 1 ? 'is' : 'are'} ready for your ${window} ICT merge window. Each has green required checks and a cross-lab PASS on the exact head below. Open a PR link and merge it on GitHub.\n\n${lines.join('\n')}`,
     agent_did: `Checked every open PR into main on ${window} ICT: ready, Tier 2 receipt, required checks and PASS on the current head.`,
     decision: `Merge the ${noun} listed above?`,
-    stakes_if_wrong: 'You merge each PR yourself; every merge can be reverted. A PR whose head moves after this card is sent no longer has these checks and PASS; the next run withdraws this card and lists only PRs whose head still holds.',
+    stakes_if_wrong: 'You merge each PR yourself; every merge can be reverted. A PR whose head moves after this card is sent no longer has these checks and PASS; a sweep withdraws this card within about 15 min, and the next window lists only PRs whose head still holds.',
     options: [
       { label: 'I will merge them on GitHub', what_happens: 'You open each PR link above and merge it on GitHub. No agent merges. A PR whose head moves after this card no longer has these checks and PASS.', pros: ['Each PR gets your own look', 'No agent merges a Tier 2 PR'], cons: ['One click per PR'], cost_or_time: 'About 1 min per PR' },
       { label: 'Skip this window', what_happens: 'Nothing merges; the PRs appear again on the next card while their head holds.', pros: ['Time to read each diff'], cons: ['Longer wait to merge'], cost_or_time: 'Next window, up to about 12 h' },
@@ -106,19 +107,24 @@ async function classify(repo, p, dir) {
 }
 
 async function main(args) {
-  if (args.length) throw new Error('takes no arguments: it only sends the card');
-  return sendCard(process.env.CARD_REPO ?? 'cheese-work/multica');
+  const repo = process.env.CARD_REPO ?? 'cheese-work/multica';
+  if (args.length === 1 && args[0] === 'sweep') return sweepCards(repo);
+  if (args.length) throw new Error('usage: tier2-merge-card.mjs [sweep]');
+  return sendCard(repo);
 }
 
 const CARD_TEXT = /ICT merge window/;
-// A sent card cannot change. Each run withdraws the still-open earlier merge card, so a stale head never stays listed.
-export const isOpenCard = (d) => d.status === 'open' && CARD_TEXT.test(d.ask ?? '');
+// The member-wide open list carries no `status` field (every entry is open); the per-issue list does.
+export const isOpenCard = (d) => (d.status ?? 'open') === 'open' && CARD_TEXT.test(d.ask ?? '');
+
+// The autopilot creates a new issue per run, so the earlier card hangs on another issue: list by member, not by issue.
+export const openCardsArgs = (memberId) => ['decision', 'list', '--for', memberId, '--state', 'open', '--output', 'json'];
 
 const liveIo = {
   collect,
   heads: async (repo) => new Map((await gh('pr', 'list', '--repo', repo, '--state', 'open', '--limit', '200', '--json', 'number,headRefOid')).map((x) => [x.number, x.headRefOid])),
-  openCards: async () => JSON.parse((await run('multica', ['decision', 'list', '--issue', process.env.CARD_ISSUE, '--output', 'json'], { maxBuffer: MAX_BUFFER })).stdout),
-  withdraw: (id) => run('multica', ['decision', 'withdraw', id, '--reason', 'Superseded by the next Tier 2 merge card run', '--output', 'json']),
+  openCards: async () => JSON.parse((await run('multica', openCardsArgs(process.env.CARD_FOR), { maxBuffer: MAX_BUFFER })).stdout),
+  withdraw: (id) => run('multica', ['decision', 'withdraw', id, '--reason', 'Superseded: a listed PR head moved or a newer Tier 2 merge card run replaced it', '--output', 'json']),
   post: async (ask) => {
     const dir = mkdtempSync(join(tmpdir(), 'tier2-card-'));
     try {
@@ -132,6 +138,7 @@ const liveIo = {
   },
 };
 
+// A sent card cannot change. Each send run withdraws every still-open earlier merge card, then posts a fresh one.
 export async function sendCard(repo, io = liveIo) {
   const dry = Boolean(process.env.CARD_DRY_RUN);
   const ready = eligible(await io.collect(repo));
@@ -143,6 +150,18 @@ export async function sendCard(repo, io = liveIo) {
   for (const d of (await io.openCards()).filter(isOpenCard)) await io.withdraw(d.id);
   if (!ask) return console.error('no Tier 2 PR is ready; no card sent');
   await io.post(ask);
+}
+
+// Run every few minutes between windows: a push to a listed PR leaves the old head on the open card, so withdraw it.
+// A listed PR that is no longer open (merged by Cheese from the card) is fine; only a moved head makes the card stale.
+export async function sweepCards(repo, io = liveIo) {
+  const cards = (await io.openCards()).filter(isOpenCard);
+  if (!cards.length) return;
+  const heads = await io.heads(repo);
+  for (const d of cards) {
+    const moved = [...d.ask.matchAll(/\/pull\/(\d+)\/commits\/([0-9a-f]{40})/g)].some(([, n, sha]) => heads.has(Number(n)) && heads.get(Number(n)) !== sha);
+    if (moved) await io.withdraw(d.id);
+  }
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) await main(process.argv.slice(2));
