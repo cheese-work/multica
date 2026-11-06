@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -333,4 +334,76 @@ func TestSendWithoutAskIDsWaitsOnTheOnlyOpenAsk(t *testing.T) {
 			t.Fatalf("later resolved_by = %v, want human_send", st.ResolvedBy)
 		}
 	})
+}
+
+// Security: T2 / T2b are the human's own transitions. A send made with an agent task token
+// (a permitted agent writing into its human's DM) creates the message and task but must not
+// resolve the human's later / unseen items or mark an ask waiting.
+func TestAgentTokenSendLeavesHumanAttentionItemsAlone(t *testing.T) {
+	dm := newAttentionDM(t)
+	taskID := dm.mustSend(t, "hello", nil).TaskID // a task of the DM agent, to authenticate as
+	later, unseen, ask := dm.item(t, "later"), dm.item(t, "unseen"), dm.item(t, "ask")
+
+	body := map[string]any{"content": "from the agent", "client_message_id": "agent-1"}
+	req := withChatTestWorkspaceCtx(t, withURLParam(newRequest(http.MethodPost, "/api/chat/sessions/"+dm.sessionID+"/messages", body), "sessionId", dm.sessionID))
+	req.Header.Set("X-Actor-Source", "task_token")
+	req.Header.Set("X-Task-ID", taskID)
+	req.Header.Set("X-Agent-ID", dm.agentID)
+	w := httptest.NewRecorder()
+	testHandler.SendChatMessage(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("agent send: %d %s, want 201", w.Code, w.Body.String())
+	}
+
+	for _, id := range []string{later, unseen} {
+		if st := dm.state(t, id); st.ResolvedBy != nil {
+			t.Fatalf("agent send resolved human item %s (resolved_by=%s)", id, *st.ResolvedBy)
+		}
+	}
+	if st := dm.state(t, ask); st.WaitingMsg != nil || st.WaitingTsk != nil {
+		t.Fatalf("agent send marked the human's ask waiting: %v / %v", st.WaitingMsg, st.WaitingTsk)
+	}
+}
+
+// B4 race: a retry that arrives while the first send is still committing must wait for it, not
+// miss it and be refused (409) as "agent archived" by a send that was in fact delivered.
+// The first send is held open here: its client_message_id is hidden, the agent is already
+// archived, and the session lock is held until the id is restored and committed.
+func TestRetryOverlappingFirstSendWaitsForItInsteadOfRefusing(t *testing.T) {
+	dm := newAttentionDM(t)
+	extra := map[string]any{"client_message_id": "attempt-1"}
+	first := dm.mustSend(t, "hello", extra)
+
+	ctx := context.Background()
+	dbfx.Exec(t, `UPDATE chat_message SET client_message_id = NULL WHERE id = $1`, first.MessageID)
+	dbfx.Exec(t, `UPDATE agent SET archived_at = now() WHERE id = $1`, dm.agentID)
+	tx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT id FROM chat_session WHERE id = $1 FOR UPDATE`, dm.sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE chat_message SET client_message_id = 'attempt-1' WHERE id = $1`, first.MessageID); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- dm.sendWith(t, "hello", extra) }()
+	time.Sleep(300 * time.Millisecond) // the retry has run its lookup against the uncommitted first send
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case w := <-done:
+		var res SendChatMessageResponse
+		json.Unmarshal(w.Body.Bytes(), &res)
+		if w.Code != http.StatusOK || res.MessageID != first.MessageID {
+			t.Fatalf("overlapping retry: %d %s, want 200 with message %s", w.Code, w.Body.String(), first.MessageID)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("retry never returned")
+	}
 }

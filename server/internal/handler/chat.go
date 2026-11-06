@@ -931,19 +931,34 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	releaseLock := func() {}
 	// A stored send is confirmed before any refusal below (B4): a retry after the agent was
-	// archived must recover the first attempt, not 409. The in-tx check covers the race.
+	// archived must recover the first attempt, not 409. The lookup holds the session lock (the
+	// one a send commits under) until the refusals have run, so a retry that overlaps its first
+	// send waits for it instead of missing it and being refused for a delivered message. The
+	// lock is released before the send, which takes it again and re-checks in its own tx.
 	if req.ClientMessageID != "" {
-		stored, found, err := h.TaskService.ReplayDirectChatSend(r.Context(), h.Queries, session, req.ClientMessageID)
+		lockTx, err := h.TxStarter.Begin(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to send chat message")
+			return
+		}
+		defer lockTx.Rollback(r.Context())
+		lockQ := h.Queries.WithTx(lockTx)
+		if _, err = lockQ.LockChatSessionForRuntimeBind(r.Context(), session.ID); err == nil {
+			var stored service.DirectChatSendResult
+			var found bool
+			if stored, found, err = h.TaskService.ReplayDirectChatSend(r.Context(), lockQ, session, req.ClientMessageID); err == nil && found {
+				writeReplayedSend(w, &stored)
+				return
+			}
+		}
 		if err != nil {
 			slog.Warn("replay chat send lookup failed", append(logger.RequestAttrs(r), "error", err)...)
 			writeError(w, http.StatusInternalServerError, "failed to send chat message")
 			return
 		}
-		if found {
-			writeReplayedSend(w, &stored)
-			return
-		}
+		releaseLock = func() { lockTx.Rollback(r.Context()) }
 	}
 	// Archived sessions are read-only: refuse to enqueue new agent work for
 	// them (see SetChatSessionArchived). The frontend disables the composer
@@ -958,6 +973,7 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	releaseLock()
 	// /preset needs the same permission as any send, so it comes after the gate.
 	if arg, isPreset := parsePresetCommand(req.Content); isPreset {
 		if len(attachmentIDs) > 0 || decisionRequestID.Valid {
@@ -1005,7 +1021,7 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		sent, err = h.sendChatDecisionReply(r, session, agent, parseUUID(userID), decisionRequestID, req.Content, attachmentIDs, req.ClientMessageID)
 	} else {
 		sent, err = h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), r.Header.Get("X-Actor-Source"),
-			service.DirectChatSendOptions{ClientMessageID: req.ClientMessageID, HumanSend: true, AskIDs: askIDs})
+			service.DirectChatSendOptions{ClientMessageID: req.ClientMessageID, HumanSend: actorType == "member", AskIDs: askIDs})
 	}
 	if err != nil {
 		var refusal decisionIntentRefusal
