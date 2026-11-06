@@ -115,8 +115,8 @@ export async function report({ api, repo, pr, dryRun = false, eventIndex = -1, e
   await api.send("POST", `/repos/${repo}/statuses/${headSha}`, status);
 }
 
-const ATTEMPTS = 3;
-const MAX_WAIT_MS = 10 * 60 * 1000;
+export const ATTEMPTS = 3;
+export const MAX_WAIT_MS = 10 * 60 * 1000;
 const FALLBACK_WAIT_MS = 60 * 1000;
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 const isRateLimit = (stderr) => /rate limit/i.test(stderr) && /HTTP (403|429)/.test(stderr);

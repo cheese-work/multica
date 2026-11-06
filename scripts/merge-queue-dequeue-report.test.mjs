@@ -253,3 +253,10 @@ test("callName names the endpoint of a read, a write and a GraphQL call", async 
   assert.equal(callName(["api", "/repos/o/r/actions/runs?event=merge_group"]), "/repos/o/r/actions/runs?event=merge_group");
   assert.equal(callName(["api", "-X", "POST", "/repos/o/r/issues/1/comments", "--input", "-"]), "/repos/o/r/issues/1/comments");
 });
+
+test("workflow timeout outlasts every rate-limit wait plus 5 min of work, so the warning can print", async () => {
+  const { ATTEMPTS, MAX_WAIT_MS } = await load();
+  const yml = readFileSync(new URL("../.github/workflows/merge-queue-dequeue-report.yml", import.meta.url), "utf8");
+  const minutes = Number(yml.match(/timeout-minutes:\s*(\d+)/)?.[1]);
+  assert.ok(minutes >= ((ATTEMPTS - 1) * MAX_WAIT_MS) / 60_000 + 5, `timeout-minutes ${minutes}`);
+});
