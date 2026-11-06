@@ -115,6 +115,7 @@ export function useIssueSurfaceData({
   projectFilters,
   includeNoProject,
   projectStatusFilters,
+  workflowFilters,
   labelFilters,
   propertyFilters,
   workingIssueIDs,
@@ -145,6 +146,7 @@ export function useIssueSurfaceData({
   projectFilters: string[];
   includeNoProject: boolean;
   projectStatusFilters: ProjectStatus[];
+  workflowFilters: string[];
   labelFilters: string[];
   propertyFilters: Record<string, PropertyFilterValue[]>;
   /** Distinct running-task issue ids projected by `/api/working-agents`. */
@@ -228,6 +230,7 @@ export function useIssueSurfaceData({
       projectFilters,
       includeNoProject,
       projectStatusFilters,
+      workflowFilters,
       labelFilters,
       propertyFilters,
       workingOnly: agentRunningFilter,
@@ -246,6 +249,7 @@ export function useIssueSurfaceData({
       propertyFilters,
       showSubIssues,
       statusFilters,
+      workflowFilters,
     ],
   );
 
@@ -373,7 +377,11 @@ export function useIssueSurfaceData({
   const catalog = useIssueStatuses(wsId);
   // Columns follow the project's workflow, or Default outside a project.
   // (MUL-7420)
-  const { workflow: projectWorkflow } = useColumnWorkflow(wsId, projectId, statusFilters.length > 0);
+  const { workflow: projectWorkflow } = useColumnWorkflow(
+    wsId,
+    projectId,
+    statusFilters.length > 0 || workflowFilters.length > 0,
+  );
   const { workflow: scopeWorkflow } = useColumnWorkflow(wsId, projectId, false);
 
   const visibleStatuses = useMemo<IssueStatus[]>(() => {
@@ -408,6 +416,7 @@ export function useIssueSurfaceData({
       includeNoProject,
       projectStatusFilters,
       projectStatusById,
+      workflowFilters,
       labelFilters,
       propertyFilters,
       showSubIssues,
@@ -425,6 +434,7 @@ export function useIssueSurfaceData({
       projectStatusById,
       projectStatusFilters,
       showSubIssues,
+      workflowFilters,
       workingIssueIDs,
     ],
   );

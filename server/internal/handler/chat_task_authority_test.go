@@ -1,9 +1,13 @@
 package handler
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -92,19 +96,58 @@ func TestResolveChatTaskAuthority(t *testing.T) {
 	}
 }
 
-// authorityFixture is a DM on agent D with a compaction agent C configured.
+// authorityFixture is a DM on agent D with a compaction agent C configured
+// through background_agents.compact (CHE-4097).
 type authorityFixture struct {
-	*compactAgentFixture
+	t                              *testing.T
 	dmAgent, compactAgent, session string
 }
 
 func newAuthorityFixture(t *testing.T) *authorityFixture {
 	t.Helper()
-	f := newCompactAgentFixture(t)
-	a := &authorityFixture{compactAgentFixture: f, dmAgent: f.eligibleAgent("authority-dm-agent"), compactAgent: f.eligibleAgent("authority-compact-agent")}
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	var settings []byte
+	dbfx.QueryRow(t, `SELECT settings FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&settings)
+	dbfx.Exec(t, `UPDATE workspace SET settings = settings - 'background_agents' - 'compact_agent_id' WHERE id = $1`, testWorkspaceID)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `UPDATE workspace SET settings = $1 WHERE id = $2`, settings, testWorkspaceID)
+	})
+	a := &authorityFixture{t: t, dmAgent: eligibleAgent(t, "authority-dm-agent"), compactAgent: eligibleAgent(t, "authority-compact-agent")}
 	a.session = dbfx.ChatSession(t, a.dmAgent)
-	f.seed(a.compactAgent)
+	a.setCompact(a.compactAgent)
 	return a
+}
+
+// eligibleAgent is workspace-visible, not archived, on a public workspace runtime.
+func eligibleAgent(t *testing.T, name string) string {
+	t.Helper()
+	runtimeID := dbfx.Runtime(t, name+"-runtime", testutil.Cols{"visibility": "public"})
+	agentID := dbfx.Agent(t, name, runtimeID, testutil.Cols{
+		"visibility":      "workspace",
+		"permission_mode": "public_to",
+	})
+	dbfx.Exec(t, `INSERT INTO agent_invocation_target (agent_id, target_type, target_id) VALUES ($1, 'workspace', $2)`, agentID, testWorkspaceID)
+	return agentID
+}
+
+// setCompact writes background_agents.compact.agent_id as a human admin (the
+// public write path, so the stored shape is the real one).
+func (a *authorityFixture) setCompact(agentID string) {
+	a.t.Helper()
+	putBG(a.t, testWorkspaceID, map[string]any{"compact": map[string]any{"agent_id": agentID}}, nil).Want(http.StatusOK)
+}
+
+func (a *authorityFixture) clearCompact() {
+	a.t.Helper()
+	bgCall(a.t, testHandler.ResetBackgroundAgents, "DELETE", testWorkspaceID, nil, nil).Want(http.StatusOK)
+}
+
+// seedOldKey writes only the retired settings.compact_agent_id.
+func (a *authorityFixture) seedOldKey(agentID string) {
+	a.t.Helper()
+	dbfx.Exec(a.t, `UPDATE workspace SET settings = jsonb_set(settings - 'background_agents', '{compact_agent_id}', to_jsonb($1::text)) WHERE id = $2`, agentID, testWorkspaceID)
 }
 
 func (a *authorityFixture) task(agentID, status, purpose string) string {
@@ -112,6 +155,9 @@ func (a *authorityFixture) task(agentID, status, purpose string) string {
 	cols := testutil.Cols{"runtime_id": handlerTestRuntimeID(a.t), "status": status, "chat_session_id": a.session}
 	if purpose != "" {
 		cols["purpose"] = purpose
+		if purpose == taskPurposeCompaction {
+			cols["task_kind"] = "compact" // what MarkChatTaskCompact writes in production
+		}
 	}
 	if status == "running" {
 		cols["started_at"] = testutil.Raw("now()")
@@ -140,6 +186,51 @@ func (a *authorityFixture) continueDM(taskID string) *httptest.ResponseRecorder 
 	return continueChatRequest(a.t, a.session, "the summary", taskID)
 }
 
+// logSink captures slog records so a test can assert which events were emitted.
+type logSink struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *logSink) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+// records returns the captured records whose message is msg.
+func (s *logSink) records(t *testing.T, msg string) []map[string]any {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []map[string]any
+	for _, line := range bytes.Split(s.buf.Bytes(), []byte("\n")) {
+		var rec map[string]any
+		if json.Unmarshal(line, &rec) == nil && rec["msg"] == msg {
+			out = append(out, rec)
+		}
+	}
+	return out
+}
+
+func captureJSONLogs(t *testing.T) *logSink {
+	t.Helper()
+	sink := &logSink{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(sink, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return sink
+}
+
+func errorCode(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	var body struct{ Code string }
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response %q is not JSON: %v", rec.Body.String(), err)
+	}
+	return body.Code
+}
+
 func requireStatus(t *testing.T, rec *httptest.ResponseRecorder, want int, code string) {
 	t.Helper()
 	if rec.Code != want {
@@ -154,7 +245,7 @@ func requireStatus(t *testing.T, rec *httptest.ResponseRecorder, want int, code 
 
 func TestChatTaskAuthorityCompactionAgentReadsAndCompactsItsOwnDM(t *testing.T) {
 	a := newAuthorityFixture(t)
-	logs := captureLogs(t)
+	logs := captureJSONLogs(t)
 	task := a.task(a.compactAgent, "running", taskPurposeCompaction)
 
 	requireStatus(t, a.read(task), http.StatusOK, "")
@@ -177,9 +268,14 @@ func TestChatTaskAuthorityDispatchedCompactionAgentMayCompact(t *testing.T) {
 
 func TestChatTaskAuthorityRefusalsAreLoggedAndCoded(t *testing.T) {
 	a := newAuthorityFixture(t)
-	logs := captureLogs(t)
+	logs := captureJSONLogs(t)
 	task := a.task(a.compactAgent, "running", taskPurposeCompaction)
-	a.seed(a.dmAgent) // the setting moves to another agent
+	a.setCompact(a.dmAgent) // the setting moves to another agent
+	// The compact-chain change cancels compaction tasks; revive this one so the
+	// authority check, not the cancel, is what refuses it.
+	if _, err := testPool.Exec(context.Background(), `UPDATE agent_task_queue SET status = 'running' WHERE id = $1`, task); err != nil {
+		t.Fatal(err)
+	}
 
 	rec := a.read(task)
 	requireStatus(t, rec, http.StatusForbidden, codeCompactionAgentNotCurrent)
@@ -203,23 +299,18 @@ func TestChatTaskAuthorityCompactionByDMAgentRefusedAfterSettingChanges(t *testi
 		name string
 		edit func(a *authorityFixture, other string)
 	}{
-		{"clear", func(a *authorityFixture, _ string) {
-			a.seed(a.dmAgent)
-			a.send(http.MethodPatch, map[string]any{"compact_agent_id": nil}, humanActor)
-		}},
-		{"A to B", func(a *authorityFixture, other string) {
-			a.send(http.MethodPatch, map[string]any{"compact_agent_id": other}, humanActor)
-		}},
+		{"clear", func(a *authorityFixture, _ string) { a.clearCompact() }},
+		{"A to B", func(a *authorityFixture, other string) { a.setCompact(other) }},
 		{"A to B to A", func(a *authorityFixture, other string) {
-			a.send(http.MethodPatch, map[string]any{"compact_agent_id": other}, humanActor)
-			a.send(http.MethodPatch, map[string]any{"compact_agent_id": a.dmAgent}, humanActor)
+			a.setCompact(other)
+			a.setCompact(a.dmAgent)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a := newAuthorityFixture(t)
-			a.seed(a.dmAgent) // A = the DM agent is the compaction agent
+			a.setCompact(a.dmAgent) // A = the DM agent is the compaction agent
 			task := a.task(a.dmAgent, "running", taskPurposeCompaction)
-			other := a.eligibleAgent("authority-other-agent")
+			other := eligibleAgent(t, "authority-other-agent")
 			tc.edit(a, other)
 			requireStatus(t, a.read(task), http.StatusForbidden, "")
 			requireStatus(t, a.compact(task), http.StatusForbidden, "")
@@ -272,7 +363,7 @@ func TestChatTaskAuthorityCompactionByDMAgentCannotContinue(t *testing.T) {
 // log means the task was allowed to act.
 func TestChatTaskAuthorityOtherSessionTargetLogsNoGrant(t *testing.T) {
 	a := newAuthorityFixture(t)
-	logs := captureLogs(t)
+	logs := captureJSONLogs(t)
 	task := a.task(a.compactAgent, "running", taskPurposeCompaction)
 	otherSession := dbfx.ChatSession(t, a.dmAgent)
 	req := withURLParam(withChatTestWorkspaceCtx(t, taskActorReq("/api/chat/sessions/"+otherSession+"/messages", task)), "sessionId", otherSession)
@@ -289,16 +380,52 @@ func TestChatTaskAuthorityOrdinaryDMTaskKeepsAccess(t *testing.T) {
 	task := a.task(a.dmAgent, "running", "")
 	for _, setting := range []string{a.compactAgent, a.dmAgent, ""} {
 		if setting == "" {
-			dbfx.Exec(t, `UPDATE workspace SET settings = settings - 'compact_agent_id' WHERE id = $1`, testWorkspaceID)
+			a.clearCompact()
 		} else {
-			a.seed(setting)
+			a.setCompact(setting)
 		}
 		requireStatus(t, a.read(task), http.StatusOK, "")
 	}
 	requireStatus(t, a.compact(task), http.StatusOK, "")
 
 	// The ordinary branch never admits a compaction agent's non-compaction task.
-	a.seed(a.compactAgent)
+	a.setCompact(a.compactAgent)
 	foreign := a.task(a.compactAgent, "running", "")
 	requireStatus(t, a.read(foreign), http.StatusForbidden, codeChatTaskAgentMismatch)
+}
+
+// The retired settings.compact_agent_id grants nothing: only
+// background_agents.compact does (CHE-2894 step 6 re-scope).
+func TestChatTaskAuthorityOldCompactAgentKeyGrantsNothing(t *testing.T) {
+	a := newAuthorityFixture(t)
+	a.clearCompact()
+	a.seedOldKey(a.compactAgent)
+	task := a.task(a.compactAgent, "running", taskPurposeCompaction)
+	requireStatus(t, a.read(task), http.StatusForbidden, codeCompactionAgentNotCurrent)
+	requireStatus(t, a.compact(task), http.StatusForbidden, codeCompactionAgentNotCurrent)
+}
+
+// Only the primary slot of background_agents.compact is the compaction agent;
+// a fallback agent is not (the fallback chain is a runner concern, SEC-1 rule 2).
+func TestChatTaskAuthorityFallbackSlotGrantsNothing(t *testing.T) {
+	a := newAuthorityFixture(t)
+	fallback := eligibleAgent(t, "authority-fallback-agent")
+	putBG(t, testWorkspaceID, map[string]any{"compact": map[string]any{"agent_id": a.compactAgent, "fallback_agent_id": fallback}}, nil).Want(http.StatusOK)
+	task := a.task(fallback, "running", taskPurposeCompaction)
+	requireStatus(t, a.read(task), http.StatusForbidden, codeCompactionAgentNotCurrent)
+}
+
+// Production marks a compaction run with MarkChatTaskCompact; it must stamp the
+// purpose the authority keys on, or real compaction tasks take the ordinary
+// (DM-agent equality) branch.
+func TestMarkChatTaskCompactStampsCompactionPurpose(t *testing.T) {
+	a := newAuthorityFixture(t)
+	task := a.task(a.compactAgent, "running", "")
+	got, err := testHandler.Queries.MarkChatTaskCompact(context.Background(), db.MarkChatTaskCompactParams{ID: parseUUID(task)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TaskKind.String != "compact" || !got.Purpose.Valid || got.Purpose.String != taskPurposeCompaction {
+		t.Fatalf("task_kind=%+v purpose=%+v, want compact/%s", got.TaskKind, got.Purpose, taskPurposeCompaction)
+	}
 }

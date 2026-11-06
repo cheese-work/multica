@@ -28,6 +28,8 @@ import {
   DashboardUsageDailyListSchema,
   ChatDraftRestoresResponseSchema,
   ChatPendingTaskSchema,
+  ChatMessageSchema,
+  ChatSupplementSchema,
   ChatSessionListSchema,
   ChatSessionSchema,
   PrioritizeQueuedChatTaskResponseSchema,
@@ -67,7 +69,7 @@ import {
   EMPTY_PLUGIN_INSTALLATION_LIST,
   EMPTY_PLUGIN_PREVIEW,
 } from "./schemas";
-import { IssueViewSchema, IssueViewListSchema } from "./schemas";
+import { IssueViewSchema, IssueViewListSchema, AgentDecisionSettingSchema } from "./schemas";
 import {
   ListIssueStatusesResponseSchema,
   IssueStatusEntrySchema,
@@ -167,6 +169,8 @@ describe("ChatSessionSchema", () => {
   });
 
   it("drops one malformed list item without hiding the other Chats", () => {
+    const latestMessageId = "00000000-0000-4000-8000-000000000002";
+    const latestMessageTaskId = "00000000-0000-4000-8000-000000000003";
     const parsed = ChatSessionListSchema.parse([
       baseSession,
       { ...baseSession, id: 42 },
@@ -174,6 +178,8 @@ describe("ChatSessionSchema", () => {
         ...baseSession,
         id: "onboarding-chat",
         last_message: {
+          id: latestMessageId,
+          task_id: latestMessageTaskId,
           content: "Welcome",
           role: "assistant",
           created_at: "2026-08-18T00:00:00Z",
@@ -184,6 +190,8 @@ describe("ChatSessionSchema", () => {
 
     expect(parsed.map((session) => session.id)).toEqual(["chat-1", "onboarding-chat"]);
     expect(parsed[1]?.last_message?.message_kind).toBe("onboarding_opening");
+    expect(parsed[1]?.last_message?.id).toBe(latestMessageId);
+    expect(parsed[1]?.last_message?.task_id).toBe(latestMessageTaskId);
   });
 });
 describe("IssueSchema (via ListIssuesResponseSchema)", () => {
@@ -2483,6 +2491,64 @@ describe("AgentActivityBucketListSchema duration", () => {
   });
 });
 
+// CHE-2820: the server steers a DM follow-up into the running task and keeps a
+// delivery receipt. A malformed or future receipt must degrade to the queue
+// state, never crash the transcript or read as delivered.
+describe("chat supplement receipts", () => {
+  const receipt = {
+    message_id: "m1",
+    chat_session_id: "s1",
+    task_id: "t1",
+    status: "delivered",
+    failure_reason: null,
+    delivered_at: "2026-11-01T00:00:00Z",
+    acked_after_resend_at: null,
+    resent_task_id: null,
+  };
+
+  it("parses a receipt on a chat message", () => {
+    const msg = ChatMessageSchema.parse({
+      id: "m1", chat_session_id: "s1", role: "user", content: "hi", supplement: receipt,
+    });
+    expect(msg.supplement).toMatchObject({ status: "delivered", delivered_at: "2026-11-01T00:00:00Z" });
+  });
+
+  it.each(["pending", "delivering", "delivered", "uncertain", "failed"])("keeps status %s", (status) => {
+    expect(ChatSupplementSchema.parse({ ...receipt, status }).status).toBe(status);
+  });
+
+  it("treats an unknown status as uncertain, never delivered or failed", () => {
+    expect(ChatSupplementSchema.parse({ ...receipt, status: "teleported" }).status).toBe("uncertain");
+  });
+
+  it("drops a malformed receipt without losing the message", () => {
+    const msg = ChatMessageSchema.parse({
+      id: "m1", chat_session_id: "s1", role: "user", content: "hi", supplement: "nope",
+    });
+    expect(msg.content).toBe("hi");
+    expect(msg.supplement).toBeUndefined();
+  });
+
+  it("is absent on messages from older servers", () => {
+    const msg = ChatMessageSchema.parse({ id: "m1", chat_session_id: "s1", role: "user", content: "hi" });
+    expect(msg.supplement).toBeUndefined();
+  });
+});
+
+describe("ChatPendingTaskSchema head_supplement", () => {
+  it.each(["capable", "starting", "unsupported"])("keeps %s", (value) => {
+    expect(ChatPendingTaskSchema.parse({ task_id: "t", head_supplement: value }).head_supplement).toBe(value);
+  });
+
+  it("is absent on an older server", () => {
+    expect(ChatPendingTaskSchema.parse({ task_id: "t" }).head_supplement).toBeUndefined();
+  });
+
+  it("maps an unknown value to unsupported so Steer never fires on a guess", () => {
+    expect(ChatPendingTaskSchema.parse({ task_id: "t", head_supplement: "maybe" }).head_supplement).toBe("unsupported");
+  });
+});
+
 describe("CommentPreviewSchema", () => {
   it("defaults optional text fields and requires ids", async () => {
     const { CommentPreviewSchema } = await import("./schemas");
@@ -2495,5 +2561,26 @@ describe("CommentPreviewSchema", () => {
     expect(ok.author_name).toBe("");
     expect(ok.preview).toBe("");
     expect(CommentPreviewSchema.safeParse({ comment_id: "c" }).success).toBe(false);
+  });
+});
+
+describe("AgentDecisionSettingSchema", () => {
+  it("keeps enabled and the stop reason, and ignores the rest of the brief", () => {
+    const parsed = AgentDecisionSettingSchema.parse({
+      enabled: false,
+      stopped: { reason: "excluded category", at: "2026-11-02T00:00:00Z" },
+      decisions: [],
+    });
+    expect(parsed.enabled).toBe(false);
+    expect(parsed.stopped).toEqual({ reason: "excluded category" });
+  });
+
+  it("reads a missing or null stop record as no stop", () => {
+    expect(AgentDecisionSettingSchema.parse({ enabled: true }).stopped).toBeNull();
+    expect(AgentDecisionSettingSchema.parse({ enabled: true, stopped: null }).stopped).toBeNull();
+  });
+
+  it("falls back to null when enabled is missing instead of guessing a value", () => {
+    expect(parseWithFallback({}, AgentDecisionSettingSchema, null, { endpoint: "t" })).toBeNull();
   });
 });

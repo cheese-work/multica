@@ -54,7 +54,7 @@ export function MentionView({ node }: NodeViewProps) {
 
   return (
     <NodeViewWrapper as="span" className="inline">
-      <span className="mention">@{label ?? id}</span>
+      <span className="mention" data-mention-id={id}>@{label ?? id}</span>
     </NodeViewWrapper>
   );
 }

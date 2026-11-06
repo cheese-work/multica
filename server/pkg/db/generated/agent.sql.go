@@ -2811,6 +2811,25 @@ func (q *Queries) CompleteAgentTask(ctx context.Context, arg CompleteAgentTaskPa
 	return i, err
 }
 
+const countChangesVerdictsForPR = `-- name: CountChangesVerdictsForPR :one
+SELECT count(*) FROM activity_log
+WHERE issue_id = $1 AND action = 'review_changes_requested'
+  AND COALESCE(details->>'pull_request_id', '') = $2::text
+`
+
+type CountChangesVerdictsForPRParams struct {
+	IssueID       pgtype.UUID `json:"issue_id"`
+	PullRequestID string      `json:"pull_request_id"`
+}
+
+// Changes-requested rounds of one PR lineage; a replacement PR starts at zero.
+func (q *Queries) CountChangesVerdictsForPR(ctx context.Context, arg CountChangesVerdictsForPRParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countChangesVerdictsForPR, arg.IssueID, arg.PullRequestID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countDelegatedFailureRecoveryTasks = `-- name: CountDelegatedFailureRecoveryTasks :one
 SELECT count(*)
 FROM agent_task_queue
@@ -6101,6 +6120,34 @@ func (q *Queries) HasActiveTaskForIssueAndAgentInThread(ctx context.Context, arg
 	return has_active, err
 }
 
+const hasPendingAssignmentTaskForAgent = `-- name: HasPendingAssignmentTaskForAgent :one
+SELECT EXISTS (
+  SELECT 1 FROM agent_task_queue
+  WHERE issue_id = $1 AND agent_id = $2
+    AND comment_thread_id IS NULL
+    AND (
+      status IN ('queued', 'dispatched')
+      OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+    )
+)
+`
+
+type HasPendingAssignmentTaskForAgentParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+}
+
+// Whether the agent holds the issue's assignment-level pending slot: exactly
+// the rows idx_one_pending_task_per_issue_agent_thread keeps one of. A caller
+// inside a transaction checks it before the insert, because the unique
+// violation would abort the transaction.
+func (q *Queries) HasPendingAssignmentTaskForAgent(ctx context.Context, arg HasPendingAssignmentTaskForAgentParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasPendingAssignmentTaskForAgent, arg.IssueID, arg.AgentID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const hasPendingIssueTaskForAgent = `-- name: HasPendingIssueTaskForAgent :one
 SELECT EXISTS (
   SELECT 1 FROM agent_task_queue
@@ -6536,6 +6583,25 @@ func (q *Queries) IsTaskSessionRetired(ctx context.Context, arg IsTaskSessionRet
 	var retired bool
 	err := row.Scan(&retired)
 	return retired, err
+}
+
+const lastVerdictHeadSHA = `-- name: LastVerdictHeadSHA :one
+SELECT COALESCE((
+  SELECT details->>'head_sha' FROM activity_log
+  WHERE issue_id = $1 AND action IN ('review_changes_requested', 'review_passed')
+  ORDER BY created_at DESC, id DESC LIMIT 1
+), '')::text AS head_sha
+`
+
+// PR head of the issue's latest review verdict, PASS or CHANGES (CHE-3243): a
+// review dispatched for that head, with nothing pushed since, would only repeat
+// it. Earlier verdicts do not count: a head the PR returned to was not looked
+// at since.
+func (q *Queries) LastVerdictHeadSHA(ctx context.Context, issueID pgtype.UUID) (string, error) {
+	row := q.db.QueryRow(ctx, lastVerdictHeadSHA, issueID)
+	var head_sha string
+	err := row.Scan(&head_sha)
+	return head_sha, err
 }
 
 const linkTaskToIssue = `-- name: LinkTaskToIssue :exec
@@ -8818,6 +8884,61 @@ type LockAgentForAutopilotAssignmentParams struct {
 //     rejects the active Autopilot.
 func (q *Queries) LockAgentForAutopilotAssignment(ctx context.Context, arg LockAgentForAutopilotAssignmentParams) (Agent, error) {
 	row := q.db.QueryRow(ctx, lockAgentForAutopilotAssignment, arg.ID, arg.WorkspaceID)
+	var i Agent
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.AvatarUrl,
+		&i.RuntimeMode,
+		&i.RuntimeConfig,
+		&i.Visibility,
+		&i.Status,
+		&i.MaxConcurrentTasks,
+		&i.OwnerID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Description,
+		&i.RuntimeID,
+		&i.Instructions,
+		&i.ArchivedAt,
+		&i.ArchivedBy,
+		&i.CustomEnv,
+		&i.CustomArgs,
+		&i.McpConfig,
+		&i.Model,
+		&i.ThinkingLevel,
+		&i.ComposioToolkitAllowlist,
+		&i.PermissionMode,
+		&i.Kind,
+		&i.SystemKey,
+		&i.DisabledRuntimeSkills,
+		&i.ServiceTier,
+		&i.ConversationStarters,
+		&i.CustomEnvVersion,
+		&i.SchedulingPausedAt,
+		&i.SchedulingPausedBy,
+	)
+	return i, err
+}
+
+const lockAgentInWorkspaceShared = `-- name: LockAgentInWorkspaceShared :one
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, custom_env_version, scheduling_paused_at, scheduling_paused_by FROM agent
+WHERE id = $1 AND workspace_id = $2 AND kind = 'user'
+FOR SHARE
+`
+
+type LockAgentInWorkspaceSharedParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Pins an agent's visibility, runtime and archived_at for the rest of the
+// transaction: a concurrent archive or update waits for the commit. Used by the
+// background-agents write so its eligibility check and its settings write
+// commit together.
+func (q *Queries) LockAgentInWorkspaceShared(ctx context.Context, arg LockAgentInWorkspaceSharedParams) (Agent, error) {
+	row := q.db.QueryRow(ctx, lockAgentInWorkspaceShared, arg.ID, arg.WorkspaceID)
 	var i Agent
 	err := row.Scan(
 		&i.ID,

@@ -108,6 +108,10 @@ type WorkspaceResponse struct {
 	AvatarURL   *string `json:"avatar_url"`
 	CreatedAt   string  `json:"created_at"`
 	UpdatedAt   string  `json:"updated_at"`
+	// SchedulingPausedAt / SchedulingPausedBy are set while an owner or admin
+	// holds claims for every agent in the workspace. Both null when scheduling runs.
+	SchedulingPausedAt *string `json:"scheduling_paused_at"`
+	SchedulingPausedBy *string `json:"scheduling_paused_by"`
 }
 
 func (h *Handler) workspaceToResponse(w db.Workspace) WorkspaceResponse {
@@ -137,6 +141,9 @@ func (h *Handler) workspaceToResponse(w db.Workspace) WorkspaceResponse {
 		AvatarURL:   h.resolveAvatarURLPtr(textToPtr(w.AvatarUrl)),
 		CreatedAt:   timestampToString(w.CreatedAt),
 		UpdatedAt:   timestampToString(w.UpdatedAt),
+
+		SchedulingPausedAt: timestampToPtr(w.SchedulingPausedAt),
+		SchedulingPausedBy: uuidToPtr(w.SchedulingPausedBy),
 	}
 }
 
@@ -297,6 +304,13 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Orders this membership against the passkey gate checks, as the joins do.
+	if err := qtx.LockUserForMembershipChange(r.Context(), parseUUID(userID)); err != nil {
+		slog.Warn("lock owner failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to add owner")
+		return
+	}
+
 	_, err = qtx.CreateMember(r.Context(), db.CreateMemberParams{
 		WorkspaceID: ws.ID,
 		UserID:      parseUUID(userID),
@@ -363,10 +377,9 @@ type UpdateWorkspaceRequest struct {
 	// overwrite, absent fields keep their saved value, null resets to the
 	// defaults. Raw for the same reason as CompactPrompt.
 	AutoCompact json.RawMessage `json:"auto_compact"`
-	// CompactAgentID sets settings.compact_agent_id alone (CHE-2908); null
-	// resets it. Raw so an explicit null is distinguishable from an absent key.
-	// Human owner or admin only: see workspace_compact_agent.go.
-	CompactAgentID json.RawMessage `json:"compact_agent_id"`
+	// IdleStartedGuard patches settings.idle_started_guard alone (CHE-3296):
+	// named fields overwrite, absent fields keep their saved value. Owner only.
+	IdleStartedGuard json.RawMessage `json:"idle_started_guard"`
 	// GitHubReviewMembers and GitHubReviewAuthors each replace one settings
 	// map alone (CHE-2269); validateGitHubReviewMapping checks the entries.
 	GitHubReviewMembers json.RawMessage `json:"github_review_members"`
@@ -533,7 +546,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	if req.Settings != nil {
 		// What depends on the stored settings (the pause guard, the PR merge
 		// switch) is decided under the workspace row lock in saveWorkspace.
-		if err := validateCompactConfig(req.Settings); err != nil {
+		if err := errors.Join(validateCompactConfig(req.Settings), validateAskGuardSetting(req.Settings)); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -573,6 +586,17 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		} else {
 			params.AutoCompact = req.AutoCompact
 		}
+	}
+	if req.IdleStartedGuard != nil {
+		// The route admits admins; this switch is the owner's.
+		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {
+			return
+		}
+		if err := validateIdleGuardPatch(req.IdleStartedGuard); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		params.IdleStartedGuard = req.IdleStartedGuard
 	}
 	for _, mapping := range []struct {
 		field string
@@ -630,25 +654,14 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		params.AvatarUrl = pgtype.Text{String: accepted, Valid: true}
 	}
 
-	compact := compactAgentWrite{field: req.CompactAgentID}
-	if req.CompactAgentID != nil || req.Settings != nil {
-		// Defense in depth: the route already limits this to owner and admin,
-		// but a machine credential rides a human's X-User-ID.
-		if !isGovernedFieldMachineActor(r, actorType) {
-			if member, err := h.getWorkspaceMember(r.Context(), requestUserID(r), id); err == nil {
-				compact.allowed = roleAllowed(member.Role, "owner", "admin")
-			}
-		}
-	}
-	ws, pauseAction, activity, compactChange, err := h.saveWorkspace(r.Context(), params, req.Settings, req.WakeupsPaused, compact, requestUserID(r), actorType, actorID)
+	ws, pauseAction, activity, err := h.saveWorkspace(r.Context(), params, req.Settings, req.WakeupsPaused, requestUserID(r), actorType, actorID, isGovernedFieldMachineActor(r, actorType))
 	var rejected settingsRejectedError
-	if errors.As(err, &rejected) {
-		writeError(w, http.StatusBadRequest, rejected.Error())
+	if errors.Is(err, errBackgroundAgentsHumanOnly) {
+		writeBackgroundAgentsRefused(w)
 		return
 	}
-	var compactErr compactAgentError
-	if errors.As(err, &compactErr) {
-		writeErrorCode(w, compactErr.status, compactErr.code, compactErr.msg)
+	if errors.As(err, &rejected) {
+		writeError(w, http.StatusBadRequest, rejected.Error())
 		return
 	}
 	if err != nil {
@@ -661,7 +674,6 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	if pauseAction != "" {
 		h.publishWakeupsPauseActivity(ws, actorType, actorID, activity)
 	}
-	h.publishCompactAgentChange(r.Context(), id, actorType, actorID, compactChange)
 	userID := requestUserID(r)
 	h.publish(protocol.EventWorkspaceUpdated, uuidToString(ws.ID), "member", userID, map[string]any{"workspace": h.workspaceToResponse(ws)})
 	// A rename changes what daemons display; a settings edit changes how they
@@ -1427,6 +1439,10 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 				}
 				return qtx.PrepareSeatCapacityMemberReleasesForWorkspaceDeletion(ctx, requester.WorkspaceID)
 			},
+		},
+		{
+			name: "delete dm progress follows",
+			run:  func() error { return qtx.DeleteDMProgressByWorkspace(ctx, requester.WorkspaceID) },
 		},
 		{
 			name: "delete chat pins",
