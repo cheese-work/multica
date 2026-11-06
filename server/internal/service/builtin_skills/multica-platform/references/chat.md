@@ -52,8 +52,10 @@ multica chat mark-unseen <session-id>    # moves the read cursor so the DM shows
 ```
 
 `mark-unseen` is creator-only and a no-op when the DM has no assistant
-message. `unseen` lists from the DM list endpoint, which needs an interactive
-sign-in; a task or PAT token gets a 403.
+message. `unseen` lists your own DMs through the DM list endpoint. It works
+with an interactive sign-in, a PAT or a CLI sign-in and returns metadata only
+(no message preview). A task token gets a 403. `multica chat sessions` rows
+also carry `unseen` (JSON) and an `UNSEEN` column (table).
 
 ## Schedule a wakeup in this DM
 
