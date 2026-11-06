@@ -10,7 +10,7 @@ import {
   decisionAnswerDraftKey,
   useDecisionAnswerDraftStore,
 } from "@multica/core/issues/stores/decision-answer-draft-store";
-import { usePersistedDraft } from "@multica/core/drafts";
+import { setUploadCancelledNotice, usePersistedDraft, useUploadCancelledNotice } from "@multica/core/drafts";
 import { chatKeys } from "@multica/core/chat/queries";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { formatShortcut, useShortcut } from "@multica/core/shortcuts";
@@ -68,8 +68,6 @@ function DecisionAnswerForm({
   // Uploads started here and still running. Leaving the card cancels them (Cheese decision,
   // CHE-3521): nothing is filed into the draft later, so no late write can outlive the card.
   const uploads = useRef(new Set<AbortController>());
-  const keepNotice = useRef(onDraftChange);
-  keepNotice.current = onDraftChange;
   // The editor's unmount flush (the last note edit) is applied. What it reports after that, such as
   // the placeholder of a cancelled upload going away, is dropped. The flush runs synchronously
   // in this unmount; the microtask flips `closed` before any async report can arrive.
@@ -82,9 +80,10 @@ function DecisionAnswerForm({
       if (running.size === 0) return;
       running.forEach((controller) => controller.abort());
       running.clear();
-      keepNotice.current({ uploadCancelled: true });
+      // In memory only: a storage write here could bring back a draft another tab just cleared.
+      setUploadCancelledNotice(draftKey, true);
     };
-  }, []);
+  }, [draftKey]);
   const onEditorUpdate = (next: string) => { if (!closed.current) setText(next); };
   const setOption = (next: string) => onDraftChange({ option: next });
   const setText = (next: string) => {
@@ -96,10 +95,11 @@ function DecisionAnswerForm({
   const editorRef = useRef<ContentEditorRef>(null);
   const uploadGate = useUploadGate(editorRef);
   const { uploadWithToast } = useEditorUpload();
+  const uploadCancelled = useUploadCancelledNotice(draftKey);
   const uploadFile = async (file: File) => {
     const controller = new AbortController();
     uploads.current.add(controller);
-    if (draft.uploadCancelled) onDraftChange({ uploadCancelled: false });
+    setUploadCancelledNotice(draftKey, false);
     try {
       return await uploadWithToast(file, { issueId: card.issue_id, signal: controller.signal });
     } finally {
@@ -191,7 +191,7 @@ function DecisionAnswerForm({
       <p id={`${textId}-hint`} className="text-caption text-muted-foreground">
         {t(($) => $.decision.answer_hint, { shortcut: sendShortcut })}
       </p>
-      {draft.uploadCancelled && <p role="status" className="text-caption text-destructive">{t(($) => $.decision.answer_upload_cancelled)}</p>}
+      {uploadCancelled && <p role="status" className="text-caption text-destructive">{t(($) => $.decision.answer_upload_cancelled)}</p>}
       {tooLong && <p role="alert" className="text-caption text-destructive">{t(($) => $.decision.answer_too_long)}</p>}
       <div className="flex flex-wrap items-center gap-2">
         <Button type="submit" size="sm" disabled={!canSend} className="disabled:opacity-70">
@@ -286,6 +286,7 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
       .mutateAsync({ requestId: card.id, option: draft.option || undefined, text: text.trim() || undefined })
       .then(() => {
         clearDraft();
+        setUploadCancelledNotice(decisionAnswerDraftKey(card.id), false);
         setFormKey((key) => key + 1);
       })
       .catch((error: unknown) => {
@@ -294,6 +295,7 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
   };
   const discardDraft = () => {
     clearDraft();
+    setUploadCancelledNotice(decisionAnswerDraftKey(card.id), false);
     setRefused(false);
   };
 

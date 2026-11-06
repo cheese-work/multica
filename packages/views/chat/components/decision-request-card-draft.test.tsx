@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@multica/core/api";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
+import { setCurrentWorkspace } from "@multica/core/platform";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderWithI18n } from "../../test/i18n";
 import { useDecisionAnswerDraftStore } from "@multica/core/issues/stores/decision-answer-draft-store";
@@ -275,6 +276,29 @@ describe("decision card draft survives remount", () => {
     await settle();
     expect(window.localStorage.getItem("multica_decision_answer_drafts")).toBeNull();
     expect(stored("left-logout")).toBeUndefined();
+  });
+
+  const draftKeys = () => Object.keys(window.localStorage).filter((k) => k.startsWith("multica_decision_answer_drafts"));
+
+  it("another tab logged out: unmounting an uploading card writes nothing back to shared storage", async () => {
+    setCurrentWorkspace("acme", "ws-a");
+    await act(async () => { await Promise.resolve(); });
+    const { first } = await startUpload("xtab");
+    // The typed note is stored already, so the unmount flush has nothing left to write.
+    await vi.waitFor(() => expect(stored("xtab")?.text).toBe("see"), { timeout: 2000 });
+    expect(draftKeys().length).toBeGreaterThan(0);
+    // Tab B logs out and clears shared storage; this tab has not heard of it yet.
+    draftKeys().forEach((k) => window.localStorage.removeItem(k));
+    first.unmount();
+    expect(draftKeys()).toEqual([]);
+  });
+
+  it("logout clears the cancel notice", async () => {
+    const { first } = await startUpload("notice-logout");
+    first.unmount();
+    resetAllRegisteredDrafts();
+    renderWithI18n(chat(card("notice-logout")));
+    expect(screen.queryByText(NOTICE)).toBeNull();
   });
 
   it("Discard draft removes the notice", async () => {
