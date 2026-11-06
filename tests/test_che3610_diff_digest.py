@@ -82,7 +82,7 @@ class DiffDigestTest(unittest.TestCase):
 
     def test_digest_is_sha256_of_the_full_diff_with_blob_hashes(self):
         self.assertRegex(self.d1, r"^[0-9a-f]{64}$")
-        out = subprocess.run(["git", "-C", self.tmp.name, "diff", "--full-index", "--no-color", self.base, self.h1],
+        out = subprocess.run(["git", "-C", self.tmp.name, "diff", "--raw", "--patch", "--full-index", "--no-color", self.base, self.h1],
                              capture_output=True, text=True, check=True).stdout
         self.assertIn("index ", out)  # the blob-hash line is part of what is hashed
         self.assertEqual(self.d1, sg.hashlib.sha256(out.encode()).hexdigest())
@@ -102,6 +102,18 @@ class DiffDigestTest(unittest.TestCase):
         m = self.advance_main("pr.txt", "".join(f"l{i}\n" for i in range(1, 10)) + "main\n")
         h2 = self.merge_main()
         self.assertNotEqual(self.r.digest(m, h2), self.d1)
+
+    def test_merge_from_main_that_edits_a_mode_only_pr_file_changes_the_digest(self):
+        # a mode-only change has no `index` line in the patch, so the blob ids must come from somewhere else
+        (Path(self.tmp.name) / "other.txt").chmod(0o755)
+        h1 = self.r.commit("mode only")
+        d1 = self.r.digest(self.base, h1)
+        self.r.git("checkout", "-q", "main")
+        self.r.write("other.txt", "o2\n")
+        m = self.r.commit("main edits other")
+        self.r.git("checkout", "-q", "pr")
+        h2 = self.merge_main()
+        self.assertNotEqual(self.r.digest(m, h2), d1)
 
     def test_pass_survives_only_while_the_digest_matches(self):
         c = [{"id": 1, "author_id": BOT, "body": verdict(self.h1, self.d1), "updated_at": "2026-11-04T16:50:00Z"}]

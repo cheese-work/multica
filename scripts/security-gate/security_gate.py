@@ -64,14 +64,17 @@ SECRET_RES = [re.compile(p) for p in (
 
 def pr_diff_digest(repo: str, base: str, head: str) -> str:
     """SHA-256 of the full `git diff <merge-base> <head>` over the files the PR changes, `index` lines (blob hashes)
-    included and headers unstripped. A merge from the default branch that changes a PR file moves the merge-base blob
-    on the `-` side, so it changes the digest too."""
+    included and headers unstripped. `--raw` adds both blob ids and modes for every path: a mode-only change has no
+    `index` line in the patch, so without it a main-branch edit to that file would not move the digest.
+    A merge from the default branch that changes a PR file moves the merge-base blob on the `-` side, so it changes
+    the digest too."""
     def git(*a: str) -> str:  # surrogateescape: non-UTF-8 file bytes round-trip, so they still hash
         return subprocess.run(["git", "--literal-pathspecs", "-C", repo, *a], check=True, capture_output=True,
                               text=True, errors="surrogateescape").stdout
     mb = git("merge-base", base, head).strip()
     names = [n for n in git("diff", "--name-only", "-z", "--no-renames", mb, head).split("\0") if n]
-    full = git("diff", "--full-index", "--no-color", "--no-ext-diff", "--no-renames", mb, head, "--", *names)
+    full = git("diff", "--raw", "--patch", "--full-index", "--no-color", "--no-ext-diff", "--no-renames", mb, head,
+               "--", *names)
     return hashlib.sha256(full.encode("utf-8", "surrogateescape")).hexdigest()
 
 
