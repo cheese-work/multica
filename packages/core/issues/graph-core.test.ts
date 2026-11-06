@@ -45,6 +45,15 @@ describe("buildGraph retarget", () => {
     expect(g.edges.map((e) => `${e.source}>${e.target}`)).toEqual(["b1>a"]);
   });
 
+  it("keeps the inside flag when a retargeted edge merges with an ordinary one, in any input order", () => {
+    const direct = edge("b1", "a");
+    const viaChild = edge("b1", "a1");
+    for (const edges of [[direct, viaChild], [viaChild, direct]]) {
+      const g = buildGraph({ nodes: tree, edges, collapsed: new Set(["a"]) });
+      expect(g.edges).toMatchObject([{ source: "b1", target: "a", targetInside: true }]);
+    }
+  });
+
   it("uses the nearest visible ancestor under nested collapse", () => {
     const nested = [...tree, node("a11", "a1")];
     const g = buildGraph({ nodes: nested, edges: [edge("b1", "a11")], collapsed: new Set(["a", "a1"]) });

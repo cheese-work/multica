@@ -88,8 +88,7 @@ export function buildGraph({ nodes, edges, collapsed = new Set(), notLoaded = ne
     return at;
   };
 
-  const seen = new Set<string>();
-  const viewEdges: ViewEdge[] = [];
+  const merged = new Map<string, ViewEdge>();
   for (const e of edges) {
     const sourceState = stateOf(e.source);
     const targetState = stateOf(e.target);
@@ -99,10 +98,13 @@ export function buildGraph({ nodes, edges, collapsed = new Set(), notLoaded = ne
     const target = targetInside ? visibleAncestor(e.target) : e.target;
     if (source === target) continue; // inside one collapsed group
     const key = `${e.type}\0${source}\0${target}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    viewEdges.push({ type: e.type, source, target, sourceState, targetState, sourceInside, targetInside });
+    const prior = merged.get(key);
+    // Merged edges keep an inside flag from any of them, so input order never changes the indicator.
+    merged.set(key, prior
+      ? { ...prior, sourceInside: prior.sourceInside || sourceInside, targetInside: prior.targetInside || targetInside }
+      : { type: e.type, source, target, sourceState, targetState, sourceInside, targetInside });
   }
+  const viewEdges = [...merged.values()];
 
   return { roots, visible, hidden, edges: viewEdges, isLeaf: (id) => !children.has(id) };
 }
