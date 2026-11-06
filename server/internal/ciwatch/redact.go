@@ -26,7 +26,11 @@ var (
 	keyMarker = regexp.MustCompile(`-----(BEGIN|END) ([A-Z0-9 ]*KEY[A-Z0-9 ]*)-----`)
 
 	// URL credentials go first so a token inside them is covered as well.
-	urlCreds   = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)[^\s/@]+@`)
+	urlCreds = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)[^\s/@]+@`)
+	// A quoted value after a credential-like key, in JSON, a Python/YAML dict or
+	// JSON escaped inside a string. The shared generic rule needs the separator
+	// right after the key, so it misses a closing quote on the key.
+	quotedCred = regexp.MustCompile(`(?i)(\b[a-z0-9_.-]*(?:password|passwd|secret|token|api[_-]?key|private[_-]?key|credential)[a-z0-9_.-]*\\?["']?\s*[:=]\s*)(?:\\"(?:[^"\\]|\\[^"])*\\"|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')`)
 	tokenShape = regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b|\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*`)
 	bearer     = regexp.MustCompile(`(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]{8,}`)
 )
@@ -35,6 +39,7 @@ func redactTokens(s string) string {
 	// URL credentials first: a provider-shaped username replaced by a
 	// placeholder with spaces would otherwise break this match and leave the password.
 	s = urlCreds.ReplaceAllString(s, "${1}"+tokenPlaceholer+"@")
+	s = quotedCred.ReplaceAllString(s, "${1}"+`"`+tokenPlaceholer+`"`)
 	s = sharedredact.Text(s)
 	s = tokenShape.ReplaceAllString(s, tokenPlaceholer)
 	return bearer.ReplaceAllString(s, "${1}"+tokenPlaceholer)

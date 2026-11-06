@@ -222,3 +222,41 @@ func TestRedactURLCredentialsWithProviderShapedUsername(t *testing.T) {
 		}
 	}
 }
+
+// Every key/value form a CI log can carry a credential in, for each key class.
+func TestRedactCredentialKeyValueForms(t *testing.T) {
+	const secret = "plantedVALUE42xyz"
+	forms := map[string]string{
+		"json":                  `{"%[1]s":"%[2]s"}`,
+		"json spaced":           `{"%[1]s": "%[2]s"}`,
+		"single quoted":         `'%[1]s': '%[2]s'`,
+		"bare colon":            `%[1]s: %[2]s`,
+		"bare equals":           `%[1]s=%[2]s`,
+		"inside longer json":    `{"id":7,"%[1]s":"%[2]s","ok":true,"name":"build"}`,
+		"escaped quote value":   `{"%[1]s":"head\"%[2]s\"tail"}`,
+		"json inside a string":  `msg="{\"%[1]s\":\"%[2]s\"}"`,
+		"value with spaces":     `{"%[1]s":"%[2]s and more"}`,
+		"quoted bare colon":     `%[1]s: "%[2]s and more"`,
+		"lower case key in url": `?%[1]s=%[2]s&x=1`,
+	}
+	keys := []string{"DB_PASSWORD", "API_KEY", "token", "secret"}
+	for name, form := range forms {
+		for _, key := range keys {
+			for _, oneByte := range []bool{false, true} {
+				in := "prefix line\n" + fmt.Sprintf(form, key, secret) + "\nsuffix line\n"
+				got := redact(t, in, oneByte)
+				noLeak(t, got, secret, "plantedVALUE", "and more", "tail")
+				if !strings.Contains(got, key) {
+					t.Errorf("%s/%s: key name must stay visible: %s", name, key, got)
+				}
+			}
+		}
+	}
+}
+
+func TestRedactKeepsHarmlessJSON(t *testing.T) {
+	in := `{"id":7,"name":"build","tokens_used":0,"ok":true}` + "\n"
+	if got := redact(t, in, false); got != strings.TrimSuffix(in, "\n") {
+		t.Errorf("harmless JSON changed: %s", got)
+	}
+}
