@@ -2716,6 +2716,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Post("/api/chat/continue", h.ContinueChatSession)
 			r.Post("/api/chat/compact", h.CompactChatSession)
 			// Agent-facing DM wakeups: the task token names the DM.
+			r.Post("/api/chat/outcome", h.PostChatOutcome)
 			r.Post("/api/chat/wakeups", h.CreateChatWakeup)
 			r.Get("/api/chat/wakeups", h.ListChatWakeups)
 			r.Delete("/api/chat/wakeups/{wakeupId}", h.CancelChatWakeup)

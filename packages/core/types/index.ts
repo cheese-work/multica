@@ -189,6 +189,8 @@ export {
 } from "./attachment-url";
 export type {
   ChatSession,
+  ChatStaleLevel,
+  ChatAttentionSource,
   ChatContinueResponse,
   ChatSessionUsage,
   ChatWakeup,

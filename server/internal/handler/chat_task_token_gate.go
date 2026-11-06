@@ -79,6 +79,7 @@ var chatRouteClasses = map[string]chatRouteClass{
 	"DELETE /api/chat/pinned-agents/{agentId}":                                   chatRouteWrite,
 	"POST /api/chat/continue":                                                    chatRouteWrite,
 	"POST /api/chat/compact":                                                     chatRouteWrite,
+	"POST /api/chat/outcome":                                                     chatRouteWrite,
 	"POST /api/chat/wakeups":                                                     chatRouteWrite,
 	"DELETE /api/chat/wakeups/{wakeupId}":                                        chatRouteWrite,
 	"POST /api/chat/fork":                                                        chatRouteWrite,

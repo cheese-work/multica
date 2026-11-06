@@ -102,7 +102,7 @@ var otherWriteFamilies = map[string]writeFamily{
 	"api/agents":                   {22, byWorkspace},
 	"api/auth":                     {2, byPublic},
 	"api/autopilots":               {12, byWorkspace},
-	"api/chat":                     {24, byOwnRow},
+	"api/chat":                     {25, byOwnRow},
 	"api/cli-token":                {1, byHuman},
 	"api/client-usage":             {1, byHuman},
 	"api/cloud-billing":            {2, byHuman},
