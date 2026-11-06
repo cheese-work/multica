@@ -41,13 +41,19 @@ type ObservationWriter interface {
 	CreateSystem1CIObservation(ctx context.Context, arg db.CreateSystem1CIObservationParams) (int64, error)
 }
 
+// LabelSetter applies an outcome label to the observation of run.
+type LabelSetter interface {
+	Set(ctx context.Context, run Run, label string) error
+}
+
 // Observer writes system1_observation rows (kind=ci_event, decision_source=rule).
 // The write is idempotent (unique index on the run's subject id), so call it on
 // every delivery: a retry after a failed write records the row, a redelivery adds none.
 type Observer struct {
 	W          ObservationWriter
-	Jev        Jev  // nil = off
-	JevEnabled bool // the jev_enabled switch
+	Labels     LabelSetter // nil = a P0 result's Label is not applied
+	Jev        Jev         // nil = off
+	JevEnabled bool        // the jev_enabled switch
 	Log        *slog.Logger
 }
 
@@ -80,6 +86,8 @@ func (o Observer) Observe(ctx context.Context, run Run, res Result, h History) e
 func (o Observer) Build(ctx context.Context, run Run, res Result, h History) (*db.CreateSystem1CIObservationParams, error) {
 	feats := map[string]any{
 		"workflow_path": run.WorkflowPath, "event": run.Event, "branch": run.HeadBranch, "conclusion": run.Conclusion,
+		// join keys for the outcome labeler
+		"repo": run.RepoOwner + "/" + run.RepoName, "run_id": run.RunID, "run_attempt": run.RunAttempt, "head_sha": run.HeadSHA,
 	}
 	var class, choice string
 	switch res.Kind {
