@@ -85,7 +85,11 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - run: bash scripts/setup-pnpm.sh
+      - name: Install pnpm from npm (no checkout script runs before the report is sealed)
+        run: |
+          version="$(node -p 'const v = require("./package.json").packageManager; if (!/^pnpm@\d+\.\d+\.\d+$/.test(v)) throw new Error("exact pnpm version required"); v.slice(5)')"
+          npm install --prefix "$RUNNER_TEMP/pnpm" "pnpm@$version"
+          echo "$RUNNER_TEMP/pnpm/node_modules/.bin" >> "$GITHUB_PATH"
       - name: Audit pnpm-lock.yaml
         # exit 1 = advisories found; the report must still parse and carry `advisories`
         run: |

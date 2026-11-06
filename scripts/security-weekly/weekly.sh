@@ -2,10 +2,12 @@
 # CHE-3701: Monday-brief step on X99. Unseal a weekly run, summarize against last week, plan and (unless --no-apply) file.
 # Usage (inside a cheese-work/multica checkout): weekly.sh <run-id> <assignee-id> <project-id> [--no-apply]
 # State (previous summary, work dirs) lives in $SECURITY_WEEKLY_STATE (default /mnt/ssd2/security-weekly), never in the repo.
+# Runs only from the trusted install (install-trusted.sh): the secret key is in reach, so no checkout-controlled script may run here.
 set -euo pipefail
 run="$1"; assignee="$2"; project="$3"; apply="${4:-}"
 here="$(cd "$(dirname "$0")" && pwd)"
 state="${SECURITY_WEEKLY_STATE:-/mnt/ssd2/security-weekly}"
+case "$here" in "$state"/trusted/*) ;; *) echo "weekly: $here is not the trusted install; run $state/trusted/current/weekly.sh (see install-trusted.sh)" >&2; exit 1 ;; esac
 work="$state/runs/$run"; rm -rf "$work"; mkdir -p "$work"
 bash "$here/unseal.sh" "$run" "$work/reports"
 sha="$(gh run view "$run" -R cheese-work/multica --json headSha --jq .headSha)"

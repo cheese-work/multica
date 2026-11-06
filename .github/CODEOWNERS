@@ -8,6 +8,5 @@
 /server/migrations/897_workspace_config_sync.*.sql        @congvc-dev
 
 # Weekly security scan (CHE-3701): reports are sealed to the X99 key; a swapped recipient would expose findings in public artifacts.
-/scripts/security-weekly/recipient.asc                    @congvc-dev
-/scripts/security-weekly/seal.sh                          @congvc-dev
+/scripts/security-weekly/                                 @congvc-dev
 /.github/workflows/security-weekly.yml                    @congvc-dev

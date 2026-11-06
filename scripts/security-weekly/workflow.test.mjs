@@ -122,7 +122,19 @@ test("seal pins the X99 key fingerprint, which matches the shipped recipient.asc
 
 test("CODEOWNERS makes the owner review any change to the recipient, the seal script or the workflow", () => {
   const owners = read(".github/CODEOWNERS");
-  for (const p of ["/scripts/security-weekly/recipient.asc", "/scripts/security-weekly/seal.sh", "/.github/workflows/security-weekly.yml"]) {
+  for (const p of ["/scripts/security-weekly/", "/.github/workflows/security-weekly.yml"]) {
     assert.match(owners, new RegExp(`^${p.replace(/[.]/g, "\\.")}\\s+@congvc-dev`, "m"), p);
   }
+});
+
+// Terra's FAIL on 8dfebb045: a merged change to any script the scheduled job runs before sealing could expose the plaintext report.
+test("the only checkout script a job runs is seal.sh (no setup-pnpm.sh: pnpm comes straight from npm)", () => {
+  const scripts = [...wf.matchAll(/\bbash (scripts\/[^\s]+)/g)].map((m) => m[1]);
+  assert.ok(scripts.length > 0);
+  for (const s of scripts) assert.equal(s, "scripts/security-weekly/seal.sh", s);
+  assert.match(wf, /npm install --prefix "\$RUNNER_TEMP\/pnpm" "pnpm@/);
+});
+
+test("CODEOWNERS routes the whole security-weekly toolchain to the owner", () => {
+  assert.match(read(".github/CODEOWNERS"), /^\/scripts\/security-weekly\/\s+@congvc-dev/m);
 });
