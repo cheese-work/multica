@@ -115,6 +115,25 @@ class DiffDigestTest(unittest.TestCase):
         h2 = self.merge_main()
         self.assertNotEqual(self.r.digest(m, h2), d1)
 
+    def test_editing_a_file_with_a_carriage_return_in_its_name_changes_the_digest(self):
+        # text-mode git output turns \r in a NUL-delimited name into \n, so the file silently left the digest
+        name = "a\rb.txt"
+        self.r.write(name, "one\n")
+        h1 = self.r.commit("add cr file")
+        d1 = self.r.digest(self.base, h1)
+        self.r.write(name, "two\n")
+        h2 = self.r.commit("edit cr file")
+        self.assertNotEqual(self.r.digest(self.base, h2), d1)
+
+    def test_later_digestless_fail_is_not_resurrected_by_a_head_with_the_same_digest(self):
+        fail = "\n".join(["Security-Gate-Verdict: FAIL", "Reviewer: x99-codex-sol (gpt-6.1-sol)",
+                          "Signed: x99-codex-sol, 2026-11-04 23:55 ICT", "Repo: cheese-work/multica", "PR: 918",
+                          "Base: main", f"SHA: {self.h1}", "Findings:", "- app.py:1 injects"])
+        c = [{"id": 1, "author_id": BOT, "body": verdict(self.h1, self.d1), "updated_at": "2026-11-04T16:50:00Z"},
+             {"id": 2, "author_id": BOT, "body": fail, "updated_at": "2026-11-04T16:55:00Z"}]
+        pr = {**PR, "head_sha": "e" * 40}
+        self.assertNotEqual(sg.evaluate(pr, c, {BOT}, DIFF, human_ids=set(), digest=self.d1)[0], "success")
+
     def test_pass_survives_only_while_the_digest_matches(self):
         c = [{"id": 1, "author_id": BOT, "body": verdict(self.h1, self.d1), "updated_at": "2026-11-04T16:50:00Z"}]
         pr = {**PR, "head_sha": "e" * 40}

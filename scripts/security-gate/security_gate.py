@@ -68,14 +68,13 @@ def pr_diff_digest(repo: str, base: str, head: str) -> str:
     `index` line in the patch, so without it a main-branch edit to that file would not move the digest.
     A merge from the default branch that changes a PR file moves the merge-base blob on the `-` side, so it changes
     the digest too."""
-    def git(*a: str) -> str:  # surrogateescape: non-UTF-8 file bytes round-trip, so they still hash
-        return subprocess.run(["git", "--literal-pathspecs", "-C", repo, *a], check=True, capture_output=True,
-                              text=True, errors="surrogateescape").stdout
-    mb = git("merge-base", base, head).strip()
-    names = [n for n in git("diff", "--name-only", "-z", "--no-renames", mb, head).split("\0") if n]
+    def git(*a: str) -> bytes:  # raw bytes: text mode would turn a \r in a file name into \n and drop the file
+        return subprocess.run(["git", "--literal-pathspecs", "-C", repo, *a], check=True, capture_output=True).stdout
+    mb = git("merge-base", base, head).decode().strip()
+    names = [n for n in git("diff", "--name-only", "-z", "--no-renames", mb, head).split(b"\0") if n]
     full = git("diff", "--raw", "--patch", "--full-index", "--no-color", "--no-ext-diff", "--no-renames", mb, head,
                "--", *names)
-    return hashlib.sha256(full.encode("utf-8", "surrogateescape")).hexdigest()
+    return hashlib.sha256(full).hexdigest()
 
 
 def lab_of(name: str) -> str | None:
@@ -256,13 +255,14 @@ def evaluate(pr: dict, comments: list[dict], trusted_ids: set[int], diff_text: s
             if err:
                 why.append(err)
             continue
-        if v["sha"] != head and not (digest and v["digest"] == digest):
-            why.append(f"verdict is for {v['sha'][:12]}, head is {head[:12]}")
-            continue
         if (v["repo"], v["pr"], v["base"]) != (pr["repo"], pr["number"], pr["base_ref"]):
             why.append(f"verdict is for {v['repo']}#{v['pr']} into {v['base']}, not this PR")
             continue
-        latest[v["agent"]] = v
+        latest[v["agent"]] = v  # the newest verdict wins before the head check: a later FAIL must not be skipped
+    for agent, v in list(latest.items()):
+        if v["sha"] != head and not (digest and v["digest"] == digest):
+            why.append(f"verdict is for {v['sha'][:12]}, head is {head[:12]}")
+            del latest[agent]
     passes = []
     for agent, v in latest.items():
         lab = lab_of(agent)

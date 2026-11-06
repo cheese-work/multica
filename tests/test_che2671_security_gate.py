@@ -205,9 +205,9 @@ class WrapperTest(unittest.TestCase):
             return ""
 
         def fake_run(cmd, **kw):
-            if sibling_head in cmd[-1] and sibling_diff_error:
+            if sibling_head in os.fsdecode(cmd[-1]) and sibling_diff_error:
                 raise subprocess.CalledProcessError(128, cmd)  # fork head objects were never fetched
-            return subprocess.CompletedProcess(cmd, 0, stdout=CLEAN_DIFF)
+            return subprocess.CompletedProcess(cmd, 0, stdout=CLEAN_DIFF if kw.get("text") else CLEAN_DIFF.encode())
 
         argv = ["x", "--repo", str(ROOT), "--github", "cheese-work/multica-dotfiles", "--pr", "405",
                 "--default-branch", "main", "--post"]
@@ -387,7 +387,7 @@ class QueueRevocationTest(unittest.TestCase):
 
         argv = ["x", "--repo", str(ROOT), "--github", "cheese-work/multica", "--pr", "405",
                 "--default-branch", "main", "--post"]
-        fake_run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=CLEAN_DIFF)
+        fake_run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=CLEAN_DIFF if kw.get("text") else CLEAN_DIFF.encode())
         with mock.patch.object(sg, "_gh", fake_gh), mock.patch.object(sg.subprocess, "run", fake_run), \
                 mock.patch.object(sg.time, "sleep"), mock.patch("sys.argv", argv), mock.patch("builtins.print"):
             code = sg.main()
