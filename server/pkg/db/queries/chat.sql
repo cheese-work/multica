@@ -2318,6 +2318,12 @@ RETURNING *;
 -- reads the committed outcome of any change in flight.
 SELECT workspace_id FROM chat_session WHERE id = $1 FOR SHARE;
 
+-- name: LockedClockTimestamp :one
+-- CHE-2909: wall-clock time read while a settings write holds its locks. The
+-- activity row is stamped with it because now() is the transaction start, which
+-- can predate a task created and failed while the write waited for its locks.
+SELECT clock_timestamp()::timestamptz AS at;
+
 -- name: CompactChainChangedSince :one
 -- CHE-2909 (SEC-1 rule 4): true when the workspace's compact agent chain
 -- changed after a task was created. The change sweep cancels only live tasks,

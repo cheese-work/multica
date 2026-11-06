@@ -9,7 +9,9 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -522,4 +524,54 @@ func TestChatTaskAuthorityRetryAfterChainChangeIsRefused(t *testing.T) {
 			t.Fatalf("child=%v err=%v, want no retry after a chain change", child, err)
 		}
 	})
+}
+
+// afterBegin runs hook right after the transaction starts, so a test can order
+// other work between the settings transaction's start (now()) and its locks.
+type afterBegin struct {
+	txStarter
+	hook func()
+}
+
+func (s afterBegin) Begin(ctx context.Context) (pgx.Tx, error) {
+	tx, err := s.txStarter.Begin(ctx)
+	if err == nil {
+		s.hook()
+	}
+	return tx, err
+}
+
+// A settings transaction starts, then a compaction task is created and fails,
+// then the transaction takes its locks and commits a fallback-only change. The
+// change's ordering mark must come from when it holds the locks, not from
+// the transaction start, or the failed task retries into the new chain.
+func TestChatTaskAuthorityRetryAfterSlowSettingsTransactionIsRefused(t *testing.T) {
+	a := newAuthorityFixture(t)
+	var parent db.AgentTaskQueue
+	orig := testHandler.TxStarter
+	testHandler.TxStarter = afterBegin{orig, func() {
+		time.Sleep(20 * time.Millisecond)
+		id := dbfx.Task(t, a.compactAgent, testutil.Cols{
+			"runtime_id": handlerTestRuntimeID(t), "status": "failed", "chat_session_id": a.session,
+			"purpose": taskPurposeCompaction, "task_kind": "compact",
+			"failure_reason": "timeout", "attempt": 1, "max_attempts": 2,
+			"completed_at": testutil.Raw("now()"),
+		})
+		var err error
+		if parent, err = testHandler.Queries.GetAgentTask(context.Background(), parseUUID(id)); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}}
+	t.Cleanup(func() { testHandler.TxStarter = orig })
+
+	putBG(t, testWorkspaceID, map[string]any{"compact": map[string]any{
+		"agent_id": a.compactAgent, "fallback_agent_id": a.dmAgent,
+	}}, nil).Want(http.StatusOK)
+	testHandler.TxStarter = orig
+
+	child, err := testHandler.TaskService.MaybeRetryFailedTask(context.Background(), parent)
+	if err != nil || child != nil {
+		t.Fatalf("child=%v err=%v, want no retry after a change committed behind the failed task", child, err)
+	}
 }

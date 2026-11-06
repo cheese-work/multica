@@ -4417,6 +4417,20 @@ func (q *Queries) LockChatSessionsByWorkspace(ctx context.Context, workspaceID p
 	return items, nil
 }
 
+const lockedClockTimestamp = `-- name: LockedClockTimestamp :one
+SELECT clock_timestamp()::timestamptz AS at
+`
+
+// CHE-2909: wall-clock time read while a settings write holds its locks. The
+// activity row is stamped with it because now() is the transaction start, which
+// can predate a task created and failed while the write waited for its locks.
+func (q *Queries) LockedClockTimestamp(ctx context.Context) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, lockedClockTimestamp)
+	var at pgtype.Timestamptz
+	err := row.Scan(&at)
+	return at, err
+}
+
 const markChatSessionExplicitlyCreated = `-- name: MarkChatSessionExplicitlyCreated :one
 UPDATE chat_session
 SET explicitly_created_at = COALESCE(explicitly_created_at, now())
