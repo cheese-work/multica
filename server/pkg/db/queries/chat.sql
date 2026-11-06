@@ -2037,6 +2037,29 @@ JOIN chat_session cs ON cs.id = t.chat_session_id
 WHERE t.id = $1
 FOR UPDATE OF cs;
 
+-- name: LockChatSessionsByIDs :many
+-- Batch terminators lock the sessions of the chat tasks they are about to end.
+-- ORDER BY id keeps two batches from deadlocking against each other.
+SELECT id FROM chat_session
+WHERE id = ANY(@ids::uuid[])
+ORDER BY id
+FOR UPDATE;
+
+-- name: LockChatSessionsForActiveTasksByRuntimeOrAgent :many
+-- Session half of CancelAgentTasksByRuntimeOrAgent: the sessions of the chat
+-- tasks it is about to cancel, taken before it so the cancel follows the
+-- chat_session -> agent_task_queue order. ORDER BY id keeps two cancellers
+-- from deadlocking against each other.
+SELECT cs.id FROM chat_session cs
+WHERE EXISTS (
+    SELECT 1 FROM agent_task_queue task
+    WHERE task.chat_session_id = cs.id
+      AND (task.runtime_id = ANY(@runtime_ids::uuid[]) OR task.agent_id = ANY(@agent_ids::uuid[]))
+      AND task.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+)
+ORDER BY cs.id
+FOR UPDATE OF cs;
+
 -- name: LockChatSessionsByWorkspace :many
 -- ORDER BY id: a stable lock order keeps two concurrent deleters from
 -- deadlocking against each other.

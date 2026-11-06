@@ -3386,15 +3386,10 @@ func distinctAgentIDs(cancelled []db.AgentTaskQueue) []pgtype.UUID {
 //
 // Returns the cancelled rows so callers can report counts / log them.
 func (s *TaskService) CancelTasksForAgent(ctx context.Context, agentID pgtype.UUID) ([]db.AgentTaskQueue, error) {
-	var cancelled []db.AgentTaskQueue
-	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
-		var err error
-		cancelled, err = qtx.CancelAgentTasksByAgent(ctx, agentID)
-		if err != nil {
-			return err
-		}
-		return SettleTerminalTaskState(ctx, qtx, cancelled...)
-	}); err != nil {
+	cancelled, err := s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+		return qtx.CancelAgentTasksByAgent(ctx, agentID)
+	})
+	if err != nil {
 		return nil, err
 	}
 	for _, t := range cancelled {
@@ -7494,16 +7489,67 @@ func (s *TaskService) CancelTasksForArchivedAgent(ctx context.Context, agentID p
 	return cancelled, nil
 }
 
+// terminateTasksInTx ends a batch of tasks and settles them in one tx, holding the chat_session row
+// of every chat task in the batch first (chat_session -> agent_task_queue, the repo-wide order; see
+// lockChatSessionForTaskWrite). A report that reads a task's status under that session row, such as
+// RecordChatOutcome, then sees a status that cannot change until it commits.
+//
+// The batch UPDATE picks its own rows, so the sessions are only known after it ran. Each pass runs
+// it in a savepoint; if it touched chat sessions not yet held, the pass is rolled back (releasing
+// its task row locks), those sessions are locked in id order, and it runs again. Every pass that
+// repeats holds at least one more session, so the loop ends.
 func (s *TaskService) terminateTasksInTx(ctx context.Context, fail func(*db.Queries) ([]db.AgentTaskQueue, error)) ([]db.AgentTaskQueue, error) {
-	var failed []db.AgentTaskQueue
-	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
-		var err error
-		failed, err = fail(qtx)
+	if s.TxStarter == nil {
+		failed, err := fail(s.Queries)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		return SettleTerminalTaskState(ctx, qtx, failed...)
-	}); err != nil {
+		return failed, SettleTerminalTaskState(ctx, s.Queries, failed...)
+	}
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	qtx := s.Queries.WithTx(tx)
+
+	held := map[pgtype.UUID]bool{}
+	var failed []db.AgentTaskQueue
+	for {
+		sp, err := tx.Begin(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("begin savepoint: %w", err)
+		}
+		failed, err = fail(s.Queries.WithTx(sp))
+		if err != nil {
+			_ = sp.Rollback(ctx)
+			return nil, err
+		}
+		var need []pgtype.UUID
+		for _, t := range failed {
+			if t.ChatSessionID.Valid && !held[t.ChatSessionID] {
+				held[t.ChatSessionID] = true
+				need = append(need, t.ChatSessionID)
+			}
+		}
+		if len(need) == 0 {
+			if err := sp.Commit(ctx); err != nil {
+				return nil, fmt.Errorf("release savepoint: %w", err)
+			}
+			break
+		}
+		if err := sp.Rollback(ctx); err != nil {
+			return nil, fmt.Errorf("rollback savepoint: %w", err)
+		}
+		if _, err := qtx.LockChatSessionsByIDs(ctx, need); err != nil {
+			return nil, fmt.Errorf("lock chat sessions: %w", err)
+		}
+	}
+	if err := SettleTerminalTaskState(ctx, qtx, failed...); err != nil {
+		_ = tx.Rollback(ctx)
+		return nil, s.recordStageRefusal(ctx, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return failed, nil

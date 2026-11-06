@@ -4345,6 +4345,35 @@ func (q *Queries) LockChatSessionForTask(ctx context.Context, id pgtype.UUID) (p
 	return id_2, err
 }
 
+const lockChatSessionsByIDs = `-- name: LockChatSessionsByIDs :many
+SELECT id FROM chat_session
+WHERE id = ANY($1::uuid[])
+ORDER BY id
+FOR UPDATE
+`
+
+// Batch terminators lock the sessions of the chat tasks they are about to end.
+// ORDER BY id keeps two batches from deadlocking against each other.
+func (q *Queries) LockChatSessionsByIDs(ctx context.Context, ids []pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, lockChatSessionsByIDs, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockChatSessionsBySystemRuntimeAgents = `-- name: LockChatSessionsBySystemRuntimeAgents :many
 SELECT cs.id FROM chat_session cs
 JOIN agent a ON a.id = cs.agent_id
@@ -4384,6 +4413,47 @@ FOR UPDATE
 // deadlocking against each other.
 func (q *Queries) LockChatSessionsByWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, lockChatSessionsByWorkspace, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockChatSessionsForActiveTasksByRuntimeOrAgent = `-- name: LockChatSessionsForActiveTasksByRuntimeOrAgent :many
+SELECT cs.id FROM chat_session cs
+WHERE EXISTS (
+    SELECT 1 FROM agent_task_queue task
+    WHERE task.chat_session_id = cs.id
+      AND (task.runtime_id = ANY($1::uuid[]) OR task.agent_id = ANY($2::uuid[]))
+      AND task.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+)
+ORDER BY cs.id
+FOR UPDATE OF cs
+`
+
+type LockChatSessionsForActiveTasksByRuntimeOrAgentParams struct {
+	RuntimeIds []pgtype.UUID `json:"runtime_ids"`
+	AgentIds   []pgtype.UUID `json:"agent_ids"`
+}
+
+// Session half of CancelAgentTasksByRuntimeOrAgent: the sessions of the chat
+// tasks it is about to cancel, taken before it so the cancel follows the
+// chat_session -> agent_task_queue order. ORDER BY id keeps two cancellers
+// from deadlocking against each other.
+func (q *Queries) LockChatSessionsForActiveTasksByRuntimeOrAgent(ctx context.Context, arg LockChatSessionsForActiveTasksByRuntimeOrAgentParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, lockChatSessionsForActiveTasksByRuntimeOrAgent, arg.RuntimeIds, arg.AgentIds)
 	if err != nil {
 		return nil, err
 	}

@@ -110,6 +110,12 @@ func (h *Handler) revokeAndRemoveMember(ctx context.Context, workspaceID, userID
 		for i, a := range result.ArchivedAgents {
 			archivedAgentIDs[i] = a.ID
 		}
+		if _, err := qtx.LockChatSessionsForActiveTasksByRuntimeOrAgent(ctx, db.LockChatSessionsForActiveTasksByRuntimeOrAgentParams{
+			RuntimeIds: runtimeIDs,
+			AgentIds:   archivedAgentIDs,
+		}); err != nil {
+			return empty, err
+		}
 		result.CancelledTasks, err = qtx.CancelAgentTasksByRuntimeOrAgent(ctx, db.CancelAgentTasksByRuntimeOrAgentParams{
 			RuntimeIds: runtimeIDs,
 			AgentIds:   archivedAgentIDs,

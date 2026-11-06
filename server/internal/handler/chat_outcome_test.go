@@ -502,3 +502,94 @@ func TestOutcomeAndRealCompletionDoNotDeadlock(t *testing.T) {
 		t.Fatalf("outcome %d but ask resolved=%v", w.Code, resolved)
 	}
 }
+
+// Batch terminators (sweepers, agent archival, runtime teardown) must take the chat session lock
+// before they write a chat task, like every other terminal path. A holder of the session row (the
+// outcome, mid status-check) then sees a status that cannot change under it: the batch waits,
+// and the outcome is ordered strictly before the cancel.
+func TestBatchTerminationWaitsForTheChatSessionLock(t *testing.T) {
+	for name, cancel := range map[string]func(dm attentionDM) error{
+		"archived agent": func(dm attentionDM) error {
+			_, err := testHandler.TaskService.CancelTasksForArchivedAgent(context.Background(), parseUUID(dm.agentID))
+			return err
+		},
+		"cancel all agent tasks": func(dm attentionDM) error {
+			_, err := testHandler.TaskService.CancelTasksForAgent(context.Background(), parseUUID(dm.agentID))
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) { batchWaitsForSession(t, cancel) })
+	}
+}
+
+func batchWaitsForSession(t *testing.T, cancel func(dm attentionDM) error) {
+	dm := newAttentionDM(t)
+	task := dm.sendRunning(t, "go")
+
+	holder, err := testPool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Rollback(context.Background()) }()
+	if _, err := holder.Exec(t.Context(), `SELECT cs.id FROM agent_task_queue t JOIN chat_session cs ON cs.id = t.chat_session_id WHERE t.id = $1 FOR UPDATE OF cs`, task); err != nil {
+		t.Fatal(err)
+	}
+
+	archived := make(chan error, 1)
+	go func() { archived <- cancel(dm) }()
+	select {
+	case err := <-archived:
+		t.Fatalf("archival cancelled a chat task while its session row was held (err=%v)", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+	var status string
+	if err := holder.QueryRow(t.Context(), `SELECT status FROM agent_task_queue WHERE id = $1`, task).Scan(&status); err != nil || status != "running" {
+		t.Fatalf("task status while the session is held = %q (err=%v), want running", status, err)
+	}
+	if err := holder.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-archived; err != nil {
+		t.Fatalf("archival cancel: %v", err)
+	}
+}
+
+// The real archival path and an outcome for the same task, released together: neither fails, and
+// the ask is resolved only if the outcome won.
+func TestOutcomeAndRealArchivalCancelDoNotConflict(t *testing.T) {
+	dm := newAttentionDM(t)
+	ask := dm.item(t, "ask")
+	task := dm.sendRunning(t, "go")
+
+	hold, err := testPool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = hold.Rollback(context.Background()) }()
+	if _, err := hold.Exec(t.Context(), `SELECT id FROM agent_task_queue WHERE id = $1 FOR NO KEY UPDATE`, task); err != nil {
+		t.Fatal(err)
+	}
+
+	outcome := make(chan *httptest.ResponseRecorder, 1)
+	archived := make(chan error, 1)
+	go func() { outcome <- dm.outcome(t, task, map[string]any{"kind": "done", "ask_ids": []string{ask}}) }()
+	go func() {
+		_, err := testHandler.TaskService.CancelTasksForArchivedAgent(context.Background(), parseUUID(dm.agentID))
+		archived <- err
+	}()
+	time.Sleep(500 * time.Millisecond)
+	if err := hold.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := <-archived; err != nil {
+		t.Fatalf("archival cancel: %v", err)
+	}
+	w := <-outcome
+	if w.Code != http.StatusOK && w.Code != http.StatusConflict {
+		t.Fatalf("outcome: %d %s, want 200 or 409", w.Code, w.Body.String())
+	}
+	if resolved := dm.state(t, ask).ResolvedBy != nil; resolved != (w.Code == http.StatusOK) {
+		t.Fatalf("outcome %d but ask resolved=%v", w.Code, resolved)
+	}
+}

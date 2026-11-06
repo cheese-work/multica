@@ -94,6 +94,12 @@ func TeardownRuntime(ctx context.Context, qtx *db.Queries, runtimeID pgtype.UUID
 	}
 
 	if opts.CancelNonTerminalTasks {
+		if _, err := qtx.LockChatSessionsForActiveTasksByRuntimeOrAgent(ctx, db.LockChatSessionsForActiveTasksByRuntimeOrAgentParams{
+			RuntimeIds: []pgtype.UUID{runtimeID},
+			AgentIds:   lockedAgentIDs,
+		}); err != nil {
+			return out, fmt.Errorf("lock chat sessions: %w", err)
+		}
 		cancelled, err := qtx.CancelAgentTasksByRuntimeOrAgent(ctx, db.CancelAgentTasksByRuntimeOrAgentParams{
 			RuntimeIds: []pgtype.UUID{runtimeID},
 			AgentIds:   lockedAgentIDs,
