@@ -357,3 +357,33 @@ func TestListEvents_RepoScopedNewestFirstLimited(t *testing.T) {
 		t.Fatalf("limit 2 -> %d rows, %v", len(two), err)
 	}
 }
+
+func TestListEvents_EnrichedWithClassProtocolActionOutcome(t *testing.T) {
+	e := newAdminEnv(t)
+	ctx := context.Background()
+	if _, err := e.pool.Exec(ctx, `INSERT INTO ci_failure_event (workspace_id, repo_owner, repo_name, run_id, run_attempt, workflow_name, head_branch, event, conclusion)
+		VALUES ($1,$2,$3,201,2,'CI','main','push','failure'), ($1,$2,$3,202,1,'CI','main','push','failure')`, e.ws, e.owner, e.name); err != nil {
+		t.Fatal(err)
+	}
+	subj := subjectID(Run{RepoOwner: e.owner, RepoName: e.name, RunID: 201, RunAttempt: 2})
+	if _, err := e.pool.Exec(ctx, `INSERT INTO system1_observation (workspace_id, kind, subject_id, class, choice_key, outcome_label)
+		VALUES ($1,'ci_event',$2,'flake','P1','rerun_green')`, e.ws, subj); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.pool.Exec(ctx, `INSERT INTO ci_watch_action (workspace_id, repo_owner, repo_name, original_run_id, action_kind, state, protocol, reason)
+		VALUES ($1,$2,$3,201,'rerun','done','P1','')`, e.ws, e.owner, e.name); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ListEvents(ctx, e.pool, e.ws, e.owner, e.name, 50)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("events = %+v, %v", got, err)
+	}
+	byRun := map[int64]WatchEvent{got[0].RunID: got[0], got[1].RunID: got[1]}
+	r := byRun[201]
+	if r.Event != "push" || r.Class != "flake" || r.Protocol != "P1" || r.Action != "rerun" || r.State != "done" || r.Outcome != "rerun_green" {
+		t.Fatalf("enriched event = %+v", r)
+	}
+	if bare := byRun[202]; bare.Event != "push" || bare.Class != "" || bare.Action != "" || bare.Outcome != "" {
+		t.Fatalf("event without observation/action = %+v", bare)
+	}
+}
