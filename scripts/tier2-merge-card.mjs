@@ -55,6 +55,7 @@ export function renderAsk(prs, window) {
       { label: 'I will merge them on GitHub', what_happens: 'You open each PR link above and merge it on GitHub. No agent merges. A PR whose head moves after this card no longer has these checks and PASS.', pros: ['Each PR gets your own look', 'No agent merges a Tier 2 PR'], cons: ['One click per PR'], cost_or_time: 'About 1 min per PR' },
       { label: 'Skip this window', what_happens: 'Nothing merges; the PRs appear again on the next card while their head holds.', pros: ['Time to read each diff'], cons: ['Longer wait to merge'], cost_or_time: 'Next window, up to about 12 h' },
     ],
+    recommended_option: 'I will merge them on GitHub',
     recommendation: `Merge the ${noun} on GitHub; the checks and PASS are on the exact heads.`,
     default_if_no_reply: 'Nothing merges; the next window lists the PRs again.',
   };

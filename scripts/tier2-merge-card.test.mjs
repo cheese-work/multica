@@ -43,6 +43,8 @@ test('card shows exact heads and per-PR links', () => {
   assert.ok(ask.context_eli10.includes(`[#10](https://github.com/cheese-work/multica/pull/10) \`${HEAD}\``));
   assert.ok(ask.context_eli10.includes('`' + 'c'.repeat(40) + '`'));
   assert.ok(ask.options.length >= 2 && ask.recommendation && ask.default_if_no_reply);
+  // `multica decision request` refuses two or more options without the exact label of the recommended one.
+  assert.ok(ask.options.some((o) => o.label === ask.recommended_option));
 });
 
 test('picks the window nearest at or before now, in ICT', () => {
