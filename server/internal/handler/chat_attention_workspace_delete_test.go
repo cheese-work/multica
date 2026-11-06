@@ -72,6 +72,14 @@ func TestDeleteWorkspace_RemovesChatAttentionRows(t *testing.T) {
 		t.Fatalf("seed attention mark: %v", err)
 	}
 
+	// CHE-4149: the per-turn outcome row has no workspace_id either; it is keyed by the chain root.
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO chat_turn_outcome (task_id, chat_session_id, chain_root_session_id, user_id, kind)
+		VALUES (gen_random_uuid(), $1, $1, $2, 'done')
+	`, sessionID, testUserID); err != nil {
+		t.Fatalf("seed turn outcome: %v", err)
+	}
+
 	w := httptest.NewRecorder()
 	req := withURLParam(newRequest(http.MethodDelete, "/api/workspaces/"+wsID, nil), "id", wsID)
 	testHandler.DeleteWorkspace(w, req)
@@ -86,7 +94,11 @@ func TestDeleteWorkspace_RemovesChatAttentionRows(t *testing.T) {
 	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM chat_attention_mark WHERE chain_root_session_id = $1`, sessionID).Scan(&marks); err != nil {
 		t.Fatalf("count marks: %v", err)
 	}
-	if items != 0 || marks != 0 {
-		t.Errorf("workspace delete left attention rows: items=%d marks=%d", items, marks)
+	var outcomes int
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM chat_turn_outcome WHERE chain_root_session_id = $1`, sessionID).Scan(&outcomes); err != nil {
+		t.Fatalf("count outcomes: %v", err)
+	}
+	if items != 0 || marks != 0 || outcomes != 0 {
+		t.Errorf("workspace delete left attention rows: items=%d marks=%d outcomes=%d", items, marks, outcomes)
 	}
 }

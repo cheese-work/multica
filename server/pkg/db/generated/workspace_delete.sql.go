@@ -235,6 +235,12 @@ deleted_attention_marks AS (
         SELECT id FROM chat_session WHERE chat_session.workspace_id = $1
     )
 ),
+deleted_turn_outcomes AS (
+    DELETE FROM chat_turn_outcome
+    WHERE chain_root_session_id IN (
+        SELECT id FROM chat_session WHERE chat_session.workspace_id = $1
+    )
+),
 deleted_sessions AS (
     DELETE FROM chat_session WHERE chat_session.workspace_id = $1
 ),

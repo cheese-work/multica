@@ -102,6 +102,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"chat_pinned_agent":                  workspaceDelete,
 	"chat_session":                       workspaceDelete,
 	"chat_task_supplement":               workspaceDelete,
+	"chat_turn_outcome":                  workspaceDelete, // no workspace_id; keyed by chain root session, removed with the sessions.
 	"chat_wakeup":                        workspaceDelete,
 	"client_usage_daily":                 workspaceDeleteDetach,
 	"comment":                            workspaceDelete,
