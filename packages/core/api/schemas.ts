@@ -558,7 +558,7 @@ const IssueWorkflowHandlerSchema = z.lazy(() => z.object({
 }).loose());
 
 const ISSUE_WORKFLOW_HANDLER_TYPES = new Set<string>([
-  "none", "agent", "squad", "member", "project_lead", "creator", "human_by_role",
+  "none", "agent", "squad", "member", "project_lead", "creator", "human_by_role", "human_in_charge",
 ]);
 
 const IssueWorkflowEdgeSchema = z.lazy(() => z.object({
@@ -1735,6 +1735,14 @@ export const IssueSchema = z.lazy(() => z.object({
   stage: z.number().nullable().default(null),
   start_date: z.string().nullable(),
   due_date: z.string().nullable(),
+  // Read-only deadline projection (CHE-3463). Additive: older backends and
+  // closed issues omit it, and a malformed value drops only itself.
+  effective_due: z.string().optional().catch(undefined),
+  due_source: z.string().optional().catch(undefined),
+  diagnostics: z
+    .array(z.object({ type: z.string(), members: z.array(z.string()).optional() }))
+    .optional()
+    .catch(undefined),
   metadata: IssueMetadataSchema,
   // Older backends predate custom properties; default {} so consumers never
   // nil-guard issue.properties.
@@ -2509,6 +2517,10 @@ export const ChatSessionSchema: z.ZodType<ChatSession> = z.lazy(() => z.object({
   context_tokens: z.number().nullable().optional().catch(undefined),
   context_window: z.number().nullable().optional().catch(undefined),
   is_current_channel_route: z.boolean().optional().catch(undefined),
+  attention_source: z.enum(["ask", "later", "unseen", "decision"]).nullable().optional().catch(null),
+  attention_since: z.string().nullable().optional().catch(undefined),
+  stale_level: z.enum(["none", "fresh", "yellow", "red"]).optional().catch("none"),
+  next_change_at: z.string().nullable().optional().catch(undefined),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
 }).loose());
@@ -2610,6 +2622,10 @@ const ChatWakeupSchema = z.lazy(() => z.object({
   fire_at: z.string(),
   instruction: z.string().default(""),
   status: z.string().default("pending"),
+  issue_id: z.string().optional().catch(undefined),
+  event: z.string().optional().catch(undefined),
+  until_status: z.string().optional().catch(undefined),
+  on_timeout: z.string().optional().catch(undefined),
 }).loose());
 
 export const ChatWakeupsSchema = z.lazy(() => z.array(ChatWakeupSchema));

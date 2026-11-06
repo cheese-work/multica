@@ -95,6 +95,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"channel_task_delivery":              workspaceDelete,
 	"channel_typing_reaction":            workspaceDeleteSettle, // Source deletion makes retained anchors eligible for the cleanup worker.
 	"channel_user_binding":               workspaceDelete,
+	"chat_attention_item":                workspaceDelete, // no FK; removed by workspace_id in DeleteWorkspaceCommunicationRoots.
+	"chat_attention_mark":                workspaceDelete, // no workspace_id; keyed by chain root session, removed with the sessions.
 	"chat_draft_restore":                 workspaceDelete,
 	"chat_message":                       workspaceDelete,
 	"chat_pinned_agent":                  workspaceDelete,
@@ -124,6 +126,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"decision_intent":                    workspaceDeleteWorker,
 	"decision_intent_target":             workspaceDeleteWorker,
 	"decision_request":                   workspaceDeleteWorker,
+	"decision_wait":                      workspaceDelete,       // explicit workspace-scoped delete in DeleteWorkspaceLeafData; no FK.
 	"decision_wake_event":                workspaceDeleteWorker, // no FK; orphan cleanup deletes the rows with their request.
 	"decision_wake_receipt":              workspaceDeleteWorker, // no FK; orphan cleanup deletes the rows with their event's request.
 	"decision_worker_lease":              workspaceDeleteKeep,
@@ -150,6 +153,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"github_webhook_dispatch":            workspaceDelete,
 	"github_webhook_revision":            workspaceDelete,
 	"governed_vote_record":               workspaceDelete, // CHE-1862 vote-gate ledger; workspace-owned leaf.
+	"governed_pass_receipt":              workspaceDelete, // CHE-3490 single-use PASS receipts; workspace-owned leaf.
 	"run_gate_event":                     workspaceDelete, // CHE-1918 run-gate shadow ledger; workspace-owned leaf.
 	"governance_receipt":                 workspaceDelete, // CHE-685 Jev governance routing receipts; workspace-owned, same shape as issue_checkpoint.
 	"governance_budget_window":           workspaceDelete,
@@ -176,9 +180,11 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"dm_progress_follow":                 workspaceDelete, // CHE-3369 C1 follow state; no FK, swept by DeleteWorkspaceIssueRoots.
 	"dm_progress_data_incident":          workspaceDelete, // CHE-3546 L0 data incident; no FK, swept by DeleteWorkspaceIssueRoots.
 	"dm_progress_lane":                   workspaceDelete, // CHE-3369 C1 lane row; no FK, swept by DeleteWorkspaceIssueRoots.
+	"dm_progress_lane_event":             workspaceDelete, // CHE-3548 moved-under lane event; no FK, swept by DeleteWorkspaceIssueRoots.
 	"issue_wakeup_pr_event":              workspaceDelete,
 	"issue_ci_advance":                   workspaceDelete,
 	"stage_queue_waiting":                workspaceDelete, // CHE-3611 refused-PR ledger; issue_id and agent_id FKs ON DELETE CASCADE remove its rows with the workspace.
+	"issue_decision_park":                workspaceDelete, // CHE-3946 decision park; issue_id FK ON DELETE CASCADE removes its rows with the workspace.
 	"issue_wakeup_receipt":               workspaceDelete,
 	"issue_child_event":                  workspaceDelete,
 	"issue_view":                         workspaceDelete,
@@ -391,7 +397,8 @@ func TestDecisionWorkspaceDeletionRemainsWorkerOwned(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	if strings.Contains(string(queries), "decision_") {
+	// decision_wait (L5b) is workspace-scoped with no FK, so baseline deletion owns it.
+	if strings.Contains(strings.ReplaceAll(string(queries), "decision_wait", ""), "decision_") {
 		test.Error("baseline workspace deletion must not run a decision statement")
 	}
 }

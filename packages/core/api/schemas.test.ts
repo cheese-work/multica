@@ -122,6 +122,30 @@ describe("ChatSessionSchema", () => {
     expect(ChatSessionListSchema.parse([baseSession])[0]).toEqual(parsed);
   });
 
+  it("reads the DM attention projection and tolerates older or newer servers", () => {
+    const attention = {
+      attention_source: "ask",
+      attention_since: "2026-11-05T01:00:00Z",
+      stale_level: "yellow",
+      next_change_at: "2026-11-06T01:00:00Z",
+    };
+    expect(ChatSessionSchema.parse({ ...baseSession, ...attention })).toMatchObject(attention);
+
+    // Older server: fields absent.
+    const old = ChatSessionSchema.parse(baseSession);
+    expect(old.stale_level).toBeUndefined();
+    expect(old.attention_source).toBeUndefined();
+
+    // Newer server: unknown enum values fall back instead of dropping the session.
+    const newer = ChatSessionListSchema.parse([
+      { ...baseSession, ...attention, stale_level: "purple", attention_source: "turn", next_change_at: 7 },
+    ]);
+    expect(newer).toHaveLength(1);
+    expect(newer[0]?.stale_level).toBe("none");
+    expect(newer[0]?.attention_source).toBeNull();
+    expect(newer[0]?.next_change_at).toBeUndefined();
+  });
+
   it("keeps sessions readable when older servers send lane-summary data", () => {
     for (const summary of [
       { lane_summary: "Legacy private lane", lane_summary_updated_at: "2026-10-12T01:00:00Z" },
@@ -233,6 +257,25 @@ describe("IssueSchema (via ListIssuesResponseSchema)", () => {
       const issue = parse({ workflow_id: bad });
       expect(issue?.id).toBe(baseIssue.id);
       expect(issue?.workflow_id ?? null).toBeNull();
+    }
+  });
+  it("reads the deadline projection and tolerates a server without it or a malformed one", () => {
+    const parse = (extra: object) => ListIssuesResponseSchema.parse({ issues: [{ ...baseIssue, ...extra }], total: 1 }).issues[0];
+    const diagnostics = [{ type: "cycle", members: ["CHE-1", "CHE-2"] }, { type: "depth_limit" }];
+    const issue = parse({ effective_due: "2026-12-01", due_source: "parent:CHE-9", diagnostics });
+    expect(issue?.effective_due).toBe("2026-12-01");
+    expect(issue?.due_source).toBe("parent:CHE-9");
+    expect(issue?.diagnostics).toEqual(diagnostics);
+    const bare = parse({});
+    expect(bare?.effective_due).toBeUndefined();
+    expect(bare?.due_source).toBeUndefined();
+    expect(bare?.diagnostics).toBeUndefined();
+    for (const bad of [42, { date: "x" }, true]) {
+      const dropped = parse({ effective_due: bad, due_source: bad, diagnostics: bad });
+      expect(dropped?.id).toBe(baseIssue.id);
+      expect(dropped?.effective_due).toBeUndefined();
+      expect(dropped?.due_source).toBeUndefined();
+      expect(dropped?.diagnostics).toBeUndefined();
     }
   });
   it("keeps the issue while independently dropping a malformed source context", () => {

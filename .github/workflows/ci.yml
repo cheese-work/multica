@@ -162,7 +162,7 @@ jobs:
           node-version: 22
 
       - name: Test CI selection and gates
-        run: node --test scripts/ci-scope.test.mjs scripts/check-image-budget.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/pr-changelog-line.test.mjs scripts/pr-issue-link-check.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/fork-sync-guard.test.mjs scripts/upstream-pr-watch.test.mjs scripts/upstream-watch-run.test.mjs scripts/ci-runners.test.mjs scripts/ci-required-jobs.test.mjs scripts/ci-locale-parity.test.mjs scripts/ci-vitest-timeout.test.mjs scripts/merge-queue-dequeue-report.test.mjs scripts/pr-main-sync.test.mjs scripts/page-load-report.test.mjs scripts/phone-network.test.mjs deploy/cd/release-manifest.test.mjs deploy/cd/drift-receipt.test.mjs
+        run: node --test scripts/ci-scope.test.mjs scripts/go-test-flakes.test.mjs scripts/check-image-budget.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/pr-changelog-line.test.mjs scripts/pr-issue-link-check.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/fork-sync-guard.test.mjs scripts/upstream-pr-watch.test.mjs scripts/upstream-watch-run.test.mjs scripts/ci-runners.test.mjs scripts/ci-required-jobs.test.mjs scripts/ci-locale-parity.test.mjs scripts/ci-vitest-timeout.test.mjs scripts/merge-queue-dequeue-report.test.mjs scripts/pr-main-sync.test.mjs scripts/page-load-report.test.mjs scripts/phone-network.test.mjs deploy/cd/release-manifest.test.mjs deploy/cd/drift-receipt.test.mjs
 
       - name: Filter paths
         id: filter
@@ -621,14 +621,45 @@ jobs:
       - name: Verify integration database startup policy
         run: bash server/cmd/server/integration_startup.test.sh
 
+      # CHE-4270: merge_group only. A failed test reruns once by name, so a
+      # flake no longer ejects the PR from the queue (see the Test step).
+      - name: Install gotestsum
+        if: ${{ github.event_name == 'merge_group' }}
+        run: go install gotest.tools/gotestsum@v1.13.0
+
+      - name: Verify merge_group test rerun
+        if: ${{ github.event_name == 'merge_group' }}
+        run: bash scripts/test-go-rerun.test.sh
+
       - name: Test
         env:
           GOFLAGS: -count=1 -v
           # CHE-2418: each package gets its own database cloned from the
           # migrated one, so test-go.sh runs packages with -p 4, not -p 1.
           MULTICA_TEST_DB_PER_PACKAGE: "1"
+          # CHE-4270: merge_group reruns failed tests once; pull_request and
+          # push stay unchanged so authors see every failure.
+          MULTICA_TEST_RERUN_FAILS: ${{ github.event_name == 'merge_group' && '1' || '' }}
+          MULTICA_FLAKE_DIR: ${{ runner.temp }}/flakes
         # pkg/agent runs on its own runner: backend-agent-tests below.
         run: bash scripts/test-go.sh --race --only regular
+
+      - name: Record flaky tests
+        if: ${{ !cancelled() && github.event_name == 'merge_group' }}
+        env:
+          MULTICA_FLAKE_DIR: ${{ runner.temp }}/flakes
+        run: |
+          mkdir -p "$MULTICA_FLAKE_DIR"
+          node scripts/go-test-flakes.mjs "$MULTICA_FLAKE_DIR" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload flakes.json
+        if: ${{ !cancelled() && github.event_name == 'merge_group' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: flakes-backend-tests
+          path: ${{ runner.temp }}/flakes/flakes.json
+          if-no-files-found: ignore
+          retention-days: 30
 
       # Go's own trim (cmd/go/internal/cache) with this run as the window
       # instead of five days: only `-a`/`-d` entries, and an executable entry
@@ -707,8 +738,33 @@ jobs:
             ${{ steps.gocache.outputs.prefix }}refs/heads/main-${{ hashFiles('server/go.sum') }}-
             ${{ steps.gocache.outputs.prefix }}
 
+      # CHE-4270: same merge_group rerun as backend-tests.
+      - name: Install gotestsum
+        if: ${{ github.event_name == 'merge_group' }}
+        run: go install gotest.tools/gotestsum@v1.13.0
+
       - name: Test agent package
+        env:
+          MULTICA_TEST_RERUN_FAILS: ${{ github.event_name == 'merge_group' && '1' || '' }}
+          MULTICA_FLAKE_DIR: ${{ runner.temp }}/flakes
         run: bash scripts/test-go.sh --race --only agent
+
+      - name: Record flaky tests
+        if: ${{ !cancelled() && github.event_name == 'merge_group' }}
+        env:
+          MULTICA_FLAKE_DIR: ${{ runner.temp }}/flakes
+        run: |
+          mkdir -p "$MULTICA_FLAKE_DIR"
+          node scripts/go-test-flakes.mjs "$MULTICA_FLAKE_DIR" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload flakes.json
+        if: ${{ !cancelled() && github.event_name == 'merge_group' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: flakes-backend-agent-tests
+          path: ${{ runner.temp }}/flakes/flakes.json
+          if-no-files-found: ignore
+          retention-days: 30
 
   # Keep the live vulnerability database from hiding build and test results.
   # The aggregate backend job below still treats both jobs as one merge gate.
@@ -881,6 +937,9 @@ jobs:
 
       - name: Test mechanical-tier classifier paths (CHE-3339)
         run: python3 -m unittest tests.test_che3339_mechanical_tier
+
+      - name: Test workflow_run cascade triggers (CHE-4250)
+        run: python3 -m unittest tests.test_che4250_workflow_run_cascades
 
       - name: Test pinned pnpm setup
         run: node --test scripts/setup-pnpm.test.mjs
