@@ -96,4 +96,13 @@ describe("comment annotation selection", () => {
     const captured = captureCommentSelection(card, select(card, 0, first, 5));
     expect(captured?.quote).toBe("Hello");
   });
+
+  it("rejects a selection that runs from one thread card into another card's comment", () => {
+    document.body.innerHTML = '<div id="a" data-annotation-thread="a"><div data-comment-content="a1"><p>Alpha text</p></div></div><div id="b" data-annotation-thread="b"><div data-comment-content="b1"><p>Beta text</p></div></div>';
+    const a = document.getElementById("a")!;
+    const start = a.querySelector("p")!.firstChild!;
+    const end = document.getElementById("b")!.querySelector("p")!.firstChild!;
+    expect(captureCommentSelection(a, select(start, 2, end, 4))).toBeNull();
+    expect(captureCommentSelection(document.getElementById("b")!, select(start, 2, end, 4))).toBeNull();
+  });
 });

@@ -39,11 +39,15 @@ function contentRoot(node: Node): HTMLElement | null {
 function clampToRoot(card: HTMLElement, range: Range): { root: HTMLElement; range: Range } | null {
   const roots = Array.from(card.querySelectorAll<HTMLElement>("[data-comment-content]"))
     .filter((node) => node.closest("[data-annotation-thread]") === card && range.intersectsNode(node));
-  const root = contentRoot(range.startContainer) ?? contentRoot(range.endContainer) ?? (roots.length === 1 ? roots[0]! : null);
-  if (!root || roots.some((node) => node !== root) || root.closest("[data-annotation-thread]") !== card) return null;
+  const startRoot = contentRoot(range.startContainer);
+  const endRoot = contentRoot(range.endContainer);
+  const root = startRoot ?? endRoot ?? (roots.length === 1 ? roots[0]! : null);
+  // An endpoint inside another comment, in this card or any other, has no single owner.
+  if (!root || (startRoot && startRoot !== root) || (endRoot && endRoot !== root) ||
+    roots.some((node) => node !== root) || root.closest("[data-annotation-thread]") !== card) return null;
   const clamped = range.cloneRange();
-  if (contentRoot(range.startContainer) !== root) clamped.setStart(root, 0);
-  if (contentRoot(range.endContainer) !== root) clamped.setEnd(root, root.childNodes.length);
+  if (!startRoot) clamped.setStart(root, 0);
+  if (!endRoot) clamped.setEnd(root, root.childNodes.length);
   return { root, range: clamped };
 }
 
