@@ -7,7 +7,7 @@ import {
 } from "../platform/workspace-storage";
 import { defaultStorage } from "../platform/storage";
 import type { StorageAdapter } from "../types/storage";
-import { getDraftGeneration, registerDraftCleanup, type DraftOrigin } from "./cleanup-registry";
+import { getDraftGeneration, registerDraftCleanup, sharedDraftGeneration, type DraftOrigin } from "./cleanup-registry";
 
 /**
  * Keyed sibling of {@link createDraftStore}: one persisted store holding many
@@ -122,8 +122,16 @@ export function createKeyedDraftStore<TData extends object>(
   // belongs to the old workspace: reads treat it as empty (never leak it into
   // the new workspace) and writes rehydrate first (never persist it under the
   // new slug).
+  //
+  // The same holds when another tab logged out or deleted this workspace: the
+  // shared generation moved since the map was loaded, so the map is the old
+  // session's. Reads treat it as empty and the next write reloads from storage
+  // first, so a write can never persist the old session's drafts again.
   let loadedSlug: string | null = null;
-  const isStale = () => workspaceScoped && getCurrentSlug() !== loadedSlug;
+  let loadedGeneration = 0;
+  const isStale = () =>
+    (workspaceScoped && getCurrentSlug() !== loadedSlug) ||
+    sharedDraftGeneration(loadedSlug) !== loadedGeneration;
   const syncToWorkspace = () => {
     if (isStale()) useStore.persist.rehydrate();
   };
@@ -169,6 +177,7 @@ export function createKeyedDraftStore<TData extends object>(
         // merge would keep the previous workspace's drafts.
         merge: (persisted, current) => {
           loadedSlug = getCurrentSlug();
+          loadedGeneration = sharedDraftGeneration(loadedSlug);
           return {
             ...current,
             drafts: prune(
@@ -187,7 +196,10 @@ export function createKeyedDraftStore<TData extends object>(
   registerDraftCleanup({
     storageKey: config.storageKey,
     workspaceScoped,
-    resetInMemory: () => useStore.setState({ drafts: {} }),
+    resetInMemory: () => {
+      useStore.setState({ drafts: {} });
+      loadedGeneration = sharedDraftGeneration(loadedSlug); // this tab's own logout: memory is already empty
+    },
   });
 
   return useStore;

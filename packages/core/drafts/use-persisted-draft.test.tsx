@@ -214,7 +214,22 @@ describe("usePersistedDraft", () => {
         act(() => hookA.result.current[1]({ text: "private" }));
         otherTabLogsOut(values);
         act(() => hookA.result.current[2]());
-        expect(store.getState().getDraft("create")).toEqual({ text: "private" });
+        // The map is the old session's, so reads hide it; the dropped clear leaves it untouched.
+        expect(store.getState().drafts.create?.data).toEqual({ text: "private" });
+      });
+
+      it("another tab logged out: a card mounted afterwards does not write the old drafts back", async () => {
+        const { store, hookA, settle, values } = await setup();
+        act(() => hookA.result.current[1]({ text: "private" }));
+        otherTabLogsOut(values);
+        // This tab has not heard of the logout. A fresh mount must not adopt the old session's map.
+        const fresh = renderHook(() => usePersistedDraft(store, "other", EMPTY));
+        expect(store.getState().getDraft("create")).toBeUndefined();
+        act(() => fresh.result.current[1]({ text: "new" }));
+        await settle();
+        const persisted = [...values.entries()].filter(([k]) => k.startsWith("h_late"));
+        expect(JSON.stringify(persisted)).not.toContain("private");
+        expect(JSON.stringify(persisted)).toContain("new");
       });
 
       it("this tab's own logout and re-login keeps a mounted hook writing", async () => {

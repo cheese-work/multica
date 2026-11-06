@@ -309,6 +309,25 @@ describe("decision card draft survives remount", () => {
     expect(draftKeys()).toEqual([]);
   });
 
+  it("another tab logged out: a card mounted afterwards does not write the old note back", async () => {
+    setCurrentWorkspace("acme", "ws-a");
+    await act(async () => { await Promise.resolve(); });
+    const user = userEvent.setup();
+    renderWithI18n(chat(card("xtab-old")));
+    await user.click(screen.getByRole("radio", { name: /Option B/ }));
+    await user.type(note(), "private note");
+    await vi.waitFor(() => expect(stored("xtab-old")?.text).toBe("private note"), { timeout: 2000 });
+    // Tab B logs out: shared storage is cleared and the shared generation moves. This tab has not heard of it.
+    draftKeys().forEach((k) => window.localStorage.removeItem(k));
+    window.localStorage.setItem(DRAFT_GENERATION_KEY, String(Number(window.localStorage.getItem(DRAFT_GENERATION_KEY) ?? 0) + 1));
+    // A different card mounts in this tab and the user picks an option, which writes the draft map.
+    renderWithI18n(chat(card("xtab-new")));
+    await user.click(screen.getAllByRole("radio", { name: /Option B/ })[1]!);
+    const persisted = draftKeys().map((k) => window.localStorage.getItem(k)).join("");
+    expect(persisted).toContain("xtab-new");
+    expect(persisted).not.toContain("private note");
+  });
+
   it("workspace switch: the notice is kept for the card's own workspace, not the one switched to", async () => {
     setCurrentWorkspace("acme", "ws-a");
     await act(async () => { await Promise.resolve(); });

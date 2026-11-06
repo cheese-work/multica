@@ -79,7 +79,12 @@ export interface DraftOrigin {
 
 /** Strictly increases whenever logout or a delete of `slug` clears its drafts, in this tab or another. */
 export function getDraftGeneration(slug: string | null): number {
-  return localDraftGeneration(slug) + sharedGeneration(DRAFT_GENERATION_KEY) + (slug ? sharedGeneration(workspaceKey(slug)) : 0);
+  return localDraftGeneration(slug) + sharedDraftGeneration(slug);
+}
+
+/** The shared-storage part of {@link getDraftGeneration}: what a cleanup in any tab, this one included, moved. */
+export function sharedDraftGeneration(slug: string | null): number {
+  return sharedGeneration(DRAFT_GENERATION_KEY) + (slug ? sharedGeneration(workspaceKey(slug)) : 0);
 }
 
 /** The part of {@link getDraftGeneration} that only this tab's own cleanup moves. */
