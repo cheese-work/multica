@@ -15,13 +15,12 @@ import (
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
-	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // Episode delivery (CHE-2591 L5 design §4.4, §6, §6.1). One delivery covers
 // every answer, re-ask and retraction of the bound set B, and goes through the
-// same dispatcher as an ordinary wake. System close (§4.5.1), run-budget and
-// persistent-refusal suspension (§4.4.3, §4.4.7) and expiry are later layers.
+// same dispatcher as an ordinary wake. The system close is in
+// decision_wait_close.go and the suspension write in decision_wait_suspend.go.
 
 // terminalRow is one request's row of the §6.1 terminal-state map.
 type terminalRow struct {
@@ -83,8 +82,7 @@ func classifyEpisodeRequest(request db.DecisionRequest, live map[pgtype.UUID]boo
 }
 
 type episodeVerdict struct {
-	// wait is true when nothing is delivered this pass. A system close (design
-	// §6 rules 1 and 2) also reports wait here until the layer that writes it.
+	// wait is true when nothing is delivered this pass.
 	wait    bool
 	reason  string
 	rows    map[pgtype.UUID]terminalRow
@@ -141,12 +139,7 @@ func (handler *Handler) episodeResumeHolds(ctx context.Context, queries *db.Quer
 // evaluateDecisionEpisode is design §6 over the locked bound set.
 func (handler *Handler) evaluateDecisionEpisode(ctx context.Context, queries *db.Queries, snapshot decisionWakeSnapshot, now time.Time) (episodeVerdict, error) {
 	verdict := episodeVerdict{wait: true}
-	if episodeClosedStatus(snapshot.issue.Status) {
-		return verdict, nil
-	}
-	if recipient := snapshot.recipient; recipient.ArchivedAt.Valid || !recipient.RuntimeID.Valid || recipient.Kind == "system" {
-		return verdict, nil
-	}
+	// Rules 1 and 2 never reach here: deliverDecisionEpisode closes first (decision_wait_close.go).
 	if holds, err := handler.episodeResumeHolds(ctx, queries, snapshot); err != nil || !holds {
 		return verdict, err
 	}
@@ -253,23 +246,29 @@ func (handler *Handler) loadDecisionEpisode(ctx context.Context, queries *db.Que
 
 // episodeRestore is design §4.4.2 step 6: one explicit-assignee write of the
 // saved placement. A status the workflow no longer has becomes in_progress.
-func (handler *Handler) episodeRestore(ctx context.Context, queries *db.Queries, snapshot decisionWakeSnapshot) (db.Issue, error) {
+// The status row is written in the same transaction (nil when nothing moved).
+func (handler *Handler) episodeRestore(ctx context.Context, queries *db.Queries, snapshot decisionWakeSnapshot) (db.Issue, *db.ActivityLog, error) {
 	wait, issue := snapshot.wait, snapshot.issue
 	status := wait.RestoreStatus
 	def, _, err := issueworkflow.ForIssue(ctx, queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
 	if err != nil {
-		return issue, err
+		return issue, nil, err
 	}
 	if def != nil {
 		if _, ok := def.Step(status); !ok {
 			status = "in_progress"
 		}
 	}
-	return queries.UpdateIssue(ctx, db.UpdateIssueParams{
+	updated, err := queries.UpdateIssue(ctx, db.UpdateIssueParams{
 		ID: issue.ID, Status: pgtype.Text{String: status, Valid: true},
 		AssigneeType: wait.RestoreAssigneeType, AssigneeID: wait.RestoreAssigneeID,
 		PreserveProject: pgtype.Bool{Bool: true, Valid: true},
 	})
+	if err != nil {
+		return issue, nil, err
+	}
+	recorded, err := recordSystemStatusChange(ctx, queries, issue, updated, service.StatusCauseDecision, nil)
+	return updated, recorded, err
 }
 
 // episodeInputs builds what the continuation carries: the comments it must
@@ -506,6 +505,9 @@ func ackEpisodeItems(ctx context.Context, queries *db.Queries, snapshot decision
 // deliverDecisionEpisode is one attempt of design §4.4.2. restart is true when
 // the snapshot is stale.
 func (handler *Handler) deliverDecisionEpisode(ctx context.Context, snapshot decisionWakeSnapshot) (bool, error) {
+	if reason := systemCloseReason(snapshot); reason != "" {
+		return handler.closeDecisionEpisode(ctx, snapshot, reason)
+	}
 	transaction, err := handler.TxStarter.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -546,18 +548,39 @@ func (handler *Handler) deliverDecisionEpisode(ctx context.Context, snapshot dec
 	if refused, err := handler.refuseGatedAgentRecords(ctx, transaction, queries, snapshot); err != nil || refused {
 		return false, err
 	}
+	// A refusal below takes everything after this point back and suspends instead.
+	if _, err := transaction.Exec(ctx, "SAVEPOINT episode_resume"); err != nil {
+		return false, err
+	}
+	suspend := func(kind string, conflict db.AgentTaskQueue) (bool, error) {
+		if _, err := transaction.Exec(ctx, "ROLLBACK TO SAVEPOINT episode_resume"); err != nil {
+			return false, err
+		}
+		move, err := handler.suspendDecisionEpisode(ctx, queries, snapshot, kind, conflict)
+		if err != nil {
+			return false, err
+		}
+		if err := transaction.Commit(ctx); err != nil {
+			return false, err
+		}
+		if move.AfterCommit != nil {
+			move.AfterCommit(ctx)
+		}
+		return false, nil
+	}
 	if rows, err := queries.ClaimDecisionWait(ctx, db.ClaimDecisionWaitParams{WorkspaceID: workspaceID, ID: wait.ID, CloseReason: pgtype.Text{String: verdict.reason, Valid: true}}); err != nil {
 		return false, err
 	} else if rows != 1 {
 		return true, nil
 	}
 	restored := false
+	var restoredActivity *db.ActivityLog
 	if wait.RestoreOnResume {
-		updated, err := handler.episodeRestore(ctx, queries, snapshot)
+		updated, recorded, err := handler.episodeRestore(ctx, queries, snapshot)
 		if err != nil {
 			return false, err
 		}
-		snapshot.issue, restored = updated, true
+		snapshot.issue, restored, restoredActivity = updated, true, recorded
 	}
 	commentIDs, summary, trigger, err := handler.episodeInputs(ctx, queries, snapshot, verdict)
 	if err != nil {
@@ -573,10 +596,15 @@ func (handler *Handler) deliverDecisionEpisode(ctx context.Context, snapshot dec
 	outcome, continuation := "planned_input", verdict.running
 	var queued db.AgentTaskQueue
 	if !verdict.running.Valid {
-		if outcome, queued, err = handler.dispatchDecisionInputs(ctx, queries, snapshot, trigger, commentIDs, summary); err != nil {
+		if outcome, queued, err = handler.dispatchDecisionInputs(ctx, queries, snapshot, trigger, commentIDs, summary); errors.Is(err, service.ErrRunBudgetExhausted) {
+			return suspend(suspendKindRunBudget, db.AgentTaskQueue{})
+		} else if err != nil {
 			return false, err
 		}
 		if outcome == "" {
+			if wait.Phase == "suspended" || (wait.DispatchRefusedSince.Valid && now.Time.Sub(wait.DispatchRefusedSince.Time) > dispatchRefusedSuspendAfter) {
+				return suspend(suspendKindDispatchRefused, snapshot.task)
+			}
 			// The refusal keeps the episode open and unchanged; only the clock starts.
 			transaction.Rollback(ctx)
 			return false, handler.Queries.MarkDecisionWaitDispatchRefused(ctx, db.MarkDecisionWaitDispatchRefusedParams{WorkspaceID: workspaceID, ID: wait.ID})
@@ -603,8 +631,8 @@ func (handler *Handler) deliverDecisionEpisode(ctx context.Context, snapshot dec
 	}
 	askingID := uuidToString(wait.AskingAgentID)
 	if restored {
-		handler.publish(protocol.EventIssueUpdated, uuidToString(workspaceID), "system", "", map[string]any{
-			"issue": handler.issueResponseWithCategory(ctx, snapshot.issue), "assignee_changed": true, "status_changed": true,
+		handler.publishSystemStatusChange(uuidToString(workspaceID), restoredActivity, map[string]any{
+			"issue": handler.issueResponseWithCategory(ctx, snapshot.issue), "assignee_changed": true, "status_changed": restoredActivity != nil,
 			"prev_status": current.issue.Status, "creator_type": current.issue.CreatorType, "creator_id": uuidToString(current.issue.CreatorID),
 			"source": "decision_wait",
 		})

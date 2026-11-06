@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   warning-budget:
-    needs: [migration-prefix-check, cursor-background-lifecycle, changes, sqlc-check, frontend-build, frontend-test, frontend-views-test, locale-parity, frontend, backend-tests, backend-agent-tests, go-vulnerability-scan, go-lint, backend, image-budget, installer, script-checks, deploy-cd, frontend-quality]
+    needs: [migration-prefix-check, cursor-background-lifecycle, changes, sqlc-check, frontend-build, frontend-test, frontend-views-test, locale-parity, frontend, backend-test-shards, backend-tests, backend-agent-tests, go-vulnerability-scan, go-lint, backend, image-budget, installer, script-checks, deploy-cd, frontend-quality]
     if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -81,7 +81,7 @@ jobs:
       - name: Test the upstream-main mirror script
         run: bash scripts/mirror-upstream-main.test.sh
       - name: Test the upstream-main rulesets
-        run: node --test scripts/mirror-rulesets.test.mjs
+        run: node --test scripts/mirror-rulesets.test.mjs scripts/mirror-workflow.test.mjs
       - name: Check no upstream update source
         run: bash scripts/check-no-upstream-update-source.sh
 
@@ -478,9 +478,23 @@ jobs:
   # replay cached results. Migrations are read from disk at run time rather
   # than embedded, so a schema change is invisible to a test binary's hash and
   # a cached "ok" from an untouched package could mask a real failure.
-  backend-tests:
+  #
+  # CHE-4268: one job took 15-16 min and was the merge-queue critical path, so
+  # the work is a matrix of runners, one partition each: four handler shards,
+  # internal/service (the slowest non-handler package) and every other
+  # package. The `backend-tests` job below is the aggregate that keeps the
+  # required check name. Each partition still builds its own test binaries;
+  # Build, Vet and the script checks run once, on `rest`.
+  backend-test-shards:
+    name: backend-test-shards (${{ matrix.partition }})
     needs: [changes, migration-prefix-check]
     if: ${{ !cancelled() && needs.changes.outputs.push_full == 'true' }}
+    strategy:
+      # A red shard must not cancel the others: the slowest evidence is the
+      # most useful, and the aggregate fails on any non-success anyway.
+      fail-fast: false
+      matrix:
+        partition: [handler-0, handler-1, handler-2, handler-3, service, rest]
     # Stays off cheese-x99 (CHE-748): this is the only job in the repo that
     # uses `services`, and the self-hosted runners talk to a nested Docker
     # daemon (`DOCKER_HOST=tcp://dind-N:2376`) living in a *different*
@@ -539,6 +553,7 @@ jobs:
       # directly so they run alongside the Postgres-backed suite.
       REDIS_TEST_URL: redis://localhost:6379/1
       GOFLAGS: -count=1
+      MULTICA_HANDLER_SHARDS: "4"
     steps:
       - name: Require migration prefix result
         env:
@@ -575,13 +590,17 @@ jobs:
         id: gocache
         run: echo "prefix=go-build-race-${{ runner.os }}-${{ runner.arch }}-$ImageOS-${{ steps.go.outputs.go-version }}-" >> "$GITHUB_OUTPUT"
 
+      # The partition goes after the ref and go.sum hash so every shard saves
+      # its own entry (one key cannot be saved twice) while a restore still
+      # falls back to any shard's entry under the same prefix.
       - name: Restore Go build cache
         uses: actions/cache/restore@v6
         with:
           path: ~/.cache/go-build
-          key: ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-${{ matrix.partition }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-
+            ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-${{ matrix.partition }}-
+            ${{ steps.gocache.outputs.prefix }}refs/heads/main-${{ hashFiles('server/go.sum') }}-${{ matrix.partition }}-
             ${{ steps.gocache.outputs.prefix }}refs/heads/main-${{ hashFiles('server/go.sum') }}-
             ${{ steps.gocache.outputs.prefix }}
 
@@ -594,6 +613,7 @@ jobs:
         run: touch -d '-1 hour' "$RUNNER_TEMP/go-build-epoch"
 
       - name: Build
+        if: ${{ matrix.partition == 'rest' }}
         run: cd server && go build -race ./...
 
       # The `agentintegration` files execute real agent CLIs, so no CI job runs
@@ -603,22 +623,27 @@ jobs:
       # untagged job still green. vet type-checks test files, so this is the
       # cheapest gate that keeps them honest without needing an agent CLI.
       - name: Vet tag-gated agent integration tests
+        if: ${{ matrix.partition == 'rest' }}
         run: cd server && go vet -race -tags agentintegration ./...
 
       - name: Run migrations
         run: cd server && go run ./cmd/migrate up
 
       - name: Verify Go test wrapper
+        if: ${{ matrix.partition == 'rest' }}
         run: bash scripts/test-go.test.sh
 
       # Runs against the freshly migrated template database; leaves it unchanged.
       - name: Verify per-package test database wrapper
+        if: ${{ matrix.partition == 'rest' }}
         run: bash scripts/go-test-db-exec.test.sh
 
       - name: Verify handler test sharding
+        if: ${{ matrix.partition == 'rest' }}
         run: bash scripts/go-test-handler-shards.test.sh
 
       - name: Verify integration database startup policy
+        if: ${{ matrix.partition == 'rest' }}
         run: bash server/cmd/server/integration_startup.test.sh
 
       # CHE-4270: merge_group only. A failed test reruns once by name, so a
@@ -628,7 +653,7 @@ jobs:
         run: go install gotest.tools/gotestsum@v1.13.0
 
       - name: Verify merge_group test rerun
-        if: ${{ github.event_name == 'merge_group' }}
+        if: ${{ github.event_name == 'merge_group' && matrix.partition == 'rest' }}
         run: bash scripts/test-go-rerun.test.sh
 
       - name: Test
@@ -642,7 +667,22 @@ jobs:
           MULTICA_TEST_RERUN_FAILS: ${{ github.event_name == 'merge_group' && '1' || '' }}
           MULTICA_FLAKE_DIR: ${{ runner.temp }}/flakes
         # pkg/agent runs on its own runner: backend-agent-tests below.
-        run: bash scripts/test-go.sh --race --only regular
+        run: bash scripts/test-go.sh --race --only regular --partition ${{ matrix.partition }} 2>&1 | tee "$RUNNER_TEMP/test.log"
+
+      # Per-shard timing for rebalancing the partitions. `!cancelled()` so a
+      # red shard still reports where its time went.
+      - name: Summarize test timing
+        if: ${{ !cancelled() }}
+        run: node scripts/go-test-timing.mjs "${{ matrix.partition }}" < "$RUNNER_TEMP/test.log" > "$RUNNER_TEMP/timing.json"
+
+      - name: Upload test timing
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: go-test-timing-${{ matrix.partition }}
+          path: ${{ runner.temp }}/timing.json
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Record flaky tests
         if: ${{ !cancelled() && github.event_name == 'merge_group' }}
@@ -656,7 +696,7 @@ jobs:
         if: ${{ !cancelled() && github.event_name == 'merge_group' }}
         uses: actions/upload-artifact@v7
         with:
-          name: flakes-backend-tests
+          name: flakes-backend-tests-${{ matrix.partition }}
           path: ${{ runner.temp }}/flakes/flakes.json
           if-no-files-found: ignore
           retention-days: 30
@@ -681,7 +721,25 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ~/.cache/go-build
-          key: ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-${{ matrix.partition }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+  # Required check `backend-tests` (ci-policy.yml): runs no tests itself, only
+  # turns the shard matrix into one result. `if` matches the shards so a
+  # filtered run reports `skipped` exactly as before; a shard that is red,
+  # cancelled or missing fails it.
+  backend-tests:
+    needs: [changes, migration-prefix-check, backend-test-shards]
+    if: ${{ !cancelled() && needs.changes.outputs.push_full == 'true' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require shard results
+        env:
+          SHARDS_RESULT: ${{ needs.backend-test-shards.result }}
+        run: |
+          if [ "$SHARDS_RESULT" != "success" ]; then
+            echo "::error::backend-test-shards expected success, got $SHARDS_RESULT"
+            exit 1
+          fi
 
   # pkg/agent used to run as the tail of backend-tests: ~2m20s for a single
   # package, throttled to -parallel 2 because its subprocess-backed tests carry

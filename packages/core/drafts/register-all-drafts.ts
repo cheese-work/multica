@@ -21,6 +21,7 @@ import "../issues/stores/unsent-edit-drafts";
 import "../projects/draft-store";
 import "../feedback/draft-store";
 import "../agents/manual-draft-store";
+import "../agents/settings-draft-stores";
 import "../skills/draft-stores";
 import "../issue-workflows/draft-stores";
 import "../squads/stores/draft-store";

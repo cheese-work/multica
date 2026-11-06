@@ -243,6 +243,7 @@ type AgentTaskQueue struct {
 	AppliedContextArgs        []byte             `json:"applied_context_args"`
 	AppliedReportedAt         pgtype.Timestamptz `json:"applied_reported_at"`
 	ExternalRead              bool               `json:"external_read"`
+	Purpose                   pgtype.Text        `json:"purpose"`
 }
 
 type AgentToLabel struct {
@@ -644,6 +645,7 @@ type ChatMessage struct {
 	DecisionAnswerID              pgtype.UUID        `json:"decision_answer_id"`
 	LineageMessageIds             []pgtype.UUID      `json:"lineage_message_ids"`
 	DecisionRequestIds            []pgtype.UUID      `json:"decision_request_ids"`
+	ClientMessageID               pgtype.Text        `json:"client_message_id"`
 }
 
 type ChatPinnedAgent struct {
@@ -1755,6 +1757,19 @@ type GovernanceWorkspaceConfigAudit struct {
 	ControlEpoch      int64              `json:"control_epoch"`
 	RollbackOfVersion pgtype.Int8        `json:"rollback_of_version"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+}
+
+type GovernedPassReceipt struct {
+	CommentID    pgtype.UUID        `json:"comment_id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	IssueID      pgtype.UUID        `json:"issue_id"`
+	ReviewerID   pgtype.UUID        `json:"reviewer_id"`
+	WriterID     pgtype.UUID        `json:"writer_id"`
+	Field        string             `json:"field"`
+	TargetID     pgtype.UUID        `json:"target_id"`
+	BeforeSha256 string             `json:"before_sha256"`
+	AfterSha256  string             `json:"after_sha256"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 }
 
 type GovernedVoteRecord struct {
