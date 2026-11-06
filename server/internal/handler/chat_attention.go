@@ -294,7 +294,7 @@ func (h *Handler) ChatAttentionXongAll(w http.ResponseWriter, r *http.Request) {
 		fail.write(w)
 		return
 	}
-	h.writeAttentionList(w, ws, user, batch)
+	h.writeAttentionList(r.Context(), w, ws, user, batch)
 }
 
 // ChatAttentionUndoXongAll reopens what the batch closed. A row changed since (answered, sent to,
@@ -328,11 +328,11 @@ func (h *Handler) ChatAttentionUndoXongAll(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "failed to commit")
 		return
 	}
-	h.writeAttentionList(w, ws, user, uuidToString(batch))
+	h.writeAttentionList(r.Context(), w, ws, user, uuidToString(batch))
 }
 
-func (h *Handler) writeAttentionList(w http.ResponseWriter, ws, user pgtype.UUID, batch string) {
-	rows, err := service.LoadChatAttention(context.Background(), h.Queries, ws, user, time.Now())
+func (h *Handler) writeAttentionList(ctx context.Context, w http.ResponseWriter, ws, user pgtype.UUID, batch string) {
+	rows, err := service.LoadChatAttention(ctx, h.Queries, ws, user, time.Now())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to read attention")
 		return
