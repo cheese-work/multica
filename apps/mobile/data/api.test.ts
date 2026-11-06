@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "./api";
+import { classifyIssueLoadError } from "@/lib/issue-load-error";
+import type { SchemaValidationError } from "@/lib/parse-response";
 
 // api.ts refuses to load without a base URL; set it before the import runs.
 vi.hoisted(() => {
@@ -245,6 +247,36 @@ describe("api chat supplements", () => {
   });
 });
 
+// CHE-3472: the decision park stores an object in metadata.decision_park. A
+// strict primitive-only schema made mobile fall back to the empty issue, which
+// the detail screen shows as "issue not found".
+describe("api.getIssue", () => {
+  const parked = {
+    id: "01a1a0eb-718d-778e-9948-770bc5e04ad7", workspace_id: "ws", number: 3357,
+    identifier: "CHE-3357", title: "Parked issue", description: "d",
+    status: "need_decision", status_category: "in_progress", status_name: "Need Decision",
+    priority: "medium", assignee_type: "agent", assignee_id: "a", creator_type: "agent", creator_id: "c",
+    parent_issue_id: "p", project_id: "proj", position: -87, stage: 1, start_date: null, due_date: null,
+    metadata: {
+      decision_park: { readiness: "r1", readiness_id: "r2", set: "s", status: "blocked", to: "need_decision" },
+      status_summary: "Blocked",
+    },
+    properties: {}, labels: [], created_at: "2026-11-03T10:19:07Z", updated_at: "2026-11-03T12:33:32Z",
+  };
+
+  it("returns the issue when metadata carries the decision-park object", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(parked), { status: 200 })));
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const issue = await api.getIssue(parked.id);
+
+    expect(issue.identifier).toBe("CHE-3357");
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+});
+
 describe("api.listWorkspacesChecked", () => {
   const fetchMock = vi.fn();
   const respond = (body: unknown) =>
@@ -281,5 +313,32 @@ describe("api.listWorkspacesChecked", () => {
   ])("falls back to an unvalidated empty list for %s", async (_name, body) => {
     respond(body);
     expect(await api.listWorkspacesChecked()).toEqual({ workspaces: [], validated: false });
+  });
+});
+
+describe("api.getIssue schema failure", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("throws a typed error naming the failing path instead of returning an empty issue", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ id: "i1", number: "not-a-number" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    const err = await api.getIssue("i1").catch((e: unknown) => e);
+
+    expect(classifyIssueLoadError(err)).toBe("data");
+    expect((err as SchemaValidationError).paths).toContain("number");
+    expect(String(warn.mock.calls[0]?.[0])).toContain("number");
   });
 });

@@ -16,11 +16,26 @@ SELECT * FROM chat_session
 WHERE id = $1;
 
 -- name: SetChatContinuationSource :one
+-- taint_ids: the source's taint at this moment (CHE-3702), kept on this chat so
+-- deleting the source cannot erase it. taint_verified follows the source: a
+-- copy of an unlinked or verified chat is complete, a copy of an unverified
+-- linked chat is left for the claim to resolve.
 UPDATE chat_session
 SET continued_from_session_id = $2,
+    taint_ids = COALESCE((
+        SELECT array_agg(DISTINCT x ORDER BY x) FROM (
+            SELECT unnest(s.taint_ids) AS x FROM chat_session s WHERE s.id = $2
+            UNION ALL
+            SELECT unnest(q.taint_ids) FROM agent_task_queue q WHERE q.chat_session_id = $2
+        ) u
+    ), '{}'),
+    taint_verified = COALESCE((
+        SELECT s.taint_verified OR (s.forked_from_session_id IS NULL AND s.continued_from_session_id IS NULL)
+        FROM chat_session s WHERE s.id = $2
+    ), false),
     last_read_at = sqlc.arg('summary_created_at')::timestamptz - interval '1 microsecond',
     pinned_at = sqlc.narg('pinned_at')
-WHERE id = $1
+WHERE chat_session.id = $1
 RETURNING *;
 
 -- name: ArchiveContinuedChatSession :one
@@ -102,13 +117,24 @@ WHERE message.id = moved.id;
 -- of the last copied message; fork_source_message_id is the source row itself.
 UPDATE chat_session
 SET forked_from_session_id = sqlc.arg(forked_from_session_id),
+    taint_ids = COALESCE((
+        SELECT array_agg(DISTINCT x ORDER BY x) FROM (
+            SELECT unnest(s.taint_ids) AS x FROM chat_session s WHERE s.id = sqlc.arg(forked_from_session_id)
+            UNION ALL
+            SELECT unnest(q.taint_ids) FROM agent_task_queue q WHERE q.chat_session_id = sqlc.arg(forked_from_session_id)
+        ) u
+    ), '{}'),
+    taint_verified = COALESCE((
+        SELECT s.taint_verified OR (s.forked_from_session_id IS NULL AND s.continued_from_session_id IS NULL)
+        FROM chat_session s WHERE s.id = sqlc.arg(forked_from_session_id)
+    ), false),
     fork_idempotency_key = sqlc.arg(fork_idempotency_key),
     fork_last_message_id = sqlc.arg(fork_last_message_id),
     fork_source_message_id = sqlc.arg(fork_source_message_id),
     fork_message_count = sqlc.arg(fork_message_count),
     runtime_id = NULL,
     last_read_at = (SELECT max(m.created_at) FROM chat_message m WHERE m.chat_session_id = sqlc.arg(id))
-WHERE id = sqlc.arg(id)
+WHERE chat_session.id = sqlc.arg(id)
 RETURNING *;
 
 -- name: ListChatMessagesForFork :many
@@ -1913,6 +1939,20 @@ UPDATE chat_session
 SET last_read_at = sqlc.arg('message_created_at')::timestamptz - interval '1 microsecond'
 WHERE id = $1;
 
+-- name: MarkChatSessionUnread :exec
+-- Places the read cursor just before the latest assistant message that counts
+-- toward unread_count, so unread_count is at least 1. No such message: no-op.
+UPDATE chat_session cs
+SET last_read_at = latest.created_at - interval '1 microsecond'
+FROM (
+  SELECT max(m.created_at) AS created_at
+  FROM chat_message m
+  WHERE m.chat_session_id = sqlc.arg('id')
+    AND m.role = 'assistant'
+    AND m.message_kind NOT IN ('decision_cancel_notice', 'decision_reference')
+) latest
+WHERE cs.id = sqlc.arg('id') AND latest.created_at IS NOT NULL;
+
 -- name: ChatSessionHasUserMessage :one
 -- Reports whether a session has any human (role='user') message yet. Used to
 -- scope the is_agent_intro self-introduction prompt to the very first,
@@ -2281,3 +2321,12 @@ WHERE t.chat_session_id = ANY($1::uuid[])
   AND t.status = 'completed'
   AND COALESCE(t.chat_compaction_epoch, 0) = cs.compaction_epoch
 ORDER BY t.chat_session_id, t.completed_at DESC, t.id DESC;
+
+-- name: GetLatestCompactionSummary :one
+-- The newest in-place compaction summary of a DM: the seed of its next turn
+-- while the resume pointer is empty. Messages after it are the post-boundary
+-- history.
+SELECT * FROM chat_message
+WHERE chat_session_id = $1 AND message_kind = 'compaction_summary'
+ORDER BY created_at DESC, id DESC
+LIMIT 1;

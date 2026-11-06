@@ -92,11 +92,13 @@ func dmLane(ctx context.Context, q *db.Queries, sessionID, creator, workspaceID 
 	return DMLane{Lineage: root, Owner: creator}, true
 }
 
-// AddProgressFollow adds reasons to the follow of issue in lane. It takes the
+// AddProgressFollow adds reasons to the follow of issue in lane. root is the
+// reporting root a new follow gets (the issue itself for an origin or manual
+// follow); an existing follow keeps the root it was created with. It takes the
 // lane row lock, so it serializes with every other write to the lane. The bool
 // is false when the owner cannot read the issue, or when the reasons are all
 // inherited and the issue was explicitly unfollowed (a negative override).
-func AddProgressFollow(ctx context.Context, q *db.Queries, lane DMLane, issue db.Issue, reasons []string, mutedAt pgtype.Timestamptz) (db.DmProgressFollow, bool, error) {
+func AddProgressFollow(ctx context.Context, q *db.Queries, lane DMLane, issue db.Issue, reasons []string, root pgtype.UUID, mutedAt pgtype.Timestamptz) (db.DmProgressFollow, bool, error) {
 	if !ProgressVisible(ctx, q, lane.Owner, issue) {
 		return db.DmProgressFollow{}, false, nil
 	}
@@ -113,7 +115,7 @@ func AddProgressFollow(ctx context.Context, q *db.Queries, lane DMLane, issue db
 	follow, err := q.InsertDMProgressFollow(ctx, db.InsertDMProgressFollowParams{
 		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, LineageID: lane.Lineage, OwnerUserID: lane.Owner,
 		Reasons: reasons, Explicit: slices.ContainsFunc(reasons, func(r string) bool { return !isInherited(r) }),
-		MutedAt: mutedAt, LastRenderedStatus: issue.Status,
+		MutedAt: mutedAt, LastRenderedStatus: issue.Status, ReportingRootID: root,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return db.DmProgressFollow{}, false, nil
@@ -132,7 +134,7 @@ func followNewIssue(ctx context.Context, q *db.Queries, p IssueCreateParams, iss
 		}
 		if err == nil && task.AgentID == p.CreatorID {
 			if lane, ok := DMLaneForTask(ctx, q, task, p.WorkspaceID); ok {
-				if _, _, err := AddProgressFollow(ctx, q, lane, issue, []string{ReasonOrigin}, pgtype.Timestamptz{}); err != nil {
+				if _, _, err := AddProgressFollow(ctx, q, lane, issue, []string{ReasonOrigin}, issue.ID, pgtype.Timestamptz{}); err != nil {
 					return err
 				}
 			}
@@ -156,6 +158,17 @@ func InheritProgressFollows(ctx context.Context, q *db.Queries, parent, child db
 	if err != nil {
 		return err
 	}
+	// Nothing to inherit: skip the ancestor walk, which runs under the workspace
+	// issue-counter lock on child creation (SEC-1).
+	if len(parentFollows) == 0 {
+		return nil
+	}
+	// A looping parent chain has no top: the child reports to itself.
+	chain, err := q.IssueParentChainLoops(ctx, child.ID)
+	if err != nil {
+		return err
+	}
+	loops := chain.Bool
 	for _, listed := range parentFollows {
 		// The list above predates the lane lock, so a mute or unfollow can commit
 		// while we wait for it. Re-read the parent under the lock.
@@ -170,9 +183,35 @@ func InheritProgressFollows(ctx context.Context, q *db.Queries, parent, child db
 			return err
 		}
 		lane := DMLane{Lineage: current.LineageID, Owner: current.OwnerUserID}
-		if _, _, err := AddProgressFollow(ctx, q, lane, child, inheritedReasons(parent, current), current.MutedAt); err != nil {
+		root := current.ReportingRootID
+		if loops {
+			root = child.ID
+		}
+		follow, ok, err := AddProgressFollow(ctx, q, lane, child, inheritedReasons(parent, current), root, current.MutedAt)
+		if err != nil {
 			return err
+		}
+		if loops && ok {
+			err = q.InsertDMProgressDataIncident(ctx, db.InsertDMProgressDataIncidentParams{
+				WorkspaceID: child.WorkspaceID, IssueID: child.ID, FollowID: follow.ID, Kind: "parent_cycle",
+			})
+			if err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+// CountProgressDescendants counts the tracked descendants of root in lane: each
+// issue once, however deep, with no cap.
+func CountProgressDescendants(ctx context.Context, q *db.Queries, lane, root pgtype.UUID) (int64, error) {
+	return q.CountDMProgressDescendants(ctx, db.CountDMProgressDescendantsParams{LineageID: lane, ReportingRootID: root})
+}
+
+// ListProgressDescendants returns one page of root's tracked descendants in
+// issue-id order, starting after the given id (invalid for the first page). An
+// empty page ends the walk.
+func ListProgressDescendants(ctx context.Context, q *db.Queries, lane, root, after pgtype.UUID, limit int32) ([]pgtype.UUID, error) {
+	return q.ListDMProgressDescendants(ctx, db.ListDMProgressDescendantsParams{LineageID: lane, ReportingRootID: root, AfterIssueID: after, Limit: limit})
 }

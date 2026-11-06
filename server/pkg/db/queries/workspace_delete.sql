@@ -2,6 +2,11 @@
 -- bottom-up deletion plan; the legacy foreign keys remain only as a
 -- compatibility safety net during the expand phase.
 
+-- name: DeleteProviderBreakersForWorkspace :exec
+-- Provider breaker state is workspace-owned; remove it explicitly before the
+-- workspace row instead of relying on the legacy FK cascade.
+DELETE FROM provider_breaker WHERE workspace_id = $1;
+
 -- name: SetWorkspaceTeardownMode :exec
 -- The setting is transaction-local. Migration 242 makes only the three DELETE
 -- dirty triggers skip their per-row work while this flag is on.
@@ -376,6 +381,10 @@ deleted_github_dispatch_halts AS (
 ),
 deleted_github_dispatch_halt_audits AS (
     DELETE FROM github_dispatch_halt_audit WHERE workspace_id = $1
+),
+-- CHE-3045 L5b wait episodes: workspace-owned leaf, no FK.
+deleted_decision_waits AS (
+    DELETE FROM decision_wait WHERE workspace_id = $1
 ),
 -- CHE-3284 config-sync enrollment: workspace-owned leaf, no FK.
 deleted_config_sync AS (
@@ -761,6 +770,8 @@ WITH deleted_wakeup_pr_events AS (
  DELETE FROM dm_progress_follow WHERE workspace_id=$1
 ), deleted_dm_progress_lanes AS (
  DELETE FROM dm_progress_lane WHERE workspace_id=$1
+), deleted_dm_progress_data_incidents AS (
+ DELETE FROM dm_progress_data_incident WHERE workspace_id=$1
 ), deleted_wakeup_aggregate_reservations AS (
  DELETE FROM wakeup_aggregate_reservation WHERE workspace_id=$1
 ), deleted_wakeup_aggregate_budgets AS (
