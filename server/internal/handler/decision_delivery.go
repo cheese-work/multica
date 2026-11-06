@@ -161,22 +161,32 @@ func (handler *Handler) loadDecisionItem(ctx context.Context, queries *db.Querie
 			}
 			return snapshot, err
 		}
-		tasks, err := queries.ListActiveTasksByIssue(ctx, request.IssueID)
+		snapshot.task, snapshot.head, err = loadDecisionRecipientTask(ctx, queries, request.IssueID, agentID)
 		if err != nil {
 			return snapshot, err
 		}
-		for _, task := range tasks {
-			if task.AgentID == agentID && (!snapshot.task.ID.Valid || (task.Status == "queued" && snapshot.task.Status != "queued")) {
-				snapshot.task = task
-			}
-		}
-		head, err := queries.GetIssueReviewHeadSha(ctx, request.IssueID)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return snapshot, err
-		}
-		snapshot.head = pgtype.Text{String: head, Valid: head != ""}
 	}
 	return snapshot, nil
+}
+
+// loadDecisionRecipientTask returns the recipient's active task on the issue
+// (a queued one wins) and the issue's review head, as a wake dispatch needs.
+func loadDecisionRecipientTask(ctx context.Context, queries *db.Queries, issueID, agentID pgtype.UUID) (db.AgentTaskQueue, pgtype.Text, error) {
+	var task db.AgentTaskQueue
+	tasks, err := queries.ListActiveTasksByIssue(ctx, issueID)
+	if err != nil {
+		return task, pgtype.Text{}, err
+	}
+	for _, candidate := range tasks {
+		if candidate.AgentID == agentID && (!task.ID.Valid || (candidate.Status == "queued" && task.Status != "queued")) {
+			task = candidate
+		}
+	}
+	head, err := queries.GetIssueReviewHeadSha(ctx, issueID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return task, pgtype.Text{}, err
+	}
+	return task, pgtype.Text{String: head, Valid: head != ""}, nil
 }
 
 func decisionWakeReady(snapshot decisionWakeSnapshot, now time.Time) bool {
@@ -527,21 +537,43 @@ func (handler *Handler) dispatchDecisionWake(ctx context.Context, queries *db.Qu
 			fmt.Fprintf(&summary, "- Target not asked: user %s\n", uuidToString(target.HumanUserID))
 		}
 	}
-	if !snapshot.task.ID.Valid {
-		task, err := handler.TaskService.EnqueueDecisionTaskInTx(ctx, queries, snapshot.issue, snapshot.recipient.ID, snapshot.squadID, trigger.ID, commentIDs, summary.String())
+	return handler.dispatchDecisionInput(ctx, queries, decisionDispatch{issue: snapshot.issue, recipient: snapshot.recipient, squadID: snapshot.squadID, task: snapshot.task, head: snapshot.head, trigger: trigger, commentIDs: commentIDs, summary: summary.String()})
+}
+
+// decisionDispatch is what a wake needs to reach one recipient: the recipient's
+// current task and head, the comment that triggers the run, and the input text.
+type decisionDispatch struct {
+	issue      db.Issue
+	recipient  db.Agent
+	squadID    pgtype.UUID
+	task       db.AgentTaskQueue
+	head       pgtype.Text
+	trigger    db.Comment
+	commentIDs []pgtype.UUID
+	summary    string
+}
+
+// dispatchDecisionInput merges the wake into a queued task, registers it as
+// planned input on a running one, or enqueues a run. An empty outcome means the
+// target changed and nothing was dispatched.
+func (handler *Handler) dispatchDecisionInput(ctx context.Context, queries *db.Queries, wake decisionDispatch) (string, db.AgentTaskQueue, error) {
+	var empty db.AgentTaskQueue
+	trigger, commentIDs := wake.trigger, wake.commentIDs
+	if !wake.task.ID.Valid {
+		task, err := handler.TaskService.EnqueueDecisionTaskInTx(ctx, queries, wake.issue, wake.recipient.ID, wake.squadID, trigger.ID, commentIDs, wake.summary)
 		return "run_enqueued", task, err
 	}
 	var taskID pgtype.UUID
 	outcome := ""
-	if snapshot.task.SquadID != snapshot.squadID || snapshot.task.IsLeaderTask != snapshot.squadID.Valid {
+	if wake.task.SquadID != wake.squadID || wake.task.IsLeaderTask != wake.squadID.Valid {
 		return "", empty, nil
 	}
-	if snapshot.task.Status == "queued" {
-		params, _, err := handler.commentMergeParams(ctx, snapshot.issue, commentAgentTrigger{Agent: snapshot.recipient, Source: commentTriggerSourceIssueAssignee}, trigger.ID, snapshot.head)
+	if wake.task.Status == "queued" {
+		params, _, err := handler.commentMergeParams(ctx, wake.issue, commentAgentTrigger{Agent: wake.recipient, Source: commentTriggerSourceIssueAssignee}, trigger.ID, wake.head)
 		if err != nil {
 			return "", empty, err
 		}
-		row, err := queries.MergeCommentIntoQueuedIssueTask(ctx, db.MergeCommentIntoQueuedIssueTaskParams{TargetTaskID: snapshot.task.ID, IssueID: snapshot.issue.ID, AgentID: snapshot.recipient.ID, SquadID: snapshot.squadID, HeadSha: snapshot.head, NewTriggerCommentID: params.NewTriggerCommentID, NewTriggerSummary: params.NewTriggerSummary, NewOriginatorUserID: params.NewOriginatorUserID, NewAccountableUserID: params.NewAccountableUserID, NewOriginatorSource: params.NewOriginatorSource, NewDelegatedFromTaskID: params.NewDelegatedFromTaskID, NewRuleVersionID: params.NewRuleVersionID, NewTriggerEvidenceKind: params.NewTriggerEvidenceKind, NewTriggerEvidenceRefID: params.NewTriggerEvidenceRefID, NewRuntimeMcpOverlay: params.NewRuntimeMcpOverlay, NewRuntimeConnectedApps: params.NewRuntimeConnectedApps})
+		row, err := queries.MergeCommentIntoQueuedIssueTask(ctx, db.MergeCommentIntoQueuedIssueTaskParams{TargetTaskID: wake.task.ID, IssueID: wake.issue.ID, AgentID: wake.recipient.ID, SquadID: wake.squadID, HeadSha: wake.head, NewTriggerCommentID: params.NewTriggerCommentID, NewTriggerSummary: params.NewTriggerSummary, NewOriginatorUserID: params.NewOriginatorUserID, NewAccountableUserID: params.NewAccountableUserID, NewOriginatorSource: params.NewOriginatorSource, NewDelegatedFromTaskID: params.NewDelegatedFromTaskID, NewRuleVersionID: params.NewRuleVersionID, NewTriggerEvidenceKind: params.NewTriggerEvidenceKind, NewTriggerEvidenceRefID: params.NewTriggerEvidenceRefID, NewRuntimeMcpOverlay: params.NewRuntimeMcpOverlay, NewRuntimeConnectedApps: params.NewRuntimeConnectedApps})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", empty, nil
 		}
@@ -550,7 +582,7 @@ func (handler *Handler) dispatchDecisionWake(ctx context.Context, queries *db.Qu
 		}
 		taskID, outcome = row.ID, "merged_into_queued"
 	} else {
-		row, err := queries.RegisterPlannedCommentForActiveTask(ctx, db.RegisterPlannedCommentForActiveTaskParams{TargetTaskID: snapshot.task.ID, IssueID: snapshot.issue.ID, AgentID: snapshot.recipient.ID, CommentID: trigger.ID, HeadSha: snapshot.head})
+		row, err := queries.RegisterPlannedCommentForActiveTask(ctx, db.RegisterPlannedCommentForActiveTaskParams{TargetTaskID: wake.task.ID, IssueID: wake.issue.ID, AgentID: wake.recipient.ID, CommentID: trigger.ID, HeadSha: wake.head})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", empty, nil
 		}
@@ -559,10 +591,10 @@ func (handler *Handler) dispatchDecisionWake(ctx context.Context, queries *db.Qu
 		}
 		taskID, outcome = row.ID, "planned_input"
 	}
-	if taskID != snapshot.task.ID {
+	if taskID != wake.task.ID {
 		return "", empty, errors.New("decision dispatch target changed")
 	}
-	rows, err := queries.AppendDecisionDeliveryInputs(ctx, db.AppendDecisionDeliveryInputsParams{WorkspaceID: snapshot.issue.WorkspaceID, ID: taskID, CommentIds: commentIDs, Summary: summary.String()})
+	rows, err := queries.AppendDecisionDeliveryInputs(ctx, db.AppendDecisionDeliveryInputsParams{WorkspaceID: wake.issue.WorkspaceID, ID: taskID, CommentIds: commentIDs, Summary: wake.summary})
 	if err == nil && rows != 1 {
 		err = errors.New("decision input target changed")
 	}
