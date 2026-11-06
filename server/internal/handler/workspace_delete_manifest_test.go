@@ -23,6 +23,28 @@ func TestGovernanceWorkspaceDeletionManifestHasExplicitQueries(t *testing.T) {
 	}
 }
 
+func TestProviderBreakerWorkspaceDeletionIsExplicit(t *testing.T) {
+	if workspaceDeletionManifest["provider_breaker"] != workspaceDelete {
+		t.Fatal("provider_breaker must be classified for explicit workspace deletion")
+	}
+
+	queries, err := os.ReadFile("../../pkg/db/queries/workspace_delete.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(queries), "DELETE FROM provider_breaker WHERE workspace_id = $1") {
+		t.Fatal("workspace deletion queries must explicitly delete provider_breaker")
+	}
+
+	handler, err := os.ReadFile("workspace.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(handler), "DeleteProviderBreakersForWorkspace(ctx, requester.WorkspaceID)") {
+		t.Fatal("workspace deletion graph must run the provider_breaker teardown query")
+	}
+}
+
 type workspaceDeleteAction string
 
 const (
@@ -73,6 +95,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"channel_task_delivery":              workspaceDelete,
 	"channel_typing_reaction":            workspaceDeleteSettle, // Source deletion makes retained anchors eligible for the cleanup worker.
 	"channel_user_binding":               workspaceDelete,
+	"chat_attention_item":                workspaceDelete, // no FK; removed by workspace_id in DeleteWorkspaceCommunicationRoots.
+	"chat_attention_mark":                workspaceDelete, // no workspace_id; keyed by chain root session, removed with the sessions.
 	"chat_draft_restore":                 workspaceDelete,
 	"chat_message":                       workspaceDelete,
 	"chat_pinned_agent":                  workspaceDelete,
@@ -102,6 +126,9 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"decision_intent":                    workspaceDeleteWorker,
 	"decision_intent_target":             workspaceDeleteWorker,
 	"decision_request":                   workspaceDeleteWorker,
+	"decision_wait":                      workspaceDelete,       // explicit workspace-scoped delete in DeleteWorkspaceLeafData; no FK.
+	"decision_wake_event":                workspaceDeleteWorker, // no FK; orphan cleanup deletes the rows with their request.
+	"decision_wake_receipt":              workspaceDeleteWorker, // no FK; orphan cleanup deletes the rows with their event's request.
 	"decision_worker_lease":              workspaceDeleteKeep,
 	"wakeup_definition_activation":       workspaceDeleteKeep,
 	"dingtalk_group_presence":            workspaceDelete,
@@ -150,15 +177,19 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"issue_wakeup":                       workspaceDelete,
 	"issue_wakeup_definition":            workspaceDelete,
 	"dm_progress_follow":                 workspaceDelete, // CHE-3369 C1 follow state; no FK, swept by DeleteWorkspaceIssueRoots.
+	"dm_progress_data_incident":          workspaceDelete, // CHE-3546 L0 data incident; no FK, swept by DeleteWorkspaceIssueRoots.
 	"dm_progress_lane":                   workspaceDelete, // CHE-3369 C1 lane row; no FK, swept by DeleteWorkspaceIssueRoots.
+	"dm_progress_lane_event":             workspaceDelete, // CHE-3548 moved-under lane event; no FK, swept by DeleteWorkspaceIssueRoots.
 	"issue_wakeup_pr_event":              workspaceDelete,
 	"issue_ci_advance":                   workspaceDelete,
 	"stage_queue_waiting":                workspaceDelete, // CHE-3611 refused-PR ledger; issue_id and agent_id FKs ON DELETE CASCADE remove its rows with the workspace.
+	"issue_decision_park":                workspaceDelete, // CHE-3946 decision park; issue_id FK ON DELETE CASCADE removes its rows with the workspace.
 	"issue_wakeup_receipt":               workspaceDelete,
 	"issue_child_event":                  workspaceDelete,
 	"issue_view":                         workspaceDelete,
 	"issue_view_preference":              workspaceDelete,
 	"issue_dependency":                   workspaceDelete,
+	"issue_idle_guard":                   workspaceDelete, // CHE-3947; FK cascade from issue and workspace.
 	"issue_label":                        workspaceDelete,
 	"issue_property":                     workspaceDelete,
 	"issue_pr_automation":                workspaceDelete,
@@ -212,6 +243,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"project_resource":                   workspaceDelete,
 	"protocol_lint_run":                  workspaceDeleteKeep, // Cross-workspace protocol-lint audit/reporting data (CHE-552), not workspace-owned.
 	"provenance_export_log":              workspaceDelete,     // CHE-755 provenance export audit rows; workspace-owned leaf.
+	"provider_breaker":                   workspaceDelete,     // CHE-1735 provider state is removed with its workspace.
 	"provider_failure_recovery":          workspaceDeleteKeep,
 	"recovery_claim":                     workspaceDelete,     // CHE-1126 gateway-recovery claim ledger; workspace_id FK ON DELETE CASCADE plus explicit teardown.
 	"push_delivery":                      workspaceDeleteKeep, // Outbox rows of inbox items; the push worker drops the ones whose item is gone (CHE-1795).
@@ -352,7 +384,7 @@ WHERE table_schema = 'public'
 }
 
 func TestDecisionWorkspaceDeletionRemainsWorkerOwned(test *testing.T) {
-	for _, table := range []string{"decision_action", "decision_agent_scope", "decision_answer", "decision_bound_write", "decision_class_change", "decision_intent", "decision_intent_target", "decision_request"} {
+	for _, table := range []string{"decision_action", "decision_agent_scope", "decision_answer", "decision_bound_write", "decision_class_change", "decision_intent", "decision_intent_target", "decision_request", "decision_wake_event", "decision_wake_receipt"} {
 		if workspaceDeletionManifest[table] != workspaceDeleteWorker {
 			test.Errorf("%s must leave orphan cleanup to the decision worker", table)
 		}
@@ -364,7 +396,8 @@ func TestDecisionWorkspaceDeletionRemainsWorkerOwned(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	if strings.Contains(string(queries), "decision_") {
+	// decision_wait (L5b) is workspace-scoped with no FK, so baseline deletion owns it.
+	if strings.Contains(strings.ReplaceAll(string(queries), "decision_wait", ""), "decision_") {
 		test.Error("baseline workspace deletion must not run a decision statement")
 	}
 }
