@@ -102,6 +102,9 @@ python3 scripts/security-gate/security_gate.py --github <owner/repo> --pr <n> --
 ```
 
 The second command prints `waiver_applies` and exits 3 when the record does not apply. A main-only merge (no change to
-any PR file) keeps the digest, so the waiver still applies. Any change to a PR file voids it. A record without the
-line covers only the head SHA it names, as before. The command checks scope only. Read the record against
+any PR file) keeps the digest, so the waiver still applies. Any change to a PR file voids it. The command fails
+closed (exit 3, `waiver_applies=false`) when the record has no such line, has more than one line that names the key, or
+has one that is not exact (case, indent, trailing text, bad hex). A head SHA in prose is never a scope, so a waiver
+recorded before this line existed stays bound to the head a human reads in it. To carry it across a main-only merge,
+re-record it once with the `Waiver-Diff-Digest:` line for the digest of that head. The command checks scope only. Read the record against
 `multica decision get <id>` first: it must be the answered decision (`authority: human`) of the same issue.

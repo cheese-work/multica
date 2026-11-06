@@ -240,15 +240,29 @@ class DiffDigestTest(unittest.TestCase):
         rc, out = self._cli(m, h3, "--waiver-record", record)
         self.assertEqual((rc, out["waiver_applies"]), (3, False))  # the PR's own diff changed
 
-    def test_waiver_recorded_before_the_digest_line_covers_only_the_head_it_names(self):
-        """Existing human waivers name a head (`e78d1733`) and nothing else. They keep working on that head only."""
-        legacy = self._record(f"Cheese waived the test-first red for head `{self.h1[:8]}` only. Status: WAIVED, not PASS.\n")
-        rc, out = self._cli(self.base, self.h1, "--waiver-record", legacy)
-        self.assertEqual((rc, out["waiver_applies"]), (0, True))
-        m = self.advance_main("other.txt", "o2\n")
-        h2 = self.merge_main()
-        rc, out = self._cli(m, h2, "--waiver-record", legacy)
-        self.assertEqual((rc, out["waiver_applies"]), (3, False))
+    def test_record_without_a_scope_line_never_applies_even_if_it_names_the_head(self):
+        """CHE-4326 round 3. Prose is not a scope. A waiver recorded before the line existed names a head in prose,
+        and the prose may as well reject that head. The command fails closed; the owner re-records it once with the
+        `Waiver-Diff-Digest:` line (a human reads the old record, the checker never parses it)."""
+        for body in (f"Cheese waived the test-first red for head `{self.h1[:8]}` only. Status: WAIVED, not PASS.\n",
+                     f"Cheese did NOT waive head {self.h1}. Status: REJECTED.\n",
+                     f"Not waived for {self.h1[:12]}\n"):
+            for head_base in ((self.base, self.h1),):
+                rc, out = self._cli(*head_base, "--waiver-record", self._record(body))
+                self.assertEqual((rc, out["waiver_applies"]), (3, False), body)
+
+    def test_ambiguous_or_malformed_scope_lines_fail_closed(self):
+        """A valid digest line beside a second, malformed, repeated or indented scope line is ambiguous: no waiver."""
+        _, first = self._cli(self.base, self.h1)
+        good = f"Waiver-Diff-Digest: {first['digest']}"
+        other = "Waiver-Diff-Digest: " + "1" * 64
+        for body in (f"{good}\n{other}\n", f"{other}\n{good}\n", f"{good}\n{good}\n", f"{good}\nWaiver-Diff-Digest: xyz\n",
+                     f"{good}\nWaiver-Diff-Digest:\n", f"{good} \n", f" {good}\n", f"{good}\nwaiver-diff-digest: {first['digest']}\n",
+                     f"{good}0\n", f"Waiver-Diff-Digest:{first['digest']}\n"):
+            rc, out = self._cli(self.base, self.h1, "--waiver-record", self._record(body))
+            self.assertEqual((rc, out["waiver_applies"]), (3, False), repr(body))
+        rc, out = self._cli(self.base, self.h1, "--waiver-record", self._record(f"Status: WAIVED\r\n{good}\r\n"))
+        self.assertEqual((rc, out["waiver_applies"]), (0, True))  # one exact line, CRLF record
 
     def test_unrelated_or_malformed_records_never_apply(self):
         _, first = self._cli(self.base, self.h1)
@@ -273,6 +287,7 @@ class DiffDigestTest(unittest.TestCase):
                 self.assertEqual(json.loads(out.getvalue())["digest"], self.d1)
         self.assertIn("Waiver-Diff-Digest:", records)
         self.assertIn("--waiver-record", records)
+        self.assertIn("re-record it once", records)
         self.assertIn("main-only merge", agent)
         self.assertIn("main-only merge", records)
 

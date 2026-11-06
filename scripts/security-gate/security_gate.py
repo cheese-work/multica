@@ -50,8 +50,8 @@ SEMGREP_BASELINE = "scripts/security-gate/semgrep-baseline.json"
 SEMGREP_CONFIGS = ("p/default", "p/golang", "p/gosec", "p/typescript", "p/python", "p/kotlin")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
-WAIVER_DIGEST_RE = re.compile(r"^Waiver-Diff-Digest: ([0-9a-f]{64})$", re.M)
-HEX_TOKEN_RE = re.compile(r"\b[0-9a-f]{8,40}\b")
+WAIVER_SCOPE_LINE_RE = re.compile(r"waiver-diff-digest", re.I)
+WAIVER_DIGEST_LINE_RE = re.compile(r"Waiver-Diff-Digest: ([0-9a-f]{64})")
 HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 FINDING_RE = re.compile(r"^- (\S+:\d+)\s+\S")
 REVIEWER_RE = re.compile(r"^(\S+) \(([^)]+)\)$")
@@ -66,15 +66,18 @@ SECRET_RES = [re.compile(p) for p in (
 
 
 def waiver_applies(record: str, head: str, digest: str) -> bool:
-    """Does a human waiver record (the decision-record comment, CHE-4326) cover this PR state? A record with a
-    `Waiver-Diff-Digest:` line covers every head whose PR diff digest equals it, so a main-only merge keeps the
-    waiver and any change to a PR file voids it. A record without the line (every waiver recorded before CHE-4326)
-    covers only the head SHA it names, in full or as a prefix of at least 8 hex characters. The caller still reads
-    that the record is the server's answered human decision (`multica decision get`): this checks scope only."""
-    digests = WAIVER_DIGEST_RE.findall(record)
-    if digests:
-        return digest in digests
-    return any(head.startswith(t) for t in HEX_TOKEN_RE.findall(record))
+    """Does a human waiver record (the decision-record comment, CHE-4326) cover this PR state? Only one exact
+    `Waiver-Diff-Digest: <64 lowercase hex>` line is a scope: it covers every head whose PR diff digest equals it, so a
+    main-only merge keeps the waiver and any change to a PR file voids it. Fail closed on anything else: no such
+    line, a second scope line, or a line that names the key but is not exact (case, indent, trailing text, bad hex).
+    Prose, including a head SHA, is never a scope: a record from before CHE-4326 is re-recorded once with the line.
+    `head` is unused on purpose: the scope is the diff. The caller still reads that the record is the server's
+    answered human decision (`multica decision get`): this checks scope only."""
+    scope_lines = [ln for ln in record.splitlines() if WAIVER_SCOPE_LINE_RE.search(ln)]
+    if len(scope_lines) != 1:
+        return False
+    m = WAIVER_DIGEST_LINE_RE.fullmatch(scope_lines[0])
+    return bool(m) and m.group(1) == digest
 
 
 def pr_diff_digest(repo: str, base: str, head: str) -> str:
