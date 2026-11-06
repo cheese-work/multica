@@ -1,7 +1,7 @@
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import type { StoreApi, UseBoundStore } from "zustand";
 import { getCurrentSlug } from "../platform/workspace-storage";
-import { currentDraftOrigin } from "./cleanup-registry";
+import { getDraftGeneration, localDraftGeneration } from "./cleanup-registry";
 import type { KeyedDraftStore } from "./create-keyed-draft-store";
 
 /**
@@ -16,7 +16,8 @@ import type { KeyedDraftStore } from "./create-keyed-draft-store";
  * write (an editor flushing on unmount, an upload settling) after the route
  * moved to another workspace lands in the originating workspace's drafts, never
  * the current one's. A write that outlives logout or a workspace delete is
- * dropped, so it cannot bring back a draft that cleanup removed.
+ * dropped, so it cannot bring back a draft that cleanup removed. That holds
+ * across tabs too: logout in another tab invalidates this tab's pending writes.
  */
 export function usePersistedDraft<TData extends object>(
   store: UseBoundStore<StoreApi<KeyedDraftStore<TData>>>,
@@ -25,7 +26,13 @@ export function usePersistedDraft<TData extends object>(
 ): [TData, (patch: Partial<TData>) => void, () => void] {
   const draft = store((s) => s.getDraft(key) ?? empty);
   const slug = getCurrentSlug();
-  const generation = currentDraftOrigin(slug).generation;
+  // The generation a write belongs to is taken when the component first renders in a workspace, and
+  // refreshed only when this tab's own cleanup ran (a logout and re-login without an unmount). A
+  // cleanup in another tab never refreshes it, so a pending edit typed before that logout stays stale.
+  const origins = useRef(new Map<string | null, { local: number; generation: number }>());
+  const local = localDraftGeneration(slug);
+  if (origins.current.get(slug)?.local !== local) origins.current.set(slug, { local, generation: getDraftGeneration(slug) });
+  const generation = origins.current.get(slug)!.generation;
   const setDraft = useCallback(
     (patch: Partial<TData>) => {
       store.getState().setDraftIn({ slug, generation }, key, patch);

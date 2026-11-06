@@ -4,7 +4,7 @@ import { act, renderHook } from "@testing-library/react";
 import { createKeyedDraftStore } from "./create-keyed-draft-store";
 import { usePersistedDraft } from "./use-persisted-draft";
 import { setCurrentWorkspace } from "../platform/workspace-storage";
-import { clearRegisteredWorkspaceDrafts, resetAllRegisteredDrafts } from "./cleanup-registry";
+import { clearRegisteredWorkspaceDrafts, DRAFT_GENERATION_KEY, resetAllRegisteredDrafts } from "./cleanup-registry";
 
 interface Sample {
   text: string;
@@ -187,6 +187,44 @@ describe("usePersistedDraft", () => {
         setCurrentWorkspace("ws-a", "id-a");
         await settle();
         expect(store.getState().getDraft("create")).toBeUndefined();
+      });
+
+      // Another tab's logout is only visible through shared storage: this tab's counters never moved.
+      const otherTabLogsOut = (values: Map<string, string>) => {
+        const key = DRAFT_GENERATION_KEY;
+        window.localStorage.setItem(key, String(Number(window.localStorage.getItem(key) ?? 0) + 1));
+        values.clear();
+      };
+
+      it("another tab logged out: a pending flush from this tab is dropped, even after a re-render", async () => {
+        const { store, hookA, settle, values } = await setup();
+        act(() => hookA.result.current[1]({ text: "private" }));
+        otherTabLogsOut(values);
+        hookA.rerender(); // a render before the unmount must not adopt the new session
+        act(() => hookA.result.current[1]({ text: "private, late" }));
+        hookA.unmount();
+        await settle();
+
+        expect([...values.keys()].filter((k) => k.startsWith("h_late"))).toEqual([]);
+        expect(store.getState().getDraft("create")?.text).not.toBe("private, late");
+      });
+
+      it("another tab logged out: a late clear is dropped too", async () => {
+        const { store, hookA, values } = await setup();
+        act(() => hookA.result.current[1]({ text: "private" }));
+        otherTabLogsOut(values);
+        act(() => hookA.result.current[2]());
+        expect(store.getState().getDraft("create")).toEqual({ text: "private" });
+      });
+
+      it("this tab's own logout and re-login keeps a mounted hook writing", async () => {
+        const { store, hookA, settle, values } = await setup();
+        resetAllRegisteredDrafts();
+        clearRegisteredWorkspaceDrafts(adapterOf(values), "ws-a");
+        hookA.rerender();
+        act(() => hookA.result.current[1]({ text: "new session" }));
+        await settle();
+        expect(store.getState().getDraft("create")).toEqual({ text: "new session" });
       });
 
       it("a late clear after cleanup is a no-op and a fresh render writes again", async () => {

@@ -1,4 +1,4 @@
-import { resetAllRegisteredDrafts } from "@multica/core/drafts";
+import { DRAFT_GENERATION_KEY, resetAllRegisteredDrafts } from "@multica/core/drafts";
 import { act, screen } from "@testing-library/react";
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import userEvent from "@testing-library/user-event";
@@ -289,6 +289,22 @@ describe("decision card draft survives remount", () => {
     expect(draftKeys().length).toBeGreaterThan(0);
     // Tab B logs out and clears shared storage; this tab has not heard of it yet.
     draftKeys().forEach((k) => window.localStorage.removeItem(k));
+    first.unmount();
+    expect(draftKeys()).toEqual([]);
+  });
+
+  it("another tab logged out with a note edit still pending: unmounting writes nothing back to shared storage", async () => {
+    setCurrentWorkspace("acme", "ws-a");
+    await act(async () => { await Promise.resolve(); });
+    const user = userEvent.setup();
+    const first = renderWithI18n(chat(card("xtab-pending")));
+    await user.click(screen.getByRole("radio", { name: /Option B/ }));
+    expect(draftKeys().length).toBeGreaterThan(0);
+    // This edit is still inside the editor's update timer, so unmount flushes it.
+    await user.type(note(), "private note");
+    // Tab B logs out: it clears shared storage and bumps the shared generation. This tab has not heard of it.
+    draftKeys().forEach((k) => window.localStorage.removeItem(k));
+    window.localStorage.setItem(DRAFT_GENERATION_KEY, String(Number(window.localStorage.getItem(DRAFT_GENERATION_KEY) ?? 0) + 1));
     first.unmount();
     expect(draftKeys()).toEqual([]);
   });

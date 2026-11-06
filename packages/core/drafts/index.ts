@@ -7,6 +7,7 @@ export {
   registerDraftCleanup,
   clearRegisteredWorkspaceDrafts,
   resetAllRegisteredDrafts,
+  DRAFT_GENERATION_KEY,
   type DraftCleanupEntry,
 } from "./cleanup-registry";
 export {
