@@ -75,7 +75,7 @@ type TxBeginner interface {
 }
 
 type rowsQuerier interface {
-	querier
+	queryer
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
@@ -253,7 +253,7 @@ const configCols = `mode, branches, events, workflows_include, workflows_exclude
 	max_owner_wakes_per_hour, updated_at`
 
 // readConfig returns the stored row, or the defaults (UpdatedAt nil) when the repo has none.
-func readConfig(ctx context.Context, q querier, ws, owner, name, lock string) (ConfigView, error) {
+func readConfig(ctx context.Context, q queryer, ws, owner, name, lock string) (ConfigView, error) {
 	c := ConfigView{Repo: owner + "/" + name}
 	err := q.QueryRow(ctx, `SELECT `+configCols+` FROM ci_watch_config
 		WHERE workspace_id=$1::uuid AND repo_owner=$2 AND repo_name=$3`+lock, ws, owner, name).Scan(
@@ -267,7 +267,7 @@ func readConfig(ctx context.Context, q querier, ws, owner, name, lock string) (C
 }
 
 // GetConfig reads one repo's settings without creating a row.
-func GetConfig(ctx context.Context, q querier, ws, owner, name string) (ConfigView, error) {
+func GetConfig(ctx context.Context, q queryer, ws, owner, name string) (ConfigView, error) {
 	return readConfig(ctx, q, ws, owner, name, "")
 }
 

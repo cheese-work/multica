@@ -3,6 +3,8 @@ package ciwatch
 import (
 	"context"
 	"errors"
+	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -47,6 +49,7 @@ type Failure struct {
 	SignatureHash                    string
 	Protocol                         string // "P2", "P3" or "P4"
 	RunURL                           string
+	CheckName                        string // the red CI job or test name; keys the red-main owner
 }
 
 type Admission struct{ Outcome string }
@@ -54,6 +57,11 @@ type Admission struct{ Outcome string }
 // Admit runs classification's follow-up in one transaction under the advisory
 // lock on (repo, signature): breaker check, owner claim, action scheduling.
 func (l *Ledger) Admit(ctx context.Context, f Failure) (Admission, error) {
+	switch f.Protocol {
+	case "P2", "P3", "P4":
+	default: // P1 reruns never reach this path; an unknown protocol must not default to P2
+		return Admission{}, fmt.Errorf("ciwatch: protocol %q is not admitted here", f.Protocol)
+	}
 	tx, err := l.pool.Begin(ctx)
 	if err != nil {
 		return Admission{}, err
@@ -64,6 +72,43 @@ func (l *Ledger) Admit(ctx context.Context, f Failure) (Admission, error) {
 		return Admission{}, err
 	}
 	return out, tx.Commit(ctx)
+}
+
+// terminalIssue is true for an issue in a done or closed status category (alias i).
+const terminalIssue = `(i.status IN ('done','cancelled') OR EXISTS (SELECT 1 FROM issue_status s
+	WHERE s.workspace_id=i.workspace_id AND s.key=i.status AND s.category IN ('done','closed')))`
+
+// reconcileClosure makes the owner row follow its real issue: a done or closed
+// issue closes the owner at the issue's closing time, a reopened one reopens it.
+// The 24 h and 7 d reopen windows in claimOwner read that time.
+func reconcileClosure(ctx context.Context, tx pgx.Tx, f Failure) error {
+	if _, err := tx.Exec(ctx, `UPDATE ci_signature_owner o SET state='closed', closed_at=i.updated_at
+		FROM issue i WHERE i.id=o.issue_id AND i.workspace_id=o.workspace_id AND o.workspace_id=$1::uuid AND o.repo_owner=$2
+			AND o.repo_name=$3 AND o.signature_hash=$4 AND o.state='open' AND `+terminalIssue,
+		f.WorkspaceID, f.RepoOwner, f.RepoName, f.SignatureHash); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `UPDATE ci_signature_owner o SET state='open', closed_at=NULL
+		FROM issue i WHERE i.id=o.issue_id AND i.workspace_id=o.workspace_id AND o.workspace_id=$1::uuid AND o.repo_owner=$2
+			AND o.repo_name=$3 AND o.signature_hash=$4 AND o.state='closed' AND NOT `+terminalIssue,
+		f.WorkspaceID, f.RepoOwner, f.RepoName, f.SignatureHash)
+	return err
+}
+
+// checkKey is the red-main "one owner per check" key: the CI job or test name,
+// lowercased, every character outside a-z0-9._- replaced by "-", cut to 60. The
+// name comes from CI, so a key git would refuse as a ref is dropped.
+var nonKeyChar = regexp.MustCompile(`[^a-z0-9._-]`)
+
+func checkKey(name string) string {
+	k := nonKeyChar.ReplaceAllString(strings.ToLower(name), "-")
+	if len(k) > 60 {
+		k = k[:60]
+	}
+	if k == "" || k[0] == '-' || k[0] == '.' || strings.Contains(k, "..") || strings.HasSuffix(k, ".lock") {
+		return ""
+	}
+	return k
 }
 
 func (l *Ledger) admit(ctx context.Context, tx pgx.Tx, f Failure) (Admission, error) {
@@ -81,18 +126,12 @@ func (l *Ledger) admit(ctx context.Context, tx pgx.Tx, f Failure) (Admission, er
 	if seen {
 		return Admission{Outcome: OutcomeDuplicate}, nil
 	}
-	if err := l.recordEvent(ctx, tx, f, "admit", nil, ""); err != nil {
+	if err := reconcileClosure(ctx, tx, f); err != nil {
 		return Admission{}, err
 	}
-	if f.Protocol == "P4" {
-		// A notification is already deduplicated per (repo, signature, day); no owner, no breaker.
-		_, _, err := l.schedule(ctx, tx, l.newAction(f, ActionInboxNotify, "p4"))
-		return Admission{Outcome: OutcomeNotify}, err
-	}
-
-	kind := KindP2
-	if f.Protocol == "P3" {
-		kind = KindP3
+	// Every applicable failure counts toward the breaker before any protocol side effect.
+	if err := l.recordEvent(ctx, tx, f, "admit", nil, ""); err != nil {
+		return Admission{}, err
 	}
 	var pausedUntil *time.Time
 	var recent int
@@ -127,8 +166,14 @@ func (l *Ledger) admit(ctx context.Context, tx pgx.Tx, f Failure) (Admission, er
 			return Admission{}, err
 		}
 		return Admission{Outcome: OutcomeSuppressed}, l.countOnly(ctx, tx, f)
+	case f.Protocol == "P4":
+		// A notification is already deduplicated per (repo, signature, day); no owner.
+		_, _, err := l.schedule(ctx, tx, l.newAction(f, ActionInboxNotify, "p4"))
+		return Admission{Outcome: OutcomeNotify}, err
+	case f.Protocol == "P3":
+		return l.attach(ctx, tx, f, KindP3, 1)
 	}
-	return l.attach(ctx, tx, f, kind, 1)
+	return l.attach(ctx, tx, f, KindP2, 1)
 }
 
 func (l *Ledger) newAction(f Failure, kind, protocol string) NewAction {
@@ -164,7 +209,9 @@ var kindRank = map[string]int{KindP3: 0, KindP2: 1, KindIncident: 2}
 
 // attach claims the signature owner for a new issue, or counts the run on the
 // existing one. kind only moves up (p3 < p2 < incident). initial is the failure
-// count a freshly claimed owner starts with.
+// count a freshly claimed owner starts with. A failure with a check name
+// follows the red-main "one owner per check" rule: a live owner of the same
+// check (another signature's owner, or an open red-main issue) takes the run.
 func (l *Ledger) attach(ctx context.Context, tx pgx.Tx, f Failure, kind string, initial int) (Admission, error) {
 	var cur string
 	err := tx.QueryRow(ctx, `SELECT kind FROM ci_signature_owner WHERE workspace_id=$1::uuid AND repo_owner=$2
@@ -177,24 +224,116 @@ func (l *Ledger) attach(ctx context.Context, tx pgx.Tx, f Failure, kind string, 
 	case cur == KindIncident:
 		reopen = ReopenAfterIncident
 	}
-	claimed, err := l.ClaimSignatureOwner(ctx, tx, f.WorkspaceID, f.RepoOwner, f.RepoName, f.SignatureHash, reopen)
+	key := checkKey(f.CheckName)
+	if key != "" { // after the signature lock, always: one lock order
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,
+			ownerKey(f.WorkspaceID, f.RepoOwner, f.RepoName, "#check:"+key)); err != nil {
+			return Admission{}, err
+		}
+	}
+	// A savepoint, so a duplicate issue_create (same run and kind scheduled
+	// before) drops the claim instead of leaving an orphan `creating` owner.
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		return Admission{}, err
+	}
+	defer func() { _ = sp.Rollback(ctx) }()
+	claimed, err := l.claimOwner(ctx, sp, f.WorkspaceID, f.RepoOwner, f.RepoName, f.SignatureHash, reopen)
 	if err != nil {
 		return Admission{}, err
 	}
 	if claimed {
-		if _, err := tx.Exec(ctx, `UPDATE ci_signature_owner SET kind=$5, fail_count=$6, last_run_url=$7, digest_class='',
-			last_digest_at=NULL WHERE workspace_id=$1::uuid AND repo_owner=$2 AND repo_name=$3 AND signature_hash=$4`,
-			f.WorkspaceID, f.RepoOwner, f.RepoName, f.SignatureHash, kind, initial, f.RunURL); err != nil {
+		adopt := ""
+		if key != "" {
+			other, err := liveCheckOwner(ctx, sp, f, key)
+			if err != nil {
+				return Admission{}, err
+			}
+			if other != "" { // the check already has an owner: drop this claim, count on that one
+				if err := sp.Rollback(ctx); err != nil {
+					return Admission{}, err
+				}
+				f.SignatureHash = other
+				return l.countOnOwner(ctx, tx, f, kind, initial)
+			}
+			if adopt, err = openRedMainIssue(ctx, sp, f, key); err != nil {
+				return Admission{}, err
+			}
+		}
+		if _, err := sp.Exec(ctx, `UPDATE ci_signature_owner SET kind=$5, fail_count=$6, last_run_url=$7, digest_class='',
+			last_digest_at=NULL, check_key=$8 WHERE workspace_id=$1::uuid AND repo_owner=$2 AND repo_name=$3 AND signature_hash=$4`,
+			f.WorkspaceID, f.RepoOwner, f.RepoName, f.SignatureHash, kind, initial, f.RunURL, key); err != nil {
 			return Admission{}, err
 		}
-		_, _, err := l.schedule(ctx, tx, l.newAction(f, ActionIssueCreate, strings.ToLower(f.Protocol)))
-		return Admission{Outcome: OutcomeScheduled}, err
+		if adopt != "" { // reuse the open issue: no creation, the digest announces the run
+			if _, err := sp.Exec(ctx, `UPDATE ci_signature_owner SET state='open', issue_id=$5::uuid WHERE workspace_id=$1::uuid
+				AND repo_owner=$2 AND repo_name=$3 AND signature_hash=$4`, f.WorkspaceID, f.RepoOwner, f.RepoName,
+				f.SignatureHash, adopt); err != nil {
+				return Admission{}, err
+			}
+			if err := syncIssueMetadata(ctx, sp, f.WorkspaceID, adopt, initial, f.RunURL); err != nil {
+				return Admission{}, err
+			}
+			_, inserted, err := l.schedule(ctx, sp, l.newAction(f, ActionIssueComment, strings.ToLower(f.Protocol)))
+			if err != nil {
+				return Admission{}, err
+			}
+			if !inserted {
+				return Admission{Outcome: OutcomeDuplicate}, nil
+			}
+			return Admission{Outcome: OutcomeAttached}, sp.Commit(ctx)
+		}
+		_, inserted, err := l.schedule(ctx, sp, l.newAction(f, ActionIssueCreate, strings.ToLower(f.Protocol)))
+		if err != nil {
+			return Admission{}, err
+		}
+		if !inserted {
+			return Admission{Outcome: OutcomeDuplicate}, nil // deferred Rollback drops the claim
+		}
+		return Admission{Outcome: OutcomeScheduled}, sp.Commit(ctx)
 	}
+	if err := sp.Rollback(ctx); err != nil {
+		return Admission{}, err
+	}
+	return l.countOnOwner(ctx, tx, f, kind, initial)
+}
 
+// liveCheckOwner returns the signature of another owner of the check whose
+// issue is still being created or is not done or closed.
+func liveCheckOwner(ctx context.Context, tx pgx.Tx, f Failure, key string) (string, error) {
+	var sig string
+	err := tx.QueryRow(ctx, `SELECT o.signature_hash FROM ci_signature_owner o
+		LEFT JOIN issue i ON i.id=o.issue_id AND i.workspace_id=o.workspace_id
+		WHERE o.workspace_id=$1::uuid AND o.repo_owner=$2 AND o.repo_name=$3 AND o.check_key=$4 AND o.signature_hash<>$5
+			AND o.state IN ('creating','open') AND (i.id IS NULL OR NOT `+terminalIssue+`)
+		ORDER BY o.created_at LIMIT 1`, f.WorkspaceID, f.RepoOwner, f.RepoName, key, f.SignatureHash).Scan(&sig)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return sig, err
+}
+
+// redMainPrefix is the title prefix of a check's owner issue.
+func redMainPrefix(repo, key string) string { return "red-main " + repo + " " + key + ":" }
+
+// openRedMainIssue finds a not-done issue titled for the check that no owner row holds yet.
+func openRedMainIssue(ctx context.Context, tx pgx.Tx, f Failure, key string) (string, error) {
+	var id string
+	err := tx.QueryRow(ctx, `SELECT i.id::text FROM issue i WHERE i.workspace_id=$1::uuid AND left(i.title, length($2))=$2
+			AND NOT `+terminalIssue+` AND NOT EXISTS (SELECT 1 FROM ci_signature_owner o WHERE o.issue_id=i.id)
+		ORDER BY i.created_at LIMIT 1`, f.WorkspaceID, redMainPrefix(f.RepoName, key)).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return id, err
+}
+
+// countOnOwner counts the run on the signature's existing owner and schedules its digest.
+func (l *Ledger) countOnOwner(ctx context.Context, tx pgx.Tx, f Failure, kind string, initial int) (Admission, error) {
 	var state string
 	var issueID *string
 	var count int
-	err = tx.QueryRow(ctx, `UPDATE ci_signature_owner SET fail_count=GREATEST(fail_count+1, $6::int), last_run_url=$5,
+	err := tx.QueryRow(ctx, `UPDATE ci_signature_owner SET fail_count=GREATEST(fail_count+1, $6::int), last_run_url=$5,
 			kind=CASE WHEN $7::int > (CASE kind WHEN 'incident' THEN 2 WHEN 'p2' THEN 1 ELSE 0 END) THEN $8::text ELSE kind END
 		WHERE workspace_id=$1::uuid AND repo_owner=$2 AND repo_name=$3 AND signature_hash=$4
 		RETURNING state, issue_id::text, fail_count`,

@@ -30,7 +30,7 @@ type watchConfig struct {
 }
 
 // loadConfig reads the repo's caps and owners; a repo without a row gets the column defaults.
-func loadConfig(ctx context.Context, q querier, a Action) (watchConfig, error) {
+func loadConfig(ctx context.Context, q queryer, a Action) (watchConfig, error) {
 	c := watchConfig{MaxNewIssuesPerDay: 5, MaxOwnerWakesPerHour: 6}
 	err := q.QueryRow(ctx, `SELECT COALESCE(fix_owner_kind,''), COALESCE(fix_owner_id::text,''),
 			COALESCE(notify_member_id::text,''), max_new_issues_per_day, max_owner_wakes_per_hour
@@ -51,7 +51,7 @@ func lockRepoCaps(ctx context.Context, tx pgx.Tx, a Action) error {
 }
 
 // actor is the member a watcher issue or comment is attributed to.
-func (c watchConfig) actor(ctx context.Context, q querier, ws string) (string, error) {
+func (c watchConfig) actor(ctx context.Context, q queryer, ws string) (string, error) {
 	if c.NotifyMemberID != "" {
 		return c.NotifyMemberID, nil
 	}
@@ -65,17 +65,17 @@ func (c watchConfig) actor(ctx context.Context, q querier, ws string) (string, e
 }
 
 type ownerState struct {
-	Kind, State, IssueID, DigestClass, LastRunURL string
-	FailCount                                     int
-	LastDigestAt, ClosedAt                        *time.Time
+	Kind, State, IssueID, DigestClass, LastRunURL, CheckKey string
+	FailCount                                               int
+	LastDigestAt, ClosedAt                                  *time.Time
 }
 
 func readOwner(ctx context.Context, tx pgx.Tx, a Action) (o ownerState, found bool, err error) {
 	err = tx.QueryRow(ctx, `SELECT kind, state, COALESCE(issue_id::text,''), digest_class, last_run_url, fail_count,
-			last_digest_at, closed_at FROM ci_signature_owner
+			last_digest_at, closed_at, check_key FROM ci_signature_owner
 		WHERE workspace_id=$1::uuid AND repo_owner=$2 AND repo_name=$3 AND signature_hash=$4 FOR UPDATE`,
 		a.WorkspaceID, a.RepoOwner, a.RepoName, a.SignatureHash).Scan(&o.Kind, &o.State, &o.IssueID, &o.DigestClass,
-		&o.LastRunURL, &o.FailCount, &o.LastDigestAt, &o.ClosedAt)
+		&o.LastRunURL, &o.FailCount, &o.LastDigestAt, &o.ClosedAt, &o.CheckKey)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return o, false, nil
 	}
@@ -111,12 +111,17 @@ func shortSig(sig string) string {
 	return sig
 }
 
-func titleFor(kind string, f failureInfo, sig string) string {
+// titleFor names the owner issue. A check with a key uses the red-main title,
+// so every later run of that check finds the issue by its prefix.
+func titleFor(kind, repo, checkKey string, f failureInfo, sig string) string {
 	branch := f.Branch
 	if branch == "" {
 		branch = "main"
 	}
 	wf := EscapeName(f.Workflow)
+	if checkKey != "" && kind != KindP3 {
+		return fmt.Sprintf("%s %s red: %s: %s", redMainPrefix(repo, checkKey), EscapeName(branch), wf, shortSig(sig))
+	}
 	switch kind {
 	case KindIncident:
 		return fmt.Sprintf("incident(ci): %s red: %s: %s", EscapeName(branch), wf, shortSig(sig))
@@ -124,6 +129,27 @@ func titleFor(kind string, f failureInfo, sig string) string {
 		return fmt.Sprintf("chore(ci): flaky: %s: %s", wf, shortSig(sig))
 	}
 	return fmt.Sprintf("fix(ci): %s red: %s: %s", EscapeName(branch), wf, shortSig(sig))
+}
+
+// takeWake spends one of the repo's hourly owner wakes. It reports false, with
+// no event, when the cap is spent. The caller records ReasonWakeCapped.
+func (l *Ledger) takeWake(ctx context.Context, tx pgx.Tx, a Action, cfg watchConfig) (bool, error) {
+	if err := lockRepoCaps(ctx, tx, a); err != nil {
+		return false, err
+	}
+	var wakes int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM ci_watch_event WHERE workspace_id=$1::uuid AND repo_owner=$2
+		AND repo_name=$3 AND kind='wake' AND created_at > $4`, a.WorkspaceID, a.RepoOwner, a.RepoName,
+		l.now().Add(-time.Hour)).Scan(&wakes); err != nil {
+		return false, err
+	}
+	if wakes >= cfg.MaxOwnerWakesPerHour {
+		return false, l.noteReason(ctx, tx, a, ReasonWakeCapped) // settle keeps it: the issue exists, only the run was capped
+	}
+	_, err := tx.Exec(ctx, `INSERT INTO ci_watch_event (workspace_id, repo_owner, repo_name, signature_hash, kind,
+		run_id, created_at) VALUES ($1::uuid,$2,$3,$4,'wake',$5,$6)`, a.WorkspaceID, a.RepoOwner, a.RepoName,
+		a.SignatureHash, a.OriginalRunID, l.now())
+	return err == nil, err
 }
 
 // bodyFor renders every untrusted field through EscapeName or UntrustedBlock.
@@ -164,44 +190,22 @@ func (l *Ledger) issueCreate(d Destinations) LocalEffect {
 			return "", err
 		}
 
-		wake := o.Kind != KindP3
-		if wake {
-			if err := lockRepoCaps(ctx, tx, a); err != nil {
-				return "", err
-			}
-			var wakes int
-			if err := tx.QueryRow(ctx, `SELECT count(*) FROM ci_watch_event WHERE workspace_id=$1::uuid AND repo_owner=$2
-				AND repo_name=$3 AND kind='wake' AND created_at > $4`, a.WorkspaceID, a.RepoOwner, a.RepoName,
-				l.now().Add(-time.Hour)).Scan(&wakes); err != nil {
-				return "", err
-			}
-			if wake = wakes < cfg.MaxOwnerWakesPerHour; !wake {
-				// settle keeps this reason: the issue exists, only the run was capped.
-				if _, err := tx.Exec(ctx, `UPDATE ci_watch_action SET reason=$2 WHERE id=$1::uuid`, a.ID, ReasonWakeCapped); err != nil {
-					return "", err
-				}
-			}
+		wake, err := l.takeWake(ctx, tx, a, cfg)
+		if err != nil {
+			return "", err
 		}
-
 		priority := "urgent"
 		if o.Kind == KindP3 {
-			priority = "low"
+			priority = "medium"
 		}
 		id, err := d.Issue.CreateIssue(ctx, tx, IssueSpec{
-			WorkspaceID: a.WorkspaceID, Title: titleFor(o.Kind, f, a.SignatureHash),
+			WorkspaceID: a.WorkspaceID, Title: titleFor(o.Kind, a.RepoName, o.CheckKey, f, a.SignatureHash),
 			Body: bodyFor(f, a.SignatureHash, o.LastRunURL, o.FailCount), Priority: priority,
 			AssigneeType: cfg.FixOwnerKind, AssigneeID: cfg.FixOwnerID, CreatorID: creator, Wake: wake,
 			Metadata: map[string]any{"ci_watch_count": o.FailCount, "last_run_url": o.LastRunURL}, OriginID: a.ID,
 		})
 		if err != nil {
 			return "", err
-		}
-		if wake {
-			if _, err := tx.Exec(ctx, `INSERT INTO ci_watch_event (workspace_id, repo_owner, repo_name, signature_hash, kind,
-				run_id, created_at) VALUES ($1::uuid,$2,$3,$4,'wake',$5,$6)`, a.WorkspaceID, a.RepoOwner, a.RepoName,
-				a.SignatureHash, a.OriginalRunID, l.now()); err != nil {
-				return "", err
-			}
 		}
 		// The creation counts as the first digest, so the next one is 6 h away.
 		_, err = tx.Exec(ctx, `UPDATE ci_signature_owner SET digest_class=$5, last_digest_at=$6
@@ -243,9 +247,17 @@ func (l *Ledger) issueComment(d Destinations) LocalEffect {
 		if err != nil {
 			return "", err
 		}
-		if classChange && o.Kind == KindIncident && d.Issue != nil {
-			if err := d.Issue.UpdateIssue(ctx, tx, IssueUpdate{WorkspaceID: a.WorkspaceID, IssueID: o.IssueID,
-				TitlePrefix: "incident(ci): ", Priority: "urgent"}); err != nil {
+		// An escalation (to incident, or from the low-key P3 issue to P2) raises
+		// the priority and wakes the owner, under the same hourly cap as creation.
+		if classChange && d.Issue != nil && (o.Kind == KindIncident || o.DigestClass == KindP3) {
+			up := IssueUpdate{WorkspaceID: a.WorkspaceID, IssueID: o.IssueID, Priority: "urgent"}
+			if o.Kind == KindIncident && o.CheckKey == "" {
+				up.TitlePrefix = "incident(ci): "
+			}
+			if up.Wake, err = l.takeWake(ctx, tx, a, cfg); err != nil {
+				return "", err
+			}
+			if err := d.Issue.UpdateIssue(ctx, tx, up); err != nil {
 				return "", err
 			}
 		}

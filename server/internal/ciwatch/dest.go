@@ -22,6 +22,7 @@ type IssueUpdate struct {
 	WorkspaceID, IssueID string
 	TitlePrefix          string
 	Priority             string
+	Wake                 bool // start the assignee's run (or the squad leader's)
 }
 
 type CommentSpec struct {
