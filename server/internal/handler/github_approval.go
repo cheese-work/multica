@@ -93,6 +93,15 @@ func (h *Handler) loadGitHubApproval(w http.ResponseWriter, r *http.Request) (gi
 		writeError(w, http.StatusInternalServerError, "failed to load pull request")
 		return loaded, pgtype.UUID{}, false
 	}
+	allowed, err := h.newGitHubPolicyRun().workspaceAllowed(ctx, pull.InstallationID, revision.WorkspaceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to check the installation allowlist")
+		return loaded, pgtype.UUID{}, false
+	}
+	if !allowed {
+		writeError(w, http.StatusForbidden, "the GitHub installation is not allowed")
+		return loaded, pgtype.UUID{}, false
+	}
 	agent, err := service.GitHubPullRequestAuthor(ctx, h.Queries, pull)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusConflict, "pull request has no unique author agent")
@@ -266,14 +275,20 @@ func (h *Handler) settleApprovedRevision(ctx context.Context, workspaceID, revis
 	if err != nil {
 		return err
 	}
-	// The master switch is read before the GitHub call and again under the lock.
+	// The master switch and the installation allowlist are read before the GitHub call
+	// and again under the lock.
 	workspace, err := h.Queries.GetWorkspace(ctx, workspaceID)
 	if err != nil {
 		return err
 	}
 	enabled := githubFeaturesEnabled(workspace)
+	// A binding excluded after the approval was stored must not cause a GitHub read.
+	allowedBefore, err := h.newGitHubPolicyRun().workspaceAllowed(ctx, pull.InstallationID, workspaceID)
+	if err != nil {
+		return err
+	}
 	var snapshot ghsnapshot.ApprovalSnapshot
-	if enabled {
+	if enabled && allowedBefore {
 		if snapshot, err = h.readGitHubSnapshot(ctx, revision, pull); err != nil {
 			return err
 		}
@@ -296,13 +311,24 @@ func (h *Handler) settleApprovedRevision(ctx context.Context, workspaceID, revis
 	if err != nil {
 		return err
 	}
+	bindings, err := queries.ListGitHubInstallationsByInstallationIDForShare(ctx, pull.InstallationID)
+	if err != nil {
+		return err
+	}
+	// Policy off allows every installation, bound or not (as workspaceAllowed does).
+	allowedNow := h.githubAllowlist.ids == nil
+	for _, binding := range bindings {
+		allowedNow = allowedNow || (binding.WorkspaceID == workspaceID && h.githubInstallationAllowed(binding))
+	}
 	state, reason := "quarantined", "approved_snapshot_changed"
 	var publications []githubIntakePublication
 	switch {
 	case !githubFeaturesEnabled(workspace):
 		state, reason = "denied", "integration_disabled"
-	case !enabled:
-		return errors.New("github: integration enabled since the snapshot read; retry")
+	case !allowedNow:
+		state, reason = "denied", "installation_not_allowed"
+	case !enabled || !allowedBefore:
+		return errors.New("github: integration or installation allowed since the snapshot read; retry")
 	case snapshot.Hash == approval.SnapshotHash && snapshotMatchesRevision(snapshot, revision):
 		state, reason, publications, err = h.routeApprovedRevision(ctx, queries, revision, pull, approval.ApproverUserID)
 		if err != nil {

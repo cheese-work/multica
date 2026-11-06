@@ -719,6 +719,15 @@ func (c *Client) ReportTaskMessages(ctx context.Context, taskID string, messages
 	}, nil)
 }
 
+// ReportSilenceAlert asks the server to leave one comment on the task's issue
+// for the silent segment. The server dedupes on (task, segment).
+func (c *Client) ReportSilenceAlert(ctx context.Context, taskID, segmentID string, silentFor time.Duration) error {
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/silence-alert", taskID), map[string]any{
+		"segment_id":         segmentID,
+		"silent_for_seconds": int(silentFor.Seconds()),
+	}, nil)
+}
+
 func (c *Client) CompleteTask(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) error {
 	return c.completeTaskWithRetrySchedule(ctx, taskID, output, branchName, sessionID, workDir, sessionRolloutMissing, retiredSessionID, durableWorkDir, 0, 0, defaultTerminalRetrySchedule)
 }
@@ -1506,6 +1515,16 @@ func (c *Client) postJSONWithToken(ctx context.Context, path, token string, reqB
 		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(respBody)
+}
+
+// AskDecision opens one decision request for the task's issue. It carries the
+// agent's task token: the server derives issue, agent and person from it.
+func (c *Client) AskDecision(ctx context.Context, taskToken string, ask json.RawMessage) (json.RawMessage, error) {
+	var response json.RawMessage
+	if err := c.postJSONWithToken(ctx, "/api/decisions/ask", taskToken, ask, &response); err != nil {
+		return nil, err
+	}
+	return response, nil
 }
 
 // InvokeAgentPluginHook asks the server to make one agent-triggered hook call.

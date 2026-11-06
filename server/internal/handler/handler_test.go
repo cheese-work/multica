@@ -30,6 +30,7 @@ var testPool *pgxpool.Pool
 var testUserID string
 var testWorkspaceID string
 var testRuntimeID string
+var testSeededAgentID string
 
 // dbfx builds the rows these tests act on and removes them again when the test
 // that asked for them ends. New tests build fixtures through it rather than
@@ -100,7 +101,9 @@ func TestMain(m *testing.M) {
 	}
 	dbfx = testutil.New(pool, testWorkspaceID, testUserID)
 
+	stopHeartbeat := keepRuntimeFresh(ctx, pool, testRuntimeID, service.RuntimeClaimFreshnessSeconds/5*time.Second)
 	code := m.Run()
+	stopHeartbeat()
 	if err := cleanupHandlerTestFixture(context.Background(), pool); err != nil {
 		fmt.Printf("Failed to clean up handler test fixture: %v\n", err)
 		if code == 0 {
@@ -173,6 +176,7 @@ func setupHandlerTestFixture(ctx context.Context, pool *pgxpool.Pool) (string, s
 	`, seededAgentID, workspaceID); err != nil {
 		return "", "", err
 	}
+	testSeededAgentID = seededAgentID
 
 	return userID, workspaceID, nil
 }

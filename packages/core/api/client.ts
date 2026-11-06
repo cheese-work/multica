@@ -114,6 +114,8 @@ import type {
   ChatDraftRestoresResponse,
   ChatPendingTask,
   PrioritizeQueuedChatTaskResponse,
+  ChatSupplement,
+  ResendChatSupplementResponse,
   PendingChatTasksResponse,
   HasPendingChatTasksResponse,
   SendChatMessageResponse,
@@ -270,14 +272,18 @@ import type {
 import { type Logger, noopLogger } from "../logger";
 import { createRequestId, createSafeId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
-import { parseWithFallback } from "./schema";
+import { parseOrThrow, parseWithFallback } from "./schema";
 import {
   PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
-  PasskeyRevokedSchema, parsePasskeyResponse,
-  type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart,
+  PasskeyListSchema, PasskeyRevokeCodeStartSchema, PasskeyRevokedSchema, parsePasskeyResponse,
+  type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart, type PasskeySummary,
 } from "./passkey-schema";
 import {
   RuntimeProfileSchema,
+  AgentDecisionSettingSchema,
+  type AgentDecisionSetting,
+  RoutingAgentSettingSchema,
+  type RoutingAgentSetting,
   OpenDecisionRequestListSchema,
   DecisionArtifactListSchema,
   RuntimeProfileListSchema,
@@ -302,6 +308,9 @@ import {
   EMPTY_CHAT_CONTINUE_RESPONSE,
   EMPTY_CHAT_FORK_RESPONSE,
   PrioritizeQueuedChatTaskResponseSchema,
+  ChatSupplementSchema,
+  EMPTY_CHAT_SUPPLEMENT,
+  ResendChatSupplementResponseSchema,
   SendChatMessageResponseSchema,
   StartMikaOnboardingResponseSchema,
   ChildIssuesResponseSchema,
@@ -418,6 +427,8 @@ import {
   RedeemWecomBindingTokenResponseSchema,
   EMPTY_WECOM_INSTALLATION,
   EMPTY_LIST_WECOM_INSTALLATIONS_RESPONSE,
+  ListLarkInstallationsResponseSchema,
+  EMPTY_LIST_LARK_INSTALLATIONS_RESPONSE,
   EMPTY_REDEEM_WECOM_BINDING_TOKEN_RESPONSE,
   TelegramInstallationSchema,
   ListTelegramInstallationsResponseSchema,
@@ -1503,14 +1514,9 @@ export class ApiClient {
       `/api/issues/${encodeURIComponent(id)}`,
       options?.signal ? { signal: options.signal } : undefined,
     );
-    const issue = parseWithFallback<Issue | null>(raw, IssueSchema, null, {
-      endpoint: "GET /api/issues/:id",
-    });
-    if (!issue) {
-      // parseWithFallback already logged the zod issues + raw payload.
-      throw new Error("GET /api/issues/:id returned a malformed issue");
-    }
-    return issue;
+    // Throws SchemaValidationError (logged with the failing paths) so the UI
+    // can tell unreadable data from a network failure.
+    return parseOrThrow<Issue>(raw, IssueSchema, { endpoint: "GET /api/issues/:id" });
   }
 
   async createIssue(
@@ -3249,10 +3255,43 @@ export class ApiClient {
     });
   }
 
-  async updateWorkspace(id: string, data: { name?: string; description?: string; context?: string; settings?: Record<string, unknown>; repos?: WorkspaceRepo[]; issue_prefix?: string; avatar_url?: string; compact_prompt?: string | null; wakeups_paused?: boolean; auto_compact?: { enabled?: boolean; threshold_pct?: number } | null; github_review_members?: Record<string, string>; github_review_authors?: Record<string, string> }): Promise<Workspace> {
+  async updateWorkspace(id: string, data: { name?: string; description?: string; context?: string; settings?: Record<string, unknown>; repos?: WorkspaceRepo[]; issue_prefix?: string; avatar_url?: string; compact_prompt?: string | null; wakeups_paused?: boolean; auto_compact?: { enabled?: boolean; threshold_pct?: number } | null; idle_started_guard?: { mode?: "off" | "shadow" | "act"; after_hours?: number }; github_review_members?: Record<string, string>; github_review_authors?: Record<string, string> }): Promise<Workspace> {
     return this.fetch(`/api/workspaces/${id}`, {
       method: "PATCH",
       body: JSON.stringify(data),
+    });
+  }
+
+  // Null when the response is malformed: callers must not show a guessed value.
+  async getAgentDecisionSetting(): Promise<AgentDecisionSetting | null> {
+    const raw: unknown = await this.fetch("/api/agent-decisions/brief");
+    return parseWithFallback<AgentDecisionSetting | null>(raw, AgentDecisionSettingSchema, null, {
+      endpoint: "GET /api/agent-decisions/brief",
+    });
+  }
+
+  // CHE-3627: null when the response is malformed, so a guessed value is never
+  // shown or saved back over the real one.
+  async getRoutingAgent(workspaceId: string): Promise<RoutingAgentSetting | null> {
+    const raw: unknown = await this.fetch(`/api/workspaces/${workspaceId}/routing-agent`);
+    return parseWithFallback<RoutingAgentSetting | null>(raw, RoutingAgentSettingSchema, null, {
+      endpoint: "GET /api/workspaces/{id}/routing-agent",
+    });
+  }
+
+  // Owner/admin + human-actor only; replaces the whole setting.
+  async updateRoutingAgent(workspaceId: string, config: RoutingAgentSetting): Promise<RoutingAgentSetting> {
+    return this.fetch(`/api/workspaces/${workspaceId}/routing-agent`, {
+      method: "PUT",
+      body: JSON.stringify(config),
+    });
+  }
+
+  // Owner + human-actor only; the server clears an earlier stop when turned on.
+  async setAgentDecisionsEnabled(enabled: boolean): Promise<{ enabled: boolean }> {
+    return this.fetch("/api/agent-decisions/setting", {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
     });
   }
 
@@ -4107,12 +4146,28 @@ export class ApiClient {
     return this.passkeyPost("/api/passkeys/enroll/start", PasskeyEnrollStartSchema);
   }
 
-  async finishPasskeyEnrollment(input: { ceremony_id: string; code: string; attestation: unknown }): Promise<void> {
+  async listPasskeys(): Promise<PasskeySummary[]> {
+    const raw: unknown = await this.fetch("/api/passkeys");
+    return parsePasskeyResponse(raw, PasskeyListSchema, "GET /api/passkeys").passkeys;
+  }
+
+  async finishPasskeyEnrollment(input: {
+    ceremony_id: string; code: string; attestation: unknown; assertion?: PasskeyAssertionEnvelope;
+  }): Promise<void> {
     await this.passkeyPost("/api/passkeys/enroll/finish", PasskeyEnrolledSchema, input);
   }
 
   challengePasskeyRevocation(passkeyId: string): Promise<PasskeyChallenge> {
     return this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke/challenge`, PasskeyChallengeSchema);
+  }
+
+  // Sole-key path: the target is the only active key, so no other key can sign. A mailed code stands in.
+  startPasskeyRevocationByCode(passkeyId: string): Promise<{ ceremony_id: string; expires_at: string }> {
+    return this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke/code`, PasskeyRevokeCodeStartSchema);
+  }
+
+  async confirmPasskeyRevocationByCode(passkeyId: string, input: { ceremony_id: string; code: string }): Promise<void> {
+    await this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke/confirm`, PasskeyRevokedSchema, input);
   }
 
   async revokePasskey(passkeyId: string, assertion: PasskeyAssertionEnvelope): Promise<void> {
@@ -4266,6 +4321,48 @@ export class ApiClient {
       PrioritizeQueuedChatTaskResponseSchema,
       EMPTY_PRIORITIZE_QUEUED_CHAT_TASK_RESPONSE,
       { endpoint: "POST /api/chat/sessions/:id/queued-tasks/:taskId/prioritize" },
+    );
+  }
+
+  /**
+   * Adds a queued follow-up to the running task instead of stopping it. The
+   * server answers 409 with a stable `code` when the run cannot take it; the
+   * follow-up then stays queued.
+   */
+  async steerChatTask(sessionId: string, taskId: string): Promise<ChatSupplement> {
+    const raw = await this.fetch<unknown>(
+      `/api/chat/sessions/${sessionId}/tasks/${taskId}/steer`,
+      { method: "POST" },
+    );
+    return parseWithFallback(raw, ChatSupplementSchema, EMPTY_CHAT_SUPPLEMENT, {
+      endpoint: "POST /api/chat/sessions/:id/tasks/:taskId/steer",
+    });
+  }
+
+  /**
+   * Sends a steered message that did not arrive as a new queued run. Pass
+   * `confirmPossibleDuplicate` only after the user accepted the duplicate
+   * warning for an `uncertain` receipt; the server refuses it otherwise.
+   */
+  async resendChatSupplement(
+    sessionId: string,
+    messageId: string,
+    options: { confirmPossibleDuplicate?: boolean } = {},
+  ): Promise<ResendChatSupplementResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/chat/sessions/${sessionId}/messages/${messageId}/supplement/resend`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          confirm_possible_duplicate: options.confirmPossibleDuplicate === true,
+        }),
+      },
+    );
+    return parseWithFallback(
+      raw,
+      ResendChatSupplementResponseSchema,
+      { task_id: "", supplement: EMPTY_CHAT_SUPPLEMENT },
+      { endpoint: "POST /api/chat/sessions/:id/messages/:messageId/supplement/resend" },
     );
   }
 
@@ -5446,7 +5543,13 @@ export class ApiClient {
 
   // Lark integration
   async listLarkInstallations(workspaceId: string): Promise<ListLarkInstallationsResponse> {
-    return this.fetch(`/api/workspaces/${workspaceId}/lark/installations`);
+    const endpoint = `/api/workspaces/${workspaceId}/lark/installations`;
+    return parseWithFallback(
+      await this.fetch(endpoint),
+      ListLarkInstallationsResponseSchema,
+      EMPTY_LIST_LARK_INSTALLATIONS_RESPONSE,
+      { endpoint },
+    );
   }
 
   async beginLarkInstall(

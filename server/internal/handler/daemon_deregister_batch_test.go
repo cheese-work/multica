@@ -49,6 +49,7 @@ func (f runtimeBatchFailDBTX) QueryRow(ctx context.Context, sql string, args ...
 // normally.
 func newRuntimeBatchReadFailureHandler(t *testing.T) *Handler {
 	t.Helper()
+	t.Cleanup(giveBackRunBudgetHooks) // New() re-registers the process-wide budget hooks on its own bus.
 	return New(
 		db.New(runtimeBatchFailDBTX{inner: testPool}),
 		testPool,

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { Suspense, useEffect, useId, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Loader2, MessageSquareQuote } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
@@ -9,8 +9,12 @@ import { useWorkspacePaths } from "@multica/core/paths";
 import { formatShortcut, useShortcut } from "@multica/core/shortcuts";
 import type { DecisionRequestCard as RequestCard } from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
-import { ContentEditor, useEditorUpload, useUploadGate, type ContentEditorRef } from "../../editor";
+import type { ContentEditorRef } from "../../editor/content-editor";
+import { useEditorUpload } from "../../editor/use-editor-upload";
+import { useUploadGate } from "../../editor/use-upload-gate";
+import { LazyContentEditor as ContentEditor } from "./lazy-content-editor";
 import { RichContent } from "../../rich-content";
+import { CompactIssueChipsProvider } from "../../issues/compact-issue-chips-context";
 import { useT } from "../../i18n";
 import { AppLink } from "../../navigation";
 import { useOnline } from "../../settings/components/use-online";
@@ -118,19 +122,21 @@ function DecisionAnswerForm({
         {card.options?.length ? t(($) => $.decision.answer_note) : t(($) => $.decision.answer_text)}
       </span>
       <div className="rounded-lg border border-surface-border px-2 py-1.5 focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-ring">
-        <ContentEditor
-          ref={editorRef}
-          defaultValue={text}
-          ariaLabel={card.options?.length ? t(($) => $.decision.answer_note) : t(($) => $.decision.answer_text)}
-          ariaDescribedBy={`${textId}-hint`}
-          onUpdate={setText}
-          onSubmit={send}
-          onUploadFile={(file) => uploadWithToast(file, { issueId: card.issue_id })}
-          onUploadingChange={uploadGate.onUploadingChange}
-          debounceMs={0}
-          showBubbleMenu={false}
-          className="max-h-60 overflow-y-auto"
-        />
+        <Suspense fallback={null}>
+          <ContentEditor
+            ref={editorRef}
+            defaultValue={text}
+            ariaLabel={card.options?.length ? t(($) => $.decision.answer_note) : t(($) => $.decision.answer_text)}
+            ariaDescribedBy={`${textId}-hint`}
+            onUpdate={setText}
+            onSubmit={send}
+            onUploadFile={(file) => uploadWithToast(file, { issueId: card.issue_id })}
+            onUploadingChange={uploadGate.onUploadingChange}
+            debounceMs={0}
+            showBubbleMenu={false}
+            className="max-h-60 overflow-y-auto"
+          />
+        </Suspense>
       </div>
       <p id={`${textId}-hint`} className="text-caption text-muted-foreground">
         {t(($) => $.decision.answer_hint, { shortcut: sendShortcut })}
@@ -275,6 +281,11 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
         >
           {card.issue_identifier || card.issue_id}
         </AppLink>
+        {card.issue_title && (
+          <span className="min-w-0 break-words text-muted-foreground" data-testid="decision-request-source-title">
+            {card.issue_title}
+          </span>
+        )}
         {card.source_comment_id && (
           <AppLink
             href={`${issueHref}#comment-${card.source_comment_id}`}
@@ -301,7 +312,9 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
         <DecisionArtifacts requestId={card.id} answered={card.state === "answered"} />
         <div data-testid="decision-request-ask">
           <AnnotatableAnswer messageId={`${DECISION_REQUEST_SOURCE_PREFIX}${card.id}`} readOnly={card.state !== "open"}>
-            <RichContent content={card.ask} density="compact" phase="settled" />
+            <CompactIssueChipsProvider>
+              <RichContent content={card.ask} density="compact" phase="settled" />
+            </CompactIssueChipsProvider>
           </AnnotatableAnswer>
         </div>
         {(refused || card.state !== "open") && hasDraft(draft) && !answer.isPending ? (

@@ -69,7 +69,25 @@
     "remove": "キューから削除",
     "more": "その他のキュー操作",
     "fallback": "キュー内のメッセージ",
+    "steer_starting": "実行を開始しています",
+    "steer_unsupported": "この実行は新しいメッセージを受け付けられません。メッセージはキューに残ります。",
+    "stop_and_send": "停止して送信",
     "action_failed_toast": "キュー内のメッセージを更新できませんでした"
+  },
+  "supplement": {
+    "added": "実行に追加しました",
+    "read": "エージェントが読みました",
+    "read_twice": "エージェントが読みました。再送もされたため、2回見える可能性があります",
+    "not_received": "未受信",
+    "unconfirmed": "配信を確認できません",
+    "resent": "新しい実行として再送しました",
+    "send_new_run": "新しい実行として送信",
+    "send_again_anyway": "それでも再送",
+    "confirm_title": "このメッセージを再送しますか？",
+    "confirm_body": "エージェントはすでにこのメッセージを受け取っている可能性があります。再送すると、エージェントが2回対応する可能性があります。",
+    "confirm_send": "再送",
+    "cancel": "キャンセル",
+    "resend_failed_toast": "メッセージを再送できませんでした"
   },
   "message_list": {
     "continued_from": "継続元：",
@@ -310,7 +328,8 @@
     "cancel": "キャンセル",
     "cancel_label": "{{time}} に予約されたフォローアップをキャンセル",
     "cancel_failed": "フォローアップをキャンセルできませんでした",
-    "load_failed": "予約済みのフォローアップを読み込めませんでした。再試行"
+    "load_failed": "予約済みのフォローアップを読み込めませんでした。再試行",
+    "watching_until": "課題を監視中 · {{time}} まで"
   },
   "annotations": {
     "one_request": "決定リクエストへのコメントは、1件ずつ送信してください。",

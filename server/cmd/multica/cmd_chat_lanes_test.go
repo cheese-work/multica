@@ -49,3 +49,25 @@ func TestChatSessionsWindowCommand(test *testing.T) {
 		test.Fatal("lane listing without --issue was allowed")
 	}
 }
+
+func TestChatSessionsShowsUnseen(test *testing.T) {
+	command, _, _ := chatCmd.Find([]string{"sessions"})
+	useChatTestServer(test, func(writer http.ResponseWriter, request *http.Request) {
+		_ = json.NewEncoder(writer).Encode([]map[string]any{
+			{"id": "seen-lane", "eligible": true, "title": "Seen", "unseen": false},
+			{"id": "unseen-lane", "eligible": true, "title": "Unseen", "unseen": true},
+		})
+	})
+	_ = command.Flags().Set("issue", "CHE-1559")
+	_ = command.Flags().Set("output", "json")
+	output, err := captureStdout(test, func() error { return command.RunE(command, nil) })
+	var lanes []map[string]any
+	if err != nil || json.Unmarshal([]byte(output), &lanes) != nil || len(lanes) != 2 || lanes[0]["unseen"] != false || lanes[1]["unseen"] != true {
+		test.Fatalf("json lacks unseen: %s error=%v", output, err)
+	}
+	_ = command.Flags().Set("output", "table")
+	output, err = captureStdout(test, func() error { return command.RunE(command, nil) })
+	if err != nil || !strings.Contains(output, "UNSEEN") {
+		test.Fatalf("table lacks UNSEEN column: %s error=%v", output, err)
+	}
+}

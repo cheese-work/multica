@@ -616,6 +616,10 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 		}
 	}
 
+	if err := followNewIssue(ctx, qtx, p, issue); err != nil {
+		return IssueCreateResult{}, fmt.Errorf("follow new issue: %w", err)
+	}
+
 	if !opts.AssignedAgentRunFireAt.IsZero() && s.shouldEnqueueAgentTaskWithQueries(ctx, qtx, issue) {
 		// The issue must never become visible without its media-gated assigned
 		// task. Inserting both rows through qtx makes the unique-index winner
