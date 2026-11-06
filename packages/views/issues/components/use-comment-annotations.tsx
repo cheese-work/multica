@@ -417,11 +417,15 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
     captureProps: {
       "data-annotation-thread": draftKey,
       onPointerDown: (event: React.PointerEvent) => {
-        armed.current = !editable && event.target instanceof Element && !!event.target.closest("[data-comment-content]") &&
-          !event.target.closest("button, [contenteditable=true]");
+        // Any press in the card may start a drag that ends in the text; the selection decides on release.
+        armed.current = !editable && event.target instanceof Element &&
+          !event.target.closest("button, input, textarea, [contenteditable=true], [data-reply-annotation-overlay]");
       },
       onKeyUp: (event: React.KeyboardEvent) => {
-        if (!editable && event.shiftKey && event.key.startsWith("Arrow")) capture();
+        if (editable) return;
+        const extend = event.shiftKey && /^(Arrow|Home$|End$|Page)/.test(event.key);
+        const selectAll = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a";
+        if (extend || selectAll) capture();
       },
       onKeyDown: (event: React.KeyboardEvent) => {
         if (event.key === "Tab" && !event.shiftKey && selection && !editingId &&

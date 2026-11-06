@@ -1921,5 +1921,32 @@
     "timing_effective": "自 {{time}} 起生效",
     "timing_pending_window": "待生效。{{time}} 生效，{{minutes}} 分鐘內可撤銷。",
     "timing_pending_wake": "待生效。代理被喚醒後立即生效。"
+  },
+  "status_history": {
+    "title": "狀態歷史",
+    "description": "此事項的所有狀態變更，依時間由早到晚。",
+    "empty": "沒有狀態變更記錄。",
+    "truncated": "較早的狀態變更未顯示。清單從伺服器回傳的最早一筆開始。",
+    "trigger_not_recorded": "未記錄觸發來源",
+    "removed": "{{status}}（已移除）",
+    "handoff_comment": "交接留言",
+    "handoff_invalid": "交接連結無效",
+    "scrubber_label": "狀態歷史位置",
+    "position": "第 {{current}} 筆，共 {{total}} 筆",
+    "cause": {
+      "ui_or_api": "由人員變更",
+      "workflow_edge": "工作流程轉換",
+      "workflow_remap": "工作流程重新對應",
+      "pr_merged": "PR 已合併",
+      "ci_advance": "CI 推進",
+      "run_budget": "執行預算",
+      "decision": "決策",
+      "watchdog": "看門狗",
+      "task_reset": "失敗執行重置",
+      "qoder": "Qoder",
+      "duplicate": "重複",
+      "system": "系統"
+    },
+    "open": "狀態歷史"
   }
 }
