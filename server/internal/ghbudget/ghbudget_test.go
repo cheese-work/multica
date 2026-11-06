@@ -33,11 +33,17 @@ type fakeFetcher struct {
 	snap  Snapshot
 	err   error
 	delay time.Duration
+	// during runs inside RateLimit, before it returns, to model a response
+	// that lands while the refresh is in flight.
+	during func()
 }
 
 func (f *fakeFetcher) RateLimit(context.Context, int64) (Snapshot, error) {
 	f.calls.Add(1)
 	time.Sleep(f.delay)
+	if f.during != nil {
+		f.during()
+	}
 	return f.snap, f.err
 }
 
@@ -418,5 +424,84 @@ func TestRecheckFailsForExpiredReservation(t *testing.T) {
 	e.clock.Advance(ReservationTTL + time.Second)
 	if err := r.Recheck(ctx); err == nil {
 		t.Fatal("expired reservation must not recheck clean")
+	}
+}
+
+func rateHeaders(remaining int, reset time.Time) http.Header {
+	h := http.Header{}
+	h.Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
+	h.Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
+	return h
+}
+
+func (e *env) storedRemaining(t *testing.T) int {
+	t.Helper()
+	var n int
+	if err := e.pool.QueryRow(context.Background(),
+		`SELECT remaining FROM gh_installation_budget WHERE installation_id=$1`, e.inst).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestRefreshNeverOverwritesNewerLowerObservation(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	reset := t0.Add(50 * time.Minute)
+	e.fetch.snap = Snapshot{Remaining: 1600, ResetAt: reset}
+	// Another call returns 1500 while GET /rate_limit (which read 1600) is in flight.
+	e.fetch.during = func() {
+		if err := e.led.Observe(ctx, e.inst, rateHeaders(1500, reset)); err != nil {
+			t.Error(err)
+		}
+	}
+	_, err := e.led.Reserve(ctx, e.inst, 10)
+	deferred(t, err, ReasonBelowFloor)
+	if got := e.storedRemaining(t); got != 1500 {
+		t.Fatalf("remaining = %d, want 1500: refresh overwrote the lower observation", got)
+	}
+}
+
+func TestCompleteWithoutHeadersDebitsTheCallCost(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	e.seed(t, 1600, t0.Add(30*time.Minute), t0)
+
+	first, err := e.led.Reserve(ctx, e.inst, 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The call timed out after GitHub received it: no headers.
+	if err := first.Complete(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if e.activeReservations(t) != 0 {
+		t.Fatal("reservation not deleted on complete")
+	}
+	if got := e.storedRemaining(t); got != 1540 {
+		t.Fatalf("remaining = %d, want 1540 after a header-less call", got)
+	}
+	// Repeating the call must not reuse the old apparent budget: 1540-60 < 1500.
+	_, err = e.led.Reserve(ctx, e.inst, 60)
+	deferred(t, err, ReasonBelowFloor)
+}
+
+func TestCompleteWithHeadersMergesInsteadOfDebiting(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	reset := t0.Add(30 * time.Minute)
+	e.seed(t, 1600, reset, t0)
+	r, err := e.led.Reserve(ctx, e.inst, 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Complete(ctx, rateHeaders(1590, reset)); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.storedRemaining(t); got != 1590 {
+		t.Fatalf("remaining = %d, want 1590 from the headers", got)
+	}
+	if e.activeReservations(t) != 0 {
+		t.Fatal("reservation not deleted on complete")
 	}
 }
