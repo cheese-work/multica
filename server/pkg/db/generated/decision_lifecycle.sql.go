@@ -150,7 +150,7 @@ SELECT CASE
           AND (request.escalation_class <> 'reversible' OR (request.project_id IS NOT NULL AND request.project_id IS DISTINCT FROM issue.project_id) OR NOT COALESCE((SELECT project.decision_delegates @> ARRAY[non_owner.user_id] FROM project WHERE project.id = issue.project_id AND project.workspace_id = issue.workspace_id), false))
     ) THEN 'delegate_removed'
     WHEN agent.archived_at IS NOT NULL AND request.request_fingerprint NOT LIKE 'server:%' AND (request.status = 'open' OR fallback.id IS NULL OR fallback.archived_at IS NOT NULL OR fallback.runtime_id IS NULL) THEN 'agent_archived'
-    WHEN request.status = 'open' AND request.origin = 'asked' AND request.created_at <= CURRENT_TIMESTAMP - interval '168 hours' THEN 'expired'
+    WHEN request.status = 'open' AND request.origin = 'asked' AND request.created_at <= CURRENT_TIMESTAMP - interval '168 hours' AND NOT EXISTS (SELECT 1 FROM decision_wait episode WHERE episode.closed_at IS NULL AND episode.phase = 'waiting' AND request.id = ANY(episode.request_ids)) THEN 'expired'
     WHEN request.status = 'open' AND EXISTS (
         SELECT 1 FROM decision_action action
         WHERE action.decision_request_id = request.id AND action.state = 'pending' AND action.expires_at <= clock_timestamp()
@@ -340,7 +340,7 @@ WHERE request.authority = 'human' AND request.status IN ('open', 'answered') AND
         WHERE non_owner.workspace_id = request.workspace_id AND non_owner.user_id = request.human_user_id AND non_owner.role <> 'owner' AND request.request_fingerprint NOT LIKE 'server:%'
           AND (request.escalation_class <> 'reversible' OR (request.project_id IS NOT NULL AND request.project_id IS DISTINCT FROM issue.project_id) OR NOT COALESCE((SELECT project.decision_delegates @> ARRAY[non_owner.user_id] FROM project WHERE project.id = issue.project_id AND project.workspace_id = issue.workspace_id), false))
     )
-    OR (request.status = 'open' AND request.origin = 'asked' AND request.created_at <= CURRENT_TIMESTAMP - interval '168 hours')
+    OR (request.status = 'open' AND request.origin = 'asked' AND request.created_at <= CURRENT_TIMESTAMP - interval '168 hours' AND NOT EXISTS (SELECT 1 FROM decision_wait episode WHERE episode.closed_at IS NULL AND episode.phase = 'waiting' AND request.id = ANY(episode.request_ids)))
     OR (request.status = 'open' AND EXISTS (
         SELECT 1 FROM decision_action action
         WHERE action.decision_request_id = request.id AND action.state = 'pending' AND action.expires_at <= clock_timestamp()
