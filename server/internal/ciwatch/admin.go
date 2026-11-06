@@ -163,7 +163,7 @@ func uuidField(raw json.RawMessage) (any, error) {
 
 func capField(raw json.RawMessage) (any, error) {
 	var n int
-	if err := json.Unmarshal(raw, &n); err != nil || n < 0 || n > maxCap {
+	if string(raw) == "null" || json.Unmarshal(raw, &n) != nil || n < 0 || n > maxCap {
 		return nil, fmt.Errorf("must be an integer from 0 to %d", maxCap)
 	}
 	return n, nil
