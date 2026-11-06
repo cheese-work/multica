@@ -3,10 +3,12 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
@@ -72,8 +74,9 @@ func (handler *Handler) suspendDecisionEpisode(ctx context.Context, queries *db.
 			return edgeMove{}, err
 		}
 		// An unchanged value is a no-op that returns no row.
-		if _, err := queries.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{Key: "blocked_reason", Value: value, ID: issue.ID, WorkspaceID: issue.WorkspaceID}); ignoreNoRows(err) != nil {
-			return edgeMove{}, err
+		_, setErr := queries.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{Key: "blocked_reason", Value: value, ID: issue.ID, WorkspaceID: issue.WorkspaceID})
+		if setErr != nil && !errors.Is(setErr, pgx.ErrNoRows) {
+			return edgeMove{}, setErr
 		}
 	}
 	if !wasBlocked || wait.SuspendReason.String != kind {
