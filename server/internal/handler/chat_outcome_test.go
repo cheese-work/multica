@@ -369,14 +369,14 @@ func TestInvalidOutcomesChangeNothingAndLeaveTheTurnUnclassified(t *testing.T) {
 	foreignAsk := foreign.item(t, "ask")
 	task := dm.sendRunning(t, "go")
 
-	dm.wantRefused(t, task, map[string]any{"kind": "done"})                                       // done needs --ask
-	dm.wantRefused(t, task, map[string]any{"kind": "done", "ask_ids": []string{}})                // empty list
-	dm.wantRefused(t, task, map[string]any{"kind": "question"})                                   // two open asks, no id
-	dm.wantRefused(t, task, map[string]any{"kind": "question", "ask": b, "new": true})            // both forms
-	dm.wantRefused(t, task, map[string]any{"kind": "question", "ask": foreignAsk})               // another chain's ask
-	dm.wantRefused(t, task, map[string]any{"kind": "done", "ask_ids": []string{a, foreignAsk}})   // one bad id voids the call
+	dm.wantRefused(t, task, map[string]any{"kind": "done"})                                        // done needs --ask
+	dm.wantRefused(t, task, map[string]any{"kind": "done", "ask_ids": []string{}})                 // empty list
+	dm.wantRefused(t, task, map[string]any{"kind": "question"})                                    // two open asks, no id
+	dm.wantRefused(t, task, map[string]any{"kind": "question", "ask": b, "new": true})             // both forms
+	dm.wantRefused(t, task, map[string]any{"kind": "question", "ask": foreignAsk})                 // another chain's ask
+	dm.wantRefused(t, task, map[string]any{"kind": "done", "ask_ids": []string{a, foreignAsk}})    // one bad id voids the call
 	dm.wantRefused(t, task, map[string]any{"kind": "done", "ask_ids": []string{uuid.NewString()}}) // unknown id
-	dm.wantRefused(t, task, map[string]any{"kind": "shout"})                                      // unknown kind
+	dm.wantRefused(t, task, map[string]any{"kind": "shout"})                                       // unknown kind
 
 	for _, id := range []string{a, b} {
 		if st := dm.state(t, id); st.ResolvedBy != nil || st.WaitingMsg != nil {
