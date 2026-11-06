@@ -109,16 +109,37 @@ jobs:
           # same on a re-run; on the first attempt no earlier run can have left a success, so a read that fails with the
           # write (one shared quota) is a warning too.
           published_success=0
+          success_waited=0 success_delay=5
           earlier_not_success() {
             local s
             s="$(gh api "repos/$GITHUB_REPOSITORY/commits/$MERGE_GROUP_SHA/status" \
               --jq '[.statuses[] | select(.context == "security-gate") | .state][0] // "none"')" || { [ "${GITHUB_RUN_ATTEMPT:-1}" = 1 ]; return; }
             [ "$s" != success ]
           }
+          # CHE-4251 review: a success is never retried from a cached decision. A throttled success write waits and then
+          # reads the verdict again (same 300 s budget); only a verdict that is still success is written, a revoked one
+          # is posted in its place. Every other state keeps the plain retry, since a stale non-success fails closed.
           post() {
-            local rc=0
-            gh_retry api "repos/$GITHUB_REPOSITORY/statuses/$MERGE_GROUP_SHA" -f "state=$1" -f context=security-gate \
-              -f "description=${2:0:140}" -f "target_url=$run_url" >/dev/null || rc=$?
+            local rc=0 err
+            if [ "$1" = success ]; then
+              err="$(mktemp)"
+              gh api "repos/$GITHUB_REPOSITORY/statuses/$MERGE_GROUP_SHA" -f "state=$1" -f context=security-gate \
+                -f "description=${2:0:140}" -f "target_url=$run_url" >/dev/null 2>"$err" || rc=$?
+              if [ "$rc" != 0 ]; then
+                if grep -qiE 'rate limit|HTTP 429|too many requests' "$err"; then rc=75; else cat "$err" >&2; fi
+              fi
+              rm -f "$err"
+              if [ "$rc" = 75 ] && [ $((success_waited + success_delay)) -le 300 ]; then
+                sleep "$success_delay"; success_waited=$((success_waited + success_delay))
+                success_delay=$((success_delay * 2 > 60 ? 60 : success_delay * 2))
+                read_verdict
+                post "$state" "$desc"
+                return
+              fi
+            else
+              gh_retry api "repos/$GITHUB_REPOSITORY/statuses/$MERGE_GROUP_SHA" -f "state=$1" -f context=security-gate \
+                -f "description=${2:0:140}" -f "target_url=$run_url" >/dev/null || rc=$?
+            fi
             if [ "$rc" = 0 ]; then
               if [ "$1" = success ]; then published_success=1; else published_success=0; fi
             elif [ "$rc" = 75 ] && [ "$published_success" = 0 ] && earlier_not_success; then

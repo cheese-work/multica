@@ -472,9 +472,23 @@ class MergeGroupStepTest(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn("state=success", self.posted(log)[0], log)
 
+    def test_a_success_write_that_waits_on_a_rate_limit_reads_the_verdict_again_before_it_lands(self):
+        # CHE-4251 review P1: a cached success must not be retried through the backoff; a revocation read during
+        # the wait replaces it, so no success is ever written after the approval is gone
+        done, log = self.run_step(rl_post=2, states="success success failure failure failure")
+        self.assertEqual(done.returncode, 0, (done.stderr, log))
+        self.assertNotIn("state=success", " ".join(self.posted(log)), log)
+        self.assertIn("state=failure", self.posted(log)[-1], log)
+
+    def test_a_success_write_that_waits_and_is_still_approved_lands_after_a_fresh_read(self):
+        done, log = self.run_step(rl_post=2, states="success success success success success success")
+        self.assertEqual(done.returncode, 0, (done.stderr, log))
+        self.assertIn("state=success", self.posted(log)[0], log)
+        self.assertGreaterEqual(len([l for l in log if l.startswith("gate ")]), 4, log)  # two reads, plus one per wait
+
     def test_a_status_write_that_stays_rate_limited_is_not_a_failed_job(self):
         # CHE-4242 review P1: no status is written (the queue entry stays pending), the job is not red
-        done, log = self.run_step(rl_post=999, states="success success success")
+        done, log = self.run_step(rl_post=999, states="success success success success success success success success success success success success")
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(self.posted(log), [], log)
         self.assertIn("::warning::", done.stderr)
