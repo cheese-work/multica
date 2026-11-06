@@ -646,6 +646,10 @@ jobs:
         if: ${{ matrix.partition == 'rest' }}
         run: bash server/cmd/server/integration_startup.test.sh
 
+      - name: TEMP deliberate shard failure (CHE-4268, reverted next commit)
+        if: ${{ matrix.partition == 'service' }}
+        run: exit 1
+
       - name: Test
         env:
           GOFLAGS: -count=1 -v
