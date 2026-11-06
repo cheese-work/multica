@@ -1176,7 +1176,7 @@ func (h *heldResponse) Write(p []byte) (int, error) {
 func (h *heldResponse) writeTo(w http.ResponseWriter) {
 	maps.Copy(w.Header(), h.header)
 	w.WriteHeader(h.status)
-	w.Write(h.body.Bytes())
+	_, _ = w.Write(h.body.Bytes())
 }
 
 // writeReplayedSend answers a retry with the stored send's ids.
