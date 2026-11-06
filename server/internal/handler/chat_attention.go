@@ -316,11 +316,11 @@ func (h *Handler) ChatAttentionUndoXongAll(w http.ResponseWriter, r *http.Reques
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
-	if _, err := qtx.ReopenXongBatchItems(r.Context(), db.ReopenXongBatchItemsParams{BatchID: batch, UserID: user}); err != nil {
+	if _, err := qtx.ReopenXongBatchItems(r.Context(), db.ReopenXongBatchItemsParams{BatchID: batch, UserID: user, WorkspaceID: ws}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to reopen items")
 		return
 	}
-	if _, err := qtx.ClearAttentionAckBatch(r.Context(), db.ClearAttentionAckBatchParams{BatchID: batch, UserID: user}); err != nil {
+	if _, err := qtx.ClearAttentionAckBatch(r.Context(), db.ClearAttentionAckBatchParams{BatchID: batch, UserID: user, WorkspaceID: ws}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to clear acknowledgements")
 		return
 	}

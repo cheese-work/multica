@@ -1699,6 +1699,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// /v1 prevents the Public API from accepting session cookies.
 	// A5b: routes that change other runs' issues or tasks without naming them.
 	denyRunToken := h.DenyTaskTokenWrites(taskWriteScopeMode())
+	// Human-only actions refuse a run's task token in every mode, not only under the rollout flag.
+	humanOnly := h.DenyTaskTokenWrites(handler.TaskWriteScopeOn)
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Auth(queries, patCache, cloudPATVerifier, cfSigner))
 		r.Use(handler.RejectRecoveryWrites)
@@ -2680,16 +2682,16 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/read", h.MarkChatSessionRead)
 					r.Post("/unread", h.MarkChatSessionUnread)
 					// DM attention (CHE-4147): human-only Xong / Để sau on the displayed keys.
-					r.With(denyRunToken).Post("/attention/xong", h.ChatAttentionXong)
-					r.With(denyRunToken).Post("/attention/later", h.ChatAttentionLater)
+					r.With(humanOnly).Post("/attention/xong", h.ChatAttentionXong)
+					r.With(humanOnly).Post("/attention/later", h.ChatAttentionLater)
 					// Deferred-cancellation draft restores (#5219):
 					// creator-only fetch + idempotent consume.
 					r.Get("/draft-restores", h.ListChatDraftRestores)
 					r.Delete("/draft-restores/{restoreId}", h.ConsumeChatDraftRestore)
 				})
 			})
-			r.With(denyRunToken).Post("/api/chat/attention/xong-all", h.ChatAttentionXongAll)
-			r.With(denyRunToken).Post("/api/chat/attention/xong-all/{batchId}/undo", h.ChatAttentionUndoXongAll)
+			r.With(humanOnly).Post("/api/chat/attention/xong-all", h.ChatAttentionXongAll)
+			r.With(humanOnly).Post("/api/chat/attention/xong-all/{batchId}/undo", h.ChatAttentionUndoXongAll)
 			r.Get("/api/chat/pending-tasks", h.ListPendingChatTasks)
 			r.Get("/api/chat/pending-tasks/has-any", h.HasPendingChatTasks)
 

@@ -46,15 +46,17 @@ WHERE chat_attention_mark.acked_at IS NULL;
 -- when the chain has since opened another one.
 UPDATE chat_attention_item i
 SET resolved_at = NULL, resolved_by = NULL, resolve_batch_id = NULL
-WHERE i.resolve_batch_id = @batch_id AND i.user_id = @user_id AND i.resolved_by = 'xong'
+WHERE i.resolve_batch_id = @batch_id AND i.user_id = @user_id AND i.workspace_id = @workspace_id
+  AND i.resolved_by = 'xong'
   AND NOT (i.kind = 'later' AND EXISTS (
     SELECT 1 FROM chat_attention_item o
     WHERE o.chain_root_session_id = i.chain_root_session_id AND o.user_id = i.user_id
       AND o.kind = 'later' AND o.resolved_at IS NULL));
 
 -- name: ClearAttentionAckBatch :execrows
-UPDATE chat_attention_mark SET acked_at = NULL, ack_batch_id = NULL
-WHERE user_id = @user_id AND ack_batch_id = @batch_id;
+UPDATE chat_attention_mark m SET acked_at = NULL, ack_batch_id = NULL
+WHERE m.user_id = @user_id AND m.ack_batch_id = @batch_id
+  AND m.chain_root_session_id IN (SELECT id FROM chat_session WHERE workspace_id = @workspace_id);
 
 -- name: AttentionItemExists :one
 SELECT EXISTS (SELECT 1 FROM chat_attention_item WHERE id = @id) AS item_exists;

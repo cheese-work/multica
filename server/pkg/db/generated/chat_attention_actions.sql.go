@@ -51,17 +51,19 @@ func (q *Queries) AttentionItemExists(ctx context.Context, id pgtype.UUID) (bool
 }
 
 const clearAttentionAckBatch = `-- name: ClearAttentionAckBatch :execrows
-UPDATE chat_attention_mark SET acked_at = NULL, ack_batch_id = NULL
-WHERE user_id = $1 AND ack_batch_id = $2
+UPDATE chat_attention_mark m SET acked_at = NULL, ack_batch_id = NULL
+WHERE m.user_id = $1 AND m.ack_batch_id = $2
+  AND m.chain_root_session_id IN (SELECT id FROM chat_session WHERE workspace_id = $3)
 `
 
 type ClearAttentionAckBatchParams struct {
-	UserID  pgtype.UUID `json:"user_id"`
-	BatchID pgtype.UUID `json:"batch_id"`
+	UserID      pgtype.UUID `json:"user_id"`
+	BatchID     pgtype.UUID `json:"batch_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
 func (q *Queries) ClearAttentionAckBatch(ctx context.Context, arg ClearAttentionAckBatchParams) (int64, error) {
-	result, err := q.db.Exec(ctx, clearAttentionAckBatch, arg.UserID, arg.BatchID)
+	result, err := q.db.Exec(ctx, clearAttentionAckBatch, arg.UserID, arg.BatchID, arg.WorkspaceID)
 	if err != nil {
 		return 0, err
 	}
@@ -264,7 +266,8 @@ func (q *Queries) OpenUnseenAttentionItem(ctx context.Context, arg OpenUnseenAtt
 const reopenXongBatchItems = `-- name: ReopenXongBatchItems :execrows
 UPDATE chat_attention_item i
 SET resolved_at = NULL, resolved_by = NULL, resolve_batch_id = NULL
-WHERE i.resolve_batch_id = $1 AND i.user_id = $2 AND i.resolved_by = 'xong'
+WHERE i.resolve_batch_id = $1 AND i.user_id = $2 AND i.workspace_id = $3
+  AND i.resolved_by = 'xong'
   AND NOT (i.kind = 'later' AND EXISTS (
     SELECT 1 FROM chat_attention_item o
     WHERE o.chain_root_session_id = i.chain_root_session_id AND o.user_id = i.user_id
@@ -272,14 +275,15 @@ WHERE i.resolve_batch_id = $1 AND i.user_id = $2 AND i.resolved_by = 'xong'
 `
 
 type ReopenXongBatchItemsParams struct {
-	BatchID pgtype.UUID `json:"batch_id"`
-	UserID  pgtype.UUID `json:"user_id"`
+	BatchID     pgtype.UUID `json:"batch_id"`
+	UserID      pgtype.UUID `json:"user_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
 // Undo: only rows this batch closed and nobody changed since. A later item stays closed
 // when the chain has since opened another one.
 func (q *Queries) ReopenXongBatchItems(ctx context.Context, arg ReopenXongBatchItemsParams) (int64, error) {
-	result, err := q.db.Exec(ctx, reopenXongBatchItems, arg.BatchID, arg.UserID)
+	result, err := q.db.Exec(ctx, reopenXongBatchItems, arg.BatchID, arg.UserID, arg.WorkspaceID)
 	if err != nil {
 		return 0, err
 	}

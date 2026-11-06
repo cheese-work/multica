@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -407,5 +408,39 @@ func TestChatAttentionXongAll_NextUnclassifiedTurnStaysVisible(t *testing.T) {
 	got := f.keysAt(time.Now())
 	if has(got, service.TurnKey(t1)) || !has(got, service.TurnKey(t2)) {
 		t.Fatalf("T1 acknowledged, T2 visible: %v", got)
+	}
+}
+
+// Undo is scoped to the workspace of the request: the same batch id from another workspace changes
+// nothing, and the batch can still be undone from its own workspace.
+func TestChatAttentionUndo_ScopedToRequestWorkspace(t *testing.T) {
+	f := newAttnFx(t)
+	ask := f.item("ask", testUserID, time.Hour)
+	turn := f.turn()
+	rec := f.call(testHandler.ChatAttentionXongAll, "/api/chat/attention/xong-all", map[string]any{"subject_keys": []string{service.ItemKey(ask), service.TurnKey(turn)}})
+	wantCode(t, rec, http.StatusOK)
+	var done struct {
+		BatchID string `json:"batch_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &done); err != nil || done.BatchID == "" {
+		t.Fatalf("batch_id missing: %s", rec.Body.String())
+	}
+	batch := done.BatchID
+	acked := `SELECT count(*) FROM chat_attention_mark WHERE user_id = $1 AND subject_key = $2 AND acked_at IS NOT NULL`
+
+	req := withURLParam(newRequest(http.MethodPost, "/api/chat/attention/xong-all/"+batch+"/undo", nil), "batchId", batch)
+	req = withChatTestWorkspaceCtx(t, req)
+	member, _ := middleware.MemberFromContext(req.Context())
+	req = req.WithContext(middleware.SetMemberContext(req.Context(), uuid.NewString(), member))
+	out := httptest.NewRecorder()
+	testHandler.ChatAttentionUndoXongAll(out, req)
+	wantCode(t, out, http.StatusOK)
+	if f.resolved(ask) == nil || dbfx.Count(t, acked, testUserID, service.TurnKey(turn)) != 1 {
+		t.Fatal("undo from another workspace must change nothing")
+	}
+
+	wantCode(t, f.call(testHandler.ChatAttentionUndoXongAll, "/api/chat/attention/xong-all/"+batch+"/undo", nil, "batchId", batch), http.StatusOK)
+	if f.resolved(ask) != nil || dbfx.Count(t, acked, testUserID, service.TurnKey(turn)) != 0 {
+		t.Fatal("undo from the batch's own workspace must restore it")
 	}
 }
