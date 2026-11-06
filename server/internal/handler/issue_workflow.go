@@ -1057,10 +1057,7 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to save workflow")
 		return
 	}
-	if lintFindings == nil {
-		lintFindings = []workflowlint.Finding{}
-	}
-	findingsRaw, err := json.Marshal(lintFindings)
+	findingsRaw, err := json.Marshal(storableFindings(lintFindings))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save workflow")
 		return

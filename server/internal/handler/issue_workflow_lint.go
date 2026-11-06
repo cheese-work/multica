@@ -257,6 +257,24 @@ func (h *Handler) lintProposedSave(ctx context.Context, wsUUID pgtype.UUID, user
 	return lintRows([]db.IssueWorkflow{row}, defs, env, byWorkflow)[0].Findings, nil
 }
 
+// agentDerivedRules are the rules that judge an agent or its runtime: a
+// finding names a provider, version or state the reader of a stored workflow
+// may not be allowed to see.
+var agentDerivedRules = map[string]bool{"WF004": true, "WF005": true, "WF006": true, "WF012": true}
+
+// storableFindings are the findings kept with a saved workflow and read back by
+// every workspace member. They are judged for the saver's view, so the
+// agent-derived ones stay out; the lint endpoint judges those per reader.
+func storableFindings(findings []workflowlint.Finding) []workflowlint.Finding {
+	out := make([]workflowlint.Finding, 0, len(findings))
+	for _, f := range findings {
+		if !agentDerivedRules[f.Rule] {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 func unwaivedErrors(findings []workflowlint.Finding) []workflowlint.Finding {
 	var out []workflowlint.Finding
 	for _, f := range findings {

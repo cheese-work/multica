@@ -203,3 +203,33 @@ func TestWorkflowLintFindingsAreReadBack(t *testing.T) {
 	}
 	t.Fatalf("want the stored WF014 warning on a plain read, got %+v", out.LintFindings)
 }
+
+// The findings saved with a workflow are read back by every workspace member.
+// A finding derived from an agent or its runtime must not be stored, or an
+// admin's save would hand a private runtime's provider and version to a member
+// who may not see that runtime.
+func TestWorkflowStoredFindingsLeaveOutRuntimeDetails(t *testing.T) {
+	seedTestCatalog(t)
+	agentID := createHandlerTestAgent(t, "Gate runtime leak "+workflowTestSuffix(), nil)
+	wf := createTestWorkflowSteps(t, "Gate runtime leak "+workflowTestSuffix(), brokenSteps()[:1])
+	steps := cleanSteps()
+	steps[2] = map[string]any{"status_key": "in_progress", "handler": map[string]any{"type": "agent", "id": agentID}}
+
+	// The runtime of the test agent is not write-qualified: WF005 for the saver.
+	saveWorkflow(t, wf.ID, map[string]any{"steps": steps, "lint_override": "test"}).Want(http.StatusOK)
+
+	var raw string
+	if err := testPool.QueryRow(context.Background(), `SELECT lint_findings::text FROM issue_workflow WHERE id = $1`, wf.ID).Scan(&raw); err != nil {
+		t.Fatalf("read stored findings: %v", err)
+	}
+	var out IssueWorkflowResponse
+	testutil.Call(t, testHandler.GetIssueWorkflow, withURLParam(workflowRequest("GET", "/api/issue-workflows/"+wf.ID, nil), "id", wf.ID)).Want(http.StatusOK).JSON(&out)
+	for _, f := range out.LintFindings {
+		if f.Rule == "WF005" || strings.Contains(f.Message, "handler_test_runtime") {
+			t.Fatalf("a plain read returns runtime details: %+v", f)
+		}
+	}
+	if strings.Contains(raw, "handler_test_runtime") {
+		t.Fatalf("the stored findings keep the runtime provider: %s", raw)
+	}
+}
