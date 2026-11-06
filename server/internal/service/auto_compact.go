@@ -23,9 +23,18 @@ import (
 // whose last prompt reached the configured share of the model's context window.
 
 const (
-	AutoCompactMinPct     = 50
-	AutoCompactMaxPct     = 90
-	autoCompactDefaultPct = 80
+	AutoCompactMinPct = 50
+	AutoCompactMaxPct = 90
+
+	// CHE-4331: with no percent saved, the threshold is a token count chosen by
+	// the model's window (windows up to 200k, or larger). The larger-window
+	// value is the idle trigger; Cheese's rule caps it at 400k.
+	AutoCompactSmallWindow       = 200_000
+	AutoCompactDefaultTokens200k = 190_000
+	AutoCompactDefaultTokens1M   = 200_000
+	AutoCompactMinTokens         = 100_000
+	AutoCompactMaxTokens200k     = 200_000
+	AutoCompactMaxTokens1M       = 400_000
 
 	// CompactTaskKind marks a compaction run, manual or automatic.
 	CompactTaskKind = "compact"
@@ -38,6 +47,14 @@ var ErrChatCompacting = errors.New("chat is compacting")
 type AutoCompact struct {
 	Enabled      bool
 	ThresholdPct int
+	Tokens200k   int64
+	Tokens1M     int64
+}
+
+// ValidAutoCompactTokens reports whether v is a whole token count within
+// [AutoCompactMinTokens, max].
+func ValidAutoCompactTokens(v float64, max int64) bool {
+	return v == math.Trunc(v) && v >= AutoCompactMinTokens && v <= float64(max)
 }
 
 func ValidAutoCompactPct(v float64) bool {
@@ -49,31 +66,59 @@ func ValidAutoCompactPct(v float64) bool {
 // out-of-range stored values are skipped: both are validated on write, so this
 // only guards legacy data.
 func ResolveAutoCompact(workspaceSettings, agentConfig []byte) AutoCompact {
-	rule := AutoCompact{Enabled: true, ThresholdPct: autoCompactDefaultPct}
+	rule := AutoCompact{Enabled: true, Tokens200k: AutoCompactDefaultTokens200k, Tokens1M: AutoCompactDefaultTokens1M}
 	for _, raw := range [][]byte{workspaceSettings, agentConfig} {
 		var layer struct {
 			AutoCompact *struct {
 				Enabled      *bool    `json:"enabled"`
 				ThresholdPct *float64 `json:"threshold_pct"`
+				Tokens200k   *float64 `json:"threshold_tokens_200k"`
+				Tokens1M     *float64 `json:"threshold_tokens_1m"`
 			} `json:"auto_compact"`
 		}
 		if json.Unmarshal(raw, &layer) != nil || layer.AutoCompact == nil {
 			continue
 		}
-		if layer.AutoCompact.Enabled != nil {
-			rule.Enabled = *layer.AutoCompact.Enabled
+		l := layer.AutoCompact
+		if l.Enabled != nil {
+			rule.Enabled = *l.Enabled
 		}
-		if pct := layer.AutoCompact.ThresholdPct; pct != nil && ValidAutoCompactPct(*pct) {
-			rule.ThresholdPct = int(*pct)
+		// A layer naming a token field switches the rule back to tokens unless
+		// the same layer also names a percent.
+		tokenSet := false
+		if l.Tokens200k != nil && ValidAutoCompactTokens(*l.Tokens200k, AutoCompactMaxTokens200k) {
+			rule.Tokens200k, tokenSet = int64(*l.Tokens200k), true
+		}
+		if l.Tokens1M != nil && ValidAutoCompactTokens(*l.Tokens1M, AutoCompactMaxTokens1M) {
+			rule.Tokens1M, tokenSet = int64(*l.Tokens1M), true
+		}
+		if tokenSet {
+			rule.ThresholdPct = 0
+		}
+		if l.ThresholdPct != nil && ValidAutoCompactPct(*l.ThresholdPct) {
+			rule.ThresholdPct = int(*l.ThresholdPct)
 		}
 	}
 	return rule
 }
 
-// Reached reports whether a prompt of tokens fills the threshold share of
-// window. Integer math, so the boundary is exact.
+// ThresholdTokens is the prompt size that triggers compaction for a model
+// window: the saved percent of the window if one is set, else the token count
+// of the window's size class, capped at 95% of a window smaller than it.
+func (a AutoCompact) ThresholdTokens(window int64) int64 {
+	if a.ThresholdPct > 0 {
+		return (int64(a.ThresholdPct)*window + 99) / 100
+	}
+	limit := a.Tokens1M
+	if window <= AutoCompactSmallWindow {
+		limit = a.Tokens200k
+	}
+	return min(limit, window*95/100)
+}
+
+// Reached reports whether a prompt of tokens reaches the window's threshold.
 func (a AutoCompact) Reached(tokens, window int64) bool {
-	return a.Enabled && tokens > 0 && window > 0 && tokens*100 >= int64(a.ThresholdPct)*window
+	return a.Enabled && tokens > 0 && window > 0 && tokens >= a.ThresholdTokens(window)
 }
 
 // IsCompactCommand reports whether a message is the /compact command: its
@@ -86,9 +131,13 @@ func IsCompactCommand(content string) bool {
 
 func compactTokensK(n int64) int64 { return (n + 500) / 1000 }
 
-func autoCompactReason(tokens, window int64, thresholdPct int) string {
-	return fmt.Sprintf("Auto-compacted: context %dk of %dk tokens (%d%%) reached the %d%% threshold.",
-		compactTokensK(tokens), compactTokensK(window), tokens*100/window, thresholdPct)
+func autoCompactReason(tokens, window int64, rule AutoCompact) string {
+	if rule.ThresholdPct > 0 {
+		return fmt.Sprintf("Auto-compacted: context %dk of %dk tokens (%d%%) reached the %d%% threshold.",
+			compactTokensK(tokens), compactTokensK(window), tokens*100/window, rule.ThresholdPct)
+	}
+	return fmt.Sprintf("Auto-compacted: context %dk of %dk tokens (%d%%) reached the %dk-token threshold.",
+		compactTokensK(tokens), compactTokensK(window), tokens*100/window, compactTokensK(rule.ThresholdTokens(window)))
 }
 
 // syncChatCompacting tells clients whether the DM of a compaction task is
@@ -197,7 +246,7 @@ func (s *TaskService) maybeAutoCompact(ctx context.Context, task db.AgentTaskQue
 		if err != nil {
 			return err
 		}
-		reason := autoCompactReason(runContext.Tokens, runContext.Window, rule.ThresholdPct)
+		reason := autoCompactReason(runContext.Tokens, runContext.Window, rule)
 		if created, err = qtx.SetChatTaskInputOwnerSelf(ctx, created.ID); err != nil {
 			return err
 		}

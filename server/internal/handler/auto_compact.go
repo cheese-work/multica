@@ -30,6 +30,17 @@ func validateAutoCompactConfig(value any) error {
 			return fmt.Errorf("auto_compact.threshold_pct must be an integer from %d to %d", service.AutoCompactMinPct, service.AutoCompactMaxPct)
 		}
 	}
+	for key, max := range map[string]int64{
+		"threshold_tokens_200k": service.AutoCompactMaxTokens200k,
+		"threshold_tokens_1m":   service.AutoCompactMaxTokens1M,
+	} {
+		if v, present := rule[key]; present {
+			n, isNum := v.(float64)
+			if !isNum || !service.ValidAutoCompactTokens(n, max) {
+				return fmt.Errorf("auto_compact.%s must be an integer from %d to %d", key, service.AutoCompactMinTokens, max)
+			}
+		}
+	}
 	return nil
 }
 
