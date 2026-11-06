@@ -159,7 +159,8 @@ vi.mock("../../editor", async () => ({
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
     useEffect(() => {
-      if (value === undefined || value === valueRef.current) return;
+      // The real editor ignores a controlled value that is trim-equal to its document.
+      if (value === undefined || value === valueRef.current || value === valueRef.current.trim()) return;
       valueRef.current = value;
       setEditorValue(value);
     }, [value]);
@@ -214,7 +215,8 @@ vi.mock("../../editor", async () => ({
         onChange={(event) => {
           valueRef.current = event.target.value;
           setEditorValue(event.target.value);
-          onUpdate?.(event.target.value);
+          // The real editor's onUpdate emits trimmed markdown while getMarkdown() stays raw.
+          onUpdate?.(event.target.value.trim());
         }}
         onKeyDown={(event) => {
           // The editor's Mod+Enter submit shortcut — the path that skips the
@@ -726,6 +728,41 @@ describe("comment composers", () => {
       configurable: true,
       get: () => "visible",
     });
+  });
+
+  // CHE-4288: the real editor's getMarkdown() keeps trailing blank lines while
+  // its onUpdate emits trimmed markdown. A visibility flush that persists the raw
+  // string made the stored entry differ from the submitted one, so the success
+  // read as "edited during the request" and the sent text stayed in the composer.
+  it.each([
+    ["comment", "new:issue-1"],
+    ["reply", "reply:issue-1:comment-1"],
+  ] as const)("a tab switch during the %s send clears a body with trailing blank lines", async (kind, key) => {
+    let resolveSubmit!: (v: boolean) => void;
+    const onSubmit = vi.fn(() => new Promise<boolean>((r) => { resolveSubmit = r; }));
+    if (kind === "comment") {
+      renderCommentInput(onSubmit);
+      activateComposer("comment-composer-shell");
+    } else {
+      renderReplyInput({ onSubmit, draftKey: key as `reply:${string}:${string}` });
+      activateComposer("reply-composer-shell");
+    }
+    const editor = screen.getByTestId("editor");
+    fireEvent.change(editor, { target: { value: "draft A\n\n" } });
+    fireEvent.keyDown(editor, { key: "Enter", metaKey: true });
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    fireEvent(document, new Event("visibilitychange"));
+
+    await act(async () => {
+      resolveSubmit(true);
+      await Promise.resolve();
+    });
+
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+    expect(useCommentDraftStore.getState().getDraft(key)).toBeUndefined();
+    expect(screen.getByTestId("editor")).toHaveValue("");
   });
 
   // MUL-5181 P0: the editor stays interactive during a send — text typed

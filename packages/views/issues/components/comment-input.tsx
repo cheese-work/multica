@@ -124,8 +124,10 @@ function CommentInput({ issueId, onSubmit, onAccepted, onEditAnnotation }: Comme
   }, [content, lazy, persistedDraft]);
   useEffect(() => {
     const flush = () => {
-      const md = editorRef.current?.getMarkdown();
-      if (md && md.trim().length > 0) setDraft(draftKey, md);
+      // Trimmed like the editor's onUpdate: a raw value with trailing blank
+      // lines would differ from the send snapshot and defeat the stale-submit guard.
+      const md = editorRef.current?.getMarkdown()?.trim();
+      if (md) setDraft(draftKey, md);
     };
     const onVis = () => { if (document.visibilityState === "hidden") flush(); };
     document.addEventListener("visibilitychange", onVis);
