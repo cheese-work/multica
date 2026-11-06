@@ -230,6 +230,7 @@ export function useIssueSurfaceController({
   const projectFilters = useViewStore((s) => s.projectFilters);
   const includeNoProject = useViewStore((s) => s.includeNoProject);
   const projectStatusFilters = useViewStore((s) => s.projectStatusFilters);
+  const workflowFilters = useViewStore((s) => s.workflowFilters);
   const labelFilters = useViewStore((s) => s.labelFilters);
   const propertyFilters = useViewStore((s) => s.propertyFilters);
   const agentRunningFilter = useViewStore((s) => s.agentRunningFilter);
@@ -242,7 +243,11 @@ export function useIssueSurfaceController({
   const listCollapsedStatuses = useViewStore((s) => s.listCollapsedStatuses);
   const hiddenStatusKeys = useViewStore((s) => s.hiddenStatuses);
   const catalog = useIssueStatuses(wsId);
-  const { workflow: projectWorkflow } = useColumnWorkflow(wsId, projectId, statusFilters.length > 0);
+  const { workflow: projectWorkflow } = useColumnWorkflow(
+    wsId,
+    projectId,
+    statusFilters.length > 0 || workflowFilters.length > 0,
+  );
   const [tableSearch, setTableSearch] = useState("");
 
   const allowedModes = useMemo(() => new Set<IssueSurfaceMode>(modes), [modes]);
@@ -411,6 +416,7 @@ export function useIssueSurfaceController({
     viewProjectFilters.length > 0 ||
     viewIncludeNoProject ||
     projectStatusFilters.length > 0 ||
+    workflowFilters.length > 0 ||
     labelFilters.length > 0 ||
     Object.keys(effectivePropertyFilters).length > 0 ||
     dateFilter != null ||
@@ -502,6 +508,7 @@ export function useIssueSurfaceController({
         ...(projectStatusFilters.length > 0
           ? { project_statuses: projectStatusFilters }
           : {}),
+        ...(workflowFilters.length > 0 ? { workflow_ids: workflowFilters } : {}),
         ...(labelFilters.length > 0 ? { label_ids: labelFilters } : {}),
         ...(Object.keys(effectivePropertyFilters).length > 0
           ? { properties: effectivePropertyFilters }
@@ -540,6 +547,7 @@ export function useIssueSurfaceController({
     viewProjectFilters,
     workingFilterUnresolved,
     workingIssueIDs,
+    workflowFilters,
   ]);
   // Every consumer below — the facet request, the status/group branch hooks and
   // the Table's own `useQueries` list — keys off this object's identity. Pin it
@@ -712,6 +720,7 @@ export function useIssueSurfaceController({
         viewProjectFilters,
         viewIncludeNoProject,
         projectStatusFilters,
+        workflowFilters,
         labelFilters,
         effectivePropertyFilters,
         agentRunningFilter,
@@ -734,6 +743,7 @@ export function useIssueSurfaceController({
       statusFilters,
       viewIncludeNoProject,
       viewProjectFilters,
+      workflowFilters,
     ],
   );
   const selection = useCreateIssueSurfaceSelection(
@@ -762,6 +772,7 @@ export function useIssueSurfaceController({
     projectFilters: viewProjectFilters,
     includeNoProject: viewIncludeNoProject,
     projectStatusFilters,
+    workflowFilters,
     labelFilters,
     propertyFilters: effectivePropertyFilters,
     workingIssueIDs,

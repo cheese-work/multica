@@ -185,16 +185,17 @@ const cancelCompactionTasksByWorkspace = `-- name: CancelCompactionTasksByWorksp
 UPDATE agent_task_queue
 SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
     cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
-WHERE purpose = 'compaction'
+WHERE (task_kind = 'compact' OR purpose = 'compaction')
   AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
   AND chat_session_id IN (SELECT id FROM chat_session WHERE workspace_id = $1)
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step, claimed_model, chat_compaction_epoch, preset_name, preset_source, preset_skips, claimed_thinking_level, claimed_service_tier, claimed_context_args, cancel_acked_at, stop_unconfirmed_at, pull_request_id, replacement_released_at, stop_hold_issue_wide, taint_ids, applied_model, applied_thinking_level, applied_service_tier, applied_context_args, applied_reported_at, external_read, purpose
 `
 
-// CHE-2908 (SEC-1 rule 4): a compact_agent_id change cancels every live
-// compaction task of the workspace, whichever agent it was queued for, so a
-// task queued under the old value never delivers the transcript. The chat
-// resume pointer is not touched (SEC-2).
+// CHE-2908 (SEC-1 rule 4): a compact chain change cancels every live compaction
+// task of the workspace, whichever agent it was queued for, so a task queued
+// under the old value never delivers the transcript. The chat resume pointer is
+// not touched (SEC-2). CHE-2909: a retry child copies purpose but not task_kind,
+// so match either marker or it would survive A->B->A with DM access.
 func (q *Queries) CancelCompactionTasksByWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, cancelCompactionTasksByWorkspace, workspaceID)
 	if err != nil {
@@ -338,6 +339,27 @@ func (q *Queries) ChatSessionHasUserMessage(ctx context.Context, chatSessionID p
 	return has_user_message, err
 }
 
+const chatSessionPointerIsCurrent = `-- name: ChatSessionPointerIsCurrent :one
+SELECT EXISTS (
+  SELECT 1 FROM agent_task_queue t
+  JOIN chat_session cs ON cs.id = t.chat_session_id
+  WHERE cs.id = $1
+    AND t.session_id = cs.session_id
+    AND COALESCE(t.chat_compaction_epoch, 0) = cs.compaction_epoch
+) AS current
+`
+
+// True when the DM's resume pointer was recorded by a task of the DM's current
+// compaction epoch. The pointer has no epoch column of its own; the compact
+// clears it, so a pointer naming a session only older epochs recorded is a
+// stale write that must not seed the claim.
+func (q *Queries) ChatSessionPointerIsCurrent(ctx context.Context, id pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, chatSessionPointerIsCurrent, id)
+	var current bool
+	err := row.Scan(&current)
+	return current, err
+}
+
 const clearChatMessageChannelMediaPending = `-- name: ClearChatMessageChannelMediaPending :exec
 UPDATE chat_message
 SET channel_media_pending_until = NULL
@@ -406,6 +428,32 @@ type ClearChatSessionSessionIfMatchesParams struct {
 func (q *Queries) ClearChatSessionSessionIfMatches(ctx context.Context, arg ClearChatSessionSessionIfMatchesParams) error {
 	_, err := q.db.Exec(ctx, clearChatSessionSessionIfMatches, arg.ID, arg.SessionID, arg.RuntimeID)
 	return err
+}
+
+const compactChainChangedSince = `-- name: CompactChainChangedSince :one
+SELECT EXISTS (
+    SELECT 1 FROM activity_log
+    WHERE workspace_id = $1
+      AND action = 'background_agent_changed'
+      AND details->>'job' = 'compact'
+      AND created_at > $2
+) AS changed
+`
+
+type CompactChainChangedSinceParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+// CHE-2909 (SEC-1 rule 4): true when the workspace's compact agent chain
+// changed after a task was created. The change sweep cancels only live tasks,
+// so a task that had already failed would otherwise retry into the new chain
+// (A -> B -> A included).
+func (q *Queries) CompactChainChangedSince(ctx context.Context, arg CompactChainChangedSinceParams) (bool, error) {
+	row := q.db.QueryRow(ctx, compactChainChangedSince, arg.WorkspaceID, arg.CreatedAt)
+	var changed bool
+	err := row.Scan(&changed)
+	return changed, err
 }
 
 const compactChatSessionInPlace = `-- name: CompactChatSessionInPlace :one
@@ -1647,17 +1695,20 @@ func (q *Queries) GetChatSessionUsageSummary(ctx context.Context, chatSessionID 
 }
 
 const getLastAutoCompactTriggerForSession = `-- name: GetLastAutoCompactTriggerForSession :one
-SELECT compact_trigger_tokens FROM agent_task_queue
-WHERE chat_session_id = $1
-  AND task_kind = 'compact'
-  AND compact_trigger_tokens IS NOT NULL
-ORDER BY created_at DESC, id DESC
+SELECT t.compact_trigger_tokens FROM agent_task_queue t
+JOIN chat_session cs ON cs.id = t.chat_session_id
+WHERE t.chat_session_id = $1
+  AND t.task_kind = 'compact'
+  AND t.compact_trigger_tokens IS NOT NULL
+  AND COALESCE(t.chat_compaction_epoch, 0) = cs.compaction_epoch
+ORDER BY t.created_at DESC, t.id DESC
 LIMIT 1
 `
 
 // Prompt size that triggered the most recent automatic compaction of a DM, for
 // the 1.1x re-arm rule after a failed attempt. Manual compactions carry no
-// trigger size and are ignored.
+// trigger size and are ignored. Only compactions of the current epoch count: a
+// successful one bumps the epoch, which clears the guard.
 func (q *Queries) GetLastAutoCompactTriggerForSession(ctx context.Context, chatSessionID pgtype.UUID) (pgtype.Int8, error) {
 	row := q.db.QueryRow(ctx, getLastAutoCompactTriggerForSession, chatSessionID)
 	var compact_trigger_tokens pgtype.Int8
@@ -1675,6 +1726,7 @@ WITH retired_sessions AS (
         OR COALESCE(r.channel_context_revision, 1) = $2::bigint
       )
       AND r.retired_session_id IS NOT NULL
+      AND COALESCE(r.chat_compaction_epoch, 0) = (SELECT cs.compaction_epoch FROM chat_session cs WHERE cs.id = $1)
 ), resume_overflow_at AS (
     -- completed_at alone, where the issue-side twin coalesces four columns:
     -- this query already selects and orders by bare completed_at throughout,
@@ -1688,6 +1740,7 @@ WITH retired_sessions AS (
         OR COALESCE(t.channel_context_revision, 1) = $2::bigint
       )
       AND t.status = 'failed'
+      AND COALESCE(t.chat_compaction_epoch, 0) = (SELECT cs.compaction_epoch FROM chat_session cs WHERE cs.id = $1)
       AND (
         COALESCE(t.failure_reason, '') = 'codex_resume_oversized'
         OR COALESCE(t.error, '') ILIKE '%response protection is unavailable%'
@@ -1704,6 +1757,7 @@ WITH retired_sessions AS (
       )
       AND t.session_id IS NOT NULL
       AND t.status IN ('completed', 'failed', 'cancelled')
+      AND COALESCE(t.chat_compaction_epoch, 0) = (SELECT cs.compaction_epoch FROM chat_session cs WHERE cs.id = $1)
     ORDER BY t.session_id, t.completed_at DESC
 )
 SELECT session_id, work_dir, runtime_id FROM latest_per_session
@@ -1791,6 +1845,11 @@ type GetLastChatTaskSessionRow struct {
 // empty message baked into the conversation history: both must match, and
 // both track emptyContentRe / historyMessageLocatorRe in
 // pkg/taskfailure/resume.go (GH #6066).
+//
+// Every CTE reads the DM's current compaction epoch only: a session recorded
+// before an in-place compact is the history the compact summarised away and
+// must not seed the next turn, and a retirement or overflow of that old
+// history must not hide a healthy session of the current epoch.
 //
 // Selection is per-session, not per-row, and retired sessions are excluded —
 // both mirroring GetLastTaskSession, which this query had drifted away from.
@@ -2584,16 +2643,46 @@ SELECT cs.id, cs.workspace_id, cs.agent_id, cs.creator_id, cs.title, cs.session_
                       AND m.created_at > cs.last_read_at)
        END::int AS unread_count,
        COALESCE(lm.content, '') AS last_message_content,
+       lm.id AS last_message_id,
+       lm.task_id AS last_message_task_id,
        COALESCE(lm.role, '') AS last_message_role,
        lm.created_at AS last_message_at,
        lm.failure_reason AS last_message_failure_reason,
        COALESCE(lm.message_kind, '') AS last_message_kind
 FROM chat_session cs
 LEFT JOIN LATERAL (
-  SELECT content, role, created_at, failure_reason, message_kind
+  SELECT id, task_id, content, role, created_at, failure_reason, message_kind
     FROM chat_message m
    WHERE m.chat_session_id = cs.id
      AND m.message_kind NOT IN ('channel_command', 'decision_cancel_notice', 'decision_reference')
+     -- Keep archived previews aligned with ListChatMessagesPage too.
+     AND NOT (
+       m.role = 'user'
+       AND EXISTS (
+         SELECT 1
+         FROM agent_task_queue AS task
+         WHERE task.chat_session_id = m.chat_session_id
+           AND task.status = 'queued'
+           AND task.id = m.task_id
+           AND task.id <> (
+             SELECT head.id
+             FROM agent_task_queue AS head
+             WHERE head.chat_session_id = m.chat_session_id
+               AND head.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+               AND head.regenerate_quick_actions_for IS NULL
+             ORDER BY
+               CASE
+                 WHEN head.status IN ('dispatched', 'running', 'waiting_local_directory') THEN 0
+                 WHEN head.status = 'deferred' THEN 1
+                 ELSE 2
+               END,
+               head.priority DESC,
+               head.created_at ASC,
+               head.id ASC
+             LIMIT 1
+           )
+       )
+     )
    ORDER BY m.created_at DESC
    LIMIT 1
 ) lm ON true
@@ -2643,6 +2732,8 @@ type ListAllChatSessionsByCreatorRow struct {
 	DecisionTopicID          pgtype.UUID        `json:"decision_topic_id"`
 	UnreadCount              int32              `json:"unread_count"`
 	LastMessageContent       string             `json:"last_message_content"`
+	LastMessageID            pgtype.UUID        `json:"last_message_id"`
+	LastMessageTaskID        pgtype.UUID        `json:"last_message_task_id"`
 	LastMessageRole          string             `json:"last_message_role"`
 	LastMessageAt            pgtype.Timestamptz `json:"last_message_at"`
 	LastMessageFailureReason pgtype.Text        `json:"last_message_failure_reason"`
@@ -2699,6 +2790,8 @@ func (q *Queries) ListAllChatSessionsByCreator(ctx context.Context, arg ListAllC
 			&i.DecisionTopicID,
 			&i.UnreadCount,
 			&i.LastMessageContent,
+			&i.LastMessageID,
+			&i.LastMessageTaskID,
 			&i.LastMessageRole,
 			&i.LastMessageAt,
 			&i.LastMessageFailureReason,
@@ -3435,16 +3528,46 @@ SELECT cs.id, cs.workspace_id, cs.agent_id, cs.creator_id, cs.title, cs.session_
             AND m.message_kind NOT IN ('decision_cancel_notice', 'decision_reference')
             AND m.created_at > cs.last_read_at)::int AS unread_count,
        COALESCE(lm.content, '') AS last_message_content,
+       lm.id AS last_message_id,
+       lm.task_id AS last_message_task_id,
        COALESCE(lm.role, '') AS last_message_role,
        lm.created_at AS last_message_at,
        lm.failure_reason AS last_message_failure_reason,
        COALESCE(lm.message_kind, '') AS last_message_kind
 FROM chat_session cs
 LEFT JOIN LATERAL (
-  SELECT content, role, created_at, failure_reason, message_kind
+  SELECT id, task_id, content, role, created_at, failure_reason, message_kind
     FROM chat_message m
    WHERE m.chat_session_id = cs.id
      AND m.message_kind NOT IN ('channel_command', 'decision_cancel_notice', 'decision_reference')
+     -- Keep the preview aligned with the queued-follow-up rule in ListChatMessagesPage.
+     AND NOT (
+       m.role = 'user'
+       AND EXISTS (
+         SELECT 1
+         FROM agent_task_queue AS task
+         WHERE task.chat_session_id = m.chat_session_id
+           AND task.status = 'queued'
+           AND task.id = m.task_id
+           AND task.id <> (
+             SELECT head.id
+             FROM agent_task_queue AS head
+             WHERE head.chat_session_id = m.chat_session_id
+               AND head.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+               AND head.regenerate_quick_actions_for IS NULL
+             ORDER BY
+               CASE
+                 WHEN head.status IN ('dispatched', 'running', 'waiting_local_directory') THEN 0
+                 WHEN head.status = 'deferred' THEN 1
+                 ELSE 2
+               END,
+               head.priority DESC,
+               head.created_at ASC,
+               head.id ASC
+             LIMIT 1
+           )
+       )
+     )
    ORDER BY m.created_at DESC
    LIMIT 1
 ) lm ON true
@@ -3494,6 +3617,8 @@ type ListChatSessionsByCreatorRow struct {
 	DecisionTopicID          pgtype.UUID        `json:"decision_topic_id"`
 	UnreadCount              int32              `json:"unread_count"`
 	LastMessageContent       string             `json:"last_message_content"`
+	LastMessageID            pgtype.UUID        `json:"last_message_id"`
+	LastMessageTaskID        pgtype.UUID        `json:"last_message_task_id"`
 	LastMessageRole          string             `json:"last_message_role"`
 	LastMessageAt            pgtype.Timestamptz `json:"last_message_at"`
 	LastMessageFailureReason pgtype.Text        `json:"last_message_failure_reason"`
@@ -3546,6 +3671,8 @@ func (q *Queries) ListChatSessionsByCreator(ctx context.Context, arg ListChatSes
 			&i.DecisionTopicID,
 			&i.UnreadCount,
 			&i.LastMessageContent,
+			&i.LastMessageID,
+			&i.LastMessageTaskID,
 			&i.LastMessageRole,
 			&i.LastMessageAt,
 			&i.LastMessageFailureReason,
@@ -3641,11 +3768,13 @@ func (q *Queries) ListForkAttachmentIndex(ctx context.Context, arg ListForkAttac
 }
 
 const listLatestRunContextForChatSessions = `-- name: ListLatestRunContextForChatSessions :many
-SELECT DISTINCT ON (chat_session_id) chat_session_id, context_tokens, context_window
-FROM agent_task_queue
-WHERE chat_session_id = ANY($1::uuid[])
-  AND status = 'completed'
-ORDER BY chat_session_id, completed_at DESC, id DESC
+SELECT DISTINCT ON (t.chat_session_id) t.chat_session_id, t.context_tokens, t.context_window
+FROM agent_task_queue t
+JOIN chat_session cs ON cs.id = t.chat_session_id
+WHERE t.chat_session_id = ANY($1::uuid[])
+  AND t.status = 'completed'
+  AND COALESCE(t.chat_compaction_epoch, 0) = cs.compaction_epoch
+ORDER BY t.chat_session_id, t.completed_at DESC, t.id DESC
 `
 
 type ListLatestRunContextForChatSessionsRow struct {
@@ -3656,7 +3785,8 @@ type ListLatestRunContextForChatSessionsRow struct {
 
 // CHE-1808: the context meter reads the LATEST completed run of each DM. A run
 // that reported nothing stays in the result with NULL columns, so the meter
-// hides instead of showing an older run's stale numbers.
+// hides instead of showing an older run's stale numbers. Runs of an earlier
+// compaction epoch do not count: the meter hides until the first post-compact run.
 func (q *Queries) ListLatestRunContextForChatSessions(ctx context.Context, dollar_1 []pgtype.UUID) ([]ListLatestRunContextForChatSessionsRow, error) {
 	rows, err := q.db.Query(ctx, listLatestRunContextForChatSessions, dollar_1)
 	if err != nil {
@@ -4216,6 +4346,20 @@ func (q *Queries) LockChatSessionForTask(ctx context.Context, id pgtype.UUID) (p
 	return id_2, err
 }
 
+const lockChatSessionShared = `-- name: LockChatSessionShared :one
+SELECT workspace_id FROM chat_session WHERE id = $1 FOR SHARE
+`
+
+// CHE-2909: retry admission takes the same chat_session lock a compact chain
+// change holds (LockChatSessionsByWorkspace, FOR UPDATE), so the check below
+// reads the committed outcome of any change in flight.
+func (q *Queries) LockChatSessionShared(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockChatSessionShared, id)
+	var workspace_id pgtype.UUID
+	err := row.Scan(&workspace_id)
+	return workspace_id, err
+}
+
 const lockChatSessionsBySystemRuntimeAgents = `-- name: LockChatSessionsBySystemRuntimeAgents :many
 SELECT cs.id FROM chat_session cs
 JOIN agent a ON a.id = cs.agent_id
@@ -4255,42 +4399,6 @@ FOR UPDATE
 // deadlocking against each other.
 func (q *Queries) LockChatSessionsByWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, lockChatSessionsByWorkspace, workspaceID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []pgtype.UUID{}
-	for rows.Next() {
-		var id pgtype.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		items = append(items, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const lockChatSessionsOfActiveCompactionTasks = `-- name: LockChatSessionsOfActiveCompactionTasks :many
-SELECT cs.id FROM chat_session cs
-WHERE cs.workspace_id = $1
-  AND cs.id IN (
-    SELECT t.chat_session_id FROM agent_task_queue t
-    WHERE t.purpose = 'compaction'
-      AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
-  )
-ORDER BY cs.id
-FOR UPDATE
-`
-
-// CHE-2908 (SEC-1 rule 4): the first lock of a compact_agent_id change. Takes
-// the DM rows of the workspace's live compaction tasks in id order, so the
-// change keeps the chat_session -> agent_task_queue order every chat writer
-// uses and two changes cannot deadlock on each other.
-func (q *Queries) LockChatSessionsOfActiveCompactionTasks(ctx context.Context, workspaceID pgtype.UUID) ([]pgtype.UUID, error) {
-	rows, err := q.db.Query(ctx, lockChatSessionsOfActiveCompactionTasks, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -4382,6 +4490,26 @@ func (q *Queries) MarkChatSessionReadBefore(ctx context.Context, arg MarkChatSes
 	return err
 }
 
+const markChatSessionUnread = `-- name: MarkChatSessionUnread :exec
+UPDATE chat_session cs
+SET last_read_at = latest.created_at - interval '1 microsecond'
+FROM (
+  SELECT max(m.created_at) AS created_at
+  FROM chat_message m
+  WHERE m.chat_session_id = $1
+    AND m.role = 'assistant'
+    AND m.message_kind NOT IN ('decision_cancel_notice', 'decision_reference')
+) latest
+WHERE cs.id = $1 AND latest.created_at IS NOT NULL
+`
+
+// Places the read cursor just before the latest assistant message that counts
+// toward unread_count, so unread_count is at least 1. No such message: no-op.
+func (q *Queries) MarkChatSessionUnread(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markChatSessionUnread, id)
+	return err
+}
+
 const markChatTaskCompact = `-- name: MarkChatTaskCompact :one
 UPDATE agent_task_queue
 SET task_kind = 'compact',
@@ -4399,7 +4527,9 @@ type MarkChatTaskCompactParams struct {
 
 // CHE-1807: flags a chat task as a compaction run. An automatic compaction
 // carries the server-built reason and the prompt size that triggered it; a
-// manual /compact carries neither.
+// manual /compact carries neither. It does not set purpose: both flows still run
+// as the DM agent (existing path); the dedicated-agent enqueue (CHE-2913) stamps
+// purpose='compaction'.
 func (q *Queries) MarkChatTaskCompact(ctx context.Context, arg MarkChatTaskCompactParams) (AgentTaskQueue, error) {
 	row := q.db.QueryRow(ctx, markChatTaskCompact, arg.ID, arg.CompactReason, arg.CompactTriggerTokens)
 	var i AgentTaskQueue

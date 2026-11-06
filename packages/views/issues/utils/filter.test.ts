@@ -714,3 +714,23 @@ describe("scalar operator filters", () => {
     expect(result.map((i) => i.id)).toEqual(["B"]);
   });
 });
+
+describe("applyIssueFilters workflow override", () => {
+  const issues = [
+    makeIssue({ id: "1", workflow_id: "w-1" }),
+    makeIssue({ id: "2", workflow_id: "w-2" }),
+    makeIssue({ id: "3", workflow_id: null }),
+    makeIssue({ id: "4" }),
+  ];
+  const ids = (workflowFilters: string[]) =>
+    applyIssueFilters(issues, { ...NO_FILTER_STATE, workflowFilters }).map((i) => i.id);
+
+  it("keeps everything with no workflow filter", () => {
+    expect(ids([])).toEqual(["1", "2", "3", "4"]);
+  });
+
+  it("keeps only issues whose own override is selected (OR within)", () => {
+    expect(ids(["w-1"])).toEqual(["1"]);
+    expect(ids(["w-1", "w-2"])).toEqual(["1", "2"]);
+  });
+});

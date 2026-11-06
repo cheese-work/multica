@@ -30,6 +30,12 @@ const (
 	EventAgentArchived = "agent:archived"
 	EventAgentRestored = "agent:restored"
 
+	// Scheduling pause: published once per real change, never on a no-op.
+	EventAgentSchedulingPaused      = "agent:scheduling_paused"
+	EventAgentSchedulingResumed     = "agent:scheduling_resumed"
+	EventWorkspaceSchedulingPaused  = "workspace:scheduling_paused"
+	EventWorkspaceSchedulingResumed = "workspace:scheduling_resumed"
+
 	// Task events (server <-> daemon).
 	// Each event maps to a status transition on agent_task_queue. Front-end
 	// subscribes by `task:` prefix and invalidates the workspace task
@@ -58,6 +64,9 @@ const (
 	// Workspace events
 	EventWorkspaceUpdated = "workspace:updated"
 	EventWorkspaceDeleted = "workspace:deleted"
+	// EventWorkspaceBackgroundAgentChanged carries one effective change of one
+	// background job's chain (CHE-4098); it fires after the commit.
+	EventWorkspaceBackgroundAgentChanged = "workspace.background_agent_changed"
 
 	// Member events
 	EventMemberAdded   = "member:added"

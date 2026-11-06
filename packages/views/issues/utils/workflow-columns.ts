@@ -26,17 +26,19 @@ export function workflowColumns(
  * its project's columns. Elsewhere, while workflows are on, columns follow
  * Default. A status outside the workflow is never a column; a status filter
  * that picks keys explicitly shows exactly those — on a project too, which is
- * how an issue left in a status its workflow no longer lists is found.
+ * how an issue left in a status its workflow no longer lists is found. A
+ * workflow filter lifts the restriction the same way: an issue that overrides
+ * its project's workflow can sit in a status only the override lists.
  */
 export function useColumnWorkflow(
   wsId: string,
   projectId: string | null | undefined,
-  hasStatusFilter: boolean,
+  hasExplicitFilter: boolean,
 ): { workflow: IssueWorkflow | null } {
   const enabled = useFeatureEnabled(PROJECT_WORKFLOWS_V1_FLAG, false);
   const { workflows } = useIssueWorkflows(wsId);
   const projectWorkflow = useProjectWorkflow(wsId, projectId);
-  if (hasStatusFilter) return { workflow: null };
+  if (hasExplicitFilter) return { workflow: null };
   if (projectId) return { workflow: projectWorkflow };
   if (!enabled) return { workflow: null };
   return { workflow: defaultWorkflow(workflows) };

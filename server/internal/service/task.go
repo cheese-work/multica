@@ -126,6 +126,11 @@ type TaskService struct {
 	// each unique index the rerun insert can hit is exercised
 	// deterministically (TestRerunIssueRetryLoop*).
 	testHookBeforeRerunEnqueue func()
+
+	// committed is the service a txScoped copy was made from; the work that
+	// follows a commit runs on it, not on the copy whose Queries is the
+	// transaction.
+	committed *TaskService
 }
 
 type SourceContextObjectStore interface {
@@ -400,6 +405,10 @@ type runtimeMCPOverlayData struct {
 	Overlay       json.RawMessage
 	ConnectedApps json.RawMessage
 }
+
+// PreparedRuntimeMCPOverlay is an overlay built before a transaction opens, for
+// the run that transaction inserts.
+type PreparedRuntimeMCPOverlay = preparedRuntimeMCPOverlay
 
 type preparedRuntimeMCPOverlay struct {
 	agentID          pgtype.UUID
@@ -1281,7 +1290,10 @@ func (s *TaskService) EnqueueCommentTriggeredTask(ctx context.Context, issue db.
 		task, attr, err = s.enqueueMentionTaskWithQueriesAndOverlay(ctx, queries, issue, agentID, triggerCommentID, nil, isLeader, squadID, false, handoffNote, actorUserID, pgtype.UUID{}, origin, preparedOverlay)
 	}
 	if err != nil {
-		return db.AgentTaskQueue{}, err
+		// A stage refusal must outlive this transaction: roll back, then
+		// write the queue mark on the pool.
+		_ = tx.Rollback(ctx)
+		return db.AgentTaskQueue{}, s.recordStageRefusal(ctx, err)
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO comment_trigger_rate_limit (issue_id, agent_id, triggered_at)
 		VALUES ($1, $2, now())
@@ -1341,6 +1353,30 @@ func (s *TaskService) prepareCommentTriggerRuntimeMCPOverlay(ctx context.Context
 		originatorUserID: attr.UserID,
 		data:             s.buildRuntimeMCPOverlay(ctx, attr.UserID, agent),
 	}, nil
+}
+
+// PrepareIssueRunOverlay builds, outside any transaction, the overlay of the
+// run an assignment of issue to its agent inserts. Nil means there is nothing
+// to prepare, or that the insert will refuse and report why; the insert reads
+// the attribution again and uses the overlay only for the agent and
+// originator it was built for.
+func (s *TaskService) PrepareIssueRunOverlay(ctx context.Context, issue db.Issue, actorUserID pgtype.UUID) *PreparedRuntimeMCPOverlay {
+	if s.Composio == nil || !featureflags.ComposioMCPAppsEnabled(ctx, s.FeatureFlags) || !issue.AssigneeID.Valid {
+		return nil
+	}
+	agent, err := s.Queries.GetAgent(ctx, issue.AssigneeID)
+	if err != nil || agent.ArchivedAt.Valid || !agent.RuntimeID.Valid {
+		return nil
+	}
+	attr, err := s.applyAttributionFallback(ctx, s.attributionForIssueTask(ctx, issue, pgtype.UUID{}, attribution.SourceCommentSource, actorUserID), agent)
+	if err != nil {
+		return nil
+	}
+	return &preparedRuntimeMCPOverlay{
+		agentID:          agent.ID,
+		originatorUserID: attr.UserID,
+		data:             s.buildRuntimeMCPOverlay(ctx, attr.UserID, agent),
+	}
 }
 
 // EnqueueDeferredChannelIssueTask persists the assigned task for a media-backed
@@ -1580,7 +1616,7 @@ func (s *TaskService) prepareIssueTaskWithQueriesAndOverlay(ctx context.Context,
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "issue has no assignee")
 		return db.CreateAgentTaskParams{}, attribution.Result{}, fmt.Errorf("issue has no assignee")
 	}
-	if _, err := guardIssueRunGate(ctx, queries, issue.ID, origin, issueRunTarget(issue, triggerCommentID, fireAt)); err != nil {
+	if _, err := guardIssueRunGate(ctx, queries, issue.ID, origin, issueRunTarget(issue, triggerCommentID, actorUserID, fireAt)); err != nil {
 		return db.CreateAgentTaskParams{}, attribution.Result{}, err
 	}
 
@@ -1644,19 +1680,19 @@ func (s *TaskService) prepareIssueTaskWithQueriesAndOverlay(ctx context.Context,
 	}, attr, nil
 }
 
-func issueRunTarget(issue db.Issue, triggerCommentID pgtype.UUID, fireAt pgtype.Timestamptz) RunTarget {
+func issueRunTarget(issue db.Issue, triggerCommentID, actorUserID pgtype.UUID, fireAt pgtype.Timestamptz) RunTarget {
 	trigger := "assignment or status handoff"
 	if triggerCommentID.Valid {
 		trigger = "comment"
 	}
-	return RunTarget{AgentID: issue.AssigneeID, Trigger: trigger, ReviewRun: !fireAt.Valid}
+	return RunTarget{AgentID: issue.AssigneeID, Trigger: trigger, ReviewRun: !fireAt.Valid, ActorUserID: actorUserID, TriggerCommentID: triggerCommentID}
 }
 
 // insertPreparedIssueTask takes the issue's budget lock through queries, admits
 // the run and inserts it: the lock lasts until the caller's transaction ends.
 // queries must not need a second connection.
 func (s *TaskService) insertPreparedIssueTask(ctx context.Context, queries *db.Queries, issue db.Issue, createParams db.CreateAgentTaskParams, fireAt pgtype.Timestamptz, origin RunOrigin) (db.AgentTaskQueue, error) {
-	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, issueRunTarget(issue, createParams.TriggerCommentID, fireAt))
+	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, issueRunTarget(issue, createParams.TriggerCommentID, createParams.OriginatorUserID, fireAt))
 	if err != nil {
 		return db.AgentTaskQueue{}, err
 	}
@@ -1776,7 +1812,7 @@ func (s *TaskService) EnqueuePreparedTaskForMentionInTx(ctx context.Context, que
 }
 
 func (s *TaskService) enqueuePreparedInTx(ctx context.Context, queries *db.Queries, issue db.Issue, params db.CreateAgentTaskParams, origin RunOrigin, trigger string) (db.AgentTaskQueue, error) {
-	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, RunTarget{AgentID: params.AgentID, Trigger: trigger, ReviewRun: true})
+	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, RunTarget{AgentID: params.AgentID, Trigger: trigger, ReviewRun: true, ActorUserID: params.OriginatorUserID, TriggerCommentID: params.TriggerCommentID})
 	if err != nil {
 		return db.AgentTaskQueue{}, err
 	}
@@ -1866,7 +1902,7 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 			slog.Debug("mention task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
 			return db.AgentTaskQueue{}, ErrDuplicatePendingTask
 		}
-		if !errors.Is(err, ErrRunBudgetExhausted) {
+		if !errors.Is(err, ErrRunBudgetExhausted) && !errors.Is(err, ErrStageQueueFull) {
 			slog.Error("mention task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
 		}
 		return db.AgentTaskQueue{}, err
@@ -1912,7 +1948,7 @@ func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Contex
 	if isLeader {
 		trigger = "squad leader callback"
 	}
-	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, RunTarget{AgentID: agentID, Trigger: trigger, ReviewRun: true})
+	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, RunTarget{AgentID: agentID, Trigger: trigger, ReviewRun: true, ActorUserID: actorUserID, TriggerCommentID: triggerCommentID})
 	if err != nil {
 		return db.CreateAgentTaskParams{}, attribution.Result{}, err
 	}
@@ -6046,6 +6082,15 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			}
 		}
 		if createRetry {
+			// SEC-1 rule 4: skip, never abort — this transaction carries the
+			// parent's failed status.
+			if revoked, rerr := compactionRetryRevoked(ctx, qtx, t); rerr != nil || revoked {
+				slog.Info("fail task auto-retry skipped: compact chain changed or unreadable",
+					"task_id", util.UUIDToString(taskID), "error", rerr)
+				createRetry = false
+			}
+		}
+		if createRetry {
 			child, cerr := qtx.CreateRetryTask(ctx, db.CreateRetryTaskParams{
 				NewTaskID:            dbid.NewV7(),
 				ID:                   taskID,
@@ -6238,6 +6283,9 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 	// both sides of a cross-issue handoff.
 	if errMsg != "" && task.IssueID.Valid && retried == nil {
 		s.createAgentComment(ctx, task.IssueID, task.AgentID, redact.Text(errMsg), "system", task.TriggerCommentID, task.ID)
+	}
+	if retried == nil {
+		s.failOverRoutingTask(ctx, task, failureReason)
 	}
 	// CHE-607: errMsg above is the proximate cause (e.g. a stream disconnect) —
 	// on its own it says nothing about why the auto-retry that would normally
@@ -6455,6 +6503,23 @@ func retryEligible(failureReason string, t db.AgentTaskQueue) bool {
 		(t.IssueID.Valid || t.ChatSessionID.Valid || isSourceContextQuickCreateTask(t))
 }
 
+// compactionRetryRevoked reports whether a compaction task's retry must not be
+// created because the workspace's compact agent chain changed after the task
+// was created (SEC-1 rule 4). The change cancels live tasks only, so a task
+// that had already failed would otherwise retry as an active child, even after
+// A -> B -> A. Taking the chat_session lock first orders the check after a
+// change in flight. It fails closed: an error means no retry.
+func compactionRetryRevoked(ctx context.Context, q *db.Queries, parent db.AgentTaskQueue) (bool, error) {
+	if !parent.ChatSessionID.Valid || !parent.Purpose.Valid || parent.Purpose.String != "compaction" {
+		return false, nil
+	}
+	workspaceID, err := q.LockChatSessionShared(ctx, parent.ChatSessionID)
+	if err != nil {
+		return true, err
+	}
+	return q.CompactChainChangedSince(ctx, db.CompactChainChangedSinceParams{WorkspaceID: workspaceID, CreatedAt: parent.CreatedAt})
+}
+
 // refuseRetryForProviderHold checks the just-created retry child's agent
 // against workspace provider holds and, if held, immediately cancels the
 // child in the SAME transaction that created it — so nothing outside this
@@ -6640,6 +6705,13 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	}
 	defer tx.Rollback(ctx)
 	qtx := s.Queries.WithTx(tx)
+	if revoked, rerr := compactionRetryRevoked(ctx, qtx, parent); rerr != nil {
+		return nil, fmt.Errorf("task auto-retry: check compaction authority: %w", rerr)
+	} else if revoked {
+		slog.Info("task auto-retry skipped: compact chain changed",
+			"parent_task_id", util.UUIDToString(parent.ID))
+		return nil, nil
+	}
 	if err := requireActiveTaskProject(ctx, qtx, parent); err != nil {
 		if IsProjectInactive(err) {
 			return nil, nil
@@ -6647,7 +6719,7 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		return nil, err
 	}
 	if err := guardIssueRunAllowed(ctx, qtx, parent.IssueID, OriginDerived, RunTarget{AgentID: parent.AgentID, Trigger: "retry"}); err != nil {
-		if errors.Is(err, ErrIssueInTriage) || errors.Is(err, ErrRunBudgetExhausted) || IsProjectInactive(err) {
+		if errors.Is(err, ErrIssueInTriage) || errors.Is(err, ErrRunBudgetExhausted) || errors.Is(err, ErrStageQueueFull) || IsProjectInactive(err) {
 			slog.Info("task auto-retry skipped: issue does not run",
 				"parent_task_id", util.UUIDToString(parent.ID),
 				"issue_id", util.UUIDToString(parent.IssueID))
@@ -7424,12 +7496,7 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 							"error", checkErr,
 						)
 					} else if !hasActive {
-						updatedIssue, updateErr := s.Queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
-							SourceTaskID: t.ID,
-							ID:           t.IssueID,
-							Status:       "todo",
-							WorkspaceID:  issue.WorkspaceID,
-						})
+						updatedIssue, activity, updateErr := s.resetIssueForFailedTask(ctx, issue, t)
 						if updateErr != nil {
 							slog.Warn("handle failed tasks: reset stuck issue failed",
 								"issue_id", issueKey,
@@ -7441,6 +7508,7 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 							// it here too. Without it the board / status-filter
 							// caches keep showing the issue as in_progress until
 							// the next write touches it (#4648 / MUL-3782).
+							(&IssueWakeupService{Tasks: s}).publishWakeupActivities(wakeupActivity{row: activity, actorType: "system", details: activity.Details})
 							s.broadcastIssueUpdated(ctx, updatedIssue, issue.Status)
 						}
 					}
@@ -7461,6 +7529,20 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 	}
 	s.notifyTasksFinished(tasks)
 	return retried
+}
+
+// resetIssueForFailedTask runs ResetIssueForFailedTask in its own transaction.
+func (s *TaskService) resetIssueForFailedTask(ctx context.Context, issue db.Issue, t db.AgentTaskQueue) (db.Issue, db.ActivityLog, error) {
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return db.Issue{}, db.ActivityLog{}, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	updated, activity, err := ResetIssueForFailedTask(ctx, s.Queries.WithTx(tx), issue, t)
+	if err != nil {
+		return db.Issue{}, db.ActivityLog{}, err
+	}
+	return updated, activity, tx.Commit(ctx)
 }
 
 const (
@@ -8215,7 +8297,10 @@ func (s *TaskService) runInTx(ctx context.Context, fn func(*db.Queries) error) e
 	}
 	defer tx.Rollback(ctx)
 	if err := fn(s.Queries.WithTx(tx)); err != nil {
-		return err
+		// Roll back first: the refusal's mark row is uncommitted in this
+		// transaction and the pool write below would wait on it.
+		_ = tx.Rollback(ctx)
+		return s.recordStageRefusal(ctx, err)
 	}
 	return tx.Commit(ctx)
 }
@@ -8903,17 +8988,27 @@ func (s *TaskService) broadcastChatDone(ctx context.Context, task db.AgentTaskQu
 // realtime-staleness fix (#4648 / MUL-3782); folding those side effects in
 // would mean unifying the payload type and is left as a follow-up.
 func (s *TaskService) broadcastIssueUpdated(ctx context.Context, issue db.Issue, prevStatus string) {
+	s.broadcastIssueUpdatedWith(ctx, issue, prevStatus, nil)
+}
+
+// broadcastIssueUpdatedWith adds extra payload keys, such as the activity_id
+// of a status row the writer already committed.
+func (s *TaskService) broadcastIssueUpdatedWith(ctx context.Context, issue db.Issue, prevStatus string, extra map[string]any) {
 	prefix := s.getIssuePrefix(issue.WorkspaceID)
+	payload := map[string]any{
+		"issue":          IssueToMapResolved(ctx, s.Queries, issue, prefix),
+		"status_changed": prevStatus != issue.Status,
+		"prev_status":    prevStatus,
+	}
+	for k, v := range extra {
+		payload[k] = v
+	}
 	s.Bus.Publish(events.Event{
 		Type:        protocol.EventIssueUpdated,
 		WorkspaceID: util.UUIDToString(issue.WorkspaceID),
 		ActorType:   "system",
 		ActorID:     "",
-		Payload: map[string]any{
-			"issue":          IssueToMapResolved(ctx, s.Queries, issue, prefix),
-			"status_changed": prevStatus != issue.Status,
-			"prev_status":    prevStatus,
-		},
+		Payload:     payload,
 	})
 }
 

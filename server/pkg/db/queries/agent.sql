@@ -52,6 +52,15 @@ SELECT * FROM agent
 WHERE id = $1 AND workspace_id = $2 AND kind = 'user'
 FOR SHARE;
 
+-- name: LockAgentInWorkspaceShared :one
+-- Pins an agent's visibility, runtime and archived_at for the rest of the
+-- transaction: a concurrent archive or update waits for the commit. Used by the
+-- background-agents write so its eligibility check and its settings write
+-- commit together.
+SELECT * FROM agent
+WHERE id = $1 AND workspace_id = $2 AND kind = 'user'
+FOR SHARE;
+
 -- name: CreateAgent :one
 INSERT INTO agent (
     workspace_id, name, description, avatar_url, runtime_mode,
@@ -1971,6 +1980,23 @@ WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
     AND workflow_step <> sqlc.arg('step')::text
   );
 
+-- name: LastVerdictHeadSHA :one
+-- PR head of the issue's latest review verdict, PASS or CHANGES (CHE-3243): a
+-- review dispatched for that head, with nothing pushed since, would only repeat
+-- it. Earlier verdicts do not count: a head the PR returned to was not looked
+-- at since.
+SELECT COALESCE((
+  SELECT details->>'head_sha' FROM activity_log
+  WHERE issue_id = $1 AND action IN ('review_changes_requested', 'review_passed')
+  ORDER BY created_at DESC, id DESC LIMIT 1
+), '')::text AS head_sha;
+
+-- name: CountChangesVerdictsForPR :one
+-- Changes-requested rounds of one PR lineage; a replacement PR starts at zero.
+SELECT count(*) FROM activity_log
+WHERE issue_id = $1 AND action = 'review_changes_requested'
+  AND COALESCE(details->>'pull_request_id', '') = sqlc.arg('pull_request_id')::text;
+
 -- name: ListStalePendingStepTasks :many
 -- The runs HasPendingTaskForIssueAndAgentAtStep ignores: pending
 -- assignment-level runs of one agent stamped for a step the issue has left.
@@ -2645,6 +2671,21 @@ LIMIT 1;
 SELECT EXISTS (
   SELECT 1 FROM agent_task_queue
   WHERE issue_id = $1 AND agent_id = $2
+    AND (
+      status IN ('queued', 'dispatched')
+      OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+    )
+);
+
+-- name: HasPendingAssignmentTaskForAgent :one
+-- Whether the agent holds the issue's assignment-level pending slot: exactly
+-- the rows idx_one_pending_task_per_issue_agent_thread keeps one of. A caller
+-- inside a transaction checks it before the insert, because the unique
+-- violation would abort the transaction.
+SELECT EXISTS (
+  SELECT 1 FROM agent_task_queue
+  WHERE issue_id = $1 AND agent_id = $2
+    AND comment_thread_id IS NULL
     AND (
       status IN ('queued', 'dispatched')
       OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')

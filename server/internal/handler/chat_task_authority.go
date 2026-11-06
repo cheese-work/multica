@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/multica-ai/multica/server/internal/bgagents"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -97,9 +98,20 @@ func refuseChatTask(code, message string) *chatTaskRefusal {
 	return &chatTaskRefusal{Code: code, Message: message}
 }
 
-// authorizeChatTask loads the workspace setting, decides, logs the decision and
-// writes the refusal. It returns true when the task may proceed.
+// authorizeChatTask decides, logs and writes the refusal. It returns true when
+// the task may proceed.
 func (h *Handler) authorizeChatTask(ctx context.Context, w http.ResponseWriter, q *db.Queries, op chatTaskOp, task db.AgentTaskQueue, session db.ChatSession, workspaceID string) bool {
+	refusal := h.decideChatTask(ctx, q, op, task, session, workspaceID)
+	if refusal != nil {
+		writeErrorCode(w, http.StatusForbidden, refusal.Code, refusal.Message)
+	}
+	return refusal == nil
+}
+
+// decideChatTask loads the compaction setting when the task needs it, decides
+// and logs the decision. A caller holding the DM lock passes its transaction's
+// queries, so the decision is re-read under the lock (SEC-1 rule 5).
+func (h *Handler) decideChatTask(ctx context.Context, q *db.Queries, op chatTaskOp, task db.AgentTaskQueue, session db.ChatSession, workspaceID string) *chatTaskRefusal {
 	in := chatTaskAuthorityInput{Op: op, Task: task, Session: session, RequestWorkspaceID: workspaceID}
 	if in.isCompaction() {
 		in.CompactAgentID, in.CompactAgentUsable = h.currentCompactAgent(ctx, q, session)
@@ -111,36 +123,44 @@ func (h *Handler) authorizeChatTask(ctx context.Context, w http.ResponseWriter, 
 	}
 	if refusal != nil {
 		slog.WarnContext(ctx, chatTaskAuthorityEvent, append(attrs, "decision", "refused", "code", refusal.Code)...)
-		writeErrorCode(w, http.StatusForbidden, refusal.Code, refusal.Message)
-		return false
+		return refusal
 	}
 	level := slog.LevelDebug
 	if in.isCompaction() {
 		level = slog.LevelInfo
 	}
 	slog.Log(ctx, level, chatTaskAuthorityEvent, append(attrs, "decision", "granted")...)
-	return true
+	return nil
 }
 
-// currentCompactAgent reads settings.compact_agent_id and whether that agent is
-// still eligible (ENG-8) and invokable by the session creator (CEO-9(b)). A
-// failed lookup counts as unusable.
+// currentCompactAgent is the primary agent of background_agents.compact
+// (CHE-4097) and whether it is still eligible (ENG-8) and invokable by the
+// session creator (CEO-9(b)). The fallback slot is a runner concern and grants
+// nothing here; the retired settings.compact_agent_id is not read. A failed
+// lookup counts as unusable.
 func (h *Handler) currentCompactAgent(ctx context.Context, q *db.Queries, session db.ChatSession) (string, bool) {
 	workspace, err := q.GetWorkspace(ctx, session.WorkspaceID)
 	if err != nil {
 		return "", false
 	}
-	var settings map[string]any
+	var settings map[string]json.RawMessage
 	_ = json.Unmarshal(workspace.Settings, &settings)
-	id, _ := settings[compactAgentIDKey].(string)
+	cfg, err := bgagents.Parse(settings[backgroundAgentsKey], bgagents.WorkspaceScope)
+	if err != nil {
+		return "", false
+	}
+	id := cfg[bgagents.Compact].AgentID
 	if id == "" {
 		return "", false
 	}
-	if ok, err := compactAgentEligible(ctx, q, session.WorkspaceID, id); err != nil || !ok {
-		return id, false
-	}
 	agent, err := q.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: parseUUID(id), WorkspaceID: session.WorkspaceID})
 	if err != nil {
+		return id, false
+	}
+	resolution := bgagents.Resolve(bgagents.Compact, nil, cfg, func(_ bgagents.Source, candidate string) bool {
+		return candidate == id && bgagents.WorkspaceEligible(agent)
+	})
+	if len(resolution.Chain) == 0 || resolution.Chain[0].Slot != bgagents.Primary {
 		return id, false
 	}
 	creator := uuidToString(session.CreatorID)

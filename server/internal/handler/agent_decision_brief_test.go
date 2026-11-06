@@ -32,12 +32,15 @@ type briefResponse struct {
 		Reason string `json:"reason"`
 	} `json:"stopped"`
 	Decisions []struct {
-		InstanceID     string `json:"instance_id"`
-		Gate           string `json:"gate"`
-		State          string `json:"state"`
-		ReviewTargetAt string `json:"review_target_at"`
-		VetoLine       string `json:"veto_line"`
-		Link           string `json:"link"`
+		InstanceID     string   `json:"instance_id"`
+		Gate           string   `json:"gate"`
+		State          string   `json:"state"`
+		ReviewTargetAt string   `json:"review_target_at"`
+		VetoLine       string   `json:"veto_line"`
+		Link           string   `json:"link"`
+		Outcome        string   `json:"outcome"`
+		Decider        string   `json:"decider"`
+		Confidence     *float64 `json:"confidence"`
 	} `json:"decisions"`
 	NoticeFailures []struct {
 		InstanceID string `json:"instance_id"`

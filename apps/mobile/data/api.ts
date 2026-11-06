@@ -20,6 +20,7 @@ import type {
   Attachment,
   ChatMessage,
   ChatPendingTask,
+  ChatSupplement,
   ChatSession,
   ChatSessionUsage,
   Comment,
@@ -62,6 +63,7 @@ import type {
   Workspace,
   WorkspaceSubscriptionSummary,
   WorkflowHandoffPreview,
+  ListIssueWorkflowsResponse,
 } from "@multica/core/types";
 import {
   AppConfigSchema,
@@ -75,6 +77,7 @@ import {
   IssueSchema,
   ListIssuesResponseSchema,
   ListIssueStatusesResponseSchema,
+  ListIssueWorkflowsResponseSchema,
   TimelineEntriesSchema,
   WorkflowHandoffPreviewSchema,
   WorkspaceSubscriptionSummarySchema,
@@ -92,6 +95,8 @@ import {
   ChatMessageListSchema,
   CommentSchema,
   ChatPendingTaskSchema,
+  ChatSupplementSchema,
+  ResendChatSupplementResponseSchema,
   ChatSessionListSchema,
   ChatSessionSchema,
   ChatSessionUsageSchema,
@@ -499,12 +504,25 @@ class ApiClient {
   async listWorkspaces(opts?: {
     signal?: AbortSignal;
   }): Promise<Workspace[]> {
+    return (await this.listWorkspacesChecked(opts)).workspaces;
+  }
+
+  /** `validated` is false when the response did not match the schema and the
+   *  empty fallback was returned instead. Only a validated list may be taken
+   *  as the user's real workspaces (draft cleanup relies on it). */
+  async listWorkspacesChecked(opts?: {
+    signal?: AbortSignal;
+  }): Promise<{ workspaces: Workspace[]; validated: boolean }> {
     const raw = await this.fetch<unknown>("/api/workspaces", {
       signal: opts?.signal,
     });
-    return parseWithFallback(raw, WorkspaceListSchema, EMPTY_WORKSPACE_LIST, {
-      endpoint: "listWorkspaces",
-    });
+    const workspaces = parseWithFallback(
+      raw,
+      WorkspaceListSchema,
+      EMPTY_WORKSPACE_LIST,
+      { endpoint: "listWorkspaces" },
+    );
+    return { workspaces, validated: Array.isArray(raw) && workspaces !== EMPTY_WORKSPACE_LIST };
   }
 
   // --- Inbox ---
@@ -1024,6 +1042,28 @@ class ApiClient {
     );
   }
 
+  /**
+   * Workspace workflows, for the statuses an issue offers under its project's
+   * or its own workflow (CHE-2822). An empty fallback reads as "unknown": the
+   * status picker then offers the whole catalog and the server still judges.
+   */
+  async listIssueWorkflows(opts?: { signal?: AbortSignal }): Promise<ListIssueWorkflowsResponse> {
+    return this.fetchValidated(
+      "/api/issue-workflows",
+      ListIssueWorkflowsResponseSchema,
+      { workflows: [], total: 0 },
+      { ...opts, endpoint: "GET /api/issue-workflows" },
+    ) as Promise<ListIssueWorkflowsResponse>;
+  }
+
+  /** Sets (or, with null, clears) the workflow an issue follows instead of its project's. */
+  async setIssueWorkflow(id: string, workflowId: string | null): Promise<void> {
+    await this.fetch<unknown>(`/api/issues/${id}/workflow`, {
+      method: "PUT",
+      body: JSON.stringify({ workflow_id: workflowId }),
+    });
+  }
+
   // --- Projects ---
   async listProjects(opts?: {
     signal?: AbortSignal;
@@ -1290,6 +1330,42 @@ class ApiClient {
       EMPTY_CHAT_PENDING_TASK,
       { endpoint: "GET /api/chat/sessions/:id/pending-task" },
     );
+  }
+
+  /** Adds a queued DM follow-up to the running task instead of cancelling it. */
+  async steerChatTask(sessionId: string, taskId: string): Promise<ChatSupplement> {
+    const raw = await this.fetch<unknown>(
+      `/api/chat/sessions/${sessionId}/tasks/${taskId}/steer`,
+      { method: "POST" },
+    );
+    const parsed = ChatSupplementSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new ApiError("Steer response invalid", 0, raw);
+    }
+    return parsed.data;
+  }
+
+  /** Sends a never-received or unconfirmed follow-up as a new run. An
+   *  `uncertain` receipt needs `confirmPossibleDuplicate`. */
+  async resendChatSupplement(
+    sessionId: string,
+    messageId: string,
+    opts: { confirmPossibleDuplicate?: boolean } = {},
+  ): Promise<{ task_id: string; supplement: ChatSupplement }> {
+    const raw = await this.fetch<unknown>(
+      `/api/chat/sessions/${sessionId}/messages/${messageId}/supplement/resend`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          confirm_possible_duplicate: opts.confirmPossibleDuplicate === true,
+        }),
+      },
+    );
+    const parsed = ResendChatSupplementResponseSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new ApiError("Resend response invalid", 0, raw);
+    }
+    return parsed.data;
   }
 
   async markChatSessionRead(sessionId: string): Promise<void> {

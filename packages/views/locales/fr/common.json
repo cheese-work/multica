@@ -135,5 +135,27 @@
   },
   "navigation": {
     "open_in_new_tab": "Ouvrir dans un nouvel onglet"
+  },
+  "decision_action": {
+    "approve": "Approuver avec une clé d'accès",
+    "waiting": "En attente de votre clé d'accès…",
+    "state": {
+      "executed": "Exécutée",
+      "failed": "Échec",
+      "rejected": "Rejetée",
+      "expired": "Expirée",
+      "cancelled": "Annulée"
+    },
+    "failed_code": {
+      "stale_cap": "Un plafond plus élevé est déjà en vigueur.",
+      "stale_window": "La fenêtre budgétaire a changé. Lancez une nouvelle demande.",
+      "not_budgeted": "Cette tâche n'a plus de budget.",
+      "other": "Échec : {{code}}"
+    },
+    "no_passkey": "Ajoutez une clé d'accès avant d'approuver.",
+    "add_passkey": "Ajouter une clé d'accès",
+    "error": "L'approbation par clé d'accès n'a pas abouti. Réessayez.",
+    "lost": "La réponse a été perdue. L'action n'est pas approuvée une seconde fois. Vérifiez le résultat.",
+    "check": "Vérifier le résultat"
   }
 }
