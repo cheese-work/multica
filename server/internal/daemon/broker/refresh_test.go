@@ -5,11 +5,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func gitErr(dir string, args ...string) (string, error) {
@@ -143,5 +145,97 @@ func TestBaseRefreshRefusals(t *testing.T) {
 	r.start(t)
 	if _, err := RefreshBase(context.Background(), r.socket, r.work); err == nil || !strings.Contains(err.Error(), "(400)") {
 		t.Fatalf("refresh on a run with no synthetic base: error = %v, want status 400", err)
+	}
+}
+
+func elevatedSynRig(t *testing.T) (*synRig, *Broker, *fakeAuthority) {
+	t.Helper()
+	s := newSynRig(t)
+	a := &fakeAuthority{}
+	s.pin.Elevation = &Elevation{Authority: a, Scope: "repo_write:42", ReportFor: 100 * time.Millisecond}
+	s.advanceMain(t, "src/b.go", "package b\n", "upstream")
+	return s, s.start(t), a
+}
+
+// A refresh runs the same live per-operation authority as a push: the server's
+// refusal (a revoked grant whose fence notice has not arrived) stops the fetch,
+// and a granted one is reported as completed.
+func TestBaseRefreshNeedsLiveAuthority(t *testing.T) {
+	t.Parallel()
+	s, _, a := elevatedSynRig(t)
+	a.authorizeIn = errors.New("grant revoked")
+	if _, err := RefreshBase(context.Background(), s.socket, s.syn); err == nil || !strings.Contains(err.Error(), "(503)") {
+		t.Fatalf("refresh after revocation: error = %v, want status 503", err)
+	}
+	if _, err := gitErr(s.syn, "rev-parse", "--verify", "refs/multica/base"); err == nil {
+		t.Fatal("a refused refresh delivered a new base")
+	}
+	a.mu.Lock()
+	a.authorizeIn = nil
+	a.mu.Unlock()
+	root, err := RefreshBase(context.Background(), s.socket, s.syn)
+	if err != nil || root == s.root {
+		t.Fatalf("authorized refresh = %q, %v; want a new root", root, err)
+	}
+	if res := a.results(); len(res) != 1 || res[0] != "completed" {
+		t.Fatalf("reported %v, want one completed", res)
+	}
+}
+
+// A fence that begins while the server is authorizing the refresh: the refresh
+// is refused, the abort is reported, and Drain has waited for it.
+func TestBaseRefreshFencedMidAuthorizationAborts(t *testing.T) {
+	t.Parallel()
+	s, b, a := elevatedSynRig(t)
+	a.authGate = newGate()
+	done := make(chan error, 1)
+	go func() { _, err := RefreshBase(context.Background(), s.socket, s.syn); done <- err }()
+	a.authGate.wait(t)
+	b.Fence()
+	drained := make(chan error, 1)
+	go func() { drained <- b.Drain(context.Background()) }()
+	select {
+	case err := <-drained:
+		t.Fatalf("Drain returned (%v) while a refresh was authorizing", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	close(a.authGate.release)
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "(403)") {
+		t.Fatalf("refresh fenced mid-authorization: error = %v, want status 403", err)
+	}
+	if err := <-drained; err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if res := a.results(); len(res) != 1 || res[0] != "aborted" {
+		t.Fatalf("reported %v, want one aborted", res)
+	}
+	if _, err := gitErr(s.syn, "rev-parse", "--verify", "refs/multica/base"); err == nil {
+		t.Fatal("a fenced refresh delivered a new base")
+	}
+}
+
+// A refresh in flight when the fence begins finishes its read before Drain
+// returns, but delivers nothing once the fence has begun.
+func TestBaseRefreshFencedBeforeReplyDeliversNothing(t *testing.T) {
+	t.Parallel()
+	s, b, a := elevatedSynRig(t)
+	g := newGate()
+	b.beforeWrite = g.hook
+	done := make(chan error, 1)
+	go func() { _, err := RefreshBase(context.Background(), s.socket, s.syn); done <- err }()
+	g.wait(t)
+	b.Fence()
+	close(g.release)
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "(403)") {
+		t.Fatalf("refresh fenced before its reply: error = %v, want status 403", err)
+	}
+	if err := b.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if res := a.results(); len(res) != 1 || res[0] != "aborted" {
+		t.Fatalf("reported %v, want one aborted", res)
+	}
+	if _, err := gitErr(s.syn, "rev-parse", "--verify", "refs/multica/base"); err == nil {
+		t.Fatal("a fenced refresh delivered a new base")
 	}
 }

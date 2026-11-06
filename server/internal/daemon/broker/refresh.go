@@ -54,7 +54,7 @@ func (b *Broker) handleRefresh(w http.ResponseWriter, r *http.Request) {
 // refreshBase builds the new root and, on success, streams it to w and moves
 // the pin. It returns the HTTP status to answer with when it wrote nothing;
 // status 0 with an error means the reply broke off after it began.
-func (b *Broker) refreshBase(ctx context.Context, w http.ResponseWriter) (string, int, error) {
+func (b *Broker) refreshBase(ctx context.Context, w http.ResponseWriter) (root string, status int, err error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.pin.Synthetic == nil {
@@ -66,6 +66,20 @@ func (b *Broker) refreshBase(ctx context.Context, w http.ResponseWriter) (string
 	if fenced {
 		return "", http.StatusForbidden, errors.New("run is fenced: base refresh is refused")
 	}
+	// A refresh reads the default branch tree, so it is an authorized operation
+	// like a push: the server is asked now, not trusted to have sent a fence.
+	// A refresh writes nothing to the remote, so any failure provably applied
+	// nothing.
+	op, status, err := b.authorize(ctx, inputHash("refresh", b.pin.Repo, b.pin.Ref, b.pin.Synthetic.Root))
+	if err != nil {
+		return "", status, err
+	}
+	defer func() {
+		if err != nil {
+			err = notApplied{err}
+		}
+		b.finish(op, err)
+	}()
 	var auth []string
 	if b.pin.Tokens != nil {
 		g, status, err := b.mint(ctx, false)
@@ -119,6 +133,9 @@ func (b *Broker) refreshBase(ctx context.Context, w http.ResponseWriter) (string
 		return "", http.StatusInternalServerError, err
 	}
 	defer f.Close()
+	if err := b.write(op); err != nil { // the fence began: deliver nothing, keep the pin
+		return "", http.StatusForbidden, err
+	}
 	w.Header().Set(baseRootHeader, sb.Root)
 	w.Header().Set("Content-Type", "application/octet-stream")
 	if _, err := io.Copy(w, f); err != nil {
