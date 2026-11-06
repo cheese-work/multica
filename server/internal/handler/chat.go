@@ -1,11 +1,14 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"maps"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -875,6 +878,11 @@ type SendChatMessageRequest struct {
 	Content           string   `json:"content"`
 	AttachmentIDs     []string `json:"attachment_ids"`
 	DecisionRequestID string   `json:"decision_request_id"`
+	// ClientMessageID makes the send idempotent per DM: a retry with the same id
+	// (after a timeout) returns the stored message and writes nothing.
+	ClientMessageID string `json:"client_message_id"`
+	// AskIDs are the open asks this message answers (attention T2b).
+	AskIDs []string `json:"ask_ids"`
 }
 
 type SendChatMessageResponse struct {
@@ -925,6 +933,11 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	askIDs, ok := parseUUIDSliceOrBadRequest(w, req.AskIDs, "ask_ids")
+	if !ok {
+		return
+	}
+	askIDs = slices.CompactFunc(slices.SortedFunc(slices.Values(askIDs), func(a, b pgtype.UUID) int { return bytes.Compare(a.Bytes[:], b.Bytes[:]) }), func(a, b pgtype.UUID) bool { return a == b })
 	var decisionRequestID pgtype.UUID
 	if req.DecisionRequestID != "" {
 		decisionRequestID, ok = parseUUIDOrBadRequest(w, req.DecisionRequestID, "decision_request_id")
@@ -942,17 +955,24 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Archived sessions are read-only: refuse to enqueue new agent work for
-	// them (see SetChatSessionArchived). The frontend disables the composer
-	// for status='archived' and only offers unarchive/delete there. Legacy
-	// soft-archived rows from before the feature are covered by the same check.
-	if session.Status != "active" {
-		writeError(w, http.StatusBadRequest, "chat session is archived")
-		return
-	}
-
-	agent, actorType, actorID, ok := h.preflightChatSend(w, r, session, userID, workspaceID)
-	if !ok {
+	// A refusal below (archived session, archived agent, no permission) must not hide a send
+	// that was in fact delivered (B4): a retry after the agent was archived recovers the first
+	// attempt, and a retry that overlaps its first send waits for it. A keyed send's refusal is
+	// held back and re-checked under the session lock; the lock tx never overlaps another
+	// pool connection. An unrefused send replays inside its own transaction.
+	var agent db.Agent
+	var actorType, actorID string
+	if !h.gateKeyedSend(w, r, session, req.ClientMessageID, func(w http.ResponseWriter) bool {
+		// Archived sessions are read-only: refuse to enqueue new agent work for them (see
+		// SetChatSessionArchived). Legacy soft-archived rows are covered by the same check.
+		if session.Status != "active" {
+			writeError(w, http.StatusBadRequest, "chat session is archived")
+			return false
+		}
+		var ok bool
+		agent, actorType, actorID, ok = h.preflightChatSend(w, r, session, userID, workspaceID)
+		return ok
+	}) {
 		return
 	}
 	// /preset needs the same permission as any send, so it comes after the gate.
@@ -999,9 +1019,10 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	var sent *service.DirectChatSendResult
 	var err error
 	if decisionRequestID.Valid {
-		sent, err = h.sendChatDecisionReply(r, session, agent, parseUUID(userID), decisionRequestID, req.Content, attachmentIDs)
+		sent, err = h.sendChatDecisionReply(r, session, agent, parseUUID(userID), decisionRequestID, req.Content, attachmentIDs, req.ClientMessageID)
 	} else {
-		sent, err = h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), r.Header.Get("X-Actor-Source"))
+		sent, err = h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), r.Header.Get("X-Actor-Source"),
+			service.DirectChatSendOptions{ClientMessageID: req.ClientMessageID, HumanSend: actorType == "member", AskIDs: askIDs})
 	}
 	if err != nil {
 		var refusal decisionIntentRefusal
@@ -1016,6 +1037,8 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "chat agent is archived")
 		case errors.Is(err, service.ErrChatTaskAgentNoRuntime):
 			writeError(w, http.StatusConflict, "chat agent has no runtime")
+		case errors.Is(err, service.ErrChatAskNotOpen):
+			writeError(w, http.StatusBadRequest, "ask_ids must be your open asks in this chat")
 		case errors.Is(err, service.ErrChatCompacting):
 			// Both keys: `code` for API consumers, `reason_code` for the web
 			// client's existing send-error mapping.
@@ -1028,6 +1051,10 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	msg := sent.Message
 	task := sent.Task
+	if sent.Replayed { // the first attempt already did the side effects below
+		writeReplayedSend(w, sent)
+		return
+	}
 	currentTitle := session.Title
 	if sent.InitialTitle != "" {
 		currentTitle = sent.InitialTitle
@@ -1091,6 +1118,72 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		Queued:        sent.Queued,
 		CreatedAt:     timestampToString(msg.CreatedAt),
 		AttachmentIDs: boundAttachmentIDs,
+	})
+}
+
+// gateKeyedSend runs a send's pre-write checks. For a keyed send a refusal is buffered, then
+// replaced by the stored send's ids if the session lock shows the first attempt was delivered.
+// It reports whether the send may go on; when false the response has been written.
+func (h *Handler) gateKeyedSend(w http.ResponseWriter, r *http.Request, session db.ChatSession, clientMessageID string, check func(http.ResponseWriter) bool) bool {
+	if clientMessageID == "" {
+		return check(w)
+	}
+	held := &heldResponse{header: http.Header{}}
+	if check(held) {
+		return true
+	}
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to send chat message")
+		return false
+	}
+	defer tx.Rollback(r.Context())
+	q := h.Queries.WithTx(tx)
+	var stored service.DirectChatSendResult
+	var found bool
+	if _, err = q.LockChatSessionForRuntimeBind(r.Context(), session.ID); err == nil {
+		stored, found, err = h.TaskService.ReplayDirectChatSend(r.Context(), q, session, clientMessageID)
+	}
+	switch {
+	case err != nil:
+		slog.Warn("replay chat send lookup failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to send chat message")
+	case found:
+		writeReplayedSend(w, &stored)
+	default:
+		held.writeTo(w)
+	}
+	return false
+}
+
+// heldResponse buffers a response so it can be sent, or dropped, later.
+type heldResponse struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func (h *heldResponse) Header() http.Header { return h.header }
+func (h *heldResponse) WriteHeader(code int) {
+	if h.status == 0 {
+		h.status = code
+	}
+}
+func (h *heldResponse) Write(p []byte) (int, error) {
+	h.WriteHeader(http.StatusOK)
+	return h.body.Write(p)
+}
+func (h *heldResponse) writeTo(w http.ResponseWriter) {
+	maps.Copy(w.Header(), h.header)
+	w.WriteHeader(h.status)
+	_, _ = w.Write(h.body.Bytes())
+}
+
+// writeReplayedSend answers a retry with the stored send's ids.
+func writeReplayedSend(w http.ResponseWriter, sent *service.DirectChatSendResult) {
+	writeJSON(w, http.StatusOK, SendChatMessageResponse{
+		MessageID: uuidToString(sent.Message.ID), TaskID: uuidToString(sent.Task.ID), SupportsQueue: true,
+		CreatedAt: timestampToString(sent.Message.CreatedAt), AttachmentIDs: uuidStringsOrEmpty(sent.BoundAttachmentIDs),
 	})
 }
 
