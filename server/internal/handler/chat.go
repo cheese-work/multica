@@ -152,6 +152,18 @@ func (h *Handler) CreateChatSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, chatSessionToResponse(session))
 }
 
+// listsOwnChatSessions reports whether the credential is a user's own: an
+// interactive sign-in, a PAT or a CLI sign-in. These list the caller's own
+// DMs only (the query filters on creator). Task tokens and cloud-node
+// credentials keep the own-session path in callingChatSession.
+func listsOwnChatSessions(actorSource string) bool {
+	switch actorSource {
+	case "interactive_jwt", "pat", "cli_jwt":
+		return true
+	}
+	return false
+}
+
 func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Has("issue") {
 		h.listDecisionLanes(w, r)
@@ -162,7 +174,7 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	workspaceID := ctxWorkspaceID(r.Context())
-	if r.Header.Get("X-Actor-Source") != "interactive_jwt" {
+	if !listsOwnChatSessions(r.Header.Get("X-Actor-Source")) {
 		session, ok := h.callingChatSession(w, r)
 		if !ok {
 			return
@@ -228,6 +240,13 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			resp = append(resp, chatSessionListRowToResponse(s))
+		}
+	}
+	// Transcript reads reject PAT and CLI credentials, so their list stays
+	// metadata-only: the last-message preview would leak message content.
+	if r.Header.Get("X-Actor-Source") != "interactive_jwt" {
+		for i := range resp {
+			resp[i].LastMessage = nil
 		}
 	}
 	if err := h.hydrateChatSessionChannelMetadata(r.Context(), resp); err != nil {

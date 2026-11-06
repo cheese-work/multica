@@ -3371,6 +3371,13 @@ func (s *TaskService) BroadcastTaskQueued(ctx context.Context, task db.AgentTask
 	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
 }
 
+// BroadcastTaskCoalesced tells clients a pending run took in another comment.
+// The run keeps its status, but its trigger and covered comments changed, and
+// clients place the run under the newest comment it answers.
+func (s *TaskService) BroadcastTaskCoalesced(ctx context.Context, task db.AgentTaskQueue) {
+	s.broadcastTaskEvent(ctx, protocol.EventTaskCoalesced, task)
+}
+
 // CaptureCancelledTasks records analytics for an already-committed bulk
 // cancellation. It deliberately does NOT settle delegated-failure recoveries:
 // by the time it runs the cancel has committed, so a failure here could not be
@@ -5398,6 +5405,9 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 			return err
 		}
 		task = t
+		if err := recordProviderSuccess(ctx, qtx, t); err != nil {
+			return err
+		}
 		change, err = syncQoderIssue(ctx, qtx, t, true)
 		if err != nil {
 			return err
@@ -5975,6 +5985,11 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			return err
 		}
 		task = t
+		if t.Status == "failed" && failureReason == taskfailure.ReasonAgentProviderServerError.String() {
+			if err := recordProviderServerFailure(ctx, qtx, t); err != nil {
+				return err
+			}
+		}
 
 		// Keep resume-unsafe sessions on the task row for observability, but
 		// do not promote them to the chat-level resume pointer.
@@ -6274,6 +6289,9 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 	// both sides of a cross-issue handoff.
 	if errMsg != "" && task.IssueID.Valid && retried == nil {
 		s.createAgentComment(ctx, task.IssueID, task.AgentID, redact.Text(errMsg), "system", task.TriggerCommentID, task.ID)
+	}
+	if retried == nil {
+		s.failOverRoutingTask(ctx, task, failureReason)
 	}
 	// CHE-607: errMsg above is the proximate cause (e.g. a stream disconnect) —
 	// on its own it says nothing about why the auto-retry that would normally
@@ -8100,6 +8118,7 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 				"failed_task_id", util.UUIDToString(target.failed.ID),
 				"coordinator_task_id", util.UUIDToString(merged.ID),
 			)
+			s.BroadcastTaskCoalesced(ctx, merged)
 			return delegatedFailureRecoveryReplayed, nil
 		} else if !errors.Is(err, pgx.ErrNoRows) {
 			return delegatedFailureRecoveryCovered, fmt.Errorf("merge recovery into pending task: %w", err)
