@@ -158,7 +158,7 @@ func seedSearchBenchShaped(t *testing.T, ctx context.Context, slug string, issue
 			'none', 'member', gen_random_uuid(), n,
 			now() - make_interval(mins => n), now() - make_interval(mins => n)
 		FROM generate_series(1, %d) n`,
-		words(1, 6), words(2, 330), issues)
+		words(1, 6), words(2, 110), issues)
 	// Bulk rows skip the per-row triggers (they cost ~3 ms each on a GIN-indexed
 	// table); the search side tables are filled set-based below instead.
 	conn, err := pool.Acquire(ctx)
@@ -194,20 +194,24 @@ func seedSearchBenchShaped(t *testing.T, ctx context.Context, slug string, issue
 	// Same projection as issue_search_text_sync / comment_search_text_sync.
 	if _, err := conn.Exec(ctx, `
 		INSERT INTO issue_search_text (issue_id, workspace_id, title_folded, description_folded, title_accents, description_accents)
-		SELECT i.id, i.workspace_id, f.t, f.d,
-			CASE WHEN lower(COALESCE(i.title, '')) <> f.t THEN lower(COALESCE(i.title, '')) END,
-			CASE WHEN lower(COALESCE(i.description, '')) <> f.d THEN lower(COALESCE(i.description, '')) END
-		FROM issue i, LATERAL (SELECT search_fold(i.title) AS t, search_fold(i.description) AS d) f
-		WHERE i.workspace_id = $1
+		WITH f AS MATERIALIZED (
+			SELECT id, workspace_id, title, description, search_fold(title) AS t, search_fold(description) AS d
+			FROM issue WHERE workspace_id = $1)
+		SELECT id, workspace_id, t, d,
+			CASE WHEN lower(COALESCE(title, '')) <> t THEN lower(COALESCE(title, '')) END,
+			CASE WHEN lower(COALESCE(description, '')) <> d THEN lower(COALESCE(description, '')) END
+		FROM f
 		ON CONFLICT (issue_id) DO NOTHING`, wsID); err != nil {
 		t.Fatalf("seed issue search text: %v", err)
 	}
 	if _, err := conn.Exec(ctx, `
 		INSERT INTO comment_search_text (comment_id, workspace_id, issue_id, created_at, content_folded, content_accents)
-		SELECT c.id, c.workspace_id, c.issue_id, c.created_at, f.c,
-			CASE WHEN lower(COALESCE(c.content, '')) <> f.c THEN lower(COALESCE(c.content, '')) END
-		FROM comment c, LATERAL (SELECT search_fold(c.content) AS c) f
-		WHERE c.workspace_id = $1
+		WITH f AS MATERIALIZED (
+			SELECT id, workspace_id, issue_id, created_at, content, search_fold(content) AS c
+			FROM comment WHERE workspace_id = $1)
+		SELECT id, workspace_id, issue_id, created_at, c,
+			CASE WHEN lower(COALESCE(content, '')) <> c THEN lower(COALESCE(content, '')) END
+		FROM f
 		ON CONFLICT (comment_id) DO NOTHING`, wsID); err != nil {
 		t.Fatalf("seed comment search text: %v", err)
 	}

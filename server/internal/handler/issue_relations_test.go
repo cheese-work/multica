@@ -301,11 +301,12 @@ func TestIssueRelationsMentionWorkDoesNotGrowWithWorkspace(t *testing.T) {
 		INSERT INTO comment(workspace_id,issue_id,author_type,author_id,content)
 		SELECT $1,id,'member',$2,'[self](mention://issue/'||id||')' FROM unrelated`, testWorkspaceID, testUserID)
 	t.Cleanup(func() {
+		seed(`DELETE FROM issue WHERE workspace_id=$1 AND title LIKE 'unrelated relations %'`, testWorkspaceID)
+	})
+	// Cleanups run LIFO: registered last, so comments are removed before their issues.
+	t.Cleanup(func() {
 		seed(`DELETE FROM comment WHERE workspace_id=$1 AND issue_id IN
 		(SELECT id FROM issue WHERE workspace_id=$1 AND title LIKE 'unrelated relations %')`, testWorkspaceID)
-	})
-	t.Cleanup(func() {
-		seed(`DELETE FROM issue WHERE workspace_id=$1 AND title LIKE 'unrelated relations %'`, testWorkspaceID)
 	})
 	for depth := 1; depth <= 2; depth++ {
 		after := measure(depth)
