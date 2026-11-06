@@ -116,18 +116,18 @@ func (h *Handler) admissionTxFinished(ctx context.Context, e service.RunBudgetEv
 var runBudgetBeforeNotice = func() {}
 
 func (h *Handler) writeRunBudgetNotice(ctx context.Context, e service.RunBudgetEvent, text string) {
-	_ = h.writeRunBudgetNoticeFrom(ctx, e, pgtype.UUID{}, nil, func(context.Context, *db.Queries) string { return text })
+	_ = h.writeRunBudgetNoticeFrom(ctx, e, hookRef{}, nil, func(context.Context, *db.Queries) string { return text })
 }
 
 // writeRunBudgetNoticeFrom is writeRunBudgetNotice with the text worded inside
 // the transaction, under the budget lock, by a function of the transaction's
 // queries. A non-nil recovery run is claimed in the same transaction.
 //
-// A valid hookID is the refusal whose hook this notice finishes (tx N): the
+// A valid hook id is the refusal whose hook this notice finishes (tx N): the
 // hook advances to done in the notice's transaction, and a refusal that no
 // longer applies returns *hookIneligible, with nothing written. Without one, a
 // lifted refusal is dropped silently.
-func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBudgetEvent, hookID pgtype.UUID, recovery *service.BudgetRecoveryRun, text func(context.Context, *db.Queries) string) error {
+func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBudgetEvent, hook hookRef, recovery *service.BudgetRecoveryRun, text func(context.Context, *db.Queries) string) error {
 	issue, err := h.Queries.GetIssue(ctx, e.IssueID)
 	if err != nil {
 		slog.Warn("run budget: load issue for notice failed", "err", err, "issue_id", uuidToString(e.IssueID))
@@ -152,11 +152,11 @@ func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBud
 			WindowID: e.Since.UTC().Format(time.RFC3339Nano), Kind: e.Kind,
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
-			if !hookID.Valid {
+			if !hook.id.Valid {
 				return nil
 			}
 			// A notice for this window exists already: nothing is left to write.
-			return h.retireHookInTx(ctx, qtx, hookID, "notice_exists")
+			return h.retireHookInTx(ctx, qtx, hook, "notice_exists")
 		}
 		if err != nil {
 			return fmt.Errorf("claim notice: %w", err)
@@ -179,16 +179,16 @@ func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBud
 		// decision, and the claim rolls back with the transaction.
 		if e.Kind == service.RunBudgetKindExhausted {
 			if err := runBudgetRefusalStillHolds(ctx, qtx, e); err != nil {
-				if hookID.Valid && errors.Is(err, errRefusalLifted) {
+				if hook.id.Valid && errors.Is(err, errRefusalLifted) {
 					return &hookIneligible{reason: "budget_restored"}
 				}
 				return err
 			}
-			if hookID.Valid {
-				if err := lockHookStep(ctx, qtx, hookID, "blocked"); err != nil {
+			if hook.id.Valid {
+				if err := lockHookStep(ctx, qtx, hook.id, hook.generation, "blocked"); err != nil {
 					return err
 				}
-				if err := qtx.SetRunBudgetRefusalHook(ctx, db.SetRunBudgetRefusalHookParams{ID: hookID, HookPhase: "done"}); err != nil {
+				if err := qtx.SetRunBudgetRefusalHook(ctx, db.SetRunBudgetRefusalHookParams{ID: hook.id, HookPhase: "done"}); err != nil {
 					return fmt.Errorf("finish hook: %w", err)
 				}
 			}
@@ -204,7 +204,7 @@ func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBud
 				recovered = true
 			case errors.Is(err, service.ErrRecoveryClaimed), errors.Is(err, service.ErrRecoveryBlockEnded):
 			case errors.Is(err, service.ErrRecoveryWindowLifted):
-				if hookID.Valid {
+				if hook.id.Valid {
 					return &hookIneligible{reason: "budget_restored"}
 				}
 				return errRefusalLifted
@@ -281,8 +281,8 @@ func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBud
 
 // retireHookInTx retires an unfinished hook in the caller's transaction and
 // reports it as finished.
-func (h *Handler) retireHookInTx(ctx context.Context, q *db.Queries, id pgtype.UUID, reason string) error {
-	return q.RetireRunBudgetRefusalHook(ctx, db.RetireRunBudgetRefusalHookParams{ID: id, Reason: reason})
+func (h *Handler) retireHookInTx(ctx context.Context, q *db.Queries, hook hookRef, reason string) error {
+	return q.RetireRunBudgetRefusalHook(ctx, db.RetireRunBudgetRefusalHookParams{ID: hook.id, Generation: hook.generation, Reason: reason})
 }
 
 // runBudgetRefusalStillHolds takes the budget lock and reports errRefusalLifted

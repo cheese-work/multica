@@ -40,6 +40,12 @@ var forIssueWorkflow = issueworkflow.ForIssue
 // errHookAdvanced means another advancer already took this step: nothing to do.
 var errHookAdvanced = errors.New("run budget: the hook already advanced")
 
+// hookRef names one generation of a refusal's hook; a revival starts the next.
+type hookRef struct {
+	id         pgtype.UUID
+	generation int32
+}
+
 // hookIneligible means the refusal no longer applies; the hook is retired.
 type hookIneligible struct{ reason string }
 
@@ -232,12 +238,12 @@ func refusalIneligible(ctx context.Context, q *db.Queries, row db.RunBudgetRefus
 // lockHookStep locks the refusal and checks that its hook is in phase and still
 // eligible. The caller holds the issue's budget lock. errHookAdvanced means
 // another advancer took the step; *hookIneligible means the hook must retire.
-func lockHookStep(ctx context.Context, q *db.Queries, id pgtype.UUID, phase string) error {
+func lockHookStep(ctx context.Context, q *db.Queries, id pgtype.UUID, generation int32, phase string) error {
 	row, err := q.LockRunBudgetRefusal(ctx, id)
 	if err != nil {
 		return err
 	}
-	if row.HookPhase != phase {
+	if row.HookGeneration != generation || row.HookPhase != phase {
 		return errHookAdvanced
 	}
 	reason, err := refusalIneligible(ctx, q, row)
@@ -258,31 +264,31 @@ func (h *Handler) advanceRefusalHook(ctx context.Context, id pgtype.UUID, e serv
 		return
 	}
 	if _, err := h.Queries.GetIssue(ctx, row.IssueID); errors.Is(err, pgx.ErrNoRows) {
-		h.settleHookStep(ctx, id, &hookIneligible{reason: "issue_closed"})
+		h.settleHookStep(ctx, id, row.HookGeneration, &hookIneligible{reason: "issue_closed"})
 		return
 	}
 	switch row.HookPhase {
 	case "intent":
-		if runBudgetHookAt("after_intent") || !h.settleHookStep(ctx, id, h.blockStep(ctx, id, e)) || runBudgetHookAt("after_block") {
+		if runBudgetHookAt("after_intent") || !h.settleHookStep(ctx, id, row.HookGeneration, h.blockStep(ctx, id, row.HookGeneration, e)) || runBudgetHookAt("after_block") {
 			return
 		}
 	case "blocked":
 	default:
 		return
 	}
-	h.settleHookStep(ctx, id, h.noticeStep(ctx, id, e))
+	h.settleHookStep(ctx, id, row.HookGeneration, h.noticeStep(ctx, id, row.HookGeneration, e))
 }
 
 // settleHookStep reports whether the hook goes on after a step. A step that
 // found the refusal ineligible retires the hook; a failed step stays for the sweep.
-func (h *Handler) settleHookStep(ctx context.Context, id pgtype.UUID, err error) bool {
+func (h *Handler) settleHookStep(ctx context.Context, id pgtype.UUID, generation int32, err error) bool {
 	var ineligible *hookIneligible
 	switch {
 	case err == nil:
 		return true
 	case errors.Is(err, errHookAdvanced):
 	case errors.As(err, &ineligible):
-		if rerr := h.Queries.RetireRunBudgetRefusalHook(ctx, db.RetireRunBudgetRefusalHookParams{ID: id, Reason: ineligible.reason}); rerr != nil {
+		if rerr := h.Queries.RetireRunBudgetRefusalHook(ctx, db.RetireRunBudgetRefusalHookParams{ID: id, Generation: generation, Reason: ineligible.reason}); rerr != nil {
 			slog.Warn("run budget: retire hook failed", "err", rerr, "refusal_id", uuidToString(id))
 		}
 	default:
@@ -294,7 +300,7 @@ func (h *Handler) settleHookStep(ctx context.Context, id pgtype.UUID, err error)
 // blockStep is tx B. The eligibility check runs in the status write's
 // transaction, so a move that commits first retires the hook and nothing is
 // written; the phase advance is written by the block's own history row.
-func (h *Handler) blockStep(ctx context.Context, id pgtype.UUID, e service.RunBudgetExhausted) error {
+func (h *Handler) blockStep(ctx context.Context, id pgtype.UUID, generation int32, e service.RunBudgetExhausted) error {
 	// Another writer (the 80% warning's comment, a person) can bump the issue's
 	// revision between the read and the block. The block then loses, so it
 	// reads the issue again and retries while the revision keeps moving.
@@ -312,13 +318,13 @@ func (h *Handler) blockStep(ctx context.Context, id pgtype.UUID, e service.RunBu
 		if issue.Status == issuestatus.Blocked || def == nil || !def.Has(issuestatus.Blocked) {
 			// Something else parked the issue, or the workflow has no blocked
 			// status: the notice goes out alone.
-			return h.advanceWithoutBlock(ctx, id, issue.ID)
+			return h.advanceWithoutBlock(ctx, id, generation, issue.ID)
 		}
 		guard := func(ctx context.Context, q *db.Queries, _ *db.UpdateIssueParams) error {
 			if _, err := q.LockIssueRunBudget(ctx, issue.ID); err != nil {
 				return err
 			}
-			if err := lockHookStep(ctx, q, id, "intent"); err != nil {
+			if err := lockHookStep(ctx, q, id, generation, "intent"); err != nil {
 				return err
 			}
 			// Committed with the move: the budget parked this issue in this window.
@@ -361,13 +367,13 @@ func (h *Handler) setBlockedReason(ctx context.Context, issue db.Issue) {
 
 // advanceWithoutBlock is tx B for a refusal that moves nothing: the phase
 // advances if the refusal is still eligible.
-func (h *Handler) advanceWithoutBlock(ctx context.Context, id, issueID pgtype.UUID) error {
+func (h *Handler) advanceWithoutBlock(ctx context.Context, id pgtype.UUID, generation int32, issueID pgtype.UUID) error {
 	return h.withPgxTx(ctx, func(tx pgx.Tx) error {
 		q := h.Queries.WithTx(tx)
 		if _, err := q.LockIssueRunBudget(ctx, issueID); err != nil {
 			return err
 		}
-		if err := lockHookStep(ctx, q, id, "intent"); err != nil {
+		if err := lockHookStep(ctx, q, id, generation, "intent"); err != nil {
 			return err
 		}
 		return q.SetRunBudgetRefusalHook(ctx, db.SetRunBudgetRefusalHookParams{ID: id, HookPhase: "blocked"})
@@ -378,7 +384,7 @@ func (h *Handler) advanceWithoutBlock(ctx context.Context, id, issueID pgtype.UU
 // the notice that states the balance, in the notice's transaction: whichever
 // callback writes the notice also gives the run. The target is priced under the
 // budget lock that transaction takes.
-func (h *Handler) noticeStep(ctx context.Context, id pgtype.UUID, e service.RunBudgetExhausted) error {
+func (h *Handler) noticeStep(ctx context.Context, id pgtype.UUID, generation int32, e service.RunBudgetExhausted) error {
 	issue, err := h.Queries.GetIssue(ctx, e.IssueID)
 	if err != nil {
 		return err
@@ -398,7 +404,7 @@ func (h *Handler) noticeStep(ctx context.Context, id pgtype.UUID, e service.RunB
 		runBudgetBeforeRecovery()
 	}
 	err = h.writeRunBudgetNoticeFrom(ctx, service.RunBudgetEvent{IssueID: e.IssueID, Kind: service.RunBudgetKindExhausted, Runs: e.Runs, Max: e.Max, Since: e.Since},
-		id, h.prepareBudgetRecovery(ctx, e),
+		hookRef{id: id, generation: generation}, h.prepareBudgetRecovery(ctx, e),
 		func(ctx context.Context, q *db.Queries) string {
 			raise := runBudgetRaiseTarget(ctx, q, issue.ID, e)
 			return exhaustedNoticeText(refused, raise.target, raise.leaves, e, moved)

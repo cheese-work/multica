@@ -413,3 +413,32 @@ func TestRunBudgetHookBlockedBeforeTheReleaseEndsAsUnknownOrigin(t *testing.T) {
 		t.Fatalf("exhaustion notices = %d, want 1", comments)
 	}
 }
+
+func TestRunBudgetHookOlderNoticeStepDoesNotRetireTheRevivedHook(t *testing.T) {
+	c, e := hookCase(t, 2856012)
+	testHandler.onRunBudgetExhausted(context.Background(), e)
+	finished(t, c)
+	// A second refusal of the window blocks again and pauses before its notice
+	// step. A move supersedes it and a third refusal revives the row, then stops
+	// after its intent. The paused notice step finds the window's notice and
+	// must not retire the third refusal's hook.
+	c.enter(t, "in_progress")
+	atStage(t, "after_block", func() bool {
+		c.enter(t, "in_progress")
+		// What a status move's history row does to the refusals; the window stays.
+		if err := testHandler.Queries.SupersedeRunBudgetRefusalsOnStatusChange(context.Background(), parseUUID(c.issueID)); err != nil {
+			t.Fatal(err)
+		}
+		crashAt(t, "after_intent")
+		testHandler.onRunBudgetExhausted(context.Background(), e)
+		return false
+	})
+	testHandler.onRunBudgetExhausted(context.Background(), e)
+	if r := onlyRefusal(t, c); r.Phase != "intent" {
+		t.Fatalf("revived hook phase = %q (reason %q), want intent: an older step retired it", r.Phase, r.HookReason)
+	}
+	sweepHooks(t)
+	if got := c.status(t); got != "blocked" {
+		t.Fatalf("issue is %s after the sweep, want blocked by the revived hook", got)
+	}
+}

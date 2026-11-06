@@ -24,7 +24,8 @@ RETURNING *;
 -- the notice and the recovery run are not given twice.
 UPDATE run_budget_refusal
 SET status = $2, occurrence_activity_id = $3, blocked = $4, agent_id = $5, trigger = $6,
-    state_reason = $7, state = $8, hook_phase = 'intent', hook_reason = NULL, updated_at = now()
+    state_reason = $7, state = $8, hook_phase = 'intent', hook_reason = NULL,
+    hook_generation = hook_generation + 1, updated_at = now()
 WHERE id = $1
 RETURNING *;
 
@@ -83,11 +84,12 @@ ORDER BY updated_at
 LIMIT 50;
 
 -- name: RetireRunBudgetRefusalHook :exec
--- Ends an unfinished hook with a reason. The refusal's own state is left to the
+-- Ends an unfinished hook of one generation with a reason: a revived hook is
+-- not retired by a step of an older one. The refusal's own state is left to the
 -- supersession writers.
 UPDATE run_budget_refusal
 SET hook_phase = 'retired', hook_reason = @reason::text, updated_at = now()
-WHERE id = @id::uuid AND hook_phase IN ('intent', 'blocked');
+WHERE id = @id::uuid AND hook_generation = @generation::int AND hook_phase IN ('intent', 'blocked');
 
 -- name: MarkRunBudgetRefusalBlocked :exec
 -- Tx B's phase advance, written in the block's own transaction: the refusal's
