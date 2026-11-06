@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Outcome labels for ci_event observations (CHE-4265, Outcome labels).
@@ -30,11 +30,18 @@ const (
 // A label is written once, except human_override replaces any label and a
 // watcher rerun result replaces self_healed (another run's green got there first).
 type Labeler struct {
-	pool *pgxpool.Pool
+	pool DB
 	now  func() time.Time
 }
 
-func NewLabeler(pool *pgxpool.Pool, now func() time.Time) *Labeler {
+// DB is the slice of a pgx pool the Labeler uses; the HTTP handler passes its own.
+type DB interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+func NewLabeler(pool DB, now func() time.Time) *Labeler {
 	if now == nil {
 		now = time.Now
 	}
