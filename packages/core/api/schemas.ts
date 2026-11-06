@@ -1735,6 +1735,14 @@ export const IssueSchema = z.lazy(() => z.object({
   stage: z.number().nullable().default(null),
   start_date: z.string().nullable(),
   due_date: z.string().nullable(),
+  // Read-only deadline projection (CHE-3463). Additive: older backends and
+  // closed issues omit it, and a malformed value drops only itself.
+  effective_due: z.string().optional().catch(undefined),
+  due_source: z.string().optional().catch(undefined),
+  diagnostics: z
+    .array(z.object({ type: z.string(), members: z.array(z.string()).optional() }))
+    .optional()
+    .catch(undefined),
   metadata: IssueMetadataSchema,
   // Older backends predate custom properties; default {} so consumers never
   // nil-guard issue.properties.
