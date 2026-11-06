@@ -33,7 +33,7 @@ const SELECT_CLASS =
 const P_KEYS = ["p1", "p2", "p3", "p4"] as const;
 
 /** Unsent edits live in the keyed draft store; the form is the saved config with them laid over it. */
-function useCIWatchForm(repo: string, saved: CIWatchConfig) {
+function useCIWatchForm(repo: string, saved: CIWatchConfig, saving: boolean) {
   const [draft, setDraft, clearDraft] = usePersistedDraft(useCIWatchDraftStore, repo, EMPTY_DRAFT);
   const base = configToForm(saved);
   const form: CIWatchForm = draft.form ? { ...base, ...(JSON.parse(draft.form) as Partial<CIWatchForm>) } : base;
@@ -41,7 +41,8 @@ function useCIWatchForm(repo: string, saved: CIWatchConfig) {
   const dirty = Object.keys(patch).length > 0;
   const change = (part: Partial<CIWatchForm>) => {
     const next = { ...form, ...part };
-    if (Object.keys(formToPatch(saved, next)).length === 0) clearDraft();
+    // While a save is in flight `saved` is stale: a revert to it is a real edit against what was sent.
+    if (!saving && Object.keys(formToPatch(saved, next)).length === 0) clearDraft();
     else setDraft({ form: JSON.stringify(next) });
   };
   return { form, patch, dirty, change, clearDraft, sent: draft.form };
@@ -61,8 +62,8 @@ function Field({ label, error, children }: { label: string; error?: string; chil
 
 function CIWatcherForm({ wsId, repo, saved }: { wsId: string; repo: string; saved: CIWatchConfig }) {
   const { t } = useT("settings");
-  const { form, patch, dirty, change, clearDraft, sent } = useCIWatchForm(repo, saved);
   const save = useUpdateCIWatchConfig(wsId, repo);
+  const { form, patch, dirty, change, clearDraft, sent } = useCIWatchForm(repo, saved, save.isPending);
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
   const { data: squads = [] } = useQuery(squadListOptions(wsId));
