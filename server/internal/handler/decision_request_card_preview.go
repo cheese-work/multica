@@ -75,7 +75,7 @@ func (handler *Handler) decisionCardAction(ctx context.Context, workspaceID, req
 		return nil
 	}
 	card := &DecisionRequestCardAction{ID: uuidToString(action.ID), ActionType: action.ActionType, PayloadSHA256: action.PayloadSha256}
-	fields, err := handler.actionPreviewFields(ctx, action)
+	fields, err := handler.cardPreviewFields(ctx, action)
 	if err == nil && len(fields) > 0 {
 		card.Preview, err = newActionPreview(fields)
 	}
@@ -86,10 +86,22 @@ func (handler *Handler) decisionCardAction(ctx context.Context, workspaceID, req
 	return card
 }
 
+// cardPreviewFields renders the preview for the request's human, the only
+// reader of the card. A preview names or quotes agent settings, so it is
+// withheld for an agent that human could not view: the executor refuses the
+// same case at approval, after the disclosure.
+func (handler *Handler) cardPreviewFields(ctx context.Context, action db.DecisionAction) ([]ActionPreviewField, error) {
+	request, err := handler.Queries.GetDecisionRequest(ctx, db.GetDecisionRequestParams{WorkspaceID: action.WorkspaceID, ID: action.DecisionRequestID})
+	if err != nil {
+		return nil, err
+	}
+	return handler.actionPreviewFields(ctx, action, request.HumanUserID)
+}
+
 // actionPreviewFields renders the values the executor will check, read
 // without writing. An unknown type or a state the executor would refuse gives
 // no fields, so the client shows "details unavailable".
-func (handler *Handler) actionPreviewFields(ctx context.Context, action db.DecisionAction) ([]ActionPreviewField, error) {
+func (handler *Handler) actionPreviewFields(ctx context.Context, action db.DecisionAction, viewer pgtype.UUID) ([]ActionPreviewField, error) {
 	switch action.ActionType {
 	case runBudgetRaiseType:
 		var params decisionaction.RunBudgetRaiseParams
@@ -119,9 +131,9 @@ func (handler *Handler) actionPreviewFields(ctx context.Context, action db.Decis
 		}
 		return []ActionPreviewField{{"Runs used", strconv.FormatInt(snapshot.RunsUsed, 10), "0"}}, nil
 	case "agent.env.patch":
-		return handler.envPatchPreview(ctx, action)
+		return handler.envPatchPreview(ctx, action, viewer)
 	case "agent.copy":
-		return handler.agentCopyPreview(ctx, action)
+		return handler.agentCopyPreview(ctx, action, viewer)
 	}
 	return nil, nil
 }
@@ -147,12 +159,12 @@ func (handler *Handler) openBudgetSnapshot(ctx context.Context, issueID, windowI
 
 // envPatchPreview names the agent and the env keys the patch sets or removes;
 // values are secrets and never leave the server.
-func (handler *Handler) envPatchPreview(ctx context.Context, action db.DecisionAction) ([]ActionPreviewField, error) {
+func (handler *Handler) envPatchPreview(ctx context.Context, action db.DecisionAction, viewer pgtype.UUID) ([]ActionPreviewField, error) {
 	var params decisionaction.EnvPatchParams
 	if err := json.Unmarshal(action.Params, &params); err != nil {
 		return nil, err
 	}
-	agent, err := handler.agentForAction(ctx, action.WorkspaceID, params.AgentID)
+	agent, err := handler.agentForAction(ctx, action.WorkspaceID, params.AgentID, viewer)
 	if err != nil {
 		return nil, err
 	}
@@ -174,12 +186,12 @@ func (handler *Handler) envPatchPreview(ctx context.Context, action db.DecisionA
 // agentCopyPreview lists every setting the copy will run with, next to the
 // source's value: the approver signs the whole execution profile, not only the
 // name. The copy never carries the source's env or MCP config.
-func (handler *Handler) agentCopyPreview(ctx context.Context, action db.DecisionAction) ([]ActionPreviewField, error) {
+func (handler *Handler) agentCopyPreview(ctx context.Context, action db.DecisionAction, viewer pgtype.UUID) ([]ActionPreviewField, error) {
 	var params decisionaction.AgentCopyParams
 	if err := json.Unmarshal(action.Params, &params); err != nil {
 		return nil, err
 	}
-	source, err := handler.agentForAction(ctx, action.WorkspaceID, params.SourceAgentID)
+	source, err := handler.agentForAction(ctx, action.WorkspaceID, params.SourceAgentID, viewer)
 	if err != nil {
 		return nil, err
 	}
@@ -305,12 +317,27 @@ func avatarLabel(requested *string) string {
 	return *requested
 }
 
-func (handler *Handler) agentForAction(ctx context.Context, workspaceID pgtype.UUID, agentID string) (db.Agent, error) {
+func (handler *Handler) agentForAction(ctx context.Context, workspaceID pgtype.UUID, agentID string, viewer pgtype.UUID) (db.Agent, error) {
 	id, err := parseUUIDStrict(agentID)
 	if err != nil {
 		return db.Agent{}, fmt.Errorf("action target agent: %w", err)
 	}
-	return handler.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: id, WorkspaceID: workspaceID})
+	agent, err := handler.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: id, WorkspaceID: workspaceID})
+	if err != nil {
+		return db.Agent{}, err
+	}
+	member, err := handler.Queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: viewer, WorkspaceID: workspaceID})
+	if err != nil {
+		return db.Agent{}, err
+	}
+	targets, err := handler.Queries.ListAgentInvocationTargets(ctx, agent.ID)
+	if err != nil {
+		return db.Agent{}, err
+	}
+	if !memberAllowedToViewAgent(agent, targets, uuidToString(viewer), member.Role) {
+		return db.Agent{}, errors.New("the card's recipient cannot view the action's agent")
+	}
+	return agent, nil
 }
 
 func joinKeys(keys []string) string {

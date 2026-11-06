@@ -159,6 +159,28 @@ func TestCardPreviewForAgentCopyDisclosesInheritedAccessAndSkills(test *testing.
 	}
 }
 
+// The card is rendered for the request's human; a source they cannot view
+// must not reach their chat, the executor refuses it at approval anyway.
+func TestCardPreviewForAgentCopyIsMissingForASourceTheRecipientCannotSee(test *testing.T) {
+	action := newPendingCopy(test, "che2959 hidden source copy", nil)
+	dbfx.Exec(test, `UPDATE agent SET owner_id = $2, permission_mode = 'private' WHERE id = $1`, action.agentID, testUserID)
+	dbfx.Exec(test, `UPDATE member SET role = 'member' WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, action.humanID)
+	card := action.cardAction(test)
+	if card == nil || card.Preview != nil {
+		raw, _ := json.Marshal(card)
+		test.Fatalf("preview of a source the recipient cannot view: %s", raw)
+	}
+}
+
+func TestCardPreviewForEnvPatchIsMissingForAnAgentTheRecipientCannotSee(test *testing.T) {
+	action := newPendingAction(test)
+	dbfx.Exec(test, `UPDATE agent SET owner_id = $2, permission_mode = 'private' WHERE id = $1`, action.agentID, testUserID)
+	dbfx.Exec(test, `UPDATE member SET role = 'member' WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, action.humanID)
+	if card := action.cardAction(test); card == nil || card.Preview != nil {
+		test.Fatalf("env preview of an agent the recipient cannot view: %+v", card)
+	}
+}
+
 func TestCardActionIsAbsentForARequestWithoutAnAction(test *testing.T) {
 	fixture := newAskedRecordFixture(test)
 	if card := testHandler.decisionCardAction(context.Background(), parseUUID(testWorkspaceID), fixture.decision.ID); card != nil {
