@@ -398,6 +398,7 @@ var terminalMap = map[string]string{
 	"cancelled/agent_withdrawn/task":  "agent_withdrawn",
 	"cancelled/issue_closed":          "system_cancelled",
 	"cancelled/agent_archived":        "system_cancelled",
+	"cancelled/agent_unavailable":     "system_cancelled",
 	"cancelled/record_disclaimed":     "other_terminal",
 	"cancelled/record_vetoed":         "other_terminal",
 	"cancelled/class_needs_owner":     "other_terminal",
@@ -515,25 +516,23 @@ func episodeCandidateIDs(t *testing.T, rotation int64) []string {
 	return ids
 }
 
-// An episode that cannot progress must not take a batch slot: more than one
-// batch of closed-issue or unavailable-asker episodes sorts ahead of a ready
-// episode, and the ready one is still selected. Neither kind is selected.
-func TestDecisionEpisodeCandidatesAreNotStarvedByStuckEpisodes(t *testing.T) {
+// A closed issue or an unavailable asking agent makes the episode a system-close
+// candidate (design §4.4.1 clause 1); the ready episode is selected beside them.
+func TestDecisionEpisodeCandidatesIncludeSystemCloses(t *testing.T) {
 	f, readyID := readyEpisode(t)
 	_ = f
-	insertEpisodeFillers(t, readyID, "00000000-0000-0000-0000-", "done", "", false, decisionBatchSize+1, 1)
+	insertEpisodeFillers(t, readyID, "00000000-0000-0000-0000-", "done", "", false, 1, 1)
 	gone := dbfx.Agent(t, "Without runtime", "")
-	insertEpisodeFillers(t, readyID, "00000000-0000-0000-0000-", "in_progress", gone, false, decisionBatchSize+1, 1000)
+	insertEpisodeFillers(t, readyID, "00000000-0000-0000-0000-", "in_progress", gone, false, 1, 1000)
 
-	var found bool
+	selected := map[string]bool{}
 	for _, id := range episodeCandidateIDs(t, 0) {
-		found = found || id == readyID
-		if strings.HasPrefix(id, "00000000-0000-0000-0000-") {
-			t.Fatalf("episode %s cannot progress before the system close and was selected", id)
-		}
+		selected[id] = true
 	}
-	if !found {
-		t.Fatal("the ready episode is not among the candidates behind two batches of stuck ones")
+	for _, id := range []string{readyID, "00000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-000000001000"} {
+		if !selected[id] {
+			t.Fatalf("episode %s is not a candidate; selected %v", id, selected)
+		}
 	}
 }
 

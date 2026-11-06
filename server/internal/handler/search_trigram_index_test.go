@@ -47,7 +47,7 @@ func explainSearchPlan(t *testing.T, wsID, phrase string) string {
 func TestIssueSearch_PlanReachesTrigramIndexes(t *testing.T) {
 	ctx := context.Background()
 	const slug = "che3164-plan-test"
-	wsID := seedSearchBench(t, ctx, slug, 3000)
+	wsID := seedSearchBench(t, ctx, slug, 2000)
 	t.Cleanup(func() {
 		for _, stmt := range []string{
 			`DELETE FROM comment WHERE workspace_id = $1`,

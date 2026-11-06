@@ -60,6 +60,7 @@ SELECT request.id AS request_id, message.id AS message_id, request.issue_id,
     COALESCE(workspace.issue_prefix, 'MUL')::text AS issue_prefix, issue.number AS issue_number, issue.title AS issue_title,
     source.id AS source_comment_id, request.ask, request.status, request.created_at,
     request.withdraw_reason, request.cancel_reason, request.options,
+    (request.ask_json IS NOT NULL)::boolean AS has_ask_json, COALESCE(request.ask_json->>'recommendation', '')::text AS recommendation,
     COALESCE(request.withdrawn_at, request.cancel_notice_posted_at) AS withdrawn_at,
     record.issue_comment_id AS record_comment_id,
     last_answer.id AS answer_id, last_answer.created_at AS answer_created_at, last_answer.woken_at AS answer_woken_at,
@@ -118,6 +119,8 @@ type ListDecisionRequestCardsRow struct {
 	WithdrawReason          string             `json:"withdraw_reason"`
 	CancelReason            pgtype.Text        `json:"cancel_reason"`
 	Options                 []byte             `json:"options"`
+	HasAskJson              bool               `json:"has_ask_json"`
+	Recommendation          string             `json:"recommendation"`
 	WithdrawnAt             pgtype.Timestamptz `json:"withdrawn_at"`
 	RecordCommentID         pgtype.UUID        `json:"record_comment_id"`
 	AnswerID                pgtype.UUID        `json:"answer_id"`
@@ -155,6 +158,8 @@ func (q *Queries) ListDecisionRequestCards(ctx context.Context, arg ListDecision
 			&i.WithdrawReason,
 			&i.CancelReason,
 			&i.Options,
+			&i.HasAskJson,
+			&i.Recommendation,
 			&i.WithdrawnAt,
 			&i.RecordCommentID,
 			&i.AnswerID,

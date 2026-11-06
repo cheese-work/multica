@@ -35,6 +35,7 @@ func newAttentionDM(t *testing.T) attentionDM {
 	var root string
 	dbfx.QueryRow(t, `SELECT chain_root_session_id FROM chat_session WHERE id = $1`, dm.sessionID).Scan(&root)
 	dbfx.Cleanup(t, `DELETE FROM chat_attention_item WHERE chain_root_session_id = $1`, root)
+	dbfx.Cleanup(t, `DELETE FROM chat_turn_outcome WHERE chain_root_session_id = $1`, root)
 	return attentionDM{dm, root}
 }
 
