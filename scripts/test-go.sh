@@ -95,7 +95,11 @@ rerun_failed() {
     reruns+=("$flake_dir/go-test-$name-rerun-$n.json")
   done
   # A root rerun can skip a failed subtest; a leaf with no pass event did not recover.
-  unproven=$(node "$FLAKES_SCRIPT" --unproven "$plan" "${reruns[@]}")
+  # errexit is off here (callers use ||), so a parser failure must be handled by hand.
+  unproven=$(node "$FLAKES_SCRIPT" --unproven "$plan" "${reruns[@]}") || {
+    echo "could not read the rerun results; nothing is proven" >&2
+    return 1
+  }
   if [ -n "$unproven" ]; then
     echo "rerun did not prove these tests passed: $(printf '%s' "$unproven" | tr '\t\n' ': ')" >&2
     status=1
