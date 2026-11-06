@@ -320,11 +320,11 @@ func (handler *Handler) episodeInputs(ctx context.Context, queries *db.Queries, 
 			if err != nil {
 				return nil, "", trigger, err
 			}
-			what := "expired"
+			what, next := "expired", "Re-resolve the human in charge, or move the issue to blocked with this reason."
 			if row.reason == "action_expired" {
-				what = "expired: the prepared action expired before approval"
+				what, next = "expired: the prepared action expired before approval", "Move the issue to blocked with the expiry stated as the reason."
 			}
-			fmt.Fprintf(&summary, "- Request %s %s. It was cancelled `expired` and no answer was delivered. Expiry is not an answer: do not ask %s the same question again. Move the issue to blocked with the expiry stated as the reason.\n", id, what, human.Name)
+			fmt.Fprintf(&summary, "- Request %s %s. It was cancelled `expired` and no answer was delivered. Expiry is not an answer: do not ask %s the same question again. %s\n", id, what, human.Name, next)
 		case "human_withdrawn":
 			human, err := queries.GetUser(ctx, request.WithdrawnByUserID)
 			if err != nil {

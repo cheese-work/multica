@@ -160,10 +160,14 @@ func TestDecisionEpisodeE2SuspendedRequestExpiresAndClosesTheEpisode(t *testing.
 	dbfx.Exec(t, `UPDATE decision_wait SET phase = 'suspended', suspend_reason = 'status_moved', suspended_at = now(), restore_on_resume = false WHERE issue_id = $1`, f.issueID)
 	decisionPass(t, runner)
 	task := f.wantOneContinuation(t, "expired")
-	for _, want := range []string{"Expiry is not an answer", "blocked"} {
+	for _, want := range []string{"Expiry is not an answer", "Re-resolve the human in charge, or move the issue to blocked with this reason"} {
 		if !strings.Contains(task.HandoffNote.String, want) {
 			t.Fatalf("handoff %q does not say %q", task.HandoffNote.String, want)
 		}
+	}
+	// Design v8 section 7: only a privileged-action expiry orders blocked.
+	if strings.Contains(task.HandoffNote.String, "with the expiry stated as the reason") {
+		t.Fatalf("ordinary expiry orders blocked: %q", task.HandoffNote.String)
 	}
 }
 
@@ -184,7 +188,7 @@ func TestDecisionEpisodeE2ActionExpiryClosesActionExpired(t *testing.T) {
 	decisionPass(t, runner)
 	decisionPass(t, runner)
 	task := f.wantOneContinuation(t, "action_expired")
-	for _, want := range []string{"prepared action expired before approval", "Expiry is not an answer"} {
+	for _, want := range []string{"prepared action expired before approval", "Expiry is not an answer", "Move the issue to blocked with the expiry stated as the reason"} {
 		if !strings.Contains(task.HandoffNote.String, want) {
 			t.Fatalf("handoff %q does not say %q", task.HandoffNote.String, want)
 		}
