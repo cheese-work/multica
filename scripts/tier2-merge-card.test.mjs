@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as card from './tier2-merge-card.mjs';
 
-const { currentWindow, eligible, renderAsk, sendCard, sweepCards, openCardsArgs, armSweepArgs } = card;
+const { currentWindow, eligible, renderAsk, sendCard, sweepCards, openCardsArgs, armSweepArgs, replaceSweep } = card;
 
 const HEAD = 'a'.repeat(40);
 const pr = (over = {}) => ({
@@ -96,10 +96,10 @@ test('a push after the card was sent: next run withdraws the old card and drops 
   const moved = 'b'.repeat(40);
   const h = harness({ collected: [pr(), pr({ number: 11, url: 'https://github.com/cheese-work/multica/pull/11' })], heads: [[10, HEAD], [11, moved]] });
   await h.run();
-  assert.deepEqual(h.calls.map((c) => c[0]), ['withdraw', 'post', 'arm']);
+  assert.deepEqual(h.calls.map((c) => c[0]), ['withdraw', 'arm', 'post']);
   assert.equal(h.calls[0][1], 'card-1');
-  assert.doesNotMatch(h.calls[1][1].context_eli10, /pull\/11/);
-  assert.match(h.calls[1][1].context_eli10, /pull\/10\/commits/);
+  assert.doesNotMatch(h.calls[2][1].context_eli10, /pull\/11/);
+  assert.match(h.calls[2][1].context_eli10, /pull\/10\/commits/);
 });
 
 test('with no PR left ready the old open card is still withdrawn and no new card is sent', async () => {
@@ -124,11 +124,53 @@ test('cards are listed on the standing issue, not by member, so each run may wit
   assert.ok(!args.includes('--for') && !args.includes('--state'));
 });
 
-test('a posted card carries the run comment id; the sweep is armed after the post', async () => {
+test('a posted card carries the run comment id; the sweep is armed before the card is posted', async () => {
   const h = harness({ cards: [], collected: [pr()], heads: [[10, HEAD]] });
   await h.run();
-  assert.deepEqual(h.calls.map((c) => c[0]), ['post', 'arm']);
-  assert.equal(h.calls[0][1].source_comment_id, 'COMMENT-UUID');
+  assert.deepEqual(h.calls.map((c) => c[0]), ['arm', 'post']);
+  assert.equal(h.calls[1][1].source_comment_id, 'COMMENT-UUID');
+});
+
+// A card must never be open without a sweep watching it: arm first, and post nothing if arming fails.
+test('if arming the sweep fails, no card is posted', async () => {
+  const calls = [];
+  const io = { collect: async () => [pr()], heads: async () => new Map([[10, HEAD]]), openCards: async () => [],
+    withdraw: async () => {}, comment: async () => 'C', post: async () => calls.push('post'),
+    armSweep: async () => { throw new Error('wakeup create failed'); }, disarmSweep: async () => {} };
+  await assert.rejects(() => sendCard('cheese-work/multica', io), /wakeup create failed/);
+  assert.deepEqual(calls, []);
+});
+
+test('if posting fails after arming, the armed sweep is kept and ends itself when it finds no card', async () => {
+  const calls = [];
+  const io = { collect: async () => [pr()], heads: async () => new Map([[10, HEAD]]), openCards: async () => [],
+    withdraw: async () => {}, comment: async () => 'C', post: async () => { throw new Error('post failed'); },
+    armSweep: async () => calls.push('arm'), disarmSweep: async () => calls.push('disarm') };
+  await assert.rejects(() => sendCard('cheese-work/multica', io), /post failed/);
+  assert.deepEqual(calls, ['arm']); // no disarm here: the 15-min sweep finds no open card and disables itself
+});
+
+// Replacing the sweep rule must not leave a gap: create the new rule first, then disable the old ones.
+const rulesIo = ({ failCreate = false } = {}) => {
+  const calls = [];
+  const rules = [{ id: 'old', kind: 'every', enabled: true }, { id: 'cron', kind: 'cron', enabled: true }, { id: 'off', kind: 'every', enabled: false }];
+  return { calls, io: {
+    list: async () => rules,
+    create: async () => { calls.push('create'); if (failCreate) throw new Error('create failed'); return { id: 'new' }; },
+    disable: async (id) => calls.push('disable ' + id),
+  } };
+};
+
+test('replacing the sweep creates the new rule first, then disables only the old enabled sweep rules', async () => {
+  const { calls, io } = rulesIo();
+  await replaceSweep(io);
+  assert.deepEqual(calls, ['create', 'disable old']);
+});
+
+test('if creating the new sweep rule fails, the old rule stays enabled', async () => {
+  const { calls, io } = rulesIo({ failCreate: true });
+  await assert.rejects(() => replaceSweep(io), /create failed/);
+  assert.deepEqual(calls, ['create']);
 });
 
 test('the sweep wakeup repeats on the card issue, ends by itself and runs only the sweep', () => {

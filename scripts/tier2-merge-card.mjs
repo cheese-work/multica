@@ -130,9 +130,22 @@ export const armSweepArgs = (issueId, memberId) => ['issue', 'wakeup', 'create',
 
 const mca = async (...args) => JSON.parse((await run('multica', args, { maxBuffer: MAX_BUFFER })).stdout);
 
-async function disarmSweep() {
-  const rules = await mca('issue', 'wakeup', 'list', process.env.CARD_ISSUE, '--output', 'json');
-  for (const r of rules.filter((x) => x.kind === 'every' && x.enabled)) await mca('issue', 'wakeup', 'disable', process.env.CARD_ISSUE, r.id, '--output', 'json');
+const wakeups = {
+  list: () => mca('issue', 'wakeup', 'list', process.env.CARD_ISSUE, '--output', 'json'),
+  create: () => mca(...armSweepArgs(process.env.CARD_ISSUE, process.env.CARD_FOR)),
+  disable: (id) => mca('issue', 'wakeup', 'disable', process.env.CARD_ISSUE, id, '--output', 'json'),
+};
+const sweepRules = async (io) => (await io.list()).filter((x) => x.kind === 'every' && x.enabled);
+
+async function disarmSweep(io = wakeups) {
+  for (const r of await sweepRules(io)) await io.disable(r.id);
+}
+
+// Create the new rule first and disable the old ones after: a failed create leaves the old rule watching, so no gap.
+export async function replaceSweep(io = wakeups) {
+  const old = await sweepRules(io);
+  await io.create();
+  for (const r of old) await io.disable(r.id);
 }
 
 const liveIo = {
@@ -162,8 +175,8 @@ const liveIo = {
     }
   },
   // Re-arming replaces the earlier sweep rule so rules never pile up.
-  armSweep: async () => { await disarmSweep(); await mca(...armSweepArgs(process.env.CARD_ISSUE, process.env.CARD_FOR)); },
-  disarmSweep,
+  armSweep: () => replaceSweep(),
+  disarmSweep: () => disarmSweep(),
 };
 
 // A sent card cannot change. Each send run withdraws every still-open earlier merge card, then posts a fresh one.
@@ -179,8 +192,10 @@ export async function sendCard(repo, io = liveIo) {
     console.error('no Tier 2 PR is ready; no card sent');
     return io.disarmSweep();
   }
-  await io.post(renderAsk(fresh, currentWindow(), process.env.CARD_ISSUE, await io.comment()));
+  // Arm before posting: a posted card always has a sweep watching it. If arming fails, no card is posted;
+  // if the post fails, the armed sweep finds no open card and disables itself.
   await io.armSweep();
+  await io.post(renderAsk(fresh, currentWindow(), process.env.CARD_ISSUE, await io.comment()));
 }
 
 // Runs every 15 min while a card is open (armed by sendCard): a push to a listed PR leaves the old head on the open card, so withdraw it.
