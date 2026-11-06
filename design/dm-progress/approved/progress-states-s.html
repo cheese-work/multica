@@ -1,0 +1,65 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+*{margin:0;box-sizing:border-box}
+body{font:14px/1.4 "Helvetica Neue",Arial,"Liberation Sans","DejaVu Sans",sans-serif;color:#1c1c1a;background:#efefec;padding:24px}
+h1{font-size:18px;line-height:1.3;font-weight:600}.n{color:#44443f;max-width:980px;margin-top:4px}
+.g{display:grid;grid-template-columns:540px 358px;gap:0 56px;margin-top:16px;align-items:start}.col{display:grid;gap:20px;align-content:start}
+.l{font-size:12px;font-weight:600;color:#5f5f5a;margin-bottom:6px}
+.pane{background:#fafaf8;border:1px solid #d4d4ce;border-radius:12px;padding:14px;display:grid;gap:10px}
+.me{justify-self:end;padding:6px 12px;border-radius:12px;background:#e8edfc;border:1px solid #d3dcf7;font:13px ui-monospace,Menlo,monospace}
+.card{background:#fff;border:1px solid #e0e0db;border-radius:12px;overflow:hidden}
+.v{padding:14px 16px 8px;display:flex;align-items:baseline;gap:10px}.v b{font-size:17px;line-height:1.25;font-weight:600}.v time{margin-left:auto;color:#5f5f5a;font-size:12px;flex:none}
+.p{padding:0 16px 14px;color:#44443f}
+.gi{width:16px;height:16px;flex:none}
+.cp{display:grid;grid-template-columns:16px minmax(0,1fr);gap:0 10px;padding:6px 16px}.cp .gi{margin-top:3px}
+.k{font-size:12px;color:#2f4fd0;text-decoration:none;margin-right:8px;font-variant-numeric:tabular-nums}.t{font-weight:500}.q{font-size:13px;color:#44443f}
+.b{color:#2f4fd0;font-weight:600}.a{color:#8a5200;font-weight:600}.rd{color:#b3201f;font-weight:600}
+.sk{height:12px;border-radius:6px;background:#e7e7e2;margin:0 16px 10px}
+.note{margin:0 16px 12px;padding:10px 12px;border-radius:10px;font-size:13px;display:grid;grid-template-columns:16px minmax(0,1fr);gap:0 10px;align-items:start}.note .gi{margin-top:2px}
+.note.w{background:#faf3e6}.note.e{background:#fbefee}.note.i{background:#f2f2ee}
+.bt{height:32px;padding:0 12px;border:1px solid #8d8d86;border-radius:8px;background:#fff;font:inherit;font-size:13px;font-weight:600;margin-top:6px}.ph .bt{height:44px}
+.toast{margin:0 16px 14px;background:#1c1c1a;color:#fff;border-radius:10px;padding:10px 14px;font-size:13px;display:flex;gap:12px;align-items:center}.toast b{margin-left:auto;text-decoration:underline;text-underline-offset:3px;min-height:24px}
+.push{background:#fff;border:1px solid #e0e0db;border-radius:14px;padding:10px 14px}.push b{display:block;font-size:13px}.push span{font-size:13px;color:#44443f}
+.sp{background:#fff;border:1px solid #e0e0db;border-radius:12px;padding:12px 16px;font-size:13px;color:#44443f}.sp b{color:#1c1c1a}.sp li{margin:3px 0 3px 16px}
+a:focus-visible,button:focus-visible{outline:2px solid #2f4fd0;outline-offset:2px}
+</style></head><body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="g-ip" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="#2f4fd0" stroke-width="1.6"/><path d="M8 4a4 4 0 0 1 0 8z" fill="#2f4fd0"/></symbol>
+<symbol id="g-ir" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="#8a5200" stroke-width="1.6"/><path d="M8 8V4a4 4 0 1 1-4 4z" fill="#8a5200"/></symbol>
+<symbol id="g-bl" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#b3201f"/><path d="M5 8h6" stroke="#fff" stroke-width="2" stroke-linecap="round"/></symbol>
+<symbol id="g-info" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5" fill="none" stroke="#5f5f5a" stroke-width="1.5"/><path d="M8 7.2V11M8 4.9v.1" stroke="#5f5f5a" stroke-width="1.8" stroke-linecap="round"/></symbol>
+<symbol id="g-warn" viewBox="0 0 16 16"><path d="M8 2l6.5 11.5h-13z" fill="none" stroke="#8a5200" stroke-width="1.5" stroke-linejoin="round"/><path d="M8 6.8v3M8 11.6v.1" stroke="#8a5200" stroke-width="1.8" stroke-linecap="round"/></symbol>
+<symbol id="g-err" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5" fill="none" stroke="#b3201f" stroke-width="1.5"/><path d="M5.8 5.8l4.4 4.4M10.2 5.8l-4.4 4.4" stroke="#b3201f" stroke-width="1.8" stroke-linecap="round"/></symbol>
+</defs></svg>
+<h1>S · Shared states for A, B and C</h1>
+<p class="n"><b>Why v2.</b> Cheese on v1, 4 Nov 2026: "the proposed designs are too slop. need to overhaul". The v1 state frame used pills, small caps labels and a footer on every card. These states keep the new language: a verdict line, status glyph plus word, and one banner style with its own icon (so colour never works alone). Mock data, ICT times.</p>
+<p class="n"><b>Build notes.</b> Banners that appear after load use role="alert" (failures) or role="status" (info). A card that arrives after a reconnect renders by message id, so it never shows twice. Labels come from i18n keys; free text never picks a label. Touch targets on the phone are 44px.</p>
+<div class="g"><div class="col">
+
+<div><p class="l">Desktop · /progress sent, reply on its way</p><div class="pane"><div class="me">/progress</div><section class="card" aria-busy="true"><div class="v"><b>Listing what you follow</b></div><div class="sk" style="width:70%"></div><div class="sk"></div><div class="sk" style="width:40%"></div></section></div></div>
+
+<div><p class="l">Desktop · /progress, nothing followed</p><div class="pane"><div class="me">/progress</div><section class="card"><div class="v"><b>You follow no issues here</b><time>18:12</time></div><p class="p">When the agent creates issues for you in this chat, they appear here on their own and their updates arrive in this chat.</p></section></div></div>
+
+<div><p class="l">Desktop · updates paused, two causes</p><div class="pane"><section class="card"><div class="v"><b>Following 3 issues</b></div>
+<div class="note w" role="status"><svg class="gi"><use href="#g-warn"/></svg><span>Updates are paused: this chat was archived. Changes are kept and arrive as one card when you unarchive it.</span></div>
+<div class="cp"><svg class="gi"><use href="#g-ip"/></svg><div><a class="k" href="#">CHE-3418</a><span class="t">Rotate the staging signing key</span><div class="q"><span class="b">In progress</span></div></div></div>
+<div class="cp" style="padding-bottom:12px"><svg class="gi"><use href="#g-ir"/></svg><div><a class="k" href="#">CHE-3430</a><span class="t">Migrate chat search to the new index</span><div class="q"><span class="a">In review</span></div></div></div></section>
+<section class="card" style="padding-top:12px"><div class="note e" role="status" style="margin-bottom:12px"><svg class="gi"><use href="#g-err"/></svg><span>Updates are paused: this chat's thread could not be found. Ask a workspace admin. Nothing was sent to another chat.</span></div></section></div></div>
+
+<div><p class="l">Desktop · control failed, offline, undo</p><div class="pane"><section class="card" style="padding-top:12px">
+<div class="cp" style="padding-top:0"><svg class="gi"><use href="#g-ip"/></svg><div><a class="k" href="#">CHE-3418</a><span class="t">Rotate the staging signing key</span></div></div>
+<div class="note e" role="alert"><svg class="gi"><use href="#g-err"/></svg><span>Could not mute CHE-3418. It is still followed.<br><button class="bt">Try again</button></span></div>
+<div class="note w" role="alert"><svg class="gi"><use href="#g-warn"/></svg><span>You are offline. Mute and unfollow work again when you reconnect.</span></div>
+<div class="toast" role="status"><span>Muted CHE-3418. No cards for it from now on.</span><b>Undo</b></div></section></div></div>
+
+</div><div class="col ph">
+
+<div><p class="l">Phone · chat disconnected, then back</p><div class="pane" style="padding:10px"><section class="card" style="padding-top:12px"><div class="note w" role="status"><svg class="gi"><use href="#g-warn"/></svg><span>Reconnecting. Cards sent meanwhile appear when you are back. None shows twice.</span></div><div class="note i" role="status"><svg class="gi"><use href="#g-info"/></svg><span>Back online. 1 card arrived while you were away.</span></div></section></div></div>
+
+<div><p class="l">Phone · notification line, English then Vietnamese</p><div class="pane" style="padding:10px"><div class="push"><b>Progress update</b><span>3 issues moved</span></div><div class="push"><b>Cập nhật tiến độ</b><span>3 issue có thay đổi</span></div><p class="q">The line holds a count only. No title, name or key, because a push preview can leave the app.</p></div></div>
+
+<div><p class="l">Phone · Vietnamese labels (card C layout)</p><div class="pane" style="padding:10px"><section class="card"><div class="v"><b>1 chờ review, 1 đang làm</b><time>17:45</time></div>
+<div class="cp" style="background:#faf3e6;margin:0 8px 8px;border-radius:10px;padding:10px"><svg class="gi"><use href="#g-ir"/></svg><div><a class="k" href="#">CHE-3412</a><span class="t">Add retry to the nightly export job</span><div class="q">Giờ <span class="a">Chờ review</span>, trước là Đang làm</div><div class="q">Mai Tran, <a class="k" href="#" style="margin:0">PR #482 sẵn sàng</a>, xong 3/5 việc con</div></div></div>
+<div class="cp" style="padding-bottom:12px"><svg class="gi"><use href="#g-ip"/></svg><div><a class="k" href="#">CHE-3418</a><span class="t">Rotate the staging signing key</span><div class="q"><span class="b">Đang làm</span>, x99-codex-terra</div></div></div></section>
+<p class="q">Labels follow the member's saved language. The issue title stays as written. Preview limit: the doop screenshot renderer lacks a font for Vietnamese letters with stacked marks (ậ, ế, ự, ờ, ổ show as boxes). The HTML text is standard Unicode and renders in a real browser or app. Judge layout and length, not these glyphs.</p></div></div>
+
+</div></div></body></html>
