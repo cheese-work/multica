@@ -21,6 +21,7 @@ type Agent struct {
 	RuntimeOnline  bool
 	Archived       bool
 	Paused         bool // scheduling paused
+	Hidden         bool // the caller may not see this agent or its runtime
 }
 
 // Usage says where a workflow is used (WF013).
@@ -132,6 +133,9 @@ func (l *linter) lintHandler(s issueworkflow.Step, env Env) {
 		return
 	}
 	a, ok := env.Agents[s.Handler.ID]
+	if ok && a.Hidden {
+		return // the caller may not learn this agent's runtime or state
+	}
 	switch {
 	case !ok:
 		l.add("WF004", LevelError, &s, fmt.Sprintf("The agent %q of %q does not exist.", s.Handler.ID, s.StatusKey),
@@ -193,7 +197,7 @@ func (l *linter) agentOf(key string, env Env) *Agent {
 		return nil
 	}
 	a, ok := env.Agents[s.Handler.ID]
-	if !ok {
+	if !ok || a.Hidden {
 		return nil
 	}
 	return &a

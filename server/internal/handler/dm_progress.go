@@ -87,7 +87,7 @@ func (h *Handler) FollowIssueProgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Explicit follow: no row back means it is already active.
-	if _, _, err := service.AddProgressFollow(r.Context(), qtx, lane, issue, []string{service.ReasonManual}, pgtype.Timestamptz{}); err != nil {
+	if _, _, err := service.AddProgressFollow(r.Context(), qtx, lane, issue, []string{service.ReasonManual}, issue.ID, pgtype.Timestamptz{}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to follow")
 		return
 	}

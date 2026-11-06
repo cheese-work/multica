@@ -1037,7 +1037,7 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		if maxRuns.Valid {
 			proposed.MaxRunsPerIssue = int(maxRuns.Int32)
 		}
-		lintFindings, err = h.lintProposedSave(ctx, wsUUID, current, proposed, catalog, projects)
+		lintFindings, err = h.lintProposedSave(ctx, wsUUID, uuidToString(member.UserID), member.Role, current, proposed, catalog, projects)
 		if err != nil {
 			slog.Warn("UpdateIssueWorkflow lint failed", append(logger.RequestAttrs(r), "error", err)...)
 			writeError(w, http.StatusInternalServerError, "failed to lint workflow")

@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -55,7 +56,7 @@ func lintResponse(row db.IssueWorkflow, findings []workflowlint.Finding) Workflo
 // pool; a save passes the catalog its own transaction already holds, because
 // loading it again through the pool would wait on the transaction's
 // uncommitted status seed and never return.
-func (h *Handler) workflowLintEnv(ctx context.Context, wsUUID pgtype.UUID, rows []db.IssueWorkflow, catalog map[string]issueworkflow.CatalogEntry) (workflowlint.Env, map[string][]string, error) {
+func (h *Handler) workflowLintEnv(ctx context.Context, wsUUID pgtype.UUID, rows []db.IssueWorkflow, userID, role string, catalog map[string]issueworkflow.CatalogEntry) (workflowlint.Env, map[string][]string, error) {
 	env := workflowlint.Env{Live: true}
 	if catalog == nil {
 		var err error
@@ -81,14 +82,23 @@ func (h *Handler) workflowLintEnv(ctx context.Context, wsUUID pgtype.UUID, rows 
 	for _, rt := range runtimes {
 		runtimeByID[uuidToString(rt.ID)] = rt
 	}
+	targetsByAgent, ok := h.loadInvocationTargetsByAgent(ctx, agents)
+	if !ok {
+		return env, nil, errors.New("load agent invocation targets")
+	}
 	env.Agents = make(map[string]workflowlint.Agent, len(agents))
 	for _, a := range agents {
+		rt, hasRuntime := runtimeByID[uuidToString(a.RuntimeID)]
+		if lintAgentHidden(a, targetsByAgent[uuidToString(a.ID)], rt, userID, role) {
+			env.Agents[uuidToString(a.ID)] = workflowlint.Agent{Hidden: true}
+			continue
+		}
 		la := workflowlint.Agent{
 			Model:    a.Model.String,
 			Archived: a.ArchivedAt.Valid,
 			Paused:   a.SchedulingPausedAt.Valid,
 		}
-		if rt, ok := runtimeByID[uuidToString(a.RuntimeID)]; ok {
+		if hasRuntime {
 			la.Provider, la.RuntimeID, la.RuntimeOnline = rt.Provider, uuidToString(rt.ID), rt.Status == "online"
 			la.RuntimeVersion = runtimeVersion(rt.Metadata)
 		}
@@ -151,11 +161,11 @@ func decodeRows(rows []db.IssueWorkflow) map[string]issueworkflow.Definition {
 	return defs
 }
 
-func (h *Handler) lintWorkflows(w http.ResponseWriter, r *http.Request, wsUUID pgtype.UUID, rows []db.IssueWorkflow, all []db.IssueWorkflow) ([]WorkflowLintResponse, bool) {
+func (h *Handler) lintWorkflows(w http.ResponseWriter, r *http.Request, wsUUID pgtype.UUID, member db.Member, rows []db.IssueWorkflow, all []db.IssueWorkflow) ([]WorkflowLintResponse, bool) {
 	// Usage and cross-references are judged against every workflow of the
 	// workspace, whichever subset is linted.
 	defs := decodeRows(all)
-	env, byWorkflow, err := h.workflowLintEnv(r.Context(), wsUUID, all, nil)
+	env, byWorkflow, err := h.workflowLintEnv(r.Context(), wsUUID, all, requestUserID(r), member.Role, nil)
 	if err != nil {
 		slog.Warn("workflow lint env failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to lint workflows")
@@ -171,7 +181,8 @@ func (h *Handler) LintIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found"); !ok {
+	member, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found")
+	if !ok {
 		return
 	}
 	idUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workflow id")
@@ -188,7 +199,7 @@ func (h *Handler) LintIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to lint workflows")
 		return
 	}
-	res, ok := h.lintWorkflows(w, r, wsUUID, []db.IssueWorkflow{row}, all)
+	res, ok := h.lintWorkflows(w, r, wsUUID, member, []db.IssueWorkflow{row}, all)
 	if !ok {
 		return
 	}
@@ -202,7 +213,8 @@ func (h *Handler) LintIssueWorkflows(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found"); !ok {
+	member, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found")
+	if !ok {
 		return
 	}
 	rows, err := h.Queries.ListIssueWorkflows(r.Context(), wsUUID)
@@ -211,7 +223,7 @@ func (h *Handler) LintIssueWorkflows(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to lint workflows")
 		return
 	}
-	res, ok := h.lintWorkflows(w, r, wsUUID, rows, rows)
+	res, ok := h.lintWorkflows(w, r, wsUUID, member, rows, rows)
 	if !ok {
 		return
 	}
@@ -222,12 +234,12 @@ func (h *Handler) LintIssueWorkflows(w http.ResponseWriter, r *http.Request) {
 // runtime check (WF012) is skipped: a save is not the moment to judge which
 // runtimes happen to be online. Statuses come from catalog, which already
 // holds the statuses this save created.
-func (h *Handler) lintProposedSave(ctx context.Context, wsUUID pgtype.UUID, current db.IssueWorkflow, proposed issueworkflow.Definition, catalog map[string]issueworkflow.CatalogEntry, projects []db.Project) ([]workflowlint.Finding, error) {
+func (h *Handler) lintProposedSave(ctx context.Context, wsUUID pgtype.UUID, userID, role string, current db.IssueWorkflow, proposed issueworkflow.Definition, catalog map[string]issueworkflow.CatalogEntry, projects []db.Project) ([]workflowlint.Finding, error) {
 	all, err := h.Queries.ListIssueWorkflows(ctx, wsUUID)
 	if err != nil {
 		return nil, err
 	}
-	env, byWorkflow, err := h.workflowLintEnv(ctx, wsUUID, all, catalog)
+	env, byWorkflow, err := h.workflowLintEnv(ctx, wsUUID, all, userID, role, catalog)
 	if err != nil {
 		return nil, err
 	}
@@ -263,4 +275,25 @@ func writeLintRefusal(w http.ResponseWriter, errs []workflowlint.Finding) {
 		"code":     "workflow_lint_errors",
 		"findings": errs,
 	})
+}
+
+// lintAgentHidden says whether the caller may not see the agent or the runtime
+// it is bound to. The lint engine then reports nothing about that agent, so a
+// finding cannot disclose a private agent's provider, version or state. The
+// rules match ListAgents and ListAgentRuntimes.
+func lintAgentHidden(agent db.Agent, targets []db.AgentInvocationTarget, rt db.AgentRuntime, userID, role string) bool {
+	if !memberAllowedToViewAgent(agent, targets, userID, role) {
+		return true
+	}
+	if roleAllowed(role, "owner", "admin") || uuidToString(rt.OwnerID) == userID || rt.Visibility == "public" {
+		return false
+	}
+	if rt.Visibility == "private" {
+		for _, id := range rt.SharedWith {
+			if uuidToString(id) == userID {
+				return false
+			}
+		}
+	}
+	return true
 }
