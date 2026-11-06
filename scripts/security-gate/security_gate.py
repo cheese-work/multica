@@ -270,8 +270,39 @@ def _out(state: str, desc: str) -> tuple[str, str]:
     return state, desc[:140]  # GitHub caps a status description at 140 chars
 
 
+RATE_LIMIT_EXIT = 75  # EX_TEMPFAIL: the workflow maps it to a `pending` status, never `failure`
+RATE_LIMIT_MAX_WAIT = 480  # seconds of backoff for the whole run; the job timeout is 20 min
+RATE_LIMIT_RE = re.compile(r"rate limit|HTTP 429|too many requests", re.I)
+RATE_LIMIT_WRITE_RESERVE = 120  # seconds of the budget kept for the status write and the queue revocation
+_rate_limit_waited = 0
+
+
+def _reserve_write_budget() -> None:
+    """Reads may spend the budget, but a verdict that is already known must still get its writes attempted."""
+    global _rate_limit_waited
+    _rate_limit_waited = min(_rate_limit_waited, RATE_LIMIT_MAX_WAIT - RATE_LIMIT_WRITE_RESERVE)
+
+
+class RateLimited(subprocess.CalledProcessError):
+    """The installation's API quota stayed exhausted for the whole wait budget (CHE-4242)."""
+
+
 def _gh(*args: str) -> str:
-    return subprocess.run(["gh", "api", *args], check=True, capture_output=True, text=True).stdout
+    """`gh api`, waiting out a 403/429 rate limit with a doubling backoff (5 s up to 60 s) from a budget shared by
+    every call of the run. Any other error is raised at once."""
+    global _rate_limit_waited
+    delay = 5
+    while True:
+        try:
+            return subprocess.run(["gh", "api", *args], check=True, capture_output=True, text=True).stdout
+        except subprocess.CalledProcessError as e:
+            if not RATE_LIMIT_RE.search(str(e.stderr or "")):
+                raise
+            if _rate_limit_waited + delay > RATE_LIMIT_MAX_WAIT:
+                raise RateLimited(e.returncode, e.cmd, e.output, e.stderr) from e
+            time.sleep(delay)
+            _rate_limit_waited += delay
+            delay = min(delay * 2, 60)
 
 
 def _post(github: str, sha: str, state: str, desc: str, run_url: str) -> None:
@@ -372,6 +403,15 @@ def gate_pr(repo: str, github: str, number: int, default_branch: str, trusted: s
 
 
 def main() -> int:
+    try:
+        return _main()
+    except RateLimited:
+        # Not a verdict: the caller posts `pending` (or retries), never `failure` for a rate limit.
+        print("rate limited, retry", file=sys.stderr)
+        return RATE_LIMIT_EXIT
+
+
+def _main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--repo", default=".", help="DEFAULT-branch checkout with the head objects fetched")
     ap.add_argument("--github", required=True, help="owner/repo")
@@ -406,6 +446,9 @@ def main() -> int:
     for n in sorted({r["number"] for r in rows if r["head"] == head} - {a.pr}):
         try:
             h, st, d = gate_pr(a.repo, a.github, n, a.default_branch, trusted, humans, baseline)
+        except RateLimited:
+            # No verdict for the sibling: it holds the head at `pending`. A known failure still wins in combine().
+            h, st, d = head, "pending", "rate limited, retry"
         except Exception as e:  # an unreadable sibling must block, never skip the status write
             h, st, d = head, "failure", f"cannot evaluate: {type(e).__name__}"
         if h == head:
@@ -413,9 +456,16 @@ def main() -> int:
     state, desc = _out(*combine(results))
     print(json.dumps({"context": CONTEXT, "sha": head, "state": state, "description": desc}))
     if a.post:
-        _post(a.github, head, state, desc, a.run_url)
-        if state != "success":
-            revoke_queue(a.github, a.pr, a.default_branch, a.run_url)
+        _reserve_write_budget()
+        limited = None
+        for write in (lambda: _post(a.github, head, state, desc, a.run_url),
+                      lambda: revoke_queue(a.github, a.pr, a.default_branch, a.run_url) if state != "success" else None):
+            try:
+                write()
+            except RateLimited as e:  # attempt the other write too, then report the rate limit
+                limited = e
+        if limited:
+            raise limited
     return 0
 
 
