@@ -21,6 +21,7 @@ import { useRecipientActions } from "../hooks/use-recipient-actions";
 import { SteerAttachmentNotice } from "./steer-attachment-notice";
 import { useStopRunsBeforeSend } from "./use-stop-runs-before-send";
 import { useCommentUploads } from "./use-comment-uploads";
+import { useClearOnDraftConsumed } from "./use-clear-on-draft-consumed";
 import { useQuickActionMenu } from "../hooks/use-quick-action-menu";
 import type { InvalidMentionRejection } from "../invalid-agent-mentions-copy";
 
@@ -126,6 +127,11 @@ function ReplyInput({
   });
   const { isDragOver, dropZoneProps } = useFileDropZone({
     onDrop: lazy.uploadOrQueue,
+  });
+
+  useClearOnDraftConsumed(draftKey, editorRef, () => {
+    setContent("");
+    setIsEmpty(true);
   });
 
   // Flush on tab close / mobile background — same rationale as CommentInput.

@@ -861,6 +861,63 @@ describe("comment composers", () => {
     expect(useCommentDraftStore.getState().getDraft("new:issue-1")).toBeUndefined();
   });
 
+  // CHE-4288: the route rewrites /issues/<uuid> to /issues/<identifier> and
+  // remounts the page while a send is in flight. The successor composer mounts
+  // from the still-unsent draft; the predecessor's success then clears the
+  // store but, being unmounted, never the successor's editor — the sent text
+  // stayed in the box. The successor must follow the draft it showed.
+  it.each([
+    ["comment", "new:issue-1"],
+    ["reply", "reply:issue-1:comment-1"],
+  ] as const)("a %s composer remounted mid-send clears when the send succeeds", async (kind, key) => {
+    let resolveSubmit!: (v: boolean) => void;
+    const onSubmit = vi.fn(() => new Promise<boolean>((r) => { resolveSubmit = r; }));
+    const mount = () => {
+      if (kind === "comment") return renderCommentInput(onSubmit);
+      return renderReplyInput({ onSubmit, draftKey: key as `reply:${string}:${string}` });
+    };
+    const first = mount();
+    activateComposer(kind === "comment" ? "comment-composer-shell" : "reply-composer-shell");
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "draft A" } });
+    fireEvent.keyDown(screen.getByTestId("editor"), { key: "Enter", metaKey: true });
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+
+    first.unmount();
+    mount();
+    expect(screen.getByTestId("editor")).toHaveValue("draft A");
+
+    await act(async () => {
+      resolveSubmit(true);
+      await Promise.resolve();
+    });
+
+    expect(useCommentDraftStore.getState().getDraft(key)).toBeUndefined();
+    await waitFor(() => expect(screen.getByTestId("editor")).toHaveValue(""));
+  });
+
+  // The successor's own edit must outlive the predecessor's success.
+  it("a remounted comment composer keeps text typed after the remount", async () => {
+    let resolveSubmit!: (v: boolean) => void;
+    const onSubmit = vi.fn(() => new Promise<boolean>((r) => { resolveSubmit = r; }));
+    const first = renderCommentInput(onSubmit);
+    activateComposer("comment-composer-shell");
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "draft A" } });
+    fireEvent.keyDown(screen.getByTestId("editor"), { key: "Enter", metaKey: true });
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+
+    first.unmount();
+    renderCommentInput(onSubmit);
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "draft B" } });
+
+    await act(async () => {
+      resolveSubmit(true);
+      await Promise.resolve();
+    });
+
+    expect(useCommentDraftStore.getState().getDraft("new:issue-1")).toBe("draft B");
+    expect(screen.getByTestId("editor")).toHaveValue("draft B");
+  });
+
   it("keeps the draft when the send fails (no optimistic clear)", async () => {
     const onSubmit = vi.fn().mockResolvedValue(false);
     const { container } = renderCommentInput(onSubmit);
