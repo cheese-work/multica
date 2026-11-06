@@ -60,7 +60,7 @@ func TestRequestRunBudgetRaiseOpensASpendRequestForAnOwner(test *testing.T) {
 	if got.RequestID == "" || got.ActionID == "" || len(got.Requests) != 1 {
 		test.Fatalf("response = %+v", got)
 	}
-	if want := "/" + handlerTestWorkspaceSlug + "/issues/" + fixture.issueID + "?decision=" + got.RequestID; got.ApproveURL != want {
+	if want := "/" + handlerTestWorkspaceSlug + "/issues/" + fixture.issueID + "?approve=" + got.ActionID; got.ApproveURL != want {
 		test.Fatalf("approve_url = %q, want %q", got.ApproveURL, want)
 	}
 	var fingerprint, class, origin, human, params, actionType string
@@ -177,4 +177,37 @@ func TestRequestRunBudgetFromAPATCannotBeApprovedByThatPAT(test *testing.T) {
 		}
 	}
 	action.assertUntouched(test)
+}
+
+func (fixture budgetRequestFixture) readAction(test *testing.T, user, actionID string) *testutil.Response {
+	test.Helper()
+	request := withURLParam(newRequest(http.MethodGet, "/api/decision-actions/"+actionID, nil), "id", actionID)
+	request.Header.Set("X-User-ID", user)
+	request.Header.Set("X-Actor-Source", "interactive_jwt")
+	return testutil.Call(test, testHandler.GetDecisionAction, request)
+}
+
+// The approve URL must reach a view that can approve: it names the action, and
+// the action is readable by the owner who is asked, and by nobody else.
+func TestRequestRunBudgetApproveURLNamesTheActionTheOwnerCanRead(test *testing.T) {
+	fixture := newBudgetRequestFixture(test)
+	var got budgetRequestResponse
+	fixture.request(test, fixture.humanID, "pat", map[string]any{"kind": "raise", "new_cap": 9, "window_id": fixture.window}).Want(http.StatusCreated).JSON(&got)
+	if want := "/" + handlerTestWorkspaceSlug + "/issues/" + fixture.issueID + "?approve=" + got.ActionID; got.ApproveURL != want {
+		test.Fatalf("approve_url = %q, want %q", got.ApproveURL, want)
+	}
+	var action struct {
+		ID            string         `json:"id"`
+		ActionType    string         `json:"action_type"`
+		PayloadSHA256 string         `json:"payload_sha256"`
+		State         string         `json:"state"`
+		Params        map[string]any `json:"params"`
+	}
+	fixture.readAction(test, fixture.humanID, got.ActionID).Want(http.StatusOK).JSON(&action)
+	if action.ID != got.ActionID || action.ActionType != "issue.run_budget.raise" || len(action.PayloadSHA256) != 64 || action.State != "pending" || action.Params["new_cap"] != float64(9) {
+		test.Fatalf("action = %+v", action)
+	}
+	other := dbfx.User(test, "Other member", "other-"+uuid.NewString()+"@test.invalid")
+	dbfx.Insert(test, "member", testutil.Cols{"workspace_id": testWorkspaceID, "user_id": other, "role": "member"})
+	fixture.readAction(test, other, got.ActionID).Want(http.StatusForbidden)
 }

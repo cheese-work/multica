@@ -68,8 +68,9 @@ multica issue budget get <issue-id> --output json
 - `multica issue budget raise [--runs N]` and `multica issue budget top-up`
   open a spend decision request and print its approve URL. They change nothing
   themselves: an owner approves with a passkey in the web app, which a CLI
-  credential cannot do. An agent that hit the cap reports the blocker and runs
-  one of these; it never raises its own budget.
+  credential cannot do. Both refuse a task token: a person runs them. An agent
+  that hit the cap reports the blocker and asks a person to run one of these;
+  it never raises its own budget.
 
 ## Inbound webhook endpoints
 

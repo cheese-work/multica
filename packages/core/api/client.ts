@@ -274,9 +274,9 @@ import { createRequestId, createSafeId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseOrThrow, parseWithFallback } from "./schema";
 import {
-  PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
+  DecisionActionViewSchema, PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
   PasskeyListSchema, PasskeyRevokeCodeStartSchema, PasskeyRevokedSchema, parsePasskeyResponse,
-  type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart, type PasskeySummary,
+  type DecisionActionView, type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart, type PasskeySummary,
 } from "./passkey-schema";
 import {
   RuntimeProfileSchema,
@@ -4183,6 +4183,11 @@ export class ApiClient {
     input: { payload_sha256: string; assertion: PasskeyAssertionEnvelope; secrets?: Record<string, string> },
   ): Promise<PasskeyDecisionOutcome> {
     return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/approve`, PasskeyDecisionOutcomeSchema, input);
+  }
+
+  async getDecisionAction(actionId: string): Promise<DecisionActionView> {
+    const raw: unknown = await this.fetch(`/api/decision-actions/${encodeURIComponent(actionId)}`);
+    return parsePasskeyResponse(raw, DecisionActionViewSchema, "GET /api/decision-actions/:id");
   }
 
   async getDecisionActionOutcome(actionId: string): Promise<PasskeyDecisionOutcome> {

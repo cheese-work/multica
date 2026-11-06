@@ -35,8 +35,8 @@ func budgetRequestServer(t *testing.T, posts *[]map[string]any) {
 			*posts = append(*posts, body)
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"request_id": "req-1", "action_id": "act-1", "approve_url": "/acme/issues/" + testIssueUUID + "?decision=req-1",
-				"requests": []map[string]any{{"request_id": "req-1", "action_id": "act-1", "approve_url": "/acme/issues/" + testIssueUUID + "?decision=req-1"}},
+				"request_id": "req-1", "action_id": "act-1", "approve_url": "/acme/issues/" + testIssueUUID + "?approve=act-1",
+				"requests": []map[string]any{{"request_id": "req-1", "action_id": "act-1", "approve_url": "/acme/issues/" + testIssueUUID + "?approve=act-1"}},
 			})
 		default:
 			http.NotFound(w, r)
@@ -61,7 +61,7 @@ func TestRunIssueBudgetRaiseRequestsAndPrintsTheApproveURL(t *testing.T) {
 	if len(posts) != 1 || !reflect.DeepEqual(posts[0], want) {
 		t.Fatalf("posts = %v, want [%v]", posts, want)
 	}
-	if !strings.Contains(out, "/acme/issues/"+testIssueUUID+"?decision=req-1") {
+	if !strings.Contains(out, "/acme/issues/"+testIssueUUID+"?approve=act-1") {
 		t.Fatalf("output %q lacks the approve URL", out)
 	}
 }
@@ -159,7 +159,7 @@ func TestRunIssueBudgetTopUpRequestsWithoutACap(t *testing.T) {
 	if len(posts) != 1 || !reflect.DeepEqual(posts[0], want) {
 		t.Fatalf("posts = %v, want [%v]", posts, want)
 	}
-	if !strings.Contains(out, "?decision=req-1") {
+	if !strings.Contains(out, "?approve=act-1") {
 		t.Fatalf("output %q lacks the approve URL", out)
 	}
 }

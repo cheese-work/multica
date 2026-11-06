@@ -109,7 +109,7 @@ func (h *Handler) RequestIssueRunBudgetAction(w http.ResponseWriter, r *http.Req
 			link := func(request db.DecisionRequest, action db.DecisionAction) {
 				links = append(links, RunBudgetActionLink{
 					RequestID: uuidToString(request.ID), ActionID: uuidToString(action.ID),
-					ApproveURL: "/" + workspace.Slug + "/issues/" + uuidToString(issue.ID) + "?decision=" + uuidToString(request.ID),
+					ApproveURL: "/" + workspace.Slug + "/issues/" + uuidToString(issue.ID) + "?approve=" + uuidToString(action.ID),
 				})
 			}
 			open, err := q.FindOpenServerDecisionRequest(r.Context(), db.FindOpenServerDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, HumanUserID: lane.human, Fingerprint: input.Fingerprint})
