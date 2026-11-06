@@ -212,8 +212,14 @@ func (h *Handler) receiptApply(w http.ResponseWriter, r *http.Request, writerID 
 	if err != nil {
 		return internal(err)
 	}
-	if _, allowed := h.delegatedWriteAllowed(r.Context(), wsUUID, writerID, c.kind); !allowed {
+	requiresHuman, allowed := h.delegatedWriteAllowed(r.Context(), wsUUID, writerID, c.kind)
+	if !allowed {
 		return deny("the writer is not delegated to write " + c.kind)
+	}
+	if requiresHuman {
+		// A peer receipt is not a human decision: only an owner who set
+		// requires_human_decision to false opens this path.
+		return deny("the workspace requires a human decision for " + c.kind)
 	}
 	live, err := h.governedLiveValue(r.Context(), c, wsUUID, idUUID)
 	if err != nil {

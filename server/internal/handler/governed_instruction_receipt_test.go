@@ -20,6 +20,7 @@ type receiptFixture struct {
 	beforeDigest, issue string
 	reviewerID          string
 	reviewerLine        string
+	humanDecision       string // stored requires_human_decision, a JSON literal
 }
 
 func receiptTarget(t *testing.T) ownerCASTarget {
@@ -39,7 +40,7 @@ func newReceiptFixture(t *testing.T) receiptFixture {
 		t.Skip("database not available")
 	}
 	t.Setenv("MULTICA_VOTE_GATE_LABS", voteLabs)
-	r := receiptFixture{voteFixture: newVoteFixture(t), tg: receiptTarget(t)}
+	r := receiptFixture{voteFixture: newVoteFixture(t), tg: receiptTarget(t), humanDecision: "false"}
 	r.initial, r.next = voteAgent("before")+"\n"+voteHuman+"\n", voteAgent("after")+"\n"+voteHuman+"\n"
 	r.id = r.tg.seed(t, r.initial)
 	r.label = "agent.instructions:" + r.id
@@ -50,15 +51,31 @@ func newReceiptFixture(t *testing.T) receiptFixture {
 	return r
 }
 
-// delegate stores the workspace setting that lets agentID write field.
+// delegate stores the workspace setting that lets agentID write field, with
+// the owner's explicit requires_human_decision choice.
 func (r receiptFixture) delegate(t *testing.T, agentID, field string) {
+	t.Helper()
+	human := r.humanDecision
+	if human == "" {
+		human = "true" // the default stays closed unless a test opts in
+	}
+	r.delegateWith(t, agentID, field, `"requires_human_decision": `+human)
+}
+
+// delegateWith stores the setting with extra raw JSON members; pass "" to omit
+// requires_human_decision from the stored value.
+func (r receiptFixture) delegateWith(t *testing.T, agentID, field, extra string) {
 	t.Helper()
 	var previous []byte
 	dbfx.QueryRow(t, `SELECT settings FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&previous)
-	setting, _ := json.Marshal(map[string]any{"delegated_governed_writes": DelegatedWritesConfig{
-		AllowedAgents: []string{agentID}, AllowedFields: []string{field}, RequiresHumanDecision: true,
-	}})
-	dbfx.Exec(t, `UPDATE workspace SET settings = $2::jsonb WHERE id = $1`, testWorkspaceID, string(setting))
+	agent, _ := json.Marshal([]string{agentID})
+	fields, _ := json.Marshal([]string{field})
+	members := `"allowed_agents": ` + string(agent) + `, "allowed_fields": ` + string(fields)
+	if extra != "" {
+		members += ", " + extra
+	}
+	dbfx.Exec(t, `UPDATE workspace SET settings = $2::jsonb WHERE id = $1`, testWorkspaceID,
+		`{"delegated_governed_writes": {`+members+`}}`)
 	t.Cleanup(func() {
 		dbfx.Exec(t, `UPDATE workspace SET settings = $2::jsonb WHERE id = $1`, testWorkspaceID, string(previous))
 	})
@@ -275,5 +292,35 @@ func TestPassReceipt_ReceiptAndVoteTogetherAreBadRequest(t *testing.T) {
 	w := r.send(r.next, r.beforeDigest, func(b map[string]any) { b["vote_issue"] = r.issue })
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// requires_human_decision is the owner's policy: true (or absent, which
+// defaults to true) keeps receipt-only writes closed; only an explicit false
+// opens them.
+func TestPassReceipt_RequiresHumanDecision(t *testing.T) {
+	cases := []struct {
+		name  string
+		extra string
+		want  int
+	}{
+		{name: "true is refused", extra: `"requires_human_decision": true`, want: http.StatusForbidden},
+		{name: "omitted is refused", extra: "", want: http.StatusForbidden},
+		{name: "false is allowed", extra: `"requires_human_decision": false`, want: http.StatusOK},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := newReceiptFixture(t)
+			r.review(t)
+			r.delegateWith(t, r.writerID, "agent.instructions", c.extra)
+			w := r.send(r.next, r.beforeDigest)
+			if w.Code != c.want {
+				t.Fatalf("expected %d, got %d: %s", c.want, w.Code, w.Body.String())
+			}
+			if c.want == http.StatusOK {
+				return
+			}
+			r.wantRefused(t, w)
+		})
 	}
 }
