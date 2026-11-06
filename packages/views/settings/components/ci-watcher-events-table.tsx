@@ -41,7 +41,7 @@ function EventRow({ event, repo, showWouldDo }: { event: CIWatchEvent; repo: str
       <TableCell>{event.action}</TableCell>
       <TableCell>{event.state}</TableCell>
       <TableCell>{event.outcome}</TableCell>
-      {showWouldDo ? <TableCell>{event.would_do}</TableCell> : null}
+      {showWouldDo ? <TableCell className="min-w-32 whitespace-normal">{event.would_do}</TableCell> : null}
       <TableCell>
         {event.run_id > 0 ? (
           <a
@@ -91,7 +91,7 @@ export function CIWatcherEventsTable({
       ) : isPending ? null : events.length === 0 ? (
         <p className="text-caption text-muted-foreground">{t(($) => $.ci_watch.events_empty)}</p>
       ) : (
-        <Table aria-label={title}>
+        <Table aria-label={title} className="text-caption">
           <TableHeader>
             <TableRow>
               {heads.map((h) => (

@@ -204,6 +204,14 @@ describe("events table", () => {
     expect(within(table).getByText("P2 triage")).toBeInTheDocument();
   });
 
+  it("wraps the free-text would-have-done cell so the Run column stays in the panel", async () => {
+    mount();
+    const table = await screen.findByRole("table", { name: "Last 50 events" });
+    const cell = within(table).getByText("P2 triage").closest("td")!;
+    expect(cell).toHaveClass("whitespace-normal");
+    expect(table).toHaveClass("text-caption");
+  });
+
   it("hides the would-have-done column outside Shadow", async () => {
     getConfig.mockResolvedValue({ ...saved, mode: "act" });
     mount();
