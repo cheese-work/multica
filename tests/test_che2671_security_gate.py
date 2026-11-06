@@ -353,7 +353,8 @@ class MergeGroupStepTest(unittest.TestCase):
     RATE_LIMITED = 'echo "gh: HTTP 403: API rate limit exceeded for installation" >&2; exit 1'
     STUB_GH = ('#!/bin/bash\n'  # RL_PARENTS / RL_POST: the first N parent lookups / status writes answer with a rate limit
                'touch "$LOG"\n'
-               'case "$*" in\n'
+               'case "$*" in\n'  # PRIOR: the security-gate state already on the queue commit; RL_PRIOR=1 rate limits that read
+               '  *commits/*/status*) [ -n "${RL_PRIOR:-}" ] && { ' + RATE_LIMITED + '; }; echo "${PRIOR:-none}" ;;\n'
                '  *commits/*) [ "${RL_PARENTS:-0}" -gt "$(grep -c "^rl-parents" "$LOG" || true)" ] && { echo rl-parents >> "$LOG"; ' + RATE_LIMITED + '; }\n'
                '              printf "%s\\n" $PARENTS ;;\n'
                '  *statuses/*) [ -n "${RL_POST_AFTER:-}" ] && [ "$(grep -c "^gh .*statuses/" "$LOG" || true)" -ge "$RL_POST_AFTER" ] && { echo rl-post >> "$LOG"; ' + RATE_LIMITED + '; }\n'
@@ -376,7 +377,7 @@ class MergeGroupStepTest(unittest.TestCase):
         self.assertEqual(len(gate), 1)
         return gate[0]["run"]
 
-    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success", script="", states="", fail_at="", rl_at="", rl_parents=0, rl_post=0, rl_post_after=""):
+    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success", script="", states="", fail_at="", rl_at="", rl_parents=0, rl_post=0, rl_post_after="", prior="none", rl_prior=""):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             (tmp / "bin").mkdir()
@@ -392,7 +393,7 @@ class MergeGroupStepTest(unittest.TestCase):
                 path.chmod(0o755)
             env = {**os.environ, "PATH": f"{tmp / 'bin'}:{os.environ['PATH']}", "LOG": str(tmp / "log"), "HEAD": HEAD,
                    "STATE": state, "STATES": states, "FAIL_AT": str(fail_at), "RL_AT": str(rl_at),
-                   "RL_PARENTS": str(rl_parents), "RL_POST": str(rl_post), "RL_POST_AFTER": str(rl_post_after), "PARENTS": " ".join(parents), "MERGE_GROUP_REF": ref, "MERGE_GROUP_SHA": self.QUEUE,
+                   "RL_PARENTS": str(rl_parents), "RL_POST": str(rl_post), "RL_POST_AFTER": str(rl_post_after), "PRIOR": prior, "RL_PRIOR": rl_prior, "PARENTS": " ".join(parents), "MERGE_GROUP_REF": ref, "MERGE_GROUP_SHA": self.QUEUE,
                    "PR_NUMBER": "", "GH_TOKEN": "t", "DEFAULT_BRANCH": "main", "GITHUB_REPOSITORY": "o/r",
                    "GITHUB_SERVER_URL": "https://github.com", "GITHUB_RUN_ID": "7"}
             done = subprocess.run(["bash", "-c", self.step_run()], cwd=tmp, env=env, capture_output=True, text=True)
@@ -477,6 +478,23 @@ class MergeGroupStepTest(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(self.posted(log), [], log)
         self.assertIn("::warning::", done.stderr)
+
+    def test_a_rerun_that_cannot_replace_an_earlier_success_keeps_the_job_red(self):
+        # CHE-4242 review round 2 P1: a success from an earlier run stays on the queue commit when the write is throttled
+        done, log = self.run_step(rl_post=999, states="failure failure failure", prior="success")
+        self.assertNotEqual(done.returncode, 0, (done.stderr, log))
+        self.assertEqual(self.posted(log), [], log)
+
+    def test_a_rerun_whose_earlier_status_cannot_be_read_keeps_the_job_red(self):
+        # unknown earlier status fails closed, never a green job over a possible stale success
+        done, log = self.run_step(rl_post=999, rl_prior="1", states="failure failure failure")
+        self.assertNotEqual(done.returncode, 0, (done.stderr, log))
+
+    def test_a_rerun_over_an_earlier_non_success_stays_green_when_the_write_is_throttled(self):
+        for prior in ("pending", "failure", "none"):
+            done, log = self.run_step(rl_post=999, states="failure failure failure", prior=prior)
+            self.assertEqual(done.returncode, 0, (prior, done.stderr, log))
+            self.assertIn("::warning::", done.stderr)
 
     def test_a_failure_that_cannot_replace_a_published_success_keeps_the_job_red(self):
         # a success is already on the queue commit: a job that stays green would hide a stale approval

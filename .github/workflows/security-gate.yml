@@ -116,16 +116,22 @@ jobs:
             done
           }
           # A write that stays rate limited before any success is on the queue commit leaves no status: the entry stays
-          # pending and the job gets a warning, not a red mark. Once a success is published, a failed overwrite keeps the
-          # job red so a stale approval is never hidden.
+          # pending and the job gets a warning, not a red mark. A success already on the commit (published by this run or
+          # an earlier one) or an unreadable earlier status keeps the job red, so a stale approval is never hidden.
           published_success=0
+          earlier_not_success() {
+            local s
+            s="$(gh api "repos/$GITHUB_REPOSITORY/commits/$MERGE_GROUP_SHA/status" \
+              --jq '[.statuses[] | select(.context == "security-gate") | .state][0] // "none"')" || return 1
+            [ "$s" != success ]
+          }
           post() {
             local rc=0
             gh_retry api "repos/$GITHUB_REPOSITORY/statuses/$MERGE_GROUP_SHA" -f "state=$1" -f context=security-gate \
               -f "description=${2:0:140}" -f "target_url=$run_url" >/dev/null || rc=$?
             if [ "$rc" = 0 ]; then
               if [ "$1" = success ]; then published_success=1; else published_success=0; fi
-            elif [ "$rc" = 75 ] && [ "$published_success" = 0 ]; then
+            elif [ "$rc" = 75 ] && [ "$published_success" = 0 ] && earlier_not_success; then
               echo "::warning::security-gate: rate limited, status not written; re-run this check" >&2
             else
               return "$rc"
