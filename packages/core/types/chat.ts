@@ -93,6 +93,12 @@ export interface ChatChannelSource {
   route_revision: number;
 }
 
+/** How long the oldest visible thing Cheese owes in a DM has waited. `none` = nothing owed. */
+export type ChatStaleLevel = "none" | "fresh" | "yellow" | "red";
+
+/** The kind of the oldest visible obligation in a DM. */
+export type ChatAttentionSource = "ask" | "later" | "unseen" | "decision";
+
 export interface ChatSession {
   forked_from_session_id?: string | null;
   /** The last copied message of a fork child; the divider sits below it. */
@@ -137,6 +143,16 @@ export interface ChatSession {
   context_window?: number | null;
   /** Absent for first-party Chats. */
   is_current_channel_route?: boolean;
+  /** DM attention projection. List-only; absent on older servers and single-session
+   *  payloads. `attention_source` and `attention_since` are null together, and null
+   *  exactly when `stale_level` is "none". */
+  attention_source?: ChatAttentionSource | null;
+  /** ISO time the oldest visible obligation started. */
+  attention_since?: string | null;
+  stale_level?: ChatStaleLevel;
+  /** ISO time the projection next changes (snooze end, 4 h or 24 h crossing, a later due
+   *  time). Refetch the list then. Null when nothing is scheduled. */
+  next_change_at?: string | null;
   created_at: string;
   updated_at: string;
 }

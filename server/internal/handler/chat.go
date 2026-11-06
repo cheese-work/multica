@@ -261,7 +261,44 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to load chat compaction state")
 		return
 	}
+	if err := h.hydrateChatSessionAttention(r.Context(), resp, parseUUID(workspaceID), parseUUID(userID)); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load chat attention")
+		return
+	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// hydrateChatSessionAttention sets the DM attention projection on each chain's
+// canonical DM. Every other row reads stale_level "none".
+func (h *Handler) hydrateChatSessionAttention(ctx context.Context, sessions []ChatSessionResponse, workspaceID, userID pgtype.UUID) error {
+	attention, err := service.LoadChatAttention(ctx, h.Queries, workspaceID, userID, time.Now())
+	if err != nil {
+		return err
+	}
+	byCanonical := make(map[string]service.ChatAttention, len(attention))
+	for _, a := range attention {
+		byCanonical[a.CanonicalID] = a
+	}
+	for i := range sessions {
+		a, ok := byCanonical[sessions[i].ID]
+		if !ok {
+			sessions[i].StaleLevel = service.AttentionNone
+			continue
+		}
+		sessions[i].StaleLevel = a.StaleLevel
+		sessions[i].AttentionSource = a.AttentionSource
+		sessions[i].AttentionSince = formatAttentionTime(a.AttentionSince)
+		sessions[i].NextChangeAt = formatAttentionTime(a.NextChangeAt)
+	}
+	return nil
+}
+
+func formatAttentionTime(t *time.Time) *string {
+	if t == nil {
+		return nil
+	}
+	s := t.UTC().Format(time.RFC3339Nano)
+	return &s
 }
 
 func (h *Handler) loadChatSessionForUser(w http.ResponseWriter, r *http.Request, userID, workspaceID, sessionID string) (db.ChatSession, bool) {
@@ -2172,8 +2209,15 @@ type ChatSessionResponse struct {
 	// run reported neither (CHE-1808).
 	ContextTokens *int64 `json:"context_tokens,omitempty"`
 	ContextWindow *int64 `json:"context_window,omitempty"`
-	CreatedAt     string `json:"created_at"`
-	UpdatedAt     string `json:"updated_at"`
+	// DM attention projection (plan r4). List-only; stale_level is "none" when
+	// nothing visible is owed, and then attention_source and attention_since
+	// are null together.
+	AttentionSource *string `json:"attention_source"`
+	AttentionSince  *string `json:"attention_since"`
+	StaleLevel      string  `json:"stale_level"`
+	NextChangeAt    *string `json:"next_change_at"`
+	CreatedAt       string  `json:"created_at"`
+	UpdatedAt       string  `json:"updated_at"`
 }
 
 type ChatSessionChannelSourceResponse struct {
