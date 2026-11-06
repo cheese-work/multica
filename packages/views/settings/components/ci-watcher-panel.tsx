@@ -44,7 +44,7 @@ function useCIWatchForm(repo: string, saved: CIWatchConfig) {
     if (Object.keys(formToPatch(saved, next)).length === 0) clearDraft();
     else setDraft({ form: JSON.stringify(next) });
   };
-  return { form, patch, dirty, change, clearDraft };
+  return { form, patch, dirty, change, clearDraft, sent: draft.form };
 }
 
 function Field({ label, error, children }: { label: string; error?: string; children: (id: string) => ReactNode }) {
@@ -61,7 +61,7 @@ function Field({ label, error, children }: { label: string; error?: string; chil
 
 function CIWatcherForm({ wsId, repo, saved }: { wsId: string; repo: string; saved: CIWatchConfig }) {
   const { t } = useT("settings");
-  const { form, patch, dirty, change, clearDraft } = useCIWatchForm(repo, saved);
+  const { form, patch, dirty, change, clearDraft, sent } = useCIWatchForm(repo, saved);
   const save = useUpdateCIWatchConfig(wsId, repo);
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
@@ -74,7 +74,12 @@ function CIWatcherForm({ wsId, repo, saved }: { wsId: string; repo: string; save
   const pLabel = (m: string) => (m === "act" ? t(($) => $.ci_watch.mode_act_short) : t(($) => $.ci_watch.mode_shadow_short));
 
   const onSave = () => {
-    save.mutate(patch, { onSuccess: () => clearDraft() });
+    // Edits typed while the request is in flight stay: only an unchanged draft is cleared.
+    save.mutate(patch, {
+      onSuccess: () => {
+        if (useCIWatchDraftStore.getState().getDraft(repo)?.form === sent) clearDraft();
+      },
+    });
   };
   const toggleEvent = (name: string, on: boolean) =>
     change({ events: on ? [...form.events, name] : form.events.filter((e) => e !== name) });
