@@ -4,6 +4,8 @@
 # its test binary once, then run it as MULTICA_HANDLER_SHARDS processes (default
 # 3), each taking every Nth top-level test and, via go-test-db-exec.sh, its own
 # cloned database. Same runner, same cores: the package just stops being serial.
+# CHE-4268: MULTICA_HANDLER_SHARD_INDEX=N (0-based) runs only shard N, so CI can
+# give each shard its own runner; every job still computes the same split.
 # Usage: go-test-handler-shards.sh [go test build flags, e.g. -race]
 # ponytail: tests are dealt round-robin by name, not by measured cost; the
 # longest test is ~18 s, so shards stay close. Weight them if that stops holding.
@@ -19,6 +21,12 @@ package_dir="$REPO_ROOT/server/internal/handler"
 case $shards in
   '' | *[!0-9]* | 0*) echo "MULTICA_HANDLER_SHARDS must be an integer >= 1, got '$shards'" >&2; exit 2 ;;
 esac
+
+only_shard=${MULTICA_HANDLER_SHARD_INDEX:-}
+if [ -n "$only_shard" ] && { [[ ! $only_shard =~ ^(0|[1-9][0-9]*)$ ]] || [ "$only_shard" -ge "$shards" ]; }; then
+  echo "MULTICA_HANDLER_SHARD_INDEX must be an integer in 0..$((shards - 1)), got '$only_shard'" >&2
+  exit 2
+fi
 
 # CHE-4243: the shard binaries are not bound by `go test`'s default timeout, so
 # this is their only one. A shard sums to ~5-8 min on a healthy runner (12 runs,
@@ -92,6 +100,7 @@ rerun_on() { [ "${MULTICA_TEST_RERUN_FAILS:-}" = 1 ]; }
 pids=()
 indexes=()
 for ((i = 0; i < shards; i++)); do
+  [ -z "$only_shard" ] || [ "$i" -eq "$only_shard" ] || continue
   pattern=$(printf '%s\n' "$names" | awk -v n="$shards" -v i="$i" 'NR % n == i { printf "%s%s", sep, $0; sep = "|" }')
   [ -n "$pattern" ] || continue
   if rerun_on; then

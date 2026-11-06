@@ -64,6 +64,30 @@ for bad in 0 -1 abc; do
   fi
   [ ! -s "$TEST_DIR/builds" ] || { echo "MULTICA_HANDLER_SHARDS=$bad must fail before compiling" >&2; exit 1; }
 done
+
+# CHE-4268: MULTICA_HANDLER_SHARD_INDEX runs one shard (a CI job each). Across
+# all indexes the shards still cover every test exactly once, with one build each.
+: >"$TEST_DIR/runs"
+for i in 0 1 2; do
+  : >"$TEST_DIR/builds"
+  MULTICA_HANDLER_SHARD_INDEX=$i run_shards -race
+  [ "$(wc -l <"$TEST_DIR/builds")" -eq 1 ] || { echo "index $i: want exactly one build" >&2; exit 1; }
+done
+[ "$(wc -l <"$TEST_DIR/runs")" -eq 3 ] || { echo "indexed runs: want 3 shard runs in total" >&2; exit 1; }
+covered=$(sed -E 's/.*-test\.run ([^ ]+).*/\1/' "$TEST_DIR/runs" | sed -E 's/^\^\((.*)\)\$$/\1/' | tr '|' '\n' | sort)
+[ "$covered" = "$expected" ] || { echo "indexed shards do not cover each test exactly once" >&2; exit 1; }
+# An index outside 0..shards-1 would run nothing and still pass: fail before compiling.
+for bad in 3 -1 abc 01; do
+  : >"$TEST_DIR/builds"
+  : >"$TEST_DIR/runs"
+  if MULTICA_HANDLER_SHARD_INDEX=$bad run_shards >/dev/null 2>&1; then
+    echo "MULTICA_HANDLER_SHARD_INDEX=$bad must fail the script" >&2; exit 1
+  fi
+  [ ! -s "$TEST_DIR/builds" ] || { echo "MULTICA_HANDLER_SHARD_INDEX=$bad must fail before compiling" >&2; exit 1; }
+done
+# A failing indexed shard fails the script.
+if SHARD_TEST_EXIT=1 MULTICA_HANDLER_SHARD_INDEX=1 run_shards >/dev/null 2>&1; then echo "failing indexed shard must fail the script" >&2; exit 1; fi
+
 # CHE-4270: with MULTICA_TEST_RERUN_FAILS=1 (merge_group) the shards run a first
 # pass, publish their failures in $MULTICA_FLAKE_DIR/handler-failed.txt (plan
 # lines `internal/handler<TAB>Test`, or `!` when a rerun proves nothing), touch
