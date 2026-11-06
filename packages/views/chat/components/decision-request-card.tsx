@@ -7,25 +7,16 @@ import { useAnswerDecisionRequest } from "@multica/core/issues/decision-answer";
 import {
   type DecisionAnswerDraft as AnswerDraft,
   EMPTY_DECISION_ANSWER_DRAFT as EMPTY_DRAFT,
-  appendDecisionAttachment,
   decisionAnswerDraftKey,
   useDecisionAnswerDraftStore,
 } from "@multica/core/issues/stores/decision-answer-draft-store";
-import {
-  beginPendingUpload,
-  invalidatePendingUploads,
-  settlePendingUpload,
-  usePendingUploadCount,
-  usePersistedDraft,
-  useUploadCancelledNotice,
-} from "@multica/core/drafts";
+import { usePersistedDraft } from "@multica/core/drafts";
 import { chatKeys } from "@multica/core/chat/queries";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { formatShortcut, useShortcut } from "@multica/core/shortcuts";
 import type { DecisionRequestCard as RequestCard } from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
 import type { ContentEditorRef } from "../../editor/content-editor";
-import { attachmentMarkdown } from "../../editor/use-coordinated-uploads";
 import { useEditorUpload } from "../../editor/use-editor-upload";
 import { useUploadGate } from "../../editor/use-upload-gate";
 import { LazyContentEditor as ContentEditor } from "./lazy-content-editor";
@@ -74,17 +65,24 @@ function DecisionAnswerForm({
   // What this editor last reported. A stored text that differs came from the other surface
   // showing the same request, and is adopted so a send from here cannot overwrite it.
   const emitted = useRef(text);
-  // The editor's unmount flush (the last note edit) is applied. What it reports after that is an
-  // upload settling; `uploadFile` below owns that, so it is dropped here. `closing` is set by this
-  // cleanup, which runs before the editor's, so the flush is not mistaken for a late report; the
-  // microtask flips `closed` before any async report from the editor can arrive.
-  const closing = useRef(false);
+  // Uploads started here and still running. Leaving the card cancels them (Cheese decision,
+  // CHE-3521): nothing is filed into the draft later, so no late write can outlive the card.
+  const uploads = useRef(new Set<AbortController>());
+  const keepNotice = useRef(onDraftChange);
+  keepNotice.current = onDraftChange;
+  // The editor's unmount flush (the last note edit) is applied. What it reports after that, such as
+  // the placeholder of a cancelled upload going away, is dropped. The flush runs synchronously
+  // in this unmount; the microtask flips `closed` before any async report can arrive.
   const closed = useRef(false);
   useEffect(() => {
-    closing.current = closed.current = false;
+    closed.current = false;
+    const running = uploads.current;
     return () => {
-      closing.current = true;
       queueMicrotask(() => { closed.current = true; });
+      if (running.size === 0) return;
+      running.forEach((controller) => controller.abort());
+      running.clear();
+      keepNotice.current({ uploadCancelled: true });
     };
   }, []);
   const onEditorUpdate = (next: string) => { if (!closed.current) setText(next); };
@@ -98,20 +96,14 @@ function DecisionAnswerForm({
   const editorRef = useRef<ContentEditorRef>(null);
   const uploadGate = useUploadGate(editorRef);
   const { uploadWithToast } = useEditorUpload();
-  const uploadsPending = usePendingUploadCount(draftKey) > 0;
-  const uploadCancelled = useUploadCancelledNotice(draftKey);
-  // The upload outlives this card. If the card closed first, the attachment goes straight into
-  // the stored note (append only), unless the draft was sent, discarded or logged out meanwhile.
   const uploadFile = async (file: File) => {
-    const ticket = beginPendingUpload(draftKey);
-    let result: Awaited<ReturnType<typeof uploadWithToast>> = null;
+    const controller = new AbortController();
+    uploads.current.add(controller);
+    if (draft.uploadCancelled) onDraftChange({ uploadCancelled: false });
     try {
-      result = await uploadWithToast(file, { issueId: card.issue_id, signal: ticket.signal });
-      return result;
+      return await uploadWithToast(file, { issueId: card.issue_id, signal: controller.signal });
     } finally {
-      settlePendingUpload(ticket, () => {
-        if (result && closing.current) appendDecisionAttachment(ticket.origin, card.id, attachmentMarkdown(result));
-      });
+      uploads.current.delete(controller);
     }
   };
   useEffect(() => {
@@ -123,13 +115,13 @@ function DecisionAnswerForm({
     editor.adoptContent(stored);
   }, [text, draftKey]);
   const tooLong = answerBytes(text) > MAX_ANSWER_BYTES;
-  const canSend = online && !answer.isPending && !uploadGate.uploading && !uploadsPending && !tooLong && (option !== "" || text.trim() !== "");
+  const canSend = online && !answer.isPending && !uploadGate.uploading && !tooLong && (option !== "" || text.trim() !== "");
   const send = () => {
     // onUpdate reaches `text` through a timer, so an Enter or click right after the last edit
     // (or a finished upload) would send stale text. Read the editor and send exactly that.
     const live = editorRef.current?.getMarkdown() ?? text;
     // Enter can arrive while an upload placeholder is still in the document.
-    const sendable = online && !answer.isPending && !uploadGate.uploading && !uploadsPending && !uploadGate.isBlocked()
+    const sendable = online && !answer.isPending && !uploadGate.uploading && !uploadGate.isBlocked()
       && answerBytes(live) <= MAX_ANSWER_BYTES && (option !== "" || live.trim() !== "");
     if (!sendable) return;
     emitted.current = live;
@@ -199,7 +191,7 @@ function DecisionAnswerForm({
       <p id={`${textId}-hint`} className="text-caption text-muted-foreground">
         {t(($) => $.decision.answer_hint, { shortcut: sendShortcut })}
       </p>
-      {uploadCancelled && <p role="status" className="text-caption text-destructive">{t(($) => $.decision.answer_upload_cancelled)}</p>}
+      {draft.uploadCancelled && <p role="status" className="text-caption text-destructive">{t(($) => $.decision.answer_upload_cancelled)}</p>}
       {tooLong && <p role="alert" className="text-caption text-destructive">{t(($) => $.decision.answer_too_long)}</p>}
       <div className="flex flex-wrap items-center gap-2">
         <Button type="submit" size="sm" disabled={!canSend} className="disabled:opacity-70">
@@ -293,7 +285,6 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
     answer
       .mutateAsync({ requestId: card.id, option: draft.option || undefined, text: text.trim() || undefined })
       .then(() => {
-        invalidatePendingUploads(decisionAnswerDraftKey(card.id));
         clearDraft();
         setFormKey((key) => key + 1);
       })
@@ -302,7 +293,6 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
       });
   };
   const discardDraft = () => {
-    invalidatePendingUploads(decisionAnswerDraftKey(card.id));
     clearDraft();
     setRefused(false);
   };

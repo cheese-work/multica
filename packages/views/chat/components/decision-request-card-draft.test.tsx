@@ -1,5 +1,4 @@
-import { clearRegisteredWorkspaceDrafts, resetAllRegisteredDrafts } from "@multica/core/drafts";
-import { setCurrentWorkspace } from "@multica/core/platform";
+import { resetAllRegisteredDrafts } from "@multica/core/drafts";
 import { act, screen } from "@testing-library/react";
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import userEvent from "@testing-library/user-event";
@@ -206,142 +205,88 @@ describe("decision card draft survives remount", () => {
     expect(note()).toHaveValue("last words");
   });
 
-  // An upload started in a card that unmounts before it settles still lands in the stored note,
-  // appended once, and never later than a send, Discard, logout or workspace change. The tests
-  // settle right after the unmount: no timer wait, so a microtask-late editor report is covered.
+  // Cheese decision (CHE-3521): an upload still running when the card unmounts (scroll-out, route
+  // change, close, workspace switch, logout) is cancelled. Nothing is filed into the draft later;
+  // the card says so when it is shown again. Typed text and chosen options are kept.
+  const NOTICE = "Upload cancelled because you left this card. Attach the file again.";
   const startUpload = async (id: string) => {
     let resolveUpload: (v: unknown) => void = () => { throw new Error("not started"); };
-    api.uploadFile.mockReturnValue(new Promise((r) => { resolveUpload = r; }));
+    api.uploadFile.mockImplementation((_file: File, _ctx: unknown, signal?: AbortSignal) => new Promise((resolve, reject) => {
+      resolveUpload = resolve;
+      signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+    }));
     const user = userEvent.setup();
     const first = renderWithI18n(chat(card(id)));
+    await user.click(screen.getByRole("radio", { name: /Option B/ }));
     await user.type(note(), "see");
     await vi.waitFor(() => expect(useDecisionAnswerDraftStore.getState().hasDraft(`decision:${id}`)).toBe(true), { timeout: 2000 });
     act(() => editorHandle.current?.uploadFile(new File(["x"], "shot.png", { type: "image/png" })));
-    first.unmount();
     return {
       user,
+      first,
+      signal: () => api.uploadFile.mock.calls[0]?.[2] as AbortSignal | undefined,
       settle: async () => {
         resolveUpload({ id: "att", filename: "shot.png", content_type: "image/png", url: "/api/attachments/att/download", download_url: "/api/attachments/att/download" });
         await act(async () => { await uploads.settle?.(); });
       },
     };
   };
-  const stored = (id: string) => useDecisionAnswerDraftStore.getState().getDraft(`decision:${id}`)?.text;
-  const occurrences = (text: string | undefined) => (text?.match(/shot\.png/g) ?? []).length;
+  const stored = (id: string) => useDecisionAnswerDraftStore.getState().getDraft(`decision:${id}`);
 
-  it("a late upload adds its attachment to the stored note, once", async () => {
-    const { settle } = await startUpload("late-note");
+  it("leaving the card aborts the upload and shows the notice on return, with text and option kept", async () => {
+    const { first, signal, settle } = await startUpload("left");
+    expect(signal()?.aborted).toBe(false);
+    first.unmount();
+    expect(signal()?.aborted).toBe(true);
     await settle();
-    expect(stored("late-note")).toMatch(/^see\n\n!\[shot\.png\]/);
-    expect(occurrences(stored("late-note"))).toBe(1);
-  });
+    expect(stored("left")?.text).toBe("see");
 
-  it("a card reopened before the upload settles shows the attachment once it does", async () => {
-    const { settle } = await startUpload("late-reopen");
-    renderWithI18n(chat(card("late-reopen")));
-    expect(note()).toHaveValue("see");
-    await settle();
-    await vi.waitFor(() => expect((note() as HTMLTextAreaElement).value).toContain("shot.png"));
-    expect(occurrences(stored("late-reopen"))).toBe(1);
-  });
-
-  it("Send stays disabled in the reopened card while the upload is pending", async () => {
-    const { user, settle } = await startUpload("late-gate");
-    renderWithI18n(chat(card("late-gate")));
-    await user.click(screen.getByRole("radio", { name: /Option A/ }));
-    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
-    await settle();
-    await vi.waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeEnabled());
-  });
-
-  it("a late upload keeps a note edited after the card was reopened", async () => {
-    const { user, settle } = await startUpload("late-edit");
-    renderWithI18n(chat(card("late-edit")));
-    await user.type(note(), " and more");
-    await vi.waitFor(() => expect(stored("late-edit")).toBe("see and more"), { timeout: 2000 });
-    await settle();
-    expect(stored("late-edit")).toMatch(/^see and more\n\n!\[shot\.png\]/);
-    expect(occurrences(stored("late-edit"))).toBe(1);
-  });
-
-  it("a late upload does not bring the draft back after Discard", async () => {
-    const { user, settle } = await startUpload("late-discard");
-    const second = renderWithI18n(chat(card("late-discard")));
-    second.rerender(chat({ ...card("late-discard"), state: "answered" }));
-    await user.click(screen.getByRole("button", { name: "Discard draft" }));
-    await settle();
-    expect(useDecisionAnswerDraftStore.getState().hasDraft("decision:late-discard")).toBe(false);
-  });
-
-  it("a late upload writes nothing after logout", async () => {
-    const { settle } = await startUpload("late-logout");
-    resetAllRegisteredDrafts();
-    await settle();
-    expect(stored("late-logout")).toBeUndefined();
-  });
-
-  const inWorkspace = async (slug: string) => {
-    act(() => setCurrentWorkspace(slug, `id-${slug}`));
-    await act(async () => { await Promise.resolve(); });
-  };
-
-  // Cheese decision (CHE-3521): an upload still running when the workspace changes is cancelled.
-  // It writes into neither workspace, and the card says so when it is shown again.
-  const NOTICE = "Upload cancelled because you switched workspace. Attach the file again.";
-
-  it("a workspace switch during an upload cancels it: nothing is written to either workspace", async () => {
-    await inWorkspace("acme");
-    const { settle } = await startUpload("late-ws");
-    const signal = api.uploadFile.mock.calls[0]?.[2] as AbortSignal | undefined;
-    await inWorkspace("other");
-    expect(signal?.aborted).toBe(true);
-    await settle();
-    expect(window.localStorage.getItem("multica_decision_answer_drafts:other")).toBeNull();
-    await inWorkspace("acme");
-    expect(stored("late-ws")).toBe("see");
-    expect(occurrences(stored("late-ws"))).toBe(0);
-    setCurrentWorkspace(null, null);
-  });
-
-  it("the note typed before the upload survives a switch away and back during the upload", async () => {
-    await inWorkspace("acme");
-    const { settle } = await startUpload("late-ws-note");
-    await inWorkspace("other");
-    await inWorkspace("acme");
-    await settle();
-    renderWithI18n(chat(card("late-ws-note")));
-    expect(note()).toHaveValue("see");
-    setCurrentWorkspace(null, null);
-  });
-
-  it("after the switch back the card shows the notice and Send is not gated", async () => {
-    await inWorkspace("acme");
-    const { user } = await startUpload("late-ws-gate");
-    await inWorkspace("other");
-    await inWorkspace("acme");
-    renderWithI18n(chat(card("late-ws-gate")));
+    renderWithI18n(chat(card("left")));
     expect(screen.getByText(NOTICE)).toBeInTheDocument();
-    await user.click(screen.getByRole("radio", { name: /Option A/ }));
+    expect(note()).toHaveValue("see");
+    expect(screen.getByRole("radio", { name: /Option B/ })).toBeChecked();
+  });
+
+  it("after leaving mid-upload, Send is not gated and a new upload clears the notice", async () => {
+    const { first, user } = await startUpload("left-send");
+    first.unmount();
+    renderWithI18n(chat(card("left-send")));
     expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
-    setCurrentWorkspace(null, null);
-  });
-
-  it("an upload that settles in the same workspace shows no notice", async () => {
-    await inWorkspace("acme");
-    const { settle } = await startUpload("late-same");
-    await settle();
-    renderWithI18n(chat(card("late-same")));
+    api.uploadFile.mockReturnValue(new Promise(() => {}));
+    act(() => editorHandle.current?.uploadFile(new File(["y"], "again.png", { type: "image/png" })));
     expect(screen.queryByText(NOTICE)).toBeNull();
-    setCurrentWorkspace(null, null);
+    await user.click(screen.getByRole("button", { name: "Send" }));
   });
 
-  it("a late upload writes nothing after its workspace's drafts were deleted", async () => {
-    await inWorkspace("acme");
-    const { settle } = await startUpload("late-del");
-    clearRegisteredWorkspaceDrafts(window.localStorage as never, "acme");
+  it("an upload that settles while the card stays mounted is not cancelled and shows no notice", async () => {
+    const { first, signal, settle } = await startUpload("stay");
     await settle();
-    expect(window.localStorage.getItem("multica_decision_answer_drafts:acme")).toBeNull();
-    setCurrentWorkspace(null, null);
+    expect(signal()?.aborted).toBe(false);
+    first.unmount();
+    renderWithI18n(chat(card("stay")));
+    expect(screen.queryByText(NOTICE)).toBeNull();
+  });
+
+  it("logout while the card is gone: a late settle writes nothing and leaves no stored draft", async () => {
+    const { first, settle } = await startUpload("left-logout");
+    first.unmount();
+    resetAllRegisteredDrafts();
+    window.localStorage.removeItem("multica_decision_answer_drafts");
+    await settle();
+    expect(window.localStorage.getItem("multica_decision_answer_drafts")).toBeNull();
+    expect(stored("left-logout")).toBeUndefined();
+  });
+
+  it("Discard draft removes the notice", async () => {
+    const { first, user } = await startUpload("left-discard");
+    first.unmount();
+    const second = renderWithI18n(chat(card("left-discard")));
+    expect(screen.getByText(NOTICE)).toBeInTheDocument();
+    second.rerender(chat({ ...card("left-discard"), state: "answered" }));
+    await user.click(screen.getByRole("button", { name: "Discard draft" }));
+    second.unmount();
+    renderWithI18n(chat(card("left-discard")));
+    expect(screen.queryByText(NOTICE)).toBeNull();
   });
 
   it("two mounted surfaces for one request stay in step, and sending from the other sends the note", async () => {
