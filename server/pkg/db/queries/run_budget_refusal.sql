@@ -6,3 +6,81 @@ WHERE issue_id = $1 AND window_id = $2
 
 -- name: GetRunBudgetRefusal :one
 SELECT * FROM run_budget_refusal WHERE id = $1;
+
+-- name: InsertRunBudgetRefusal :one
+-- Tx R of the exhaustion hook (CHE-2798 A1c1b): a retry finds the row already
+-- there and gets no row back.
+INSERT INTO run_budget_refusal (
+    id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger,
+    state, state_reason, hook_phase)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'intent')
+ON CONFLICT (issue_id, window_id) DO NOTHING
+RETURNING *;
+
+-- name: GetRunBudgetRefusalByWindow :one
+SELECT * FROM run_budget_refusal WHERE issue_id = $1 AND window_id = $2;
+
+-- name: LockRunBudgetRefusal :one
+SELECT * FROM run_budget_refusal WHERE id = $1 FOR UPDATE;
+
+-- name: NewestIssueStatusChange :one
+-- The status occurrence the issue is in: its newest status_changed row, with the
+-- cause kind and the refusal a run-budget block named.
+SELECT id,
+       COALESCE(details->'trigger'->'cause'->>'kind', '')::text AS cause_kind,
+       COALESCE(details->'trigger'->'cause'->'ref'->>'refusal_id', '')::text AS refusal_id
+FROM activity_log
+WHERE issue_id = $1 AND action = 'status_changed'
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
+
+-- name: SetRunBudgetRefusalHook :exec
+-- Advances the hook. A NULL occurrence keeps the stored one.
+UPDATE run_budget_refusal
+SET hook_phase = @hook_phase::text,
+    hook_reason = sqlc.narg('hook_reason')::text,
+    blocked = COALESCE(sqlc.narg('blocked')::boolean, blocked),
+    occurrence_activity_id = COALESCE(sqlc.narg('occurrence_activity_id')::uuid, occurrence_activity_id),
+    updated_at = now()
+WHERE id = @id::uuid;
+
+-- name: SupersedeRunBudgetRefusalsExcept :exec
+-- A refusal for a later window ends every earlier non-terminal refusal of the
+-- issue and its unfinished hook (P2r supersession a).
+UPDATE run_budget_refusal
+SET state = 'superseded', state_reason = 'later_window',
+    hook_phase = CASE WHEN hook_phase IN ('intent', 'blocked') THEN 'retired' ELSE hook_phase END,
+    hook_reason = CASE WHEN hook_phase IN ('intent', 'blocked') THEN 'later_window' ELSE hook_reason END,
+    updated_at = now()
+WHERE issue_id = $1 AND id <> $2 AND state IN ('open', 'resume_pending', 'still_blocked');
+
+-- name: SupersedeRunBudgetRefusalsOnStatusChange :exec
+-- A status move starts its own work: every non-terminal refusal of the issue
+-- ends, and so does its unfinished hook (P2r supersession b).
+UPDATE run_budget_refusal
+SET state = 'superseded', state_reason = 'status_moved',
+    hook_phase = CASE WHEN hook_phase IN ('intent', 'blocked') THEN 'retired' ELSE hook_phase END,
+    hook_reason = CASE WHEN hook_phase IN ('intent', 'blocked') THEN 'status_moved' ELSE hook_reason END,
+    updated_at = now()
+WHERE issue_id = $1 AND state IN ('open', 'resume_pending', 'still_blocked');
+
+-- name: ListStaleRunBudgetHooks :many
+-- Hooks a crashed callback left unfinished: the sweep advances them.
+SELECT id FROM run_budget_refusal
+WHERE hook_phase IN ('intent', 'blocked') AND updated_at < @before::timestamptz
+ORDER BY updated_at
+LIMIT 50;
+
+-- name: RetireRunBudgetRefusalHook :exec
+-- Ends an unfinished hook with a reason. The refusal's own state is left to the
+-- supersession writers.
+UPDATE run_budget_refusal
+SET hook_phase = 'retired', hook_reason = @reason::text, updated_at = now()
+WHERE id = @id::uuid AND hook_phase IN ('intent', 'blocked');
+
+-- name: MarkRunBudgetRefusalBlocked :exec
+-- Tx B's phase advance, written in the block's own transaction: the refusal's
+-- block is the status occurrence that move recorded.
+UPDATE run_budget_refusal
+SET hook_phase = 'blocked', blocked = true, occurrence_activity_id = @occurrence_activity_id::uuid, updated_at = now()
+WHERE id = @id::uuid AND hook_phase = 'intent';

@@ -116,17 +116,22 @@ func (h *Handler) admissionTxFinished(ctx context.Context, e service.RunBudgetEv
 var runBudgetBeforeNotice = func() {}
 
 func (h *Handler) writeRunBudgetNotice(ctx context.Context, e service.RunBudgetEvent, text string) {
-	h.writeRunBudgetNoticeFrom(ctx, e, nil, func(context.Context, *db.Queries) string { return text })
+	_ = h.writeRunBudgetNoticeFrom(ctx, e, pgtype.UUID{}, nil, func(context.Context, *db.Queries) string { return text })
 }
 
 // writeRunBudgetNoticeFrom is writeRunBudgetNotice with the text worded inside
 // the transaction, under the budget lock, by a function of the transaction's
 // queries. A non-nil recovery run is claimed in the same transaction.
-func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBudgetEvent, recovery *service.BudgetRecoveryRun, text func(context.Context, *db.Queries) string) {
+//
+// A valid hookID is the refusal whose hook this notice finishes (tx N): the
+// hook advances to done in the notice's transaction, and a refusal that no
+// longer applies returns *hookIneligible, with nothing written. Without one, a
+// lifted refusal is dropped silently.
+func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBudgetEvent, hookID pgtype.UUID, recovery *service.BudgetRecoveryRun, text func(context.Context, *db.Queries) string) error {
 	issue, err := h.Queries.GetIssue(ctx, e.IssueID)
 	if err != nil {
 		slog.Warn("run budget: load issue for notice failed", "err", err, "issue_id", uuidToString(e.IssueID))
-		return
+		return err
 	}
 	usage := h.runBudgetUsageNote(ctx, issue)
 	recent := ""
@@ -147,7 +152,11 @@ func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBud
 			WindowID: e.Since.UTC().Format(time.RFC3339Nano), Kind: e.Kind,
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
+			if !hookID.Valid {
+				return nil
+			}
+			// A notice for this window exists already: nothing is left to write.
+			return h.retireHookInTx(ctx, qtx, hookID, "notice_exists")
 		}
 		if err != nil {
 			return fmt.Errorf("claim notice: %w", err)
@@ -170,7 +179,18 @@ func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBud
 		// decision, and the claim rolls back with the transaction.
 		if e.Kind == service.RunBudgetKindExhausted {
 			if err := runBudgetRefusalStillHolds(ctx, qtx, e); err != nil {
+				if hookID.Valid && errors.Is(err, errRefusalLifted) {
+					return &hookIneligible{reason: "budget_restored"}
+				}
 				return err
+			}
+			if hookID.Valid {
+				if err := lockHookStep(ctx, qtx, hookID, "blocked"); err != nil {
+					return err
+				}
+				if err := qtx.SetRunBudgetRefusalHook(ctx, db.SetRunBudgetRefusalHookParams{ID: hookID, HookPhase: "done"}); err != nil {
+					return fmt.Errorf("finish hook: %w", err)
+				}
 			}
 		}
 		// The recovery run debits the ledger, so it commits with the notice
@@ -184,6 +204,9 @@ func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBud
 				recovered = true
 			case errors.Is(err, service.ErrRecoveryClaimed), errors.Is(err, service.ErrRecoveryBlockEnded):
 			case errors.Is(err, service.ErrRecoveryWindowLifted):
+				if hookID.Valid {
+					return &hookIneligible{reason: "budget_restored"}
+				}
 				return errRefusalLifted
 			default:
 				slog.Warn("run budget: recovery run not enqueued", "err", err, "issue_id", uuidToString(issue.ID))
@@ -225,17 +248,20 @@ func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBud
 		return err
 	})
 	if errors.Is(err, errRefusalLifted) {
-		return
+		return nil
 	}
 	if err != nil {
-		slog.Warn("run budget: write notice failed", "err", err, "issue_id", uuidToString(issue.ID), "kind", e.Kind)
-		return
+		var ineligible *hookIneligible
+		if !errors.Is(err, errHookAdvanced) && !errors.As(err, &ineligible) {
+			slog.Warn("run budget: write notice failed", "err", err, "issue_id", uuidToString(issue.ID), "kind", e.Kind)
+		}
+		return err
 	}
 	if recovered {
 		recovery.Published(ctx)
 	}
 	if !comment.ID.Valid {
-		return
+		return nil
 	}
 	workspaceID := uuidToString(issue.WorkspaceID)
 	h.publish(protocol.EventCommentCreated, workspaceID, "system", "", map[string]any{
@@ -250,6 +276,13 @@ func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBud
 		h.publish(protocol.EventInboxNew, workspaceID, "system", "", map[string]any{"item": inboxToResponse(item)})
 	}
 	h.publishRunBudgetDecisions(issue, decisions)
+	return nil
+}
+
+// retireHookInTx retires an unfinished hook in the caller's transaction and
+// reports it as finished.
+func (h *Handler) retireHookInTx(ctx context.Context, q *db.Queries, id pgtype.UUID, reason string) error {
+	return q.RetireRunBudgetRefusalHook(ctx, db.RetireRunBudgetRefusalHookParams{ID: id, Reason: reason})
 }
 
 // runBudgetRefusalStillHolds takes the budget lock and reports errRefusalLifted

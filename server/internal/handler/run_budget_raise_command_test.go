@@ -301,24 +301,19 @@ func TestNoticeOnAnIndependentlyBlockedIssueGivesNoRecoveryRun(t *testing.T) {
 }
 
 // blockWithoutNotice is the exhaustion callback that blocks the issue and
-// exits before its notice. It re-reads the issue after a lost revision race,
-// as the callback does.
+// exits before its notice: the hook stops after tx B, as a crash would.
 func blockWithoutNotice(t *testing.T, e service.RunBudgetExhausted) {
 	t.Helper()
-	for try := 0; try < runBudgetBlockTries; try++ {
-		issue, err := testHandler.Queries.GetIssue(context.Background(), e.IssueID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		moved, lifted := testHandler.blockExhaustedIssue(context.Background(), issue, e, "")
-		if lifted {
-			t.Fatal("the refusal was lifted")
-		}
-		if moved {
-			return
-		}
+	runBudgetHookAt = func(stage string) bool { return stage == "after_block" }
+	defer func() { runBudgetHookAt = func(string) bool { return false } }()
+	testHandler.onRunBudgetExhausted(context.Background(), e)
+	issue, err := testHandler.Queries.GetIssue(context.Background(), e.IssueID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Fatal("the block never moved the issue")
+	if issue.Status != "blocked" {
+		t.Fatalf("status = %q, want the block to have moved the issue", issue.Status)
+	}
 }
 
 // A callback that blocked the issue and exited before its notice leaves the

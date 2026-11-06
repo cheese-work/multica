@@ -78,8 +78,10 @@ func TestRecoveryRunExhaustionMoveEnqueuesOneAndASecondClaimIsRefused(t *testing
 		t.Fatalf("second refusal = %v, want ErrRunBudgetExhausted", err)
 	}
 	settle()
-	if got := c.status(t); got != "blocked" {
-		t.Fatalf("issue is %s after the second refusal, want blocked again (the second claim must be attempted)", got)
+	// One hook per window: the window's hook is done, so the second refusal
+	// reuses its row and neither blocks nor claims again.
+	if got := c.status(t); got != "in_progress" {
+		t.Fatalf("issue is %s after the second refusal, want in_progress (the window's hook already ran)", got)
 	}
 	if n := recoveryRuns(t, c); n != 1 {
 		t.Fatalf("recovery runs after a second claim in the window = %d, want still 1", n)
