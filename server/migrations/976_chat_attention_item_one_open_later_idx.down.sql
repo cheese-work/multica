@@ -1,1 +1,0 @@
-DROP INDEX CONCURRENTLY IF EXISTS chat_attention_item_one_open_later_idx;

@@ -582,36 +582,6 @@ type ChannelUserBinding struct {
 	BoundAt        pgtype.Timestamptz `json:"bound_at"`
 }
 
-type ChatAttentionItem struct {
-	ID                 pgtype.UUID        `json:"id"`
-	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
-	ChainRootSessionID pgtype.UUID        `json:"chain_root_session_id"`
-	ChatSessionID      pgtype.UUID        `json:"chat_session_id"`
-	UserID             pgtype.UUID        `json:"user_id"`
-	AgentID            pgtype.UUID        `json:"agent_id"`
-	Kind               string             `json:"kind"`
-	OpenedAt           pgtype.Timestamptz `json:"opened_at"`
-	DueAt              pgtype.Timestamptz `json:"due_at"`
-	SourceTaskID       pgtype.UUID        `json:"source_task_id"`
-	SourceMessageID    pgtype.UUID        `json:"source_message_id"`
-	LastOutcomeTaskID  pgtype.UUID        `json:"last_outcome_task_id"`
-	WaitingMessageID   pgtype.UUID        `json:"waiting_message_id"`
-	WaitingTaskID      pgtype.UUID        `json:"waiting_task_id"`
-	ResolvedAt         pgtype.Timestamptz `json:"resolved_at"`
-	ResolvedBy         pgtype.Text        `json:"resolved_by"`
-	ResolveBatchID     pgtype.UUID        `json:"resolve_batch_id"`
-}
-
-type ChatAttentionMark struct {
-	UserID             pgtype.UUID        `json:"user_id"`
-	SubjectKey         string             `json:"subject_key"`
-	ChainRootSessionID pgtype.UUID        `json:"chain_root_session_id"`
-	SnoozedUntil       pgtype.Timestamptz `json:"snoozed_until"`
-	AckedAt            pgtype.Timestamptz `json:"acked_at"`
-	AckBatchID         pgtype.UUID        `json:"ack_batch_id"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-}
-
 type ChatDraftRestore struct {
 	ID            pgtype.UUID        `json:"id"`
 	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
@@ -685,7 +655,6 @@ type ChatSession struct {
 	CompactionEpoch        int64              `json:"compaction_epoch"`
 	PresetName             pgtype.Text        `json:"preset_name"`
 	DecisionTopicID        pgtype.UUID        `json:"decision_topic_id"`
-	ChainRootSessionID     pgtype.UUID        `json:"chain_root_session_id"`
 	TaintIds               []string           `json:"taint_ids"`
 	TaintVerified          bool               `json:"taint_verified"`
 }

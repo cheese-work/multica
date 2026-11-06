@@ -84,6 +84,3 @@ perf-report/
 
 # Local /changelog preview output (CHE-1634)
 .fork-changelog/
-
-# CHE-4270: local default for test-go.sh rerun/flake output
-flake-reports/

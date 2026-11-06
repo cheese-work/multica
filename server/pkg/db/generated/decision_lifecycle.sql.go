@@ -412,7 +412,6 @@ SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 WHERE request.authority = 'human' AND request.status = 'cancelled' AND request.cancel_reason IN ('human_removed', 'lane_archived')
   AND request.cancel_notice_posted_at IS NOT NULL AND request.reask_delivered_at IS NULL
-  AND NOT EXISTS (SELECT 1 FROM decision_wait episode WHERE episode.closed_at IS NULL AND request.id = ANY(episode.request_ids))
 ORDER BY request.id
 LIMIT LEAST(GREATEST($1::int, 0), 100)
 `
@@ -481,7 +480,6 @@ JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.works
 WHERE answer.woken_at IS NOT NULL AND answer.wake_outcome <> 'skipped_ineligible'
   AND answer.disclaimed_at IS NOT NULL AND answer.withdrawal_comment_id IS NOT NULL
   AND answer.retraction_delivered_at IS NULL
-  AND NOT EXISTS (SELECT 1 FROM decision_wait episode WHERE episode.closed_at IS NULL AND request.id = ANY(episode.request_ids))
 ORDER BY answer.id
 LIMIT LEAST(GREATEST($1::int, 0), 100)
 `
