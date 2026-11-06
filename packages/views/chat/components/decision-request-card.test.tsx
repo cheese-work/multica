@@ -11,8 +11,17 @@ import type { DecisionRequestCard as RequestCard } from "@multica/core/types";
 import { DecisionRequestCard } from "./decision-request-card";
 import { ChatAnnotationContext } from "./chat-annotation-context";
 
+const ui = vi.hoisted(() => ({ desktop: false }));
+const openExternal = vi.hoisted(() => vi.fn());
+const challengeDecisionAnswer = vi.hoisted(() => vi.fn());
+const signPasskeyChallenge = vi.hoisted(() => vi.fn());
+vi.mock("../../platform", () => ({ openExternal }));
+vi.mock("../../platform/local-directory", () => ({ isDesktopShell: () => ui.desktop }));
+vi.mock("@multica/core/auth/webauthn", () => ({ signPasskeyChallenge }));
+
 vi.mock("../../navigation", async (importActual) => ({
   ...(await importActual<typeof import("../../navigation")>()),
+  useOptionalNavigation: () => ({ getShareableUrl: (path: string) => `https://app.test${path}` }),
   AppLink: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => <a href={href} {...rest}>{children}</a>,
 }));
 
@@ -30,7 +39,7 @@ const listDecisionArtifacts = vi.hoisted(() => vi.fn());
 const uploadFile = vi.hoisted(() => vi.fn());
 vi.mock("@multica/core/api", async (importActual) => ({
   ...(await importActual<typeof import("@multica/core/api")>()),
-  api: { answerDecisionRequest, listDecisionArtifacts, uploadFile },
+  api: { answerDecisionRequest, challengeDecisionAnswer, listDecisionArtifacts, uploadFile },
 }));
 
 // The real editor is Tiptap; its own suites cover typing and paste. Here it is
@@ -554,5 +563,80 @@ describe("DecisionRequestCard answering", () => {
     expect(screen.queryByRole("alert")).toBeNull();
     await user.click(screen.getByRole("button", { name: "Discard draft" }));
     expect(screen.queryByTestId("decision-request-kept-draft")).toBeNull();
+  });
+});
+
+describe("DecisionRequestCard passkey-gated answering", () => {
+  const withOptions: RequestCard = { ...card, options: [{ label: "Option A" }, { label: "Option B" }] };
+  const gated = () => new ApiError("assertion_required: sign this answer with your passkey", 403, "Forbidden");
+  const challenge = { challenge_id: "ch-1", options: { publicKey: {} }, expires_at: "later", answer_revision: 3, policy_revision: 2 };
+  const renderCard = () =>
+    renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={withOptions} /></WorkspaceSlugProvider></QueryClientProvider>);
+  const pickAndSend = async (user: ReturnType<typeof userEvent.setup>) => {
+    await user.click(screen.getByRole("radio", { name: /Option A/ }));
+    await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), " why {Enter}");
+  };
+  beforeEach(() => {
+    answerDecisionRequest.mockReset().mockRejectedValueOnce(gated()).mockResolvedValue(undefined);
+    challengeDecisionAnswer.mockReset().mockResolvedValue(challenge);
+    signPasskeyChallenge.mockReset().mockResolvedValue({ challenge_id: "ch-1", credential: { id: "cred" } });
+    ui.desktop = false;
+    openExternal.mockReset();
+    editor.live = undefined;
+  });
+
+  it("asks for a passkey after assertion_required, then sends the signed answer with the revisions", async () => {
+    renderCard();
+    const user = userEvent.setup();
+    await pickAndSend(user);
+    expect(await screen.findByRole("alert")).toHaveTextContent("This answer needs your passkey");
+    expect(challengeDecisionAnswer).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Send with passkey" }));
+    await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalledTimes(2));
+    expect(challengeDecisionAnswer).toHaveBeenCalledWith("request", { option: "Option A", text: "why" });
+    expect(answerDecisionRequest).toHaveBeenLastCalledWith("request", {
+      option: "Option A", text: "why", answer_revision: 3, policy_revision: 2,
+      assertion: { challenge_id: "ch-1", credential: { id: "cred" } },
+    });
+  });
+
+  it("keeps the draft and offers a retry when the passkey ceremony is cancelled", async () => {
+    signPasskeyChallenge.mockRejectedValueOnce(new Error("passkey sign-in was cancelled"));
+    renderCard();
+    const user = userEvent.setup();
+    await pickAndSend(user);
+    await user.click(await screen.findByRole("button", { name: "Send with passkey" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("The passkey step did not finish");
+    expect(answerDecisionRequest).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("decision-request-kept-draft")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Send with passkey" }));
+    await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalledTimes(2));
+  });
+
+  it("shows a reload message on a stale revision and signs a fresh challenge on retry", async () => {
+    answerDecisionRequest.mockReset()
+      .mockRejectedValueOnce(gated())
+      .mockRejectedValueOnce(new ApiError("stale_answer: the request or workspace policy changed; reload the card", 409, "Conflict"))
+      .mockResolvedValue(undefined);
+    renderCard();
+    const user = userEvent.setup();
+    await pickAndSend(user);
+    await user.click(await screen.findByRole("button", { name: "Send with passkey" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("changed since you opened it");
+    expect(screen.queryByTestId("decision-request-kept-draft")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Send with passkey" }));
+    await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalledTimes(3));
+    expect(challengeDecisionAnswer).toHaveBeenCalledTimes(2);
+  });
+
+  it("hands off to the web page on desktop instead of running the ceremony", async () => {
+    ui.desktop = true;
+    renderCard();
+    const user = userEvent.setup();
+    await pickAndSend(user);
+    await user.click(await screen.findByRole("button", { name: "Open in browser" }));
+    expect(openExternal).toHaveBeenCalledWith("https://app.test/acme/issues/issue");
+    expect(challengeDecisionAnswer).not.toHaveBeenCalled();
+    expect(signPasskeyChallenge).not.toHaveBeenCalled();
   });
 });
