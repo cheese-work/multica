@@ -188,11 +188,11 @@ func TestTwoReposOnOneInstallationShareTheFloor(t *testing.T) {
 	e.seed(t, 1600, reset, t0)
 	ctx := context.Background()
 
-	repoA, err := e.led.Reserve(ctx, e.inst, 60) // 1600-60 = 1540 >= 1500
+	repoA, err := e.led.Reserve(ctx, e.inst, 60) // leaves 1540 remaining, at or above the 1500 floor
 	if err != nil {
 		t.Fatalf("repo A: %v", err)
 	}
-	// repo B, same installation: 1600-60-60 = 1480 < 1500.
+	// repo B, same installation: would leave 1480, below the 1500 floor.
 	_, err = e.led.Reserve(ctx, e.inst, 60)
 	d := deferred(t, err, ReasonBelowFloor)
 	if d.DueAt.Before(reset) || d.DueAt.After(reset.Add(MaxJitter)) {
