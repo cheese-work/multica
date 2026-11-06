@@ -21,7 +21,9 @@ test("install-trusted.sh installs a main-reachable revision and refuses any othe
   const origin = join(root, "origin.git");
   const work = join(root, "work");
   sh(root, "init", "-q", "--bare", "-b", "main", origin);
-  sh(root, "clone", "-q", origin, work);
+  mkdirSync(work);
+  sh(work, "init", "-q", "-b", "main");
+  sh(work, "remote", "add", "origin", origin);
   sh(work, "config", "user.email", "t@t");
   sh(work, "config", "user.name", "t");
   mkdirSync(join(work, "scripts/security-weekly"), { recursive: true });
