@@ -33,6 +33,7 @@ SET continued_from_session_id = $2,
         SELECT s.taint_verified OR (s.forked_from_session_id IS NULL AND s.continued_from_session_id IS NULL)
         FROM chat_session s WHERE s.id = $2
     ), false),
+    chain_root_session_id = COALESCE((SELECT p.chain_root_session_id FROM chat_session p WHERE p.id = $2), chat_session.chain_root_session_id),
     last_read_at = sqlc.arg('summary_created_at')::timestamptz - interval '1 microsecond',
     pinned_at = sqlc.narg('pinned_at')
 WHERE chat_session.id = $1
@@ -854,7 +855,7 @@ WHERE id = $1;
 INSERT INTO chat_message (
     chat_session_id, role, content, task_id, failure_reason, elapsed_ms,
     message_kind, quick_actions, channel_media_pending_until, channel_ingested,
-    channel_context_revision, id, sent_via, decision_answer_id, created_at
+    channel_context_revision, id, sent_via, decision_answer_id, client_message_id, created_at
 )
 VALUES (
     $1, $2, $3, sqlc.narg(task_id), sqlc.narg(failure_reason), sqlc.narg(elapsed_ms),
@@ -874,6 +875,7 @@ VALUES (
     CASE WHEN COALESCE(sqlc.narg(channel_ingested)::boolean, FALSE) THEN 'channel'
          ELSE COALESCE(NULLIF(sqlc.narg(sent_via)::text, ''), 'system') END,
     sqlc.narg(decision_answer_id),
+    sqlc.narg(client_message_id),
     GREATEST(now(), COALESCE((SELECT cs.segment_floor_at + interval '1 microsecond' FROM chat_session cs WHERE cs.id = $1), now()))
 )
 RETURNING *;
@@ -1589,6 +1591,11 @@ WHERE message.chat_session_id = $1
   AND (message.created_at, message.id) >= (sqlc.arg('after_created_at')::timestamptz, sqlc.arg('after_id')::uuid)
 ORDER BY message.created_at ASC, message.id ASC
 LIMIT $2;
+
+-- name: GetChatMessageByClientID :one
+-- Replay lookup for an idempotent send (CHE-4146); served by chat_message_client_message_id_idx.
+SELECT * FROM chat_message
+WHERE chat_session_id = $1 AND client_message_id = $2;
 
 -- name: GetChatMessage :one
 SELECT * FROM chat_message
