@@ -11,6 +11,129 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const clearChatAttentionWaitingForTasks = `-- name: ClearChatAttentionWaitingForTasks :exec
+UPDATE chat_attention_item
+SET waiting_message_id = NULL, waiting_task_id = NULL
+WHERE waiting_task_id = ANY($1::uuid[])
+`
+
+// T10: whichever way a task ends, the asks that waited on it go back to Cheese.
+func (q *Queries) ClearChatAttentionWaitingForTasks(ctx context.Context, taskIds []pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, clearChatAttentionWaitingForTasks, taskIds)
+	return err
+}
+
+const continueChatAttentionAsks = `-- name: ContinueChatAttentionAsks :exec
+UPDATE chat_attention_item i
+SET last_outcome_task_id = $1,
+    waiting_message_id = CASE WHEN i.waiting_task_id IS NULL OR i.waiting_task_id = $1 THEN NULL ELSE i.waiting_message_id END,
+    waiting_task_id = CASE WHEN i.waiting_task_id IS NULL OR i.waiting_task_id = $1 THEN NULL ELSE i.waiting_task_id END
+WHERE i.id = ANY($2::uuid[]) AND i.kind = 'ask' AND i.resolved_at IS NULL
+  AND (i.last_outcome_task_id IS NULL OR (
+        SELECT (o.created_at, o.id) FROM agent_task_queue o WHERE o.id = i.last_outcome_task_id
+      ) < (SELECT (n.created_at, n.id) FROM agent_task_queue n WHERE n.id = $1))
+`
+
+type ContinueChatAttentionAsksParams struct {
+	TaskID pgtype.UUID   `json:"task_id"`
+	Ids    []pgtype.UUID `json:"ids"`
+}
+
+// T6 continue: the ask returns to Cheese with its original opened_at. Waiting is cleared unless a
+// later task is the one it waits on. The watermark makes an older task or a repeat a no-op (T11);
+// tasks are ordered by (created_at, id).
+func (q *Queries) ContinueChatAttentionAsks(ctx context.Context, arg ContinueChatAttentionAsksParams) error {
+	_, err := q.db.Exec(ctx, continueChatAttentionAsks, arg.TaskID, arg.Ids)
+	return err
+}
+
+const createChatAttentionAsk = `-- name: CreateChatAttentionAsk :one
+INSERT INTO chat_attention_item (workspace_id, chain_root_session_id, chat_session_id, user_id, agent_id, kind, source_task_id, last_outcome_task_id)
+VALUES ($1, $2, $3, $4, $5, 'ask', $6, $6)
+RETURNING id
+`
+
+type CreateChatAttentionAskParams struct {
+	WorkspaceID        pgtype.UUID `json:"workspace_id"`
+	ChainRootSessionID pgtype.UUID `json:"chain_root_session_id"`
+	ChatSessionID      pgtype.UUID `json:"chat_session_id"`
+	UserID             pgtype.UUID `json:"user_id"`
+	AgentID            pgtype.UUID `json:"agent_id"`
+	SourceTaskID       pgtype.UUID `json:"source_task_id"`
+}
+
+// T6 new: opened_at is the default clock_timestamp().
+func (q *Queries) CreateChatAttentionAsk(ctx context.Context, arg CreateChatAttentionAskParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, createChatAttentionAsk,
+		arg.WorkspaceID,
+		arg.ChainRootSessionID,
+		arg.ChatSessionID,
+		arg.UserID,
+		arg.AgentID,
+		arg.SourceTaskID,
+	)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const getChatAttentionAskOpenedByTask = `-- name: GetChatAttentionAskOpenedByTask :one
+SELECT id FROM chat_attention_item WHERE source_task_id = $1 AND kind = 'ask'
+`
+
+func (q *Queries) GetChatAttentionAskOpenedByTask(ctx context.Context, sourceTaskID pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getChatAttentionAskOpenedByTask, sourceTaskID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const listChatAttentionAsksOfAgent = `-- name: ListChatAttentionAsksOfAgent :many
+
+SELECT id, (resolved_at IS NULL)::boolean AS open FROM chat_attention_item
+WHERE id = ANY($1::uuid[]) AND chain_root_session_id = $2 AND user_id = $3
+  AND agent_id = $4 AND kind = 'ask'
+`
+
+type ListChatAttentionAsksOfAgentParams struct {
+	Ids                []pgtype.UUID `json:"ids"`
+	ChainRootSessionID pgtype.UUID   `json:"chain_root_session_id"`
+	UserID             pgtype.UUID   `json:"user_id"`
+	AgentID            pgtype.UUID   `json:"agent_id"`
+}
+
+type ListChatAttentionAsksOfAgentRow struct {
+	ID   pgtype.UUID `json:"id"`
+	Open bool        `json:"open"`
+}
+
+// Agent outcomes and task end (CHE-4149). All run in one transaction per call.
+// The agent's asks among ids (any state) in this chain for this user; outcomes may name only these.
+func (q *Queries) ListChatAttentionAsksOfAgent(ctx context.Context, arg ListChatAttentionAsksOfAgentParams) ([]ListChatAttentionAsksOfAgentRow, error) {
+	rows, err := q.db.Query(ctx, listChatAttentionAsksOfAgent,
+		arg.Ids,
+		arg.ChainRootSessionID,
+		arg.UserID,
+		arg.AgentID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListChatAttentionAsksOfAgentRow{}
+	for rows.Next() {
+		var i ListChatAttentionAsksOfAgentRow
+		if err := rows.Scan(&i.ID, &i.Open); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listChatAttentionChains = `-- name: ListChatAttentionChains :many
 
 SELECT id AS canonical_id, chain_root_session_id AS root_id, (status = 'archived')::boolean AS archived
@@ -150,17 +273,20 @@ func (q *Queries) ListChatAttentionItems(ctx context.Context, arg ListChatAttent
 }
 
 const listChatAttentionLatestTurns = `-- name: ListChatAttentionLatestTurns :many
-SELECT DISTINCT ON (s.chain_root_session_id) s.chain_root_session_id, t.id AS task_id
-FROM agent_task_queue t
-JOIN chat_session s ON s.id = t.chat_session_id
-WHERE s.workspace_id = $1 AND s.creator_id = $2 AND t.status = 'completed'
-  AND s.chain_root_session_id IS NOT NULL
-ORDER BY s.chain_root_session_id, t.created_at DESC, t.id DESC
+SELECT chain_root_session_id, task_id FROM (
+  SELECT DISTINCT ON (o.chain_root_session_id) o.chain_root_session_id, o.task_id, o.kind
+  FROM chat_turn_outcome o
+  JOIN agent_task_queue t ON t.id = o.task_id
+  JOIN chat_session s ON s.id = o.chat_session_id
+  WHERE s.workspace_id = $1 AND o.user_id = $2
+  ORDER BY o.chain_root_session_id, t.created_at DESC, t.id DESC
+) latest
+WHERE kind = 'unclassified'
 `
 
 type ListChatAttentionLatestTurnsParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	CreatorID   pgtype.UUID `json:"creator_id"`
+	UserID      pgtype.UUID `json:"user_id"`
 }
 
 type ListChatAttentionLatestTurnsRow struct {
@@ -168,9 +294,9 @@ type ListChatAttentionLatestTurnsRow struct {
 	TaskID             pgtype.UUID `json:"task_id"`
 }
 
-// C2: the latest finished chat task of each chain. Untyped until L5 records outcomes.
+// C2: the unclassified turn of each chain, if its latest recorded turn ended with no outcome (CHE-4149).
 func (q *Queries) ListChatAttentionLatestTurns(ctx context.Context, arg ListChatAttentionLatestTurnsParams) ([]ListChatAttentionLatestTurnsRow, error) {
-	rows, err := q.db.Query(ctx, listChatAttentionLatestTurns, arg.WorkspaceID, arg.CreatorID)
+	rows, err := q.db.Query(ctx, listChatAttentionLatestTurns, arg.WorkspaceID, arg.UserID)
 	if err != nil {
 		return nil, err
 	}
@@ -282,6 +408,104 @@ func (q *Queries) ListOpenChatAttentionAsksByID(ctx context.Context, arg ListOpe
 		return nil, err
 	}
 	return items, nil
+}
+
+const listOpenChatAttentionAsksOfAgent = `-- name: ListOpenChatAttentionAsksOfAgent :many
+SELECT id FROM chat_attention_item
+WHERE chain_root_session_id = $1 AND user_id = $2 AND agent_id = $3
+  AND kind = 'ask' AND resolved_at IS NULL
+ORDER BY opened_at, id
+`
+
+type ListOpenChatAttentionAsksOfAgentParams struct {
+	ChainRootSessionID pgtype.UUID `json:"chain_root_session_id"`
+	UserID             pgtype.UUID `json:"user_id"`
+	AgentID            pgtype.UUID `json:"agent_id"`
+}
+
+func (q *Queries) ListOpenChatAttentionAsksOfAgent(ctx context.Context, arg ListOpenChatAttentionAsksOfAgentParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listOpenChatAttentionAsksOfAgent, arg.ChainRootSessionID, arg.UserID, arg.AgentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const recordChatTurnOutcome = `-- name: RecordChatTurnOutcome :exec
+INSERT INTO chat_turn_outcome (task_id, workspace_id, chat_session_id, chain_root_session_id, user_id, kind)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (task_id) DO NOTHING
+`
+
+type RecordChatTurnOutcomeParams struct {
+	TaskID             pgtype.UUID `json:"task_id"`
+	WorkspaceID        pgtype.UUID `json:"workspace_id"`
+	ChatSessionID      pgtype.UUID `json:"chat_session_id"`
+	ChainRootSessionID pgtype.UUID `json:"chain_root_session_id"`
+	UserID             pgtype.UUID `json:"user_id"`
+	Kind               string      `json:"kind"`
+}
+
+// One row per task; the first outcome wins.
+func (q *Queries) RecordChatTurnOutcome(ctx context.Context, arg RecordChatTurnOutcomeParams) error {
+	_, err := q.db.Exec(ctx, recordChatTurnOutcome,
+		arg.TaskID,
+		arg.WorkspaceID,
+		arg.ChatSessionID,
+		arg.ChainRootSessionID,
+		arg.UserID,
+		arg.Kind,
+	)
+	return err
+}
+
+const recordUnclassifiedChatTurns = `-- name: RecordUnclassifiedChatTurns :exec
+INSERT INTO chat_turn_outcome (task_id, workspace_id, chat_session_id, chain_root_session_id, user_id, kind)
+SELECT t.id, s.workspace_id, s.id, s.chain_root_session_id, s.creator_id, 'unclassified'
+FROM agent_task_queue t
+JOIN chat_session s ON s.id = t.chat_session_id
+WHERE t.id = ANY($1::uuid[]) AND t.status = 'completed' AND t.task_kind IS DISTINCT FROM 'compact'
+  AND s.chain_root_session_id IS NOT NULL
+ON CONFLICT (task_id) DO NOTHING
+`
+
+// T9: a completed chat task that reported no outcome is an unclassified turn. Compaction tasks are not turns.
+func (q *Queries) RecordUnclassifiedChatTurns(ctx context.Context, taskIds []pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, recordUnclassifiedChatTurns, taskIds)
+	return err
+}
+
+const resolveChatAttentionAsksDone = `-- name: ResolveChatAttentionAsksDone :exec
+UPDATE chat_attention_item i
+SET resolved_at = clock_timestamp(), resolved_by = 'agent_done', last_outcome_task_id = $1,
+    waiting_message_id = NULL, waiting_task_id = NULL
+WHERE i.id = ANY($2::uuid[]) AND i.kind = 'ask' AND i.resolved_at IS NULL
+  AND (i.last_outcome_task_id IS NULL OR (
+        SELECT (o.created_at, o.id) FROM agent_task_queue o WHERE o.id = i.last_outcome_task_id
+      ) < (SELECT (n.created_at, n.id) FROM agent_task_queue n WHERE n.id = $1))
+`
+
+type ResolveChatAttentionAsksDoneParams struct {
+	TaskID pgtype.UUID   `json:"task_id"`
+	Ids    []pgtype.UUID `json:"ids"`
+}
+
+// T7: only the named asks, under the same watermark.
+func (q *Queries) ResolveChatAttentionAsksDone(ctx context.Context, arg ResolveChatAttentionAsksDoneParams) error {
+	_, err := q.db.Exec(ctx, resolveChatAttentionAsksDone, arg.TaskID, arg.Ids)
+	return err
 }
 
 const resolveChatAttentionOnHumanSend = `-- name: ResolveChatAttentionOnHumanSend :exec

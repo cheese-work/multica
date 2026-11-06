@@ -709,6 +709,16 @@ type ChatTaskSupplement struct {
 	DeliveredAt        pgtype.Timestamptz `json:"delivered_at"`
 }
 
+type ChatTurnOutcome struct {
+	TaskID             pgtype.UUID        `json:"task_id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	ChatSessionID      pgtype.UUID        `json:"chat_session_id"`
+	ChainRootSessionID pgtype.UUID        `json:"chain_root_session_id"`
+	UserID             pgtype.UUID        `json:"user_id"`
+	Kind               string             `json:"kind"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+}
+
 type ChatWakeup struct {
 	ID              pgtype.UUID        `json:"id"`
 	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
