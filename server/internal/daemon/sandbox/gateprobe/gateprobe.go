@@ -337,7 +337,9 @@ func probeConnect(authority string, sni []string) error {
 	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
 	fmt.Fprintf(c, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", authority, authority)
 	br := bufio.NewReader(c)
-	resp, err := http.ReadResponse(br, nil)
+	// Body stays unread and unclosed: after a 200 it is the live tunnel, and
+	// closing it would block on the socket. The deferred c.Close() ends it.
+	resp, err := http.ReadResponse(br, nil) //nolint:bodyclose // see above
 	if err != nil {
 		return fmt.Errorf("proxy answer: %w", err)
 	}
@@ -374,7 +376,7 @@ func probeAbsolute(target string) error {
 		return err
 	}
 	fmt.Fprintf(c, "GET %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, u.Host)
-	resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+	resp, err := http.ReadResponse(bufio.NewReader(c), nil) //nolint:bodyclose // only the status line is used; the deferred c.Close() ends the socket
 	if err != nil {
 		return fmt.Errorf("proxy answer: %w", err)
 	}
