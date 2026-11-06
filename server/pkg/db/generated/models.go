@@ -243,6 +243,7 @@ type AgentTaskQueue struct {
 	AppliedContextArgs        []byte             `json:"applied_context_args"`
 	AppliedReportedAt         pgtype.Timestamptz `json:"applied_reported_at"`
 	ExternalRead              bool               `json:"external_read"`
+	Purpose                   pgtype.Text        `json:"purpose"`
 }
 
 type AgentToLabel struct {
@@ -582,6 +583,36 @@ type ChannelUserBinding struct {
 	BoundAt        pgtype.Timestamptz `json:"bound_at"`
 }
 
+type ChatAttentionItem struct {
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	ChainRootSessionID pgtype.UUID        `json:"chain_root_session_id"`
+	ChatSessionID      pgtype.UUID        `json:"chat_session_id"`
+	UserID             pgtype.UUID        `json:"user_id"`
+	AgentID            pgtype.UUID        `json:"agent_id"`
+	Kind               string             `json:"kind"`
+	OpenedAt           pgtype.Timestamptz `json:"opened_at"`
+	DueAt              pgtype.Timestamptz `json:"due_at"`
+	SourceTaskID       pgtype.UUID        `json:"source_task_id"`
+	SourceMessageID    pgtype.UUID        `json:"source_message_id"`
+	LastOutcomeTaskID  pgtype.UUID        `json:"last_outcome_task_id"`
+	WaitingMessageID   pgtype.UUID        `json:"waiting_message_id"`
+	WaitingTaskID      pgtype.UUID        `json:"waiting_task_id"`
+	ResolvedAt         pgtype.Timestamptz `json:"resolved_at"`
+	ResolvedBy         pgtype.Text        `json:"resolved_by"`
+	ResolveBatchID     pgtype.UUID        `json:"resolve_batch_id"`
+}
+
+type ChatAttentionMark struct {
+	UserID             pgtype.UUID        `json:"user_id"`
+	SubjectKey         string             `json:"subject_key"`
+	ChainRootSessionID pgtype.UUID        `json:"chain_root_session_id"`
+	SnoozedUntil       pgtype.Timestamptz `json:"snoozed_until"`
+	AckedAt            pgtype.Timestamptz `json:"acked_at"`
+	AckBatchID         pgtype.UUID        `json:"ack_batch_id"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+}
+
 type ChatDraftRestore struct {
 	ID            pgtype.UUID        `json:"id"`
 	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
@@ -614,6 +645,7 @@ type ChatMessage struct {
 	DecisionAnswerID              pgtype.UUID        `json:"decision_answer_id"`
 	LineageMessageIds             []pgtype.UUID      `json:"lineage_message_ids"`
 	DecisionRequestIds            []pgtype.UUID      `json:"decision_request_ids"`
+	ClientMessageID               pgtype.Text        `json:"client_message_id"`
 }
 
 type ChatPinnedAgent struct {
@@ -655,6 +687,7 @@ type ChatSession struct {
 	CompactionEpoch        int64              `json:"compaction_epoch"`
 	PresetName             pgtype.Text        `json:"preset_name"`
 	DecisionTopicID        pgtype.UUID        `json:"decision_topic_id"`
+	ChainRootSessionID     pgtype.UUID        `json:"chain_root_session_id"`
 	TaintIds               []string           `json:"taint_ids"`
 	TaintVerified          bool               `json:"taint_verified"`
 }
@@ -1821,6 +1854,19 @@ type GovernanceWorkspaceConfigAudit struct {
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 }
 
+type GovernedPassReceipt struct {
+	CommentID    pgtype.UUID        `json:"comment_id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	IssueID      pgtype.UUID        `json:"issue_id"`
+	ReviewerID   pgtype.UUID        `json:"reviewer_id"`
+	WriterID     pgtype.UUID        `json:"writer_id"`
+	Field        string             `json:"field"`
+	TargetID     pgtype.UUID        `json:"target_id"`
+	BeforeSha256 string             `json:"before_sha256"`
+	AfterSha256  string             `json:"after_sha256"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
 type GovernedVoteRecord struct {
 	IssueID            pgtype.UUID        `json:"issue_id"`
 	CommentID          pgtype.UUID        `json:"comment_id"`
@@ -2839,6 +2885,26 @@ type RunBudgetNotice struct {
 	Kind        string             `json:"kind"`
 	CommentID   pgtype.UUID        `json:"comment_id"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type RunBudgetRefusal struct {
+	ID                   pgtype.UUID        `json:"id"`
+	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
+	IssueID              pgtype.UUID        `json:"issue_id"`
+	WindowID             string             `json:"window_id"`
+	Status               pgtype.Text        `json:"status"`
+	OccurrenceActivityID pgtype.UUID        `json:"occurrence_activity_id"`
+	Blocked              bool               `json:"blocked"`
+	AgentID              pgtype.UUID        `json:"agent_id"`
+	Trigger              string             `json:"trigger"`
+	State                string             `json:"state"`
+	StateReason          pgtype.Text        `json:"state_reason"`
+	HookPhase            string             `json:"hook_phase"`
+	HookReason           pgtype.Text        `json:"hook_reason"`
+	ActionID             pgtype.UUID        `json:"action_id"`
+	ResumeWindowID       pgtype.Text        `json:"resume_window_id"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
 }
 
 type RunCapabilityGrant struct {

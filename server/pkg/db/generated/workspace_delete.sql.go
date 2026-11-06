@@ -226,6 +226,15 @@ func (q *Queries) DeleteWorkspaceComments(ctx context.Context, workspaceID pgtyp
 
 const deleteWorkspaceCommunicationRoots = `-- name: DeleteWorkspaceCommunicationRoots :exec
 WITH
+deleted_attention_items AS (
+    DELETE FROM chat_attention_item WHERE workspace_id = $1
+),
+deleted_attention_marks AS (
+    DELETE FROM chat_attention_mark
+    WHERE chain_root_session_id IN (
+        SELECT id FROM chat_session WHERE chat_session.workspace_id = $1
+    )
+),
 deleted_sessions AS (
     DELETE FROM chat_session WHERE chat_session.workspace_id = $1
 ),
@@ -242,6 +251,8 @@ deleted_channel_installations AS (
 DELETE FROM lark_installation WHERE lark_installation.workspace_id = $1
 `
 
+// No foreign keys on the attention tables. Items carry workspace_id; marks have none, so
+// their chain root is one of this workspace's sessions.
 func (q *Queries) DeleteWorkspaceCommunicationRoots(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteWorkspaceCommunicationRoots, workspaceID)
 	return err
@@ -449,6 +460,9 @@ deleted_recovery_claims AS (
 deleted_run_budget_notices AS (
     DELETE FROM run_budget_notice WHERE workspace_id = $1
 ),
+deleted_run_budget_refusals AS (
+    DELETE FROM run_budget_refusal WHERE workspace_id = $1
+),
 deleted_issue_run_budget_entries AS (
     DELETE FROM issue_run_budget_entry WHERE workspace_id = $1
 ),
@@ -478,6 +492,9 @@ deleted_issue_checkpoints AS (
 ),
 deleted_governed_vote_records AS (
     DELETE FROM governed_vote_record WHERE workspace_id = $1
+),
+deleted_governed_pass_receipts AS (
+    DELETE FROM governed_pass_receipt WHERE workspace_id = $1
 ),
 deleted_run_gate_events AS (
     DELETE FROM run_gate_event WHERE workspace_id = $1
@@ -748,6 +765,7 @@ WHERE channel_media_pending_object.workspace_id = $1
 // CHE-1126 gateway-recovery claim ledger: workspace-owned leaf; the FK cascades
 // too, the explicit delete keeps teardown independent of FK ordering.
 // CHE-2297 run-budget notice claims: workspace-owned leaf, no FK.
+// CHE-2798 run-budget refusals: workspace-owned leaf, no FK.
 // CHE-2297 L2a run-budget ledger: workspace-owned leaf, no FK.
 // CHE-2489 run capability grants: workspace-owned leaf, no FK.
 // CHE-2509 elevated-read snapshot approvals: workspace-owned leaf, no FK.
@@ -755,6 +773,7 @@ WHERE channel_media_pending_object.workspace_id = $1
 // CHE-2510 elevation state and authorized operations: workspace-owned leaves, no FK.
 // CHE-2514 issue taint and its clear audit: workspace-owned leaves, no FK.
 // CHE-1862 vote-gate ledger: workspace-owned, a leaf with no dependents.
+// CHE-3490 single-use PASS receipts: workspace-owned leaf, no dependents.
 // CHE-1918 run-gate shadow ledger: workspace-owned, a leaf with no dependents
 // and no FK. Outlives issues and receipts; goes with the workspace.
 // CHE-2147 webhook-fed GitHub Actions run/job mirror: workspace-owned leaves
