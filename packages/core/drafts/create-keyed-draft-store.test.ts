@@ -177,8 +177,11 @@ describe("createKeyedDraftStore", () => {
     useStore.getState().setDraft("issue-3", { text: "A again" });
     await flush();
 
-    const persisted = (slug: string) =>
-      Object.keys(JSON.parse(storage.values.get(`k_ws_race:${slug}`)!).state.drafts).sort();
+    // The stored key carries the session token after a logout elsewhere in this file.
+    const persisted = (slug: string) => {
+      const key = [...storage.values.keys()].find((k) => k === `k_ws_race:${slug}` || k.startsWith(`k_ws_race:${slug}#`))!;
+      return Object.keys(JSON.parse(storage.values.get(key)!).state.drafts).sort();
+    };
     expect(persisted("ws-a")).toEqual(["issue-1", "issue-3"]);
     expect(persisted("ws-b")).toEqual(["issue-2"]);
     expect(Object.keys(useStore.getState().drafts).sort()).toEqual(["issue-1", "issue-3"]);

@@ -257,10 +257,13 @@ describe("usePersistedDraft", () => {
         expect(persisted).not.toContain("private");
       });
 
-      it("a write that lands after another tab's logout cleared storage is not read by the next user", async () => {
+      // A write decided under the old session lands after the other tab's whole logout. The next user
+      // signs in on the same profile and may already have saved a draft under the same key.
+      const lateLandingSetup = async () => {
         const values = new Map<string, string>();
         const tabB = await loadTabB("h_land");
         let armed = false;
+        let newUserWrites: (() => void) | undefined;
         const make = (storage: ReturnType<typeof adapterOf>) =>
           createKeyedDraftStore<Sample>({
             storageKey: "h_land",
@@ -269,22 +272,46 @@ describe("usePersistedDraft", () => {
             storage,
           });
         const store = make({
-            ...adapterOf(values),
-            // The write was decided under the old session, then the other tab's whole logout ran, then it lands.
-            setItem: (k, v) => {
-              if (armed) {
-                armed = false;
-                logoutIn(tabB, values);
-              }
-              values.set(k, v);
-            },
-          });
+          ...adapterOf(values),
+          setItem: (k, v) => {
+            if (armed) {
+              armed = false;
+              logoutIn(tabB, values);
+              newUserWrites?.();
+            }
+            values.set(k, v);
+          },
+        });
         setCurrentWorkspace("ws-a", "id-a");
         await act(async () => { await new Promise((r) => queueMicrotask(() => r(null))); });
-        armed = true;
-        store.getState().setDraft("create", { text: "user one note" });
+        const lateWrite = (onLogout?: () => void) => {
+          newUserWrites = onLogout;
+          armed = true;
+          store.getState().setDraft("create", { text: "user one note" });
+        };
+        const rawStorage = () => JSON.stringify([...values.entries()].filter(([k]) => k.startsWith("h_land")));
+        const storageEvent = () => window.dispatchEvent(new Event("storage")); // another tab wrote a key
+        return { make, lateWrite, rawStorage, storageEvent, values };
+      };
+
+      it("a write that lands after another tab's logout cleared storage is not read, and is swept from storage", async () => {
+        const { make, lateWrite, rawStorage, storageEvent, values } = await lateLandingSetup();
+        lateWrite();
         // the next user signs in on the same profile: a page load reads storage
         expect(make(adapterOf(values)).getState().getDraft("create")).toBeUndefined();
+        storageEvent();
+        expect(rawStorage()).not.toContain("user one note");
+      });
+
+      it("a write that lands after another tab's logout does not replace the next user's draft", async () => {
+        const { make, lateWrite, rawStorage, storageEvent, values } = await lateLandingSetup();
+        lateWrite(() => {
+          const next = make(adapterOf(values));
+          next.getState().setDraft("create", { text: "user two note" });
+        });
+        storageEvent();
+        expect(make(adapterOf(values)).getState().getDraft("create")).toEqual({ text: "user two note" });
+        expect(rawStorage()).not.toContain("user one note");
       });
 
       it("another tab logged out: a pending flush from this tab is dropped, even after a re-render", async () => {

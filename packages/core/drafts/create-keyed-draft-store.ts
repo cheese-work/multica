@@ -7,7 +7,14 @@ import {
 } from "../platform/workspace-storage";
 import { defaultStorage } from "../platform/storage";
 import type { StorageAdapter } from "../types/storage";
-import { draftSessionToken, NO_DRAFT_SESSION, registerDraftCleanup, type DraftOrigin } from "./cleanup-registry";
+import {
+  draftSessionToken,
+  NO_DRAFT_SESSION,
+  registerDraftCleanup,
+  sessionKeySuffix,
+  sweepDeadDrafts,
+  type DraftOrigin,
+} from "./cleanup-registry";
 
 /**
  * Keyed sibling of {@link createDraftStore}: one persisted store holding many
@@ -100,21 +107,16 @@ export function createKeyedDraftStore<TData extends object>(
   // Read-modify-write one other workspace's persisted namespace directly. The
   // in-memory map belongs to the current workspace and is left alone.
   const updateOtherWorkspace = (slug: string, update: (d: Drafts) => Drafts) => {
-    const name = `${config.storageKey}:${slug}`;
-    let persisted: { state?: { drafts?: Drafts; session?: string }; version?: number } | null = null;
+    const name = `${config.storageKey}:${slug}${sessionKeySuffix(draftSessionToken(slug))}`;
+    let persisted: { state?: { drafts?: Drafts }; version?: number } | null = null;
     try {
       const raw = backing.getItem(name);
       persisted = raw ? JSON.parse(raw) : null;
     } catch {
       persisted = null; // unreadable entry: start that namespace over
     }
-    const session = draftSessionToken(slug);
-    const mine = (persisted?.state?.session ?? NO_DRAFT_SESSION) === session;
-    const drafts = update(prune(mine ? persisted?.state?.drafts : undefined));
-    backing.setItem(
-      name,
-      JSON.stringify({ state: { drafts, session }, version: persisted?.version ?? 0 }),
-    );
+    const drafts = update(prune(persisted?.state?.drafts));
+    backing.setItem(name, JSON.stringify({ state: { drafts }, version: persisted?.version ?? 0 }));
   };
   const inOtherWorkspace = (slug: string | null) =>
     workspaceScoped && slug !== getCurrentSlug();
@@ -127,15 +129,25 @@ export function createKeyedDraftStore<TData extends object>(
   //
   // The same holds when another tab logged out or deleted this workspace: the
   // session token moved since the map was loaded, so the map is the old
-  // session's. Reads treat it as empty and the next write reloads from storage
-  // first. Every payload is stamped with the token its map was loaded under
-  // and a load accepts only the current token, so old drafts are unreadable
-  // whatever order another tab ends the session and clears storage in.
+  // session's. Reads treat it as empty and the next write reloads first.
+  //
+  // Storage keys carry the session token (`<name>#<token>`). A load reads only
+  // the current token's key. A write re-checks staleness in the same tick as
+  // its `setItem` and is skipped when stale, so a late write cannot restore
+  // old data or replace the new session's key. A write that still races
+  // across processes lands under a dead key, which `sweepDeadDrafts` removes.
   let loadedSlug: string | null = null;
   let loadedToken = NO_DRAFT_SESSION;
+  const tokenNow = () => draftSessionToken(workspaceScoped ? loadedSlug : null);
   const isStale = () =>
-    (workspaceScoped && getCurrentSlug() !== loadedSlug) ||
-    draftSessionToken(loadedSlug) !== loadedToken;
+    (workspaceScoped && getCurrentSlug() !== loadedSlug) || tokenNow() !== loadedToken;
+  const sessioned: StorageAdapter = {
+    getItem: (name) => backing.getItem(name + sessionKeySuffix(draftSessionToken(workspaceScoped ? getCurrentSlug() : null))),
+    setItem: (name, value) => {
+      if (!isStale()) backing.setItem(name + sessionKeySuffix(loadedToken), value);
+    },
+    removeItem: (name) => backing.removeItem(name + sessionKeySuffix(loadedToken)),
+  };
   const syncToWorkspace = () => {
     if (isStale()) useStore.persist.rehydrate();
   };
@@ -174,17 +186,14 @@ export function createKeyedDraftStore<TData extends object>(
       {
         name: config.storageKey,
         storage: createJSONStorage(() =>
-          workspaceScoped ? createWorkspaceAwareStorage(backing) : backing,
+          workspaceScoped ? createWorkspaceAwareStorage(sessioned) : sessioned,
         ),
-        partialize: (s) => ({ drafts: s.drafts, session: loadedToken }) as unknown as KeyedDraftStore<TData>,
         // An empty namespace must mean an empty draft set — zustand's default
         // merge would keep the previous workspace's drafts.
         merge: (persisted, current) => {
           loadedSlug = getCurrentSlug();
-          loadedToken = draftSessionToken(loadedSlug);
-          const stored = persisted as { drafts?: Drafts; session?: string } | undefined;
-          const mine = (stored?.session ?? NO_DRAFT_SESSION) === loadedToken;
-          return { ...current, drafts: prune(mine ? stored?.drafts : undefined) };
+          loadedToken = tokenNow();
+          return { ...current, drafts: prune((persisted as { drafts?: Drafts } | undefined)?.drafts) };
         },
       },
     ),
@@ -197,11 +206,13 @@ export function createKeyedDraftStore<TData extends object>(
   registerDraftCleanup({
     storageKey: config.storageKey,
     workspaceScoped,
+    sessioned: backing,
     resetInMemory: () => {
-      loadedToken = draftSessionToken(loadedSlug); // this tab's own logout: memory is empty, so it is current
+      loadedToken = tokenNow(); // this tab's own logout: memory is empty, so it is current
       useStore.setState({ drafts: {} });
     },
   });
+  sweepDeadDrafts();
 
   return useStore;
 }
