@@ -167,7 +167,7 @@ func seedSearchBenchShaped(t *testing.T, ctx context.Context, slug string, issue
 	}
 	defer conn.Release()
 	// Runs before Release, so a failed seed never returns a trigger-less conn to the pool.
-	defer conn.Exec(context.WithoutCancel(ctx), "RESET session_replication_role") //nolint:errcheck
+	defer conn.Exec(context.WithoutCancel(ctx), "RESET session_replication_role")
 	if _, err := conn.Exec(ctx, "SET session_replication_role = replica"); err != nil {
 		t.Fatal(err)
 	}
