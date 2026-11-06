@@ -193,11 +193,14 @@ func recordRunBudgetRaise(ctx context.Context, q *db.Queries, issue db.Issue, ev
 
 // debitRun charges the run just inserted to the open window.
 func debitRun(ctx context.Context, q *db.Queries, issueID, taskID pgtype.UUID) error {
-	issue, usage, _, err := openRunBudget(ctx, q, issueID, taskID)
+	issue, usage, balance, err := openRunBudget(ctx, q, issueID, taskID)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && usage == nil) {
 		return nil
 	}
 	if err != nil {
+		return err
+	}
+	if err := admitMeteredRun(ctx, q, issue.ID, taskID, balance); err != nil {
 		return err
 	}
 	windowID := runBudgetWindowID(usage.Since)

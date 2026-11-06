@@ -51,6 +51,21 @@ func (q *Queries) CountIssueRunsSinceExcept(ctx context.Context, arg CountIssueR
 	return column_1, err
 }
 
+const countRunsInFlightWithoutUsage = `-- name: CountRunsInFlightWithoutUsage :one
+SELECT COUNT(*)::bigint FROM agent_task_queue t
+WHERE t.status IN ('queued', 'dispatched', 'running')
+  AND t.id IS DISTINCT FROM $1::uuid
+  AND NOT EXISTS (SELECT 1 FROM task_usage u WHERE u.task_id = t.id)
+`
+
+// Runs that started and have reported no usage yet, except one.
+func (q *Queries) CountRunsInFlightWithoutUsage(ctx context.Context, exceptTaskID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countRunsInFlightWithoutUsage, exceptTaskID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const firstStatusInWindow = `-- name: FirstStatusInWindow :one
 SELECT COALESCE(details->>'from', '')::text FROM activity_log
 WHERE issue_id = $1::uuid AND action = 'status_changed' AND created_at >= $2::timestamptz
@@ -184,6 +199,33 @@ func (q *Queries) HasRunBudgetNotice(ctx context.Context, arg HasRunBudgetNotice
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const insertIssueAgentCreditEntry = `-- name: InsertIssueAgentCreditEntry :exec
+INSERT INTO issue_run_budget_entry (id, workspace_id, issue_id, window_id, kind, event_key, runs_delta, cap_delta, agent_delta)
+VALUES ($1, $2, $3, 'agent', 'agent', $4, 0, 0, $5)
+ON CONFLICT (issue_id, kind, event_key) DO NOTHING
+`
+
+type InsertIssueAgentCreditEntryParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	EventKey    string      `json:"event_key"`
+	AgentDelta  int32       `json:"agent_delta"`
+}
+
+// Runs of credit an agent granted to the issue (CHE-3251). Moves no balance:
+// the grant's own entry does. A replayed event is a no-op.
+func (q *Queries) InsertIssueAgentCreditEntry(ctx context.Context, arg InsertIssueAgentCreditEntryParams) error {
+	_, err := q.db.Exec(ctx, insertIssueAgentCreditEntry,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.EventKey,
+		arg.AgentDelta,
+	)
+	return err
 }
 
 const insertIssueRunBudgetEntry = `-- name: InsertIssueRunBudgetEntry :exec
@@ -375,6 +417,39 @@ func (q *Queries) RunBudgetBoundaryClock(ctx context.Context) (pgtype.Timestampt
 	return column_1, err
 }
 
+const sumAgentCreditOutstanding = `-- name: SumAgentCreditOutstanding :one
+SELECT COALESCE(SUM(GREATEST(LEAST(b.balance, c.credit), 0)), 0)::bigint
+FROM (
+  SELECT issue_id, SUM(agent_delta) AS credit FROM issue_run_budget_entry
+  WHERE agent_delta <> 0 GROUP BY issue_id
+) c
+CROSS JOIN LATERAL (
+  SELECT COALESCE(SUM(e.runs_delta), 0) AS balance FROM issue_run_budget_entry e WHERE e.issue_id = c.issue_id
+) b
+`
+
+// Runs of agent-granted credit not yet used, across the instance: per issue the
+// smaller of its balance and the credit agents gave it (runs use the allowance
+// first, the credit last).
+func (q *Queries) SumAgentCreditOutstanding(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, sumAgentCreditOutstanding)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const sumIssueAgentCredit = `-- name: SumIssueAgentCredit :one
+SELECT COALESCE(SUM(agent_delta), 0)::bigint FROM issue_run_budget_entry
+WHERE issue_id = $1::uuid AND agent_delta <> 0
+`
+
+func (q *Queries) SumIssueAgentCredit(ctx context.Context, issueID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, sumIssueAgentCredit, issueID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const sumIssueRunBudgetCap = `-- name: SumIssueRunBudgetCap :one
 SELECT COALESCE(SUM(cap_delta), 0)::bigint FROM issue_run_budget_entry
 WHERE issue_id = $1::uuid AND window_id = $2::text
@@ -460,4 +535,64 @@ func (q *Queries) SumIssueRunBudgetWindowAllowance(ctx context.Context, arg SumI
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const sumMeteredUsageBetween = `-- name: SumMeteredUsageBetween :many
+SELECT u.model, (u.cost_usd_ticks IS NOT NULL)::bool AS priced,
+  COALESCE(SUM(u.cost_usd_ticks), 0)::bigint AS ticks,
+  COALESCE(SUM(u.input_tokens), 0)::bigint AS input_tokens,
+  COALESCE(SUM(u.output_tokens), 0)::bigint AS output_tokens,
+  COALESCE(SUM(u.cache_read_tokens), 0)::bigint AS cache_read_tokens,
+  COALESCE(SUM(u.cache_write_tokens), 0)::bigint AS cache_write_tokens,
+  COUNT(DISTINCT u.task_id)::bigint AS tasks
+FROM task_usage u
+WHERE u.created_at >= $1::timestamptz AND u.created_at < $2::timestamptz
+GROUP BY u.model, (u.cost_usd_ticks IS NOT NULL)
+`
+
+type SumMeteredUsageBetweenParams struct {
+	Since pgtype.Timestamptz `json:"since"`
+	Until pgtype.Timestamptz `json:"until"`
+}
+
+type SumMeteredUsageBetweenRow struct {
+	Model            string `json:"model"`
+	Priced           bool   `json:"priced"`
+	Ticks            int64  `json:"ticks"`
+	InputTokens      int64  `json:"input_tokens"`
+	OutputTokens     int64  `json:"output_tokens"`
+	CacheReadTokens  int64  `json:"cache_read_tokens"`
+	CacheWriteTokens int64  `json:"cache_write_tokens"`
+	Tasks            int64  `json:"tasks"`
+}
+
+// Usage reported in a period, across the instance, by whether the provider
+// priced it: priced rows carry ticks, the rest are priced from the rate table.
+func (q *Queries) SumMeteredUsageBetween(ctx context.Context, arg SumMeteredUsageBetweenParams) ([]SumMeteredUsageBetweenRow, error) {
+	rows, err := q.db.Query(ctx, sumMeteredUsageBetween, arg.Since, arg.Until)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SumMeteredUsageBetweenRow{}
+	for rows.Next() {
+		var i SumMeteredUsageBetweenRow
+		if err := rows.Scan(
+			&i.Model,
+			&i.Priced,
+			&i.Ticks,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.CacheReadTokens,
+			&i.CacheWriteTokens,
+			&i.Tasks,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

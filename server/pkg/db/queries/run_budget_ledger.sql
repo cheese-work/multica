@@ -131,3 +131,48 @@ SELECT EXISTS (
 -- The time now, not the transaction's start: a window boundary taken after a
 -- wait for the boundary lock must sort after every boundary written during it.
 SELECT clock_timestamp()::timestamptz;
+
+-- name: InsertIssueAgentCreditEntry :exec
+-- Runs of credit an agent granted to the issue (CHE-3251). Moves no balance:
+-- the grant's own entry does. A replayed event is a no-op.
+INSERT INTO issue_run_budget_entry (id, workspace_id, issue_id, window_id, kind, event_key, runs_delta, cap_delta, agent_delta)
+VALUES (sqlc.arg('id'), sqlc.arg('workspace_id'), sqlc.arg('issue_id'), 'agent', 'agent', sqlc.arg('event_key'), 0, 0, sqlc.arg('agent_delta'))
+ON CONFLICT (issue_id, kind, event_key) DO NOTHING;
+
+-- name: SumIssueAgentCredit :one
+SELECT COALESCE(SUM(agent_delta), 0)::bigint FROM issue_run_budget_entry
+WHERE issue_id = sqlc.arg('issue_id')::uuid AND agent_delta <> 0;
+
+-- name: SumAgentCreditOutstanding :one
+-- Runs of agent-granted credit not yet used, across the instance: per issue the
+-- smaller of its balance and the credit agents gave it (runs use the allowance
+-- first, the credit last).
+SELECT COALESCE(SUM(GREATEST(LEAST(b.balance, c.credit), 0)), 0)::bigint
+FROM (
+  SELECT issue_id, SUM(agent_delta) AS credit FROM issue_run_budget_entry
+  WHERE agent_delta <> 0 GROUP BY issue_id
+) c
+CROSS JOIN LATERAL (
+  SELECT COALESCE(SUM(e.runs_delta), 0) AS balance FROM issue_run_budget_entry e WHERE e.issue_id = c.issue_id
+) b;
+
+-- name: SumMeteredUsageBetween :many
+-- Usage reported in a period, across the instance, by whether the provider
+-- priced it: priced rows carry ticks, the rest are priced from the rate table.
+SELECT u.model, (u.cost_usd_ticks IS NOT NULL)::bool AS priced,
+  COALESCE(SUM(u.cost_usd_ticks), 0)::bigint AS ticks,
+  COALESCE(SUM(u.input_tokens), 0)::bigint AS input_tokens,
+  COALESCE(SUM(u.output_tokens), 0)::bigint AS output_tokens,
+  COALESCE(SUM(u.cache_read_tokens), 0)::bigint AS cache_read_tokens,
+  COALESCE(SUM(u.cache_write_tokens), 0)::bigint AS cache_write_tokens,
+  COUNT(DISTINCT u.task_id)::bigint AS tasks
+FROM task_usage u
+WHERE u.created_at >= sqlc.arg('since')::timestamptz AND u.created_at < sqlc.arg('until')::timestamptz
+GROUP BY u.model, (u.cost_usd_ticks IS NOT NULL);
+
+-- name: CountRunsInFlightWithoutUsage :one
+-- Runs that started and have reported no usage yet, except one.
+SELECT COUNT(*)::bigint FROM agent_task_queue t
+WHERE t.status IN ('queued', 'dispatched', 'running')
+  AND t.id IS DISTINCT FROM sqlc.narg('except_task_id')::uuid
+  AND NOT EXISTS (SELECT 1 FROM task_usage u WHERE u.task_id = t.id);

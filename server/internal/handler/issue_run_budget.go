@@ -157,6 +157,12 @@ func (h *Handler) RaiseIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to record the run budget raise")
 		return
 	}
+	if actorType == "agent" {
+		if err := service.RecordAgentRunCredit(r.Context(), qtx, issue, activity.ID, int(raised.Int32)-current); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to record the run budget raise")
+			return
+		}
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to raise the run budget")
 		return
@@ -237,17 +243,24 @@ func (h *Handler) TopUpIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to top up the run budget")
 		return
 	}
-	if _, err := qtx.CreateActivity(r.Context(), db.CreateActivityParams{
+	activity, err := qtx.CreateActivity(r.Context(), db.CreateActivityParams{
 		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, ActorType: pgtype.Text{String: actorType, Valid: true},
 		ActorID: parseUUID(actorID), Action: "run_budget_top_up", Details: details,
 		CreatedAt: startedAt,
-	}); err != nil {
+	})
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to record the run budget top-up")
 		return
 	}
 	if _, err := service.OpenRunBudgetWindow(r.Context(), qtx, issue.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to top up the run budget")
 		return
+	}
+	if actorType == "agent" {
+		if err := service.RecordAgentRunCredit(r.Context(), qtx, issue, activity.ID, max); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to top up the run budget")
+			return
+		}
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to top up the run budget")

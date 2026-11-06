@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/dispatch"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -23,14 +24,16 @@ const micro = int64(1_000_000)
 func enableAgentBudget(t *testing.T, mutate ...func(*AgentRunBudgetConfig)) {
 	t.Helper()
 	prev := testHandler.AgentRunBudget
-	cfg := AgentRunBudgetConfig{PerRunMicroUSD: micro, DailyMicroUSD: 10 * micro, MonthlyMicroUSD: 100 * micro, MeteredLimitMicroUSD: 200 * micro, meteredGateReady: true}
+	cfg := AgentRunBudgetConfig{PerRunMicroUSD: micro, DailyMicroUSD: 10 * micro, MonthlyMicroUSD: 100 * micro, MeteredLimitMicroUSD: 200 * micro}
 	for _, m := range mutate {
 		m(&cfg)
 	}
 	testHandler.AgentRunBudget = cfg
+	service.SetMeteredGate(cfg.MeteredGate())
 	resetAgentBudgetActivity(t)
 	t.Cleanup(func() {
 		testHandler.AgentRunBudget = prev
+		service.SetMeteredGate(prev.MeteredGate())
 		resetAgentBudgetActivity(t)
 	})
 }
@@ -103,40 +106,6 @@ func TestAgentRaiseIsOffByDefault(t *testing.T) {
 	}
 	if overrideOf(t, c.issueID) != 0 {
 		t.Fatal("a disabled raise still stored an override")
-	}
-}
-
-// With all four limits set but the metered-limit checks not yet shipped, the
-// feature stays off: no credit is granted that the metered limit would not bound.
-func TestAgentRaiseStaysOffUntilTheMeteredGateExists(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	enableAgentBudget(t, func(c *AgentRunBudgetConfig) { c.meteredGateReady = false })
-	c := budgetIssue(t, 3251020, 2)
-	_, _, asAgent := raisingAgent(t)
-	for name, call := range map[string]func() int{
-		"raise": func() int {
-			w := raiseBudget(t, c.issueID, map[string]any{"runs": 1}, asAgent)
-			if got := decodeRefusal(t, w); got.Reason != "disabled" {
-				t.Fatalf("raise reason = %q, want disabled", got.Reason)
-			}
-			return w.Code
-		},
-		"top-up": func() int {
-			w := topUpBudget(t, c.issueID, asAgent)
-			if got := decodeRefusal(t, w); got.Reason != "disabled" {
-				t.Fatalf("top-up reason = %q, want disabled", got.Reason)
-			}
-			return w.Code
-		},
-	} {
-		if code := call(); code != http.StatusForbidden {
-			t.Fatalf("%s with the gate missing = %d, want 403", name, code)
-		}
-	}
-	if overrideOf(t, c.issueID) != 0 {
-		t.Fatal("a refused grant still stored an override")
 	}
 }
 
@@ -456,9 +425,8 @@ func TestParseAgentRunBudgetConfig(t *testing.T) {
 	if err != nil || cfg.PerRunMicroUSD != 500_000 || cfg.MonthlyMicroUSD != 100_250_000 {
 		t.Fatalf("set = %+v, %v", cfg, err)
 	}
-	// All four limits set is still off until the metered-limit checks exist.
-	if cfg.Enabled() {
-		t.Fatalf("env config enabled the feature without the metered gate: %+v", cfg)
+	if !cfg.Enabled() || cfg.MeteredLimitMicroUSD != 150_000_000 {
+		t.Fatalf("all four limits set = %+v, want enabled", cfg)
 	}
 	// Part of the set is as good as unset: the feature stays off.
 	cfg, err = ParseAgentRunBudgetConfig(env(map[string]string{"MULTICA_AGENT_RUN_BUDGET_DAILY_USD": "10"}))

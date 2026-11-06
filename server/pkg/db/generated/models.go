@@ -1897,6 +1897,7 @@ type IssueRunBudgetEntry struct {
 	CapDelta    int32              `json:"cap_delta"`
 	TokensDelta int64              `json:"tokens_delta"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	AgentDelta  int32              `json:"agent_delta"`
 }
 
 type IssueSearchText struct {

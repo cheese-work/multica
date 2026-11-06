@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/dispatch"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -25,19 +26,20 @@ type AgentRunBudgetConfig struct {
 	PerRunMicroUSD       int64 // price of one granted run
 	DailyMicroUSD        int64 // agent-added credit per ICT day
 	MonthlyMicroUSD      int64 // agent-added credit per ICT month, used or not
-	MeteredLimitMicroUSD int64 // monthly metered-API limit; checked by the admission gate (CHE-3251 PR B)
-
-	// meteredGateReady is true only once the metered-limit checks (CHE-3251
-	// PR B) exist. Nothing sets it in production code yet, so agent grants stay
-	// refused with reason "disabled" even when all four limits are set: this
-	// layer enforces the daily and monthly caps but not the metered limit, and
-	// enabling it without that check would grant credit the metered limit
-	// never bounds. PR B sets it where it wires the checks in.
-	meteredGateReady bool
+	MeteredLimitMicroUSD int64 // monthly metered-API limit; grants and runs on agent credit stop at 80% of it
 }
 
 func (c AgentRunBudgetConfig) Enabled() bool {
-	return c.meteredGateReady && c.PerRunMicroUSD > 0 && c.DailyMicroUSD > 0 && c.MonthlyMicroUSD > 0 && c.MeteredLimitMicroUSD > 0
+	return c.PerRunMicroUSD > 0 && c.DailyMicroUSD > 0 && c.MonthlyMicroUSD > 0 && c.MeteredLimitMicroUSD > 0
+}
+
+// MeteredGate is the admission line for runs on agent credit; nil while the
+// feature is off, which refuses them.
+func (c AgentRunBudgetConfig) MeteredGate() *service.MeteredGate {
+	if !c.Enabled() {
+		return nil
+	}
+	return &service.MeteredGate{PerRunMicroUSD: c.PerRunMicroUSD, LimitMicroUSD: c.MeteredLimitMicroUSD}
 }
 
 var agentRunBudgetEnv = []struct {
@@ -134,7 +136,8 @@ func (h *Handler) admitAgentRunBudgetCaller(w http.ResponseWriter, r *http.Reque
 }
 
 // checkAgentRunBudgetCap refuses an agent's grant of runs when it would pass the
-// daily or the monthly cap. It runs inside the grant's transaction, after the
+// daily or the monthly cap, or when the month's metered spend plus the credit
+// agents hold plus the grant would pass 80% of the metered limit. It runs inside the grant's transaction, after the
 // issue's lock, and takes the instance-wide cap lock: the sums it reads cannot
 // change until that transaction ends. It writes the refusal and reports false
 // when the grant must not happen.
@@ -171,5 +174,30 @@ func (h *Handler) checkAgentRunBudgetCap(w http.ResponseWriter, r *http.Request,
 		})
 		return false, nil
 	}
-	return true, nil
+	return h.checkMeteredCeiling(w, r, q, runs, now)
+}
+
+// checkMeteredCeiling is the grant-time metered check: spend this month plus
+// the agent credit not yet used plus the grant, at the price of a run, must fit
+// under 80% of the metered limit (the instance-wide cap lock is held).
+func (h *Handler) checkMeteredCeiling(w http.ResponseWriter, r *http.Request, q *db.Queries, runs int, now time.Time) (bool, error) {
+	cfg := h.AgentRunBudget
+	p, err := service.ReadMeteredPosition(r.Context(), q, now, cfg.PerRunMicroUSD, pgtype.UUID{})
+	if err != nil {
+		return false, err
+	}
+	ceiling, requested := service.MeteredCeiling(cfg.MeteredLimitMicroUSD), int64(runs)*cfg.PerRunMicroUSD
+	if p.Spent+p.Credit+requested <= ceiling {
+		return true, nil
+	}
+	_, resets := service.ICTMonth(now)
+	used, remaining := p.Spent+p.Credit, max(ceiling-p.Spent-p.Credit, 0)
+	w.Header().Set("Retry-After", strconv.Itoa(max(int(time.Until(resets).Seconds()), 1)))
+	writeJSON(w, http.StatusTooManyRequests, map[string]any{
+		"error": "agent run-budget cap reached", "reason": "monthly_limit",
+		"limit_usd": usd(ceiling), "used_usd": usd(used), "remaining_usd": usd(remaining),
+		"remaining_runs": remaining / cfg.PerRunMicroUSD, "requested_runs": runs,
+		"resets_at": resets.Format(time.RFC3339),
+	})
+	return false, nil
 }
