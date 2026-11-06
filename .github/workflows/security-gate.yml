@@ -102,9 +102,22 @@ jobs:
           fi
           # Queue run. The default-branch script is used unchanged (it may predate this step), without --post: that
           # would write to the PR head. Its state goes on the queue commit, and only if the PR head is its parent.
+          # CHE-4242: a 403/429 rate limit is waited out (5 s doubling to 60 s, 300 s in all) and then returns 75, which
+          # the callers turn into `pending`; any other gh error keeps its exit code.
+          gh_retry() {
+            local out err waited=0 delay=5 rc
+            err="$(mktemp)"
+            while :; do
+              out="$(gh "$@" 2>"$err")" && { printf '%s\n' "$out"; rm -f "$err"; return 0; }
+              rc=$?
+              grep -qiE 'rate limit|HTTP 429|too many requests' "$err" || { cat "$err" >&2; rm -f "$err"; return "$rc"; }
+              if [ $((waited + delay)) -gt 300 ]; then cat "$err" >&2; rm -f "$err"; return 75; fi
+              sleep "$delay"; waited=$((waited + delay)); delay=$((delay * 2 > 60 ? 60 : delay * 2))
+            done
+          }
           post() {
-            gh api "repos/$GITHUB_REPOSITORY/statuses/$MERGE_GROUP_SHA" -f "state=$1" -f context=security-gate \
-              -f "description=${2:0:140}" -f "target_url=$run_url"
+            gh_retry api "repos/$GITHUB_REPOSITORY/statuses/$MERGE_GROUP_SHA" -f "state=$1" -f context=security-gate \
+              -f "description=${2:0:140}" -f "target_url=$run_url" >/dev/null
           }
           re='^refs/heads/gh-readonly-queue/(.+)/pr-([0-9]+)-[0-9a-f]{40}$'
           if [[ ! $MERGE_GROUP_REF =~ $re ]] || [ "${BASH_REMATCH[1]}" != "$DEFAULT_BRANCH" ]; then
@@ -120,17 +133,23 @@ jobs:
           evaluate() {
             local out parents
             out="$(python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$pr" \
-              --default-branch "$DEFAULT_BRANCH" $sg --run-url "$run_url")" || return 1
+              --default-branch "$DEFAULT_BRANCH" $sg --run-url "$run_url")" || return $?
             head="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["sha"])' "$out")" || return 1
             state="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["state"])' "$out")" || return 1
             desc="#$pr: $(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["description"])' "$out")" || return 1
-            parents="$(gh api "repos/$GITHUB_REPOSITORY/commits/$MERGE_GROUP_SHA" --jq '.parents[].sha')" || return 1
+            parents="$(gh_retry api "repos/$GITHUB_REPOSITORY/commits/$MERGE_GROUP_SHA" --jq '.parents[].sha')" || return $?
             if ! grep -qx "$head" <<<"$parents"; then
               state=failure desc="#$pr head ${head:0:12} is not a parent of ${MERGE_GROUP_SHA:0:12}"
             fi
           }
-          # An unreadable verdict is a failure on the queue commit, never a stalled entry or a cached success.
-          read_verdict() { evaluate || { state=failure desc="#$pr: cannot read the verdict"; }; }
+          # An unreadable verdict is a failure on the queue commit, never a stalled entry or a cached success. A rate
+          # limit (exit 75) is no verdict at all: `pending`, so the queue entry waits for a re-run instead of ejecting.
+          read_verdict() {
+            local rc=0
+            evaluate || rc=$?
+            if [ "$rc" = 75 ]; then state=pending desc="#$pr: rate limited, retry"
+            elif [ "$rc" != 0 ]; then state=failure desc="#$pr: cannot read the verdict"; fi
+          }
           # A success is read again right before it is published and once more after (CHE-3240): a verdict revoked in
           # between is overwritten by the failure instead of the cached success. The revoke path (PR events) covers the rest.
           read_verdict

@@ -240,6 +240,82 @@ class WrapperTest(unittest.TestCase):
         self.assertIn("state=failure", posted[0])
 
 
+class RateLimitTest(unittest.TestCase):
+    """CHE-4242: `gh api` answers 403 `API rate limit exceeded` when the installation is spent. Wait and retry
+    up to a bounded budget, then raise RateLimited; main() maps that to exit 75 (workflow posts pending), never a failure."""
+
+    LIMIT = "gh: API rate limit exceeded for installation. If you reach out to support (HTTP 403)"
+
+    def fake_run(self, outcomes):
+        calls = iter(outcomes)
+
+        def run(cmd, **kw):
+            code, out, err = next(calls)
+            if code:
+                raise subprocess.CalledProcessError(code, cmd, output=out, stderr=err)
+            return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+        return run
+
+    def setUp(self):
+        sg._rate_limit_waited = 0
+
+    def test_a_rate_limited_call_is_retried_and_returns_the_answer(self):
+        run = self.fake_run([(1, "", self.LIMIT), (1, "", self.LIMIT), (0, "ok", "")])
+        with mock.patch.object(sg.subprocess, "run", run), mock.patch.object(sg.time, "sleep") as sleep:
+            self.assertEqual(sg._gh("repos/o/r/pulls/1"), "ok")
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_429_is_a_rate_limit_too(self):
+        run = self.fake_run([(1, "", "gh: Too Many Requests (HTTP 429)"), (0, "ok", "")])
+        with mock.patch.object(sg.subprocess, "run", run), mock.patch.object(sg.time, "sleep"):
+            self.assertEqual(sg._gh("x"), "ok")
+
+    def test_a_call_still_rate_limited_after_the_budget_raises_rate_limited(self):
+        run = self.fake_run([(1, "", self.LIMIT)] * 100)
+        with mock.patch.object(sg.subprocess, "run", run), mock.patch.object(sg.time, "sleep") as sleep:
+            with self.assertRaises(sg.RateLimited):
+                sg._gh("x")
+        self.assertLessEqual(sum(c.args[0] for c in sleep.call_args_list), sg.RATE_LIMIT_MAX_WAIT)
+
+    def test_the_wait_budget_is_shared_across_calls(self):
+        run = self.fake_run([(1, "", self.LIMIT)] * 100)
+        with mock.patch.object(sg.subprocess, "run", run), mock.patch.object(sg.time, "sleep") as sleep:
+            for _ in range(3):
+                with self.assertRaises(sg.RateLimited):
+                    sg._gh("x")
+        self.assertLessEqual(sum(c.args[0] for c in sleep.call_args_list), sg.RATE_LIMIT_MAX_WAIT)
+
+    def test_any_other_error_is_raised_at_once_without_waiting(self):
+        run = self.fake_run([(1, "", "gh: Not Found (HTTP 404)")])
+        with mock.patch.object(sg.subprocess, "run", run), mock.patch.object(sg.time, "sleep") as sleep:
+            with self.assertRaises(subprocess.CalledProcessError) as ctx:
+                sg._gh("x")
+        self.assertNotIsInstance(ctx.exception, sg.RateLimited)
+        sleep.assert_not_called()
+
+    def test_main_exits_75_and_posts_no_failure_when_the_read_stays_rate_limited(self):
+        posted = []
+        argv = ["x", "--repo", str(ROOT), "--github", "o/r", "--pr", "405", "--default-branch", "main", "--post"]
+        with mock.patch.object(sg, "gate_pr", side_effect=sg.RateLimited(1, ["gh"])), \
+                mock.patch.object(sg, "_post", side_effect=lambda *a: posted.append(a)), \
+                mock.patch("sys.argv", argv), mock.patch("builtins.print"):
+            self.assertEqual(sg.main(), sg.RATE_LIMIT_EXIT)
+        self.assertEqual(sg.RATE_LIMIT_EXIT, 75)
+        self.assertEqual(posted, [])
+
+    def test_a_rate_limited_sibling_pr_is_not_turned_into_a_failure(self):
+        def gate(repo, github, n, *rest):
+            if n == 406:
+                raise sg.RateLimited(1, ["gh"])
+            return HEAD, "success", "PASS"
+        rows = json.dumps({"number": 406, "head": HEAD})
+        argv = ["x", "--repo", str(ROOT), "--github", "o/r", "--pr", "405", "--default-branch", "main", "--post"]
+        with mock.patch.object(sg, "gate_pr", side_effect=gate), mock.patch.object(sg, "_gh", return_value=rows), \
+                mock.patch.object(sg, "_post") as post, mock.patch("sys.argv", argv), mock.patch("builtins.print"):
+            self.assertEqual(sg.main(), sg.RATE_LIMIT_EXIT)
+        post.assert_not_called()
+
+
 class MergeGroupStepTest(unittest.TestCase):
     """The merge queue requires `security-gate` on its own commit, which no PR event ever reaches. The job runs the
     DEFAULT-branch script, which on the first queue run is still the old one (`--pr` only), so the workflow step
@@ -247,9 +323,14 @@ class MergeGroupStepTest(unittest.TestCase):
 
     QUEUE = "e" * 40
     REF = f"refs/heads/gh-readonly-queue/main/pr-405-{'d' * 40}"
-    STUB_GH = ('#!/bin/bash\n'
+    RATE_LIMITED = 'echo "gh: HTTP 403: API rate limit exceeded for installation" >&2; exit 1'
+    STUB_GH = ('#!/bin/bash\n'  # RL_PARENTS / RL_POST: the first N parent lookups / status writes answer with a rate limit
+               'touch "$LOG"\n'
                'case "$*" in\n'
-               '  *commits/*) printf "%s\\n" $PARENTS ;;\n'
+               '  *commits/*) [ "${RL_PARENTS:-0}" -gt "$(grep -c "^rl-parents" "$LOG" || true)" ] && { echo rl-parents >> "$LOG"; ' + RATE_LIMITED + '; }\n'
+               '              printf "%s\\n" $PARENTS ;;\n'
+               '  *statuses/*) [ "${RL_POST:-0}" -gt "$(grep -c "^rl-post" "$LOG" || true)" ] && { echo rl-post >> "$LOG"; ' + RATE_LIMITED + '; }\n'
+               '               echo "gh $*" >> "$LOG" ;;\n'
                '  *) echo "gh $*" >> "$LOG" ;;\n'
                'esac\n')
     STUB_GATE = ('#!/bin/bash\n'  # the old script: --pr N required (an empty N is an argparse error), verdict read live
@@ -257,6 +338,7 @@ class MergeGroupStepTest(unittest.TestCase):
                  'case " $* " in *" --pr "[0-9]*) ;; *) exit 2 ;; esac\n'
                  'n=$(grep -c "^gate " "$LOG")\n'  # this is the Nth read: STATES answers per read, FAIL_AT makes one read error out
                  '[ "$n" = "${FAIL_AT:-}" ] && exit 1\n'
+                 '[ "$n" = "${RL_AT:-}" ] && { echo "rate limited" >&2; exit 75; }\n'
                  'if [ -n "${STATES:-}" ]; then STATE=$(echo $STATES | cut -d" " -f$n); fi\n'
                  'echo \'{"context": "security-gate", "sha": "\'$HEAD\'", "state": "\'$STATE\'", "description": "PASS on x"}\'\n')
 
@@ -266,21 +348,23 @@ class MergeGroupStepTest(unittest.TestCase):
         self.assertEqual(len(gate), 1)
         return gate[0]["run"]
 
-    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success", script="", states="", fail_at=""):
+    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success", script="", states="", fail_at="", rl_at="", rl_parents=0, rl_post=0):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             (tmp / "bin").mkdir()
             (tmp / "scripts/security-gate").mkdir(parents=True)
             (tmp / "bin/gh").write_text(self.STUB_GH)
+            (tmp / "bin/sleep").write_text('#!/bin/bash\necho "sleep $*" >> "$LOG"\n')  # no real waiting in tests
             (tmp / "scripts/security-gate/gate.sh").write_text(self.STUB_GATE)
             (tmp / "scripts/security-gate/security_gate.py").write_text(script)  # the step runs it via the shadowed python3
             (tmp / "bin/python3").write_text(
                 '#!/bin/bash\n[ "${1##*/}" = security_gate.py ] && exec bash "$(dirname "$1")/gate.sh" "${@:2}"\n'
                 f'exec {sys.executable} "$@"\n')
-            for path in (tmp / "bin/gh", tmp / "bin/python3", tmp / "scripts/security-gate/gate.sh"):
+            for path in (tmp / "bin/gh", tmp / "bin/sleep", tmp / "bin/python3", tmp / "scripts/security-gate/gate.sh"):
                 path.chmod(0o755)
             env = {**os.environ, "PATH": f"{tmp / 'bin'}:{os.environ['PATH']}", "LOG": str(tmp / "log"), "HEAD": HEAD,
-                   "STATE": state, "STATES": states, "FAIL_AT": str(fail_at), "PARENTS": " ".join(parents), "MERGE_GROUP_REF": ref, "MERGE_GROUP_SHA": self.QUEUE,
+                   "STATE": state, "STATES": states, "FAIL_AT": str(fail_at), "RL_AT": str(rl_at),
+                   "RL_PARENTS": str(rl_parents), "RL_POST": str(rl_post), "PARENTS": " ".join(parents), "MERGE_GROUP_REF": ref, "MERGE_GROUP_SHA": self.QUEUE,
                    "PR_NUMBER": "", "GH_TOKEN": "t", "DEFAULT_BRANCH": "main", "GITHUB_REPOSITORY": "o/r",
                    "GITHUB_SERVER_URL": "https://github.com", "GITHUB_RUN_ID": "7"}
             done = subprocess.run(["bash", "-c", self.step_run()], cwd=tmp, env=env, capture_output=True, text=True)
@@ -332,6 +416,32 @@ class MergeGroupStepTest(unittest.TestCase):
         for fail_at in (1, 2):
             done, log = self.run_step(fail_at=fail_at)
             self.assertIn("state=failure", self.posted(log)[-1], (fail_at, done.stderr, log))
+
+    def test_a_rate_limited_read_posts_pending_never_failure(self):
+        # CHE-4242: a 403 rate limit on the installation turned a green PR red at the last queue step
+        for rl_at in (1, 2, 3):
+            done, log = self.run_step(rl_at=rl_at, states="success success success")
+            self.assertEqual(done.returncode, 0, (rl_at, done.stderr))
+            self.assertNotIn("state=failure", " ".join(self.posted(log)), (rl_at, log))
+            self.assertIn("state=pending", self.posted(log)[-1], (rl_at, log))
+            self.assertIn("rate limited, retry", self.posted(log)[-1], (rl_at, log))
+
+    def test_a_rate_limited_parent_lookup_is_retried_until_it_answers(self):
+        done, log = self.run_step(rl_parents=2)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(len([l for l in log if l.startswith("sleep")]), 2, log)
+        self.assertIn("state=success", self.posted(log)[0], log)
+
+    def test_a_parent_lookup_still_rate_limited_after_the_retries_posts_pending(self):
+        done, log = self.run_step(rl_parents=999)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertNotIn("state=failure", " ".join(self.posted(log)), log)
+        self.assertIn("state=pending", self.posted(log)[-1], log)
+
+    def test_a_rate_limited_status_write_is_retried_until_it_lands(self):
+        done, log = self.run_step(rl_post=2)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("state=success", self.posted(log)[0], log)
 
     def test_pr_head_that_is_not_a_parent_fails(self):
         done, log = self.run_step(parents=("d" * 40, OLD))
