@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ApiError } from "@multica/core/api";
+import { useWakeupFormDraftStore } from "@multica/core/issues/stores";
 import { propertyListOptions } from "@multica/core/properties/queries";
 import type { IssueWakeupInput } from "@multica/core/types";
 import { useViewingTimezone } from "../../common/use-viewing-timezone";
@@ -16,20 +17,36 @@ import { buildWakeupInput, emptyWakeupDraft, type WakeupDraft, type WakeupDraftE
 export function useWakeupForm({
   workspaceId,
   defaultAgentId,
+  draftKey,
+  initial,
   save,
   onSaved,
   onBusy,
+  describeError,
 }: {
   workspaceId: string;
   defaultAgentId: string;
+  /**
+   * Persist the member's edits under this key until a save succeeds, so the
+   * unsent form comes back after the host unmounts. Unset: nothing persisted.
+   */
+  draftKey?: string;
+  /** Draft fields to open with, for editing a saved rule. */
+  initial?: Partial<WakeupDraft>;
   save: (input: IssueWakeupInput) => Promise<unknown>;
   onSaved: () => void;
   onBusy?: (busy: boolean) => void;
+  /** A message for a refusal the caller knows; anything else gets the shared one. */
+  describeError?: (err: unknown) => string | undefined;
 }) {
   const { t } = useT("issues");
   const text = useWakeupText();
   const timezone = useViewingTimezone();
-  const [draft, setDraft] = useState(() => emptyWakeupDraft(defaultAgentId, timezone));
+  const [draft, setDraft] = useState<WakeupDraft>(() => ({
+    ...emptyWakeupDraft(defaultAgentId, timezone),
+    ...initial,
+    ...(draftKey ? (useWakeupFormDraftStore.getState().getDraft(draftKey)?.fields as Partial<WakeupDraft> | null | undefined) : null),
+  }));
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const inFlight = useRef(false);
@@ -37,6 +54,10 @@ export function useWakeupForm({
 
   const update = (patch: Partial<WakeupDraft>) => {
     setDraft((prev) => ({ ...prev, ...patch }));
+    if (draftKey) {
+      const store = useWakeupFormDraftStore.getState();
+      store.setDraft(draftKey, { fields: { ...store.getDraft(draftKey)?.fields, ...patch } });
+    }
     setError("");
   };
   const draftErrors: Record<WakeupDraftError, string> = {
@@ -50,11 +71,16 @@ export function useWakeupForm({
     until_future: t(($) => $.wakeups.create.until_future),
   };
 
-  const submit = async () => {
-    if (inFlight.current) return;
+  /** The payload save sends: a property condition's value is typed by the property. */
+  const build = () => {
     const propertyType =
       draft.field === "property" ? properties.find((p) => p.id === draft.fieldTarget)?.type : undefined;
-    const result = buildWakeupInput(draft, new Date(), propertyType);
+    return buildWakeupInput(draft, new Date(), propertyType);
+  };
+
+  const submit = async () => {
+    if (inFlight.current) return;
+    const result = build();
     if ("error" in result) {
       setError(draftErrors[result.error]);
       return;
@@ -64,6 +90,7 @@ export function useWakeupForm({
     onBusy?.(true);
     try {
       await save(result.input);
+      if (draftKey) useWakeupFormDraftStore.getState().clearDraft(draftKey);
       onSaved();
     } catch (err) {
       const code =
@@ -71,9 +98,10 @@ export function useWakeupForm({
           ? err.body.code
           : undefined;
       setError(
-        code === "wakeup_capacity_exceeded"
-          ? t(($) => $.wakeups.create.capacity_error)
-          : text.error(err, t(($) => $.wakeups.create.error)),
+        describeError?.(err) ??
+          (code === "wakeup_capacity_exceeded"
+            ? t(($) => $.wakeups.create.capacity_error)
+            : text.error(err, t(($) => $.wakeups.create.error))),
       );
     } finally {
       inFlight.current = false;
@@ -82,5 +110,5 @@ export function useWakeupForm({
     }
   };
 
-  return { draft, update, error, pending, submit };
+  return { draft, update, error, pending, submit, build };
 }

@@ -23,6 +23,7 @@ export type ChatMessageKind =
   | "onboarding_kickoff"
   | "onboarding_opening"
   | "continuation_summary"
+  | "compaction_summary"
   | "compact_notice"
   | "decision_request"
   | "decision_cancel_notice"
@@ -73,6 +74,10 @@ export interface ChatQuickActionsFailureState {
 
 /** Preview of a session's most recent message, for the IM-style list. */
 export interface ChatLastMessage {
+  /** Message identity lets an open detail detect a missed realtime update. */
+  id?: string;
+  /** Task identity distinguishes a reply from an earlier queued turn. */
+  task_id?: string;
   content: string;
   role: "user" | "assistant";
   created_at: string;
@@ -484,8 +489,13 @@ export interface ChatPendingTask {
 export interface ChatWakeup {
   id: string;
   agent_id: string;
-  /** RFC 3339 instant the turn fires. */
+  /** RFC 3339 instant the turn fires; for an issue watch, when it gives up. */
   fire_at: string;
   instruction: string;
   status: string;
+  /** Set when this is an issue watch rather than a time wakeup. */
+  issue_id?: string;
+  event?: string;
+  until_status?: string;
+  on_timeout?: string;
 }

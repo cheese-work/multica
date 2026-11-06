@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -175,13 +176,27 @@ func TestResolveSkillBundleHTTP2RecoversBlackholedConnection(t *testing.T) {
 }
 
 func TestResolveSkillBundleHTTP2SlowDownloadUsesContextDeadline(t *testing.T) {
-	for _, budget := range []time.Duration{3 * time.Second, 100 * time.Millisecond} {
-		t.Run(budget.String(), func(t *testing.T) {
+	// The deadline case gives connection setup most of its budget and the
+	// server never finishes the body, so the caller's deadline fires only
+	// after the response has started, however slow the runner (CHE-4008).
+	for _, tc := range []struct {
+		name     string
+		budget   time.Duration
+		finishes bool
+	}{
+		{name: "healthy slow download", budget: 3 * time.Second, finishes: true},
+		{name: "caller deadline", budget: time.Second, finishes: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			var requests atomic.Int32
 			client, connections := newHTTP2TestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requests.Add(1)
 				_, _ = io.WriteString(w, `{"bundles":[`)
 				w.(http.Flusher).Flush()
+				if !tc.finishes {
+					<-r.Context().Done()
+					return
+				}
 				select {
 				case <-time.After(500 * time.Millisecond):
 					_, _ = io.WriteString(w, `{"id":"skill"}]}`)
@@ -189,13 +204,14 @@ func TestResolveSkillBundleHTTP2SlowDownloadUsesContextDeadline(t *testing.T) {
 				}
 			}))
 			client.client.Timeout = 50 * time.Millisecond
+			slowConnectionSetup(t, client.bundleClient, 200*time.Millisecond)
 			if client.bundleClient.Timeout != 0 {
 				t.Fatal("bundle downloads must use the caller's deadline")
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), budget)
+			ctx, cancel := context.WithTimeout(context.Background(), tc.budget)
 			defer cancel()
 			bundle, stats, err := client.ResolveSkillBundle(ctx, "runtime", "task", SkillRefData{ID: "skill"})
-			if budget > 500*time.Millisecond {
+			if tc.finishes {
 				if err != nil || bundle.ID != "skill" {
 					t.Fatalf("healthy slow download failed: bundle=%+v err=%v", bundle, err)
 				}
@@ -215,6 +231,22 @@ func TestResolveSkillBundleHTTP2SlowDownloadUsesContextDeadline(t *testing.T) {
 			default:
 			}
 		})
+	}
+}
+
+// slowConnectionSetup delays every new connection, as a loaded CI runner does
+// before the TLS and HTTP/2 handshake completes (CHE-4008).
+func slowConnectionSetup(t *testing.T, client *http.Client, delay time.Duration) {
+	t.Helper()
+	transport := client.Transport.(*http.Transport)
+	var dialer net.Dialer
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return dialer.DialContext(ctx, network, address)
 	}
 }
 

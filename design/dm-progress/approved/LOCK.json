@@ -1,0 +1,34 @@
+{
+  "provider": "doop",
+  "base_url": "https://congvc-c00.taila6fa8a.ts.net:34443/",
+  "canvas_or_project_id": "zGq4HKcar9",
+  "page_id": "zGq4HKcar9:che-3407",
+  "screens": [
+    {
+      "screen": "dm-progress (direction C, Attention first: verdict line, then tinted blocks for Blocked, In review and Done, one-line rows for the rest; desktop 540 and phone 358; digest, immediate blocked and done cards, /progress reply with caret menu, muted and unavailable rows, hostile title)",
+      "frame_id": "V0nBnIQ-OI",
+      "updatedAt": "2026-11-04T12:00:37.964Z",
+      "content_sha256": "018a076e9cd0974d8f98cebe66c05d1b19b5e355486e4a4a92ce3407dd692117"
+    },
+    {
+      "screen": "dm-progress shared states for A, B and C (/progress loading and empty, updates paused by archive and by missing thread, control failed, offline, undo toast, reconnect, count-only push line in English and Vietnamese, Vietnamese labels on the C layout)",
+      "frame_id": "TiPMSzRj-T",
+      "updatedAt": "2026-11-04T12:01:34.967Z",
+      "content_sha256": "0e0442a37e23dc30d4a00bf8eb78b50ec2ac30a1679312b3443955b56b962538"
+    }
+  ],
+  "export_sha256": "e2669cc8fbf5f81b625ae8be3a91a1eeb576eaf1ada110b4847cef37faa05f88",
+  "export_sha256_method": "sha256 of the lines '<sha256>  <file>' (each ending in a newline, as `sha256sum` prints them) for export_files, sorted by file name",
+  "export_files": {
+    "progress-card-c.html": "018a076e9cd0974d8f98cebe66c05d1b19b5e355486e4a4a92ce3407dd692117",
+    "progress-states-s.html": "0e0442a37e23dc30d4a00bf8eb78b50ec2ac30a1679312b3443955b56b962538"
+  },
+  "export_transform": "none: each frame HTML is self-contained (system font stack, inline SVG, no external fetch); written as read from doop via get_frame, including its one trailing newline; length in characters equals htmlBytes from get_frame (15465 for V0nBnIQ-OI, 9483 for TiPMSzRj-T)",
+  "exported_at": "2026-11-05 16:37 ICT",
+  "exported_by": "x99-claude-sonnet-design / claude-sonnet-5-5 / x99",
+  "issue": "CHE-3407",
+  "selection_id": "01a1ab0d-e919-7b79-87bf-a093a9a7b4af",
+  "selection_quote_id": "01a1ab02-66d6-71c4-ad3f-313a99f4abb3",
+  "decision_request_id": "1fb8d9d9-764c-4032-8e11-6850f7dc4af8",
+  "ux_verdict_id": "01a1a673-783f-76c4-b35a-d5e7bb320087"
+}
