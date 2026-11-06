@@ -382,6 +382,10 @@ deleted_github_dispatch_halts AS (
 deleted_github_dispatch_halt_audits AS (
     DELETE FROM github_dispatch_halt_audit WHERE workspace_id = $1
 ),
+-- CHE-3045 L5b wait episodes: workspace-owned leaf, no FK.
+deleted_decision_waits AS (
+    DELETE FROM decision_wait WHERE workspace_id = $1
+),
 -- CHE-3284 config-sync enrollment: workspace-owned leaf, no FK.
 deleted_config_sync AS (
     DELETE FROM workspace_config_sync WHERE workspace_id = $1
@@ -729,6 +733,17 @@ WHERE chat_session_id IN (
 
 -- name: DeleteWorkspaceCommunicationRoots :exec
 WITH
+-- No foreign keys on the attention tables. Items carry workspace_id; marks have none, so
+-- their chain root is one of this workspace's sessions.
+deleted_attention_items AS (
+    DELETE FROM chat_attention_item WHERE workspace_id = $1
+),
+deleted_attention_marks AS (
+    DELETE FROM chat_attention_mark
+    WHERE chain_root_session_id IN (
+        SELECT id FROM chat_session WHERE chat_session.workspace_id = $1
+    )
+),
 deleted_sessions AS (
     DELETE FROM chat_session WHERE chat_session.workspace_id = $1
 ),

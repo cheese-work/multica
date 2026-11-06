@@ -33,6 +33,11 @@ type decisionWakeSnapshot struct {
 	task      db.AgentTaskQueue
 	head      pgtype.Text
 	group     bool
+	// binding is the non-closed episode that binds an ordinary item's request;
+	// wait and intents are the episode and its intents when kind is "episode".
+	binding db.DecisionWait
+	wait    db.DecisionWait
+	intents []db.DecisionIntent
 }
 
 func (handler *Handler) DeliverDecisionWake(ctx context.Context, workspaceID, requestID pgtype.UUID) error {
@@ -57,6 +62,9 @@ func (handler *Handler) deliverDecisionItem(ctx context.Context, workspaceID, it
 }
 
 func (handler *Handler) loadDecisionItem(ctx context.Context, queries *db.Queries, workspaceID, itemID pgtype.UUID, kind string) (decisionWakeSnapshot, error) {
+	if kind == "episode" {
+		return handler.loadDecisionEpisode(ctx, queries, workspaceID, itemID)
+	}
 	snapshot := decisionWakeSnapshot{kind: kind, itemID: itemID}
 	requestID := itemID
 	if kind == "retraction" {
@@ -72,6 +80,10 @@ func (handler *Handler) loadDecisionItem(ctx context.Context, queries *db.Querie
 		return snapshot, err
 	}
 	snapshot.request = request
+	snapshot.binding, err = queries.GetBindingDecisionWait(ctx, db.GetBindingDecisionWaitParams{WorkspaceID: workspaceID, RequestID: requestID})
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return snapshot, err
+	}
 	snapshot.issue, err = queries.GetIssue(ctx, request.IssueID)
 	if err != nil || snapshot.issue.WorkspaceID != workspaceID {
 		if err == nil {
@@ -153,40 +165,40 @@ func (handler *Handler) loadDecisionItem(ctx context.Context, queries *db.Querie
 			}
 		}
 	}
-	if agentID.Valid {
-		snapshot.recipient, err = queries.GetAgent(ctx, agentID)
-		if err != nil || snapshot.recipient.WorkspaceID != workspaceID {
-			if err == nil {
-				err = pgx.ErrNoRows
-			}
-			return snapshot, err
-		}
-		snapshot.task, snapshot.head, err = loadDecisionRecipientTask(ctx, queries, request.IssueID, agentID)
-		if err != nil {
-			return snapshot, err
-		}
-	}
-	return snapshot, nil
+	err = handler.loadDecisionRecipient(ctx, queries, &snapshot, agentID)
+	return snapshot, err
 }
 
-// loadDecisionRecipientTask returns the recipient's active task on the issue
-// (a queued one wins) and the issue's review head, as a wake dispatch needs.
-func loadDecisionRecipientTask(ctx context.Context, queries *db.Queries, issueID, agentID pgtype.UUID) (db.AgentTaskQueue, pgtype.Text, error) {
-	var task db.AgentTaskQueue
-	tasks, err := queries.ListActiveTasksByIssue(ctx, issueID)
-	if err != nil {
-		return task, pgtype.Text{}, err
+// loadDecisionRecipient reads the recipient, its active task on the issue and
+// the review head the dispatch targets. An invalid agentID leaves them empty.
+func (handler *Handler) loadDecisionRecipient(ctx context.Context, queries *db.Queries, snapshot *decisionWakeSnapshot, agentID pgtype.UUID) error {
+	if !agentID.Valid {
+		return nil
 	}
-	for _, candidate := range tasks {
-		if candidate.AgentID == agentID && (!task.ID.Valid || (candidate.Status == "queued" && task.Status != "queued")) {
-			task = candidate
+	var err error
+	workspaceID := snapshot.issue.WorkspaceID
+	snapshot.recipient, err = queries.GetAgent(ctx, agentID)
+	if err != nil || snapshot.recipient.WorkspaceID != workspaceID {
+		if err == nil {
+			err = pgx.ErrNoRows
+		}
+		return err
+	}
+	tasks, err := queries.ListActiveTasksByIssue(ctx, snapshot.issue.ID)
+	if err != nil {
+		return err
+	}
+	for _, task := range tasks {
+		if task.AgentID == agentID && (!snapshot.task.ID.Valid || (task.Status == "queued" && snapshot.task.Status != "queued")) {
+			snapshot.task = task
 		}
 	}
-	head, err := queries.GetIssueReviewHeadSha(ctx, issueID)
+	head, err := queries.GetIssueReviewHeadSha(ctx, snapshot.issue.ID)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return task, pgtype.Text{}, err
+		return err
 	}
-	return task, pgtype.Text{String: head, Valid: head != ""}, nil
+	snapshot.head = pgtype.Text{String: head, Valid: head != ""}
+	return nil
 }
 
 func decisionWakeReady(snapshot decisionWakeSnapshot, now time.Time) bool {
@@ -228,6 +240,13 @@ func decisionWakeIDs(values []pgtype.UUID) []pgtype.UUID {
 }
 
 func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisionWakeSnapshot) (bool, error) {
+	if snapshot.kind == "episode" {
+		return handler.deliverDecisionEpisode(ctx, snapshot)
+	}
+	if snapshot.binding.ID.Valid {
+		// A bound request belongs to its episode (design §4.4.1).
+		return false, nil
+	}
 	transaction, err := handler.TxStarter.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -392,13 +411,7 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 	if eligible {
 		if snapshot.kind == "" {
 			for _, answer := range snapshot.answers {
-				if _, err := transaction.Exec(ctx, `SELECT capture_issue_wakeup($1, 'comment.created', c.id::text, c.author_id, c.source_task_id,
-					jsonb_build_object('comment_id', c.id, 'author_type', c.author_type, 'author_id', c.author_id,
-					'actor_type', 'member', 'actor_id', r.human_user_id, 'decision_answer_id', a.id))
-					FROM decision_answer a JOIN decision_request r ON r.id = a.decision_request_id
-					JOIN comment c ON c.id = a.issue_comment_id
-					WHERE r.authority = 'human' AND a.id = $2 AND r.workspace_id = $3 AND r.issue_id = $1 AND c.issue_id = $1
-					AND a.disclaimed_at IS NULL AND c.deleted_at IS NULL`, snapshot.issue.ID, answer.ID, workspaceID); err != nil {
+				if err := captureDecisionAnswerWakeup(ctx, transaction, snapshot.issue.ID, answer.ID, workspaceID); err != nil {
 					return false, err
 				}
 			}
@@ -537,43 +550,29 @@ func (handler *Handler) dispatchDecisionWake(ctx context.Context, queries *db.Qu
 			fmt.Fprintf(&summary, "- Target not asked: user %s\n", uuidToString(target.HumanUserID))
 		}
 	}
-	return handler.dispatchDecisionInput(ctx, queries, decisionDispatch{issue: snapshot.issue, recipient: snapshot.recipient, squadID: snapshot.squadID, task: snapshot.task, head: snapshot.head, trigger: trigger, commentIDs: commentIDs, summary: summary.String()})
+	return handler.dispatchDecisionInputs(ctx, queries, snapshot, trigger, commentIDs, summary.String())
 }
 
-// decisionDispatch is what a wake needs to reach one recipient: the recipient's
-// current task and head, the comment that triggers the run, and the input text.
-type decisionDispatch struct {
-	issue      db.Issue
-	recipient  db.Agent
-	squadID    pgtype.UUID
-	task       db.AgentTaskQueue
-	head       pgtype.Text
-	trigger    db.Comment
-	commentIDs []pgtype.UUID
-	summary    string
-}
-
-// dispatchDecisionInput merges the wake into a queued task, registers it as
-// planned input on a running one, or enqueues a run. An empty outcome means the
-// target changed and nothing was dispatched.
-func (handler *Handler) dispatchDecisionInput(ctx context.Context, queries *db.Queries, wake decisionDispatch) (string, db.AgentTaskQueue, error) {
+// dispatchDecisionInputs is the one place a decision delivery reaches the
+// recipient: a new task, a merge into its queued task, or planned input for its
+// running task. An empty outcome is a refusal.
+func (handler *Handler) dispatchDecisionInputs(ctx context.Context, queries *db.Queries, snapshot decisionWakeSnapshot, trigger db.Comment, commentIDs []pgtype.UUID, summary string) (string, db.AgentTaskQueue, error) {
 	var empty db.AgentTaskQueue
-	trigger, commentIDs := wake.trigger, wake.commentIDs
-	if !wake.task.ID.Valid {
-		task, err := handler.TaskService.EnqueueDecisionTaskInTx(ctx, queries, wake.issue, wake.recipient.ID, wake.squadID, trigger.ID, commentIDs, wake.summary)
+	if !snapshot.task.ID.Valid {
+		task, err := handler.TaskService.EnqueueDecisionTaskInTx(ctx, queries, snapshot.issue, snapshot.recipient.ID, snapshot.squadID, trigger.ID, commentIDs, summary)
 		return "run_enqueued", task, err
 	}
 	var taskID pgtype.UUID
 	outcome := ""
-	if wake.task.SquadID != wake.squadID || wake.task.IsLeaderTask != wake.squadID.Valid {
+	if snapshot.task.SquadID != snapshot.squadID || snapshot.task.IsLeaderTask != snapshot.squadID.Valid {
 		return "", empty, nil
 	}
-	if wake.task.Status == "queued" {
-		params, _, err := handler.commentMergeParams(ctx, wake.issue, commentAgentTrigger{Agent: wake.recipient, Source: commentTriggerSourceIssueAssignee}, trigger.ID, wake.head)
+	if snapshot.task.Status == "queued" {
+		params, _, err := handler.commentMergeParams(ctx, snapshot.issue, commentAgentTrigger{Agent: snapshot.recipient, Source: commentTriggerSourceIssueAssignee}, trigger.ID, snapshot.head)
 		if err != nil {
 			return "", empty, err
 		}
-		row, err := queries.MergeCommentIntoQueuedIssueTask(ctx, db.MergeCommentIntoQueuedIssueTaskParams{TargetTaskID: wake.task.ID, IssueID: wake.issue.ID, AgentID: wake.recipient.ID, SquadID: wake.squadID, HeadSha: wake.head, NewTriggerCommentID: params.NewTriggerCommentID, NewTriggerSummary: params.NewTriggerSummary, NewOriginatorUserID: params.NewOriginatorUserID, NewAccountableUserID: params.NewAccountableUserID, NewOriginatorSource: params.NewOriginatorSource, NewDelegatedFromTaskID: params.NewDelegatedFromTaskID, NewRuleVersionID: params.NewRuleVersionID, NewTriggerEvidenceKind: params.NewTriggerEvidenceKind, NewTriggerEvidenceRefID: params.NewTriggerEvidenceRefID, NewRuntimeMcpOverlay: params.NewRuntimeMcpOverlay, NewRuntimeConnectedApps: params.NewRuntimeConnectedApps})
+		row, err := queries.MergeCommentIntoQueuedIssueTask(ctx, db.MergeCommentIntoQueuedIssueTaskParams{TargetTaskID: snapshot.task.ID, IssueID: snapshot.issue.ID, AgentID: snapshot.recipient.ID, SquadID: snapshot.squadID, HeadSha: snapshot.head, NewTriggerCommentID: params.NewTriggerCommentID, NewTriggerSummary: params.NewTriggerSummary, NewOriginatorUserID: params.NewOriginatorUserID, NewAccountableUserID: params.NewAccountableUserID, NewOriginatorSource: params.NewOriginatorSource, NewDelegatedFromTaskID: params.NewDelegatedFromTaskID, NewRuleVersionID: params.NewRuleVersionID, NewTriggerEvidenceKind: params.NewTriggerEvidenceKind, NewTriggerEvidenceRefID: params.NewTriggerEvidenceRefID, NewRuntimeMcpOverlay: params.NewRuntimeMcpOverlay, NewRuntimeConnectedApps: params.NewRuntimeConnectedApps})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", empty, nil
 		}
@@ -582,7 +581,7 @@ func (handler *Handler) dispatchDecisionInput(ctx context.Context, queries *db.Q
 		}
 		taskID, outcome = row.ID, "merged_into_queued"
 	} else {
-		row, err := queries.RegisterPlannedCommentForActiveTask(ctx, db.RegisterPlannedCommentForActiveTaskParams{TargetTaskID: wake.task.ID, IssueID: wake.issue.ID, AgentID: wake.recipient.ID, CommentID: trigger.ID, HeadSha: wake.head})
+		row, err := queries.RegisterPlannedCommentForActiveTask(ctx, db.RegisterPlannedCommentForActiveTaskParams{TargetTaskID: snapshot.task.ID, IssueID: snapshot.issue.ID, AgentID: snapshot.recipient.ID, CommentID: trigger.ID, HeadSha: snapshot.head})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", empty, nil
 		}
@@ -591,12 +590,25 @@ func (handler *Handler) dispatchDecisionInput(ctx context.Context, queries *db.Q
 		}
 		taskID, outcome = row.ID, "planned_input"
 	}
-	if taskID != wake.task.ID {
+	if taskID != snapshot.task.ID {
 		return "", empty, errors.New("decision dispatch target changed")
 	}
-	rows, err := queries.AppendDecisionDeliveryInputs(ctx, db.AppendDecisionDeliveryInputsParams{WorkspaceID: wake.issue.WorkspaceID, ID: taskID, CommentIds: commentIDs, Summary: wake.summary})
+	rows, err := queries.AppendDecisionDeliveryInputs(ctx, db.AppendDecisionDeliveryInputsParams{WorkspaceID: snapshot.issue.WorkspaceID, ID: taskID, CommentIds: commentIDs, Summary: summary})
 	if err == nil && rows != 1 {
 		err = errors.New("decision input target changed")
 	}
 	return outcome, empty, err
+}
+
+// captureDecisionAnswerWakeup records the answer comment as a comment.created
+// wakeup of the issue, as an ordinary answer wake does.
+func captureDecisionAnswerWakeup(ctx context.Context, transaction pgx.Tx, issueID, answerID, workspaceID pgtype.UUID) error {
+	_, err := transaction.Exec(ctx, `SELECT capture_issue_wakeup($1, 'comment.created', c.id::text, c.author_id, c.source_task_id,
+		jsonb_build_object('comment_id', c.id, 'author_type', c.author_type, 'author_id', c.author_id,
+		'actor_type', 'member', 'actor_id', r.human_user_id, 'decision_answer_id', a.id))
+		FROM decision_answer a JOIN decision_request r ON r.id = a.decision_request_id
+		JOIN comment c ON c.id = a.issue_comment_id
+		WHERE r.authority = 'human' AND a.id = $2 AND r.workspace_id = $3 AND r.issue_id = $1 AND c.issue_id = $1
+		AND a.disclaimed_at IS NULL AND c.deleted_at IS NULL`, issueID, answerID, workspaceID)
+	return err
 }

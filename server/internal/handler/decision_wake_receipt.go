@@ -91,7 +91,7 @@ type decisionReceiptState struct {
 	head      pgtype.Text
 }
 
-func loadDecisionReceiptState(ctx context.Context, queries *db.Queries, receiptID pgtype.UUID) (decisionReceiptState, error) {
+func (handler *Handler) loadDecisionReceiptState(ctx context.Context, queries *db.Queries, receiptID pgtype.UUID) (decisionReceiptState, error) {
 	var state decisionReceiptState
 	var err error
 	if state.receipt, err = queries.GetDecisionWakeReceipt(ctx, receiptID); err != nil {
@@ -106,10 +106,9 @@ func loadDecisionReceiptState(ctx context.Context, queries *db.Queries, receiptI
 	if state.issue, err = queries.GetIssue(ctx, state.request.IssueID); err != nil {
 		return state, err
 	}
-	if state.recipient, err = queries.GetAgent(ctx, state.receipt.RecipientAgentID); err != nil {
-		return state, err
-	}
-	state.task, state.head, err = loadDecisionRecipientTask(ctx, queries, state.issue.ID, state.recipient.ID)
+	snapshot := decisionWakeSnapshot{issue: state.issue}
+	err = handler.loadDecisionRecipient(ctx, queries, &snapshot, state.receipt.RecipientAgentID)
+	state.recipient, state.task, state.head = snapshot.recipient, snapshot.task, snapshot.head
 	return state, err
 }
 
@@ -128,7 +127,7 @@ func (handler *Handler) deliverDecisionWakeReceipt(ctx context.Context, receiptI
 }
 
 func (handler *Handler) tryDeliverDecisionWakeReceipt(ctx context.Context, receiptID pgtype.UUID) (restart bool, err error) {
-	state, err := loadDecisionReceiptState(ctx, handler.Queries, receiptID)
+	state, err := handler.loadDecisionReceiptState(ctx, handler.Queries, receiptID)
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && state.receipt.Status != "pending" {
 		return false, nil
 	}
@@ -174,7 +173,7 @@ func (handler *Handler) tryDeliverDecisionWakeReceipt(ctx context.Context, recei
 	if _, err := queries.LockDecisionWakeReceipt(ctx, receiptID); err != nil {
 		return false, err
 	}
-	current, err := loadDecisionReceiptState(ctx, queries, receiptID)
+	current, err := handler.loadDecisionReceiptState(ctx, queries, receiptID)
 	if err != nil {
 		return false, err
 	}
@@ -188,11 +187,10 @@ func (handler *Handler) tryDeliverDecisionWakeReceipt(ctx context.Context, recei
 		if err != nil {
 			return false, err
 		}
-		dispatched, queued, err := handler.dispatchDecisionInput(ctx, queries, decisionDispatch{
-			issue: state.issue, recipient: state.recipient, squadID: state.receipt.SquadID, task: state.task, head: state.head,
-			trigger: trigger, commentIDs: []pgtype.UUID{trigger.ID},
-			summary: fmt.Sprintf("Human action request %s: %s.\n- Source comment %s\n", uuidToString(state.request.ID), state.event.Type, uuidToString(trigger.ID)),
-		})
+		dispatched, queued, err := handler.dispatchDecisionInputs(ctx, queries,
+			decisionWakeSnapshot{issue: state.issue, recipient: state.recipient, squadID: state.receipt.SquadID, task: state.task, head: state.head},
+			trigger, []pgtype.UUID{trigger.ID},
+			fmt.Sprintf("Human action request %s: %s.\n- Source comment %s\n", uuidToString(state.request.ID), state.event.Type, uuidToString(trigger.ID)))
 		if err != nil || dispatched == "" {
 			return false, err
 		}

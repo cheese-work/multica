@@ -329,6 +329,9 @@ func (h *Handler) writeIssueLocked(ctx context.Context, q *db.Queries, workspace
 			return db.Issue{}, nil, err
 		}
 	}
+	if err := h.applyDecisionEpisode(ctx, q, workspaceID, wf, &params); err != nil {
+		return db.Issue{}, nil, err
+	}
 	issue, cancelledWakeups, err := updateIssueStoppingWakeups(ctx, q, params)
 	if err != nil {
 		return issue, nil, err
@@ -4260,6 +4263,9 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 		}
 	}
 	refreshUntouchedNullableIssueParams(&params, current, rawFields, false)
+	if err := h.applyDecisionEpisode(ctx, qtx, workspaceID, wf, &params); err != nil {
+		return db.Issue{}, current, false, err
+	}
 
 	issue, cancelledWakeups, err := updateIssueStoppingWakeups(ctx, qtx, params)
 	if err != nil {
@@ -5613,6 +5619,11 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			}
 			if errors.Is(err, errBudgetRebinding) {
 				failed = append(failed, map[string]any{"id": issueID, "code": budgetRebindingCode})
+				continue
+			}
+			var refused *decisionEpisodeRefusal
+			if errors.As(err, &refused) {
+				failed = append(failed, map[string]any{"id": issueID, "code": "decision_episode_refused", "error": refused.Error()})
 				continue
 			}
 			slog.Warn("batch update issue failed", "issue_id", issueID, "error", err)

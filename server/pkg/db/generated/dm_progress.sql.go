@@ -182,7 +182,7 @@ func (q *Queries) GetActiveDMProgressFollow(ctx context.Context, arg GetActiveDM
 }
 
 const getNativeChatSession = `-- name: GetNativeChatSession :one
-SELECT session.id, session.workspace_id, session.agent_id, session.creator_id, session.title, session.session_id, session.work_dir, session.status, session.created_at, session.updated_at, session.unread_since, session.runtime_id, session.last_read_at, session.is_agent_intro, session.pinned_at, session.project_id, session.explicitly_created_at, session.continued_from_session_id, session.continued_into_session_id, session.channel_origin_at, session.forked_from_session_id, session.fork_idempotency_key, session.fork_last_message_id, session.fork_message_count, session.fork_source_message_id, session.title_manually_set, session.compaction_epoch, session.preset_name, session.decision_topic_id FROM chat_session session
+SELECT session.id, session.workspace_id, session.agent_id, session.creator_id, session.title, session.session_id, session.work_dir, session.status, session.created_at, session.updated_at, session.unread_since, session.runtime_id, session.last_read_at, session.is_agent_intro, session.pinned_at, session.project_id, session.explicitly_created_at, session.continued_from_session_id, session.continued_into_session_id, session.channel_origin_at, session.forked_from_session_id, session.fork_idempotency_key, session.fork_last_message_id, session.fork_message_count, session.fork_source_message_id, session.title_manually_set, session.compaction_epoch, session.preset_name, session.decision_topic_id, session.chain_root_session_id, session.taint_ids, session.taint_verified FROM chat_session session
 WHERE session.id = $1
   AND session.channel_origin_at IS NULL
   AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
@@ -222,6 +222,9 @@ func (q *Queries) GetNativeChatSession(ctx context.Context, id pgtype.UUID) (Cha
 		&i.CompactionEpoch,
 		&i.PresetName,
 		&i.DecisionTopicID,
+		&i.ChainRootSessionID,
+		&i.TaintIds,
+		&i.TaintVerified,
 	)
 	return i, err
 }

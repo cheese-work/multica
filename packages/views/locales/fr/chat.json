@@ -333,7 +333,8 @@
     "cancel": "Annuler",
     "cancel_label": "Annuler la relance prévue à {{time}}",
     "cancel_failed": "Impossible d'annuler la relance",
-    "load_failed": "Impossible de charger les suivis planifiés. Réessayer"
+    "load_failed": "Impossible de charger les suivis planifiés. Réessayer",
+    "watching_until": "Surveille la demande · jusqu'à {{time}}"
   },
   "annotations": {
     "one_request": "Envoyez les commentaires sur une seule demande de décision à la fois.",
