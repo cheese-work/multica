@@ -114,8 +114,8 @@ WHERE i.id = ANY(@ids::uuid[]) AND i.kind = 'ask' AND i.resolved_at IS NULL
 
 -- name: RecordChatTurnOutcome :exec
 -- One row per task; the first outcome wins.
-INSERT INTO chat_turn_outcome (task_id, chat_session_id, chain_root_session_id, user_id, kind)
-VALUES (@task_id, @chat_session_id, @chain_root_session_id, @user_id, @kind)
+INSERT INTO chat_turn_outcome (task_id, workspace_id, chat_session_id, chain_root_session_id, user_id, kind)
+VALUES (@task_id, @workspace_id, @chat_session_id, @chain_root_session_id, @user_id, @kind)
 ON CONFLICT (task_id) DO NOTHING;
 
 -- name: ClearChatAttentionWaitingForTasks :exec
@@ -126,8 +126,8 @@ WHERE waiting_task_id = ANY(@task_ids::uuid[]);
 
 -- name: RecordUnclassifiedChatTurns :exec
 -- T9: a completed chat task that reported no outcome is an unclassified turn. Compaction tasks are not turns.
-INSERT INTO chat_turn_outcome (task_id, chat_session_id, chain_root_session_id, user_id, kind)
-SELECT t.id, s.id, s.chain_root_session_id, s.creator_id, 'unclassified'
+INSERT INTO chat_turn_outcome (task_id, workspace_id, chat_session_id, chain_root_session_id, user_id, kind)
+SELECT t.id, s.workspace_id, s.id, s.chain_root_session_id, s.creator_id, 'unclassified'
 FROM agent_task_queue t
 JOIN chat_session s ON s.id = t.chat_session_id
 WHERE t.id = ANY(@task_ids::uuid[]) AND t.status = 'completed' AND t.task_kind IS DISTINCT FROM 'compact'

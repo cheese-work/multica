@@ -444,13 +444,14 @@ func (q *Queries) ListOpenChatAttentionAsksOfAgent(ctx context.Context, arg List
 }
 
 const recordChatTurnOutcome = `-- name: RecordChatTurnOutcome :exec
-INSERT INTO chat_turn_outcome (task_id, chat_session_id, chain_root_session_id, user_id, kind)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO chat_turn_outcome (task_id, workspace_id, chat_session_id, chain_root_session_id, user_id, kind)
+VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (task_id) DO NOTHING
 `
 
 type RecordChatTurnOutcomeParams struct {
 	TaskID             pgtype.UUID `json:"task_id"`
+	WorkspaceID        pgtype.UUID `json:"workspace_id"`
 	ChatSessionID      pgtype.UUID `json:"chat_session_id"`
 	ChainRootSessionID pgtype.UUID `json:"chain_root_session_id"`
 	UserID             pgtype.UUID `json:"user_id"`
@@ -461,6 +462,7 @@ type RecordChatTurnOutcomeParams struct {
 func (q *Queries) RecordChatTurnOutcome(ctx context.Context, arg RecordChatTurnOutcomeParams) error {
 	_, err := q.db.Exec(ctx, recordChatTurnOutcome,
 		arg.TaskID,
+		arg.WorkspaceID,
 		arg.ChatSessionID,
 		arg.ChainRootSessionID,
 		arg.UserID,
@@ -470,8 +472,8 @@ func (q *Queries) RecordChatTurnOutcome(ctx context.Context, arg RecordChatTurnO
 }
 
 const recordUnclassifiedChatTurns = `-- name: RecordUnclassifiedChatTurns :exec
-INSERT INTO chat_turn_outcome (task_id, chat_session_id, chain_root_session_id, user_id, kind)
-SELECT t.id, s.id, s.chain_root_session_id, s.creator_id, 'unclassified'
+INSERT INTO chat_turn_outcome (task_id, workspace_id, chat_session_id, chain_root_session_id, user_id, kind)
+SELECT t.id, s.workspace_id, s.id, s.chain_root_session_id, s.creator_id, 'unclassified'
 FROM agent_task_queue t
 JOIN chat_session s ON s.id = t.chat_session_id
 WHERE t.id = ANY($1::uuid[]) AND t.status = 'completed' AND t.task_kind IS DISTINCT FROM 'compact'

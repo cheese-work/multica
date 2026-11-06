@@ -92,6 +92,13 @@ func (h *Handler) revokeAndRemoveMember(ctx context.Context, workspaceID, userID
 			}
 		}
 
+		// Sessions before agents (chat_session -> agent -> task): chat enqueue
+		// holds a session while it locks the agent, so archiving the agents
+		// first would deadlock a concurrent send.
+		if _, err := qtx.LockChatSessionsForRuntimes(ctx, runtimeIDs); err != nil {
+			return empty, err
+		}
+
 		result.ArchivedAgents, err = qtx.ArchiveAgentsByRuntime(ctx, db.ArchiveAgentsByRuntimeParams{
 			ArchivedBy: archivedBy,
 			RuntimeIds: runtimeIDs,
@@ -109,12 +116,6 @@ func (h *Handler) revokeAndRemoveMember(ctx context.Context, workspaceID, userID
 		archivedAgentIDs := make([]pgtype.UUID, len(result.ArchivedAgents))
 		for i, a := range result.ArchivedAgents {
 			archivedAgentIDs[i] = a.ID
-		}
-		if _, err := qtx.LockChatSessionsForActiveTasksByRuntimeOrAgent(ctx, db.LockChatSessionsForActiveTasksByRuntimeOrAgentParams{
-			RuntimeIds: runtimeIDs,
-			AgentIds:   archivedAgentIDs,
-		}); err != nil {
-			return empty, err
 		}
 		result.CancelledTasks, err = qtx.CancelAgentTasksByRuntimeOrAgent(ctx, db.CancelAgentTasksByRuntimeOrAgentParams{
 			RuntimeIds: runtimeIDs,

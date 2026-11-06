@@ -102,10 +102,10 @@ func TestLoadChatAttention(t *testing.T) {
 	}
 	// Finished turns are recorded when they end (CHE-4149); only the latest recorded turn can be unclassified.
 	for _, id := range []string{task(z, "completed", 3*time.Hour), task(z, "completed", time.Hour)} {
-		mustExec(`INSERT INTO chat_turn_outcome (task_id, chat_session_id, chain_root_session_id, user_id, kind) VALUES ($1, $2, $2, $3, 'unclassified')`, id, z, userID)
+		mustExec(`INSERT INTO chat_turn_outcome (task_id, workspace_id, chat_session_id, chain_root_session_id, user_id, kind) VALUES ($1, $4, $2, $2, $3, 'unclassified')`, id, z, userID, workspaceID)
 	}
 	latestZ := task(z, "completed", time.Hour/2)
-	mustExec(`INSERT INTO chat_turn_outcome (task_id, chat_session_id, chain_root_session_id, user_id, kind) VALUES ($1, $2, $2, $3, 'unclassified')`, latestZ, z, userID)
+	mustExec(`INSERT INTO chat_turn_outcome (task_id, workspace_id, chat_session_id, chain_root_session_id, user_id, kind) VALUES ($1, $4, $2, $2, $3, 'unclassified')`, latestZ, z, userID, workspaceID)
 	task(z, "running", 0) // not finished: not a turn
 
 	got, err := LoadChatAttention(ctx, q, util.MustParseUUID(workspaceID), util.MustParseUUID(userID), now)

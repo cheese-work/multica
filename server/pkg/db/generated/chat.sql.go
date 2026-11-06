@@ -4431,29 +4431,29 @@ func (q *Queries) LockChatSessionsByWorkspace(ctx context.Context, workspaceID p
 	return items, nil
 }
 
-const lockChatSessionsForActiveTasksByRuntimeOrAgent = `-- name: LockChatSessionsForActiveTasksByRuntimeOrAgent :many
+const lockChatSessionsForRuntimes = `-- name: LockChatSessionsForRuntimes :many
 SELECT cs.id FROM chat_session cs
-WHERE EXISTS (
-    SELECT 1 FROM agent_task_queue task
-    WHERE task.chat_session_id = cs.id
-      AND (task.runtime_id = ANY($1::uuid[]) OR task.agent_id = ANY($2::uuid[]))
-      AND task.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
-)
+WHERE cs.agent_id IN (SELECT a.id FROM agent a WHERE a.runtime_id = ANY($1::uuid[]))
+   OR EXISTS (
+        SELECT 1 FROM agent_task_queue task
+        WHERE task.chat_session_id = cs.id
+          AND task.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+          AND (task.runtime_id = ANY($1::uuid[])
+               OR task.agent_id IN (SELECT a.id FROM agent a WHERE a.runtime_id = ANY($1::uuid[])))
+   )
 ORDER BY cs.id
 FOR UPDATE OF cs
 `
 
-type LockChatSessionsForActiveTasksByRuntimeOrAgentParams struct {
-	RuntimeIds []pgtype.UUID `json:"runtime_ids"`
-	AgentIds   []pgtype.UUID `json:"agent_ids"`
-}
-
-// Session half of CancelAgentTasksByRuntimeOrAgent: the sessions of the chat
-// tasks it is about to cancel, taken before it so the cancel follows the
-// chat_session -> agent_task_queue order. ORDER BY id keeps two cancellers
-// from deadlocking against each other.
-func (q *Queries) LockChatSessionsForActiveTasksByRuntimeOrAgent(ctx context.Context, arg LockChatSessionsForActiveTasksByRuntimeOrAgentParams) ([]pgtype.UUID, error) {
-	rows, err := q.db.Query(ctx, lockChatSessionsForActiveTasksByRuntimeOrAgent, arg.RuntimeIds, arg.AgentIds)
+// Session half of every runtime-wide teardown (member revocation, runtime
+// delete). The one lock order is chat_session -> agent -> agent_task_queue:
+// chat enqueue takes the session then the agent, so a teardown that archives or
+// locks the runtime's agents must already hold the sessions of those agents,
+// or the two deadlock. Covers sessions of agents bound to the runtimes and
+// sessions of any active task pinned to them. ORDER BY id keeps two
+// teardowns from deadlocking against each other.
+func (q *Queries) LockChatSessionsForRuntimes(ctx context.Context, runtimeIds []pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, lockChatSessionsForRuntimes, runtimeIds)
 	if err != nil {
 		return nil, err
 	}

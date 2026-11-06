@@ -90,7 +90,7 @@ func (s *TaskService) RecordChatOutcome(ctx context.Context, taskID pgtype.UUID,
 		return nil, err
 	}
 	if err := q.RecordChatTurnOutcome(ctx, db.RecordChatTurnOutcomeParams{
-		TaskID: task.ID, ChatSessionID: session.ID, ChainRootSessionID: session.ChainRootSessionID, UserID: session.CreatorID, Kind: in.Kind,
+		TaskID: task.ID, WorkspaceID: session.WorkspaceID, ChatSessionID: session.ID, ChainRootSessionID: session.ChainRootSessionID, UserID: session.CreatorID, Kind: in.Kind,
 	}); err != nil {
 		return nil, fmt.Errorf("record turn outcome: %w", err)
 	}

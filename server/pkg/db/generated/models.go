@@ -710,6 +710,7 @@ type ChatTaskSupplement struct {
 
 type ChatTurnOutcome struct {
 	TaskID             pgtype.UUID        `json:"task_id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
 	ChatSessionID      pgtype.UUID        `json:"chat_session_id"`
 	ChainRootSessionID pgtype.UUID        `json:"chain_root_session_id"`
 	UserID             pgtype.UUID        `json:"user_id"`

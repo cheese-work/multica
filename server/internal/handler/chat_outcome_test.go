@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -592,4 +593,75 @@ func TestOutcomeAndRealArchivalCancelDoNotConflict(t *testing.T) {
 	if resolved := dm.state(t, ask).ResolvedBy != nil; resolved != (w.Code == http.StatusOK) {
 		t.Fatalf("outcome %d but ask resolved=%v", w.Code, resolved)
 	}
+}
+
+// Lock order is chat_session -> agent -> task. A real chat send holds the session while it locks the
+// agent; a revoke or runtime delete that locked the agent first and then queued for the session
+// deadlocked with it (40P01). A gate holds the session so the send queues first and the teardown
+// queues second; both handlers then run for real when the gate opens. Neither may fail.
+func raceSendAgainstTeardown(t *testing.T, dm attentionDM, teardown func() error) {
+	t.Helper()
+	gate, err := testPool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = gate.Rollback(context.Background()) }()
+	if _, err := gate.Exec(t.Context(), `SELECT id FROM chat_session WHERE id = $1 FOR UPDATE`, dm.sessionID); err != nil {
+		t.Fatal(err)
+	}
+
+	sent := make(chan *httptest.ResponseRecorder, 1)
+	torn := make(chan error, 1)
+	go func() { sent <- dm.send(t, "racing the teardown") }()
+	time.Sleep(500 * time.Millisecond)
+	go func() { torn <- teardown() }()
+	time.Sleep(500 * time.Millisecond)
+	if err := gate.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case w := <-sent:
+		if w.Code/100 != 2 {
+			t.Fatalf("send racing a teardown: %d %s, want 2xx", w.Code, w.Body.String())
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("send did not finish: deadlock with the teardown")
+	}
+	select {
+	case err := <-torn:
+		if err != nil {
+			t.Fatalf("teardown racing a send: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("teardown did not finish: deadlock with the send")
+	}
+}
+
+func TestChatSendAndMemberRevocationDoNotDeadlock(t *testing.T) {
+	dm := newAttentionDM(t)
+	member := createPermissionTestMember(t, "revoke-race-"+dm.sessionID+"@example.com")
+	dbfx.Exec(t, `UPDATE agent_runtime SET owner_id = $1, visibility = 'public' WHERE id = $2`, member, dm.runtimeID)
+	var memberRow string
+	dbfx.QueryRow(t, `SELECT id FROM member WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, member).Scan(&memberRow)
+
+	raceSendAgainstTeardown(t, dm, func() error {
+		_, err := testHandler.revokeAndRemoveMember(context.Background(),
+			parseUUID(testWorkspaceID), parseUUID(member), parseUUID(memberRow), parseUUID(testUserID))
+		return err
+	})
+}
+
+func TestChatSendAndRuntimeDeleteDoNotDeadlock(t *testing.T) {
+	dm := newAttentionDM(t)
+	raceSendAgainstTeardown(t, dm, func() error {
+		body := map[string]any{"expected_active_agent_ids": []string{dm.agentID}}
+		req := withURLParam(newRequest(http.MethodPost, "/api/runtimes/"+dm.runtimeID+"/unbind-agents-and-delete", body), "runtimeId", dm.runtimeID)
+		w := httptest.NewRecorder()
+		testHandler.UnbindAgentsAndDeleteRuntime(w, req)
+		if w.Code != http.StatusOK {
+			return fmt.Errorf("runtime delete: %d %s", w.Code, w.Body.String())
+		}
+		return nil
+	})
 }
