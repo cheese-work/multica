@@ -575,3 +575,38 @@ func TestChatTaskAuthorityRetryAfterSlowSettingsTransactionIsRefused(t *testing.
 		t.Fatalf("child=%v err=%v, want no retry after a change committed behind the failed task", child, err)
 	}
 }
+
+// The history and thread routes take the same authority check as the messages
+// route: a compaction task whose agent is no longer the current compact agent
+// reads nothing, even though its token still binds it to the DM session.
+func TestChatTaskAuthorityHistoryRoutesUseSharedCheck(t *testing.T) {
+	routes := map[string]func(http.ResponseWriter, *http.Request){
+		"history": testHandler.GetChatChannelHistory,
+		"thread":  testHandler.GetChatThread,
+	}
+	get := func(a *authorityFixture, route, taskID string) int {
+		req := withChatTestWorkspaceCtx(a.t, taskActorReq("/api/chat/"+route, taskID))
+		rec := httptest.NewRecorder()
+		routes[route](rec, req)
+		return rec.Code
+	}
+	for route := range routes {
+		t.Run(route, func(t *testing.T) {
+			a := newAuthorityFixture(t)
+			a.setCompact(a.dmAgent)
+			stale := a.task(a.dmAgent, "running", taskPurposeCompaction)
+			a.setCompact(a.compactAgent)
+			current := a.task(a.compactAgent, "running", taskPurposeCompaction)
+			ordinary := a.task(a.dmAgent, "running", "")
+
+			if code := get(a, route, stale); code != http.StatusForbidden {
+				t.Fatalf("stale compaction task: status %d, want 403", code)
+			}
+			for name, id := range map[string]string{"current compact agent": current, "ordinary DM task": ordinary} {
+				if code := get(a, route, id); code != http.StatusOK {
+					t.Fatalf("%s: status %d, want 200", name, code)
+				}
+			}
+		})
+	}
+}
