@@ -258,11 +258,15 @@ def evaluate(pr: dict, comments: list[dict], trusted_ids: set[int], diff_text: s
         if (v["repo"], v["pr"], v["base"]) != (pr["repo"], pr["number"], pr["base_ref"]):
             why.append(f"verdict is for {v['repo']}#{v['pr']} into {v['base']}, not this PR")
             continue
-        latest[v["agent"]] = v  # the newest verdict wins before the head check: a later FAIL must not be skipped
-    for agent, v in list(latest.items()):
-        if v["sha"] != head and not (digest and v["digest"] == digest):
+        applies = v["sha"] == head or bool(digest and v["digest"] == digest)
+        # A verdict that does not apply to this head/diff never replaces an applicable one from the same reviewer
+        # (a delayed stale PASS must not erase a current FAIL). A FAIL stands unless its digest names another diff:
+        # a later FAIL must not be skipped, and a digest-less FAIL keeps blocking until its reviewer posts a newer
+        # applicable verdict.
+        if applies or (v["result"] == "FAIL" and not v["digest"]):
+            latest[v["agent"]] = v
+        else:
             why.append(f"verdict is for {v['sha'][:12]}, head is {head[:12]}")
-            del latest[agent]
     passes = []
     for agent, v in latest.items():
         lab = lab_of(agent)
