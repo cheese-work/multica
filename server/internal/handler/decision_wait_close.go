@@ -138,7 +138,7 @@ func (handler *Handler) closeDecisionEpisode(ctx context.Context, snapshot decis
 		}
 		if def != nil && !def.Has(issuestatus.Blocked) {
 			transaction.Rollback(ctx)
-			return false, handler.Queries.MarkDecisionWaitDispatchRefused(ctx, db.MarkDecisionWaitDispatchRefusedParams{WorkspaceID: workspaceID, ID: wait.ID})
+			return false, handler.Queries.MarkDecisionWaitCloseRefused(ctx, db.MarkDecisionWaitCloseRefusedParams{WorkspaceID: workspaceID, ID: wait.ID})
 		}
 	}
 	// The episode is claimed before any status write, so the write finds no open wait.

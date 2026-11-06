@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/multica-ai/multica/server/internal/service"
 )
 
 // deliverEpisodeOnly runs the episode stage alone. decisionPass would run the
@@ -225,5 +227,36 @@ func TestDecisionEpisodeNoResumeAgentWithoutBlockedStepKeepsEpisodeOpen(t *testi
 	}
 	if status, _, _ := issueStatusAndAssignee(t, f.issueID); status != "need_decision" {
 		t.Fatalf("issue = %s, want unchanged need_decision", status)
+	}
+}
+
+// Terra review round 2 on CHE-3047: a suspended episode that cannot close
+// (no resume agent, no blocked step) is an unconditional candidate. It must
+// rotate behind the others (the candidate query sorts marked episodes last),
+// or 100 of them starve a later ready episode.
+func TestDecisionEpisodeUnclosableSuspendedDemotedBehindReadyEpisode(t *testing.T) {
+	stuck := newEpisodeFixture(t, false)
+	stuck.enter(t)
+	stuck.answerRequest(t, stuck.requestID, -time.Minute, false)
+	dbfx.Exec(t, `UPDATE issue_workflow SET steps = (SELECT jsonb_agg(s) FROM jsonb_array_elements(steps) s WHERE s ->> 'status_key' <> 'blocked')
+		WHERE id = (SELECT workflow_id FROM project WHERE id = (SELECT project_id FROM issue WHERE id = $1))`, stuck.issueID)
+	stuck.exhaustBudget(t)
+	stuck.deliverEpisodeOnly(t)
+	service.WaitRunBudgetHooks()
+	if s := stuck.suspension(t); s.phase != "suspended" {
+		t.Fatalf("episode = %+v, want suspended", s)
+	}
+	var runtimeID string
+	dbfx.QueryRow(t, `SELECT runtime_id::text FROM agent WHERE id = $1`, stuck.agentID).Scan(&runtimeID)
+	t.Cleanup(func() { dbfx.Exec(t, `UPDATE agent SET runtime_id = $2 WHERE id = $1`, stuck.agentID, runtimeID) })
+	dbfx.Exec(t, `UPDATE agent SET runtime_id = NULL WHERE id = $1`, stuck.agentID)
+
+	stuck.deliverEpisodeOnly(t)
+
+	// The candidate query sorts a marked episode behind the unmarked ones and rotates it.
+	var demoted bool
+	dbfx.QueryRow(t, `SELECT dispatch_refused_since IS NOT NULL FROM decision_wait WHERE issue_id = $1 AND closed_at IS NULL`, stuck.issueID).Scan(&demoted)
+	if !demoted {
+		t.Fatal("the unclosable suspended episode was not demoted: it keeps its slot ahead of ready episodes")
 	}
 }

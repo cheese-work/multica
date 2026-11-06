@@ -769,6 +769,24 @@ func (q *Queries) LockDecisionWait(ctx context.Context, arg LockDecisionWaitPara
 	return i, err
 }
 
+const markDecisionWaitCloseRefused = `-- name: MarkDecisionWaitCloseRefused :exec
+UPDATE decision_wait SET dispatch_refused_since = now()
+WHERE workspace_id = $1 AND id = $2
+  AND dispatch_refused_since IS NULL AND closed_at IS NULL
+`
+
+type MarkDecisionWaitCloseRefusedParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+// A system close that cannot complete (no blocked step for no_resume_agent)
+// demotes the episode in any phase, so suspended ones rotate out of the batch too.
+func (q *Queries) MarkDecisionWaitCloseRefused(ctx context.Context, arg MarkDecisionWaitCloseRefusedParams) error {
+	_, err := q.db.Exec(ctx, markDecisionWaitCloseRefused, arg.WorkspaceID, arg.ID)
+	return err
+}
+
 const markDecisionWaitDispatchRefused = `-- name: MarkDecisionWaitDispatchRefused :exec
 UPDATE decision_wait SET dispatch_refused_since = now()
 WHERE workspace_id = $1 AND id = $2

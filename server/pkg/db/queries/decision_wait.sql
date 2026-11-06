@@ -144,6 +144,13 @@ UPDATE decision_wait SET dispatch_refused_since = now()
 WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
   AND dispatch_refused_since IS NULL AND closed_at IS NULL AND phase = 'waiting';
 
+-- name: MarkDecisionWaitCloseRefused :exec
+-- A system close that cannot complete (no blocked step for no_resume_agent)
+-- demotes the episode in any phase, so suspended ones rotate out of the batch too.
+UPDATE decision_wait SET dispatch_refused_since = now()
+WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
+  AND dispatch_refused_since IS NULL AND closed_at IS NULL;
+
 -- name: ListDecisionEpisodeCandidates :many
 -- Non-closed episodes that §6 can act on now (design §4.4.1). A closed issue
 -- or an unavailable asking agent makes the episode a system-close candidate
