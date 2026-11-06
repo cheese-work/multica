@@ -1290,7 +1290,10 @@ func (s *TaskService) EnqueueCommentTriggeredTask(ctx context.Context, issue db.
 		task, attr, err = s.enqueueMentionTaskWithQueriesAndOverlay(ctx, queries, issue, agentID, triggerCommentID, nil, isLeader, squadID, false, handoffNote, actorUserID, pgtype.UUID{}, origin, preparedOverlay)
 	}
 	if err != nil {
-		return db.AgentTaskQueue{}, err
+		// A stage refusal must outlive this transaction: roll back, then
+		// write the queue mark on the pool.
+		_ = tx.Rollback(ctx)
+		return db.AgentTaskQueue{}, s.recordStageRefusal(ctx, err)
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO comment_trigger_rate_limit (issue_id, agent_id, triggered_at)
 		VALUES ($1, $2, now())
@@ -1613,7 +1616,7 @@ func (s *TaskService) prepareIssueTaskWithQueriesAndOverlay(ctx context.Context,
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "issue has no assignee")
 		return db.CreateAgentTaskParams{}, attribution.Result{}, fmt.Errorf("issue has no assignee")
 	}
-	if _, err := guardIssueRunGate(ctx, queries, issue.ID, origin, issueRunTarget(issue, triggerCommentID, fireAt)); err != nil {
+	if _, err := guardIssueRunGate(ctx, queries, issue.ID, origin, issueRunTarget(issue, triggerCommentID, actorUserID, fireAt)); err != nil {
 		return db.CreateAgentTaskParams{}, attribution.Result{}, err
 	}
 
@@ -1677,19 +1680,19 @@ func (s *TaskService) prepareIssueTaskWithQueriesAndOverlay(ctx context.Context,
 	}, attr, nil
 }
 
-func issueRunTarget(issue db.Issue, triggerCommentID pgtype.UUID, fireAt pgtype.Timestamptz) RunTarget {
+func issueRunTarget(issue db.Issue, triggerCommentID, actorUserID pgtype.UUID, fireAt pgtype.Timestamptz) RunTarget {
 	trigger := "assignment or status handoff"
 	if triggerCommentID.Valid {
 		trigger = "comment"
 	}
-	return RunTarget{AgentID: issue.AssigneeID, Trigger: trigger, ReviewRun: !fireAt.Valid}
+	return RunTarget{AgentID: issue.AssigneeID, Trigger: trigger, ReviewRun: !fireAt.Valid, ActorUserID: actorUserID, TriggerCommentID: triggerCommentID}
 }
 
 // insertPreparedIssueTask takes the issue's budget lock through queries, admits
 // the run and inserts it: the lock lasts until the caller's transaction ends.
 // queries must not need a second connection.
 func (s *TaskService) insertPreparedIssueTask(ctx context.Context, queries *db.Queries, issue db.Issue, createParams db.CreateAgentTaskParams, fireAt pgtype.Timestamptz, origin RunOrigin) (db.AgentTaskQueue, error) {
-	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, issueRunTarget(issue, createParams.TriggerCommentID, fireAt))
+	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, issueRunTarget(issue, createParams.TriggerCommentID, createParams.OriginatorUserID, fireAt))
 	if err != nil {
 		return db.AgentTaskQueue{}, err
 	}
@@ -1809,7 +1812,7 @@ func (s *TaskService) EnqueuePreparedTaskForMentionInTx(ctx context.Context, que
 }
 
 func (s *TaskService) enqueuePreparedInTx(ctx context.Context, queries *db.Queries, issue db.Issue, params db.CreateAgentTaskParams, origin RunOrigin, trigger string) (db.AgentTaskQueue, error) {
-	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, RunTarget{AgentID: params.AgentID, Trigger: trigger, ReviewRun: true})
+	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, RunTarget{AgentID: params.AgentID, Trigger: trigger, ReviewRun: true, ActorUserID: params.OriginatorUserID, TriggerCommentID: params.TriggerCommentID})
 	if err != nil {
 		return db.AgentTaskQueue{}, err
 	}
@@ -1899,7 +1902,7 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 			slog.Debug("mention task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
 			return db.AgentTaskQueue{}, ErrDuplicatePendingTask
 		}
-		if !errors.Is(err, ErrRunBudgetExhausted) {
+		if !errors.Is(err, ErrRunBudgetExhausted) && !errors.Is(err, ErrStageQueueFull) {
 			slog.Error("mention task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
 		}
 		return db.AgentTaskQueue{}, err
@@ -1945,7 +1948,7 @@ func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Contex
 	if isLeader {
 		trigger = "squad leader callback"
 	}
-	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, RunTarget{AgentID: agentID, Trigger: trigger, ReviewRun: true})
+	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, RunTarget{AgentID: agentID, Trigger: trigger, ReviewRun: true, ActorUserID: actorUserID, TriggerCommentID: triggerCommentID})
 	if err != nil {
 		return db.CreateAgentTaskParams{}, attribution.Result{}, err
 	}
@@ -3366,6 +3369,13 @@ func (s *TaskService) BroadcastCancelledTasks(ctx context.Context, workspaceID s
 // BroadcastTaskQueued emits a post-commit queue invalidation for clients.
 func (s *TaskService) BroadcastTaskQueued(ctx context.Context, task db.AgentTaskQueue) {
 	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
+}
+
+// BroadcastTaskCoalesced tells clients a pending run took in another comment.
+// The run keeps its status, but its trigger and covered comments changed, and
+// clients place the run under the newest comment it answers.
+func (s *TaskService) BroadcastTaskCoalesced(ctx context.Context, task db.AgentTaskQueue) {
+	s.broadcastTaskEvent(ctx, protocol.EventTaskCoalesced, task)
 }
 
 // CaptureCancelledTasks records analytics for an already-committed bulk
@@ -5409,6 +5419,9 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 			return err
 		}
 		task = t
+		if err := recordProviderSuccess(ctx, qtx, t); err != nil {
+			return err
+		}
 		change, err = syncQoderIssue(ctx, qtx, t, true)
 		if err != nil {
 			return err
@@ -5986,6 +5999,11 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			return err
 		}
 		task = t
+		if t.Status == "failed" && failureReason == taskfailure.ReasonAgentProviderServerError.String() {
+			if err := recordProviderServerFailure(ctx, qtx, t); err != nil {
+				return err
+			}
+		}
 
 		// Keep resume-unsafe sessions on the task row for observability, but
 		// do not promote them to the chat-level resume pointer.
@@ -6285,6 +6303,9 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 	// both sides of a cross-issue handoff.
 	if errMsg != "" && task.IssueID.Valid && retried == nil {
 		s.createAgentComment(ctx, task.IssueID, task.AgentID, redact.Text(errMsg), "system", task.TriggerCommentID, task.ID)
+	}
+	if retried == nil {
+		s.failOverRoutingTask(ctx, task, failureReason)
 	}
 	// CHE-607: errMsg above is the proximate cause (e.g. a stream disconnect) —
 	// on its own it says nothing about why the auto-retry that would normally
@@ -6694,7 +6715,7 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		return nil, err
 	}
 	if err := guardIssueRunAllowed(ctx, qtx, parent.IssueID, OriginDerived, RunTarget{AgentID: parent.AgentID, Trigger: "retry"}); err != nil {
-		if errors.Is(err, ErrIssueInTriage) || errors.Is(err, ErrRunBudgetExhausted) || IsProjectInactive(err) {
+		if errors.Is(err, ErrIssueInTriage) || errors.Is(err, ErrRunBudgetExhausted) || errors.Is(err, ErrStageQueueFull) || IsProjectInactive(err) {
 			slog.Info("task auto-retry skipped: issue does not run",
 				"parent_task_id", util.UUIDToString(parent.ID),
 				"issue_id", util.UUIDToString(parent.IssueID))
@@ -8111,6 +8132,7 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 				"failed_task_id", util.UUIDToString(target.failed.ID),
 				"coordinator_task_id", util.UUIDToString(merged.ID),
 			)
+			s.BroadcastTaskCoalesced(ctx, merged)
 			return delegatedFailureRecoveryReplayed, nil
 		} else if !errors.Is(err, pgx.ErrNoRows) {
 			return delegatedFailureRecoveryCovered, fmt.Errorf("merge recovery into pending task: %w", err)
@@ -8272,7 +8294,10 @@ func (s *TaskService) runInTx(ctx context.Context, fn func(*db.Queries) error) e
 	}
 	defer tx.Rollback(ctx)
 	if err := fn(s.Queries.WithTx(tx)); err != nil {
-		return err
+		// Roll back first: the refusal's mark row is uncommitted in this
+		// transaction and the pool write below would wait on it.
+		_ = tx.Rollback(ctx)
+		return s.recordStageRefusal(ctx, err)
 	}
 	return tx.Commit(ctx)
 }

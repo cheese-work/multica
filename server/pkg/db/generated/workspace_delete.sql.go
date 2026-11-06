@@ -11,6 +11,21 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteProviderBreakersForWorkspace = `-- name: DeleteProviderBreakersForWorkspace :exec
+
+DELETE FROM provider_breaker WHERE workspace_id = $1
+`
+
+// Workspace deletion is application-owned. These statements form a fixed,
+// bottom-up deletion plan; the legacy foreign keys remain only as a
+// compatibility safety net during the expand phase.
+// Provider breaker state is workspace-owned; remove it explicitly before the
+// workspace row instead of relying on the legacy FK cascade.
+func (q *Queries) DeleteProviderBreakersForWorkspace(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteProviderBreakersForWorkspace, workspaceID)
+	return err
+}
+
 const deleteTaskBatch = `-- name: DeleteTaskBatch :exec
 WITH
 batch AS MATERIALIZED (
@@ -260,6 +275,8 @@ WITH deleted_wakeup_pr_events AS (
  DELETE FROM dm_progress_follow WHERE workspace_id=$1
 ), deleted_dm_progress_lanes AS (
  DELETE FROM dm_progress_lane WHERE workspace_id=$1
+), deleted_dm_progress_data_incidents AS (
+ DELETE FROM dm_progress_data_incident WHERE workspace_id=$1
 ), deleted_wakeup_aggregate_reservations AS (
  DELETE FROM wakeup_aggregate_reservation WHERE workspace_id=$1
 ), deleted_wakeup_aggregate_budgets AS (
@@ -381,11 +398,20 @@ deleted_chat_wakeups AS (
 deleted_github_dispatch_halts AS (
     DELETE FROM github_dispatch_halt WHERE workspace_id = $1
 ),
+deleted_github_dispatch_halt_audits AS (
+    DELETE FROM github_dispatch_halt_audit WHERE workspace_id = $1
+),
+deleted_decision_waits AS (
+    DELETE FROM decision_wait WHERE workspace_id = $1
+),
 deleted_config_sync AS (
     DELETE FROM workspace_config_sync WHERE workspace_id = $1
 ),
 deleted_ask_guard_events AS (
     DELETE FROM ask_guard_event WHERE workspace_id = $1
+),
+deleted_system1_observations AS (
+    DELETE FROM system1_observation WHERE workspace_id = $1
 ),
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
@@ -695,8 +721,10 @@ WHERE channel_media_pending_object.workspace_id = $1
 // Same no-FK chore as chat_draft_restore above. Matched on workspace_id rather
 // than the session set because that column exists precisely so this statement
 // does not have to join through chat_session, which it deletes in this same CTE.
+// CHE-3045 L5b wait episodes: workspace-owned leaf, no FK.
 // CHE-3284 config-sync enrollment: workspace-owned leaf, no FK.
 // CHE-3345 ask guard events: workspace-owned leaf, no FK.
+// CHE-3628 shadow System 1 observations: workspace-owned leaf, no FK.
 // CHE-488 durable stage-completion-wake bookkeeping (stage_generation,
 // stage_completion_wake). Deleted before the parent issues below so neither
 // statement depends on FK cascade ordering.
@@ -1411,13 +1439,9 @@ func (q *Queries) PrepareWorkspaceDeletionLinks(ctx context.Context, workspaceID
 }
 
 const setWorkspaceTeardownMode = `-- name: SetWorkspaceTeardownMode :exec
-
 SELECT set_config('multica.workspace_teardown', 'on', true)
 `
 
-// Workspace deletion is application-owned. These statements form a fixed,
-// bottom-up deletion plan; the legacy foreign keys remain only as a
-// compatibility safety net during the expand phase.
 // The setting is transaction-local. Migration 242 makes only the three DELETE
 // dirty triggers skip their per-row work while this flag is on.
 func (q *Queries) SetWorkspaceTeardownMode(ctx context.Context) error {

@@ -20,7 +20,7 @@ import {
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { useModalStore } from "@multica/core/modals";
 import { useConfigStore } from "@multica/core/config";
-import { normalizeCommandURL } from "@multica/core/runtimes";
+import { instanceOrigin } from "@multica/core/config/instance-origin";
 import { isDesktopShell } from "../platform/local-directory";
 import { DISCORD_URL, DiscordIcon } from "./discord";
 import { useT } from "../i18n";
@@ -38,9 +38,10 @@ export function HelpLauncher() {
   const serverVersion = useConfigStore((state) => state.serverVersion);
   const serverBuild = useConfigStore((state) => state.serverBuild);
   // Self-hosted instances serve their own /changelog; `daemon_app_url` is
-  // omitted for the managed cloud, which keeps the brand site.
+  // omitted for the managed cloud, which keeps the brand site. Link to the
+  // origin the visitor is on, not the canonical app URL.
   const appUrl = useConfigStore((state) => state.daemonAppUrl);
-  const changelogUrl = `${normalizeCommandURL(appUrl) || BRAND_URL}/changelog`;
+  const changelogUrl = `${(appUrl && instanceOrigin(appUrl)) || BRAND_URL}/changelog`;
   const displayVersion = serverVersion
     ? serverBuild
       ? `${serverVersion}-${serverBuild}`

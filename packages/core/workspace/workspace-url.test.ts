@@ -1,7 +1,24 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { workspaceUrlHost } from "./workspace-url";
 
+afterEach(() => vi.unstubAllGlobals());
+
 describe("workspaceUrlHost", () => {
+  it("shows the host the visitor is on, not the configured app URL", () => {
+    vi.stubGlobal("location", {
+      protocol: "https:",
+      origin: "https://multica.congvc.dev",
+    });
+    expect(workspaceUrlHost("https://congvc-c00.taila6fa8a.ts.net:19443")).toBe(
+      "multica.congvc.dev",
+    );
+  });
+
+  it("keeps the brand host when no app URL is configured, even on a web page", () => {
+    vi.stubGlobal("location", { protocol: "https:", origin: "https://multica.ai" });
+    expect(workspaceUrlHost("")).toBe("multica.ai");
+  });
+
   it("returns the host of a full app URL", () => {
     expect(workspaceUrlHost("https://multica.example.com")).toBe(
       "multica.example.com",
