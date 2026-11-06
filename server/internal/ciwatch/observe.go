@@ -40,13 +40,19 @@ type ObservationWriter interface {
 	CreateSystem1Observation(ctx context.Context, arg db.CreateSystem1ObservationParams) error
 }
 
+// LabelSetter applies an outcome label to the observation of run.
+type LabelSetter interface {
+	Set(ctx context.Context, run Run, label string) error
+}
+
 // Observer writes system1_observation rows (kind=ci_event, decision_source=rule).
 // Call it only when Store reported a first insert (or for a P0 row), so a
 // redelivered run adds no row.
 type Observer struct {
 	W          ObservationWriter
-	Jev        Jev  // nil = off
-	JevEnabled bool // the jev_enabled switch
+	Labels     LabelSetter // nil = a P0 result's Label is not applied
+	Jev        Jev         // nil = off
+	JevEnabled bool        // the jev_enabled switch
 	Log        *slog.Logger
 }
 
@@ -67,6 +73,8 @@ func fmtKey(r Run) string {
 func (o Observer) Observe(ctx context.Context, run Run, res Result, h History) error {
 	feats := map[string]any{
 		"workflow_path": run.WorkflowPath, "event": run.Event, "branch": run.HeadBranch, "conclusion": run.Conclusion,
+		// join keys for the outcome labeler
+		"repo": run.RepoOwner + "/" + run.RepoName, "run_id": run.RunID, "run_attempt": run.RunAttempt, "head_sha": run.HeadSHA,
 	}
 	var class, choice string
 	switch res.Kind {
@@ -115,5 +123,11 @@ func (o Observer) Observe(ctx context.Context, run Run, res Result, h History) e
 			p.PredictedPrecedents = pgtype.Int4{Int32: int32(pred.Precedents), Valid: true}
 		}
 	}
-	return o.W.CreateSystem1Observation(ctx, p)
+	if err := o.W.CreateSystem1Observation(ctx, p); err != nil {
+		return err
+	}
+	if res.Kind == KindP0 && res.Label != "" && o.Labels != nil {
+		return o.Labels.Set(ctx, run, res.Label)
+	}
+	return nil
 }
