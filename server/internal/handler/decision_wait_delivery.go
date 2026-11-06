@@ -55,7 +55,7 @@ func episodeLiveRequests(snapshot decisionWakeSnapshot) map[pgtype.UUID]bool {
 
 // classifyEpisodeRequest is the §6.1 map. Every value the check constraints
 // allow lands in a row; a value without an explicit row falls to other_terminal.
-func classifyEpisodeRequest(request db.DecisionRequest, live map[pgtype.UUID]bool) terminalRow {
+func classifyEpisodeRequest(request db.DecisionRequest, live, actionExpired map[pgtype.UUID]bool) terminalRow {
 	switch request.Status {
 	case "answered":
 		if live[request.ID] {
@@ -66,6 +66,9 @@ func classifyEpisodeRequest(request db.DecisionRequest, live map[pgtype.UUID]boo
 		case "human_removed", "lane_archived":
 			return terminalRow{2, "reask"}
 		case "expired":
+			if actionExpired[request.ID] {
+				return terminalRow{3, "action_expired"}
+			}
 			return terminalRow{3, "expired"}
 		case "agent_withdrawn":
 			if request.WithdrawnByUserID.Valid {
@@ -168,12 +171,20 @@ func (handler *Handler) evaluateDecisionEpisode(ctx context.Context, queries *db
 			return verdict, err
 		}
 	}
+	expiredActions, err := queries.ListDecisionWaitExpiredActionRequests(ctx, db.ListDecisionWaitExpiredActionRequestsParams{WorkspaceID: snapshot.wait.WorkspaceID, RequestIds: snapshot.wait.RequestIds})
+	if err != nil {
+		return verdict, err
+	}
+	actionExpired := make(map[pgtype.UUID]bool, len(expiredActions))
+	for _, id := range expiredActions {
+		actionExpired[id] = true
+	}
 	verdict.wait, verdict.rows = false, make(map[pgtype.UUID]terminalRow, len(snapshot.requests))
 	best := terminalRow{priority: 99}
 	allTaskWithdrawn := len(snapshot.requests) > 0
 	var withdrawnBy pgtype.UUID
 	for _, request := range snapshot.requests {
-		row := classifyEpisodeRequest(request, live)
+		row := classifyEpisodeRequest(request, live, actionExpired)
 		verdict.rows[request.ID] = row
 		if row.priority < best.priority {
 			best = row
@@ -304,8 +315,16 @@ func (handler *Handler) episodeInputs(ctx context.Context, queries *db.Queries, 
 			// The quotes are listed with the answers below.
 		case "reask":
 			fmt.Fprintf(&summary, "- Request %s was cancelled (%s). Ask again through a new decision-intent window and a fresh lane listing. No automatic re-ping or server-created DM.\n", id, request.CancelReason.String)
-		case "expired":
-			fmt.Fprintf(&summary, "- Request %s expired. It was cancelled `expired` and no answer was delivered.\n", id)
+		case "expired", "action_expired":
+			human, err := queries.GetUser(ctx, request.HumanUserID)
+			if err != nil {
+				return nil, "", trigger, err
+			}
+			what := "expired"
+			if row.reason == "action_expired" {
+				what = "expired: the prepared action expired before approval"
+			}
+			fmt.Fprintf(&summary, "- Request %s %s. It was cancelled `expired` and no answer was delivered. Expiry is not an answer: do not ask %s the same question again. Move the issue to blocked with the expiry stated as the reason.\n", id, what, human.Name)
 		case "human_withdrawn":
 			human, err := queries.GetUser(ctx, request.WithdrawnByUserID)
 			if err != nil {

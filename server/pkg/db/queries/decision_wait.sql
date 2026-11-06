@@ -214,3 +214,33 @@ ORDER BY (wait.dispatch_refused_since IS NOT NULL),
   CASE WHEN wait.dispatch_refused_since IS NOT NULL THEN md5(wait.id::text || sqlc.arg('rotation')::bigint::text) END,
   wait.id
 LIMIT LEAST(GREATEST(sqlc.arg('batch_size')::int, 0), 100);
+
+-- name: ListDecisionReminderCandidates :many
+-- Waiting episodes whose one reminder is due (design §4.6). The filters match
+-- what the delivery transaction re-checks, so an episode that cannot be
+-- reminded never takes a batch slot.
+SELECT wait.* FROM decision_wait wait
+WHERE wait.closed_at IS NULL AND wait.phase = 'waiting'
+  AND wait.reminder_delivered_at IS NULL AND wait.reminder_due_at <= now()
+  AND EXISTS (
+      SELECT 1 FROM decision_request bound
+      WHERE bound.authority = 'human' AND bound.id = ANY(wait.request_ids) AND bound.status = 'open'
+        AND bound.human_user_id = wait.human_user_id
+  )
+  AND EXISTS (
+      SELECT 1 FROM member WHERE member.workspace_id = wait.workspace_id AND member.user_id = wait.human_user_id
+  )
+ORDER BY wait.reminder_due_at, wait.id
+LIMIT LEAST(GREATEST(sqlc.arg('batch_size')::int, 0), 100);
+
+-- name: MarkDecisionReminderDelivered :execrows
+UPDATE decision_wait SET reminder_delivered_at = now()
+WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
+  AND closed_at IS NULL AND reminder_delivered_at IS NULL;
+
+-- name: ListDecisionWaitExpiredActionRequests :many
+-- Bound requests whose prepared action expired: the episode closes
+-- action_expired, not expired (design §6.1 priority 3).
+SELECT action.decision_request_id FROM decision_action action
+WHERE action.workspace_id = sqlc.arg('workspace_id') AND action.state = 'expired'
+  AND action.decision_request_id = ANY(sqlc.arg('request_ids')::uuid[]);
