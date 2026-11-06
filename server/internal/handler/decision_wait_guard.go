@@ -197,11 +197,7 @@ func (handler *Handler) checkDecisionWait(ctx context.Context, candidate db.Issu
 }
 
 func setDecisionWaitMetadata(ctx context.Context, queries *db.Queries, issue db.Issue, key string, value any) error {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
-	_, err = queries.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID, Key: key, Value: raw})
+	_, err := setIssueMetadataValue(ctx, queries, issue.WorkspaceID, issue.ID, key, value)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}

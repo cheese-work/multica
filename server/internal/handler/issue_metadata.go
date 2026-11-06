@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -63,6 +65,23 @@ func validateStatusSummary(raw json.RawMessage) error {
 		return fmt.Errorf("status_summary cannot exceed %d characters", maxStatusSummaryRunes)
 	}
 	return nil
+}
+
+// setIssueMetadataValue is the only caller of the SetIssueMetadataKey query
+// (TestIssueMetadataSingleWriter). Every metadata write, HTTP or internal,
+// goes through it so the primitive-only contract holds on all paths (CHE-3948).
+func setIssueMetadataValue(ctx context.Context, q *db.Queries, workspaceID, issueID pgtype.UUID, key string, value any) (db.SetIssueMetadataKeyRow, error) {
+	if err := validateIssueMetadataKey(key); err != nil {
+		return db.SetIssueMetadataKeyRow{}, err
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return db.SetIssueMetadataKeyRow{}, err
+	}
+	if err := validateIssueMetadataValue(raw); err != nil {
+		return db.SetIssueMetadataKeyRow{}, fmt.Errorf("metadata %q: %w", key, err)
+	}
+	return q.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{WorkspaceID: workspaceID, ID: issueID, Key: key, Value: raw})
 }
 
 func validateIssueMetadataKey(key string) error {
@@ -218,12 +237,7 @@ func (h *Handler) SetIssueMetadataKey(w http.ResponseWriter, r *http.Request) {
 
 	queryStarted := time.Now()
 	updated, err := wakeupWrite(h, r, func(q *db.Queries) (db.SetIssueMetadataKeyRow, error) {
-		return q.SetIssueMetadataKey(r.Context(), db.SetIssueMetadataKeyParams{
-			ID:          issue.ID,
-			WorkspaceID: issue.WorkspaceID,
-			Key:         key,
-			Value:       []byte(req.Value),
-		})
+		return setIssueMetadataValue(r.Context(), q, issue.WorkspaceID, issue.ID, key, req.Value)
 	})
 	queryDuration := time.Since(queryStarted)
 	if err != nil {

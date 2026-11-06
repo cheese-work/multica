@@ -147,8 +147,7 @@ func (handler *Handler) admitIdleGuardNotice(ctx context.Context, settings idleG
 	}
 	if receipt.To == idleGuardNeedDecision {
 		// The decision wait guard would alert the same leader ten minutes later.
-		raw, _ := json.Marshal(receipt.AlertID)
-		if _, err := q.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{WorkspaceID: workspaceID, ID: issueID, Key: "decision_wait_alert_id", Value: raw}); err != nil {
+		if _, err := setIssueMetadataValue(ctx, q, workspaceID, issueID, "decision_wait_alert_id", receipt.AlertID); err != nil {
 			return none, err
 		}
 	}

@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"time"
 
@@ -47,11 +46,7 @@ func writeIdleGuardReceipt(ctx context.Context, q *db.Queries, issue db.Issue, r
 	if receipt.State != idleGuardNotified || receipt.To == "" {
 		return clearIdleGuardNotified(ctx, q, issue)
 	}
-	raw, err := json.Marshal(receipt.To)
-	if err != nil {
-		return err
-	}
-	_, err = q.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID, Key: idleGuardNotifiedKey, Value: raw})
+	_, err := setIssueMetadataValue(ctx, q, issue.WorkspaceID, issue.ID, idleGuardNotifiedKey, receipt.To)
 	if errors.Is(err, pgx.ErrNoRows) { // the value is already set
 		return nil
 	}

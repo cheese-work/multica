@@ -423,8 +423,7 @@ func (h *Handler) blockExhaustedIssue(ctx context.Context, issue db.Issue, e ser
 	if !moved {
 		return false, false
 	}
-	reason, _ := json.Marshal(issueworkflow.BlockedReasonRunBudget)
-	if _, err := h.Queries.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{Key: "blocked_reason", Value: reason, ID: issue.ID, WorkspaceID: issue.WorkspaceID}); err != nil {
+	if _, err := setIssueMetadataValue(ctx, h.Queries, issue.WorkspaceID, issue.ID, "blocked_reason", issueworkflow.BlockedReasonRunBudget); err != nil {
 		slog.Warn("run budget: set blocked_reason failed", "err", err, "issue_id", uuidToString(issue.ID))
 	}
 	return true, false
