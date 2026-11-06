@@ -333,7 +333,8 @@
     "cancel": "Cancel",
     "cancel_label": "Cancel scheduled follow-up at {{time}}",
     "cancel_failed": "Couldn't cancel the follow-up",
-    "load_failed": "Couldn't load scheduled follow-ups. Retry"
+    "load_failed": "Couldn't load scheduled follow-ups. Retry",
+    "watching_until": "Watching issue · until {{time}}"
   },
   "annotations": {
     "one_request": "Send comments on one decision request at a time.",

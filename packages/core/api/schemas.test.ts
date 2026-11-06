@@ -235,6 +235,25 @@ describe("IssueSchema (via ListIssuesResponseSchema)", () => {
       expect(issue?.workflow_id ?? null).toBeNull();
     }
   });
+  it("reads the deadline projection and tolerates a server without it or a malformed one", () => {
+    const parse = (extra: object) => ListIssuesResponseSchema.parse({ issues: [{ ...baseIssue, ...extra }], total: 1 }).issues[0];
+    const diagnostics = [{ type: "cycle", members: ["CHE-1", "CHE-2"] }, { type: "depth_limit" }];
+    const issue = parse({ effective_due: "2026-12-01", due_source: "parent:CHE-9", diagnostics });
+    expect(issue?.effective_due).toBe("2026-12-01");
+    expect(issue?.due_source).toBe("parent:CHE-9");
+    expect(issue?.diagnostics).toEqual(diagnostics);
+    const bare = parse({});
+    expect(bare?.effective_due).toBeUndefined();
+    expect(bare?.due_source).toBeUndefined();
+    expect(bare?.diagnostics).toBeUndefined();
+    for (const bad of [42, { date: "x" }, true]) {
+      const dropped = parse({ effective_due: bad, due_source: bad, diagnostics: bad });
+      expect(dropped?.id).toBe(baseIssue.id);
+      expect(dropped?.effective_due).toBeUndefined();
+      expect(dropped?.due_source).toBeUndefined();
+      expect(dropped?.diagnostics).toBeUndefined();
+    }
+  });
   it("keeps the issue while independently dropping a malformed source context", () => {
     const parsed = ListIssuesResponseSchema.parse({
       issues: [{ ...baseIssue, source_context: { snapshot: "bad" } }],
@@ -347,12 +366,24 @@ describe("IssueSchema (via ListIssuesResponseSchema)", () => {
     expect(parsed.issues[0]?.metadata).toEqual({});
   });
 
-  it("rejects metadata with non-primitive values (nested object)", () => {
+  // CHE-3472: the server's decision park writes an object under `decision_park`.
+  // One non-primitive entry must not fail the whole issue, or the detail view
+  // reads a malformed response as "does not exist".
+  it("drops non-primitive metadata entries and keeps the issue (decision_park)", () => {
     const payload = {
-      issues: [{ ...baseIssue, metadata: { nested: { x: 1 } } }],
+      issues: [
+        {
+          ...baseIssue,
+          metadata: {
+            decision_park: { status: "blocked", to: "need_decision", set: "opt-1" },
+            status_summary: "Blocked",
+          },
+        },
+      ],
       total: 1,
     };
-    expect(ListIssuesResponseSchema.safeParse(payload).success).toBe(false);
+    const parsed = ListIssuesResponseSchema.parse(payload);
+    expect(parsed.issues[0]?.metadata).toEqual({ status_summary: "Blocked" });
   });
 
   it("accepts a numeric stage", () => {
