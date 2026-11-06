@@ -420,8 +420,10 @@ func TestOutcomeNeedsARunningChatTask(t *testing.T) {
 	}
 }
 
-// An outcome that arrives while the task is settling must not land after the settlement: the
-// status check waits for the settling transaction, then refuses the finished task.
+// Every terminal report takes the chat session row first, then the task row. An outcome that
+// arrives while a report holds the session must wait for it, see the final status and be refused.
+// The settling transaction here takes the locks in the real order; an outcome that locked the task
+// row first would deadlock with it (PostgreSQL aborts one side with 40P01).
 func TestOutcomeRacingTaskSettlementIsRefusedAndChangesNothing(t *testing.T) {
 	dm := newAttentionDM(t)
 	ask := dm.item(t, "ask")
@@ -432,7 +434,7 @@ func TestOutcomeRacingTaskSettlementIsRefusedAndChangesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = settling.Rollback(context.Background()) }()
-	if _, err := settling.Exec(t.Context(), `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, task); err != nil {
+	if _, err := settling.Exec(t.Context(), `SELECT id FROM chat_session WHERE id = $1 FOR UPDATE`, dm.sessionID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -441,8 +443,11 @@ func TestOutcomeRacingTaskSettlementIsRefusedAndChangesNothing(t *testing.T) {
 
 	select {
 	case w := <-done:
-		t.Fatalf("outcome finished while the task was still settling: %d %s", w.Code, w.Body.String())
+		t.Fatalf("outcome finished while the session was held: %d %s", w.Code, w.Body.String())
 	case <-time.After(500 * time.Millisecond):
+	}
+	if _, err := settling.Exec(t.Context(), `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, task); err != nil {
+		t.Fatalf("settling the task while an outcome waits: %v", err)
 	}
 	if err := settling.Commit(t.Context()); err != nil {
 		t.Fatal(err)
@@ -452,5 +457,48 @@ func TestOutcomeRacingTaskSettlementIsRefusedAndChangesNothing(t *testing.T) {
 	}
 	if st := dm.state(t, ask); st.ResolvedBy != nil {
 		t.Fatalf("a delayed outcome resolved the ask after settlement (%s)", *st.ResolvedBy)
+	}
+}
+
+// The real /complete handler and an outcome for the same task, released together: neither may fail
+// with a deadlock, and the ask is either resolved by an outcome that won or left alone by one that
+// lost, never half-applied.
+func TestOutcomeAndRealCompletionDoNotDeadlock(t *testing.T) {
+	dm := newAttentionDM(t)
+	ask := dm.item(t, "ask")
+	task := dm.sendRunning(t, "go")
+
+	hold, err := testPool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = hold.Rollback(context.Background()) }()
+	if _, err := hold.Exec(t.Context(), `SELECT id FROM chat_session WHERE id = $1 FOR UPDATE`, dm.sessionID); err != nil {
+		t.Fatal(err)
+	}
+
+	outcome := make(chan *httptest.ResponseRecorder, 1)
+	complete := make(chan *httptest.ResponseRecorder, 1)
+	go func() { outcome <- dm.outcome(t, task, map[string]any{"kind": "done", "ask_ids": []string{ask}}) }()
+	go func() {
+		req := newDaemonTokenRequest(http.MethodPost, "/api/daemon/tasks/"+task+"/complete", map[string]any{"output": "done"}, testWorkspaceID, dm.daemonID)
+		w := httptest.NewRecorder()
+		testHandler.CompleteTask(w, withURLParam(req, "taskId", task))
+		complete <- w
+	}()
+	time.Sleep(500 * time.Millisecond)
+	if err := hold.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	if w := <-complete; w.Code != http.StatusOK {
+		t.Fatalf("complete: %d %s, want 200", w.Code, w.Body.String())
+	}
+	w := <-outcome
+	if w.Code != http.StatusOK && w.Code != http.StatusConflict {
+		t.Fatalf("outcome: %d %s, want 200 or 409", w.Code, w.Body.String())
+	}
+	if resolved := dm.state(t, ask).ResolvedBy != nil; resolved != (w.Code == http.StatusOK) {
+		t.Fatalf("outcome %d but ask resolved=%v", w.Code, resolved)
 	}
 }

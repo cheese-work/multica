@@ -52,7 +52,13 @@ func (s *TaskService) RecordChatOutcome(ctx context.Context, taskID pgtype.UUID,
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	q := s.Queries.WithTx(tx)
 
-	task, err := q.LockAgentTaskForOutcome(ctx, taskID)
+	// Session row first, then the task: the repo-wide order every terminal report uses (see
+	// lockChatSessionForTaskWrite). A report that settles this task holds the session until it
+	// commits, so the status read below is final. No rows: unknown task, or not a chat task.
+	if _, err := q.LockChatSessionForTask(ctx, taskID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("lock chat session: %w", err)
+	}
+	task, err := q.GetAgentTask(ctx, taskID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrChatOutcomeTaskUnknown
 	} else if err != nil {
@@ -63,9 +69,6 @@ func (s *TaskService) RecordChatOutcome(ctx context.Context, taskID pgtype.UUID,
 	}
 	if task.Status != "dispatched" && task.Status != "running" {
 		return nil, ErrChatOutcomeTaskEnded
-	}
-	if _, err := q.LockChatSessionForOutcome(ctx, task.ChatSessionID); err != nil {
-		return nil, fmt.Errorf("lock chat session: %w", err)
 	}
 	session, err := q.GetChatSession(ctx, task.ChatSessionID)
 	if err != nil {
