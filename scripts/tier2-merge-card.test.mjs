@@ -45,6 +45,9 @@ test('card shows exact heads and per-PR links', () => {
   assert.ok(ask.options.length >= 2 && ask.recommendation && ask.default_if_no_reply);
   // `multica decision request` refuses two or more options without the exact label of the recommended one.
   assert.ok(ask.options.some((o) => o.label === ask.recommended_option));
+  // ...and a UUID `source_issue_id` (seen live: "ask.source_issue_id must be a UUID").
+  const sent = renderAsk([pr()], '07:30', 'ISSUE-UUID', 'COMMENT-UUID');
+  assert.deepEqual([sent.source_issue_id, sent.source_comment_id], ['ISSUE-UUID', 'COMMENT-UUID']);
 });
 
 test('picks the window nearest at or before now, in ICT', () => {

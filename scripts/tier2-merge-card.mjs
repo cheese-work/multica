@@ -3,10 +3,10 @@
 // still merges: the card only lists the PRs. Tier 0/1 go through the agent merge lane, not this card.
 //
 // Run from a clean checkout of the default branch (the classifier must equal its base copy).
-//   node scripts/tier2-merge-card.mjs   send the card; run at 07:30, 12:30 and 20:00 ICT (autopilot b2b5403b, Asia/Ho_Chi_Minh: `30 7,12 * * *` and
+//   node scripts/tier2-merge-card.mjs   send the card; run at 07:30, 12:30 and 20:00 ICT (autopilot b2b5403b, create_issue mode, paused until merge; Asia/Ho_Chi_Minh: `30 7,12 * * *` and
 //                                       `0 20 * * *`). CARD_DRY_RUN=1 prints the ask instead.
 // No agent merges from this script: Cheese opens each PR link and merges it on GitHub (Tier 2 stays human, CHE-3612).
-// Env: CARD_ISSUE (issue the card hangs on), CARD_FOR (Cheese's member id), CARD_REPO (default cheese-work/multica).
+// Env: CARD_ISSUE and CARD_COMMENT (UUIDs of the issue and of the comment the card hangs on), CARD_FOR (Cheese's member id), CARD_REPO (default cheese-work/multica).
 // The cross-lab PASS is the `security-gate` status: it is `success` only for a signed verdict on the exact head whose
 // reviewer lab differs from the author's (RGS-1, scripts/security-gate/security_gate.py); any push resets it.
 import { execFile } from 'node:child_process';
@@ -42,7 +42,7 @@ export function eligible(prs) {
     && p.securityGate.state === 'success');
 }
 
-export function renderAsk(prs, window) {
+export function renderAsk(prs, window, sourceIssueId, sourceCommentId) {
   const n = prs.length;
   const noun = `${n} Tier 2 PR${n === 1 ? '' : 's'}`;
   const lines = prs.map((p) => `- [#${p.number}](${p.url}) \`${p.headSha}\` ${p.title}`);
@@ -55,6 +55,8 @@ export function renderAsk(prs, window) {
       { label: 'I will merge them on GitHub', what_happens: 'You open each PR link above and merge it on GitHub. No agent merges. A PR whose head moves after this card no longer has these checks and PASS.', pros: ['Each PR gets your own look', 'No agent merges a Tier 2 PR'], cons: ['One click per PR'], cost_or_time: 'About 1 min per PR' },
       { label: 'Skip this window', what_happens: 'Nothing merges; the PRs appear again on the next card while their head holds.', pros: ['Time to read each diff'], cons: ['Longer wait to merge'], cost_or_time: 'Next window, up to about 12 h' },
     ],
+    source_issue_id: sourceIssueId,
+    source_comment_id: sourceCommentId,
     recommended_option: 'I will merge them on GitHub',
     recommendation: `Merge the ${noun} on GitHub; the checks and PASS are on the exact heads.`,
     default_if_no_reply: 'Nothing merges; the next window lists the PRs again.',
@@ -112,7 +114,7 @@ async function sendCard(repo) {
   const heads = new Map((await gh('pr', 'list', '--repo', repo, '--state', 'open', '--limit', '200', '--json', 'number,headRefOid')).map((x) => [x.number, x.headRefOid]));
   const fresh = ready.filter((p) => heads.get(p.number) === p.headSha);
   if (!fresh.length) return console.error('no Tier 2 PR is ready; no card sent');
-  const ask = renderAsk(fresh, currentWindow());
+  const ask = renderAsk(fresh, currentWindow(), process.env.CARD_ISSUE, process.env.CARD_COMMENT);
   if (process.env.CARD_DRY_RUN) return console.log(JSON.stringify(ask, null, 2));
   const dir = mkdtempSync(join(tmpdir(), 'tier2-card-'));
   try {
