@@ -15,7 +15,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
-	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // Episode delivery (CHE-2591 L5 design §4.4, §6, §6.1). One delivery covers
@@ -253,23 +252,29 @@ func (handler *Handler) loadDecisionEpisode(ctx context.Context, queries *db.Que
 
 // episodeRestore is design §4.4.2 step 6: one explicit-assignee write of the
 // saved placement. A status the workflow no longer has becomes in_progress.
-func (handler *Handler) episodeRestore(ctx context.Context, queries *db.Queries, snapshot decisionWakeSnapshot) (db.Issue, error) {
+// The status row is written in the same transaction (nil when nothing moved).
+func (handler *Handler) episodeRestore(ctx context.Context, queries *db.Queries, snapshot decisionWakeSnapshot) (db.Issue, *db.ActivityLog, error) {
 	wait, issue := snapshot.wait, snapshot.issue
 	status := wait.RestoreStatus
 	def, _, err := issueworkflow.ForIssue(ctx, queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
 	if err != nil {
-		return issue, err
+		return issue, nil, err
 	}
 	if def != nil {
 		if _, ok := def.Step(status); !ok {
 			status = "in_progress"
 		}
 	}
-	return queries.UpdateIssue(ctx, db.UpdateIssueParams{
+	updated, err := queries.UpdateIssue(ctx, db.UpdateIssueParams{
 		ID: issue.ID, Status: pgtype.Text{String: status, Valid: true},
 		AssigneeType: wait.RestoreAssigneeType, AssigneeID: wait.RestoreAssigneeID,
 		PreserveProject: pgtype.Bool{Bool: true, Valid: true},
 	})
+	if err != nil {
+		return issue, nil, err
+	}
+	recorded, err := recordSystemStatusChange(ctx, queries, issue, updated, service.StatusCauseDecision, nil)
+	return updated, recorded, err
 }
 
 // episodeInputs builds what the continuation carries: the comments it must
@@ -552,12 +557,13 @@ func (handler *Handler) deliverDecisionEpisode(ctx context.Context, snapshot dec
 		return true, nil
 	}
 	restored := false
+	var restoredActivity *db.ActivityLog
 	if wait.RestoreOnResume {
-		updated, err := handler.episodeRestore(ctx, queries, snapshot)
+		updated, recorded, err := handler.episodeRestore(ctx, queries, snapshot)
 		if err != nil {
 			return false, err
 		}
-		snapshot.issue, restored = updated, true
+		snapshot.issue, restored, restoredActivity = updated, true, recorded
 	}
 	commentIDs, summary, trigger, err := handler.episodeInputs(ctx, queries, snapshot, verdict)
 	if err != nil {
@@ -603,8 +609,8 @@ func (handler *Handler) deliverDecisionEpisode(ctx context.Context, snapshot dec
 	}
 	askingID := uuidToString(wait.AskingAgentID)
 	if restored {
-		handler.publish(protocol.EventIssueUpdated, uuidToString(workspaceID), "system", "", map[string]any{
-			"issue": handler.issueResponseWithCategory(ctx, snapshot.issue), "assignee_changed": true, "status_changed": true,
+		handler.publishSystemStatusChange(uuidToString(workspaceID), restoredActivity, map[string]any{
+			"issue": handler.issueResponseWithCategory(ctx, snapshot.issue), "assignee_changed": true, "status_changed": restoredActivity != nil,
 			"prev_status": current.issue.Status, "creator_type": current.issue.CreatorType, "creator_id": uuidToString(current.issue.CreatorID),
 			"source": "decision_wait",
 		})
