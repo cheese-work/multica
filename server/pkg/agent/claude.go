@@ -1246,6 +1246,11 @@ func buildClaudeArgs(opts ExecOptions, logger *slog.Logger) []string {
 	if opts.ClaudeSettingsPath != "" {
 		args = append(args, "--settings", opts.ClaudeSettingsPath)
 	}
+	if opts.DisableProviderWebTools {
+		// Last, so no earlier user argument can follow it. A deny rule beats
+		// any --allowedTools entry.
+		args = append(args, "--disallowedTools", "WebSearch,WebFetch")
+	}
 	return args
 }
 

@@ -388,3 +388,9 @@ func (t Task) EffectiveProfile() string {
 	}
 	return "restricted"
 }
+
+// DisableProviderWebTools reports whether the run starts with the provider's
+// server-side web tools off (CHE-2216 plan 3.3).
+func (t Task) DisableProviderWebTools() bool {
+	return t.EffectiveProfile() == "elevated"
+}

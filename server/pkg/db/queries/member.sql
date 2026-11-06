@@ -24,6 +24,13 @@ WHERE id = $1;
 SELECT * FROM member
 WHERE user_id = $1 AND workspace_id = $2;
 
+-- LockMemberByUserAndWorkspace holds a share lock until the caller's transaction
+-- ends, so a concurrent member removal waits for it instead of slipping past.
+-- name: LockMemberByUserAndWorkspace :one
+SELECT * FROM member
+WHERE user_id = $1 AND workspace_id = $2
+FOR SHARE;
+
 -- name: GetRealtimeMemberships :many
 SELECT m.user_id, m.workspace_id
 FROM member m

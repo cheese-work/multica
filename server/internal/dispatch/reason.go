@@ -132,5 +132,6 @@ const (
 	// is indistinguishable from a live provider outage until someone reads the
 	// hold text by hand — see taskfailure.ReasonDispatchBlockedProviderHold for
 	// the matching failure_reason story once dispatch has already happened.
-	ReasonProviderHold ReasonCode = "provider_hold"
+	ReasonProviderHold    ReasonCode = "provider_hold"
+	ReasonProviderBreaker ReasonCode = "provider_breaker"
 )
