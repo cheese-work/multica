@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -211,15 +210,13 @@ func (h *Handler) ListDMProgressFollows(w http.ResponseWriter, r *http.Request) 
 // went (CHE-3548). A move never edits follows or reporting roots: reporting
 // stays with the original commission, and the new parent's lane hears about
 // the issue only through an explicit follow. A detach has no new parent to
-// name, so it writes nothing. Best effort after the update commits: a failure
-// is logged and costs the lane one line, never the move.
-func (h *Handler) recordIssueMoved(ctx context.Context, prev, moved db.Issue) {
-	if !moved.ParentIssueID.Valid || prev.ParentIssueID == moved.ParentIssueID {
-		return
+// name, so it writes nothing. It runs on the update's own transaction: the
+// event commits or rolls back with the move, so a lane cannot miss a move.
+func recordIssueMoved(ctx context.Context, q *db.Queries, prevParent pgtype.UUID, moved db.Issue) error {
+	if !moved.ParentIssueID.Valid || prevParent == moved.ParentIssueID {
+		return nil
 	}
-	if err := h.Queries.InsertDMProgressMovedUnderEvents(ctx, db.InsertDMProgressMovedUnderEventsParams{
+	return q.InsertDMProgressMovedUnderEvents(ctx, db.InsertDMProgressMovedUnderEventsParams{
 		IssueID: moved.ID, WorkspaceID: moved.WorkspaceID, NewParentID: moved.ParentIssueID,
-	}); err != nil {
-		slog.Warn("dm progress: record moved-under event failed", "issue_id", uuidToString(moved.ID), "error", err)
-	}
+	})
 }

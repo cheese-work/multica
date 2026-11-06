@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -125,6 +127,60 @@ func TestDMProgress_ReparentWritesOneMovedUnderEventToTheOriginLane(t *testing.T
 	updateIssueField(t, w.moved, map[string]any{"parent_issue_id": w.newParent})
 	if n := movedUnderEvents(t, w.moved, w.laneA); n != 1 {
 		t.Errorf("a no-op parent write left %d events, want still 1", n)
+	}
+}
+
+// failMovedUnderEvents makes every moved_under insert for issue fail, so a test
+// can prove the event and the reparent commit or roll back together.
+func failMovedUnderEvents(t *testing.T, issue string) {
+	t.Helper()
+	name := "che3548_fail_" + issue[:8]
+	ctx := t.Context()
+	stmts := []string{
+		`CREATE OR REPLACE FUNCTION ` + name + `() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'forced moved_under failure'; END $$`,
+		fmt.Sprintf(`CREATE TRIGGER %s BEFORE INSERT ON dm_progress_lane_event FOR EACH ROW WHEN (NEW.issue_id = '%s') EXECUTE FUNCTION %s()`, name, issue, name),
+	}
+	for _, stmt := range stmts {
+		if _, err := testPool.Exec(ctx, stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DROP TRIGGER IF EXISTS `+name+` ON dm_progress_lane_event`)
+		testPool.Exec(context.Background(), `DROP FUNCTION IF EXISTS `+name+`()`)
+	})
+}
+
+func parentIDText(t *testing.T, issue string) string {
+	t.Helper()
+	var parent string
+	if err := testPool.QueryRow(t.Context(), `SELECT COALESCE(parent_issue_id::text, '') FROM issue WHERE id = $1`, issue).Scan(&parent); err != nil {
+		t.Fatal(err)
+	}
+	return parent
+}
+
+func TestDMProgress_ReparentAndItsEventCommitTogether(t *testing.T) {
+	w := newReparentWorld(t)
+	failMovedUnderEvents(t, w.moved)
+
+	req := withURLParam(newRequest("PUT", "/api/issues/"+w.moved, map[string]any{"parent_issue_id": w.newParent}), "id", w.moved)
+	if rr := testutil.Call(t, testHandler.UpdateIssue, req); rr.Code == http.StatusOK {
+		t.Fatalf("reparent succeeded although its moved_under event could not be written")
+	}
+	if got := parentIDText(t, w.moved); got != "" {
+		t.Errorf("moved issue has parent %s after a failed event write, want the reparent rolled back", got)
+	}
+}
+
+func TestDMProgress_BatchReparentAndItsEventCommitTogether(t *testing.T) {
+	w := newReparentWorld(t)
+	failMovedUnderEvents(t, w.moved)
+
+	body := map[string]any{"issue_ids": []string{w.moved}, "updates": map[string]any{"parent_issue_id": w.newParent}}
+	testutil.Call(t, testHandler.BatchUpdateIssues, newRequest("POST", "/api/issues/batch-update", body))
+	if got := parentIDText(t, w.moved); got != "" {
+		t.Errorf("moved issue has parent %s after a failed event write, want the reparent rolled back", got)
 	}
 }
 

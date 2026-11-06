@@ -359,9 +359,20 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 		}
 		fromStatus = prior.Status
 	}
+	var prevParent pgtype.UUID
+	if params.ParentIssueID.Valid {
+		prior, err := q.GetIssue(ctx, params.ID)
+		if err != nil {
+			return db.Issue{}, nil, fmt.Errorf("read issue parent: %w", err)
+		}
+		prevParent = prior.ParentIssueID
+	}
 	issue, err := q.UpdateIssue(ctx, params)
 	if err != nil {
 		return issue, nil, err
+	}
+	if err := recordIssueMoved(ctx, q, prevParent, issue); err != nil {
+		return db.Issue{}, nil, fmt.Errorf("record moved-under event: %w", err)
 	}
 	if recordStatus && fromStatus != issue.Status {
 		row, err := service.RecordStatusChange(ctx, q, issue, fromStatus, issue.Status, rec.trigger, rec.recordedHandoff(issue))
@@ -4709,7 +4720,6 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if statusChanged || prevIssue.ParentIssueID != issue.ParentIssueID || prevIssue.Stage != issue.Stage {
 		h.processChildEvents(r.Context(), issue.ParentIssueID, prevIssue.ParentIssueID)
 	}
-	h.recordIssueMoved(r.Context(), prevIssue, issue)
 	if statusChanged && issue.ParentIssueID.Valid && h.childDoneSystemRuleEnabled(r.Context(), issue.ParentIssueID) {
 		h.notifyParentOfChildDone(r.Context(), prevIssue, issue)
 	}
@@ -5601,7 +5611,6 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		if statusChanged || prevIssue.ParentIssueID != issue.ParentIssueID || prevIssue.Stage != issue.Stage {
 			changedParents = append(changedParents, issue.ParentIssueID, prevIssue.ParentIssueID)
 		}
-		h.recordIssueMoved(r.Context(), prevIssue, issue)
 		updated++
 		updatedIDs = append(updatedIDs, uuidToString(issue.ID))
 	}
