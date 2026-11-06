@@ -293,7 +293,14 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"workspace":                          workspaceDelete,
 	"workspace_config_sync":              workspaceDelete,
 	"ask_guard_event":                    workspaceDelete,
-	"system1_observation":                workspaceDelete, // CHE-3628 no FK.
+	"system1_observation":                workspaceDelete,     // CHE-3628 no FK.
+	"ci_watch_config":                    workspaceDelete,     // CHE-4273 CI watcher settings; no FK.
+	"ci_watch_config_audit":              workspaceDelete,     // CHE-4273
+	"ci_failure_event":                   workspaceDelete,     // CHE-4273
+	"ci_watch_action":                    workspaceDelete,     // CHE-4273
+	"ci_signature_owner":                 workspaceDelete,     // CHE-4273
+	"gh_installation_budget":             workspaceDeleteKeep, // CHE-4273 per GitHub App installation, shared across workspaces; no workspace_id.
+	"gh_budget_reservation":              workspaceDeleteKeep, // CHE-4273 same; no workspace_id.
 	"workspace_invitation":               workspaceDelete,
 	"workspace_share_link":               workspaceDelete,
 }
