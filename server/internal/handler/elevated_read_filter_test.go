@@ -541,3 +541,44 @@ func TestCompletedDowngradeReadsFullDescription(t *testing.T) {
 		t.Errorf("restricted_final run read = %v, want full text", got.Description)
 	}
 }
+
+// The approval that lifts a stub belongs to the issue the run is working on (its
+// task_elevation row), not to the issue the text sits on.
+func TestApprovalIsBoundToTheRequestingTasksIssue(t *testing.T) {
+	f := claimElevated(t, "multica_cross_issue")
+	other := dbfx.Issue(t, "issue the run only reads")
+	c := seedReaderComments(t, other)
+	body := hostileBody + " (marked)"
+
+	// Approved only for the content's issue B: the run on issue A still reads a stub.
+	approveRead(t, other, "multica_comment", c.marked, body)
+	got := listCommentsAs(t, other, f.taskID)
+	assertStub(t, "comment approved for the other issue", got[c.marked].Content, got[c.marked].Withheld, c.marked, body)
+
+	// Approved for the run's own issue A: full text, although the text sits on B.
+	approveRead(t, f.issueID, "multica_comment", c.marked, body)
+	got = listCommentsAs(t, other, f.taskID)
+	if m := got[c.marked]; m.Content != body || m.Withheld {
+		t.Errorf("comment approved for the run's issue = %+v, want full text", m)
+	}
+}
+
+func TestDescriptionApprovalIsBoundToTheRequestingTasksIssue(t *testing.T) {
+	f := claimElevated(t, "multica_cross_issue")
+	other := dbfx.Issue(t, "issue the run only reads")
+	dbfx.Exec(t, `UPDATE issue SET description = $2, description_external_read = true WHERE id = $1`, other, hostileBody)
+	get := func() IssueResponse {
+		req := asElevatedToken(withURLParam(newRequest("GET", "/api/issues/"+other, nil), "id", other), f.taskID)
+		var out IssueResponse
+		testutil.Call(t, testHandler.GetIssue, req).Want(http.StatusOK).JSON(&out)
+		return out
+	}
+	approveRead(t, other, "multica_description", other, hostileBody)
+	if got := get(); got.Description == nil || !got.DescriptionWithheld {
+		t.Fatalf("approval for the description's own issue lifted the stub: %+v", got.Description)
+	}
+	approveRead(t, f.issueID, "multica_description", other, hostileBody)
+	if got := get(); got.Description == nil || *got.Description != hostileBody || got.DescriptionWithheld {
+		t.Errorf("description approved for the run's issue = %v withheld=%v, want full text", got.Description, got.DescriptionWithheld)
+	}
+}

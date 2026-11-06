@@ -20,7 +20,7 @@ import (
 // description marked external_read, or carrying taint, comes back as a stub:
 // author, id, hash and link. Members and restricted runs read full text. Two
 // exceptions return the body (B8b-2): a read_snapshot_approval of the exact body
-// hash for this issue (B3), and a completed downgrade, which leaves the task in
+// hash for the issue the run was elevated on (B3), and a completed downgrade, which leaves the task in
 // restricted_final so it is no longer an elevated reader.
 
 const elevationRestrictedFinal = "restricted_final"
@@ -31,18 +31,28 @@ const elevationRestrictedFinal = "restricted_final"
 // full text (T16). A lookup error or an unreadable task id returns true: plan
 // 3.4 requires a stub, never full text, when the server cannot tell.
 func (h *Handler) elevatedReader(r *http.Request) bool {
+	elevated, _ := h.elevatedReaderIssue(r)
+	return elevated
+}
+
+// elevatedReaderIssue is elevatedReader plus the issue the run was elevated on,
+// which a read approval must name. The issue is invalid when it is unknown.
+func (h *Handler) elevatedReaderIssue(r *http.Request) (bool, pgtype.UUID) {
 	if r.Header.Get("X-Actor-Source") != "task_token" {
-		return false
+		return false, pgtype.UUID{}
 	}
 	taskID, err := util.ParseUUID(r.Header.Get("X-Task-ID"))
 	if err != nil {
-		return true
+		return true, pgtype.UUID{}
 	}
 	te, err := h.Queries.GetTaskElevation(r.Context(), taskID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false
+		return false, pgtype.UUID{}
 	}
-	return err != nil || te.State != elevationRestrictedFinal
+	if err != nil {
+		return true, pgtype.UUID{}
+	}
+	return te.State != elevationRestrictedFinal, te.IssueID
 }
 
 // readFilter answers "stub this body?" for one request. It looks the elevation
@@ -52,6 +62,8 @@ type readFilter struct {
 	r    *http.Request
 	once sync.Once
 	stub bool
+	// taskIssue is the issue the run was elevated on; invalid when unknown.
+	taskIssue pgtype.UUID
 }
 
 func (h *Handler) newReadFilter(r *http.Request) *readFilter { return &readFilter{h: h, r: r} }
@@ -60,25 +72,30 @@ func (f *readFilter) withholds(marked bool) bool {
 	if !marked {
 		return false
 	}
-	f.once.Do(func() { f.stub = f.h.elevatedReader(f.r) })
+	f.once.Do(func() { f.stub, f.taskIssue = f.h.elevatedReaderIssue(f.r) })
 	return f.stub
 }
 
 // withholdsApproved is withholds for a body an approver can name: a marked body
-// still reads in full when a person approved these exact bytes for this issue
-// (hash of the current text, so an edit voids the approval). A lookup error
-// withholds (plan 3.4).
-func (f *readFilter) withholdsApproved(marked bool, workspaceID, issueID pgtype.UUID, kind, objectID, body string) bool {
+// still reads in full when a person approved these exact bytes (hash of the
+// current text, so an edit voids the approval) for the issue the run was
+// elevated on. The issue the text sits on does not count: an approval for issue B
+// must not open B's text to a run working on issue A. A lookup error or an
+// unknown task issue withholds (plan 3.4).
+func (f *readFilter) withholdsApproved(marked bool, workspaceID pgtype.UUID, kind, objectID, body string) bool {
 	if !f.withholds(marked) {
 		return false
 	}
-	ok, err := f.h.hasReadSnapshotApproval(f.r.Context(), workspaceID, issueID, kind, objectID, sha256Hex(body))
+	if !f.taskIssue.Valid {
+		return true
+	}
+	ok, err := f.h.hasReadSnapshotApproval(f.r.Context(), workspaceID, f.taskIssue, kind, objectID, sha256Hex(body))
 	return err != nil || !ok
 }
 
 // withholdsComment answers "stub this comment?" for list, timeline and preview.
 func (f *readFilter) withholdsComment(c db.Comment) bool {
-	return f.withholdsApproved(commentWithheld(c), c.WorkspaceID, c.IssueID, "multica_comment", uuidToString(c.ID), c.Content)
+	return f.withholdsApproved(commentWithheld(c), c.WorkspaceID, "multica_comment", uuidToString(c.ID), c.Content)
 }
 
 // withheldStub replaces a body. The hash covers the exact bytes withheld, so a
@@ -125,9 +142,8 @@ func (f *readFilter) stubDescription(h *Handler, i db.Issue, resp *IssueResponse
 // stubDescriptionOf is stubDescription for list rows, which are not db.Issue.
 func (f *readFilter) stubDescriptionOf(h *Handler, marked bool, desc pgtype.Text, creatorType string, creatorID pgtype.UUID, resp *IssueResponse) {
 	workspaceID, wsErr := util.ParseUUID(resp.WorkspaceID)
-	issueID, idErr := util.ParseUUID(resp.ID)
-	// An unparseable id cannot be approved: the stub stays (fail closed).
-	if f.withholds(marked) && (wsErr != nil || idErr != nil || f.withholdsApproved(marked, workspaceID, issueID, "multica_description", resp.ID, desc.String)) {
+	// An unparseable workspace id cannot be approved: the stub stays (fail closed).
+	if f.withholds(marked) && (wsErr != nil || f.withholdsApproved(marked, workspaceID, "multica_description", resp.ID, desc.String)) {
 		if resp.WebURL == "" {
 			resp.WebURL = h.workspaceWebURL(f.r.Context(), workspaceID, func(w db.Workspace) string { return weblink.Issue(w.Slug, resp.Identifier) })
 		}
