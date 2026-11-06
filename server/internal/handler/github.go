@@ -1547,7 +1547,7 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case "pull_request":
-		if err := h.handlePullRequestEvent(ctx, body); err != nil {
+		if err := h.handlePullRequestEvent(context.WithValue(ctx, prDeliveryGUIDKey{}, deliveryGUID), body); err != nil {
 			// Returning 5xx makes GitHub redeliver when mirroring or link writes fail.
 			slog.Error("github: pull_request event failed", "err", err, "delivery_guid", deliveryGUID)
 			writeError(w, http.StatusInternalServerError, "failed to process pull_request event")
@@ -1721,7 +1721,9 @@ func (repo *ghPRHeadRepository) sameRepository(id int64, owner, name string) boo
 }
 
 type ghPullRequestPayload struct {
-	Action      string `json:"action"`
+	Action string `json:"action"`
+	// Reason is GitHub's cause of a dequeued action (e.g. MERGE_CONFLICT).
+	Reason      string `json:"reason"`
 	PullRequest struct {
 		Number         int32  `json:"number"`
 		HTMLURL        string `json:"html_url"`
@@ -1766,6 +1768,10 @@ type ghPullRequestPayload struct {
 		ID int64 `json:"id"`
 	} `json:"installation"`
 }
+
+// prDeliveryGUIDKey carries the webhook delivery GUID to the pull_request
+// handling. Replays from the repair sweep carry none.
+type prDeliveryGUIDKey struct{}
 
 func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error {
 	var p ghPullRequestPayload
@@ -2230,6 +2236,11 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	// reaches the rule; EventAt separates it from a later conversion.
 	var attention service.PullRequestWakeupInput
 	switch {
+	case p.Action == "dequeued":
+		// Facts only (CHE-4231): GitHub's reason, never a re-queue. The
+		// delivery GUID makes a redelivery one wake and a later dequeue another.
+		guid, _ := ctx.Value(prDeliveryGUIDKey{}).(string)
+		attention = service.PullRequestWakeupInput{Rule: service.SystemRulePRDequeued, Reason: p.Reason, DeliveryGUID: guid}
 	case state == "merged":
 		attention = service.PullRequestWakeupInput{
 			Rule: service.SystemRulePRMerged, MergeCommit: p.PullRequest.MergeCommitSHA, DefaultBranch: p.Repository.DefaultBranch,

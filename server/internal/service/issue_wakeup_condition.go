@@ -47,7 +47,7 @@ type WakeupCondition struct {
 	// every stage closing while a later one waits, then every sub-issue
 	// closing. Only the platform sets it.
 	EachStage bool `json:"each_stage,omitempty"`
-	// pull_request: checks_finished | merged | conflicts
+	// pull_request: checks_finished | merged | conflicts | dequeued
 	Event string `json:"event,omitempty"`
 	// other_issue: the watched issue and done | ended | in_review | blocked. The
 	// identifier is recorded for display; clients never set it.
@@ -213,8 +213,8 @@ func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.
 		}
 		out = WakeupCondition{Type: c.Type, Stage: c.Stage}
 	case "pull_request":
-		if c.Event != "checks_finished" && c.Event != "merged" && c.Event != "conflicts" {
-			return nil, nil, badCondition("event must be checks_finished, merged or conflicts")
+		if c.Event != "checks_finished" && c.Event != "merged" && c.Event != "conflicts" && c.Event != "dequeued" {
+			return nil, nil, badCondition("event must be checks_finished, merged, conflicts or dequeued")
 		}
 		out = WakeupCondition{Type: c.Type, Event: c.Event}
 	case "other_issue":
@@ -304,6 +304,9 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 		met, fingerprint, observed := childrenDone(c, children)
 		return met, fingerprint, observed, nil
 	case "pull_request":
+		if c.Event == "dequeued" {
+			return evaluatePRDequeued(ctx, tx, w)
+		}
 		// Without the snapshot client GitHub rows are never refreshed, so their
 		// checks and mergeability neither satisfy nor stall the rule. Self-hosted VCS rows carry
 		// their own commit statuses and are evaluated regardless (#9034).
@@ -893,4 +896,38 @@ func withoutPRs(fingerprint string, identities []string) string {
 		return ""
 	}
 	return "pr:" + strings.Join(kept, ",")
+}
+
+// evaluatePRDequeued reads the dequeue facts the webhook recorded as receipts
+// of the issue's pr_dequeued rule (CHE-4231), for the PRs linked now and
+// received since this rule was created. A dequeue is an event, not a state the
+// snapshot holds, and the delivery GUID in each receipt key makes every
+// dequeue a new fingerprint.
+func evaluatePRDequeued(ctx context.Context, tx pgx.Tx, w db.IssueWakeup) (bool, string, map[string]any, error) {
+	rows, err := tx.Query(ctx, `SELECT r.event_key, pr.pr_number, r.payload->>'head_sha', r.payload->>'reason'
+		FROM issue_wakeup dw JOIN issue_wakeup_receipt r ON r.wakeup_id=dw.id
+		JOIN github_pull_request pr ON lower(pr.repo_owner)=lower(r.payload->>'repo_owner') AND lower(pr.repo_name)=lower(r.payload->>'repo_name') AND pr.pr_number=(r.payload->>'pr_number')::int
+		JOIN issue_pull_request ipr ON ipr.pull_request_id=pr.id AND ipr.issue_id=dw.issue_id
+		WHERE dw.issue_id=$1 AND dw.system_rule='pr_dequeued' AND r.created_at>=$2
+		ORDER BY r.event_key`, w.IssueID, w.CreatedAt)
+	if err != nil {
+		return false, "", nil, err
+	}
+	defer rows.Close()
+	var keys []string
+	var prs []map[string]any
+	for rows.Next() {
+		var key string
+		var number int32
+		var head, reason pgtype.Text
+		if err := rows.Scan(&key, &number, &head, &reason); err != nil {
+			return false, "", nil, err
+		}
+		keys = append(keys, key)
+		prs = append(prs, map[string]any{"number": number, "head_sha": head.String, "reason": reason.String})
+	}
+	if err := rows.Err(); err != nil {
+		return false, "", nil, err
+	}
+	return len(keys) > 0, "pr:" + strings.Join(keys, ","), map[string]any{"pull_requests": prs}, nil
 }
