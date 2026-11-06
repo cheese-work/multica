@@ -415,17 +415,73 @@ func TestChatTaskAuthorityFallbackSlotGrantsNothing(t *testing.T) {
 	requireStatus(t, a.read(task), http.StatusForbidden, codeCompactionAgentNotCurrent)
 }
 
-// Production marks a compaction run with MarkChatTaskCompact; it must stamp the
-// purpose the authority keys on, or real compaction tasks take the ordinary
-// (DM-agent equality) branch.
-func TestMarkChatTaskCompactStampsCompactionPurpose(t *testing.T) {
+// Manual /compact and auto-compaction both run as the DM agent today and are
+// flagged by MarkChatTaskCompact (no purpose). They keep the ordinary
+// DM-agent path whatever the compact setting is; only a task stamped
+// purpose='compaction' needs the dedicated compact agent.
+func TestChatTaskAuthorityManualAndAutoCompactionKeepDMAgentPath(t *testing.T) {
+	for _, flow := range []struct {
+		name   string
+		reason pgtype.Text
+		tokens pgtype.Int8
+	}{
+		{"manual", pgtype.Text{}, pgtype.Int8{}},
+		{"auto", pgtype.Text{String: "prompt_size", Valid: true}, pgtype.Int8{Int64: 180000, Valid: true}},
+	} {
+		for _, setting := range []string{"unset", "other agent", "DM agent"} {
+			t.Run(flow.name+"/"+setting, func(t *testing.T) {
+				a := newAuthorityFixture(t)
+				switch setting {
+				case "unset":
+					a.clearCompact()
+				case "DM agent":
+					a.setCompact(a.dmAgent)
+				}
+				task := a.task(a.dmAgent, "running", "")
+				marked, err := testHandler.Queries.MarkChatTaskCompact(context.Background(), db.MarkChatTaskCompactParams{
+					ID: parseUUID(task), CompactReason: flow.reason, CompactTriggerTokens: flow.tokens,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if marked.TaskKind.String != "compact" || marked.Purpose.Valid {
+					t.Fatalf("task_kind=%+v purpose=%+v, want compact with no purpose", marked.TaskKind, marked.Purpose)
+				}
+				requireStatus(t, a.read(task), http.StatusOK, "")
+				requireStatus(t, a.compact(task), http.StatusOK, "")
+			})
+		}
+	}
+}
+
+// A retry child copies purpose but not task_kind. It must still be cancelled by
+// a compact-chain change, or it would keep DM access with its task token after
+// A -> B -> A.
+func TestChatTaskAuthorityRetryChildOfCompactionTaskIsRevoked(t *testing.T) {
 	a := newAuthorityFixture(t)
-	task := a.task(a.compactAgent, "running", "")
-	got, err := testHandler.Queries.MarkChatTaskCompact(context.Background(), db.MarkChatTaskCompactParams{ID: parseUUID(task)})
+	parent := a.task(a.compactAgent, "failed", taskPurposeCompaction)
+	child, err := testHandler.Queries.CreateRetryTask(context.Background(), db.CreateRetryTaskParams{ID: parseUUID(parent)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.TaskKind.String != "compact" || !got.Purpose.Valid || got.Purpose.String != taskPurposeCompaction {
-		t.Fatalf("task_kind=%+v purpose=%+v, want compact/%s", got.TaskKind, got.Purpose, taskPurposeCompaction)
+	childID := uuidToString(child.ID)
+	if !child.Purpose.Valid || child.Purpose.String != taskPurposeCompaction {
+		t.Fatalf("retry purpose = %+v, want %s", child.Purpose, taskPurposeCompaction)
 	}
+	if _, err := testPool.Exec(context.Background(), `UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1`, childID); err != nil {
+		t.Fatal(err)
+	}
+	requireStatus(t, a.read(childID), http.StatusOK, "")
+
+	a.setCompact(a.dmAgent)
+	a.setCompact(a.compactAgent) // A -> B -> A
+
+	var status string
+	if err := testPool.QueryRow(context.Background(), `SELECT status FROM agent_task_queue WHERE id = $1`, childID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "cancelled" {
+		t.Fatalf("retry child status = %q after A->B->A, want cancelled", status)
+	}
+	requireStatus(t, a.read(childID), http.StatusForbidden, codeChatTaskNotActive)
 }

@@ -2243,11 +2243,11 @@ CROSS JOIN messages;
 -- name: MarkChatTaskCompact :one
 -- CHE-1807: flags a chat task as a compaction run. An automatic compaction
 -- carries the server-built reason and the prompt size that triggered it; a
--- manual /compact carries neither. CHE-2909: also stamps purpose='compaction',
--- the marker the chat-task authority keys on (SEC-1 rule 2).
+-- manual /compact carries neither. It does not set purpose: both flows still run
+-- as the DM agent (existing path); the dedicated-agent enqueue (CHE-2913) stamps
+-- purpose='compaction'.
 UPDATE agent_task_queue
 SET task_kind = 'compact',
-    purpose = 'compaction',
     compact_reason = sqlc.narg('compact_reason'),
     compact_trigger_tokens = sqlc.narg('compact_trigger_tokens')
 WHERE id = $1
@@ -2302,11 +2302,12 @@ ORDER BY t.chat_session_id, t.completed_at DESC, t.id DESC;
 -- CHE-2908 (SEC-1 rule 4): a compact chain change cancels every live compaction
 -- task of the workspace, whichever agent it was queued for, so a task queued
 -- under the old value never delivers the transcript. The chat resume pointer is
--- not touched (SEC-2).
+-- not touched (SEC-2). CHE-2909: a retry child copies purpose but not task_kind,
+-- so match either marker or it would survive A->B->A with DM access.
 UPDATE agent_task_queue
 SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
     cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
-WHERE task_kind = 'compact'
+WHERE (task_kind = 'compact' OR purpose = 'compaction')
   AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
   AND chat_session_id IN (SELECT id FROM chat_session WHERE workspace_id = $1)
 RETURNING *;
