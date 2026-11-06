@@ -43,6 +43,7 @@ import {
 import { useWSEvent, useWSReconnect } from "@multica/core/realtime";
 import { removeCommentSubtree } from "@multica/core/issues/comment-deletion";
 import { toast } from "sonner";
+import { rejectInvalidAgentMentions, type InvalidMentionRejection } from "../invalid-agent-mentions-copy";
 import { useT } from "../../i18n";
 import { blockedShortReasonLabel } from "../blocked-trigger-copy";
 
@@ -154,12 +155,24 @@ export function useIssueTimeline(issueId: string, userId?: string) {
       (payload: unknown) => {
         const { comment } = payload as CommentCreatedPayload;
         if (comment.issue_id !== issueId) return;
-        qc.setQueryData<TLCache>(issueKeys.timeline(issueId), (old) => {
-          const entry = commentToTimelineEntry(comment);
-          if (!old) return [entry];
-          if (old.some((e) => e.id === comment.id)) return old;
-          return sortTimelineEntriesAsc([...old, entry]);
-        });
+        const queryKey = issueKeys.timeline(issueId);
+        const recoveringFetch = qc.getQueryState?.(queryKey)?.fetchStatus === "fetching";
+        const writeComment = (): void => {
+          qc.setQueryData<TLCache>(queryKey, (old) => {
+            const entry = commentToTimelineEntry(comment);
+            if (!old) return [entry];
+            if (old.some((e) => e.id === comment.id)) return old;
+            return sortTimelineEntriesAsc([...old, entry]);
+          });
+          if (recoveringFetch) {
+            void qc.invalidateQueries({ queryKey, refetchType: "active" });
+          }
+        };
+        if (recoveringFetch) {
+          void qc.cancelQueries({ queryKey }).then(writeComment);
+        } else {
+          writeComment();
+        }
       },
       [qc, issueId],
     ),
@@ -359,13 +372,15 @@ export function useIssueTimeline(issueId: string, userId?: string) {
   // on success — so a slow send no longer leaves the box full next to an
   // already-posted comment, and a failed send keeps the draft.
   const submitComment = useCallback(
-    async (content: string, attachmentIds?: string[], suppressAgentIds?: string[], steerTaskIds?: string[]): Promise<string | false> => {
+    async (content: string, attachmentIds?: string[], suppressAgentIds?: string[], steerTaskIds?: string[]): Promise<string | false | InvalidMentionRejection> => {
       if (!content.trim() || !userId) return false;
       try {
         const comment = await createComment({ content, attachmentIds, suppressAgentIds, steerTaskIds });
         warnUnhandledTriggers(comment?.trigger_outcomes, comment?.content);
         return comment.id;
       } catch (err) {
+        const rejected = rejectInvalidAgentMentions(err, content, t);
+        if (rejected) return rejected;
         toast.error(
           err instanceof Error && err.message
             ? err.message
@@ -378,7 +393,7 @@ export function useIssueTimeline(issueId: string, userId?: string) {
   );
 
   const submitReply = useCallback(
-    async (parentId: string, content: string, attachmentIds?: string[], suppressAgentIds?: string[], steerTaskIds?: string[]): Promise<string | false> => {
+    async (parentId: string, content: string, attachmentIds?: string[], suppressAgentIds?: string[], steerTaskIds?: string[]): Promise<string | false | InvalidMentionRejection> => {
       if (!content.trim() || !userId) return false;
       try {
         const comment = await createComment({
@@ -392,6 +407,8 @@ export function useIssueTimeline(issueId: string, userId?: string) {
         warnUnhandledTriggers(comment?.trigger_outcomes, comment?.content);
         return comment.id;
       } catch (err) {
+        const rejected = rejectInvalidAgentMentions(err, content, t);
+        if (rejected) return rejected;
         toast.error(
           err instanceof Error && err.message
             ? err.message

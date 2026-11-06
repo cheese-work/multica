@@ -9,6 +9,7 @@ import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../locales/en/common.json";
 import enSkills from "../../locales/en/skills.json";
 import { NavigationProvider, type NavigationAdapter } from "../../navigation";
+import { resetAllRegisteredDrafts } from "@multica/core/drafts";
 
 const TEST_RESOURCES = { en: { common: enCommon, skills: enSkills } };
 
@@ -164,6 +165,7 @@ async function remoteUpdate(queryClient: QueryClient, next: Partial<Skill>) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetAllRegisteredDrafts();
   skillRef.current = baseSkill;
   agentsRef.current = [];
   membersRef.current = [{ user_id: "user-1", role: "member" }];

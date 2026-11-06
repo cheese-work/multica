@@ -15,12 +15,22 @@ export async function GET(
   }
   let origin: string;
   try {
-    const publicUrl = new URL(process.env.MULTICA_APP_URL?.trim() || `${protocol}://${host}`);
+    const configured = process.env.MULTICA_APP_URL?.trim();
+    const publicUrl = new URL(configured || `${protocol}://${host}`);
+    // An https configured origin means the instance is served over TLS; the
+    // proxy hop's X-Forwarded-Proto: http must not downgrade alternate hosts.
+    const visitor = new URL(`${publicUrl.protocol === "https:" ? "https" : protocol}://${host}`);
     if (!/^https?:$/.test(publicUrl.protocol) || publicUrl.username || publicUrl.password
       || publicUrl.pathname !== "/" || publicUrl.search || publicUrl.hash) {
       return new Response("Invalid origin", { status: 400 });
     }
-    origin = publicUrl.origin;
+    // The configured URL is one canonical origin, but the instance can be
+    // reached through others (Cloudflare, Tailscale). It only wins when the
+    // visitor is on the same hostname, where it restores the port and scheme
+    // an internal proxy hop drops; any other visitor host is used as is. The
+    // response is no-store and per request, so a spoofed Host only affects
+    // the caller.
+    origin = publicUrl.hostname === visitor.hostname ? publicUrl.origin : visitor.origin;
   } catch {
     return new Response("Invalid origin", { status: 400 });
   }

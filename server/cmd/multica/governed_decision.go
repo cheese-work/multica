@@ -126,7 +126,7 @@ func workflowBindingRequested(cmd *cobra.Command) bool {
 
 // checkWorkflowBindingFlags rejects a malformed decision-bound workflow
 // request before any HTTP call. The server accepts steps and expected_version
-// only, so rule flags are refused here instead of as a 400.
+// only, so rule and rename flags are refused here instead of as a 400.
 func checkWorkflowBindingFlags(cmd *cobra.Command) error {
 	if !workflowBindingRequested(cmd) {
 		return nil
@@ -139,6 +139,11 @@ func checkWorkflowBindingFlags(cmd *cobra.Command) error {
 	for _, rule := range []string{"max-runs-per-issue", "include-child-prs"} {
 		if cmd.Flags().Changed(rule) {
 			return fmt.Errorf("a decision-bound write carries --steps-file only; --%s changes a run rule, which needs the owner/admin path", rule)
+		}
+	}
+	for _, other := range []string{"name", "description", "map", "dry-run", "copy-for-project"} {
+		if cmd.Flags().Changed(other) {
+			return fmt.Errorf("a decision-bound write edits steps only; --%s needs the owner/admin path", other)
 		}
 	}
 	return nil

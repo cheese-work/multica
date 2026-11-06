@@ -112,7 +112,6 @@ import {
   EMPTY_COMMENT,
   EMPTY_INBOX_LIST,
   EMPTY_INBOX_UNREAD_SUMMARY,
-  EMPTY_ISSUE_FALLBACK,
   EMPTY_LIST_LABELS_RESPONSE,
   EMPTY_LIST_PROJECT_RESOURCES_RESPONSE,
   EMPTY_LIST_PROJECTS_RESPONSE,
@@ -148,7 +147,7 @@ import {
 } from "./schemas";
 import type { ZodType } from "zod";
 import { getCurrentSlug } from "./workspace-store";
-import { parseWithFallback } from "@/lib/parse-response";
+import { parseOrThrow, parseWithFallback } from "@/lib/parse-response";
 import { createRequestId } from "@/lib/request-id";
 import { buildCommentUpdateBody } from "./revision";
 
@@ -504,12 +503,25 @@ class ApiClient {
   async listWorkspaces(opts?: {
     signal?: AbortSignal;
   }): Promise<Workspace[]> {
+    return (await this.listWorkspacesChecked(opts)).workspaces;
+  }
+
+  /** `validated` is false when the response did not match the schema and the
+   *  empty fallback was returned instead. Only a validated list may be taken
+   *  as the user's real workspaces (draft cleanup relies on it). */
+  async listWorkspacesChecked(opts?: {
+    signal?: AbortSignal;
+  }): Promise<{ workspaces: Workspace[]; validated: boolean }> {
     const raw = await this.fetch<unknown>("/api/workspaces", {
       signal: opts?.signal,
     });
-    return parseWithFallback(raw, WorkspaceListSchema, EMPTY_WORKSPACE_LIST, {
-      endpoint: "listWorkspaces",
-    });
+    const workspaces = parseWithFallback(
+      raw,
+      WorkspaceListSchema,
+      EMPTY_WORKSPACE_LIST,
+      { endpoint: "listWorkspaces" },
+    );
+    return { workspaces, validated: Array.isArray(raw) && workspaces !== EMPTY_WORKSPACE_LIST };
   }
 
   // --- Inbox ---
@@ -693,12 +705,9 @@ class ApiClient {
     id: string,
     opts?: { signal?: AbortSignal },
   ): Promise<Issue> {
-    return this.fetchValidated(
-      `/api/issues/${id}`,
-      IssueSchema,
-      EMPTY_ISSUE_FALLBACK,
-      { ...opts, endpoint: "getIssue" },
-    );
+    // No fallback: an empty issue made the screen say "not found" for data it could not read.
+    const raw = await this.fetch<unknown>(`/api/issues/${id}`, { signal: opts?.signal });
+    return parseOrThrow<Issue>(raw, IssueSchema, { endpoint: "getIssue" });
   }
 
   /**

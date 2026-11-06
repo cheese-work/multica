@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -90,12 +89,9 @@ func TestDecisionLaneMentionCaps(test *testing.T) {
 	if len(lanes) != 10 || lanes[0].ID != sessionID || len(lanes[0].Mentions) != 20 || lanes[0].Mentions[0].ID != latestIssue {
 		test.Fatalf("wrong caps or order: %+v", lanes)
 	}
-	if !strings.Contains(lanes[0].Mentions[0].Snippet, "fresh docs web") || strings.Contains(lanes[0].Mentions[0].Snippet, "Owner") {
-		test.Fatalf("snippet crossed another mention: %+v", lanes[0].Mentions[0])
-	}
 	for _, mention := range lanes[0].Mentions {
-		if !utf8.ValidString(mention.Snippet) || utf8.RuneCountInString(mention.Snippet) > 100 || strings.Contains(mention.Snippet, "mention://") || strings.Contains(mention.Snippet, "](") || strings.Contains(mention.Snippet, "/issue/") || strings.Contains(mention.Snippet, "https://") || strings.Contains(mention.Snippet, mention.Title) || strings.Contains(mention.Snippet, mention.Key) || mention.Key == "" || mention.Title == "" || mention.MentionedAt == "" || mention.RelativeTime == "" {
-			test.Fatalf("incomplete or unbounded mention: %+v", mention)
+		if mention.Snippet != "" || mention.Key == "" || mention.Title == "" || mention.MentionedAt == "" || mention.RelativeTime == "" {
+			test.Fatalf("a task token gets titles only, no message text: %+v", mention)
 		}
 	}
 	if lanes[1].Mentions == nil || len(lanes[1].Mentions) != 0 {

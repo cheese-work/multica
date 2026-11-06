@@ -186,13 +186,21 @@ Repository permissions:
 |---|---|
 | Metadata | Read-only |
 | Pull requests | Read-only |
-| Members | Read-only。接続ユーザーが organization の active admin であることを確認するために必要 |
+| Actions | Read-only。`--until-gh-run` wakeup に必要 |
 | Checks | Read-only。CI の状態表示に使用 |
 | Commit statuses | Read-only。legacy status 形式の CI 集計に使用 |
+
+Organization permissions:
+
+| 権限 | レベル |
+|---|---|
+| Members | Read-only。接続ユーザーが organization の active admin であることを確認するために必要 |
 
 次のイベントを購読します。
 
 - **Pull request**
+- **Pull request review**、**Pull request review comment**、**Issue comment**。human review wakeup を設定する場合に使用します。
+- **Workflow run**、**Workflow job**。`--until-gh-run` wakeup に必要です。
 - **Check suite**、**Check run**、**Status**。CI とマージ可能性を更新するために使用します。
 
 PR スナップショットは Pull requests、Checks、Commit statuses の REST API から取得します。Contents 権限は不要です。
@@ -227,7 +235,15 @@ GITHUB_APP_PRIVATE_KEY=<complete PEM private key, including BEGIN/END lines and 
 
 接続ボタンには GitHub の 6 つの値がすべて必要です。新規接続では、Multica が GitHub のユーザー認可 code を交換し、App として installation を解決したうえで、個人アカウントの ID と login の完全一致、または organization の active admin membership を要求します。ユーザーの installation 一覧に表示されるだけでは organization の権限証明になりません。検証エラーはすべて接続を拒否し、一時的な user token は確認後に失効させます。
 
-既存の App に Members 権限を追加する場合、新しいワークスペースへ接続する前に対象 organization ごとに権限変更を承認してください。
+既存の App に Members または Actions 権限を追加する場合、新しいワークスペースへ接続する前に対象 organization ごとに権限変更を承認してください。既存の installation は新しい権限を承認する必要があります。承認されるまで、`--until-gh-run` wakeup は workflow イベントを受け取りません。
+
+必要に応じて `GITHUB_ALLOWED_ACCOUNT_IDS` に、GitHub アカウントの数値 ID（login ではなく、ユーザーまたは organization の `id`）をカンマ区切りで設定します。未設定または空の場合は、上記の検証を通過したアカウントならどれでも接続できます。設定すると、アカウント ID が一覧にない installation の binding を Multica は拒否します。setup callback は `github_error=installation_not_allowed` でリダイレクトし、binding は作成しません。code のない **Redirect on update** の callback は、その binding に保存済みのアカウント ID で判定します。保存済みのアカウント ID がない binding は拒否されます（fail closed）。login など不正な値は、起動時にサーバーを停止させます。
+
+```dotenv
+GITHUB_ALLOWED_ACCOUNT_IDS=1234567,7654321
+```
+
+GitHub の `deleted` と `suspend` イベントは、一覧に関係なく常に binding を削除します。
 
 </Step>
 <Step>
@@ -244,6 +260,7 @@ GITHUB_APP_PRIVATE_KEY=<complete PEM private key, including BEGIN/END lines and 
 - **接続ボタンを使用できない**: `GITHUB_APP_SLUG`、`GITHUB_WEBHOOK_SECRET`、`GITHUB_APP_CLIENT_ID`、`GITHUB_APP_CLIENT_SECRET`、`GITHUB_APP_ID`、`GITHUB_APP_PRIVATE_KEY` が API プロセスに設定されていることを確認します。
 - **インストール直後に接続が失敗する**: **Request user authorization (OAuth) during installation** を有効にし、callback URL と setup URL の両方を `/api/github/setup` に設定して、Members read-only を付与します。接続ユーザーは個人アカウントの所有者、または organization の active admin である必要があります。
 - **Webhook が 401 を返す**: GitHub App と API が同じ Webhook secret を使っていることを確認し、GitHub の **Recent Deliveries** から再配信します。
+- **GitHub でマージ済みなのに Multica で PR が open のまま**: `closed` Webhook が失われています。`GITHUB_APP_ID` と `GITHUB_APP_PRIVATE_KEY` が設定されていれば、次の CI 更新が GitHub から PR を読み、Webhook が届いた場合と同じようにマージまたはクローズを記録します。タスクを開くと更新が始まります。定期的なバックグラウンド更新を待つこともできます。認証情報がない場合は **Recent Deliveries** からイベントを再配信します。
 - **PR が紐づかない**: リポジトリが App の許可範囲にあること、PR の自動紐づけが有効であること、番号が現在のワークスペースのものであること、誰かがタスクから外していないかを確認します。
 - **本文に番号を書いても紐づかない**: `Closes MUL-123` を使うか、番号をブランチ名または PR タイトルに入れるか、手動で紐づけます。
 - **CI の状態がない**: `GITHUB_APP_ID` と `GITHUB_APP_PRIVATE_KEY` が設定済みで、App に Pull requests、Checks、Commit statuses の read-only 権限があり、関連イベントを購読していることを確認します。Contents 権限は不要です。インストール済み App に権限を追加した場合は、各 installation の所有者が GitHub 上で承認するまで有効になりません。

@@ -223,7 +223,7 @@ export interface WakeupDefinitionConfig {
   v: number;
   enabled?: boolean | null;
   name?: string | null;
-  trigger?: { kind: string } | null;
+  trigger?: { kind: string; events?: string[]; condition?: unknown } | null;
   /** `type` is absent when the viewer may not see the target (`redacted`). */
   target?: { type?: "assignee" | "agent" | "squad"; id?: string; redacted?: boolean } | null;
   instruction?: string | null;
