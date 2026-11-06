@@ -7490,7 +7490,7 @@ func (s *TaskService) CancelTasksForArchivedAgent(ctx context.Context, agentID p
 }
 
 // terminateTasksInTx ends a batch of tasks and settles them in one tx, holding the chat_session row
-// of every chat task in the batch first. The one lock order is chat_session -> agent ->
+// of every chat task in the batch first. The one lock order is chat_session -> runtime -> agent ->
 // agent_task_queue (chat enqueue takes the session, then the agent; see lockChatSessionForTaskWrite). A report that reads a task's status under that session row, such as
 // RecordChatOutcome, then sees a status that cannot change until it commits.
 //

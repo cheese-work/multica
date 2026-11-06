@@ -92,7 +92,7 @@ func (h *Handler) revokeAndRemoveMember(ctx context.Context, workspaceID, userID
 			}
 		}
 
-		// Sessions before agents (chat_session -> agent -> task): chat enqueue
+		// Sessions before agents (chat_session -> runtime -> agent -> task): chat enqueue
 		// holds a session while it locks the agent, so archiving the agents
 		// first would deadlock a concurrent send.
 		if _, err := qtx.LockChatSessionsForRuntimes(ctx, runtimeIDs); err != nil {

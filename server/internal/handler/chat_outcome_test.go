@@ -595,7 +595,7 @@ func TestOutcomeAndRealArchivalCancelDoNotConflict(t *testing.T) {
 	}
 }
 
-// Lock order is chat_session -> agent -> task. A real chat send holds the session while it locks the
+// Lock order is chat_session -> runtime -> agent -> task. A real chat send holds the session while it locks the
 // agent; a revoke or runtime delete that locked the agent first and then queued for the session
 // deadlocked with it (40P01). A gate holds the session so the send queues first and the teardown
 // queues second; both handlers then run for real when the gate opens. Neither may fail.
