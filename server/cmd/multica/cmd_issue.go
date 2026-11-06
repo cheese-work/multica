@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/spf13/cobra"
@@ -3443,12 +3444,23 @@ func runIssueRuns(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// stripControl drops C0, DEL and C1 control runes. The report comes from the
+// runtime, so unescaped ESC/OSC sequences could spoof output or reach the clipboard.
+func stripControl(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // printInitContextReports prints one token-report table per run. The report
 // lives at result.init_context.parts; runs from older daemons, failed runs and
 // runs still in flight have none, and say so rather than printing an empty table.
 func printInitContextReports(w io.Writer, runs []map[string]any, fullID bool) {
 	for _, r := range runs {
-		id := displayID(strVal(r, "id"), fullID)
+		id := stripControl(displayID(strVal(r, "id"), fullID))
 		result, _ := r["result"].(map[string]any)
 		report, _ := result["init_context"].(map[string]any)
 		parts, _ := report["parts"].([]any)
@@ -3468,10 +3480,10 @@ func printInitContextReports(w io.Writer, runs []map[string]any, fullID bool) {
 				}
 			}
 			rows = append(rows, []string{
-				strVal(pm, "part"),
-				formatMetadataValue(pm["tokens"]),
-				formatMetadataValue(pm["budget"]),
-				strings.Join(notes, "; "),
+				stripControl(strVal(pm, "part")),
+				stripControl(formatMetadataValue(pm["tokens"])),
+				stripControl(formatMetadataValue(pm["budget"])),
+				stripControl(strings.Join(notes, "; ")),
 			})
 		}
 		fmt.Fprintf(w, "Run %s:\n", id)

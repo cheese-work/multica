@@ -100,3 +100,26 @@ func TestRunIssueRunsInitContextRejectsSiblings(t *testing.T) {
 		t.Fatalf("err = %v, want --siblings conflict", err)
 	}
 }
+
+func TestRunIssueRunsInitContextStripsTerminalControls(t *testing.T) {
+	parts := []map[string]any{{
+		"part":   "evil\x1b]52;c;ZXZpbA==\x07name\x1b[31m",
+		"tokens": 10,
+		"budget": "5\x9b0",
+		"notes":  []string{"spoof\x1b[2J\x1b]0;title\x1b\\ok\rtail"},
+	}}
+	out, err := runIssueRunsForTest(t, []map[string]any{
+		initCtxRun("aaaaaaaa-1111-4222-8333-444444444444", parts),
+	}, "table", true, false)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	for _, r := range out {
+		if r < 0x20 && r != '\n' || (r >= 0x7f && r <= 0x9f) {
+			t.Fatalf("control char %U in output:\n%q", r, out)
+		}
+	}
+	if !strings.Contains(out, "evil") || !strings.Contains(out, "spoof") {
+		t.Errorf("printable text lost in:\n%s", out)
+	}
+}
