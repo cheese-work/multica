@@ -39,6 +39,12 @@ type Collector struct {
 
 var errLogTooBig = errors.New("ciwatch: log over byte limit")
 
+// settleError marks a Release that could not store its settlement.
+type settleError struct{ err error }
+
+func (e *settleError) Error() string { return "ciwatch: settle github budget: " + e.err.Error() }
+func (e *settleError) Unwrap() error { return e.err }
+
 // capReader fails once more than max bytes were read, so a 50 MB log is never drained.
 type capReader struct {
 	r    io.Reader
@@ -138,6 +144,16 @@ func (c *Collector) Handle(ctx context.Context, in Input) (Result, error) {
 	// stop reports whether err ends all further API calls, recording why.
 	stop := func(err error) bool {
 		var rl *RateLimitError
+		var se *settleError
+		// A settlement the ledger did not store leaves its balance stale: end
+		// collection and fail the run, even when err also carries a limit.
+		stopped := errors.As(err, &se)
+		if stopped {
+			if persistErr == nil {
+				persistErr = se
+			}
+			partial(PartialBudget)
+		}
 		switch {
 		case errors.Is(err, ErrNoBudget):
 			partial(PartialBudget)
@@ -149,7 +165,7 @@ func (c *Collector) Handle(ctx context.Context, in Input) (Result, error) {
 			}
 			partial(PartialBackoff)
 		default:
-			return false
+			return stopped
 		}
 		return true
 	}
@@ -218,7 +234,9 @@ func (c *Collector) failedJobs(ctx context.Context, run Run, partial func(string
 			var js []Job
 			var h http.Header
 			js, more, h, err = c.GH.ListJobs(ctx, run, page)
-			release(h)
+			if serr := release(h); serr != nil {
+				err = errors.Join(err, &settleError{serr})
+			}
 			for _, j := range js {
 				if j.Conclusion == "failure" || j.Conclusion == "timed_out" {
 					failed = append(failed, j)
@@ -249,7 +267,7 @@ func (c *Collector) failedJobs(ctx context.Context, run Run, partial func(string
 var errRedact = errors.New("ciwatch: redaction failed")
 
 // tail downloads one job log under the byte and time limits and returns its redacted tail.
-func (c *Collector) tail(ctx context.Context, run Run, jobID int64) ([]string, error) {
+func (c *Collector) tail(ctx context.Context, run Run, jobID int64) (lines []string, err error) {
 	timeout, limit, redact := c.LogTimeout, c.MaxLogBytes, c.Redact
 	if timeout == 0 {
 		timeout = defLogTimeout
@@ -265,7 +283,11 @@ func (c *Collector) tail(ctx context.Context, run Run, jobID int64) ([]string, e
 		return nil, err
 	}
 	var h http.Header
-	defer func() { release(h) }()
+	defer func() {
+		if serr := release(h); serr != nil {
+			lines, err = nil, errors.Join(err, &settleError{serr})
+		}
+	}()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	body, h, err := c.GH.JobLog(ctx, run, jobID)
@@ -273,7 +295,7 @@ func (c *Collector) tail(ctx context.Context, run Run, jobID int64) ([]string, e
 		return nil, err
 	}
 	defer body.Close()
-	lines, err := redact(&capReader{r: body, left: limit}, maxExcerptLine)
+	lines, err = redact(&capReader{r: body, left: limit}, maxExcerptLine)
 	switch {
 	case err == nil:
 		return lines, nil

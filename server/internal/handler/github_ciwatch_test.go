@@ -27,7 +27,7 @@ func (ciFakeGH) JobLog(context.Context, ciwatch.Run, int64) (io.ReadCloser, http
 type ciFakeBudget struct{}
 
 func (ciFakeBudget) Reserve(context.Context, int64, int) (ciwatch.Release, error) {
-	return func(http.Header) {}, nil
+	return func(http.Header) error { return nil }, nil
 }
 func (ciFakeBudget) Limited(context.Context, int64, *ciwatch.RateLimitError) error { return nil }
 

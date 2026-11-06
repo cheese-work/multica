@@ -138,8 +138,10 @@ type GitHub interface {
 }
 
 // Release settles one reserved call. Pass the response headers so the shared
-// ledger sees what other consumers spent; nil when the call failed.
-type Release func(h http.Header)
+// ledger sees what other consumers spent; nil when the call failed. An error
+// means the settlement was not stored, so the ledger balance is stale: the
+// caller must make no further call.
+type Release func(h http.Header) error
 
 // Budget is the shared installation ledger. CHE-4275 (S3) supplies the real one.
 type Budget interface {

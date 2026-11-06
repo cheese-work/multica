@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strconv"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -81,21 +80,15 @@ func (b LedgerBudget) Reserve(ctx context.Context, inst int64, cost int) (Releas
 	}
 	// Settle with the response headers: when other consumers spent the shared
 	// budget, the ledger lowers its count and the next Reserve sees it.
-	return func(h http.Header) { _ = r.Complete(context.WithoutCancel(ctx), h) }, nil
+	return func(h http.Header) error { return r.Complete(context.WithoutCancel(ctx), h) }, nil
 }
 
 // Limited stores the shared backoff from the throttling response itself: the
 // ledger keeps the later of the header reset and Retry-After, uncapped. Without
-// either header it falls back to the client's wait. An error means the backoff
-// was not stored.
+// either header the ledger's own 60/120/240 s escalation applies: the client's
+// wait is not passed on, it would hide repeated limits. An error means the
+// backoff was not stored.
 func (b LedgerBudget) Limited(ctx context.Context, inst int64, e *RateLimitError) error {
-	h := e.Header.Clone()
-	if h == nil {
-		h = http.Header{}
-	}
-	if h.Get("Retry-After") == "" && h.Get("X-RateLimit-Reset") == "" {
-		h.Set("Retry-After", strconv.Itoa(int(e.RetryAfter.Seconds())))
-	}
-	_, err := b.L.RecordLimited(context.WithoutCancel(ctx), inst, h)
+	_, err := b.L.RecordLimited(context.WithoutCancel(ctx), inst, e.Header)
 	return err
 }

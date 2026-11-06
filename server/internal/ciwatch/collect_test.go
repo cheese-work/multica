@@ -53,6 +53,8 @@ type fakeBudget struct {
 	limited     *RateLimitError
 	limitErr    error         // returned by Limited: the backoff was not stored
 	settled     []http.Header // headers passed to release, in order
+	settleErr   error         // returned by release: the ledger could not store the headers
+	settleAt    int           // 0: every release fails; n: only the nth
 }
 
 func (b *fakeBudget) Reserve(_ context.Context, _ int64, cost int) (Release, error) {
@@ -61,7 +63,14 @@ func (b *fakeBudget) Reserve(_ context.Context, _ int64, cost int) (Release, err
 	}
 	b.reserved += cost
 	b.outstanding++
-	return func(h http.Header) { b.outstanding--; b.settled = append(b.settled, h) }, nil
+	return func(h http.Header) error {
+		b.outstanding--
+		b.settled = append(b.settled, h)
+		if b.settleAt == 0 || b.settleAt == len(b.settled) {
+			return b.settleErr
+		}
+		return nil
+	}, nil
 }
 func (b *fakeBudget) Limited(_ context.Context, _ int64, e *RateLimitError) error {
 	b.limited = e
@@ -471,5 +480,45 @@ func TestHandleRateLimitStoredGivesPartialBackoff(t *testing.T) {
 	res, err := c.Handle(context.Background(), baseInput())
 	if err != nil || res.Event.PartialReason != PartialBackoff || b.limited == nil {
 		t.Fatalf("res=%+v err=%v limited=%v", res, err, b.limited)
+	}
+}
+
+// A settlement the ledger could not store leaves a stale balance. The collector
+// must stop spending and fail the run, not carry on with the old count.
+func TestHandleFailsClosedWhenSettlementNotStored(t *testing.T) {
+	gh := &fakeGH{jobsByPage: [][]Job{{failedJob(1, "build", t0)}},
+		logs: map[int64]func(context.Context) io.Reader{1: text("API rate limit exceeded\n")}}
+	b := &fakeBudget{settleErr: errors.New("ledger down")}
+	c, _ := newCollector(gh, b, fakeRuns{})
+	res, err := c.Handle(context.Background(), baseInput())
+	if err == nil || !errors.Is(err, b.settleErr) {
+		t.Fatalf("err=%v res=%+v, want the settlement error", err, res)
+	}
+	if len(gh.logCalls) != 0 {
+		t.Fatalf("logCalls=%v, want no call after a failed settlement", gh.logCalls)
+	}
+	// The ledger is back: the retry collects in full.
+	b.settleErr = nil
+	gh2 := &fakeGH{jobsByPage: [][]Job{{failedJob(1, "build", t0)}},
+		logs: map[int64]func(context.Context) io.Reader{1: text("API rate limit exceeded\n")}}
+	c2, _ := newCollector(gh2, b, fakeRuns{})
+	res, err = c2.Handle(context.Background(), baseInput())
+	if err != nil || res.Event == nil || res.Event.Evidence != EvidenceFull {
+		t.Fatalf("retry: err=%v res=%+v, want full evidence", err, res)
+	}
+}
+
+// The same on the log download call.
+func TestHandleFailsClosedWhenLogSettlementNotStored(t *testing.T) {
+	gh := &fakeGH{jobsByPage: [][]Job{{failedJob(1, "build", t0), failedJob(2, "test", t0.Add(time.Second))}},
+		logs: map[int64]func(context.Context) io.Reader{1: text("a\n"), 2: text("b\n")}}
+	b := &fakeBudget{settleErr: errors.New("ledger down"), settleAt: 2} // the first log call
+	c, _ := newCollector(gh, b, fakeRuns{})
+	_, err := c.Handle(context.Background(), baseInput())
+	if err == nil || !errors.Is(err, b.settleErr) {
+		t.Fatalf("err=%v, want the settlement error", err)
+	}
+	if len(gh.logCalls) != 1 {
+		t.Fatalf("logCalls=%v, want the first log only", gh.logCalls)
 	}
 }

@@ -91,7 +91,9 @@ func TestLedgerBudgetReleaseSharesResponseHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	release(rateHeaders(ghbudget.Floor-100, ledgerWindow))
+	if err := release(rateHeaders(ghbudget.Floor-100, ledgerWindow)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := b.Reserve(ctx, inst, 1); !errors.Is(err, ErrNoBudget) {
 		t.Fatalf("Reserve after the headers showed %d left: err=%v, want ErrNoBudget", ghbudget.Floor-100, err)
 	}
@@ -164,16 +166,39 @@ func TestLedgerBudgetLimitedUsesLaterOfResetAndRetryAfter(t *testing.T) {
 	}
 }
 
-// Without headers only the client's wait is known; it still applies.
-func TestLedgerBudgetLimitedWithoutHeadersUsesRetryAfter(t *testing.T) {
+// Without headers there is nothing to honor. The ledger's own 60/120/240 second
+// escalation must run: a synthesized Retry-After would hide repeated limits.
+func TestLedgerBudgetLimitedWithoutHeadersEscalates(t *testing.T) {
 	b, _, clk, inst := ledgerEnv(t)
 	ctx := context.Background()
-	if err := b.Limited(ctx, inst, &RateLimitError{RetryAfter: 4 * time.Minute}); err != nil {
+	limit := func() {
+		t.Helper()
+		if err := b.Limited(ctx, inst, &RateLimitError{RetryAfter: 5 * time.Minute}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	limit()
+	clk.Advance(61 * time.Second)
+	if _, err := b.Reserve(ctx, inst, 1); err != nil {
+		t.Fatalf("61s after the first headerless limit: err=%v, want a reservation", err)
+	}
+	limit() // second strike: 120 s
+	clk.Advance(61 * time.Second)
+	if _, err := b.Reserve(ctx, inst, 1); !errors.Is(err, ErrBackoff) {
+		t.Fatalf("61s into the second headerless limit: err=%v, want ErrBackoff", err)
+	}
+}
+
+// A settlement the ledger cannot store is an error, not a silent drop.
+func TestLedgerBudgetReleaseReturnsSettlementError(t *testing.T) {
+	b, pool, _, inst := ledgerEnv(t)
+	release, err := b.Reserve(context.Background(), inst, 1)
+	if err != nil {
 		t.Fatal(err)
 	}
-	clk.Advance(3 * time.Minute)
-	if _, err := b.Reserve(ctx, inst, 1); !errors.Is(err, ErrBackoff) {
-		t.Fatalf("3 min into a 4-min wait: err=%v, want ErrBackoff", err)
+	pool.Close() // every ledger write now fails
+	if err := release(rateHeaders(ghbudget.Floor-100, ledgerWindow)); err == nil {
+		t.Fatal("release returned nil although the ledger write failed")
 	}
 }
 
