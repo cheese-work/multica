@@ -73,6 +73,9 @@ const (
 	OutcomeRateLimit  = "rate_limit" // 429, or 403 with a rate-limit signal
 	OutcomeRejected   = "rejected"   // any other 4xx
 	OutcomeServer     = "server"     // 5xx: the rerun may have landed
+	OutcomeNoAnswer   = "no_answer"  // timeout or transport error: the rerun may have landed
+	// "" (never stored): the worker died, or its write failed, after the POST.
+	// The answer may have been a permission 403, so followup treats it as one.
 )
 
 // PostError is a POST that was sent and answered with something other than
@@ -98,7 +101,10 @@ func (r *Rerunner) Execute(ctx context.Context, a Action, mark func(expectedAtte
 	if err != nil {
 		return RemoteOutcome{}, r.notSent(err)
 	}
-	st, _, err := r.API.GetRun(ctx, inst, a.RepoOwner, a.RepoName, a.OriginalRunID)
+	st, hdr, err := r.API.GetRun(ctx, inst, a.RepoOwner, a.RepoName, a.OriginalRunID)
+	// The GET went out, so the reservation is always settled with Complete: a
+	// release would spend the shared installation budget without a debit.
+	settle := func(h http.Header) { _ = res.Complete(context.WithoutCancel(ctx), h) }
 	if err == nil && !st.Completed {
 		err = errors.New("run is not completed")
 	}
@@ -106,25 +112,25 @@ func (r *Rerunner) Execute(ctx context.Context, a Action, mark func(expectedAtte
 		err = res.Recheck(ctx)
 	}
 	if err != nil {
-		_ = res.Release(ctx)
+		settle(hdr)
 		return RemoteOutcome{}, r.notSent(err)
 	}
 	if st.Attempt > 1 { // somebody already reran it
-		_ = res.Release(ctx)
+		settle(hdr)
 		return RemoteOutcome{State: StateDone, Reason: ReasonManualRerun, DestinationID: strconv.Itoa(st.Attempt)}, nil
 	}
 	expected := st.Attempt + 1
 	if err := mark(expected); err != nil {
-		_ = res.Release(ctx)
+		settle(hdr)
 		return RemoteOutcome{}, r.notSent(err)
 	}
 
 	resp, err := r.API.RerunFailedJobs(ctx, inst, a.RepoOwner, a.RepoName, a.OriginalRunID)
 	if err != nil { // timeout or transport error: the rerun may have landed
-		_ = res.Complete(ctx, nil)
-		return RemoteOutcome{}, fmt.Errorf("rerun POST: %w", err)
+		settle(nil)
+		return RemoteOutcome{}, &PostError{Outcome: OutcomeNoAnswer, Err: fmt.Errorf("rerun POST: %w", err)}
 	}
-	_ = res.Complete(ctx, resp.Header)
+	settle(resp.Header)
 	if resp.Status >= 200 && resp.Status < 300 {
 		return RemoteOutcome{State: StateDone, DestinationID: strconv.Itoa(expected)}, nil
 	}
@@ -132,7 +138,7 @@ func (r *Rerunner) Execute(ctx context.Context, a Action, mark func(expectedAtte
 	switch {
 	case resp.Status == http.StatusTooManyRequests || resp.Status == http.StatusForbidden && isRateLimited(resp):
 		outcome = OutcomeRateLimit
-		_, _ = r.Budget.RecordLimited(ctx, inst, resp.Header)
+		_, _ = r.Budget.RecordLimited(context.WithoutCancel(ctx), inst, resp.Header)
 	case resp.Status == http.StatusForbidden:
 		outcome = OutcomePermission
 	case resp.Status >= 500:

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/multica-ai/multica/server/internal/ghbudget"
@@ -454,31 +455,48 @@ func (l *Ledger) postRemote(ctx context.Context, a Action, ex RemoteExecutor) er
 			a.ID, diagnostic(err), ns.DueAt, now, MaxAttempts, ReasonAttemptsExhausted, a.LeaseEpoch)
 		return uerr
 	}
+	// The POST was sent. What follows must survive a cancelled context: it
+	// stores the answer, and a lost answer can hide a permission 403.
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
 	if err != nil {
-		// The POST was sent: keep what the answer was (post_outcome) so a restart
-		// can still route it. A failed write is retried; it never POSTs again.
-		var pe *PostError
-		outcome := ""
-		if errors.As(err, &pe) {
-			outcome = pe.Outcome
-		}
-		var uerr error
-		for i := 0; i < 3; i++ {
-			_, uerr = l.pool.Exec(ctx, `UPDATE ci_watch_action SET state='ambiguous', reason=$2, diagnostic=$3,
-				due_at=$4, lease_until=NULL, updated_at=$5, post_outcome=$7
-				WHERE id=$1::uuid AND lease_epoch=$6 AND state='executing'`,
-				a.ID, ReasonPostError, diagnostic(err), now.Add(ReconcileGap), now, a.LeaseEpoch, outcome)
-			if uerr == nil || ctx.Err() != nil {
-				break
-			}
-		}
-		return uerr
+		return l.recordPostError(wctx, a, err, now)
 	}
 	// A 0-row update means recovery already moved the row; reconcile owns it.
-	_, uerr := l.pool.Exec(ctx, `UPDATE ci_watch_action SET state=$2, reason=$3, destination_id=NULLIF($4,''),
+	_, uerr := l.pool.Exec(wctx, `UPDATE ci_watch_action SET state=$2, reason=$3, destination_id=NULLIF($4,''),
 		lease_until=NULL, updated_at=$5 WHERE id=$1::uuid AND lease_epoch=$6 AND state='executing'`,
 		a.ID, out.State, out.Reason, out.DestinationID, now, a.LeaseEpoch)
 	return uerr
+}
+
+// recordPostError parks a row whose POST was sent but not accepted, and keeps
+// the answer (post_outcome) so a restart can still route it. A failed write is
+// retried; nothing here POSTs. Recovery may have moved the row while the POST
+// was in flight (sweep: ambiguous; reconcile: any state, new epoch): the
+// answer is then stored without touching that state. A row has one POST, so the
+// answer is the row's whatever the epoch.
+func (l *Ledger) recordPostError(ctx context.Context, a Action, cause error, now time.Time) error {
+	var pe *PostError
+	outcome := ""
+	if errors.As(cause, &pe) {
+		outcome = pe.Outcome
+	}
+	var err error
+	for i := 0; i < 3; i++ {
+		var tag pgconn.CommandTag
+		tag, err = l.pool.Exec(ctx, `UPDATE ci_watch_action SET state='ambiguous', reason=$2, diagnostic=$3,
+			due_at=$4, lease_until=NULL, updated_at=$5, post_outcome=$7
+			WHERE id=$1::uuid AND lease_epoch=$6 AND state IN ('executing','ambiguous') AND reconcile_attempts=0`,
+			a.ID, ReasonPostError, diagnostic(cause), now.Add(ReconcileGap), now, a.LeaseEpoch, outcome)
+		if err == nil && tag.RowsAffected() == 0 {
+			_, err = l.pool.Exec(ctx, `UPDATE ci_watch_action SET post_outcome=$2, diagnostic=$3
+				WHERE id=$1::uuid AND post_started_at IS NOT NULL AND post_outcome=''`, a.ID, outcome, diagnostic(cause))
+		}
+		if err == nil || ctx.Err() != nil {
+			break
+		}
+	}
+	return err
 }
 
 // Sweep recovers `executing` rows past their lease that nobody holds. Remote

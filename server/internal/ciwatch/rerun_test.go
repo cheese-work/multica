@@ -22,6 +22,7 @@ type fakeRerunGH struct {
 	attempt int // run_attempt GitHub reports
 	post    func() (RerunResponse, error)
 	getErr  error
+	pending bool // GET reports the run as not completed
 }
 
 func (f *fakeRerunGH) GetRun(context.Context, int64, string, string, int64) (RunState, http.Header, error) {
@@ -31,7 +32,7 @@ func (f *fakeRerunGH) GetRun(context.Context, int64, string, string, int64) (Run
 	if f.getErr != nil {
 		return RunState{}, nil, f.getErr
 	}
-	return RunState{Attempt: f.attempt, Completed: true}, http.Header{}, nil
+	return RunState{Attempt: f.attempt, Completed: !f.pending}, http.Header{}, nil
 }
 
 func (f *fakeRerunGH) RerunFailedJobs(context.Context, int64, string, string, int64) (RerunResponse, error) {
@@ -347,25 +348,22 @@ func Test5xxPostThatLandedNeverEscalates(t *testing.T) {
 	e.wantPosts(t, 1)
 }
 
-func TestTimeoutPostAndRestartMidPostEscalateToP2WhenNotLanded(t *testing.T) {
+func TestTimeoutPostEscalatesToP2WhenNotLanded(t *testing.T) {
 	e := newRerunEnv(t)
-	ctx := context.Background()
 	e.gh.post = func() (RerunResponse, error) { return RerunResponse{}, context.DeadlineExceeded }
-	e.schedule(t, 1017)
+	a := e.schedule(t, 1017)
 	e.runOne(t)
-	// a second action: the worker died after the POST, so no outcome was stored
-	b := e.schedule(t, 1018)
-	if _, err := e.pool.Exec(ctx, `UPDATE ci_watch_action SET state='executing', lease_epoch=1, expected_attempt=2,
-		post_started_at=$2, lease_until=$2 WHERE id=$1`, b.ID, e.clock.Now()); err != nil {
-		t.Fatal(err)
+	if got := e.get(t, a.ID); got.PostOutcome != OutcomeNoAnswer {
+		t.Fatalf("outcome %q", got.PostOutcome)
 	}
 	e.settleAll(t)
 	e.followup(t)
 	e.followup(t)
-	for _, run := range []int64{1017, 1018} {
-		if e.escalations(t, run, ActionIssueCreate) != 1 {
-			t.Fatalf("run %d: P2 issues=%d", run, e.escalations(t, run, ActionIssueCreate))
-		}
+	if e.escalations(t, 1017, ActionIssueCreate) != 1 {
+		t.Fatalf("P2 issues=%d", e.escalations(t, 1017, ActionIssueCreate))
+	}
+	if mode, _ := e.p1Audits(t); mode == "shadow" {
+		t.Fatal("a timeout switched the repo to shadow")
 	}
 	e.wantPosts(t, 1)
 }

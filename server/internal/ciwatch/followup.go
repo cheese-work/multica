@@ -55,15 +55,20 @@ func (l *Ledger) escalate(ctx context.Context, tx pgx.Tx, n NewAction) (Action, 
 	return a, err == nil, err
 }
 
-// RerunFollowup routes one rerun row whose POST failed. It never POSTs. The
-// side effects (Shadow switch for a permission 403, the P2/P4 action) commit in
-// one transaction with the row they came from, so a crash leaves either both
-// or neither, and the next call finishes the job.
+// RerunFollowup routes one rerun row whose POST did not succeed, once. It
+// never POSTs. The side effects (Shadow switch, P2/P4 action) commit in one
+// transaction with the followup_at marker, so a crash leaves either all or
+// none, and the next call finishes the job. An existing P2/P4 action for the
+// run does not stop the Shadow switch, and neither does a reconcile that ended
+// in done: the permission problem stays.
 //
-//   - permission, rate_limit: the rerun was refused; route now.
-//   - server, rejected, no answer: wait until read-only reconcile has finished
-//     and found no rerun (state failed/reconcile_not_found). A rerun that
-//     landed is done and escalates nothing.
+//   - permission: refused for lack of permission; route now, in any state.
+//   - rate_limit: refused; route now (ambiguous or failed).
+//   - server, rejected, no_answer: wait until read-only reconcile has finished
+//     and found no rerun (failed/reconcile_not_found). A rerun that landed is
+//     done and escalates nothing.
+//   - "" (answer never stored): once reconcile found no rerun it is treated as
+//     a possible permission denial: Shadow switch and P4.
 //
 // Returns true when it handled a row.
 func (l *Ledger) RerunFollowup(ctx context.Context) (bool, error) {
@@ -73,12 +78,10 @@ func (l *Ledger) RerunFollowup(ctx context.Context) (bool, error) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	a, err := scanAction(tx.QueryRow(ctx, `SELECT `+actionCols+` FROM ci_watch_action a
-		WHERE action_kind='rerun' AND post_started_at IS NOT NULL AND (
-			(post_outcome IN ('permission','rate_limit') AND state IN ('ambiguous','failed'))
-			OR (state='failed' AND reason=$1 AND post_outcome IN ('','server','rejected')))
-		AND NOT EXISTS (SELECT 1 FROM ci_watch_action e WHERE e.workspace_id=a.workspace_id AND e.repo_owner=a.repo_owner
-			AND e.repo_name=a.repo_name AND e.original_run_id=a.original_run_id
-			AND e.action_kind IN ('inbox_notify','issue_create'))
+		WHERE action_kind='rerun' AND post_started_at IS NOT NULL AND followup_at IS NULL AND (
+			(post_outcome='permission' AND state IN ('ambiguous','failed','done'))
+			OR (post_outcome='rate_limit' AND state IN ('ambiguous','failed'))
+			OR (state='failed' AND reason=$1 AND post_outcome IN ('','server','rejected','no_answer')))
 		ORDER BY updated_at LIMIT 1 FOR UPDATE OF a SKIP LOCKED`, ReasonReconcileNotFound))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
@@ -89,9 +92,9 @@ func (l *Ledger) RerunFollowup(ctx context.Context) (bool, error) {
 	now := l.now()
 	protocol := "P2"
 	switch a.PostOutcome {
-	case OutcomePermission:
+	case OutcomePermission, "":
 		protocol = "P4"
-		// p1_mode of the repo goes back to shadow, with an audit row; once only.
+		// p1_mode of the repo goes back to shadow, with an audit row.
 		if _, err = tx.Exec(ctx, `WITH old AS (
 				SELECT id, p1_mode FROM ci_watch_config
 				WHERE workspace_id=$1::uuid AND repo_owner=lower($2) AND repo_name=lower($3) AND p1_mode<>'shadow' FOR UPDATE),
@@ -108,6 +111,9 @@ func (l *Ledger) RerunFollowup(ctx context.Context) (bool, error) {
 		OriginalRunID: a.OriginalRunID, Kind: escalationKind(protocol), Protocol: protocol,
 		SignatureHash: a.SignatureHash, DueAt: now, RunCompletedAt: a.RunCompletedAt}
 	if _, _, err = l.escalate(ctx, tx, n); err != nil {
+		return true, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE ci_watch_action SET followup_at=$2 WHERE id=$1::uuid`, a.ID, now); err != nil {
 		return true, err
 	}
 	return true, tx.Commit(ctx)
