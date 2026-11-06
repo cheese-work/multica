@@ -335,6 +335,28 @@ class RateLimitTest(unittest.TestCase):
         self.assertEqual(rc, sg.RATE_LIMIT_EXIT)
         revoke.assert_called_once()
 
+    def run_main_with_rate_limited_discovery(self, primary):
+        argv = ["x", "--repo", str(ROOT), "--github", "o/r", "--pr", "405", "--default-branch", "main", "--post"]
+        with mock.patch.object(sg, "gate_pr", return_value=(HEAD, primary, "primary verdict")), \
+                mock.patch.object(sg, "_gh", side_effect=sg.RateLimited(1, ["gh"])), \
+                mock.patch.object(sg, "_post") as post, mock.patch.object(sg, "revoke_queue") as revoke, \
+                mock.patch("sys.argv", argv), mock.patch("builtins.print"):
+            return sg.main(), post, revoke
+
+    def test_a_rate_limited_pr_discovery_does_not_hide_a_known_failure(self):
+        # CHE-4242 security review: the known FAIL must still be published and the queued successes revoked
+        rc, post, revoke = self.run_main_with_rate_limited_discovery("failure")
+        self.assertEqual(rc, 0)
+        self.assertEqual(post.call_args.args[2], "failure")
+        revoke.assert_called_once()
+
+    def test_a_rate_limited_pr_discovery_of_a_pass_is_pending_never_success(self):
+        rc, post, revoke = self.run_main_with_rate_limited_discovery("success")
+        self.assertEqual(rc, 0)
+        self.assertEqual(post.call_args.args[2], "pending")
+        self.assertIn("rate limited, retry", post.call_args.args[3])
+        revoke.assert_called_once()
+
     def test_writes_keep_a_wait_reserve_after_the_reads_spent_the_budget(self):
         sg._rate_limit_waited = sg.RATE_LIMIT_MAX_WAIT
         run = self.fake_run([(1, "", self.LIMIT), (0, "ok", "")])

@@ -440,9 +440,14 @@ def _main() -> int:
     head, state, desc = gate_pr(a.repo, a.github, a.pr, a.default_branch, trusted, humans, baseline)
     # The API also lists PRs that merely contain the commit (descendants, forks) with a different head. Their
     # head objects may not be fetched, so they are filtered here, before any diff is read.
-    rows = [json.loads(l) for l in _gh(f"repos/{a.github}/commits/{head}/pulls", "--jq",
-                                       '.[] | select(.state=="open") | {number, head: .head.sha}').splitlines()]
     results = [(state, desc)]
+    try:
+        rows = [json.loads(l) for l in _gh(f"repos/{a.github}/commits/{head}/pulls", "--jq",
+                                           '.[] | select(.state=="open") | {number, head: .head.sha}').splitlines()]
+    except RateLimited:
+        # Siblings unknown: hold the head at `pending`. The primary verdict is already known and still wins in combine().
+        rows = []
+        results.append(("pending", "rate limited, retry"))
     for n in sorted({r["number"] for r in rows if r["head"] == head} - {a.pr}):
         try:
             h, st, d = gate_pr(a.repo, a.github, n, a.default_branch, trusted, humans, baseline)
