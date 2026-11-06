@@ -653,7 +653,18 @@ func TestWakeupConditionFailedCommitPreservesFailure(t *testing.T) {
 	f.Exec(t, "UPDATE issue_wakeup SET next_fire_at=now()-interval '1 second',last_error='earlier dispatch failure' WHERE id=$1", w.ID)
 	commitErr := errors.New("dispatch commit failed")
 	s.Tasks.TxStarter = wakeupCommitFailureStarter{TxStarter: f.Pool, err: commitErr}
-	if err := s.dispatch(ctx, w); !errors.Is(err, commitErr) {
+	// dispatch holds its locks for at most 50 ms and a pass records a failure
+	// with a write bounded to 100 ms (dispatchFromTick). On a loaded runner
+	// either can time out and the earlier error stays. The rule is still due, so
+	// the next attempt retries it; the commit failure is the state under test
+	// (CHE-4008).
+	var err error
+	for attempt := 0; attempt < 20; attempt++ {
+		if err = s.dispatch(ctx, w); errors.Is(err, commitErr) {
+			break
+		}
+	}
+	if !errors.Is(err, commitErr) {
 		t.Fatalf("dispatch error=%v, want %v", err, commitErr)
 	}
 	got, err := f.q.LocklessWakeup(ctx, w.ID)
@@ -663,12 +674,17 @@ func TestWakeupConditionFailedCommitPreservesFailure(t *testing.T) {
 	if !got.LastError.Valid || got.LastError.String != "earlier dispatch failure" {
 		t.Fatalf("failed commit cleared the earlier failure: %+v", got.LastError)
 	}
-	if err := s.TickWorkspaces(ctx, parseTestUUID(t, f.WorkspaceID)); !errors.Is(err, commitErr) {
-		t.Fatalf("tick error=%v, want %v", err, commitErr)
-	}
-	got, err = f.q.LocklessWakeup(ctx, w.ID)
-	if err != nil {
-		t.Fatal(err)
+	for pass := 0; pass < 20; pass++ {
+		if err := s.TickWorkspaces(ctx, parseTestUUID(t, f.WorkspaceID)); err == nil {
+			t.Fatal("a pass whose commit failed reported no error")
+		}
+		got, err = f.q.LocklessWakeup(ctx, w.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.LastError.Valid && got.LastError.String == commitErr.Error() {
+			break
+		}
 	}
 	if !got.LastError.Valid || got.LastError.String != commitErr.Error() {
 		t.Fatalf("failed pass did not record the current failure: %+v", got.LastError)

@@ -263,6 +263,12 @@ func (h *Handler) claimChatTaskSupplement(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "failed to claim additional message")
 		return
 	}
+	// The claimed text is chat content. Take the chat's taint after the claim so
+	// a delegate this run starts later cannot be elevated (CHE-3702).
+	if err := h.recordChatTaint(r.Context(), &task, ""); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record chat taint")
+		return
+	}
 	atts, err := h.Queries.ListAttachmentsByChatMessageIDs(r.Context(), db.ListAttachmentsByChatMessageIDsParams{
 		Column1: []pgtype.UUID{row.MessageID}, WorkspaceID: row.WorkspaceID,
 	})
