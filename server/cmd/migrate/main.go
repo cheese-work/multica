@@ -157,7 +157,7 @@ var concurrentIndexCleanups = map[string]string{
 	"997_ci_signature_owner_signature_uidx":                     "ci_signature_owner_signature_uidx",
 	"998_ci_signature_owner_issue_uidx":                         "ci_signature_owner_issue_uidx",
 	"999_ci_failure_event_created_at_idx":                       "ci_failure_event_created_at_idx",
-	"999_system1_observation_ci_event_subject_idx":              "system1_observation_ci_event_subject",
+	"9992_system1_observation_ci_event_subject_idx":             "system1_observation_ci_event_subject",
 	"971_dm_progress_data_incident_follow_kind_idx":             "idx_dm_progress_data_incident_follow_kind",
 	"944_decision_wake_event_request_seq_idx":                   "decision_wake_event_request_seq_uidx",
 	"945_decision_wake_receipt_event_recipient_idx":             "decision_wake_receipt_event_recipient_uidx",
@@ -560,7 +560,7 @@ var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
 		TableRegclass: "ci_failure_event",
 		Columns:       []string{"created_at"},
 	},
-	"999_system1_observation_ci_event_subject_idx": {
+	"9992_system1_observation_ci_event_subject_idx": {
 		IndexRegclass: "system1_observation_ci_event_subject",
 		TableRegclass: "system1_observation",
 		Unique:        true,

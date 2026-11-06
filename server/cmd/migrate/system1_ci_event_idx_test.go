@@ -6,7 +6,7 @@ import (
 )
 
 // CHE-4276: one rule row per CI run attempt, enforced by the database.
-const system1CIEventSubjectVersion = "999_system1_observation_ci_event_subject_idx"
+const system1CIEventSubjectVersion = "9992_system1_observation_ci_event_subject_idx"
 
 func TestSystem1CIEventSubjectIndexIsRecoverableAndUnique(t *testing.T) {
 	t.Parallel()
