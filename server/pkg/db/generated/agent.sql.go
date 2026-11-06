@@ -6532,19 +6532,31 @@ repaired AS (
     WHERE c.id = (SELECT t2.chat_session_id FROM agent_task_queue t2 WHERE t2.id = $1)
       AND (c.taint_ids IS DISTINCT FROM (SELECT ids FROM inherited)
            OR (NOT c.taint_verified AND (c.forked_from_session_id IS NOT NULL OR c.continued_from_session_id IS NOT NULL)))
+),
+computed AS (
+    SELECT COALESCE((
+        SELECT array_agg(DISTINCT x ORDER BY x) FROM (
+            SELECT unnest((SELECT ids FROM inherited)) AS x
+            UNION ALL
+            SELECT unnest(s.taint_ids) FROM agent_task_queue s
+            WHERE s.chat_session_id = (SELECT t3.chat_session_id FROM agent_task_queue t3 WHERE t3.id = $1)
+              AND ($2::text IS NULL OR s.session_id = $2::text)
+        ) u
+    ), '{}')::text[] AS ids
+),
+updated AS (
+    -- Only a task that lacks some of the taint is written. Every chat read and
+    -- supplement claim calls this, so a clean chat must not churn the row.
+    UPDATE agent_task_queue t
+    SET taint_ids = (SELECT ids FROM computed)
+    WHERE t.id = $1 AND NOT (t.taint_ids @> (SELECT ids FROM computed))
+    RETURNING t.taint_ids
 )
-UPDATE agent_task_queue t
-SET taint_ids = COALESCE((
-    SELECT array_agg(DISTINCT x ORDER BY x) FROM (
-        SELECT unnest((SELECT ids FROM inherited)) AS x
-        UNION ALL
-        SELECT unnest(s.taint_ids) FROM agent_task_queue s
-        WHERE s.chat_session_id = t.chat_session_id
-          AND ($2::text IS NULL OR s.session_id = $2::text)
-    ) u
-), '{}')
-WHERE t.id = $1
-RETURNING t.taint_ids
+SELECT COALESCE(
+    (SELECT u.taint_ids FROM updated u),
+    (SELECT t4.taint_ids FROM agent_task_queue t4 WHERE t4.id = $1)
+)::text[] AS taint_ids
+WHERE EXISTS (SELECT 1 FROM agent_task_queue t5 WHERE t5.id = $1)
 `
 
 type InheritChatTaintParams struct {

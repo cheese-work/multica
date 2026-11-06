@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -600,8 +599,7 @@ func TestChatHistoryReadMarksReadingTaskAndReachesDelegate(t *testing.T) {
 	dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": chatID, "role": "assistant", "content": "attacker-influenced reply"})
 	taskID := dbfx.Task(t, agentID, testutil.Cols{"status": "running", "runtime_id": runtimeID, "chat_session_id": chatID})
 
-	w := httptest.NewRecorder()
-	testHandler.GetChatChannelHistory(w, withChatTestWorkspaceCtx(t, taskActorReq("/api/chat/history?limit=10", taskID)))
+	w := serveChat(t, chatGateRouter(nil), "/api/chat/history?limit=10", taskID)
 	if w.Code != http.StatusOK {
 		t.Fatalf("history status = %d: %s", w.Code, w.Body.String())
 	}
@@ -653,7 +651,7 @@ func (l *lateReader) Thread(context.Context, pgtype.UUID, string, channel.Histor
 // the watch does) lands after the handler begins but before the transcript is
 // read. The response must contain that message, and the reading task must carry
 // its taint, so a delegate of the reader is restricted.
-func readMidCommit(handler func(http.ResponseWriter, *http.Request), target string, slackBacked bool) func(*testing.T, string, string) string {
+func readMidCommit(target string, slackBacked bool) func(*testing.T, string, string) string {
 	return func(t *testing.T, agentID, runtimeID string) string {
 		chatID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "mid-read commit"})
 		const late = "late tainted reply"
@@ -675,8 +673,7 @@ func readMidCommit(handler func(http.ResponseWriter, *http.Request), target stri
 			testHandler.SlackHistory = nil
 			testHandler.Queries = db.New(&onceBeforeQuery{DBTX: testPool, match: "name: ListChatMessagesPage :many", inject: inject})
 		}
-		w := httptest.NewRecorder()
-		handler(w, withChatTestWorkspaceCtx(t, taskActorReq(target, taskID)))
+		w := serveChat(t, chatGateRouter(nil), target, taskID)
 		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), late) {
 			t.Fatalf("read = %d %s, want 200 containing %q", w.Code, w.Body.String(), late)
 		}
@@ -715,13 +712,12 @@ func TestEveryChatContentPathRestrictsADelegate(t *testing.T) {
 			return dm.ID
 		}
 	}
-	read := func(handler func(http.ResponseWriter, *http.Request), target string) func(*testing.T, string, string) string {
+	read := func(target string) func(*testing.T, string, string) string {
 		return func(t *testing.T, agentID, runtimeID string) string {
 			chatID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "read path", "taint_ids": []string{"t1"}, "taint_verified": true})
 			dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": chatID, "role": "assistant", "content": "attacker-influenced reply"})
 			taskID := dbfx.Task(t, agentID, testutil.Cols{"status": "running", "runtime_id": runtimeID, "chat_session_id": chatID})
-			w := httptest.NewRecorder()
-			handler(w, withChatTestWorkspaceCtx(t, taskActorReq(target, taskID)))
+			w := serveChat(t, chatGateRouter(nil), target, taskID)
 			if w.Code != http.StatusOK {
 				t.Fatalf("read status = %d: %s", w.Code, w.Body.String())
 			}
@@ -759,15 +755,26 @@ func TestEveryChatContentPathRestrictsADelegate(t *testing.T) {
 					"chat_session_id": chatID, "role": "assistant", "message_kind": "continuation_summary", "content": "summary",
 				})
 			})},
-		{"history read", read(testHandler.GetChatChannelHistory, "/api/chat/history?limit=10")},
-		{"thread read", read(testHandler.GetChatThread, "/api/chat/thread")},
-		{"history read, tainted turn commits mid-read", readMidCommit(testHandler.GetChatChannelHistory, "/api/chat/history?limit=10", false)},
-		{"thread read, tainted turn commits mid-read", readMidCommit(testHandler.GetChatThread, "/api/chat/thread", false)},
-		{"slack history, tainted turn commits mid-read", readMidCommit(testHandler.GetChatChannelHistory, "/api/chat/history?limit=10", true)},
-		{"slack thread, tainted turn commits mid-read", readMidCommit(testHandler.GetChatThread, "/api/chat/thread", true)},
+		{"supplement claim", func(t *testing.T, _, _ string) string {
+			f := steeredFixture(t)
+			dbfx.Exec(t, `UPDATE chat_session SET taint_ids = '{t1}', taint_verified = true WHERE id = $1`, f.sessionID)
+			claimSteer(t, newChatSupplementDaemonClient(t), f)
+			return f.runningID
+		}},
+		{"history read", read("/api/chat/history?limit=10")},
+		{"thread read", read("/api/chat/thread")},
+		{"history read, tainted turn commits mid-read", readMidCommit("/api/chat/history?limit=10", false)},
+		{"thread read, tainted turn commits mid-read", readMidCommit("/api/chat/thread", false)},
+		{"slack history, tainted turn commits mid-read", readMidCommit("/api/chat/history?limit=10", true)},
+		{"slack thread, tainted turn commits mid-read", readMidCommit("/api/chat/thread", true)},
 	} {
 		t.Run(p.name, func(t *testing.T) {
-			agentID, runtimeID, _ := createRuntimeGuardAgent(t, context.Background())
+			var agentID, runtimeID string
+			// The supplement row builds its own agent (steeredFixture), which would
+			// collide on name with the one created here.
+			if p.name != "supplement claim" {
+				agentID, runtimeID, _ = createRuntimeGuardAgent(t, context.Background())
+			}
 			delegateClaimsRestricted(t, p.run(t, agentID, runtimeID), p.name, []string{"t1"})
 		})
 	}
