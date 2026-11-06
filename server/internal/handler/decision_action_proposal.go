@@ -273,6 +273,11 @@ func (handler *Handler) ProposeDecisionAction(writer http.ResponseWriter, reques
 	} else {
 		recipient = resolved
 	}
+	if len(body.Reason) > maxProposalReasonBytes {
+		writeError(writer, http.StatusBadRequest, "reason is too long (1 KiB at most)")
+		return
+	}
+	body.Reason = cleanProposalReason(body.Reason)
 	ask, err := composeProposalAsk(uuidToString(issue.ID), draft, body.Reason)
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, "failed to compose proposal")
