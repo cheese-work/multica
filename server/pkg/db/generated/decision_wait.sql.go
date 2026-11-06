@@ -292,7 +292,7 @@ WHERE wait.closed_at IS NULL
       SELECT 1 FROM decision_answer live
       JOIN decision_request bound ON bound.authority = 'human' AND bound.id = live.decision_request_id
       WHERE bound.id = ANY(wait.request_ids) AND bound.status = 'answered'
-        AND live.disclaimed_at IS NULL AND live.woken_at IS NULL AND live.wake_at > clock_timestamp()
+        AND live.disclaimed_at IS NULL AND live.woken_at IS NULL AND (live.wake_at IS NULL OR live.wake_at > clock_timestamp())
   )
 ORDER BY (wait.dispatch_refused_since IS NOT NULL),
   CASE WHEN wait.dispatch_refused_since IS NOT NULL THEN md5(wait.id::text || $1::bigint::text) END,

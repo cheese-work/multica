@@ -537,6 +537,37 @@ func TestDecisionEpisodeCandidatesAreNotStarvedByStuckEpisodes(t *testing.T) {
 	}
 }
 
+// An answer recorded by a running task has no wake_at until that task ends, and
+// delivery waits on it. More than one batch of such episodes sorts ahead of a
+// ready episode; they must not take batch slots, or the ready one never resumes.
+func TestDecisionEpisodeCandidatesSkipAnswersWithoutWakeTime(t *testing.T) {
+	f, readyID := readyEpisode(t)
+	_ = f
+	// A second answered request, cloned from the fixture's, whose answer has no wake_at yet.
+	unfinalizedID := "00000000-0000-0000-0002-ffffffffffff"
+	dbfx.Exec(t, `INSERT INTO decision_request SELECT (json_populate_record(r, jsonb_build_object('id', $1::text)::json)).* FROM decision_request r WHERE r.id = $2`, unfinalizedID, f.requestID)
+	dbfx.Exec(t, `INSERT INTO decision_answer SELECT (json_populate_record(a, jsonb_build_object('id', gen_random_uuid()::text, 'decision_request_id', $1::text, 'wake_at', NULL)::json)).*
+		FROM decision_answer a WHERE a.decision_request_id = $2 AND a.disclaimed_at IS NULL`, unfinalizedID, f.requestID)
+	t.Cleanup(func() {
+		dbfx.Exec(t, `DELETE FROM decision_answer WHERE decision_request_id = $1`, unfinalizedID)
+		dbfx.Exec(t, `DELETE FROM decision_request WHERE id = $1`, unfinalizedID)
+	})
+	const prefix = "00000000-0000-0000-0002-"
+	insertEpisodeFillers(t, readyID, prefix, "in_progress", "", false, decisionBatchSize+1, 1)
+	dbfx.Exec(t, `UPDATE decision_wait SET request_ids = ARRAY[$1::uuid] WHERE id::text LIKE $2`, unfinalizedID, prefix+"%")
+
+	var found bool
+	for _, id := range episodeCandidateIDs(t, 0) {
+		found = found || id == readyID
+		if strings.HasPrefix(id, prefix) {
+			t.Fatalf("episode %s waits on an answer with no wake_at and was selected", id)
+		}
+	}
+	if !found {
+		t.Fatal("the ready episode is not among the candidates behind more than one batch of unfinalized ones")
+	}
+}
+
 // Persistent refusals sort after the others and rotate, so a later refused
 // episode that can now dispatch is retried although more than one batch of
 // older refusals stays refused.
