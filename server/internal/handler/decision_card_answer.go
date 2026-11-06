@@ -221,7 +221,7 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if err := queries.TouchChatSession(ctx, session.ID); err != nil {
 		return empty, err
 	}
-	decision, err = queries.MarkDecisionRequestAnswered(ctx, db.MarkDecisionRequestAnsweredParams{WorkspaceID: workspaceID, ID: decision.ID})
+	decision, err = markDecisionRequestAnswered(ctx, queries, decision, answer)
 	if err != nil {
 		return empty, err
 	}
