@@ -2,13 +2,16 @@
 // that is ready, with the classifier's green required checks and a cross-lab PASS, all on the PR's exact head. Cheese
 // still merges: the card only lists the PRs. Tier 0/1 go through the agent merge lane, not this card.
 //
-// Run from a clean checkout of the default branch (the classifier must equal its base copy).
-//   node scripts/tier2-merge-card.mjs sweep   withdraw an open card whose listed PR head moved (autopilot, every 15 min, CARD_FOR only)
-//   node scripts/tier2-merge-card.mjs   send the card; run at 07:30, 12:30 and 20:00 ICT (autopilot b2b5403b, create_issue mode, paused until merge; Asia/Ho_Chi_Minh: `30 7,12 * * *` and
-//                                       `0 20 * * *`). CARD_DRY_RUN=1 prints the ask instead.
-//   Each run first withdraws the earlier merge card if still open, then posts a fresh one: a sent card cannot drop a moved head, the next run does.
+// Run from a clean checkout of the default branch (the classifier must equal its base copy), as a wakeup run of the asking agent
+// on ONE standing issue (CARD_ISSUE). The server lets an agent withdraw a card only from a running task on the card's own issue
+// (server/internal/handler/decision_withdraw.go), so all cards hang on that issue and every run below is a wakeup run on it.
+//   node scripts/tier2-merge-card.mjs         send the card. Two cron wakeups on the standing issue (Asia/Ho_Chi_Minh): `30 7,12 * * *` and `0 20 * * *`.
+//                                             It first withdraws the earlier merge card if still open (a sent card cannot drop a moved head), posts a
+//                                             fresh one, then arms the sweep. CARD_DRY_RUN=1 prints the ask instead.
+//   node scripts/tier2-merge-card.mjs sweep   a 15-min wakeup armed by the send run (expires after 12 h): withdraw the open card if a listed PR
+//                                             head moved; disable the wakeup once no merge card is open.
 // No agent merges from this script: Cheese opens each PR link and merges it on GitHub (Tier 2 stays human, CHE-3612).
-// Env: CARD_ISSUE and CARD_COMMENT (UUIDs of the issue and of the comment the card hangs on), CARD_FOR (Cheese's member id), CARD_REPO (default cheese-work/multica).
+// Env: CARD_ISSUE (UUID of the standing issue), CARD_FOR (Cheese's member id), CARD_REPO (default cheese-work/multica).
 // The cross-lab PASS is the `security-gate` status: it is `success` only for a signed verdict on the exact head whose
 // reviewer lab differs from the author's (RGS-1, scripts/security-gate/security_gate.py); any push resets it.
 import { execFile } from 'node:child_process';
@@ -114,17 +117,39 @@ async function main(args) {
 }
 
 const CARD_TEXT = /ICT merge window/;
-// The member-wide open list carries no `status` field (every entry is open); the per-issue list does.
-export const isOpenCard = (d) => (d.status ?? 'open') === 'open' && CARD_TEXT.test(d.ask ?? '');
+export const isOpenCard = (d) => d.status === 'open' && CARD_TEXT.test(d.ask ?? '');
 
-// The autopilot creates a new issue per run, so the earlier card hangs on another issue: list by member, not by issue.
-export const openCardsArgs = (memberId) => ['decision', 'list', '--for', memberId, '--state', 'open', '--output', 'json'];
+// The server lets an agent withdraw its card only from a running task on the card's own issue (decision_withdraw.go).
+// So every card hangs on one standing issue (CARD_ISSUE) and each window and sweep run is a wakeup run on that issue.
+export const openCardsArgs = (issueId) => ['decision', 'list', '--issue', issueId, '--output', 'json'];
+
+const SWEEP_EVERY = '15m';
+const SWEEP_FOR = '12h'; // longer than the longest gap between windows (20:00 to 07:30)
+export const armSweepArgs = (issueId, memberId) => ['issue', 'wakeup', 'create', issueId, '--kind', 'every', '--every', SWEEP_EVERY, '--expires-in', SWEEP_FOR,
+  '--instruction', `Run \`CARD_ISSUE=${issueId} CARD_FOR=${memberId} node scripts/tier2-merge-card.mjs sweep\` from a clean checkout of main, then end the run.`, '--output', 'json'];
+
+const mca = async (...args) => JSON.parse((await run('multica', args, { maxBuffer: MAX_BUFFER })).stdout);
+
+async function disarmSweep() {
+  const rules = await mca('issue', 'wakeup', 'list', process.env.CARD_ISSUE, '--output', 'json');
+  for (const r of rules.filter((x) => x.kind === 'every' && x.enabled)) await mca('issue', 'wakeup', 'disable', process.env.CARD_ISSUE, r.id, '--output', 'json');
+}
 
 const liveIo = {
   collect,
   heads: async (repo) => new Map((await gh('pr', 'list', '--repo', repo, '--state', 'open', '--limit', '200', '--json', 'number,headRefOid')).map((x) => [x.number, x.headRefOid])),
-  openCards: async () => JSON.parse((await run('multica', openCardsArgs(process.env.CARD_FOR), { maxBuffer: MAX_BUFFER })).stdout),
+  openCards: () => mca(...openCardsArgs(process.env.CARD_ISSUE)),
   withdraw: (id) => run('multica', ['decision', 'withdraw', id, '--reason', 'Superseded: a listed PR head moved or a newer Tier 2 merge card run replaced it', '--output', 'json']),
+  comment: async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tier2-card-'));
+    try {
+      const file = join(dir, 'comment.md');
+      writeFileSync(file, `Tier 2 merge card run, ${currentWindow()} ICT window.`);
+      return (await mca('issue', 'comment', 'add', process.env.CARD_ISSUE, '--content-file', file, '--output', 'json')).id;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
   post: async (ask) => {
     const dir = mkdtempSync(join(tmpdir(), 'tier2-card-'));
     try {
@@ -136,6 +161,9 @@ const liveIo = {
       rmSync(dir, { recursive: true, force: true });
     }
   },
+  // Re-arming replaces the earlier sweep rule so rules never pile up.
+  armSweep: async () => { await disarmSweep(); await mca(...armSweepArgs(process.env.CARD_ISSUE, process.env.CARD_FOR)); },
+  disarmSweep,
 };
 
 // A sent card cannot change. Each send run withdraws every still-open earlier merge card, then posts a fresh one.
@@ -145,23 +173,28 @@ export async function sendCard(repo, io = liveIo) {
   // Re-read the heads after collecting: a push during collection leaves the old head in `ready`.
   const heads = await io.heads(repo);
   const fresh = ready.filter((p) => heads.get(p.number) === p.headSha);
-  const ask = fresh.length ? renderAsk(fresh, currentWindow(), process.env.CARD_ISSUE, process.env.CARD_COMMENT) : null;
-  if (dry) return console.log(ask ? JSON.stringify(ask, null, 2) : 'no Tier 2 PR is ready');
+  if (dry) return console.log(fresh.length ? JSON.stringify(renderAsk(fresh, currentWindow(), process.env.CARD_ISSUE), null, 2) : 'no Tier 2 PR is ready');
   for (const d of (await io.openCards()).filter(isOpenCard)) await io.withdraw(d.id);
-  if (!ask) return console.error('no Tier 2 PR is ready; no card sent');
-  await io.post(ask);
+  if (!fresh.length) {
+    console.error('no Tier 2 PR is ready; no card sent');
+    return io.disarmSweep();
+  }
+  await io.post(renderAsk(fresh, currentWindow(), process.env.CARD_ISSUE, await io.comment()));
+  await io.armSweep();
 }
 
-// Run every few minutes between windows: a push to a listed PR leaves the old head on the open card, so withdraw it.
+// Runs every 15 min while a card is open (armed by sendCard): a push to a listed PR leaves the old head on the open card, so withdraw it.
 // A listed PR that is no longer open (merged by Cheese from the card) is fine; only a moved head makes the card stale.
+// With no merge card left open the wakeup rule is disabled, so idle days cost no runs.
 export async function sweepCards(repo, io = liveIo) {
-  const cards = (await io.openCards()).filter(isOpenCard);
-  if (!cards.length) return;
-  const heads = await io.heads(repo);
-  for (const d of cards) {
-    const moved = [...d.ask.matchAll(/\/pull\/(\d+)\/commits\/([0-9a-f]{40})/g)].some(([, n, sha]) => heads.has(Number(n)) && heads.get(Number(n)) !== sha);
-    if (moved) await io.withdraw(d.id);
+  let open = (await io.openCards()).filter(isOpenCard);
+  if (open.length) {
+    const heads = await io.heads(repo);
+    const moved = (d) => [...d.ask.matchAll(/\/pull\/(\d+)\/commits\/([0-9a-f]{40})/g)].some(([, n, sha]) => heads.has(Number(n)) && heads.get(Number(n)) !== sha);
+    for (const d of open.filter(moved)) await io.withdraw(d.id);
+    open = open.filter((d) => !moved(d));
   }
+  if (!open.length) await io.disarmSweep();
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) await main(process.argv.slice(2));

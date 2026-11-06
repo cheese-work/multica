@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as card from './tier2-merge-card.mjs';
 
-const { currentWindow, eligible, renderAsk, sendCard, sweepCards, openCardsArgs } = card;
+const { currentWindow, eligible, renderAsk, sendCard, sweepCards, openCardsArgs, armSweepArgs } = card;
 
 const HEAD = 'a'.repeat(40);
 const pr = (over = {}) => ({
@@ -84,7 +84,10 @@ const harness = ({ cards = [OLD_CARD], collected, heads }) => {
     heads: async () => new Map(heads),
     openCards: async () => cards,
     withdraw: async (id) => calls.push(['withdraw', id]),
+    comment: async () => 'COMMENT-UUID',
     post: async (ask) => calls.push(['post', ask]),
+    armSweep: async () => calls.push(['arm']),
+    disarmSweep: async () => calls.push(['disarm']),
   };
   return { calls, run: () => sendCard('cheese-work/multica', io) };
 };
@@ -93,7 +96,7 @@ test('a push after the card was sent: next run withdraws the old card and drops 
   const moved = 'b'.repeat(40);
   const h = harness({ collected: [pr(), pr({ number: 11, url: 'https://github.com/cheese-work/multica/pull/11' })], heads: [[10, HEAD], [11, moved]] });
   await h.run();
-  assert.deepEqual(h.calls.map((c) => c[0]), ['withdraw', 'post']);
+  assert.deepEqual(h.calls.map((c) => c[0]), ['withdraw', 'post', 'arm']);
   assert.equal(h.calls[0][1], 'card-1');
   assert.doesNotMatch(h.calls[1][1].context_eli10, /pull\/11/);
   assert.match(h.calls[1][1].context_eli10, /pull\/10\/commits/);
@@ -102,7 +105,7 @@ test('a push after the card was sent: next run withdraws the old card and drops 
 test('with no PR left ready the old open card is still withdrawn and no new card is sent', async () => {
   const h = harness({ collected: [pr({ securityGate: { sha: HEAD, state: 'pending' } })], heads: [[10, HEAD]] });
   await h.run();
-  assert.deepEqual(h.calls, [['withdraw', 'card-1']]);
+  assert.deepEqual(h.calls, [['withdraw', 'card-1'], ['disarm']]);
 });
 
 test('only open merge cards are withdrawn: answered and unrelated asks stay', async () => {
@@ -112,22 +115,36 @@ test('only open merge cards are withdrawn: answered and unrelated asks stay', as
   assert.deepEqual(h.calls.filter((c) => c[0] === 'withdraw'), [['withdraw', 'card-1']]);
 });
 
-// The autopilot creates a new issue per run, so the earlier card hangs on another issue: look it up by member, not by issue.
-test('earlier cards are found across issues: listed by member, never by the current issue', async () => {
-  const args = openCardsArgs('MEMBER-UUID');
+// The server lets an agent withdraw a card only from a running task on the card's own issue (decision_withdraw.go):
+// every card hangs on one standing issue, and each window and sweep run is a wakeup run on that issue.
+test('cards are listed on the standing issue, not by member, so each run may withdraw what it lists', () => {
+  const args = openCardsArgs('ISSUE-UUID');
   assert.deepEqual(args.slice(0, 2), ['decision', 'list']);
-  assert.ok(args.includes('--for') && args.includes('MEMBER-UUID') && args.includes('--state') && args.includes('open'));
-  assert.ok(!args.includes('--issue'));
-  const other = { ...OLD_CARD, id: 'last-window', issue_id: 'ISSUE-OF-LAST-RUN' };
-  const h = harness({ cards: [other], collected: [], heads: [] });
+  assert.ok(args.includes('--issue') && args.includes('ISSUE-UUID'));
+  assert.ok(!args.includes('--for') && !args.includes('--state'));
+});
+
+test('a posted card carries the run comment id; the sweep is armed after the post', async () => {
+  const h = harness({ cards: [], collected: [pr()], heads: [[10, HEAD]] });
   await h.run();
-  assert.deepEqual(h.calls, [['withdraw', 'last-window']]); // empty window: old card withdrawn, none posted
+  assert.deepEqual(h.calls.map((c) => c[0]), ['post', 'arm']);
+  assert.equal(h.calls[0][1].source_comment_id, 'COMMENT-UUID');
+});
+
+test('the sweep wakeup repeats on the card issue, ends by itself and runs only the sweep', () => {
+  const args = armSweepArgs('ISSUE-UUID', 'MEMBER-UUID');
+  assert.deepEqual(args.slice(0, 3), ['issue', 'wakeup', 'create']);
+  assert.equal(args[3], 'ISSUE-UUID');
+  const at = (flag) => args[args.indexOf(flag) + 1];
+  assert.equal(at('--every'), '15m');
+  assert.ok(at('--expires-in'));
+  assert.match(at('--instruction'), /CARD_ISSUE=ISSUE-UUID CARD_FOR=MEMBER-UUID node scripts\/tier2-merge-card\.mjs sweep/);
 });
 
 // Between runs a push leaves the listed head on the open card: a frequent sweep withdraws a card whose listed head moved.
 const sweepHarness = ({ cards, heads }) => {
   const calls = [];
-  const io = { heads: async () => new Map(heads), openCards: async () => cards, withdraw: async (id) => calls.push(id) };
+  const io = { heads: async () => new Map(heads), openCards: async () => cards, withdraw: async (id) => calls.push(id), disarmSweep: async () => calls.push('disarm') };
   return { calls, run: () => sweepCards('cheese-work/multica', io) };
 };
 const cardFor = (...prs) => ({ id: 'card-' + prs.map((x) => x.number).join('-'), status: 'open', ask: renderAsk(prs, '07:30').context_eli10 });
@@ -135,7 +152,7 @@ const cardFor = (...prs) => ({ id: 'card-' + prs.map((x) => x.number).join('-'),
 test('sweep: a push to a listed PR withdraws the open card', async () => {
   const h = sweepHarness({ cards: [cardFor(pr())], heads: [[10, 'b'.repeat(40)]] });
   await h.run();
-  assert.deepEqual(h.calls, ['card-10']);
+  assert.deepEqual(h.calls, ['card-10', 'disarm']);
 });
 
 test('sweep: unchanged heads keep the card, and a PR merged from the card does not withdraw it', async () => {
@@ -144,11 +161,11 @@ test('sweep: unchanged heads keep the card, and a PR merged from the card does n
   await h.run();
   const merged = sweepHarness({ cards: [two], heads: [[10, HEAD]] }); // #11 merged: not open any more
   await merged.run();
-  assert.deepEqual([h.calls, merged.calls], [[], []]);
+  assert.deepEqual([h.calls, merged.calls], [[], []]); // cards still open: the sweep keeps running
 });
 
-test('sweep ignores answered and unrelated asks', async () => {
+test('sweep ignores answered and unrelated asks, and stops the wakeup once no merge card is open', async () => {
   const h = sweepHarness({ cards: [{ ...cardFor(pr()), status: 'answered' }, { id: 'x', status: 'open', ask: 'Pick one' }], heads: [[10, 'b'.repeat(40)]] });
   await h.run();
-  assert.deepEqual(h.calls, []);
+  assert.deepEqual(h.calls, ['disarm']);
 });
