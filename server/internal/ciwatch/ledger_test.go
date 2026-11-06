@@ -589,3 +589,68 @@ func TestLedgerSignatureOwnerClaim(t *testing.T) {
 		t.Fatal("reopen after the window should claim")
 	}
 }
+
+// A crash between the owner claim and the action insert must leave neither.
+func TestLedgerOwnerClaimAndScheduleAreAtomic(t *testing.T) {
+	e := newLedgerEnv(t)
+	ctx := context.Background()
+	sig := "atomic-" + uuid.NewString()[:8]
+	tx, _ := e.pool.Begin(ctx)
+	if ok, err := e.ledger.ClaimSignatureOwner(ctx, tx, e.ws, "o", e.repo, sig, time.Hour); err != nil || !ok {
+		t.Fatalf("claim ok=%v err=%v", ok, err)
+	}
+	if _, _, err := e.ledger.ScheduleTx(ctx, tx, e.action(70, ActionIssueCreate, sig)); err != nil {
+		t.Fatal(err)
+	}
+	_ = tx.Rollback(ctx) // the worker died before commit
+	var owners, actions int
+	_ = e.pool.QueryRow(ctx, `SELECT count(*) FROM ci_signature_owner WHERE workspace_id=$1 AND signature_hash=$2`, e.ws, sig).Scan(&owners)
+	_ = e.pool.QueryRow(ctx, `SELECT count(*) FROM ci_watch_action WHERE workspace_id=$1`, e.ws).Scan(&actions)
+	if owners != 0 || actions != 0 {
+		t.Fatalf("after rollback: owners=%d actions=%d, want 0/0", owners, actions)
+	}
+	tx, _ = e.pool.Begin(ctx)
+	ok, err := e.ledger.ClaimSignatureOwner(ctx, tx, e.ws, "o", e.repo, sig, time.Hour)
+	if err == nil {
+		_, _, err = e.ledger.ScheduleTx(ctx, tx, e.action(70, ActionIssueCreate, sig))
+	}
+	if err != nil || !ok || tx.Commit(ctx) != nil {
+		t.Fatalf("retry claim ok=%v err=%v", ok, err)
+	}
+	_ = e.pool.QueryRow(ctx, `SELECT count(*) FROM ci_watch_action WHERE workspace_id=$1`, e.ws).Scan(&actions)
+	if actions != 1 {
+		t.Fatalf("actions=%d, want 1", actions)
+	}
+}
+
+// After a POST and a crash, a restarted ledger that sweeps and runs before
+// the rerun executor registers must not turn the row back into work.
+func TestLedgerRestartBeforeRemoteRegistrationNeverReschedulesRerun(t *testing.T) {
+	e := newLedgerEnv(t)
+	ctx := context.Background()
+	a, _, _ := e.ledger.Schedule(ctx, e.action(80, ActionRerun, ""))
+	if _, err := e.pool.Exec(ctx, `UPDATE ci_watch_action SET state='executing', lease_epoch=1, lease_until=$2 WHERE id=$1`,
+		a.ID, e.clock.Now().Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	e.clock.Advance(3 * time.Minute)
+	// restarted process: nothing registered yet
+	if _, err := e.ledger.Sweep(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.get(t, a.ID); got.State != StateAmbiguous {
+		t.Fatalf("after sweep: %s, want ambiguous", got.State)
+	}
+	if ran, err := e.ledger.RunOne(ctx); err != nil || ran {
+		t.Fatalf("RunOne ran=%v err=%v before registration", ran, err)
+	}
+	r := &fakeRemote{found: []bool{true}, reconOut: RemoteOutcome{State: StateDone}}
+	e.ledger.RegisterRemote(ActionRerun, r)
+	e.clock.Advance(3 * time.Minute)
+	if _, err := e.ledger.ReconcileOne(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.get(t, a.ID); got.State != StateDone || r.executes != 0 {
+		t.Fatalf("final: %s executes=%d, want done/0", got.State, r.executes)
+	}
+}
