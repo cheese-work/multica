@@ -13,7 +13,7 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/multica-test-go-rerun.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
 mkdir -p "$WORK/scripts" "$WORK/server"
-cp "$SCRIPT_DIR/test-go.sh" "$SCRIPT_DIR/go-test-with-agent-cli-guard.sh" "$SCRIPT_DIR/agent-cli-command-names.txt" "$WORK/scripts/"
+cp "$SCRIPT_DIR/test-go.sh" "$SCRIPT_DIR/go-test-flakes.mjs" "$SCRIPT_DIR/go-test-with-agent-cli-guard.sh" "$SCRIPT_DIR/agent-cli-command-names.txt" "$WORK/scripts/"
 printf 'module fx\n\ngo 1.21\n' >"$WORK/server/go.mod"
 cat >"$WORK/server/fx_test.go" <<'GO'
 package fx

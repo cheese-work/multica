@@ -90,3 +90,44 @@ test("flakes from the shards and the other packages count together", () => {
   });
   assert.equal(status, 1);
 });
+
+// A rerun is its own gotestsum run: first-pass file, then go-test-<name>-rerun-<n>.json.
+test("a fail in the first pass and a pass in the rerun file is one flake", () => {
+  const { flakes } = run({
+    "go-test-regular.json": ev("fail", "p", "TestX/sub") + "\n" + ev("fail", "p", "TestX"),
+    "go-test-regular-rerun-1.json": ev("pass", "p", "TestX/sub") + "\n" + ev("pass", "p", "TestX"),
+  });
+  assert.deepEqual(flakes.flakes, [{ package: "p", test: "TestX/sub" }]);
+});
+
+// --plan: the job-wide rerun decision of test-go.sh reads the first-pass failures of each run.
+const plan = (events) => {
+  const dir = mkdtempSync(join(tmpdir(), "plan-"));
+  const file = join(dir, "go-test-regular.json");
+  writeFileSync(file, events.join("\n"));
+  return execFileSync("node", [script, "--plan", file], { encoding: "utf8" });
+};
+const out = (Output) => JSON.stringify({ Action: "output", Package: "p", Output });
+
+test("--plan lists the root test of every failed test once", () => {
+  assert.equal(
+    plan([ev("fail", "p", "TestB/sub"), ev("fail", "p", "TestB"), ev("fail", "p", "TestA"), ev("fail", "p")]),
+    "p\tTestA\np\tTestB\n",
+  );
+});
+
+test("--plan prints ! for a panic, a race, a timeout, a package-level failure or a missing file", () => {
+  for (const events of [
+    [out("panic: boom\n"), ev("fail", "p", "TestA"), ev("fail", "p")],
+    [out("WARNING: DATA RACE\n"), ev("fail", "p", "TestA"), ev("fail", "p")],
+    [out("panic: test timed out after 10m0s\n"), ev("fail", "p")],
+    [ev("fail", "p")], // build or TestMain failure: no failing test
+  ]) {
+    assert.equal(plan(events), "!\n");
+  }
+  assert.equal(execFileSync("node", [script, "--plan", "/nonexistent/x.json"], { encoding: "utf8" }), "!\n");
+});
+
+test("--plan prints nothing for a passing run", () => {
+  assert.equal(plan([ev("pass", "p", "TestA"), ev("pass", "p")]), "");
+});

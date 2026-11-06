@@ -11,6 +11,36 @@ import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const MAX_FLAKES = 3;
+
+// --plan <gotestsum.json>: the first-pass failures of one run, for test-go.sh's job-wide rerun
+// decision. One `<package>\t<root test>` line per failed test (a failing subtest reruns through its
+// root test), or a single `!` when a rerun proves nothing: a panic, a timeout, a data race, or a
+// package that failed with no failing test (build or TestMain failure).
+if (process.argv[2] === "--plan") {
+  let events = [];
+  try {
+    events = readFileSync(process.argv[3], "utf8").split("\n").filter((l) => l.startsWith("{")).map((l) => JSON.parse(l));
+  } catch {
+    console.log("!");
+    process.exit(0);
+  }
+  const roots = new Set();
+  const failedPackages = new Set();
+  const packagesWithFailedTest = new Set();
+  let unsafe = false;
+  for (const { Action, Package, Test, Output } of events) {
+    if (Action === "output" && /^panic: |WARNING: DATA RACE|race detected during execution|test timed out after/m.test(Output ?? "")) unsafe = true;
+    if (Action !== "fail") continue;
+    if (Test) {
+      roots.add(`${Package}\t${Test.split("/")[0]}`);
+      packagesWithFailedTest.add(Package);
+    } else failedPackages.add(Package);
+  }
+  if (unsafe || [...failedPackages].some((p) => !packagesWithFailedTest.has(p))) console.log("!");
+  else for (const line of [...roots].sort()) console.log(line);
+  process.exit(0);
+}
+
 const dir = process.argv[2];
 if (!dir) {
   console.error("usage: go-test-flakes.mjs <flake-dir>");
@@ -20,10 +50,13 @@ if (!dir) {
 const found = new Map(); // "package\ttest" -> { package, test }
 const add = (pkg, test) => found.set(`${pkg}\t${test}`, { package: pkg, test });
 
-for (const file of readdirSync(dir)) {
+// A rerun is a separate run (go-test-<name>-rerun-<n>.json) that follows the first pass, so read
+// the reruns last and keep one failed set across files.
+const rerunLast = (a, b) => /-rerun-/.test(a) - /-rerun-/.test(b) || a.localeCompare(b);
+const failed = new Set();
+for (const file of readdirSync(dir).sort(rerunLast)) {
   const text = readFileSync(join(dir, file), "utf8");
   if (/^go-test-.*\.json$/.test(file)) {
-    const failed = new Set();
     for (const line of text.split("\n")) {
       if (!line.startsWith("{")) continue;
       const { Action, Package, Test } = JSON.parse(line);

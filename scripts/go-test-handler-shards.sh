@@ -40,48 +40,79 @@ fi
 verbose=()
 case " ${GOFLAGS:-} " in *" -v "*) verbose=(-test.v) ;; esac
 
-# CHE-4270: in merge_group (MULTICA_TEST_RERUN_FAILS=1) a shard that failed on
-# 1-3 named top-level tests reruns just those once, so a flake does not eject
-# the PR from the queue. Passing on rerun records the test in
-# $MULTICA_FLAKE_DIR/handler-flakes.txt. Not rerun: exit != 1 (panic, timeout,
-# data race leave later tests unrun), no `--- FAIL` name, or more than 3 names.
+# CHE-4270: in merge_group (MULTICA_TEST_RERUN_FAILS=1) failed tests rerun once
+# so a flake does not eject the PR from the queue, but only on a job-wide
+# decision: this script publishes its first-pass failures (plan lines
+# `internal/handler\t<test>`, or `!` for a panic, a timeout, a data race or a
+# failure with no test name, which a rerun proves nothing about) in
+# $MULTICA_FLAKE_DIR/handler-failed.txt, touches handler-first-pass.done, and
+# waits for test-go.sh to write rerun-decision (`rerun` or `skip`) after it
+# counted the failures of every run. A passing rerun records the tests in
+# handler-flakes.txt.
 flake_dir=${MULTICA_FLAKE_DIR:-$REPO_ROOT/flake-reports}
+rerun_wait=${MULTICA_RERUN_WAIT:-3600}
 
 run_shard() { # $1: -test.run regex
   (cd "$package_dir" && exec "$GUARD_SCRIPT" -- "$EXEC_WRAPPER" "$work_dir/handler.test" \
     -test.run "$1" -test.count=1 -test.timeout=10m ${verbose[@]+"${verbose[@]}"})
 }
 
-run_shard_with_rerun() { # $1: shard index, $2: -test.run regex
-  local log="$work_dir/shard-$1.log" shard_status=0 failed count
+first_pass_shard() { # $1: shard index, $2: -test.run regex; writes shard-N.plan, returns the shard status
+  local log="$work_dir/shard-$1.log" shard_status=0 failed
   set -o pipefail
   run_shard "$2" 2>&1 | tee "$log" || shard_status=$?
-  [ "$shard_status" -eq 1 ] || return "$shard_status"
-  # A panic or a race report is a real defect: a passing rerun must not hide it.
-  grep -qE '^panic: |^WARNING: DATA RACE|race detected during execution' "$log" && return 1
+  : >"$work_dir/shard-$1.plan"
+  [ "$shard_status" -ne 0 ] || return 0
   failed=$(grep -oE '^--- FAIL: [A-Za-z0-9_]+' "$log" | sed 's/^--- FAIL: //' | sort -u) || true
-  count=$(printf '%s' "$failed" | grep -c .) || true
-  { [ "$count" -ge 1 ] && [ "$count" -le 3 ]; } || return 1
-  echo "rerunning failed tests once: $(printf '%s' "$failed" | paste -sd' ')"
-  run_shard "^($(printf '%s' "$failed" | paste -sd'|'))\$" || return $?
-  mkdir -p "$flake_dir"
-  printf 'internal/handler\t%s\n' $failed >>"$flake_dir/handler-flakes.txt"
+  if [ "$shard_status" -ne 1 ] || [ -z "$failed" ] || grep -qE '^panic: |^WARNING: DATA RACE|race detected during execution' "$log"; then
+    echo '!' >"$work_dir/shard-$1.plan"
+  else
+    printf 'internal/handler\t%s\n' $failed >"$work_dir/shard-$1.plan"
+  fi
+  return "$shard_status"
 }
 
+rerun_on() { [ "${MULTICA_TEST_RERUN_FAILS:-}" = 1 ]; }
+
 pids=()
+indexes=()
 for ((i = 0; i < shards; i++)); do
   pattern=$(printf '%s\n' "$names" | awk -v n="$shards" -v i="$i" 'NR % n == i { printf "%s%s", sep, $0; sep = "|" }')
   [ -n "$pattern" ] || continue
-  if [ "${MULTICA_TEST_RERUN_FAILS:-}" = 1 ]; then
-    run_shard_with_rerun "$i" "^($pattern)\$" &
+  if rerun_on; then
+    first_pass_shard "$i" "^($pattern)\$" &
   else
     run_shard "^($pattern)\$" &
   fi
   pids+=($!)
+  indexes+=("$i")
 done
 
 status=0
 for pid in "${pids[@]}"; do
   wait "$pid" || status=1
 done
-exit "$status"
+rerun_on || exit "$status"
+
+mkdir -p "$flake_dir"
+plans=()
+for i in "${indexes[@]}"; do plans+=("$work_dir/shard-$i.plan"); done
+cat "${plans[@]}" | sort -u >"$flake_dir/handler-failed.txt"
+touch "$flake_dir/handler-first-pass.done"
+[ "$status" -ne 0 ] || exit 0
+
+waited=0
+while [ ! -e "$flake_dir/rerun-decision" ]; do
+  if [ "$waited" -ge "$rerun_wait" ]; then
+    echo "no rerun decision after ${rerun_wait}s: failing" >&2
+    exit 1
+  fi
+  sleep 1
+  waited=$((waited + 1))
+done
+[ "$(cat "$flake_dir/rerun-decision")" = rerun ] || exit 1
+
+failed=$(cut -f2 "$flake_dir/handler-failed.txt")
+echo "rerunning failed tests once: $(printf '%s' "$failed" | paste -sd' ')"
+run_shard "^($(printf '%s' "$failed" | paste -sd'|'))\$" || exit 1
+printf 'internal/handler\t%s\n' $failed >>"$flake_dir/handler-flakes.txt"

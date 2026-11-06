@@ -124,31 +124,84 @@ fi
 MULTICA_TEST_DB_PER_PACKAGE=1 PATH="$BIN_DIR:$PATH" bash "$SCRIPT_DIR/test-go.sh" --only agent --race
 expect_calls "per-package databases leave pkg/agent alone" "$agent_call"
 
-# CHE-4270: merge_group sets MULTICA_TEST_RERUN_FAILS=1 and each half runs under
-# gotestsum, which reruns failed tests once by name. Anything else stays on
-# plain `go test`, so pull_request and push runs show every failure.
+# CHE-4270: merge_group sets MULTICA_TEST_RERUN_FAILS=1. Every run does a first
+# pass with no retry; test-go.sh then decides once for the whole job (regular
+# packages, handler shards, agent) and reruns the failed tests by name only
+# when 1 to 3 tests failed in total and none is a panic or race (plan line `!`).
+# Anything else stays on plain `go test`.
+# Fake gotestsum: first pass fails the tests in $FAKE_FAIL (space separated
+# `<package>:<test>`, empty = pass) with $FAKE_UNSAFE as extra output; a call
+# with -run is a rerun and passes unless $FAKE_RERUN_FAIL is set.
 cat >"$BIN_DIR/gotestsum" <<'FAKE'
 #!/usr/bin/env bash
 echo "gotestsum $*" >>"$MULTICA_TEST_GO_CALLS"
+json= rerun=
+for arg in "$@"; do
+  [ "$prev" = --jsonfile ] && json=$arg
+  [ "$arg" = -run ] && rerun=1
+  prev=$arg
+done
+: >"$json"
+if [ -n "$rerun" ]; then [ -z "${FAKE_RERUN_FAIL:-}" ]; exit; fi
+for t in ${FAKE_FAIL:-}; do
+  printf '{"Action":"fail","Package":"%s","Test":"%s"}\n' "${t%%:*}" "${t##*:}" >>"$json"
+done
+[ -z "${FAKE_UNSAFE:-}" ] || printf '{"Action":"output","Package":"p","Output":"%s\\n"}\n' "$FAKE_UNSAFE" >>"$json"
+[ -z "${FAKE_FAIL:-}${FAKE_UNSAFE:-}" ]
 FAKE
 chmod 755 "$BIN_DIR/gotestsum"
-rerun_flags="--rerun-fails=1 --rerun-fails-max-failures=3 --rerun-fails-abort-on-data-race --format standard-verbose"
-flake_dir="$TEST_DIR/flakes"
-: >"$CALLS_FILE"
-MULTICA_FLAKE_DIR="$flake_dir" MULTICA_TEST_RERUN_FAILS=1 PATH="$BIN_DIR:$PATH" bash "$SCRIPT_DIR/test-go.sh" --race
-expect_calls "rerun mode" "gotestsum $rerun_flags --jsonfile $flake_dir/go-test-regular.json --packages github.com/multica-ai/multica/server github.com/multica-ai/multica/server/internal/daemon github.com/multica-ai/multica/server/internal/handler -- -race -p 1
-gotestsum $rerun_flags --jsonfile $flake_dir/go-test-agent.json --packages ./pkg/agent/... -- -race -p 2 -parallel 2"
-[ -d "$flake_dir" ] || { echo "rerun mode must create the flake dir" >&2; exit 1; }
-
-# A failing gotestsum run (a test failed twice) fails test-go.sh.
-cat >"$BIN_DIR/gotestsum" <<'FAKE'
+# Fake handler shards script: publishes $FAKE_SHARD_FAIL (plan lines, `\n` separated) like the real one,
+# then records the job-wide decision it receives.
+cat >"$TEST_DIR/fake-shards" <<'FAKE'
 #!/usr/bin/env bash
-exit 1
+printf '%b' "${FAKE_SHARD_FAIL:-}" >"$MULTICA_FLAKE_DIR/handler-failed.txt"
+touch "$MULTICA_FLAKE_DIR/handler-first-pass.done"
+[ -z "${FAKE_SHARD_FAIL:-}" ] && exit 0
+until [ -e "$MULTICA_FLAKE_DIR/rerun-decision" ]; do sleep 0.1; done
+cp "$MULTICA_FLAKE_DIR/rerun-decision" "$MULTICA_FLAKE_DIR/decision-seen"
+[ "$(cat "$MULTICA_FLAKE_DIR/rerun-decision")" = rerun ]
 FAKE
-if MULTICA_FLAKE_DIR="$flake_dir" MULTICA_TEST_RERUN_FAILS=1 PATH="$BIN_DIR:$PATH" bash "$SCRIPT_DIR/test-go.sh" --race --only agent >/dev/null 2>&1; then
-  echo "a failing rerun run must fail test-go.sh" >&2
-  exit 1
-fi
+chmod 755 "$TEST_DIR/fake-shards"
+flake_dir="$TEST_DIR/flakes"
+rerun_flags="--format standard-verbose"
+reruns() { grep -c -- ' -run ' "$CALLS_FILE" || true; }
+# $1 label, $2 want exit (0 = zero), $3 want regular reruns, $4 want decision (empty = none), rest: env
+budget_case() {
+  local label=$1 want=$2 want_reruns=$3 want_decision=$4 status=0
+  shift 4
+  rm -rf "$flake_dir"
+  : >"$CALLS_FILE"
+  env "$@" MULTICA_FLAKE_DIR="$flake_dir" MULTICA_TEST_RERUN_FAILS=1 MULTICA_TEST_DB_PER_PACKAGE=1 \
+    MULTICA_HANDLER_SHARDS_SCRIPT="$TEST_DIR/fake-shards" PATH="$BIN_DIR:$PATH" \
+    bash "$SCRIPT_DIR/test-go.sh" --only regular >/dev/null 2>&1 || status=$?
+  { [ "$want" = 0 ] && [ "$status" -eq 0 ]; } || { [ "$want" != 0 ] && [ "$status" -ne 0 ]; } \
+    || { echo "$label: exit $status, want $want" >&2; exit 1; }
+  [ "$(reruns)" -eq "$want_reruns" ] || { echo "$label: $(reruns) regular reruns, want $want_reruns" >&2; cat "$CALLS_FILE" >&2; exit 1; }
+  if [ -n "$want_decision" ]; then
+    [ "$(cat "$flake_dir/decision-seen" 2>/dev/null)" = "$want_decision" ] \
+      || { echo "$label: shards saw '$(cat "$flake_dir/decision-seen" 2>/dev/null)', want $want_decision" >&2; exit 1; }
+  fi
+}
+budget_case "no failure" 0 0 "" FAKE_FAIL=
+budget_case "one regular failure reruns" 0 1 "" FAKE_FAIL=a:TestA
+# 2 regular + 1 shard failure = 3 in total: the shards are told to rerun, and so does the regular run.
+budget_case "3 split failures rerun" 0 2 rerun FAKE_FAIL="a:TestA b:TestB" FAKE_SHARD_FAIL='internal/handler\tTestH\n'
+# 2 regular + 2 shard failures = 4 in total: nobody reruns anything, the job fails.
+budget_case "4 split failures never rerun" 1 0 skip FAKE_FAIL="a:TestA b:TestB" FAKE_SHARD_FAIL='internal/handler\tTestH1\ninternal/handler\tTestH2\n'
+# 1 regular failure + 3 shard failures (4): the regular failure is not rerun either.
+budget_case "regular + 3 shard failures never rerun" 1 0 skip FAKE_FAIL=a:TestA FAKE_SHARD_FAIL='internal/handler\tT1\ninternal/handler\tT2\ninternal/handler\tT3\n'
+# 4 failures in the regular packages alone.
+budget_case "4 regular failures never rerun" 1 0 "" FAKE_FAIL="a:T1 a:T2 b:T3 b:T4"
+# A shard that cannot be rerun (panic, race) vetoes the regular rerun, and a regular panic vetoes the shard rerun.
+budget_case "shard veto" 1 0 skip FAKE_FAIL=a:TestA FAKE_SHARD_FAIL='!\n'
+budget_case "regular race vetoes shards" 1 0 skip FAKE_FAIL=a:TestA FAKE_UNSAFE='WARNING: DATA RACE' FAKE_SHARD_FAIL='internal/handler\tTestH\n'
+budget_case "rerun fails again" 1 1 "" FAKE_FAIL=a:TestA FAKE_RERUN_FAIL=1
+
+# First pass and rerun call shapes, agent half (no shards).
+: >"$CALLS_FILE"
+FAKE_FAIL=a:TestA MULTICA_FLAKE_DIR="$flake_dir" MULTICA_TEST_RERUN_FAILS=1 PATH="$BIN_DIR:$PATH" bash "$SCRIPT_DIR/test-go.sh" --race --only agent
+expect_calls "rerun mode agent" "gotestsum $rerun_flags --jsonfile $flake_dir/go-test-agent.json --packages ./pkg/agent/... -- -race -p 2 -parallel 2
+gotestsum $rerun_flags --jsonfile $flake_dir/go-test-agent-rerun-1.json --packages a -- -race -p 2 -parallel 2 -count=1 -run ^(TestA)\$"
 
 # Any value but 1 is off.
 : >"$CALLS_FILE"
