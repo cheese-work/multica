@@ -366,8 +366,8 @@ func TestListEvents_JoinsObservationAndAction(t *testing.T) {
 	ctx := context.Background()
 	t.Cleanup(func() { _, _ = e.pool.Exec(ctx, `DELETE FROM system1_observation WHERE workspace_id=$1`, e.ws) })
 	repo := e.owner + "/" + e.name
-	if _, err := e.pool.Exec(ctx, `INSERT INTO ci_failure_event (workspace_id, repo_owner, repo_name, run_id, run_attempt, workflow_name, head_branch, conclusion, created_at)
-		VALUES ($1,$2,$3,201,1,'CI','main','failure', now() - interval '3 min')`, e.ws, e.owner, e.name); err != nil {
+	if _, err := e.pool.Exec(ctx, `INSERT INTO ci_failure_event (workspace_id, repo_owner, repo_name, run_id, run_attempt, workflow_name, head_branch, event, conclusion, created_at)
+		VALUES ($1,$2,$3,201,1,'CI','main','push','failure', now() - interval '3 min')`, e.ws, e.owner, e.name); err != nil {
 		t.Fatal(err)
 	}
 	obs := func(run int, class, choice, inputs string, outcome *string) {
@@ -404,7 +404,7 @@ func TestListEvents_JoinsObservationAndAction(t *testing.T) {
 		t.Fatalf("want 3 events (one per run), got %d: %+v", len(got), got)
 	}
 	f := byRun[201]
-	if f.Kind != "ci_failure" || f.Workflow != "CI" || f.Class != "infra_transient" || f.Protocol != "P1" ||
+	if f.Kind != "ci_failure" || f.Event != "push" || f.Workflow != "CI" || f.Class != "infra_transient" || f.Protocol != "P1" ||
 		f.Action != "rerun" || f.State != "done" || f.Outcome != "rerun_green" || f.WouldDo != "" {
 		t.Fatalf("failure event = %+v", f)
 	}
