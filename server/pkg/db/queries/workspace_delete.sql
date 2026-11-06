@@ -2,6 +2,11 @@
 -- bottom-up deletion plan; the legacy foreign keys remain only as a
 -- compatibility safety net during the expand phase.
 
+-- name: DeleteProviderBreakersForWorkspace :exec
+-- Provider breaker state is workspace-owned; remove it explicitly before the
+-- workspace row instead of relying on the legacy FK cascade.
+DELETE FROM provider_breaker WHERE workspace_id = $1;
+
 -- name: SetWorkspaceTeardownMode :exec
 -- The setting is transaction-local. Migration 242 makes only the three DELETE
 -- dirty triggers skip their per-row work while this flag is on.
@@ -374,6 +379,21 @@ deleted_chat_wakeups AS (
 deleted_github_dispatch_halts AS (
     DELETE FROM github_dispatch_halt WHERE workspace_id = $1
 ),
+deleted_github_dispatch_halt_audits AS (
+    DELETE FROM github_dispatch_halt_audit WHERE workspace_id = $1
+),
+-- CHE-3284 config-sync enrollment: workspace-owned leaf, no FK.
+deleted_config_sync AS (
+    DELETE FROM workspace_config_sync WHERE workspace_id = $1
+),
+-- CHE-3345 ask guard events: workspace-owned leaf, no FK.
+deleted_ask_guard_events AS (
+    DELETE FROM ask_guard_event WHERE workspace_id = $1
+),
+-- CHE-3628 shadow System 1 observations: workspace-owned leaf, no FK.
+deleted_system1_observations AS (
+    DELETE FROM system1_observation WHERE workspace_id = $1
+),
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
 ),
@@ -738,6 +758,12 @@ WITH deleted_wakeup_pr_events AS (
  DELETE FROM issue_wakeup WHERE workspace_id=$1
 ), deleted_wakeup_definitions AS (
  DELETE FROM issue_wakeup_definition WHERE workspace_id=$1
+), deleted_dm_progress_follows AS (
+ DELETE FROM dm_progress_follow WHERE workspace_id=$1
+), deleted_dm_progress_lanes AS (
+ DELETE FROM dm_progress_lane WHERE workspace_id=$1
+), deleted_dm_progress_data_incidents AS (
+ DELETE FROM dm_progress_data_incident WHERE workspace_id=$1
 ), deleted_wakeup_aggregate_reservations AS (
  DELETE FROM wakeup_aggregate_reservation WHERE workspace_id=$1
 ), deleted_wakeup_aggregate_budgets AS (

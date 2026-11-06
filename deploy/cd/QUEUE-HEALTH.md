@@ -1,6 +1,6 @@
 # C00 deployment queue health
 
-`cd-queue-watch.yml` runs a read-only alarm on a GitHub-hosted runner every
+`queue-watch.yml` (with the merge queue alarm) runs a read-only alarm on a GitHub-hosted runner every
 15 minutes (GitHub schedules can be delayed) and on manual dispatch. It has
 no deploy concurrency group, production environment, C00 secrets, or write
 permissions. A queue cannot hide its own failure behind its unavailable runner.

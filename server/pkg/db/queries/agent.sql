@@ -1306,13 +1306,16 @@ LIMIT 1;
 -- Chat-session counterpart of GetLatestTaskRolloutMissing (MUL-5305): reports
 -- whether the most recent terminal task on this chat session withheld its Codex
 -- session because the rollout was missing. When true the next chat claim resumed
--- an older session (or none), so it must disclose the continuity gap.
+-- an older session (or none), so it must disclose the continuity gap. Scoped to
+-- the chat's current compaction_epoch: a gap before an in-place /compact is
+-- covered by the compaction summary.
 SELECT COALESCE(session_rollout_missing, FALSE) FROM agent_task_queue
 WHERE chat_session_id = sqlc.arg('chat_session_id')
   AND (
     sqlc.narg('channel_context_revision')::bigint IS NULL
     OR COALESCE(channel_context_revision, 1) = sqlc.narg('channel_context_revision')::bigint
   )
+  AND COALESCE(chat_compaction_epoch, 0) = sqlc.arg('compaction_epoch')::bigint
   AND status IN ('completed', 'failed')
   AND started_at IS NOT NULL
 ORDER BY COALESCE(completed_at, started_at, dispatched_at, created_at) DESC
@@ -1969,6 +1972,23 @@ WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
     AND workflow_step <> sqlc.arg('step')::text
   );
 
+-- name: LastVerdictHeadSHA :one
+-- PR head of the issue's latest review verdict, PASS or CHANGES (CHE-3243): a
+-- review dispatched for that head, with nothing pushed since, would only repeat
+-- it. Earlier verdicts do not count: a head the PR returned to was not looked
+-- at since.
+SELECT COALESCE((
+  SELECT details->>'head_sha' FROM activity_log
+  WHERE issue_id = $1 AND action IN ('review_changes_requested', 'review_passed')
+  ORDER BY created_at DESC, id DESC LIMIT 1
+), '')::text AS head_sha;
+
+-- name: CountChangesVerdictsForPR :one
+-- Changes-requested rounds of one PR lineage; a replacement PR starts at zero.
+SELECT count(*) FROM activity_log
+WHERE issue_id = $1 AND action = 'review_changes_requested'
+  AND COALESCE(details->>'pull_request_id', '') = sqlc.arg('pull_request_id')::text;
+
 -- name: ListStalePendingStepTasks :many
 -- The runs HasPendingTaskForIssueAndAgentAtStep ignores: pending
 -- assignment-level runs of one agent stamped for a step the issue has left.
@@ -2226,7 +2246,7 @@ WHERE id = (
     ORDER BY t.created_at DESC
     LIMIT 1
 )
-RETURNING id, coalesced_comment_ids;
+RETURNING *;
 
 -- name: MergeCommentIntoQueuedIssueTask :one
 -- CHE-1418: one comment produces at most one run per agent. Same fold and
@@ -2643,6 +2663,21 @@ LIMIT 1;
 SELECT EXISTS (
   SELECT 1 FROM agent_task_queue
   WHERE issue_id = $1 AND agent_id = $2
+    AND (
+      status IN ('queued', 'dispatched')
+      OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+    )
+);
+
+-- name: HasPendingAssignmentTaskForAgent :one
+-- Whether the agent holds the issue's assignment-level pending slot: exactly
+-- the rows idx_one_pending_task_per_issue_agent_thread keeps one of. A caller
+-- inside a transaction checks it before the insert, because the unique
+-- violation would abort the transaction.
+SELECT EXISTS (
+  SELECT 1 FROM agent_task_queue
+  WHERE issue_id = $1 AND agent_id = $2
+    AND comment_thread_id IS NULL
     AND (
       status IN ('queued', 'dispatched')
       OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')

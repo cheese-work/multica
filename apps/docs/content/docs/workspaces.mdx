@@ -38,6 +38,18 @@ The creator automatically becomes an `owner`.
 After the issue prefix changes, every issue immediately switches to the new number (`MUL-5` becomes `NEW-5`), but the old numbers in PRs, branch names, and chat history do not update.
 </Callout>
 
+### Ask guard
+
+The workspace setting `ask_guard_mode` controls what happens when an agent operation asks a person to act without opening a decision request.
+
+| Value | Effect |
+| --- | --- |
+| `off` (default) | The guard does nothing. |
+| `warn` | The guard records an event and a metric. The operation goes ahead. |
+| `block` | The guard records the event first, then refuses the operation with `422`. Only `block` events become recovery work. |
+
+Each event keeps the mode it was created under, so switching from `warn` to `block` does not turn earlier events into recovery work. If the event cannot be written, the operation fails with `503` and a `Retry-After` header, and nothing is written.
+
 ## Switch and leave
 
 One account can join multiple workspaces. Switching only changes what you are currently viewing; it moves no data.

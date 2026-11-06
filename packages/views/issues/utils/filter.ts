@@ -22,6 +22,8 @@ export interface IssueFilters {
    *  so the context-free `filterIssues` entry point can evaluate the
    *  project-status predicate, like `runningIssueIds` does for working-only. */
   projectStatusById?: ReadonlyMap<string, ProjectStatus>;
+  /** Workflow ids matched against the issue's own override. */
+  workflowFilters?: string[];
   labelFilters: string[];
   /** Custom-property filters: definition id → selected values (OR within
    *  a definition, AND across definitions; checkbox uses "true"/"false"). */
@@ -50,6 +52,7 @@ export interface IssueFilterState {
   includeNoProject: boolean;
   /** See IssueFilters.projectStatusFilters. */
   projectStatusFilters?: ProjectStatus[];
+  workflowFilters?: string[];
   labelFilters: string[];
   propertyFilters?: Record<string, PropertyFilterValue[]>;
   workingOnly: boolean;
@@ -217,6 +220,7 @@ export function applyIssueFilters(
   // user opted into "only running" and there is nothing running.
   const applyWorkingOnly = workingOnly === true;
   const hideSubIssues = filters.showSubIssues === false;
+  const workflowFilters = filters.workflowFilters ?? [];
 
   return issues.filter((issue) => {
     if (applyWorkingOnly && !issueIsWorking(issue.id, context))
@@ -276,6 +280,12 @@ export function applyIssueFilters(
         return false;
     }
 
+    if (
+      workflowFilters.length > 0 &&
+      !(issue.workflow_id && workflowFilters.includes(issue.workflow_id))
+    )
+      return false;
+
     if (labelFilters.length > 0) {
       // OR semantics within the filter: keep issues that carry any of the
       // selected labels. Matches existing priority / project multi-select.
@@ -303,6 +313,7 @@ export function filterIssues(issues: Issue[], filters: IssueFilters): Issue[] {
       projectFilters: filters.projectFilters,
       includeNoProject: filters.includeNoProject,
       projectStatusFilters: filters.projectStatusFilters,
+      workflowFilters: filters.workflowFilters,
       labelFilters: filters.labelFilters,
       propertyFilters: filters.propertyFilters,
       workingOnly: filters.agentRunningFilter === true,

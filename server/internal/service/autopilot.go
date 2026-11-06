@@ -655,6 +655,9 @@ func (s *AutopilotService) dispatchAutopilotRun(
 		triggerTimezone := s.resolveAutopilotTriggerTimezone(ctx, triggerID)
 		if err := s.dispatchCreateIssue(ctx, autopilot, run, triggerTimezone, actorUserID, recoveryAttempt); err != nil {
 			if skipped, code := s.handleDispatchSkip(ctx, autopilot, run, err); skipped != nil {
+				// The dispatch transaction is rolled back by now; a cap notice written
+				// inside it would be lost.
+				s.TaskSvc.notifyProviderFailureAttemptCap(ctx, recoveryAttempt)
 				return skipped, code, nil
 			}
 			s.failRun(ctx, run.ID, err.Error())
@@ -664,6 +667,9 @@ func (s *AutopilotService) dispatchAutopilotRun(
 	case "run_only":
 		if err := s.dispatchRunOnly(ctx, autopilot, run, actorUserID, recoveryAttempt); err != nil {
 			if skipped, code := s.handleDispatchSkip(ctx, autopilot, run, err); skipped != nil {
+				// The dispatch transaction is rolled back by now; a cap notice written
+				// inside it would be lost.
+				s.TaskSvc.notifyProviderFailureAttemptCap(ctx, recoveryAttempt)
 				return skipped, code, nil
 			}
 			s.failRun(ctx, run.ID, err.Error())

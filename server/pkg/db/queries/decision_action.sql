@@ -21,6 +21,18 @@ SELECT * FROM decision_action WHERE decision_request_id = $1 AND workspace_id = 
 -- name: LockWorkspaceKeyShareNowait :one
 SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE NOWAIT;
 
+-- A config change serialises per field and target on a try-lock: a second
+-- approval of the same field gets false and retries, never waits.
+-- name: TryLockConfigChange :one
+SELECT pg_try_advisory_xact_lock(hashtextextended(sqlc.arg('key')::text, 0))::boolean;
+
+-- The row a config change reads and writes is locked the same way, so an
+-- ordinary edit cannot commit between the approval's read and its write.
+-- name: LockWorkflowTargetNowait :one
+SELECT id FROM issue_workflow
+WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id')
+FOR UPDATE NOWAIT;
+
 -- name: LockDecisionSessionNowait :one
 SELECT id FROM chat_session
 WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
@@ -62,6 +74,22 @@ SELECT * FROM agent
 WHERE workspace_id = sqlc.arg('workspace_id') AND id = ANY(sqlc.arg('ids')::uuid[])
 ORDER BY id
 FOR UPDATE NOWAIT;
+
+-- name: LockDecisionSquadNowait :one
+-- The squad a squad-target action changes, locked in its workspace.
+SELECT * FROM squad
+WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
+FOR UPDATE NOWAIT;
+
+-- name: LockDecisionWorkflowNowait :one
+SELECT * FROM issue_workflow
+WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
+FOR UPDATE NOWAIT;
+
+-- name: LockDecisionWorkspaceNowait :one
+-- A workspace-target action rewrites a column of the row row 1 holds FOR KEY
+-- SHARE; take the stronger mode the update needs, once.
+SELECT * FROM workspace WHERE id = $1 FOR NO KEY UPDATE NOWAIT;
 
 -- name: LockDecisionIssueNowait :one
 SELECT id FROM issue
