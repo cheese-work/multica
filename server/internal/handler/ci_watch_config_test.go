@@ -196,3 +196,26 @@ func TestCIWatchConfig_EventsNewestFirstAndLimit(t *testing.T) {
 		t.Fatalf("default limit returned %d events, want 3", len(out.Events))
 	}
 }
+
+func TestCIWatchConfig_EventsCarryActionFields(t *testing.T) {
+	e := ciWatchFixture(t, "ciw-events-enriched")
+	dbfx.Exec(t, `INSERT INTO ci_failure_event (workspace_id, repo_owner, repo_name, run_id, run_attempt, workflow_name, head_branch, event, conclusion)
+		VALUES ($1,'acme','widgets',77,1,'ci','main','push','failure')`, e.ws)
+	dbfx.Exec(t, `INSERT INTO ci_watch_action (workspace_id, repo_owner, repo_name, original_run_id, action_kind, state, protocol)
+		VALUES ($1,'acme','widgets',77,'rerun','done','P1')`, e.ws)
+	var out struct {
+		Events []map[string]any `json:"events"`
+	}
+	e.call(t, testHandler.ListCIWatchEvents, "GET", "/events", nil, nil).Want(http.StatusOK).JSON(&out)
+	if len(out.Events) != 1 {
+		t.Fatalf("events = %v", out.Events)
+	}
+	// class and outcome come from system-1 observations (covered in ciwatch);
+	// the keys must still be present so the panel can rely on them.
+	want := map[string]string{"event": "push", "class": "", "protocol": "P1", "action": "rerun", "state": "done", "outcome": ""}
+	for k, v := range want {
+		if got, ok := out.Events[0][k]; !ok || got != v {
+			t.Errorf("event[%q] = %v (present=%v), want %q (event = %v)", k, got, ok, v, out.Events[0])
+		}
+	}
+}
