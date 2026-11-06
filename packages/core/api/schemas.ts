@@ -558,7 +558,7 @@ const IssueWorkflowHandlerSchema = z.lazy(() => z.object({
 }).loose());
 
 const ISSUE_WORKFLOW_HANDLER_TYPES = new Set<string>([
-  "none", "agent", "squad", "member", "project_lead", "creator", "human_by_role",
+  "none", "agent", "squad", "member", "project_lead", "creator", "human_by_role", "human_in_charge",
 ]);
 
 const IssueWorkflowEdgeSchema = z.lazy(() => z.object({

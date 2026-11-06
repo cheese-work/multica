@@ -1061,6 +1061,35 @@ type DecisionRequest struct {
 	WakeSeq               int64              `json:"wake_seq"`
 }
 
+type DecisionWait struct {
+	ID                   pgtype.UUID        `json:"id"`
+	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
+	IssueID              pgtype.UUID        `json:"issue_id"`
+	AskingAgentID        pgtype.UUID        `json:"asking_agent_id"`
+	AskingTaskID         pgtype.UUID        `json:"asking_task_id"`
+	ResumeSquadID        pgtype.UUID        `json:"resume_squad_id"`
+	HumanUserID          pgtype.UUID        `json:"human_user_id"`
+	RequestIds           []pgtype.UUID      `json:"request_ids"`
+	IntentIds            []pgtype.UUID      `json:"intent_ids"`
+	GroupAckIntentIds    []pgtype.UUID      `json:"group_ack_intent_ids"`
+	RestoreStatus        string             `json:"restore_status"`
+	RestoreAssigneeType  pgtype.Text        `json:"restore_assignee_type"`
+	RestoreAssigneeID    pgtype.UUID        `json:"restore_assignee_id"`
+	RestoreOnResume      bool               `json:"restore_on_resume"`
+	Phase                string             `json:"phase"`
+	SuspendReason        pgtype.Text        `json:"suspend_reason"`
+	SuspendedAt          pgtype.Timestamptz `json:"suspended_at"`
+	RefusedTaskID        pgtype.UUID        `json:"refused_task_id"`
+	EnteredAt            pgtype.Timestamptz `json:"entered_at"`
+	ReminderDueAt        pgtype.Timestamptz `json:"reminder_due_at"`
+	ReminderDeliveredAt  pgtype.Timestamptz `json:"reminder_delivered_at"`
+	DispatchRefusedSince pgtype.Timestamptz `json:"dispatch_refused_since"`
+	ClosedAt             pgtype.Timestamptz `json:"closed_at"`
+	CloseReason          pgtype.Text        `json:"close_reason"`
+	ResumeTaskID         pgtype.UUID        `json:"resume_task_id"`
+	ResumeOutcome        pgtype.Text        `json:"resume_outcome"`
+}
+
 type DecisionWakeEvent struct {
 	ID               pgtype.UUID        `json:"id"`
 	RequestID        pgtype.UUID        `json:"request_id"`
