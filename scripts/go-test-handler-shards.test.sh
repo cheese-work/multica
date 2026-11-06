@@ -72,7 +72,7 @@ done
 # handler-flakes.txt. `skip` (or no decision in time): the shard script fails.
 # The fake binary fails its first call with $FIRST_OUT / $FIRST_EXIT and, when
 # set, its second call with $SECOND_OUT; a call whose -test.run equals $RERUN_RE
-# exits $RERUN_EXIT; everything else passes.
+# prints $RERUN_OUT and exits $RERUN_EXIT; everything else passes.
 cat >"$TEST_DIR/bin/go" <<'FAKE'
 #!/usr/bin/env bash
 set -eu
@@ -82,7 +82,7 @@ cat >"$out" <<'BIN'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$SHARD_TEST_DIR/runs"
 case " $* " in
-  *" -test.run $RERUN_RE "*) exit "${RERUN_EXIT:-0}" ;;
+  *" -test.run $RERUN_RE "*) printf '%s\n' "${RERUN_OUT:-}"; exit "${RERUN_EXIT:-0}" ;;
 esac
 if ! [ -e "$SHARD_TEST_DIR/failed-1" ] && mkdir "$SHARD_TEST_DIR/failed-1" 2>/dev/null; then
   printf '%s\n' "$FIRST_OUT"; exit "${FIRST_EXIT:-1}"
@@ -115,11 +115,16 @@ export RERUN_RE='^(TestFlakyA|TestFlakyB)$'
 export FIRST_OUT=$'--- FAIL: TestFlakyB (0.10s)\n    --- FAIL: TestFlakyB/sub (0.10s)\n--- FAIL: TestFlakyA (0.20s)\nFAIL'
 
 # Fails once, decision rerun, passes on rerun: shard script passes, both tests recorded as flakes.
+export RERUN_OUT=$'--- PASS: TestFlakyA (0s)\n--- PASS: TestFlakyB (0s)\n    --- PASS: TestFlakyB/sub (0s)'
 RERUN_EXIT=0 rerun_case "flake" 0 1 rerun
 [ "$(published)" = "internal/handler:TestFlakyA:TestFlakyA,internal/handler:TestFlakyB:TestFlakyB/sub" ] || { echo "published wrong: $(published)" >&2; exit 1; }
 [ -e "$TEST_DIR/flakes/handler-first-pass.done" ] || { echo "first-pass marker missing" >&2; exit 1; }
 [ "$(sort "$TEST_DIR/flakes/handler-flakes.txt")" = "$(printf 'internal/handler\tTestFlakyA\ninternal/handler\tTestFlakyB/sub')" ] \
   || { echo "flake file wrong:" >&2; cat "$TEST_DIR/flakes/handler-flakes.txt" >&2; exit 1; }
+
+# The root reruns and passes, but a failed subtest was skipped: not recovered, nothing recorded.
+RERUN_OUT=$'--- PASS: TestFlakyA (0s)\n--- PASS: TestFlakyB (0s)\n    --- SKIP: TestFlakyB/sub (0s)' RERUN_EXIT=0 rerun_case "skipped leaf" 1 1 rerun
+[ ! -s "$TEST_DIR/flakes/handler-flakes.txt" ] || { echo "a skipped leaf must not be recorded as a flake" >&2; exit 1; }
 
 # Fails again on rerun: real failure, nothing recorded.
 RERUN_EXIT=1 rerun_case "fails twice" 1 1 rerun
@@ -137,6 +142,7 @@ FIRST_OUT=$'--- FAIL: TestFlakyA (0s)\n    --- FAIL: TestFlakyA/s1 (0s)\n    ---
   RERUN_RE='^(TestFlakyA)$' RERUN_EXIT=0 rerun_case "sibling subtests" 1 0 skip
 [ "$(published | tr ',' '\n' | wc -l | tr -d ' ')" = 4 ] || { echo "sibling subtests: want 4 published leaves, got $(published)" >&2; exit 1; }
 FIRST_OUT=$'--- FAIL: TestFlakyA (0s)\n    --- FAIL: TestFlakyA/s1 (0s)\n    --- FAIL: TestFlakyA/s2 (0s)\nFAIL' \
+  RERUN_OUT=$'--- PASS: TestFlakyA (0s)\n    --- PASS: TestFlakyA/s1 (0s)\n    --- PASS: TestFlakyA/s2 (0s)' \
   RERUN_RE='^(TestFlakyA)$' RERUN_EXIT=0 rerun_case "sibling subtests rerun by root" 0 1 rerun
 [ "$(sort "$TEST_DIR/flakes/handler-flakes.txt" | paste -sd, | tr '\t' ':')" = "internal/handler:TestFlakyA/s1,internal/handler:TestFlakyA/s2" ] \
   || { echo "sibling flakes keep their own names:" >&2; cat "$TEST_DIR/flakes/handler-flakes.txt" >&2; exit 1; }

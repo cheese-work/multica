@@ -49,6 +49,24 @@ if (process.argv[2] === "--plan") {
   process.exit(0);
 }
 
+// --unproven <plan.txt> <rerun.json>...: the plan leaves with no pass event in the rerun logs. A root
+// rerun can skip a failed subtest, and a skipped leaf is not a recovered one.
+if (process.argv[2] === "--unproven") {
+  const passed = new Set();
+  for (const file of process.argv.slice(4)) {
+    for (const line of readFileSync(file, "utf8").split("\n")) {
+      if (!line.startsWith("{")) continue;
+      const { Action, Package, Test } = JSON.parse(line);
+      if (Action === "pass" && Test) passed.add(`${Package}\t${Test}`);
+    }
+  }
+  for (const line of readFileSync(process.argv[3], "utf8").split("\n")) {
+    const [pkg, , leaf] = line.split("\t");
+    if (pkg && leaf && !passed.has(`${pkg}\t${leaf}`)) console.log(`${pkg}\t${leaf}`);
+  }
+  process.exit(0);
+}
+
 const dir = process.argv[2];
 if (!dir) {
   console.error("usage: go-test-flakes.mjs <flake-dir>");

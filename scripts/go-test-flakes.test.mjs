@@ -137,3 +137,12 @@ test("--plan prints ! for a panic, a race, a timeout, a package-level failure or
 test("--plan prints nothing for a passing run", () => {
   assert.equal(plan([ev("pass", "p", "TestA"), ev("pass", "p")]), "");
 });
+
+test("--unproven lists the plan leaves with no pass event in the rerun logs", () => {
+  const dir = mkdtempSync(join(tmpdir(), "unproven-"));
+  const planFile = join(dir, "plan.txt");
+  const rerun = join(dir, "rerun.json");
+  writeFileSync(planFile, "p\tTestA\tTestA/s1\np\tTestA\tTestA/s2\n");
+  writeFileSync(rerun, [ev("pass", "p", "TestA/s1"), ev("skip", "p", "TestA/s2"), ev("pass", "p", "TestA")].join("\n"));
+  assert.equal(execFileSync("node", [script, "--unproven", planFile, rerun], { encoding: "utf8" }), "p\tTestA/s2\n");
+});

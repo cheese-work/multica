@@ -131,7 +131,8 @@ expect_calls "per-package databases leave pkg/agent alone" "$agent_call"
 # Anything else stays on plain `go test`.
 # Fake gotestsum: first pass fails the tests in $FAKE_FAIL (space separated
 # `<package>:<test>`, empty = pass) with $FAKE_UNSAFE as extra output; a call
-# with -run is a rerun and passes unless $FAKE_RERUN_FAIL is set.
+# with -run is a rerun and passes (a pass event per test, except those in
+# $FAKE_RERUN_SKIP) unless $FAKE_RERUN_FAIL is set.
 cat >"$BIN_DIR/gotestsum" <<'FAKE'
 #!/usr/bin/env bash
 echo "gotestsum $*" >>"$MULTICA_TEST_GO_CALLS"
@@ -142,7 +143,13 @@ for arg in "$@"; do
   prev=$arg
 done
 : >"$json"
-if [ -n "$rerun" ]; then [ -z "${FAKE_RERUN_FAIL:-}" ]; exit; fi
+if [ -n "$rerun" ]; then
+  for t in ${FAKE_FAIL:-}; do
+    case " ${FAKE_RERUN_SKIP:-} " in *" $t "*) continue ;; esac
+    printf '{"Action":"pass","Package":"%s","Test":"%s"}\n' "${t%%:*}" "${t##*:}" >>"$json"
+  done
+  [ -z "${FAKE_RERUN_FAIL:-}" ]; exit
+fi
 for t in ${FAKE_FAIL:-}; do
   printf '{"Action":"fail","Package":"%s","Test":"%s"}\n' "${t%%:*}" "${t##*:}" >>"$json"
 done
@@ -198,6 +205,8 @@ budget_case "4 sibling subtests never rerun" 1 0 "" FAKE_FAIL="a:TestA a:TestA/s
 budget_case "3 sibling subtests rerun" 0 1 "" FAKE_FAIL="a:TestA a:TestA/s1 a:TestA/s2 a:TestA/s3"
 budget_case "regular subtest + 3 shard subtests never rerun" 1 0 skip FAKE_FAIL="a:TestA a:TestA/s1" \
   FAKE_SHARD_FAIL='internal/handler\tTestH\tTestH/s1\ninternal/handler\tTestH\tTestH/s2\ninternal/handler\tTestH\tTestH/s3\n'
+# A root rerun that skips a failed subtest has not recovered it: the job fails.
+budget_case "skipped leaf is not recovered" 1 1 "" FAKE_FAIL="a:TestA a:TestA/s1 a:TestA/s2" FAKE_RERUN_SKIP="a:TestA/s2"
 budget_case "shard veto" 1 0 skip FAKE_FAIL=a:TestA FAKE_SHARD_FAIL='!\n'
 budget_case "regular race vetoes shards" 1 0 skip FAKE_FAIL=a:TestA FAKE_UNSAFE='WARNING: DATA RACE' FAKE_SHARD_FAIL='internal/handler\tTestH\tTestH\n'
 budget_case "rerun fails again" 1 1 "" FAKE_FAIL=a:TestA FAKE_RERUN_FAIL=1

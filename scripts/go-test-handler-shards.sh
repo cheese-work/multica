@@ -66,9 +66,9 @@ case " ${GOFLAGS:-} " in *" -v "*) verbose=(-test.v) ;; esac
 flake_dir=${MULTICA_FLAKE_DIR:-$REPO_ROOT/flake-reports}
 rerun_wait=${MULTICA_RERUN_WAIT:-3600}
 
-run_shard() { # $1: -test.run regex
+run_shard() { # $1: -test.run regex, rest: extra test flags
   (cd "$package_dir" && exec "$GUARD_SCRIPT" -- "$EXEC_WRAPPER" "$work_dir/handler.test" \
-    -test.run "$1" -test.count=1 -test.timeout="$shard_timeout" ${verbose[@]+"${verbose[@]}"})
+    -test.run "$1" -test.count=1 -test.timeout="$shard_timeout" ${verbose[@]+"${verbose[@]}"} "${@:2}")
 }
 
 first_pass_shard() { # $1: shard index, $2: -test.run regex; writes shard-N.plan, returns the shard status
@@ -129,5 +129,13 @@ done
 
 roots=$(cut -f2 "$flake_dir/handler-failed.txt" | sort -u)
 echo "rerunning failed tests once: $(printf '%s' "$roots" | paste -sd' ')"
-run_shard "^($(printf '%s' "$roots" | paste -sd'|'))\$" || exit 1
+# A root rerun can skip a failed subtest, so a leaf only counts as recovered with its own PASS line.
+rerun_log="$work_dir/rerun.log"
+set -o pipefail
+run_shard "^($(printf '%s' "$roots" | paste -sd'|'))\$" -test.v 2>&1 | tee "$rerun_log" || exit 1
+unproven=0
+while IFS=$'\t' read -r _ _ leaf; do
+  grep -qF -- "--- PASS: $leaf (" "$rerun_log" || { echo "rerun did not prove $leaf passed" >&2; unproven=1; }
+done <"$flake_dir/handler-failed.txt"
+[ "$unproven" -eq 0 ] || exit 1
 cut -f1,3 "$flake_dir/handler-failed.txt" >>"$flake_dir/handler-flakes.txt"

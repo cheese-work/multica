@@ -84,7 +84,7 @@ rerun_allowed() {
 
 # Rerun the failed tests of plan $2 once, package by package. $1: name, rest: go test flags.
 rerun_failed() {
-  local name=$1 plan=$2 status=0 pkg tests n=0
+  local name=$1 plan=$2 status=0 pkg tests n=0 unproven reruns=()
   shift 2
   for pkg in $(cut -f1 "$plan" | sort -u); do
     n=$((n + 1))
@@ -92,7 +92,14 @@ rerun_failed() {
     echo "rerunning failed tests once in $pkg: $tests"
     "$GUARD_SCRIPT" -- gotestsum --format standard-verbose --jsonfile "$flake_dir/go-test-$name-rerun-$n.json" \
       --packages "$pkg" -- "$@" -count=1 -run "^($tests)\$" || status=$?
+    reruns+=("$flake_dir/go-test-$name-rerun-$n.json")
   done
+  # A root rerun can skip a failed subtest; a leaf with no pass event did not recover.
+  unproven=$(node "$FLAKES_SCRIPT" --unproven "$plan" "${reruns[@]}")
+  if [ -n "$unproven" ]; then
+    echo "rerun did not prove these tests passed: $(printf '%s' "$unproven" | tr '\t\n' ': ')" >&2
+    status=1
+  fi
   return "$status"
 }
 
