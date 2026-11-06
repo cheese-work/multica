@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { issueListOptions, issueDetailOptions } from "@multica/core/issues/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { useCompactIssueChips } from "../compact-issue-chips-context";
 import { StatusIcon } from "./status-icon";
 
 /**
@@ -60,6 +61,7 @@ export function IssueChip({
   const wsId = useWorkspaceId();
   const { colorOf: statusColorOf, iconOf: statusIconOf } = useIssueStatuses(wsId);
   const { data: issues = [] } = useQuery(issueListOptions(wsId));
+  const compact = useCompactIssueChips();
   const listIssue = issues.find((i) => i.id === issueId);
 
   // Fallback fetch for issues outside the list's first page (the first
@@ -99,7 +101,9 @@ export function IssueChip({
       <span className="font-medium text-muted-foreground shrink-0">
         {issue.identifier}
       </span>
-      <span className="min-w-0 truncate text-foreground">{issue.title}</span>
+      {!compact && (
+        <span className="min-w-0 truncate text-foreground">{issue.title}</span>
+      )}
     </span>
   );
 }
