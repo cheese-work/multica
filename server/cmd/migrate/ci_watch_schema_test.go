@@ -8,19 +8,19 @@ import (
 )
 
 // CHE-4273 (S1 of CHE-4265): storage for the CI failure watcher.
-const ciWatchTablesVersion = "986_ci_watch_tables"
+const ciWatchTablesVersion = "993_ci_watch_tables"
 
 // version -> index, in migration order. Each is one concurrent unique build.
 var ciWatchUniqueIndexes = []struct{ version, index, table string }{
-	{"987_ci_watch_config_repo_uidx", "ci_watch_config_repo_uidx", "ci_watch_config"},
-	{"988_ci_failure_event_run_attempt_uidx", "ci_failure_event_run_attempt_uidx", "ci_failure_event"},
-	{"989_ci_watch_action_key_uidx", "ci_watch_action_key_uidx", "ci_watch_action"},
-	{"990_ci_signature_owner_signature_uidx", "ci_signature_owner_signature_uidx", "ci_signature_owner"},
-	{"991_ci_signature_owner_issue_uidx", "ci_signature_owner_issue_uidx", "ci_signature_owner"},
+	{"994_ci_watch_config_repo_uidx", "ci_watch_config_repo_uidx", "ci_watch_config"},
+	{"995_ci_failure_event_run_attempt_uidx", "ci_failure_event_run_attempt_uidx", "ci_failure_event"},
+	{"996_ci_watch_action_key_uidx", "ci_watch_action_key_uidx", "ci_watch_action"},
+	{"997_ci_signature_owner_signature_uidx", "ci_signature_owner_signature_uidx", "ci_signature_owner"},
+	{"998_ci_signature_owner_issue_uidx", "ci_signature_owner_issue_uidx", "ci_signature_owner"},
 }
 
-// 992 serves the 30-day prune of ci_failure_event.
-const ciFailureEventPruneIndexVersion = "992_ci_failure_event_created_at_idx"
+// 999 serves the 30-day prune of ci_failure_event.
+const ciFailureEventPruneIndexVersion = "999_ci_failure_event_created_at_idx"
 
 func TestCIWatchMigrationsFollowTheRules(t *testing.T) {
 	t.Parallel()
@@ -165,6 +165,12 @@ func TestCIWatchSchemaUpDownUpAndUniqueKeys(t *testing.T) {
 	var mode, p1 string
 	if err := pool.QueryRow(ctx, `SELECT mode, p1_mode FROM ci_watch_config`).Scan(&mode, &p1); err != nil || mode != "off" || p1 != "shadow" {
 		t.Errorf("config defaults = %q/%q (err %v), want off/shadow", mode, p1, err)
+	}
+
+	// Caps follow the parent plan: reruns per original run, new issues per day, owner wakes per hour.
+	var reruns, issues, wakes int
+	if err := pool.QueryRow(ctx, `SELECT max_reruns_per_original_run, max_new_issues_per_day, max_owner_wakes_per_hour FROM ci_watch_config`).Scan(&reruns, &issues, &wakes); err != nil || reruns != 1 || issues != 5 || wakes != 6 {
+		t.Errorf("cap defaults = %d/%d/%d (err %v), want 1/5/6", reruns, issues, wakes, err)
 	}
 
 	// system1_observation accepts the new kind and still refuses others.
