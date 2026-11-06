@@ -68,6 +68,7 @@ type Action struct {
 	Attempts, ReconcileAttempts          int
 	ExpectedAttempt                      *int
 	DestinationID, Reason, Diagnostic    string
+	PostOutcome                          string
 }
 
 type Verdict struct {
@@ -95,7 +96,8 @@ type PermanentError struct {
 func (e *PermanentError) Error() string { return e.Reason + ": " + e.Err.Error() }
 func (e *PermanentError) Unwrap() error { return e.Err }
 
-type CancelFilter struct{ WorkspaceID, RepoOwner, RepoName, Protocol string }
+// SignatureHash narrows the cancel to one signature (storm breaker).
+type CancelFilter struct{ WorkspaceID, RepoOwner, RepoName, Protocol, SignatureHash string }
 
 // Ledger owns the ci_watch_action lifecycle (CHE-4277). Local kinds (issue,
 // comment, notification) claim and run in one transaction, so `executing` is
@@ -171,12 +173,13 @@ var errFenced = errors.New("ciwatch: lease epoch changed")
 
 const actionCols = `id::text, workspace_id::text, repo_owner, repo_name, original_run_id, action_kind, state,
 	lease_epoch, protocol, signature_hash, due_at, run_completed_at, lease_until, attempts,
-	reconcile_attempts, expected_attempt, post_started_at, COALESCE(destination_id,''), reason, diagnostic`
+	reconcile_attempts, expected_attempt, post_started_at, COALESCE(destination_id,''), reason, diagnostic,
+	post_outcome`
 
 func scanAction(r pgx.Row) (a Action, err error) {
 	err = r.Scan(&a.ID, &a.WorkspaceID, &a.RepoOwner, &a.RepoName, &a.OriginalRunID, &a.Kind, &a.State,
 		&a.LeaseEpoch, &a.Protocol, &a.SignatureHash, &a.DueAt, &a.RunCompletedAt, &a.LeaseUntil, &a.Attempts,
-		&a.ReconcileAttempts, &a.ExpectedAttempt, &a.PostStartedAt, &a.DestinationID, &a.Reason, &a.Diagnostic)
+		&a.ReconcileAttempts, &a.ExpectedAttempt, &a.PostStartedAt, &a.DestinationID, &a.Reason, &a.Diagnostic, &a.PostOutcome)
 	return a, err
 }
 
@@ -192,13 +195,17 @@ func diagnostic(err error) string {
 	return string(r)
 }
 
-func (l *Ledger) Get(ctx context.Context, id string) (Action, error) {
-	return scanAction(l.pool.QueryRow(ctx, `SELECT `+actionCols+` FROM ci_watch_action WHERE id=$1::uuid`, id))
-}
-
 // queryer is satisfied by both the pool and a transaction.
 type queryer interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+func (l *Ledger) Get(ctx context.Context, id string) (Action, error) {
+	return getAction(ctx, l.pool, id)
+}
+
+func getAction(ctx context.Context, q queryer, id string) (Action, error) {
+	return scanAction(q.QueryRow(ctx, `SELECT `+actionCols+` FROM ci_watch_action WHERE id=$1::uuid`, id))
 }
 
 // Schedule claims (repo, original run, kind). inserted=false returns the
@@ -258,7 +265,7 @@ func (l *Ledger) schedule(ctx context.Context, q queryer, n NewAction) (Action, 
 	if err != nil {
 		return Action{}, false, err
 	}
-	a, err := scanAction(q.QueryRow(ctx, `SELECT `+actionCols+` FROM ci_watch_action WHERE id=$1::uuid`, id))
+	a, err := getAction(ctx, q, id)
 	return a, inserted, err
 }
 
@@ -277,7 +284,7 @@ func (l *Ledger) existing(ctx context.Context, q queryer, n NewAction) (Action, 
 // settle ends a row held by tx, fenced on its epoch. A non-done end of an
 // issue_create frees the `creating` owner it was holding.
 func (l *Ledger) settle(ctx context.Context, tx pgx.Tx, a Action, from, state, reason, diag, dest string) error {
-	tag, err := tx.Exec(ctx, `UPDATE ci_watch_action SET state=$2, reason=$3, diagnostic=$4,
+	tag, err := tx.Exec(ctx, `UPDATE ci_watch_action SET state=$2, reason=COALESCE(NULLIF($3,''), reason), diagnostic=$4,
 		destination_id=NULLIF($5,''), lease_until=NULL, updated_at=$6
 		WHERE id=$1::uuid AND lease_epoch=$7 AND state=$8`,
 		a.ID, state, reason, diag, dest, l.now(), a.LeaseEpoch, from)
@@ -385,7 +392,8 @@ func (l *Ledger) run(ctx context.Context, tx pgx.Tx, a Action, now time.Time) (a
 			return nil, l.settle(ctx, tx, a, StateScheduled, StateCancelled, ReasonOwnedElsewhere, "", "")
 		}
 	}
-	dest, err := effect(ctx, tx, a)
+	hooks := &afterCommit{}
+	dest, err := effect(context.WithValue(ctx, afterCommitKey{}, hooks), tx, a)
 	if err != nil {
 		return nil, err
 	}
@@ -400,7 +408,32 @@ func (l *Ledger) run(ctx context.Context, tx pgx.Tx, a Action, now time.Time) (a
 			return nil, errFenced
 		}
 	}
-	return nil, l.settle(ctx, tx, a, StateScheduled, StateDone, "", "", dest)
+	if err := l.settle(ctx, tx, a, StateScheduled, StateDone, "", "", dest); err != nil {
+		return nil, err
+	}
+	if len(hooks.fns) == 0 {
+		return nil, nil
+	}
+	return hooks.run, nil
+}
+
+type afterCommitKey struct{}
+
+type afterCommit struct{ fns []func() }
+
+func (h *afterCommit) run() error {
+	for _, f := range h.fns {
+		f()
+	}
+	return nil
+}
+
+// AfterCommit queues f to run once the effect's transaction has committed (event
+// publish, task wakeup). It is dropped on rollback. Outside a local effect it is a no-op.
+func AfterCommit(ctx context.Context, f func()) {
+	if h, ok := ctx.Value(afterCommitKey{}).(*afterCommit); ok {
+		h.fns = append(h.fns, f)
+	}
 }
 
 func ownerKey(ws, owner, repo, sig string) string { return ws + "/" + owner + "/" + repo + "/" + sig }
@@ -480,10 +513,34 @@ func (l *Ledger) postRemote(ctx context.Context, a Action, ex RemoteExecutor) er
 		err = fmt.Errorf("executor returned state %q", out.State)
 	}
 	now := l.now()
+	var ns *NotSentError
+	if errors.As(err, &ns) {
+		// Nothing was sent (post_started_at is still NULL): try again later, bounded.
+		_, uerr := l.pool.Exec(ctx, `UPDATE ci_watch_action SET diagnostic=$2, due_at=$3, lease_until=NULL, updated_at=$4,
+			state=CASE WHEN attempts>=$5 THEN 'failed' ELSE 'scheduled' END,
+			reason=CASE WHEN attempts>=$5 THEN $6 ELSE reason END
+			WHERE id=$1::uuid AND lease_epoch=$7 AND state='executing' AND post_started_at IS NULL`,
+			a.ID, diagnostic(err), ns.DueAt, now, MaxAttempts, ReasonAttemptsExhausted, a.LeaseEpoch)
+		return uerr
+	}
 	if err != nil {
-		_, uerr := l.pool.Exec(ctx, `UPDATE ci_watch_action SET state='ambiguous', reason=$2, diagnostic=$3,
-			due_at=$4, lease_until=NULL, updated_at=$5 WHERE id=$1::uuid AND lease_epoch=$6 AND state='executing'`,
-			a.ID, ReasonPostError, diagnostic(err), now.Add(ReconcileGap), now, a.LeaseEpoch)
+		// The POST was sent: keep what the answer was (post_outcome) so a restart
+		// can still route it. A failed write is retried; it never POSTs again.
+		var pe *PostError
+		outcome := ""
+		if errors.As(err, &pe) {
+			outcome = pe.Outcome
+		}
+		var uerr error
+		for i := 0; i < 3; i++ {
+			_, uerr = l.pool.Exec(ctx, `UPDATE ci_watch_action SET state='ambiguous', reason=$2, diagnostic=$3,
+				due_at=$4, lease_until=NULL, updated_at=$5, post_outcome=$7
+				WHERE id=$1::uuid AND lease_epoch=$6 AND state='executing'`,
+				a.ID, ReasonPostError, diagnostic(err), now.Add(ReconcileGap), now, a.LeaseEpoch, outcome)
+			if uerr == nil || ctx.Err() != nil {
+				break
+			}
+		}
 		return uerr
 	}
 	// A 0-row update means recovery already moved the row; reconcile owns it.
@@ -569,10 +626,25 @@ func (l *Ledger) CancelScheduled(ctx context.Context, f CancelFilter, reason str
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	n, err := l.cancelScheduled(ctx, tx, f, reason, false)
+	if err != nil {
+		return 0, err
+	}
+	return n, tx.Commit(ctx)
+}
+
+// cancelScheduled runs in the caller's tx. skipLocked leaves rows a worker is
+// running alone: Admit holds the signature lock, and a worker holding a row
+// may be waiting for that lock, so blocking on the row would deadlock.
+func (l *Ledger) cancelScheduled(ctx context.Context, tx pgx.Tx, f CancelFilter, reason string, skipLocked bool) (int, error) {
+	lock := ""
+	if skipLocked {
+		lock = " FOR UPDATE SKIP LOCKED"
+	}
 	rows, err := tx.Query(ctx, `UPDATE ci_watch_action SET state='cancelled', reason=$5, updated_at=$6
-		WHERE state='scheduled' AND workspace_id=$1::uuid AND repo_owner=$2 AND repo_name=$3
-		AND ($4 = '' OR protocol=$4)
-		RETURNING `+actionCols, f.WorkspaceID, f.RepoOwner, f.RepoName, f.Protocol, reason, l.now())
+		WHERE id IN (SELECT id FROM ci_watch_action WHERE state='scheduled' AND workspace_id=$1::uuid
+			AND repo_owner=$2 AND repo_name=$3 AND ($4 = '' OR protocol=$4) AND ($7 = '' OR signature_hash=$7)`+lock+`)
+		RETURNING `+actionCols, f.WorkspaceID, f.RepoOwner, f.RepoName, f.Protocol, reason, l.now(), f.SignatureHash)
 	if err != nil {
 		return 0, err
 	}
@@ -594,7 +666,7 @@ func (l *Ledger) CancelScheduled(ctx context.Context, f CancelFilter, reason str
 			return 0, err
 		}
 	}
-	return len(cancelled), tx.Commit(ctx)
+	return len(cancelled), nil
 }
 
 // claimOwner makes the caller the one creator for (repo, signature)

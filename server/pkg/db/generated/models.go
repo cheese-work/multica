@@ -727,6 +727,12 @@ type CiSignatureOwner struct {
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	State         string             `json:"state"`
 	ClosedAt      pgtype.Timestamptz `json:"closed_at"`
+	Kind          string             `json:"kind"`
+	FailCount     int32              `json:"fail_count"`
+	LastRunUrl    string             `json:"last_run_url"`
+	DigestClass   string             `json:"digest_class"`
+	LastDigestAt  pgtype.Timestamptz `json:"last_digest_at"`
+	CheckKey      string             `json:"check_key"`
 }
 
 type CiWatchAction struct {
@@ -788,6 +794,20 @@ type CiWatchConfigAudit struct {
 	OldValue    pgtype.Text        `json:"old_value"`
 	NewValue    pgtype.Text        `json:"new_value"`
 	ChangedAt   pgtype.Timestamptz `json:"changed_at"`
+}
+
+type CiWatchEvent struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	RepoOwner     string             `json:"repo_owner"`
+	RepoName      string             `json:"repo_name"`
+	SignatureHash string             `json:"signature_hash"`
+	Kind          string             `json:"kind"`
+	RunID         int64              `json:"run_id"`
+	Day           pgtype.Date        `json:"day"`
+	PausedUntil   pgtype.Timestamptz `json:"paused_until"`
+	Detail        string             `json:"detail"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 }
 
 type ClientUsageDaily struct {
