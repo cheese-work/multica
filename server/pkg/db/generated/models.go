@@ -1061,34 +1061,6 @@ type DecisionRequest struct {
 	WakeSeq               int64              `json:"wake_seq"`
 }
 
-type DecisionWakeEvent struct {
-	ID               pgtype.UUID        `json:"id"`
-	RequestID        pgtype.UUID        `json:"request_id"`
-	Seq              int64              `json:"seq"`
-	Type             string             `json:"type"`
-	AnswerID         pgtype.UUID        `json:"answer_id"`
-	SourceCommentID  pgtype.UUID        `json:"source_comment_id"`
-	SupersededAt     pgtype.Timestamptz `json:"superseded_at"`
-	SupersededReason pgtype.Text        `json:"superseded_reason"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
-}
-
-type DecisionWakeReceipt struct {
-	ID               pgtype.UUID        `json:"id"`
-	EventID          pgtype.UUID        `json:"event_id"`
-	EventSeq         int64              `json:"event_seq"`
-	RecipientAgentID pgtype.UUID        `json:"recipient_agent_id"`
-	Role             string             `json:"role"`
-	SquadID          pgtype.UUID        `json:"squad_id"`
-	Status           string             `json:"status"`
-	Outcome          pgtype.Text        `json:"outcome"`
-	AttemptCount     int32              `json:"attempt_count"`
-	NextAttemptAt    pgtype.Timestamptz `json:"next_attempt_at"`
-	LastError        pgtype.Text        `json:"last_error"`
-	DeliveredAt      pgtype.Timestamptz `json:"delivered_at"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
-}
-
 type DecisionWait struct {
 	ID                   pgtype.UUID        `json:"id"`
 	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
@@ -1116,6 +1088,34 @@ type DecisionWait struct {
 	CloseReason          pgtype.Text        `json:"close_reason"`
 	ResumeTaskID         pgtype.UUID        `json:"resume_task_id"`
 	ResumeOutcome        pgtype.Text        `json:"resume_outcome"`
+}
+
+type DecisionWakeEvent struct {
+	ID               pgtype.UUID        `json:"id"`
+	RequestID        pgtype.UUID        `json:"request_id"`
+	Seq              int64              `json:"seq"`
+	Type             string             `json:"type"`
+	AnswerID         pgtype.UUID        `json:"answer_id"`
+	SourceCommentID  pgtype.UUID        `json:"source_comment_id"`
+	SupersededAt     pgtype.Timestamptz `json:"superseded_at"`
+	SupersededReason pgtype.Text        `json:"superseded_reason"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+}
+
+type DecisionWakeReceipt struct {
+	ID               pgtype.UUID        `json:"id"`
+	EventID          pgtype.UUID        `json:"event_id"`
+	EventSeq         int64              `json:"event_seq"`
+	RecipientAgentID pgtype.UUID        `json:"recipient_agent_id"`
+	Role             string             `json:"role"`
+	SquadID          pgtype.UUID        `json:"squad_id"`
+	Status           string             `json:"status"`
+	Outcome          pgtype.Text        `json:"outcome"`
+	AttemptCount     int32              `json:"attempt_count"`
+	NextAttemptAt    pgtype.Timestamptz `json:"next_attempt_at"`
+	LastError        pgtype.Text        `json:"last_error"`
+	DeliveredAt      pgtype.Timestamptz `json:"delivered_at"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 }
 
 type DecisionWorkerLease struct {
