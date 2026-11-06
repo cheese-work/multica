@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/multica-ai/multica/server/internal/ghbudget"
@@ -68,6 +69,7 @@ type Action struct {
 	Attempts, ReconcileAttempts          int
 	ExpectedAttempt                      *int
 	DestinationID, Reason, Diagnostic    string
+	PostOutcome                          string
 }
 
 type Verdict struct {
@@ -171,12 +173,13 @@ var errFenced = errors.New("ciwatch: lease epoch changed")
 
 const actionCols = `id::text, workspace_id::text, repo_owner, repo_name, original_run_id, action_kind, state,
 	lease_epoch, protocol, signature_hash, due_at, run_completed_at, lease_until, attempts,
-	reconcile_attempts, expected_attempt, post_started_at, COALESCE(destination_id,''), reason, diagnostic`
+	reconcile_attempts, expected_attempt, post_started_at, COALESCE(destination_id,''), reason, diagnostic,
+	post_outcome`
 
 func scanAction(r pgx.Row) (a Action, err error) {
 	err = r.Scan(&a.ID, &a.WorkspaceID, &a.RepoOwner, &a.RepoName, &a.OriginalRunID, &a.Kind, &a.State,
 		&a.LeaseEpoch, &a.Protocol, &a.SignatureHash, &a.DueAt, &a.RunCompletedAt, &a.LeaseUntil, &a.Attempts,
-		&a.ReconcileAttempts, &a.ExpectedAttempt, &a.PostStartedAt, &a.DestinationID, &a.Reason, &a.Diagnostic)
+		&a.ReconcileAttempts, &a.ExpectedAttempt, &a.PostStartedAt, &a.DestinationID, &a.Reason, &a.Diagnostic, &a.PostOutcome)
 	return a, err
 }
 
@@ -480,17 +483,58 @@ func (l *Ledger) postRemote(ctx context.Context, a Action, ex RemoteExecutor) er
 		err = fmt.Errorf("executor returned state %q", out.State)
 	}
 	now := l.now()
-	if err != nil {
-		_, uerr := l.pool.Exec(ctx, `UPDATE ci_watch_action SET state='ambiguous', reason=$2, diagnostic=$3,
-			due_at=$4, lease_until=NULL, updated_at=$5 WHERE id=$1::uuid AND lease_epoch=$6 AND state='executing'`,
-			a.ID, ReasonPostError, diagnostic(err), now.Add(ReconcileGap), now, a.LeaseEpoch)
+	var ns *NotSentError
+	if errors.As(err, &ns) {
+		// Nothing was sent (post_started_at is still NULL): try again later, bounded.
+		_, uerr := l.pool.Exec(ctx, `UPDATE ci_watch_action SET diagnostic=$2, due_at=$3, lease_until=NULL, updated_at=$4,
+			state=CASE WHEN attempts>=$5 THEN 'failed' ELSE 'scheduled' END,
+			reason=CASE WHEN attempts>=$5 THEN $6 ELSE reason END
+			WHERE id=$1::uuid AND lease_epoch=$7 AND state='executing' AND post_started_at IS NULL`,
+			a.ID, diagnostic(err), ns.DueAt, now, MaxAttempts, ReasonAttemptsExhausted, a.LeaseEpoch)
 		return uerr
 	}
+	// The POST was sent. What follows must survive a cancelled context: it
+	// stores the answer, and a lost answer can hide a permission 403.
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if err != nil {
+		return l.recordPostError(wctx, a, err, now)
+	}
 	// A 0-row update means recovery already moved the row; reconcile owns it.
-	_, uerr := l.pool.Exec(ctx, `UPDATE ci_watch_action SET state=$2, reason=$3, destination_id=NULLIF($4,''),
+	_, uerr := l.pool.Exec(wctx, `UPDATE ci_watch_action SET state=$2, reason=$3, destination_id=NULLIF($4,''),
 		lease_until=NULL, updated_at=$5 WHERE id=$1::uuid AND lease_epoch=$6 AND state='executing'`,
 		a.ID, out.State, out.Reason, out.DestinationID, now, a.LeaseEpoch)
 	return uerr
+}
+
+// recordPostError parks a row whose POST was sent but not accepted, and keeps
+// the answer (post_outcome) so a restart can still route it. A failed write is
+// retried; nothing here POSTs. Recovery may have moved the row while the POST
+// was in flight (sweep: ambiguous; reconcile: any state, new epoch): the
+// answer is then stored without touching that state. A row has one POST, so the
+// answer is the row's whatever the epoch.
+func (l *Ledger) recordPostError(ctx context.Context, a Action, cause error, now time.Time) error {
+	var pe *PostError
+	outcome := ""
+	if errors.As(cause, &pe) {
+		outcome = pe.Outcome
+	}
+	var err error
+	for i := 0; i < 3; i++ {
+		var tag pgconn.CommandTag
+		tag, err = l.pool.Exec(ctx, `UPDATE ci_watch_action SET state='ambiguous', reason=$2, diagnostic=$3,
+			due_at=$4, lease_until=NULL, updated_at=$5, post_outcome=$7
+			WHERE id=$1::uuid AND lease_epoch=$6 AND state IN ('executing','ambiguous') AND reconcile_attempts=0`,
+			a.ID, ReasonPostError, diagnostic(cause), now.Add(ReconcileGap), now, a.LeaseEpoch, outcome)
+		if err == nil && tag.RowsAffected() == 0 {
+			_, err = l.pool.Exec(ctx, `UPDATE ci_watch_action SET post_outcome=$2, diagnostic=$3
+				WHERE id=$1::uuid AND post_started_at IS NOT NULL AND post_outcome=''`, a.ID, outcome, diagnostic(cause))
+		}
+		if err == nil || ctx.Err() != nil {
+			break
+		}
+	}
+	return err
 }
 
 // Sweep recovers `executing` rows past their lease that nobody holds. Remote
