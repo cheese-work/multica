@@ -52,8 +52,10 @@ jobs:
     # prefix, so the hook admits it. An edit that removes the prefix is admitted for the bot only when the OLD body
     # (`changes.body.from`) had it (CHE-3354, hook updated to match); the next PR event re-reads every comment. `startsWith` here ignores case and the hook's `jq startswith` does not, so
     # a lowercase prefix from the bot schedules a job the hook then refuses: a red check, never a bypass.
+    # CHE-4251: once SECURITY_GATE_QUEUE_TRUSTED is true, security-gate-queue.yml (a trusted `workflow_run` definition that
+    # holds the App key) evaluates the queue, and this job skips `merge_group`; `queue-handoff` below still runs.
     if: >-
-      github.event_name == 'pull_request_target' || github.event_name == 'merge_group' || (github.event.issue.pull_request &&
+      github.event_name == 'pull_request_target' || (github.event_name == 'merge_group' && vars.SECURITY_GATE_QUEUE_TRUSTED != 'true') || (github.event.issue.pull_request &&
       (contains(github.event.comment.body, 'Security-Gate-Verdict:') ||
       (github.event.action == 'edited' && contains(github.event.changes.body.from, 'Security-Gate-Verdict:'))) &&
       (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) ||
@@ -63,10 +65,6 @@ jobs:
     # CHE-3604: GitHub-hosted runner, so the X99 hook described above no longer applies; the `if:` above is the only comment filter.
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # CHE-4251: only the queue run gets the c00-multicado App token (own API budget). The pull_request_target and
-    # issue_comment runs also execute on `main`, which the environment's branch rule admits, so this expression is the
-    # guard (tests/test_che4251_app_token.py): they run with no environment and no key.
-    environment: ${{ github.event_name == 'merge_group' && 'ci-app-token' || '' }}
     env:
       PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
       GH_TOKEN: ${{ github.token }}
@@ -96,32 +94,7 @@ jobs:
           venv="$RUNNER_TOOL_CACHE/semgrep-1.183.0"
           [ -x "$venv/bin/semgrep" ] || { python3 -m venv "$venv" && "$venv/bin/pip" install --quiet semgrep==1.183.0; }
           echo "SEMGREP_BIN=$venv/bin/semgrep" >> "$GITHUB_ENV"
-      - name: Mint the c00-multicado read token (CHE-4251)
-        id: app
-        if: github.event_name == 'merge_group'
-        # A missing key or environment must not stop a deploy: the pick step below falls back to GITHUB_TOKEN.
-        continue-on-error: true
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: ${{ secrets.C00_MULTICADO_APP_ID }}
-          private-key: ${{ secrets.C00_MULTICADO_CI_PRIVATE_KEY }}
-          repositories: multica
-          permission-metadata: read
-          permission-contents: read
-          permission-pull-requests: read
-          permission-issues: read
-          permission-statuses: write
-      - name: Pick the API token (App token while its budget stays above 1,500)
-        id: api
-        if: github.event_name == 'merge_group'
-        shell: bash
-        env:
-          APP_TOKEN: ${{ steps.app.outputs.token }}
-          FALLBACK_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: bash deploy/cd/pick-api-token.sh
       - name: Evaluate the verdict and post the status
-        env:
-          GH_TOKEN: ${{ steps.api.outputs.token || github.token }}
         run: |
           set -euo pipefail
           run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
@@ -208,3 +181,14 @@ jobs:
             read_verdict
             if [ "$state" != success ]; then post "$state" "$desc"; fi
           fi
+
+  # CHE-4251: a queue run that holds no secret. Its completion triggers security-gate-queue.yml, which runs from the
+  # default branch. This definition comes from the queue commit, so it must never name an environment or a secret.
+  queue-handoff:
+    name: queue-handoff
+    if: github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - run: echo "queue commit ${{ github.event.merge_group.head_sha }} handed to security-gate-queue"

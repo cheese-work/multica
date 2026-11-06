@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github/workflows"
 ENV_NAME = "ci-app-token"
 SECRET_RE = re.compile(r"C00_MULTICADO_")
-PR_TRIGGERS = {"pull_request", "pull_request_target", "issue_comment"}
+UNTRUSTED = {"merge_group", "pull_request", "pull_request_target", "issue_comment"}
 MINT = "actions/create-github-app-token@"
 
 
@@ -38,29 +38,45 @@ def uses_app_token(job):
     return ENV_NAME in env_of(job) or any(SECRET_RE.search(str(s)) for s in job.get("steps", []))
 
 
+def run_filter(wf):
+    on = wf.get("on", wf.get(True))
+    return on.get("workflow_run", {}) if isinstance(on, dict) else {}
+
+
 def violations():
-    """Return every rule break; empty means the guard holds."""
+    """Return every rule break; empty means the guard holds.
+
+    A workflow whose definition a queued or PR change can edit (merge_group, pull_request, pull_request_target,
+    issue_comment) must never reach the App key: the environment branch policy admits the queue refs. Only a
+    `workflow_run` definition, which GitHub reads from the default branch, may hold it.
+    """
     found = []
     for name, wf in workflows():
         for job_id, job in wf.get("jobs", {}).items():
             if not uses_app_token(job):
                 continue
             where = f"{name}:{job_id}"
-            mixed = bool(triggers(wf) & PR_TRIGGERS)
-            if mixed and "github.event_name == 'merge_group'" not in env_of(job):
-                found.append(f"{where}: PR-triggered workflow, environment is not gated on merge_group")
+            untrusted = triggers(wf) & UNTRUSTED
+            if untrusted:
+                found.append(f"{where}: reaches the App key from a definition a PR or queue change controls ({sorted(untrusted)})")
+            if "workflow_run" not in triggers(wf):
+                found.append(f"{where}: key holder is not a workflow_run (default-branch) definition")
             if ENV_NAME not in env_of(job):
                 found.append(f"{where}: reads the App secrets without the {ENV_NAME} environment")
+            gate = str(job.get("if", ""))
+            if run_filter(wf).get("branches") != ["main"] and not (
+                "github.event.workflow_run.event == 'merge_group'" in gate
+                and "github.event.workflow_run.head_repository.full_name == github.repository" in gate
+            ):
+                found.append(f"{where}: workflow_run job is not limited to main or to a same-repo merge_group run")
             for step in job.get("steps", []):
                 text = str(step)
                 if SECRET_RE.search(text) and not str(step.get("uses", "")).startswith(MINT):
                     found.append(f"{where}: secret used outside {MINT}")
-                if SECRET_RE.search(text) and mixed and "github.event_name == 'merge_group'" not in str(step.get("if", "")):
-                    found.append(f"{where}: mint step not gated on merge_group")
                 if str(step.get("uses", "")).startswith("actions/checkout@"):
                     ref = str(step.get("with", {}).get("ref", ""))
-                    if re.search(r"head|pull|github\.sha", ref) and mixed:
-                        found.append(f"{where}: checks out PR code beside the App token")
+                    if re.search(r"head|pull|workflow_run", ref):
+                        found.append(f"{where}: checks out the triggering run's code beside the App token")
     return found
 
 
@@ -68,21 +84,47 @@ class Guard(unittest.TestCase):
     def test_no_violations(self):
         self.assertEqual(violations(), [])
 
-    def test_guard_catches_an_ungated_pr_job(self):
-        wf = {"on": {"pull_request": {}}, "jobs": {"j": {"environment": ENV_NAME, "steps": [{"run": "echo"}]}}}
-        with tempfile.TemporaryDirectory() as d:
-            (Path(d) / "x.yml").write_text(yaml.safe_dump(wf))
-            global WORKFLOWS
-            old, WORKFLOWS = WORKFLOWS, Path(d)
-            try:
-                self.assertTrue(violations())
-            finally:
-                WORKFLOWS = old
+    def swapped(self, files):
+        global WORKFLOWS
+        d = tempfile.TemporaryDirectory()
+        for name, wf in files.items():
+            (Path(d.name) / name).write_text(yaml.safe_dump(wf))
+        old, WORKFLOWS = WORKFLOWS, Path(d.name)
+        try:
+            return violations()
+        finally:
+            WORKFLOWS = old
+            d.cleanup()
+
+    def test_guard_catches_a_merge_group_job_with_the_environment(self):
+        # The exact CHE-4251 review finding: a queue-controlled definition naming the environment.
+        wf = {"on": {"merge_group": {}}, "jobs": {"j": {"environment": ENV_NAME, "steps": [{"run": "echo"}]}}}
+        self.assertTrue(self.swapped({"x.yml": wf}))
+
+    def test_guard_catches_a_pr_job_with_the_secret(self):
+        wf = {"on": {"pull_request": {}}, "jobs": {"j": {"steps": [{"run": "echo ${{ secrets.C00_MULTICADO_APP_ID }}"}]}}}
+        self.assertTrue(self.swapped({"x.yml": wf}))
+
+    def test_guard_catches_an_ungated_workflow_run_job(self):
+        wf = {"on": {"workflow_run": {"workflows": ["a"]}}, "jobs": {"j": {"environment": ENV_NAME, "steps": [{"run": "echo"}]}}}
+        self.assertTrue(self.swapped({"x.yml": wf}))
+
+    def test_guard_catches_a_workflow_run_job_that_checks_out_the_run_head(self):
+        wf = {"on": {"workflow_run": {"workflows": ["a"], "branches": ["main"]}},
+              "jobs": {"j": {"environment": ENV_NAME,
+                             "steps": [{"uses": "actions/checkout@x", "with": {"ref": "${{ github.event.workflow_run.head_sha }}"}}]}}}
+        self.assertTrue(self.swapped({"x.yml": wf}))
+
+    def test_security_gate_definition_never_names_the_key(self):
+        text = (WORKFLOWS / "security-gate.yml").read_text()
+        self.assertNotIn(ENV_NAME, text)
+        self.assertNotIn("C00_MULTICADO_", text)
+        self.assertNotIn("create-github-app-token", text)
 
     def test_deploy_path_and_queue_gate_use_the_app_token(self):
         jobs = dict(workflows())
         pre = jobs["cd-deploy.yml"]["jobs"]["candidate-preflight"]
-        gate = jobs["security-gate.yml"]["jobs"]["security-gate"]
+        gate = jobs["security-gate-queue.yml"]["jobs"]["security-gate-queue"]
         for job in (pre, gate):
             self.assertIn(ENV_NAME, env_of(job))
             mint = [s for s in job["steps"] if str(s.get("uses", "")).startswith(MINT)]
@@ -90,8 +132,15 @@ class Guard(unittest.TestCase):
             w = mint[0]["with"]
             self.assertEqual(w["repositories"], "multica")
             self.assertTrue(any(k.startswith("permission-") for k in w))
-            self.assertNotIn("permission-contents", {k for k, v in w.items() if v == "write"})
-        self.assertEqual(gate["steps"][[s.get("uses", "").startswith(MINT) for s in gate["steps"]].index(True)]["with"]["permission-statuses"], "write")
+            self.assertNotIn("write", {v for k, v in w.items() if k != "permission-statuses"})
+        self.assertEqual(next(s for s in gate["steps"] if str(s.get("uses", "")).startswith(MINT))["with"]["permission-statuses"], "write")
+
+    def test_queue_handoff_holds_no_secret_and_the_gate_skips_the_queue_once_trusted(self):
+        sg = dict(workflows())["security-gate.yml"]["jobs"]
+        self.assertEqual(sg["queue-handoff"]["permissions"], {})
+        self.assertIn("vars.SECURITY_GATE_QUEUE_TRUSTED != 'true'", sg["security-gate"]["if"])
+        q = dict(workflows())["security-gate-queue.yml"]["jobs"]["security-gate-queue"]
+        self.assertIn("vars.SECURITY_GATE_QUEUE_TRUSTED == 'true'", q["if"])
 
 
 class Wiring(unittest.TestCase):

@@ -1,0 +1,169 @@
+# Queue-time security gate on a trusted workflow definition (CHE-4251). Runs from the DEFAULT branch via `workflow_run`.
+#
+# SECURITY: a `merge_group` workflow definition comes from the queue commit, which carries the queued PR's own changes, so
+# anything in it can request an environment whose branch policy admits `gh-readonly-queue/*`. This workflow therefore
+# holds the c00-multicado App key (environment `ci-app-token`, branch policy `main` ONLY). `workflow_run` runs the
+# definition on `main`, and the only inputs read from the trigger are the queue commit SHA and ref name, which GitHub
+# sets. The queue ref is fetched as data and never checked out or executed. security-gate.yml keeps a no-secret
+# `queue-handoff` job so that a `merge_group` run exists to trigger this one. Cutover: set the repository variable
+# SECURITY_GATE_QUEUE_TRUSTED=true after this file is on `main`; until then security-gate.yml evaluates the queue
+# itself on GITHUB_TOKEN and this workflow does nothing. Unset the variable to roll back.
+
+name: security-gate-queue
+
+on:
+  workflow_run:
+    workflows: [security-gate]
+    types: [completed]
+
+permissions:
+  contents: read
+  statuses: write
+
+concurrency:
+  group: security-gate-queue-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  security-gate-queue:
+    name: security-gate-queue-eval
+    # Only a merge-queue run of this repository: a `push` or `pull_request` run that happens to be named security-gate never gets the key.
+    if: >-
+      vars.SECURITY_GATE_QUEUE_TRUSTED == 'true' && github.event.workflow_run.event == 'merge_group' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: ci-app-token
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      MERGE_GROUP_REF: refs/heads/${{ github.event.workflow_run.head_branch }}
+      MERGE_GROUP_SHA: ${{ github.event.workflow_run.head_sha }}
+      PR_NUMBER: ""
+    steps:
+      - name: Discard a reused workspace
+        run: |
+          find "$GITHUB_WORKSPACE" -mindepth 1 -delete
+      - name: Check out the protected default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch the queue commit without checking it out
+        run: |
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          # A queue commit has the queued PR head as a parent, so fetching the queue ref brings the head objects too.
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            fetch --no-tags origin "+${MERGE_GROUP_REF}:refs/remotes/pull/head"
+      - name: Install pinned semgrep (cached on the runner)
+        run: |
+          venv="$RUNNER_TOOL_CACHE/semgrep-1.183.0"
+          [ -x "$venv/bin/semgrep" ] || { python3 -m venv "$venv" && "$venv/bin/pip" install --quiet semgrep==1.183.0; }
+          echo "SEMGREP_BIN=$venv/bin/semgrep" >> "$GITHUB_ENV"
+      - name: Mint the c00-multicado read token (CHE-4251)
+        id: app
+        # A missing key or environment must not stop the queue: the pick step below falls back to GITHUB_TOKEN.
+        continue-on-error: true
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.C00_MULTICADO_APP_ID }}
+          private-key: ${{ secrets.C00_MULTICADO_CI_PRIVATE_KEY }}
+          repositories: multica
+          permission-metadata: read
+          permission-contents: read
+          permission-pull-requests: read
+          permission-issues: read
+          permission-statuses: write
+      - name: Pick the API token (App token while its budget stays above 1,600)
+        id: api
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app.outputs.token }}
+          FALLBACK_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash deploy/cd/pick-api-token.sh
+      - name: Evaluate the verdict and post the status
+        env:
+          GH_TOKEN: ${{ steps.api.outputs.token || github.token }}
+        run: |
+          set -euo pipefail
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          # Queue run. The default-branch script is used unchanged (it may predate this step), without --post: that
+          # would write to the PR head. Its state goes on the queue commit, and only if the PR head is its parent.
+          # CHE-4242: a 403/429 rate limit is waited out (5 s doubling to 60 s, 300 s in all) and then returns 75, which
+          # the callers turn into `pending`; any other gh error keeps its exit code.
+          gh_retry() {
+            local out err waited=0 delay=5 rc
+            err="$(mktemp)"
+            while :; do
+              out="$(gh "$@" 2>"$err")" && { printf '%s\n' "$out"; rm -f "$err"; return 0; }
+              rc=$?
+              grep -qiE 'rate limit|HTTP 429|too many requests' "$err" || { cat "$err" >&2; rm -f "$err"; return "$rc"; }
+              if [ $((waited + delay)) -gt 300 ]; then cat "$err" >&2; rm -f "$err"; return 75; fi
+              sleep "$delay"; waited=$((waited + delay)); delay=$((delay * 2 > 60 ? 60 : delay * 2))
+            done
+          }
+          # A write that stays rate limited before any success is on the queue commit leaves no status: the entry stays
+          # pending and the job gets a warning, not a red mark. A success already on the commit (published by this run or
+          # an earlier one) keeps the job red, so a stale approval is never hidden. An unreadable earlier status does the
+          # same on a re-run; on the first attempt no earlier run can have left a success, so a read that fails with the
+          # write (one shared quota) is a warning too.
+          published_success=0
+          earlier_not_success() {
+            local s
+            s="$(gh api "repos/$GITHUB_REPOSITORY/commits/$MERGE_GROUP_SHA/status" \
+              --jq '[.statuses[] | select(.context == "security-gate") | .state][0] // "none"')" || { [ "${GITHUB_RUN_ATTEMPT:-1}" = 1 ]; return; }
+            [ "$s" != success ]
+          }
+          post() {
+            local rc=0
+            gh_retry api "repos/$GITHUB_REPOSITORY/statuses/$MERGE_GROUP_SHA" -f "state=$1" -f context=security-gate \
+              -f "description=${2:0:140}" -f "target_url=$run_url" >/dev/null || rc=$?
+            if [ "$rc" = 0 ]; then
+              if [ "$1" = success ]; then published_success=1; else published_success=0; fi
+            elif [ "$rc" = 75 ] && [ "$published_success" = 0 ] && earlier_not_success; then
+              echo "::warning::security-gate: rate limited, status not written; re-run this check" >&2
+            else
+              return "$rc"
+            fi
+          }
+          re='^refs/heads/gh-readonly-queue/(.+)/pr-([0-9]+)-[0-9a-f]{40}$'
+          if [[ ! $MERGE_GROUP_REF =~ $re ]] || [ "${BASH_REMATCH[1]}" != "$DEFAULT_BRANCH" ]; then
+            post failure "unsupported merge group $MERGE_GROUP_REF: only $DEFAULT_BRANCH is gated"
+            exit 0
+          fi
+          pr="${BASH_REMATCH[2]}"
+          # Scan with semgrep once the default-branch script knows the flag; an older script would reject it.
+          sg=""
+          grep -q -e '--semgrep' scripts/security-gate/security_gate.py && sg="--semgrep"
+          # Fresh verdict read -> head/state/desc; the PR head must be a parent of the queue commit. Every step returns
+          # non-zero on error (no `set -e` inside an `if`), so the callers below can fail closed.
+          evaluate() {
+            local out parents
+            out="$(python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$pr" \
+              --default-branch "$DEFAULT_BRANCH" $sg --run-url "$run_url")" || return $?
+            head="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["sha"])' "$out")" || return 1
+            state="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["state"])' "$out")" || return 1
+            desc="#$pr: $(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["description"])' "$out")" || return 1
+            parents="$(gh_retry api "repos/$GITHUB_REPOSITORY/commits/$MERGE_GROUP_SHA" --jq '.parents[].sha')" || return $?
+            if ! grep -qx "$head" <<<"$parents"; then
+              state=failure desc="#$pr head ${head:0:12} is not a parent of ${MERGE_GROUP_SHA:0:12}"
+            fi
+          }
+          # An unreadable verdict is a failure on the queue commit, never a stalled entry or a cached success. A rate
+          # limit (exit 75) is no verdict at all: `pending`, so the queue entry waits for a re-run instead of ejecting.
+          read_verdict() {
+            local rc=0
+            evaluate || rc=$?
+            if [ "$rc" = 75 ]; then state=pending desc="#$pr: rate limited, retry"
+            elif [ "$rc" != 0 ]; then state=failure desc="#$pr: cannot read the verdict"; fi
+          }
+          # A success is read again right before it is published and once more after (CHE-3240): a verdict revoked in
+          # between is overwritten by the failure instead of the cached success. The revoke path (PR events) covers the rest.
+          read_verdict
+          if [ "$state" = success ]; then read_verdict; fi
+          post "$state" "$desc"
+          if [ "$state" = success ]; then
+            read_verdict
+            if [ "$state" != success ]; then post "$state" "$desc"; fi
+          fi

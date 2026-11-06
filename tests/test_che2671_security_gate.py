@@ -520,6 +520,20 @@ class MergeGroupStepTest(unittest.TestCase):
         self.assertFalse([l for l in log if l.startswith("gate ")])
 
 
+class TrustedQueueStepTest(MergeGroupStepTest):
+    """CHE-4251: the queue evaluation also runs from security-gate-queue.yml, a `workflow_run` definition read from the
+    default branch (it holds the App key). Same behavior, same harness, other file."""
+
+    def step_run(self):
+        doc = yaml.safe_load((ROOT / ".github/workflows/security-gate-queue.yml").read_text())
+        gate = [s for s in doc["jobs"]["security-gate-queue"]["steps"] if "security_gate.py" in s.get("run", "")]
+        self.assertEqual(len(gate), 1)
+        return gate[0]["run"]
+
+    def test_queue_step_has_no_pr_branch(self):
+        self.assertNotIn("PR_NUMBER", self.step_run())
+
+
 class QueueRevocationTest(unittest.TestCase):
     """CHE-3240: a success carried onto a queue head must not outlive the PR-head verdict that earned it."""
 
