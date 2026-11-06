@@ -252,6 +252,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"push_subscription":                  workspaceDeleteKeep, // A user's device across all workspaces, not workspace-owned (CHE-1795).
 	"quick_action":                       workspaceDelete,
 	"run_budget_notice":                  workspaceDelete,
+	"run_budget_refusal":                 workspaceDelete,
 	"run_capability_grant":               workspaceDelete,
 	"protected_path_policy":              workspaceDelete,
 	"task_elevation":                     workspaceDelete,
