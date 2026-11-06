@@ -104,6 +104,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"decision_intent":                    workspaceDeleteWorker,
 	"decision_intent_target":             workspaceDeleteWorker,
 	"decision_request":                   workspaceDeleteWorker,
+	"decision_wake_event":                workspaceDeleteWorker, // no FK; orphan cleanup deletes the rows with their request.
+	"decision_wake_receipt":              workspaceDeleteWorker, // no FK; orphan cleanup deletes the rows with their event's request.
 	"decision_worker_lease":              workspaceDeleteKeep,
 	"wakeup_definition_activation":       workspaceDeleteKeep,
 	"dingtalk_group_presence":            workspaceDelete,
@@ -161,6 +163,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"issue_view":                         workspaceDelete,
 	"issue_view_preference":              workspaceDelete,
 	"issue_dependency":                   workspaceDelete,
+	"issue_idle_guard":                   workspaceDelete, // CHE-3947; FK cascade from issue and workspace.
 	"issue_label":                        workspaceDelete,
 	"issue_property":                     workspaceDelete,
 	"issue_pr_automation":                workspaceDelete,
@@ -354,7 +357,7 @@ WHERE table_schema = 'public'
 }
 
 func TestDecisionWorkspaceDeletionRemainsWorkerOwned(test *testing.T) {
-	for _, table := range []string{"decision_action", "decision_agent_scope", "decision_answer", "decision_bound_write", "decision_class_change", "decision_intent", "decision_intent_target", "decision_request"} {
+	for _, table := range []string{"decision_action", "decision_agent_scope", "decision_answer", "decision_bound_write", "decision_class_change", "decision_intent", "decision_intent_target", "decision_request", "decision_wake_event", "decision_wake_receipt"} {
 		if workspaceDeletionManifest[table] != workspaceDeleteWorker {
 			test.Errorf("%s must leave orphan cleanup to the decision worker", table)
 		}
