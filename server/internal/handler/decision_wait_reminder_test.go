@@ -206,7 +206,9 @@ func TestDecisionEpisodeReminderTwoWorkersSendOne(t *testing.T) {
 	wait := f.onlyEpisode(t)
 	errs := make(chan error, 2)
 	for range 2 {
-		go func() { errs <- testHandler.deliverDecisionReminder(context.Background(), parseUUID(testWorkspaceID), parseUUID(wait.id)) }()
+		go func() {
+			errs <- testHandler.deliverDecisionReminder(context.Background(), parseUUID(testWorkspaceID), parseUUID(wait.id))
+		}()
 	}
 	for range 2 {
 		if err := <-errs; err != nil {
