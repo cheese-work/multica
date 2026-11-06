@@ -8,15 +8,15 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
-// decisionParkKey is the issue.metadata record of a park: what the issue was
-// before a decision request parked it, so the answer can put it back.
-const decisionParkKey = "decision_park"
-
+// decisionPark is the issue_decision_park record of a park: what the issue was
+// before a decision request parked it, so the answer can put it back. It lives
+// in its own table because issue.metadata holds primitive values only.
 type decisionPark struct {
 	Status string `json:"status"`
 	// To is the waiting status the park wrote.
@@ -94,11 +94,11 @@ func parkIssueForDecision(ctx context.Context, queries *db.Queries, issue db.Iss
 			return issue, false, err
 		}
 	}
-	record, err := json.Marshal(park)
-	if err != nil {
-		return issue, false, err
-	}
-	if _, err := queries.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID, Key: decisionParkKey, Value: record}); err != nil {
+	if err := queries.InsertIssueDecisionPark(ctx, db.InsertIssueDecisionParkParams{
+		IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, PriorStatus: park.Status, ToStatus: park.To,
+		ReadinessID:    pgtype.Text{String: park.ReadinessID, Valid: park.ReadinessID != ""},
+		PriorReadiness: park.Readiness, SetValue: park.Set,
+	}); err != nil {
 		return issue, false, err
 	}
 	updated, err := queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{ID: issue.ID, Status: target, WorkspaceID: issue.WorkspaceID})
@@ -110,10 +110,14 @@ func parkIssueForDecision(ctx context.Context, queries *db.Queries, issue db.Iss
 // the answers the caller is delivering now. Run it under the issue lock. An issue someone
 // moved on in the meantime keeps its status; only the record goes.
 func unparkIssueAfterDecision(ctx context.Context, queries *db.Queries, issue db.Issue, delivering []db.DecisionAnswer) (db.Issue, bool, error) {
-	var park decisionPark
-	if raw, ok := issueMetadataValue(issue, decisionParkKey); !ok || json.Unmarshal(raw, &park) != nil {
+	row, err := queries.GetIssueDecisionPark(ctx, db.GetIssueDecisionParkParams{IssueID: issue.ID, WorkspaceID: issue.WorkspaceID})
+	if errors.Is(err, pgx.ErrNoRows) {
 		return issue, false, nil
 	}
+	if err != nil {
+		return issue, false, err
+	}
+	park := decisionPark{Status: row.PriorStatus, To: row.ToStatus, ReadinessID: row.ReadinessID.String, Readiness: row.PriorReadiness, Set: row.SetValue}
 	requests, err := queries.ListDecisionRequestsByIssue(ctx, db.ListDecisionRequestsByIssueParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID})
 	if err != nil {
 		return issue, false, err
@@ -150,7 +154,7 @@ func unparkIssueAfterDecision(ctx context.Context, queries *db.Queries, issue db
 			return issue, false, err
 		}
 	}
-	if _, err := queries.DeleteIssueMetadataKey(ctx, db.DeleteIssueMetadataKeyParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID, Key: decisionParkKey}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	if err := queries.DeleteIssueDecisionPark(ctx, db.DeleteIssueDecisionParkParams{IssueID: issue.ID, WorkspaceID: issue.WorkspaceID}); err != nil {
 		return issue, false, err
 	}
 	return issue, restored, nil
@@ -160,15 +164,6 @@ func unparkIssueAfterDecision(ctx context.Context, queries *db.Queries, issue db
 func readinessUnchanged(issue db.Issue, park decisionPark) bool {
 	var values map[string]json.RawMessage
 	return json.Unmarshal(issue.Properties, &values) == nil && string(values[park.ReadinessID]) == string(park.Set)
-}
-
-func issueMetadataValue(issue db.Issue, key string) (json.RawMessage, bool) {
-	var values map[string]json.RawMessage
-	if json.Unmarshal(issue.Metadata, &values) != nil {
-		return nil, false
-	}
-	raw, ok := values[key]
-	return raw, ok
 }
 
 // publishDecisionStatusChange announces a park or restore, after the commit.

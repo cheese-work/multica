@@ -92,6 +92,7 @@ interface ActiveProfile {
 let statusPollTimer: ReturnType<typeof setInterval> | null = null;
 let logTailWatcher: { path: string; listener: StatsListener } | null = null;
 let currentState: DaemonStatus["state"] = "installing_cli";
+let cliDownload: DaemonStatus["cliDownload"];
 let getMainWindow: () => BrowserWindow | null = () => null;
 let statusPollInProgress = false;
 let cachedCliBinary: string | null | undefined = undefined;
@@ -349,7 +350,9 @@ async function fetchHealth(): Promise<DaemonStatus> {
   // polling — there's nothing to probe yet and /health calls would just return
   // "stopped", which would overwrite the correct setup state in the UI.
   if (currentState === "installing_cli" || currentState === "cli_not_found") {
-    return { state: currentState };
+    return currentState === "installing_cli" && cliDownload
+      ? { state: currentState, cliDownload }
+      : { state: currentState };
   }
 
   const active = await ensureActiveProfile();
@@ -592,7 +595,14 @@ async function resolveCliBinary(): Promise<string | null> {
         forceInstall: existsSync(managed),
         serverUrl: prereqs.serverUrl,
         token: prereqs.token,
+        onProgress: (progress) => {
+          // A retry after cli_not_found reaches here still in that state.
+          currentState = "installing_cli";
+          cliDownload = progress;
+          sendStatus({ state: "installing_cli", cliDownload });
+        },
       });
+      cliDownload = undefined;
       const version = await probeCliBinary(installed, "managed");
       if (version) {
         cachedCliBinary = installed;
@@ -603,6 +613,7 @@ async function resolveCliBinary(): Promise<string | null> {
         `[daemon] managed CLI at ${installed} failed validation after install`,
       );
     } catch (err) {
+      cliDownload = undefined;
       console.warn("[daemon] CLI auto-install failed, falling back to PATH:", err);
     }
 

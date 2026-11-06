@@ -1,0 +1,28 @@
+name: C00 live revision alarm
+
+# C00's API is tailnet only, so this runs on an existing X99 runner. It catches what run history cannot: a rollback on
+# C00. A separate file from cd-freshness-watch.yml so that a dead X99 runner cannot silence the stall alarm there, and
+# so this privileged job has no pull_request, push or manual trigger. `schedule` is the only trigger, and a schedule
+# always runs the default branch's copy of this file (CHE-3634 security review). The default runner group still serves
+# every workflow in the repository; restricting it to main workflows is org-owner config (CHE-3644).
+on:
+  schedule:
+    - cron: "12,27,42,57 * * * *"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  live-revision:
+    runs-on: [self-hosted, linux, x64, cheese-x99]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Alarm when C00 does not run main's head 90 min after merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          C00_API_URL: ${{ vars.C00_API_URL || 'https://congvc-c00.taila6fa8a.ts.net:19444' }}
+        run: python3 deploy/cd/check-deploy-freshness.py --live

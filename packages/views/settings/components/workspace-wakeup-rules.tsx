@@ -1,6 +1,8 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { usePersistedDraft } from "@multica/core/drafts";
+import { useWakeupRuleDraftStore, type SettingsFieldsDraft } from "@multica/core/settings/draft-stores";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronRight, Pencil, Trash2 } from "@multica/ui/icons";
 import { ApiError } from "@multica/core/api";
@@ -28,6 +30,8 @@ import {
 import { useT } from "../../i18n";
 import { SettingsCard, SettingsSection } from "./settings-layout";
 
+const NO_RULE_DRAFT: SettingsFieldsDraft = {};
+
 class DraftRefused extends Error {
   constructor(readonly reason: WakeupDefinitionConfigError) {
     super(reason);
@@ -52,16 +56,25 @@ export function ScopedWakeupRules({
   scope,
   canManage,
   toggleLabel,
+  revealSignal = 0,
 }: {
   workspaceId: string;
   scope: EditableWakeupScope;
   canManage: boolean;
+  /** Each increase opens the collapsed toggle and brings it into view (a deep link). */
+  revealSignal?: number;
   /** Puts the rules behind a collapsed toggle with this label; the drafts survive a collapse. */
   toggleLabel?: string;
 }) {
   const { t } = useT("settings");
   const bodyId = useId();
   const [open, setOpen] = useState(!toggleLabel);
+  const toggleRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (!revealSignal) return;
+    setOpen(true);
+    toggleRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [revealSignal]);
   const project = scope.kind === "project";
   const { data } = useQuery(wakeupDefinitionsOptions(workspaceId, scope));
   // A saved rule empties the form: a new key remounts it.
@@ -110,6 +123,7 @@ export function ScopedWakeupRules({
   return (
     <div>
       <button
+        ref={toggleRef}
         type="button"
         aria-expanded={open}
         aria-controls={bodyId}
@@ -227,7 +241,19 @@ function RuleForm({
   const id = useId();
   const create = useCreateWakeupDefinition(workspaceId, scope);
   const save = useSaveWakeupDefinition(workspaceId, scope);
-  const [name, setName] = useState(initial?.name ?? "");
+  // Unsent input is kept per scope and rule (or the new-rule form), so it
+  // survives a remount or reload; a saved rule or a cancel clears it.
+  const draftKey = `${scope.kind}:${scope.kind === "project" ? scope.id : workspaceId}:${rule?.rule_key ?? "new"}`;
+  const [persisted, setPersisted, clearPersisted] = usePersistedDraft(useWakeupRuleDraftStore, draftKey, NO_RULE_DRAFT);
+  const [name, setNameState] = useState(persisted.name ?? initial?.name ?? "");
+  // The store fills in after mount when the workspace storage namespace
+  // switches; a draft arriving then applies once, unless the user typed first.
+  const touched = useRef(Boolean(persisted.name ?? persisted.form));
+  const setName = (next: string) => {
+    touched.current = true;
+    setNameState(next);
+    setPersisted({ name: next });
+  };
   const [previewed, setPreviewed] = useState<WakeupEffectiveRule | null>(null);
   const [previewError, setPreviewError] = useState("");
   const [previewing, setPreviewing] = useState(false);
@@ -244,10 +270,10 @@ function RuleForm({
     unsupported_filter: t(($) => $.wakeups.rules.unsupported_filter),
     unsupported_schedule: t(($) => $.wakeups.rules.unsupported_schedule),
   };
-  const { draft, update, error, pending, submit, build } = useWakeupForm({
+  const { draft, update: updateDraft, error, pending, submit, build } = useWakeupForm({
     workspaceId,
     defaultAgentId: "",
-    initial: initial?.draft,
+    initial: { ...initial?.draft, ...(persisted.form ? (JSON.parse(persisted.form) as Partial<WakeupDraft>) : undefined) },
     save: async (input) => {
       const result = definitionConfigFromInput(input, name);
       if ("error" in result) throw new DraftRefused(result.error);
@@ -257,7 +283,10 @@ function RuleForm({
       }
       await save.mutateAsync({ ruleKey: rule.rule_key, revision: rule.revision, config: configToSave(result.config) });
     },
-    onSaved: onDone,
+    onSaved: () => {
+      clearPersisted();
+      onDone();
+    },
     describeError: (err) => {
       if (err instanceof DraftRefused) return refusals[err.reason];
       if (err instanceof ApiError && err.status === 409) return t(($) => $.wakeups.rules.conflict_error);
@@ -265,6 +294,19 @@ function RuleForm({
       return code === "wakeup_definition_writes_closed" ? t(($) => $.wakeups.rules.closed_error) : undefined;
     },
   });
+
+  useEffect(() => {
+    if (touched.current || !(persisted.name ?? persisted.form)) return;
+    touched.current = true;
+    if (persisted.name !== undefined) setNameState(persisted.name);
+    if (persisted.form) updateDraft(JSON.parse(persisted.form) as Partial<WakeupDraft>);
+  }, [persisted, updateDraft]);
+
+  const update = (patch: Partial<WakeupDraft>) => {
+    touched.current = true;
+    updateDraft(patch);
+    setPersisted({ form: JSON.stringify({ ...draft, ...patch }) });
+  };
 
   const preview = async () => {
     setPreviewed(null);
@@ -306,8 +348,10 @@ function RuleForm({
       <label htmlFor={`${id}-name`} className="mt-3 mb-1.5 block text-caption font-medium">
         {t(($) => $.wakeups.rules.name)}
       </label>
-      <Input id={`${id}-name`} value={name} maxLength={WAKEUP_DEFINITION_NAME_MAX * 4} onChange={(event) => setName(event.target.value)} />
-      <WakeupFields draft={draft} update={update} scope={{ workspaceId, definition: true }} assigneeAgentId={null} />
+      <Input id={`${id}-name`} value={name} disabled={pending} maxLength={WAKEUP_DEFINITION_NAME_MAX * 4} onChange={(event) => setName(event.target.value)} />
+      <fieldset disabled={pending} className="contents">
+        <WakeupFields draft={draft} update={update} scope={{ workspaceId, definition: true }} assigneeAgentId={null} />
+      </fieldset>
       {error && (
         <p role="alert" className="mt-3 text-caption text-destructive">
           {error}
@@ -321,7 +365,10 @@ function RuleForm({
       {previewed && <PreviewSummary rule={previewed} scope={scope} />}
       <div className="mt-4 flex justify-end gap-2 border-t border-border pt-3">
         {onCancel && (
-          <Button type="button" variant="ghost" size="sm" disabled={pending} onClick={onCancel}>
+          <Button type="button" variant="ghost" size="sm" disabled={pending} onClick={() => {
+              clearPersisted();
+              onCancel();
+            }}>
             {t(($) => $.wakeups.rules.cancel)}
           </Button>
         )}

@@ -328,7 +328,8 @@
     "cancel": "取消",
     "cancel_label": "取消 {{time}} 的计划跟进",
     "cancel_failed": "无法取消该跟进",
-    "load_failed": "无法加载已计划的跟进。重试"
+    "load_failed": "无法加载已计划的跟进。重试",
+    "watching_until": "监听事项 · 截止 {{time}}"
   },
   "annotations": {
     "one_request": "请每次只发送针对一个决策请求的评论。",
