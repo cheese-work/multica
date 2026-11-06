@@ -520,51 +520,82 @@ func TestOutOfOrderCompletionsDoNotLoseAHeaderlessCall(t *testing.T) {
 	deferred(t, err, ReasonBelowFloor)
 }
 
-func TestLaterResponseAccountsForEarlierHeaderlessCall(t *testing.T) {
+// B times out while still in transit and settles. A is reserved afterwards,
+// reaches GitHub first and returns 1550. B can still arrive, leaving 1500, so
+// A's response must not drop B's cost.
+func TestDelayedTimeoutCostSurvivesLaterResponse(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
 	reset := t0.Add(30 * time.Minute)
 	e.seed(t, 1600, reset, t0)
-	g, err := e.led.Reserve(ctx, e.inst, 50)
+	b, err := e.led.Reserve(ctx, e.inst, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Complete(ctx, nil); err != nil {
+	if err := b.Complete(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
-	x, err := e.led.Reserve(ctx, e.inst, 10) // reserved after g completed
+	a, err := e.led.Reserve(ctx, e.inst, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := x.Complete(ctx, rateHeaders(1540, reset)); err != nil { // header includes g
+	if err := a.Complete(ctx, rateHeaders(1550, reset)); err != nil {
 		t.Fatal(err)
 	}
-	if e.settledReservations(t) != 0 {
-		t.Fatal("a response from a later call already counts the header-less call")
+	if e.settledReservations(t) != 1 {
+		t.Fatal("a normal response must not clear an uncertain cost")
 	}
-	if _, err := e.led.Reserve(ctx, e.inst, 40); err != nil { // 1540-40 = 1500
-		t.Fatalf("budget freed by the later header: %v", err)
+	// B may still land: 1550 - 50 (B) - 50 < 1500.
+	_, err = e.led.Reserve(ctx, e.inst, 50)
+	deferred(t, err, ReasonBelowFloor)
+}
+
+func (e *env) ageSettled(t *testing.T, by time.Duration) {
+	t.Helper()
+	if _, err := e.pool.Exec(context.Background(),
+		`UPDATE gh_budget_reservation SET created_at = created_at - make_interval(secs => $2)
+		  WHERE installation_id=$1 AND substr(id::text,15,1)='0'`, e.inst, by.Seconds()); err != nil {
+		t.Fatal(err)
 	}
 }
 
-func TestRefreshAccountsForHeaderlessCalls(t *testing.T) {
-	e := newEnv(t)
-	ctx := context.Background()
-	e.seed(t, 1600, t0.Add(50*time.Minute), t0)
-	g, err := e.led.Reserve(ctx, e.inst, 50)
+func (e *env) settleHeaderless(t *testing.T, cost int) {
+	t.Helper()
+	g, err := e.led.Reserve(context.Background(), e.inst, cost)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Complete(ctx, nil); err != nil {
+	if err := g.Complete(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestRefreshStartedTooSoonKeepsUncertainCost(t *testing.T) {
+	e := newEnv(t)
+	e.seed(t, 1600, t0.Add(50*time.Minute), t0)
+	e.settleHeaderless(t, 50)
+	e.clock.Advance(StaleAfter + time.Second)
+	e.fetch.snap = Snapshot{Remaining: 1650, ResetAt: t0.Add(50 * time.Minute)}
+	if _, err := e.led.Reserve(context.Background(), e.inst, 10); err != nil {
+		t.Fatal(err)
+	}
+	if e.settledReservations(t) != 1 {
+		t.Fatal("a refresh that started before the call could have landed must keep its cost")
+	}
+}
+
+func TestRefreshAfterClearDelayDropsUncertainCost(t *testing.T) {
+	e := newEnv(t)
+	e.seed(t, 1600, t0.Add(50*time.Minute), t0)
+	e.settleHeaderless(t, 50)
+	e.ageSettled(t, UncertainClearAfter+time.Second)
 	e.clock.Advance(StaleAfter + time.Second)
 	e.fetch.snap = Snapshot{Remaining: 1550, ResetAt: t0.Add(50 * time.Minute)}
-	if _, err := e.led.Reserve(ctx, e.inst, 10); err != nil {
+	if _, err := e.led.Reserve(context.Background(), e.inst, 10); err != nil {
 		t.Fatal(err)
 	}
 	if e.settledReservations(t) != 0 {
-		t.Fatal("GET /rate_limit already counts the header-less call")
+		t.Fatal("GET /rate_limit started after the clear delay already counts the call")
 	}
 }
 

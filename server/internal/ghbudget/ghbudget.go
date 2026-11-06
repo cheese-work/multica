@@ -37,6 +37,11 @@ const (
 	MinRefreshGap = 60 * time.Second
 	// ReservationTTL bounds how long a forgotten reservation counts.
 	ReservationTTL = 2 * time.Minute
+	// UncertainClearAfter is how long after a header-less call settled a
+	// refresh must have started before it counts that call: the 20 s HTTP
+	// client timeout plus a 60 s margin. By then the call has reached GitHub or
+	// been dropped.
+	UncertainClearAfter = 80 * time.Second
 	// MaxJitter spreads deferred calls so they do not wake together.
 	MaxJitter = 60 * time.Second
 	// MaxBackoff caps the header-less secondary-limit backoff.
@@ -130,10 +135,6 @@ type Reservation struct {
 	inst int64
 	id   string
 	cost int
-	// createdAt is the database time the reservation was taken, under the
-	// installation lock. Settled calls stamped before it are already counted
-	// by any response this reservation gets.
-	createdAt time.Time
 }
 
 // Reserve claims cost requests, refreshing the ledger first when it is empty,
@@ -165,17 +166,14 @@ func (l *Ledger) tryReserve(ctx context.Context, inst int64, cost int) (*Reserva
 		if err := l.evaluate(ctx, tx, inst, cost, "", now); err != nil {
 			return err
 		}
-		var (
-			id        string
-			createdAt time.Time
-		)
+		var id string
 		if err := tx.QueryRow(ctx,
 			`INSERT INTO gh_budget_reservation (installation_id, cost, expires_at, created_at)
-			 VALUES ($1,$2,$3, clock_timestamp()) RETURNING id::text, created_at`,
-			inst, cost, now.Add(ReservationTTL)).Scan(&id, &createdAt); err != nil {
+			 VALUES ($1,$2,$3, clock_timestamp()) RETURNING id::text`,
+			inst, cost, now.Add(ReservationTTL)).Scan(&id); err != nil {
 			return err
 		}
-		res = &Reservation{l: l, inst: inst, id: id, cost: cost, createdAt: createdAt}
+		res = &Reservation{l: l, inst: inst, id: id, cost: cost}
 		return nil
 	})
 	if err != nil {
@@ -209,36 +207,28 @@ func (r *Reservation) Recheck(ctx context.Context) error {
 // Complete settles a reservation after the call returned. Pass the response
 // headers, or nil when the call failed or timed out.
 //
-// Usable headers are merged into the ledger. They already count every call
-// that finished before this one was reserved, so those settled calls are
-// dropped; calls that overlapped it stay, because responses can arrive out of
-// order. Without usable headers the call may still have cost budget, so its
-// reservation stays on the ledger as a settled call until a later response
-// or a refresh counts it, or the window resets. The count never rises on a
-// guess, and the floor holds across overlapping and repeated calls.
+// Usable headers are merged into the ledger (the lower count wins within a
+// window). A call without usable headers may still reach GitHub later, so its
+// reservation stays on the ledger as an uncertain cost. No response clears an
+// uncertain cost, because responses arrive out of order. Only a refresh that
+// started UncertainClearAfter after the settlement, or the window reset,
+// clears it. Over-reserving only defers a call; under-reserving breaks the
+// floor.
 func (r *Reservation) Complete(ctx context.Context, h http.Header) error {
 	return r.l.inLockedTx(ctx, r.inst, func(tx pgx.Tx) error {
 		remaining, reset, ok := parseRateHeaders(h)
 		if !ok {
 			return r.settle(ctx, tx)
 		}
-		applied, err := r.l.upsertObservation(ctx, tx, r.inst, remaining, reset)
-		if err != nil {
+		if _, err := r.l.upsertObservation(ctx, tx, r.inst, remaining, reset); err != nil {
 			return err
 		}
-		if applied {
-			if _, err := tx.Exec(ctx,
-				`DELETE FROM gh_budget_reservation WHERE installation_id=$1 AND substr(id::text,15,1)='0' AND created_at < $2`,
-				r.inst, r.createdAt); err != nil {
-				return err
-			}
-		}
-		_, err = tx.Exec(ctx, `DELETE FROM gh_budget_reservation WHERE id=$1::uuid`, r.id)
+		_, err := tx.Exec(ctx, `DELETE FROM gh_budget_reservation WHERE id=$1::uuid`, r.id)
 		return err
 	})
 }
 
-// settle turns the reservation into a settled call that lasts until the
+// settle turns the reservation into an uncertain cost that lasts until the
 // window resets, and stamps created_at with the settle time. A settled call is
 // marked by version nibble 0 in its id: gen_random_uuid() always writes 4
 // there, so no live reservation looks settled. This needs no migration (the
@@ -390,10 +380,11 @@ func (l *Ledger) refreshLocked(ctx context.Context, inst int64) error {
 	if err != nil || !applied {
 		return err
 	}
-	// GET /rate_limit counts every call that finished before it started.
+	// GET /rate_limit counts an uncertain call once that call has either
+	// reached GitHub or been dropped, which UncertainClearAfter guarantees.
 	_, err = conn.Exec(ctx,
 		`DELETE FROM gh_budget_reservation WHERE installation_id=$1 AND substr(id::text,15,1)='0' AND created_at < $2`,
-		inst, fetchStart)
+		inst, fetchStart.Add(-UncertainClearAfter))
 	return err
 }
 
