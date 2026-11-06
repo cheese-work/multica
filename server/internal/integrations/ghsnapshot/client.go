@@ -58,6 +58,9 @@ func (e *InstallationGoneError) Error() string {
 // the X-RateLimit-Reset header, or a conservative default.
 type RateLimitError struct {
 	RetryAfter time.Duration
+	// Header is the throttling response's headers, unclamped. Nil when the
+	// error was not built from a response.
+	Header http.Header
 }
 
 func (e *RateLimitError) Error() string {
@@ -338,5 +341,5 @@ func rateLimitFromResponse(resp *http.Response, now time.Time) *RateLimitError {
 	if wait > 5*time.Minute {
 		wait = 5 * time.Minute
 	}
-	return &RateLimitError{RetryAfter: wait}
+	return &RateLimitError{RetryAfter: wait, Header: resp.Header.Clone()}
 }

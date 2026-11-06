@@ -26,6 +26,12 @@ FROM workspace WHERE workspace.id = sqlc.arg('workspace_id')
 FOR KEY SHARE OF workspace
 ON CONFLICT (workspace_id, subject_id) WHERE kind = 'ci_event' DO NOTHING;
 
+-- name: LockWorkspaceForCIWrite :one
+-- Takes a KEY SHARE lock on the workspace row until the transaction ends: a
+-- workspace delete waits for the CI writes, and a workspace already deleted
+-- returns no row, so the caller can write nothing.
+SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE;
+
 -- name: GetCIWatchConfigForRepo :one
 -- The per-repo routing config; no row means the repo is not watched.
 SELECT mode, branches, events, workflows_include, workflows_exclude

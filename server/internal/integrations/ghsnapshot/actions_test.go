@@ -32,7 +32,7 @@ func TestListRunJobsReadsOnePageOfTheLatestAttempt(t *testing.T) {
 		 {"id":8,"name":"lint","conclusion":"success","completed_at":"2026-11-06T01:02:04Z","steps":[{"status":"completed","conclusion":"success"}]}]}`))
 	}))
 	defer srv.Close()
-	jobs, more, err := newTestClient(t, srv.URL).ListRunJobs(context.Background(), 5, "o", "r", 99, 2, 3)
+	jobs, more, _, err := newTestClient(t, srv.URL).ListRunJobs(context.Background(), 5, "o", "r", 99, 2, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestJobLogStreamsThroughTheRedirectWithoutARangeHeader(t *testing.T) {
 		http.Redirect(w, r, blob.URL+"/signed", http.StatusFound)
 	}))
 	defer api.Close()
-	body, err := newTestClient(t, api.URL).JobLog(context.Background(), 5, "o", "r", 7)
+	body, _, err := newTestClient(t, api.URL).JobLog(context.Background(), 5, "o", "r", 7)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,11 +89,59 @@ func TestJobLogMapsThrottlingAndOtherFailures(t *testing.T) {
 			w.WriteHeader(tc.status)
 			_, _ = w.Write([]byte("ghs_secret"))
 		}))
-		_, err := newTestClient(t, srv.URL).JobLog(context.Background(), 5, "o", "r", 7)
+		_, _, err := newTestClient(t, srv.URL).JobLog(context.Background(), 5, "o", "r", 7)
 		srv.Close()
 		var rl *RateLimitError
 		if err == nil || errors.As(err, &rl) != tc.limited || strings.Contains(err.Error(), "ghs_secret") {
 			t.Fatalf("status %d: err=%v limited=%v", tc.status, err, tc.limited)
+		}
+	}
+}
+
+// The budget ledger learns from the rate headers of every call, so the
+// client has to hand them back.
+func TestListRunJobsReturnsTheRateLimitHeaders(t *testing.T) {
+	srv := httptest.NewServer(tokenOrElse(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "1200")
+		w.Header().Set("X-RateLimit-Reset", "1893456000")
+		_, _ = w.Write([]byte(`{"jobs":[]}`))
+	}))
+	defer srv.Close()
+	_, _, h, err := newTestClient(t, srv.URL).ListRunJobs(context.Background(), 5, "o", "r", 99, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Get("X-RateLimit-Remaining") != "1200" || h.Get("X-RateLimit-Reset") != "1893456000" {
+		t.Fatalf("headers = %v", h)
+	}
+}
+
+// The signed blob host answers with its own headers. Only GitHub's API answer
+// carries the installation's rate limit.
+func TestJobLogReturnsTheAPIHeadersNotTheBlobHosts(t *testing.T) {
+	blob := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "999999")
+		_, _ = w.Write([]byte("log"))
+	}))
+	defer blob.Close()
+	for name, redirect := range map[string]bool{"redirected": true, "direct": false} {
+		api := httptest.NewServer(tokenOrElse(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-RateLimit-Remaining", "1200")
+			w.Header().Set("X-RateLimit-Reset", "1893456000")
+			if redirect {
+				http.Redirect(w, r, blob.URL+"/signed", http.StatusFound)
+				return
+			}
+			_, _ = w.Write([]byte("log"))
+		}))
+		body, h, err := newTestClient(t, api.URL).JobLog(context.Background(), 5, "o", "r", 7)
+		api.Close()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		_ = body.Close()
+		if h.Get("X-RateLimit-Remaining") != "1200" || h.Get("X-RateLimit-Reset") != "1893456000" {
+			t.Errorf("%s: headers = %v, want the API's 1200 / 1893456000", name, h)
 		}
 	}
 }

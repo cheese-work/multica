@@ -23,7 +23,7 @@ func PgxTx(b interface {
 			return err
 		}
 		q := db.New(tx)
-		if err := fn(Writers{Events: q, Observations: q}); err != nil {
+		if err := fn(Writers{Workspace: q, Events: q, Observations: q}); err != nil {
 			_ = tx.Rollback(ctx)
 			return err
 		}
@@ -70,7 +70,7 @@ func (r DBRuns) Newer(ctx context.Context, run Run) (exists, succeeded bool, err
 // LedgerBudget adapts the shared installation ledger to Budget.
 type LedgerBudget struct{ L *ghbudget.Ledger }
 
-func (b LedgerBudget) Reserve(ctx context.Context, inst int64, cost int) (func(), error) {
+func (b LedgerBudget) Reserve(ctx context.Context, inst int64, cost int) (Release, error) {
 	r, err := b.L.Reserve(ctx, inst, cost)
 	if err != nil {
 		var d *ghbudget.DeferredError
@@ -79,13 +79,23 @@ func (b LedgerBudget) Reserve(ctx context.Context, inst int64, cost int) (func()
 		}
 		return nil, ErrNoBudget
 	}
-	// The call is sent before release runs, so settle it as spent. A call that
-	// was limited is recorded by Limited, which also sets the backoff.
-	return func() { _ = r.Complete(context.WithoutCancel(ctx), nil) }, nil
+	// Settle with the response headers: when other consumers spent the shared
+	// budget, the ledger lowers its count and the next Reserve sees it.
+	return func(h http.Header) { _ = r.Complete(context.WithoutCancel(ctx), h) }, nil
 }
 
-func (b LedgerBudget) Limited(ctx context.Context, inst int64, e *RateLimitError) {
-	h := http.Header{}
-	h.Set("Retry-After", strconv.Itoa(int(e.RetryAfter.Seconds())))
-	_, _ = b.L.RecordLimited(ctx, inst, h)
+// Limited stores the shared backoff from the throttling response itself: the
+// ledger keeps the later of the header reset and Retry-After, uncapped. Without
+// either header it falls back to the client's wait. An error means the backoff
+// was not stored.
+func (b LedgerBudget) Limited(ctx context.Context, inst int64, e *RateLimitError) error {
+	h := e.Header.Clone()
+	if h == nil {
+		h = http.Header{}
+	}
+	if h.Get("Retry-After") == "" && h.Get("X-RateLimit-Reset") == "" {
+		h.Set("Retry-After", strconv.Itoa(int(e.RetryAfter.Seconds())))
+	}
+	_, err := b.L.RecordLimited(context.WithoutCancel(ctx), inst, h)
+	return err
 }

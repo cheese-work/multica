@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -15,18 +16,20 @@ import (
 
 type ciFakeGH struct{}
 
-func (ciFakeGH) ListJobs(context.Context, ciwatch.Run, int) ([]ciwatch.Job, bool, error) {
-	return []ciwatch.Job{{ID: 7, Name: "build", Conclusion: "failure"}}, false, nil
+func (ciFakeGH) ListJobs(context.Context, ciwatch.Run, int) ([]ciwatch.Job, bool, http.Header, error) {
+	return []ciwatch.Job{{ID: 7, Name: "build", Conclusion: "failure"}}, false, nil, nil
 }
 
-func (ciFakeGH) JobLog(context.Context, ciwatch.Run, int64) (io.ReadCloser, error) {
-	return io.NopCloser(strings.NewReader("API rate limit exceeded\n")), nil
+func (ciFakeGH) JobLog(context.Context, ciwatch.Run, int64) (io.ReadCloser, http.Header, error) {
+	return io.NopCloser(strings.NewReader("API rate limit exceeded\n")), nil, nil
 }
 
 type ciFakeBudget struct{}
 
-func (ciFakeBudget) Reserve(context.Context, int64, int) (func(), error)     { return func() {}, nil }
-func (ciFakeBudget) Limited(context.Context, int64, *ciwatch.RateLimitError) {}
+func (ciFakeBudget) Reserve(context.Context, int64, int) (ciwatch.Release, error) {
+	return func(http.Header) {}, nil
+}
+func (ciFakeBudget) Limited(context.Context, int64, *ciwatch.RateLimitError) error { return nil }
 
 // ciWatchFixture binds the installation, turns the flag on, watches the repo in
 // shadow mode and installs a watcher backed by a fake GitHub. It returns the

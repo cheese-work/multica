@@ -191,3 +191,17 @@ func (q *Queries) InsertCIFailureEvent(ctx context.Context, arg InsertCIFailureE
 	}
 	return result.RowsAffected(), nil
 }
+
+const lockWorkspaceForCIWrite = `-- name: LockWorkspaceForCIWrite :one
+SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE
+`
+
+// Takes a KEY SHARE lock on the workspace row until the transaction ends: a
+// workspace delete waits for the CI writes, and a workspace already deleted
+// returns no row, so the caller can write nothing.
+func (q *Queries) LockWorkspaceForCIWrite(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockWorkspaceForCIWrite, id)
+	var id_2 pgtype.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
+}

@@ -1,9 +1,28 @@
 package ciwatch
 
-import "context"
+import (
+	"context"
+	"errors"
+	"fmt"
 
-// Writers are the two writes of one run, valid inside one InTx call.
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+)
+
+// ErrWorkspaceGone means the workspace was deleted before the CI rows could be
+// written. Nothing is stored; the delivery fails and the retry stops at the
+// webhook's own workspace lookup.
+var ErrWorkspaceGone = errors.New("ciwatch: workspace no longer exists")
+
+// WorkspaceLocker takes a KEY SHARE lock on the workspace row until the
+// transaction ends, and returns pgx.ErrNoRows when the workspace is gone.
+type WorkspaceLocker interface {
+	LockWorkspaceForCIWrite(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error)
+}
+
+// Writers are the writes of one run, valid inside one InTx call.
 type Writers struct {
+	Workspace    WorkspaceLocker
 	Events       EventWriter
 	Observations ObservationWriter
 }
@@ -37,7 +56,20 @@ func (p Pipeline) Process(ctx context.Context, in Input, h History) (Result, err
 	if obs == nil && res.Kind != KindEvidence {
 		return res, nil
 	}
+	var ws pgtype.UUID
+	if err := ws.Scan(in.Run.WorkspaceID); err != nil {
+		return res, fmt.Errorf("ciwatch: workspace id: %w", err)
+	}
 	return res, p.Tx(ctx, func(w Writers) error {
+		// Neither table has a foreign key to workspace. The KEY SHARE lock holds
+		// the row until commit, so a delete that wins the race makes this fail
+		// before any insert, and one that comes later waits for the commit.
+		if _, err := w.Workspace.LockWorkspaceForCIWrite(ctx, ws); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrWorkspaceGone
+			}
+			return err
+		}
 		if res.Kind == KindEvidence {
 			if _, err := Store(ctx, w.Events, res.Event); err != nil {
 				return err

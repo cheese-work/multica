@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -52,17 +54,32 @@ func (m *memObs) CreateSystem1CIObservation(_ context.Context, a db.CreateSystem
 	return 1, nil
 }
 
+// memWS stands for the workspace row: gone=true means it was deleted. locks
+// counts the KEY SHARE locks taken.
+type memWS struct {
+	gone  bool
+	locks int
+}
+
+func (m *memWS) LockWorkspaceForCIWrite(_ context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	m.locks++
+	if m.gone {
+		return pgtype.UUID{}, pgx.ErrNoRows
+	}
+	return id, nil
+}
+
 func pipelineFor(ev *memEvents, ob *memObs, gh *fakeGH) Pipeline {
 	return pipelineWithRuns(ev, ob, gh, fakeRuns{})
 }
 
 func pipelineWithRuns(ev *memEvents, ob *memObs, gh *fakeGH, runs Runs) Pipeline {
 	c, _ := newCollector(gh, &fakeBudget{}, runs)
-	return Pipeline{Collector: c, Tx: memTx(ev, ob), Observer: Observer{W: ob}}
+	return Pipeline{Collector: c, Tx: memTx(ev, ob, &memWS{}), Observer: Observer{W: ob}}
 }
 
 // memTx commits both memory stores or, when fn fails, restores them.
-func memTx(ev *memEvents, ob *memObs) InTx {
+func memTx(ev *memEvents, ob *memObs, ws *memWS) InTx {
 	return func(_ context.Context, fn func(Writers) error) error {
 		evSnap, obSnap := map[string]bool{}, map[string]db.CreateSystem1CIObservationParams{}
 		for k, v := range ev.seen {
@@ -71,7 +88,7 @@ func memTx(ev *memEvents, ob *memObs) InTx {
 		for k, v := range ob.rows {
 			obSnap[k] = v
 		}
-		if err := fn(Writers{Events: ev, Observations: ob}); err != nil {
+		if err := fn(Writers{Workspace: ws, Events: ev, Observations: ob}); err != nil {
 			ev.seen, ob.rows = evSnap, obSnap
 			return err
 		}
@@ -185,5 +202,34 @@ func TestProcessRetryNeverMixesTwoDecisions(t *testing.T) {
 	}
 	if len(ob.rows) != 1 {
 		t.Fatalf("observations=%d, want 1", len(ob.rows))
+	}
+}
+
+// The workspace can be deleted while the collector reads GitHub. Both inserts
+// have no foreign key, so the pipeline must lock the workspace first and write
+// nothing when it is gone.
+func TestProcessWorkspaceDeletedDuringCollectionWritesNothing(t *testing.T) {
+	ev, ob, ws := &memEvents{}, &memObs{}, &memWS{gone: true}
+	p := pipelineFor(ev, ob, failingRunGH())
+	p.Tx = memTx(ev, ob, ws)
+	_, err := p.Process(context.Background(), realInput(), History{})
+	if !errors.Is(err, ErrWorkspaceGone) {
+		t.Fatalf("err=%v, want ErrWorkspaceGone", err)
+	}
+	if len(ev.seen) != 0 || len(ob.rows) != 0 {
+		t.Fatalf("events=%d observations=%d, want 0 and 0", len(ev.seen), len(ob.rows))
+	}
+}
+
+// A live workspace is locked once per write transaction.
+func TestProcessLocksWorkspaceBeforeWriting(t *testing.T) {
+	ev, ob, ws := &memEvents{}, &memObs{}, &memWS{}
+	p := pipelineFor(ev, ob, failingRunGH())
+	p.Tx = memTx(ev, ob, ws)
+	if _, err := p.Process(context.Background(), realInput(), History{}); err != nil {
+		t.Fatal(err)
+	}
+	if ws.locks != 1 || len(ev.seen) != 1 || len(ob.rows) != 1 {
+		t.Fatalf("locks=%d events=%d observations=%d, want 1/1/1", ws.locks, len(ev.seen), len(ob.rows))
 	}
 }

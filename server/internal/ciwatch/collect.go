@@ -3,8 +3,10 @@ package ciwatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"path"
 	"slices"
 	"strings"
@@ -130,6 +132,9 @@ func (c *Collector) Handle(ctx context.Context, in Input) (Result, error) {
 			ev.PartialReason = reason
 		}
 	}
+	// persistErr is a backoff that could not be stored. Collection ends and the
+	// run fails: it is retried once the ledger is back, never spent blindly.
+	var persistErr error
 	// stop reports whether err ends all further API calls, recording why.
 	stop := func(err error) bool {
 		var rl *RateLimitError
@@ -139,7 +144,9 @@ func (c *Collector) Handle(ctx context.Context, in Input) (Result, error) {
 		case errors.Is(err, ErrBackoff):
 			partial(PartialBackoff)
 		case errors.As(err, &rl):
-			c.Budget.Limited(ctx, run.InstallationID, rl)
+			if perr := c.Budget.Limited(ctx, run.InstallationID, rl); perr != nil && persistErr == nil {
+				persistErr = fmt.Errorf("ciwatch: store github backoff: %w", perr)
+			}
 			partial(PartialBackoff)
 		default:
 			return false
@@ -176,6 +183,9 @@ func (c *Collector) Handle(ctx context.Context, in Input) (Result, error) {
 		}
 	}
 
+	if persistErr != nil {
+		return Result{}, persistErr
+	}
 	if truncated {
 		// Set after the log loop: it must not end log collection.
 		partial(PartialJobsTruncated)
@@ -206,8 +216,9 @@ func (c *Collector) failedJobs(ctx context.Context, run Run, partial func(string
 		more := false
 		if err == nil {
 			var js []Job
-			js, more, err = c.GH.ListJobs(ctx, run, page)
-			release()
+			var h http.Header
+			js, more, h, err = c.GH.ListJobs(ctx, run, page)
+			release(h)
 			for _, j := range js {
 				if j.Conclusion == "failure" || j.Conclusion == "timed_out" {
 					failed = append(failed, j)
@@ -253,10 +264,11 @@ func (c *Collector) tail(ctx context.Context, run Run, jobID int64) ([]string, e
 	if err != nil {
 		return nil, err
 	}
-	defer release()
+	var h http.Header
+	defer func() { release(h) }()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	body, err := c.GH.JobLog(ctx, run, jobID)
+	body, h, err := c.GH.JobLog(ctx, run, jobID)
 	if err != nil {
 		return nil, err
 	}
