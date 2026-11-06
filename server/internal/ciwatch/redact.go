@@ -7,6 +7,8 @@ import (
 	"io"
 	"regexp"
 	"strings"
+
+	sharedredact "github.com/multica-ai/multica/server/pkg/redact"
 )
 
 const (
@@ -30,6 +32,7 @@ var (
 )
 
 func redactTokens(s string) string {
+	s = sharedredact.Text(s)
 	s = urlCreds.ReplaceAllString(s, "${1}"+tokenPlaceholer+"@")
 	s = tokenShape.ReplaceAllString(s, tokenPlaceholer)
 	return bearer.ReplaceAllString(s, "${1}"+tokenPlaceholer)
@@ -42,6 +45,7 @@ type redactor struct {
 	lines    []string
 	inKey    bool
 	label    string // label of the open BEGIN; only an END with this label closes it
+	nested   bool   // a BEGIN arrived inside an open key: fail closed, stay open to EOF
 }
 
 func (r *redactor) emit(s string) {
@@ -69,7 +73,7 @@ func (r *redactor) line(text string, sc *lineScan) {
 	} else if !r.inKey {
 		r.emit(keyPlaceholder)
 	}
-	r.inKey, r.label = sc.open, sc.label
+	r.inKey, r.label, r.nested = sc.open, sc.label, sc.nested
 }
 
 // lineScan accumulates one logical line from ReadSlice fragments. It walks the
@@ -83,6 +87,7 @@ type lineScan struct {
 	orphanEnd bool   // an END arrived while no key was open
 	open      bool   // key state after the markers seen so far
 	label     string // label of the open BEGIN
+	nested    bool   // see redactor.nested
 	carry     string
 	seen      int // bytes of the line consumed before carry
 	done      int // offset in the line just past the last marker handled
@@ -100,11 +105,13 @@ func (l *lineScan) add(frag []byte) {
 		label := s[m[4]:m[5]]
 		switch {
 		case s[m[2]] == 'B':
-			// A nested BEGIN never replaces the outer label: only the outer END closes the key.
-			if !l.open {
+			// A BEGIN inside an open key makes the END pairing ambiguous: fail closed to EOF.
+			if l.open {
+				l.nested = true
+			} else {
 				l.open, l.label = true, label
 			}
-		case l.open && label == l.label:
+		case l.open && !l.nested && label == l.label:
 			l.open = false
 		case !l.open:
 			l.orphanEnd = true
@@ -153,7 +160,7 @@ func RedactTail(r io.Reader, maxLines int) (lines []string, err error) {
 				text = "[line over 64 KiB omitted]"
 			}
 			red.line(text, &cur)
-			cur = lineScan{open: red.inKey, label: red.label}
+			cur = lineScan{open: red.inKey, label: red.label, nested: red.nested}
 		}
 		if rerr != nil {
 			if errors.Is(rerr, io.EOF) {

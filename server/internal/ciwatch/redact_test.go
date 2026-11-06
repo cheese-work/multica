@@ -179,10 +179,31 @@ func TestRedactNestedBeginKeepsOuterKeyOpen(t *testing.T) {
 			})
 		}
 	}
-	// The outer END still closes the key.
-	got := redact(t, "-----BEGIN "+"PRIVATE KEY-----\n-----BEGIN "+"PUBLIC KEY-----\n"+pemBody+"\n-----END PRIVATE KEY-----\nafter\n", false)
+	// The outer END cannot be told apart from the inner one, so the key stays open to EOF.
+	got := redact(t, "-----BEGIN "+"PRIVATE KEY-----\n-----BEGIN "+"PUBLIC KEY-----\n"+pemBody+"\n-----END PRIVATE KEY-----\n"+pemBody+"\n", false)
 	noLeak(t, got, pemBody)
-	if !strings.Contains(got, "after") {
-		t.Errorf("outer END did not close: %q", got)
+}
+
+// Two BEGINs and one END must not close the outer key (CHE-4274 review P1, round 4).
+func TestRedactSameLabelNestedBeginFailsClosed(t *testing.T) {
+	cases := map[string]string{
+		"separate lines": "-----BEGIN " + "PRIVATE KEY-----\n-----BEGIN " + "PRIVATE KEY-----\n-----END PRIVATE KEY-----\n" + pemBody + "\n",
+		"one line":       "-----BEGIN " + "PRIVATE KEY----- -----BEGIN " + "PRIVATE KEY----- -----END PRIVATE KEY-----\n" + pemBody + "\n",
+	}
+	for name, in := range cases {
+		for _, oneByte := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/oneByte=%v", name, oneByte), func(t *testing.T) {
+				noLeak(t, redact(t, in, oneByte), pemBody)
+			})
+		}
+	}
+}
+
+// Generic and provider credentials follow the shared server/pkg/redact rules (CHE-4274 review P2).
+func TestRedactAppliesSharedCredentialRules(t *testing.T) {
+	got := redact(t, "DB_PASSWORD=hunter2planted\nAPI_KEY: abcplantedsecret99\nkept line\n", false)
+	noLeak(t, got, "hunter2planted", "abcplantedsecret99")
+	if !strings.Contains(got, "kept line") {
+		t.Errorf("lost plain line: %q", got)
 	}
 }
