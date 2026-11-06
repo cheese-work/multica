@@ -51,14 +51,18 @@ two signers, from a different lab than the author), `red_impossible_reason`,
 opinion repeats the reason in a `red_impossible_reason` header, which must match the
 proposal. A version 1 record stays valid and never gains the new gate.
 
-Waiver candidate for a PR (CHE-4326): use the PR's own diff digest as `candidate_sha256`,
-printed by `python3 scripts/security-gate/security_gate.py --github <owner/repo> --pr <n>
---print-digest` (`security_gate.py --print-digest`, key `digest`). The server matches the candidate
-exactly, so the same value on a later head finds the record: a main-only merge (no change to
-any PR file) keeps the waiver, and any change to a PR file (new commit, or a conflict
-resolution that edits PR files) gives a new digest and the lookup reports `not decided`. A
-candidate that is a head SHA instead voids the record on every head change. The security-gate
-PASS follows the same rule through the verdict's `Diff-Digest` line.
+Waiver candidate for a PR (CHE-4326): an agent decision (Jev, once live) uses the PR's own diff digest as
+`candidate_sha256`. Print it with this command in a code block:
+
+```sh
+python3 scripts/security-gate/security_gate.py --github <owner/repo> --pr <n> --default-branch main --print-digest
+```
+
+The server matches the candidate exactly. A main-only merge (no change to any PR file) keeps the same digest, so the
+lookup still finds the record. Any change to a PR file gives a new digest and the lookup reports `not decided`. A
+candidate that is a head SHA instead voids the record on every head change. A record here is never human
+authorization: while Jev is not live, Cheese decides and the waiver is a human decision record (see
+`decision-records.md`, "Waiver scope line").
 
 Every new proposal must carry `decision_class: "reversible_gate"`, the only in-scope
 class. A missing or unrecognised class is refused (fail closed, no stop rule). A class of

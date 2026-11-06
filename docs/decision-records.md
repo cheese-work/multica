@@ -84,3 +84,24 @@ retraction is sent.
 - Issue timeline: the record card, shown under the person's name.
 - DM: the request card and the answer.
 - Agent runs: the agent receives the answer when the record turns effective.
+
+## Waiver scope line (CHE-4326)
+
+A human test-first waiver is a decision record. Put the PR's diff digest in the ask's option and repeat it in the
+agent's note of the record as its own line:
+
+```text
+Waiver-Diff-Digest: <64 lowercase hex>
+```
+
+Print the digest with this command, then check a record against a PR with the same command plus `--waiver-record`:
+
+```sh
+python3 scripts/security-gate/security_gate.py --github <owner/repo> --pr <n> --default-branch main --print-digest
+python3 scripts/security-gate/security_gate.py --github <owner/repo> --pr <n> --default-branch main --print-digest --waiver-record <record.md>
+```
+
+The second command prints `waiver_applies` and exits 3 when the record does not apply. A main-only merge (no change to
+any PR file) keeps the digest, so the waiver still applies. Any change to a PR file voids it. A record without the
+line covers only the head SHA it names, as before. The command checks scope only. Read the record against
+`multica decision get <id>` first: it must be the answered decision (`authority: human`) of the same issue.

@@ -5,6 +5,9 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
+import re
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -202,31 +205,76 @@ class DiffDigestTest(unittest.TestCase):
         h2 = self.merge_main()
         self.assertEqual(run(m, h2), {"head": h2, "digest": self.d1})  # clean merge: same digest, PASS kept
 
-    def _print_digest(self, base, head):
+    def _cli(self, base, head, *extra):
+        """Run the published command: `security_gate.py --github o/r --pr 918 --default-branch main --print-digest`."""
         pull = json.dumps({"head": {"sha": head}, "base": {"sha": base}})
-        argv = ["x", "--repo", self.tmp.name, "--github", "o/r", "--pr", "918", "--default-branch", "main", "--print-digest"]
+        argv = ["x", "--repo", self.tmp.name, "--github", "o/r", "--pr", "918", "--default-branch", "main",
+                "--print-digest", *extra]
         out = io.StringIO()
         with mock.patch.object(sg, "_gh", return_value=pull), mock.patch("sys.argv", argv), redirect_stdout(out):
-            self.assertEqual(sg.main(), 0)
-        return json.loads(out.getvalue())["digest"]
+            rc = sg.main()
+        return rc, json.loads(out.getvalue())
 
-    def test_waiver_candidate_follows_the_diff_through_a_main_merge_and_dies_on_a_pr_edit(self):
-        """CHE-4326. A test-first waiver is an agent decision bound to `candidate_sha256` (the server matches it
-        exactly, `rely`/lookup). Recorded with the PR diff digest as candidate, it is found again after a main-only
-        merge and not found after any change to the PR's own files."""
-        recorded = self._print_digest(self.base, self.h1)
-        self.assertRegex(recorded, DIGEST_FOR_SERVER)  # the server accepts only 64 lowercase hex
+    def _record(self, body):
+        f = tempfile.NamedTemporaryFile("w", suffix=".md", delete=False)
+        self.addCleanup(os.unlink, f.name)
+        f.write(body)
+        f.close()
+        return f.name
+
+    def test_human_waiver_follows_the_diff_through_a_main_merge_and_dies_on_a_pr_edit(self):
+        """CHE-4326. A human test-first waiver is a decision record that names the PR diff digest. The command says
+        whether it still applies: yes after a main-only merge, no after any change to a PR file."""
+        rc, first = self._cli(self.base, self.h1)
+        self.assertEqual(rc, 0)
+        self.assertRegex(first["digest"], DIGEST_FOR_SERVER)
+        record = self._record(f"Cheese chose \"Waive this PR diff\".\nStatus: WAIVED, not PASS.\nWaiver-Diff-Digest: {first['digest']}\n")
+        rc, out = self._cli(self.base, self.h1, "--waiver-record", record)
+        self.assertEqual((rc, out["waiver_applies"]), (0, True))
         m = self.advance_main("other.txt", "o2\n")
         h2 = self.merge_main()
-        self.assertEqual(self._print_digest(m, h2), recorded)
+        rc, out = self._cli(m, h2, "--waiver-record", record)
+        self.assertEqual((rc, out["waiver_applies"]), (0, True))  # head moved, diff did not
         self.r.write("pr.txt", "l1\nPR2\n" + "".join(f"l{i}\n" for i in range(3, 11)))
         h3 = self.r.commit("edit")
-        self.assertNotEqual(self._print_digest(m, h3), recorded)
+        rc, out = self._cli(m, h3, "--waiver-record", record)
+        self.assertEqual((rc, out["waiver_applies"]), (3, False))  # the PR's own diff changed
 
-    def test_agent_decisions_doc_names_the_diff_digest_as_the_waiver_candidate(self):
-        doc = (ROOT / "docs/agent-decisions.md").read_text()
-        self.assertIn("security_gate.py --print-digest", doc)
-        self.assertIn("main-only merge", doc)
+    def test_waiver_recorded_before_the_digest_line_covers_only_the_head_it_names(self):
+        """Existing human waivers name a head (`e78d1733`) and nothing else. They keep working on that head only."""
+        legacy = self._record(f"Cheese waived the test-first red for head `{self.h1[:8]}` only. Status: WAIVED, not PASS.\n")
+        rc, out = self._cli(self.base, self.h1, "--waiver-record", legacy)
+        self.assertEqual((rc, out["waiver_applies"]), (0, True))
+        m = self.advance_main("other.txt", "o2\n")
+        h2 = self.merge_main()
+        rc, out = self._cli(m, h2, "--waiver-record", legacy)
+        self.assertEqual((rc, out["waiver_applies"]), (3, False))
+
+    def test_unrelated_or_malformed_records_never_apply(self):
+        _, first = self._cli(self.base, self.h1)
+        for body in ("", "no scope here\n", "Waiver-Diff-Digest: xyz\n", f"Waiver-Diff-Digest: {first['digest'].upper()}\n",
+                     f"Waiver-Diff-Digest: {'0' * 64}\n", f"see {first['digest']} in prose\n"):
+            rc, out = self._cli(self.base, self.h1, "--waiver-record", self._record(body))
+            self.assertEqual((rc, out["waiver_applies"]), (3, False), body)
+
+    def test_docs_publish_a_command_that_parses_and_the_record_line(self):
+        agent = (ROOT / "docs/agent-decisions.md").read_text()
+        records = (ROOT / "docs/decision-records.md").read_text()
+        record = self._record(f"Waiver-Diff-Digest: {self.d1}\n")
+        for doc in (agent, records):
+            lines = re.findall(r"^python3 scripts/security-gate/security_gate\.py .*--print-digest.*$", doc, re.M)
+            self.assertTrue(lines, "no published command")
+            for line in lines:
+                argv = shlex.split(line.replace("<owner/repo>", "o/r").replace("<n>", "918").replace("<record.md>", record))
+                pull = json.dumps({"head": {"sha": self.h1}, "base": {"sha": self.base}})
+                with mock.patch.object(sg, "_gh", return_value=pull), mock.patch("sys.argv", ["x", "--repo", self.tmp.name, *argv[2:]]), \
+                        redirect_stdout(io.StringIO()) as out:
+                    self.assertEqual(sg.main(), 0)  # argparse accepts the published command and the record applies
+                self.assertEqual(json.loads(out.getvalue())["digest"], self.d1)
+        self.assertIn("Waiver-Diff-Digest:", records)
+        self.assertIn("--waiver-record", records)
+        self.assertIn("main-only merge", agent)
+        self.assertIn("main-only merge", records)
 
 
 if __name__ == "__main__":
