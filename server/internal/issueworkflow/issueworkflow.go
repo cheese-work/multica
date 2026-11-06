@@ -46,6 +46,10 @@ const (
 	// HandlerHumanByRole hands the issue to a person, by role: the issue's
 	// requester, then the project lead, then the workspace owner.
 	HandlerHumanByRole = "human_by_role"
+	// HandlerHumanInCharge marks a status that waits on the person in charge
+	// of a decision request (CHE-2591 L5). Entering it never hands off by
+	// itself: the entry check assigns the issue explicitly.
+	HandlerHumanInCharge = "human_in_charge"
 )
 
 const (
@@ -326,7 +330,9 @@ func EncodeSteps(steps []Step) ([]byte, error) {
 	stored := make([]storedStep, len(steps))
 	for i, s := range steps {
 		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen, Edges: s.Edges, SubWorkflow: s.SubWorkflow, Entry: s.Entry, DynamicAssignment: s.DynamicAssignment, LintWaive: s.LintWaive}
-		if s.HandsOff() {
+		// A human_in_charge step hands nothing off, but its handler is the entry
+		// rule of a decision episode and must survive storage.
+		if s.HandsOff() || s.Handler.Type == HandlerHumanInCharge {
 			h := s.Handler
 			stored[i].Handler = &h
 			stored[i].Instructions = s.Instructions
@@ -522,7 +528,7 @@ func ValidateHandoff(s Step, def Definition) error {
 		return invalid("status %q is not part of this workflow", s.StatusKey)
 	}
 	switch s.Handler.Type {
-	case HandlerNone, HandlerProjectLead, HandlerHumanByRole:
+	case HandlerNone, HandlerProjectLead, HandlerHumanByRole, HandlerHumanInCharge:
 	case HandlerAgent, HandlerMember:
 		if s.Handler.ID == "" {
 			return invalid("choose a %s to hand off to", s.Handler.Type)

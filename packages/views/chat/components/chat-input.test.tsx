@@ -1,5 +1,5 @@
 import { cloneElement, forwardRef, useEffect, useRef, useImperativeHandle } from "react";
-import { beforeEach, describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { I18nProvider } from "@multica/core/i18n/react";
 import type { UploadResult } from "@multica/core/hooks/use-file-upload";
@@ -2102,5 +2102,43 @@ describe("ChatInput after a decision card closes", () => {
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
     expect(onSend.mock.calls[0]![0]).toBe("Next question");
     expect(onSend.mock.calls[0]![4]).toBeUndefined();
+  });
+});
+
+// CHE-3534: iOS keeps the layout viewport full-height under the soft
+// keyboard, so the wrapper's percentage cap resolved against a surface mostly
+// hidden behind it and a long draft squeezed the message list to one line.
+describe("ChatInput keyboard height cap", () => {
+  class FakeVisualViewport extends EventTarget {
+    offsetTop = 0;
+    scale = 1;
+    constructor(public height: number) {
+      super();
+    }
+  }
+
+  afterEach(() => {
+    Reflect.deleteProperty(document.documentElement, "clientHeight");
+    Reflect.deleteProperty(window, "visualViewport");
+  });
+
+  function setViewport(visibleHeight: number) {
+    Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 800 });
+    Object.defineProperty(window, "visualViewport", {
+      configurable: true,
+      value: new FakeVisualViewport(visibleHeight),
+    });
+  }
+
+  it("caps the composer at 40% of the visible viewport while the keyboard is open", () => {
+    setViewport(400);
+    renderInput();
+    expect(screen.getByTestId("chat-composer").style.maxHeight).toBe("160px");
+  });
+
+  it("leaves the CSS cap alone when the keyboard is closed", () => {
+    setViewport(800);
+    renderInput();
+    expect(screen.getByTestId("chat-composer").style.maxHeight).toBe("");
   });
 });
