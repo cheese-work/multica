@@ -124,6 +124,37 @@ fi
 MULTICA_TEST_DB_PER_PACKAGE=1 PATH="$BIN_DIR:$PATH" bash "$SCRIPT_DIR/test-go.sh" --only agent --race
 expect_calls "per-package databases leave pkg/agent alone" "$agent_call"
 
+# CHE-4270: merge_group sets MULTICA_TEST_RERUN_FAILS=1 and each half runs under
+# gotestsum, which reruns failed tests once by name. Anything else stays on
+# plain `go test`, so pull_request and push runs show every failure.
+cat >"$BIN_DIR/gotestsum" <<'FAKE'
+#!/usr/bin/env bash
+echo "gotestsum $*" >>"$MULTICA_TEST_GO_CALLS"
+FAKE
+chmod 755 "$BIN_DIR/gotestsum"
+rerun_flags="--rerun-fails=1 --rerun-fails-max-failures=3 --rerun-fails-abort-on-data-race --format standard-verbose"
+flake_dir="$TEST_DIR/flakes"
+: >"$CALLS_FILE"
+MULTICA_FLAKE_DIR="$flake_dir" MULTICA_TEST_RERUN_FAILS=1 PATH="$BIN_DIR:$PATH" bash "$SCRIPT_DIR/test-go.sh" --race
+expect_calls "rerun mode" "gotestsum $rerun_flags --jsonfile $flake_dir/go-test-regular.json --packages github.com/multica-ai/multica/server github.com/multica-ai/multica/server/internal/daemon github.com/multica-ai/multica/server/internal/handler -- -race -p 1
+gotestsum $rerun_flags --jsonfile $flake_dir/go-test-agent.json --packages ./pkg/agent/... -- -race -p 2 -parallel 2"
+[ -d "$flake_dir" ] || { echo "rerun mode must create the flake dir" >&2; exit 1; }
+
+# A failing gotestsum run (a test failed twice) fails test-go.sh.
+cat >"$BIN_DIR/gotestsum" <<'FAKE'
+#!/usr/bin/env bash
+exit 1
+FAKE
+if MULTICA_FLAKE_DIR="$flake_dir" MULTICA_TEST_RERUN_FAILS=1 PATH="$BIN_DIR:$PATH" bash "$SCRIPT_DIR/test-go.sh" --race --only agent >/dev/null 2>&1; then
+  echo "a failing rerun run must fail test-go.sh" >&2
+  exit 1
+fi
+
+# Any value but 1 is off.
+: >"$CALLS_FILE"
+MULTICA_TEST_RERUN_FAILS=0 PATH="$BIN_DIR:$PATH" bash "$SCRIPT_DIR/test-go.sh" --only agent --race
+expect_calls "rerun off" "$agent_call"
+
 expect_usage_failure "unknown option" --unknown
 expect_usage_failure "unknown --only scope" --only everything
 expect_usage_failure "missing --only scope" --only

@@ -40,6 +40,25 @@ done
 
 cd "$REPO_ROOT/server"
 
+# CHE-4270: merge_group sets MULTICA_TEST_RERUN_FAILS=1. Each half then runs
+# under gotestsum, which reruns failed tests once by name (more than 3 failures,
+# a panic or a data race: no rerun). A test that fails then passes is a flake:
+# the run passes and the test shows in $MULTICA_FLAKE_DIR/go-test-<name>.json
+# for go-test-flakes.mjs. Any other run keeps plain `go test`.
+# $1: json name, $2: space-separated packages, rest: go test flags.
+run_go_test() {
+  local name=$1 packages=$2
+  shift 2
+  if [ "${MULTICA_TEST_RERUN_FAILS:-}" != 1 ]; then
+    "$GUARD_SCRIPT" -- go test "$@" $packages
+    return
+  fi
+  local flake_dir=${MULTICA_FLAKE_DIR:-$REPO_ROOT/flake-reports}
+  mkdir -p "$flake_dir"
+  "$GUARD_SCRIPT" -- gotestsum --rerun-fails=1 --rerun-fails-max-failures=3 --rerun-fails-abort-on-data-race \
+    --format standard-verbose --jsonfile "$flake_dir/go-test-$name.json" --packages "$packages" -- "$@"
+}
+
 if [ "$only" != agent ]; then
   packages=$(go list ./...)
   regular_packages=()
@@ -75,7 +94,7 @@ if [ "$only" != agent ]; then
     handler_shards_pid=$!
   fi
   regular_status=0
-  "$GUARD_SCRIPT" -- go "${go_test_args[@]}" "${package_parallelism[@]}" "${regular_packages[@]}" || regular_status=$?
+  run_go_test regular "${regular_packages[*]}" "${go_test_args[@]:1}" "${package_parallelism[@]}" || regular_status=$?
   shards_status=0
   [ -z "$handler_shards_pid" ] || wait "$handler_shards_pid" || shards_status=$?
   [ "$regular_status" -eq 0 ] || exit "$regular_status"
@@ -85,5 +104,5 @@ fi
 if [ "$only" != regular ]; then
   # Subprocess-backed agent tests have hard deadlines. Limit both package and
   # within-package parallelism so race builds do not starve their parent loops.
-  "$GUARD_SCRIPT" -- go "${go_test_args[@]}" -p 2 -parallel 2 ./pkg/agent/...
+  run_go_test agent ./pkg/agent/... "${go_test_args[@]:1}" -p 2 -parallel 2
 fi

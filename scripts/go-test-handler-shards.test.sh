@@ -64,4 +64,69 @@ for bad in 0 -1 abc; do
   fi
   [ ! -s "$TEST_DIR/builds" ] || { echo "MULTICA_HANDLER_SHARDS=$bad must fail before compiling" >&2; exit 1; }
 done
+# CHE-4270: with MULTICA_TEST_RERUN_FAILS=1 (merge_group) a shard that fails on
+# 1-3 named top-level tests reruns just those once. Pass on rerun = flake,
+# recorded in $MULTICA_FLAKE_DIR/handler-flakes.txt; fail again = shard fails.
+# The fake binary fails its first call with $FIRST_OUT / $FIRST_EXIT; a call
+# whose -test.run equals $RERUN_RE exits $RERUN_EXIT; everything else passes.
+cat >"$TEST_DIR/bin/go" <<'FAKE'
+#!/usr/bin/env bash
+set -eu
+out=
+while [ "$#" -gt 0 ]; do [ "$1" = -o ] && out=$2; shift; done
+cat >"$out" <<'BIN'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$SHARD_TEST_DIR/runs"
+case " $* " in
+  *" -test.run $RERUN_RE "*) exit "${RERUN_EXIT:-0}" ;;
+esac
+if ! [ -e "$SHARD_TEST_DIR/failed-once" ] && mkdir "$SHARD_TEST_DIR/failed-once" 2>/dev/null; then
+  printf '%s\n' "$FIRST_OUT"; exit "${FIRST_EXIT:-1}"
+fi
+exit 0
+BIN
+chmod 755 "$out"
+FAKE
+rerun_case() { # $1 label, $2 want exit, $3 want rerun count; rest: env from caller
+  rm -rf "$TEST_DIR/flakes" "$TEST_DIR/failed-once"
+  : >"$TEST_DIR/runs"
+  local status=0
+  MULTICA_TEST_RERUN_FAILS=1 MULTICA_FLAKE_DIR="$TEST_DIR/flakes" PATH="$TEST_DIR/bin:$PATH" \
+    MULTICA_TEST_EXEC="$TEST_DIR/exec" MULTICA_HANDLER_SHARDS=3 \
+    bash "$SCRIPT_DIR/go-test-handler-shards.sh" >/dev/null 2>&1 || status=$?
+  [ "$status" -eq "$2" ] || { echo "$1: exit $status, want $2" >&2; exit 1; }
+  local reruns
+  reruns=$(grep -cF -- "-test.run $RERUN_RE " "$TEST_DIR/runs" || true)
+  [ "$reruns" -eq "$3" ] || { echo "$1: $reruns reruns, want $3" >&2; exit 1; }
+}
+export SHARD_TEST_DIR
+export RERUN_RE='^(TestFlakyA|TestFlakyB)$'
+export FIRST_OUT=$'--- FAIL: TestFlakyB (0.10s)\n    --- FAIL: TestFlakyB/sub (0.10s)\n--- FAIL: TestFlakyA (0.20s)\nFAIL'
+
+# Fails once, passes on rerun: shard passes, both tests recorded as flakes.
+RERUN_EXIT=0 rerun_case "flake" 0 1
+[ "$(sort "$TEST_DIR/flakes/handler-flakes.txt")" = "$(printf 'internal/handler\tTestFlakyA\ninternal/handler\tTestFlakyB')" ] \
+  || { echo "flake file wrong:" >&2; cat "$TEST_DIR/flakes/handler-flakes.txt" >&2; exit 1; }
+
+# Fails again on rerun: real failure, nothing recorded.
+RERUN_EXIT=1 rerun_case "fails twice" 1 1
+[ ! -s "$TEST_DIR/flakes/handler-flakes.txt" ] || { echo "no flake may be recorded when the rerun fails" >&2; exit 1; }
+
+# More than 3 failing tests: a real break, no rerun.
+FIRST_OUT=$'--- FAIL: TestA (0s)\n--- FAIL: TestB (0s)\n--- FAIL: TestC (0s)\n--- FAIL: TestD (0s)\nFAIL' RERUN_EXIT=0 rerun_case ">3 failures" 1 0
+
+# A panic or timeout leaves later tests unrun, so a rerun of the named ones proves nothing.
+FIRST_OUT=$'--- FAIL: TestFlakyA (0s)\npanic: test timed out after 10m0s' FIRST_EXIT=2 RERUN_EXIT=0 rerun_case "panic" 1 0
+
+# No named failure (TestMain, build): nothing to rerun.
+FIRST_OUT='FAIL' RERUN_EXIT=0 rerun_case "no names" 1 0
+
+# Default (pull_request, push): no rerun, failure shows.
+rm -rf "$TEST_DIR/failed-once"
+: >"$TEST_DIR/runs"
+status=0
+RERUN_EXIT=0 PATH="$TEST_DIR/bin:$PATH" MULTICA_TEST_EXEC="$TEST_DIR/exec" MULTICA_HANDLER_SHARDS=3 \
+  bash "$SCRIPT_DIR/go-test-handler-shards.sh" >/dev/null 2>&1 || status=$?
+[ "$status" -eq 1 ] || { echo "rerun off: exit $status, want 1" >&2; exit 1; }
+! grep -qF -- "-test.run $RERUN_RE " "$TEST_DIR/runs" || { echo "rerun off must not rerun" >&2; exit 1; }
 echo "go-test-handler-shards.test.sh: PASS"

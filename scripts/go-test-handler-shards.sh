@@ -40,12 +40,42 @@ fi
 verbose=()
 case " ${GOFLAGS:-} " in *" -v "*) verbose=(-test.v) ;; esac
 
+# CHE-4270: in merge_group (MULTICA_TEST_RERUN_FAILS=1) a shard that failed on
+# 1-3 named top-level tests reruns just those once, so a flake does not eject
+# the PR from the queue. Passing on rerun records the test in
+# $MULTICA_FLAKE_DIR/handler-flakes.txt. Not rerun: exit != 1 (panic, timeout,
+# data race leave later tests unrun), no `--- FAIL` name, or more than 3 names.
+flake_dir=${MULTICA_FLAKE_DIR:-$REPO_ROOT/flake-reports}
+
+run_shard() { # $1: -test.run regex
+  (cd "$package_dir" && exec "$GUARD_SCRIPT" -- "$EXEC_WRAPPER" "$work_dir/handler.test" \
+    -test.run "$1" -test.count=1 -test.timeout=10m ${verbose[@]+"${verbose[@]}"})
+}
+
+run_shard_with_rerun() { # $1: shard index, $2: -test.run regex
+  local log="$work_dir/shard-$1.log" shard_status=0 failed count
+  set -o pipefail
+  run_shard "$2" 2>&1 | tee "$log" || shard_status=$?
+  [ "$shard_status" -eq 1 ] || return "$shard_status"
+  grep -q '^panic: ' "$log" && return 1
+  failed=$(grep -oE '^--- FAIL: [A-Za-z0-9_]+' "$log" | sed 's/^--- FAIL: //' | sort -u) || true
+  count=$(printf '%s' "$failed" | grep -c .) || true
+  { [ "$count" -ge 1 ] && [ "$count" -le 3 ]; } || return 1
+  echo "rerunning failed tests once: $(printf '%s' "$failed" | paste -sd' ')"
+  run_shard "^($(printf '%s' "$failed" | paste -sd'|'))\$" || return $?
+  mkdir -p "$flake_dir"
+  printf 'internal/handler\t%s\n' $failed >>"$flake_dir/handler-flakes.txt"
+}
+
 pids=()
 for ((i = 0; i < shards; i++)); do
   pattern=$(printf '%s\n' "$names" | awk -v n="$shards" -v i="$i" 'NR % n == i { printf "%s%s", sep, $0; sep = "|" }')
   [ -n "$pattern" ] || continue
-  (cd "$package_dir" && exec "$GUARD_SCRIPT" -- "$EXEC_WRAPPER" "$work_dir/handler.test" \
-    -test.run "^($pattern)\$" -test.count=1 -test.timeout=10m ${verbose[@]+"${verbose[@]}"}) &
+  if [ "${MULTICA_TEST_RERUN_FAILS:-}" = 1 ]; then
+    run_shard_with_rerun "$i" "^($pattern)\$" &
+  else
+    run_shard "^($pattern)\$" &
+  fi
   pids+=($!)
 done
 
