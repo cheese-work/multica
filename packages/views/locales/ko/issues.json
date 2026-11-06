@@ -1980,5 +1980,32 @@
       "row_actions": "{{name}} 작업",
       "no_matches": "일치하는 뷰가 없습니다"
     }
+  },
+  "status_history": {
+    "title": "상태 기록",
+    "description": "이 이슈의 모든 상태 변경을 오래된 순서로 표시합니다.",
+    "empty": "기록된 상태 변경이 없습니다.",
+    "truncated": "오래된 상태 변경은 표시되지 않습니다. 서버가 반환한 가장 오래된 변경부터 시작합니다.",
+    "trigger_not_recorded": "트리거가 기록되지 않았습니다",
+    "removed": "{{status}} (제거됨)",
+    "handoff_comment": "인계 댓글",
+    "handoff_invalid": "인계 링크가 올바르지 않습니다",
+    "scrubber_label": "상태 기록 위치",
+    "position": "{{current}} / {{total}}",
+    "cause": {
+      "ui_or_api": "사용자가 변경",
+      "workflow_edge": "워크플로 전환",
+      "workflow_remap": "워크플로 재매핑",
+      "pr_merged": "PR 병합",
+      "ci_advance": "CI 진행",
+      "run_budget": "실행 예산",
+      "decision": "결정",
+      "watchdog": "워치독",
+      "task_reset": "실패한 실행 초기화",
+      "qoder": "Qoder",
+      "duplicate": "중복",
+      "system": "시스템"
+    },
+    "open": "상태 기록"
   }
 }

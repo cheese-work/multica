@@ -2061,5 +2061,32 @@
       "row_actions": "Actions pour {{name}}",
       "no_matches": "Aucune vue ne correspond"
     }
+  },
+  "status_history": {
+    "title": "Historique des statuts",
+    "description": "Tous les changements de statut de ce ticket, du plus ancien au plus récent.",
+    "empty": "Aucun changement de statut enregistré.",
+    "truncated": "Les changements de statut plus anciens ne sont pas affichés. La liste commence au plus ancien changement renvoyé par le serveur.",
+    "trigger_not_recorded": "Déclencheur non enregistré",
+    "removed": "{{status}} (supprimé)",
+    "handoff_comment": "Commentaire de transmission",
+    "handoff_invalid": "Lien de transmission invalide",
+    "scrubber_label": "Position dans l’historique des statuts",
+    "position": "{{current}} sur {{total}}",
+    "cause": {
+      "ui_or_api": "Modifié par une personne",
+      "workflow_edge": "Transition de workflow",
+      "workflow_remap": "Remappage de workflow",
+      "pr_merged": "PR fusionnée",
+      "ci_advance": "Avancement CI",
+      "run_budget": "Budget d’exécutions",
+      "decision": "Décision",
+      "watchdog": "Chien de garde",
+      "task_reset": "Réinitialisation après échec",
+      "qoder": "Qoder",
+      "duplicate": "Doublon",
+      "system": "Système"
+    },
+    "open": "Historique des statuts"
   }
 }

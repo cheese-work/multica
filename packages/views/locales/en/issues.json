@@ -2061,5 +2061,32 @@
       "row_actions": "Actions for {{name}}",
       "no_matches": "No views match"
     }
+  },
+  "status_history": {
+    "title": "Status history",
+    "description": "Every status change on this issue, oldest first.",
+    "empty": "No status changes recorded.",
+    "truncated": "Older status changes are not shown. The list starts at the oldest change the server returned.",
+    "trigger_not_recorded": "Trigger not recorded",
+    "removed": "{{status}} (removed)",
+    "handoff_comment": "Handoff comment",
+    "handoff_invalid": "Handoff link invalid",
+    "scrubber_label": "Position in status history",
+    "position": "{{current}} of {{total}}",
+    "cause": {
+      "ui_or_api": "Changed by a person",
+      "workflow_edge": "Workflow edge",
+      "workflow_remap": "Workflow remap",
+      "pr_merged": "PR merged",
+      "ci_advance": "CI advance",
+      "run_budget": "Run budget",
+      "decision": "Decision",
+      "watchdog": "Watchdog",
+      "task_reset": "Failed run reset",
+      "qoder": "Qoder",
+      "duplicate": "Duplicate",
+      "system": "System"
+    },
+    "open": "Status history"
   }
 }
