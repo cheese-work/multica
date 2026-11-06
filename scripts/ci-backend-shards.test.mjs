@@ -15,7 +15,7 @@ const aggregate = job("backend-tests");
 test("the shard matrix covers handler shards, service and the rest, one runner each", () => {
   assert.ok(shards, "missing backend-test-shards job");
   const partitions = shards.match(/^        partition: \[(.*)\]$/m)?.[1].split(/,\s*/);
-  assert.deepEqual(partitions, ["handler-0", "handler-1", "handler-2", "service", "rest"]);
+  assert.deepEqual(partitions, ["handler-0", "handler-1", "handler-2", "handler-3", "service", "rest"]);
   assert.match(shards, /^      fail-fast: false$/m);
   assert.match(shards, /^    runs-on: ubuntu-24\.04$/m);
   const handlerShards = partitions.filter((name) => name.startsWith("handler-")).length;

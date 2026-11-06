@@ -480,7 +480,7 @@ jobs:
   # a cached "ok" from an untouched package could mask a real failure.
   #
   # CHE-4268: one job took 15-16 min and was the merge-queue critical path, so
-  # the work is a matrix of runners, one partition each: three handler shards,
+  # the work is a matrix of runners, one partition each: four handler shards,
   # internal/service (the slowest non-handler package) and every other
   # package. The `backend-tests` job below is the aggregate that keeps the
   # required check name. Each partition still builds its own test binaries;
@@ -494,7 +494,7 @@ jobs:
       # most useful, and the aggregate fails on any non-success anyway.
       fail-fast: false
       matrix:
-        partition: [handler-0, handler-1, handler-2, service, rest]
+        partition: [handler-0, handler-1, handler-2, handler-3, service, rest]
     # Stays off cheese-x99 (CHE-748): this is the only job in the repo that
     # uses `services`, and the self-hosted runners talk to a nested Docker
     # daemon (`DOCKER_HOST=tcp://dind-N:2376`) living in a *different*
@@ -553,7 +553,7 @@ jobs:
       # directly so they run alongside the Postgres-backed suite.
       REDIS_TEST_URL: redis://localhost:6379/1
       GOFLAGS: -count=1
-      MULTICA_HANDLER_SHARDS: "3"
+      MULTICA_HANDLER_SHARDS: "4"
     steps:
       - name: Require migration prefix result
         env:
