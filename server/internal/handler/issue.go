@@ -4709,6 +4709,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if statusChanged || prevIssue.ParentIssueID != issue.ParentIssueID || prevIssue.Stage != issue.Stage {
 		h.processChildEvents(r.Context(), issue.ParentIssueID, prevIssue.ParentIssueID)
 	}
+	h.recordIssueMoved(r.Context(), prevIssue, issue)
 	if statusChanged && issue.ParentIssueID.Valid && h.childDoneSystemRuleEnabled(r.Context(), issue.ParentIssueID) {
 		h.notifyParentOfChildDone(r.Context(), prevIssue, issue)
 	}
@@ -5600,6 +5601,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		if statusChanged || prevIssue.ParentIssueID != issue.ParentIssueID || prevIssue.Stage != issue.Stage {
 			changedParents = append(changedParents, issue.ParentIssueID, prevIssue.ParentIssueID)
 		}
+		h.recordIssueMoved(r.Context(), prevIssue, issue)
 		updated++
 		updatedIDs = append(updatedIDs, uuidToString(issue.ID))
 	}
