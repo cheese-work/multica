@@ -466,7 +466,7 @@ func (e *env) settledReservations(t *testing.T) int {
 	t.Helper()
 	var n int
 	if err := e.pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM gh_budget_reservation WHERE installation_id=$1 AND settled_at IS NOT NULL`, e.inst).Scan(&n); err != nil {
+		`SELECT count(*) FROM gh_budget_reservation WHERE installation_id=$1 AND substr(id::text,15,1)='0'`, e.inst).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	return n

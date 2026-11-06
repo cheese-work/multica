@@ -131,8 +131,8 @@ type Reservation struct {
 	id   string
 	cost int
 	// createdAt is the database time the reservation was taken, under the
-	// installation lock. Settled calls older than it are already counted by
-	// any response this reservation gets.
+	// installation lock. Settled calls stamped before it are already counted
+	// by any response this reservation gets.
 	createdAt time.Time
 }
 
@@ -228,7 +228,7 @@ func (r *Reservation) Complete(ctx context.Context, h http.Header) error {
 		}
 		if applied {
 			if _, err := tx.Exec(ctx,
-				`DELETE FROM gh_budget_reservation WHERE installation_id=$1 AND settled_at IS NOT NULL AND settled_at < $2`,
+				`DELETE FROM gh_budget_reservation WHERE installation_id=$1 AND substr(id::text,15,1)='0' AND created_at < $2`,
 				r.inst, r.createdAt); err != nil {
 				return err
 			}
@@ -239,20 +239,27 @@ func (r *Reservation) Complete(ctx context.Context, h http.Header) error {
 }
 
 // settle turns the reservation into a settled call that lasts until the
-// window resets. If cleanup already removed the row, it is written again.
+// window resets, and stamps created_at with the settle time. A settled call is
+// marked by version nibble 0 in its id: gen_random_uuid() always writes 4
+// there, so no live reservation looks settled. This needs no migration (the
+// runner sorts file names as text, so a 1000_ file would run before 986_).
+// If cleanup already removed the row, it is written again.
 func (r *Reservation) settle(ctx context.Context, tx pgx.Tx) error {
 	until := r.l.now().Add(ReservationTTL)
 	tag, err := tx.Exec(ctx,
 		`UPDATE gh_budget_reservation
-		    SET settled_at = clock_timestamp(),
+		    SET id = overlay(id::text placing '0' from 15 for 1)::uuid,
+		        created_at = clock_timestamp(),
 		        expires_at = GREATEST(expires_at, COALESCE((SELECT reset_at FROM gh_installation_budget WHERE installation_id=$2), $3))
 		  WHERE id=$1::uuid`, r.id, r.inst, until)
 	if err != nil || tag.RowsAffected() > 0 {
 		return err
 	}
 	_, err = tx.Exec(ctx,
-		`INSERT INTO gh_budget_reservation (id, installation_id, cost, expires_at, created_at, settled_at)
-		 VALUES ($1::uuid, $2, $3, COALESCE((SELECT reset_at FROM gh_installation_budget WHERE installation_id=$2), $4), clock_timestamp(), clock_timestamp())`,
+		`INSERT INTO gh_budget_reservation (id, installation_id, cost, expires_at, created_at)
+		 VALUES (overlay($1::text placing '0' from 15 for 1)::uuid, $2, $3,
+		         COALESCE((SELECT reset_at FROM gh_installation_budget WHERE installation_id=$2), $4), clock_timestamp())
+		 ON CONFLICT (id) DO NOTHING`,
 		r.id, r.inst, r.cost, until)
 	return err
 }
@@ -385,7 +392,7 @@ func (l *Ledger) refreshLocked(ctx context.Context, inst int64) error {
 	}
 	// GET /rate_limit counts every call that finished before it started.
 	_, err = conn.Exec(ctx,
-		`DELETE FROM gh_budget_reservation WHERE installation_id=$1 AND settled_at IS NOT NULL AND settled_at < $2`,
+		`DELETE FROM gh_budget_reservation WHERE installation_id=$1 AND substr(id::text,15,1)='0' AND created_at < $2`,
 		inst, fetchStart)
 	return err
 }
