@@ -9,6 +9,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // Per-issue workflow override (CHE-1986).
@@ -149,6 +150,40 @@ func TestOverrideBeatsStoredDefaultOutsideAProject(t *testing.T) {
 		t.Fatalf("code = %v, want status_not_in_workflow: the override, not the stored Default, judges the move", code)
 	}
 	updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}).Want(http.StatusOK)
+}
+
+// On create, outside a project, an override lists the statuses the new issue
+// may take, not the stored Default: a status only the override lists is
+// accepted, and one only the Default lists is refused. (CHE-3459)
+func TestCreateOutsideAProjectJudgesByTheOverrideNotTheStoredDefault(t *testing.T) {
+	seedTestCatalog(t)
+	resetDefaultWorkflow(t)
+	key := "only_override"
+	createTestCustomStatus(t, key, "started")
+	wf := createTestWorkflow(t, "Create beats Default "+workflowTestSuffix(), key)
+	// Store the Default, then take key out of it: only the override lists key.
+	testutil.Call(t, testHandler.ListIssueWorkflows, workflowRequest("GET", "/api/issue-workflows", nil)).Want(http.StatusOK)
+	if err := testHandler.Queries.RemoveStatusFromDefaultIssueWorkflow(context.Background(), db.RemoveStatusFromDefaultIssueWorkflowParams{
+		WorkspaceID: util.MustParseUUID(testWorkspaceID), StatusKey: key,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	create := func(body map[string]any) *testutil.Response {
+		return testutil.Call(t, testHandler.CreateIssue, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, body))
+	}
+
+	var created struct {
+		ID string `json:"id"`
+	}
+	create(map[string]any{"title": "listed only by the override " + workflowTestSuffix(), "status": key, "workflow_id": wf.ID}).
+		Want(http.StatusCreated).JSON(&created)
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, created.ID) })
+	if got := issueOverride(t, created.ID); got != wf.ID {
+		t.Fatalf("stored override = %q, want %q", got, wf.ID)
+	}
+	// No override: the stored Default still judges, and it does not list key.
+	create(map[string]any{"title": "no override " + workflowTestSuffix(), "status": key}).
+		Want(http.StatusBadRequest)
 }
 
 // Creating with an override that omits the requested status is an error, not
