@@ -2,9 +2,12 @@ package handler
 
 import (
 	"context"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 )
@@ -61,10 +64,10 @@ func TestIssueMetadataCheckRejectsNonPrimitive(t *testing.T) {
 	}
 }
 
-// Only setIssueMetadataValue may call the SetIssueMetadataKey query.
+// Only setIssueMetadataValue may reference the SetIssueMetadataKey query
+// (call or method value), whatever the receiver or context spelling.
 func TestIssueMetadataSingleWriter(t *testing.T) {
-	call := regexp.MustCompile(`\.SetIssueMetadataKey\((ctx|context\.|r\.Context\(\))`)
-	var hits []string
+	var refs []string
 	err := filepath.WalkDir("../..", func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -75,19 +78,36 @@ func TestIssueMetadataSingleWriter(t *testing.T) {
 		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		b, err := os.ReadFile(path)
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, path, nil, 0)
 		if err != nil {
 			return err
 		}
-		if call.Match(b) {
-			hits = append(hits, filepath.ToSlash(path))
+		for _, decl := range f.Decls {
+			fn, _ := decl.(*ast.FuncDecl)
+			owner := "<package level>"
+			if fn != nil {
+				owner = fn.Name.Name
+			}
+			ast.Inspect(decl, func(n ast.Node) bool {
+				sel, ok := n.(*ast.SelectorExpr)
+				if !ok || sel.Sel.Name != "SetIssueMetadataKey" {
+					return true
+				}
+				// router.go binds the HTTP handler method of the same name, not the query.
+				if x, isIdent := sel.X.(*ast.Ident); isIdent && x.Name == "h" && filepath.Base(path) == "router.go" {
+					return true
+				}
+				refs = append(refs, fmt.Sprintf("%s:%d in %s", filepath.ToSlash(path), fset.Position(sel.Pos()).Line, owner))
+				return true
+			})
 		}
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(hits) != 1 || !strings.HasSuffix(hits[0], "internal/handler/issue_metadata.go") {
-		t.Fatalf("SetIssueMetadataKey query called outside setIssueMetadataValue: %v", hits)
+	if len(refs) != 1 || !strings.HasPrefix(refs[0], "../../internal/handler/issue_metadata.go:") || !strings.HasSuffix(refs[0], " in setIssueMetadataValue") {
+		t.Fatalf("want exactly one SetIssueMetadataKey reference, inside setIssueMetadataValue; got: %v", refs)
 	}
 }
