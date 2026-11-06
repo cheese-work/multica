@@ -41,11 +41,13 @@ export function AgentAutoCompactSection({
 
   const save = async (field: TokenField, text: string) => {
     const { auto_compact, ...rest } = agent.runtime_config ?? {};
-    const { [field]: _dropped, ...others } =
+    const { [field]: _dropped, ...kept } =
       auto_compact !== null && typeof auto_compact === "object" && !Array.isArray(auto_compact)
         ? (auto_compact as Record<string, unknown>)
         : {};
-    const next = text.trim() === "" ? others : { ...others, [field]: Number(text) };
+    // A saved percent would outrank the token limit being saved, so it goes.
+    const { threshold_pct: _pct, ...withoutPct } = kept;
+    const next = text.trim() === "" ? kept : { ...withoutPct, [field]: Number(text) };
     try {
       await onUpdate(agent.id, {
         runtime_config: Object.keys(next).length ? { ...rest, auto_compact: next } : rest,

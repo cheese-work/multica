@@ -66,3 +66,14 @@ it("is read-only without edit access", () => {
   expect(oneM()).toBeDisabled();
   expect(small()).toBeDisabled();
 });
+
+it("a saved token limit replaces a percent saved earlier at this level", async () => {
+  const onUpdate = mount({ auto_compact: { enabled: true, threshold_pct: 80 } });
+  fireEvent.change(oneM(), { target: { value: "300000" } });
+  fireEvent.blur(oneM());
+  await waitFor(() =>
+    expect(onUpdate).toHaveBeenCalledWith("agent-1", {
+      runtime_config: { auto_compact: { enabled: true, threshold_tokens_1m: 300000 } },
+    }),
+  );
+});

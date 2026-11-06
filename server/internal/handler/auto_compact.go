@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/multica-ai/multica/server/internal/service"
@@ -24,7 +25,9 @@ func validateAutoCompactConfig(value any) error {
 			return fmt.Errorf("auto_compact.enabled must be a boolean")
 		}
 	}
-	if v, present := rule["threshold_pct"]; present {
+	// null is the stored mark of a percent replaced by a token limit (see
+	// clearStalePct); a whole-settings save sends it back unchanged.
+	if v, present := rule["threshold_pct"]; present && v != nil {
 		pct, isNum := v.(float64)
 		if !isNum || !service.ValidAutoCompactPct(pct) {
 			return fmt.Errorf("auto_compact.threshold_pct must be an integer from %d to %d", service.AutoCompactMinPct, service.AutoCompactMaxPct)
@@ -51,4 +54,38 @@ func validateCompactConfig(value any) error {
 		return err
 	}
 	return validateAutoCompactConfig(value)
+}
+
+// validateAutoCompactPatch checks a PATCH body: like a stored object, but a
+// null threshold_pct is not a value a client may send.
+func validateAutoCompactPatch(incoming any) error {
+	if rule, ok := incoming.(map[string]any); ok {
+		if v, present := rule["threshold_pct"]; present && v == nil {
+			return fmt.Errorf("auto_compact.threshold_pct must be an integer from %d to %d", service.AutoCompactMinPct, service.AutoCompactMaxPct)
+		}
+	}
+	return validateAutoCompactConfig(map[string]any{"auto_compact": incoming})
+}
+
+// clearStalePct makes a saved token limit effective. A patch merges into the
+// stored object, so a percent saved earlier would keep winning over the token
+// limit being saved now; the patch therefore sets threshold_pct to null unless
+// it names a percent itself. Input is already validated.
+func clearStalePct(patch json.RawMessage) json.RawMessage {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(patch, &fields) != nil {
+		return patch
+	}
+	_, hasPct := fields["threshold_pct"]
+	_, has200k := fields["threshold_tokens_200k"]
+	_, has1m := fields["threshold_tokens_1m"]
+	if hasPct || (!has200k && !has1m) {
+		return patch
+	}
+	fields["threshold_pct"] = json.RawMessage("null")
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return patch
+	}
+	return out
 }
