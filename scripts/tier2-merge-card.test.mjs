@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { currentWindow, eligible, mergeMethod, parseListed, planMerge, renderAsk } from './tier2-merge-card.mjs';
+import * as card from './tier2-merge-card.mjs';
+
+const { currentWindow, eligible, renderAsk } = card;
 
 const HEAD = 'a'.repeat(40);
 const pr = (over = {}) => ({
@@ -35,12 +37,11 @@ test('a merged PR is never listed: merged PRs are not open and drop out of the i
   assert.deepEqual(eligible([pr({ state: 'MERGED' })]), []);
 });
 
-test('card shows exact heads, per-PR links, merge all and merge none', () => {
+test('card shows exact heads and per-PR links', () => {
   const ask = renderAsk([pr(), pr({ number: 11, url: 'https://github.com/cheese-work/multica/pull/11', headSha: 'c'.repeat(40) })], '07:30');
   assert.match(ask.decision, /2 Tier 2 PRs/);
   assert.ok(ask.context_eli10.includes(`[#10](https://github.com/cheese-work/multica/pull/10) \`${HEAD}\``));
   assert.ok(ask.context_eli10.includes('`' + 'c'.repeat(40) + '`'));
-  assert.deepEqual(ask.options.map((o) => o.label), ['Merge all 2', 'Merge none now']);
   assert.ok(ask.options.length >= 2 && ask.recommendation && ask.default_if_no_reply);
 });
 
@@ -60,23 +61,10 @@ test('rejects a receipt that failed to classify or came from an untrusted classi
   assert.deepEqual(eligible([pr({ receipt: { ...r, classifier: undefined } })]), []);
 });
 
-test('merge method follows the title tag; no tag is refused', () => {
-  assert.equal(mergeMethod('feat: x [squash]'), '--squash');
-  assert.equal(mergeMethod('feat: x [merge]'), '--merge');
-  assert.equal(mergeMethod('feat: x'), null);
-});
-
-test('parses the card command pairs and refuses a malformed one', () => {
-  assert.deepEqual(parseListed([`10:${HEAD}`]), [{ number: 10, headSha: HEAD }]);
-  assert.throws(() => parseListed(['10:abc']));
-  assert.throws(() => parseListed([]));
-});
-
-test('execution merges only PRs still eligible at the listed head; a moved head is skipped', () => {
-  const moved = 'b'.repeat(40);
-  const listed = [{ number: 10, headSha: HEAD }, { number: 11, headSha: HEAD }, { number: 12, headSha: HEAD }];
-  const now = eligible([pr(), pr({ number: 11, headSha: moved, receipt: { ...pr().receipt, head: moved, ci: { head_sha: moved, passed: true } }, securityGate: { sha: moved, state: 'success' } })]);
-  const plan = planMerge(listed, now);
-  assert.deepEqual(plan.merge.map((p) => p.number), [10]);
-  assert.deepEqual(plan.skipped.map((s) => s.number), [11, 12]); // 11 moved; 12 no longer eligible (merged, closed or red)
+test('the card only lists: no agent merge step exists and no option has an agent merge', () => {
+  for (const name of ['mergeListed', 'planMerge', 'mergeMethod', 'parseListed']) assert.equal(card[name], undefined, name);
+  const ask = renderAsk([pr()], '07:30');
+  const text = JSON.stringify(ask.options) + ask.decision + ask.recommendation + ask.default_if_no_reply;
+  assert.doesNotMatch(text, /agent runs|--match-head-commit|tier2-merge-card\.mjs merge|gh pr merge/i);
+  assert.match(ask.default_if_no_reply, /Nothing merges/);
 });
