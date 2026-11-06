@@ -17,7 +17,8 @@ const (
 	PartialRedactionError = "redaction_error"
 	PartialLogTruncated   = "log_truncated"
 	PartialNoJobs         = "no_jobs"
-	PartialFetchError     = "fetch_error" // not in the plan's list: a non-limit GitHub failure
+	PartialJobsTruncated  = "jobs_truncated" // more job pages than we read
+	PartialFetchError     = "fetch_error"    // not in the plan's list: a non-limit GitHub failure
 )
 
 // Result kinds from Handle.

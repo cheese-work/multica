@@ -51,41 +51,63 @@ func (r *redactor) emit(s string) {
 	}
 }
 
-// line takes one logical line. text is what may be stored; begin and end say
-// whether a key marker appeared anywhere in the full line.
-func (r *redactor) line(text string, begin, end bool) {
-	switch {
-	case r.inKey:
-		if end {
-			r.inKey = false
+// line takes one logical line. text is what may be stored; first and last are
+// the kinds of the first and last key marker anywhere in the full line ('B'
+// BEGIN, 'E' END, 0 none). The last marker decides whether a key is still open
+// after the line, so "END ... BEGIN" on one line keeps the next body hidden.
+func (r *redactor) line(text string, first, last byte) {
+	if first == 0 {
+		if !r.inKey {
+			r.emit(redactTokens(text))
 		}
-	case begin && end:
-		r.emit(keyPlaceholder)
-	case begin:
-		r.inKey = true
-		r.emit(keyPlaceholder)
-	case end:
-		// END without BEGIN: the key started before anything we saw as a key,
-		// so nothing earlier is trustworthy. Drop it all.
-		r.lines = r.lines[:0]
-		r.emit(keyPlaceholder)
-	default:
-		r.emit(redactTokens(text))
+		return
 	}
+	if !r.inKey {
+		if first == 'E' {
+			// END without BEGIN: the key started before anything we saw as a
+			// key, so nothing earlier is trustworthy. Drop it all.
+			r.lines = r.lines[:0]
+		}
+		r.emit(keyPlaceholder)
+	}
+	r.inKey = last == 'B'
 }
 
 // lineScan accumulates one logical line from ReadSlice fragments.
 type lineScan struct {
-	head       []byte
-	overflow   bool
-	begin, end bool
-	carry      string
+	head        []byte
+	overflow    bool
+	first, last byte // kind of the first and last key marker seen; 0 none
+	carry       string
+}
+
+// span returns the first and last match start in s, or -1, -1.
+func span(re *regexp.Regexp, s string) (lo, hi int) {
+	m := re.FindAllStringIndex(s, -1)
+	if len(m) == 0 {
+		return -1, -1
+	}
+	return m[0][0], m[len(m)-1][0]
 }
 
 func (l *lineScan) add(frag []byte) {
 	s := l.carry + string(frag)
-	l.begin = l.begin || keyBegin.MatchString(s)
-	l.end = l.end || keyEnd.MatchString(s)
+	// A marker re-found in the carry keeps its kind and order, so first and
+	// last stay right when a marker straddles two fragments.
+	loB, hiB := span(keyBegin, s)
+	loE, hiE := span(keyEnd, s)
+	if loB >= 0 || loE >= 0 {
+		if l.first == 0 {
+			l.first = 'E'
+			if loE < 0 || (loB >= 0 && loB < loE) {
+				l.first = 'B'
+			}
+		}
+		l.last = 'E'
+		if hiE < 0 || hiB > hiE {
+			l.last = 'B'
+		}
+	}
 	if len(s) > markerCarry {
 		s = s[len(s)-markerCarry:]
 	}
@@ -126,7 +148,7 @@ func RedactTail(r io.Reader, maxLines int) (lines []string, err error) {
 			if cur.overflow {
 				text += " [line cut at 64 KiB]"
 			}
-			red.line(text, cur.begin, cur.end)
+			red.line(text, cur.first, cur.last)
 			cur = lineScan{}
 		}
 		if rerr != nil {

@@ -258,6 +258,18 @@ func TestJobSelectionAndPaging(t *testing.T) {
 	if len(gh.logCalls) != 2 {
 		t.Errorf("log downloads = %v, want 2", gh.logCalls)
 	}
+	if ev.Evidence != EvidencePartial || ev.PartialReason != PartialJobsTruncated {
+		t.Errorf("more pages after page 3 must be partial/jobs_truncated, got %s/%s", ev.Evidence, ev.PartialReason)
+	}
+}
+
+func TestEndThenBeginInLogReachesNoSink(t *testing.T) {
+	raw := "-----BEGIN PRIVATE KEY-----\n" + pemBody + "\n-----END PRIVATE KEY----- -----BEGIN PRIVATE KEY-----\nSECONDplantedBODY0123\n"
+	gh := &fakeGH{jobsByPage: [][]Job{{failedJob(1, "build", t0)}}, logs: map[int64]func(context.Context) io.Reader{1: text(raw)}}
+	c, logs := newCollector(gh, &fakeBudget{}, fakeRuns{})
+	got, _ := c.Handle(context.Background(), baseInput())
+	blob, _ := json.Marshal(got)
+	noLeak(t, string(blob)+logs.String()+UntrustedBlock(got.Event.Jobs[0].Excerpt), pemBody, "SECONDplantedBODY0123")
 }
 
 func TestNoFailedJobsIsPartial(t *testing.T) {
