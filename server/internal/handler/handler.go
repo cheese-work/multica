@@ -226,7 +226,9 @@ type Handler struct {
 	// workflowWriter overrides how workflow deliveries are stored; nil means the
 	// default transaction-per-workspace writer. Tests inject faults through it.
 	workflowWriter workflowWriter
-	Queries        *db.Queries
+	// ciWatch records completed runs for the CI failure watcher; nil = off.
+	ciWatch ciWatcher
+	Queries *db.Queries
 	// ActionRequestsEnabled lets `kind=action` decision requests be created. It
 	// stays off until the whole CHE-2394 stack is deployed (P7 removes it).
 	ActionRequestsEnabled  bool
