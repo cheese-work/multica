@@ -6,7 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // The exhaustion hook is three transactions: R records the refusal, B blocks,
@@ -342,5 +345,71 @@ func TestRunBudgetHookRefusalWhileBlockedCopiesTheOriginalStatusAndTarget(t *tes
 	}
 	if agentID != c.agentID {
 		t.Fatalf("copied target agent = %s, want %s", agentID, c.agentID)
+	}
+}
+
+func TestRunBudgetHookLookupErrorLeavesTheHookForTheSweep(t *testing.T) {
+	c, e := hookCase(t, 2856009)
+	// The workflow cannot be read when B looks for the Blocked step: that is not
+	// "no Blocked step", so the hook must stay where it is and be retried.
+	lookupFails := true
+	forIssueWorkflow = func(ctx context.Context, q issueworkflow.Querier, ws, wf, project pgtype.UUID) (*issueworkflow.Definition, db.Project, error) {
+		if lookupFails {
+			return nil, db.Project{}, errors.New("workflow lookup unavailable")
+		}
+		return issueworkflow.ForIssue(ctx, q, ws, wf, project)
+	}
+	t.Cleanup(func() { forIssueWorkflow = issueworkflow.ForIssue })
+	testHandler.onRunBudgetExhausted(context.Background(), e)
+	if r := onlyRefusal(t, c); r.Phase != "intent" {
+		t.Fatalf("hook phase after a failed lookup = %q, want intent (kept for the sweep)", r.Phase)
+	}
+	if got := c.status(t); got != "in_progress" || blockRows(t, c) != 0 {
+		t.Fatalf("issue is %s with %d block rows, want in_progress and none", got, blockRows(t, c))
+	}
+	lookupFails = false
+	sweepHooks(t)
+	sweepHooks(t)
+	finished(t, c)
+}
+
+func TestRunBudgetHookSecondRefusalInTheWindowBlocksAgainAndQueuesNoSecondRun(t *testing.T) {
+	c, e := hookCase(t, 2856010)
+	testHandler.onRunBudgetExhausted(context.Background(), e)
+	finished(t, c)
+	// A system move puts the issue back in progress; the same window refuses again.
+	c.enter(t, "in_progress")
+	testHandler.onRunBudgetExhausted(context.Background(), e)
+	if got := c.status(t); got != "blocked" {
+		t.Fatalf("issue is %s after the second refusal, want blocked", got)
+	}
+	if n := blockRows(t, c); n != 2 {
+		t.Fatalf("block history rows = %d, want 2", n)
+	}
+	if n := recoveryRuns(t, c.edgeCase); n != 1 {
+		t.Fatalf("recovery runs = %d, want still 1", n)
+	}
+	if comments, _ := c.notices(t, service.RunBudgetKindExhausted); comments != 1 {
+		t.Fatalf("exhaustion notices = %d, want still 1", comments)
+	}
+	if r := onlyRefusal(t, c); r.Phase != "retired" || r.HookReason != "notice_exists" || r.State != "open" || !r.Blocked {
+		t.Fatalf("refusal = %+v, want the one row open, blocked, its hook retired as notice_exists", r)
+	}
+}
+
+func TestRunBudgetHookBlockedBeforeTheReleaseEndsAsUnknownOrigin(t *testing.T) {
+	c, e := hookCase(t, 2856011)
+	// Blocked by something that left no refusal row (a block from before this release).
+	c.enter(t, "blocked")
+	testHandler.onRunBudgetExhausted(context.Background(), e)
+	r := onlyRefusal(t, c)
+	if r.State != "superseded" || r.StateReason != "unknown_origin" || r.Status != "" || r.Phase != "done" {
+		t.Fatalf("refusal = %+v, want superseded:unknown_origin, no status, hook done", r)
+	}
+	if got := c.status(t); got != "blocked" || blockRows(t, c) != 0 {
+		t.Fatalf("issue is %s with %d budget block rows, want blocked and none", got, blockRows(t, c))
+	}
+	if comments, _ := c.notices(t, service.RunBudgetKindExhausted); comments != 1 {
+		t.Fatalf("exhaustion notices = %d, want 1", comments)
 	}
 }

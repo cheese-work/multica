@@ -17,6 +17,17 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'intent')
 ON CONFLICT (issue_id, window_id) DO NOTHING
 RETURNING *;
 
+-- name: ReviveRunBudgetRefusal :one
+-- A refusal of a window whose row no longer applies (its hook ran or was
+-- retired, or a status move superseded it) is a new refusal: the row starts
+-- again at intent for the new occurrence. The window's notice claims stay, so
+-- the notice and the recovery run are not given twice.
+UPDATE run_budget_refusal
+SET status = $2, occurrence_activity_id = $3, blocked = $4, agent_id = $5, trigger = $6,
+    state_reason = $7, state = $8, hook_phase = 'intent', hook_reason = NULL, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
 -- name: GetRunBudgetRefusalByWindow :one
 SELECT * FROM run_budget_refusal WHERE issue_id = $1 AND window_id = $2;
 

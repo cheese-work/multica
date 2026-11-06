@@ -291,6 +291,63 @@ func (q *Queries) RetireRunBudgetRefusalHook(ctx context.Context, arg RetireRunB
 	return err
 }
 
+const reviveRunBudgetRefusal = `-- name: ReviveRunBudgetRefusal :one
+UPDATE run_budget_refusal
+SET status = $2, occurrence_activity_id = $3, blocked = $4, agent_id = $5, trigger = $6,
+    state_reason = $7, state = $8, hook_phase = 'intent', hook_reason = NULL, updated_at = now()
+WHERE id = $1
+RETURNING id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at
+`
+
+type ReviveRunBudgetRefusalParams struct {
+	ID                   pgtype.UUID `json:"id"`
+	Status               pgtype.Text `json:"status"`
+	OccurrenceActivityID pgtype.UUID `json:"occurrence_activity_id"`
+	Blocked              bool        `json:"blocked"`
+	AgentID              pgtype.UUID `json:"agent_id"`
+	Trigger              string      `json:"trigger"`
+	StateReason          pgtype.Text `json:"state_reason"`
+	State                string      `json:"state"`
+}
+
+// A refusal of a window whose row no longer applies (its hook ran or was
+// retired, or a status move superseded it) is a new refusal: the row starts
+// again at intent for the new occurrence. The window's notice claims stay, so
+// the notice and the recovery run are not given twice.
+func (q *Queries) ReviveRunBudgetRefusal(ctx context.Context, arg ReviveRunBudgetRefusalParams) (RunBudgetRefusal, error) {
+	row := q.db.QueryRow(ctx, reviveRunBudgetRefusal,
+		arg.ID,
+		arg.Status,
+		arg.OccurrenceActivityID,
+		arg.Blocked,
+		arg.AgentID,
+		arg.Trigger,
+		arg.StateReason,
+		arg.State,
+	)
+	var i RunBudgetRefusal
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.WindowID,
+		&i.Status,
+		&i.OccurrenceActivityID,
+		&i.Blocked,
+		&i.AgentID,
+		&i.Trigger,
+		&i.State,
+		&i.StateReason,
+		&i.HookPhase,
+		&i.HookReason,
+		&i.ActionID,
+		&i.ResumeWindowID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const setRunBudgetRefusalHook = `-- name: SetRunBudgetRefusalHook :exec
 UPDATE run_budget_refusal
 SET hook_phase = $1::text,

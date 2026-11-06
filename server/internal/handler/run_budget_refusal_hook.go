@@ -34,6 +34,9 @@ import (
 // as a crash would, or lands a write in the gap and returns false.
 var runBudgetHookAt = func(stage string) bool { return false }
 
+// forIssueWorkflow reads the workflow of an issue; a test replaces it to fail the lookup.
+var forIssueWorkflow = issueworkflow.ForIssue
+
 // errHookAdvanced means another advancer already took this step: nothing to do.
 var errHookAdvanced = errors.New("run budget: the hook already advanced")
 
@@ -74,8 +77,10 @@ func exhaustedIssueWith(ctx context.Context, q *db.Queries, e service.RunBudgetE
 
 // recordRefusalIntent is tx R: it records the refusal of one window and ends
 // every earlier refusal of the issue. A callback that finds the window's row
-// already there gets that row's id back. ok is false when the refusal no longer
-// applies and nothing was recorded.
+// still serving a live or finished hook gets that row's id back; a row that no
+// longer applies (its hook was retired, or a move superseded it) starts again
+// for the new occurrence. ok is false when the refusal no longer applies and
+// nothing was recorded.
 func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetExhausted) (id pgtype.UUID, ok bool) {
 	window := e.Since.UTC().Format(time.RFC3339Nano)
 	err := h.withPgxTx(ctx, func(tx pgx.Tx) error {
@@ -84,12 +89,17 @@ func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetEx
 			return err
 		}
 		existing, err := q.GetRunBudgetRefusalByWindow(ctx, db.GetRunBudgetRefusalByWindowParams{IssueID: e.IssueID, WindowID: window})
-		if err == nil {
-			id, ok = existing.ID, true
-			return nil
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
+		found := err == nil
+		if !found && !errors.Is(err, pgx.ErrNoRows) {
 			return err
+		}
+		if found {
+			if reuse, err := refusalServes(ctx, q, existing); err != nil {
+				return err
+			} else if reuse {
+				id, ok = existing.ID, true
+				return nil
+			}
 		}
 		issue, eligible := exhaustedIssueWith(ctx, q, e)
 		if !eligible {
@@ -108,25 +118,60 @@ func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetEx
 			return err
 		}
 		// Refused while blocked: the status and target the block hid are the
-		// original refusal's, which the block's history row names.
+		// original refusal's, which the block's history row names. A block that
+		// names none (made before refusals were recorded) has no status to give
+		// back: the row ends unknown_origin and only the notice goes out.
 		if issue.Status == issuestatus.Blocked {
-			in.Status = pgtype.Text{String: issuestatus.Blocked, Valid: true}
 			if prev, ok := h.blockingRefusal(ctx, q, newest); ok {
 				in.Status, in.AgentID, in.Trigger, in.Blocked = prev.Status, prev.AgentID, prev.Trigger, true
+			} else {
+				in.Status, in.Blocked = pgtype.Text{}, true
+				in.State, in.StateReason = "superseded", pgtype.Text{String: stateReasonUnknownOrigin, Valid: true}
 			}
 		}
-		row, err := q.InsertRunBudgetRefusal(ctx, in)
-		if err != nil {
-			return fmt.Errorf("insert refusal: %w", err)
+		if found {
+			row, err := q.ReviveRunBudgetRefusal(ctx, db.ReviveRunBudgetRefusalParams{
+				ID: existing.ID, Status: in.Status, OccurrenceActivityID: in.OccurrenceActivityID, Blocked: in.Blocked,
+				AgentID: in.AgentID, Trigger: in.Trigger, StateReason: in.StateReason, State: in.State,
+			})
+			if err != nil {
+				return fmt.Errorf("revive refusal: %w", err)
+			}
+			id, ok = row.ID, true
+		} else {
+			row, err := q.InsertRunBudgetRefusal(ctx, in)
+			if err != nil {
+				return fmt.Errorf("insert refusal: %w", err)
+			}
+			id, ok = row.ID, true
 		}
-		id, ok = row.ID, true
-		return q.SupersedeRunBudgetRefusalsExcept(ctx, db.SupersedeRunBudgetRefusalsExceptParams{IssueID: issue.ID, ID: row.ID})
+		return q.SupersedeRunBudgetRefusalsExcept(ctx, db.SupersedeRunBudgetRefusalsExceptParams{IssueID: issue.ID, ID: id})
 	})
 	if err != nil {
 		slog.Warn("run budget: record refusal failed", "err", err, "issue_id", uuidToString(e.IssueID))
 		return pgtype.UUID{}, false
 	}
 	return id, ok
+}
+
+// stateReasonUnknownOrigin marks a refusal found on a block that left no refusal row.
+const stateReasonUnknownOrigin = "unknown_origin"
+
+// refusalServes reports whether the window's existing row answers a new refusal
+// of the same window: its hook is still to run, or it ran and the issue is
+// still where it left it. Any other row is started again, so the new refusal
+// gets its own block.
+func refusalServes(ctx context.Context, q *db.Queries, row db.RunBudgetRefusal) (bool, error) {
+	switch {
+	case row.HookPhase == "intent" || row.HookPhase == "blocked":
+		return true, nil
+	case row.State != "open" && row.State != "superseded":
+		return true, nil
+	case row.HookPhase == "retired":
+		return false, nil
+	}
+	reason, err := refusalIneligible(ctx, q, row)
+	return reason == "", err
 }
 
 // blockingRefusal is the refusal whose block is the issue's newest status
@@ -144,7 +189,7 @@ func (h *Handler) blockingRefusal(ctx context.Context, q *db.Queries, newest db.
 // refusal was recorded in: a status that went away and came back is another
 // occurrence. Read through q, under the issue lock.
 func refusalIneligible(ctx context.Context, q *db.Queries, row db.RunBudgetRefusal) (string, error) {
-	if row.State != "open" {
+	if row.State != "open" && row.StateReason.String != stateReasonUnknownOrigin {
 		return row.State, nil
 	}
 	issue, err := q.GetIssue(ctx, row.IssueID)
@@ -259,8 +304,12 @@ func (h *Handler) blockStep(ctx context.Context, id pgtype.UUID, e service.RunBu
 			return err
 		}
 		runBudgetBeforeBlock()
-		def, _, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
-		if issue.Status == issuestatus.Blocked || err != nil || def == nil || !def.Has(issuestatus.Blocked) {
+		def, _, err := forIssueWorkflow(ctx, h.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
+		if err != nil {
+			// Not "no Blocked step": the hook stays at intent for the sweep.
+			return fmt.Errorf("read the issue's workflow: %w", err)
+		}
+		if issue.Status == issuestatus.Blocked || def == nil || !def.Has(issuestatus.Blocked) {
 			// Something else parked the issue, or the workflow has no blocked
 			// status: the notice goes out alone.
 			return h.advanceWithoutBlock(ctx, id, issue.ID)
