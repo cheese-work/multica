@@ -558,7 +558,7 @@ const IssueWorkflowHandlerSchema = z.lazy(() => z.object({
 }).loose());
 
 const ISSUE_WORKFLOW_HANDLER_TYPES = new Set<string>([
-  "none", "agent", "squad", "member", "project_lead", "creator", "human_by_role",
+  "none", "agent", "squad", "member", "project_lead", "creator", "human_by_role", "human_in_charge",
 ]);
 
 const IssueWorkflowEdgeSchema = z.lazy(() => z.object({
@@ -1749,6 +1749,14 @@ export const IssueSchema = z.lazy(() => z.object({
   stage: z.number().nullable().default(null),
   start_date: z.string().nullable(),
   due_date: z.string().nullable(),
+  // Read-only deadline projection (CHE-3463). Additive: older backends and
+  // closed issues omit it, and a malformed value drops only itself.
+  effective_due: z.string().optional().catch(undefined),
+  due_source: z.string().optional().catch(undefined),
+  diagnostics: z
+    .array(z.object({ type: z.string(), members: z.array(z.string()).optional() }))
+    .optional()
+    .catch(undefined),
   metadata: IssueMetadataSchema,
   // Older backends predate custom properties; default {} so consumers never
   // nil-guard issue.properties.
@@ -2624,6 +2632,10 @@ const ChatWakeupSchema = z.lazy(() => z.object({
   fire_at: z.string(),
   instruction: z.string().default(""),
   status: z.string().default("pending"),
+  issue_id: z.string().optional().catch(undefined),
+  event: z.string().optional().catch(undefined),
+  until_status: z.string().optional().catch(undefined),
+  on_timeout: z.string().optional().catch(undefined),
 }).loose());
 
 export const ChatWakeupsSchema = z.lazy(() => z.array(ChatWakeupSchema));

@@ -152,6 +152,9 @@ var concurrentIndexCleanups = map[string]string{
 	"937_system1_observation_decision_subject_idx":              "system1_observation_decision_subject",
 	"938_system1_observation_precedent_idx":                     "system1_observation_precedent",
 	"939_system1_observation_routing_subject_idx":               "system1_observation_routing_subject",
+	"975_chat_session_chain_root_idx":                           "idx_chat_session_chain_root",
+	"976_chat_attention_item_one_open_later_idx":                "chat_attention_item_one_open_later_idx",
+	"977_chat_attention_item_open_idx":                          "chat_attention_item_open_idx",
 	"971_dm_progress_data_incident_follow_kind_idx":             "idx_dm_progress_data_incident_follow_kind",
 	"944_decision_wake_event_request_seq_idx":                   "decision_wake_event_request_seq_uidx",
 	"945_decision_wake_receipt_event_recipient_idx":             "decision_wake_receipt_event_recipient_uidx",
@@ -507,6 +510,7 @@ var concurrentIndexCleanups = map[string]string{
 	"536_governance_receipt_workspace_comment_created_idx":      "idx_governance_receipt_workspace_comment_created",
 	"552_governance_concurrency_guard_identity":                 "governance_concurrency_guard_identity_uidx",
 	"553_governance_concurrency_hold_identity":                  "governance_concurrency_hold_identity_uidx",
+	"930_decision_wait_open_issue_idx":                          "decision_wait_open_issue_idx",
 }
 
 type requiredConcurrentIndex struct {

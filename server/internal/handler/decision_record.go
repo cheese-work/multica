@@ -502,7 +502,7 @@ func (handler *Handler) persistDecisionRecord(ctx context.Context, queries *db.Q
 	if err := queries.TouchChatSession(ctx, source.SessionID); err != nil {
 		return empty, err
 	}
-	decision, err = queries.MarkDecisionRequestAnswered(ctx, db.MarkDecisionRequestAnsweredParams{WorkspaceID: issue.WorkspaceID, ID: decision.ID})
+	decision, err = markDecisionRequestAnswered(ctx, queries, decision, answer)
 	if err != nil {
 		return empty, err
 	}

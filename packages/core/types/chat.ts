@@ -489,8 +489,13 @@ export interface ChatPendingTask {
 export interface ChatWakeup {
   id: string;
   agent_id: string;
-  /** RFC 3339 instant the turn fires. */
+  /** RFC 3339 instant the turn fires; for an issue watch, when it gives up. */
   fire_at: string;
   instruction: string;
   status: string;
+  /** Set when this is an issue watch rather than a time wakeup. */
+  issue_id?: string;
+  event?: string;
+  until_status?: string;
+  on_timeout?: string;
 }
