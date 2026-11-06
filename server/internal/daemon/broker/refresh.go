@@ -47,6 +47,7 @@ func (b *Broker) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	b.log.Info("broker base refresh", "task", b.pin.Task, "repo", b.pin.Repo, "root", root, "status", status, "elapsed", time.Since(began), "error", err)
 	if err != nil && status != 0 {
 		http.Error(w, err.Error(), status)
+		return
 	}
 }
 
