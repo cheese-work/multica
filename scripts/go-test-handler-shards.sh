@@ -20,6 +20,20 @@ case $shards in
   '' | *[!0-9]* | 0*) echo "MULTICA_HANDLER_SHARDS must be an integer >= 1, got '$shards'" >&2; exit 2 ;;
 esac
 
+# CHE-4243: the shard binaries are not bound by `go test`'s default timeout, so
+# this is their only one. A shard sums to ~5-8 min on a healthy runner (12 runs,
+# 6 Nov 2026) and a slow runner stretched one past the old fixed 10m. 20m keeps
+# a hang bounded while leaving ~2.5x headroom over the median shard.
+shard_timeout=${MULTICA_HANDLER_SHARD_TIMEOUT:-20m}
+case $shard_timeout in
+  [1-9]*[smh]) case ${shard_timeout%[smh]} in *[!0-9]*) shard_timeout= ;; esac ;;
+  *) shard_timeout= ;;
+esac
+if [ -z "$shard_timeout" ]; then
+  echo "MULTICA_HANDLER_SHARD_TIMEOUT must be <integer>s|m|h, got '${MULTICA_HANDLER_SHARD_TIMEOUT}'" >&2
+  exit 2
+fi
+
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/multica-handler-shards.XXXXXX")
 trap 'rm -rf "$work_dir"' EXIT
 trap 'exit 130' INT
@@ -54,7 +68,7 @@ rerun_wait=${MULTICA_RERUN_WAIT:-3600}
 
 run_shard() { # $1: -test.run regex
   (cd "$package_dir" && exec "$GUARD_SCRIPT" -- "$EXEC_WRAPPER" "$work_dir/handler.test" \
-    -test.run "$1" -test.count=1 -test.timeout=10m ${verbose[@]+"${verbose[@]}"})
+    -test.run "$1" -test.count=1 -test.timeout="$shard_timeout" ${verbose[@]+"${verbose[@]}"})
 }
 
 first_pass_shard() { # $1: shard index, $2: -test.run regex; writes shard-N.plan, returns the shard status
