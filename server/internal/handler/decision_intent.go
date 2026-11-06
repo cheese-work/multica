@@ -102,7 +102,7 @@ func (handler *Handler) checkDecisionTarget(request *http.Request, queries *db.Q
 		}
 		return err
 	}
-	if !handler.canInvokeAgent(ctx, agent, "member", uuidToString(humanID), "", uuidToString(issue.WorkspaceID)) {
+	if allowed, _ := handler.invokeAgentDecisionVia(ctx, queries, agent, "member", uuidToString(humanID), "", uuidToString(issue.WorkspaceID)); !allowed {
 		return decisionIntentRefusal{http.StatusBadRequest, "named person cannot invoke the asking agent: " + uuidToString(humanID)}
 	}
 	return nil

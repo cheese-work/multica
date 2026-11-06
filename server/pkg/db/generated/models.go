@@ -1056,7 +1056,37 @@ type DecisionRequest struct {
 	ProjectID             pgtype.UUID        `json:"project_id"`
 	Kind                  string             `json:"kind"`
 	ExpiresAt             pgtype.Timestamptz `json:"expires_at"`
+	ProposalFingerprint   pgtype.Text        `json:"proposal_fingerprint"`
 	AnswerRevision        int32              `json:"answer_revision"`
+	WakeSeq               int64              `json:"wake_seq"`
+}
+
+type DecisionWakeEvent struct {
+	ID               pgtype.UUID        `json:"id"`
+	RequestID        pgtype.UUID        `json:"request_id"`
+	Seq              int64              `json:"seq"`
+	Type             string             `json:"type"`
+	AnswerID         pgtype.UUID        `json:"answer_id"`
+	SourceCommentID  pgtype.UUID        `json:"source_comment_id"`
+	SupersededAt     pgtype.Timestamptz `json:"superseded_at"`
+	SupersededReason pgtype.Text        `json:"superseded_reason"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+}
+
+type DecisionWakeReceipt struct {
+	ID               pgtype.UUID        `json:"id"`
+	EventID          pgtype.UUID        `json:"event_id"`
+	EventSeq         int64              `json:"event_seq"`
+	RecipientAgentID pgtype.UUID        `json:"recipient_agent_id"`
+	Role             string             `json:"role"`
+	SquadID          pgtype.UUID        `json:"squad_id"`
+	Status           string             `json:"status"`
+	Outcome          pgtype.Text        `json:"outcome"`
+	AttemptCount     int32              `json:"attempt_count"`
+	NextAttemptAt    pgtype.Timestamptz `json:"next_attempt_at"`
+	LastError        pgtype.Text        `json:"last_error"`
+	DeliveredAt      pgtype.Timestamptz `json:"delivered_at"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 }
 
 type DecisionWorkerLease struct {
@@ -1101,6 +1131,15 @@ type DingtalkGroupRoute struct {
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 }
 
+type DmProgressDataIncident struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	FollowID    pgtype.UUID        `json:"follow_id"`
+	Kind        string             `json:"kind"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type DmProgressFollow struct {
 	ID                 pgtype.UUID        `json:"id"`
 	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
@@ -1113,6 +1152,7 @@ type DmProgressFollow struct {
 	LastImmediateAt    pgtype.Timestamptz `json:"last_immediate_at"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 	Reasons            []string           `json:"reasons"`
+	ReportingRootID    pgtype.UUID        `json:"reporting_root_id"`
 }
 
 type DmProgressLane struct {
@@ -1790,6 +1830,24 @@ type IssueDependency struct {
 	IssueID          pgtype.UUID `json:"issue_id"`
 	DependsOnIssueID pgtype.UUID `json:"depends_on_issue_id"`
 	Type             string      `json:"type"`
+}
+
+type IssueIdleGuard struct {
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	State         string             `json:"state"`
+	Kind          string             `json:"kind"`
+	FromStatus    string             `json:"from_status"`
+	ToStatus      string             `json:"to_status"`
+	IdleSince     pgtype.Timestamptz `json:"idle_since"`
+	MovedAt       pgtype.Timestamptz `json:"moved_at"`
+	Attempts      int32              `json:"attempts"`
+	AlertID       pgtype.UUID        `json:"alert_id"`
+	CommentID     pgtype.UUID        `json:"comment_id"`
+	Error         string             `json:"error"`
+	AlertAttempts int32              `json:"alert_attempts"`
+	AlertAt       pgtype.Timestamptz `json:"alert_at"`
+	AlertError    string             `json:"alert_error"`
 }
 
 type IssueLabel struct {
@@ -2529,6 +2587,20 @@ type ProvenanceExportLog struct {
 	ExcludedCount  int32              `json:"excluded_count"`
 	Manifest       []byte             `json:"manifest"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+type ProviderBreaker struct {
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	Provider      string             `json:"provider"`
+	State         string             `json:"state"`
+	OpenedAt      pgtype.Timestamptz `json:"opened_at"`
+	NextProbeAt   pgtype.Timestamptz `json:"next_probe_at"`
+	CoolOffS      int32              `json:"cool_off_s"`
+	CanaryTaskID  pgtype.UUID        `json:"canary_task_id"`
+	TripEvidence  []pgtype.UUID      `json:"trip_evidence"`
+	Last5xxAt     pgtype.Timestamptz `json:"last_5xx_at"`
+	LastSuccessAt pgtype.Timestamptz `json:"last_success_at"`
+	Version       int64              `json:"version"`
 }
 
 type ProviderFailureRecovery struct {

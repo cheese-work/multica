@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ApiError } from "@multica/core/api";
+import { useWakeupFormDraftStore } from "@multica/core/issues/stores";
 import { propertyListOptions } from "@multica/core/properties/queries";
 import type { IssueWakeupInput } from "@multica/core/types";
 import { useViewingTimezone } from "../../common/use-viewing-timezone";
@@ -16,6 +17,7 @@ import { buildWakeupInput, emptyWakeupDraft, type WakeupDraft, type WakeupDraftE
 export function useWakeupForm({
   workspaceId,
   defaultAgentId,
+  draftKey,
   initial,
   save,
   onSaved,
@@ -24,6 +26,11 @@ export function useWakeupForm({
 }: {
   workspaceId: string;
   defaultAgentId: string;
+  /**
+   * Persist the member's edits under this key until a save succeeds, so the
+   * unsent form comes back after the host unmounts. Unset: nothing persisted.
+   */
+  draftKey?: string;
   /** Draft fields to open with, for editing a saved rule. */
   initial?: Partial<WakeupDraft>;
   save: (input: IssueWakeupInput) => Promise<unknown>;
@@ -35,7 +42,11 @@ export function useWakeupForm({
   const { t } = useT("issues");
   const text = useWakeupText();
   const timezone = useViewingTimezone();
-  const [draft, setDraft] = useState(() => ({ ...emptyWakeupDraft(defaultAgentId, timezone), ...initial }));
+  const [draft, setDraft] = useState<WakeupDraft>(() => ({
+    ...emptyWakeupDraft(defaultAgentId, timezone),
+    ...initial,
+    ...(draftKey ? (useWakeupFormDraftStore.getState().getDraft(draftKey)?.fields as Partial<WakeupDraft> | null | undefined) : null),
+  }));
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const inFlight = useRef(false);
@@ -43,6 +54,10 @@ export function useWakeupForm({
 
   const update = (patch: Partial<WakeupDraft>) => {
     setDraft((prev) => ({ ...prev, ...patch }));
+    if (draftKey) {
+      const store = useWakeupFormDraftStore.getState();
+      store.setDraft(draftKey, { fields: { ...store.getDraft(draftKey)?.fields, ...patch } });
+    }
     setError("");
   };
   const draftErrors: Record<WakeupDraftError, string> = {
@@ -75,6 +90,7 @@ export function useWakeupForm({
     onBusy?.(true);
     try {
       await save(result.input);
+      if (draftKey) useWakeupFormDraftStore.getState().clearDraft(draftKey);
       onSaved();
     } catch (err) {
       const code =
