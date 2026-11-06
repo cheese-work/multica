@@ -151,6 +151,12 @@ var concurrentIndexCleanups = map[string]string{
 	"937_system1_observation_decision_subject_idx":              "system1_observation_decision_subject",
 	"938_system1_observation_precedent_idx":                     "system1_observation_precedent",
 	"939_system1_observation_routing_subject_idx":               "system1_observation_routing_subject",
+	"987_ci_watch_config_repo_uidx":                             "ci_watch_config_repo_uidx",
+	"988_ci_failure_event_run_attempt_uidx":                     "ci_failure_event_run_attempt_uidx",
+	"989_ci_watch_action_key_uidx":                              "ci_watch_action_key_uidx",
+	"990_ci_signature_owner_signature_uidx":                     "ci_signature_owner_signature_uidx",
+	"991_ci_signature_owner_issue_uidx":                         "ci_signature_owner_issue_uidx",
+	"992_ci_failure_event_created_at_idx":                       "ci_failure_event_created_at_idx",
 	"971_dm_progress_data_incident_follow_kind_idx":             "idx_dm_progress_data_incident_follow_kind",
 	"944_decision_wake_event_request_seq_idx":                   "decision_wake_event_request_seq_uidx",
 	"945_decision_wake_receipt_event_recipient_idx":             "decision_wake_receipt_event_recipient_uidx",
@@ -518,6 +524,41 @@ type requiredConcurrentIndex struct {
 }
 
 var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
+	"987_ci_watch_config_repo_uidx": {
+		IndexRegclass: "ci_watch_config_repo_uidx",
+		TableRegclass: "ci_watch_config",
+		Unique:        true,
+		Columns:       []string{"workspace_id", "repo_owner", "repo_name"},
+	},
+	"988_ci_failure_event_run_attempt_uidx": {
+		IndexRegclass: "ci_failure_event_run_attempt_uidx",
+		TableRegclass: "ci_failure_event",
+		Unique:        true,
+		Columns:       []string{"workspace_id", "repo_owner", "repo_name", "run_id", "run_attempt"},
+	},
+	"989_ci_watch_action_key_uidx": {
+		IndexRegclass: "ci_watch_action_key_uidx",
+		TableRegclass: "ci_watch_action",
+		Unique:        true,
+		Columns:       []string{"workspace_id", "repo_owner", "repo_name", "original_run_id", "action_kind"},
+	},
+	"990_ci_signature_owner_signature_uidx": {
+		IndexRegclass: "ci_signature_owner_signature_uidx",
+		TableRegclass: "ci_signature_owner",
+		Unique:        true,
+		Columns:       []string{"workspace_id", "repo_owner", "repo_name", "signature_hash"},
+	},
+	"991_ci_signature_owner_issue_uidx": {
+		IndexRegclass: "ci_signature_owner_issue_uidx",
+		TableRegclass: "ci_signature_owner",
+		Unique:        true,
+		Columns:       []string{"issue_id"},
+	},
+	"992_ci_failure_event_created_at_idx": {
+		IndexRegclass: "ci_failure_event_created_at_idx",
+		TableRegclass: "ci_failure_event",
+		Columns:       []string{"created_at"},
+	},
 	"971_dm_progress_data_incident_follow_kind_idx": {
 		IndexRegclass: "idx_dm_progress_data_incident_follow_kind",
 		TableRegclass: "dm_progress_data_incident",
