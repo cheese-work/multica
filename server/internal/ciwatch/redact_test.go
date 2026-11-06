@@ -1,6 +1,7 @@
 package ciwatch
 
 import (
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -112,5 +113,24 @@ func TestLimitTailKeepsWholeLinesFromTheEnd(t *testing.T) {
 	}
 	if got := LimitTail([]string{strings.Repeat("z", 50)}, 10); len(got) != 10 {
 		t.Errorf("single long line not cut to 10 bytes: %d", len(got))
+	}
+}
+
+// A line that closes one key and opens the next must keep the next key's body
+// out of storage (CHE-4274 review P1).
+func TestRedactEndThenBeginOnOneLineKeepsNextKeyClosed(t *testing.T) {
+	second := "SECONDkeyBODYplanted0123456789"
+	cases := map[string]string{
+		"inside a key": "-----BEGIN PRIVATE KEY-----\n" + pemBody + "\n-----END PRIVATE KEY----- -----BEGIN PRIVATE KEY-----\n" + second + "\n",
+		"stray end":    "x\n-----END PRIVATE KEY----- -----BEGIN PRIVATE KEY-----\n" + second + "\n",
+		"begin end begin": "-----BEGIN PRIVATE KEY----- -----END PRIVATE KEY----- -----BEGIN PRIVATE KEY-----\n" +
+			second + "\n",
+	}
+	for name, in := range cases {
+		for _, oneByte := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/oneByte=%v", name, oneByte), func(t *testing.T) {
+				noLeak(t, redact(t, in, oneByte), pemBody, second)
+			})
+		}
 	}
 }

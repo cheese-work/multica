@@ -147,7 +147,7 @@ func (c *Collector) Handle(ctx context.Context, in Input) (Result, error) {
 		return true
 	}
 
-	jobs, ok := c.failedJobs(ctx, run, partial, stop)
+	jobs, ok, truncated := c.failedJobs(ctx, run, partial, stop)
 	ev.FailedJobCount = len(jobs)
 	for _, j := range jobs {
 		ev.RunnerLost = ev.RunnerLost || j.RunnerLost
@@ -176,6 +176,11 @@ func (c *Collector) Handle(ctx context.Context, in Input) (Result, error) {
 		}
 	}
 
+	if truncated {
+		// Set after the log loop: it must not end log collection.
+		partial(PartialJobsTruncated)
+	}
+
 	var text []string
 	names := []string{run.WorkflowName}
 	for _, j := range ev.Jobs {
@@ -192,8 +197,9 @@ func (c *Collector) Handle(ctx context.Context, in Input) (Result, error) {
 }
 
 // failedJobs pages the jobs list (3 pages max) and returns failed jobs, oldest completion first.
-// ok is false when the listing itself failed.
-func (c *Collector) failedJobs(ctx context.Context, run Run, partial func(string), stop func(error) bool) (failed []Job, ok bool) {
+// ok is false when the listing itself failed; truncated is true when GitHub
+// still had more pages after the last one read, so the count may be low.
+func (c *Collector) failedJobs(ctx context.Context, run Run, partial func(string), stop func(error) bool) (failed []Job, ok, truncated bool) {
 	ok = true
 	for page := 1; page <= maxJobPages; page++ {
 		release, err := c.Budget.Reserve(ctx, run.InstallationID, 1)
@@ -218,6 +224,7 @@ func (c *Collector) failedJobs(ctx context.Context, run Run, partial func(string
 		if !more {
 			break
 		}
+		truncated = page == maxJobPages
 	}
 	slices.SortFunc(failed, func(a, b Job) int {
 		if d := a.CompletedAt.Compare(b.CompletedAt); d != 0 {
@@ -225,7 +232,7 @@ func (c *Collector) failedJobs(ctx context.Context, run Run, partial func(string
 		}
 		return int(a.ID - b.ID)
 	})
-	return failed, ok
+	return failed, ok, truncated
 }
 
 var errRedact = errors.New("ciwatch: redaction failed")
