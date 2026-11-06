@@ -33,6 +33,15 @@ type NotifySpec struct {
 	WorkspaceID, MemberID, IssueID, Title, Body string
 }
 
+// CheckClaimer takes the shared red-main claim for one check, the GitHub ref
+// refs/heads/red-main/<key> that red-main workers also take. holder is the
+// signature that wants the issue; claiming again with the same holder must
+// succeed, so a retry after a rolled-back creation is not locked out. ok=false
+// means another holder owns the check.
+type CheckClaimer interface {
+	ClaimCheck(ctx context.Context, tx pgx.Tx, repoOwner, repoName, checkKey, holder string) (ok bool, err error)
+}
+
 type IssueDestination interface {
 	CreateIssue(ctx context.Context, tx pgx.Tx, s IssueSpec) (issueID string, err error)
 	UpdateIssue(ctx context.Context, tx pgx.Tx, u IssueUpdate) error
@@ -52,4 +61,7 @@ type Destinations struct {
 	Issue   IssueDestination
 	Comment CommentDestination
 	Inbox   InboxDestination
+	// RedMain is the shared check claim. Without it no issue is created: the
+	// per-check advisory lock only orders this watcher's own transactions.
+	RedMain CheckClaimer
 }

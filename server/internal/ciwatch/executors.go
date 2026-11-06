@@ -50,18 +50,23 @@ func lockRepoCaps(ctx context.Context, tx pgx.Tx, a Action) error {
 	return err
 }
 
-// actor is the member a watcher issue or comment is attributed to.
-func (c watchConfig) actor(ctx context.Context, q queryer, ws string) (string, error) {
-	if c.NotifyMemberID != "" {
-		return c.NotifyMemberID, nil
+// actor is the member a watcher issue, comment or notification is attributed to
+// and whose invocation permissions the wake is checked against. Only the repo's
+// configured notify member counts: a workspace-owner fallback would let any
+// repo's automation run as the owner. Without one the action fails closed.
+func (c watchConfig) actor() (string, error) {
+	if c.NotifyMemberID == "" {
+		return "", &PermanentError{Reason: ReasonNoPrincipal, Err: errors.New("no notify_member_id configured for the watcher")}
 	}
-	var id string
-	err := q.QueryRow(ctx, `SELECT user_id::text FROM member WHERE workspace_id=$1::uuid
-		ORDER BY (role='owner') DESC, created_at LIMIT 1`, ws).Scan(&id)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
-	}
-	return id, err
+	return c.NotifyMemberID, nil
+}
+
+// lockCheck serializes owners of one red-main check until the tx ends. Lock
+// order is always signature, then check, as in admit.
+func lockCheck(ctx context.Context, tx pgx.Tx, a Action, key string) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,
+		ownerKey(a.WorkspaceID, a.RepoOwner, a.RepoName, "#check:"+key))
+	return err
 }
 
 type ownerState struct {
@@ -177,15 +182,35 @@ func (l *Ledger) issueCreate(d Destinations) LocalEffect {
 		if err != nil {
 			return "", err
 		}
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,
+			ownerKey(a.WorkspaceID, a.RepoOwner, a.RepoName, a.SignatureHash)); err != nil {
+			return "", err
+		}
 		o, found, err := readOwner(ctx, tx, a)
 		if err != nil || !found {
 			return "", errors.Join(err, errors.New("signature owner missing"))
+		}
+		// One owner per check, shared with red-main workers through the GitHub ref
+		// claim. Without a usable key or a claimer the kind stays Shadow-only.
+		if o.CheckKey == "" {
+			return "", &PermanentError{Reason: ReasonNoCheckKey, Err: errors.New("no usable check key for the red-main claim")}
+		}
+		if d.RedMain == nil {
+			return "", nonTransactional("red-main claim")
+		}
+		if err := lockCheck(ctx, tx, a, o.CheckKey); err != nil {
+			return "", err
+		}
+		if ok, err := d.RedMain.ClaimCheck(ctx, tx, a.RepoOwner, a.RepoName, o.CheckKey, a.SignatureHash); err != nil {
+			return "", err
+		} else if !ok {
+			return "", &PermanentError{Reason: ReasonRedMainClaimed, Err: errors.New("another holder owns the red-main check")}
 		}
 		f, err := readFailure(ctx, tx, a)
 		if err != nil {
 			return "", err
 		}
-		creator, err := cfg.actor(ctx, tx, a.WorkspaceID)
+		creator, err := cfg.actor()
 		if err != nil {
 			return "", err
 		}
@@ -243,7 +268,7 @@ func (l *Ledger) issueComment(d Destinations) LocalEffect {
 		if err != nil {
 			return "", err
 		}
-		author, err := cfg.actor(ctx, tx, a.WorkspaceID)
+		author, err := cfg.actor()
 		if err != nil {
 			return "", err
 		}
@@ -315,7 +340,7 @@ func (l *Ledger) inboxNotify(d Destinations) LocalEffect {
 		if err != nil {
 			return "", err
 		}
-		member, err := cfg.actor(ctx, tx, a.WorkspaceID)
+		member, err := cfg.actor()
 		if err != nil {
 			return "", err
 		}

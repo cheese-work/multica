@@ -18,6 +18,9 @@ const (
 	ReasonCap              = "cap"
 	ReasonNonTransactional = "non_transactional_destination"
 	ReasonWakeCapped       = "wake_capped"
+	ReasonNoPrincipal      = "no_principal"
+	ReasonNoCheckKey       = "no_check_key"
+	ReasonRedMainClaimed   = "red_main_claimed_elsewhere"
 	StormThreshold         = 5
 	StormWindow            = 10 * time.Minute
 	StormPause             = 30 * time.Minute
@@ -39,6 +42,7 @@ const (
 	OutcomeAttached   = "attached"   // counted on the signature's owner
 	OutcomeSuppressed = "suppressed" // P5: breaker tripped or paused
 	OutcomeNotify     = "notify"     // P4 notification scheduled
+	OutcomeRerun      = "rerun"      // P1 rerun scheduled
 	OutcomeDuplicate  = "duplicate"  // this run was admitted before
 )
 
@@ -47,9 +51,10 @@ type Failure struct {
 	WorkspaceID, RepoOwner, RepoName string
 	RunID                            int64
 	SignatureHash                    string
-	Protocol                         string // "P2", "P3" or "P4"
+	Protocol                         string // "P1", "P2", "P3" or "P4"
 	RunURL                           string
-	CheckName                        string // the red CI job or test name; keys the red-main owner
+	CheckName                        string    // the red CI job or test name; keys the red-main owner
+	RerunDueAt                       time.Time // P1 only: when the rerun is due; zero means now
 }
 
 type Admission struct{ Outcome string }
@@ -58,8 +63,8 @@ type Admission struct{ Outcome string }
 // lock on (repo, signature): breaker check, owner claim, action scheduling.
 func (l *Ledger) Admit(ctx context.Context, f Failure) (Admission, error) {
 	switch f.Protocol {
-	case "P2", "P3", "P4":
-	default: // P1 reruns never reach this path; an unknown protocol must not default to P2
+	case "P1", "P2", "P3", "P4":
+	default: // an unknown protocol must not default to P2
 		return Admission{}, fmt.Errorf("ciwatch: protocol %q is not admitted here", f.Protocol)
 	}
 	tx, err := l.pool.Begin(ctx)
@@ -79,10 +84,11 @@ const terminalIssue = `(i.status IN ('done','cancelled') OR EXISTS (SELECT 1 FRO
 	WHERE s.workspace_id=i.workspace_id AND s.key=i.status AND s.category IN ('done','closed')))`
 
 // reconcileClosure makes the owner row follow its real issue: a done or closed
-// issue closes the owner at the issue's closing time, a reopened one reopens it.
+// issue closes the owner at the time of its last status change (an edit after closure must not restart the window), a reopened one reopens it.
 // The 24 h and 7 d reopen windows in claimOwner read that time.
 func reconcileClosure(ctx context.Context, tx pgx.Tx, f Failure) error {
-	if _, err := tx.Exec(ctx, `UPDATE ci_signature_owner o SET state='closed', closed_at=i.updated_at
+	if _, err := tx.Exec(ctx, `UPDATE ci_signature_owner o SET state='closed',
+			closed_at=COALESCE((SELECT max(a.created_at) FROM activity_log a WHERE a.issue_id=i.id AND a.action='status_changed'), i.updated_at)
 		FROM issue i WHERE i.id=o.issue_id AND i.workspace_id=o.workspace_id AND o.workspace_id=$1::uuid AND o.repo_owner=$2
 			AND o.repo_name=$3 AND o.signature_hash=$4 AND o.state='open' AND `+terminalIssue,
 		f.WorkspaceID, f.RepoOwner, f.RepoName, f.SignatureHash); err != nil {
@@ -166,6 +172,15 @@ func (l *Ledger) admit(ctx context.Context, tx pgx.Tx, f Failure) (Admission, er
 			return Admission{}, err
 		}
 		return Admission{Outcome: OutcomeSuppressed}, l.countOnly(ctx, tx, f)
+	case f.Protocol == "P1":
+		// The rerun is scheduled in this transaction, after the admit event, so the
+		// breaker counts it and a trip cancels it.
+		na := l.newAction(f, ActionRerun, "p1")
+		if !f.RerunDueAt.IsZero() {
+			na.DueAt = f.RerunDueAt
+		}
+		_, _, err := l.schedule(ctx, tx, na)
+		return Admission{Outcome: OutcomeRerun}, err
 	case f.Protocol == "P4":
 		// A notification is already deduplicated per (repo, signature, day); no owner.
 		_, _, err := l.schedule(ctx, tx, l.newAction(f, ActionInboxNotify, "p4"))
@@ -226,8 +241,7 @@ func (l *Ledger) attach(ctx context.Context, tx pgx.Tx, f Failure, kind string, 
 	}
 	key := checkKey(f.CheckName)
 	if key != "" { // after the signature lock, always: one lock order
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,
-			ownerKey(f.WorkspaceID, f.RepoOwner, f.RepoName, "#check:"+key)); err != nil {
+		if err := lockCheck(ctx, tx, Action{WorkspaceID: f.WorkspaceID, RepoOwner: f.RepoOwner, RepoName: f.RepoName}, key); err != nil {
 			return Admission{}, err
 		}
 	}

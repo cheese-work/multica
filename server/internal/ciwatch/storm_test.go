@@ -91,22 +91,43 @@ func (d *fakeDest) Notify(ctx context.Context, tx pgx.Tx, s NotifySpec) (string,
 	return id, err
 }
 
+// fakeClaims is the shared red-main claim: one holder per check key, and the
+// same holder may claim again. Like a GitHub ref it does not roll back with the transaction.
+type fakeClaims struct {
+	mu     sync.Mutex
+	held   map[string]string
+	claims atomic.Int32
+}
+
+func (c *fakeClaims) ClaimCheck(_ context.Context, _ pgx.Tx, _, repo, key, holder string) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.claims.Add(1)
+	k := repo + "/" + key
+	if cur, ok := c.held[k]; ok {
+		return cur == holder, nil
+	}
+	c.held[k] = holder
+	return true, nil
+}
+
 type stormEnv struct {
 	*ledgerEnv
-	d *fakeDest
+	d      *fakeDest
+	claims *fakeClaims
 }
 
 func newStormEnv(t *testing.T) *stormEnv {
 	t.Helper()
 	e := newLedgerEnv(t)
 	e.ledger = NewLedger(e.pool, NewStormRecheck(e.clock.Now), WithLedgerClock(e.clock.Now))
-	s := &stormEnv{ledgerEnv: e, d: &fakeDest{e: e}}
+	s := &stormEnv{ledgerEnv: e, d: &fakeDest{e: e}, claims: &fakeClaims{held: map[string]string{}}}
 	// issue rows reference a workspace (legacy FK), so the test workspace is real.
 	if _, err := e.pool.Exec(context.Background(), `INSERT INTO workspace (id, name, slug, issue_prefix)
 		VALUES ($1::uuid, 'ciwatch test', $2, 'CWT')`, e.ws, "ciwatch-"+e.ws); err != nil {
 		t.Fatal(err)
 	}
-	e.ledger.RegisterStormExecutors(Destinations{Issue: s.d, Comment: s.d, Inbox: s.d})
+	e.ledger.RegisterStormExecutors(s.destinations())
 	t.Cleanup(func() {
 		ctx := context.Background()
 		_, _ = e.pool.Exec(ctx, `DELETE FROM ci_watch_event WHERE workspace_id=$1`, e.ws)
@@ -116,6 +137,10 @@ func newStormEnv(t *testing.T) *stormEnv {
 	})
 	s.setCaps(t, 5, 6)
 	return s
+}
+
+func (s *stormEnv) destinations() Destinations {
+	return Destinations{Issue: s.d, Comment: s.d, Inbox: s.d, RedMain: s.claims}
 }
 
 func (s *stormEnv) setCaps(t *testing.T, issuesPerDay, wakesPerHour int) {
@@ -134,7 +159,7 @@ func (s *stormEnv) setCaps(t *testing.T, issuesPerDay, wakesPerHour int) {
 func (s *stormEnv) admit(t *testing.T, run int64, sig, protocol string) Admission {
 	t.Helper()
 	a, err := s.ledger.Admit(context.Background(), Failure{WorkspaceID: s.ws, RepoOwner: "o", RepoName: s.repo,
-		RunID: run, SignatureHash: sig, Protocol: protocol, RunURL: "https://github.com/o/r/actions/runs/1"})
+		RunID: run, SignatureHash: sig, Protocol: protocol, CheckName: "check-" + sig, RunURL: "https://github.com/o/r/actions/runs/1"})
 	if err != nil {
 		t.Fatalf("admit run %d: %v", run, err)
 	}
@@ -220,7 +245,7 @@ func TestStormFiveConcurrentFailuresMakeOneIssue(t *testing.T) {
 	}
 	s.d.mu.Lock()
 	defer s.d.mu.Unlock()
-	if len(s.d.specs) != 1 || !strings.HasPrefix(s.d.specs[0].Title, "incident(ci): ") || s.d.specs[0].Priority != "urgent" {
+	if len(s.d.specs) != 1 || !strings.HasPrefix(s.d.specs[0].Title, "red-main ") || s.d.specs[0].Priority != "urgent" {
 		t.Fatalf("issue spec = %+v", s.d.specs)
 	}
 }
@@ -234,7 +259,7 @@ func TestStormTwoConcurrentP2RunsMakeOneIssue(t *testing.T) {
 	}
 	s.d.mu.Lock()
 	defer s.d.mu.Unlock()
-	if sp := s.d.specs[0]; !strings.HasPrefix(sp.Title, "fix(ci): ") || sp.Priority != "urgent" || sp.AssigneeType != "agent" || !sp.Wake {
+	if sp := s.d.specs[0]; !strings.HasPrefix(sp.Title, "red-main ") || sp.Priority != "urgent" || sp.AssigneeType != "agent" || !sp.Wake {
 		t.Fatalf("P2 issue spec = %+v", sp)
 	}
 }
@@ -404,7 +429,7 @@ func TestStormClassChangeReusesIssueAndCommentsAtOnce(t *testing.T) {
 	}
 	s.d.mu.Lock()
 	defer s.d.mu.Unlock()
-	if len(s.d.updates) != 1 || s.d.updates[0].TitlePrefix != "incident(ci): " || s.d.updates[0].Priority != "urgent" {
+	if len(s.d.updates) != 1 || s.d.updates[0].TitlePrefix != "" || s.d.updates[0].Priority != "urgent" {
 		t.Fatalf("incident update = %+v", s.d.updates)
 	}
 	if len(s.d.comments) != 1 {
@@ -550,6 +575,19 @@ func (s *stormEnv) closeIssue(t *testing.T, sig string, ago time.Duration) {
 		s.ws, s.repo, s.clock.Now().Add(-ago), sig)
 	if err != nil || tag.RowsAffected() != 1 {
 		t.Fatalf("close issue of %s: rows=%d err=%v", sig, tag.RowsAffected(), err)
+	}
+	// The status move leaves its own activity row, as the issue API writes it; a
+	// test that closes again at another time replaces the earlier row.
+	if _, err := s.pool.Exec(context.Background(), `DELETE FROM activity_log WHERE workspace_id=$1::uuid AND action='status_changed'
+		AND issue_id IN (SELECT issue_id FROM ci_signature_owner WHERE workspace_id=$1::uuid AND repo_name=$2 AND signature_hash=$3)`,
+		s.ws, s.repo, sig); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(context.Background(), `INSERT INTO activity_log (workspace_id, issue_id, actor_type, action, details, created_at)
+		SELECT $1::uuid, issue_id, 'system', 'status_changed', '{"to":"done"}', $3 FROM ci_signature_owner
+		WHERE workspace_id=$1::uuid AND repo_name=$2 AND signature_hash=$4`,
+		s.ws, s.repo, s.clock.Now().Add(-ago), sig); err != nil {
+		t.Fatal(err)
 	}
 }
 

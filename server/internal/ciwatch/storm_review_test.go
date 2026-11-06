@@ -55,9 +55,9 @@ func TestStormBreakerCountsP4AndMixedBursts(t *testing.T) {
 func TestStormRejectsProtocolsItDoesNotAdmit(t *testing.T) {
 	s := newStormEnv(t)
 	_, err := s.ledger.Admit(context.Background(), Failure{WorkspaceID: s.ws, RepoOwner: "o", RepoName: s.repo,
-		RunID: 400, SignatureHash: "p1A", Protocol: "P1"})
+		RunID: 400, SignatureHash: "p5A", Protocol: "P5"})
 	if err == nil {
-		t.Fatal("P1 was admitted; it must be rejected, not defaulted to P2")
+		t.Fatal("an unknown protocol was admitted; it must be rejected, not defaulted to P2")
 	}
 	if got := s.events(t, "admit"); got != 0 {
 		t.Fatalf("admit events for a rejected protocol = %d, want 0", got)
