@@ -6,15 +6,19 @@ REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 GUARD_SCRIPT="$SCRIPT_DIR/go-test-with-agent-cli-guard.sh"
 
 usage() {
-  echo "usage: $0 [--race] [--only regular|agent]" >&2
+  echo "usage: $0 [--race] [--only regular|agent] [--partition NAME]" >&2
 }
 
 # The suite is two `go test` invocations: every package outside pkg/agent at
 # the default parallelism, then pkg/agent throttled (see below). `--only`
 # selects one half so CI can give each its own runner; the default still runs
 # both for `make test`, check.sh, and the release workflow.
+# CHE-4268: `--partition` cuts the regular half so CI runs it as parallel jobs:
+# handler-N = shard N of internal/handler, service = internal/service, rest =
+# every other regular package. The partitions together equal the whole half.
 go_test_args=(test)
 only=all
+partition=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --race)
@@ -31,12 +35,36 @@ while [ "$#" -gt 0 ]; do
       esac
       shift 2
       ;;
+    --partition)
+      case "${2:-}" in
+        handler-[0-9]*|service|rest) partition=$2 ;;
+        *)
+          usage
+          exit 2
+          ;;
+      esac
+      shift 2
+      ;;
     *)
       usage
       exit 2
       ;;
   esac
 done
+
+# A partition is a slice of the regular half and needs the per-package
+# databases the parallel CI run uses; without them slices would race shared tables.
+if [ -n "$partition" ]; then
+  [ "$only" != agent ] || { usage; exit 2; }
+  case "$partition" in
+    handler-*[!0-9]*) usage; exit 2 ;;
+  esac
+  if [ "${MULTICA_TEST_DB_PER_PACKAGE:-}" != 1 ]; then
+    echo "--partition needs MULTICA_TEST_DB_PER_PACKAGE=1" >&2
+    exit 2
+  fi
+  only=regular
+fi
 
 cd "$REPO_ROOT/server"
 
@@ -65,17 +93,23 @@ if [ "$only" != agent ]; then
     # runs as parallel shards beside the rest (go-test-handler-shards.sh).
     other_packages=()
     for package in "${regular_packages[@]}"; do
-      case "$package" in
-        */internal/handler) ;;
-        *) other_packages+=("$package") ;;
+      case "$package:$partition" in
+        */internal/handler:*) ;;
+        */internal/service: | */internal/service:service) other_packages+=("$package") ;;
+        */internal/service:*) ;;
+        *: | *:rest) other_packages+=("$package") ;;
       esac
     done
     regular_packages=("${other_packages[@]}")
-    "${MULTICA_HANDLER_SHARDS_SCRIPT:-$SCRIPT_DIR/go-test-handler-shards.sh}" "${go_test_args[@]:1}" &
-    handler_shards_pid=$!
+    if [ -z "$partition" ] || [[ "$partition" == handler-* ]]; then
+      MULTICA_HANDLER_SHARD_INDEX=${partition#handler-} \
+        "${MULTICA_HANDLER_SHARDS_SCRIPT:-$SCRIPT_DIR/go-test-handler-shards.sh}" "${go_test_args[@]:1}" &
+      handler_shards_pid=$!
+    fi
   fi
   regular_status=0
-  "$GUARD_SCRIPT" -- go "${go_test_args[@]}" "${package_parallelism[@]}" "${regular_packages[@]}" || regular_status=$?
+  [ "${#regular_packages[@]}" -eq 0 ] ||
+    "$GUARD_SCRIPT" -- go "${go_test_args[@]}" "${package_parallelism[@]}" "${regular_packages[@]}" || regular_status=$?
   shards_status=0
   [ -z "$handler_shards_pid" ] || wait "$handler_shards_pid" || shards_status=$?
   [ "$regular_status" -eq 0 ] || exit "$regular_status"

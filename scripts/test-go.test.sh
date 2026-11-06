@@ -32,6 +32,8 @@ case "${1:-}" in
       github.com/multica-ai/multica/server/internal/handler \
       github.com/multica-ai/multica/server/pkg/agent \
       github.com/multica-ai/multica/server/pkg/agent/internal/testutil
+    # CHE-4268: a partition run must also see internal/service, set apart from the rest.
+    [ -z "${MULTICA_TEST_GO_WITH_SERVICE:-}" ] || echo github.com/multica-ai/multica/server/internal/service
     ;;
   test)
     printf '%s\n' "$*" >>"$MULTICA_TEST_GO_CALLS"
@@ -78,7 +80,7 @@ expect_usage_failure() {
     cat "$CALLS_FILE" >&2
     exit 1
   fi
-  if ! grep -q '^usage: .*test-go.sh \[--race\] \[--only regular|agent\]$' "$OUTPUT_FILE"; then
+  if ! grep -q '^usage: .*test-go.sh \[--race\] \[--only regular|agent\] \[--partition NAME\]$' "$OUTPUT_FILE"; then
     echo "$label did not print usage" >&2
     cat "$OUTPUT_FILE" >&2
     exit 1
@@ -103,7 +105,7 @@ expect_calls "--only agent" "$agent_call"
 parallel_call="test -race -p 4 -exec $SCRIPT_DIR/go-test-db-exec.sh github.com/multica-ai/multica/server github.com/multica-ai/multica/server/internal/daemon"
 cat >"$TEST_DIR/shards" <<'SHARDS'
 #!/usr/bin/env bash
-echo "handler-shards $*" >>"$MULTICA_TEST_GO_CALLS"
+echo "handler-shards $*${MULTICA_HANDLER_SHARD_INDEX:+ index=$MULTICA_HANDLER_SHARD_INDEX}" >>"$MULTICA_TEST_GO_CALLS"
 [ -z "${SHARDS_TEST_FAIL:-}" ]
 SHARDS
 chmod 755 "$TEST_DIR/shards"
@@ -123,6 +125,37 @@ fi
 
 MULTICA_TEST_DB_PER_PACKAGE=1 PATH="$BIN_DIR:$PATH" bash "$SCRIPT_DIR/test-go.sh" --only agent --race
 expect_calls "per-package databases leave pkg/agent alone" "$agent_call"
+
+# CHE-4268: --partition splits the regular half so CI runs it as parallel jobs.
+# handler-N = shard N of internal/handler; service = internal/service; rest =
+# every other regular package. Together they must equal the unpartitioned run.
+partition_call() { echo "test -race -p 4 -exec $SCRIPT_DIR/go-test-db-exec.sh $*"; }
+svc=github.com/multica-ai/multica/server/internal/service
+base=github.com/multica-ai/multica/server
+run_partition() { # $1 partition; later args: extra env assignments
+  : >"$CALLS_FILE"
+  env MULTICA_TEST_DB_PER_PACKAGE=1 MULTICA_TEST_GO_WITH_SERVICE=1 PATH="$BIN_DIR:$PATH" bash "$SCRIPT_DIR/test-go.sh" --race --only regular --partition "$1"
+}
+run_partition handler-1
+expect_calls "--partition handler-1" "handler-shards -race index=1"
+run_partition service
+expect_calls "--partition service" "$(partition_call $svc)"
+run_partition rest
+expect_calls "--partition rest" "$(partition_call $base $base/internal/daemon)"
+# Without per-package databases a partition would race shared tables: refuse.
+if MULTICA_TEST_GO_WITH_SERVICE=1 PATH="$BIN_DIR:$PATH" bash "$SCRIPT_DIR/test-go.sh" --race --only regular --partition rest >/dev/null 2>&1; then
+  echo "--partition without MULTICA_TEST_DB_PER_PACKAGE=1 must fail" >&2; exit 1
+fi
+: >"$CALLS_FILE"
+# A failing handler shard fails its partition.
+if SHARDS_TEST_FAIL=1 MULTICA_TEST_DB_PER_PACKAGE=1 PATH="$BIN_DIR:$PATH" bash "$SCRIPT_DIR/test-go.sh" --race --only regular --partition handler-0 >/dev/null 2>&1; then
+  echo "handler partition failure must fail test-go.sh" >&2; exit 1
+fi
+: >"$CALLS_FILE"
+expect_usage_failure "unknown partition" --only regular --partition everything
+expect_usage_failure "handler partition without index" --only regular --partition handler-
+expect_usage_failure "partition with agent half" --only agent --partition rest
+expect_usage_failure "missing partition name" --partition
 
 expect_usage_failure "unknown option" --unknown
 expect_usage_failure "unknown --only scope" --only everything
