@@ -5,11 +5,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -610,6 +613,77 @@ func TestChatHistoryReadMarksReadingTaskAndReachesDelegate(t *testing.T) {
 	delegateClaimsRestricted(t, taskID, "history", []string{"t1"})
 }
 
+// onceBeforeQuery runs inject once, immediately before the first query whose
+// SQL contains match, so a test can commit a row at an exact point in a
+// handler's read sequence.
+type onceBeforeQuery struct {
+	db.DBTX
+	match  string
+	inject func()
+	done   bool
+}
+
+func (d *onceBeforeQuery) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+	if !d.done && strings.Contains(sql, d.match) {
+		d.done = true
+		d.inject()
+	}
+	return d.DBTX.Query(ctx, sql, args...)
+}
+
+// lateReader is a Slack-backed history reader that commits a row right before
+// it returns the page, i.e. after the handler decided to read.
+type lateReader struct {
+	inject func()
+	page   channel.HistoryPage
+}
+
+func (l *lateReader) ChannelOverview(context.Context, pgtype.UUID, channel.HistoryOptions) (channel.HistoryPage, error) {
+	l.inject()
+	return l.page, nil
+}
+
+func (l *lateReader) Thread(context.Context, pgtype.UUID, string, channel.HistoryOptions) (channel.HistoryPage, error) {
+	l.inject()
+	return l.page, nil
+}
+
+// readMidCommit is the CHE-3702 round 19 interleaving: the chat is clean when a
+// history read starts, and a tainted turn (message + task, committed together as
+// the watch does) lands after the handler begins but before the transcript is
+// read. The response must contain that message, and the reading task must carry
+// its taint, so a delegate of the reader is restricted.
+func readMidCommit(handler func(http.ResponseWriter, *http.Request), target string, slackBacked bool) func(*testing.T, string, string) string {
+	return func(t *testing.T, agentID, runtimeID string) string {
+		chatID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "mid-read commit"})
+		const late = "late tainted reply"
+		taskID := dbfx.Task(t, agentID, testutil.Cols{"status": "running", "runtime_id": runtimeID, "chat_session_id": chatID})
+		inject := func() {
+			lateTask := dbfx.Task(t, agentID, testutil.Cols{
+				"status": "completed", "runtime_id": runtimeID, "chat_session_id": chatID, "taint_ids": []string{"t1"},
+				"started_at": testutil.Raw("now() - interval '1 minute'"), "completed_at": testutil.Raw("now()"),
+			})
+			dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": chatID, "role": "assistant", "content": late, "task_id": lateTask})
+		}
+		origQueries, origSlack := testHandler.Queries, testHandler.SlackHistory
+		t.Cleanup(func() { testHandler.Queries, testHandler.SlackHistory = origQueries, origSlack })
+		if slackBacked {
+			testHandler.SlackHistory = &lateReader{inject: inject, page: channel.HistoryPage{
+				ChannelType: "slack", Messages: []channel.HistoryMessage{{ID: "1", Role: channel.HistoryRoleAssistant, Text: late, TS: "1"}},
+			}}
+		} else {
+			testHandler.SlackHistory = nil
+			testHandler.Queries = db.New(&onceBeforeQuery{DBTX: testPool, match: "name: ListChatMessagesPage :many", inject: inject})
+		}
+		w := httptest.NewRecorder()
+		handler(w, withChatTestWorkspaceCtx(t, taskActorReq(target, taskID)))
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), late) {
+			t.Fatalf("read = %d %s, want 200 containing %q", w.Code, w.Body.String(), late)
+		}
+		return taskID
+	}
+}
+
 // CHE-3702 round 18 guard: every path by which chat content enters a task. The
 // only taint sits on the chat (chat_session.taint_ids); its task rows are clean,
 // so a path that skips the shared helper (recordChatTaint) leaves the task and
@@ -687,6 +761,10 @@ func TestEveryChatContentPathRestrictsADelegate(t *testing.T) {
 			})},
 		{"history read", read(testHandler.GetChatChannelHistory, "/api/chat/history?limit=10")},
 		{"thread read", read(testHandler.GetChatThread, "/api/chat/thread")},
+		{"history read, tainted turn commits mid-read", readMidCommit(testHandler.GetChatChannelHistory, "/api/chat/history?limit=10", false)},
+		{"thread read, tainted turn commits mid-read", readMidCommit(testHandler.GetChatThread, "/api/chat/thread", false)},
+		{"slack history, tainted turn commits mid-read", readMidCommit(testHandler.GetChatChannelHistory, "/api/chat/history?limit=10", true)},
+		{"slack thread, tainted turn commits mid-read", readMidCommit(testHandler.GetChatThread, "/api/chat/thread", true)},
 	} {
 		t.Run(p.name, func(t *testing.T) {
 			agentID, runtimeID, _ := createRuntimeGuardAgent(t, context.Background())

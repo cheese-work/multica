@@ -75,6 +75,9 @@ func (h *Handler) GetChatChannelHistory(w http.ResponseWriter, r *http.Request) 
 			page, err = h.chatMessageHistory(r, scope)
 		}
 	}
+	if !h.takeChatHistoryTaint(w, r, &scope) {
+		return
+	}
 	h.respondChatHistory(w, r, scope.sessionID, page, err)
 }
 
@@ -227,6 +230,9 @@ func (h *Handler) GetChatThread(w http.ResponseWriter, r *http.Request) {
 			page, err = h.chatMessageHistory(r, scope)
 		}
 	}
+	if !h.takeChatHistoryTaint(w, r, &scope) {
+		return
+	}
 	h.respondChatHistory(w, r, scope.sessionID, page, err)
 }
 
@@ -241,6 +247,7 @@ func (h *Handler) GetChatThread(w http.ResponseWriter, r *http.Request) {
 // the credential it requires rather than inheriting that guarantee silently
 // from a middleware two layers away.
 type chatHistoryScope struct {
+	task            db.AgentTaskQueue
 	sessionID       pgtype.UUID
 	contextRevision pgtype.Int8
 	historyStart    string
@@ -283,14 +290,6 @@ func (h *Handler) chatHistorySession(w http.ResponseWriter, r *http.Request) (ch
 		writeError(w, http.StatusBadRequest, "this task is not a chat task")
 		return chatHistoryScope{}, false
 	}
-	// The transcript returned below is chat content, so the reading task takes
-	// the chat's taint before any of it leaves (CHE-3702). Fail closed.
-	if err := h.recordChatTaint(r.Context(), &task, ""); err != nil {
-		slog.Error("chat history: record chat taint failed", append(logger.RequestAttrs(r),
-			"error", err, "task_id", uuidToString(task.ID))...)
-		writeError(w, http.StatusInternalServerError, "failed to record chat taint")
-		return chatHistoryScope{}, false
-	}
 	// Defense in depth: load the session and confirm it lives in the token's
 	// stamped workspace. The token→task binding already guarantees the agent can
 	// only reach its own task; this makes a future wiring regression fail closed.
@@ -303,7 +302,7 @@ func (h *Handler) chatHistorySession(w http.ResponseWriter, r *http.Request) (ch
 		writeError(w, http.StatusForbidden, "chat session does not belong to this workspace")
 		return chatHistoryScope{}, false
 	}
-	scope := chatHistoryScope{sessionID: task.ChatSessionID, contextRevision: task.ChannelContextRevision}
+	scope := chatHistoryScope{task: task, sessionID: task.ChatSessionID, contextRevision: task.ChannelContextRevision}
 	if task.ChannelContextRevision.Valid {
 		generation, err := h.Queries.GetChannelChatContextGeneration(r.Context(), db.GetChannelChatContextGenerationParams{
 			ChatSessionID: task.ChatSessionID, Revision: task.ChannelContextRevision.Int64,
@@ -317,6 +316,22 @@ func (h *Handler) chatHistorySession(w http.ResponseWriter, r *http.Request) (ch
 		scope.boundaryPending = generation.HistoryBoundaryPending
 	}
 	return scope, true
+}
+
+// takeChatHistoryTaint makes the reading task take the chat's taint. Call it
+// AFTER the transcript is read and before anything is written: taint only grows
+// and a turn commits its message and task together, so the taint read here
+// covers every message the page can hold. Recording first would let a turn
+// commit between the two steps and leave its message in the response without
+// its taint (CHE-3702). Fail closed.
+func (h *Handler) takeChatHistoryTaint(w http.ResponseWriter, r *http.Request, scope *chatHistoryScope) bool {
+	if err := h.recordChatTaint(r.Context(), &scope.task, ""); err != nil {
+		slog.Error("chat history: record chat taint failed", append(logger.RequestAttrs(r),
+			"error", err, "task_id", uuidToString(scope.task.ID))...)
+		writeError(w, http.StatusInternalServerError, "failed to record chat taint")
+		return false
+	}
+	return true
 }
 
 // respondChatHistory writes the shared response: a note (200) when the session
