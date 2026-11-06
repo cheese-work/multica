@@ -100,7 +100,8 @@ print(json.dumps({"server_commit": versions[min(index, len(versions) - 1)]}))
             return "waiting", "No eligibility job runs before c00-production approval."
 
         preflight = self.workflow["jobs"]["candidate-preflight"]
-        self.assertNotIn("environment", preflight)
+        # CHE-4251: the read path has its own App-token environment, never the approval environment.
+        self.assertEqual(preflight["environment"], "ci-app-token")
         self.assertIn("needs.candidate-preflight.outputs.eligible == 'true'", protected["if"])
         self.assertIn("needs.candidate-preflight.outputs.eligible == 'true'", self.workflow["jobs"]["prepare-release-candidate"]["if"])
         selection = next(step for step in preflight["steps"] if step.get("id") == "candidate")
@@ -278,7 +279,9 @@ print(json.dumps({"server_commit": versions[min(index, len(versions) - 1)]}))
         checkout = next(step for step in preflight["steps"] if step.get("uses", "").startswith("actions/checkout@"))
         self.assertEqual(checkout["with"]["ref"], "${{ github.sha }}")
         self.assertEqual(checkout["with"]["fetch-depth"], 0)
-        self.assertNotIn("secrets.C00", json.dumps(preflight))
+        # CHE-4251: the only C00 secrets allowed are the App id and CI key, read by the mint step alone.
+        self.assertNotIn("secrets.C00", json.dumps([s for s in preflight["steps"]
+                                                    if not s.get("uses", "").startswith("actions/create-github-app-token@")]))
         selection = next(step for step in preflight["steps"] if step.get("id") == "candidate")
         self.assertEqual(selection["env"]["C00_CONFIG_URL"],
                          "${{ vars.C00_CONFIG_URL }}")

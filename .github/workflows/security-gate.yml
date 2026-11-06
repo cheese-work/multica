@@ -63,6 +63,10 @@ jobs:
     # CHE-3604: GitHub-hosted runner, so the X99 hook described above no longer applies; the `if:` above is the only comment filter.
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # CHE-4251: only the queue run gets the c00-multicado App token (own API budget). The pull_request_target and
+    # issue_comment runs also execute on `main`, which the environment's branch rule admits, so this expression is the
+    # guard (tests/test_che4251_app_token.py): they run with no environment and no key.
+    environment: ${{ github.event_name == 'merge_group' && 'ci-app-token' || '' }}
     env:
       PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
       GH_TOKEN: ${{ github.token }}
@@ -92,7 +96,32 @@ jobs:
           venv="$RUNNER_TOOL_CACHE/semgrep-1.183.0"
           [ -x "$venv/bin/semgrep" ] || { python3 -m venv "$venv" && "$venv/bin/pip" install --quiet semgrep==1.183.0; }
           echo "SEMGREP_BIN=$venv/bin/semgrep" >> "$GITHUB_ENV"
+      - name: Mint the c00-multicado read token (CHE-4251)
+        id: app
+        if: github.event_name == 'merge_group'
+        # A missing key or environment must not stop a deploy: the pick step below falls back to GITHUB_TOKEN.
+        continue-on-error: true
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.C00_MULTICADO_APP_ID }}
+          private-key: ${{ secrets.C00_MULTICADO_CI_PRIVATE_KEY }}
+          repositories: multica
+          permission-metadata: read
+          permission-contents: read
+          permission-pull-requests: read
+          permission-issues: read
+          permission-statuses: write
+      - name: Pick the API token (App token while its budget stays above 1,500)
+        id: api
+        if: github.event_name == 'merge_group'
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app.outputs.token }}
+          FALLBACK_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash deploy/cd/pick-api-token.sh
       - name: Evaluate the verdict and post the status
+        env:
+          GH_TOKEN: ${{ steps.api.outputs.token || github.token }}
         run: |
           set -euo pipefail
           run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
