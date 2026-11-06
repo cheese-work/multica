@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"time"
 )
 
@@ -39,7 +40,7 @@ const (
 	LabelSelfHealed      = "self_healed"
 )
 
-// Config is the part of ci_watch_config that routing steps 1 and 2 read.
+// Config is the part of the per-repo watch config that routing steps 1 and 2 read.
 type Config struct {
 	Mode             string   // off, shadow, act
 	Branches         []string // globs; empty = DefaultBranch only
@@ -87,7 +88,7 @@ type JobEvidence struct {
 	Excerpt string `json:"excerpt"`
 }
 
-// FailureEvent is the ci_failure_event row. Idempotency key: repo, run id, attempt.
+// FailureEvent is one stored failure event. Idempotency key: repo, run id, attempt.
 type FailureEvent struct {
 	WorkspaceID    string
 	RepoOwner      string
@@ -104,6 +105,7 @@ type FailureEvent struct {
 	PartialReason  string
 	FailedJobCount int
 	Jobs           []JobEvidence
+	RunnerLost     bool // a failed job's metadata shows runner loss; not stored, classified in memory
 }
 
 // Job is one entry of the jobs list.
@@ -112,29 +114,44 @@ type Job struct {
 	Name        string
 	Conclusion  string
 	CompletedAt time.Time
+	RunnerLost  bool // job metadata shows the runner vanished mid-job
 }
 
-// RateLimitError is what GitHub answered when it asked us to back off.
-type RateLimitError struct{ RetryAfter time.Duration }
+// RateLimitError is what GitHub answered when it asked us to back off. Header
+// holds the throttling response's headers as sent (the reset is not clamped);
+// RetryAfter is the client's clamped wait, used when Header is nil.
+type RateLimitError struct {
+	RetryAfter time.Duration
+	Header     http.Header
+}
 
 func (e *RateLimitError) Error() string { return "github rate limited" }
 
 // GitHub is the installation-scoped API surface the collector uses. The
 // implementation must send no Range header and follow the log redirect.
 type GitHub interface {
-	// ListJobs returns one page (100 per page, filter=latest) of the run attempt's jobs.
-	ListJobs(ctx context.Context, run Run, page int) (jobs []Job, hasMore bool, err error)
-	// JobLog streams the job log from byte 0.
-	JobLog(ctx context.Context, run Run, jobID int64) (io.ReadCloser, error)
+	// ListJobs returns one page (100 per page, filter=latest) of the run attempt's
+	// jobs and the response headers (nil on error).
+	ListJobs(ctx context.Context, run Run, page int) (jobs []Job, hasMore bool, h http.Header, err error)
+	// JobLog streams the job log from byte 0, with GitHub's API response headers.
+	JobLog(ctx context.Context, run Run, jobID int64) (io.ReadCloser, http.Header, error)
 }
+
+// Release settles one reserved call. Pass the response headers so the shared
+// ledger sees what other consumers spent; nil when the call failed. An error
+// means the settlement was not stored, so the ledger balance is stale: the
+// caller must make no further call.
+type Release func(h http.Header) error
 
 // Budget is the shared installation ledger. CHE-4275 (S3) supplies the real one.
 type Budget interface {
-	// Reserve holds cost calls of budget; release returns the hold. ErrNoBudget
-	// means below the floor or unknown; ErrBackoff means a backoff is active.
-	Reserve(ctx context.Context, installationID int64, cost int) (release func(), err error)
-	// Limited records a 403/429 answer so every repo on the installation backs off.
-	Limited(ctx context.Context, installationID int64, e *RateLimitError)
+	// Reserve holds cost calls of budget; call release once the call returned.
+	// ErrNoBudget means below the floor or unknown; ErrBackoff means a backoff
+	// is active.
+	Reserve(ctx context.Context, installationID int64, cost int) (release Release, err error)
+	// Limited records a 403/429 answer so every repo on the installation backs
+	// off. An error means the backoff was not stored: the caller must stop.
+	Limited(ctx context.Context, installationID int64, e *RateLimitError) error
 }
 
 var (

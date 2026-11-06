@@ -24,7 +24,10 @@ func ciWatcherStorageAllowed(rel string) bool {
 		strings.HasPrefix(rel, "pkg/db/generated/"),
 		rel == "cmd/migrate/main.go", // index registry: names, not access
 		rel == "pkg/db/queries/ci_watch.sql",
-		rel == "pkg/db/queries/workspace_delete.sql":
+		rel == "pkg/db/queries/workspace_delete.sql",
+		// The installation budget ledger (S3); it is only reached through the
+		// watcher, whose entry point checks CIWatcherEnabled.
+		rel == "internal/ghbudget/ghbudget.go":
 		return true
 	}
 	return false

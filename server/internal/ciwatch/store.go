@@ -14,7 +14,7 @@ type EventWriter interface {
 	InsertCIFailureEvent(ctx context.Context, arg db.InsertCIFailureEventParams) (int64, error)
 }
 
-// Store writes ev to ci_failure_event. It reports false when the run attempt
+// Store writes ev as a failure event. It reports false when the run attempt
 // was already stored (a redelivered event), which is not an error.
 func Store(ctx context.Context, w EventWriter, ev *FailureEvent) (bool, error) {
 	var ws pgtype.UUID

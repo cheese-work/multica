@@ -157,6 +157,7 @@ var concurrentIndexCleanups = map[string]string{
 	"997_ci_signature_owner_signature_uidx":                     "ci_signature_owner_signature_uidx",
 	"998_ci_signature_owner_issue_uidx":                         "ci_signature_owner_issue_uidx",
 	"999_ci_failure_event_created_at_idx":                       "ci_failure_event_created_at_idx",
+	"9992_system1_observation_ci_event_subject_idx":             "system1_observation_ci_event_subject",
 	"975_chat_session_chain_root_idx":                           "idx_chat_session_chain_root",
 	"976_chat_attention_item_one_open_later_idx":                "chat_attention_item_one_open_later_idx",
 	"977_chat_attention_item_open_idx":                          "chat_attention_item_open_idx",
@@ -563,6 +564,13 @@ var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
 		IndexRegclass: "ci_failure_event_created_at_idx",
 		TableRegclass: "ci_failure_event",
 		Columns:       []string{"created_at"},
+	},
+	"9992_system1_observation_ci_event_subject_idx": {
+		IndexRegclass: "system1_observation_ci_event_subject",
+		TableRegclass: "system1_observation",
+		Unique:        true,
+		Columns:       []string{"workspace_id", "subject_id"},
+		Predicate:     "kind = 'ci_event'::text",
 	},
 	"971_dm_progress_data_incident_follow_kind_idx": {
 		IndexRegclass: "idx_dm_progress_data_incident_follow_kind",
