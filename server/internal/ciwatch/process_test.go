@@ -53,8 +53,30 @@ func (m *memObs) CreateSystem1CIObservation(_ context.Context, a db.CreateSystem
 }
 
 func pipelineFor(ev *memEvents, ob *memObs, gh *fakeGH) Pipeline {
-	c, _ := newCollector(gh, &fakeBudget{}, fakeRuns{})
-	return Pipeline{Collector: c, Events: ev, Observer: Observer{W: ob}}
+	return pipelineWithRuns(ev, ob, gh, fakeRuns{})
+}
+
+func pipelineWithRuns(ev *memEvents, ob *memObs, gh *fakeGH, runs Runs) Pipeline {
+	c, _ := newCollector(gh, &fakeBudget{}, runs)
+	return Pipeline{Collector: c, Tx: memTx(ev, ob), Observer: Observer{W: ob}}
+}
+
+// memTx commits both memory stores or, when fn fails, restores them.
+func memTx(ev *memEvents, ob *memObs) InTx {
+	return func(_ context.Context, fn func(Writers) error) error {
+		evSnap, obSnap := map[string]bool{}, map[string]db.CreateSystem1CIObservationParams{}
+		for k, v := range ev.seen {
+			evSnap[k] = v
+		}
+		for k, v := range ob.rows {
+			obSnap[k] = v
+		}
+		if err := fn(Writers{Events: ev, Observations: ob}); err != nil {
+			ev.seen, ob.rows = evSnap, obSnap
+			return err
+		}
+		return nil
+	}
 }
 
 func failingRunGH() *fakeGH {
@@ -91,16 +113,16 @@ func TestProcessObservationFailureIsRecoveredByRedelivery(t *testing.T) {
 	if _, err := p.Process(context.Background(), in, History{}); err == nil {
 		t.Fatal("a failed observation write must be returned so the delivery is retried")
 	}
-	if len(ev.seen) != 1 || len(ob.rows) != 0 {
-		t.Fatalf("after failure: events=%d observations=%d, want 1 and 0", len(ev.seen), len(ob.rows))
+	if len(ev.seen) != 0 || len(ob.rows) != 0 {
+		t.Fatalf("after failure: events=%d observations=%d, want 0 and 0 (one transaction)", len(ev.seen), len(ob.rows))
 	}
-	// Redelivery: the event is already stored, the observation is still written.
+	// Redelivery writes both together.
 	ob.fail = nil
 	if _, err := pipelineFor(ev, ob, failingRunGH()).Process(context.Background(), in, History{}); err != nil {
 		t.Fatal(err)
 	}
-	if len(ob.rows) != 1 {
-		t.Fatalf("after redelivery: observations=%d, want 1", len(ob.rows))
+	if len(ev.seen) != 1 || len(ob.rows) != 1 {
+		t.Fatalf("after redelivery: events=%d observations=%d, want 1 and 1", len(ev.seen), len(ob.rows))
 	}
 	// A further redelivery adds nothing.
 	if _, err := pipelineFor(ev, ob, failingRunGH()).Process(context.Background(), in, History{}); err != nil || len(ob.rows) != 1 {
@@ -138,5 +160,30 @@ func TestSubjectIDIsPerWorkspace(t *testing.T) {
 	b.WorkspaceID = uuid.NewString()
 	if subjectID(a) == subjectID(b) {
 		t.Error("two workspaces watching one repo must not share a subject id")
+	}
+}
+
+// A failed write must not pin half a decision. The retry sees different state
+// (a newer run has since succeeded); the event and the observation that end up
+// stored must still agree: either both come from the first attempt, or the
+// first attempt left nothing behind.
+func TestProcessRetryNeverMixesTwoDecisions(t *testing.T) {
+	ev, ob := &memEvents{}, &memObs{fail: errors.New("db down")}
+	in := realInput()
+	if _, err := pipelineFor(ev, ob, failingRunGH()).Process(context.Background(), in, History{}); err == nil {
+		t.Fatal("a failed observation write must be returned")
+	}
+	ob.fail = nil
+	retry := pipelineWithRuns(ev, ob, failingRunGH(), fakeRuns{exists: true, succeeded: true})
+	if _, err := retry.Process(context.Background(), in, History{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range ob.rows {
+		if len(ev.seen) == 1 && r.Class != "infra_rate_limit" {
+			t.Errorf("stored event is a rate-limit failure but the observation says %q", r.Class)
+		}
+	}
+	if len(ob.rows) != 1 {
+		t.Fatalf("observations=%d, want 1", len(ob.rows))
 	}
 }

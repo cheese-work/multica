@@ -25,3 +25,18 @@ SELECT workspace.id, 'ci_event', sqlc.arg('subject_id')::uuid, sqlc.arg('class')
 FROM workspace WHERE workspace.id = sqlc.arg('workspace_id')
 FOR KEY SHARE OF workspace
 ON CONFLICT (workspace_id, subject_id) WHERE kind = 'ci_event' DO NOTHING;
+
+-- name: GetCIWatchConfigForRepo :one
+-- The per-repo routing config; no row means the repo is not watched.
+SELECT mode, branches, events, workflows_include, workflows_exclude
+FROM ci_watch_config
+WHERE workspace_id = $1 AND lower(repo_owner) = lower($2) AND lower(repo_name) = lower($3);
+
+-- name: CIWatchNewerRuns :one
+-- Supersession from the run mirror, no API call: is there a later run (higher
+-- run id) of the same workflow and branch, and did one of them succeed.
+SELECT (count(*) > 0)::bool AS newer_exists,
+       COALESCE(bool_or(conclusion = 'success'), false)::bool AS newer_succeeded
+FROM github_workflow_run
+WHERE workspace_id = $1 AND repo_owner = lower($2) AND repo_name = lower($3)
+  AND workflow_path = $4 AND head_branch = $5 AND run_id > $6;

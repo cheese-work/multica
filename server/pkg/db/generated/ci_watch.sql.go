@@ -11,6 +11,44 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const cIWatchNewerRuns = `-- name: CIWatchNewerRuns :one
+SELECT (count(*) > 0)::bool AS newer_exists,
+       COALESCE(bool_or(conclusion = 'success'), false)::bool AS newer_succeeded
+FROM github_workflow_run
+WHERE workspace_id = $1 AND repo_owner = lower($2) AND repo_name = lower($3)
+  AND workflow_path = $4 AND head_branch = $5 AND run_id > $6
+`
+
+type CIWatchNewerRunsParams struct {
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+	Lower        string      `json:"lower"`
+	Lower_2      string      `json:"lower_2"`
+	WorkflowPath string      `json:"workflow_path"`
+	HeadBranch   string      `json:"head_branch"`
+	RunID        int64       `json:"run_id"`
+}
+
+type CIWatchNewerRunsRow struct {
+	NewerExists    bool `json:"newer_exists"`
+	NewerSucceeded bool `json:"newer_succeeded"`
+}
+
+// Supersession from the run mirror, no API call: is there a later run (higher
+// run id) of the same workflow and branch, and did one of them succeed.
+func (q *Queries) CIWatchNewerRuns(ctx context.Context, arg CIWatchNewerRunsParams) (CIWatchNewerRunsRow, error) {
+	row := q.db.QueryRow(ctx, cIWatchNewerRuns,
+		arg.WorkspaceID,
+		arg.Lower,
+		arg.Lower_2,
+		arg.WorkflowPath,
+		arg.HeadBranch,
+		arg.RunID,
+	)
+	var i CIWatchNewerRunsRow
+	err := row.Scan(&i.NewerExists, &i.NewerSucceeded)
+	return i, err
+}
+
 const createSystem1CIObservation = `-- name: CreateSystem1CIObservation :execrows
 INSERT INTO system1_observation (workspace_id, kind, subject_id, class, decision_source, inputs, predicted_key, predicted_confidence, predicted_precedents, predicted_at, choice_key)
 SELECT workspace.id, 'ci_event', $1::uuid, $2::text, 'rule', $3::jsonb, $4::text, $5::real, $6::int, CASE WHEN $4::text IS NOT NULL THEN clock_timestamp() END, $7::text
@@ -63,6 +101,40 @@ func (q *Queries) DeleteExpiredCIFailureEvents(ctx context.Context, createdAt pg
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const getCIWatchConfigForRepo = `-- name: GetCIWatchConfigForRepo :one
+SELECT mode, branches, events, workflows_include, workflows_exclude
+FROM ci_watch_config
+WHERE workspace_id = $1 AND lower(repo_owner) = lower($2) AND lower(repo_name) = lower($3)
+`
+
+type GetCIWatchConfigForRepoParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Lower       string      `json:"lower"`
+	Lower_2     string      `json:"lower_2"`
+}
+
+type GetCIWatchConfigForRepoRow struct {
+	Mode             string   `json:"mode"`
+	Branches         []string `json:"branches"`
+	Events           []string `json:"events"`
+	WorkflowsInclude []string `json:"workflows_include"`
+	WorkflowsExclude []string `json:"workflows_exclude"`
+}
+
+// The per-repo routing config; no row means the repo is not watched.
+func (q *Queries) GetCIWatchConfigForRepo(ctx context.Context, arg GetCIWatchConfigForRepoParams) (GetCIWatchConfigForRepoRow, error) {
+	row := q.db.QueryRow(ctx, getCIWatchConfigForRepo, arg.WorkspaceID, arg.Lower, arg.Lower_2)
+	var i GetCIWatchConfigForRepoRow
+	err := row.Scan(
+		&i.Mode,
+		&i.Branches,
+		&i.Events,
+		&i.WorkflowsInclude,
+		&i.WorkflowsExclude,
+	)
+	return i, err
 }
 
 const insertCIFailureEvent = `-- name: InsertCIFailureEvent :execrows

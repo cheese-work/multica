@@ -44,7 +44,7 @@ func TestProcessDBRecordsEachRunAttemptOnce(t *testing.T) {
 		c, _ := newCollector(failingRunGH(), &fakeBudget{}, fakeRuns{})
 		in := baseInput()
 		in.Run.WorkspaceID, in.Run.RunAttempt = ws, attempt
-		p := Pipeline{Collector: c, Events: q, Observer: Observer{W: q}}
+		p := Pipeline{Collector: c, Tx: PgxTx(pool), Observer: Observer{W: q}}
 		if _, err := p.Process(ctx, in, History{}); err != nil {
 			t.Fatal(err)
 		}
