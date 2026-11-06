@@ -388,6 +388,40 @@ func TestInstructionSetConcurrentApprovalsApplyOnce(test *testing.T) {
 	})
 }
 
+// The signed matrix row: a loser that got busy_retry gets precondition_drift
+// on one retry after the winning approval commits, and never mutates. The test
+// holds the field lock to force busy_retry, so the sequence is deterministic.
+func TestInstructionSetBusyLoserRetriesAsDriftAfterTheWinnerCommits(test *testing.T) {
+	forEachInstructionSetTarget(test, func(test *testing.T, target instructionSetTarget) {
+		winner, _ := requestInstructionSet(test, target, http.StatusCreated, nil)
+		other := strings.Replace(governedText, "tail", "tail other", 1)
+		fixture := newActionFixture(test)
+		var created actionResponse
+		fixture.respond(test, fixture.withAction(map[string]any{"type": target.actionType, "version": 1, "params": target.params(winner.id, governedText, other)}), http.StatusCreated, &created)
+		dbfx.Cleanup(test, `DELETE FROM decision_answer WHERE decision_request_id = $1`, created.ID)
+		loser := instructionSetRequest{pendingAction{fixture, created.ID, created.Action.ID}, target, winner.id}
+		handler := withVerifier(acceptingVerifier)
+
+		release := holdRowLock(test, `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, configChangeLockKey(testWorkspaceID, target.field, winner.id))
+		mustContain(test, loser.approveOwner(test, handler, http.StatusConflict), "busy_retry")
+		loser.assertNotApplied(test, governedText)
+
+		release()
+		winner.approveOwner(test, handler, http.StatusOK)
+		mustContain(test, loser.approveOwner(test, handler, http.StatusConflict), "precondition_drift")
+		loser.action.assertUntouched(test)
+		if got := target.live(test, winner.id); got != editedText {
+			test.Fatalf("stored text %q after the losing retry, want the winner's %q", got, editedText)
+		}
+		if n := loser.action.activityCount(test, "config_change_applied"); n != 0 {
+			test.Fatalf("losing action wrote %d config_change_applied rows, want 0", n)
+		}
+		if n := winner.action.activityCount(test, "config_change_applied"); n != 1 {
+			test.Fatalf("winning action wrote %d config_change_applied rows, want 1", n)
+		}
+	})
+}
+
 func TestSquadInstructionsSetRefusesGrowthPastTheTokenLimit(test *testing.T) {
 	target := instructionSetTargets()[0]
 	long := governedText + strings.Repeat(" word", 4000)
