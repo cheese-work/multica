@@ -124,11 +124,19 @@ export function scanBaselines(runs, { pending, jobBaselines, baselineJobs, listJ
     }
     first ??= run
     for (const job of runJobs) {
-      const name = pending.has(job.name) ? job.name : job.name.replace(/^(cursor-background-lifecycle|installer) \(ubuntu-latest\)$/, "$1 (ubuntu-24.04)")
-      if (!pending.has(name) || job.status !== "completed" || job.conclusion !== "success") continue
-      baselineJobs.push({ ...collect(job), name })
-      jobBaselines[name] = { run: run.html_url, sha: run.head_sha, job: job.name }
-      pending.delete(name)
+      if (job.status !== "completed" || job.conclusion !== "success") continue
+      // CHE-4268: until main has run the shard matrix, the old single `backend-tests` job is the baseline
+      // for every shard. Its warnings are a ceiling for each shard, so a shard can only pass by being quieter.
+      const names = job.name === "backend-tests" ? [...pending].filter((name) => name.startsWith("backend-test-shards (")) : []
+      const renamed = pending.has(job.name) ? job.name : job.name.replace(/^(cursor-background-lifecycle|installer) \(ubuntu-latest\)$/, "$1 (ubuntu-24.04)")
+      if (pending.has(renamed)) names.push(renamed)
+      if (!names.length) continue
+      const collected = collect(job)
+      for (const name of names) {
+        baselineJobs.push({ ...collected, name })
+        jobBaselines[name] = { run: run.html_url, sha: run.head_sha, job: job.name }
+        pending.delete(name)
+      }
     }
     if (!pending.size) break
   }

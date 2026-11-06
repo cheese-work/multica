@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_decision_request_open_proposal;
