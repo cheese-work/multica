@@ -1,5 +1,6 @@
 """CHE-4251: the `ci-app-token` environment (c00-multicado App key) is reachable only from main / merge_group jobs."""
 
+import json
 import os
 import re
 import stat
@@ -93,6 +94,23 @@ class Guard(unittest.TestCase):
         self.assertEqual(gate["steps"][[s.get("uses", "").startswith(MINT) for s in gate["steps"]].index(True)]["with"]["permission-statuses"], "write")
 
 
+class Wiring(unittest.TestCase):
+    def test_polling_and_selection_steps_get_both_tokens_for_the_reserve_check(self):
+        jobs = dict(workflows())
+        pre = jobs["cd-deploy.yml"]["jobs"]["candidate-preflight"]
+        select = next(s for s in pre["steps"] if s.get("id") == "candidate")
+        self.assertIn("steps.app.outputs.token", select["env"]["APP_TOKEN"])
+        self.assertIn("secrets.GITHUB_TOKEN", select["env"]["FALLBACK_TOKEN"])
+
+    def test_jobs_that_hold_c00_secrets_never_get_the_app_key(self):
+        # prepare-release-candidate and deploy hold C00 secrets in their own environments; the key stays out of them.
+        cd = dict(workflows())["cd-deploy.yml"]["jobs"]
+        for name in ("prepare-release-candidate", "approve-c00", "admission", "deploy"):
+            text = json.dumps(cd[name])
+            self.assertNotIn(ENV_NAME, text, name)
+            self.assertNotIn("C00_MULTICADO_", text, name)
+
+
 class PickToken(unittest.TestCase):
     def run_pick(self, remaining, app="APP", fallback="GHT"):
         with tempfile.TemporaryDirectory() as d:
@@ -113,9 +131,11 @@ class PickToken(unittest.TestCase):
         self.assertIn("4000", r.stdout)
         self.assertNotIn("APP", r.stdout.replace("App token", "").replace("::add-mask::APP", ""))
 
-    def test_floor_is_inclusive_and_below_falls_back(self):
-        self.assertEqual(self.run_pick("1500")[1], "token=APP\n")
-        r, out = self.run_pick("1499")
+    def test_server_reserve_plus_headroom_is_kept(self):
+        # Floor 1,500 for the server plus a 100 headroom for what one poll or a sibling job spends before the next read.
+        self.assertEqual(self.run_pick("1600")[1], "token=APP\n")
+        self.assertEqual(self.run_pick("1599")[1], "token=GHT\n")
+        r, out = self.run_pick("1500")
         self.assertEqual(out, "token=GHT\n")
         self.assertIn("falling back", r.stdout + r.stderr)
 

@@ -176,6 +176,9 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ steps.api.outputs.token }}
+          # The scripts re-read the App budget before every API phase and drop to FALLBACK_TOKEN below the reserve.
+          APP_TOKEN: ${{ steps.app.outputs.token }}
+          FALLBACK_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
           C00_CONFIG_URL: ${{ vars.C00_CONFIG_URL }}
           CHECKS_WAIT_SECONDS: "3600"
