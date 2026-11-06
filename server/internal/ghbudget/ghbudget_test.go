@@ -462,7 +462,17 @@ func TestRefreshNeverOverwritesNewerLowerObservation(t *testing.T) {
 	}
 }
 
-func TestCompleteWithoutHeadersDebitsTheCallCost(t *testing.T) {
+func (e *env) settledReservations(t *testing.T) int {
+	t.Helper()
+	var n int
+	if err := e.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM gh_budget_reservation WHERE installation_id=$1 AND settled_at IS NOT NULL`, e.inst).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestCompleteWithoutHeadersKeepsTheCostOnTheLedger(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
 	e.seed(t, 1600, t0.Add(30*time.Minute), t0)
@@ -475,15 +485,87 @@ func TestCompleteWithoutHeadersDebitsTheCallCost(t *testing.T) {
 	if err := first.Complete(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
-	if e.activeReservations(t) != 0 {
-		t.Fatal("reservation not deleted on complete")
+	if e.settledReservations(t) != 1 {
+		t.Fatal("header-less call must stay on the ledger as a settled reservation")
 	}
-	if got := e.storedRemaining(t); got != 1540 {
-		t.Fatalf("remaining = %d, want 1540 after a header-less call", got)
-	}
-	// Repeating the call must not reuse the old apparent budget: 1540-60 < 1500.
+	// Repeating the call must not reuse the old apparent budget: 1600-60-60 < 1500.
 	_, err = e.led.Reserve(ctx, e.inst, 60)
 	deferred(t, err, ReasonBelowFloor)
+}
+
+// A and B are in flight. GitHub processes A first (header 1550), then B
+// (true count 1500). B completes without headers first, then A completes with
+// its older header. The ledger must still account for B.
+func TestOutOfOrderCompletionsDoNotLoseAHeaderlessCall(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	reset := t0.Add(30 * time.Minute)
+	e.seed(t, 1600, reset, t0)
+	a, err := e.led.Reserve(ctx, e.inst, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := e.led.Reserve(ctx, e.inst, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Complete(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Complete(ctx, rateHeaders(1550, reset)); err != nil {
+		t.Fatal(err)
+	}
+	// True count is 1500: one more 50-cost call would cross the floor.
+	_, err = e.led.Reserve(ctx, e.inst, 50)
+	deferred(t, err, ReasonBelowFloor)
+}
+
+func TestLaterResponseAccountsForEarlierHeaderlessCall(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	reset := t0.Add(30 * time.Minute)
+	e.seed(t, 1600, reset, t0)
+	g, err := e.led.Reserve(ctx, e.inst, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Complete(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	x, err := e.led.Reserve(ctx, e.inst, 10) // reserved after g completed
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := x.Complete(ctx, rateHeaders(1540, reset)); err != nil { // header includes g
+		t.Fatal(err)
+	}
+	if e.settledReservations(t) != 0 {
+		t.Fatal("a response from a later call already counts the header-less call")
+	}
+	if _, err := e.led.Reserve(ctx, e.inst, 40); err != nil { // 1540-40 = 1500
+		t.Fatalf("budget freed by the later header: %v", err)
+	}
+}
+
+func TestRefreshAccountsForHeaderlessCalls(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	e.seed(t, 1600, t0.Add(50*time.Minute), t0)
+	g, err := e.led.Reserve(ctx, e.inst, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Complete(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	e.clock.Advance(StaleAfter + time.Second)
+	e.fetch.snap = Snapshot{Remaining: 1550, ResetAt: t0.Add(50 * time.Minute)}
+	if _, err := e.led.Reserve(ctx, e.inst, 10); err != nil {
+		t.Fatal(err)
+	}
+	if e.settledReservations(t) != 0 {
+		t.Fatal("GET /rate_limit already counts the header-less call")
+	}
 }
 
 func TestCompleteWithHeadersMergesInsteadOfDebiting(t *testing.T) {

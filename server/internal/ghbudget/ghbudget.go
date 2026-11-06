@@ -130,6 +130,10 @@ type Reservation struct {
 	inst int64
 	id   string
 	cost int
+	// createdAt is the database time the reservation was taken, under the
+	// installation lock. Settled calls older than it are already counted by
+	// any response this reservation gets.
+	createdAt time.Time
 }
 
 // Reserve claims cost requests, refreshing the ledger first when it is empty,
@@ -161,13 +165,17 @@ func (l *Ledger) tryReserve(ctx context.Context, inst int64, cost int) (*Reserva
 		if err := l.evaluate(ctx, tx, inst, cost, "", now); err != nil {
 			return err
 		}
-		var id string
+		var (
+			id        string
+			createdAt time.Time
+		)
 		if err := tx.QueryRow(ctx,
-			`INSERT INTO gh_budget_reservation (installation_id, cost, expires_at) VALUES ($1,$2,$3) RETURNING id::text`,
-			inst, cost, now.Add(ReservationTTL)).Scan(&id); err != nil {
+			`INSERT INTO gh_budget_reservation (installation_id, cost, expires_at, created_at)
+			 VALUES ($1,$2,$3, clock_timestamp()) RETURNING id::text, created_at`,
+			inst, cost, now.Add(ReservationTTL)).Scan(&id, &createdAt); err != nil {
 			return err
 		}
-		res = &Reservation{l: l, inst: inst, id: id, cost: cost}
+		res = &Reservation{l: l, inst: inst, id: id, cost: cost, createdAt: createdAt}
 		return nil
 	})
 	if err != nil {
@@ -199,25 +207,54 @@ func (r *Reservation) Recheck(ctx context.Context) error {
 }
 
 // Complete settles a reservation after the call returned. Pass the response
-// headers, or nil when the call failed or timed out. Usable rate headers are
-// merged into the ledger. Without them the call may still have cost budget, so
-// its cost is debited from the ledger instead: the count never rises on a
-// guess, and the floor holds across repeated header-less calls. The debit and
-// the delete share one transaction.
+// headers, or nil when the call failed or timed out.
+//
+// Usable headers are merged into the ledger. They already count every call
+// that finished before this one was reserved, so those settled calls are
+// dropped; calls that overlapped it stay, because responses can arrive out of
+// order. Without usable headers the call may still have cost budget, so its
+// reservation stays on the ledger as a settled call until a later response
+// or a refresh counts it, or the window resets. The count never rises on a
+// guess, and the floor holds across overlapping and repeated calls.
 func (r *Reservation) Complete(ctx context.Context, h http.Header) error {
 	return r.l.inLockedTx(ctx, r.inst, func(tx pgx.Tx) error {
-		if remaining, reset, ok := parseRateHeaders(h); ok {
-			if err := r.l.upsertObservation(ctx, tx, r.inst, remaining, reset); err != nil {
-				return err
-			}
-		} else if _, err := tx.Exec(ctx,
-			`UPDATE gh_installation_budget SET remaining = GREATEST(remaining - $2, 0) WHERE installation_id=$1`,
-			r.inst, r.cost); err != nil {
+		remaining, reset, ok := parseRateHeaders(h)
+		if !ok {
+			return r.settle(ctx, tx)
+		}
+		applied, err := r.l.upsertObservation(ctx, tx, r.inst, remaining, reset)
+		if err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `DELETE FROM gh_budget_reservation WHERE id=$1::uuid`, r.id)
+		if applied {
+			if _, err := tx.Exec(ctx,
+				`DELETE FROM gh_budget_reservation WHERE installation_id=$1 AND settled_at IS NOT NULL AND settled_at < $2`,
+				r.inst, r.createdAt); err != nil {
+				return err
+			}
+		}
+		_, err = tx.Exec(ctx, `DELETE FROM gh_budget_reservation WHERE id=$1::uuid`, r.id)
 		return err
 	})
+}
+
+// settle turns the reservation into a settled call that lasts until the
+// window resets. If cleanup already removed the row, it is written again.
+func (r *Reservation) settle(ctx context.Context, tx pgx.Tx) error {
+	until := r.l.now().Add(ReservationTTL)
+	tag, err := tx.Exec(ctx,
+		`UPDATE gh_budget_reservation
+		    SET settled_at = clock_timestamp(),
+		        expires_at = GREATEST(expires_at, COALESCE((SELECT reset_at FROM gh_installation_budget WHERE installation_id=$2), $3))
+		  WHERE id=$1::uuid`, r.id, r.inst, until)
+	if err != nil || tag.RowsAffected() > 0 {
+		return err
+	}
+	_, err = tx.Exec(ctx,
+		`INSERT INTO gh_budget_reservation (id, installation_id, cost, expires_at, created_at, settled_at)
+		 VALUES ($1::uuid, $2, $3, COALESCE((SELECT reset_at FROM gh_installation_budget WHERE installation_id=$2), $4), clock_timestamp(), clock_timestamp())`,
+		r.id, r.inst, r.cost, until)
+	return err
 }
 
 // Release deletes the reservation of a call that was never sent. A sent call
@@ -332,13 +369,25 @@ func (l *Ledger) refreshLocked(ctx context.Context, inst int64) error {
 	l.lastAttempt[inst] = now
 	l.mu.Unlock()
 
+	var fetchStart time.Time
+	if err := conn.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&fetchStart); err != nil {
+		return err
+	}
 	snap, err := l.fetch.RateLimit(ctx, inst)
 	if err != nil {
 		return err
 	}
 	// A header observation may have landed while RateLimit was in flight, so
 	// merge conservatively instead of overwriting.
-	return l.upsertObservation(ctx, conn, inst, snap.Remaining, snap.ResetAt)
+	applied, err := l.upsertObservation(ctx, conn, inst, snap.Remaining, snap.ResetAt)
+	if err != nil || !applied {
+		return err
+	}
+	// GET /rate_limit counts every call that finished before it started.
+	_, err = conn.Exec(ctx,
+		`DELETE FROM gh_budget_reservation WHERE installation_id=$1 AND settled_at IS NOT NULL AND settled_at < $2`,
+		inst, fetchStart)
+	return err
 }
 
 // Observe folds the rate-limit headers of a successful watcher response into
@@ -355,7 +404,8 @@ func (l *Ledger) observeHeaders(ctx context.Context, inst int64, h http.Header) 
 	if !ok {
 		return nil
 	}
-	return l.upsertObservation(ctx, l.pool, inst, remaining, reset)
+	_, err := l.upsertObservation(ctx, l.pool, inst, remaining, reset)
+	return err
 }
 
 type execer interface {
@@ -365,8 +415,8 @@ type execer interface {
 // upsertObservation merges one reading into the ledger without ever raising
 // the count: same window keeps the lower count, an older window is ignored,
 // a newer window replaces.
-func (l *Ledger) upsertObservation(ctx context.Context, db execer, inst int64, remaining int, reset time.Time) error {
-	_, err := db.Exec(ctx,
+func (l *Ledger) upsertObservation(ctx context.Context, db execer, inst int64, remaining int, reset time.Time) (applied bool, err error) {
+	tag, err := db.Exec(ctx,
 		`INSERT INTO gh_installation_budget AS b (installation_id, remaining, reset_at, observed_at)
 		 VALUES ($1,$2,$3,$4)
 		 ON CONFLICT (installation_id) DO UPDATE
@@ -376,7 +426,7 @@ func (l *Ledger) upsertObservation(ctx context.Context, db execer, inst int64, r
 		       observed_at = EXCLUDED.observed_at
 		   WHERE b.reset_at IS NULL OR EXCLUDED.reset_at >= b.reset_at`,
 		inst, remaining, reset, l.now())
-	return err
+	return tag.RowsAffected() > 0, err
 }
 
 func parseRateHeaders(h http.Header) (remaining int, reset time.Time, ok bool) {
