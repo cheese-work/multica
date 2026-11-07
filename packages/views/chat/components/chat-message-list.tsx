@@ -77,6 +77,7 @@ import { ContinuationBlock } from "./continuation-block";
 import { ChatSupplementStatus } from "./chat-supplement-status";
 import { useChatFirstItemIndex } from "./use-chat-first-item-index";
 import { predecessorChain } from "../lib/predecessor-chain";
+import { openAsksBefore, type OpenAsk } from "../lib/open-asks";
 
 // ─── Public component ────────────────────────────────────────────────────
 
@@ -188,43 +189,6 @@ interface ChatListContext {
  * a different row (MUL-4922). That identity is what keeps an already-rendered
  * Mermaid diagram or HTML iframe mounted across task completion.
  */
-interface OpenAsk {
-  messageId: string;
-  ask: string;
-}
-
-const MAX_OPEN_ASKS = 5;
-
-/** Question lines (outside code fences) of a message, bullet markers stripped. */
-function questionLines(content: string): string[] {
-  // ponytail: a line ending in "?" is a question; no sentence splitting.
-  const lines = content.replace(/```[\s\S]*?```/g, "").split("\n");
-  return lines
-    .map((line) => line.trim().replace(/^(?:[-*>]|\d+[.)])\s+/, "").replace(/[*_]+$/, "").trim())
-    .filter((line) => line.endsWith("?"))
-    .map((line) => (line.length > 200 ? `${line.slice(0, 199)}…` : line));
-}
-
-/**
- * Open asks of the last assistant message before `messages[index]`: its open
- * decision requests, then its question lines. A member reply after it answers
- * it, so nothing repeats.
- */
-function openAsksBefore(messages: readonly ChatMessage[], index: number): OpenAsk[] {
-  for (let i = index - 1; i >= 0; i--) {
-    const m = messages[i]!;
-    if (m.role === "user") return [];
-    if (m.role !== "assistant" || m.message_kind === "compact_notice" || m.message_kind === "compaction_summary") continue;
-    const cards = m.decision_requests ?? (m.decision_request ? [m.decision_request] : []);
-    const asks = cards.filter((card) => card.state === "open").map((card) => ({ messageId: m.id, ask: card.ask }));
-    for (const line of questionLines(m.content)) {
-      if (!asks.some((a) => a.ask === line)) asks.push({ messageId: m.id, ask: line });
-    }
-    return asks.slice(0, MAX_OPEN_ASKS);
-  }
-  return [];
-}
-
 type ChatRenderItem =
   | {
       key: string;
@@ -1123,18 +1087,22 @@ const MessageBubble = memo(function MessageBubble({
  */
 function CompactNotice({ message }: { message: ChatMessage }) {
   const { t } = useT("chat");
+  // The same kind carries preset replies and failure notes; only a compaction gets the divider.
+  const compacted = /^(?:Auto-)?[Cc]ompacted/.test(message.content);
   const time = formatTimeWithZone(message.created_at);
-  const tokens = /(\d+k) tokens/.exec(message.content)?.[1];
+  const tokens = /\bat (\d+k) tokens/.exec(message.content)?.[1];
   const label = tokens
     ? t(($) => $.message_list.compaction_divider, { time, tokens })
     : t(($) => $.message_list.compaction_divider_no_tokens, { time });
   return (
     <div className="space-y-1">
-      <div role="separator" className="flex w-full items-center gap-3 text-caption text-muted-foreground">
-        <span className="h-px flex-1 bg-border" />
-        <span>{label}</span>
-        <span className="h-px flex-1 bg-border" />
-      </div>
+      {compacted && (
+        <div role="separator" className="flex w-full items-center gap-3 text-caption text-muted-foreground">
+          <span className="h-px flex-1 bg-border" />
+          <span>{label}</span>
+          <span className="h-px flex-1 bg-border" />
+        </div>
+      )}
       <p role="note" className="text-caption text-muted-foreground">
         {message.content}
       </p>

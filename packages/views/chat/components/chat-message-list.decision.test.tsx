@@ -352,6 +352,23 @@ describe("ChatMessageList — compaction summary", () => {
       expect(screen.queryByRole("button", { name: /^Open question/ })).toBeNull();
     });
 
+    it("keeps an open decision card after an unrelated member message, but not a plain question", () => {
+      const open = {
+        id: "request-2", issue_id: "issue-1", issue_identifier: "CHE-2088",
+        ask: "Ship the reversible change?", state: "open" as const, created_at: "2026-10-26T05:00:00Z",
+      };
+      renderList({
+        messages: [
+          message("q", { role: "assistant", content: "Which database should we use?", decision_request: open, message_kind: "decision_request" }),
+          message("u", { role: "user", content: "Unrelated chat" }),
+          message("n", { role: "assistant", message_kind: "compact_notice", content: "Compacted in this DM at 213k tokens (limit 200k). Earlier messages are summarized below." }),
+          message("s", { role: "assistant", message_kind: "compaction_summary", content: "SUMMARY" }),
+        ],
+      });
+      expect(screen.getByRole("button", { name: /^Open question: Ship the reversible change\?/ })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: line })).toBeNull();
+    });
+
     it("treats the question as answered once the member replied after it", () => {
       renderList({ messages: asked("Which database should we use?", [{ role: "user", content: "Postgres" }]) });
       expect(screen.queryByRole("button", { name: line })).toBeNull();

@@ -1397,6 +1397,21 @@ describe("ChatMessageList compact notice", () => {
     expect(divider).toHaveTextContent(/^Compacted · \d{2}:\d{2} \S+ · 164k tokens$/);
     expect(divider).toHaveClass("w-full");
   });
+
+  it.each([
+    "Preset set to fast for the next run.",
+    "Auto-compact failed (failed). Type /compact to retry.",
+  ])("draws no divider on a notice that is not a compaction: %s", (content) => {
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={new QueryClient()}>
+          <ChatMessageList messages={[{ ...notice, content }]} pendingTask={null} availability="online" />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+    expect(screen.queryByRole("separator")).toBeNull();
+    expect(screen.getByRole("note")).toHaveTextContent(content);
+  });
 });
 
 describe("ChatMessageList row keys (CHE-3329)", () => {
