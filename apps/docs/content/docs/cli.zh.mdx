@@ -141,6 +141,12 @@ multica issue comment add MUL-123 --content-file note.md --steer <task-id>
 multica issue comment add MUL-123 --content-file note.md --steer-active
 ```
 
+智能体任务发出的评论若提及成员（`[@名称](mention://member/<id>)`），只有以下几种会被接受：决策请求、`--decision-intent`、`--decision-record` 或 `--decision-veto` 评论，以及带 `--notify-only` 的评论。无需回复的知会请使用 `--notify-only`。它不会开启等待，也不算决策请求，且不能与决策类参数同时使用。检查依据的是提及链接而非措辞，代码中的链接同样计入。工作区设置 `ask_guard_mode`（`off`、`warn`、`block`）决定被拒绝的评论只记录还是返回 422。聊天任务和没有任务的调用只记录。编辑时新增成员提及同样适用此规则。
+
+```bash
+multica issue comment add MUL-123 --content-file fyi.md --notify-only
+```
+
 同一项目、同一父任务下已有标题相同（不区分大小写，忽略多余空格）且未关闭的任务时，`issue create` 会拒绝创建并给出那个任务。确实要再建一个，加 `--allow-duplicate`；要把一个任务标为另一个的重复，用 `multica issue status MUL-124 cancelled --duplicate-of MUL-123`。
 
 ### 时间线
