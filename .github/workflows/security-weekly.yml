@@ -23,6 +23,7 @@ env:
   # Primary fingerprint of the X99 key (secret half in /mnt/ssd2/security-weekly/gnupg). seal.sh refuses any other recipient.
   SECURITY_WEEKLY_FPR: 1A9377889F3E812D256D3612A32DB5293024988D
   GOVULNCHECK_VERSION: "v1.8.0"
+  PNPM_VERSION: "10.28.2"
   GITLEAKS_VERSION: "8.30.1"
   GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
   TRIVY_VERSION: "0.76.1"
@@ -95,9 +96,9 @@ jobs:
         with:
           node-version: 22
       - name: Install pnpm from npm (no checkout script runs before the report is sealed)
+        # The version is pinned here, in the owner-protected workflow: package.json is unowned, so its manifest must not pick it.
         run: |
-          version="$(node -p 'const v = require("./package.json").packageManager; if (!/^pnpm@\d+\.\d+\.\d+$/.test(v)) throw new Error("exact pnpm version required"); v.slice(5)')"
-          npm install --prefix "$RUNNER_TEMP/pnpm" "pnpm@$version"
+          npm install --prefix "$RUNNER_TEMP/pnpm" "pnpm@${PNPM_VERSION}"
           echo "$RUNNER_TEMP/pnpm/node_modules/.bin" >> "$GITHUB_PATH"
       - name: Audit pnpm-lock.yaml (in a scratch directory)
         # `pnpm audit` loads .pnpmfile.cjs and the workspace config from its working directory, and CODEOWNERS covers neither. Only the
@@ -128,11 +129,14 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Scan the full history
+        # Config and ignore list come from owner-protected scripts/security-weekly. Gitleaks also reads a root .gitleaksignore (CODEOWNERS
+        # does not cover it), so the job deletes it first; --config bypasses a root .gitleaks.toml.
         run: |
+          rm -f .gitleaksignore
           curl -fsSL -o "$RUNNER_TEMP/gitleaks.tgz" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
-          "$RUNNER_TEMP/gitleaks" git --no-banner --redact --exit-code 0 --report-format json --report-path gitleaks.json .
+          "$RUNNER_TEMP/gitleaks" git --no-banner --gitleaks-ignore-path scripts/security-weekly --config scripts/security-weekly/gitleaks.toml --redact --exit-code 0 --report-format json --report-path gitleaks.json .
       - name: Seal the report
         run: bash scripts/security-weekly/seal.sh gitleaks.json
       - uses: actions/upload-artifact@v7
@@ -152,20 +156,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # build-mode none for both: a build step would run the root Makefile (unowned by CODEOWNERS) before the SARIF is sealed.
           - language: go
-            build-mode: autobuild
+            build-mode: none
           - language: javascript-typescript
             build-mode: none
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - if: matrix.language == 'go'
-        uses: actions/setup-go@v7
-        with:
-          go-version: "~1.27.3"
-          check-latest: true
-          cache-dependency-path: server/go.sum
       - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           languages: ${{ matrix.language }}

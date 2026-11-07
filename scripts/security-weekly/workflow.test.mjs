@@ -47,12 +47,14 @@ test("downloaded scanner binaries are checksum-pinned", () => {
   assert.equal((wf.match(/sha256sum -c/g) ?? []).length, 2, "gitleaks and trivy");
 });
 
-test("CodeQL Go builds (autobuild); only javascript-typescript may use build-mode none", () => {
+// Luna FAIL on 7adaba3d6: Go autobuild runs the root Makefile, which CODEOWNERS does not cover, before the SARIF is sealed.
+// Both languages analyze from source (build-mode none), so no checkout-controlled build step runs.
+test("CodeQL runs build-mode none for every language: no autobuild, no setup-go, no checkout build step", () => {
   const job = wf.slice(wf.indexOf("  codeql:"), wf.indexOf("  image-scan:"));
-  assert.match(job, /language: go\s+build-mode: autobuild/);
+  assert.match(job, /language: go\s+build-mode: none/);
   assert.match(job, /language: javascript-typescript\s+build-mode: none/);
   assert.match(job, /build-mode: \$\{\{ matrix\.build-mode \}\}/);
-  assert.match(job, /if: matrix\.language == 'go'[\s\S]*setup-go/);
+  assert.doesNotMatch(job, /autobuild|setup-go|\bmake\b/);
 });
 
 // Luna's FAIL on b7242fd47: this repo is public, so every artifact and step summary is world-readable. Finding detail
@@ -133,6 +135,25 @@ test("the only checkout script a job runs is seal.sh (no setup-pnpm.sh: pnpm com
   assert.ok(scripts.length > 0);
   for (const s of scripts) assert.equal(s, "scripts/security-weekly/seal.sh", s);
   assert.match(wf, /npm install --prefix "\$RUNNER_TEMP\/pnpm" "pnpm@/);
+});
+
+// Luna medium on 7adaba3d6: package.json is unowned, so its `packageManager` field must not choose the pnpm version the job runs.
+test("the pnpm version is pinned in the owner-protected workflow, not read from package.json", () => {
+  assert.match(wf, /PNPM_VERSION: "\d+\.\d+\.\d+"/);
+  assert.match(wf, /"pnpm@\$\{PNPM_VERSION\}"/);
+  assert.doesNotMatch(wf, /require\("\.\/package\.json"\)|packageManager/);
+});
+
+// Luna medium on 7adaba3d6: a root .gitleaksignore or .gitleaks.toml is unowned and would drop findings before sealing. Gitleaks reads
+// both from owner-protected paths only.
+test("gitleaks reads its ignore list and config from scripts/security-weekly, not the repo root", () => {
+  assert.match(wf, /gitleaks" git [^\n]*--gitleaks-ignore-path scripts\/security-weekly /);
+  assert.match(wf, /gitleaks" git [^\n]*--config scripts\/security-weekly\/gitleaks\.toml /);
+  assert.ok(existsSync(new URL("./.gitleaksignore", import.meta.url)));
+  assert.ok(existsSync(new URL("./gitleaks.toml", import.meta.url)));
+  assert.ok(!existsSync(new URL("../../.gitleaksignore", import.meta.url)), "root .gitleaksignore moved to the owned path");
+  // Gitleaks 8.30.1 still reads <source>/.gitleaksignore despite --gitleaks-ignore-path (verified on X99), so the job deletes it first.
+  assert.match(wf, /rm -f \.gitleaksignore\n[\s\S]*gitleaks" git /);
 });
 
 test("CODEOWNERS routes the whole security-weekly toolchain to the owner", () => {
