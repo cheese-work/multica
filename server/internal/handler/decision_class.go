@@ -181,7 +181,7 @@ func raisesPastNonOwner(ctx context.Context, queries *db.Queries, workspaceID, r
 // open request gets the lifecycle cancel. Neither reopens the request.
 func cancelRaisedPastNonOwner(ctx context.Context, queries *db.Queries, raised db.DecisionRequest, live db.DecisionAnswer, root *db.Comment, userID pgtype.UUID) (decisionCancelOutcome, error) {
 	if !live.ID.Valid {
-		return cancelLockedDecision(ctx, queries, raised, live, root, decisiontx.ClassNeedsOwner)
+		return cancelDecisionLifecycleLocked(ctx, queries, raised, live, root, decisiontx.ClassNeedsOwner)
 	}
 	session, err := queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{WorkspaceID: raised.WorkspaceID, ID: raised.ChatSessionID})
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {

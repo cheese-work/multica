@@ -19,3 +19,7 @@ func (d Definition) EffectiveMaxRuns() int {
 // it blocks an issue that spent its run budget. A trigger on issue.status
 // clears it when the issue leaves blocked.
 const BlockedReasonRunBudget = "run-budget"
+
+// BlockedReasonDecisionDispatchRefused is the blocked_reason a decision episode sets
+// when a persistent dispatch refusal suspends it. Leaving blocked clears it.
+const BlockedReasonDecisionDispatchRefused = "decision-dispatch-refused"

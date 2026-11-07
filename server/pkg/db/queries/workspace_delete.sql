@@ -398,6 +398,23 @@ deleted_ask_guard_events AS (
 deleted_system1_observations AS (
     DELETE FROM system1_observation WHERE workspace_id = $1
 ),
+-- CHE-4273 CI failure watcher: workspace-owned leaves, no FK. The two gh_*
+-- budget tables are per App installation, have no workspace_id, and stay.
+deleted_ci_watch_configs AS (
+    DELETE FROM ci_watch_config WHERE workspace_id = $1
+),
+deleted_ci_watch_config_audits AS (
+    DELETE FROM ci_watch_config_audit WHERE workspace_id = $1
+),
+deleted_ci_failure_events AS (
+    DELETE FROM ci_failure_event WHERE workspace_id = $1
+),
+deleted_ci_watch_actions AS (
+    DELETE FROM ci_watch_action WHERE workspace_id = $1
+),
+deleted_ci_signature_owners AS (
+    DELETE FROM ci_signature_owner WHERE workspace_id = $1
+),
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
 ),
@@ -424,6 +441,10 @@ deleted_recovery_claims AS (
 -- CHE-2297 run-budget notice claims: workspace-owned leaf, no FK.
 deleted_run_budget_notices AS (
     DELETE FROM run_budget_notice WHERE workspace_id = $1
+),
+-- CHE-2798 run-budget refusals: workspace-owned leaf, no FK.
+deleted_run_budget_refusals AS (
+    DELETE FROM run_budget_refusal WHERE workspace_id = $1
 ),
 -- CHE-2297 L2a run-budget ledger: workspace-owned leaf, no FK.
 deleted_issue_run_budget_entries AS (

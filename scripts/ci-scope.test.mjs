@@ -321,7 +321,7 @@ test("merge-group reuse is wired to authenticated Actions reads and separate hos
   }
   assert.match(mainJobs["push-go-cache-warm"], /go test -race -run '\^\$' -exec \/bin\/true \.\/\.\.\./);
   for (const prefix of ["go-mod-", "go-build-race-"]) {
-    assert.ok(jobs["backend-tests"].includes(prefix));
+    assert.ok(jobs["backend-test-shards"].includes(prefix));
     assert.ok(mainJobs["push-go-cache-warm"].includes(prefix));
   }
   assert.match(mainJobs["push-turbo-cache-warm"], /key: turbo-build-/);
