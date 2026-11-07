@@ -352,7 +352,7 @@ describe("ChatMessageList — compaction summary", () => {
       expect(screen.queryByRole("button", { name: /^Open question/ })).toBeNull();
     });
 
-    it("keeps an open decision card after an unrelated member message, but not a plain question", () => {
+    it("keeps an open decision card and a plain question after an unrelated member message", () => {
       const open = {
         id: "request-2", issue_id: "issue-1", issue_identifier: "CHE-2088",
         ask: "Ship the reversible change?", state: "open" as const, created_at: "2026-10-26T05:00:00Z",
@@ -366,12 +366,23 @@ describe("ChatMessageList — compaction summary", () => {
         ],
       });
       expect(screen.getByRole("button", { name: /^Open question: Ship the reversible change\?/ })).toBeTruthy();
-      expect(screen.queryByRole("button", { name: line })).toBeNull();
+      expect(screen.getByRole("button", { name: line })).toBeTruthy();
     });
 
-    it("treats the question as answered once the member replied after it", () => {
-      renderList({ messages: asked("Which database should we use?", [{ role: "user", content: "Postgres" }]) });
+    it("keeps the question when the member's later message is about something else", () => {
+      renderList({ messages: asked("Which database should we use?\nWhat about caching?", [{ role: "user", content: "Postgres" }]) });
+      expect(screen.getByRole("button", { name: line })).toBeTruthy();
+      expect(screen.getByRole("button", { name: /^Open question: What about caching\?/ })).toBeTruthy();
+    });
+
+    it("hides only the question the member's later message quotes", () => {
+      renderList({
+        messages: asked("Which database should we use?\nWhat about caching?", [
+          { role: "user", content: "> Which database should we use?\n\nPostgres" },
+        ]),
+      });
       expect(screen.queryByRole("button", { name: line })).toBeNull();
+      expect(screen.getByRole("button", { name: /^Open question: What about caching\?/ })).toBeTruthy();
     });
   });
 });
