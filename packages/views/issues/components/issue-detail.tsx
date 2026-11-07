@@ -16,6 +16,7 @@ import { NextSelfMention, useMentionsViewer } from "../../rich-content/next-self
 import { MediaSourceProvider } from "../../media/media-context";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
+import { usePersistedDraft } from "@multica/core/drafts";
 import { AppLink, useBackOrReplace } from "../../navigation";
 import { IssueDuplicateBanner, IssueDuplicatesSection, isDuplicateIssue } from "./issue-duplicates";
 import {
@@ -83,6 +84,8 @@ import { PropertyIcon } from "../../common/property-icon";
 import type { Attachment, Issue, IssueProperty, IssueStatus, IssueStatusCategory, IssuePriority, TimelineEntry, UpdateIssueRequest } from "@multica/core/types";
 import { contentReferencesAttachment } from "@multica/core/types";
 import { isBuiltInIssueStatus } from "@multica/core/issue-statuses";
+import { isSchemaValidationError } from "@multica/core/api/schema";
+import { isIssueUuid, isNotFoundError } from "@multica/core/issues/canonical-id";
 import { commentLandingTarget, isDeletedComment } from "@multica/core/issues/comment-deletion";
 import { formatDateOnly, isPastDateOnly } from "@multica/core/issues/date";
 import { useUpdateIssue } from "@multica/core/issues/mutations";
@@ -127,8 +130,10 @@ import {
 import { collectThreadParticipants, collectThreadReplies, deriveThreadResolution } from "./thread-utils";
 import { IssueAgentHeaderChip } from "./issue-agent-header-chip";
 import { IssueWakeupHeaderChip } from "./issue-wakeup-header-chip";
+import { useWakeupsFocus } from "./use-wakeups-focus";
 import { IssueInboxRestoreButton } from "./issue-inbox-restore-button";
 import { ExecutionLogSection } from "./execution-log-section";
+import { StatusHistoryButton } from "./status-history-button";
 import { WakeupsSection } from "./wakeups-section";
 import { QuickActionsSection } from "./quick-actions-section";
 import { PluginPanelSection } from "../../plugins";
@@ -170,6 +175,8 @@ import {
   useResolvedExpandStore,
   useSubIssuesCollapseStore,
   useSubIssueDisplayStore,
+  useIssueTitleDraftStore,
+  EMPTY_TEXT_EDIT,
   SUB_ISSUE_ROW_PROPERTY_KEYS,
   type SubIssueRowProperties,
   type SubIssueRowPropertyKey,
@@ -205,6 +212,7 @@ import { useInPageFind } from "../hooks/use-in-page-find";
 import { useIssueDisclosureReveal } from "../hooks/use-issue-disclosure-reveal";
 import { useStickyComposer } from "../hooks/use-sticky-composer";
 import { FindBar } from "./find-bar";
+import { issueHighlightMementoKey } from "./issue-highlight-key";
 import {
   AnimatedRightSidebar,
   getAnimatedRightSidebarInitialOpen,
@@ -213,16 +221,7 @@ import {
   useRightSidebarShortcut,
 } from "../../layout/animated-right-sidebar";
 
-/**
- * Memento entry recording that the comment-highlight deep link for this
- * issue already landed on the current route (value: the consumed comment
- * id). Lets a remount that merely restores the view (tab switch back) skip
- * the jump-and-highlight, while a fresh selection — which clears the entry
- * (see InboxPage.handleSelect) — runs it again.
- */
-export function issueHighlightMementoKey(issueId: string): string {
-  return `highlight:${issueId}`;
-}
+export { issueHighlightMementoKey };
 
 // Shared by the subscribe button and the unsubscribe menu trigger so the two
 // stay one control visually — they occupy the same slot and only differ in
@@ -975,6 +974,7 @@ function SubIssueRow({
           status={child.status}
           onUpdate={handleUpdate}
           projectId={child.project_id}
+          workflowId={child.workflow_id}
           issue={child}
           align="start"
           trigger={
@@ -1238,8 +1238,17 @@ export function IssueNotFound({
   showBackLink = true,
   leading,
   trailing,
+  onRetry,
+  dataError,
+  issueKey,
 }: {
   showBackLink?: boolean;
+  /** The response arrived but failed schema validation: say the data is unreadable, not "connection". */
+  dataError?: boolean;
+  /** Identifier shown above the data-error message so the user knows which issue it is. */
+  issueKey?: string;
+  /** Set when the load failed for a reason other than a 404: says so and offers a retry. */
+  onRetry?: () => void;
   /**
    * Host-supplied way back, mirrored from `IssueDetailProps.leadingAction`. A
    * host that hands its whole screen to this component (the inbox, on a phone)
@@ -1263,7 +1272,13 @@ export function IssueNotFound({
         </div>
       )}
       <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 text-body text-muted-foreground">
-        <p>{t(($) => $.detail.not_found)}</p>
+        {dataError && issueKey && <p className="font-medium">{issueKey}</p>}
+        <p>{t(($) => (dataError ? $.detail.data_error : onRetry ? $.detail.load_failed : $.detail.not_found))}</p>
+        {onRetry && (
+          <Button variant="outline" size="sm" onClick={onRetry}>
+            {t(($) => $.detail.retry)}
+          </Button>
+        )}
         {showBackLink && (
           <Button variant="outline" size="sm" onClick={() => backOrReplace(paths.issues())}>
             <ChevronLeft className="mr-1 h-3.5 w-3.5" />
@@ -1617,7 +1632,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const lastHighlightRequestTokenRef = useRef(highlightRequestToken);
 
   // Issue data from TQ — uses detail query, seeded from list cache if available.
-  const { data: issue = null, isLoading: issueLoading, refetch: refetchIssue } = useQuery(
+  const { data: issue = null, error: issueError, isLoading: issueLoading, refetch: refetchIssue } = useQuery(
     issueDetailViewOptions(wsId, id, allIssues.find((i) => i.id === id), authoritative),
   );
   const descriptionSourceId = `description:${id}`;
@@ -3097,7 +3112,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // keeps this single eager editor affordable; title and composers stay lazy.
   const titleEditorRef = useRef<TitleEditorRef>(null);
   const titleBaseRef = useRef<string | undefined>(issue?.title);
+  // An unsaved title edit outlives the page and the editor; it is cleared only once the server accepts it.
+  const [titleDraft, setTitleDraft, clearTitleDraft] = usePersistedDraft(useIssueTitleDraftStore, id, EMPTY_TEXT_EDIT);
   const [titleConflictDraft, setTitleConflictDraft] = useState<string | null>(null);
+  // While a title save is in flight the cache already shows the new title, and a failure rolls it back.
+  // Matching `issue.title` then proves nothing, so the draft is kept until the save settles.
+  const titleSavesInFlightRef = useRef(0);
   // Bumped when a conflicting title draft is discarded. TitleEditor reads its
   // text from `defaultValue` at mount and exposes no imperative setter, so
   // remounting is the only way to put the server's title back in the editor.
@@ -3113,7 +3133,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const descPendingUploadsRef = useRef<File[]>([]);
   useEffect(() => {
     setTitleConflictDraft(null);
-    titleBaseRef.current = undefined;
+    titleSavesInFlightRef.current = 0;
+    // A restored edit keeps the title it started from, so a title that moved meanwhile still conflicts.
+    titleBaseRef.current = useIssueTitleDraftStore.getState().getDraft(id)?.base ?? undefined;
     descriptionSaveInFlightRef.current = false;
     descriptionSaveIssueIdRef.current = id;
     pendingDescriptionSaveRef.current = null;
@@ -3121,7 +3143,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     descPendingUploadsRef.current = [];
     setDescriptionFocused(false);
   }, [id]);
-  const titleLazy = useLazyEditor({ editorRef: titleEditorRef, resetKey: id });
+  const titleLazy = useLazyEditor({ editorRef: titleEditorRef, resetKey: id, initialActive: titleDraft.value !== null });
   const uploadIntoExpandedDescription = useCallback(
     (file: File) => {
       if (descriptionExpanded) {
@@ -3436,6 +3458,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     });
   }, [handleToggleSidebar, id, sidebarOpen]);
 
+  // `?focus=wakeups` lands on the same section as the header chip, once the
+  // issue has loaded and the section exists.
+  useWakeupsFocus(id, openWakeups, !loading && !!issue);
+
   useRightSidebarShortcut(rightSidebarShortcutTargetRef, handleToggleSidebar);
 
   const scrollAnchor = useIssueDetailScrollAnchor({
@@ -3484,7 +3510,16 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   }
 
   if (!issue) {
-    return <IssueNotFound showBackLink={!onDelete} leading={leadingAction} trailing={trailingActions} />;
+    return (
+      <IssueNotFound
+        showBackLink={!onDelete}
+        leading={leadingAction}
+        trailing={trailingActions}
+        onRetry={issueError && !isNotFoundError(issueError) ? () => void refetchIssue() : undefined}
+        dataError={isSchemaValidationError(issueError)}
+        issueKey={isIssueUuid(id) ? undefined : id}
+      />
+    );
   }
 
   const persistDescriptionSave = (
@@ -3570,6 +3605,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               onUpdate={handleUpdateField}
               align="start"
               projectId={issue.project_id}
+              workflowId={issue.workflow_id}
               issue={issue}
               onMarkDuplicate={actions.openMarkDuplicate}
               isDuplicate={isDuplicateIssue(issue)}
@@ -3770,6 +3806,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         issueId={issue.id}
         closed={["done", "closed"].includes(resolveStatusCategory(issue.status))}
         defaultAgentId={issue.assignee_type === "agent" ? (issue.assignee_id ?? undefined) : undefined}
+        projectId={issue.project_id ?? undefined}
       />
       <PluginPanelSection issueId={issue.id} />
 
@@ -3796,6 +3833,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           Self-contained; owns its own collapse state and WS subscriptions.
           Hides itself when there are no runs to show. */}
       <ExecutionLogSection issueId={id} identifier={issue.identifier} issueTitle={issue.title} />
+
+      <StatusHistoryButton issueId={id} wsId={wsId} />
 
       {/* Details — creator and timestamps. Sits below the execution log
           because it is the least-read block in the sidebar: the values
@@ -4188,22 +4227,34 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               <TitleEditor
                 key={`title-${id}-${titleResetToken}`}
                 ref={titleEditorRef}
-                defaultValue={titleConflictDraft ?? issue.title}
+                defaultValue={titleConflictDraft ?? titleDraft.value ?? issue.title}
                 placeholder={t(($) => $.detail.title_placeholder)}
                 className={cn("w-full leading-snug", titleSizeClass)}
                 onReady={titleLazy.onReady}
+                onChange={(value) => {
+                  if (value.trim() === issue.title && titleSavesInFlightRef.current === 0) clearTitleDraft();
+                  else setTitleDraft({ value, base: titleBaseRef.current ?? issue.title });
+                }}
                 onBlur={(value) => {
                   const trimmed = value.trim();
+                  if ((!trimmed || trimmed === issue.title) && titleSavesInFlightRef.current === 0) clearTitleDraft();
                   if (trimmed && trimmed !== issue.title) {
+                    titleSavesInFlightRef.current += 1;
                     handleUpdateField({
                       title: trimmed,
                       title_base: titleBaseRef.current,
                     }, {
                       onSuccess: (serverIssue) => {
+                        titleSavesInFlightRef.current = Math.max(0, titleSavesInFlightRef.current - 1);
                         setTitleConflictDraft(null);
+                        // Edits made while this save was in flight are still unsent, even one that
+                        // went back to the old title. Only text the server now holds is done.
+                        const latest = useIssueTitleDraftStore.getState().getDraft(id)?.value?.trim();
+                        if (latest == null || latest === trimmed || latest === serverIssue.title) clearTitleDraft();
                         titleBaseRef.current = serverIssue.title;
                       },
                       onError: (error) => {
+                        titleSavesInFlightRef.current = Math.max(0, titleSavesInFlightRef.current - 1);
                         if (errorCode(error) === "revision_conflict") {
                           setTitleConflictDraft(trimmed);
                         }
@@ -4255,6 +4306,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                     // discarding writes nothing. The remount is what puts it
                     // back into the editor (see titleResetToken).
                     setTitleConflictDraft(null);
+                    clearTitleDraft();
                     titleBaseRef.current = issue.title;
                     setTitleResetToken((token) => token + 1);
                   }}
@@ -4275,6 +4327,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                       {
                         onSuccess: (serverIssue) => {
                           setTitleConflictDraft(null);
+                          clearTitleDraft();
                           titleBaseRef.current = serverIssue.title;
                         },
                       },

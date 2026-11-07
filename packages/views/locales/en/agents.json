@@ -990,6 +990,12 @@
     "kind_tool": "Tool",
     "kind_thinking": "Thinking",
     "kind_error": "Error",
+    "silence_warn": "No output for {{minutes}} min",
+    "silence_warn_unknown": "No output for a while",
+    "tool_stalled": "Still running past {{minutes}} min",
+    "tool_stalled_unknown": "Still running past the limit",
+    "tool_stalled_ended": "Ran past {{minutes}} min with no result",
+    "tool_stalled_ended_unknown": "Ran past the limit with no result",
     "group_calls_one": "{{count}} call",
     "group_calls_other": "{{count}} calls",
     "step_running": "Still running",
@@ -1080,5 +1086,11 @@
     "selected_one": "{{count}} selected",
     "selected_other": "{{count}} selected",
     "clear_selection": "Clear selection"
+  },
+  "auto_compact": {
+    "title": "Auto-compact",
+    "hint": "Leave a field empty to use the workspace value.",
+    "inherit_placeholder": "Workspace default",
+    "save_failed": "Could not save the auto-compact setting."
   }
 }

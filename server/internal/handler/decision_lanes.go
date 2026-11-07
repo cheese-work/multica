@@ -4,8 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"regexp"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -17,8 +15,6 @@ import (
 )
 
 type decisionLaneResponse = protocol.DecisionLane
-
-var decisionSnippetURL = regexp.MustCompile(`mention://[^\s)\]]+|/issue/[0-9a-fA-F-]+`)
 
 func (handler *Handler) decisionLaneWindow(request *http.Request, queries *db.Queries, issue db.Issue, targetID pgtype.UUID) (db.Agent, pgtype.UUID, error) {
 	ctx := request.Context()
@@ -141,9 +137,9 @@ func (handler *Handler) listDecisionLanes(writer http.ResponseWriter, request *h
 			bySession := make(map[pgtype.UUID][]protocol.DecisionIssueMention)
 			now := time.Now()
 			for _, mention := range mentions {
-				snippet := decisionSnippetURL.ReplaceAllString(mention.Snippet, "")
-				snippet = strings.ReplaceAll(strings.ReplaceAll(snippet, mention.IssueKey, ""), mention.IssueTitle, "")
-				bySession[mention.ChatSessionID] = append(bySession[mention.ChatSessionID], protocol.DecisionIssueMention{IssueID: uuidToString(mention.IssueID), IssueKey: mention.IssueKey, IssueTitle: mention.IssueTitle, MentionedAt: timestampToString(mention.MentionedAt), RelativeTime: decisionMentionAge(now.Sub(mention.MentionedAt.Time)), Snippet: strings.Join(strings.Fields(snippet), " ")})
+				// Titles only: lane callers are task tokens, and message text
+				// would reach the run without the chat's taint (CHE-3702).
+				bySession[mention.ChatSessionID] = append(bySession[mention.ChatSessionID], protocol.DecisionIssueMention{IssueID: uuidToString(mention.IssueID), IssueKey: mention.IssueKey, IssueTitle: mention.IssueTitle, MentionedAt: timestampToString(mention.MentionedAt), RelativeTime: decisionMentionAge(now.Sub(mention.MentionedAt.Time))})
 			}
 			for _, row := range rows {
 				issueMentions := bySession[row.ID]
@@ -155,6 +151,7 @@ func (handler *Handler) listDecisionLanes(writer http.ResponseWriter, request *h
 					lane.ReferencedAt = row.ReferencedAt.Time.UTC().Format(time.RFC3339Nano)
 				}
 				lane.Eligible = row.ReferencedAt.Valid || row.DecisionTopicID == topic.ID
+				lane.Unseen = row.Unseen
 				response = append(response, lane)
 			}
 		}

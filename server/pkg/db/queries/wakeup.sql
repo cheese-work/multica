@@ -68,11 +68,13 @@ WHERE context->>'wakeup_id'= @wakeup_id::text AND status IN ('queued','deferred'
 -- name: DisableIssueWakeups :exec
 -- Closing wins over every subscription on the issue; reopening does not rearm.
 -- A system rule only rests while its issue is closed and resumes on reopen.
+-- A waiver follow-up check is meant to run after release, so it outlives the close.
 UPDATE issue_wakeup SET enabled=false,disabled_at=clock_timestamp(),updated_at=clock_timestamp()
-WHERE issue_id= @issue_id AND disabled_at IS NULL AND system_rule IS NULL;
+WHERE issue_id= @issue_id AND disabled_at IS NULL AND system_rule IS NULL AND followup_instance_id IS NULL;
 -- name: CancelUnstartedIssueWakeupTasks :many
 UPDATE agent_task_queue SET status='cancelled',completed_at=now(),error='Issue closed; wakeup disabled'
-WHERE issue_id= @issue_id AND context->>'wakeup_id' IS NOT NULL AND status IN ('queued','deferred') AND started_at IS NULL RETURNING *;
+WHERE agent_task_queue.issue_id= @issue_id AND context->>'wakeup_id' IS NOT NULL AND status IN ('queued','deferred') AND started_at IS NULL
+ AND NOT EXISTS(SELECT 1 FROM issue_wakeup w WHERE w.id::text=agent_task_queue.context->>'wakeup_id' AND w.followup_instance_id IS NOT NULL) RETURNING *;
 -- name: ListInputWakeups :many
 -- Scheduler lane 1: rules with unprocessed inputs (subscribed events,
 -- condition hints, "wake now"). Deliberately not filtered by enabled: a once

@@ -37,6 +37,9 @@ import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/i18n";
 
 interface Props {
+  /** Chat session id, or the new-chat sentinel. Keys the composer draft
+   *  (mention chips + attachments); the text stays in `value`. */
+  draftKey: string;
   /** Current draft text (controlled). Empty string = no draft. */
   value: string;
   /** Fired on every keystroke. The caller writes to the drafts store. */
@@ -45,6 +48,10 @@ interface Props {
    *  server ids. Caller resets the input by setting `value=""` after a
    *  successful send. */
   onSend: (content: string, attachmentIds: string[]) => Promise<void> | void;
+  /** Keep the submitted text on disk until the send settles (see
+   *  `useChatDraftsStore.beginSend`). */
+  onSendStart?: (text: string) => string;
+  onSendSettled?: (handle: string, ok: boolean) => void;
   /** Cancel the in-flight agent task. Only callable while `sending===true`. */
   onStop: () => void;
   /** True while an agent task is running for the active session. The
@@ -65,9 +72,12 @@ interface Props {
 const IS_IOS = process.env.EXPO_OS === "ios";
 
 export function ChatComposer({
+  draftKey,
   value,
   onChangeText,
   onSend,
+  onSendStart,
+  onSendSettled,
   onStop,
   sending,
   allowStop = true,
@@ -107,9 +117,12 @@ export function ChatComposer({
   return (
     <View testID="mobile-chat-composer">
       <MessageComposer
+        draftKey={`chat:${draftKey}`}
         value={value}
         onChangeText={onChangeText}
         onSubmit={onSubmit}
+        onSubmitStart={onSendStart}
+        onSubmitSettled={onSendSettled}
         mentionPickerPath={{
           pathname: "/[workspace]/mention-picker",
           params: { workspace: wsSlug ?? "", mode: "chat" },

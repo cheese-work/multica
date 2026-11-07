@@ -546,7 +546,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	if req.Settings != nil {
 		// What depends on the stored settings (the pause guard, the PR merge
 		// switch) is decided under the workspace row lock in saveWorkspace.
-		if err := validateCompactConfig(req.Settings); err != nil {
+		if err := errors.Join(validateCompactConfig(req.Settings), validateAskGuardSetting(req.Settings)); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -575,7 +575,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			err = errAutoCompactShape
 		} else {
-			err = validateAutoCompactConfig(map[string]any{"auto_compact": incoming})
+			err = validateAutoCompactPatch(incoming)
 		}
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -584,7 +584,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		if incoming == nil {
 			params.AutoCompactReset = pgtype.Bool{Bool: true, Valid: true}
 		} else {
-			params.AutoCompact = req.AutoCompact
+			params.AutoCompact = clearStalePct(req.AutoCompact)
 		}
 	}
 	if req.IdleStartedGuard != nil {
@@ -654,8 +654,12 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		params.AvatarUrl = pgtype.Text{String: accepted, Valid: true}
 	}
 
-	ws, pauseAction, activity, err := h.saveWorkspace(r.Context(), params, req.Settings, req.WakeupsPaused, requestUserID(r), actorType, actorID)
+	ws, pauseAction, activity, err := h.saveWorkspace(r.Context(), params, req.Settings, req.WakeupsPaused, requestUserID(r), actorType, actorID, isGovernedFieldMachineActor(r, actorType))
 	var rejected settingsRejectedError
+	if errors.Is(err, errBackgroundAgentsHumanOnly) {
+		writeBackgroundAgentsRefused(w)
+		return
+	}
 	if errors.As(err, &rejected) {
 		writeError(w, http.StatusBadRequest, rejected.Error())
 		return
@@ -1437,6 +1441,10 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		{
+			name: "delete dm progress follows",
+			run:  func() error { return qtx.DeleteDMProgressByWorkspace(ctx, requester.WorkspaceID) },
+		},
+		{
 			name: "delete chat pins",
 			run:  func() error { return qtx.DeleteChatPinnedAgentsByWorkspace(ctx, requester.WorkspaceID) },
 		},
@@ -1465,6 +1473,14 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 				_, err := tx.Exec(ctx, `DELETE FROM cloud_agent_connection WHERE provider='qoder_cloud' AND workspace_id=$1`, requester.WorkspaceID)
 				return err
 			},
+		},
+		{
+			name: "delete provider breakers",
+			run:  func() error { return qtx.DeleteProviderBreakersForWorkspace(ctx, requester.WorkspaceID) },
+		},
+		{
+			name: "delete provider breaker audit",
+			run:  func() error { return qtx.DeleteProviderBreakerAuditForWorkspace(ctx, requester.WorkspaceID) },
 		},
 		{
 			name: "delete leaf data",
