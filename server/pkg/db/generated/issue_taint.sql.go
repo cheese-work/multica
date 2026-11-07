@@ -89,3 +89,17 @@ func (q *Queries) LockIssueForTaintClear(ctx context.Context, id pgtype.UUID) er
 	_, err := q.db.Exec(ctx, lockIssueForTaintClear, id)
 	return err
 }
+
+const noteIssueTaint = `-- name: NoteIssueTaint :exec
+SELECT issue_taint_note($1::uuid, $2::text[])
+`
+
+type NoteIssueTaintParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	Taint   []string    `json:"taint"`
+}
+
+func (q *Queries) NoteIssueTaint(ctx context.Context, arg NoteIssueTaintParams) error {
+	_, err := q.db.Exec(ctx, noteIssueTaint, arg.IssueID, arg.Taint)
+	return err
+}

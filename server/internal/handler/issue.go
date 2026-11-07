@@ -390,6 +390,12 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 		if err := q.TaintPendingRunsOnIssue(ctx, db.TaintPendingRunsOnIssueParams{TaintIds: taint, IssueID: issue.ID}); err != nil {
 			return db.Issue{}, nil, fmt.Errorf("taint pending runs: %w", err)
 		}
+		// A run created after this commit (a budget recovery run whose refusal
+		// callback has not run yet) has no pending run to inherit from; the
+		// issue's own taint stops it authorizing an elevated operation.
+		if err := q.NoteIssueTaint(ctx, db.NoteIssueTaintParams{IssueID: issue.ID, Taint: taint}); err != nil {
+			return db.Issue{}, nil, fmt.Errorf("note issue taint: %w", err)
+		}
 	}
 	if external, _ := ctx.Value(issueWriteExternalReadKey{}).(bool); external && params.Description.Valid {
 		if err := q.MarkIssueDescriptionExternalRead(ctx, issue.ID); err != nil {

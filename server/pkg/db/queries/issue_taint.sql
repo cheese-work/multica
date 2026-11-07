@@ -18,3 +18,6 @@ WHERE issue_id = sqlc.arg('issue_id');
 INSERT INTO issue_taint_clear (workspace_id, issue_id, taint_ids, cleared_by_member_id)
 VALUES ($1, $2, $3, $4)
 RETURNING *;
+
+-- name: NoteIssueTaint :exec
+SELECT issue_taint_note(@issue_id::uuid, @taint::text[]);

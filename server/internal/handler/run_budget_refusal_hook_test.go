@@ -3,12 +3,14 @@ package handler
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -619,5 +621,74 @@ func TestRunBudgetHookRecoveryKeepsEveryRequestersTaint(t *testing.T) {
 				t.Fatalf("recovery run taint = %v, want [ext-1]", got)
 			}
 		})
+	}
+}
+
+// A tainted agent hands a spent issue over while a clean hook has already
+// created and started the recovery run. The tainted request's callback is held,
+// as it is when it has not run yet: the taint must already stop the recovery
+// run from authorizing an elevated operation (it cannot be revoked afterwards).
+func TestRunBudgetHookTaintedAssignmentFencesRecoveryRunBeforeItsCallback(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	c := newBudgetCase(t, 2856060, recoverySteps(seededReadyAgentID(t)), 2)
+	recordOccurrence(t, c, "in_progress")
+	c.spend(t, 2)
+	ctxClean, eClean := refusalBy(t, c, "")
+
+	held := make(chan service.RunBudgetExhausted, 1)
+	service.SetOnRunBudgetExhausted(func(_ context.Context, e service.RunBudgetExhausted) { held <- e })
+	// The tainted agent works on another issue; its task alone carries the taint.
+	actorRuntime := createClaimReclaimRuntime(t, ctx, "Budget previous runtime")
+	other := dbfx.Agent(t, "Budget previous assignee", actorRuntime)
+	actor := dbfx.Task(t, c.agentID, testutil.Cols{"status": "running", "runtime_id": actorRuntime, "issue_id": dbfx.Issue(t, "budget tainted actor"), "taint_ids": []string{"ext-1"}})
+	// The issue sits with another agent, so handing it to the recovery handler is a change.
+	dbfx.Exec(t, `UPDATE issue SET assignee_id=$2 WHERE id=$1`, c.issueID, other)
+	testutil.Call(t, testHandler.UpdateIssue, testutil.WithURLParams(
+		asRun(newRequest(http.MethodPatch, "/api/issues/"+c.issueID, map[string]any{
+			"assignee_type": "agent", "assignee_id": c.agentID,
+		}), c.agentID, actor), "id", c.issueID)).Want(http.StatusOK)
+	select {
+	case <-held:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the tainted assignment's refusal never reached its callback")
+	}
+
+	// The clean hook finishes and its recovery run starts before the held callback runs.
+	id, generation, ok := testHandler.recordRefusalIntent(ctxClean, eClean)
+	if !ok {
+		t.Fatal("clean refusal not recorded")
+	}
+	testHandler.advanceRefusalHook(ctxClean, id, generation, eClean)
+	finished(t, c)
+
+	runtimeID := createClaimReclaimRuntime(t, ctx, "Budget recovery runtime")
+	agentID := dbfx.Agent(t, "Budget recovery agent", runtimeID)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET agent_id=$2, runtime_id=$3, status='dispatched', dispatched_at=now() - interval '120 seconds'
+		WHERE issue_id=$1 AND task_kind='budget_recovery'`, c.issueID, agentID, runtimeID)
+	insertGrant(t, c.issueID, testWorkspaceID, []string{"repo_write:1234"}, "1 minute", "1 hour", false)
+	req := withURLParam(newOwnerDaemonRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil), "runtimeId", runtimeID)
+	var claim struct {
+		Task *struct {
+			ID      string `json:"id"`
+			Profile string `json:"profile"`
+			Epoch   int64  `json:"epoch"`
+		} `json:"task"`
+	}
+	testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusOK).JSON(&claim)
+	if claim.Task == nil {
+		t.Fatal("claim returned no recovery run")
+	}
+	f := elevatedFixture{taskID: claim.Task.ID, issueID: c.issueID, runtimeID: runtimeID}
+	if claim.Task.Profile == "elevated" {
+		f.authorize(t, claim.Task.Epoch, "repo_write:1234", hashA).Want(http.StatusForbidden)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM elevated_op WHERE task_id = $1`, claim.Task.ID); n != 0 {
+		t.Fatalf("authorized operations = %d, want 0", n)
+	}
+	if claim.Task.Profile == "elevated" {
+		t.Fatalf("recovery run claimed elevated before the tainted request's callback ran")
 	}
 }
