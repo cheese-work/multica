@@ -2,6 +2,8 @@ package handler
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,6 +55,21 @@ func coveredCardOffers(batch, card db.DecisionRequest, label string) bool {
 	return false
 }
 
+// batchCoverAck is the acknowledgment a batch option answer must carry: the
+// SHA-256 hex of the batch id, the sorted covered ids (comma joined) and the
+// chosen option label, each on its own line. A client computes it from the
+// covered decisions the card disclosed, so an answer from a client that never
+// showed them cannot propagate to the covered cards.
+func batchCoverAck(batch db.DecisionRequest, option string) string {
+	ids := make([]string, 0, len(batch.CoversRequestIds))
+	for _, id := range batch.CoversRequestIds {
+		ids = append(ids, uuidToString(id))
+	}
+	slices.Sort(ids)
+	sum := sha256.Sum256([]byte(uuidToString(batch.ID) + "\n" + strings.Join(ids, ",") + "\n" + option))
+	return hex.EncodeToString(sum[:])
+}
+
 // maxBatchCovers bounds how many open cards one batch card may cover.
 const maxBatchCovers = 25
 
@@ -97,6 +114,11 @@ func (handler *Handler) answerCoveredCards(ctx context.Context, queries *db.Quer
 func (handler *Handler) answerCoveredCard(ctx context.Context, queries *db.Queries, workspace db.Workspace, batch, card db.DecisionRequest, input decisionCardAnswerInput, content string) (*coveredCardAnswer, error) {
 	if !coveredCardOffers(batch, card, input.Option) {
 		return nil, nil
+	}
+	// A card's own answer is refused while its person is in recovery; the batch
+	// answer must not settle it around that.
+	if err := refuseGatedAnswerWhileRecovering(ctx, queries, workspace, card, batch.HumanUserID); err != nil {
+		return nil, err
 	}
 	root, err := commentguard.LockThreadForReplyAndLoadRoot(ctx, queries, card.WorkspaceID, card.IssueCommentID)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -214,4 +236,49 @@ func coverBatchRequests(ctx context.Context, queries *db.Queries, batch db.Decis
 		}
 	}
 	return queries.SetDecisionRequestCovers(ctx, db.SetDecisionRequestCoversParams{WorkspaceID: batch.WorkspaceID, ID: batch.ID, CoversRequestIds: covers})
+}
+
+// withdrawCoveredAnswers withdraws what a withdrawn batch answer decided on the
+// covered cards: each reopens, loses its batch fold and its live answer is
+// disclaimed, so no covered decision stays settled by an answer that is gone.
+func withdrawCoveredAnswers(ctx context.Context, queries *db.Queries, batch db.DecisionRequest, userID pgtype.UUID) ([]decisiontx.Withdrawal, error) {
+	if len(batch.CoversRequestIds) == 0 {
+		return nil, nil
+	}
+	covered, err := queries.LockBatchAnsweredRequests(ctx, db.LockBatchAnsweredRequestsParams{WorkspaceID: batch.WorkspaceID, BatchRequestID: batch.ID})
+	if err != nil {
+		return nil, err
+	}
+	var withdrawn []decisiontx.Withdrawal
+	for _, card := range covered {
+		root, err := commentguard.LockThreadForReplyAndLoadRoot(ctx, queries, card.WorkspaceID, card.IssueCommentID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
+		}
+		if _, err := queries.LockDecisionIssue(ctx, db.LockDecisionIssueParams{WorkspaceID: card.WorkspaceID, ID: card.IssueID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
+		}
+		answer, err := queries.LockDecisionLiveAnswer(ctx, db.LockDecisionLiveAnswerParams{WorkspaceID: card.WorkspaceID, ID: card.ID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		session, err := queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{WorkspaceID: card.WorkspaceID, ID: card.ChatSessionID})
+		if err != nil {
+			return nil, err
+		}
+		result, err := decisiontx.Withdraw(ctx, queries, card, answer, session.Status, "human", userID)
+		if err != nil {
+			return nil, err
+		}
+		if root != nil && len(result.Comments) > 0 {
+			if result.ClearedComments, err = queries.ClearThreadResolutionForReply(ctx, db.ClearThreadResolutionForReplyParams{ThreadRootID: root.ID, IssueID: card.IssueID, WorkspaceID: card.WorkspaceID}); err != nil {
+				return nil, err
+			}
+		}
+		withdrawn = append(withdrawn, result)
+	}
+	return withdrawn, nil
 }

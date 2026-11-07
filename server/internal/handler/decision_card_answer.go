@@ -23,6 +23,10 @@ import (
 
 const maxDecisionCardTextBytes = 8 << 10
 
+// errCoversAckRequired refuses a batch option answer whose client did not
+// acknowledge the covered decisions. Nothing is written or propagated.
+var errCoversAckRequired = decisionIntentRefusal{http.StatusBadRequest, "covers_ack_required: this card also answers other decisions; reload the card to see and acknowledge them"}
+
 // decisionCardAnswerInput is one card answer: a chosen option label, free text,
 // or both. The label must match one the card offers.
 type decisionCardAnswerInput struct {
@@ -33,6 +37,10 @@ type decisionCardAnswerInput struct {
 	AnswerRevision int32           `json:"answer_revision,omitempty"`
 	PolicyRevision int32           `json:"policy_revision,omitempty"`
 	Assertion      json.RawMessage `json:"assertion,omitempty"`
+	// A batch card's option answer also closes the cards it covers. It carries
+	// the digest of the covered decisions the person saw (batchCoverAck); a
+	// client that never showed them sends none, and the answer is refused.
+	CoversAck string `json:"covers_ack,omitempty"`
 }
 
 // AnswerDecisionRequest records the request's human answering on the card. The
@@ -179,6 +187,9 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	workspace, err := queries.GetWorkspace(ctx, workspaceID)
 	if err != nil {
 		return empty, err
+	}
+	if len(decision.CoversRequestIds) > 0 && input.Option != "" && input.CoversAck != batchCoverAck(decision, input.Option) {
+		return empty, errCoversAckRequired
 	}
 	if err := refuseGatedAnswerWhileRecovering(ctx, queries, workspace, decision, userID); err != nil {
 		return empty, err

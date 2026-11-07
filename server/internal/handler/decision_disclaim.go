@@ -14,6 +14,13 @@ import (
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
+// disclaimResult is the withdrawn answer plus, for a batch card, the covered
+// cards' answers it took back with it.
+type disclaimResult struct {
+	decisiontx.Withdrawal
+	Covered []decisiontx.Withdrawal
+}
+
 func (handler *Handler) DisclaimDecisionAnswer(writer http.ResponseWriter, request *http.Request) {
 	switch request.Header.Get("X-Actor-Source") {
 	case "interactive_jwt", "cli_jwt", "pat":
@@ -38,7 +45,7 @@ func (handler *Handler) DisclaimDecisionAnswer(writer http.ResponseWriter, reque
 		writeError(writer, http.StatusForbidden, "decision disclaim requires the request's human")
 		return
 	}
-	var result decisiontx.Withdrawal
+	var result disclaimResult
 	for attempt := 0; ; attempt++ {
 		result, err = handler.disclaimDecisionAnswerTx(request, workspaceUUID, answerID, userID)
 		if err == nil || !decisiontx.IsRetryable(err) || attempt == 1 {
@@ -54,12 +61,19 @@ func (handler *Handler) DisclaimDecisionAnswer(writer http.ResponseWriter, reque
 	}
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "member", uuidToString(userID))
 	handler.publishDecisionAnswerUpdated(workspaceID, "member", uuidToString(userID), result.Answer.ID, result.Request.IssueID, decisionStateDisclaimed)
+	for _, item := range result.Covered {
+		for _, comment := range item.Comments {
+			handler.publish(protocol.EventCommentCreated, workspaceID, "member", uuidToString(userID), map[string]any{"comment": commentToResponse(comment, nil, nil)})
+		}
+		handler.TaskService.PublishThreadUnresolvedOnReply(item.ClearedComments, workspaceID, "member", uuidToString(userID))
+		handler.publishDecisionAnswerUpdated(workspaceID, "member", uuidToString(userID), item.Answer.ID, item.Request.IssueID, decisionStateDisclaimed)
+	}
 	writeJSON(writer, http.StatusOK, result.Answer)
 }
 
-func (handler *Handler) disclaimDecisionAnswerTx(request *http.Request, workspaceID, answerID, userID pgtype.UUID) (decisiontx.Withdrawal, error) {
+func (handler *Handler) disclaimDecisionAnswerTx(request *http.Request, workspaceID, answerID, userID pgtype.UUID) (disclaimResult, error) {
 	ctx := request.Context()
-	empty := decisiontx.Withdrawal{}
+	empty := disclaimResult{}
 	answer, err := handler.Queries.GetDecisionAnswer(ctx, db.GetDecisionAnswerParams{WorkspaceID: workspaceID, ID: answerID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return empty, decisionIntentRefusal{http.StatusNotFound, "decision answer not found"}
@@ -119,6 +133,10 @@ func (handler *Handler) disclaimDecisionAnswerTx(request *http.Request, workspac
 	if err != nil {
 		return empty, err
 	}
+	covered, err := withdrawCoveredAnswers(ctx, queries, current, userID)
+	if err != nil {
+		return empty, err
+	}
 	if len(result.Comments) > 0 && root != nil {
 		result.ClearedComments, err = queries.ClearThreadResolutionForReply(ctx, db.ClearThreadResolutionForReplyParams{ThreadRootID: root.ID, IssueID: current.IssueID, WorkspaceID: workspaceID})
 		if err != nil {
@@ -129,5 +147,5 @@ func (handler *Handler) disclaimDecisionAnswerTx(request *http.Request, workspac
 		return empty, err
 	}
 	handler.DecisionWorker.Notify()
-	return result, nil
+	return disclaimResult{Withdrawal: result, Covered: covered}, nil
 }

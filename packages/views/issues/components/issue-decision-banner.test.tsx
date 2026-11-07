@@ -83,6 +83,22 @@ describe("IssueDecisionBanner", () => {
     expect(screen.getByRole("button", { name: /Hold/ })).toBeInTheDocument();
   });
 
+  it("acknowledges the covered cards when a batch card is answered on the issue page", async () => {
+    api.listOpenDecisionRequests.mockResolvedValue([open("batch", "issue", {
+      covers_request_ids: ["c2", "c1"],
+      covered_cards: [
+        { id: "c2", issue_id: "i2", issue_identifier: "CHE-12", decision: "Cut the release?", options: [{ label: "Ship it", what_happens: "Cuts." }, { label: "Hold" }] },
+        { id: "c1", issue_id: "i1", issue_identifier: "CHE-11", decision: "Merge the stack?", options: [{ label: "Ship it", what_happens: "Merges." }, { label: "Hold" }] },
+      ],
+    })]);
+    show();
+    await userEvent.setup().click(await screen.findByRole("button", { name: /Hold/ }));
+    await waitFor(() => expect(api.answerDecisionRequest).toHaveBeenCalledTimes(1));
+    const [id, input] = api.answerDecisionRequest.mock.calls[0];
+    expect(id).toBe("batch");
+    expect(input).toEqual({ option: "Hold", covers_ack: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  });
+
   it("offers no answer on the issue page while a batch card's covered decisions are missing", async () => {
     api.listOpenDecisionRequests.mockResolvedValue([open("batch", "issue", { covers_request_ids: ["c1", "c2"] })]);
     show();

@@ -1916,6 +1916,80 @@ func (q *Queries) ListOpenProposals(ctx context.Context, arg ListOpenProposalsPa
 	return items, nil
 }
 
+const lockBatchAnsweredRequests = `-- name: LockBatchAnsweredRequests :many
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, covers_request_ids, answered_by_batch_request_id FROM decision_request
+WHERE authority = 'human' AND workspace_id = $1 AND answered_by_batch_request_id = $2
+  AND status = 'answered'
+ORDER BY id
+FOR UPDATE
+`
+
+type LockBatchAnsweredRequestsParams struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	BatchRequestID pgtype.UUID `json:"batch_request_id"`
+}
+
+// The per-issue cards a batch answer closed, locked in id order, so
+// withdrawing the batch answer can reopen them.
+func (q *Queries) LockBatchAnsweredRequests(ctx context.Context, arg LockBatchAnsweredRequestsParams) ([]DecisionRequest, error) {
+	rows, err := q.db.Query(ctx, lockBatchAnsweredRequests, arg.WorkspaceID, arg.BatchRequestID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DecisionRequest{}
+	for rows.Next() {
+		var i DecisionRequest
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.AskingAgentID,
+			&i.HumanUserID,
+			&i.ChatSessionID,
+			&i.PingMessageID,
+			&i.IssueCommentID,
+			&i.Ask,
+			&i.EscalationClass,
+			&i.Status,
+			&i.Origin,
+			&i.DecisionIntentID,
+			&i.CancelReason,
+			&i.CancelNoticePostedAt,
+			&i.PingNotifiedAt,
+			&i.ReaskDeliveredAt,
+			&i.ReaskOutcome,
+			&i.CreatedAt,
+			&i.SourceCommentID,
+			&i.SourceContentSnapshot,
+			&i.RequestFingerprint,
+			&i.WithdrawReason,
+			&i.WithdrawnAt,
+			&i.WithdrawnByTaskID,
+			&i.WithdrawnByUserID,
+			&i.Options,
+			&i.AskIdentity,
+			&i.AskJson,
+			&i.Authority,
+			&i.ProjectID,
+			&i.Kind,
+			&i.ExpiresAt,
+			&i.ProposalFingerprint,
+			&i.AnswerRevision,
+			&i.WakeSeq,
+			&i.CoversRequestIds,
+			&i.AnsweredByBatchRequestID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockBatchCoveredRequests = `-- name: LockBatchCoveredRequests :many
 SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, covers_request_ids, answered_by_batch_request_id FROM decision_request
 WHERE authority = 'human' AND workspace_id = $1 AND id = ANY($2::uuid[])
@@ -2711,7 +2785,7 @@ func (q *Queries) RaiseDecisionClass(ctx context.Context, arg RaiseDecisionClass
 }
 
 const reopenDecisionRequest = `-- name: ReopenDecisionRequest :one
-UPDATE decision_request SET status = 'open', answer_revision = answer_revision + 1
+UPDATE decision_request SET status = 'open', answer_revision = answer_revision + 1, answered_by_batch_request_id = NULL
 WHERE authority = 'human' AND workspace_id = $1 AND id = $2 AND status = 'answered'
 RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, covers_request_ids, answered_by_batch_request_id
 `

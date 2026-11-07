@@ -2,9 +2,11 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -39,7 +41,7 @@ func TestBatchAnswerClosesCoveredCards(test *testing.T) {
 	for _, card := range fixture.covered {
 		dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, card.taskID, card.chatTaskID)
 	}
-	result, err := fixture.batch.answerOnCard(decisionCardAnswerInput{Option: "Option B"})
+	result, err := fixture.answerAcknowledged(test, "Option B")
 	if err != nil {
 		test.Fatal(err)
 	}
@@ -71,6 +73,88 @@ func TestBatchAnswerClosesCoveredCards(test *testing.T) {
 		if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'running')`, card.issueID, card.agentID); count != 1 {
 			test.Fatalf("covered asking agent wake runs = %d, want exactly 1", count)
 		}
+	}
+}
+
+// answerAcknowledged is a batch option answer from a client that disclosed the
+// covered decisions: it carries the digest the server expects.
+func (fixture batchFixture) answerAcknowledged(test *testing.T, option string) (decisionRecordResult, error) {
+	test.Helper()
+	batch, err := testHandler.Queries.GetDecisionRequest(context.Background(), db.GetDecisionRequestParams{WorkspaceID: fixture.batch.issue.WorkspaceID, ID: fixture.batch.decision.ID})
+	if err != nil {
+		test.Fatal(err)
+	}
+	return fixture.batch.answerOnCard(decisionCardAnswerInput{Option: option, CoversAck: batchCoverAck(batch, option)})
+}
+
+// wantNothingPropagated checks the batch card and every covered card are still open and unanswered.
+func (fixture batchFixture) wantNothingPropagated(test *testing.T) {
+	test.Helper()
+	if status, answers := coveredCardState(test, fixture.batch); status != "open" || answers != 0 {
+		test.Fatalf("batch card: status=%s answers=%d, want open with none", status, answers)
+	}
+	for _, card := range fixture.covered {
+		if status, answers := coveredCardState(test, card); status != "open" || answers != 0 {
+			test.Fatalf("covered card %s: status=%s answers=%d, want open with none", uuidToString(card.decision.ID), status, answers)
+		}
+	}
+}
+
+func TestBatchAnswerNeedsTheCoverAcknowledgment(test *testing.T) {
+	resetDecisionLease(test)
+	fixture := newBatchFixture(test, 2)
+	batch, err := testHandler.Queries.GetDecisionRequest(context.Background(), db.GetDecisionRequestParams{WorkspaceID: fixture.batch.issue.WorkspaceID, ID: fixture.batch.decision.ID})
+	if err != nil {
+		test.Fatal(err)
+	}
+	cases := map[string]decisionCardAnswerInput{
+		"old client payload, no acknowledgment": {Option: "Option B"},
+		"acknowledgment for another option":     {Option: "Option B", CoversAck: batchCoverAck(batch, "Option A")},
+		"acknowledgment that is not a digest":   {Option: "Option B", CoversAck: "yes"},
+	}
+	for name, input := range cases {
+		test.Run(name, func(test *testing.T) {
+			_, err := fixture.batch.answerOnCard(input)
+			var refusal decisionIntentRefusal
+			if !errors.As(err, &refusal) || refusal.status != http.StatusBadRequest {
+				test.Fatalf("err = %v, want a 400 refusal", err)
+			}
+			fixture.wantNothingPropagated(test)
+		})
+	}
+	// Positive control: the acknowledged payload closes every covered card.
+	if _, err := fixture.answerAcknowledged(test, "Option B"); err != nil {
+		test.Fatal(err)
+	}
+	for _, card := range fixture.covered {
+		if status, answers := coveredCardState(test, card); status != "answered" || answers != 1 {
+			test.Fatalf("covered card after the acknowledged answer: status=%s answers=%d, want answered with one", status, answers)
+		}
+	}
+}
+
+// An acknowledgment is bound to the covered ids: one taken from a different
+// batch card does not open this card's answer.
+func TestBatchAcknowledgmentIsBoundToTheCoveredCards(test *testing.T) {
+	resetDecisionLease(test)
+	fixture := newBatchFixture(test, 2)
+	other := newBatchFixture(test, 1)
+	stolen, err := testHandler.Queries.GetDecisionRequest(context.Background(), db.GetDecisionRequestParams{WorkspaceID: other.batch.issue.WorkspaceID, ID: other.batch.decision.ID})
+	if err != nil {
+		test.Fatal(err)
+	}
+	if _, err := fixture.batch.answerOnCard(decisionCardAnswerInput{Option: "Option B", CoversAck: batchCoverAck(stolen, "Option B")}); err == nil {
+		test.Fatal("an acknowledgment of another batch card was accepted")
+	}
+	fixture.wantNothingPropagated(test)
+}
+
+// Pins the digest so the web client can compute the same value.
+func TestBatchCoverAckDigestIsStable(test *testing.T) {
+	batch := db.DecisionRequest{ID: parseUUID("00000000-0000-4000-8000-0000000000b1"), CoversRequestIds: []pgtype.UUID{parseUUID("00000000-0000-4000-8000-0000000000c2"), parseUUID("00000000-0000-4000-8000-0000000000c1")}}
+	const want = "012ee7331cfe77d20ca96126e0cae16df3acabee3149e329bb3054f42d0211e1"
+	if got := batchCoverAck(batch, "Option B"); got != want {
+		test.Fatalf("digest = %s, want %s", got, want)
 	}
 }
 
@@ -154,7 +238,7 @@ func TestBatchAnswerLeavesGovernedWriteCardOpen(test *testing.T) {
 	dbfx.Exec(test, `UPDATE member SET role = 'owner' WHERE workspace_id = $1 AND user_id = $2`, write.issue.WorkspaceID, parseUUID(fixture.batch.humanID))
 	dbfx.Exec(test, `UPDATE decision_request SET options = $2::jsonb WHERE id = $1`, fixture.batch.decision.ID,
 		`[{"label":"`+decisiontx.ApproveWriteLabel+`","what_happens":"ok"},{"label":"Reject","what_happens":"no"}]`)
-	if _, err := fixture.batch.answerOnCard(decisionCardAnswerInput{Option: decisiontx.ApproveWriteLabel}); err != nil {
+	if _, err := fixture.answerAcknowledged(test, decisiontx.ApproveWriteLabel); err != nil {
 		test.Fatal(err)
 	}
 	var status string
@@ -210,7 +294,7 @@ func TestBatchAnswerLeavesUnrelatedCardOpen(test *testing.T) {
 	fixture := newBatchFixture(test, 2)
 	unrelated, related := fixture.covered[0], fixture.covered[1]
 	setCardOptions(test, unrelated, unrelatedOptions)
-	if _, err := fixture.batch.answerOnCard(decisionCardAnswerInput{Option: "Option B"}); err != nil {
+	if _, err := fixture.answerAcknowledged(test, "Option B"); err != nil {
 		test.Fatal(err)
 	}
 	if status, answers := coveredCardState(test, unrelated); status != "open" || answers != 0 {
@@ -228,7 +312,7 @@ func TestBatchAnswerLeavesDifferentMeaningCardOpen(test *testing.T) {
 	fixture := newBatchFixture(test, 2)
 	different, same := fixture.covered[0], fixture.covered[1]
 	setCardOptions(test, different, differentMeaningOptions)
-	if _, err := fixture.batch.answerOnCard(decisionCardAnswerInput{Option: "Option B"}); err != nil {
+	if _, err := fixture.answerAcknowledged(test, "Option B"); err != nil {
 		test.Fatal(err)
 	}
 	if status, answers := coveredCardState(test, different); status != "open" || answers != 0 {
@@ -328,4 +412,49 @@ func TestOpenDecisionsListDisclosesCoveredDecisions(test *testing.T) {
 			test.Fatalf("covered_cards[%d] = %+v, want the covered card's decision and options with meanings", index, card)
 		}
 	}
+}
+
+// Withdrawing the batch answer withdraws what it decided on the covered cards:
+// they reopen, their answers are disclaimed, and no live answer stays behind.
+func TestDisclaimingABatchAnswerWithdrawsTheCoveredAnswers(test *testing.T) {
+	resetDecisionLease(test)
+	fixture := newBatchFixture(test, 2)
+	result, err := fixture.answerAcknowledged(test, "Option B")
+	if err != nil {
+		test.Fatal(err)
+	}
+	if _, err := testHandler.disclaimDecisionAnswerTx(fixture.batch.request(), fixture.batch.issue.WorkspaceID, result.Answer.ID, parseUUID(fixture.batch.humanID)); err != nil {
+		test.Fatal(err)
+	}
+	if status, _ := coveredCardState(test, fixture.batch); status != "open" {
+		test.Fatalf("batch card status = %s, want open", status)
+	}
+	for _, card := range fixture.covered {
+		var status string
+		var by *string
+		dbfx.QueryRow(test, `SELECT status, answered_by_batch_request_id::text FROM decision_request WHERE id = $1`, card.decision.ID).Scan(&status, &by)
+		if status != "open" || by != nil {
+			test.Fatalf("covered card %s after the batch disclaim: status=%s answered_by_batch=%v, want open and unfolded", uuidToString(card.decision.ID), status, by)
+		}
+		if live := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1 AND disclaimed_at IS NULL`, card.decision.ID); live != 0 {
+			test.Fatalf("covered card %s keeps %d live answers after the batch disclaim", uuidToString(card.decision.ID), live)
+		}
+	}
+}
+
+// A covered product-direction card keeps the recovery restriction its own
+// answer has: a batch answer cannot settle it while the person is in recovery.
+func TestBatchAnswerCannotSettleAGatedCoveredCardWhileRecovering(test *testing.T) {
+	resetDecisionLease(test)
+	fixture := newBatchFixture(test, 1)
+	workspaceID := uuidToString(fixture.batch.issue.WorkspaceID)
+	dbfx.Exec(test, `UPDATE decision_request SET escalation_class = 'product_direction' WHERE id = $1`, fixture.covered[0].decision.ID)
+	dbfx.Exec(test, `UPDATE workspace SET decision_passkey_gate = 'block' WHERE id = $1`, workspaceID)
+	dbfx.Cleanup(test, `UPDATE workspace SET decision_passkey_gate = 'off' WHERE id = $1`, workspaceID)
+	setPasskeyState(test, fixture.batch.humanID, "recovery_required")
+	_, err := fixture.answerAcknowledged(test, "Option B")
+	if err == nil || !strings.Contains(err.Error(), "recovery_required") {
+		test.Fatalf("err = %v, want recovery_required", err)
+	}
+	fixture.wantNothingPropagated(test)
 }

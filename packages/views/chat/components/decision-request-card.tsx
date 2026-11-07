@@ -300,7 +300,7 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
     // Keep what is sent as the draft, so a refused send shows back the same choice and text.
     setDraft({ option, text });
     answer.mutate(
-      { requestId: card.id, option: option || undefined, text: text.trim() || undefined, passkey: needsPasskey },
+      { requestId: card.id, option: option || undefined, text: text.trim() || undefined, passkey: needsPasskey, covers: card.covers_request_ids },
       {
         onSuccess: () => {
           setNeedsPasskey(false);

@@ -101,7 +101,7 @@ WHERE request.authority = 'human' AND request.id = answer.decision_request_id AN
 RETURNING answer.*;
 
 -- name: ReopenDecisionRequest :one
-UPDATE decision_request SET status = 'open', answer_revision = answer_revision + 1
+UPDATE decision_request SET status = 'open', answer_revision = answer_revision + 1, answered_by_batch_request_id = NULL
 WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND status = 'answered'
 RETURNING *;
 
@@ -543,6 +543,15 @@ FOR UPDATE;
 UPDATE decision_request SET status = 'answered', answered_by_batch_request_id = sqlc.arg('batch_request_id')
 WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND status = 'open'
 RETURNING *;
+
+-- name: LockBatchAnsweredRequests :many
+-- The per-issue cards a batch answer closed, locked in id order, so
+-- withdrawing the batch answer can reopen them.
+SELECT * FROM decision_request
+WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND answered_by_batch_request_id = sqlc.arg('batch_request_id')
+  AND status = 'answered'
+ORDER BY id
+FOR UPDATE;
 
 -- name: SetDecisionRequestCovers :one
 UPDATE decision_request SET covers_request_ids = sqlc.arg('covers_request_ids')::uuid[]
