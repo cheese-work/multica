@@ -179,7 +179,11 @@ func TestBypassConnectToRelayAndAlternateNamesRefused(t *testing.T) {
 	}
 }
 
-// (d) an allowed host carrying a GitHub SNI, and an allowed host with no SNI.
+// (d) the Multica host carrying a GitHub SNI: the tunnel is cut at the hello
+// and nothing is logged as allowed. The provider host cannot be exercised here:
+// it is reachable on 443 only, which the fixture cannot serve, and the proxy
+// dials before it reads the hello. That case (provider host, foreign SNI) is
+// egress.TestElevatedSNIMismatchRefused, which injects the dialer.
 func TestBypassAllowedHostWithForeignSNIRefused(t *testing.T) {
 	f := newBypassGate(t)
 	a := net.JoinHostPort(bypassMulticaHost, f.port)
@@ -187,6 +191,9 @@ func TestBypassAllowedHostWithForeignSNIRefused(t *testing.T) {
 		if out := f.connect(a, sni); out != "connect "+a+" status=200 tls=fail" {
 			t.Errorf("SNI %s: %q, want the tunnel to be cut at the hello", sni, out)
 		}
+	}
+	if n := len(f.dests()); n != 3 {
+		t.Errorf("proxy logged %d attempts, want 3", n)
 	}
 	for _, d := range f.dests() {
 		if d.Allowed {
