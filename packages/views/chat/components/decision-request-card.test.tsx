@@ -344,7 +344,7 @@ describe("DecisionRequestCard answering", () => {
     renderCard();
     await userEvent.setup().click(screen.getByRole("button", { name: /Option B/ }));
     await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalledTimes(1));
-    expect(answerDecisionRequest.mock.calls[0][1]).not.toHaveProperty("covers_ack");
+    expect(answerDecisionRequest.mock.calls[0]?.[1]).not.toHaveProperty("covers_ack");
   });
 
   it("shows each option's pros, cons and cost, and marks the recommendation", () => {

@@ -94,9 +94,8 @@ describe("IssueDecisionBanner", () => {
     show();
     await userEvent.setup().click(await screen.findByRole("button", { name: /Hold/ }));
     await waitFor(() => expect(api.answerDecisionRequest).toHaveBeenCalledTimes(1));
-    const [id, input] = api.answerDecisionRequest.mock.calls[0];
-    expect(id).toBe("batch");
-    expect(input).toEqual({ option: "Hold", covers_ack: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(api.answerDecisionRequest.mock.calls[0]?.[0]).toBe("batch");
+    expect(api.answerDecisionRequest.mock.calls[0]?.[1]).toEqual({ option: "Hold", covers_ack: expect.stringMatching(/^[0-9a-f]{64}$/) });
   });
 
   it("offers no answer on the issue page while a batch card's covered decisions are missing", async () => {
