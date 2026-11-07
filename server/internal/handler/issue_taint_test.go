@@ -403,6 +403,61 @@ func TestWorkspaceTeardownDetachAndAuthorizeShareOneLockOrder(t *testing.T) {
 	}
 }
 
+// The task page of a workspace teardown can hold a parent and its child at once.
+// Locking that page FOR UPDATE before the child's issue inverts the order of an
+// authorization, which holds the child's issue and then asks for the child run:
+// the page holds the run and waits for the issue. The sweep has to lock the
+// issues of the page before it locks the run rows.
+func TestWorkspaceTeardownTaskPageAndAuthorizeShareOneLockOrder(t *testing.T) {
+	ctx := context.Background()
+	f := claimElevated(t, "repo_write:1234")
+	victim := newWorkspaceDeletePathFixture(t, "page-lock-order")
+
+	parent := insertDeletePathTask(t, victim.victimAgent, victim.victimIssue, victim.victimRuntime)
+	pointRunAtParentWithStaleLineage(t, f, parent)
+	// The child is swept in the same page as its parent; its issue stays outside
+	// the workspace, so the owner-row locks do not cover it.
+	dbfx.Exec(t, `UPDATE agent_task_queue SET agent_id = $2 WHERE id = $1`, f.taskID, victim.victimAgent)
+
+	gate, authorized := holdAuthorizationAtElevationRow(t, f)
+	teardown := make(chan error, 1)
+	go func() {
+		tx, err := testHandler.TxStarter.Begin(ctx)
+		if err != nil {
+			teardown <- err
+			return
+		}
+		defer tx.Rollback(ctx)
+		qtx := testHandler.Queries.WithTx(tx)
+		if err := qtx.SetWorkspaceTeardownMode(ctx); err != nil {
+			teardown <- err
+			return
+		}
+		if err := lockWorkspaceTaskOwners(ctx, qtx, parseUUID(victim.victimID)); err != nil {
+			teardown <- err
+			return
+		}
+		if err := deleteWorkspaceTasks(ctx, qtx, parseUUID(victim.victimID)); err != nil {
+			teardown <- err
+			return
+		}
+		teardown <- tx.Commit(ctx)
+	}()
+	waitForLockWaiters(t, 2)
+	if err := gate.Commit(ctx); err != nil {
+		t.Fatalf("gate commit: %v", err)
+	}
+	if got := (<-authorized).Code; got != http.StatusOK && got != http.StatusForbidden {
+		t.Fatalf("authorization status = %d, want 200 or 403 (a deadlock aborts it)", got)
+	}
+	if err := <-teardown; err != nil {
+		t.Fatalf("teardown = %v, want it to commit (a deadlock aborts it)", err)
+	}
+	if left := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE id = ANY($1::uuid[])`, []string{parent, f.taskID}); left != 0 {
+		t.Fatalf("%d of the parent and child runs survived the sweep", left)
+	}
+}
+
 // pointRunAtCommentWithStaleLineage makes the elevated run name commentID as its
 // trigger and a retry source whose taint arrives only afterwards. Nulling the
 // trigger (the FK's ON DELETE SET NULL) then recomputes the run's taint from the

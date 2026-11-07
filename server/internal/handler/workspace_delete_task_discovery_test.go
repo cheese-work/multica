@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -493,7 +495,9 @@ func TestSweepTasksForOwner_FailsClosedWhenTasksKeepArriving(t *testing.T) {
 	}
 	noop := func(context.Context, []pgtype.UUID) error { return nil }
 
-	err := sweepTasksForOwner(ctx, "agent", owner, firstPage, nextPage, noop, noop)
+	lockAll := func(_ context.Context, ids []pgtype.UUID) ([]pgtype.UUID, error) { return ids, nil }
+
+	err := sweepTasksForOwner(ctx, "agent", owner, firstPage, nextPage, lockAll, noop, noop)
 	if err == nil {
 		t.Fatal("sweep succeeded while tasks kept arriving; teardown would commit a partial cleanup")
 	}
@@ -626,5 +630,100 @@ INSERT INTO agent_task_queue (agent_id, issue_id, runtime_id, status, completed_
 VALUES ($1, $2, $3, 'completed', now())
 `, f.neighbourAgent, f.neighbourIssue, f.neighbourRuntime); err != nil {
 		t.Errorf("neighbour-only enqueue was blocked by the victim's teardown locks: %v", err)
+	}
+}
+
+// lateChildTx makes the issue list of a task page stale. With lateChild it adds a
+// real child run on a new issue right after the first list, a run created after
+// the lock query ran. With endless it answers every later list with an issue the
+// page has never locked.
+type lateChildTx struct {
+	db.DBTX
+	t                  *testing.T
+	parent             string
+	agentID, runtimeID string
+	workspaceID        string
+	lateChild, endless bool
+	lists              int
+}
+
+func (c *lateChildTx) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+	if !strings.Contains(sql, "ORDER BY t.issue_id") {
+		return c.DBTX.Query(ctx, sql, args...)
+	}
+	c.lists++
+	if c.endless && c.lists > 1 {
+		return &oneUUIDRows{id: parseUUID(uuid.NewString())}, nil
+	}
+	rows, err := c.DBTX.Query(ctx, sql, args...)
+	if err == nil && c.lateChild && c.lists == 1 {
+		var issueID string
+		if err := testPool.QueryRow(ctx, `
+INSERT INTO issue (workspace_id, title, creator_type, creator_id, number)
+VALUES ($1, 'late child', 'member', $2,
+        (SELECT COALESCE(max(number), 0) + 1 FROM issue WHERE workspace_id = $1))
+RETURNING id`, c.workspaceID, testUserID).Scan(&issueID); err != nil {
+			c.t.Fatalf("create late child issue: %v", err)
+		}
+		if _, err := testPool.Exec(ctx, `
+INSERT INTO agent_task_queue (agent_id, issue_id, runtime_id, status, completed_at, parent_task_id)
+VALUES ($1, $2, $3, 'completed', now(), $4)`, c.agentID, issueID, c.runtimeID, c.parent); err != nil {
+			c.t.Fatalf("create late child run: %v", err)
+		}
+	}
+	return rows, err
+}
+
+// oneUUIDRows is a result set with a single uuid row.
+type oneUUIDRows struct {
+	pgx.Rows
+	id   pgtype.UUID
+	read bool
+}
+
+func (r *oneUUIDRows) Next() bool {
+	if r.read {
+		return false
+	}
+	r.read = true
+	return true
+}
+func (r *oneUUIDRows) Scan(dest ...any) error { *(dest[0].(*pgtype.UUID)) = r.id; return nil }
+func (r *oneUUIDRows) Err() error             { return nil }
+func (r *oneUUIDRows) Close()                 {}
+
+// A child created after the issue lock query names an issue the page has not
+// locked. The page locks it and checks again; a page that keeps growing fails the
+// teardown instead of running with an issue unlocked.
+func TestLockTaskPageIssuesFirstRechecksChildrenAndFailsAtTheCap(t *testing.T) {
+	if testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	f := newWorkspaceDeletePathFixture(t, "late-child")
+	parent := insertDeletePathTask(t, f.victimAgent, f.victimIssue, f.victimRuntime)
+
+	run := func(wrap func(*lateChildTx)) ([]pgtype.UUID, int, error) {
+		tx, err := testHandler.TxStarter.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer tx.Rollback(ctx)
+		w := &lateChildTx{
+			DBTX: tx, t: t, parent: parent, agentID: f.victimAgent,
+			runtimeID: f.victimRuntime, workspaceID: f.neighbourID,
+		}
+		wrap(w)
+		locked, err := lockTaskPageIssuesFirst(ctx, db.New(w), parseUUID(f.victimAgent), []pgtype.UUID{parseUUID(parent)})
+		return locked, w.lists, err
+	}
+
+	locked, lists, err := run(func(w *lateChildTx) { w.lateChild = true })
+	if err != nil || len(locked) != 1 || lists != 3 {
+		t.Fatalf("one late child: locked=%d lists=%d err=%v, want 1 locked row, 3 lists (initial, the re-read that finds the child's issue, the re-read after locking it), no error", len(locked), lists, err)
+	}
+	if _, _, err := run(func(w *lateChildTx) { w.endless = true }); err == nil ||
+		!strings.Contains(err.Error(), "refusing to proceed with an issue unlocked") {
+		t.Fatalf("endless children: err = %v, want a refusal at the pass cap", err)
 	}
 }
