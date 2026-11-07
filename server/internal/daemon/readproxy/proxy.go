@@ -62,6 +62,13 @@ type Admitter interface {
 	Admitted(ctx context.Context, c Check) (bool, error)
 }
 
+// OwnMessager is the broker's receipt check (broker.Broker implements it): it
+// reports whether msg, the current bytes of a commit message, hash to the
+// receipt of a commit the broker pushed for this run under sha.
+type OwnMessager interface {
+	OwnMessage(sha string, msg []byte) bool
+}
+
 // Result is one read's answer: full text, or a stub with no body.
 type Result struct {
 	Full   bool   `json:"full"`
@@ -80,7 +87,8 @@ type Proxy struct {
 	Token           func(context.Context) (string, error)
 	Admit           Admitter
 	Approve         Approver
-	RESTURL         string // default https://api.github.com
+	Own             OwnMessager // nil: no broker exception for commit messages
+	RESTURL         string      // default https://api.github.com
 	HTTP            *http.Client
 	LookupTimeout   time.Duration // server lookup bound; default 5s
 }
