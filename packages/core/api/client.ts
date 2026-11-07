@@ -4226,6 +4226,11 @@ export class ApiClient {
     return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/approve`, PasskeyDecisionOutcomeSchema, input);
   }
 
+  /** Ends a pending action as rejected. No passkey: declining changes nothing. */
+  rejectDecisionAction(actionId: string): Promise<PasskeyDecisionOutcome> {
+    return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/reject`, PasskeyDecisionOutcomeSchema);
+  }
+
   async getDecisionAction(actionId: string): Promise<DecisionActionView> {
     const raw: unknown = await this.fetch(`/api/decision-actions/${encodeURIComponent(actionId)}`);
     return parsePasskeyResponse(raw, DecisionActionViewSchema, "GET /api/decision-actions/:id");

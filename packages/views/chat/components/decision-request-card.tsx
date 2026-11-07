@@ -198,8 +198,10 @@ function DecisionAnswerForm({
 // could not vouch for the action: say so and keep Approve disabled.
 function ActionPreview({ action }: { action: NonNullable<RequestCard["action"]> }) {
   const { t } = useT("chat");
-  const fields = approvablePreview(action)?.fields;
-  if (!fields) {
+  // Once the action left pending there is nothing to preview: only its live outcome shows.
+  const pending = !action.state || action.state === "pending";
+  const fields = pending ? approvablePreview(action)?.fields : undefined;
+  if (pending && !fields) {
     return (
       <div className="space-y-1">
         <p role="status" className="text-label text-warning">{t(($) => $.decision.action_unavailable)}</p>
@@ -207,17 +209,42 @@ function ActionPreview({ action }: { action: NonNullable<RequestCard["action"]> 
       </div>
     );
   }
+  // Same tree before and after approval, so the approval component keeps its state when the card turns answered.
   return (
     <div className="space-y-2">
-      <dl data-testid="decision-request-action-preview" aria-label={t(($) => $.decision.action_preview)} className="space-y-1 rounded-lg border border-surface-border px-2 py-1.5 text-label">
-        {fields.map((field) => (
-          <div key={field.label} className="flex flex-wrap items-baseline gap-x-2">
-            <dt className="font-medium">{field.label}</dt>
-            <dd className="text-muted-foreground">{field.current} → <span className="text-foreground">{field.proposed}</span></dd>
-          </div>
-        ))}
-      </dl>
-      <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} />
+      {fields && (
+        <dl data-testid="decision-request-action-preview" aria-label={t(($) => $.decision.action_preview)} className="space-y-1 rounded-lg border border-surface-border px-2 py-1.5 text-label">
+          {fields.map((field) => (
+            <div key={field.label} className="flex flex-wrap items-baseline gap-x-2">
+              <dt className="font-medium">{field.label}</dt>
+              <dd className="text-muted-foreground">{field.current} → <span className="text-foreground">{field.proposed}</span></dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} state={action.state} />
+    </div>
+  );
+}
+
+// The server appends the agent's free text to the ask as a "> "-quoted block under this
+// heading. Show it apart, as plain text: it is the agent's claim, never a fact.
+const AGENT_NOTE_HEADING = "\n\n**Agent's note (not verified)**\n";
+
+function splitAgentNote(ask: string): { facts: string; note: string } {
+  const at = ask.indexOf(AGENT_NOTE_HEADING);
+  if (at < 0) return { facts: ask, note: "" };
+  const note = ask.slice(at + AGENT_NOTE_HEADING.length).split("\n").map((line) => line.replace(/^> ?/, "")).join("\n");
+  return { facts: ask.slice(0, at), note };
+}
+
+function AgentNote({ note }: { note: string }) {
+  const { t } = useT("chat");
+  const label = t(($) => $.decision.agent_note);
+  return (
+    <div role="group" aria-label={label} data-testid="decision-request-agent-note" className="space-y-0.5 rounded-lg border border-dashed border-surface-border px-2 py-1.5 text-label">
+      <span className="font-medium text-muted-foreground">{label}</span>
+      <p className="whitespace-pre-wrap break-words">{note}</p>
     </div>
   );
 }
@@ -296,6 +323,7 @@ function useNow(card: RequestCard) {
 export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCard; inIssue?: boolean }) {
   const { t } = useT("chat");
   const paths = useWorkspacePaths();
+  const { facts, note } = splitAgentNote(card.ask);
   const shown = displayState(card, useNow(card));
   const state = t(($) => $.decision.request_state[shown]);
   const timestamp = card.state === "withdrawn" ? card.withdrawn_at || card.created_at : card.created_at;
@@ -402,11 +430,12 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
         <div data-testid="decision-request-ask">
           <AnnotatableAnswer messageId={`${DECISION_REQUEST_SOURCE_PREFIX}${card.id}`} readOnly={card.state !== "open"}>
             <CompactIssueChipsProvider>
-              <RichContent content={card.ask} density="compact" phase="settled" />
+              <RichContent content={facts} density="compact" phase="settled" />
             </CompactIssueChipsProvider>
           </AnnotatableAnswer>
         </div>
-        {card.state === "open" && card.action && <ActionPreview action={card.action} />}
+        {note && <AgentNote note={note} />}
+        {card.action && (card.state === "open" || (card.action.state && card.action.state !== "pending")) && <ActionPreview action={card.action} />}
         {(refused || card.state !== "open") && hasDraft(draft) && !answer.isPending ? (
           <KeptDraft draft={draft} onDiscard={discardDraft} />
         ) : (
