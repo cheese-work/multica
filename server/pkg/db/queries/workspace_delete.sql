@@ -180,6 +180,21 @@ ORDER BY id
 LIMIT $3
 FOR UPDATE;
 
+-- name: LockIssuesOfTaskChildren :exec
+-- Issue lock for DetachTaskBatchReferences. Nulling parent_task_id re-runs the
+-- taint inheritance trigger on each child, whose issue-taint trigger then locks
+-- the child's issue FOR NO KEY UPDATE. AuthorizeElevatedOp takes the issue lock
+-- first and then waits on the task row, so teardown must take the issue lock
+-- before it updates the task rows, or Postgres aborts one side (40P01). Issue ids
+-- are locked in ascending order so two teardowns cannot cross each other.
+SELECT 1 FROM issue i
+WHERE i.id IN (
+    SELECT c.issue_id FROM agent_task_queue c
+    WHERE c.parent_task_id = ANY(@task_ids::uuid[]) AND c.issue_id IS NOT NULL
+)
+ORDER BY i.id
+FOR NO KEY UPDATE OF i;
+
 -- name: DetachTaskBatchReferences :exec
 -- Break inbound references to a task batch before deleting it, in the
 -- application layer rather than through the FKs' ON DELETE SET NULL. Both

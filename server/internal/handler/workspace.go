@@ -1185,7 +1185,14 @@ func deleteWorkspaceTasks(ctx context.Context, qtx *db.Queries, workspaceID pgty
 			for _, ownerID := range owners {
 				if err := sweepTasksForOwner(ctx, kind.label, ownerID,
 					kind.taskFirstPage, kind.taskPage,
-					qtx.DetachTaskBatchReferences, qtx.DeleteTaskBatch); err != nil {
+					func(ctx context.Context, ids []pgtype.UUID) error {
+						// Issue lock before the task-row updates: the taint
+						// triggers lock the children's issues (40P01 otherwise).
+						if err := qtx.LockIssuesOfTaskChildren(ctx, ids); err != nil {
+							return err
+						}
+						return qtx.DetachTaskBatchReferences(ctx, ids)
+					}, qtx.DeleteTaskBatch); err != nil {
 					return err
 				}
 				if kind.sweepAgent {

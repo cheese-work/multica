@@ -1355,6 +1355,27 @@ func (q *Queries) ListWorkspaceRuntimeIDPage(ctx context.Context, arg ListWorksp
 	return items, nil
 }
 
+const lockIssuesOfTaskChildren = `-- name: LockIssuesOfTaskChildren :exec
+SELECT 1 FROM issue i
+WHERE i.id IN (
+    SELECT c.issue_id FROM agent_task_queue c
+    WHERE c.parent_task_id = ANY($1::uuid[]) AND c.issue_id IS NOT NULL
+)
+ORDER BY i.id
+FOR NO KEY UPDATE OF i
+`
+
+// Issue lock for DetachTaskBatchReferences. Nulling parent_task_id re-runs the
+// taint inheritance trigger on each child, whose issue-taint trigger then locks
+// the child's issue FOR NO KEY UPDATE. AuthorizeElevatedOp takes the issue lock
+// first and then waits on the task row, so teardown must take the issue lock
+// before it updates the task rows, or Postgres aborts one side (40P01). Issue ids
+// are locked in ascending order so two teardowns cannot cross each other.
+func (q *Queries) LockIssuesOfTaskChildren(ctx context.Context, taskIds []pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockIssuesOfTaskChildren, taskIds)
+	return err
+}
+
 const lockTaskUsageRollupForWorkspaceDelete = `-- name: LockTaskUsageRollupForWorkspaceDelete :exec
 SELECT pg_advisory_xact_lock(4246)
 `

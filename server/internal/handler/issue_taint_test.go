@@ -318,3 +318,84 @@ func TestPlannedCommentRegistrationAndAuthorizeShareOneLockOrder(t *testing.T) {
 		t.Fatalf("registration = %v, %v, want registered without error", r.ok, r.err)
 	}
 }
+
+// Workspace teardown detaches the children of a task batch. A child's parent_task_id
+// is an input of the run's inheritance trigger, so detaching it can add the taint of
+// the lineage that remains (here a retry source that was tainted after the child
+// inherited), and the run's taint trigger then locks the child's issue. That issue
+// can belong to a neighbour workspace the teardown never locked. Authorization holds
+// the issue first and then asks for the run row. The detach has to take the issue
+// before it touches the run row, or each waits for what the other holds and
+// Postgres aborts one of them.
+func TestWorkspaceTeardownDetachAndAuthorizeShareOneLockOrder(t *testing.T) {
+	ctx := context.Background()
+	f := claimElevated(t, "repo_write:1234")
+	victim := newWorkspaceDeletePathFixture(t, "detach-lock-order")
+
+	var agentID string
+	dbfx.QueryRow(t, `SELECT agent_id FROM agent_task_queue WHERE id = $1`, f.taskID).Scan(&agentID)
+	parent := insertDeletePathTask(t, victim.victimAgent, victim.neighbourIssue, victim.neighbourRuntime)
+	retrySource := taintedTask(t, agentID)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET parent_task_id = $2, retry_of_task_id = $3 WHERE id = $1`, f.taskID, parent, retrySource)
+	// The retry source gains taint after the child inherited from it.
+	dbfx.Exec(t, `UPDATE agent_task_queue SET taint_ids = ARRAY['tr'] WHERE id = $1`, retrySource)
+	if got := taintOf(t, "agent_task_queue", f.taskID); len(got) != 0 {
+		t.Fatalf("child taint before the detach = %v, want none", got)
+	}
+
+	// The gate holds the elevation row, so authorization stops there with the
+	// issue row already locked.
+	gate, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin gate: %v", err)
+	}
+	defer gate.Rollback(ctx)
+	if _, err := gate.Exec(ctx, `SELECT 1 FROM task_elevation WHERE task_id = $1 FOR UPDATE`, f.taskID); err != nil {
+		t.Fatalf("gate locks the elevation row: %v", err)
+	}
+	authorized := make(chan *testutil.Response, 1)
+	go func() { authorized <- f.authorize(t, 1, "repo_write:1234", hashA) }()
+	waitForLockWaiters(t, 1)
+
+	teardown := make(chan error, 1)
+	go func() {
+		tx, err := testHandler.TxStarter.Begin(ctx)
+		if err != nil {
+			teardown <- err
+			return
+		}
+		defer tx.Rollback(ctx)
+		qtx := testHandler.Queries.WithTx(tx)
+		if err := qtx.SetWorkspaceTeardownMode(ctx); err != nil {
+			teardown <- err
+			return
+		}
+		if err := lockWorkspaceTaskOwners(ctx, qtx, parseUUID(victim.victimID)); err != nil {
+			teardown <- err
+			return
+		}
+		if err := deleteWorkspaceTasks(ctx, qtx, parseUUID(victim.victimID)); err != nil {
+			teardown <- err
+			return
+		}
+		teardown <- tx.Commit(ctx)
+	}()
+	// Authorization waits on the elevation row; the teardown waits on the issue
+	// row (taken first) or, unfixed, on it through the run's trigger.
+	waitForLockWaiters(t, 2)
+	if err := gate.Commit(ctx); err != nil {
+		t.Fatalf("gate commit: %v", err)
+	}
+
+	if got := (<-authorized).Code; got != http.StatusOK && got != http.StatusForbidden {
+		t.Fatalf("authorization status = %d, want 200 or 403 (a deadlock aborts it)", got)
+	}
+	if err := <-teardown; err != nil {
+		t.Fatalf("teardown = %v, want it to commit (a deadlock aborts it)", err)
+	}
+	var detached bool
+	dbfx.QueryRow(t, `SELECT parent_task_id IS NULL FROM agent_task_queue WHERE id = $1`, f.taskID).Scan(&detached)
+	if !detached {
+		t.Fatal("the child still names the deleted parent")
+	}
+}
