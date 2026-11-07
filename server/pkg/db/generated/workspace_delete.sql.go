@@ -11,6 +11,15 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteProviderBreakerAuditForWorkspace = `-- name: DeleteProviderBreakerAuditForWorkspace :exec
+DELETE FROM provider_breaker_audit WHERE workspace_id = $1
+`
+
+func (q *Queries) DeleteProviderBreakerAuditForWorkspace(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteProviderBreakerAuditForWorkspace, workspaceID)
+	return err
+}
+
 const deleteProviderBreakersForWorkspace = `-- name: DeleteProviderBreakersForWorkspace :exec
 
 DELETE FROM provider_breaker WHERE workspace_id = $1
@@ -234,6 +243,9 @@ deleted_attention_marks AS (
     WHERE chain_root_session_id IN (
         SELECT id FROM chat_session WHERE chat_session.workspace_id = $1
     )
+),
+deleted_turn_outcomes AS (
+    DELETE FROM chat_turn_outcome WHERE workspace_id = $1
 ),
 deleted_sessions AS (
     DELETE FROM chat_session WHERE chat_session.workspace_id = $1

@@ -642,7 +642,7 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 			resp[i].ContentTruncated = &truncated
 		}
 		// Last, so no read mode or summary clip can put the original text back.
-		if readFilter.withholds(commentWithheld(c)) {
+		if readFilter.withholdsComment(c) {
 			resp[i].Content = h.commentStub(r.Context(), c)
 			resp[i].Withheld = true
 		}
