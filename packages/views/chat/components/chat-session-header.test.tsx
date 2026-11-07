@@ -261,7 +261,7 @@ describe("ChatSessionHeader context meter", () => {
     expect(screen.queryByText("Will compact after the next reply")).not.toBeInTheDocument();
   });
 
-  it("uses the exact token threshold, not one rebuilt from a rounded percent", () => {
+  it("uses the exact token threshold, not one rebuilt from a percent", () => {
     // 1,048,576 window with the 200k default: 20% rounds up to 209,715 tokens.
     const { unmount } = renderHeader(withContext(179_999, 1_048_576), { autoCompactThresholdTokens: 200_000 });
     expect(screen.queryByText(/Compacts at/)).not.toBeInTheDocument();
