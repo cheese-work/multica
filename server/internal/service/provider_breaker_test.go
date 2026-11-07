@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -324,5 +325,21 @@ func TestProviderBreakerTripsOnlyForSameProviderServerFailuresAndSerializesConcu
 	}
 	if count != 1 {
 		t.Fatalf("concurrent trip row count = %d, want 1", count)
+	}
+}
+
+// CHE-4381: the refusal text for a provider breaker names the provider and the
+// opened_at / next_probe_at times in ICT, and is not the CLI-reinstall text.
+func TestRuntimeUnusableNoticeProviderBreaker(t *testing.T) {
+	openedAt := time.Date(2026, 11, 7, 5, 0, 0, 0, time.UTC)
+	detail := providerBreakerNotice("openai", openedAt, openedAt.Add(5*time.Minute))
+	notice := RuntimeUnusableNotice("Mika", AgentVerdict{Reason: dispatch.ReasonProviderBreaker, Detail: detail})
+	for _, want := range []string{"openai", "2026-11-07 12:00 ICT", "2026-11-07 12:05 ICT"} {
+		if !strings.Contains(notice, want) {
+			t.Errorf("notice lacks %q:\n%s", want, notice)
+		}
+	}
+	if strings.Contains(notice, "Reinstall") {
+		t.Errorf("a breaker hold is not a CLI problem:\n%s", notice)
 	}
 }
