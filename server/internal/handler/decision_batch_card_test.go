@@ -202,6 +202,9 @@ func TestBatchCardCreationRefusals(test *testing.T) {
 			dbfx.Exec(test, `UPDATE decision_request SET human_user_id = $2 WHERE id = $1`, card.decision.ID, fixture.humanID)
 			setCardOptions(test, card, sameLabelsOtherMeaning)
 		},
+		"artifact approval": func(card askedRecordFixture, fixture requestCoreFixture) {
+			dbfx.Exec(test, `UPDATE decision_request SET human_user_id = $2, ask_json = ask_json || '{"subject":"artifact_approval","artifacts":[{"kind":"file","name":"plan.md"}]}'::jsonb WHERE id = $1`, card.decision.ID, fixture.humanID)
+		},
 		"already answered": func(card askedRecordFixture, fixture requestCoreFixture) {
 			dbfx.Exec(test, `UPDATE decision_request SET human_user_id = $2, status = 'answered' WHERE id = $1`, card.decision.ID, fixture.humanID)
 		},
@@ -457,4 +460,66 @@ func TestBatchAnswerCannotSettleAGatedCoveredCardWhileRecovering(test *testing.T
 		test.Fatalf("err = %v, want recovery_required", err)
 	}
 	fixture.wantNothingPropagated(test)
+}
+
+// Every path that withdraws or ends a batch answer must take the covered answers
+// with it, so no covered card keeps a live answer that rests on a gone batch
+// answer (CHE-4453 round 6). One case per production caller of the withdrawal.
+func TestEveryBatchAnswerWithdrawalReopensTheCoveredCards(test *testing.T) {
+	paths := map[string]func(test *testing.T, fixture batchFixture, result decisionRecordResult){
+		"human disclaim": func(test *testing.T, fixture batchFixture, result decisionRecordResult) {
+			if _, err := testHandler.disclaimDecisionAnswerTx(fixture.batch.request(), fixture.batch.issue.WorkspaceID, result.Answer.ID, parseUUID(fixture.batch.humanID)); err != nil {
+				test.Fatal(err)
+			}
+		},
+		"agent veto": func(test *testing.T, fixture batchFixture, result decisionRecordResult) {
+			dbfx.Exec(test, `UPDATE decision_answer SET wake_at = now(), woken_at = now(), wake_outcome = 'run_enqueued' WHERE id = $1`, result.Answer.ID)
+			if response := vetoDecisionHTTP(testHandler, fixture.batch, uuidToString(result.Comment.ID), "Wrong batch answer", true); response.Code != http.StatusCreated {
+				test.Fatalf("veto status=%d body=%s", response.Code, response.Body.String())
+			}
+		},
+		"answer source removed": func(test *testing.T, fixture batchFixture, result decisionRecordResult) {
+			dbfx.Exec(test, `DELETE FROM chat_message WHERE id = ANY($1)`, result.Answer.ChatMessageIds)
+			if _, err := testHandler.CheckDecisionSource(context.Background(), fixture.batch.issue.WorkspaceID, fixture.batch.decision.ID); err != nil {
+				test.Fatal(err)
+			}
+		},
+		"lifecycle cancel": func(test *testing.T, fixture batchFixture, result decisionRecordResult) {
+			dbfx.Exec(test, `UPDATE issue SET status = 'cancelled' WHERE id = $1`, fixture.batch.issueID)
+			if _, err := testHandler.CancelDecisionLifecycle(context.Background(), fixture.batch.issue.WorkspaceID, fixture.batch.decision.ID); err != nil {
+				test.Fatal(err)
+			}
+		},
+		"class raised past a delegate": func(test *testing.T, fixture batchFixture, result decisionRecordResult) {
+			placeDecisionHuman(test, fixture.batch.issueID, fixture.batch.humanID, "member", true)
+			if response := raiseDecisionClassAs(test, fixture.batch, fixture.batch.decision.ID, "spend"); response.Code != http.StatusOK {
+				test.Fatalf("raise status=%d body=%s", response.Code, response.Body.String())
+			}
+		},
+	}
+	for name, withdraw := range paths {
+		test.Run(name, func(test *testing.T) {
+			resetDecisionLease(test)
+			fixture := newBatchFixture(test, 2)
+			result, err := fixture.answerAcknowledged(test, "Option B")
+			if err != nil {
+				test.Fatal(err)
+			}
+			withdraw(test, fixture, result)
+			if dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1 AND disclaimed_at IS NULL`, fixture.batch.decision.ID) > 0 && name != "lifecycle cancel" {
+				test.Fatal("batch answer is still live after the withdrawal")
+			}
+			for _, card := range fixture.covered {
+				var status string
+				var by *string
+				dbfx.QueryRow(test, `SELECT status, answered_by_batch_request_id::text FROM decision_request WHERE id = $1`, card.decision.ID).Scan(&status, &by)
+				if status != "open" || by != nil {
+					test.Fatalf("covered card %s: status=%s answered_by_batch=%v, want open and unfolded", uuidToString(card.decision.ID), status, by)
+				}
+				if live := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1 AND disclaimed_at IS NULL`, card.decision.ID); live != 0 {
+					test.Fatalf("covered card %s keeps %d live answers", uuidToString(card.decision.ID), live)
+				}
+			}
+		})
+	}
 }

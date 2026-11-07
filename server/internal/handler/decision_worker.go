@@ -288,6 +288,9 @@ func (handler *Handler) publishWithdrawal(result decisiontx.Withdrawal) {
 	if result.Answer.DisclaimedAt.Valid {
 		handler.publishDecisionAnswerUpdated(workspaceID, "agent", agentID, result.Answer.ID, result.Request.IssueID, decisionStateDisclaimed)
 	}
+	for _, item := range result.Covered {
+		handler.publishWithdrawalEvents(workspaceID, "agent", agentID, item, nil)
+	}
 }
 
 func (handler *Handler) cleanupDecisionOrphans(ctx context.Context, workspaceID, issueID pgtype.UUID) error {

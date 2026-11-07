@@ -530,12 +530,16 @@ WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id'
 -- A decision-bound governed-write approval (an "Approve write" option or the
 -- "Apply this change to <field>?" heading) is never eligible: the human must
 -- see that exact change on its own card, not approve it through a batch.
+-- An artifact approval is never eligible either: the covered summary shows no
+-- artifact, so the human must see and bind each artifact on its own card.
 SELECT * FROM decision_request
 WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = ANY(sqlc.arg('ids')::uuid[])
   AND human_user_id = sqlc.arg('human_user_id') AND status = 'open' AND origin = 'asked' AND kind = 'decision'
   AND escalation_class IN ('reversible', 'product_direction')
   AND NOT options @> '[{"label": "Approve write"}]'::jsonb
   AND COALESCE(ask_json->>'decision', '') NOT LIKE 'Apply this change to %'
+  AND COALESCE(ask_json->>'subject', '') <> 'artifact_approval'
+  AND COALESCE(ask_json->'artifacts', '[]'::jsonb) = '[]'::jsonb
 ORDER BY id
 FOR UPDATE;
 

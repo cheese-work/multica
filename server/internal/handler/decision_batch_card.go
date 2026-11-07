@@ -226,7 +226,7 @@ func coverBatchRequests(ctx context.Context, queries *db.Queries, batch db.Decis
 		return batch, err
 	}
 	if len(found) != len(covers) {
-		return batch, decisionIntentRefusal{http.StatusBadRequest, "covers_request_ids must name open reversible or product_direction cards addressed to the same human; a governed-write approval cannot be covered"}
+		return batch, decisionIntentRefusal{http.StatusBadRequest, "covers_request_ids must name open reversible or product_direction cards addressed to the same human; a governed-write approval or an artifact approval cannot be covered"}
 	}
 	batchOptions := askOptions(batch.Options)
 	for _, card := range found {
@@ -241,44 +241,61 @@ func coverBatchRequests(ctx context.Context, queries *db.Queries, batch db.Decis
 // withdrawCoveredAnswers withdraws what a withdrawn batch answer decided on the
 // covered cards: each reopens, loses its batch fold and its live answer is
 // disclaimed, so no covered decision stays settled by an answer that is gone.
-func withdrawCoveredAnswers(ctx context.Context, queries *db.Queries, batch db.DecisionRequest, userID pgtype.UUID) ([]decisiontx.Withdrawal, error) {
+// Every path that withdraws or cancels a batch answer calls it, setting result.Covered.
+func withdrawCoveredAnswers(ctx context.Context, queries *db.Queries, batch db.DecisionRequest, result *decisiontx.Withdrawal, userID pgtype.UUID) error {
 	if len(batch.CoversRequestIds) == 0 {
-		return nil, nil
+		return nil
 	}
 	covered, err := queries.LockBatchAnsweredRequests(ctx, db.LockBatchAnsweredRequestsParams{WorkspaceID: batch.WorkspaceID, BatchRequestID: batch.ID})
 	if err != nil {
-		return nil, err
+		return err
 	}
-	var withdrawn []decisiontx.Withdrawal
 	for _, card := range covered {
 		root, err := commentguard.LockThreadForReplyAndLoadRoot(ctx, queries, card.WorkspaceID, card.IssueCommentID)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return nil, err
+			return err
 		}
 		if _, err := queries.LockDecisionIssue(ctx, db.LockDecisionIssueParams{WorkspaceID: card.WorkspaceID, ID: card.IssueID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return nil, err
+			return err
 		}
 		answer, err := queries.LockDecisionLiveAnswer(ctx, db.LockDecisionLiveAnswerParams{WorkspaceID: card.WorkspaceID, ID: card.ID})
 		if errors.Is(err, pgx.ErrNoRows) {
 			continue
 		}
 		if err != nil {
-			return nil, err
+			return err
 		}
 		session, err := queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{WorkspaceID: card.WorkspaceID, ID: card.ChatSessionID})
 		if err != nil {
-			return nil, err
+			return err
 		}
-		result, err := decisiontx.Withdraw(ctx, queries, card, answer, session.Status, "human", userID)
+		withdrawn, err := decisiontx.Withdraw(ctx, queries, card, answer, session.Status, "human", userID)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		if root != nil && len(result.Comments) > 0 {
-			if result.ClearedComments, err = queries.ClearThreadResolutionForReply(ctx, db.ClearThreadResolutionForReplyParams{ThreadRootID: root.ID, IssueID: card.IssueID, WorkspaceID: card.WorkspaceID}); err != nil {
-				return nil, err
+		if root != nil && len(withdrawn.Comments) > 0 {
+			if withdrawn.ClearedComments, err = queries.ClearThreadResolutionForReply(ctx, db.ClearThreadResolutionForReplyParams{ThreadRootID: root.ID, IssueID: card.IssueID, WorkspaceID: card.WorkspaceID}); err != nil {
+				return err
 			}
 		}
-		withdrawn = append(withdrawn, result)
+		result.Covered = append(result.Covered, withdrawn)
 	}
-	return withdrawn, nil
+	return nil
+}
+
+// publishWithdrawalEvents publishes a withdrawal's comments, cleared threads and answer state,
+// and those of every covered card it took back.
+func (handler *Handler) publishWithdrawalEvents(workspaceID, actorType, actorID string, result decisiontx.Withdrawal, extra map[string]any) {
+	for _, comment := range result.Comments {
+		payload := map[string]any{"comment": commentToResponse(comment, nil, nil)}
+		for key, value := range extra {
+			payload[key] = value
+		}
+		handler.publish(protocol.EventCommentCreated, workspaceID, actorType, actorID, payload)
+	}
+	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, actorType, actorID)
+	handler.publishDecisionAnswerUpdated(workspaceID, actorType, actorID, result.Answer.ID, result.Request.IssueID, decisionStateDisclaimed)
+	for _, item := range result.Covered {
+		handler.publishWithdrawalEvents(workspaceID, actorType, actorID, item, nil)
+	}
 }

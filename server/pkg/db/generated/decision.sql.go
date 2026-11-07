@@ -1997,6 +1997,8 @@ WHERE authority = 'human' AND workspace_id = $1 AND id = ANY($2::uuid[])
   AND escalation_class IN ('reversible', 'product_direction')
   AND NOT options @> '[{"label": "Approve write"}]'::jsonb
   AND COALESCE(ask_json->>'decision', '') NOT LIKE 'Apply this change to %'
+  AND COALESCE(ask_json->>'subject', '') <> 'artifact_approval'
+  AND COALESCE(ask_json->'artifacts', '[]'::jsonb) = '[]'::jsonb
 ORDER BY id
 FOR UPDATE
 `
@@ -2013,6 +2015,8 @@ type LockBatchCoveredRequestsParams struct {
 // A decision-bound governed-write approval (an "Approve write" option or the
 // "Apply this change to <field>?" heading) is never eligible: the human must
 // see that exact change on its own card, not approve it through a batch.
+// An artifact approval is never eligible either: the covered summary shows no
+// artifact, so the human must see and bind each artifact on its own card.
 func (q *Queries) LockBatchCoveredRequests(ctx context.Context, arg LockBatchCoveredRequestsParams) ([]DecisionRequest, error) {
 	rows, err := q.db.Query(ctx, lockBatchCoveredRequests, arg.WorkspaceID, arg.Ids, arg.HumanUserID)
 	if err != nil {
