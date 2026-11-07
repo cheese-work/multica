@@ -104,6 +104,10 @@ const card = (id: string): RequestCard => ({
 const notes = () => screen.getAllByRole("textbox", { name: "Add a note (optional)" });
 const note = () => screen.getByRole("textbox", { name: "Add a note (optional)" });
 
+// An option click sends at once, so a kept choice exists only after a refused send.
+const refuseSends = () => api.answerDecisionRequest.mockRejectedValue(new ApiError("refused", 500, "Error"));
+const optionButton = (name: RegExp) => screen.getByRole("button", { name });
+
 const chat = (value: RequestCard) => (
   <QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={value} /></WorkspaceSlugProvider></QueryClientProvider>
 );
@@ -122,29 +126,36 @@ describe("decision card draft survives remount", () => {
     api.answerDecisionRequest.mockResolvedValue({});
   });
 
-  it("chat surface: option and note come back after unmount and remount", async () => {
+  it("chat surface: the kept option and the note come back after unmount and remount", async () => {
+    refuseSends();
     const user = userEvent.setup();
     const first = renderWithI18n(chat(card("chat-remount")));
-    await user.click(screen.getByRole("radio", { name: /Option B/ }));
+    await user.click(optionButton(/Option B/));
+    await vi.waitFor(() => expect(api.answerDecisionRequest).toHaveBeenCalledTimes(1));
     await user.type(note(), "my note");
     first.unmount();
 
     renderWithI18n(chat(card("chat-remount")));
-    expect(screen.getByRole("radio", { name: /Option B/ })).toBeChecked();
     expect(note()).toHaveValue("my note");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await vi.waitFor(() => expect(api.answerDecisionRequest).toHaveBeenLastCalledWith("chat-remount", { option: "Option B", text: "my note" }));
   });
 
-  it("issue banner surface: option and note come back after unmount and remount", async () => {
+  it("issue banner surface: the kept option and the note come back after unmount and remount", async () => {
+    refuseSends();
     api.listOpenDecisionRequests.mockResolvedValue([{ ...card("banner-remount"), asking_agent_id: "a", asking_agent_name: "Terra", escalation_class: "spend", chat_session_id: "s", message_id: null }]);
     const user = userEvent.setup();
     const first = renderWithI18n(banner());
-    await user.click(await screen.findByRole("radio", { name: /Option A/ }));
+    await user.click(await screen.findByRole("button", { name: /Option A/ }));
+    await vi.waitFor(() => expect(api.answerDecisionRequest).toHaveBeenCalledTimes(1));
     await user.type(note(), "banner note");
     first.unmount();
 
     renderWithI18n(banner());
-    expect(await screen.findByRole("radio", { name: /Option A/ })).toBeChecked();
+    await screen.findByRole("button", { name: /Option A/ });
     expect(note()).toHaveValue("banner note");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await vi.waitFor(() => expect(api.answerDecisionRequest).toHaveBeenLastCalledWith("banner-remount", { option: "Option A", text: "banner note" }));
   });
 
   it("a draft typed in the chat card shows in the banner card for the same request", async () => {
@@ -155,21 +166,21 @@ describe("decision card draft survives remount", () => {
     first.unmount();
 
     renderWithI18n(banner());
-    await screen.findByRole("radio", { name: /Option A/ });
+    await screen.findByRole("button", { name: /Option A/ });
     expect(note()).toHaveValue("typed in chat");
   });
 
   it("a refused send keeps the draft across remount", async () => {
-    api.answerDecisionRequest.mockRejectedValue(new ApiError("refused", 500, "Error"));
+    refuseSends();
     const user = userEvent.setup();
     const first = renderWithI18n(chat(card("refused")));
-    await user.click(screen.getByRole("radio", { name: /Option A/ }));
-    await user.click(screen.getByRole("button", { name: "Send" }));
+    await user.click(optionButton(/Option A/));
     await vi.waitFor(() => expect(api.answerDecisionRequest).toHaveBeenCalledTimes(1));
     first.unmount();
 
     renderWithI18n(chat(card("refused")));
-    expect(screen.getByRole("radio", { name: /Option A/ })).toBeChecked();
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await vi.waitFor(() => expect(api.answerDecisionRequest).toHaveBeenLastCalledWith("refused", { option: "Option A" }));
   });
 
   it("a successful send clears the draft, even when the card unmounted mid-send", async () => {
@@ -177,8 +188,7 @@ describe("decision card draft survives remount", () => {
     api.answerDecisionRequest.mockReturnValue(new Promise((r) => { resolve = r; }));
     const user = userEvent.setup();
     const first = renderWithI18n(chat(card("sent")));
-    await user.click(screen.getByRole("radio", { name: /Option B/ }));
-    await user.click(screen.getByRole("button", { name: "Send" }));
+    await user.click(optionButton(/Option B/));
     await vi.waitFor(() => expect(api.answerDecisionRequest).toHaveBeenCalledTimes(1));
     first.unmount();
     resolve();
@@ -186,15 +196,17 @@ describe("decision card draft survives remount", () => {
   });
 
   it("Discard draft clears it for good", async () => {
+    refuseSends();
     const user = userEvent.setup();
     const first = renderWithI18n(chat(card("discard")));
-    await user.click(screen.getByRole("radio", { name: /Option A/ }));
+    await user.click(optionButton(/Option A/));
+    await vi.waitFor(() => expect(api.answerDecisionRequest).toHaveBeenCalledTimes(1));
     first.rerender(chat({ ...card("discard"), state: "answered" }));
     await user.click(screen.getByRole("button", { name: "Discard draft" }));
     first.unmount();
 
     renderWithI18n(chat(card("discard")));
-    expect(screen.getByRole("radio", { name: /Option A/ })).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
   });
   it("keeps the last edit when the card unmounts before the editor's update timer fires", async () => {
     const user = userEvent.setup();
@@ -216,9 +228,11 @@ describe("decision card draft survives remount", () => {
       resolveUpload = resolve;
       signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
     }));
+    refuseSends();
     const user = userEvent.setup();
     const first = renderWithI18n(chat(card(id)));
-    await user.click(screen.getByRole("radio", { name: /Option B/ }));
+    await user.click(optionButton(/Option B/));
+    await vi.waitFor(() => expect(api.answerDecisionRequest).toHaveBeenCalledTimes(1));
     await user.type(note(), "see");
     await vi.waitFor(() => expect(useDecisionAnswerDraftStore.getState().hasDraft(`decision:${id}`)).toBe(true), { timeout: 2000 });
     act(() => editorHandle.current?.uploadFile(new File(["x"], "shot.png", { type: "image/png" })));
@@ -245,7 +259,8 @@ describe("decision card draft survives remount", () => {
     renderWithI18n(chat(card("left")));
     expect(screen.getByText(NOTICE)).toBeInTheDocument();
     expect(note()).toHaveValue("see");
-    expect(screen.getByRole("radio", { name: /Option B/ })).toBeChecked();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Send" }));
+    await vi.waitFor(() => expect(api.answerDecisionRequest).toHaveBeenLastCalledWith("left", { option: "Option B", text: "see" }));
   });
 
   it("after leaving mid-upload, Send is not gated and a new upload clears the notice", async () => {
@@ -297,8 +312,9 @@ describe("decision card draft survives remount", () => {
     setCurrentWorkspace("acme", "ws-a");
     await act(async () => { await Promise.resolve(); });
     const user = userEvent.setup();
+    refuseSends();
     const first = renderWithI18n(chat(card("xtab-pending")));
-    await user.click(screen.getByRole("radio", { name: /Option B/ }));
+    await user.click(optionButton(/Option B/));
     expect(draftKeys().length).toBeGreaterThan(0);
     // This edit is still inside the editor's update timer, so unmount flushes it.
     await user.type(note(), "private note");
@@ -313,8 +329,9 @@ describe("decision card draft survives remount", () => {
     setCurrentWorkspace("acme", "ws-a");
     await act(async () => { await Promise.resolve(); });
     const user = userEvent.setup();
+    refuseSends();
     renderWithI18n(chat(card("xtab-old")));
-    await user.click(screen.getByRole("radio", { name: /Option B/ }));
+    await user.click(optionButton(/Option B/));
     await user.type(note(), "private note");
     await vi.waitFor(() => expect(stored("xtab-old")?.text).toBe("private note"), { timeout: 2000 });
     // Tab B logs out: shared storage is cleared and the session id changes. This tab has not heard of it.
@@ -322,7 +339,7 @@ describe("decision card draft survives remount", () => {
     window.localStorage.setItem(DRAFT_SESSION_KEY, `other-tab-${Math.random()}`);
     // A different card mounts in this tab and the user picks an option, which writes the draft map.
     renderWithI18n(chat(card("xtab-new")));
-    await user.click(screen.getAllByRole("radio", { name: /Option B/ })[1]!);
+    await user.click(screen.getAllByRole("button", { name: /Option B/ })[1]!);
     const persisted = draftKeys().map((k) => window.localStorage.getItem(k)).join("");
     expect(persisted).toContain("xtab-new");
     expect(persisted).not.toContain("private note");
@@ -373,8 +390,7 @@ describe("decision card draft survives remount", () => {
     const [inChat, inBanner] = notes() as [HTMLElement, HTMLElement];
     await user.type(inChat, "typed in chat");
     await vi.waitFor(() => expect(inBanner).toHaveValue("typed in chat"));
-    await user.click(screen.getAllByRole("radio", { name: /Option B/ })[1] as HTMLElement);
-    await user.click(screen.getAllByRole("button", { name: "Send" })[1] as HTMLElement);
+    await user.click(screen.getAllByRole("button", { name: /Option B/ })[1] as HTMLElement);
     await vi.waitFor(() => expect(api.answerDecisionRequest).toHaveBeenCalledWith("both", { option: "Option B", text: "typed in chat" }));
   });
 });
