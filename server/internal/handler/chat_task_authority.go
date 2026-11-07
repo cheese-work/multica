@@ -163,6 +163,9 @@ func (h *Handler) currentCompactAgent(ctx context.Context, q *db.Queries, sessio
 	if len(resolution.Chain) == 0 || resolution.Chain[0].Slot != bgagents.Primary {
 		return id, false
 	}
+	// Through q, not the pool: a caller holding the DM lock is inside a
+	// transaction, and a second pool connection can deadlock against it.
 	creator := uuidToString(session.CreatorID)
-	return id, h.canInvokeAgent(ctx, agent, "member", creator, creator, uuidToString(session.WorkspaceID))
+	allowed, err := h.invokeAgentDecisionVia(ctx, q, agent, "member", creator, creator, uuidToString(session.WorkspaceID))
+	return id, allowed && err == nil
 }
