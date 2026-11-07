@@ -142,7 +142,7 @@ jobs:
           curl -fsSL -o "$RUNNER_TEMP/gitleaks.tgz" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
-          "$RUNNER_TEMP/gitleaks" git --no-banner --gitleaks-ignore-path scripts/security-weekly --config scripts/security-weekly/gitleaks.toml --redact --exit-code 0 --report-format json --report-path "$RUNNER_TEMP/reports/gitleaks.json" .
+          "$RUNNER_TEMP/gitleaks" git --no-banner --ignore-gitleaks-allow --gitleaks-ignore-path scripts/security-weekly --config scripts/security-weekly/gitleaks.toml --redact --exit-code 0 --report-format json --report-path "$RUNNER_TEMP/reports/gitleaks.json" .
       - name: Seal the report
         run: bash scripts/security-weekly/seal.sh "$RUNNER_TEMP"/reports/gitleaks.json
       - uses: actions/upload-artifact@v7
@@ -224,12 +224,14 @@ jobs:
           TRIVY_USERNAME: ${{ github.actor }}
           TRIVY_PASSWORD: ${{ github.token }}
         run: |
+          # Trivy reads <cwd>/.trivyignore by default and CODEOWNERS does not cover it: delete it, read the owned file instead.
+          rm -f .trivyignore
           mkdir "$RUNNER_TEMP/reports"
           curl -fsSL -o "$RUNNER_TEMP/trivy.tgz" "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
           echo "${TRIVY_SHA256}  $RUNNER_TEMP/trivy.tgz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/trivy.tgz" -C "$RUNNER_TEMP" trivy
-          "$RUNNER_TEMP/trivy" image --image-src remote --scanners vuln --quiet --format json --output "$RUNNER_TEMP/reports/trivy-backend.json" "$BACKEND_REF"
-          "$RUNNER_TEMP/trivy" image --image-src remote --scanners vuln --quiet --format json --output "$RUNNER_TEMP/reports/trivy-web.json" "$WEB_REF"
+          "$RUNNER_TEMP/trivy" image --ignorefile scripts/security-weekly/.trivyignore --image-src remote --scanners vuln --quiet --format json --output "$RUNNER_TEMP/reports/trivy-backend.json" "$BACKEND_REF"
+          "$RUNNER_TEMP/trivy" image --ignorefile scripts/security-weekly/.trivyignore --image-src remote --scanners vuln --quiet --format json --output "$RUNNER_TEMP/reports/trivy-web.json" "$WEB_REF"
       - name: Seal the report
         run: bash scripts/security-weekly/seal.sh "$RUNNER_TEMP"/reports/trivy-*.json
       - uses: actions/upload-artifact@v7

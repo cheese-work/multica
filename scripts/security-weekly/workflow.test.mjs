@@ -208,3 +208,17 @@ test("every report is written, sealed and uploaded from $RUNNER_TEMP/reports, ne
 test("semgrep deletes a root .semgrepignore before scanning", () => {
   assert.match(wf, /rm -f \.semgrepignore\n[\s\S]*semgrep" scan /);
 });
+
+// Luna medium on 91dbba8ed: Trivy reads <cwd>/.trivyignore by default, and a root .trivyignore is unowned, so it could hide image CVEs
+// before sealing. Terra and Luna notes: Gitleaks inline `gitleaks:allow` in unowned source also drops findings.
+test("trivy reads its ignore file from scripts/security-weekly, not the repo root", () => {
+  assert.match(wf, /trivy" image [^\n]*--ignorefile scripts\/security-weekly\/\.trivyignore /);
+  assert.ok(existsSync(new URL("./.trivyignore", import.meta.url)));
+  assert.ok(!existsSync(new URL("../../.trivyignore", import.meta.url)));
+  assert.equal((wf.match(/trivy" image /g) ?? []).length, (wf.match(/trivy" image [^\n]*--ignorefile /g) ?? []).length, "every trivy call");
+  assert.match(wf, /rm -f \.trivyignore\n[\s\S]*trivy" image /);
+});
+
+test("gitleaks ignores inline gitleaks:allow comments", () => {
+  assert.match(wf, /gitleaks" git [^\n]*--ignore-gitleaks-allow /);
+});
