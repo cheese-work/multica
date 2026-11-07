@@ -8,6 +8,7 @@ import {
   Minimize2,
   MoreHorizontal,
   Pencil,
+  EyeOff,
   Pin,
   PinOff,
   Trash2,
@@ -61,6 +62,7 @@ export function ChatSessionHeader({
   onArchive,
   onUnarchive,
   onTogglePin,
+  onMarkUnseen,
   onOpenStatistics,
   renameRequest = 0,
   autoCompactThresholdTokens = null,
@@ -78,6 +80,8 @@ export function ChatSessionHeader({
   onUnarchive?: (session: ChatSession) => void;
   /** Pins or unpins an active DM. Omit to hide the Pin item. */
   onTogglePin?: (session: ChatSession) => void;
+  /** Marks an active DM unseen and leaves it. Omit to hide the item. */
+  onMarkUnseen?: (session: ChatSession) => void;
   /** Opens the Statistics dialog. Omit to hide the Statistics item. */
   onOpenStatistics?: () => void;
   renameRequest?: number;
@@ -317,6 +321,18 @@ export function ChatSessionHeader({
                 >
                   {session.pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4 -rotate-45" />}
                   {session.pinned ? t(($) => $.header.unpin) : t(($) => $.header.pin)}
+                </DropdownMenuItem>
+              ) : null;
+            }
+            if (item.id === "unseen") {
+              return onMarkUnseen ? (
+                <DropdownMenuItem
+                  key={item.id}
+                  data-testid="chat-more-menu-unseen"
+                  onClick={() => onMarkUnseen(session)}
+                >
+                  <EyeOff className="h-4 w-4" />
+                  {t(($) => $.header.unseen)}
                 </DropdownMenuItem>
               ) : null;
             }

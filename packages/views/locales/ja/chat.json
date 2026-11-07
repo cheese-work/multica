@@ -304,6 +304,8 @@
     "archive_failed": "このチャットをアーカイブできませんでした",
     "unarchive_failed": "このチャットのアーカイブを解除できませんでした",
     "pin_failed": "ピン留めを更新できませんでした",
+    "unseen": "未読にする",
+    "unseen_failed": "このチャットを未読にできませんでした",
     "undo": "元に戻す"
   },
   "header": {
@@ -320,6 +322,7 @@
     "statistics": "統計",
     "pin": "チャットをピン留め",
     "unpin": "チャットのピン留めを解除",
+    "unseen": "未読にする",
     "preset": { "label": "プリセット", "inherit": "継承", "base": "ベース" }
   },
   "scheduled": {

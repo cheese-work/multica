@@ -304,6 +304,8 @@
     "archive_failed": "無法封存此對話",
     "unarchive_failed": "無法取消封存此對話",
     "pin_failed": "無法更新置頂狀態",
+    "unseen": "標記為未讀",
+    "unseen_failed": "無法將此對話標記為未讀",
     "undo": "復原"
   },
   "header": {
@@ -320,6 +322,7 @@
     "statistics": "統計",
     "pin": "置頂對話",
     "unpin": "取消置頂對話",
+    "unseen": "標記為未讀",
     "preset": { "label": "預設", "inherit": "繼承", "base": "基礎" }
   },
   "scheduled": {
