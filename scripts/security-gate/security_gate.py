@@ -121,6 +121,28 @@ class SemgrepError(Exception):
     pass
 
 
+def _archive(repo: str, rev: str, paths: list[str]) -> bytes:
+    """`git archive` of `rev` with the revision's own `export-ignore`/`export-subst` attributes switched off: they are
+    PR-controlled and would drop a changed file from the scan or rewrite its text. `info/attributes` outranks every
+    in-tree .gitattributes; the repo's file is put back afterwards."""
+    git_path = subprocess.run(["git", "-C", repo, "rev-parse", "--git-path", "info/attributes"], check=True,
+                              capture_output=True, text=True).stdout.strip()
+    attrs = os.path.join(repo, git_path)
+    old = open(attrs, "rb").read() if os.path.exists(attrs) else None
+    os.makedirs(os.path.dirname(attrs), exist_ok=True)
+    with open(attrs, "wb") as f:
+        f.write((old or b"") + b"\n* -export-ignore -export-subst\n")
+    try:
+        return subprocess.run(["git", "--literal-pathspecs", "-C", repo, "archive", rev, "--", *paths],
+                              check=True, capture_output=True).stdout
+    finally:
+        if old is None:
+            os.unlink(attrs)
+        else:
+            with open(attrs, "wb") as f:
+                f.write(old)
+
+
 def semgrep_scan(repo: str, rev: str, paths: list[str] | None = None) -> list[dict]:
     """ERROR-severity semgrep findings of `rev`: the whole tree, or only `paths`. Static scan of an extracted copy;
     nothing from the revision runs. Only the default branch's .semgrepignore is used (the revision's are deleted), `--disable-nosem` stops a PR from
@@ -129,8 +151,7 @@ def semgrep_scan(repo: str, rev: str, paths: list[str] | None = None) -> list[di
         chunks = [[]] if paths is None else [paths[i:i + 200] for i in range(0, len(paths), 200)]
         for chunk in chunks:
             try:
-                tar = subprocess.run(["git", "--literal-pathspecs", "-C", repo, "archive", rev, "--", *chunk],
-                                     check=True, capture_output=True).stdout
+                tar = _archive(repo, rev, chunk)
                 with tarfile.open(fileobj=io.BytesIO(tar)) as t:
                     t.extractall(root, filter="data")
             except (subprocess.CalledProcessError, tarfile.TarError) as e:
@@ -411,10 +432,6 @@ def gate_pr(repo: str, github: str, number: int, default_branch: str, trusted: s
     """`baseline` None = no semgrep scan."""
     pull = json.loads(_gh(f"repos/{github}/pulls/{number}"))
     head, base = pull["head"]["sha"], pull["base"]["sha"]
-    # no --slurp: the X99 gh (2.45) lacks it; --jq emits one compact object per line across pages
-    lines = _gh("--paginate", f"repos/{github}/issues/{number}/comments", "--jq",
-                '.[] | {id, author_id: .user.id, body: (.body // ""), updated_at}').splitlines()
-    comments = [json.loads(l) for l in lines]
     diff, semgrep, digest = "", None, None  # a non-default base returns before the diff is read; its base may not be in this checkout
     if pull["base"]["ref"] == default_branch:
         diff = subprocess.run(["git", "-C", repo, "diff", "-U0", "--no-color", f"{base}...{head}"],
@@ -427,6 +444,13 @@ def gate_pr(repo: str, github: str, number: int, default_branch: str, trusted: s
                 semgrep = new_semgrep(semgrep_scan(repo, head, [n for n in names.split("\0") if n]), baseline, diff)
             except (SemgrepError, subprocess.CalledProcessError) as e:  # cannot scan: never a silent pass
                 return head, "pending", _out("pending", f"semgrep did not run: {e}")[1]
+        if semgrep is not None and json.loads(_gh(f"repos/{github}/pulls/{number}"))["head"]["sha"] != head:
+            return head, "pending", _out("pending", "head moved during the semgrep scan")[1]
+    # The scan can run for minutes: read the verdicts only now, so a revocation during it is seen (CHE-4251).
+    # no --slurp: the X99 gh (2.45) lacks it; --jq emits one compact object per line across pages
+    lines = _gh("--paginate", f"repos/{github}/issues/{number}/comments", "--jq",
+                '.[] | {id, author_id: .user.id, body: (.body // ""), updated_at}').splitlines()
+    comments = [json.loads(l) for l in lines]
     state, desc = evaluate({"head_sha": head, "head_ref": pull["head"]["ref"], "base_ref": pull["base"]["ref"],
                             "default_branch": default_branch, "author_id": pull["user"]["id"],
                             "repo": github, "number": number}, comments, trusted, diff, humans, semgrep, digest)

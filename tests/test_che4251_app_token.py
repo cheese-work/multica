@@ -17,6 +17,7 @@ ENV_NAME = "ci-app-token"
 SECRET_RE = re.compile(r"C00_MULTICADO_")
 UNTRUSTED = {"merge_group", "pull_request", "pull_request_target", "issue_comment"}
 MINT = "actions/create-github-app-token@"
+DEFAULT_BRANCH_ONLY = {"workflow_run", "schedule"}  # GitHub reads these definitions from the default branch
 
 
 def workflows():
@@ -59,12 +60,12 @@ def violations():
             untrusted = triggers(wf) & UNTRUSTED
             if untrusted:
                 found.append(f"{where}: reaches the App key from a definition a PR or queue change controls ({sorted(untrusted)})")
-            if "workflow_run" not in triggers(wf):
-                found.append(f"{where}: key holder is not a workflow_run (default-branch) definition")
+            if not triggers(wf) & DEFAULT_BRANCH_ONLY:
+                found.append(f"{where}: key holder is not a workflow_run or schedule (default-branch) definition")
             if ENV_NAME not in env_of(job):
                 found.append(f"{where}: reads the App secrets without the {ENV_NAME} environment")
             gate = str(job.get("if", ""))
-            if run_filter(wf).get("branches") != ["main"] and not (
+            if "workflow_run" in triggers(wf) and run_filter(wf).get("branches") != ["main"] and not (
                 "github.event.workflow_run.event == 'merge_group'" in gate
                 and "github.event.workflow_run.head_repository.full_name == github.repository" in gate
             ):

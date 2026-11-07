@@ -343,6 +343,68 @@ class RateLimitTest(unittest.TestCase):
             self.assertEqual(sg._gh("x"), "ok")
 
 
+class ScanWindowTest(unittest.TestCase):
+    """CHE-4251 review P1: Semgrep can run for minutes. The verdict comments and the PR head are read after it, so a
+    revocation or a push during the scan is never overwritten by a success computed from the earlier read."""
+
+    def gate(self, during_scan):
+        state = {"comments": [comment(verdict("PASS"))], "head": HEAD}
+
+        def fake_gh(*args):
+            path = " ".join(args)
+            if "issues/405/comments" in path:
+                return "\n".join(json.dumps(c) for c in state["comments"])
+            return json.dumps({"head": {"sha": state["head"], "ref": PR["head_ref"]},
+                               "base": {"sha": "d" * 40, "ref": "main"}, "user": {"id": BOT}})
+
+        def scan(*a, **kw):
+            during_scan(state)
+            return []
+
+        run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=CLEAN_DIFF if kw.get("text") else b"")
+        with mock.patch.object(sg, "_gh", fake_gh), mock.patch.object(sg.subprocess, "run", run), \
+                mock.patch.object(sg, "pr_diff_digest", return_value="e" * 64), \
+                mock.patch.object(sg, "semgrep_scan", side_effect=scan):
+            return sg.gate_pr(str(ROOT), "cheese-work/multica-dotfiles", 405, "main", TRUSTED, HUMANS, [])
+
+    def test_a_pass_stays_success_when_nothing_changes_during_the_scan(self):
+        self.assertEqual(self.gate(lambda st: None)[1], "success")
+
+    def test_a_fail_posted_during_the_scan_wins_over_the_earlier_pass(self):
+        def revoke(st):
+            st["comments"].append(comment(verdict("FAIL", findings="\n- app.py:7 injection"), cid=2,
+                                          updated="2026-10-30T17:50:00Z"))
+        self.assertEqual(self.gate(revoke)[1], "failure")
+
+    def test_a_head_that_moves_during_the_scan_is_never_success(self):
+        def push(st):
+            st["head"] = OLD
+        self.assertNotEqual(self.gate(push)[1], "success")
+
+
+class ArchiveAttributesTest(unittest.TestCase):
+    """A PR-controlled .gitattributes `export-ignore` must not hide a changed file from the Semgrep input."""
+
+    def test_an_export_ignored_file_is_still_scanned(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo, git = Path(d) / "r", lambda *a: subprocess.run(["git", "-C", str(Path(d) / "r"), *a], check=True,
+                                                              capture_output=True)
+            repo.mkdir()
+            git("init", "-q")
+            (repo / "b.py").write_text("y = 2\n")
+            (repo / ".gitattributes").write_text("b.py export-ignore\n")
+            git("add", "-A")
+            git("-c", "user.email=a@b", "-c", "user.name=n", "commit", "-qm", "i")
+            fake = Path(d) / "semgrep"
+            fake.write_text("#!/bin/sh\necho '{\"results\":[{\"check_id\":\"r.x\",\"path\":\"b.py\","
+                            "\"start\":{\"line\":1},\"end\":{\"line\":1},\"extra\":{\"severity\":\"ERROR\"}}]}'\n")
+            fake.chmod(0o755)
+            with mock.patch.dict(os.environ, {"SEMGREP_BIN": str(fake)}):
+                found = sg.semgrep_scan(str(repo), "HEAD", ["b.py"])
+            self.assertEqual([f["path"] for f in found], ["b.py"])
+            self.assertFalse((repo / ".git/info/attributes").exists(), "the repo's attributes file must be restored")
+
+
 class MergeGroupStepTest(unittest.TestCase):
     """The merge queue requires `security-gate` on its own commit, which no PR event ever reaches. The job runs the
     DEFAULT-branch script, which on the first queue run is still the old one (`--pr` only), so the workflow step
