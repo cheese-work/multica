@@ -395,7 +395,8 @@
   },
   "chat": {
     "floating_label": "플로팅 채팅 창",
-    "floating_hint": "모든 페이지에 플로팅 채팅 버튼을 표시합니다."
+    "floating_hint": "모든 페이지에 플로팅 채팅 버튼을 표시합니다.",
+    "recent_agents_label": "새 채팅의 최근 에이전트"
   },
   "issue": {
     "opening": {
