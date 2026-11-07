@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -629,31 +632,31 @@ func TestRunBudgetHookRecoveryKeepsEveryRequestersTaint(t *testing.T) {
 // as it is when it has not run yet: the taint must already stop the recovery
 // run from authorizing an elevated operation (it cannot be revoked afterwards).
 func TestRunBudgetHookTaintedAssignmentFencesRecoveryRunBeforeItsCallback(t *testing.T) {
-	taintedAssignmentFencesRecoveryRun(t, 2856060, false)
+	taintedAssignmentFencesRecoveryRun(t, 2856060, false, false)
 }
 
 // A member cleared the taint ID for this issue: the issue stays clean, but the
 // task that carries the ID is still tainted, and so is the run its assignment starts.
 func TestRunBudgetHookClearedTaintAssignmentFencesRecoveryRunBeforeItsCallback(t *testing.T) {
-	taintedAssignmentFencesRecoveryRun(t, 2856061, true)
+	taintedAssignmentFencesRecoveryRun(t, 2856061, true, false)
 }
 
-func taintedAssignmentFencesRecoveryRun(t *testing.T, seed int64, cleared bool) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	ctx := context.Background()
-	c := newBudgetCase(t, seed, recoverySteps(seededReadyAgentID(t)), 2)
-	if cleared {
-		dbfx.Exec(t, `INSERT INTO issue_taint_clear (workspace_id, issue_id, taint_ids, cleared_by_member_id)
-			SELECT $1, $2, ARRAY['ext-1'], id FROM member WHERE workspace_id = $1 LIMIT 1`, testWorkspaceID, c.issueID)
-	}
-	recordOccurrence(t, c, "in_progress")
-	c.spend(t, 2)
-	ctxClean, eClean := refusalBy(t, c, "")
+// The recovery run is already claimed and running when the tainted assignment
+// commits, and the ID was cleared for the issue: neither the pending-run update
+// nor the issue taint reaches it, so the run itself takes the taint.
+func TestRunBudgetHookClearedTaintAssignmentFencesARunningRecoveryRun(t *testing.T) {
+	taintedAssignmentFencesRecoveryRun(t, 2856062, true, true)
+}
 
+// taintedAssignment hands the spent issue to the recovery handler as a task that
+// carries ext-1 on another issue, and returns once its refusal reached the held
+// callback (which never runs, as after a crash).
+func taintedAssignment(t *testing.T, c budgetCase) {
+	t.Helper()
+	ctx := context.Background()
 	held := make(chan service.RunBudgetExhausted, 1)
 	service.SetOnRunBudgetExhausted(func(_ context.Context, e service.RunBudgetExhausted) { held <- e })
+	t.Cleanup(func() { service.SetOnRunBudgetExhausted(testHandler.onRunBudgetExhausted) })
 	// The tainted agent works on another issue; its task alone carries the taint.
 	actorRuntime := createClaimReclaimRuntime(t, ctx, "Budget previous runtime")
 	other := dbfx.Agent(t, "Budget previous assignee", actorRuntime)
@@ -669,15 +672,21 @@ func taintedAssignmentFencesRecoveryRun(t *testing.T, seed int64, cleared bool) 
 	case <-time.After(5 * time.Second):
 		t.Fatal("the tainted assignment's refusal never reached its callback")
 	}
+}
 
-	// The clean hook finishes and its recovery run starts before the held callback runs.
-	id, generation, ok := testHandler.recordRefusalIntent(ctxClean, eClean)
-	if !ok {
-		t.Fatal("clean refusal not recorded")
-	}
-	testHandler.advanceRefusalHook(ctxClean, id, generation, eClean)
-	finished(t, c)
+// memberClearsTaint is the member's clear of ext-1 for the issue.
+func memberClearsTaint(t *testing.T, c budgetCase) {
+	t.Helper()
+	dbfx.Exec(t, `INSERT INTO issue_taint_clear (workspace_id, issue_id, taint_ids, cleared_by_member_id)
+		SELECT $1, $2, ARRAY['ext-1'], id FROM member WHERE workspace_id = $1 LIMIT 1`, testWorkspaceID, c.issueID)
+	dbfx.Exec(t, `UPDATE issue_taint SET taint_ids = '{}' WHERE issue_id = $1`, c.issueID)
+}
 
+// claimRecoveryRun hands the issue's recovery run to a fresh runtime with a live
+// repo_write grant and claims it.
+func claimRecoveryRun(t *testing.T, c budgetCase) (elevatedFixture, string, int64) {
+	t.Helper()
+	ctx := context.Background()
 	runtimeID := createClaimReclaimRuntime(t, ctx, "Budget recovery runtime")
 	agentID := dbfx.Agent(t, "Budget recovery agent", runtimeID)
 	dbfx.Exec(t, `UPDATE agent_task_queue SET agent_id=$2, runtime_id=$3, status='dispatched', dispatched_at=now() - interval '120 seconds'
@@ -695,14 +704,104 @@ func taintedAssignmentFencesRecoveryRun(t *testing.T, seed int64, cleared bool) 
 	if claim.Task == nil {
 		t.Fatal("claim returned no recovery run")
 	}
-	f := elevatedFixture{taskID: claim.Task.ID, issueID: c.issueID, runtimeID: runtimeID}
-	if claim.Task.Profile == "elevated" {
-		f.authorize(t, claim.Task.Epoch, "repo_write:1234", hashA).Want(http.StatusForbidden)
+	return elevatedFixture{taskID: claim.Task.ID, issueID: c.issueID, runtimeID: runtimeID}, claim.Task.Profile, claim.Task.Epoch
+}
+
+// assertNoElevatedOp asserts the recovery run cannot authorize repo_write. A
+// run claimed without elevation has no epoch to authorize against.
+func assertNoElevatedOp(t *testing.T, f elevatedFixture, profile string, epoch int64) {
+	t.Helper()
+	if profile == "elevated" {
+		// The refusal names the taint, not a stale epoch or an expired grant.
+		if body := f.authorize(t, epoch, "repo_write:1234", hashA).Want(http.StatusForbidden).Body.String(); !strings.Contains(body, "tainted") {
+			t.Fatalf("authorization refused for another reason: %s", body)
+		}
 	}
-	if n := dbfx.Count(t, `SELECT count(*) FROM elevated_op WHERE task_id = $1`, claim.Task.ID); n != 0 {
+	if n := dbfx.Count(t, `SELECT count(*) FROM elevated_op WHERE task_id = $1`, f.taskID); n != 0 {
 		t.Fatalf("authorized operations = %d, want 0", n)
 	}
-	if claim.Task.Profile == "elevated" {
+}
+
+func taintedAssignmentFencesRecoveryRun(t *testing.T, seed int64, cleared, assignAfterClaim bool) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c := newBudgetCase(t, seed, recoverySteps(seededReadyAgentID(t)), 2)
+	if cleared {
+		memberClearsTaint(t, c)
+	}
+	recordOccurrence(t, c, "in_progress")
+	c.spend(t, 2)
+	ctxClean, eClean := refusalBy(t, c, "")
+	if !assignAfterClaim {
+		taintedAssignment(t, c)
+	}
+
+	// The clean hook finishes and its recovery run starts before the held callback runs.
+	id, generation, ok := testHandler.recordRefusalIntent(ctxClean, eClean)
+	if !ok {
+		t.Fatal("clean refusal not recorded")
+	}
+	testHandler.advanceRefusalHook(ctxClean, id, generation, eClean)
+	finished(t, c)
+
+	f, profile, epoch := claimRecoveryRun(t, c)
+	if assignAfterClaim {
+		if profile != "elevated" {
+			t.Fatalf("clean recovery run profile = %q before the assignment, want elevated", profile)
+		}
+		// A claim leaves the run dispatched; the daemon's start makes it running,
+		// which the pending-run taint update does not reach.
+		dbfx.Exec(t, `UPDATE agent_task_queue SET status='running', started_at=now() WHERE id=$1`, f.taskID)
+		taintedAssignment(t, c)
+	} else if profile == "elevated" {
 		t.Fatalf("recovery run claimed elevated before the tainted request's callback ran")
+	}
+	assertNoElevatedOp(t, f, profile, epoch)
+}
+
+// A tainted agent hands the issue over, a member then clears the ID for the
+// issue, and the server stops before the refusal callback ran. The clean hook is
+// finished by the sweep; its recovery run still carries the assignment's taint.
+func TestRunBudgetHookAssignClearRestartKeepsTheAssignmentsTaintOnTheRecoveryRun(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c := newBudgetCase(t, 2856063, recoverySteps(seededReadyAgentID(t)), 2)
+	recordOccurrence(t, c, "in_progress")
+	c.spend(t, 2)
+	ctxClean, eClean := refusalBy(t, c, "")
+	taintedAssignment(t, c)
+	memberClearsTaint(t, c)
+	if got, err := testHandler.Queries.GetIssueTaintIDs(context.Background(), parseUUID(c.issueID)); err != nil || len(got) != 0 {
+		t.Fatalf("issue taint after the clear = %v, %v, want none", got, err)
+	}
+	crashAt(t, "after_intent")
+	testHandler.onRunBudgetExhausted(ctxClean, eClean)
+	sweepHooks(t)
+	sweepHooks(t)
+	finished(t, c)
+	if got := recoveryTaint(t, c); len(got) != 1 || got[0] != "ext-1" {
+		t.Fatalf("recovery run taint = %v, want [ext-1]", got)
+	}
+}
+
+// Workspace deletion removes the issue_run_taint rows of the workspace.
+func TestIssueRunTaintWorkspaceDeletionRemovesItsRows(t *testing.T) {
+	workspaceID := dbfx.Workspace(t, "issue run taint teardown", "run-taint-teardown-"+uuid.NewString())
+	scoped := testutil.New(testPool, workspaceID, testUserID)
+	scoped.Member(t, workspaceID, testUserID, "owner")
+	issueID := scoped.Issue(t, "issue run taint teardown")
+	dbfx.Exec(t, `INSERT INTO issue_run_taint (issue_id, workspace_id, taint_ids) VALUES ($1, $2, ARRAY['ext-1'])`, issueID, workspaceID)
+	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM issue_run_taint WHERE issue_id = $1`, issueID) })
+
+	w := httptest.NewRecorder()
+	req := withURLParam(newRequest(http.MethodDelete, "/api/workspaces/"+workspaceID, nil), "id", workspaceID)
+	testHandler.DeleteWorkspace(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("DeleteWorkspace = %d, want 204: %s", w.Code, w.Body.String())
+	}
+	if got := dbfx.Count(t, `SELECT count(*) FROM issue_run_taint WHERE workspace_id = $1`, workspaceID); got != 0 {
+		t.Fatalf("issue_run_taint rows after workspace deletion = %d, want 0", got)
 	}
 }

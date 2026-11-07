@@ -397,9 +397,13 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 			return db.Issue{}, nil, fmt.Errorf("note issue taint: %w", err)
 		}
 		// A member's clear keeps the ID off the issue, not off the writer's
-		// task; the recovery run reads what the clear dropped.
+		// task: a recovery run created later reads it from issue_run_taint, and
+		// one already running takes it now.
 		if err := q.NoteIssueRunTaint(ctx, db.NoteIssueRunTaintParams{IssueID: issue.ID, Taint: taint}); err != nil {
 			return db.Issue{}, nil, fmt.Errorf("note issue run taint: %w", err)
+		}
+		if err := q.TaintBudgetRecoveryRuns(ctx, db.TaintBudgetRecoveryRunsParams{IssueID: issue.ID, Taint: taint}); err != nil {
+			return db.Issue{}, nil, fmt.Errorf("taint recovery runs: %w", err)
 		}
 	}
 	if external, _ := ctx.Value(issueWriteExternalReadKey{}).(bool); external && params.Description.Valid {

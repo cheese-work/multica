@@ -459,6 +459,9 @@ deleted_issue_taints AS (
 deleted_issue_taint_clears AS (
     DELETE FROM issue_taint_clear WHERE workspace_id = $1
 ),
+deleted_issue_run_taints AS (
+    DELETE FROM issue_run_taint WHERE workspace_id = $1
+),
 deleted_issue_checkpoints AS (
     DELETE FROM issue_checkpoint WHERE workspace_id = $1
 ),

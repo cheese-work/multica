@@ -23,13 +23,13 @@ RETURNING *;
 SELECT issue_taint_note(@issue_id::uuid, @taint::text[]);
 
 -- name: NoteIssueRunTaint :exec
--- The part of a tainted writer's taint that issue_taint_note drops because a
--- member cleared it for the issue. Written in the writer's own transaction.
+-- A tainted writer's whole taint, kept apart from the issue's own taint so a
+-- member's clear, before or after the write, never drops it. Written in the
+-- writer's own transaction.
 INSERT INTO issue_run_taint (issue_id, workspace_id, taint_ids)
 SELECT i.id, i.workspace_id, array_agg(DISTINCT t ORDER BY t)
 FROM issue i, unnest(@taint::text[]) AS t
 WHERE i.id = @issue_id::uuid
-  AND EXISTS (SELECT 1 FROM issue_taint_clear c WHERE c.issue_id = i.id AND t = ANY (c.taint_ids))
 GROUP BY i.id, i.workspace_id
 ON CONFLICT (issue_id) DO UPDATE SET
     taint_ids = (SELECT array_agg(DISTINCT u ORDER BY u) FROM unnest(issue_run_taint.taint_ids || EXCLUDED.taint_ids) AS u);
