@@ -343,3 +343,44 @@ func TestRuntimeUnusableNoticeProviderBreaker(t *testing.T) {
 		t.Errorf("a breaker hold is not a CLI problem:\n%s", notice)
 	}
 }
+
+// CHE-4408: an open breaker is a wait, not a refusal. The claim path already
+// holds queued work until the probe is due, so assign/mention/comment triggers
+// must queue instead of leaving a refused trigger with no retry.
+func TestAgentReadinessProviderBreakerIsWaitable(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	workspaceID, _, agentID, _ := seedAttributionFixture(t, pool)
+	ws, agent := util.MustParseUUID(workspaceID), util.MustParseUUID(agentID)
+	if _, err := pool.Exec(ctx, `UPDATE agent SET model = 'gpt-5.6-terra' WHERE id = $1`, agent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO provider_breaker (workspace_id, provider, state, next_probe_at) VALUES ($1, 'openai', 'open', now() + interval '5 minutes')`, ws); err != nil {
+		t.Fatal(err)
+	}
+	queries := db.New(pool)
+	a, err := queries.GetAgent(ctx, agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verdict, err := AgentReadiness(ctx, RuntimeLookup{Queries: queries}, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verdict.Blocked() || verdict.Ready() || verdict.Reason != dispatch.ReasonProviderBreaker {
+		t.Fatalf("open breaker verdict = %+v, want waitable with reason provider_breaker", verdict)
+	}
+
+	// A broken runtime still wins: waiting on the breaker cannot fix it.
+	if _, err := pool.Exec(ctx, `UPDATE agent SET runtime_id = NULL WHERE id = $1`, agent); err != nil {
+		t.Fatal(err)
+	}
+	a, _ = queries.GetAgent(ctx, agent)
+	verdict, err = AgentReadiness(ctx, RuntimeLookup{Queries: queries}, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !verdict.Blocked() || verdict.Reason != dispatch.ReasonAgentRuntimeRequired {
+		t.Fatalf("unbound agent under an open breaker = %+v, want blocked agent_runtime_required", verdict)
+	}
+}
