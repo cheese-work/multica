@@ -520,7 +520,8 @@ test("PR check job (pr-guards): GitHub-hosted, no secrets, skips closed PRs, tru
   assert.match(wf, /^permissions: \{\}$/m);
   assert.match(job, /runs-on: ubuntu-24\.04/);
   assert.doesNotMatch(wf, /self-hosted|secrets\./);
-  for (const type of ["opened", "edited", "synchronize", "reopened"]) assert.match(wf, new RegExp(type));
+  for (const type of ["opened", "synchronize", "reopened"]) assert.match(wf, new RegExp(type));
+  assert.doesNotMatch(wf, /types: \[[^\]]*edited/); // CHE-4385: a body edit does not re-run the check
   assert.match(wf, /pull_request_target:/);
   assert.match(job, /ref: \$\{\{ github\.workflow_sha \}\}/);
   assert.match(job, /state != 'closed'/);
