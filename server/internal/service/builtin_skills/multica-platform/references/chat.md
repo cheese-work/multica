@@ -34,6 +34,17 @@ multica chat continue --fork                                # keeps this DM, ope
 - A retry of the same turn returns the same child (`--idempotency-key`
   defaults to the current chat task id).
 
+To keep the same DM instead, compact it in place:
+
+```bash
+multica chat compact --summary-file ./summary.md            # same DM id, history and URL; next turn starts from the summary
+```
+
+- The DM is never archived and no new DM is created. The summary is all the
+  next turn starts with.
+- If the server does not support in-place compaction, the command stops and
+  the DM is unchanged.
+
 ## Rename a DM
 
 ```bash
