@@ -171,9 +171,15 @@ func (h *Handler) compactChatInPlace(ctx context.Context, sessionID, taskID pgty
 		return fail(http.StatusInternalServerError, "failed to commit compaction")
 	}
 	id := uuidToString(session.ID)
-	h.publishChatFor(protocol.EventChatMessage, uuidToString(session.WorkspaceID), "agent", uuidToString(session.AgentID), uuidToString(session.CreatorID), id, protocol.ChatMessagePayload{
-		ChatSessionID: id, MessageID: uuidToString(summary.ID), Role: summary.Role, Content: summary.Content,
-		TaskID: uuidToString(taskID), CreatedAt: timestampToString(summary.CreatedAt),
-	})
+	h.publishChatFor(protocol.EventChatMessage, uuidToString(session.WorkspaceID), "agent", uuidToString(session.AgentID), uuidToString(session.CreatorID), id, compactionSummaryPayload(id, summary, uuidToString(taskID)))
 	return session, summary, nil
+}
+
+// compactionSummaryPayload is the live event for a new compaction summary.
+func compactionSummaryPayload(sessionID string, summary db.ChatMessage, taskID string) protocol.ChatMessagePayload {
+	return protocol.ChatMessagePayload{
+		ChatSessionID: sessionID, MessageID: uuidToString(summary.ID), Role: summary.Role, Content: summary.Content,
+		TaskID: taskID, CreatedAt: timestampToString(summary.CreatedAt),
+		MessageKind: protocol.ChatMessageKindCompactionSummary,
+	}
 }
