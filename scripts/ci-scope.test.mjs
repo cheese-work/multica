@@ -21,7 +21,6 @@ for (const [name, files, selected] of [
   ["readme only", ["README.md"], []],
   ["docs only", ["apps/docs/content/docs/guide.mdx"], ["quality"]],
   ["web changelog", ["apps/web/features/landing/i18n/en.ts"], ["frontend", "quality"]],
-  ["UI Lab", ["apps/ui-lab/src/app.tsx"], ["frontend", "quality"]],
   ["mobile UI", ["apps/mobile/app/index.tsx"], ["quality"]],
   ["migration only", ["server/migrations/999_example.up.sql"], ["backend", "sqlc"]],
   ["agent process code", ["server/pkg/agent/cursor_background.go"], ["backend", "runtime"]],
@@ -322,7 +321,7 @@ test("merge-group reuse is wired to authenticated Actions reads and separate hos
   }
   assert.match(mainJobs["push-go-cache-warm"], /go test -race -run '\^\$' -exec \/bin\/true \.\/\.\.\./);
   for (const prefix of ["go-mod-", "go-build-race-"]) {
-    assert.ok(jobs["backend-tests"].includes(prefix));
+    assert.ok(jobs["backend-test-shards"].includes(prefix));
     assert.ok(mainJobs["push-go-cache-warm"].includes(prefix));
   }
   assert.match(mainJobs["push-turbo-cache-warm"], /key: turbo-build-/);

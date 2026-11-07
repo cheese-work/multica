@@ -75,6 +75,7 @@ import { WakeupEventRow, WakeupReplyRail } from "./wakeup-event-row";
 import { stripWakeupHeader } from "@multica/core/chat/wakeup";
 import { ContinuationBlock } from "./continuation-block";
 import { ChatSupplementStatus } from "./chat-supplement-status";
+import { useChatFirstItemIndex } from "./use-chat-first-item-index";
 import { predecessorChain } from "../lib/predecessor-chain";
 
 // ─── Public component ────────────────────────────────────────────────────
@@ -82,6 +83,14 @@ import { predecessorChain } from "../lib/predecessor-chain";
 interface ChatMessageListProps {
   /** Pause bottom-stick effects while a closing floating window fades out. */
   active?: boolean;
+  /**
+   * Names the conversation, so a later mount of it in this page session
+   * reveals as soon as it lands instead of waiting out the settle window
+   * (stick-to-bottom.ts). Omit to pay the settle on every mount.
+   */
+  revealKey?: string | null;
+  /** The list became visible to the reader — on reveal, and on each reactivation after it. */
+  onRevealed?: () => void;
   messages: ChatMessage[];
   continuedFromSessionId?: string | null;
   continuedIntoSessionId?: string | null;
@@ -105,7 +114,6 @@ interface ChatMessageListProps {
   pendingTask: ChatPendingTask | null | undefined;
   /** Resolved presence; pass `undefined` while loading to keep the pill copy neutral. */
   availability: AgentAvailability | undefined;
-  firstItemIndex?: number;
   hasOlderMessages?: boolean;
   isFetchingOlderMessages?: boolean;
   onLoadOlderMessages?: () => void;
@@ -373,6 +381,8 @@ const LIST_COMPONENTS: Components<ChatRenderItem, ChatListContext> = {
 
 export function ChatMessageList({
   active = true,
+  revealKey = null,
+  onRevealed,
   messages,
   continuedFromSessionId,
   continuedIntoSessionId,
@@ -384,7 +394,6 @@ export function ChatMessageList({
   sessions,
   pendingTask,
   availability,
-  firstItemIndex = 0,
   hasOlderMessages = false,
   isFetchingOlderMessages = false,
   onLoadOlderMessages,
@@ -413,7 +422,11 @@ export function ChatMessageList({
     scrollContainerEl,
     pinToLiveEnd,
     active,
+    revealKey,
   );
+  useEffect(() => {
+    if (active && hasReachedLiveEnd) onRevealed?.();
+  }, [active, hasReachedLiveEnd, onRevealed]);
   // Soft edge fade hinting more content above/below. Kept small so it barely
   // grazes full-bleed previews (image / HTML) at the edges.
   const fadeStyle = useScrollFade(scrollRef, 16);
@@ -588,6 +601,7 @@ export function ChatMessageList({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flashId, scrollContainerEl]);
 
+  const firstItemIndex = useChatFirstItemIndex(renderItems.map((item) => item.key));
   const firstIndex = renderItems.length > 0 ? firstItemIndex : 0;
   const liveEndKey = renderItems[renderItems.length - 1]?.key ?? null;
   const firstItem = renderItems[0];
