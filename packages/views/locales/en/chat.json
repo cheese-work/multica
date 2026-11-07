@@ -419,6 +419,7 @@
     "option_cons": "Cons",
     "option_cost": "Cost or time",
     "answer_send": "Send",
+    "answer_clear": "Clear selection",
     "answer_error": "Could not send. Try again.",
     "answer_helper": "Send posts your answer to {{issue}}. Questions for the DM agent go in the message box below.",
     "answer_helper_issue": "Send posts your answer to {{issue}}.",
