@@ -31,6 +31,7 @@ type prWakeupSettings struct {
 	WakeOnCIFailure *bool `json:"github_wake_on_ci_failure"`
 	WakeOnCISuccess *bool `json:"github_wake_on_ci_success"`
 	WakeOnAttention *bool `json:"github_wake_on_pr_attention"`
+	WakeOnDequeue   *bool `json:"github_wake_on_pr_dequeue"`
 }
 
 // ruleSetting is the stored value of one PR rule's switch; nil when unset.
@@ -42,6 +43,8 @@ func (v prWakeupSettings) ruleSetting(rule string) *bool {
 		return v.WakeOnCISuccess
 	case SystemRulePRAttention:
 		return v.WakeOnAttention
+	case SystemRulePRDequeued:
+		return v.WakeOnDequeue
 	default:
 		return v.WakeOnPRMerge
 	}
