@@ -28,20 +28,25 @@ render() {
   local json
   json="$(env -i HOME="$HOME" PATH="$PATH" "${vars[@]}" docker compose "${files[@]}" config --format json)" \
     || fail "render failed ($label, $value)"
+  local s got
   for s in "${services[@]}"; do
-    printf '%s=%s\n' "$s" "$(printf '%s' "$json" | node -e '
+    got="$(printf '%s' "$json" | node -e '
       const m = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
       const e = (m.services[process.argv[1]] || {}).environment || {};
       process.stdout.write("GITHUB_ALLOWED_ACCOUNT_IDS" in e ? "[" + e.GITHUB_ALLOWED_ACCOUNT_IDS + "]" : "MISSING");
-    ' "$s")"
+    ' "$s")" || fail "parse failed ($label, $value, $s)"
+    printf '%s=%s\n' "$s" "$got"
   done
 }
 
 check() { # check <label> <value|unset> <expected-env-value>
-  local label=$1 value=$2 want=$3 line
+  local label=$1 value=$2 want=$3 out line
+  # Capture first: a failed render must fail the test, not vanish in a pipe.
+  out="$(render "$label" "$value")" || exit 1
+  [ -n "$out" ] || fail "$label ${value}: no services rendered"
   while IFS= read -r line; do
     [ "${line#*=}" = "[$want]" ] || fail "$label ${value}: ${line%%=*} got ${line#*=}, want [$want]"
-  done < <(render "$label" "$value")
+  done <<<"$out"
 }
 
 for label in base ab; do
