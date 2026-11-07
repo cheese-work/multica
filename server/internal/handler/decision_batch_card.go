@@ -226,7 +226,7 @@ func coverBatchRequests(ctx context.Context, queries *db.Queries, batch db.Decis
 		return batch, err
 	}
 	if len(found) != len(covers) {
-		return batch, decisionIntentRefusal{http.StatusBadRequest, "covers_request_ids must name open reversible or product_direction cards addressed to the same human; a governed-write approval or an artifact approval cannot be covered"}
+		return batch, decisionIntentRefusal{http.StatusBadRequest, "covers_request_ids must name open plain choice cards (reversible or product_direction) addressed to the same human; a card with an action, a governed write, an artifact or a gated class cannot be covered"}
 	}
 	batchOptions := askOptions(batch.Options)
 	for _, card := range found {

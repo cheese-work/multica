@@ -184,6 +184,82 @@ func TestBatchCardCreationStoresCovers(test *testing.T) {
 	}
 }
 
+// notPlainChoiceCards is one row per kind of card in the decision-card model
+// that a batch card must not cover: only a plain choice card is on the
+// allowlist, so a new kind of card is closed to batches until it is added there.
+// The plain choice card itself is the positive control in each test that uses it.
+func notPlainChoiceCards() map[string]func(test *testing.T, card askedRecordFixture) {
+	setClass := func(class string) func(test *testing.T, card askedRecordFixture) {
+		return func(test *testing.T, card askedRecordFixture) {
+			dbfx.Exec(test, `UPDATE decision_request SET escalation_class = $2 WHERE id = $1`, card.decision.ID, class)
+		}
+	}
+	return map[string]func(test *testing.T, card askedRecordFixture){
+		"spend gate":   setClass("spend"),
+		"deploy gate":  setClass("deploy"),
+		"publish gate": setClass("publish"),
+		"irreversible": setClass("irreversible"),
+		"human action": func(test *testing.T, card askedRecordFixture) {
+			dbfx.Exec(test, `UPDATE decision_request SET kind = 'action' WHERE id = $1`, card.decision.ID)
+		},
+		"unprompted": func(test *testing.T, card askedRecordFixture) {
+			dbfx.Exec(test, `UPDATE decision_request SET origin = 'unprompted' WHERE id = $1`, card.decision.ID)
+		},
+		"agents authority": func(test *testing.T, card askedRecordFixture) {
+			dbfx.Exec(test, `UPDATE decision_request SET authority = 'agents' WHERE id = $1`, card.decision.ID)
+		},
+		"governed write": func(test *testing.T, card askedRecordFixture) { makeBoundWriteCard(test, card) },
+		"artifact approval": func(test *testing.T, card askedRecordFixture) {
+			dbfx.Exec(test, `UPDATE decision_request SET ask_json = ask_json || '{"subject":"artifact_approval","artifacts":[{"kind":"file","name":"plan.md"}]}'::jsonb WHERE id = $1`, card.decision.ID)
+		},
+		"attached action": func(test *testing.T, card askedRecordFixture) {
+			dbfx.Exec(test, `INSERT INTO decision_action (workspace_id, decision_request_id, action_type, action_version, params, payload_sha256, expires_at, requested_by_agent_id)
+				SELECT workspace_id, id, 'agent.env.patch', 1, '{}', repeat('a', 64), now() + interval '1 day', $2 FROM decision_request WHERE id = $1`, card.decision.ID, card.agentID)
+		},
+		"governed write record": func(test *testing.T, card askedRecordFixture) {
+			dbfx.Exec(test, `INSERT INTO decision_bound_write (decision_id, workspace_id, agent_id, field, before_sha256, after_sha256)
+				SELECT id, workspace_id, asking_agent_id, 'env', repeat('a', 64), repeat('b', 64) FROM decision_request WHERE id = $1`, card.decision.ID)
+		},
+	}
+}
+
+// A card that is not a plain choice card is refused at creation, whatever its
+// kind (CHE-4453 round 7).
+func TestBatchCardRefusesEveryNotPlainChoiceCard(test *testing.T) {
+	for name, mutate := range notPlainChoiceCards() {
+		test.Run(name, func(test *testing.T) {
+			fixture := newRequestCoreFixture(test, false)
+			card := newCardFixture(test)
+			dbfx.Exec(test, `UPDATE decision_request SET human_user_id = $2 WHERE id = $1`, card.decision.ID, fixture.humanID)
+			shareHoldProceed(test, card)
+			mutate(test, card)
+			testutil.Call(test, testHandler.RequestDecision, batchCreateRequest(fixture, []string{uuidToString(card.decision.ID)})).Want(http.StatusBadRequest)
+			fixture.assertCounts(test, 0)
+		})
+	}
+}
+
+// A card that turns into a not plain choice card after the batch card was
+// created stays open when the batch is answered; the plain card beside it closes.
+func TestBatchAnswerLeavesEveryNotPlainChoiceCardOpen(test *testing.T) {
+	for name, mutate := range notPlainChoiceCards() {
+		test.Run(name, func(test *testing.T) {
+			resetDecisionLease(test)
+			fixture := newBatchFixture(test, 2)
+			mutate(test, fixture.covered[0])
+			if _, err := fixture.answerAcknowledged(test, "Option B"); err != nil {
+				test.Fatal(err)
+			}
+			if status, answers := coveredCardState(test, fixture.covered[0]); status != "open" || answers != 0 {
+				test.Fatalf("not plain card: status=%s answers=%d, want open with none", status, answers)
+			}
+			if status, answers := coveredCardState(test, fixture.covered[1]); status != "answered" || answers != 1 {
+				test.Fatalf("plain card: status=%s answers=%d, want answered with one", status, answers)
+			}
+		})
+	}
+}
+
 func TestBatchCardCreationRefusals(test *testing.T) {
 	cases := map[string]func(card askedRecordFixture, fixture requestCoreFixture){
 		"another human's card": func(card askedRecordFixture, fixture requestCoreFixture) {},
@@ -490,6 +566,12 @@ func TestEveryBatchAnswerWithdrawalReopensTheCoveredCards(test *testing.T) {
 				test.Fatal(err)
 			}
 		},
+		"source issue deleted": func(test *testing.T, fixture batchFixture, result decisionRecordResult) {
+			dbfx.Exec(test, `DELETE FROM issue WHERE id = $1`, fixture.batch.issueID)
+			if err := testHandler.cleanupDecisionOrphans(context.Background(), fixture.batch.issue.WorkspaceID, fixture.batch.issue.ID); err != nil {
+				test.Fatal(err)
+			}
+		},
 		"class raised past a delegate": func(test *testing.T, fixture batchFixture, result decisionRecordResult) {
 			placeDecisionHuman(test, fixture.batch.issueID, fixture.batch.humanID, "member", true)
 			if response := raiseDecisionClassAs(test, fixture.batch, fixture.batch.decision.ID, "spend"); response.Code != http.StatusOK {
@@ -501,12 +583,15 @@ func TestEveryBatchAnswerWithdrawalReopensTheCoveredCards(test *testing.T) {
 		test.Run(name, func(test *testing.T) {
 			resetDecisionLease(test)
 			fixture := newBatchFixture(test, 2)
+			for _, card := range fixture.covered {
+				dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, card.taskID, card.chatTaskID)
+			}
 			result, err := fixture.answerAcknowledged(test, "Option B")
 			if err != nil {
 				test.Fatal(err)
 			}
 			withdraw(test, fixture, result)
-			if dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1 AND disclaimed_at IS NULL`, fixture.batch.decision.ID) > 0 && name != "lifecycle cancel" {
+			if name != "lifecycle cancel" && name != "source issue deleted" && dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1 AND disclaimed_at IS NULL`, fixture.batch.decision.ID) > 0 {
 				test.Fatal("batch answer is still live after the withdrawal")
 			}
 			for _, card := range fixture.covered {
@@ -518,6 +603,19 @@ func TestEveryBatchAnswerWithdrawalReopensTheCoveredCards(test *testing.T) {
 				}
 				if live := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1 AND disclaimed_at IS NULL`, card.decision.ID); live != 0 {
 					test.Fatalf("covered card %s keeps %d live answers", uuidToString(card.decision.ID), live)
+				}
+			}
+			// Later delivery must not resurrect a withdrawn answer.
+			_, runner := newDecisionRunnerFixture(test)
+			for range 2 {
+				decisionPass(test, runner)
+			}
+			for _, card := range fixture.covered {
+				if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'running')`, card.issueID, card.agentID); count != 0 {
+					test.Fatalf("covered card %s woke its agent %d times after the withdrawal", uuidToString(card.decision.ID), count)
+				}
+				if live := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1 AND disclaimed_at IS NULL`, card.decision.ID); live != 0 {
+					test.Fatalf("covered card %s has %d live answers after delivery", uuidToString(card.decision.ID), live)
 				}
 			}
 		})

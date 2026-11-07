@@ -524,24 +524,29 @@ WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id'
   AND request_fingerprint = sqlc.arg('fingerprint') AND status = 'open';
 
 -- name: LockBatchCoveredRequests :many
--- The open per-issue cards a batch card covers, locked in id order. Only a
--- reversible or product_direction card of the batch's own human is eligible:
--- a gated class needs its own passkey answer, an action needs its own approval.
--- A decision-bound governed-write approval (an "Approve write" option or the
--- "Apply this change to <field>?" heading) is never eligible: the human must
--- see that exact change on its own card, not approve it through a batch.
--- An artifact approval is never eligible either: the covered summary shows no
--- artifact, so the human must see and bind each artifact on its own card.
-SELECT * FROM decision_request
-WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = ANY(sqlc.arg('ids')::uuid[])
-  AND human_user_id = sqlc.arg('human_user_id') AND status = 'open' AND origin = 'asked' AND kind = 'decision'
-  AND escalation_class IN ('reversible', 'product_direction')
-  AND NOT options @> '[{"label": "Approve write"}]'::jsonb
-  AND COALESCE(ask_json->>'decision', '') NOT LIKE 'Apply this change to %'
-  AND COALESCE(ask_json->>'subject', '') <> 'artifact_approval'
-  AND COALESCE(ask_json->'artifacts', '[]'::jsonb) = '[]'::jsonb
-ORDER BY id
-FOR UPDATE;
+-- The open per-issue cards a batch card covers, locked in id order. This is
+-- the ONE allowlist of what a batch may cover, used at creation and again at
+-- answer time (CHE-4453): a PLAIN CHOICE card only. That is an open, asked
+-- decision card of the batch's own human whose class is reversible or
+-- product_direction (a gated class needs its own passkey answer), that has no
+-- subject or artifact (the human must see and bind each artifact on its own
+-- card), no attached action (the human must see the action preview on its own
+-- card), and no governed write (an "Approve write" option, the "Apply this
+-- change to <field>?" heading or a decision_bound_write row: the human must
+-- see that exact change). A new kind of card is closed to batches until it is
+-- added here.
+SELECT * FROM decision_request request
+WHERE request.authority = 'human' AND request.workspace_id = sqlc.arg('workspace_id') AND request.id = ANY(sqlc.arg('ids')::uuid[])
+  AND request.human_user_id = sqlc.arg('human_user_id') AND request.status = 'open' AND request.origin = 'asked' AND request.kind = 'decision'
+  AND request.escalation_class IN ('reversible', 'product_direction')
+  AND COALESCE(request.ask_json->>'subject', '') = ''
+  AND COALESCE(request.ask_json->'artifacts', '[]'::jsonb) = '[]'::jsonb
+  AND NOT request.options @> '[{"label": "Approve write"}]'::jsonb
+  AND COALESCE(request.ask_json->>'decision', '') NOT LIKE 'Apply this change to %'
+  AND NOT EXISTS (SELECT 1 FROM decision_action action WHERE action.decision_request_id = request.id)
+  AND NOT EXISTS (SELECT 1 FROM decision_bound_write bound WHERE bound.decision_id = request.id)
+ORDER BY request.id
+FOR UPDATE OF request;
 
 -- name: MarkDecisionRequestAnsweredByBatch :one
 UPDATE decision_request SET status = 'answered', answered_by_batch_request_id = sqlc.arg('batch_request_id')

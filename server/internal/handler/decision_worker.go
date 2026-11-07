@@ -316,7 +316,18 @@ func (handler *Handler) cleanupDecisionOrphans(ctx context.Context, workspaceID,
 	if err != nil {
 		return err
 	}
-	for _, requestID := range requests {
+	var withdrawn []decisiontx.Withdrawal
+	for _, request := range requests {
+		requestID := request.ID
+		// An orphaned batch request takes its answer with it: the cards it closed
+		// reopen with their answers disclaimed, as for any withdrawn batch answer.
+		result := decisiontx.Withdrawal{Request: request}
+		if err := withdrawCoveredAnswers(ctx, queries, request, &result, pgtype.UUID{}); err != nil {
+			return err
+		}
+		if len(result.Covered) > 0 {
+			withdrawn = append(withdrawn, result)
+		}
 		if err := queries.DeleteDecisionOrphanRequestAction(ctx, requestID); err != nil {
 			return err
 		}
@@ -345,5 +356,11 @@ func (handler *Handler) cleanupDecisionOrphans(ctx context.Context, workspaceID,
 			return err
 		}
 	}
-	return transaction.Commit(ctx)
+	if err := transaction.Commit(ctx); err != nil {
+		return err
+	}
+	for _, result := range withdrawn {
+		handler.publishWithdrawal(result)
+	}
+	return nil
 }

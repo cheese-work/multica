@@ -1991,16 +1991,18 @@ func (q *Queries) LockBatchAnsweredRequests(ctx context.Context, arg LockBatchAn
 }
 
 const lockBatchCoveredRequests = `-- name: LockBatchCoveredRequests :many
-SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, covers_request_ids, answered_by_batch_request_id FROM decision_request
-WHERE authority = 'human' AND workspace_id = $1 AND id = ANY($2::uuid[])
-  AND human_user_id = $3 AND status = 'open' AND origin = 'asked' AND kind = 'decision'
-  AND escalation_class IN ('reversible', 'product_direction')
-  AND NOT options @> '[{"label": "Approve write"}]'::jsonb
-  AND COALESCE(ask_json->>'decision', '') NOT LIKE 'Apply this change to %'
-  AND COALESCE(ask_json->>'subject', '') <> 'artifact_approval'
-  AND COALESCE(ask_json->'artifacts', '[]'::jsonb) = '[]'::jsonb
-ORDER BY id
-FOR UPDATE
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, covers_request_ids, answered_by_batch_request_id FROM decision_request request
+WHERE request.authority = 'human' AND request.workspace_id = $1 AND request.id = ANY($2::uuid[])
+  AND request.human_user_id = $3 AND request.status = 'open' AND request.origin = 'asked' AND request.kind = 'decision'
+  AND request.escalation_class IN ('reversible', 'product_direction')
+  AND COALESCE(request.ask_json->>'subject', '') = ''
+  AND COALESCE(request.ask_json->'artifacts', '[]'::jsonb) = '[]'::jsonb
+  AND NOT request.options @> '[{"label": "Approve write"}]'::jsonb
+  AND COALESCE(request.ask_json->>'decision', '') NOT LIKE 'Apply this change to %'
+  AND NOT EXISTS (SELECT 1 FROM decision_action action WHERE action.decision_request_id = request.id)
+  AND NOT EXISTS (SELECT 1 FROM decision_bound_write bound WHERE bound.decision_id = request.id)
+ORDER BY request.id
+FOR UPDATE OF request
 `
 
 type LockBatchCoveredRequestsParams struct {
@@ -2009,14 +2011,17 @@ type LockBatchCoveredRequestsParams struct {
 	HumanUserID pgtype.UUID   `json:"human_user_id"`
 }
 
-// The open per-issue cards a batch card covers, locked in id order. Only a
-// reversible or product_direction card of the batch's own human is eligible:
-// a gated class needs its own passkey answer, an action needs its own approval.
-// A decision-bound governed-write approval (an "Approve write" option or the
-// "Apply this change to <field>?" heading) is never eligible: the human must
-// see that exact change on its own card, not approve it through a batch.
-// An artifact approval is never eligible either: the covered summary shows no
-// artifact, so the human must see and bind each artifact on its own card.
+// The open per-issue cards a batch card covers, locked in id order. This is
+// the ONE allowlist of what a batch may cover, used at creation and again at
+// answer time (CHE-4453): a PLAIN CHOICE card only. That is an open, asked
+// decision card of the batch's own human whose class is reversible or
+// product_direction (a gated class needs its own passkey answer), that has no
+// subject or artifact (the human must see and bind each artifact on its own
+// card), no attached action (the human must see the action preview on its own
+// card), and no governed write (an "Approve write" option, the "Apply this
+// change to <field>?" heading or a decision_bound_write row: the human must
+// see that exact change). A new kind of card is closed to batches until it is
+// added here.
 func (q *Queries) LockBatchCoveredRequests(ctx context.Context, arg LockBatchCoveredRequestsParams) ([]DecisionRequest, error) {
 	rows, err := q.db.Query(ctx, lockBatchCoveredRequests, arg.WorkspaceID, arg.Ids, arg.HumanUserID)
 	if err != nil {
