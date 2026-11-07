@@ -40,6 +40,7 @@ func init() {
 type chatAttentionRow struct {
 	ID              string  `json:"id"`
 	Title           string  `json:"title"`
+	Status          string  `json:"status,omitempty"`
 	StaleLevel      string  `json:"stale_level"`
 	AttentionSource *string `json:"attention_source"`
 	AttentionSince  *string `json:"attention_since"`
@@ -60,7 +61,7 @@ func runChatAttention(command *cobra.Command, _ []string) error {
 	stale, _ := command.Flags().GetBool("stale")
 	rows := make([]chatAttentionRow, 0, len(sessions))
 	for _, s := range sessions {
-		visible := s.StaleLevel != "none" && s.StaleLevel != "" && s.AttentionSince != nil
+		visible := s.Status != "archived" && s.StaleLevel != "none" && s.StaleLevel != "" && s.AttentionSince != nil
 		if visible && (!stale || s.StaleLevel == "yellow" || s.StaleLevel == "red") {
 			rows = append(rows, s)
 		}

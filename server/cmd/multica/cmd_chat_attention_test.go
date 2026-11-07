@@ -16,6 +16,7 @@ func attentionRows() []map[string]any {
 		{"id": "dm-none", "title": "Quiet", "stale_level": "none", "attention_source": nil, "attention_since": nil},
 		{"id": "dm-red", "title": "Red", "stale_level": "red", "attention_source": "decision", "attention_since": "2026-11-05T08:00:00Z"},
 		{"id": "dm-yellow", "title": "Yellow", "stale_level": "yellow", "attention_source": "ask", "attention_since": "2026-11-07T01:00:00Z"},
+		{"id": "dm-archived", "title": "Archived", "status": "archived", "stale_level": "red", "attention_source": "ask", "attention_since": "2026-11-04T08:00:00Z"},
 		// A future `later` and an archived chain read stale_level "none" from the server projection (C1, T14).
 		{"id": "dm-future-later", "title": "Later", "stale_level": "none", "attention_source": nil, "attention_since": nil},
 	}
