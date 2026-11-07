@@ -91,19 +91,12 @@ func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetEx
 	window := e.Since.UTC().Format(time.RFC3339Nano)
 	err := h.withPgxTx(ctx, func(tx pgx.Tx) error {
 		q := h.Queries.WithTx(tx)
-		// A tainted callback may update the issue's recovery runs below. Lock
-		// them first, as a tainted issue write does, so the order is run, then
-		// issue everywhere; locking the issue first would invert it.
-		taint, err := service.CtxTaint(ctx, q)
-		if err != nil {
+		// The issue lock comes before anything that reads or updates its runs.
+		if _, err := q.LockIssueRunBudget(ctx, e.IssueID); err != nil {
 			return err
 		}
-		if len(taint) > 0 {
-			if err := q.LockRunsForTaintedWrite(ctx, e.IssueID); err != nil {
-				return fmt.Errorf("lock runs for tainted callback: %w", err)
-			}
-		}
-		if _, err := q.LockIssueRunBudget(ctx, e.IssueID); err != nil {
+		taint, err := service.CtxTaint(ctx, q)
+		if err != nil {
 			return err
 		}
 		existing, err := q.GetRunBudgetRefusalByWindow(ctx, db.GetRunBudgetRefusalByWindowParams{IssueID: e.IssueID, WindowID: window})

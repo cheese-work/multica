@@ -216,23 +216,23 @@ func TestClearingIssueTaintBeforeAnySweepStillFencesTheOriginalTask(t *testing.T
 	}
 }
 
-// waitForBlockedShareLock polls until a backend waits on a row lock taken by a
-// FOR SHARE read of agent_task_queue (an authorization reached the task lock).
-func waitForBlockedShareLock(t *testing.T) {
+// waitForBlockedIssueShareLock polls until a backend waits on the issue row
+// lock taken by a FOR SHARE read (an authorization reached its first lock).
+func waitForBlockedIssueShareLock(t *testing.T) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if dbfx.Count(t, `SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%agent_task_queue%FOR SHARE%'`) > 0 {
+		if dbfx.Count(t, `SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query ILIKE '%FROM issue%FOR SHARE%'`) > 0 {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatal("authorization never waited on the task row lock")
+	t.Fatal("authorization never waited on the issue row lock")
 }
 
-// A taint writer updates the task row and, through its trigger, then locks the
-// issue. Authorization must take its locks in the same order (task, then
-// issue), or the two wait on each other and one aborts.
+// A taint writer holds the issue row, updates the task row and, through its
+// trigger, locks the issue again. Authorization takes the issue first too, so
+// it waits before it holds any task lock and the two cannot wait on each other.
 func TestTaintUpdateAndAuthorizeShareOneLockOrder(t *testing.T) {
 	ctx := context.Background()
 	f := claimElevated(t, "repo_write:1234")
@@ -242,16 +242,14 @@ func TestTaintUpdateAndAuthorizeShareOneLockOrder(t *testing.T) {
 		t.Fatalf("begin writer: %v", err)
 	}
 	defer writer.Rollback(ctx)
-	if _, err := writer.Exec(ctx, `SELECT 1 FROM agent_task_queue WHERE id = $1 FOR UPDATE`, f.taskID); err != nil {
-		t.Fatalf("writer locks task: %v", err)
+	if _, err := writer.Exec(ctx, `SELECT 1 FROM issue WHERE id = (SELECT issue_id FROM agent_task_queue WHERE id = $1) FOR NO KEY UPDATE`, f.taskID); err != nil {
+		t.Fatalf("writer locks issue: %v", err)
 	}
 
 	authorized := make(chan *testutil.Response, 1)
 	go func() { authorized <- f.authorize(t, 1, "repo_write:1234", hashA) }()
-	waitForBlockedShareLock(t)
+	waitForBlockedIssueShareLock(t)
 
-	// The authorization now waits on the task row. The writer's trigger must
-	// reach the issue row without waiting on anything the authorization holds.
 	if _, err := writer.Exec(ctx, `UPDATE agent_task_queue SET taint_ids = ARRAY['tz'] WHERE id = $1`, f.taskID); err != nil {
 		t.Fatalf("writer update: %v", err)
 	}

@@ -126,7 +126,7 @@ RETURNING task_id
 
 // A member clearing the issue's taint fences every elevation still live on it
 // first, so the taint cannot vanish before the sweep saw it. Same update as the
-// sweep; it runs before the issue lock (task_elevation, then issue, as authorize).
+// sweep; it runs after the issue lock, as every path that touches a run does.
 func (q *Queries) FenceIssueTaskElevations(ctx context.Context, issueID pgtype.UUID) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, fenceIssueTaskElevations, issueID)
 	if err != nil {

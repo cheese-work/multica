@@ -1000,6 +1000,123 @@ func TestLateRefusalCallbackAndTaintedWriteDoNotDeadlock(t *testing.T) {
 	}
 }
 
+// The notice transaction inserts the recovery run and stays uncommitted while a
+// tainted late callback starts. The callback can lock nothing of the run ahead
+// of the issue lock, because the run is not visible to it. After the commit the
+// callback holds the issue lock; the run is claimed, and its authorization must
+// not wait for the issue while holding the run's lock, which the callback's
+// update of the run then waits for. One order covers every path: issue lock first.
+func TestNoticeInsertThenTaintedCallbackAndClaimedRunAuthorizationDoNotDeadlock(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	c := newBudgetCase(t, 2856067, recoverySteps(seededReadyAgentID(t)), 2)
+	recordOccurrence(t, c, "in_progress")
+	c.spend(t, 2)
+	ctxClean, eClean := refusalBy(t, c, "")
+	ctxLate, eLate := refusalBy(t, c, "ext-1")
+	id, generation, ok := testHandler.recordRefusalIntent(ctxClean, eClean)
+	if !ok {
+		t.Fatal("clean refusal not recorded")
+	}
+	testHandler.advanceRefusalHook(ctxClean, id, generation, eClean)
+	finished(t, c)
+	// The late requester's taint is on the issue's first run only; the member
+	// cleared it for the issue, so the recovery run is claimed elevated.
+	memberClearsTaint(t, c)
+	var runID string
+	dbfx.QueryRow(t, `SELECT id FROM agent_task_queue WHERE issue_id=$1 AND task_kind='budget_recovery'`, c.issueID).Scan(&runID)
+
+	// Take the run back out and let a scripted notice transaction insert it again.
+	dbfx.Exec(t, `DROP TABLE IF EXISTS che2856_run_copy`)
+	dbfx.Exec(t, `CREATE TABLE che2856_run_copy AS SELECT * FROM agent_task_queue WHERE id = $1`, runID)
+	t.Cleanup(func() { dbfx.Exec(t, `DROP TABLE IF EXISTS che2856_run_copy`) })
+	dbfx.Exec(t, `DELETE FROM agent_task_queue WHERE id = $1`, runID)
+
+	service.SetOnRunBudgetExhausted(func(context.Context, service.RunBudgetExhausted) {})
+	t.Cleanup(func() { service.SetOnRunBudgetExhausted(testHandler.onRunBudgetExhausted) })
+
+	// A test-held lock on the refusal row stops the callback after it took the
+	// issue lock and before it updates the run.
+	gate, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gate.Rollback(ctx)
+	if _, err := gate.Exec(ctx, `SELECT 1 FROM run_budget_refusal WHERE issue_id = $1 FOR UPDATE`, c.issueID); err != nil {
+		t.Fatal(err)
+	}
+	notice, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer notice.Rollback(ctx)
+	if _, err := notice.Exec(ctx, `SELECT id FROM issue WHERE id = $1 FOR NO KEY UPDATE`, c.issueID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := notice.Exec(ctx, `INSERT INTO agent_task_queue SELECT * FROM che2856_run_copy`); err != nil {
+		t.Fatal(err)
+	}
+	waiting := func(query string) bool {
+		var n int
+		dbfx.QueryRow(t, `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE '%' || $1 || '%'`, query).Scan(&n)
+		return n > 0
+	}
+	until := func(what string, ok func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); !ok(); time.Sleep(20 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting for %s", what)
+			}
+		}
+	}
+
+	recorded := make(chan bool, 1)
+	go func() {
+		_, _, ok := testHandler.recordRefusalIntent(ctxLate, eLate)
+		recorded <- ok
+	}()
+	until("the late callback to wait for the notice transaction", func() bool { return waiting("FROM issue") })
+	if err := notice.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	until("the late callback to reach the refusal row", func() bool { return waiting("MergeRunBudgetRefusalTaint") })
+
+	f, _, epoch := claimRecoveryRun(t, c)
+	authorized := make(chan int, 1)
+	go func() {
+		w := httptest.NewRecorder()
+		testHandler.AuthorizeElevatedOp(w, withURLParam(newOwnerDaemonRequest("POST", "/api/daemon/tasks/"+f.taskID+"/elevation/authorize",
+			map[string]any{"epoch": epoch, "scope": "repo_write:1234", "input_hash": hashA}), "taskId", f.taskID))
+		authorized <- w.Code
+	}()
+	until("the authorization to wait for the issue lock", func() bool { return waiting("FOR SHARE") })
+	if err := gate.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case ok := <-recorded:
+		if !ok {
+			t.Fatal("late callback was not recorded (an aborted transaction records nothing)")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("late callback never finished")
+	}
+	select {
+	case code := <-authorized:
+		if code != http.StatusForbidden {
+			t.Fatalf("authorization status = %d, want 403 (the run is tainted; an aborted transaction is 500)", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("authorization never finished")
+	}
+	if got := recoveryTaint(t, c); len(got) != 1 || got[0] != "ext-1" {
+		t.Fatalf("recovery run taint = %v, want [ext-1]", got)
+	}
+}
+
 // Workspace deletion removes the issue_run_taint rows of the workspace.
 func TestIssueRunTaintWorkspaceDeletionRemovesItsRows(t *testing.T) {
 	workspaceID := dbfx.Workspace(t, "issue run taint teardown", "run-taint-teardown-"+uuid.NewString())

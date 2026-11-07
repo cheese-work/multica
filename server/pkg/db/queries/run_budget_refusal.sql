@@ -106,16 +106,6 @@ UPDATE run_budget_refusal
 SET hook_phase = 'blocked', blocked = true, occurrence_activity_id = @occurrence_activity_id::uuid, updated_at = now()
 WHERE id = @id::uuid AND hook_phase = 'intent';
 
--- name: LockRunsForTaintedWrite :exec
--- A tainted issue write updates these runs after it locks the issue row; the
--- authorization path locks a run and then the issue. Taking the run locks
--- first, in id order, gives both paths one order: run, then issue.
-SELECT id FROM agent_task_queue
-WHERE issue_id = @issue_id::uuid
-  AND (status IN ('queued', 'dispatched', 'waiting_local_directory') OR (task_kind = 'budget_recovery' AND status = 'running'))
-ORDER BY id
-FOR NO KEY UPDATE;
-
 -- name: TaintBudgetRecoveryRuns :exec
 -- A requester that joined a hook after its notice committed: the recovery run
 -- already exists, so it takes the requester's taint, whether it is still queued
