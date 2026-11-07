@@ -101,6 +101,10 @@ forward_mentions AS MATERIALIZED (
  FROM workspace_issues i JOIN frontier ON i.duplicate_of_issue_id=frontier.id
  WHERE i.status='cancelled'
  UNION ALL
+ SELECT d.issue_id,d.depends_on_issue_id,'dependency'
+ FROM issue_dependency d
+ WHERE d.issue_id IN (SELECT id FROM frontier) OR d.depends_on_issue_id IN (SELECT id FROM frontier)
+ UNION ALL
  SELECT watched.id,w.issue_id,'wakeup'
  FROM issue_wakeup w
  JOIN workspace_issues watched ON watched.id::text=w.condition->>'issue_id'

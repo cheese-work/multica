@@ -21,6 +21,7 @@ type Agent struct {
 	RuntimeOnline  bool
 	Archived       bool
 	Paused         bool // scheduling paused
+	Hidden         bool // the caller may not see this agent or its runtime
 }
 
 // Usage says where a workflow is used (WF013).
@@ -39,6 +40,9 @@ type Env struct {
 	Live bool
 	// Usage turns on WF013. Nil skips it.
 	Usage *Usage
+	// Statuses is the workspace status catalog, status key to display name.
+	// It turns on WF009 and WF010, which read step instructions. Nil skips them.
+	Statuses map[string]string
 }
 
 // The two JSON files below are the only place that names a qualified runtime
@@ -109,12 +113,13 @@ func (m labMap) of(a Agent) (string, bool) {
 	return lab, ok
 }
 
-// LintWith is Lint plus the agent, runtime and usage rules (WF004-006, 012, 013).
+// LintWith is Lint plus the agent, runtime and usage rules (WF004-006, 009, 010, 012, 013).
 func LintWith(def issueworkflow.Definition, env Env) []Finding {
 	l := linter{def: def, reached: reachedStatuses(def)}
 	for _, s := range def.Steps {
 		l.lintStep(s)
 		l.lintHandler(s, env)
+		l.lintInstructions(s, env)
 	}
 	l.lintRunBudget()
 	l.lintLabs(env)
@@ -128,6 +133,9 @@ func (l *linter) lintHandler(s issueworkflow.Step, env Env) {
 		return
 	}
 	a, ok := env.Agents[s.Handler.ID]
+	if ok && a.Hidden {
+		return // the caller may not learn this agent's runtime or state
+	}
 	switch {
 	case !ok:
 		l.add("WF004", LevelError, &s, fmt.Sprintf("The agent %q of %q does not exist.", s.Handler.ID, s.StatusKey),
@@ -189,7 +197,7 @@ func (l *linter) agentOf(key string, env Env) *Agent {
 		return nil
 	}
 	a, ok := env.Agents[s.Handler.ID]
-	if !ok {
+	if !ok || a.Hidden {
 		return nil
 	}
 	return &a

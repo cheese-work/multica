@@ -727,6 +727,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// is bridge code — it will simply find no rows to update
 				// on a fresh deployment and exit. MUL-2671.
 				go lark.BackfillBotUnionIDs(context.Background(), cs, larkClient, installSvc, slog.Default())
+				go lark.BackfillLegacyInboundReceipts(context.Background(), cs, slog.Default())
 
 				// Upgrade repair for deployments that ran the whole
 				// integration against Lark international via the deployment-
@@ -1074,7 +1075,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// language, resolved when the round is opened and carried
 					// on the handle to whichever closer gets there.
 					Languages: queries,
-					Logger:    slog.Default(),
+					// Who is asking, which is what decides whether their
+					// bubble may show the run's steps. Without it every
+					// bubble falls to the closed tier and shows none.
+					Identities: queries,
+					Logger:     slog.Default(),
 				})
 				// Subscribes task:failed and task:cancelled — neither a failed
 				// nor a cancelled run publishes chat:done, so this is the sole
@@ -1094,6 +1099,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 						store,
 						engine.NewDBMediaIntentLedger(queries),
 						wecomSenders,
+						queries,
 						slog.Default(),
 					)
 				}
@@ -2114,6 +2120,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// Task-token write scoping (CHE-2216 A5a). Off until the A6 cutover:
 			// ordinary runs keep their ambient capabilities (risk decision 8).
 			r.Use(h.TaskTokenWriteScope(taskWriteScopeMode()))
+			// Every /api/chat* route is classed for task tokens (CHE-3702).
+			r.Use(h.ChatTaskTokenGate)
 
 			// Assignee frequency
 			r.Get("/api/assignee-frequency", h.GetAssigneeFrequency)
@@ -2152,6 +2160,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/table/groups", h.ListIssueTableGroups)
 				r.Post("/table/rows", h.ListIssueTableRows)
 				r.Post("/table/facets", h.ListIssueTableFacets)
+				r.Post("/timeline", h.ListIssueActualTimeline)
 				r.Get("/search", h.SearchIssues)
 				r.Get("/child-progress", h.ChildIssueProgress)
 				r.Get("/children", h.ListChildrenByParents)
@@ -2313,8 +2322,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Route("/api/issue-workflows", func(r chi.Router) {
 				r.Get("/", h.ListIssueWorkflows)
 				r.Post("/", h.CreateIssueWorkflow)
+				r.Get("/lint", h.LintIssueWorkflows)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetIssueWorkflow)
+					r.Get("/lint", h.LintIssueWorkflow)
 					r.With(handler.RequireHumanOrTaskToken).Patch("/", h.UpdateIssueWorkflow)
 					r.With(handler.RequireHumanActor).Delete("/", h.DeleteIssueWorkflow)
 					r.With(handler.RequireHumanOrTaskToken).Put("/handoffs/{status}", h.SetIssueWorkflowHandoff)
@@ -2703,6 +2714,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Post("/api/chat/continue", h.ContinueChatSession)
 			r.Post("/api/chat/compact", h.CompactChatSession)
 			// Agent-facing DM wakeups: the task token names the DM.
+			r.Post("/api/chat/outcome", h.PostChatOutcome)
 			r.Post("/api/chat/wakeups", h.CreateChatWakeup)
 			r.Get("/api/chat/wakeups", h.ListChatWakeups)
 			r.Delete("/api/chat/wakeups/{wakeupId}", h.CancelChatWakeup)
@@ -2746,6 +2758,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			})
 			r.With(handler.RequireHumanActor).Post("/api/decision-answers/{id}/disclaim", h.DisclaimDecisionAnswer)
 			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/class", h.RaiseDecisionClass)
+			r.Post("/api/decision-actions/proposals", h.ProposeDecisionAction)
 			r.With(handler.RequireHumanActor).Post("/api/decision-actions/{id}/reject", h.RejectDecisionAction)
 			r.With(handler.RequireHumanActor).Post("/api/decision-actions/{id}/challenge", h.ChallengeDecisionAction)
 			r.With(handler.RequireHumanActor).Get("/api/passkeys", h.ListPasskeys)
@@ -2843,6 +2856,7 @@ func buildLarkConnector(installSvc *lark.InstallationService, apiClient lark.API
 		FrameDecoder:        decoder,
 		Enricher:            enricher,
 		CredentialsProvider: credsProvider,
+		InboundVerifier:     installSvc,
 		Logger:              slog.Default(),
 	})
 	if err != nil {
