@@ -20,9 +20,9 @@ for (const name of ["ci.yml", "main-build.yml", "pr-guards.yml"]) {
   });
 }
 
-test("PR close target validates edited events using trusted code without an edited-event skip", () => {
+test("PR guards run trusted code on every PR event they start on, with no `edited` trigger (CHE-4385)", () => {
   const workflow = read("pr-guards.yml");
-  assert.match(workflow, /types: \[opened, edited, synchronize, reopened, ready_for_review\]/);
+  assert.match(workflow, /types: \[opened, synchronize, reopened, ready_for_review\]/);
   assert.match(workflow, /ref: \$\{\{ github\.workflow_sha \}\}/);
   assert.doesNotMatch(workflow, /if:.*(action|edited)/);
 });

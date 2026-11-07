@@ -47,7 +47,9 @@ class OneWorkflowPerPrPush(unittest.TestCase):
         doc = load("pr-guards.yml")
         self.assertEqual(set(doc["on"]), {"pull_request_target"})
         self.assertEqual(set(doc["on"]["pull_request_target"]["types"]),
-                         {"opened", "edited", "synchronize", "reopened", "ready_for_review"})
+                         {"opened", "synchronize", "reopened", "ready_for_review"})
+        # A body or title edit does not re-run the guards (about 37 sample runs); the next push does.
+        self.assertNotIn("edited", doc["on"]["pull_request_target"]["types"])
         self.assertTrue(doc["concurrency"]["cancel-in-progress"])
         self.assertIn("github.event.pull_request.number", doc["concurrency"]["group"])
 
@@ -80,15 +82,44 @@ class NoCommentOrCascadeRuns(unittest.TestCase):
         self.assertEqual(jobs["mechanical-tier"]["needs"], "security-gate")
 
     def test_push_to_main_workflows_do_not_start_each_other(self):
-        # Item 5: the only workflow_run chains are CD qualification -> deploy and Main Build -> cache maintenance.
+        # The only workflow_run chain is CD qualification -> deploy; main-build calls the other two in its own run.
         chains = {}
         for p in WF.glob("*.yml"):
             on = load(p.name)["on"]
             if isinstance(on, dict) and "workflow_run" in on:
                 chains[p.name] = on["workflow_run"]["workflows"]
-        self.assertEqual(chains, {"cd-deploy.yml": ["CD qualification build"], "cache-maintenance.yml": ["Main Build"]})
+        self.assertEqual(chains, {"cd-deploy.yml": ["CD qualification build"]})
         # No push-to-main workflow listens to another one's push through `workflow_run` on CI or the gates.
         self.assertNotIn("CI", [w for ws in chains.values() for w in ws])
+
+    def test_main_build_runs_cache_maintenance_after_the_warm_jobs(self):
+        self.assertEqual(triggers(load("cache-maintenance.yml")), {"schedule", "workflow_dispatch", "workflow_call"})
+        job = load("main-build.yml")["jobs"]["cache-maintenance"]
+        self.assertEqual(job["uses"], "./.github/workflows/cache-maintenance.yml")
+        self.assertEqual(set(job["needs"]), {"push-go-cache-warm", "push-turbo-cache-warm", "daemon-artifact"})
+        self.assertEqual(job["if"].strip(), "${{ always() }}")  # it ran after every completed Main Build before
+        self.assertEqual(job["permissions"], {"contents": "read", "actions": "write"})
+
+    def test_main_build_runs_pr_main_sync_and_it_has_no_push_trigger(self):
+        self.assertEqual(triggers(load("pr-main-sync.yml")), {"workflow_dispatch", "workflow_call"})
+        job = load("main-build.yml")["jobs"]["pr-main-sync"]
+        self.assertEqual(job["uses"], "./.github/workflows/pr-main-sync.yml")
+        self.assertEqual(job["permissions"], {"contents": "read"})
+        self.assertNotIn("needs", job)  # it did not wait for the build before either
+
+    def test_called_workflows_use_a_concurrency_group_other_than_the_callers(self):
+        caller = load("main-build.yml")["concurrency"]["group"]
+        for name in ("cache-maintenance.yml", "pr-main-sync.yml"):
+            self.assertNotEqual(load(name)["concurrency"]["group"], caller)
+
+    def test_pr_main_sync_keeps_its_gate_runner_and_dry_run_switch(self):
+        text = (WF / "pr-main-sync.yml").read_text()
+        job = load("pr-main-sync.yml")["jobs"]["sync"]
+        self.assertIn("PR_MAIN_SYNC_ENABLED == 'true'", job["if"])
+        self.assertEqual(job["runs-on"], ["self-hosted", "linux", "x64", "cheese-x99"])
+        self.assertIn("PR_MAIN_SYNC_ENABLED != 'true'", text)
+        self.assertNotRegex(text, r"ref: \$\{\{ github\.event\.pull_request\.head")
+
 
 if __name__ == "__main__":
     unittest.main()

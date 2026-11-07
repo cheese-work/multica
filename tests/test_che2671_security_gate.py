@@ -510,11 +510,16 @@ class WorkflowTest(unittest.TestCase):
         self.assertNotIn(".base.sha", self.text)
         self.assertIn("--default-branch", self.text)
 
-    def test_pr_guards_calls_the_gate_on_every_pr_event_that_retargets_or_edits(self):
-        # findings 3 and 4, moved by CHE-4385: `edited` (retarget) is a pr-guards trigger now
+    def test_pr_guards_calls_the_gate_on_a_push_and_a_retarget_needs_a_dispatch(self):
+        # findings 3 and 4, moved twice by CHE-4385: `edited` (retarget) is no longer a pr-guards trigger (Cheese chose the
+        # run cut), so a retarget re-runs the gate only through a push or `workflow_dispatch`. A stale status fails closed:
+        # a PR retargeted onto the default branch stays "not gated yet" (pending), and `merge_group` re-reads the verdicts.
         guards = yaml.safe_load((ROOT / ".github/workflows/pr-guards.yml").read_text())
-        self.assertIn("edited", guards[True]["pull_request_target"]["types"])
+        self.assertNotIn("edited", guards[True]["pull_request_target"]["types"])
+        self.assertIn("synchronize", guards[True]["pull_request_target"]["types"])
         self.assertEqual(guards["jobs"]["security-gate"]["uses"], "./.github/workflows/security-gate.yml")
+        self.assertIn("workflow_dispatch", self.doc[True])
+        self.assertIn("merge_group", self.doc[True])
 
     def test_dispatch_takes_one_digits_only_pull_request_number(self):
         self.assertEqual(list(self.doc[True]["workflow_dispatch"]["inputs"]), ["pr"])
