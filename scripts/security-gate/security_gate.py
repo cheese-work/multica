@@ -14,9 +14,12 @@ Verdict = a PR comment by a trusted workspace bot:
   PR: <number>
   Base: <target branch>
   SHA: <40 hex>
+  Diff-Digest: <64 hex>   (optional; `pr_diff_digest` of the PR at that SHA, CHE-3610)
   Findings: none          (FAIL: lines `- path:line <exploit path>`)
 
-A verdict counts only for the repo, PR number, base branch and head SHA it names. Only PRs into the default
+A verdict counts only for the repo, PR number, base branch and head SHA it names. A verdict that also names a
+`Diff-Digest` keeps counting on a later head whose digest is identical: a clean merge from the default branch that
+leaves every PR file alone is no reason to review again; any change to a PR file changes the digest (CHE-3610). Only PRs into the default
 branch are gated; a PR into another base is pending ("not gated yet") until it is retargeted. The PR author
 must be a registered agent (lab from the `agent/<name>/` branch) or a registered human; anyone else fails closed.
 
@@ -45,6 +48,7 @@ TRUSTED_AUTHORS = "skills/multica-cheese-work-github/scripts/trusted-authors.jso
 SEMGREP_BASELINE = "scripts/security-gate/semgrep-baseline.json"
 SEMGREP_CONFIGS = ("p/default", "p/golang", "p/gosec", "p/typescript", "p/python", "p/kotlin")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 FINDING_RE = re.compile(r"^- (\S+:\d+)\s+\S")
 REVIEWER_RE = re.compile(r"^(\S+) \(([^)]+)\)$")
@@ -56,6 +60,21 @@ SECRET_RES = [re.compile(p) for p in (
     r"\bxox[abprs]-[A-Za-z0-9-]{10,}",
     r"\bsk-[A-Za-z0-9_-]{32,}",
 )]
+
+
+def pr_diff_digest(repo: str, base: str, head: str) -> str:
+    """SHA-256 of the full `git diff <merge-base> <head>` over the files the PR changes, `index` lines (blob hashes)
+    included and headers unstripped. `--raw` adds both blob ids and modes for every path: a mode-only change has no
+    `index` line in the patch, so without it a main-branch edit to that file would not move the digest.
+    A merge from the default branch that changes a PR file moves the merge-base blob on the `-` side, so it changes
+    the digest too."""
+    def git(*a: str) -> bytes:  # raw bytes: text mode would turn a \r in a file name into \n and drop the file
+        return subprocess.run(["git", "--literal-pathspecs", "-C", repo, *a], check=True, capture_output=True).stdout
+    mb = git("merge-base", base, head).decode().strip()
+    names = [n for n in git("diff", "--name-only", "-z", "--no-renames", mb, head).split(b"\0") if n]
+    full = git("diff", "--raw", "--patch", "--full-index", "--no-color", "--no-ext-diff", "--no-renames", mb, head,
+               "--", *names)
+    return hashlib.sha256(full).hexdigest()
 
 
 def lab_of(name: str) -> str | None:
@@ -178,7 +197,7 @@ def parse_verdict(body: str) -> tuple[dict | None, str]:
     fields, findings, in_findings = {}, [], False
     for l in lines[start:]:
         key, _, val = l.partition(":")
-        if key in ("Security-Gate-Verdict", "Reviewer", "Signed", "Repo", "PR", "Base", "SHA", "Findings"):
+        if key in ("Security-Gate-Verdict", "Reviewer", "Signed", "Repo", "PR", "Base", "SHA", "Diff-Digest", "Findings"):
             fields[key] = val.strip()
             in_findings = key == "Findings"
         elif in_findings and l.startswith("- "):
@@ -192,6 +211,8 @@ def parse_verdict(body: str) -> tuple[dict | None, str]:
         return None, "missing Signed"
     if not SHA_RE.match(fields.get("SHA", "")):
         return None, "SHA must be 40 hex"
+    if "Diff-Digest" in fields and not DIGEST_RE.match(fields["Diff-Digest"]):
+        return None, "Diff-Digest must be 64 hex"
     if not (fields.get("Repo") and fields.get("PR", "").isdigit() and fields.get("Base")):
         return None, "missing Repo, PR or Base"
     if result == "PASS" and (fields.get("Findings", "").lower() != "none" or findings):
@@ -199,11 +220,13 @@ def parse_verdict(body: str) -> tuple[dict | None, str]:
     if result == "FAIL" and not any(FINDING_RE.match(f) for f in findings):
         return None, "FAIL needs `- path:line <exploit path>`"
     return {"result": result, "agent": rev.group(1), "model": rev.group(2), "sha": fields["SHA"],
-            "repo": fields["Repo"], "pr": int(fields["PR"]), "base": fields["Base"], "findings": findings}, ""
+            "repo": fields["Repo"], "pr": int(fields["PR"]), "base": fields["Base"], "digest": fields.get("Diff-Digest"), "findings": findings}, ""
 
 
 def evaluate(pr: dict, comments: list[dict], trusted_ids: set[int], diff_text: str,
-             human_ids: frozenset[int] | set[int] = frozenset(), semgrep: list[str] | None = None) -> tuple[str, str]:
+             human_ids: frozenset[int] | set[int] = frozenset(), semgrep: list[str] | None = None,
+             digest: str | None = None) -> tuple[str, str]:
+    """`digest` = `pr_diff_digest` of the current head; None = not computed, so only an exact SHA match counts."""
     head, why = pr["head_sha"], []
     if pr["base_ref"] != pr["default_branch"]:
         # A stacked layer is gated when it is retargeted to the default branch (the `edited` event re-runs this).
@@ -232,13 +255,18 @@ def evaluate(pr: dict, comments: list[dict], trusted_ids: set[int], diff_text: s
             if err:
                 why.append(err)
             continue
-        if v["sha"] != head:
-            why.append(f"verdict is for {v['sha'][:12]}, head is {head[:12]}")
-            continue
         if (v["repo"], v["pr"], v["base"]) != (pr["repo"], pr["number"], pr["base_ref"]):
             why.append(f"verdict is for {v['repo']}#{v['pr']} into {v['base']}, not this PR")
             continue
-        latest[v["agent"]] = v
+        applies = v["sha"] == head or bool(digest and v["digest"] == digest)
+        # A verdict that does not apply to this head/diff never replaces an applicable one from the same reviewer
+        # (a delayed stale PASS must not erase a current FAIL). A FAIL stands unless its digest names another diff:
+        # a later FAIL must not be skipped, and a digest-less FAIL keeps blocking until its reviewer posts a newer
+        # applicable verdict.
+        if applies or (v["result"] == "FAIL" and not v["digest"]):
+            latest[v["agent"]] = v
+        else:
+            why.append(f"verdict is for {v['sha'][:12]}, head is {head[:12]}")
     passes = []
     for agent, v in latest.items():
         lab = lab_of(agent)
@@ -297,6 +325,8 @@ def _gh(*args: str) -> str:
             return subprocess.run(["gh", "api", *args], check=True, capture_output=True, text=True).stdout
         except subprocess.CalledProcessError as e:
             if not RATE_LIMIT_RE.search(str(e.stderr or "")):
+                # CHE-4234: capture_output hid the API error; show it in the job log
+                print(f"gh api {args[0]} failed (exit {e.returncode}): {(e.stderr or '').strip()}", file=sys.stderr)
                 raise
             if _rate_limit_waited + delay > RATE_LIMIT_MAX_WAIT:
                 raise RateLimited(e.returncode, e.cmd, e.output, e.stderr) from e
@@ -385,10 +415,11 @@ def gate_pr(repo: str, github: str, number: int, default_branch: str, trusted: s
     lines = _gh("--paginate", f"repos/{github}/issues/{number}/comments", "--jq",
                 '.[] | {id, author_id: .user.id, body: (.body // ""), updated_at}').splitlines()
     comments = [json.loads(l) for l in lines]
-    diff, semgrep = "", None  # a non-default base returns before the diff is read; its base may not be in this checkout
+    diff, semgrep, digest = "", None, None  # a non-default base returns before the diff is read; its base may not be in this checkout
     if pull["base"]["ref"] == default_branch:
         diff = subprocess.run(["git", "-C", repo, "diff", "-U0", "--no-color", f"{base}...{head}"],
                               check=True, capture_output=True, text=True).stdout
+        digest = pr_diff_digest(repo, base, head)
         if baseline is not None:
             try:
                 names = subprocess.run(["git", "-C", repo, "diff", "--name-only", "-z", "--diff-filter=d",
@@ -398,7 +429,7 @@ def gate_pr(repo: str, github: str, number: int, default_branch: str, trusted: s
                 return head, "pending", _out("pending", f"semgrep did not run: {e}")[1]
     state, desc = evaluate({"head_sha": head, "head_ref": pull["head"]["ref"], "base_ref": pull["base"]["ref"],
                             "default_branch": default_branch, "author_id": pull["user"]["id"],
-                            "repo": github, "number": number}, comments, trusted, diff, humans, semgrep)
+                            "repo": github, "number": number}, comments, trusted, diff, humans, semgrep, digest)
     return head, state, desc
 
 
@@ -420,6 +451,8 @@ def _main() -> int:
     ap.add_argument("--run-url", default="")
     ap.add_argument("--semgrep", action="store_true", help="scan the PR's added lines against the committed baseline")
     ap.add_argument("--write-baseline", action="store_true", help="scan the default branch HEAD and rewrite the baseline")
+    ap.add_argument("--print-digest", action="store_true",
+                    help="print the PR's head and diff digest as JSON, for any lane that records a PASS (CHE-3610)")
     ap.add_argument("--post", action="store_true", help="write the commit status (default: print only)")
     a = ap.parse_args()
     if a.write_baseline:
@@ -428,6 +461,11 @@ def _main() -> int:
             json.dump({"configs": list(SEMGREP_CONFIGS), "findings": fps}, f, indent=1)
             f.write("\n")
         print(f"baseline: {len(fps)} ERROR finding(s)")
+        return 0
+    if a.print_digest:
+        pull = json.loads(_gh(f"repos/{a.github}/pulls/{a.pr}"))
+        head = pull["head"]["sha"]
+        print(json.dumps({"head": head, "digest": pr_diff_digest(a.repo, pull["base"]["sha"], head)}))
         return 0
     with open(f"{a.repo}/{TRUSTED_AUTHORS}") as f:
         registry = json.load(f)

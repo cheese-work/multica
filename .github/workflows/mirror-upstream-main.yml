@@ -4,6 +4,13 @@ name: Mirror upstream-main
 # The only writer of upstream-main. Runs only the reviewed mirror script from
 # the default branch; builds nothing and installs nothing.
 #
+# Writer: a c00-multicado App token (Cheese, 6 Nov 2026, decision card af20).
+# Upstream history contains .github/workflows files, and GITHUB_TOKEN can never
+# hold `workflows` permission, so it cannot push them. The App key sits in the
+# `ci-app-token` environment (branch policy: main only), so a schedule run and a
+# dispatch from main can read it and a PR branch cannot. The App needs Contents
+# and Workflows write (owner step). The job token below stays read-only.
+#
 # Failure notification: a failed scheduled run notifies the user who last
 # edited the cron line below (Actions notifications for failed workflows), and
 # shows a red run on the Actions tab. The owner keeps "Send notifications for
@@ -15,7 +22,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: mirror-upstream-main
@@ -26,6 +33,7 @@ jobs:
     name: Fast-forward upstream-main
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    environment: ci-app-token
     steps:
       - uses: actions/checkout@v6
         with:
@@ -34,7 +42,16 @@ jobs:
           sparse-checkout-cone-mode: false
           fetch-depth: 1
           persist-credentials: false
+      - name: Mint the c00-multicado write token
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.C00_MULTICADO_APP_ID }}
+          private-key: ${{ secrets.C00_MULTICADO_CI_PRIVATE_KEY }}
+          repositories: multica
+          permission-contents: write
+          permission-workflows: write
       - name: Fast-forward mirror
         env:
-          TARGET_URL: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
+          TARGET_URL: https://x-access-token:${{ steps.app.outputs.token }}@github.com/${{ github.repository }}.git
         run: bash scripts/mirror-upstream-main.sh

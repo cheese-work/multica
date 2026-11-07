@@ -2315,8 +2315,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Route("/api/issue-workflows", func(r chi.Router) {
 				r.Get("/", h.ListIssueWorkflows)
 				r.Post("/", h.CreateIssueWorkflow)
+				r.Get("/lint", h.LintIssueWorkflows)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetIssueWorkflow)
+					r.Get("/lint", h.LintIssueWorkflow)
 					r.With(handler.RequireHumanOrTaskToken).Patch("/", h.UpdateIssueWorkflow)
 					r.With(handler.RequireHumanActor).Delete("/", h.DeleteIssueWorkflow)
 					r.With(handler.RequireHumanOrTaskToken).Put("/handoffs/{status}", h.SetIssueWorkflowHandoff)
@@ -2705,6 +2707,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Post("/api/chat/continue", h.ContinueChatSession)
 			r.Post("/api/chat/compact", h.CompactChatSession)
 			// Agent-facing DM wakeups: the task token names the DM.
+			r.Post("/api/chat/outcome", h.PostChatOutcome)
 			r.Post("/api/chat/wakeups", h.CreateChatWakeup)
 			r.Get("/api/chat/wakeups", h.ListChatWakeups)
 			r.Delete("/api/chat/wakeups/{wakeupId}", h.CancelChatWakeup)
