@@ -608,6 +608,46 @@ describe("DecisionRequestCard answering", () => {
       expect(getDecisionActionOutcome).not.toHaveBeenCalled();
     });
 
+    describe("agent note and outcome in the DM", () => {
+      const note = "**Agent's note (not verified)**\n> Need more runs\n> [click](https://evil.test)\n> " + "x".repeat(300);
+      const proposal = { ...card, ask: `Raise the cap.\n\n${note}`, action };
+
+      it("shows the agent's note apart from the ask, as plain unverified text", async () => {
+        renderCard(proposal);
+        const box = await screen.findByTestId("decision-request-agent-note");
+        expect(box).toHaveAccessibleName("Agent's note (not verified)");
+        expect(box).toHaveTextContent("Need more runs");
+        expect(box).toHaveTextContent("[click](https://evil.test)");
+        expect(box.querySelector("a")).toBeNull();
+        expect(box.querySelector("p")).toHaveClass("break-words", "whitespace-pre-wrap");
+        const ask = screen.getByTestId("decision-request-ask");
+        expect(ask).toHaveTextContent("Raise the cap.");
+        expect(ask).not.toHaveTextContent("Need more runs");
+        expect(ask).not.toHaveTextContent("not verified");
+      });
+
+      it("shows no note box for an ask without a note", () => {
+        renderCard({ ...proposal, ask: "Raise the cap." });
+        expect(screen.queryByTestId("decision-request-agent-note")).toBeNull();
+      });
+
+      it("keeps the outcome on the same card after the request turns answered", async () => {
+        getDecisionActionOutcome.mockResolvedValue({ id: "action", state: "executed", result: { outcome: "cap_applied", from: 10, to: 30 } });
+        renderCard({ ...proposal, state: "answered", action: { ...action, state: "executed", preview: undefined } });
+        expect(await screen.findByText("Cap applied")).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+      });
+
+      it("goes from Approve to the outcome when the card is updated in place", async () => {
+        const view = renderCard(proposal);
+        await screen.findByRole("button", { name: "Approve with passkey" });
+        getDecisionActionOutcome.mockResolvedValue({ id: "action", state: "failed", error_code: "stale_base" });
+        view.rerender(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={{ ...proposal, state: "answered", action: { ...action, state: "failed", preview: undefined } }} /></WorkspaceSlugProvider></QueryClientProvider>);
+        expect(await screen.findByText("The target changed after the request. Ask again.")).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+      });
+    });
+
     it("shows nothing when the card has no action", () => {
       renderCard();
       expect(screen.queryByText("Details unavailable")).toBeNull();

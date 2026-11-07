@@ -418,6 +418,7 @@
     "action_unavailable": "无法显示详情",
     "action_approve": "使用通行密钥批准",
     "action_preview": "批准后将更改的内容",
+    "agent_note": "智能体备注（未验证）",
     "answer_send_passkey": "使用通行密钥发送",
     "answer_open_browser": "在浏览器中打开",
     "answer_passkey_needed": "此回答需要你的通行密钥。再次发送以确认。",

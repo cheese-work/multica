@@ -418,6 +418,7 @@
     "action_unavailable": "詳細を表示できません",
     "action_approve": "パスキーで承認",
     "action_preview": "承認で変更される内容",
+    "agent_note": "エージェントのメモ（未検証）",
     "answer_send_passkey": "パスキーで送信",
     "answer_open_browser": "ブラウザで開く",
     "answer_passkey_needed": "この回答にはパスキーが必要です。もう一度送信して確定してください。",

@@ -60,6 +60,34 @@ describe("DecisionActionApproval", () => {
     expect(await screen.findByText(label)).toBeTruthy();
   });
 
+  it.each([
+    [{ outcome: "cap_applied", from: 10, to: 30 }, ["Cap applied", "10 → 30"]],
+    [{ outcome: "run_queued" }, ["Run queued"]],
+    [{ outcome: "still_blocked:budget_exhausted" }, ["Still blocked: budget_exhausted"]],
+    [{ outcome: "future_thing" }, ["Executed"]],
+    [undefined, ["Executed"]],
+  ])("shows the executed outcome %j", async (result, texts) => {
+    api.approveDecisionAction.mockResolvedValue({ ...outcome("executed"), result });
+    await renderApproval().approve();
+    for (const text of texts) expect(await screen.findByText(text)).toBeTruthy();
+  });
+
+  it("shows stale_base as a failed approval that needs a new request", async () => {
+    api.approveDecisionAction.mockResolvedValue(outcome("failed", "stale_base"));
+    await renderApproval().approve();
+    expect(await screen.findByText("Failed")).toBeTruthy();
+    expect(screen.getByText("The target changed after the request. Ask again.")).toBeTruthy();
+  });
+
+  it("reads the outcome again when the card around it reports a new action state", async () => {
+    const view = renderWithI18n(<DecisionActionApproval actionId="a1" payloadSha256="abc" state="pending" />);
+    await screen.findByRole("button", { name: "Approve with passkey" });
+    api.getDecisionActionOutcome.mockResolvedValue({ ...outcome("executed"), result: { outcome: "run_queued" } });
+    view.rerender(<DecisionActionApproval actionId="a1" payloadSha256="abc" state="executed" />);
+    expect(await screen.findByText("Run queued")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+  });
+
   it("prompts enrollment when the user has no passkey", async () => {
     api.challengeDecisionAction.mockRejectedValue(new ApiError("no_passkey: enroll a passkey before approving", 409, "Conflict"));
     const { approve, onEnroll } = renderApproval();

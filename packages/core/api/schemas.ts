@@ -1054,6 +1054,7 @@ const DecisionActionSchema = z.lazy(() => z.object({
   id: z.string(),
   action_type: z.string().catch(""),
   payload_sha256: z.string(),
+  state: z.string().optional().catch(undefined),
   preview: z.object({
     fields: z.array(z.object({ label: z.string(), current: z.string(), proposed: z.string() }).loose()).min(1),
     sha256: z.string().regex(SHA256_HEX),

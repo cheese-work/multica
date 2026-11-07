@@ -150,12 +150,14 @@
       "stale_cap": "已有更高的上限生效。",
       "stale_window": "预算窗口已变化。请发起新请求。",
       "not_budgeted": "此事项已不再受预算限制。",
-      "other": "失败：{{code}}"
+      "other": "失败：{{code}}",
+      "stale_base": "请求之后目标已更改。请重新请求。"
     },
     "no_passkey": "批准前请先添加通行密钥。",
     "add_passkey": "添加通行密钥",
     "error": "通行密钥批准未完成。请重试。",
     "lost": "响应丢失。该操作不会被再次批准。请检查结果。",
-    "check": "检查结果"
+    "check": "检查结果",
+    "outcome": { "cap_applied": "已应用上限", "run_queued": "运行已排队", "still_blocked": "仍被阻止：{{reason}}" }
   }
 }
