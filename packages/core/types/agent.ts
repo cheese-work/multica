@@ -1207,6 +1207,12 @@ export type RuntimeUpdateStatus =
   | "failed"
   | "timeout";
 
+export interface RuntimeUpdateProgress {
+  phase: string;
+  bytes_done: number;
+  bytes_total: number;
+}
+
 export interface RuntimeUpdate {
   id: string;
   runtime_id: string;
@@ -1214,6 +1220,8 @@ export interface RuntimeUpdate {
   target_version: string;
   output?: string;
   error?: string;
+  /** Latest download progress the daemon reported; absent before the first report or from an older server. */
+  progress?: RuntimeUpdateProgress;
   created_at: string;
   updated_at: string;
 }

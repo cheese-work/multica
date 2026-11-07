@@ -10,9 +10,13 @@ import {
   NEGATABLE_FILTER_DIMENSIONS,
   type DueDateFilter,
 } from "../issues/stores/view-store";
-import { countAdvancedConditions, sanitizeAdvancedFilter } from "../issues/stores/filter-tree";
+import {
+  countAdvancedConditions,
+  sanitizeAdvancedFilter,
+  sanitizePropertyFilterValues,
+} from "../issues/stores/filter-tree";
 import type { IssuePriority, IssueStatus, ProjectStatus, PropertyFilterValue } from "../types";
-import { isKnownPropertyFilterOp, isPropertyOperatorFilter, propertyFilterValueKey } from "../types";
+import { propertyFilterValueKey } from "../types";
 import { PRIORITY_DISPLAY_ORDER } from "../issues/config";
 import { PROJECT_STATUS_ORDER } from "../projects/config";
 
@@ -56,28 +60,17 @@ function stringArray(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 }
 
-/**
- * Sanitize one property filter's member list. Strings pass through (equality,
- * "true"/"false", "__none__"); operator objects must carry a known op and a
- * string value. Anything else — a hand-edited blob or an operator a future
- * client added — is dropped: a member the store cannot represent must not
- * enter the snapshot (same rule as the enum filters above).
- */
-function propertyFilterValueArray(v: unknown): PropertyFilterValue[] {
-  if (!Array.isArray(v)) return [];
-  return v.filter(
-    (x): x is PropertyFilterValue =>
-      typeof x === "string" ||
-      (isPropertyOperatorFilter(x) && isKnownPropertyFilterOp(x.op)),
-  );
-}
+const ACTOR_FILTER_TYPES: readonly string[] = ["member", "agent", "squad"];
 
+// A shared view's query is untrusted JSON: both `id` and `type` must be the
+// strings the store can represent, or actorFilterKey would throw on render.
 function actorArray(v: unknown): ActorFilterValue[] {
   if (!Array.isArray(v)) return [];
-  return v.filter(
-    (x): x is ActorFilterValue =>
-      !!x && typeof x === "object" && typeof (x as ActorFilterValue).id === "string",
-  );
+  return v.filter((x): x is ActorFilterValue => {
+    if (!x || typeof x !== "object") return false;
+    const { id, type } = x as { id?: unknown; type?: unknown };
+    return typeof id === "string" && typeof type === "string" && ACTOR_FILTER_TYPES.includes(type);
+  });
 }
 
 export function baselineFromQuery(query: Record<string, unknown>): IssueViewBaseline {
@@ -134,7 +127,7 @@ export function baselineFromQuery(query: Record<string, unknown>): IssueViewBase
     for (const [id, selected] of Object.entries(
       query.propertyFilters as Record<string, unknown>,
     )) {
-      const values = propertyFilterValueArray(selected);
+      const values = sanitizePropertyFilterValues(selected);
       if (values.length > 0) {
         propertyFilters[id] = values;
         property.set(id, new Set(values.map(propertyFilterValueKey)));

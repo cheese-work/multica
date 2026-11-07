@@ -22,6 +22,7 @@ import type {
 import type { SidebarIssuesRequest } from "./sidebar-list";
 import { ALL_STATUSES } from "./config";
 import { issueColumnCategory } from "./status-category";
+import { isSchemaValidationError } from "../api/schema";
 
 export function issueTasksOptions(issueId: string) {
   return queryOptions({
@@ -168,6 +169,10 @@ export const issueKeys = {
   /** Full-issue timeline (single TanStack Query, no cursor). */
   timeline: (issueId: string) =>
     [...issueKeys.timelineAll(), issueId] as const,
+  /** Status-history dialog data. Nested under `timeline(issueId)` so every
+   *  timeline invalidation (WS events, reconnect recovery) refreshes it too. */
+  statusHistory: (issueId: string) =>
+    [...issueKeys.timeline(issueId), "status-history"] as const,
   /** Prefix across all issues — WS task lifecycle events invalidate here so
    *  an open composer's trigger preview refreshes when an agent's queue
    *  state changes (the dedup guard makes the answer queue-dependent). */
@@ -540,6 +545,8 @@ const ISSUE_FETCH_MAX_RETRIES = 3;
  */
 export function retryIssueFetch(failureCount: number, err: Error): boolean {
   if (failureCount >= ISSUE_FETCH_MAX_RETRIES) return false;
+  // Unreadable data will not change on retry.
+  if (isSchemaValidationError(err)) return false;
   // Duck-typed on `status`, like `isNotFoundError`: holds across module
   // boundaries and test mocks. No status means a network failure.
   const status = (err as { status?: unknown }).status;
@@ -745,6 +752,14 @@ export function issueTimelineOptions(issueId: string) {
   return queryOptions({
     queryKey: issueKeys.timeline(issueId),
     queryFn: () => api.listTimeline(issueId),
+  });
+}
+
+/** Timeline + truncation flag, fetched only while the status history is open. */
+export function issueStatusHistoryOptions(issueId: string) {
+  return queryOptions({
+    queryKey: issueKeys.statusHistory(issueId),
+    queryFn: () => api.listTimelineWithMeta(issueId),
   });
 }
 

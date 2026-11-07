@@ -146,4 +146,15 @@ describe("ScheduledWakeupsChip", () => {
 
     expect(screen.getByRole("button", { name: /Scheduled 1/ })).toBeTruthy();
   });
+
+  it("labels an issue watch by its expiry, not as a fire time", async () => {
+    mocks.list.mockResolvedValue([
+      { ...wakeup("w1", "Relay the reply", "2026-10-29T07:00:00Z"), issue_id: "i1", event: "comment.created" },
+    ]);
+    renderChip("UTC");
+    fireEvent.click(await screen.findByRole("button", { name: "Scheduled 1" }));
+    expect(await screen.findByText(/Watching issue/)).toBeInTheDocument();
+    expect(screen.getByText(/07:00/)).toBeInTheDocument();
+    expect(screen.getByText("Relay the reply")).toBeInTheDocument();
+  });
 });

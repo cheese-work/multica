@@ -14,6 +14,7 @@ import {
   advancedFilterSignature,
   pruneAdvancedFilter,
   sanitizeAdvancedFilter,
+  sanitizePropertyFilters,
   simpleFromAdvancedFilter,
 } from "../issues/stores/filter-tree";
 
@@ -109,9 +110,7 @@ function filterMeaning(query: Record<string, unknown>): Record<string, unknown> 
     NEGATABLE_FILTER_DIMENSIONS.every(
       (dimension) => !filterDimensionHasSelection(query as unknown as FilterSnapshot, dimension),
     ) &&
-    Object.values((query.propertyFilters ?? {}) as Record<string, unknown[]>).every(
-      (values) => values.length === 0,
-    );
+    Object.keys(sanitizePropertyFilters(query.propertyFilters)).length === 0;
   if (simple && flatEmpty) return { ...query, ...simple, advancedFilter: "" };
   return { ...query, advancedFilter: advancedFilterSignature(tree) };
 }

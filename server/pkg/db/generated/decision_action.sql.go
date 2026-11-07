@@ -337,6 +337,66 @@ func (q *Queries) ListDecisionActionsAwaitingPostCommit(ctx context.Context, bat
 	return items, nil
 }
 
+const listRecentRejectedProposalParams = `-- name: ListRecentRejectedProposalParams :many
+SELECT a.params, a.updated_at
+FROM decision_action a
+JOIN decision_request r ON r.id = a.decision_request_id AND r.workspace_id = a.workspace_id
+WHERE a.workspace_id = $1
+  AND a.state = 'rejected'
+  AND a.requested_by_agent_id = $2
+  AND r.human_user_id = $3
+  AND r.issue_id = $4
+  AND a.action_type = $5
+  AND a.action_version = $6
+  AND a.updated_at > now() - $7::interval
+`
+
+type ListRecentRejectedProposalParamsParams struct {
+	WorkspaceID     pgtype.UUID     `json:"workspace_id"`
+	AgentID         pgtype.UUID     `json:"agent_id"`
+	RecipientUserID pgtype.UUID     `json:"recipient_user_id"`
+	IssueID         pgtype.UUID     `json:"issue_id"`
+	ActionType      string          `json:"action_type"`
+	ActionVersion   int32           `json:"action_version"`
+	Cooldown        pgtype.Interval `json:"cooldown"`
+}
+
+type ListRecentRejectedProposalParamsRow struct {
+	Params    []byte             `json:"params"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+// Params of the actions this person rejected within the cooldown, for one
+// agent, issue and action. The caller matches the params hash, which is
+// lane-independent: a rejection in any lane counts.
+func (q *Queries) ListRecentRejectedProposalParams(ctx context.Context, arg ListRecentRejectedProposalParamsParams) ([]ListRecentRejectedProposalParamsRow, error) {
+	rows, err := q.db.Query(ctx, listRecentRejectedProposalParams,
+		arg.WorkspaceID,
+		arg.AgentID,
+		arg.RecipientUserID,
+		arg.IssueID,
+		arg.ActionType,
+		arg.ActionVersion,
+		arg.Cooldown,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRecentRejectedProposalParamsRow{}
+	for rows.Next() {
+		var i ListRecentRejectedProposalParamsRow
+		if err := rows.Scan(&i.Params, &i.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockAgentRuntimeNowait = `-- name: LockAgentRuntimeNowait :one
 SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, shared_with FROM agent_runtime WHERE id = $1 AND workspace_id = $2 FOR NO KEY UPDATE NOWAIT
 `
@@ -577,7 +637,7 @@ func (q *Queries) LockDecisionLiveAnswerNowait(ctx context.Context, arg LockDeci
 }
 
 const lockDecisionRequestNowait = `-- name: LockDecisionRequestNowait :one
-SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, answer_revision FROM decision_request
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq FROM decision_request
 WHERE authority = 'human' AND workspace_id = $1 AND id = $2
 FOR UPDATE NOWAIT
 `
@@ -624,7 +684,9 @@ func (q *Queries) LockDecisionRequestNowait(ctx context.Context, arg LockDecisio
 		&i.ProjectID,
 		&i.Kind,
 		&i.ExpiresAt,
+		&i.ProposalFingerprint,
 		&i.AnswerRevision,
+		&i.WakeSeq,
 	)
 	return i, err
 }
@@ -680,7 +742,7 @@ func (q *Queries) LockDecisionSquadNowait(ctx context.Context, arg LockDecisionS
 }
 
 const lockDecisionWorkflowNowait = `-- name: LockDecisionWorkflowNowait :one
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve FROM issue_workflow
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, start_status_key FROM issue_workflow
 WHERE workspace_id = $1 AND id = $2
 FOR UPDATE NOWAIT
 `
@@ -709,6 +771,7 @@ func (q *Queries) LockDecisionWorkflowNowait(ctx context.Context, arg LockDecisi
 		&i.RunBudgetSince,
 		&i.RunBudgetTokenAllowance,
 		&i.RunBudgetTokenReserve,
+		&i.StartStatusKey,
 	)
 	return i, err
 }

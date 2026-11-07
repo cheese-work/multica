@@ -114,7 +114,7 @@ func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db
 	if !ok || !step.HandsOff() {
 		return nil, nil
 	}
-	humans, err := h.workflowHumans(ctx, step, project, prev.WorkspaceID, prev.RequestedByID)
+	humans, err := h.workflowHumans(ctx, q, step, project, prev.WorkspaceID, prev.RequestedByID)
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +156,7 @@ func (e *createHandoffError) Error() string { return e.message }
 // calls it under the catalog and project locks.
 func (h *Handler) createHandoffResolver(r *http.Request, workspaceID, creatorType string, creatorID, requestedByID pgtype.UUID) service.CreateHandoffResolver {
 	return func(ctx context.Context, step issueworkflow.Step, project db.Project) (pgtype.Text, pgtype.UUID, error) {
-		humans, err := h.workflowHumans(ctx, step, project, project.WorkspaceID, requestedByID)
+		humans, err := h.workflowHumans(ctx, h.Queries, step, project, project.WorkspaceID, requestedByID)
 		if err != nil {
 			return pgtype.Text{}, pgtype.UUID{}, err
 		}
@@ -609,7 +609,10 @@ func taskRunsForAssignee(issue db.Issue, task *db.AgentTaskQueue) bool {
 // stored ids outlive the member row. Other handlers need none of this, so they
 // skip the lookups. A workspace with no owner is not an error; a failed lookup
 // is, so the write fails instead of leaving the issue unassigned.
-func (h *Handler) workflowHumans(ctx context.Context, step issueworkflow.Step, project db.Project, workspaceID, requestedByID pgtype.UUID) (issueworkflow.Humans, error) {
+func (h *Handler) workflowHumans(ctx context.Context, q *db.Queries, step issueworkflow.Step, project db.Project, workspaceID, requestedByID pgtype.UUID) (issueworkflow.Humans, error) {
+	if step.Handler.Type == issueworkflow.HandlerAgent {
+		return issueworkflow.Humans{RoutingAgent: routingAgentFor(ctx, q, workspaceID, project, step.StatusKey)}, nil
+	}
 	if step.Handler.Type != issueworkflow.HandlerHumanByRole {
 		return issueworkflow.Humans{}, nil
 	}
@@ -648,7 +651,7 @@ func (h *Handler) workflowHumans(ctx context.Context, step issueworkflow.Step, p
 func (h *Handler) stepHandlerName(ctx context.Context, issue db.Issue, project db.Project, step issueworkflow.Step) string {
 	// A brief only names the handler; on a lookup failure it names the fallbacks
 	// that need no lookup. The write that matters resolves it again and fails.
-	humans, err := h.workflowHumans(ctx, step, project, issue.WorkspaceID, issue.RequestedByID)
+	humans, err := h.workflowHumans(ctx, h.Queries, step, project, issue.WorkspaceID, issue.RequestedByID)
 	if err != nil {
 		slog.Warn("workflow brief: resolve human handler", "issue_id", uuidToString(issue.ID), "error", err)
 	}

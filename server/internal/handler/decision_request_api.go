@@ -58,6 +58,12 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusBadRequest, err.Error())
 		return
 	}
+	// The recommended option is shown first (CHE-3628); an ask with two or more options must identify it.
+	parsed, err = parsed.RequireRecommendedFirst()
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, err.Error())
+		return
+	}
 	hints := decisiontx.LintAsk(parsed)
 	sourceIssueID, ok := parseUUIDOrBadRequest(writer, parsed.SourceIssueID, "ask.source_issue_id")
 	if !ok {
@@ -120,6 +126,12 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeDecisionError(writer, err, "decision request")
 		return
 	}
+	handler.writeDecisionResult(writer, request, issue, result, hints)
+}
+
+// writeDecisionResult answers a replay with 200, or publishes the events of a
+// new request and answers 201.
+func (handler *Handler) writeDecisionResult(writer http.ResponseWriter, request *http.Request, issue db.Issue, result decisionRequestResult, hints []string) {
 	if result.Replayed {
 		action, err := handler.replayedDecisionAction(request.Context(), issue, result.Request)
 		if err != nil {
@@ -165,8 +177,8 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 			"decision_intent_targets": []string{uuidToString(result.Request.HumanUserID)},
 		})
 	}
-	if result.Parked {
-		handler.publishDecisionStatusChange(request.Context(), issue, result.ParkedIssue, "decision_request")
+	if result.ParkedActivity != nil {
+		handler.publishDecisionStatusChange(request.Context(), issue, result.ParkedIssue, result.ParkedActivity, "decision_request")
 	}
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
 	handler.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(result.Request.HumanUserID), uuidToString(result.Message.ChatSessionID), protocol.ChatMessagePayload{

@@ -22,6 +22,7 @@ export function useDmSessionSurface({
   send,
   onOpenSession,
   onArchived,
+  onUnseen,
   onRename,
   onFork,
 }: {
@@ -31,6 +32,8 @@ export function useDmSessionSurface({
   onOpenSession: (session: ChatSession) => void;
   /** Moves the pane off a DM after the server archived it. */
   onArchived: (session: ChatSession) => void;
+  /** Moves the pane off a DM after the server marked it unseen. */
+  onUnseen: (session: ChatSession) => void;
   onRename?: InputProps["onRename"];
   onFork?: InputProps["onFork"];
 }): {
@@ -42,6 +45,7 @@ export function useDmSessionSurface({
     | "onStatistic"
     | "onArchive"
     | "onPin"
+    | "onUnseen"
     | "onUnarchive"
     | "presetAgentId"
     | "sessionArchived"
@@ -51,12 +55,16 @@ export function useDmSessionSurface({
   archive: (session: ChatSession) => Promise<boolean>;
   unarchive: (session: ChatSession) => Promise<boolean>;
   togglePin: (session: ChatSession) => Promise<boolean>;
+  markUnseen: (session: ChatSession) => Promise<boolean>;
 } {
   const actions = useChatSessionActions();
   const [statsSessionId, setStatsSessionId] = useState<string | null>(null);
 
   const archive = (target: ChatSession) =>
     actions.archive(target, { onArchived: () => onArchived(target) });
+
+  const markUnseen = (target: ChatSession) =>
+    actions.markUnseen(target, { onMarked: () => onUnseen(target) });
 
   const archivedSend = useArchivedSend<SendArgs>({
     session,
@@ -78,6 +86,7 @@ export function useDmSessionSurface({
       onStatistic: active ? () => setStatsSessionId(active.id) : undefined,
       onArchive: active ? () => archive(active) : undefined,
       onPin: active ? () => actions.togglePin(active) : undefined,
+      onUnseen: active ? () => markUnseen(active) : undefined,
       onUnarchive: session && archived ? () => actions.unarchive(session) : undefined,
       // The server answers /preset only inside a saved, active DM.
       presetAgentId: active?.agent_id,
@@ -99,5 +108,6 @@ export function useDmSessionSurface({
     archive,
     unarchive: actions.unarchive,
     togglePin: actions.togglePin,
+    markUnseen,
   };
 }

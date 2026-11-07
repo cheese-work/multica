@@ -498,6 +498,31 @@ export function withoutAdvancedFilterFields(
 }
 
 /**
+ * One property filter's member list from untrusted JSON (a shared view's
+ * query). Strings pass through; operator objects need a known op and a
+ * string value. Anything else is dropped.
+ */
+export function sanitizePropertyFilterValues(v: unknown): PropertyFilterValue[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter(
+    (x): x is PropertyFilterValue =>
+      typeof x === "string" || (isPropertyOperatorFilter(x) && isKnownPropertyFilterOp(x.op)),
+  );
+}
+
+/** A property-filter map from untrusted JSON, with empty and malformed
+ *  entries dropped. */
+export function sanitizePropertyFilters(v: unknown): Record<string, PropertyFilterValue[]> {
+  const out: Record<string, PropertyFilterValue[]> = {};
+  if (!v || typeof v !== "object" || Array.isArray(v)) return out;
+  for (const [id, selected] of Object.entries(v)) {
+    const values = sanitizePropertyFilterValues(selected);
+    if (values.length > 0) out[id] = values;
+  }
+  return out;
+}
+
+/**
  * Flat property filters folded into a tree as conditions, ANDed like they
  * were. Returns null when the tree's shape can't take them: an "any" root
  * that already holds a group.
@@ -506,9 +531,9 @@ export function foldPropertyFiltersIntoTree(
   tree: AdvancedFilterGroup,
   propertyFilters: Record<string, PropertyFilterValue[]>,
 ): AdvancedFilterGroup | null {
-  const conditions = Object.entries(propertyFilters)
-    .filter(([, values]) => values.length > 0)
-    .map(([propertyId, values]) => createFilterCondition(propertyFilterField(propertyId), [...values]));
+  const conditions = Object.entries(sanitizePropertyFilters(propertyFilters)).map(([propertyId, values]) =>
+    createFilterCondition(propertyFilterField(propertyId), values),
+  );
   if (conditions.length === 0) return tree;
   if (tree.match === "all") return { ...tree, children: [...tree.children, ...conditions] };
   if (tree.children.some((child) => child.type === "group")) return null;

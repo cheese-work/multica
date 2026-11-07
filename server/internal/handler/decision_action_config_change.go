@@ -46,6 +46,12 @@ type configChange struct {
 	Apply func(ctx context.Context, execution decisionActionExecution, read configChangeRead) error
 	// Publish sends the realtime event after commit; it must be idempotent.
 	Publish func(ctx context.Context, handler *Handler, action db.DecisionAction) error
+	// QueueField, when set, makes approvals of this field on one target wait
+	// for each other, for at most the transaction's lock timeout, instead of
+	// answering busy_retry. A waiting approval holds no other lock, and it
+	// reads the value the earlier one committed, so it answers
+	// precondition_drift. Leave it empty to keep busy_retry.
+	QueueField string
 }
 
 type configChangeRead struct {
