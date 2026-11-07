@@ -157,9 +157,10 @@ class ReceiptRefreshAfterCi(unittest.TestCase):
     def setUp(self):
         self.text = WORKFLOW.read_text()
 
-    def test_a_finished_ci_or_security_gate_run_re_runs_the_classifier(self):
+    def test_a_finished_ci_run_re_runs_the_classifier(self):
         # `status` events posted with GITHUB_TOKEN start no workflow run; workflow_run does fire for them.
-        self.assertRegex(self.text, r"(?m)^  workflow_run:\n    workflows: \[CI, security-gate\]\n    types: \[completed\]")
+        # A security verdict that lands later refreshes the receipt through workflow_dispatch (security-gate.yml, CHE-4250).
+        self.assertRegex(self.text, r"(?m)^  workflow_run:\n    workflows: \[CI\]\n    types: \[completed\]")
         self.assertNotRegex(self.text, r"(?m)^  status:")
         self.assertNotRegex(self.text, r"(?m)^  issue_comment:")
 
@@ -192,7 +193,7 @@ class ReceiptRefreshAfterCi(unittest.TestCase):
             out = Path(d) / "out"
             full = {**os.environ, "PATH": d + ":" + os.environ["PATH"], "GITHUB_REPOSITORY": "o/r",
                     "GITHUB_OUTPUT": str(out), "EVENT_NAME": event, "PR_NUMBER": "", "BASE_SHA": "", "HEAD_SHA": "",
-                    "RUN_NAME": "", "RUN_CREATED": "2026-11-03T09:00:00Z", "FIXTURE_FILE": str(Path(d) / "fixture.json"), **env}
+                    "RUN_NAME": "", "INPUT_PR": "", "FIXTURE_FILE": str(Path(d) / "fixture.json"), **env}
             done = subprocess.run(["bash", "-e", "-c", script], env=full, capture_output=True, text=True, timeout=120)
             targets = None
             if out.exists():
@@ -214,50 +215,49 @@ class ReceiptRefreshAfterCi(unittest.TestCase):
     def test_a_finished_run_for_a_pull_request_head_names_that_pull_request_from_the_api(self):
         self.assertEqual(self.find("workflow_run", HEAD_SHA=A, RUN_NAME="CI"), [{"pr": 7, "base": B, "head": A}])
 
-    def test_a_security_gate_run_on_the_default_branch_sha_names_the_pull_requests_whose_gate_status_it_wrote(self):
-        self.assertEqual(self.find("workflow_run", HEAD_SHA="d" * 40, RUN_NAME="security-gate"), [{"pr": 8, "base": B, "head": C}])
-
-    def test_a_ci_run_with_no_open_pull_request_for_its_head_names_nothing_and_does_not_scan(self):
+    def test_a_ci_run_with_no_open_pull_request_for_its_head_names_nothing(self):
         self.assertEqual(self.find("workflow_run", HEAD_SHA="d" * 40, RUN_NAME="CI"), [])
 
     def test_a_pull_request_whose_head_moved_since_the_run_is_not_named(self):
         self.assertEqual(self.find("workflow_run", HEAD_SHA="e" * 40, RUN_NAME="CI"), [])
 
-    def test_the_gate_scan_reaches_a_pull_request_far_down_the_open_list(self):
-        # 78 PRs were open when this was written; the last one in the list is as reachable as the first.
-        fx = find_fixture(open_prs=range(100, 220), fresh={219})
-        got = self.find("workflow_run", fx, HEAD_SHA="d" * 40, RUN_NAME="security-gate")
-        self.assertEqual(sorted(t["pr"] for t in got), [8, 219])
+    def shared_head_fixture(self):
+        fx = find_fixture()
+        sibling = {"number": 9, "state": "open", "head": {"sha": C}}
+        fx["pulls_for"][C] = [{"number": 8, "state": "open", "head": {"sha": C}}, sibling,
+                              {"number": 10, "state": "closed", "head": {"sha": C}}]
+        fx["pr"]["9"] = {"number": 9, "base": {"sha": B}, "head": {"sha": C}}
+        return fx
 
-    def test_every_pull_request_with_a_fresh_gate_status_is_named_not_only_the_first_few(self):
-        fx = find_fixture(open_prs=range(100, 112), fresh=set(range(100, 112)))
-        got = self.find("workflow_run", fx, HEAD_SHA="d" * 40, RUN_NAME="security-gate")
-        self.assertEqual(sorted(t["pr"] for t in got), [8, *range(100, 112)])
+    def test_a_dispatch_for_a_pull_request_names_it_and_every_open_pull_request_sharing_its_head(self):
+        # CHE-4250: a verdict changes the shared head's status, so a sibling's receipt goes stale with it.
+        got = self.find("workflow_dispatch", self.shared_head_fixture(), INPUT_PR="8")
+        self.assertEqual(sorted(t["pr"] for t in got), [8, 9])
 
-    def assert_find_fails_without_naming_a_partial_list(self, fail_path, **fixture_args):
-        fx = find_fixture(open_prs=range(100, 104), fresh={100, 101}, **fixture_args)
-        fx["fail"] = [fail_path]
-        done, targets = self.run_find("workflow_run", fx, HEAD_SHA="d" * 40, RUN_NAME="security-gate")
+    def test_a_dispatch_reads_one_pull_request_and_scans_no_list(self):
+        fx = self.shared_head_fixture()
+        fx["fail"] = ["repos/o/r/pulls?state=open&per_page=100", f"repos/o/r/commits/{C}/statuses?per_page=100"]
+        done, targets = self.run_find("workflow_dispatch", fx, INPUT_PR="8")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(sorted(t["pr"] for t in targets), [8, 9])
+
+    def test_a_dispatch_input_that_is_not_a_number_is_refused(self):
+        for bad in ("", "8; id", "8 9", "$(id)", "x8"):
+            done, targets = self.run_find("workflow_dispatch", self.shared_head_fixture(), INPUT_PR=bad)
+            self.assertNotEqual(done.returncode, 0, bad)
+            self.assertIsNone(targets, bad)
+
+    def test_a_failed_pull_request_read_fails_the_job_instead_of_dropping_it(self):
+        fx = find_fixture()
+        fx["fail"] = ["repos/o/r/pulls/7"]
+        done, targets = self.run_find("workflow_run", fx, HEAD_SHA=A, RUN_NAME="CI")
         self.assertNotEqual(done.returncode, 0, done.stdout)
         self.assertIsNone(targets)
 
-    def test_a_gate_run_with_no_open_pull_requests_names_nothing(self):
-        fx = find_fixture()
-        fx["open"] = []
-        self.assertEqual(self.find("workflow_run", fx, HEAD_SHA="d" * 40, RUN_NAME="security-gate"), [])
-
-    def test_a_pagination_failure_after_a_partial_page_fails_the_job(self):
-        self.assert_find_fails_without_naming_a_partial_list("repos/o/r/pulls?state=open&per_page=100")
-
-    def test_a_failed_status_read_fails_the_job(self):
-        self.assert_find_fails_without_naming_a_partial_list(f"repos/o/r/commits/{sha(100)}/statuses?per_page=100")
-
-    def test_a_failed_pull_request_read_fails_the_job_instead_of_dropping_it(self):
-        self.assert_find_fails_without_naming_a_partial_list("repos/o/r/pulls/100")
-
     def test_more_pull_requests_than_a_matrix_can_hold_fails_the_job_instead_of_dropping_some(self):
-        fx = find_fixture(open_prs=range(100, 400), fresh=set(range(100, 400)))
-        done, _ = self.run_find("workflow_run", fx, HEAD_SHA="d" * 40, RUN_NAME="security-gate")
+        fx = find_fixture()
+        fx["pulls_for"][A] = [{"number": n, "state": "open", "head": {"sha": A}} for n in range(100, 400)]
+        done, _ = self.run_find("workflow_run", fx, HEAD_SHA=A, RUN_NAME="CI")
         self.assertNotEqual(done.returncode, 0)
         self.assertIn("256", done.stdout + done.stderr)
 

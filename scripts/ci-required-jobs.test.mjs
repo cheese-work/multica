@@ -11,7 +11,7 @@ const ci = read(".github/workflows/ci.yml");
 const policy = read(".github/ci-policy.yml");
 
 // Jobs a required check may wait on. Anything heavier would put its runtime on the PR critical path.
-const FAST_LANE_DEPS = new Set(["changes", "migration-prefix-check"]);
+const FAST_LANE_DEPS = new Set(["changes", "migration-prefix-check", "backend-test-shards"]); // CHE-4268: shard matrix behind backend-tests
 
 const section = (text, start, end) => {
   const from = text.indexOf(start);

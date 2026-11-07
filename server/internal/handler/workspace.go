@@ -1475,6 +1475,10 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		{
+			name: "delete provider breakers",
+			run:  func() error { return qtx.DeleteProviderBreakersForWorkspace(ctx, requester.WorkspaceID) },
+		},
+		{
 			name: "delete leaf data",
 			run:  func() error { return qtx.DeleteWorkspaceLeafData(ctx, requester.WorkspaceID) },
 		},

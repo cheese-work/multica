@@ -149,6 +149,7 @@ vi.mock("../../common/use-app-foreground", () => ({
   useAppForeground: () => h.appForeground.value,
 }));
 vi.mock("@multica/core/chat", () => ({
+  CHAT_TITLE_MAX: 60,
   useChatStore: Object.assign(
     (sel: (s: typeof h.store) => unknown) => sel(h.store),
     { getState: () => h.store },
