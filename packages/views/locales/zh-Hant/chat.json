@@ -376,6 +376,7 @@
     "option_cons": "缺點",
     "option_cost": "成本或時間",
     "answer_send": "傳送",
+    "answer_clear": "清除選擇",
     "answer_error": "傳送失敗，請重試。",
     "answer_helper": "傳送會將你的回答發佈到 {{issue}}。給 DM 代理的問題請寫在下方訊息框。",
     "answer_helper_issue": "傳送會將你的回答發佈到 {{issue}}。",
