@@ -1409,6 +1409,8 @@ describe("ChatMessageList row keys (CHE-3329)", () => {
     );
     const keys = [...container.querySelectorAll("[data-row-key]")].map((el) => el.getAttribute("data-row-key"));
     expect(new Set(keys).size).toBe(keys.length);
+    // The summary renders as a collapsed compaction divider (CHE-2169).
+    fireEvent.click(screen.getByRole("button", { name: /Compacted/ }));
     expect(screen.getByText("SUMMARY-TEXT")).toBeInTheDocument();
     expect(screen.getByText("REPLY-TEXT")).toBeInTheDocument();
     expect(error.mock.calls.filter(([m]) => String(m).includes("same key"))).toHaveLength(0);
