@@ -6,9 +6,10 @@ export interface DecisionAnswerDraft {
   text: string;
 }
 
-/** One draft per decision request id; cleared on a successful send or an explicit discard. */
+/** One draft per decision request id; cleared on a successful send or an explicit discard, never by age. */
 export const useDecisionAnswerDraftStore = createKeyedDraftStore<DecisionAnswerDraft>({
   storageKey: "multica_decision_answer_drafts",
+  ttlMs: Number.POSITIVE_INFINITY,
   emptyData: { option: "", text: "" },
   hasMeaningful: (d) => d.option !== "" || d.text.trim() !== "",
 });
