@@ -4,6 +4,7 @@ import { Loader2, MessageSquareQuote } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
 import { ApiError } from "@multica/core/api";
 import { useAnswerDecisionRequest } from "@multica/core/issues/decision-answer";
+import { approvablePreview } from "@multica/core/issues/decision-action-preview";
 import { chatKeys } from "@multica/core/chat/queries";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { formatShortcut, useShortcut } from "@multica/core/shortcuts";
@@ -16,6 +17,7 @@ import { LazyContentEditor as ContentEditor } from "./lazy-content-editor";
 import { RichContent } from "../../rich-content";
 import { CompactIssueChipsProvider } from "../../issues/compact-issue-chips-context";
 import { useT } from "../../i18n";
+import { DecisionActionApproval } from "../../common/decision-action-approval";
 import { AppLink, useOptionalNavigation } from "../../navigation";
 import { openExternal } from "../../platform";
 import { isDesktopShell } from "../../platform/local-directory";
@@ -173,6 +175,35 @@ function DecisionAnswerForm({
         )}
       </div>
     </form>
+  );
+}
+
+// What the approval would change, shown before Approve exists. No usable preview
+// (missing, empty, malformed, bad digest, unknown action type) means the server
+// could not vouch for the action: say so and keep Approve disabled.
+function ActionPreview({ action }: { action: NonNullable<RequestCard["action"]> }) {
+  const { t } = useT("chat");
+  const fields = approvablePreview(action)?.fields;
+  if (!fields) {
+    return (
+      <div className="space-y-1">
+        <p role="status" className="text-label text-warning">{t(($) => $.decision.action_unavailable)}</p>
+        <Button size="sm" disabled>{t(($) => $.decision.action_approve)}</Button>
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-2">
+      <dl data-testid="decision-request-action-preview" aria-label={t(($) => $.decision.action_preview)} className="space-y-1 rounded-lg border border-surface-border px-2 py-1.5 text-label">
+        {fields.map((field) => (
+          <div key={field.label} className="flex flex-wrap items-baseline gap-x-2">
+            <dt className="font-medium">{field.label}</dt>
+            <dd className="text-muted-foreground">{field.current} → <span className="text-foreground">{field.proposed}</span></dd>
+          </div>
+        ))}
+      </dl>
+      <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} />
+    </div>
   );
 }
 
@@ -359,6 +390,7 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
             </CompactIssueChipsProvider>
           </AnnotatableAnswer>
         </div>
+        {card.state === "open" && card.action && <ActionPreview action={card.action} />}
         {(refused || card.state !== "open") && hasDraft(draft) && !answer.isPending ? (
           <KeptDraft draft={draft} onDiscard={discardDraft} />
         ) : (
