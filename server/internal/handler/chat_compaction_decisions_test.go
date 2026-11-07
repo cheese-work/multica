@@ -59,6 +59,19 @@ func requireDecisions(t *testing.T, where, text string, want ...recordedDecision
 	}
 }
 
+// requireDecisionRefs checks that each decision is still named (key, time, record
+// id) even when its words were collapsed or cut to fit.
+func requireDecisionRefs(t *testing.T, where, text string, want ...recordedDecision) {
+	t.Helper()
+	for _, decision := range want {
+		for _, part := range []string{decision.key, decision.answerID} {
+			if !strings.Contains(text, part) {
+				t.Fatalf("%s no longer names %q of decision %s", where, part, decision.key)
+			}
+		}
+	}
+}
+
 func TestCompactionCarriesEveryRecordedDecision(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -122,7 +135,7 @@ func TestCompactionKeepsDecisionsPastTheOldCaps(t *testing.T) {
 	for index := 0; index < 51; index++ {
 		want = append(want, recordDecision(t, agentID, sessionID, fmt.Sprintf("bounds %d", index), fmt.Sprintf("Decision number %d stands.", index), index%2 == 0))
 	}
-	want = append(want, recordDecision(t, agentID, sessionID, "bounds big", "Big decision: "+strings.Repeat("keep every word. ", 4500), false))
+	big := recordDecision(t, agentID, sessionID, "bounds big", "Big decision: "+strings.Repeat("keep every word. ", 4500), false)
 	for round := 1; round <= 2; round++ {
 		session, summary, fail := testHandler.compactChatInPlace(ctx, parseUUID(sessionID), pgtype.UUID{}, "Summary that keeps nothing.")
 		if fail != nil {
@@ -143,8 +156,10 @@ func TestCompactionKeepsDecisionsPastTheOldCaps(t *testing.T) {
 		}
 		for where, text := range map[string]string{"folded row": summary.Content, "prompt": seed} {
 			requireDecisions(t, fmt.Sprintf("%s round %d", where, round), text, want...)
-			if strings.Contains(text, "omitted") {
-				t.Fatalf("%s round %d omits decisions:\n%.400s", where, round, text)
+			requireDecisionRefs(t, fmt.Sprintf("%s round %d", where, round), text, big)
+			// An oversize record is cut visibly, never dropped silently.
+			if !strings.Contains(text, "words cut") || strings.Contains(text, strconv.Quote(big.words)) {
+				t.Fatalf("%s round %d does not mark the cut of the oversize record", where, round)
 			}
 		}
 		sessionID = uuidToString(session.ID)
@@ -235,5 +250,72 @@ func TestCompactionSeedDropsDecisionsWithdrawnAfterCompaction(t *testing.T) {
 	requireDecisions(t, "fresh session prompt", seed, kept)
 	if strings.Contains(seed, revoked.words) || strings.Contains(seed, revoked.answerID) {
 		t.Fatalf("fresh session prompt still lists the withdrawn decision as standing:\n%s", seed)
+	}
+}
+
+// A provider token inside a decision's words is redacted in the live block the
+// seed rebuilds, as it is in the stored divider row.
+func TestCompactionSeedRedactsDecisionWords(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID := createHandlerTestAgent(t, "compaction-decisions-redact", []byte("[]"))
+	sessionID := dbfx.ChatSession(t, agentID)
+	const token = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn"
+	recordDecision(t, agentID, sessionID, "token decision", "Use this token "+token+" for the deploy.", false)
+	session, summary, fail := testHandler.compactChatInPlace(ctx, parseUUID(sessionID), pgtype.UUID{}, "Nothing kept.")
+	if fail != nil {
+		t.Fatalf("compact: %s", fail.message)
+	}
+	seed, err := testHandler.compactionSeedBlock(ctx, session, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for where, text := range map[string]string{"row": summary.Content, "prompt": seed} {
+		if strings.Contains(text, "ghp_ABCDEF") {
+			t.Fatalf("%s carries a provider token:\n%s", where, text)
+		}
+	}
+}
+
+// Enough decisions to pass the block budget: the newest stay in full, older ones
+// collapse to one line that still names key, time and record id, and a count
+// line says so. Nothing is dropped silently, and the block stays bounded.
+func TestCompactionDecisionsOverflowCollapsesOlderOnes(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID := createHandlerTestAgent(t, "compaction-decisions-overflow", []byte("[]"))
+	sessionID := dbfx.ChatSession(t, agentID)
+	const total = 150
+	var all []recordedDecision
+	for index := 0; index < total; index++ {
+		all = append(all, recordDecision(t, agentID, sessionID, fmt.Sprintf("overflow %d", index), fmt.Sprintf("Decision %03d: %s", index, strings.Repeat("words ", 70)), false))
+	}
+	for round := 1; round <= 2; round++ {
+		session, summary, fail := testHandler.compactChatInPlace(ctx, parseUUID(sessionID), pgtype.UUID{}, "Nothing kept.")
+		if fail != nil {
+			t.Fatalf("compact round %d: %s", round, fail.message)
+		}
+		seed, err := testHandler.compactionSeedBlock(ctx, session, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for where, text := range map[string]string{"row": summary.Content, "prompt": seed} {
+			requireDecisionRefs(t, where, text, all...)
+			requireDecisions(t, where+" newest", text, all[total-1])
+			if strings.Contains(text, strconv.Quote(all[0].words)) {
+				t.Fatalf("%s round %d keeps the oldest decision in full; the block has no budget", where, round)
+			}
+			if !strings.Contains(text, " older decisions collapsed") {
+				t.Fatalf("%s round %d does not say how many decisions it collapsed", where, round)
+			}
+			head, _, _ := strings.Cut(text, decisionsBlockEnd)
+			if len(head) > 2*decisionsBlockBudget {
+				t.Fatalf("%s round %d block is %d bytes", where, round, len(head))
+			}
+		}
 	}
 }
