@@ -138,6 +138,8 @@
   },
   "decision_action": {
     "approve": "パスキーで承認",
+    "reject": "却下",
+    "reject_error": "却下できませんでした。もう一度お試しください。",
     "waiting": "パスキーを待っています…",
     "state": {
       "executed": "実行済み",

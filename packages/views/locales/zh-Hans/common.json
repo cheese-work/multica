@@ -138,6 +138,8 @@
   },
   "decision_action": {
     "approve": "使用通行密钥批准",
+    "reject": "拒绝",
+    "reject_error": "拒绝未完成。请重试。",
     "waiting": "正在等待你的通行密钥…",
     "state": {
       "executed": "已执行",

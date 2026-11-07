@@ -138,6 +138,8 @@
   },
   "decision_action": {
     "approve": "패스키로 승인",
+    "reject": "거부",
+    "reject_error": "거부하지 못했습니다. 다시 시도하세요.",
     "waiting": "패스키를 기다리는 중…",
     "state": {
       "executed": "실행됨",

@@ -138,6 +138,8 @@
   },
   "decision_action": {
     "approve": "Approuver avec une clé d'accès",
+    "reject": "Refuser",
+    "reject_error": "Le refus n'a pas abouti. Réessayez.",
     "waiting": "En attente de votre clé d'accès…",
     "state": {
       "executed": "Exécutée",

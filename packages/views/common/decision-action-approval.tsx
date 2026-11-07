@@ -9,7 +9,7 @@ import { Button } from "@multica/ui/components/ui/button";
 import { useT } from "../i18n";
 
 type View =
-  | { step: "loading" | "idle" | "busy" | "no_passkey" | "retry" | "lost" }
+  | { step: "loading" | "idle" | "busy" | "rejecting" | "no_passkey" | "retry" | "reject_retry" | "lost" }
   | { step: "done"; outcome: PasskeyDecisionOutcome };
 
 const TERMINAL = ["executed", "failed", "rejected", "expired", "cancelled"] as const;
@@ -103,6 +103,17 @@ export function DecisionActionApproval({
     }
   };
 
+  const reject = async () => {
+    setView({ step: "rejecting" });
+    try {
+      const outcome = await api.rejectDecisionAction(actionId);
+      setView(isTerminal(outcome.state) ? { step: "done", outcome } : { step: "lost" });
+    } catch (error) {
+      if (error instanceof ApiError && error.status < 500 && !error.message.startsWith("not_pending")) setView({ step: "reject_retry" });
+      else await readBack(); // the click may have landed: show the real state
+    }
+  };
+
   if (view.step === "done") {
     const { state, error_code: code } = view.outcome;
     const detail =
@@ -146,9 +157,13 @@ export function DecisionActionApproval({
   return (
     <div className="space-y-1 text-label">
       {view.step === "retry" && <p role="alert" className="text-caption text-destructive">{t(($) => $.decision_action.error)}</p>}
-      <Button size="sm" onClick={approve} disabled={view.step === "busy"}>
-        {view.step === "busy" ? t(($) => $.decision_action.waiting) : t(($) => $.decision_action.approve)}
-      </Button>
+      {view.step === "reject_retry" && <p role="alert" className="text-caption text-destructive">{t(($) => $.decision_action.reject_error)}</p>}
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" onClick={approve} disabled={view.step === "busy" || view.step === "rejecting"}>
+          {view.step === "busy" ? t(($) => $.decision_action.waiting) : t(($) => $.decision_action.approve)}
+        </Button>
+        <Button size="sm" variant="outline" onClick={reject} disabled={view.step === "busy" || view.step === "rejecting"}>{t(($) => $.decision_action.reject)}</Button>
+      </div>
     </div>
   );
 }

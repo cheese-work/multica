@@ -138,6 +138,8 @@
   },
   "decision_action": {
     "approve": "Approve with passkey",
+    "reject": "Reject",
+    "reject_error": "Rejecting did not complete. Try again.",
     "waiting": "Waiting for your passkey…",
     "state": {
       "executed": "Executed",

@@ -4,7 +4,9 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@multica/core/api";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { chatKeys } from "@multica/core/chat/queries";
+import { applyDecisionAnswerUpdated } from "@multica/core/realtime";
 import { renderWithI18n } from "../../test/i18n";
 import type { DecisionRequestCard as RequestCard } from "@multica/core/types";
 import { DecisionRequestCard } from "./decision-request-card";
@@ -638,13 +640,24 @@ describe("DecisionRequestCard answering", () => {
         expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
       });
 
-      it("goes from Approve to the outcome when the card is updated in place", async () => {
-        const view = renderCard(proposal);
+      it("goes from Approve to the outcome when the server announces the change", async () => {
+        // The real handler for decision_answer:updated invalidates the DM message
+        // query; the refetch carries the action's new state into the card.
+        const qc = new QueryClient();
+        let served: RequestCard = proposal;
+        const Dm = () => {
+          const { data } = useQuery({ queryKey: chatKeys.messages("s1"), queryFn: async () => served });
+          return data ? <DecisionRequestCard card={data} /> : null;
+        };
+        renderWithI18n(<QueryClientProvider client={qc}><WorkspaceSlugProvider slug="acme"><Dm /></WorkspaceSlugProvider></QueryClientProvider>);
         await screen.findByRole("button", { name: "Approve with passkey" });
+        expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument();
+        served = { ...proposal, state: "answered", action: { ...action, state: "failed", preview: undefined } };
         getDecisionActionOutcome.mockResolvedValue({ id: "action", state: "failed", error_code: "stale_base" });
-        view.rerender(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={{ ...proposal, state: "answered", action: { ...action, state: "failed", preview: undefined } }} /></WorkspaceSlugProvider></QueryClientProvider>);
+        act(() => applyDecisionAnswerUpdated(qc, { answer_id: "a", issue_id: proposal.issue_id, state: "effective" }));
         expect(await screen.findByText("The target changed after the request. Ask again.")).toBeInTheDocument();
         expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+        expect(screen.queryByRole("button", { name: "Reject" })).toBeNull();
       });
     });
 

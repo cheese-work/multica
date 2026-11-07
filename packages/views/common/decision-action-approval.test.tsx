@@ -7,6 +7,7 @@ import { DecisionActionApproval } from "./decision-action-approval";
 const api = vi.hoisted(() => ({
   challengeDecisionAction: vi.fn(),
   approveDecisionAction: vi.fn(),
+  rejectDecisionAction: vi.fn(),
   getDecisionActionOutcome: vi.fn(),
 }));
 const sign = vi.hoisted(() => vi.fn());
@@ -86,6 +87,33 @@ describe("DecisionActionApproval", () => {
     view.rerender(<DecisionActionApproval actionId="a1" payloadSha256="abc" state="executed" />);
     expect(await screen.findByText("Run queued")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+  });
+
+  it("rejects without a passkey and shows rejected", async () => {
+    api.rejectDecisionAction.mockResolvedValue(outcome("rejected"));
+    renderApproval();
+    fireEvent.click(await screen.findByRole("button", { name: "Reject" }));
+    expect(await screen.findByText("Rejected")).toBeTruthy();
+    expect(api.rejectDecisionAction).toHaveBeenCalledWith("a1");
+    expect(api.challengeDecisionAction).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+  });
+
+  it("reads the outcome back when the reject response is lost", async () => {
+    api.rejectDecisionAction.mockRejectedValue(new Error("network"));
+    api.getDecisionActionOutcome.mockResolvedValueOnce(outcome("pending")).mockResolvedValue(outcome("rejected"));
+    renderApproval();
+    fireEvent.click(await screen.findByRole("button", { name: "Reject" }));
+    expect(await screen.findByText("Rejected")).toBeTruthy();
+  });
+
+  it("keeps both buttons and shows an error when reject is refused", async () => {
+    api.rejectDecisionAction.mockRejectedValue(new ApiError("busy", 409, "Conflict"));
+    renderApproval();
+    fireEvent.click(await screen.findByRole("button", { name: "Reject" }));
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reject" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Approve with passkey" })).toBeTruthy();
   });
 
   it("prompts enrollment when the user has no passkey", async () => {
