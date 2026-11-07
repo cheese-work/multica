@@ -102,8 +102,10 @@ func TestChatLaterDurationParsing(t *testing.T) {
 			t.Errorf("parseLaterSeconds(%q) = %d, %v; want %d", in, got, err, want)
 		}
 	}
-	if _, err := parseLaterSeconds("soon"); err == nil {
-		t.Error("garbage duration accepted")
+	for _, bad := range []string{"soon", "99999999999999999999d", "9999999999d"} {
+		if got, err := parseLaterSeconds(bad); err == nil {
+			t.Errorf("parseLaterSeconds(%q) accepted as %d", bad, got)
+		}
 	}
 }
 

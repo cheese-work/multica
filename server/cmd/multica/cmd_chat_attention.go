@@ -96,7 +96,11 @@ func parseLaterSeconds(s string) (int64, error) {
 	}
 	var days int64
 	if m := laterPart.FindStringSubmatch(s); m != nil {
-		days, _ = strconv.ParseInt(m[1], 10, 64)
+		var err error
+		// 1e6 days is far past the server's 168h cap; the guard only stops int64 wrap-around.
+		if days, err = strconv.ParseInt(m[1], 10, 64); err != nil || days > 1_000_000 {
+			return 0, fmt.Errorf("invalid duration %q (use 90m, 2h, 1d12h or seconds)", s)
+		}
 		s = s[len(m[0]):]
 	}
 	var rest time.Duration
