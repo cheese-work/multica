@@ -9,7 +9,7 @@ import test from "node:test";
 const read = (name) => readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), "utf8");
 const runsOn = (text) => text.split("\n").filter((line) => /^\s+runs-on:/.test(line));
 
-for (const name of ["ci.yml", "main-build.yml", "pr-changelog-check.yml", "pr-close-target-check.yml"]) {
+for (const name of ["ci.yml", "main-build.yml", "pr-guards.yml"]) {
   test(`${name} runs every job on GitHub-hosted runners`, () => {
     const lines = runsOn(read(name));
     assert.ok(lines.length > 0);
@@ -21,8 +21,8 @@ for (const name of ["ci.yml", "main-build.yml", "pr-changelog-check.yml", "pr-cl
 }
 
 test("PR close target validates edited events using trusted code without an edited-event skip", () => {
-  const workflow = read("pr-close-target-check.yml");
-  assert.match(workflow, /types: \[opened, edited, synchronize, reopened\]/);
+  const workflow = read("pr-guards.yml");
+  assert.match(workflow, /types: \[opened, edited, synchronize, reopened, ready_for_review\]/);
   assert.match(workflow, /ref: \$\{\{ github\.workflow_sha \}\}/);
   assert.doesNotMatch(workflow, /if:.*(action|edited)/);
 });
@@ -45,9 +45,9 @@ test("release.yml leaves the Go cache to the disk on a self-hosted runner", () =
 
 // CHE-3604: the gate is a light job (median 1.5 min), so it runs on a GitHub-hosted runner, free
 // for this public repository. CHE-3128 had moved it to a dedicated X99 lane. The trust boundary
-// is unchanged: the job runs the default-branch definition and the `if:` filter still applies.
+// is unchanged: the job runs the default-branch definition.
 test("security-gate.yml runs on a GitHub-hosted runner", () => {
-  // CHE-4250: the workflow has two jobs (the gate and its mechanical-tier refresh); every one must be hosted.
+  // CHE-4385: the second job (mechanical-tier) is a reusable-workflow call with no runner of its own.
   const lines = runsOn(read("security-gate.yml"));
   assert.ok(lines.length > 0);
   for (const line of lines) {

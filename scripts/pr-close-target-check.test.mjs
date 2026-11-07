@@ -8,7 +8,7 @@ import test from "node:test";
 const load = () => import("./pr-close-target-check.mjs");
 const script = new URL("./pr-close-target-check.mjs", import.meta.url).pathname;
 const fixtures = new URL("./fixtures/pr-close-target/", import.meta.url).pathname;
-const workflow = new URL("../.github/workflows/pr-close-target-check.yml", import.meta.url).pathname;
+const workflow = new URL("../.github/workflows/pr-guards.yml", import.meta.url).pathname;
 
 const pullRequest = (overrides = {}) => ({
   title: "fix(x): change (CHE-1926) [squash]",
