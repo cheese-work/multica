@@ -34,6 +34,10 @@ const (
 	StatusCauseQoder    = "qoder"
 )
 
+// StatusCauseDecision is the cause of the move that parks an issue while it
+// waits for a decision and of the move that restores it afterwards.
+const StatusCauseDecision = "decision"
+
 // StatusTriggerVersion is the schema version of details.trigger.
 const StatusTriggerVersion = 1
 

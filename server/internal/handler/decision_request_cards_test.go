@@ -70,6 +70,9 @@ func TestDecisionRequestCardsFollowStateAndPreserveAsk(test *testing.T) {
 				if card["state"] != wantedState || card["ask"] != fixture.decision.Ask || card["issue_id"] != fixture.issueID || card["issue_identifier"] == "" {
 					test.Fatalf("incorrect request card: %v", card)
 				}
+				if card["issue_title"] != fixture.issue.Title || fixture.issue.Title == "" {
+					test.Fatalf("request card lacks the source issue title: %v", card)
+				}
 				if state == "legacy" || state == "foreign_source" {
 					if card["source_comment_id"] != nil {
 						test.Fatalf("invalid source link exposed: %v", card)

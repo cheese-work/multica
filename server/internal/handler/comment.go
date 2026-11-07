@@ -32,11 +32,13 @@ import (
 )
 
 type CommentResponse struct {
-	ID                  string  `json:"id"`
-	IssueID             string  `json:"issue_id"`
-	AuthorType          string  `json:"author_type"`
-	AuthorID            string  `json:"author_id"`
-	Content             string  `json:"content"`
+	ID         string `json:"id"`
+	IssueID    string `json:"issue_id"`
+	AuthorType string `json:"author_type"`
+	AuthorID   string `json:"author_id"`
+	Content    string `json:"content"`
+	// Withheld marks Content as a stub: an elevated run may not read the body.
+	Withheld            bool    `json:"withheld,omitempty"`
 	Type                string  `json:"type"`
 	ParentID            *string `json:"parent_id"`
 	WebURL              string  `json:"web_url,omitempty"`
@@ -610,6 +612,7 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 	grouped := h.groupReactions(r, commentIDs)
 	groupedAtt := h.groupAttachments(r, commentIDs)
 
+	readFilter := h.newReadFilter(r)
 	resp := make([]CommentResponse, len(result.Comments))
 	for i, c := range result.Comments {
 		cid := uuidToString(c.ID)
@@ -637,6 +640,11 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 			clipped, truncated := summarizeContent(resp[i].Content)
 			resp[i].Content = clipped
 			resp[i].ContentTruncated = &truncated
+		}
+		// Last, so no read mode or summary clip can put the original text back.
+		if readFilter.withholdsComment(c) {
+			resp[i].Content = h.commentStub(r.Context(), c)
+			resp[i].Withheld = true
 		}
 	}
 
@@ -2754,6 +2762,9 @@ func (h *Handler) mergeCommentIntoPendingTask(ctx context.Context, issue db.Issu
 		"new_trigger_comment_id", uuidToString(newTriggerCommentID),
 		"coalesced_count", len(row.CoalescedCommentIds))
 	h.TaskService.RecordHumanDelegation(ctx, attr)
+	// The run's status is unchanged, so no lifecycle event tells clients that it
+	// now answers this comment.
+	h.TaskService.BroadcastTaskCoalesced(ctx, row)
 	return commentMergeSucceeded
 }
 
