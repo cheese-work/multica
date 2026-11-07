@@ -333,6 +333,25 @@ describe("DecisionRequestCard answering", () => {
     expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: "Option B", text: undefined });
   });
 
+  it("does not style an unselected recommended option as selected; the badge is its only cue", async () => {
+    renderCard();
+    const optionB = screen.getByRole("radio", { name: /Option B/ });
+    expect(optionB).toHaveTextContent("Recommended");
+    expect(optionB).toHaveAttribute("aria-checked", "false");
+    expect(optionB.className).not.toMatch(/border-primary|bg-primary|ring-primary/);
+    await userEvent.setup().click(optionB);
+    expect(optionB.className).toMatch(/border-primary/);
+    expect(optionB.className).toMatch(/ring-primary/);
+  });
+
+  it("gives Send and Clear selection a 44px touch height on a phone", async () => {
+    renderCard();
+    await userEvent.setup().click(screen.getByRole("radio", { name: /Option A/ }));
+    for (const name of ["Send", "Clear selection"]) {
+      expect(screen.getByRole("button", { name }).className).toContain("max-sm:h-11");
+    }
+  });
+
   it("deselects on a second tap or on Clear, and Send is disabled again", async () => {
     renderCard();
     const user = userEvent.setup();

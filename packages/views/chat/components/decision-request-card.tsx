@@ -121,7 +121,6 @@ function DecisionAnswerForm({
               onClick={() => toggleOption(item.label)}
               className={cn(
                 "flex min-h-9 w-full items-start gap-2 rounded-lg border border-surface-border px-2 py-1.5 text-left hover:bg-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-70",
-                card.recommended_option_index === index && "border-primary bg-primary/5",
                 draft.option === item.label && "border-primary bg-primary/10 ring-1 ring-primary",
               )}
             >
@@ -169,12 +168,12 @@ function DecisionAnswerForm({
       </p>
       {tooLong && <p role="alert" className="text-caption text-destructive">{t(($) => $.decision.answer_too_long)}</p>}
       <div className="flex flex-wrap items-center gap-2">
-        <Button type="submit" size="sm" disabled={!canSend} className="disabled:opacity-70">
+        <Button type="submit" size="sm" disabled={!canSend} className="disabled:opacity-70 max-sm:h-11">
           {answer.isPending && <Loader2 className="size-4 animate-spin" aria-hidden />}
           {t(($) => (needsPasskey ? $.decision.answer_send_passkey : $.decision.answer_send))}
         </Button>
         {draft.option !== "" && (
-          <Button type="button" size="sm" variant="ghost" disabled={!canSubmit} onClick={() => onDraftChange({ option: "" })}>
+          <Button type="button" size="sm" variant="ghost" disabled={!canSubmit} className="max-sm:h-11" onClick={() => onDraftChange({ option: "" })}>
             {t(($) => $.decision.answer_clear)}
           </Button>
         )}
