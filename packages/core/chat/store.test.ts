@@ -454,3 +454,23 @@ describe("session action guard", () => {
     expect(store.getState().beginSessionAction("s1", "unarchive")).toBe(true);
   });
 });
+
+describe("suppressAutoRead", () => {
+  it("holds the session until the next open, and survives leaving the DM", () => {
+    const store = createChatStore({ storage: memStorage() });
+    store.getState().setActiveSession("s1");
+    store.getState().suppressAutoRead("s1");
+    store.getState().setActiveSession(null);
+    expect(store.getState().autoReadSuppressedId).toBe("s1");
+
+    store.getState().setActiveSession("s1");
+    expect(store.getState().autoReadSuppressedId).toBeNull();
+  });
+
+  it("is dropped when another DM opens", () => {
+    const store = createChatStore({ storage: memStorage() });
+    store.getState().suppressAutoRead("s1");
+    store.getState().setActiveSession("s2");
+    expect(store.getState().autoReadSuppressedId).toBeNull();
+  });
+});

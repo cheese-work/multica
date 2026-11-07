@@ -309,6 +309,8 @@
     "archive_failed": "Impossible d’archiver cette discussion",
     "unarchive_failed": "Impossible de désarchiver cette discussion",
     "pin_failed": "Impossible de mettre à jour l’épingle",
+    "unseen": "Marquer comme non vu",
+    "unseen_failed": "Impossible de marquer cette discussion comme non vue",
     "undo": "Annuler"
   },
   "header": {
@@ -325,6 +327,7 @@
     "statistics": "Statistiques",
     "pin": "Épingler la discussion",
     "unpin": "Détacher la discussion",
+    "unseen": "Marquer comme non vu",
     "preset": { "label": "Préréglage", "inherit": "Hériter", "base": "Base" }
   },
   "scheduled": {
