@@ -1837,7 +1837,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// Scheduling pause: the handler also refuses agent credentials.
 					r.Post("/pause", h.PauseWorkspaceScheduling)
 					r.Post("/resume", h.ResumeWorkspaceScheduling)
-					r.With(denyRunToken).Post("/provider-breakers/{provider}/reset", h.ResetProviderBreaker)
+					r.With(handler.RequireHumanActor).Post("/provider-breakers/{provider}/reset", h.ResetProviderBreaker)
 					r.Post("/members", h.CreateInvitation)
 					r.Route("/members/{memberId}", func(r chi.Router) {
 						r.Patch("/", h.UpdateMember)

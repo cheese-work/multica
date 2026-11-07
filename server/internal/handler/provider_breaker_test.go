@@ -126,3 +126,25 @@ func TestListProviderBreakersClosedHidesStaleEvidence(t *testing.T) {
 	}
 	t.Fatalf("provider %q missing from %+v", provider, out.Breakers)
 }
+
+// Security gate (PR 1162): a machine credential bound to an owner/admin must not reset a breaker.
+func TestResetProviderBreakerRejectsMachineCredentials(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	const provider = "machine-test"
+	for _, source := range []string{"task_token", "cloud_pat"} {
+		t.Run(source, func(t *testing.T) {
+			seedProviderBreaker(t, provider, "open")
+			req := resetBreakerRequest(testUserID, provider)
+			req.Header.Set("X-Actor-Source", source)
+			testutil.Call(t, testHandler.ResetProviderBreaker, req).Want(http.StatusForbidden)
+			if got := breakerState(t, provider); got != "open" {
+				t.Fatalf("%s reset changed state to %q", source, got)
+			}
+			if n := breakerAuditCount(t, provider, "reset"); n != 0 {
+				t.Fatalf("refused %s reset wrote %d audit rows", source, n)
+			}
+		})
+	}
+}

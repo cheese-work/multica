@@ -64,6 +64,11 @@ func (h *Handler) ListProviderBreakers(w http.ResponseWriter, r *http.Request) {
 
 // ResetProviderBreaker force-closes a breaker. Owner/admin only; the reset and its audit row commit together.
 func (h *Handler) ResetProviderBreaker(w http.ResponseWriter, r *http.Request) {
+	// Human only whatever the task write-scope mode is: a machine credential bound to an admin must not reset.
+	if isMachineCredentialActor(r) {
+		writeError(w, http.StatusForbidden, "this endpoint is only available to human actors")
+		return
+	}
 	workspaceID := h.resolveWorkspaceID(r)
 	if _, ok := h.requireWorkspaceRole(w, r, workspaceID, "workspace not found", "owner", "admin"); !ok {
 		return
