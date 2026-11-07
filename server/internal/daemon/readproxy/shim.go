@@ -21,8 +21,10 @@ func ShimMain(args []string, getenv func(string) string, stdout, stderr io.Write
 		call = func(sock string) (Result, error) { return ReadPR(context.Background(), sock, args[1], args[2]) }
 	case len(args) == 3 && args[0] == "log":
 		call = func(sock string) (Result, error) { return ReadCILog(context.Background(), sock, args[1], args[2]) }
+	case len(args) == 3 && args[0] == "commit":
+		call = func(sock string) (Result, error) { return ReadCommit(context.Background(), sock, args[1], args[2]) }
 	default:
-		fmt.Fprintln(stderr, "gh: elevated runs support only `gh read <node-id> [title|body]` and `gh log <owner/repo> <job-id>`")
+		fmt.Fprintln(stderr, "gh: elevated runs support only `gh read <node-id> [title|body]`, `gh log <owner/repo> <job-id>` and `gh commit <owner/repo> <sha>`")
 		return 2
 	}
 	sock := getenv(SocketEnv)
