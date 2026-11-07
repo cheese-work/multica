@@ -886,7 +886,7 @@
     "agent_decisions_stopped_description": "原因：{{reason}}。开启决策会清除这条记录。",
     "agent_decisions_stopped_confirm": "开启",
     "runtime_profile_label": "运行时配置档",
-    "runtime_profile_hint": "智能体 CLI 配置方式的工作区默认值。Managed 会为每个任务生成最小化的配置目录。",
+    "runtime_profile_hint": "智能体 CLI 配置方式的工作区默认值。Managed 会为每个任务生成最小化的配置目录。没有托管适配器的工具在 Managed 下会失败，请为这些智能体显式设置 个人。",
     "runtime_profile_personal": "个人",
     "runtime_profile_managed": "托管",
     "runtime_profile_inherit": "工作区默认",

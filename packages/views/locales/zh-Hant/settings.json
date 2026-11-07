@@ -888,7 +888,7 @@
     "agent_decisions_stopped_description": "原因：{{reason}}。開啟決策會清除這筆記錄。",
     "agent_decisions_stopped_confirm": "開啟",
     "runtime_profile_label": "執行階段設定檔",
-    "runtime_profile_hint": "代理 CLI 設定方式的工作區預設值。Managed 會為每個任務產生最精簡的設定目錄。",
+    "runtime_profile_hint": "代理 CLI 設定方式的工作區預設值。Managed 會為每個任務產生最精簡的設定目錄。沒有受管轉接器的工具在 Managed 下會失敗，請為這些代理明確設定 個人。",
     "runtime_profile_personal": "個人",
     "runtime_profile_managed": "受管",
     "runtime_profile_inherit": "工作區預設",

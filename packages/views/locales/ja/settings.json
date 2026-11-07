@@ -886,7 +886,7 @@
     "agent_decisions_stopped_description": "理由: {{reason}}。判断をオンにすると、この記録は消去されます。",
     "agent_decisions_stopped_confirm": "オンにする",
     "runtime_profile_label": "ランタイムプロファイル",
-    "runtime_profile_hint": "エージェント CLI の設定の作り方のワークスペース既定値です。Managed はタスクごとに最小構成のホームを生成します。",
+    "runtime_profile_hint": "エージェント CLI の設定の作り方のワークスペース既定値です。Managed はタスクごとに最小構成のホームを生成します。管理対象アダプターのないツールは Managed では失敗するため、それらのエージェントには パーソナル を明示的に設定してください。",
     "runtime_profile_personal": "パーソナル",
     "runtime_profile_managed": "マネージド",
     "runtime_profile_inherit": "ワークスペース既定",

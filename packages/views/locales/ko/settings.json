@@ -886,7 +886,7 @@
     "agent_decisions_stopped_description": "사유: {{reason}}. 결정을 켜면 이 기록이 지워집니다.",
     "agent_decisions_stopped_confirm": "켜기",
     "runtime_profile_label": "런타임 프로필",
-    "runtime_profile_hint": "에이전트 CLI 설정 방식의 워크스페이스 기본값입니다. Managed는 작업마다 최소 구성 홈을 만듭니다.",
+    "runtime_profile_hint": "에이전트 CLI 설정 방식의 워크스페이스 기본값입니다. Managed는 작업마다 최소 구성 홈을 만듭니다. 관리형 어댑터가 없는 도구는 Managed에서 실패하므로, 해당 에이전트에는 개인을 명시적으로 지정하세요.",
     "runtime_profile_personal": "개인",
     "runtime_profile_managed": "관리형",
     "runtime_profile_inherit": "워크스페이스 기본값",

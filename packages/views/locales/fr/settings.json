@@ -892,7 +892,7 @@
     "agent_decisions_stopped_description": "Motif : {{reason}}. Activer les décisions efface cet enregistrement.",
     "agent_decisions_stopped_confirm": "Activer",
     "runtime_profile_label": "Profil d'exécution",
-    "runtime_profile_hint": "Valeur par défaut de l'espace de travail pour la configuration des CLI d'agent. Managed crée un dossier minimal par tâche.",
+    "runtime_profile_hint": "Valeur par défaut de l'espace de travail pour la configuration des CLI d'agent. Managed crée un dossier minimal par tâche. Les outils sans adaptateur géré échouent sous Managed : donnez à ces agents une surcharge explicite Personnel.",
     "runtime_profile_personal": "Personnel",
     "runtime_profile_managed": "Géré",
     "runtime_profile_inherit": "Valeur par défaut de l'espace de travail",

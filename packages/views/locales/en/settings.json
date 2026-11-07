@@ -892,7 +892,7 @@
     "agent_decisions_stopped_description": "Reason: {{reason}}. Turning decisions on clears this record.",
     "agent_decisions_stopped_confirm": "Turn on",
     "runtime_profile_label": "Runtime profile",
-    "runtime_profile_hint": "Workspace default for how agent CLIs get their config. Managed builds a minimal home per task.",
+    "runtime_profile_hint": "Workspace default for how agent CLIs get their config. Managed builds a minimal home per task. Tools without a managed adapter fail under Managed; give those agents an explicit Personal override.",
     "runtime_profile_personal": "Personal",
     "runtime_profile_managed": "Managed",
     "runtime_profile_inherit": "Workspace default",
