@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -104,27 +105,66 @@ func TestRecoveryLineageGetsNoGenericRetry(t *testing.T) {
 	}
 }
 
-// Ordinary tasks keep the generic schedule: same child, fire_at and max_attempts.
+// Ordinary tasks keep the generic schedule. Expected values are fixed literals
+// taken from the schedule before CHE-1773, not read back from the helpers.
 func TestNonRecoveryTaskKeepsGenericRetry(t *testing.T) {
 	o := newOwnerFixture(t)
 	ctx := context.Background()
-	for _, reason := range sortedRetryableReasons() {
-		t.Run(reason, func(t *testing.T) {
-			id := o.runningTask(t, nil)
-			if _, err := o.svc.TaskSvc.FailTask(ctx, parseTestUUID(t, id), "boom", "", "", "", reason, false, "", ""); err != nil {
+	const network = "agent_error.provider_network"
+	for _, tc := range []struct {
+		name, reason     string
+		attempt, taskMax int
+		retried          bool
+		childMax         int
+		delay            time.Duration
+	}{
+		{"runtime_offline", "runtime_offline", 1, 2, true, 2, time.Second},
+		{"runtime_recovery", "runtime_recovery", 1, 2, true, 2, 0},
+		{"timeout", "timeout", 1, 2, true, 2, 0},
+		{"codex_semantic_inactivity", "codex_semantic_inactivity", 1, 2, true, 2, 0},
+		{"skill_bundle_unavailable", "skill_bundle_unavailable", 1, 2, true, 2, 0},
+		{"provider_capacity_or_rate_limit", "agent_error.provider_capacity_or_rate_limit", 1, 2, true, 2, 10 * time.Minute},
+		{"provider_network tier 1", network, 1, 2, true, 3, 0},
+		{"provider_network tier 2", network, 2, 2, true, 3, 5 * time.Second},
+		{"provider_network tier 3 is exhausted", network, 3, 3, false, 0, 0},
+		{"provider_server_error stays unretried (CHE-1699)", "agent_error.provider_server_error", 1, 2, false, 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id := o.runningTask(t, testutil.Cols{"attempt": tc.attempt, "max_attempts": tc.taskMax})
+			before := time.Now()
+			if _, err := o.svc.TaskSvc.FailTask(ctx, parseTestUUID(t, id), "boom", "", "", "", tc.reason, false, "", ""); err != nil {
 				t.Fatal(err)
 			}
-			var attempt, maxAttempts int
-			var fireAt bool
-			if err := o.Pool.QueryRow(ctx,
-				`SELECT attempt, max_attempts, fire_at IS NOT NULL FROM agent_task_queue WHERE parent_task_id=$1 OR retry_of_task_id=$1`, id).Scan(&attempt, &maxAttempts, &fireAt); err != nil {
-				t.Fatalf("no retry child: %v", err)
-			}
-			if attempt != 2 || maxAttempts != int(retryAttemptCeiling(reason, 2)) || fireAt != (retryDelayForAttempt(reason, 1) > 0) {
-				t.Fatalf("child attempt=%d max=%d fire_at=%t, want generic schedule", attempt, maxAttempts, fireAt)
-			}
+			after := time.Now()
 			if n := o.countNotices(t, id); n != 0 {
 				t.Fatalf("owner notices=%d, want 0", n)
+			}
+			if !tc.retried {
+				if n := o.retryChildren(t, id); n != 0 {
+					t.Fatalf("retry children=%d, want 0", n)
+				}
+				return
+			}
+			var attempt, maxAttempts int
+			var status string
+			var fireAt pgtype.Timestamptz
+			if err := o.Pool.QueryRow(ctx,
+				`SELECT attempt, max_attempts, status, fire_at FROM agent_task_queue WHERE parent_task_id=$1 OR retry_of_task_id=$1`, id).Scan(&attempt, &maxAttempts, &status, &fireAt); err != nil {
+				t.Fatalf("no retry child: %v", err)
+			}
+			wantStatus := "queued"
+			if tc.delay > 0 {
+				wantStatus = "deferred"
+			}
+			if attempt != tc.attempt+1 || maxAttempts != tc.childMax || status != wantStatus || fireAt.Valid != (tc.delay > 0) {
+				t.Fatalf("child attempt=%d max=%d status=%s fire_at set=%t, want attempt=%d max=%d status=%s fire_at set=%t",
+					attempt, maxAttempts, status, fireAt.Valid, tc.attempt+1, tc.childMax, wantStatus, tc.delay > 0)
+			}
+			if tc.delay > 0 {
+				slack := time.Second
+				if fireAt.Time.Before(before.Add(tc.delay-slack)) || fireAt.Time.After(after.Add(tc.delay+slack)) {
+					t.Fatalf("fire_at=%s, want %s after the failure", fireAt.Time, tc.delay)
+				}
 			}
 		})
 	}
@@ -144,7 +184,7 @@ func TestRecoveryLineageWakeupRevision(t *testing.T) {
 		retried  bool
 	}{{4, true}, {5, false}, {6, false}} {
 		t.Run(fmt.Sprintf("revision %d", tc.revision), func(t *testing.T) {
-			id := o.runningTask(t, testutil.Cols{"context": testutil.Raw(fmt.Sprintf(`'{"wakeup_id":"%s","wakeup_revision":%d}'::jsonb`, wakeupID, tc.revision))})
+			id := o.runningTask(t, testutil.Cols{"context": testutil.Raw(fmt.Sprintf(`'{"wakeup_id":%q,"wakeup_revision":%d}'::jsonb`, wakeupID, tc.revision))})
 			if _, err := o.svc.TaskSvc.FailTask(ctx, parseTestUUID(t, id), "boom", "", "", "", "timeout", false, "", ""); err != nil {
 				t.Fatal(err)
 			}
