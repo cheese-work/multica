@@ -49,6 +49,9 @@ describe("copyText", () => {
 
   it("fallback without the async API selects the whole text", async () => {
     setClipboard(undefined);
+    // Model iOS Safari: select() on a readonly textarea is a no-op, so only
+    // an explicit setSelectionRange() leaves the text selected.
+    vi.spyOn(HTMLTextAreaElement.prototype, "select").mockImplementation(() => {});
     let selected: string | undefined;
     document.execCommand = vi.fn(() => {
       const ta = document.querySelector("textarea")!;
