@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"slices"
 	"sort"
@@ -3101,6 +3102,18 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			h.failClaimedTaskBeforeLaunch(r.Context(), task,
 				"This agent's runtime profile is "+harnessProfile+", but the daemon that claimed the task does not support runtime profiles. Update the daemon, or set the agent's runtime profile to personal.",
 				taskfailure.ReasonEnvironmentPrepareFailed, "error_harness_profile_unsupported", http.StatusConflict, "daemon does not support the agent's runtime profile")
+	}
+	// CHE-4331: compaction env for Claude Code, derived from auto_compact at
+	// claim time; never stored in agent env, and the agent's own env wins.
+	if runtime.Provider == "claude" {
+		if ws, err := h.Queries.GetWorkspace(r.Context(), parseUUID(runtimeWorkspaceID)); err != nil {
+			slog.Warn("daemon claim: load workspace for auto-compact env failed", "task_id", uuidToString(task.ID), "error", err)
+		} else if extra := service.ClaudeCompactEnv(runtime.Provider, preset.Settings.Model, ws.Settings, agent.RuntimeConfig, customEnv); len(extra) > 0 {
+			if customEnv == nil {
+				customEnv = map[string]string{}
+			}
+			maps.Copy(customEnv, extra)
+		}
 	}
 	resp.Agent = &TaskAgentData{
 		ID:                    uuidToString(agent.ID),

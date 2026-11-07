@@ -299,7 +299,11 @@ def _out(state: str, desc: str) -> tuple[str, str]:
 
 
 def _gh(*args: str) -> str:
-    return subprocess.run(["gh", "api", *args], check=True, capture_output=True, text=True).stdout
+    try:
+        return subprocess.run(["gh", "api", *args], check=True, capture_output=True, text=True).stdout
+    except subprocess.CalledProcessError as e:  # CHE-4234: capture_output hid the API error; show it in the job log
+        print(f"gh api {args[0]} failed (exit {e.returncode}): {(e.stderr or '').strip()}", file=sys.stderr)
+        raise
 
 
 def _post(github: str, sha: str, state: str, desc: str, run_url: str) -> None:

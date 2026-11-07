@@ -578,7 +578,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			err = errAutoCompactShape
 		} else {
-			err = validateAutoCompactConfig(map[string]any{"auto_compact": incoming})
+			err = validateAutoCompactPatch(incoming)
 		}
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -587,7 +587,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		if incoming == nil {
 			params.AutoCompactReset = pgtype.Bool{Bool: true, Valid: true}
 		} else {
-			params.AutoCompact = req.AutoCompact
+			params.AutoCompact = clearStalePct(req.AutoCompact)
 		}
 	}
 	if req.HarnessProfile != nil {

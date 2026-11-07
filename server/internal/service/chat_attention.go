@@ -194,7 +194,7 @@ func LoadChatAttention(ctx context.Context, q *db.Queries, workspaceID, userID p
 	if err != nil {
 		return nil, fmt.Errorf("list decisions: %w", err)
 	}
-	turns, err := q.ListChatAttentionLatestTurns(ctx, db.ListChatAttentionLatestTurnsParams{WorkspaceID: workspaceID, CreatorID: userID})
+	turns, err := q.ListChatAttentionLatestTurns(ctx, db.ListChatAttentionLatestTurnsParams{WorkspaceID: workspaceID, UserID: userID})
 	if err != nil {
 		return nil, fmt.Errorf("list turns: %w", err)
 	}

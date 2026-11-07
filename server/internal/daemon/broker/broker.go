@@ -94,6 +94,9 @@ type Broker struct {
 	rmu      sync.Mutex
 	receipts []Receipt
 
+	pinMu    sync.RWMutex // guards Base, Synthetic and baseRepo against a base refresh
+	baseRepo string       // bare repo holding refreshed default-branch tips; "" until the first refresh
+
 	fmu     sync.Mutex // guards fenced, open, changed and the elevOp fields
 	fenced  bool
 	open    map[*elevOp]struct{} // authorized, not yet acknowledged by the server
@@ -125,6 +128,7 @@ func New(p Pin, socket string, log *slog.Logger) (*Broker, error) {
 	mux.HandleFunc("GET /pin", b.handlePin)
 	mux.HandleFunc("POST /push", b.track(b.handlePush))
 	mux.HandleFunc("POST /pr", b.track(b.handlePR))
+	mux.HandleFunc("POST /base-refresh", b.track(b.handleRefresh))
 	b.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := b.srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
@@ -162,6 +166,9 @@ func (b *Broker) Close() error {
 	b.ops.Wait()
 	b.stop()
 	b.wg.Wait()
+	if b.baseRepo != "" {
+		_ = os.RemoveAll(b.baseRepo)
+	}
 	return err
 }
 
@@ -206,6 +213,8 @@ func validRef(ref string) bool {
 
 // handlePin tells the in-sandbox client what to bundle.
 func (b *Broker) handlePin(w http.ResponseWriter, _ *http.Request) {
+	b.pinMu.RLock()
+	defer b.pinMu.RUnlock()
 	_ = json.NewEncoder(w).Encode(b.pin)
 }
 
@@ -287,7 +296,7 @@ func (b *Broker) push(r *http.Request) (sha string, status int, err error) {
 	if err := os.MkdirAll(filepath.Join(work, "objects", "info"), 0o755); err != nil {
 		return "", http.StatusInternalServerError, err
 	}
-	if err := os.WriteFile(filepath.Join(work, "objects", "info", "alternates"), []byte(b.pin.Objects+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(work, "objects", "info", "alternates"), b.alternates(), 0o644); err != nil {
 		return "", http.StatusInternalServerError, err
 	}
 	heads, err := bundleHeads(bundle)
@@ -306,8 +315,9 @@ func (b *Broker) push(r *http.Request) (sha string, status int, err error) {
 	if out, err := b.git(ctx, work, nil, "-c", "transfer.fsckObjects=true", "bundle", "unbundle", bundle); err != nil {
 		return "", http.StatusBadRequest, fmt.Errorf("unbundle: %s", b.scrub(firstLine(out)))
 	}
+	var runSHA map[string]string
 	if b.pin.Synthetic != nil {
-		if sha, status, err = b.translate(ctx, work, sha, filepath.Join(scratch, "msg")); err != nil {
+		if sha, runSHA, status, err = b.translate(ctx, work, sha, filepath.Join(scratch, "msg")); err != nil {
 			return "", status, err
 		}
 	}
@@ -317,7 +327,7 @@ func (b *Broker) push(r *http.Request) (sha string, status int, err error) {
 		}
 		return sha, status, err
 	}
-	commits, err := b.commitReceipts(ctx, work, sha)
+	commits, err := b.commitReceipts(ctx, work, sha, runSHA)
 	if errors.Is(err, errTooManyCommits) {
 		return sha, http.StatusRequestEntityTooLarge, err
 	}
