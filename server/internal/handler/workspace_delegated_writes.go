@@ -169,7 +169,10 @@ func (h *Handler) UpdateDelegatedWrites(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	if err := h.saveDelegatedWrites(r.Context(), member, next); err != nil {
+	if err := h.saveDelegatedWrites(r.Context(), r, member, next); err != nil {
+		if failedAudit(w, r, err, "workspace.delegated_writes.update") {
+			return
+		}
 		slog.Warn("update delegated writes failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", id)...)
 		writeError(w, http.StatusInternalServerError, "failed to update delegated writes")
 		return
@@ -183,7 +186,7 @@ func (h *Handler) UpdateDelegatedWrites(w http.ResponseWriter, r *http.Request) 
 
 // saveDelegatedWrites writes the key and its audit record in one transaction
 // under the workspace row lock, so a change without a record does not happen.
-func (h *Handler) saveDelegatedWrites(ctx context.Context, member db.Member, next DelegatedWritesConfig) error {
+func (h *Handler) saveDelegatedWrites(ctx context.Context, r *http.Request, member db.Member, next DelegatedWritesConfig) error {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
 		return err
@@ -220,6 +223,12 @@ func (h *Handler) saveDelegatedWrites(ctx context.Context, member db.Member, nex
 		Action: delegatedWritesActivity, Details: details,
 	}); err != nil {
 		return err
+	}
+	if err := h.writeAudit(ctx, q, r, auditInput{
+		Kind: "workspace.delegated_writes.update", WorkspaceID: member.WorkspaceID, TargetID: member.WorkspaceID,
+		Before: delegatedWritesAuditFields(prev), After: delegatedWritesAuditFields(next),
+	}); err != nil {
+		return auditWriteError{err}
 	}
 	return tx.Commit(ctx)
 }
