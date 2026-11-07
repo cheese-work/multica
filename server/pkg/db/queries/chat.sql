@@ -2037,6 +2037,34 @@ JOIN chat_session cs ON cs.id = t.chat_session_id
 WHERE t.id = $1
 FOR UPDATE OF cs;
 
+-- name: LockChatSessionsByIDs :many
+-- Batch terminators lock the sessions of the chat tasks they are about to end.
+-- ORDER BY id keeps two batches from deadlocking against each other.
+SELECT id FROM chat_session
+WHERE id = ANY(@ids::uuid[])
+ORDER BY id
+FOR UPDATE;
+
+-- name: LockChatSessionsForRuntimes :many
+-- Session half of every runtime-wide teardown (member revocation, runtime
+-- delete). The one lock order is chat_session -> agent -> agent_task_queue:
+-- chat enqueue takes the session then the agent, so a teardown that archives or
+-- locks the runtime's agents must already hold the sessions of those agents,
+-- or the two deadlock. Covers sessions of agents bound to the runtimes and
+-- sessions of any active task pinned to them. ORDER BY id keeps two
+-- teardowns from deadlocking against each other.
+SELECT cs.id FROM chat_session cs
+WHERE cs.agent_id IN (SELECT a.id FROM agent a WHERE a.runtime_id = ANY(@runtime_ids::uuid[]))
+   OR EXISTS (
+        SELECT 1 FROM agent_task_queue task
+        WHERE task.chat_session_id = cs.id
+          AND task.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+          AND (task.runtime_id = ANY(@runtime_ids::uuid[])
+               OR task.agent_id IN (SELECT a.id FROM agent a WHERE a.runtime_id = ANY(@runtime_ids::uuid[])))
+   )
+ORDER BY cs.id
+FOR UPDATE OF cs;
+
 -- name: LockChatSessionsByWorkspace :many
 -- ORDER BY id: a stable lock order keeps two concurrent deleters from
 -- deadlocking against each other.
@@ -2328,6 +2356,19 @@ WHERE t.chat_session_id = ANY($1::uuid[])
   AND t.status = 'completed'
   AND COALESCE(t.chat_compaction_epoch, 0) = cs.compaction_epoch
 ORDER BY t.chat_session_id, t.completed_at DESC, t.id DESC;
+
+-- name: CancelCompactionTasksByWorkspace :many
+-- CHE-2908 (SEC-1 rule 4): a compact chain change cancels every live compaction
+-- task of the workspace, whichever agent it was queued for, so a task queued
+-- under the old value never delivers the transcript. The chat resume pointer is
+-- not touched (SEC-2).
+UPDATE agent_task_queue
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
+    cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
+WHERE task_kind = 'compact'
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+  AND chat_session_id IN (SELECT id FROM chat_session WHERE workspace_id = $1)
+RETURNING *;
 
 -- name: GetLatestCompactionSummary :one
 -- The newest in-place compaction summary of a DM: the seed of its next turn

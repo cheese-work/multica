@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,28 +18,42 @@ func TestProviderBreakerTripThresholdAndWindow(t *testing.T) {
 	now := time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC)
 	failures := []time.Time{now.Add(-4 * time.Minute), now.Add(-2 * time.Minute), now.Add(-time.Minute)}
 
-	if providerBreakerShouldTrip(failures[:2], now, 3, 5*time.Minute) {
+	if providerBreakerShouldTrip(failures[:2], now, 3, 5*time.Minute, 5*time.Second) {
 		t.Fatal("N-1 failures must not trip the breaker")
 	}
-	if !providerBreakerShouldTrip(failures, now, 3, 5*time.Minute) {
+	if !providerBreakerShouldTrip(failures, now, 3, 5*time.Minute, 5*time.Second) {
 		t.Fatal("N failures within the window must trip the breaker")
 	}
-	if providerBreakerShouldTrip([]time.Time{now.Add(-6 * time.Minute), now.Add(-time.Minute), now}, now, 3, 5*time.Minute) {
+	if providerBreakerShouldTrip([]time.Time{now.Add(-6 * time.Minute), now.Add(-time.Minute), now}, now, 3, 5*time.Minute, 5*time.Second) {
 		t.Fatal("a failure outside the window must not count")
 	}
-	if !providerBreakerShouldTrip([]time.Time{now.Add(-time.Minute), now.Add(-time.Second), now.Add(time.Second)}, now, 3, 5*time.Minute) {
+	if !providerBreakerShouldTrip([]time.Time{now.Add(-time.Minute), now.Add(-30 * time.Second), now.Add(time.Second)}, now, 3, 5*time.Minute, 5*time.Second) {
 		t.Fatal("database timestamps slightly ahead of the application clock must count")
+	}
+	if providerBreakerShouldTrip([]time.Time{now.Add(-3 * time.Second), now.Add(-2 * time.Second), now.Add(-time.Second)}, now, 3, 5*time.Minute, 5*time.Second) {
+		t.Fatal("failures within one burst must count as a single signal")
+	}
+	if !providerBreakerShouldTrip([]time.Time{now.Add(-time.Minute), now.Add(-time.Minute + time.Second), now.Add(-30 * time.Second), now.Add(-time.Second)}, now, 3, 5*time.Minute, 5*time.Second) {
+		t.Fatal("a burst plus two later distinct failures must trip")
 	}
 }
 
 func TestProviderBreakerDisposition(t *testing.T) {
-	for _, state := range []string{"open", "half_open", "draining"} {
-		if got := providerBreakerDisposition(state); got != "hold" {
-			t.Errorf("state %q: disposition = %q, want hold", state, got)
+	for _, state := range []string{"open", "half_open"} {
+		if got := providerBreakerDisposition(state, false); got != "hold" {
+			t.Errorf("state %q before next_probe_at: disposition = %q, want hold", state, got)
+		}
+		if got := providerBreakerDisposition(state, true); got != "normal" {
+			t.Errorf("state %q once due: disposition = %q, want normal", state, got)
+		}
+	}
+	for _, due := range []bool{false, true} {
+		if got := providerBreakerDisposition("draining", due); got != "hold" {
+			t.Errorf("draining (due=%v): disposition = %q, want hold", due, got)
 		}
 	}
 	for _, state := range []string{"closed", "unknown"} {
-		if got := providerBreakerDisposition(state); got != "normal" {
+		if got := providerBreakerDisposition(state, false); got != "normal" {
 			t.Errorf("state %q: disposition = %q, want normal", state, got)
 		}
 	}
@@ -80,7 +95,7 @@ func TestCompleteTaskWritesProviderSuccessEvidenceOnlyForCompletedTasksWithBreak
 	if count != 0 {
 		t.Fatalf("completion without breaker state or hold created %d rows, want 0", count)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO provider_breaker (workspace_id, provider, state) VALUES ($1, 'openai', 'open')`, workspaceID); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO provider_breaker (workspace_id, provider, state, next_probe_at) VALUES ($1, 'openai', 'open', now() + interval '5 minutes')`, workspaceID); err != nil {
 		t.Fatal(err)
 	}
 	for _, status := range []string{"failed", "cancelled"} {
@@ -114,7 +129,7 @@ func TestProviderBreakerAdmitReadsPersistedState(t *testing.T) {
 	ctx := context.Background()
 	workspaceID, _, _, _ := seedAttributionFixture(t, pool)
 	parsedWorkspaceID := util.MustParseUUID(workspaceID)
-	if _, err := pool.Exec(ctx, `INSERT INTO provider_breaker (workspace_id, provider, state) VALUES ($1, 'openai', 'open')`, parsedWorkspaceID); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO provider_breaker (workspace_id, provider, state, next_probe_at) VALUES ($1, 'openai', 'open', now() + interval '5 minutes')`, parsedWorkspaceID); err != nil {
 		t.Fatal(err)
 	}
 	got, err := ProviderBreakerAdmit(ctx, db.New(pool), parsedWorkspaceID, "openai")
@@ -252,12 +267,14 @@ func TestProviderBreakerTripsOnlyForSameProviderServerFailuresAndSerializesConcu
 		FROM agent WHERE id=$1 RETURNING id`, agentUUID, util.MustParseUUID(userID)).Scan(&claudeAgentID); err != nil {
 		t.Fatal(err)
 	}
+	failures := 0
 	insertFailed := func(agent pgtype.UUID, reason string) pgtype.UUID {
 		t.Helper()
+		failures++ // spaced out: a same-instant burst counts as one signal
 		var taskID pgtype.UUID
 		if err := pool.QueryRow(ctx, `
-			INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, attempt, max_attempts, failure_reason)
-			VALUES ($1, $2, $3, 'failed', 0, 1, 3, $4) RETURNING id`, agent, runtimeID, issueUUID, reason).Scan(&taskID); err != nil {
+			INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, attempt, max_attempts, failure_reason, completed_at)
+			VALUES ($1, $2, $3, 'failed', 0, 1, 3, $4, now() - make_interval(secs => $5::int)) RETURNING id`, agent, runtimeID, issueUUID, reason, 30*(5-failures)).Scan(&taskID); err != nil {
 			t.Fatal(err)
 		}
 		return taskID
@@ -308,5 +325,21 @@ func TestProviderBreakerTripsOnlyForSameProviderServerFailuresAndSerializesConcu
 	}
 	if count != 1 {
 		t.Fatalf("concurrent trip row count = %d, want 1", count)
+	}
+}
+
+// CHE-4381: the refusal text for a provider breaker names the provider and the
+// opened_at / next_probe_at times in ICT, and is not the CLI-reinstall text.
+func TestRuntimeUnusableNoticeProviderBreaker(t *testing.T) {
+	openedAt := time.Date(2026, 11, 7, 5, 0, 0, 0, time.UTC)
+	detail := providerBreakerNotice("openai", openedAt, openedAt.Add(5*time.Minute))
+	notice := RuntimeUnusableNotice("Mika", AgentVerdict{Reason: dispatch.ReasonProviderBreaker, Detail: detail})
+	for _, want := range []string{"openai", "2026-11-07 12:00 ICT", "2026-11-07 12:05 ICT"} {
+		if !strings.Contains(notice, want) {
+			t.Errorf("notice lacks %q:\n%s", want, notice)
+		}
+	}
+	if strings.Contains(notice, "Reinstall") {
+		t.Errorf("a breaker hold is not a CLI problem:\n%s", notice)
 	}
 }
