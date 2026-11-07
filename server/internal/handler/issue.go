@@ -5132,6 +5132,16 @@ func (h *Handler) deleteIssuesAndCollectAttachmentURLs(ctx context.Context, issu
 	defer tx.Rollback(ctx)
 	qtx := h.Queries.WithTx(tx)
 
+	// The comment cascade of the delete nulls trigger_comment_id on runs that
+	// can belong to other issues. Lock all of those issues first.
+	issueIDs := make([]pgtype.UUID, 0, len(issues))
+	for _, issue := range issues {
+		issueIDs = append(issueIDs, issue.ID)
+	}
+	if err := qtx.LockIssuesOfIssueDelete(ctx, issueIDs); err != nil {
+		return issueDeleteResult{}, fmt.Errorf("lock issues of issue delete: %w", err)
+	}
+
 	result := issueDeleteResult{}
 	for _, issue := range issues {
 		if _, err := qtx.LockIssueForDelete(ctx, db.LockIssueForDeleteParams{

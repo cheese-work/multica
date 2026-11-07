@@ -473,6 +473,45 @@ func TestCommentDeleteAndAuthorizeShareOneLockOrder(t *testing.T) {
 	}
 }
 
+// An issue delete removes the issue's comments through comment.issue_id
+// ON DELETE CASCADE. Each removed comment nulls trigger_comment_id on the runs
+// that name it, and a run can belong to another issue. The delete has to hold
+// that issue before the cascade runs.
+func TestIssueDeleteAndAuthorizeShareOneLockOrder(t *testing.T) {
+	ctx := context.Background()
+	f := claimElevated(t, "repo_write:1234")
+	deletedIssue := dbfx.Issue(t, "issue delete lock order")
+	commentID := dbfx.Comment(t, deletedIssue, "trigger")
+	pointRunAtCommentWithStaleLineage(t, f, commentID)
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(deletedIssue))
+	if err != nil {
+		t.Fatalf("load issue: %v", err)
+	}
+
+	gate, authorized := holdAuthorizationAtElevationRow(t, f)
+	deleted := make(chan error, 1)
+	go func() {
+		_, err := testHandler.deleteIssueAndCollectAttachmentURLs(ctx, issue, nil)
+		deleted <- err
+	}()
+	waitForLockWaiters(t, 2)
+	if err := gate.Commit(ctx); err != nil {
+		t.Fatalf("gate commit: %v", err)
+	}
+
+	if got := (<-authorized).Code; got != http.StatusOK && got != http.StatusForbidden {
+		t.Fatalf("authorization status = %d, want 200 or 403 (a deadlock aborts it)", got)
+	}
+	if err := <-deleted; err != nil {
+		t.Fatalf("issue delete = %v, want it to commit (a deadlock aborts it)", err)
+	}
+	var nulled bool
+	dbfx.QueryRow(t, `SELECT trigger_comment_id IS NULL FROM agent_task_queue WHERE id = $1`, f.taskID).Scan(&nulled)
+	if !nulled {
+		t.Fatal("the run still names the comment of the deleted issue")
+	}
+}
+
 // Teardown deletes every comment of the workspace. A run in a neighbour
 // workspace can name one of them, and nulling that trigger takes the run's issue,
 // which the teardown never locked.
