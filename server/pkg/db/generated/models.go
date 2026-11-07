@@ -1901,6 +1901,20 @@ type HostSample struct {
 	DiskPercent pgtype.Float4      `json:"disk_percent"`
 }
 
+type HostSampleHourly struct {
+	DaemonID      string             `json:"daemon_id"`
+	BucketTs      pgtype.Timestamptz `json:"bucket_ts"`
+	MountPath     string             `json:"mount_path"`
+	CpuMax        pgtype.Float4      `json:"cpu_max"`
+	CpuAvg        pgtype.Float4      `json:"cpu_avg"`
+	RamMax        pgtype.Float4      `json:"ram_max"`
+	RamAvg        pgtype.Float4      `json:"ram_avg"`
+	DiskMax       pgtype.Float4      `json:"disk_max"`
+	DiskAvg       pgtype.Float4      `json:"disk_avg"`
+	SampleCount   int32              `json:"sample_count"`
+	ExpectedCount int32              `json:"expected_count"`
+}
+
 type InboxItem struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
