@@ -111,6 +111,20 @@ describe("squad detail drafts survive unmount and remount", () => {
     expect(screen.getByLabelText("editor")).toHaveValue("typed just before a tab change");
   });
 
+  it("cancel inside the debounce window discards the typed text", async () => {
+    vi.useFakeTimers();
+    const props = { squad, canManage: true, onSave: vi.fn() };
+    renderTab(<SquadInstructionsTab {...props} />);
+    type("editor", "typed then cancelled");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await flushDebounce();
+
+    expect(screen.queryByLabelText("editor")).not.toBeInTheDocument();
+    expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument();
+    openEditor();
+    expect(screen.getByLabelText("editor")).toHaveValue("saved");
+  });
+
   it("instructions edited while a save is pending are not erased when it succeeds", async () => {
     vi.useFakeTimers();
     let resolveSave!: () => void;

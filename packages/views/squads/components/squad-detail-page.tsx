@@ -723,6 +723,9 @@ export function SquadInstructionsSection({
   // An unsent draft reopens the editor, so it is visible again after a remount.
   const [editing, setEditing] = useState(isDirty);
   const [saving, setSaving] = useState(false);
+  // Cancel unmounts an editor that flushes its pending text on unmount; that
+  // flush must not write the discarded text back into the draft.
+  const discardingRef = useRef(false);
 
   // A debounced editor can land its last update after the save closed the
   // editor; that text is a draft again, so show it.
@@ -748,7 +751,13 @@ export function SquadInstructionsSection({
       title={t(($) => $.detail.instructions)}
       action={
         canManage && !editing ? (
-          <ObjectSectionAction icon={Pencil} onClick={() => setEditing(true)}>
+          <ObjectSectionAction
+            icon={Pencil}
+            onClick={() => {
+              discardingRef.current = false;
+              setEditing(true);
+            }}
+          >
             {t(($) => $.detail.edit)}
           </ObjectSectionAction>
         ) : null
@@ -763,7 +772,9 @@ export function SquadInstructionsSection({
             <ContentEditor
               key={squad.id}
               value={value}
-              onUpdate={setValue}
+              onUpdate={(md) => {
+                if (!discardingRef.current) setValue(md);
+              }}
               placeholder={t(($) => $.instructions_tab.placeholder)}
               debounceMs={150}
               // Keep the last edit when the route changes inside the debounce window.
@@ -781,6 +792,7 @@ export function SquadInstructionsSection({
               size="sm"
               disabled={saving}
               onClick={() => {
+                discardingRef.current = true;
                 discard();
                 setEditing(false);
               }}

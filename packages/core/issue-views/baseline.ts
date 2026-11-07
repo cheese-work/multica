@@ -71,12 +71,17 @@ function propertyFilterValueArray(v: unknown): PropertyFilterValue[] {
   );
 }
 
+const ACTOR_FILTER_TYPES: readonly string[] = ["member", "agent", "squad"];
+
+// A shared view's query is untrusted JSON: both `id` and `type` must be the
+// strings the store can represent, or actorFilterKey would throw on render.
 function actorArray(v: unknown): ActorFilterValue[] {
   if (!Array.isArray(v)) return [];
-  return v.filter(
-    (x): x is ActorFilterValue =>
-      !!x && typeof x === "object" && typeof (x as ActorFilterValue).id === "string",
-  );
+  return v.filter((x): x is ActorFilterValue => {
+    if (!x || typeof x !== "object") return false;
+    const { id, type } = x as { id?: unknown; type?: unknown };
+    return typeof id === "string" && typeof type === "string" && ACTOR_FILTER_TYPES.includes(type);
+  });
 }
 
 export function baselineFromQuery(query: Record<string, unknown>): IssueViewBaseline {
