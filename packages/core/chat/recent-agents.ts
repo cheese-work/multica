@@ -5,7 +5,7 @@ export const RECENT_AGENTS_MAX = 3;
 
 /**
  * Agents the user most often started a new DM with inside the window, best
- * first: DM count, then latest start, then name. Forks and continuations are
+ * first: DM count, then latest start, then name. Each id appears once. Forks and continuations are
  * not new DMs; archived sessions still count. Only `agents` are eligible.
  */
 export function rankRecentAgents(
@@ -27,8 +27,9 @@ export function rankRecentAgents(
       latest: Math.max(prev?.latest ?? 0, created),
     });
   }
+  const seen = new Set<string>();
   return agents
-    .filter((a) => stats.has(a.id))
+    .filter((a) => stats.has(a.id) && !seen.has(a.id) && seen.add(a.id))
     .sort((a, b) => {
       const sa = stats.get(a.id)!;
       const sb = stats.get(b.id)!;

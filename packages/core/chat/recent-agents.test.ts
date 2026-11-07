@@ -89,6 +89,12 @@ describe("rankRecentAgents", () => {
     expect(rankRecentAgents(sessions, AGENTS, ME, NOW)).toEqual(["a"]);
   });
 
+  it("returns each agent id once when the agent list repeats an agent", () => {
+    const sessions = [session({ id: "1", agent_id: "a" }), session({ id: "2", agent_id: "b" })];
+    const dup = [agent("a"), agent("b"), agent("a")];
+    expect(rankRecentAgents(sessions, dup, ME, NOW)).toEqual(["a", "b"]);
+  });
+
   it("returns an empty list when nothing qualifies", () => {
     expect(rankRecentAgents([], AGENTS, ME, NOW)).toEqual([]);
     expect(rankRecentAgents([session({ id: "1", agent_id: "a" })], [], ME, NOW)).toEqual([]);
