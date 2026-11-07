@@ -19,6 +19,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/logger"
 	skillpkg "github.com/multica-ai/multica/server/internal/skill"
@@ -2585,15 +2586,51 @@ func (h *Handler) ListAgentSkills(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// beginAgentSkillWrite opens the transaction every agent_skill writer on an
+// existing agent runs in. It takes the agent row lock first
+// (LockAgentForSkillWrite) and checks manager state against the locked row, so
+// the manager check and the write see the same agent an approved action sees.
+// On false the response is written and the transaction is already rolled back.
+func (h *Handler) beginAgentSkillWrite(w http.ResponseWriter, r *http.Request, agent db.Agent) (pgx.Tx, *db.Queries, db.Agent, bool) {
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start transaction")
+		return nil, nil, agent, false
+	}
+	qtx := h.Queries.WithTx(tx)
+	locked, err := qtx.LockAgentForSkillWrite(r.Context(), db.LockAgentForSkillWriteParams{ID: agent.ID, WorkspaceID: agent.WorkspaceID})
+	if err == nil && h.canManageAgent(w, r, locked) {
+		return tx, qtx, locked, true
+	}
+	tx.Rollback(r.Context())
+	switch {
+	case err == nil: // canManageAgent wrote the refusal
+	case errors.Is(err, pgx.ErrNoRows):
+		writeError(w, http.StatusNotFound, "agent not found")
+	case isLockNotAvailable(err):
+		writeError(w, http.StatusServiceUnavailable, "agent is being changed, retry")
+	default:
+		writeError(w, http.StatusInternalServerError, "failed to lock agent")
+	}
+	return nil, nil, agent, false
+}
+
+func isLockNotAvailable(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "55P03"
+}
+
 func (h *Handler) SetAgentSkills(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	agent, ok := h.loadAgentForUser(w, r, id)
 	if !ok {
 		return
 	}
-	if !h.canManageAgent(w, r, agent) {
+	tx, qtx, agent, ok := h.beginAgentSkillWrite(w, r, agent)
+	if !ok {
 		return
 	}
+	defer tx.Rollback(r.Context())
 
 	var req SetAgentSkillsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -2610,15 +2647,6 @@ func (h *Handler) SetAgentSkills(w http.ResponseWriter, r *http.Request) {
 	if len(skillUUIDs) > 0 && h.rejectQoderOverrides(w, r, agent, qoderOverrides{skills: len(skillUUIDs)}) {
 		return
 	}
-
-	tx, err := h.TxStarter.Begin(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to start transaction")
-		return
-	}
-	defer tx.Rollback(r.Context())
-
-	qtx := h.Queries.WithTx(tx)
 
 	if err := qtx.RemoveAllAgentSkills(r.Context(), agent.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to clear agent skills")
@@ -2650,9 +2678,11 @@ func (h *Handler) AddAgentSkills(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !h.canManageAgent(w, r, agent) {
+	tx, qtx, agent, ok := h.beginAgentSkillWrite(w, r, agent)
+	if !ok {
 		return
 	}
+	defer tx.Rollback(r.Context())
 
 	var req AddAgentSkillsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -2670,14 +2700,6 @@ func (h *Handler) AddAgentSkills(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := h.TxStarter.Begin(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to start transaction")
-		return
-	}
-	defer tx.Rollback(r.Context())
-
-	qtx := h.Queries.WithTx(tx)
 	for _, skillID := range skillUUIDs {
 		if err := qtx.AddAgentSkill(r.Context(), db.AddAgentSkillParams{
 			AgentID: agent.ID,
@@ -2703,9 +2725,11 @@ func (h *Handler) SetAgentSkillEnabled(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !h.canManageAgent(w, r, agent) {
+	tx, qtx, agent, ok := h.beginAgentSkillWrite(w, r, agent)
+	if !ok {
 		return
 	}
+	defer tx.Rollback(r.Context())
 
 	skillID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "skillId"), "skill_id")
 	if !ok {
@@ -2718,7 +2742,7 @@ func (h *Handler) SetAgentSkillEnabled(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "enabled is required")
 		return
 	}
-	rows, err := h.Queries.SetAgentSkillEnabled(r.Context(), db.SetAgentSkillEnabledParams{
+	rows, err := qtx.SetAgentSkillEnabled(r.Context(), db.SetAgentSkillEnabledParams{
 		AgentID: agent.ID,
 		SkillID: skillID,
 		Enabled: *req.Enabled,
@@ -2731,6 +2755,10 @@ func (h *Handler) SetAgentSkillEnabled(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "agent skill not found")
 		return
 	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit")
+		return
+	}
 
 	h.writeUpdatedAgentSkills(w, r, agent)
 }
@@ -2741,18 +2769,24 @@ func (h *Handler) RemoveAgentSkill(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !h.canManageAgent(w, r, agent) {
+	tx, qtx, agent, ok := h.beginAgentSkillWrite(w, r, agent)
+	if !ok {
 		return
 	}
+	defer tx.Rollback(r.Context())
 	skillID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "skillId"), "skill_id")
 	if !ok {
 		return
 	}
-	if err := h.Queries.RemoveAgentSkill(r.Context(), db.RemoveAgentSkillParams{
+	if err := qtx.RemoveAgentSkill(r.Context(), db.RemoveAgentSkillParams{
 		AgentID: agent.ID,
 		SkillID: skillID,
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to remove agent skill")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit")
 		return
 	}
 	h.writeUpdatedAgentSkills(w, r, agent)

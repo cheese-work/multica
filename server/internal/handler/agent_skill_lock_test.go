@@ -1,0 +1,172 @@
+package handler
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+)
+
+// agentSkillWriters drives each ordinary writer of agent_skill rows on an
+// existing agent. Every writer targets skill x.
+var agentSkillWriters = []struct {
+	name string
+	call func(h *Handler, agentID, x string) *httptest.ResponseRecorder
+	// wantX is the enabled state of x after the writer ran: nil = row gone.
+	wantX *bool
+	// wantN is the state of n (the skill the action adds) after the writer
+	// ran: nil = row gone (the writer replaced the whole list).
+	wantN *bool
+}{
+	{"AddAgentSkills", func(h *Handler, agentID, x string) *httptest.ResponseRecorder {
+		return callAgentSkillWriter(h.AddAgentSkills, "POST", "/api/agents/"+agentID+"/skills/add", map[string]any{"skill_ids": []string{x}}, agentID, "")
+	}, boolPtr(true), boolPtr(true)},
+	{"SetAgentSkills", func(h *Handler, agentID, x string) *httptest.ResponseRecorder {
+		return callAgentSkillWriter(h.SetAgentSkills, "PUT", "/api/agents/"+agentID+"/skills", map[string]any{"skill_ids": []string{}}, agentID, "")
+	}, nil, nil},
+	{"SetAgentSkillEnabled", func(h *Handler, agentID, x string) *httptest.ResponseRecorder {
+		return callAgentSkillWriter(h.SetAgentSkillEnabled, "PUT", "/api/agents/"+agentID+"/skills/"+x+"/enabled", map[string]any{"enabled": false}, agentID, x)
+	}, boolPtr(false), boolPtr(true)},
+	{"RemoveAgentSkill", func(h *Handler, agentID, x string) *httptest.ResponseRecorder {
+		return callAgentSkillWriter(h.RemoveAgentSkill, "DELETE", "/api/agents/"+agentID+"/skills/"+x, nil, agentID, x)
+	}, nil, boolPtr(true)},
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+func callAgentSkillWriter(fn http.HandlerFunc, method, path string, body any, agentID, skillID string) *httptest.ResponseRecorder {
+	w := httptest.NewRecorder()
+	req := newRequest(method, path, body)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", agentID)
+	if skillID != "" {
+		rctx.URLParams.Add("skillId", skillID)
+	}
+	fn(w, req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx)))
+	return w
+}
+
+// waitForLockWaiter blocks until some backend waits on a lock, or fails when
+// the writer finished first (it did not wait for the agent lock).
+func waitForLockWaiter(t *testing.T, done <-chan *httptest.ResponseRecorder) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case w := <-done:
+			t.Fatalf("writer finished (%d) while the action transaction held the agent lock", w.Code)
+		default:
+		}
+		var waiting int
+		if err := testPool.QueryRow(context.Background(),
+			`SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("no writer waited on the agent lock")
+}
+
+func agentSkillEnabled(t *testing.T, agentID, skillID string) *bool {
+	t.Helper()
+	var enabled bool
+	err := testPool.QueryRow(context.Background(),
+		`SELECT enabled FROM agent_skill WHERE agent_id = $1 AND skill_id = $2`, agentID, skillID).Scan(&enabled)
+	if err != nil {
+		return nil
+	}
+	return &enabled
+}
+
+func sameState(a, b *bool) bool { return (a == nil) == (b == nil) && (a == nil || *a == *b) }
+
+// An action transaction holds the agent lock: each ordinary writer waits and
+// commits after it, so the action's change is not lost.
+func TestAgentSkillWritersWaitForAgentLock(t *testing.T) {
+	for _, writer := range agentSkillWriters {
+		t.Run(writer.name, func(t *testing.T) {
+			agentID := createHandlerTestAgent(t, "Skill Lock "+writer.name, nil)
+			x := insertHandlerTestSkill(t, "skill-lock-x-"+writer.name, "# x")
+			n := insertHandlerTestSkill(t, "skill-lock-n-"+writer.name, "# n")
+			if _, err := testPool.Exec(context.Background(), `INSERT INTO agent_skill (agent_id, skill_id) VALUES ($1, $2)`, agentID, x); err != nil {
+				t.Fatal(err)
+			}
+
+			ctx := context.Background()
+			tx, err := testPool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(ctx)
+			qtx := testHandler.Queries.WithTx(tx)
+			if _, err := qtx.LockDecisionAgentsNowait(ctx, db.LockDecisionAgentsNowaitParams{
+				WorkspaceID: parseUUID(testWorkspaceID), Ids: []pgtype.UUID{parseUUID(agentID)},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			// The action's change: assign n.
+			if err := qtx.AddAgentSkill(ctx, db.AddAgentSkillParams{AgentID: parseUUID(agentID), SkillID: parseUUID(n)}); err != nil {
+				t.Fatal(err)
+			}
+
+			done := make(chan *httptest.ResponseRecorder, 1)
+			go func() { done <- writer.call(testHandler, agentID, x) }()
+			waitForLockWaiter(t, done)
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case resp := <-done:
+				if resp.Code != http.StatusOK && resp.Code != http.StatusNoContent {
+					t.Fatalf("writer status=%d body=%s", resp.Code, resp.Body.String())
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("writer did not finish after the action committed")
+			}
+			if got := agentSkillEnabled(t, agentID, x); !sameState(got, writer.wantX) {
+				t.Fatalf("skill x state = %v, want %v", got, writer.wantX)
+			}
+			if got := agentSkillEnabled(t, agentID, n); !sameState(got, writer.wantN) {
+				t.Fatalf("skill n state = %v, want %v", got, writer.wantN)
+			}
+		})
+	}
+}
+
+// An ordinary writer holds the agent lock: the action's NOWAIT lock fails with
+// lock_not_available, which the approval path answers as busy_retry.
+func TestAgentSkillWriterLockMakesActionLockBusy(t *testing.T) {
+	agentID := createHandlerTestAgent(t, "Skill Lock Reverse", nil)
+	ctx := context.Background()
+	writerTx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writerTx.Rollback(ctx)
+	if _, err := db.New(writerTx).LockAgentForSkillWrite(ctx, db.LockAgentForSkillWriteParams{ID: parseUUID(agentID), WorkspaceID: parseUUID(testWorkspaceID)}); err != nil {
+		t.Fatal(err)
+	}
+
+	actionTx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer actionTx.Rollback(ctx)
+	_, err = testHandler.Queries.WithTx(actionTx).LockDecisionAgentsNowait(ctx, db.LockDecisionAgentsNowaitParams{
+		WorkspaceID: parseUUID(testWorkspaceID), Ids: []pgtype.UUID{parseUUID(agentID)},
+	})
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
+		t.Fatalf("action lock err = %v, want 55P03 lock_not_available", err)
+	}
+}
