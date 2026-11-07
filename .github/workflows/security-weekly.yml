@@ -39,16 +39,18 @@ jobs:
           persist-credentials: false
       - name: Scan the whole tree with the security-gate rule packs
         run: |
-          python3 -m venv "$RUNNER_TEMP/semgrep"
+          mkdir "$RUNNER_TEMP/reports"
+          rm -f .semgrepignore
+          python3 -I -m venv "$RUNNER_TEMP/semgrep"
           "$RUNNER_TEMP/semgrep/bin/pip" install --quiet semgrep==1.183.0
           "$RUNNER_TEMP/semgrep/bin/semgrep" scan --metrics=off --disable-version-check --disable-nosem --quiet --json --timeout 30 \
-            --config p/default --config p/golang --config p/gosec --config p/typescript --config p/python --config p/kotlin . > semgrep.json
+            --config p/default --config p/golang --config p/gosec --config p/typescript --config p/python --config p/kotlin . > "$RUNNER_TEMP/reports/semgrep.json"
       - name: Seal the report
-        run: bash scripts/security-weekly/seal.sh semgrep.json
+        run: bash scripts/security-weekly/seal.sh "$RUNNER_TEMP"/reports/semgrep.json
       - uses: actions/upload-artifact@v7
         with:
           name: weekly-report-semgrep
-          path: semgrep.json.gpg
+          path: ${{ runner.temp }}/reports/semgrep.json.gpg
           if-no-files-found: error
           retention-days: 14
 
@@ -75,13 +77,15 @@ jobs:
       - name: Scan Go dependencies
         working-directory: server
         # exit 3 = vulnerabilities found, which is a result; any other non-zero is a scanner failure
-        run: '"$(go env GOPATH)/bin/govulncheck" ./... > ../govulncheck.txt || [ $? -eq 3 ]'
+        run: |
+          mkdir "$RUNNER_TEMP/reports"
+          "$(go env GOPATH)/bin/govulncheck" ./... > "$RUNNER_TEMP/reports/govulncheck.txt" || [ $? -eq 3 ]
       - name: Seal the report
-        run: bash scripts/security-weekly/seal.sh govulncheck.txt
+        run: bash scripts/security-weekly/seal.sh "$RUNNER_TEMP"/reports/govulncheck.txt
       - uses: actions/upload-artifact@v7
         with:
           name: weekly-report-govulncheck
-          path: govulncheck.txt.gpg
+          path: ${{ runner.temp }}/reports/govulncheck.txt.gpg
           if-no-files-found: error
           retention-days: 14
 
@@ -107,16 +111,17 @@ jobs:
         run: |
           audit_dir="$RUNNER_TEMP/pnpm-audit"
           mkdir "$audit_dir"
+          mkdir "$RUNNER_TEMP/reports"
           cp pnpm-lock.yaml "$audit_dir/"
           echo '{"name":"audit","private":true}' > "$audit_dir/package.json"
-          (cd "$audit_dir" && pnpm audit --json > "$GITHUB_WORKSPACE/pnpm-audit.json" || true)
-          node -e 'if (!JSON.parse(require("fs").readFileSync("pnpm-audit.json", "utf8")).advisories) process.exit(1)'
+          (cd "$audit_dir" && pnpm audit --json > "$RUNNER_TEMP/reports/pnpm-audit.json" || true)
+          node -e 'if (!JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).advisories) process.exit(1)' "$RUNNER_TEMP/reports/pnpm-audit.json"
       - name: Seal the report
-        run: bash scripts/security-weekly/seal.sh pnpm-audit.json
+        run: bash scripts/security-weekly/seal.sh "$RUNNER_TEMP"/reports/pnpm-audit.json
       - uses: actions/upload-artifact@v7
         with:
           name: weekly-report-pnpm-audit
-          path: pnpm-audit.json.gpg
+          path: ${{ runner.temp }}/reports/pnpm-audit.json.gpg
           if-no-files-found: error
           retention-days: 14
 
@@ -132,17 +137,18 @@ jobs:
         # Config and ignore list come from owner-protected scripts/security-weekly. Gitleaks also reads a root .gitleaksignore (CODEOWNERS
         # does not cover it), so the job deletes it first; --config bypasses a root .gitleaks.toml.
         run: |
+          mkdir "$RUNNER_TEMP/reports"
           rm -f .gitleaksignore
           curl -fsSL -o "$RUNNER_TEMP/gitleaks.tgz" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
-          "$RUNNER_TEMP/gitleaks" git --no-banner --gitleaks-ignore-path scripts/security-weekly --config scripts/security-weekly/gitleaks.toml --redact --exit-code 0 --report-format json --report-path gitleaks.json .
+          "$RUNNER_TEMP/gitleaks" git --no-banner --gitleaks-ignore-path scripts/security-weekly --config scripts/security-weekly/gitleaks.toml --redact --exit-code 0 --report-format json --report-path "$RUNNER_TEMP/reports/gitleaks.json" .
       - name: Seal the report
-        run: bash scripts/security-weekly/seal.sh gitleaks.json
+        run: bash scripts/security-weekly/seal.sh "$RUNNER_TEMP"/reports/gitleaks.json
       - uses: actions/upload-artifact@v7
         with:
           name: weekly-report-gitleaks
-          path: gitleaks.json.gpg
+          path: ${{ runner.temp }}/reports/gitleaks.json.gpg
           if-no-files-found: error
           retention-days: 14
 
@@ -173,14 +179,16 @@ jobs:
       - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           upload: never
-          output: codeql-out
-      - run: cp codeql-out/*.sarif "codeql-${{ matrix.language }}.sarif"
+          output: ${{ runner.temp }}/codeql-out
+      - run: |
+          mkdir "$RUNNER_TEMP/reports"
+          cp "$RUNNER_TEMP"/codeql-out/*.sarif "$RUNNER_TEMP/reports/codeql-${{ matrix.language }}.sarif"
       - name: Seal the report
-        run: bash scripts/security-weekly/seal.sh codeql-${{ matrix.language }}.sarif
+        run: bash scripts/security-weekly/seal.sh "$RUNNER_TEMP"/reports/codeql-${{ matrix.language }}.sarif
       - uses: actions/upload-artifact@v7
         with:
           name: weekly-report-codeql-${{ matrix.language }}
-          path: codeql-${{ matrix.language }}.sarif.gpg
+          path: ${{ runner.temp }}/reports/codeql-${{ matrix.language }}.sarif.gpg
           if-no-files-found: error
           retention-days: 14
 
@@ -205,9 +213,9 @@ jobs:
           run_id="$(gh run list --workflow cd-qualification.yml --branch main --status success --limit 1 --json databaseId,headSha --jq '.[0].databaseId')"
           sha="$(gh run list --workflow cd-qualification.yml --branch main --status success --limit 1 --json headSha --jq '.[0].headSha')"
           [ -n "$run_id" ] || { echo "no successful cd-qualification run"; exit 1; }
-          gh run download "$run_id" --name "cd-build-evidence-$sha" --dir evidence
+          gh run download "$run_id" --name "cd-build-evidence-$sha" --dir "$RUNNER_TEMP/evidence"
           for image in backend web; do
-            digest="$(node -p "require('./evidence/cd-image-provenance.json').images['$image'].digest")"
+            digest="$(node -p "require(process.argv[1]).images['$image'].digest" "$RUNNER_TEMP/evidence/cd-image-provenance.json")"
             echo "$digest" | grep -Eq '^sha256:[a-f0-9]{64}$'
             echo "${image^^}_REF=ghcr.io/${GITHUB_REPOSITORY_OWNER}/multica-${image}@${digest}" >> "$GITHUB_ENV"
           done
@@ -216,16 +224,17 @@ jobs:
           TRIVY_USERNAME: ${{ github.actor }}
           TRIVY_PASSWORD: ${{ github.token }}
         run: |
+          mkdir "$RUNNER_TEMP/reports"
           curl -fsSL -o "$RUNNER_TEMP/trivy.tgz" "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
           echo "${TRIVY_SHA256}  $RUNNER_TEMP/trivy.tgz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/trivy.tgz" -C "$RUNNER_TEMP" trivy
-          "$RUNNER_TEMP/trivy" image --image-src remote --scanners vuln --quiet --format json --output trivy-backend.json "$BACKEND_REF"
-          "$RUNNER_TEMP/trivy" image --image-src remote --scanners vuln --quiet --format json --output trivy-web.json "$WEB_REF"
+          "$RUNNER_TEMP/trivy" image --image-src remote --scanners vuln --quiet --format json --output "$RUNNER_TEMP/reports/trivy-backend.json" "$BACKEND_REF"
+          "$RUNNER_TEMP/trivy" image --image-src remote --scanners vuln --quiet --format json --output "$RUNNER_TEMP/reports/trivy-web.json" "$WEB_REF"
       - name: Seal the report
-        run: bash scripts/security-weekly/seal.sh trivy-*.json
+        run: bash scripts/security-weekly/seal.sh "$RUNNER_TEMP"/reports/trivy-*.json
       - uses: actions/upload-artifact@v7
         with:
           name: weekly-report-trivy
-          path: trivy-*.json.gpg
+          path: ${{ runner.temp }}/reports/trivy-*.json.gpg
           if-no-files-found: error
           retention-days: 14

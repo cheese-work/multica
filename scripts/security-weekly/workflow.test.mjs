@@ -178,7 +178,33 @@ test("pnpm audit runs in a scratch directory with only the lockfile, never in th
   assert.match(block, /audit_dir="\$RUNNER_TEMP\/pnpm-audit"/);
   assert.match(block, /cp pnpm-lock\.yaml "\$audit_dir\/"/);
   assert.match(block, /cd "\$audit_dir"/);
-  assert.match(block, /pnpm audit --json > "\$GITHUB_WORKSPACE\/pnpm-audit\.json"/);
+  assert.match(block, /pnpm audit --json > "\$RUNNER_TEMP\/reports\/pnpm-audit\.json"/);
   assert.doesNotMatch(block, /(^|\n)\s+pnpm audit --json > pnpm-audit\.json/);
   assert.doesNotMatch(block, /cp [^\n]*(package\.json|\.npmrc|pnpm-workspace)/, "no checkout config enters the scratch directory");
+});
+
+// Terra FAIL on 1243d6ecd: `python3 -m venv` run from the checkout puts the cwd first on sys.path, so a merged root venv.py
+// (unowned) would run before sealing. -I drops the cwd and PYTHONPATH from sys.path.
+test("python never imports from the checkout: the venv is built with python3 -I", () => {
+  const pythons = [...wf.matchAll(/^\s+(?:[^#\n]*\s)?python3? [^\n]*/gm)].map((m) => m[0].trim()).filter((l) => !l.startsWith("#") && !l.includes("--config")).map((l) => l.slice(l.search(/python3? /)));
+  assert.ok(pythons.length > 0);
+  for (const p of pythons) assert.match(p, /^python3 -I /, p);
+});
+
+// Terra FAIL on 1243d6ecd: a committed symlink named like a report (semgrep.json -> /dev/stdout) would redirect plaintext into the
+// public Actions log. Every report is written, sealed and uploaded from a fresh directory under RUNNER_TEMP, outside the checkout.
+test("every report is written, sealed and uploaded from $RUNNER_TEMP/reports, never from the checkout", () => {
+  const sealArgs = [...wf.matchAll(/\bbash scripts\/security-weekly\/seal\.sh ([^\n]+)/g)].map((m) => m[1]);
+  assert.ok(sealArgs.length >= 6);
+  for (const a of sealArgs) assert.match(a, /^"\$RUNNER_TEMP"\/reports\//, a);
+  for (const u of uploads) assert.match(u, /path: \$\{\{ runner\.temp \}\}\/reports\//, u);
+  const mkdirs = wf.match(/mkdir "\$RUNNER_TEMP\/reports"/g) ?? [];
+  assert.equal(mkdirs.length, uploads.length, "each job makes its own reports directory");
+  assert.doesNotMatch(wf, />\s*(\.\.\/)?(semgrep|govulncheck|gitleaks)\.(json|txt)\b/);
+  assert.doesNotMatch(wf, /--report-path gitleaks\.json|--output trivy-|output: codeql-out|GITHUB_WORKSPACE\/pnpm-audit|--dir evidence/);
+});
+
+// Terra non-blocking note on 1243d6ecd: a root .semgrepignore is unowned and drops files from the scan before sealing.
+test("semgrep deletes a root .semgrepignore before scanning", () => {
+  assert.match(wf, /rm -f \.semgrepignore\n[\s\S]*semgrep" scan /);
 });
