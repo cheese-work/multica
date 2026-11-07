@@ -476,7 +476,8 @@
       "code": "Code",
       "channels": "Messagerie",
       "apps": "Applications connectées",
-      "workflows": "Workflows"
+      "workflows": "Workflows",
+      "provider_breakers": "Disjoncteurs des fournisseurs"
     },
     "groups": {
       "personal": "Personnel",
@@ -1629,5 +1630,36 @@
     "mcp": "Ajoutés par les administrateurs, partagés dans l'espace de travail puis attribués agent par agent.",
     "apps": "Autorisées avec votre propre compte via Composio et activées sur les agents qui vous appartiennent.",
     "plugins": "Paquets installés pouvant ajouter des outils, des hooks planifiés et du stockage, chacun avec ses propres autorisations."
+  },
+  "provider_breakers": {
+    "description": "Un disjoncteur refuse le nouveau travail d'un fournisseur après des erreurs serveur répétées, puis le sonde de nouveau tout seul.",
+    "empty": "Aucun disjoncteur ne s'est déclenché dans cet espace de travail.",
+    "load_error": "Impossible de charger les disjoncteurs.",
+    "retry": "Réessayer",
+    "columns": {
+      "provider": "Fournisseur",
+      "state": "État",
+      "reason": "Raison",
+      "failures": "Échecs",
+      "opened": "Ouvert",
+      "next_probe": "Prochaine sonde",
+      "last_success": "Dernier succès",
+      "actions": "Actions"
+    },
+    "states": {
+      "closed": "Fermé",
+      "open": "Ouvert",
+      "half_open": "Semi-ouvert"
+    },
+    "none": "—",
+    "reset": "Réinitialiser",
+    "reset_label": "Réinitialiser le disjoncteur {{provider}}",
+    "reset_title": "Réinitialiser le disjoncteur {{provider}} ?",
+    "reset_description": "Le disjoncteur se ferme maintenant et le nouveau travail atteint de nouveau {{provider}}. Si le fournisseur échoue encore, le disjoncteur se déclenche à nouveau. La réinitialisation est enregistrée dans le journal d'audit.",
+    "reset_cancel": "Annuler",
+    "reset_confirm": "Réinitialiser le disjoncteur",
+    "resetting": "Réinitialisation…",
+    "reset_success": "Disjoncteur réinitialisé.",
+    "reset_error": "Impossible de réinitialiser le disjoncteur."
   }
 }

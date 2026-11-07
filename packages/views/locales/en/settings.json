@@ -476,7 +476,8 @@
       "code": "Code",
       "channels": "Messaging",
       "apps": "Connected apps",
-      "workflows": "Workflows"
+      "workflows": "Workflows",
+      "provider_breakers": "Provider breakers"
     },
     "groups": {
       "personal": "Personal",
@@ -1629,5 +1630,36 @@
     "mcp": "Added by admins and shared across the workspace, then assigned per agent.",
     "apps": "Authorized with your own account through Composio and enabled on agents you own.",
     "plugins": "Installed packages that can add tools, scheduled hooks, and storage, each with its own permissions."
+  },
+  "provider_breakers": {
+    "description": "A breaker refuses new work for a provider after repeated server errors, then probes it again by itself.",
+    "empty": "No breaker has tripped in this workspace.",
+    "load_error": "Could not load provider breakers.",
+    "retry": "Retry",
+    "columns": {
+      "provider": "Provider",
+      "state": "State",
+      "reason": "Reason",
+      "failures": "Failures",
+      "opened": "Opened",
+      "next_probe": "Next probe",
+      "last_success": "Last success",
+      "actions": "Actions"
+    },
+    "states": {
+      "closed": "Closed",
+      "open": "Open",
+      "half_open": "Half open"
+    },
+    "none": "—",
+    "reset": "Reset",
+    "reset_label": "Reset {{provider}} breaker",
+    "reset_title": "Reset the {{provider}} breaker?",
+    "reset_description": "The breaker closes now and new work reaches {{provider}} again. If the provider is still failing, the breaker trips again. The reset is recorded in the audit log.",
+    "reset_cancel": "Cancel",
+    "reset_confirm": "Reset breaker",
+    "resetting": "Resetting…",
+    "reset_success": "Breaker reset.",
+    "reset_error": "Could not reset the breaker."
   }
 }

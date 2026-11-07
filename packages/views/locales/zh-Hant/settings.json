@@ -465,7 +465,8 @@
       "channels": "訊息渠道",
       "apps": "已連線應用",
       "workflows": "工作流",
-      "export_privacy": "導出隱私"
+      "export_privacy": "導出隱私",
+      "provider_breakers": "服務商熔斷器"
     },
     "groups": {
       "personal": "個人",
@@ -1617,5 +1618,36 @@
       "permission_changed": "您已不再擁有管理導出隱私設置的權限",
       "permission_changed_title": "需要權限"
     }
+  },
+  "provider_breakers": {
+    "description": "服務商連續出現伺服器錯誤後，熔斷器會拒絕送往該服務商的新任務，並自動再次探測。",
+    "empty": "此工作區沒有觸發過熔斷器。",
+    "load_error": "無法載入熔斷器。",
+    "retry": "重試",
+    "columns": {
+      "provider": "服務商",
+      "state": "狀態",
+      "reason": "原因",
+      "failures": "失敗次數",
+      "opened": "開啟時間",
+      "next_probe": "下次探測",
+      "last_success": "上次成功",
+      "actions": "操作"
+    },
+    "states": {
+      "closed": "關閉",
+      "open": "開啟",
+      "half_open": "半開"
+    },
+    "none": "—",
+    "reset": "重設",
+    "reset_label": "重設 {{provider}} 熔斷器",
+    "reset_title": "重設 {{provider}} 熔斷器？",
+    "reset_description": "熔斷器立即關閉，新任務會再次送往 {{provider}}。如果服務商仍在失敗，熔斷器會再次觸發。重設會記錄到稽核日誌。",
+    "reset_cancel": "取消",
+    "reset_confirm": "重設熔斷器",
+    "resetting": "正在重設…",
+    "reset_success": "熔斷器已重設。",
+    "reset_error": "無法重設熔斷器。"
   }
 }
