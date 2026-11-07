@@ -74,7 +74,7 @@ class DeployApprovalTests(unittest.TestCase):
     def test_protected_environment_is_never_given_up(self):
         # Removing its reviewer would leave old runs and downstream-job reruns,
         # which still use the old workflow, with no approval at all.
-        self.assertEqual({j.get("environment") for j in self.jobs.values()} - {None}, {PROTECTED, RUNTIME})
+        self.assertEqual({j.get("environment") for j in self.jobs.values()} - {None}, {PROTECTED, RUNTIME, "ci-app-token"})
 
     def test_c00_jobs_run_on_the_c00_runner_and_never_over_ssh(self):
         # Both jobs that touch C00 run on the target-host runner. A fall-back

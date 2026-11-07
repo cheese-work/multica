@@ -7,8 +7,8 @@
 /** Label size Mermaid draws at; the unit the minimum below is measured against. */
 export const MERMAID_FONT_PX = 15;
 
-/** Smallest label size a diagram may be scaled down to before it is stacked. */
-export const MERMAID_MIN_TEXT_PX = 12;
+/** Smallest label size a diagram may be scaled down to: the body font (`--text-body`). */
+export const MERMAID_MIN_TEXT_PX = 14;
 
 export interface MermaidThemeColors {
   background: string;

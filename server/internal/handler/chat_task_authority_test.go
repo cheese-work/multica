@@ -9,7 +9,9 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -522,4 +524,192 @@ func TestChatTaskAuthorityRetryAfterChainChangeIsRefused(t *testing.T) {
 			t.Fatalf("child=%v err=%v, want no retry after a chain change", child, err)
 		}
 	})
+}
+
+// afterBegin runs hook right after the transaction starts, so a test can order
+// other work between the settings transaction's start (now()) and its locks.
+type afterBegin struct {
+	txStarter
+	hook func()
+}
+
+func (s afterBegin) Begin(ctx context.Context) (pgx.Tx, error) {
+	tx, err := s.txStarter.Begin(ctx)
+	if err == nil {
+		s.hook()
+	}
+	return tx, err
+}
+
+// A settings transaction starts, then a compaction task is created and fails,
+// then the transaction takes its locks and commits a fallback-only change. The
+// change's ordering mark must come from when it holds the locks, not from
+// the transaction start, or the failed task retries into the new chain.
+func TestChatTaskAuthorityRetryAfterSlowSettingsTransactionIsRefused(t *testing.T) {
+	a := newAuthorityFixture(t)
+	var parent db.AgentTaskQueue
+	orig := testHandler.TxStarter
+	testHandler.TxStarter = afterBegin{orig, func() {
+		time.Sleep(20 * time.Millisecond)
+		id := dbfx.Task(t, a.compactAgent, testutil.Cols{
+			"runtime_id": handlerTestRuntimeID(t), "status": "failed", "chat_session_id": a.session,
+			"purpose": taskPurposeCompaction, "task_kind": "compact",
+			"failure_reason": "timeout", "attempt": 1, "max_attempts": 2,
+			"completed_at": testutil.Raw("now()"),
+		})
+		var err error
+		if parent, err = testHandler.Queries.GetAgentTask(context.Background(), parseUUID(id)); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}}
+	t.Cleanup(func() { testHandler.TxStarter = orig })
+
+	putBG(t, testWorkspaceID, map[string]any{"compact": map[string]any{
+		"agent_id": a.compactAgent, "fallback_agent_id": a.dmAgent,
+	}}, nil).Want(http.StatusOK)
+	testHandler.TxStarter = orig
+
+	child, err := testHandler.TaskService.MaybeRetryFailedTask(context.Background(), parent)
+	if err != nil || child != nil {
+		t.Fatalf("child=%v err=%v, want no retry after a change committed behind the failed task", child, err)
+	}
+}
+
+// A retry admission and a settings write must take the workspace lock before
+// the chat_session lock. The retry holding the session lock while it waits for
+// the workspace (CreateRetryTask) against a settings write holding the workspace
+// and waiting for the session is a deadlock. Here the settings write holds the
+// workspace first, a retry starts, then the write asks for the session locks:
+// both must finish, and the retry must see the committed change.
+func TestChatTaskAuthorityRetryAndSettingsWriteTakeLocksInOneOrder(t *testing.T) {
+	a := newAuthorityFixture(t)
+	ctx := context.Background()
+	id := dbfx.Task(t, a.compactAgent, testutil.Cols{
+		"runtime_id": handlerTestRuntimeID(t), "status": "failed", "chat_session_id": a.session,
+		"purpose": taskPurposeCompaction, "task_kind": "compact",
+		"failure_reason": "timeout", "attempt": 1, "max_attempts": 2,
+		"completed_at": testutil.Raw("now()"),
+	})
+	parent, err := testHandler.Queries.GetAgentTask(ctx, parseUUID(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	q := testHandler.Queries.WithTx(tx)
+	if _, err := q.LockWorkspaceSettings(ctx, parseUUID(testWorkspaceID)); err != nil {
+		t.Fatal(err)
+	}
+
+	type result struct {
+		child *db.AgentTaskQueue
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		child, err := testHandler.TaskService.MaybeRetryFailedTask(ctx, parent)
+		done <- result{child, err}
+	}()
+	time.Sleep(300 * time.Millisecond) // let the retry reach its first lock
+
+	lockCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if _, err := q.LockChatSessionsByWorkspace(lockCtx, parseUUID(testWorkspaceID)); err != nil {
+		t.Fatalf("settings write could not lock the sessions behind a retry: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("retry error: %v", r.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("retry did not finish after the settings write committed")
+	}
+}
+
+// FailTask retries in its own transaction, which already holds the session when
+// it reaches the retry guard. It must take the workspace first all the same, or
+// a settings write holding the workspace and waiting for the sessions deadlocks
+// against it and one side rolls back.
+func TestChatTaskAuthorityFailTaskAndSettingsWriteTakeLocksInOneOrder(t *testing.T) {
+	a := newAuthorityFixture(t)
+	ctx := context.Background()
+	id := a.task(a.compactAgent, "running", taskPurposeCompaction)
+
+	tx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	q := testHandler.Queries.WithTx(tx)
+	if _, err := q.LockWorkspaceSettings(ctx, parseUUID(testWorkspaceID)); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := testHandler.TaskService.FailTask(ctx, parseUUID(id), "timed out", "", "", "", "timeout", false, "", "")
+		done <- err
+	}()
+	time.Sleep(300 * time.Millisecond) // let the failure reach its first lock
+
+	lockCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if _, err := q.LockChatSessionsByWorkspace(lockCtx, parseUUID(testWorkspaceID)); err != nil {
+		t.Fatalf("settings write could not lock the sessions behind a failing task: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("FailTask error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("FailTask did not finish after the settings write committed")
+	}
+}
+
+// The history and thread routes take the same authority check as the messages
+// route: a compaction task whose agent is no longer the current compact agent
+// reads nothing, even though its token still binds it to the DM session.
+func TestChatTaskAuthorityHistoryRoutesUseSharedCheck(t *testing.T) {
+	routes := map[string]func(http.ResponseWriter, *http.Request){
+		"history": testHandler.GetChatChannelHistory,
+		"thread":  testHandler.GetChatThread,
+	}
+	get := func(a *authorityFixture, route, taskID string) int {
+		req := withChatTestWorkspaceCtx(a.t, taskActorReq("/api/chat/"+route, taskID))
+		rec := httptest.NewRecorder()
+		routes[route](rec, req)
+		return rec.Code
+	}
+	for route := range routes {
+		t.Run(route, func(t *testing.T) {
+			a := newAuthorityFixture(t)
+			a.setCompact(a.dmAgent)
+			stale := a.task(a.dmAgent, "running", taskPurposeCompaction)
+			a.setCompact(a.compactAgent)
+			current := a.task(a.compactAgent, "running", taskPurposeCompaction)
+			ordinary := a.task(a.dmAgent, "running", "")
+
+			if code := get(a, route, stale); code != http.StatusForbidden {
+				t.Fatalf("stale compaction task: status %d, want 403", code)
+			}
+			for name, id := range map[string]string{"current compact agent": current, "ordinary DM task": ordinary} {
+				if code := get(a, route, id); code != http.StatusOK {
+					t.Fatalf("%s: status %d, want 200", name, code)
+				}
+			}
+		})
+	}
 }

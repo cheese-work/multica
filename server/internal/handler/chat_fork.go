@@ -100,7 +100,7 @@ func (h *Handler) ForkChatSession(w http.ResponseWriter, r *http.Request) {
 	// A replay returns before the send preflight, so a stored fork stays
 	// reachable after its agent changes.
 	if child, err := h.Queries.GetChatForkByOperation(r.Context(), operation); err == nil {
-		h.writeForkReplay(w, r, session, child)
+		h.writeForkReplay(w, r, session, child, taskScoped)
 		return
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusInternalServerError, "failed to check fork operation")
@@ -152,7 +152,7 @@ func (h *Handler) ForkChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if child, err := qtx.GetChatForkByOperation(r.Context(), operation); err == nil {
-		h.writeForkReplay(w, r, session, child)
+		h.writeForkReplay(w, r, session, child, taskScoped)
 		return
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusInternalServerError, "failed to check fork operation")
@@ -308,7 +308,11 @@ func (h *Handler) resolveForkSource(w http.ResponseWriter, r *http.Request, user
 	return session, uuidToString(key), true, true
 }
 
-func (h *Handler) writeForkReplay(w http.ResponseWriter, r *http.Request, source, child db.ChatSession) {
+// writeForkReplay answers a retry with the saved child. A chat task never
+// receives the child's first message: a task fork route is not a content
+// route, so the saved text, written by a person, would reach the task without
+// taint. A person's replay keeps the message.
+func (h *Handler) writeForkReplay(w http.ResponseWriter, r *http.Request, source, child db.ChatSession, taskScoped bool) {
 	if child.CreatorID != source.CreatorID || child.WorkspaceID != source.WorkspaceID {
 		writeError(w, http.StatusConflict, "the fork is no longer available")
 		return
@@ -319,6 +323,11 @@ func (h *Handler) writeForkReplay(w http.ResponseWriter, r *http.Request, source
 		return
 	}
 	response := ChatForkResponse{Session: chatSessionToResponse(child), PreviousSessionID: uuidToString(source.ID), URL: forkChatURL(workspace.Slug, child.ID), WebURL: weblink.Build(h.cfg.AppURL, forkChatURL(workspace.Slug, child.ID))}
+	if taskScoped {
+		slog.Info("chat fork replayed", "source_session_id", uuidToString(source.ID), "child_session_id", uuidToString(child.ID), "replay", true)
+		writeJSON(w, http.StatusOK, response)
+		return
+	}
 	if first, err := h.Queries.GetChatForkFirstMessage(r.Context(), child.ID); err == nil {
 		message := chatMessageToResponse(first, nil)
 		response.Message = &message
