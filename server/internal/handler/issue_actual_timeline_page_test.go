@@ -220,12 +220,72 @@ func TestTimelineT8PagesAreStable(t *testing.T) {
 	sameSet(t, "all pages", seen, ids)
 }
 
+// T8 with a status filter: the filter reads the as-of status, not the live one.
+// An unseen issue that leaves the filtered status after page 1 still appears;
+// one that enters it after page 1 still does not.
+func TestTimelineT8StatusFilterUsesAsOfStatus(t *testing.T) {
+	project := dbfx.Project(t, "t8 status filter")
+	base := time.Now().Add(-10 * day).Truncate(time.Microsecond)
+	var ids []string
+	for i := 0; i < 6; i++ {
+		status := "in_progress"
+		if i == 5 {
+			status = "todo"
+		}
+		ids = append(ids, dbfx.Issue(t, "t8s", testutil.Cols{"project_id": project, "status": status, "created_at": base.Add(time.Duration(i) * time.Second)}))
+	}
+	scope := map[string]any{"kind": "project", "project_id": project}
+	filters := map[string]any{"statuses": []string{"in_progress"}}
+
+	code, first := postTL(t, pageBody(scope, filters, 2, nil))
+	if code != http.StatusOK || first.NextCursor == nil {
+		t.Fatalf("page 1: %d", code)
+	}
+	change := func(id, from, to string) {
+		dbfx.Exec(t, `UPDATE issue SET status = $2 WHERE id = $1`, id, to)
+		dbfx.Exec(t, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, action, details, created_at)
+			VALUES ($1, $2, 'system', 'status_changed', jsonb_build_object('from', $3::text, 'to', $4::text), $5)`,
+			testWorkspaceID, id, from, to, first.AsOf.Add(time.Second))
+	}
+	change(ids[4], "in_progress", "done") // leaves the filter after page 1
+	change(ids[5], "todo", "in_progress") // enters the filter after page 1
+
+	got := []string{first.Issues[0].IssueID, first.Issues[1].IssueID}
+	for cursor := first.NextCursor; cursor != nil; {
+		code, page := postTL(t, pageBody(scope, filters, 2, cursor))
+		if code != http.StatusOK {
+			t.Fatalf("next page: %d", code)
+		}
+		for _, issue := range page.Issues {
+			got = append(got, issue.IssueID)
+		}
+		cursor = page.NextCursor
+	}
+	sameSet(t, "as-of status filter", got, ids[:5])
+}
+
 func TestTimelineN1ForeignProjectScopeIs404(t *testing.T) {
 	foreign := dbfx.Workspace(t, "n1 foreign", fmt.Sprintf("n1-%d", time.Now().UnixNano()))
 	project := dbfx.Project(t, "foreign project", testutil.Cols{"workspace_id": foreign})
 	code, _ := postTL(t, pageBody(map[string]any{"kind": "project", "project_id": project}, nil, 10, nil))
 	if code != http.StatusNotFound {
 		t.Fatalf("got %d, want 404", code)
+	}
+}
+
+// N2: the endpoint takes no root issue, so a foreign-workspace root cannot be
+// named. What N2 protects is that a foreign-workspace issue never leaks into a
+// result, whatever the scope.
+func TestTimelineN2ForeignIssueNeverReturned(t *testing.T) {
+	foreign := dbfx.Workspace(t, "n2 foreign", fmt.Sprintf("n2-%d", time.Now().UnixNano()))
+	foreignIssue := dbfx.Issue(t, "n2 foreign issue", testutil.Cols{"workspace_id": foreign, "status": "in_progress", "created_at": time.Now().Add(-day)})
+	ownIssue := dbfx.Issue(t, "n2 own issue", testutil.Cols{"status": "in_progress", "created_at": time.Now().Add(-day)})
+	got := allPages(t, map[string]any{"kind": "workspace"}, nil, 500)
+	if slices.Contains(got, foreignIssue) {
+		t.Fatal("foreign-workspace issue returned")
+	}
+	if !slices.Contains(got, ownIssue) {
+		t.Fatal("own issue missing")
 	}
 }
 

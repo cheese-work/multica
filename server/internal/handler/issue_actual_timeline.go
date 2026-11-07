@@ -167,6 +167,21 @@ func (h *Handler) ListIssueActualTimeline(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+	// The status filter must read the as-of status, which is only known after
+	// the history rows load. The SQL leaves it out; the fingerprint keeps it.
+	sqlQuery := compiled
+	var statusFilter map[string]bool
+	if len(req.Filters.Statuses) > 0 {
+		statusFilter = map[string]bool{}
+		for _, status := range req.Filters.Statuses {
+			statusFilter[status] = true
+		}
+		noStatus := req.Filters
+		noStatus.Statuses = nil
+		if sqlQuery, ok = h.compileIssueTableQuery(w, r, issueTableQuerySpec{Scope: req.Scope, Filters: noStatus}); !ok {
+			return
+		}
+	}
 	if req.Scope.Kind == "project" {
 		var exists bool
 		projectID, _ := util.ParseUUID(req.Scope.ProjectID) // validated by compileIssueTableQuery
@@ -207,7 +222,7 @@ func (h *Handler) ListIssueActualTimeline(w http.ResponseWriter, r *http.Request
 	var scan *timelineScan
 	scanned, totalRows := 0, 0
 	for {
-		batch, order, next, err := h.loadTimelineBatch(r, compiled, from, to, asOf, scan)
+		batch, order, next, err := h.loadTimelineBatch(r, sqlQuery, from, to, asOf, scan)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to load issues")
 			return
@@ -232,6 +247,9 @@ func (h *Handler) ListIssueActualTimeline(w http.ResponseWriter, r *http.Request
 		for _, uuid := range order {
 			id := util.UUIDToString(uuid)
 			issue := batch[id]
+			if statusFilter != nil && !statusFilter[issue.Status] { // issue.Status is the as-of status here
+				continue
+			}
 			tl, selected := service.BuildActualTimeline(issue.TimelineIssue, categoryOf, from, to, asOf)
 			if !selected {
 				continue
