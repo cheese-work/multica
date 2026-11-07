@@ -384,3 +384,37 @@ func TestAgentReadinessProviderBreakerIsWaitable(t *testing.T) {
 		t.Fatalf("unbound agent under an open breaker = %+v, want blocked agent_runtime_required", verdict)
 	}
 }
+
+// CHE-4408: a squad assignment during a breaker hold must still reach the
+// leader's queue. The trigger gate used to skip every non-ready leader, so the
+// handoff was lost and nothing could retry it after the probe.
+func TestWillEnqueueRunSquadLeaderQueuesDuringBreakerHold(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	workspaceID, userID, agentID, issueID := seedAttributionFixture(t, pool)
+	ws, agent := util.MustParseUUID(workspaceID), util.MustParseUUID(agentID)
+	if _, err := pool.Exec(ctx, `UPDATE agent SET model = 'gpt-5.6-terra' WHERE id = $1`, agent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO provider_breaker (workspace_id, provider, state, next_probe_at) VALUES ($1, 'openai', 'open', now() + interval '5 minutes')`, ws); err != nil {
+		t.Fatal(err)
+	}
+	var squadID string
+	if err := pool.QueryRow(ctx, `INSERT INTO squad (workspace_id, name, leader_id, creator_id) VALUES ($1, 'che4408 squad', $2, $3) RETURNING id`,
+		ws, agent, util.MustParseUUID(userID)).Scan(&squadID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE issue SET status = 'todo', assignee_type = 'squad', assignee_id = $2 WHERE id = $1`, util.MustParseUUID(issueID), util.MustParseUUID(squadID)); err != nil {
+		t.Fatal(err)
+	}
+	queries := db.New(pool)
+	issue, err := queries.GetIssue(ctx, util.MustParseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := &IssueService{Queries: queries}
+	trigger, ok := svc.WillEnqueueRun(ctx, IssueTriggerInput{Issue: issue, AssigneeChanged: true}, IssueTriggerProbe{})
+	if !ok || trigger.AgentID != agent {
+		t.Fatalf("squad leader under an open breaker = (%+v, %v), want a trigger for the leader", trigger, ok)
+	}
+}
