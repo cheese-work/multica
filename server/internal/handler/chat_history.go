@@ -295,6 +295,11 @@ func (h *Handler) chatHistorySession(w http.ResponseWriter, r *http.Request) (ch
 		writeError(w, http.StatusForbidden, "chat session does not belong to this workspace")
 		return chatHistoryScope{}, false
 	}
+	// Same purpose-first check as the messages route (CHE-2909): task-session
+	// binding alone does not authorize a read.
+	if !h.authorizeChatTask(r.Context(), w, h.Queries, chatOpRead, task, session, ctxWorkspaceID(r.Context())) {
+		return chatHistoryScope{}, false
+	}
 	scope := chatHistoryScope{sessionID: task.ChatSessionID, contextRevision: task.ChannelContextRevision}
 	if task.ChannelContextRevision.Valid {
 		generation, err := h.Queries.GetChannelChatContextGeneration(r.Context(), db.GetChannelChatContextGenerationParams{
