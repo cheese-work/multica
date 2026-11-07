@@ -3739,6 +3739,10 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if createWorkflow != nil {
+		// A creator who picked no status gets the workflow's start status.
+		if req.Status == "" {
+			status = createWorkflow.Start()
+		}
 		if err := issueworkflow.CheckStatus(createWorkflow, status); err != nil {
 			writeIssueWorkflowError(w, err)
 			return
@@ -3949,6 +3953,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		Title:           req.Title,
 		Description:     ptrToText(req.Description),
 		Status:          status,
+		StatusOmitted:   req.Status == "",
 		Priority:        priority,
 		AssigneeType:    assigneeType,
 		AssigneeID:      assigneeID,

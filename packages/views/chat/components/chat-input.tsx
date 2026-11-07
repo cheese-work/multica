@@ -75,13 +75,14 @@ interface ChatInputProps {
   onFork?: (message: string, attachmentIds: string[]) => Promise<ForkResult>;
   /**
    * DM commands the owner answers itself; nothing is sent to the agent. Pass a
-   * handler only when the command applies to the open DM: `/archive` and `/pin`
-   * on an active DM, `/unarchive` on an archived one. A handler that resolves
+   * handler only when the command applies to the open DM: `/archive`, `/pin`
+   * and `/unseen` on an active DM, `/unarchive` on an archived one. A handler that resolves
    * `false` keeps the command in the box.
    */
   onStatistic?: () => void | boolean | Promise<void | boolean>;
   onArchive?: () => void | boolean | Promise<void | boolean>;
   onPin?: () => void | boolean | Promise<void | boolean>;
+  onUnseen?: () => void | boolean | Promise<void | boolean>;
   onUnarchive?: () => void | boolean | Promise<void | boolean>;
   /** The open, active DM's agent: offers `/preset <name>` completions for its presets. */
   presetAgentId?: string;
@@ -215,6 +216,7 @@ export function ChatInput({
   onStatistic,
   onArchive,
   onPin,
+  onUnseen,
   onUnarchive,
   presetAgentId,
   sessionArchived,
@@ -299,7 +301,7 @@ export function ChatInput({
   }, [draftKey]);
   // A fork input keeps the Send action even while a turn runs: a fork never
   // joins the agent's queue, so it is not gated by queue support.
-  const dmCommandHandlers = { statistic: onStatistic, archive: onArchive, pin: onPin, unarchive: onUnarchive };
+  const dmCommandHandlers = { statistic: onStatistic, archive: onArchive, pin: onPin, unseen: onUnseen, unarchive: onUnarchive };
   const draftDmAttempt = parseDmClientCommandAttempt(inputDraft);
   // A DM command is answered locally and never joins the agent's queue either.
   const isForkInput =
@@ -571,7 +573,7 @@ export function ChatInput({
       // These states disable the SubmitButton, but Mod+Enter bypasses it — so a
       // read-only or busy composer must still refuse the keyboard path.
       const fork = onFork ? parseForkCommand(content) : null;
-      const hasDmCommandHandler = !!(onStatistic || onArchive || onPin || onUnarchive);
+      const hasDmCommandHandler = !!(onStatistic || onArchive || onPin || onUnseen || onUnarchive);
       const dmAttempt = hasDmCommandHandler
         ? parseDmClientCommandAttempt(editorRef.current?.getText() ?? "")
         : null;
@@ -943,6 +945,7 @@ export function ChatInput({
             enableStatisticCommand={!!onStatistic}
             enableArchiveCommand={!!onArchive}
             enablePinCommand={!!onPin}
+            enableUnseenCommand={!!onUnseen}
             enableUnarchiveCommand={!!onUnarchive}
             presetAgentId={presetAgentId}
             enableCompactCommand={!sessionArchived}

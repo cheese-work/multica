@@ -7,6 +7,9 @@
 -- workspace row instead of relying on the legacy FK cascade.
 DELETE FROM provider_breaker WHERE workspace_id = $1;
 
+-- name: DeleteProviderBreakerAuditForWorkspace :exec
+DELETE FROM provider_breaker_audit WHERE workspace_id = $1;
+
 -- name: SetWorkspaceTeardownMode :exec
 -- The setting is transaction-local. Migration 242 makes only the three DELETE
 -- dirty triggers skip their per-row work while this flag is on.

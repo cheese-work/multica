@@ -395,7 +395,8 @@
   },
   "chat": {
     "floating_label": "플로팅 채팅 창",
-    "floating_hint": "모든 페이지에 플로팅 채팅 버튼을 표시합니다."
+    "floating_hint": "모든 페이지에 플로팅 채팅 버튼을 표시합니다.",
+    "recent_agents_label": "새 채팅의 최근 에이전트"
   },
   "issue": {
     "opening": {
@@ -873,7 +874,12 @@
     "auto_compact_hint": "웹 DM은 컨텍스트가 임계값에 도달하면 답변 후 새 DM으로 이어집니다.",
     "auto_compact_threshold_label": "임계값 (%)",
     "auto_compact_threshold_invalid": "50에서 90 사이의 정수를 입력하세요.",
+    "auto_compact_tokens_200k_label": "임계값, 200k 모델 (토큰)",
+    "auto_compact_tokens_1m_label": "임계값, 1M 모델 (토큰)",
+    "auto_compact_tokens_200k_invalid": "100000에서 200000 사이의 정수를 입력하세요.",
+    "auto_compact_tokens_1m_invalid": "100000에서 400000 사이의 정수를 입력하세요.",
     "auto_compact_readonly_on": "켜짐, {{threshold}}%",
+    "auto_compact_readonly_on_tokens": "켜짐, {{small}} / {{large}} 토큰",
     "auto_compact_readonly_off": "꺼짐",
     "agent_decisions_label": "에이전트 결정",
     "agent_decisions_hint": "에이전트가 허용 목록에 있는 게이트를 대신 결정할 수 있습니다. 각 결정은 일일 브리프에 표시되며 24시간 동안 거부할 수 있습니다.",

@@ -11,6 +11,15 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteProviderBreakerAuditForWorkspace = `-- name: DeleteProviderBreakerAuditForWorkspace :exec
+DELETE FROM provider_breaker_audit WHERE workspace_id = $1
+`
+
+func (q *Queries) DeleteProviderBreakerAuditForWorkspace(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteProviderBreakerAuditForWorkspace, workspaceID)
+	return err
+}
+
 const deleteProviderBreakersForWorkspace = `-- name: DeleteProviderBreakersForWorkspace :exec
 
 DELETE FROM provider_breaker WHERE workspace_id = $1

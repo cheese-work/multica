@@ -273,6 +273,8 @@ multica runtime profile create --display-name "사내 Claude 래퍼" \
 
 활성 에이전트가 계속 연결된 런타임을 삭제하면 명령이 기본적으로 거부됩니다. `multica runtime delete <id> --cascade`는 에이전트의 런타임 연결을 해제하고 설정과 기록을 보존하며 활성 실행을 취소합니다.
 
+`multica runtime breaker list`는 프로바이더별 서킷 브레이커를 보여 주고, `multica runtime breaker reset <provider>`는 강제로 닫습니다(소유자 또는 관리자만). [프로바이더 서킷 브레이커](/daemon-runtimes#provider-breaker)를 참고하세요.
+
 실행 메커니즘과 사용자 지정 profile은 [데몬과 런타임](/daemon-runtimes)을 참고하세요.
 
 ## 프로젝트, 워크스페이스, 오토파일럿
@@ -427,6 +429,7 @@ CLI 설정 파일에는 사용자를 대신해 Multica에 접근할 수 있는 t
 | `runtime` | `list/usage/activity/update/rename/delete` | 런타임 확인 및 관리 | `usage`: `--days`(기본값 90, 최대 365). `update`: `--target-version`(필수), `--wait`. `delete`: `--cascade`(연결된 에이전트의 런타임을 해제하고 데이터를 보존하며 실행 취소) |
 | | `profile list/create/update/delete` | 사용자 지정 런타임 profile 관리 | `create`: `--display-name`, `--command-name`(모두 필수), `--runtime-type`(또는 예전 `--protocol-family`), `--description`. `update`: `--enabled` |
 | | `profile set-path/unset-path <profile-id>` | 로컬 실행 파일 경로 고정(로컬에만 적용되고 서버에 업로드되지 않음) | |
+| | `breaker list/reset <provider>` | 프로바이더 서킷 브레이커 조회 또는 강제 닫기 | `reset`: 워크스페이스 소유자 또는 관리자만 |
 
 ### Additional
 

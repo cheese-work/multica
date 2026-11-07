@@ -117,6 +117,9 @@ type IssueWorkflowResponse struct {
 	// IncludeChildPRs says whether a parent's PR guards also read the PRs of
 	// its direct children.
 	IncludeChildPRs bool `json:"include_child_prs"`
+	// StartStatusKey is where new issues of the workflow start; empty means
+	// todo (CHE-3113).
+	StartStatusKey string `json:"start_status_key"`
 }
 
 // StatusMappingRequirement names a status some issues are on that the target
@@ -194,6 +197,7 @@ func issueWorkflowToResponse(row db.IssueWorkflow, def issueworkflow.Definition,
 
 		MaxRunsPerIssue: maxRunsPtr(row.MaxRunsPerIssue),
 		IncludeChildPRs: row.IncludeChildPrs,
+		StartStatusKey:  row.StartStatusKey.String,
 	}
 }
 
@@ -418,6 +422,10 @@ type IssueWorkflowWriteRequest struct {
 	// IncludeChildPRs sets whether a parent's PR guards read its children's
 	// PRs. Omitted keeps the stored value (true for a new workflow).
 	IncludeChildPRs *bool `json:"include_child_prs,omitempty"`
+	// StartStatusKey names the status where new issues of the workflow start
+	// (CHE-3113). Omitted keeps the stored value; "" clears it back to todo.
+	// It must be an unstarted or started step of the workflow.
+	StartStatusKey *string `json:"start_status_key,omitempty"`
 }
 
 var newStatusDefaultColor = map[string]string{
@@ -811,7 +819,7 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	machine := isMachineCredentialActor(r)
-	if machine && (req.Steps == nil || req.Name != nil || req.Description != nil || req.IncludeChildPRs != nil || len(req.StatusMapping) > 0 || req.DryRun) {
+	if machine && (req.Steps == nil || req.Name != nil || req.Description != nil || req.IncludeChildPRs != nil || req.StartStatusKey != nil || len(req.StatusMapping) > 0 || req.DryRun) {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", "a decision-bound write carries steps and expected_version only")
 		return
 	}
@@ -909,6 +917,18 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", err.Error())
 		return
 	}
+	// The start status is checked against the steps this save leaves, so a
+	// step edit cannot strand it.
+	startStatus := pgtype.Text{}
+	startKey := current.StartStatusKey.String
+	if req.StartStatusKey != nil {
+		startKey = strings.TrimSpace(*req.StartStatusKey)
+		startStatus = pgtype.Text{String: startKey, Valid: true}
+	}
+	if err := issueworkflow.ValidateStartStatus(startKey, steps, catalog); err != nil {
+		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", err.Error())
+		return
+	}
 	if msg, err := h.subWorkflowTargetsMessage(ctx, qtx, wsUUID, current.ID, steps); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save workflow")
 		return
@@ -993,6 +1013,7 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		Steps:            raw,
 		MaxRunsPerIssue:  maxRuns,
 		IncludeChildPrs:  includeChildPRs,
+		StartStatusKey:   startStatus,
 	})
 	if err != nil {
 		if isUniqueViolation(err) {

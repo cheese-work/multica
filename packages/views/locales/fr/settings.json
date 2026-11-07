@@ -398,7 +398,8 @@
   },
   "chat": {
     "floating_label": "Fenêtre de discussion flottante",
-    "floating_hint": "Afficher le bouton de chat flottant sur chaque page."
+    "floating_hint": "Afficher le bouton de chat flottant sur chaque page.",
+    "recent_agents_label": "Agents récents dans le sélecteur Nouvelle discussion"
   },
   "issue": {
     "opening": {
@@ -879,7 +880,12 @@
     "auto_compact_hint": "Un message privé web continue dans un nouveau message privé après une réponse, dès que son contexte atteint le seuil.",
     "auto_compact_threshold_label": "Seuil (%)",
     "auto_compact_threshold_invalid": "Saisissez un nombre entier de 50 à 90.",
+    "auto_compact_tokens_200k_label": "Seuil, modèles 200k (tokens)",
+    "auto_compact_tokens_1m_label": "Seuil, modèles 1M (tokens)",
+    "auto_compact_tokens_200k_invalid": "Saisissez un nombre entier de 100000 à 200000.",
+    "auto_compact_tokens_1m_invalid": "Saisissez un nombre entier de 100000 à 400000.",
     "auto_compact_readonly_on": "Activé, à {{threshold}} %",
+    "auto_compact_readonly_on_tokens": "Activé, à {{small}} / {{large}} tokens",
     "auto_compact_readonly_off": "Désactivé",
     "agent_decisions_label": "Décisions des agents",
     "agent_decisions_hint": "Les agents peuvent trancher à votre place les étapes autorisées. Chaque décision apparaît dans le récapitulatif quotidien avec un veto de 24 h.",
