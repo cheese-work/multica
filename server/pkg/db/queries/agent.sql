@@ -2116,7 +2116,7 @@ WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'
 -- queue or is about to still reads the issue afterwards, so each takes the
 -- writer's taint (the task trigger unions it with what the run has).
 UPDATE agent_task_queue SET taint_ids = sqlc.arg('taint_ids')::text[]
-WHERE issue_id = $1 AND status IN ('queued', 'dispatched');
+WHERE issue_id = $1 AND status IN ('queued', 'dispatched', 'waiting_local_directory');
 
 -- name: GetTaskTaintIDs :one
 SELECT taint_ids FROM agent_task_queue WHERE id = $1;

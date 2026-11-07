@@ -91,6 +91,18 @@ func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetEx
 	window := e.Since.UTC().Format(time.RFC3339Nano)
 	err := h.withPgxTx(ctx, func(tx pgx.Tx) error {
 		q := h.Queries.WithTx(tx)
+		// A tainted callback may update the issue's recovery runs below. Lock
+		// them first, as a tainted issue write does, so the order is run, then
+		// issue everywhere; locking the issue first would invert it.
+		taint, err := service.CtxTaint(ctx, q)
+		if err != nil {
+			return err
+		}
+		if len(taint) > 0 {
+			if err := q.LockRunsForTaintedWrite(ctx, e.IssueID); err != nil {
+				return fmt.Errorf("lock runs for tainted callback: %w", err)
+			}
+		}
 		if _, err := q.LockIssueRunBudget(ctx, e.IssueID); err != nil {
 			return err
 		}
@@ -103,10 +115,6 @@ func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetEx
 			if reuse, err := refusalServes(ctx, q, existing); err != nil {
 				return err
 			} else if reuse {
-				taint, err := service.CtxTaint(ctx, q)
-				if err != nil {
-					return err
-				}
 				if err := q.MergeRunBudgetRefusalTaint(ctx, db.MergeRunBudgetRefusalTaintParams{ID: existing.ID, Taint: taint}); err != nil {
 					return err
 				}
@@ -123,10 +131,6 @@ func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetEx
 		issue, eligible := exhaustedIssueWith(ctx, q, e)
 		if !eligible {
 			return nil
-		}
-		taint, err := service.CtxTaint(ctx, q)
-		if err != nil {
-			return err
 		}
 		in := db.InsertRunBudgetRefusalParams{
 			TaintIds: taint,

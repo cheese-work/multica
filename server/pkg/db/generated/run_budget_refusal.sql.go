@@ -245,7 +245,7 @@ func (q *Queries) LockRunBudgetRefusal(ctx context.Context, id pgtype.UUID) (Run
 const lockRunsForTaintedWrite = `-- name: LockRunsForTaintedWrite :exec
 SELECT id FROM agent_task_queue
 WHERE issue_id = $1::uuid
-  AND (status IN ('queued', 'dispatched') OR (task_kind = 'budget_recovery' AND status = 'running'))
+  AND (status IN ('queued', 'dispatched', 'waiting_local_directory') OR (task_kind = 'budget_recovery' AND status = 'running'))
 ORDER BY id
 FOR NO KEY UPDATE
 `
@@ -472,7 +472,7 @@ func (q *Queries) SupersedeRunBudgetRefusalsOnStatusChange(ctx context.Context, 
 const taintBudgetRecoveryRuns = `-- name: TaintBudgetRecoveryRuns :exec
 UPDATE agent_task_queue SET taint_ids = $1::text[]
 WHERE issue_id = $2::uuid AND task_kind = 'budget_recovery'
-  AND status IN ('queued', 'dispatched', 'running')
+  AND status IN ('queued', 'dispatched', 'waiting_local_directory', 'running')
 `
 
 type TaintBudgetRecoveryRunsParams struct {
@@ -482,7 +482,7 @@ type TaintBudgetRecoveryRunsParams struct {
 
 // A requester that joined a hook after its notice committed: the recovery run
 // already exists, so it takes the requester's taint, whether it is still queued
-// or already started (the task trigger unions it with what the run has, and a
+// waiting for a local directory, or already started (the task trigger unions it with what the run has, and a
 // started run reads its taint on every call).
 func (q *Queries) TaintBudgetRecoveryRuns(ctx context.Context, arg TaintBudgetRecoveryRunsParams) error {
 	_, err := q.db.Exec(ctx, taintBudgetRecoveryRuns, arg.Taint, arg.IssueID)

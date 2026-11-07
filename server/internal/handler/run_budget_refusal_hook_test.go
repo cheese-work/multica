@@ -632,20 +632,26 @@ func TestRunBudgetHookRecoveryKeepsEveryRequestersTaint(t *testing.T) {
 // as it is when it has not run yet: the taint must already stop the recovery
 // run from authorizing an elevated operation (it cannot be revoked afterwards).
 func TestRunBudgetHookTaintedAssignmentFencesRecoveryRunBeforeItsCallback(t *testing.T) {
-	taintedAssignmentFencesRecoveryRun(t, 2856060, false, false)
+	taintedAssignmentFencesRecoveryRun(t, 2856060, false, "")
 }
 
 // A member cleared the taint ID for this issue: the issue stays clean, but the
 // task that carries the ID is still tainted, and so is the run its assignment starts.
 func TestRunBudgetHookClearedTaintAssignmentFencesRecoveryRunBeforeItsCallback(t *testing.T) {
-	taintedAssignmentFencesRecoveryRun(t, 2856061, true, false)
+	taintedAssignmentFencesRecoveryRun(t, 2856061, true, "")
 }
 
 // The recovery run is already claimed and running when the tainted assignment
 // commits, and the ID was cleared for the issue: neither the pending-run update
 // nor the issue taint reaches it, so the run itself takes the taint.
 func TestRunBudgetHookClearedTaintAssignmentFencesARunningRecoveryRun(t *testing.T) {
-	taintedAssignmentFencesRecoveryRun(t, 2856062, true, true)
+	taintedAssignmentFencesRecoveryRun(t, 2856062, true, "running")
+}
+
+// The same, for a run the daemon holds in waiting_local_directory: it is claimed
+// elevated, has not started, and starting it reads only its own taint.
+func TestRunBudgetHookClearedTaintAssignmentFencesAWaitingRecoveryRun(t *testing.T) {
+	taintedAssignmentFencesRecoveryRun(t, 2856065, true, "waiting_local_directory")
 }
 
 // taintedAssignment hands the spent issue to the recovery handler as a task that
@@ -722,7 +728,9 @@ func assertNoElevatedOp(t *testing.T, f elevatedFixture, profile string, epoch i
 	}
 }
 
-func taintedAssignmentFencesRecoveryRun(t *testing.T, seed int64, cleared, assignAfterClaim bool) {
+// afterClaim is the status the recovery run has when the tainted assignment
+// commits; empty means the assignment commits before the run is claimed.
+func taintedAssignmentFencesRecoveryRun(t *testing.T, seed int64, cleared bool, afterClaim string) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
@@ -733,7 +741,7 @@ func taintedAssignmentFencesRecoveryRun(t *testing.T, seed int64, cleared, assig
 	recordOccurrence(t, c, "in_progress")
 	c.spend(t, 2)
 	ctxClean, eClean := refusalBy(t, c, "")
-	if !assignAfterClaim {
+	if afterClaim == "" {
 		taintedAssignment(t, c)
 	}
 
@@ -746,13 +754,14 @@ func taintedAssignmentFencesRecoveryRun(t *testing.T, seed int64, cleared, assig
 	finished(t, c)
 
 	f, profile, epoch := claimRecoveryRun(t, c)
-	if assignAfterClaim {
+	if afterClaim != "" {
 		if profile != "elevated" {
 			t.Fatalf("clean recovery run profile = %q before the assignment, want elevated", profile)
 		}
-		// A claim leaves the run dispatched; the daemon's start makes it running,
-		// which the pending-run taint update does not reach.
-		dbfx.Exec(t, `UPDATE agent_task_queue SET status='running', started_at=now() WHERE id=$1`, f.taskID)
+		// A claim leaves the run dispatched; the daemon's start makes it running
+		// (after waiting_local_directory, if it waits), which the pending-run
+		// taint update does not reach.
+		dbfx.Exec(t, `UPDATE agent_task_queue SET status=$2, started_at=now() WHERE id=$1`, f.taskID, afterClaim)
 		taintedAssignment(t, c)
 	} else if profile == "elevated" {
 		t.Fatalf("recovery run claimed elevated before the tainted request's callback ran")
@@ -894,6 +903,100 @@ func TestTaintedAssignmentAndAuthorizationOfARunningRecoveryRunDoNotDeadlock(t *
 	}
 	if authCode != http.StatusOK && authCode != http.StatusForbidden {
 		t.Fatalf("authorization status = %d, want 200 or 403 (an aborted transaction is 500)", authCode)
+	}
+}
+
+// A late tainted requester's callback and a tainted issue write both update the
+// issue's recovery run. Both take the run lock before the issue lock, so neither
+// waits on the other while holding what the other needs.
+func TestLateRefusalCallbackAndTaintedWriteDoNotDeadlock(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	c := newBudgetCase(t, 2856066, recoverySteps(seededReadyAgentID(t)), 2)
+	recordOccurrence(t, c, "in_progress")
+	c.spend(t, 2)
+	ctxClean, eClean := refusalBy(t, c, "")
+	ctxLate, eLate := refusalBy(t, c, "ext-1")
+	id, generation, ok := testHandler.recordRefusalIntent(ctxClean, eClean)
+	if !ok {
+		t.Fatal("clean refusal not recorded")
+	}
+	testHandler.advanceRefusalHook(ctxClean, id, generation, eClean)
+	finished(t, c)
+	var runID string
+	dbfx.QueryRow(t, `SELECT id FROM agent_task_queue WHERE issue_id=$1 AND task_kind='budget_recovery'`, c.issueID).Scan(&runID)
+
+	service.SetOnRunBudgetExhausted(func(context.Context, service.RunBudgetExhausted) {})
+	t.Cleanup(func() { service.SetOnRunBudgetExhausted(testHandler.onRunBudgetExhausted) })
+	actorRuntime := createClaimReclaimRuntime(t, ctx, "Budget previous runtime")
+	other := dbfx.Agent(t, "Budget previous assignee", actorRuntime)
+	actor := dbfx.Task(t, c.agentID, testutil.Cols{"status": "running", "runtime_id": actorRuntime, "issue_id": dbfx.Issue(t, "budget tainted actor"), "taint_ids": []string{"ext-1"}})
+	dbfx.Exec(t, `UPDATE issue SET assignee_id=$2 WHERE id=$1`, c.issueID, other)
+
+	hold, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hold.Rollback(ctx)
+	if _, err := hold.Exec(ctx, `SELECT 1 FROM agent_task_queue WHERE id = $1 FOR SHARE`, runID); err != nil {
+		t.Fatal(err)
+	}
+	lockWaiters := func() int {
+		var n int
+		dbfx.QueryRow(t, `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&n)
+		return n
+	}
+	until := func(what string, ok func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); !ok(); time.Sleep(20 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting for %s", what)
+			}
+		}
+	}
+
+	assigned := make(chan int, 1)
+	go func() {
+		w := httptest.NewRecorder()
+		testHandler.UpdateIssue(w, testutil.WithURLParams(
+			asRun(newRequest(http.MethodPatch, "/api/issues/"+c.issueID, map[string]any{
+				"assignee_type": "agent", "assignee_id": c.agentID,
+			}), c.agentID, actor), "id", c.issueID))
+		assigned <- w.Code
+	}()
+	until("the tainted write to wait on the recovery run", func() bool { return lockWaiters() >= 1 })
+
+	recorded := make(chan bool, 1)
+	go func() {
+		_, _, ok := testHandler.recordRefusalIntent(ctxLate, eLate)
+		recorded <- ok
+	}()
+	// The callback waits on the recovery run, with or without the issue lock.
+	until("the late callback to wait on the recovery run", func() bool { return lockWaiters() >= 2 })
+	if err := hold.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case code := <-assigned:
+		if code != http.StatusOK {
+			t.Fatalf("tainted write status = %d, want 200 (an aborted transaction is 500)", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("tainted write never finished")
+	}
+	select {
+	case ok := <-recorded:
+		if !ok {
+			t.Fatal("late callback was not recorded (an aborted transaction records nothing)")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("late callback never finished")
+	}
+	if got := recoveryTaint(t, c); len(got) != 1 || got[0] != "ext-1" {
+		t.Fatalf("recovery run taint = %v, want [ext-1]", got)
 	}
 }
 

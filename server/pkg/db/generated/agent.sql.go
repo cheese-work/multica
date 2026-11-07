@@ -12044,7 +12044,7 @@ func (q *Queries) SettleDelegatedFailureRecoveryComment(ctx context.Context, com
 
 const taintPendingRunsOnIssue = `-- name: TaintPendingRunsOnIssue :exec
 UPDATE agent_task_queue SET taint_ids = $2::text[]
-WHERE issue_id = $1 AND status IN ('queued', 'dispatched')
+WHERE issue_id = $1 AND status IN ('queued', 'dispatched', 'waiting_local_directory')
 `
 
 type TaintPendingRunsOnIssueParams struct {
