@@ -59,4 +59,15 @@ describe("copyText", () => {
     expect(await copyText(SAMPLE)).toBe(true);
     expect(selected).toBe(SAMPLE);
   });
+
+  it("fallback sets an explicit selection range, which iOS Safari needs", async () => {
+    // iOS ignores textarea.select() on a readonly field; only
+    // setSelectionRange() selects, and an empty selection copies nothing.
+    setClipboard(undefined);
+    const range = vi.spyOn(HTMLTextAreaElement.prototype, "setSelectionRange");
+    document.execCommand = vi.fn(() => true);
+
+    expect(await copyText(SAMPLE)).toBe(true);
+    expect(range).toHaveBeenCalledWith(0, SAMPLE.length);
+  });
 });
