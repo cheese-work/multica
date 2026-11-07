@@ -15,7 +15,7 @@ var decisionShadowReportCmd = &cobra.Command{
 }
 
 func init() {
-	decisionShadowReportCmd.Flags().String("output", "json", "Output format: table or json")
+	decisionShadowReportCmd.Flags().String("output", "json", "Output format (JSON only)")
 	decisionCmd.AddCommand(decisionShadowReportCmd)
 }
 
