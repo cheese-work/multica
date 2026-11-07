@@ -5,31 +5,52 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/dispatch"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 const (
 	providerBreakerThreshold = 3
 	providerBreakerWindow    = 5 * time.Minute
-	providerBreakerCoolOff   = 300
+	// One provider outage fails every in-flight task at about the same time;
+	// those failures are one signal, not several.
+	providerBreakerBurstWindow = 5 * time.Second
+	providerBreakerCoolOff     = 300
+	providerBreakerMaxCoolOff  = 3600
+	// A half_open breaker waits this long for its canary before another
+	// canary may replace it, so a lost canary cannot hold the breaker forever.
+	providerBreakerCanaryDeadline = 30 * time.Minute
 )
 
-func providerBreakerShouldTrip(failures []time.Time, now time.Time, threshold int, window time.Duration) bool {
+// providerBreakerShouldTrip reports whether failures hold at least threshold
+// distinct signals inside window. Failures within burst of the first failure
+// of a signal belong to that signal.
+func providerBreakerShouldTrip(failures []time.Time, now time.Time, threshold int, window, burst time.Duration) bool {
 	if threshold <= 0 || window <= 0 {
 		return false
 	}
 	cutoff := now.Add(-window)
-	count := 0
+	var inWindow []time.Time
 	for _, failedAt := range failures {
 		if !failedAt.Before(cutoff) {
-			count++
-			if count >= threshold {
+			inWindow = append(inWindow, failedAt)
+		}
+	}
+	sort.Slice(inWindow, func(i, j int) bool { return inWindow[i].Before(inWindow[j]) })
+	signals := 0
+	var signalStart time.Time
+	for _, failedAt := range inWindow {
+		if signals == 0 || failedAt.Sub(signalStart) >= burst {
+			signals++
+			signalStart = failedAt
+			if signals >= threshold {
 				return true
 			}
 		}
@@ -37,9 +58,16 @@ func providerBreakerShouldTrip(failures []time.Time, now time.Time, threshold in
 	return false
 }
 
-func providerBreakerDisposition(state string) string {
+// providerBreakerDisposition: an open or half_open breaker holds until its
+// next_probe_at passes; after that a probe may be admitted.
+func providerBreakerDisposition(state string, probeDue bool) string {
 	switch state {
-	case "open", "half_open", "draining":
+	case "open", "half_open":
+		if probeDue {
+			return "normal"
+		}
+		return "hold"
+	case "draining":
 		return "hold"
 	default:
 		return "normal"
@@ -53,14 +81,14 @@ func ProviderBreakerAdmit(ctx context.Context, queries *db.Queries, workspaceID 
 	if queries == nil || !workspaceID.Valid || provider == "" {
 		return "normal", nil
 	}
-	state, err := queries.GetProviderBreakerState(ctx, db.GetProviderBreakerStateParams{WorkspaceID: workspaceID, Provider: provider})
+	row, exists, err := providerBreakerRow(ctx, queries, workspaceID, provider)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return "normal", nil
-		}
-		return "", fmt.Errorf("read provider breaker: %w", err)
+		return "", err
 	}
-	return providerBreakerDisposition(state), nil
+	if !exists {
+		return "normal", nil
+	}
+	return providerBreakerDisposition(row.State, row.ProbeDue), nil
 }
 
 func providerBreakerVerdict(ctx context.Context, lookup RuntimeLookup, agent db.Agent) (AgentVerdict, error) {
@@ -95,6 +123,23 @@ func recordProviderServerFailure(ctx context.Context, queries *db.Queries, task 
 	if err := queries.LockProviderBreakerTrip(ctx, lockKey); err != nil {
 		return fmt.Errorf("lock provider breaker trip: %w", err)
 	}
+	row, exists, err := providerBreakerRow(ctx, queries, agent.WorkspaceID, provider)
+	if err != nil {
+		return err
+	}
+	if exists && isProviderBreakerCanary(row, task) {
+		changed, err := queries.ReopenProviderBreaker(ctx, db.ReopenProviderBreakerParams{
+			WorkspaceID: agent.WorkspaceID, Provider: provider, TaskID: task.ID, ExpectedVersion: row.Version,
+			MaxCoolOffSeconds: providerBreakerMaxCoolOff,
+		})
+		if err != nil {
+			return fmt.Errorf("reopen provider breaker: %w", err)
+		}
+		if changed == 1 {
+			slog.Warn("provider breaker reopened after canary failure", "provider", provider, "canary_task_id", util.UUIDToString(task.ID), "prev_cool_off_s", row.CoolOffS)
+		}
+		return nil
+	}
 	rows, err := queries.ListRecentProviderServerFailures(ctx, db.ListRecentProviderServerFailuresParams{WorkspaceID: agent.WorkspaceID, WindowSeconds: int32(providerBreakerWindow.Seconds())})
 	if err != nil {
 		return fmt.Errorf("load recent provider failures: %w", err)
@@ -109,20 +154,19 @@ func recordProviderServerFailure(ctx context.Context, queries *db.Queries, task 
 			}
 		}
 	}
-	if !providerBreakerShouldTrip(failedAt, time.Now(), providerBreakerThreshold, providerBreakerWindow) {
+	if !providerBreakerShouldTrip(failedAt, time.Now(), providerBreakerThreshold, providerBreakerWindow, providerBreakerBurstWindow) {
 		return nil
 	}
-	version, _, err := providerBreakerVersion(ctx, queries, agent.WorkspaceID, provider)
-	if err != nil {
-		return err
-	}
-	changed, err := queries.OpenProviderBreaker(ctx, db.OpenProviderBreakerParams{WorkspaceID: agent.WorkspaceID, Provider: provider, TripEvidence: evidence, ExpectedVersion: version, CoolOffSeconds: providerBreakerCoolOff})
+	changed, err := queries.OpenProviderBreaker(ctx, db.OpenProviderBreakerParams{WorkspaceID: agent.WorkspaceID, Provider: provider, TripEvidence: evidence, ExpectedVersion: row.Version, CoolOffSeconds: providerBreakerCoolOff})
 	if err != nil {
 		return fmt.Errorf("open provider breaker: %w", err)
 	}
 	if changed != 1 {
 		slog.Warn("provider breaker trip skipped after concurrent version change", "provider", provider)
 		return nil
+	}
+	if !exists || row.State == "closed" {
+		slog.Warn("provider breaker opened", "provider", provider, "evidence_tasks", len(evidence))
 	}
 	return nil
 }
@@ -139,7 +183,7 @@ func recordProviderSuccess(ctx context.Context, queries *db.Queries, task db.Age
 	if !ok {
 		return nil
 	}
-	_, exists, err := providerBreakerVersion(ctx, queries, agent.WorkspaceID, provider)
+	_, exists, err := providerBreakerRow(ctx, queries, agent.WorkspaceID, provider)
 	if err != nil {
 		return err
 	}
@@ -156,11 +200,24 @@ func recordProviderSuccess(ctx context.Context, queries *db.Queries, task db.Age
 	if err := queries.LockProviderBreakerTrip(ctx, lockKey); err != nil {
 		return fmt.Errorf("lock provider breaker success: %w", err)
 	}
-	version, _, err := providerBreakerVersion(ctx, queries, agent.WorkspaceID, provider)
+	row, _, err := providerBreakerRow(ctx, queries, agent.WorkspaceID, provider)
 	if err != nil {
 		return err
 	}
-	changed, err := queries.RecordProviderSuccess(ctx, db.RecordProviderSuccessParams{WorkspaceID: agent.WorkspaceID, Provider: provider, ExpectedVersion: version})
+	if isProviderBreakerCanary(row, task) {
+		changed, err := queries.CloseProviderBreakerOnCanary(ctx, db.CloseProviderBreakerOnCanaryParams{
+			WorkspaceID: agent.WorkspaceID, Provider: provider, TaskID: task.ID, ExpectedVersion: row.Version,
+			DefaultCoolOffSeconds: providerBreakerCoolOff,
+		})
+		if err != nil {
+			return fmt.Errorf("close provider breaker: %w", err)
+		}
+		if changed == 1 {
+			slog.Info("provider breaker closed after canary success", "provider", provider, "canary_task_id", util.UUIDToString(task.ID))
+		}
+		return nil
+	}
+	changed, err := queries.RecordProviderSuccess(ctx, db.RecordProviderSuccessParams{WorkspaceID: agent.WorkspaceID, Provider: provider, ExpectedVersion: row.Version})
 	if err != nil {
 		return fmt.Errorf("record provider success: %w", err)
 	}
@@ -171,13 +228,54 @@ func recordProviderSuccess(ctx context.Context, queries *db.Queries, task db.Age
 	return nil
 }
 
-func providerBreakerVersion(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, provider string) (int64, bool, error) {
-	version, err := queries.GetProviderBreakerVersion(ctx, db.GetProviderBreakerVersionParams{WorkspaceID: workspaceID, Provider: provider})
+// isProviderBreakerCanary: task.ID.Valid guards against the zero pgtype.UUID
+// equalling the zero canary_task_id of a breaker with no canary.
+func isProviderBreakerCanary(row db.GetProviderBreakerRow, task db.AgentTaskQueue) bool {
+	return task.ID.Valid && row.State == "half_open" && row.CanaryTaskID == task.ID
+}
+
+// providerBreakerRow returns the breaker row; version is 0 when it does not exist.
+func providerBreakerRow(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, provider string) (db.GetProviderBreakerRow, bool, error) {
+	row, err := queries.GetProviderBreaker(ctx, db.GetProviderBreakerParams{WorkspaceID: workspaceID, Provider: provider})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, false, nil
+		return db.GetProviderBreakerRow{}, false, nil
 	}
 	if err != nil {
-		return 0, false, fmt.Errorf("read provider breaker version: %w", err)
+		return db.GetProviderBreakerRow{}, false, fmt.Errorf("read provider breaker: %w", err)
 	}
-	return version, true, nil
+	return row, true, nil
+}
+
+// errProviderBreakerCanaryTaken rolls back a claim that lost the canary race.
+var errProviderBreakerCanaryTaken = errors.New("provider breaker canary taken")
+
+// providerBreakerClaimGate decides a claim for agent. held: the breaker is open
+// or half_open and not yet due, so the claim must be skipped. canary: the
+// breaker is due, so the claimed task must be bound as its canary
+// (acquireProviderBreakerCanary) in the same transaction.
+func providerBreakerClaimGate(ctx context.Context, queries *db.Queries, agent db.Agent) (provider string, held, canary bool, err error) {
+	provider, ok := ResolveModelProvider(agent.Model.String)
+	if !ok {
+		return "", false, false, nil
+	}
+	row, exists, err := providerBreakerRow(ctx, queries, agent.WorkspaceID, provider)
+	if err != nil || !exists || (row.State != "open" && row.State != "half_open") {
+		return provider, false, false, err
+	}
+	return provider, !row.ProbeDue, row.ProbeDue, nil
+}
+
+func acquireProviderBreakerCanary(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, provider string, taskID pgtype.UUID) error {
+	changed, err := queries.AcquireProviderBreakerCanary(ctx, db.AcquireProviderBreakerCanaryParams{
+		WorkspaceID: workspaceID, Provider: provider, TaskID: taskID,
+		CanaryDeadlineSeconds: int32(providerBreakerCanaryDeadline.Seconds()),
+	})
+	if err != nil {
+		return fmt.Errorf("acquire provider breaker canary: %w", err)
+	}
+	if changed != 1 {
+		return errProviderBreakerCanaryTaken
+	}
+	slog.Warn("provider breaker half_open: canary admitted", "provider", provider, "canary_task_id", util.UUIDToString(taskID))
+	return nil
 }
