@@ -786,6 +786,53 @@ func (q *Queries) GetDecisionAnswer(ctx context.Context, arg GetDecisionAnswerPa
 	return i, err
 }
 
+const getDecisionCardAnswer = `-- name: GetDecisionCardAnswer :one
+SELECT id, decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, content_snapshot, effective_at, wake_at, woken_at, wake_outcome, issue_comment_id, disclaimed_at, disclaim_comment_posted_at, disclaimed_by_user_id, disclaim_reason, disclaimed_by_agent_id, disclaimed_by_task_id, veto_reason, veto_note_posted_at, retraction_delivered_at, retraction_outcome, withdrawal_comment_id, created_at, source_comment_id, answered_by_user_id, answer_source, chosen_option_index, reply_text, context_message_id, excerpted, answered_label, state_version, hindsight_acked_version FROM decision_answer WHERE decision_request_id = $1 AND answer_source = 'card'
+ORDER BY created_at DESC LIMIT 1
+`
+
+// The answer a human's card click recorded for a request; one per request.
+func (q *Queries) GetDecisionCardAnswer(ctx context.Context, decisionRequestID pgtype.UUID) (DecisionAnswer, error) {
+	row := q.db.QueryRow(ctx, getDecisionCardAnswer, decisionRequestID)
+	var i DecisionAnswer
+	err := row.Scan(
+		&i.ID,
+		&i.DecisionRequestID,
+		&i.AnsweredByTaskID,
+		&i.SourceChatSessionID,
+		&i.ChatMessageIds,
+		&i.ContentSnapshot,
+		&i.EffectiveAt,
+		&i.WakeAt,
+		&i.WokenAt,
+		&i.WakeOutcome,
+		&i.IssueCommentID,
+		&i.DisclaimedAt,
+		&i.DisclaimCommentPostedAt,
+		&i.DisclaimedByUserID,
+		&i.DisclaimReason,
+		&i.DisclaimedByAgentID,
+		&i.DisclaimedByTaskID,
+		&i.VetoReason,
+		&i.VetoNotePostedAt,
+		&i.RetractionDeliveredAt,
+		&i.RetractionOutcome,
+		&i.WithdrawalCommentID,
+		&i.CreatedAt,
+		&i.SourceCommentID,
+		&i.AnsweredByUserID,
+		&i.AnswerSource,
+		&i.ChosenOptionIndex,
+		&i.ReplyText,
+		&i.ContextMessageID,
+		&i.Excerpted,
+		&i.AnsweredLabel,
+		&i.StateVersion,
+		&i.HindsightAckedVersion,
+	)
+	return i, err
+}
+
 const getDecisionIntent = `-- name: GetDecisionIntent :one
 SELECT id, workspace_id, issue_id, task_id, agent_id, comment_id, opened_at, expires_at, consumed_at, consumed_by_request_id, closed_at, close_reason, sealed_at, group_woken_at FROM decision_intent
 WHERE workspace_id = $1 AND id = $2

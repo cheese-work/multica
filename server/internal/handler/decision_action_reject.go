@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -148,6 +149,9 @@ func (handler *Handler) RejectDecisionAction(writer http.ResponseWriter, request
 	if err != nil {
 		writeDecisionActionError(writer, err)
 		return
+	}
+	if err := handler.publishDecisionActionCardUpdated(context.WithoutCancel(ctx), action); err != nil {
+		slog.Warn("decision action: card update not published", "action_id", uuidToString(action.ID), "error", err)
 	}
 	handler.DecisionWorker.Notify()
 	writeJSON(writer, http.StatusOK, newDecisionActionResponse(action))

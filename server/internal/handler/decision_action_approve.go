@@ -414,6 +414,9 @@ func (handler *Handler) finishApprovalAfterCommit(ctx context.Context, action db
 // completeDecisionActionPostCommit broadcasts the change, wakes the delivery
 // worker and stamps the row. It is idempotent: a repeat only re-sends events.
 func (handler *Handler) completeDecisionActionPostCommit(ctx context.Context, action db.DecisionAction) error {
+	if err := handler.publishDecisionActionCardUpdated(ctx, action); err != nil {
+		return err
+	}
 	if action.State == "executed" {
 		if err := handler.publishDecisionActionExecuted(ctx, action); err != nil {
 			return err
@@ -421,6 +424,23 @@ func (handler *Handler) completeDecisionActionPostCommit(ctx context.Context, ac
 	}
 	handler.DecisionWorker.Notify()
 	return handler.Queries.MarkDecisionActionPostCommitDone(ctx, db.MarkDecisionActionPostCommitDoneParams{ID: action.ID, WorkspaceID: action.WorkspaceID})
+}
+
+// publishDecisionActionCardUpdated tells open clients the action left pending:
+// the DM card re-reads its action state on this event, so every client drops
+// the approve and reject buttons and shows the outcome. The click recorded a
+// card answer in the same transaction as the state change.
+func (handler *Handler) publishDecisionActionCardUpdated(ctx context.Context, action db.DecisionAction) error {
+	request, err := handler.Queries.GetDecisionRequest(ctx, db.GetDecisionRequestParams{WorkspaceID: action.WorkspaceID, ID: action.DecisionRequestID})
+	if err != nil {
+		return err
+	}
+	answer, err := handler.Queries.GetDecisionCardAnswer(ctx, action.DecisionRequestID)
+	if err != nil {
+		return err
+	}
+	handler.publishDecisionAnswerUpdated(uuidToString(action.WorkspaceID), "member", uuidToString(answer.AnsweredByUserID), answer.ID, request.IssueID, decisionAnswerState(answer.WokenAt, answer.DisclaimedAt))
+	return nil
 }
 
 // decisionActionTarget is the one existing agent an action reads or changes.
