@@ -629,11 +629,25 @@ func TestRunBudgetHookRecoveryKeepsEveryRequestersTaint(t *testing.T) {
 // as it is when it has not run yet: the taint must already stop the recovery
 // run from authorizing an elevated operation (it cannot be revoked afterwards).
 func TestRunBudgetHookTaintedAssignmentFencesRecoveryRunBeforeItsCallback(t *testing.T) {
+	taintedAssignmentFencesRecoveryRun(t, 2856060, false)
+}
+
+// A member cleared the taint ID for this issue: the issue stays clean, but the
+// task that carries the ID is still tainted, and so is the run its assignment starts.
+func TestRunBudgetHookClearedTaintAssignmentFencesRecoveryRunBeforeItsCallback(t *testing.T) {
+	taintedAssignmentFencesRecoveryRun(t, 2856061, true)
+}
+
+func taintedAssignmentFencesRecoveryRun(t *testing.T, seed int64, cleared bool) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
 	ctx := context.Background()
-	c := newBudgetCase(t, 2856060, recoverySteps(seededReadyAgentID(t)), 2)
+	c := newBudgetCase(t, seed, recoverySteps(seededReadyAgentID(t)), 2)
+	if cleared {
+		dbfx.Exec(t, `INSERT INTO issue_taint_clear (workspace_id, issue_id, taint_ids, cleared_by_member_id)
+			SELECT $1, $2, ARRAY['ext-1'], id FROM member WHERE workspace_id = $1 LIMIT 1`, testWorkspaceID, c.issueID)
+	}
 	recordOccurrence(t, c, "in_progress")
 	c.spend(t, 2)
 	ctxClean, eClean := refusalBy(t, c, "")

@@ -27,6 +27,17 @@ func (q *Queries) ClearIssueTaintIDs(ctx context.Context, arg ClearIssueTaintIDs
 	return err
 }
 
+const getIssueRunTaint = `-- name: GetIssueRunTaint :one
+SELECT COALESCE((SELECT taint_ids FROM issue_run_taint WHERE issue_id = $1), '{}')::text[] AS taint_ids
+`
+
+func (q *Queries) GetIssueRunTaint(ctx context.Context, issueID pgtype.UUID) ([]string, error) {
+	row := q.db.QueryRow(ctx, getIssueRunTaint, issueID)
+	var taint_ids []string
+	err := row.Scan(&taint_ids)
+	return taint_ids, err
+}
+
 const getIssueTaintIDs = `-- name: GetIssueTaintIDs :one
 SELECT COALESCE((SELECT taint_ids FROM issue_taint WHERE issue_id = $1), '{}')::text[] AS taint_ids
 `
@@ -87,6 +98,29 @@ SELECT 1 FROM issue WHERE id = $1 FOR NO KEY UPDATE
 
 func (q *Queries) LockIssueForTaintClear(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, lockIssueForTaintClear, id)
+	return err
+}
+
+const noteIssueRunTaint = `-- name: NoteIssueRunTaint :exec
+INSERT INTO issue_run_taint (issue_id, workspace_id, taint_ids)
+SELECT i.id, i.workspace_id, array_agg(DISTINCT t ORDER BY t)
+FROM issue i, unnest($1::text[]) AS t
+WHERE i.id = $2::uuid
+  AND EXISTS (SELECT 1 FROM issue_taint_clear c WHERE c.issue_id = i.id AND t = ANY (c.taint_ids))
+GROUP BY i.id, i.workspace_id
+ON CONFLICT (issue_id) DO UPDATE SET
+    taint_ids = (SELECT array_agg(DISTINCT u ORDER BY u) FROM unnest(issue_run_taint.taint_ids || EXCLUDED.taint_ids) AS u)
+`
+
+type NoteIssueRunTaintParams struct {
+	Taint   []string    `json:"taint"`
+	IssueID pgtype.UUID `json:"issue_id"`
+}
+
+// The part of a tainted writer's taint that issue_taint_note drops because a
+// member cleared it for the issue. Written in the writer's own transaction.
+func (q *Queries) NoteIssueRunTaint(ctx context.Context, arg NoteIssueRunTaintParams) error {
+	_, err := q.db.Exec(ctx, noteIssueRunTaint, arg.Taint, arg.IssueID)
 	return err
 }
 

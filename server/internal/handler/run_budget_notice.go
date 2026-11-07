@@ -192,7 +192,12 @@ func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBud
 					return err
 				}
 				if recovery != nil {
-					recovery.WithTaint(taint)
+					// The issue lock is held, so an assignment that committed first is read here.
+					assigned, err := qtx.GetIssueRunTaint(ctx, e.IssueID)
+					if err != nil {
+						return err
+					}
+					recovery.WithTaint(append(taint, assigned...))
 				}
 				if err := qtx.SetRunBudgetRefusalHook(ctx, db.SetRunBudgetRefusalHookParams{ID: hook.id, HookPhase: "done"}); err != nil {
 					return fmt.Errorf("finish hook: %w", err)
