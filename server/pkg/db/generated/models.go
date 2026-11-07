@@ -1901,6 +1901,20 @@ type HostSample struct {
 	DiskPercent pgtype.Float4      `json:"disk_percent"`
 }
 
+type HostSampleHourly struct {
+	DaemonID      string             `json:"daemon_id"`
+	BucketTs      pgtype.Timestamptz `json:"bucket_ts"`
+	MountPath     string             `json:"mount_path"`
+	CpuMax        pgtype.Float4      `json:"cpu_max"`
+	CpuAvg        pgtype.Float4      `json:"cpu_avg"`
+	RamMax        pgtype.Float4      `json:"ram_max"`
+	RamAvg        pgtype.Float4      `json:"ram_avg"`
+	DiskMax       pgtype.Float4      `json:"disk_max"`
+	DiskAvg       pgtype.Float4      `json:"disk_avg"`
+	SampleCount   int32              `json:"sample_count"`
+	ExpectedCount int32              `json:"expected_count"`
+}
+
 type InboxItem struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
@@ -2795,6 +2809,18 @@ type ProviderBreaker struct {
 	Last5xxAt     pgtype.Timestamptz `json:"last_5xx_at"`
 	LastSuccessAt pgtype.Timestamptz `json:"last_success_at"`
 	Version       int64              `json:"version"`
+}
+
+type ProviderBreakerAudit struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	Provider      string             `json:"provider"`
+	Event         string             `json:"event"`
+	PreviousState string             `json:"previous_state"`
+	NewState      string             `json:"new_state"`
+	ActorID       pgtype.UUID        `json:"actor_id"`
+	TaskID        pgtype.UUID        `json:"task_id"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 }
 
 type ProviderFailureRecovery struct {

@@ -42,6 +42,7 @@ import sys
 import tarfile
 import tempfile
 import time
+from pathlib import Path
 
 CONTEXT = "security-gate"
 TRUSTED_AUTHORS = "skills/multica-cheese-work-github/scripts/trusted-authors.json"
@@ -49,6 +50,8 @@ SEMGREP_BASELINE = "scripts/security-gate/semgrep-baseline.json"
 SEMGREP_CONFIGS = ("p/default", "p/golang", "p/gosec", "p/typescript", "p/python", "p/kotlin")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+WAIVER_SCOPE_LINE_RE = re.compile(r"waiver-diff-digest", re.I)
+WAIVER_DIGEST_LINE_RE = re.compile(r"Waiver-Diff-Digest: ([0-9a-f]{64})")
 HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 FINDING_RE = re.compile(r"^- (\S+:\d+)\s+\S")
 REVIEWER_RE = re.compile(r"^(\S+) \(([^)]+)\)$")
@@ -60,6 +63,21 @@ SECRET_RES = [re.compile(p) for p in (
     r"\bxox[abprs]-[A-Za-z0-9-]{10,}",
     r"\bsk-[A-Za-z0-9_-]{32,}",
 )]
+
+
+def waiver_applies(record: str, head: str, digest: str) -> bool:
+    """Does a human waiver record (the decision-record comment, CHE-4326) cover this PR state? Only one exact
+    `Waiver-Diff-Digest: <64 lowercase hex>` line is a scope: it covers every head whose PR diff digest equals it, so a
+    main-only merge keeps the waiver and any change to a PR file voids it. Fail closed on anything else: no such
+    line, a second scope line, or a line that names the key but is not exact (case, indent, trailing text, bad hex).
+    Prose, including a head SHA, is never a scope: a record from before CHE-4326 is re-recorded once with the line.
+    `head` is unused on purpose: the scope is the diff. The caller still reads that the record is the server's
+    answered human decision (`multica decision get`): this checks scope only."""
+    scope_lines = [ln for ln in record.splitlines() if WAIVER_SCOPE_LINE_RE.search(ln)]
+    if len(scope_lines) != 1:
+        return False
+    m = WAIVER_DIGEST_LINE_RE.fullmatch(scope_lines[0])
+    return bool(m) and m.group(1) == digest
 
 
 def pr_diff_digest(repo: str, base: str, head: str) -> str:
@@ -507,6 +525,8 @@ def _main() -> int:
     ap.add_argument("--write-baseline", action="store_true", help="scan the default branch HEAD and rewrite the baseline")
     ap.add_argument("--print-digest", action="store_true",
                     help="print the PR's head and diff digest as JSON, for any lane that records a PASS (CHE-3610)")
+    ap.add_argument("--waiver-record", metavar="FILE",
+                    help="with --print-digest: check a human waiver record (file, or - for stdin) against the PR; exit 3 if it does not apply")
     ap.add_argument("--post", action="store_true", help="write the commit status (default: print only)")
     a = ap.parse_args()
     if a.write_baseline:
@@ -519,8 +539,12 @@ def _main() -> int:
     if a.print_digest:
         pull = json.loads(_gh(f"repos/{a.github}/pulls/{a.pr}"))
         head = pull["head"]["sha"]
-        print(json.dumps({"head": head, "digest": pr_diff_digest(a.repo, pull["base"]["sha"], head)}))
-        return 0
+        out = {"head": head, "digest": pr_diff_digest(a.repo, pull["base"]["sha"], head)}
+        if a.waiver_record:
+            record = sys.stdin.read() if a.waiver_record == "-" else Path(a.waiver_record).read_text()
+            out["waiver_applies"] = waiver_applies(record, head, out["digest"])
+        print(json.dumps(out))
+        return 3 if out.get("waiver_applies") is False else 0
     with open(f"{a.repo}/{TRUSTED_AUTHORS}") as f:
         registry = json.load(f)
     trusted = {b["id"] for b in registry["workspace_bots"]}
