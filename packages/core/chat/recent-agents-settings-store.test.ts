@@ -27,9 +27,13 @@ describe("recent agents settings store", () => {
 
   it("keeps the saved value across a reload", async () => {
     useRecentAgentsSettingsStore.getState().setShowRecentAgents(false);
-    expect(disk.size).toBeGreaterThan(0);
+    const saved = new Map(disk);
+    expect(saved.size).toBeGreaterThan(0);
 
+    // Reload: memory resets to the default, then the saved entries come back.
     useRecentAgentsSettingsStore.setState({ showRecentAgents: true });
+    disk.clear();
+    saved.forEach((value, key) => disk.set(key, value));
     await useRecentAgentsSettingsStore.persist.rehydrate();
 
     expect(useRecentAgentsSettingsStore.getState().showRecentAgents).toBe(false);
