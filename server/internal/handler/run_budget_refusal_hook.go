@@ -111,7 +111,12 @@ func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetEx
 		if !eligible {
 			return nil
 		}
+		taint, err := service.CtxTaint(ctx, q)
+		if err != nil {
+			return err
+		}
 		in := db.InsertRunBudgetRefusalParams{
+			TaintIds: taint,
 			ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, WindowID: window,
 			Status:  pgtype.Text{String: e.Status, Valid: true},
 			AgentID: e.Target.AgentID, Trigger: e.Target.Trigger, State: "open",
@@ -138,7 +143,7 @@ func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetEx
 		if found {
 			row, err := q.ReviveRunBudgetRefusal(ctx, db.ReviveRunBudgetRefusalParams{
 				ID: existing.ID, Status: in.Status, OccurrenceActivityID: in.OccurrenceActivityID, Blocked: in.Blocked,
-				AgentID: in.AgentID, Trigger: in.Trigger, StateReason: in.StateReason, State: in.State,
+				AgentID: in.AgentID, Trigger: in.Trigger, StateReason: in.StateReason, State: in.State, TaintIds: in.TaintIds,
 			})
 			if err != nil {
 				return fmt.Errorf("revive refusal: %w", err)
@@ -449,7 +454,8 @@ func (h *Handler) sweepRunBudgetHooks(ctx context.Context, before time.Time) {
 		e.Runs, _ = h.Queries.CountIssueRunsSinceExcept(ctx, db.CountIssueRunsSinceExceptParams{
 			IssueID: row.IssueID, Since: pgtype.Timestamptz{Time: since, Valid: true},
 		})
-		h.advanceRefusalHook(ctx, id, row.HookGeneration, e)
+		// The recovery run carries the taint of the request the budget refused.
+		h.advanceRefusalHook(service.WithTaint(ctx, row.TaintIds), id, row.HookGeneration, e)
 	}
 }
 

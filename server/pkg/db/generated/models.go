@@ -2765,6 +2765,7 @@ type RunBudgetRefusal struct {
 	CreatedAt            pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
 	HookGeneration       int32              `json:"hook_generation"`
+	TaintIds             []string           `json:"taint_ids"`
 }
 
 type RunCapabilityGrant struct {

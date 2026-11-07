@@ -470,3 +470,66 @@ func TestRunBudgetHookDelayedStepOfAnOlderGenerationDoesNotAdvanceTheRevivedRow(
 		t.Fatalf("block history rows = %d, want %d: the older event blocked the issue", got, blocksBefore)
 	}
 }
+
+// taintedRefusal spends the budget, then makes a task that carries taint ask for
+// one run too many. It returns the refusal's event and the context the callback
+// would get, without running its hook.
+func taintedRefusal(t *testing.T, c budgetCase, taint string) (context.Context, service.RunBudgetExhausted) {
+	t.Helper()
+	type refusal struct {
+		ctx context.Context
+		e   service.RunBudgetExhausted
+	}
+	events := make(chan refusal, 1)
+	service.SetOnRunBudgetExhausted(func(ctx context.Context, e service.RunBudgetExhausted) { events <- refusal{ctx, e} })
+	t.Cleanup(func() { service.SetOnRunBudgetExhausted(testHandler.onRunBudgetExhausted) })
+	c.spend(t, 2)
+	var actor pgtype.UUID
+	if err := testPool.QueryRow(context.Background(), `UPDATE agent_task_queue SET taint_ids=ARRAY[$2]::text[]
+		WHERE id=(SELECT id FROM agent_task_queue WHERE issue_id=$1 ORDER BY created_at LIMIT 1) RETURNING id`, c.issueID, taint).Scan(&actor); err != nil {
+		t.Fatal(err)
+	}
+	issue, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(c.issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testHandler.TaskService.EnqueueTaskForIssue(service.WithActingTask(context.Background(), actor), issue); !errors.Is(err, service.ErrRunBudgetExhausted) {
+		t.Fatalf("admission = %v, want ErrRunBudgetExhausted", err)
+	}
+	r := <-events
+	return r.ctx, r.e
+}
+
+// recoveryTaint is the taint of the issue's recovery run.
+func recoveryTaint(t *testing.T, c budgetCase) []string {
+	t.Helper()
+	var taint []string
+	if err := testPool.QueryRow(context.Background(), `SELECT taint_ids FROM agent_task_queue WHERE issue_id=$1 AND task_kind='budget_recovery'`, c.issueID).Scan(&taint); err != nil {
+		t.Fatal(err)
+	}
+	return taint
+}
+
+// A sweep rebuilds the event from the refusal row: the recovery run it creates
+// must still carry the taint of the task whose request was refused, or an
+// active grant could elevate a run that tainted input reached.
+func TestRunBudgetHookSweepRecoveryKeepsTheRefusedTasksTaint(t *testing.T) {
+	for i, stage := range []string{"after_intent", "after_block"} {
+		t.Run(stage, func(t *testing.T) {
+			if testHandler == nil {
+				t.Skip("database not available")
+			}
+			c := newBudgetCase(t, int64(2856030+i), recoverySteps(seededReadyAgentID(t)), 2)
+			recordOccurrence(t, c, "in_progress")
+			ctx, e := taintedRefusal(t, c, "ext-1")
+			crashAt(t, stage)
+			testHandler.onRunBudgetExhausted(ctx, e)
+			sweepHooks(t)
+			sweepHooks(t)
+			finished(t, c)
+			if got := recoveryTaint(t, c); len(got) != 1 || got[0] != "ext-1" {
+				t.Fatalf("recovery run taint = %v, want [ext-1]", got)
+			}
+		})
+	}
+}

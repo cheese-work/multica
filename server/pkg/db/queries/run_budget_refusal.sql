@@ -12,8 +12,8 @@ SELECT * FROM run_budget_refusal WHERE id = $1;
 -- there and gets no row back.
 INSERT INTO run_budget_refusal (
     id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger,
-    state, state_reason, hook_phase)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'intent')
+    state, state_reason, taint_ids, hook_phase)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'intent')
 ON CONFLICT (issue_id, window_id) DO NOTHING
 RETURNING *;
 
@@ -24,7 +24,7 @@ RETURNING *;
 -- the notice and the recovery run are not given twice.
 UPDATE run_budget_refusal
 SET status = $2, occurrence_activity_id = $3, blocked = $4, agent_id = $5, trigger = $6,
-    state_reason = $7, state = $8, hook_phase = 'intent', hook_reason = NULL,
+    state_reason = $7, state = $8, taint_ids = $9, hook_phase = 'intent', hook_reason = NULL,
     hook_generation = hook_generation + 1, updated_at = now()
 WHERE id = $1
 RETURNING *;

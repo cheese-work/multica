@@ -12,7 +12,7 @@ import (
 )
 
 const getOpenRunBudgetRefusal = `-- name: GetOpenRunBudgetRefusal :one
-SELECT id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation FROM run_budget_refusal
+SELECT id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids FROM run_budget_refusal
 WHERE issue_id = $1 AND window_id = $2
   AND state IN ('open', 'resume_pending', 'still_blocked')
 `
@@ -45,12 +45,13 @@ func (q *Queries) GetOpenRunBudgetRefusal(ctx context.Context, arg GetOpenRunBud
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.HookGeneration,
+		&i.TaintIds,
 	)
 	return i, err
 }
 
 const getRunBudgetRefusal = `-- name: GetRunBudgetRefusal :one
-SELECT id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation FROM run_budget_refusal WHERE id = $1
+SELECT id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids FROM run_budget_refusal WHERE id = $1
 `
 
 func (q *Queries) GetRunBudgetRefusal(ctx context.Context, id pgtype.UUID) (RunBudgetRefusal, error) {
@@ -75,12 +76,13 @@ func (q *Queries) GetRunBudgetRefusal(ctx context.Context, id pgtype.UUID) (RunB
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.HookGeneration,
+		&i.TaintIds,
 	)
 	return i, err
 }
 
 const getRunBudgetRefusalByWindow = `-- name: GetRunBudgetRefusalByWindow :one
-SELECT id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation FROM run_budget_refusal WHERE issue_id = $1 AND window_id = $2
+SELECT id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids FROM run_budget_refusal WHERE issue_id = $1 AND window_id = $2
 `
 
 type GetRunBudgetRefusalByWindowParams struct {
@@ -110,6 +112,7 @@ func (q *Queries) GetRunBudgetRefusalByWindow(ctx context.Context, arg GetRunBud
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.HookGeneration,
+		&i.TaintIds,
 	)
 	return i, err
 }
@@ -117,10 +120,10 @@ func (q *Queries) GetRunBudgetRefusalByWindow(ctx context.Context, arg GetRunBud
 const insertRunBudgetRefusal = `-- name: InsertRunBudgetRefusal :one
 INSERT INTO run_budget_refusal (
     id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger,
-    state, state_reason, hook_phase)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'intent')
+    state, state_reason, taint_ids, hook_phase)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'intent')
 ON CONFLICT (issue_id, window_id) DO NOTHING
-RETURNING id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation
+RETURNING id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids
 `
 
 type InsertRunBudgetRefusalParams struct {
@@ -135,6 +138,7 @@ type InsertRunBudgetRefusalParams struct {
 	Trigger              string      `json:"trigger"`
 	State                string      `json:"state"`
 	StateReason          pgtype.Text `json:"state_reason"`
+	TaintIds             []string    `json:"taint_ids"`
 }
 
 // Tx R of the exhaustion hook (CHE-2798 A1c1b): a retry finds the row already
@@ -152,6 +156,7 @@ func (q *Queries) InsertRunBudgetRefusal(ctx context.Context, arg InsertRunBudge
 		arg.Trigger,
 		arg.State,
 		arg.StateReason,
+		arg.TaintIds,
 	)
 	var i RunBudgetRefusal
 	err := row.Scan(
@@ -173,6 +178,7 @@ func (q *Queries) InsertRunBudgetRefusal(ctx context.Context, arg InsertRunBudge
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.HookGeneration,
+		&i.TaintIds,
 	)
 	return i, err
 }
@@ -206,7 +212,7 @@ func (q *Queries) ListStaleRunBudgetHooks(ctx context.Context, before pgtype.Tim
 }
 
 const lockRunBudgetRefusal = `-- name: LockRunBudgetRefusal :one
-SELECT id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation FROM run_budget_refusal WHERE id = $1 FOR UPDATE
+SELECT id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids FROM run_budget_refusal WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) LockRunBudgetRefusal(ctx context.Context, id pgtype.UUID) (RunBudgetRefusal, error) {
@@ -231,6 +237,7 @@ func (q *Queries) LockRunBudgetRefusal(ctx context.Context, id pgtype.UUID) (Run
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.HookGeneration,
+		&i.TaintIds,
 	)
 	return i, err
 }
@@ -301,10 +308,10 @@ func (q *Queries) RetireRunBudgetRefusalHook(ctx context.Context, arg RetireRunB
 const reviveRunBudgetRefusal = `-- name: ReviveRunBudgetRefusal :one
 UPDATE run_budget_refusal
 SET status = $2, occurrence_activity_id = $3, blocked = $4, agent_id = $5, trigger = $6,
-    state_reason = $7, state = $8, hook_phase = 'intent', hook_reason = NULL,
+    state_reason = $7, state = $8, taint_ids = $9, hook_phase = 'intent', hook_reason = NULL,
     hook_generation = hook_generation + 1, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation
+RETURNING id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids
 `
 
 type ReviveRunBudgetRefusalParams struct {
@@ -316,6 +323,7 @@ type ReviveRunBudgetRefusalParams struct {
 	Trigger              string      `json:"trigger"`
 	StateReason          pgtype.Text `json:"state_reason"`
 	State                string      `json:"state"`
+	TaintIds             []string    `json:"taint_ids"`
 }
 
 // A refusal of a window whose row no longer applies (its hook ran or was
@@ -332,6 +340,7 @@ func (q *Queries) ReviveRunBudgetRefusal(ctx context.Context, arg ReviveRunBudge
 		arg.Trigger,
 		arg.StateReason,
 		arg.State,
+		arg.TaintIds,
 	)
 	var i RunBudgetRefusal
 	err := row.Scan(
@@ -353,6 +362,7 @@ func (q *Queries) ReviveRunBudgetRefusal(ctx context.Context, arg ReviveRunBudge
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.HookGeneration,
+		&i.TaintIds,
 	)
 	return i, err
 }
