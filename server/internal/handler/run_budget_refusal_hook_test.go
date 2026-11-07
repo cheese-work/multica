@@ -476,6 +476,14 @@ func TestRunBudgetHookDelayedStepOfAnOlderGenerationDoesNotAdvanceTheRevivedRow(
 // would get, without running its hook.
 func taintedRefusal(t *testing.T, c budgetCase, taint string) (context.Context, service.RunBudgetExhausted) {
 	t.Helper()
+	c.spend(t, 2)
+	return refusalBy(t, c, taint)
+}
+
+// refusalBy asks for one run too many on a spent budget, as a task carrying
+// taint, or as a request with no acting task when taint is empty.
+func refusalBy(t *testing.T, c budgetCase, taint string) (context.Context, service.RunBudgetExhausted) {
+	t.Helper()
 	type refusal struct {
 		ctx context.Context
 		e   service.RunBudgetExhausted
@@ -483,17 +491,20 @@ func taintedRefusal(t *testing.T, c budgetCase, taint string) (context.Context, 
 	events := make(chan refusal, 1)
 	service.SetOnRunBudgetExhausted(func(ctx context.Context, e service.RunBudgetExhausted) { events <- refusal{ctx, e} })
 	t.Cleanup(func() { service.SetOnRunBudgetExhausted(testHandler.onRunBudgetExhausted) })
-	c.spend(t, 2)
-	var actor pgtype.UUID
-	if err := testPool.QueryRow(context.Background(), `UPDATE agent_task_queue SET taint_ids=ARRAY[$2]::text[]
-		WHERE id=(SELECT id FROM agent_task_queue WHERE issue_id=$1 ORDER BY created_at LIMIT 1) RETURNING id`, c.issueID, taint).Scan(&actor); err != nil {
-		t.Fatal(err)
+	ctx := context.Background()
+	if taint != "" {
+		var actor pgtype.UUID
+		if err := testPool.QueryRow(context.Background(), `UPDATE agent_task_queue SET taint_ids=ARRAY[$2]::text[]
+			WHERE id=(SELECT id FROM agent_task_queue WHERE issue_id=$1 ORDER BY created_at LIMIT 1) RETURNING id`, c.issueID, taint).Scan(&actor); err != nil {
+			t.Fatal(err)
+		}
+		ctx = service.WithActingTask(ctx, actor)
 	}
 	issue, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(c.issueID))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := testHandler.TaskService.EnqueueTaskForIssue(service.WithActingTask(context.Background(), actor), issue); !errors.Is(err, service.ErrRunBudgetExhausted) {
+	if _, err := testHandler.TaskService.EnqueueTaskForIssue(ctx, issue); !errors.Is(err, service.ErrRunBudgetExhausted) {
 		t.Fatalf("admission = %v, want ErrRunBudgetExhausted", err)
 	}
 	r := <-events
@@ -526,6 +537,46 @@ func TestRunBudgetHookSweepRecoveryKeepsTheRefusedTasksTaint(t *testing.T) {
 			testHandler.onRunBudgetExhausted(ctx, e)
 			sweepHooks(t)
 			sweepHooks(t)
+			finished(t, c)
+			if got := recoveryTaint(t, c); len(got) != 1 || got[0] != "ext-1" {
+				t.Fatalf("recovery run taint = %v, want [ext-1]", got)
+			}
+		})
+	}
+}
+
+// Two requesters can refuse in the same window and share one hook. Whoever
+// finishes it, the recovery run carries the taint of every request it answers.
+func TestRunBudgetHookRecoveryKeepsEveryRequestersTaint(t *testing.T) {
+	// first and second name who refuses first; finisher is "sweep" or the
+	// first requester's own callback.
+	cases := []struct{ name, first, second, finisher string }{
+		{"clean_then_tainted_sweep", "", "ext-1", "sweep"},
+		{"tainted_then_clean_sweep", "ext-1", "", "sweep"},
+		{"clean_callback_finishes_after_tainted_reuse", "", "ext-1", "first"},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if testHandler == nil {
+				t.Skip("database not available")
+			}
+			c := newBudgetCase(t, int64(2856040+i), recoverySteps(seededReadyAgentID(t)), 2)
+			recordOccurrence(t, c, "in_progress")
+			c.spend(t, 2)
+			ctx1, e1 := refusalBy(t, c, tc.first)
+			ctx2, e2 := refusalBy(t, c, tc.second)
+			id, generation, ok := testHandler.recordRefusalIntent(ctx1, e1)
+			if !ok {
+				t.Fatal("first refusal not recorded")
+			}
+			if id2, _, ok := testHandler.recordRefusalIntent(ctx2, e2); !ok || id2 != id {
+				t.Fatalf("second refusal = %v, %v; want it to reuse the first's row", id2, ok)
+			}
+			if tc.finisher == "sweep" {
+				sweepHooks(t)
+			} else {
+				testHandler.advanceRefusalHook(ctx1, id, generation, e1)
+			}
 			finished(t, c)
 			if got := recoveryTaint(t, c); len(got) != 1 || got[0] != "ext-1" {
 				t.Fatalf("recovery run taint = %v, want [ext-1]", got)

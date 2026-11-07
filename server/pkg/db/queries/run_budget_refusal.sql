@@ -29,6 +29,14 @@ SET status = $2, occurrence_activity_id = $3, blocked = $4, agent_id = $5, trigg
 WHERE id = $1
 RETURNING *;
 
+-- name: MergeRunBudgetRefusalTaint :exec
+-- A later requester of the same window joins the hook that answers it: the
+-- recovery run carries the taint of every request the hook answers. A subset
+-- writes nothing.
+UPDATE run_budget_refusal
+SET taint_ids = ARRAY(SELECT DISTINCT t FROM unnest(taint_ids || @taint::text[]) AS t ORDER BY t)
+WHERE id = @id::uuid AND NOT taint_ids @> @taint::text[];
+
 -- name: GetRunBudgetRefusalByWindow :one
 SELECT * FROM run_budget_refusal WHERE issue_id = $1 AND window_id = $2;
 

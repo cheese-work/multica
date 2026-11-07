@@ -185,8 +185,14 @@ func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBud
 				return err
 			}
 			if hook.id.Valid {
-				if err := lockHookStep(ctx, qtx, hook.id, hook.generation, "blocked"); err != nil {
+				// Read under the row lock: a requester that joined the hook before
+				// this point is in the taint the recovery run carries.
+				taint, err := lockHookStep(ctx, qtx, hook.id, hook.generation, "blocked")
+				if err != nil {
 					return err
+				}
+				if recovery != nil {
+					recovery.WithTaint(taint)
 				}
 				if err := qtx.SetRunBudgetRefusalHook(ctx, db.SetRunBudgetRefusalHookParams{ID: hook.id, HookPhase: "done"}); err != nil {
 					return fmt.Errorf("finish hook: %w", err)

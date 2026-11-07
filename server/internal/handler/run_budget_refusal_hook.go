@@ -103,6 +103,13 @@ func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetEx
 			if reuse, err := refusalServes(ctx, q, existing); err != nil {
 				return err
 			} else if reuse {
+				taint, err := service.CtxTaint(ctx, q)
+				if err != nil {
+					return err
+				}
+				if err := q.MergeRunBudgetRefusalTaint(ctx, db.MergeRunBudgetRefusalTaintParams{ID: existing.ID, Taint: taint}); err != nil {
+					return err
+				}
 				id, generation, ok = existing.ID, existing.HookGeneration, true
 				return nil
 			}
@@ -117,7 +124,7 @@ func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetEx
 		}
 		in := db.InsertRunBudgetRefusalParams{
 			TaintIds: taint,
-			ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, WindowID: window,
+			ID:       dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, WindowID: window,
 			Status:  pgtype.Text{String: e.Status, Valid: true},
 			AgentID: e.Target.AgentID, Trigger: e.Target.Trigger, State: "open",
 		}
@@ -243,22 +250,22 @@ func refusalIneligible(ctx context.Context, q *db.Queries, row db.RunBudgetRefus
 // lockHookStep locks the refusal and checks that its hook is in phase and still
 // eligible. The caller holds the issue's budget lock. errHookAdvanced means
 // another advancer took the step; *hookIneligible means the hook must retire.
-func lockHookStep(ctx context.Context, q *db.Queries, id pgtype.UUID, generation int32, phase string) error {
+func lockHookStep(ctx context.Context, q *db.Queries, id pgtype.UUID, generation int32, phase string) (taint []string, err error) {
 	row, err := q.LockRunBudgetRefusal(ctx, id)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if row.HookGeneration != generation || row.HookPhase != phase {
-		return errHookAdvanced
+		return nil, errHookAdvanced
 	}
 	reason, err := refusalIneligible(ctx, q, row)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if reason != "" {
-		return &hookIneligible{reason: reason}
+		return nil, &hookIneligible{reason: reason}
 	}
-	return nil
+	return row.TaintIds, nil
 }
 
 // advanceRefusalHook runs the steps of the hook the row still owes, in order.
@@ -335,7 +342,7 @@ func (h *Handler) blockStep(ctx context.Context, id pgtype.UUID, generation int3
 			if _, err := q.LockIssueRunBudget(ctx, issue.ID); err != nil {
 				return err
 			}
-			if err := lockHookStep(ctx, q, id, generation, "intent"); err != nil {
+			if _, err := lockHookStep(ctx, q, id, generation, "intent"); err != nil {
 				return err
 			}
 			// Committed with the move: the budget parked this issue in this window.
@@ -384,7 +391,7 @@ func (h *Handler) advanceWithoutBlock(ctx context.Context, id pgtype.UUID, gener
 		if _, err := q.LockIssueRunBudget(ctx, issueID); err != nil {
 			return err
 		}
-		if err := lockHookStep(ctx, q, id, generation, "intent"); err != nil {
+		if _, err := lockHookStep(ctx, q, id, generation, "intent"); err != nil {
 			return err
 		}
 		return q.SetRunBudgetRefusalHook(ctx, db.SetRunBudgetRefusalHookParams{ID: id, HookPhase: "blocked"})
@@ -454,8 +461,7 @@ func (h *Handler) sweepRunBudgetHooks(ctx context.Context, before time.Time) {
 		e.Runs, _ = h.Queries.CountIssueRunsSinceExcept(ctx, db.CountIssueRunsSinceExceptParams{
 			IssueID: row.IssueID, Since: pgtype.Timestamptz{Time: since, Valid: true},
 		})
-		// The recovery run carries the taint of the request the budget refused.
-		h.advanceRefusalHook(service.WithTaint(ctx, row.TaintIds), id, row.HookGeneration, e)
+		h.advanceRefusalHook(ctx, id, row.HookGeneration, e)
 	}
 }
 

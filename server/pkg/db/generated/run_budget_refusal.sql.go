@@ -260,6 +260,25 @@ func (q *Queries) MarkRunBudgetRefusalBlocked(ctx context.Context, arg MarkRunBu
 	return err
 }
 
+const mergeRunBudgetRefusalTaint = `-- name: MergeRunBudgetRefusalTaint :exec
+UPDATE run_budget_refusal
+SET taint_ids = ARRAY(SELECT DISTINCT t FROM unnest(taint_ids || $1::text[]) AS t ORDER BY t)
+WHERE id = $2::uuid AND NOT taint_ids @> $1::text[]
+`
+
+type MergeRunBudgetRefusalTaintParams struct {
+	Taint []string    `json:"taint"`
+	ID    pgtype.UUID `json:"id"`
+}
+
+// A later requester of the same window joins the hook that answers it: the
+// recovery run carries the taint of every request the hook answers. A subset
+// writes nothing.
+func (q *Queries) MergeRunBudgetRefusalTaint(ctx context.Context, arg MergeRunBudgetRefusalTaintParams) error {
+	_, err := q.db.Exec(ctx, mergeRunBudgetRefusalTaint, arg.Taint, arg.ID)
+	return err
+}
+
 const newestIssueStatusChange = `-- name: NewestIssueStatusChange :one
 SELECT id,
        COALESCE(details->'trigger'->'cause'->>'kind', '')::text AS cause_kind,
