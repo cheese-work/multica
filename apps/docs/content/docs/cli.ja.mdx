@@ -273,6 +273,8 @@ multica runtime profile create --display-name "社内 Claude ラッパー" \
 
 アクティブなエージェントがまだ紐付いているランタイムの削除は、デフォルトで拒否されます。`multica runtime delete <id> --cascade` は、それらのエージェントをランタイムから解除して設定と履歴を保持し、アクティブな実行をキャンセルします。
 
+`multica runtime breaker list` は各プロバイダーのサーキットブレーカーを表示し、`multica runtime breaker reset <provider>` は強制的に閉じます（オーナーまたは管理者のみ）。[プロバイダーのサーキットブレーカー](/daemon-runtimes#provider-breaker)を参照してください。
+
 仕組みとカスタムプロファイルについては[デーモンとランタイム](/daemon-runtimes)を参照してください。
 
 ## プロジェクト、ワークスペース、オートパイロット
@@ -427,6 +429,7 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 | `runtime` | `list/usage/activity/update/rename/delete` | ランタイムを表示・管理 | `usage`: `--days`（既定 90、最大 365）；`update`: `--target-version`（必須）、`--wait`；`delete`: `--cascade`（紐付くエージェントを解除してデータを保持し、その実行をキャンセル） |
 | | `profile list/create/update/delete` | カスタムランタイムプロファイルを管理 | `create`: `--display-name`、`--command-name`（いずれも必須）、`--runtime-type`（または古い `--protocol-family`）、`--description`；`update`: `--enabled` |
 | | `profile set-path/unset-path <profile-id>` | ローカルの実行ファイルパスを固定（ローカルのみ有効。サーバーには送信されません） | |
+| | `breaker list/reset <provider>` | プロバイダーのサーキットブレーカーを表示、または強制的に閉じる | `reset`：ワークスペースのオーナーまたは管理者のみ |
 
 ### Additional
 

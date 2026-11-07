@@ -247,6 +247,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"protocol_lint_run":                  workspaceDeleteKeep, // Cross-workspace protocol-lint audit/reporting data (CHE-552), not workspace-owned.
 	"provenance_export_log":              workspaceDelete,     // CHE-755 provenance export audit rows; workspace-owned leaf.
 	"provider_breaker":                   workspaceDelete,     // CHE-1735 provider state is removed with its workspace.
+	"provider_breaker_audit":             workspaceDelete,     // CHE-4381 breaker transition audit; removed with DeleteProviderBreakersForWorkspace.
 	"provider_failure_recovery":          workspaceDeleteKeep,
 	"recovery_claim":                     workspaceDelete,     // CHE-1126 gateway-recovery claim ledger; workspace_id FK ON DELETE CASCADE plus explicit teardown.
 	"push_delivery":                      workspaceDeleteKeep, // Outbox rows of inbox items; the push worker drops the ones whose item is gone (CHE-1795).

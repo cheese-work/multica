@@ -1790,6 +1790,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceMemberFromURL(queries, "id"))
 					r.Get("/", h.GetWorkspace)
 					r.Get("/members", h.ListMembersWithUser)
+					r.Get("/provider-breakers", h.ListProviderBreakers)
 					r.With(denyRunToken).Post("/leave", h.LeaveWorkspace)
 					r.Get("/invitations", h.ListWorkspaceInvitations)
 					// Listing GitHub installations is member-visible so the
@@ -1837,6 +1838,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// Scheduling pause: the handler also refuses agent credentials.
 					r.Post("/pause", h.PauseWorkspaceScheduling)
 					r.Post("/resume", h.ResumeWorkspaceScheduling)
+					r.With(handler.RequireHumanActor).Post("/provider-breakers/{provider}/reset", h.ResetProviderBreaker)
 					r.Post("/members", h.CreateInvitation)
 					r.Route("/members/{memberId}", func(r chi.Router) {
 						r.Patch("/", h.UpdateMember)
@@ -2174,6 +2176,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/preview-trigger", h.PreviewIssueTrigger)
 				r.Post("/batch-update", h.BatchUpdateIssues)
 				r.Post("/batch-delete", h.BatchDeleteIssues)
+				r.Post("/relations/batch", h.GetIssueRelationsBatch)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetIssue)
 					r.Get("/agent-decisions", h.LookupAgentDecision)
