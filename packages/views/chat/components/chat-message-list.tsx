@@ -193,13 +193,34 @@ interface OpenAsk {
   ask: string;
 }
 
-/** Open decision asks of the last assistant message before `messages[index]`. */
+const MAX_OPEN_ASKS = 5;
+
+/** Question lines (outside code fences) of a message, bullet markers stripped. */
+function questionLines(content: string): string[] {
+  // ponytail: a line ending in "?" is a question; no sentence splitting.
+  const lines = content.replace(/```[\s\S]*?```/g, "").split("\n");
+  return lines
+    .map((line) => line.trim().replace(/^(?:[-*>]|\d+[.)])\s+/, "").replace(/[*_]+$/, "").trim())
+    .filter((line) => line.endsWith("?"))
+    .map((line) => (line.length > 200 ? `${line.slice(0, 199)}…` : line));
+}
+
+/**
+ * Open asks of the last assistant message before `messages[index]`: its open
+ * decision requests, then its question lines. A member reply after it answers
+ * it, so nothing repeats.
+ */
 function openAsksBefore(messages: readonly ChatMessage[], index: number): OpenAsk[] {
   for (let i = index - 1; i >= 0; i--) {
     const m = messages[i]!;
+    if (m.role === "user") return [];
     if (m.role !== "assistant" || m.message_kind === "compact_notice" || m.message_kind === "compaction_summary") continue;
     const cards = m.decision_requests ?? (m.decision_request ? [m.decision_request] : []);
-    return cards.filter((card) => card.state === "open").map((card) => ({ messageId: m.id, ask: card.ask }));
+    const asks = cards.filter((card) => card.state === "open").map((card) => ({ messageId: m.id, ask: card.ask }));
+    for (const line of questionLines(m.content)) {
+      if (!asks.some((a) => a.ask === line)) asks.push({ messageId: m.id, ask: line });
+    }
+    return asks.slice(0, MAX_OPEN_ASKS);
   }
   return [];
 }

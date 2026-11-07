@@ -331,4 +331,30 @@ describe("ChatMessageList — compaction summary", () => {
     renderList({ messages: thread().map((m) => (m.id === "a" ? { ...m, decision_request: { ...openAsk, state: "answered" as const } } : m)) });
     expect(screen.queryByRole("button", { name: /^Open question: Ship the reversible change\?/ })).toBeNull();
   });
+
+  describe("plain-text questions", () => {
+    const asked = (content: string, extra: Partial<ChatMessage>[] = []) => [
+      message("q", { role: "assistant", content }),
+      ...extra.map((e, i) => message(`x${i}`, e)),
+      message("n", { role: "assistant", message_kind: "compact_notice", content: "Compacted in this DM at 213k tokens (limit 200k). Earlier messages are summarized below." }),
+      message("s", { role: "assistant", message_kind: "compaction_summary", content: "SUMMARY" }),
+    ];
+    const line = /^Open question: Which database should we use\?/;
+
+    it("repeats an unanswered question of the last assistant message and jumps to it", () => {
+      renderList({ messages: asked("Here is the plan.\n\n- Which database should we use?\nNo rush.") });
+      act(() => screen.getByRole("button", { name: line }).click());
+      expect(scrollToIndex).toHaveBeenCalledWith(expect.objectContaining({ index: 0 }));
+    });
+
+    it("ignores questions inside code fences and plain statements", () => {
+      renderList({ messages: asked("Done.\n```\nwhat is this?\n```") });
+      expect(screen.queryByRole("button", { name: /^Open question/ })).toBeNull();
+    });
+
+    it("treats the question as answered once the member replied after it", () => {
+      renderList({ messages: asked("Which database should we use?", [{ role: "user", content: "Postgres" }]) });
+      expect(screen.queryByRole("button", { name: line })).toBeNull();
+    });
+  });
 });
