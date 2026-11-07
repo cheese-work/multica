@@ -78,6 +78,8 @@ For a reference-only GitHub link, use `Refs MUL-123` or `Part of MUL-123` in the
 
 A bare mention in the body, such as `Related to MUL-123`, doesn't link the PR at all. Commit messages and PR comments don't trigger linking either.
 
+A PR from a fork links automatically only when the fork has the same owner as the base repository. Merging such a PR does not move the issue. Link PRs from forks with other owners by hand.
+
 You can also link a PR by hand: in the issue's **Pull requests** block, click **+** and paste the PR URL. To take a PR off an issue, open the **⋯** menu on its row and choose **Remove from issue**; Multica won't link it again from its title or branch.
 
 ## View PRs on an issue
@@ -276,6 +278,14 @@ Generate the private key under the GitHub App's **Private keys → Generate a pr
 All six GitHub values are required for the connect button. During a new connection, Multica exchanges GitHub's user-authorization code, resolves the installation as the App, and then requires either an exact personal-account ID and login match or an active organization admin membership. Visibility in a user's installation list is not treated as proof of organization authority. Verification errors fail closed. The temporary user token is revoked after the check.
 
 When adding the Members or Actions permission to an App that is already installed, approve the permission change in every target organization before connecting it to a new workspace. Existing installations must accept the new permission; until they do, `--until-gh-run` wakeups receive no workflow events.
+
+Optionally set `GITHUB_ALLOWED_ACCOUNT_IDS` to a comma-separated list of numeric GitHub account IDs (the `id` of the user or organization, not its login). Left unset or empty, any account that passes the check above can connect. Once set, Multica refuses to bind an installation whose account ID is not listed. The setup callback redirects with `github_error=installation_not_allowed` and creates no binding. A code-less **Redirect on update** callback is judged against the account ID already stored for that binding. A binding with no stored account ID is refused, which fails closed. A malformed value, such as a login, stops the server at startup.
+
+```dotenv
+GITHUB_ALLOWED_ACCOUNT_IDS=1234567,7654321
+```
+
+GitHub `deleted` and `suspend` events always remove the binding, whatever the list says.
 
 </Step>
 <Step>

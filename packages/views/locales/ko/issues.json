@@ -430,6 +430,10 @@
     "metadata_description": "에이전트와 연동 기능이 작업 흐름을 이어가기 위해 기록하는 키와 값 데이터입니다.",
     "section_load_failed_retry": "불러오지 못했습니다. 다시 시도",
     "not_found": "이 워크스페이스에 해당 태스크가 없거나 삭제되었습니다.",
+    "load_failed": "이 태스크를 불러오지 못했습니다. 연결을 확인하고 다시 시도하세요.",
+    "card_load_failed": "이 태스크를 불러오지 못했습니다.",
+    "data_error": "이 태스크에 앱이 읽을 수 없는 데이터가 있습니다.",
+    "retry": "다시 시도",
     "breadcrumb_project_unknown": "알 수 없는 프로젝트",
     "back": "뒤로",
     "title_placeholder": "태스크 제목",
@@ -1473,7 +1477,34 @@
       "rate": "1시간에 12회 넘게 실행됨"
     },
     "paused_banner": "{{name}}님이 {{time}}에 깨우기를 일시 중지했습니다",
-    "paused_banner_anonymous": "{{time}}에 깨우기가 일시 중지되었습니다"
+    "paused_banner_anonymous": "{{time}}에 깨우기가 일시 중지되었습니다",
+    "defaults": {
+      "title": "기본 웨이크업",
+      "rule_pr_merged": "연결된 PR이 병합될 때",
+      "rule_pr_checks_failed": "PR 검사가 실패할 때",
+      "rule_pr_needs_attention": "연결된 PR에 확인이 필요할 때",
+      "state_on": "켜짐",
+      "state_disabled": "비활성화됨",
+      "state_paused": "일시 중지됨: {{reason}}",
+      "inherited": "{{source}}에서 상속됨",
+      "overridden": "이 이슈에서 재정의됨",
+      "source_workspace": "워크스페이스",
+      "source_project": "프로젝트",
+      "source_default": "기본값",
+      "open_project": "프로젝트 규칙에서 편집",
+      "override": "재정의",
+      "override_label": "{{rule}} 재정의",
+      "edit": "재정의 편집",
+      "edit_label": "{{rule}} 재정의 편집",
+      "reset": "초기화",
+      "reset_label": "{{rule}} 초기화",
+      "save": "재정의 저장",
+      "saving": "저장 중…",
+      "cancel": "취소",
+      "save_error": "재정의를 저장하지 못했습니다.",
+      "reset_error": "규칙을 초기화하지 못했습니다.",
+      "conflict_error": "다른 사람이 먼저 이 규칙을 변경했습니다. 편집 내용은 유지됩니다. 새로고침하여 상대의 변경을 확인하세요."
+    }
   },
   "duplicates": {
     "banner_prefix": "중복 원본:",
@@ -1890,5 +1921,32 @@
     "timing_effective": "{{time}}부터 유효",
     "timing_pending_window": "대기 중. {{time}}에 효력 발생, 철회 가능 시간 {{minutes}}분.",
     "timing_pending_wake": "대기 중. 에이전트가 깨어나는 즉시 효력이 발생합니다."
+  },
+  "status_history": {
+    "title": "상태 기록",
+    "description": "이 이슈의 모든 상태 변경을 오래된 순서로 표시합니다.",
+    "empty": "기록된 상태 변경이 없습니다.",
+    "truncated": "오래된 상태 변경은 표시되지 않습니다. 서버가 반환한 가장 오래된 변경부터 시작합니다.",
+    "trigger_not_recorded": "트리거가 기록되지 않았습니다",
+    "removed": "{{status}} (제거됨)",
+    "handoff_comment": "인계 댓글",
+    "handoff_invalid": "인계 링크가 올바르지 않습니다",
+    "scrubber_label": "상태 기록 위치",
+    "position": "{{current}} / {{total}}",
+    "cause": {
+      "ui_or_api": "사용자가 변경",
+      "workflow_edge": "워크플로 전환",
+      "workflow_remap": "워크플로 재매핑",
+      "pr_merged": "PR 병합",
+      "ci_advance": "CI 진행",
+      "run_budget": "실행 예산",
+      "decision": "결정",
+      "watchdog": "워치독",
+      "task_reset": "실패한 실행 초기화",
+      "qoder": "Qoder",
+      "duplicate": "중복",
+      "system": "시스템"
+    },
+    "open": "상태 기록"
   }
 }

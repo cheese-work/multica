@@ -106,11 +106,17 @@ func makeOpsRollupHandler(queries *db.Queries) Handler {
 // while the first rollup keeps failing). Rows older than raw retention (7 d)
 // are already deleted and cannot be recovered.
 func opsRollupFrom(to time.Time, newestRolled pgtype.Timestamptz) time.Time {
-	oldest := to.Add(-opsRawRetention)
+	return rollupFrom(to, newestRolled, opsRollupLookback, opsRawRetention)
+}
+
+// rollupFrom is opsRollupFrom with the lookback and raw retention as inputs,
+// shared with the host sample rollup.
+func rollupFrom(to time.Time, newestRolled pgtype.Timestamptz, lookback, rawRetention time.Duration) time.Time {
+	oldest := to.Add(-rawRetention)
 	if !newestRolled.Valid {
 		return oldest
 	}
-	from := to.Add(-opsRollupLookback)
+	from := to.Add(-lookback)
 	if newestRolled.Time.Before(from) {
 		from = newestRolled.Time
 	}
@@ -121,7 +127,8 @@ func opsRollupFrom(to time.Time, newestRolled pgtype.Timestamptz) time.Time {
 }
 
 // OpsRetentionJob deletes raw snapshots after 7 d, rollups and requeue events
-// after 35 d, and the sampler's own lease rows after 7 d.
+// after 35 d, the sampler's own lease rows after 7 d, raw host samples after
+// 7 d and hourly host rollups after 90 d.
 func OpsRetentionJob(queries *db.Queries) JobSpec {
 	return JobSpec{
 		Name:              JobNameOpsRetention,
@@ -143,6 +150,7 @@ func OpsRetentionJob(queries *db.Queries) JobSpec {
 func makeOpsRetentionHandler(queries *db.Queries, now func() time.Time) Handler {
 	return func(ctx context.Context, _ HandlerInput) (HandlerResult, error) {
 		raw, rollup := ts(now().Add(-opsRawRetention)), ts(now().Add(-opsRollupRetention))
+		hostRaw, hostRollup := ts(now().Add(-hostRawRetention)), ts(now().Add(-hostRollupRetention))
 		deletes := []struct {
 			what string
 			run  func() (int64, error)
@@ -151,6 +159,8 @@ func makeOpsRetentionHandler(queries *db.Queries, now func() time.Time) Handler 
 			{"snapshot rollups", func() (int64, error) { return queries.DeleteOpsSnapshot5mBefore(ctx, rollup) }},
 			{"task events", func() (int64, error) { return queries.DeleteAgentTaskEventBefore(ctx, rollup) }},
 			{"sampler leases", func() (int64, error) { return queries.DeleteOpsSamplerCronExecutionsBefore(ctx, raw) }},
+			{"raw host samples", func() (int64, error) { return queries.DeleteHostSampleBefore(ctx, hostRaw) }},
+			{"host sample rollups", func() (int64, error) { return queries.DeleteHostSampleHourlyBefore(ctx, hostRollup) }},
 		}
 		var total int64
 		for _, d := range deletes {

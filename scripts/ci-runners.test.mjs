@@ -43,12 +43,22 @@ test("release.yml leaves the Go cache to the disk on a self-hosted runner", () =
   assert.match(verify, /uses: actions\/setup-go@[^\n]+\n\s+with:[\s\S]*?\n\s+cache: \$\{\{ runner\.environment != 'self-hosted' \}\}/);
 });
 
-// CHE-3128: gate checks run on the dedicated 2-runner lane so heavy CI on the shared
-// `cheese-x99` pool cannot delay them. Forks keep the GitHub-hosted fallback.
-test("security-gate.yml runs on the dedicated X99 gate lane", () => {
-  const [line, ...rest] = runsOn(read("security-gate.yml"));
-  assert.equal(rest.length, 0);
-  assert.match(line, /"cheese-x99-gate"/);
-  assert.doesNotMatch(line, /"cheese-x99"/);
-  assert.match(line, /ubuntu-latest/);
+// CHE-3604: the gate is a light job (median 1.5 min), so it runs on a GitHub-hosted runner, free
+// for this public repository. CHE-3128 had moved it to a dedicated X99 lane. The trust boundary
+// is unchanged: the job runs the default-branch definition and the `if:` filter still applies.
+test("security-gate.yml runs on a GitHub-hosted runner", () => {
+  // Three hosted jobs: the gate, the secret-free queue-handoff (CHE-4251) and the mechanical-tier refresh (CHE-4250).
+  const lines = runsOn(read("security-gate.yml"));
+  assert.equal(lines.length, 3);
+  for (const line of lines) {
+    assert.match(line, /runs-on: ubuntu-latest\s*(#.*)?$/);
+    assert.doesNotMatch(line, /cheese-x99|self-hosted/);
+  }
+});
+
+// CHE-4251: the queue evaluation that holds the App key is hosted too.
+test("security-gate-queue.yml runs on a GitHub-hosted runner", () => {
+  const lines = runsOn(read("security-gate-queue.yml"));
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /runs-on: ubuntu-latest\s*(#.*)?$/);
 });

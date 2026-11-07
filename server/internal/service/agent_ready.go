@@ -114,6 +114,7 @@ func RuntimeBlockedNeedsNotice(code dispatch.ReasonCode) bool {
 	return code == dispatch.ReasonRuntimeUnusable ||
 		code == dispatch.ReasonRuntimeProfileMissing ||
 		code == dispatch.ReasonProviderHold ||
+		code == dispatch.ReasonProviderBreaker ||
 		code == dispatch.ReasonRuntimeAccessDenied
 }
 
@@ -195,6 +196,13 @@ func AgentReadiness(ctx context.Context, lookup RuntimeLookup, agent db.Agent) (
 	}
 	if blocked {
 		return verdict, nil
+	}
+	breakerVerdict, err := providerBreakerVerdict(ctx, lookup, agent)
+	if err != nil {
+		return AgentVerdict{}, err
+	}
+	if breakerVerdict.Blocked() {
+		return breakerVerdict, nil
 	}
 	if !agent.RuntimeID.Valid {
 		return AgentVerdict{
@@ -473,7 +481,7 @@ func RuntimeUnusableNotice(agentName string, verdict AgentVerdict) string {
 	// substitute list right there; rebuilding it here would need both again).
 	// verdict.Detail carries that finished notice verbatim, so this is a
 	// pass-through, not a second renderer to keep in sync with the first.
-	if verdict.Reason == dispatch.ReasonProviderHold {
+	if verdict.Reason == dispatch.ReasonProviderHold || verdict.Reason == dispatch.ReasonProviderBreaker {
 		return verdict.Detail
 	}
 	if verdict.Reason == dispatch.ReasonRuntimeAccessDenied {

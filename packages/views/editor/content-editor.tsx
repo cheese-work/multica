@@ -214,6 +214,7 @@ interface ContentEditorBaseProps {
   enableStatisticCommand?: boolean;
   enableArchiveCommand?: boolean;
   enablePinCommand?: boolean;
+  enableUnseenCommand?: boolean;
   enableUnarchiveCommand?: boolean;
   /** `/compact` is offered by default; an archived DM turns it off. */
   enableCompactCommand?: boolean;
@@ -412,6 +413,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       enableStatisticCommand = false,
       enableArchiveCommand = false,
       enablePinCommand = false,
+      enableUnseenCommand = false,
       enableUnarchiveCommand = false,
       enableCompactCommand = true,
       slashCommandMode = "skill",
@@ -461,12 +463,14 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       statistic: enableStatisticCommand,
       archive: enableArchiveCommand,
       pin: enablePinCommand,
+      unseen: enableUnseenCommand,
       unarchive: enableUnarchiveCommand,
     });
     dmCommandsRef.current = {
       statistic: enableStatisticCommand,
       archive: enableArchiveCommand,
       pin: enablePinCommand,
+      unseen: enableUnseenCommand,
       unarchive: enableUnarchiveCommand,
     };
     const enableCompactCommandRef = useRef(enableCompactCommand);
