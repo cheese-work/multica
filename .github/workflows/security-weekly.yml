@@ -99,10 +99,16 @@ jobs:
           version="$(node -p 'const v = require("./package.json").packageManager; if (!/^pnpm@\d+\.\d+\.\d+$/.test(v)) throw new Error("exact pnpm version required"); v.slice(5)')"
           npm install --prefix "$RUNNER_TEMP/pnpm" "pnpm@$version"
           echo "$RUNNER_TEMP/pnpm/node_modules/.bin" >> "$GITHUB_PATH"
-      - name: Audit pnpm-lock.yaml
+      - name: Audit pnpm-lock.yaml (in a scratch directory)
+        # `pnpm audit` loads .pnpmfile.cjs and the workspace config from its working directory, and CODEOWNERS covers neither. Only the
+        # lockfile (data, not code) crosses into a scratch directory with a stub manifest, so no checkout hook can run before sealing.
         # exit 1 = advisories found; the report must still parse and carry `advisories`
         run: |
-          pnpm audit --json > pnpm-audit.json || true
+          audit_dir="$RUNNER_TEMP/pnpm-audit"
+          mkdir "$audit_dir"
+          cp pnpm-lock.yaml "$audit_dir/"
+          echo '{"name":"audit","private":true}' > "$audit_dir/package.json"
+          (cd "$audit_dir" && pnpm audit --json > "$GITHUB_WORKSPACE/pnpm-audit.json" || true)
           node -e 'if (!JSON.parse(require("fs").readFileSync("pnpm-audit.json", "utf8")).advisories) process.exit(1)'
       - name: Seal the report
         run: bash scripts/security-weekly/seal.sh pnpm-audit.json

@@ -148,3 +148,16 @@ test("govulncheck is installed at a pinned version outside the checkout, never v
   assert.match(wf, /working-directory: \$\{\{ runner\.temp \}\}\n\s+env:\n\s+GOFLAGS: ""\n\s+GOWORK: "off"\n\s+run: go install golang\.org\/x\/vuln\/cmd\/govulncheck@\$\{GOVULNCHECK_VERSION\}/);
   assert.match(wf, /"\$\(go env GOPATH\)\/bin\/govulncheck" \.\/\.\.\./);
 });
+
+// Terra FAIL on 62a4a3c11: `pnpm audit` run in the checkout loads a root .pnpmfile.cjs, which CODEOWNERS does not cover. A merged
+// hook would run before the report is sealed. The audit runs in a scratch directory holding only the lockfile and a stub manifest,
+// so no checkout-controlled pnpm config, hook or workspace file is read.
+test("pnpm audit runs in a scratch directory with only the lockfile, never in the checkout", () => {
+  const block = wf.slice(wf.indexOf("  pnpm-audit:"), wf.indexOf("  gitleaks:"));
+  assert.match(block, /audit_dir="\$RUNNER_TEMP\/pnpm-audit"/);
+  assert.match(block, /cp pnpm-lock\.yaml "\$audit_dir\/"/);
+  assert.match(block, /cd "\$audit_dir"/);
+  assert.match(block, /pnpm audit --json > "\$GITHUB_WORKSPACE\/pnpm-audit\.json"/);
+  assert.doesNotMatch(block, /(^|\n)\s+pnpm audit --json > pnpm-audit\.json/);
+  assert.doesNotMatch(block, /cp [^\n]*(package\.json|\.npmrc|pnpm-workspace)/, "no checkout config enters the scratch directory");
+});
