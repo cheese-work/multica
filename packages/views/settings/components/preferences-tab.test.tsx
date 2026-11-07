@@ -106,6 +106,7 @@ vi.mock("@multica/core/auth", async () => {
 import { PreferencesTab } from "./preferences-tab";
 import { useCommentComposerStore } from "@multica/core/issues/stores";
 import { useIssueOpeningStore } from "@multica/core/issues/stores/issue-opening-store";
+import { useRecentAgentsSettingsStore } from "@multica/core/chat/recent-agents-settings-store";
 import {
   DEFAULT_MANUAL_CREATE_FIELDS,
   DEFAULT_QUICK_CREATE_FIELDS,
@@ -337,6 +338,7 @@ describe("PreferencesTab — Comments & chat", () => {
     userRef.current = null;
     useCommentComposerStore.setState({ runningAgentReply: "steer", sticky: true });
     chatState.floatingChatEnabled = true;
+    useRecentAgentsSettingsStore.setState({ showRecentAgents: true });
   });
 
   afterEach(() => {
@@ -448,5 +450,16 @@ describe("PreferencesTab — Scope", () => {
     await user.click(preview);
     expect(useIssueOpeningStore.getState().openMode).toBe("peek");
     expect(preview).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("toggles recent agents in the New chat picker", async () => {
+    const user = userEvent.setup();
+    render(<PreferencesTab />, { wrapper: I18nWrapper });
+
+    const toggle = screen.getByRole("switch", { name: enSettings.chat.recent_agents_label });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    await user.click(toggle);
+    expect(useRecentAgentsSettingsStore.getState().showRecentAgents).toBe(false);
+    expect(mockToastSuccess).not.toHaveBeenCalled();
   });
 });
