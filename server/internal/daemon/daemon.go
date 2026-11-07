@@ -779,6 +779,10 @@ type Daemon struct {
 	// New() and overridable in tests so the auto-update poller can be exercised
 	// without touching the real network or the brew CLI.
 	runUpdateFn func(targetVersion string) (string, error)
+
+	// updateProgress is set while a server-triggered update runs, so the fork
+	// download can report its progress. Nil for auto-updates.
+	updateProgress atomic.Pointer[updateProgressReporter]
 }
 
 type profileLaunchSpec struct {
@@ -5065,7 +5069,13 @@ func (d *Daemon) handleUpdate(ctx context.Context, runtimeID string, update *Pen
 		"status": "running",
 	})
 
+	rep := newUpdateProgressReporter(func(ctx context.Context, payload map[string]any) error {
+		return d.client.ReportUpdateResult(ctx, runtimeID, update.ID, payload)
+	})
+	d.updateProgress.Store(rep)
 	output, err := d.runUpdateFn(update.TargetVersion)
+	d.updateProgress.Store(nil)
+	rep.wait() // a late progress report must not land after the terminal one
 	if errors.Is(err, cli.ErrForkUpToDate) {
 		// Already on the server's build: nothing was installed, so report
 		// success and keep the healthy daemon running.
