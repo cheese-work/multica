@@ -624,3 +624,65 @@ func TestUnconfiguredHTTPProviderFailureProbeReportsNotConfigured(t *testing.T) 
 		t.Fatalf("typed-nil probe decision = %+v, want not-configured skip reason", typedAttempt)
 	}
 }
+
+// seedAutopilotProviderFailure fails one scheduled autopilot run with a provider
+// 503, then writes the same-provider breaker row (closed, last success
+// last success successAgo ago) so the next scheduled run decides.
+func seedAutopilotProviderFailure(t *testing.T, f principalFixture, ownerID, failedAgo, successAgo string) (autopilotID, triggerID, failedTaskID string) {
+	t.Helper()
+	agentID := f.privateAgentOwnedBy(t, ownerID, "breaker-evidence")
+	f.Exec(t, "UPDATE agent SET model='gpt-5.6-sol' WHERE id=$1", agentID)
+	autopilotID, triggerID = f.autopilotWithTrigger(t, agentID, ownerID, ownerID)
+	failedRun, err := f.q.CreateAutopilotRun(context.Background(), db.CreateAutopilotRunParams{
+		ID: dbid.NewV7(), AutopilotID: parseTestUUID(t, autopilotID), TriggerID: parseTestUUID(t, triggerID),
+		Source: "schedule", Status: "running", TriggerPayload: []byte(`{}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Cleanup(t, "DELETE FROM autopilot_run WHERE id=$1", util.UUIDToString(failedRun.ID))
+	failedTaskID = f.Task(t, agentID, testutil.Cols{
+		"runtime_id":       testutil.Raw("(SELECT runtime_id FROM agent WHERE id='" + agentID + "')"),
+		"autopilot_run_id": util.UUIDToString(failedRun.ID),
+		"status":           "failed",
+		"failure_reason":   "agent_error.provider_server_error",
+		"completed_at":     testutil.Raw("now()-interval '" + failedAgo + "'"),
+	})
+	f.Cleanup(t, "DELETE FROM provider_failure_recovery WHERE failed_task_id=$1", failedTaskID)
+	f.Exec(t, "UPDATE autopilot_run SET status='failed',completed_at=now() WHERE id=$1", util.UUIDToString(failedRun.ID))
+	f.Exec(t, "DELETE FROM provider_breaker WHERE workspace_id=$1 AND provider='openai'", f.WorkspaceID)
+	f.Exec(t, "INSERT INTO provider_breaker (workspace_id, provider, state, last_success_at) VALUES ($1,'openai','closed', now()-interval '"+successAgo+"')", f.WorkspaceID)
+	f.Cleanup(t, "DELETE FROM provider_breaker WHERE workspace_id=$1 AND provider='openai'", f.WorkspaceID)
+	return autopilotID, triggerID, failedTaskID
+}
+
+// CHE-4311: no probe configured, one 503, then another agent succeeded on the
+// same provider (breaker closed, last_success_at after the failure): the next
+// scheduled run admits.
+func TestAutopilotScheduleAdmitsOnSameProviderSuccessEvidence(t *testing.T) {
+	f, ownerID := newPrincipalFixture(t)
+	autopilotID, triggerID, failedTaskID := seedAutopilotProviderFailure(t, f, ownerID, "61 minutes", "10 minutes")
+
+	run := f.dispatch(t, autopilotID, triggerID)
+	if run.Status != "running" || !run.TaskID.Valid {
+		t.Fatalf("run = status %q task valid=%v reason=%q, want admitted", run.Status, run.TaskID.Valid, run.FailureReason.String)
+	}
+	var recordedRun string
+	if err := f.Pool.QueryRow(context.Background(), `SELECT recovery_run_id FROM provider_failure_recovery WHERE failed_task_id=$1`, failedTaskID).Scan(&recordedRun); err != nil {
+		t.Fatal(err)
+	}
+	if recordedRun != util.UUIDToString(run.ID) {
+		t.Fatalf("recovery receipt run=%s, want %s", recordedRun, util.UUIDToString(run.ID))
+	}
+}
+
+// Success older than the failure is not recovery evidence.
+func TestAutopilotScheduleSkipsWhenProviderSuccessPredatesFailure(t *testing.T) {
+	f, ownerID := newPrincipalFixture(t)
+	autopilotID, triggerID, _ := seedAutopilotProviderFailure(t, f, ownerID, "61 minutes", "90 minutes")
+
+	run := f.dispatch(t, autopilotID, triggerID)
+	if run.Status != "skipped" || run.ReasonCode.String != string(dispatch.ReasonProviderFailureCooldown) {
+		t.Fatalf("run = status %q reason=%q, want provider_failure_cooldown skip", run.Status, run.ReasonCode.String)
+	}
+}
