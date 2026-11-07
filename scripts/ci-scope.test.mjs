@@ -354,7 +354,8 @@ test("a merge-group migration failure cannot pass the backend gate", () => {
 for (const gate of ["frontend", "backend"]) {
   test(`production ${gate} gate matches every dependency, condition and scope output`, () => {
     const mapping = productionMapping(gate);
-    assert.match(jobs[gate], /^    if: \$\{\{ !cancelled\(\) \}\}$/m);
+    // CHE-3989: a no-op PR event skips `changes`; the gate then skips too instead of failing closed on empty outputs.
+    assert.match(jobs[gate], /^    if: \$\{\{ !cancelled\(\) && needs\.changes\.result != 'skipped' \}\}$/m);
     assert.match(jobs[gate], /^          NEEDS_JSON: \$\{\{ toJSON\(needs\) \}\}$/m);
     assert.match(jobs[gate], /^        run: node scripts\/ci-scope\.mjs gate$/m);
     for (const scope of Object.values(mapping)) {

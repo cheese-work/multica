@@ -144,7 +144,7 @@ const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta
 const job = (name) => workflow.match(new RegExp(`^  ${name}:\\n[\\s\\S]*?(?=^  [\\w-]+:|$(?![\\s\\S]))`, "m"))?.[0] ?? "";
 
 test("PR-only scanner runs in parallel and required backend-tests fails closed", () => {
-  assert.match(job("migration-prefix-check"), /^    if: github.event_name == 'pull_request'$/m);
+  assert.match(job("migration-prefix-check"), /^    if: \$\{\{ github\.event_name == 'pull_request' && \(.+\) \}\}$/m);
   assert.doesNotMatch(job("migration-prefix-check"), /^    needs:/m);
   assert.match(job("migration-prefix-check"), /persist-credentials: false/);
   assert.match(job("migration-prefix-check"), /pull-requests: read/);
