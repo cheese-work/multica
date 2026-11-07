@@ -19,8 +19,8 @@ import (
 
 // Episode delivery (CHE-2591 L5 design §4.4, §6, §6.1). One delivery covers
 // every answer, re-ask and retraction of the bound set B, and goes through the
-// same dispatcher as an ordinary wake. System close (§4.5.1), run-budget and
-// persistent-refusal suspension (§4.4.3, §4.4.7) and expiry are later layers.
+// same dispatcher as an ordinary wake. The system close is in
+// decision_wait_close.go and the suspension write in decision_wait_suspend.go.
 
 // terminalRow is one request's row of the §6.1 terminal-state map.
 type terminalRow struct {
@@ -55,7 +55,7 @@ func episodeLiveRequests(snapshot decisionWakeSnapshot) map[pgtype.UUID]bool {
 
 // classifyEpisodeRequest is the §6.1 map. Every value the check constraints
 // allow lands in a row; a value without an explicit row falls to other_terminal.
-func classifyEpisodeRequest(request db.DecisionRequest, live map[pgtype.UUID]bool) terminalRow {
+func classifyEpisodeRequest(request db.DecisionRequest, live, actionExpired map[pgtype.UUID]bool) terminalRow {
 	switch request.Status {
 	case "answered":
 		if live[request.ID] {
@@ -66,6 +66,9 @@ func classifyEpisodeRequest(request db.DecisionRequest, live map[pgtype.UUID]boo
 		case "human_removed", "lane_archived":
 			return terminalRow{2, "reask"}
 		case "expired":
+			if actionExpired[request.ID] {
+				return terminalRow{3, "action_expired"}
+			}
 			return terminalRow{3, "expired"}
 		case "agent_withdrawn":
 			if request.WithdrawnByUserID.Valid {
@@ -82,8 +85,7 @@ func classifyEpisodeRequest(request db.DecisionRequest, live map[pgtype.UUID]boo
 }
 
 type episodeVerdict struct {
-	// wait is true when nothing is delivered this pass. A system close (design
-	// §6 rules 1 and 2) also reports wait here until the layer that writes it.
+	// wait is true when nothing is delivered this pass.
 	wait    bool
 	reason  string
 	rows    map[pgtype.UUID]terminalRow
@@ -140,12 +142,7 @@ func (handler *Handler) episodeResumeHolds(ctx context.Context, queries *db.Quer
 // evaluateDecisionEpisode is design §6 over the locked bound set.
 func (handler *Handler) evaluateDecisionEpisode(ctx context.Context, queries *db.Queries, snapshot decisionWakeSnapshot, now time.Time) (episodeVerdict, error) {
 	verdict := episodeVerdict{wait: true}
-	if episodeClosedStatus(snapshot.issue.Status) {
-		return verdict, nil
-	}
-	if recipient := snapshot.recipient; recipient.ArchivedAt.Valid || !recipient.RuntimeID.Valid || recipient.Kind == "system" {
-		return verdict, nil
-	}
+	// Rules 1 and 2 never reach here: deliverDecisionEpisode closes first (decision_wait_close.go).
 	if holds, err := handler.episodeResumeHolds(ctx, queries, snapshot); err != nil || !holds {
 		return verdict, err
 	}
@@ -174,12 +171,20 @@ func (handler *Handler) evaluateDecisionEpisode(ctx context.Context, queries *db
 			return verdict, err
 		}
 	}
+	expiredActions, err := queries.ListDecisionWaitExpiredActionRequests(ctx, db.ListDecisionWaitExpiredActionRequestsParams{WorkspaceID: snapshot.wait.WorkspaceID, RequestIds: snapshot.wait.RequestIds})
+	if err != nil {
+		return verdict, err
+	}
+	actionExpired := make(map[pgtype.UUID]bool, len(expiredActions))
+	for _, id := range expiredActions {
+		actionExpired[id] = true
+	}
 	verdict.wait, verdict.rows = false, make(map[pgtype.UUID]terminalRow, len(snapshot.requests))
 	best := terminalRow{priority: 99}
 	allTaskWithdrawn := len(snapshot.requests) > 0
 	var withdrawnBy pgtype.UUID
 	for _, request := range snapshot.requests {
-		row := classifyEpisodeRequest(request, live)
+		row := classifyEpisodeRequest(request, live, actionExpired)
 		verdict.rows[request.ID] = row
 		if row.priority < best.priority {
 			best = row
@@ -310,8 +315,16 @@ func (handler *Handler) episodeInputs(ctx context.Context, queries *db.Queries, 
 			// The quotes are listed with the answers below.
 		case "reask":
 			fmt.Fprintf(&summary, "- Request %s was cancelled (%s). Ask again through a new decision-intent window and a fresh lane listing. No automatic re-ping or server-created DM.\n", id, request.CancelReason.String)
-		case "expired":
-			fmt.Fprintf(&summary, "- Request %s expired. It was cancelled `expired` and no answer was delivered.\n", id)
+		case "expired", "action_expired":
+			human, err := queries.GetUser(ctx, request.HumanUserID)
+			if err != nil {
+				return nil, "", trigger, err
+			}
+			what, next := "expired", "Re-resolve the human in charge, or move the issue to blocked with this reason."
+			if row.reason == "action_expired" {
+				what, next = "expired: the prepared action expired before approval", "Move the issue to blocked with the expiry stated as the reason."
+			}
+			fmt.Fprintf(&summary, "- Request %s %s. It was cancelled `expired` and no answer was delivered. Expiry is not an answer: do not ask %s the same question again. %s\n", id, what, human.Name, next)
 		case "human_withdrawn":
 			human, err := queries.GetUser(ctx, request.WithdrawnByUserID)
 			if err != nil {
@@ -511,6 +524,9 @@ func ackEpisodeItems(ctx context.Context, queries *db.Queries, snapshot decision
 // deliverDecisionEpisode is one attempt of design §4.4.2. restart is true when
 // the snapshot is stale.
 func (handler *Handler) deliverDecisionEpisode(ctx context.Context, snapshot decisionWakeSnapshot) (bool, error) {
+	if reason := systemCloseReason(snapshot); reason != "" {
+		return handler.closeDecisionEpisode(ctx, snapshot, reason)
+	}
 	transaction, err := handler.TxStarter.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -551,6 +567,26 @@ func (handler *Handler) deliverDecisionEpisode(ctx context.Context, snapshot dec
 	if refused, err := handler.refuseGatedAgentRecords(ctx, transaction, queries, snapshot); err != nil || refused {
 		return false, err
 	}
+	// A refusal below takes everything after this point back and suspends instead.
+	if _, err := transaction.Exec(ctx, "SAVEPOINT episode_resume"); err != nil {
+		return false, err
+	}
+	suspend := func(kind string, conflict db.AgentTaskQueue) (bool, error) {
+		if _, err := transaction.Exec(ctx, "ROLLBACK TO SAVEPOINT episode_resume"); err != nil {
+			return false, err
+		}
+		move, err := handler.suspendDecisionEpisode(ctx, queries, snapshot, kind, conflict)
+		if err != nil {
+			return false, err
+		}
+		if err := transaction.Commit(ctx); err != nil {
+			return false, err
+		}
+		if move.AfterCommit != nil {
+			move.AfterCommit(ctx)
+		}
+		return false, nil
+	}
 	if rows, err := queries.ClaimDecisionWait(ctx, db.ClaimDecisionWaitParams{WorkspaceID: workspaceID, ID: wait.ID, CloseReason: pgtype.Text{String: verdict.reason, Valid: true}}); err != nil {
 		return false, err
 	} else if rows != 1 {
@@ -579,10 +615,15 @@ func (handler *Handler) deliverDecisionEpisode(ctx context.Context, snapshot dec
 	outcome, continuation := "planned_input", verdict.running
 	var queued db.AgentTaskQueue
 	if !verdict.running.Valid {
-		if outcome, queued, err = handler.dispatchDecisionInputs(ctx, queries, snapshot, trigger, commentIDs, summary); err != nil {
+		if outcome, queued, err = handler.dispatchDecisionInputs(ctx, queries, snapshot, trigger, commentIDs, summary); errors.Is(err, service.ErrRunBudgetExhausted) {
+			return suspend(suspendKindRunBudget, db.AgentTaskQueue{})
+		} else if err != nil {
 			return false, err
 		}
 		if outcome == "" {
+			if wait.Phase == "suspended" || (wait.DispatchRefusedSince.Valid && now.Time.Sub(wait.DispatchRefusedSince.Time) > dispatchRefusedSuspendAfter) {
+				return suspend(suspendKindDispatchRefused, snapshot.task)
+			}
 			// The refusal keeps the episode open and unchanged; only the clock starts.
 			transaction.Rollback(ctx)
 			return false, handler.Queries.MarkDecisionWaitDispatchRefused(ctx, db.MarkDecisionWaitDispatchRefusedParams{WorkspaceID: workspaceID, ID: wait.ID})

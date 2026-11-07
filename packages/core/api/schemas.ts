@@ -87,6 +87,7 @@ import type {
   PluginSurfaceLaunch,
   ResourceLabelsResponse,
   RuntimeModelListRequest,
+  RuntimeUpdate,
   SearchIssuesResponse,
   SearchProjectsResponse,
   ShareLink,
@@ -1070,7 +1071,14 @@ const DecisionRequestCardSchema = z.lazy(() => z.object({
   source_comment_id: z.string().nullish().catch(undefined),
   ask: z.string(),
   asking_agent_name: z.string().optional().catch(undefined),
-  options: z.array(z.object({ label: z.string(), what_happens: z.string().optional().catch(undefined) }).loose()).catch([]),
+  options: z.array(z.object({
+    label: z.string(),
+    what_happens: z.string().optional().catch(undefined),
+    pros: z.array(z.string()).optional().catch([]),
+    cons: z.array(z.string()).optional().catch([]),
+    cost_or_time: z.string().optional().catch(undefined),
+  }).loose()).catch([]),
+  recommended_option_index: z.number().int().nonnegative().optional().catch(undefined),
   state: z.enum(["open", "answered", "withdrawn"]).catch("open"),
   created_at: z.string(),
   withdrawn_at: z.string().nullish().catch(undefined),
@@ -3826,6 +3834,38 @@ export const MALFORMED_RUNTIME_MODEL_LIST_REQUEST: RuntimeModelListRequest = {
   status: "failed",
   supported: true,
   error: "invalid model discovery response",
+  created_at: "",
+  updated_at: "",
+};
+
+const RuntimeUpdateProgressSchema = z.object({
+  phase: z.string(),
+  bytes_done: z.number(),
+  bytes_total: z.number(),
+});
+
+export const RuntimeUpdateSchema = z.lazy(() => z.object({
+  id: z.string().default(""),
+  runtime_id: z.string().default(""),
+  status: z.string(),
+  target_version: z.string().default(""),
+  output: z.string().optional(),
+  error: z.string().optional(),
+  // Progress is cosmetic: a malformed value drops to absent rather than
+  // failing the whole poll.
+  progress: RuntimeUpdateProgressSchema.optional().catch(undefined),
+  created_at: z.string().default(""),
+  updated_at: z.string().default(""),
+}).loose());
+
+// Fallback for an unparseable update response: `failed` ends the poll with an
+// explicit error rather than spinning until the client-side timeout.
+export const MALFORMED_RUNTIME_UPDATE: RuntimeUpdate = {
+  id: "",
+  runtime_id: "",
+  status: "failed",
+  target_version: "",
+  error: "invalid update response",
   created_at: "",
   updated_at: "",
 };

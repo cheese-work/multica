@@ -46,7 +46,7 @@ jobs:
   migration-prefix-check:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
-    timeout-minutes: 1
+    timeout-minutes: 3
     permissions:
       contents: read
       pull-requests: read
@@ -81,7 +81,7 @@ jobs:
       - name: Test the upstream-main mirror script
         run: bash scripts/mirror-upstream-main.test.sh
       - name: Test the upstream-main rulesets
-        run: node --test scripts/mirror-rulesets.test.mjs
+        run: node --test scripts/mirror-rulesets.test.mjs scripts/mirror-workflow.test.mjs
       - name: Check no upstream update source
         run: bash scripts/check-no-upstream-update-source.sh
 

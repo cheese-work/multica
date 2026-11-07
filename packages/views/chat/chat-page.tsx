@@ -12,7 +12,7 @@ import {
 } from "@multica/ui/components/ui/resizable";
 import { useIsCompact } from "@multica/ui/hooks/use-mobile";
 import { useCurrentWorkspace, useRequiredWorkspaceSlug, useWorkspacePaths } from "@multica/core/paths";
-import { resolveAutoCompact } from "@multica/core/workspace/auto-compact";
+import { autoCompactThresholdTokens, resolveAutoCompact } from "@multica/core/workspace/auto-compact";
 import {
   getCurrentSlug,
   getWorkspaceRehydrationGeneration,
@@ -258,6 +258,11 @@ export function ChatPage() {
       if (isCompact) backOrReplace(wsPaths.chat());
       else c.advanceSelectionAfterArchive(session);
     },
+    onUnseen: (session) => {
+      if (session.id !== useChatStore.getState().activeSessionId) return;
+      if (isCompact) backOrReplace(wsPaths.chat());
+      else c.setActiveSession(null);
+    },
     onRename: handleRename,
     onFork: canForkSession(c.currentSession) ? handleFork : undefined,
   });
@@ -394,7 +399,7 @@ export function ChatPage() {
   // THIS pane, which the user resizes independently of the browser window.
   const queuedTasks = c.pendingTask?.queued_tasks ?? [];
   const autoCompact = resolveAutoCompact(workspace?.settings, c.activeAgent?.runtime_config);
-  const autoCompactThresholdPct = autoCompact.enabled ? autoCompact.threshold_pct : null;
+  const autoCompactTokens = autoCompactThresholdTokens(autoCompact, c.currentSession?.context_window);
   const { quoteRequest, quote, handleQuoteApplied } = useQuoteRequest();
   const annotation = useChatAnnotations({
     sessionId: c.activeSessionId,
@@ -422,9 +427,10 @@ export function ChatPage() {
           onArchive={handleArchive}
           onUnarchive={dm.unarchive}
           onTogglePin={dm.togglePin}
+          onMarkUnseen={dm.markUnseen}
           onOpenStatistics={() => dm.openStatistics(c.currentSession?.id ?? "")}
           renameRequest={renameRequest}
-          autoCompactThresholdPct={autoCompactThresholdPct}
+          autoCompactThresholdTokens={autoCompactTokens}
           onCompact={() => void c.handleSend("/compact")}
           onSetPreset={(name) =>
             // The server answers /preset without a session event: refetch so the picker shows the new choice.

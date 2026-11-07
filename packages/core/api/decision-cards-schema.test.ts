@@ -122,6 +122,11 @@ describe("DM decision cards", () => {
     expect(ChatMessageSchema.parse(bubble).decision_request).toBeUndefined();
     expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, options: [{ label: "B", what_happens: "ship" }] } }).decision_request?.options)
       .toEqual([{ label: "B", what_happens: "ship" }]);
+    const detailed = { label: "B", what_happens: "ship", pros: ["safe"], cons: ["slow"], cost_or_time: "2 days" };
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, options: [detailed], recommended_option_index: 0 } }).decision_request)
+      .toMatchObject({ options: [detailed], recommended_option_index: 0 });
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, options: [{ label: "B", pros: "x" }], recommended_option_index: "no" } }).decision_request)
+      .toMatchObject({ options: [{ label: "B", pros: [] }], recommended_option_index: undefined });
     // A malformed options list degrades to no buttons, not a dropped card.
     expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, options: "B" } }).decision_request?.options).toEqual([]);
     expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, options: [{ nolabel: 1 }] } }).decision_request?.options).toEqual([]);

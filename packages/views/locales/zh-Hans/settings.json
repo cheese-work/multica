@@ -395,7 +395,8 @@
   },
   "chat": {
     "floating_label": "悬浮聊天窗",
-    "floating_hint": "在每个页面显示悬浮聊天按钮。"
+    "floating_hint": "在每个页面显示悬浮聊天按钮。",
+    "recent_agents_label": "新聊天中的最近智能体"
   },
   "issue": {
     "opening": {
@@ -873,7 +874,12 @@
     "auto_compact_hint": "网页私信的上下文达到阈值后，会在一次回复之后转入新的私信。",
     "auto_compact_threshold_label": "阈值 (%)",
     "auto_compact_threshold_invalid": "请输入 50 到 90 的整数。",
+    "auto_compact_tokens_200k_label": "阈值，200k 模型（token）",
+    "auto_compact_tokens_1m_label": "阈值，1M 模型（token）",
+    "auto_compact_tokens_200k_invalid": "请输入 100000 到 200000 之间的整数。",
+    "auto_compact_tokens_1m_invalid": "请输入 100000 到 400000 之间的整数。",
     "auto_compact_readonly_on": "开启，阈值 {{threshold}}%",
+    "auto_compact_readonly_on_tokens": "已开启，{{small}} / {{large}} token",
     "auto_compact_readonly_off": "关闭",
     "agent_decisions_label": "代理决策",
     "agent_decisions_hint": "代理可以代你决定白名单内的关卡。每项决定都会出现在每日简报中，并有 24 小时否决期。",

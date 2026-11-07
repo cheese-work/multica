@@ -284,7 +284,14 @@ describe("DecisionRequestCard accessibility", () => {
 });
 
 describe("DecisionRequestCard answering", () => {
-  const withOptions: RequestCard = { ...card, options: [{ label: "Option A", what_happens: "A happens" }, { label: "Option B", what_happens: "B happens" }] };
+  const withOptions: RequestCard = {
+    ...card,
+    options: [
+      { label: "Option A", what_happens: "A happens", pros: ["fast"], cons: ["risky"], cost_or_time: "1 h" },
+      { label: "Option B", what_happens: "B happens", pros: ["safe"], cons: ["slow"], cost_or_time: "2 days" },
+    ],
+    recommended_option_index: 1,
+  };
   const renderCard = (value: RequestCard = withOptions) =>
     renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={value} /></WorkspaceSlugProvider></QueryClientProvider>);
   beforeEach(() => {
@@ -312,15 +319,25 @@ describe("DecisionRequestCard answering", () => {
     await vi.waitFor(() => expect(screen.getByRole("textbox", { name: "Write an answer" })).toHaveValue(""));
   });
 
-  it("sends the selected option on Send, and only once chosen", async () => {
+  it("submits an option with one click and no text", async () => {
     renderCard();
     const user = userEvent.setup();
-    const send = screen.getByRole("button", { name: "Send" });
-    expect(send).toBeDisabled();
-    await user.click(screen.getByRole("radio", { name: /Option B/ }));
-    expect(screen.getByRole("radio", { name: /Option B/ })).toBeChecked();
-    await user.click(send);
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: /Option B/ }));
+    expect(answerDecisionRequest).toHaveBeenCalledTimes(1);
     expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: "Option B", text: undefined });
+  });
+
+  it("shows each option's pros, cons and cost, and marks the recommendation", () => {
+    renderCard();
+    const second = screen.getByRole("button", { name: /Option B/ });
+    expect(second).toHaveTextContent("safe");
+    expect(second).toHaveTextContent("slow");
+    expect(second).toHaveTextContent("2 days");
+    expect(second).toHaveTextContent("Recommended");
+    const first = screen.getByRole("button", { name: /Option A/ });
+    expect(first).toHaveTextContent("fast");
+    expect(first).not.toHaveTextContent("Recommended");
   });
 
   it("sends on Enter and keeps Shift+Enter as a newline", async () => {
@@ -346,8 +363,9 @@ describe("DecisionRequestCard answering", () => {
   it("sends the option and the note together", async () => {
     renderCard();
     const user = userEvent.setup();
-    await user.click(screen.getByRole("radio", { name: /Option A/ }));
-    await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "but wait a day{Enter}");
+    await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "but wait a day");
+    editor.live = "but wait a day";
+    await user.click(screen.getByRole("button", { name: /Option A/ }));
     expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: "Option A", text: "but wait a day" });
   });
 
@@ -447,7 +465,7 @@ describe("DecisionRequestCard answering", () => {
     expect(screen.getByText("Send posts your answer to CHE-2088. Questions for the DM agent go in the message box below.")).toBeVisible();
     // The editor sends on the configured shortcut (Ctrl/Cmd+Enter by default), so the hint names that key.
     expect(screen.getByText(/^(Ctrl\+Enter|⌘↵) sends$/)).toBeVisible();
-    expect(screen.getByRole("radiogroup", { name: "Options" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Options" })).toBeInTheDocument();
     expect(screen.getByLabelText("Add a note (optional)")).toHaveAccessibleDescription(/^(Ctrl\+Enter|⌘↵) sends$/);
   });
 
@@ -474,12 +492,10 @@ describe("DecisionRequestCard answering", () => {
     );
     const { rerender } = renderWithI18n(view(withOptions));
     const user = userEvent.setup();
-    await user.click(screen.getByRole("radio", { name: /Option B/ }));
     await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "my note");
     rerender(view({ ...withOptions, state: "answered", record_comment_id: "record" }));
     expect(screen.getByTestId("decision-request-record")).toBeInTheDocument();
     const kept = screen.getByTestId("decision-request-kept-draft");
-    expect(kept).toHaveTextContent("Option B");
     expect(kept).toHaveTextContent("my note");
     expect(answerDecisionRequest).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Discard draft" }));
@@ -554,8 +570,9 @@ describe("DecisionRequestCard answering", () => {
     answerDecisionRequest.mockRejectedValue(new ApiError("this request cannot accept another answer", 409, "Conflict"));
     renderCard();
     const user = userEvent.setup();
-    await user.click(screen.getByRole("radio", { name: /Option A/ }));
-    await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "with a note{Enter}");
+    await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "with a note");
+    editor.live = "with a note";
+    await user.click(screen.getByRole("button", { name: /Option A/ }));
     const kept = await screen.findByTestId("decision-request-kept-draft");
     expect(kept).toHaveTextContent("Nothing from your draft was posted.");
     expect(kept).toHaveTextContent("Option A");
@@ -676,8 +693,9 @@ describe("DecisionRequestCard passkey-gated answering", () => {
   const renderCard = () =>
     renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={withOptions} /></WorkspaceSlugProvider></QueryClientProvider>);
   const pickAndSend = async (user: ReturnType<typeof userEvent.setup>) => {
-    await user.click(screen.getByRole("radio", { name: /Option A/ }));
-    await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), " why {Enter}");
+    await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "why");
+    editor.live = "why";
+    await user.click(screen.getByRole("button", { name: /Option A/ }));
   };
   beforeEach(() => {
     answerDecisionRequest.mockReset().mockRejectedValueOnce(gated()).mockResolvedValue(undefined);
@@ -701,6 +719,19 @@ describe("DecisionRequestCard passkey-gated answering", () => {
       option: "Option A", text: "why", answer_revision: 3, policy_revision: 2,
       assertion: { challenge_id: "ch-1", credential: { id: "cred" } },
     });
+  });
+
+  it("keeps the clicked option when the note is edited before the passkey retry", async () => {
+    renderCard();
+    const user = userEvent.setup();
+    await pickAndSend(user);
+    await screen.findByRole("button", { name: "Send with passkey" });
+    await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), " more");
+    editor.live = "why more";
+    await user.click(screen.getByRole("button", { name: "Send with passkey" }));
+    await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalledTimes(2));
+    expect(challengeDecisionAnswer).toHaveBeenCalledWith("request", { option: "Option A", text: "why more" });
+    expect(answerDecisionRequest).toHaveBeenLastCalledWith("request", expect.objectContaining({ option: "Option A", text: "why more" }));
   });
 
   it("keeps the draft and offers a retry when the passkey ceremony is cancelled", async () => {

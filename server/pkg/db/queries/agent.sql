@@ -52,6 +52,15 @@ SELECT * FROM agent
 WHERE id = $1 AND workspace_id = $2 AND kind = 'user'
 FOR SHARE;
 
+-- name: LockAgentInWorkspaceShared :one
+-- Pins an agent's visibility, runtime and archived_at for the rest of the
+-- transaction: a concurrent archive or update waits for the commit. Used by the
+-- background-agents write so its eligibility check and its settings write
+-- commit together.
+SELECT * FROM agent
+WHERE id = $1 AND workspace_id = $2 AND kind = 'user'
+FOR SHARE;
+
 -- name: CreateAgent :one
 INSERT INTO agent (
     workspace_id, name, description, avatar_url, runtime_mode,
@@ -969,6 +978,13 @@ ev AS (
     INSERT INTO agent_task_event (workspace_id, task_id, runtime_id, kind)
     SELECT r.workspace_id, upd.id, upd.runtime_id, 'requeue_claim_failure'
     FROM upd JOIN agent_runtime r ON r.id = upd.runtime_id
+),
+-- A provider breaker canary that goes back to queued can no longer start while
+-- the breaker holds claims: release it so the next claim re-elects a canary.
+rel AS (
+    UPDATE provider_breaker
+    SET state = 'open', canary_task_id = NULL, next_probe_at = now(), version = version + 1
+    WHERE state = 'half_open' AND canary_task_id IN (SELECT id FROM upd)
 )
 SELECT * FROM upd;
 

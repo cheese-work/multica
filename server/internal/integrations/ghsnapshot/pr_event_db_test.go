@@ -94,6 +94,30 @@ func TestPREventBaseMovedRaisesConflictOnSameHead(t *testing.T) {
 	}
 }
 
+// A PR whose head repository is not the base repository (a fork, including a
+// same-owner fork that is auto-linked, CHE-4300) must raise no attention event:
+// the event would wake an agent for a contributor-controlled PR.
+func TestPREventForkHeadRaisesNoEvent(t *testing.T) {
+	w := seedPREventWorld(t, `{}`)
+	ctx := context.Background()
+	t0 := time.Unix(1_700_100_000, 0)
+	if _, err := w.pool.Exec(ctx, `UPDATE github_pull_request SET head_repo_same=false WHERE id=$1`, w.pr.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	clean := &PRSnapshot{HeadSHA: "A", BaseSHA: "base-1", Mergeable: "MERGEABLE", MergeStateStatus: "CLEAN"}
+	if applied, err := w.manager(t0).applySnapshot(ctx, w.pr.ID, clean); err != nil || !applied {
+		t.Fatalf("clean snapshot applied=%v err=%v", applied, err)
+	}
+	dirty := &PRSnapshot{HeadSHA: "A", BaseSHA: "base-2", Mergeable: "CONFLICTING", MergeStateStatus: "DIRTY"}
+	if applied, err := w.manager(t0.Add(time.Minute)).applySnapshot(ctx, w.pr.ID, dirty); err != nil || !applied {
+		t.Fatalf("conflicting snapshot applied=%v err=%v", applied, err)
+	}
+	if got := w.events(t); len(got) != 0 {
+		t.Fatalf("fork-head PR raised events: %+v", got)
+	}
+}
+
 func TestPREventRepeatSnapshotStoresOneEvent(t *testing.T) {
 	w := seedPREventWorld(t, `{}`)
 	ctx := context.Background()

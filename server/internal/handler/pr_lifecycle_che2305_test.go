@@ -52,8 +52,8 @@ func newC1World(t *testing.T) c1World {
 	w.agentID = dbfx.Agent(t, "C1 agent", w.runtimeID)
 	w.issueID = dbfx.Issue(t, "c1 issue", testutil.Cols{"status": "in_progress"})
 	dbfx.QueryRow(t, `
-		INSERT INTO github_pull_request (workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, pr_created_at, pr_updated_at, head_sha)
-		VALUES ($1, $2, 'acme', $3, $4, 'c1 pr', 'open', 'https://example.test/pr', now(), now(), 'c1head')
+		INSERT INTO github_pull_request (workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, pr_created_at, pr_updated_at, head_sha, head_repo_same)
+		VALUES ($1, $2, 'acme', $3, $4, 'c1 pr', 'open', 'https://example.test/pr', now(), now(), 'c1head', true)
 		RETURNING id::text`, testWorkspaceID, w.installationID, w.repo, w.number).Scan(&w.prID)
 	dbfx.Exec(t, `INSERT INTO issue_pull_request (issue_id, pull_request_id, linked_by_type) VALUES ($1, $2, 'member')`, w.issueID, w.prID)
 	t.Cleanup(func() {

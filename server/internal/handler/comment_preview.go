@@ -78,6 +78,10 @@ func (h *Handler) GetCommentPreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prefix := h.getIssuePrefix(r.Context(), wsUUID)
+	preview := commentFirstLine(comment.Content)
+	if h.newReadFilter(r).withholdsComment(comment) {
+		preview = ""
+	}
 	writeJSON(w, http.StatusOK, CommentPreviewResponse{
 		CommentID:       uuidToString(comment.ID),
 		IssueID:         uuidToString(issue.ID),
@@ -85,6 +89,6 @@ func (h *Handler) GetCommentPreview(w http.ResponseWriter, r *http.Request) {
 		AuthorType:      comment.AuthorType,
 		AuthorID:        uuidToString(comment.AuthorID),
 		AuthorName:      h.actorDisplayName(r.Context(), wsUUID, comment.AuthorType, comment.AuthorID),
-		Preview:         commentFirstLine(comment.Content),
+		Preview:         preview,
 	})
 }

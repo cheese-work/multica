@@ -395,7 +395,8 @@
   },
   "chat": {
     "floating_label": "フローティングチャット",
-    "floating_hint": "すべてのページにフローティングチャットボタンを表示します。"
+    "floating_hint": "すべてのページにフローティングチャットボタンを表示します。",
+    "recent_agents_label": "新規チャットの最近のエージェント"
   },
   "issue": {
     "opening": {
@@ -873,7 +874,12 @@
     "auto_compact_hint": "Web の DM は、コンテキストがしきい値に達した後の返信のあとで、新しい DM に引き継がれます。",
     "auto_compact_threshold_label": "しきい値 (%)",
     "auto_compact_threshold_invalid": "50 から 90 の整数を入力してください。",
+    "auto_compact_tokens_200k_label": "しきい値、200kモデル(トークン)",
+    "auto_compact_tokens_1m_label": "しきい値、1Mモデル(トークン)",
+    "auto_compact_tokens_200k_invalid": "100000〜200000の整数を入力してください。",
+    "auto_compact_tokens_1m_invalid": "100000〜400000の整数を入力してください。",
     "auto_compact_readonly_on": "オン（{{threshold}}%）",
+    "auto_compact_readonly_on_tokens": "オン、{{small}} / {{large}} トークン",
     "auto_compact_readonly_off": "オフ",
     "agent_decisions_label": "エージェントの判断",
     "agent_decisions_hint": "エージェントは許可リストにあるゲートをあなたに代わって判断できます。各判断は日次ブリーフに表示され、24時間以内なら拒否できます。",

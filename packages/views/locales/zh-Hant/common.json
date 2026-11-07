@@ -160,6 +160,13 @@
     "error": "通行金鑰核准未完成。請重試。",
     "lost": "回應遺失。該操作不會被再次核准。請檢查結果。",
     "check": "檢查結果",
-    "outcome": { "cap_applied": "已套用上限", "run_queued": "執行已排入佇列", "still_blocked": "仍被封鎖：{{reason}}" }
+    "outcome": { "cap_applied": "已套用上限", "run_queued": "執行已排入佇列", "still_blocked": "仍被封鎖：{{reason}}" },
+    "panel": {
+      "title": "執行預算請求",
+      "raise_cap": "將此視窗中 {{issue}} 的執行上限提高到 {{cap}} 次。",
+      "top_up": "為此視窗中的 {{issue}} 補充執行預算。",
+      "mismatch": "此核准不是針對該議題的執行預算請求，無法在此核准。",
+      "unreadable": "你無權查看此核准，或它已不存在。"
+    }
   }
 }

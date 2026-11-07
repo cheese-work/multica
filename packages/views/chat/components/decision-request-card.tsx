@@ -63,7 +63,7 @@ function DecisionAnswerForm({
   draft: AnswerDraft;
   answer: AnswerMutation;
   onDraftChange: (draft: AnswerDraft) => void;
-  onSend: (text: string) => void;
+  onSend: (text: string, option?: string) => void;
   inIssue: boolean;
   /** The server refused a bare answer: the next send runs the passkey ceremony. */
   needsPasskey: boolean;
@@ -74,24 +74,24 @@ function DecisionAnswerForm({
   const online = useOnline();
   const handoff = needsPasskey && isDesktopShell();
   const sendShortcut = formatShortcut(useShortcut("send"));
-  const { option, text } = draft;
-  const setOption = (next: string) => onDraftChange({ option: next, text });
-  const setText = (next: string) => onDraftChange({ option, text: next });
-  const group = useId();
+  const { text } = draft;
+  const setText = (next: string) => onDraftChange({ option: draft.option, text: next });
   const textId = useId();
   const editorRef = useRef<ContentEditorRef>(null);
   const uploadGate = useUploadGate(editorRef);
   const { uploadWithToast } = useEditorUpload();
   const tooLong = answerBytes(text) > MAX_ANSWER_BYTES;
-  const canSend = !handoff && online && !answer.isPending && !uploadGate.uploading && !tooLong && (option !== "" || text.trim() !== "");
-  const send = () => {
+  const canSubmit = !handoff && online && !answer.isPending && !uploadGate.uploading && !tooLong;
+  const canSend = canSubmit && (draft.option !== "" || text.trim() !== "");
+  // An option click sends at once, with whatever note is in the box. A retry keeps the kept choice.
+  const send = (option = draft.option) => {
     // onUpdate reaches `text` through a timer, so an Enter or click right after the last edit
     // (or a finished upload) would send stale text. Read the editor and send exactly that.
     const live = editorRef.current?.getMarkdown() ?? text;
     // Enter can arrive while an upload placeholder is still in the document.
     const sendable = !handoff && online && !answer.isPending && !uploadGate.uploading && !uploadGate.isBlocked()
-      && answerBytes(live) <= MAX_ANSWER_BYTES && (option !== "" || live.trim() !== "");
-    if (sendable) onSend(live);
+      && answerBytes(live) <= MAX_ANSWER_BYTES && (!!option || live.trim() !== "");
+    if (sendable) onSend(live, option);
   };
 
   return (
@@ -107,31 +107,33 @@ function DecisionAnswerForm({
         {t(($) => (inIssue ? $.decision.answer_helper_issue : $.decision.answer_helper), { issue: card.issue_identifier || card.issue_id })}
       </p>
       {!!card.options?.length && (
-        <fieldset role="radiogroup" className="space-y-1">
-          <legend className="sr-only">{t(($) => $.decision.answer_options)}</legend>
-          {card.options.map((item) => (
-            <label
+        <div role="group" aria-label={t(($) => $.decision.answer_options)} className="space-y-1">
+          {card.options.map((item, index) => (
+            <button
               key={item.label}
+              type="button"
+              disabled={!canSubmit}
+              onClick={() => send(item.label)}
               className={cn(
-                "flex min-h-9 cursor-pointer items-start gap-2 rounded-lg border border-surface-border px-2 py-1.5 has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-ring",
-                option === item.label && "border-primary bg-primary/5",
+                "flex min-h-9 w-full items-start gap-2 rounded-lg border border-surface-border px-2 py-1.5 text-left hover:bg-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-70",
+                card.recommended_option_index === index && "border-primary bg-primary/5",
               )}
             >
-              <input
-                type="radio"
-                name={group}
-                value={item.label}
-                checked={option === item.label}
-                onChange={() => setOption(item.label)}
-                className="mt-1"
-              />
-              <span className="min-w-0">
-                <span className="font-medium">{item.label}</span>
+              <span className="min-w-0 space-y-0.5">
+                <span className="flex flex-wrap items-center gap-2">
+                  <span className="font-medium">{item.label}</span>
+                  {card.recommended_option_index === index && (
+                    <span className="rounded-full bg-primary/10 px-2 py-0.5 text-micro font-medium text-primary">{t(($) => $.decision.option_recommended)}</span>
+                  )}
+                </span>
                 {item.what_happens && <span className="block text-caption text-muted-foreground">{item.what_happens}</span>}
+                {!!item.pros?.length && <span className="block text-caption text-muted-foreground">{t(($) => $.decision.option_pros)}: {item.pros.join("; ")}</span>}
+                {!!item.cons?.length && <span className="block text-caption text-muted-foreground">{t(($) => $.decision.option_cons)}: {item.cons.join("; ")}</span>}
+                {item.cost_or_time && <span className="block text-caption text-muted-foreground">{t(($) => $.decision.option_cost)}: {item.cost_or_time}</span>}
               </span>
-            </label>
+            </button>
           ))}
-        </fieldset>
+        </div>
       )}
       <span className="block text-label font-medium">
         {card.options?.length ? t(($) => $.decision.answer_note) : t(($) => $.decision.answer_text)}
@@ -144,7 +146,7 @@ function DecisionAnswerForm({
             ariaLabel={card.options?.length ? t(($) => $.decision.answer_note) : t(($) => $.decision.answer_text)}
             ariaDescribedBy={`${textId}-hint`}
             onUpdate={setText}
-            onSubmit={send}
+            onSubmit={() => send()}
             onUploadFile={(file) => uploadWithToast(file, { issueId: card.issue_id })}
             onUploadingChange={uploadGate.onUploadingChange}
             debounceMs={0}
@@ -320,11 +322,11 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
   // Remounting the form empties the editor after a send: the editor takes its draft once at mount.
   const [formKey, setFormKey] = useState(0);
   const answer = useAnswerDecisionRequest(card.issue_id);
-  const sendAnswer = (text: string) => {
-    // Keep what is sent as the draft, so a refused send shows back the same text.
-    setDraft((current) => ({ ...current, text }));
+  const sendAnswer = (text: string, option = "") => {
+    // Keep what is sent as the draft, so a refused send shows back the same choice and text.
+    setDraft({ option, text });
     answer.mutate(
-      { requestId: card.id, option: draft.option || undefined, text: text.trim() || undefined, passkey: needsPasskey },
+      { requestId: card.id, option: option || undefined, text: text.trim() || undefined, passkey: needsPasskey },
       {
         onSuccess: () => {
           setNeedsPasskey(false);
