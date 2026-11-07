@@ -345,7 +345,7 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 				missingSnapshot = missingSnapshot || head == ""
 				if head != "" && slices.Contains([]string{"SUCCESS", "FAILURE", "ERROR"}, checks) {
 					keys = append(keys, fmt.Sprintf("%d@%s:%s", number, head, checks))
-					prs = append(prs, map[string]any{"number": number, "head_sha": head, "checks": strings.ToLower(checks)})
+					prs = append(prs, map[string]any{"number": number, "head_sha": head, "checks": strings.ToLower(checks), "head_current": head == currentHead})
 					prRepos = append(prRepos, [2]string{repoOwner, repoName})
 				}
 			case "conflicts":
@@ -422,7 +422,7 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 				}
 				if head != "" && checks != "" {
 					keys = append(keys, fmt.Sprintf("vcs:%s@%s:%s", util.UUIDToString(id), head, checks))
-					prs = append(prs, map[string]any{"number": number, "provider": provider, "head_sha": head, "checks": strings.ToLower(checks)})
+					prs = append(prs, map[string]any{"number": number, "provider": provider, "head_sha": head, "checks": strings.ToLower(checks), "head_current": true})
 				}
 			}
 		}
@@ -613,9 +613,10 @@ func conditionNewlyMet(previous, current string) bool {
 }
 
 // conditionFiresOnChange reports whether facts already true at registration
-// are ignored. Finished checks usually belong to the head the agent just
-// replaced, so a checks condition waits for a newer result; states such as a
-// status value, finished sub-issues or a merged PR fire as soon as they hold.
+// can be ignored. Finished checks may belong to the head the agent just
+// replaced, so baselineCondition ignores those, but not checks finished on the
+// PR's current head; states such as a status value, finished sub-issues or a
+// merged PR fire as soon as they hold.
 func conditionFiresOnChange(raw []byte) bool {
 	var c WakeupCondition
 	_ = json.Unmarshal(raw, &c)
@@ -625,17 +626,35 @@ func conditionFiresOnChange(raw []byte) bool {
 // baselineCondition records which facts already satisfy a new or re-enabled
 // rule, so it wakes the agent when they change rather than immediately.
 func (s *IssueWakeupService) baselineCondition(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.IssueWakeup, now time.Time) error {
-	met, fingerprint, _, err := s.evaluateCondition(ctx, tx, q, w)
+	met, fingerprint, observed, err := s.evaluateCondition(ctx, tx, q, w)
 	if err != nil && !conditionDiagnostic(err) {
 		return err
 	}
 	if err := saveConditionDiagnostic(ctx, q, w, err); err != nil {
 		return err
 	}
-	if !met {
+	if !met || checksFinishedOnCurrentHead(w.Condition, observed) {
 		fingerprint = ""
 	}
 	return q.SetWakeupConditionState(ctx, db.SetWakeupConditionStateParams{ID: w.ID, ConditionState: fingerprint, NextFireAt: pgtype.Timestamptz{Time: now.Add(conditionPollInterval), Valid: true}})
+}
+
+// checksFinishedOnCurrentHead reports whether a checks_finished rule is already
+// satisfied only by checks on each PR's current head. That result is news to
+// the rule, so registration leaves it unbaselined and the next poll fires.
+func checksFinishedOnCurrentHead(raw []byte, observed map[string]any) bool {
+	var c WakeupCondition
+	_ = json.Unmarshal(raw, &c)
+	prs, _ := observed["pull_requests"].([]map[string]any)
+	if c.Type != "pull_request" || c.Event != "checks_finished" || len(prs) == 0 {
+		return false
+	}
+	for _, pr := range prs {
+		if current, _ := pr["head_current"].(bool); !current {
+			return false
+		}
+	}
+	return true
 }
 
 // A completed evaluation replaces the previous pass's error with its current
