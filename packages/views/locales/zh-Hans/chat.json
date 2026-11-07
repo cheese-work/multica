@@ -304,11 +304,14 @@
     "archive_failed": "无法归档此会话",
     "unarchive_failed": "无法取消归档此会话",
     "pin_failed": "无法更新置顶状态",
+    "unseen": "标记为未读",
+    "unseen_failed": "无法将此对话标记为未读",
     "undo": "撤销"
   },
   "header": {
     "context_meter": "{{window}} 中的 {{pct}}%",
     "context_meter_warning": "下一次回复后将压缩",
+    "context_meter_threshold": "达到 {{threshold}} 时压缩(当前 {{now}})",
     "compact_now": "立即压缩",
     "more_actions": "更多操作",
     "view_profile": "查看智能体资料",
@@ -319,6 +322,7 @@
     "statistics": "统计",
     "pin": "置顶会话",
     "unpin": "取消置顶会话",
+    "unseen": "标记为未读",
     "preset": { "label": "预设", "inherit": "继承", "base": "基础" }
   },
   "scheduled": {
@@ -328,7 +332,8 @@
     "cancel": "取消",
     "cancel_label": "取消 {{time}} 的计划跟进",
     "cancel_failed": "无法取消该跟进",
-    "load_failed": "无法加载已计划的跟进。重试"
+    "load_failed": "无法加载已计划的跟进。重试",
+    "watching_until": "监听事项 · 截止 {{time}}"
   },
   "annotations": {
     "one_request": "请每次只发送针对一个决策请求的评论。",
@@ -405,6 +410,10 @@
     "answer_text": "输入回答",
     "answer_note": "添加备注（可选）",
     "answer_chose": "已选择：{{option}}",
+    "option_recommended": "推荐",
+    "option_pros": "优点",
+    "option_cons": "缺点",
+    "option_cost": "成本或时间",
     "answer_send": "发送",
     "answer_error": "发送失败，请重试。",
     "answer_helper": "发送会将你的回答发布到 {{issue}}。给 DM 智能体的问题请写在下方消息框。",
@@ -414,6 +423,13 @@
     "answer_offline": "你已离线。回答已保留，重新连接后即可发送。",
     "answer_conflict": "此卡片已无法接收你的回答，例如已被先回答。你的草稿未被发布。你的草稿：",
     "answer_discard": "丢弃草稿",
+    "answer_send_passkey": "使用通行密钥发送",
+    "answer_open_browser": "在浏览器中打开",
+    "answer_passkey_needed": "此回答需要你的通行密钥。再次发送以确认。",
+    "answer_passkey_desktop": "此回答需要通行密钥，只能在浏览器中使用。请在浏览器中打开并回答。",
+    "answer_stale": "打开后此请求已变更。请查看后再发送。",
+    "answer_no_passkey": "回答此请求前，请先在设置中添加通行密钥。",
+    "answer_passkey_failed": "通行密钥步骤未完成。回答已保留，再次发送即可重试。",
     "source_comment": "来源评论",
     "quoted_in": "已引用到 {{issue}}",
     "receipt_recorded": "已记录到 {{issue}}",

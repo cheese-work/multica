@@ -40,7 +40,7 @@ const MAX_ITEMS = 20;
 export type BuiltinCommandKey = "note" | "preset" | ChatCommandId;
 
 /** DM commands a surface switches on one by one; compact is gated separately. */
-export type DmClientCommand = "statistic" | "archive" | "pin" | "unarchive";
+export type DmClientCommand = "statistic" | "archive" | "pin" | "unarchive" | "unseen";
 const DM_CLIENT_COMMANDS: readonly DmClientCommand[] = CHAT_COMMANDS
   .filter((cmd): cmd is typeof cmd & { id: DmClientCommand } => cmd.args === "none")
   .map((cmd) => cmd.id);
@@ -158,9 +158,11 @@ export const SlashCommandList = forwardRef<
                 ? t(($) => $.slash_command.commands.archive)
                 : item.descriptionKey === "pin"
                   ? t(($) => $.slash_command.commands.pin)
-                  : item.descriptionKey === "unarchive"
-                    ? t(($) => $.slash_command.commands.unarchive)
-                    : item.description;
+                  : item.descriptionKey === "unseen"
+                    ? t(($) => $.slash_command.commands.unseen)
+                    : item.descriptionKey === "unarchive"
+                      ? t(($) => $.slash_command.commands.unarchive)
+                      : item.description;
 
   return (
     // Height budget clamps to min(design max, viewport-aware

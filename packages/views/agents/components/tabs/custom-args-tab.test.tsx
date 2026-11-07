@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi, afterEach } from "vitest";
+import { resetAllRegisteredDrafts } from "@multica/core/drafts";
+import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Agent, RuntimeDevice } from "@multica/core/types";
 import { I18nProvider } from "@multica/core/i18n/react";
@@ -65,6 +66,12 @@ function renderTab(
   return { ...result, onSave };
 }
 
+// Unmount first: a mounted draft hook would write its draft back after the reset.
+afterEach(() => {
+  cleanup();
+  resetAllRegisteredDrafts();
+});
+
 describe("CustomArgsTab", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -120,5 +127,33 @@ describe("CustomArgsTab", () => {
     await user.click(screen.getByRole("button", { name: /^save$/i }));
 
     expect(onSave).toHaveBeenCalledWith({ custom_args: ["value with spaces"] });
+  });
+
+  it("keeps unsaved arguments across unmount and remount, clears them after save", async () => {
+    const user = userEvent.setup();
+    const first = renderTab({ id: "agent-args", custom_args: [] });
+    await user.click(screen.getByRole("button", { name: /add argument/i }));
+    await user.type(screen.getByRole("textbox", { name: /new argument/i }), "--draft");
+    await user.click(screen.getByRole("button", { name: /^add$/i }));
+    first.unmount();
+
+    const second = renderTab({ id: "agent-args", custom_args: [] });
+    expect(screen.getByText("--draft")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+    second.unmount();
+    renderTab({ id: "agent-args", custom_args: [] });
+    expect(screen.queryByText("--draft")).not.toBeInTheDocument();
+  });
+
+  it("keeps the open editor and its text across unmount and remount", async () => {
+    const user = userEvent.setup();
+    const first = renderTab({ id: "agent-editor", custom_args: [] });
+    await user.click(screen.getByRole("button", { name: /add argument/i }));
+    await user.type(screen.getByRole("textbox", { name: /new argument/i }), "--half-typed");
+    first.unmount();
+
+    renderTab({ id: "agent-editor", custom_args: [] });
+    expect(screen.getByRole("textbox", { name: /new argument/i })).toHaveValue("--half-typed");
   });
 });

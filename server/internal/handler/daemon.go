@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"slices"
 	"sort"
@@ -3084,6 +3085,18 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		// resp was snapshotted before this write; report what is now stored.
 		resp.ClaimedModel = &preset.Settings.Model
 	}
+	// CHE-4331: compaction env for Claude Code, derived from auto_compact at
+	// claim time; never stored in agent env, and the agent's own env wins.
+	if runtime.Provider == "claude" {
+		if ws, err := h.Queries.GetWorkspace(r.Context(), parseUUID(runtimeWorkspaceID)); err != nil {
+			slog.Warn("daemon claim: load workspace for auto-compact env failed", "task_id", uuidToString(task.ID), "error", err)
+		} else if extra := service.ClaudeCompactEnv(runtime.Provider, preset.Settings.Model, ws.Settings, agent.RuntimeConfig, customEnv); len(extra) > 0 {
+			if customEnv == nil {
+				customEnv = map[string]string{}
+			}
+			maps.Copy(customEnv, extra)
+		}
+	}
 	resp.Agent = &TaskAgentData{
 		ID:                    uuidToString(agent.ID),
 		Name:                  agent.Name,
@@ -3856,6 +3869,24 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				}
 			}
 
+			// Both resume paths above end here. The resumed transcript holds
+			// whatever tainted input earlier turns read (a fired issue watch
+			// stamps only its own turn), so the claimed task takes that taint
+			// before the profile is finalized. A resumed fork or continuation
+			// also holds copied history, so the same helper as the seeds applies
+			// the stored chat taint and the ancestry check. If it cannot be
+			// recorded, keep the task queued rather than run the resume.
+			if resp.PriorSessionID != "" {
+				if err := h.recordChatTaint(r.Context(), task, resp.PriorSessionID); err != nil {
+					slog.Error("chat claim: record resume taint failed; preserving task for redelivery",
+						"task_id", uuidToString(task.ID), "chat_session_id", uuidToString(cs.ID), "error", err)
+					return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+						outcome: "error_chat_seed_taint", status: http.StatusInternalServerError, message: "failed to record seed taint",
+					}
+				}
+				applyRunProfile()
+			}
+
 			// MUL-5305: continuity-gap disclosure is independent of whether
 			// either pointer field needed fallback, so this query stays
 			// unconditional for non-force-fresh chat claims.
@@ -3992,6 +4023,24 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			resp.ChatDecisionContext = decisions
 		}
 
+		// A fresh session seeded from other DM content (a compaction summary, a
+		// fork's copied transcript, a continuation summary) lost the resume
+		// pointer that carried the source's taint. Take the taint before the
+		// profile is finalized; if it cannot be recorded, keep the task queued
+		// rather than seed it.
+		seedWithTaint := func(block string) *claimBuildFailure {
+			if err := h.recordChatTaint(r.Context(), task, ""); err != nil {
+				slog.Error("chat claim: record seed taint failed; preserving task for redelivery",
+					"task_id", uuidToString(task.ID), "chat_session_id", uuidToString(cs.ID), "error", err)
+				return &claimBuildFailure{
+					outcome: "error_chat_seed_taint", status: http.StatusInternalServerError, message: "failed to record seed taint",
+				}
+			}
+			applyRunProfile()
+			resp.ChatMessage = block + "\n\nCurrent message:\n\n" + resp.ChatMessage
+			return nil
+		}
+
 		if cs.CompactionEpoch > 0 && resp.PriorSessionID == "" {
 			// An in-place /compact cleared the resume session: seed this turn
 			// with the summary and what was said since. It outranks the fork and
@@ -4005,7 +4054,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				}
 			}
 			if block != "" {
-				resp.ChatMessage = block + "\n\nCurrent message:\n\n" + resp.ChatMessage
+				if failure := seedWithTaint(block); failure != nil {
+					return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, failure
+				}
 			}
 		} else if cs.ForkedFromSessionID.Valid && resp.PriorSessionID == "" {
 			block, inlined, err := h.forkContextBlock(r.Context(), cs, unanswered, hasLocalDirectory(resp.ProjectResources))
@@ -4018,7 +4069,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}
 			slog.Info("chat claim: fork context block added",
 				"task_id", uuidToString(task.ID), "chat_session_id", uuidToString(cs.ID), "inlined_messages", inlined)
-			resp.ChatMessage = block + "\n\nCurrent message:\n\n" + resp.ChatMessage
+			if failure := seedWithTaint(block); failure != nil {
+				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, failure
+			}
 		} else if cs.ContinuedFromSessionID.Valid && resp.PriorSessionID == "" {
 			summary, err := h.Queries.GetChatContinuationSummary(r.Context(), cs.ID)
 			if err != nil {
@@ -4026,7 +4079,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 					outcome: "error_chat_continuation_summary", status: http.StatusInternalServerError, message: "failed to load continuation summary",
 				}
 			}
-			resp.ChatMessage = "Continuation context from the previous DM:\n\n" + summary.Content + "\n\nCurrent message:\n\n" + resp.ChatMessage
+			if failure := seedWithTaint("Continuation context from the previous DM:\n\n" + summary.Content); failure != nil {
+				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, failure
+			}
 		}
 		if strings.TrimSpace(resp.ThreadName) == "" && resp.ChatMessage != "" {
 			resp.ThreadName = resp.ChatMessage
@@ -7386,6 +7441,22 @@ func (h *Handler) inheritSessionTaint(ctx context.Context, task *db.AgentTaskQue
 	}
 	task.TaintIds = taint
 	return true
+}
+
+// recordChatTaint is the single path by which a DM task takes the taint of chat
+// content it holds (CHE-3702): a resumed session (sessionID set), a fresh
+// session seeded from a compaction summary, fork or continuation, and a read of
+// the chat transcript (sessionID empty). The caller fails closed on an error.
+func (h *Handler) recordChatTaint(ctx context.Context, task *db.AgentTaskQueue, sessionID string) error {
+	taint, err := h.Queries.InheritChatTaint(ctx, db.InheritChatTaintParams{
+		ID:        task.ID,
+		SessionID: pgtype.Text{String: sessionID, Valid: sessionID != ""},
+	})
+	if err != nil {
+		return err
+	}
+	task.TaintIds = taint
+	return nil
 }
 
 // MarkTaskExternalRead records that the run contacted a host other than the
