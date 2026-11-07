@@ -103,6 +103,7 @@ import type {
 } from "../types";
 import type { CloudRuntimeNode } from "../runtimes/cloud-runtime";
 import type { CreateFeedbackResponse } from "../feedback/types";
+import { SHA256_HEX, isPreviewedActionType } from "../issues/decision-action-preview";
 
 export const PluginConfigFieldSchema = z.lazy(() => z.object({
   key: z.string(),
@@ -1046,6 +1047,21 @@ const DecisionCardSchema = z.lazy(() => z.object({
   request_message_id: z.string().optional().catch(undefined),
 }).loose());
 
+// A malformed preview degrades to none (the card says details are unavailable and
+// offers no approval); an action without an id or digest cannot be approved, so it is dropped.
+// The preview also needs a SHA-256 hex digest and an action type this client
+// knows; otherwise it is dropped, so a newer or tampered response cannot enable approval.
+const DecisionActionSchema = z.lazy(() => z.object({
+  id: z.string(),
+  action_type: z.string().catch(""),
+  payload_sha256: z.string(),
+  preview: z.object({
+    fields: z.array(z.object({ label: z.string(), current: z.string(), proposed: z.string() }).loose()).min(1),
+    sha256: z.string().regex(SHA256_HEX),
+  }).loose().optional().catch(undefined),
+}).loose().transform((action) =>
+  action.preview && !isPreviewedActionType(action.action_type) ? { ...action, preview: undefined } : action));
+
 const DecisionRequestCardSchema = z.lazy(() => z.object({
   id: z.string(),
   issue_id: z.string(),
@@ -1074,6 +1090,7 @@ const DecisionRequestCardSchema = z.lazy(() => z.object({
     option_label: z.string().optional().catch(undefined),
     answered_at: z.string().default(""),
   }).loose().optional().catch(undefined),
+  action: DecisionActionSchema.optional().catch(undefined),
 }).loose());
 
 export const DecisionArtifactListSchema = z.lazy(() => z.object({

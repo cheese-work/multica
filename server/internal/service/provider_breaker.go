@@ -104,7 +104,10 @@ func providerBreakerVerdict(ctx context.Context, lookup RuntimeLookup, agent db.
 		return AgentVerdict{}, nil
 	}
 	return AgentVerdict{
-		Availability: AgentBlocked,
+		// Waitable, not blocked: the claim gate keeps queued work until the probe
+		// is due and then lets one task through as the canary, so a trigger that
+		// queues now retries itself (CHE-4408). A refusal would leave no retry.
+		Availability: AgentWaitable,
 		Reason:       dispatch.ReasonProviderBreaker,
 		Detail:       providerBreakerNotice(provider, row.OpenedAt.Time, row.NextProbeAt.Time),
 	}, nil
@@ -114,7 +117,7 @@ func providerBreakerVerdict(ctx context.Context, lookup RuntimeLookup, agent db.
 func providerBreakerNotice(provider string, openedAt, nextProbeAt time.Time) string {
 	ict := time.FixedZone("ICT", 7*60*60)
 	const layout = "2006-01-02 15:04 MST"
-	return fmt.Sprintf("This agent's provider (%s) is temporarily unavailable: its circuit breaker opened at %s and the next probe is at %s. Trigger the agent again after that, or ask a workspace admin to reset the breaker.",
+	return fmt.Sprintf("This agent's provider (%s) is temporarily unavailable: its circuit breaker opened at %s and the next probe is at %s. Work queued for it starts after that probe, or a workspace admin can reset the breaker.",
 		provider, openedAt.In(ict).Format(layout), nextProbeAt.In(ict).Format(layout))
 }
 

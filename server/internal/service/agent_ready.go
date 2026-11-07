@@ -201,9 +201,6 @@ func AgentReadiness(ctx context.Context, lookup RuntimeLookup, agent db.Agent) (
 	if err != nil {
 		return AgentVerdict{}, err
 	}
-	if breakerVerdict.Blocked() {
-		return breakerVerdict, nil
-	}
 	if !agent.RuntimeID.Valid {
 		return AgentVerdict{
 			Availability: AgentBlocked,
@@ -215,7 +212,12 @@ func AgentReadiness(ctx context.Context, lookup RuntimeLookup, agent db.Agent) (
 	if err != nil {
 		return AgentVerdict{}, err
 	}
-	return runtimeVerdict(rt, agent), nil
+	verdict = runtimeVerdict(rt, agent)
+	// A broken runtime outranks the breaker wait: waiting cannot fix it.
+	if !verdict.Blocked() && !breakerVerdict.Ready() {
+		return breakerVerdict, nil
+	}
+	return verdict, nil
 }
 
 // providerHoldVerdict is the provider-hold half of AgentReadiness, split out
