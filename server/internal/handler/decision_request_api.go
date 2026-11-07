@@ -33,6 +33,8 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		Action          *decisionActionWire `json:"action"`
 		Kind            string              `json:"kind"`
 		ExpiresIn       string              `json:"expires_in"`
+		// CoversRequestIDs names open cards this batch card answers for (CHE-4453).
+		CoversRequestIDs []string `json:"covers_request_ids"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8*maxCommentContentBytes)).Decode(&input); err != nil {
 		writeError(writer, http.StatusBadRequest, "invalid decision request")
@@ -108,6 +110,10 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 			return
 		}
 	}
+	covers, ok := parseBatchCovers(writer, input.CoversRequestIDs, input.Action != nil)
+	if !ok {
+		return
+	}
 	var draft *decisionActionDraft
 	if input.Action != nil {
 		if draft, err = draftDecisionAction(input.Action); err != nil {
@@ -121,7 +127,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusInternalServerError, "failed to encode ask")
 		return
 	}
-	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, Parsed: &parsed, Slug: workspace.Slug, Kind: kind, ExpiresInSeconds: expiresInSeconds})
+	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, Parsed: &parsed, Slug: workspace.Slug, Kind: kind, ExpiresInSeconds: expiresInSeconds, Covers: covers})
 	if err != nil {
 		writeDecisionError(writer, err, "decision request")
 		return

@@ -318,6 +318,17 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
     setRefused(false);
   };
 
+  if (card.answered_by_batch_request_id && !inIssue) {
+    return (
+      <p data-testid="decision-request-folded" className="flex min-w-0 flex-wrap items-center gap-x-2 rounded-xl border border-surface-border bg-surface px-3 py-2 text-label text-muted-foreground">
+        <span>{t(($) => $.decision.answered_by_batch, { issue: card.issue_identifier || card.issue_id })}</span>
+        <AppLink href={issueHref} className="font-medium hover:underline focus-visible:outline-2 focus-visible:outline-ring">
+          {card.issue_title}
+        </AppLink>
+      </p>
+    );
+  }
+
   return (
     <section
       aria-label={t(($) => $.decision.request_label, { state })}
@@ -354,6 +365,11 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
         >
           {card.issue_identifier || card.issue_id}
         </AppLink>
+        {card.covers_request_ids && card.covers_request_ids.length > 0 && (
+          <span className="text-muted-foreground" data-testid="decision-request-covers">
+            {t(($) => $.decision.covers_batch, { count: card.covers_request_ids.length })}
+          </span>
+        )}
         {card.issue_title && (
           <span className="min-w-0 break-words text-muted-foreground" data-testid="decision-request-source-title">
             {card.issue_title}

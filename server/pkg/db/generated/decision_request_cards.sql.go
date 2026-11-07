@@ -64,6 +64,7 @@ SELECT request.id AS request_id, message.id AS message_id, request.issue_id,
     (request.ask_json IS NOT NULL)::boolean AS has_ask_json, COALESCE(request.ask_json->>'recommendation', '')::text AS recommendation,
     COALESCE(request.withdrawn_at, request.cancel_notice_posted_at) AS withdrawn_at,
     record.issue_comment_id AS record_comment_id,
+    request.covers_request_ids, request.answered_by_batch_request_id,
     last_answer.id AS answer_id, last_answer.created_at AS answer_created_at, last_answer.woken_at AS answer_woken_at,
     last_answer.wake_outcome AS answer_wake_outcome, last_answer.disclaimed_at AS answer_disclaimed_at,
     last_answer.chosen_option_index AS answer_chosen_option_index,
@@ -107,32 +108,34 @@ type ListDecisionRequestCardsParams struct {
 }
 
 type ListDecisionRequestCardsRow struct {
-	RequestID               pgtype.UUID        `json:"request_id"`
-	MessageID               pgtype.UUID        `json:"message_id"`
-	IssueID                 pgtype.UUID        `json:"issue_id"`
-	IssuePrefix             string             `json:"issue_prefix"`
-	IssueNumber             int32              `json:"issue_number"`
-	IssueTitle              string             `json:"issue_title"`
-	SourceCommentID         pgtype.UUID        `json:"source_comment_id"`
-	Ask                     string             `json:"ask"`
-	Status                  string             `json:"status"`
-	CreatedAt               pgtype.Timestamptz `json:"created_at"`
-	WithdrawReason          string             `json:"withdraw_reason"`
-	CancelReason            pgtype.Text        `json:"cancel_reason"`
-	Options                 []byte             `json:"options"`
-	HasAskJson              bool               `json:"has_ask_json"`
-	Recommendation          string             `json:"recommendation"`
-	WithdrawnAt             pgtype.Timestamptz `json:"withdrawn_at"`
-	RecordCommentID         pgtype.UUID        `json:"record_comment_id"`
-	AnswerID                pgtype.UUID        `json:"answer_id"`
-	AnswerCreatedAt         pgtype.Timestamptz `json:"answer_created_at"`
-	AnswerWokenAt           pgtype.Timestamptz `json:"answer_woken_at"`
-	AnswerWakeOutcome       pgtype.Text        `json:"answer_wake_outcome"`
-	AnswerDisclaimedAt      pgtype.Timestamptz `json:"answer_disclaimed_at"`
-	AnswerChosenOptionIndex pgtype.Int4        `json:"answer_chosen_option_index"`
-	AskingAgentName         string             `json:"asking_agent_name"`
-	PickupTaskID            pgtype.UUID        `json:"pickup_task_id"`
-	PickupAgentName         string             `json:"pickup_agent_name"`
+	RequestID                pgtype.UUID        `json:"request_id"`
+	MessageID                pgtype.UUID        `json:"message_id"`
+	IssueID                  pgtype.UUID        `json:"issue_id"`
+	IssuePrefix              string             `json:"issue_prefix"`
+	IssueNumber              int32              `json:"issue_number"`
+	IssueTitle               string             `json:"issue_title"`
+	SourceCommentID          pgtype.UUID        `json:"source_comment_id"`
+	Ask                      string             `json:"ask"`
+	Status                   string             `json:"status"`
+	CreatedAt                pgtype.Timestamptz `json:"created_at"`
+	WithdrawReason           string             `json:"withdraw_reason"`
+	CancelReason             pgtype.Text        `json:"cancel_reason"`
+	Options                  []byte             `json:"options"`
+	HasAskJson               bool               `json:"has_ask_json"`
+	Recommendation           string             `json:"recommendation"`
+	WithdrawnAt              pgtype.Timestamptz `json:"withdrawn_at"`
+	RecordCommentID          pgtype.UUID        `json:"record_comment_id"`
+	CoversRequestIds         []pgtype.UUID      `json:"covers_request_ids"`
+	AnsweredByBatchRequestID pgtype.UUID        `json:"answered_by_batch_request_id"`
+	AnswerID                 pgtype.UUID        `json:"answer_id"`
+	AnswerCreatedAt          pgtype.Timestamptz `json:"answer_created_at"`
+	AnswerWokenAt            pgtype.Timestamptz `json:"answer_woken_at"`
+	AnswerWakeOutcome        pgtype.Text        `json:"answer_wake_outcome"`
+	AnswerDisclaimedAt       pgtype.Timestamptz `json:"answer_disclaimed_at"`
+	AnswerChosenOptionIndex  pgtype.Int4        `json:"answer_chosen_option_index"`
+	AskingAgentName          string             `json:"asking_agent_name"`
+	PickupTaskID             pgtype.UUID        `json:"pickup_task_id"`
+	PickupAgentName          string             `json:"pickup_agent_name"`
 }
 
 // The run that resumed the issue: one that started and carries the record, else the first started run on the issue after it.
@@ -163,6 +166,8 @@ func (q *Queries) ListDecisionRequestCards(ctx context.Context, arg ListDecision
 			&i.Recommendation,
 			&i.WithdrawnAt,
 			&i.RecordCommentID,
+			&i.CoversRequestIds,
+			&i.AnsweredByBatchRequestID,
 			&i.AnswerID,
 			&i.AnswerCreatedAt,
 			&i.AnswerWokenAt,

@@ -48,6 +48,10 @@ export interface DecisionRequestCard {
   answer?: DecisionRequestAnswer;
   /** The pending executable action behind an open request, if any. */
   action?: DecisionRequestAction;
+  /** A batch card: the per-issue cards its answer also closes. */
+  covers_request_ids?: string[];
+  /** Set when a batch card's answer closed this card. */
+  answered_by_batch_request_id?: string | null;
 }
 
 /** What an executable action would change, rendered by the server from the values its executor checks. */

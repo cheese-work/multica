@@ -1091,6 +1091,8 @@ const DecisionRequestCardSchema = z.lazy(() => z.object({
     answered_at: z.string().default(""),
   }).loose().optional().catch(undefined),
   action: DecisionActionSchema.optional().catch(undefined),
+  covers_request_ids: z.array(z.string()).optional().catch(undefined),
+  answered_by_batch_request_id: z.string().nullish().catch(undefined),
 }).loose());
 
 export const DecisionArtifactListSchema = z.lazy(() => z.object({

@@ -64,4 +64,15 @@ describe("DecisionRequestCard compact issue chips", () => {
     expect(screen.getByTestId("decision-request-source-issue")).toHaveTextContent("CHE-2204");
     expect(screen.getByTestId("decision-request-source-title")).toHaveTextContent("Decision cards stay readable");
   });
+
+  it("folds a card a batch answer closed into one row", () => {
+    renderCard({ state: "answered", answered_by_batch_request_id: "batch-1", issue_title: "Decision cards stay readable" } as never);
+    expect(screen.getByTestId("decision-request-folded")).toHaveTextContent("CHE-2204: answered by the batch card");
+    expect(screen.queryByTestId("decision-request-card")).toBeNull();
+  });
+
+  it("tells a batch card how many cards its answer closes", () => {
+    renderCard({ covers_request_ids: ["a", "b", "c"] } as never);
+    expect(screen.getByTestId("decision-request-covers")).toHaveTextContent("Closed with this answer: 3");
+  });
 });

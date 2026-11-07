@@ -522,3 +522,24 @@ WHERE member.workspace_id = sqlc.arg('workspace_id') AND member.user_id = sqlc.a
 SELECT * FROM decision_request
 WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id') AND human_user_id = sqlc.arg('human_user_id')
   AND request_fingerprint = sqlc.arg('fingerprint') AND status = 'open';
+
+-- name: LockBatchCoveredRequests :many
+-- The open per-issue cards a batch card covers, locked in id order. Only a
+-- reversible or product_direction card of the batch's own human is eligible:
+-- a gated class needs its own passkey answer, an action needs its own approval.
+SELECT * FROM decision_request
+WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = ANY(sqlc.arg('ids')::uuid[])
+  AND human_user_id = sqlc.arg('human_user_id') AND status = 'open' AND origin = 'asked' AND kind = 'decision'
+  AND escalation_class IN ('reversible', 'product_direction')
+ORDER BY id
+FOR UPDATE;
+
+-- name: MarkDecisionRequestAnsweredByBatch :one
+UPDATE decision_request SET status = 'answered', answered_by_batch_request_id = sqlc.arg('batch_request_id')
+WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND status = 'open'
+RETURNING *;
+
+-- name: SetDecisionRequestCovers :one
+UPDATE decision_request SET covers_request_ids = sqlc.arg('covers_request_ids')::uuid[]
+WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND status = 'open'
+RETURNING *;

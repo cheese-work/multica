@@ -90,6 +90,7 @@ func (handler *Handler) AnswerDecisionRequest(writer http.ResponseWriter, reques
 			ChatSessionID: uuidToString(message.ChatSessionID), MessageID: uuidToString(message.ID), Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt),
 		})
 	}
+	handler.publishCoveredCards(request.Context(), workspaceUUID, workspaceID, actorID, result.Covered)
 	writeJSON(writer, http.StatusCreated, response)
 }
 
@@ -231,11 +232,15 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if _, err := queries.MarkInboxReadByDecisionRequest(ctx, db.MarkInboxReadByDecisionRequestParams{WorkspaceID: workspaceID, DecisionRequestID: uuidToString(decision.ID)}); err != nil {
 		return empty, err
 	}
+	covered, err := handler.answerCoveredCards(ctx, queries, workspace, decision, input, content)
+	if err != nil {
+		return empty, err
+	}
 	if err := transaction.Commit(ctx); err != nil {
 		return empty, err
 	}
 	handler.DecisionWorker.Notify()
-	return decisionRecordResult{Request: decision, Answer: answer, Comment: comment.Comment(), Message: message, AnswerMessage: answerMessage, ClearedComments: cleared}, nil
+	return decisionRecordResult{Request: decision, Answer: answer, Comment: comment.Comment(), Message: message, AnswerMessage: answerMessage, ClearedComments: cleared, Covered: covered}, nil
 }
 
 // cardAnswerContent joins the chosen option label and the free text into the

@@ -409,6 +409,8 @@
   "decision": {
     "request_title": "Decision request",
     "asked_by": "from {{agent}}",
+    "answered_by_batch": "{{issue}}: answered by the batch card",
+    "covers_batch": "Closed with this answer: {{count}}",
     "request_label": "Decision request: {{state}}",
     "request_state": { "open": "Open", "answered": "Answered", "withdrawn": "Withdrawn", "recorded": "Recorded", "delivered": "Delivered", "picked_up": "Picked up", "not_picked_up": "Not picked up", "disclaimed": "Disclaimed" },
     "picked_up_by": "Picked up by {{agent}}",

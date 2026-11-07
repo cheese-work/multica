@@ -36,6 +36,10 @@ type DecisionRequestCard struct {
 	Answer *DecisionRequestAnswer `json:"answer,omitempty"`
 	// Action is the pending action an open request asks to approve, with the server's preview of it.
 	Action *DecisionRequestCardAction `json:"action,omitempty"`
+	// CoversRequestIDs are the per-issue cards a batch card answers for; the DM folds them under it.
+	CoversRequestIDs []string `json:"covers_request_ids,omitempty"`
+	// AnsweredByBatchRequestID is the batch card whose answer closed this card.
+	AnsweredByBatchRequestID *string `json:"answered_by_batch_request_id,omitempty"`
 }
 
 // DecisionRequestAnswer is the receipt half of a request card.
@@ -111,6 +115,13 @@ func (handler *Handler) decisionRequestsForMessages(ctx context.Context, workspa
 		if row.SourceCommentID.Valid {
 			sourceID := uuidToString(row.SourceCommentID)
 			card.SourceCommentID = &sourceID
+		}
+		for _, covered := range row.CoversRequestIds {
+			card.CoversRequestIDs = append(card.CoversRequestIDs, uuidToString(covered))
+		}
+		if row.AnsweredByBatchRequestID.Valid {
+			batchID := uuidToString(row.AnsweredByBatchRequestID)
+			card.AnsweredByBatchRequestID = &batchID
 		}
 		if row.RecordCommentID.Valid {
 			recordID := uuidToString(row.RecordCommentID)
