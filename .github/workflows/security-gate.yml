@@ -15,8 +15,10 @@
 #       gh workflow run security-gate.yml -R cheese-work/multica --ref main -f pr=<number>
 #     The dispatched run re-reads every verdict comment, posts the status, then refreshes the mechanical-tier receipt.
 #   - `merge_group`: see below. It re-reads every verdict, so a new FAIL is caught when the PR enters the queue.
-# A newly created comment alone does not flip the status. Until the poster dispatches, a new FAIL verdict takes
-# effect on the next PR event or at queue entry.
+#   - security-gate-sweep.yml: every 30 minutes it re-runs this script for each open PR whose status is `success`, so a new
+#     FAIL verdict revokes the PR status and any queue head carrying it within 30 minutes, with no dispatch needed.
+# A newly created comment alone does not flip the status. A new FAIL verdict takes effect at the next sweep, PR event,
+# dispatch or queue entry, whichever is first.
 #
 # SECURITY — same boundary as mechanical-tier.yml: a call from `pull_request_target`, a dispatch and `issue_comment` all run this
 # definition from the default branch. The job checks out the DEFAULT branch (never the PR's base: a PR can target an

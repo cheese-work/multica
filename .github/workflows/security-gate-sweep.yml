@@ -1,0 +1,90 @@
+# Verdict sweep for security-gate (CHE-4385). A new `Security-Gate-Verdict:` comment no longer starts security-gate
+# (a created comment cost about 96 of 800 sampled runs), so a FAIL posted after a PR went green would revoke nothing.
+# This run, every 30 minutes (48 runs a day), re-reads the verdicts of every open PR whose `security-gate` status is
+# `success` and posts the result again through the same script: a status that is no longer `success` flips the PR and
+# every merge-queue head carrying it (`revoke_queue`, CHE-3240). A FAIL therefore lands within 30 minutes. It misses a
+# merge that happens inside that window; the verdict poster dispatching security-gate.yml removes the window.
+#
+# SECURITY: same boundary as security-gate.yml. It runs from the default branch, checks out the DEFAULT branch only
+# and fetches head objects for a diff read; nothing from a head is executed. No secret, no head checkout.
+
+name: security-gate-sweep
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+
+# A sweep that overlaps the previous one waits: cancelling it could drop a revoke that was half written.
+concurrency:
+  group: security-gate-sweep
+  cancel-in-progress: false
+
+jobs:
+  list-green:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      prs: ${{ steps.list.outputs.prs }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - name: List open pull requests whose security-gate status is success
+        id: list
+        run: |
+          set -euo pipefail
+          prs="[]"
+          while read -r number sha; do
+            state="$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha/status" \
+              --jq '[.statuses[] | select(.context == "security-gate")][0].state // ""')"
+            [ "$state" = success ] && prs="$(jq -c --argjson n "$number" '. + [$n]' <<<"$prs")"
+          done < <(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls?state=open&base=$DEFAULT_BRANCH&per_page=100" \
+            --jq '.[] | "\(.number) \(.head.sha)"')
+          echo "prs=$prs" >> "$GITHUB_OUTPUT"
+
+  sweep:
+    needs: list-green
+    if: needs.list-green.outputs.prs != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      PRS: ${{ needs.list-green.outputs.prs }}
+    steps:
+      - name: Discard a reused workspace
+        run: |
+          find "$GITHUB_WORKSPACE" -mindepth 1 -delete
+      - name: Check out the protected default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install pinned semgrep (cached on the runner)
+        run: |
+          venv="$RUNNER_TOOL_CACHE/semgrep-1.183.0"
+          [ -x "$venv/bin/semgrep" ] || { python3 -m venv "$venv" && "$venv/bin/pip" install --quiet semgrep==1.183.0; }
+          echo "SEMGREP_BIN=$venv/bin/semgrep" >> "$GITHUB_ENV"
+      - name: Re-read each green pull request's verdicts and post the status
+        run: |
+          set -uo pipefail
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          failed=""
+          for pr in $(jq -r '.[]' <<<"$PRS"); do
+            [[ "$pr" =~ ^[0-9]+$ ]] || { failed="$failed $pr"; continue; }
+            # One bad PR must not stop the rest: a later PR may carry the FAIL that has to be revoked.
+            git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+              fetch --no-tags origin "+refs/pull/${pr}/head:refs/remotes/pull/head" \
+              && python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$pr" \
+                --default-branch "$DEFAULT_BRANCH" --semgrep --run-url "$run_url" --post \
+              || failed="$failed $pr"
+          done
+          [ -z "$failed" ] || { echo "sweep failed for:$failed" >&2; exit 1; }

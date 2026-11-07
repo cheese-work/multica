@@ -59,6 +59,31 @@ class OneWorkflowPerPrPush(unittest.TestCase):
         self.assertNotIn("secrets.", text)
 
 
+class NewFailVerdictRevokesAGreenCommit(unittest.TestCase):
+    """A comment no longer starts security-gate, so a sweep re-reads the verdicts of open green PRs (Cheese, CHE-4385)."""
+
+    def test_sweep_runs_on_a_schedule_and_by_hand_only(self):
+        self.assertEqual(triggers(load("security-gate-sweep.yml")), {"schedule", "workflow_dispatch"})
+        crons = [c["cron"] for c in load("security-gate-sweep.yml")["on"]["schedule"]]
+        self.assertEqual(crons, ["*/30 * * * *"])  # 48 runs a day
+
+    def test_sweep_overlap_queues_instead_of_cancelling_a_revoke(self):
+        self.assertFalse(load("security-gate-sweep.yml")["concurrency"]["cancel-in-progress"])
+
+    def test_sweep_posts_through_the_gate_script_from_the_default_branch(self):
+        text = (WF / "security-gate-sweep.yml").read_text()
+        self.assertIn("scripts/security-gate/security_gate.py", text)
+        self.assertIn("--post", text)
+        self.assertIn("ref: ${{ github.event.repository.default_branch }}", text)
+        self.assertNotRegex(text, r"ref: \$\{\{ github\.event\.pull_request\.head")
+        self.assertNotIn("secrets.", text)
+
+    def test_sweep_skips_the_scan_when_no_open_pr_is_green(self):
+        jobs = load("security-gate-sweep.yml")["jobs"]
+        self.assertEqual(jobs["list-green"]["outputs"]["prs"], "${{ steps.list.outputs.prs }}")
+        self.assertIn("needs.list-green.outputs.prs != '[]'", jobs["sweep"]["if"])
+
+
 class NoCommentOrCascadeRuns(unittest.TestCase):
     def test_no_workflow_starts_on_a_new_comment(self):
         # security-gate keeps `edited`/`deleted` only, so a PASS is revoked without a dispatch; `created` is the cost.
