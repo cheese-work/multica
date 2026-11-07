@@ -26,7 +26,7 @@
       "updatedAt": "2026-11-07T06:25:43.109Z",
       "content_sha256": "50be5b8939928cb51c50059dba00baa4c589382c8614c15a83aea80fc4b15106",
       "selection_id": "01a1b4b3-c28c-761e-8bc1-98834f375436",
-      "ux_verdict_id": "PENDING"
+      "ux_verdict_id": "01a1b4c7-12ab-78c2-b188-639996083873"
     },
     {
       "screen": "Sidebar card + mode switch, Direction A (mini preview); frame also holds Direction B",
@@ -49,5 +49,5 @@
   "issue": "CHE-4313",
   "selection_id": "01a1b4b3-c28c-761e-8bc1-98834f375436",
   "ux_verdict_id": "01a1b42c-a6b8-7385-b8c7-c0af079c76d3",
-  "notes": "Decision request af1dc36e-fabc-49e3-8f5f-10e8691b3638 (answered): Gantt B, Swimlane A, Hierarchy A, Sidebar A. Each frame holds both of its directions; the picked one is named in README.md. Hierarchy frame mzbsoFU2MX moved to updatedAt 2026-11-07T06:25:43.109Z after the PASS (verdict 01a1b42c covers the 2026-11-06T13:58:58Z version); the new version has no UX verdict yet, so its ux_verdict_id is PENDING. This lock does not merge until a PASS on the exact version is recorded here."
+  "notes": "Decision request af1dc36e-fabc-49e3-8f5f-10e8691b3638 (answered): Gantt B, Swimlane A, Hierarchy A, Sidebar A. Each frame holds both of its directions; the picked one is named in README.md. Hierarchy frame mzbsoFU2MX moved to updatedAt 2026-11-07T06:25:43.109Z after verdict 01a1b42c (which covers the 2026-11-06T13:58:58Z version). x99-agy-gemini-ux re-scored the new version and found the HTML byte-identical to the scored one (PASS, verdict 01a1b4c7-12ab-78c2-b188-639996083873); that verdict and the lock-match review of PR 1163 are in the same comment. ux_verdict_id on the Hierarchy screen is that confirmation of the exact version listed here."
 }
