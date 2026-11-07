@@ -207,24 +207,37 @@ func (h *Handler) queuedRunCarriesWrite(ctx context.Context, issue db.Issue, age
 	return err == nil && carries
 }
 
-// taintQueuedRunCarryingWrite takes the issue row lock before it updates the
-// queued run: the update fires the run's taint trigger, which locks the issue,
-// and every other path that touches the runs of an issue takes the issue first.
-func (h *Handler) taintQueuedRunCarryingWrite(ctx context.Context, arg db.TaintQueuedRunCarryingIssueWriteParams) (int64, error) {
+// underIssueLock runs fn in one transaction that holds the issue row lock
+// first. A write to a run's taint-bearing columns fires the run's taint
+// trigger, which locks the issue; every other path that touches the runs of an
+// issue takes the issue first, so such a write takes it first too. A missing
+// issue (a chat run has none) is tolerated: the trigger does not lock then.
+func (h *Handler) underIssueLock(ctx context.Context, issueID pgtype.UUID, fn func(q *db.Queries) error) error {
+	if h.TxStarter == nil {
+		return errors.New("transaction starter is not configured")
+	}
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx))
 	qtx := h.Queries.WithTx(tx)
-	if _, err := qtx.LockIssueRunBudget(ctx, arg.IssueID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return 0, err
+	if _, err := qtx.LockIssueRunBudget(ctx, issueID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
 	}
-	n, err := qtx.TaintQueuedRunCarryingIssueWrite(ctx, arg)
-	if err != nil {
-		return 0, err
+	if err := fn(qtx); err != nil {
+		return err
 	}
-	return n, tx.Commit(ctx)
+	return tx.Commit(ctx)
+}
+
+// taintQueuedRunCarryingWrite updates the queued run under the issue lock.
+func (h *Handler) taintQueuedRunCarryingWrite(ctx context.Context, arg db.TaintQueuedRunCarryingIssueWriteParams) (n int64, err error) {
+	err = h.underIssueLock(ctx, arg.IssueID, func(q *db.Queries) error {
+		n, err = q.TaintQueuedRunCarryingIssueWrite(ctx, arg)
+		return err
+	})
+	return n, err
 }
 
 // memberActorUserID returns the acting member's user id as a pgtype.UUID when the

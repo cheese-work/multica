@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -259,5 +261,60 @@ func TestTaintUpdateAndAuthorizeShareOneLockOrder(t *testing.T) {
 	(<-authorized).Want(http.StatusForbidden)
 	if n := dbfx.Count(t, `SELECT count(*) FROM elevated_op WHERE task_id = $1`, f.taskID); n != 0 {
 		t.Fatalf("authorized operations = %d, want 0", n)
+	}
+}
+
+// A comment planned onto a claimed run adds the comment's taint to the run
+// row, and the run's taint trigger locks the issue. Authorization holds the
+// issue first and then asks for the run row. The registration has to take the
+// issue first as well, or each waits for what the other holds and Postgres
+// aborts one of them.
+func TestPlannedCommentRegistrationAndAuthorizeShareOneLockOrder(t *testing.T) {
+	ctx := context.Background()
+	f := claimElevated(t, "repo_write:1234")
+	var agentID string
+	dbfx.QueryRow(t, `SELECT agent_id FROM agent_task_queue WHERE id = $1`, f.taskID).Scan(&agentID)
+	commentID := dbfx.Comment(t, f.issueID, "hostile relay", testutil.Cols{"source_task_id": taintedTask(t, agentID, "tp")})
+	dbfx.Exec(t, `UPDATE agent_task_queue SET comment_thread_id = $2 WHERE id = $1`, f.taskID, commentID)
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(f.issueID))
+	if err != nil {
+		t.Fatalf("load issue: %v", err)
+	}
+
+	// The gate holds the elevation row, so authorization stops there with the
+	// issue row already locked.
+	gate, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin gate: %v", err)
+	}
+	defer gate.Rollback(ctx)
+	if _, err := gate.Exec(ctx, `SELECT 1 FROM task_elevation WHERE task_id = $1 FOR UPDATE`, f.taskID); err != nil {
+		t.Fatalf("gate locks the elevation row: %v", err)
+	}
+	authorized := make(chan *testutil.Response, 1)
+	go func() { authorized <- f.authorize(t, 1, "repo_write:1234", hashA) }()
+	waitForLockWaiters(t, 1)
+
+	type registered struct {
+		ok  bool
+		err error
+	}
+	registration := make(chan registered, 1)
+	go func() {
+		ok, err := testHandler.registerPlannedCommentForActiveTask(ctx, issue, parseUUID(agentID), parseUUID(commentID), pgtype.Text{})
+		registration <- registered{ok, err}
+	}()
+	// Authorization waits on the elevation row; the registration waits on the
+	// issue row (taken first) or, unfixed, on it through the run's trigger.
+	waitForLockWaiters(t, 2)
+	if err := gate.Commit(ctx); err != nil {
+		t.Fatalf("gate commit: %v", err)
+	}
+
+	if got := (<-authorized).Code; got != http.StatusOK && got != http.StatusForbidden {
+		t.Fatalf("authorization status = %d, want 200 or 403 (a deadlock aborts it)", got)
+	}
+	if r := <-registration; r.err != nil || !r.ok {
+		t.Fatalf("registration = %v, %v, want registered without error", r.ok, r.err)
 	}
 }
