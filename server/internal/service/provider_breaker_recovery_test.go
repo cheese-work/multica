@@ -246,21 +246,54 @@ func TestProviderBreakerActiveCanaryPastDeadlineIsNotReplaced(t *testing.T) {
 	}
 }
 
-// A settled canary that never reported (cancelled, non-5xx failure) is replaced
-// once its deadline passes.
-func TestProviderBreakerSettledCanaryPastDeadlineIsReplaced(t *testing.T) {
+// A canary that is not in flight (settled without reporting, or back in queued
+// where held claims cannot start it) is replaced once its deadline passes.
+func TestProviderBreakerIdleCanaryPastDeadlineIsReplaced(t *testing.T) {
+	for _, status := range []string{"cancelled", "queued"} {
+		t.Run(status, func(t *testing.T) {
+			r := newBreakerRig(t)
+			ctx := context.Background()
+			svc := &TaskService{Queries: db.New(r.pool), TxStarter: r.pool, Bus: events.New()}
+			canary := r.task(t, status, "", 0)
+			next := r.task(t, "queued", "", 0)
+			r.breaker(t, "half_open", -time.Second, 300, canary)
+
+			got, err := svc.ClaimTask(ctx, r.agentID)
+			if err != nil || got == nil {
+				t.Fatalf("claim after a %s canary's deadline = %v, %v; want a new canary", status, got, err)
+			}
+			if got.ID != canary && got.ID != next {
+				t.Fatalf("claimed unrelated task %s", util.UUIDToString(got.ID))
+			}
+			if state, _, c, _ := r.row(t); state != "half_open" || c != got.ID {
+				t.Fatalf("state %q canary %v; want half_open bound to the claimed task", state, c)
+			}
+		})
+	}
+}
+
+// A canary whose claim is rolled back to queued (payload finalization failed)
+// must release its binding, or the provider is held with no task able to run.
+func TestProviderBreakerRequeuedCanaryIsReelected(t *testing.T) {
 	r := newBreakerRig(t)
 	ctx := context.Background()
 	svc := &TaskService{Queries: db.New(r.pool), TxStarter: r.pool, Bus: events.New()}
-	canary := r.task(t, "cancelled", "", 0)
-	next := r.task(t, "queued", "", 0)
-	r.breaker(t, "half_open", -time.Second, 300, canary)
+	first := r.task(t, "queued", "", 0)
+	r.breaker(t, "open", -time.Second, 300, pgtype.UUID{})
 
-	got, err := svc.ClaimTask(ctx, r.agentID)
-	if err != nil || got == nil || got.ID != next {
-		t.Fatalf("claim after a settled canary's deadline = %v, %v; want the queued task as new canary", got, err)
+	canary, err := svc.ClaimTask(ctx, r.agentID)
+	if err != nil || canary == nil || canary.ID != first {
+		t.Fatalf("canary claim = %v, %v; want the queued task", canary, err)
 	}
-	if state, _, c, _ := r.row(t); state != "half_open" || c != next {
-		t.Fatalf("state %q canary %v; want half_open bound to the new task", state, c)
+	if _, err := svc.RequeueTaskAfterClaimFailure(ctx, *canary); err != nil {
+		t.Fatal(err)
+	}
+
+	again, err := svc.ClaimTask(ctx, r.agentID)
+	if err != nil || again == nil || again.ID != first {
+		t.Fatalf("claim after canary requeue = %v, %v; want the same task re-elected as canary", again, err)
+	}
+	if state, _, c, _ := r.row(t); state != "half_open" || c != first {
+		t.Fatalf("state %q canary %v; want half_open bound to the re-claimed task", state, c)
 	}
 }

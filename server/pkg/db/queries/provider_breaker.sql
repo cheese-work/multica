@@ -25,14 +25,16 @@ WHERE provider_breaker.version = @expected_version;
 -- name: GetProviderBreaker :one
 -- probe_due uses the database clock: NULL next_probe_at counts as due so an
 -- open breaker can never wait without a bound. A canary task that has not
--- reached a terminal status (dispatched, running, waiting_local_directory, ...)
--- is never replaced, even past its deadline: it is fenced until it settles, so
--- its own late result still lands.
+-- reached a terminal status and is in flight (dispatched, running,
+-- waiting_local_directory) is never replaced, even past its deadline: it is
+-- fenced until it settles, so its own late result still lands. A queued or
+-- deferred canary is not in flight (claims are held while half_open, so it
+-- cannot start), so the deadline alone bounds it.
 SELECT pb.*, (
     (pb.next_probe_at IS NULL OR pb.next_probe_at <= now())
     AND NOT EXISTS (
         SELECT 1 FROM agent_task_queue t
-        WHERE t.id = pb.canary_task_id AND t.status NOT IN ('completed', 'failed', 'cancelled'))
+        WHERE t.id = pb.canary_task_id AND t.status IN ('dispatched', 'running', 'waiting_local_directory'))
 )::bool AS probe_due
 FROM provider_breaker pb WHERE pb.workspace_id = @workspace_id AND pb.provider = @provider;
 
@@ -40,7 +42,8 @@ FROM provider_breaker pb WHERE pb.workspace_id = @workspace_id AND pb.provider =
 -- Moves a due open (or deadline-expired half_open) breaker to half_open bound
 -- to one task. next_probe_at becomes the canary deadline; if the canary settles
 -- without reporting, the breaker is due again after it. A canary that has
--- not settled blocks replacement (same fence as probe_due).
+-- not settled blocks replacement (same in-flight fence as probe_due,
+-- except the task being claimed: re-claiming the bound canary itself is allowed).
 UPDATE provider_breaker
 SET state = 'half_open', canary_task_id = @task_id,
     next_probe_at = now() + make_interval(secs => @canary_deadline_seconds::int),
@@ -50,7 +53,8 @@ WHERE workspace_id = @workspace_id AND provider = @provider
   AND (next_probe_at IS NULL OR next_probe_at <= now())
   AND NOT EXISTS (
       SELECT 1 FROM agent_task_queue t
-      WHERE t.id = provider_breaker.canary_task_id AND t.status NOT IN ('completed', 'failed', 'cancelled'));
+      WHERE t.id = provider_breaker.canary_task_id AND t.id <> @task_id
+        AND t.status IN ('dispatched', 'running', 'waiting_local_directory'));
 
 -- name: CloseProviderBreakerOnCanary :execrows
 UPDATE provider_breaker
