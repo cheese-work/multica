@@ -19,25 +19,38 @@ import (
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
-// optionLabels reads the answer labels a card offers; an unreadable list offers none.
-func optionLabels(raw []byte) []string {
+// askOptions reads the options a card offers; an unreadable list offers none.
+func askOptions(raw []byte) []decisiontx.AskOption {
 	var options []decisiontx.AskOption
 	if err := json.Unmarshal(raw, &options); err != nil {
 		return nil
 	}
-	labels := make([]string, 0, len(options))
-	for _, option := range options {
-		labels = append(labels, option.Label)
-	}
-	return labels
+	return options
+}
+
+// offersOption reports whether options hold an option with the same label and
+// the same meaning (what_happens). A label alone is not consent: two cards can
+// both offer "Approve" and mean different actions.
+func offersOption(options []decisiontx.AskOption, want decisiontx.AskOption) bool {
+	return slices.ContainsFunc(options, func(option decisiontx.AskOption) bool {
+		return option.Label == want.Label && option.WhatHappens == want.WhatHappens
+	})
 }
 
 // coveredCardOffers reports whether the covered card offers the exact option
-// chosen on the batch card. A free-text batch answer names no option, so it
-// covers nothing: the human never agreed to an unnamed answer for another
-// card's question.
-func coveredCardOffers(card db.DecisionRequest, option string) bool {
-	return option != "" && slices.Contains(optionLabels(card.Options), option)
+// (label and meaning) chosen on the batch card. A free-text batch answer names
+// no option, so it covers nothing: the human never agreed to an unnamed answer
+// for another card's question.
+func coveredCardOffers(batch, card db.DecisionRequest, label string) bool {
+	if label == "" {
+		return false
+	}
+	for _, chosen := range askOptions(batch.Options) {
+		if chosen.Label == label && offersOption(askOptions(card.Options), chosen) {
+			return true
+		}
+	}
+	return false
 }
 
 // maxBatchCovers bounds how many open cards one batch card may cover.
@@ -82,7 +95,7 @@ func (handler *Handler) answerCoveredCards(ctx context.Context, queries *db.Quer
 }
 
 func (handler *Handler) answerCoveredCard(ctx context.Context, queries *db.Queries, workspace db.Workspace, batch, card db.DecisionRequest, input decisionCardAnswerInput, content string) (*coveredCardAnswer, error) {
-	if !coveredCardOffers(card, input.Option) {
+	if !coveredCardOffers(batch, card, input.Option) {
 		return nil, nil
 	}
 	root, err := commentguard.LockThreadForReplyAndLoadRoot(ctx, queries, card.WorkspaceID, card.IssueCommentID)
@@ -193,11 +206,11 @@ func coverBatchRequests(ctx context.Context, queries *db.Queries, batch db.Decis
 	if len(found) != len(covers) {
 		return batch, decisionIntentRefusal{http.StatusBadRequest, "covers_request_ids must name open reversible or product_direction cards addressed to the same human; a governed-write approval cannot be covered"}
 	}
-	batchLabels := optionLabels(batch.Options)
+	batchOptions := askOptions(batch.Options)
 	for _, card := range found {
-		cardLabels := optionLabels(card.Options)
-		if len(batchLabels) == 0 || slices.ContainsFunc(batchLabels, func(label string) bool { return !slices.Contains(cardLabels, label) }) {
-			return batch, decisionIntentRefusal{http.StatusBadRequest, "every covered card must offer each option of the batch card, so each batch answer is an answer to that card's own question"}
+		cardOptions := askOptions(card.Options)
+		if len(batchOptions) == 0 || slices.ContainsFunc(batchOptions, func(option decisiontx.AskOption) bool { return !offersOption(cardOptions, option) }) {
+			return batch, decisionIntentRefusal{http.StatusBadRequest, "every covered card must offer each option of the batch card with the same label and the same meaning, so each batch answer is an answer to that card's own question"}
 		}
 	}
 	return queries.SetDecisionRequestCovers(ctx, db.SetDecisionRequestCoversParams{WorkspaceID: batch.WorkspaceID, ID: batch.ID, CoversRequestIds: covers})

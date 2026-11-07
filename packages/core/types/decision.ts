@@ -63,6 +63,8 @@ export interface DecisionCoveredCard {
   issue_identifier: string;
   issue_title?: string;
   decision: string;
+  /** The covered card's own options with their meanings. */
+  options?: DecisionRequestOption[];
 }
 
 /** What an executable action would change, rendered by the server from the values its executor checks. */

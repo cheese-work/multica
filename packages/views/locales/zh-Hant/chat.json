@@ -361,6 +361,7 @@
     "asked_by": "來自 {{agent}}",
     "answered_by_batch": "{{issue}}:已由批次卡片回答",
     "covers_batch": "此回答關閉的卡片:{{count}}",
+    "covers_unavailable": "無法載入此回答將關閉的決定。請重新整理後再回答。",
     "request_label": "決策請求：{{state}}",
     "request_state": {
       "open": "待答復",

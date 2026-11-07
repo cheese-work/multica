@@ -58,7 +58,7 @@ func (q *Queries) GetDecisionCancelMessageForRequest(ctx context.Context, arg Ge
 
 const listCoveredCardSummaries = `-- name: ListCoveredCardSummaries :many
 SELECT request.id, request.issue_id, COALESCE(workspace.issue_prefix, 'MUL')::text AS issue_prefix, issue.number AS issue_number,
-    issue.title AS issue_title, COALESCE(request.ask_json->>'decision', request.ask)::text AS decision
+    issue.title AS issue_title, COALESCE(request.ask_json->>'decision', request.ask)::text AS decision, request.options
 FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 JOIN workspace ON workspace.id = request.workspace_id
@@ -78,6 +78,7 @@ type ListCoveredCardSummariesRow struct {
 	IssueNumber int32       `json:"issue_number"`
 	IssueTitle  string      `json:"issue_title"`
 	Decision    string      `json:"decision"`
+	Options     []byte      `json:"options"`
 }
 
 // What a batch card's answer also decides, in the order the batch card lists it.
@@ -97,6 +98,7 @@ func (q *Queries) ListCoveredCardSummaries(ctx context.Context, arg ListCoveredC
 			&i.IssueNumber,
 			&i.IssueTitle,
 			&i.Decision,
+			&i.Options,
 		); err != nil {
 			return nil, err
 		}

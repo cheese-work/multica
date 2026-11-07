@@ -51,6 +51,8 @@ type DecisionRequestCoveredCard struct {
 	IssueIdentifier string `json:"issue_identifier"`
 	IssueTitle      string `json:"issue_title,omitempty"`
 	Decision        string `json:"decision"`
+	// Options are the covered card's own options with their meanings, so the human sees what each answer does there.
+	Options []decisiontx.AskOption `json:"options"`
 }
 
 // DecisionRequestAnswer is the receipt half of a request card.
@@ -130,7 +132,13 @@ func (handler *Handler) decisionRequestsForMessages(ctx context.Context, workspa
 		for _, covered := range row.CoversRequestIds {
 			card.CoversRequestIDs = append(card.CoversRequestIDs, uuidToString(covered))
 		}
-		card.CoveredCards = handler.coveredCardSummaries(ctx, workspaceUUID, row.CoversRequestIds)
+		// On a read failure the card keeps its covers_request_ids but lists no covered
+		// cards; the client then refuses to offer the answer form (fail closed).
+		covered, err := handler.coveredCardSummaries(ctx, workspaceUUID, row.CoversRequestIds)
+		if err != nil {
+			slog.ErrorContext(ctx, "list covered decision cards", "request_id", card.ID, "error", err)
+		}
+		card.CoveredCards = covered
 		if row.AnsweredByBatchRequestID.Valid {
 			batchID := uuidToString(row.AnsweredByBatchRequestID)
 			card.AnsweredByBatchRequestID = &batchID
@@ -190,19 +198,23 @@ func recommendedOptionIndex(options []decisiontx.AskOption, recommendation strin
 
 // coveredCardSummaries reads the decisions a batch card covers from the
 // covered cards themselves, never from the batch card's own text, so the
-// human sees what the one answer decides.
-func (handler *Handler) coveredCardSummaries(ctx context.Context, workspaceUUID pgtype.UUID, ids []pgtype.UUID) []DecisionRequestCoveredCard {
+// human sees what the one answer decides. A read failure is returned, never
+// turned into an empty list.
+func (handler *Handler) coveredCardSummaries(ctx context.Context, workspaceUUID pgtype.UUID, ids []pgtype.UUID) ([]DecisionRequestCoveredCard, error) {
 	if len(ids) == 0 {
-		return nil
+		return nil, nil
 	}
 	rows, err := handler.Queries.ListCoveredCardSummaries(ctx, db.ListCoveredCardSummariesParams{WorkspaceID: workspaceUUID, Ids: ids})
 	if err != nil {
-		slog.ErrorContext(ctx, "list covered decision cards", "error", err)
-		return nil
+		return nil, err
 	}
 	covered := make([]DecisionRequestCoveredCard, 0, len(rows))
 	for _, row := range rows {
-		covered = append(covered, DecisionRequestCoveredCard{ID: uuidToString(row.ID), IssueID: uuidToString(row.IssueID), IssueIdentifier: fmt.Sprintf("%s-%d", row.IssuePrefix, row.IssueNumber), IssueTitle: row.IssueTitle, Decision: row.Decision})
+		summary := DecisionRequestCoveredCard{ID: uuidToString(row.ID), IssueID: uuidToString(row.IssueID), IssueIdentifier: fmt.Sprintf("%s-%d", row.IssuePrefix, row.IssueNumber), IssueTitle: row.IssueTitle, Decision: row.Decision}
+		if err := json.Unmarshal(row.Options, &summary.Options); err != nil {
+			return nil, fmt.Errorf("covered card %s options: %w", summary.ID, err)
+		}
+		covered = append(covered, summary)
 	}
-	return covered
+	return covered, nil
 }

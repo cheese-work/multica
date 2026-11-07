@@ -403,6 +403,7 @@
     "asked_by": "来自 {{agent}}",
     "answered_by_batch": "{{issue}}:已由批量卡片回答",
     "covers_batch": "此回答关闭的卡片:{{count}}",
+    "covers_unavailable": "无法加载此回答将关闭的决定。请刷新后再回答。",
     "request_label": "决策请求：{{state}}",
     "request_state": { "open": "待答复", "answered": "已答复", "withdrawn": "已撤回", "recorded": "已记录", "delivered": "已送达", "picked_up": "已接手", "not_picked_up": "未接手", "disclaimed": "已撤销" },
     "picked_up_by": "{{agent}} 已接手",

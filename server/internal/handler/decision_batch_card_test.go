@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"context"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"net/http"
@@ -112,6 +114,10 @@ func TestBatchCardCreationRefusals(test *testing.T) {
 			dbfx.Exec(test, `UPDATE decision_request SET human_user_id = $2 WHERE id = $1`, card.decision.ID, fixture.humanID)
 			setCardOptions(test, card, unrelatedOptions)
 		},
+		"same label with a different meaning": func(card askedRecordFixture, fixture requestCoreFixture) {
+			dbfx.Exec(test, `UPDATE decision_request SET human_user_id = $2 WHERE id = $1`, card.decision.ID, fixture.humanID)
+			setCardOptions(test, card, sameLabelsOtherMeaning)
+		},
 		"already answered": func(card askedRecordFixture, fixture requestCoreFixture) {
 			dbfx.Exec(test, `UPDATE decision_request SET human_user_id = $2, status = 'answered' WHERE id = $1`, card.decision.ID, fixture.humanID)
 		},
@@ -170,6 +176,12 @@ func TestDirectGovernedWriteAnswerStillBinds(test *testing.T) {
 	}
 }
 
+// sameLabelsOtherMeaning offers the API test batch card's labels with other actions behind them.
+const sameLabelsOtherMeaning = `[{"label":"Hold","what_happens":"Delete the production data."},{"label":"Proceed","what_happens":"Proceed happens."}]`
+
+// differentMeaningOptions keeps the fixture batch card's labels and changes what one of them does.
+const differentMeaningOptions = `[{"label":"Option A","what_happens":"A happens"},{"label":"Option B","what_happens":"Wipe the archive."}]`
+
 const unrelatedOptions = `[{"label":"Ship the redesign","what_happens":"ships"},{"label":"Drop the redesign","what_happens":"drops"}]`
 
 func setCardOptions(test *testing.T, card askedRecordFixture, options string) {
@@ -180,7 +192,7 @@ func setCardOptions(test *testing.T, card askedRecordFixture, options string) {
 // shareHoldProceed gives a covered card the two options the API test's batch ask offers.
 func shareHoldProceed(test *testing.T, card askedRecordFixture) {
 	test.Helper()
-	setCardOptions(test, card, `[{"label":"Hold","what_happens":"hold"},{"label":"Proceed","what_happens":"go"}]`)
+	setCardOptions(test, card, `[{"label":"Hold","what_happens":"Hold happens."},{"label":"Proceed","what_happens":"Proceed happens."}]`)
 }
 
 func coveredCardState(test *testing.T, card askedRecordFixture) (string, int) {
@@ -206,6 +218,24 @@ func TestBatchAnswerLeavesUnrelatedCardOpen(test *testing.T) {
 	}
 	if status, answers := coveredCardState(test, related); status != "answered" || answers != 1 {
 		test.Fatalf("related covered card: status=%s answers=%d, want answered with one", status, answers)
+	}
+}
+
+// A card whose chosen label means something else than on the batch card stays
+// open: the label alone is not consent to another action (CHE-4453 review P1).
+func TestBatchAnswerLeavesDifferentMeaningCardOpen(test *testing.T) {
+	resetDecisionLease(test)
+	fixture := newBatchFixture(test, 2)
+	different, same := fixture.covered[0], fixture.covered[1]
+	setCardOptions(test, different, differentMeaningOptions)
+	if _, err := fixture.batch.answerOnCard(decisionCardAnswerInput{Option: "Option B"}); err != nil {
+		test.Fatal(err)
+	}
+	if status, answers := coveredCardState(test, different); status != "open" || answers != 0 {
+		test.Fatalf("same-label covered card with another meaning: status=%s answers=%d, want open with none", status, answers)
+	}
+	if status, answers := coveredCardState(test, same); status != "answered" || answers != 1 {
+		test.Fatalf("same-meaning covered card: status=%s answers=%d, want answered with one", status, answers)
 	}
 }
 
@@ -246,5 +276,20 @@ func TestBatchCardDisclosesCoveredDecisions(test *testing.T) {
 		if card.ID != uuidToString(fixture.covered[index].decision.ID) || card.Decision != "Pick one" || card.IssueIdentifier == "" {
 			test.Fatalf("covered_cards[%d] = %+v, want the covered card's id, decision and issue", index, card)
 		}
+		if len(card.Options) != 2 || card.Options[1].Label != "Option B" || card.Options[1].WhatHappens != "B happens" {
+			test.Fatalf("covered_cards[%d].options = %+v, want each covered option with its meaning", index, card.Options)
+		}
+	}
+}
+
+// When the covered decisions cannot be read, the lookup reports the error
+// instead of an empty list, so the card cannot look like it covers nothing.
+func TestCoveredCardSummariesReportReadFailure(test *testing.T) {
+	fixture := newBatchFixture(test, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	summaries, err := testHandler.coveredCardSummaries(ctx, parseUUID(testWorkspaceID), []pgtype.UUID{fixture.covered[0].decision.ID})
+	if err == nil || len(summaries) != 0 {
+		test.Fatalf("summaries=%v err=%v, want an error and no summaries", summaries, err)
 	}
 }

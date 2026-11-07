@@ -89,4 +89,23 @@ describe("DecisionRequestCard compact issue chips", () => {
     expect(items[0]).toHaveTextContent("CHE-1 Small fix: Hold or proceed?");
     expect(items[1]).toHaveTextContent("CHE-2 Redesign: Ship the redesign?");
   });
+
+  it("shows each covered option with its meaning, so equal labels cannot hide different actions", () => {
+    renderCard({
+      covers_request_ids: ["a", "b"],
+      covered_cards: [
+        { id: "a", issue_id: "i1", issue_identifier: "CHE-1", decision: "Deploy?", options: [{ label: "Approve", what_happens: "Deploys the staging build." }] },
+        { id: "b", issue_id: "i2", issue_identifier: "CHE-2", decision: "Deploy?", options: [{ label: "Approve", what_happens: "Deletes the production data." }] },
+      ],
+    } as never);
+    const items = screen.getAllByTestId("decision-request-covered-item");
+    expect(items[0]).toHaveTextContent("Approve: Deploys the staging build.");
+    expect(items[1]).toHaveTextContent("Approve: Deletes the production data.");
+  });
+
+  it("offers no answer form while a covered decision is missing, and says why", () => {
+    renderCard({ state: "open", covers_request_ids: ["a", "b"], covered_cards: [] } as never);
+    expect(screen.getByRole("alert")).toHaveTextContent("Cannot load the decisions this answer would close");
+    expect(screen.queryByTestId("decision-request-answer")).toBeNull();
+  });
 });

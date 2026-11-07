@@ -91,7 +91,7 @@ ORDER BY created_at DESC, id DESC LIMIT 1;
 -- name: ListCoveredCardSummaries :many
 -- What a batch card's answer also decides, in the order the batch card lists it.
 SELECT request.id, request.issue_id, COALESCE(workspace.issue_prefix, 'MUL')::text AS issue_prefix, issue.number AS issue_number,
-    issue.title AS issue_title, COALESCE(request.ask_json->>'decision', request.ask)::text AS decision
+    issue.title AS issue_title, COALESCE(request.ask_json->>'decision', request.ask)::text AS decision, request.options
 FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 JOIN workspace ON workspace.id = request.workspace_id
