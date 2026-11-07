@@ -101,6 +101,7 @@ Use semantic tokens from `packages/ui/styles/tokens.css`: surface, border, muted
 | artifact-viewer-dialog | doop `Bi32qQ55Hi` @ 2026-11-01T04:43:09.622Z | B | 762 | n/a (`design/artifact-viewer-dialog/approved/`) |
 | run-mode-chip | doop `N4j_S11KaP` @ 2026-11-02T08:23:51.708Z | C | 815 | n/a (`design/run-mode-chip/approved/`) |
 | dm-progress | doop `V0nBnIQ-OI` @ 2026-11-04T12:00:37.964Z (C) with states `TiPMSzRj-T` @ 2026-11-04T12:01:34.967Z | C | 1034 | n/a (`design/dm-progress/approved/`) |
+| dm-attention | doop `y7DenM6GGW` @ 2026-11-07T12:07:33.378Z (B Light), `ztpwE4spMa` @ 2026-11-07T12:07:37.297Z (B Dark) | B | 1193 | n/a (`design/dm-attention/approved/`) |
 | issue-sidebar-compact | doop `UVi0hFp3L_` @ 2026-11-05T10:56:09.927Z | A (v2: C placement, A mechanics) | 1048 | n/a (`design/issue-sidebar-compact/approved/`) |
 | timeline-views | doop `huve-k7jLE` @ 2026-11-06T13:50:07.153Z (Gantt B), `20EKgO9pKX` @ 2026-11-06T14:03:42.763Z (Swimlane A), `mzbsoFU2MX` @ 2026-11-07T06:25:43.109Z (Hierarchy A), `aTIpEERfej` @ 2026-11-06T14:00:23.849Z (Sidebar A) | Gantt B, Swimlane A, Hierarchy A, Sidebar A | 1163 | n/a (`design/timeline-views/approved/`) |
 

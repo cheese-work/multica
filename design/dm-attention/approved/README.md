@@ -4,4 +4,4 @@ Direction B, docked attention panel, selected by Cheese through decision request
 
 Implementation condition: below 1280px, collapse the docked panel into a responsive drawer before implementation. Shared CHE-3556 row contract: `AttentionRow = KindLabel + AgeIndicator + StatusChips + RowActions`; `RowActions` receives the exact rendered subject-key snapshot.
 
-The standalone design-lock PR publishes this record. The topic's last implementing PR deletes these reference files.
+Lock PR #1193 publishes this record. The topic's last implementing PR deletes these reference files.
