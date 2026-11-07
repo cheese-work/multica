@@ -521,6 +521,43 @@ func recoveryTaint(t *testing.T, c budgetCase) []string {
 	return taint
 }
 
+// A requester whose callback reaches the hook after its notice committed still
+// answers the same hook: the recovery run already exists, queued or started, so
+// the late taint goes onto that run too.
+func TestRunBudgetHookLateRequesterTaintsTheExistingRecoveryRun(t *testing.T) {
+	for i, runStatus := range []string{"queued", "running"} {
+		t.Run(runStatus, func(t *testing.T) {
+			if testHandler == nil {
+				t.Skip("database not available")
+			}
+			c := newBudgetCase(t, int64(2856050+i), recoverySteps(seededReadyAgentID(t)), 2)
+			recordOccurrence(t, c, "in_progress")
+			c.spend(t, 2)
+			ctxClean, eClean := refusalBy(t, c, "")
+			ctxLate, eLate := refusalBy(t, c, "ext-1")
+			id, generation, ok := testHandler.recordRefusalIntent(ctxClean, eClean)
+			if !ok {
+				t.Fatal("clean refusal not recorded")
+			}
+			testHandler.advanceRefusalHook(ctxClean, id, generation, eClean)
+			finished(t, c)
+			if got := recoveryTaint(t, c); len(got) != 0 {
+				t.Fatalf("recovery run taint before the late requester = %v, want none", got)
+			}
+			if _, err := testPool.Exec(context.Background(), `UPDATE agent_task_queue SET status=$2 WHERE issue_id=$1 AND task_kind='budget_recovery'`, c.issueID, runStatus); err != nil {
+				t.Fatal(err)
+			}
+			if id2, _, ok := testHandler.recordRefusalIntent(ctxLate, eLate); !ok || id2 != id {
+				t.Fatalf("late refusal = %v, %v; want it to reuse the finished row", id2, ok)
+			}
+			if got := recoveryTaint(t, c); len(got) != 1 || got[0] != "ext-1" {
+				t.Fatalf("recovery run taint = %v, want [ext-1]", got)
+			}
+			finished(t, c)
+		})
+	}
+}
+
 // A sweep rebuilds the event from the refusal row: the recovery run it creates
 // must still carry the taint of the task whose request was refused, or an
 // active grant could elevate a run that tainted input reached.

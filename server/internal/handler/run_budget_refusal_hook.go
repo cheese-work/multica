@@ -110,6 +110,12 @@ func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetEx
 				if err := q.MergeRunBudgetRefusalTaint(ctx, db.MergeRunBudgetRefusalTaintParams{ID: existing.ID, Taint: taint}); err != nil {
 					return err
 				}
+				// Past the notice the recovery run exists and no longer reads the row.
+				if existing.HookPhase == "done" && len(taint) > 0 {
+					if err := q.TaintBudgetRecoveryRuns(ctx, db.TaintBudgetRecoveryRunsParams{IssueID: existing.IssueID, Taint: taint}); err != nil {
+						return err
+					}
+				}
 				id, generation, ok = existing.ID, existing.HookGeneration, true
 				return nil
 			}
