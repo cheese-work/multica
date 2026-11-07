@@ -228,6 +228,7 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 			return handler.DeliverDecisionWake(ctx, request.WorkspaceID, request.ID)
 		}))
 	}
+	failures = errors.Join(failures, handler.deliverDecisionWakeReceipts(ctx))
 	retractions, err := handler.Queries.ListDecisionRetractionCandidates(ctx, decisionBatchSize)
 	if err != nil {
 		return errors.Join(failures, err)
