@@ -335,7 +335,7 @@ WITH workspace_issues AS NOT MATERIALIZED (
 SELECT jsonb_build_object(
  'nodes',(SELECT coalesce(jsonb_agg(jsonb_build_object(
   'id',i.id,'identifier',$5::text||'-'||i.number,'title',i.title,'status',i.status,
-  'parent_issue_id',i.parent_issue_id,'context',NOT (i.id=ANY($2::uuid[]))
+  'parent_issue_id',(SELECT p.id FROM workspace_issues p WHERE p.id=i.parent_issue_id),'context',NOT (i.id=ANY($2::uuid[]))
  ) ORDER BY i.id),'[]'::jsonb) FROM ends JOIN workspace_issues i ON i.id=ends.id),
  'edges',(SELECT coalesce(jsonb_agg(jsonb_build_object(
   'source',e.source,'target',e.target,'type',e.type

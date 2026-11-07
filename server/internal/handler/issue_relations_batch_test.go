@@ -10,8 +10,9 @@ import (
 
 type relationsBatchPage struct {
 	Nodes []struct {
-		ID      string `json:"id"`
-		Context bool   `json:"context"`
+		ID            string  `json:"id"`
+		Context       bool    `json:"context"`
+		ParentIssueID *string `json:"parent_issue_id"`
 	} `json:"nodes"`
 	Edges []struct {
 		Source string `json:"source"`
@@ -124,6 +125,37 @@ func TestRelationsBatchContextNodeAndForeignEdge(t *testing.T) {
 	}
 	if contexts != 1 || len(page.Nodes) != 2 {
 		t.Fatalf("nodes: %+v", page.Nodes)
+	}
+}
+
+// F2: a parent in another workspace never leaks its ID through parent_issue_id;
+// an in-workspace parent still does.
+func TestRelationsBatchNullsForeignParentID(t *testing.T) {
+	foreignParent := dbfx.Issue(t, "batch foreign parent", testutil.Cols{"workspace_id": dbfx.Workspace(t, "batch foreign parent", "batch-foreign-parent")})
+	orphan := dbfx.Issue(t, "batch orphan", testutil.Cols{"parent_issue_id": foreignParent})
+	parent := dbfx.Issue(t, "batch parent")
+	child := dbfx.Issue(t, "batch child", testutil.Cols{"parent_issue_id": parent})
+	dbfx.Insert(t, "issue_dependency", testutil.Cols{"issue_id": orphan, "depends_on_issue_id": child, "type": "blocks"})
+	page := readRelationsBatch(t, map[string]any{"issue_ids": []string{orphan, child}})
+	seen := 0
+	defer func() {
+		if seen != 2 {
+			t.Fatalf("saw %d of the 2 expected nodes", seen)
+		}
+	}()
+	for _, node := range page.Nodes {
+		switch node.ID {
+		case orphan:
+			seen++
+			if node.ParentIssueID != nil {
+				t.Fatalf("orphan parent_issue_id = %s, want null", *node.ParentIssueID)
+			}
+		case child:
+			seen++
+			if node.ParentIssueID == nil || *node.ParentIssueID != parent {
+				t.Fatalf("child parent_issue_id = %v, want %s", node.ParentIssueID, parent)
+			}
+		}
 	}
 }
 
