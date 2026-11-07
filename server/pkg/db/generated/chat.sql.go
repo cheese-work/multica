@@ -2489,12 +2489,12 @@ func (q *Queries) InitializeChatSessionTitle(ctx context.Context, arg Initialize
 const insertForkChatMessages = `-- name: InsertForkChatMessages :exec
 INSERT INTO chat_message (
     id, chat_session_id, role, content, task_id, created_at, failure_reason,
-    elapsed_ms, message_kind, quick_actions, sent_via, decision_answer_id, lineage_message_ids
+    elapsed_ms, message_kind, quick_actions, sent_via, decision_answer_id, lineage_message_ids, reanchored_at
 )
 SELECT ($1::uuid[])[i], $2::uuid, source.role,
        ($3::text[])[i], NULL, source.created_at, source.failure_reason,
        source.elapsed_ms, ($4::text[])[i], '[]'::jsonb, source.sent_via, source.decision_answer_id,
-       source.lineage_message_ids || source.id
+       source.lineage_message_ids || source.id, source.reanchored_at
 FROM generate_subscripts($1::uuid[], 1) AS i
 JOIN chat_message AS source ON source.id = ($5::uuid[])[i]
 `
@@ -2510,6 +2510,8 @@ type InsertForkChatMessagesParams struct {
 // Copies source rows as history: original role, time, elapsed time and failure
 // text; no task, no quick actions, no channel fields. The caller supplies new
 // ids in source order and the (possibly link-rewritten) content and kind.
+// reanchored_at is copied with the restamped created_at: a copy of a restamped
+// message must stay refused as a decision source (CHE-2895).
 func (q *Queries) InsertForkChatMessages(ctx context.Context, arg InsertForkChatMessagesParams) error {
 	_, err := q.db.Exec(ctx, insertForkChatMessages,
 		arg.Ids,
