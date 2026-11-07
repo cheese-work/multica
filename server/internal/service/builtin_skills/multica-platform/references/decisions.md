@@ -171,3 +171,29 @@ multica workspace update <id> --context-file ./c.md --expected-before-digest <he
   run-rule flag. `--decision-id` and `--vote-issue` are alternatives.
 - 409 means the live value moved or the decision was used: read it again and
   ask for a new decision. The CLI never retries.
+
+## Proposing an action (task token)
+
+An agent proposes a governed action; a person approves it with a passkey on a
+card. The proposal changes nothing itself.
+
+```bash
+multica decision propose issue.run_budget.raise --version 1 --issue <issue> \
+  --for <user-id> --param window_id=<id> --param new_cap:=40 [--reason "..."]
+multica decision propose <action-type> --version 1 --issue <issue> --params-file ./params.json
+```
+
+- `--version` and `--issue` are required. `--for` names the person; leave it
+  out only when an open intent already names one.
+- `--param k=v` sends a string. `--param k:=<json>` sends raw JSON (a number,
+  boolean, array or object). Repeat the flag per key; a duplicate key is
+  refused. `--params-file` is one JSON object and cannot be mixed with
+  `--param`.
+- It works only with a task token. The output prints the card link
+  `<web>/<workspace>/issues/<issue-id>?approve=<action-id>`; give that link to
+  the person.
+- A refusal prints the server's status and error code, for example
+  `503 proposals_unavailable`. Report it; do not retry with a PAT.
+- `issue.run_budget.raise` takes `issue_id`, `window_id`, `new_cap`;
+  `issue.run_budget.top_up` takes `issue_id`, `window_id`. Prefer
+  `multica issue budget raise|top-up`, which fills these for you.
