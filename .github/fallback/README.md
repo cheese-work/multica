@@ -7,13 +7,13 @@ Guards `main` without `merge_group`: required checks (not strict) plus full CI o
 ## Why three pieces
 
 - Since CHE-3325 `ci.yml` has no `push` trigger: the queue fast-forwards `main` to a SHA its `merge_group` run already tested. Without the queue, a merge would get no CI, and deploy admission (`deploy/cd/admission.mjs`) would find no `backend`/`frontend` checks for the new SHA. The patch restores the trigger.
-- A2 (CHE-2416) skips heavy jobs on push only when a green `merge_group` run exists for the same SHA. With no queue it finds none, waits up to 180 s, then runs full CI. `CI_PUSH_FULL=true` skips that lookup, so each push does not wait 3 minutes.
+- A2 (CHE-2416) skips heavy jobs on push only when a green `merge_group` run exists for the same SHA. With no queue it finds none, waits up to 180 s, then runs full CI. `CI_PUSH_FULL=true` skips that lookup, so each push does not wait 3 minutes. It also makes `ci-scope.mjs decide` select every scope on a push to `main`, not only the paths changed since the previous push (`decideScopes(..., forcePushFull)`).
 - The ruleset must drop its `merge_queue` rule, or PRs cannot merge (they wait for a queue that no longer runs).
 
 ## Switch, in this order
 
 1. Set the repo variable: `gh variable set CI_PUSH_FULL --body true --repo cheese-work/multica`.
-2. Merge a PR that applies `.github/fallback/ci-push-trigger.patch` (`git apply .github/fallback/ci-push-trigger.patch`). It adds `push: branches: [main]` and sets `cancel-in-progress: ${{ github.event_name != 'push' }}`, so a second merge never cancels the CI of the first (a cancelled run leaves its SHA without the checks deploy admission needs). Update `scripts/main-build.test.mjs` in the same PR: its "no push trigger" assertion is then false.
+2. Merge a PR that applies `.github/fallback/ci-push-trigger.patch` (`git apply .github/fallback/ci-push-trigger.patch`). It adds `push: branches: [main]`, gives each push its own concurrency group (keyed by SHA) and sets `cancel-in-progress: ${{ github.event_name != 'push' }}`. GitHub keeps only one pending run per group, so a shared group would drop the middle SHA of three quick merges, and that SHA would have no checks for deploy admission. Update `scripts/main-build.test.mjs` in the same PR: its "no push trigger" assertion is then false.
 3. Re-read the live ruleset, compare with the payload, then apply:
    `gh api repos/cheese-work/multica/rulesets/22854843 > before.json` (keep it for rollback), then
    `gh api -X PUT repos/cheese-work/multica/rulesets/22854843 --input .github/fallback/ruleset-22854843-no-merge-queue.json`.
@@ -34,4 +34,4 @@ Order matters: steps 1-2 first, so `main` is never without CI between the rulese
 
 ## Proof
 
-`node --test scripts/merge-queue-fallback.test.mjs` checks: the patch applies and keeps push CI uncancelled; the ruleset payload keeps required non-strict checks and no `merge_queue`; with no `merge_group` run, and with `CI_PUSH_FULL=true`, A2 selects full CI for every scope.
+`node --test scripts/merge-queue-fallback.test.mjs` checks: the patch applies and keeps push CI uncancelled; the ruleset payload keeps required non-strict checks and no `merge_queue`; with no `merge_group` run, and with `CI_PUSH_FULL=true`, A2 selects full CI for every scope even when all path filters are false; each push gets its own concurrency group.

@@ -28,7 +28,11 @@ test("fallback patch applies to ci.yml: push to main triggers CI and a later pus
   const triggers = patched.slice(0, patched.indexOf("\njobs:"));
   assert.match(triggers, /^  push:\n    branches: \[main\]$/m);
   for (const trigger of ["pull_request", "schedule", "workflow_dispatch"]) assert.match(triggers, new RegExp(`^  ${trigger}:`, "m"));
-  // A cancelled push run leaves its SHA without backend/frontend checks, which deploy admission needs.
+  // GitHub keeps one pending run per group, even with cancel-in-progress false: a third push in a shared
+  // group replaces the second pending run, and that SHA gets no checks (deploy admission needs them).
+  // So every push gets its own group, keyed by SHA.
+  const group = triggers.match(/^  group: (.+)$/m)[1];
+  assert.match(group, /github\.event_name == 'push' && github\.sha/);
   assert.match(triggers, /cancel-in-progress: \$\{\{ github\.event_name != 'push' \}\}/);
 });
 
@@ -53,10 +57,36 @@ test("without a merge_group run the A2 skip logic selects full push CI and never
   assert.equal(hasGreenMergeGroup(env, () => ({ workflow_runs: [] }), (ms) => { time += ms; }, () => time), false);
   // Fallback runbook sets CI_PUSH_FULL=true: no lookup, so no 180 s wait on every push.
   assert.equal(hasGreenMergeGroup({ ...env, CI_PUSH_FULL: "true" }, () => assert.fail("must not query Actions")), false);
-  const outputs = decideScopes("push", Object.fromEntries(Object.keys(filters).map((scope) => [scope, "true"])), "main", false);
+  const none = Object.fromEntries(Object.keys(filters).map((scope) => [scope, "false"]));
+  // A push touching no scope (or only backend files) still gets full CI when the kill switch is on.
+  const outputs = decideScopes("push", none, "main", false, true);
   assert.equal(outputs.push_full, "true");
   assert.equal(outputs.merge_group_green, "false");
-  for (const scope of Object.keys(filters)) assert.equal(outputs[scope], "true");
+  for (const scope of Object.keys(filters)) assert.equal(outputs[scope], "true", scope);
+  // Without the switch (PR-style path filtering) scopes stay filtered; other events and refs never go full.
+  assert.equal(decideScopes("push", none, "main", false, false).frontend, "false");
+  assert.equal(decideScopes("push", none, "feature", false, true).frontend, "false");
+  assert.equal(decideScopes("pull_request", none, "main", false, true).frontend, "false");
+  assert.equal(decideScopes("merge_group", none, "main", false, true).frontend, "false");
+});
+
+test("the decide CLI selects every scope on a main push with CI_PUSH_FULL=true even when path filters are all false", (context) => {
+  const directory = mkdtempSync(join(tmpdir(), "mq-fallback-cli-"));
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+  const output = join(directory, "outputs");
+  writeFileSync(output, "");
+  const none = Object.fromEntries(Object.keys(filters).map((scope) => [scope, "false"]));
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL("./ci-scope.mjs", import.meta.url)), "decide"], {
+    encoding: "utf8",
+    // No gh stub: the kill switch must skip the Actions lookup entirely.
+    env: { ...process.env, PATH: directory, EVENT_NAME: "push", GITHUB_REF: "refs/heads/main", HEAD_REF: "main",
+      GITHUB_SHA: "a".repeat(40), GITHUB_REPOSITORY: "cheese-work/multica", CI_PUSH_FULL: "true",
+      FILTER_RESULTS: JSON.stringify(none), GITHUB_OUTPUT: output },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const outputs = Object.fromEntries(readFileSync(output, "utf8").trim().split("\n").map((line) => line.split("=")));
+  assert.equal(outputs.push_full, "true");
+  for (const scope of Object.keys(filters)) assert.equal(outputs[scope], "true", scope);
 });
 
 test("runbook lists the three switch steps in order and the rollback", () => {
