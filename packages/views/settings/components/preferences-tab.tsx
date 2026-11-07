@@ -33,6 +33,7 @@ import {
 import { useLocaleAdapter } from "@multica/core/i18n/react";
 import { useAuthStore } from "@multica/core/auth";
 import { useChatStore } from "@multica/core/chat";
+import { useRecentAgentsSettingsStore } from "@multica/core/chat/recent-agents-settings-store";
 import {
   useCommentComposerStore,
   type RunningAgentReply,
@@ -100,6 +101,7 @@ export function PreferencesTab() {
           <StickyCommentBarRow />
           <RunningAgentReplyRow />
           <FloatingChatRow />
+          <RecentAgentsRow />
         </SettingsCard>
       </SettingsSection>
 
@@ -346,6 +348,25 @@ function FloatingChatRow() {
         checked={enabled}
         onCheckedChange={(checked) => setEnabled(checked)}
         aria-label={t(($) => $.chat.floating_label)}
+      />
+    </SettingsRow>
+  );
+}
+
+/** Whether the New chat picker lists a Recent section above My agents. */
+function RecentAgentsRow() {
+  const { t } = useT("settings");
+  const show = useRecentAgentsSettingsStore((s) => s.showRecentAgents);
+  const setShow = useRecentAgentsSettingsStore((s) => s.setShowRecentAgents);
+  return (
+    <SettingsRow
+      anchor="recent-agents"
+      label={t(($) => $.chat.recent_agents_label)}
+    >
+      <Switch
+        checked={show}
+        onCheckedChange={(checked) => setShow(checked)}
+        aria-label={t(($) => $.chat.recent_agents_label)}
       />
     </SettingsRow>
   );
