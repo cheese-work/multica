@@ -141,6 +141,15 @@ func (h *Handler) compactChatInPlace(ctx context.Context, sessionID, taskID pgty
 			return fail(http.StatusInternalServerError, "failed to check existing summary")
 		}
 	}
+	// The server's decision records lead the stored summary: the seed cuts a
+	// too-long summary from its tail, never the decisions.
+	decisions, err := compactionDecisionsBlock(ctx, qtx, session)
+	if err != nil {
+		return fail(http.StatusInternalServerError, "failed to load decision records")
+	}
+	if decisions != "" {
+		summaryText = decisions + "\n" + summaryText
+	}
 	summary, err := qtx.CreateChatCompactionDivider(ctx, db.CreateChatCompactionDividerParams{
 		ID: dbid.NewV7(), ChatSessionID: session.ID,
 		Content: strings.TrimSpace(redact.Prose(summaryText)),
