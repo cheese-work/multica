@@ -105,6 +105,8 @@
     "compaction_summary_show": "보기",
     "compaction_summary_hide": "숨기기",
     "compaction_open_question": "열린 질문: {{ask}}",
+    "compaction_divider": "압축됨 · {{time}} · {{tokens}} 토큰",
+    "compaction_divider_no_tokens": "압축됨 · {{time}}",
     "earlier_dm": "이전 대화",
     "quote_message": "인용",
     "speaker_you": "나",

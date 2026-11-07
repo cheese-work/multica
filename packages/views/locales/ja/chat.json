@@ -105,6 +105,8 @@
     "compaction_summary_show": "表示",
     "compaction_summary_hide": "非表示",
     "compaction_open_question": "未回答の質問: {{ask}}",
+    "compaction_divider": "圧縮 · {{time}} · {{tokens}} トークン",
+    "compaction_divider_no_tokens": "圧縮 · {{time}}",
     "earlier_dm": "以前のDM",
     "quote_message": "引用",
     "speaker_you": "あなた",

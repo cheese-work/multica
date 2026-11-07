@@ -144,6 +144,8 @@
     "compaction_summary_show": "顯示",
     "compaction_summary_hide": "隱藏",
     "compaction_open_question": "待回答的問題：{{ask}}",
+    "compaction_divider": "已壓縮 · {{time}} · {{tokens}} 個 token",
+    "compaction_divider_no_tokens": "已壓縮 · {{time}}",
     "earlier_dm": "較早的私信",
     "quote_message": "引用",
     "speaker_you": "你",

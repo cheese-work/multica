@@ -1382,6 +1382,21 @@ describe("ChatMessageList compact notice", () => {
     expect(note).toHaveTextContent("Compacted in this DM at 164k tokens (limit 160k). Earlier messages are summarized below.");
     expect(note).toHaveClass("text-muted-foreground");
   });
+
+  // CHE-4438: a full-width divider marks the compaction point; above it is the
+  // old session, below it the new one.
+  it("draws a divider labelled with time and tokens at the compaction point", () => {
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={new QueryClient()}>
+          <ChatMessageList messages={[notice]} pendingTask={null} availability="online" />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+    const divider = screen.getByRole("separator");
+    expect(divider).toHaveTextContent(/^Compacted · \d{2}:\d{2} \S+ · 164k tokens$/);
+    expect(divider).toHaveClass("w-full");
+  });
 });
 
 describe("ChatMessageList row keys (CHE-3329)", () => {

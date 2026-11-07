@@ -62,7 +62,7 @@ import {
   splitTimeline,
 } from "../lib/copy-text";
 import { stripChatQuickActionsProtocol } from "../lib/quick-actions";
-import { dayKey, formatDayLabel, formatMessageDateTime, formatMessageTime } from "./message-time";
+import { dayKey, formatDayLabel, formatMessageDateTime, formatMessageTime, formatTimeWithZone } from "./message-time";
 import { useT } from "../../i18n";
 import { AnnotatableAnswer } from "./annotatable-answer";
 import { useWorkspacePaths } from "@multica/core/paths";
@@ -1029,11 +1029,7 @@ const MessageBubble = memo(function MessageBubble({
   // The server-authored reason for an automatic compaction (or its failure):
   // a muted note, not a reply from the agent.
   if (message.message_kind === "compact_notice") {
-    return (
-      <p role="note" className="text-caption text-muted-foreground">
-        {message.content}
-      </p>
-    );
+    return <CompactNotice message={message} />;
   }
 
   // A fired wakeup is a system event, not something the member typed.
@@ -1099,6 +1095,32 @@ const MessageBubble = memo(function MessageBubble({
   );
 });
 
+/**
+ * The compaction point: a full-width divider (old session above, new below),
+ * then the server's muted note. The token count comes from the notice text
+ * ("... at 213k tokens ..."); without it the divider shows the time only.
+ */
+function CompactNotice({ message }: { message: ChatMessage }) {
+  const { t } = useT("chat");
+  const time = formatTimeWithZone(message.created_at);
+  const tokens = /(\d+k) tokens/.exec(message.content)?.[1];
+  const label = tokens
+    ? t(($) => $.message_list.compaction_divider, { time, tokens })
+    : t(($) => $.message_list.compaction_divider_no_tokens, { time });
+  return (
+    <div className="space-y-1">
+      <div role="separator" className="flex w-full items-center gap-3 text-caption text-muted-foreground">
+        <span className="h-px flex-1 bg-border" />
+        <span>{label}</span>
+        <span className="h-px flex-1 bg-border" />
+      </div>
+      <p role="note" className="text-caption text-muted-foreground">
+        {message.content}
+      </p>
+    </div>
+  );
+}
+
 function CompactionSummary({
   message,
   openAsks,
@@ -1125,6 +1147,7 @@ function CompactionSummary({
           </AnnotatableAnswer>
         </CollapsibleContent>
       </Collapsible>
+      {/* Slot: CHE-4447 adds "Decisions in this DM" here, under the folded summary. */}
       {openAsks.map((ask) => (
         <button
           key={`${ask.messageId}:${ask.ask}`}

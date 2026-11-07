@@ -109,6 +109,8 @@
     "compaction_summary_show": "Afficher",
     "compaction_summary_hide": "Masquer",
     "compaction_open_question": "Question ouverte : {{ask}}",
+    "compaction_divider": "Compacté · {{time}} · {{tokens}} jetons",
+    "compaction_divider_no_tokens": "Compacté · {{time}}",
     "earlier_dm": "Conversation antérieure",
     "quote_message": "Citer",
     "speaker_you": "Vous",
