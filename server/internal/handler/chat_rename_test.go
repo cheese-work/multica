@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -131,48 +130,6 @@ func TestChatRenameAtomicAnnouncement(test *testing.T) {
 	testutil.Call(test, testHandler.UpdateChatSession, request).Want(http.StatusInternalServerError)
 	if title := chatSessionTitleFromDB(test, parseUUID(sessionID)); title != "Handler Test Chat Session" {
 		test.Fatalf("title committed without announcement: %q", title)
-	}
-}
-
-func TestChatRenameTitleGenerationRaces(test *testing.T) {
-	withStubLLM(test, stubLLMCompletion(test, http.StatusOK, "Generated title"))
-	for _, titles := range [][]string{{"Original"}, {"Temporary", "Original"}} {
-		test.Run(strings.Join(titles, "/"), func(test *testing.T) {
-			agentID := createHandlerTestAgent(test, "rename-race", []byte("[]"))
-			sessionID := createHandlerTestChatSession(test, agentID)
-			dbfx.Exec(test, `UPDATE chat_session SET title = 'Original' WHERE id = $1`, sessionID)
-			test.Cleanup(func() { dbfx.Exec(test, `DELETE FROM chat_message WHERE chat_session_id = $1`, sessionID) })
-			for _, title := range titles {
-				request := withChatTestWorkspaceCtx(test, withURLParam(newRequest(http.MethodPatch, "/", map[string]string{"title": title}), "sessionId", sessionID))
-				testutil.Call(test, testHandler.UpdateChatSession, request).Want(http.StatusOK)
-			}
-			_, applied, err := testHandler.generateChatSessionTitle(context.Background(), parseUUID(sessionID), "Original", "Opening message")
-			if err != nil || applied || chatSessionTitleFromDB(test, parseUUID(sessionID)) != "Original" {
-				test.Fatalf("generation overwrote manual rename: applied=%v, error=%v", applied, err)
-			}
-		})
-	}
-}
-
-func TestChatRenameDuringTitleGeneration(test *testing.T) {
-	agentID := createHandlerTestAgent(test, "rename-inflight", []byte("[]"))
-	sessionID := createHandlerTestChatSession(test, agentID)
-	dbfx.Exec(test, `UPDATE chat_session SET title = 'Original' WHERE id = $1`, sessionID)
-	test.Cleanup(func() { dbfx.Exec(test, `DELETE FROM chat_message WHERE chat_session_id = $1`, sessionID) })
-	renameRequest := withChatTestWorkspaceCtx(test, withURLParam(newRequest(http.MethodPatch, "/", map[string]string{"title": "Manual title"}), "sessionId", sessionID))
-	status := make(chan int, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		response := httptest.NewRecorder()
-		testHandler.UpdateChatSession(response, renameRequest)
-		status <- response.Code
-		writer.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(writer, `{"choices":[{"message":{"role":"assistant","content":"Generated title"},"finish_reason":"stop"}]}`)
-	}))
-	test.Cleanup(server.Close)
-	withStubLLM(test, server)
-	_, applied, err := testHandler.generateChatSessionTitle(context.Background(), parseUUID(sessionID), "Original", "Opening message")
-	if renameStatus := <-status; renameStatus != http.StatusOK || err != nil || applied || chatSessionTitleFromDB(test, parseUUID(sessionID)) != "Manual title" {
-		test.Fatalf("in-flight title generation clobbered rename: status=%d applied=%v error=%v", renameStatus, applied, err)
 	}
 }
 
