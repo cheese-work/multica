@@ -201,7 +201,7 @@ func TestCardPreviewIsMissingForAnUnknownActionType(test *testing.T) {
 // keeps the action, with its state and no preview, so it can show the outcome.
 func TestCardActionStaysAfterTheActionLeavesPending(test *testing.T) {
 	action := newPendingAction(test)
-	dbfx.Exec(test, `UPDATE decision_action SET state = 'executed' WHERE id = $1`, action.actionID)
+	dbfx.Exec(test, `UPDATE decision_action SET state = 'executed', executed_at = now() WHERE id = $1`, action.actionID)
 	card := action.cardAction(test)
 	if card == nil || card.State != "executed" || card.Preview != nil || card.ID != action.actionID {
 		test.Fatalf("executed action on the card: %+v", card)
