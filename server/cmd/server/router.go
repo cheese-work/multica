@@ -1790,6 +1790,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceMemberFromURL(queries, "id"))
 					r.Get("/", h.GetWorkspace)
 					r.Get("/members", h.ListMembersWithUser)
+					r.Get("/provider-breakers", h.ListProviderBreakers)
 					r.With(denyRunToken).Post("/leave", h.LeaveWorkspace)
 					r.Get("/invitations", h.ListWorkspaceInvitations)
 					// Listing GitHub installations is member-visible so the
@@ -1801,6 +1802,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// for the same reason as GitHub installations; connect /
 					// disconnect are admin-gated in the group below.
 					r.Get("/vcs/connections", h.ListVCSConnections)
+					r.Get("/background-agents", h.GetBackgroundAgents)
 					r.Get("/qoder", h.GetQoderConnection)
 					r.Get("/qoder/agents", h.ListQoderAgents)
 					// Custom runtime profiles — listing/reading is member-visible
@@ -1836,6 +1838,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// Scheduling pause: the handler also refuses agent credentials.
 					r.Post("/pause", h.PauseWorkspaceScheduling)
 					r.Post("/resume", h.ResumeWorkspaceScheduling)
+					r.With(handler.RequireHumanActor).Post("/provider-breakers/{provider}/reset", h.ResetProviderBreaker)
 					r.Post("/members", h.CreateInvitation)
 					r.Route("/members/{memberId}", func(r chi.Router) {
 						r.Patch("/", h.UpdateMember)
@@ -1855,6 +1858,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// CHE-3627: routing agent. Human owner/admin only.
 					r.With(handler.RequireHumanActor).Get("/routing-agent", h.GetRoutingAgent)
 					r.With(handler.RequireHumanActor).Put("/routing-agent", h.UpdateRoutingAgent)
+					// CHE-4098: background agents. Owner/admin only; the handler refuses a
+					// machine actor itself so the refusal carries a stable code and an
+					// unchanged machine write stays accepted.
+					r.Put("/background-agents", h.UpdateBackgroundAgents)
+					r.Delete("/background-agents", h.ResetBackgroundAgents)
 					// CHE-2490: admin-written protected-path policy for the push broker.
 					r.With(handler.RequireHumanActor).Put("/protected-path-policies/{name}", h.SetProtectedPathPolicy)
 					// Curating the shared MCP library is an admin action.
@@ -2154,6 +2162,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/table/groups", h.ListIssueTableGroups)
 				r.Post("/table/rows", h.ListIssueTableRows)
 				r.Post("/table/facets", h.ListIssueTableFacets)
+				r.Post("/timeline", h.ListIssueActualTimeline)
 				r.Get("/search", h.SearchIssues)
 				r.Get("/child-progress", h.ChildIssueProgress)
 				r.Get("/children", h.ListChildrenByParents)

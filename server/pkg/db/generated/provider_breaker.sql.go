@@ -137,6 +137,70 @@ func (q *Queries) GetProviderBreaker(ctx context.Context, arg GetProviderBreaker
 	return i, err
 }
 
+const insertProviderBreakerAudit = `-- name: InsertProviderBreakerAudit :exec
+INSERT INTO provider_breaker_audit (workspace_id, provider, event, previous_state, new_state, actor_id, task_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+`
+
+type InsertProviderBreakerAuditParams struct {
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	Provider      string      `json:"provider"`
+	Event         string      `json:"event"`
+	PreviousState string      `json:"previous_state"`
+	NewState      string      `json:"new_state"`
+	ActorID       pgtype.UUID `json:"actor_id"`
+	TaskID        pgtype.UUID `json:"task_id"`
+}
+
+func (q *Queries) InsertProviderBreakerAudit(ctx context.Context, arg InsertProviderBreakerAuditParams) error {
+	_, err := q.db.Exec(ctx, insertProviderBreakerAudit,
+		arg.WorkspaceID,
+		arg.Provider,
+		arg.Event,
+		arg.PreviousState,
+		arg.NewState,
+		arg.ActorID,
+		arg.TaskID,
+	)
+	return err
+}
+
+const listProviderBreakers = `-- name: ListProviderBreakers :many
+SELECT workspace_id, provider, state, opened_at, next_probe_at, cool_off_s, canary_task_id, trip_evidence, last_5xx_at, last_success_at, version FROM provider_breaker WHERE workspace_id = $1 ORDER BY provider
+`
+
+func (q *Queries) ListProviderBreakers(ctx context.Context, workspaceID pgtype.UUID) ([]ProviderBreaker, error) {
+	rows, err := q.db.Query(ctx, listProviderBreakers, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProviderBreaker{}
+	for rows.Next() {
+		var i ProviderBreaker
+		if err := rows.Scan(
+			&i.WorkspaceID,
+			&i.Provider,
+			&i.State,
+			&i.OpenedAt,
+			&i.NextProbeAt,
+			&i.CoolOffS,
+			&i.CanaryTaskID,
+			&i.TripEvidence,
+			&i.Last5xxAt,
+			&i.LastSuccessAt,
+			&i.Version,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRecentProviderServerFailures = `-- name: ListRecentProviderServerFailures :many
 SELECT t.id, a.model, COALESCE(t.completed_at, t.created_at) AS failed_at
 FROM agent_task_queue t
@@ -270,6 +334,27 @@ func (q *Queries) ReopenProviderBreaker(ctx context.Context, arg ReopenProviderB
 		arg.TaskID,
 		arg.ExpectedVersion,
 	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const resetProviderBreaker = `-- name: ResetProviderBreaker :execrows
+UPDATE provider_breaker
+SET state = 'closed', canary_task_id = NULL, opened_at = NULL, next_probe_at = NULL,
+    cool_off_s = $1, version = version + 1
+WHERE workspace_id = $2 AND provider = $3
+`
+
+type ResetProviderBreakerParams struct {
+	DefaultCoolOffSeconds int32       `json:"default_cool_off_seconds"`
+	WorkspaceID           pgtype.UUID `json:"workspace_id"`
+	Provider              string      `json:"provider"`
+}
+
+func (q *Queries) ResetProviderBreaker(ctx context.Context, arg ResetProviderBreakerParams) (int64, error) {
+	result, err := q.db.Exec(ctx, resetProviderBreaker, arg.DefaultCoolOffSeconds, arg.WorkspaceID, arg.Provider)
 	if err != nil {
 		return 0, err
 	}

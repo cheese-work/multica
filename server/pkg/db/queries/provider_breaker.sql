@@ -78,3 +78,16 @@ VALUES (@workspace_id, @provider, now())
 ON CONFLICT (workspace_id, provider) DO UPDATE
 SET last_success_at = now(), version = provider_breaker.version + 1
 WHERE provider_breaker.version = @expected_version;
+
+-- name: ListProviderBreakers :many
+SELECT * FROM provider_breaker WHERE workspace_id = @workspace_id ORDER BY provider;
+
+-- name: ResetProviderBreaker :execrows
+UPDATE provider_breaker
+SET state = 'closed', canary_task_id = NULL, opened_at = NULL, next_probe_at = NULL,
+    cool_off_s = @default_cool_off_seconds, version = version + 1
+WHERE workspace_id = @workspace_id AND provider = @provider;
+
+-- name: InsertProviderBreakerAudit :exec
+INSERT INTO provider_breaker_audit (workspace_id, provider, event, previous_state, new_state, actor_id, task_id)
+VALUES (@workspace_id, @provider, @event, @previous_state, @new_state, @actor_id, @task_id);
