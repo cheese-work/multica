@@ -415,6 +415,7 @@
     "option_cons": "단점",
     "option_cost": "비용 또는 시간",
     "answer_send": "보내기",
+    "answer_clear": "선택 해제",
     "answer_error": "보내지 못했습니다. 다시 시도하세요.",
     "answer_helper": "보내기를 누르면 답변이 {{issue}}에 게시됩니다. DM 에이전트에게 하는 질문은 아래 메시지 입력란에 입력하세요.",
     "answer_helper_issue": "보내기를 누르면 답변이 {{issue}}에 게시됩니다.",

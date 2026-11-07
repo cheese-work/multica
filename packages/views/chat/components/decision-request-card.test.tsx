@@ -7,6 +7,7 @@ import { WorkspaceSlugProvider } from "@multica/core/paths";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderWithI18n } from "../../test/i18n";
 import type { DecisionRequestCard as RequestCard } from "@multica/core/types";
+import { useDecisionAnswerDraftStore } from "@multica/core/issues/stores/decision-answer-draft-store";
 import { DecisionRequestCard } from "./decision-request-card";
 import { ChatAnnotationContext } from "./chat-annotation-context";
 
@@ -293,6 +294,7 @@ describe("DecisionRequestCard answering", () => {
   const renderCard = (value: RequestCard = withOptions) =>
     renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={value} /></WorkspaceSlugProvider></QueryClientProvider>);
   beforeEach(() => {
+    useDecisionAnswerDraftStore.setState({ drafts: {} });
     answerDecisionRequest.mockReset().mockResolvedValue(undefined);
     uploadFile.mockReset();
     editor.hasActiveUploads = false;
@@ -317,23 +319,79 @@ describe("DecisionRequestCard answering", () => {
     await vi.waitFor(() => expect(screen.getByRole("textbox", { name: "Write an answer" })).toHaveValue(""));
   });
 
-  it("submits an option with one click and no text", async () => {
+  it("selects an option on tap without sending, and Send posts the chosen option", async () => {
     renderCard();
     const user = userEvent.setup();
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
-    await user.click(screen.getByRole("button", { name: /Option B/ }));
+    const optionB = screen.getByRole("radio", { name: /Option B/ });
+    expect(optionB).toHaveAttribute("aria-checked", "false");
+    await user.click(optionB);
+    expect(answerDecisionRequest).not.toHaveBeenCalled();
+    expect(optionB).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("radio", { name: /Option A/ })).toHaveAttribute("aria-checked", "false");
+    await user.click(screen.getByRole("button", { name: "Send" }));
     expect(answerDecisionRequest).toHaveBeenCalledTimes(1);
     expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: "Option B", text: undefined });
   });
 
+  it("does not style an unselected recommended option as selected; the badge is its only cue", async () => {
+    renderCard();
+    const optionB = screen.getByRole("radio", { name: /Option B/ });
+    expect(optionB).toHaveTextContent("Recommended");
+    expect(optionB).toHaveAttribute("aria-checked", "false");
+    expect(optionB.className).not.toMatch(/border-primary|bg-primary|ring-primary/);
+    await userEvent.setup().click(optionB);
+    expect(optionB.className).toMatch(/border-primary/);
+    expect(optionB.className).toMatch(/ring-primary/);
+  });
+
+  it("gives Send and Clear selection a 44px touch height on a phone", async () => {
+    renderCard();
+    await userEvent.setup().click(screen.getByRole("radio", { name: /Option A/ }));
+    for (const name of ["Send", "Clear selection"]) {
+      expect(screen.getByRole("button", { name }).className).toContain("max-sm:h-11");
+    }
+  });
+
+  it("deselects on a second tap or on Clear, and Send is disabled again", async () => {
+    renderCard();
+    const user = userEvent.setup();
+    const optionA = screen.getByRole("radio", { name: /Option A/ });
+    await user.click(optionA);
+    await user.click(optionA);
+    expect(optionA).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Clear selection" })).not.toBeInTheDocument();
+    await user.click(optionA);
+    await user.click(screen.getByRole("button", { name: "Clear selection" }));
+    expect(optionA).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(answerDecisionRequest).not.toHaveBeenCalled();
+  });
+
+  it("keeps the selection and the note across an unmount until it is sent", async () => {
+    const first = renderCard();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("radio", { name: /Option A/ }));
+    await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "later");
+    first.unmount();
+    renderCard();
+    expect(screen.getByRole("radio", { name: /Option A/ })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("textbox", { name: "Add a note (optional)" })).toHaveValue("later");
+    editor.live = "later";
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: "Option A", text: "later" }));
+    await vi.waitFor(() => expect(useDecisionAnswerDraftStore.getState().getDraft("request")).toBeUndefined());
+  });
+
   it("shows each option's pros, cons and cost, and marks the recommendation", () => {
     renderCard();
-    const second = screen.getByRole("button", { name: /Option B/ });
+    const second = screen.getByRole("radio", { name: /Option B/ });
     expect(second).toHaveTextContent("safe");
     expect(second).toHaveTextContent("slow");
     expect(second).toHaveTextContent("2 days");
     expect(second).toHaveTextContent("Recommended");
-    const first = screen.getByRole("button", { name: /Option A/ });
+    const first = screen.getByRole("radio", { name: /Option A/ });
     expect(first).toHaveTextContent("fast");
     expect(first).not.toHaveTextContent("Recommended");
   });
@@ -363,7 +421,9 @@ describe("DecisionRequestCard answering", () => {
     const user = userEvent.setup();
     await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "but wait a day");
     editor.live = "but wait a day";
-    await user.click(screen.getByRole("button", { name: /Option A/ }));
+    await user.click(screen.getByRole("radio", { name: /Option A/ }));
+    expect(answerDecisionRequest).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Send" }));
     expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: "Option A", text: "but wait a day" });
   });
 
@@ -463,7 +523,7 @@ describe("DecisionRequestCard answering", () => {
     expect(screen.getByText("Send posts your answer to CHE-2088. Questions for the DM agent go in the message box below.")).toBeVisible();
     // The editor sends on the configured shortcut (Ctrl/Cmd+Enter by default), so the hint names that key.
     expect(screen.getByText(/^(Ctrl\+Enter|⌘↵) sends$/)).toBeVisible();
-    expect(screen.getByRole("group", { name: "Options" })).toBeInTheDocument();
+    expect(screen.getByRole("radiogroup", { name: "Options" })).toBeInTheDocument();
     expect(screen.getByLabelText("Add a note (optional)")).toHaveAccessibleDescription(/^(Ctrl\+Enter|⌘↵) sends$/);
   });
 
@@ -570,7 +630,8 @@ describe("DecisionRequestCard answering", () => {
     const user = userEvent.setup();
     await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "with a note");
     editor.live = "with a note";
-    await user.click(screen.getByRole("button", { name: /Option A/ }));
+    await user.click(screen.getByRole("radio", { name: /Option A/ }));
+    await user.click(screen.getByRole("button", { name: "Send" }));
     const kept = await screen.findByTestId("decision-request-kept-draft");
     expect(kept).toHaveTextContent("Nothing from your draft was posted.");
     expect(kept).toHaveTextContent("Option A");
@@ -642,9 +703,11 @@ describe("DecisionRequestCard passkey-gated answering", () => {
   const pickAndSend = async (user: ReturnType<typeof userEvent.setup>) => {
     await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "why");
     editor.live = "why";
-    await user.click(screen.getByRole("button", { name: /Option A/ }));
+    await user.click(screen.getByRole("radio", { name: /Option A/ }));
+    await user.click(screen.getByRole("button", { name: "Send" }));
   };
   beforeEach(() => {
+    useDecisionAnswerDraftStore.setState({ drafts: {} });
     answerDecisionRequest.mockReset().mockRejectedValueOnce(gated()).mockResolvedValue(undefined);
     challengeDecisionAnswer.mockReset().mockResolvedValue(challenge);
     signPasskeyChallenge.mockReset().mockResolvedValue({ challenge_id: "ch-1", credential: { id: "cred" } });
