@@ -134,7 +134,10 @@ func TestActivityIssueCreated_AutopilotMapPayload(t *testing.T) {
 	}
 }
 
-func TestActivityIssueUpdated_StatusChanged(t *testing.T) {
+// The listener writes no status row of its own (CHE-2854, C1d): every writer
+// commits its row in the status transaction and names it as activity_id. An
+// event without one gets no stand-in row.
+func TestActivityIssueUpdated_StatusChangedWithoutActivityIDWritesNoRow(t *testing.T) {
 	queries := db.New(testPool)
 	bus := events.New()
 	registerActivityListeners(bus, queries)
@@ -165,23 +168,8 @@ func TestActivityIssueUpdated_StatusChanged(t *testing.T) {
 		},
 	})
 
-	activities := listActivitiesForIssue(t, queries, issueID)
-	if len(activities) != 1 {
-		t.Fatalf("expected 1 activity, got %d", len(activities))
-	}
-	if activities[0].Action != "status_changed" {
-		t.Fatalf("expected action 'status_changed', got %q", activities[0].Action)
-	}
-
-	var details map[string]string
-	if err := json.Unmarshal(activities[0].Details, &details); err != nil {
-		t.Fatalf("failed to unmarshal details: %v", err)
-	}
-	if details["from"] != "todo" {
-		t.Fatalf("expected from 'todo', got %q", details["from"])
-	}
-	if details["to"] != "in_progress" {
-		t.Fatalf("expected to 'in_progress', got %q", details["to"])
+	if n := len(listActivitiesForIssue(t, queries, issueID)); n != 0 {
+		t.Fatalf("expected 0 listener rows without activity_id, got %d", n)
 	}
 }
 
@@ -245,8 +233,8 @@ func TestActivityIssueUpdated_AssigneeChanged(t *testing.T) {
 }
 
 // TestActivityIssueUpdated_WorkflowHandoff pins the merged timeline entry for
-// a workflow handoff (MUL-7420): one status row carrying who the issue went
-// to and the brief, and no separate assignee row repeating it.
+// a workflow handoff (MUL-7420): the status row carries who the issue went to
+// and the brief, so no separate assignee row repeats it.
 func TestActivityIssueUpdated_WorkflowHandoff(t *testing.T) {
 	queries := db.New(testPool)
 	bus := events.New()
@@ -288,21 +276,10 @@ func TestActivityIssueUpdated_WorkflowHandoff(t *testing.T) {
 		},
 	})
 
-	activities := listActivitiesForIssue(t, queries, issueID)
-	if len(activities) != 1 || activities[0].Action != "status_changed" {
-		t.Fatalf("expected one status_changed activity, got %+v", activities)
-	}
-	var details map[string]string
-	if err := json.Unmarshal(activities[0].Details, &details); err != nil {
-		t.Fatalf("failed to unmarshal details: %v", err)
-	}
-	for key, want := range map[string]string{
-		"from": "implement", "to": "code_review", "handoff_workflow": "Delivery",
-		"handoff_to_type": "agent", "handoff_to_id": agentID, "handoff_run": "true", "handoff_note": "Review the PR.",
-	} {
-		if details[key] != want {
-			t.Fatalf("details[%q] = %q, want %q (all: %v)", key, details[key], want, details)
-		}
+	// The handoff rides on the producer's status row, so the listener writes
+	// neither that row nor the assignee row.
+	if n := len(listActivitiesForIssue(t, queries, issueID)); n != 0 {
+		t.Fatalf("expected 0 listener rows for a handoff, got %d", n)
 	}
 }
 
@@ -515,9 +492,16 @@ func activityDetails(t *testing.T, queries *db.Queries, issueID, action string) 
 	if len(found) != 1 {
 		t.Fatalf("expected exactly 1 %q activity on %s, got %d", action, issueID, len(found))
 	}
-	var details map[string]string
-	if err := json.Unmarshal(found[0].Details, &details); err != nil {
+	var raw map[string]any
+	if err := json.Unmarshal(found[0].Details, &raw); err != nil {
 		t.Fatalf("failed to unmarshal details: %v", err)
+	}
+	// String fields only; the trigger object is read by its own test.
+	details := map[string]string{}
+	for k, v := range raw {
+		if s, ok := v.(string); ok {
+			details[k] = s
+		}
 	}
 	return details
 }
@@ -611,6 +595,23 @@ func TestActivityIssueUpdated_DuplicateUnmarked(t *testing.T) {
 	}
 }
 
+// A reopen that already recorded its status row in the transaction
+// (activity_id) must not have the unmarked row stand in for it too.
+func TestActivityIssueUpdated_DuplicateUnmarkedWithRecordedStatusRow(t *testing.T) {
+	queries := db.New(testPool)
+	bus, duplicateID, originalID := newDuplicateTestIssues(t, queries)
+
+	bus.Publish(duplicateMarkEvent(duplicateID, "MUL-7624", "todo", &originalID, nil, map[string]any{
+		"status_changed": true,
+		"prev_status":    "cancelled",
+		"activity_id":    "00000000-0000-4000-8000-0000000000a1",
+	}))
+
+	if got := activityDetails(t, queries, duplicateID, "duplicate_unmarked"); got["to"] != "" {
+		t.Fatalf("duplicate_unmarked details = %v, want no to", got)
+	}
+}
+
 // Moving a mark from one original to another reads as leaving the first and
 // joining the second, on all three issues. The status did not move.
 func TestActivityIssueUpdated_DuplicateRepointed(t *testing.T) {
@@ -664,22 +665,6 @@ func TestActivityIssueUpdated_DuplicateUnchanged(t *testing.T) {
 	}
 	if got := activityActions(t, queries, originalID); len(got) != 0 {
 		t.Fatalf("expected no activities on the original, got %v", got)
-	}
-}
-
-// A plain cancel with no mark still logs its status row: only a mark change
-// replaces it.
-func TestActivityIssueUpdated_PlainCancelKeepsStatusRow(t *testing.T) {
-	queries := db.New(testPool)
-	bus, issueID, _ := newDuplicateTestIssues(t, queries)
-
-	bus.Publish(duplicateMarkEvent(issueID, "MUL-7624", "cancelled", nil, nil, map[string]any{
-		"status_changed": true,
-		"prev_status":    "todo",
-	}))
-
-	if got := activityActions(t, queries, issueID); len(got) != 1 || got[0] != "status_changed" {
-		t.Fatalf("expected only status_changed, got %v", got)
 	}
 }
 
@@ -817,10 +802,8 @@ func TestActivityLeftoverDuplicatePointer(t *testing.T) {
 	})
 }
 
-// A migrated producer already committed the status row and names it in the
-// event; the listener must not write a second one. An unmigrated producer
-// (TestActivityIssueUpdated_StatusChanged) sends no activity_id and still gets
-// exactly one row.
+// A producer already committed the status row and names it in the event; the
+// listener must not write a second one.
 func TestActivityIssueUpdated_StatusChangedWithActivityIDWritesNoRow(t *testing.T) {
 	queries := db.New(testPool)
 	bus := events.New()
@@ -855,5 +838,31 @@ func TestActivityIssueUpdated_StatusChangedWithActivityIDWritesNoRow(t *testing.
 
 	if n := len(listActivitiesForIssue(t, queries, issueID)); n != 0 {
 		t.Fatalf("expected 0 listener rows when activity_id is present, got %d", n)
+	}
+}
+
+// A duplicate mark and unmark carry the status trigger the handler put on the
+// event, so the timeline row says who and what moved the issue.
+func TestActivityIssueUpdated_DuplicateRowsCarryTrigger(t *testing.T) {
+	queries := db.New(testPool)
+	bus, duplicateID, originalID := newDuplicateTestIssues(t, queries)
+	trigger := map[string]any{"v": 1, "cause": map[string]any{"kind": "ui_or_api"}, "channel": "web"}
+
+	bus.Publish(duplicateMarkEvent(duplicateID, "MUL-7624", "cancelled", nil, &originalID, map[string]any{
+		"status_changed": true, "prev_status": "todo", "status_trigger": trigger,
+	}))
+	bus.Publish(duplicateMarkEvent(duplicateID, "MUL-7624", "todo", &originalID, nil, map[string]any{
+		"status_changed": true, "prev_status": "cancelled", "status_trigger": trigger,
+	}))
+
+	for _, action := range []string{"duplicate_marked", "duplicate_unmarked"} {
+		var raw []byte
+		if err := testPool.QueryRow(context.Background(), `SELECT details FROM activity_log WHERE issue_id = $1 AND action = $2`, duplicateID, action).Scan(&raw); err != nil {
+			t.Fatalf("%s: %v", action, err)
+		}
+		var details struct{ Trigger map[string]any }
+		if err := json.Unmarshal(raw, &details); err != nil || details.Trigger["channel"] != "web" {
+			t.Fatalf("%s details = %s", action, raw)
+		}
 	}
 }

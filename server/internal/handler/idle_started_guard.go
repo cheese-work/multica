@@ -19,6 +19,33 @@ const (
 
 var idleGuardDefaultStatuses = []string{"in_progress", "agent_review"}
 
+var errIdleGuardShape = fmt.Errorf("idle_started_guard must be an object of mode (off, shadow or act) and after_hours (integer 1 to %d)", idleGuardMaxHours)
+
+// validateIdleGuardPatch checks the idle_started_guard request field: an
+// object whose named fields are valid. Absent fields are left alone.
+func validateIdleGuardPatch(raw json.RawMessage) error {
+	var patch map[string]any
+	if err := json.Unmarshal(raw, &patch); err != nil || patch == nil {
+		return errIdleGuardShape
+	}
+	for key := range patch {
+		if key != "mode" && key != "after_hours" {
+			return fmt.Errorf("idle_started_guard.%s is not settable; use mode or after_hours", key)
+		}
+	}
+	if v, present := patch["mode"]; present {
+		if mode, _ := v.(string); mode != "off" && mode != "shadow" && mode != "act" {
+			return fmt.Errorf("idle_started_guard.mode must be off, shadow or act")
+		}
+	}
+	if v, present := patch["after_hours"]; present {
+		if hours, _ := v.(float64); hours != float64(int(hours)) || hours < 1 || hours > idleGuardMaxHours {
+			return fmt.Errorf("idle_started_guard.after_hours must be an integer from 1 to %d", idleGuardMaxHours)
+		}
+	}
+	return nil
+}
+
 type idleGuardSettings struct {
 	Guard struct {
 		Mode       string   `json:"mode"`

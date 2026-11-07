@@ -819,6 +819,12 @@
     "kind_tool": "도구",
     "kind_thinking": "사고",
     "kind_error": "오류",
+    "silence_warn": "{{minutes}}분 동안 출력 없음",
+    "silence_warn_unknown": "한동안 출력 없음",
+    "tool_stalled": "{{minutes}}분 넘게 실행 중",
+    "tool_stalled_unknown": "제한 시간을 넘겨 실행 중",
+    "tool_stalled_ended": "{{minutes}}분 넘게 실행되고 결과 없음",
+    "tool_stalled_ended_unknown": "제한 시간을 넘기고 결과 없음",
     "group_calls_other": "호출 {{count}}회",
     "step_running": "진행 중",
     "step_duration_unknown": "정확한 소요 시간을 확인할 수 없습니다.",
@@ -1053,5 +1059,11 @@
   "actions": {
     "selected_other": "{{count}}개 선택됨",
     "clear_selection": "선택 해제"
+  },
+  "auto_compact": {
+    "title": "자동 압축",
+    "hint": "비워 두면 워크스페이스 값을 사용합니다.",
+    "inherit_placeholder": "워크스페이스 기본값",
+    "save_failed": "자동 압축 설정을 저장하지 못했습니다."
   }
 }

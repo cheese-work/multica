@@ -23,6 +23,7 @@ export interface IssueViewBaseline {
   project: Set<string>;
   includeNoProject: boolean;
   projectStatus: Set<string>;
+  workflow: Set<string>;
   label: Set<string>;
   /** Property definition id → fixed member keys (`propertyFilterValueKey`). */
   property: Map<string, Set<string>>;
@@ -85,6 +86,7 @@ export function baselineFromQuery(query: Record<string, unknown>): IssueViewBase
   const projectStatusFilters = stringArray(query.projectStatusFilters).filter(
     (s): s is ProjectStatus => (PROJECT_STATUS_ORDER as readonly string[]).includes(s),
   );
+  const workflowFilters = stringArray(query.workflowFilters);
   const labelFilters = stringArray(query.labelFilters);
   const includeNoAssignee = query.includeNoAssignee === true;
   const includeNoProject = query.includeNoProject === true;
@@ -112,6 +114,7 @@ export function baselineFromQuery(query: Record<string, unknown>): IssueViewBase
     project: new Set(projectFilters),
     includeNoProject,
     projectStatus: new Set(projectStatusFilters),
+    workflow: new Set(workflowFilters),
     label: new Set(labelFilters),
     property,
     raw: {
@@ -123,6 +126,7 @@ export function baselineFromQuery(query: Record<string, unknown>): IssueViewBase
       projectFilters,
       includeNoProject,
       projectStatusFilters,
+      workflowFilters,
       labelFilters,
       propertyFilters,
     },

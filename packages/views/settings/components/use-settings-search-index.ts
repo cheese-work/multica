@@ -121,6 +121,11 @@ export function useSettingsSearchIndex(
         description: t(($) => $.tokens.purpose),
       },
       {
+        tab: "passkeys",
+        title: t(($) => $.page.tabs.passkeys),
+        description: t(($) => $.passkeys.purpose),
+      },
+      {
         tab: "shortcuts",
         title: t(($) => $.page.tabs.shortcuts),
         description: t(($) => $.shortcuts.description),
@@ -150,6 +155,24 @@ export function useSettingsSearchIndex(
         anchor: "auto-compact",
         title: t(($) => $.workspace.auto_compact_label),
         description: t(($) => $.workspace.auto_compact_hint),
+      },
+      {
+        tab: "workspace",
+        anchor: "idle-guard",
+        title: t(($) => $.workspace.idle_guard_label),
+        description: t(($) => $.workspace.idle_guard_hint),
+      },
+      {
+        tab: "workspace",
+        anchor: "routing-agent",
+        title: t(($) => $.workspace.routing_agent_label),
+        description: t(($) => $.workspace.routing_agent_hint),
+      },
+      {
+        tab: "workspace",
+        anchor: "routing-fallback-agent",
+        title: t(($) => $.workspace.routing_fallback_label),
+        description: t(($) => $.workspace.routing_fallback_hint),
       },
       { tab: "workspace", anchor: "slug", title: t(($) => $.workspace.slug_label) },
       {

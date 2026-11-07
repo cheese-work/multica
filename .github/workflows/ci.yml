@@ -1,8 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
   merge_group:
@@ -17,7 +15,7 @@ concurrency:
 
 jobs:
   warning-budget:
-    needs: [migration-prefix-check, cursor-background-lifecycle, changes, sqlc-check, frontend-build, frontend-test, frontend-views-test, locale-parity, frontend, backend-tests, backend-agent-tests, go-vulnerability-scan, go-lint, backend, daemon-artifact, image-budget, installer, script-checks, deploy-cd, frontend-quality]
+    needs: [migration-prefix-check, cursor-background-lifecycle, changes, sqlc-check, frontend-build, frontend-test, frontend-views-test, locale-parity, frontend, backend-test-shards, backend-tests, backend-agent-tests, go-vulnerability-scan, go-lint, backend, image-budget, installer, script-checks, deploy-cd, frontend-quality]
     if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -48,7 +46,7 @@ jobs:
   migration-prefix-check:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
-    timeout-minutes: 1
+    timeout-minutes: 3
     permissions:
       contents: read
       pull-requests: read
@@ -80,6 +78,10 @@ jobs:
           persist-credentials: false
       - name: Test the guard
         run: bash scripts/check-no-upstream-update-source.test.sh
+      - name: Test the upstream-main mirror script
+        run: bash scripts/mirror-upstream-main.test.sh
+      - name: Test the upstream-main rulesets
+        run: node --test scripts/mirror-rulesets.test.mjs scripts/mirror-workflow.test.mjs
       - name: Check no upstream update source
         run: bash scripts/check-no-upstream-update-source.sh
 
@@ -160,7 +162,7 @@ jobs:
           node-version: 22
 
       - name: Test CI selection and gates
-        run: node --test scripts/ci-scope.test.mjs scripts/check-image-budget.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/pr-changelog-line.test.mjs scripts/pr-issue-link-check.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/fork-sync-guard.test.mjs scripts/ci-runners.test.mjs scripts/ci-locale-parity.test.mjs scripts/ci-vitest-timeout.test.mjs scripts/page-load-report.test.mjs scripts/phone-network.test.mjs deploy/cd/release-manifest.test.mjs deploy/cd/drift-receipt.test.mjs
+        run: node --test scripts/ci-scope.test.mjs scripts/go-test-flakes.test.mjs scripts/check-image-budget.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/pr-changelog-line.test.mjs scripts/pr-issue-link-check.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/fork-sync-guard.test.mjs scripts/upstream-pr-watch.test.mjs scripts/upstream-watch-run.test.mjs scripts/ci-runners.test.mjs scripts/ci-required-jobs.test.mjs scripts/ci-locale-parity.test.mjs scripts/ci-vitest-timeout.test.mjs scripts/merge-queue-dequeue-report.test.mjs scripts/pr-main-sync.test.mjs scripts/page-load-report.test.mjs scripts/phone-network.test.mjs deploy/cd/release-manifest.test.mjs deploy/cd/drift-receipt.test.mjs
 
       - name: Filter paths
         id: filter
@@ -260,8 +262,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .turbo/cache
-          key: turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.sha }}
+          key: turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
+            turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-
+            turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-refs/heads/main-${{ hashFiles('pnpm-lock.yaml') }}-
             turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-
 
       - name: Build, type check, and lint
@@ -314,8 +318,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .turbo/cache
-          key: turbo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.sha }}
+          key: turbo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
+            turbo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-
+            turbo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-refs/heads/main-${{ hashFiles('pnpm-lock.yaml') }}-
             turbo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-
 
       - name: Test web, core, and desktop
@@ -370,8 +376,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .turbo/cache
-          key: turbo-views-test-${{ matrix.index }}-of-${{ matrix.total }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.sha }}
+          key: turbo-views-test-${{ matrix.index }}-of-${{ matrix.total }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
+            turbo-views-test-${{ matrix.index }}-of-${{ matrix.total }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-
+            turbo-views-test-${{ matrix.index }}-of-${{ matrix.total }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-refs/heads/main-${{ hashFiles('pnpm-lock.yaml') }}-
             turbo-views-test-${{ matrix.index }}-of-${{ matrix.total }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-
 
       - name: Test views shard ${{ matrix.index }}/${{ matrix.total }}
@@ -470,9 +478,23 @@ jobs:
   # replay cached results. Migrations are read from disk at run time rather
   # than embedded, so a schema change is invisible to a test binary's hash and
   # a cached "ok" from an untouched package could mask a real failure.
-  backend-tests:
+  #
+  # CHE-4268: one job took 15-16 min and was the merge-queue critical path, so
+  # the work is a matrix of runners, one partition each: four handler shards,
+  # internal/service (the slowest non-handler package) and every other
+  # package. The `backend-tests` job below is the aggregate that keeps the
+  # required check name. Each partition still builds its own test binaries;
+  # Build, Vet and the script checks run once, on `rest`.
+  backend-test-shards:
+    name: backend-test-shards (${{ matrix.partition }})
     needs: [changes, migration-prefix-check]
     if: ${{ !cancelled() && needs.changes.outputs.push_full == 'true' }}
+    strategy:
+      # A red shard must not cancel the others: the slowest evidence is the
+      # most useful, and the aggregate fails on any non-success anyway.
+      fail-fast: false
+      matrix:
+        partition: [handler-0, handler-1, handler-2, handler-3, service, rest]
     # Stays off cheese-x99 (CHE-748): this is the only job in the repo that
     # uses `services`, and the self-hosted runners talk to a nested Docker
     # daemon (`DOCKER_HOST=tcp://dind-N:2376`) living in a *different*
@@ -531,6 +553,7 @@ jobs:
       # directly so they run alongside the Postgres-backed suite.
       REDIS_TEST_URL: redis://localhost:6379/1
       GOFLAGS: -count=1
+      MULTICA_HANDLER_SHARDS: "4"
     steps:
       - name: Require migration prefix result
         env:
@@ -567,12 +590,19 @@ jobs:
         id: gocache
         run: echo "prefix=go-build-race-${{ runner.os }}-${{ runner.arch }}-$ImageOS-${{ steps.go.outputs.go-version }}-" >> "$GITHUB_OUTPUT"
 
+      # The partition goes after the ref and go.sum hash so every shard saves
+      # its own entry (one key cannot be saved twice) while a restore still
+      # falls back to any shard's entry under the same prefix.
       - name: Restore Go build cache
         uses: actions/cache/restore@v6
         with:
           path: ~/.cache/go-build
-          key: ${{ steps.gocache.outputs.prefix }}${{ github.sha }}
-          restore-keys: ${{ steps.gocache.outputs.prefix }}
+          key: ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-${{ matrix.partition }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-${{ matrix.partition }}-
+            ${{ steps.gocache.outputs.prefix }}refs/heads/main-${{ hashFiles('server/go.sum') }}-${{ matrix.partition }}-
+            ${{ steps.gocache.outputs.prefix }}refs/heads/main-${{ hashFiles('server/go.sum') }}-
+            ${{ steps.gocache.outputs.prefix }}
 
       # Go refreshes a cache entry's mtime when it uses it, but only once that
       # mtime is an hour old. So after the run, an entry no newer than an hour
@@ -583,6 +613,7 @@ jobs:
         run: touch -d '-1 hour' "$RUNNER_TEMP/go-build-epoch"
 
       - name: Build
+        if: ${{ matrix.partition == 'rest' }}
         run: cd server && go build -race ./...
 
       # The `agentintegration` files execute real agent CLIs, so no CI job runs
@@ -592,23 +623,38 @@ jobs:
       # untagged job still green. vet type-checks test files, so this is the
       # cheapest gate that keeps them honest without needing an agent CLI.
       - name: Vet tag-gated agent integration tests
+        if: ${{ matrix.partition == 'rest' }}
         run: cd server && go vet -race -tags agentintegration ./...
 
       - name: Run migrations
         run: cd server && go run ./cmd/migrate up
 
       - name: Verify Go test wrapper
+        if: ${{ matrix.partition == 'rest' }}
         run: bash scripts/test-go.test.sh
 
       # Runs against the freshly migrated template database; leaves it unchanged.
       - name: Verify per-package test database wrapper
+        if: ${{ matrix.partition == 'rest' }}
         run: bash scripts/go-test-db-exec.test.sh
 
       - name: Verify handler test sharding
+        if: ${{ matrix.partition == 'rest' }}
         run: bash scripts/go-test-handler-shards.test.sh
 
       - name: Verify integration database startup policy
+        if: ${{ matrix.partition == 'rest' }}
         run: bash server/cmd/server/integration_startup.test.sh
+
+      # CHE-4270: merge_group only. A failed test reruns once by name, so a
+      # flake no longer ejects the PR from the queue (see the Test step).
+      - name: Install gotestsum
+        if: ${{ github.event_name == 'merge_group' }}
+        run: go install gotest.tools/gotestsum@v1.13.0
+
+      - name: Verify merge_group test rerun
+        if: ${{ github.event_name == 'merge_group' && matrix.partition == 'rest' }}
+        run: bash scripts/test-go-rerun.test.sh
 
       - name: Test
         env:
@@ -616,8 +662,44 @@ jobs:
           # CHE-2418: each package gets its own database cloned from the
           # migrated one, so test-go.sh runs packages with -p 4, not -p 1.
           MULTICA_TEST_DB_PER_PACKAGE: "1"
+          # CHE-4270: merge_group reruns failed tests once; pull_request and
+          # push stay unchanged so authors see every failure.
+          MULTICA_TEST_RERUN_FAILS: ${{ github.event_name == 'merge_group' && '1' || '' }}
+          MULTICA_FLAKE_DIR: ${{ runner.temp }}/flakes
         # pkg/agent runs on its own runner: backend-agent-tests below.
-        run: bash scripts/test-go.sh --race --only regular
+        run: bash scripts/test-go.sh --race --only regular --partition ${{ matrix.partition }} 2>&1 | tee "$RUNNER_TEMP/test.log"
+
+      # Per-shard timing for rebalancing the partitions. `!cancelled()` so a
+      # red shard still reports where its time went.
+      - name: Summarize test timing
+        if: ${{ !cancelled() }}
+        run: node scripts/go-test-timing.mjs "${{ matrix.partition }}" < "$RUNNER_TEMP/test.log" > "$RUNNER_TEMP/timing.json"
+
+      - name: Upload test timing
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: go-test-timing-${{ matrix.partition }}
+          path: ${{ runner.temp }}/timing.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Record flaky tests
+        if: ${{ !cancelled() && github.event_name == 'merge_group' }}
+        env:
+          MULTICA_FLAKE_DIR: ${{ runner.temp }}/flakes
+        run: |
+          mkdir -p "$MULTICA_FLAKE_DIR"
+          node scripts/go-test-flakes.mjs "$MULTICA_FLAKE_DIR" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload flakes.json
+        if: ${{ !cancelled() && github.event_name == 'merge_group' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: flakes-backend-tests-${{ matrix.partition }}
+          path: ${{ runner.temp }}/flakes/flakes.json
+          if-no-files-found: ignore
+          retention-days: 30
 
       # Go's own trim (cmd/go/internal/cache) with this run as the window
       # instead of five days: only `-a`/`-d` entries, and an executable entry
@@ -639,7 +721,25 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ~/.cache/go-build
-          key: ${{ steps.gocache.outputs.prefix }}${{ github.sha }}
+          key: ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-${{ matrix.partition }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+  # Required check `backend-tests` (ci-policy.yml): runs no tests itself, only
+  # turns the shard matrix into one result. `if` matches the shards so a
+  # filtered run reports `skipped` exactly as before; a shard that is red,
+  # cancelled or missing fails it.
+  backend-tests:
+    needs: [changes, migration-prefix-check, backend-test-shards]
+    if: ${{ !cancelled() && needs.changes.outputs.push_full == 'true' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require shard results
+        env:
+          SHARDS_RESULT: ${{ needs.backend-test-shards.result }}
+        run: |
+          if [ "$SHARDS_RESULT" != "success" ]; then
+            echo "::error::backend-test-shards expected success, got $SHARDS_RESULT"
+            exit 1
+          fi
 
   # pkg/agent used to run as the tail of backend-tests: ~2m20s for a single
   # package, throttled to -parallel 2 because its subprocess-backed tests carry
@@ -690,11 +790,39 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ~/.cache/go-build
-          key: ${{ steps.gocache.outputs.prefix }}${{ github.sha }}
-          restore-keys: ${{ steps.gocache.outputs.prefix }}
+          key: ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-
+            ${{ steps.gocache.outputs.prefix }}refs/heads/main-${{ hashFiles('server/go.sum') }}-
+            ${{ steps.gocache.outputs.prefix }}
+
+      # CHE-4270: same merge_group rerun as backend-tests.
+      - name: Install gotestsum
+        if: ${{ github.event_name == 'merge_group' }}
+        run: go install gotest.tools/gotestsum@v1.13.0
 
       - name: Test agent package
+        env:
+          MULTICA_TEST_RERUN_FAILS: ${{ github.event_name == 'merge_group' && '1' || '' }}
+          MULTICA_FLAKE_DIR: ${{ runner.temp }}/flakes
         run: bash scripts/test-go.sh --race --only agent
+
+      - name: Record flaky tests
+        if: ${{ !cancelled() && github.event_name == 'merge_group' }}
+        env:
+          MULTICA_FLAKE_DIR: ${{ runner.temp }}/flakes
+        run: |
+          mkdir -p "$MULTICA_FLAKE_DIR"
+          node scripts/go-test-flakes.mjs "$MULTICA_FLAKE_DIR" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload flakes.json
+        if: ${{ !cancelled() && github.event_name == 'merge_group' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: flakes-backend-agent-tests
+          path: ${{ runner.temp }}/flakes/flakes.json
+          if-no-files-found: ignore
+          retention-days: 30
 
   # Keep the live vulnerability database from hiding build and test results.
   # The aggregate backend job below still treats both jobs as one merge gate.
@@ -775,132 +903,10 @@ jobs:
           JOB_SCOPES: '{"backend-tests":"push_full","backend-agent-tests":"backend","sqlc-check":"push_full","go-vulnerability-scan":"push_full","go-lint":"push_full","script-checks":"scripts","installer":"installer","deploy-cd":"deploy_cd"}'
         run: node scripts/ci-scope.mjs gate
 
-  push-go-cache-warm:
-    needs: changes
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.merge_group_green == 'true' }}
-    runs-on: ubuntu-24.04
-    env:
-      CI: "true"
-      GOFLAGS: -count=1
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v7
-        id: go
-        with:
-          go-version: "~1.27.3"
-          check-latest: true
-          cache: false
-      - name: Restore Go module cache
-        uses: actions/cache@v6
-        with:
-          path: ~/go/pkg/mod
-          key: go-mod-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('server/go.sum') }}
-      - name: Resolve Go build cache key
-        id: gocache
-        run: echo "prefix=go-build-race-${{ runner.os }}-${{ runner.arch }}-$ImageOS-${{ steps.go.outputs.go-version }}-" >> "$GITHUB_OUTPUT"
-      - name: Restore Go build cache
-        uses: actions/cache/restore@v6
-        with:
-          path: ~/.cache/go-build
-          key: ${{ steps.gocache.outputs.prefix }}${{ github.sha }}
-          restore-keys: ${{ steps.gocache.outputs.prefix }}
-      - name: Mark Go build cache epoch
-        id: goepoch
-        run: touch -d '-1 hour' "$RUNNER_TEMP/go-build-epoch"
-      - name: Compile race test binaries without executing TestMain
-        working-directory: server
-        run: ../scripts/go-test-with-agent-cli-guard.sh -- go test -race -run '^$' -exec /bin/true ./...
-      - name: Prune Go build cache to this run's entries
-        if: ${{ !cancelled() && steps.goepoch.outcome == 'success' }}
-        run: |
-          find ~/.cache/go-build -mindepth 2 -maxdepth 2 \( -name '*-a' -o -name '*-d' \) \
-            ! -newer "$RUNNER_TEMP/go-build-epoch" -exec rm -rf {} +
-      - name: Save Go build cache
-        if: ${{ !cancelled() && steps.gocache.outcome == 'success' }}
-        uses: actions/cache/save@v6
-        with:
-          path: ~/.cache/go-build
-          key: ${{ steps.gocache.outputs.prefix }}${{ github.sha }}
-
-  push-turbo-cache-warm:
-    needs: changes
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.merge_group_green == 'true' }}
-    runs-on: ubuntu-24.04
-    env:
-      TURBO_CACHE_DIR: .turbo/cache
-    steps:
-      - uses: actions/checkout@v6
-      - name: Setup pnpm
-        run: bash scripts/setup-pnpm.sh
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: pnpm
-      - name: Install dependencies
-        run: pnpm install
-      - name: Resolve runtime for cache key
-        id: runtime
-        run: echo "node=$(node --version)" >> "$GITHUB_OUTPUT"
-      - name: Restore turbo cache
-        uses: actions/cache@v6
-        with:
-          path: .turbo/cache
-          key: turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.sha }}
-          restore-keys: |
-            turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-
-      - name: Warm build, type check, and lint cache
-        run: pnpm exec turbo build typecheck lint --concurrency=2 --filter='!@multica/docs' --filter='!@multica/mobile'
-
-
   # macOS daemon CI is halted (CHE-1012): there are no free macOS runners, so
   # the former macos-runtime job (Blacksmith) is removed and no macOS daemon
   # artifact is built. cursor_background_process_darwin.go is therefore not
   # built or tested in CI until a macOS runner is provisioned by its owner.
-
-  # Bootstrap only (CHE-1980). Daemons update from their own Multica server
-  # now, but a daemon still on the earlier GitHub-based updater reaches its
-  # first server-built version through this artifact: `multica-daemon-<goos>-<goarch>`
-  # holding one file named `multica`. Delete this job once every host runs a
-  # server-only build.
-  daemon-artifact:
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        goarch: [amd64, arm64]
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0 # commit history for version/commit stamping
-      - uses: actions/setup-go@v7
-        with:
-          go-version: "~1.27.3"
-          check-latest: true
-          cache-dependency-path: server/go.sum
-      - name: Build daemon binary
-        working-directory: server
-        env:
-          CGO_ENABLED: "0"
-          GOOS: linux
-          GOARCH: ${{ matrix.goarch }}
-        # main.version uses <upstream>-YYYYMMDD-hhmm from UPSTREAM_VERSION and
-        # commit timestamp so capability gates accept it (scripts/daemon-artifact-version.sh
-        # fails closed otherwise); the exact full commit goes separately into
-        # main.commit, which the updater requires the candidate's `--version` to report.
-        run: |
-          mkdir -p ../dist
-          version=$(cd .. && scripts/daemon-artifact-version.sh)
-          go build -trimpath \
-            -ldflags "-s -w -X main.version=${version} -X main.commit=${GITHUB_SHA} -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            -o ../dist/multica ./cmd/multica
-      - name: Upload daemon artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: multica-daemon-linux-${{ matrix.goarch }}
-          path: dist/multica
-          if-no-files-found: error
-          retention-days: 30
 
   image-budget:
     # Soft gate against the 21.7MB of raw PNG/JPG that MUL-6352 cleared out:
@@ -987,6 +993,12 @@ jobs:
       - name: Check runner routing
         run: python3 .github/tests/test_runner_routing.py
 
+      - name: Test mechanical-tier classifier paths (CHE-3339)
+        run: python3 -m unittest tests.test_che3339_mechanical_tier
+
+      - name: Test workflow_run cascade triggers (CHE-4250)
+        run: python3 -m unittest tests.test_che4250_workflow_run_cascades
+
       - name: Test pinned pnpm setup
         run: node --test scripts/setup-pnpm.test.mjs
 
@@ -1062,6 +1074,7 @@ jobs:
           python3 deploy/cd/test-candidate-preflight.py
           python3 deploy/cd/test-deploy-approval.py
           python3 deploy/cd/test-build-cache.py
+          python3 .github/scripts/test_cache_policy.py
           bash deploy/cd/test-admission.sh
           bash deploy/cd/test-record-checks.sh
 

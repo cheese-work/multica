@@ -1,9 +1,26 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Issue } from "../types";
-import { issueDetailOptions, issueKeys } from "./queries";
+import { isSchemaValidationError } from "../api/schema";
+import {
+  issueDetailOptions,
+  issueFetchRetryDelay,
+  issueKeys,
+  retryIssueFetch,
+} from "./queries";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * True only for a 404 from the API. A 403, 5xx or network failure says nothing
+ * about whether the issue exists, so callers must not present it as deleted.
+ * Duck-typed on `status` so it holds across module boundaries and test mocks.
+ */
+export function isNotFoundError(error: unknown): boolean {
+  return (
+    typeof error === "object" && error !== null && (error as { status?: unknown }).status === 404
+  );
+}
 
 /** True for a canonical issue UUID; false for an identifier like `MUL-123`. */
 export function isIssueUuid(value: string): boolean {
@@ -20,6 +37,12 @@ export interface CanonicalIssue {
   issue: Issue | undefined;
   isResolving: boolean;
   /**
+   * The entry is still the response of an identifier lookup made during this
+   * mount, never patched since. The view mounting on it need not read the
+   * detail endpoint again; a leftover from an earlier visit is not this.
+   */
+  authoritative: boolean;
+  /**
    * Terminal: this identifier does not name an issue in this workspace.
    *
    * Callers MUST branch on this and render a not-found state rather than
@@ -30,6 +53,11 @@ export interface CanonicalIssue {
    * that never settles on "not found".
    */
   notFound: boolean;
+  /** Terminal, but not a 404: the lookup failed and `retry` may succeed. */
+  loadError: boolean;
+  /** The lookup returned 2xx but the body failed schema validation. */
+  dataError: boolean;
+  retry: () => void;
 }
 
 /**
@@ -53,11 +81,15 @@ export interface CanonicalIssue {
  */
 export function useCanonicalIssue(wsId: string, routeId: string): CanonicalIssue {
   const qc = useQueryClient();
+  // Entries older than this mount were not refreshed by it.
+  const [mountedAt] = useState(() => Date.now());
   const isUuid = isIssueUuid(routeId);
   const resolveEnabled = !isUuid && !!wsId && !!routeId;
 
   const resolve = useQuery({
     ...issueDetailOptions(wsId, routeId),
+    retry: retryIssueFetch,
+    retryDelay: issueFetchRetryDelay,
     enabled: resolveEnabled,
   });
 
@@ -96,11 +128,20 @@ export function useCanonicalIssue(wsId: string, routeId: string): CanonicalIssue
   // still-resolving, or the caller flips back to a loading frame and the
   // remount loop described on `notFound` starts.
   const failed = resolveEnabled && resolve.isError;
+  const notFound = failed && isNotFoundError(resolve.error);
 
   return {
     canonicalId,
     issue: detail.data,
     isResolving: resolveEnabled && !failed && resolve.data === undefined,
-    notFound: failed,
+    authoritative:
+      !isUuid &&
+      detail.data !== undefined &&
+      detail.data === resolve.data &&
+      resolve.dataUpdatedAt >= mountedAt,
+    notFound,
+    loadError: failed && !notFound,
+    dataError: failed && isSchemaValidationError(resolve.error),
+    retry: () => void resolve.refetch(),
   };
 }

@@ -189,6 +189,8 @@ export {
 } from "./attachment-url";
 export type {
   ChatSession,
+  ChatStaleLevel,
+  ChatAttentionSource,
   ChatContinueResponse,
   ChatSessionUsage,
   ChatWakeup,
@@ -208,6 +210,10 @@ export type {
   ChatPendingTask,
   ChatQueuedTask,
   PrioritizeQueuedChatTaskResponse,
+  ChatSupplement,
+  ChatSupplementStatus,
+  ChatHeadSupplement,
+  ResendChatSupplementResponse,
   PendingChatTaskItem,
   PendingChatTasksResponse,
   HasPendingChatTasksResponse,
