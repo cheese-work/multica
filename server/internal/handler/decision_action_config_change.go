@@ -52,6 +52,19 @@ type configChange struct {
 	// reads the value the earlier one committed, so it answers
 	// precondition_drift. Leave it empty to keep busy_retry.
 	QueueField string
+	// ServerAfter drops after_sha256 from the params: the server's own after
+	// digest stands in for the agent's claim, since it computes the whole change.
+	ServerAfter bool
+	// StaleBaseCode, when set, turns drift at approval into a failed action with
+	// this code (HTTP 200) instead of the 409 precondition_drift refusal.
+	StaleBaseCode string
+	// CatalogLock makes an approval take the status catalog lock before any other
+	// lock, in the order a workflow save does, because the change validates against
+	// the catalog.
+	CatalogLock bool
+	// DelegatedField, when set, requires the proposing agent to pass the
+	// delegated-write gate for this field at request time.
+	DelegatedField string
 }
 
 type configChangeRead struct {
@@ -97,16 +110,23 @@ type configChangeWant struct{ Field, TargetID, Before string }
 
 // checkConfigChange applies the rules shared by the request and the approval,
 // in this order: denylist, governed blocks, drift of the live value, and the
-// agent's after digest against the server's own. status is the code for the
-// two refusals that differ between the request (400) and the approval (409).
-func checkConfigChange(read configChangeRead, claim configChangeClaim, want configChangeWant, status int) error {
+// agent's after digest against the server's own. An action with a stale-base
+// code checks drift before the governed blocks: a block a person edited after
+// the request is a changed base, not a fault of the proposal. status is the
+// code for the two refusals that differ between the request (400) and the
+// approval (409).
+func checkConfigChange(read configChangeRead, claim configChangeClaim, want configChangeWant, status int, driftFirst bool) error {
 	if err := decisionaction.CheckConfigChange(read.Field, read.Keys); err != nil {
 		return decisionIntentRefusal{http.StatusForbidden, decisionaction.CodeDenylisted + ": " + err.Error()}
+	}
+	drifted := read.Field != want.Field || read.TargetID != want.TargetID || read.LiveSHA256 != want.Before
+	if driftFirst && drifted {
+		return errPreconditionDrift
 	}
 	if !read.HumanBlocksIntact {
 		return decisionIntentRefusal{status, "governed_blocks_changed: a governed:human block may not change"}
 	}
-	if read.Field != want.Field || read.TargetID != want.TargetID || read.LiveSHA256 != want.Before {
+	if drifted {
 		return errPreconditionDrift
 	}
 	if read.AfterSHA256 != claim.AfterSHA256 {
@@ -117,9 +137,14 @@ func checkConfigChange(read configChangeRead, claim configChangeClaim, want conf
 
 // configChangePreconditions validates the agent's claim against the server's
 // own reading and stores the preview the approver must be shown.
-func configChangePreconditions(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, draft *decisionActionDraft, change configChange) (map[string]any, error) {
+func configChangePreconditions(ctx context.Context, queries *db.Queries, workspaceID, agentID pgtype.UUID, draft *decisionActionDraft, change configChange) (map[string]any, error) {
 	if !draft.Definition.RequiresPreview {
 		return nil, errors.New("config change " + draft.Type + " must require a preview")
+	}
+	if change.DelegatedField != "" {
+		if _, allowed := (&Handler{Queries: queries}).delegatedWriteAllowed(ctx, workspaceID, uuidToString(agentID), change.DelegatedField); !allowed {
+			return nil, decisionIntentRefusal{http.StatusForbidden, "not_permitted: this agent may not propose " + change.DelegatedField + " writes"}
+		}
 	}
 	var claim configChangeClaim
 	if err := json.Unmarshal(draft.Params, &claim); err != nil {
@@ -129,7 +154,10 @@ func configChangePreconditions(ctx context.Context, queries *db.Queries, workspa
 	if err != nil {
 		return nil, err
 	}
-	if err := checkConfigChange(read, claim, configChangeWant{read.Field, read.TargetID, claim.BaseSHA256}, http.StatusBadRequest); err != nil {
+	if change.ServerAfter {
+		claim.AfterSHA256 = read.AfterSHA256
+	}
+	if err := checkConfigChange(read, claim, configChangeWant{read.Field, read.TargetID, claim.BaseSHA256}, http.StatusBadRequest, change.StaleBaseCode != ""); err != nil {
 		return nil, err
 	}
 	diff, err := configChangeDiff(read)
@@ -214,10 +242,13 @@ func executeConfigChange(ctx context.Context, change configChange, execution dec
 	}
 	read, err := change.Read(ctx, queries, action.WorkspaceID, action.Params)
 	if err != nil {
-		return nil, err
+		return nil, change.staleBase(err)
 	}
-	if err := checkConfigChange(read, claim, configChangeWant{stored.Field, stored.TargetID, stored.BeforeSHA256}, http.StatusConflict); err != nil {
-		return nil, err
+	if change.ServerAfter {
+		claim.AfterSHA256 = read.AfterSHA256
+	}
+	if err := checkConfigChange(read, claim, configChangeWant{stored.Field, stored.TargetID, stored.BeforeSHA256}, http.StatusConflict, change.StaleBaseCode != ""); err != nil {
+		return nil, change.staleBase(err)
 	}
 	execution.Agent, execution.Workflow = db.Agent{}, db.IssueWorkflow{}
 	if err := change.Apply(ctx, execution, read); err != nil {
@@ -248,6 +279,14 @@ func executeConfigChange(ctx context.Context, change configChange, execution dec
 		return nil, err
 	}
 	return json.Marshal(map[string]any{"field": read.Field, "target_id": read.TargetID, "before_sha256": read.LiveSHA256, "after_sha256": read.AfterSHA256, "readback_sha256": readback.LiveSHA256})
+}
+
+// staleBase turns drift at approval into the action's own failure code, when it has one.
+func (change configChange) staleBase(err error) error {
+	if change.StaleBaseCode != "" && errors.Is(err, errPreconditionDrift) {
+		return actionFailure{Code: change.StaleBaseCode, Message: "the target changed since the request; ask again"}
+	}
+	return err
 }
 
 func nonNilKeys(keys []string) []string {
