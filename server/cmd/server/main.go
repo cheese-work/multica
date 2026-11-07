@@ -907,6 +907,7 @@ func main() {
 		scheduler.OpsSnapshotSamplerJob(queries),
 		scheduler.OpsSnapshotRollupJob(queries),
 		scheduler.OpsRetentionJob(queries),
+		scheduler.HostSampleRollupJob(queries),
 	} {
 		if err := schedulerMgr.Register(job); err != nil {
 			slog.Warn("scheduler: failed to register ops job", "job", job.Name, "error", err)

@@ -432,6 +432,7 @@
     "not_found": "このタスクはこのワークスペースに存在しないか、削除されています。",
     "load_failed": "このタスクを読み込めませんでした。接続を確認して再試行してください。",
     "card_load_failed": "このタスクを読み込めませんでした。",
+    "data_error": "このタスクにはアプリが読み取れないデータが含まれています。",
     "retry": "再試行",
     "breadcrumb_project_unknown": "不明なプロジェクト",
     "back": "戻る",
@@ -1920,5 +1921,32 @@
     "timing_effective": "{{time}} から有効",
     "timing_pending_window": "保留中。{{time}} に有効になります。取り消しは {{minutes}} 分以内。",
     "timing_pending_wake": "保留中。エージェントが起動され次第、有効になります。"
+  },
+  "status_history": {
+    "title": "ステータス履歴",
+    "description": "この課題のステータス変更を古い順に表示します。",
+    "empty": "ステータス変更の記録はありません。",
+    "truncated": "古いステータス変更は表示されていません。サーバーが返した最も古い変更から始まります。",
+    "trigger_not_recorded": "トリガーは記録されていません",
+    "removed": "{{status}}（削除済み）",
+    "handoff_comment": "引き継ぎコメント",
+    "handoff_invalid": "引き継ぎリンクが無効です",
+    "scrubber_label": "ステータス履歴の位置",
+    "position": "{{current}} / {{total}}",
+    "cause": {
+      "ui_or_api": "ユーザーによる変更",
+      "workflow_edge": "ワークフロー遷移",
+      "workflow_remap": "ワークフロー再マッピング",
+      "pr_merged": "PR マージ",
+      "ci_advance": "CI 進行",
+      "run_budget": "実行予算",
+      "decision": "決定",
+      "watchdog": "ウォッチドッグ",
+      "task_reset": "失敗した実行のリセット",
+      "qoder": "Qoder",
+      "duplicate": "重複",
+      "system": "システム"
+    },
+    "open": "ステータス履歴"
   }
 }
