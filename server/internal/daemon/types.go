@@ -268,6 +268,9 @@ type AgentData struct {
 	// daemon decodes provider-specific fields (e.g. openclaw mode +
 	// gateway endpoint, see issue #3260); other backends ignore it.
 	RuntimeConfig json.RawMessage `json:"runtime_config,omitempty"`
+	// HarnessProfile is the server-resolved profile (agent override >
+	// workspace default > personal). Empty means personal (CHE-3706).
+	HarnessProfile string `json:"harness_profile,omitempty"`
 }
 
 // DisabledRuntimeSkillData is the task-wire identity of one runtime-local
