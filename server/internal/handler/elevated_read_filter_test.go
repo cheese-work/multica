@@ -450,3 +450,135 @@ func TestElevationLookupErrorSuppressesBulkAttachments(t *testing.T) {
 		t.Errorf("failed lookup must suppress marked attachments: %s", got)
 	}
 }
+
+// Approve and downgrade exceptions (CHE-2216 plan 3.7, slice B8b-2, T17 (i)). A
+// person's read_snapshot_approval of the exact body hash for this issue lifts the
+// stub; so does a completed downgrade (state restricted_final).
+
+func approveRead(t *testing.T, issueID, kind, objectID, body string) {
+	t.Helper()
+	dbfx.Exec(t, `INSERT INTO read_snapshot_approval (workspace_id, issue_id, object_kind, object_id, body_hash, approver_user_id)
+		VALUES ($1, $2, $3, $4, $5, $6)`, testWorkspaceID, issueID, kind, objectID, sha256Hex(body), testUserID)
+}
+
+func TestApprovedCommentReadsFullTextToElevatedToken(t *testing.T) {
+	f := claimElevated(t, "multica_cross_issue")
+	c := seedReaderComments(t, f.issueID)
+	approveRead(t, f.issueID, "multica_comment", c.marked, hostileBody+" (marked)")
+	// Approval of other bytes, of another object or of another issue lifts nothing.
+	approveRead(t, f.issueID, "multica_comment", c.tainted, "some other bytes")
+	other := dbfx.Issue(t, "approval on another issue")
+	approveRead(t, other, "multica_comment", c.tainted, hostileBody+" (tainted)")
+
+	got := listCommentsAs(t, f.issueID, f.taskID)
+	if m := got[c.marked]; m.Content != hostileBody+" (marked)" || m.Withheld {
+		t.Errorf("approved comment = %+v, want full text", m)
+	}
+	assertStub(t, "tainted comment", got[c.tainted].Content, got[c.tainted].Withheld, c.tainted, hostileBody+" (tainted)")
+
+	// Timeline and preview are separate representations of the same body.
+	req := asElevatedToken(withURLParam(newRequest("GET", "/api/issues/"+f.issueID+"/timeline", nil), "id", f.issueID), f.taskID)
+	var entries []TimelineEntry
+	testutil.Call(t, testHandler.ListTimeline, req).Want(http.StatusOK).JSON(&entries)
+	for _, e := range entries {
+		if e.ID == c.marked && (e.Content == nil || *e.Content != hostileBody+" (marked)") {
+			t.Errorf("timeline approved comment = %v, want full text", e.Content)
+		}
+		if e.ID == c.tainted && e.Content != nil && strings.Contains(*e.Content, hostileBody) {
+			t.Errorf("timeline leaks unapproved tainted comment: %q", *e.Content)
+		}
+	}
+	res := elevatedGet(t, testHandler.GetCommentPreview, "/api/comments/"+c.marked+"/preview", nil, f.taskID, "commentId", c.marked)
+	if !strings.Contains(res.Want(http.StatusOK).Text(), hostileBody) {
+		t.Errorf("preview of approved comment is empty: %s", res.Text())
+	}
+}
+
+func TestApprovedCommentGoesBackToStubWhenEdited(t *testing.T) {
+	f := claimElevated(t, "multica_cross_issue")
+	c := seedReaderComments(t, f.issueID)
+	approveRead(t, f.issueID, "multica_comment", c.marked, hostileBody+" (marked)")
+	dbfx.Exec(t, `UPDATE comment SET content = $2 WHERE id = $1`, c.marked, hostileBody+" (edited after approval)")
+
+	got := listCommentsAs(t, f.issueID, f.taskID)
+	assertStub(t, "edited comment", got[c.marked].Content, got[c.marked].Withheld, c.marked, hostileBody+" (edited after approval)")
+}
+
+func TestApprovedDescriptionReadsFullTextToElevatedToken(t *testing.T) {
+	f := claimElevated(t, "multica_cross_issue")
+	dbfx.Exec(t, `UPDATE issue SET description = $2, description_external_read = true WHERE id = $1`, f.issueID, hostileBody)
+	get := func() IssueResponse {
+		req := asElevatedToken(withURLParam(newRequest("GET", "/api/issues/"+f.issueID, nil), "id", f.issueID), f.taskID)
+		var out IssueResponse
+		testutil.Call(t, testHandler.GetIssue, req).Want(http.StatusOK).JSON(&out)
+		return out
+	}
+	approveRead(t, f.issueID, "multica_description", f.issueID, "not the description")
+	if got := get(); got.Description == nil || !got.DescriptionWithheld {
+		t.Fatalf("wrong-hash approval lifted the stub: %+v", got.Description)
+	}
+	approveRead(t, f.issueID, "multica_description", f.issueID, hostileBody)
+	if got := get(); got.Description == nil || *got.Description != hostileBody || got.DescriptionWithheld {
+		t.Errorf("approved description = %v withheld=%v, want full text", got.Description, got.DescriptionWithheld)
+	}
+}
+
+func TestCompletedDowngradeReadsFullDescription(t *testing.T) {
+	f := claimElevated(t, "multica_cross_issue")
+	dbfx.Exec(t, `UPDATE issue SET description = $2, description_external_read = true WHERE id = $1`, f.issueID, hostileBody)
+	get := func() IssueResponse {
+		req := asElevatedToken(withURLParam(newRequest("GET", "/api/issues/"+f.issueID, nil), "id", f.issueID), f.taskID)
+		var out IssueResponse
+		testutil.Call(t, testHandler.GetIssue, req).Want(http.StatusOK).JSON(&out)
+		return out
+	}
+	dbfx.Exec(t, `UPDATE task_elevation SET state = 'fencing', epoch = epoch + 1 WHERE task_id = $1`, f.taskID)
+	if got := get(); got.Description == nil || !got.DescriptionWithheld {
+		t.Fatalf("fencing run read the description: %v", got.Description)
+	}
+	dbfx.Exec(t, `UPDATE task_elevation SET state = 'restricted_final' WHERE task_id = $1`, f.taskID)
+	if got := get(); got.Description == nil || *got.Description != hostileBody {
+		t.Errorf("restricted_final run read = %v, want full text", got.Description)
+	}
+}
+
+// The approval that lifts a stub belongs to the issue the run is working on (its
+// task_elevation row), not to the issue the text sits on.
+func TestApprovalIsBoundToTheRequestingTasksIssue(t *testing.T) {
+	f := claimElevated(t, "multica_cross_issue")
+	other := dbfx.Issue(t, "issue the run only reads")
+	c := seedReaderComments(t, other)
+	body := hostileBody + " (marked)"
+
+	// Approved only for the content's issue B: the run on issue A still reads a stub.
+	approveRead(t, other, "multica_comment", c.marked, body)
+	got := listCommentsAs(t, other, f.taskID)
+	assertStub(t, "comment approved for the other issue", got[c.marked].Content, got[c.marked].Withheld, c.marked, body)
+
+	// Approved for the run's own issue A: full text, although the text sits on B.
+	approveRead(t, f.issueID, "multica_comment", c.marked, body)
+	got = listCommentsAs(t, other, f.taskID)
+	if m := got[c.marked]; m.Content != body || m.Withheld {
+		t.Errorf("comment approved for the run's issue = %+v, want full text", m)
+	}
+}
+
+func TestDescriptionApprovalIsBoundToTheRequestingTasksIssue(t *testing.T) {
+	f := claimElevated(t, "multica_cross_issue")
+	other := dbfx.Issue(t, "issue the run only reads")
+	dbfx.Exec(t, `UPDATE issue SET description = $2, description_external_read = true WHERE id = $1`, other, hostileBody)
+	get := func() IssueResponse {
+		req := asElevatedToken(withURLParam(newRequest("GET", "/api/issues/"+other, nil), "id", other), f.taskID)
+		var out IssueResponse
+		testutil.Call(t, testHandler.GetIssue, req).Want(http.StatusOK).JSON(&out)
+		return out
+	}
+	approveRead(t, other, "multica_description", other, hostileBody)
+	if got := get(); got.Description == nil || !got.DescriptionWithheld {
+		t.Fatalf("approval for the description's own issue lifted the stub: %+v", got.Description)
+	}
+	approveRead(t, f.issueID, "multica_description", other, hostileBody)
+	if got := get(); got.Description == nil || *got.Description != hostileBody || got.DescriptionWithheld {
+		t.Errorf("description approved for the run's issue = %v withheld=%v, want full text", got.Description, got.DescriptionWithheld)
+	}
+}
