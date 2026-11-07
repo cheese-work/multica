@@ -227,19 +227,6 @@ func recordProviderSuccess(ctx context.Context, queries *db.Queries, task db.Age
 	if !ok {
 		return nil
 	}
-	_, exists, err := providerBreakerRow(ctx, queries, agent.WorkspaceID, provider)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		_, held, err := providerHoldBlocksAgent(ctx, RuntimeLookup{Queries: queries}, agent)
-		if err != nil {
-			return fmt.Errorf("check provider hold for successful task: %w", err)
-		}
-		if !held {
-			return nil
-		}
-	}
 	lockKey := fmt.Sprintf("%x:%s", agent.WorkspaceID.Bytes, provider)
 	if err := queries.LockProviderBreakerTrip(ctx, lockKey); err != nil {
 		return fmt.Errorf("lock provider breaker success: %w", err)
