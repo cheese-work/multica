@@ -1,3 +1,4 @@
+# ci-policy: class=deploy
 name: CD deploy to C00
 run-name: CD deploy to C00 · ${{ github.event.workflow_run.head_sha || inputs.ref || github.sha }}
 
@@ -59,8 +60,10 @@ permissions:
 
 # No workflow-level concurrency (CHE-2027): a run waiting for approval would
 # hold it and block every newer version behind it. Instead the approval gate
-# below is replaced by a newer version, and the two jobs that touch C00
-# (prepare-release-candidate, deploy) share one never-cancelled lock group.
+# below has its own group, so only approvals wait on each other, and the two
+# jobs that touch C00 (prepare-release-candidate, deploy) share one
+# never-cancelled lock group. CHE-3273: no deploy-path job cancels in progress
+# (CI policy R4), so a newer version queues behind a waiting approval.
 #
 # The lock uses `queue: max`. The default (`single`) keeps ONE pending job and
 # cancels it for any newcomer, whatever its version, so a stale stage joining
@@ -75,9 +78,9 @@ jobs:
   # holds no secrets. The jobs that use the C00 secrets run in c00-runtime,
   # which has no reviewers, so they do not ask again. c00-production keeps its
   # protection on purpose: runs started by the previous workflow, and reruns of
-  # their jobs, still use it. A newer version entering this group cancels an
-  # older one that is still waiting for approval. Nothing in this group touches
-  # C00, so cancelling it can never interrupt a deploy.
+  # their jobs, still use it. A newer version entering this group waits behind
+  # an older one that is still waiting for approval; it is never cancelled by
+  # it (CI policy R4, CHE-3273). Nothing in this group touches C00.
   # ---------------------------------------------------------------------------
   approve-c00:
     needs: candidate-preflight
@@ -88,7 +91,7 @@ jobs:
     environment: c00-production
     concurrency:
       group: cd-deploy-c00-approval
-      cancel-in-progress: true
+      cancel-in-progress: false
     steps:
       - name: Approval granted
         run: echo "C00 deployment approved."

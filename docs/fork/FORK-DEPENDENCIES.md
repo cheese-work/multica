@@ -272,7 +272,7 @@ Rows in a cycle are ordered as one unit in [UPSTREAM-READINESS.md](UPSTREAM-READ
 - **O15**: O15/O27 cycle.
 - **O16**: D06 and D14 also edit provider_failure_guard.go and task.go.
 - **O17**: Both source files are shared with upstream edits, so syncs conflict here.
-- **O21**: cd-deploy.yml:89-91 concurrency cd-deploy-c00-approval; :168-170 queue max.
+- **O21**: cd-deploy.yml:92-94 concurrency cd-deploy-c00-approval; :173-175 queue max.
 - **O23**: fork-sync-guard.yml:37 runs the script.
 - **O24**: trusted-authors.json read at security_gate.py:214 (same row).
 - **O25**: warning-budget.mjs:162,168 baselines come from main push runs and throw if none; push jobs are skipped when merge_group_green (ci.yml:780).

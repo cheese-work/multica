@@ -1,3 +1,4 @@
+# ci-policy: class=gate
 name: PR Close Target Check
 
 on:

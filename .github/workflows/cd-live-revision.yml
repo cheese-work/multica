@@ -1,3 +1,4 @@
+# ci-policy: class=scheduled
 name: C00 live revision alarm
 
 # C00's API is tailnet only, so this runs on an existing X99 runner. It catches what run history cannot: a rollback on
