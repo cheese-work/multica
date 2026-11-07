@@ -260,3 +260,39 @@ func TestRedactKeepsHarmlessJSON(t *testing.T) {
 		t.Errorf("harmless JSON changed: %s", got)
 	}
 }
+
+// One rule: credential-like key (bare, single- or double-quoted), then : or =,
+// then a value of any type. The value is masked whatever its shape.
+func TestRedactCredentialValueTypes(t *testing.T) {
+	cases := []struct{ in, planted string }{
+		{`"password": hunter2planted`, "hunter2planted"},
+		{`{"password":123456789}`, "123456789"},
+		{`{"password":true}`, "true"},
+		{`{"password":null}`, "null"},
+		{`{"password":-1.5e3}`, "1.5e3"},
+		{`'password': hunter2planted`, "hunter2planted"},
+		{`password: "x planted y"`, "planted"},
+		{`password = hunter2planted`, "hunter2planted"},
+		{`password=hunter2planted&next=1`, "hunter2planted"},
+		{`{"a":1,"API_KEY": 99887766,"b":2}`, "99887766"},
+		{`secret: [planted1, planted2]`, "planted1"},
+		{`token: Bearer plantedBEARERvalue1`, "plantedBEARERvalue1"},
+		{`{"token":"a\"planted\"b"}`, "planted"},
+	}
+	for _, tc := range cases {
+		for _, oneByte := range []bool{false, true} {
+			got := redact(t, "before\n"+tc.in+"\nafter\n", oneByte)
+			noLeak(t, got, tc.planted)
+			if !strings.Contains(got, "before") || !strings.Contains(got, "after") {
+				t.Errorf("%q: neighbour lines lost: %s", tc.in, got)
+			}
+		}
+	}
+}
+
+func TestRedactKeepsNonCredentialKeysWithCredentialSubstrings(t *testing.T) {
+	in := `{"max_tokens":4096,"tokens_used":12,"password_policy":"strict"}`
+	if got := redact(t, in+"\n", false); got != in {
+		t.Errorf("changed: %s", got)
+	}
+}
