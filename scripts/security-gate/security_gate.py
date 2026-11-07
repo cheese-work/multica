@@ -486,7 +486,13 @@ def main() -> int:
         print(json.dumps(out))
         return 3 if out.get("waiver_applies") is False else 0
     if a.revoke_only:
-        revoke_queue(a.github, a.pr, a.default_branch, a.run_url)
+        # The sweep chose this PR as non-success some time ago; a gate run may have turned it green since.
+        # Read the live head status right before the flip so a recovered PR keeps its queue entry.
+        head = json.loads(_gh(f"repos/{a.github}/pulls/{a.pr}"))["head"]["sha"]
+        status = _gh(f"repos/{a.github}/commits/{head}/status", "--jq",
+                     f'[.statuses[] | select(.context=="{CONTEXT}") | .state] | first // ""').strip()
+        if status != "success":
+            revoke_queue(a.github, a.pr, a.default_branch, a.run_url)
         return 0
     with open(f"{a.repo}/{TRUSTED_AUTHORS}") as f:
         registry = json.load(f)
