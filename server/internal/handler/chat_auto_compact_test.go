@@ -219,8 +219,9 @@ func TestAutoCompactEnqueuesATaskWithAServerBuiltReason(t *testing.T) {
 		t.Fatalf("compaction task owns %d user messages, want 0", n)
 	}
 	notices := dm.messages(t, "compact_notice")
-	if len(notices) != 1 || notices[0] != wantReason+" Continuing in a new DM." {
-		t.Fatalf("compact_notice rows = %q, want one %q", notices, wantReason+" Continuing in a new DM.")
+	wantNotice := "Compacted in this DM at 164k tokens (limit 160k). Earlier messages are summarized below."
+	if len(notices) != 1 || notices[0] != wantNotice {
+		t.Fatalf("compact_notice rows = %q, want one %q", notices, wantNotice)
 	}
 	if role := dbfx.Count(t, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1 AND message_kind = 'compact_notice' AND role = 'assistant'`, dm.sessionID); role != 1 {
 		t.Fatalf("the notice must be an assistant message")
@@ -439,9 +440,9 @@ func TestAutoCompactSuccessKeepsTheReasonNoticeAndPostsNoFailure(t *testing.T) {
 	if !strings.Contains(summary, "Retained goal.") {
 		t.Fatalf("the agent's summary is missing from %q", summary)
 	}
-	wantNotice := "Auto-compacted: context 164k of 200k tokens (82%) reached the 80% threshold."
-	if notices := dm.messages(t, "compact_notice"); len(notices) != 1 || !strings.HasPrefix(notices[0], wantNotice) {
-		t.Fatalf("compact notices = %q, want one starting %q", notices, wantNotice)
+	wantNotice := "Compacted in this DM at 164k tokens (limit 160k). Earlier messages are summarized below."
+	if notices := dm.messages(t, "compact_notice"); len(notices) != 1 || notices[0] != wantNotice {
+		t.Fatalf("compact notices = %q, want one %q", notices, wantNotice)
 	}
 
 	// The compaction succeeded: finishing it must not post a failure notice.
