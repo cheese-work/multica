@@ -426,6 +426,7 @@
     "action_unavailable": "Details unavailable",
     "action_approve": "Approve with passkey",
     "action_preview": "What approving changes",
+    "agent_note": "Agent's note (not verified)",
     "answer_send_passkey": "Send with passkey",
     "answer_open_browser": "Open in browser",
     "answer_passkey_needed": "This answer needs your passkey. Send again to confirm.",

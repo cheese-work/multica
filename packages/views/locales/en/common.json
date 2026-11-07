@@ -150,12 +150,14 @@
       "stale_cap": "A higher cap is already in force.",
       "stale_window": "The budget window changed. Start a new request.",
       "not_budgeted": "This issue is no longer budgeted.",
-      "other": "Failed: {{code}}"
+      "other": "Failed: {{code}}",
+      "stale_base": "The target changed after the request. Ask again."
     },
     "no_passkey": "Add a passkey before you approve.",
     "add_passkey": "Add a passkey",
     "error": "Passkey approval did not complete. Try again.",
     "lost": "The response was lost. The action is not approved again. Check the outcome.",
-    "check": "Check outcome"
+    "check": "Check outcome",
+    "outcome": { "cap_applied": "Cap applied", "run_queued": "Run queued", "still_blocked": "Still blocked: {{reason}}" }
   }
 }

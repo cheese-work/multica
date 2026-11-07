@@ -35,6 +35,15 @@ function markApproveSent(actionId: string, sent = true) {
   }
 }
 
+// What the executor reported: `result.outcome` is `cap_applied`, `run_queued` or
+// `still_blocked:<reason>`; a token this client does not know shows as plain "Executed".
+function executedEffect(result: unknown): { token: string; change?: string } | null {
+  if (typeof result !== "object" || result === null) return null;
+  const { outcome, from, to } = result as Record<string, unknown>;
+  if (typeof outcome !== "string") return null;
+  return { token: outcome, change: typeof from === "number" && typeof to === "number" ? `${from} → ${to}` : undefined };
+}
+
 /**
  * Passkey approval of one executable decision action: challenge → WebAuthn
  * assertion → approve → outcome. After the approve request leaves, a lost or
@@ -46,10 +55,13 @@ function markApproveSent(actionId: string, sent = true) {
 export function DecisionActionApproval({
   actionId,
   payloadSha256,
+  state,
   onEnroll,
 }: {
   actionId: string;
   payloadSha256: string;
+  /** The action state the surrounding card reports; a change reads the outcome again (a decision made in another tab or by a worker). */
+  state?: string;
   onEnroll?: () => void;
 }) {
   const { t } = useT("common");
@@ -67,8 +79,8 @@ export function DecisionActionApproval({
 
   useEffect(() => {
     void readBack(approveWasSent(actionId) ? { step: "lost" } : { step: "idle" });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- read once per action
-  }, [actionId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- read once per action and per reported state
+  }, [actionId, state]);
 
   const approve = async () => {
     setView({ step: "busy" });
@@ -97,11 +109,19 @@ export function DecisionActionApproval({
       code === "stale_cap" ? t(($) => $.decision_action.failed_code.stale_cap)
       : code === "stale_window" ? t(($) => $.decision_action.failed_code.stale_window)
       : code === "not_budgeted" ? t(($) => $.decision_action.failed_code.not_budgeted)
+      : code === "stale_base" ? t(($) => $.decision_action.failed_code.stale_base)
       : code ? t(($) => $.decision_action.failed_code.other, { code })
       : null;
+    const effect = state === "executed" ? executedEffect(view.outcome.result) : null;
     return (
       <div role="status" data-state={state} className="space-y-1 text-label">
-        <p className="font-medium">{t(($) => $.decision_action.state[state as Terminal])}</p>
+        <p className="font-medium">
+          {effect?.token === "cap_applied" ? t(($) => $.decision_action.outcome.cap_applied)
+            : effect?.token === "run_queued" ? t(($) => $.decision_action.outcome.run_queued)
+            : effect?.token.startsWith("still_blocked:") ? t(($) => $.decision_action.outcome.still_blocked, { reason: effect.token.slice("still_blocked:".length) })
+            : t(($) => $.decision_action.state[state as Terminal])}
+        </p>
+        {effect?.change && <p className="text-caption text-muted-foreground">{effect.change}</p>}
         {state === "failed" && detail && <p className="text-caption text-muted-foreground">{detail}</p>}
       </div>
     );

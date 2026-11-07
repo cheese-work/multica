@@ -426,6 +426,7 @@
     "action_unavailable": "Détails indisponibles",
     "action_approve": "Approuver avec une clé d’accès",
     "action_preview": "Ce que l’approbation modifie",
+    "agent_note": "Note de l’agent (non vérifiée)",
     "answer_send_passkey": "Envoyer avec une clé d'accès",
     "answer_open_browser": "Ouvrir dans le navigateur",
     "answer_passkey_needed": "Cette réponse nécessite votre clé d'accès. Envoyez à nouveau pour confirmer.",

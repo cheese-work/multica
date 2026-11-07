@@ -110,7 +110,8 @@ func (handler *Handler) decisionRequestsForMessages(ctx context.Context, workspa
 			recordID := uuidToString(row.RecordCommentID)
 			card.RecordCommentID = &recordID
 		}
-		if row.Status == "open" {
+		// An answered request keeps its action so the card can show the outcome after approval.
+		if row.Status == "open" || row.Status == "answered" {
 			card.Action = handler.decisionCardAction(ctx, workspaceUUID, row.RequestID)
 		}
 		if row.Status == "cancelled" {

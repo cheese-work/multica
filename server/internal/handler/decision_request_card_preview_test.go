@@ -196,3 +196,14 @@ func TestCardPreviewIsMissingForAnUnknownActionType(test *testing.T) {
 		test.Fatalf("unknown type should be listed without a preview: %+v", card)
 	}
 }
+
+// After approval the request is answered and the action leaves pending: the card
+// keeps the action, with its state and no preview, so it can show the outcome.
+func TestCardActionStaysAfterTheActionLeavesPending(test *testing.T) {
+	action := newPendingAction(test)
+	dbfx.Exec(test, `UPDATE decision_action SET state = 'executed' WHERE id = $1`, action.actionID)
+	card := action.cardAction(test)
+	if card == nil || card.State != "executed" || card.Preview != nil || card.ID != action.actionID {
+		test.Fatalf("executed action on the card: %+v", card)
+	}
+}
