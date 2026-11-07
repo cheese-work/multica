@@ -1,0 +1,48 @@
+# ci-policy: class=gate
+# Required `pr-ready` check, merge-queue half (CHE-3440). Canonical copy: cheese-work/dotfiles-agents
+# .github/workflows/pr-ready-queue.yml. Same job name `pr-ready` as pr-ready.yml: the required context is satisfied
+# by whichever file the event triggers. Judges every PR the merge queue holds (body + signed PASS at its head).
+#
+# SECURITY: GitHub runs a merge_group workflow from the QUEUE COMMIT, so a queued PR can rewrite this file and
+# the job is untrusted. It therefore runs on a GitHub-hosted ephemeral runner (never the self-hosted X99 pool) with
+# a read-only token and no secret, and the script it runs is checked out from the default branch. A PR that edits
+# this file can still make its own queue check pass: closing that needs an org required-workflow ruleset pointing at
+# a trusted copy (owner-only; docs/pr-ready.md). Until then, review any PR that touches .github/workflows/pr-ready*.
+
+name: pr-ready-queue
+
+on:
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: pr-ready-queue-${{ github.event.merge_group.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  pr-ready:
+    name: pr-ready
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EVENT: ${{ github.event_name }}
+      REPO: ${{ github.repository }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      BASE_REF: ${{ github.event.merge_group.base_ref }}
+      BASE_SHA: ${{ github.event.merge_group.base_sha }}
+      HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+      HEAD_REF: ${{ github.event.merge_group.head_ref }}
+    steps:
+      - name: Check out the protected default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Judge every PR in the merge group
+        run: python3 .github/pr-ready/pr_ready.py
