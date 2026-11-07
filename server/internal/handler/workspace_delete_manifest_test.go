@@ -220,6 +220,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"member":                             workspaceDelete,
 	"member_delegation_day":              workspaceDeleteKeep, // user-scoped telemetry ledger, no workspace_id
 	"host_sample":                        workspaceDeleteKeep, // host telemetry keyed by daemon_id, no workspace_id; outlives workspaces by design
+	"host_sample_hourly":                 workspaceDeleteKeep, // hourly rollup of host_sample; same reason
 	"agent_mcp_server":                   workspaceDelete,
 	"wakeup_aggregate_budget":            workspaceDelete,
 	"wakeup_aggregate_reservation":       workspaceDelete,
