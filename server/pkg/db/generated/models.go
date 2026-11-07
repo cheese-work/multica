@@ -2811,6 +2811,18 @@ type ProviderBreaker struct {
 	Version       int64              `json:"version"`
 }
 
+type ProviderBreakerAudit struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	Provider      string             `json:"provider"`
+	Event         string             `json:"event"`
+	PreviousState string             `json:"previous_state"`
+	NewState      string             `json:"new_state"`
+	ActorID       pgtype.UUID        `json:"actor_id"`
+	TaskID        pgtype.UUID        `json:"task_id"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
 type ProviderFailureRecovery struct {
 	FailedTaskID           pgtype.UUID        `json:"failed_task_id"`
 	TriggerKind            string             `json:"trigger_kind"`

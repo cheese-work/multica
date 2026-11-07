@@ -302,6 +302,19 @@ This first version supports issue runs, chat, progress reporting, cancellation, 
 
 For standalone bridge setup and operational limitations, see the [Qoder runtime README](https://github.com/multica-ai/multica/blob/main/server/cmd/qoder-runtime/README.md).
 
+## Provider circuit breaker [#provider-breaker]
+
+When a provider keeps returning 5xx errors, Multica opens a circuit breaker for that provider in the workspace and holds new runs instead of failing them one by one. An agent on that provider shows a notice with the provider, the time the breaker opened, and the time of the next probe (both in ICT). Trigger the agent again after that time, or ask a workspace admin to reset the breaker.
+
+After the cool-off, one probe run decides whether the breaker closes or opens again. Every automatic open, half-open, close, and reopen, and every manual reset, is written to an audit log with who, when, and the previous state.
+
+```bash
+multica runtime breaker list
+multica runtime breaker reset <provider>
+```
+
+`list` shows the state, failure count, opened time, and next probe time of each provider. `reset` force-closes the breaker and is limited to workspace owners and admins. The same data is available over the API: `GET /api/workspaces/{id}/provider-breakers` lists breakers and `POST /api/workspaces/{id}/provider-breakers/{provider}/reset` resets one.
+
 ## Troubleshooting an offline runtime
 
 Check in this order:
