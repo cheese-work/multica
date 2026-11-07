@@ -786,6 +786,117 @@ func TestRunBudgetHookAssignClearRestartKeepsTheAssignmentsTaintOnTheRecoveryRun
 	}
 }
 
+// A tainted assignment and an elevated-op authorization of the issue's running
+// recovery run overlap. The test holds a share lock on the run, as the
+// authorization does first; the assignment then waits on the run, and the
+// authorization asks for the issue. Locking the issue before the run (the
+// assignment's old order) makes the two wait on each other and the database
+// aborts one; locking the run first lets both finish.
+func TestTaintedAssignmentAndAuthorizationOfARunningRecoveryRunDoNotDeadlock(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	c := newBudgetCase(t, 2856064, recoverySteps(seededReadyAgentID(t)), 2)
+	recordOccurrence(t, c, "in_progress")
+	c.spend(t, 2)
+	ctxClean, eClean := refusalBy(t, c, "")
+	id, generation, ok := testHandler.recordRefusalIntent(ctxClean, eClean)
+	if !ok {
+		t.Fatal("clean refusal not recorded")
+	}
+	testHandler.advanceRefusalHook(ctxClean, id, generation, eClean)
+	finished(t, c)
+	f, profile, epoch := claimRecoveryRun(t, c)
+	if profile != "elevated" {
+		t.Fatalf("clean recovery run profile = %q, want elevated", profile)
+	}
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status='running', started_at=now() WHERE id=$1`, f.taskID)
+
+	service.SetOnRunBudgetExhausted(func(context.Context, service.RunBudgetExhausted) {})
+	t.Cleanup(func() { service.SetOnRunBudgetExhausted(testHandler.onRunBudgetExhausted) })
+	actorRuntime := createClaimReclaimRuntime(t, ctx, "Budget previous runtime")
+	other := dbfx.Agent(t, "Budget previous assignee", actorRuntime)
+	actor := dbfx.Task(t, c.agentID, testutil.Cols{"status": "running", "runtime_id": actorRuntime, "issue_id": dbfx.Issue(t, "budget tainted actor"), "taint_ids": []string{"ext-1"}})
+	dbfx.Exec(t, `UPDATE issue SET assignee_id=$2 WHERE id=$1`, c.issueID, other)
+
+	hold, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hold.Rollback(ctx)
+	if _, err := hold.Exec(ctx, `SELECT 1 FROM agent_task_queue WHERE id = $1 FOR SHARE`, f.taskID); err != nil {
+		t.Fatal(err)
+	}
+	lockWaiters := func() int {
+		var n int
+		dbfx.QueryRow(t, `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&n)
+		return n
+	}
+	until := func(what string, ok func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); !ok(); time.Sleep(20 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting for %s", what)
+			}
+		}
+	}
+
+	assigned := make(chan int, 1)
+	go func() {
+		w := httptest.NewRecorder()
+		testHandler.UpdateIssue(w, testutil.WithURLParams(
+			asRun(newRequest(http.MethodPatch, "/api/issues/"+c.issueID, map[string]any{
+				"assignee_type": "agent", "assignee_id": c.agentID,
+			}), c.agentID, actor), "id", c.issueID))
+		assigned <- w.Code
+	}()
+	until("the assignment to wait on the recovery run", func() bool { return lockWaiters() >= 1 })
+
+	authorized := make(chan int, 1)
+	go func() {
+		w := httptest.NewRecorder()
+		testHandler.AuthorizeElevatedOp(w, withURLParam(newOwnerDaemonRequest("POST", "/api/daemon/tasks/"+f.taskID+"/elevation/authorize",
+			map[string]any{"epoch": epoch, "scope": "repo_write:1234", "input_hash": hashA}), "taskId", f.taskID))
+		authorized <- w.Code
+	}()
+	// Either the authorization finished (run locked first) or it waits for the
+	// issue (issue locked first); both mean it reached the issue lock.
+	var authCode int
+	authDone := false
+	until("the authorization to reach the issue lock", func() bool {
+		select {
+		case authCode = <-authorized:
+			authDone = true
+			return true
+		default:
+			return lockWaiters() >= 2
+		}
+	})
+	if err := hold.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if !authDone {
+		select {
+		case authCode = <-authorized:
+		case <-time.After(10 * time.Second):
+			t.Fatal("authorization never finished")
+		}
+	}
+	select {
+	case code := <-assigned:
+		if code != http.StatusOK {
+			t.Fatalf("assignment status = %d, want 200", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("assignment never finished")
+	}
+	if authCode != http.StatusOK && authCode != http.StatusForbidden {
+		t.Fatalf("authorization status = %d, want 200 or 403 (an aborted transaction is 500)", authCode)
+	}
+}
+
 // Workspace deletion removes the issue_run_taint rows of the workspace.
 func TestIssueRunTaintWorkspaceDeletionRemovesItsRows(t *testing.T) {
 	workspaceID := dbfx.Workspace(t, "issue run taint teardown", "run-taint-teardown-"+uuid.NewString())

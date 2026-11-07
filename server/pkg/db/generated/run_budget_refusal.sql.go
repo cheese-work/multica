@@ -242,6 +242,22 @@ func (q *Queries) LockRunBudgetRefusal(ctx context.Context, id pgtype.UUID) (Run
 	return i, err
 }
 
+const lockRunsForTaintedWrite = `-- name: LockRunsForTaintedWrite :exec
+SELECT id FROM agent_task_queue
+WHERE issue_id = $1::uuid
+  AND (status IN ('queued', 'dispatched') OR (task_kind = 'budget_recovery' AND status = 'running'))
+ORDER BY id
+FOR NO KEY UPDATE
+`
+
+// A tainted issue write updates these runs after it locks the issue row; the
+// authorization path locks a run and then the issue. Taking the run locks
+// first, in id order, gives both paths one order: run, then issue.
+func (q *Queries) LockRunsForTaintedWrite(ctx context.Context, issueID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockRunsForTaintedWrite, issueID)
+	return err
+}
+
 const markRunBudgetRefusalBlocked = `-- name: MarkRunBudgetRefusalBlocked :exec
 UPDATE run_budget_refusal
 SET hook_phase = 'blocked', blocked = true, occurrence_activity_id = $1::uuid, updated_at = now()

@@ -316,6 +316,9 @@ func (h *Handler) writeIssueLocked(ctx context.Context, q *db.Queries, workspace
 	if err := wf.lockProject(ctx, q); err != nil {
 		return db.Issue{}, nil, err
 	}
+	if err := lockRunsForTaintedWrite(ctx, q, params.ID); err != nil {
+		return db.Issue{}, nil, err
+	}
 	if params.DuplicateOfIssueID.Valid {
 		if err := lockAndCheckDuplicateMark(ctx, q, workspaceID, params.ID, params.DuplicateOfIssueID); err != nil {
 			return db.Issue{}, nil, err
@@ -337,6 +340,20 @@ func (h *Handler) writeIssueLocked(ctx context.Context, q *db.Queries, workspace
 		return issue, nil, err
 	}
 	return issue, cancelledWakeups, wf.recordVerdict(ctx, q, issue)
+}
+
+// lockRunsForTaintedWrite locks, before the issue row, the runs a tainted write
+// is about to update, so the write and an elevated-op authorization take their
+// locks in one order (run, then issue). A run created after this point is
+// inserted under the issue lock and cannot be authorized before it commits.
+func lockRunsForTaintedWrite(ctx context.Context, q *db.Queries, issueID pgtype.UUID) error {
+	if len(issueWriteTaint(ctx)) == 0 {
+		return nil
+	}
+	if err := q.LockRunsForTaintedWrite(ctx, issueID); err != nil {
+		return fmt.Errorf("lock runs for tainted write: %w", err)
+	}
+	return nil
 }
 
 // updateIssueStoppingWakeups writes params and, when the write moves the issue
@@ -4228,6 +4245,9 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 		}); err != nil {
 			return db.Issue{}, db.Issue{}, false, fmt.Errorf("lock issue attachments: %w", err)
 		}
+	}
+	if err := lockRunsForTaintedWrite(ctx, qtx, params.ID); err != nil {
+		return db.Issue{}, db.Issue{}, false, err
 	}
 	current, err := qtx.LockIssueForDescriptionUpdate(ctx, db.LockIssueForDescriptionUpdateParams{
 		ID:          params.ID,

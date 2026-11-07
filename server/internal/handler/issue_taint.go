@@ -18,7 +18,7 @@ import (
 
 // lockedIssueTaint reads the issue's active taint IDs under a share lock on the
 // issue row, in a second statement so it sees what a writer committed while
-// the lock was awaited. Lock order everywhere: task_elevation, task, issue.
+// the lock was awaited. Lock order everywhere: task_elevation, task, issue (a tainted issue write locks its runs first: lockRunsForTaintedWrite).
 func lockedIssueTaint(ctx context.Context, q *db.Queries, issueID pgtype.UUID) ([]string, error) {
 	if err := q.LockIssueForTaint(ctx, issueID); err != nil {
 		return nil, err

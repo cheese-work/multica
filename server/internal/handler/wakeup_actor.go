@@ -92,6 +92,13 @@ func (h *Handler) beginWakeupWrite(ctx context.Context) (pgx.Tx, error) {
 				return nil, err
 			}
 		}
+		// A tainted write locks its runs before any issue row (lockRunsForTaintedWrite).
+		for _, observed := range scope.issues {
+			if err := lockRunsForTaintedWrite(ctx, queries, observed.ID); err != nil {
+				_ = tx.Rollback(ctx)
+				return nil, err
+			}
+		}
 		for _, observed := range scope.issues {
 			current, err := queries.LockWakeupIssue(ctx, observed.ID)
 			if err == nil && current.ProjectID != observed.ProjectID {
