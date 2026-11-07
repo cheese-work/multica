@@ -188,27 +188,32 @@ func TestWakeupConditionPRConflictsAcrossRecompute(t *testing.T) {
 	}
 }
 
-// Checks already finished on the PR's current head must fire a new
-// checks_finished rule. Only a result for a replaced head is baselined.
+// Checks already finished on a PR's current head must fire a new
+// checks_finished rule. Only a result for a replaced head is baselined, even
+// when another linked PR has a current result.
 func TestBaselineChecksFinishedOnCurrentHead(t *testing.T) {
+	current := []any{int32(1), "open", "head", "SUCCESS", "head", "", "p1", "acme", "widget"}
+	replaced := []any{int32(2), "open", "old", "SUCCESS", "head", "", "p2", "acme", "widget"}
+	running := []any{int32(1), "open", "head", "PENDING", "head", "", "p1", "acme", "widget"}
 	for _, tc := range []struct {
-		name         string
-		row          []any
-		wantBaseline bool
+		name      string
+		rows      [][]any
+		wantState string
 	}{
-		{"finished on current head", []any{int32(1), "open", "head", "SUCCESS", "head", "", "p1", "acme", "widget"}, false},
-		{"finished on replaced head", []any{int32(1), "open", "old", "SUCCESS", "head", "", "p1", "acme", "widget"}, true},
-		{"still running", []any{int32(1), "open", "head", "PENDING", "head", "", "p1", "acme", "widget"}, false},
+		{"finished on current head", [][]any{current}, ""},
+		{"finished on replaced head", [][]any{replaced}, "pr:2@old:SUCCESS"},
+		{"still running", [][]any{running}, ""},
+		{"current and replaced PRs", [][]any{current, replaced}, "pr:2@old:SUCCESS"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := &IssueWakeupService{Tasks: &TaskService{PRSnapshotsEnabled: true}}
 			w := db.IssueWakeup{ID: dbid.NewV7(), IssueID: dbid.NewV7(), Condition: condition(t, map[string]any{"type": "pull_request", "event": "checks_finished"})}
-			tx := &prConditionTx{issue: w.IssueID, prs: [][]any{tc.row}}
+			tx := &prConditionTx{issue: w.IssueID, prs: tc.rows}
 			if err := s.baselineCondition(context.Background(), tx, db.New(tx), w, time.Now()); err != nil {
 				t.Fatal(err)
 			}
-			if got := tx.state != ""; got != tc.wantBaseline {
-				t.Fatalf("baseline state=%q, want baselined=%t", tx.state, tc.wantBaseline)
+			if tx.state != tc.wantState {
+				t.Fatalf("baseline state=%q, want %q", tx.state, tc.wantState)
 			}
 		})
 	}

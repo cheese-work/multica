@@ -344,7 +344,7 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 				}
 				missingSnapshot = missingSnapshot || head == ""
 				if head != "" && slices.Contains([]string{"SUCCESS", "FAILURE", "ERROR"}, checks) {
-					keys = append(keys, fmt.Sprintf("%d@%s:%s", number, head, checks))
+					keys = append(keys, prChecksKey(number, head, checks))
 					prs = append(prs, map[string]any{"number": number, "head_sha": head, "checks": strings.ToLower(checks), "head_current": head == currentHead})
 					prRepos = append(prRepos, [2]string{repoOwner, repoName})
 				}
@@ -633,28 +633,44 @@ func (s *IssueWakeupService) baselineCondition(ctx context.Context, tx pgx.Tx, q
 	if err := saveConditionDiagnostic(ctx, q, w, err); err != nil {
 		return err
 	}
-	if !met || checksFinishedOnCurrentHead(w.Condition, observed) {
+	if !met {
 		fingerprint = ""
+	} else if staleOnly, ok := replacedHeadChecks(w.Condition, observed); ok {
+		fingerprint = staleOnly
 	}
 	return q.SetWakeupConditionState(ctx, db.SetWakeupConditionStateParams{ID: w.ID, ConditionState: fingerprint, NextFireAt: pgtype.Timestamptz{Time: now.Add(conditionPollInterval), Valid: true}})
 }
 
-// checksFinishedOnCurrentHead reports whether a checks_finished rule is already
-// satisfied only by checks on each PR's current head. That result is news to
-// the rule, so registration leaves it unbaselined and the next poll fires.
-func checksFinishedOnCurrentHead(raw []byte, observed map[string]any) bool {
+// prChecksKey is the fingerprint key of one finished checks result.
+func prChecksKey(number any, head, checks string) string {
+	return fmt.Sprintf("%v@%s:%s", number, head, strings.ToUpper(checks))
+}
+
+// replacedHeadChecks returns the fingerprint a new checks_finished rule
+// baselines: only the results on a replaced head, since those are not news.
+// A result on a PR's current head stays out of it, so the next poll fires,
+// whatever the other linked PRs show. ok is false for any other rule.
+func replacedHeadChecks(raw []byte, observed map[string]any) (fingerprint string, ok bool) {
 	var c WakeupCondition
 	_ = json.Unmarshal(raw, &c)
+	if c.Type != "pull_request" || c.Event != "checks_finished" {
+		return "", false
+	}
+	var keys []string
 	prs, _ := observed["pull_requests"].([]map[string]any)
-	if c.Type != "pull_request" || c.Event != "checks_finished" || len(prs) == 0 {
-		return false
-	}
 	for _, pr := range prs {
-		if current, _ := pr["head_current"].(bool); !current {
-			return false
+		if current, _ := pr["head_current"].(bool); current {
+			continue
 		}
+		head, _ := pr["head_sha"].(string)
+		checks, _ := pr["checks"].(string)
+		keys = append(keys, prChecksKey(pr["number"], head, checks))
 	}
-	return true
+	if len(keys) == 0 {
+		return "", true
+	}
+	sort.Strings(keys)
+	return "pr:" + strings.Join(keys, ","), true
 }
 
 // A completed evaluation replaces the previous pass's error with its current
