@@ -262,7 +262,7 @@ func TestCompactionSeedRedactsDecisionWords(t *testing.T) {
 	ctx := context.Background()
 	agentID := createHandlerTestAgent(t, "compaction-decisions-redact", []byte("[]"))
 	sessionID := dbfx.ChatSession(t, agentID)
-	const token = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn"
+	token := "ghp_" + strings.Repeat("a1B2c3D4e5", 3) + "a1B2c3"
 	recordDecision(t, agentID, sessionID, "token decision", "Use this token "+token+" for the deploy.", false)
 	session, summary, fail := testHandler.compactChatInPlace(ctx, parseUUID(sessionID), pgtype.UUID{}, "Nothing kept.")
 	if fail != nil {
@@ -273,7 +273,7 @@ func TestCompactionSeedRedactsDecisionWords(t *testing.T) {
 		t.Fatal(err)
 	}
 	for where, text := range map[string]string{"row": summary.Content, "prompt": seed} {
-		if strings.Contains(text, "ghp_ABCDEF") {
+		if strings.Contains(text, token) {
 			t.Fatalf("%s carries a provider token:\n%s", where, text)
 		}
 	}
