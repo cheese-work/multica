@@ -78,7 +78,7 @@ func (e settingsRejectedError) Error() string { return e.msg }
 // pause held. The audit record of a flip commits with it, so a flip that
 // cannot be audited does not happen. A write that cannot read the stored
 // settings fails instead of guessing that they hold no pause.
-func (h *Handler) saveWorkspace(ctx context.Context, params db.UpdateWorkspaceParams, settings any, pause *bool, userID, actorType, actorID string) (db.Workspace, string, db.ActivityLog, error) {
+func (h *Handler) saveWorkspace(ctx context.Context, params db.UpdateWorkspaceParams, settings any, pause *bool, userID, actorType, actorID string, machine bool) (db.Workspace, string, db.ActivityLog, error) {
 	var activity db.ActivityLog
 	if settings == nil && pause == nil {
 		ws, err := h.Queries.UpdateWorkspace(ctx, params)
@@ -115,13 +115,19 @@ func (h *Handler) saveWorkspace(ctx context.Context, params db.UpdateWorkspacePa
 		reconcileDelegatedWrites(stored, incoming)
 		reconcileAgentDecisionJev(stored, incoming)
 		reconcileRoutingAgent(stored, incoming)
+		if err := reconcileBackgroundAgents(stored, incoming, machine); err != nil {
+			return db.Workspace{}, "", activity, err
+		}
 		if action, err = reconcileWakeupsPause(stored, incoming, userID, time.Now()); err != nil {
 			return db.Workspace{}, "", activity, settingsRejectedError{err.Error()}
 		}
-	} else if stored[wakeupsPausedKey] == true || stored[delegatedWritesKey] != nil || stored[agentDecisionJevKey] != nil || stored[routingAgentKey] != nil {
+	} else if machine && stored[backgroundAgentsKey] != nil {
+		// A non-object body would clear the key: a key-omitting replacement.
+		return db.Workspace{}, "", activity, errBackgroundAgentsHumanOnly
+	} else if stored[wakeupsPausedKey] == true || stored[backgroundAgentsKey] != nil || stored[delegatedWritesKey] != nil || stored[agentDecisionJevKey] != nil || stored[routingAgentKey] != nil {
 		// A non-object body would replace the whole blob and clear the pause, the
 		// delegated-writes setting or the Jev registration with no record. Other callers may still store one.
-		return db.Workspace{}, "", activity, settingsRejectedError{"settings must be an object while wakeups are paused, delegated writes are set, a Jev agent is registered or a routing agent is set"}
+		return db.Workspace{}, "", activity, settingsRejectedError{"settings must be an object while wakeups are paused, delegated writes are set, a Jev agent is registered, a routing agent is set or background agents are set"}
 	}
 	params.Settings, _ = json.Marshal(settings)
 	ws, err := q.UpdateWorkspace(ctx, params)

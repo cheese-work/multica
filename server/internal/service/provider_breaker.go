@@ -96,18 +96,63 @@ func providerBreakerVerdict(ctx context.Context, lookup RuntimeLookup, agent db.
 	if !ok || lookup.Queries == nil {
 		return AgentVerdict{}, nil
 	}
-	state, err := ProviderBreakerAdmit(ctx, lookup.Queries, agent.WorkspaceID, provider)
+	row, exists, err := providerBreakerRow(ctx, lookup.Queries, agent.WorkspaceID, provider)
 	if err != nil {
 		return AgentVerdict{}, err
 	}
-	if state != "hold" {
+	if !exists || providerBreakerDisposition(row.State, row.ProbeDue) != "hold" {
 		return AgentVerdict{}, nil
 	}
 	return AgentVerdict{
-		Availability: AgentBlocked,
+		// Waitable, not blocked: the claim gate keeps queued work until the probe
+		// is due and then lets one task through as the canary, so a trigger that
+		// queues now retries itself (CHE-4408). A refusal would leave no retry.
+		Availability: AgentWaitable,
 		Reason:       dispatch.ReasonProviderBreaker,
-		Detail:       fmt.Sprintf("This agent's provider (%s) is temporarily unavailable because its circuit breaker is open.", provider),
+		Detail:       providerBreakerNotice(provider, row.OpenedAt.Time, row.NextProbeAt.Time),
 	}, nil
+}
+
+// providerBreakerNotice is the finished refusal text; RuntimeUnusableNotice passes it through.
+func providerBreakerNotice(provider string, openedAt, nextProbeAt time.Time) string {
+	ict := time.FixedZone("ICT", 7*60*60)
+	const layout = "2006-01-02 15:04 MST"
+	return fmt.Sprintf("This agent's provider (%s) is temporarily unavailable: its circuit breaker opened at %s and the next probe is at %s. Work queued for it starts after that probe, or a workspace admin can reset the breaker.",
+		provider, openedAt.In(ict).Format(layout), nextProbeAt.In(ict).Format(layout))
+}
+
+// recordProviderBreakerTransition writes the audit row of one breaker transition.
+// actor is the zero UUID for automatic transitions; task is the zero UUID when no task caused it.
+func recordProviderBreakerTransition(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, provider, event, previous, next string, actor, task pgtype.UUID) error {
+	if err := queries.InsertProviderBreakerAudit(ctx, db.InsertProviderBreakerAuditParams{
+		WorkspaceID: workspaceID, Provider: provider, Event: event, PreviousState: previous, NewState: next, ActorID: actor, TaskID: task,
+	}); err != nil {
+		return fmt.Errorf("audit provider breaker %s: %w", event, err)
+	}
+	slog.Warn("provider breaker transition", "provider", provider, "event", event, "from", previous, "to", next,
+		"actor_id", util.UUIDToString(actor), "task_id", util.UUIDToString(task))
+	return nil
+}
+
+// ResetProviderBreaker force-closes a breaker (admin action) and audits who did it
+// and the state it was in. found is false when the provider has no breaker row.
+// Callers pass transaction-bound queries so the reset and its audit row commit together.
+func ResetProviderBreaker(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, provider string, actor pgtype.UUID) (previous string, found bool, err error) {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if err := queries.LockProviderBreakerTrip(ctx, fmt.Sprintf("%x:%s", workspaceID.Bytes, provider)); err != nil {
+		return "", false, fmt.Errorf("lock provider breaker reset: %w", err)
+	}
+	row, exists, err := providerBreakerRow(ctx, queries, workspaceID, provider)
+	if err != nil || !exists {
+		return "", false, err
+	}
+	if _, err := queries.ResetProviderBreaker(ctx, db.ResetProviderBreakerParams{WorkspaceID: workspaceID, Provider: provider, DefaultCoolOffSeconds: providerBreakerCoolOff}); err != nil {
+		return "", false, fmt.Errorf("reset provider breaker: %w", err)
+	}
+	if err := recordProviderBreakerTransition(ctx, queries, workspaceID, provider, "reset", row.State, "closed", actor, pgtype.UUID{}); err != nil {
+		return "", false, err
+	}
+	return row.State, true, nil
 }
 
 func recordProviderServerFailure(ctx context.Context, queries *db.Queries, task db.AgentTaskQueue) error {
@@ -137,6 +182,7 @@ func recordProviderServerFailure(ctx context.Context, queries *db.Queries, task 
 		}
 		if changed == 1 {
 			slog.Warn("provider breaker reopened after canary failure", "provider", provider, "canary_task_id", util.UUIDToString(task.ID), "prev_cool_off_s", row.CoolOffS)
+			return recordProviderBreakerTransition(ctx, queries, agent.WorkspaceID, provider, "reopen", "half_open", "open", pgtype.UUID{}, task.ID)
 		}
 		return nil
 	}
@@ -167,6 +213,7 @@ func recordProviderServerFailure(ctx context.Context, queries *db.Queries, task 
 	}
 	if !exists || row.State == "closed" {
 		slog.Warn("provider breaker opened", "provider", provider, "evidence_tasks", len(evidence))
+		return recordProviderBreakerTransition(ctx, queries, agent.WorkspaceID, provider, "open", "closed", "open", pgtype.UUID{}, task.ID)
 	}
 	return nil
 }
@@ -182,19 +229,6 @@ func recordProviderSuccess(ctx context.Context, queries *db.Queries, task db.Age
 	provider, ok := ResolveModelProvider(agent.Model.String)
 	if !ok {
 		return nil
-	}
-	_, exists, err := providerBreakerRow(ctx, queries, agent.WorkspaceID, provider)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		_, held, err := providerHoldBlocksAgent(ctx, RuntimeLookup{Queries: queries}, agent)
-		if err != nil {
-			return fmt.Errorf("check provider hold for successful task: %w", err)
-		}
-		if !held {
-			return nil
-		}
 	}
 	lockKey := fmt.Sprintf("%x:%s", agent.WorkspaceID.Bytes, provider)
 	if err := queries.LockProviderBreakerTrip(ctx, lockKey); err != nil {
@@ -214,6 +248,7 @@ func recordProviderSuccess(ctx context.Context, queries *db.Queries, task db.Age
 		}
 		if changed == 1 {
 			slog.Info("provider breaker closed after canary success", "provider", provider, "canary_task_id", util.UUIDToString(task.ID))
+			return recordProviderBreakerTransition(ctx, queries, agent.WorkspaceID, provider, "close", "half_open", "closed", pgtype.UUID{}, task.ID)
 		}
 		return nil
 	}
@@ -266,6 +301,10 @@ func providerBreakerClaimGate(ctx context.Context, queries *db.Queries, agent db
 }
 
 func acquireProviderBreakerCanary(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, provider string, taskID pgtype.UUID) error {
+	prior, _, err := providerBreakerRow(ctx, queries, workspaceID, provider)
+	if err != nil {
+		return err
+	}
 	changed, err := queries.AcquireProviderBreakerCanary(ctx, db.AcquireProviderBreakerCanaryParams{
 		WorkspaceID: workspaceID, Provider: provider, TaskID: taskID,
 		CanaryDeadlineSeconds: int32(providerBreakerCanaryDeadline.Seconds()),
@@ -277,5 +316,5 @@ func acquireProviderBreakerCanary(ctx context.Context, queries *db.Queries, work
 		return errProviderBreakerCanaryTaken
 	}
 	slog.Warn("provider breaker half_open: canary admitted", "provider", provider, "canary_task_id", util.UUIDToString(taskID))
-	return nil
+	return recordProviderBreakerTransition(ctx, queries, workspaceID, provider, "half_open", prior.State, "half_open", pgtype.UUID{}, taskID)
 }

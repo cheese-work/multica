@@ -2606,7 +2606,31 @@ func commentEnqueueFailureReason(err error) DispatchReasonCode {
 	if errors.Is(err, service.ErrAttributionFailClosed) {
 		return ReasonAttributionBlocked
 	}
+	// The same refusals the rerun path types (task_lifecycle.go); each is a
+	// property of the issue or stage, so the code stays enumeration-safe.
+	if errors.Is(err, service.ErrStageQueueFull) {
+		return ReasonStageQueueFull
+	}
+	if errors.Is(err, service.ErrRunBudgetExhausted) {
+		return ReasonRunBudgetExhausted
+	}
+	if errors.Is(err, service.ErrIssueInTriage) {
+		return ReasonIssueInTriage
+	}
 	return ReasonInternalError
+}
+
+// logCommentAdmissionInternalError records why a comment admission branch
+// reported internal_error. trigger_outcomes carries only the reason code, so
+// this warning is the only place the cause is readable.
+func logCommentAdmissionInternalError(branch string, issueID pgtype.UUID, opts commentTriggerComputeOptions, targetType, targetID string, err error) {
+	slog.Warn("comment admission reported internal_error",
+		"branch", branch,
+		"issue_id", uuidToString(issueID),
+		"comment_id", uuidToString(opts.ExcludeTriggerCommentID),
+		"target_type", targetType,
+		"target_id", targetID,
+		"error", err)
 }
 
 // hasActiveTaskForIssueAndAgent reports whether the (issue, agent) pair has any
@@ -3109,6 +3133,9 @@ func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issu
 			triggers = nil
 			for index := range targets {
 				if targets[index].ReasonCode != ReasonInvocationNotAllowed {
+					if reason == ReasonInternalError {
+						logCommentAdmissionInternalError("project_active_check", issue.ID, opts, targets[index].TargetType, targets[index].TargetID, err)
+					}
 					targets[index].ExecAgentID = ""
 					targets[index].Status = DispatchBlocked
 					targets[index].ReasonCode = reason
@@ -3826,6 +3853,7 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 			}
 			hasPending, err := h.hasPendingTaskForIssueAndAgent(ctx, issue.ID, leaderID, opts)
 			if err != nil {
+				logCommentAdmissionInternalError("squad_mention_pending_check", issue.ID, opts, "squad", m.ID, err)
 				blockTarget("squad", m.ID, ReasonInternalError)
 				continue
 			}
@@ -3885,6 +3913,7 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 		}
 		hasPending, err := h.hasPendingTaskForIssueAndAgent(ctx, issue.ID, agentUUID, opts)
 		if err != nil {
+			logCommentAdmissionInternalError("agent_mention_pending_check", issue.ID, opts, "agent", m.ID, err)
 			blockTarget("agent", m.ID, ReasonInternalError)
 			continue
 		}

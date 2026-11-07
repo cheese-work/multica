@@ -387,7 +387,8 @@
   },
   "chat": {
     "floating_label": "懸浮聊天窗",
-    "floating_hint": "在每個頁面顯示懸浮聊天按鈕。"
+    "floating_hint": "在每個頁面顯示懸浮聊天按鈕。",
+    "recent_agents_label": "新聊天中的最近智慧體"
   },
   "issue": {
     "opening": {

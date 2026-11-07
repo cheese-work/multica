@@ -398,7 +398,8 @@
   },
   "chat": {
     "floating_label": "Floating chat window",
-    "floating_hint": "Show the floating chat button on every page."
+    "floating_hint": "Show the floating chat button on every page.",
+    "recent_agents_label": "Recent agents in New chat"
   },
   "issue": {
     "opening": {

@@ -70,6 +70,11 @@ export function useSettingsSearchIndex(
       },
       {
         tab: "preferences",
+        anchor: "recent-agents",
+        title: t(($) => $.chat.recent_agents_label),
+      },
+      {
+        tab: "preferences",
         anchor: "issue-opening",
         title: t(($) => $.issue.opening.click),
         description: t(($) => $.issue.opening.hint),
