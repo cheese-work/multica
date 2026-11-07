@@ -56,6 +56,58 @@ func (q *Queries) GetDecisionCancelMessageForRequest(ctx context.Context, arg Ge
 	return i, err
 }
 
+const listCoveredCardSummaries = `-- name: ListCoveredCardSummaries :many
+SELECT request.id, request.issue_id, COALESCE(workspace.issue_prefix, 'MUL')::text AS issue_prefix, issue.number AS issue_number,
+    issue.title AS issue_title, COALESCE(request.ask_json->>'decision', request.ask)::text AS decision
+FROM decision_request request
+JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
+JOIN workspace ON workspace.id = request.workspace_id
+WHERE request.workspace_id = $1 AND request.id = ANY($2::uuid[])
+ORDER BY array_position($2::uuid[], request.id)
+`
+
+type ListCoveredCardSummariesParams struct {
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	Ids         []pgtype.UUID `json:"ids"`
+}
+
+type ListCoveredCardSummariesRow struct {
+	ID          pgtype.UUID `json:"id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	IssuePrefix string      `json:"issue_prefix"`
+	IssueNumber int32       `json:"issue_number"`
+	IssueTitle  string      `json:"issue_title"`
+	Decision    string      `json:"decision"`
+}
+
+// What a batch card's answer also decides, in the order the batch card lists it.
+func (q *Queries) ListCoveredCardSummaries(ctx context.Context, arg ListCoveredCardSummariesParams) ([]ListCoveredCardSummariesRow, error) {
+	rows, err := q.db.Query(ctx, listCoveredCardSummaries, arg.WorkspaceID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCoveredCardSummariesRow{}
+	for rows.Next() {
+		var i ListCoveredCardSummariesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.IssueID,
+			&i.IssuePrefix,
+			&i.IssueNumber,
+			&i.IssueTitle,
+			&i.Decision,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDecisionRequestCards = `-- name: ListDecisionRequestCards :many
 SELECT request.id AS request_id, message.id AS message_id, request.issue_id,
     COALESCE(workspace.issue_prefix, 'MUL')::text AS issue_prefix, issue.number AS issue_number, issue.title AS issue_title,

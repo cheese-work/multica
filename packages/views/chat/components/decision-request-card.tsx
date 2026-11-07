@@ -394,6 +394,19 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
           </AppLink>
         )}
       </div>
+      {card.covered_cards && card.covered_cards.length > 0 && (
+        <ul className="min-w-0 space-y-1 break-words border-b px-3 py-2 text-xs" data-testid="decision-request-covered-list">
+          {card.covered_cards.map((covered) => (
+            <li key={covered.id} data-testid="decision-request-covered-item">
+              <AppLink href={paths.issueDetail(covered.issue_id)} className="font-medium hover:underline focus-visible:outline-2 focus-visible:outline-ring">
+                {covered.issue_identifier || covered.issue_id}
+              </AppLink>
+              {covered.issue_title && <span className="text-muted-foreground">{` ${covered.issue_title}`}</span>}
+              {covered.decision && <span>{`: ${covered.decision}`}</span>}
+            </li>
+          ))}
+        </ul>
+      )}
       <div className="min-w-0 space-y-3 break-words px-3 py-3">
         {card.state === "withdrawn" && card.reason && (
           <p className="whitespace-pre-wrap text-muted-foreground" data-testid="decision-request-reason">{card.reason}</p>

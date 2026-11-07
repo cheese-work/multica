@@ -4,6 +4,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -87,6 +88,7 @@ func TestBatchCardCreationStoresCovers(test *testing.T) {
 	fixture := newRequestCoreFixture(test, false)
 	card := newCardFixture(test)
 	dbfx.Exec(test, `UPDATE decision_request SET human_user_id = $2 WHERE id = $1`, card.decision.ID, fixture.humanID)
+	shareHoldProceed(test, card)
 	var created map[string]any
 	testutil.Call(test, testHandler.RequestDecision, batchCreateRequest(fixture, []string{uuidToString(card.decision.ID), uuidToString(card.decision.ID)})).Want(http.StatusCreated).JSON(&created)
 	var covers []string
@@ -106,6 +108,10 @@ func TestBatchCardCreationRefusals(test *testing.T) {
 			dbfx.Exec(test, `UPDATE decision_request SET human_user_id = $2 WHERE id = $1`, card.decision.ID, fixture.humanID)
 			makeBoundWriteCard(test, card)
 		},
+		"unrelated decision": func(card askedRecordFixture, fixture requestCoreFixture) {
+			dbfx.Exec(test, `UPDATE decision_request SET human_user_id = $2 WHERE id = $1`, card.decision.ID, fixture.humanID)
+			setCardOptions(test, card, unrelatedOptions)
+		},
 		"already answered": func(card askedRecordFixture, fixture requestCoreFixture) {
 			dbfx.Exec(test, `UPDATE decision_request SET human_user_id = $2, status = 'answered' WHERE id = $1`, card.decision.ID, fixture.humanID)
 		},
@@ -115,6 +121,7 @@ func TestBatchCardCreationRefusals(test *testing.T) {
 			fixture := newRequestCoreFixture(test, false)
 			card := newCardFixture(test)
 			dbfx.Exec(test, `UPDATE decision_request SET human_user_id = '00000000-0000-0000-0000-000000000001' WHERE id = $1`, card.decision.ID)
+			shareHoldProceed(test, card)
 			setup(card, fixture)
 			testutil.Call(test, testHandler.RequestDecision, batchCreateRequest(fixture, []string{uuidToString(card.decision.ID)})).Want(http.StatusBadRequest)
 			fixture.assertCounts(test, 0)
@@ -160,5 +167,84 @@ func TestDirectGovernedWriteAnswerStillBinds(test *testing.T) {
 	write := newBoundWriteFixture(test, decisiontx.ApproveWriteLabel)
 	if err := write.verifyBinding(allowAnyAgent, boundAfter); err != nil {
 		test.Fatalf("direct approval no longer binds: %v", err)
+	}
+}
+
+const unrelatedOptions = `[{"label":"Ship the redesign","what_happens":"ships"},{"label":"Drop the redesign","what_happens":"drops"}]`
+
+func setCardOptions(test *testing.T, card askedRecordFixture, options string) {
+	test.Helper()
+	dbfx.Exec(test, `UPDATE decision_request SET options = $2::jsonb WHERE id = $1`, card.decision.ID, options)
+}
+
+// shareHoldProceed gives a covered card the two options the API test's batch ask offers.
+func shareHoldProceed(test *testing.T, card askedRecordFixture) {
+	test.Helper()
+	setCardOptions(test, card, `[{"label":"Hold","what_happens":"hold"},{"label":"Proceed","what_happens":"go"}]`)
+}
+
+func coveredCardState(test *testing.T, card askedRecordFixture) (string, int) {
+	test.Helper()
+	var status string
+	dbfx.QueryRow(test, `SELECT status FROM decision_request WHERE id = $1`, card.decision.ID).Scan(&status)
+	return status, dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1`, card.decision.ID)
+}
+
+// A batch answer closes only a card that offers the answer chosen on the
+// batch card. A card with unrelated options stays open for its own answer
+// (CHE-4453 review P1). The related card beside it is the positive control.
+func TestBatchAnswerLeavesUnrelatedCardOpen(test *testing.T) {
+	resetDecisionLease(test)
+	fixture := newBatchFixture(test, 2)
+	unrelated, related := fixture.covered[0], fixture.covered[1]
+	setCardOptions(test, unrelated, unrelatedOptions)
+	if _, err := fixture.batch.answerOnCard(decisionCardAnswerInput{Option: "Option B"}); err != nil {
+		test.Fatal(err)
+	}
+	if status, answers := coveredCardState(test, unrelated); status != "open" || answers != 0 {
+		test.Fatalf("unrelated covered card: status=%s answers=%d, want open with none", status, answers)
+	}
+	if status, answers := coveredCardState(test, related); status != "answered" || answers != 1 {
+		test.Fatalf("related covered card: status=%s answers=%d, want answered with one", status, answers)
+	}
+}
+
+// A free-text batch answer names no option, so it closes no covered card.
+func TestBatchTextAnswerLeavesCoveredCardsOpen(test *testing.T) {
+	resetDecisionLease(test)
+	fixture := newBatchFixture(test, 1)
+	if _, err := fixture.batch.answerOnCard(decisionCardAnswerInput{Text: "Ship it all."}); err != nil {
+		test.Fatal(err)
+	}
+	if status, answers := coveredCardState(test, fixture.covered[0]); status != "open" || answers != 0 {
+		test.Fatalf("covered card after a text answer: status=%s answers=%d, want open with none", status, answers)
+	}
+}
+
+// The batch card lists every covered decision, so the human sees what the answer decides.
+func TestBatchCardDisclosesCoveredDecisions(test *testing.T) {
+	fixture := newBatchFixture(test, 2)
+	request := withURLParam(httptest.NewRequest(http.MethodGet, "/api/chat/sessions/"+fixture.batch.sessionID+"/messages/page", nil), "sessionId", fixture.batch.sessionID)
+	request.Header.Set("X-User-ID", fixture.batch.humanID)
+	request = withChatTestWorkspaceCtx(test, request)
+	var page struct {
+		Messages []struct {
+			DecisionRequest *DecisionRequestCard `json:"decision_request"`
+		} `json:"messages"`
+	}
+	testutil.Call(test, testHandler.ListChatMessagesPage, request).Want(http.StatusOK).JSON(&page)
+	var batch *DecisionRequestCard
+	for _, message := range page.Messages {
+		if message.DecisionRequest != nil && message.DecisionRequest.ID == uuidToString(fixture.batch.decision.ID) {
+			batch = message.DecisionRequest
+		}
+	}
+	if batch == nil || len(batch.CoveredCards) != 2 {
+		test.Fatalf("batch card covered_cards = %+v, want 2 entries", batch)
+	}
+	for index, card := range batch.CoveredCards {
+		if card.ID != uuidToString(fixture.covered[index].decision.ID) || card.Decision != "Pick one" || card.IssueIdentifier == "" {
+			test.Fatalf("covered_cards[%d] = %+v, want the covered card's id, decision and issue", index, card)
+		}
 	}
 }

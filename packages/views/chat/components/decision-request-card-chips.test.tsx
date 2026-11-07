@@ -75,4 +75,18 @@ describe("DecisionRequestCard compact issue chips", () => {
     renderCard({ covers_request_ids: ["a", "b", "c"] } as never);
     expect(screen.getByTestId("decision-request-covers")).toHaveTextContent("Closed with this answer: 3");
   });
+
+  it("lists every decision a batch answer closes, so no covered decision is hidden", () => {
+    renderCard({
+      covers_request_ids: ["a", "b"],
+      covered_cards: [
+        { id: "a", issue_id: "i1", issue_identifier: "CHE-1", issue_title: "Small fix", decision: "Hold or proceed?" },
+        { id: "b", issue_id: "i2", issue_identifier: "CHE-2", issue_title: "Redesign", decision: "Ship the redesign?" },
+      ],
+    } as never);
+    const items = screen.getAllByTestId("decision-request-covered-item");
+    expect(items).toHaveLength(2);
+    expect(items[0]).toHaveTextContent("CHE-1 Small fix: Hold or proceed?");
+    expect(items[1]).toHaveTextContent("CHE-2 Redesign: Ship the redesign?");
+  });
 });

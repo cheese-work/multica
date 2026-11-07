@@ -50,8 +50,19 @@ export interface DecisionRequestCard {
   action?: DecisionRequestAction;
   /** A batch card: the per-issue cards its answer also closes. */
   covers_request_ids?: string[];
+  /** What each covered card asks, so the human sees every decision the batch answer closes. */
+  covered_cards?: DecisionCoveredCard[];
   /** Set when a batch card's answer closed this card. */
   answered_by_batch_request_id?: string | null;
+}
+
+/** One per-issue card a batch card covers, with the decision it asks. */
+export interface DecisionCoveredCard {
+  id: string;
+  issue_id: string;
+  issue_identifier: string;
+  issue_title?: string;
+  decision: string;
 }
 
 /** What an executable action would change, rendered by the server from the values its executor checks. */
