@@ -103,7 +103,7 @@ Use semantic tokens from `packages/ui/styles/tokens.css`: surface, border, muted
 | dm-progress | doop `V0nBnIQ-OI` @ 2026-11-04T12:00:37.964Z (C) with states `TiPMSzRj-T` @ 2026-11-04T12:01:34.967Z | C | 1034 | n/a (`design/dm-progress/approved/`) |
 | issue-sidebar-compact | doop `UVi0hFp3L_` @ 2026-11-05T10:56:09.927Z | A (v2: C placement, A mechanics) | 1048 | n/a (`design/issue-sidebar-compact/approved/`) |
 | timeline-views | doop `huve-k7jLE` @ 2026-11-06T13:50:07.153Z (Gantt B), `20EKgO9pKX` @ 2026-11-06T14:03:42.763Z (Swimlane A), `mzbsoFU2MX` @ 2026-11-07T06:25:43.109Z (Hierarchy A), `aTIpEERfej` @ 2026-11-06T14:00:23.849Z (Sidebar A) | Gantt B, Swimlane A, Hierarchy A, Sidebar A | 1163 | n/a (`design/timeline-views/approved/`) |
-| decision-card-fold | doop `HtwdZpoCai` @ 2026-11-07T12:47:11.565Z | A | PR_NUM | n/a (`design/decision-card-fold/approved/`) |
+| decision-card-fold | doop `HtwdZpoCai` @ 2026-11-07T12:47:11.565Z | A | 1181 | n/a (`design/decision-card-fold/approved/`) |
 
 Each row is written before its merge, as the standard requires. A design is approved when Cheese merges its PR: PR 255 for `wakeups-pause`, PR 268 for `jev-governance-tab`, PR 277 for `dm-notifications-mobile`, PR 284 for `dm-stats-archive-menu`, PR 307 for `dm-notifications-web`. The merge commit is read from GitHub and is not written here.
 
