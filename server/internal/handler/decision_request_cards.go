@@ -34,6 +34,8 @@ type DecisionRequestCard struct {
 	RecordCommentID *string `json:"record_comment_id,omitempty"`
 	// Answer is the latest answer to the request, kept after a disclaim so the card can say so.
 	Answer *DecisionRequestAnswer `json:"answer,omitempty"`
+	// Action is the pending action an open request asks to approve, with the server's preview of it.
+	Action *DecisionRequestCardAction `json:"action,omitempty"`
 }
 
 // DecisionRequestAnswer is the receipt half of a request card.
@@ -113,6 +115,10 @@ func (handler *Handler) decisionRequestsForMessages(ctx context.Context, workspa
 		if row.RecordCommentID.Valid {
 			recordID := uuidToString(row.RecordCommentID)
 			card.RecordCommentID = &recordID
+		}
+		// An answered request keeps its action so the card can show the outcome after approval.
+		if row.Status == "open" || row.Status == "answered" {
+			card.Action = handler.decisionCardAction(ctx, workspaceUUID, row.RequestID)
 		}
 		if row.Status == "cancelled" {
 			card.State = "withdrawn"

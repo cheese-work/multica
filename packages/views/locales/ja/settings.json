@@ -395,7 +395,8 @@
   },
   "chat": {
     "floating_label": "フローティングチャット",
-    "floating_hint": "すべてのページにフローティングチャットボタンを表示します。"
+    "floating_hint": "すべてのページにフローティングチャットボタンを表示します。",
+    "recent_agents_label": "新規チャットの最近のエージェント"
   },
   "issue": {
     "opening": {
@@ -885,6 +886,11 @@
     "agent_decisions_stopped_title": "判断は自動的に停止されました",
     "agent_decisions_stopped_description": "理由: {{reason}}。判断をオンにすると、この記録は消去されます。",
     "agent_decisions_stopped_confirm": "オンにする",
+    "runtime_profile_label": "ランタイムプロファイル",
+    "runtime_profile_hint": "エージェント CLI の設定の作り方のワークスペース既定値です。Managed はタスクごとに最小構成のホームを生成します。管理対象アダプターのないツールは Managed では失敗するため、それらのエージェントには パーソナル を明示的に設定してください。",
+    "runtime_profile_personal": "パーソナル",
+    "runtime_profile_managed": "マネージド",
+    "runtime_profile_inherit": "ワークスペース既定",
     "idle_guard_label": "アイドル課題ガード",
     "idle_guard_hint": "実行もウェイクアップもない開始済みの課題を N 時間後に移動します。Shadow は記録のみ行います。",
     "idle_guard_off": "オフ",

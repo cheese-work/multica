@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiClient } from "../api/client";
-import { AutoCompactSchema, autoCompactThresholdPct, isValidAutoCompactPct, readAutoCompact, resolveAutoCompact } from "./auto-compact";
+import { AutoCompactSchema, autoCompactThresholdTokens, isValidAutoCompactPct, readAutoCompact, resolveAutoCompact } from "./auto-compact";
 
 // Retrospective test (added with the implementation, not first).
 describe("readAutoCompact", () => {
@@ -162,15 +162,16 @@ describe("resolveAutoCompact", () => {
 
 // CHE-4331: with no percent saved, the trigger is a token count chosen by the
 // model's window (190k up to 200k, 200k above), mirroring the server.
-describe("autoCompactThresholdPct", () => {
-  it("defaults to 95% of a 200k window and 20% of a 1M window", () => {
+describe("autoCompactThresholdTokens", () => {
+  it("defaults to 190k on a 200k window and 200k on a 1M window", () => {
     const rule = resolveAutoCompact(undefined, undefined);
-    expect(autoCompactThresholdPct(rule, 200_000)).toBe(95);
-    expect(autoCompactThresholdPct(rule, 1_000_000)).toBe(20);
+    expect(autoCompactThresholdTokens(rule, 200_000)).toBe(190_000);
+    expect(autoCompactThresholdTokens(rule, 1_000_000)).toBe(200_000);
+    expect(autoCompactThresholdTokens(rule, 1_048_576)).toBe(200_000);
   });
 
   it("caps a small window at 95%", () => {
-    expect(autoCompactThresholdPct(resolveAutoCompact(undefined, undefined), 128_000)).toBe(95);
+    expect(autoCompactThresholdTokens(resolveAutoCompact(undefined, undefined), 128_000)).toBe(121_600);
   });
 
   it("uses saved token fields and ignores out-of-range ones", () => {
@@ -178,24 +179,25 @@ describe("autoCompactThresholdPct", () => {
       { auto_compact: { threshold_tokens_200k: 150_000, threshold_tokens_1m: 900_000 } },
       undefined,
     );
-    expect(autoCompactThresholdPct(rule, 200_000)).toBe(75);
-    expect(autoCompactThresholdPct(rule, 1_000_000)).toBe(20);
+    expect(autoCompactThresholdTokens(rule, 200_000)).toBe(150_000);
+    expect(autoCompactThresholdTokens(rule, 1_000_000)).toBe(200_000);
   });
 
-  it("uses a saved percent over the token defaults, and lets an agent's tokens win back", () => {
-    expect(autoCompactThresholdPct(resolveAutoCompact({ auto_compact: { threshold_pct: 60 } }, undefined), 1_000_000)).toBe(60);
-    expect(
-      autoCompactThresholdPct(
-        resolveAutoCompact({ auto_compact: { threshold_pct: 60 } }, { auto_compact: { threshold_tokens_1m: 250_000 } }),
-        1_000_000,
-      ),
-    ).toBe(25);
+  it("uses a saved percent over the token defaults, rounded up like the server", () => {
+    const rule = resolveAutoCompact({ auto_compact: { threshold_pct: 60 } }, undefined);
+    expect(autoCompactThresholdTokens(rule, 1_000_000)).toBe(600_000);
+    expect(autoCompactThresholdTokens(resolveAutoCompact({ auto_compact: { threshold_pct: 51 } }, undefined), 1_048_576)).toBe(534_774);
+  });
+
+  it("lets an agent's tokens win back over a workspace percent", () => {
+    const rule = resolveAutoCompact({ auto_compact: { threshold_pct: 60 } }, { auto_compact: { threshold_tokens_1m: 250_000 } });
+    expect(autoCompactThresholdTokens(rule, 1_000_000)).toBe(250_000);
   });
 
   it("is null when the window is unknown or auto-compact is off", () => {
     const rule = resolveAutoCompact(undefined, undefined);
-    expect(autoCompactThresholdPct(rule, null)).toBeNull();
-    expect(autoCompactThresholdPct(rule, 0)).toBeNull();
-    expect(autoCompactThresholdPct({ ...rule, enabled: false }, 200_000)).toBeNull();
+    expect(autoCompactThresholdTokens(rule, null)).toBeNull();
+    expect(autoCompactThresholdTokens(rule, 0)).toBeNull();
+    expect(autoCompactThresholdTokens({ ...rule, enabled: false }, 200_000)).toBeNull();
   });
 });

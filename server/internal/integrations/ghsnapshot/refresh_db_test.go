@@ -107,6 +107,7 @@ func seedPRForWorkspace(t *testing.T, q *db.Queries, wsID pgtype.UUID, installat
 		State:          "open",
 		HtmlUrl:        "http://x",
 		HeadSha:        headSHA,
+		HeadRepoSame:   true,
 		PrCreatedAt:    ts,
 		PrUpdatedAt:    ts,
 	})

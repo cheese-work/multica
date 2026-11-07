@@ -223,6 +223,11 @@ func (h *Handler) writeBackgroundAgents(ctx context.Context, member db.Member, m
 			return nil, nil, err
 		}
 	}
+	// Taken with the locks held: compact retry admission orders against it.
+	changedAt, err := q.LockedClockTimestamp(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
 	for _, c := range changes {
 		details, err := json.Marshal(map[string]any{"job": c.Job, "scope": bgagents.WorkspaceScope, "from": c.From, "to": c.To})
 		if err != nil {
@@ -230,7 +235,7 @@ func (h *Handler) writeBackgroundAgents(ctx context.Context, member db.Member, m
 		}
 		if _, err := q.CreateActivity(ctx, db.CreateActivityParams{
 			ID: dbid.NewV7(), WorkspaceID: member.WorkspaceID, ActorType: strToText("member"), ActorID: member.UserID,
-			Action: backgroundAgentsActivity, Details: details,
+			Action: backgroundAgentsActivity, Details: details, CreatedAt: changedAt,
 		}); err != nil {
 			return nil, nil, err
 		}
