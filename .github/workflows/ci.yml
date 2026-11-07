@@ -996,8 +996,8 @@ jobs:
       - name: Test mechanical-tier classifier paths (CHE-3339)
         run: python3 -m unittest tests.test_che3339_mechanical_tier
 
-      - name: Test workflow_run cascade triggers (CHE-4250)
-        run: python3 -m unittest tests.test_che4250_workflow_run_cascades
+      - name: Test workflow run budget and cascade triggers (CHE-4250, CHE-4385)
+        run: python3 -m unittest tests.test_che4385_run_budget
 
       - name: Test pinned pnpm setup
         run: node --test scripts/setup-pnpm.test.mjs

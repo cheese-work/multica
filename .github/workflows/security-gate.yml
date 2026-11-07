@@ -3,26 +3,47 @@
 # Sets the `security-gate` commit status on the PR's exact head SHA. Register `security-gate` as a required status
 # check only through the rollout in cheese-work/multica-dotfiles docs/cheese-work/SECURITY-GATE.md; this file alone blocks nothing.
 #
-# SECURITY — same boundary as mechanical-tier.yml: `pull_request_target` and `issue_comment` both run this
+# Runs (CHE-4385): GitHub disabled Actions at about 2,500 created runs a day, and a skipped run still counts, so the
+# trigger set is the budget. There is no `pull_request_target` trigger here, and `issue_comment` covers `edited` and
+# `deleted` only, never `created`:
+#   - `workflow_call`: pr-guards.yml calls this file once per PR event, so a PR push adds no run of its own.
+#   - `issue_comment` (edited, deleted): revokes a PASS without any dispatch. Editing or deleting a verdict comment is
+#     rare, so this costs few runs. The job runs only for a comment that holds, or held before the edit, the
+#     `Security-Gate-Verdict:` header and comes from a trusted author. The same events were the revocation path before.
+#   - `workflow_dispatch` (input `pr`): the verdict poster dispatches this once per PR after it posts a NEW
+#     `Security-Gate-Verdict:` comment, in place of one run per created comment:
+#       gh workflow run security-gate.yml -R cheese-work/multica --ref main -f pr=<number>
+#     The dispatched run re-reads every verdict comment, posts the status, then refreshes the mechanical-tier receipt.
+#   - `merge_group`: see below. It re-reads every verdict, so a new FAIL is caught when the PR enters the queue.
+#   - security-gate-sweep.yml: every 30 minutes it re-runs this script for each open PR whose status is `success`, so a new
+#     FAIL verdict revokes the PR status and any queue head carrying it within 30 minutes, with no dispatch needed.
+# A newly created comment alone does not flip the status. A new FAIL verdict takes effect at the next sweep, PR event,
+# dispatch or queue entry, whichever is first.
+#
+# SECURITY — same boundary as mechanical-tier.yml: a call from `pull_request_target`, a dispatch and `issue_comment` all run this
 # definition from the default branch. The job checks out the DEFAULT branch (never the PR's base: a PR can target an
 # unprotected branch that carries a modified gate script) and only FETCHES head objects for a diff read. Nothing from
 # the head is executed (semgrep reads an extracted copy of the changed files; CHE-3121). Do not add a head checkout or a secret here.
-# `issue_comment` (created, edited, deleted) is the path by which a verdict comment flips or revokes the status; `edited`
-# on the PR covers a retarget. The script re-reads the live head SHA and base ref.
+# The script re-reads the live head SHA and base ref. The dispatch input is matched against a digits-only pattern before use.
 # `merge_group` posts the queued PR's freshly evaluated state on the queue commit; without it the required check never
 # reports there and the queue times out. This file runs from the queue commit; the job still checks out the default
 # branch and only fetches the queue ref. A verdict revoked after the queue commit went green is mirrored by the
-# pull_request_target / issue_comment path: when the PR status is not `success`, the script (`revoke_queue`, CHE-3240)
+# pull_request_target / dispatch path: when the PR status is not `success`, the script (`revoke_queue`, CHE-3240)
 # flips every queue head carrying that PR to `failure`, and fails a group it cannot read closed. If both queue lookups
 # keep failing the job goes red and no head is flipped: dequeue the PR by hand. Each head's write is retried (3 attempts) and a head that still fails never skips the later heads; the job fails naming each unflipped head: dequeue it or re-run the job.
 
 name: security-gate
 
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review, edited]
+  workflow_call:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number to evaluate
+        required: true
+        type: string
   issue_comment:
-    types: [created, edited, deleted]
+    types: [edited, deleted]
   merge_group:
     types: [checks_requested]
 
@@ -31,42 +52,34 @@ permissions:
   pull-requests: read
   statuses: write
 
-concurrency:
-  # A comment the job skips (see `if:` below) gets its own group: a run cancels the in-flight run of its group before
-  # its `if:` is read, so a skipped comment in the PR's group would cancel the real evaluation and post no status.
-  # The skip test below repeats the `if:` condition; keep the two in step.
-  group: security-gate-${{ github.event_name == 'issue_comment' && !((contains(github.event.comment.body, 'Security-Gate-Verdict:') || (github.event.action == 'edited' && contains(github.event.changes.body.from, 'Security-Gate-Verdict:'))) && (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) || (github.event.comment.user.id == 282619718 && github.event.comment.user.type == 'Bot' && (startsWith(github.event.comment.body, 'Security-Gate-Verdict:') || (github.event.action == 'edited' && startsWith(github.event.changes.body.from, 'Security-Gate-Verdict:')))))) && format('ignored-{0}', github.run_id) || github.event.pull_request.number || github.event.issue.number || github.event.merge_group.head_sha }}
-  cancel-in-progress: true
-
 jobs:
   security-gate:
     # Job name differs from the status context on purpose: the context is posted by the script, not by this job.
     name: security-gate-eval
-    # CHE-3354: a comment also needs the `Security-Gate-Verdict:` header, or an edit whose OLD body had it (`changes.body.from`),
-    # so a plain comment queues nothing on the shared runner. An edit that drops the header is a revocation and still runs.
-    # The X99 runner hook (job-started.sh) refuses a comment unless its author is OWNER, MEMBER or COLLABORATOR, or is the
-    # trusted X99 agent App (ID 282619718, type Bot) posting a `Security-Gate-Verdict:` comment. That bot is NONE, so
-    # filtering NONE alone would drop every verdict. Skip here exactly what the hook refuses: no job is scheduled and
-    # no red check appears. The hook is a security boundary and stays as it is; this only mirrors it.
-    # Revoking a PASS: edit it to a FAIL verdict, post a FAIL verdict, or delete it. Each event still carries the
-    # prefix, so the hook admits it. An edit that removes the prefix is admitted for the bot only when the OLD body
-    # (`changes.body.from`) had it (CHE-3354, hook updated to match); the next PR event re-reads every comment. `startsWith` here ignores case and the hook's `jq startswith` does not, so
-    # a lowercase prefix from the bot schedules a job the hook then refuses: a red check, never a bypass.
+    # A comment run needs the `Security-Gate-Verdict:` header, or an edit whose OLD body had it (`changes.body.from`).
+    # An edit that drops the header is a revocation and still runs. The author must be OWNER, MEMBER or COLLABORATOR,
+    # or the trusted agent App (ID 282619718, type Bot) whose comment starts with the header. A job-level `if` skips a
+    # comment before its concurrency group is read, so an ignored comment cannot cancel a real evaluation.
     # CHE-4251: once SECURITY_GATE_QUEUE_TRUSTED is true, security-gate-queue.yml (a trusted `workflow_run` definition that
     # holds the App key) evaluates the queue, and this job skips `merge_group`; `queue-handoff` below still runs.
+    # CHE-4385: every event other than a comment or a queue entry (`workflow_call`, `workflow_dispatch`) runs.
     if: >-
-      github.event_name == 'pull_request_target' || (github.event_name == 'merge_group' && vars.SECURITY_GATE_QUEUE_TRUSTED != 'true') || (github.event.issue.pull_request &&
+      (github.event_name != 'issue_comment' && (github.event_name != 'merge_group' || vars.SECURITY_GATE_QUEUE_TRUSTED != 'true')) || (github.event.issue.pull_request &&
       (contains(github.event.comment.body, 'Security-Gate-Verdict:') ||
       (github.event.action == 'edited' && contains(github.event.changes.body.from, 'Security-Gate-Verdict:'))) &&
       (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) ||
       (github.event.comment.user.id == 282619718 && github.event.comment.user.type == 'Bot' &&
       (startsWith(github.event.comment.body, 'Security-Gate-Verdict:') ||
       (github.event.action == 'edited' && startsWith(github.event.changes.body.from, 'Security-Gate-Verdict:'))))))
-    # CHE-3604: GitHub-hosted runner, so the X99 hook described above no longer applies; the `if:` above is the only comment filter.
+    # The job group differs from pr-guards' group on purpose: a called workflow cannot share its caller's group.
+    concurrency:
+      group: security-gate-${{ github.event.pull_request.number || github.event.inputs.pr || github.event.issue.number || github.event.merge_group.head_sha }}
+      cancel-in-progress: true
+    # CHE-3604: GitHub-hosted runner.
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+      PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr || github.event.issue.number }}
       GH_TOKEN: ${{ github.token }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       MERGE_GROUP_REF: ${{ github.event.merge_group.head_ref }}
@@ -75,6 +88,9 @@ jobs:
       - name: Discard a reused workspace
         run: |
           find "$GITHUB_WORKSPACE" -mindepth 1 -delete
+      - name: Check the dispatched pull request number
+        run: |
+          [ -n "$MERGE_GROUP_REF" ] || [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || { echo "pr must be digits only" >&2; exit 1; }
       - name: Check out the protected default branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -154,37 +170,15 @@ jobs:
     steps:
       - run: echo "queue commit ${{ github.event.merge_group.head_sha }} handed to security-gate-queue"
 
-  # CHE-4250: a verdict that lands after CI changes required-check evidence, so the receipt needs a refresh. mechanical-tier
-  # no longer listens to this workflow (each comment run would start a run of its own, most of them empty). This job asks
-  # for one targeted refresh instead, and only for a real verdict run whose CI has already finished; while CI is still
-  # running, its completion takes the receipt. GITHUB_TOKEN can start `workflow_dispatch`, which `workflow_run` cannot
-  # do for events it made. Kept apart from the evaluation job: the only job-level write is `actions`, there is no
-  # checkout and nothing from the comment or the PR is executed or interpolated (PR number is digit-checked).
-  refresh-mechanical-tier:
-    name: refresh-mechanical-tier
+  # CHE-4385: a verdict that lands after CI changes required-check evidence, so a dispatched run refreshes the receipt
+  # in this same run (no `workflow_run` cascade, no separate run). While CI is still running its receipt is stale by
+  # design: dispatch again once CI is done. Called only on `workflow_dispatch`; a PR push gets its receipt from pr-guards.
+  mechanical-tier:
     needs: security-gate
-    if: always() && github.event_name == 'issue_comment' && needs.security-gate.result != 'skipped' && needs.security-gate.result != 'cancelled'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    if: always() && github.event_name == 'workflow_dispatch' && needs.security-gate.result != 'skipped' && needs.security-gate.result != 'cancelled'
     permissions:
-      actions: write
       contents: read
       pull-requests: read
-    env:
-      GH_TOKEN: ${{ github.token }}
-      PR_NUMBER: ${{ github.event.issue.number }}
-      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-    steps:
-      - name: Ask mechanical-tier for a fresh receipt
-        run: |
-          set -euo pipefail
-          [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || exit 0
-          repo="repos/$GITHUB_REPOSITORY"
-          head="$(gh api "$repo/pulls/$PR_NUMBER" --jq .head.sha)"
-          pending="$(gh api "$repo/actions/workflows/ci.yml/runs?head_sha=$head&per_page=100" \
-            --jq '[.workflow_runs[] | select(.status != "completed")] | length')"
-          if [ "$pending" -gt 0 ]; then
-            echo "CI is still running; its completion refreshes the receipt."
-            exit 0
-          fi
-          gh workflow run mechanical-tier.yml -R "$GITHUB_REPOSITORY" --ref "$DEFAULT_BRANCH" -f pr="$PR_NUMBER"
+      checks: read
+      statuses: read
+    uses: ./.github/workflows/mechanical-tier.yml

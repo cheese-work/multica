@@ -159,3 +159,18 @@ jobs:
           path: dist/multica
           if-no-files-found: error
           retention-days: 30
+
+  # CHE-4385: both ran as separate workflow runs per push to main; as called workflows they add jobs only.
+  # Cache maintenance runs after every completed build, as its old `workflow_run` trigger did.
+  cache-maintenance:
+    needs: [push-go-cache-warm, push-turbo-cache-warm, daemon-artifact]
+    if: ${{ always() }}
+    permissions:
+      contents: read
+      actions: write
+    uses: ./.github/workflows/cache-maintenance.yml
+
+  pr-main-sync:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/pr-main-sync.yml

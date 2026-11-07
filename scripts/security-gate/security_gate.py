@@ -324,6 +324,9 @@ def _gh(*args: str) -> str:
         raise
 
 
+FRESHNESS_TRIES = 3
+
+
 def _post(github: str, sha: str, state: str, desc: str, run_url: str) -> None:
     _gh(f"repos/{github}/statuses/{sha}", "-f", f"state={state}", "-f", f"context={CONTEXT}",
         "-f", f"description={desc}", *(["-f", f"target_url={run_url}"] if run_url else []))
@@ -422,6 +425,33 @@ def gate_pr(repo: str, github: str, number: int, default_branch: str, trusted: s
     return head, state, desc
 
 
+def _fingerprint(github: str, number: int) -> tuple:
+    """What a success depends on: the PR head, every comment id + edit time, and the current gate status."""
+    head = json.loads(_gh(f"repos/{github}/pulls/{number}"))["head"]["sha"]
+    comments = _gh("--paginate", f"repos/{github}/issues/{number}/comments", "--jq", r'.[] | "\(.id) \(.updated_at)"')
+    status = _gh(f"repos/{github}/commits/{head}/status", "--jq",
+                 f'[.statuses[] | select(.context=="{CONTEXT}") | .state] | first // ""').strip()
+    return head, comments, status
+
+
+def _evaluate(a: argparse.Namespace, trusted: set[int], humans: set[int], baseline: list[str] | None) -> tuple[str, str, str]:
+    head, state, desc = gate_pr(a.repo, a.github, a.pr, a.default_branch, trusted, humans, baseline)
+    # The API also lists PRs that merely contain the commit (descendants, forks) with a different head. Their
+    # head objects may not be fetched, so they are filtered here, before any diff is read.
+    rows = [json.loads(l) for l in _gh(f"repos/{a.github}/commits/{head}/pulls", "--jq",
+                                       '.[] | select(.state=="open") | {number, head: .head.sha}').splitlines()]
+    results = [(state, desc)]
+    for n in sorted({r["number"] for r in rows if r["head"] == head} - {a.pr}):
+        try:
+            h, st, d = gate_pr(a.repo, a.github, n, a.default_branch, trusted, humans, baseline)
+        except Exception as e:  # an unreadable sibling must block, never skip the status write
+            h, st, d = head, "failure", f"cannot evaluate: {type(e).__name__}"
+        if h == head:
+            results.append((st, f"#{n}: {d}"))
+    state, desc = _out(*combine(results))
+    return head, state, desc
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--repo", default=".", help="DEFAULT-branch checkout with the head objects fetched")
@@ -436,6 +466,8 @@ def main() -> int:
     ap.add_argument("--waiver-record", metavar="FILE",
                     help="with --print-digest: check a human waiver record (file, or - for stdin) against the PR; exit 3 if it does not apply")
     ap.add_argument("--post", action="store_true", help="write the commit status (default: print only)")
+    ap.add_argument("--revoke-only", action="store_true",
+                    help="only flip the merge-queue heads that carry the PR to failure, without reading a verdict (sweep retry)")
     a = ap.parse_args()
     if a.write_baseline:
         fps = sorted(f["fp"] for f in semgrep_scan(a.repo, "HEAD"))
@@ -453,6 +485,9 @@ def main() -> int:
             out["waiver_applies"] = waiver_applies(record, head, out["digest"])
         print(json.dumps(out))
         return 3 if out.get("waiver_applies") is False else 0
+    if a.revoke_only:
+        revoke_queue(a.github, a.pr, a.default_branch, a.run_url)
+        return 0
     with open(f"{a.repo}/{TRUSTED_AUTHORS}") as f:
         registry = json.load(f)
     trusted = {b["id"] for b in registry["workspace_bots"]}
@@ -461,20 +496,15 @@ def main() -> int:
         baseline = load_baseline(a.repo) if a.semgrep else None
     except SemgrepError as e:
         sys.exit(f"semgrep baseline: {e}")  # fail the job: no status is posted, the required check stays pending
-    head, state, desc = gate_pr(a.repo, a.github, a.pr, a.default_branch, trusted, humans, baseline)
-    # The API also lists PRs that merely contain the commit (descendants, forks) with a different head. Their
-    # head objects may not be fetched, so they are filtered here, before any diff is read.
-    rows = [json.loads(l) for l in _gh(f"repos/{a.github}/commits/{head}/pulls", "--jq",
-                                       '.[] | select(.state=="open") | {number, head: .head.sha}').splitlines()]
-    results = [(state, desc)]
-    for n in sorted({r["number"] for r in rows if r["head"] == head} - {a.pr}):
-        try:
-            h, st, d = gate_pr(a.repo, a.github, n, a.default_branch, trusted, humans, baseline)
-        except Exception as e:  # an unreadable sibling must block, never skip the status write
-            h, st, d = head, "failure", f"cannot evaluate: {type(e).__name__}"
-        if h == head:
-            results.append((st, f"#{n}: {d}"))
-    state, desc = _out(*combine(results))
+    for _ in range(FRESHNESS_TRIES):
+        before = _fingerprint(a.github, a.pr)
+        head, state, desc = _evaluate(a, trusted, humans, baseline)
+        # CHE-4385: the scheduled sweep can run for minutes. A FAIL verdict, a new head or a status change that
+        # landed meanwhile must not be overwritten by a success: re-read, and evaluate again if anything moved.
+        if not a.post or state != "success" or _fingerprint(a.github, a.pr) == before:
+            break
+    else:
+        sys.exit("security-gate: the PR changed on every evaluation; no success posted")
     print(json.dumps({"context": CONTEXT, "sha": head, "state": state, "description": desc}))
     if a.post:
         _post(a.github, head, state, desc, a.run_url)

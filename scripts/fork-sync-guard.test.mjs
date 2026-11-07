@@ -189,10 +189,10 @@ test("a sync with no parseable Source paths fails closed", () => {
   assert.throws(() => checkForkSync({ ...fixture, ledger: "" }), /No Source paths/);
 });
 
-test("the workflow uses trusted code on a hosted runner and reruns after body edits", () => {
-  const workflow = readFileSync(new URL("../.github/workflows/fork-sync-guard.yml", import.meta.url), "utf8");
+test("the workflow uses trusted code on a hosted runner and reruns on every push, not on body edits (CHE-4385)", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/pr-guards.yml", import.meta.url), "utf8");
   assert.match(workflow, /pull_request_target:/);
-  assert.match(workflow, /types: \[opened, edited, synchronize, reopened\]/);
+  assert.match(workflow, /types: \[opened, synchronize, reopened, ready_for_review\]/);
   assert.match(workflow, /ref: \$\{\{ github.workflow_sha \}\}/);
   assert.match(workflow, /runs-on: ubuntu-24.04/);
   assert.match(workflow, /persist-credentials: false/);
