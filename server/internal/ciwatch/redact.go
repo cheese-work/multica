@@ -157,7 +157,7 @@ func RedactTail(r io.Reader, maxLines int) (lines []string, err error) {
 		if len(frag) > 0 || rerr == nil {
 			cur.add(frag)
 		}
-		if rerr == bufio.ErrBufferFull {
+		if errors.Is(rerr, bufio.ErrBufferFull) {
 			continue
 		}
 		if rerr == nil || (errors.Is(rerr, io.EOF) && len(cur.head) > 0) {
