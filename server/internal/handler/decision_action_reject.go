@@ -173,6 +173,27 @@ func (handler *Handler) GetDecisionActionOutcome(writer http.ResponseWriter, req
 	writeJSON(writer, http.StatusOK, newDecisionActionOutcome(action))
 }
 
+// GetDecisionAction returns the card view of one action to the request's
+// human, so the approval page can show what it asks and name its payload hash.
+func (handler *Handler) GetDecisionAction(writer http.ResponseWriter, request *http.Request) {
+	caller, ok := handler.authorizeDecisionActionCaller(writer, request)
+	if !ok {
+		return
+	}
+	action, err := handler.Queries.GetDecisionAction(request.Context(), db.GetDecisionActionParams{WorkspaceID: caller.workspaceID, ID: caller.actionID})
+	if err == nil && !handler.isActionsHuman(request.Context(), caller, action) {
+		err = errNotTheHuman
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = errNotTheHuman
+	}
+	if err != nil {
+		writeDecisionActionError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, newDecisionActionResponse(action))
+}
+
 func (handler *Handler) isActionsHuman(ctx context.Context, caller decisionActionCaller, action db.DecisionAction) bool {
 	decisionRequest, err := handler.Queries.GetDecisionRequest(ctx, db.GetDecisionRequestParams{WorkspaceID: caller.workspaceID, ID: action.DecisionRequestID})
 	return err == nil && decisionRequest.HumanUserID == caller.userID

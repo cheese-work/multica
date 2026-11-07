@@ -47,6 +47,10 @@ class OneWorkflowPerPrPush(unittest.TestCase):
         self.assertIn("pr-guards.yml", starters)
         self.assertEqual(starters & set(MERGED_AWAY), set())
 
+    def test_secret_scan_runs_on_pr_inside_ci_not_as_its_own_run(self):
+        self.assertNotIn("pull_request", triggers(load("secret-scan.yml")))
+        self.assertIn("gitleaks", load("ci.yml")["jobs"])
+
     def test_pr_guards_runs_the_pr_event_once_and_cancels_a_superseded_run(self):
         doc = load("pr-guards.yml")
         self.assertEqual(set(doc["on"]), {"pull_request_target"})

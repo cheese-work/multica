@@ -22,6 +22,11 @@
 # pull request. Merge decisions use the latest receipt for the exact head, re-verified with `verify`.
 #
 # Runner (CHE-3603): GitHub-hosted. The repo is public, so minutes are free, and 61 queued runs no longer block X99 runners.
+# CHE-3990: no `concurrency` block, on purpose. A cancelled run becomes the latest check for its head and shows red
+# even after an earlier run passed. GitHub keeps one running and one pending job per group, so a third event on a head
+# cancels the pending job even with `cancel-in-progress: false`. Every run is an idempotent receipt: run them all.
+# Do not add a shared group back.
+#
 # The classifier excludes its own check name from the required-check set, so it is never its own evidence.
 
 name: mechanical-tier
@@ -89,9 +94,6 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.find.outputs.targets) }}
-    concurrency:
-      group: mechanical-tier-${{ matrix.head }}
-      cancel-in-progress: false
     env:
       PR_NUMBER: ${{ matrix.pr }}
       BASE_SHA: ${{ matrix.base }}

@@ -100,15 +100,17 @@ export function resolveAutoCompact(
 }
 
 /**
- * The share of the window at which this DM compacts, or null when auto-compact
- * is off or the window is unknown. A window under 200k caps at 95%.
+ * The prompt size at which this DM compacts, or null when auto-compact is off
+ * or the window is unknown. Mirrors ThresholdTokens in the server: a saved
+ * percent rounds up; otherwise the window's token count, capped at 95% of a
+ * smaller window.
  */
-export function autoCompactThresholdPct(
+export function autoCompactThresholdTokens(
   rule: ResolvedAutoCompact,
   window: number | null | undefined,
 ): number | null {
   if (!rule.enabled || !window || window <= 0) return null;
-  if (rule.threshold_pct !== null) return rule.threshold_pct;
+  if (rule.threshold_pct !== null) return Math.ceil((rule.threshold_pct * window) / 100);
   const tokens = window <= SMALL_WINDOW ? rule.tokens_200k : rule.tokens_1m;
-  return Math.min(95, Math.ceil((tokens * 100) / window));
+  return Math.min(tokens, Math.floor((window * 95) / 100));
 }

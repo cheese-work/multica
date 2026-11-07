@@ -742,7 +742,7 @@ func (q *Queries) LockDecisionSquadNowait(ctx context.Context, arg LockDecisionS
 }
 
 const lockDecisionWorkflowNowait = `-- name: LockDecisionWorkflowNowait :one
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve FROM issue_workflow
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, start_status_key FROM issue_workflow
 WHERE workspace_id = $1 AND id = $2
 FOR UPDATE NOWAIT
 `
@@ -771,6 +771,7 @@ func (q *Queries) LockDecisionWorkflowNowait(ctx context.Context, arg LockDecisi
 		&i.RunBudgetSince,
 		&i.RunBudgetTokenAllowance,
 		&i.RunBudgetTokenReserve,
+		&i.StartStatusKey,
 	)
 	return i, err
 }

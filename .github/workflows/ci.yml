@@ -43,6 +43,25 @@ jobs:
           path: warning-budget-report.json
           retention-days: 14
 
+  # CHE-2696 / CHE-4385: scans the commits a PR adds. Lives here, not in its own workflow, so a PR push starts no extra run.
+  gitleaks:
+    name: gitleaks
+    if: ${{ github.event_name == 'pull_request' && !startsWith(github.head_ref, 'upstream-sync/') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan the added commits
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: bash scripts/secret-scan.sh "$PR_BASE..$PR_HEAD"
+
   migration-prefix-check:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
