@@ -1,0 +1,22 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 88d53b1915..ed080b1ebc 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -1,6 +1,8 @@
+ name: CI
+ 
+ on:
++  push:
++    branches: [main]
+   pull_request:
+     branches: [main]
+   merge_group:
+@@ -11,7 +13,7 @@ on:
+ 
+ concurrency:
+   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+-  cancel-in-progress: true
++  cancel-in-progress: ${{ github.event_name != 'push' }}
+ 
+ jobs:
+   warning-budget:
