@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -69,7 +68,7 @@ func TestRecordProviderSuccessIgnoresNonCompletedTasks(t *testing.T) {
 	}
 }
 
-func TestCompleteTaskWritesProviderSuccessEvidenceOnlyForCompletedTasksWithBreaker(t *testing.T) {
+func TestCompleteTaskWritesProviderSuccessEvidenceOnlyForCompletedTasks(t *testing.T) {
 	d := newDeliveryFixture(t)
 	ctx := context.Background()
 	pool := d.f.Pool
@@ -92,10 +91,10 @@ func TestCompleteTaskWritesProviderSuccessEvidenceOnlyForCompletedTasksWithBreak
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM provider_breaker WHERE workspace_id=$1 AND provider='openai'`, workspaceID).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 0 {
-		t.Fatalf("completion without breaker state or hold created %d rows, want 0", count)
+	if count != 1 {
+		t.Fatalf("completion without breaker state created %d rows, want 1", count)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO provider_breaker (workspace_id, provider, state, next_probe_at) VALUES ($1, 'openai', 'open', now() + interval '5 minutes')`, workspaceID); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE provider_breaker SET state='open', last_success_at=NULL, next_probe_at=now() + interval '5 minutes' WHERE workspace_id=$1 AND provider='openai'`, workspaceID); err != nil {
 		t.Fatal(err)
 	}
 	for _, status := range []string{"failed", "cancelled"} {
@@ -148,7 +147,7 @@ func TestProviderBreakerAdmitReadsPersistedState(t *testing.T) {
 	}
 }
 
-func TestRecordProviderSuccessSkipsUnneededWriteAndPreservesHold(t *testing.T) {
+func TestRecordProviderSuccessCreatesClosedRowAndPreservesHold(t *testing.T) {
 	pool := newResolveOriginatorPool(t)
 	ctx := context.Background()
 	workspaceID, _, agentID, _ := seedAttributionFixture(t, pool)
@@ -157,31 +156,6 @@ func TestRecordProviderSuccessSkipsUnneededWriteAndPreservesHold(t *testing.T) {
 	workspaceUUID := util.MustParseUUID(workspaceID)
 	task := db.AgentTaskQueue{AgentID: agentUUID, Status: "completed"}
 	q := db.New(pool)
-
-	lockTx, err := pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = lockTx.Rollback(context.Background()) })
-	lockKey := fmt.Sprintf("%x:%s", workspaceUUID.Bytes, "openai")
-	if err := db.New(lockTx).LockProviderBreakerTrip(ctx, lockKey); err != nil {
-		t.Fatal(err)
-	}
-	callCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
-	defer cancel()
-	if err := recordProviderSuccess(callCtx, q, task); err != nil {
-		t.Fatal(err)
-	}
-	var count int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM provider_breaker WHERE workspace_id=$1 AND provider='openai'`, workspaceUUID).Scan(&count); err != nil {
-		t.Fatal(err)
-	}
-	if count != 0 {
-		t.Fatalf("success without a breaker row or hold created %d rows, want 0", count)
-	}
-	if err := lockTx.Rollback(ctx); err != nil {
-		t.Fatal(err)
-	}
 
 	setWorkspaceProviderHold(t, pool, workspaceID, agentID, "gpt-5.6-sol", "openai")
 	if err := recordProviderSuccess(ctx, q, task); err != nil {
