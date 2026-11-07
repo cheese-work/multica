@@ -582,6 +582,9 @@ func (s *AutopilotService) dispatchAutopilot(
 		active, activeErr := s.Queries.FindActiveScheduledAutopilotRunForTrigger(ctx, db.FindActiveScheduledAutopilotRunForTriggerParams{
 			TriggerID: scope.TriggerID, ConditionKey: scope.ConditionKey,
 		})
+		if activeErr == nil && s.supersedeBreakerHeldRun(ctx, autopilot, active) {
+			activeErr = pgx.ErrNoRows
+		}
 		if activeErr == nil {
 			reason := "equivalent scheduled run is already active: " + util.UUIDToString(active.ID)
 			skipped, skipErr := s.recordSkippedRun(ctx, autopilot, triggerID, source, payload, plannedAt, webhookDeliveryID, reason, dispatch.ReasonAlreadyActive)
@@ -1740,6 +1743,41 @@ func (s *AutopilotService) shouldSkipDispatch(ctx context.Context, ap db.Autopil
 		return "this trigger's owner lacks access to the private assignee agent, or the trigger records no owner", dispatch.ReasonInvocationNotAllowed, true
 	}
 	return "", "", false
+}
+
+// supersedeBreakerHeldRun retires a run_only run whose task is still queued
+// behind an open provider breaker, so the next schedule tick replaces it and a
+// long outage leaves no stale run to start after recovery (CHE-4460). A queued
+// task with the breaker closed is about to start; it stays and the tick dedupes.
+// Reports whether the run was retired.
+func (s *AutopilotService) supersedeBreakerHeldRun(ctx context.Context, ap db.Autopilot, active db.AutopilotRun) bool {
+	if ap.ExecutionMode != "run_only" || !active.TaskID.Valid {
+		return false
+	}
+	task, err := s.Queries.GetAgentTask(ctx, active.TaskID)
+	if err != nil || task.Status != "queued" {
+		return false
+	}
+	agent, _, err := s.resolveAutopilotLeader(ctx, ap)
+	if err != nil {
+		return false
+	}
+	verdict, err := AgentReadiness(ctx, s.runtimeLookup(), agent)
+	if err != nil || !providerBreakerHold(verdict) {
+		return false
+	}
+	if _, err := s.Queries.CancelAgentTask(ctx, task.ID); err != nil {
+		return false
+	}
+	if _, err := s.skipAutopilotRun(ctx, db.UpdateAutopilotRunSkippedParams{
+		ID:            active.ID,
+		FailureReason: pgtype.Text{String: "superseded by the next scheduled run while the provider breaker held it", Valid: true},
+		ReasonCode:    pgtype.Text{String: string(dispatch.ReasonProviderBreaker), Valid: true},
+	}); err != nil {
+		slog.Warn("failed to retire breaker-held autopilot run", "run_id", util.UUIDToString(active.ID), "error", err)
+		return false
+	}
+	return true
 }
 
 // providerBreakerHold reports a wait on an open provider breaker. Every mode
