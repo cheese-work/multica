@@ -4454,6 +4454,20 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			return nil
 		}
 
+		// Provider breaker: an open or half_open breaker that is not yet due
+		// skips the claim (the task stays queued). A due breaker lets exactly
+		// one task through as the canary, bound after the claim below.
+		breakerProvider, breakerHeld, breakerCanary, berr := providerBreakerClaimGate(ctx, qtx, agent)
+		if berr != nil {
+			outcome = "error_provider_breaker_check"
+			return fmt.Errorf("check provider breaker for claim: %w", berr)
+		}
+		if breakerHeld {
+			slog.Debug("task claim skipped: provider breaker", "agent_id", util.UUIDToString(agentID), "provider", breakerProvider)
+			outcome = "provider_breaker"
+			return nil
+		}
+
 		coolingDown, err := qtx.HasRecentProviderServerFailure(ctx, db.HasRecentProviderServerFailureParams{
 			AgentID: agentID,
 			FailedSince: pgtype.Timestamptz{
@@ -4501,6 +4515,17 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			return fmt.Errorf("claim task: %w", err)
 		}
 
+		if breakerCanary {
+			if err := acquireProviderBreakerCanary(ctx, qtx, agent.WorkspaceID, breakerProvider, task.ID); err != nil {
+				if errors.Is(err, errProviderBreakerCanaryTaken) {
+					outcome = "provider_breaker"
+				} else {
+					outcome = "error_provider_breaker_canary"
+				}
+				return err
+			}
+		}
+
 		// Rule E: the claim stamped the epoch on a statement snapshot that a
 		// compact committed just before our DM lock may have outdated. Restamp
 		// on a fresh snapshot; the DM share lock keeps the epoch fixed until
@@ -4533,10 +4558,27 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			reanchorMs = time.Since(t0).Milliseconds()
 		}
 
+		// A retry child owns its root's input batch, which neither direct
+		// reanchor query reaches; keep a question that predates a compact
+		// beside its answer (CHE-2819).
+		if task.ChatSessionID.Valid && task.ChatInputTaskID.Valid && task.ChatInputTaskID != task.ID {
+			if err := qtx.ReanchorChatInputAcrossFloor(ctx, db.ReanchorChatInputAcrossFloorParams{
+				ChatSessionID: task.ChatSessionID,
+				InputTaskID:   task.ChatInputTaskID,
+				DispatchedAt:  task.DispatchedAt,
+			}); err != nil {
+				outcome = "error_reanchor_chat_input"
+				return fmt.Errorf("reanchor chat input across floor: %w", err)
+			}
+		}
+
 		claimedTask := task
 		claimed = &claimedTask
 		return nil
 	})
+	if errors.Is(err, errProviderBreakerCanaryTaken) {
+		return nil, nil // another claim owns the canary; the rollback left this task queued
+	}
 	if err != nil {
 		if outcome == "unknown" {
 			outcome = "error_transaction"

@@ -23,11 +23,13 @@ import (
 // Commit is one pushed commit: its ID and the SHA-256 of its raw message bytes.
 type Commit struct {
 	SHA           string `json:"sha"`
+	RunSHA        string `json:"run_sha,omitempty"`
 	MessageSHA256 string `json:"message_sha256"`
 }
 
 // Receipt records one successful push (plan 3.2 item 7). The read proxy uses
-// it to return the run's own commit messages.
+// it to return the run's own commit messages. Commit.SHA is the commit the
+// remote holds; RunSHA is the SHA the run knew it by before translation.
 type Receipt struct {
 	Task    string    `json:"task"`
 	Repo    string    `json:"repo"`
@@ -190,7 +192,9 @@ func (b *Broker) realBase() string {
 // commitReceipts lists the commits the bundle added on top of the pinned base
 // with the SHA-256 of each raw message. One git process serves all objects and
 // its output is hashed as a stream, so a huge message costs time, not memory.
-func (b *Broker) commitReceipts(ctx context.Context, work, sha string) ([]Commit, error) {
+// runSHA maps a translated commit to the SHA the run knew it by (nil without
+// translation).
+func (b *Broker) commitReceipts(ctx context.Context, work, sha string, runSHA map[string]string) ([]Commit, error) {
 	limit := b.pin.MaxCommits
 	if limit <= 0 {
 		limit = defaultMaxCommits
@@ -225,6 +229,9 @@ func (b *Broker) commitReceipts(ctx context.Context, work, sha string) ([]Commit
 	}
 	if readErr != nil {
 		return nil, fmt.Errorf("receipt: %w", readErr)
+	}
+	for i := range commits {
+		commits[i].RunSHA = runSHA[commits[i].SHA]
 	}
 	return commits, nil
 }

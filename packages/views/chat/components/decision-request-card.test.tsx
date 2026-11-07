@@ -37,9 +37,10 @@ vi.mock("../../issues/components/comment-mention-card", () => ({
 const answerDecisionRequest = vi.hoisted(() => vi.fn());
 const listDecisionArtifacts = vi.hoisted(() => vi.fn());
 const uploadFile = vi.hoisted(() => vi.fn());
+const getDecisionActionOutcome = vi.hoisted(() => vi.fn());
 vi.mock("@multica/core/api", async (importActual) => ({
   ...(await importActual<typeof import("@multica/core/api")>()),
-  api: { answerDecisionRequest, challengeDecisionAnswer, listDecisionArtifacts, uploadFile },
+  api: { answerDecisionRequest, challengeDecisionAnswer, listDecisionArtifacts, uploadFile, getDecisionActionOutcome },
 }));
 
 // The real editor is Tiptap; its own suites cover typing and paste. Here it is
@@ -580,6 +581,57 @@ describe("DecisionRequestCard answering", () => {
     expect(screen.queryByRole("alert")).toBeNull();
     await user.click(screen.getByRole("button", { name: "Discard draft" }));
     expect(screen.queryByTestId("decision-request-kept-draft")).toBeNull();
+  });
+
+  describe("action preview", () => {
+    const preview = {
+      fields: [
+        { label: "Run cap", current: "10", proposed: "30" },
+        { label: "Runs left", current: "0", proposed: "20" },
+      ],
+      sha256: "d".repeat(64),
+    };
+    const action = { id: "action", action_type: "issue.run_budget.raise", payload_sha256: "payload", preview };
+    const show = (value: RequestCard["action"]) => renderCard({ ...card, action: value });
+    beforeEach(() => getDecisionActionOutcome.mockReset().mockResolvedValue({ id: "action", state: "pending" }));
+
+    it("shows the current and proposed values and enables Approve", async () => {
+      show(action);
+      const region = await screen.findByTestId("decision-request-action-preview");
+      expect(region).toHaveTextContent("Run cap");
+      expect(region).toHaveTextContent("10");
+      expect(region).toHaveTextContent("30");
+      expect(region).toHaveTextContent("Runs left");
+      expect(await screen.findByRole("button", { name: "Approve with passkey" })).toBeEnabled();
+      expect(screen.queryByText("Details unavailable")).toBeNull();
+    });
+
+    it.each([
+      ["missing", undefined],
+      ["empty", { fields: [], sha256: "d".repeat(64) }],
+      ["digestless", { ...preview, sha256: "" }],
+      ["not a sha-256 digest", { ...preview, sha256: "digest" }],
+      ["partly malformed", { ...preview, fields: [{ label: "Run cap" }] } as unknown as typeof preview],
+    ])("says details are unavailable and keeps Approve disabled when the preview is %s", (_name, bad) => {
+      show({ ...action, preview: bad });
+      expect(screen.getByText("Details unavailable")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Approve with passkey" })).toBeDisabled();
+      expect(getDecisionActionOutcome).not.toHaveBeenCalled();
+    });
+
+    it("keeps Approve disabled for an action type this client does not know, even with fields", () => {
+      show({ ...action, action_type: "future.thing" });
+      expect(screen.getByText("Details unavailable")).toBeInTheDocument();
+      expect(screen.queryByTestId("decision-request-action-preview")).toBeNull();
+      expect(screen.getByRole("button", { name: "Approve with passkey" })).toBeDisabled();
+      expect(getDecisionActionOutcome).not.toHaveBeenCalled();
+    });
+
+    it("shows nothing when the card has no action", () => {
+      renderCard();
+      expect(screen.queryByText("Details unavailable")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+    });
   });
 });
 

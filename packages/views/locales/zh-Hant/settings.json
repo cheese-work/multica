@@ -387,7 +387,8 @@
   },
   "chat": {
     "floating_label": "懸浮聊天窗",
-    "floating_hint": "在每個頁面顯示懸浮聊天按鈕。"
+    "floating_hint": "在每個頁面顯示懸浮聊天按鈕。",
+    "recent_agents_label": "新聊天中的最近智慧體"
   },
   "issue": {
     "opening": {
@@ -875,7 +876,12 @@
     "auto_compact_hint": "網頁私信的上下文達到閾值後，會在一次回復之後轉入新的私信。",
     "auto_compact_threshold_label": "閾值 (%)",
     "auto_compact_threshold_invalid": "請輸入 50 到 90 的整數。",
+    "auto_compact_tokens_200k_label": "閾值，200k 模型（token）",
+    "auto_compact_tokens_1m_label": "閾值，1M 模型（token）",
+    "auto_compact_tokens_200k_invalid": "請輸入 100000 到 200000 之間的整數。",
+    "auto_compact_tokens_1m_invalid": "請輸入 100000 到 400000 之間的整數。",
     "auto_compact_readonly_on": "開啓，閾值 {{threshold}}%",
+    "auto_compact_readonly_on_tokens": "已開啟，{{small}} / {{large}} token",
     "auto_compact_readonly_off": "關閉",
     "agent_decisions_label": "代理決策",
     "agent_decisions_hint": "代理可以代你決定白名單內的關卡。每項決定都會出現在每日簡報中，並有 24 小時否決期。",
