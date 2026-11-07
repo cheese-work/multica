@@ -423,6 +423,7 @@
     "option_cons": "Inconvénients",
     "option_cost": "Coût ou délai",
     "answer_send": "Envoyer",
+    "answer_clear": "Effacer la sélection",
     "answer_error": "Échec de l'envoi. Réessayez.",
     "answer_helper": "Envoyer publie votre réponse sur {{issue}}. Les questions pour l'agent du DM vont dans la zone de message ci-dessous.",
     "answer_helper_issue": "Envoyer publie votre réponse sur {{issue}}.",

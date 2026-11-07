@@ -1,9 +1,11 @@
 import { Suspense, useEffect, useId, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Loader2, MessageSquareQuote } from "@multica/ui/icons";
+import { Check, Loader2, MessageSquareQuote } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
 import { ApiError } from "@multica/core/api";
 import { useAnswerDecisionRequest } from "@multica/core/issues/decision-answer";
+import { useDecisionAnswerDraftStore } from "@multica/core/issues/stores/decision-answer-draft-store";
+import { usePersistedDraft } from "@multica/core/drafts";
 import { approvablePreview } from "@multica/core/issues/decision-action-preview";
 import { chatKeys } from "@multica/core/chat/queries";
 import { useWorkspacePaths } from "@multica/core/paths";
@@ -62,7 +64,7 @@ function DecisionAnswerForm({
   card: RequestCard;
   draft: AnswerDraft;
   answer: AnswerMutation;
-  onDraftChange: (draft: AnswerDraft) => void;
+  onDraftChange: (patch: Partial<AnswerDraft>) => void;
   onSend: (text: string, option?: string) => void;
   inIssue: boolean;
   /** The server refused a bare answer: the next send runs the passkey ceremony. */
@@ -75,7 +77,9 @@ function DecisionAnswerForm({
   const handoff = needsPasskey && isDesktopShell();
   const sendShortcut = formatShortcut(useShortcut("send"));
   const { text } = draft;
-  const setText = (next: string) => onDraftChange({ option: draft.option, text: next });
+  const setText = (next: string) => onDraftChange({ text: next });
+  // A tap selects; a second tap on the selected option clears it. Nothing is sent until Send.
+  const toggleOption = (label: string) => onDraftChange({ option: draft.option === label ? "" : label });
   const textId = useId();
   const editorRef = useRef<ContentEditorRef>(null);
   const uploadGate = useUploadGate(editorRef);
@@ -83,8 +87,9 @@ function DecisionAnswerForm({
   const tooLong = answerBytes(text) > MAX_ANSWER_BYTES;
   const canSubmit = !handoff && online && !answer.isPending && !uploadGate.uploading && !tooLong;
   const canSend = canSubmit && (draft.option !== "" || text.trim() !== "");
-  // An option click sends at once, with whatever note is in the box. A retry keeps the kept choice.
-  const send = (option = draft.option) => {
+  // Send posts the selected option with whatever note is in the box. A retry keeps the kept choice.
+  const send = () => {
+    const option = draft.option;
     // onUpdate reaches `text` through a timer, so an Enter or click right after the last edit
     // (or a finished upload) would send stale text. Read the editor and send exactly that.
     const live = editorRef.current?.getMarkdown() ?? text;
@@ -107,18 +112,23 @@ function DecisionAnswerForm({
         {t(($) => (inIssue ? $.decision.answer_helper_issue : $.decision.answer_helper), { issue: card.issue_identifier || card.issue_id })}
       </p>
       {!!card.options?.length && (
-        <div role="group" aria-label={t(($) => $.decision.answer_options)} className="space-y-1">
+        <div role="radiogroup" aria-label={t(($) => $.decision.answer_options)} className="space-y-1">
           {card.options.map((item, index) => (
             <button
               key={item.label}
               type="button"
+              role="radio"
+              aria-checked={draft.option === item.label}
               disabled={!canSubmit}
-              onClick={() => send(item.label)}
+              onClick={() => toggleOption(item.label)}
               className={cn(
                 "flex min-h-9 w-full items-start gap-2 rounded-lg border border-surface-border px-2 py-1.5 text-left hover:bg-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-70",
-                card.recommended_option_index === index && "border-primary bg-primary/5",
+                draft.option === item.label && "border-primary bg-primary/10 ring-1 ring-primary",
               )}
             >
+              <span aria-hidden className={cn("mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border", draft.option === item.label ? "border-primary bg-primary text-primary-foreground" : "border-surface-border")}>
+                {draft.option === item.label && <Check className="size-3" />}
+              </span>
               <span className="min-w-0 space-y-0.5">
                 <span className="flex flex-wrap items-center gap-2">
                   <span className="font-medium">{item.label}</span>
@@ -160,10 +170,15 @@ function DecisionAnswerForm({
       </p>
       {tooLong && <p role="alert" className="text-caption text-destructive">{t(($) => $.decision.answer_too_long)}</p>}
       <div className="flex flex-wrap items-center gap-2">
-        <Button type="submit" size="sm" disabled={!canSend} className="disabled:opacity-70">
+        <Button type="submit" size="sm" disabled={!canSend} className="disabled:opacity-70 max-sm:h-11">
           {answer.isPending && <Loader2 className="size-4 animate-spin" aria-hidden />}
           {t(($) => (needsPasskey ? $.decision.answer_send_passkey : $.decision.answer_send))}
         </Button>
+        {draft.option !== "" && (
+          <Button type="button" size="sm" variant="ghost" disabled={!canSubmit} className="max-sm:h-11" onClick={() => onDraftChange({ option: "" })}>
+            {t(($) => $.decision.answer_clear)}
+          </Button>
+        )}
         {handoff && (
           <Button type="button" size="sm" variant="outline" onClick={onOpenWeb}>{t(($) => $.decision.answer_open_browser)}</Button>
         )}
@@ -287,7 +302,8 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
   const date = new Date(timestamp);
   const validDate = !Number.isNaN(date.getTime());
   const issueHref = paths.issueDetail(card.issue_id);
-  const [draft, setDraft] = useState<AnswerDraft>(EMPTY_DRAFT);
+  // Persisted per request: the selection and the note survive unmount and reload until sent or discarded.
+  const [draft, patchDraft, clearDraft] = usePersistedDraft(useDecisionAnswerDraftStore, card.id, EMPTY_DRAFT);
   const [refused, setRefused] = useState(false);
   const [needsPasskey, setNeedsPasskey] = useState(false);
   const navigation = useOptionalNavigation();
@@ -296,13 +312,13 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
   const answer = useAnswerDecisionRequest(card.issue_id);
   const sendAnswer = (text: string, option = "") => {
     // Keep what is sent as the draft, so a refused send shows back the same choice and text.
-    setDraft({ option, text });
+    patchDraft({ option, text });
     answer.mutate(
       { requestId: card.id, option: option || undefined, text: text.trim() || undefined, passkey: needsPasskey },
       {
         onSuccess: () => {
           setNeedsPasskey(false);
-          setDraft(EMPTY_DRAFT);
+          clearDraft();
           setFormKey((key) => key + 1);
         },
         onError: (error) => {
@@ -314,7 +330,7 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
     );
   };
   const discardDraft = () => {
-    setDraft(EMPTY_DRAFT);
+    clearDraft();
     setRefused(false);
   };
 
@@ -395,7 +411,7 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
           <KeptDraft draft={draft} onDiscard={discardDraft} />
         ) : (
           card.state === "open" && (
-            <DecisionAnswerForm key={formKey} card={card} draft={draft} answer={answer} onDraftChange={setDraft} onSend={sendAnswer} inIssue={inIssue} needsPasskey={needsPasskey} onOpenWeb={() => navigation && openExternal(navigation.getShareableUrl(issueHref))} />
+            <DecisionAnswerForm key={formKey} card={card} draft={draft} answer={answer} onDraftChange={patchDraft} onSend={sendAnswer} inIssue={inIssue} needsPasskey={needsPasskey} onOpenWeb={() => navigation && openExternal(navigation.getShareableUrl(issueHref))} />
           )
         )}
         {shown === "picked_up" && card.answer?.run && (
