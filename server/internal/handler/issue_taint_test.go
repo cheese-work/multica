@@ -7,9 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -510,6 +512,122 @@ func TestIssueDeleteAndAuthorizeShareOneLockOrder(t *testing.T) {
 	if !nulled {
 		t.Fatal("the run still names the comment of the deleted issue")
 	}
+}
+
+// pointRunAtParentWithStaleLineage makes the elevated run a child of parentID
+// and gives it a retry source whose taint arrives only afterwards. Nulling
+// parent_task_id (the FK's ON DELETE SET NULL) then recomputes the run's taint
+// from the lineage that remains, and the run's taint trigger locks the run's issue.
+func pointRunAtParentWithStaleLineage(t *testing.T, f elevatedFixture, parentID string) {
+	t.Helper()
+	var agentID string
+	dbfx.QueryRow(t, `SELECT agent_id FROM agent_task_queue WHERE id = $1`, f.taskID).Scan(&agentID)
+	retrySource := taintedTask(t, agentID)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET parent_task_id = $2, retry_of_task_id = $3 WHERE id = $1`, f.taskID, parentID, retrySource)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET taint_ids = ARRAY['tr'] WHERE id = $1`, retrySource)
+	if got := taintOf(t, "agent_task_queue", f.taskID); len(got) != 0 {
+		t.Fatalf("run taint before the delete = %v, want none", got)
+	}
+}
+
+// finishDeleteAgainstHeldAuthorization runs del while authorization holds the
+// run's issue and waits on the elevation row, then releases the gate. The delete
+// has to hold the run's issue before it reaches the run row; a deadlock aborts
+// one side.
+func finishDeleteAgainstHeldAuthorization(t *testing.T, f elevatedFixture, del func() error) {
+	t.Helper()
+	ctx := context.Background()
+	gate, authorized := holdAuthorizationAtElevationRow(t, f)
+	deleted := make(chan error, 1)
+	go func() { deleted <- del() }()
+	waitForLockWaiters(t, 2)
+	if err := gate.Commit(ctx); err != nil {
+		t.Fatalf("gate commit: %v", err)
+	}
+	if got := (<-authorized).Code; got != http.StatusOK && got != http.StatusForbidden {
+		t.Fatalf("authorization status = %d, want 200 or 403 (a deadlock aborts it)", got)
+	}
+	if err := <-deleted; err != nil {
+		t.Fatalf("delete = %v, want it to commit (a deadlock aborts it)", err)
+	}
+	var detached bool
+	dbfx.QueryRow(t, `SELECT parent_task_id IS NULL FROM agent_task_queue WHERE id = $1`, f.taskID).Scan(&detached)
+	if !detached {
+		t.Fatal("the run still names the deleted parent")
+	}
+}
+
+// makeSystemAgentWithRun turns a fresh agent into an Agent Builder carrier and
+// gives it a finished run, which the run under test then names as its parent.
+func makeSystemAgentWithRun(t *testing.T, runtimeID, issueID string) (agentID, parentTaskID string) {
+	t.Helper()
+	agentID = dbfx.Agent(t, "carrier "+uuid.NewString()[:8], runtimeID)
+	dbfx.Exec(t, `UPDATE agent SET kind = 'system', system_key = $2 WHERE id = $1`, agentID, "agent_builder:"+uuid.NewString())
+	return agentID, insertDeletePathTask(t, agentID, issueID, runtimeID)
+}
+
+// An issue delete removes the issue's runs through agent_task_queue.issue_id
+// ON DELETE CASCADE, and each removed run nulls parent_task_id on its children.
+// A child can belong to another issue.
+func TestIssueDeleteRunCascadeAndAuthorizeShareOneLockOrder(t *testing.T) {
+	ctx := context.Background()
+	f := claimElevated(t, "repo_write:1234")
+	deletedIssue := dbfx.Issue(t, "issue delete run cascade")
+	var agentID string
+	dbfx.QueryRow(t, `SELECT agent_id FROM agent_task_queue WHERE id = $1`, f.taskID).Scan(&agentID)
+	parent := insertDeletePathTask(t, agentID, deletedIssue, f.runtimeID)
+	pointRunAtParentWithStaleLineage(t, f, parent)
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(deletedIssue))
+	if err != nil {
+		t.Fatalf("load issue: %v", err)
+	}
+
+	finishDeleteAgainstHeldAuthorization(t, f, func() error {
+		_, err := testHandler.deleteIssueAndCollectAttachmentURLs(ctx, issue, nil)
+		return err
+	})
+}
+
+// Deleting an Agent Builder carrier removes its runs through
+// agent_task_queue.agent_id ON DELETE CASCADE.
+func TestSystemAgentDeleteAndAuthorizeShareOneLockOrder(t *testing.T) {
+	ctx := context.Background()
+	f := claimElevated(t, "repo_write:1234")
+	carrier, parent := makeSystemAgentWithRun(t, f.runtimeID, dbfx.Issue(t, "carrier run issue"))
+	pointRunAtParentWithStaleLineage(t, f, parent)
+
+	finishDeleteAgainstHeldAuthorization(t, f, func() error {
+		tx, err := testHandler.TxStarter.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx)
+		if err := deleteSystemAgent(ctx, testHandler.Queries.WithTx(tx), parseUUID(carrier)); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	})
+}
+
+// A runtime teardown deletes the runtime's system agents the same way.
+func TestRuntimeTeardownSystemAgentDeleteAndAuthorizeShareOneLockOrder(t *testing.T) {
+	ctx := context.Background()
+	f := claimElevated(t, "repo_write:1234")
+	runtimeID := createClaimReclaimRuntime(t, ctx, "carrier runtime "+uuid.NewString()[:8])
+	_, parent := makeSystemAgentWithRun(t, runtimeID, dbfx.Issue(t, "carrier run issue"))
+	pointRunAtParentWithStaleLineage(t, f, parent)
+
+	finishDeleteAgainstHeldAuthorization(t, f, func() error {
+		tx, err := testHandler.TxStarter.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx)
+		if _, err := service.TeardownRuntime(ctx, testHandler.Queries.WithTx(tx), parseUUID(runtimeID), service.RuntimeTeardownOptions{CancelNonTerminalTasks: true}); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	})
 }
 
 // Teardown deletes every comment of the workspace. A run in a neighbour
