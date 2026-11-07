@@ -1073,7 +1073,7 @@ func (s *AutopilotService) dispatchRunOnly(ctx context.Context, ap db.Autopilot,
 	if err != nil {
 		return fmt.Errorf("check agent readiness: %w", err)
 	}
-	if !verdict.Ready() {
+	if !verdict.Ready() && !providerBreakerHold(verdict) {
 		return &errDispatchSkipped{reason: formatAdmissionReason(ap, verdict.Detail), code: verdict.Reason}
 	}
 
@@ -1704,7 +1704,7 @@ func (s *AutopilotService) shouldSkipDispatch(ctx context.Context, ap db.Autopil
 		// written server-side and the run waits for the laptop to come back. An
 		// unusable runtime does not qualify — nothing there can run until a
 		// human repairs it, so a doomed issue-create is not an improvement.
-		if ap.ExecutionMode == "create_issue" && verdict.Availability == AgentWaitable {
+		if (ap.ExecutionMode == "create_issue" && verdict.Availability == AgentWaitable) || providerBreakerHold(verdict) {
 			slog.Info("autopilot admission: allowing create_issue dispatch for offline runtime",
 				"autopilot_id", util.UUIDToString(ap.ID),
 				"runtime_id", util.UUIDToString(agent.RuntimeID),
@@ -1740,6 +1740,13 @@ func (s *AutopilotService) shouldSkipDispatch(ctx context.Context, ap db.Autopil
 		return "this trigger's owner lacks access to the private assignee agent, or the trigger records no owner", dispatch.ReasonInvocationNotAllowed, true
 	}
 	return "", "", false
+}
+
+// providerBreakerHold reports a wait on an open provider breaker. Every mode
+// queues through it: the claim gate holds the task until the probe is due, and
+// a skipped scheduled run would not come back (CHE-4460).
+func providerBreakerHold(v AgentVerdict) bool {
+	return v.Availability == AgentWaitable && v.Reason == dispatch.ReasonProviderBreaker
 }
 
 // formatAdmissionReason rewrites the generic AgentReadiness reason into the
