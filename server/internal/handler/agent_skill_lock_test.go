@@ -13,6 +13,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/realtime"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -250,4 +255,68 @@ func TestAgentSkillWritersReadBodyBeforeLocking(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The writer transaction holds one pool connection. Every read inside it must
+// go through that transaction: a read through the pool waits for a connection
+// the transaction never frees, and enough concurrent writers exhaust the real
+// pool the same way. A pool of one connection makes the wait deterministic.
+func TestAgentSkillWritersReadOnlyThroughTheirTransaction(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	cfg := testPool.Config()
+	cfg.MaxConns = 1
+	small, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer small.Close()
+	h := New(db.New(small), small, realtime.NewHub(), events.New(), service.NewEmailService(), nil, nil, analytics.NoopClient{}, Config{})
+
+	// Non-empty lists reach the qoder provider check inside the transaction.
+	writers := []struct {
+		name string
+		call func(ctx context.Context, agentID, x string) *httptest.ResponseRecorder
+	}{
+		{"SetAgentSkills", func(ctx context.Context, agentID, x string) *httptest.ResponseRecorder {
+			return callAgentSkillWriterCtx(ctx, h.SetAgentSkills, "PUT", map[string]any{"skill_ids": []string{x}}, agentID, "")
+		}},
+		{"AddAgentSkills", func(ctx context.Context, agentID, x string) *httptest.ResponseRecorder {
+			return callAgentSkillWriterCtx(ctx, h.AddAgentSkills, "POST", map[string]any{"skill_ids": []string{x}}, agentID, "")
+		}},
+		{"SetAgentSkillEnabled", func(ctx context.Context, agentID, x string) *httptest.ResponseRecorder {
+			return callAgentSkillWriterCtx(ctx, h.SetAgentSkillEnabled, "PUT", map[string]any{"enabled": false}, agentID, x)
+		}},
+		{"RemoveAgentSkill", func(ctx context.Context, agentID, x string) *httptest.ResponseRecorder {
+			return callAgentSkillWriterCtx(ctx, h.RemoveAgentSkill, "DELETE", nil, agentID, x)
+		}},
+	}
+	for _, writer := range writers {
+		t.Run(writer.name, func(t *testing.T) {
+			agentID := createHandlerTestAgent(t, "Skill Pool "+writer.name, nil)
+			x := insertHandlerTestSkill(t, "skill-pool-x-"+writer.name, "# x")
+			if _, err := testPool.Exec(context.Background(), `INSERT INTO agent_skill (agent_id, skill_id) VALUES ($1, $2)`, agentID, x); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			resp := writer.call(ctx, agentID, x)
+			if resp.Code != http.StatusOK {
+				t.Fatalf("writer on a pool of one connection: status=%d body=%s", resp.Code, resp.Body.String())
+			}
+		})
+	}
+}
+
+func callAgentSkillWriterCtx(ctx context.Context, fn http.HandlerFunc, method string, body any, agentID, skillID string) *httptest.ResponseRecorder {
+	w := httptest.NewRecorder()
+	req := newRequest(method, "/api/agents/"+agentID+"/skills", body)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", agentID)
+	if skillID != "" {
+		rctx.URLParams.Add("skillId", skillID)
+	}
+	fn(w, req.WithContext(context.WithValue(ctx, chi.RouteCtxKey, rctx)))
+	return w
 }

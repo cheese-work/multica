@@ -2590,8 +2590,14 @@ func (h *Handler) ListAgentSkills(w http.ResponseWriter, r *http.Request) {
 // existing agent runs in. It takes the agent row lock first
 // (LockAgentForSkillWrite) and checks manager state against the locked row, so
 // the manager check and the write see the same agent an approved action sees.
-// On false the response is written and the transaction is already rolled back.
+// The workspace role is read before the transaction starts: a read through the
+// pool while the transaction holds a connection can exhaust the pool. On false
+// the response is written and the transaction is already rolled back.
 func (h *Handler) beginAgentSkillWrite(w http.ResponseWriter, r *http.Request, agent db.Agent) (pgx.Tx, *db.Queries, db.Agent, bool) {
+	member, ok := h.requireWorkspaceRole(w, r, uuidToString(agent.WorkspaceID), "agent not found", "owner", "admin", "member")
+	if !ok {
+		return nil, nil, agent, false
+	}
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to start transaction")
@@ -2599,12 +2605,13 @@ func (h *Handler) beginAgentSkillWrite(w http.ResponseWriter, r *http.Request, a
 	}
 	qtx := h.Queries.WithTx(tx)
 	locked, err := qtx.LockAgentForSkillWrite(r.Context(), db.LockAgentForSkillWriteParams{ID: agent.ID, WorkspaceID: agent.WorkspaceID})
-	if err == nil && h.canManageAgent(w, r, locked) {
+	if err == nil && (roleAllowed(member.Role, "owner", "admin") || uuidToString(locked.OwnerID) == requestUserID(r)) {
 		return tx, qtx, locked, true
 	}
 	tx.Rollback(r.Context())
 	switch {
-	case err == nil: // canManageAgent wrote the refusal
+	case err == nil:
+		writeError(w, http.StatusForbidden, "only the agent owner can manage this agent")
 	case errors.Is(err, pgx.ErrNoRows):
 		writeError(w, http.StatusNotFound, "agent not found")
 	case isLockNotAvailable(err):
@@ -2613,6 +2620,20 @@ func (h *Handler) beginAgentSkillWrite(w http.ResponseWriter, r *http.Request, a
 		writeError(w, http.StatusInternalServerError, "failed to lock agent")
 	}
 	return nil, nil, agent, false
+}
+
+// rejectQoderSkillOverrides is rejectQoderOverrides for a caller inside a
+// transaction: the runtime lookup goes through qtx, never the pool.
+func rejectQoderSkillOverrides(w http.ResponseWriter, r *http.Request, qtx *db.Queries, agent db.Agent, skills int) bool {
+	rt, err := qtx.GetAgentRuntimeForWorkspace(r.Context(), db.GetAgentRuntimeForWorkspaceParams{ID: agent.RuntimeID, WorkspaceID: agent.WorkspaceID})
+	if err != nil || rt.Provider != "qoder_cloud" {
+		return false
+	}
+	if err := (qoderOverrides{skills: skills}).validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return true
+	}
+	return false
 }
 
 func isLockNotAvailable(err error) bool {
@@ -2650,7 +2671,7 @@ func (h *Handler) SetAgentSkills(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	if len(skillUUIDs) > 0 && h.rejectQoderOverrides(w, r, agent, qoderOverrides{skills: len(skillUUIDs)}) {
+	if len(skillUUIDs) > 0 && rejectQoderSkillOverrides(w, r, qtx, agent, len(skillUUIDs)) {
 		return
 	}
 
@@ -2708,7 +2729,7 @@ func (h *Handler) AddAgentSkills(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	if len(skillUUIDs) > 0 && h.rejectQoderOverrides(w, r, agent, qoderOverrides{skills: len(skillUUIDs)}) {
+	if len(skillUUIDs) > 0 && rejectQoderSkillOverrides(w, r, qtx, agent, len(skillUUIDs)) {
 		return
 	}
 
