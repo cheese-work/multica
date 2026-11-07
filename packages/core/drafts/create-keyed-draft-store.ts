@@ -141,8 +141,15 @@ export function createKeyedDraftStore<TData extends object>(
   const tokenNow = () => draftSessionToken(workspaceScoped ? loadedSlug : null);
   const isStale = () =>
     (workspaceScoped && getCurrentSlug() !== loadedSlug) || tokenNow() !== loadedToken;
+  // Token the last load read its payload under. `merge` compares against this
+  // value, never a fresh read: a logout landing between the read and the merge
+  // must not let the old payload adopt the new session's token.
+  let readToken = NO_DRAFT_SESSION;
   const sessioned: StorageAdapter = {
-    getItem: (name) => backing.getItem(name + sessionKeySuffix(draftSessionToken(workspaceScoped ? getCurrentSlug() : null))),
+    getItem: (name) => {
+      readToken = draftSessionToken(workspaceScoped ? getCurrentSlug() : null);
+      return backing.getItem(name + sessionKeySuffix(readToken));
+    },
     setItem: (name, value) => {
       if (!isStale()) backing.setItem(name + sessionKeySuffix(loadedToken), value);
     },
@@ -192,8 +199,10 @@ export function createKeyedDraftStore<TData extends object>(
         // merge would keep the previous workspace's drafts.
         merge: (persisted, current) => {
           loadedSlug = getCurrentSlug();
-          loadedToken = tokenNow();
-          return { ...current, drafts: prune((persisted as { drafts?: Drafts } | undefined)?.drafts) };
+          const moved = tokenNow() !== readToken; // session ended after the read: payload is the old session's
+          loadedToken = readToken;
+          const drafts = moved ? {} : prune((persisted as { drafts?: Drafts } | undefined)?.drafts);
+          return { ...current, drafts };
         },
       },
     ),
