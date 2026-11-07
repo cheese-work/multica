@@ -57,4 +57,25 @@ describe("CodeBlockShell copy toolbar", () => {
       timers.restore();
     }
   });
+
+  it("starts no feedback timer when unmounted before the copy resolves", async () => {
+    let resolveCopy!: (copied: boolean) => void;
+    copyTextMock.mockReturnValueOnce(new Promise<boolean>((resolve) => (resolveCopy = resolve)));
+    const view = render(
+      <CodeBlockShell language="bash" code="echo hi">
+        <code>echo hi</code>
+      </CodeBlockShell>,
+    );
+    const timers = trackFeedbackTimers();
+    try {
+      fireEvent.click(screen.getByRole("button", { name: /copy/i }));
+      view.unmount();
+      resolveCopy(true);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(timers.ids).toHaveLength(0);
+    } finally {
+      timers.restore();
+    }
+  });
 });
