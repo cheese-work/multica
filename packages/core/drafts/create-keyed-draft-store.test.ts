@@ -8,6 +8,8 @@ import {
   __clearDraftCleanupRegistryForTest,
 } from "./cleanup-registry";
 import { setCurrentWorkspace } from "../platform/workspace-storage";
+import { defaultStorage } from "../platform/storage";
+import { currentDraftOrigin, DRAFT_SESSION_KEY } from "./cleanup-registry";
 import type { StorageAdapter } from "../types/storage";
 
 interface Sample {
@@ -219,6 +221,7 @@ describe("createKeyedDraftStore", () => {
     let armed = true;
     storage.getItem = (k) => {
       const value = realGet(k);
+      console.log("READ", k);
       if (armed && k.startsWith("k_logout_race") && value) {
         armed = false;
         resetAllRegisteredDrafts();
@@ -233,5 +236,74 @@ describe("createKeyedDraftStore", () => {
     const raw = [...storage.values.values()].join("\n");
     expect(raw).not.toContain("old user note");
     expect(raw).toContain("new user note");
+  });
+
+  // Another tab ends the session of ws-a right after the session check of a
+  // delayed op, before its next session read. `afterEnd` runs once the new token exists.
+  const endSessionAfterFirstRead = (storage: StorageAdapter, afterEnd: () => void = () => {}) => {
+    const realGet = defaultStorage.getItem;
+    let state: "armed" | "fire" | "done" = "armed";
+    const end = () => {
+      state = "done";
+      clearRegisteredWorkspaceDrafts(storage, "ws-a");
+      afterEnd();
+    };
+    defaultStorage.getItem = (k) => {
+      if (state === "fire") end(); // the read after the check: the session ends right before it
+      if (state === "armed" && k === `${DRAFT_SESSION_KEY}:ws-a`) state = "fire";
+      return realGet(k);
+    };
+    return () => {
+      defaultStorage.getItem = realGet;
+      // An op that reads the token once never reaches the second read: end the session after it.
+      if (state !== "done") end();
+    };
+  };
+
+  it("delayed write: session ends between the check and key selection; the old note never lands under the new token", async () => {
+    setCurrentWorkspace("ws-a", "id-a");
+    const { useStore, storage } = build("k_key_race_set", memoryStorage(), { workspaceScoped: true });
+    await flush();
+    const origin = currentDraftOrigin("ws-a"); // editor scheduled its flush in ws-a
+    setCurrentWorkspace("ws-b", "id-b");
+    await flush();
+
+    const restore = endSessionAfterFirstRead(storage);
+    try {
+      useStore.getState().setDraftIn(origin, "issue-1", { text: "old private note" });
+    } finally {
+      restore();
+    }
+
+    const newToken = currentDraftOrigin("ws-a").session;
+    expect(newToken).not.toBe(origin.session);
+    const leaked = [...storage.values.entries()].filter(
+      ([k, v]) => k.endsWith(`#${newToken}`) && v.includes("old private note"),
+    );
+    expect(leaked).toEqual([]);
+  });
+
+  it("delayed clear: session ends between the check and key selection; the new session's draft survives", async () => {
+    setCurrentWorkspace("ws-a", "id-a");
+    const { useStore, storage } = build("k_key_race_clear", memoryStorage(), { workspaceScoped: true });
+    await flush();
+    const origin = currentDraftOrigin("ws-a");
+    setCurrentWorkspace("ws-b", "id-b");
+    await flush();
+
+    const newKey = () => `k_key_race_clear:ws-a#${currentDraftOrigin("ws-a").session}`;
+    const restore = endSessionAfterFirstRead(storage, () =>
+      storage.values.set(
+        newKey(),
+        JSON.stringify({ state: { drafts: { "issue-1": { data: { text: "new note", tags: [] }, updatedAt: Date.now() } } }, version: 0 }),
+      ),
+    );
+    try {
+      useStore.getState().clearDraftIn(origin, "issue-1");
+    } finally {
+      restore();
+    }
+
+    expect(storage.values.get(newKey())).toContain("new note");
   });
 });

@@ -1,7 +1,8 @@
 import { useCallback, useRef } from "react";
 import type { StoreApi, UseBoundStore } from "zustand";
 import { getCurrentSlug } from "../platform/workspace-storage";
-import { draftSessionToken, localDraftGeneration } from "./cleanup-registry";
+import { localDraftGeneration } from "./cleanup-registry";
+import type { DraftOrigin } from "./cleanup-registry";
 import type { KeyedDraftStore } from "./create-keyed-draft-store";
 
 /**
@@ -29,18 +30,18 @@ export function usePersistedDraft<TData extends object>(
   // The session a write belongs to is taken when the component first renders in a workspace, and
   // refreshed only when this tab's own cleanup ran (a logout and re-login without an unmount). A
   // cleanup in another tab never refreshes it, so a pending edit typed before that logout stays stale.
-  const origins = useRef(new Map<string | null, { local: number; session: string }>());
+  const origins = useRef(new Map<string | null, { local: number; origin: DraftOrigin }>());
   const local = localDraftGeneration(slug);
-  if (origins.current.get(slug)?.local !== local) origins.current.set(slug, { local, session: draftSessionToken(slug) });
-  const session = origins.current.get(slug)!.session;
+  if (origins.current.get(slug)?.local !== local) origins.current.set(slug, { local, origin: store.getState().originFor(slug) });
+  const origin = origins.current.get(slug)!.origin;
   const setDraft = useCallback(
     (patch: Partial<TData>) => {
-      store.getState().setDraftIn({ slug, session }, key, patch);
+      store.getState().setDraftIn(origin, key, patch);
     },
-    [store, key, slug, session],
+    [store, key, origin],
   );
   const clearDraft = useCallback(() => {
-    store.getState().clearDraftIn({ slug, session }, key);
-  }, [store, key, slug, session]);
+    store.getState().clearDraftIn(origin, key);
+  }, [store, key, origin]);
   return [draft, setDraft, clearDraft];
 }
