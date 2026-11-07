@@ -770,6 +770,19 @@ deleted_channel_installations AS (
 )
 DELETE FROM lark_installation WHERE lark_installation.workspace_id = $1;
 
+-- name: LockIssuesOfWorkspaceCommentTasks :exec
+-- Runs before DeleteWorkspaceComments. A run can name one of the workspace's
+-- comments from an issue of a neighbour workspace, and nulling that trigger
+-- locks the run's issue. Take those issues first, in ascending id order.
+SELECT 1 FROM issue i
+WHERE i.id IN (
+    SELECT t.issue_id FROM agent_task_queue t
+    JOIN comment c ON c.id = t.trigger_comment_id
+    WHERE c.workspace_id = @workspace_id AND t.issue_id IS NOT NULL
+)
+ORDER BY i.id
+FOR NO KEY UPDATE OF i;
+
 -- name: DeleteWorkspaceComments :exec
 DELETE FROM comment WHERE comment.workspace_id = $1;
 

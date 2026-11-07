@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -397,5 +398,135 @@ func TestWorkspaceTeardownDetachAndAuthorizeShareOneLockOrder(t *testing.T) {
 	dbfx.QueryRow(t, `SELECT parent_task_id IS NULL FROM agent_task_queue WHERE id = $1`, f.taskID).Scan(&detached)
 	if !detached {
 		t.Fatal("the child still names the deleted parent")
+	}
+}
+
+// pointRunAtCommentWithStaleLineage makes the elevated run name commentID as its
+// trigger and a retry source whose taint arrives only afterwards. Nulling the
+// trigger (the FK's ON DELETE SET NULL) then recomputes the run's taint from the
+// lineage that remains, and the run's taint trigger locks the run's issue.
+func pointRunAtCommentWithStaleLineage(t *testing.T, f elevatedFixture, commentID string) {
+	t.Helper()
+	var agentID string
+	dbfx.QueryRow(t, `SELECT agent_id FROM agent_task_queue WHERE id = $1`, f.taskID).Scan(&agentID)
+	retrySource := taintedTask(t, agentID)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET trigger_comment_id = $2, retry_of_task_id = $3 WHERE id = $1`, f.taskID, commentID, retrySource)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET taint_ids = ARRAY['tr'] WHERE id = $1`, retrySource)
+	if got := taintOf(t, "agent_task_queue", f.taskID); len(got) != 0 {
+		t.Fatalf("run taint before the delete = %v, want none", got)
+	}
+}
+
+// holdAuthorizationAtElevationRow starts an authorization that has the run's
+// issue locked and waits on the elevation row the returned gate holds.
+func holdAuthorizationAtElevationRow(t *testing.T, f elevatedFixture) (gate pgx.Tx, authorized chan *testutil.Response) {
+	t.Helper()
+	ctx := context.Background()
+	gate, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin gate: %v", err)
+	}
+	t.Cleanup(func() { gate.Rollback(ctx) })
+	if _, err := gate.Exec(ctx, `SELECT 1 FROM task_elevation WHERE task_id = $1 FOR UPDATE`, f.taskID); err != nil {
+		t.Fatalf("gate locks the elevation row: %v", err)
+	}
+	authorized = make(chan *testutil.Response, 1)
+	go func() { authorized <- f.authorize(t, 1, "repo_write:1234", hashA) }()
+	waitForLockWaiters(t, 1)
+	return gate, authorized
+}
+
+// A comment delete nulls trigger_comment_id on every run that names the comment,
+// and that update runs the run's taint trigger. The run's issue can differ from
+// the comment's. Authorization holds the run's issue and then asks for the run
+// row, so the delete has to hold that issue before it deletes the comment.
+func TestCommentDeleteAndAuthorizeShareOneLockOrder(t *testing.T) {
+	ctx := context.Background()
+	f := claimElevated(t, "repo_write:1234")
+	commentIssue := dbfx.Issue(t, "comment delete lock order")
+	commentID := dbfx.Comment(t, commentIssue, "trigger")
+	pointRunAtCommentWithStaleLineage(t, f, commentID)
+
+	gate, authorized := holdAuthorizationAtElevationRow(t, f)
+	deleted := make(chan error, 1)
+	go func() {
+		_, err := testHandler.deleteComment(ctx, parseUUID(commentID), parseUUID(testWorkspaceID))
+		deleted <- err
+	}()
+	// Authorization waits on the elevation row; the delete waits on the run's
+	// issue (taken first) or, unfixed, on it through the run's trigger.
+	waitForLockWaiters(t, 2)
+	if err := gate.Commit(ctx); err != nil {
+		t.Fatalf("gate commit: %v", err)
+	}
+
+	if got := (<-authorized).Code; got != http.StatusOK && got != http.StatusForbidden {
+		t.Fatalf("authorization status = %d, want 200 or 403 (a deadlock aborts it)", got)
+	}
+	if err := <-deleted; err != nil {
+		t.Fatalf("comment delete = %v, want it to commit (a deadlock aborts it)", err)
+	}
+	var nulled bool
+	dbfx.QueryRow(t, `SELECT trigger_comment_id IS NULL FROM agent_task_queue WHERE id = $1`, f.taskID).Scan(&nulled)
+	if !nulled {
+		t.Fatal("the run still names the deleted comment")
+	}
+}
+
+// Teardown deletes every comment of the workspace. A run in a neighbour
+// workspace can name one of them, and nulling that trigger takes the run's issue,
+// which the teardown never locked.
+func TestWorkspaceTeardownCommentDeleteAndAuthorizeShareOneLockOrder(t *testing.T) {
+	ctx := context.Background()
+	f := claimElevated(t, "repo_write:1234")
+	victim := newWorkspaceDeletePathFixture(t, "comment-lock-order")
+	var commentID string
+	if err := testPool.QueryRow(ctx, `
+INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content)
+VALUES ($1, $2, 'member', $3, 'trigger') RETURNING id`,
+		victim.victimID, victim.victimIssue, testUserID).Scan(&commentID); err != nil {
+		t.Fatalf("create victim comment: %v", err)
+	}
+	pointRunAtCommentWithStaleLineage(t, f, commentID)
+
+	gate, authorized := holdAuthorizationAtElevationRow(t, f)
+	teardown := make(chan error, 1)
+	go func() {
+		tx, err := testHandler.TxStarter.Begin(ctx)
+		if err != nil {
+			teardown <- err
+			return
+		}
+		defer tx.Rollback(ctx)
+		qtx := testHandler.Queries.WithTx(tx)
+		if err := qtx.SetWorkspaceTeardownMode(ctx); err != nil {
+			teardown <- err
+			return
+		}
+		if err := lockWorkspaceTaskOwners(ctx, qtx, parseUUID(victim.victimID)); err != nil {
+			teardown <- err
+			return
+		}
+		if err := deleteWorkspaceComments(ctx, qtx, parseUUID(victim.victimID)); err != nil {
+			teardown <- err
+			return
+		}
+		teardown <- tx.Commit(ctx)
+	}()
+	waitForLockWaiters(t, 2)
+	if err := gate.Commit(ctx); err != nil {
+		t.Fatalf("gate commit: %v", err)
+	}
+
+	if got := (<-authorized).Code; got != http.StatusOK && got != http.StatusForbidden {
+		t.Fatalf("authorization status = %d, want 200 or 403 (a deadlock aborts it)", got)
+	}
+	if err := <-teardown; err != nil {
+		t.Fatalf("teardown = %v, want it to commit (a deadlock aborts it)", err)
+	}
+	var nulled bool
+	dbfx.QueryRow(t, `SELECT trigger_comment_id IS NULL FROM agent_task_queue WHERE id = $1`, f.taskID).Scan(&nulled)
+	if !nulled {
+		t.Fatal("the run still names the deleted comment")
 	}
 }

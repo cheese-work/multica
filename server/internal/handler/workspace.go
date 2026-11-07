@@ -1507,7 +1507,7 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		},
 		{
 			name: "delete comments",
-			run:  func() error { return qtx.DeleteWorkspaceComments(ctx, requester.WorkspaceID) },
+			run:  func() error { return deleteWorkspaceComments(ctx, qtx, requester.WorkspaceID) },
 		},
 		{
 			// Teardown mode keeps the triggers from logging the deletes above
@@ -1625,4 +1625,14 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	h.notifyDaemonWorkspacesChanged(affectedUserIDs...)
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteWorkspaceComments deletes the workspace's comments after it locks the
+// issues of the runs that name them: the delete nulls those runs' trigger, which
+// locks each run's issue, and that issue comes before the run row on every path.
+func deleteWorkspaceComments(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID) error {
+	if err := qtx.LockIssuesOfWorkspaceCommentTasks(ctx, workspaceID); err != nil {
+		return err
+	}
+	return qtx.DeleteWorkspaceComments(ctx, workspaceID)
 }

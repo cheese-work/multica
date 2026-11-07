@@ -4458,6 +4458,13 @@ func (h *Handler) deleteComment(ctx context.Context, commentID, workspaceID pgty
 	defer tx.Rollback(ctx)
 	qtx := h.Queries.WithTx(tx)
 
+	// The delete nulls the trigger of every run that names this comment, which
+	// locks that run's issue; take those issues before the run rows.
+	if err := qtx.LockIssuesOfCommentDelete(ctx, db.LockIssuesOfCommentDeleteParams{
+		ID: commentID, WorkspaceID: workspaceID,
+	}); err != nil {
+		return out, err
+	}
 	target, err := qtx.LockCommentForDelete(ctx, db.LockCommentForDeleteParams{
 		ID:          commentID,
 		WorkspaceID: workspaceID,

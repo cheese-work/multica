@@ -1376,6 +1376,25 @@ func (q *Queries) LockIssuesOfTaskChildren(ctx context.Context, taskIds []pgtype
 	return err
 }
 
+const lockIssuesOfWorkspaceCommentTasks = `-- name: LockIssuesOfWorkspaceCommentTasks :exec
+SELECT 1 FROM issue i
+WHERE i.id IN (
+    SELECT t.issue_id FROM agent_task_queue t
+    JOIN comment c ON c.id = t.trigger_comment_id
+    WHERE c.workspace_id = $1 AND t.issue_id IS NOT NULL
+)
+ORDER BY i.id
+FOR NO KEY UPDATE OF i
+`
+
+// Runs before DeleteWorkspaceComments. A run can name one of the workspace's
+// comments from an issue of a neighbour workspace, and nulling that trigger
+// locks the run's issue. Take those issues first, in ascending id order.
+func (q *Queries) LockIssuesOfWorkspaceCommentTasks(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockIssuesOfWorkspaceCommentTasks, workspaceID)
+	return err
+}
+
 const lockTaskUsageRollupForWorkspaceDelete = `-- name: LockTaskUsageRollupForWorkspaceDelete :exec
 SELECT pg_advisory_xact_lock(4246)
 `
