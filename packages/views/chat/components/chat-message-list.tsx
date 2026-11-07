@@ -188,6 +188,22 @@ interface ChatListContext {
  * a different row (MUL-4922). That identity is what keeps an already-rendered
  * Mermaid diagram or HTML iframe mounted across task completion.
  */
+interface OpenAsk {
+  messageId: string;
+  ask: string;
+}
+
+/** Open decision asks of the last assistant message before `messages[index]`. */
+function openAsksBefore(messages: readonly ChatMessage[], index: number): OpenAsk[] {
+  for (let i = index - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.role !== "assistant" || m.message_kind === "compact_notice" || m.message_kind === "compaction_summary") continue;
+    const cards = m.decision_requests ?? (m.decision_request ? [m.decision_request] : []);
+    return cards.filter((card) => card.state === "open").map((card) => ({ messageId: m.id, ask: card.ask }));
+  }
+  return [];
+}
+
 type ChatRenderItem =
   | {
       key: string;
@@ -198,6 +214,8 @@ type ChatRenderItem =
       dayStart: boolean;
       /** A reply carried over from the earlier DM's last turn; its tool steps stay there. */
       carriedReply: boolean;
+      /** compaction_summary only: the open asks of the last assistant message before it (CHE-4438). */
+      openAsks?: OpenAsk[];
     }
   | { key: string; kind: "live"; taskId: string };
 
@@ -510,12 +528,23 @@ export function ChatMessageList({
         taskId: message.task_id ?? null,
         dayStart: i === 0 || dayKey(message.created_at) !== dayKey(visible[i - 1]!.created_at),
         carriedReply: !!message.carried_from_session_id,
+        ...(message.message_kind === "compaction_summary"
+          ? { openAsks: openAsksBefore(messages, messages.indexOf(message)) }
+          : {}),
       }));
     if (hasLive && pendingTaskId) {
       items.push({ key: `task:${pendingTaskId}`, kind: "live", taskId: pendingTaskId });
     }
     return items;
   }, [messages, hasLive, pendingTaskId, continuationSummary]);
+
+  const jumpToLoadedMessage = useCallback(
+    (id: string) => {
+      const index = renderItems.findIndex((item) => item.kind === "message" && item.message.id === id);
+      if (index >= 0) virtuosoRef.current?.scrollToIndex({ index, align: "center", behavior: "auto" });
+    },
+    [renderItems],
+  );
 
   // Jump to a message: scroll once it is loaded, ask for older pages until it
   // is, and settle "missing" when none are left. The target is settled once so
@@ -857,6 +886,7 @@ export function ChatMessageList({
               isPending={!!pendingTaskId && item.taskId === pendingTaskId}
               wakeupAgentId={item.taskId ? wakeupAgentByTask.get(item.taskId) : undefined}
               transformContent={transformContent}
+              onJumpToMessage={jumpToLoadedMessage}
               onQuickAction={onQuickAction}
               quickActionsDisabled={quickActionsDisabled}
               onRegenerateQuickActions={onRegenerateQuickActions}
@@ -939,6 +969,7 @@ const MessageBubble = memo(function MessageBubble({
   isPending,
   wakeupAgentId,
   transformContent,
+  onJumpToMessage,
   onQuickAction,
   quickActionsDisabled,
   onRegenerateQuickActions,
@@ -950,6 +981,7 @@ const MessageBubble = memo(function MessageBubble({
   isPending: boolean;
   wakeupAgentId?: string;
   transformContent?: (content: string) => string;
+  onJumpToMessage: (id: string) => void;
   onQuickAction?: (action: ChatQuickAction) => void | Promise<unknown>;
   quickActionsDisabled: boolean;
   onRegenerateQuickActions?: (message: ChatMessage) => void | Promise<unknown>;
@@ -986,6 +1018,12 @@ const MessageBubble = memo(function MessageBubble({
 
   if (message.message_kind === "continuation_summary") {
     return <ContinuationSummary message={message} />;
+  }
+
+  // The agent-facing summary of a compaction: folded, with the open asks of the
+  // message before it repeated underneath (CHE-4438).
+  if (message.message_kind === "compaction_summary") {
+    return <CompactionSummary message={message} openAsks={item.openAsks ?? []} onJump={onJumpToMessage} />;
   }
 
   // The server-authored reason for an automatic compaction (or its failure):
@@ -1060,6 +1098,46 @@ const MessageBubble = memo(function MessageBubble({
     </WithWakeupRail>
   );
 });
+
+function CompactionSummary({
+  message,
+  openAsks,
+  onJump,
+}: {
+  message: ChatMessage;
+  openAsks: OpenAsk[];
+  onJump: (id: string) => void;
+}) {
+  const { t } = useT("chat");
+  const [open, setOpen] = useState(false);
+  const words = message.content.trim().split(/\s+/).filter(Boolean).length;
+  const toggle = t(($) => (open ? $.message_list.compaction_summary_hide : $.message_list.compaction_summary_show));
+  return (
+    <div className="space-y-1">
+      <Collapsible open={open} onOpenChange={setOpen}>
+        <CollapsibleTrigger className="flex items-center gap-1 text-caption text-muted-foreground hover:text-foreground transition-colors">
+          {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+          {t(($) => $.message_list.compaction_summary, { count: words })} · {toggle}
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <AnnotatableAnswer messageId={message.id}>
+            <RichContent content={message.content} attachments={message.attachments} density="compact" />
+          </AnnotatableAnswer>
+        </CollapsibleContent>
+      </Collapsible>
+      {openAsks.map((ask) => (
+        <button
+          key={`${ask.messageId}:${ask.ask}`}
+          type="button"
+          onClick={() => onJump(ask.messageId)}
+          className="block text-left text-body underline-offset-2 hover:underline"
+        >
+          {t(($) => $.message_list.compaction_open_question, { ask: ask.ask })}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 function ContinuationSummary({ message }: { message: ChatMessage }) {
   const { t } = useT("chat");

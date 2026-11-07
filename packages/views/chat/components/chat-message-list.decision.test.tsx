@@ -298,3 +298,37 @@ describe("ChatMessageList — a card answer bubble", () => {
     expect(within(bubble).queryByTestId("decision-answer-chip")).toBeNull();
   });
 });
+
+// CHE-4438: an auto-compaction shows one notice and one folded summary row, and
+// the last assistant message's open asks stay visible below it.
+describe("ChatMessageList — compaction summary", () => {
+  const openAsk = {
+    id: "request-1", issue_id: "issue-1", issue_identifier: "CHE-2088",
+    ask: "Ship the reversible change?", state: "open" as const, created_at: "2026-10-26T05:00:00Z",
+  };
+  const thread = () => [
+    message("a", { role: "assistant", decision_request: openAsk, message_kind: "decision_request" }),
+    message("n", { role: "assistant", message_kind: "compact_notice", content: "Compacted in this DM at 213k tokens (limit 200k). Earlier messages are summarized below." }),
+    message("s", { role: "assistant", message_kind: "compaction_summary", content: "SUMMARY one two three" }),
+  ];
+
+  it("folds the summary by default and opens it on click", () => {
+    renderList({ messages: thread() });
+    expect(screen.queryByText("SUMMARY one two three")).toBeNull();
+    const toggle = screen.getByRole("button", { name: "Summary for the agent · 4 words · Show" });
+    act(() => toggle.click());
+    expect(screen.getByText("SUMMARY one two three")).toBeTruthy();
+  });
+
+  it("repeats the open ask under the folded row and jumps to its message", () => {
+    renderList({ messages: thread() });
+    const link = screen.getByRole("button", { name: /^Open question: Ship the reversible change\?/ });
+    act(() => link.click());
+    expect(scrollToIndex).toHaveBeenCalledWith(expect.objectContaining({ index: 0 }));
+  });
+
+  it("shows no ask line when the last assistant message has no open ask", () => {
+    renderList({ messages: thread().map((m) => (m.id === "a" ? { ...m, decision_request: { ...openAsk, state: "answered" as const } } : m)) });
+    expect(screen.queryByRole("button", { name: /^Open question: Ship the reversible change\?/ })).toBeNull();
+  });
+});

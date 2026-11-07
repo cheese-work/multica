@@ -1361,7 +1361,7 @@ describe("ChatMessageList onboarding starter cards", () => {
 describe("ChatMessageList compact notice", () => {
   const notice = {
     id: "notice", chat_session_id: "44444444-4444-4444-8444-444444444444", role: "assistant" as const,
-    content: "Auto-compacted: context 164k of 200k tokens (82%) reached the 80% threshold. Continuing in a new DM.",
+    content: "Compacted in this DM at 164k tokens (limit 160k). Earlier messages are summarized below.",
     message_kind: "compact_notice", task_id: null, created_at: "2026-10-16T00:00:00Z",
   } as unknown as ChatMessage;
 
@@ -1379,7 +1379,7 @@ describe("ChatMessageList compact notice", () => {
     );
 
     const note = screen.getByRole("note");
-    expect(note).toHaveTextContent("Auto-compacted: context 164k of 200k tokens (82%) reached the 80% threshold. Continuing in a new DM.");
+    expect(note).toHaveTextContent("Compacted in this DM at 164k tokens (limit 160k). Earlier messages are summarized below.");
     expect(note).toHaveClass("text-muted-foreground");
   });
 });
@@ -1409,7 +1409,9 @@ describe("ChatMessageList row keys (CHE-3329)", () => {
     );
     const keys = [...container.querySelectorAll("[data-row-key]")].map((el) => el.getAttribute("data-row-key"));
     expect(new Set(keys).size).toBe(keys.length);
-    expect(screen.getByText("SUMMARY-TEXT")).toBeInTheDocument();
+    // CHE-4438: the summary is folded behind a row; the reply stays visible.
+    expect(screen.queryByText("SUMMARY-TEXT")).toBeNull();
+    expect(screen.getByRole("button", { name: /Summary for the agent/ })).toBeInTheDocument();
     expect(screen.getByText("REPLY-TEXT")).toBeInTheDocument();
     expect(error.mock.calls.filter(([m]) => String(m).includes("same key"))).toHaveLength(0);
     error.mockRestore();
