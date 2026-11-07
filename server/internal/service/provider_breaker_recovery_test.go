@@ -210,34 +210,39 @@ func TestProviderBreakerReopensWithLongerCoolOffOnCanaryFailure(t *testing.T) {
 	}
 }
 
-// A canary still running past its deadline keeps the breaker held: no second
-// canary may start, and the canary's own late success still closes the breaker.
+// A canary that has not settled (any non-terminal status) past its deadline
+// keeps the breaker held: no second canary may start, and the canary's own late
+// success still closes the breaker.
 func TestProviderBreakerActiveCanaryPastDeadlineIsNotReplaced(t *testing.T) {
-	r := newBreakerRig(t)
-	ctx := context.Background()
-	svc := &TaskService{Queries: db.New(r.pool), TxStarter: r.pool, Bus: events.New()}
-	canary := r.task(t, "running", "", 0)
-	r.task(t, "queued", "", 0)
-	r.breaker(t, "half_open", -time.Second, 300, canary)
+	for _, status := range []string{"dispatched", "running", "waiting_local_directory"} {
+		t.Run(status, func(t *testing.T) {
+			r := newBreakerRig(t)
+			ctx := context.Background()
+			svc := &TaskService{Queries: db.New(r.pool), TxStarter: r.pool, Bus: events.New()}
+			canary := r.task(t, status, "", 0)
+			r.task(t, "queued", "", 0)
+			r.breaker(t, "half_open", -time.Second, 300, canary)
 
-	if got, err := ProviderBreakerAdmit(ctx, db.New(r.pool), r.workspaceID, "openai"); err != nil || got != "hold" {
-		t.Fatalf("admit with an active canary past deadline = %q, %v; want hold", got, err)
-	}
-	if got, err := svc.ClaimTask(ctx, r.agentID); err != nil || got != nil {
-		t.Fatalf("claim with an active canary past deadline = %v, %v; want nothing (no second canary)", got, err)
-	}
-	if _, _, c, _ := r.row(t); c != canary {
-		t.Fatalf("canary was replaced: %v, want %v", c, canary)
-	}
+			if got, err := ProviderBreakerAdmit(ctx, db.New(r.pool), r.workspaceID, "openai"); err != nil || got != "hold" {
+				t.Fatalf("admit with a %s canary past deadline = %q, %v; want hold", status, got, err)
+			}
+			if got, err := svc.ClaimTask(ctx, r.agentID); err != nil || got != nil {
+				t.Fatalf("claim with a %s canary past deadline = %v, %v; want nothing (no second canary)", status, got, err)
+			}
+			if _, _, c, _ := r.row(t); c != canary {
+				t.Fatalf("canary was replaced: %v, want %v", c, canary)
+			}
 
-	if _, err := r.pool.Exec(ctx, `UPDATE agent_task_queue SET status='completed', completed_at=now() WHERE id=$1`, canary); err != nil {
-		t.Fatal(err)
-	}
-	if err := recordProviderSuccess(ctx, db.New(r.pool), db.AgentTaskQueue{ID: canary, AgentID: r.agentID, Status: "completed"}); err != nil {
-		t.Fatal(err)
-	}
-	if state, _, c, _ := r.row(t); state != "closed" || c.Valid {
-		t.Fatalf("late canary success: state %q canary valid %v; want closed", state, c.Valid)
+			if _, err := r.pool.Exec(ctx, `UPDATE agent_task_queue SET status='completed', completed_at=now() WHERE id=$1`, canary); err != nil {
+				t.Fatal(err)
+			}
+			if err := recordProviderSuccess(ctx, db.New(r.pool), db.AgentTaskQueue{ID: canary, AgentID: r.agentID, Status: "completed"}); err != nil {
+				t.Fatal(err)
+			}
+			if state, _, c, _ := r.row(t); state != "closed" || c.Valid {
+				t.Fatalf("late canary success: state %q canary valid %v; want closed", state, c.Valid)
+			}
+		})
 	}
 }
 

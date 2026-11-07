@@ -21,7 +21,7 @@ WHERE workspace_id = $3 AND provider = $4
   AND (next_probe_at IS NULL OR next_probe_at <= now())
   AND NOT EXISTS (
       SELECT 1 FROM agent_task_queue t
-      WHERE t.id = provider_breaker.canary_task_id AND t.status IN ('dispatched', 'running'))
+      WHERE t.id = provider_breaker.canary_task_id AND t.status NOT IN ('completed', 'failed', 'cancelled'))
 `
 
 type AcquireProviderBreakerCanaryParams struct {
@@ -33,8 +33,8 @@ type AcquireProviderBreakerCanaryParams struct {
 
 // Moves a due open (or deadline-expired half_open) breaker to half_open bound
 // to one task. next_probe_at becomes the canary deadline; if the canary settles
-// without reporting, the breaker is due again after it. A canary still
-// dispatched or running blocks replacement (same fence as probe_due).
+// without reporting, the breaker is due again after it. A canary that has
+// not settled blocks replacement (same fence as probe_due).
 func (q *Queries) AcquireProviderBreakerCanary(ctx context.Context, arg AcquireProviderBreakerCanaryParams) (int64, error) {
 	result, err := q.db.Exec(ctx, acquireProviderBreakerCanary,
 		arg.TaskID,
@@ -83,7 +83,7 @@ SELECT pb.workspace_id, pb.provider, pb.state, pb.opened_at, pb.next_probe_at, p
     (pb.next_probe_at IS NULL OR pb.next_probe_at <= now())
     AND NOT EXISTS (
         SELECT 1 FROM agent_task_queue t
-        WHERE t.id = pb.canary_task_id AND t.status IN ('dispatched', 'running'))
+        WHERE t.id = pb.canary_task_id AND t.status NOT IN ('completed', 'failed', 'cancelled'))
 )::bool AS probe_due
 FROM provider_breaker pb WHERE pb.workspace_id = $1 AND pb.provider = $2
 `
@@ -109,9 +109,10 @@ type GetProviderBreakerRow struct {
 }
 
 // probe_due uses the database clock: NULL next_probe_at counts as due so an
-// open breaker can never wait without a bound. A canary task that is still
-// dispatched or running is never replaced, even past its deadline: it is
-// fenced until it settles, so its own late result still lands.
+// open breaker can never wait without a bound. A canary task that has not
+// reached a terminal status (dispatched, running, waiting_local_directory, ...)
+// is never replaced, even past its deadline: it is fenced until it settles, so
+// its own late result still lands.
 func (q *Queries) GetProviderBreaker(ctx context.Context, arg GetProviderBreakerParams) (GetProviderBreakerRow, error) {
 	row := q.db.QueryRow(ctx, getProviderBreaker, arg.WorkspaceID, arg.Provider)
 	var i GetProviderBreakerRow
