@@ -58,12 +58,16 @@ class OneWorkflowPerPrPush(unittest.TestCase):
 
 
 class NoCommentOrCascadeRuns(unittest.TestCase):
-    def test_no_workflow_starts_on_a_comment(self):
+    def test_no_workflow_starts_on_a_new_comment(self):
+        # security-gate keeps `edited`/`deleted` only, so a PASS is revoked without a dispatch; `created` is the cost.
         for p in WF.glob("*.yml"):
-            self.assertNotIn("issue_comment", triggers(load(p.name)), p.name)
+            on = load(p.name)["on"]
+            if "issue_comment" in triggers(load(p.name)):
+                self.assertEqual(p.name, "security-gate.yml")
+                self.assertEqual(sorted(on["issue_comment"]["types"]), ["deleted", "edited"])
 
-    def test_security_gate_runs_for_the_queue_a_dispatch_and_pr_guards_only(self):
-        self.assertEqual(triggers(load("security-gate.yml")), {"workflow_call", "merge_group", "workflow_dispatch"})
+    def test_security_gate_runs_for_the_queue_a_dispatch_a_comment_edit_and_pr_guards_only(self):
+        self.assertEqual(triggers(load("security-gate.yml")), {"workflow_call", "merge_group", "workflow_dispatch", "issue_comment"})
         self.assertEqual(list(load("security-gate.yml")["on"]["workflow_dispatch"]["inputs"]), ["pr"])
 
     def test_mechanical_tier_is_called_never_a_run_of_its_own(self):

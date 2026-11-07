@@ -500,7 +500,7 @@ class WorkflowTest(unittest.TestCase):
     def test_runs_from_base_and_never_checks_out_head(self):
         # CHE-4385: the file runs only when pr-guards calls it (pull_request_target, base definition), on a dispatch
         # of the default branch, or on the merge queue. It has no event of its own for a PR or a comment.
-        self.assertEqual(set(self.doc[True]), {"workflow_call", "workflow_dispatch", "merge_group"})
+        self.assertEqual(set(self.doc[True]), {"workflow_call", "workflow_dispatch", "issue_comment", "merge_group"})
         self.assertIn("ref: ${{ github.event.repository.default_branch }}", self.text)
         self.assertNotIn("pull_request.head.ref", self.text)
 
@@ -521,9 +521,16 @@ class WorkflowTest(unittest.TestCase):
         self.assertIn("github.event.inputs.pr", self.doc["jobs"]["security-gate"]["env"]["PR_NUMBER"])
         self.assertIn("pr must be digits only", self.text)
 
-    def test_a_comment_starts_nothing(self):
-        self.assertNotIn("issue_comment", self.doc[True])
-        self.assertNotIn("github.event.comment", self.text)
+    def test_only_an_edited_or_deleted_verdict_comment_revokes_without_a_dispatch(self):
+        # CHE-4385: `created` is the run-budget cost and is left to the poster's dispatch; edit/delete revoke a PASS.
+        self.assertEqual(sorted(self.doc[True]["issue_comment"]["types"]), ["deleted", "edited"])
+        cond = self.doc["jobs"]["security-gate"]["if"]
+        self.assertIn("github.event_name != 'issue_comment'", cond)
+        self.assertIn("Security-Gate-Verdict:", cond)
+        self.assertIn("github.event.changes.body.from", cond)
+        self.assertIn("OWNER", cond)
+        self.assertIn("282619718", cond)
+        self.assertIn("github.event.issue.number", self.doc["jobs"]["security-gate"]["env"]["PR_NUMBER"])
 
     def test_job_group_differs_from_the_caller_group(self):
         # A called workflow cannot share its caller's concurrency group (pr-guards-<n>); a dispatch and a push for the
