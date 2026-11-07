@@ -128,9 +128,18 @@ func TestCompactionKeepsDecisionsPastTheOldCaps(t *testing.T) {
 		if fail != nil {
 			t.Fatalf("compact round %d: %s", round, fail.message)
 		}
+		recent := fmt.Sprintf("recent message of round %d", round)
+		dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": uuidToString(session.ID), "role": "user", "content": recent})
 		seed, err := testHandler.compactionSeedBlock(ctx, session, nil)
 		if err != nil {
 			t.Fatal(err)
+		}
+		// A decisions block past the seed cap must not push out the rest of the
+		// compaction context: the agent's summary and the recent messages stay.
+		for _, kept := range []string{"Summary that keeps nothing.", recent} {
+			if !strings.Contains(seed, kept) {
+				t.Fatalf("prompt round %d lost %q to the decisions block (prompt is %d bytes)", round, kept, len(seed))
+			}
 		}
 		for where, text := range map[string]string{"folded row": summary.Content, "prompt": seed} {
 			requireDecisions(t, fmt.Sprintf("%s round %d", where, round), text, want...)
@@ -199,5 +208,32 @@ func TestCompactionDecisionsKeepCardOptionAndNote(t *testing.T) {
 		if !strings.Contains(text, "Option B") {
 			t.Fatalf("%s lacks the chosen option:\n%s", where, text)
 		}
+	}
+}
+
+// A decision withdrawn after the compaction must not reach a fresh session as a
+// standing record: the seed reconciles against the live records.
+func TestCompactionSeedDropsDecisionsWithdrawnAfterCompaction(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID := createHandlerTestAgent(t, "compaction-decisions-withdrawn", []byte("[]"))
+	sessionID := dbfx.ChatSession(t, agentID)
+	kept := recordDecision(t, agentID, sessionID, "still standing", "Keep the cache layer.", false)
+	revoked := recordDecision(t, agentID, sessionID, "later withdrawn", "Approve the schema drop.", false)
+	session, summary, fail := testHandler.compactChatInPlace(ctx, parseUUID(sessionID), pgtype.UUID{}, "Nothing kept.")
+	if fail != nil {
+		t.Fatalf("compact: %s", fail.message)
+	}
+	requireDecisions(t, "row at compaction", summary.Content, kept, revoked)
+	dbfx.Exec(t, `UPDATE decision_answer SET disclaimed_at = now() WHERE id = $1`, revoked.answerID)
+	seed, err := testHandler.compactionSeedBlock(ctx, session, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireDecisions(t, "fresh session prompt", seed, kept)
+	if strings.Contains(seed, revoked.words) || strings.Contains(seed, revoked.answerID) {
+		t.Fatalf("fresh session prompt still lists the withdrawn decision as standing:\n%s", seed)
 	}
 }
