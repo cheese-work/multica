@@ -104,63 +104,9 @@ jobs:
           fi
           # Queue run. The default-branch script is used unchanged (it may predate this step), without --post: that
           # would write to the PR head. Its state goes on the queue commit, and only if the PR head is its parent.
-          # CHE-4242: a 403/429 rate limit is waited out (5 s doubling to 60 s, 300 s in all) and then returns 75, which
-          # the callers turn into `pending`; any other gh error keeps its exit code.
-          gh_retry() {
-            local out err waited=0 delay=5 rc
-            err="$(mktemp)"
-            while :; do
-              out="$(gh "$@" 2>"$err")" && { printf '%s\n' "$out"; rm -f "$err"; return 0; }
-              rc=$?
-              grep -qiE 'rate limit|HTTP 429|too many requests' "$err" || { cat "$err" >&2; rm -f "$err"; return "$rc"; }
-              if [ $((waited + delay)) -gt 300 ]; then cat "$err" >&2; rm -f "$err"; return 75; fi
-              sleep "$delay"; waited=$((waited + delay)); delay=$((delay * 2 > 60 ? 60 : delay * 2))
-            done
-          }
-          # A write that stays rate limited before any success is on the queue commit leaves no status: the entry stays
-          # pending and the job gets a warning, not a red mark. A success already on the commit (published by this run or
-          # an earlier one) keeps the job red, so a stale approval is never hidden. An unreadable earlier status does the
-          # same on a re-run; on the first attempt no earlier run can have left a success, so a read that fails with the
-          # write (one shared quota) is a warning too.
-          published_success=0
-          success_waited=0 success_delay=5
-          earlier_not_success() {
-            local s
-            s="$(gh api "repos/$GITHUB_REPOSITORY/commits/$MERGE_GROUP_SHA/status" \
-              --jq '[.statuses[] | select(.context == "security-gate") | .state][0] // "none"')" || { [ "${GITHUB_RUN_ATTEMPT:-1}" = 1 ]; return; }
-            [ "$s" != success ]
-          }
-          # CHE-4251 review: a success is never retried from a cached decision. A throttled success write waits and then
-          # reads the verdict again (same 300 s budget); only a verdict that is still success is written, a revoked one
-          # is posted in its place. Every other state keeps the plain retry, since a stale non-success fails closed.
           post() {
-            local rc=0 err
-            if [ "$1" = success ]; then
-              err="$(mktemp)"
-              gh api "repos/$GITHUB_REPOSITORY/statuses/$MERGE_GROUP_SHA" -f "state=$1" -f context=security-gate \
-                -f "description=${2:0:140}" -f "target_url=$run_url" >/dev/null 2>"$err" || rc=$?
-              if [ "$rc" != 0 ]; then
-                if grep -qiE 'rate limit|HTTP 429|too many requests' "$err"; then rc=75; else cat "$err" >&2; fi
-              fi
-              rm -f "$err"
-              if [ "$rc" = 75 ] && [ $((success_waited + success_delay)) -le 300 ]; then
-                sleep "$success_delay"; success_waited=$((success_waited + success_delay))
-                success_delay=$((success_delay * 2 > 60 ? 60 : success_delay * 2))
-                read_verdict
-                post "$state" "$desc"
-                return
-              fi
-            else
-              gh_retry api "repos/$GITHUB_REPOSITORY/statuses/$MERGE_GROUP_SHA" -f "state=$1" -f context=security-gate \
-                -f "description=${2:0:140}" -f "target_url=$run_url" >/dev/null || rc=$?
-            fi
-            if [ "$rc" = 0 ]; then
-              if [ "$1" = success ]; then published_success=1; else published_success=0; fi
-            elif [ "$rc" = 75 ] && [ "$published_success" = 0 ] && earlier_not_success; then
-              echo "::warning::security-gate: rate limited, status not written; re-run this check" >&2
-            else
-              return "$rc"
-            fi
+            gh api "repos/$GITHUB_REPOSITORY/statuses/$MERGE_GROUP_SHA" -f "state=$1" -f context=security-gate \
+              -f "description=${2:0:140}" -f "target_url=$run_url"
           }
           re='^refs/heads/gh-readonly-queue/(.+)/pr-([0-9]+)-[0-9a-f]{40}$'
           if [[ ! $MERGE_GROUP_REF =~ $re ]] || [ "${BASH_REMATCH[1]}" != "$DEFAULT_BRANCH" ]; then
@@ -175,26 +121,18 @@ jobs:
           # non-zero on error (no `set -e` inside an `if`), so the callers below can fail closed.
           evaluate() {
             local out parents
-            # The immutable parent list comes first: its retries may wait up to 300 s, and the verdict read below is the
-            # one that gets published, so a revocation during that wait is never overwritten by a cached success.
-            parents="$(gh_retry api "repos/$GITHUB_REPOSITORY/commits/$MERGE_GROUP_SHA" --jq '.parents[].sha')" || return $?
             out="$(python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$pr" \
-              --default-branch "$DEFAULT_BRANCH" $sg --run-url "$run_url")" || return $?
+              --default-branch "$DEFAULT_BRANCH" $sg --run-url "$run_url")" || return 1
             head="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["sha"])' "$out")" || return 1
             state="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["state"])' "$out")" || return 1
             desc="#$pr: $(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["description"])' "$out")" || return 1
+            parents="$(gh api "repos/$GITHUB_REPOSITORY/commits/$MERGE_GROUP_SHA" --jq '.parents[].sha')" || return 1
             if ! grep -qx "$head" <<<"$parents"; then
               state=failure desc="#$pr head ${head:0:12} is not a parent of ${MERGE_GROUP_SHA:0:12}"
             fi
           }
-          # An unreadable verdict is a failure on the queue commit, never a stalled entry or a cached success. A rate
-          # limit (exit 75) is no verdict at all: `pending`, so the queue entry waits for a re-run instead of ejecting.
-          read_verdict() {
-            local rc=0
-            evaluate || rc=$?
-            if [ "$rc" = 75 ]; then state=pending desc="#$pr: rate limited, retry"
-            elif [ "$rc" != 0 ]; then state=failure desc="#$pr: cannot read the verdict"; fi
-          }
+          # An unreadable verdict is a failure on the queue commit, never a stalled entry or a cached success.
+          read_verdict() { evaluate || { state=failure desc="#$pr: cannot read the verdict"; }; }
           # A success is read again right before it is published and once more after (CHE-3240): a verdict revoked in
           # between is overwritten by the failure instead of the cached success. The revoke path (PR events) covers the rest.
           read_verdict

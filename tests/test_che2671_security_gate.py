@@ -188,7 +188,7 @@ class WrapperTest(unittest.TestCase):
             return json.dumps({"head": {"sha": head, "ref": ref}, "base": {"sha": "d" * 40, "ref": "main"},
                                "user": {"id": BOT}})
 
-        def fake_gh(*args, **kw):
+        def fake_gh(*args):
             path = " ".join(args)
             if args[0] == "--paginate":
                 return json.dumps(comment(fail)) if "issues/405/comments" in path else ""
@@ -240,278 +240,6 @@ class WrapperTest(unittest.TestCase):
         self.assertIn("state=failure", posted[0])
 
 
-class RateLimitTest(unittest.TestCase):
-    """CHE-4242: `gh api` answers 403 `API rate limit exceeded` when the installation is spent. Wait and retry
-    up to a bounded budget, then raise RateLimited; main() maps that to exit 75 (workflow posts pending), never a failure."""
-
-    LIMIT = "gh: API rate limit exceeded for installation. If you reach out to support (HTTP 403)"
-
-    def fake_run(self, outcomes):
-        calls = iter(outcomes)
-
-        def run(cmd, **kw):
-            code, out, err = next(calls)
-            if code:
-                raise subprocess.CalledProcessError(code, cmd, output=out, stderr=err)
-            return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
-        return run
-
-    def setUp(self):
-        sg._rate_limit_waited = 0
-
-    def test_a_rate_limited_call_is_retried_and_returns_the_answer(self):
-        run = self.fake_run([(1, "", self.LIMIT), (1, "", self.LIMIT), (0, "ok", "")])
-        with mock.patch.object(sg.subprocess, "run", run), mock.patch.object(sg.time, "sleep") as sleep:
-            self.assertEqual(sg._gh("repos/o/r/pulls/1"), "ok")
-        self.assertEqual(sleep.call_count, 2)
-
-    def test_429_is_a_rate_limit_too(self):
-        run = self.fake_run([(1, "", "gh: Too Many Requests (HTTP 429)"), (0, "ok", "")])
-        with mock.patch.object(sg.subprocess, "run", run), mock.patch.object(sg.time, "sleep"):
-            self.assertEqual(sg._gh("x"), "ok")
-
-    def test_a_call_still_rate_limited_after_the_budget_raises_rate_limited(self):
-        run = self.fake_run([(1, "", self.LIMIT)] * 100)
-        with mock.patch.object(sg.subprocess, "run", run), mock.patch.object(sg.time, "sleep") as sleep:
-            with self.assertRaises(sg.RateLimited):
-                sg._gh("x")
-        self.assertLessEqual(sum(c.args[0] for c in sleep.call_args_list), sg.RATE_LIMIT_MAX_WAIT)
-
-    def test_the_wait_budget_is_shared_across_calls(self):
-        run = self.fake_run([(1, "", self.LIMIT)] * 100)
-        with mock.patch.object(sg.subprocess, "run", run), mock.patch.object(sg.time, "sleep") as sleep:
-            for _ in range(3):
-                with self.assertRaises(sg.RateLimited):
-                    sg._gh("x")
-        self.assertLessEqual(sum(c.args[0] for c in sleep.call_args_list), sg.RATE_LIMIT_MAX_WAIT)
-
-    def test_any_other_error_is_raised_at_once_without_waiting(self):
-        run = self.fake_run([(1, "", "gh: Not Found (HTTP 404)")])
-        with mock.patch.object(sg.subprocess, "run", run), mock.patch.object(sg.time, "sleep") as sleep:
-            with self.assertRaises(subprocess.CalledProcessError) as ctx:
-                sg._gh("x")
-        self.assertNotIsInstance(ctx.exception, sg.RateLimited)
-        sleep.assert_not_called()
-
-    def test_main_exits_75_and_posts_no_failure_when_the_read_stays_rate_limited(self):
-        posted = []
-        argv = ["x", "--repo", str(ROOT), "--github", "o/r", "--pr", "405", "--default-branch", "main", "--post"]
-        with mock.patch.object(sg, "gate_pr", side_effect=sg.RateLimited(1, ["gh"])), \
-                mock.patch.object(sg, "_post", side_effect=lambda *a: posted.append(a)), \
-                mock.patch("sys.argv", argv), mock.patch("builtins.print"):
-            self.assertEqual(sg.main(), sg.RATE_LIMIT_EXIT)
-        self.assertEqual(sg.RATE_LIMIT_EXIT, 75)
-        self.assertEqual(posted, [])
-
-    def run_main_with_rate_limited_sibling(self, primary, post_error=None, revoke_error=None):
-        def gate(repo, github, n, *rest):
-            if n == 406:
-                raise sg.RateLimited(1, ["gh"])
-            rest[-1][n] = {}  # the scan the final refresh decides again
-            return HEAD, primary, "primary verdict"
-        rows = json.dumps({"number": 406, "head": HEAD})
-        argv = ["x", "--repo", str(ROOT), "--github", "o/r", "--pr", "405", "--default-branch", "main", "--post"]
-        with mock.patch.object(sg, "gate_pr", side_effect=gate), mock.patch.object(sg, "_gh", return_value=rows), \
-                mock.patch.object(sg, "decide_pr", return_value=(HEAD, primary, "primary verdict")), \
-                mock.patch.object(sg, "_post", side_effect=post_error) as post, \
-                mock.patch.object(sg, "revoke_queue", side_effect=revoke_error) as revoke, \
-                mock.patch("sys.argv", argv), mock.patch("builtins.print"):
-            return sg.main(), post, revoke
-
-    def test_a_rate_limited_sibling_does_not_hide_a_known_failure(self):
-        # CHE-4242 review P1: the primary FAIL must still be published and the queued successes revoked
-        rc, post, revoke = self.run_main_with_rate_limited_sibling("failure")
-        self.assertEqual(rc, 0)
-        self.assertEqual(post.call_args.args[2], "failure")
-        revoke.assert_called_once()
-
-    def test_a_rate_limited_sibling_of_a_pass_is_pending_never_success_or_failure(self):
-        rc, post, revoke = self.run_main_with_rate_limited_sibling("success")
-        self.assertEqual(rc, 0)
-        self.assertEqual(post.call_args.args[2], "pending")
-        self.assertIn("rate limited, retry", post.call_args.args[3])
-        revoke.assert_called_once()  # a status that is not success must not ride a carried success
-
-    def test_a_status_write_that_stays_rate_limited_still_attempts_the_revocation(self):
-        rc, post, revoke = self.run_main_with_rate_limited_sibling("failure", post_error=sg.RateLimited(1, ["gh"]))
-        self.assertEqual(rc, sg.RATE_LIMIT_EXIT)
-        revoke.assert_called_once()
-
-    def test_writes_keep_a_wait_reserve_after_the_reads_spent_the_budget(self):
-        sg._rate_limit_waited = sg.RATE_LIMIT_MAX_WAIT
-        run = self.fake_run([(1, "", self.LIMIT), (0, "ok", "")])
-        with mock.patch.object(sg.subprocess, "run", run), mock.patch.object(sg.time, "sleep"):
-            sg._reserve_write_budget()
-            self.assertEqual(sg._gh("x"), "ok")
-
-
-class ScanWindowTest(unittest.TestCase):
-    """CHE-4251 review P1: Semgrep can run for minutes. The verdict comments and the PR head are read after it, so a
-    revocation or a push during the scan is never overwritten by a success computed from the earlier read."""
-
-    def gate(self, during_scan):
-        state = {"comments": [comment(verdict("PASS"))], "head": HEAD}
-
-        def fake_gh(*args, **kw):
-            path = " ".join(args)
-            if "issues/405/comments" in path:
-                return "\n".join(json.dumps(c) for c in state["comments"])
-            return json.dumps({"head": {"sha": state["head"], "ref": PR["head_ref"]},
-                               "base": {"sha": "d" * 40, "ref": "main"}, "user": {"id": BOT}})
-
-        def scan(*a, **kw):
-            during_scan(state)
-            return []
-
-        run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=CLEAN_DIFF if kw.get("text") else b"")
-        with mock.patch.object(sg, "_gh", fake_gh), mock.patch.object(sg.subprocess, "run", run), \
-                mock.patch.object(sg, "pr_diff_digest", return_value="e" * 64), \
-                mock.patch.object(sg, "semgrep_scan", side_effect=scan):
-            return sg.gate_pr(str(ROOT), "cheese-work/multica-dotfiles", 405, "main", TRUSTED, HUMANS, [])
-
-    def test_a_pass_stays_success_when_nothing_changes_during_the_scan(self):
-        self.assertEqual(self.gate(lambda st: None)[1], "success")
-
-    def test_a_fail_posted_during_the_scan_wins_over_the_earlier_pass(self):
-        def revoke(st):
-            st["comments"].append(comment(verdict("FAIL", findings="\n- app.py:7 injection"), cid=2,
-                                          updated="2026-10-30T17:50:00Z"))
-        self.assertEqual(self.gate(revoke)[1], "failure")
-
-    def test_a_head_that_moves_during_the_scan_is_never_success(self):
-        def push(st):
-            st["head"] = OLD
-        self.assertNotEqual(self.gate(push)[1], "success")
-
-
-class ArchiveAttributesTest(unittest.TestCase):
-    """A PR-controlled .gitattributes `export-ignore` must not hide a changed file from the Semgrep input."""
-
-    def test_an_export_ignored_file_is_still_scanned(self):
-        with tempfile.TemporaryDirectory() as d:
-            repo, git = Path(d) / "r", lambda *a: subprocess.run(["git", "-C", str(Path(d) / "r"), *a], check=True,
-                                                              capture_output=True)
-            repo.mkdir()
-            git("init", "-q")
-            (repo / "b.py").write_text("y = 2\n")
-            (repo / ".gitattributes").write_text("b.py export-ignore\n")
-            git("add", "-A")
-            git("-c", "user.email=a@b", "-c", "user.name=n", "commit", "-qm", "i")
-            fake = Path(d) / "semgrep"
-            fake.write_text("#!/bin/sh\necho '{\"results\":[{\"check_id\":\"r.x\",\"path\":\"b.py\","
-                            "\"start\":{\"line\":1},\"end\":{\"line\":1},\"extra\":{\"severity\":\"ERROR\"}}]}'\n")
-            fake.chmod(0o755)
-            with mock.patch.dict(os.environ, {"SEMGREP_BIN": str(fake)}):
-                found = sg.semgrep_scan(str(repo), "HEAD", ["b.py"])
-            self.assertEqual([f["path"] for f in found], ["b.py"])
-            self.assertFalse((repo / ".git/info/attributes").exists(), "the repo's attributes file must be restored")
-
-
-class PublishWindowTest(unittest.TestCase):
-    """CHE-4251 review round 5: the PASS read for the primary PR must not survive the commit-to-PR lookup, the sibling
-    scans or the backoff of the status write itself. Verdicts and head are read again right before success goes out."""
-
-    LIMIT = "gh: API rate limit exceeded for installation (HTTP 403)"
-
-    def run_main(self, on_event, siblings=()):
-        state = {"comments": {405: [comment(verdict())], **{n: [comment(verdict(pr=n))] for n in siblings}}}
-        posted = []
-
-        def revoke(n):
-            state["comments"][n].append(comment(verdict("FAIL", pr=n, findings="\n- app.py:7 injection"), cid=9,
-                                                updated="2026-10-30T17:50:00Z"))
-
-        def fake_gh(*args, **kw):
-            path = " ".join(args)
-            for n in state["comments"]:
-                if f"issues/{n}/comments" in path:
-                    return "\n".join(json.dumps(c) for c in state["comments"][n])
-            if "commits/" in path:
-                on_event("lookup", revoke)
-                rows = [{"number": 405, "head": HEAD}, *({"number": n, "head": HEAD} for n in siblings)]
-                return "\n".join(json.dumps(r) for r in rows)
-            if "statuses/" in path:
-                posted.append(args)
-                return ""
-            for n in state["comments"]:
-                if f"pulls/{n}" in path:
-                    if n != 405:
-                        on_event("sibling", revoke)
-                    return json.dumps({"head": {"sha": HEAD, "ref": PR["head_ref"]},
-                                       "base": {"sha": "d" * 40, "ref": "main"}, "user": {"id": BOT}})
-            return ""
-
-        run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=CLEAN_DIFF if kw.get("text") else b"")
-        argv = ["x", "--repo", str(ROOT), "--github", "cheese-work/multica-dotfiles", "--pr", "405",
-                "--default-branch", "main", "--post"]
-        with mock.patch.object(sg, "_gh", fake_gh), mock.patch.object(sg.subprocess, "run", run), \
-                mock.patch.object(sg, "pr_diff_digest", return_value="e" * 64), \
-                mock.patch.object(sg, "revoke_queue"), mock.patch("sys.argv", argv), mock.patch("builtins.print"):
-            code = sg.main()
-        return code, posted
-
-    def test_a_pass_stays_success_when_nothing_changes(self):
-        code, posted = self.run_main(lambda *a: None, siblings=(406,))
-        self.assertEqual((code, len(posted)), (0, 1))
-        self.assertIn("state=success", posted[0])
-
-    def test_a_revocation_during_the_commit_to_pr_lookup_is_not_published_as_success(self):
-        code, posted = self.run_main(lambda ev, revoke: revoke(405) if ev == "lookup" else None)
-        self.assertNotIn("state=success", posted[0])
-
-    def test_a_revocation_during_the_sibling_scan_is_not_published_as_success(self):
-        code, posted = self.run_main(lambda ev, revoke: revoke(405) if ev == "sibling" else None, siblings=(406,))
-        self.assertNotIn("state=success", posted[0])
-
-    def test_a_sibling_revoked_after_its_own_scan_is_not_published_as_success(self):
-        reads = {"n": 0}
-
-        def event(ev, revoke):
-            if ev == "sibling":
-                reads["n"] += 1
-                if reads["n"] == 2:  # first read is the sibling's scan, second is the final refresh
-                    revoke(406)
-        code, posted = self.run_main(event, siblings=(406,))
-        self.assertNotIn("state=success", posted[0])
-
-    def test_a_success_write_retried_after_backoff_reads_the_decision_again(self):
-        sg._rate_limit_waited = 0
-        outcomes = iter([(1, self.LIMIT), (0, "")])
-        sent = []
-
-        def run(cmd, **kw):
-            sent.append(cmd)
-            code, err = next(outcomes)
-            if code:
-                raise subprocess.CalledProcessError(code, cmd, output="", stderr=err)
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-        def recheck():
-            raise sg.StaleDecision("failure", "revoked during the write backoff")
-        with mock.patch.object(sg.subprocess, "run", run), mock.patch.object(sg.time, "sleep"):
-            written = sg._post("o/r", HEAD, "success", "PASS", "", recheck=recheck)
-        self.assertEqual(written, "failure")
-        self.assertIn("state=failure", sent[-1])
-
-    def test_a_decision_that_cannot_be_refreshed_is_never_retried_as_success(self):
-        sg._rate_limit_waited = 0
-        outcomes = iter([(1, self.LIMIT), (0, "")])
-        sent = []
-
-        def run(cmd, **kw):
-            sent.append(cmd)
-            code, err = next(outcomes)
-            if code:
-                raise subprocess.CalledProcessError(code, cmd, output="", stderr=err)
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-        def main_recheck_failing():
-            raise sg.StaleDecision("pending", "could not refresh the decision")
-        with mock.patch.object(sg.subprocess, "run", run), mock.patch.object(sg.time, "sleep"):
-            self.assertEqual(sg._post("o/r", HEAD, "success", "PASS", "", recheck=main_recheck_failing), "pending")
-        self.assertNotIn("state=success", sent[-1])
-
-
 class MergeGroupStepTest(unittest.TestCase):
     """The merge queue requires `security-gate` on its own commit, which no PR event ever reaches. The job runs the
     DEFAULT-branch script, which on the first queue run is still the old one (`--pr` only), so the workflow step
@@ -519,16 +247,9 @@ class MergeGroupStepTest(unittest.TestCase):
 
     QUEUE = "e" * 40
     REF = f"refs/heads/gh-readonly-queue/main/pr-405-{'d' * 40}"
-    RATE_LIMITED = 'echo "gh: HTTP 403: API rate limit exceeded for installation" >&2; exit 1'
-    STUB_GH = ('#!/bin/bash\n'  # RL_PARENTS / RL_POST: the first N parent lookups / status writes answer with a rate limit
-               'touch "$LOG"\n'
-               'case "$*" in\n'  # PRIOR: the security-gate state already on the queue commit; RL_PRIOR=1 rate limits that read
-               '  *commits/*/status*) [ -n "${RL_PRIOR:-}" ] && { ' + RATE_LIMITED + '; }; echo "${PRIOR:-none}" ;;\n'
-               '  *commits/*) [ "${RL_PARENTS:-0}" -gt "$(grep -c "^rl-parents" "$LOG" || true)" ] && [ "${RL_PARENTS_ON:-$(grep -c "^parents" "$LOG" || true)}" = "$(grep -c "^parents" "$LOG" || true)" ] && { echo rl-parents >> "$LOG"; ' + RATE_LIMITED + '; }\n'
-               '              echo parents >> "$LOG"; printf "%s\\n" $PARENTS ;;\n'
-               '  *statuses/*) [ -n "${RL_POST_AFTER:-}" ] && [ "$(grep -c "^gh .*statuses/" "$LOG" || true)" -ge "$RL_POST_AFTER" ] && { echo rl-post >> "$LOG"; ' + RATE_LIMITED + '; }\n'
-               '               [ "${RL_POST:-0}" -gt "$(grep -c "^rl-post" "$LOG" || true)" ] && { echo rl-post >> "$LOG"; ' + RATE_LIMITED + '; }\n'
-               '               echo "gh $*" >> "$LOG" ;;\n'
+    STUB_GH = ('#!/bin/bash\n'
+               'case "$*" in\n'
+               '  *commits/*) printf "%s\\n" $PARENTS ;;\n'
                '  *) echo "gh $*" >> "$LOG" ;;\n'
                'esac\n')
     STUB_GATE = ('#!/bin/bash\n'  # the old script: --pr N required (an empty N is an argparse error), verdict read live
@@ -536,8 +257,6 @@ class MergeGroupStepTest(unittest.TestCase):
                  'case " $* " in *" --pr "[0-9]*) ;; *) exit 2 ;; esac\n'
                  'n=$(grep -c "^gate " "$LOG")\n'  # this is the Nth read: STATES answers per read, FAIL_AT makes one read error out
                  '[ "$n" = "${FAIL_AT:-}" ] && exit 1\n'
-                 '[ "$n" = "${RL_AT:-}" ] && { echo "rate limited" >&2; exit 75; }\n'
-                 '[ -n "${REVOKE_ON_SLEEP:-}" ] && grep -q "^sleep" "$LOG" && STATE=failure\n'  # revoked during a retry wait
                  'if [ -n "${STATES:-}" ]; then STATE=$(echo $STATES | cut -d" " -f$n); fi\n'
                  'echo \'{"context": "security-gate", "sha": "\'$HEAD\'", "state": "\'$STATE\'", "description": "PASS on x"}\'\n')
 
@@ -547,23 +266,21 @@ class MergeGroupStepTest(unittest.TestCase):
         self.assertEqual(len(gate), 1)
         return gate[0]["run"]
 
-    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success", script="", states="", fail_at="", rl_at="", rl_parents=0, rl_post=0, rl_post_after="", rl_parents_on="", revoke_on_sleep="", prior="none", rl_prior="", attempt="1"):
+    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success", script="", states="", fail_at=""):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             (tmp / "bin").mkdir()
             (tmp / "scripts/security-gate").mkdir(parents=True)
             (tmp / "bin/gh").write_text(self.STUB_GH)
-            (tmp / "bin/sleep").write_text('#!/bin/bash\necho "sleep $*" >> "$LOG"\n')  # no real waiting in tests
             (tmp / "scripts/security-gate/gate.sh").write_text(self.STUB_GATE)
             (tmp / "scripts/security-gate/security_gate.py").write_text(script)  # the step runs it via the shadowed python3
             (tmp / "bin/python3").write_text(
                 '#!/bin/bash\n[ "${1##*/}" = security_gate.py ] && exec bash "$(dirname "$1")/gate.sh" "${@:2}"\n'
                 f'exec {sys.executable} "$@"\n')
-            for path in (tmp / "bin/gh", tmp / "bin/sleep", tmp / "bin/python3", tmp / "scripts/security-gate/gate.sh"):
+            for path in (tmp / "bin/gh", tmp / "bin/python3", tmp / "scripts/security-gate/gate.sh"):
                 path.chmod(0o755)
-            env = {**os.environ, **({"RL_PARENTS_ON": str(rl_parents_on)} if rl_parents_on != "" else {}), "PATH": f"{tmp / 'bin'}:{os.environ['PATH']}", "LOG": str(tmp / "log"), "HEAD": HEAD,
-                   "STATE": state, "STATES": states, "FAIL_AT": str(fail_at), "RL_AT": str(rl_at),
-                   "RL_PARENTS": str(rl_parents), "RL_POST": str(rl_post), "RL_POST_AFTER": str(rl_post_after), "REVOKE_ON_SLEEP": revoke_on_sleep, "PRIOR": prior, "RL_PRIOR": rl_prior, "GITHUB_RUN_ATTEMPT": str(attempt), "PARENTS": " ".join(parents), "MERGE_GROUP_REF": ref, "MERGE_GROUP_SHA": self.QUEUE,
+            env = {**os.environ, "PATH": f"{tmp / 'bin'}:{os.environ['PATH']}", "LOG": str(tmp / "log"), "HEAD": HEAD,
+                   "STATE": state, "STATES": states, "FAIL_AT": str(fail_at), "PARENTS": " ".join(parents), "MERGE_GROUP_REF": ref, "MERGE_GROUP_SHA": self.QUEUE,
                    "PR_NUMBER": "", "GH_TOKEN": "t", "DEFAULT_BRANCH": "main", "GITHUB_REPOSITORY": "o/r",
                    "GITHUB_SERVER_URL": "https://github.com", "GITHUB_RUN_ID": "7"}
             done = subprocess.run(["bash", "-c", self.step_run()], cwd=tmp, env=env, capture_output=True, text=True)
@@ -616,93 +333,6 @@ class MergeGroupStepTest(unittest.TestCase):
             done, log = self.run_step(fail_at=fail_at)
             self.assertIn("state=failure", self.posted(log)[-1], (fail_at, done.stderr, log))
 
-    def test_a_rate_limited_read_posts_pending_never_failure(self):
-        # CHE-4242: a 403 rate limit on the installation turned a green PR red at the last queue step
-        for rl_at in (1, 2, 3):
-            done, log = self.run_step(rl_at=rl_at, states="success success success")
-            self.assertEqual(done.returncode, 0, (rl_at, done.stderr))
-            self.assertNotIn("state=failure", " ".join(self.posted(log)), (rl_at, log))
-            self.assertIn("state=pending", self.posted(log)[-1], (rl_at, log))
-            self.assertIn("rate limited, retry", self.posted(log)[-1], (rl_at, log))
-
-    def test_a_rate_limited_parent_lookup_is_retried_until_it_answers(self):
-        done, log = self.run_step(rl_parents=2)
-        self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(len([l for l in log if l.startswith("sleep")]), 2, log)
-        self.assertIn("state=success", self.posted(log)[0], log)
-
-    def test_an_approval_revoked_while_the_final_parent_lookup_waits_is_never_published_as_success(self):
-        # CHE-4251 review round 3 P1: the parent lookup (up to 300 s of backoff) ran after the verdict read, so a
-        # revocation during the wait was overwritten by the cached success. The lookup comes first now.
-        done, log = self.run_step(rl_parents=2, rl_parents_on=1, revoke_on_sleep="1")
-        self.assertEqual(done.returncode, 0, (done.stderr, log))
-        self.assertGreaterEqual(len([l for l in log if l.startswith("sleep")]), 2, log)  # the lookup did wait
-        self.assertNotIn("state=success", " ".join(self.posted(log)), log)
-        self.assertIn("state=failure", self.posted(log)[-1], log)
-
-    def test_a_parent_lookup_still_rate_limited_after_the_retries_posts_pending(self):
-        done, log = self.run_step(rl_parents=999)
-        self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertNotIn("state=failure", " ".join(self.posted(log)), log)
-        self.assertIn("state=pending", self.posted(log)[-1], log)
-
-    def test_a_rate_limited_status_write_is_retried_until_it_lands(self):
-        done, log = self.run_step(rl_post=2)
-        self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertIn("state=success", self.posted(log)[0], log)
-
-    def test_a_success_write_that_waits_on_a_rate_limit_reads_the_verdict_again_before_it_lands(self):
-        # CHE-4251 review P1: a cached success must not be retried through the backoff; a revocation read during
-        # the wait replaces it, so no success is ever written after the approval is gone
-        done, log = self.run_step(rl_post=2, states="success success failure failure failure")
-        self.assertEqual(done.returncode, 0, (done.stderr, log))
-        self.assertNotIn("state=success", " ".join(self.posted(log)), log)
-        self.assertIn("state=failure", self.posted(log)[-1], log)
-
-    def test_a_success_write_that_waits_and_is_still_approved_lands_after_a_fresh_read(self):
-        done, log = self.run_step(rl_post=2, states="success success success success success success")
-        self.assertEqual(done.returncode, 0, (done.stderr, log))
-        self.assertIn("state=success", self.posted(log)[0], log)
-        self.assertGreaterEqual(len([l for l in log if l.startswith("gate ")]), 4, log)  # two reads, plus one per wait
-
-    def test_a_status_write_that_stays_rate_limited_is_not_a_failed_job(self):
-        # CHE-4242 review P1: no status is written (the queue entry stays pending), the job is not red
-        done, log = self.run_step(rl_post=999, states="success success success success success success success success success success success success")
-        self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(self.posted(log), [], log)
-        self.assertIn("::warning::", done.stderr)
-
-    def test_a_rerun_that_cannot_replace_an_earlier_success_keeps_the_job_red(self):
-        # CHE-4242 review round 2 P1: a success from an earlier run stays on the queue commit when the write is throttled
-        done, log = self.run_step(rl_post=999, states="failure failure failure", prior="success")
-        self.assertNotEqual(done.returncode, 0, (done.stderr, log))
-        self.assertEqual(self.posted(log), [], log)
-
-    def test_a_rerun_whose_earlier_status_cannot_be_read_keeps_the_job_red(self):
-        # unknown earlier status on a re-run fails closed: attempt 1 left a success only if it got that far
-        done, log = self.run_step(rl_post=999, rl_prior="1", states="failure failure failure", attempt=2)
-        self.assertNotEqual(done.returncode, 0, (done.stderr, log))
-
-    def test_a_first_attempt_that_cannot_write_or_read_the_status_is_not_a_failed_job(self):
-        # CHE-4242 review round 3 P1: shared quota exhaustion fails the write and the read together; on the first
-        # attempt no earlier run can have left a success on the queue commit, so the job gets a warning, not a red mark
-        done, log = self.run_step(rl_post=999, rl_prior="1", state="pending", states="pending pending pending")
-        self.assertEqual(done.returncode, 0, (done.stderr, log))
-        self.assertEqual(self.posted(log), [], log)
-        self.assertIn("::warning::", done.stderr)
-
-    def test_a_rerun_over_an_earlier_non_success_stays_green_when_the_write_is_throttled(self):
-        for prior in ("pending", "failure", "none"):
-            done, log = self.run_step(rl_post=999, states="failure failure failure", prior=prior)
-            self.assertEqual(done.returncode, 0, (prior, done.stderr, log))
-            self.assertIn("::warning::", done.stderr)
-
-    def test_a_failure_that_cannot_replace_a_published_success_keeps_the_job_red(self):
-        # a success is already on the queue commit: a job that stays green would hide a stale approval
-        done, log = self.run_step(rl_post_after=1, states="success success failure")
-        self.assertIn("state=success", self.posted(log)[0], log)
-        self.assertNotEqual(done.returncode, 0, (done.stderr, log))
-
     def test_pr_head_that_is_not_a_parent_fails(self):
         done, log = self.run_step(parents=("d" * 40, OLD))
         self.assertIn("state=failure", self.posted(log)[0])
@@ -711,20 +341,6 @@ class MergeGroupStepTest(unittest.TestCase):
         done, log = self.run_step(ref=f"refs/heads/gh-readonly-queue/dev/pr-405-{'d' * 40}")
         self.assertIn("state=failure", self.posted(log)[0])
         self.assertFalse([l for l in log if l.startswith("gate ")])
-
-
-class TrustedQueueStepTest(MergeGroupStepTest):
-    """CHE-4251: the queue evaluation also runs from security-gate-queue.yml, a `workflow_run` definition read from the
-    default branch (it holds the App key). Same behavior, same harness, other file."""
-
-    def step_run(self):
-        doc = yaml.safe_load((ROOT / ".github/workflows/security-gate-queue.yml").read_text())
-        gate = [s for s in doc["jobs"]["security-gate-queue"]["steps"] if "security_gate.py" in s.get("run", "")]
-        self.assertEqual(len(gate), 1)
-        return gate[0]["run"]
-
-    def test_queue_step_has_no_pr_branch(self):
-        self.assertNotIn("PR_NUMBER", self.step_run())
 
 
 class QueueRevocationTest(unittest.TestCase):
@@ -743,7 +359,7 @@ class QueueRevocationTest(unittest.TestCase):
         if stacked:  # the second group sits on top of the first, so both carry the PR
             chains[self.G2] = [{"sha": self.G2, "parents": [self.G1, "7" * 40], "message": "Merge pull request #999 from x/z"}, *chains[self.G1]]
 
-        def fake_gh(*args, **kw):
+        def fake_gh(*args):
             path = " ".join(args)
             if "git/matching-refs/heads/gh-readonly-queue/main/" in path or "/branches" in path:
                 lookups.append(path)
@@ -854,7 +470,7 @@ class QueueRevocationTest(unittest.TestCase):
         attempts = []
         real = sg._post
 
-        def spy(github, sha, *rest, **kw):
+        def spy(github, sha, *rest):
             attempts.append(sha)
             return real(github, sha, *rest)
 
@@ -867,7 +483,7 @@ class QueueRevocationTest(unittest.TestCase):
         seen = {}
         real = sg._post
 
-        def spy(github, sha, state, desc, run_url, **kw):
+        def spy(github, sha, state, desc, run_url):
             seen[sha] = (f"state={state}",)
             return real(github, sha, state, desc, run_url)
 

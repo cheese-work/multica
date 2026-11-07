@@ -139,28 +139,6 @@ class SemgrepError(Exception):
     pass
 
 
-def _archive(repo: str, rev: str, paths: list[str]) -> bytes:
-    """`git archive` of `rev` with the revision's own `export-ignore`/`export-subst` attributes switched off: they are
-    PR-controlled and would drop a changed file from the scan or rewrite its text. `info/attributes` outranks every
-    in-tree .gitattributes; the repo's file is put back afterwards."""
-    git_path = subprocess.run(["git", "-C", repo, "rev-parse", "--git-path", "info/attributes"], check=True,
-                              capture_output=True, text=True).stdout.strip()
-    attrs = os.path.join(repo, git_path)
-    old = open(attrs, "rb").read() if os.path.exists(attrs) else None
-    os.makedirs(os.path.dirname(attrs), exist_ok=True)
-    with open(attrs, "wb") as f:
-        f.write((old or b"") + b"\n* -export-ignore -export-subst\n")
-    try:
-        return subprocess.run(["git", "--literal-pathspecs", "-C", repo, "archive", rev, "--", *paths],
-                              check=True, capture_output=True).stdout
-    finally:
-        if old is None:
-            os.unlink(attrs)
-        else:
-            with open(attrs, "wb") as f:
-                f.write(old)
-
-
 def semgrep_scan(repo: str, rev: str, paths: list[str] | None = None) -> list[dict]:
     """ERROR-severity semgrep findings of `rev`: the whole tree, or only `paths`. Static scan of an extracted copy;
     nothing from the revision runs. Only the default branch's .semgrepignore is used (the revision's are deleted), `--disable-nosem` stops a PR from
@@ -169,7 +147,8 @@ def semgrep_scan(repo: str, rev: str, paths: list[str] | None = None) -> list[di
         chunks = [[]] if paths is None else [paths[i:i + 200] for i in range(0, len(paths), 200)]
         for chunk in chunks:
             try:
-                tar = _archive(repo, rev, chunk)
+                tar = subprocess.run(["git", "--literal-pathspecs", "-C", repo, "archive", rev, "--", *chunk],
+                                     check=True, capture_output=True).stdout
                 with tarfile.open(fileobj=io.BytesIO(tar)) as t:
                     t.extractall(root, filter="data")
             except (subprocess.CalledProcessError, tarfile.TarError) as e:
@@ -337,65 +316,17 @@ def _out(state: str, desc: str) -> tuple[str, str]:
     return state, desc[:140]  # GitHub caps a status description at 140 chars
 
 
-RATE_LIMIT_EXIT = 75  # EX_TEMPFAIL: the workflow maps it to a `pending` status, never `failure`
-RATE_LIMIT_MAX_WAIT = 480  # seconds of backoff for the whole run; the job timeout is 20 min
-RATE_LIMIT_RE = re.compile(r"rate limit|HTTP 429|too many requests", re.I)
-RATE_LIMIT_WRITE_RESERVE = 120  # seconds of the budget kept for the status write and the queue revocation
-_rate_limit_waited = 0
-
-
-def _reserve_write_budget() -> None:
-    """Reads may spend the budget, but a verdict that is already known must still get its writes attempted."""
-    global _rate_limit_waited
-    _rate_limit_waited = min(_rate_limit_waited, RATE_LIMIT_MAX_WAIT - RATE_LIMIT_WRITE_RESERVE)
-
-
-class RateLimited(subprocess.CalledProcessError):
-    """The installation's API quota stayed exhausted for the whole wait budget (CHE-4242)."""
-
-
-class StaleDecision(Exception):
-    """The decision behind a `success` write no longer holds; carries the state to write instead."""
-
-    def __init__(self, state: str, desc: str):
-        super().__init__(desc)
-        self.state, self.desc = state, desc
-
-
-def _gh(*args: str, recheck=None) -> str:
-    """`gh api`, waiting out a 403/429 rate limit with a doubling backoff (5 s up to 60 s) from a budget shared by
-    every call of the run. Any other error is raised at once. `recheck` runs after each backoff, before the retry."""
-    global _rate_limit_waited
-    delay = 5
-    while True:
-        try:
-            return subprocess.run(["gh", "api", *args], check=True, capture_output=True, text=True).stdout
-        except subprocess.CalledProcessError as e:
-            if not RATE_LIMIT_RE.search(str(e.stderr or "")):
-                # CHE-4234: capture_output hid the API error; show it in the job log
-                print(f"gh api {args[0]} failed (exit {e.returncode}): {(e.stderr or '').strip()}", file=sys.stderr)
-                raise
-            if _rate_limit_waited + delay > RATE_LIMIT_MAX_WAIT:
-                raise RateLimited(e.returncode, e.cmd, e.output, e.stderr) from e
-            time.sleep(delay)
-            _rate_limit_waited += delay
-            delay = min(delay * 2, 60)
-            if recheck:
-                recheck()
-
-
-def _post(github: str, sha: str, state: str, desc: str, run_url: str, recheck=None) -> str:
-    """Writes the status and returns the state written. A `success` that waits out a rate limit is decided again
-    first (`recheck` raises StaleDecision): the verdict may have been revoked during the wait."""
-    def write(state: str, desc: str, recheck=None) -> None:
-        _gh(f"repos/{github}/statuses/{sha}", "-f", f"state={state}", "-f", f"context={CONTEXT}",
-            "-f", f"description={desc}", *(["-f", f"target_url={run_url}"] if run_url else []), **({"recheck": recheck} if recheck else {}))
+def _gh(*args: str) -> str:
     try:
-        write(state, desc, recheck if state == "success" else None)
-        return state
-    except StaleDecision as e:
-        write(e.state, e.desc)
-        return e.state
+        return subprocess.run(["gh", "api", *args], check=True, capture_output=True, text=True).stdout
+    except subprocess.CalledProcessError as e:  # CHE-4234: capture_output hid the API error; show it in the job log
+        print(f"gh api {args[0]} failed (exit {e.returncode}): {(e.stderr or '').strip()}", file=sys.stderr)
+        raise
+
+
+def _post(github: str, sha: str, state: str, desc: str, run_url: str) -> None:
+    _gh(f"repos/{github}/statuses/{sha}", "-f", f"state={state}", "-f", f"context={CONTEXT}",
+        "-f", f"description={desc}", *(["-f", f"target_url={run_url}"] if run_url else []))
 
 
 def _group_chain(github: str, base: str, head: str, strict: bool = True) -> list[dict]:
@@ -464,29 +395,15 @@ def revoke_queue(github: str, number: int, default_branch: str, run_url: str) ->
         raise RuntimeError(f"could not revoke security-gate on queue head(s): {' '.join(unflipped)}")
 
 
-def decide_pr(github: str, number: int, default_branch: str, trusted: set[int], humans: set[int], scan: dict
-              ) -> tuple[str, str, str]:
-    """Verdicts and head are read here, after any slow work (CHE-4251): a revocation or a push that happened during
-    a scan, a lookup or a backoff is seen. `scan` holds what was computed for the head (`head`, diff, semgrep, digest)."""
+def gate_pr(repo: str, github: str, number: int, default_branch: str, trusted: set[int],
+            humans: set[int], baseline: list[str] | None = None) -> tuple[str, str, str]:
+    """`baseline` None = no semgrep scan."""
     pull = json.loads(_gh(f"repos/{github}/pulls/{number}"))
-    if pull["head"]["sha"] != scan["head"]:
-        return scan["head"], "pending", _out("pending", "head moved since the scan")[1]
+    head, base = pull["head"]["sha"], pull["base"]["sha"]
     # no --slurp: the X99 gh (2.45) lacks it; --jq emits one compact object per line across pages
     lines = _gh("--paginate", f"repos/{github}/issues/{number}/comments", "--jq",
                 '.[] | {id, author_id: .user.id, body: (.body // ""), updated_at}').splitlines()
     comments = [json.loads(l) for l in lines]
-    state, desc = evaluate({"head_sha": scan["head"], "head_ref": pull["head"]["ref"], "base_ref": pull["base"]["ref"],
-                            "default_branch": default_branch, "author_id": pull["user"]["id"],
-                            "repo": github, "number": number}, comments, trusted, scan["diff"], humans,
-                           scan["semgrep"], scan["digest"])
-    return scan["head"], state, desc
-
-
-def gate_pr(repo: str, github: str, number: int, default_branch: str, trusted: set[int],
-            humans: set[int], baseline: list[str] | None = None, scans: dict | None = None) -> tuple[str, str, str]:
-    """`baseline` None = no semgrep scan. `scans` collects each PR's scan so the caller can decide it again."""
-    pull = json.loads(_gh(f"repos/{github}/pulls/{number}"))
-    head, base = pull["head"]["sha"], pull["base"]["sha"]
     diff, semgrep, digest = "", None, None  # a non-default base returns before the diff is read; its base may not be in this checkout
     if pull["base"]["ref"] == default_branch:
         diff = subprocess.run(["git", "-C", repo, "diff", "-U0", "--no-color", f"{base}...{head}"],
@@ -499,22 +416,13 @@ def gate_pr(repo: str, github: str, number: int, default_branch: str, trusted: s
                 semgrep = new_semgrep(semgrep_scan(repo, head, [n for n in names.split("\0") if n]), baseline, diff)
             except (SemgrepError, subprocess.CalledProcessError) as e:  # cannot scan: never a silent pass
                 return head, "pending", _out("pending", f"semgrep did not run: {e}")[1]
-    scan = {"head": head, "diff": diff, "semgrep": semgrep, "digest": digest}
-    if scans is not None:
-        scans[number] = scan
-    return decide_pr(github, number, default_branch, trusted, humans, scan)
+    state, desc = evaluate({"head_sha": head, "head_ref": pull["head"]["ref"], "base_ref": pull["base"]["ref"],
+                            "default_branch": default_branch, "author_id": pull["user"]["id"],
+                            "repo": github, "number": number}, comments, trusted, diff, humans, semgrep, digest)
+    return head, state, desc
 
 
 def main() -> int:
-    try:
-        return _main()
-    except RateLimited:
-        # Not a verdict: the caller posts `pending` (or retries), never `failure` for a rate limit.
-        print("rate limited, retry", file=sys.stderr)
-        return RATE_LIMIT_EXIT
-
-
-def _main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--repo", default=".", help="DEFAULT-branch checkout with the head objects fetched")
     ap.add_argument("--github", required=True, help="owner/repo")
@@ -553,62 +461,25 @@ def _main() -> int:
         baseline = load_baseline(a.repo) if a.semgrep else None
     except SemgrepError as e:
         sys.exit(f"semgrep baseline: {e}")  # fail the job: no status is posted, the required check stays pending
-    scans: dict = {}
-    head, state, desc = gate_pr(a.repo, a.github, a.pr, a.default_branch, trusted, humans, baseline, scans)
+    head, state, desc = gate_pr(a.repo, a.github, a.pr, a.default_branch, trusted, humans, baseline)
     # The API also lists PRs that merely contain the commit (descendants, forks) with a different head. Their
     # head objects may not be fetched, so they are filtered here, before any diff is read.
     rows = [json.loads(l) for l in _gh(f"repos/{a.github}/commits/{head}/pulls", "--jq",
                                        '.[] | select(.state=="open") | {number, head: .head.sha}').splitlines()]
-    results = [(a.pr, state, desc)]
+    results = [(state, desc)]
     for n in sorted({r["number"] for r in rows if r["head"] == head} - {a.pr}):
         try:
-            h, st, d = gate_pr(a.repo, a.github, n, a.default_branch, trusted, humans, baseline, scans)
-        except RateLimited:
-            # No verdict for the sibling: it holds the head at `pending`. A known failure still wins in combine().
-            h, st, d = head, "pending", "rate limited, retry"
+            h, st, d = gate_pr(a.repo, a.github, n, a.default_branch, trusted, humans, baseline)
         except Exception as e:  # an unreadable sibling must block, never skip the status write
             h, st, d = head, "failure", f"cannot evaluate: {type(e).__name__}"
         if h == head:
-            results.append((n, st, d))
-
-    def settle(fresh: bool) -> tuple[str, str]:
-        """One status for the head. `fresh` decides every `success` again from the verdicts and head as they are now."""
-        out = []
-        for n, st, d in results:
-            if fresh and st == "success":
-                try:
-                    if n not in scans:
-                        raise LookupError("no scan to decide again")
-                    st, d = decide_pr(a.github, n, a.default_branch, trusted, humans, scans[n])[1:]
-                except RateLimited:
-                    st, d = "pending", "rate limited, retry"
-                except Exception as e:  # cannot decide again: never publish the earlier success
-                    st, d = "pending", f"cannot refresh: {type(e).__name__}"
-            out.append((st, d if n == a.pr else f"#{n}: {d}"))
-        return _out(*combine(out))
-
-    def recheck() -> None:
-        st, d = settle(True)
-        if st != "success":
-            raise StaleDecision(st, d)
-    # All lookups and sibling scans are done: decide every success again right before it is published.
-    state, desc = settle(True)
+            results.append((st, f"#{n}: {d}"))
+    state, desc = _out(*combine(results))
     print(json.dumps({"context": CONTEXT, "sha": head, "state": state, "description": desc}))
     if a.post:
-        _reserve_write_budget()
-        limited = None
-        written = {"state": state}
-
-        def write_status() -> None:
-            written["state"] = _post(a.github, head, state, desc, a.run_url, recheck=recheck) or state
-        for write in (write_status,
-                      lambda: revoke_queue(a.github, a.pr, a.default_branch, a.run_url) if written["state"] != "success" else None):
-            try:
-                write()
-            except RateLimited as e:  # attempt the other write too, then report the rate limit
-                limited = e
-        if limited:
-            raise limited
+        _post(a.github, head, state, desc, a.run_url)
+        if state != "success":
+            revoke_queue(a.github, a.pr, a.default_branch, a.run_url)
     return 0
 
 

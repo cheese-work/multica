@@ -194,5 +194,40 @@ class PickToken(unittest.TestCase):
         self.assertEqual(self.run_pick("4000", app="")[1], "token=GHT\n")
 
 
+class GateBackoffDeferred(unittest.TestCase):
+    """Split decision (7 Nov 2026): the gate's rate-limit backoff and freshness patches moved to CHE-4415.
+    With the App token the gate behaves as on main: a rate limit is an ordinary error, never a wait."""
+
+    def test_script_does_not_wait_out_a_rate_limit(self):
+        import importlib.util
+        from unittest import mock
+
+        spec = importlib.util.spec_from_file_location("security_gate", ROOT / "scripts/security-gate/security_gate.py")
+        sg = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(sg)
+        err = subprocess.CalledProcessError(1, ["gh"], output="", stderr="HTTP 403: API rate limit exceeded")
+        with mock.patch.object(sg.subprocess, "run", side_effect=err) as run, \
+                mock.patch.object(sg.time, "sleep") as sleep:
+            with self.assertRaises(subprocess.CalledProcessError):
+                sg._gh("repos/x/y")
+        self.assertEqual(run.call_count, 1)
+        sleep.assert_not_called()
+
+    def test_script_and_workflows_carry_no_gate_backoff(self):
+        gate = (ROOT / "scripts/security-gate/security_gate.py").read_text()
+        for needle in ("RATE_LIMIT", "RateLimited", "StaleDecision", "_reserve_write_budget"):
+            self.assertNotIn(needle, gate)
+        for name in ("security-gate.yml", "security-gate-queue.yml"):
+            text = (WORKFLOWS / name).read_text()
+            for needle in ("gh_retry", "sleep ", "rate limit", "return 75"):
+                self.assertNotIn(needle, text, f"{name}: {needle}")
+
+    def test_script_and_gate_test_match_main(self):
+        # The only gate code this PR may change is the workflow wiring; the script and its test equal main.
+        for path in ("scripts/security-gate/security_gate.py", "tests/test_che2671_security_gate.py"):
+            diff = subprocess.run(["git", "diff", "--quiet", "origin/main", "--", path], cwd=ROOT)
+            self.assertEqual(diff.returncode, 0, path)
+
+
 if __name__ == "__main__":
     unittest.main()
