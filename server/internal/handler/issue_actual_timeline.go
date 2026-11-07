@@ -48,6 +48,11 @@ var (
 	timelineMaxIssues = 5000   // selected issues per response
 	timelineMaxRows   = 200000 // status rows per batch
 	timelineBatchSize = 1000   // candidate issues per batch
+
+	// Request-wide work budget across all batches, so a window that selects
+	// nothing still cannot scan the whole workspace on every request.
+	timelineMaxScanned   = 100000  // candidate issues scanned per request
+	timelineMaxTotalRows = 1000000 // status rows read per request
 )
 
 var errTimelineTooLarge = errors.New("timeline result set too large")
@@ -98,6 +103,7 @@ func (h *Handler) ListIssueActualTimeline(w http.ResponseWriter, r *http.Request
 
 	out := make([]issueActualTimelineEntry, 0)
 	var cursor *timelineCursor
+	scanned, totalRows := 0, 0
 	for {
 		batch, order, next, err := h.loadTimelineBatch(r, wsUUID, from, to, cursor)
 		if err != nil {
@@ -108,7 +114,13 @@ func (h *Handler) ListIssueActualTimeline(w http.ResponseWriter, r *http.Request
 			break
 		}
 		cursor = next
-		if err := h.attachTimelineRows(r, order, batch); errors.Is(err, errTimelineTooLarge) {
+		if scanned += len(order); scanned > timelineMaxScanned {
+			writeError(w, http.StatusUnprocessableEntity, "too many issues scanned for this window; narrow the window")
+			return
+		}
+		rowsRead, err := h.attachTimelineRows(r, order, batch, timelineMaxTotalRows-totalRows)
+		totalRows += rowsRead
+		if errors.Is(err, errTimelineTooLarge) {
 			writeError(w, http.StatusUnprocessableEntity, "too much status history for this window; narrow the window")
 			return
 		} else if err != nil {
@@ -237,20 +249,24 @@ func dateUTC(d pgtype.Date) *time.Time {
 	return &t
 }
 
-func (h *Handler) attachTimelineRows(r *http.Request, ids []pgtype.UUID, issues map[string]*timelineIssueRecord) error {
+// attachTimelineRows reads one batch's status rows and returns how many it read.
+// It fails with errTimelineTooLarge past the per-batch cap or the remaining
+// request budget.
+func (h *Handler) attachTimelineRows(r *http.Request, ids []pgtype.UUID, issues map[string]*timelineIssueRecord, budget int) (int, error) {
+	limit := min(timelineMaxRows, budget)
 	rows, err := h.DB.Query(r.Context(), `
 		SELECT issue_id, id, created_at, COALESCE(details->>'from', ''), COALESCE(details->>'to', '')
 		FROM activity_log
 		WHERE action = 'status_changed' AND issue_id = ANY($1)
-		ORDER BY issue_id, created_at, id LIMIT $2`, ids, timelineMaxRows+1)
+		ORDER BY issue_id, created_at, id LIMIT $2`, ids, limit+1)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer rows.Close()
 	n := 0
 	for rows.Next() {
-		if n++; n > timelineMaxRows {
-			return errTimelineTooLarge
+		if n++; n > limit {
+			return n, errTimelineTooLarge
 		}
 		var (
 			issueID, id pgtype.UUID
@@ -258,7 +274,7 @@ func (h *Handler) attachTimelineRows(r *http.Request, ids []pgtype.UUID, issues 
 			from, to    string
 		)
 		if err := rows.Scan(&issueID, &id, &at, &from, &to); err != nil {
-			return err
+			return n, err
 		}
 		if to == "" {
 			continue
@@ -267,5 +283,5 @@ func (h *Handler) attachTimelineRows(r *http.Request, ids []pgtype.UUID, issues 
 			issue.Rows = append(issue.Rows, service.TimelineRow{ID: util.UUIDToString(id), At: at, From: from, To: to})
 		}
 	}
-	return rows.Err()
+	return n, rows.Err()
 }

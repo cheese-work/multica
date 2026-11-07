@@ -296,7 +296,11 @@ func postTimeline(from, to time.Duration) (int, []tlResult) {
 
 func restoreTimelineLimits(t *testing.T) {
 	oldIssues, oldRows, oldBatch := timelineMaxIssues, timelineMaxRows, timelineBatchSize
-	t.Cleanup(func() { timelineMaxIssues, timelineMaxRows, timelineBatchSize = oldIssues, oldRows, oldBatch })
+	oldScanned, oldTotal := timelineMaxScanned, timelineMaxTotalRows
+	t.Cleanup(func() {
+		timelineMaxIssues, timelineMaxRows, timelineBatchSize = oldIssues, oldRows, oldBatch
+		timelineMaxScanned, timelineMaxTotalRows = oldScanned, oldTotal
+	})
 }
 
 // The result cap counts issues the window selects, not every older issue the
@@ -356,5 +360,38 @@ func TestTimelineRejectsOversizedBody(t *testing.T) {
 	testHandler.ListIssueActualTimeline(w, newRequest(http.MethodPost, "/api/issues/timeline", body))
 	if w.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("1 MiB body: got %d, want 413", w.Code)
+	}
+}
+
+// The per-batch caps do not bound a request that spans many batches: the
+// cumulative candidate scan and status-row reads have their own budget.
+func TestTimelineRequestScanBudget(t *testing.T) {
+	restoreTimelineLimits(t)
+	for i := 0; i < 5; i++ { // older issues the window never selects
+		seedTLIssue(t, tlIssue{status: "backlog", created: 300 * day})
+	}
+	timelineBatchSize = 2
+	if code, _ := postTimeline(20*day, 10*day); code != http.StatusOK {
+		t.Fatalf("baseline: got %d, want 200", code)
+	}
+	timelineMaxScanned = 3
+	if code, _ := postTimeline(20*day, 10*day); code != http.StatusUnprocessableEntity {
+		t.Fatalf("scan over budget: got %d, want 422", code)
+	}
+}
+
+func TestTimelineRequestRowBudget(t *testing.T) {
+	restoreTimelineLimits(t)
+	for i := 0; i < 4; i++ {
+		seedTLIssue(t, tlIssue{status: "todo", created: 9 * day, rows: []tlRow{{ago: 8 * day, from: "backlog", to: "todo"}}})
+	}
+	timelineBatchSize = 1
+	timelineMaxRows = 1 // one row per batch is fine; the sum is not
+	if code, _ := postTimeline(30*day, 0); code != http.StatusOK {
+		t.Fatalf("baseline: got %d, want 200", code)
+	}
+	timelineMaxTotalRows = 1
+	if code, _ := postTimeline(30*day, 0); code != http.StatusUnprocessableEntity {
+		t.Fatalf("rows over budget: got %d, want 422", code)
 	}
 }
