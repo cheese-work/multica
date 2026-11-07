@@ -1150,6 +1150,18 @@ export const OpenDecisionRequestListSchema = z.lazy(() => z.array(z.object({
     label: z.string(),
     what_happens: z.string().optional().catch(undefined),
   }).loose()).catch([]),
+  covers_request_ids: z.array(z.string()).optional().catch(undefined),
+  covered_cards: z.array(z.object({
+    id: z.string(),
+    issue_id: z.string().default(""),
+    issue_identifier: z.string().default(""),
+    issue_title: z.string().optional().catch(undefined),
+    decision: z.string().default(""),
+    options: z.array(z.object({
+      label: z.string(),
+      what_happens: z.string().optional().catch(undefined),
+    }).loose()).catch([]),
+  }).loose()).optional().catch(undefined),
 }).loose()));
 
 // An unknown status degrades to `uncertain`: it never claims the agent read the

@@ -293,3 +293,39 @@ func TestCoveredCardSummariesReportReadFailure(test *testing.T) {
 		test.Fatalf("summaries=%v err=%v, want an error and no summaries", summaries, err)
 	}
 }
+
+// The issue page lists open cards from /api/decisions/open. A batch card there
+// must carry the covered decisions too, or the page would let a human answer
+// for cards it never shows.
+func TestOpenDecisionsListDisclosesCoveredDecisions(test *testing.T) {
+	fixture := newBatchFixture(test, 2)
+	dbfx.Exec(test, `UPDATE decision_request SET human_user_id = $2 WHERE id = $1 OR id = ANY($3::uuid[])`,
+		fixture.batch.decision.ID, parseUUID(testUserID), []pgtype.UUID{fixture.covered[0].decision.ID, fixture.covered[1].decision.ID})
+	request := httptest.NewRequest(http.MethodGet, "/api/decisions/open", nil)
+	request.Header.Set("X-User-ID", testUserID)
+	request = withChatTestWorkspaceCtx(test, request)
+	var open []struct {
+		ID               string                       `json:"id"`
+		CoversRequestIDs []string                     `json:"covers_request_ids"`
+		CoveredCards     []DecisionRequestCoveredCard `json:"covered_cards"`
+	}
+	testutil.Call(test, testHandler.ListOpenDecisions, request).Want(http.StatusOK).JSON(&open)
+	var batch *int
+	for index := range open {
+		if open[index].ID == uuidToString(fixture.batch.decision.ID) {
+			batch = &index
+		}
+	}
+	if batch == nil {
+		test.Fatalf("open list lacks the batch card: %+v", open)
+	}
+	got := open[*batch]
+	if len(got.CoversRequestIDs) != 2 || len(got.CoveredCards) != 2 {
+		test.Fatalf("batch card covers=%v covered_cards=%+v, want 2 and 2", got.CoversRequestIDs, got.CoveredCards)
+	}
+	for index, card := range got.CoveredCards {
+		if card.ID != uuidToString(fixture.covered[index].decision.ID) || card.Decision != "Pick one" || len(card.Options) != 2 || card.Options[1].WhatHappens != "B happens" {
+			test.Fatalf("covered_cards[%d] = %+v, want the covered card's decision and options with meanings", index, card)
+		}
+	}
+}

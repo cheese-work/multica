@@ -13,6 +13,9 @@ export interface OpenDecisionRequest {
   message_id: string | null;
   source_comment_id?: string | null;
   options?: DecisionRequestOption[];
+  /** Per-issue cards a batch card answers for; shown with `covered_cards` before an answer. */
+  covers_request_ids?: string[];
+  covered_cards?: DecisionCoveredCard[];
 }
 
 /** One answer button on an open decision card. */

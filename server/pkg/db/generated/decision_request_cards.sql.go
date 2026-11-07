@@ -315,7 +315,7 @@ SELECT request.id, request.issue_id,
     request.asking_agent_id, COALESCE(agent.name, '')::text AS asking_agent_name,
     request.ask, request.escalation_class, request.created_at,
     request.chat_session_id, request.ping_message_id AS message_id,
-    request.options, request.source_comment_id
+    request.options, request.source_comment_id, request.covers_request_ids
 FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 JOIN workspace ON workspace.id = request.workspace_id
@@ -332,18 +332,19 @@ type ListOpenDecisionRequestsForHumanParams struct {
 }
 
 type ListOpenDecisionRequestsForHumanRow struct {
-	ID              pgtype.UUID        `json:"id"`
-	IssueID         pgtype.UUID        `json:"issue_id"`
-	IssueIdentifier string             `json:"issue_identifier"`
-	AskingAgentID   pgtype.UUID        `json:"asking_agent_id"`
-	AskingAgentName string             `json:"asking_agent_name"`
-	Ask             string             `json:"ask"`
-	EscalationClass string             `json:"escalation_class"`
-	CreatedAt       pgtype.Timestamptz `json:"created_at"`
-	ChatSessionID   pgtype.UUID        `json:"chat_session_id"`
-	MessageID       pgtype.UUID        `json:"message_id"`
-	Options         []byte             `json:"options"`
-	SourceCommentID pgtype.UUID        `json:"source_comment_id"`
+	ID               pgtype.UUID        `json:"id"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	IssueIdentifier  string             `json:"issue_identifier"`
+	AskingAgentID    pgtype.UUID        `json:"asking_agent_id"`
+	AskingAgentName  string             `json:"asking_agent_name"`
+	Ask              string             `json:"ask"`
+	EscalationClass  string             `json:"escalation_class"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	ChatSessionID    pgtype.UUID        `json:"chat_session_id"`
+	MessageID        pgtype.UUID        `json:"message_id"`
+	Options          []byte             `json:"options"`
+	SourceCommentID  pgtype.UUID        `json:"source_comment_id"`
+	CoversRequestIds []pgtype.UUID      `json:"covers_request_ids"`
 }
 
 func (q *Queries) ListOpenDecisionRequestsForHuman(ctx context.Context, arg ListOpenDecisionRequestsForHumanParams) ([]ListOpenDecisionRequestsForHumanRow, error) {
@@ -368,6 +369,7 @@ func (q *Queries) ListOpenDecisionRequestsForHuman(ctx context.Context, arg List
 			&i.MessageID,
 			&i.Options,
 			&i.SourceCommentID,
+			&i.CoversRequestIds,
 		); err != nil {
 			return nil, err
 		}
