@@ -473,7 +473,8 @@
       "code": "コード",
       "channels": "メッセージング",
       "apps": "接続済みアプリ",
-      "workflows": "ワークフロー"
+      "workflows": "ワークフロー",
+      "provider_breakers": "プロバイダーのブレーカー"
     },
     "groups": {
       "personal": "個人",
@@ -1617,5 +1618,36 @@
     "mcp": "管理者が追加してワークスペースで共有し、エージェントごとに割り当てます。",
     "apps": "自分のアカウントで Composio 経由で承認し、自分が所有するエージェントで有効にします。",
     "plugins": "インストールするとツール、定期フック、ストレージを追加でき、プラグインごとに権限を付与します。"
+  },
+  "provider_breakers": {
+    "description": "ブレーカーは、サーバーエラーが繰り返されたプロバイダーへの新しい作業を止め、自動で再度確認します。",
+    "empty": "このワークスペースで作動したブレーカーはありません。",
+    "load_error": "ブレーカーを読み込めませんでした。",
+    "retry": "再試行",
+    "columns": {
+      "provider": "プロバイダー",
+      "state": "状態",
+      "reason": "理由",
+      "failures": "失敗数",
+      "opened": "開放時刻",
+      "next_probe": "次の確認",
+      "last_success": "最後の成功",
+      "actions": "操作"
+    },
+    "states": {
+      "closed": "閉",
+      "open": "開",
+      "half_open": "半開"
+    },
+    "none": "—",
+    "reset": "リセット",
+    "reset_label": "{{provider}} のブレーカーをリセット",
+    "reset_title": "{{provider}} のブレーカーをリセットしますか？",
+    "reset_description": "ブレーカーはすぐに閉じ、新しい作業が再び {{provider}} に届きます。プロバイダーがまだ失敗している場合、ブレーカーは再び作動します。リセットは監査ログに記録されます。",
+    "reset_cancel": "キャンセル",
+    "reset_confirm": "ブレーカーをリセット",
+    "resetting": "リセット中…",
+    "reset_success": "ブレーカーをリセットしました。",
+    "reset_error": "ブレーカーをリセットできませんでした。"
   }
 }

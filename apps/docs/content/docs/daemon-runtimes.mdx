@@ -315,6 +315,8 @@ multica runtime breaker reset <provider>
 
 `list` shows the state, failure count, opened time, and next probe time of each provider. `reset` force-closes the breaker and is limited to workspace owners and admins. The same data is available over the API: `GET /api/workspaces/{id}/provider-breakers` lists breakers and `POST /api/workspaces/{id}/provider-breakers/{provider}/reset` resets one.
 
+In the web app, **Settings → Provider breakers** shows the same state for every provider. Owners and admins see a **Reset** button behind a confirm dialog; other members see the state read-only.
+
 ## Troubleshooting an offline runtime
 
 Check in this order:
