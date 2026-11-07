@@ -120,6 +120,36 @@ class LiveTest(unittest.TestCase):
         self.assertEqual(self.run_live(SHA[:7], 600), (0, "main %s runs on C00 (live revision %s).\n" % (SHA[:9], SHA[:7])))
 
 
+class ResumeAfterPauseTest(unittest.TestCase):
+    """CHE-4500: a deploy run skipped by MAIN_RED_PAUSED is lost unless something reruns it after the flag clears."""
+
+    def skipped(self, sha=SHA, attempt=1, run_id=30):
+        return {"id": run_id, "display_title": f"CD deploy to C00 · {sha}", "conclusion": "skipped", "run_attempt": attempt}
+
+    def test_qualified_head_with_skipped_deploy_run_is_rerun(self):
+        self.assertEqual(fresh.decide_resume(SHA, [qual("success")], [self.skipped()], deployed=False), 30)
+
+    def test_deployed_head_is_not_rerun(self):
+        self.assertIsNone(fresh.decide_resume(SHA, [qual("success")], [self.skipped()], deployed=True))
+
+    def test_unqualified_head_is_not_rerun(self):
+        for conclusion in ("failure", None, "cancelled"):
+            self.assertIsNone(fresh.decide_resume(SHA, [qual(conclusion)], [self.skipped()], deployed=False), conclusion)
+
+    def test_skipped_run_of_another_sha_is_not_rerun(self):
+        self.assertIsNone(fresh.decide_resume(SHA, [qual("success")], [self.skipped(sha="0" * 40)], deployed=False))
+
+    def test_retries_stop_at_the_attempt_cap(self):
+        last = self.skipped(attempt=fresh.MAX_RESUME_ATTEMPTS - 1)
+        self.assertEqual(fresh.decide_resume(SHA, [qual("success")], [last], deployed=False), 30)
+        self.assertIsNone(fresh.decide_resume(SHA, [qual("success")], [self.skipped(attempt=fresh.MAX_RESUME_ATTEMPTS)], deployed=False))
+
+    def test_newest_skipped_run_wins(self):
+        runs = [self.skipped(run_id=30, attempt=3), self.skipped(run_id=31, attempt=1)]
+        runs[0]["created_at"], runs[1]["created_at"] = "2026-11-05T10:00:00Z", "2026-11-05T11:00:00Z"
+        self.assertEqual(fresh.decide_resume(SHA, [qual("success")], runs, deployed=False), 31)
+
+
 class RateLimitTest(unittest.TestCase):
     def err(self, text):
         return subprocess.CalledProcessError(1, "gh", stderr=text)
@@ -159,7 +189,7 @@ class RateLimitTest(unittest.TestCase):
 
 
 class MainTest(unittest.TestCase):
-    def run_main(self, qual_runs, deploy_runs, minutes_ago, deploy_job="success", log="2026-11-05T10:01:02Z ok\n2026-11-05T10:01:03Z ##[error]buildx failed: boom\n"):
+    def run_main(self, qual_runs, deploy_runs, minutes_ago, deploy_job="success", skipped_runs=(), log="2026-11-05T10:01:02Z ok\n2026-11-05T10:01:03Z ##[error]buildx failed: boom\n"):
         commit = {"sha": SHA, "commit": {"committer": {"date": head_at(minutes_ago).isoformat()}}}
         jobs = [{"id": 7, "name": "build-images", "conclusion": "failure"}, {"id": 8, "name": "cd-qualification", "conclusion": "skipped"}]
         seen = []
@@ -174,6 +204,8 @@ class MainTest(unittest.TestCase):
             if "workflows/cd-qualification.yml/runs" in path:
                 return json.dumps({"workflow_runs": qual_runs})
             if "workflows/cd-deploy.yml/runs" in path:
+                if "status=skipped" in path:
+                    return json.dumps({"workflow_runs": list(skipped_runs)})
                 self.assertIn("status=success", path)
                 return json.dumps({"workflow_runs": deploy_runs})
             if "/actions/runs/20/jobs" in path:
@@ -190,6 +222,12 @@ class MainTest(unittest.TestCase):
                 contextlib.redirect_stdout(out):
             rc = fresh.main()
         return rc, out.getvalue(), seen
+
+    def test_deploy_run_skipped_by_the_pause_is_rerun_without_failed_flag(self):
+        skipped = {"id": 30, "display_title": f"CD deploy to C00 · {SHA}", "conclusion": "skipped", "run_attempt": 1}
+        rc, out, seen = self.run_main([qual("success")], [], 30, skipped_runs=[skipped])
+        self.assertEqual(rc, 0)
+        self.assertEqual([a for a in seen if a[:2] == ("run", "rerun")], [("run", "rerun", "30", "-R", "cheese-work/multica")])
 
     def test_failed_build_is_rerun_once_and_not_yet_alerted(self):
         rc, out, seen = self.run_main([qual("failure")], [], 30)

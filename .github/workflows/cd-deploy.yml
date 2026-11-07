@@ -123,7 +123,8 @@ jobs:
     # CHE-4500 (CHE-3625 item 2): while main is red the cron sets the repo variable
     # MAIN_RED_PAUSED (an unset variable reads as ''). A skipped preflight leaves
     # `eligible` empty, so approval, notice, prepare, admission and deploy are all
-    # skipped. Green main deletes the variable and auto-deploy resumes. The manual
+    # skipped, and the run ends `skipped`. Green main deletes the variable, which starts
+    # nothing: deploy/cd/check-deploy-freshness.py (15 min cron) reruns that skipped run. The manual
     # workflow_dispatch path is a deliberate human act and is not paused.
     if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && vars.MAIN_RED_PAUSED == ''
     runs-on: [self-hosted, linux, x64, cheese-x99]
