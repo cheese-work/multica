@@ -2357,6 +2357,19 @@ WHERE t.chat_session_id = ANY($1::uuid[])
   AND COALESCE(t.chat_compaction_epoch, 0) = cs.compaction_epoch
 ORDER BY t.chat_session_id, t.completed_at DESC, t.id DESC;
 
+-- name: CancelCompactionTasksByWorkspace :many
+-- CHE-2908 (SEC-1 rule 4): a compact chain change cancels every live compaction
+-- task of the workspace, whichever agent it was queued for, so a task queued
+-- under the old value never delivers the transcript. The chat resume pointer is
+-- not touched (SEC-2).
+UPDATE agent_task_queue
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
+    cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
+WHERE task_kind = 'compact'
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+  AND chat_session_id IN (SELECT id FROM chat_session WHERE workspace_id = $1)
+RETURNING *;
+
 -- name: GetLatestCompactionSummary :one
 -- The newest in-place compaction summary of a DM: the seed of its next turn
 -- while the resume pointer is empty. Messages after it are the post-boundary
