@@ -171,6 +171,7 @@
       "statistic": "Show usage and cost for this DM",
       "archive": "Archive this DM without starting an agent turn",
       "pin": "Pin or unpin this DM",
+      "unseen": "Mark this DM as unseen and leave it",
       "unarchive": "Unarchive this DM. Nothing is sent to the agent."
     }
   },

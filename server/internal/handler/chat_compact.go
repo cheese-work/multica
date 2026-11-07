@@ -156,14 +156,13 @@ func (h *Handler) compactChatInPlace(ctx context.Context, sessionID, taskID pgty
 			return fail(http.StatusInternalServerError, "failed to check existing summary")
 		}
 	}
-	summary, err := qtx.CreateChatMessage(ctx, db.CreateChatMessageParams{
-		ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "assistant",
-		Content:     strings.TrimSpace(redact.Prose(summaryText)),
-		TaskID:      taskID,
-		MessageKind: pgtype.Text{String: protocol.ChatMessageKindCompactionSummary, Valid: true},
+	summary, err := qtx.CreateChatCompactionDivider(ctx, db.CreateChatCompactionDividerParams{
+		ID: dbid.NewV7(), ChatSessionID: session.ID,
+		Content: strings.TrimSpace(redact.Prose(summaryText)),
+		TaskID:  taskID,
 	})
 	if err == nil {
-		session, err = qtx.CompactChatSessionInPlace(ctx, session.ID)
+		session, err = qtx.CompactChatSessionInPlace(ctx, db.CompactChatSessionInPlaceParams{ID: session.ID, DividerID: summary.ID})
 	}
 	if err != nil {
 		return fail(http.StatusInternalServerError, "failed to compact chat session")

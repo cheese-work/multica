@@ -304,11 +304,14 @@
     "archive_failed": "이 채팅을 보관하지 못했습니다",
     "unarchive_failed": "이 채팅의 보관을 해제하지 못했습니다",
     "pin_failed": "고정 상태를 업데이트하지 못했습니다",
+    "unseen": "읽지 않음으로 표시",
+    "unseen_failed": "이 채팅을 읽지 않음으로 표시하지 못했습니다",
     "undo": "실행 취소"
   },
   "header": {
     "context_meter": "{{window}} 중 {{pct}}%",
     "context_meter_warning": "다음 답변 후 압축됩니다",
+    "context_meter_threshold": "{{threshold}}에서 압축(현재 {{now}})",
     "compact_now": "지금 압축",
     "more_actions": "더 보기",
     "view_profile": "Agent 프로필 보기",
@@ -319,6 +322,7 @@
     "statistics": "통계",
     "pin": "채팅 고정",
     "unpin": "채팅 고정 해제",
+    "unseen": "읽지 않음으로 표시",
     "preset": { "label": "프리셋", "inherit": "상속", "base": "기본" }
   },
   "scheduled": {

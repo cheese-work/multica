@@ -304,11 +304,14 @@
     "archive_failed": "无法归档此会话",
     "unarchive_failed": "无法取消归档此会话",
     "pin_failed": "无法更新置顶状态",
+    "unseen": "标记为未读",
+    "unseen_failed": "无法将此对话标记为未读",
     "undo": "撤销"
   },
   "header": {
     "context_meter": "{{window}} 中的 {{pct}}%",
     "context_meter_warning": "下一次回复后将压缩",
+    "context_meter_threshold": "达到 {{threshold}} 时压缩(当前 {{now}})",
     "compact_now": "立即压缩",
     "more_actions": "更多操作",
     "view_profile": "查看智能体资料",
@@ -319,6 +322,7 @@
     "statistics": "统计",
     "pin": "置顶会话",
     "unpin": "取消置顶会话",
+    "unseen": "标记为未读",
     "preset": { "label": "预设", "inherit": "继承", "base": "基础" }
   },
   "scheduled": {

@@ -51,6 +51,8 @@ import {
   ListPropertiesResponseSchema,
   MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
   RuntimeModelListRequestSchema,
+  RuntimeUpdateSchema,
+  MALFORMED_RUNTIME_UPDATE,
   SearchProjectsResponseSchema,
   RuntimeHourlyActivityListSchema,
   RuntimeUsageByAgentListSchema,
@@ -2616,6 +2618,46 @@ describe("CommentPreviewSchema", () => {
     expect(ok.author_name).toBe("");
     expect(ok.preview).toBe("");
     expect(CommentPreviewSchema.safeParse({ comment_id: "c" }).success).toBe(false);
+  });
+});
+
+describe("RuntimeUpdateSchema", () => {
+  const running = {
+    id: "u-1",
+    runtime_id: "rt-1",
+    status: "running",
+    target_version: "v1.2.3",
+    created_at: "2026-11-04T00:00:00Z",
+    updated_at: "2026-11-04T00:00:01Z",
+  };
+  const parse = (data: unknown) =>
+    parseWithFallback(data, RuntimeUpdateSchema, MALFORMED_RUNTIME_UPDATE, {
+      endpoint: "test",
+    });
+
+  it("keeps a well-formed progress", () => {
+    const progress = { phase: "download", bytes_done: 512, bytes_total: 2048 };
+    expect(parse({ ...running, progress }).progress).toEqual(progress);
+  });
+
+  it("parses a response without progress (older server)", () => {
+    const parsed = parse(running);
+    expect(parsed.status).toBe("running");
+    expect(parsed.progress).toBeUndefined();
+  });
+
+  it.each([
+    ["a string", "50%"],
+    ["wrong field types", { phase: "download", bytes_done: "x", bytes_total: 1 }],
+    ["missing fields", { phase: "download" }],
+  ])("drops a malformed progress (%s) and keeps the rest", (_name, progress) => {
+    const parsed = parse({ ...running, progress });
+    expect(parsed.status).toBe("running");
+    expect(parsed.progress).toBeUndefined();
+  });
+
+  it("falls back to failed when the body is not an update", () => {
+    expect(parse(null)).toEqual(MALFORMED_RUNTIME_UPDATE);
   });
 });
 

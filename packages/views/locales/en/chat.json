@@ -309,11 +309,14 @@
     "archive_failed": "Couldn't archive this chat",
     "unarchive_failed": "Couldn't unarchive this chat",
     "pin_failed": "Couldn't update the pin",
+    "unseen": "Mark as unseen",
+    "unseen_failed": "Couldn't mark this chat as unseen",
     "undo": "Undo"
   },
   "header": {
     "context_meter": "{{pct}}% of {{window}}",
     "context_meter_warning": "Will compact after the next reply",
+    "context_meter_threshold": "Compacts at {{threshold}} (now {{now}})",
     "compact_now": "Compact now",
     "more_actions": "More actions",
     "view_profile": "View agent profile",
@@ -324,6 +327,7 @@
     "statistics": "Statistics",
     "pin": "Pin chat",
     "unpin": "Unpin chat",
+    "unseen": "Mark as unseen",
     "preset": { "label": "Preset", "inherit": "Inherit", "base": "Base" }
   },
   "scheduled": {
