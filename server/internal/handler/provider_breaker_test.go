@@ -99,3 +99,30 @@ func TestListProviderBreakers(t *testing.T) {
 	}
 	t.Fatalf("provider %q missing from %+v", provider, out.Breakers)
 }
+
+func TestListProviderBreakersClosedHidesStaleEvidence(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	const provider = "stale-test"
+	seedProviderBreaker(t, provider, "closed")
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE provider_breaker SET trip_evidence = ARRAY[gen_random_uuid(), gen_random_uuid()] WHERE workspace_id = $1 AND provider = $2`,
+		testWorkspaceID, provider); err != nil {
+		t.Fatalf("seed trip evidence: %v", err)
+	}
+	req := withURLParams(newRequest("GET", "/api/workspaces/"+testWorkspaceID+"/provider-breakers", nil), "id", testWorkspaceID)
+	var out struct {
+		Breakers []providerBreakerResponse `json:"breakers"`
+	}
+	testutil.Call(t, testHandler.ListProviderBreakers, req).Want(http.StatusOK).JSON(&out)
+	for _, b := range out.Breakers {
+		if b.Provider == provider {
+			if b.FailureCount != 0 || len(b.TripEvidence) != 0 {
+				t.Fatalf("closed breaker shows failure_count=%d evidence=%v, want none", b.FailureCount, b.TripEvidence)
+			}
+			return
+		}
+	}
+	t.Fatalf("provider %q missing from %+v", provider, out.Breakers)
+}

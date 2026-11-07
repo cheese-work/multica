@@ -35,8 +35,11 @@ func (h *Handler) ListProviderBreakers(w http.ResponseWriter, r *http.Request) {
 	out := make([]providerBreakerResponse, 0, len(rows))
 	for _, row := range rows {
 		evidence := make([]string, 0, len(row.TripEvidence))
-		for _, id := range row.TripEvidence {
-			evidence = append(evidence, uuidToString(id))
+		// A closed breaker keeps its last trip evidence; it is history, not a current failure count.
+		if row.State != "closed" {
+			for _, id := range row.TripEvidence {
+				evidence = append(evidence, uuidToString(id))
+			}
 		}
 		item := providerBreakerResponse{Provider: row.Provider, State: row.State, FailureCount: len(evidence), TripEvidence: evidence}
 		if row.State != "closed" {
