@@ -177,8 +177,11 @@ describe("createKeyedDraftStore", () => {
     useStore.getState().setDraft("issue-3", { text: "A again" });
     await flush();
 
-    const persisted = (slug: string) =>
-      Object.keys(JSON.parse(storage.values.get(`k_ws_race:${slug}`)!).state.drafts).sort();
+    // The stored key carries the session token after a logout elsewhere in this file.
+    const persisted = (slug: string) => {
+      const key = [...storage.values.keys()].find((k) => k === `k_ws_race:${slug}` || k.startsWith(`k_ws_race:${slug}#`))!;
+      return Object.keys(JSON.parse(storage.values.get(key)!).state.drafts).sort();
+    };
     expect(persisted("ws-a")).toEqual(["issue-1", "issue-3"]);
     expect(persisted("ws-b")).toEqual(["issue-2"]);
     expect(Object.keys(useStore.getState().drafts).sort()).toEqual(["issue-1", "issue-3"]);
@@ -205,5 +208,30 @@ describe("createKeyedDraftStore", () => {
     expect(useStore.getState().getDraft("k")).toBeUndefined();
     await flush();
     expect(useStore.getState().hasDraft("k")).toBe(false);
+  });
+  it("logout between the storage read and the merge: the old payload is rejected, not adopted by the new session", () => {
+    const storage = memoryStorage();
+    const first = build("k_logout_race", storage).useStore;
+    first.getState().setDraft("a", { text: "old user note" });
+
+    // Another tab logs out right after this load read the stored payload.
+    const realGet = storage.getItem;
+    let armed = true;
+    storage.getItem = (k) => {
+      const value = realGet(k);
+      if (armed && k.startsWith("k_logout_race") && value) {
+        armed = false;
+        resetAllRegisteredDrafts();
+      }
+      return value;
+    };
+
+    const { useStore } = build("k_logout_race", storage);
+
+    expect(useStore.getState().getDraft("a")).toBeUndefined();
+    useStore.getState().setDraft("b", { text: "new user note" });
+    const raw = [...storage.values.values()].join("\n");
+    expect(raw).not.toContain("old user note");
+    expect(raw).toContain("new user note");
   });
 });
