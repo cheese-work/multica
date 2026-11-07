@@ -87,7 +87,7 @@ func exhaustedIssueWith(ctx context.Context, q *db.Queries, e service.RunBudgetE
 // longer applies (its hook was retired, or a move superseded it) starts again
 // for the new occurrence. ok is false when the refusal no longer applies and
 // nothing was recorded.
-func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetExhausted) (id pgtype.UUID, ok bool) {
+func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetExhausted) (id pgtype.UUID, generation int32, ok bool) {
 	window := e.Since.UTC().Format(time.RFC3339Nano)
 	err := h.withPgxTx(ctx, func(tx pgx.Tx) error {
 		q := h.Queries.WithTx(tx)
@@ -103,7 +103,7 @@ func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetEx
 			if reuse, err := refusalServes(ctx, q, existing); err != nil {
 				return err
 			} else if reuse {
-				id, ok = existing.ID, true
+				id, generation, ok = existing.ID, existing.HookGeneration, true
 				return nil
 			}
 		}
@@ -143,21 +143,21 @@ func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetEx
 			if err != nil {
 				return fmt.Errorf("revive refusal: %w", err)
 			}
-			id, ok = row.ID, true
+			id, generation, ok = row.ID, row.HookGeneration, true
 		} else {
 			row, err := q.InsertRunBudgetRefusal(ctx, in)
 			if err != nil {
 				return fmt.Errorf("insert refusal: %w", err)
 			}
-			id, ok = row.ID, true
+			id, generation, ok = row.ID, row.HookGeneration, true
 		}
 		return q.SupersedeRunBudgetRefusalsExcept(ctx, db.SupersedeRunBudgetRefusalsExceptParams{IssueID: issue.ID, ID: id})
 	})
 	if err != nil {
 		slog.Warn("run budget: record refusal failed", "err", err, "issue_id", uuidToString(e.IssueID))
-		return pgtype.UUID{}, false
+		return pgtype.UUID{}, 0, false
 	}
-	return id, ok
+	return id, generation, ok
 }
 
 // stateReasonUnknownOrigin marks a refusal found on a block that left no refusal row.
@@ -257,26 +257,32 @@ func lockHookStep(ctx context.Context, q *db.Queries, id pgtype.UUID, generation
 }
 
 // advanceRefusalHook runs the steps of the hook the row still owes, in order.
-func (h *Handler) advanceRefusalHook(ctx context.Context, id pgtype.UUID, e service.RunBudgetExhausted) {
+// The event and generation come from the same refusal; a row revived since
+// belongs to a newer one.
+func (h *Handler) advanceRefusalHook(ctx context.Context, id pgtype.UUID, generation int32, e service.RunBudgetExhausted) {
 	row, err := h.Queries.GetRunBudgetRefusal(ctx, id)
 	if err != nil {
 		slog.Warn("run budget: load refusal failed", "err", err, "refusal_id", uuidToString(id))
 		return
 	}
+	if row.HookGeneration != generation {
+		// The row was revived for a newer refusal, which owns it and its event.
+		return
+	}
 	if _, err := h.Queries.GetIssue(ctx, row.IssueID); errors.Is(err, pgx.ErrNoRows) {
-		h.settleHookStep(ctx, id, row.HookGeneration, &hookIneligible{reason: "issue_closed"})
+		h.settleHookStep(ctx, id, generation, &hookIneligible{reason: "issue_closed"})
 		return
 	}
 	switch row.HookPhase {
 	case "intent":
-		if runBudgetHookAt("after_intent") || !h.settleHookStep(ctx, id, row.HookGeneration, h.blockStep(ctx, id, row.HookGeneration, e)) || runBudgetHookAt("after_block") {
+		if runBudgetHookAt("after_intent") || !h.settleHookStep(ctx, id, generation, h.blockStep(ctx, id, generation, e)) || runBudgetHookAt("after_block") {
 			return
 		}
 	case "blocked":
 	default:
 		return
 	}
-	h.settleHookStep(ctx, id, row.HookGeneration, h.noticeStep(ctx, id, row.HookGeneration, e))
+	h.settleHookStep(ctx, id, generation, h.noticeStep(ctx, id, generation, e))
 }
 
 // settleHookStep reports whether the hook goes on after a step. A step that
@@ -443,7 +449,7 @@ func (h *Handler) sweepRunBudgetHooks(ctx context.Context, before time.Time) {
 		e.Runs, _ = h.Queries.CountIssueRunsSinceExcept(ctx, db.CountIssueRunsSinceExceptParams{
 			IssueID: row.IssueID, Since: pgtype.Timestamptz{Time: since, Valid: true},
 		})
-		h.advanceRefusalHook(ctx, id, e)
+		h.advanceRefusalHook(ctx, id, row.HookGeneration, e)
 	}
 }
 

@@ -243,8 +243,8 @@ func (h *Handler) guardedIssueStatuses(ctx context.Context, q *db.Queries, works
 // review status is blocked only by a refusal of its reviewer. A restart sweep
 // finishes a hook this callback did not.
 func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetExhausted) {
-	if id, ok := h.recordRefusalIntent(ctx, e); ok {
-		h.advanceRefusalHook(ctx, id, e)
+	if id, generation, ok := h.recordRefusalIntent(ctx, e); ok {
+		h.advanceRefusalHook(ctx, id, generation, e)
 	}
 }
 

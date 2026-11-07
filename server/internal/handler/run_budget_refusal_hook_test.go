@@ -442,3 +442,31 @@ func TestRunBudgetHookOlderNoticeStepDoesNotRetireTheRevivedHook(t *testing.T) {
 		t.Fatalf("issue is %s after the sweep, want blocked by the revived hook", got)
 	}
 }
+
+func TestRunBudgetHookDelayedStepOfAnOlderGenerationDoesNotAdvanceTheRevivedRow(t *testing.T) {
+	c, e := hookCase(t, 2856013)
+	testHandler.onRunBudgetExhausted(context.Background(), e)
+	finished(t, c)
+	var id pgtype.UUID
+	var oldGeneration int32
+	if err := testPool.QueryRow(context.Background(), `SELECT id, hook_generation FROM run_budget_refusal WHERE issue_id=$1`, c.issueID).Scan(&id, &oldGeneration); err != nil {
+		t.Fatal(err)
+	}
+	// A move supersedes the refusal and a later refusal revives the row, then
+	// stops after its intent. A callback that started in the older generation
+	// and was delayed carries the older event: it must not run the new hook.
+	c.enter(t, "in_progress")
+	if err := testHandler.Queries.SupersedeRunBudgetRefusalsOnStatusChange(context.Background(), parseUUID(c.issueID)); err != nil {
+		t.Fatal(err)
+	}
+	crashAt(t, "after_intent")
+	testHandler.onRunBudgetExhausted(context.Background(), e)
+	blocksBefore := blockRows(t, c)
+	testHandler.advanceRefusalHook(context.Background(), id, oldGeneration, e)
+	if r := onlyRefusal(t, c); r.Phase != "intent" {
+		t.Fatalf("revived hook phase = %q, want intent: the older generation's event advanced it", r.Phase)
+	}
+	if got := blockRows(t, c); got != blocksBefore {
+		t.Fatalf("block history rows = %d, want %d: the older event blocked the issue", got, blocksBefore)
+	}
+}
