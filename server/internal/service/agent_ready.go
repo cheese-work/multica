@@ -481,7 +481,7 @@ func RuntimeUnusableNotice(agentName string, verdict AgentVerdict) string {
 	// substitute list right there; rebuilding it here would need both again).
 	// verdict.Detail carries that finished notice verbatim, so this is a
 	// pass-through, not a second renderer to keep in sync with the first.
-	if verdict.Reason == dispatch.ReasonProviderHold {
+	if verdict.Reason == dispatch.ReasonProviderHold || verdict.Reason == dispatch.ReasonProviderBreaker {
 		return verdict.Detail
 	}
 	if verdict.Reason == dispatch.ReasonRuntimeAccessDenied {
