@@ -42,6 +42,7 @@ import sys
 import tarfile
 import tempfile
 import time
+from pathlib import Path
 
 CONTEXT = "security-gate"
 TRUSTED_AUTHORS = "skills/multica-cheese-work-github/scripts/trusted-authors.json"
@@ -49,6 +50,8 @@ SEMGREP_BASELINE = "scripts/security-gate/semgrep-baseline.json"
 SEMGREP_CONFIGS = ("p/default", "p/golang", "p/gosec", "p/typescript", "p/python", "p/kotlin")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+WAIVER_SCOPE_LINE_RE = re.compile(r"waiver-diff-digest", re.I)
+WAIVER_DIGEST_LINE_RE = re.compile(r"Waiver-Diff-Digest: ([0-9a-f]{64})")
 HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 FINDING_RE = re.compile(r"^- (\S+:\d+)\s+\S")
 REVIEWER_RE = re.compile(r"^(\S+) \(([^)]+)\)$")
@@ -60,6 +63,21 @@ SECRET_RES = [re.compile(p) for p in (
     r"\bxox[abprs]-[A-Za-z0-9-]{10,}",
     r"\bsk-[A-Za-z0-9_-]{32,}",
 )]
+
+
+def waiver_applies(record: str, head: str, digest: str) -> bool:
+    """Does a human waiver record (the decision-record comment, CHE-4326) cover this PR state? Only one exact
+    `Waiver-Diff-Digest: <64 lowercase hex>` line is a scope: it covers every head whose PR diff digest equals it, so a
+    main-only merge keeps the waiver and any change to a PR file voids it. Fail closed on anything else: no such
+    line, a second scope line, or a line that names the key but is not exact (case, indent, trailing text, bad hex).
+    Prose, including a head SHA, is never a scope: a record from before CHE-4326 is re-recorded once with the line.
+    `head` is unused on purpose: the scope is the diff. The caller still reads that the record is the server's
+    answered human decision (`multica decision get`): this checks scope only."""
+    scope_lines = [ln for ln in record.splitlines() if WAIVER_SCOPE_LINE_RE.search(ln)]
+    if len(scope_lines) != 1:
+        return False
+    m = WAIVER_DIGEST_LINE_RE.fullmatch(scope_lines[0])
+    return bool(m) and m.group(1) == digest
 
 
 def pr_diff_digest(repo: str, base: str, head: str) -> str:
@@ -306,6 +324,9 @@ def _gh(*args: str) -> str:
         raise
 
 
+FRESHNESS_TRIES = 3
+
+
 def _post(github: str, sha: str, state: str, desc: str, run_url: str) -> None:
     _gh(f"repos/{github}/statuses/{sha}", "-f", f"state={state}", "-f", f"context={CONTEXT}",
         "-f", f"description={desc}", *(["-f", f"target_url={run_url}"] if run_url else []))
@@ -404,44 +425,16 @@ def gate_pr(repo: str, github: str, number: int, default_branch: str, trusted: s
     return head, state, desc
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--repo", default=".", help="DEFAULT-branch checkout with the head objects fetched")
-    ap.add_argument("--github", required=True, help="owner/repo")
-    ap.add_argument("--pr", type=int, required=True)
-    ap.add_argument("--default-branch", required=True)
-    ap.add_argument("--run-url", default="")
-    ap.add_argument("--semgrep", action="store_true", help="scan the PR's added lines against the committed baseline")
-    ap.add_argument("--write-baseline", action="store_true", help="scan the default branch HEAD and rewrite the baseline")
-    ap.add_argument("--print-digest", action="store_true",
-                    help="print the PR's head and diff digest as JSON, for any lane that records a PASS (CHE-3610)")
-    ap.add_argument("--post", action="store_true", help="write the commit status (default: print only)")
-    ap.add_argument("--revoke-only", action="store_true",
-                    help="only flip the merge-queue heads that carry the PR to failure, without reading a verdict (sweep retry)")
-    a = ap.parse_args()
-    if a.write_baseline:
-        fps = sorted(f["fp"] for f in semgrep_scan(a.repo, "HEAD"))
-        with open(f"{a.repo}/{SEMGREP_BASELINE}", "w") as f:
-            json.dump({"configs": list(SEMGREP_CONFIGS), "findings": fps}, f, indent=1)
-            f.write("\n")
-        print(f"baseline: {len(fps)} ERROR finding(s)")
-        return 0
-    if a.print_digest:
-        pull = json.loads(_gh(f"repos/{a.github}/pulls/{a.pr}"))
-        head = pull["head"]["sha"]
-        print(json.dumps({"head": head, "digest": pr_diff_digest(a.repo, pull["base"]["sha"], head)}))
-        return 0
-    if a.revoke_only:
-        revoke_queue(a.github, a.pr, a.default_branch, a.run_url)
-        return 0
-    with open(f"{a.repo}/{TRUSTED_AUTHORS}") as f:
-        registry = json.load(f)
-    trusted = {b["id"] for b in registry["workspace_bots"]}
-    humans = {h["id"] for h in registry["instruction_authors"]}
-    try:
-        baseline = load_baseline(a.repo) if a.semgrep else None
-    except SemgrepError as e:
-        sys.exit(f"semgrep baseline: {e}")  # fail the job: no status is posted, the required check stays pending
+def _fingerprint(github: str, number: int) -> tuple:
+    """What a success depends on: the PR head, every comment id + edit time, and the current gate status."""
+    head = json.loads(_gh(f"repos/{github}/pulls/{number}"))["head"]["sha"]
+    comments = _gh("--paginate", f"repos/{github}/issues/{number}/comments", "--jq", r'.[] | "\(.id) \(.updated_at)"')
+    status = _gh(f"repos/{github}/commits/{head}/status", "--jq",
+                 f'[.statuses[] | select(.context=="{CONTEXT}") | .state] | first // ""').strip()
+    return head, comments, status
+
+
+def _evaluate(a: argparse.Namespace, trusted: set[int], humans: set[int], baseline: list[str] | None) -> tuple[str, str, str]:
     head, state, desc = gate_pr(a.repo, a.github, a.pr, a.default_branch, trusted, humans, baseline)
     # The API also lists PRs that merely contain the commit (descendants, forks) with a different head. Their
     # head objects may not be fetched, so they are filtered here, before any diff is read.
@@ -456,6 +449,62 @@ def main() -> int:
         if h == head:
             results.append((st, f"#{n}: {d}"))
     state, desc = _out(*combine(results))
+    return head, state, desc
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--repo", default=".", help="DEFAULT-branch checkout with the head objects fetched")
+    ap.add_argument("--github", required=True, help="owner/repo")
+    ap.add_argument("--pr", type=int, required=True)
+    ap.add_argument("--default-branch", required=True)
+    ap.add_argument("--run-url", default="")
+    ap.add_argument("--semgrep", action="store_true", help="scan the PR's added lines against the committed baseline")
+    ap.add_argument("--write-baseline", action="store_true", help="scan the default branch HEAD and rewrite the baseline")
+    ap.add_argument("--print-digest", action="store_true",
+                    help="print the PR's head and diff digest as JSON, for any lane that records a PASS (CHE-3610)")
+    ap.add_argument("--waiver-record", metavar="FILE",
+                    help="with --print-digest: check a human waiver record (file, or - for stdin) against the PR; exit 3 if it does not apply")
+    ap.add_argument("--post", action="store_true", help="write the commit status (default: print only)")
+    ap.add_argument("--revoke-only", action="store_true",
+                    help="only flip the merge-queue heads that carry the PR to failure, without reading a verdict (sweep retry)")
+    a = ap.parse_args()
+    if a.write_baseline:
+        fps = sorted(f["fp"] for f in semgrep_scan(a.repo, "HEAD"))
+        with open(f"{a.repo}/{SEMGREP_BASELINE}", "w") as f:
+            json.dump({"configs": list(SEMGREP_CONFIGS), "findings": fps}, f, indent=1)
+            f.write("\n")
+        print(f"baseline: {len(fps)} ERROR finding(s)")
+        return 0
+    if a.print_digest:
+        pull = json.loads(_gh(f"repos/{a.github}/pulls/{a.pr}"))
+        head = pull["head"]["sha"]
+        out = {"head": head, "digest": pr_diff_digest(a.repo, pull["base"]["sha"], head)}
+        if a.waiver_record:
+            record = sys.stdin.read() if a.waiver_record == "-" else Path(a.waiver_record).read_text()
+            out["waiver_applies"] = waiver_applies(record, head, out["digest"])
+        print(json.dumps(out))
+        return 3 if out.get("waiver_applies") is False else 0
+    if a.revoke_only:
+        revoke_queue(a.github, a.pr, a.default_branch, a.run_url)
+        return 0
+    with open(f"{a.repo}/{TRUSTED_AUTHORS}") as f:
+        registry = json.load(f)
+    trusted = {b["id"] for b in registry["workspace_bots"]}
+    humans = {h["id"] for h in registry["instruction_authors"]}
+    try:
+        baseline = load_baseline(a.repo) if a.semgrep else None
+    except SemgrepError as e:
+        sys.exit(f"semgrep baseline: {e}")  # fail the job: no status is posted, the required check stays pending
+    for _ in range(FRESHNESS_TRIES):
+        before = _fingerprint(a.github, a.pr)
+        head, state, desc = _evaluate(a, trusted, humans, baseline)
+        # CHE-4385: the scheduled sweep can run for minutes. A FAIL verdict, a new head or a status change that
+        # landed meanwhile must not be overwritten by a success: re-read, and evaluate again if anything moved.
+        if not a.post or state != "success" or _fingerprint(a.github, a.pr) == before:
+            break
+    else:
+        sys.exit("security-gate: the PR changed on every evaluation; no success posted")
     print(json.dumps({"context": CONTEXT, "sha": head, "state": state, "description": desc}))
     if a.post:
         _post(a.github, head, state, desc, a.run_url)

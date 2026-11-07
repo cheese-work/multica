@@ -5,6 +5,10 @@ A skipped run still counts as a created run, so the trigger set is the budget: t
 
 from __future__ import annotations
 
+import os
+import stat
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -112,6 +116,75 @@ class NewFailVerdictRevokesAGreenCommit(unittest.TestCase):
             # false: a sweep queues behind a running gate; the gate (cancel-in-progress true) cancels a queued or running sweep
             self.assertFalse(job["concurrency"]["cancel-in-progress"])
             self.assertFalse(job["strategy"]["fail-fast"])
+
+
+class SweepStepsBehavior(unittest.TestCase):
+    """Runs the sweep's real `run:` scripts under bash with a stubbed `gh` (and `python3`), and asserts what they do."""
+
+    FAKE_GH = """#!/bin/bash
+case "$*" in
+  *"/pulls?state=open"*) [ "$FAKE_FAIL" = pulls ] && exit 1; printf '%s' "$FAKE_PULLS" ;;
+  *"git/matching-refs"*) [ "$FAKE_FAIL" = refs ] && exit 1; printf '%s' "$FAKE_REFS" ;;
+  *"/status"*) [ "$FAKE_FAIL" = status ] && exit 1; printf '%s' "$FAKE_STATE" ;;
+  *) exit 1 ;;
+esac
+"""
+    RECORD_PY = '#!/bin/bash\nprintf "%s\\n" "$*" >> "$FAKE_ARGV"\n'
+
+    def step(self, job: str, needle: str) -> str:
+        steps = load("security-gate-sweep.yml")["jobs"].get(job, {}).get("steps", [])
+        runs = [str(st["run"]) for st in steps if needle in str(st.get("run", ""))]
+        self.assertTrue(runs, f"no `{needle}` step in job {job}")
+        return runs[0]
+
+    def run_step(self, run: str, **env) -> tuple[subprocess.CompletedProcess, str, str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            for name, body in (("gh", self.FAKE_GH), ("python3", self.RECORD_PY)):
+                (tmp / name).write_text(body)
+                (tmp / name).chmod(tmp.joinpath(name).stat().st_mode | stat.S_IXUSR)
+            out, argv = tmp / "out", tmp / "argv"
+            out.touch()
+            argv.touch()
+            e = {"PATH": f"{tmp}:{os.environ['PATH']}", "GITHUB_OUTPUT": str(out), "FAKE_ARGV": str(argv),
+                 "GITHUB_REPOSITORY": "o/r", "DEFAULT_BRANCH": "main", "GITHUB_SERVER_URL": "https://x",
+                 "GITHUB_RUN_ID": "1", "PR_NUMBER": "7", "FAKE_PULLS": "", "FAKE_REFS": "", "FAKE_STATE": "",
+                 "FAKE_FAIL": "", **env}
+            proc = subprocess.run(["bash", "-e", "-c", run], env=e, cwd=tmp, capture_output=True, text=True)
+            return proc, out.read_text(), argv.read_text()
+
+    def listing(self, **env):
+        return self.run_step(self.step("list", "gh api"), **env)
+
+    def test_a_failed_pr_listing_fails_the_job_and_publishes_nothing(self):
+        for failing in ("pulls", "refs", "status"):
+            proc, out, _ = self.listing(FAKE_FAIL=failing, FAKE_PULLS="7 " + "a" * 40, FAKE_REFS="refs/heads/gh-readonly-queue/main/pr-1-x",
+                                        FAKE_STATE="success")
+            self.assertNotEqual(proc.returncode, 0, failing)
+            self.assertNotIn("green=", out, failing)
+
+    def test_a_green_open_pr_is_listed_for_the_sweep(self):
+        proc, out, _ = self.listing(FAKE_PULLS="7 " + "a" * 40, FAKE_STATE="success")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("green=[7]", out)
+        self.assertIn("queued=[]", out)
+
+    def test_a_non_success_pr_is_listed_for_a_revoke_retry_only_while_a_queue_branch_exists(self):
+        pulls = "7 " + "a" * 40
+        proc, out, _ = self.listing(FAKE_PULLS=pulls, FAKE_STATE="failure", FAKE_REFS="refs/heads/gh-readonly-queue/main/pr-1-x")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("queued=[7]", out)
+        self.assertIn("green=[]", out)
+        proc, out, _ = self.listing(FAKE_PULLS=pulls, FAKE_STATE="failure")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("queued=[]", out)
+
+    def test_the_revoke_job_calls_the_script_for_its_pr_with_revoke_only_and_no_scan(self):
+        proc, _, argv = self.run_step(self.step("revoke", "--revoke-only"))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("--revoke-only", argv)
+        self.assertRegex(argv, r"--pr 7\b")
+        self.assertNotIn("--semgrep", argv)
 
 
 class NoCommentOrCascadeRuns(unittest.TestCase):

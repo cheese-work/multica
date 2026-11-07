@@ -561,5 +561,63 @@ class WorkflowTest(unittest.TestCase):
     def test_only_status_write_is_added(self):
         self.assertEqual(self.doc["permissions"], {"contents": "read", "pull-requests": "read", "statuses": "write"})
 
+class FreshnessRaceTest(unittest.TestCase):
+    """CHE-4385: a success must not be posted over a verdict that changed while the evaluation was running."""
+
+    def run_main(self, fail_after_read=None, churn=False):
+        """`fail_after_read`: a FAIL verdict comment appears right after this (1-based) fingerprint read.
+        `churn`: the comment list differs on every fingerprint read."""
+        fail = comment(verdict("FAIL", findings="\n- app.py:7 shell=True on user input"), cid=2, updated="2026-10-30T17:00:00Z")
+        store, posted, reads = [comment(verdict())], [], []
+
+        def fake_gh(*args):
+            path = " ".join(args)
+            if args[0] == "--paginate" and "issues/405/comments" in path:
+                if "author_id" in path:  # the evaluation's own read
+                    return "\n".join(json.dumps(c) for c in store)
+                reads.append(1)  # a fingerprint read
+                if len(reads) == fail_after_read:
+                    store.append(fail)
+                extra = f"\nn{len(reads)}" if churn else ""
+                return "\n".join(f"{c['id']} {c['updated_at']}" for c in store) + extra
+            if "pulls/405" in path:
+                return json.dumps({"head": {"sha": HEAD, "ref": PR["head_ref"]}, "base": {"sha": "d" * 40, "ref": "main"},
+                                   "user": {"id": BOT}})
+            if "statuses/" in path:
+                posted.append(path)
+            if "commits/" in path and "/pulls" in path:
+                return json.dumps({"number": 405, "head": HEAD})
+            return "success" if "commits/" in path else ""
+
+        def fake_run(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 0, stdout=CLEAN_DIFF if kw.get("text") else CLEAN_DIFF.encode())
+
+        argv = ["x", "--repo", str(ROOT), "--github", "cheese-work/multica-dotfiles", "--pr", "405", "--default-branch", "main", "--post"]
+        with mock.patch.object(sg, "_gh", fake_gh), mock.patch.object(sg.subprocess, "run", fake_run), \
+                mock.patch("sys.argv", argv), mock.patch("builtins.print"):
+            try:
+                code = sg.main()
+            except SystemExit as e:
+                code = e.code
+        return code, posted
+
+    def test_a_verdict_that_lands_during_the_evaluation_is_read_before_any_success_is_posted(self):
+        # read 1 is before the first evaluation, read 2 after it: the FAIL arrives between them.
+        code, posted = self.run_main(fail_after_read=2)
+        self.assertEqual(code, 0)
+        self.assertFalse([p for p in posted if "state=success" in p], posted)
+        self.assertTrue(any("state=failure" in p for p in posted), posted)
+
+    def test_an_unchanged_verdict_set_still_posts_the_success(self):
+        code, posted = self.run_main()
+        self.assertEqual(code, 0)
+        self.assertEqual([("state=success" in p) for p in posted], [True])
+
+    def test_a_verdict_set_that_never_settles_posts_no_success_and_fails_the_job(self):
+        code, posted = self.run_main(churn=True)
+        self.assertNotIn(code, (0, None))
+        self.assertFalse([p for p in posted if "state=success" in p], posted)
+
+
 if __name__ == "__main__":
     unittest.main()
