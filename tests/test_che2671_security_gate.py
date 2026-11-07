@@ -188,7 +188,7 @@ class WrapperTest(unittest.TestCase):
             return json.dumps({"head": {"sha": head, "ref": ref}, "base": {"sha": "d" * 40, "ref": "main"},
                                "user": {"id": BOT}})
 
-        def fake_gh(*args):
+        def fake_gh(*args, **kw):
             path = " ".join(args)
             if args[0] == "--paginate":
                 return json.dumps(comment(fail)) if "issues/405/comments" in path else ""
@@ -307,10 +307,12 @@ class RateLimitTest(unittest.TestCase):
         def gate(repo, github, n, *rest):
             if n == 406:
                 raise sg.RateLimited(1, ["gh"])
+            rest[-1][n] = {}  # the scan the final refresh decides again
             return HEAD, primary, "primary verdict"
         rows = json.dumps({"number": 406, "head": HEAD})
         argv = ["x", "--repo", str(ROOT), "--github", "o/r", "--pr", "405", "--default-branch", "main", "--post"]
         with mock.patch.object(sg, "gate_pr", side_effect=gate), mock.patch.object(sg, "_gh", return_value=rows), \
+                mock.patch.object(sg, "decide_pr", return_value=(HEAD, primary, "primary verdict")), \
                 mock.patch.object(sg, "_post", side_effect=post_error) as post, \
                 mock.patch.object(sg, "revoke_queue", side_effect=revoke_error) as revoke, \
                 mock.patch("sys.argv", argv), mock.patch("builtins.print"):
@@ -350,7 +352,7 @@ class ScanWindowTest(unittest.TestCase):
     def gate(self, during_scan):
         state = {"comments": [comment(verdict("PASS"))], "head": HEAD}
 
-        def fake_gh(*args):
+        def fake_gh(*args, **kw):
             path = " ".join(args)
             if "issues/405/comments" in path:
                 return "\n".join(json.dumps(c) for c in state["comments"])
@@ -403,6 +405,111 @@ class ArchiveAttributesTest(unittest.TestCase):
                 found = sg.semgrep_scan(str(repo), "HEAD", ["b.py"])
             self.assertEqual([f["path"] for f in found], ["b.py"])
             self.assertFalse((repo / ".git/info/attributes").exists(), "the repo's attributes file must be restored")
+
+
+class PublishWindowTest(unittest.TestCase):
+    """CHE-4251 review round 5: the PASS read for the primary PR must not survive the commit-to-PR lookup, the sibling
+    scans or the backoff of the status write itself. Verdicts and head are read again right before success goes out."""
+
+    LIMIT = "gh: API rate limit exceeded for installation (HTTP 403)"
+
+    def run_main(self, on_event, siblings=()):
+        state = {"comments": {405: [comment(verdict())], **{n: [comment(verdict(pr=n))] for n in siblings}}}
+        posted = []
+
+        def revoke(n):
+            state["comments"][n].append(comment(verdict("FAIL", pr=n, findings="\n- app.py:7 injection"), cid=9,
+                                                updated="2026-10-30T17:50:00Z"))
+
+        def fake_gh(*args, **kw):
+            path = " ".join(args)
+            for n in state["comments"]:
+                if f"issues/{n}/comments" in path:
+                    return "\n".join(json.dumps(c) for c in state["comments"][n])
+            if "commits/" in path:
+                on_event("lookup", revoke)
+                rows = [{"number": 405, "head": HEAD}, *({"number": n, "head": HEAD} for n in siblings)]
+                return "\n".join(json.dumps(r) for r in rows)
+            if "statuses/" in path:
+                posted.append(args)
+                return ""
+            for n in state["comments"]:
+                if f"pulls/{n}" in path:
+                    if n != 405:
+                        on_event("sibling", revoke)
+                    return json.dumps({"head": {"sha": HEAD, "ref": PR["head_ref"]},
+                                       "base": {"sha": "d" * 40, "ref": "main"}, "user": {"id": BOT}})
+            return ""
+
+        run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=CLEAN_DIFF if kw.get("text") else b"")
+        argv = ["x", "--repo", str(ROOT), "--github", "cheese-work/multica-dotfiles", "--pr", "405",
+                "--default-branch", "main", "--post"]
+        with mock.patch.object(sg, "_gh", fake_gh), mock.patch.object(sg.subprocess, "run", run), \
+                mock.patch.object(sg, "pr_diff_digest", return_value="e" * 64), \
+                mock.patch.object(sg, "revoke_queue"), mock.patch("sys.argv", argv), mock.patch("builtins.print"):
+            code = sg.main()
+        return code, posted
+
+    def test_a_pass_stays_success_when_nothing_changes(self):
+        code, posted = self.run_main(lambda *a: None, siblings=(406,))
+        self.assertEqual((code, len(posted)), (0, 1))
+        self.assertIn("state=success", posted[0])
+
+    def test_a_revocation_during_the_commit_to_pr_lookup_is_not_published_as_success(self):
+        code, posted = self.run_main(lambda ev, revoke: revoke(405) if ev == "lookup" else None)
+        self.assertNotIn("state=success", posted[0])
+
+    def test_a_revocation_during_the_sibling_scan_is_not_published_as_success(self):
+        code, posted = self.run_main(lambda ev, revoke: revoke(405) if ev == "sibling" else None, siblings=(406,))
+        self.assertNotIn("state=success", posted[0])
+
+    def test_a_sibling_revoked_after_its_own_scan_is_not_published_as_success(self):
+        reads = {"n": 0}
+
+        def event(ev, revoke):
+            if ev == "sibling":
+                reads["n"] += 1
+                if reads["n"] == 2:  # first read is the sibling's scan, second is the final refresh
+                    revoke(406)
+        code, posted = self.run_main(event, siblings=(406,))
+        self.assertNotIn("state=success", posted[0])
+
+    def test_a_success_write_retried_after_backoff_reads_the_decision_again(self):
+        sg._rate_limit_waited = 0
+        outcomes = iter([(1, self.LIMIT), (0, "")])
+        sent = []
+
+        def run(cmd, **kw):
+            sent.append(cmd)
+            code, err = next(outcomes)
+            if code:
+                raise subprocess.CalledProcessError(code, cmd, output="", stderr=err)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        def recheck():
+            raise sg.StaleDecision("failure", "revoked during the write backoff")
+        with mock.patch.object(sg.subprocess, "run", run), mock.patch.object(sg.time, "sleep"):
+            written = sg._post("o/r", HEAD, "success", "PASS", "", recheck=recheck)
+        self.assertEqual(written, "failure")
+        self.assertIn("state=failure", sent[-1])
+
+    def test_a_decision_that_cannot_be_refreshed_is_never_retried_as_success(self):
+        sg._rate_limit_waited = 0
+        outcomes = iter([(1, self.LIMIT), (0, "")])
+        sent = []
+
+        def run(cmd, **kw):
+            sent.append(cmd)
+            code, err = next(outcomes)
+            if code:
+                raise subprocess.CalledProcessError(code, cmd, output="", stderr=err)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        def main_recheck_failing():
+            raise sg.StaleDecision("pending", "could not refresh the decision")
+        with mock.patch.object(sg.subprocess, "run", run), mock.patch.object(sg.time, "sleep"):
+            self.assertEqual(sg._post("o/r", HEAD, "success", "PASS", "", recheck=main_recheck_failing), "pending")
+        self.assertNotIn("state=success", sent[-1])
 
 
 class MergeGroupStepTest(unittest.TestCase):
@@ -636,7 +743,7 @@ class QueueRevocationTest(unittest.TestCase):
         if stacked:  # the second group sits on top of the first, so both carry the PR
             chains[self.G2] = [{"sha": self.G2, "parents": [self.G1, "7" * 40], "message": "Merge pull request #999 from x/z"}, *chains[self.G1]]
 
-        def fake_gh(*args):
+        def fake_gh(*args, **kw):
             path = " ".join(args)
             if "git/matching-refs/heads/gh-readonly-queue/main/" in path or "/branches" in path:
                 lookups.append(path)
@@ -747,7 +854,7 @@ class QueueRevocationTest(unittest.TestCase):
         attempts = []
         real = sg._post
 
-        def spy(github, sha, *rest):
+        def spy(github, sha, *rest, **kw):
             attempts.append(sha)
             return real(github, sha, *rest)
 
@@ -760,7 +867,7 @@ class QueueRevocationTest(unittest.TestCase):
         seen = {}
         real = sg._post
 
-        def spy(github, sha, state, desc, run_url):
+        def spy(github, sha, state, desc, run_url, **kw):
             seen[sha] = (f"state={state}",)
             return real(github, sha, state, desc, run_url)
 
