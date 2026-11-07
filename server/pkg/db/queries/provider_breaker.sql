@@ -22,11 +22,39 @@ ON CONFLICT (workspace_id, provider) DO UPDATE SET
     last_5xx_at = now(), version = provider_breaker.version + 1
 WHERE provider_breaker.version = @expected_version;
 
--- name: GetProviderBreakerVersion :one
-SELECT version FROM provider_breaker WHERE workspace_id = @workspace_id AND provider = @provider;
+-- name: GetProviderBreaker :one
+-- probe_due uses the database clock: NULL next_probe_at counts as due so an
+-- open breaker can never wait without a bound.
+SELECT *, (next_probe_at IS NULL OR next_probe_at <= now())::bool AS probe_due
+FROM provider_breaker WHERE workspace_id = @workspace_id AND provider = @provider;
 
--- name: GetProviderBreakerState :one
-SELECT state FROM provider_breaker WHERE workspace_id = @workspace_id AND provider = @provider;
+-- name: AcquireProviderBreakerCanary :execrows
+-- Moves a due open (or deadline-expired half_open) breaker to half_open bound
+-- to one task. next_probe_at becomes the canary deadline; if the canary never
+-- reports back, the breaker is due again after it.
+UPDATE provider_breaker
+SET state = 'half_open', canary_task_id = @task_id,
+    next_probe_at = now() + make_interval(secs => @canary_deadline_seconds::int),
+    version = version + 1
+WHERE workspace_id = @workspace_id AND provider = @provider
+  AND state IN ('open', 'half_open')
+  AND (next_probe_at IS NULL OR next_probe_at <= now());
+
+-- name: CloseProviderBreakerOnCanary :execrows
+UPDATE provider_breaker
+SET state = 'closed', canary_task_id = NULL, opened_at = NULL, next_probe_at = NULL,
+    cool_off_s = @default_cool_off_seconds, last_success_at = now(), version = version + 1
+WHERE workspace_id = @workspace_id AND provider = @provider
+  AND state = 'half_open' AND canary_task_id = @task_id AND version = @expected_version;
+
+-- name: ReopenProviderBreaker :execrows
+UPDATE provider_breaker
+SET state = 'open', canary_task_id = NULL, opened_at = now(),
+    cool_off_s = LEAST(cool_off_s * 2, @max_cool_off_seconds::int),
+    next_probe_at = now() + make_interval(secs => LEAST(cool_off_s * 2, @max_cool_off_seconds::int)),
+    last_5xx_at = now(), version = version + 1
+WHERE workspace_id = @workspace_id AND provider = @provider
+  AND state = 'half_open' AND canary_task_id = @task_id AND version = @expected_version;
 
 -- name: RecordProviderSuccess :execrows
 INSERT INTO provider_breaker (workspace_id, provider, last_success_at)
