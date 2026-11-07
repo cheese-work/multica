@@ -165,6 +165,46 @@ func (q *Queries) InsertProviderBreakerAudit(ctx context.Context, arg InsertProv
 	return err
 }
 
+const listCompletedTaskModelsSince = `-- name: ListCompletedTaskModelsSince :many
+SELECT a.model, max(t.completed_at)::timestamptz AS completed_at
+FROM agent_task_queue t
+JOIN agent a ON a.id = t.agent_id
+WHERE a.workspace_id = $1
+  AND t.status = 'completed'
+  AND t.completed_at > $2
+GROUP BY a.model
+`
+
+type ListCompletedTaskModelsSinceParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Since       pgtype.Timestamptz `json:"since"`
+}
+
+type ListCompletedTaskModelsSinceRow struct {
+	Model       pgtype.Text        `json:"model"`
+	CompletedAt pgtype.Timestamptz `json:"completed_at"`
+}
+
+func (q *Queries) ListCompletedTaskModelsSince(ctx context.Context, arg ListCompletedTaskModelsSinceParams) ([]ListCompletedTaskModelsSinceRow, error) {
+	rows, err := q.db.Query(ctx, listCompletedTaskModelsSince, arg.WorkspaceID, arg.Since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCompletedTaskModelsSinceRow{}
+	for rows.Next() {
+		var i ListCompletedTaskModelsSinceRow
+		if err := rows.Scan(&i.Model, &i.CompletedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProviderBreakers = `-- name: ListProviderBreakers :many
 SELECT workspace_id, provider, state, opened_at, next_probe_at, cool_off_s, canary_task_id, trip_evidence, last_5xx_at, last_success_at, version FROM provider_breaker WHERE workspace_id = $1 ORDER BY provider
 `

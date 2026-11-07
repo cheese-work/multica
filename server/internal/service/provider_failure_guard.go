@@ -232,11 +232,26 @@ func providerSuccessAfter(ctx context.Context, q *db.Queries, failedTaskID pgtyp
 	if !ok {
 		return time.Time{}, false, nil
 	}
+	// A breaker row exists only after a trip or a hold; one 503 and a plain
+	// success create none. Completed tasks are the evidence; a held or open
+	// breaker still blocks.
 	row, exists, err := providerBreakerRow(ctx, q, agent.WorkspaceID, provider)
-	if err != nil || !exists || row.State != "closed" || !row.LastSuccessAt.Valid || !row.LastSuccessAt.Time.After(failedAt) {
+	if err != nil || (exists && row.State != "closed") {
 		return time.Time{}, false, err
 	}
-	return row.LastSuccessAt.Time.UTC(), true, nil
+	done, err := q.ListCompletedTaskModelsSince(ctx, db.ListCompletedTaskModelsSinceParams{
+		WorkspaceID: agent.WorkspaceID, Since: pgtype.Timestamptz{Time: failedAt, Valid: true},
+	})
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("load same-provider successes: %w", err)
+	}
+	var latest time.Time
+	for _, d := range done {
+		if p, ok := ResolveModelProvider(d.Model.String); ok && p == provider && d.CompletedAt.Time.After(latest) {
+			latest = d.CompletedAt.Time
+		}
+	}
+	return latest.UTC(), !latest.IsZero(), nil
 }
 
 func (s *TaskService) notifyProviderFailureOwner(

@@ -11,6 +11,15 @@ WHERE a.workspace_id = @workspace_id
   AND COALESCE(t.completed_at, t.created_at) >= now() - make_interval(secs => @window_seconds::int)
 ORDER BY COALESCE(t.completed_at, t.created_at) DESC;
 
+-- name: ListCompletedTaskModelsSince :many
+SELECT a.model, max(t.completed_at)::timestamptz AS completed_at
+FROM agent_task_queue t
+JOIN agent a ON a.id = t.agent_id
+WHERE a.workspace_id = @workspace_id
+  AND t.status = 'completed'
+  AND t.completed_at > @since
+GROUP BY a.model;
+
 -- name: OpenProviderBreaker :execrows
 INSERT INTO provider_breaker (workspace_id, provider, state, opened_at, next_probe_at, cool_off_s, trip_evidence, last_5xx_at)
 VALUES (@workspace_id, @provider, 'open', now(), now() + make_interval(secs => @cool_off_seconds::int), @cool_off_seconds, @trip_evidence, now())
