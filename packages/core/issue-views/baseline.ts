@@ -1,4 +1,16 @@
-import type { ActorFilterValue, FilterSnapshot } from "../issues/stores/view-store";
+import type {
+  ActorFilterValue,
+  FilterSnapshot,
+  IssueRelationFilter,
+  NegatableFilterDimension,
+} from "../issues/stores/view-store";
+import {
+  DUE_DATE_FILTERS,
+  ISSUE_RELATION_FILTERS,
+  NEGATABLE_FILTER_DIMENSIONS,
+  type DueDateFilter,
+} from "../issues/stores/view-store";
+import { countAdvancedConditions, sanitizeAdvancedFilter } from "../issues/stores/filter-tree";
 import type { IssuePriority, IssueStatus, ProjectStatus, PropertyFilterValue } from "../types";
 import { isKnownPropertyFilterOp, isPropertyOperatorFilter, propertyFilterValueKey } from "../types";
 import { PRIORITY_DISPLAY_ORDER } from "../issues/config";
@@ -25,6 +37,10 @@ export interface IssueViewBaseline {
   projectStatus: Set<string>;
   workflow: Set<string>;
   label: Set<string>;
+  relation: Set<string>;
+  dueDate: Set<string>;
+  /** Dimensions the view saved as "is not". */
+  negated: Set<NegatableFilterDimension>;
   /** Property definition id → fixed member keys (`propertyFilterValueKey`). */
   property: Map<string, Set<string>>;
   /** Enum-sanitized snapshot, safe to hand straight to `resetFiltersTo`. */
@@ -88,6 +104,25 @@ export function baselineFromQuery(query: Record<string, unknown>): IssueViewBase
   );
   const workflowFilters = stringArray(query.workflowFilters);
   const labelFilters = stringArray(query.labelFilters);
+  const relationFilters = stringArray(query.relationFilters).filter(
+    (r): r is IssueRelationFilter => (ISSUE_RELATION_FILTERS as readonly string[]).includes(r),
+  );
+  const dueDateFilters = [
+    ...new Set(
+      stringArray(query.dueDateFilters).filter((d): d is DueDateFilter =>
+        (DUE_DATE_FILTERS as readonly string[]).includes(d),
+      ),
+    ),
+  ];
+  const advancedFilter = sanitizeAdvancedFilter(query.advancedFilter);
+  const negatedFilters = [
+    ...new Set(
+      stringArray(query.negatedFilters).filter(
+        (d): d is NegatableFilterDimension =>
+          (NEGATABLE_FILTER_DIMENSIONS as readonly string[]).includes(d),
+      ),
+    ),
+  ];
   const includeNoAssignee = query.includeNoAssignee === true;
   const includeNoProject = query.includeNoProject === true;
 
@@ -116,6 +151,9 @@ export function baselineFromQuery(query: Record<string, unknown>): IssueViewBase
     projectStatus: new Set(projectStatusFilters),
     workflow: new Set(workflowFilters),
     label: new Set(labelFilters),
+    relation: new Set(relationFilters),
+    dueDate: new Set(dueDateFilters),
+    negated: new Set(negatedFilters),
     property,
     raw: {
       statusFilters,
@@ -128,7 +166,31 @@ export function baselineFromQuery(query: Record<string, unknown>): IssueViewBase
       projectStatusFilters,
       workflowFilters,
       labelFilters,
+      relationFilters,
+      dueDateFilters,
+      negatedFilters,
       propertyFilters,
+      advancedFilter,
     },
   };
+}
+
+/** How many filter dimensions a saved query constrains, for summaries. */
+export function issueViewFilterCount(query: Record<string, unknown>): number {
+  const { raw } = baselineFromQuery(query);
+  return (
+    [
+      raw.statusFilters.length,
+      raw.priorityFilters.length,
+      raw.assigneeFilters.length || raw.includeNoAssignee,
+      raw.creatorFilters.length,
+      raw.projectFilters.length || raw.includeNoProject,
+      raw.projectStatusFilters.length,
+      raw.labelFilters.length,
+      raw.relationFilters.length,
+      raw.dueDateFilters.length,
+    ].filter(Boolean).length +
+    Object.keys(raw.propertyFilters).length +
+    countAdvancedConditions(raw.advancedFilter)
+  );
 }

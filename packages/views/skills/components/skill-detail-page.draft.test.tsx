@@ -33,7 +33,7 @@ vi.mock("@multica/core/workspace/queries", () => ({
   agentListOptions: (wsId: string) => ({ queryKey: ["agents", wsId], queryFn: () => Promise.resolve([]) }),
   memberListOptions: (wsId: string) => ({
     queryKey: ["members", wsId],
-    queryFn: () => Promise.resolve([{ user_id: "user-1", role: "member" }]),
+    queryFn: () => Promise.resolve([{ user_id: "user-1", role: "member", name: "Ada", email: "ada@example.com", avatar_url: null }]),
   }),
   selectSkillAssignments: () => new Map(),
   workspaceKeys: { skills: (wsId: string) => ["skills", wsId], agents: (wsId: string) => ["agents", wsId] },
@@ -100,12 +100,14 @@ describe("SkillDetailPage unsaved edits", () => {
     const first = mount();
     const name = (await screen.findByDisplayValue("animations")) as HTMLInputElement;
     fireEvent.change(name, { target: { value: "animations-v2" } });
-    fireEvent.change(screen.getByDisplayValue("Animate things"), { target: { value: "Edited" } });
+    // 1.0 layout: the description edits inside a popover opened from its value.
+    fireEvent.click(screen.getByRole("button", { name: "Animate things" }));
+    fireEvent.change(await screen.findByRole("textbox", { name: "Description" }), { target: { value: "Edited" } });
     first.unmount();
 
     const second = mount();
     expect(await screen.findByDisplayValue("animations-v2")).toBeTruthy();
-    expect(screen.getByDisplayValue("Edited")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Edited" })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: /Discard/ }));
     second.unmount();
