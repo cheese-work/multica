@@ -151,6 +151,12 @@ var concurrentIndexCleanups = map[string]string{
 	"937_system1_observation_decision_subject_idx":              "system1_observation_decision_subject",
 	"938_system1_observation_precedent_idx":                     "system1_observation_precedent",
 	"939_system1_observation_routing_subject_idx":               "system1_observation_routing_subject",
+	"994_ci_watch_config_repo_uidx":                             "ci_watch_config_repo_uidx",
+	"995_ci_failure_event_run_attempt_uidx":                     "ci_failure_event_run_attempt_uidx",
+	"996_ci_watch_action_key_uidx":                              "ci_watch_action_key_uidx",
+	"997_ci_signature_owner_signature_uidx":                     "ci_signature_owner_signature_uidx",
+	"998_ci_signature_owner_issue_uidx":                         "ci_signature_owner_issue_uidx",
+	"999_ci_failure_event_created_at_idx":                       "ci_failure_event_created_at_idx",
 	"975_chat_session_chain_root_idx":                           "idx_chat_session_chain_root",
 	"976_chat_attention_item_one_open_later_idx":                "chat_attention_item_one_open_later_idx",
 	"977_chat_attention_item_open_idx":                          "chat_attention_item_open_idx",
@@ -178,6 +184,7 @@ var concurrentIndexCleanups = map[string]string{
 	"734_agent_preset_agent_name_uq":                            "agent_preset_agent_name_uq",
 	"762_run_budget_notice_unique":                              "idx_one_run_budget_notice_per_window",
 	"763_run_budget_notice_workspace_index":                     "idx_run_budget_notice_workspace_id",
+	"903_run_budget_refusal_unique":                             "idx_one_run_budget_refusal_per_window",
 	"805_issue_run_budget_entry_unique":                         "idx_one_issue_run_budget_entry",
 	"806_issue_run_budget_entry_workspace_index":                "idx_issue_run_budget_entry_workspace_id",
 	"759_issue_pr_event_dedupe_index":                           "idx_issue_pr_event_dedupe",
@@ -523,6 +530,41 @@ type requiredConcurrentIndex struct {
 }
 
 var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
+	"994_ci_watch_config_repo_uidx": {
+		IndexRegclass: "ci_watch_config_repo_uidx",
+		TableRegclass: "ci_watch_config",
+		Unique:        true,
+		Columns:       []string{"workspace_id", "repo_owner", "repo_name"},
+	},
+	"995_ci_failure_event_run_attempt_uidx": {
+		IndexRegclass: "ci_failure_event_run_attempt_uidx",
+		TableRegclass: "ci_failure_event",
+		Unique:        true,
+		Columns:       []string{"workspace_id", "repo_owner", "repo_name", "run_id", "run_attempt"},
+	},
+	"996_ci_watch_action_key_uidx": {
+		IndexRegclass: "ci_watch_action_key_uidx",
+		TableRegclass: "ci_watch_action",
+		Unique:        true,
+		Columns:       []string{"workspace_id", "repo_owner", "repo_name", "original_run_id", "action_kind"},
+	},
+	"997_ci_signature_owner_signature_uidx": {
+		IndexRegclass: "ci_signature_owner_signature_uidx",
+		TableRegclass: "ci_signature_owner",
+		Unique:        true,
+		Columns:       []string{"workspace_id", "repo_owner", "repo_name", "signature_hash"},
+	},
+	"998_ci_signature_owner_issue_uidx": {
+		IndexRegclass: "ci_signature_owner_issue_uidx",
+		TableRegclass: "ci_signature_owner",
+		Unique:        true,
+		Columns:       []string{"issue_id"},
+	},
+	"999_ci_failure_event_created_at_idx": {
+		IndexRegclass: "ci_failure_event_created_at_idx",
+		TableRegclass: "ci_failure_event",
+		Columns:       []string{"created_at"},
+	},
 	"971_dm_progress_data_incident_follow_kind_idx": {
 		IndexRegclass: "idx_dm_progress_data_incident_follow_kind",
 		TableRegclass: "dm_progress_data_incident",

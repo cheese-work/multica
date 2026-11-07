@@ -1851,6 +1851,28 @@ export class ApiClient {
     });
   }
 
+  /**
+   * The timeline plus the server's truncation signal. The server keeps the
+   * newest 2000 entries and names the affected kinds in `X-Timeline-Truncated`
+   * ("activity", "comment" or "activity,comment"); `listTimeline` drops that
+   * header. `truncated` is true only when ACTIVITY rows were cut, because
+   * status changes are activity rows (a comment-only cut hides none).
+   */
+  async listTimelineWithMeta(
+    issueId: string,
+  ): Promise<{ entries: TimelineEntry[]; truncated: boolean }> {
+    const res = await this.fetchRaw(`/api/issues/${issueId}/timeline`, {
+      extraHeaders: { "Content-Type": "application/json" },
+    });
+    const raw: unknown = await res.json();
+    return {
+      entries: parseWithFallback(raw, TimelineEntriesSchema, EMPTY_TIMELINE_ENTRIES, {
+        endpoint: "GET /api/issues/:id/timeline",
+      }),
+      truncated: (res.headers.get("X-Timeline-Truncated") ?? "").split(",").includes("activity"),
+    };
+  }
+
   async getAssigneeFrequency(): Promise<AssigneeFrequencyEntry[]> {
     return this.fetch("/api/assignee-frequency");
   }
@@ -3255,7 +3277,7 @@ export class ApiClient {
     });
   }
 
-  async updateWorkspace(id: string, data: { name?: string; description?: string; context?: string; settings?: Record<string, unknown>; repos?: WorkspaceRepo[]; issue_prefix?: string; avatar_url?: string; compact_prompt?: string | null; wakeups_paused?: boolean; auto_compact?: { enabled?: boolean; threshold_pct?: number } | null; idle_started_guard?: { mode?: "off" | "shadow" | "act"; after_hours?: number }; github_review_members?: Record<string, string>; github_review_authors?: Record<string, string> }): Promise<Workspace> {
+  async updateWorkspace(id: string, data: { name?: string; description?: string; context?: string; settings?: Record<string, unknown>; repos?: WorkspaceRepo[]; issue_prefix?: string; avatar_url?: string; compact_prompt?: string | null; wakeups_paused?: boolean; auto_compact?: { enabled?: boolean; threshold_pct?: number; threshold_tokens_200k?: number; threshold_tokens_1m?: number } | null; idle_started_guard?: { mode?: "off" | "shadow" | "act"; after_hours?: number }; github_review_members?: Record<string, string>; github_review_authors?: Record<string, string> }): Promise<Workspace> {
     return this.fetch(`/api/workspaces/${id}`, {
       method: "PATCH",
       body: JSON.stringify(data),

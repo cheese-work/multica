@@ -255,9 +255,11 @@ JOIN issue ON issue.id = wait.issue_id AND issue.workspace_id = wait.workspace_i
 JOIN agent asker ON asker.id = wait.asking_agent_id AND asker.workspace_id = wait.workspace_id
 LEFT JOIN project ON project.id = issue.project_id AND project.workspace_id = issue.workspace_id
 WHERE wait.closed_at IS NULL
-  AND issue.status NOT IN ('done', 'cancelled', 'agent_accepted', 'approved')
-  AND asker.archived_at IS NULL AND asker.runtime_id IS NOT NULL AND asker.kind <> 'system'
   AND (
+    issue.status IN ('done', 'cancelled', 'agent_accepted', 'approved')
+    OR asker.archived_at IS NOT NULL OR asker.runtime_id IS NULL OR asker.kind = 'system'
+    OR (
+  (
         (wait.phase = 'waiting' OR wait.suspend_reason = 'status_moved'
          OR (wait.suspend_reason = 'run_budget' AND (
              EXISTS (
@@ -294,6 +296,8 @@ WHERE wait.closed_at IS NULL
       WHERE bound.id = ANY(wait.request_ids) AND bound.status = 'answered'
         AND live.disclaimed_at IS NULL AND live.woken_at IS NULL AND (live.wake_at IS NULL OR live.wake_at > clock_timestamp())
   )
+    )
+  )
 ORDER BY (wait.dispatch_refused_since IS NOT NULL),
   CASE WHEN wait.dispatch_refused_since IS NOT NULL THEN md5(wait.id::text || $1::bigint::text) END,
   wait.id
@@ -305,10 +309,11 @@ type ListDecisionEpisodeCandidatesParams struct {
 	BatchSize int32 `json:"batch_size"`
 }
 
-// Non-closed episodes that §6 can deliver now (design §4.4.1, clauses 2-4).
-// Closed-issue and unavailable-agent episodes are system-close candidates
-// (clause 1); the system close is L5d (design §11), so they stay out of the
-// batch here: an episode that cannot progress must not take a batch slot.
+// Non-closed episodes that §6 can act on now (design §4.4.1). A closed issue
+// or an unavailable asking agent makes the episode a system-close candidate
+// (clause 1) whatever its requests say. Otherwise it is a candidate when it
+// can deliver (clauses 2-4): an episode that cannot progress must not take a
+// batch slot.
 // Episodes with a refused dispatch sort last, in an order that rotates with
 // the rotation argument, so a batch of persistent refusals cannot hold every
 // slot while a later one could now dispatch. The run-budget resume condition
@@ -316,6 +321,72 @@ type ListDecisionEpisodeCandidatesParams struct {
 // start; the delivery transaction re-checks it exactly.
 func (q *Queries) ListDecisionEpisodeCandidates(ctx context.Context, arg ListDecisionEpisodeCandidatesParams) ([]DecisionWait, error) {
 	rows, err := q.db.Query(ctx, listDecisionEpisodeCandidates, arg.Rotation, arg.BatchSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DecisionWait{}
+	for rows.Next() {
+		var i DecisionWait
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.AskingAgentID,
+			&i.AskingTaskID,
+			&i.ResumeSquadID,
+			&i.HumanUserID,
+			&i.RequestIds,
+			&i.IntentIds,
+			&i.GroupAckIntentIds,
+			&i.RestoreStatus,
+			&i.RestoreAssigneeType,
+			&i.RestoreAssigneeID,
+			&i.RestoreOnResume,
+			&i.Phase,
+			&i.SuspendReason,
+			&i.SuspendedAt,
+			&i.RefusedTaskID,
+			&i.EnteredAt,
+			&i.ReminderDueAt,
+			&i.ReminderDeliveredAt,
+			&i.DispatchRefusedSince,
+			&i.ClosedAt,
+			&i.CloseReason,
+			&i.ResumeTaskID,
+			&i.ResumeOutcome,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDecisionReminderCandidates = `-- name: ListDecisionReminderCandidates :many
+SELECT wait.id, wait.workspace_id, wait.issue_id, wait.asking_agent_id, wait.asking_task_id, wait.resume_squad_id, wait.human_user_id, wait.request_ids, wait.intent_ids, wait.group_ack_intent_ids, wait.restore_status, wait.restore_assignee_type, wait.restore_assignee_id, wait.restore_on_resume, wait.phase, wait.suspend_reason, wait.suspended_at, wait.refused_task_id, wait.entered_at, wait.reminder_due_at, wait.reminder_delivered_at, wait.dispatch_refused_since, wait.closed_at, wait.close_reason, wait.resume_task_id, wait.resume_outcome FROM decision_wait wait
+WHERE wait.closed_at IS NULL AND wait.phase = 'waiting'
+  AND wait.reminder_delivered_at IS NULL AND wait.reminder_due_at <= now()
+  AND EXISTS (
+      SELECT 1 FROM decision_request bound
+      WHERE bound.authority = 'human' AND bound.id = ANY(wait.request_ids) AND bound.status = 'open'
+        AND bound.human_user_id = wait.human_user_id
+  )
+  AND EXISTS (
+      SELECT 1 FROM member WHERE member.workspace_id = wait.workspace_id AND member.user_id = wait.human_user_id
+  )
+ORDER BY wait.reminder_due_at, wait.id
+LIMIT LEAST(GREATEST($1::int, 0), 100)
+`
+
+// Waiting episodes whose one reminder is due (design §4.6). The filters match
+// what the delivery transaction re-checks, so an episode that cannot be
+// reminded never takes a batch slot.
+func (q *Queries) ListDecisionReminderCandidates(ctx context.Context, batchSize int32) ([]DecisionWait, error) {
+	rows, err := q.db.Query(ctx, listDecisionReminderCandidates, batchSize)
 	if err != nil {
 		return nil, err
 	}
@@ -501,6 +572,39 @@ func (q *Queries) ListDecisionWaitBoundRequests(ctx context.Context, arg ListDec
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDecisionWaitExpiredActionRequests = `-- name: ListDecisionWaitExpiredActionRequests :many
+SELECT action.decision_request_id FROM decision_action action
+WHERE action.workspace_id = $1 AND action.state = 'expired'
+  AND action.decision_request_id = ANY($2::uuid[])
+`
+
+type ListDecisionWaitExpiredActionRequestsParams struct {
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	RequestIds  []pgtype.UUID `json:"request_ids"`
+}
+
+// Bound requests whose prepared action expired: the episode closes
+// action_expired, not expired (design §6.1 priority 3).
+func (q *Queries) ListDecisionWaitExpiredActionRequests(ctx context.Context, arg ListDecisionWaitExpiredActionRequestsParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listDecisionWaitExpiredActionRequests, arg.WorkspaceID, arg.RequestIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var decision_request_id pgtype.UUID
+		if err := rows.Scan(&decision_request_id); err != nil {
+			return nil, err
+		}
+		items = append(items, decision_request_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -764,6 +868,43 @@ func (q *Queries) LockDecisionWait(ctx context.Context, arg LockDecisionWaitPara
 	return i, err
 }
 
+const markDecisionReminderDelivered = `-- name: MarkDecisionReminderDelivered :execrows
+UPDATE decision_wait SET reminder_delivered_at = now()
+WHERE workspace_id = $1 AND id = $2
+  AND closed_at IS NULL AND reminder_delivered_at IS NULL
+`
+
+type MarkDecisionReminderDeliveredParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) MarkDecisionReminderDelivered(ctx context.Context, arg MarkDecisionReminderDeliveredParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markDecisionReminderDelivered, arg.WorkspaceID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const markDecisionWaitCloseRefused = `-- name: MarkDecisionWaitCloseRefused :exec
+UPDATE decision_wait SET dispatch_refused_since = now()
+WHERE workspace_id = $1 AND id = $2
+  AND dispatch_refused_since IS NULL AND closed_at IS NULL
+`
+
+type MarkDecisionWaitCloseRefusedParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+// A system close that cannot complete (no blocked step for no_resume_agent)
+// demotes the episode in any phase, so suspended ones rotate out of the batch too.
+func (q *Queries) MarkDecisionWaitCloseRefused(ctx context.Context, arg MarkDecisionWaitCloseRefusedParams) error {
+	_, err := q.db.Exec(ctx, markDecisionWaitCloseRefused, arg.WorkspaceID, arg.ID)
+	return err
+}
+
 const markDecisionWaitDispatchRefused = `-- name: MarkDecisionWaitDispatchRefused :exec
 UPDATE decision_wait SET dispatch_refused_since = now()
 WHERE workspace_id = $1 AND id = $2
@@ -918,4 +1059,71 @@ func (q *Queries) RecordDecisionWaitResume(ctx context.Context, arg RecordDecisi
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const suspendDecisionWait = `-- name: SuspendDecisionWait :one
+UPDATE decision_wait SET
+    phase = 'suspended', suspend_reason = $1, suspended_at = now(),
+    refused_task_id = $2, dispatch_refused_since = NULL,
+    restore_status = $3, restore_assignee_type = $4,
+    restore_assignee_id = $5, restore_on_resume = $6
+WHERE id = $7 AND workspace_id = $8 AND closed_at IS NULL
+RETURNING id, workspace_id, issue_id, asking_agent_id, asking_task_id, resume_squad_id, human_user_id, request_ids, intent_ids, group_ack_intent_ids, restore_status, restore_assignee_type, restore_assignee_id, restore_on_resume, phase, suspend_reason, suspended_at, refused_task_id, entered_at, reminder_due_at, reminder_delivered_at, dispatch_refused_since, closed_at, close_reason, resume_task_id, resume_outcome
+`
+
+type SuspendDecisionWaitParams struct {
+	SuspendReason       pgtype.Text `json:"suspend_reason"`
+	RefusedTaskID       pgtype.UUID `json:"refused_task_id"`
+	RestoreStatus       string      `json:"restore_status"`
+	RestoreAssigneeType pgtype.Text `json:"restore_assignee_type"`
+	RestoreAssigneeID   pgtype.UUID `json:"restore_assignee_id"`
+	RestoreOnResume     bool        `json:"restore_on_resume"`
+	ID                  pgtype.UUID `json:"id"`
+	WorkspaceID         pgtype.UUID `json:"workspace_id"`
+}
+
+// The suspension write of a refusal (design §4.4.7): kind, clock, conflicting
+// task and the restore target the capture rule chose. The caller runs it last,
+// after the block write, so the status hook's flag change cannot override it.
+func (q *Queries) SuspendDecisionWait(ctx context.Context, arg SuspendDecisionWaitParams) (DecisionWait, error) {
+	row := q.db.QueryRow(ctx, suspendDecisionWait,
+		arg.SuspendReason,
+		arg.RefusedTaskID,
+		arg.RestoreStatus,
+		arg.RestoreAssigneeType,
+		arg.RestoreAssigneeID,
+		arg.RestoreOnResume,
+		arg.ID,
+		arg.WorkspaceID,
+	)
+	var i DecisionWait
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.AskingAgentID,
+		&i.AskingTaskID,
+		&i.ResumeSquadID,
+		&i.HumanUserID,
+		&i.RequestIds,
+		&i.IntentIds,
+		&i.GroupAckIntentIds,
+		&i.RestoreStatus,
+		&i.RestoreAssigneeType,
+		&i.RestoreAssigneeID,
+		&i.RestoreOnResume,
+		&i.Phase,
+		&i.SuspendReason,
+		&i.SuspendedAt,
+		&i.RefusedTaskID,
+		&i.EnteredAt,
+		&i.ReminderDueAt,
+		&i.ReminderDeliveredAt,
+		&i.DispatchRefusedSince,
+		&i.ClosedAt,
+		&i.CloseReason,
+		&i.ResumeTaskID,
+		&i.ResumeOutcome,
+	)
+	return i, err
 }

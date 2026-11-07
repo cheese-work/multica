@@ -34,6 +34,7 @@ import { AgentMcpTab } from "./tabs/agent-mcp-tab";
 import { IntegrationsTab } from "./tabs/integrations-tab";
 import { QoderAgentTab } from "./tabs/qoder-agent-tab";
 import { RuntimeConfigTab } from "./tabs/runtime-config-tab";
+import { AgentAutoCompactSection } from "./agent-auto-compact-section";
 import { AgentDetailInspector } from "./agent-detail-inspector";
 import { AgentAccessSettings } from "./agent-access-settings";
 import { AgentOverviewSummary } from "./agent-overview-summary";
@@ -498,15 +499,23 @@ export function AgentOverviewPane({
                     <IntegrationsTab agent={agent} />
                   )}
                   {effectiveView === "general" && (
-                    <AgentDetailInspector
-                      agent={agent}
-                      runtime={runtime}
-                      runtimes={runtimes}
-                      members={members}
-                      currentUserId={currentUserId ?? null}
-                      canEdit={canEdit}
-                      onUpdate={onUpdate}
-                    />
+                    <>
+                      <AgentDetailInspector
+                        agent={agent}
+                        runtime={runtime}
+                        runtimes={runtimes}
+                        members={members}
+                        currentUserId={currentUserId ?? null}
+                        canEdit={canEdit}
+                        onUpdate={onUpdate}
+                      />
+                      <AgentAutoCompactSection
+                        key={agent.id}
+                        agent={agent}
+                        canEdit={canEdit}
+                        onUpdate={onUpdate}
+                      />
+                    </>
                   )}
                   {effectiveView === "access" && (
                     <AgentAccessSettings
