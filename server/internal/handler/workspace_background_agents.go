@@ -235,6 +235,16 @@ func (h *Handler) writeBackgroundAgents(ctx context.Context, member db.Member, m
 			return nil, nil, err
 		}
 	}
+	// A changed job drops the queued work its old workspace chain produced; a
+	// user-sourced task keeps running. Same transaction, so a failed cancel
+	// rolls the setting back too.
+	for _, c := range changes {
+		rows, err := service.CancelBackgroundTasksForJob(ctx, q, member.WorkspaceID, c.Job)
+		if err != nil {
+			return nil, nil, err
+		}
+		cancelled = append(cancelled, rows...)
+	}
 	return changes, cancelled, tx.Commit(ctx)
 }
 

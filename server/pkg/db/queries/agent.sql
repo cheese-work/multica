@@ -516,6 +516,46 @@ WHERE lock_task_owner_rows($1, NULL, $2)
   AND lock_active_project(NULLIF($4::jsonb->>'project_id','')::uuid, (SELECT a.workspace_id FROM agent a WHERE a.id=$1))
 RETURNING *;
 
+-- name: CreateBackgroundTask :one
+-- Output-only background job (CHE-4099). Like CreateQuickCreateTask: no issue,
+-- chat or autopilot link, fenced against workspace teardown by
+-- lock_task_owner_rows. The input, chain_source, member_id, slot and deadlines
+-- live in context; purpose ('bg:<job>') selects the completion writer.
+INSERT INTO agent_task_queue (
+    agent_id, runtime_id, issue_id, status, priority, context, purpose,
+    originator_user_id, accountable_user_id,
+    originator_source, trigger_evidence_kind, trigger_evidence_ref_id,
+    id
+)
+SELECT
+    $1, $2, NULL, 'queued', $3, $4, $5,
+    sqlc.narg(originator_user_id),
+    sqlc.narg(accountable_user_id),
+    sqlc.narg(originator_source),
+    sqlc.narg(trigger_evidence_kind),
+    sqlc.narg(trigger_evidence_ref_id),
+    COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
+WHERE lock_task_owner_rows($1, NULL, $2)
+RETURNING *;
+
+-- name: CancelBackgroundTasksByPurposeAndSource :many
+-- A workspace-scope change to one job cancels that job's non-terminal tasks
+-- whose chain came from the workspace setting. User-sourced tasks are left alone.
+-- Runs in the same transaction as the settings write (CHE-4098); returns the
+-- rows so the caller can settle and broadcast.
+UPDATE agent_task_queue
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
+    cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
+WHERE id IN (
+    SELECT atq.id FROM agent_task_queue atq
+    JOIN agent a ON a.id = atq.agent_id
+    WHERE a.workspace_id = @workspace_id
+      AND atq.purpose = @purpose
+      AND atq.context->>'chain_source' = 'workspace'
+      AND atq.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+)
+RETURNING *;
+
 -- name: LinkTaskToIssue :exec
 -- Fenced against workspace teardown: lock_task_owner_rows (migration 284)
 -- locks the owners' workspace rows in the writer's own transaction and returns
