@@ -47,8 +47,7 @@ test("release.yml leaves the Go cache to the disk on a self-hosted runner", () =
 // for this public repository. CHE-3128 had moved it to a dedicated X99 lane. The trust boundary
 // is unchanged: the job runs the default-branch definition.
 test("security-gate.yml runs on a GitHub-hosted runner", () => {
-  // Two hosted jobs: the gate and the secret-free queue-handoff (CHE-4251). CHE-4385: mechanical-tier is a
-  // reusable-workflow call with no runner of its own.
+  // Two hosted jobs: the gate and the secret-free queue-handoff (CHE-4251). mechanical-tier (CHE-4385) is a reusable-workflow call with no runner of its own.
   const lines = runsOn(read("security-gate.yml"));
   assert.equal(lines.length, 2);
   for (const line of lines) {
