@@ -974,7 +974,7 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if machine {
-		if err := h.verifyWorkflowWrite(ctx, qtx, r, wsUUID, current.ID, req.DecisionBindingFields, currentSteps, steps); err != nil {
+		if err := h.verifyWorkflowWrite(ctx, tx, qtx, r, wsUUID, current.ID, req.DecisionBindingFields, currentSteps, steps); err != nil {
 			writeDecisionError(w, err, "workflow write")
 			return
 		}
@@ -1422,7 +1422,7 @@ func (h *Handler) SetIssueWorkflowHandoff(w http.ResponseWriter, r *http.Request
 		}
 	}
 	if machine {
-		if err := h.verifyWorkflowWrite(ctx, qtx, r, wsUUID, def.ID, req.DecisionBindingFields, previous, def.Steps); err != nil {
+		if err := h.verifyWorkflowWrite(ctx, tx, qtx, r, wsUUID, def.ID, req.DecisionBindingFields, previous, def.Steps); err != nil {
 			writeDecisionError(w, err, "workflow write")
 			return
 		}

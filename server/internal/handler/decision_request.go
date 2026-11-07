@@ -66,10 +66,10 @@ type decisionRequestResult struct {
 	// no item for a departed recipient" from "not yet recorded".
 	PingItem     *db.InboxItem
 	PingRecorded bool
-	// Parked is set when this request moved the issue to its waiting status;
-	// ParkedIssue is the issue as written.
-	Parked      bool
-	ParkedIssue db.Issue
+	// ParkedActivity is the status row of the move to the waiting status, nil
+	// when this request made none; ParkedIssue is the issue as written.
+	ParkedIssue    db.Issue
+	ParkedActivity *db.ActivityLog
 }
 
 func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Issue, input decisionRequestInput) (decisionRequestResult, error) {
@@ -438,7 +438,7 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	if err != nil {
 		return empty, err
 	}
-	if result.ParkedIssue, result.Parked, err = parkIssueForDecision(ctx, queries, issue); err != nil {
+	if result.ParkedIssue, result.ParkedActivity, err = parkIssueForDecision(ctx, queries, issue); err != nil {
 		return empty, err
 	}
 	if err := transaction.Commit(ctx); err != nil {
@@ -699,7 +699,7 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 	}
 	result.PingRecorded = true
 	if !inDM { // the DM's task is not the issue's: the anchor stays as it is
-		if result.ParkedIssue, result.Parked, err = parkIssueForDecision(ctx, queries, issue); err != nil {
+		if result.ParkedIssue, result.ParkedActivity, err = parkIssueForDecision(ctx, queries, issue); err != nil {
 			return empty, err
 		}
 	}

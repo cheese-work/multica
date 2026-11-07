@@ -393,4 +393,33 @@ describe("selection to reply", () => {
     action.dispatchEvent(event);
     expect(event.defaultPrevented).toBe(false);
   });
+
+  it("opens the action when a drag starts in the gutter and ends in the text", async () => {
+    const { container } = renderWithI18n(<Fixture />);
+    const source = container.querySelector<HTMLElement>("[data-comment-content]")!;
+    const gutter = source.parentElement!;
+    fireEvent.pointerDown(gutter, { pointerType: "mouse", button: 0 });
+    const range = document.createRange();
+    range.selectNodeContents(source);
+    act(() => { window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range); });
+    fireEvent.pointerUp(source);
+    expect(await screen.findByRole("button", { name: "Add to reply" })).toBeInTheDocument();
+  });
+
+  it.each([
+    { key: "End", shiftKey: true },
+    { key: "Home", shiftKey: true },
+    { key: "PageDown", shiftKey: true },
+    { key: "a", ctrlKey: true },
+    { key: "a", metaKey: true },
+  ])("opens the action after the keyboard selection %o", async (keys) => {
+    const { container } = renderWithI18n(<Fixture />);
+    const source = container.querySelector<HTMLElement>("[data-comment-content]")!;
+    source.focus();
+    const range = document.createRange();
+    range.selectNodeContents(source);
+    act(() => { window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range); });
+    fireEvent.keyUp(source, keys);
+    expect(await screen.findByRole("button", { name: "Add to reply" })).toBeInTheDocument();
+  });
 });

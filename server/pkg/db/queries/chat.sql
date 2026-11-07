@@ -2106,6 +2106,34 @@ JOIN chat_session cs ON cs.id = t.chat_session_id
 WHERE t.id = $1
 FOR UPDATE OF cs;
 
+-- name: LockChatSessionsByIDs :many
+-- Batch terminators lock the sessions of the chat tasks they are about to end.
+-- ORDER BY id keeps two batches from deadlocking against each other.
+SELECT id FROM chat_session
+WHERE id = ANY(@ids::uuid[])
+ORDER BY id
+FOR UPDATE;
+
+-- name: LockChatSessionsForRuntimes :many
+-- Session half of every runtime-wide teardown (member revocation, runtime
+-- delete). The one lock order is chat_session -> agent -> agent_task_queue:
+-- chat enqueue takes the session then the agent, so a teardown that archives or
+-- locks the runtime's agents must already hold the sessions of those agents,
+-- or the two deadlock. Covers sessions of agents bound to the runtimes and
+-- sessions of any active task pinned to them. ORDER BY id keeps two
+-- teardowns from deadlocking against each other.
+SELECT cs.id FROM chat_session cs
+WHERE cs.agent_id IN (SELECT a.id FROM agent a WHERE a.runtime_id = ANY(@runtime_ids::uuid[]))
+   OR EXISTS (
+        SELECT 1 FROM agent_task_queue task
+        WHERE task.chat_session_id = cs.id
+          AND task.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+          AND (task.runtime_id = ANY(@runtime_ids::uuid[])
+               OR task.agent_id IN (SELECT a.id FROM agent a WHERE a.runtime_id = ANY(@runtime_ids::uuid[])))
+   )
+ORDER BY cs.id
+FOR UPDATE OF cs;
+
 -- name: LockChatSessionsByWorkspace :many
 -- ORDER BY id: a stable lock order keeps two concurrent deleters from
 -- deadlocking against each other.
