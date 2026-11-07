@@ -1996,6 +1996,12 @@ type IssueRunBudgetEntry struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type IssueRunTaint struct {
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	TaintIds    []string    `json:"taint_ids"`
+}
+
 type IssueSearchText struct {
 	IssueID            pgtype.UUID `json:"issue_id"`
 	WorkspaceID        pgtype.UUID `json:"workspace_id"`
@@ -2764,6 +2770,8 @@ type RunBudgetRefusal struct {
 	ResumeWindowID       pgtype.Text        `json:"resume_window_id"`
 	CreatedAt            pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+	HookGeneration       int32              `json:"hook_generation"`
+	TaintIds             []string           `json:"taint_ids"`
 }
 
 type RunCapabilityGrant struct {
