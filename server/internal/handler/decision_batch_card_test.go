@@ -579,45 +579,90 @@ func TestEveryBatchAnswerWithdrawalReopensTheCoveredCards(test *testing.T) {
 			}
 		},
 	}
-	for name, withdraw := range paths {
-		test.Run(name, func(test *testing.T) {
-			resetDecisionLease(test)
-			fixture := newBatchFixture(test, 2)
-			for _, card := range fixture.covered {
-				dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, card.taskID, card.chatTaskID)
+	// A covered card's DM can be gone by the time its batch answer is withdrawn
+	// (CHE-4453 round 8): the withdrawal must still finish, cancelling the card
+	// whose lane no longer exists instead of reopening it.
+	for _, dmDeleted := range []bool{false, true} {
+		for name, withdraw := range paths {
+			if dmDeleted {
+				name += " with a covered DM deleted"
 			}
-			result, err := fixture.answerAcknowledged(test, "Option B")
-			if err != nil {
-				test.Fatal(err)
-			}
-			withdraw(test, fixture, result)
-			if name != "lifecycle cancel" && name != "source issue deleted" && dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1 AND disclaimed_at IS NULL`, fixture.batch.decision.ID) > 0 {
-				test.Fatal("batch answer is still live after the withdrawal")
-			}
-			for _, card := range fixture.covered {
-				var status string
-				var by *string
-				dbfx.QueryRow(test, `SELECT status, answered_by_batch_request_id::text FROM decision_request WHERE id = $1`, card.decision.ID).Scan(&status, &by)
-				if status != "open" || by != nil {
-					test.Fatalf("covered card %s: status=%s answered_by_batch=%v, want open and unfolded", uuidToString(card.decision.ID), status, by)
+			test.Run(name, func(test *testing.T) {
+				resetDecisionLease(test)
+				fixture := newBatchFixture(test, 2)
+				for _, card := range fixture.covered {
+					dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, card.taskID, card.chatTaskID)
 				}
-				if live := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1 AND disclaimed_at IS NULL`, card.decision.ID); live != 0 {
-					test.Fatalf("covered card %s keeps %d live answers", uuidToString(card.decision.ID), live)
+				result, err := fixture.answerAcknowledged(test, "Option B")
+				if err != nil {
+					test.Fatal(err)
 				}
-			}
-			// Later delivery must not resurrect a withdrawn answer.
-			_, runner := newDecisionRunnerFixture(test)
-			for range 2 {
-				decisionPass(test, runner)
-			}
-			for _, card := range fixture.covered {
-				if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'running')`, card.issueID, card.agentID); count != 0 {
-					test.Fatalf("covered card %s woke its agent %d times after the withdrawal", uuidToString(card.decision.ID), count)
+				if dmDeleted {
+					dbfx.Exec(test, `DELETE FROM chat_message WHERE chat_session_id = $1`, fixture.covered[0].sessionID)
+					dbfx.Exec(test, `DELETE FROM chat_session WHERE id = $1`, fixture.covered[0].sessionID)
 				}
-				if live := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1 AND disclaimed_at IS NULL`, card.decision.ID); live != 0 {
-					test.Fatalf("covered card %s has %d live answers after delivery", uuidToString(card.decision.ID), live)
+				withdraw(test, fixture, result)
+				if !strings.HasPrefix(name, "lifecycle cancel") && !strings.HasPrefix(name, "source issue deleted") && dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1 AND disclaimed_at IS NULL`, fixture.batch.decision.ID) > 0 {
+					test.Fatal("batch answer is still live after the withdrawal")
 				}
-			}
-		})
+				for index, card := range fixture.covered {
+					var status string
+					var by *string
+					dbfx.QueryRow(test, `SELECT status, answered_by_batch_request_id::text FROM decision_request WHERE id = $1`, card.decision.ID).Scan(&status, &by)
+					if dmDeleted && index == 0 {
+						if status != "cancelled" {
+							test.Fatalf("covered card %s with its DM deleted: status=%s, want cancelled", uuidToString(card.decision.ID), status)
+						}
+					} else if status != "open" || by != nil {
+						test.Fatalf("covered card %s: status=%s answered_by_batch=%v, want open and unfolded", uuidToString(card.decision.ID), status, by)
+					}
+					if live := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1 AND disclaimed_at IS NULL`, card.decision.ID); live != 0 {
+						test.Fatalf("covered card %s keeps %d live answers", uuidToString(card.decision.ID), live)
+					}
+				}
+				// Later delivery must not resurrect a withdrawn answer.
+				_, runner := newDecisionRunnerFixture(test)
+				for range 2 {
+					decisionPass(test, runner)
+				}
+				for index, card := range fixture.covered {
+					// The one run a card with a deleted DM may have is the re-ask notice its
+					// asking agent is owed; a withdrawn answer wakes nothing, and more passes add nothing.
+					want := 0
+					if dmDeleted && index == 0 {
+						want = 1
+					}
+					for range 2 {
+						decisionPass(test, runner)
+					}
+					if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'running')`, card.issueID, card.agentID); count != want {
+						test.Fatalf("covered card %s has %d queued runs after the withdrawal, want %d", uuidToString(card.decision.ID), count, want)
+					}
+					if live := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1 AND disclaimed_at IS NULL`, card.decision.ID); live != 0 {
+						test.Fatalf("covered card %s has %d live answers after delivery", uuidToString(card.decision.ID), live)
+					}
+				}
+			})
+		}
+	}
+}
+
+// A covered card's answer keeps its DM: the session retention query names a
+// card a batch answer closed, so deleting the DM is refused like any other
+// referenced DM (CHE-4453 round 8).
+func TestDeletingTheDMOfACardABatchAnswerClosedIsRefused(test *testing.T) {
+	resetDecisionLease(test)
+	fixture := newBatchFixture(test, 2)
+	if _, err := fixture.answerAcknowledged(test, "Option B"); err != nil {
+		test.Fatal(err)
+	}
+	for _, card := range fixture.covered {
+		references, err := testHandler.Queries.ListDecisionSessionReferences(context.Background(), db.ListDecisionSessionReferencesParams{WorkspaceID: card.issue.WorkspaceID, SessionID: parseUUID(card.sessionID)})
+		if err != nil {
+			test.Fatal(err)
+		}
+		if len(references) == 0 {
+			test.Fatalf("DM %s of covered card %s is not retained after the batch answer", card.sessionID, uuidToString(card.decision.ID))
+		}
 	}
 }

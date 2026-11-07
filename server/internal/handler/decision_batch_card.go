@@ -265,11 +265,16 @@ func withdrawCoveredAnswers(ctx context.Context, queries *db.Queries, batch db.D
 		if err != nil {
 			return err
 		}
+		// A card whose DM is gone cannot reopen there: withdraw it as an archived lane
+		// (cancelled) so the batch and every covered answer still end in one transaction.
+		laneStatus := "archived"
 		session, err := queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{WorkspaceID: card.WorkspaceID, ID: card.ChatSessionID})
-		if err != nil {
+		if err == nil {
+			laneStatus = session.Status
+		} else if !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		withdrawn, err := decisiontx.Withdraw(ctx, queries, card, answer, session.Status, "human", userID)
+		withdrawn, err := decisiontx.Withdraw(ctx, queries, card, answer, laneStatus, "human", userID)
 		if err != nil {
 			return err
 		}

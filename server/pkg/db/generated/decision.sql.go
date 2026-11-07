@@ -1699,6 +1699,9 @@ LEFT JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.
 LEFT JOIN workspace ON workspace.id = request.workspace_id
 WHERE request.authority = 'human' AND request.workspace_id = $1 AND (
     (request.status = 'open' AND request.chat_session_id = $2)
+    -- A card a batch answer closed keeps its DM while that answer stands: withdrawing
+    -- the batch answer reopens the card there.
+    OR (request.status = 'answered' AND request.answered_by_batch_request_id IS NOT NULL AND request.chat_session_id = $2)
     OR EXISTS (
         SELECT 1 FROM decision_answer answer
         WHERE answer.decision_request_id = request.id AND answer.source_chat_session_id = $2
