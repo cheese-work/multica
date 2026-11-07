@@ -125,6 +125,16 @@ describe("DecisionActionApproval", () => {
     expect(api.approveDecisionAction).not.toHaveBeenCalled();
   });
 
+  it("still lets the user reject after the no-passkey prompt", async () => {
+    api.challengeDecisionAction.mockRejectedValue(new ApiError("no_passkey: enroll a passkey before approving", 409, "Conflict"));
+    api.rejectDecisionAction.mockResolvedValue(outcome("rejected"));
+    await renderApproval().approve();
+    await screen.findByRole("button", { name: "Add a passkey" });
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+    expect(await screen.findByText("Rejected")).toBeTruthy();
+    expect(api.rejectDecisionAction).toHaveBeenCalledWith("a1");
+  });
+
   it("reads the outcome after a lost response and never approves twice", async () => {
     api.approveDecisionAction.mockRejectedValue(new TypeError("network error"));
     api.getDecisionActionOutcome.mockResolvedValueOnce(outcome("pending")).mockResolvedValueOnce(outcome("pending")).mockResolvedValueOnce(outcome("executed"));

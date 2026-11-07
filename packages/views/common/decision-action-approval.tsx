@@ -149,7 +149,10 @@ export function DecisionActionApproval({
     return (
       <div className="space-y-1 text-label">
         <p role="alert" className="text-caption">{t(($) => $.decision_action.no_passkey)}</p>
-        {onEnroll && <Button size="sm" onClick={onEnroll}>{t(($) => $.decision_action.add_passkey)}</Button>}
+        <div className="flex flex-wrap gap-2">
+          {onEnroll && <Button size="sm" onClick={onEnroll}>{t(($) => $.decision_action.add_passkey)}</Button>}
+          <Button size="sm" variant="outline" onClick={reject}>{t(($) => $.decision_action.reject)}</Button>
+        </div>
       </div>
     );
   }
