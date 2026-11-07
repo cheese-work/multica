@@ -265,7 +265,7 @@ const (
 // would be equivalent for correctness but would not let us distinguish "not
 // found" from "digest mismatch" for the error response, and would not let
 // us assert the workspace ID in the same round trip.
-func (h *Handler) hermesExceptionVerifyAndSwapWorkspaceContext(ctx context.Context, workspaceID string, req hermesExceptionRequest) (hermesExceptionSwapResult, hermesExceptionRejectReason, error) {
+func (h *Handler) hermesExceptionVerifyAndSwapWorkspaceContext(ctx context.Context, r *http.Request, workspaceID string, req hermesExceptionRequest) (hermesExceptionSwapResult, hermesExceptionRejectReason, error) {
 	if !isWellFormedDigestHex(req.ExpectedBeforeDigest) {
 		return hermesExceptionSwapResult{}, hermesExceptionRejectMalformedDigest, nil
 	}
@@ -311,11 +311,16 @@ func (h *Handler) hermesExceptionVerifyAndSwapWorkspaceContext(ctx context.Conte
 		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal, err
 	}
 
+	result := hermesExceptionSwapResult{BeforeDigest: beforeDigest, AfterDigest: afterDigest, BeforeText: string(currentBytes), AfterText: req.NewContent}
+	if err := h.auditGovernedWrite(ctx, tx, r, ownerCASWorkspaceContext, workspaceID, workspaceID, result); err != nil {
+		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal, err
 	}
 
-	return hermesExceptionSwapResult{BeforeDigest: beforeDigest, AfterDigest: afterDigest}, hermesExceptionRejectNone, nil
+	return result, hermesExceptionRejectNone, nil
 }
 
 // hermesExceptionVerifyAndSwapSquadInstructions is the squad.instructions

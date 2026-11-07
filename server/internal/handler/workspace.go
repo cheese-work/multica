@@ -477,11 +477,14 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "this request may only include context and expected_before_digest")
 			return
 		}
-		result, reason, swapErr := h.hermesExceptionVerifyAndSwapWorkspaceContext(r.Context(), id, hermesExceptionRequest{
+		result, reason, swapErr := h.hermesExceptionVerifyAndSwapWorkspaceContext(r.Context(), r, id, hermesExceptionRequest{
 			NewContent:           *req.Context,
 			ExpectedBeforeDigest: req.ExpectedBeforeDigest,
 		})
 		logHermesExceptionOutcome(r, actorID, "workspace.context", id, result, reason, swapErr)
+		if failedAudit(w, r, swapErr, "workspace.context") {
+			return
+		}
 		if reason != hermesExceptionRejectNone {
 			hermesExceptionWriteRejection(w, r, reason, swapErr)
 			return

@@ -758,3 +758,52 @@ func TestAddAgentMcpServer_AuditInsertFailureAddsNothing(t *testing.T) {
 		t.Errorf("agent_mcp_server rows = %d; want 0 (rolled back)", n)
 	}
 }
+
+// The Hermes exception also writes workspace.context through its own
+// transaction. Same contract: one redacted row, rolled back with the swap.
+func TestUpdateWorkspace_HermesExceptionRecordsAuditRow(t *testing.T) {
+	_, agentID, taskID := hermesExceptionFixture(t, "audit-ws-ok")
+	// The workspace id is shared by every Hermes test, so count the delta.
+	before := len(auditRowsFor(t, "workspace.context", hermesExceptionWorkspaceID))
+
+	w := httptest.NewRecorder()
+	testHandler.UpdateWorkspace(w, hermesWorkspaceReq(agentID, taskID, map[string]any{
+		"context":                "SECRET-CONTEXT-BODY",
+		"expected_before_digest": testDigest("original workspace context"),
+	}))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+
+	rows := auditRowsFor(t, "workspace.context", hermesExceptionWorkspaceID)
+	if len(rows) != before+1 {
+		t.Fatalf("workspace.context rows = %d; want %d", len(rows), before+1)
+	}
+	row := rows[len(rows)-1]
+	if row.ActorType != "agent" || row.ActorID != agentID || row.TaskID != taskID || row.TargetType != "workspace" {
+		t.Errorf("row = %+v; want agent %s task %s on workspace", row, agentID, taskID)
+	}
+	assertNoneStored(t, row, "SECRET-CONTEXT-BODY", "original workspace context")
+}
+
+func TestUpdateWorkspace_HermesExceptionAuditInsertFailureKeepsContext(t *testing.T) {
+	_, agentID, taskID := hermesExceptionFixture(t, "audit-ws-fail")
+	failAuditInsertFor(t, hermesExceptionWorkspaceID)
+	before := len(auditRowsFor(t, "workspace.context", hermesExceptionWorkspaceID))
+
+	w := httptest.NewRecorder()
+	testHandler.UpdateWorkspace(w, hermesWorkspaceReq(agentID, taskID, map[string]any{
+		"context":                "new context",
+		"expected_before_digest": testDigest("original workspace context"),
+	}))
+	assertAuditFailure(t, w)
+
+	var stored string
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, hermesExceptionWorkspaceID).Scan(&stored)
+	if stored != "original workspace context" {
+		t.Errorf("context = %q; want the original (rolled back)", stored)
+	}
+	if n := len(auditRowsFor(t, "workspace.context", hermesExceptionWorkspaceID)); n != before {
+		t.Errorf("audit rows = %d; want %d (rolled back)", n, before)
+	}
+}
