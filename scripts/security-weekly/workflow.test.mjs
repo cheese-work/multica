@@ -138,3 +138,13 @@ test("the only checkout script a job runs is seal.sh (no setup-pnpm.sh: pnpm com
 test("CODEOWNERS routes the whole security-weekly toolchain to the owner", () => {
   assert.match(read(".github/CODEOWNERS"), /^\/scripts\/security-weekly\/\s+@congvc-dev/m);
 });
+
+// Terra and luna FAIL on 517fb9e60: `go tool govulncheck` resolves the scanner through server/go.mod, which CODEOWNERS does not
+// cover. A merged `replace` there would run substituted code before the report is sealed. The scanner is installed at a pinned
+// version from outside any module, so the checkout cannot choose which code runs.
+test("govulncheck is installed at a pinned version outside the checkout, never via go tool or the checkout's go.mod", () => {
+  assert.doesNotMatch(wf, /go tool\b|go run\b/);
+  assert.match(wf, /GOVULNCHECK_VERSION: "v\d+\.\d+\.\d+"/);
+  assert.match(wf, /working-directory: \$\{\{ runner\.temp \}\}\n\s+env:\n\s+GOFLAGS: ""\n\s+GOWORK: "off"\n\s+run: go install golang\.org\/x\/vuln\/cmd\/govulncheck@\$\{GOVULNCHECK_VERSION\}/);
+  assert.match(wf, /"\$\(go env GOPATH\)\/bin\/govulncheck" \.\/\.\.\./);
+});

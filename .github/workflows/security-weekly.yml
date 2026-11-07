@@ -22,6 +22,7 @@ concurrency:
 env:
   # Primary fingerprint of the X99 key (secret half in /mnt/ssd2/security-weekly/gnupg). seal.sh refuses any other recipient.
   SECURITY_WEEKLY_FPR: 1A9377889F3E812D256D3612A32DB5293024988D
+  GOVULNCHECK_VERSION: "v1.8.0"
   GITLEAKS_VERSION: "8.30.1"
   GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
   TRIVY_VERSION: "0.76.1"
@@ -62,10 +63,18 @@ jobs:
           go-version: "~1.27.3"
           check-latest: true
           cache-dependency-path: server/go.sum
+      - name: Install govulncheck (pinned, from outside the checkout)
+        # A module-defined tool would resolve the scanner through server/go.mod, which CODEOWNERS does not cover: a merged `replace` there
+        # would run substituted code before the report is sealed. Outside any module, the version below is the only input.
+        working-directory: ${{ runner.temp }}
+        env:
+          GOFLAGS: ""
+          GOWORK: "off"
+        run: go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}
       - name: Scan Go dependencies
         working-directory: server
         # exit 3 = vulnerabilities found, which is a result; any other non-zero is a scanner failure
-        run: go tool govulncheck ./... > ../govulncheck.txt || [ $? -eq 3 ]
+        run: '"$(go env GOPATH)/bin/govulncheck" ./... > ../govulncheck.txt || [ $? -eq 3 ]'
       - name: Seal the report
         run: bash scripts/security-weekly/seal.sh govulncheck.txt
       - uses: actions/upload-artifact@v7
