@@ -25,6 +25,7 @@ export type ChatMessageKind =
   | "continuation_summary"
   | "compaction_summary"
   | "compact_notice"
+  | "compaction_summary"
   | "decision_request"
   | "decision_cancel_notice"
   | "decision_reference";
