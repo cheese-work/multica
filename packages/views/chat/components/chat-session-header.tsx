@@ -63,7 +63,8 @@ export function ChatSessionHeader({
   onTogglePin,
   onOpenStatistics,
   renameRequest = 0,
-  autoCompactThresholdPct = null,
+  autoCompactThresholdTokens = null,
+  lastTurnTokens,
   onCompact,
   onSetPreset,
 }: {
@@ -80,8 +81,10 @@ export function ChatSessionHeader({
   /** Opens the Statistics dialog. Omit to hide the Statistics item. */
   onOpenStatistics?: () => void;
   renameRequest?: number;
-  /** Auto-compact threshold for this DM, or null when auto-compact is off. */
-  autoCompactThresholdPct?: number | null;
+  /** Prompt size at which this DM auto-compacts, or null when auto-compact is off. */
+  autoCompactThresholdTokens?: number | null;
+  /** Prompt growth of the last turn, when known. */
+  lastTurnTokens?: number | null;
   /** Sends /compact. Omit to hide the "Compact now" item. */
   onCompact?: () => void;
   /** Sends `/preset <reset|base|name>`. Omit to hide the preset picker. */
@@ -266,7 +269,8 @@ export function ChatSessionHeader({
         <ChatContextMeter
           tokens={session.context_tokens}
           window={session.context_window}
-          thresholdPct={autoCompactThresholdPct}
+          thresholdTokens={autoCompactThresholdTokens}
+          lastTurnTokens={lastTurnTokens}
         />
       )}
 

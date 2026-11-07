@@ -309,6 +309,7 @@
   "header": {
     "context_meter": "{{window}} 中 {{pct}}%",
     "context_meter_warning": "次の返信のあとにコンパクトします",
+    "context_meter_threshold": "{{threshold}} でコンパクト(現在 {{now}})",
     "compact_now": "今すぐコンパクト",
     "more_actions": "その他の操作",
     "view_profile": "Agent のプロフィール",
