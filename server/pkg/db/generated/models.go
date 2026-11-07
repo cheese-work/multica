@@ -2329,6 +2329,7 @@ type IssueWakeup struct {
 	AggregateRetryAt          pgtype.Timestamptz `json:"aggregate_retry_at"`
 	ContentRevision           int64              `json:"content_revision"`
 	WorkflowStep              pgtype.Text        `json:"workflow_step"`
+	FollowupInstanceID        pgtype.UUID        `json:"followup_instance_id"`
 }
 
 type IssueWakeupDefinition struct {
