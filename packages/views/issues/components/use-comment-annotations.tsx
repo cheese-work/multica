@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { isImeComposing } from "@multica/core/utils";
 import { Button } from "@multica/ui/components/ui/button";
 import { IconButton } from "@multica/ui/components/common/icon-button";
-import { useCommentDraftStore, type CommentDraftKey } from "@multica/core/issues/stores";
+import { useAnnotationNoteDraftStore, useCommentDraftStore, type CommentDraftKey } from "@multica/core/issues/stores";
 import { MAX_ANNOTATION_QUOTE_LENGTH, MAX_REPLY_ANNOTATIONS, type ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 import { useT } from "../../i18n";
 import { annotationRange, captureCommentSelection, findAnnotationSource } from "./comment-annotation-selection";
@@ -124,10 +124,10 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
   const editingExisting = editor?.existing === true;
   const editingRef = useRef(editing);
   editingRef.current = editing;
-  const noteDrafts = useRef(new Map<string, { note: string; savedNote: string }>());
   const noteDraftKey = useCallback((annotation: ReplyAnnotation) => JSON.stringify([
     draftKey, annotation.sourceCommentId, annotation.start, annotation.quote, annotation.prefix, annotation.suffix,
   ]), [draftKey]);
+  // Unconfirmed note text lives in useAnnotationNoteDraftStore (keyed by quote identity), so it outlives the popover and the hook.
   const editingId = editing?.id;
   const [error, setError] = useState(false);
   const [anchors, setAnchors] = useState<SourceAnchor[]>([]);
@@ -189,7 +189,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
     if (captured) { pendingMarkerFocus.current = null; claimEditor(); setSelection(captured); setEditor(null); setError(false); }
   };
 
-  useEffect(() => { noteDrafts.current.clear(); setSelection(null); setEditor(null); setError(false); }, [draftKey, enabled]);
+  useEffect(() => { setSelection(null); setEditor(null); setError(false); }, [draftKey, enabled]);
 
   // A drag can end anywhere (padding, gutter, another element), so a press inside the message arms
   // a document-level pointerup; captureCommentSelection then decides from the selection alone.
@@ -234,7 +234,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
     const onPointerCancel = () => { touch = null; };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || isImeComposing(event)) return;
-      if (editingRef.current) noteDrafts.current.delete(noteDraftKey(editingRef.current));
+      if (editingRef.current) useAnnotationNoteDraftStore.getState().clearDraft(noteDraftKey(editingRef.current));
       if (selection.root.isConnected) {
         const target = editable ? selection.root.querySelector<HTMLElement>("[contenteditable=true]") ?? selection.root : selection.root;
         target.focus({ preventScroll: true });
@@ -381,7 +381,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
       setError(true);
       return;
     }
-    noteDrafts.current.delete(noteDraftKey(editing));
+    useAnnotationNoteDraftStore.getState().clearDraft(noteDraftKey(editing));
     if (chat && !editingExisting) { pendingMarkerFocus.current = editing.id; close(false); }
     else close(true);
     if (!editingExisting) onAddedRef.current?.();
@@ -406,7 +406,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
     return () => { CSS.highlights.delete(name); };
   }, [enabled, anchors, activeId, editingId, highlightName]);
   const confirmLabel = editor?.existing ? L.save : L.confirmAdd;
-  const noteDraft = editing && noteDrafts.current.get(noteDraftKey(editing));
+  const noteDraft = editing && useAnnotationNoteDraftStore.getState().getDraft(noteDraftKey(editing));
 
   return {
     cardRef,
@@ -417,11 +417,15 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
     captureProps: {
       "data-annotation-thread": draftKey,
       onPointerDown: (event: React.PointerEvent) => {
-        armed.current = !editable && event.target instanceof Element && !!event.target.closest("[data-comment-content]") &&
-          !event.target.closest("button, [contenteditable=true]");
+        // Any press in the card may start a drag that ends in the text; the selection decides on release.
+        armed.current = !editable && event.target instanceof Element &&
+          !event.target.closest("button, input, textarea, [contenteditable=true], [data-reply-annotation-overlay]");
       },
       onKeyUp: (event: React.KeyboardEvent) => {
-        if (!editable && event.shiftKey && event.key.startsWith("Arrow")) capture();
+        if (editable) return;
+        const extend = event.shiftKey && /^(Arrow|Home$|End$|Page)/.test(event.key);
+        const selectAll = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a";
+        if (extend || selectAll) capture();
       },
       onKeyDown: (event: React.KeyboardEvent) => {
         if (event.key === "Tab" && !event.shiftKey && selection && !editingId &&
@@ -455,13 +459,13 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
       })}
       {enabled && selection && <CommentSelectionBubble range={selection.range} source={selection.root} owner={draftKey} onPositioned={focusNote} keepInView={!!editing}>
         <div className="bubble-menu max-w-[calc(100vw-16px)] focus-within:outline-1 focus-within:outline-ring">
-          {editing ? <AnnotationNoteEditor key={editing.id} inputRef={inputRef} initialNote={noteDraft?.savedNote === editing.note ? noteDraft.note : editing.note}
+          {editing ? <AnnotationNoteEditor key={editing.id} inputRef={inputRef} initialNote={noteDraft?.base === editing.note && noteDraft.value !== null ? noteDraft.value : editing.note}
               label={L.noteLabel(editingNumber)} showLabel={chat && editingExisting} placeholder={L.notePlaceholder}
               confirmLabel={confirmLabel} removeLabel={editingExisting ? L.remove(editingNumber) : undefined}
-              onEdit={(note) => { noteDrafts.current.set(noteDraftKey(editing), { note, savedNote: editing.note }); if (error) setError(false); }} onConfirm={confirmNote}
-              onCancel={() => { noteDrafts.current.delete(noteDraftKey(editing)); close(true); }}
+              onEdit={(note) => { useAnnotationNoteDraftStore.getState().setDraft(noteDraftKey(editing), { value: note, base: editing.note }); if (error) setError(false); }} onConfirm={confirmNote}
+              onCancel={() => { useAnnotationNoteDraftStore.getState().clearDraft(noteDraftKey(editing)); close(true); }}
               onRemove={() => {
-                noteDrafts.current.delete(noteDraftKey(editing));
+                useAnnotationNoteDraftStore.getState().clearDraft(noteDraftKey(editing));
                 useCommentDraftStore.getState().removeAnnotation(draftKey, editing.id);
                 close(true);
               }} /> : <Button ref={actionRef} variant="ghost" size="sm" data-testid="annotation-add"

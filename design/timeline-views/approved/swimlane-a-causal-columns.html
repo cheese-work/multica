@@ -1,0 +1,108 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+*{box-sizing:border-box}body{margin:0;background:#0b0b0c;color:#e7e7ea;font-family:Helvetica,Arial,sans-serif;font-size:13px}
+.hd{padding:28px 32px 18px;border-bottom:1px solid #2e2e33}h1{margin:0 0 6px;font-size:18px;color:#fff}h2{margin:0 0 4px;font-size:14px;color:#fff}
+.why{margin:0;color:#a1a1aa;font-size:12px;line-height:1.5;max-width:1180px}.sec{padding:22px 0 0}.sec h2,.sec .why,.chips{margin-left:32px}
+.chips{display:flex;gap:8px;margin-top:10px;margin-bottom:12px;flex-wrap:wrap}.chip{border:1px solid #3a3a42;background:#18181b;border-radius:14px;padding:4px 10px;font-size:11px;color:#e7e7ea;display:flex;gap:6px;align-items:center}
+.chip b{font-weight:700}.chip.off{opacity:.45}
+svg text{font-family:Helvetica,Arial,sans-serif;fill:#e7e7ea}.m{font-family:"DejaVu Sans Mono",monospace;font-size:10.5px;fill:#a1a1aa}.s{font-size:10.5px;fill:#a1a1aa}.l{font-size:11.5px}.ax{font-size:11px;fill:#a1a1aa}
+.note{margin:14px 32px 0;color:#a1a1aa;font-size:12px;line-height:1.5}
+</style></head><body>
+<div class="hd"><h1>Swimlane 2.0 · new first view mode (D2, D3)</h1>
+<p class="why">Fixture: CHE-2797 tree, real ids and titles; <b style="color:#e7e7ea">assignee lanes, causal links and statuses are illustrative</b> (live capture NOT-CAPTURED, see the Ref frame). Lanes group by assignee (group-by selector keeps today's options). X-axis is causal rank: left to right is cause to effect, never clock time; timestamps appear on hover. Edge types are told apart by line style plus a label, not colour alone. Q3 default shown: no. A mention is its own edge type (dotted teal, @ badge) and is not drawn as a cross-issue wakeup.</p></div>
+
+<div class="sec"><h2>Direction A · Causal columns, full cards</h2>
+<p class="why">One column per causal rank, cards carry id, status icon plus word and title. Easiest to read for the cause-and-effect question; costs width (6 ranks = 1250 px), so wide trees pan sideways.</p>
+<div class="chips"><span class="chip"><svg width="26" height="8"><path d="M1 4H20" stroke="#e7e7ea" stroke-width="1.6"/><path d="M20 1l5 3-5 3z" fill="#e7e7ea"/></svg><b>Wakeup</b> 5</span><span class="chip"><svg width="26" height="8"><path d="M1 4H20" stroke="#b79cff" stroke-width="1.6" stroke-dasharray="5 3"/><path d="M20 1l5 3-5 3z" fill="#b79cff"/></svg><b>Dependency</b> 2</span><span class="chip"><svg width="26" height="8"><circle cx="3" cy="4" r="2.5" fill="none" stroke="#a1a1aa"/><path d="M6 4H25" stroke="#a1a1aa"/></svg><b>Parent / child</b> 2</span><span class="chip"><svg width="26" height="8"><path d="M1 4H25" stroke="#5eead4" stroke-width="2" stroke-dasharray="1 4" stroke-linecap="round"/></svg><b>Mention</b> 1</span><span class="chip off">Group by: <b>Assignee</b></span></div>
+<svg width="1440" height="560" viewBox="0 0 1440 560">
+<defs>
+<marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L8 4L0 8z" fill="#e7e7ea"/></marker>
+<marker id="ad" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L8 4L0 8z" fill="#b79cff"/></marker>
+<marker id="am" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L8 4L0 8z" fill="#5eead4"/></marker>
+<symbol id="ip" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M6 1.5a4.5 4.5 0 0 1 0 9z" fill="currentColor"/></symbol>
+<symbol id="ir" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="6" cy="6" r="1.8" fill="currentColor"/></symbol>
+<symbol id="ib" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M2.8 9.2l6.4-6.4" stroke="currentColor" stroke-width="1.4"/></symbol>
+<symbol id="id" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M3.8 6.2l1.6 1.6 3-3.4" fill="none" stroke="currentColor" stroke-width="1.4"/></symbol>
+<symbol id="it" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="2 2"/></symbol>
+</defs>
+<rect x="0" y="56" width="1440" height="104" fill="#111113"/><rect x="0" y="264" width="1440" height="104" fill="#111113"/>
+<g stroke="#2e2e33"><path d="M0 56H1440M0 160H1440M0 264H1440M0 368H1440M0 472H1440"/><path d="M160 0V472"/></g>
+<g class="ax"><text class="ax" x="16" y="34">Lane · assignee</text>
+<text class="ax" x="170" y="22">rank 0</text><text class="s" x="170" y="40">start</text><text class="ax" x="380" y="22">rank 1</text><text class="ax" x="590" y="22">rank 2</text><text class="ax" x="800" y="22">rank 3</text><text class="ax" x="1010" y="22">rank 4</text><text class="ax" x="1220" y="22">rank 5</text>
+<text class="s" x="560" y="40">rank = longest causal path from a start node · order, not clock time</text></g>
+<g><text class="l" x="16" y="104" font-weight="700">x99-claude-gstack</text><text class="s" x="16" y="120">1 node</text>
+<text class="l" x="16" y="208" font-weight="700">x99-claude-sonnet-impl</text><text class="s" x="16" y="224">5 nodes</text>
+<text class="l" x="16" y="312" font-weight="700">x99-codex-luna-review</text><text class="s" x="16" y="328">1 node</text>
+<text class="l" x="16" y="416" font-weight="700">cheese</text><text class="s" x="16" y="432">1 node</text></g>
+<g fill="none">
+<path d="M340 108C360 108 360 190 380 190" stroke="#a1a1aa" stroke-width="1.2"/><path d="M340 108C360 108 360 234 380 234" stroke="#a1a1aa" stroke-width="1.2"/>
+<path d="M550 190C570 150 780 150 800 190" stroke="#b79cff" stroke-width="1.6" stroke-dasharray="6 4" marker-end="url(#ad)"/>
+<path d="M970 226H1220" stroke="#b79cff" stroke-width="1.6" stroke-dasharray="6 4" marker-end="url(#ad)"/>
+<path d="M550 234C570 234 570 190 590 190" stroke="#0b0b0c" stroke-width="6"/><path d="M550 234C570 234 570 190 590 190" stroke="#fff" stroke-width="2.4" marker-end="url(#ah)"/>
+<path d="M550 234C570 234 570 294 590 294" stroke="#e7e7ea" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M760 294C780 294 780 190 800 190" stroke="#e7e7ea" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M970 234C990 234 990 398 1010 398" stroke="#5eead4" stroke-width="2" stroke-dasharray="1 4" stroke-linecap="round" marker-end="url(#am)"/>
+<path d="M1180 398C1200 398 1200 244 1220 244" stroke="#e7e7ea" stroke-width="1.6" marker-end="url(#ah)"/>
+</g>
+<circle cx="340" cy="108" r="3" fill="#0b0b0c" stroke="#a1a1aa"/>
+<circle cx="570" cy="212" r="7" fill="none" stroke="#fff" stroke-width="1.6"/>
+<circle cx="991" cy="316" r="9" fill="#0b0b0c" stroke="#5eead4"/><text x="991" y="320" text-anchor="middle" font-size="11" font-weight="700" style="fill:#5eead4">@</text>
+<g><rect x="170" y="88" width="170" height="40" rx="8" fill="#18181b" stroke="#2e2e33"/><rect x="170" y="88" width="4" height="40" rx="2" fill="#f5a524"/><use href="#ip" x="182" y="94" width="12" height="12" style="color:#f5a524"/><text class="m" x="200" y="104">CHE-2798</text><text class="s" x="332" y="104" text-anchor="end">in progress</text><text class="l" x="182" y="121">plan(budget): take budget…</text></g>
+<g><rect x="380" y="170" width="170" height="40" rx="8" fill="#18181b" stroke="#2e2e33"/><rect x="380" y="170" width="4" height="40" rx="2" fill="#6b8cff"/><use href="#id" x="392" y="176" width="12" height="12" style="color:#6b8cff"/><text class="m" x="410" y="186">CHE-2824</text><text class="s" x="542" y="186" text-anchor="end">done</text><text class="l" x="392" y="203">S1a restrict run-budget…</text></g>
+<g><rect x="380" y="214" width="170" height="40" rx="8" fill="#18181b" stroke="#2e2e33"/><rect x="380" y="214" width="4" height="40" rx="2" fill="#f5a524"/><use href="#ir" x="392" y="220" width="12" height="12" style="color:#f5a524"/><text class="m" x="410" y="230">CHE-2838</text><text class="s" x="542" y="230" text-anchor="end">in review</text><text class="l" x="392" y="247">B1b passkey gate setting</text></g>
+<g><rect x="590" y="170" width="170" height="40" rx="8" fill="#18181b" stroke="#2e2e33"/><rect x="590" y="170" width="4" height="40" rx="2" fill="#f5a524"/><use href="#ip" x="602" y="176" width="12" height="12" style="color:#f5a524"/><text class="m" x="620" y="186">CHE-2841</text><text class="s" x="752" y="186" text-anchor="end">in progress</text><text class="l" x="602" y="203">C1b2 move PR, GitHub…</text></g>
+<g><rect x="590" y="274" width="170" height="40" rx="8" fill="#18181b" stroke="#2e2e33"/><rect x="590" y="274" width="4" height="40" rx="2" fill="#6b8cff"/><use href="#id" x="602" y="280" width="12" height="12" style="color:#6b8cff"/><text class="m" x="620" y="290">CHE-3039</text><text class="s" x="752" y="290" text-anchor="end">done</text><text class="l" x="602" y="307">review(security): PR #773</text></g>
+<g><rect x="800" y="170" width="170" height="40" rx="8" fill="#18181b" stroke="#2e2e33"/><rect x="800" y="170" width="4" height="40" rx="2" fill="#f5a524"/><use href="#ir" x="812" y="176" width="12" height="12" style="color:#f5a524"/><text class="m" x="830" y="186">CHE-2846</text><text class="s" x="962" y="186" text-anchor="end">in review</text><text class="l" x="812" y="203">A1b3 passkey top-up…</text><circle cx="970" cy="170" r="8" fill="#0b0b0c" stroke="#e7e7ea" stroke-width="1.3"/><path d="M970 165v5l3 2" fill="none" stroke="#e7e7ea" stroke-width="1.2"/></g>
+<g><rect x="800" y="214" width="170" height="40" rx="8" fill="#18181b" stroke="#2e2e33"/><rect x="800" y="214" width="4" height="40" rx="2" fill="#ef4444"/><use href="#ib" x="812" y="220" width="12" height="12" style="color:#ef4444"/><text class="m" x="830" y="230">CHE-2851</text><text class="s" x="962" y="230" text-anchor="end">blocked</text><text class="l" x="812" y="247">A2a run-budget meter API</text></g>
+<g><rect x="1010" y="378" width="170" height="40" rx="8" fill="#18181b" stroke="#2e2e33"/><rect x="1010" y="378" width="4" height="40" rx="2" fill="#f5a524"/><use href="#ip" x="1022" y="384" width="12" height="12" style="color:#f5a524"/><text class="m" x="1040" y="394">CHE-2949</text><text class="s" x="1172" y="394" text-anchor="end">in progress</text><text class="l" x="1022" y="411">plan(decision): agent-pro…</text></g>
+<g><rect x="1220" y="214" width="170" height="40" rx="8" fill="#18181b" stroke="#2e2e33"/><rect x="1220" y="214" width="4" height="40" rx="2" fill="#71717a"/><use href="#it" x="1232" y="220" width="12" height="12" style="color:#a1a1aa"/><text class="m" x="1250" y="230">CHE-2854</text><text class="s" x="1382" y="230" text-anchor="end">todo</text><text class="l" x="1232" y="247">C1d remove status-hist…</text></g>
+<g><rect x="600" y="332" width="350" height="128" rx="10" fill="#18181b" stroke="#52525b"/>
+<text x="616" y="354" font-size="12" font-weight="700" style="fill:#fff">Wakeup · CHE-2838 → CHE-2841</text>
+<text class="s" x="616" y="372">fired Tue 3 Nov 2026 09:02 ICT · run started 09:02 ICT</text>
+<text class="s" x="616" y="388">cause: CHE-2838 reached in review, action requested</text>
+<text class="s" x="616" y="404">gap to previous event on this chain: 1 d 3 h</text>
+<text class="s" x="616" y="424" style="fill:#f5a524">Hover shows time, order stays causal.</text>
+<text class="s" x="616" y="444">illustrative values · all times ICT</text></g>
+<g><text class="s" x="16" y="500">Status</text>
+<use href="#it" x="64" y="490" width="12" height="12" style="color:#a1a1aa"/><text class="s" x="82" y="500">todo</text><use href="#ip" x="124" y="490" width="12" height="12" style="color:#f5a524"/><text class="s" x="142" y="500">in progress</text><use href="#ir" x="212" y="490" width="12" height="12" style="color:#f5a524"/><text class="s" x="230" y="500">in review</text><use href="#ib" x="290" y="490" width="12" height="12" style="color:#ef4444"/><text class="s" x="308" y="500">blocked</text><use href="#id" x="360" y="490" width="12" height="12" style="color:#6b8cff"/><text class="s" x="378" y="500">done</text>
+<circle cx="440" cy="496" r="7" fill="#0b0b0c" stroke="#e7e7ea" stroke-width="1.3"/><path d="M440 491v5l3 2" fill="none" stroke="#e7e7ea" stroke-width="1.2"/><text class="s" x="454" y="500">self wakeup (clock badge)</text>
+<text class="s" x="16" y="530">Edges</text><text class="s" x="64" y="530">solid arrow = wakeup · dashed lilac = dependency · grey line with ring = parent to child · dotted teal @ = mention · ring on an edge = the edge hovered</text>
+<text class="s" x="16" y="550">Sparse lanes stay compact; empty lanes are hidden by default. Node click opens the issue peek; double-click centres the lane on the node.</text></g>
+</svg></div>
+
+<div class="sec" style="padding-top:34px;border-top:1px solid #2e2e33;margin-top:24px"><h2>Direction B · Compact pills, time-gap bridges, trace a node</h2>
+<p class="why">Same order, same lanes, 140 px pills with icon and id; the title is on hover. Small gap chips between ranks hint at elapsed time without turning the axis into a clock. Select a node to trace upstream and downstream; everything else dims. Fits 8 ranks on a laptop; costs reading titles.</p>
+<div class="chips"><span class="chip"><b>Wakeup</b> 5</span><span class="chip"><b>Dependency</b> 2</span><span class="chip"><b>Parent / child</b> 2</span><span class="chip"><b>Mention</b> 1</span><span class="chip" style="border-color:#fff"><b>Trace:</b> CHE-2838 · 1 upstream · 3 downstream</span><span class="chip off">Clear trace · Esc</span></div>
+<svg width="1440" height="440" viewBox="0 0 1440 440">
+<rect x="0" y="74" width="1440" height="78" fill="#111113"/><rect x="0" y="230" width="1440" height="78" fill="#111113"/>
+<g stroke="#2e2e33"><path d="M0 74H1440M0 152H1440M0 230H1440M0 308H1440M0 386H1440"/><path d="M160 0V386"/></g>
+<g><text class="ax" x="16" y="34">Lane · assignee</text>
+<text class="ax" x="180" y="22">rank 0</text><text class="ax" x="385" y="22">rank 1</text><text class="ax" x="590" y="22">rank 2</text><text class="ax" x="795" y="22">rank 3</text><text class="ax" x="1000" y="22">rank 4</text><text class="ax" x="1205" y="22">rank 5</text>
+<rect x="326" y="40" width="50" height="18" rx="9" fill="#232327" stroke="#3a3a42"/><text x="351" y="53" text-anchor="middle" font-size="10" style="fill:#a1a1aa">+3 h</text><rect x="531" y="40" width="50" height="18" rx="9" fill="#232327" stroke="#3a3a42"/><text x="556" y="53" text-anchor="middle" font-size="10" style="fill:#a1a1aa">+1 d</text><rect x="736" y="40" width="50" height="18" rx="9" fill="#232327" stroke="#3a3a42"/><text x="761" y="53" text-anchor="middle" font-size="10" style="fill:#a1a1aa">+5 h</text><rect x="941" y="40" width="50" height="18" rx="9" fill="#232327" stroke="#3a3a42"/><text x="966" y="53" text-anchor="middle" font-size="10" style="fill:#a1a1aa">+2 d</text><rect x="1146" y="40" width="50" height="18" rx="9" fill="#232327" stroke="#3a3a42"/><text x="1171" y="53" text-anchor="middle" font-size="10" style="fill:#a1a1aa">+4 h</text>
+<text class="s" x="1250" y="53">gap chips = median elapsed, illustrative</text></g>
+<g><text class="l" x="16" y="116" font-weight="700">x99-claude-gstack</text><text class="s" x="16" y="132">1</text><text class="l" x="16" y="194" font-weight="700">x99-claude-sonnet-impl</text><text class="s" x="16" y="210">5</text><text class="l" x="16" y="272" font-weight="700">x99-codex-luna-review</text><text class="s" x="16" y="288">1</text><text class="l" x="16" y="350" font-weight="700">cheese</text><text class="s" x="16" y="366">1</text></g>
+<g opacity=".28" fill="none">
+<path d="M525 176C545 150 775 150 795 176" stroke="#b79cff" stroke-width="1.6" stroke-dasharray="6 4" marker-end="url(#ad)"/>
+<path d="M935 206H1205" stroke="#b79cff" stroke-width="1.6" stroke-dasharray="6 4" marker-end="url(#ad)"/>
+<path d="M935 206C965 206 965 342 1000 342" stroke="#5eead4" stroke-width="2" stroke-dasharray="1 4" stroke-linecap="round" marker-end="url(#am)"/>
+<path d="M1140 342C1170 342 1170 206 1205 206" stroke="#e7e7ea" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M320 113C350 113 350 176 385 176" stroke="#a1a1aa" stroke-width="1.2"/></g>
+<g fill="none"><path d="M320 113C350 113 350 206 385 206" stroke="#fff" stroke-width="1.8"/>
+<path d="M525 206C555 206 555 176 590 176" stroke="#fff" stroke-width="2.4" marker-end="url(#ah)"/>
+<path d="M525 206C555 206 555 264 590 264" stroke="#fff" stroke-width="2.4" marker-end="url(#ah)"/>
+<path d="M730 264C765 264 765 176 795 176" stroke="#fff" stroke-width="2.4" marker-end="url(#ah)"/></g>
+<circle cx="320" cy="113" r="3" fill="#0b0b0c" stroke="#fff"/>
+<g opacity=".3"><rect x="385" y="162" width="140" height="28" rx="14" fill="#18181b" stroke="#2e2e33"/><use href="#id" x="397" y="168" width="14" height="14" style="color:#6b8cff"/><text class="m" x="417" y="180">CHE-2824</text>
+<rect x="795" y="192" width="140" height="28" rx="14" fill="#18181b" stroke="#2e2e33"/><use href="#ib" x="807" y="198" width="14" height="14" style="color:#ef4444"/><text class="m" x="827" y="210">CHE-2851</text>
+<rect x="1000" y="328" width="140" height="28" rx="14" fill="#18181b" stroke="#2e2e33"/><use href="#ip" x="1012" y="334" width="14" height="14" style="color:#f5a524"/><text class="m" x="1032" y="346">CHE-2949</text>
+<rect x="1205" y="192" width="140" height="28" rx="14" fill="#18181b" stroke="#2e2e33"/><use href="#it" x="1217" y="198" width="14" height="14" style="color:#a1a1aa"/><text class="m" x="1237" y="210">CHE-2854</text></g>
+<g><rect x="180" y="99" width="140" height="28" rx="14" fill="#18181b" stroke="#a1a1aa"/><use href="#ip" x="192" y="105" width="14" height="14" style="color:#f5a524"/><text class="m" x="212" y="117" style="fill:#e7e7ea">CHE-2798</text>
+<rect x="385" y="192" width="140" height="28" rx="14" fill="#232327" stroke="#fff" stroke-width="2"/><use href="#ir" x="397" y="198" width="14" height="14" style="color:#f5a524"/><text class="m" x="417" y="210" style="fill:#fff">CHE-2838</text>
+<rect x="590" y="162" width="140" height="28" rx="14" fill="#18181b" stroke="#a1a1aa"/><use href="#ip" x="602" y="168" width="14" height="14" style="color:#f5a524"/><text class="m" x="622" y="180" style="fill:#e7e7ea">CHE-2841</text>
+<rect x="590" y="250" width="140" height="28" rx="14" fill="#18181b" stroke="#a1a1aa"/><use href="#id" x="602" y="256" width="14" height="14" style="color:#6b8cff"/><text class="m" x="622" y="268" style="fill:#e7e7ea">CHE-3039</text>
+<rect x="795" y="162" width="140" height="28" rx="14" fill="#18181b" stroke="#a1a1aa"/><use href="#ir" x="807" y="168" width="14" height="14" style="color:#f5a524"/><text class="m" x="827" y="180" style="fill:#e7e7ea">CHE-2846</text><circle cx="935" cy="162" r="8" fill="#0b0b0c" stroke="#e7e7ea" stroke-width="1.3"/><path d="M935 157v5l3 2" fill="none" stroke="#e7e7ea" stroke-width="1.2"/></g>
+<g><rect x="360" y="296" width="330" height="82" rx="10" fill="#18181b" stroke="#52525b"/>
+<text x="376" y="318" font-size="12" font-weight="700" style="fill:#fff">CHE-2838 · B1b passkey gate setting</text><text class="s" x="376" y="336">in review · started Mon 2 Nov 2026 14:00 ICT</text><text class="s" x="376" y="352">woke CHE-2841 and CHE-3039 at Tue 3 Nov 2026 09:02 ICT</text><text class="s" x="376" y="368">hover card on a pill · illustrative</text></g>
+<text class="s" x="16" y="414">Trace: white = path through the selected node (1 upstream, 3 downstream) · dimmed = unrelated · same edge styles as A</text>
+</svg></div>
+<p class="note">Both directions: pan and pinch-zoom the canvas, click a node to peek, mode switch in the sidebar card (see the dialog frame). Hidden children collapse into a count node on the parent and re-target edges there; the 60-node cap shows "+N" per lane. 390 px: lanes stack as sections, ranks scroll sideways, edges show on tap.</p>
+</body></html>

@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiClient } from "../api/client";
-import { AutoCompactSchema, isValidAutoCompactPct, readAutoCompact, resolveAutoCompact } from "./auto-compact";
+import { AutoCompactSchema, autoCompactThresholdTokens, isValidAutoCompactPct, readAutoCompact, resolveAutoCompact } from "./auto-compact";
 
 // Retrospective test (added with the implementation, not first).
 describe("readAutoCompact", () => {
@@ -135,8 +135,8 @@ describe("readAutoCompact on a malformed workspace response", () => {
 // CHE-1808: the effective rule mirrors the server's precedence (agent override
 // over workspace over the defaults, field by field).
 describe("resolveAutoCompact", () => {
-  it("defaults to on at 80", () => {
-    expect(resolveAutoCompact(undefined, undefined)).toEqual({ enabled: true, threshold_pct: 80 });
+  it("defaults to on with per-window tokens", () => {
+    expect(resolveAutoCompact(undefined, undefined)).toEqual({ enabled: true, threshold_pct: null, tokens_200k: 190_000, tokens_1m: 200_000 });
   });
 
   it("lets a present agent field win over the workspace value", () => {
@@ -145,17 +145,59 @@ describe("resolveAutoCompact", () => {
         { auto_compact: { enabled: false, threshold_pct: 60 } },
         { auto_compact: { threshold_pct: 85 } },
       ),
-    ).toEqual({ enabled: false, threshold_pct: 85 });
+    ).toMatchObject({ enabled: false, threshold_pct: 85 });
   });
 
   it("treats a null agent override as inherit and ignores malformed fields", () => {
-    expect(resolveAutoCompact({ auto_compact: { threshold_pct: 55 } }, { auto_compact: null })).toEqual({
+    expect(resolveAutoCompact({ auto_compact: { threshold_pct: 55 } }, { auto_compact: null })).toMatchObject({
       enabled: true,
       threshold_pct: 55,
     });
-    expect(resolveAutoCompact({ auto_compact: { threshold_pct: 55 } }, { auto_compact: { enabled: "no", threshold_pct: 5 } })).toEqual({
+    expect(resolveAutoCompact({ auto_compact: { threshold_pct: 55 } }, { auto_compact: { enabled: "no", threshold_pct: 5 } })).toMatchObject({
       enabled: true,
       threshold_pct: 55,
     });
+  });
+});
+
+// CHE-4331: with no percent saved, the trigger is a token count chosen by the
+// model's window (190k up to 200k, 200k above), mirroring the server.
+describe("autoCompactThresholdTokens", () => {
+  it("defaults to 190k on a 200k window and 200k on a 1M window", () => {
+    const rule = resolveAutoCompact(undefined, undefined);
+    expect(autoCompactThresholdTokens(rule, 200_000)).toBe(190_000);
+    expect(autoCompactThresholdTokens(rule, 1_000_000)).toBe(200_000);
+    expect(autoCompactThresholdTokens(rule, 1_048_576)).toBe(200_000);
+  });
+
+  it("caps a small window at 95%", () => {
+    expect(autoCompactThresholdTokens(resolveAutoCompact(undefined, undefined), 128_000)).toBe(121_600);
+  });
+
+  it("uses saved token fields and ignores out-of-range ones", () => {
+    const rule = resolveAutoCompact(
+      { auto_compact: { threshold_tokens_200k: 150_000, threshold_tokens_1m: 900_000 } },
+      undefined,
+    );
+    expect(autoCompactThresholdTokens(rule, 200_000)).toBe(150_000);
+    expect(autoCompactThresholdTokens(rule, 1_000_000)).toBe(200_000);
+  });
+
+  it("uses a saved percent over the token defaults, rounded up like the server", () => {
+    const rule = resolveAutoCompact({ auto_compact: { threshold_pct: 60 } }, undefined);
+    expect(autoCompactThresholdTokens(rule, 1_000_000)).toBe(600_000);
+    expect(autoCompactThresholdTokens(resolveAutoCompact({ auto_compact: { threshold_pct: 51 } }, undefined), 1_048_576)).toBe(534_774);
+  });
+
+  it("lets an agent's tokens win back over a workspace percent", () => {
+    const rule = resolveAutoCompact({ auto_compact: { threshold_pct: 60 } }, { auto_compact: { threshold_tokens_1m: 250_000 } });
+    expect(autoCompactThresholdTokens(rule, 1_000_000)).toBe(250_000);
+  });
+
+  it("is null when the window is unknown or auto-compact is off", () => {
+    const rule = resolveAutoCompact(undefined, undefined);
+    expect(autoCompactThresholdTokens(rule, null)).toBeNull();
+    expect(autoCompactThresholdTokens(rule, 0)).toBeNull();
+    expect(autoCompactThresholdTokens({ ...rule, enabled: false }, 200_000)).toBeNull();
   });
 });

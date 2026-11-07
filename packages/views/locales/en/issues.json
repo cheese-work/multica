@@ -440,6 +440,7 @@
     "not_found": "This issue does not exist or has been deleted in this workspace.",
     "load_failed": "Couldn't load this issue. Check your connection and retry.",
     "card_load_failed": "Couldn't load this issue.",
+    "data_error": "This issue has data the app cannot read.",
     "retry": "Retry",
     "breadcrumb_project_unknown": "Unknown project",
     "back": "Back",
@@ -1998,5 +1999,32 @@
     "timing_effective": "In effect since {{time}}",
     "timing_pending_window": "Pending. Takes effect {{time}}; {{minutes}} min to disclaim.",
     "timing_pending_wake": "Pending. Takes effect as soon as the agent is woken."
+  },
+  "status_history": {
+    "title": "Status history",
+    "description": "Every status change on this issue, oldest first.",
+    "empty": "No status changes recorded.",
+    "truncated": "Older status changes are not shown. The list starts at the oldest change the server returned.",
+    "trigger_not_recorded": "Trigger not recorded",
+    "removed": "{{status}} (removed)",
+    "handoff_comment": "Handoff comment",
+    "handoff_invalid": "Handoff link invalid",
+    "scrubber_label": "Position in status history",
+    "position": "{{current}} of {{total}}",
+    "cause": {
+      "ui_or_api": "Changed by a person",
+      "workflow_edge": "Workflow edge",
+      "workflow_remap": "Workflow remap",
+      "pr_merged": "PR merged",
+      "ci_advance": "CI advance",
+      "run_budget": "Run budget",
+      "decision": "Decision",
+      "watchdog": "Watchdog",
+      "task_reset": "Failed run reset",
+      "qoder": "Qoder",
+      "duplicate": "Duplicate",
+      "system": "System"
+    },
+    "open": "Status history"
   }
 }

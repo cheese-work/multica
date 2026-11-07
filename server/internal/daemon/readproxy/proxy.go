@@ -31,8 +31,8 @@ const (
 	defaultGraphQL = "https://api.github.com/graphql"
 )
 
-// ponytail: comments, reviews and review comments only; PR title and body,
-// commit message and CI log stubs arrive with B2c.
+// Comments, reviews and review comments have an admission path (CHE-2214);
+// PR title and body and CI logs do not (external.go).
 var kinds = map[string]bool{"IssueComment": true, "PullRequestReview": true, "PullRequestReviewComment": true}
 
 var objectID = regexp.MustCompile(`^[A-Za-z0-9_=-]{1,128}$`)
@@ -62,6 +62,13 @@ type Admitter interface {
 	Admitted(ctx context.Context, c Check) (bool, error)
 }
 
+// OwnMessager is the broker's receipt check (broker.Broker implements it): it
+// reports whether msg, the current bytes of a commit message, hash to the
+// receipt of a commit the broker pushed for this run under sha.
+type OwnMessager interface {
+	OwnMessage(sha string, msg []byte) bool
+}
+
 // Result is one read's answer: full text, or a stub with no body.
 type Result struct {
 	Full   bool   `json:"full"`
@@ -79,6 +86,9 @@ type Proxy struct {
 	GraphQLURL      string // default https://api.github.com/graphql
 	Token           func(context.Context) (string, error)
 	Admit           Admitter
+	Approve         Approver
+	Own             OwnMessager // nil: no broker exception for commit messages
+	RESTURL         string      // default https://api.github.com
 	HTTP            *http.Client
 	LookupTimeout   time.Duration // server lookup bound; default 5s
 }
@@ -117,29 +127,51 @@ func (n *object) provenance(c *Check) error {
 	return nil
 }
 
-func (p *Proxy) fetch(ctx context.Context, id string) (*object, error) {
+// do sends one authenticated GitHub request. The read token goes only to the
+// first host: a redirect to another host (log blobs) drops it.
+func (p *Proxy) do(ctx context.Context, method, endpoint string, body io.Reader, contentType string) (*http.Response, error) {
 	tok, err := p.Token(ctx)
 	if err != nil || tok == "" {
 		return nil, errors.New("read token unavailable")
 	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	base := p.HTTP
+	if base == nil {
+		base = &http.Client{Timeout: 30 * time.Second}
+	}
+	client := *base
+	client.CheckRedirect = func(r *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return errors.New("too many redirects")
+		}
+		if r.URL.Host != via[0].URL.Host {
+			r.Header.Del("Authorization")
+		}
+		return nil
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, errors.New("github request failed")
+	}
+	return resp, nil
+}
+
+func (p *Proxy) fetch(ctx context.Context, id string) (*object, error) {
 	payload, _ := json.Marshal(map[string]any{"query": query, "variables": map[string]string{"id": id}})
 	endpoint := p.GraphQLURL
 	if endpoint == "" {
 		endpoint = defaultGraphQL
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	resp, err := p.do(ctx, http.MethodPost, endpoint, bytes.NewReader(payload), "application/json")
 	if err != nil {
 		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+tok)
-	req.Header.Set("Content-Type", "application/json")
-	client := p.HTTP
-	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, errors.New("github request failed")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -174,18 +206,23 @@ func (p *Proxy) read(ctx context.Context, id string) (Result, error) {
 	if err := n.provenance(&c); err != nil {
 		return Result{}, err
 	}
+	if ok, err := p.admit(ctx, func(lctx context.Context) (bool, error) { return p.Admit.Admitted(lctx, c) }); err == nil && ok {
+		res.Full, res.Body = true, *n.Body
+	}
+	return res, nil
+}
+
+// admit bounds one server lookup. An error, a timeout, or a success that
+// arrives after the deadline is a refusal, so the caller returns a stub.
+func (p *Proxy) admit(ctx context.Context, ask func(context.Context) (bool, error)) (bool, error) {
 	lookup := p.LookupTimeout
 	if lookup <= 0 {
 		lookup = defaultLookup
 	}
 	lctx, cancel := context.WithTimeout(ctx, lookup)
 	defer cancel()
-	// Lookup error or timeout is a stub, never full text, even when the
-	// admitter reports success after the deadline.
-	if ok, err := p.Admit.Admitted(lctx, c); err == nil && ok && lctx.Err() == nil {
-		res.Full, res.Body = true, *n.Body
-	}
-	return res, nil
+	ok, err := ask(lctx)
+	return ok && err == nil && lctx.Err() == nil, err
 }
 
 // Handler serves GET /v1/object?id=<node id>.
@@ -206,6 +243,7 @@ func (p *Proxy) Handler() http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(res)
 	})
+	p.externalRoutes(mux)
 	return mux
 }
 
@@ -216,11 +254,15 @@ func (p *Proxy) Serve(ln net.Listener) error {
 
 // Read asks the proxy on sock for one object.
 func Read(ctx context.Context, sock, id string) (Result, error) {
+	return get(ctx, sock, "/v1/object?id="+url.QueryEscape(id))
+}
+
+func get(ctx context.Context, sock, pathQuery string) (Result, error) {
 	c := &http.Client{Timeout: 60 * time.Second, Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", sock)
 		}}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://readproxy/v1/object?id="+url.QueryEscape(id), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://readproxy"+pathQuery, nil)
 	if err != nil {
 		return Result{}, err
 	}

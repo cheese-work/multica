@@ -1,15 +1,56 @@
 #!/usr/bin/env node
 import { appendFileSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { pathToFileURL } from "node:url";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { generateEntries, loadBackfill, optionsFromEnv, serializeEntries, writeAtomically } from "./fork-changelog.mjs";
 
 export const FETCH_DEADLINE_MS = 180_000;
+const DEPLOY_ENVIRONMENT = "c00-production";
+
+// "<UPSTREAM_VERSION at that commit>-<release stamp of the commit time>", e.g. 0.7.2-20261105-1426.
+export function versionLabel(sha, { cwd = process.cwd() } = {}) {
+  const git = (...args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
+  const upstream = git("show", `${sha}:UPSTREAM_VERSION`);
+  const stamp = execFileSync("sh", [join(dirname(fileURLToPath(import.meta.url)), "release-stamp.sh"), git("show", "-s", "--format=%cI", sha)], { encoding: "utf8" }).trim();
+  return `${upstream}-${stamp}`;
+}
+
+// GitHub flips a superseded deployment to INACTIVE, so "latest status" hides prior successes:
+// a deployment counts when any status was SUCCESS, dated at the earliest one.
+export const deploymentsFromGraphql = (json) =>
+  (json?.data?.repository?.deployments?.nodes ?? []).flatMap((node) => {
+    const successes = (node?.statuses?.nodes ?? []).filter((status) => status?.state === "SUCCESS" && status.createdAt)
+      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+    return node?.commitOid && successes.length ? [{ sha: node.commitOid, state: "SUCCESS", createdAt: successes[0].createdAt }] : [];
+  });
+
+// Pages the c00-production deployments (newest first) through GraphQL; throws on any failure.
+export async function fetchDeployments({ token, repository, fetchImpl = fetch, signal }) {
+  const [owner, name] = repository.split("/");
+  const query = `query($owner:String!,$name:String!,$after:String){repository(owner:$owner,name:$name){deployments(environments:["${DEPLOY_ENVIRONMENT}"],first:100,after:$after,orderBy:{field:CREATED_AT,direction:DESC}){pageInfo{hasNextPage endCursor} nodes{commitOid statuses(first:20){nodes{state createdAt}}}}}}`;
+  const all = [];
+  for (let after = null, pages = 0; pages < 20; pages += 1) {
+    const response = await fetchImpl("https://api.github.com/graphql", {
+      method: "POST", signal,
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ query, variables: { owner, name, after } }),
+    });
+    if (!response.ok) throw new Error(`deployments: HTTP ${response.status}`);
+    const json = await response.json();
+    if (json.errors?.length) throw new Error(`deployments: ${json.errors[0].message}`);
+    all.push(...deploymentsFromGraphql(json));
+    const info = json.data?.repository?.deployments?.pageInfo;
+    if (!info?.hasNextPage) return all;
+    after = info.endCursor;
+  }
+  return all;
+}
 const annotate = (message) => console.warn(`::warning::${message.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A")}`);
 
 export async function fetchChangelog({
   token, out, firstParent, repository = "cheese-work/multica", fetchImpl = fetch,
-  generator = generateEntries, deadlineMs = FETCH_DEADLINE_MS, summaryPath,
+  generator = generateEntries, deployments = null, deadlineMs = FETCH_DEADLINE_MS, summaryPath,
   warning = annotate, note = console.log, ...options
 }) {
   const controller = new AbortController();
@@ -57,15 +98,36 @@ export async function fetchChangelog({
         }
         if (!items.length || !/;\s*rel="next"/.test(response.headers?.get("link") ?? "")) stop = true;
       }
-      const result = generator({ prs, firstParent }, options);
+      // Dividers are optional: a deployment-read failure keeps the entries and drops only `deploys`.
+      let deploymentList = null;
+      let dividerWarning = null;
+      if (deployments) {
+        // Dividers get half the remaining budget, so a slow read cannot cost the entries.
+        const budget = new AbortController();
+        let budgetTimer;
+        const budgetExpired = new Promise((_, reject) => {
+          budgetTimer = setTimeout(() => { budget.abort(); reject(new Error("deployment read exceeded its time budget")); }, Math.max(0, deadlineMs - (performance.now() - started)) / 2);
+        });
+        const abortWithParent = () => budget.abort();
+        controller.signal.addEventListener("abort", abortWithParent, { once: true });
+        try { deploymentList = await Promise.race([deployments(budget.signal), budgetExpired]); } catch (error) {
+          dividerWarning = `Deploy dividers unavailable for this build: ${error.message}`;
+        } finally {
+          clearTimeout(budgetTimer);
+          controller.signal.removeEventListener("abort", abortWithParent);
+        }
+      }
+      checkDeadline();
+      const result = generator({ prs, firstParent, deployments: deploymentList }, options);
       checkDeadline();
       writeAtomically(out, serializeEntries(result));
       checkDeadline();
       // Merged PRs were already warned at PR time (pr-changelog-check); a plain log keeps every build free of annotations nobody can act on.
       for (const { number, message } of result.warnings) note(`PR #${number}: ${message}`);
+      if (dividerWarning) warning(dividerWarning);
       if (summaryPath) {
         const { shown, hidden, byReason } = result.counts;
-        appendFileSync(summaryPath, `### Fork changelog\n\nShown: ${shown}\n\nHidden: ${hidden}\n${Object.entries(byReason).sort().map(([reason, count]) => `\n- ${reason}: ${count}`).join("")}\n`);
+        appendFileSync(summaryPath, `### Fork changelog\n\nShown: ${shown}\n\nHidden: ${hidden}\n${Object.entries(byReason).sort().map(([reason, count]) => `\n- ${reason}: ${count}`).join("")}\n${dividerWarning ? `\n${dividerWarning}\n` : ""}`);
       }
       checkDeadline();
       return result;
@@ -104,12 +166,13 @@ export async function main(argv, env) {
     if (args["sync-prefix"]) options.syncPrefix = args["sync-prefix"];
     const sha = args.sha ?? env.GITHUB_SHA;
     if (!/^[a-f0-9]{40}$/.test(sha ?? "")) throw new Error("A qualified source SHA is required");
-    const history = execFileSync("git", ["log", "--first-parent", "--format=%H%x00%B%x00", sha], {
+    const history = execFileSync("git", ["log", "--first-parent", "--format=%H%x00%cI%x00%B%x00", sha], {
       encoding: "utf8", timeout: FETCH_DEADLINE_MS, maxBuffer: 32 * 1024 * 1024,
     }).split("\0");
     const firstParent = [];
-    for (let index = 0; index + 1 < history.length; index += 2) firstParent.push({ sha: history[index].trim(), message: history[index + 1] });
-    await fetchChangelog({ token: env.GH_TOKEN, out, firstParent, repository: env.GITHUB_REPOSITORY,
+    for (let index = 0; index + 2 < history.length; index += 3) firstParent.push({ sha: history[index].trim(), time: history[index + 1], message: history[index + 2] });
+    await fetchChangelog({ token: env.GH_TOKEN, out, firstParent, repository: env.GITHUB_REPOSITORY, versionOf: (commit) => { try { return versionLabel(commit); } catch { return commit.slice(0, 7); } },
+      deployments: (signal) => fetchDeployments({ token: env.GH_TOKEN, repository: env.GITHUB_REPOSITORY, signal }),
       summaryPath: env.GITHUB_STEP_SUMMARY, deadlineMs: FETCH_DEADLINE_MS - (performance.now() - started), ...options });
   } catch (error) {
     try { rmSync(out, { force: true }); } catch {}

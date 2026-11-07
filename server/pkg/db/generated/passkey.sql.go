@@ -340,6 +340,46 @@ func (q *Queries) LeavePasskeyRecovery(ctx context.Context, id pgtype.UUID) erro
 	return err
 }
 
+const listLivePasskeys = `-- name: ListLivePasskeys :many
+SELECT id, user_id, credential_id, public_key, attestation_type, aaguid, sign_count, transports, flags, suspect_at, created_at, last_used_at, revoked_at FROM user_passkey
+WHERE user_id = $1 AND revoked_at IS NULL
+ORDER BY created_at, id
+`
+
+func (q *Queries) ListLivePasskeys(ctx context.Context, userID pgtype.UUID) ([]UserPasskey, error) {
+	rows, err := q.db.Query(ctx, listLivePasskeys, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UserPasskey{}
+	for rows.Next() {
+		var i UserPasskey
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.CredentialID,
+			&i.PublicKey,
+			&i.AttestationType,
+			&i.Aaguid,
+			&i.SignCount,
+			&i.Transports,
+			&i.Flags,
+			&i.SuspectAt,
+			&i.CreatedAt,
+			&i.LastUsedAt,
+			&i.RevokedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUsablePasskeys = `-- name: ListUsablePasskeys :many
 SELECT id, user_id, credential_id, public_key, attestation_type, aaguid, sign_count, transports, flags, suspect_at, created_at, last_used_at, revoked_at FROM user_passkey
 WHERE user_id = $1 AND revoked_at IS NULL AND suspect_at IS NULL

@@ -65,7 +65,7 @@ UPDATE issue_wakeup_definition d SET sweep_retry_at= $1::timestamptz,sweep_done=
  sweep_error=CASE WHEN d.sweep_revision<>d.revision THEN NULL ELSE d.sweep_error END,
  sweep_revision=d.revision
 FROM pick WHERE d.workspace_id=pick.workspace_id AND d.scope_kind=pick.scope_kind AND d.scope_id=pick.scope_id AND d.rule_key=pick.rule_key
-RETURNING d.workspace_id, d.scope_kind, d.scope_id, d.rule_key, d.root, d.config, d.revision, d.created_by, d.updated_by, d.created_at, d.updated_at, d.event_types, d.sweep_revision, d.sweep_cursor, d.sweep_done, d.sweep_baseline, d.sweep_attempts, d.sweep_retry_at, d.sweep_error
+RETURNING d.workspace_id, d.scope_kind, d.scope_id, d.rule_key, d.root, d.config, d.revision, d.created_by, d.updated_by, d.created_at, d.updated_at, d.event_types, d.sweep_revision, d.sweep_cursor, d.sweep_done, d.sweep_baseline, d.sweep_attempts, d.sweep_retry_at, d.sweep_error, d.pending_approval
 `
 
 type ClaimWakeupDefinitionSweepParams struct {
@@ -104,6 +104,7 @@ func (q *Queries) ClaimWakeupDefinitionSweep(ctx context.Context, arg ClaimWakeu
 		&i.SweepAttempts,
 		&i.SweepRetryAt,
 		&i.SweepError,
+		&i.PendingApproval,
 	)
 	return i, err
 }
