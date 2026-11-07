@@ -6044,12 +6044,23 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		// so don't block" fail-open providerHoldVerdict documents.
 		retryAgent       db.Agent
 		retryAgentLoaded bool
+		// retryFence: set when the task is in a provider-failure recovery
+		// lineage (CHE-1773); no retry is minted and the owner is told once.
+		retryFence providerFailureOwnerDecision
 	)
 	if retryableReasons[failureReason] {
 		if parent, perr := s.Queries.GetAgentTask(ctx, taskID); perr != nil {
 			slog.Warn("fail task auto-retry: load parent failed",
 				"task_id", util.UUIDToString(taskID), "error", perr)
-		} else if retryEligible(failureReason, parent) {
+		} else if !retryEligible(failureReason, parent) {
+			// Not retryable: nothing to mint.
+		} else if fence, ferr := s.fenceRecoveryLineage(ctx, s.Queries, taskID); ferr != nil {
+			// Fail closed: an unreadable lineage must not mint a generic retry.
+			slog.Warn("fail task auto-retry: recovery lineage check failed; no retry",
+				"task_id", util.UUIDToString(taskID), "error", ferr)
+		} else if fence.Capped() {
+			retryFence = fence
+		} else {
 			wantRetry = true
 			// Persist the reason-aware effective budget into the child so the
 			// retry chain self-describes (e.g. provider_network → max_attempts=3),
@@ -6442,6 +6453,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 	// follow a provider_network failure didn't happen. Post the policy notice
 	// as its own comment so a human reading the issue sees the retry was a
 	// deliberate refusal, not the platform silently giving up.
+	s.notifyProviderFailureCap(ctx, s.Queries, task.ID, retryFence)
 	if retryProviderHoldNotice != "" && task.IssueID.Valid {
 		s.createAgentComment(ctx, task.IssueID, task.AgentID, retryProviderHoldNotice, "system", task.TriggerCommentID, task.ID)
 	}
@@ -6790,6 +6802,16 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	// with no issue/chat link has nowhere to report its retry — retryEligible
 	// covers both, keeping this sweeper path in sync with FailTask's in-tx retry.
 	if !retryEligible(reason, parent) {
+		return nil, nil
+	}
+	// CHE-1773: a recovery-lineage task gets no generic retry from this entry
+	// point either; fail closed when the lineage cannot be read.
+	fence, err := s.fenceRecoveryLineage(ctx, s.Queries, parent.ID)
+	if err != nil {
+		return nil, fmt.Errorf("task auto-retry: recovery lineage check: %w", err)
+	}
+	if fence.Capped() {
+		s.notifyProviderFailureCap(ctx, s.Queries, parent.ID, fence)
 		return nil, nil
 	}
 

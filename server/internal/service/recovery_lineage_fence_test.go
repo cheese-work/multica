@@ -194,8 +194,9 @@ func TestRecoveryLineageDepthCapAndCycle(t *testing.T) {
 		o.Exec(t, "UPDATE agent_task_queue SET retry_of_task_id=$2 WHERE id=$1", a, b)
 		t.Cleanup(func() { o.Exec(t, "UPDATE agent_task_queue SET retry_of_task_id=NULL WHERE id IN ($1,$2)", a, b) })
 		failTimeout(t, a)
-		if n := o.retryChildren(t, a); n != 1 {
-			t.Fatalf("retry children=%d, want 1", n)
+		// b points at a already, so one new retry child makes two.
+		if n := o.retryChildren(t, a); n != 2 {
+			t.Fatalf("retry children=%d, want 2", n)
 		}
 	})
 }
