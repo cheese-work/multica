@@ -1430,6 +1430,9 @@ WHERE claimed_input.id = latest_visible.claimed_input_id
 -- input past a later card would let it pass as a fresh answer. The card may sit
 -- in any DM the same human owns in the workspace, because a decision accepts a
 -- source DM other than the ask's DM. Caller runs it in the claim transaction.
+-- The card check cannot see an ask still uncommitted in a sibling DM, so each
+-- moved row is also stamped reanchored_at; a decision record refuses it as a
+-- source (CHE-2895).
 WITH batch AS (
     SELECT m.id, row_number() OVER (ORDER BY m.created_at, m.id) AS n
     FROM chat_message m
@@ -1463,7 +1466,8 @@ WITH batch AS (
     FROM chat_message WHERE chat_session_id = sqlc.arg('chat_session_id')
 )
 UPDATE chat_message m
-SET created_at = base.at + (batch.n - 1) * interval '1 microsecond'
+SET created_at = base.at + (batch.n - 1) * interval '1 microsecond',
+    reanchored_at = now()
 FROM batch, base
 WHERE m.id = batch.id;
 
