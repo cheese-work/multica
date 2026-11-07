@@ -1766,18 +1766,47 @@ func (s *AutopilotService) supersedeBreakerHeldRun(ctx context.Context, ap db.Au
 	if err != nil || !providerBreakerHold(verdict) {
 		return false
 	}
-	if _, err := s.Queries.CancelAgentTask(ctx, task.ID); err != nil {
-		return false
-	}
-	if _, err := s.skipAutopilotRun(ctx, db.UpdateAutopilotRunSkippedParams{
-		ID:            active.ID,
-		FailureReason: pgtype.Text{String: "superseded by the next scheduled run while the provider breaker held it", Valid: true},
-		ReasonCode:    pgtype.Text{String: string(dispatch.ReasonProviderBreaker), Valid: true},
-	}); err != nil {
+	retired, err := s.retireQueuedBreakerHeldRun(ctx, active, task.ID)
+	if err != nil {
 		slog.Warn("failed to retire breaker-held autopilot run", "run_id", util.UUIDToString(active.ID), "error", err)
 		return false
 	}
-	return true
+	return retired
+}
+
+// retireQueuedBreakerHeldRun cancels the run's task and marks the run skipped in
+// one transaction: a failed second write rolls the cancel back, so no run is
+// left running behind a cancelled task. The cancel applies only to a task that
+// is still queued. A claim that wins the race moves the task to dispatched, the
+// update then matches no row, and the run stays untouched (it is starting).
+func (s *AutopilotService) retireQueuedBreakerHeldRun(ctx context.Context, run db.AutopilotRun, taskID pgtype.UUID) (bool, error) {
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin breaker-held run retirement: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `UPDATE agent_task_queue
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
+    cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
+WHERE id = $1 AND status = 'queued'`, taskID)
+	if err != nil {
+		return false, fmt.Errorf("cancel queued task: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+	if _, err := s.Queries.WithTx(tx).UpdateAutopilotRunTerminalWithQuota(ctx, db.UpdateAutopilotRunTerminalWithQuotaParams{
+		TerminalStatus: "skipped",
+		FailureReason:  pgtype.Text{String: "superseded by the next scheduled run while the provider breaker held it", Valid: true},
+		ReasonCode:     pgtype.Text{String: string(dispatch.ReasonProviderBreaker), Valid: true},
+		RunID:          run.ID,
+	}); err != nil {
+		return false, fmt.Errorf("skip run: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit breaker-held run retirement: %w", err)
+	}
+	return true, nil
 }
 
 // providerBreakerHold reports a wait on an open provider breaker. Every mode
