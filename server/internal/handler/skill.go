@@ -2626,11 +2626,9 @@ func (h *Handler) SetAgentSkills(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	tx, qtx, agent, ok := h.beginAgentSkillWrite(w, r, agent)
-	if !ok {
+	if !h.canManageAgent(w, r, agent) {
 		return
 	}
-	defer tx.Rollback(r.Context())
 
 	var req SetAgentSkillsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -2644,6 +2642,14 @@ func (h *Handler) SetAgentSkills(w http.ResponseWriter, r *http.Request) {
 	if !h.validateAgentSkillIDsInWorkspace(w, r, agent, skillUUIDs) {
 		return
 	}
+
+	// The request body is fully read above: the agent row lock is never held
+	// while a client controls the pace (CWE-400).
+	tx, qtx, agent, ok := h.beginAgentSkillWrite(w, r, agent)
+	if !ok {
+		return
+	}
+	defer tx.Rollback(r.Context())
 	if len(skillUUIDs) > 0 && h.rejectQoderOverrides(w, r, agent, qoderOverrides{skills: len(skillUUIDs)}) {
 		return
 	}
@@ -2678,11 +2684,9 @@ func (h *Handler) AddAgentSkills(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	tx, qtx, agent, ok := h.beginAgentSkillWrite(w, r, agent)
-	if !ok {
+	if !h.canManageAgent(w, r, agent) {
 		return
 	}
-	defer tx.Rollback(r.Context())
 
 	var req AddAgentSkillsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -2696,6 +2700,14 @@ func (h *Handler) AddAgentSkills(w http.ResponseWriter, r *http.Request) {
 	if !h.validateAgentSkillIDsInWorkspace(w, r, agent, skillUUIDs) {
 		return
 	}
+
+	// The request body is fully read above: the agent row lock is never held
+	// while a client controls the pace (CWE-400).
+	tx, qtx, agent, ok := h.beginAgentSkillWrite(w, r, agent)
+	if !ok {
+		return
+	}
+	defer tx.Rollback(r.Context())
 	if len(skillUUIDs) > 0 && h.rejectQoderOverrides(w, r, agent, qoderOverrides{skills: len(skillUUIDs)}) {
 		return
 	}
@@ -2725,11 +2737,9 @@ func (h *Handler) SetAgentSkillEnabled(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	tx, qtx, agent, ok := h.beginAgentSkillWrite(w, r, agent)
-	if !ok {
+	if !h.canManageAgent(w, r, agent) {
 		return
 	}
-	defer tx.Rollback(r.Context())
 
 	skillID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "skillId"), "skill_id")
 	if !ok {
@@ -2742,6 +2752,12 @@ func (h *Handler) SetAgentSkillEnabled(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "enabled is required")
 		return
 	}
+
+	tx, qtx, agent, ok := h.beginAgentSkillWrite(w, r, agent)
+	if !ok {
+		return
+	}
+	defer tx.Rollback(r.Context())
 	rows, err := qtx.SetAgentSkillEnabled(r.Context(), db.SetAgentSkillEnabledParams{
 		AgentID: agent.ID,
 		SkillID: skillID,

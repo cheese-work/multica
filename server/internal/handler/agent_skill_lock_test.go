@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -168,5 +170,84 @@ func TestAgentSkillWriterLockMakesActionLockBusy(t *testing.T) {
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
 		t.Fatalf("action lock err = %v, want 55P03 lock_not_available", err)
+	}
+}
+
+// stalledBody blocks its first Read until release is closed, then yields data.
+type stalledBody struct {
+	started chan struct{}
+	release chan struct{}
+	data    *strings.Reader
+	once    sync.Once
+}
+
+func (b *stalledBody) Read(p []byte) (int, error) {
+	b.once.Do(func() { close(b.started) })
+	<-b.release
+	return b.data.Read(p)
+}
+
+// A client that stalls its request body must not pin the agent row lock or a
+// transaction: the body is read before the lock is taken (CWE-400).
+func TestAgentSkillWritersReadBodyBeforeLocking(t *testing.T) {
+	writers := []struct {
+		name, method, path, body string
+		fn                       func(h *Handler) http.HandlerFunc
+		withSkill                bool
+	}{
+		{"SetAgentSkills", "PUT", "/skills", `{"skill_ids":[]}`, func(h *Handler) http.HandlerFunc { return h.SetAgentSkills }, false},
+		{"AddAgentSkills", "POST", "/skills/add", `{"skill_ids":[]}`, func(h *Handler) http.HandlerFunc { return h.AddAgentSkills }, false},
+		{"SetAgentSkillEnabled", "PUT", "/skills/{x}/enabled", `{"enabled":false}`, func(h *Handler) http.HandlerFunc { return h.SetAgentSkillEnabled }, true},
+	}
+	for _, writer := range writers {
+		t.Run(writer.name, func(t *testing.T) {
+			agentID := createHandlerTestAgent(t, "Skill Body "+writer.name, nil)
+			x := insertHandlerTestSkill(t, "skill-body-x-"+writer.name, "# x")
+			if _, err := testPool.Exec(context.Background(), `INSERT INTO agent_skill (agent_id, skill_id) VALUES ($1, $2)`, agentID, x); err != nil {
+				t.Fatal(err)
+			}
+			body := &stalledBody{started: make(chan struct{}), release: make(chan struct{}), data: strings.NewReader(writer.body)}
+			req := httptest.NewRequest(writer.method, "/api/agents/"+agentID+strings.ReplaceAll(writer.path, "{x}", x), body)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-User-ID", testUserID)
+			req.Header.Set("X-Workspace-ID", testWorkspaceID)
+			rctx := chi.NewRouteContext()
+			rctx.URLParams.Add("id", agentID)
+			if writer.withSkill {
+				rctx.URLParams.Add("skillId", x)
+			}
+			req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+			done := make(chan *httptest.ResponseRecorder, 1)
+			go func() {
+				w := httptest.NewRecorder()
+				writer.fn(testHandler)(w, req)
+				done <- w
+			}()
+			select {
+			case <-body.started:
+			case <-time.After(5 * time.Second):
+				t.Fatal("handler never read the body")
+			}
+
+			// While the body is stalled, an action must get the agent lock.
+			ctx := context.Background()
+			tx, err := testPool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, lockErr := testHandler.Queries.WithTx(tx).LockDecisionAgentsNowait(ctx, db.LockDecisionAgentsNowaitParams{
+				WorkspaceID: parseUUID(testWorkspaceID), Ids: []pgtype.UUID{parseUUID(agentID)},
+			})
+			tx.Rollback(ctx)
+			close(body.release)
+			resp := <-done
+			if lockErr != nil {
+				t.Fatalf("stalled body pinned the agent row lock: %v", lockErr)
+			}
+			if resp.Code != http.StatusOK {
+				t.Fatalf("writer status=%d body=%s", resp.Code, resp.Body.String())
+			}
+		})
 	}
 }
