@@ -7,8 +7,9 @@ Two rules for the current main head:
 2. Head merged >= 90 min ago and no successful `CD deploy to C00` run named for it whose `deploy` job succeeded
    (manual dispatches named by ref, not SHA, do not count; a run with the deploy job skipped does not count) -> ::error:: with the run
    URL and the first error line.
-3. Qualified head whose deploy run was skipped (MAIN_RED_PAUSED was set when it started) -> `gh run rerun`, once per
-   15 min tick up to MAX_RESUME_ATTEMPTS, because clearing the variable starts no run (CHE-4500).
+3. Qualified head whose deploy run was skipped (MAIN_RED_PAUSED was set when it started) -> `gh run rerun` once this
+   watch itself sees the variable cleared (cd-freshness-watch.yml passes it in as env), one rerun per 15 min tick up
+   to MAX_RESUME_ATTEMPTS, because clearing the variable starts no run (CHE-4500). No retry is spent while it is set.
 `--live`: compare the revision C00 reports on /api/config (env C00_API_URL, tailnet only, so it runs on an X99
 runner) with main's head; catches a rollback, which run history cannot see.
 GitHub rate limits (403/429) wait for the reset time (capped) and retry instead of failing the alarm.
@@ -24,7 +25,7 @@ import urllib.request
 MAX_WAIT = 600  # seconds per rate-limit wait; the job's 15 min timeout bounds the total
 RETRIES = 2
 DEPLOY_DEADLINE = dt.timedelta(minutes=90)
-MAX_RESUME_ATTEMPTS = 12  # one rerun per 15 min tick: about 3 h of pause; the 90 min alarm still fires
+MAX_RESUME_ATTEMPTS = 12  # reruns after the pause cleared (one per 15 min tick), so a pause of any length cannot use them up
 
 
 def _gh(*args):
@@ -67,14 +68,20 @@ def decide(sha, head_time, now, qual_runs, deploy_runs, ran_deploy):
             "deployed": deployed, "run": newest}
 
 
-def decide_resume(sha, qual_runs, skipped_deploy_runs, deployed):
+def main_red_paused():
+    """True while the repo variable MAIN_RED_PAUSED is set; the workflow passes `vars.MAIN_RED_PAUSED` in as env."""
+    return bool(os.environ.get("MAIN_RED_PAUSED"))
+
+
+def decide_resume(sha, qual_runs, skipped_deploy_runs, deployed, paused):
     """Run ID of the skipped `CD deploy to C00` run to rerun, or None (CHE-4500).
 
     A run with the skipped conclusion never started candidate-preflight: its `if` was false. With a successful
     qualification that means MAIN_RED_PAUSED was set. Clearing the variable starts nothing, so rerun the run
-    (all jobs: the preflight is the skipped one) to re-evaluate the flag. Still paused -> skipped again, next tick retries."""
+    (all jobs: the preflight is the skipped one) to re-evaluate the flag. While the flag is still set a rerun only
+    skips again, so spend nothing: the attempt cap then counts only reruns made after the pause cleared."""
     newest = max(qual_runs, key=lambda r: r["created_at"], default=None)
-    if deployed or not newest or newest["conclusion"] != "success":
+    if paused or deployed or not newest or newest["conclusion"] != "success":
         return None
     named = [r for r in skipped_deploy_runs if r.get("display_title", "").endswith(f" {sha}")]
     run = max(named, key=lambda r: r.get("created_at", ""), default=None)
@@ -141,10 +148,10 @@ def main(argv=()):
     if d["rerun"]:
         gh_api("run", "rerun", str(d["rerun"]), "--failed", "-R", repo)
         print(f"Reran failed jobs of qualification run {d['rerun']} (once per run ID).")
-    resume = None if d["deployed"] else decide_resume(sha, qual_runs, runs("cd-deploy.yml", "status=skipped"), d["deployed"])
+    resume = None if d["deployed"] else decide_resume(sha, qual_runs, runs("cd-deploy.yml", "status=skipped"), d["deployed"], main_red_paused())
     if resume:
         gh_api("run", "rerun", str(resume), "-R", repo)
-        print(f"Reran skipped deploy run {resume}: MAIN_RED_PAUSED may have cleared.")
+        print(f"Reran skipped deploy run {resume}: MAIN_RED_PAUSED is cleared.")
     if d["alert"]:
         age = int((now - head_time).total_seconds() // 60)
         run = d["run"]

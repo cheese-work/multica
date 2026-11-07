@@ -127,27 +127,45 @@ class ResumeAfterPauseTest(unittest.TestCase):
         return {"id": run_id, "display_title": f"CD deploy to C00 · {sha}", "conclusion": "skipped", "run_attempt": attempt}
 
     def test_qualified_head_with_skipped_deploy_run_is_rerun(self):
-        self.assertEqual(fresh.decide_resume(SHA, [qual("success")], [self.skipped()], deployed=False), 30)
+        self.assertEqual(fresh.decide_resume(SHA, [qual("success")], [self.skipped()], deployed=False, paused=False), 30)
 
     def test_deployed_head_is_not_rerun(self):
-        self.assertIsNone(fresh.decide_resume(SHA, [qual("success")], [self.skipped()], deployed=True))
+        self.assertIsNone(fresh.decide_resume(SHA, [qual("success")], [self.skipped()], deployed=True, paused=False))
 
     def test_unqualified_head_is_not_rerun(self):
         for conclusion in ("failure", None, "cancelled"):
-            self.assertIsNone(fresh.decide_resume(SHA, [qual(conclusion)], [self.skipped()], deployed=False), conclusion)
+            self.assertIsNone(fresh.decide_resume(SHA, [qual(conclusion)], [self.skipped()], deployed=False, paused=False), conclusion)
 
     def test_skipped_run_of_another_sha_is_not_rerun(self):
-        self.assertIsNone(fresh.decide_resume(SHA, [qual("success")], [self.skipped(sha="0" * 40)], deployed=False))
+        self.assertIsNone(fresh.decide_resume(SHA, [qual("success")], [self.skipped(sha="0" * 40)], deployed=False, paused=False))
 
     def test_retries_stop_at_the_attempt_cap(self):
         last = self.skipped(attempt=fresh.MAX_RESUME_ATTEMPTS - 1)
-        self.assertEqual(fresh.decide_resume(SHA, [qual("success")], [last], deployed=False), 30)
-        self.assertIsNone(fresh.decide_resume(SHA, [qual("success")], [self.skipped(attempt=fresh.MAX_RESUME_ATTEMPTS)], deployed=False))
+        self.assertEqual(fresh.decide_resume(SHA, [qual("success")], [last], deployed=False, paused=False), 30)
+        self.assertIsNone(fresh.decide_resume(SHA, [qual("success")], [self.skipped(attempt=fresh.MAX_RESUME_ATTEMPTS)], deployed=False, paused=False))
+
+    def test_no_retry_is_spent_while_the_pause_is_still_set(self):
+        # Terra P1: 12 reruns during a long pause used up the cap, so clearing the flag later resumed nothing.
+        for attempt in (1, 5, fresh.MAX_RESUME_ATTEMPTS - 1):
+            self.assertIsNone(fresh.decide_resume(SHA, [qual("success")], [self.skipped(attempt=attempt)], deployed=False, paused=True))
+
+    def test_long_pause_then_cleared_still_resumes(self):
+        # 20 ticks paused (no rerun, attempt stays 1), then the flag clears: the next tick reruns.
+        run = self.skipped(attempt=1)
+        for _ in range(20):
+            self.assertIsNone(fresh.decide_resume(SHA, [qual("success")], [run], deployed=False, paused=True))
+        self.assertEqual(fresh.decide_resume(SHA, [qual("success")], [run], deployed=False, paused=False), 30)
+
+    def test_paused_reads_the_variable_from_the_environment(self):
+        for value, expected in (("", False), (None, False), ("1", True), ("main red since 10:00", True)):
+            env = {} if value is None else {"MAIN_RED_PAUSED": value}
+            with patch.dict(fresh.os.environ, env, clear=True):
+                self.assertIs(fresh.main_red_paused(), expected, value)
 
     def test_newest_skipped_run_wins(self):
         runs = [self.skipped(run_id=30, attempt=3), self.skipped(run_id=31, attempt=1)]
         runs[0]["created_at"], runs[1]["created_at"] = "2026-11-05T10:00:00Z", "2026-11-05T11:00:00Z"
-        self.assertEqual(fresh.decide_resume(SHA, [qual("success")], runs, deployed=False), 31)
+        self.assertEqual(fresh.decide_resume(SHA, [qual("success")], runs, deployed=False, paused=False), 31)
 
 
 class RateLimitTest(unittest.TestCase):
@@ -189,7 +207,7 @@ class RateLimitTest(unittest.TestCase):
 
 
 class MainTest(unittest.TestCase):
-    def run_main(self, qual_runs, deploy_runs, minutes_ago, deploy_job="success", skipped_runs=(), log="2026-11-05T10:01:02Z ok\n2026-11-05T10:01:03Z ##[error]buildx failed: boom\n"):
+    def run_main(self, qual_runs, deploy_runs, minutes_ago, deploy_job="success", skipped_runs=(), paused="", log="2026-11-05T10:01:02Z ok\n2026-11-05T10:01:03Z ##[error]buildx failed: boom\n"):
         commit = {"sha": SHA, "commit": {"committer": {"date": head_at(minutes_ago).isoformat()}}}
         jobs = [{"id": 7, "name": "build-images", "conclusion": "failure"}, {"id": 8, "name": "cd-qualification", "conclusion": "skipped"}]
         seen = []
@@ -217,7 +235,7 @@ class MainTest(unittest.TestCase):
             raise AssertionError(path)
 
         out = io.StringIO()
-        with patch.dict(fresh.os.environ, {"GITHUB_REPOSITORY": "cheese-work/multica"}), \
+        with patch.dict(fresh.os.environ, {"GITHUB_REPOSITORY": "cheese-work/multica", "MAIN_RED_PAUSED": paused}), \
                 patch.object(fresh, "gh_api", side_effect=fake), patch.object(fresh, "utcnow", return_value=NOW), \
                 contextlib.redirect_stdout(out):
             rc = fresh.main()
@@ -228,6 +246,12 @@ class MainTest(unittest.TestCase):
         rc, out, seen = self.run_main([qual("success")], [], 30, skipped_runs=[skipped])
         self.assertEqual(rc, 0)
         self.assertEqual([a for a in seen if a[:2] == ("run", "rerun")], [("run", "rerun", "30", "-R", "cheese-work/multica")])
+
+    def test_skipped_deploy_run_is_not_rerun_while_the_pause_is_set(self):
+        skipped = {"id": 30, "display_title": f"CD deploy to C00 · {SHA}", "conclusion": "skipped", "run_attempt": 1}
+        rc, out, seen = self.run_main([qual("success")], [], 30, skipped_runs=[skipped], paused="1")
+        self.assertEqual(rc, 0)
+        self.assertEqual([a for a in seen if a[:2] == ("run", "rerun")], [])
 
     def test_failed_build_is_rerun_once_and_not_yet_alerted(self):
         rc, out, seen = self.run_main([qual("failure")], [], 30)

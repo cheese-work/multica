@@ -9,7 +9,7 @@ on:
       - deploy/cd/check-deploy-freshness.py
       - deploy/cd/test-check-deploy-freshness.py
 
-# actions: write is only for `gh run rerun --failed` on the main qualification run. A separate file from
+# actions: write is only for `gh run rerun` on the main qualification run and on a deploy run skipped by MAIN_RED_PAUSED. A separate file from
 # cd-queue-watch.yml, whose tests pin it to read-only permissions. Like that alarm: GitHub-hosted runner,
 # no concurrency group, so a dead deploy or X99 runner cannot suppress it. The live C00 revision check runs on X99
 # in its own schedule-only file, cd-live-revision.yml.
@@ -31,4 +31,6 @@ jobs:
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
+          # Read at tick time; the token cannot read repo variables over the API. Set = main is red, do not resume.
+          MAIN_RED_PAUSED: ${{ vars.MAIN_RED_PAUSED }}
         run: python3 deploy/cd/check-deploy-freshness.py
