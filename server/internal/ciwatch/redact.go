@@ -20,20 +20,14 @@ const (
 	markerCarry     = 64
 	keyPlaceholder  = "[REDACTED PRIVATE KEY]"
 	tokenPlaceholer = "[REDACTED]"
+	lineOmitted     = "[line over 64 KiB omitted]"
 )
 
 var (
 	keyMarker = regexp.MustCompile(`-----(BEGIN|END) ([A-Z0-9 ]*KEY[A-Z0-9 ]*)-----`)
 
 	// URL credentials go first so a token inside them is covered as well.
-	urlCreds = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)[^\s/@]+@`)
-	// One key-driven rule: a credential-like key (bare, single- or double-quoted,
-	// also escaped inside a string), then ":" or "=", then the whole value
-	// whatever its type. Keys must END in the credential word, so max_tokens and
-	// password_policy stay readable. Quoted forms come first so spaces inside
-	// them are covered; a bare value stops at whitespace or , } ] &.
-	credValue = regexp.MustCompile(`(?i)(\b[a-z0-9_.-]*(?:password|passwd|secret|secret[_-]?key|access[_-]?key|api[_-]?key|private[_-]?key|credentials?|token)\\?["']?\s*[:=]\s*)` +
-		`(?:\\"(?:[^"\\]|\\[^"])*\\"|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\[[^\]]*\]|\{[^}]*\}|(?:bearer\s+)?[^\s,}\]&]+)`)
+	urlCreds   = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)[^\s/@]+@`)
 	tokenShape = regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b|\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*`)
 	bearer     = regexp.MustCompile(`(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]{8,}`)
 )
@@ -42,7 +36,6 @@ func redactTokens(s string) string {
 	// URL credentials first: a provider-shaped username replaced by a
 	// placeholder with spaces would otherwise break this match and leave the password.
 	s = urlCreds.ReplaceAllString(s, "${1}"+tokenPlaceholer+"@")
-	s = credValue.ReplaceAllString(s, "${1}"+tokenPlaceholer)
 	s = sharedredact.Text(s)
 	s = tokenShape.ReplaceAllString(s, tokenPlaceholer)
 	return bearer.ReplaceAllString(s, "${1}"+tokenPlaceholer)
@@ -56,6 +49,7 @@ type redactor struct {
 	inKey    bool
 	label    string // label of the open BEGIN; only an END with this label closes it
 	nested   bool   // a BEGIN arrived inside an open key: fail closed, stay open to EOF
+	cred     credMasker
 }
 
 func (r *redactor) emit(s string) {
@@ -71,6 +65,9 @@ func (r *redactor) emit(s string) {
 func (r *redactor) line(text string, sc *lineScan) {
 	if !sc.sawMarker {
 		if !r.inKey {
+			if text != lineOmitted {
+				text = r.cred.line(text)
+			}
 			r.emit(redactTokens(text))
 		}
 		return
@@ -167,7 +164,7 @@ func RedactTail(r io.Reader, maxLines int) (lines []string, err error) {
 			text := strings.TrimRight(string(cur.head), "\r\n")
 			if cur.overflow {
 				// A cut line can hold half a credential (the "@" lies past the cut), so drop the text.
-				text = "[line over 64 KiB omitted]"
+				text = lineOmitted
 			}
 			red.line(text, &cur)
 			cur = lineScan{open: red.inKey, label: red.label, nested: red.nested}

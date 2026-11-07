@@ -296,3 +296,36 @@ func TestRedactKeepsNonCredentialKeysWithCredentialSubstrings(t *testing.T) {
 		t.Errorf("changed: %s", got)
 	}
 }
+
+// Values that nest or sit on a later line: masking tracks depth, quotes and
+// lines, and an unterminated value masks to EOF.
+func TestRedactCredentialValuesSpanNestingAndLines(t *testing.T) {
+	cases := []struct {
+		name, in string
+		planted  []string
+		keep     []string // lines that must survive
+	}{
+		{"nested object", `{"password":{"nested":{"x":1},"raw":"planted1"},"id":7}`, []string{"planted1"}, []string{`"id":7`}},
+		{"brace inside string", `{"password":"a}b\"planted1"}`, []string{"planted1"}, nil},
+		{"value on next line", "\"password\":\nplanted1\nafter", []string{"planted1"}, []string{"after"}},
+		{"yaml indented next line", "password:\n    planted1 planted2\nafter", []string{"planted1", "planted2"}, []string{"after"}},
+		{"blank line between", "password:\n\nplanted1\nafter", []string{"planted1"}, []string{"after"}},
+		{"object body on later lines", "\"password\": {\n  \"user\": \"planted1\",\n  \"inner\": {\"k\": \"planted2\"}\n}\nafter", []string{"planted1", "planted2"}, []string{"after"}},
+		{"list across lines", "secret: [\n  planted1,\n  planted2\n]\nafter", []string{"planted1", "planted2"}, []string{"after"}},
+		{"unterminated object masks to EOF", "password: {\nplanted1\nplanted2\n", []string{"planted1", "planted2"}, nil},
+		{"unterminated list masks to EOF", "token = [\nplanted1\n", []string{"planted1"}, nil},
+		{"unterminated string stays on its line", "password: \"planted1 planted2\nafter", []string{"planted1", "planted2"}, []string{"after"}},
+		{"value then more json", `{"password":{"a":1},"id":7}` + "\nafter", nil, []string{`"id":7`, "after"}},
+	}
+	for _, tc := range cases {
+		for _, oneByte := range []bool{false, true} {
+			got := redact(t, "before\n"+tc.in+"\n", oneByte)
+			noLeak(t, got, tc.planted...)
+			for _, k := range append([]string{"before"}, tc.keep...) {
+				if !strings.Contains(got, k) {
+					t.Errorf("%s: %q lost: %s", tc.name, k, got)
+				}
+			}
+		}
+	}
+}
