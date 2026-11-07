@@ -13,25 +13,24 @@ function formatWindow(tokens: number): string {
  * the model's window. Near the auto-compact token threshold it shows where the
  * DM compacts: with a known last-turn size, "after the next reply" only when
  * less than one turn remains; otherwise from 90% of the threshold tokens.
- * Hidden when the run reported no size. `thresholdPct` is null when
+ * Hidden when the run reported no size. `thresholdTokens` is null when
  * auto-compact is off for this DM.
  */
 export function ChatContextMeter({
   tokens,
   window,
-  thresholdPct,
+  thresholdTokens,
   lastTurnTokens,
 }: {
   tokens?: number | null;
   window?: number | null;
-  thresholdPct: number | null;
+  thresholdTokens: number | null;
   /** Prompt growth of the last turn, when known. */
   lastTurnTokens?: number | null;
 }) {
   const { t } = useT("chat");
   if (!tokens || !window || tokens < 0 || window <= 0) return null;
   const pct = Math.floor((tokens * 100) / window);
-  const thresholdTokens = thresholdPct === null ? null : (window * thresholdPct) / 100;
   const turn = lastTurnTokens && lastTurnTokens > 0 ? lastTurnTokens : null;
   const finalTurn =
     thresholdTokens !== null && turn !== null && thresholdTokens - tokens < turn;
