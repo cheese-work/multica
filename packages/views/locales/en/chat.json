@@ -309,6 +309,8 @@
     "archive_failed": "Couldn't archive this chat",
     "unarchive_failed": "Couldn't unarchive this chat",
     "pin_failed": "Couldn't update the pin",
+    "unseen": "Mark as unseen",
+    "unseen_failed": "Couldn't mark this chat as unseen",
     "undo": "Undo"
   },
   "header": {
@@ -325,6 +327,7 @@
     "statistics": "Statistics",
     "pin": "Pin chat",
     "unpin": "Unpin chat",
+    "unseen": "Mark as unseen",
     "preset": { "label": "Preset", "inherit": "Inherit", "base": "Base" }
   },
   "scheduled": {

@@ -12,7 +12,7 @@ import (
 )
 
 const getDecisionCancelMessageForRequest = `-- name: GetDecisionCancelMessageForRequest :one
-SELECT id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via, decision_answer_id, lineage_message_ids, decision_request_ids, client_message_id FROM chat_message
+SELECT id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via, decision_answer_id, lineage_message_ids, decision_request_ids, client_message_id, reanchored_at FROM chat_message
 WHERE chat_session_id = $1
     AND $2::uuid = ANY(decision_request_ids)
     AND message_kind = 'decision_cancel_notice'
@@ -51,6 +51,7 @@ func (q *Queries) GetDecisionCancelMessageForRequest(ctx context.Context, arg Ge
 		&i.LineageMessageIds,
 		&i.DecisionRequestIds,
 		&i.ClientMessageID,
+		&i.ReanchoredAt,
 	)
 	return i, err
 }

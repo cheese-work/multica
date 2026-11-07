@@ -646,6 +646,7 @@ type ChatMessage struct {
 	LineageMessageIds             []pgtype.UUID      `json:"lineage_message_ids"`
 	DecisionRequestIds            []pgtype.UUID      `json:"decision_request_ids"`
 	ClientMessageID               pgtype.Text        `json:"client_message_id"`
+	ReanchoredAt                  pgtype.Timestamptz `json:"reanchored_at"`
 }
 
 type ChatPinnedAgent struct {
@@ -687,6 +688,8 @@ type ChatSession struct {
 	CompactionEpoch        int64              `json:"compaction_epoch"`
 	PresetName             pgtype.Text        `json:"preset_name"`
 	DecisionTopicID        pgtype.UUID        `json:"decision_topic_id"`
+	SegmentFloorAt         pgtype.Timestamptz `json:"segment_floor_at"`
+	SegmentFloorID         pgtype.UUID        `json:"segment_floor_id"`
 	ChainRootSessionID     pgtype.UUID        `json:"chain_root_session_id"`
 	TaintIds               []string           `json:"taint_ids"`
 	TaintVerified          bool               `json:"taint_verified"`
@@ -2388,6 +2391,7 @@ type IssueWorkflow struct {
 	RunBudgetSince          pgtype.Timestamptz `json:"run_budget_since"`
 	RunBudgetTokenAllowance pgtype.Int8        `json:"run_budget_token_allowance"`
 	RunBudgetTokenReserve   pgtype.Int8        `json:"run_budget_token_reserve"`
+	StartStatusKey          pgtype.Text        `json:"start_status_key"`
 }
 
 type LarkBindingToken struct {

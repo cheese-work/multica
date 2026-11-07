@@ -254,6 +254,11 @@ export function ChatPage() {
       if (isCompact) backOrReplace(wsPaths.chat());
       else c.advanceSelectionAfterArchive(session);
     },
+    onUnseen: (session) => {
+      if (session.id !== useChatStore.getState().activeSessionId) return;
+      if (isCompact) backOrReplace(wsPaths.chat());
+      else c.setActiveSession(null);
+    },
     onRename: handleRename,
     onFork: canForkSession(c.currentSession) ? handleFork : undefined,
   });
@@ -437,6 +442,7 @@ export function ChatPage() {
           onArchive={handleArchive}
           onUnarchive={dm.unarchive}
           onTogglePin={dm.togglePin}
+          onMarkUnseen={dm.markUnseen}
           onOpenStatistics={() => dm.openStatistics(c.currentSession?.id ?? "")}
           renameRequest={renameRequest}
           autoCompactThresholdTokens={autoCompactTokens}
