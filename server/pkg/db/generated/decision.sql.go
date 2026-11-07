@@ -1921,6 +1921,8 @@ SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_
 WHERE authority = 'human' AND workspace_id = $1 AND id = ANY($2::uuid[])
   AND human_user_id = $3 AND status = 'open' AND origin = 'asked' AND kind = 'decision'
   AND escalation_class IN ('reversible', 'product_direction')
+  AND NOT options @> '[{"label": "Approve write"}]'::jsonb
+  AND COALESCE(ask_json->>'decision', '') NOT LIKE 'Apply this change to %'
 ORDER BY id
 FOR UPDATE
 `
@@ -1934,6 +1936,9 @@ type LockBatchCoveredRequestsParams struct {
 // The open per-issue cards a batch card covers, locked in id order. Only a
 // reversible or product_direction card of the batch's own human is eligible:
 // a gated class needs its own passkey answer, an action needs its own approval.
+// A decision-bound governed-write approval (an "Approve write" option or the
+// "Apply this change to <field>?" heading) is never eligible: the human must
+// see that exact change on its own card, not approve it through a batch.
 func (q *Queries) LockBatchCoveredRequests(ctx context.Context, arg LockBatchCoveredRequestsParams) ([]DecisionRequest, error) {
 	rows, err := q.db.Query(ctx, lockBatchCoveredRequests, arg.WorkspaceID, arg.Ids, arg.HumanUserID)
 	if err != nil {

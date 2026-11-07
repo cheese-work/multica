@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"net/http"
 	"strings"
@@ -101,6 +102,10 @@ func TestBatchCardCreationRefusals(test *testing.T) {
 		"gated class": func(card askedRecordFixture, fixture requestCoreFixture) {
 			dbfx.Exec(test, `UPDATE decision_request SET human_user_id = $2, escalation_class = 'deploy' WHERE id = $1`, card.decision.ID, fixture.humanID)
 		},
+		"governed write approval": func(card askedRecordFixture, fixture requestCoreFixture) {
+			dbfx.Exec(test, `UPDATE decision_request SET human_user_id = $2 WHERE id = $1`, card.decision.ID, fixture.humanID)
+			makeBoundWriteCard(test, card)
+		},
 		"already answered": func(card askedRecordFixture, fixture requestCoreFixture) {
 			dbfx.Exec(test, `UPDATE decision_request SET human_user_id = $2, status = 'answered' WHERE id = $1`, card.decision.ID, fixture.humanID)
 		},
@@ -114,5 +119,46 @@ func TestBatchCardCreationRefusals(test *testing.T) {
 			testutil.Call(test, testHandler.RequestDecision, batchCreateRequest(fixture, []string{uuidToString(card.decision.ID)})).Want(http.StatusBadRequest)
 			fixture.assertCounts(test, 0)
 		})
+	}
+}
+
+// makeBoundWriteCard turns an open card into a decision-bound governed-write
+// approval card, as newBoundWriteFixture does before it answers the card.
+func makeBoundWriteCard(test *testing.T, card askedRecordFixture) {
+	test.Helper()
+	options := `[{"label":"` + decisiontx.ApproveWriteLabel + `","what_happens":"apply"},{"label":"Reject","what_happens":"drop"}]`
+	dbfx.Exec(test, `UPDATE decision_request SET options = $2::jsonb WHERE id = $1`, card.decision.ID, options)
+	storeBoundWriteCard(test, card.decision.ID, decisiontx.BoundWriteDecision(boundField, boundBefore, boundAfter))
+}
+
+// A batch answer must not approve a governed write the human never saw: the
+// covered write card stays open and unanswered, so the binding is refused.
+func TestBatchAnswerLeavesGovernedWriteCardOpen(test *testing.T) {
+	resetDecisionLease(test)
+	fixture := newBatchFixture(test, 1)
+	write := fixture.covered[0]
+	makeBoundWriteCard(test, write)
+	dbfx.Exec(test, `UPDATE member SET role = 'owner' WHERE workspace_id = $1 AND user_id = $2`, write.issue.WorkspaceID, parseUUID(fixture.batch.humanID))
+	dbfx.Exec(test, `UPDATE decision_request SET options = $2::jsonb WHERE id = $1`, fixture.batch.decision.ID,
+		`[{"label":"`+decisiontx.ApproveWriteLabel+`","what_happens":"ok"},{"label":"Reject","what_happens":"no"}]`)
+	if _, err := fixture.batch.answerOnCard(decisionCardAnswerInput{Option: decisiontx.ApproveWriteLabel}); err != nil {
+		test.Fatal(err)
+	}
+	var status string
+	dbfx.QueryRow(test, `SELECT status FROM decision_request WHERE id = $1`, write.decision.ID).Scan(&status)
+	if status != "open" || dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1`, write.decision.ID) != 0 {
+		test.Fatalf("governed write card was closed by the batch answer: status=%s", status)
+	}
+	if err := write.verifyBinding(allowAnyAgent, boundAfter); err == nil || !strings.Contains(err.Error(), "no live answer") {
+		test.Fatalf("binding on a batch-covered write card = %v, want refusal: decision has no live answer", err)
+	}
+}
+
+// Positive control: answering the governed-write card itself still binds.
+func TestDirectGovernedWriteAnswerStillBinds(test *testing.T) {
+	resetDecisionLease(test)
+	write := newBoundWriteFixture(test, decisiontx.ApproveWriteLabel)
+	if err := write.verifyBinding(allowAnyAgent, boundAfter); err != nil {
+		test.Fatalf("direct approval no longer binds: %v", err)
 	}
 }

@@ -164,7 +164,7 @@ func coverBatchRequests(ctx context.Context, queries *db.Queries, batch db.Decis
 		return batch, err
 	}
 	if len(found) != len(covers) {
-		return batch, decisionIntentRefusal{http.StatusBadRequest, "covers_request_ids must name open reversible or product_direction cards addressed to the same human"}
+		return batch, decisionIntentRefusal{http.StatusBadRequest, "covers_request_ids must name open reversible or product_direction cards addressed to the same human; a governed-write approval cannot be covered"}
 	}
 	return queries.SetDecisionRequestCovers(ctx, db.SetDecisionRequestCoversParams{WorkspaceID: batch.WorkspaceID, ID: batch.ID, CoversRequestIds: covers})
 }
