@@ -64,6 +64,7 @@ export function ChatSessionHeader({
   onOpenStatistics,
   renameRequest = 0,
   autoCompactThresholdPct = null,
+  lastTurnTokens,
   onCompact,
   onSetPreset,
 }: {
@@ -82,6 +83,8 @@ export function ChatSessionHeader({
   renameRequest?: number;
   /** Auto-compact threshold for this DM, or null when auto-compact is off. */
   autoCompactThresholdPct?: number | null;
+  /** Prompt growth of the last turn, when known. */
+  lastTurnTokens?: number | null;
   /** Sends /compact. Omit to hide the "Compact now" item. */
   onCompact?: () => void;
   /** Sends `/preset <reset|base|name>`. Omit to hide the preset picker. */
@@ -267,6 +270,7 @@ export function ChatSessionHeader({
           tokens={session.context_tokens}
           window={session.context_window}
           thresholdPct={autoCompactThresholdPct}
+          lastTurnTokens={lastTurnTokens}
         />
       )}
 
