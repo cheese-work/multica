@@ -2,6 +2,8 @@ package handler
 
 import (
 	"context"
+	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,24 +17,32 @@ import (
 
 type recordedDecision struct{ key, words, answerID string }
 
-// recordDecision stores one answered, standing decision of sessionID. A card
-// answer has no chat source; an agent record quotes a DM message.
+// recordDecision stores one answered, standing decision asked in sessionID and
+// sourced from the same DM. A card answer is shaped as the card handler writes
+// it: a card source, the DM row it made, the option plus note as the snapshot.
 func recordDecision(t *testing.T, agentID, sessionID, title, words string, card bool) recordedDecision {
+	t.Helper()
+	return recordDecisionFrom(t, agentID, sessionID, sessionID, title, words, "", card)
+}
+
+// recordDecisionFrom lets the request lane and the source DM differ, as an
+// agent record quoting another DM's message does (TestAskedDecisionRecordFromAnotherDM).
+// note is a card's free text beside the option; words is the whole snapshot.
+func recordDecisionFrom(t *testing.T, agentID, requestSession, sourceSession, title, words, note string, card bool) recordedDecision {
 	t.Helper()
 	issueID := dbfx.Issue(t, title)
 	var key string
 	dbfx.QueryRow(t, `SELECT workspace.issue_prefix || '-' || issue.number::text FROM issue JOIN workspace ON workspace.id = issue.workspace_id WHERE issue.id = $1`, issueID).Scan(&key)
-	requestID := dbfx.Insert(t, "decision_request", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": issueID, "asking_agent_id": agentID, "human_user_id": testUserID, "chat_session_id": sessionID, "escalation_class": "reversible", "origin": "asked", "status": "answered"})
+	requestID := dbfx.Insert(t, "decision_request", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": issueID, "asking_agent_id": agentID, "human_user_id": testUserID, "chat_session_id": requestSession, "escalation_class": "reversible", "origin": "asked", "status": "answered"})
 	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM decision_request WHERE id = $1`, requestID) })
-	var answerID string
+	messageID := dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": sourceSession, "role": "user", "content": words})
+	cols := testutil.Cols{"decision_request_id": requestID, "source_chat_session_id": sourceSession, "chat_message_ids": "{" + messageID + "}", "content_snapshot": words, "effective_at": time.Now()}
 	if card {
-		answerID = dbfx.Insert(t, "decision_answer", testutil.Cols{"decision_request_id": requestID, "answered_by_user_id": testUserID, "answer_source": "card", "chat_message_ids": "{}", "content_snapshot": words, "reply_text": words, "effective_at": time.Now()})
+		cols["answered_by_user_id"], cols["answer_source"], cols["reply_text"] = testUserID, "card", note
 	} else {
-		messageID := dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": sessionID, "role": "user", "content": words})
-		taskID := dbfx.Task(t, agentID, testutil.Cols{"status": "completed", "chat_session_id": sessionID, "runtime_id": handlerTestRuntimeID(t)})
-		answerID = dbfx.Insert(t, "decision_answer", testutil.Cols{"decision_request_id": requestID, "answered_by_task_id": taskID, "source_chat_session_id": sessionID, "chat_message_ids": "{" + messageID + "}", "content_snapshot": words, "effective_at": time.Now()})
+		cols["answered_by_task_id"] = dbfx.Task(t, agentID, testutil.Cols{"status": "completed", "chat_session_id": sourceSession, "runtime_id": handlerTestRuntimeID(t)})
 	}
-	return recordedDecision{key: key, words: words, answerID: answerID}
+	return recordedDecision{key: key, words: words, answerID: dbfx.Insert(t, "decision_answer", cols)}
 }
 
 func requireDecisions(t *testing.T, where, text string, want ...recordedDecision) {
@@ -41,7 +51,7 @@ func requireDecisions(t *testing.T, where, text string, want ...recordedDecision
 		t.Fatalf("%s lacks the decisions block:\n%s", where, text)
 	}
 	for _, decision := range want {
-		for _, part := range []string{decision.key, decision.words, decision.answerID, "ICT"} {
+		for _, part := range []string{decision.key, strconv.Quote(decision.words), decision.answerID, "ICT"} {
 			if !strings.Contains(text, part) {
 				t.Fatalf("%s lacks %q of decision %s:\n%s", where, part, decision.key, text)
 			}
@@ -97,4 +107,97 @@ func TestCompactionCarriesEveryRecordedDecision(t *testing.T) {
 	}
 	requireDecisions(t, "second prompt", seed, first, second, third, fourth)
 	requireDecisions(t, "second folded row", summary.Content, first, second, third, fourth)
+}
+
+// The block never drops a decision: not at 51 records, not for one record
+// larger than the old 8 KiB cap or the 64 KiB seed cap, and not across a repeated compaction.
+func TestCompactionKeepsDecisionsPastTheOldCaps(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID := createHandlerTestAgent(t, "compaction-decisions-bounds", []byte("[]"))
+	sessionID := dbfx.ChatSession(t, agentID)
+	var want []recordedDecision
+	for index := 0; index < 51; index++ {
+		want = append(want, recordDecision(t, agentID, sessionID, fmt.Sprintf("bounds %d", index), fmt.Sprintf("Decision number %d stands.", index), index%2 == 0))
+	}
+	want = append(want, recordDecision(t, agentID, sessionID, "bounds big", "Big decision: "+strings.Repeat("keep every word. ", 4500), false))
+	for round := 1; round <= 2; round++ {
+		session, summary, fail := testHandler.compactChatInPlace(ctx, parseUUID(sessionID), pgtype.UUID{}, "Summary that keeps nothing.")
+		if fail != nil {
+			t.Fatalf("compact round %d: %s", round, fail.message)
+		}
+		seed, err := testHandler.compactionSeedBlock(ctx, session, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for where, text := range map[string]string{"folded row": summary.Content, "prompt": seed} {
+			requireDecisions(t, fmt.Sprintf("%s round %d", where, round), text, want...)
+			if strings.Contains(text, "omitted") {
+				t.Fatalf("%s round %d omits decisions:\n%.400s", where, round, text)
+			}
+		}
+		sessionID = uuidToString(session.ID)
+	}
+}
+
+// A record belongs to the DM its source message lives in, not to the DM that
+// asked: DM A's block lists A-sourced answers only, DM B's block B-sourced ones.
+func TestCompactionDecisionsFollowTheSourceDM(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID := createHandlerTestAgent(t, "compaction-decisions-source", []byte("[]"))
+	dmA, dmB := dbfx.ChatSession(t, agentID), dbfx.ChatSession(t, agentID)
+	inA := recordDecisionFrom(t, agentID, dmA, dmA, "source a", "Decided in DM A.", "", false)
+	askedInAAnsweredInB := recordDecisionFrom(t, agentID, dmA, dmB, "asked a answered b", "Decided in DM B only.", "", false)
+	session, summary, fail := testHandler.compactChatInPlace(ctx, parseUUID(dmA), pgtype.UUID{}, "Nothing kept.")
+	if fail != nil {
+		t.Fatalf("compact: %s", fail.message)
+	}
+	requireDecisions(t, "DM A row", summary.Content, inA)
+	if strings.Contains(summary.Content, decisionWords(askedInAAnsweredInB)) {
+		t.Fatalf("DM A lists an answer sourced from DM B:\n%s", summary.Content)
+	}
+	seed, err := testHandler.compactionSeedBlock(ctx, session, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(seed, decisionWords(askedInAAnsweredInB)) {
+		t.Fatalf("DM A prompt lists an answer sourced from DM B:\n%s", seed)
+	}
+	_, summaryB, fail := testHandler.compactChatInPlace(ctx, parseUUID(dmB), pgtype.UUID{}, "Nothing kept.")
+	if fail != nil {
+		t.Fatalf("compact B: %s", fail.message)
+	}
+	requireDecisions(t, "DM B row", summaryB.Content, askedInAAnsweredInB)
+}
+
+func decisionWords(d recordedDecision) string { return d.words }
+
+// A card answer with a chosen option and a note carries both.
+func TestCompactionDecisionsKeepCardOptionAndNote(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID := createHandlerTestAgent(t, "compaction-decisions-card", []byte("[]"))
+	sessionID := dbfx.ChatSession(t, agentID)
+	card := recordDecisionFrom(t, agentID, sessionID, sessionID, "card with note", "Option B\n\nbut cap retries at 3", "but cap retries at 3", true)
+	session, summary, fail := testHandler.compactChatInPlace(ctx, parseUUID(sessionID), pgtype.UUID{}, "Nothing kept.")
+	if fail != nil {
+		t.Fatalf("compact: %s", fail.message)
+	}
+	seed, err := testHandler.compactionSeedBlock(ctx, session, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for where, text := range map[string]string{"row": summary.Content, "prompt": seed} {
+		requireDecisions(t, where, text, card)
+		if !strings.Contains(text, "Option B") {
+			t.Fatalf("%s lacks the chosen option:\n%s", where, text)
+		}
+	}
 }

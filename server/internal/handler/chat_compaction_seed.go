@@ -42,10 +42,15 @@ func (h *Handler) compactionSeedBlock(ctx context.Context, session db.ChatSessio
 		older      = "Messages before the compaction are not included; read them with multica chat history.\n"
 		cutNote    = "Only the newest messages since the compaction fit here; read the rest with multica chat history.\n"
 	)
-	content := strings.ReplaceAll(summary.Content, compactionSummaryClose, `<\/compaction_summary>`)
-	budget := forkBlockMaxBytes - len(head) - len(recentOpen) - len(compactionRecentClose) - 1 - len(older) - len(cutNote)
-	content = cutUTF8(content, budget)
-	budget -= len(content)
+	// The decisions block is never cut: only the agent's own text gives way to
+	// the size cap (CHE-4447).
+	decisions, agentText := splitCompactionDecisions(summary.Content)
+	decisions = strings.ReplaceAll(decisions, compactionSummaryClose, `<\/compaction_summary>`)
+	agentText = strings.ReplaceAll(agentText, compactionSummaryClose, `<\/compaction_summary>`)
+	budget := forkBlockMaxBytes - len(head) - len(recentOpen) - len(compactionRecentClose) - 1 - len(older) - len(cutNote) - len(decisions)
+	agentText = cutUTF8(agentText, max(budget, 0))
+	budget = max(budget-len(agentText), 0)
+	content := decisions + agentText
 
 	var entries []string
 	cut := false

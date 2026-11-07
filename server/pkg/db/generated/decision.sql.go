@@ -1123,16 +1123,16 @@ func (q *Queries) ListChatDecisionReferences(ctx context.Context, arg ListChatDe
 
 const listChatSessionDecisionRecords = `-- name: ListChatSessionDecisionRecords :many
 SELECT answer.id AS answer_id, answer.created_at AS answered_at,
-       COALESCE(NULLIF(answer.reply_text, ''), NULLIF(answer.answered_label, ''), answer.content_snapshot)::text AS words,
+       (CASE WHEN answer.answer_source = 'card' THEN answer.content_snapshot
+             ELSE COALESCE(NULLIF(answer.reply_text, ''), answer.content_snapshot) END)::text AS words,
        COALESCE(workspace.issue_prefix || '-' || issue.number::text, request.issue_id::text)::text AS issue_key
 FROM decision_answer answer
 JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
 LEFT JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 LEFT JOIN workspace ON workspace.id = request.workspace_id
 WHERE request.workspace_id = $1 AND answer.disclaimed_at IS NULL
-  AND (request.chat_session_id = $2 OR answer.source_chat_session_id = $2)
+  AND answer.source_chat_session_id = $2
 ORDER BY answer.created_at DESC, answer.id DESC
-LIMIT 50
 `
 
 type ListChatSessionDecisionRecordsParams struct {
@@ -1147,9 +1147,14 @@ type ListChatSessionDecisionRecordsRow struct {
 	IssueKey   string             `json:"issue_key"`
 }
 
-// Every standing answer of a DM, newest first: agent-recorded answers sourced
-// from the DM and card answers on the DM's cards. A disclaimed answer is gone.
-// Feeds the "Decisions in this DM" block that compaction adds (CHE-4447).
+// Every standing answer of a DM, newest first, with no row limit: the answers
+// whose source message lives in this DM. An agent record quotes a DM message;
+// a card answer is written into its card's DM; either way source_chat_session_id
+// is that DM, so a request asked in one DM and answered in another belongs to
+// the answering DM. A disclaimed answer is gone. A card answer's words are the
+// whole snapshot (chosen option and note); other records quote the human's own
+// words without pasted context. Feeds the "Decisions in this DM" block that
+// compaction adds (CHE-4447).
 func (q *Queries) ListChatSessionDecisionRecords(ctx context.Context, arg ListChatSessionDecisionRecordsParams) ([]ListChatSessionDecisionRecordsRow, error) {
 	rows, err := q.db.Query(ctx, listChatSessionDecisionRecords, arg.WorkspaceID, arg.SessionID)
 	if err != nil {
