@@ -19,6 +19,9 @@ SET state = 'half_open', canary_task_id = $1,
 WHERE workspace_id = $3 AND provider = $4
   AND state IN ('open', 'half_open')
   AND (next_probe_at IS NULL OR next_probe_at <= now())
+  AND NOT EXISTS (
+      SELECT 1 FROM agent_task_queue t
+      WHERE t.id = provider_breaker.canary_task_id AND t.status IN ('dispatched', 'running'))
 `
 
 type AcquireProviderBreakerCanaryParams struct {
@@ -29,8 +32,9 @@ type AcquireProviderBreakerCanaryParams struct {
 }
 
 // Moves a due open (or deadline-expired half_open) breaker to half_open bound
-// to one task. next_probe_at becomes the canary deadline; if the canary never
-// reports back, the breaker is due again after it.
+// to one task. next_probe_at becomes the canary deadline; if the canary settles
+// without reporting, the breaker is due again after it. A canary still
+// dispatched or running blocks replacement (same fence as probe_due).
 func (q *Queries) AcquireProviderBreakerCanary(ctx context.Context, arg AcquireProviderBreakerCanaryParams) (int64, error) {
 	result, err := q.db.Exec(ctx, acquireProviderBreakerCanary,
 		arg.TaskID,
@@ -75,8 +79,13 @@ func (q *Queries) CloseProviderBreakerOnCanary(ctx context.Context, arg ClosePro
 }
 
 const getProviderBreaker = `-- name: GetProviderBreaker :one
-SELECT workspace_id, provider, state, opened_at, next_probe_at, cool_off_s, canary_task_id, trip_evidence, last_5xx_at, last_success_at, version, (next_probe_at IS NULL OR next_probe_at <= now())::bool AS probe_due
-FROM provider_breaker WHERE workspace_id = $1 AND provider = $2
+SELECT pb.workspace_id, pb.provider, pb.state, pb.opened_at, pb.next_probe_at, pb.cool_off_s, pb.canary_task_id, pb.trip_evidence, pb.last_5xx_at, pb.last_success_at, pb.version, (
+    (pb.next_probe_at IS NULL OR pb.next_probe_at <= now())
+    AND NOT EXISTS (
+        SELECT 1 FROM agent_task_queue t
+        WHERE t.id = pb.canary_task_id AND t.status IN ('dispatched', 'running'))
+)::bool AS probe_due
+FROM provider_breaker pb WHERE pb.workspace_id = $1 AND pb.provider = $2
 `
 
 type GetProviderBreakerParams struct {
@@ -100,7 +109,9 @@ type GetProviderBreakerRow struct {
 }
 
 // probe_due uses the database clock: NULL next_probe_at counts as due so an
-// open breaker can never wait without a bound.
+// open breaker can never wait without a bound. A canary task that is still
+// dispatched or running is never replaced, even past its deadline: it is
+// fenced until it settles, so its own late result still lands.
 func (q *Queries) GetProviderBreaker(ctx context.Context, arg GetProviderBreakerParams) (GetProviderBreakerRow, error) {
 	row := q.db.QueryRow(ctx, getProviderBreaker, arg.WorkspaceID, arg.Provider)
 	var i GetProviderBreakerRow
