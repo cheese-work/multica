@@ -3,7 +3,7 @@
  * with a model-facing header (server/internal/service/chat_wakeup.go). The
  * header is for the agent only and must never reach the screen.
  */
-const WAKEUP_HEADER = /^\[Scheduled wakeup — [^\]\n]*\]\n?(?:Instruction: )?/;
+const WAKEUP_HEADER = /^\[(?:Scheduled wakeup|Issue watch) — [^\]\n]*\]\n?(?:Instruction: )?/;
 
 export function isWakeupHeaderContent(content: string): boolean {
   return WAKEUP_HEADER.test(content);

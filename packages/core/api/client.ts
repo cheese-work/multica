@@ -272,11 +272,11 @@ import type {
 import { type Logger, noopLogger } from "../logger";
 import { createRequestId, createSafeId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
-import { parseWithFallback } from "./schema";
+import { parseOrThrow, parseWithFallback } from "./schema";
 import {
-  PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
+  PasskeyAnswerChallengeSchema, PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
   PasskeyListSchema, PasskeyRevokeCodeStartSchema, PasskeyRevokedSchema, parsePasskeyResponse,
-  type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart, type PasskeySummary,
+  type PasskeyAnswerChallenge, type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart, type PasskeySummary,
 } from "./passkey-schema";
 import {
   RuntimeProfileSchema,
@@ -427,6 +427,8 @@ import {
   RedeemWecomBindingTokenResponseSchema,
   EMPTY_WECOM_INSTALLATION,
   EMPTY_LIST_WECOM_INSTALLATIONS_RESPONSE,
+  ListLarkInstallationsResponseSchema,
+  EMPTY_LIST_LARK_INSTALLATIONS_RESPONSE,
   EMPTY_REDEEM_WECOM_BINDING_TOKEN_RESPONSE,
   TelegramInstallationSchema,
   ListTelegramInstallationsResponseSchema,
@@ -1514,14 +1516,9 @@ export class ApiClient {
       `/api/issues/${encodeURIComponent(id)}`,
       options?.signal ? { signal: options.signal } : undefined,
     );
-    const issue = parseWithFallback<Issue | null>(raw, IssueSchema, null, {
-      endpoint: "GET /api/issues/:id",
-    });
-    if (!issue) {
-      // parseWithFallback already logged the zod issues + raw payload.
-      throw new Error("GET /api/issues/:id returned a malformed issue");
-    }
-    return issue;
+    // Throws SchemaValidationError (logged with the failing paths) so the UI
+    // can tell unreadable data from a network failure.
+    return parseOrThrow<Issue>(raw, IssueSchema, { endpoint: "GET /api/issues/:id" });
   }
 
   async createIssue(
@@ -1854,6 +1851,28 @@ export class ApiClient {
     return parseWithFallback(raw, TimelineEntriesSchema, EMPTY_TIMELINE_ENTRIES, {
       endpoint: "GET /api/issues/:id/timeline",
     });
+  }
+
+  /**
+   * The timeline plus the server's truncation signal. The server keeps the
+   * newest 2000 entries and names the affected kinds in `X-Timeline-Truncated`
+   * ("activity", "comment" or "activity,comment"); `listTimeline` drops that
+   * header. `truncated` is true only when ACTIVITY rows were cut, because
+   * status changes are activity rows (a comment-only cut hides none).
+   */
+  async listTimelineWithMeta(
+    issueId: string,
+  ): Promise<{ entries: TimelineEntry[]; truncated: boolean }> {
+    const res = await this.fetchRaw(`/api/issues/${issueId}/timeline`, {
+      extraHeaders: { "Content-Type": "application/json" },
+    });
+    const raw: unknown = await res.json();
+    return {
+      entries: parseWithFallback(raw, TimelineEntriesSchema, EMPTY_TIMELINE_ENTRIES, {
+        endpoint: "GET /api/issues/:id/timeline",
+      }),
+      truncated: (res.headers.get("X-Timeline-Truncated") ?? "").split(",").includes("activity"),
+    };
   }
 
   async getAssigneeFrequency(): Promise<AssigneeFrequencyEntry[]> {
@@ -3268,7 +3287,7 @@ export class ApiClient {
     });
   }
 
-  async updateWorkspace(id: string, data: { name?: string; description?: string; context?: string; settings?: Record<string, unknown>; repos?: WorkspaceRepo[]; issue_prefix?: string; avatar_url?: string; compact_prompt?: string | null; wakeups_paused?: boolean; auto_compact?: { enabled?: boolean; threshold_pct?: number } | null; idle_started_guard?: { mode?: "off" | "shadow" | "act"; after_hours?: number }; github_review_members?: Record<string, string>; github_review_authors?: Record<string, string> }): Promise<Workspace> {
+  async updateWorkspace(id: string, data: { name?: string; description?: string; context?: string; settings?: Record<string, unknown>; repos?: WorkspaceRepo[]; issue_prefix?: string; avatar_url?: string; compact_prompt?: string | null; wakeups_paused?: boolean; auto_compact?: { enabled?: boolean; threshold_pct?: number; threshold_tokens_200k?: number; threshold_tokens_1m?: number } | null; idle_started_guard?: { mode?: "off" | "shadow" | "act"; after_hours?: number }; github_review_members?: Record<string, string>; github_review_authors?: Record<string, string> }): Promise<Workspace> {
     return this.fetch(`/api/workspaces/${id}`, {
       method: "PATCH",
       body: JSON.stringify(data),
@@ -4136,7 +4155,11 @@ export class ApiClient {
     await this.fetch(`/api/decision-answers/${answerId}/disclaim`, { method: "POST" });
   }
 
-  async answerDecisionRequest(requestId: string, input: { option?: string; text?: string }): Promise<void> {
+  /** A gated class also sends the revisions from `challengeDecisionAnswer` and the signed assertion. */
+  async answerDecisionRequest(
+    requestId: string,
+    input: { option?: string; text?: string; answer_revision?: number; policy_revision?: number; assertion?: PasskeyAssertionEnvelope },
+  ): Promise<void> {
     await this.fetch(`/api/decision-requests/${encodeURIComponent(requestId)}/answer`, { method: "POST", body: JSON.stringify(input) });
   }
 
@@ -4185,6 +4208,11 @@ export class ApiClient {
 
   async revokePasskey(passkeyId: string, assertion: PasskeyAssertionEnvelope): Promise<void> {
     await this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke`, PasskeyRevokedSchema, { assertion });
+  }
+
+  /** Binds a challenge to exactly this option and trimmed text; the answer must repeat them. */
+  challengeDecisionAnswer(requestId: string, input: { option?: string; text?: string }): Promise<PasskeyAnswerChallenge> {
+    return this.passkeyPost(`/api/decision-requests/${encodeURIComponent(requestId)}/answer/challenge`, PasskeyAnswerChallengeSchema, input);
   }
 
   challengeDecisionAction(actionId: string): Promise<PasskeyChallenge> {
@@ -4422,6 +4450,10 @@ export class ApiClient {
 
   async markChatSessionRead(sessionId: string): Promise<void> {
     await this.fetch(`/api/chat/sessions/${sessionId}/read`, { method: "POST" });
+  }
+
+  async markChatSessionUnread(sessionId: string): Promise<void> {
+    await this.fetch(`/api/chat/sessions/${sessionId}/unread`, { method: "POST" });
   }
 
   // Advertises the durable draft-restore capability (#5219). The server only
@@ -5556,7 +5588,13 @@ export class ApiClient {
 
   // Lark integration
   async listLarkInstallations(workspaceId: string): Promise<ListLarkInstallationsResponse> {
-    return this.fetch(`/api/workspaces/${workspaceId}/lark/installations`);
+    const endpoint = `/api/workspaces/${workspaceId}/lark/installations`;
+    return parseWithFallback(
+      await this.fetch(endpoint),
+      ListLarkInstallationsResponseSchema,
+      EMPTY_LIST_LARK_INSTALLATIONS_RESPONSE,
+      { endpoint },
+    );
   }
 
   async beginLarkInstall(

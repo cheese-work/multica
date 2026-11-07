@@ -59,6 +59,10 @@ func (h *Handler) withDeviceLock(w http.ResponseWriter, r *http.Request, what st
 	if err == nil {
 		return true
 	}
+	if errors.Is(err, errSessionRevoked) {
+		writeError(w, http.StatusUnauthorized, "this session has ended")
+		return false
+	}
 	var pgErr *pgconn.PgError
 	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &pgErr) && pgErr.Code == "55P03") {
 		w.Header().Set("Retry-After", "5")
@@ -138,6 +142,17 @@ func (h *Handler) UpsertPushSubscription(w http.ResponseWriter, r *http.Request)
 	}
 	var sub db.PushSubscription
 	if !h.withDeviceLock(w, r, "save subscription", func(ctx context.Context, q *db.Queries) (err error) {
+		// Share lock on the user row first: passkey recovery holds it FOR UPDATE
+		// and deletes the user's subscriptions, so this registration lands wholly
+		// before it (and is deleted) or sees the bumped generation and is refused.
+		// The middleware's generation check may be cached, so compare here.
+		stored, err := q.LockUserSessionGeneration(ctx, parseUUID(userID))
+		if err != nil {
+			return err
+		}
+		if stored != session.generation {
+			return errSessionRevoked
+		}
 		sub, err = q.UpsertPushSubscription(ctx, db.UpsertPushSubscriptionParams{
 			ID: dbid.NewV7(), UserID: parseUUID(userID), Endpoint: req.Endpoint, P256dh: req.Keys.P256dh, Auth: req.Keys.Auth,
 			SessionID: session.id, SessionValidUntil: pgtype.Timestamptz{Time: session.expires, Valid: true},
@@ -174,6 +189,8 @@ type pushSession struct {
 	userID  string
 	id      string
 	expires time.Time
+	// generation is the token's `gen` claim.
+	generation int32
 }
 
 // sessionFromRequest reads the login session out of the request's own token,
@@ -192,7 +209,7 @@ func sessionFromRequest(r *http.Request) (pushSession, bool) {
 	sid, _ := claims["sid"].(string)
 	sub, _ := claims["sub"].(string)
 	expires := auth.SessionExpiry(claims)
-	return pushSession{userID: sub, id: sid, expires: expires}, sid != "" && sub != "" && !expires.IsZero()
+	return pushSession{userID: sub, id: sid, expires: expires, generation: auth.SessionGeneration(claims)}, sid != "" && sub != "" && !expires.IsZero()
 }
 
 // pushLogoutDrain is how long logout waits for sends admitted before the

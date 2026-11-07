@@ -309,11 +309,14 @@
     "archive_failed": "Impossible d’archiver cette discussion",
     "unarchive_failed": "Impossible de désarchiver cette discussion",
     "pin_failed": "Impossible de mettre à jour l’épingle",
+    "unseen": "Marquer comme non vu",
+    "unseen_failed": "Impossible de marquer cette discussion comme non vue",
     "undo": "Annuler"
   },
   "header": {
     "context_meter": "{{pct}} % de {{window}}",
     "context_meter_warning": "Sera compactée après la prochaine réponse",
+    "context_meter_threshold": "Compactage à {{threshold}} (actuellement {{now}})",
     "compact_now": "Compacter maintenant",
     "more_actions": "Plus d'actions",
     "view_profile": "Voir le profil de l'agent",
@@ -324,6 +327,7 @@
     "statistics": "Statistiques",
     "pin": "Épingler la discussion",
     "unpin": "Détacher la discussion",
+    "unseen": "Marquer comme non vu",
     "preset": { "label": "Préréglage", "inherit": "Hériter", "base": "Base" }
   },
   "scheduled": {
@@ -333,7 +337,8 @@
     "cancel": "Annuler",
     "cancel_label": "Annuler la relance prévue à {{time}}",
     "cancel_failed": "Impossible d'annuler la relance",
-    "load_failed": "Impossible de charger les suivis planifiés. Réessayer"
+    "load_failed": "Impossible de charger les suivis planifiés. Réessayer",
+    "watching_until": "Surveille la demande · jusqu'à {{time}}"
   },
   "annotations": {
     "one_request": "Envoyez les commentaires sur une seule demande de décision à la fois.",
@@ -413,6 +418,10 @@
     "answer_text": "Écrivez une réponse",
     "answer_note": "Ajouter une note (facultatif)",
     "answer_chose": "Choix : {{option}}",
+    "option_recommended": "Recommandé",
+    "option_pros": "Avantages",
+    "option_cons": "Inconvénients",
+    "option_cost": "Coût ou délai",
     "answer_send": "Envoyer",
     "answer_error": "Échec de l'envoi. Réessayez.",
     "answer_helper": "Envoyer publie votre réponse sur {{issue}}. Les questions pour l'agent du DM vont dans la zone de message ci-dessous.",
@@ -422,6 +431,13 @@
     "answer_offline": "Vous êtes hors ligne. Votre réponse est conservée. Envoyer se réactive à la reconnexion.",
     "answer_conflict": "Cette carte ne peut plus recevoir votre réponse, par exemple parce qu'elle a déjà été répondue. Rien de votre brouillon n'a été publié. Votre brouillon :",
     "answer_discard": "Supprimer le brouillon",
+    "answer_send_passkey": "Envoyer avec une clé d'accès",
+    "answer_open_browser": "Ouvrir dans le navigateur",
+    "answer_passkey_needed": "Cette réponse nécessite votre clé d'accès. Envoyez à nouveau pour confirmer.",
+    "answer_passkey_desktop": "Cette réponse nécessite votre clé d'accès, utilisable uniquement dans le navigateur. Ouvrez-la là pour répondre.",
+    "answer_stale": "Cette demande a changé depuis son ouverture. Vérifiez-la, puis renvoyez.",
+    "answer_no_passkey": "Ajoutez une clé d'accès dans les paramètres avant de répondre à cette demande.",
+    "answer_passkey_failed": "L'étape de la clé d'accès n'a pas abouti. Votre réponse est conservée. Renvoyez pour réessayer.",
     "source_comment": "Commentaire source",
     "quoted_in": "Cité dans {{issue}}",
     "receipt_recorded": "Enregistré pour {{issue}}",

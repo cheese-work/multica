@@ -8978,17 +8978,18 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// only the daemon knows — hence handing the backend finished text rather
 		// than a flag. Empty when the prompt already carries the notice, so a turn
 		// can never pay for it twice (MUL-5722).
-		ResumeExpected:         task.PriorSessionID != "",
-		ResumeContinuityNotice: backendResumeContinuityNotice(task),
-		ExtraArgs:              extraArgs,
-		CustomArgs:             customArgs,
-		McpConfig:              mcpConfig,
-		ThinkingLevel:          thinkingLevel,
-		ServiceTier:            serviceTier,
-		OpenclawMode:           openclawMode,
-		OpenclawModelOverride:  openclawModelOverride,
-		ClaudeSettingsPath:     env.ClaudeSettingsPath,
-		QwenpawWorkspace:       env.QwenpawWorkspace,
+		ResumeExpected:          task.PriorSessionID != "",
+		ResumeContinuityNotice:  backendResumeContinuityNotice(task),
+		ExtraArgs:               extraArgs,
+		CustomArgs:              customArgs,
+		McpConfig:               mcpConfig,
+		ThinkingLevel:           thinkingLevel,
+		ServiceTier:             serviceTier,
+		OpenclawMode:            openclawMode,
+		OpenclawModelOverride:   openclawModelOverride,
+		ClaudeSettingsPath:      env.ClaudeSettingsPath,
+		DisableProviderWebTools: task.DisableProviderWebTools(),
+		QwenpawWorkspace:        env.QwenpawWorkspace,
 	}
 	// Some providers do not reliably load the per-task runtime config files we
 	// write into the task workdir:

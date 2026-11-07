@@ -309,11 +309,14 @@
     "archive_failed": "Couldn't archive this chat",
     "unarchive_failed": "Couldn't unarchive this chat",
     "pin_failed": "Couldn't update the pin",
+    "unseen": "Mark as unseen",
+    "unseen_failed": "Couldn't mark this chat as unseen",
     "undo": "Undo"
   },
   "header": {
     "context_meter": "{{pct}}% of {{window}}",
     "context_meter_warning": "Will compact after the next reply",
+    "context_meter_threshold": "Compacts at {{threshold}} (now {{now}})",
     "compact_now": "Compact now",
     "more_actions": "More actions",
     "view_profile": "View agent profile",
@@ -324,6 +327,7 @@
     "statistics": "Statistics",
     "pin": "Pin chat",
     "unpin": "Unpin chat",
+    "unseen": "Mark as unseen",
     "preset": { "label": "Preset", "inherit": "Inherit", "base": "Base" }
   },
   "scheduled": {
@@ -333,7 +337,8 @@
     "cancel": "Cancel",
     "cancel_label": "Cancel scheduled follow-up at {{time}}",
     "cancel_failed": "Couldn't cancel the follow-up",
-    "load_failed": "Couldn't load scheduled follow-ups. Retry"
+    "load_failed": "Couldn't load scheduled follow-ups. Retry",
+    "watching_until": "Watching issue · until {{time}}"
   },
   "annotations": {
     "one_request": "Send comments on one decision request at a time.",
@@ -413,6 +418,10 @@
     "answer_text": "Write an answer",
     "answer_note": "Add a note (optional)",
     "answer_chose": "Chose: {{option}}",
+    "option_recommended": "Recommended",
+    "option_pros": "Pros",
+    "option_cons": "Cons",
+    "option_cost": "Cost or time",
     "answer_send": "Send",
     "answer_error": "Could not send. Try again.",
     "answer_helper": "Send posts your answer to {{issue}}. Questions for the DM agent go in the message box below.",
@@ -422,6 +431,13 @@
     "answer_offline": "You are offline. Your answer is kept. Send turns on when you reconnect.",
     "answer_conflict": "This card can no longer take your answer, for example because it was answered first. Nothing from your draft was posted. Your draft:",
     "answer_discard": "Discard draft",
+    "answer_send_passkey": "Send with passkey",
+    "answer_open_browser": "Open in browser",
+    "answer_passkey_needed": "This answer needs your passkey. Send again to confirm.",
+    "answer_passkey_desktop": "This answer needs your passkey, which works only in the browser. Open it there to answer.",
+    "answer_stale": "This request changed since you opened it. Check it, then send again.",
+    "answer_no_passkey": "Add a passkey in Settings before you answer this request.",
+    "answer_passkey_failed": "The passkey step did not finish. Your answer is kept. Send again to retry.",
     "source_comment": "Source comment",
     "quoted_in": "Quoted in {{issue}}",
     "receipt_recorded": "Recorded for {{issue}}",
