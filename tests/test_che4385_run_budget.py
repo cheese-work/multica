@@ -78,10 +78,40 @@ class NewFailVerdictRevokesAGreenCommit(unittest.TestCase):
         self.assertNotRegex(text, r"ref: \$\{\{ github\.event\.pull_request\.head")
         self.assertNotIn("secrets.", text)
 
-    def test_sweep_skips_the_scan_when_no_open_pr_is_green(self):
+    def test_sweep_skips_the_scan_when_no_open_pr_needs_one(self):
         jobs = load("security-gate-sweep.yml")["jobs"]
-        self.assertEqual(jobs["list-green"]["outputs"]["prs"], "${{ steps.list.outputs.prs }}")
-        self.assertIn("needs.list-green.outputs.prs != '[]'", jobs["sweep"]["if"])
+        self.assertEqual(jobs["list"]["outputs"]["green"], "${{ steps.list.outputs.green }}")
+        self.assertEqual(jobs["list"]["outputs"]["queued"], "${{ steps.list.outputs.queued }}")
+        self.assertIn("needs.list.outputs.green != '[]'", jobs["sweep"]["if"])
+        self.assertIn("needs.list.outputs.queued != '[]'", jobs["revoke"]["if"])
+
+    def test_a_failed_pr_listing_fails_the_job_instead_of_listing_nothing(self):
+        # Terra P1: process substitution hid the exit status of `gh api`, so a failed list looked like "no open PR".
+        step = load("security-gate-sweep.yml")["jobs"]["list"]["steps"][0]["run"]
+        self.assertIn("set -euo pipefail", step)
+        self.assertNotIn("< <(", step)
+        self.assertRegex(step, r'pulls="\$\(gh api --paginate')
+        self.assertNotRegex(step, r"\[ .* \] && ")  # a false test as the loop's last command would trip errexit
+
+    def test_a_pr_whose_revocation_failed_is_retried_while_a_queue_branch_exists(self):
+        # Terra P1: the status is written non-success before the queue heads are flipped; a failed flip was never retried.
+        jobs = load("security-gate-sweep.yml")["jobs"]
+        run = "\n".join(str(st.get("run", "")) for st in jobs["revoke"]["steps"])
+        self.assertIn("--revoke-only", run)
+        self.assertNotIn("--semgrep", run)
+        self.assertEqual(jobs["revoke"]["strategy"]["matrix"]["pr"], "${{ fromJSON(needs.list.outputs.queued) }}")
+        self.assertIn("gh-readonly-queue", (WF / "security-gate-sweep.yml").read_text())
+
+    def test_a_sweep_job_never_runs_alongside_the_gate_for_the_same_pr(self):
+        # Terra P1: a sweep could read a PASS and post success after the gate had posted a revocation.
+        gate = load("security-gate.yml")["jobs"]["security-gate"]["concurrency"]["group"]
+        self.assertTrue(gate.startswith("security-gate-${{ github.event.pull_request.number"))
+        for name in ("sweep", "revoke"):
+            job = load("security-gate-sweep.yml")["jobs"][name]
+            self.assertEqual(job["concurrency"]["group"], "security-gate-${{ matrix.pr }}")
+            # false: a sweep queues behind a running gate; the gate (cancel-in-progress true) cancels a queued or running sweep
+            self.assertFalse(job["concurrency"]["cancel-in-progress"])
+            self.assertFalse(job["strategy"]["fail-fast"])
 
 
 class NoCommentOrCascadeRuns(unittest.TestCase):

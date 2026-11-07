@@ -416,6 +416,8 @@ def main() -> int:
     ap.add_argument("--print-digest", action="store_true",
                     help="print the PR's head and diff digest as JSON, for any lane that records a PASS (CHE-3610)")
     ap.add_argument("--post", action="store_true", help="write the commit status (default: print only)")
+    ap.add_argument("--revoke-only", action="store_true",
+                    help="only flip the merge-queue heads that carry the PR to failure, without reading a verdict (sweep retry)")
     a = ap.parse_args()
     if a.write_baseline:
         fps = sorted(f["fp"] for f in semgrep_scan(a.repo, "HEAD"))
@@ -428,6 +430,9 @@ def main() -> int:
         pull = json.loads(_gh(f"repos/{a.github}/pulls/{a.pr}"))
         head = pull["head"]["sha"]
         print(json.dumps({"head": head, "digest": pr_diff_digest(a.repo, pull["base"]["sha"], head)}))
+        return 0
+    if a.revoke_only:
+        revoke_queue(a.github, a.pr, a.default_branch, a.run_url)
         return 0
     with open(f"{a.repo}/{TRUSTED_AUTHORS}") as f:
         registry = json.load(f)

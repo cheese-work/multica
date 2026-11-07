@@ -4,6 +4,12 @@
 # `success` and posts the result again through the same script: a status that is no longer `success` flips the PR and
 # every merge-queue head carrying it (`revoke_queue`, CHE-3240). A FAIL therefore lands within 30 minutes. It misses a
 # merge that happens inside that window; the verdict poster dispatching security-gate.yml removes the window.
+# The script writes the PR status before it flips queue heads, so a flip that failed leaves a non-success PR that the
+# list above no longer selects. While any merge-queue branch exists, the `revoke` job therefore repeats only the flip
+# (`--revoke-only`, no scan) for every open PR whose status is not `success`.
+# Each PR runs as its own matrix job in the concurrency group `security-gate-<pr>`, the group security-gate.yml uses.
+# A sweep job queues behind a running gate for that PR; a gate run (cancel-in-progress) cancels a queued or running
+# sweep job, so a stale PASS read by the sweep is never posted after the gate's revocation.
 #
 # SECURITY: same boundary as security-gate.yml. It runs from the default branch, checks out the DEFAULT branch only
 # and fetches head objects for a diff read; nothing from a head is executed. No secret, no head checkout.
@@ -26,37 +32,56 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  list-green:
+  list:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      prs: ${{ steps.list.outputs.prs }}
+      green: ${{ steps.list.outputs.green }}
+      queued: ${{ steps.list.outputs.queued }}
     env:
       GH_TOKEN: ${{ github.token }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
     steps:
-      - name: List open pull requests whose security-gate status is success
+      - name: List open pull requests by security-gate status
         id: list
         run: |
           set -euo pipefail
-          prs="[]"
+          # Each read is assigned on its own so a failed API call fails the step; an empty list is never assumed.
+          pulls="$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls?state=open&base=$DEFAULT_BRANCH&per_page=100" \
+            --jq '.[] | "\(.number) \(.head.sha)"')"
+          refs="$(gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/heads/gh-readonly-queue/$DEFAULT_BRANCH/" \
+            --jq '.[].ref')"
+          green="[]"
+          queued="[]"
           while read -r number sha; do
+            [ -n "$number" ] || continue
             state="$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha/status" \
               --jq '[.statuses[] | select(.context == "security-gate")][0].state // ""')"
-            [ "$state" = success ] && prs="$(jq -c --argjson n "$number" '. + [$n]' <<<"$prs")"
-          done < <(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls?state=open&base=$DEFAULT_BRANCH&per_page=100" \
-            --jq '.[] | "\(.number) \(.head.sha)"')
-          echo "prs=$prs" >> "$GITHUB_OUTPUT"
+            if [ "$state" = success ]; then
+              green="$(jq -c --argjson n "$number" '. + [$n]' <<<"$green")"
+            elif [ -n "$refs" ]; then
+              queued="$(jq -c --argjson n "$number" '. + [$n]' <<<"$queued")"
+            fi
+          done <<<"$pulls"
+          echo "green=$green" >> "$GITHUB_OUTPUT"
+          echo "queued=$queued" >> "$GITHUB_OUTPUT"
 
   sweep:
-    needs: list-green
-    if: needs.list-green.outputs.prs != '[]'
+    needs: list
+    if: needs.list.outputs.green != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        pr: ${{ fromJSON(needs.list.outputs.green) }}
+    concurrency:
+      group: security-gate-${{ matrix.pr }}
+      cancel-in-progress: false
     env:
       GH_TOKEN: ${{ github.token }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-      PRS: ${{ needs.list-green.outputs.prs }}
+      PR_NUMBER: ${{ matrix.pr }}
     steps:
       - name: Discard a reused workspace
         run: |
@@ -67,24 +92,47 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Fetch the head objects without checking them out
+        run: |
+          [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || { echo "pr must be digits only" >&2; exit 1; }
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/head"
       - name: Install pinned semgrep (cached on the runner)
         run: |
           venv="$RUNNER_TOOL_CACHE/semgrep-1.183.0"
           [ -x "$venv/bin/semgrep" ] || { python3 -m venv "$venv" && "$venv/bin/pip" install --quiet semgrep==1.183.0; }
           echo "SEMGREP_BIN=$venv/bin/semgrep" >> "$GITHUB_ENV"
-      - name: Re-read each green pull request's verdicts and post the status
+      - name: Re-read the verdicts and post the status
         run: |
-          set -uo pipefail
           run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
-          failed=""
-          for pr in $(jq -r '.[]' <<<"$PRS"); do
-            [[ "$pr" =~ ^[0-9]+$ ]] || { failed="$failed $pr"; continue; }
-            # One bad PR must not stop the rest: a later PR may carry the FAIL that has to be revoked.
-            git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
-              fetch --no-tags origin "+refs/pull/${pr}/head:refs/remotes/pull/head" \
-              && python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$pr" \
-                --default-branch "$DEFAULT_BRANCH" --semgrep --run-url "$run_url" --post \
-              || failed="$failed $pr"
-          done
-          [ -z "$failed" ] || { echo "sweep failed for:$failed" >&2; exit 1; }
+          exec python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" \
+            --default-branch "$DEFAULT_BRANCH" --semgrep --run-url "$run_url" --post
+
+  revoke:
+    needs: list
+    if: needs.list.outputs.queued != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        pr: ${{ fromJSON(needs.list.outputs.queued) }}
+    concurrency:
+      group: security-gate-${{ matrix.pr }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      PR_NUMBER: ${{ matrix.pr }}
+    steps:
+      - name: Check out the protected default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Flip the queue heads that carry this non-success pull request
+        run: |
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          exec python3 scripts/security-gate/security_gate.py --repo . --github "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" \
+            --default-branch "$DEFAULT_BRANCH" --run-url "$run_url" --revoke-only

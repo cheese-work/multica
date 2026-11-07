@@ -394,6 +394,17 @@ class QueueRevocationTest(unittest.TestCase):
         self.lookups = lookups
         return code, posted
 
+    def test_revoke_only_retries_the_queue_flip_without_reading_the_verdict(self):
+        # CHE-4385 sweep: a PR already non-success whose queue flip failed gets only the flip again, no scan.
+        argv = ["x", "--repo", str(ROOT), "--github", "cheese-work/multica", "--pr", "405",
+                "--default-branch", "main", "--run-url", "u", "--revoke-only"]
+        with mock.patch.object(sg, "revoke_queue") as revoke, mock.patch.object(sg, "gate_pr") as gate, \
+                mock.patch("sys.argv", argv):
+            code = sg.main()
+        self.assertEqual(code, 0)
+        revoke.assert_called_once_with("cheese-work/multica", 405, "main", "u")
+        gate.assert_not_called()
+
     def test_a_revoked_verdict_flips_the_queue_head_that_carries_the_pr_to_failure(self):
         code, posted = self.run_pr([comment("no verdict any more")])
         self.assertEqual(code, 0)
