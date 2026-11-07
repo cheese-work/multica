@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -186,7 +187,7 @@ func (h *Handler) queuedRunCarriesWrite(ctx context.Context, issue db.Issue, age
 		return false
 	}
 	if len(taint) > 0 {
-		n, err := h.Queries.TaintQueuedRunCarryingIssueWrite(ctx, db.TaintQueuedRunCarryingIssueWriteParams{
+		n, err := h.taintQueuedRunCarryingWrite(ctx, db.TaintQueuedRunCarryingIssueWriteParams{
 			TaintIds:     taint,
 			IssueID:      issue.ID,
 			AgentID:      agentID,
@@ -204,6 +205,26 @@ func (h *Handler) queuedRunCarriesWrite(ctx context.Context, issue db.Issue, age
 		Step:         issue.Status,
 	})
 	return err == nil && carries
+}
+
+// taintQueuedRunCarryingWrite takes the issue row lock before it updates the
+// queued run: the update fires the run's taint trigger, which locks the issue,
+// and every other path that touches the runs of an issue takes the issue first.
+func (h *Handler) taintQueuedRunCarryingWrite(ctx context.Context, arg db.TaintQueuedRunCarryingIssueWriteParams) (int64, error) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	qtx := h.Queries.WithTx(tx)
+	if _, err := qtx.LockIssueRunBudget(ctx, arg.IssueID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return 0, err
+	}
+	n, err := qtx.TaintQueuedRunCarryingIssueWrite(ctx, arg)
+	if err != nil {
+		return 0, err
+	}
+	return n, tx.Commit(ctx)
 }
 
 // memberActorUserID returns the acting member's user id as a pgtype.UUID when the
