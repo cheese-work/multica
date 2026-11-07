@@ -7,7 +7,7 @@ import { Button } from "@multica/ui/components/ui/button";
 import { IconButton } from "@multica/ui/components/common/icon-button";
 import { useIsCompact } from "@multica/ui/hooks/use-mobile";
 import { useCurrentWorkspace, useRequiredWorkspaceSlug, useWorkspacePaths } from "@multica/core/paths";
-import { autoCompactThresholdPct, resolveAutoCompact } from "@multica/core/workspace/auto-compact";
+import { autoCompactThresholdTokens, resolveAutoCompact } from "@multica/core/workspace/auto-compact";
 import {
   getCurrentSlug,
   getWorkspaceRehydrationGeneration,
@@ -395,7 +395,7 @@ export function ChatPage() {
   // THIS pane, which the user resizes independently of the browser window.
   const queuedTasks = c.pendingTask?.queued_tasks ?? [];
   const autoCompact = resolveAutoCompact(workspace?.settings, c.activeAgent?.runtime_config);
-  const autoCompactPct = autoCompactThresholdPct(autoCompact, c.currentSession?.context_window);
+  const autoCompactTokens = autoCompactThresholdTokens(autoCompact, c.currentSession?.context_window);
   const { quoteRequest, quote, handleQuoteApplied } = useQuoteRequest();
   const annotation = useChatAnnotations({
     sessionId: c.activeSessionId,
@@ -439,7 +439,7 @@ export function ChatPage() {
           onTogglePin={dm.togglePin}
           onOpenStatistics={() => dm.openStatistics(c.currentSession?.id ?? "")}
           renameRequest={renameRequest}
-          autoCompactThresholdPct={autoCompactPct}
+          autoCompactThresholdTokens={autoCompactTokens}
           onCompact={() => void c.handleSend("/compact")}
           onSetPreset={(name) =>
             // The server answers /preset without a session event: refetch so the picker shows the new choice.
