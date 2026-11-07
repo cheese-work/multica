@@ -6448,12 +6448,13 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 	if retried == nil {
 		s.failOverRoutingTask(ctx, task, failureReason)
 	}
+	// CHE-1773: a recovery-lineage task got no retry; tell its owner once.
+	s.notifyProviderFailureCap(ctx, s.Queries, task.ID, retryFence)
 	// CHE-607: errMsg above is the proximate cause (e.g. a stream disconnect) —
 	// on its own it says nothing about why the auto-retry that would normally
 	// follow a provider_network failure didn't happen. Post the policy notice
 	// as its own comment so a human reading the issue sees the retry was a
 	// deliberate refusal, not the platform silently giving up.
-	s.notifyProviderFailureCap(ctx, s.Queries, task.ID, retryFence)
 	if retryProviderHoldNotice != "" && task.IssueID.Valid {
 		s.createAgentComment(ctx, task.IssueID, task.AgentID, retryProviderHoldNotice, "system", task.TriggerCommentID, task.ID)
 	}
