@@ -38,6 +38,7 @@ const defaultREST = "https://api.github.com"
 var (
 	repoName = regexp.MustCompile(`^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9_-][A-Za-z0-9_.-]{0,99}$`)
 	jobID    = regexp.MustCompile(`^[0-9]{1,18}$`)
+	commitID = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 )
 
 const prQuery = `query($id: ID!) { node(id: $id) { __typename ... on PullRequest { id url title body } } }`
@@ -117,6 +118,43 @@ func (p *Proxy) readCILog(ctx context.Context, repo, job string) (Result, error)
 	return p.withheld(ctx, Approval{Kind: "ci_log", ObjectID: path}, string(raw), "https://github.com/"+repo+"/runs/"+job), nil
 }
 
+// readCommit returns a commit message as a stub (plan 3.4, CHE-3971). Commit
+// messages have no admission path, so only an approval of these exact bytes
+// releases them. One exception: a commit the broker pushed for this run, while
+// its current bytes still hash to the receipt (Own).
+func (p *Proxy) readCommit(ctx context.Context, repo, sha string) (Result, error) {
+	base := p.RESTURL
+	if base == "" {
+		base = defaultREST
+	}
+	path := repo + "/commits/" + sha
+	resp, err := p.do(ctx, http.MethodGet, base+"/repos/"+repo+"/git/commits/"+sha, nil, "")
+	if err != nil {
+		return Result{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return Result{}, fmt.Errorf("github status %d", resp.StatusCode)
+	}
+	var out struct {
+		SHA     string  `json:"sha"`
+		Message *string `json:"message"`
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
+	if err != nil || len(raw) > maxResponse || json.Unmarshal(raw, &out) != nil {
+		return Result{}, errors.New("github response unreadable")
+	}
+	if out.SHA != sha || out.Message == nil {
+		return Result{}, errors.New("object not readable")
+	}
+	link := "https://github.com/" + repo + "/commit/" + sha
+	if p.Own != nil && p.Own.OwnMessage(sha, []byte(*out.Message)) {
+		sum := sha256.Sum256([]byte(*out.Message))
+		return Result{Full: true, Kind: "commit_message", ID: path, URL: link, SHA256: hex.EncodeToString(sum[:]), Body: *out.Message}, nil
+	}
+	return p.withheld(ctx, Approval{Kind: "commit_message", ObjectID: path}, *out.Message, link), nil
+}
+
 func (p *Proxy) externalRoutes(mux *http.ServeMux) {
 	serve := func(w http.ResponseWriter, res Result, err error) {
 		if err != nil {
@@ -144,6 +182,15 @@ func (p *Proxy) externalRoutes(mux *http.ServeMux) {
 		res, err := p.readCILog(r.Context(), repo, job)
 		serve(w, res, err)
 	})
+	mux.HandleFunc("GET /v1/commit", func(w http.ResponseWriter, r *http.Request) {
+		repo, sha := r.URL.Query().Get("repo"), r.URL.Query().Get("sha")
+		if !validRepo(repo) || !commitID.MatchString(sha) {
+			http.Error(w, "bad commit read", http.StatusBadRequest)
+			return
+		}
+		res, err := p.readCommit(r.Context(), repo, sha)
+		serve(w, res, err)
+	})
 }
 
 func validRepo(repo string) bool {
@@ -166,4 +213,9 @@ func ReadPR(ctx context.Context, sock, id, field string) (Result, error) {
 // ReadCILog asks the proxy on sock for one job's log.
 func ReadCILog(ctx context.Context, sock, repo, job string) (Result, error) {
 	return get(ctx, sock, "/v1/ci-log?repo="+url.QueryEscape(repo)+"&job="+url.QueryEscape(job))
+}
+
+// ReadCommit asks the proxy on sock for one commit's message.
+func ReadCommit(ctx context.Context, sock, repo, sha string) (Result, error) {
+	return get(ctx, sock, "/v1/commit?repo="+url.QueryEscape(repo)+"&sha="+url.QueryEscape(sha))
 }
