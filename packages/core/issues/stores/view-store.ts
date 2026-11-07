@@ -13,6 +13,7 @@ import {
   DUE_DATE_FILTERS,
   EMPTY_SIMPLE_FILTER_FIELDS,
   foldPropertyFiltersIntoTree,
+  sanitizePropertyFilters,
   ISSUE_RELATION_FILTERS,
   NEGATABLE_FILTER_DIMENSIONS,
   sanitizeAdvancedFilter,
@@ -968,6 +969,9 @@ export function mergeViewStatePersisted<T extends IssueViewState>(
           (DUE_DATE_FILTERS as readonly unknown[]).includes(bucket),
         ))]
       : current.dueDateFilters,
+    propertyFilters: p.propertyFilters === undefined
+      ? current.propertyFilters
+      : sanitizePropertyFilters(p.propertyFilters),
     advancedFilter: p.advancedFilter === undefined
       ? current.advancedFilter
       : sanitizeAdvancedFilter(p.advancedFilter),

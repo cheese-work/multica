@@ -76,3 +76,27 @@ describe("modifiedFilterDimensions", () => {
     );
   });
 });
+
+describe("malformed shared-view property filters", () => {
+  const bad = {
+    query: {
+      statusFilters: ["todo"],
+      propertyFilters: { obj: { length: 1 }, nul: null, mixed: ["ok", 5] },
+      advancedFilter: { type: "group", match: "all", children: [{ type: "condition", field: "status", values: ["todo"] }] },
+    },
+    display: {},
+  };
+
+  it("seeds the surface without throwing", () => {
+    expect(() => issueViewSeedDefinition(bad)).not.toThrow();
+    // The valid member folds into the tree; the malformed entries are gone.
+    expect(issueViewSeedDefinition(bad).query.propertyFilters).toEqual({});
+  });
+
+  it("compares header modification without throwing", () => {
+    const state = liveStateFor(bad).getState();
+    expect(() => isIssueViewModified(bad, state)).not.toThrow();
+    expect(() => modifiedFilterDimensions(bad, state)).not.toThrow();
+    expect(isIssueViewModified(bad, state).filters).toBe(false);
+  });
+});
