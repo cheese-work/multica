@@ -120,7 +120,12 @@ jobs:
           SOURCE_SHA="$HEAD_SHA" bash deploy/cd/notify-approval.sh
 
   candidate-preflight:
-    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+    # CHE-4500 (CHE-3625 item 2): while main is red the cron sets the repo variable
+    # MAIN_RED_PAUSED (an unset variable reads as ''). A skipped preflight leaves
+    # `eligible` empty, so approval, notice, prepare, admission and deploy are all
+    # skipped. Green main deletes the variable and auto-deploy resumes. The manual
+    # workflow_dispatch path is a deliberate human act and is not paused.
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && vars.MAIN_RED_PAUSED == ''
     runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 65
     # CHE-4251: own API budget for the read path; main-only environment holding the c00-multicado CI key.

@@ -159,6 +159,38 @@ class DeployApprovalTests(unittest.TestCase):
         self.assertIn("steps.deploy.outputs.decision != 'skip'", outcome["if"])
 
 
+class MainRedPauseGuardTests(unittest.TestCase):
+    """CHE-4500 (CHE-3625 item 2): no auto-deploy while the repo variable MAIN_RED_PAUSED exists."""
+
+    def setUp(self):
+        self.jobs = yaml.safe_load((ROOT / ".github/workflows/cd-deploy.yml").read_text())["jobs"]
+
+    def runs(self, job, event_name, paused):
+        """Dry-evaluate a job's `if:` for an event, with MAIN_RED_PAUSED set or cleared."""
+        class Ctx:
+            def __init__(self, **kw):
+                self.__dict__.update(kw)
+
+        ctx = {
+            "github": Ctx(event_name=event_name, event=Ctx(workflow_run=Ctx(conclusion="success"))),
+            "vars": Ctx(MAIN_RED_PAUSED="abc123 backend notice=sent" if paused else ""),
+        }
+        expr = self.jobs[job]["if"].replace("&&", " and ").replace("||", " or ")
+        return bool(eval(expr, {"__builtins__": {}}, ctx))  # trusted: our own workflow file
+
+    def test_auto_deploy_skipped_while_paused(self):
+        self.assertFalse(self.runs("candidate-preflight", "workflow_run", paused=True))
+
+    def test_auto_deploy_runs_when_cleared(self):
+        self.assertTrue(self.runs("candidate-preflight", "workflow_run", paused=False))
+
+    def test_every_c00_job_hangs_off_the_guarded_preflight(self):
+        # Skipping candidate-preflight leaves eligible empty, so the gate, notice and deploy chain is skipped.
+        for name in ["approve-c00", "notify-approval", "prepare-release-candidate", "admission", "deploy"]:
+            with self.subTest(job=name):
+                self.assertIn("candidate-preflight", DeployApprovalTests.ancestors(self, name) | set(needs(self.jobs[name])))
+
+
 class LockModel:
     """GitHub's documented concurrency rules for cancel-in-progress: false.
     queue=single: one running job, one pending job; a job that joins evicts the
