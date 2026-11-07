@@ -6,13 +6,16 @@ const center = (box: Box) => box.x + box.w / 2;
 /**
  * Zoom to `scale`, keeping the world point under `anchor` (screen px) fixed.
  * There is no fixed bound; only a scale that is not a positive finite number
- * (underflow, overflow, NaN) is refused, and the view stays as it was.
+ * (underflow, overflow, NaN) or one whose offsets overflow is refused, and the
+ * view stays as it was.
  */
 export function zoomAt(view: View, scale: number, anchor: { x: number; y: number }): View {
   const next = scale;
   if (!(Number.isFinite(next) && next > 0)) return view;
   const ratio = next / view.scale;
-  return { scale: next, x: anchor.x - (anchor.x - view.x) * ratio, y: anchor.y - (anchor.y - view.y) * ratio };
+  const x = anchor.x - (anchor.x - view.x) * ratio;
+  const y = anchor.y - (anchor.y - view.y) * ratio;
+  return Number.isFinite(x) && Number.isFinite(y) ? { scale: next, x, y } : view;
 }
 
 export function centerOn(box: Box, viewport: { w: number; h: number }, scale: number): View {

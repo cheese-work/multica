@@ -33,6 +33,10 @@ describe("canvas math: unbounded zoom", () => {
     const view = { x: 5, y: 6, scale: 1 };
     for (const bad of [0, -1, Number.NaN, Infinity]) expect(zoomAt(view, bad, { x: 0, y: 0 })).toEqual(view);
   });
+  it("zoomAt keeps the previous view when the new offsets overflow", () => {
+    const view = { x: 1e300, y: -1e300, scale: 1 };
+    expect(zoomAt(view, 1e300, { x: 10, y: 10 })).toEqual(view);
+  });
   it("fitView of huge bounds goes below the old 20% floor", () => {
     expect(fitView({ x: 0, y: 0, w: 100_000, h: 100_000 }, { w: 800, h: 600 }).scale).toBeLessThan(0.2);
   });
@@ -51,6 +55,12 @@ describe("useCanvasEngine", () => {
     act(() => { for (let i = 0; i < 4000; i++) result.current.zoomBy(2, undefined, false); });
     expect(Number.isFinite(result.current.view.scale)).toBe(true);
     expect(result.current.view.scale).toBeGreaterThan(0);
+  });
+  it("keeps the view coordinates finite while zooming in repeatedly", () => {
+    const { result } = mount();
+    act(() => { for (let i = 0; i < 4000; i++) result.current.zoomBy(2, { x: 1, y: 1 }, false); });
+    const { x, y, scale } = result.current.view;
+    expect([x, y, scale].every(Number.isFinite)).toBe(true);
   });
   it("animates button zoom by default", () => {
     const { result } = mount();
