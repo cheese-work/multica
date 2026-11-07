@@ -201,8 +201,13 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	} else if err != nil {
 		return err
 	}
-	// The kill switch (CHE-2220) drops the event rather than queueing it. A read
-	// that fails returns the error, so the delivery fails and GitHub redelivers.
+	// The kill switch (CHE-2220) drops the event rather than queueing it. The
+	// shared lock holds to the commit, so a switch change either waits for this
+	// admission and sweeps it, or commits first and this read sees it (CHE-2223).
+	// A read that fails returns the error, so the delivery fails and GitHub redelivers.
+	if err := q.LockGitHubDispatchHaltShared(ctx, workspace); err != nil {
+		return err
+	}
 	if halted, err := q.GitHubDispatchHalted(ctx, db.GitHubDispatchHaltedParams{WorkspaceID: workspace, RepoOwner: in.RepoOwner, RepoName: in.RepoName}); err != nil {
 		return err
 	} else if halted {
@@ -875,10 +880,14 @@ func systemWakeupFacts(w db.IssueWakeup, receipts []db.IssueWakeupReceipt) map[s
 	if w.SystemRule.String == SystemRuleChildDone {
 		return childDoneFacts(receipts)
 	}
-	facts := map[string]any{"rule": w.SystemRule.String}
+	rule := w.SystemRule.String
+	if !w.SystemRule.Valid {
+		rule = w.DefaultRuleKey.String
+	}
+	facts := map[string]any{"rule": rule}
 	for i := len(receipts) - 1; i >= 0; i-- {
 		if err := json.Unmarshal(receipts[i].Payload, &facts); err == nil {
-			facts["rule"] = w.SystemRule.String
+			facts["rule"] = rule
 			return facts
 		}
 	}
@@ -1454,6 +1463,37 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 			return commit()
 		}
 	}
+	// CHE-3590: the PR is as it was when the last run on this rule started.
+	inputFingerprint := ""
+	// Returning to draft is an event, not a state: each conversion is new, and
+	// the skip consumes the whole batch, not only its newest fact.
+	if !holdsDraftReturn(receipts) &&
+		(w.SystemRule.String == SystemRulePRChecksFailed || w.SystemRule.String == SystemRulePRAttention) {
+		if inputFingerprint, err = prStateFingerprint(ctx, tx, issue.ID); err != nil {
+			return err
+		}
+		// An edited rule (instruction or settings) is not what the last run answered.
+		if inputFingerprint != "" {
+			inputFingerprint += fmt.Sprintf("|%d|%s", w.Revision, w.Instruction)
+		}
+		// A conflict against a newer base commit is a new fact, not a repeat.
+		if baseSHA, _ := facts["base_sha"].(string); baseSHA != "" && inputFingerprint != "" {
+			inputFingerprint += "|" + baseSHA
+		}
+		lastTask, unchanged, err := unchangedSinceLastRun(ctx, tx, issue.ID, agent.ID, "wakeup_system", w.SystemRule.String, inputFingerprint)
+		if err != nil {
+			return err
+		}
+		if unchanged {
+			if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
+				return err
+			}
+			if err := note(wakeupActivitySkipped, skippedUnchangedDetails(w.SystemRule.String, lastTask)); err != nil {
+				return err
+			}
+			return commit()
+		}
+	}
 	recent, err := q.CountRecentWakeupTasks(ctx, db.CountRecentWakeupTasksParams{WakeupID: util.UUIDToString(w.ID), IssueID: w.IssueID, Since: pgtype.Timestamptz{Time: now.Add(-time.Hour), Valid: true}})
 	if err != nil {
 		return err
@@ -1513,6 +1553,9 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	taskContext := map[string]any{"wakeup_id": util.UUIDToString(w.ID), "wakeup_revision": w.Revision, "wakeup_evidence": evidence, "wakeup_system": w.SystemRule.String}
 	if deferring {
 		taskContext[wakeupIsolatedKey] = true
+	}
+	if inputFingerprint != "" {
+		taskContext[wakeupFingerprintKey] = inputFingerprint
 	}
 	contextJSON, _ := json.Marshal(taskContext)
 	task, err = q.CreateWakeupTask(ctx, db.CreateWakeupTaskParams{

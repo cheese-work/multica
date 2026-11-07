@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -30,6 +31,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -409,16 +411,17 @@ const (
 
 // signState produces an opaque token that binds a workspace and return target
 // to a short-lived install flow.
-// Format: "<workspaceID>.<returnTo>.<issuedAtUnix>.<nonce>.<sigHex>".
+// Format: "<workspaceID>.<returnTo>.<issuedAtUnix>.<nonce>.<originB64>.<sigHex>"
+// (originB64 is the base64url browser origin that started the flow, or empty).
 func signState(workspaceID string) (string, error) {
-	return signStateForReturn(workspaceID, githubReturnToGitHub)
+	return signStateForReturn(workspaceID, githubReturnToGitHub, "")
 }
 
-func signStateForReturn(workspaceID, returnTo string) (string, error) {
-	return signStateForReturnAt(workspaceID, returnTo, time.Now())
+func signStateForReturn(workspaceID, returnTo, origin string) (string, error) {
+	return signStateForReturnAt(workspaceID, returnTo, origin, time.Now())
 }
 
-func signStateForReturnAt(workspaceID, returnTo string, now time.Time) (string, error) {
+func signStateForReturnAt(workspaceID, returnTo, origin string, now time.Time) (string, error) {
 	secret := githubWebhookSecret()
 	if secret == "" {
 		return "", errors.New("github integration is not configured")
@@ -435,6 +438,7 @@ func signStateForReturnAt(workspaceID, returnTo string, now time.Time) (string, 
 		returnTo,
 		strconv.FormatInt(now.Unix(), 10),
 		hex.EncodeToString(nonceBytes),
+		base64.RawURLEncoding.EncodeToString([]byte(origin)),
 	}, ".")
 	return payload + "." + signGitHubState(secret, payload), nil
 }
@@ -446,40 +450,44 @@ func signGitHubState(secret, payload string) string {
 }
 
 func verifyState(token string) (string, bool) {
-	workspaceID, _, ok := verifyStateWithReturn(token)
+	workspaceID, _, _, ok := verifyStateWithReturn(token)
 	return workspaceID, ok
 }
 
-func verifyStateWithReturn(token string) (workspaceID, returnTo string, ok bool) {
+func verifyStateWithReturn(token string) (workspaceID, returnTo, origin string, ok bool) {
 	return verifyStateWithReturnAt(token, time.Now())
 }
 
-func verifyStateWithReturnAt(token string, now time.Time) (workspaceID, returnTo string, ok bool) {
+func verifyStateWithReturnAt(token string, now time.Time) (workspaceID, returnTo, origin string, ok bool) {
 	secret := githubWebhookSecret()
 	if secret == "" {
-		return "", "", false
+		return "", "", "", false
 	}
 	parts := strings.Split(token, ".")
-	if len(parts) != 5 {
-		return "", "", false
+	if len(parts) != 6 {
+		return "", "", "", false
 	}
 	workspaceID, returnTo = parts[0], parts[1]
 	if !isAllowedGitHubReturnTo(returnTo) {
-		return "", "", false
+		return "", "", "", false
 	}
-	payload := strings.Join(parts[:4], ".")
-	if !hmac.Equal([]byte(signGitHubState(secret, payload)), []byte(parts[4])) {
-		return "", "", false
+	payload := strings.Join(parts[:5], ".")
+	if !hmac.Equal([]byte(signGitHubState(secret, payload)), []byte(parts[5])) {
+		return "", "", "", false
 	}
 	issuedAt, err := strconv.ParseInt(parts[2], 10, 64)
 	if err != nil {
-		return "", "", false
+		return "", "", "", false
 	}
 	age := now.Sub(time.Unix(issuedAt, 0))
 	if age > githubStateMaxAge || age < -githubStateClockSkew {
-		return "", "", false
+		return "", "", "", false
 	}
-	return workspaceID, returnTo, true
+	rawOrigin, err := base64.RawURLEncoding.DecodeString(parts[4])
+	if err != nil {
+		return "", "", "", false
+	}
+	return workspaceID, returnTo, string(rawOrigin), true
 }
 
 func isAllowedGitHubReturnTo(returnTo string) bool {
@@ -514,7 +522,7 @@ func (h *Handler) GitHubConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slug := githubAppSlug()
-	state, err := signStateForReturn(workspaceID, returnTo)
+	state, err := signStateForReturn(workspaceID, returnTo, util.RequestOrigin(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to sign state")
 		return
@@ -545,12 +553,12 @@ func (h *Handler) GitHubSetupCallback(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, settingsURL+"&github_error=missing_params", http.StatusFound)
 		return
 	}
-	workspaceID, returnTo, ok := verifyStateWithReturn(state)
+	workspaceID, returnTo, origin, ok := verifyStateWithReturn(state)
 	if !ok {
 		http.Redirect(w, r, settingsURL+"&github_error=invalid_state", http.StatusFound)
 		return
 	}
-	settingsURL = githubSettingsURL(frontend, returnTo)
+	settingsURL = githubSettingsURL(util.ReturnOrigin(origin, frontend), returnTo)
 	if installationIDStr == "" {
 		http.Redirect(w, r, settingsURL+"&github_error=missing_params", http.StatusFound)
 		return
@@ -587,6 +595,26 @@ func (h *Handler) GitHubSetupCallback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The policy judges the numeric account id: the verified one for a bind with
+	// a code, the stored one for a code-less update (which carries none).
+	candidate := db.GithubInstallation{
+		WorkspaceID:    wsUUID,
+		InstallationID: installationID,
+		AccountID:      githubAccountIDParam(verified.Account.ID),
+	}
+	if code == "" {
+		candidate = existing
+	}
+	if !h.githubInstallationAllowed(candidate) {
+		slog.Warn("github: refused installation bind outside allowlist",
+			"installation_id", installationID,
+			"account_id", candidate.AccountID.Int64,
+			"workspace_id", workspaceID,
+		)
+		http.Redirect(w, r, settingsURL+"&github_error=installation_not_allowed", http.StatusFound)
+		return
+	}
+
 	connectedBy := pgtype.UUID{}
 	if code == "" {
 		connectedBy = existing.ConnectedByID
@@ -607,6 +635,7 @@ func (h *Handler) GitHubSetupCallback(w http.ResponseWriter, r *http.Request) {
 		AccountType:      verified.Account.Type,
 		AccountAvatarUrl: avatar,
 		ConnectedByID:    connectedBy,
+		AccountID:        githubAccountIDParam(verified.Account.ID),
 	})
 	if err != nil {
 		slog.Error("github: failed to persist installation", "err", err, "installation_id", installationID)
@@ -1429,7 +1458,7 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
 		for _, issueID := range issueIDs {
 			// A move that already started the next handler is the wake.
-			if h.advanceIssueOnCIGreen(ctx, issueID, pr.SnapshotHeadSha, pr.State) {
+			if h.advanceIssueOnCIGreenUnlessHalted(ctx, pr, issueID) {
 				continue
 			}
 			if err := wakeup.TriggerPullRequestWakeup(ctx, issueID, service.PullRequestWakeupInput{
@@ -1524,6 +1553,7 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to process pull_request event")
 			return
 		}
+		h.configSyncOnPullRequest(ctx, body)
 	case "workflow_run":
 		if err := h.handleWorkflowRunEvent(ctx, body); err != nil {
 			slog.Error("github: workflow_run event failed", "err", err, "delivery_guid", deliveryGUID)
@@ -1567,6 +1597,7 @@ type ghInstallationPayload struct {
 	Installation struct {
 		ID      int64 `json:"id"`
 		Account struct {
+			ID        int64  `json:"id"`
 			Login     string `json:"login"`
 			Type      string `json:"type"`
 			AvatarURL string `json:"avatar_url"`
@@ -1622,33 +1653,33 @@ func (h *Handler) handleInstallationEvent(ctx context.Context, body []byte) {
 			return
 		}
 
-		// We don't know which workspace(s) this maps to from the webhook
-		// alone. If no setup callback has created a workspace binding yet,
-		// keep the account metadata and let the callback consume it after it
-		// creates github_installation.
-		existing, err := h.Queries.ListGitHubInstallationsByInstallationID(ctx, p.Installation.ID)
+		// A signed delivery proves GitHub sent it, not that anyone here wants
+		// the installation. Only an existing workspace binding (made by the setup
+		// callback, which verifies the installing user) may be refreshed; with no
+		// binding nothing is stored, whatever the account.
+		bound, err := h.Queries.ListGitHubInstallationsByInstallationID(ctx, p.Installation.ID)
 		if err != nil {
 			slog.Warn("github: lookup installation failed", "err", err, "installation_id", p.Installation.ID)
 			return
 		}
-		if len(existing) == 0 {
-			if _, err := h.Queries.UpsertPendingGitHubInstallation(ctx, db.UpsertPendingGitHubInstallationParams{
-				InstallationID:   p.Installation.ID,
-				AccountLogin:     login,
-				AccountType:      accountType,
-				AccountAvatarUrl: ptrToText(avatar),
-			}); err != nil {
-				slog.Warn("github: store pending installation failed", "err", err, "installation_id", p.Installation.ID)
-			}
+		if len(bound) == 0 {
 			return
 		}
-		// Refresh the account display metadata across every workspace binding;
+		if !h.anyGitHubInstallationAllowed(bound) {
+			slog.Warn("github: installation event ignored; binding denied by allowlist",
+				"installation_id", p.Installation.ID, "action", p.Action)
+			return
+		}
+		// Refresh the account display metadata on the allowed bindings only; a
+		// denied binding on a shared installation keeps its stored account.
 		// workspace_id and connected_by_id are left untouched.
 		refreshed, err := h.Queries.UpdateGitHubInstallationAccountByInstallationID(ctx, db.UpdateGitHubInstallationAccountByInstallationIDParams{
 			InstallationID:   p.Installation.ID,
 			AccountLogin:     login,
 			AccountType:      accountType,
 			AccountAvatarUrl: ptrToText(avatar),
+			AccountID:        githubAccountIDParam(p.Installation.Account.ID),
+			WorkspaceIds:     h.allowedWorkspaceIDs(bound),
 		})
 		if err != nil {
 			slog.Warn("github: refresh installation failed", "err", err)
@@ -1664,6 +1695,9 @@ func (h *Handler) handleInstallationEvent(ctx context.Context, body []byte) {
 		// the user already loaded the page) would stay visibly stale
 		// until the user manually refreshes. One broadcast per bound workspace.
 		for _, inst := range refreshed {
+			if !h.githubInstallationAllowed(inst) {
+				continue
+			}
 			h.publish(protocol.EventGitHubInstallationCreated, uuidToString(inst.WorkspaceID), "system", "", map[string]any{
 				"installation": githubInstallationToBroadcast(inst),
 			})
@@ -1746,7 +1780,7 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error
 	if p.Installation.ID == 0 {
 		return nil
 	}
-	insts, err := h.Queries.ListGitHubInstallationsByInstallationID(ctx, p.Installation.ID)
+	insts, err := h.allowedGitHubInstallations(ctx, p.Installation.ID)
 	if err != nil {
 		// CHE-374 review round 2, item 5: a real DB error here (as opposed to
 		// "no installation row exists", which is len(insts)==0 below and stays
@@ -1760,8 +1794,8 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error
 		return fmt.Errorf("list installations by installation id: %w", err)
 	}
 	if len(insts) == 0 {
-		// Webhook from an installation we never wired up — nothing we
-		// can attribute to a workspace, so drop it silently.
+		// Webhook from an installation we never wired up, or one the account
+		// allowlist denies — nothing we may attribute to a workspace, so drop it.
 		return nil
 	}
 	// #4855 lets one GitHub App installation bind to several workspaces. A
@@ -1795,12 +1829,22 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error
 	// authoritative CI + mergeability snapshot for that head. The webhook is
 	// only the doorbell — its own mergeable/checks payload is not used for
 	// display anymore (MUL-5265).
+	if p.Action == "edited" && baseRefChanged(p.Changes) {
+		// The stored API verdict describes the old base. A failed clear must
+		// fail the delivery so GitHub redelivers it.
+		if err := h.Queries.InvalidateGitHubPRMergeState(ctx, db.InvalidateGitHubPRMergeStateParams{
+			InstallationID: p.Installation.ID, RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name, PrNumber: p.PullRequest.Number,
+			WorkspaceIds: workspaceIDsOf(insts),
+		}); err != nil {
+			errs = append(errs, fmt.Errorf("github: invalidate merge state of retargeted pull request: %w", err))
+		}
+	}
 	h.PRRefresh.Enqueue(p.Installation.ID, p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number)
 	if p.Action == "closed" && p.PullRequest.Merged {
 		h.PRRefresh.RefreshConflictWatchers(ctx, p.Installation.ID, p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number)
 	}
 	if p.PullRequest.Merged {
-		if err := h.refreshOpenPRsOnBase(ctx, &p); err != nil {
+		if err := h.refreshOpenPRsOnBase(ctx, &p, insts); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -1982,6 +2026,9 @@ func (h *Handler) triggerPRRefreshFromCIEvent(ctx context.Context, body []byte) 
 	if p.Installation.ID == 0 || p.Repository.Name == "" {
 		return
 	}
+	if allowed, err := h.allowedGitHubInstallations(ctx, p.Installation.ID); err != nil || len(allowed) == 0 {
+		return
+	}
 	owner, repo := p.Repository.Owner.Login, p.Repository.Name
 
 	seen := map[int32]struct{}{}
@@ -2154,15 +2201,27 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 			return fmt.Errorf("github: apply pr %s lifecycle: %w", state, err)
 		}
 	}
+	var autoCompleteErrs []error
 	if githubFeaturesEnabled(ws) && pr.HeadRepoSame && !linkPolicy.indeterminate {
-		if state == "merged" && prevState != "merged" {
+		// An owed closed-PR replay runs after an earlier attempt may have failed
+		// past the commit: the links are unchanged but the auto-completion they
+		// owe may not have run (CHE-3402). A plain redelivery stays a no-op.
+		if state == "merged" && (prevState != "merged" || isOwedClosedReplay(ctx)) {
 			for _, issueID := range closingIssueIDs {
 				touched[issueID] = struct{}{}
 			}
 		}
 		resolver := issuestatus.NewResolver(wsID)
 		for issueID := range touched {
-			h.maybeAutoCompleteIssue(ctx, wsID, issueID, resolver)
+			err := h.autoCompleteIssue(ctx, wsID, issueID, resolver)
+			switch {
+			case err == nil:
+			case isOwedClosedReplay(ctx):
+				// Fail the replay so its marker stays and the sweep retries.
+				autoCompleteErrs = append(autoCompleteErrs, fmt.Errorf("github: auto-complete issue %s: %w", uuidToString(issueID), err))
+			default:
+				slog.Warn("pr auto-complete failed", "err", err, "issue_id", uuidToString(issueID))
+			}
 		}
 	}
 	// A PR sent back to draft (CHE-1417): the rule itself decides whether the
@@ -2182,36 +2241,39 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
 		attention.RepoOwner, attention.RepoName, attention.Number, attention.URL = p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number, p.PullRequest.HTMLURL
 		attention.HeadSHA, attention.BaseBranch, attention.HeadBranch = p.PullRequest.Head.SHA, p.PullRequest.Base.Ref, p.PullRequest.Head.Ref
-		return dispatchMergedPRWakeups(issueIDs, func(issueID pgtype.UUID) error {
+		return errors.Join(append(autoCompleteErrs, dispatchMergedPRWakeups(issueIDs, func(issueID pgtype.UUID) error {
 			return wakeup.TriggerPullRequestWakeup(ctx, issueID, attention)
 		}, func() {
 			h.publish(protocol.EventPullRequestUpdated, workspaceID, "system", "", map[string]any{
 				"pull_request":     githubPullRequestToResponse(pr, h.PRRefresh.Enabled()),
 				"linked_issue_ids": linkedIssueIDs,
 			})
-		})
+		}))...)
 	}
 	h.publish(protocol.EventPullRequestUpdated, workspaceID, "system", "", map[string]any{
 		"pull_request":     githubPullRequestToResponse(pr, h.PRRefresh.Enabled()),
 		"linked_issue_ids": linkedIssueIDs,
 	})
-	return nil
+	return errors.Join(autoCompleteErrs...)
 }
 
 // refreshOpenPRsOnBase asks for a fresh snapshot of every open PR on the base
 // a merge just moved (CHE-1417). Their merge state can turn DIRTY or BEHIND
 // without a pull_request event of their own; the refresh is what notices it.
+// A stack child, based on the merged PR's head branch, is included (CHE-2796).
 // Their stored merge state is cleared first, so a PR the refresh queue drops
 // is undecided and the snapshot sweep refreshes it. A failed clear is returned:
 // the old decided verdicts would stay outside the sweep, so the delivery must
 // fail and GitHub's redelivery retries it.
-func (h *Handler) refreshOpenPRsOnBase(ctx context.Context, p *ghPullRequestPayload) error {
+func (h *Handler) refreshOpenPRsOnBase(ctx context.Context, p *ghPullRequestPayload, insts []db.GithubInstallation) error {
 	if !h.PRRefresh.Enabled() || p.PullRequest.Base.Ref == "" {
 		return nil
 	}
 	rows, err := h.Queries.InvalidateOpenGitHubPRMergeStateOnBase(ctx, db.InvalidateOpenGitHubPRMergeStateOnBaseParams{
-		InstallationID: p.Installation.ID, RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name,
+		InstallationID: p.Installation.ID, WorkspaceIds: workspaceIDsOf(insts),
+		RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name,
 		MergedPrNumber: p.PullRequest.Number, BaseRef: pgtype.Text{String: p.PullRequest.Base.Ref, Valid: true},
+		HeadRef: pgtype.Text{String: p.PullRequest.Head.Ref, Valid: true},
 	})
 	if err != nil {
 		return fmt.Errorf("github: invalidate merge state of open pull requests on merged base: %w", err)
@@ -2777,11 +2839,25 @@ func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, worksp
 		}
 	}
 
-	updated, err := h.Queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		slog.Warn("github: advance issue to done: begin failed", "err", err)
+		return
+	}
+	defer tx.Rollback(ctx)
+	qtx := h.Queries.WithTx(tx)
+	updated, err := qtx.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
 		ID:          issue.ID,
 		Status:      "done",
 		WorkspaceID: issue.WorkspaceID,
 	})
+	var recorded *db.ActivityLog
+	if err == nil {
+		recorded, err = recordSystemStatusChange(ctx, qtx, issue, updated, service.StatusCausePRMerged, nil)
+	}
+	if err == nil {
+		err = tx.Commit(ctx)
+	}
 	if err != nil {
 		slog.Warn("github: advance issue to done failed", "err", err)
 		return
@@ -2793,7 +2869,7 @@ func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, worksp
 	prefix := h.getIssuePrefix(ctx, issue.WorkspaceID)
 	resp := issueToResponse(updated, prefix)
 	h.fillStatusCategory(ctx, updated.WorkspaceID, &resp)
-	h.publish(protocol.EventIssueUpdated, workspaceID, "system", "", map[string]any{
+	h.publishSystemStatusChange(workspaceID, recorded, map[string]any{
 		"issue":          resp,
 		"status_changed": true,
 		"prev_status":    issue.Status,

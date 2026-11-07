@@ -1,4 +1,11 @@
 {
+  "decision_banner": {
+    "title": "Décision requise",
+    "waiting": "L’agent n’a pas encore envoyé la carte de décision.",
+    "queued_since": "En file depuis {{time}}",
+    "running_since": "En cours depuis {{time}}",
+    "no_run": "Aucune exécution active."
+  },
   "needs_you": {
     "title": "À vous de décider",
     "loading": "Chargement des demandes…",
@@ -64,7 +71,25 @@
     "remove": "Retirer le message de la file d'attente",
     "more": "Plus d'actions sur la file d'attente",
     "fallback": "Message en file d'attente",
+    "steer_starting": "L'exécution démarre",
+    "steer_unsupported": "Cette exécution ne peut pas recevoir de nouveaux messages. Le message reste en file d'attente.",
+    "stop_and_send": "Arrêter et envoyer",
     "action_failed_toast": "Impossible de mettre à jour le message en file d'attente"
+  },
+  "supplement": {
+    "added": "Ajouté à l'exécution",
+    "read": "Lu par l'agent",
+    "read_twice": "Lu par l'agent ; aussi renvoyé, l'agent peut le voir deux fois",
+    "not_received": "Non reçu",
+    "unconfirmed": "Livraison non confirmée",
+    "resent": "Renvoyé comme nouvelle exécution",
+    "send_new_run": "Envoyer comme nouvelle exécution",
+    "send_again_anyway": "Renvoyer quand même",
+    "confirm_title": "Renvoyer ce message ?",
+    "confirm_body": "L'agent a peut-être déjà reçu ce message. Le renvoyer peut le faire agir deux fois dessus.",
+    "confirm_send": "Renvoyer",
+    "cancel": "Annuler",
+    "resend_failed_toast": "Impossible de renvoyer le message"
   },
   "message_list": {
     "continued_from": "Suite de",
@@ -289,6 +314,7 @@
   "header": {
     "context_meter": "{{pct}} % de {{window}}",
     "context_meter_warning": "Sera compactée après la prochaine réponse",
+    "context_meter_threshold": "Compactage à {{threshold}} (actuellement {{now}})",
     "compact_now": "Compacter maintenant",
     "more_actions": "Plus d'actions",
     "view_profile": "Voir le profil de l'agent",
@@ -298,7 +324,8 @@
     "delete": "Supprimer la discussion",
     "statistics": "Statistiques",
     "pin": "Épingler la discussion",
-    "unpin": "Détacher la discussion"
+    "unpin": "Détacher la discussion",
+    "preset": { "label": "Préréglage", "inherit": "Hériter", "base": "Base" }
   },
   "scheduled": {
     "chip": "Planifié {{count}}",
@@ -307,7 +334,8 @@
     "cancel": "Annuler",
     "cancel_label": "Annuler la relance prévue à {{time}}",
     "cancel_failed": "Impossible d'annuler la relance",
-    "load_failed": "Impossible de charger les suivis planifiés. Réessayer"
+    "load_failed": "Impossible de charger les suivis planifiés. Réessayer",
+    "watching_until": "Surveille la demande · jusqu'à {{time}}"
   },
   "annotations": {
     "one_request": "Envoyez les commentaires sur une seule demande de décision à la fois.",
@@ -387,13 +415,26 @@
     "answer_text": "Écrivez une réponse",
     "answer_note": "Ajouter une note (facultatif)",
     "answer_chose": "Choix : {{option}}",
+    "option_recommended": "Recommandé",
+    "option_pros": "Avantages",
+    "option_cons": "Inconvénients",
+    "option_cost": "Coût ou délai",
     "answer_send": "Envoyer",
     "answer_error": "Échec de l'envoi. Réessayez.",
     "answer_helper": "Envoyer publie votre réponse sur {{issue}}. Les questions pour l'agent du DM vont dans la zone de message ci-dessous.",
-    "answer_hint": "Entrée envoie · Maj+Entrée pour un saut de ligne",
+    "answer_helper_issue": "Envoyer publie votre réponse sur {{issue}}.",
+    "answer_hint": "{{shortcut}} envoie",
+    "answer_too_long": "Cette réponse dépasse 8 Ko. Raccourcissez-la pour l'envoyer.",
     "answer_offline": "Vous êtes hors ligne. Votre réponse est conservée. Envoyer se réactive à la reconnexion.",
     "answer_conflict": "Cette carte ne peut plus recevoir votre réponse, par exemple parce qu'elle a déjà été répondue. Rien de votre brouillon n'a été publié. Votre brouillon :",
     "answer_discard": "Supprimer le brouillon",
+    "answer_send_passkey": "Envoyer avec une clé d'accès",
+    "answer_open_browser": "Ouvrir dans le navigateur",
+    "answer_passkey_needed": "Cette réponse nécessite votre clé d'accès. Envoyez à nouveau pour confirmer.",
+    "answer_passkey_desktop": "Cette réponse nécessite votre clé d'accès, utilisable uniquement dans le navigateur. Ouvrez-la là pour répondre.",
+    "answer_stale": "Cette demande a changé depuis son ouverture. Vérifiez-la, puis renvoyez.",
+    "answer_no_passkey": "Ajoutez une clé d'accès dans les paramètres avant de répondre à cette demande.",
+    "answer_passkey_failed": "L'étape de la clé d'accès n'a pas abouti. Votre réponse est conservée. Renvoyez pour réessayer.",
     "source_comment": "Commentaire source",
     "quoted_in": "Cité dans {{issue}}",
     "receipt_recorded": "Enregistré pour {{issue}}",
@@ -409,11 +450,11 @@
       "approved": "Vous avez approuvé",
       "download": "Télécharger",
       "download_label": "Télécharger {{name}}",
+      "open_label": "Ouvrir {{name}}",
       "hash_verified": "Empreinte vérifiée",
       "sha": "SHA",
       "viewer_label": "Lire le fichier",
-      "viewer_hint": "Sélectionnez un onglet pour lire le fichier ici.",
-      "tab_changes": "Changements depuis {{previous}}",
+      "tab_changes": "Changements",
       "tab_preview": "Aperçu",
       "signed_by": "{{label}} signé par {{reviewer}}",
       "not_signed": "{{label}} n'est pas encore signé",

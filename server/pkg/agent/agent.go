@@ -30,7 +30,9 @@ type ExecOptions struct {
 	// capability handshake enabled additional messages.
 	EnableTaskSupplement bool
 	Cwd                  string
-	Model                string
+	// StableCwd, when set, is the cwd the process sees instead of Cwd (Claude only; see wrapStableCwd).
+	StableCwd string
+	Model     string
 	// SystemPrompt carries the Multica runtime brief for the few providers
 	// that cannot pick it up from disk. The daemon leaves it empty for every
 	// other provider (see daemon.providerNeedsInlineSystemPrompt), because the
@@ -108,6 +110,9 @@ type ExecOptions struct {
 	CustomArgs       []string        // per-agent CLI arguments appended after ExtraArgs
 	QwenpawWorkspace string          // per-task QwenPaw workspace directory (passed as --workspace to qwenpaw acp); empty when not applicable
 	McpConfig        json.RawMessage // if non-nil, MCP server config to pass via --mcp-config
+	// DisableProviderWebTools turns the provider's server-side web tools off for
+	// this run (elevated profile, CHE-2216 plan 3.3). Claude and Codex only.
+	DisableProviderWebTools bool
 	// ThinkingLevel is the runtime-native reasoning/effort value (e.g.
 	// Claude's "low|medium|high|xhigh|max", Codex's "none|minimal|low|
 	// medium|high|xhigh", OpenCode's model variant names). Empty means

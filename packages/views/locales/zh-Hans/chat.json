@@ -1,4 +1,11 @@
 {
+  "decision_banner": {
+    "title": "需要你做决定",
+    "waiting": "智能体尚未发送决策卡片。",
+    "queued_since": "自 {{time}} 起排队中",
+    "running_since": "自 {{time}} 起运行中",
+    "no_run": "没有活动的运行。"
+  },
   "needs_you": {
     "title": "待你决定",
     "loading": "正在加载待处理请求…",
@@ -62,7 +69,25 @@
     "remove": "移除排队消息",
     "more": "更多队列操作",
     "fallback": "排队消息",
+    "steer_starting": "运行正在启动",
+    "steer_unsupported": "此运行无法接收新消息。消息仍在队列中。",
+    "stop_and_send": "停止并发送",
     "action_failed_toast": "无法更新排队消息"
+  },
+  "supplement": {
+    "added": "已加入运行",
+    "read": "智能体已读",
+    "read_twice": "智能体已读；也已重新发送，智能体可能会看到两次",
+    "not_received": "未收到",
+    "unconfirmed": "送达未确认",
+    "resent": "已作为新运行重新发送",
+    "send_new_run": "作为新运行发送",
+    "send_again_anyway": "仍然重新发送",
+    "confirm_title": "重新发送此消息？",
+    "confirm_body": "智能体可能已经收到此消息。重新发送可能导致智能体处理两次。",
+    "confirm_send": "重新发送",
+    "cancel": "取消",
+    "resend_failed_toast": "无法重新发送消息"
   },
   "message_list": {
     "continued_from": "续接自",
@@ -284,6 +309,7 @@
   "header": {
     "context_meter": "{{window}} 中的 {{pct}}%",
     "context_meter_warning": "下一次回复后将压缩",
+    "context_meter_threshold": "达到 {{threshold}} 时压缩(当前 {{now}})",
     "compact_now": "立即压缩",
     "more_actions": "更多操作",
     "view_profile": "查看智能体资料",
@@ -293,7 +319,8 @@
     "unarchive": "取消归档",
     "statistics": "统计",
     "pin": "置顶会话",
-    "unpin": "取消置顶会话"
+    "unpin": "取消置顶会话",
+    "preset": { "label": "预设", "inherit": "继承", "base": "基础" }
   },
   "scheduled": {
     "chip": "已计划 {{count}}",
@@ -302,7 +329,8 @@
     "cancel": "取消",
     "cancel_label": "取消 {{time}} 的计划跟进",
     "cancel_failed": "无法取消该跟进",
-    "load_failed": "无法加载已计划的跟进。重试"
+    "load_failed": "无法加载已计划的跟进。重试",
+    "watching_until": "监听事项 · 截止 {{time}}"
   },
   "annotations": {
     "one_request": "请每次只发送针对一个决策请求的评论。",
@@ -379,13 +407,26 @@
     "answer_text": "输入回答",
     "answer_note": "添加备注（可选）",
     "answer_chose": "已选择：{{option}}",
+    "option_recommended": "推荐",
+    "option_pros": "优点",
+    "option_cons": "缺点",
+    "option_cost": "成本或时间",
     "answer_send": "发送",
     "answer_error": "发送失败，请重试。",
     "answer_helper": "发送会将你的回答发布到 {{issue}}。给 DM 智能体的问题请写在下方消息框。",
-    "answer_hint": "Enter 发送 · Shift+Enter 换行",
+    "answer_helper_issue": "发送会将你的回答发布到 {{issue}}。",
+    "answer_hint": "{{shortcut}} 发送",
+    "answer_too_long": "回答超过 8 KB。缩短后才能发送。",
     "answer_offline": "你已离线。回答已保留，重新连接后即可发送。",
     "answer_conflict": "此卡片已无法接收你的回答，例如已被先回答。你的草稿未被发布。你的草稿：",
     "answer_discard": "丢弃草稿",
+    "answer_send_passkey": "使用通行密钥发送",
+    "answer_open_browser": "在浏览器中打开",
+    "answer_passkey_needed": "此回答需要你的通行密钥。再次发送以确认。",
+    "answer_passkey_desktop": "此回答需要通行密钥，只能在浏览器中使用。请在浏览器中打开并回答。",
+    "answer_stale": "打开后此请求已变更。请查看后再发送。",
+    "answer_no_passkey": "回答此请求前，请先在设置中添加通行密钥。",
+    "answer_passkey_failed": "通行密钥步骤未完成。回答已保留，再次发送即可重试。",
     "source_comment": "来源评论",
     "quoted_in": "已引用到 {{issue}}",
     "receipt_recorded": "已记录到 {{issue}}",
@@ -401,11 +442,11 @@
       "approved": "你已批准",
       "download": "下载",
       "download_label": "下载 {{name}}",
+      "open_label": "打开 {{name}}",
       "hash_verified": "哈希已验证",
       "sha": "SHA",
       "viewer_label": "阅读文件",
-      "viewer_hint": "选择一个标签页即可在此阅读文件。",
-      "tab_changes": "自 {{previous}} 以来的变更",
+      "tab_changes": "变更",
       "tab_preview": "预览",
       "signed_by": "{{label}} 已由 {{reviewer}} 签署",
       "not_signed": "{{label}} 尚未签署",

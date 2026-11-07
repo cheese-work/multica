@@ -48,17 +48,19 @@ func (q *Queries) ClearGitHubPRReview(ctx context.Context, arg ClearGitHubPRRevi
 
 const createGitHubInstallation = `-- name: CreateGitHubInstallation :one
 INSERT INTO github_installation (
-    workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id
+    workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, account_id
 ) VALUES (
-    $1, $2, $3, $4, $5, $6
+    $1, $2, $3, $4, $5, $6, $7
 )
 ON CONFLICT (workspace_id, installation_id) DO UPDATE SET
     account_login = EXCLUDED.account_login,
+    -- A code-less refresh carries no trusted id; keep the stored one.
+    account_id = COALESCE(EXCLUDED.account_id, github_installation.account_id),
     account_type = EXCLUDED.account_type,
     account_avatar_url = EXCLUDED.account_avatar_url,
     connected_by_id = EXCLUDED.connected_by_id,
     updated_at = now()
-RETURNING id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at
+RETURNING id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, account_id
 `
 
 type CreateGitHubInstallationParams struct {
@@ -68,6 +70,7 @@ type CreateGitHubInstallationParams struct {
 	AccountType      string      `json:"account_type"`
 	AccountAvatarUrl pgtype.Text `json:"account_avatar_url"`
 	ConnectedByID    pgtype.UUID `json:"connected_by_id"`
+	AccountID        pgtype.Int8 `json:"account_id"`
 }
 
 func (q *Queries) CreateGitHubInstallation(ctx context.Context, arg CreateGitHubInstallationParams) (GithubInstallation, error) {
@@ -78,6 +81,7 @@ func (q *Queries) CreateGitHubInstallation(ctx context.Context, arg CreateGitHub
 		arg.AccountType,
 		arg.AccountAvatarUrl,
 		arg.ConnectedByID,
+		arg.AccountID,
 	)
 	var i GithubInstallation
 	err := row.Scan(
@@ -90,6 +94,7 @@ func (q *Queries) CreateGitHubInstallation(ctx context.Context, arg CreateGitHub
 		&i.ConnectedByID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.AccountID,
 	)
 	return i, err
 }
@@ -209,7 +214,7 @@ func (q *Queries) FindGitHubPullRequestByURL(ctx context.Context, arg FindGitHub
 }
 
 const getGitHubInstallationByID = `-- name: GetGitHubInstallationByID :one
-SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at FROM github_installation
+SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, account_id FROM github_installation
 WHERE id = $1
 `
 
@@ -226,6 +231,7 @@ func (q *Queries) GetGitHubInstallationByID(ctx context.Context, id pgtype.UUID)
 		&i.ConnectedByID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.AccountID,
 	)
 	return i, err
 }
@@ -534,7 +540,7 @@ func (q *Queries) ListClosingIssueIDsForPullRequest(ctx context.Context, pullReq
 }
 
 const listGitHubInstallationsByInstallationID = `-- name: ListGitHubInstallationsByInstallationID :many
-SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at FROM github_installation
+SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, account_id FROM github_installation
 WHERE installation_id = $1
 ORDER BY created_at ASC, id ASC
 `
@@ -561,6 +567,48 @@ func (q *Queries) ListGitHubInstallationsByInstallationID(ctx context.Context, i
 			&i.ConnectedByID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.AccountID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGitHubInstallationsByInstallationIDForShare = `-- name: ListGitHubInstallationsByInstallationIDForShare :many
+SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, account_id FROM github_installation
+WHERE installation_id = $1
+ORDER BY created_at ASC, id ASC
+FOR SHARE
+`
+
+// Same rows as ListGitHubInstallationsByInstallationID, share-locked until the
+// transaction ends: a concurrent delete or account change of a binding waits, so
+// a policy check made inside the transaction still holds when it commits.
+func (q *Queries) ListGitHubInstallationsByInstallationIDForShare(ctx context.Context, installationID int64) ([]GithubInstallation, error) {
+	rows, err := q.db.Query(ctx, listGitHubInstallationsByInstallationIDForShare, installationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GithubInstallation{}
+	for rows.Next() {
+		var i GithubInstallation
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.InstallationID,
+			&i.AccountLogin,
+			&i.AccountType,
+			&i.AccountAvatarUrl,
+			&i.ConnectedByID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.AccountID,
 		); err != nil {
 			return nil, err
 		}
@@ -574,7 +622,7 @@ func (q *Queries) ListGitHubInstallationsByInstallationID(ctx context.Context, i
 
 const listGitHubInstallationsByWorkspace = `-- name: ListGitHubInstallationsByWorkspace :many
 
-SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at FROM github_installation
+SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, account_id FROM github_installation
 WHERE workspace_id = $1
 ORDER BY created_at ASC
 `
@@ -601,6 +649,45 @@ func (q *Queries) ListGitHubInstallationsByWorkspace(ctx context.Context, worksp
 			&i.ConnectedByID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.AccountID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGitHubInstallationsMissingAccountID = `-- name: ListGitHubInstallationsMissingAccountID :many
+SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, account_id FROM github_installation
+WHERE account_id IS NULL
+ORDER BY created_at ASC, id ASC
+`
+
+// Startup backfill input: rows bound before the trusted account_id existed.
+func (q *Queries) ListGitHubInstallationsMissingAccountID(ctx context.Context) ([]GithubInstallation, error) {
+	rows, err := q.db.Query(ctx, listGitHubInstallationsMissingAccountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GithubInstallation{}
+	for rows.Next() {
+		var i GithubInstallation
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.InstallationID,
+			&i.AccountLogin,
+			&i.AccountType,
+			&i.AccountAvatarUrl,
+			&i.ConnectedByID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.AccountID,
 		); err != nil {
 			return nil, err
 		}
@@ -930,6 +1017,27 @@ func (q *Queries) RecordGitHubPRReview(ctx context.Context, arg RecordGitHubPRRe
 	return err
 }
 
+const setGitHubInstallationAccountIDByInstallationID = `-- name: SetGitHubInstallationAccountIDByInstallationID :execrows
+UPDATE github_installation
+SET account_id = $2
+WHERE installation_id = $1 AND account_id IS NULL
+`
+
+type SetGitHubInstallationAccountIDByInstallationIDParams struct {
+	InstallationID int64       `json:"installation_id"`
+	AccountID      pgtype.Int8 `json:"account_id"`
+}
+
+// Fill only a null id, so a backfill can never overwrite one captured from a
+// verified bind or a signed lifecycle event.
+func (q *Queries) SetGitHubInstallationAccountIDByInstallationID(ctx context.Context, arg SetGitHubInstallationAccountIDByInstallationIDParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setGitHubInstallationAccountIDByInstallationID, arg.InstallationID, arg.AccountID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const unlinkIssueFromPullRequest = `-- name: UnlinkIssueFromPullRequest :execrows
 DELETE FROM issue_pull_request
 WHERE issue_id = $1 AND pull_request_id = $2
@@ -953,27 +1061,34 @@ UPDATE github_installation
 SET account_login = $2,
     account_type = $3,
     account_avatar_url = $4,
+    account_id = COALESCE($5, account_id),
     updated_at = now()
 WHERE installation_id = $1
-RETURNING id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at
+  AND workspace_id = ANY($6::uuid[])
+RETURNING id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, account_id
 `
 
 type UpdateGitHubInstallationAccountByInstallationIDParams struct {
-	InstallationID   int64       `json:"installation_id"`
-	AccountLogin     string      `json:"account_login"`
-	AccountType      string      `json:"account_type"`
-	AccountAvatarUrl pgtype.Text `json:"account_avatar_url"`
+	InstallationID   int64         `json:"installation_id"`
+	AccountLogin     string        `json:"account_login"`
+	AccountType      string        `json:"account_type"`
+	AccountAvatarUrl pgtype.Text   `json:"account_avatar_url"`
+	AccountID        pgtype.Int8   `json:"account_id"`
+	WorkspaceIds     []pgtype.UUID `json:"workspace_ids"`
 }
 
-// Refresh the GitHub account display metadata across every workspace binding of
-// an installation (fired by installation.created/new_permissions_accepted/
-// unsuspend). Leaves workspace_id and connected_by_id untouched.
+// Refresh the GitHub account display metadata on the given workspace bindings
+// of an installation (fired by installation.created/new_permissions_accepted/
+// unsuspend). Callers pass only the bindings the allowlist permits. Leaves
+// workspace_id and connected_by_id untouched.
 func (q *Queries) UpdateGitHubInstallationAccountByInstallationID(ctx context.Context, arg UpdateGitHubInstallationAccountByInstallationIDParams) ([]GithubInstallation, error) {
 	rows, err := q.db.Query(ctx, updateGitHubInstallationAccountByInstallationID,
 		arg.InstallationID,
 		arg.AccountLogin,
 		arg.AccountType,
 		arg.AccountAvatarUrl,
+		arg.AccountID,
+		arg.WorkspaceIds,
 	)
 	if err != nil {
 		return nil, err
@@ -992,6 +1107,7 @@ func (q *Queries) UpdateGitHubInstallationAccountByInstallationID(ctx context.Co
 			&i.ConnectedByID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.AccountID,
 		); err != nil {
 			return nil, err
 		}

@@ -611,6 +611,28 @@ func (q *Queries) LockProjectForWorkflowChange(ctx context.Context, arg LockProj
 	return i, err
 }
 
+const minInheritedRunsOverrideForProject = `-- name: MinInheritedRunsOverrideForProject :one
+SELECT COALESCE(MIN(COALESCE(max_runs_override, 0)), 0)::int FROM issue
+WHERE workspace_id = $1::uuid
+  AND project_id = $2::uuid
+  AND workflow_id IS NULL
+`
+
+type MinInheritedRunsOverrideForProjectParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ProjectID   pgtype.UUID `json:"project_id"`
+}
+
+// The smallest run override among a project's issues that follow its workflow
+// (0 when one has none, or there are none). A workflow switch widens the budget
+// of the issue with the smallest override first.
+func (q *Queries) MinInheritedRunsOverrideForProject(ctx context.Context, arg MinInheritedRunsOverrideForProjectParams) (int32, error) {
+	row := q.db.QueryRow(ctx, minInheritedRunsOverrideForProject, arg.WorkspaceID, arg.ProjectID)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const releaseIssueCIAdvance = `-- name: ReleaseIssueCIAdvance :exec
 DELETE FROM issue_ci_advance
 WHERE issue_id = $1::uuid AND head_sha = $2::text
@@ -644,7 +666,7 @@ WHERE i.workspace_id = $2::uuid
   AND i.status = $4::text
   AND i.status <> $1::text
   AND i.workflow_id IS NULL
-RETURNING i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties, i.revision, i.last_activity_at, i.triage_state, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.max_runs_override
+RETURNING i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties, i.revision, i.last_activity_at, i.triage_state, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.max_runs_override, i.description_external_read
 `
 
 type RemapProjectIssueStatusParams struct {
@@ -708,6 +730,7 @@ func (q *Queries) RemapProjectIssueStatus(ctx context.Context, arg RemapProjectI
 			&i.WorkflowID,
 			&i.RequestedByID,
 			&i.MaxRunsOverride,
+			&i.DescriptionExternalRead,
 		); err != nil {
 			return nil, err
 		}
@@ -750,7 +773,7 @@ UPDATE issue SET
     updated_at = now()
 WHERE id = $2::uuid
   AND workspace_id = $3::uuid
-RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id, workflow_id, requested_by_id, max_runs_override
+RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id, workflow_id, requested_by_id, max_runs_override, description_external_read
 `
 
 type SetIssueWorkflowParams struct {
@@ -798,6 +821,7 @@ func (q *Queries) SetIssueWorkflow(ctx context.Context, arg SetIssueWorkflowPara
 		&i.WorkflowID,
 		&i.RequestedByID,
 		&i.MaxRunsOverride,
+		&i.DescriptionExternalRead,
 	)
 	return i, err
 }

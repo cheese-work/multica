@@ -141,6 +141,17 @@ func (h *Handler) SetIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to set workflow")
 		return
 	}
+	if !isInteractiveRequest(r) {
+		before, err := issueBinding(ctx, qtx, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID, issue.MaxRunsOverride)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to set workflow")
+			return
+		}
+		if budgetWidens(before, workflowBinding(next, issue.MaxRunsOverride)) {
+			writeBudgetRebindingRefused(w)
+			return
+		}
+	}
 	if err := issueworkflow.CheckStatus(next, issue.Status); err != nil {
 		writeIssueWorkflowError(w, err)
 		return

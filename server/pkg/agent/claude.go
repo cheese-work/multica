@@ -108,6 +108,11 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 
 	cmd := b.cfg.commandAt(execPath).exec(runCtx, args...)
 	hideAgentWindow(cmd)
+	if opts.StableCwd != "" && opts.Cwd != "" {
+		if err := wrapStableCwd(cmd, opts.Cwd, opts.StableCwd); err != nil {
+			b.cfg.Logger.Warn("stable cwd unavailable, running at the task workdir", "error", err)
+		}
+	}
 	// Take over context cancellation: the default kills the whole group the
 	// instant runCtx is done. We instead drive a graceful group-wide
 	// SIGTERM→SIGKILL from the cancellation goroutine below and close stdout
@@ -1237,6 +1242,11 @@ func buildClaudeArgs(opts ExecOptions, logger *slog.Logger) []string {
 	args = append(args, filterCustomArgs(opts.CustomArgs, blockedArgs, logger)...)
 	if opts.ClaudeSettingsPath != "" {
 		args = append(args, "--settings", opts.ClaudeSettingsPath)
+	}
+	if opts.DisableProviderWebTools {
+		// Last, so no earlier user argument can follow it. A deny rule beats
+		// any --allowedTools entry.
+		args = append(args, "--disallowedTools", "WebSearch,WebFetch")
 	}
 	return args
 }

@@ -45,6 +45,7 @@ import { ActorAvatar } from "../../common/actor-avatar";
 import { AppLink } from "../../navigation";
 import { useT } from "../../i18n";
 import { ChatContextMeter } from "./chat-context-meter";
+import { ChatPresetPicker } from "./chat-preset-picker";
 import { ScheduledWakeupsChip } from "./scheduled-wakeups-chip";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 
@@ -62,8 +63,10 @@ export function ChatSessionHeader({
   onTogglePin,
   onOpenStatistics,
   renameRequest = 0,
-  autoCompactThresholdPct = null,
+  autoCompactThresholdTokens = null,
+  lastTurnTokens,
   onCompact,
+  onSetPreset,
 }: {
   session: ChatSession;
   agent: Agent | null;
@@ -78,10 +81,14 @@ export function ChatSessionHeader({
   /** Opens the Statistics dialog. Omit to hide the Statistics item. */
   onOpenStatistics?: () => void;
   renameRequest?: number;
-  /** Auto-compact threshold for this DM, or null when auto-compact is off. */
-  autoCompactThresholdPct?: number | null;
+  /** Prompt size at which this DM auto-compacts, or null when auto-compact is off. */
+  autoCompactThresholdTokens?: number | null;
+  /** Prompt growth of the last turn, when known. */
+  lastTurnTokens?: number | null;
   /** Sends /compact. Omit to hide the "Compact now" item. */
   onCompact?: () => void;
+  /** Sends `/preset <reset|base|name>`. Omit to hide the preset picker. */
+  onSetPreset?: (name: string) => void;
 }) {
   const { t } = useT("chat");
   const { t: tCommon } = useT("common");
@@ -262,7 +269,16 @@ export function ChatSessionHeader({
         <ChatContextMeter
           tokens={session.context_tokens}
           window={session.context_window}
-          thresholdPct={autoCompactThresholdPct}
+          thresholdTokens={autoCompactThresholdTokens}
+          lastTurnTokens={lastTurnTokens}
+        />
+      )}
+
+      {isArchived || !agent || !onSetPreset ? null : (
+        <ChatPresetPicker
+          agentId={agent.id}
+          current={session.preset_name ?? null}
+          onSelect={onSetPreset}
         />
       )}
 

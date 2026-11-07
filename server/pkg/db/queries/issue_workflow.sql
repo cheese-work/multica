@@ -205,6 +205,15 @@ SELECT COUNT(*)::bigint FROM issue
 WHERE workspace_id = sqlc.arg('workspace_id')::uuid
   AND workflow_id = sqlc.arg('workflow_id')::uuid;
 
+-- name: MinInheritedRunsOverrideForProject :one
+-- The smallest run override among a project's issues that follow its workflow
+-- (0 when one has none, or there are none). A workflow switch widens the budget
+-- of the issue with the smallest override first.
+SELECT COALESCE(MIN(COALESCE(max_runs_override, 0)), 0)::int FROM issue
+WHERE workspace_id = sqlc.arg('workspace_id')::uuid
+  AND project_id = sqlc.arg('project_id')::uuid
+  AND workflow_id IS NULL;
+
 -- name: ListOverrideIssueStatusesForWorkflow :many
 -- Statuses held by issues that follow this workflow by override, for an edit
 -- that would drop one of them.

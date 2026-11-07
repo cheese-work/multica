@@ -146,6 +146,7 @@ var errInjectedChatAttachmentRead = errors.New("injected chat attachment batch r
 
 func newChatAttachmentReadFailureHandler(t *testing.T) *Handler {
 	t.Helper()
+	t.Cleanup(giveBackRunBudgetHooks) // New() re-registers the process-wide budget hooks on its own bus.
 	return New(
 		db.New(chatAttachmentBatchFailDBTX{inner: testPool}),
 		testPool,

@@ -8,7 +8,7 @@
 SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-       i.revision, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id
+       i.revision, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.description_external_read
 FROM issue i
 WHERE i.workspace_id = $1
   AND (sqlc.narg('status')::text IS NULL OR i.status = sqlc.narg('status'))
@@ -241,7 +241,9 @@ WITH wakeup_source AS MATERIALIZED (SELECT set_config('multica.source_task_id', 
         sqlc.narg('start_date')::date AS next_start_date,
         sqlc.narg('due_date')::date AS next_due_date,
         sqlc.narg('parent_issue_id')::uuid AS next_parent_issue_id,
-        sqlc.narg('project_id')::uuid AS next_project_id,
+        -- preserve_project keeps the locked row's project, for a content write
+        -- built from a snapshot that a concurrent move may have outdated.
+        CASE WHEN COALESCE(sqlc.narg('preserve_project')::boolean, false) THEN i.project_id ELSE sqlc.narg('project_id')::uuid END AS next_project_id,
         sqlc.narg('stage')::integer AS next_stage,
         -- A supplied pointer marks the issue (the handler also sets cancelled).
         -- Otherwise a mark only survives a write that leaves an already
@@ -533,7 +535,7 @@ DELETE FROM issue WHERE issue.id IN (SELECT target.id FROM target);
 SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-       i.revision, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id
+       i.revision, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.description_external_read
 FROM issue i
 WHERE i.workspace_id = $1
   -- Negate only known terminal keys so an unknown legacy key remains visible.

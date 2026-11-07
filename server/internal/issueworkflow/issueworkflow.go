@@ -29,6 +29,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/agentpreset"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -45,6 +46,10 @@ const (
 	// HandlerHumanByRole hands the issue to a person, by role: the issue's
 	// requester, then the project lead, then the workspace owner.
 	HandlerHumanByRole = "human_by_role"
+	// HandlerHumanInCharge marks a status that waits on the person in charge
+	// of a decision request (CHE-2591 L5). Entering it never hands off by
+	// itself: the entry check assigns the issue explicitly.
+	HandlerHumanInCharge = "human_in_charge"
 )
 
 const (
@@ -164,6 +169,9 @@ func BuiltInDefaultKeys() []string {
 type Handler struct {
 	Type string `json:"type"`
 	ID   string `json:"id,omitempty"`
+	// Preset names the agent preset a run on this step uses (CHE-2249); "base"
+	// forces the agent row. Only an agent or squad handler carries one.
+	Preset string `json:"preset,omitempty"`
 }
 
 // Step is one status of a workflow with its handoff.
@@ -183,6 +191,21 @@ type Step struct {
 	// creates a child issue that follows another workflow, and a children_done
 	// edge joins when every child of the stage is done.
 	SubWorkflow *SubWorkflow `json:"sub_workflow,omitempty"`
+	// Entry are the conditions a status write must meet to put an issue into
+	// this step (CHE-2295); none means no gate.
+	Entry []EntryGate `json:"entry,omitempty"`
+	// DynamicAssignment says the step's assignee is chosen at run time, so it
+	// has no handler. Lint-only: the dispatcher ignores it.
+	DynamicAssignment bool `json:"dynamic_assignment,omitempty"`
+	// LintWaive silences lint rules on this step, each with its reason. A
+	// waived finding is still reported, marked waived.
+	LintWaive []LintWaiver `json:"lint_waive,omitempty"`
+}
+
+// LintWaiver waives one lint rule on a step.
+type LintWaiver struct {
+	Rule   string `json:"rule"`
+	Reason string `json:"reason"`
 }
 
 // SubWorkflow names the workflow a sub-workflow step starts and the stage its
@@ -234,6 +257,10 @@ type storedStep struct {
 	AdvanceOnCI   bool         `json:"advance_on_ci_green,omitempty"`
 	Edges         []Edge       `json:"edges,omitempty"`
 	SubWorkflow   *SubWorkflow `json:"sub_workflow,omitempty"`
+	Entry         []EntryGate  `json:"entry,omitempty"`
+
+	DynamicAssignment bool         `json:"dynamic_assignment,omitempty"`
+	LintWaive         []LintWaiver `json:"lint_waive,omitempty"`
 }
 
 // Decode parses a stored workflow row.
@@ -277,6 +304,10 @@ func DecodeSteps(raw []byte) ([]Step, error) {
 			AdvanceOnCIGreen: s.AdvanceOnCI,
 			Edges:            s.Edges,
 			SubWorkflow:      s.SubWorkflow,
+			Entry:            s.Entry,
+
+			DynamicAssignment: s.DynamicAssignment,
+			LintWaive:         s.LintWaive,
 		}
 		if s.Handler != nil && s.Handler.Type != "" {
 			steps[i].Handler = *s.Handler
@@ -298,8 +329,10 @@ func DecodeKeys(raw []byte) ([]string, error) {
 func EncodeSteps(steps []Step) ([]byte, error) {
 	stored := make([]storedStep, len(steps))
 	for i, s := range steps {
-		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen, Edges: s.Edges, SubWorkflow: s.SubWorkflow}
-		if s.HandsOff() {
+		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen, Edges: s.Edges, SubWorkflow: s.SubWorkflow, Entry: s.Entry, DynamicAssignment: s.DynamicAssignment, LintWaive: s.LintWaive}
+		// A human_in_charge step hands nothing off, but its handler is the entry
+		// rule of a decision episode and must survive storage.
+		if s.HandsOff() || s.Handler.Type == HandlerHumanInCharge {
 			h := s.Handler
 			stored[i].Handler = &h
 			stored[i].Instructions = s.Instructions
@@ -464,6 +497,10 @@ func NormalizeHandoff(s Step) Step {
 		// by a type switch in the form would otherwise be stored.
 		s.Handler.ID = ""
 	}
+	s.Handler.Preset = strings.TrimSpace(s.Handler.Preset)
+	if s.Handler.Type != HandlerAgent && s.Handler.Type != HandlerSquad {
+		s.Handler.Preset = ""
+	}
 	s.Instructions = strings.TrimSpace(s.Instructions)
 	if s.Handler.Type == HandlerNone {
 		s.Instructions = ""
@@ -471,6 +508,7 @@ func NormalizeHandoff(s Step) Step {
 	s.NextStatusKey = strings.TrimSpace(s.NextStatusKey)
 	s.BackStatusKey = strings.TrimSpace(s.BackStatusKey)
 	s.Edges = normalizeEdges(s.Edges)
+	s.Entry = normalizeEntry(s.Entry)
 	if s.SubWorkflow != nil {
 		s.SubWorkflow = &SubWorkflow{WorkflowID: strings.TrimSpace(s.SubWorkflow.WorkflowID), Stage: s.SubWorkflow.Stage}
 	}
@@ -490,7 +528,7 @@ func ValidateHandoff(s Step, def Definition) error {
 		return invalid("status %q is not part of this workflow", s.StatusKey)
 	}
 	switch s.Handler.Type {
-	case HandlerNone, HandlerProjectLead, HandlerHumanByRole:
+	case HandlerNone, HandlerProjectLead, HandlerHumanByRole, HandlerHumanInCharge:
 	case HandlerAgent, HandlerMember:
 		if s.Handler.ID == "" {
 			return invalid("choose a %s to hand off to", s.Handler.Type)
@@ -505,6 +543,11 @@ func ValidateHandoff(s Step, def Definition) error {
 	if s.HandsOff() && !AcceptsHandoff(s.StatusKey) {
 		return invalid("issues entering %q cannot be handed off", s.StatusKey)
 	}
+	if p := s.Handler.Preset; p != "" && p != agentpreset.BaseName {
+		if err := agentpreset.ValidateName(p); err != nil {
+			return invalid("%s", err.Error())
+		}
+	}
 	if utf8.RuneCountInString(s.Instructions) > MaxInstructionsRunes {
 		return invalid("instructions must be at most %d characters", MaxInstructionsRunes)
 	}
@@ -517,6 +560,9 @@ func ValidateHandoff(s Step, def Definition) error {
 		return invalid("issues in %q cannot advance on CI green", s.StatusKey)
 	}
 	if err := validateSubWorkflow(s); err != nil {
+		return err
+	}
+	if err := validateEntry(s); err != nil {
 		return err
 	}
 	return validateEdges(s, def)
@@ -616,6 +662,8 @@ type Humans struct {
 	Requester      pgtype.UUID
 	LeadNotMember  bool
 	WorkspaceOwner pgtype.UUID
+	// RoutingAgent, when valid, replaces an agent handler (CHE-3627).
+	RoutingAgent pgtype.UUID
 }
 
 // ResolveHandler turns a step's handler into a concrete assignee for one
@@ -624,6 +672,9 @@ type Humans struct {
 func ResolveHandler(step Step, project db.Project, issueCreatorType string, issueCreatorID pgtype.UUID, humans Humans) (assigneeType string, assigneeID pgtype.UUID, ok bool) {
 	switch step.Handler.Type {
 	case HandlerAgent, HandlerSquad, HandlerMember:
+		if step.Handler.Type == HandlerAgent && humans.RoutingAgent.Valid {
+			return HandlerAgent, humans.RoutingAgent, true
+		}
 		var id pgtype.UUID
 		if err := id.Scan(step.Handler.ID); err != nil || !id.Valid {
 			return "", pgtype.UUID{}, false

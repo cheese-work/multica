@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,6 +28,7 @@ import (
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/multica-ai/multica/server/internal/agentpreset"
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
@@ -662,6 +664,11 @@ type Daemon struct {
 	// It deliberately includes preparation and local-directory waiters because
 	// restart/update barriers must not kill any claimed task.
 	activeTasks atomic.Int64
+
+	// hostSampler holds the latest host CPU/RAM/disk sample. Built in New so it
+	// exists before Run starts any reader; Run starts its sampling loop.
+	// Attached to every runtime heartbeat via heartbeatRequest.
+	hostSampler *hostSampler
 	// Sticky for this process: a finished task can leave independent processes
 	// behind even after activeTasks reaches zero.
 	cleanupUnconfirmed atomic.Bool
@@ -790,6 +797,7 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 	agent.SetRestrictedEnv(cfg.SandboxMode == sandbox.ModeOn)
 	d := &Daemon{
 		cfg:                         cfg,
+		hostSampler:                 newHostSampler(newProcHostCollector()),
 		client:                      client,
 		repoCache:                   repocache.New(cacheRoot, logger),
 		skillCache:                  NewSkillBundleCache(skillCacheRoot),
@@ -2140,6 +2148,8 @@ func (d *Daemon) run(ctx context.Context, healthLn net.Listener) error {
 		"heartbeat_interval", d.cfg.HeartbeatInterval,
 		"agent_timeout", d.cfg.AgentTimeout,
 		"idle_watchdog", d.cfg.AgentIdleWatchdog,
+		"silence_warn_after", d.cfg.AgentSilenceWarnAfter,
+		"silence_alert_after", d.cfg.AgentSilenceAlertAfter,
 		// Logged explicitly because it is normally derived from idle_watchdog:
 		// without it an operator cannot read the tool budget actually in effect.
 		"tool_watchdog", d.cfg.AgentToolWatchdog,
@@ -2203,6 +2213,7 @@ func (d *Daemon) run(ctx context.Context, healthLn net.Listener) error {
 
 	taskWakeups := make(chan taskWakeup, 256)
 	go d.taskWakeupLoop(ctx, taskWakeups)
+	go d.hostSampler.Run(ctx, hostSampleWarmup, protocol.HostSampleInterval, d.logger)
 	go d.heartbeatLoop(ctx)
 	go d.gcLoop(ctx)
 	go d.autoUpdateLoop(ctx)
@@ -4535,7 +4546,7 @@ func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) bool {
 		return false
 	}
 	d.logger.Debug("heartbeat: HTTP tick", "runtime_id", rid)
-	resp, err := d.client.SendHeartbeat(ctx, rid, int(d.activeTasks.Load()))
+	resp, err := d.client.SendHeartbeat(ctx, d.heartbeatRequest(rid))
 	if err != nil {
 		if ctx.Err() == nil {
 			if isRuntimeNotFoundError(err) {
@@ -4681,7 +4692,7 @@ func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
 		return
 	}
 	hbCtx, cancel := context.WithTimeout(ctx, pendingWorkHeartbeatTimeout)
-	resp, err := d.client.SendHeartbeat(hbCtx, runtimeID, int(d.activeTasks.Load()))
+	resp, err := d.client.SendHeartbeat(hbCtx, d.heartbeatRequest(runtimeID))
 	cancel()
 	if err != nil {
 		if isRuntimeNotFoundError(err) {
@@ -7604,6 +7615,25 @@ type taskModelSelection struct {
 	ThinkingLevelWarning string
 }
 
+// launchContextArgs lists the context-window args every launch input carries, in
+// argv order: the runtime's launch prefix, the daemon's default args, then the
+// agent's custom args.
+func launchContextArgs(provider string, prefix, defaults, custom []string) []string {
+	return agentpreset.ContextArgsOf(provider, slices.Concat(prefix, defaults, custom))
+}
+
+// reportAppliedSettings tells the server what this launch will use (CHE-2248). It
+// runs only for a claim the server marked as supporting it, and a failure is
+// logged and dropped: the applied columns stay NULL and the task still runs.
+func (d *Daemon) reportAppliedSettings(ctx context.Context, task Task, provider string, applied AppliedSettings, log *slog.Logger) {
+	if !task.AppliedSettingsSupported {
+		return
+	}
+	if err := d.client.ReportAppliedSettings(ctx, task, applied); err != nil {
+		log.Warn("report applied settings failed; continuing", "provider", provider, "error", err)
+	}
+}
+
 // resolveTaskModelSelection settles the model selector and its capability
 // overrides against the runtime's own model catalog, reading that catalog at
 // most once per task — and not at all when nothing needs it.
@@ -8076,10 +8106,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// on the issue, which is the same rule that makes a failing tool call a
 	// tool error rather than a task error.
 	pluginHookConfig, pluginHookServer, pluginHookErr := startTaskPluginHookMCP(
-		ctx, task.ID, task.PluginHookTools,
-		func(callCtx context.Context, taskID, installationID, hookKey string, input json.RawMessage) (json.RawMessage, error) {
+		ctx, task.ID, taskHookTools(task, decisionAskReachable(provider, resolvedVersion, !usesCustomProfileCommand)),
+		taskHookInvoker(task, d.client, func(callCtx context.Context, taskID, installationID, hookKey string, input json.RawMessage) (json.RawMessage, error) {
 			return d.client.InvokeAgentPluginHook(callCtx, task.RemoteMCPDaemonToken, taskID, installationID, hookKey, input)
-		},
+		}),
 		taskLog,
 	)
 	if pluginHookErr != nil {
@@ -8571,13 +8601,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		taskCapabilities = append(taskCapabilities, protocol.DaemonCapabilityPiProcessCleanupV1)
 	}
 	var cursorHookCommand []string
-	supplementSupported := agent.SupportsTaskSupplement(provider, resolvedVersion) && task.IssueID != ""
+	supplementSupported := agent.SupportsTaskSupplement(provider, resolvedVersion) && (task.IssueID != "" || task.ChatSessionID != "")
 	if supplementSupported && provider == "cursor" {
 		cursorHookCommand, supplementSupported = cursorSupplementHookCommand(env)
 	}
 	if supplementSupported {
-		taskCapabilities = append(taskCapabilities,
-			protocol.DaemonCapabilityTaskSupplementV1, protocol.DaemonCapabilityTaskSupplementPREventV1)
+		taskCapabilities = append(taskCapabilities, taskSupplementCapabilities(task)...)
 	}
 	negotiation, err := d.startTaskWithCurrentClaim(prepareCtx, task, taskCapabilities...)
 	if err != nil {
@@ -8895,12 +8924,24 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	selection := resolveTaskModelSelection(ctx, provider, agent.NewCommand(entry.Path, profileFixedArgs),
 		taskModelSelection{Model: model, ThinkingLevel: thinkingLevel, ServiceTier: serviceTier}, taskLog)
 	model, thinkingLevel, serviceTier = selection.Model, selection.ThinkingLevel, selection.ServiceTier
+	d.reportAppliedSettings(ctx, task, provider, AppliedSettings{
+		Model: model, ThinkingLevel: thinkingLevel, ServiceTier: serviceTier,
+		ContextArgs: launchContextArgs(provider, profileFixedArgs, extraArgs, customArgs),
+	}, taskLog)
 
 	var idleWatchdogTimeout time.Duration
 	if provider == "opencode" || provider == "codearts" {
 		idleWatchdogTimeout = d.cfg.OpenCodeIdleWatchdog
 	}
+	stableCwd := d.cfg.stableCwdFor(provider, task.Agent.Name, task.AgentID)
+	if stableCwd != "" {
+		if err := os.MkdirAll(stableCwd, 0o755); err != nil {
+			taskLog.Warn("stable cwd mount point unavailable", "path", stableCwd, "error", err)
+			stableCwd = ""
+		}
+	}
 	execOpts := agent.ExecOptions{
+		StableCwd: stableCwd,
 		// PR events ride the same injection channel, so they need its hooks too.
 		EnableTaskSupplement:       negotiation.Supplement || negotiation.PREvent,
 		CursorHookCommand:          cursorHookCommand,
@@ -8927,17 +8968,18 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// only the daemon knows — hence handing the backend finished text rather
 		// than a flag. Empty when the prompt already carries the notice, so a turn
 		// can never pay for it twice (MUL-5722).
-		ResumeExpected:         task.PriorSessionID != "",
-		ResumeContinuityNotice: backendResumeContinuityNotice(task),
-		ExtraArgs:              extraArgs,
-		CustomArgs:             customArgs,
-		McpConfig:              mcpConfig,
-		ThinkingLevel:          thinkingLevel,
-		ServiceTier:            serviceTier,
-		OpenclawMode:           openclawMode,
-		OpenclawModelOverride:  openclawModelOverride,
-		ClaudeSettingsPath:     env.ClaudeSettingsPath,
-		QwenpawWorkspace:       env.QwenpawWorkspace,
+		ResumeExpected:          task.PriorSessionID != "",
+		ResumeContinuityNotice:  backendResumeContinuityNotice(task),
+		ExtraArgs:               extraArgs,
+		CustomArgs:              customArgs,
+		McpConfig:               mcpConfig,
+		ThinkingLevel:           thinkingLevel,
+		ServiceTier:             serviceTier,
+		OpenclawMode:            openclawMode,
+		OpenclawModelOverride:   openclawModelOverride,
+		ClaudeSettingsPath:      env.ClaudeSettingsPath,
+		DisableProviderWebTools: task.DisableProviderWebTools(),
+		QwenpawWorkspace:        env.QwenpawWorkspace,
 	}
 	// Some providers do not reliably load the per-task runtime config files we
 	// write into the task workdir:
@@ -8964,6 +9006,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if providerNeedsInlineSystemPrompt(provider) {
 		execOpts.SystemPrompt = runtimeBrief
 	}
+	if provider == "codex" {
+		execOpts.ExtraArgs = append(execOpts.ExtraArgs, codexBriefBudget(env.RootDir, env.WorkDir, runtimeBrief, taskLog)...)
+	}
 
 	// A quick-actions refresh task from a server that predates server-side
 	// generation (MUL-5573). This daemon no longer has a suggestion pass to run
@@ -8985,17 +9030,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// branch ownership from this in-memory record instead of trusting request
 	// fields or ambient process environment. Register only for the provider
 	// execution window and always remove the credential afterwards.
-	d.registerActiveRepoCheckoutTask(agentToken, activeRepoCheckoutTask{
-		WorkspaceID:     task.WorkspaceID,
-		TaskID:          task.ID,
-		AgentID:         task.AgentID,
-		AgentName:       task.Agent.Name,
-		WorkDir:         env.WorkDir,
-		IssueIdentifier: task.IssueIdentifier,
-		IntakeRun:       task.IntakeRun,
-		PinnedBranch:    task.PinnedBranch,
-		PinnedRepo:      task.PinnedRepo,
-	})
+	checkoutTask := newActiveRepoCheckoutTask(task, env.WorkDir)
+	checkoutTask.StableDir = stableCwd
+	d.registerActiveRepoCheckoutTask(agentToken, checkoutTask)
 	defer d.clearActiveRepoCheckoutTask(agentToken)
 
 	taskLog.Debug("invoking backend",
@@ -9066,6 +9103,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			runtimeBrief = freshBrief
 			if providerNeedsInlineSystemPrompt(provider) {
 				execOpts.SystemPrompt = runtimeBrief
+			}
+			if provider == "codex" {
+				// The rewritten brief has a new size; the later -c wins.
+				execOpts.ExtraArgs = append(execOpts.ExtraArgs, codexBriefBudget(env.RootDir, env.WorkDir, runtimeBrief, taskLog)...)
 			}
 		}
 		freshPrompt := BuildPrompt(task, provider, promptOptions...)
@@ -9773,6 +9814,34 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		go d.runIdleWatchdog(watchdogCtx, idleWindow, d.cfg.AgentToolWatchdog, &lastActivityAt, watchdogToolCount, &idleWatchdogFired, &idleWatchdogThreshold, agentCancel, session.Messages, session.InterruptBackgroundTools, terminalObserved, taskLog)
 	}
 
+	// Silence tiers run beside the idle watchdog but never stop the run. Markers
+	// post straight to the transcript (the drain batch is private to its
+	// goroutine); a failed marker or alert is logged and dropped.
+	var toolCalls toolCallRegistry
+	if d.cfg.AgentSilenceWarnAfter > 0 || d.cfg.AgentSilenceAlertAfter > 0 {
+		sw := &silenceWatchdog{
+			warn: d.cfg.AgentSilenceWarnAfter, alert: d.cfg.AgentSilenceAlertAfter,
+			last: &lastActivityAt, inFlight: watchdogToolCount, calls: toolCalls.running,
+			now: awakeclock.Now, log: taskLog,
+			mark: func(typ, content, callID, tool string) {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				err := d.client.ReportTaskMessages(ctx, taskID, []TaskMessageData{{
+					Seq: int(msgSeq.Add(1)), Type: typ, Content: content, CallID: callID, Tool: tool, CreatedAt: time.Now(),
+				}})
+				if err != nil {
+					taskLog.Warn("failed to report silence marker", "type", typ, "error", err)
+				}
+			},
+			raise: func(segmentID string, silentFor time.Duration) error {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				return d.client.ReportSilenceAlert(ctx, taskID, segmentID, silentFor)
+			},
+		}
+		go sw.run(watchdogCtx)
+	}
+
 	// drainFinished closes after the drain goroutine has flushed the last
 	// message batch, so the result hand-off below can wait for the transcript
 	// tail to be persisted.
@@ -9948,6 +10017,7 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 					sealPendingLocked()
 					if msg.CallID != "" {
 						callIDToTool[msg.CallID] = msg.Tool
+						toolCalls.start(transcriptCallID(msg.CallID), msg.Tool, awakeclock.Now())
 					}
 					s := msgSeq.Add(1)
 					batch = append(batch, TaskMessageData{
@@ -9987,6 +10057,7 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 					output, outputTruncated := toolOutputPreview(msg.Output)
 					mu.Lock()
 					sealPendingLocked()
+					toolCalls.finish(transcriptCallID(msg.CallID))
 					toolName := msg.Tool
 					if toolName == "" && msg.CallID != "" {
 						toolName = callIDToTool[msg.CallID]

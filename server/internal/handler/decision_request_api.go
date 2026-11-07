@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -30,6 +31,8 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		ParentID        string              `json:"parent_id"`
 		EscalationClass string              `json:"escalation_class"`
 		Action          *decisionActionWire `json:"action"`
+		Kind            string              `json:"kind"`
+		ExpiresIn       string              `json:"expires_in"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8*maxCommentContentBytes)).Decode(&input); err != nil {
 		writeError(writer, http.StatusBadRequest, "invalid decision request")
@@ -46,7 +49,17 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusBadRequest, "a structured ask is required")
 		return
 	}
-	parsed, err := decisiontx.DecodeAsk(input.Ask)
+	kind, expiresInSeconds, ok := handler.actionRequestTerms(writer, input.Kind, input.ExpiresIn, input.Action != nil)
+	if !ok {
+		return
+	}
+	parsed, err := decisiontx.DecodeAskKind(input.Ask, kind)
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, err.Error())
+		return
+	}
+	// The recommended option is shown first (CHE-3628); an ask with two or more options must identify it.
+	parsed, err = parsed.RequireRecommendedFirst()
 	if err != nil {
 		writeError(writer, http.StatusBadRequest, err.Error())
 		return
@@ -108,11 +121,17 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusInternalServerError, "failed to encode ask")
 		return
 	}
-	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, Parsed: &parsed, Slug: workspace.Slug})
+	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, Parsed: &parsed, Slug: workspace.Slug, Kind: kind, ExpiresInSeconds: expiresInSeconds})
 	if err != nil {
 		writeDecisionError(writer, err, "decision request")
 		return
 	}
+	handler.writeDecisionResult(writer, request, issue, result, hints)
+}
+
+// writeDecisionResult answers a replay with 200, or publishes the events of a
+// new request and answers 201.
+func (handler *Handler) writeDecisionResult(writer http.ResponseWriter, request *http.Request, issue db.Issue, result decisionRequestResult, hints []string) {
 	if result.Replayed {
 		action, err := handler.replayedDecisionAction(request.Context(), issue, result.Request)
 		if err != nil {
@@ -157,6 +176,9 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 			"comment": commentToResponse(result.Comment, nil, nil), "issue_title": issue.Title, "issue_status": issue.Status,
 			"decision_intent_targets": []string{uuidToString(result.Request.HumanUserID)},
 		})
+	}
+	if result.ParkedActivity != nil {
+		handler.publishDecisionStatusChange(request.Context(), issue, result.ParkedIssue, result.ParkedActivity, "decision_request")
 	}
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
 	handler.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(result.Request.HumanUserID), uuidToString(result.Message.ChatSessionID), protocol.ChatMessagePayload{
@@ -247,10 +269,25 @@ func (handler *Handler) ListOpenDecisions(writer http.ResponseWriter, request *h
 		writeError(writer, http.StatusInternalServerError, "failed to list open decision requests")
 		return
 	}
-	if requests == nil {
-		requests = []db.ListOpenDecisionRequestsForHumanRow{}
+	writeJSON(writer, http.StatusOK, openDecisionResponses(requests))
+}
+
+// openDecisionResponse sends options as JSON, not as the row's base64 bytes,
+// so the issue-page banner can render the answer buttons.
+type openDecisionResponse struct {
+	db.ListOpenDecisionRequestsForHumanRow
+	Options json.RawMessage `json:"options"`
+}
+
+func openDecisionResponses(rows []db.ListOpenDecisionRequestsForHumanRow) []openDecisionResponse {
+	out := make([]openDecisionResponse, len(rows))
+	for i, row := range rows {
+		out[i] = openDecisionResponse{row, row.Options}
+		if len(out[i].Options) == 0 {
+			out[i].Options = json.RawMessage("[]")
+		}
 	}
-	writeJSON(writer, http.StatusOK, requests)
+	return out
 }
 
 // openAskResponse is the open-asks projection. It deliberately has no field
@@ -303,4 +340,45 @@ func (handler *Handler) ListOpenDecisionAsks(writer http.ResponseWriter, request
 		})
 	}
 	writeJSON(writer, http.StatusOK, asks)
+}
+
+const (
+	defaultActionExpiry = 72 * time.Hour
+	maxActionExpiry     = 168 * time.Hour
+)
+
+// actionRequestTerms checks the request kind and its expiry, and answers 400 for
+// anything the kind does not allow. The returned kind is "decision" or "action";
+// the seconds are 0 for a decision, which keeps its fixed lifetime.
+func (handler *Handler) actionRequestTerms(writer http.ResponseWriter, kind, expiresIn string, hasAction bool) (string, float64, bool) {
+	switch kind {
+	case "", decisiontx.KindDecision:
+		if expiresIn != "" {
+			writeError(writer, http.StatusBadRequest, "expires_in applies to action requests only")
+			return "", 0, false
+		}
+		return decisiontx.KindDecision, 0, true
+	case decisiontx.KindAction:
+	default:
+		writeError(writer, http.StatusBadRequest, "kind must be decision or action")
+		return "", 0, false
+	}
+	if !handler.ActionRequestsEnabled {
+		writeErrorCode(writer, http.StatusBadRequest, "action_requests_unavailable", "action requests are not available yet")
+		return "", 0, false
+	}
+	if hasAction {
+		writeError(writer, http.StatusBadRequest, "an action request cannot carry an action")
+		return "", 0, false
+	}
+	expiry := defaultActionExpiry
+	if expiresIn != "" {
+		parsed, err := time.ParseDuration(expiresIn)
+		if err != nil || parsed <= 0 || parsed > maxActionExpiry {
+			writeError(writer, http.StatusBadRequest, "expires_in must be a duration above 0 and at most 168h")
+			return "", 0, false
+		}
+		expiry = parsed
+	}
+	return decisiontx.KindAction, expiry.Seconds(), true
 }

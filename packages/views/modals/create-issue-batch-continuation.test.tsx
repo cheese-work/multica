@@ -88,6 +88,16 @@ vi.mock("@multica/core/hooks", () => ({
   useWorkspaceId: () => "ws-test",
 }));
 
+// The workflow pill asks who may switch workflows; this suite is not about that.
+vi.mock("../workflows/permissions", () => ({
+  useWorkflowPermissions: () => ({
+    isAdmin: false,
+    canCreateWorkflow: false,
+    canEditWorkflow: false,
+    canManageProject: false,
+  }),
+}));
+
 vi.mock("./use-issue-limit-upgrade-prompt", () => ({
   useIssueLimitUpgradePrompt: () => vi.fn(),
 }));

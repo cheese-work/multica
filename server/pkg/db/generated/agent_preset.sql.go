@@ -11,6 +11,61 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const agentPresetUsage = `-- name: AgentPresetUsage :many
+SELECT t.preset_name::text AS preset_name,
+       COUNT(DISTINCT t.id)::bigint AS tasks,
+       COALESCE(SUM(u.input_tokens), 0)::bigint AS input_tokens,
+       COALESCE(SUM(u.output_tokens), 0)::bigint AS output_tokens,
+       COALESCE(SUM(u.cache_read_tokens), 0)::bigint AS cache_read_tokens,
+       COALESCE(SUM(u.cache_write_tokens), 0)::bigint AS cache_write_tokens,
+       COALESCE(SUM(u.cost_usd_ticks), 0)::bigint AS cost_usd_ticks
+FROM agent_task_queue t
+JOIN task_usage u ON u.task_id = t.id
+WHERE t.agent_id = $1 AND t.preset_name IS NOT NULL
+GROUP BY t.preset_name
+ORDER BY t.preset_name
+`
+
+type AgentPresetUsageRow struct {
+	PresetName       string `json:"preset_name"`
+	Tasks            int64  `json:"tasks"`
+	InputTokens      int64  `json:"input_tokens"`
+	OutputTokens     int64  `json:"output_tokens"`
+	CacheReadTokens  int64  `json:"cache_read_tokens"`
+	CacheWriteTokens int64  `json:"cache_write_tokens"`
+	CostUsdTicks     int64  `json:"cost_usd_ticks"`
+}
+
+// Tokens and cost of one agent's runs grouped by the preset each run was
+// claimed under. A run with several (provider, model) usage rows counts once.
+func (q *Queries) AgentPresetUsage(ctx context.Context, agentID pgtype.UUID) ([]AgentPresetUsageRow, error) {
+	rows, err := q.db.Query(ctx, agentPresetUsage, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentPresetUsageRow{}
+	for rows.Next() {
+		var i AgentPresetUsageRow
+		if err := rows.Scan(
+			&i.PresetName,
+			&i.Tasks,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.CacheReadTokens,
+			&i.CacheWriteTokens,
+			&i.CostUsdTicks,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const clearAgentPresetDefault = `-- name: ClearAgentPresetDefault :exec
 UPDATE agent_preset SET is_default = false, updated_at = now()
 WHERE workspace_id = $1 AND agent_id = $2 AND is_default
@@ -186,7 +241,7 @@ func (q *Queries) ListAgentPresets(ctx context.Context, arg ListAgentPresetsPara
 const setChatSessionPresetName = `-- name: SetChatSessionPresetName :one
 UPDATE chat_session SET preset_name = $2
 WHERE id = $1
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id, title_manually_set, compaction_epoch, preset_name, decision_topic_id
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id, title_manually_set, compaction_epoch, preset_name, decision_topic_id, chain_root_session_id, taint_ids, taint_verified
 `
 
 type SetChatSessionPresetNameParams struct {
@@ -227,6 +282,9 @@ func (q *Queries) SetChatSessionPresetName(ctx context.Context, arg SetChatSessi
 		&i.CompactionEpoch,
 		&i.PresetName,
 		&i.DecisionTopicID,
+		&i.ChainRootSessionID,
+		&i.TaintIds,
+		&i.TaintVerified,
 	)
 	return i, err
 }

@@ -19,6 +19,7 @@ import { useWorkspacePaths } from "@multica/core/paths";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useLocale, useT, useTimeAgo } from "../../i18n";
 import { ProjectIcon } from "../../projects/components/project-icon";
+import { WorkflowPill } from "./workflow-pill";
 import { PriorityIcon } from "./priority-icon";
 import { PriorityPicker, AssigneePicker, StartDatePicker, DueDatePicker } from "./pickers";
 import { useViewStore } from "@multica/core/issues/stores/view-store-context";
@@ -114,6 +115,7 @@ export const BoardCardContent = memo(function BoardCardContent({
     storeProperties.project && cardGrouping !== "project" && project;
   const showChildProgress = storeProperties.childProgress && childProgress;
   const showLabels = storeProperties.labels && labels.length > 0;
+  const showWorkflow = !!issue.workflow_id;
   // Keeps the chip row from rendering an empty flex container when the status
   // chip is the only thing in it and it decides to render nothing.
   const showCustomStatus = useIsCustomStatus(issue.status);
@@ -227,7 +229,7 @@ export const BoardCardContent = memo(function BoardCardContent({
       {/* Chip row: status + project + labels + custom property values.
           The status chip renders only for a CUSTOM status — the column header
           already names the category. (MUL-6243) */}
-      {(showCustomStatus || showProject || showLabels || cardCustomProperties.length > 0) && (
+      {(showCustomStatus || showProject || showWorkflow || showLabels || cardCustomProperties.length > 0) && (
         <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
           <CustomStatusChip status={issue.status} />
           {showProject && (
@@ -236,6 +238,7 @@ export const BoardCardContent = memo(function BoardCardContent({
               <span className="truncate">{project!.title}</span>
             </span>
           )}
+          <WorkflowPill workflowId={issue.workflow_id} />
           {showLabels && labels.slice(0, 2).map((label) => (
             <LabelChip key={label.id} label={label} />
           ))}

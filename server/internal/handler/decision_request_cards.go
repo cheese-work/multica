@@ -17,16 +17,19 @@ type DecisionRequestCard struct {
 	ID              string  `json:"id"`
 	IssueID         string  `json:"issue_id"`
 	IssueIdentifier string  `json:"issue_identifier"`
+	IssueTitle      string  `json:"issue_title,omitempty"`
 	SourceCommentID *string `json:"source_comment_id,omitempty"`
 	Ask             string  `json:"ask"`
 	// AskingAgentName is the asking agent's current name; empty when the agent is gone.
 	AskingAgentName string `json:"asking_agent_name,omitempty"`
 	// Options are the answer buttons; empty for a card with no structured options.
-	Options     []decisiontx.AskOption `json:"options"`
-	State       string                 `json:"state"`
-	CreatedAt   string                 `json:"created_at"`
-	WithdrawnAt *string                `json:"withdrawn_at,omitempty"`
-	Reason      string                 `json:"reason,omitempty"`
+	Options []decisiontx.AskOption `json:"options"`
+	// RecommendedOptionIndex is the 0-based option the ask's recommendation names; absent when none matches.
+	RecommendedOptionIndex *int    `json:"recommended_option_index,omitempty"`
+	State                  string  `json:"state"`
+	CreatedAt              string  `json:"created_at"`
+	WithdrawnAt            *string `json:"withdrawn_at,omitempty"`
+	Reason                 string  `json:"reason,omitempty"`
 	// RecordCommentID is the issue comment that recorded the answer, set only while the request is answered.
 	RecordCommentID *string `json:"record_comment_id,omitempty"`
 	// Answer is the latest answer to the request, kept after a disclaim so the card can say so.
@@ -92,12 +95,16 @@ func (handler *Handler) decisionRequestsForMessages(ctx context.Context, workspa
 	for _, row := range rows {
 		card := DecisionRequestCard{
 			ID: uuidToString(row.RequestID), IssueID: uuidToString(row.IssueID),
-			IssueIdentifier: fmt.Sprintf("%s-%d", row.IssuePrefix, row.IssueNumber),
-			Ask:             row.Ask, AskingAgentName: row.AskingAgentName, State: row.Status, CreatedAt: timestampToString(row.CreatedAt),
+			IssueIdentifier: fmt.Sprintf("%s-%d", row.IssuePrefix, row.IssueNumber), IssueTitle: row.IssueTitle,
+			Ask: row.Ask, AskingAgentName: row.AskingAgentName, State: row.Status, CreatedAt: timestampToString(row.CreatedAt),
 			Answer: decisionRequestAnswerFromRow(row),
 		}
-		if err := json.Unmarshal(row.Options, &card.Options); err != nil {
-			slog.WarnContext(ctx, "decision card options unreadable", "request_id", card.ID, "error", err)
+		// Buttons need the structured ask; an older request stays text-only.
+		if row.HasAskJson {
+			if err := json.Unmarshal(row.Options, &card.Options); err != nil {
+				slog.WarnContext(ctx, "decision card options unreadable", "request_id", card.ID, "error", err)
+			}
+			card.RecommendedOptionIndex = recommendedOptionIndex(card.Options, row.Recommendation)
 		}
 		if row.SourceCommentID.Valid {
 			sourceID := uuidToString(row.SourceCommentID)
@@ -126,4 +133,29 @@ func (handler *Handler) decisionRequestsForMessages(ctx context.Context, workspa
 		}
 	}
 	return cards
+}
+
+// recommendedOptionIndex is the one option whose label is the whole
+// recommendation, trimmed and case-folded. The text is free-form, so anything
+// else (a reason, a negation, two labels, duplicate labels) marks nothing: a
+// wrong mark would steer the click.
+func recommendedOptionIndex(options []decisiontx.AskOption, recommendation string) *int {
+	want := strings.ToLower(strings.TrimSpace(recommendation))
+	if want == "" {
+		return nil
+	}
+	match := -1
+	for index, option := range options {
+		if strings.ToLower(strings.TrimSpace(option.Label)) != want {
+			continue
+		}
+		if match >= 0 {
+			return nil
+		}
+		match = index
+	}
+	if match < 0 {
+		return nil
+	}
+	return &match
 }

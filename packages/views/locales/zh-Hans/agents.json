@@ -168,6 +168,18 @@
     "section_details_hint": "只读的所有权和生命周期信息。",
     "section_skills": "Skills",
     "section_integrations": "集成",
+    "section_presets": "预设",
+    "preset_default": "默认",
+    "preset_stale": "已失效",
+    "preset_stale_reason": {
+      "unknown_preset": "已不存在",
+      "ambiguous": "名称匹配多个预设",
+      "context_args": "不支持上下文参数",
+      "thinking_level": "不支持思考级别",
+      "service_tier": "不支持服务层级",
+      "model": "模型不可用",
+      "lab_lock": "已锁定到其他实验室"
+    },
     "prop_runtime": "运行时",
     "prop_model": "模型",
     "prop_thinking": "思考",
@@ -923,6 +935,12 @@
     "details_created": "创建",
     "details_started": "开始",
     "details_completed": "完成",
+    "details_preset": "预设",
+    "details_preset_skipped": "已跳过",
+    "details_preset_claimed": "已声明",
+    "details_preset_applied": "已应用",
+    "details_preset_not_reported": "未上报",
+    "details_preset_agent_defaults": "智能体默认值",
     "copy_workdir": "复制工作目录",
     "copy_project_directory": "复制项目目录",
     "close": "关闭",
@@ -950,6 +968,12 @@
     "kind_tool": "工具",
     "kind_thinking": "思考",
     "kind_error": "错误",
+    "silence_warn": "已 {{minutes}} 分钟无输出",
+    "silence_warn_unknown": "已有一段时间无输出",
+    "tool_stalled": "已运行超过 {{minutes}} 分钟",
+    "tool_stalled_unknown": "运行时间已超过限制",
+    "tool_stalled_ended": "运行超过 {{minutes}} 分钟且无结果",
+    "tool_stalled_ended_unknown": "运行超过限制且无结果",
     "group_calls_other": "{{count}} 次调用",
     "step_running": "进行中",
     "step_duration_unknown": "无法确定准确耗时。",
@@ -1035,5 +1059,11 @@
   "actions": {
     "selected_other": "已选 {{count}} 项",
     "clear_selection": "清除选择"
+  },
+  "auto_compact": {
+    "title": "自动压缩",
+    "hint": "留空则使用工作区的值。",
+    "inherit_placeholder": "工作区默认值",
+    "save_failed": "无法保存自动压缩设置。"
   }
 }

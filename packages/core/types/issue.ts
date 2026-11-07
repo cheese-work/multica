@@ -220,6 +220,11 @@ export interface Issue {
   // + local formatting, which shifts the day by the viewer's offset.
   start_date: string | null;
   due_date: string | null;
+  /** Earliest inherited due date (own, parent or prerequisite); absent when none or closed. */
+  effective_due?: string;
+  /** `own`, `parent:<key>` or `prereq_of:<key>`; present with `effective_due`. */
+  due_source?: string;
+  diagnostics?: { type: string; members?: string[] }[];
   metadata: IssueMetadata;
   // Custom property values keyed by property definition id. Always present
   // in responses (empty object when unset), mirroring `metadata`.
@@ -238,4 +243,15 @@ export interface Issue {
   last_activity_at?: string | null;
   /** Present only on issue detail responses for issues created from a comment. */
   source_context?: IssueSourceContext;
+}
+
+/** Where a comment lives and enough text to recognise it — backs comment-ID chips. */
+export interface CommentPreview {
+  comment_id: string;
+  issue_id: string;
+  issue_identifier: string;
+  author_type: string;
+  author_id: string;
+  author_name: string;
+  preview: string;
 }

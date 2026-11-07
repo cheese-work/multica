@@ -143,6 +143,28 @@ func TestNormalizeHandoffDropsStaleHandlerData(t *testing.T) {
 	}
 }
 
+func TestHandoffPreset(t *testing.T) {
+	def := devDefinition()
+	step := func(h Handler) Step { return NormalizeHandoff(Step{StatusKey: "implement", Handler: h}) }
+
+	if got := step(Handler{Type: HandlerAgent, ID: testAgentID, Preset: " deep "}).Handler.Preset; got != "deep" {
+		t.Fatalf("agent preset = %q, want it trimmed", got)
+	}
+	if got := step(Handler{Type: HandlerProjectLead, Preset: "deep"}).Handler.Preset; got != "" {
+		t.Fatalf("project-lead preset = %q, want it dropped", got)
+	}
+	for _, name := range []string{"deep", "base", ""} {
+		if err := ValidateHandoff(step(Handler{Type: HandlerAgent, ID: testAgentID, Preset: name}), def); err != nil {
+			t.Fatalf("preset %q: %v", name, err)
+		}
+	}
+	for _, name := range []string{"reset", "Bad Name", "-x"} {
+		if err := ValidateHandoff(step(Handler{Type: HandlerAgent, ID: testAgentID, Preset: name}), def); err == nil {
+			t.Fatalf("preset %q should be refused", name)
+		}
+	}
+}
+
 func TestEncodeStepsRoundTripsHandoffs(t *testing.T) {
 	def := devDefinition()
 	raw, err := EncodeSteps(def.Steps)
@@ -155,6 +177,21 @@ func TestEncodeStepsRoundTripsHandoffs(t *testing.T) {
 	got, err := DecodeSteps(raw)
 	if err != nil || !reflect.DeepEqual(got, def.Steps) {
 		t.Fatalf("DecodeSteps = %+v, %v; want %+v", got, err, def.Steps)
+	}
+}
+
+func TestEncodeStepsKeepsTheHumanInChargeHandler(t *testing.T) {
+	steps := []Step{{StatusKey: "need_decision", Handler: Handler{Type: HandlerHumanInCharge}}}
+	if steps[0].HandsOff() {
+		t.Fatal("human_in_charge must not hand the issue off by itself")
+	}
+	raw, err := EncodeSteps(steps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := DecodeSteps(raw)
+	if err != nil || !reflect.DeepEqual(got, steps) {
+		t.Fatalf("DecodeSteps = %+v, %v; want %+v", got, err, steps)
 	}
 }
 
@@ -497,5 +534,39 @@ func TestCheckAgentMoveRefusesEveryMoveOffAFactOnlyStep(t *testing.T) {
 	}
 	if err := CheckAgentMove(def, "in_review", "cancelled"); err != nil {
 		t.Errorf("in_review → cancelled refused: %v", err)
+	}
+}
+
+func TestResolveHandlerRoutingAgentReplacesAgentHandlerOnly(t *testing.T) {
+	var routed pgtype.UUID
+	if err := routed.Scan("11111111-1111-4111-8111-111111111111"); err != nil {
+		t.Fatal(err)
+	}
+	humans := Humans{RoutingAgent: routed}
+	agent := Step{StatusKey: "todo", Handler: Handler{Type: HandlerAgent, ID: testAgentID}}
+	if typ, id, ok := ResolveHandler(agent, db.Project{}, "", pgtype.UUID{}, humans); !ok || typ != HandlerAgent || id != routed {
+		t.Fatalf("agent handler = %s %v %v, want the routing agent", typ, id, ok)
+	}
+	member := Step{StatusKey: "todo", Handler: Handler{Type: HandlerMember, ID: testAgentID}}
+	if _, id, _ := ResolveHandler(member, db.Project{}, "", pgtype.UUID{}, humans); id == routed {
+		t.Fatal("routing agent replaced a member handler")
+	}
+}
+
+func TestStepLintFieldsRoundTrip(t *testing.T) {
+	in := []Step{{
+		StatusKey: "in_progress", Handler: Handler{Type: HandlerNone}, DynamicAssignment: true,
+		LintWaive: []LintWaiver{{Rule: "WF002", Reason: "assigned at run time"}},
+	}}
+	raw, err := EncodeSteps(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := DecodeSteps(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(in, out) {
+		t.Fatalf("round trip lost lint fields: want %+v, got %+v", in, out)
 	}
 }

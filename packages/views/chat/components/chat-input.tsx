@@ -5,14 +5,11 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { TriangleAlert } from "@multica/ui/icons";
 import { toast } from "sonner";
 import { cn } from "@multica/ui/lib/utils";
-import {
-  ContentEditor,
-  type ContentEditorRef,
-  useFileDropZone,
-  FileDropOverlay,
-  useUploadGate,
-  useComposerSubmit,
-} from "../../editor";
+import type { ContentEditorRef } from "../../editor/content-editor";
+import { useFileDropZone } from "../../editor/use-file-drop-zone";
+import { FileDropOverlay } from "../../editor/file-drop-overlay";
+import { useUploadGate } from "../../editor/use-upload-gate";
+import { useComposerSubmit } from "../../editor/use-composer-submit";
 import { PASTE_AS_FILE_THRESHOLD } from "../../editor/paste-as-file";
 import { parseForkCommand } from "../../editor/extensions/parse-fork-command";
 import { parseDmClientCommandAttempt } from "../../editor/extensions/parse-dm-client-command";
@@ -22,8 +19,11 @@ import {
   type UploadDraftBinding,
 } from "../../editor/use-coordinated-uploads";
 import { SubmitButton } from "@multica/ui/components/common/submit-button";
+import { DeferredContentEditor as ContentEditor } from "./deferred-content-editor";
 import { ChatAddMenu } from "./chat-add-menu";
 import { CHAT_COLUMN, CHAT_GUTTER } from "./chat-column";
+import { useVisualViewportKeyboard } from "./use-visual-viewport-keyboard";
+import { keyboardComposerMaxHeight } from "./keyboard-composer-cap";
 import { useChatStore, DRAFT_NEW_SESSION } from "@multica/core/chat";
 import { attachmentToDraftUpload, type DraftUpload } from "@multica/core/drafts";
 import { createLogger } from "@multica/core/logger";
@@ -83,6 +83,8 @@ interface ChatInputProps {
   onArchive?: () => void | boolean | Promise<void | boolean>;
   onPin?: () => void | boolean | Promise<void | boolean>;
   onUnarchive?: () => void | boolean | Promise<void | boolean>;
+  /** The open, active DM's agent: offers `/preset <name>` completions for its presets. */
+  presetAgentId?: string;
   /** The open DM is archived: a send asks to unarchive first. Turns `/compact` off. */
   sessionArchived?: boolean;
   /** Identifies the composer for UI checks; the floating window overrides it. */
@@ -214,6 +216,7 @@ export function ChatInput({
   onArchive,
   onPin,
   onUnarchive,
+  presetAgentId,
   sessionArchived,
   testId = "chat-composer",
   restoreDraftRequest,
@@ -249,6 +252,7 @@ export function ChatInput({
   const sendShortcut = useShortcut("send");
   const editorRef = useRef<ContentEditorRef>(null);
   const composerRef = useRef<HTMLDivElement>(null);
+  const keyboard = useVisualViewportKeyboard();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   // Two keys with deliberately different concerns:
   //
@@ -458,6 +462,7 @@ export function ChatInput({
   // started) so the user can type immediately. The editor's `focus()` latches
   // through to `onCreate` when it isn't mounted yet, so this works even on the
   // first render of a freshly-mounted compose box. `0` is inert on purpose.
+  // The composer loads its editor on demand; this call is what summons it.
   useEffect(() => {
     if (!focusRequest) return;
     editorRef.current?.focus();
@@ -812,6 +817,12 @@ export function ChatInput({
     <div
       ref={composerRef}
       data-testid={testId}
+      // Soft keyboards (iOS) leave the layout viewport full-height, so the
+      // percentage cap below resolves against a surface mostly hidden behind
+      // the keyboard (CHE-3534). While it is up, cap by the visible strip
+      // instead so the message list keeps the rest. Always written, so the
+      // cap clears when the keyboard closes.
+      style={{ maxHeight: keyboardComposerMaxHeight(keyboard?.viewportHeight) }}
       className={cn(
         // The composer grows with the draft up to half the surface it sits on
         // — a fixed 160px cap made long drafts unreadable in a five-line
@@ -906,6 +917,8 @@ export function ChatInput({
             // intentionally tracks neither the session nor the agent.
             key={editorKey}
             ref={editorRef}
+            // Queued file/quote calls made before the editor chunk loads are bound to this draft.
+            draftKey={draftKey}
             value={inputDraft}
             placeholder={placeholder}
             onUpdate={(md) => {
@@ -931,6 +944,7 @@ export function ChatInput({
             enableArchiveCommand={!!onArchive}
             enablePinCommand={!!onPin}
             enableUnarchiveCommand={!!onUnarchive}
+            presetAgentId={presetAgentId}
             enableCompactCommand={!sessionArchived}
             // The bubble menu carries the only affordance that can strip
             // formatting — "Normal text" (setParagraph) plus the mark/list

@@ -1,8 +1,9 @@
 -- name: ListDecisionRequestCards :many
 SELECT request.id AS request_id, message.id AS message_id, request.issue_id,
-    COALESCE(workspace.issue_prefix, 'MUL')::text AS issue_prefix, issue.number AS issue_number,
+    COALESCE(workspace.issue_prefix, 'MUL')::text AS issue_prefix, issue.number AS issue_number, issue.title AS issue_title,
     source.id AS source_comment_id, request.ask, request.status, request.created_at,
     request.withdraw_reason, request.cancel_reason, request.options,
+    (request.ask_json IS NOT NULL)::boolean AS has_ask_json, COALESCE(request.ask_json->>'recommendation', '')::text AS recommendation,
     COALESCE(request.withdrawn_at, request.cancel_notice_posted_at) AS withdrawn_at,
     record.issue_comment_id AS record_comment_id,
     last_answer.id AS answer_id, last_answer.created_at AS answer_created_at, last_answer.woken_at AS answer_woken_at,
@@ -47,7 +48,8 @@ SELECT request.id, request.issue_id,
     (COALESCE(NULLIF(workspace.issue_prefix, ''), 'MUL') || '-' || issue.number::text)::text AS issue_identifier,
     request.asking_agent_id, COALESCE(agent.name, '')::text AS asking_agent_name,
     request.ask, request.escalation_class, request.created_at,
-    request.chat_session_id, request.ping_message_id AS message_id
+    request.chat_session_id, request.ping_message_id AS message_id,
+    request.options, request.source_comment_id
 FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 JOIN workspace ON workspace.id = request.workspace_id

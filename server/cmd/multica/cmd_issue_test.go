@@ -4393,6 +4393,8 @@ func newIssueStatusTestCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "status"}
 	cmd.Flags().Bool("no-start", false, "")
 	cmd.Flags().String("duplicate-of", "", "")
+	cmd.Flags().String("override-reason", "", "")
+	cmd.Flags().StringArray("finding", nil, "")
 	cmd.Flags().String("output", "table", "")
 	return cmd
 }
@@ -4795,6 +4797,68 @@ func TestRunIssueStatusDuplicateOfSendsMark(t *testing.T) {
 	}
 }
 
+func TestRunIssueStatusSendsOverrideReason(t *testing.T) {
+	var body map[string]any
+	newDuplicateMarkTestServer(t, true, &body)
+
+	cmd := newIssueStatusTestCmd()
+	_ = cmd.Flags().Set("override-reason", "  reviewed by hand ")
+	if err := runIssueStatus(cmd, []string{"MUL-2", "in_review"}); err != nil {
+		t.Fatalf("runIssueStatus: %v", err)
+	}
+	want := map[string]any{"status": "in_review", "entry_gate_override_reason": "reviewed by hand"}
+	if !reflect.DeepEqual(body, want) {
+		t.Fatalf("body = %#v, want %#v", body, want)
+	}
+}
+
+func TestRunIssueStatusSendsReviewFindings(t *testing.T) {
+	var body map[string]any
+	newDuplicateMarkTestServer(t, true, &body)
+
+	cmd := newIssueStatusTestCmd()
+	_ = cmd.Flags().Set("finding", "P1: leaks the token")
+	_ = cmd.Flags().Set("finding", "P3:naming")
+	if err := runIssueStatus(cmd, []string{"MUL-2", "in_progress"}); err != nil {
+		t.Fatalf("runIssueStatus: %v", err)
+	}
+	want := map[string]any{"status": "in_progress", "review_findings": []any{
+		map[string]any{"severity": "P1", "summary": "leaks the token"},
+		map[string]any{"severity": "P3", "summary": "naming"},
+	}}
+	if !reflect.DeepEqual(body, want) {
+		t.Fatalf("body = %#v, want %#v", body, want)
+	}
+}
+
+func TestRunIssueStatusRejectsFindingWithoutSeverity(t *testing.T) {
+	cmd := newIssueStatusTestCmd()
+	_ = cmd.Flags().Set("finding", "no severity here")
+	if err := runIssueStatus(cmd, []string{"MUL-2", "in_progress"}); err == nil {
+		t.Fatal("want an error for a finding without <P0-P3>:<summary>")
+	}
+}
+
+func TestRunIssueStatusRefusedByEntryGateShowsFactAndFix(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			json.NewEncoder(w).Encode(map[string]any{"id": "issue-2", "identifier": "MUL-2", "status": "todo"})
+			return
+		}
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]any{"code": "entry_gate_failed", "error": "status in_review is not open to this write: pr.ready (a PR is draft; fix: mark the PR ready for review, or open one)"})
+	}))
+	t.Cleanup(srv.Close)
+	setCLITestServerEnv(t, srv.URL)
+	t.Setenv("MULTICA_TASK_CONFIG_ROOT", t.TempDir())
+	t.Setenv("MULTICA_TOKEN", "mat_test-token")
+
+	err := runIssueStatus(newIssueStatusTestCmd(), []string{"MUL-2", "in_review"})
+	if err == nil || !strings.Contains(err.Error(), "a PR is draft") || !strings.Contains(err.Error(), "fix: mark the PR ready") {
+		t.Fatalf("error = %v, want the failed gate's fact and fix", err)
+	}
+}
+
 func TestRunIssueUpdateDuplicateOfSendsMark(t *testing.T) {
 	var body map[string]any
 	newDuplicateMarkTestServer(t, true, &body)
@@ -5050,6 +5114,29 @@ func TestRunIssueListSendsSortAndDirection(t *testing.T) {
 	}
 }
 
+func TestRunIssueListSendsEffectiveDueSort(t *testing.T) {
+	var gotQuery url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		json.NewEncoder(w).Encode(map[string]any{"issues": []any{}, "total": 0})
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	cmd := newIssueListTestCmd()
+	_ = cmd.Flags().Set("output", "json")
+	_ = cmd.Flags().Set("sort", "effective_due")
+	if err := runIssueList(cmd, nil); err != nil {
+		t.Fatalf("runIssueList: %v", err)
+	}
+	if got := gotQuery.Get("sort"); got != "effective_due" {
+		t.Fatalf("sort query = %q, want effective_due", got)
+	}
+}
+
 func TestRunIssueListRejectsInvalidSortAndDirection(t *testing.T) {
 	t.Setenv("MULTICA_SERVER_URL", "http://127.0.0.1:0")
 	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
@@ -5087,6 +5174,7 @@ func TestRunIssueListRejectsDirectionWithoutDirectionalSort(t *testing.T) {
 	}{
 		{"direction without sort", ""},
 		{"direction with explicit position sort", "position"},
+		{"direction with effective_due sort", "effective_due"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -5131,6 +5219,7 @@ func sampleIssueResponse() handler.IssueResponse {
 	lastActivity := "2024-01-01T00:00:00Z"
 	labels := []handler.LabelResponse{}
 
+	effectiveDue := "2024-02-01"
 	return handler.IssueResponse{
 		ID:             "iss-1",
 		WorkspaceID:    "ws-1",
@@ -5159,6 +5248,10 @@ func sampleIssueResponse() handler.IssueResponse {
 		Metadata:       map[string]any{},
 		Properties:     map[string]any{},
 		Labels:         &labels,
+		// Present on `--sort effective_due` rows (CHE-3463).
+		EffectiveDue: &effectiveDue,
+		DueSource:    "parent:CHE-1",
+		Diagnostics:  []handler.DueDiagnostic{{Type: "depth_limit"}},
 	}
 }
 

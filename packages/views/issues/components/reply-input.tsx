@@ -21,7 +21,9 @@ import { useRecipientActions } from "../hooks/use-recipient-actions";
 import { SteerAttachmentNotice } from "./steer-attachment-notice";
 import { useStopRunsBeforeSend } from "./use-stop-runs-before-send";
 import { useCommentUploads } from "./use-comment-uploads";
+import { useClearOnDraftConsumed } from "./use-clear-on-draft-consumed";
 import { useQuickActionMenu } from "../hooks/use-quick-action-menu";
+import type { InvalidMentionRejection } from "../invalid-agent-mentions-copy";
 
 // Types
 
@@ -33,7 +35,7 @@ interface ReplyInputProps {
   avatarId: string;
   /** Resolves true on success, false on failure — the reply box keeps its text
    *  (locked + spinning) until then, clearing only on success. */
-  onSubmit: (content: string, attachmentIds?: string[], suppressAgentIds?: string[], steerTaskIds?: string[]) => Promise<string | boolean>;
+  onSubmit: (content: string, attachmentIds?: string[], suppressAgentIds?: string[], steerTaskIds?: string[]) => Promise<string | boolean | InvalidMentionRejection>;
   /** Called after the server accepts the reply and the composer is cleared. */
   onAccepted?: (commentId: string) => void;
   size?: "sm" | "default";
@@ -127,12 +129,19 @@ function ReplyInput({
     onDrop: lazy.uploadOrQueue,
   });
 
+  useClearOnDraftConsumed(draftKey, editorRef, () => {
+    setContent("");
+    setIsEmpty(true);
+  });
+
   // Flush on tab close / mobile background — same rationale as CommentInput.
   useEffect(() => {
     if (!draftKey) return;
     const flush = () => {
-      const md = editorRef.current?.getMarkdown();
-      if (md && md.trim().length > 0) setDraft(draftKey, md);
+      // Trimmed like the editor's onUpdate: a raw value with trailing blank
+      // lines would differ from the send snapshot and defeat the stale-submit guard.
+      const md = editorRef.current?.getMarkdown()?.trim();
+      if (md) setDraft(draftKey, md);
     };
     const onVis = () => { if (document.visibilityState === "hidden") flush(); };
     document.addEventListener("visibilitychange", onVis);
@@ -197,9 +206,14 @@ function ReplyInput({
         activeIds.length > 0 ? activeIds : undefined,
         suppressAgentIds.length > 0 ? suppressAgentIds : undefined,
         steerTaskIds.length > 0 ? steerTaskIds : undefined,
-      ).then((commentId) => {
-        acceptedCommentIdRef.current = typeof commentId === "string" ? commentId : null;
-        return !!commentId;
+      ).then((result) => {
+        // Server refused a mention: keep the draft and flag the refused chips.
+        if (typeof result === "object") {
+          editorRef.current?.flagMentions(result.invalidMentionIds);
+          return false;
+        }
+        acceptedCommentIdRef.current = typeof result === "string" ? result : null;
+        return !!result;
       });
     },
     onAccepted: () => {

@@ -70,18 +70,7 @@ function liveLines(body) {
   });
 }
 
-function truncateGraphemes(text, limit) {
-  let used = 0;
-  let out = "";
-  for (const { segment } of new Intl.Segmenter("en", { granularity: "grapheme" }).segment(text)) {
-    used += [...segment].length;
-    if (used > limit) break;
-    out += segment;
-  }
-  return out;
-}
-
-const result = (status, text, override, warnings) => ({ status, text, override, warnings });
+const result = (status, text, override, warnings, overLimit = false) => ({ status, text, override, warnings, overLimit });
 
 export function parseChangelogLine(body) {
   const matches = liveLines(typeof body === "string" ? body : "")
@@ -115,12 +104,11 @@ export function parseChangelogLine(body) {
     return result("parse-error", null, null, warnings);
   }
 
-  let text = cleaned;
-  if ([...text].length > MAX_CODE_POINTS) {
-    text = truncateGraphemes(text, MAX_CODE_POINTS).trimEnd();
-    warnings.push(`Truncated to ${MAX_CODE_POINTS} characters.`);
-  }
-  return result("text", text, override ?? null, warnings);
+  // Never cut: the PR check fails an over-limit line so its author shortens it, and
+  // entries merged before that rule keep their complete sentence.
+  const overLimit = [...cleaned].length > MAX_CODE_POINTS;
+  if (overLimit) warnings.push(`The Changelog line is over ${MAX_CODE_POINTS} characters: shorten it to one short sentence.`);
+  return result("text", cleaned, override ?? null, warnings, overLimit);
 }
 
 const titleType = (title) => /^([a-z]+)(?:\([^)]*\))?!?:/i.exec(title ?? "")?.[1].toLowerCase() ?? null;
@@ -206,12 +194,13 @@ export function evaluatePr(pr, options = {}) {
     section: sectionFor(pr.title, parsed.override),
     text: parsed.text,
     warnings: parsed.warnings,
+    overLimit: parsed.overLimit,
   };
 }
 
 export function formatCheck(evaluation) {
   if (evaluation.kind === "entry") {
-    return { line: `Entry: [${evaluation.section}] "${evaluation.text}"`, failing: false, warnings: evaluation.warnings };
+    return { line: `Entry: [${evaluation.section}] "${evaluation.text}"`, failing: evaluation.overLimit, warnings: evaluation.warnings };
   }
   const missingLine = evaluation.reason === "missing" || evaluation.reason === "parse-error";
   return {
@@ -232,15 +221,52 @@ const startMs = (startDate) => {
 };
 const ictDate = (ms) => new Date(ms + ICT_OFFSET_MS).toISOString().slice(0, 10);
 
-export function generateEntries({ prs, firstParent = null }, options = {}) {
+// Hidden reasons that mean "a user-facing PR may have shipped without a note" (CHE-4015).
+const COUNTED_HIDDEN = new Set(["none", "missing", "parse-error"]);
+
+// One divider per successful C00 deploy whose SHA is in the first-parent history (newest
+// first). A redeploy or rollback of a SHA keeps its earliest success; the qualified build
+// (commits[0]) is the Live deploy. A PR belongs to the oldest deploy that contains it: the
+// deploy nearest to it at or after it in history, else Live.
+function planDeploys(commits, deployments, options) {
+  const index = new Map(commits.map((c, i) => [c.sha, i]));
+  const earliest = new Map();
+  for (const { sha, state, createdAt } of deployments) {
+    const at = Date.parse(createdAt);
+    if (String(state).toUpperCase() !== "SUCCESS" || !index.has(sha) || index.get(sha) === 0 || Number.isNaN(at)) continue;
+    if (!(at >= (earliest.get(sha) ?? Infinity))) earliest.set(sha, at);
+  }
+  const versionOf = options.versionOf ?? ((sha) => sha.slice(0, 7));
+  // Live is the newest build: never dated before a previous deploy that finished later.
+  const liveTime = Math.max(Date.parse(commits[0]?.time ?? ""), ...earliest.values());
+  const deploys = [
+    { sha: commits[0].sha, version: versionOf(commits[0].sha), deployedAt: new Date(Number.isNaN(liveTime) ? (options.now ?? new Date()) : liveTime).toISOString(), hiddenCount: 0, live: true },
+    ...[...earliest].sort((a, b) => index.get(a[0]) - index.get(b[0]))
+      .map(([sha, at]) => ({ sha, version: versionOf(sha), deployedAt: new Date(at).toISOString(), hiddenCount: 0 })),
+  ];
+  const deployFor = (sha) => {
+    const position = index.get(sha);
+    if (position === undefined) return null;
+    return deploys.slice(1).findLast((d) => index.get(d.sha) <= position) ?? deploys[0];
+  };
+  return { deploys, deployFor };
+}
+
+export function generateEntries({ prs, firstParent = null, deployments = null }, options = {}) {
   const start = startMs(options.startDate ?? DEFAULT_START);
   const commits = (firstParent ?? []).map((c) => (typeof c === "string" ? { sha: c, message: "" } : c));
   const onMain = firstParent ? new Set(commits.map((c) => c.sha)) : null;
   const considered = prs.filter((pr) => !onMain || onMain.has(pr.mergeSha));
   const { isReverted, isReverter } = revertedShas(considered, commits);
 
+  const plan = firstParent && deployments && commits.length ? planDeploys(commits, deployments, options) : null;
   const entries = [];
   const hiddenList = [];
+  const noteHidden = (pr, reason) => {
+    hiddenList.push({ number: pr.number, reason });
+    const deploy = plan && COUNTED_HIDDEN.has(reason) ? plan.deployFor(pr.mergeSha) : null;
+    if (deploy) deploy.hiddenCount += 1;
+  };
   const warnings = [];
   for (const pr of considered) {
     const mergedMs = Date.parse(pr.mergedAt);
@@ -250,15 +276,16 @@ export function generateEntries({ prs, firstParent = null }, options = {}) {
     else if (mergedMs < start) hide = "before-start-date";
     else if (isRevertPr(pr) || isReverter(pr.mergeSha) || isReverted(pr.mergeSha)) hide = "reverted";
     if (hide) {
-      hiddenList.push({ number: pr.number, reason: hide });
+      noteHidden(pr, hide);
       continue;
     }
     const evaluation = evaluatePr(pr, options);
     for (const message of evaluation.warnings) warnings.push({ number: pr.number, message });
     if (evaluation.kind === "hidden") {
-      hiddenList.push({ number: pr.number, reason: evaluation.reason });
+      noteHidden(pr, evaluation.reason);
       continue;
     }
+    const deploy = plan?.deployFor(pr.mergeSha);
     entries.push({
       id: `fork-pr-${pr.number}`,
       number: pr.number,
@@ -266,6 +293,7 @@ export function generateEntries({ prs, firstParent = null }, options = {}) {
       date: ictDate(mergedMs),
       section: evaluation.section,
       text: evaluation.text,
+      ...(deploy && { deploy: deploy.live ? "live" : deploy.sha }),
     });
   }
   // Backfill entries (CHE-2196) predate the live rule; a live PR entry of the same number wins.
@@ -277,13 +305,14 @@ export function generateEntries({ prs, firstParent = null }, options = {}) {
   for (const { reason } of hiddenList) byReason[reason] = (byReason[reason] ?? 0) + 1;
   return {
     entries,
+    ...(plan && { deploys: plan.deploys }),
     hidden: hiddenList,
     warnings,
     counts: { shown: entries.length, hidden: hiddenList.length, byReason },
   };
 }
 
-export const serializeEntries = ({ entries }) => `${JSON.stringify({ entries }, null, 2)}\n`;
+export const serializeEntries = ({ entries, deploys }) => `${JSON.stringify({ entries, deploys }, null, 2)}\n`;
 
 // Delete the target, write a temp file, rename on success: a failure leaves no file.
 export function writeAtomically(path, text) {
@@ -323,7 +352,7 @@ function runCheck(eventPath, options, env) {
   console.log(check.line);
   for (const message of check.warnings) console.log(`::warning::${message}`);
   if (check.failing) {
-    console.log('::error::This feat/fix/perf PR has no valid Changelog line. Add "Changelog: <sentence>" or "Changelog: none".');
+    console.log('::error::This PR has no valid Changelog line (feat/fix/perf need one; any line over 140 characters fails). Add "Changelog: <sentence>" or "Changelog: none".');
   }
   if (env.GITHUB_STEP_SUMMARY) {
     const lines = ["### Fork changelog", "", "```text", check.line.replace(/`/g, "'"), "```"];
@@ -335,7 +364,7 @@ function runCheck(eventPath, options, env) {
 
 function runPreview(fixturePath, outPath, options) {
   const fixture = JSON.parse(readFileSync(fixturePath, "utf8"));
-  const generated = generateEntries(fixture, options);
+  const generated = generateEntries(fixture, { ...options, versionOf: (sha) => fixture.versions?.[sha] ?? sha.slice(0, 7) });
   writeAtomically(outPath, serializeEntries(generated));
   const { shown, hidden: count } = generated.counts;
   console.log(`Wrote ${outPath}: ${shown} shown, ${count} hidden.`);

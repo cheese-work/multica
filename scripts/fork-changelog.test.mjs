@@ -88,20 +88,34 @@ test("blank values and <placeholders> count as missing, none is explicit", async
   assert.equal(parseChangelogLine(undefined).status, "missing");
 });
 
-test("text over 140 code points is cut without splitting a grapheme and warns", async () => {
-  const { parseChangelogLine } = await load();
+test("text over 140 code points is kept whole and flagged, never cut", async () => {
+  const { parseChangelogLine, evaluatePr, formatCheck } = await load();
   const family = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}"; // one grapheme, 5 code points
-  const cut = parseChangelogLine(`Changelog: ${"a".repeat(138)}${family}`);
-  assert.equal(cut.text, "a".repeat(138), "the grapheme that crosses 140 is dropped whole");
-  assert.ok(cut.warnings.some((w) => /truncat/i.test(w)), cut.warnings.join("|"));
-  assert.ok([...cut.text].length <= 140);
+  const long = parseChangelogLine(`Changelog: ${"a".repeat(138)}${family}`);
+  assert.equal(long.status, "text");
+  assert.equal(long.text, `${"a".repeat(138)}${family}`, "the sentence is complete");
+  assert.equal(long.overLimit, true);
+  assert.ok(long.warnings.some((w) => /over 140/.test(w)), long.warnings.join("|"));
 
   const exact = parseChangelogLine(`Changelog: ${"b".repeat(140)}`);
   assert.equal(exact.text.length, 140);
-  assert.ok(!exact.warnings.some((w) => /truncat/i.test(w)));
+  assert.notEqual(exact.overLimit, true);
+  assert.equal(parseChangelogLine(`Changelog: ${"\u{1F600}".repeat(150)}`).overLimit, true);
 
-  const emoji = parseChangelogLine(`Changelog: ${"\u{1F600}".repeat(150)}`);
-  assert.equal([...emoji.text].length, 140);
+  // the PR check fails the PR, whatever its type, so the author shortens the line
+  for (const title of ["feat: x", "fix: x", "docs: x"]) {
+    const check = formatCheck(evaluatePr({ number: 1, title, body: `Changelog: ${"c".repeat(141)}`, headRef: "h" }));
+    assert.equal(check.failing, true, title);
+  }
+});
+
+test("a merged PR whose line is over the limit still publishes its complete sentence", async () => {
+  const text = "Agents can now keep named presets and switch them with a command or in a chat, and the list shows which preset each agent uses today, so nobody has to open each agent to check.";
+  assert.ok([...text].length > 140);
+  const result = await run([pr(731, { body: `Changelog: ${text}` })]);
+  assert.equal(result.entries.length, 1);
+  assert.equal(result.entries[0].text, text);
+  assert.equal(result.counts.byReason["too-long"], undefined);
 });
 
 // --- sanitizing ------------------------------------------------------------
@@ -207,7 +221,7 @@ test("feat, fix and perf PRs without a valid line fail the check; none and syncs
 test("warnings reach the check output", async () => {
   const { evaluatePr, formatCheck } = await load();
   const got = formatCheck(evaluatePr(pr(1, { body: `Changelog: ${"x".repeat(200)}` })));
-  assert.ok(got.warnings.some((w) => /truncat/i.test(w)), got.warnings.join("|"));
+  assert.ok(got.warnings.some((w) => /over 140/.test(w)), got.warnings.join("|"));
 });
 
 // --- generator --------------------------------------------------------------
@@ -369,7 +383,7 @@ test("warnings are collected per PR", async () => {
   const result = await run([pr(1, { body: `Changelog: ${"x".repeat(200)}` })]);
   assert.equal(result.warnings.length, 1);
   assert.equal(result.warnings[0].number, 1);
-  assert.match(result.warnings[0].message, /truncat/i);
+  assert.match(result.warnings[0].message, /over 140/);
 });
 
 test("serializeEntries is stable JSON with a trailing newline", async () => {
@@ -422,15 +436,16 @@ function cli(args, env = {}) {
 }
 const tmp = () => mkdtempSync(join(tmpdir(), "fork-changelog-"));
 
-test("preview: --fixture and --out write one known entry with no credentials", () => {
+test("preview: --fixture and --out write the known entries and three deploys with no credentials", () => {
   const out = join(tmp(), "preview.json");
   const fixture = new URL("./fixtures/fork-changelog-preview.json", import.meta.url).pathname;
   const res = cli(["--fixture", fixture, "--out", out]);
   assert.equal(res.status, 0, res.stderr);
   const written = JSON.parse(readFileSync(out, "utf8"));
-  assert.equal(written.entries.length, 1);
-  assert.equal(written.entries[0].id, "fork-pr-1");
-  assert.equal(written.entries[0].text, "Issue lists now open instantly in large workspaces.");
+  assert.equal(written.entries.length, 4);
+  assert.equal(written.entries.find((e) => e.id === "fork-pr-1").text, "Issue lists now open instantly in large workspaces.");
+  assert.equal(written.deploys.length, 4);
+  assert.equal(written.deploys.filter((d) => d.deployedAt.startsWith("2026-11-05")).length, 3);
 });
 
 test("preview: a bad fixture exits non-zero and leaves no output file", () => {
@@ -483,10 +498,11 @@ test("PR check: a feat PR without a line writes Hidden and fails", () => {
   assert.match(summary, /Hidden: missing — add "Changelog: <sentence>" to publish/);
 });
 
-test("PR check: warnings are annotated, a closed PR is skipped, a sync head passes", () => {
+test("PR check: an over-limit line fails with an annotation, a closed PR is skipped, a sync head passes", () => {
   const warn = checkEvent({ title: "fix(a): b", body: `Changelog: ${"y".repeat(200)}` });
-  assert.equal(warn.res.status, 0);
-  assert.match(warn.res.stdout, /::warning::.*truncat/i);
+  assert.equal(warn.res.status, 1);
+  assert.match(warn.res.stdout, /::warning::.*over 140/);
+  assert.match(warn.res.stdout, /::error::/);
 
   const closed = checkEvent({ title: "feat(a): b", body: "" }, "closed");
   assert.equal(closed.res.status, 0);
@@ -800,6 +816,62 @@ test("preview: --backfill adds the backfill entries to the fixture entries", () 
   assert.equal(res.status, 0, res.stderr);
   const { entries } = JSON.parse(readFileSync(out, "utf8"));
   // Fixture PR #1 is also a backfill number: the fixture entry wins, so it is not counted twice.
-  assert.equal(entries.length, JSON.parse(readFileSync(backfill, "utf8")).entries.length);
+  assert.equal(entries.length, JSON.parse(readFileSync(backfill, "utf8")).entries.length + 3);
   assert.equal(entries.find((e) => e.number === 1).text, "Issue lists now open instantly in large workspaces.");
+});
+
+// CHE-4015: bucket entries into C00 deploys.
+// first-parent is newest first: idx0 = qualified (live) build, 1..5 older commits.
+test("each entry gets the first deploy that contains it; duplicates, rollbacks and failures do not add dividers", async () => {
+  const { generateEntries } = await load();
+  const firstParent = [5, 4, 3, 2, 1].map((n) => ({ sha: sha(n), message: "", time: `2026-10-13T0${n}:00:00+07:00` }));
+  const prs = [1, 2, 3, 4, 5].map((n) => pr(n, { mergedAt: `2026-10-13T0${n}:00:00Z` }));
+  prs[1].body = "Changelog: none"; // PR 2 hidden, reason none
+  prs[2].body = "no line"; // PR 3 hidden, reason missing
+  const deployments = [
+    { sha: sha(2), state: "SUCCESS", createdAt: "2026-10-13T03:00:00Z" },
+    { sha: sha(2), state: "SUCCESS", createdAt: "2026-10-13T02:00:00Z" }, // duplicate: earliest wins
+    { sha: sha(4), state: "SUCCESS", createdAt: "2026-10-13T05:00:00Z" },
+    { sha: sha(1), state: "SUCCESS", createdAt: "2026-10-13T06:00:00Z" }, // rollback to older SHA, after sha(4)
+    { sha: sha(3), state: "FAILURE", createdAt: "2026-10-13T04:00:00Z" }, // failed: ignored
+    { sha: sha(5), state: "SUCCESS", createdAt: "2026-10-13T07:00:00Z" }, // the qualified SHA itself: ignored
+    { sha: sha(9), state: "SUCCESS", createdAt: "2026-10-13T08:00:00Z" }, // not in history: ignored
+  ];
+  const out = generateEntries({ prs, firstParent, deployments }, { versionOf: (s) => `v-${Number(s)}` });
+  assert.deepEqual(out.deploys.map(({ sha: s, version, deployedAt, hiddenCount, live }) => [Number(s), version, deployedAt, hiddenCount, live ?? false]), [
+    [5, "v-5", "2026-10-13T06:00:00.000Z", 0, true], // commit time 22:00Z the day before, clamped to the newest earlier deploy
+    [4, "v-4", "2026-10-13T05:00:00.000Z", 1, false], // PR 3 (missing) sits newer than deploy 2
+    [2, "v-2", "2026-10-13T02:00:00.000Z", 1, false], // PR 2 (none)
+    [1, "v-1", "2026-10-13T06:00:00.000Z", 0, false],
+  ]);
+  const deployOf = Object.fromEntries(out.entries.map((e) => [e.number, e.deploy === "live" ? "live" : Number(e.deploy)]));
+  assert.deepEqual(deployOf, { 1: 1, 4: 4, 5: "live" });
+});
+
+test("hiddenCount ignores upstream-sync, reverted and before-start-date", async () => {
+  const { generateEntries } = await load();
+  const firstParent = [3, 2, 1].map((n) => ({ sha: sha(n), message: "", time: "2026-10-13T00:00:00Z" }));
+  const prs = [
+    pr(1, { body: "Changelog: none" }),
+    pr(2, { headRef: "upstream-sync/x", body: "none" }),
+    pr(3, { body: "Changelog: none", mergedAt: "2026-10-01T00:00:00Z" }),
+  ];
+  const out = generateEntries({ prs, firstParent, deployments: [{ sha: sha(1), state: "SUCCESS", createdAt: "2026-10-13T01:00:00Z" }] }, { versionOf: (s) => s });
+  assert.equal(out.deploys.find((d) => d.sha === sha(1)).hiddenCount, 1);
+  assert.equal(out.deploys.find((d) => d.live).hiddenCount, 0);
+});
+
+test("without deployments the output has no deploys field and entries have no deploy", async () => {
+  const { generateEntries, serializeEntries } = await load();
+  const out = generateEntries({ prs: [pr(1)], firstParent: [sha(1)] });
+  assert.equal(out.deploys, undefined);
+  assert.equal("deploy" in out.entries[0], false);
+  assert.equal("deploys" in JSON.parse(serializeEntries(out)), false);
+});
+
+test("Live is never dated before a later-deployed previous build", async () => {
+  const { generateEntries } = await load();
+  const firstParent = [2, 1].map((n) => ({ sha: sha(n), message: "", time: `2026-10-13T0${n}:00:00Z` }));
+  const out = generateEntries({ prs: [], firstParent, deployments: [{ sha: sha(1), state: "SUCCESS", createdAt: "2026-10-13T09:00:00Z" }] }, { versionOf: (s) => s });
+  assert.deepEqual(out.deploys.map((d) => [Number(d.sha), d.deployedAt]), [[2, "2026-10-13T09:00:00.000Z"], [1, "2026-10-13T09:00:00.000Z"]]);
 });

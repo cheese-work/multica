@@ -12,18 +12,18 @@ import {
 } from "@multica/ui/components/ui/resizable";
 import { useIsCompact } from "@multica/ui/hooks/use-mobile";
 import { useCurrentWorkspace, useRequiredWorkspaceSlug, useWorkspacePaths } from "@multica/core/paths";
-import { resolveAutoCompact } from "@multica/core/workspace/auto-compact";
+import { autoCompactThresholdTokens, resolveAutoCompact } from "@multica/core/workspace/auto-compact";
 import {
   getCurrentSlug,
   getWorkspaceRehydrationGeneration,
   subscribeToWorkspaceRehydration,
 } from "@multica/core/platform";
 import { useChatStore } from "@multica/core/chat";
-import { chatQuickActionsPendingOptions } from "@multica/core/chat/queries";
+import { chatKeys, chatQuickActionsPendingOptions } from "@multica/core/chat/queries";
 import { useRegenerateChatQuickActions } from "@multica/core/chat/mutations";
 import { useQuickActionsPendingTimeout } from "@multica/core/chat/use-quick-actions-pending-timeout";
 import { useQuickActionsFailureToast } from "./components/use-quick-actions-failure-toast";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Agent, ChatSearchHit, ChatSession } from "@multica/core/types";
 import { PageHeader } from "../layout/page-header";
 import { useBackOrReplace, useNavigation } from "../navigation";
@@ -81,6 +81,7 @@ export function ChatPage() {
   const workspaceSlug = useRequiredWorkspaceSlug();
   const wsPaths = useWorkspacePaths();
   const workspace = useCurrentWorkspace();
+  const qc = useQueryClient();
   // App Router can retain this page after navigation. Once the URL belongs
   // to another route, this instance must stop reconciling shared chat state.
   // Also check the live workspace mirror in each effect: the incoming layout
@@ -393,7 +394,7 @@ export function ChatPage() {
   // THIS pane, which the user resizes independently of the browser window.
   const queuedTasks = c.pendingTask?.queued_tasks ?? [];
   const autoCompact = resolveAutoCompact(workspace?.settings, c.activeAgent?.runtime_config);
-  const autoCompactThresholdPct = autoCompact.enabled ? autoCompact.threshold_pct : null;
+  const autoCompactTokens = autoCompactThresholdTokens(autoCompact, c.currentSession?.context_window);
   const { quoteRequest, quote, handleQuoteApplied } = useQuoteRequest();
   const annotation = useChatAnnotations({
     sessionId: c.activeSessionId,
@@ -423,8 +424,14 @@ export function ChatPage() {
           onTogglePin={dm.togglePin}
           onOpenStatistics={() => dm.openStatistics(c.currentSession?.id ?? "")}
           renameRequest={renameRequest}
-          autoCompactThresholdPct={autoCompactThresholdPct}
+          autoCompactThresholdTokens={autoCompactTokens}
           onCompact={() => void c.handleSend("/compact")}
+          onSetPreset={(name) =>
+            // The server answers /preset without a session event: refetch so the picker shows the new choice.
+            void c.handleSend(`/preset ${name}`).then((sent) => {
+              if (sent && workspace) void qc.invalidateQueries({ queryKey: chatKeys.sessions(workspace.id) });
+            })
+          }
         />
       )}
       {c.showSkeleton ? (
@@ -443,7 +450,6 @@ export function ChatPage() {
           sessions={c.sessionsLoaded ? c.sessions : undefined}
           pendingTask={c.pendingTask}
           availability={c.availability}
-          firstItemIndex={c.firstItemIndex}
           hasOlderMessages={c.hasOlderMessages}
           isFetchingOlderMessages={c.isFetchingOlderMessages}
           onLoadOlderMessages={() => void c.fetchOlderMessages()}
@@ -495,7 +501,9 @@ export function ChatPage() {
       <ChatQueue
         tasks={queuedTasks}
         headStatus={c.pendingTask?.status}
-        onSendNow={c.handleSendQueuedTaskNow}
+        headSupplement={c.pendingTask?.head_supplement}
+        onSteer={c.handleSteerQueuedTask}
+        onStopAndSend={c.handleStopAndSendQueuedTask}
         sendNowDisabled={c.isAgentAccessRevoked}
         onEdit={c.handleEditQueuedTask}
         onRemove={c.handleRemoveQueuedTask}

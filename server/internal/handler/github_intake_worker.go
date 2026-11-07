@@ -153,17 +153,7 @@ func (worker githubIntakeWorker) runOnce(ctx context.Context) (bool, error) {
 	}
 	slog.Info("github: intake processed", "delivery_guid", intake.DeliveryGuid, "state", state, "reason", reason,
 		"attempts", intake.Attempts, "age_seconds", int64(time.Since(intake.ReceivedAt.Time).Seconds()))
-	for _, publication := range publications {
-		issue := publication.issue
-		worker.handler.publish(protocol.EventCommentCreated, uuidToString(issue.WorkspaceID), "system", "", map[string]any{
-			"comment": commentToResponse(publication.comment.Comment(), nil, nil), "issue_title": issue.Title,
-			"issue_assignee_type": textToPtr(issue.AssigneeType), "issue_assignee_id": uuidToPtr(issue.AssigneeID),
-			"issue_status": issue.Status, "issue_revision": publication.comment.IssueRevision,
-		})
-		if publication.task.ID.Valid {
-			worker.handler.TaskService.PublishTaskEnqueued(ctx, publication.task)
-		}
-	}
+	worker.handler.publishGitHubIntake(ctx, publications)
 	return true, nil
 }
 
@@ -195,6 +185,7 @@ func (worker githubIntakeWorker) process(ctx context.Context, queries *db.Querie
 	state, reason := "denied", "no_revision"
 	priority := map[string]int{"denied": 0, "dispatched": 1, "projected": 2, "unsigned": 3, "quarantined": 4, "deferred": 5}
 	var publications []githubIntakePublication
+	policy := worker.handler.newGitHubPolicyRun()
 	for _, revision := range revisions {
 		if !revision.SourceDeliveryGuid.Valid || revision.SourceDeliveryGuid.String == "" {
 			// No signed delivery backs this revision (R3). Settle it as unsigned; retrying cannot create one.
@@ -220,6 +211,22 @@ func (worker githubIntakeWorker) process(ctx context.Context, queries *db.Querie
 			needsAdmission = !recorded
 		}
 		if needsAdmission {
+			// A revision stored before the policy applied is still checked here, so a now-disallowed binding routes no agent.
+			allowed, err := policy.workspaceAllowed(ctx, revision.InstallationID, revision.WorkspaceID)
+			if err != nil {
+				return "", "", nil, err
+			}
+			if !allowed {
+				if err := queries.SetGitHubWebhookRevisionState(ctx, db.SetGitHubWebhookRevisionStateParams{
+					WorkspaceID: revision.WorkspaceID, ID: revision.ID, State: "denied", Reason: "installation_not_allowed",
+				}); err != nil {
+					return "", "", nil, err
+				}
+				if priority["denied"] >= priority[state] {
+					state, reason = "denied", "installation_not_allowed"
+				}
+				continue
+			}
 			if worker.admit == nil {
 				return "", "", nil, errors.New("github: admission unavailable")
 			}
@@ -303,7 +310,19 @@ func (worker githubIntakeWorker) dispatch(ctx context.Context, queries *db.Queri
 	}
 	key := fmt.Sprintf("github.intake:%s:%s", uuidToString(revision.ID), uuidToString(issue.ID))
 	commentID := pgtype.UUID{Bytes: uuid.NewSHA1(uuid.NameSpaceURL, []byte(key)), Valid: true}
-	if !worker.dispatchEnabled {
+	// Held until this transaction ends: a switch change waits for us, or we see it.
+	if err := queries.LockGitHubDispatchHaltShared(ctx, revision.WorkspaceID); err != nil {
+		return nil, err
+	}
+	pull, err := queries.GetGitHubPullRequestInWorkspace(ctx, db.GetGitHubPullRequestInWorkspaceParams{ID: revision.PullRequestID, WorkspaceID: revision.WorkspaceID})
+	if err != nil {
+		return nil, err
+	}
+	halted, err := queries.GitHubDispatchHalted(ctx, db.GitHubDispatchHaltedParams{WorkspaceID: revision.WorkspaceID, RepoOwner: pull.RepoOwner, RepoName: pull.RepoName})
+	if err != nil {
+		return nil, err
+	}
+	if !worker.dispatchEnabled || halted {
 		content, err := githubNotifyContent(ctx, queries, revision)
 		if err != nil {
 			return nil, err
@@ -314,6 +333,9 @@ func (worker githubIntakeWorker) dispatch(ctx context.Context, queries *db.Queri
 		}
 		publication.comment = db.CreateCommentRow(created)
 		publication.state, publication.reason = "projected", "gate_g_closed"
+		if halted {
+			publication.reason = "kill_switch"
+		}
 	} else {
 		params, err := worker.handler.TaskService.PrepareTaskForMention(ctx, queries, issue, target.AgentID, commentID, route.UserID, service.OriginDerived)
 		if err != nil {
@@ -328,6 +350,10 @@ func (worker githubIntakeWorker) dispatch(ctx context.Context, queries *db.Queri
 		}
 		publication.task, err = worker.handler.TaskService.EnqueuePreparedTaskForMentionInTx(ctx, queries, issue, params, service.OriginDerived)
 		if err != nil {
+			return nil, err
+		}
+		// The kill switch sweep finds a live run by this mark.
+		if err := queries.MarkGitHubDispatchRun(ctx, db.MarkGitHubDispatchRunParams{TaskID: publication.task.ID, IssueID: issue.ID, Source: "intake", Repo: pull.RepoOwner + "/" + pull.RepoName}); err != nil {
 			return nil, err
 		}
 		publication.state, publication.reason = "dispatched", "admitted"
@@ -351,4 +377,18 @@ func recordGitHubRouteResult(ctx context.Context, queries *db.Queries, revision 
 		return errors.New("github: route receipt requires its committed effects")
 	}
 	return nil
+}
+
+func (handler *Handler) publishGitHubIntake(ctx context.Context, publications []githubIntakePublication) {
+	for _, publication := range publications {
+		issue := publication.issue
+		handler.publish(protocol.EventCommentCreated, uuidToString(issue.WorkspaceID), "system", "", map[string]any{
+			"comment": commentToResponse(publication.comment.Comment(), nil, nil), "issue_title": issue.Title,
+			"issue_assignee_type": textToPtr(issue.AssigneeType), "issue_assignee_id": uuidToPtr(issue.AssigneeID),
+			"issue_status": issue.Status, "issue_revision": publication.comment.IssueRevision,
+		})
+		if publication.task.ID.Valid {
+			handler.TaskService.PublishTaskEnqueued(ctx, publication.task)
+		}
+	}
 }
