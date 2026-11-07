@@ -273,6 +273,8 @@ multica runtime profile create --display-name "内部 Claude 封装" \
 
 删除仍绑定活跃智能体的运行时时，命令默认拒绝。`multica runtime delete <id> --cascade` 会解绑这些智能体、保留其配置与历史记录，并取消它们的活动运行。
 
+`multica runtime breaker list` 显示各服务商的熔断器，`multica runtime breaker reset <provider>` 强制关闭熔断器（仅所有者或管理员）。参见[服务商熔断器](/daemon-runtimes#provider-breaker)。
+
 运行机制和自定义 profile 见[守护进程与运行时](/daemon-runtimes)。
 
 ## 项目、工作区和自动化
@@ -431,6 +433,7 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | `runtime` | `list/usage/activity/update/rename/delete` | 查看和管理运行时 | `usage`：`--days`（默认 90，最多 365）；`update`：`--target-version`（必填）、`--wait`；`delete`：`--cascade`（解绑绑定的智能体、保留其数据并取消其运行） |
 | | `profile list/create/update/delete` | 管理自定义运行时 profile | `create`：`--display-name`、`--command-name`（均必填）、`--runtime-type`（或旧的 `--protocol-family`）、`--description`；`update`：`--enabled` |
 | | `profile set-path/unset-path <profile-id>` | 固定本机可执行文件路径（仅本地生效，不上传服务器） | |
+| | `breaker list/reset <provider>` | 查看或强制关闭服务商熔断器 | `reset`：仅工作区所有者或管理员 |
 
 ### Additional
 

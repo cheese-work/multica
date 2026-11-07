@@ -311,6 +311,7 @@
   "header": {
     "context_meter": "{{window}} 中的 {{pct}}%",
     "context_meter_warning": "下一次回复后将压缩",
+    "context_meter_threshold": "达到 {{threshold}} 时压缩(当前 {{now}})",
     "compact_now": "立即压缩",
     "more_actions": "更多操作",
     "view_profile": "查看智能体资料",
@@ -409,6 +410,10 @@
     "answer_text": "输入回答",
     "answer_note": "添加备注（可选）",
     "answer_chose": "已选择：{{option}}",
+    "option_recommended": "推荐",
+    "option_pros": "优点",
+    "option_cons": "缺点",
+    "option_cost": "成本或时间",
     "answer_send": "发送",
     "answer_error": "发送失败，请重试。",
     "answer_helper": "发送会将你的回答发布到 {{issue}}。给 DM 智能体的问题请写在下方消息框。",

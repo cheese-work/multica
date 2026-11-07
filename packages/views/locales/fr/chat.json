@@ -316,6 +316,7 @@
   "header": {
     "context_meter": "{{pct}} % de {{window}}",
     "context_meter_warning": "Sera compactée après la prochaine réponse",
+    "context_meter_threshold": "Compactage à {{threshold}} (actuellement {{now}})",
     "compact_now": "Compacter maintenant",
     "more_actions": "Plus d'actions",
     "view_profile": "Voir le profil de l'agent",
@@ -417,6 +418,10 @@
     "answer_text": "Écrivez une réponse",
     "answer_note": "Ajouter une note (facultatif)",
     "answer_chose": "Choix : {{option}}",
+    "option_recommended": "Recommandé",
+    "option_pros": "Avantages",
+    "option_cons": "Inconvénients",
+    "option_cost": "Coût ou délai",
     "answer_send": "Envoyer",
     "answer_error": "Échec de l'envoi. Réessayez.",
     "answer_helper": "Envoyer publie votre réponse sur {{issue}}. Les questions pour l'agent du DM vont dans la zone de message ci-dessous.",

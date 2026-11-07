@@ -311,6 +311,7 @@
   "header": {
     "context_meter": "{{window}} 中 {{pct}}%",
     "context_meter_warning": "次の返信のあとにコンパクトします",
+    "context_meter_threshold": "{{threshold}} でコンパクト(現在 {{now}})",
     "compact_now": "今すぐコンパクト",
     "more_actions": "その他の操作",
     "view_profile": "Agent のプロフィール",
@@ -409,6 +410,10 @@
     "answer_text": "回答を入力",
     "answer_note": "メモを追加（任意）",
     "answer_chose": "選択: {{option}}",
+    "option_recommended": "おすすめ",
+    "option_pros": "メリット",
+    "option_cons": "デメリット",
+    "option_cost": "コストまたは時間",
     "answer_send": "送信",
     "answer_error": "送信できませんでした。もう一度お試しください。",
     "answer_helper": "送信すると回答が {{issue}} に投稿されます。DM エージェントへの質問は下のメッセージ欄に入力してください。",

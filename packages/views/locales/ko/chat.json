@@ -311,6 +311,7 @@
   "header": {
     "context_meter": "{{window}} 중 {{pct}}%",
     "context_meter_warning": "다음 답변 후 압축됩니다",
+    "context_meter_threshold": "{{threshold}}에서 압축(현재 {{now}})",
     "compact_now": "지금 압축",
     "more_actions": "더 보기",
     "view_profile": "Agent 프로필 보기",
@@ -409,6 +410,10 @@
     "answer_text": "답변 입력",
     "answer_note": "메모 추가 (선택)",
     "answer_chose": "선택: {{option}}",
+    "option_recommended": "추천",
+    "option_pros": "장점",
+    "option_cons": "단점",
+    "option_cost": "비용 또는 시간",
     "answer_send": "보내기",
     "answer_error": "보내지 못했습니다. 다시 시도하세요.",
     "answer_helper": "보내기를 누르면 답변이 {{issue}}에 게시됩니다. DM 에이전트에게 하는 질문은 아래 메시지 입력란에 입력하세요.",
