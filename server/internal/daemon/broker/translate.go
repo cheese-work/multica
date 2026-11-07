@@ -39,11 +39,12 @@ func (b *Broker) seedRoot(ctx context.Context, work string) (int, error) {
 
 // translate rewrites the commits sha adds on top of the synthetic root with
 // git commit-tree, mapping the root to the real parent and keeping tree,
-// author, committer and message (plan 3.5). It returns the translated tip.
+// author, committer and message (plan 3.5). It returns the translated tip and,
+// for each translated commit, the SHA the run knew it by.
 // Every commit must descend from the root: a second root, or a parent outside
 // the pushed set, refuses the push, so no run commit reaches the real history
 // by any other path.
-func (b *Broker) translate(ctx context.Context, work, sha, msgFile string) (string, int, error) {
+func (b *Broker) translate(ctx context.Context, work, sha, msgFile string) (string, map[string]string, int, error) {
 	s := b.pin.Synthetic
 	limit := b.pin.MaxCommits
 	if limit <= 0 {
@@ -51,45 +52,47 @@ func (b *Broker) translate(ctx context.Context, work, sha, msgFile string) (stri
 	}
 	list, err := b.git(ctx, work, nil, "rev-list", "--reverse", "--topo-order", "--max-count="+strconv.Itoa(limit+1), sha, "^"+s.Root)
 	if err != nil {
-		return "", http.StatusInternalServerError, fmt.Errorf("translate: %s", firstLine(list))
+		return "", nil, http.StatusInternalServerError, fmt.Errorf("translate: %s", firstLine(list))
 	}
 	shas := strings.Fields(list)
 	if len(shas) > limit {
-		return "", http.StatusRequestEntityTooLarge, errTooManyCommits
+		return "", nil, http.StatusRequestEntityTooLarge, errTooManyCommits
 	}
 	mapped := map[string]string{s.Root: s.Parent}
+	runSHA := make(map[string]string, len(shas))
 	for _, old := range shas {
 		// The size comes from the object header, so a compressed bomb is
 		// refused before its decompressed bytes reach daemon memory.
 		size, err := b.git(ctx, work, nil, "cat-file", "-s", old)
 		if err != nil {
-			return "", http.StatusInternalServerError, fmt.Errorf("translate: %s", firstLine(size))
+			return "", nil, http.StatusInternalServerError, fmt.Errorf("translate: %s", firstLine(size))
 		}
 		if n, err := strconv.Atoi(size); err != nil || n > maxCommitBytes {
-			return "", http.StatusRequestEntityTooLarge, errCommitTooLarge
+			return "", nil, http.StatusRequestEntityTooLarge, errCommitTooLarge
 		}
 		raw, err := rawGit(ctx, work, nil, "cat-file", "commit", old)
 		if err != nil {
-			return "", http.StatusInternalServerError, fmt.Errorf("translate: %w", err)
+			return "", nil, http.StatusInternalServerError, fmt.Errorf("translate: %w", err)
 		}
 		args, env, msg, ok := parseCommit(raw, mapped)
 		if !ok {
-			return "", http.StatusBadRequest, errNotTranslatable
+			return "", nil, http.StatusBadRequest, errNotTranslatable
 		}
 		if err := os.WriteFile(msgFile, msg, 0o600); err != nil {
-			return "", http.StatusInternalServerError, err
+			return "", nil, http.StatusInternalServerError, err
 		}
 		out, err := b.git(ctx, work, env, append(args, "-F", msgFile)...)
 		if err != nil {
-			return "", http.StatusBadRequest, fmt.Errorf("translate: %s", firstLine(out))
+			return "", nil, http.StatusBadRequest, fmt.Errorf("translate: %s", firstLine(out))
 		}
 		mapped[old] = out
+		runSHA[out] = old
 	}
 	tip, ok := mapped[sha]
 	if !ok || sha == s.Root {
-		return "", http.StatusBadRequest, errNotTranslatable
+		return "", nil, http.StatusBadRequest, errNotTranslatable
 	}
-	return tip, 0, nil
+	return tip, runSHA, 0, nil
 }
 
 // parseCommit reads a raw commit object into commit-tree arguments and author

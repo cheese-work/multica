@@ -110,6 +110,9 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if located.HumanUserID != userID {
 		return empty, decisionIntentRefusal{http.StatusForbidden, "only the request's human can answer"}
 	}
+	if input.Option != "" && located.AskJson == nil {
+		return empty, decisionIntentRefusal{http.StatusBadRequest, "this request has no options to click; type an answer"}
+	}
 	content, err := cardAnswerContent(located, input)
 	if err != nil {
 		return empty, err

@@ -251,6 +251,9 @@ func init() {
 		"PUT /api/agents/{id}/presets/default",
 		"PUT /api/workspaces/{id}/decision-gate",
 		"PUT /api/workspaces/{id}/routing-agent",
+		"PUT /api/workspaces/{id}/background-agents",
+		"DELETE /api/workspaces/{id}/background-agents",
+		"POST /api/workspaces/{id}/provider-breakers/{provider}/reset",
 	} {
 		auditPendingL5b[route] = true
 	}

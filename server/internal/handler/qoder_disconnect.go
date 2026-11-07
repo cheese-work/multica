@@ -202,6 +202,17 @@ func (h *Handler) writeQoderStopAudit(r *http.Request, tx pgx.Tx, ws pgtype.UUID
 // while tasks run on them or when their active agents differ from the
 // confirmed set. It returns the runtimes to remove.
 func (h *Handler) checkQoderDisconnectPlan(w http.ResponseWriter, ctx context.Context, tx pgx.Tx, qtx *db.Queries, ws pgtype.UUID, expected map[string]struct{}) ([]pgtype.UUID, bool) {
+	// Chat sessions before the runtime and agent locks: chat enqueue holds a session while it
+	// takes KEY SHARE on the runtime and locks the agent. Read the ids unlocked to find them.
+	planned, err := unlockedRuntimeIDs(ctx, tx, `SELECT id FROM agent_runtime WHERE workspace_id=$1 AND provider='qoder_cloud' ORDER BY id`, ws)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot load Qoder runtime")
+		return nil, true
+	}
+	if _, err := qtx.LockChatSessionsForRuntimes(ctx, planned); err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot lock Qoder chat sessions")
+		return nil, true
+	}
 	rows, err := tx.Query(ctx, `SELECT id FROM agent_runtime WHERE workspace_id=$1 AND provider='qoder_cloud' ORDER BY id FOR UPDATE`, ws)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "cannot load Qoder runtime")
@@ -268,4 +279,14 @@ func (h *Handler) refuseQoderManagedRuntime(w http.ResponseWriter, ctx context.C
 		"code":  "runtime_managed_by_connection",
 	})
 	return true
+}
+
+// unlockedRuntimeIDs reads runtime ids without locking them, so the caller can lock the chat
+// sessions that point at those runtimes before it locks the runtimes themselves.
+func unlockedRuntimeIDs(ctx context.Context, tx pgx.Tx, query string, args ...any) ([]pgtype.UUID, error) {
+	rows, err := tx.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[pgtype.UUID])
 }

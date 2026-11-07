@@ -569,6 +569,17 @@ func (h *Handler) DeleteRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 	// Lock runtime rows in deterministic ID order. Their agent/task foreign-key
 	// inserts take KEY SHARE locks, preventing dependencies from appearing after
 	// the active-agent check.
+	// Chat sessions before the runtime and agent locks (session -> runtime -> agent -> task): chat
+	// enqueue holds a session while it takes KEY SHARE on the runtime and locks the agent.
+	plannedIDs, err := unlockedRuntimeIDs(r.Context(), tx, `SELECT id FROM agent_runtime WHERE profile_id=$1 AND workspace_id=$2 ORDER BY id`, profileUUID, wsUUID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to enumerate profile runtimes")
+		return
+	}
+	if _, err := qtx.LockChatSessionsForRuntimes(r.Context(), plannedIDs); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to lock profile chat sessions")
+		return
+	}
 	runtimeIDs, err := qtx.ListAgentRuntimeIDsByProfile(r.Context(), db.ListAgentRuntimeIDsByProfileParams{
 		ProfileID:   profileUUID,
 		WorkspaceID: wsUUID,

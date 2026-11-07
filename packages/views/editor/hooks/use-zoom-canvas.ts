@@ -375,6 +375,9 @@ export function useZoomCanvas({
     (event: ReactKeyboardEvent<HTMLElement>) => {
       const { contentSize: c, viewport: v, ready: r } = stateRef.current;
       if (!r) return;
+      // Ctrl/Cmd + - = 0 are the browser's page-zoom shortcuts; hijacking them
+      // desyncs the canvas transform from the viewport the browser then resizes.
+      if (event.ctrlKey || event.metaKey) return;
 
       // Escape is the Dialog's; never swallow it here.
       switch (event.key) {

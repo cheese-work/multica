@@ -102,6 +102,13 @@ func (h *Handler) removeMemberAudited(ctx context.Context, r *http.Request, audi
 			}
 		}
 
+		// Sessions before agents (chat_session -> runtime -> agent -> task): chat enqueue
+		// holds a session while it locks the agent, so archiving the agents
+		// first would deadlock a concurrent send.
+		if _, err := qtx.LockChatSessionsForRuntimes(ctx, runtimeIDs); err != nil {
+			return empty, err
+		}
+
 		result.ArchivedAgents, err = qtx.ArchiveAgentsByRuntime(ctx, db.ArchiveAgentsByRuntimeParams{
 			ArchivedBy: archivedBy,
 			RuntimeIds: runtimeIDs,

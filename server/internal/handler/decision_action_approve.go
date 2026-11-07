@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
@@ -91,6 +92,7 @@ var (
 	errActionExpired       = decisionIntentRefusal{http.StatusConflict, "expired: this action's approval window has closed"}
 	errNeedsOwner          = decisionIntentRefusal{http.StatusForbidden, decisionClassNeedsOwner + ": this action needs the workspace owner"}
 	errPreviewRequired     = decisionIntentRefusal{http.StatusConflict, "preview_required: approve with the digest of the preview you were shown"}
+	errRefusalMismatch     = decisionIntentRefusal{http.StatusConflict, "refusal_mismatch: params.refusal_id must name a refusal of params.issue_id and params.window_id"}
 	errNotPermitted        = decisionIntentRefusal{http.StatusForbidden, "not_permitted: you may not make this change to this agent"}
 	errSecretsMismatch     = decisionIntentRefusal{http.StatusBadRequest, "secrets_mismatch: supply a value for exactly the secret slots, none masked or empty"}
 )
@@ -302,6 +304,9 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	switch targetKind {
 	case decisionaction.TargetIssue:
 		if err := checkIssueTarget(action.Params, current.IssueID, http.StatusConflict); err != nil {
+			return empty, err
+		}
+		if err := checkRefusalBinding(ctx, queries, action.Params); err != nil {
 			return empty, err
 		}
 	case decisionaction.TargetWorkflow:
@@ -663,4 +668,28 @@ func (handler *Handler) publishDecisionActionExecuted(ctx context.Context, actio
 		return err
 	}
 	return handler.publishAgentEnvUpdated(ctx, agent, action.ApprovedByUserID)
+}
+
+// checkRefusalBinding applies the run-budget rule to an issue action that names
+// a refusal: it must be a refusal of the action's own issue and window. An
+// action without params.refusal_id passes.
+func checkRefusalBinding(ctx context.Context, queries *db.Queries, params json.RawMessage) error {
+	var named struct {
+		IssueID   string `json:"issue_id"`
+		WindowID  string `json:"window_id"`
+		RefusalID string `json:"refusal_id"`
+	}
+	if json.Unmarshal(params, &named) != nil || named.RefusalID == "" {
+		return nil
+	}
+	refusalID, refusalErr := parseUUIDString(named.RefusalID)
+	issueID, issueErr := parseUUIDString(named.IssueID)
+	if refusalErr != nil || issueErr != nil {
+		return errRefusalMismatch
+	}
+	err := service.RunBudgetRefusalBinds(ctx, queries, refusalID, issueID, named.WindowID)
+	if errors.Is(err, service.ErrRunBudgetRefusalMismatch) {
+		return errRefusalMismatch
+	}
+	return err
 }
