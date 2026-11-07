@@ -15,6 +15,7 @@ vi.mock("../i18n", async () => {
   };
 });
 
+import { trackFeedbackTimers } from "../test/feedback-timer";
 import { CodeBlockShell } from "./rich-code-block";
 
 describe("CodeBlockShell copy toolbar", () => {
@@ -38,5 +39,22 @@ describe("CodeBlockShell copy toolbar", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: /copy/i }));
     await waitFor(() => expect(copyTextMock).toHaveBeenCalledWith("echo hi"));
+  });
+
+  it("clears the copy-feedback timer on unmount", async () => {
+    const view = render(
+      <CodeBlockShell language="bash" code="echo hi">
+        <code>echo hi</code>
+      </CodeBlockShell>,
+    );
+    const timers = trackFeedbackTimers();
+    try {
+      fireEvent.click(screen.getByRole("button", { name: /copy/i }));
+      await waitFor(() => expect(timers.ids).toHaveLength(1));
+      view.unmount();
+      expect(timers.cleared(timers.ids[0])).toBe(true);
+    } finally {
+      timers.restore();
+    }
   });
 });
