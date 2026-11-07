@@ -65,7 +65,13 @@ func delegatedWritesFromSettings(settings map[string]any) (DelegatedWritesConfig
 }
 
 func (h *Handler) loadDelegatedWrites(ctx context.Context, ws pgtype.UUID) (DelegatedWritesConfig, error) {
-	row, err := h.Queries.GetWorkspace(ctx, ws)
+	return loadDelegatedWritesQ(ctx, h.Queries, ws)
+}
+
+// loadDelegatedWritesQ reads the setting through queries, so an approval
+// transaction can read it under the workspace lock.
+func loadDelegatedWritesQ(ctx context.Context, queries *db.Queries, ws pgtype.UUID) (DelegatedWritesConfig, error) {
+	row, err := queries.GetWorkspace(ctx, ws)
 	if err != nil {
 		return defaultDelegatedWrites(), err
 	}
@@ -78,7 +84,12 @@ func (h *Handler) loadDelegatedWrites(ctx context.Context, ws pgtype.UUID) (Dele
 // field, and whether that write needs a human decision. It fails closed: a
 // read error or malformed setting denies and requires a decision.
 func (h *Handler) delegatedWriteAllowed(ctx context.Context, ws pgtype.UUID, agentID, field string) (requiresDecision, ok bool) {
-	cfg, err := h.loadDelegatedWrites(ctx, ws)
+	return delegatedWriteAllowedQ(ctx, h.Queries, ws, agentID, field)
+}
+
+// delegatedWriteAllowedQ is delegatedWriteAllowed over any *db.Queries.
+func delegatedWriteAllowedQ(ctx context.Context, queries *db.Queries, ws pgtype.UUID, agentID, field string) (requiresDecision, ok bool) {
+	cfg, err := loadDelegatedWritesQ(ctx, queries, ws)
 	if err != nil {
 		return true, false
 	}
