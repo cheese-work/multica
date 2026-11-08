@@ -153,6 +153,9 @@ export interface ChatSession {
   /** ISO time the projection next changes (snooze end, 4 h or 24 h crossing, a later due
    *  time). Refetch the list then. Null when nothing is scheduled. */
   next_change_at?: string | null;
+  /** Subject keys (`turn:<task_id>`) of visible untyped turns. Listed collapsed with no
+   *  colour or age; not part of `stale_level`. */
+  attention_unclassified_keys?: string[];
   created_at: string;
   updated_at: string;
 }

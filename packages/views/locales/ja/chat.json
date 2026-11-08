@@ -11,7 +11,33 @@
     "loading": "未回答の依頼を読み込み中…",
     "error": "依頼を読み込めませんでした。",
     "retry": "再試行",
-    "empty": "未回答の依頼はありません。"
+    "empty": "未回答の依頼はありません。",
+    "decisions": "未決の判断",
+    "show_all": "すべて表示（{{count}}件）",
+    "show_less": "表示を減らす",
+    "count": "{{shown}} / {{total}}",
+    "kind": {
+      "ask": "質問",
+      "later": "リマインダー",
+      "unseen": "未読",
+      "decision": "判断"
+    },
+    "level": {
+      "fresh": "新着",
+      "yellow": "黄",
+      "red": "赤"
+    },
+    "age": {
+      "minutes_other": "{{count}}分",
+      "hours_other": "{{count}}時間",
+      "days_other": "{{count}}日"
+    },
+    "level_age": "{{level}} · {{age}}",
+    "row_aria": "{{kind}}：{{title}}。{{level}}、{{age}}待ち",
+    "unclassified": {
+      "title": "未分類",
+      "replies_other": "{{count}}件の返信"
+    }
   },
   "page": {
     "interactive_login_required": "チャットを使うには再度ログインしてください",

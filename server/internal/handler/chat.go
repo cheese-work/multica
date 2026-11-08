@@ -292,6 +292,7 @@ func (h *Handler) hydrateChatSessionAttention(ctx context.Context, sessions []Ch
 		sessions[i].AttentionSource = a.AttentionSource
 		sessions[i].AttentionSince = formatAttentionTime(a.AttentionSince)
 		sessions[i].NextChangeAt = formatAttentionTime(a.NextChangeAt)
+		sessions[i].AttentionUnclassifiedKeys = a.Unclassified
 	}
 	return nil
 }
@@ -2314,8 +2315,11 @@ type ChatSessionResponse struct {
 	AttentionSince  *string `json:"attention_since"`
 	StaleLevel      string  `json:"stale_level"`
 	NextChangeAt    *string `json:"next_change_at"`
-	CreatedAt       string  `json:"created_at"`
-	UpdatedAt       string  `json:"updated_at"`
+	// AttentionUnclassifiedKeys: visible untyped-turn subject keys. Listed
+	// collapsed, never coloured or aged, and not counted in stale_level.
+	AttentionUnclassifiedKeys []string `json:"attention_unclassified_keys"`
+	CreatedAt                 string   `json:"created_at"`
+	UpdatedAt                 string   `json:"updated_at"`
 }
 
 type ChatSessionChannelSourceResponse struct {

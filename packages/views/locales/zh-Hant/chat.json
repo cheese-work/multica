@@ -11,7 +11,33 @@
     "loading": "正在載入待處理請求…",
     "error": "無法載入待處理請求。",
     "retry": "重試",
-    "empty": "沒有待處理請求。"
+    "empty": "沒有待處理請求。",
+    "decisions": "待決定事項",
+    "show_all": "顯示全部（{{count}}）",
+    "show_less": "收合",
+    "count": "{{shown}} / {{total}}",
+    "kind": {
+      "ask": "提問",
+      "later": "提醒",
+      "unseen": "未讀",
+      "decision": "決定"
+    },
+    "level": {
+      "fresh": "新",
+      "yellow": "黃色",
+      "red": "紅色"
+    },
+    "age": {
+      "minutes_other": "{{count}} 分鐘",
+      "hours_other": "{{count}} 小時",
+      "days_other": "{{count}} 天"
+    },
+    "level_age": "{{level}} · {{age}}",
+    "row_aria": "{{kind}}：{{title}}。{{level}}，已等待 {{age}}",
+    "unclassified": {
+      "title": "未分類",
+      "replies_other": "{{count}} 則回覆"
+    }
   },
   "page": {
     "title": "聊天",
