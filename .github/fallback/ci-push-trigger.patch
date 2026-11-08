@@ -1,0 +1,24 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 4b364f2..7eb6779 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -1,6 +1,8 @@
+ name: CI
+ 
+ on:
++  push:
++    branches: [main]
+   # CHE-3989: stacked PRs (base agent/**) run here too, so every run is PR-associated and uses the merge commit.
+   # A draft stacked PR starts no jobs unless it carries the run-ci label. Events that change nothing skip every job
+   # and use their own concurrency group, so they never cancel a real run.
+@@ -14,8 +16,8 @@ on:
+   workflow_dispatch:
+ 
+ concurrency:
+-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ (github.event_name != 'pull_request' || ((github.event.action == 'opened' || github.event.action == 'synchronize' || github.event.action == 'reopened') && (github.event.pull_request.base.ref == 'main' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci'))) || (github.event.action == 'ready_for_review' && github.event.pull_request.base.ref != 'main') || (github.event.action == 'labeled' && github.event.label.name == 'run-ci' && github.event.pull_request.base.ref != 'main' && github.event.pull_request.draft) || (github.event.action == 'edited' && github.event.changes.base != null && (github.event.pull_request.base.ref == 'main' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci')))) && 'run' || 'noop' }}
+-  cancel-in-progress: true
++  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || (github.event_name == 'push' && github.sha) || github.ref }}-${{ (github.event_name != 'pull_request' || ((github.event.action == 'opened' || github.event.action == 'synchronize' || github.event.action == 'reopened') && (github.event.pull_request.base.ref == 'main' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci'))) || (github.event.action == 'ready_for_review' && github.event.pull_request.base.ref != 'main') || (github.event.action == 'labeled' && github.event.label.name == 'run-ci' && github.event.pull_request.base.ref != 'main' && github.event.pull_request.draft) || (github.event.action == 'edited' && github.event.changes.base != null && (github.event.pull_request.base.ref == 'main' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'run-ci')))) && 'run' || 'noop' }}
++  cancel-in-progress: ${{ github.event_name != 'push' }}
+ 
+ jobs:
+   warning-budget:
