@@ -18,6 +18,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 CD = ROOT / "deploy/cd"
 DEPLOYED, NEWER, PREDECESSOR = "a" * 40, "b" * 40, "c" * 40
+PRED_BACKEND = f"ghcr.io/cheese-work/multica-backend:sha-{PREDECESSOR}"
+PRED_WEB = f"ghcr.io/cheese-work/multica-web:sha-{PREDECESSOR}"
 
 
 class RollbackTests(unittest.TestCase):
@@ -31,7 +33,8 @@ class RollbackTests(unittest.TestCase):
                 shutil.copy(CD / name, self.dir / "deploy/cd" / name)
         self.compose = self.dir / "compose"
         self.compose.mkdir()
-        (self.compose / ".env").write_text("POSTGRES_USER=u\nPOSTGRES_PASSWORD=p\nPOSTGRES_DB=d\n")
+        # The .env tag is stale on purpose: rollback must not fall back to it.
+        (self.compose / ".env").write_text("POSTGRES_USER=u\nPOSTGRES_PASSWORD=p\nPOSTGRES_DB=d\nMULTICA_IMAGE_TAG=sha-stale\n")
         self.cutover_state = self.dir / "cutover-state"
         self.cutover_state.mkdir()
         (self.cutover_state / "cutover-state.json").write_text('{"active_colour": "blue"}')
@@ -43,13 +46,17 @@ class RollbackTests(unittest.TestCase):
     def stub(self, name, body):
         (self.dir / "deploy/cd" / name).write_text(body)
 
-    def docker(self, label="", tag="", services_running=False):
+    def docker(self, label="", tag="", services_running=False, pred_backend=PRED_BACKEND, pred_web=PRED_WEB):
         # The active colour's backend is a stopped container: `ps -q` lists
         # running containers only, `ps -aq` lists it too.
         images = json.dumps([{"Repository": "r", "Tag": tag}]) if tag else "[]"
         script = f'''#!/usr/bin/env bash
 case "$*" in
   *"ps -aq backend-blue"*) echo stopped-backend ;;
+  *"ps -aq backend-green"*) echo pred-backend ;;
+  *"ps -aq frontend-green"*) echo pred-web ;;
+  inspect*Config.Image*pred-backend) echo '{pred_backend}' ;;
+  inspect*Config.Image*pred-web) echo '{pred_web}' ;;
   *"ps -q"*) {'echo running-backend' if services_running else ':'} ;;
   *"images backend-blue"*) echo '{images}' ;;
   inspect*revision*stopped-backend) echo '{label}' ;;
@@ -59,15 +66,15 @@ esac
         (self.bin / "docker").write_text(script)
         (self.bin / "docker").chmod(0o755)
 
-    def rollback(self, running=DEPLOYED, rollback_ok=True, healthy_after=True, sha=DEPLOYED, label=None, tag=""):
-        self.docker(label=running if label is None else label, tag=tag)
+    def rollback(self, running=DEPLOYED, rollback_ok=True, healthy_after=True, sha=DEPLOYED, label=None, tag="", **images):
+        self.docker(label=running if label is None else label, tag=tag, **images)
         live = json.dumps({"application_sha": PREDECESSOR})
         # The full baseline needs running services: it fails until the rollback ran.
         self.stub("capture-remote-baseline.sh",
                   f'grep -q cutover "{self.calls}" || {{ echo "could not read compose config-hash" >&2; exit 1; }}\n'
                   f"echo '{live}' > \"$1\"\n")
         self.stub("cutover.sh",
-                  f'echo "cutover $* url=$CUTOVER_DATABASE_URL router=$ROUTER_STATE_DIR token=$GHCR_PULL_TOKEN" >> "{self.calls}"\n'
+                  f'echo "cutover $* url=$CUTOVER_DATABASE_URL router=$ROUTER_STATE_DIR token=$GHCR_PULL_TOKEN pins=$MULTICA_BACKEND_IMAGE|$MULTICA_WEB_IMAGE|$MULTICA_IMAGE_TAG" >> "{self.calls}"\n'
                   + ("" if rollback_ok else "exit 1\n"))
         self.stub("ab-health-check.sh", f'echo "health $*" >> "{self.calls}"\n' + ("" if healthy_after else "exit 1\n"))
         env = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}", "C00_COMPOSE_DIR": str(self.compose),
@@ -125,6 +132,27 @@ esac
         result = self.rollback(sha=head, label="", tag=head[:8])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("cutover rollback", self.recorded())
+
+    def test_rollback_is_pinned_to_the_retained_predecessor_image(self):
+        # CHE-4582 drill prep (CHE-4665): without pins Compose recreates the
+        # predecessor from the stale .env tag. Pin repo and tag read from the
+        # predecessor's own containers, after .env is sourced.
+        result = self.rollback()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            f"pins=ghcr.io/cheese-work/multica-backend|ghcr.io/cheese-work/multica-web|sha-{PREDECESSOR}",
+            self.recorded())
+        self.assertNotIn("sha-stale", self.recorded())
+
+    def test_an_unidentifiable_predecessor_image_fails_closed_before_any_rollback(self):
+        result = self.rollback(pred_backend="")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("cutover", self.recorded())
+
+    def test_a_predecessor_with_mismatched_tags_fails_closed(self):
+        result = self.rollback(pred_web="ghcr.io/cheese-work/multica-web:sha-" + "d" * 40)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("cutover", self.recorded())
 
     def test_short_sha_is_refused(self):
         self.assertEqual(self.rollback(sha="abc").returncode, 2)
