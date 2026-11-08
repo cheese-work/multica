@@ -12,9 +12,9 @@ import (
 )
 
 const createSystem1Observation = `-- name: CreateSystem1Observation :exec
-INSERT INTO system1_observation (workspace_id, kind, subject_id, class, decision_source, inputs, option_count, recommended_index, agent_confidence, predicted_key, predicted_confidence, predicted_precedents, predicted_at, choice_key, outcome, answered_at)
-SELECT workspace.id, $1::text, $2::uuid, $3::text, $4::text, $5::jsonb, $6::int, $7::int, $8::real, $9::text, $10::real, $11::int, clock_timestamp(), $12::text, $13::text, CASE WHEN $13::text = 'applied' THEN clock_timestamp() END
-FROM workspace WHERE workspace.id = $14
+INSERT INTO system1_observation (workspace_id, kind, subject_id, class, decision_source, inputs, option_count, recommended_index, agent_confidence, predicted_key, predicted_confidence, predicted_precedents, predicted_at, choice_key, outcome, answered_at, event_id)
+SELECT workspace.id, $1::text, $2::uuid, $3::text, $4::text, $5::jsonb, $6::int, $7::int, $8::real, $9::text, $10::real, $11::int, clock_timestamp(), $12::text, $13::text, CASE WHEN $13::text = 'applied' THEN clock_timestamp() END, $14::uuid
+FROM workspace WHERE workspace.id = $15
 FOR KEY SHARE OF workspace
 `
 
@@ -32,6 +32,7 @@ type CreateSystem1ObservationParams struct {
 	PredictedPrecedents pgtype.Int4   `json:"predicted_precedents"`
 	ChoiceKey           pgtype.Text   `json:"choice_key"`
 	Outcome             pgtype.Text   `json:"outcome"`
+	EventID             pgtype.UUID   `json:"event_id"`
 	WorkspaceID         pgtype.UUID   `json:"workspace_id"`
 }
 
@@ -54,9 +55,38 @@ func (q *Queries) CreateSystem1Observation(ctx context.Context, arg CreateSystem
 		arg.PredictedPrecedents,
 		arg.ChoiceKey,
 		arg.Outcome,
+		arg.EventID,
 		arg.WorkspaceID,
 	)
 	return err
+}
+
+const listRecentIssueStatusChanges = `-- name: ListRecentIssueStatusChanges :many
+SELECT (details->>'to')::text AS to_status FROM activity_log
+WHERE issue_id = $1 AND action = 'status_changed' AND details->>'to' IS NOT NULL
+ORDER BY created_at DESC, id DESC
+LIMIT 3
+`
+
+// The last few statuses an issue moved to, newest first (route label input).
+func (q *Queries) ListRecentIssueStatusChanges(ctx context.Context, issueID pgtype.UUID) ([]string, error) {
+	rows, err := q.db.Query(ctx, listRecentIssueStatusChanges, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var to_status string
+		if err := rows.Scan(&to_status); err != nil {
+			return nil, err
+		}
+		items = append(items, to_status)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listSystem1PrecedentKeys = `-- name: ListSystem1PrecedentKeys :many

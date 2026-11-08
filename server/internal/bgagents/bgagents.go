@@ -202,3 +202,6 @@ func pick(src Source, c Chain, eligible func(Source, string) bool) Resolution {
 func WorkspaceEligible(a db.Agent) bool {
 	return a.Visibility == "workspace" && !a.ArchivedAt.Valid && a.RuntimeID.Valid
 }
+
+// Purpose is the agent_task_queue.purpose value for a job's tasks.
+func Purpose(j Job) string { return "bg:" + string(j) }

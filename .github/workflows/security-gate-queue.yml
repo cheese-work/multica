@@ -16,6 +16,8 @@ on:
   workflow_run:
     workflows: [security-gate]
     types: [completed]
+    # CHE-4385: only a merge-queue run can pass the job `if`; without this filter every security-gate run starts a skipped queue run.
+    branches: [gh-readonly-queue/**]
 
 permissions:
   contents: read
