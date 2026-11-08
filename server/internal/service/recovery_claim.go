@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 type RecoveryMode string
@@ -102,16 +103,18 @@ func (s *RecoveryClaimStore) Claim(ctx context.Context, p RecoveryClaimParams) (
 	return claim, RecoveryAdmitted, nil
 }
 
-// lineageRoot returns the top of the failed run's parent_task_id chain, or the
-// run itself when it has no recorded task row. The depth bound stops a corrupt
-// cycle from recursing forever.
+// lineageRoot returns the top of the failed run's ancestry, or the run itself
+// when it has no recorded task row. A native retry points at its parent via
+// parent_task_id and a fresh replay at its source via rerun_of_task_id; both
+// are retries of one lineage. The depth bound stops a corrupt cycle from
+// recursing forever.
 func lineageRoot(ctx context.Context, tx pgx.Tx, failedTaskID pgtype.UUID) (pgtype.UUID, error) {
 	var root pgtype.UUID
 	err := tx.QueryRow(ctx, `
 		WITH RECURSIVE chain(id, parent_task_id, depth) AS (
-			SELECT id, parent_task_id, 0 FROM agent_task_queue WHERE id = $1
+			SELECT id, COALESCE(parent_task_id, rerun_of_task_id), 0 FROM agent_task_queue WHERE id = $1
 			UNION ALL
-			SELECT q.id, q.parent_task_id, chain.depth + 1
+			SELECT q.id, COALESCE(q.parent_task_id, q.rerun_of_task_id), chain.depth + 1
 			FROM agent_task_queue q JOIN chain ON q.id = chain.parent_task_id
 			WHERE chain.depth < 1000
 		)
@@ -126,13 +129,13 @@ func lineageRoot(ctx context.Context, tx pgx.Tx, failedTaskID pgtype.UUID) (pgty
 }
 
 func (s *RecoveryClaimStore) refusal(ctx context.Context, tx pgx.Tx, p RecoveryClaimParams, root pgtype.UUID) (RecoveryClaimOutcome, error) {
-	// Both native modes and fresh replay answer to the native ceiling of the
-	// failed run's lineage: the original attempt is attempt one, so retries stop
-	// at ceiling-1, and an exhausted native lineage never earns a fresh replay.
+	// Every automatic retry of the lineage, native or replay, spends one budget:
+	// the original attempt is attempt one, so retries stop at ceiling-1, and an
+	// exhausted lineage never earns another retry from any writer.
 	var retries int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM recovery_claim WHERE workspace_id = $1 AND issue_id = $2 AND lineage_root_task_id = $3 AND mode IN ('native_resume', 'native_release') AND state <> 'released'`,
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM recovery_claim WHERE workspace_id = $1 AND issue_id = $2 AND lineage_root_task_id = $3 AND state <> 'released'`,
 		p.WorkspaceID, p.IssueID, root).Scan(&retries); err != nil {
-		return "", fmt.Errorf("count native recovery attempts: %w", err)
+		return "", fmt.Errorf("count recovery attempts: %w", err)
 	}
 	if retries >= p.NativeCeiling-1 {
 		return RecoveryNativeCeiling, nil
@@ -170,21 +173,28 @@ func (s *RecoveryClaimStore) refusal(ctx context.Context, tx pgx.Tx, p RecoveryC
 
 // MarkSubmitted records the successor task of a claim whose submission is known.
 func (s *RecoveryClaimStore) MarkSubmitted(ctx context.Context, id, successorTaskID pgtype.UUID) error {
-	return s.transition(ctx, id, `state = 'submitted', successor_task_id = $2`, `state = 'claimed'`, successorTaskID)
+	return s.MarkSubmittedIn(ctx, s.pool, id, successorTaskID)
+}
+
+// MarkSubmittedIn is MarkSubmitted on the caller's executor. Inside the
+// dispatch transaction it commits with the dispatch and rolls back with it, so
+// a claim is never submitted for a task that was not minted (CHE-4568).
+func (s *RecoveryClaimStore) MarkSubmittedIn(ctx context.Context, ex db.DBTX, id, successorTaskID pgtype.UUID) error {
+	return transition(ctx, ex, id, `state = 'submitted', successor_task_id = $2`, `state = 'claimed'`, successorTaskID)
 }
 
 // MarkAmbiguous keeps the claim's slot until Settle reconciles it.
 func (s *RecoveryClaimStore) MarkAmbiguous(ctx context.Context, id pgtype.UUID) error {
-	return s.transition(ctx, id, `state = 'ambiguous'`, `state IN ('claimed', 'submitted')`)
+	return transition(ctx, s.pool, id, `state = 'ambiguous'`, `state IN ('claimed', 'submitted')`)
 }
 
 // Settle ends a claim and frees its paced slot.
 func (s *RecoveryClaimStore) Settle(ctx context.Context, id pgtype.UUID, state RecoveryState) error {
-	return s.transition(ctx, id, `state = $2, settled_at = now()`, `state IN ('claimed', 'submitted', 'ambiguous')`, string(state))
+	return transition(ctx, s.pool, id, `state = $2, settled_at = now()`, `state IN ('claimed', 'submitted', 'ambiguous')`, string(state))
 }
 
-func (s *RecoveryClaimStore) transition(ctx context.Context, id pgtype.UUID, set, from string, args ...any) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE recovery_claim SET `+set+` WHERE id = $1 AND `+from, append([]any{id}, args...)...)
+func transition(ctx context.Context, ex db.DBTX, id pgtype.UUID, set, from string, args ...any) error {
+	tag, err := ex.Exec(ctx, `UPDATE recovery_claim SET `+set+` WHERE id = $1 AND `+from, append([]any{id}, args...)...)
 	if err != nil {
 		return fmt.Errorf("update recovery claim: %w", err)
 	}
@@ -215,19 +225,39 @@ func (s *RecoveryClaimStore) Discard(ctx context.Context, id pgtype.UUID) error 
 	return nil
 }
 
-// ReapSettled frees paced slots nobody will settle: claims whose caller died
-// before dispatching, and submitted claims whose successor already finished.
-// Without it the paced cap saturates forever.
+// dispatchedTask is the task a stale claim's writer dispatched, found from
+// evidence rather than from the claim's own state: the recorded successor, a
+// task derived from the failed run, or the autopilot run a provider-failure
+// reservation anchored. NULL means nothing was dispatched.
+// ponytail: per stale claim, not per request; index the derived columns if
+// unsettled claims ever pile up.
+const dispatchedTask = `(SELECT q.id FROM agent_task_queue q
+	WHERE q.id = c.successor_task_id OR q.parent_task_id = c.failed_task_id
+	   OR q.retry_of_task_id = c.failed_task_id OR q.rerun_of_task_id = c.failed_task_id
+	   OR q.autopilot_run_id IN (SELECT r.recovery_run_id FROM provider_failure_recovery r WHERE r.failed_task_id = c.failed_task_id)
+	ORDER BY (q.id = c.successor_task_id) DESC, q.created_at LIMIT 1)`
+
+// ReapSettled settles claims nobody else will, from what the database shows.
+// A stale claim whose dispatch committed (crash before MarkSubmitted, or an
+// autopilot task minted after the reservation) is bound to that task and keeps
+// its slot until the task ends. A stale claim with no dispatch and no
+// reservation never reached the queue, so it is removed and the failed run
+// becomes recoverable again. A reservation with no task yet stays ambiguous,
+// which holds its slot. Without this the paced cap saturates forever.
 func (s *RecoveryClaimStore) ReapSettled(ctx context.Context, workspaceID pgtype.UUID, now time.Time) error {
 	stale := now.Add(-recoveryStaleClaim)
 	for _, stmt := range []string{
-		`DELETE FROM recovery_claim WHERE workspace_id = $1 AND state = 'claimed' AND claimed_at < $2`,
+		`UPDATE recovery_claim c SET state = 'submitted', successor_task_id = ` + dispatchedTask + `
+		 WHERE c.workspace_id = $1 AND c.claimed_at < $2 AND c.successor_task_id IS NULL AND c.state IN ('claimed', 'submitted', 'ambiguous')
+		   AND ` + dispatchedTask + ` IS NOT NULL`,
 		`UPDATE recovery_claim c SET state = CASE q.status WHEN 'completed' THEN 'completed' ELSE 'failed' END, settled_at = now()
 		 FROM agent_task_queue q
 		 WHERE c.workspace_id = $1 AND c.state = 'submitted' AND c.claimed_at < $2 AND q.id = c.successor_task_id AND q.status IN ('completed', 'failed', 'cancelled')`,
-		`UPDATE recovery_claim SET state = 'reconciled', settled_at = now()
-		 WHERE workspace_id = $1 AND state = 'submitted' AND claimed_at < $2
-		   AND (successor_task_id IS NULL OR NOT EXISTS (SELECT 1 FROM agent_task_queue q WHERE q.id = successor_task_id))`,
+		`DELETE FROM recovery_claim c
+		 WHERE c.workspace_id = $1 AND c.claimed_at < $2 AND c.state IN ('claimed', 'submitted') AND ` + dispatchedTask + ` IS NULL
+		   AND NOT EXISTS (SELECT 1 FROM provider_failure_recovery r WHERE r.failed_task_id = c.failed_task_id)`,
+		`UPDATE recovery_claim c SET state = 'ambiguous'
+		 WHERE c.workspace_id = $1 AND c.claimed_at < $2 AND c.state IN ('claimed', 'submitted') AND ` + dispatchedTask + ` IS NULL`,
 	} {
 		if _, err := s.pool.Exec(ctx, stmt, workspaceID, stale); err != nil {
 			return fmt.Errorf("reap recovery claims: %w", err)
@@ -238,8 +268,9 @@ func (s *RecoveryClaimStore) ReapSettled(ctx context.Context, workspaceID pgtype
 
 // recoveryHold carries an admitted claim from a writer's gate to its outcome.
 type recoveryHold struct {
-	claim RecoveryClaim
-	held  bool
+	claim     RecoveryClaim
+	held      bool
+	submitted bool // marked inside the dispatch transaction
 }
 
 // claimRecovery asks the shared store to admit one recovery dispatch for the
@@ -275,14 +306,29 @@ func (s *TaskService) claimRecovery(ctx context.Context, hold *recoveryHold, iss
 	return true, nil
 }
 
-// finishRecoveryClaim records what the writer did with its claim: a successor
-// marks it submitted, a failed write discards it (nothing was dispatched, the
-// run stays recoverable), and a decision not to dispatch releases it.
-// ponytail: a crash between dispatch and this call leaves a claimed row until
-// ReapSettled drops it, which can allow one extra retry; add a dispatch-side
-// idempotency key if that ever matters.
-func (s *TaskService) finishRecoveryClaim(ctx context.Context, hold *recoveryHold, successorTaskID pgtype.UUID, dispatched bool, writeErr error) {
+// submitRecoveryClaim marks the claim submitted on the dispatch transaction's
+// own executor, so it commits or rolls back with the dispatch. A failure is
+// logged, not returned: the reaper resolves the claim from the queue.
+func (s *TaskService) submitRecoveryClaim(ctx context.Context, hold *recoveryHold, q *db.Queries, successorTaskID pgtype.UUID) {
 	if hold == nil || !hold.held {
+		return
+	}
+	if err := s.RecoveryClaims.MarkSubmittedIn(ctx, q.Conn(), hold.claim.ID, successorTaskID); err != nil {
+		slog.Warn("recovery claim: submit failed", "claim_id", util.UUIDToString(hold.claim.ID), "error", err)
+		return
+	}
+	hold.submitted = true
+}
+
+// finishRecoveryClaim records what the writer did with its claim: a failed
+// write discards it (nothing was dispatched, the run stays recoverable), a
+// dispatch outside a transaction marks it submitted, and a decision not to
+// dispatch releases it. A claim submitted inside the transaction is already
+// final once the write succeeded.
+// ponytail: a RerunIssue crash between its enqueue and this call leaves a
+// claimed row; ReapSettled binds it to the dispatched task.
+func (s *TaskService) finishRecoveryClaim(ctx context.Context, hold *recoveryHold, successorTaskID pgtype.UUID, dispatched bool, writeErr error) {
+	if hold == nil || !hold.held || hold.submitted && writeErr == nil {
 		return
 	}
 	ctx = context.WithoutCancel(ctx)

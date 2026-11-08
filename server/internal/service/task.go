@@ -6331,6 +6331,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 						return fmt.Errorf("copy retry channel delivery: %w", err)
 					}
 					retried = &child
+					s.submitRecoveryClaim(ctx, hold, qtx, child.ID)
 				}
 			case errors.Is(cerr, pgx.ErrNoRows):
 				// The statement wrote nothing: either the owning workspace was
@@ -7007,6 +7008,7 @@ func (s *TaskService) maybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	if err := noteRunInserted(ctx, qtx, parent.IssueID, child.ID); err != nil {
 		return nil, err
 	}
+	s.submitRecoveryClaim(ctx, hold, qtx, child.ID)
 	// CHE-607: AgentReadiness never ran for this admission — CreateRetryTask
 	// mints the child directly. Catch a held provider here, before the child
 	// can be claimed, and cancel it in the same transaction rather than

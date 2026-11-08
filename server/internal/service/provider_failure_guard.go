@@ -384,6 +384,9 @@ func (s *TaskService) reserveProviderFailureRecovery(ctx context.Context, q *db.
 		RecoveryRunID:    recoveryRunID,
 		RecoveryTaskID:   recoveryTaskID,
 	})
+	if err == nil && rows == 1 {
+		s.submitRecoveryClaim(ctx, hold, q, recoveryTaskID)
+	}
 	s.finishRecoveryClaim(ctx, hold, recoveryTaskID, err == nil && rows == 1, err)
 	if err != nil {
 		return false, fmt.Errorf("reserve provider failure recovery: %w", err)
