@@ -221,6 +221,14 @@ multica issue wakeup runs MUL-123 <wakeup-id>
 
 Creating one from a terminal as a member requires `--agent-id`; an agent creating one inside its own run wakes itself by default.
 
+A rule a person can trigger is an event rule on a comment, issue, reaction or attachment change whose actor filter does not exclude members. When the workspace `ask_guard_mode` is `warn` or `block`, an agent cannot register such a rule on its own unless it has one of these:
+
+- `--decision <request-id>` binds the rule to a decision request on this issue. The request must be asked or answered, and for the member in `--filter-actor-id` if you set one. One request binds one enabled wakeup at a time.
+- `--purpose observe` marks a rule that does not wait for a person. Each fire caused by a member is recorded as an audit event.
+- `--filter-actor-type agent` with no `--filter-actor-id` matches any agent and no member.
+
+In `block` mode the refusal is a 422 whose message gives the fix command. In `warn` mode the rule is created and an event is recorded.
+
 ### Following progress in a DM
 
 A DM follows the issues its agent creates for you. Members manage follows only in a DM they created, with `--chat`. An agent runs `multica issue follow <issue>` without `--chat`: the DM comes from its own task, and a task with no DM is refused. Child issues inherit their parent's active follow.
