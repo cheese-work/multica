@@ -42,7 +42,8 @@ class OneWorkflowPerPrPush(unittest.TestCase):
     def test_pr_guards_is_the_only_workflow_besides_ci_that_a_pr_push_starts(self):
         starters = {p.name for p in WF.glob("*.yml") if PR_EVENTS & triggers(load(p.name))}
         # CI (needs the PR merge commit) stays. Others start only on a path-filtered `pull_request` or a rare `dequeued`.
-        for name in starters - {"ci.yml", "pr-guards.yml"}:
+        # ci-policy.yml (CHE-3273) is the vendored ci-policy PR check: one run per PR push, same content in every enrolled repo.
+        for name in starters - {"ci.yml", "pr-guards.yml", "ci-policy.yml"}:
             on = load(name)["on"]
             self.assertTrue("paths" in on.get("pull_request", {}) or on.get("pull_request_target", {}).get("types") == ["dequeued"], name)
         self.assertIn("pr-guards.yml", starters)
@@ -233,7 +234,12 @@ class NoCommentOrCascadeRuns(unittest.TestCase):
                 chains[p.name] = on["workflow_run"]["workflows"]
         self.assertEqual(
             chains,
-            {"cd-deploy.yml": ["CD qualification build"], "security-gate-queue.yml": ["security-gate"]},
+            {
+                "cd-deploy.yml": ["CD qualification build"],
+                "security-gate-queue.yml": ["security-gate"],
+                # CHE-3273: the vendored ci-policy handoff -> queue status chain; one run per ci-policy-handoff run.
+                "ci-policy-queue.yml": ["ci-policy-handoff"],
+            },
         )
         # No push-to-main workflow listens to another one's push through `workflow_run` on CI or the gates.
         self.assertNotIn("CI", [w for ws in chains.values() for w in ws])
