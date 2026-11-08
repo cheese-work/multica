@@ -48,13 +48,15 @@ test("downloaded scanner binaries are checksum-pinned", () => {
 });
 
 // Luna FAIL on 7adaba3d6: Go autobuild runs the root Makefile, which CODEOWNERS does not cover, before the SARIF is sealed.
-// Both languages analyze from source (build-mode none), so no checkout-controlled build step runs.
-test("CodeQL runs build-mode none for every language: no autobuild, no setup-go, no checkout build step", () => {
+// Go does not support build-mode none (first scheduled run, 8 Nov 2026), so Go uses manual with a plain `go build` in server/.
+// JavaScript/TypeScript analyzes from source (build-mode none). No checkout-controlled Makefile ever runs.
+test("CodeQL: Go builds manually with plain go build, JS/TS uses none, no autobuild or make", () => {
   const job = wf.slice(wf.indexOf("  codeql:"), wf.indexOf("  image-scan:"));
-  assert.match(job, /language: go\s+build-mode: none/);
+  assert.match(job, /language: go\s+build-mode: manual/);
   assert.match(job, /language: javascript-typescript\s+build-mode: none/);
   assert.match(job, /build-mode: \$\{\{ matrix\.build-mode \}\}/);
-  assert.doesNotMatch(job, /autobuild|setup-go|\bmake\b/);
+  assert.match(job, /working-directory: server\s+run: go build \.\/\.\.\./);
+  assert.doesNotMatch(job.replace(/^\s*#.*$/gm, ""), /autobuild|\bmake\b/);
 });
 
 // Luna's FAIL on b7242fd47: this repo is public, so every artifact and step summary is world-readable. Finding detail
