@@ -1076,6 +1076,7 @@ jobs:
           python3 deploy/cd/test-deploy-approval.py
           python3 deploy/cd/test-authorize-c00.py
           python3 deploy/cd/test-post-deploy-readback.py
+          python3 deploy/cd/test-rollback-failed-readback.py
           python3 deploy/cd/test-build-cache.py
           python3 .github/scripts/test_cache_policy.py
           bash deploy/cd/test-admission.sh

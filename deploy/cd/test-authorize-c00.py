@@ -33,17 +33,24 @@ print(json.dumps(value))
 """
 
 
-def pull(sha=SHA, merged_by="congvc-dev", base="main", merged=True):
-    return {
+PR_NUMBER = 1234
+
+
+def pull(sha=SHA, merged_by="congvc-dev", base="main", merged=True, number=PR_NUMBER, detail_sha=None, detail_base=None):
+    """(list entry, detail). GitHub's commits/SHA/pulls list has no `merged_by`; only pulls/N does."""
+    listed = {
+        "number": number,
         "merged_at": "2026-11-08T03:00:00Z" if merged else None,
         "merge_commit_sha": sha,
         "base": {"ref": base},
+    }
+    detail = {
+        **listed,
+        "merge_commit_sha": detail_sha or sha,
+        "base": {"ref": detail_base or base},
         "merged_by": {"login": merged_by} if merged_by else None,
     }
-
-
-def run(run_id, jobs=None):
-    return {"id": run_id, "jobs": jobs or []}
+    return listed, detail
 
 
 class AuthorizeC00Tests(unittest.TestCase):
@@ -60,13 +67,23 @@ class AuthorizeC00Tests(unittest.TestCase):
         self.output = directory / "output"
         self.output.write_text("")
 
-    def authorize(self, event, actor="", head_sha=SHA, candidate="", extra="", pulls=None, runs=None, current_run="99"):
-        """Return (returncode, outputs, stderr). `runs` is newest-first [(id, [(job, conclusion)])]."""
-        fixtures = {f"repos/{REPO}/commits/{head_sha}/pulls": [] if pulls is None else pulls}
+    def authorize(self, event, actor="", head_sha=SHA, candidate="", extra="", pulls=None, runs=None, current_run="99", detail_failure=False):
+        """Return (returncode, outputs, stderr). `runs` is newest-first [(id, [(job, conclusion)])]; `pulls` is [pull()]."""
+        pulls = pulls or []
+        fixtures = {f"repos/{REPO}/commits/{head_sha}/pulls": [listed for listed, _ in pulls]}
+        for listed, detail in pulls:
+            fixtures[f"repos/{REPO}/pulls/{listed['number']}"] = None if detail_failure else detail
         runs = runs or []
-        fixtures[f"repos/{REPO}/actions/workflows/cd-deploy.yml/runs?branch=main&status=completed&per_page=20"] = {
-            "workflow_runs": [{"id": rid} for rid, _ in runs]
-        }
+        # 100 runs a page, as the script asks; a short page ends the history.
+        pages = [runs[i:i + 100] for i in range(0, len(runs), 100)] or [[]]
+        for number, page in enumerate(pages, start=1):
+            fixtures[f"repos/{REPO}/actions/workflows/cd-deploy.yml/runs?branch=main&status=completed&per_page=100&page={number}"] = {
+                "workflow_runs": [{"id": rid} for rid, _ in page]
+            }
+        if len(pages[-1]) == 100:
+            fixtures[f"repos/{REPO}/actions/workflows/cd-deploy.yml/runs?branch=main&status=completed&per_page=100&page={len(pages) + 1}"] = {
+                "workflow_runs": []
+            }
         for rid, jobs in runs:
             fixtures[f"repos/{REPO}/actions/runs/{rid}/jobs?per_page=100"] = {
                 "jobs": [{"name": name, "conclusion": conclusion} for name, conclusion in jobs]
@@ -125,6 +142,8 @@ class AuthorizeC00Tests(unittest.TestCase):
             "other base": [pull(base="release")],
             "different merge commit": [pull(sha=OTHER_SHA)],
             "no merger recorded": [pull(merged_by=None)],
+            "detail says another merge commit": [pull(detail_sha=OTHER_SHA)],
+            "detail says another base": [pull(detail_base="release")],
         }
         for name, pulls in cases.items():
             with self.subTest(case=name):
@@ -132,6 +151,21 @@ class AuthorizeC00Tests(unittest.TestCase):
                 code, out, text = self.authorize("workflow_run", pulls=pulls)
                 self.assertEqual(code, 0, text)
                 self.assertEqual(out["authorized"], "false")
+
+    def test_the_merger_comes_from_the_pull_detail_not_the_commit_list(self):
+        # The commit list carries no merged_by (P1, review of e0d5b41ab4). Two PRs
+        # share the commit; only the one whose merge commit is HEAD_SHA counts.
+        other = pull(sha=OTHER_SHA, merged_by="congvc-dev", number=7)
+        mine = pull(merged_by="someone-else")
+        self.assertNotIn("merged_by", mine[0])
+        code, out, text = self.authorize("workflow_run", pulls=[other, mine])
+        self.assertEqual((code, out["authorized"]), (0, "false"), text)
+
+    def test_a_pull_detail_failure_fails_closed_and_loud(self):
+        code, out, text = self.authorize("workflow_run", pulls=[pull()], detail_failure=True)
+        self.assertNotEqual(code, 0)
+        self.assertNotEqual(out.get("authorized"), "true")
+        self.assertIn("GitHub API read failed", text)
 
     def test_api_failure_fails_closed_and_loud(self):
         fixtures = {f"repos/{REPO}/commits/{SHA}/pulls": None}
@@ -187,6 +221,31 @@ class AuthorizeC00Tests(unittest.TestCase):
         runs = [(99, [("deploy", "failure")]), (5, [("deploy", "skipped")]), (4, [("deploy", "cancelled")])]
         code, out, text = self.authorize("workflow_run", pulls=[pull()], runs=runs)
         self.assertEqual((code, out["authorized"]), (0, "true"), text)
+
+    def test_suspension_does_not_expire_after_many_stopped_runs(self):
+        # P2, review of e0d5b41ab4: 20 built-and-stopped runs used to push a failed deploy out of view.
+        stopped = [(1000 - i, [("deploy", "skipped"), ("readback", "skipped")]) for i in range(130)]
+        runs = stopped + [(500, [("deploy", "failure")]), (400, [("deploy", "success")])]
+        code, out, text = self.authorize("workflow_run", pulls=[pull()], runs=runs)
+        self.assertEqual((code, out["authorized"]), (0, "false"), text)
+        self.assertIn("suspended", text)
+
+    def test_a_deploy_found_after_many_stopped_runs_decides(self):
+        stopped = [(1000 - i, [("deploy", "skipped")]) for i in range(130)]
+        code, out, text = self.authorize("workflow_run", pulls=[pull()], runs=stopped + [(500, [("deploy", "success")])])
+        self.assertEqual((code, out["authorized"]), (0, "true"), text)
+
+    def test_history_that_never_deployed_is_not_suspended(self):
+        stopped = [(1000 - i, [("deploy", "skipped")]) for i in range(130)]
+        code, out, text = self.authorize("workflow_run", pulls=[pull()], runs=stopped)
+        self.assertEqual((code, out["authorized"]), (0, "true"), text)
+
+    def test_an_unreadable_history_fails_closed(self):
+        # Five full pages of stopped runs and no deploy in sight: unknown, so do not deploy.
+        stopped = [(10000 - i, [("deploy", "skipped")]) for i in range(500)]
+        code, out, text = self.authorize("workflow_run", pulls=[pull()], runs=stopped)
+        self.assertEqual((code, out["authorized"]), (0, "false"), text)
+        self.assertIn("suspended", text)
 
     def test_a_dispatch_is_never_suspended(self):
         # The owner's dispatch is the way out of a suspension.

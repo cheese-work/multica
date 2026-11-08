@@ -308,6 +308,7 @@ python3 deploy/cd/test-candidate-preflight.py
 python3 deploy/cd/test-deploy-approval.py
 python3 deploy/cd/test-authorize-c00.py
 python3 deploy/cd/test-post-deploy-readback.py
+python3 deploy/cd/test-rollback-failed-readback.py
 bash deploy/cd/test-isolated-qualification.sh
 bash deploy/cd/test-tuple-snapshot.sh
 bash deploy/cd/test-quiescence.sh
@@ -678,8 +679,9 @@ every approval and C00 mutation lock.
 
 The owner's merge deploys (CHE-4582, D5 = A); everything else builds and stops
 (CHE-4495). After a successful qualification, `authorize-c00` asks the GitHub
-API which pull request has the commit as its `main` merge commit and who merged
-it. If the merger is `congvc-dev` or a login in the repository variable
+API which pull request has the commit as its `main` merge commit, then reads
+that pull request's own record for `merged_by` (the commit's pull list has none).
+If the merger is `congvc-dev` or a login in the repository variable
 `C00_DEPLOY_AUTHORIZERS` (comma list; CHE-3123 sets the agent merge identity
 there, no workflow change), and `candidate-preflight` found the commit
 eligible, `prepare-release-candidate`, `admission` and `deploy` run with no
@@ -704,12 +706,20 @@ After `deploy` succeeds, `readback` (outside the C00 lock) runs
 `post-deploy-readback.sh` for 15 minutes (CHE-2365): health of the public route
 and upstream, then the running commit (the deployed one or a descendant) and the
 image digests against the admitted manifest. A failed `deploy` or `readback`
-suspends automatic deploys: the next `authorize-c00` finds the latest finished
-`main` run of this workflow with a failed `deploy`/`readback` job and builds
-without deploying. A later successful deploy, such as the owner's dispatch,
-lifts it; a dispatch is never suspended. A failed cutover rolls back by digest
-inside `cutover.sh`; a failed readback after a good cutover suspends but does
-not roll back by itself. Merge-queue merges report the enqueuer or merger as
+suspends automatic deploys: the next `authorize-c00` walks the finished `main`
+runs of this workflow, newest first, 100 per page and at most 5 pages, until one
+had a `deploy`/`readback` job that succeeded or failed. A failure there means
+suspended, however many built-and-stopped runs came since. Finding no deploy in
+all 5 pages is unknown and stays suspended; a history that ends sooner (never
+deployed) is not suspended. A later successful deploy, such as the owner's
+dispatch, lifts it; a dispatch is never suspended. A failed cutover rolls back
+by digest inside `cutover.sh`. A failed `readback` also starts the `rollback`
+job, under the C00 lock: `rollback-failed-readback.sh` runs `cutover.sh
+rollback` (retained predecessor, no down migration, no restore) and reads back
+the health and SHA. It skips when C00 no longer runs the deployed commit. The
+run stays red, so the suspension holds. A rollback refused by the controller
+(ledger below `minimum_rollback_version`, failed gate) fails the job and needs a
+person. Merge-queue merges report the enqueuer or merger as
 `merged_by`; a merge by a bot not on the list builds and stops.
 
 A dispatch with

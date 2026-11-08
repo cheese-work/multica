@@ -109,6 +109,18 @@ class DeployApprovalTests(unittest.TestCase):
         self.assertIn("post-deploy-readback.sh", text)
         self.assertIn("900", text)
 
+    def test_failed_readback_rolls_back_under_the_c00_lock(self):
+        rollback = self.jobs["rollback"]
+        self.assertEqual(needs(rollback), ["admission", "readback"])
+        self.assertEqual(rollback["runs-on"], C00_RUNNER)
+        self.assertEqual(rollback["environment"], RUNTIME)
+        self.assertEqual(rollback["concurrency"]["group"], "cd-deploy-c00")
+        self.assertIn("needs.readback.result == 'failure'", rollback["if"])
+        self.assertNotIn("cancelled", rollback["if"])
+        self.assertIn("rollback-failed-readback.sh", yaml.safe_dump(rollback))
+        # The readback job stays the one that fails, so the suspension still reads it.
+        self.assertNotIn("continue-on-error", yaml.safe_dump(self.jobs["readback"]))
+
     def test_dispatch_with_candidate_sha_issues_the_candidate_itself(self):
         prepare = self.jobs["prepare-release-candidate"]
         self.assertIn("needs.authorize-c00.outputs.candidate_sha != ''", prepare["if"])
