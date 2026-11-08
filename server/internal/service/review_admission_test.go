@@ -442,9 +442,12 @@ func TestAdmissionSwitchOffStartsTheReviewerRun(t *testing.T) {
 }
 
 func TestAdmissionEnabledFromEnv(t *testing.T) {
-	for v, want := range map[string]bool{"": false, "false": false, "0": false, "true": true, " TRUE ": true, "1": true} {
-		if got := admissionEnabledFromEnv(func(string) string { return v }); got != want {
-			t.Fatalf("MULTICA_REVIEW_ADMISSION=%q: enabled = %v, want %v", v, got, want)
+	for _, c := range []struct {
+		value string
+		want  bool
+	}{{"", false}, {"false", false}, {"0", false}, {"true", true}, {" TRUE ", true}, {"1", true}} {
+		if got := admissionEnabledFromEnv(func(string) string { return c.value }); got != c.want {
+			t.Fatalf("MULTICA_REVIEW_ADMISSION=%q: enabled = %v, want %v", c.value, got, c.want)
 		}
 	}
 }
