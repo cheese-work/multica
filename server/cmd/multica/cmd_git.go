@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -78,3 +80,36 @@ func checkPushArgs(args []string, dir string) error {
 	}
 	return nil
 }
+
+// readTokenMargin is how close to expiry the run's read token is refreshed.
+const readTokenMargin = 10 * time.Minute
+
+var gitReadTokenCmd = &cobra.Command{
+	Use:   "read-token",
+	Short: "Print the run's read-only GitHub token, refreshing it through the push broker when it nears expiry",
+	Long: "Used by the `gh` wrapper in a restricted run. The token is cached for the run (MULTICA_READ_TOKEN_FILE, default ~/.multica/read-token);\n" +
+		"a refresh revokes the previous token.",
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		sock := os.Getenv(broker.SocketEnv)
+		if sock == "" {
+			return fmt.Errorf("%s is not set: this run has no push broker", broker.SocketEnv)
+		}
+		cache := os.Getenv("MULTICA_READ_TOKEN_FILE")
+		if cache == "" {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return err
+			}
+			cache = filepath.Join(home, ".multica", "read-token")
+		}
+		tok, err := broker.CachedReadToken(cmd.Context(), sock, cache, readTokenMargin)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(cmd.OutOrStdout(), tok)
+		return err
+	},
+}
+
+func init() { gitCmd.AddCommand(gitReadTokenCmd) }

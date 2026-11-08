@@ -148,10 +148,30 @@ type ReadToken struct {
 // GetReadToken asks the broker for a read-only token. The broker revokes it
 // when the run ends.
 func GetReadToken(ctx context.Context, socket string) (ReadToken, error) {
+	return readToken(ctx, socket, "/readtoken", "")
+}
+
+// RefreshReadToken swaps the token the caller holds, stale, for a new one. The
+// broker mints first and revokes stale after, so a failed mint leaves the old
+// token working. A caller that holds a token another process already replaced
+// gets that newer token back, not a third one. An empty stale mints like
+// GetReadToken.
+func RefreshReadToken(ctx context.Context, socket, stale string) (ReadToken, error) {
+	id := ""
+	if stale != "" {
+		id = grant{token: stale}.id()
+	}
+	return readToken(ctx, socket, "/readtoken/refresh", id)
+}
+
+func readToken(ctx context.Context, socket, path, staleID string) (ReadToken, error) {
 	var t ReadToken
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://broker/readtoken", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://broker"+path, nil)
 	if err != nil {
 		return t, err
+	}
+	if staleID != "" {
+		req.Header.Set(staleTokenHeader, staleID)
 	}
 	resp, err := unixClient(socket).Do(req)
 	if err != nil {
@@ -209,4 +229,50 @@ func headRef(repoDir string) (string, error) {
 		return "", errors.New("push needs a checked-out branch, not a detached HEAD")
 	}
 	return ref, nil
+}
+
+// staleTokenHeader carries the hash prefix of the token being replaced.
+const staleTokenHeader = "X-Multica-Stale-Token"
+
+// CachedReadToken is what the `gh` shim calls before each gh command. It keeps
+// the run's token in cache (mode 0600, under the per-run HOME) and returns it
+// while it has more than margin left; past that it refreshes through the
+// broker, which revokes the old token. An unreadable cache is replaced.
+func CachedReadToken(ctx context.Context, socket, cache string, margin time.Duration) (string, error) {
+	var have ReadToken
+	if b, err := os.ReadFile(cache); err == nil {
+		if json.Unmarshal(b, &have) != nil {
+			have = ReadToken{}
+		}
+	}
+	if have.Token != "" && time.Until(have.ExpiresAt) > margin {
+		return have.Token, nil
+	}
+	next, err := RefreshReadToken(ctx, socket, have.Token)
+	if err != nil {
+		return "", err
+	}
+	b, err := json.Marshal(next)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(cache), 0o700); err != nil {
+		return "", err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(cache), ".read-token-*") // mode 0600
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(tmp.Name())
+	_, werr := tmp.Write(b)
+	if cerr := tmp.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		return "", werr
+	}
+	if err := os.Rename(tmp.Name(), cache); err != nil {
+		return "", err
+	}
+	return next.Token, nil
 }

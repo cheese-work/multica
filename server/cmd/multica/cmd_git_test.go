@@ -70,3 +70,10 @@ func TestGitPRNoBroker(t *testing.T) {
 		t.Fatalf("pr without a broker: %v", err)
 	}
 }
+
+func TestGitReadTokenNoBroker(t *testing.T) {
+	t.Setenv("MULTICA_BROKER_SOCKET", "")
+	if err := gitReadTokenCmd.RunE(gitReadTokenCmd, nil); err == nil || !strings.Contains(err.Error(), "no push broker") {
+		t.Fatalf("read-token without a broker: %v", err)
+	}
+}

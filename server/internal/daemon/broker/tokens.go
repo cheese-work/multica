@@ -198,17 +198,25 @@ func or(d, def time.Duration) time.Duration {
 	return d
 }
 
-// handleReadToken hands the run a read-only token for its own repository. The
-// token is the one credential that enters the sandbox (plan 3.2); the broker
-// keeps its own copy and revokes it when the run ends. An elevated run reads
+// readTokenAllowed refuses a run that may not hold a read token. The token is
+// the one credential that enters the sandbox (plan 3.2). An elevated run reads
 // through the read proxy instead, so it gets none.
-func (b *Broker) handleReadToken(w http.ResponseWriter, r *http.Request) {
+func (b *Broker) readTokenAllowed(w http.ResponseWriter) bool {
 	switch {
 	case b.pin.Tokens == nil:
 		http.Error(w, "this run has no GitHub access", http.StatusNotImplemented)
-		return
+		return false
 	case b.pin.Elevation != nil:
 		http.Error(w, "an elevated run reads through the read proxy", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
+// handleReadToken hands the run a read-only token for its own repository. The
+// broker keeps its own copy and revokes it when the run ends.
+func (b *Broker) handleReadToken(w http.ResponseWriter, r *http.Request) {
+	if !b.readTokenAllowed(w) {
 		return
 	}
 	if !b.reserveRead() {
@@ -229,6 +237,83 @@ func (b *Broker) handleReadToken(w http.ResponseWriter, r *http.Request) {
 	b.reads = append(b.reads, g)
 	b.rdmu.Unlock()
 	_ = json.NewEncoder(w).Encode(ReadToken{Token: g.token, ExpiresAt: g.expires})
+}
+
+// handleReadRefresh replaces the read token named in staleTokenHeader (plan
+// 3.9: revoked on every refresh of the previous token). The new token is
+// minted first, so a failed mint leaves the old one working; the old one is
+// revoked before the reply, so a reply means the old token is dead. Refreshes
+// run one at a time: a caller whose stale token is already gone gets the
+// newest token instead of causing a third mint. The swap takes the old token's
+// slot, so refreshing never raises the count under maxReadTokens.
+func (b *Broker) handleReadRefresh(w http.ResponseWriter, r *http.Request) {
+	if !b.readTokenAllowed(w) {
+		return
+	}
+	b.refmu.Lock()
+	defer b.refmu.Unlock()
+	stale := r.Header.Get(staleTokenHeader)
+	idx := b.readIndex(stale)
+	if stale != "" && idx < 0 {
+		if g, ok := b.newestRead(); ok { // another caller already replaced it
+			_ = json.NewEncoder(w).Encode(ReadToken{Token: g.token, ExpiresAt: g.expires})
+			return
+		}
+	}
+	if idx < 0 && !b.reserveRead() {
+		http.Error(w, "this run holds the most read tokens it may", http.StatusTooManyRequests)
+		return
+	}
+	g, status, err := b.mintWith(r.Context(), readPerms)
+	b.rdmu.Lock()
+	if idx < 0 {
+		b.pending--
+	}
+	if err != nil {
+		b.rdmu.Unlock()
+		b.log.Warn("broker read token refresh", "task", b.pin.Task, "repo", b.pin.Repo, "status", status, "error", err)
+		http.Error(w, err.Error(), status)
+		return
+	}
+	var old *grant
+	if i := b.readIndexLocked(stale); i >= 0 {
+		o := b.reads[i]
+		old = &o
+		b.reads = append(b.reads[:i], b.reads[i+1:]...)
+	}
+	b.reads = append(b.reads, g)
+	b.rdmu.Unlock()
+	if old != nil {
+		b.revoke(*old) // a failure retries in the background, then alerts; the refresh already succeeded
+	}
+	_ = json.NewEncoder(w).Encode(ReadToken{Token: g.token, ExpiresAt: g.expires})
+}
+
+func (b *Broker) readIndex(id string) int {
+	b.rdmu.Lock()
+	defer b.rdmu.Unlock()
+	return b.readIndexLocked(id)
+}
+
+func (b *Broker) readIndexLocked(id string) int {
+	if id == "" {
+		return -1
+	}
+	for i, g := range b.reads {
+		if g.id() == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func (b *Broker) newestRead() (grant, bool) {
+	b.rdmu.Lock()
+	defer b.rdmu.Unlock()
+	if len(b.reads) == 0 {
+		return grant{}, false
+	}
+	return b.reads[len(b.reads)-1], true
 }
 
 // reserveRead takes one of the maxReadTokens slots before a mint starts, so

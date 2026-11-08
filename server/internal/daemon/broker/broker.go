@@ -102,6 +102,7 @@ type Broker struct {
 	open    map[*elevOp]struct{} // authorized, not yet acknowledged by the server
 	changed chan struct{}        // closed and replaced when open or its state changes
 
+	refmu   sync.Mutex // one read-token refresh at a time
 	rdmu    sync.Mutex // guards reads
 	reads   []grant    // read tokens handed to the run, revoked by Close
 	pending int        // mints in flight that hold a slot under maxReadTokens
@@ -133,6 +134,7 @@ func New(p Pin, socket string, log *slog.Logger) (*Broker, error) {
 	mux.HandleFunc("POST /push", b.track(b.handlePush))
 	mux.HandleFunc("POST /pr", b.track(b.handlePR))
 	mux.HandleFunc("POST /readtoken", b.track(b.handleReadToken))
+	mux.HandleFunc("POST /readtoken/refresh", b.track(b.handleReadRefresh))
 	mux.HandleFunc("POST /base-refresh", b.track(b.handleRefresh))
 	b.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
