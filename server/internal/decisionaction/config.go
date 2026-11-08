@@ -51,6 +51,9 @@ func SettingsDigest(workspaceID string, keys map[string]json.RawMessage) (string
 var configFields = []string{
 	"agent.instructions", "squad.instructions", "workspace.context",
 	"workflow.steps", "workflow.instructions", SettingsField,
+	// Dedicated identities (CHE-4462 E0a): none is a settings key, so the generic
+	// patch still refuses routing_agent and delegated_governed_writes.
+	"workspace.routing_agent", "workspace.delegated_writes", "agent.skills",
 }
 
 // SettingsField is the field a workspace settings patch writes.
