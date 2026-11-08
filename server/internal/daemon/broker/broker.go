@@ -176,6 +176,7 @@ func (b *Broker) Close() error {
 	b.revokeReads()
 	b.stop()
 	b.wg.Wait()
+	b.revokeLeftovers()
 	if b.baseRepo != "" {
 		_ = os.RemoveAll(b.baseRepo)
 	}

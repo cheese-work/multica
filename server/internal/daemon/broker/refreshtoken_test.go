@@ -251,6 +251,63 @@ func TestRefreshRevokeGaveUpRetriedAtClose(t *testing.T) {
 	}
 }
 
+// Forces the ordering where Close sweeps the unrevoked tokens while the retry
+// worker is still between "gave up" and "marked as given up" (it is held in the
+// Alert callback). The old token must still be revoked before Close returns.
+func TestCloseRevokesGivingUpToken(t *testing.T) {
+	t.Parallel()
+	inAlert, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	var f *fakeGitHub
+	r, f, b := readRig(t, func(p *Pin) {
+		p.Tokens.RetryFor = 30 * time.Millisecond
+		p.Tokens.Alert = func(Alert) {
+			once.Do(func() {
+				f.mu.Lock()
+				f.failRevoke = 0 // GitHub recovers before the run ends
+				f.mu.Unlock()
+				close(inAlert)
+			})
+			<-release
+		}
+	})
+	a, err := GetReadToken(context.Background(), r.socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.failRevoke = -1
+	f.mu.Unlock()
+	cur, err := RefreshReadToken(context.Background(), r.socket, a.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-inAlert:
+	case <-time.After(3 * time.Second):
+		t.Fatal("retries never ran out")
+	}
+	closed := make(chan struct{})
+	go func() { b.Close(); close(closed) }()
+	// Close revokes the current token after it has taken its snapshot of the
+	// unrevoked ones, so this marks the point to let the retry worker go on.
+	for deadline := time.Now().Add(3 * time.Second); f.isLive(cur.Token); {
+		if time.Now().After(deadline) {
+			t.Fatal("Close never revoked the current token")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(release)
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return")
+	}
+	if f.isLive(a.Token) || f.liveCount() != 0 {
+		t.Fatalf("Close left a token live (previous live: %v, total %d)", f.isLive(a.Token), f.liveCount())
+	}
+}
+
 func TestWriteGHShim(t *testing.T) {
 	// Not parallel: a fork while a script is still open for writing fails with "text file busy".
 	dir := t.TempDir()

@@ -175,11 +175,12 @@ func (b *Broker) retryRevoke(t *Tokens, g grant, err error) {
 			}
 			wait = min(wait*2, 30*time.Second)
 		case <-giveUp.C:
+			b.markAlerted(g)
 			b.alert(t, g, err)
-			b.markGaveUp(g) // still tracked: Close tries once more
-			return
+			return // still tracked: Close tries once more, after this worker has ended
 		case <-b.bg.Done(): // one last try before the broker goes away
 			if err = b.dropOnce(t, g); err != nil {
+				b.markAlerted(g)
 				b.alert(t, g, err)
 			}
 			return
@@ -244,11 +245,11 @@ func (b *Broker) handleReadToken(w http.ResponseWriter, r *http.Request) {
 }
 
 // staleRead is a replaced read token that GitHub may still accept. It stays
-// tracked until a revoke succeeds. Its own retry goroutine owns it until that
-// goroutine gives up; from then on Close owns the last attempt.
+// tracked until a revoke succeeds. Close makes the last attempt, after every
+// retry worker has ended, so the worker and Close never race for the token.
 type staleRead struct {
-	g      grant
-	gaveUp bool
+	g       grant
+	alerted bool // the expiry alert is out; Close does not repeat it
 }
 
 func (b *Broker) settle(g grant) {
@@ -257,10 +258,10 @@ func (b *Broker) settle(g grant) {
 	b.rdmu.Unlock()
 }
 
-func (b *Broker) markGaveUp(g grant) {
+func (b *Broker) markAlerted(g grant) {
 	b.rdmu.Lock()
 	if s := b.unrevoked[g.id()]; s != nil {
-		s.gaveUp = true
+		s.alerted = true
 	}
 	b.rdmu.Unlock()
 }
@@ -389,11 +390,6 @@ func (b *Broker) revokeReads() {
 	b.rdmu.Lock()
 	reads := b.reads
 	b.reads = nil
-	for _, s := range b.unrevoked { // retries that ran out: one last try each
-		if s.gaveUp {
-			reads = append(reads, s.g)
-		}
-	}
 	b.rdmu.Unlock()
 	var wg sync.WaitGroup
 	for _, g := range reads {
@@ -401,6 +397,30 @@ func (b *Broker) revokeReads() {
 		go func() {
 			defer wg.Done()
 			b.revoke(g)
+		}()
+	}
+	wg.Wait()
+}
+
+// revokeLeftovers makes one last try at every replaced token still tracked.
+// Close calls it after the retry workers have ended: whatever is left here
+// outlived its retries, and nothing else can still be revoking it.
+func (b *Broker) revokeLeftovers() {
+	b.rdmu.Lock()
+	left := make([]*staleRead, 0, len(b.unrevoked))
+	for _, s := range b.unrevoked {
+		left = append(left, s)
+	}
+	b.rdmu.Unlock()
+	t := b.pin.Tokens
+	var wg sync.WaitGroup
+	for _, s := range left {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := b.dropOnce(t, s.g); err != nil && !s.alerted {
+				b.alert(t, s.g, err)
+			}
 		}()
 	}
 	wg.Wait()
