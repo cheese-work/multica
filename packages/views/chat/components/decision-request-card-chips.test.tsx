@@ -64,4 +64,48 @@ describe("DecisionRequestCard compact issue chips", () => {
     expect(screen.getByTestId("decision-request-source-issue")).toHaveTextContent("CHE-2204");
     expect(screen.getByTestId("decision-request-source-title")).toHaveTextContent("Decision cards stay readable");
   });
+
+  it("folds a card a batch answer closed into one row", () => {
+    renderCard({ state: "answered", answered_by_batch_request_id: "batch-1", issue_title: "Decision cards stay readable" } as never);
+    expect(screen.getByTestId("decision-request-folded")).toHaveTextContent("CHE-2204: answered by the batch card");
+    expect(screen.queryByTestId("decision-request-card")).toBeNull();
+  });
+
+  it("tells a batch card how many cards its answer closes", () => {
+    renderCard({ covers_request_ids: ["a", "b", "c"] } as never);
+    expect(screen.getByTestId("decision-request-covers")).toHaveTextContent("Closed with this answer: 3");
+  });
+
+  it("lists every decision a batch answer closes, so no covered decision is hidden", () => {
+    renderCard({
+      covers_request_ids: ["a", "b"],
+      covered_cards: [
+        { id: "a", issue_id: "i1", issue_identifier: "CHE-1", issue_title: "Small fix", decision: "Hold or proceed?" },
+        { id: "b", issue_id: "i2", issue_identifier: "CHE-2", issue_title: "Redesign", decision: "Ship the redesign?" },
+      ],
+    } as never);
+    const items = screen.getAllByTestId("decision-request-covered-item");
+    expect(items).toHaveLength(2);
+    expect(items[0]).toHaveTextContent("CHE-1 Small fix: Hold or proceed?");
+    expect(items[1]).toHaveTextContent("CHE-2 Redesign: Ship the redesign?");
+  });
+
+  it("shows each covered option with its meaning, so equal labels cannot hide different actions", () => {
+    renderCard({
+      covers_request_ids: ["a", "b"],
+      covered_cards: [
+        { id: "a", issue_id: "i1", issue_identifier: "CHE-1", decision: "Deploy?", options: [{ label: "Approve", what_happens: "Deploys the staging build." }] },
+        { id: "b", issue_id: "i2", issue_identifier: "CHE-2", decision: "Deploy?", options: [{ label: "Approve", what_happens: "Deletes the production data." }] },
+      ],
+    } as never);
+    const items = screen.getAllByTestId("decision-request-covered-item");
+    expect(items[0]).toHaveTextContent("Approve: Deploys the staging build.");
+    expect(items[1]).toHaveTextContent("Approve: Deletes the production data.");
+  });
+
+  it("offers no answer form while a covered decision is missing, and says why", () => {
+    renderCard({ state: "open", covers_request_ids: ["a", "b"], covered_cards: [] } as never);
+    expect(screen.getByRole("alert")).toHaveTextContent("Cannot load the decisions this answer would close");
+    expect(screen.queryByTestId("decision-request-answer")).toBeNull();
+  });
 });
