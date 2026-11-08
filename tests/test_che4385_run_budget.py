@@ -194,13 +194,20 @@ esac
 
 
 class NoCommentOrCascadeRuns(unittest.TestCase):
-    def test_no_workflow_starts_on_a_new_comment(self):
-        # security-gate keeps `edited`/`deleted` only, so a PASS is revoked without a dispatch; `created` is the cost.
+    def test_only_security_gate_starts_on_a_comment_and_it_includes_created(self):
+        # `created` is restored (Cheese, CHE-4385): a new FAIL verdict must flip the status without waiting for a sweep.
+        # The job-level `if` skips every comment that is not a trusted verdict, but that run still counts (about 284/day).
         for p in WF.glob("*.yml"):
             on = load(p.name)["on"]
             if "issue_comment" in triggers(load(p.name)):
                 self.assertEqual(p.name, "security-gate.yml")
-                self.assertEqual(sorted(on["issue_comment"]["types"]), ["deleted", "edited"])
+                self.assertEqual(sorted(on["issue_comment"]["types"]), ["created", "deleted", "edited"])
+
+    def test_the_queue_workflow_starts_only_for_a_merge_queue_branch(self):
+        # `workflow_run` runs only from main; the branch filter stops a non-queue security-gate run starting a skipped queue run.
+        run = load("security-gate-queue.yml")["on"]["workflow_run"]
+        self.assertEqual(run["workflows"], ["security-gate"])
+        self.assertEqual(run["branches"], ["gh-readonly-queue/**"])
 
     def test_security_gate_runs_for_the_queue_a_dispatch_a_comment_edit_and_pr_guards_only(self):
         self.assertEqual(triggers(load("security-gate.yml")), {"workflow_call", "merge_group", "workflow_dispatch", "issue_comment"})

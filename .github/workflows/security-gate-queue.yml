@@ -15,8 +15,8 @@ on:
   workflow_run:
     workflows: [security-gate]
     types: [completed]
-    # CHE-4639: the trigger filter, not the job `if`, avoids a skipped run for every non-queue security-gate run.
-    branches: ['gh-readonly-queue/**']
+    # CHE-4385: only a merge-queue run can pass the job `if`; without this filter every security-gate run starts a skipped queue run.
+    branches: [gh-readonly-queue/**]
 
 permissions:
   contents: read
