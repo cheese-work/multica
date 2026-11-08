@@ -6,9 +6,10 @@
 # checker. The job checks out the base SHA and only FETCHES head objects; gate.py reads the head's `.github` tree as data.
 # Do not add a head checkout, a head `run:` or a secret to this workflow.
 # `pull_request_review` and `merge_group` run the definition from the PR merge / queue commit, which the PR can edit, so
-# neither may compute or name a verdict. `merge_group` here only runs a no-op `queue-handoff` job, so the trusted
-# ci-policy-queue.yml (`workflow_run`, default branch) has a run to follow and posts the `ci-policy` queue status itself.
-# After a policy-changed approval, re-run this job (a re-run keeps the trusted definition).
+# neither may compute or name a verdict: they only run the no-op `handoff` job (no token, no permissions). The trusted
+# ci-policy-queue.yml (`workflow_run`, default branch) follows those runs: after a review change it re-runs this PR check
+# and re-evaluates the open queue groups, and for a queue run it posts the `ci-policy` queue status itself.
+# After a policy-changed approval, the review event re-runs this job on its own (a re-run keeps the trusted definition).
 # Not a required check until D-9 promotion; a push trigger is never needed (D-4).
 
 name: ci-policy
@@ -16,6 +17,8 @@ name: ci-policy
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted, dismissed]
   merge_group:
 
 permissions:
@@ -28,9 +31,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  handoff:
+    # A review or queue run must not report a check named `ci-policy`: that name is not authenticated.
+    name: ${{ github.event_name == 'merge_group' && 'queue-handoff' || 'review-handoff' }}
+    if: github.event_name != 'pull_request_target'
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99-gate"]') || fromJSON('["ubuntu-latest"]') }}
+    permissions: {}
+    timeout-minutes: 2
+    steps:
+      - run: echo "ci-policy-queue.yml follows this run"
   ci-policy:
-    # A queue run must not report a check named `ci-policy`: that name is not authenticated and the trusted queue status owns it.
-    name: ${{ github.event_name == 'merge_group' && 'queue-handoff' || 'ci-policy' }}
+    name: ci-policy
+    if: github.event_name == 'pull_request_target'
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99-gate"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 10
     env:
@@ -41,17 +53,12 @@ jobs:
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       PRIVATE: ${{ github.event.repository.private && '--private' || '' }}
     steps:
-      - name: Hand off to ci-policy-queue (no secret, no verdict)
-        if: github.event_name == 'merge_group'
-        run: echo "ci-policy-queue.yml reads this run and posts the ci-policy status on the queue commit"
       - name: Discard a reused workspace
-        if: github.event_name != 'merge_group'
         run: |
           find "$GITHUB_WORKSPACE" -mindepth 1 -delete
       # A plain git checkout of the BASE sha: no `actions/checkout` and no head ref, so the pull_request_target
       # checkout rule has nothing to match and the base-only boundary stays visible.
       - name: Check out the trusted base
-        if: github.event_name != 'merge_group'
         run: |
           auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
           git init --quiet .
@@ -60,7 +67,6 @@ jobs:
             fetch --quiet --no-tags origin "+refs/heads/*:refs/remotes/origin/*"
           git checkout --quiet --detach "$BASE_SHA"
       - name: Fetch the head objects without checking them out
-        if: github.event_name != 'merge_group'
         run: |
           auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
           git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
@@ -68,12 +74,10 @@ jobs:
           test "$(git rev-parse refs/remotes/pull/head)" = "$HEAD_SHA"
       # Some X99 runners ship no PyYAML (CHE-2397); --target avoids PEP 668.
       - name: Install PyYAML
-        if: github.event_name != 'merge_group'
         run: |
           python3 -m pip install --quiet --target "$RUNNER_TEMP/pydeps" pyyaml
           echo "PYTHONPATH=$RUNNER_TEMP/pydeps" >> "$GITHUB_ENV"
       - name: Check the PR against the base policy
-        if: github.event_name != 'merge_group'
         run: |
           python3 .github/ci-policy/gate.py pr --repo "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" \
             --base "$BASE_SHA" --head "$HEAD_SHA" --default-branch "$DEFAULT_BRANCH" $PRIVATE

@@ -4,6 +4,7 @@ data (`git archive`), nothing from it is executed. Needs `git` and, for the API 
 
   pr          --repo OWNER/NAME --pr N --base SHA --head SHA [--private] [--default-branch main] [--root DIR]
   merge-group --repo OWNER/NAME --group-ref REF
+  rerun-pr    --repo OWNER/NAME --head SHA   (after a review change: re-run that PR's check)
 
 `pr` runs check.py on the head's workflow files and policy file. A PR that edits `.github/ci-policy*` or the caller
 workflow also fails `policy-changed` until a GitHub review APPROVED by a human who is not the author or a bot, with
@@ -33,11 +34,17 @@ def is_protected(path: str) -> bool:
 
 def gh_api(path: str):
     """JSON for one object, or a list for a paginated array (`check_runs` unwrapped)."""
+    base = path.split("?")[0]
     jq = (".check_runs[]" if "/check-runs" in path else ".commits[]" if "/compare/" in path
-          else ".[]" if path.endswith(("/reviews", "/pulls")) else ".")
+          else ".workflow_runs[]" if base.endswith("/runs")
+          else ".[]" if base.endswith(("/reviews", "/pulls")) else ".")
     out = subprocess.run(["gh", "api", "--paginate", path, "--jq", jq], check=True, capture_output=True, text=True).stdout
     items = [json.loads(line) for line in out.splitlines() if line.strip()]
     return items if jq != "." else items[0]
+
+
+def gh_post(path: str) -> None:
+    subprocess.run(["gh", "api", "-X", "POST", path], check=True, capture_output=True, text=True)
 
 
 def can_write(repo: str, login: str, api) -> bool:
@@ -144,6 +151,22 @@ def check_merge_group(repo: str, group_ref: str, api=gh_api, evaluate=None) -> l
     return found
 
 
+def rerun_pr_check(repo: str, head: str, api=gh_api, post=gh_post) -> str:
+    """A review was submitted or dismissed: re-run the PR check of the open PR at `head`, so approval withdrawal flips the
+    cached verdict. Runs in the trusted receiver; the only input is a head SHA, matched against the repo's own open PRs.
+    A re-run keeps the original (trusted, base-branch) definition and re-reads the reviews."""
+    prs = [p["number"] for p in api(f"repos/{repo}/pulls?state=open&per_page=100") if p["head"]["sha"] == head]
+    if not prs:
+        return f"no open PR at {head[:12]}: nothing to re-run"
+    runs = [r for r in api(f"repos/{repo}/actions/workflows/ci-policy.yml/runs?event=pull_request_target&per_page=100")
+            if r["head_sha"] == head or any(p["number"] in prs for p in r.get("pull_requests", []))]
+    if not runs:
+        raise RuntimeError(f"no ci-policy run found for PR #{prs[0]} at {head[:12]}")
+    run = max(runs, key=lambda r: r["id"])["id"]
+    post(f"repos/{repo}/actions/runs/{run}/rerun")
+    return f"re-ran ci-policy run {run} for PR #{prs[0]}"
+
+
 def queue_check(args) -> list:
     """Run in the trusted queue workflow: the group ref is fetched as data; each queued head is checked like a PR."""
     base_branch = m[2] if (m := GROUP_REF.match(args.group_ref)) else args.default_branch
@@ -171,7 +194,13 @@ def main(argv=None) -> int:
     mg.add_argument("--root", type=Path, default=Path("."))
     mg.add_argument("--private", action="store_true")
     mg.add_argument("--default-branch", default="main")
+    rr = sub.add_parser("rerun-pr")
+    rr.add_argument("--repo", required=True)
+    rr.add_argument("--head", required=True)
     args = ap.parse_args(argv)
+    if args.cmd == "rerun-pr":
+        print(rerun_pr_check(args.repo, args.head))
+        return 0
     if args.cmd == "pr":
         found = check_pr(args.root, args.repo, args.pr, args.base, args.head, args.private, args.default_branch)
     else:
