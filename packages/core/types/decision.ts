@@ -13,6 +13,9 @@ export interface OpenDecisionRequest {
   message_id: string | null;
   source_comment_id?: string | null;
   options?: DecisionRequestOption[];
+  /** Per-issue cards a batch card answers for; shown with `covered_cards` before an answer. */
+  covers_request_ids?: string[];
+  covered_cards?: DecisionCoveredCard[];
 }
 
 /** One answer button on an open decision card. */
@@ -48,6 +51,23 @@ export interface DecisionRequestCard {
   answer?: DecisionRequestAnswer;
   /** The pending executable action behind an open request, if any. */
   action?: DecisionRequestAction;
+  /** A batch card: the per-issue cards its answer also closes. */
+  covers_request_ids?: string[];
+  /** What each covered card asks, so the human sees every decision the batch answer closes. */
+  covered_cards?: DecisionCoveredCard[];
+  /** Set when a batch card's answer closed this card. */
+  answered_by_batch_request_id?: string | null;
+}
+
+/** One per-issue card a batch card covers, with the decision it asks. */
+export interface DecisionCoveredCard {
+  id: string;
+  issue_id: string;
+  issue_identifier: string;
+  issue_title?: string;
+  decision: string;
+  /** The covered card's own options with their meanings. */
+  options?: DecisionRequestOption[];
 }
 
 /** What an executable action would change, rendered by the server from the values its executor checks. */

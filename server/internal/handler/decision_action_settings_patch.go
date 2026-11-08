@@ -40,6 +40,7 @@ func init() {
 		Normalize: normalizeSettingsPatch,
 	})
 	registerConfigChange(settingsPatchAction, configChange{
+		Fields: []string{decisionaction.SettingsField},
 		Lock: func(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, params json.RawMessage) error {
 			_, err := loadWorkspaceTarget(ctx, queries, workspaceID, params, http.StatusConflict, true)
 			return err
