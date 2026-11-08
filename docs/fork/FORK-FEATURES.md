@@ -10,10 +10,10 @@ This refresh moves the ledger from the 2026-10-23 pin to current `main`, adds a
 It describes the fork; it does not authorize a PR, merge or deployment.
 
 - Fork `main` pin: `ee8b37834f56f7219f17d2046c8155a731cb80d8` (committed 2026-11-02 16:33 ICT).
-- Upstream `main` pin: `3794359792e1e310d89d0488b46efff66e9d2369` (committed 2026-11-02 19:02 ICT).
+- Upstream `main` pin: `73975653323750d04c27047ea9c986ef06bdf6a1` (committed 2026-11-08 13:35 ICT).
   Upstream tag `v0.7.0` (`dbdbb299164347586e2650bb67684a490726a798`) and the merge base are unchanged.
-  Evidence was read at `e8b6a97643ccc35efbcf2a4675c8d088a288ed6e` (2026-11-02 17:44 ICT) and re-verified at the pin `3794359792e1e310d89d0488b46efff66e9d2369` (2026-11-02 19:02 ICT): 3 later commits change 55 files (agents UI, collection page, skill-import limit errors; `server/internal/cli/errors.go` gains a 413 kind). Of those 55 files only `packages/views/chat/components/chat-session-header.tsx`, `packages/views/layout/index.ts`, `packages/views/search/search-command.test.tsx` and `server/internal/cli/errors.go` are named anywhere in these docs, and none is an upstream line that a status or fix verdict rests on, so no status changed.
-- Previous pin: `9ac3541dba50d3e1f06687779694b08095c21b79` (2026-10-23 16:52 ICT).
+  Evidence was read at `e8b6a97643ccc35efbcf2a4675c8d088a288ed6e` (2026-11-02 17:44 ICT) and re-verified at the previous pin `3794359792e1e310d89d0488b46efff66e9d2369` (2026-11-02 19:02 ICT) and at the pin `73975653323750d04c27047ea9c986ef06bdf6a1` (2026-11-08 13:35 ICT). From the previous pin to this pin 134 upstream commits change 1053 files. 48 of the files named in these docs changed. Only those with an upstream line behind a status or fix verdict were re-read: FX120, FX133, FX080, FX106, FX082, FX074, FX058, FX148, FX070, FX036, FX077, W20 and the unknown rows. Result: FX083 is now `fixed upstream` (82492f94d6, #9860); every other status is unchanged; FX131 was re-checked and upstream has no fix. Line numbers moved for FX080, FX082, FX074, FX148, FX070, FX036, FX077 and W20 and are updated. Upstream `e7592c57ed` (#10057, a per-issue `--pr-auto-complete` flag) does not add a CLI link or unlink path, so FX070 stays `present`.
+- Previous pin: `3794359792e1e310d89d0488b46efff66e9d2369` (2026-11-02 19:02 ICT); before it `9ac3541dba50d3e1f06687779694b08095c21b79` (2026-10-23 16:52 ICT).
 - Fork PRs merged after the previous pin: **299**. 204 are grouped into the
   64 new rows below; 91 fix and perf PRs are in
   [UPSTREAM-FIXES.md](UPSTREAM-FIXES.md); 4 upstream-sync chores
