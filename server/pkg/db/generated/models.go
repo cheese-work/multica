@@ -3150,6 +3150,18 @@ type SysCronExecution struct {
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
 }
 
+type System1Label struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	ObservationID pgtype.UUID        `json:"observation_id"`
+	Scope         string             `json:"scope"`
+	Kind          string             `json:"kind"`
+	Source        string             `json:"source"`
+	Label         string             `json:"label"`
+	SupersededAt  pgtype.Timestamptz `json:"superseded_at"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
 type System1Observation struct {
 	ID                  pgtype.UUID        `json:"id"`
 	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
