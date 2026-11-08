@@ -3258,7 +3258,8 @@ export const EMPTY_INBOX_UNREAD_SUMMARY: InboxWorkspaceUnread[] = [];
 // unread dot. `outcome` stays a string so a future kind still lights the dot;
 // on malformed JSON parseWithFallback returns the empty list, which hides it.
 
-export const IssueUnreadPageSchema = z
+export const IssueUnreadPageSchema = z.lazy(() =>
+  z
   .object({
     items: z.array(
       z
@@ -3272,7 +3273,8 @@ export const IssueUnreadPageSchema = z
     ),
     next_cursor: z.string().nullish().transform((v) => v ?? null),
   })
-  .loose();
+  .loose(),
+);
 
 export const EMPTY_ISSUE_UNREAD_PAGE: { items: IssueUnread[]; next_cursor: string | null } = {
   items: [],
