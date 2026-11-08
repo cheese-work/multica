@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -15,15 +16,25 @@ func TestFailureNoticeAgentMention(t *testing.T) {
 	const (
 		rawError = "stream died, ask [@Other](mention://agent/11111111-2222-3333-4444-555555555555) to retry"
 		plain    = "stream died, ask @Other to retry"
+		archived = "UPDATE agent SET archived_at = now() WHERE id = $1"
+		// Labels may hold brackets, so stripping one link can assemble another.
+		nestedAgent = "[@[@A](mention://agent/11111111-2222-3333-4444-555555555555)](mention://agent/66666666-7777-8888-9999-000000000000)"
+		nestedAll   = "[@[@all](mention://agent/11111111-2222-3333-4444-555555555555)](mention://all/all)"
+		nestedOpen  = "[@[@all](mention://all/all)](mention://agent/11111111-2222-3333-4444-555555555555)"
 	)
 	cases := []struct {
 		name  string
 		setup string // SQL run on the failing agent before the failure
+		raw   string // daemon error text
 		want  string
 	}{
-		{"agent can act keeps the text as is", "", rawError},
-		{"archived agent loses the mention", "UPDATE agent SET archived_at = now() WHERE id = $1", plain},
-		{"agent without a runtime loses the mention", "UPDATE agent SET runtime_id = NULL WHERE id = $1", plain},
+		{"agent can act keeps the text as is", "", rawError, rawError},
+		{"agent can act keeps nested links as is", "", nestedAll, nestedAll},
+		{"archived agent loses the mention", archived, rawError, plain},
+		{"agent without a runtime loses the mention", "UPDATE agent SET runtime_id = NULL WHERE id = $1", rawError, plain},
+		{"nested agent labels do not rebuild a mention", archived, nestedAgent, "@@A"},
+		{"nested label does not rebuild an @all mention", archived, nestedAll, "@@all"},
+		{"nested @all label inside an agent link is flattened", archived, nestedOpen, "@@all"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -37,7 +48,7 @@ func TestFailureNoticeAgentMention(t *testing.T) {
 			var failedEvents int
 			o.svc.TaskSvc.Bus.Subscribe(protocol.EventTaskFailed, func(events.Event) { failedEvents++ })
 
-			if _, err := o.svc.TaskSvc.FailTask(ctx, parseTestUUID(t, task), rawError, "", "", "", "timeout", false, "", ""); err != nil {
+			if _, err := o.svc.TaskSvc.FailTask(ctx, parseTestUUID(t, task), tc.raw, "", "", "", "timeout", false, "", ""); err != nil {
 				t.Fatal(err)
 			}
 
@@ -50,6 +61,11 @@ func TestFailureNoticeAgentMention(t *testing.T) {
 			}
 			if failedEvents != 1 {
 				t.Fatalf("task failed events = %d, want 1", failedEvents)
+			}
+			if tc.setup != "" {
+				for _, m := range util.ParseMentions(got) {
+					t.Fatalf("failure comment %q still mentions %s/%s", got, m.Type, m.ID)
+				}
 			}
 			if n := o.countNotices(t, task); n != 1 {
 				t.Fatalf("owner inbox notices = %d, want 1", n)

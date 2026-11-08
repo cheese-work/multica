@@ -9324,23 +9324,31 @@ func commentEventFields(c db.Comment) map[string]any {
 	}
 }
 
-// failureNoticeText keeps a terminal-failure notice on the timeline but turns
-// agent mention links in the (untrusted) error text into plain @labels when the
-// failing agent cannot act (archived, no runtime, or unreadable), so the notice
-// never points a wake at an agent that cannot run.
+// failureNoticeText keeps a terminal-failure notice on the timeline but, when the
+// failing agent cannot act (archived, no runtime, or unreadable), flattens the
+// (untrusted) error text's agent/squad/member/@all mention links into plain @labels,
+// so the notice never points a wake or a notification at anyone. Labels may hold
+// brackets, so one pass can assemble a new link out of the leftovers; repeat until
+// none is left (each pass shortens the text, so it ends). Issue links stay.
 func (s *TaskService) failureNoticeText(ctx context.Context, agentID pgtype.UUID, text string) string {
-	if !strings.Contains(text, "mention://agent/") {
+	if !strings.Contains(text, "mention://") {
 		return text
 	}
 	if agent, err := s.Queries.GetAgent(ctx, agentID); err == nil && !agent.ArchivedAt.Valid && agent.RuntimeID.Valid {
 		return text
 	}
-	return util.MentionRe.ReplaceAllStringFunc(text, func(m string) string {
-		if sub := util.MentionRe.FindStringSubmatch(m); sub[2] == "agent" {
-			return "@" + sub[1]
+	for {
+		flat := util.MentionRe.ReplaceAllStringFunc(text, func(m string) string {
+			if sub := util.MentionRe.FindStringSubmatch(m); sub[2] != "issue" {
+				return "@" + sub[1]
+			}
+			return m
+		})
+		if flat == text {
+			return text
 		}
-		return m
-	})
+		text = flat
+	}
 }
 
 func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID pgtype.UUID, content, commentType string, parentID, sourceTaskID pgtype.UUID) {
