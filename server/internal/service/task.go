@@ -6459,7 +6459,13 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 	// in addition to the coordinator recovery signal, preserving visibility on
 	// both sides of a cross-issue handoff.
 	if errMsg != "" && task.IssueID.Valid && retried == nil {
-		s.createAgentComment(ctx, task.IssueID, task.AgentID, redact.Text(errMsg), "system", task.TriggerCommentID, task.ID)
+		notice := redact.Text(errMsg)
+		if isGatewayClassFailureReason(failureReason) {
+			// CHE-4575: raw provider text may carry a mention link; a live
+			// agent mention would enqueue a run for a failure notice.
+			notice = strings.ReplaceAll(notice, "mention://agent/", "mention-agent://")
+		}
+		s.createAgentComment(ctx, task.IssueID, task.AgentID, notice, "system", task.TriggerCommentID, task.ID)
 	}
 	if retried == nil {
 		s.failOverRoutingTask(ctx, task, failureReason)

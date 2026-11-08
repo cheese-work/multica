@@ -145,3 +145,34 @@ func TestTerminalGatewayFailureKeepsTaskRowAndEvent(t *testing.T) {
 		t.Fatalf("task:failed workspace = %q, want %q", got[0].WorkspaceID, f.workspaceID)
 	}
 }
+
+// AC2 guard: error text that itself carries an agent mention link must not
+// reach the timeline as a live mention (a mention would enqueue a run).
+func TestTerminalGatewayFailureNeutralizesMentionInErrorText(t *testing.T) {
+	f, svc := seedDelegatedFailureFixture(t)
+	ctx := context.Background()
+	failedID := f.insertWorkerTask(t, "running", "comment", 3, 3)
+	before := countTasks(t, f)
+
+	errMsg := "upstream said: [@Bob](mention://agent/11111111-2222-3333-4444-555555555555) please retry"
+	if _, err := svc.FailTask(ctx, failedID, errMsg, "", "", "", "agent_error.provider_network", false, "", ""); err != nil {
+		t.Fatalf("FailTask: %v", err)
+	}
+
+	var content string
+	if err := f.pool.QueryRow(ctx, `
+		SELECT content FROM comment
+		WHERE issue_id = $1 AND author_type = 'agent' AND source_task_id = $2`, f.workerIssue, failedID).
+		Scan(&content); err != nil {
+		t.Fatalf("failure comment missing: %v", err)
+	}
+	if strings.Contains(content, "mention://agent/") {
+		t.Fatalf("failure comment keeps a live agent mention: %q", content)
+	}
+	if !strings.Contains(content, "upstream said:") {
+		t.Fatalf("failure comment lost its text: %q", content)
+	}
+	if after := countTasks(t, f); after != before {
+		t.Fatalf("agent_task_queue rows = %d, want %d (no new task)", after, before)
+	}
+}
