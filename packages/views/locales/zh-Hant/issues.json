@@ -450,6 +450,7 @@
     "not_found": "這個任務不存在或已在該工作區被刪除。",
     "load_failed": "無法載入這個任務。請檢查網路後重試。",
     "card_load_failed": "無法載入這個任務。",
+    "data_error": "這個任務包含應用程式無法讀取的資料。",
     "retry": "重試",
     "breadcrumb_project_unknown": "未知專案",
     "back": "返回",
@@ -1440,7 +1441,34 @@
       "rate": "1 小時內觸發超過 12 次"
     },
     "paused_banner": "{{name}} 已於 {{time}} 暫停喚醒",
-    "paused_banner_anonymous": "喚醒已於 {{time}} 暫停"
+    "paused_banner_anonymous": "喚醒已於 {{time}} 暫停",
+    "defaults": {
+      "title": "預設喚醒",
+      "rule_pr_merged": "連結的 PR 合併時",
+      "rule_pr_checks_failed": "PR 檢查失敗時",
+      "rule_pr_needs_attention": "連結的 PR 需要關注時",
+      "state_on": "已開啟",
+      "state_disabled": "已停用",
+      "state_paused": "已暫停：{{reason}}",
+      "inherited": "繼承自{{source}}",
+      "overridden": "已在此事項上覆寫",
+      "source_workspace": "工作區",
+      "source_project": "專案",
+      "source_default": "預設值",
+      "open_project": "在專案規則中編輯",
+      "override": "覆寫",
+      "override_label": "覆寫{{rule}}",
+      "edit": "編輯覆寫",
+      "edit_label": "編輯{{rule}}的覆寫",
+      "reset": "重設",
+      "reset_label": "重設{{rule}}",
+      "save": "儲存覆寫",
+      "saving": "儲存中…",
+      "cancel": "取消",
+      "save_error": "無法儲存覆寫。",
+      "reset_error": "無法重設該規則。",
+      "conflict_error": "有人先修改了此規則。你的修改已保留；請重新整理以查看對方的修改。"
+    }
   },
   "duplicates": {
     "banner_prefix": "重複於",
@@ -1960,5 +1988,32 @@
       "row_actions": "{{name}} 的操作",
       "no_matches": "沒有符合的檢視"
     }
+  },
+  "status_history": {
+    "title": "狀態歷史",
+    "description": "此事項的所有狀態變更，依時間由早到晚。",
+    "empty": "沒有狀態變更記錄。",
+    "truncated": "較早的狀態變更未顯示。清單從伺服器回傳的最早一筆開始。",
+    "trigger_not_recorded": "未記錄觸發來源",
+    "removed": "{{status}}（已移除）",
+    "handoff_comment": "交接留言",
+    "handoff_invalid": "交接連結無效",
+    "scrubber_label": "狀態歷史位置",
+    "position": "第 {{current}} 筆，共 {{total}} 筆",
+    "cause": {
+      "ui_or_api": "由人員變更",
+      "workflow_edge": "工作流程轉換",
+      "workflow_remap": "工作流程重新對應",
+      "pr_merged": "PR 已合併",
+      "ci_advance": "CI 推進",
+      "run_budget": "執行預算",
+      "decision": "決策",
+      "watchdog": "看門狗",
+      "task_reset": "失敗執行重置",
+      "qoder": "Qoder",
+      "duplicate": "重複",
+      "system": "系統"
+    },
+    "open": "狀態歷史"
   }
 }

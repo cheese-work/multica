@@ -95,6 +95,11 @@ const (
 	// issue like ReasonIssueInTriage; a person unblocking the issue, or
 	// naming an agent by hand, runs again.
 	ReasonRunBudgetExhausted ReasonCode = "run_budget_exhausted"
+	// ReasonStageQueueFull: the PR's bottleneck stage (cross-lab review, device
+	// lane or browser lane) already runs its capacity of PRs (CHE-3611). The PR
+	// is listed as queued and runs when a slot frees; nothing is lost. A property
+	// of the stage, not of the target, so it is enumeration-safe.
+	ReasonStageQueueFull ReasonCode = "stage_queue_full"
 	// ReasonQuotaExceeded is a policy-neutral refusal for an exhausted
 	// Cloud-provided autopilot interval.
 	ReasonQuotaExceeded ReasonCode = "quota_exceeded"
@@ -127,5 +132,6 @@ const (
 	// is indistinguishable from a live provider outage until someone reads the
 	// hold text by hand — see taskfailure.ReasonDispatchBlockedProviderHold for
 	// the matching failure_reason story once dispatch has already happened.
-	ReasonProviderHold ReasonCode = "provider_hold"
+	ReasonProviderHold    ReasonCode = "provider_hold"
+	ReasonProviderBreaker ReasonCode = "provider_breaker"
 )

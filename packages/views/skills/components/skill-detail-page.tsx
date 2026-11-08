@@ -38,6 +38,11 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@multica/core/api";
 import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { usePersistedDraft } from "@multica/core/drafts";
+import {
+  EMPTY_SKILL_EDIT_DRAFT,
+  useSkillEditDraftStore,
+} from "@multica/core/skills/draft-stores";
 import { useWorkspacePaths } from "@multica/core/paths";
 import {
   agentListOptions,
@@ -346,7 +351,12 @@ function UsedByList({ agents }: { agents: Agent[] }) {
 
 // Main page
 
+/** Keyed by id: unsaved edits and the seeded baseline belong to one skill. */
 export function SkillDetailPage({ skillId }: { skillId: string }) {
+  return <SkillDetail key={skillId} skillId={skillId} />;
+}
+
+function SkillDetail({ skillId }: { skillId: string }) {
   const { t } = useT("skills");
   const { t: tCommon } = useT("common");
   const wsId = useWorkspaceId();
@@ -425,6 +435,17 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
   const draftRef = useRef({ name, description, content, files });
   draftRef.current = { name, description, content, files };
 
+  // Unsent edits survive a route change, reload or remount. Cleared when the
+  // page returns to its baseline: Save, Discard or the user reverting.
+  const [storedEdits, storeEdits, clearStoredEdits] = usePersistedDraft(
+    useSkillEditDraftStore,
+    skillId,
+    EMPTY_SKILL_EDIT_DRAFT,
+  );
+  const storedEditsRef = useRef(storedEdits);
+  storedEditsRef.current = storedEdits;
+  const heldEditsRef = useRef(false);
+
   const seededKeyRef = useRef<string | null>(null);
 
   /**
@@ -489,6 +510,17 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
     }
 
     adoptServerVersion(skill, !sameSkill);
+
+    // First load: put back edits a previous visit left behind. If the server
+    // moved on meanwhile they sit on an older version, so raise the conflict.
+    const held = storedEditsRef.current;
+    if (!sameSkill && held.baseUpdatedAt) {
+      setName(held.name);
+      setDescription(held.description);
+      setContent(held.content);
+      setFiles(held.files);
+      if (held.baseUpdatedAt !== skill.updated_at) setConflictPending(true);
+    }
   }, [skill, wsId, adoptServerVersion, name, description, content, files]);
 
   const creator = useMemo<MemberWithUser | null>(
@@ -588,6 +620,22 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
     setActiveView("files");
     navigation.push(viewHref("files"));
   };
+
+  useEffect(() => {
+    if (isDirty && skill) {
+      heldEditsRef.current = true;
+      storeEdits({
+        name,
+        description,
+        content,
+        files,
+        baseUpdatedAt: seededKeyRef.current?.split("@")[1] ?? skill.updated_at,
+      });
+    } else if (heldEditsRef.current) {
+      heldEditsRef.current = false;
+      clearStoredEdits();
+    }
+  }, [isDirty, skill, name, description, content, files, storeEdits, clearStoredEdits]);
 
   const handleSave = async () => {
     if (!skill || !canEdit) return;

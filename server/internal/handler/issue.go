@@ -39,15 +39,16 @@ import (
 
 // IssueResponse is the JSON response for an issue.
 type IssueResponse struct {
-	TriggerOutcomes []CommentTriggerOutcome `json:"trigger_outcomes,omitempty"`
-	ID              string                  `json:"id"`
-	WorkspaceID     string                  `json:"workspace_id"`
-	Number          int32                   `json:"number"`
-	Identifier      string                  `json:"identifier"`
-	WebURL          string                  `json:"web_url,omitempty"`
-	Title           string                  `json:"title"`
-	Description     *string                 `json:"description"`
-	Status          string                  `json:"status"`
+	TriggerOutcomes     []CommentTriggerOutcome `json:"trigger_outcomes,omitempty"`
+	ID                  string                  `json:"id"`
+	WorkspaceID         string                  `json:"workspace_id"`
+	Number              int32                   `json:"number"`
+	Identifier          string                  `json:"identifier"`
+	WebURL              string                  `json:"web_url,omitempty"`
+	Title               string                  `json:"title"`
+	Description         *string                 `json:"description"`
+	DescriptionWithheld bool                    `json:"description_withheld,omitempty"`
+	Status              string                  `json:"status"`
 	// StatusCategory encodes lifecycle using the legacy seven-value wire enum. It is
 	// omitted when an endpoint cannot resolve a custom status, so consumers must
 	// fall back to their catalog rather than treat a blank as "no category".
@@ -91,9 +92,15 @@ type IssueResponse struct {
 	Stage     *int32  `json:"stage"`
 	StartDate *string `json:"start_date"`
 	DueDate   *string `json:"due_date"`
-	CreatedAt string  `json:"created_at"`
-	UpdatedAt string  `json:"updated_at"`
-	Revision  int64   `json:"revision"`
+	// EffectiveDue, DueSource and Diagnostics are the read-only deadline
+	// projection (see issue_effective_due.go). Detail-only for now; absent
+	// when nothing is inherited or the issue is closed.
+	EffectiveDue *string         `json:"effective_due,omitempty"`
+	DueSource    string          `json:"due_source,omitempty"`
+	Diagnostics  []DueDiagnostic `json:"diagnostics,omitempty"`
+	CreatedAt    string          `json:"created_at"`
+	UpdatedAt    string          `json:"updated_at"`
+	Revision     int64           `json:"revision"`
 	// LastActivityAt is the latest semantic issue activity. It stays nullable
 	// while the operator-run historical backfill is incomplete.
 	LastActivityAt *string `json:"last_activity_at"`
@@ -323,6 +330,9 @@ func (h *Handler) writeIssueLocked(ctx context.Context, q *db.Queries, workspace
 			return db.Issue{}, nil, err
 		}
 	}
+	if err := h.applyDecisionEpisode(ctx, q, workspaceID, wf, &params); err != nil {
+		return db.Issue{}, nil, err
+	}
 	issue, cancelledWakeups, err := updateIssueStoppingWakeups(ctx, q, params)
 	if err != nil {
 		return issue, nil, err
@@ -353,9 +363,20 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 		}
 		fromStatus = prior.Status
 	}
+	var prevParent pgtype.UUID
+	if params.ParentIssueID.Valid {
+		prior, err := q.GetIssue(ctx, params.ID)
+		if err != nil {
+			return db.Issue{}, nil, fmt.Errorf("read issue parent: %w", err)
+		}
+		prevParent = prior.ParentIssueID
+	}
 	issue, err := q.UpdateIssue(ctx, params)
 	if err != nil {
 		return issue, nil, err
+	}
+	if err := recordIssueMoved(ctx, q, prevParent, issue); err != nil {
+		return db.Issue{}, nil, fmt.Errorf("record moved-under event: %w", err)
 	}
 	if recordStatus && fromStatus != issue.Status {
 		row, err := service.RecordStatusChange(ctx, q, issue, fromStatus, issue.Status, rec.trigger, rec.recordedHandoff(issue))
@@ -498,6 +519,30 @@ func duplicateOfPointer(status string, id pgtype.UUID) pgtype.UUID {
 		return pgtype.UUID{}
 	}
 	return id
+}
+
+// statusMoveRecorded keeps status_changed honest for the event: a write that
+// carried a status record but wrote no row lost the race to an identical
+// concurrent move (the locked status already matched), so it moved nothing.
+// Without this the event would claim a move no row names (CHE-2854).
+func statusMoveRecorded(statusChanged bool, rec *statusRecord) bool {
+	return statusChanged && (rec == nil || rec.activity != nil)
+}
+
+// duplicateRowNamesMove reports whether the duplicate_marked or
+// duplicate_unmarked row the listener writes stands in for this write's status
+// row (MUL-7349). It does not when the pointer is a leftover or its original
+// is gone: no duplicate row is written, so the status row records the move.
+func (h *Handler) duplicateRowNamesMove(ctx context.Context, params db.UpdateIssueParams, prev db.Issue) bool {
+	if params.DuplicateOfIssueID.Valid {
+		return true
+	}
+	mark := duplicateOfPointer(prev.Status, prev.DuplicateOfIssueID)
+	if !mark.Valid {
+		return false
+	}
+	_, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: mark, WorkspaceID: prev.WorkspaceID})
+	return err == nil
 }
 
 // duplicateOriginals memoises the originals a request's duplicates point at,
@@ -896,31 +941,78 @@ type searchResult struct {
 	matchedCommentContent string
 }
 
-// buildSearchQuery builds a two-stage, workspace-scoped candidate pipeline for issue search.
-// Search patterns are lowercased and escaped in Go so every flag uses the same
-// case-insensitive LIKE semantics as the legacy query. The pipeline deliberately
-// trades the title, description, and comment content GIN fast paths for one
-// predictable pass over each relation within the selected workspace.
 // searchCommentSource scopes the name "comment" to the stored folded text for
 // one CTE body, so the comment scan reads one narrow table instead of joining
 // comment to its side table. content is the folded text; content_accents is the
 // lowered unfolded text where folding changed it, for the exact-diacritic rank.
-const searchCommentSource = `comment AS (
+//
+// A comment that matches none of the patterns sets no flag in the aggregate
+// below, so the trigram predicate (CHE-3164) drops it here, where the GIN index
+// on content_folded can serve it, instead of after reading every comment of the
+// workspace. The patterns are the same ones the flags use.
+func searchCommentSource(wsParam string, likeParams []string) string {
+	return fmt.Sprintf(`comment AS (
 			SELECT comment_id AS id, issue_id, workspace_id, created_at,
 				content_folded AS content, content_accents
 			FROM comment_search_text
-		)`
+			WHERE workspace_id = %s AND (%s)
+		)`, wsParam, foldedLikeAny("content_folded", likeParams))
+}
 
 // searchIssueSource exposes the stored folded text as title and description,
 // next to the raw text that the exact-diacritic ranking compares against.
-const searchIssueSource = `(
+//
+// Only issues that can be eligible are read (CHE-3164): a title or description
+// that matches a pattern (one arm per folded column, so each OR stays cheap
+// enough for the planner to pick that column's GIN index), an issue that has a
+// matching comment (comment_matches), or the issue whose number was searched.
+// Every eligibility rule below needs at least one of these, so the flags that
+// follow are computed on those rows instead of every issue of the workspace.
+func searchIssueSource(wsParam string, likeParams []string, numParam string) string {
+	candidates := fmt.Sprintf(`SELECT issue_id FROM issue_search_text
+			WHERE workspace_id = %[1]s AND (%[2]s)
+			UNION
+			SELECT issue_id FROM issue_search_text
+			WHERE workspace_id = %[1]s AND (%[3]s)
+			UNION
+			SELECT issue_id FROM comment_matches`,
+		wsParam, foldedLikeAny("title_folded", likeParams), foldedLikeAny("description_folded", likeParams))
+	if numParam != "" {
+		candidates += fmt.Sprintf(`
+			UNION
+			SELECT id FROM issue WHERE workspace_id = %s AND number = %s`, wsParam, numParam)
+	}
+	return fmt.Sprintf(`(
 		SELECT i.id, i.workspace_id, i.status, i.updated_at, i.number,
 			ist.title_folded AS title, ist.description_folded AS description,
 			ist.title_accents, ist.description_accents
-		FROM issue i
+		FROM (
+			%s
+		) candidate
+		JOIN issue i ON i.id = candidate.issue_id AND i.workspace_id = %s
 		JOIN issue_search_text ist ON ist.issue_id = i.id AND ist.workspace_id = i.workspace_id
-	)`
+	)`, candidates, wsParam)
+}
 
+// foldedLikeAny is column LIKE p for any of the patterns.
+func foldedLikeAny(column string, likeParams []string) string {
+	predicates := make([]string, len(likeParams))
+	for i, param := range likeParams {
+		predicates[i] = column + " LIKE " + param
+	}
+	return strings.Join(predicates, " OR ")
+}
+
+// buildSearchQuery builds a two-stage, workspace-scoped candidate pipeline for issue search.
+// Search patterns are lowercased and escaped in Go so every flag uses the same
+// case-insensitive LIKE semantics as the legacy query.
+//
+// Every scan of the stored folded text keeps its workspace_id equality and adds
+// the same LIKE patterns the flags use (CHE-3164). The workspace btree still
+// bounds the worst case, which is the MUL-4059 plan this pipeline was built for;
+// the trigram GIN indexes let the planner skip rows that no pattern can match
+// when that is cheaper. Cost is the planner's call, so the SQL never forces an
+// index, and the eligibility rules and ranking read the same flags as before.
 func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, includeClosed bool, terminalStatusKeys []string) (string, []any) {
 	// The stored search text is lowered and diacritic-folded (search_fold), so the
 	// patterns are folded the same way. The lowered-only query is kept to rank a
@@ -954,6 +1046,10 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 			termContainsParams = append(termContainsParams, nextArg("%"+escapeLike(term)+"%"))
 		}
 	}
+
+	// Every flag below needs one of these patterns to match (or the searched
+	// number to equal), so the sources use them to skip rows no flag can hit.
+	textLikeParams := append([]string{phraseContainsParam}, termContainsParams...)
 
 	numParam := ""
 	if hasNum {
@@ -1063,7 +1159,7 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		) lowered_issue_description ON TRUE
 		WHERE %s
 	)`, strings.Join(issueFlagColumns, ",\n\t\t\t"),
-		searchIssueSource, titleMatchExpr, issueWhere)
+		searchIssueSource(wsParam, textLikeParams, numParam), titleMatchExpr, issueWhere)
 
 	// Comments are also scanned once, workspace-first. This intentionally avoids
 	// the legacy planner choice between global content GIN postings and repeated
@@ -1133,7 +1229,7 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		) aggregated_comments
 		WHERE %s
 	)`,
-		searchCommentSource,
+		searchCommentSource(wsParam, textLikeParams),
 		strings.Join(commentFlagColumns, ",\n\t\t\t\t"),
 		wsParam,
 		strings.Join(commentCandidateFlags, " OR "),
@@ -1267,15 +1363,15 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
 		i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position,
 		i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id,
-		i.revision, i.duplicate_of_issue_id,
+		i.revision, i.duplicate_of_issue_id, i.description_external_read,
 		pc.match_source,
 		COALESCE(c.content, '') AS matched_comment_content
 	FROM page_candidates pc
 	JOIN issue i ON i.id = pc.issue_id AND i.workspace_id = %s
 	LEFT JOIN comment c ON c.id = pc.snippet_comment_id AND c.workspace_id = %s
 	ORDER BY pc.cancelled_rank, pc.relevance_rank, pc.status_rank, pc.diacritic_rank, pc.updated_at DESC, pc.issue_id ASC`,
-		issueMatchesCTE,
 		commentMatchesCTE,
+		issueMatchesCTE,
 		rankedCandidatesCTE,
 		pageCandidatesCTE,
 		wsParam,
@@ -1400,6 +1496,7 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		originals = appendDuplicateOriginal(originals, sr.issue.Status, sr.issue.DuplicateOfIssueID)
 	}
 	fillSearch := h.newStatusCategoryFiller(ctx, wsUUID, originals...)
+	searchFilter := h.newReadFilter(r)
 	resp := make([]SearchIssueResponse, len(results))
 	for i, sr := range results {
 		sir := SearchIssueResponse{
@@ -1407,8 +1504,11 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 			MatchSource:   sr.matchSource,
 		}
 		fillSearch(&sir.IssueResponse)
+		searchFilter.stubDescription(h, sr.issue, &sir.IssueResponse)
 		// Always populate comment snippet when a matching comment exists
-		if sr.matchedCommentContent != "" {
+		// The search row does not say whether the matched comment is marked, so
+		// an elevated reader gets no comment snippet at all.
+		if sr.matchedCommentContent != "" && !searchFilter.withholds(true) {
 			snippet := extractSnippet(sr.matchedCommentContent, q)
 			sir.MatchedCommentSnippet = &snippet
 			// Keep backward compat: also set MatchedSnippet for comment-source matches
@@ -1418,7 +1518,7 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		// Populate description snippet when description matches
 		if sr.matchSource == "description" || descriptionContains(sr.issue.Description, q, terms) {
-			if sr.issue.Description.Valid && sr.issue.Description.String != "" {
+			if sr.issue.Description.Valid && sr.issue.Description.String != "" && !searchFilter.withholds(sr.issue.DescriptionExternalRead) {
 				snippet := extractSnippet(sr.issue.Description.String, q)
 				sir.MatchedDescriptionSnippet = &snippet
 			}
@@ -1453,6 +1553,80 @@ func (h *Handler) QueryIssues(w http.ResponseWriter, r *http.Request) {
 	r.URL.RawQuery = values.Encode()
 	h.ListIssues(w, r)
 }
+
+// listIssueColumns is the full ListIssues select list.
+const listIssueColumns = `i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
+       i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
+       i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
+       i.revision, i.duplicate_of_issue_id, i.description_external_read`
+
+var narrowColumns = strings.NewReplacer(
+	"i.title,", "''::text,", // Title scans into a string, so empty rather than NULL
+	"i.description,", "NULL::text,",
+	"i.metadata,", "NULL::jsonb,",
+	"i.properties,", "NULL::jsonb,",
+)
+
+// narrowListIssueColumns blanks the large title/description/metadata/properties
+// columns in the select list of a ListIssues query (the part before FROM);
+// the WHERE clause is left alone.
+func narrowListIssueColumns(query string) string {
+	selectList, rest, _ := strings.Cut(query, "\nFROM issue i")
+	return narrowColumns.Replace(selectList) + "\nFROM issue i" + rest
+}
+
+func scanListIssueRows(rows pgx.Rows) ([]db.ListIssuesRow, error) {
+	var issues []db.ListIssuesRow
+	for rows.Next() {
+		var row db.ListIssuesRow
+		if err := rows.Scan(
+			&row.ID, &row.WorkspaceID, &row.Title, &row.Description, &row.Status, &row.Priority,
+			&row.AssigneeType, &row.AssigneeID, &row.CreatorType, &row.CreatorID,
+			&row.ParentIssueID, &row.Position, &row.StartDate, &row.DueDate,
+			&row.CreatedAt, &row.UpdatedAt, &row.LastActivityAt, &row.Number, &row.ProjectID,
+			&row.Metadata, &row.Stage, &row.Properties, &row.Revision, &row.DuplicateOfIssueID, &row.DescriptionExternalRead,
+		); err != nil {
+			return nil, err
+		}
+		issues = append(issues, row)
+	}
+	return issues, rows.Err()
+}
+
+// fullListIssueRows re-reads page (already sorted) with every column, keeping order.
+func (h *Handler) fullListIssueRows(ctx context.Context, wsUUID pgtype.UUID, page []db.ListIssuesRow) ([]db.ListIssuesRow, error) {
+	if len(page) == 0 {
+		return page, nil
+	}
+	ids := make([]pgtype.UUID, len(page))
+	for i, r := range page {
+		ids[i] = r.ID
+	}
+	rows, err := h.DB.Query(ctx, `SELECT `+listIssueColumns+` FROM issue i WHERE i.workspace_id = $1 AND i.id = ANY($2)`, wsUUID, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	full, err := scanListIssueRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[pgtype.UUID]db.ListIssuesRow, len(full))
+	for _, r := range full {
+		byID[r.ID] = r
+	}
+	out := page[:0:0]
+	for _, r := range page {
+		if f, ok := byID[r.ID]; ok { // a row deleted mid-request just drops out
+			out = append(out, f)
+		}
+	}
+	return out, nil
+}
+
+// effectiveDueMaxCandidates bounds the rows loaded and projected for
+// sort=effective_due. Var so tests can lower it.
+var effectiveDueMaxCandidates = 2000
 
 func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -1569,6 +1743,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 		}
 
 		prefix := h.getIssuePrefix(ctx, wsUUID)
+		rf := h.newReadFilter(r)
 		ids := make([]pgtype.UUID, len(issues))
 		var originals []pgtype.UUID
 		for i, issue := range issues {
@@ -1580,6 +1755,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 		resp := make([]IssueResponse, len(issues))
 		for i, issue := range issues {
 			resp[i] = openIssueRowToResponse(issue, prefix)
+			rf.stubDescriptionOf(h, issue.DescriptionExternalRead, issue.Description, issue.CreatorType, issue.CreatorID, &resp[i])
 			fillOpen(&resp[i])
 			labels := labelsMap[resp[i].ID]
 			if labels == nil {
@@ -1656,8 +1832,15 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	sortIsExpr := false
 	sortIsProperty := false
 	sortByStatus := false
+	sortByEffectiveDue := false
 	if s := r.URL.Query().Get("sort"); s != "" {
 		switch s {
+		case "effective_due":
+			// Dates are computed on read, so the page is cut after sorting.
+			// Fetch order is the undated order: priority, then oldest.
+			sortCol = "CASE i.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END"
+			sortIsExpr = true
+			sortByEffectiveDue = true
 		case "position", "title", "created_at", "updated_at", "start_date", "due_date":
 			sortCol = s
 		case "last_activity":
@@ -1698,7 +1881,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	if sortCol == "last_activity_at" {
 		sortDir = "DESC"
 	}
-	if sortCol != "position" {
+	if sortCol != "position" && !sortByEffectiveDue {
 		if d := r.URL.Query().Get("direction"); d != "" {
 			switch strings.ToLower(d) {
 			case "asc":
@@ -1912,21 +2095,32 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	// LIMIT/OFFSET requests, duplicating or dropping rows at page boundaries.
 	if sortCol == "last_activity_at" {
 		orderBy += ", i.id DESC"
+	} else if sortByEffectiveDue {
+		orderBy += ", i.created_at ASC, i.id ASC"
 	} else {
 		orderBy += ", i.created_at DESC, i.id DESC"
 	}
 
-	offsetRef := addArg(int64(offset))
-	limitRef := addArg(int64(limit))
+	fetchOffset, fetchLimit := int64(offset), int64(limit)
+	if sortByEffectiveDue {
+		// ponytail: loads the whole filtered set to sort it, bounded by
+		// effectiveDueMaxCandidates; SQL-side date if that is ever too low.
+		fetchOffset, fetchLimit = 0, int64(effectiveDueMaxCandidates)+1
+	}
+	offsetRef := addArg(fetchOffset)
+	limitRef := addArg(fetchLimit)
 
 	query := fmt.Sprintf(`SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-	   i.revision, i.duplicate_of_issue_id
+	   i.revision, i.duplicate_of_issue_id, i.description_external_read
 FROM issue i
 WHERE %s
 ORDER BY %s
 LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
+	if sortByEffectiveDue {
+		query = narrowListIssueColumns(query)
+	}
 
 	rows, err := h.DB.Query(ctx, query, args...)
 	if err != nil {
@@ -1936,44 +2130,15 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 	}
 	defer rows.Close()
 
-	var issues []db.ListIssuesRow
-	for rows.Next() {
-		var row db.ListIssuesRow
-		if err := rows.Scan(
-			&row.ID,
-			&row.WorkspaceID,
-			&row.Title,
-			&row.Description,
-			&row.Status,
-			&row.Priority,
-			&row.AssigneeType,
-			&row.AssigneeID,
-			&row.CreatorType,
-			&row.CreatorID,
-			&row.ParentIssueID,
-			&row.Position,
-			&row.StartDate,
-			&row.DueDate,
-			&row.CreatedAt,
-			&row.UpdatedAt,
-			&row.LastActivityAt,
-			&row.Number,
-			&row.ProjectID,
-			&row.Metadata,
-			&row.Stage,
-			&row.Properties,
-			&row.Revision,
-			&row.DuplicateOfIssueID,
-		); err != nil {
-			slog.Warn("ListIssues scan failed", "error", err)
-			writeError(w, http.StatusInternalServerError, "failed to list issues")
-			return
-		}
-		issues = append(issues, row)
-	}
-	if err := rows.Err(); err != nil {
-		slog.Warn("ListIssues rows failed", "error", err)
+	issues, err := scanListIssueRows(rows)
+	if err != nil {
+		slog.Warn("ListIssues scan failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to list issues")
+		return
+	}
+	if sortByEffectiveDue && len(issues) > effectiveDueMaxCandidates {
+		// Refuse, never truncate: a sort over a partial set is a wrong order.
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("too many issues to sort by effective_due (max %d); narrow the filter (project, status, assignee)", effectiveDueMaxCandidates))
 		return
 	}
 
@@ -1989,6 +2154,42 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 	}
 
 	prefix := h.getIssuePrefix(ctx, wsUUID)
+	rf := h.newReadFilter(r)
+	var projections map[pgtype.UUID]dueProjection
+	if sortByEffectiveDue {
+		roots := make([]db.Issue, len(issues))
+		for i, r := range issues {
+			roots[i] = db.Issue{ID: r.ID, WorkspaceID: r.WorkspaceID, Number: r.Number, Status: r.Status, DueDate: r.DueDate, ParentIssueID: r.ParentIssueID}
+		}
+		var err error
+		if projections, err = h.effectiveDueFor(ctx, wsUUID, prefix, roots); errors.Is(err, errEffectiveDueTooBroad) {
+			writeError(w, http.StatusBadRequest, "too many related issues to sort by effective_due; narrow the filter (project, status, assignee)")
+			return
+		} else if err != nil {
+			slog.Warn("ListIssues effective_due failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to resolve sort")
+			return
+		}
+		for _, p := range projections {
+			for _, d := range p.diagnostics {
+				if d.Type == "graph_limit" {
+					// Refuse, never sort: an unknown date is not "no date".
+					writeError(w, http.StatusBadRequest, "an issue's deadline graph is too large to sort by effective_due; narrow the filter (project, status, assignee)")
+					return
+				}
+			}
+		}
+		sortRowsByEffectiveDue(issues, projections)
+		start := min(offset, len(issues)) // bound before adding: offset+limit can overflow
+		issues = issues[start : start+min(limit, len(issues)-start)]
+		// Candidates were read without title/description/metadata/properties; load
+		// those only for the page, so a deep sort cannot buffer 2,001 large rows.
+		if issues, err = h.fullListIssueRows(ctx, wsUUID, issues); err != nil {
+			slog.Warn("ListIssues page fetch failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to list issues")
+			return
+		}
+	}
 	ids := make([]pgtype.UUID, len(issues))
 	for i, issue := range issues {
 		ids[i] = issue.ID
@@ -1997,6 +2198,13 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 	resp := make([]IssueResponse, len(issues))
 	for i, issue := range issues {
 		resp[i] = issueListRowToResponse(issue, prefix)
+		rf.stubDescriptionOf(h, issue.DescriptionExternalRead, issue.Description, issue.CreatorType, issue.CreatorID, &resp[i])
+		if p, ok := projections[issue.ID]; ok {
+			if p.date != "" {
+				resp[i].EffectiveDue, resp[i].DueSource = &p.date, p.source
+			}
+			resp[i].Diagnostics = p.diagnostics
+		}
 		labels := labelsMap[resp[i].ID]
 		if labels == nil {
 			labels = []LabelResponse{}
@@ -2522,7 +2730,7 @@ WITH ranked AS (
 		i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
 		i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
 		i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at,
-		i.number, i.project_id, i.metadata, i.stage, i.properties, i.revision, i.duplicate_of_issue_id,
+		i.number, i.project_id, i.metadata, i.stage, i.properties, i.revision, i.duplicate_of_issue_id, i.description_external_read,
 		COUNT(*) OVER (PARTITION BY i.assignee_type, i.assignee_id) AS group_total,
 		ROW_NUMBER() OVER (
 			PARTITION BY i.assignee_type, i.assignee_id
@@ -2535,7 +2743,7 @@ SELECT
 	id, workspace_id, title, description, status, priority,
 	assignee_type, assignee_id, creator_type, creator_id,
 	parent_issue_id, position, start_date, due_date, created_at, updated_at, last_activity_at,
-	number, project_id, metadata, stage, properties, revision, duplicate_of_issue_id, group_total
+	number, project_id, metadata, stage, properties, revision, duplicate_of_issue_id, description_external_read, group_total
 FROM ranked
 WHERE rn > %s AND rn <= %s + %s
 ORDER BY
@@ -2585,6 +2793,7 @@ ORDER BY
 			&row.Properties,
 			&row.Revision,
 			&row.DuplicateOfIssueID,
+			&row.DescriptionExternalRead,
 			&row.GroupTotal,
 		); err != nil {
 			slog.Warn("ListGroupedIssues scan failed", "error", err)
@@ -2607,6 +2816,7 @@ ORDER BY
 	}
 	labelsMap := h.labelsByIssue(ctx, wsUUID, ids)
 	prefix := h.getIssuePrefix(ctx, wsUUID)
+	rf := h.newReadFilter(r)
 	// One Resolver for the whole page — a per-row filler would query the
 	// catalog once per custom-status row. (MUL-6243)
 	fillGrouped := h.newStatusCategoryFiller(ctx, wsUUID, originals...)
@@ -2629,6 +2839,7 @@ ORDER BY
 		}
 
 		issue := issueListRowToResponse(row.ListIssuesRow, prefix)
+		rf.stubDescriptionOf(h, row.DescriptionExternalRead, row.Description, row.CreatorType, row.CreatorID, &issue)
 		fillGrouped(&issue)
 		labels := labelsMap[issue.ID]
 		if labels == nil {
@@ -2650,7 +2861,9 @@ func (h *Handler) GetIssue(w http.ResponseWriter, r *http.Request) {
 	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
 	resp := issueToResponse(issue, prefix)
 	resp.WebURL = h.workspaceWebURL(r.Context(), issue.WorkspaceID, func(ws db.Workspace) string { return weblink.Issue(ws.Slug, resp.Identifier) })
+	h.newReadFilter(r).stubDescription(h, issue, &resp)
 	h.fillStatusCategory(r.Context(), issue.WorkspaceID, &resp)
+	h.fillEffectiveDue(r.Context(), issue, &resp)
 	detailLabels := h.labelsByIssue(r.Context(), issue.WorkspaceID, []pgtype.UUID{issue.ID})[uuidToString(issue.ID)]
 	if detailLabels == nil {
 		detailLabels = []LabelResponse{}
@@ -2671,6 +2884,9 @@ func (h *Handler) GetIssue(w http.ResponseWriter, r *http.Request) {
 		IssueID:     issue.ID,
 		WorkspaceID: issue.WorkspaceID,
 	})
+	if err == nil {
+		attachments = h.readableAttachments(r, attachments)
+	}
 	if err == nil && len(attachments) > 0 {
 		mode := attachmentURLModeFromRequest(r)
 		resp.Attachments = make([]AttachmentResponse, len(attachments))
@@ -2716,9 +2932,11 @@ func (h *Handler) ListChildIssues(w http.ResponseWriter, r *http.Request) {
 	// built-in statuses still cost no query, and a list full of custom ones
 	// costs one catalog read rather than one per row.
 	statusResolver := issuestatus.NewResolver(issue.WorkspaceID)
+	readFilter := h.newReadFilter(r)
 	resp := make([]IssueResponse, len(children))
 	for i, child := range children {
 		resp[i] = issueToResponse(child, prefix)
+		readFilter.stubDescription(h, child, &resp[i])
 		resp[i].StatusCategory = issuestatus.WireCategory(child.Status, statusResolver.Category(r.Context(), h.Queries, child.Status))
 		labels := labelsMap[resp[i].ID]
 		if labels == nil {
@@ -2802,9 +3020,11 @@ func (h *Handler) ListChildrenByParents(w http.ResponseWriter, r *http.Request) 
 	// built-in statuses still cost no query, and a list full of custom ones
 	// costs one catalog read rather than one per row.
 	statusResolver := issuestatus.NewResolver(wsUUID)
+	readFilter := h.newReadFilter(r)
 	resp := make([]IssueResponse, len(children))
 	for i, child := range children {
 		resp[i] = issueToResponse(child, prefix)
+		readFilter.stubDescription(h, child, &resp[i])
 		resp[i].StatusCategory = issuestatus.WireCategory(child.Status, statusResolver.Category(r.Context(), h.Queries, child.Status))
 		labels := labelsMap[resp[i].ID]
 		if labels == nil {
@@ -3533,6 +3753,10 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if createWorkflow != nil {
+		// A creator who picked no status gets the workflow's start status.
+		if req.Status == "" {
+			status = createWorkflow.Start()
+		}
 		if err := issueworkflow.CheckStatus(createWorkflow, status); err != nil {
 			writeIssueWorkflowError(w, err)
 			return
@@ -3540,7 +3764,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		if req.AssigneeType == nil && req.AssigneeID == nil {
 			if step, ok := createWorkflow.Step(status); ok && step.HandsOff() {
 				handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
-				humans, err := h.workflowHumans(r.Context(), step, createWorkflowProject, wsUUID, requestedByID)
+				humans, err := h.workflowHumans(r.Context(), h.Queries, step, createWorkflowProject, wsUUID, requestedByID)
 				if err != nil {
 					slog.Error("create issue: resolve workflow handler", append(logger.RequestAttrs(r), "error", err)...)
 					writeError(w, http.StatusInternalServerError, "failed to resolve workflow handler")
@@ -3675,6 +3899,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		if len(atts) == 0 {
 			return nil
 		}
+		atts = h.readableAttachments(r, atts)
 		out := make([]AttachmentResponse, len(atts))
 		for i, a := range atts {
 			out[i] = h.attachmentToResponse(a, attachmentMode)
@@ -3732,7 +3957,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to create issue")
 			return
 		}
-		markedWriter = acting && actor.ExternalRead
+		markedWriter = acting && (actor.ExternalRead || len(actor.TaintIds) > 0)
 	}
 	res, err := h.IssueService.Create(r.Context(), service.IssueCreateParams{
 		WorkspaceID:     wsUUID,
@@ -3742,6 +3967,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		Title:           req.Title,
 		Description:     ptrToText(req.Description),
 		Status:          status,
+		StatusOmitted:   req.Status == "",
 		Priority:        priority,
 		AssigneeType:    assigneeType,
 		AssigneeID:      assigneeID,
@@ -3794,6 +4020,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	if errors.Is(err, service.ErrActiveDuplicate) {
 		dup := *res.DuplicateIssue
 		existing := issueToResponse(dup, h.getIssuePrefix(r.Context(), dup.WorkspaceID))
+		h.newReadFilter(r).stubDescription(h, dup, &existing)
 		h.fillStatusCategory(r.Context(), dup.WorkspaceID, &existing)
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"code":  "active_duplicate_issue",
@@ -3841,6 +4068,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	slog.Info("issue created", append(logger.RequestAttrs(r), "issue_id", uuidToString(issue.ID), "title", issue.Title, "status", issue.Status, "workspace_id", workspaceID)...)
 
 	resp := issueToResponse(issue, prefix)
+	h.newReadFilter(r).stubDescription(h, issue, &resp)
 	resp.WebURL = h.workspaceWebURL(r.Context(), issue.WorkspaceID, func(ws db.Workspace) string { return weblink.Issue(ws.Slug, resp.Identifier) })
 	fillCreated(&resp)
 	h.fillProjectTriggerOutcome(r.Context(), issue, &resp)
@@ -4101,6 +4329,9 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 		}
 	}
 	refreshUntouchedNullableIssueParams(&params, current, rawFields, false)
+	if err := h.applyDecisionEpisode(ctx, qtx, workspaceID, wf, &params); err != nil {
+		return db.Issue{}, current, false, err
+	}
 
 	issue, cancelledWakeups, err := updateIssueStoppingWakeups(ctx, qtx, params)
 	if err != nil {
@@ -4454,13 +4685,13 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		releaseMove = release
 		defer releaseMove()
 	}
-	// Status history is written in the status transaction. A duplicate mark
-	// keeps the listener's richer row until it migrates; it gets the same
-	// trigger instead.
+	// Status history is written in the status transaction. A live duplicate
+	// mark change is named by the listener's duplicate row, which carries the
+	// same trigger instead.
 	statusTrigger := statusTriggerFromRequest(r, actorType, actorID)
 	statusTrigger.Version = service.StatusTriggerVersion
 	var statusRec *statusRecord
-	if !params.DuplicateOfIssueID.Valid && !prevIssue.DuplicateOfIssueID.Valid {
+	if !h.duplicateRowNamesMove(r.Context(), params, prevIssue) {
 		statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTrigger}
 		if handoff != nil {
 			statusRec.handoffWorkflow = handoff.def.Name
@@ -4511,6 +4742,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 
 	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
 	resp := issueToResponse(issue, prefix)
+	h.newReadFilter(r).stubDescription(h, issue, &resp)
 	slog.Info("issue updated", append(logger.RequestAttrs(r), "issue_id", id, "workspace_id", workspaceID)...)
 	h.fillProjectTriggerOutcome(r.Context(), issue, &resp)
 
@@ -4518,6 +4750,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	assigneeChanged := (req.AssigneeType != nil || req.AssigneeID != nil || handoff != nil) &&
 		(prevIssue.AssigneeType.String != issue.AssigneeType.String || uuidToString(prevIssue.AssigneeID) != uuidToString(issue.AssigneeID))
 	if assigneeChanged {
+		h.recordSystem1Routing(r.Context(), prevIssue, issue, handoff, actorType)
 		h.followDecisionSteward(r.Context(), issue)
 	}
 	statusChanged := (req.Status != nil || params.Status.Valid) && prevIssue.Status != issue.Status
@@ -4563,7 +4796,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	updatedPayload := map[string]any{
 		"issue":               resp,
 		"assignee_changed":    assigneeChanged,
-		"status_changed":      statusChanged,
+		"status_changed":      statusMoveRecorded(statusChanged, statusRec),
 		"priority_changed":    priorityChanged,
 		"project_changed":     projectChanged,
 		"start_date_changed":  startDateChanged,
@@ -5206,6 +5439,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	// once after the loop against the final state (MUL-4155), not per child
 	// against a mid-batch snapshot.
 	var changedParents []pgtype.UUID
+	batchFilter := h.newReadFilter(r)
 	for _, issueID := range req.IssueIDs {
 		issueUUID, err := util.ParseUUID(issueID)
 		if err != nil {
@@ -5416,7 +5650,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		// Same recording as UpdateIssue: the row commits with the status.
 		var statusRec *statusRecord
-		if !params.DuplicateOfIssueID.Valid && !prevIssue.DuplicateOfIssueID.Valid {
+		if !h.duplicateRowNamesMove(r.Context(), params, prevIssue) {
 			statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTriggerFromRequest(r, actorType, actorID)}
 			if handoff != nil {
 				statusRec.handoffWorkflow = handoff.def.Name
@@ -5455,6 +5689,11 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 				failed = append(failed, map[string]any{"id": issueID, "code": budgetRebindingCode})
 				continue
 			}
+			var refused *decisionEpisodeRefusal
+			if errors.As(err, &refused) {
+				failed = append(failed, map[string]any{"id": issueID, "code": "decision_episode_refused", "error": refused.Error()})
+				continue
+			}
 			slog.Warn("batch update issue failed", "issue_id", issueID, "error", err)
 			continue
 		}
@@ -5465,6 +5704,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		// reloaded issue so the batch result and event carry the stored one.
 		issue = h.postEntryWarning(r.Context(), workflowWrite, issue)
 		resp := issueToResponse(issue, prefix)
+		batchFilter.stubDescription(h, issue, &resp)
 
 		fillBatch(&resp)
 		h.fillProjectTriggerOutcome(r.Context(), issue, &resp)
@@ -5498,7 +5738,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		batchPayload := map[string]any{
 			"issue":                      resp,
 			"assignee_changed":           assigneeChanged,
-			"status_changed":             statusChanged,
+			"status_changed":             statusMoveRecorded(statusChanged, statusRec),
 			"priority_changed":           priorityChanged,
 			"project_changed":            projectChanged,
 			"prev_status":                prevIssue.Status,

@@ -39,6 +39,7 @@ import { IntegrationsTab } from "./tabs/integrations-tab";
 import { QoderAgentTab } from "./tabs/qoder-agent-tab";
 import { RuntimeConfigTab } from "./tabs/runtime-config-tab";
 import { AgentDetailInspector } from "./agent-detail-inspector";
+import { AgentAutoCompactSection } from "./agent-auto-compact-section";
 import { AgentAccessSettings } from "./agent-access-settings";
 import { useT } from "../../i18n";
 
@@ -306,15 +307,23 @@ export function AgentAdvancedSettings({
                 </h2>
                 <div className="mt-6">
                   {active.id === "general" && (
-                    <AgentDetailInspector
-                      agent={agent}
-                      runtime={runtime}
-                      runtimes={runtimes}
-                      members={members}
-                      currentUserId={currentUserId}
-                      canEdit={canEdit}
-                      onUpdate={onUpdate}
-                    />
+                    <>
+                      <AgentDetailInspector
+                        agent={agent}
+                        runtime={runtime}
+                        runtimes={runtimes}
+                        members={members}
+                        currentUserId={currentUserId}
+                        canEdit={canEdit}
+                        onUpdate={onUpdate}
+                      />
+                      <AgentAutoCompactSection
+                        key={agent.id}
+                        agent={agent}
+                        canEdit={canEdit}
+                        onUpdate={onUpdate}
+                      />
+                    </>
                   )}
                   {active.id === "access" && (
                     <AgentAccessSettings

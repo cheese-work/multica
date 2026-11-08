@@ -65,10 +65,13 @@ func NewIssueService(q *db.Queries, tx TxStarter, bus *events.Bus, ac analytics.
 // to IssueService.Create. The handler owns the parsing step that turns its
 // request payload into this struct; the service stays transport-agnostic.
 type IssueCreateParams struct {
-	WorkspaceID   pgtype.UUID
-	Title         string
-	Description   pgtype.Text
-	Status        string
+	WorkspaceID pgtype.UUID
+	Title       string
+	Description pgtype.Text
+	Status      string
+	// StatusOmitted marks a creator who picked no status: Status then holds
+	// the caller's placeholder and the workflow's start status wins.
+	StatusOmitted bool
 	Priority      string
 	AssigneeType  pgtype.Text
 	AssigneeID    pgtype.UUID
@@ -399,13 +402,13 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 			p.Status = issueworkflow.StartStatus
 		}
 	}
-	if def != nil && def.Limits() && !def.Has(p.Status) {
+	if def != nil && def.Limits() && (p.StatusOmitted || !def.Has(p.Status)) {
 		// An override is the caller's explicit choice: a status it does not
 		// list is an error, never a silent restart.
-		if p.WorkflowID.Valid {
+		if p.WorkflowID.Valid && !p.StatusOmitted {
 			return IssueCreateResult{}, issueworkflow.CheckStatus(def, p.Status)
 		}
-		p.Status = issueworkflow.StartStatus
+		p.Status = def.Start()
 	}
 	// The handler of the step the issue lands on comes from the workflow as it
 	// stands under the locks. An earlier unlocked read can name the former
@@ -1090,7 +1093,7 @@ func (s *IssueService) isSquadLeaderReady(ctx context.Context, issue db.Issue) b
 	if err != nil {
 		return false
 	}
-	return verdict.Ready()
+	return !verdict.Blocked()
 }
 
 func (s *IssueService) enqueueSquadLeaderTask(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID string) {

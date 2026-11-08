@@ -318,6 +318,11 @@ export interface ChatState {
   /** Settings preference: is the floating chat window available at all. */
   floatingChatEnabled: boolean;
   activeSessionId: string | null;
+  /**
+   * Session the viewer just marked unseen. Auto mark-read skips it, otherwise
+   * it would clear the cursor at once. Cleared by the next real open. Never persisted.
+   */
+  autoReadSuppressedId: string | null;
   /** One-shot URL-write intent for the next session change. Never persisted. */
   navIntent: ChatNavIntent | null;
   /**
@@ -347,6 +352,7 @@ export interface ChatState {
   toggle: () => void;
   setFloatingChatEnabled: (enabled: boolean) => void;
   setActiveSession: (id: string | null) => void;
+  suppressAutoRead: (sessionId: string | null) => void;
   /** Record how the next session change reaches the URL; the latest request wins. */
   requestNav: (intent: ChatNavIntent) => void;
   /** Claim the session's archive guard. False when an action is already in flight. */
@@ -420,6 +426,7 @@ export function createChatStore(options: ChatStoreOptions) {
     isOpen: initialIsOpen,
     floatingChatEnabled: initialFloatingEnabled,
     activeSessionId: storage.getItem(wsKey(SESSION_STORAGE_KEY)),
+    autoReadSuppressedId: null,
     navIntent: null,
     sessionActionPending: {},
     selectedAgentId: initialAgentId,
@@ -457,8 +464,9 @@ export function createChatStore(options: ChatStoreOptions) {
       } else {
         storage.removeItem(wsKey(SESSION_STORAGE_KEY));
       }
-      set({ activeSessionId: id });
+      set(id ? { activeSessionId: id, autoReadSuppressedId: null } : { activeSessionId: id });
     },
+    suppressAutoRead: (sessionId) => set({ autoReadSuppressedId: sessionId }),
     requestNav: (intent) => set({ navIntent: intent }),
     beginSessionAction: (sessionId, action) => {
       if (get().sessionActionPending[sessionId]) return false;
@@ -718,6 +726,7 @@ export function createChatStore(options: ChatStoreOptions) {
     });
     store.setState({
       activeSessionId: nextSession,
+      autoReadSuppressedId: null,
       selectedAgentId: nextAgent,
       selectedProjectId: nextProject,
       inputDrafts: nextDrafts,

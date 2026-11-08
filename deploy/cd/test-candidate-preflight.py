@@ -35,6 +35,18 @@ import sys
 
 state = Path(os.environ["STUB_STATE"])
 endpoint = sys.argv[2]
+if endpoint == "rate_limit":
+    # CHE-4251: the budget read is free and only the App token may ask for it.
+    if os.environ.get("GH_TOKEN") != "APP":
+        sys.exit(9)
+    counter = state / "budget-reads"
+    index = int(counter.read_text()) if counter.exists() else 0
+    counter.write_text(str(index + 1))
+    budgets = json.loads(os.environ["STUB_BUDGETS"])
+    print(budgets[min(index, len(budgets) - 1)])
+    sys.exit(0)
+with (state / "calls").open("a") as calls:
+    calls.write(endpoint.split("?")[0].rsplit("/", 1)[-1] + " " + os.environ.get("GH_TOKEN", "") + "\\n")
 api_error = os.environ.get("STUB_API_ERROR")
 if api_error and (api_error == "1" or api_error in endpoint):
     sys.exit("simulated GitHub API failure")
@@ -90,7 +102,7 @@ print(json.dumps({"server_commit": versions[min(index, len(versions) - 1)]}))
 
     def approval_state(self, heads, checks=None, files=None, wait_seconds="60",
                        live_status="ahead", main_status="ahead", live_versions=None,
-                       live_sha=LIVE_SHA, ambiguous_short=False):
+                       live_sha=LIVE_SHA, ambiguous_short=False, extra_env=None):
         protected = self.workflow["jobs"]["approve-c00"]
         self.assertEqual(protected["environment"], "c00-production")
         dependencies = protected.get("needs", [])
@@ -100,7 +112,8 @@ print(json.dumps({"server_commit": versions[min(index, len(versions) - 1)]}))
             return "waiting", "No eligibility job runs before c00-production approval."
 
         preflight = self.workflow["jobs"]["candidate-preflight"]
-        self.assertNotIn("environment", preflight)
+        # CHE-4251: the read path has its own App-token environment, never the approval environment.
+        self.assertEqual(preflight["environment"], "ci-app-token")
         self.assertIn("needs.candidate-preflight.outputs.eligible == 'true'", protected["if"])
         self.assertIn("needs.candidate-preflight.outputs.eligible == 'true'", self.workflow["jobs"]["prepare-release-candidate"]["if"])
         selection = next(step for step in preflight["steps"] if step.get("id") == "candidate")
@@ -125,6 +138,7 @@ print(json.dumps({"server_commit": versions[min(index, len(versions) - 1)]}))
             "STUB_FILES": json.dumps(files if files is not None else ["server/only.go"]),
             "CHECKS_WAIT_SECONDS": wait_seconds,
             "CHECKS_POLL_SECONDS": "0",
+            **(extra_env or {}),
         }
         result = subprocess.run(
             ["bash", "-c", selection["run"]], cwd=self.directory, env=environment,
@@ -179,6 +193,21 @@ print(json.dumps({"server_commit": versions[min(index, len(versions) - 1)]}))
         )
         self.assertEqual(state, "waiting", reason)
         self.assertEqual((self.directory / "check-reads").read_text(), "2")
+
+    def test_app_token_reserve_is_enforced_on_every_poll(self):
+        # CHE-4251: the budget is read before each API phase, so a long wait cannot drain the server's reserve.
+        pending = {**SUCCESS, "backend": None}
+        state, reason = self.approval_state(
+            [SOURCE_SHA], [pending, pending, SUCCESS],
+            extra_env={"GH_TOKEN": "APP", "APP_TOKEN": "APP", "FALLBACK_TOKEN": "GHT",
+                       "STUB_BUDGETS": json.dumps([4000, 4000, 4000, 4000, 1000])},
+        )
+        self.assertEqual(state, "waiting", reason)
+        polls = [line.split()[1] for line in (self.directory / "calls").read_text().splitlines()
+                 if line.startswith("check-runs ")]
+        self.assertEqual(polls[0], "APP")
+        self.assertEqual(polls[-1], "GHT")
+        self.assertEqual(len(polls), 3)
 
     def test_unknown_live_version_fails_closed(self):
         for version in [None, "", "unknown", "main", "not-a-sha"]:
@@ -278,7 +307,9 @@ print(json.dumps({"server_commit": versions[min(index, len(versions) - 1)]}))
         checkout = next(step for step in preflight["steps"] if step.get("uses", "").startswith("actions/checkout@"))
         self.assertEqual(checkout["with"]["ref"], "${{ github.sha }}")
         self.assertEqual(checkout["with"]["fetch-depth"], 0)
-        self.assertNotIn("secrets.C00", json.dumps(preflight))
+        # CHE-4251: the only C00 secrets allowed are the App id and CI key, read by the mint step alone.
+        self.assertNotIn("secrets.C00", json.dumps([s for s in preflight["steps"]
+                                                    if not s.get("uses", "").startswith("actions/create-github-app-token@")]))
         selection = next(step for step in preflight["steps"] if step.get("id") == "candidate")
         self.assertEqual(selection["env"]["C00_CONFIG_URL"],
                          "${{ vars.C00_CONFIG_URL }}")

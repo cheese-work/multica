@@ -1468,7 +1468,7 @@ const listIssues = `-- name: ListIssues :many
 SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-       i.revision, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id
+       i.revision, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.description_external_read
 FROM issue i
 WHERE i.workspace_id = $1
   AND ($4::text IS NULL OR i.status = $4)
@@ -1539,32 +1539,33 @@ type ListIssuesParams struct {
 }
 
 type ListIssuesRow struct {
-	ID                 pgtype.UUID        `json:"id"`
-	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
-	Title              string             `json:"title"`
-	Description        pgtype.Text        `json:"description"`
-	Status             string             `json:"status"`
-	Priority           string             `json:"priority"`
-	AssigneeType       pgtype.Text        `json:"assignee_type"`
-	AssigneeID         pgtype.UUID        `json:"assignee_id"`
-	CreatorType        string             `json:"creator_type"`
-	CreatorID          pgtype.UUID        `json:"creator_id"`
-	ParentIssueID      pgtype.UUID        `json:"parent_issue_id"`
-	Position           float64            `json:"position"`
-	StartDate          pgtype.Date        `json:"start_date"`
-	DueDate            pgtype.Date        `json:"due_date"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
-	LastActivityAt     pgtype.Timestamptz `json:"last_activity_at"`
-	Number             int32              `json:"number"`
-	ProjectID          pgtype.UUID        `json:"project_id"`
-	Metadata           []byte             `json:"metadata"`
-	Stage              pgtype.Int4        `json:"stage"`
-	Properties         []byte             `json:"properties"`
-	Revision           int64              `json:"revision"`
-	DuplicateOfIssueID pgtype.UUID        `json:"duplicate_of_issue_id"`
-	WorkflowID         pgtype.UUID        `json:"workflow_id"`
-	RequestedByID      pgtype.UUID        `json:"requested_by_id"`
+	ID                      pgtype.UUID        `json:"id"`
+	WorkspaceID             pgtype.UUID        `json:"workspace_id"`
+	Title                   string             `json:"title"`
+	Description             pgtype.Text        `json:"description"`
+	Status                  string             `json:"status"`
+	Priority                string             `json:"priority"`
+	AssigneeType            pgtype.Text        `json:"assignee_type"`
+	AssigneeID              pgtype.UUID        `json:"assignee_id"`
+	CreatorType             string             `json:"creator_type"`
+	CreatorID               pgtype.UUID        `json:"creator_id"`
+	ParentIssueID           pgtype.UUID        `json:"parent_issue_id"`
+	Position                float64            `json:"position"`
+	StartDate               pgtype.Date        `json:"start_date"`
+	DueDate                 pgtype.Date        `json:"due_date"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
+	LastActivityAt          pgtype.Timestamptz `json:"last_activity_at"`
+	Number                  int32              `json:"number"`
+	ProjectID               pgtype.UUID        `json:"project_id"`
+	Metadata                []byte             `json:"metadata"`
+	Stage                   pgtype.Int4        `json:"stage"`
+	Properties              []byte             `json:"properties"`
+	Revision                int64              `json:"revision"`
+	DuplicateOfIssueID      pgtype.UUID        `json:"duplicate_of_issue_id"`
+	WorkflowID              pgtype.UUID        `json:"workflow_id"`
+	RequestedByID           pgtype.UUID        `json:"requested_by_id"`
+	DescriptionExternalRead bool               `json:"description_external_read"`
 }
 
 // involves_user_id widens the assignee filter to surface issues where the user
@@ -1622,6 +1623,7 @@ func (q *Queries) ListIssues(ctx context.Context, arg ListIssuesParams) ([]ListI
 			&i.DuplicateOfIssueID,
 			&i.WorkflowID,
 			&i.RequestedByID,
+			&i.DescriptionExternalRead,
 		); err != nil {
 			return nil, err
 		}
@@ -1637,7 +1639,7 @@ const listOpenIssues = `-- name: ListOpenIssues :many
 SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-       i.revision, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id
+       i.revision, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.description_external_read
 FROM issue i
 WHERE i.workspace_id = $1
   -- Negate only known terminal keys so an unknown legacy key remains visible.
@@ -1754,32 +1756,33 @@ type ListOpenIssuesParams struct {
 }
 
 type ListOpenIssuesRow struct {
-	ID                 pgtype.UUID        `json:"id"`
-	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
-	Title              string             `json:"title"`
-	Description        pgtype.Text        `json:"description"`
-	Status             string             `json:"status"`
-	Priority           string             `json:"priority"`
-	AssigneeType       pgtype.Text        `json:"assignee_type"`
-	AssigneeID         pgtype.UUID        `json:"assignee_id"`
-	CreatorType        string             `json:"creator_type"`
-	CreatorID          pgtype.UUID        `json:"creator_id"`
-	ParentIssueID      pgtype.UUID        `json:"parent_issue_id"`
-	Position           float64            `json:"position"`
-	StartDate          pgtype.Date        `json:"start_date"`
-	DueDate            pgtype.Date        `json:"due_date"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
-	LastActivityAt     pgtype.Timestamptz `json:"last_activity_at"`
-	Number             int32              `json:"number"`
-	ProjectID          pgtype.UUID        `json:"project_id"`
-	Metadata           []byte             `json:"metadata"`
-	Stage              pgtype.Int4        `json:"stage"`
-	Properties         []byte             `json:"properties"`
-	Revision           int64              `json:"revision"`
-	DuplicateOfIssueID pgtype.UUID        `json:"duplicate_of_issue_id"`
-	WorkflowID         pgtype.UUID        `json:"workflow_id"`
-	RequestedByID      pgtype.UUID        `json:"requested_by_id"`
+	ID                      pgtype.UUID        `json:"id"`
+	WorkspaceID             pgtype.UUID        `json:"workspace_id"`
+	Title                   string             `json:"title"`
+	Description             pgtype.Text        `json:"description"`
+	Status                  string             `json:"status"`
+	Priority                string             `json:"priority"`
+	AssigneeType            pgtype.Text        `json:"assignee_type"`
+	AssigneeID              pgtype.UUID        `json:"assignee_id"`
+	CreatorType             string             `json:"creator_type"`
+	CreatorID               pgtype.UUID        `json:"creator_id"`
+	ParentIssueID           pgtype.UUID        `json:"parent_issue_id"`
+	Position                float64            `json:"position"`
+	StartDate               pgtype.Date        `json:"start_date"`
+	DueDate                 pgtype.Date        `json:"due_date"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
+	LastActivityAt          pgtype.Timestamptz `json:"last_activity_at"`
+	Number                  int32              `json:"number"`
+	ProjectID               pgtype.UUID        `json:"project_id"`
+	Metadata                []byte             `json:"metadata"`
+	Stage                   pgtype.Int4        `json:"stage"`
+	Properties              []byte             `json:"properties"`
+	Revision                int64              `json:"revision"`
+	DuplicateOfIssueID      pgtype.UUID        `json:"duplicate_of_issue_id"`
+	WorkflowID              pgtype.UUID        `json:"workflow_id"`
+	RequestedByID           pgtype.UUID        `json:"requested_by_id"`
+	DescriptionExternalRead bool               `json:"description_external_read"`
 }
 
 // See ListIssues for the semantics of involves_user_id (mirrors the 4-branch
@@ -1831,6 +1834,7 @@ func (q *Queries) ListOpenIssues(ctx context.Context, arg ListOpenIssuesParams) 
 			&i.DuplicateOfIssueID,
 			&i.WorkflowID,
 			&i.RequestedByID,
+			&i.DescriptionExternalRead,
 		); err != nil {
 			return nil, err
 		}

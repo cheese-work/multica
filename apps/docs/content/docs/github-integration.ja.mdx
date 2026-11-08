@@ -74,6 +74,8 @@ Resolves MUL-123
 
 本文に `Related to MUL-123` のような通常の参照を書いただけでは、そのタスクへまったく紐づきません。Commit message と PR コメントも紐づけの対象外です。
 
+フォークからの PR は、フォークのオーナーがベースリポジトリと同じ場合にのみ自動で紐づきます。そのような PR をマージしても、タスクのステータスは変わりません。他のオーナーのフォークからの PR は手動で紐づけてください。
+
 手動で紐づけることもできます。タスクの **Pull requests** セクションで **+** をクリックし、PR の URL を貼り付けます。PR をタスクから外すには、その行の **⋯** メニューから **タスクから外す** を選びます。以後、Multica がタイトルやブランチから再び紐づけることはありません。
 
 ## タスクから PR を確認する
@@ -236,6 +238,14 @@ GITHUB_APP_PRIVATE_KEY=<complete PEM private key, including BEGIN/END lines and 
 接続ボタンには GitHub の 6 つの値がすべて必要です。新規接続では、Multica が GitHub のユーザー認可 code を交換し、App として installation を解決したうえで、個人アカウントの ID と login の完全一致、または organization の active admin membership を要求します。ユーザーの installation 一覧に表示されるだけでは organization の権限証明になりません。検証エラーはすべて接続を拒否し、一時的な user token は確認後に失効させます。
 
 既存の App に Members または Actions 権限を追加する場合、新しいワークスペースへ接続する前に対象 organization ごとに権限変更を承認してください。既存の installation は新しい権限を承認する必要があります。承認されるまで、`--until-gh-run` wakeup は workflow イベントを受け取りません。
+
+必要に応じて `GITHUB_ALLOWED_ACCOUNT_IDS` に、GitHub アカウントの数値 ID（login ではなく、ユーザーまたは organization の `id`）をカンマ区切りで設定します。未設定または空の場合は、上記の検証を通過したアカウントならどれでも接続できます。設定すると、アカウント ID が一覧にない installation の binding を Multica は拒否します。setup callback は `github_error=installation_not_allowed` でリダイレクトし、binding は作成しません。code のない **Redirect on update** の callback は、その binding に保存済みのアカウント ID で判定します。保存済みのアカウント ID がない binding は拒否されます（fail closed）。login など不正な値は、起動時にサーバーを停止させます。
+
+```dotenv
+GITHUB_ALLOWED_ACCOUNT_IDS=1234567,7654321
+```
+
+GitHub の `deleted` と `suspend` イベントは、一覧に関係なく常に binding を削除します。
 
 </Step>
 <Step>

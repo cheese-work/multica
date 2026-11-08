@@ -503,6 +503,7 @@
     "not_found": "Cette tâche n'existe pas ou a été supprimée dans cet espace de travail.",
     "load_failed": "Impossible de charger cette tâche. Vérifiez votre connexion et réessayez.",
     "card_load_failed": "Impossible de charger cette tâche.",
+    "data_error": "Cette tâche contient des données que l'application ne peut pas lire.",
     "retry": "Réessayer",
     "breadcrumb_project_unknown": "Projet inconnu",
     "back": "Retour",
@@ -1541,7 +1542,34 @@
       "rate": "plus de 12 exécutions en une heure"
     },
     "paused_banner": "Réveils suspendus par {{name}} à {{time}}",
-    "paused_banner_anonymous": "Réveils suspendus à {{time}}"
+    "paused_banner_anonymous": "Réveils suspendus à {{time}}",
+    "defaults": {
+      "title": "Réveils par défaut",
+      "rule_pr_merged": "Quand la PR liée est fusionnée",
+      "rule_pr_checks_failed": "Quand les vérifications de la PR échouent",
+      "rule_pr_needs_attention": "Quand la PR liée demande de l’attention",
+      "state_on": "Activé",
+      "state_disabled": "Désactivé",
+      "state_paused": "En pause : {{reason}}",
+      "inherited": "Hérité de {{source}}",
+      "overridden": "Remplacé sur ce ticket",
+      "source_workspace": "l’espace de travail",
+      "source_project": "le projet",
+      "source_default": "la valeur par défaut",
+      "open_project": "Modifier dans les règles du projet",
+      "override": "Remplacer",
+      "override_label": "Remplacer {{rule}}",
+      "edit": "Modifier le remplacement",
+      "edit_label": "Modifier le remplacement de {{rule}}",
+      "reset": "Réinitialiser",
+      "reset_label": "Réinitialiser {{rule}}",
+      "save": "Enregistrer le remplacement",
+      "saving": "Enregistrement…",
+      "cancel": "Annuler",
+      "save_error": "Impossible d’enregistrer le remplacement.",
+      "reset_error": "Impossible de réinitialiser la règle.",
+      "conflict_error": "Quelqu’un a modifié cette règle avant vous. Vos modifications sont conservées ; rechargez pour voir les siennes."
+    }
   },
   "duplicates": {
     "banner_prefix": "Doublon de",
@@ -2041,5 +2069,32 @@
       "row_actions": "Actions pour {{name}}",
       "no_matches": "Aucune vue ne correspond"
     }
+  },
+  "status_history": {
+    "title": "Historique des statuts",
+    "description": "Tous les changements de statut de ce ticket, du plus ancien au plus récent.",
+    "empty": "Aucun changement de statut enregistré.",
+    "truncated": "Les changements de statut plus anciens ne sont pas affichés. La liste commence au plus ancien changement renvoyé par le serveur.",
+    "trigger_not_recorded": "Déclencheur non enregistré",
+    "removed": "{{status}} (supprimé)",
+    "handoff_comment": "Commentaire de transmission",
+    "handoff_invalid": "Lien de transmission invalide",
+    "scrubber_label": "Position dans l’historique des statuts",
+    "position": "{{current}} sur {{total}}",
+    "cause": {
+      "ui_or_api": "Modifié par une personne",
+      "workflow_edge": "Transition de workflow",
+      "workflow_remap": "Remappage de workflow",
+      "pr_merged": "PR fusionnée",
+      "ci_advance": "Avancement CI",
+      "run_budget": "Budget d’exécutions",
+      "decision": "Décision",
+      "watchdog": "Chien de garde",
+      "task_reset": "Réinitialisation après échec",
+      "qoder": "Qoder",
+      "duplicate": "Doublon",
+      "system": "Système"
+    },
+    "open": "Historique des statuts"
   }
 }

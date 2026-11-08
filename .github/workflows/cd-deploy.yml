@@ -123,6 +123,8 @@ jobs:
     if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
     runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 65
+    # CHE-4251: own API budget for the read path; main-only environment holding the c00-multicado CI key.
+    environment: ci-app-token
     outputs:
       eligible: ${{ steps.candidate.outputs.eligible }}
     steps:
@@ -131,6 +133,10 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+
+      - name: Use disposable build caches
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/build-cache-env.sh"
 
       - name: Setup Node
         uses: actions/setup-node@v7
@@ -142,11 +148,37 @@ jobs:
         shell: bash
         run: bash deploy/cd/ensure-pyyaml.sh
 
+      - name: Mint the c00-multicado read token (CHE-4251)
+        id: app
+        # A missing key or environment must not stop a deploy: the pick step below falls back to GITHUB_TOKEN.
+        continue-on-error: true
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.C00_MULTICADO_APP_ID }}
+          private-key: ${{ secrets.C00_MULTICADO_CI_PRIVATE_KEY }}
+          repositories: multica
+          permission-metadata: read
+          permission-contents: read
+          permission-actions: read
+          permission-checks: read
+          permission-statuses: read
+          permission-pull-requests: read
+      - name: Pick the API token (App token while its budget stays above 1,500)
+        id: api
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app.outputs.token }}
+          FALLBACK_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash deploy/cd/pick-api-token.sh
+
       - name: Select a forward candidate before C00 approval
         id: candidate
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.api.outputs.token }}
+          # The scripts re-read the App budget before every API phase and drop to FALLBACK_TOKEN below the reserve.
+          APP_TOKEN: ${{ steps.app.outputs.token }}
+          FALLBACK_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
           C00_CONFIG_URL: ${{ vars.C00_CONFIG_URL }}
           CHECKS_WAIT_SECONDS: "3600"
