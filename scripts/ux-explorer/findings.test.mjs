@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
-import { ROUTES, PROFILES, validateFinding, selectWeekly, WEEKLY_CAP } from "./findings.mjs";
+import {
+  ROUTES, PROFILES, validateFinding, selectWeekly, WEEKLY_CAP,
+  allowRequest, isolationProblems, checkScreenshotFiles, PAT_PATH, SANDBOX_ORIGIN_ENV,
+} from "./findings.mjs";
 
 // CHE-2985 (B2 of CHE-2970): the explorer run definition and finding format.
 const skill = readFileSync(new URL("../../skills/ux-explorer/SKILL.md", import.meta.url), "utf8");
@@ -71,4 +76,60 @@ test("equal pain: older proposal first", () => {
     { id: "old", pain: 5, found_at: "2026-11-02" },
   ]);
   assert.deepEqual(publish.map((p) => p.id), ["old", "new"]);
+});
+
+// Review round 1 (CHE-2985, terra): enforced boundaries, not prose.
+
+test("explorer browser may only read: GET/HEAD to the sandbox origin", () => {
+  const o = "https://app.example";
+  assert.equal(allowRequest("GET", `${o}/ux-explorer-sandbox/issues`, o), true);
+  assert.equal(allowRequest("HEAD", `${o}/x`, o), true);
+  for (const m of ["POST", "PUT", "PATCH", "DELETE"]) assert.equal(allowRequest(m, `${o}/api/issues`, o), false, m);
+  assert.equal(allowRequest("GET", "https://evil.example/x", o), false, "other origin");
+  assert.equal(allowRequest("GET", "not a url", o), false, "unparseable fails closed");
+});
+
+test("publication step: refuses when E's credential is reachable", () => {
+  const clean = { env: { PATH: "/usr/bin" }, canRead: () => false };
+  assert.deepEqual(isolationProblems(clean), []);
+  assert.ok(isolationProblems({ ...clean, canRead: (p) => p === PAT_PATH }).length, "PAT file readable");
+  assert.ok(isolationProblems({ ...clean, env: { MULTICA_TOKEN: "x" } }).length, "token in env");
+  assert.ok(isolationProblems({ ...clean, env: { EXPLORER_PAT: "x" } }).length, "explorer pat in env");
+  assert.ok(isolationProblems({ ...clean, env: { [SANDBOX_ORIGIN_ENV]: "x" } }).length === 0, "origin is not a secret");
+});
+
+test("screenshot file names: plain .png name inside findings/, nothing else", () => {
+  for (const file of ["/etc/passwd", "../x.png", "a/b.png", ".hidden.png", "x.jpg", "x.png\0.txt", ""]) {
+    assert.ok(validateFinding(class2({ screenshots: [{ profile: "desktop", file }] })).length, JSON.stringify(file));
+  }
+});
+
+test("screenshot files: regular PNG only, no symlink, no other content", () => {
+  const dir = mkdtempSync(join(tmpdir(), "uxs-"));
+  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(8)]);
+  writeFileSync(join(dir, "ok.png"), png);
+  writeFileSync(join(dir, "text.png"), "secret=1\n");
+  writeFileSync(join(dir, "target.txt"), "x");
+  symlinkSync(join(dir, "target.txt"), join(dir, "link.png"));
+  mkdirSync(join(dir, "dir.png"));
+  const f = (file) => class2({ screenshots: [{ profile: "desktop", file }] });
+  assert.deepEqual(checkScreenshotFiles(dir, f("ok.png")), []);
+  for (const bad of ["text.png", "link.png", "dir.png", "missing.png"]) {
+    assert.ok(checkScreenshotFiles(dir, f(bad)).length, bad);
+  }
+});
+
+test("weekly cap counts proposals already published this week", () => {
+  const pending = Array.from({ length: 30 }, (_, i) => ({ id: i, pain: 5, found_at: `2026-11-${10 + i}` }));
+  assert.equal(selectWeekly(pending, WEEKLY_CAP, 15).publish.length, 5);
+  assert.equal(selectWeekly(pending, WEEKLY_CAP, 15).carryOver.length, 25);
+  assert.equal(selectWeekly(pending, WEEKLY_CAP, 20).publish.length, 0);
+  assert.equal(selectWeekly(pending, WEEKLY_CAP, 99).publish.length, 0, "over cap never goes negative");
+  assert.equal(selectWeekly(pending, WEEKLY_CAP, Number.NaN).publish.length, 0, "unknown count publishes none");
+});
+
+test("SKILL.md names the enforced boundaries and treats findings as untrusted", () => {
+  for (const s of ["OS user", "allowRequest", "isolationProblems", "checkScreenshotFiles", "untrusted", "published this week"]) {
+    assert.ok(skill.includes(s), s);
+  }
 });
