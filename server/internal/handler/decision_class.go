@@ -181,7 +181,7 @@ func raisesPastNonOwner(ctx context.Context, queries *db.Queries, workspaceID, r
 // open request gets the lifecycle cancel. Neither reopens the request.
 func cancelRaisedPastNonOwner(ctx context.Context, queries *db.Queries, raised db.DecisionRequest, live db.DecisionAnswer, root *db.Comment, userID pgtype.UUID) (decisionCancelOutcome, error) {
 	if !live.ID.Valid {
-		return cancelLockedDecision(ctx, queries, raised, live, root, decisiontx.ClassNeedsOwner)
+		return cancelDecisionLifecycleLocked(ctx, queries, raised, live, root, decisiontx.ClassNeedsOwner)
 	}
 	session, err := queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{WorkspaceID: raised.WorkspaceID, ID: raised.ChatSessionID})
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -189,6 +189,9 @@ func cancelRaisedPastNonOwner(ctx context.Context, queries *db.Queries, raised d
 	}
 	withdrawn, err := decisiontx.Withdraw(ctx, queries, raised, live, session.Status, decisiontx.ClassNeedsOwner, userID)
 	if err != nil {
+		return decisionCancelOutcome{}, err
+	}
+	if err := withdrawCoveredAnswers(ctx, queries, raised, &withdrawn, userID); err != nil {
 		return decisionCancelOutcome{}, err
 	}
 	if len(withdrawn.Comments) > 0 && root != nil {
@@ -206,5 +209,8 @@ func (handler *Handler) publishRaisedPastNonOwner(workspaceID, userID pgtype.UUI
 	if out.withdrawal.Answer.ID.Valid {
 		handler.TaskService.PublishThreadUnresolvedOnReply(out.withdrawal.ClearedComments, uuidToString(workspaceID), "member", uuidToString(userID))
 		handler.publishDecisionAnswerUpdated(uuidToString(workspaceID), "member", uuidToString(userID), out.withdrawal.Answer.ID, request.IssueID, decisionStateDisclaimed)
+	}
+	for _, item := range out.withdrawal.Covered {
+		handler.publishWithdrawalEvents(uuidToString(workspaceID), "member", uuidToString(userID), item, nil)
 	}
 }

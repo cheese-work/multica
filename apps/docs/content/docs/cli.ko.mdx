@@ -273,6 +273,8 @@ multica runtime profile create --display-name "사내 Claude 래퍼" \
 
 활성 에이전트가 계속 연결된 런타임을 삭제하면 명령이 기본적으로 거부됩니다. `multica runtime delete <id> --cascade`는 에이전트의 런타임 연결을 해제하고 설정과 기록을 보존하며 활성 실행을 취소합니다.
 
+`multica runtime breaker list`는 프로바이더별 서킷 브레이커를 보여 주고, `multica runtime breaker reset <provider>`는 강제로 닫습니다(소유자 또는 관리자만). [프로바이더 서킷 브레이커](/daemon-runtimes#provider-breaker)를 참고하세요.
+
 실행 메커니즘과 사용자 지정 profile은 [데몬과 런타임](/daemon-runtimes)을 참고하세요.
 
 ## 프로젝트, 워크스페이스, 오토파일럿
@@ -362,7 +364,7 @@ CLI 설정 파일에는 사용자를 대신해 Multica에 접근할 수 있는 t
 
 | 명령 | 하위 명령 | 용도 | 주요 flag |
 | --- | --- | --- | --- |
-| `issue` | `list` | 태스크 목록 | `--status`, `--priority`, `--assignee`, `--project`, `--metadata`(반복 가능), `--property`(반복 가능, `"이름=값"` 또는 `"Score>=3"`, `"Due<2026-01-01"`, `"Notes~=text"` 같은 비교; `__none__`은 미설정과 일치), `--limit`, `--offset`, `--sort`(`property:<이름 또는 id>` 지원), `--full-id`, `--resolve-properties`(JSON 전용; 저장된 id와 함께 속성, 옵션, 멤버 이름을 반환), `--fields`(JSON 전용. 남길 필드를 쉼표로 구분) |
+| `issue` | `list` | 태스크 목록 | `--status`, `--priority`, `--assignee`, `--project`, `--metadata`(반복 가능), `--property`(반복 가능, `"이름=값"` 또는 `"Score>=3"`, `"Due<2026-01-01"`, `"Notes~=text"` 같은 비교; `__none__`은 미설정과 일치), `--limit`, `--offset`, `--sort`(`effective_due`: 상속된 가장 이른 마감일 순으로 마감일이 있는 항목을 앞에 정렬, 그리고 `property:<이름 또는 id>` 지원), `--full-id`, `--resolve-properties`(JSON 전용; 저장된 id와 함께 속성, 옵션, 멤버 이름을 반환), `--fields`(JSON 전용. 남길 필드를 쉼표로 구분) |
 | | `get <id>` | 태스크 하나 확인 | `--resolve-properties`(JSON 전용; 저장된 id와 함께 속성, 옵션, 멤버 이름을 반환) |
 | | `create` | 태스크 생성 | `--title`(필수), `--description` / `--description-stdin` / `--description-file`, `--status`, `--priority`, `--assignee`, `--parent`, `--stage`, `--project`, `--start-date`, `--due-date`, `--attachment`(반복 가능), `--property`(반복 가능), `--allow-duplicate`(같은 제목의 닫히지 않은 태스크가 있어도 생성) |
 | | `update <id>` | 태스크 필드 업데이트 | `create`와 같은 종류의 필드에 `--position`, `--no-start`, `--duplicate-of` 추가 |
@@ -400,6 +402,7 @@ CLI 설정 파일에는 사용자를 대신해 Multica에 접근할 수 있는 t
 | | `trigger <id>` | 수동으로 한 번 트리거 | |
 | | `runs <id>` | 실행 기록 확인 | |
 | | `trigger-add/trigger-update/trigger-delete/trigger-rotate-url` | 일정 및 webhook 트리거 관리 | `trigger-add`: `--kind`(`schedule` 또는 `webhook`), `--cron`, `--timezone`(기본값 UTC), `--label` |
+| `workflow` | `lint [<id>]` | 워크플로의 단계, 엣지, 핸들러, 지침을 검사. 표로 출력하며 `--output json`이면 JSON으로 출력. 면제되지 않은 오류가 있으면 0이 아닌 종료 코드를 반환 | `--all`(워크스페이스의 모든 워크플로, ID와 둘 중 하나만 지정), `--output`(`table` 또는 `json`) |
 | `workspace` | `list/get/create/update/switch` | 워크스페이스 관리. `switch`는 현재 profile의 기본 워크스페이스 설정 | `create`: `--name`, `--slug`(모두 필수), `--issue-prefix`, `--description`, `--context` / `--context-stdin`. `update`는 slug를 제외한 같은 항목 변경 |
 | | `mcp list/add/update/remove` | 워크스페이스의 MCP 서버 라이브러리를 관리 | 쓰기는 owner/admin 전용. 여기에 추가한 서버는 어떤 에이전트에도 할당되지 않으며 `multica agent mcp add`로 할당합니다. `list`는 이름과 transport만 표시하고, 저장된 항목은 쓰기 전용이라 어떤 역할에도 반환되지 않습니다. `--server-config-file` / `--server-config-stdin`은 토큰이 셸 기록에 남지 않게 합니다 |
 | | `member list/invite <email>` | 멤버 확인 및 초대 전송 | `invite`: `--role`(member 또는 admin, 기본 member) |
@@ -426,6 +429,7 @@ CLI 설정 파일에는 사용자를 대신해 Multica에 접근할 수 있는 t
 | `runtime` | `list/usage/activity/update/rename/delete` | 런타임 확인 및 관리 | `usage`: `--days`(기본값 90, 최대 365). `update`: `--target-version`(필수), `--wait`. `delete`: `--cascade`(연결된 에이전트의 런타임을 해제하고 데이터를 보존하며 실행 취소) |
 | | `profile list/create/update/delete` | 사용자 지정 런타임 profile 관리 | `create`: `--display-name`, `--command-name`(모두 필수), `--runtime-type`(또는 예전 `--protocol-family`), `--description`. `update`: `--enabled` |
 | | `profile set-path/unset-path <profile-id>` | 로컬 실행 파일 경로 고정(로컬에만 적용되고 서버에 업로드되지 않음) | |
+| | `breaker list/reset <provider>` | 프로바이더 서킷 브레이커 조회 또는 강제 닫기 | `reset`: 워크스페이스 소유자 또는 관리자만 |
 
 ### Additional
 
@@ -439,6 +443,18 @@ CLI 설정 파일에는 사용자를 대신해 Multica에 접근할 수 있는 t
 | `config` | `show`, `set <key> <value>` | 현재 profile의 로컬 설정 확인 또는 변경 | 우선순위: 명령줄 flag > 환경 변수 > `config.json` > 내장 기본값. 빈 문자열로 설정하면 삭제 |
 | `update` | — | CLI를 최신 버전으로 업데이트 | |
 | `version` | — | 버전 정보 확인 | `--output`(`text` 또는 `json`) |
+
+### 결정 제안
+
+작업 토큰은 사람이 패스키로 승인하는 관리 대상 작업을 제안할 수 있습니다. 제안 자체는 아무것도 변경하지 않습니다.
+
+```bash
+multica decision propose issue.run_budget.raise --version 1 --issue MUL-123 \
+  --for <user-id> --param window_id=<id> --param new_cap:=40 [--reason "..."]
+multica decision propose <action-type> --version 1 --issue MUL-123 --params-file ./params.json
+```
+
+`--version`과 `--issue`는 필수입니다. `--param k=v`는 문자열, `--param k:=<json>`은 원시 JSON을 보냅니다. `--params-file`은 JSON 객체 하나를 받으며 `--param`과 함께 쓸 수 없습니다. 명령은 승인 카드 링크를 출력합니다. 거부되면 서버의 상태와 오류 코드를 보여 줍니다. `multica issue budget raise`와 `multica issue budget top-up`은 작업 토큰에서 같은 경로를 사용하며(`--for <user-id>` 추가), 개인 액세스 토큰에서는 기존처럼 지출 요청을 엽니다.
 
 ## 다른 코딩 에이전트에서 Multica 조작하기
 

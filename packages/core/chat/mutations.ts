@@ -206,6 +206,45 @@ export function useMarkChatSessionRead() {
 }
 
 /**
+ * Moves the session's read cursor back so it counts as unread again.
+ * Optimistically shows at least one unread message; the refetch on settle
+ * brings the server's real count. Rolls back on error.
+ */
+export function useMarkChatSessionUnread() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+
+  return useMutation({
+    mutationFn: (sessionId: string) => {
+      logger.info("markChatSessionUnread.start", { sessionId });
+      return api.markChatSessionUnread(sessionId);
+    },
+    onMutate: async (sessionId) => {
+      await qc.cancelQueries({ queryKey: chatKeys.sessions(wsId) });
+
+      const prevSessions = qc.getQueryData<ChatSession[]>(chatKeys.sessions(wsId));
+
+      qc.setQueryData<ChatSession[]>(chatKeys.sessions(wsId), (old) =>
+        old?.map((s) =>
+          s.id === sessionId
+            ? { ...s, has_unread: true, unread_count: Math.max(1, s.unread_count ?? 0) }
+            : s,
+        ),
+      );
+
+      return { prevSessions };
+    },
+    onError: (err, sessionId, ctx) => {
+      logger.error("markChatSessionUnread.error.rollback", { sessionId, err });
+      if (ctx?.prevSessions) qc.setQueryData(chatKeys.sessions(wsId), ctx.prevSessions);
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: chatKeys.sessions(wsId) });
+    },
+  });
+}
+
+/**
  * Renames a chat session. Optimistically swaps the title in the cached
  * list so the dropdown reflects the new label immediately; rolls back on
  * error. The matching `chat:session_updated` WS event keeps other

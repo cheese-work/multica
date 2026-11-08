@@ -650,7 +650,7 @@ adds `candidate-preflight` and `prepare-release-candidate`, which the manual
 path does not need. The run title names the qualifying candidate SHA rather
 than the workflow run's default-branch SHA.
 
-`candidate-preflight` runs on X99 without the `c00-production` environment or
+`candidate-preflight` runs on X99 without a deployment environment or
 C00 credentials. It uses the workflow revision's tools so an older candidate
 does not need to contain the new preflight script. Before requesting approval,
 `require-current.sh` requires the candidate to be an ancestor of (or equal to)
@@ -679,23 +679,25 @@ A finished older build is not wasted: `require-current.sh` accepts a qualified
 older `main` commit that is a forward move from C00. This group is separate from
 every approval and C00 mutation lock.
 
-An eligible candidate waits at `approve-c00`, the only job that asks for
-approval (CHE-2027): one prompt per version, on both the automatic and manual
-paths. It runs in the existing `c00-production` environment (required reviewer,
-wait timer, branch policy), which is left unchanged, and holds no secrets. Its concurrency group
-`cd-deploy-c00-approval` has `cancel-in-progress: true`, so a newer version
-replaces an older run still waiting for approval. Once approved, a candidate
-is not superseded merely because `main` advances (CHE-2146). There is no
-post-approval `require-current.sh` guard or `deploy-gate` job. The manual path
-still names an explicit admitted manifest and may deploy a non-head ref.
+Deploy is dispatch-only (CHE-4495). A push to `main` builds, runs
+`candidate-preflight` and, when eligible, `notify-approval`, then stops: no C00
+job runs. The notice links to the workflow's dispatch page with the full
+`candidate_sha`. The `approve-c00` environment approval was removed: required
+reviewers do not exist on a private Team repository, so it was a silent no-op.
 
-`prepare-release-candidate` and `deploy` use the C00 secrets from the
-`c00-runtime` environment, which has no reviewers or wait timer, so they do not
-ask again. `c00-production` keeps its protection on purpose: runs started by
-the previous workflow, and reruns of their jobs, still use that workflow and
-therefore still stop at it. Secrets are copied to `c00-runtime` and must be
-rotated in both environments until `c00-production` secrets are retired. A
-missing `c00-runtime` environment fails closed: GitHub creates it empty, the
+The gate is `authorize-c00`, a job that runs only on `workflow_dispatch` and
+exits 1 unless `github.triggering_actor` is `congvc-dev`. It has no environment
+and no secrets. Every C00-touching job (`prepare-release-candidate`,
+`admission`, `deploy`) depends on it, so a dispatch by anyone else fails before
+any C00 step. The `c00-runtime` deployment-branch policy allows `main` only, so
+a dispatch from another ref gets no `c00-runtime` secrets. A dispatch with
+`candidate_sha` looks up the successful `main` push qualification run and issues
+the release candidate itself; manual evidence paths remain for explicit
+admitted manifests. The `c00-production` environment is no longer used by this
+workflow; its secrets can be retired. The
+`prepare-release-candidate` and `deploy` jobs use the C00 secrets from the
+`c00-runtime` environment.
+A missing `c00-runtime` environment fails closed: GitHub creates it empty, the
 deploy step has no secrets and stops. They share the
 job-level lock `cd-deploy-c00` with `queue: max` and no `cancel-in-progress`: one
 C00 stage at a time, queued FIFO, and a started deploy is never cancelled. The
@@ -733,7 +735,7 @@ binds the baseline tuple of the host being deployed to — the fresh Hermes
 configuration digest and migration snapshot described above — which only a
 stage running on C00 can read. `prepare-release-candidate` runs on the
 C00 self-hosted runner under the `c00-runtime` environment as the
-deploy job, after the single `approve-c00` approval, reads that baseline locally with `capture-tuple.sh`, re-issues
+deploy job, after the `authorize-c00` gate, reads that baseline locally with `capture-tuple.sh`, re-issues
 D1's evidence (carrying D1's own image digests forward unchanged) as a
 release-candidate bound to it, records the qualifying event and the commit's
 required-check results, and hands the set to the unchanged `admission` and

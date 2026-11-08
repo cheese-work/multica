@@ -24,6 +24,7 @@ jobs:
     continue-on-error: true
     permissions:
       contents: read
+      deployments: read
       pull-requests: read
     env:
       FORK_CHANGELOG_START: '2026-10-11'

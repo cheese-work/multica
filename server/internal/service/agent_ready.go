@@ -114,6 +114,7 @@ func RuntimeBlockedNeedsNotice(code dispatch.ReasonCode) bool {
 	return code == dispatch.ReasonRuntimeUnusable ||
 		code == dispatch.ReasonRuntimeProfileMissing ||
 		code == dispatch.ReasonProviderHold ||
+		code == dispatch.ReasonProviderBreaker ||
 		code == dispatch.ReasonRuntimeAccessDenied
 }
 
@@ -196,6 +197,10 @@ func AgentReadiness(ctx context.Context, lookup RuntimeLookup, agent db.Agent) (
 	if blocked {
 		return verdict, nil
 	}
+	breakerVerdict, err := providerBreakerVerdict(ctx, lookup, agent)
+	if err != nil {
+		return AgentVerdict{}, err
+	}
 	if !agent.RuntimeID.Valid {
 		return AgentVerdict{
 			Availability: AgentBlocked,
@@ -207,7 +212,12 @@ func AgentReadiness(ctx context.Context, lookup RuntimeLookup, agent db.Agent) (
 	if err != nil {
 		return AgentVerdict{}, err
 	}
-	return runtimeVerdict(rt, agent), nil
+	verdict = runtimeVerdict(rt, agent)
+	// A broken runtime outranks the breaker wait: waiting cannot fix it.
+	if !verdict.Blocked() && !breakerVerdict.Ready() {
+		return breakerVerdict, nil
+	}
+	return verdict, nil
 }
 
 // providerHoldVerdict is the provider-hold half of AgentReadiness, split out
@@ -473,7 +483,7 @@ func RuntimeUnusableNotice(agentName string, verdict AgentVerdict) string {
 	// substitute list right there; rebuilding it here would need both again).
 	// verdict.Detail carries that finished notice verbatim, so this is a
 	// pass-through, not a second renderer to keep in sync with the first.
-	if verdict.Reason == dispatch.ReasonProviderHold {
+	if verdict.Reason == dispatch.ReasonProviderHold || verdict.Reason == dispatch.ReasonProviderBreaker {
 		return verdict.Detail
 	}
 	if verdict.Reason == dispatch.ReasonRuntimeAccessDenied {

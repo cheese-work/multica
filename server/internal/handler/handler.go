@@ -255,7 +255,8 @@ type Handler struct {
 	// ApprovalVerifier proves a human approved a decision action. Nil until
 	// the passkey verifier is wired; approve then fails closed.
 	ApprovalVerifier ApprovalVerifier
-	// ProposalGuard admits agent action proposals. Nil refuses them all (C2).
+	// ProposalGuard admits agent action proposals. New wires the real guard; nil
+	// refuses them all (C2).
 	ProposalGuard ProposalGuard
 	// Passkeys issues and verifies approval challenges. Nil leaves passkeys
 	// off (MULTICA_WEBAUTHN_* unset).
@@ -543,6 +544,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	// a disabled client, which turns the feature off rather than failing.
 	taskSvc.QuickActions = llmClient
 	h := &Handler{
+		ProposalGuard:                admitProposalOnce,
 		Queries:                      queries,
 		ReadSelector:                 dbreader.NewPrimaryOnly(queries),
 		DB:                           executor,

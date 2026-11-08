@@ -33,7 +33,7 @@ import {
   useMarkChatSessionRead,
   useSetChatSessionProject,
 } from "@multica/core/chat/mutations";
-import { useChatStore } from "@multica/core/chat";
+import { CHAT_TITLE_MAX, useChatStore } from "@multica/core/chat";
 import { useCommentComposerStore } from "@multica/core/issues/stores/comment-composer-store";
 import { upsertChatMessageToCaches } from "@multica/core/chat/message-cache";
 import {
@@ -60,7 +60,6 @@ const apiLogger = createLogger("chat.api");
 // markdown stripped, whitespace collapsed, capped. A deterministic title
 // (no LLM) — the server has no summarization model, so this is the sensible
 // default until a runtime-generated title is wired up.
-const CHAT_TITLE_MAX = 30;
 export function deriveChatTitle(content: string): string {
   const firstLine = (content.split("\n").find((l) => l.trim()) ?? content).trim();
   const cleaned = firstLine
@@ -416,7 +415,8 @@ export function useChatController(opts?: { isActive?: boolean }) {
     if (!currentHasUnread) return;
     const sessionId = activeSessionId;
     const timer = setTimeout(() => {
-      if (useChatStore.getState().activeSessionId !== sessionId) return;
+      const { activeSessionId: openId, autoReadSuppressedId } = useChatStore.getState();
+      if (openId !== sessionId || autoReadSuppressedId === sessionId) return;
       uiLogger.info("auto markRead", { sessionId });
       markRead.mutate(sessionId);
     }, 0);

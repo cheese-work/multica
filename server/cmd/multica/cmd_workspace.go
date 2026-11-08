@@ -554,13 +554,14 @@ func printWorkspace(cmd *cobra.Command, ws map[string]any) error {
 			runes := []rune(wsContext)
 			wsContext = string(runes[:57]) + "..."
 		}
-		headers := []string{"ID", "NAME", "SLUG", "DESCRIPTION", "CONTEXT"}
+		headers := []string{"ID", "NAME", "SLUG", "DESCRIPTION", "CONTEXT", "PAUSED"}
 		rows := [][]string{{
 			strVal(ws, "id"),
 			strVal(ws, "name"),
 			strVal(ws, "slug"),
 			desc,
 			wsContext,
+			strVal(ws, "scheduling_paused_at"),
 		}}
 		cli.PrintTable(os.Stdout, headers, rows)
 		return nil
