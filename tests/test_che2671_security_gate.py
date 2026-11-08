@@ -559,9 +559,9 @@ class WorkflowTest(unittest.TestCase):
         self.assertIn("github.event.inputs.pr", self.doc["jobs"]["security-gate"]["env"]["PR_NUMBER"])
         self.assertIn("pr must be digits only", self.text)
 
-    def test_only_an_edited_or_deleted_verdict_comment_revokes_without_a_dispatch(self):
-        # CHE-4385: `created` is the run-budget cost and is left to the poster's dispatch; edit/delete revoke a PASS.
-        self.assertEqual(sorted(self.doc[True]["issue_comment"]["types"]), ["deleted", "edited"])
+    def test_a_created_edited_or_deleted_verdict_comment_evaluates_without_a_dispatch(self):
+        # CHE-4385: `created` is restored so a new FAIL flips the status at once; edit/delete revoke a PASS.
+        self.assertEqual(sorted(self.doc[True]["issue_comment"]["types"]), ["created", "deleted", "edited"])
         cond = self.doc["jobs"]["security-gate"]["if"]
         self.assertIn("github.event_name != 'issue_comment'", cond)
         self.assertIn("Security-Gate-Verdict:", cond)

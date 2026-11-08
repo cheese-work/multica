@@ -4,22 +4,19 @@
 # check only through the rollout in cheese-work/multica-dotfiles docs/cheese-work/SECURITY-GATE.md; this file alone blocks nothing.
 #
 # Runs (CHE-4385): GitHub disabled Actions at about 2,500 created runs a day, and a skipped run still counts, so the
-# trigger set is the budget. There is no `pull_request_target` trigger here, and `issue_comment` covers `edited` and
-# `deleted` only, never `created`:
+# trigger set is the budget. There is no `pull_request_target` trigger here. `issue_comment` covers `created`, `edited`
+# and `deleted` (Cheese restored `created`): a new FAIL verdict must flip the status at once, with no sweep wait:
 #   - `workflow_call`: pr-guards.yml calls this file once per PR event, so a PR push adds no run of its own.
-#   - `issue_comment` (edited, deleted): revokes a PASS without any dispatch. Editing or deleting a verdict comment is
-#     rare, so this costs few runs. The job runs only for a comment that holds, or held before the edit, the
-#     `Security-Gate-Verdict:` header and comes from a trusted author. The same events were the revocation path before.
-#   - `workflow_dispatch` (input `pr`): the verdict poster dispatches this once per PR after it posts a NEW
-#     `Security-Gate-Verdict:` comment, in place of one run per created comment:
+#   - `issue_comment` (created, edited, deleted): evaluates a verdict the moment it is posted, edited or deleted. This adds
+#     one run per PR comment (about 284 a day); the job-level `if` skips every comment that is not a trusted verdict, but
+#     a skipped run still counts. The job runs only for a comment that holds, or held before the edit, the
+#     `Security-Gate-Verdict:` header and comes from a trusted author.
+#   - `workflow_dispatch` (input `pr`): an optional extra for the verdict poster, no longer needed for correctness:
 #       gh workflow run security-gate.yml -R cheese-work/multica --ref main -f pr=<number>
 #     The dispatched run re-reads every verdict comment, posts the status, then refreshes the mechanical-tier receipt.
 #   - `merge_group`: see below. It re-reads every verdict, so a new FAIL is caught when the PR enters the queue.
-#   - security-gate-sweep.yml: every 30 minutes it re-runs this script for each open PR whose status is `success`, so a new
-#     FAIL verdict revokes the PR status and any queue head carrying it within 30 minutes, with no dispatch needed.
-# A newly created comment alone does not flip the status. A new FAIL verdict takes effect at the next sweep, PR event,
-# dispatch or queue entry, whichever is first.
-#
+#   - security-gate-sweep.yml: every 30 minutes it re-runs this script for each open PR whose status is `success`, as a
+#     backstop for a missed event.
 # SECURITY — same boundary as mechanical-tier.yml: a call from `pull_request_target`, a dispatch and `issue_comment` all run this
 # definition from the default branch. The job checks out the DEFAULT branch (never the PR's base: a PR can target an
 # unprotected branch that carries a modified gate script) and only FETCHES head objects for a diff read. Nothing from
@@ -43,7 +40,7 @@ on:
         required: true
         type: string
   issue_comment:
-    types: [edited, deleted]
+    types: [created, edited, deleted]
   merge_group:
     types: [checks_requested]
 
