@@ -1,8 +1,10 @@
 name: PR Changelog Check
 
 # Prints the /changelog entry this PR will publish (CHE-1631). Fails a feat/fix/perf
-# PR without a valid `Changelog:` line. Runs for any base branch so stack layers see
-# their own result. The PR body comes from the event payload; no token, no secrets.
+# PR without a valid `Changelog:` line, or with `Changelog: none` on user-facing files
+# (CHE-4016). Runs for any base branch so stack layers see their own result. The PR
+# body comes from the event payload; the changed files come from the read-only
+# workflow token (a failed read warns and passes, never fails the check).
 # GitHub-hosted only: upstream-sync/* heads never reach the self-hosted X99 runner
 # (the script reports them as `Hidden: upstream-sync` and passes).
 # Making this check required in branch protection is Cheese's call.
@@ -11,7 +13,8 @@ on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
 
-permissions: {}
+permissions:
+  pull-requests: read
 
 concurrency:
   group: pr-changelog-check-${{ github.event.pull_request.number }}
@@ -35,5 +38,14 @@ jobs:
         with:
           node-version: 22
 
+      - name: List the changed files
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh api --paginate "repos/$REPO/pulls/${PR_NUMBER}/files" --jq '.[].filename' > "$RUNNER_TEMP/files.txt" \
+            || rm -f "$RUNNER_TEMP/files.txt"
+
       - name: Compute the changelog entry
-        run: node scripts/fork-changelog.mjs --event "$GITHUB_EVENT_PATH"
+        run: node scripts/fork-changelog.mjs --event "$GITHUB_EVENT_PATH" --files "$RUNNER_TEMP/files.txt"
