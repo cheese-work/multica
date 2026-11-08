@@ -2,9 +2,12 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -123,6 +126,8 @@ func (p *HTTPProviderFailureProbe) WithBearerToken(token string) *HTTPProviderFa
 // LoadProviderProbeCredential reads the probe credential from env, else from
 // an absolute file path. Relative paths are refused so the secret cannot live
 // in a repo-tracked file. Both empty means no credential.
+var errBearerOverPlainHTTP = errors.New("refusing to send a bearer token over plain HTTP to a non-loopback host")
+
 func LoadProviderProbeCredential(env, file string) (string, error) {
 	if env = strings.TrimSpace(env); env != "" {
 		return env, nil
@@ -133,9 +138,31 @@ func LoadProviderProbeCredential(env, file string) (string, error) {
 	if !filepath.IsAbs(file) {
 		return "", fmt.Errorf("provider probe credential file must be an absolute path outside the repo")
 	}
-	raw, err := os.ReadFile(file)
+	real, err := filepath.EvalSymlinks(file)
+	if err != nil {
+		return "", fmt.Errorf("resolve provider probe credential file: %w", err)
+	}
+	for dir := filepath.Dir(real); ; dir = filepath.Dir(dir) {
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			return "", fmt.Errorf("provider probe credential file is inside a git work tree")
+		}
+		if dir == filepath.Dir(dir) {
+			break
+		}
+	}
+	raw, err := os.ReadFile(real)
 	if err != nil {
 		return "", fmt.Errorf("read provider probe credential file: %w", err)
 	}
 	return strings.TrimSpace(string(raw)), nil
+}
+
+// tokenSafeURL: a bearer token goes only over https or to a loopback host.
+func tokenSafeURL(u *url.URL) bool {
+	if u.Scheme == "https" {
+		return true
+	}
+	host := u.Hostname()
+	ip := net.ParseIP(host)
+	return host == "localhost" || (ip != nil && ip.IsLoopback())
 }

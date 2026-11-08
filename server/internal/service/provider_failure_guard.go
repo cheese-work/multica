@@ -85,6 +85,9 @@ func (p *HTTPProviderFailureProbe) Probe(ctx context.Context) (ProviderFailurePr
 		return ProviderFailureProbeEvidence{}, fmt.Errorf("create provider recovery probe: %w", err)
 	}
 	if p.token != "" {
+		if !tokenSafeURL(request.URL) {
+			return ProviderFailureProbeEvidence{}, errBearerOverPlainHTTP
+		}
 		request.Header.Set("Authorization", "Bearer "+p.token)
 	}
 	response, err := p.client.Do(request)

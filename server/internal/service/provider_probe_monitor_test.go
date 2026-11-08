@@ -174,6 +174,8 @@ func TestLoadProviderProbeCredential(t *testing.T) {
 		{"file outside repo", "", file, "from-file", false},
 		{"none configured", "", "", "", false},
 		{"relative path is a repo file", "", "go.mod", "", true},
+		{"absolute path inside a git work tree", "", inRepoCredential(t), "", true},
+		{"symlink into a git work tree", "", symlinkedRepoCredential(t), "", true},
 		{"missing file", "", filepath.Join(t.TempDir(), "absent"), "", true},
 	}
 	for _, c := range cases {
@@ -183,5 +185,53 @@ func TestLoadProviderProbeCredential(t *testing.T) {
 				t.Fatalf("got %q err=%v, want %q wantErr=%t", got, err, c.want, c.wantErr)
 			}
 		})
+	}
+}
+
+func inRepoCredential(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(repo, "config", "cred")
+	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return file
+}
+
+func symlinkedRepoCredential(t *testing.T) string {
+	t.Helper()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(inRepoCredential(t), link); err != nil {
+		t.Fatal(err)
+	}
+	return link
+}
+
+func TestHTTPProviderFailureProbeRefusesBearerTokenOverPlainHTTP(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests++ }))
+	defer server.Close()
+	// Non-loopback plain-HTTP host: the request must never leave the process.
+	probe, err := NewHTTPProviderFailureProbe("http://gateway.example.invalid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := probe.WithBearerToken("tok").Probe(context.Background()); !errors.Is(err, errBearerOverPlainHTTP) {
+		t.Fatalf("err = %v, want errBearerOverPlainHTTP", err)
+	}
+	for _, base := range []string{"https://gateway.example.invalid", server.URL} { // https and loopback http are allowed
+		p, err := NewHTTPProviderFailureProbe(base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := p.WithBearerToken("tok").Probe(context.Background()); err != nil && errors.Is(err, errBearerOverPlainHTTP) {
+			t.Fatalf("%s refused: %v", base, err)
+		}
 	}
 }
