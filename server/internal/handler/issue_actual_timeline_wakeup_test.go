@@ -255,6 +255,53 @@ func TestWakeupN5PrivateAgentEventOmitted(t *testing.T) {
 	}
 }
 
+// bulkWakeupRows inserts n run-starting rows for one agent, oldest first, all
+// older than the rows insertWakeupRow adds afterwards.
+func bulkWakeupRows(t *testing.T, issue, agent string, n int) {
+	t.Helper()
+	snap, _ := json.Marshal(snapshotOf(agent, "event", nil))
+	if _, err := testPool.Exec(context.Background(), `
+INSERT INTO activity_log (id, workspace_id, issue_id, actor_type, action, details, created_at)
+SELECT gen_random_uuid(), $1, $2, 'system', 'wakeup_triggered',
+       jsonb_build_object('task_id', gen_random_uuid()::text, 'wakeup', $3::jsonb),
+       now() - interval '20 days' + g * interval '1 second'
+FROM generate_series(1, $4) g`, testWorkspaceID, issue, snap, n); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The row cap counts events the viewer can see: rows hidden by N5 never use
+// it up, and visible events after them are not silently dropped.
+func TestWakeupCapCountsVisibleEventsOnly(t *testing.T) {
+	target := newWakeupTarget(t)
+	privateAgent := dbfx.Agent(t, "cap private agent", "")
+	viewer := dbfx.User(t, "cap viewer", fmt.Sprintf("cap-%d@multica.test", time.Now().UnixNano()))
+	dbfx.Member(t, testWorkspaceID, viewer, "member")
+	ownAgent := dbfx.Agent(t, "cap own agent", "", testutil.Cols{"owner_id": viewer}) // the viewer sees its own agent
+	bulkWakeupRows(t, target, privateAgent, timelineMaxWakeupEvents+1)
+	insertWakeupRow(t, target, day, snapshotOf(ownAgent, "event", nil), fireExtra(nil))
+	got := fetchWakeupEvents(t, func(r *http.Request) { r.Header.Set("X-User-ID", viewer) })
+	if e := oneEvent(t, got, target); e.Class != "self" {
+		t.Fatalf("event = %+v, want the one visible event", e)
+	}
+}
+
+// More visible events than the cap is a 422, never a silent cut.
+func TestWakeupOverCapIs422(t *testing.T) {
+	target := newWakeupTarget(t)
+	agent := dbfx.Agent(t, "over cap agent", "")
+	bulkWakeupRows(t, target, agent, timelineMaxWakeupEvents+1)
+	req := newRequest(http.MethodPost, "/api/issues/timeline", map[string]any{"window": map[string]any{
+		"from": time.Now().Add(-30 * day).UTC().Format(time.RFC3339Nano),
+		"to":   time.Now().Add(time.Minute).UTC().Format(time.RFC3339Nano),
+	}})
+	w := httptest.NewRecorder()
+	testHandler.ListIssueActualTimeline(w, req)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("timeline: %d, want 422", w.Code)
+	}
+}
+
 // N6 (timeline half): an other_issue source outside the workspace is omitted,
 // with no placeholder and no ID.
 func TestWakeupN6ForeignSourceOmitted(t *testing.T) {

@@ -105,8 +105,7 @@ FROM activity_log
 WHERE workspace_id = $1 AND issue_id = ANY($2::uuid[]) AND action = 'wakeup_triggered'
   AND created_at >= $3 AND created_at < $4 AND created_at <= $5
   AND COALESCE(details->>'task_id', '') <> ''
-ORDER BY created_at, id
-LIMIT $6`, workspaceID, issueIDs, from, to, asOf, timelineMaxWakeupEvents+1)
+ORDER BY created_at, id`, workspaceID, issueIDs, from, to, asOf)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load wakeup events")
 		return nil, false
@@ -121,10 +120,6 @@ LIMIT $6`, workspaceID, issueIDs, from, to, asOf, timelineMaxWakeupEvents+1)
 		)
 		if err := rows.Scan(&e.ID, &e.TargetIssueID, &e.At, &raw); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to load wakeup events")
-			return nil, false
-		}
-		if len(events) >= timelineMaxWakeupEvents {
-			writeError(w, http.StatusUnprocessableEntity, "too many wakeup events for this window; narrow the window")
 			return nil, false
 		}
 		if json.Unmarshal(raw, &d) != nil {
@@ -169,6 +164,11 @@ LIMIT $6`, workspaceID, issueIDs, from, to, asOf, timelineMaxWakeupEvents+1)
 			}
 		}
 		kept = append(kept, e)
+	}
+	// The cap counts events the viewer can see, so hidden rows never use it up.
+	if len(kept) > timelineMaxWakeupEvents {
+		writeError(w, http.StatusUnprocessableEntity, "too many wakeup events for this window; narrow the window")
+		return nil, false
 	}
 	return kept, true
 }
