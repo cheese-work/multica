@@ -55,8 +55,11 @@ type PrepareParams struct {
 	// Profile is the daemon's profile name (empty = default). It namespaces the
 	// per-issue Codex session store so a second profile-daemon sharing the same
 	// ~/.codex cannot see or GC this daemon's stores (MUL-4424).
-	Profile         string
-	Provider        string // agent provider (determines runtime config and skill injection paths)
+	Profile  string
+	Provider string // agent provider (determines runtime config and skill injection paths)
+	// HarnessProfile is the resolved per-agent profile ("personal" | "managed",
+	// CHE-3706). Empty and "personal" keep today's behavior.
+	HarnessProfile  string
 	CodexVersion    string // detected Codex CLI version (only used when Provider == "codex")
 	CodexBinaryPath string // resolved codex CLI path (only used when Provider == "codex"); empty = skip the model-catalog override (no PATH lookup). Used by ensureCodexModelCatalogOverride to run `codex debug models` (CHE-773/CHE-778).
 	OpenclawBin     string // resolved openclaw CLI path (only used when Provider == "openclaw"); empty = look up on PATH
@@ -632,10 +635,14 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	// For Codex, set up a per-task CODEX_HOME seeded from ~/.codex/ with skills.
 	if params.Provider == "codex" {
 		codexHome := filepath.Join(envRoot, codexHomeDirName)
-		if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{CodexVersion: params.CodexVersion, CodexBinaryPath: params.CodexBinaryPath, IsLocalDirectory: params.LocalWorkDir != "" || params.LocalWorktree != nil, SessionStoreKey: codexSessionStoreKey(params.Profile, params.Task), CodexCustomArgs: params.CodexCustomArgs}, logger); err != nil {
+		if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{CodexVersion: params.CodexVersion, CodexBinaryPath: params.CodexBinaryPath, IsLocalDirectory: params.LocalWorkDir != "" || params.LocalWorktree != nil, SessionStoreKey: codexSessionStoreKey(params.Profile, params.Task), CodexCustomArgs: params.CodexCustomArgs, Managed: params.HarnessProfile == HarnessProfileManaged}, logger); err != nil {
 			return nil, fmt.Errorf("execenv: prepare codex-home: %w", err)
 		}
-		if err := hydrateCodexSkills(codexHome, params.Task.AgentSkills, params.Task.DisabledRuntimeSkills, logger); err != nil {
+		if params.HarnessProfile == HarnessProfileManaged {
+			if err := prepareManagedCodex(envRoot, codexHome, params.Task.AgentSkills, params.McpConfig, logger); err != nil {
+				return nil, fmt.Errorf("execenv: prepare managed codex: %w", err)
+			}
+		} else if err := hydrateCodexSkills(codexHome, params.Task.AgentSkills, params.Task.DisabledRuntimeSkills, logger); err != nil {
 			return nil, fmt.Errorf("execenv: hydrate codex skills: %w", err)
 		}
 		env.CodexHome = codexHome
@@ -748,6 +755,8 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 // the per-provider knobs (CodexVersion, OpenclawBin) so callers can pass
 // the same resolved binary path on both first-run and reuse paths.
 type ReuseParams struct {
+	// HarnessProfile mirrors PrepareParams.HarnessProfile (CHE-3706).
+	HarnessProfile string
 	// WorkspacesRoot is the daemon-owned root under which all task envs live.
 	// Passed on reuse so the root-level fail-closed marker is self-healed here
 	// too — a marker removed while the daemon runs is restored before a reused
@@ -923,7 +932,7 @@ func Reuse(params ReuseParams, logger *slog.Logger) *Environment {
 	// config (especially sandbox/network access) is up to date.
 	if params.Provider == "codex" {
 		codexHome := filepath.Join(env.RootDir, codexHomeDirName)
-		if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{CodexVersion: params.CodexVersion, CodexBinaryPath: params.CodexBinaryPath, ResumeSessionID: params.ResumeSessionID, IsLocalDirectory: params.LocalDirectory, SessionStoreKey: codexSessionStoreKey(params.Profile, params.Task), CodexCustomArgs: params.CodexCustomArgs}, logger); err != nil {
+		if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{CodexVersion: params.CodexVersion, CodexBinaryPath: params.CodexBinaryPath, ResumeSessionID: params.ResumeSessionID, IsLocalDirectory: params.LocalDirectory, SessionStoreKey: codexSessionStoreKey(params.Profile, params.Task), CodexCustomArgs: params.CodexCustomArgs, Managed: params.HarnessProfile == HarnessProfileManaged}, logger); err != nil {
 			// Leaving env.CodexHome empty does not launch Codex against an
 			// ambient home: configureCodexTaskShellEnvironment rejects the empty
 			// value ("task CODEX_HOME is missing") and the run fails before
@@ -935,7 +944,12 @@ func Reuse(params ReuseParams, logger *slog.Logger) *Environment {
 			return nil
 		} else {
 			env.CodexHome = codexHome
-			if err := hydrateCodexSkills(codexHome, params.Task.AgentSkills, params.Task.DisabledRuntimeSkills, logger); err != nil {
+			if params.HarnessProfile == HarnessProfileManaged {
+				if err := prepareManagedCodex(env.RootDir, codexHome, params.Task.AgentSkills, params.McpConfig, logger); err != nil {
+					logger.Warn("execenv: refresh managed codex home failed; forcing fresh prepare", "error", err)
+					return nil
+				}
+			} else if err := hydrateCodexSkills(codexHome, params.Task.AgentSkills, params.Task.DisabledRuntimeSkills, logger); err != nil {
 				logger.Warn("execenv: refresh codex skills failed", "error", err)
 			}
 		}
