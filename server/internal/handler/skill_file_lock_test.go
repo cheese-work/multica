@@ -184,7 +184,7 @@ func skillParentRowWriters() []skillWriter {
 			name:       "import refresh",
 			wantStatus: http.StatusOK,
 			run: func(test *testing.T, f skillWriterFixture) int {
-				_, err := testHandler.overwriteSkillWithFiles(context.Background(), skillOverwriteInput{
+				_, err := testHandler.overwriteSkillWithFiles(context.Background(), newRequest(http.MethodPost, "/api/skills/"+f.skillID+"/refresh", nil), skillOverwriteInput{
 					WorkspaceID:   parseUUID(testWorkspaceID),
 					TargetSkillID: parseUUID(f.skillID),
 					UserID:        testUserID,
