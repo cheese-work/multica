@@ -159,7 +159,8 @@ vi.mock("../../editor", async () => ({
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
     useEffect(() => {
-      if (value === undefined || value === valueRef.current) return;
+      // The real editor ignores a controlled value that is trim-equal to its document.
+      if (value === undefined || value === valueRef.current || value === valueRef.current.trim()) return;
       valueRef.current = value;
       setEditorValue(value);
     }, [value]);
@@ -214,7 +215,8 @@ vi.mock("../../editor", async () => ({
         onChange={(event) => {
           valueRef.current = event.target.value;
           setEditorValue(event.target.value);
-          onUpdate?.(event.target.value);
+          // The real editor's onUpdate emits trimmed markdown while getMarkdown() stays raw.
+          onUpdate?.(event.target.value.trim());
         }}
         onKeyDown={(event) => {
           // The editor's Mod+Enter submit shortcut — the path that skips the
@@ -728,6 +730,41 @@ describe("comment composers", () => {
     });
   });
 
+  // CHE-4288: the real editor's getMarkdown() keeps trailing blank lines while
+  // its onUpdate emits trimmed markdown. A visibility flush that persists the raw
+  // string made the stored entry differ from the submitted one, so the success
+  // read as "edited during the request" and the sent text stayed in the composer.
+  it.each([
+    ["comment", "new:issue-1"],
+    ["reply", "reply:issue-1:comment-1"],
+  ] as const)("a tab switch during the %s send clears a body with trailing blank lines", async (kind, key) => {
+    let resolveSubmit!: (v: boolean) => void;
+    const onSubmit = vi.fn(() => new Promise<boolean>((r) => { resolveSubmit = r; }));
+    if (kind === "comment") {
+      renderCommentInput(onSubmit);
+      activateComposer("comment-composer-shell");
+    } else {
+      renderReplyInput({ onSubmit, draftKey: key as `reply:${string}:${string}` });
+      activateComposer("reply-composer-shell");
+    }
+    const editor = screen.getByTestId("editor");
+    fireEvent.change(editor, { target: { value: "draft A\n\n" } });
+    fireEvent.keyDown(editor, { key: "Enter", metaKey: true });
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    fireEvent(document, new Event("visibilitychange"));
+
+    await act(async () => {
+      resolveSubmit(true);
+      await Promise.resolve();
+    });
+
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+    expect(useCommentDraftStore.getState().getDraft(key)).toBeUndefined();
+    expect(screen.getByTestId("editor")).toHaveValue("");
+  });
+
   // MUL-5181 P0: the editor stays interactive during a send — text typed
   // while draft A is in flight must survive A's success, in store AND editor.
   it("text typed while a comment send is in flight survives the success", async () => {
@@ -822,6 +859,63 @@ describe("comment composers", () => {
     });
 
     expect(useCommentDraftStore.getState().getDraft("new:issue-1")).toBeUndefined();
+  });
+
+  // CHE-4288: the route rewrites /issues/<uuid> to /issues/<identifier> and
+  // remounts the page while a send is in flight. The successor composer mounts
+  // from the still-unsent draft; the predecessor's success then clears the
+  // store but, being unmounted, never the successor's editor — the sent text
+  // stayed in the box. The successor must follow the draft it showed.
+  it.each([
+    ["comment", "new:issue-1"],
+    ["reply", "reply:issue-1:comment-1"],
+  ] as const)("a %s composer remounted mid-send clears when the send succeeds", async (kind, key) => {
+    let resolveSubmit!: (v: boolean) => void;
+    const onSubmit = vi.fn(() => new Promise<boolean>((r) => { resolveSubmit = r; }));
+    const mount = () => {
+      if (kind === "comment") return renderCommentInput(onSubmit);
+      return renderReplyInput({ onSubmit, draftKey: key as `reply:${string}:${string}` });
+    };
+    const first = mount();
+    activateComposer(kind === "comment" ? "comment-composer-shell" : "reply-composer-shell");
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "draft A" } });
+    fireEvent.keyDown(screen.getByTestId("editor"), { key: "Enter", metaKey: true });
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+
+    first.unmount();
+    mount();
+    expect(screen.getByTestId("editor")).toHaveValue("draft A");
+
+    await act(async () => {
+      resolveSubmit(true);
+      await Promise.resolve();
+    });
+
+    expect(useCommentDraftStore.getState().getDraft(key)).toBeUndefined();
+    await waitFor(() => expect(screen.getByTestId("editor")).toHaveValue(""));
+  });
+
+  // The successor's own edit must outlive the predecessor's success.
+  it("a remounted comment composer keeps text typed after the remount", async () => {
+    let resolveSubmit!: (v: boolean) => void;
+    const onSubmit = vi.fn(() => new Promise<boolean>((r) => { resolveSubmit = r; }));
+    const first = renderCommentInput(onSubmit);
+    activateComposer("comment-composer-shell");
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "draft A" } });
+    fireEvent.keyDown(screen.getByTestId("editor"), { key: "Enter", metaKey: true });
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+
+    first.unmount();
+    renderCommentInput(onSubmit);
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "draft B" } });
+
+    await act(async () => {
+      resolveSubmit(true);
+      await Promise.resolve();
+    });
+
+    expect(useCommentDraftStore.getState().getDraft("new:issue-1")).toBe("draft B");
+    expect(screen.getByTestId("editor")).toHaveValue("draft B");
   });
 
   it("keeps the draft when the send fails (no optimistic clear)", async () => {

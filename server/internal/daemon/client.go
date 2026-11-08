@@ -213,6 +213,7 @@ func daemonCommonCapabilities() []string {
 		protocol.DaemonCapabilityCLICommentSteerV1,
 		protocol.DaemonCapabilityAppliedSettingsV1,
 		protocol.DaemonCapabilityBackgroundOutputOnlyV1,
+		protocol.DaemonCapabilityRuntimeProfileV1,
 	}
 }
 

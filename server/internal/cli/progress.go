@@ -20,6 +20,8 @@ type Progress struct {
 	// OnUpdate, if set, is called with the byte counts at most 10 times per
 	// second and once more on Finish with the final counts. Set it before use.
 	OnUpdate func(done, total int64)
+	// OnPhase, if set, is called with each Phase name. Set it before use.
+	OnPhase func(name string)
 
 	w     io.Writer
 	tty   bool
@@ -92,6 +94,9 @@ func (p *Progress) Phase(name string) {
 	defer p.mu.Unlock()
 	if p.tty {
 		fmt.Fprintln(p.w, name)
+	}
+	if p.OnPhase != nil {
+		p.OnPhase(name)
 	}
 }
 

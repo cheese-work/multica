@@ -8,15 +8,15 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
-	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
-// decisionParkKey is the issue.metadata record of a park: what the issue was
-// before a decision request parked it, so the answer can put it back.
-const decisionParkKey = "decision_park"
-
+// decisionPark is the issue_decision_park record of a park: what the issue was
+// before a decision request parked it, so the answer can put it back. It lives
+// in its own table because issue.metadata holds primitive values only.
 type decisionPark struct {
 	Status string `json:"status"`
 	// To is the waiting status the park wrote.
@@ -58,16 +58,16 @@ func gatedHumanReadiness(ctx context.Context, queries *db.Queries, issue db.Issu
 // records what it replaced. It runs in the request transaction, under the
 // issue lock. It leaves a terminal or already waiting issue, and one whose
 // workflow lists neither status, as it is.
-func parkIssueForDecision(ctx context.Context, queries *db.Queries, issue db.Issue) (db.Issue, bool, error) {
+func parkIssueForDecision(ctx context.Context, queries *db.Queries, issue db.Issue) (db.Issue, *db.ActivityLog, error) {
 	category, err := issuestatus.CategoryWithError(ctx, queries, issue.WorkspaceID, issue.Status)
 	if err != nil || category == issuestatus.CategoryDone || category == issuestatus.CategoryClosed {
-		return issue, false, err
+		return issue, nil, err
 	}
 	var target string
 	for _, candidate := range []string{idleGuardNeedDecision, issuestatus.Blocked} {
 		available, err := statusAvailableToIssue(ctx, queries, issue, candidate)
 		if err != nil {
-			return issue, false, err
+			return issue, nil, err
 		}
 		if available {
 			target = candidate
@@ -75,52 +75,60 @@ func parkIssueForDecision(ctx context.Context, queries *db.Queries, issue db.Iss
 		}
 	}
 	if target == "" || issue.Status == target {
-		return issue, false, nil
+		return issue, nil, nil
 	}
 	park := decisionPark{Status: issue.Status, To: target}
 	propertyID, optionID, err := gatedHumanReadiness(ctx, queries, issue)
 	if err != nil {
-		return issue, false, err
+		return issue, nil, err
 	}
 	if propertyID != "" {
 		var values map[string]json.RawMessage
 		if err := json.Unmarshal(issue.Properties, &values); err != nil {
-			return issue, false, err
+			return issue, nil, err
 		}
 		park.ReadinessID, park.Readiness = propertyID, values[propertyID]
 		value, _ := json.Marshal(optionID)
 		park.Set = value
 		if _, err := queries.SetIssuePropertyValue(ctx, db.SetIssuePropertyValueParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID, Key: propertyID, Value: value}); err != nil {
-			return issue, false, err
+			return issue, nil, err
 		}
 	}
-	record, err := json.Marshal(park)
-	if err != nil {
-		return issue, false, err
-	}
-	if _, err := queries.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID, Key: decisionParkKey, Value: record}); err != nil {
-		return issue, false, err
+	if err := queries.InsertIssueDecisionPark(ctx, db.InsertIssueDecisionParkParams{
+		IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, PriorStatus: park.Status, ToStatus: park.To,
+		ReadinessID:    pgtype.Text{String: park.ReadinessID, Valid: park.ReadinessID != ""},
+		PriorReadiness: park.Readiness, SetValue: park.Set,
+	}); err != nil {
+		return issue, nil, err
 	}
 	updated, err := queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{ID: issue.ID, Status: target, WorkspaceID: issue.WorkspaceID})
-	return updated, err == nil, err
+	if err != nil {
+		return issue, nil, err
+	}
+	recorded, err := recordSystemStatusChange(ctx, queries, issue, updated, service.StatusCauseDecision, nil)
+	return updated, recorded, err
 }
 
 // unparkIssueAfterDecision puts a parked issue back once its last open
 // decision request is closed and every answer is delivered. `delivering` lists
 // the answers the caller is delivering now. Run it under the issue lock. An issue someone
 // moved on in the meantime keeps its status; only the record goes.
-func unparkIssueAfterDecision(ctx context.Context, queries *db.Queries, issue db.Issue, delivering []db.DecisionAnswer) (db.Issue, bool, error) {
-	var park decisionPark
-	if raw, ok := issueMetadataValue(issue, decisionParkKey); !ok || json.Unmarshal(raw, &park) != nil {
-		return issue, false, nil
+func unparkIssueAfterDecision(ctx context.Context, queries *db.Queries, issue db.Issue, delivering []db.DecisionAnswer) (db.Issue, *db.ActivityLog, error) {
+	row, err := queries.GetIssueDecisionPark(ctx, db.GetIssueDecisionParkParams{IssueID: issue.ID, WorkspaceID: issue.WorkspaceID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return issue, nil, nil
 	}
+	if err != nil {
+		return issue, nil, err
+	}
+	park := decisionPark{Status: row.PriorStatus, To: row.ToStatus, ReadinessID: row.ReadinessID.String, Readiness: row.PriorReadiness, Set: row.SetValue}
 	requests, err := queries.ListDecisionRequestsByIssue(ctx, db.ListDecisionRequestsByIssueParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID})
 	if err != nil {
-		return issue, false, err
+		return issue, nil, err
 	}
 	for _, request := range requests {
 		if request.Status == "open" {
-			return issue, false, nil
+			return issue, nil, nil
 		}
 		if request.Status != "answered" || slices.ContainsFunc(delivering, func(answer db.DecisionAnswer) bool { return answer.DecisionRequestID == request.ID }) {
 			continue
@@ -128,14 +136,14 @@ func unparkIssueAfterDecision(ctx context.Context, queries *db.Queries, issue db
 		// An answered request holds the park until its answer is delivered.
 		answer, err := queries.LockDecisionLiveAnswer(ctx, db.LockDecisionLiveAnswerParams{WorkspaceID: issue.WorkspaceID, ID: request.ID})
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return issue, false, err
+			return issue, nil, err
 		}
 		if err == nil && !answer.WokenAt.Valid {
-			return issue, false, nil
+			return issue, nil, nil
 		}
 	}
-	restored := issue.Status == park.To
-	if restored {
+	var recorded *db.ActivityLog
+	if issue.Status == park.To {
 		if park.ReadinessID != "" && readinessUnchanged(issue, park) {
 			if len(park.Readiness) == 0 {
 				_, err = queries.DeleteIssuePropertyValue(ctx, db.DeleteIssuePropertyValueParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID, Key: park.ReadinessID})
@@ -143,17 +151,21 @@ func unparkIssueAfterDecision(ctx context.Context, queries *db.Queries, issue db
 				_, err = queries.SetIssuePropertyValue(ctx, db.SetIssuePropertyValueParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID, Key: park.ReadinessID, Value: park.Readiness})
 			}
 			if err != nil {
-				return issue, false, err
+				return issue, nil, err
 			}
 		}
+		previous := issue
 		if issue, err = queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{ID: issue.ID, Status: park.Status, WorkspaceID: issue.WorkspaceID}); err != nil {
-			return issue, false, err
+			return previous, nil, err
+		}
+		if recorded, err = recordSystemStatusChange(ctx, queries, previous, issue, service.StatusCauseDecision, nil); err != nil {
+			return previous, nil, err
 		}
 	}
-	if _, err := queries.DeleteIssueMetadataKey(ctx, db.DeleteIssueMetadataKeyParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID, Key: decisionParkKey}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return issue, false, err
+	if err := queries.DeleteIssueDecisionPark(ctx, db.DeleteIssueDecisionParkParams{IssueID: issue.ID, WorkspaceID: issue.WorkspaceID}); err != nil {
+		return issue, nil, err
 	}
-	return issue, restored, nil
+	return issue, recorded, nil
 }
 
 // readinessUnchanged reports whether Readiness still holds the value the park set.
@@ -162,18 +174,9 @@ func readinessUnchanged(issue db.Issue, park decisionPark) bool {
 	return json.Unmarshal(issue.Properties, &values) == nil && string(values[park.ReadinessID]) == string(park.Set)
 }
 
-func issueMetadataValue(issue db.Issue, key string) (json.RawMessage, bool) {
-	var values map[string]json.RawMessage
-	if json.Unmarshal(issue.Metadata, &values) != nil {
-		return nil, false
-	}
-	raw, ok := values[key]
-	return raw, ok
-}
-
 // publishDecisionStatusChange announces a park or restore, after the commit.
-func (handler *Handler) publishDecisionStatusChange(ctx context.Context, previous, updated db.Issue, source string) {
-	handler.publish(protocol.EventIssueUpdated, uuidToString(updated.WorkspaceID), "system", "", map[string]any{
+func (handler *Handler) publishDecisionStatusChange(ctx context.Context, previous, updated db.Issue, recorded *db.ActivityLog, source string) {
+	handler.publishSystemStatusChange(uuidToString(updated.WorkspaceID), recorded, map[string]any{
 		"issue":            handler.issueResponseWithCategory(ctx, updated),
 		"assignee_changed": false,
 		"status_changed":   true,

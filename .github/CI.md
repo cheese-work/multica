@@ -35,3 +35,7 @@ node --test scripts/ci-scope.test.mjs scripts/ci-runners.test.mjs scripts/warnin
 bash deploy/cd/test-record-checks.sh
 bash deploy/cd/test-admission.sh
 ```
+
+## Merge-queue fallback
+
+A ready plan, patch and ruleset payload for guarding `main` without `merge_group` live in `.github/fallback/` (CHE-4498). They are not applied.
