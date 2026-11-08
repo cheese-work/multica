@@ -206,3 +206,20 @@ func TestSystem1OrdinaryAnswerWritesNoLabel(t *testing.T) {
 		t.Fatalf("labels = %+v, want none", got)
 	}
 }
+
+// Withdraw (disclaim) then answer again: the old label stays superseded and the replacement answer gets its own mapped label of record.
+func TestSystem1WaiverReanswerAfterDisclaimWritesNewLabel(t *testing.T) {
+	requestID := askWaiver(t)
+	zero, one := 0, 1
+	answerOnCardRow(t, requestID, &zero)
+	dbfx.Exec(t, `UPDATE decision_answer SET disclaimed_at = clock_timestamp() WHERE decision_request_id = $1`, requestID)
+	answerOnCardRow(t, requestID, &one)
+	got := loadLabels(t, requestID)
+	want := []labelRow{
+		{label: "refuse", scope: "test_first_waiver", kind: "burn_in", source: "human_answer", superseded: true},
+		{label: "waive", scope: "test_first_waiver", kind: "burn_in", source: "human_answer"},
+	}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("labels = %+v, want %+v", got, want)
+	}
+}

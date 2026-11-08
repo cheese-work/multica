@@ -37,7 +37,14 @@ BEGIN
     WHERE kind = 'decision' AND subject_id = NEW.decision_request_id AND answered_at IS NULL
     RETURNING * INTO obs;
 
-    IF obs.id IS NOT NULL AND obs.inputs ->> 'topic' = 'test_first_waiver' THEN
+    -- A replacement answer after a withdraw/disclaim finds the observation already answered: label it too, once no live label remains.
+    IF obs.id IS NULL THEN
+        SELECT * INTO obs FROM system1_observation
+        WHERE kind = 'decision' AND subject_id = NEW.decision_request_id ORDER BY created_at DESC LIMIT 1;
+    END IF;
+
+    IF obs.id IS NOT NULL AND obs.inputs ->> 'topic' = 'test_first_waiver'
+       AND NOT EXISTS (SELECT 1 FROM system1_label WHERE observation_id = obs.id AND source = 'human_answer' AND superseded_at IS NULL) THEN
         mapped := obs.inputs -> 'option_keys' ->> NEW.chosen_option_index;
         INSERT INTO system1_label (workspace_id, observation_id, scope, kind, source, label)
         VALUES (obs.workspace_id, obs.id, obs.inputs ->> 'topic', 'burn_in', 'human_answer',

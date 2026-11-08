@@ -83,6 +83,9 @@ free text): `observation_id`, `scope`, `kind` (`burn_in`, `eval`), `source`
 - **Disclaim:** the disclaim trigger sets `superseded_at` on the answer's
   label, beside the existing `reversed_at`. A superseded row is never the
   label of record.
+- **Withdraw then re-answer:** a replacement answer on the reopened request
+  writes its own label (the old one stays superseded), because no live label
+  remains. The observation row keeps the first answer's choice fields.
 - An ask without the topic gets no label row; its `choice_key` stays
   positional.
 - Later slices add labeller rows (`source`, task id, correction link) and
