@@ -9831,7 +9831,7 @@ func taskUsageEntries(provider string, usage map[string]agent.TokenUsage) []Task
 
 // liveUsageFlushEvery bounds how often a running task's cumulative counters are
 // POSTed. The agent emits them per model call; this only bounds the traffic.
-const liveUsageFlushEvery = 30 * time.Second
+var liveUsageFlushEvery = 30 * time.Second
 
 // startUsageFlush POSTs the newest snapshot held in `live` until the returned
 // stop func runs, so a long run's cost is visible before it ends (STOE-30).
