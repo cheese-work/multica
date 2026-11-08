@@ -546,7 +546,7 @@ func (h *Handler) CreateSkill(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resp, err := h.createSkillWithFiles(r.Context(), skillCreateInput{
+	resp, err := h.createSkillWithFiles(r.Context(), r, skillCreateInput{
 		WorkspaceID: workspaceUUID,
 		CreatorID:   creatorUUID,
 		Name:        req.Name,
@@ -556,6 +556,9 @@ func (h *Handler) CreateSkill(w http.ResponseWriter, r *http.Request) {
 		Files:       req.Files,
 	})
 	if err != nil {
+		if failedAudit(w, r, err, "skill.create") {
+			return
+		}
 		if isUniqueViolation(err) {
 			writeError(w, http.StatusConflict, "a skill with this name already exists")
 			return
@@ -627,6 +630,13 @@ func (h *Handler) UpdateSkill(w http.ResponseWriter, r *http.Request) {
 
 	qtx := h.Queries.WithTx(tx)
 
+	oldSkill := skill
+	oldFiles, err := qtx.ListSkillFiles(r.Context(), skill.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load skill files")
+		return
+	}
+
 	params := db.UpdateSkillParams{
 		ID: parseUUID(id),
 	}
@@ -688,6 +698,14 @@ func (h *Handler) UpdateSkill(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "skill.update", WorkspaceID: skill.WorkspaceID, TargetID: skill.ID,
+		Before: skillRowAuditFields(oldSkill, oldFiles),
+		After:  skillAuditFields(skill.Name, skill.Description, skill.Content, skill.Config, skillAuditFilesFromResponses(fileResps)),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "skill.update")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to commit")
 		return
@@ -720,6 +738,11 @@ func (h *Handler) DeleteSkill(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
+	files, err := qtx.ListSkillFiles(r.Context(), skill.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load skill files")
+		return
+	}
 	if err := qtx.DeleteSkillLabelAssignmentsBySkill(r.Context(), skill.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to remove skill label assignments")
 		return
@@ -729,6 +752,13 @@ func (h *Handler) DeleteSkill(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID: skill.WorkspaceID,
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete skill")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "skill.delete", WorkspaceID: skill.WorkspaceID, TargetID: skill.ID,
+		Before: skillRowAuditFields(skill, files),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "skill.delete")
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
@@ -2171,8 +2201,8 @@ func skillImportConflictReason() string {
 	return "a skill with this name already exists; use --on-conflict overwrite to replace it or --on-conflict rename to import a copy"
 }
 
-func (h *Handler) createImportedSkillWithName(ctx context.Context, workspaceID, creatorID pgtype.UUID, name string, imported *importedSkill, config map[string]any, files []CreateSkillFileRequest) (SkillWithFilesResponse, error) {
-	return h.createSkillWithFiles(ctx, skillCreateInput{
+func (h *Handler) createImportedSkillWithName(ctx context.Context, r *http.Request, workspaceID, creatorID pgtype.UUID, name string, imported *importedSkill, config map[string]any, files []CreateSkillFileRequest) (SkillWithFilesResponse, error) {
+	return h.createSkillWithFiles(ctx, r, skillCreateInput{
 		WorkspaceID: workspaceID,
 		CreatorID:   creatorID,
 		Name:        name,
@@ -2183,10 +2213,10 @@ func (h *Handler) createImportedSkillWithName(ctx context.Context, workspaceID, 
 	})
 }
 
-func (h *Handler) createRenamedImportedSkill(ctx context.Context, workspaceID, creatorID pgtype.UUID, baseName string, imported *importedSkill, config map[string]any, files []CreateSkillFileRequest) (SkillWithFilesResponse, error) {
+func (h *Handler) createRenamedImportedSkill(ctx context.Context, r *http.Request, workspaceID, creatorID pgtype.UUID, baseName string, imported *importedSkill, config map[string]any, files []CreateSkillFileRequest) (SkillWithFilesResponse, error) {
 	for suffix := 2; suffix < maxImportRenameAttempts+2; suffix++ {
 		candidate := fmt.Sprintf("%s-%d", baseName, suffix)
-		resp, err := h.createImportedSkillWithName(ctx, workspaceID, creatorID, candidate, imported, config, files)
+		resp, err := h.createImportedSkillWithName(ctx, r, workspaceID, creatorID, candidate, imported, config, files)
 		if err == nil {
 			return resp, nil
 		}
@@ -2228,7 +2258,7 @@ func (h *Handler) resolveImportSkillConflict(w http.ResponseWriter, r *http.Requ
 			})
 			return
 		}
-		resp, err := h.overwriteSkillWithFiles(r.Context(), skillOverwriteInput{
+		resp, err := h.overwriteSkillWithFiles(r.Context(), r, skillOverwriteInput{
 			WorkspaceID:   workspaceUUID,
 			TargetSkillID: existing.ID,
 			UserID:        creatorID,
@@ -2239,6 +2269,9 @@ func (h *Handler) resolveImportSkillConflict(w http.ResponseWriter, r *http.Requ
 			Files:         files,
 		})
 		if err != nil {
+			if failedAudit(w, r, err, "skill.update") {
+				return
+			}
 			status, reason := skillImportOverwriteFailure(err)
 			if status == http.StatusInternalServerError {
 				slog.Warn("overwrite imported skill failed", append(logger.RequestAttrs(r), "error", err)...)
@@ -2254,8 +2287,11 @@ func (h *Handler) resolveImportSkillConflict(w http.ResponseWriter, r *http.Requ
 		h.publish(protocol.EventSkillUpdated, workspaceID, actorType, actorID, map[string]any{"skill": resp})
 		writeJSON(w, http.StatusOK, SkillImportResult{Status: "updated", Skill: &resp})
 	case importOnConflictRename:
-		resp, err := h.createRenamedImportedSkill(r.Context(), workspaceUUID, creatorUUID, name, imported, config, files)
+		resp, err := h.createRenamedImportedSkill(r.Context(), r, workspaceUUID, creatorUUID, name, imported, config, files)
 		if err != nil {
+			if failedAudit(w, r, err, "skill.create") {
+				return
+			}
 			slog.Warn("create renamed skill failed", append(logger.RequestAttrs(r), "error", err)...)
 			writeJSON(w, http.StatusInternalServerError, SkillImportResult{
 				Status:        "failed",
@@ -2422,8 +2458,11 @@ func (h *Handler) finishSkillImport(w http.ResponseWriter, r *http.Request, work
 		}
 	}
 
-	resp, err := h.createImportedSkillWithName(r.Context(), workspaceUUID, creatorUUID, name, imported, config, files)
+	resp, err := h.createImportedSkillWithName(r.Context(), r, workspaceUUID, creatorUUID, name, imported, config, files)
 	if err != nil {
+		if failedAudit(w, r, err, "skill.create") {
+			return
+		}
 		if isUniqueViolation(err) {
 			if structuredResult {
 				if existing, found, lerr := h.lookupSkillByName(r.Context(), workspaceUUID, name); lerr == nil && found {
@@ -2620,6 +2659,11 @@ func (h *Handler) SetAgentSkills(w http.ResponseWriter, r *http.Request) {
 
 	qtx := h.Queries.WithTx(tx)
 
+	beforeSkills, err := agentSkillsAuditField(r.Context(), qtx, agent.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load agent skills")
+		return
+	}
 	if err := qtx.RemoveAllAgentSkills(r.Context(), agent.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to clear agent skills")
 		return
@@ -2636,6 +2680,19 @@ func (h *Handler) SetAgentSkills(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	afterSkills, err := agentSkillsAuditField(r.Context(), qtx, agent.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load agent skills")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "agent.skills.update", WorkspaceID: agent.WorkspaceID, TargetID: agent.ID,
+		Before: map[string]any{"skill_ids": beforeSkills},
+		After:  map[string]any{"skill_ids": afterSkills},
+	}); err != nil {
+		writeAuditFailure(w, r, err, "agent.skills.update")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to commit")
 		return
@@ -2678,6 +2735,11 @@ func (h *Handler) AddAgentSkills(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 
 	qtx := h.Queries.WithTx(tx)
+	beforeSkills, err := agentSkillsAuditField(r.Context(), qtx, agent.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load agent skills")
+		return
+	}
 	for _, skillID := range skillUUIDs {
 		if err := qtx.AddAgentSkill(r.Context(), db.AddAgentSkillParams{
 			AgentID: agent.ID,
@@ -2689,6 +2751,19 @@ func (h *Handler) AddAgentSkills(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	afterSkills, err := agentSkillsAuditField(r.Context(), qtx, agent.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load agent skills")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "agent.skills.update", WorkspaceID: agent.WorkspaceID, TargetID: agent.ID,
+		Before: map[string]any{"skill_ids": beforeSkills},
+		After:  map[string]any{"skill_ids": afterSkills},
+	}); err != nil {
+		writeAuditFailure(w, r, err, "agent.skills.update")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to commit")
 		return
