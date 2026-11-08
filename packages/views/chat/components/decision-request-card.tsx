@@ -6,9 +6,10 @@ import { ApiError } from "@multica/core/api";
 import { useAnswerDecisionRequest } from "@multica/core/issues/decision-answer";
 import { useDecisionAnswerDraftStore } from "@multica/core/issues/stores/decision-answer-draft-store";
 import { usePersistedDraft } from "@multica/core/drafts";
-import { approvablePreview } from "@multica/core/issues/decision-action-preview";
+import { approvableConfigChange, approvablePreview, isConfigChangeActionType } from "@multica/core/issues/decision-action-preview";
+import { useCurrentMember } from "@multica/core/permissions";
 import { chatKeys } from "@multica/core/chat/queries";
-import { useWorkspacePaths } from "@multica/core/paths";
+import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
 import { formatShortcut, useShortcut } from "@multica/core/shortcuts";
 import type { DecisionRequestCard as RequestCard } from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
@@ -25,6 +26,7 @@ import { openExternal } from "../../platform";
 import { isDesktopShell } from "../../platform/local-directory";
 import { useOnline } from "../../settings/components/use-online";
 import { AnnotatableAnswer } from "./annotatable-answer";
+import { ConfigChangeViewer } from "./config-change-viewer";
 import { DecisionArtifacts } from "./decision-artifacts";
 import { DECISION_REQUEST_SOURCE_PREFIX } from "./chat-annotation-context";
 
@@ -193,15 +195,34 @@ function DecisionAnswerForm({
   );
 }
 
+type CardAction = NonNullable<RequestCard["action"]>;
+
+// Approve for an action only the workspace owner may approve. Fails closed: with no workspace, no
+// member list yet or any other role the button is absent. The server still refuses a non-owner.
+function OwnerGatedApproval({ action, previewSha256 }: { action: CardAction; previewSha256?: string }) {
+  const workspace = useCurrentWorkspace();
+  return workspace
+    ? <MemberGatedApproval wsId={workspace.id} action={action} previewSha256={previewSha256} />
+    : <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} previewSha256={previewSha256} canApprove={false} state={action.state} />;
+}
+
+function MemberGatedApproval({ wsId, action, previewSha256 }: { wsId: string; action: CardAction; previewSha256?: string }) {
+  const { role } = useCurrentMember(wsId);
+  return <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} previewSha256={previewSha256} canApprove={role === "owner"} state={action.state} />;
+}
+
 // What the approval would change, shown before Approve exists. No usable preview
 // (missing, empty, malformed, bad digest, unknown action type) means the server
 // could not vouch for the action: say so and keep Approve disabled.
-function ActionPreview({ action }: { action: NonNullable<RequestCard["action"]> }) {
+function ActionPreview({ action }: { action: CardAction }) {
   const { t } = useT("chat");
   // Once the action left pending there is nothing to preview: only its live outcome shows.
   const pending = !action.state || action.state === "pending";
-  const fields = pending ? approvablePreview(action)?.fields : undefined;
-  if (pending && !fields) {
+  const configAction = isConfigChangeActionType(action.action_type);
+  const ownerOnly = configAction || action.owner_only === true;
+  const configChange = pending && configAction ? approvableConfigChange(action) : undefined;
+  const fields = pending && !configAction ? approvablePreview(action)?.fields : undefined;
+  if (pending && !fields && !configChange) {
     return (
       <div className="space-y-1">
         <p role="status" className="text-label text-warning">{t(($) => $.decision.action_unavailable)}</p>
@@ -212,6 +233,7 @@ function ActionPreview({ action }: { action: NonNullable<RequestCard["action"]> 
   // Same tree before and after approval, so the approval component keeps its state when the card turns answered.
   return (
     <div className="space-y-2">
+      {configChange && <ConfigChangeViewer change={configChange} />}
       {fields && (
         <dl data-testid="decision-request-action-preview" aria-label={t(($) => $.decision.action_preview)} className="space-y-1 rounded-lg border border-surface-border px-2 py-1.5 text-label">
           {fields.map((field) => (
@@ -222,7 +244,9 @@ function ActionPreview({ action }: { action: NonNullable<RequestCard["action"]> 
           ))}
         </dl>
       )}
-      <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} state={action.state} />
+      {ownerOnly
+        ? <OwnerGatedApproval action={action} previewSha256={configChange?.sha256} />
+        : <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} state={action.state} />}
     </div>
   );
 }
