@@ -243,6 +243,7 @@ type AgentTaskQueue struct {
 	AppliedContextArgs        []byte             `json:"applied_context_args"`
 	AppliedReportedAt         pgtype.Timestamptz `json:"applied_reported_at"`
 	ExternalRead              bool               `json:"external_read"`
+	Purpose                   pgtype.Text        `json:"purpose"`
 }
 
 type AgentToLabel struct {
@@ -645,6 +646,7 @@ type ChatMessage struct {
 	LineageMessageIds             []pgtype.UUID      `json:"lineage_message_ids"`
 	DecisionRequestIds            []pgtype.UUID      `json:"decision_request_ids"`
 	ClientMessageID               pgtype.Text        `json:"client_message_id"`
+	ReanchoredAt                  pgtype.Timestamptz `json:"reanchored_at"`
 }
 
 type ChatPinnedAgent struct {
@@ -686,6 +688,8 @@ type ChatSession struct {
 	CompactionEpoch        int64              `json:"compaction_epoch"`
 	PresetName             pgtype.Text        `json:"preset_name"`
 	DecisionTopicID        pgtype.UUID        `json:"decision_topic_id"`
+	SegmentFloorAt         pgtype.Timestamptz `json:"segment_floor_at"`
+	SegmentFloorID         pgtype.UUID        `json:"segment_floor_id"`
 	ChainRootSessionID     pgtype.UUID        `json:"chain_root_session_id"`
 	TaintIds               []string           `json:"taint_ids"`
 	TaintVerified          bool               `json:"taint_verified"`
@@ -708,6 +712,16 @@ type ChatTaskSupplement struct {
 	DeliveredAt        pgtype.Timestamptz `json:"delivered_at"`
 }
 
+type ChatTurnOutcome struct {
+	TaskID             pgtype.UUID        `json:"task_id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	ChatSessionID      pgtype.UUID        `json:"chat_session_id"`
+	ChainRootSessionID pgtype.UUID        `json:"chain_root_session_id"`
+	UserID             pgtype.UUID        `json:"user_id"`
+	Kind               string             `json:"kind"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+}
+
 type ChatWakeup struct {
 	ID              pgtype.UUID        `json:"id"`
 	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
@@ -727,6 +741,81 @@ type ChatWakeup struct {
 	FilterActorID   pgtype.UUID        `json:"filter_actor_id"`
 	UntilStatus     string             `json:"until_status"`
 	OnTimeout       string             `json:"on_timeout"`
+}
+
+type CiFailureEvent struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	RepoOwner     string             `json:"repo_owner"`
+	RepoName      string             `json:"repo_name"`
+	RunID         int64              `json:"run_id"`
+	RunAttempt    int32              `json:"run_attempt"`
+	WorkflowName  string             `json:"workflow_name"`
+	Event         string             `json:"event"`
+	HeadBranch    string             `json:"head_branch"`
+	HeadSha       string             `json:"head_sha"`
+	Conclusion    string             `json:"conclusion"`
+	SignatureHash string             `json:"signature_hash"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
+type CiSignatureOwner struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	RepoOwner     string             `json:"repo_owner"`
+	RepoName      string             `json:"repo_name"`
+	SignatureHash string             `json:"signature_hash"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
+type CiWatchAction struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	RepoOwner     string             `json:"repo_owner"`
+	RepoName      string             `json:"repo_name"`
+	OriginalRunID int64              `json:"original_run_id"`
+	ActionKind    string             `json:"action_kind"`
+	State         string             `json:"state"`
+	LeaseEpoch    int64              `json:"lease_epoch"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
+type CiWatchConfig struct {
+	ID                      pgtype.UUID        `json:"id"`
+	WorkspaceID             pgtype.UUID        `json:"workspace_id"`
+	RepoOwner               string             `json:"repo_owner"`
+	RepoName                string             `json:"repo_name"`
+	Mode                    string             `json:"mode"`
+	Branches                []string           `json:"branches"`
+	Events                  []string           `json:"events"`
+	WorkflowsInclude        []string           `json:"workflows_include"`
+	WorkflowsExclude        []string           `json:"workflows_exclude"`
+	P1Mode                  string             `json:"p1_mode"`
+	P2Mode                  string             `json:"p2_mode"`
+	P3Mode                  string             `json:"p3_mode"`
+	P4Mode                  string             `json:"p4_mode"`
+	FixOwnerKind            pgtype.Text        `json:"fix_owner_kind"`
+	FixOwnerID              pgtype.UUID        `json:"fix_owner_id"`
+	NotifyMemberID          pgtype.UUID        `json:"notify_member_id"`
+	MaxRerunsPerOriginalRun int32              `json:"max_reruns_per_original_run"`
+	MaxNewIssuesPerDay      int32              `json:"max_new_issues_per_day"`
+	MaxOwnerWakesPerHour    int32              `json:"max_owner_wakes_per_hour"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
+}
+
+type CiWatchConfigAudit struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	ConfigID    pgtype.UUID        `json:"config_id"`
+	ActorType   string             `json:"actor_type"`
+	ActorID     pgtype.UUID        `json:"actor_id"`
+	Field       string             `json:"field"`
+	OldValue    pgtype.Text        `json:"old_value"`
+	NewValue    pgtype.Text        `json:"new_value"`
+	ChangedAt   pgtype.Timestamptz `json:"changed_at"`
 }
 
 type ClientUsageDaily struct {
@@ -1266,6 +1355,22 @@ type Feedback struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type GhBudgetReservation struct {
+	ID             pgtype.UUID        `json:"id"`
+	InstallationID int64              `json:"installation_id"`
+	Cost           int32              `json:"cost"`
+	ExpiresAt      pgtype.Timestamptz `json:"expires_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+type GhInstallationBudget struct {
+	InstallationID int64              `json:"installation_id"`
+	Remaining      int32              `json:"remaining"`
+	ResetAt        pgtype.Timestamptz `json:"reset_at"`
+	ObservedAt     pgtype.Timestamptz `json:"observed_at"`
+	BackoffUntil   pgtype.Timestamptz `json:"backoff_until"`
+}
+
 type GithubDispatchHalt struct {
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
 	Scope       string             `json:"scope"`
@@ -1799,6 +1904,20 @@ type HostSample struct {
 	DiskPercent pgtype.Float4      `json:"disk_percent"`
 }
 
+type HostSampleHourly struct {
+	DaemonID      string             `json:"daemon_id"`
+	BucketTs      pgtype.Timestamptz `json:"bucket_ts"`
+	MountPath     string             `json:"mount_path"`
+	CpuMax        pgtype.Float4      `json:"cpu_max"`
+	CpuAvg        pgtype.Float4      `json:"cpu_avg"`
+	RamMax        pgtype.Float4      `json:"ram_max"`
+	RamAvg        pgtype.Float4      `json:"ram_avg"`
+	DiskMax       pgtype.Float4      `json:"disk_max"`
+	DiskAvg       pgtype.Float4      `json:"disk_avg"`
+	SampleCount   int32              `json:"sample_count"`
+	ExpectedCount int32              `json:"expected_count"`
+}
+
 type InboxItem struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
@@ -2210,6 +2329,7 @@ type IssueWakeup struct {
 	AggregateRetryAt          pgtype.Timestamptz `json:"aggregate_retry_at"`
 	ContentRevision           int64              `json:"content_revision"`
 	WorkflowStep              pgtype.Text        `json:"workflow_step"`
+	FollowupInstanceID        pgtype.UUID        `json:"followup_instance_id"`
 }
 
 type IssueWakeupDefinition struct {
@@ -2272,6 +2392,7 @@ type IssueWorkflow struct {
 	RunBudgetSince          pgtype.Timestamptz `json:"run_budget_since"`
 	RunBudgetTokenAllowance pgtype.Int8        `json:"run_budget_token_allowance"`
 	RunBudgetTokenReserve   pgtype.Int8        `json:"run_budget_token_reserve"`
+	StartStatusKey          pgtype.Text        `json:"start_status_key"`
 }
 
 type LarkBindingToken struct {
@@ -2695,6 +2816,18 @@ type ProviderBreaker struct {
 	Version       int64              `json:"version"`
 }
 
+type ProviderBreakerAudit struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	Provider      string             `json:"provider"`
+	Event         string             `json:"event"`
+	PreviousState string             `json:"previous_state"`
+	NewState      string             `json:"new_state"`
+	ActorID       pgtype.UUID        `json:"actor_id"`
+	TaskID        pgtype.UUID        `json:"task_id"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
 type ProviderFailureRecovery struct {
 	FailedTaskID           pgtype.UUID        `json:"failed_task_id"`
 	TriggerKind            string             `json:"trigger_kind"`
@@ -2789,6 +2922,26 @@ type RunBudgetNotice struct {
 	Kind        string             `json:"kind"`
 	CommentID   pgtype.UUID        `json:"comment_id"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type RunBudgetRefusal struct {
+	ID                   pgtype.UUID        `json:"id"`
+	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
+	IssueID              pgtype.UUID        `json:"issue_id"`
+	WindowID             string             `json:"window_id"`
+	Status               pgtype.Text        `json:"status"`
+	OccurrenceActivityID pgtype.UUID        `json:"occurrence_activity_id"`
+	Blocked              bool               `json:"blocked"`
+	AgentID              pgtype.UUID        `json:"agent_id"`
+	Trigger              string             `json:"trigger"`
+	State                string             `json:"state"`
+	StateReason          pgtype.Text        `json:"state_reason"`
+	HookPhase            string             `json:"hook_phase"`
+	HookReason           pgtype.Text        `json:"hook_reason"`
+	ActionID             pgtype.UUID        `json:"action_id"`
+	ResumeWindowID       pgtype.Text        `json:"resume_window_id"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
 }
 
 type RunCapabilityGrant struct {

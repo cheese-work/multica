@@ -73,5 +73,5 @@ func executeRunBudgetRaiseAction(ctx context.Context, execution decisionActionEx
 	if err := service.RecordRunBudgetActionRaise(ctx, queries, issue, execution.Action.ID, int(raised.Int32)-current); err != nil {
 		return nil, err
 	}
-	return json.Marshal(map[string]any{"from": current, "to": raised.Int32})
+	return json.Marshal(map[string]any{"from": current, "to": raised.Int32, "outcome": "cap_applied"})
 }

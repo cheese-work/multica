@@ -49,6 +49,50 @@ describe("DM decision cards", () => {
     expect(ChatMessageSchema.parse({ ...bubble, decision_request: request }).decision_request?.asking_agent_name).toBeUndefined();
   });
 
+  describe("action preview", () => {
+    const request = { id: "request", issue_id: "issue", ask: "Ask", created_at: bubble.created_at, state: "open" };
+    const digest = "a".repeat(64);
+    const preview = { fields: [{ label: "Run cap", current: "10", proposed: "30" }], sha256: digest };
+    const action = { id: "action", action_type: "issue.run_budget.raise", payload_sha256: "payload", preview };
+    const parse = (value: unknown) => ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, action: value } }).decision_request?.action;
+
+    it("keeps a well-formed action and its preview", () => {
+      expect(parse(action)).toEqual(action);
+    });
+
+    it("keeps the action without a preview when the preview is missing or malformed", () => {
+      const { preview: _omit, ...bare } = action;
+      expect(parse(bare)?.preview).toBeUndefined();
+      expect(parse(bare)?.id).toBe("action");
+      for (const bad of [
+        "x",
+        { fields: "x", sha256: digest },
+        { fields: [{ label: "Run cap", current: 10, proposed: "30" }], sha256: digest },
+        { fields: [{ label: "Run cap", current: "10", proposed: "30" }] },
+        { fields: [], sha256: digest },
+        { ...preview, sha256: "abc" },
+        { ...preview, sha256: "A".repeat(64) },
+      ]) {
+        expect(parse({ ...action, preview: bad })?.preview).toBeUndefined();
+        expect(parse({ ...action, preview: bad })?.payload_sha256).toBe("payload");
+      }
+    });
+
+    it("drops the preview of an action type this client does not know", () => {
+      expect(parse({ ...action, action_type: "future.thing" })?.preview).toBeUndefined();
+      expect(parse({ ...action, action_type: undefined })?.preview).toBeUndefined();
+      for (const known of ["issue.run_budget.raise", "issue.run_budget.top_up", "agent.env.patch", "agent.copy"]) {
+        expect(parse({ ...action, action_type: known })?.preview).toEqual(preview);
+      }
+    });
+
+    it("drops an action that cannot be approved and leaves the card alone", () => {
+      expect(parse({ ...action, id: 7 })).toBeUndefined();
+      expect(parse({ ...action, payload_sha256: undefined })).toBeUndefined();
+      expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, action: "x" } }).decision_request?.id).toBe("request");
+    });
+  });
+
   it("keeps the receipt fields and degrades a malformed answer on its own", () => {
     const request = { id: "request", issue_id: "issue", ask: "Ask", created_at: bubble.created_at, state: "answered" };
     const answer = { state: "delivered", chosen_option_index: 1, option_label: "Hold", answered_at: "2026-10-26T06:00:00Z" };
@@ -78,6 +122,11 @@ describe("DM decision cards", () => {
     expect(ChatMessageSchema.parse(bubble).decision_request).toBeUndefined();
     expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, options: [{ label: "B", what_happens: "ship" }] } }).decision_request?.options)
       .toEqual([{ label: "B", what_happens: "ship" }]);
+    const detailed = { label: "B", what_happens: "ship", pros: ["safe"], cons: ["slow"], cost_or_time: "2 days" };
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, options: [detailed], recommended_option_index: 0 } }).decision_request)
+      .toMatchObject({ options: [detailed], recommended_option_index: 0 });
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, options: [{ label: "B", pros: "x" }], recommended_option_index: "no" } }).decision_request)
+      .toMatchObject({ options: [{ label: "B", pros: [] }], recommended_option_index: undefined });
     // A malformed options list degrades to no buttons, not a dropped card.
     expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, options: "B" } }).decision_request?.options).toEqual([]);
     expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, options: [{ nolabel: 1 }] } }).decision_request?.options).toEqual([]);

@@ -68,6 +68,7 @@ func TestMain(m *testing.M) {
 	bus := events.New()
 	emailSvc := service.NewEmailService()
 	testHandler = New(queries, pool, hub, bus, emailSvc, nil, nil, analytics.NoopClient{}, Config{AllowSignup: true})
+	watchStatusEventsWithoutActivityID(bus)
 	// Production always wires a real *featureflag.Service (cmd/server/main.go);
 	// leaving it nil here would make every flag defaulting to true (currently
 	// only ExportPrivacyControls, CHE-766) silently deny in tests where a
@@ -104,6 +105,10 @@ func TestMain(m *testing.M) {
 	stopHeartbeat := keepRuntimeFresh(ctx, pool, testRuntimeID, service.RuntimeClaimFreshnessSeconds/5*time.Second)
 	code := m.Run()
 	stopHeartbeat()
+	if lost := statusEventsWithoutActivityID(); len(lost) > 0 {
+		fmt.Printf("status-change events without activity_id (the listener no longer writes their row): %v\n", lost)
+		code = 1
+	}
 	if err := cleanupHandlerTestFixture(context.Background(), pool); err != nil {
 		fmt.Printf("Failed to clean up handler test fixture: %v\n", err)
 		if code == 0 {

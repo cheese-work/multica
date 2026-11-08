@@ -513,11 +513,11 @@ test("PR check: an over-limit line fails with an annotation, a closed PR is skip
   assert.match(sync.summary, /Hidden: upstream-sync/);
 });
 
-test("PR check workflow: GitHub-hosted, permissions: {}, no secrets, skips closed PRs", () => {
+test("PR check workflow: GitHub-hosted, permissions: pull-requests read, token only, skips closed PRs", () => {
   const raw = readFileSync(new URL("../.github/workflows/pr-changelog-check.yml", import.meta.url), "utf8");
   const wf = raw.replace(/^\s*#.*$/gm, "");
   assert.match(wf, /^permissions:\n {2}pull-requests: read$/m);
-  assert.match(wf, /runs-on: ubuntu-24\.04/);
+  assert.match(wf, /runs-on: \$\{\{ vars\.RUNNER_PR_CHANGELOG_CHECK \|\| 'ubuntu-24\.04' \}\}/);
   assert.doesNotMatch(wf, /self-hosted/);
   assert.deepEqual(wf.match(/secrets\.\w+/g), ["secrets.GITHUB_TOKEN"], "only the read-only workflow token");
   assert.match(wf, /GH_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/);

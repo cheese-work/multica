@@ -12,7 +12,7 @@ import (
 )
 
 const getDecisionCancelMessageForRequest = `-- name: GetDecisionCancelMessageForRequest :one
-SELECT id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via, decision_answer_id, lineage_message_ids, decision_request_ids, client_message_id FROM chat_message
+SELECT id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via, decision_answer_id, lineage_message_ids, decision_request_ids, client_message_id, reanchored_at FROM chat_message
 WHERE chat_session_id = $1
     AND $2::uuid = ANY(decision_request_ids)
     AND message_kind = 'decision_cancel_notice'
@@ -51,6 +51,7 @@ func (q *Queries) GetDecisionCancelMessageForRequest(ctx context.Context, arg Ge
 		&i.LineageMessageIds,
 		&i.DecisionRequestIds,
 		&i.ClientMessageID,
+		&i.ReanchoredAt,
 	)
 	return i, err
 }
@@ -60,6 +61,7 @@ SELECT request.id AS request_id, message.id AS message_id, request.issue_id,
     COALESCE(workspace.issue_prefix, 'MUL')::text AS issue_prefix, issue.number AS issue_number, issue.title AS issue_title,
     source.id AS source_comment_id, request.ask, request.status, request.created_at,
     request.withdraw_reason, request.cancel_reason, request.options,
+    (request.ask_json IS NOT NULL)::boolean AS has_ask_json, COALESCE(request.ask_json->>'recommendation', '')::text AS recommendation,
     COALESCE(request.withdrawn_at, request.cancel_notice_posted_at) AS withdrawn_at,
     record.issue_comment_id AS record_comment_id,
     last_answer.id AS answer_id, last_answer.created_at AS answer_created_at, last_answer.woken_at AS answer_woken_at,
@@ -118,6 +120,8 @@ type ListDecisionRequestCardsRow struct {
 	WithdrawReason          string             `json:"withdraw_reason"`
 	CancelReason            pgtype.Text        `json:"cancel_reason"`
 	Options                 []byte             `json:"options"`
+	HasAskJson              bool               `json:"has_ask_json"`
+	Recommendation          string             `json:"recommendation"`
 	WithdrawnAt             pgtype.Timestamptz `json:"withdrawn_at"`
 	RecordCommentID         pgtype.UUID        `json:"record_comment_id"`
 	AnswerID                pgtype.UUID        `json:"answer_id"`
@@ -155,6 +159,8 @@ func (q *Queries) ListDecisionRequestCards(ctx context.Context, arg ListDecision
 			&i.WithdrawReason,
 			&i.CancelReason,
 			&i.Options,
+			&i.HasAskJson,
+			&i.Recommendation,
 			&i.WithdrawnAt,
 			&i.RecordCommentID,
 			&i.AnswerID,
