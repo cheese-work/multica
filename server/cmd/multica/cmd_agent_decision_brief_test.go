@@ -102,7 +102,7 @@ func TestAgentDecisionBriefMarkdownIsEmptyWhenOffAndNothingToShow(t *testing.T) 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf strings.Builder
-			if err := writeAgentDecisionMarkdown(&buf, tc.feed); err != nil {
+			if err := writeAgentDecisionMarkdown(&buf, tc.feed, nil); err != nil {
 				t.Fatal(err)
 			}
 			if got := buf.Len() == 0; got != tc.wantEmpty {
@@ -120,7 +120,7 @@ func TestAgentDecisionBriefMarkdownLabelsJevAndWaiver(t *testing.T) {
 			"review_target_at": "2026-10-31T10:00:00Z", "link": "https://app/x/issues/CHE-6#comment-c4", "veto_line": "Veto: decision:i4 sha member:u1"},
 	}}
 	var b strings.Builder
-	if err := writeAgentDecisionMarkdown(&b, feed); err != nil {
+	if err := writeAgentDecisionMarkdown(&b, feed, nil); err != nil {
 		t.Fatal(err)
 	}
 	out := b.String()

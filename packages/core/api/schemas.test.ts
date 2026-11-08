@@ -146,6 +146,12 @@ describe("ChatSessionSchema", () => {
     expect(newer[0]?.stale_level).toBe("none");
     expect(newer[0]?.attention_source).toBeNull();
     expect(newer[0]?.next_change_at).toBeUndefined();
+
+    // Untyped turns ride along as subject keys; a malformed value is dropped.
+    const keys = ["turn:t1", "turn:t2"];
+    expect(ChatSessionSchema.parse({ ...baseSession, attention_unclassified_keys: keys }).attention_unclassified_keys).toEqual(keys);
+    expect(old.attention_unclassified_keys).toBeUndefined();
+    expect(ChatSessionSchema.parse({ ...baseSession, attention_unclassified_keys: "turn:t1" }).attention_unclassified_keys).toBeUndefined();
   });
 
   it("keeps sessions readable when older servers send lane-summary data", () => {
