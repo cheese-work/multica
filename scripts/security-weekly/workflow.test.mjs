@@ -7,8 +7,9 @@ import test from "node:test";
 const read = (path) => (existsSync(new URL(`../../${path}`, import.meta.url)) ? readFileSync(new URL(`../../${path}`, import.meta.url), "utf8") : "");
 const wf = read(".github/workflows/security-weekly.yml");
 
-test("runs Sunday 23:00 ICT (16:00 UTC)", () => {
-  assert.match(wf, /cron: "0 16 \* \* 0"/);
+// CHE-4691: minute 0 is the busiest slot on GitHub, and the first 23:00 run never started. 23:23 ICT is 16:23 UTC.
+test("runs Sunday 23:23 ICT (16:23 UTC), off the top of the hour", () => {
+  assert.match(wf, /cron: "23 16 \* \* 0" # Sunday 23:23 ICT/);
 });
 
 test("token stays read-only: no write permission anywhere, no secrets", () => {
@@ -88,7 +89,7 @@ test("filing issues needs credentials the scan must not hold: no apply step in t
 });
 
 test("every job that seals checks out the repo first (seal.sh lives in the tree)", () => {
-  const jobs = wf.split(/^  (?=[a-z-]+:\n    runs-on:)/m).slice(1);
+  const jobs = wf.split(/^  (?=[a-z-]+:\n    (?:if: [^\n]*\n    )?runs-on:)/m).slice(1);
   assert.ok(jobs.length >= 6);
   for (const j of jobs) {
     if (j.includes("seal.sh")) assert.match(j, /uses: actions\/checkout@/, j.split("\n")[0]);
@@ -100,12 +101,18 @@ test("never runs on a pull request: a PR could swap recipient.asc and read the s
   assert.match(wf, /^on:\n  schedule:/m);
 });
 
-// Terra and luna FAIL on f3b0150f8: workflow_dispatch lets a writer pick a branch (gh workflow run --ref). The run then
-// uses that branch's workflow file, checkout and recipient.asc, so an in-file guard cannot stop it. Only `schedule`
-// is pinned by GitHub to the default branch, so it is the sole trigger.
-test("schedule is the only trigger: GitHub runs it on the default branch only", () => {
-  assert.match(wf, /^on:\n  schedule:\n    - cron: "[^"]+"[^\n]*\n\n/m);
-  assert.doesNotMatch(wf, /^\s*(workflow_dispatch|workflow_call|push|repository_dispatch|workflow_run):/m);
+// Terra and luna FAIL on f3b0150f8: workflow_dispatch lets a writer pick a branch (gh workflow run --ref), and the run uses that
+// branch's own file and recipient.asc. CHE-4691 re-adds it behind a per-job guard so the baseline run can be started: the guard
+// stops a mistaken dispatch, not an author who edits the file. CODEOWNERS on this file, seal.sh and the key is the real control.
+test("triggers are schedule and workflow_dispatch only", () => {
+  assert.match(wf, /^on:\n  schedule:\n    - cron: "[^"]+"[^\n]*\n  workflow_dispatch:\n\n/m);
+  assert.doesNotMatch(wf, /^\s*(workflow_call|push|repository_dispatch|workflow_run):/m);
+});
+
+test("every job runs on main only: a dispatch from another ref skips them all", () => {
+  const jobs = wf.split(/^  (?=[a-z-]+:\n    (?:if: [^\n]*\n    )?runs-on:)/m).slice(1);
+  assert.equal(jobs.length, 6, "semgrep, govulncheck, pnpm-audit, gitleaks, codeql, image-scan");
+  for (const j of jobs) assert.match(j, /^[a-z-]+:\n    if: github\.ref == 'refs\/heads\/main'\n    runs-on:/, j.split("\n")[0]);
 });
 
 test("nothing is written to a step summary", () => {
