@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/agentconfig"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -35,6 +36,14 @@ type ActionPreview struct {
 	SHA256 string               `json:"sha256"`
 }
 
+// ActionDiff is the stored text diff an approver must be shown before a
+// RequiresPreview action; SHA256 is the digest approval compares.
+type ActionDiff struct {
+	Kind   string                `json:"kind"`
+	Hunks  []decisiontx.DiffHunk `json:"hunks"`
+	SHA256 string                `json:"sha256"`
+}
+
 // DecisionRequestCardAction is the action a request asks to approve. It stays on
 // the card after approval so the card can show the outcome.
 type DecisionRequestCardAction struct {
@@ -45,6 +54,8 @@ type DecisionRequestCardAction struct {
 	// Preview is absent when the server cannot render the action as the
 	// executor would run it now: an unknown type, or a state the executor refuses.
 	Preview *ActionPreview `json:"preview,omitempty"`
+	// Diff is the stored change of a config-change action, pending only.
+	Diff *ActionDiff `json:"diff,omitempty"`
 }
 
 // previewDigest is the digest of a preview's canonical fields.
@@ -89,7 +100,25 @@ func (handler *Handler) decisionCardAction(ctx context.Context, workspaceID, req
 		slog.WarnContext(ctx, "decision card preview unavailable", "action_id", card.ID, "action_type", action.ActionType, "error", err)
 		card.Preview = nil
 	}
+	card.Diff = storedActionDiff(action.Preconditions)
 	return card
+}
+
+// storedActionDiff reads the text diff a config-change action stored with its
+// preview, and the digest approval compares. It is nil for an action without
+// one or whose stored preview is not a text diff.
+func storedActionDiff(preconditions []byte) *ActionDiff {
+	var stored struct {
+		Preview struct {
+			Diff     []decisiontx.DiffHunk `json:"diff"`
+			DiffKind string                `json:"diff_kind"`
+		} `json:"preview"`
+		SHA256 string `json:"preview_sha256"`
+	}
+	if json.Unmarshal(preconditions, &stored) != nil || stored.Preview.DiffKind != diffKindText || stored.SHA256 == "" {
+		return nil
+	}
+	return &ActionDiff{Kind: diffKindText, Hunks: stored.Preview.Diff, SHA256: stored.SHA256}
 }
 
 // cardPreviewFields renders the preview for the request's human, the only
