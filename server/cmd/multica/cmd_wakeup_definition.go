@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -116,6 +117,7 @@ func runWakeupDefinitionGet(cmd *cobra.Command, args []string) error {
 		RuleKey   string            `json:"rule_key"`
 		Scope     string            `json:"scope"`
 		Enabled   bool              `json:"enabled"`
+		Config    json.RawMessage   `json:"config"`
 		Sources   map[string]string `json:"sources"`
 		Overrides []string          `json:"overrides"`
 		Execution *struct {
@@ -138,8 +140,13 @@ func runWakeupDefinitionGet(cmd *cobra.Command, args []string) error {
 			execution += " paused=" + *e.PausedReason
 		}
 	}
-	cli.PrintTable(cmd.OutOrStdout(), []string{"RULE", "SCOPE", "ENABLED", "SOURCES", "OVERRIDES", "EXECUTION"}, [][]string{{
-		eff.RuleKey, eff.Scope, fmt.Sprint(eff.Enabled), strings.Join(sources, ","), strings.Join(eff.Overrides, ","), execution,
+	config := "none"
+	var compact bytes.Buffer
+	if len(eff.Config) > 0 && json.Compact(&compact, eff.Config) == nil {
+		config = compact.String()
+	}
+	cli.PrintTable(cmd.OutOrStdout(), []string{"RULE", "SCOPE", "ENABLED", "CONFIG", "SOURCES", "OVERRIDES", "EXECUTION"}, [][]string{{
+		eff.RuleKey, eff.Scope, fmt.Sprint(eff.Enabled), config, strings.Join(sources, ","), strings.Join(eff.Overrides, ","), execution,
 	}})
 	return nil
 }

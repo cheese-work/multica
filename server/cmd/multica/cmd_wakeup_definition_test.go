@@ -59,7 +59,7 @@ func TestWakeupDefinitionGetCLI(t *testing.T) {
 	const id = "a57c0511-1ebc-471d-a314-438ca16cc75d"
 	eff := map[string]any{
 		"rule_key": "pr_merged", "scope": "x", "applicable": true, "enabled": true,
-		"config":    map[string]any{"v": 1},
+		"config":    map[string]any{"v": 1, "instruction": "check-the-pr"},
 		"sources":   map[string]string{"instruction": "workspace"},
 		"overrides": []string{"enabled"},
 		"execution": map[string]any{"instance_id": "w-1", "enabled": false, "paused_reason": "loop"},
@@ -94,7 +94,7 @@ func TestWakeupDefinitionGetCLI(t *testing.T) {
 				}
 				wants := []string{`"sources"`, `"overrides"`, `"execution"`}
 				if format == "table" {
-					wants = []string{"pr_merged", "instruction=workspace", "enabled", "loop"}
+					wants = []string{"pr_merged", "instruction=workspace", "enabled", "loop", "CONFIG", `"instruction":"check-the-pr"`}
 				}
 				for _, want := range wants {
 					if !strings.Contains(out.String(), want) {
