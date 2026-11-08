@@ -39,17 +39,22 @@ const CJK_URL_TERMINATOR_REGEX =
 // `~`) in the match, so we trim here. Interior punctuation is untouched.
 const TRAILING_PUNCT = /[?!.,:;*_~]$/
 
-function trimTrailingPunctuation(url: string): string {
+export function trimTrailingPunctuation(url: string): string {
+  // Count parentheses once and update the counts as `)` / `(` leave the tail,
+  // so the trim is O(n) even for a long run of `)` mixed with punctuation (CWE-407).
+  let open = 0
+  let close = 0
+  for (let i = 0; i < url.length; i++) {
+    if (url[i] === '(') open++
+    else if (url[i] === ')') close++
+  }
   let end = url.length
   while (end > 0) {
     const last = url[end - 1]!
     if (TRAILING_PUNCT.test(last)) {
       end--
-    } else if (last === ')') {
-      const body = url.slice(0, end)
-      const open = body.split('(').length - 1
-      const close = body.split(')').length - 1
-      if (close <= open) break
+    } else if (last === ')' && close > open) {
+      close--
       end--
     } else {
       break

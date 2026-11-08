@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { preprocessLinks } from "@multica/ui/markdown/linkify";
+import { preprocessLinks, trimTrailingPunctuation } from "@multica/ui/markdown/linkify";
 
 // The bug: linkify-it does not treat CJK full-width punctuation as a URL
 // boundary, so the href can swallow trailing punctuation and the Chinese
@@ -222,5 +222,21 @@ describe("preprocessLinks — trailing punctuation is not part of the URL (GFM)"
     expect(preprocessLinks("go www.example.com/x.")).toBe(
       "go [www.example.com/x](https://www.example.com/x).",
     );
+  });
+
+  // CWE-407: the trim must stay linear for a long run of trailing `)` mixed with
+  // other trailing punctuation (CHE-4660). linkify-it caps what reaches the trim
+  // through preprocessLinks, so exercise the helper directly.
+  it("trimTrailingPunctuation is linear on a long ')'-and-punctuation run", () => {
+    const run = ")_".repeat(40_000);
+    const start = performance.now();
+    const out = trimTrailingPunctuation(`https://example.com/x${run}`);
+    expect(performance.now() - start).toBeLessThan(500);
+    expect(out).toBe("https://example.com/x");
+  });
+
+  it("trimTrailingPunctuation keeps balanced ) inside a trailing run", () => {
+    expect(trimTrailingPunctuation("https://x/a_(b)_)")).toBe("https://x/a_(b)");
+    expect(trimTrailingPunctuation("https://x/a_(b)")).toBe("https://x/a_(b)");
   });
 });
