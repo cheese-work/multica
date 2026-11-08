@@ -5856,6 +5856,9 @@ func (s *TaskService) writeChatCompletionOutcome(ctx context.Context, qtx *db.Qu
 	if err != nil {
 		return nil, err
 	}
+	if err := writeChatInterimMessages(ctx, qtx, task, replySessionID); err != nil {
+		return nil, err
+	}
 	params := db.CreateChatMessageParams{
 		ID:            dbid.NewV7(),
 		ChatSessionID: replySessionID,
@@ -5923,6 +5926,53 @@ func (s *TaskService) writeChatCompletionOutcome(ctx context.Context, qtx *db.Qu
 		}
 	}
 	return &row, nil
+}
+
+// writeChatInterimMessages turns the text a direct-chat agent wrote BEFORE its
+// last tool step into ordinary assistant rows, ahead of the final reply
+// (CHE-4704). Only the final Output became a chat_message, so status lines and
+// multi-part replies written between tool calls stayed in task_message, where
+// the UI folds them into the step block. Text after the last tool step is the
+// final reply and is not repeated here. Channel tasks are skipped: their
+// outbound pushes every assistant row to Slack/Lark.
+func writeChatInterimMessages(ctx context.Context, qtx *db.Queries, task db.AgentTaskQueue, sessionID pgtype.UUID) error {
+	if !task.ChatInputTaskID.Valid {
+		return nil
+	}
+	if channelIngested, err := qtx.TaskHasChannelIngestedMessages(ctx, task.ChatInputTaskID); err != nil {
+		return fmt.Errorf("check interim chat channel provenance: %w", err)
+	} else if channelIngested {
+		return nil
+	}
+	steps, err := qtx.ListTaskMessages(ctx, task.ID)
+	if err != nil {
+		return fmt.Errorf("list chat task messages: %w", err)
+	}
+	lastTool := -1
+	for i, m := range steps {
+		if m.Type == "tool_use" || m.Type == "tool_result" {
+			lastTool = i
+		}
+	}
+	for _, m := range steps[:lastTool+1] {
+		if m.Type != "text" {
+			continue
+		}
+		body, _ := splitChatQuickActions(util.UnescapeBackslashEscapes(m.Content.String))
+		if strings.TrimSpace(body) == "" {
+			continue
+		}
+		if _, err := createAssistantChatMessage(ctx, qtx, db.CreateChatMessageParams{
+			ID:            dbid.NewV7(),
+			ChatSessionID: sessionID,
+			Role:          "assistant",
+			Content:       redact.Prose(body),
+			TaskID:        task.ID,
+		}); err != nil {
+			return fmt.Errorf("create interim chat message: %w", err)
+		}
+	}
+	return nil
 }
 
 // observeChatOutputLocalPath records a metric when a chat reply references a
