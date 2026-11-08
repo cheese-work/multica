@@ -160,17 +160,23 @@ WHERE request.authority = 'human' AND request.workspace_id = sqlc.arg('workspace
 ORDER BY issue_key;
 
 -- name: ListChatSessionDecisionRecords :many
--- Every standing answer of a DM, newest first, with no row limit: the answers
+-- The standing answers of a DM, newest first: the answers
 -- whose source message lives in this DM. An agent record quotes a DM message;
 -- a card answer is written into its card's DM; either way source_chat_session_id
 -- is that DM, so a request asked in one DM and answered in another belongs to
 -- the answering DM. A disclaimed answer is gone. A card answer's words are the
 -- whole snapshot (chosen option and note); other records quote the human's own
 -- words without pasted context. Feeds the "Decisions in this DM" block that
--- compaction adds (CHE-4447).
+-- compaction adds (CHE-4447). Retrieval is bounded: at most row_limit rows, each
+-- with its words cut to words_max_chars characters; words_bytes is the full
+-- size and total_count the number of standing answers, so the block can state
+-- every omission.
 SELECT answer.id AS answer_id, answer.created_at AS answered_at,
-       (CASE WHEN answer.answer_source = 'card' THEN answer.content_snapshot
-             ELSE COALESCE(NULLIF(answer.reply_text, ''), answer.content_snapshot) END)::text AS words,
+       LEFT(CASE WHEN answer.answer_source = 'card' THEN answer.content_snapshot
+                 ELSE COALESCE(NULLIF(answer.reply_text, ''), answer.content_snapshot) END, sqlc.arg('words_max_chars')::int)::text AS words,
+       octet_length(CASE WHEN answer.answer_source = 'card' THEN answer.content_snapshot
+                         ELSE COALESCE(NULLIF(answer.reply_text, ''), answer.content_snapshot) END)::int AS words_bytes,
+       (count(*) OVER ())::int AS total_count,
        COALESCE(workspace.issue_prefix || '-' || issue.number::text, request.issue_id::text)::text AS issue_key
 FROM decision_answer answer
 JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
@@ -178,7 +184,8 @@ LEFT JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.
 LEFT JOIN workspace ON workspace.id = request.workspace_id
 WHERE request.workspace_id = sqlc.arg('workspace_id') AND answer.disclaimed_at IS NULL
   AND answer.source_chat_session_id = sqlc.arg('session_id')
-ORDER BY answer.created_at DESC, answer.id DESC;
+ORDER BY answer.created_at DESC, answer.id DESC
+LIMIT sqlc.arg('row_limit')::int;
 
 -- name: ListDecisionRequestsByIssue :many
 SELECT * FROM decision_request

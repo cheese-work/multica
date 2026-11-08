@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -315,6 +316,56 @@ func TestCompactionDecisionsOverflowCollapsesOlderOnes(t *testing.T) {
 			head, _, _ := strings.Cut(text, decisionsBlockEnd)
 			if len(head) > 2*decisionsBlockBudget {
 				t.Fatalf("%s round %d block is %d bytes", where, round, len(head))
+			}
+		}
+	}
+}
+
+// Far more decisions than fit even as one-line references: the block stays hard
+// bounded (full lines, then references, each under its own budget), and a count
+// line names how many decisions it did not list, so every omission is stated
+// and full lines + reference lines + the count add up to every record. Retrieval
+// is bounded too: 600 records exceed the row limit and are still all accounted
+// for (CHE-4447, decision: hard-bound references).
+func TestCompactionDecisionsHardBoundTheReferences(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID := createHandlerTestAgent(t, "compaction-decisions-hardbound", []byte("[]"))
+	sessionID := dbfx.ChatSession(t, agentID)
+	const total = 600
+	var all []recordedDecision
+	for index := 0; index < total; index++ {
+		all = append(all, recordDecision(t, agentID, sessionID, fmt.Sprintf("hardbound %d", index), fmt.Sprintf("Decision %03d: %s", index, strings.Repeat("words ", 70)), false))
+	}
+	for round := 1; round <= 2; round++ {
+		session, summary, fail := testHandler.compactChatInPlace(ctx, parseUUID(sessionID), pgtype.UUID{}, "Nothing kept.")
+		if fail != nil {
+			t.Fatalf("compact round %d: %s", round, fail.message)
+		}
+		seed, err := testHandler.compactionSeedBlock(ctx, session, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for where, text := range map[string]string{"row": summary.Content, "prompt": seed} {
+			requireDecisions(t, where+" newest", text, all[total-1])
+			block, _, _ := strings.Cut(text, decisionsBlockEnd)
+			if limit := decisionsBlockBudget + decisionsRefsBudget + 1<<10; len(block) > limit {
+				t.Fatalf("%s round %d block is %d bytes, over the hard bound %d", where, round, len(block), limit)
+			}
+			listed := strings.Count(block, "\n- ") // one per decision line
+			var unlisted int
+			marker := regexp.MustCompile(`- (\d+) older decisions not listed`)
+			match := marker.FindStringSubmatch(block)
+			if match == nil {
+				t.Fatalf("%s round %d does not say how many decisions it left unlisted", where, round)
+			}
+			unlisted, _ = strconv.Atoi(match[1])
+			// Lines that begin "- CHE" are decisions; the two count lines are not.
+			decisionLines := strings.Count(block, "\n- "+all[0].key[:strings.Index(all[0].key, "-")]+"-")
+			if decisionLines+unlisted != total || unlisted == 0 {
+				t.Fatalf("%s round %d accounts for %d listed + %d unlisted, want %d (lines %d)", where, round, decisionLines, unlisted, total, listed)
 			}
 		}
 	}
