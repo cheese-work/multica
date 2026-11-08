@@ -138,6 +138,8 @@
   },
   "decision_action": {
     "approve": "Approuver avec une clé d'accès",
+    "reject": "Refuser",
+    "reject_error": "Le refus n'a pas abouti. Réessayez.",
     "waiting": "En attente de votre clé d'accès…",
     "state": {
       "executed": "Exécutée",
@@ -150,13 +152,15 @@
       "stale_cap": "Un plafond plus élevé est déjà en vigueur.",
       "stale_window": "La fenêtre budgétaire a changé. Lancez une nouvelle demande.",
       "not_budgeted": "Cette tâche n'a plus de budget.",
-      "other": "Échec : {{code}}"
+      "other": "Échec : {{code}}",
+      "stale_base": "La cible a changé après la demande. Redemandez."
     },
     "no_passkey": "Ajoutez une clé d'accès avant d'approuver.",
     "add_passkey": "Ajouter une clé d'accès",
     "error": "L'approbation par clé d'accès n'a pas abouti. Réessayez.",
     "lost": "La réponse a été perdue. L'action n'est pas approuvée une seconde fois. Vérifiez le résultat.",
     "check": "Vérifier le résultat",
+    "outcome": { "cap_applied": "Plafond appliqué", "run_queued": "Exécution en file d’attente", "still_blocked": "Toujours bloqué : {{reason}}" },
     "panel": {
       "title": "Demande de budget d'exécutions",
       "raise_cap": "Porter le plafond d'exécutions de {{issue}} à {{cap}} pour cette fenêtre.",

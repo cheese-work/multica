@@ -171,6 +171,23 @@ WHERE agent_id = $1 AND skill_id = $2;
 -- name: RemoveAllAgentSkills :exec
 DELETE FROM agent_skill WHERE agent_id = $1;
 
+-- name: LockSkillsShare :many
+-- The skill rows an approval snapshots, in the workspace, locked FOR SHARE
+-- NOWAIT in id order. Every writer of a skill's files takes a conflicting
+-- parent lock first, so the file set cannot change until the lock holder
+-- commits. Rows are never locked per file: a new file row would escape a row
+-- lock. A busy row answers 55P03. Missing and foreign ids return no row.
+SELECT * FROM skill
+WHERE workspace_id = sqlc.arg('workspace_id') AND id = ANY(sqlc.arg('ids')::uuid[])
+ORDER BY id
+FOR SHARE NOWAIT;
+
+-- name: ListAgentSkillAssignments :many
+-- The agent's skill assignments with their enabled flag, for the skill-set digest.
+SELECT skill_id, enabled FROM agent_skill
+WHERE agent_id = $1
+ORDER BY skill_id;
+
 -- name: ListAgentSkillsByWorkspace :many
 SELECT ask.agent_id, s.id, s.name, s.description, ask.enabled
 FROM agent_skill ask

@@ -48,12 +48,15 @@ func validateAutoCompactConfig(value any) error {
 }
 
 // validateCompactConfig is the single write-time check for the compact keys
-// (compact_prompt, auto_compact) of workspace settings and agent runtime_config.
+// (compact_prompt, auto_compact) and the harness_profile key of workspace settings and agent runtime_config.
 func validateCompactConfig(value any) error {
 	if err := validateCompactPromptConfig(value); err != nil {
 		return err
 	}
-	return validateAutoCompactConfig(value)
+	if err := validateAutoCompactConfig(value); err != nil {
+		return err
+	}
+	return validateHarnessProfileConfig(value)
 }
 
 // validateAutoCompactPatch checks a PATCH body: like a stored object, but a

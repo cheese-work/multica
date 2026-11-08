@@ -506,6 +506,11 @@ INSERT INTO decision_answer (decision_request_id, answered_by_user_id, answer_so
 VALUES (sqlc.arg('decision_request_id'), sqlc.arg('answered_by_user_id'), 'card', '{}', sqlc.arg('content_snapshot'), sqlc.arg('effective_at'), sqlc.narg('issue_comment_id'), GREATEST(sqlc.arg('effective_at')::timestamptz, clock_timestamp()))
 RETURNING *;
 
+-- name: GetDecisionCardAnswer :one
+-- The answer a human's card click recorded for a request; one per request.
+SELECT * FROM decision_answer WHERE decision_request_id = sqlc.arg('decision_request_id') AND answer_source = 'card'
+ORDER BY created_at DESC LIMIT 1;
+
 -- name: DecisionHumanAuthority :one
 -- is_owner: the person holds the workspace owner role. is_delegate: the person is
 -- listed in decision_delegates of the project the issue belongs to.

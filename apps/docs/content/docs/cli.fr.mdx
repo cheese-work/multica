@@ -452,6 +452,18 @@ Les tableaux ci-dessous couvrent toutes les commandes de premier niveau actuelle
 | `update` | — | Mettre à jour le CLI vers la dernière version | |
 | `version` | — | Afficher les informations de version | `--output` (`text` ou `json`) |
 
+### Propositions de décision
+
+Un jeton de tâche propose une action encadrée qu'une personne approuve avec une passkey. La proposition ne modifie rien elle-même.
+
+```bash
+multica decision propose issue.run_budget.raise --version 1 --issue MUL-123 \
+  --for <user-id> --param window_id=<id> --param new_cap:=40 [--reason "..."]
+multica decision propose <action-type> --version 1 --issue MUL-123 --params-file ./params.json
+```
+
+`--version` et `--issue` sont obligatoires. `--param k=v` envoie une chaîne et `--param k:=<json>` envoie du JSON brut ; `--params-file` prend un objet JSON et ne se combine pas avec `--param`. La commande affiche le lien de la carte d'approbation. Un refus affiche le statut et le code d'erreur du serveur. `multica issue budget raise` et `multica issue budget top-up` utilisent la même route avec un jeton de tâche (ajoutez `--for <user-id>`) ; avec un jeton d'accès personnel, ils ouvrent la demande de dépense comme avant.
+
 ## Piloter Multica depuis un autre agent de codage
 
 Si l'essentiel de votre travail se passe déjà dans Codex, Claude Code ou Cursor, vous pouvez piloter Multica depuis ces outils au lieu de basculer vers un terminal. Le [skill Multica CLI](https://github.com/multica-ai/multica-cli) apprend à ces agents à utiliser les commandes de cette page en toute sécurité : lire les tâches et les fils de commentaires sans gaspiller de tokens, écrire les commentaires via un fichier, et gérer les effets de bord qu'entraînent les mentions, les changements de statut et les assignations.

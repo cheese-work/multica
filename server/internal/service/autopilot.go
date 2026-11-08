@@ -582,6 +582,9 @@ func (s *AutopilotService) dispatchAutopilot(
 		active, activeErr := s.Queries.FindActiveScheduledAutopilotRunForTrigger(ctx, db.FindActiveScheduledAutopilotRunForTriggerParams{
 			TriggerID: scope.TriggerID, ConditionKey: scope.ConditionKey,
 		})
+		if activeErr == nil && s.supersedeBreakerHeldRun(ctx, autopilot, active) {
+			activeErr = pgx.ErrNoRows
+		}
 		if activeErr == nil {
 			reason := "equivalent scheduled run is already active: " + util.UUIDToString(active.ID)
 			skipped, skipErr := s.recordSkippedRun(ctx, autopilot, triggerID, source, payload, plannedAt, webhookDeliveryID, reason, dispatch.ReasonAlreadyActive)
@@ -1073,7 +1076,7 @@ func (s *AutopilotService) dispatchRunOnly(ctx context.Context, ap db.Autopilot,
 	if err != nil {
 		return fmt.Errorf("check agent readiness: %w", err)
 	}
-	if !verdict.Ready() {
+	if !verdict.Ready() && !providerBreakerHold(verdict) {
 		return &errDispatchSkipped{reason: formatAdmissionReason(ap, verdict.Detail), code: verdict.Reason}
 	}
 
@@ -1704,7 +1707,7 @@ func (s *AutopilotService) shouldSkipDispatch(ctx context.Context, ap db.Autopil
 		// written server-side and the run waits for the laptop to come back. An
 		// unusable runtime does not qualify — nothing there can run until a
 		// human repairs it, so a doomed issue-create is not an improvement.
-		if ap.ExecutionMode == "create_issue" && verdict.Availability == AgentWaitable {
+		if (ap.ExecutionMode == "create_issue" && verdict.Availability == AgentWaitable) || providerBreakerHold(verdict) {
 			slog.Info("autopilot admission: allowing create_issue dispatch for offline runtime",
 				"autopilot_id", util.UUIDToString(ap.ID),
 				"runtime_id", util.UUIDToString(agent.RuntimeID),
@@ -1740,6 +1743,77 @@ func (s *AutopilotService) shouldSkipDispatch(ctx context.Context, ap db.Autopil
 		return "this trigger's owner lacks access to the private assignee agent, or the trigger records no owner", dispatch.ReasonInvocationNotAllowed, true
 	}
 	return "", "", false
+}
+
+// supersedeBreakerHeldRun retires a run_only run whose task is still queued
+// behind an open provider breaker, so the next schedule tick replaces it and a
+// long outage leaves no stale run to start after recovery (CHE-4460). A queued
+// task with the breaker closed is about to start; it stays and the tick dedupes.
+// Reports whether the run was retired.
+func (s *AutopilotService) supersedeBreakerHeldRun(ctx context.Context, ap db.Autopilot, active db.AutopilotRun) bool {
+	if ap.ExecutionMode != "run_only" || !active.TaskID.Valid {
+		return false
+	}
+	task, err := s.Queries.GetAgentTask(ctx, active.TaskID)
+	if err != nil || task.Status != "queued" {
+		return false
+	}
+	agent, _, err := s.resolveAutopilotLeader(ctx, ap)
+	if err != nil {
+		return false
+	}
+	verdict, err := AgentReadiness(ctx, s.runtimeLookup(), agent)
+	if err != nil || !providerBreakerHold(verdict) {
+		return false
+	}
+	retired, err := s.retireQueuedBreakerHeldRun(ctx, active, task.ID)
+	if err != nil {
+		slog.Warn("failed to retire breaker-held autopilot run", "run_id", util.UUIDToString(active.ID), "error", err)
+		return false
+	}
+	return retired
+}
+
+// retireQueuedBreakerHeldRun cancels the run's task and marks the run skipped in
+// one transaction: a failed second write rolls the cancel back, so no run is
+// left running behind a cancelled task. The cancel applies only to a task that
+// is still queued. A claim that wins the race moves the task to dispatched, the
+// update then matches no row, and the run stays untouched (it is starting).
+func (s *AutopilotService) retireQueuedBreakerHeldRun(ctx context.Context, run db.AutopilotRun, taskID pgtype.UUID) (bool, error) {
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin breaker-held run retirement: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `UPDATE agent_task_queue
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
+    cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
+WHERE id = $1 AND status = 'queued'`, taskID)
+	if err != nil {
+		return false, fmt.Errorf("cancel queued task: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+	if _, err := s.Queries.WithTx(tx).UpdateAutopilotRunTerminalWithQuota(ctx, db.UpdateAutopilotRunTerminalWithQuotaParams{
+		TerminalStatus: "skipped",
+		FailureReason:  pgtype.Text{String: "superseded by the next scheduled run while the provider breaker held it", Valid: true},
+		ReasonCode:     pgtype.Text{String: string(dispatch.ReasonProviderBreaker), Valid: true},
+		RunID:          run.ID,
+	}); err != nil {
+		return false, fmt.Errorf("skip run: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit breaker-held run retirement: %w", err)
+	}
+	return true, nil
+}
+
+// providerBreakerHold reports a wait on an open provider breaker. Every mode
+// queues through it: the claim gate holds the task until the probe is due, and
+// a skipped scheduled run would not come back (CHE-4460).
+func providerBreakerHold(v AgentVerdict) bool {
+	return v.Availability == AgentWaitable && v.Reason == dispatch.ReasonProviderBreaker
 }
 
 // formatAdmissionReason rewrites the generic AgentReadiness reason into the

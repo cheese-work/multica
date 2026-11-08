@@ -309,6 +309,8 @@ multica runtime breaker reset <provider>
 
 `list` は各プロバイダーの状態、失敗回数、開いた時刻、次のプローブ時刻を表示します。`reset` はブレーカーを強制的に閉じ、ワークスペースのオーナーと管理者のみ実行できます。同じ情報は API でも取得できます。`GET /api/workspaces/{id}/provider-breakers` で一覧を取得し、`POST /api/workspaces/{id}/provider-breakers/{provider}/reset` で 1 件をリセットします。
 
+Webアプリでは、**設定 → プロバイダーのブレーカー**ですべてのプロバイダーの同じ状態を確認できます。オーナーと管理者には確認ダイアログ付きの**リセット**ボタンが表示され、その他のメンバーは読み取り専用です。
+
 ## ランタイムがオフラインのときの確認手順
 
 次の順に確認します。
