@@ -3386,15 +3386,10 @@ func distinctAgentIDs(cancelled []db.AgentTaskQueue) []pgtype.UUID {
 //
 // Returns the cancelled rows so callers can report counts / log them.
 func (s *TaskService) CancelTasksForAgent(ctx context.Context, agentID pgtype.UUID) ([]db.AgentTaskQueue, error) {
-	var cancelled []db.AgentTaskQueue
-	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
-		var err error
-		cancelled, err = qtx.CancelAgentTasksByAgent(ctx, agentID)
-		if err != nil {
-			return err
-		}
-		return SettleTerminalTaskState(ctx, qtx, cancelled...)
-	}); err != nil {
+	cancelled, err := s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+		return qtx.CancelAgentTasksByAgent(ctx, agentID)
+	})
+	if err != nil {
 		return nil, err
 	}
 	for _, t := range cancelled {
@@ -4459,6 +4454,20 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			return nil
 		}
 
+		// Provider breaker: an open or half_open breaker that is not yet due
+		// skips the claim (the task stays queued). A due breaker lets exactly
+		// one task through as the canary, bound after the claim below.
+		breakerProvider, breakerHeld, breakerCanary, berr := providerBreakerClaimGate(ctx, qtx, agent)
+		if berr != nil {
+			outcome = "error_provider_breaker_check"
+			return fmt.Errorf("check provider breaker for claim: %w", berr)
+		}
+		if breakerHeld {
+			slog.Debug("task claim skipped: provider breaker", "agent_id", util.UUIDToString(agentID), "provider", breakerProvider)
+			outcome = "provider_breaker"
+			return nil
+		}
+
 		coolingDown, err := qtx.HasRecentProviderServerFailure(ctx, db.HasRecentProviderServerFailureParams{
 			AgentID: agentID,
 			FailedSince: pgtype.Timestamptz{
@@ -4506,6 +4515,17 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			return fmt.Errorf("claim task: %w", err)
 		}
 
+		if breakerCanary {
+			if err := acquireProviderBreakerCanary(ctx, qtx, agent.WorkspaceID, breakerProvider, task.ID); err != nil {
+				if errors.Is(err, errProviderBreakerCanaryTaken) {
+					outcome = "provider_breaker"
+				} else {
+					outcome = "error_provider_breaker_canary"
+				}
+				return err
+			}
+		}
+
 		// Rule E: the claim stamped the epoch on a statement snapshot that a
 		// compact committed just before our DM lock may have outdated. Restamp
 		// on a fresh snapshot; the DM share lock keeps the epoch fixed until
@@ -4538,10 +4558,27 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			reanchorMs = time.Since(t0).Milliseconds()
 		}
 
+		// A retry child owns its root's input batch, which neither direct
+		// reanchor query reaches; keep a question that predates a compact
+		// beside its answer (CHE-2819).
+		if task.ChatSessionID.Valid && task.ChatInputTaskID.Valid && task.ChatInputTaskID != task.ID {
+			if err := qtx.ReanchorChatInputAcrossFloor(ctx, db.ReanchorChatInputAcrossFloorParams{
+				ChatSessionID: task.ChatSessionID,
+				InputTaskID:   task.ChatInputTaskID,
+				DispatchedAt:  task.DispatchedAt,
+			}); err != nil {
+				outcome = "error_reanchor_chat_input"
+				return fmt.Errorf("reanchor chat input across floor: %w", err)
+			}
+		}
+
 		claimedTask := task
 		claimed = &claimedTask
 		return nil
 	})
+	if errors.Is(err, errProviderBreakerCanaryTaken) {
+		return nil, nil // another claim owns the canary; the rollback left this task queued
+	}
 	if err != nil {
 		if outcome == "unknown" {
 			outcome = "error_transaction"
@@ -6007,12 +6044,23 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		// so don't block" fail-open providerHoldVerdict documents.
 		retryAgent       db.Agent
 		retryAgentLoaded bool
+		// retryFence: set when the task is in a provider-failure recovery
+		// lineage (CHE-1773); no retry is minted and the owner is told once.
+		retryFence providerFailureOwnerDecision
 	)
 	if retryableReasons[failureReason] {
 		if parent, perr := s.Queries.GetAgentTask(ctx, taskID); perr != nil {
 			slog.Warn("fail task auto-retry: load parent failed",
 				"task_id", util.UUIDToString(taskID), "error", perr)
-		} else if retryEligible(failureReason, parent) {
+		} else if !retryEligible(failureReason, parent) {
+			// Not retryable: nothing to mint.
+		} else if fence, ferr := s.fenceRecoveryLineage(ctx, s.Queries, taskID); ferr != nil {
+			// Fail closed: an unreadable lineage must not mint a generic retry.
+			slog.Warn("fail task auto-retry: recovery lineage check failed; no retry",
+				"task_id", util.UUIDToString(taskID), "error", ferr)
+		} else if fence.Capped() {
+			retryFence = fence
+		} else {
 			wantRetry = true
 			// Persist the reason-aware effective budget into the child so the
 			// retry chain self-describes (e.g. provider_network → max_attempts=3),
@@ -6056,6 +6104,13 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			}
 			if err := requireActiveTaskProject(ctx, qtx, parent); err != nil {
 				wantRetry = false
+			}
+			// SEC-1 rule 4: the retry guard below locks the workspace, which
+			// must come before the session lock taken next.
+			if wantRetry && parent.Purpose.Valid && parent.Purpose.String == "compaction" && parent.ChatSessionID.Valid {
+				if _, err := lockCompactionRetryWorkspace(ctx, qtx, parent); err != nil {
+					return err
+				}
 			}
 		}
 		if err := lockChatSessionForTaskWrite(ctx, qtx, taskID); err != nil {
@@ -6200,6 +6255,15 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 					"issue_id", util.UUIDToString(t.IssueID),
 					"error", gerr,
 				)
+				createRetry = false
+			}
+		}
+		if createRetry {
+			// SEC-1 rule 4: skip, never abort — this transaction carries the
+			// parent's failed status.
+			if revoked, rerr := compactionRetryRevoked(ctx, qtx, t); rerr != nil || revoked {
+				slog.Info("fail task auto-retry skipped: compact chain changed or unreadable",
+					"task_id", util.UUIDToString(taskID), "error", rerr)
 				createRetry = false
 			}
 		}
@@ -6400,6 +6464,8 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 	if retried == nil {
 		s.failOverRoutingTask(ctx, task, failureReason)
 	}
+	// CHE-1773: a recovery-lineage task got no retry; tell its owner once.
+	s.notifyProviderFailureCap(ctx, s.Queries, task.ID, retryFence)
 	// CHE-607: errMsg above is the proximate cause (e.g. a stream disconnect) —
 	// on its own it says nothing about why the auto-retry that would normally
 	// follow a provider_network failure didn't happen. Post the policy notice
@@ -6616,6 +6682,43 @@ func retryEligible(failureReason string, t db.AgentTaskQueue) bool {
 		(t.IssueID.Valid || t.ChatSessionID.Valid || isSourceContextQuickCreateTask(t))
 }
 
+// compactionRetryRevoked reports whether a compaction task's retry must not be
+// created because the workspace's compact agent chain changed after the task
+// was created (SEC-1 rule 4). The change cancels live tasks only, so a task
+// that had already failed would otherwise retry as an active child, even after
+// A -> B -> A. Taking the chat_session lock orders the check after a change in
+// flight. The workspace lock comes first, the order the settings write uses
+// (workspace, then sessions); the other order deadlocks with CreateRetryTask,
+// which also locks the workspace. It fails closed: an error means no retry.
+func compactionRetryRevoked(ctx context.Context, q *db.Queries, parent db.AgentTaskQueue) (bool, error) {
+	if !parent.ChatSessionID.Valid || !parent.Purpose.Valid || parent.Purpose.String != "compaction" {
+		return false, nil
+	}
+	workspaceID, err := lockCompactionRetryWorkspace(ctx, q, parent)
+	if err != nil {
+		return true, err
+	}
+	if _, err := q.LockChatSessionShared(ctx, parent.ChatSessionID); err != nil {
+		return true, err
+	}
+	return q.CompactChainChangedSince(ctx, db.CompactChainChangedSinceParams{WorkspaceID: workspaceID, CreatedAt: parent.CreatedAt})
+}
+
+// lockCompactionRetryWorkspace takes the workspace row of a compaction task's
+// session. A caller that locks the session itself (FailTask) calls it first, so
+// the workspace-then-session order holds on every path. Not a compaction task:
+// no-op.
+func lockCompactionRetryWorkspace(ctx context.Context, q *db.Queries, parent db.AgentTaskQueue) (pgtype.UUID, error) {
+	session, err := q.GetChatSession(ctx, parent.ChatSessionID)
+	if err != nil {
+		return pgtype.UUID{}, err
+	}
+	if _, err := q.LockWorkspaceForChatSessionCreate(ctx, session.WorkspaceID); err != nil {
+		return pgtype.UUID{}, err
+	}
+	return session.WorkspaceID, nil
+}
+
 // refuseRetryForProviderHold checks the just-created retry child's agent
 // against workspace provider holds and, if held, immediately cancels the
 // child in the SAME transaction that created it — so nothing outside this
@@ -6755,6 +6858,16 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	if !retryEligible(reason, parent) {
 		return nil, nil
 	}
+	// CHE-1773: a recovery-lineage task gets no generic retry from this entry
+	// point either; fail closed when the lineage cannot be read.
+	fence, err := s.fenceRecoveryLineage(ctx, s.Queries, parent.ID)
+	if err != nil {
+		return nil, fmt.Errorf("task auto-retry: recovery lineage check: %w", err)
+	}
+	if fence.Capped() {
+		s.notifyProviderFailureCap(ctx, s.Queries, parent.ID, fence)
+		return nil, nil
+	}
 
 	var runtimeMCPOverlay runtimeMCPOverlayData
 	agent, agentErr := s.Queries.GetAgent(ctx, parent.AgentID)
@@ -6801,6 +6914,13 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	}
 	defer tx.Rollback(ctx)
 	qtx := s.Queries.WithTx(tx)
+	if revoked, rerr := compactionRetryRevoked(ctx, qtx, parent); rerr != nil {
+		return nil, fmt.Errorf("task auto-retry: check compaction authority: %w", rerr)
+	} else if revoked {
+		slog.Info("task auto-retry skipped: compact chain changed",
+			"parent_task_id", util.UUIDToString(parent.ID))
+		return nil, nil
+	}
 	if err := requireActiveTaskProject(ctx, qtx, parent); err != nil {
 		if IsProjectInactive(err) {
 			return nil, nil
@@ -7494,16 +7614,67 @@ func (s *TaskService) CancelTasksForArchivedAgent(ctx context.Context, agentID p
 	return cancelled, nil
 }
 
+// terminateTasksInTx ends a batch of tasks and settles them in one tx, holding the chat_session row
+// of every chat task in the batch first. The one lock order is chat_session -> runtime -> agent ->
+// agent_task_queue (chat enqueue takes the session, then the agent; see lockChatSessionForTaskWrite). A report that reads a task's status under that session row, such as
+// RecordChatOutcome, then sees a status that cannot change until it commits.
+//
+// The batch UPDATE picks its own rows, so the sessions are only known after it ran. Each pass runs
+// it in a savepoint; if it touched chat sessions not yet held, the pass is rolled back (releasing
+// its task row locks), those sessions are locked in id order, and it runs again. Every pass that
+// repeats holds at least one more session, so the loop ends.
 func (s *TaskService) terminateTasksInTx(ctx context.Context, fail func(*db.Queries) ([]db.AgentTaskQueue, error)) ([]db.AgentTaskQueue, error) {
-	var failed []db.AgentTaskQueue
-	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
-		var err error
-		failed, err = fail(qtx)
+	if s.TxStarter == nil {
+		failed, err := fail(s.Queries)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		return SettleTerminalTaskState(ctx, qtx, failed...)
-	}); err != nil {
+		return failed, SettleTerminalTaskState(ctx, s.Queries, failed...)
+	}
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	qtx := s.Queries.WithTx(tx)
+
+	held := map[pgtype.UUID]bool{}
+	var failed []db.AgentTaskQueue
+	for {
+		sp, err := tx.Begin(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("begin savepoint: %w", err)
+		}
+		failed, err = fail(s.Queries.WithTx(sp))
+		if err != nil {
+			_ = sp.Rollback(ctx)
+			return nil, err
+		}
+		var need []pgtype.UUID
+		for _, t := range failed {
+			if t.ChatSessionID.Valid && !held[t.ChatSessionID] {
+				held[t.ChatSessionID] = true
+				need = append(need, t.ChatSessionID)
+			}
+		}
+		if len(need) == 0 {
+			if err := sp.Commit(ctx); err != nil {
+				return nil, fmt.Errorf("release savepoint: %w", err)
+			}
+			break
+		}
+		if err := sp.Rollback(ctx); err != nil {
+			return nil, fmt.Errorf("rollback savepoint: %w", err)
+		}
+		if _, err := qtx.LockChatSessionsByIDs(ctx, need); err != nil {
+			return nil, fmt.Errorf("lock chat sessions: %w", err)
+		}
+	}
+	if err := SettleTerminalTaskState(ctx, qtx, failed...); err != nil {
+		_ = tx.Rollback(ctx)
+		return nil, s.recordStageRefusal(ctx, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return failed, nil
@@ -7660,6 +7831,9 @@ func SettleTerminalTaskState(ctx context.Context, q *db.Queries, tasks ...db.Age
 		if err := settleCompactionTask(ctx, q, task); err != nil {
 			return err
 		}
+	}
+	if err := settleChatTurns(ctx, q, tasks); err != nil {
+		return err
 	}
 	if _, err := q.SettleTerminalTaskSupplements(ctx, taskIDs); err != nil {
 		return fmt.Errorf("settle terminal task supplements: %w", err)

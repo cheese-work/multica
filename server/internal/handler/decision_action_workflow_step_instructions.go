@@ -19,6 +19,7 @@ import (
 // like a workflow save, because it validates the workflow against the catalog.
 func init() {
 	registerConfigChange(decisionaction.WorkflowStepInstructionsSet, configChange{
+		Fields:      []string{workflowInstructionsField},
 		ServerAfter: true, StaleBaseCode: "stale_base", CatalogLock: true, DelegatedField: workflowInstructionsField,
 		Lock: func(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, params json.RawMessage) error {
 			workflow, err := loadWorkflowTarget(ctx, queries, workspaceID, params, http.StatusConflict, false)

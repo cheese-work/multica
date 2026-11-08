@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -33,6 +34,8 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		Action          *decisionActionWire `json:"action"`
 		Kind            string              `json:"kind"`
 		ExpiresIn       string              `json:"expires_in"`
+		// CoversRequestIDs names open cards this batch card answers for (CHE-4453).
+		CoversRequestIDs []string `json:"covers_request_ids"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8*maxCommentContentBytes)).Decode(&input); err != nil {
 		writeError(writer, http.StatusBadRequest, "invalid decision request")
@@ -108,6 +111,10 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 			return
 		}
 	}
+	covers, ok := parseBatchCovers(writer, input.CoversRequestIDs, input.Action != nil)
+	if !ok {
+		return
+	}
 	var draft *decisionActionDraft
 	if input.Action != nil {
 		if draft, err = draftDecisionAction(input.Action); err != nil {
@@ -121,7 +128,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusInternalServerError, "failed to encode ask")
 		return
 	}
-	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, Parsed: &parsed, Slug: workspace.Slug, Kind: kind, ExpiresInSeconds: expiresInSeconds})
+	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, Parsed: &parsed, Slug: workspace.Slug, Kind: kind, ExpiresInSeconds: expiresInSeconds, Covers: covers})
 	if err != nil {
 		writeDecisionError(writer, err, "decision request")
 		return
@@ -269,23 +276,37 @@ func (handler *Handler) ListOpenDecisions(writer http.ResponseWriter, request *h
 		writeError(writer, http.StatusInternalServerError, "failed to list open decision requests")
 		return
 	}
-	writeJSON(writer, http.StatusOK, openDecisionResponses(requests))
+	writeJSON(writer, http.StatusOK, handler.openDecisionResponses(request.Context(), member.WorkspaceID, requests))
 }
 
 // openDecisionResponse sends options as JSON, not as the row's base64 bytes,
-// so the issue-page banner can render the answer buttons.
+// so the issue-page banner can render the answer buttons. A batch card also
+// carries the decisions it covers: the issue page shows them next to the
+// answer form, so a human never answers for a card they cannot see.
 type openDecisionResponse struct {
 	db.ListOpenDecisionRequestsForHumanRow
-	Options json.RawMessage `json:"options"`
+	Options          json.RawMessage              `json:"options"`
+	CoversRequestIDs []string                     `json:"covers_request_ids,omitempty"`
+	CoveredCards     []DecisionRequestCoveredCard `json:"covered_cards,omitempty"`
 }
 
-func openDecisionResponses(rows []db.ListOpenDecisionRequestsForHumanRow) []openDecisionResponse {
+func (handler *Handler) openDecisionResponses(ctx context.Context, workspaceUUID pgtype.UUID, rows []db.ListOpenDecisionRequestsForHumanRow) []openDecisionResponse {
 	out := make([]openDecisionResponse, len(rows))
 	for i, row := range rows {
-		out[i] = openDecisionResponse{row, row.Options}
+		out[i] = openDecisionResponse{ListOpenDecisionRequestsForHumanRow: row, Options: row.Options}
 		if len(out[i].Options) == 0 {
 			out[i].Options = json.RawMessage("[]")
 		}
+		for _, covered := range row.CoversRequestIds {
+			out[i].CoversRequestIDs = append(out[i].CoversRequestIDs, uuidToString(covered))
+		}
+		// On a read failure the card keeps covers_request_ids but lists no covered
+		// cards; the client then refuses the answer form (fail closed).
+		covered, err := handler.coveredCardSummaries(ctx, workspaceUUID, row.CoversRequestIds)
+		if err != nil {
+			slog.ErrorContext(ctx, "list covered decision cards", "request_id", uuidToString(row.ID), "error", err)
+		}
+		out[i].CoveredCards = covered
 	}
 	return out
 }

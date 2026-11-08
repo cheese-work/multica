@@ -44,11 +44,11 @@ class MechanicalTierTriggers(unittest.TestCase):
         for noisy in ("cancelled", "skipped"):
             self.assertIn(noisy, cond)
 
-    def test_classify_concurrency_is_keyed_by_head_and_never_cancels(self):
-        # CHE-3990: cancel-in-progress turned a green check red.
-        conc = self.doc["jobs"]["mechanical-tier"]["concurrency"]
-        self.assertFalse(conc["cancel-in-progress"])
-        self.assertIn("matrix.head", conc["group"])
+    def test_classify_has_no_concurrency_group(self):
+        # CHE-3990: a concurrency group (even cancel-in-progress: false) cancels the pending job on a third event,
+        # and a cancelled run becomes the latest red check for the head. Every run is an idempotent receipt.
+        self.assertNotIn("concurrency", self.doc["jobs"]["mechanical-tier"])
+        self.assertNotIn("concurrency", self.doc)
 
 
 class CacheMaintenanceTriggers(unittest.TestCase):

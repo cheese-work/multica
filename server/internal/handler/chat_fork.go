@@ -285,7 +285,7 @@ func (h *Handler) resolveForkSource(w http.ResponseWriter, r *http.Request, user
 		return db.ChatSession{}, "", true, false
 	}
 	task, err := h.Queries.GetAgentTask(r.Context(), taskID)
-	if err != nil || !task.ChatSessionID.Valid || (task.Status != "running" && task.Status != "dispatched") {
+	if err != nil || !task.ChatSessionID.Valid {
 		writeError(w, http.StatusForbidden, "a running session chat task is required")
 		return db.ChatSession{}, "", true, false
 	}
@@ -294,8 +294,11 @@ func (h *Handler) resolveForkSource(w http.ResponseWriter, r *http.Request, user
 		return db.ChatSession{}, "", true, false
 	}
 	session, err := h.Queries.GetChatSession(r.Context(), task.ChatSessionID)
-	if err != nil || uuidToString(session.WorkspaceID) != workspaceID || session.AgentID != task.AgentID {
+	if err != nil {
 		writeError(w, http.StatusForbidden, "task does not belong to this chat session")
+		return db.ChatSession{}, "", true, false
+	}
+	if !h.authorizeChatTask(r.Context(), w, h.Queries, chatOpContinue, task, session, workspaceID) {
 		return db.ChatSession{}, "", true, false
 	}
 	key := task.ID

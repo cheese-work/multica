@@ -284,9 +284,9 @@ func workflowPreconditions(ctx context.Context, queries *db.Queries, workspaceID
 // actionPreconditions records what the approver must still find true: the
 // issue, workflow, squad or workspace the action names, otherwise the agent's
 // snapshot.
-func actionPreconditions(ctx context.Context, queries *db.Queries, issue db.Issue, agentID pgtype.UUID, draft *decisionActionDraft) (map[string]any, error) {
+func actionPreconditions(ctx context.Context, queries *db.Queries, issue db.Issue, proposer pgtype.UUID, draft *decisionActionDraft) (map[string]any, error) {
 	if change, ok := configChanges[draft.Type]; ok {
-		return configChangePreconditions(ctx, queries, issue.WorkspaceID, agentID, draft, change)
+		return configChangePreconditions(ctx, queries, issue.WorkspaceID, proposer, draft, change)
 	}
 	switch draft.Definition.Target {
 	case decisionaction.TargetIssue:

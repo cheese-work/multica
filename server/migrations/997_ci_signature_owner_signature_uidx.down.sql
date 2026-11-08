@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS ci_signature_owner_signature_uidx;

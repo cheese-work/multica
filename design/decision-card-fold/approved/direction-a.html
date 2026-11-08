@@ -1,0 +1,73 @@
+<!doctype html><html><head><meta charset="utf-8"><title>CHE-4432 A</title><style>
+:root{--surface:oklch(1 0 0);--bd:oklch(.92 .004 286.32);--mut:oklch(.967 .001 286.375);--mf:oklch(.505 .016 285.938);--fg:oklch(.21 .006 285.885);--ok:oklch(.55 .16 145);--warn:oklch(.75 .16 85);--ring:oklch(.705 .015 286.067)}
+*{box-sizing:border-box;margin:0}
+body{font:14px/20px system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--fg);background:oklch(.985 0 0);padding:24px}
+h1{font-size:20px;line-height:26px}.sub{color:var(--mf);margin:4px 0 12px;max-width:900px}
+.notes{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0 20px}
+.notes div{background:var(--surface);border:1px solid var(--bd);border-radius:8px;padding:8px 10px;font-size:12px;line-height:16px;color:var(--mf)}.notes b{color:var(--fg);display:block;font-size:13px;line-height:18px}
+.cols{display:flex;gap:40px;align-items:flex-start}.d{width:780px}.p{width:390px}
+.col>h2{font-size:12px;line-height:16px;letter-spacing:.06em;text-transform:uppercase;color:var(--mf);margin-bottom:8px}
+.pn{background:var(--surface);border:1px solid var(--bd);border-radius:12px;padding:16px;margin-bottom:16px}.pn>h3{font-size:13px;line-height:18px;margin-bottom:8px}
+.dm{max-width:560px}.cap{font-size:11px;line-height:15px;color:var(--mf);margin:14px 0 4px;font-weight:600}.pn>h3+.cap,.dm>.cap:first-child{margin-top:0}
+.card{border:1px solid var(--bd);border-radius:12px;background:var(--surface);min-width:0}
+.sec{border:1px solid color-mix(in oklch,var(--warn) 40%,transparent);background:color-mix(in oklch,var(--warn) 5%,transparent);border-radius:12px;padding:8px;display:grid;gap:8px}.sec.n{border-color:var(--bd);background:var(--mut)}
+.sec>h4{font-size:13px;line-height:18px;display:flex;gap:8px;align-items:center;padding:0 4px}
+.cnt{border-radius:999px;background:color-mix(in oklch,var(--warn) 14%,transparent);padding:0 8px;font-size:11px;line-height:15px;font-weight:500}.cnt.m{background:var(--surface);color:var(--mf)}
+.hd{display:flex;align-items:center;gap:8px;width:100%;min-height:36px;padding:0 12px;border:0;background:none;font:inherit;text-align:left;color:inherit;border-radius:12px}
+button.hd{cursor:pointer}button.hd:hover{background:var(--mut)}button.hd:focus-visible,.fc{outline:2px solid var(--ring);outline-offset:-2px}
+.ic{width:16px;height:16px;flex:none}.ok{color:var(--ok)}.mu{color:var(--mf)}.wn{color:color-mix(in oklch,var(--warn),black 40%)}
+.q{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+.chip{flex:none;max-width:11rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border:1px solid var(--bd);border-radius:3px;padding:0 6px;font-size:11px;line-height:15px}.chip.dis{text-decoration:line-through;color:var(--mf);background:var(--mut)}
+time{flex:none;color:var(--mf);font-size:12px;line-height:16px;font-variant-numeric:tabular-nums}
+.chev{color:var(--mf);transition:transform .2s ease-out}[aria-expanded=true] .chev{transform:rotate(180deg)}
+.pill{flex:none;border-radius:999px;padding:0 8px;font-size:11px;line-height:15px;font-weight:500;background:var(--mut);color:var(--mf)}.pill.wn{background:color-mix(in oklch,var(--warn) 14%,transparent);color:var(--fg)}.pill.ok{background:color-mix(in oklch,var(--ok) 10%,transparent);color:var(--ok)}
+.body{display:grid;grid-template-rows:0fr;opacity:0;transition:grid-template-rows .2s ease-out,opacity .2s ease-out}.x>.body{grid-template-rows:1fr;opacity:1}.body>div{overflow:hidden;min-height:0}
+.bi{padding:8px 12px 12px;display:grid;gap:8px;border-top:1px solid var(--bd)}
+@media (prefers-reduced-motion:reduce){.body,.chev{transition:none}}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.ans{font-size:13px;line-height:18px}.meta{font-size:12px;line-height:16px;color:var(--mf)}.meta u{text-underline-offset:2px}
+.opts{display:grid;gap:4px}.opt{display:flex;gap:8px;align-items:center;border:1px solid var(--bd);border-radius:8px;padding:6px 10px;min-height:36px;font-size:13px}.opt i{width:14px;height:14px;border:1.5px solid var(--mf);border-radius:50%;flex:none}
+.btn{justify-self:start;min-height:36px;padding:0 14px;border-radius:8px;border:0;background:var(--fg);color:var(--surface);font:inherit;font-size:13px;font-weight:500}
+.wl{border-radius:8px;background:color-mix(in oklch,var(--warn) 14%,transparent);padding:6px 10px;font-size:12px;line-height:16px}
+.p .lg,.p .lbl{display:none}.from{flex:none;font-size:12px;color:var(--mf)}.p .from{display:none}
+</style></head><body class="A"><h1>Direction A · one-row header button, question first</h1>
+<p class="sub">The card header is the control. Folded = header only: state icon, question, chosen-answer chip, time, chevron. Expand keeps the header where it is and opens the body under it. Tokens copied from <code>packages/ui/styles/tokens.css</code> (light). Try it: click a folded row.</p>
+<div class="notes"><div><b>Fold rule (D9 = A)</b>Folds on picked_up, withdrawn, disclaimed. Open and not_picked_up stay expanded. DM request cards and issue decision cards fold the same way.</div><div><b>Row = one button</b>min-height 36px, aria-expanded, state word is screen-reader text. Click or Enter expands. The answer draft and form stay mounted, hidden with inert.</div><div><b>Motion</b>Height + opacity, 200 ms ease-out. prefers-reduced-motion: none. Done at page load: renders folded, no animation. Expand state is not saved.</div></div>
+<div class="cols" id="app"></div>
+<script>
+const V='A';
+const P={q:'<path d="M14 14a2 2 0 0 0 2-2V8h-2"/><path d="M8 14a2 2 0 0 0 2-2V8H8"/><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',ok:'<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',ban:'<circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/>',un:'<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11"/>',clk:'<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',cv:'<path d="m6 9 6 6 6-6"/>'};
+const I=(p,c='')=>`<svg class="ic ${c}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[p]}</svg>`;
+const S={open:{l:'Open',i:'q',c:'wn'},picked_up:{l:'Picked up',i:'ok',c:'ok'},withdrawn:{l:'Withdrawn',i:'ban',c:'mu'},disclaimed:{l:'Disclaimed',i:'un',c:'mu'},not_picked_up:{l:'Not picked up',i:'clk',c:'wn'}};
+const D={open:{q:'Ship the new sidebar behind a flag?',ask:'The sidebar change is ready. Ship it to staff first, or to everyone?',o:['Flag on for staff only','Ship to everyone','Wait for the review']},
+picked_up:{q:'Which Gantt arrow style?',ask:'Two prototypes are on the canvas. Pick the arrow style for the Gantt view.',n:1,a:'Arrows over bars',d:'7 Nov',t:'14:02',by:'x99-codex-terra'},
+withdrawn:{q:'Deploy window for the proxy?',ask:'Pick a window for the proxy deploy.',r:'Superseded: the window moved to Monday.',d:'7 Nov',t:'13:40'},
+disclaimed:{q:'Rename the Defaults section?',ask:'Keep the name Defaults, or rename it to Settings?',n:2,a:'Keep “Defaults”',d:'6 Nov',t:'17:15'},
+not_picked_up:{q:'Archive the old design topics?',ask:'Archive every topic folder older than 30 days?',n:1,a:'Archive all',d:'7 Nov',t:'14:31'}};
+let k=0;
+const tm=d=>`<time><span class="lg">${d.d} </span>${d.t} ICT</time>`;
+const chipT=(s,d)=>s==='withdrawn'?'No answer':`Option ${d.n} · ${d.a}`;
+const chipH=(s,d)=>s==='withdrawn'?'No answer':`Option ${d.n}<span class="lbl"> · ${d.a}</span>`;
+function body(s){const d=D[s];let h=`<p>${d.ask}</p>`;
+if(s==='open')h+=`<div class="opts">${d.o.map((o,i)=>`<div class="opt"><i></i>Option ${i+1} · ${o}</div>`).join('')}</div><button class="btn" type="button">Send answer</button>`;
+if(s==='picked_up')h+=`<p class="ans">Your answer: <b>${chipT(s,d)}</b></p><p class="meta">Picked up by <u>${d.by}</u> · ${d.d} 2026 ${d.t} ICT</p>`;
+if(s==='withdrawn')h+=`<p class="wl"><b>Withdrawn by the agent.</b> ${d.r}</p>`;
+if(s==='disclaimed')h+=`<p class="ans mu"><s>${chipT(s,d)}</s></p><p class="meta">Disclaimed: you took this answer back · ${d.d} 2026 ${d.t} ICT</p>`;
+if(s==='not_picked_up')h+=`<p class="ans">Your answer: <b>${chipT(s,d)}</b></p><p class="wl">No run started after the answer was recorded.</p>`;
+return h}
+function card(s,o={}){const d=D[s],m=S[s],id='b'+(++k),fold=!['open','not_picked_up'].includes(s),exp=!fold||!!o.x;
+let hd;
+if(!fold){hd=`<div class="hd">${I(m.i,m.c)}<span class="q">${d.q}</span>${s==='open'?'<span class="from">from x99-claude-sonnet-design</span>':`<span class="chip">${chipH(s,d)}</span>`}<span class="pill ${m.c}">${m.l}</span></div>`}
+else{hd=`<button class="hd${o.f?' fc':''}" type="button" aria-expanded="${exp}" aria-controls="${id}">${I(m.i,m.c)}<span class="sr">${m.l}: </span><span class="q">${d.q}</span><span class="chip${s==='disclaimed'?' dis':''}">${chipH(s,d)}</span>${tm(d)}${I('cv','chev')}</button>`}
+return `<section class="card${exp?' x':''}" aria-label="${d.q}" data-state="${s}">${hd}<div class="body" id="${id}"${exp?'':' inert'}><div><div class="bi">${body(s)}</div></div></div></section>`}
+const cap=t=>`<div class="cap">${t}</div>`;
+const sec=(t,c,n,items)=>`<section class="sec${n?' n':''}" aria-label="${t}"><h4>${t}${c}</h4>${items}</section>`;
+function col(w,lab){return `<div class="col ${w}"><h2>${lab}</h2><div class="pn"><h3>Direct message with x99-claude-sonnet-design</h3><div class="dm">`+
+cap('1 · Open')+card('open')+cap('2 · Picked up, folded (keyboard focus shown)')+card('picked_up',{f:1})+cap('3 · Withdrawn, folded')+card('withdrawn')+cap('4 · Disclaimed, folded')+card('disclaimed')+cap('5 · Not picked up, stays expanded')+card('not_picked_up')+cap('6 · Picked up, folded then expanded by click')+card('picked_up',{x:1})+
+`</div></div><div class="pn"><h3>Issue page banner</h3>`+
+cap('7 · Mixed: one open, three answered and folded')+sec('Decision needed','<span class="cnt">1 open</span>',0,card('open')+card('picked_up')+card('withdrawn')+card('disclaimed'))+
+cap('8 · All answered: neutral frame, no warning colour (new copy)')+sec('Decisions','<span class="cnt m">2 answered</span>',1,card('picked_up')+card('not_picked_up'))+
+cap('9 · Banner, folded then expanded by click')+sec('Decisions','<span class="cnt m">1 answered</span>',1,card('disclaimed',{x:1}))+`</div></div>`}
+document.getElementById('app').innerHTML=col('d','Desktop · 780')+col('p','Phone · 390');
+document.addEventListener('click',e=>{const b=e.target.closest('button.hd');if(!b)return;const c=b.closest('.card'),x=c.classList.toggle('x');b.setAttribute('aria-expanded',x);c.querySelector('.body').toggleAttribute('inert',!x)});
+</script></body></html>
