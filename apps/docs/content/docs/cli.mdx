@@ -451,6 +451,10 @@ multica decision propose <action-type> --version 1 --issue MUL-123 --params-file
 
 `--version` and `--issue` are required. `--param k=v` sends a string and `--param k:=<json>` sends raw JSON; `--params-file` takes one JSON object and cannot be combined with `--param`. The command prints the approve-card link. A refusal shows the server's status and error code. `multica issue budget raise` and `multica issue budget top-up` use the same route under a task token (add `--for <user-id>`); with a personal access token they open the spend request as before.
 
+### Covered fields need a passkey action
+
+A task token or cloud-node token cannot write these fields through the older routes: `agent.instructions`, `squad.instructions`, `workspace.context`, workflow steps and step instructions, and the workspace settings keys on the decision-action allow table (`compact_prompt`, `auto_compact`, `idle_started_guard`, `wakeups_paused`, `mermaid_orientation` and the other plain operational keys). The server answers 403 with `code: passkey_action_required` and an `action_type` naming the action to propose instead (`agent.instructions.set`, `squad.instructions.set`, `workspace.context.set`, `workflow.steps.set`, `workspace.settings.patch`). The stored value does not change. A vote receipt, a decision binding, a PASS receipt and the Hermes exception no longer lift this refusal. Propose the action with `multica decision propose <action-type>`; a person approves it with a passkey. Writes by a person, and `project.description`, work as before.
+
 ## IDs and output formats
 
 Issues use keys like `MUL-123` or full UUIDs; short UUID prefixes are not accepted.

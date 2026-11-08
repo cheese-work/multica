@@ -69,10 +69,15 @@ func (f decisionWriteFixture) used(t *testing.T) int {
 // next, and runs fn.
 func eachDecisionCase(t *testing.T, initial, next string, fn func(t *testing.T, tg ownerCASTarget, f decisionWriteFixture, id string)) {
 	t.Helper()
+	eachDecisionCaseOf(t, agentWriteTargets(), initial, next, fn)
+}
+
+func eachDecisionCaseOf(t *testing.T, targets []ownerCASTarget, initial, next string, fn func(t *testing.T, tg ownerCASTarget, f decisionWriteFixture, id string)) {
+	t.Helper()
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	for _, tg := range voteTargets() {
+	for _, tg := range targets {
 		t.Run(tg.name, func(t *testing.T) {
 			id := tg.seed(t, initial)
 			fn(t, tg, newDecisionWriteFixture(t, tg.name, testDigest(initial), testDigest(next)), id)

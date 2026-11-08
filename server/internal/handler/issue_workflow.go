@@ -598,6 +598,9 @@ func (h *Handler) CreateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	if req.Steps != nil && refuseMachineWorkflowWrite(w, r) {
+		return
+	}
 	maxRuns, includeChildPRs, ruleMsg := runRuleParams(req)
 	if ruleMsg != "" {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", ruleMsg)
@@ -815,7 +818,7 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", ruleMsg)
 		return
 	}
-	if refuseUnboundMachineWrite(w, r, req.DecisionBindingFields) {
+	if refuseMachineWorkflowWrite(w, r) {
 		return
 	}
 	machine := isMachineCredentialActor(r)
@@ -1380,7 +1383,7 @@ func (h *Handler) SetIssueWorkflowHandoff(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if refuseUnboundMachineWrite(w, r, req.DecisionBindingFields) {
+	if refuseMachineWorkflowWrite(w, r) {
 		return
 	}
 	machine := isMachineCredentialActor(r)

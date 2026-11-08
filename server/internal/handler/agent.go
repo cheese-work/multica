@@ -1555,7 +1555,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	// decoding — a plain rawFields[...] map lookup here would reintroduce
 	// the exact case-variant bypass this file's other fix already closed.
 	actorType, _ := h.resolveActor(r, ownerID, workspaceID)
-	if rejectGovernedFieldForAgentActor(w, r, actorType, rawFieldsHasKeyFold(rawFields, "instructions"), "instructions") {
+	if refuseMachineCoveredWrite(w, r, actorType, rawFieldsHasKeyFold(rawFields, "instructions"), agentInstructionsAction) {
 		return
 	}
 
@@ -2156,13 +2156,15 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	workspaceID := uuidToString(existing.WorkspaceID)
 	actorType, actorID := h.resolveActor(r, requestUserID(r), workspaceID)
 
-	// CHE-1862: an agent write backed by a vote receipt skips the denial below.
-	if voteEntered(actorType, req.Instructions != nil, rawFields) {
-		h.ownerCASUpdateAgent(w, r, existing, actorType, actorID, rawFields)
+	// CHE-3482: a machine identity needs a passkey-approved action; this runs
+	// before the vote-receipt entry below.
+	if refuseMachineCoveredWrite(w, r, actorType, req.Instructions != nil, agentInstructionsAction) {
 		return
 	}
 
-	if rejectGovernedFieldForAgentActor(w, r, actorType, req.Instructions != nil, "instructions") {
+	// CHE-1862: the vote receipt entry; only a human reaches it.
+	if voteEntered(actorType, req.Instructions != nil, rawFields) {
+		h.ownerCASUpdateAgent(w, r, existing, actorType, actorID, rawFields)
 		return
 	}
 

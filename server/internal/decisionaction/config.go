@@ -71,6 +71,9 @@ var settingsKeys = []string{
 	"agent_comment_wake_policy_enabled", "mermaid_orientation",
 }
 
+// SettingsKeys lists the allow table keys.
+func SettingsKeys() []string { return slices.Clone(settingsKeys) }
+
 // CheckConfigChange refuses, with CodeDenylisted, a field outside the allow
 // list, a settings patch that names no key or any key outside the allow table,
 // and keys on any other field. It runs at request and again at approval.
