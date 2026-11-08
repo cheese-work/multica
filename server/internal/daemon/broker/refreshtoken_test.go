@@ -168,44 +168,86 @@ func TestRefreshRevokeFailureAlerts(t *testing.T) {
 	}
 }
 
-func TestCachedReadToken(t *testing.T) {
+func TestCurrentReadToken(t *testing.T) {
 	t.Parallel()
 	r, f, _ := readRig(t, nil)
-	cache := filepath.Join(t.TempDir(), "read-token")
 	ctx := context.Background()
-	a, err := CachedReadToken(ctx, r.socket, cache, 10*time.Minute)
-	if err != nil {
-		t.Fatal(err)
+	a, err := CurrentReadToken(ctx, r.socket)
+	if err != nil || !f.isLive(a) {
+		t.Fatalf("first call must mint a live token: %v", err)
 	}
-	if fi, err := os.Stat(cache); err != nil || fi.Mode().Perm() != 0o600 {
-		t.Fatalf("cache %v %v, want mode 0600", fi, err)
-	}
-	if b, err := CachedReadToken(ctx, r.socket, cache, 10*time.Minute); err != nil || b != a || len(f.minted) != 1 {
+	if b, err := CurrentReadToken(ctx, r.socket); err != nil || b != a || len(f.minted) != 1 {
 		t.Fatalf("a fresh token must be reused: %v, minted %d", err, len(f.minted))
-	}
-	// Near expiry: within the margin, the token is refreshed and the old one dies.
-	n, err := CachedReadToken(ctx, r.socket, cache, 2*time.Hour)
-	if err != nil || n == a || len(f.minted) != 2 {
-		t.Fatalf("expiring token must be refreshed: %v, minted %d", err, len(f.minted))
-	}
-	if f.isLive(a) || !f.isLive(n) {
-		t.Fatal("refresh through the cache must revoke the previous token")
-	}
-	if c, err := CachedReadToken(ctx, r.socket, cache, 10*time.Minute); err != nil || c != n {
-		t.Fatalf("cache must hold the new token: %v", err)
 	}
 }
 
-func TestCachedReadTokenGarbageCache(t *testing.T) {
+// Within the margin, the broker replaces the token and revokes the old one.
+func TestCurrentReadTokenRefreshesNearExpiry(t *testing.T) {
 	t.Parallel()
-	r, f, _ := readRig(t, nil)
-	cache := filepath.Join(t.TempDir(), "read-token")
-	if err := os.WriteFile(cache, []byte("not json"), 0o600); err != nil {
+	r, f, _ := readRig(t, func(p *Pin) { p.Tokens.ReadMargin = 2 * time.Hour })
+	ctx := context.Background()
+	a, err := CurrentReadToken(ctx, r.socket)
+	if err != nil {
 		t.Fatal(err)
 	}
-	tok, err := CachedReadToken(context.Background(), r.socket, cache, time.Minute)
-	if err != nil || !f.isLive(tok) {
-		t.Fatalf("a corrupt cache must be replaced: %v", err)
+	n, err := CurrentReadToken(ctx, r.socket)
+	if err != nil || n == a || len(f.minted) != 2 {
+		t.Fatalf("an expiring token must be refreshed: %v, minted %d", err, len(f.minted))
+	}
+	if f.isLive(a) || !f.isLive(n) {
+		t.Fatal("the refresh must revoke the previous token")
+	}
+	if f.liveCount() != 1 {
+		t.Fatalf("live %d, want 1", f.liveCount())
+	}
+}
+
+// Plan 3.9: no token value is written to disk. The client keeps nothing.
+func TestCurrentReadTokenWritesNoFile(t *testing.T) {
+	r, _, _ := readRig(t, nil)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Chdir(home)
+	if _, err := CurrentReadToken(context.Background(), r.socket); err != nil {
+		t.Fatal(err)
+	}
+	if ents, _ := os.ReadDir(home); len(ents) != 0 {
+		t.Fatalf("the client wrote %d entries under HOME", len(ents))
+	}
+}
+
+// A revoke that outlives its retries stays tracked, so Close tries once more.
+func TestRefreshRevokeGaveUpRetriedAtClose(t *testing.T) {
+	t.Parallel()
+	got := make(chan Alert, 4)
+	r, f, b := readRig(t, func(p *Pin) {
+		p.Tokens.RetryFor = 30 * time.Millisecond
+		p.Tokens.Alert = func(a Alert) { got <- a }
+	})
+	a, err := GetReadToken(context.Background(), r.socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.failRevoke = -1
+	f.mu.Unlock()
+	if _, err := RefreshReadToken(context.Background(), r.socket, a.Token); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-got:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no alert after the retries ran out")
+	}
+	if !f.isLive(a.Token) {
+		t.Fatal("setup: the previous token should still be live")
+	}
+	f.mu.Lock()
+	f.failRevoke = 0 // GitHub recovers before the run ends
+	f.mu.Unlock()
+	b.Close()
+	if f.isLive(a.Token) || f.liveCount() != 0 {
+		t.Fatalf("Close left a token live (previous live: %v, total %d)", f.isLive(a.Token), f.liveCount())
 	}
 }
 
@@ -236,5 +278,60 @@ func TestWriteGHShim(t *testing.T) {
 		if _, err := WriteGHShim(dir, bad, fakeMultica); err == nil {
 			t.Fatalf("accepted path %q", bad)
 		}
+	}
+}
+
+// Helper process: stands in for `multica git read-token` inside the fake run.
+func TestHelperReadToken(t *testing.T) {
+	if os.Getenv("BROKER_TEST_HELPER") != "1" {
+		t.Skip("helper process")
+	}
+	tok, err := CurrentReadToken(context.Background(), os.Getenv(SocketEnv))
+	if err != nil {
+		os.Stderr.WriteString(err.Error() + "\n")
+		os.Exit(1)
+	}
+	os.Stdout.WriteString(tok + "\n")
+	os.Exit(0)
+}
+
+// A fake agent runs `gh` through the installed shims. The real gh stand-in
+// sees only the broker's token; a refresh between two calls revokes the first.
+func TestFakeAgentRunUsesGHShim(t *testing.T) {
+	// Not parallel: scripts are written just before they are run.
+	r, f, b := readRig(t, func(p *Pin) { p.Tokens.ReadMargin = 2 * time.Hour })
+	dir := t.TempDir()
+	multica := filepath.Join(dir, "multica")
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(multica, []byte("#!/bin/sh\n[ \"$1 $2\" = \"git read-token\" ] || exit 9\nBROKER_TEST_HELPER=1 exec '"+self+"' -test.run='^TestHelperReadToken$'\n"), 0o755)
+	realGH := filepath.Join(dir, "realgh")
+	os.WriteFile(realGH, []byte("#!/bin/sh\necho \"$GH_TOKEN\"\n"), 0o755)
+	realGit := filepath.Join(dir, "realgit")
+	os.WriteFile(realGit, []byte("#!/bin/sh\nexit 0\n"), 0o755)
+	shims := t.TempDir()
+	if err := InstallShims(shims, realGit, realGH, multica); err != nil {
+		t.Fatalf("InstallShims: %v", err)
+	}
+	agent := filepath.Join(dir, "agent")
+	os.WriteFile(agent, []byte("#!/bin/sh\ngh pr view 1\ngh pr view 2\n"), 0o755)
+	cmd := exec.Command(agent)
+	cmd.Env = []string{"PATH=" + shims + ":/usr/bin:/bin", SocketEnv + "=" + r.socket, "HOME=" + t.TempDir(), "GH_TOKEN=ambient", "GITHUB_TOKEN=ambient"}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("agent: %v\n%s", err, out)
+	}
+	seen := strings.Fields(string(out))
+	if len(seen) != 2 || seen[0] == seen[1] || strings.Contains(string(out), "ambient") {
+		t.Fatalf("gh saw tokens %q: want two broker tokens, never the ambient one", seen)
+	}
+	if f.isLive(seen[0]) || !f.isLive(seen[1]) {
+		t.Fatal("the first token must be revoked by the refresh, the second live")
+	}
+	b.Close()
+	if f.liveCount() != 0 {
+		t.Fatalf("live %d after run end", f.liveCount())
 	}
 }

@@ -234,45 +234,11 @@ func headRef(repoDir string) (string, error) {
 // staleTokenHeader carries the hash prefix of the token being replaced.
 const staleTokenHeader = "X-Multica-Stale-Token"
 
-// CachedReadToken is what the `gh` shim calls before each gh command. It keeps
-// the run's token in cache (mode 0600, under the per-run HOME) and returns it
-// while it has more than margin left; past that it refreshes through the
-// broker, which revokes the old token. An unreadable cache is replaced.
-func CachedReadToken(ctx context.Context, socket, cache string, margin time.Duration) (string, error) {
-	var have ReadToken
-	if b, err := os.ReadFile(cache); err == nil {
-		if json.Unmarshal(b, &have) != nil {
-			have = ReadToken{}
-		}
-	}
-	if have.Token != "" && time.Until(have.ExpiresAt) > margin {
-		return have.Token, nil
-	}
-	next, err := RefreshReadToken(ctx, socket, have.Token)
-	if err != nil {
-		return "", err
-	}
-	b, err := json.Marshal(next)
-	if err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(filepath.Dir(cache), 0o700); err != nil {
-		return "", err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(cache), ".read-token-*") // mode 0600
-	if err != nil {
-		return "", err
-	}
-	defer os.Remove(tmp.Name())
-	_, werr := tmp.Write(b)
-	if cerr := tmp.Close(); werr == nil {
-		werr = cerr
-	}
-	if werr != nil {
-		return "", werr
-	}
-	if err := os.Rename(tmp.Name(), cache); err != nil {
-		return "", err
-	}
-	return next.Token, nil
+// CurrentReadToken is what the `gh` shim calls before each gh command. The
+// broker keeps the run's token in its own memory and replaces it when it nears
+// expiry, revoking the old one. The client keeps nothing, so no token value is
+// written to disk (plan 3.9).
+func CurrentReadToken(ctx context.Context, socket string) (string, error) {
+	t, err := readToken(ctx, socket, "/readtoken/current", "")
+	return t.Token, err
 }

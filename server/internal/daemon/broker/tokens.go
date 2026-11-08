@@ -40,6 +40,8 @@ type Tokens struct {
 	RetryBase, RetryFor time.Duration
 	// RevokeTimeout bounds one revoke call; zero means 15s.
 	RevokeTimeout time.Duration
+	// ReadMargin is how close to expiry the run's read token is replaced; zero means 10 minutes.
+	ReadMargin time.Duration
 }
 
 // Alert says which token may still be live and until when. TokenSHA256 is a
@@ -155,6 +157,7 @@ func (b *Broker) dropOnce(t *Tokens, g grant) error {
 	defer cancel()
 	err := t.drop(ctx, g)
 	if err == nil {
+		b.settle(g)
 		b.log.Info("broker token revoked", "repo", b.pin.Repo, "token", g.id())
 	}
 	return err
@@ -173,6 +176,7 @@ func (b *Broker) retryRevoke(t *Tokens, g grant, err error) {
 			wait = min(wait*2, 30*time.Second)
 		case <-giveUp.C:
 			b.alert(t, g, err)
+			b.markGaveUp(g) // still tracked: Close tries once more
 			return
 		case <-b.bg.Done(): // one last try before the broker goes away
 			if err = b.dropOnce(t, g); err != nil {
@@ -239,6 +243,28 @@ func (b *Broker) handleReadToken(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(ReadToken{Token: g.token, ExpiresAt: g.expires})
 }
 
+// staleRead is a replaced read token that GitHub may still accept. It stays
+// tracked until a revoke succeeds. Its own retry goroutine owns it until that
+// goroutine gives up; from then on Close owns the last attempt.
+type staleRead struct {
+	g      grant
+	gaveUp bool
+}
+
+func (b *Broker) settle(g grant) {
+	b.rdmu.Lock()
+	delete(b.unrevoked, g.id())
+	b.rdmu.Unlock()
+}
+
+func (b *Broker) markGaveUp(g grant) {
+	b.rdmu.Lock()
+	if s := b.unrevoked[g.id()]; s != nil {
+		s.gaveUp = true
+	}
+	b.rdmu.Unlock()
+}
+
 // handleReadRefresh replaces the read token named in staleTokenHeader (plan
 // 3.9: revoked on every refresh of the previous token). The new token is
 // minted first, so a failed mint leaves the old one working; the old one is
@@ -252,7 +278,31 @@ func (b *Broker) handleReadRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	b.refmu.Lock()
 	defer b.refmu.Unlock()
-	stale := r.Header.Get(staleTokenHeader)
+	b.refreshRead(w, r, r.Header.Get(staleTokenHeader))
+}
+
+// handleReadCurrent hands the run its read token and keeps it in the broker's
+// memory only (plan 3.9: no token value on disk). The token is reused until it
+// is within ReadMargin of expiry; then it is replaced and the old one revoked.
+func (b *Broker) handleReadCurrent(w http.ResponseWriter, r *http.Request) {
+	if !b.readTokenAllowed(w) {
+		return
+	}
+	b.refmu.Lock()
+	defer b.refmu.Unlock()
+	stale := ""
+	if g, ok := b.newestRead(); ok {
+		if time.Until(g.expires) > or(b.pin.Tokens.ReadMargin, 10*time.Minute) {
+			_ = json.NewEncoder(w).Encode(ReadToken{Token: g.token, ExpiresAt: g.expires})
+			return
+		}
+		stale = g.id()
+	}
+	b.refreshRead(w, r, stale)
+}
+
+// refreshRead mints a replacement and revokes stale. The caller holds refmu.
+func (b *Broker) refreshRead(w http.ResponseWriter, r *http.Request, stale string) {
 	idx := b.readIndex(stale)
 	if stale != "" && idx < 0 {
 		if g, ok := b.newestRead(); ok { // another caller already replaced it
@@ -280,6 +330,10 @@ func (b *Broker) handleReadRefresh(w http.ResponseWriter, r *http.Request) {
 		o := b.reads[i]
 		old = &o
 		b.reads = append(b.reads[:i], b.reads[i+1:]...)
+		if b.unrevoked == nil { // tracked until a revoke succeeds, so Close can retry it
+			b.unrevoked = map[string]*staleRead{}
+		}
+		b.unrevoked[o.id()] = &staleRead{g: o}
 	}
 	b.reads = append(b.reads, g)
 	b.rdmu.Unlock()
@@ -335,6 +389,11 @@ func (b *Broker) revokeReads() {
 	b.rdmu.Lock()
 	reads := b.reads
 	b.reads = nil
+	for _, s := range b.unrevoked { // retries that ran out: one last try each
+		if s.gaveUp {
+			reads = append(reads, s.g)
+		}
+	}
 	b.rdmu.Unlock()
 	var wg sync.WaitGroup
 	for _, g := range reads {
