@@ -62,8 +62,11 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ~/.cache/go-build
-          key: ${{ steps.gocache.outputs.prefix }}${{ github.sha }}
-          restore-keys: ${{ steps.gocache.outputs.prefix }}
+          key: ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-
+            ${{ steps.gocache.outputs.prefix }}refs/heads/main-${{ hashFiles('server/go.sum') }}-
+            ${{ steps.gocache.outputs.prefix }}
       - name: Mark Go build cache epoch
         id: goepoch
         run: touch -d '-1 hour' "$RUNNER_TEMP/go-build-epoch"
@@ -80,7 +83,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ~/.cache/go-build
-          key: ${{ steps.gocache.outputs.prefix }}${{ github.sha }}
+          key: ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   push-turbo-cache-warm:
     needs: merge-group
@@ -105,8 +108,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .turbo/cache
-          key: turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.sha }}
+          key: turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
+            turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-
+            turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-refs/heads/main-${{ hashFiles('pnpm-lock.yaml') }}-
             turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-
       - name: Warm build, type check, and lint cache
         run: pnpm exec turbo build typecheck lint --concurrency=2 --filter='!@multica/docs' --filter='!@multica/mobile'
@@ -117,7 +122,7 @@ jobs:
   # holding one file named `multica`. Delete this job once every host runs a
   # server-only build.
   daemon-artifact:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER_DAEMON_ARTIFACT || 'ubuntu-24.04' }}
     strategy:
       fail-fast: false
       matrix:

@@ -273,6 +273,8 @@ multica runtime profile create --display-name "内部 Claude 封装" \
 
 删除仍绑定活跃智能体的运行时时，命令默认拒绝。`multica runtime delete <id> --cascade` 会解绑这些智能体、保留其配置与历史记录，并取消它们的活动运行。
 
+`multica runtime breaker list` 显示各服务商的熔断器，`multica runtime breaker reset <provider>` 强制关闭熔断器（仅所有者或管理员）。参见[服务商熔断器](/daemon-runtimes#provider-breaker)。
+
 运行机制和自定义 profile 见[守护进程与运行时](/daemon-runtimes)。
 
 ## 项目、工作区和自动化
@@ -293,6 +295,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 
 - `--lead` 接受成员或智能体的名称。`--default-branch-hint` 只告诉智能体仓库的默认分支，不会切换分支。
 - 工作区的 `--context` 会提供给工作区里的每个智能体。`--slug` 创建后不能修改；`--issue-prefix` 会转成大写，修改它会给所有现有任务重新编号，外部引用里的旧编号随之失效。
+- `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]` 指定接手纯路由工作流步骤的智能体（默认为 `todo`、`blocked`、`merged`、`need_decision`；用 `--routing-statuses` 修改，用 `--routing-overrides todo=<agent-id>` 把某个状态交给另一个智能体）。该智能体被归档，或其运行因提供商错误失败时，由备用智能体接手。覆盖键写成 `<workflow-id>:<status>` 时，只对该工作流生效。`none` 表示关闭该项。只有人类所有者或管理员可以修改，每次修改都会记入活动日志。
 - `--issue-title-template` 只替换 `{{date}}`（UTC，`YYYY-MM-DD`），其他 `{{...}}` 会被拒绝。定时触发器的 `--timezone` 默认 UTC。
 
 ## 命令概览
@@ -300,7 +303,8 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 | 命令 | 用途 |
 | --- | --- |
 | `issue` | 创建、更新、分配和搜索任务；管理评论、订阅、标签、属性、唤醒、时间线与执行记录 |
-| `project` | 管理项目及其资源 |
+| `project` | 管理项目、项目资源和项目使用的工作流 |
+| `workflow` | 管理工作流：状态以及每个状态交给谁处理 |
 | `label`、`property` | 管理工作区标签和自定义属性 |
 | `agent`、`skill`、`squad` | 管理智能体、skill 和小队 |
 | `autopilot` | 管理自动化、触发器和运行历史 |
@@ -361,7 +365,7 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 
 | 命令 | 子命令 | 用途 | 关键 flag |
 | --- | --- | --- | --- |
-| `issue` | `list` | 列出任务 | `--status`、`--priority`、`--assignee`、`--project`、`--metadata`（可重复）、`--property`（可重复，`"名称=值"` 或 `"Score>=3"`、`"Due<2026-01-01"`、`"Notes~=text"` 这样的比较；`__none__` 匹配未设置）、`--limit`、`--offset`、`--sort`（支持 `property:<名称或 id>`）、`--full-id`、`--fields`（仅 JSON；逗号分隔，只输出这些字段）、`--resolve-properties`（仅 JSON；在保存的 id 旁附上属性、选项和成员名称） |
+| `issue` | `list` | 列出任务 | `--status`、`--priority`、`--assignee`、`--project`、`--metadata`（可重复）、`--property`（可重复，`"名称=值"` 或 `"Score>=3"`、`"Due<2026-01-01"`、`"Notes~=text"` 这样的比较；`__none__` 匹配未设置）、`--limit`、`--offset`、`--sort`（支持 `effective_due`：有日期的任务按继承的最早截止日期排在前；以及 `property:<名称或 id>`）、`--full-id`、`--fields`（仅 JSON；逗号分隔，只输出这些字段）、`--resolve-properties`（仅 JSON；在保存的 id 旁附上属性、选项和成员名称） |
 | | `get <id>` | 查看单个任务 | `--resolve-properties`（仅 JSON；在保存的 id 旁附上属性、选项和成员名称） |
 | | `create` | 创建任务 | `--title`（必填）、`--description` / `--description-stdin` / `--description-file`、`--status`、`--priority`、`--assignee`、`--parent`、`--stage`、`--project`、`--start-date`、`--due-date`、`--attachment`（可重复）、`--property`（可重复）、`--allow-duplicate`（已有同名未关闭任务时仍创建） |
 | | `update <id>` | 更新任务字段 | 与 `create` 同类字段，另有 `--position`、`--no-start`、`--duplicate-of` |
@@ -386,6 +390,9 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | `project` | `list/get/create/update/delete` | 管理项目 | `create`：`--title`（必填）、`--lead`、`--status`、`--icon`、`--start-date`、`--due-date`、`--repo`（可重复） |
 | | `status <id> <status>` | 修改项目状态 | |
 | | `resource list/add/update/remove` | 管理项目附加资源 | `--type`、`--url`、`--default-branch-hint`、`--ref`、`--local-path`、`--daemon-id`、`--execution-mode`（本地目录的 `in_place` / `worktree`） |
+| | `workflow get/set <project-id>` | 查看项目当前生效的工作流，或切换工作流 | `set <project-id> <workflow\|default>`：`--map old=new`（可重复），`--dry-run` 打印状态迁移计划；切换不会重新分配任务，也不会启动运行。仅管理员和项目负责人可操作 |
+| `workflow` | `list/get/create/update/delete` | 管理工作流；`get` 等命令接受 ID、ID 前缀、完整名称或 `default` | `create` / `update`：`--name`、`--description`、`--steps-file`（步骤的 JSON 数组，整体替换）；`update`：`--map old=new`（可重复）、`--dry-run`。编辑和删除仅限工作流所有者和工作区管理员；仍被项目使用的工作流不能删除 |
+| | `handoff set <workflow> <status-key>` | 设置单个步骤的处理人、说明和下一步/退回状态，未指定的字段保持不变 | `--handler`（`none`、`project_lead`、`creator`，或成员/智能体/小队的名称或 UUID）、`--instructions` / `--instructions-file`、`--next`、`--back`、`--copy-for-project` |
 | `label` | `list/get/create/update/delete` | 管理工作区标签 | `list`：`--resource-type`（`issue` 或 `skill`）、`--full-id`；`create`：`--name`、`--color`、`--resource-type`（`issue` 或 `skill`）、`--description` |
 | `property` | `list/get/create/update/archive/unarchive` | 管理工作区自定义属性 | `create`：`--name`、`--type`（`text`、`number`、`select`、`multi_select`、`date`、`checkbox`、`url`、`actor`、`multi_actor`、`multi_text`、`multi_url`）、`--option`（可重复，仅 select 类型）；`list`：`--include-archived`；类型创建后不可修改 |
 | `agent` | `list/get/create/update/archive/restore` | 管理智能体 | `--name`、`--runtime-id`（`create` 必填）、`--instructions`、`--conversation-starters`、`--model`、`--thinking-level`、`--custom-env` / `--custom-env-file` / `--custom-env-stdin`（仅 `create`）、`--custom-args`、`--mcp-config` / `--mcp-config-file` / `--mcp-config-stdin`、`--permission-mode`、`--visibility`（旧写法）、`--max-concurrent-tasks` |
@@ -399,6 +406,7 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | | `trigger <id>` | 手动触发一次 | |
 | | `runs <id>` | 查看运行历史 | |
 | | `trigger-add/trigger-update/trigger-delete/trigger-rotate-url` | 管理定时和 webhook 触发器 | `trigger-add`：`--kind`（`schedule` 或 `webhook`）、`--cron`、`--timezone`（默认 UTC）、`--label` |
+| `workflow` | `lint [<id>]` | 检查工作流的步骤、边、处理者和指令。输出表格，加 `--output json` 输出 JSON。存在未豁免的错误时退出码非 0 | `--all`（工作区内所有工作流；与 id 二选一）、`--output`（`table` 或 `json`） |
 | `workspace` | `list/get/create/update/switch` | 管理工作区；`switch` 设置当前 profile 的默认工作区 | `create`：`--name`、`--slug`（均必填）、`--issue-prefix`、`--description`、`--context` / `--context-stdin`；`update` 可改除 slug 外的同类字段 |
 | | `mcp list/add/update/remove` | 管理工作区的 MCP 服务库 | 写操作需要 owner/admin。这里添加的服务不会分配给任何 agent——用 `multica agent mcp add` 分配给某个 agent。`list` 只列出名称与 transport；存储的条目是只写的，任何角色都读不回。`--server-config-file` / `--server-config-stdin` 避免 token 进入 shell 历史 |
 | | `member list/invite <email>` | 查看成员、发出邀请 | `invite`：`--role`（member 或 admin，默认 member） |
@@ -425,6 +433,7 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | `runtime` | `list/usage/activity/update/rename/delete` | 查看和管理运行时 | `usage`：`--days`（默认 90，最多 365）；`update`：`--target-version`（必填）、`--wait`；`delete`：`--cascade`（解绑绑定的智能体、保留其数据并取消其运行） |
 | | `profile list/create/update/delete` | 管理自定义运行时 profile | `create`：`--display-name`、`--command-name`（均必填）、`--runtime-type`（或旧的 `--protocol-family`）、`--description`；`update`：`--enabled` |
 | | `profile set-path/unset-path <profile-id>` | 固定本机可执行文件路径（仅本地生效，不上传服务器） | |
+| | `breaker list/reset <provider>` | 查看或强制关闭服务商熔断器 | `reset`：仅工作区所有者或管理员 |
 
 ### Additional
 
@@ -438,6 +447,18 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | `config` | `show`、`set <key> <value>` | 查看或修改当前 profile 的本地配置 | 优先级：命令行 flag > 环境变量 > `config.json` > 内置默认；设为空串可清除 |
 | `update` | — | 更新 CLI 到最新版本 | |
 | `version` | — | 查看版本信息 | `--output`（`text` 或 `json`） |
+
+### 决策提案
+
+任务令牌可以提出一个受管控的操作，由人用通行密钥批准。提案本身不会更改任何内容。
+
+```bash
+multica decision propose issue.run_budget.raise --version 1 --issue MUL-123 \
+  --for <user-id> --param window_id=<id> --param new_cap:=40 [--reason "..."]
+multica decision propose <action-type> --version 1 --issue MUL-123 --params-file ./params.json
+```
+
+`--version` 和 `--issue` 为必填。`--param k=v` 发送字符串，`--param k:=<json>` 发送原始 JSON；`--params-file` 接收一个 JSON 对象，不能与 `--param` 同时使用。命令会打印批准卡片链接。被拒绝时会显示服务器的状态和错误码。使用任务令牌时，`multica issue budget raise` 和 `multica issue budget top-up` 走同一条路径（加上 `--for <user-id>`）；使用个人访问令牌时仍按原样发起支出请求。
 
 ## 在其他编码智能体里操作 Multica
 

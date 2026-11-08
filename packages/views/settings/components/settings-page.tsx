@@ -46,6 +46,7 @@ import { WorkspaceAvatar } from "../../workspace/workspace-avatar";
 import { AccountTab } from "./account-tab";
 import { PreferencesTab } from "./preferences-tab";
 import { TokensTab } from "./tokens-tab";
+import { PasskeysTab } from "./passkeys-tab";
 import { WorkspaceTab } from "./workspace-tab";
 import { MembersTab } from "./members-tab";
 import { CodeTab } from "./code-tab";
@@ -67,6 +68,7 @@ import { searchSettings } from "./settings-search";
 import { HighlightText } from "../../search/highlight-text";
 import { useSettingsSearchIndex } from "./use-settings-search-index";
 import { WakeupsTab } from "./wakeups-tab";
+import { ProviderBreakersTab } from "./provider-breakers-tab";
 import { CollapsedNavTrigger } from "../../layout/page-header";
 import { useT } from "../../i18n";
 
@@ -171,6 +173,7 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
               ? [entry("apps", t(($) => $.page.tabs.apps), Plug, <ConnectedAppsTab />)]
               : []),
             entry("tokens", t(($) => $.page.tabs.tokens), KeyRound, <TokensTab />),
+            entry("passkeys", t(($) => $.page.tabs.passkeys), Lock, <PasskeysTab />),
           ],
         },
       ],
@@ -233,6 +236,13 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
               wide: true,
               adminOnly: true,
             }),
+            entry(
+              "provider-breakers",
+              t(($) => $.page.tabs.provider_breakers),
+              Zap,
+              <ProviderBreakersTab />,
+              { wide: true },
+            ),
             entry("labels", t(($) => $.page.tabs.labels), Tags, <LabelsTab />, {
               wide: true,
             }),

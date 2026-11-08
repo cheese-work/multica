@@ -46,6 +46,10 @@ const (
 	// HandlerHumanByRole hands the issue to a person, by role: the issue's
 	// requester, then the project lead, then the workspace owner.
 	HandlerHumanByRole = "human_by_role"
+	// HandlerHumanInCharge marks a status that waits on the person in charge
+	// of a decision request (CHE-2591 L5). Entering it never hands off by
+	// itself: the entry check assigns the issue explicitly.
+	HandlerHumanInCharge = "human_in_charge"
 )
 
 const (
@@ -231,6 +235,34 @@ type Definition struct {
 	// only when both are stored.
 	TokenAllowance int64
 	TokenReserve   int64
+	// StartStatusKey is the status where new issues of the workflow start
+	// (CHE-3113); empty means StartStatus.
+	StartStatusKey string
+}
+
+// Start is the status a new issue lands on when its creator picks none. A key
+// the workflow no longer lists falls back to StartStatus.
+func (d Definition) Start() string {
+	if d.StartStatusKey != "" && d.Has(d.StartStatusKey) {
+		return d.StartStatusKey
+	}
+	return StartStatus
+}
+
+// ValidateStartStatus checks a workflow's start status: empty keeps todo;
+// otherwise the key must be one of the steps, in an unstarted or started
+// category, so a new issue never begins finished or cancelled.
+func ValidateStartStatus(key string, steps []Step, catalog map[string]CatalogEntry) error {
+	if key == "" {
+		return nil
+	}
+	if !(Definition{Steps: steps}).Has(key) {
+		return invalid("start status %q is not a status of this workflow", key)
+	}
+	if category := catalog[key].Category; category != issuestatus.CategoryUnstarted && category != issuestatus.CategoryStarted {
+		return invalid("start status %q must be an unstarted or started status", key)
+	}
+	return nil
 }
 
 // HandsOff reports whether entering the step reassigns the issue.
@@ -268,6 +300,7 @@ func Decode(row db.IssueWorkflow) (Definition, error) {
 	def := Definition{
 		ID: row.ID, Name: row.Name, IsDefault: row.IsDefault, Steps: steps,
 		MaxRunsPerIssue: int(row.MaxRunsPerIssue.Int32), IncludeChildPRs: row.IncludeChildPrs,
+		StartStatusKey: row.StartStatusKey.String,
 	}
 	if row.RunBudgetSince.Valid {
 		def.RunBudgetSince = row.RunBudgetSince.Time
@@ -326,7 +359,9 @@ func EncodeSteps(steps []Step) ([]byte, error) {
 	stored := make([]storedStep, len(steps))
 	for i, s := range steps {
 		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen, Edges: s.Edges, SubWorkflow: s.SubWorkflow, Entry: s.Entry, DynamicAssignment: s.DynamicAssignment, LintWaive: s.LintWaive}
-		if s.HandsOff() {
+		// A human_in_charge step hands nothing off, but its handler is the entry
+		// rule of a decision episode and must survive storage.
+		if s.HandsOff() || s.Handler.Type == HandlerHumanInCharge {
 			h := s.Handler
 			stored[i].Handler = &h
 			stored[i].Instructions = s.Instructions
@@ -522,7 +557,7 @@ func ValidateHandoff(s Step, def Definition) error {
 		return invalid("status %q is not part of this workflow", s.StatusKey)
 	}
 	switch s.Handler.Type {
-	case HandlerNone, HandlerProjectLead, HandlerHumanByRole:
+	case HandlerNone, HandlerProjectLead, HandlerHumanByRole, HandlerHumanInCharge:
 	case HandlerAgent, HandlerMember:
 		if s.Handler.ID == "" {
 			return invalid("choose a %s to hand off to", s.Handler.Type)
@@ -656,6 +691,8 @@ type Humans struct {
 	Requester      pgtype.UUID
 	LeadNotMember  bool
 	WorkspaceOwner pgtype.UUID
+	// RoutingAgent, when valid, replaces an agent handler (CHE-3627).
+	RoutingAgent pgtype.UUID
 }
 
 // ResolveHandler turns a step's handler into a concrete assignee for one
@@ -664,6 +701,9 @@ type Humans struct {
 func ResolveHandler(step Step, project db.Project, issueCreatorType string, issueCreatorID pgtype.UUID, humans Humans) (assigneeType string, assigneeID pgtype.UUID, ok bool) {
 	switch step.Handler.Type {
 	case HandlerAgent, HandlerSquad, HandlerMember:
+		if step.Handler.Type == HandlerAgent && humans.RoutingAgent.Valid {
+			return HandlerAgent, humans.RoutingAgent, true
+		}
 		var id pgtype.UUID
 		if err := id.Scan(step.Handler.ID); err != nil || !id.Valid {
 			return "", pgtype.UUID{}, false

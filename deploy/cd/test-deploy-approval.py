@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One C00 approval per version; a newer version replaces a waiting one (CHE-2027)."""
+"""C00 deploys only on dispatch by the owner; a push builds and stops (CHE-4495)."""
 import json
 import os
 from pathlib import Path
@@ -11,10 +11,11 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
-GATE = "approve-c00"
+GATE = "authorize-c00"
 STALE_GATE = "deploy-gate"
 LOCK = "cd-deploy-c00"
-PROTECTED = "c00-production"  # reviewer + wait timer; legacy runs and reruns keep hitting it
+PROTECTED = "c00-production"  # reviewer environment; no job of this workflow may use it any more
+OWNER = "congvc-dev"
 RUNTIME = "c00-runtime"  # holds the copied C00 secrets; no reviewers
 C00_RUNNER = ["self-hosted", "linux", "x64", "cheese-c00-deploy"]
 C00_LOCAL_DEPLOY_STEP = "Deploy to C00 on local runner"
@@ -48,33 +49,57 @@ class DeployApprovalTests(unittest.TestCase):
                 todo.extend(needs(self.jobs[current]))
         return seen
 
-    def test_exactly_one_job_asks_for_approval(self):
-        gated = [n for n, j in self.jobs.items() if j.get("environment") == PROTECTED]
-        self.assertEqual(gated, [GATE])
+    def gate_run(self, actor):
+        step = self.jobs[GATE]["steps"][0]
+        return subprocess.run(["bash", "-c", step["run"]], env={**os.environ, "ACTOR": actor},
+                              text=True, capture_output=True)
 
-    def test_waiting_approval_notifies_without_gating_it(self):
-        # CHE-2418 B5: the notice rides next to the gate, never in front of it.
-        notify = self.jobs["notify-approval"]
-        self.assertEqual(needs(notify), needs(self.jobs[GATE]))
-        self.assertIsNone(notify.get("environment"))
-        self.assertNotIn("notify-approval", self.ancestors(GATE))
-        self.assertNotIn("notify-approval", self.ancestors("deploy"))
-        self.assertIn("notify-approval.sh", json.dumps(notify["steps"]))
+    def test_no_job_uses_the_reviewer_environment(self):
+        # Required reviewers do not gate on a private Team repo (silent no-op).
+        self.assertEqual([n for n, j in self.jobs.items() if j.get("environment") == PROTECTED], [])
 
-    def test_notice_covers_every_path_that_waits_for_approval(self):
-        # Review round 1: the manual (workflow_dispatch) path skips the
-        # preflight, so a notice gated on it alone never fires there.
-        notify, gate = self.jobs["notify-approval"], self.jobs[GATE]
-        self.assertEqual(notify["if"], gate["if"])
-        steps = json.dumps(notify["steps"])
-        # A manual run has no workflow_run payload: the candidate comes from inputs.ref.
-        self.assertIn("inputs.ref", steps)
-        self.assertIn("workflow_run.head_sha", steps)
+    def test_gate_is_dispatch_only_and_has_no_environment(self):
+        gate = self.jobs[GATE]
+        self.assertEqual(gate["if"], "github.event_name == 'workflow_dispatch'")
+        self.assertNotIn("environment", gate)
+        self.assertEqual(gate["steps"][0]["env"]["ACTOR"], "${{ github.triggering_actor }}")
 
-    def test_protected_environment_is_never_given_up(self):
-        # Removing its reviewer would leave old runs and downstream-job reruns,
-        # which still use the old workflow, with no approval at all.
-        self.assertEqual({j.get("environment") for j in self.jobs.values()} - {None}, {PROTECTED, RUNTIME})
+    def test_dispatch_by_another_actor_fails_at_the_gate(self):
+        self.assertEqual(self.gate_run(OWNER).returncode, 0)
+        for actor in ["someone-else", "congvc-dev-bot", "", OWNER + "x"]:
+            with self.subTest(actor=actor):
+                self.assertNotEqual(self.gate_run(actor).returncode, 0)
+
+    def test_push_path_stops_after_preflight_and_notice(self):
+        # workflow_run: the gate is skipped, so every job behind it is skipped too.
+        for name in ["prepare-release-candidate", "admission", "deploy"]:
+            with self.subTest(job=name):
+                self.assertIn(GATE, self.ancestors(name))
+                self.assertIn("workflow_dispatch", json.dumps(self.jobs[GATE]["if"]))
+        self.assertIn("workflow_run", self.jobs["notify-approval"]["if"])
+        self.assertEqual(needs(self.jobs["notify-approval"]), ["candidate-preflight"])
+
+    def test_notice_links_the_dispatch_page_with_the_full_candidate(self):
+        notify = json.dumps(self.jobs["notify-approval"]["steps"])
+        self.assertIn("actions/workflows/cd-deploy.yml", notify)
+        self.assertIn("workflow_run.head_sha", notify)
+        self.assertNotIn("inputs.ref", notify)
+
+    def test_dispatch_with_candidate_sha_issues_the_candidate_itself(self):
+        prepare = self.jobs["prepare-release-candidate"]
+        self.assertIn("inputs.candidate_sha != ''", prepare["if"])
+        self.assertIn(GATE, needs(prepare))
+        self.assertNotIn("github.event.workflow_run", json.dumps(prepare))
+        self.assertIn("candidate_sha", self.workflow[True]["workflow_dispatch"]["inputs"])
+        resolve = prepare["steps"][0]
+        bad = subprocess.run(["bash", "-c", resolve["run"]], text=True, capture_output=True,
+                             env={**os.environ, "CANDIDATE_SHA": "main; echo pwned", "GH_TOKEN": "x",
+                                  "GITHUB_OUTPUT": os.devnull, "GITHUB_REPOSITORY": "o/r"})
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertIn("40-hex", bad.stderr)
+
+    def test_environment_set_is_runtime_and_ci_app_token_only(self):
+        self.assertEqual({j.get("environment") for j in self.jobs.values()} - {None}, {RUNTIME, "ci-app-token"})
 
     def test_c00_jobs_run_on_the_c00_runner_and_never_over_ssh(self):
         # Both jobs that touch C00 run on the target-host runner. A fall-back
@@ -122,16 +147,10 @@ class DeployApprovalTests(unittest.TestCase):
         self.assertNotIn("require-current.sh", yaml.safe_dump(self.workflow))
         self.assertNotIn("outputs.current", yaml.safe_dump(self.workflow))
         self.assertEqual(needs(self.jobs["deploy"]), ["admission"])
-        self.assertIn("needs.approve-c00.result == 'success'", self.jobs["admission"]["if"])
+        self.assertIn("needs.authorize-c00.result == 'success'", self.jobs["admission"]["if"])
 
     def test_gate_holds_no_secrets(self):
         self.assertNotIn("secrets.C00", yaml.safe_dump(self.jobs[GATE]))
-
-    def test_waiting_approval_is_never_cancelled_by_a_newer_version(self):
-        # CI policy R4: a deploy-path job never sets cancel-in-progress (CHE-3273).
-        gate = self.jobs[GATE]["concurrency"]
-        self.assertFalse(gate.get("cancel-in-progress", False))
-        self.assertNotEqual(gate["group"], LOCK)
 
     def test_no_workflow_level_lock_behind_a_waiting_approval(self):
         self.assertNotIn("concurrency", self.workflow)

@@ -148,7 +148,7 @@ function IssuePinRow({
   wsSlug: string | null;
 }) {
   const { data, isLoading } = useQuery(issueDetailOptions(wsId, pin.item_id));
-  // EMPTY_ISSUE_FALLBACK has an empty id — treat as deleted/no-access.
+  // A failed load (deleted, no access, unreadable data) leaves no data — show the missing row.
   const issue = data && data.id ? (data as Issue) : null;
 
   if (isLoading) return <SkeletonRow />;

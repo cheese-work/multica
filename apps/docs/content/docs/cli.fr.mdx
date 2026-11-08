@@ -273,6 +273,8 @@ multica runtime profile create --display-name "Wrapper Claude interne" \
 
 La suppression d'un runtime auquel des agents actifs sont encore liés est refusée par défaut. `multica runtime delete <id> --cascade` dissocie ces agents, préserve leur configuration et leur historique, et annule leurs exécutions actives.
 
+`multica runtime breaker list` affiche le disjoncteur de chaque fournisseur ; `multica runtime breaker reset <provider>` le ferme de force (propriétaire ou administrateur uniquement). Voir [Disjoncteur de fournisseur](/daemon-runtimes#provider-breaker).
+
 Consultez [Daemon et runtimes](/daemon-runtimes) pour son fonctionnement et les profils personnalisés.
 
 ## Projets, espaces de travail et automatisations
@@ -293,6 +295,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Europ
 
 - `--lead` prend le nom d'un membre ou d'un agent. `--default-branch-hint` indique seulement à l'agent la branche par défaut du dépôt ; il ne change pas de branche.
 - Le `--context` d'un espace de travail est fourni à tous ses agents. `--slug` ne peut plus être modifié après la création. `--issue-prefix` est mis en majuscules ; le changer renumérote toutes les tâches existantes, et les anciens identifiants cités ailleurs ne mènent plus nulle part.
+- `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]` désigne l'agent qui prend les étapes de workflow de simple routage (par défaut `todo`, `blocked`, `merged`, `need_decision` ; modifiable avec `--routing-statuses`, et `--routing-overrides todo=<agent-id>` envoie un statut à un autre agent). L'agent de repli prend le relais quand cet agent est archivé ou quand son exécution échoue à cause du fournisseur. Une clé de remplacement `<workflow-id>:<status>` limite ce remplacement à un seul workflow. `none` désactive un champ. Seul un propriétaire ou administrateur humain peut le modifier, et chaque changement est consigné dans le journal d'activité.
 - `--issue-title-template` ne remplace que `{{date}}` (UTC, `YYYY-MM-DD`) et refuse tout autre `{{...}}`. Le `--timezone` d'un déclencheur planifié vaut UTC par défaut.
 
 ## Vue d'ensemble des commandes
@@ -369,7 +372,7 @@ Les tableaux ci-dessous couvrent toutes les commandes de premier niveau actuelle
 
 | Commande | Sous-commande | Rôle | Options principales |
 | --- | --- | --- | --- |
-| `issue` | `list` | Lister les tâches | `--status`, `--priority`, `--assignee`, `--project`, `--metadata` (répétable), `--property` (répétable, `"Name=Value"` ; `__none__` correspond à une valeur non définie), `--limit`, `--offset`, `--sort` (y compris `property:<name-or-id>`), `--full-id`, `--resolve-properties` (JSON uniquement ; lignes avec les noms de propriété, d'option et de membre à côté des ID enregistrés), `--fields` (JSON uniquement ; champs à conserver, séparés par des virgules) |
+| `issue` | `list` | Lister les tâches | `--status`, `--priority`, `--assignee`, `--project`, `--metadata` (répétable), `--property` (répétable, `"Name=Value"` ; `__none__` correspond à une valeur non définie), `--limit`, `--offset`, `--sort` (y compris `effective_due`, qui place d'abord les tâches datées selon l'échéance héritée la plus proche, et `property:<name-or-id>`), `--full-id`, `--resolve-properties` (JSON uniquement ; lignes avec les noms de propriété, d'option et de membre à côté des ID enregistrés), `--fields` (JSON uniquement ; champs à conserver, séparés par des virgules) |
 | | `get <id>` | Afficher une tâche | `--resolve-properties` (JSON uniquement ; lignes avec les noms de propriété, d'option et de membre à côté des ID enregistrés) |
 | | `create` | Créer une tâche | `--title` (obligatoire), `--description` / `--description-stdin` / `--description-file`, `--status`, `--priority`, `--assignee`, `--parent`, `--stage`, `--project`, `--start-date`, `--due-date`, `--attachment` (répétable), `--property` (répétable), `--allow-duplicate` (crée même si une tâche ouverte porte le même titre) |
 | | `update <id>` | Mettre à jour les champs d'une tâche | Mêmes champs que `create`, plus `--position`, `--no-start`, `--duplicate-of` |
@@ -407,6 +410,7 @@ Les tableaux ci-dessous couvrent toutes les commandes de premier niveau actuelle
 | | `trigger <id>` | Déclencher une exécution manuellement | |
 | | `runs <id>` | Afficher l'historique des exécutions | |
 | | `trigger-add/trigger-update/trigger-delete/trigger-rotate-url` | Gérer les déclencheurs de planification et webhook | `trigger-add` : `--kind` (`schedule` ou `webhook`), `--cron`, `--timezone` (UTC par défaut), `--label` |
+| `workflow` | `lint [<id>]` | Vérifier les workflows : étapes, transitions, gestionnaires et instructions. Affiche un tableau, ou du JSON avec `--output json`. Code de sortie non nul si une erreur n'est pas écartée par une dérogation | `--all` (tous les workflows de l'espace de travail ; utilisez-le ou un id, pas les deux), `--output` (`table` ou `json`) |
 | `workspace` | `list/get/create/update/switch` | Gérer les espaces de travail ; `switch` définit l'espace de travail par défaut du profil actuel | `create` : `--name`, `--slug` (tous deux obligatoires), `--issue-prefix`, `--description`, `--context` / `--context-stdin` ; `update` modifie les mêmes champs, sauf le slug |
 | | `mcp list/add/update/remove` | Gérer la bibliothèque de serveurs MCP de l'espace de travail | Les écritures sont réservées aux propriétaires et administrateurs. Un serveur ajouté ici n'est assigné à aucun agent — attribuez-le à un agent avec `multica agent mcp add`. `list` n'affiche que les noms et les transports ; l'entrée enregistrée est en écriture seule et n'est jamais renvoyée. `--server-config-file` / `--server-config-stdin` gardent les jetons hors de l'historique du shell |
 | | `member list/invite <email>` | Consulter les membres, envoyer des invitations | `invite` : `--role` (member ou admin, member par défaut) |
@@ -433,6 +437,7 @@ Les tableaux ci-dessous couvrent toutes les commandes de premier niveau actuelle
 | `runtime` | `list/usage/activity/update/rename/delete` | Consulter et gérer les runtimes | `usage` : `--days` (90 par défaut, 365 au maximum) ; `update` : `--target-version` (obligatoire), `--wait` ; `delete` : `--cascade` (dissocie les agents liés, préserve leurs données et annule leurs exécutions) |
 | | `profile list/create/update/delete` | Gérer les profils de runtime personnalisés | `create` : `--display-name`, `--command-name` (tous deux obligatoires), `--runtime-type` (ou l'ancien `--protocol-family`), `--description` ; `update` : `--enabled` |
 | | `profile set-path/unset-path <profile-id>` | Fixer le chemin d'un exécutable local (local uniquement, jamais envoyé au serveur) | |
+| | `breaker list/reset <provider>` | Afficher ou fermer de force le disjoncteur d'un fournisseur | `reset` : propriétaire ou administrateur de l'espace de travail uniquement |
 
 ### Additional
 
@@ -446,6 +451,18 @@ Les tableaux ci-dessous couvrent toutes les commandes de premier niveau actuelle
 | `config` | `show`, `set <key> <value>` | Consulter ou modifier la configuration locale du profil actuel | Priorité : options de ligne de commande > variables d'environnement > `config.json` > valeurs par défaut intégrées ; définissez une chaîne vide pour effacer une valeur |
 | `update` | — | Mettre à jour le CLI vers la dernière version | |
 | `version` | — | Afficher les informations de version | `--output` (`text` ou `json`) |
+
+### Propositions de décision
+
+Un jeton de tâche propose une action encadrée qu'une personne approuve avec une passkey. La proposition ne modifie rien elle-même.
+
+```bash
+multica decision propose issue.run_budget.raise --version 1 --issue MUL-123 \
+  --for <user-id> --param window_id=<id> --param new_cap:=40 [--reason "..."]
+multica decision propose <action-type> --version 1 --issue MUL-123 --params-file ./params.json
+```
+
+`--version` et `--issue` sont obligatoires. `--param k=v` envoie une chaîne et `--param k:=<json>` envoie du JSON brut ; `--params-file` prend un objet JSON et ne se combine pas avec `--param`. La commande affiche le lien de la carte d'approbation. Un refus affiche le statut et le code d'erreur du serveur. `multica issue budget raise` et `multica issue budget top-up` utilisent la même route avec un jeton de tâche (ajoutez `--for <user-id>`) ; avec un jeton d'accès personnel, ils ouvrent la demande de dépense comme avant.
 
 ## Piloter Multica depuis un autre agent de codage
 
