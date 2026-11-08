@@ -52,6 +52,7 @@ func init() {
 	decisionRequestCmd.Flags().String("ask-file", "", "UTF-8 JSON ask: context_eli10, agent_did, decision, stakes_if_wrong, options[{label, what_happens, pros[], cons[], cost_or_time}], recommendation, recommended_option (the exact label of the recommended option; required with two or more options), confidence (optional number 0-1, your own confidence in the recommendation), default_if_no_reply, source_issue_id, source_comment_id. The server moves the recommended option first. The recommendation text is never used to pick it. Refused: two or more options without a matching recommended_option; an inline numbered list (1. a 2. b on one line; use a Markdown list); a bare ID (full UUID outside a Markdown link destination, link it as [what it is](link)); an agent_did with fewer than 10 letters once links and IDs are removed. Advisory hints, never refusals: a decision that looks like several questions (send one request per question), and human_steps that leave values implicit. The list and ID rules cover context_eli10, decision, stakes_if_wrong, recommendation, default_if_no_reply, options[].label, options[].what_happens, options[].pros[], options[].cons[], options[].cost_or_time. For an ask that approves a file: subject \"artifact_approval\" with artifacts[{attachment_id, label, sha256, supersedes_attachment_id, signed_by{reviewer, comment_id}, supersedes_signed_by{reviewer, comment_id}}]. To ask a human to act also: human_steps[{action, command, values[{name, value, source}], verify_done}], probes[], after_done")
 	decisionRequestCmd.Flags().String("action-file", "", "Optional UTF-8 JSON privileged action Cheese approves on the card: {type, version, params, secret_slots[{slot, target}], expires_in_seconds}. Never put a secret value in it")
 	decisionRequestCmd.Flags().String("kind", "decision", "decision (default) asks the person to choose; action asks them to do something an agent cannot")
+	decisionRequestCmd.Flags().StringSlice("covers", nil, "Batch card: ids of open plain choice cards (reversible or product_direction, with no action, governed write or artifact) for the same human that this answer also closes (max 25); every covered card must offer each batch option with the same label and the same what_happens meaning; withdrawing the batch answer withdraws the covered answers too")
 	decisionRequestCmd.Flags().String("expires-in", "", "With --kind action: how long the ask stays open, e.g. 72h (default 72h, maximum 168h)")
 	decisionRequestCmd.Flags().String("footer-file", "", "Optional UTF-8 file appended to the issue comment only, e.g. RHC-2 lines")
 	for _, flag := range []string{"class", "ask-file"} {
@@ -143,6 +144,9 @@ func runDecisionRequest(command *cobra.Command, _ []string) error {
 	}
 	if action != nil {
 		body["action"] = action
+	}
+	if covers, _ := command.Flags().GetStringSlice("covers"); len(covers) > 0 {
+		body["covers_request_ids"] = covers
 	}
 	if kind == decisiontx.KindAction {
 		// The raw file goes up so the server's strict action decoder sees no empty decision fields.

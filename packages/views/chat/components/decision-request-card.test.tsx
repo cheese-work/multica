@@ -336,6 +336,31 @@ describe("DecisionRequestCard answering", () => {
     expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: "Option B", text: undefined });
   });
 
+  it("acknowledges the covered cards when a batch card's option is chosen", async () => {
+    const batchId = "00000000-0000-4000-8000-0000000000b1";
+    renderCard({ ...withOptions, id: batchId, covers_request_ids: ["00000000-0000-4000-8000-0000000000c2", "00000000-0000-4000-8000-0000000000c1"],
+      covered_cards: ["c2", "c1"].map((tail) => ({ id: `00000000-0000-4000-8000-0000000000${tail}`, issue_id: `issue-${tail}`, issue_identifier: `CHE-${tail}`, decision: "Same ask?", options: withOptions.options })),
+    });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("radio", { name: /Option B/ }));
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalledTimes(1));
+    // Same vector as the server test: the digest of the batch id, the sorted covered ids and the option.
+    expect(answerDecisionRequest).toHaveBeenCalledWith(batchId, {
+      option: "Option B", text: undefined,
+      covers_ack: "012ee7331cfe77d20ca96126e0cae16df3acabee3149e329bb3054f42d0211e1",
+    });
+  });
+
+  it("sends no acknowledgment for a direct answer", async () => {
+    renderCard();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("radio", { name: /Option B/ }));
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalledTimes(1));
+    expect(answerDecisionRequest.mock.calls[0]?.[1]).not.toHaveProperty("covers_ack");
+  });
+
   it("does not style an unselected recommended option as selected; the badge is its only cue", async () => {
     renderCard();
     const optionB = screen.getByRole("radio", { name: /Option B/ });

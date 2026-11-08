@@ -374,6 +374,8 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
   const paths = useWorkspacePaths();
   const { facts, note } = splitAgentNote(card.ask);
   const shown = displayState(card, useNow(card));
+  // A batch answer must not be sent blind: with any covered decision unloaded the form stays away.
+  const coveredCardsMissing = (card.covers_request_ids?.length ?? 0) > (card.covered_cards?.length ?? 0);
   const state = t(($) => $.decision.request_state[shown]);
   const timestamp = card.state === "withdrawn" ? card.withdrawn_at || card.created_at : card.created_at;
   const date = new Date(timestamp);
@@ -393,7 +395,7 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
     // mutateAsync, not mutate's callbacks: those are dropped when the card unmounts mid-send,
     // which would leave a sent answer in the store.
     answer
-      .mutateAsync({ requestId: card.id, option: option || undefined, text: text.trim() || undefined, passkey: needsPasskey })
+      .mutateAsync({ requestId: card.id, option: option || undefined, text: text.trim() || undefined, passkey: needsPasskey, covers: card.covers_request_ids })
       .then(() => {
         setNeedsPasskey(false);
         clearDraft();
@@ -411,6 +413,17 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
     setUploadCancelled(false);
     setRefused(false);
   };
+
+  if (card.answered_by_batch_request_id && !inIssue) {
+    return (
+      <p data-testid="decision-request-folded" className="flex min-w-0 flex-wrap items-center gap-x-2 rounded-xl border border-surface-border bg-surface px-3 py-2 text-label text-muted-foreground">
+        <span>{t(($) => $.decision.answered_by_batch, { issue: card.issue_identifier || card.issue_id })}</span>
+        <AppLink href={issueHref} className="font-medium hover:underline focus-visible:outline-2 focus-visible:outline-ring">
+          {card.issue_title}
+        </AppLink>
+      </p>
+    );
+  }
 
   return (
     <section
@@ -448,6 +461,11 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
         >
           {card.issue_identifier || card.issue_id}
         </AppLink>
+        {card.covers_request_ids && card.covers_request_ids.length > 0 && (
+          <span className="text-muted-foreground" data-testid="decision-request-covers">
+            {t(($) => $.decision.covers_batch, { count: card.covers_request_ids.length })}
+          </span>
+        )}
         {card.issue_title && (
           <span className="min-w-0 break-words text-muted-foreground" data-testid="decision-request-source-title">
             {card.issue_title}
@@ -472,6 +490,26 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
           </AppLink>
         )}
       </div>
+      {card.covered_cards && card.covered_cards.length > 0 && (
+        <ul className="min-w-0 space-y-1 break-words border-b px-3 py-2 text-xs" data-testid="decision-request-covered-list">
+          {card.covered_cards.map((covered) => (
+            <li key={covered.id} data-testid="decision-request-covered-item">
+              <AppLink href={paths.issueDetail(covered.issue_id)} className="font-medium hover:underline focus-visible:outline-2 focus-visible:outline-ring">
+                {covered.issue_identifier || covered.issue_id}
+              </AppLink>
+              {covered.issue_title && <span className="text-muted-foreground">{` ${covered.issue_title}`}</span>}
+              {covered.decision && <span>{`: ${covered.decision}`}</span>}
+              {covered.options && covered.options.length > 0 && (
+                <ul className="ml-4 list-disc text-muted-foreground">
+                  {covered.options.map((option, index) => (
+                    <li key={`${index}:${option.label}`}>{option.what_happens ? `${option.label}: ${option.what_happens}` : option.label}</li>
+                  ))}
+                </ul>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
       <div className="min-w-0 space-y-3 break-words px-3 py-3">
         {card.state === "withdrawn" && card.reason && (
           <p className="whitespace-pre-wrap text-muted-foreground" data-testid="decision-request-reason">{card.reason}</p>
@@ -489,9 +527,11 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
         {(refused || card.state !== "open") && hasDraft(draft) && !answer.isPending ? (
           <KeptDraft draft={draft} onDiscard={discardDraft} />
         ) : (
-          card.state === "open" && (
+          card.state === "open" && (coveredCardsMissing ? (
+            <p role="alert" className="text-destructive" data-testid="decision-request-covers-unavailable">{t(($) => $.decision.covers_unavailable)}</p>
+          ) : (
             <DecisionAnswerForm key={formKey} card={card} draft={draft} answer={answer} onDraftChange={setDraft} onSend={sendAnswer} inIssue={inIssue} needsPasskey={needsPasskey} onOpenWeb={() => navigation && openExternal(navigation.getShareableUrl(issueHref))} />
-          )
+          ))
         )}
         {shown === "picked_up" && card.answer?.run && (
           <AppLink href={`${issueHref}?run=${encodeURIComponent(card.answer.run.id)}`} data-testid="decision-request-run" className="inline-flex min-h-9 items-center text-label hover:underline focus-visible:outline-2 focus-visible:outline-ring">

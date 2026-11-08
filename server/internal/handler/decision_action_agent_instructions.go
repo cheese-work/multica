@@ -22,6 +22,7 @@ const (
 
 func init() {
 	registerConfigChange(agentInstructionsAction, configChange{
+		Fields:     []string{agentInstructionsField},
 		Lock:       lockAgentInstructionsTarget,
 		Read:       readAgentInstructions,
 		Apply:      applyAgentInstructions,
