@@ -10,8 +10,8 @@ import (
 // CHE-4548 (S1 of CHE-4439): system1_observation gains kind `route` and a
 // nullable event_id, plus a non-unique partial index on the route rows.
 const (
-	system1RouteColumnVersion = "9999_system1_observation_route_event_id"
-	system1RouteIndexVersion  = "9999_system1_observation_route_event_id_idx"
+	system1RouteColumnVersion = "99952_system1_observation_route_event_id"
+	system1RouteIndexVersion  = "99953_system1_observation_route_event_id_idx"
 	system1RouteIndexName     = "system1_observation_route_event_idx"
 )
 
