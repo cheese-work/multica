@@ -2614,6 +2614,9 @@ func commentEnqueueFailureReason(err error) DispatchReasonCode {
 	if errors.Is(err, service.ErrRunBudgetExhausted) {
 		return ReasonRunBudgetExhausted
 	}
+	if errors.Is(err, service.ErrReviewHeadAnswered) {
+		return ReasonReviewHeadAnswered
+	}
 	if errors.Is(err, service.ErrIssueInTriage) {
 		return ReasonIssueInTriage
 	}

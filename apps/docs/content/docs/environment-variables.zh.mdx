@@ -47,6 +47,7 @@ MULTICA_PUBLIC_URL=https://api.multica.example.com
 | `LOG_LEVEL` | 应用默认 | 日志级别 |
 | `MULTICA_SHUTDOWN_HOLD_DURATION` | `0` | 收到终止信号后，开始优雅退出前等待多久 |
 | `MULTICA_RUNTIME_RECONNECT_GRACE` | `3h` | 运行时离线后可重新连接且不终止在途运行的宽限时间；低于 `150s` 时按 `150s` 处理 |
+| `MULTICA_REVIEW_GUARD_AGENT_IDS` | 空（关闭守卫） | 以逗号分隔的评审者智能体 ID。该智能体已针对 PR 的 head 发布 PASS、FAIL、BLOCKED 或 NOT-RUN，且 Issue 恰有一个打开的关联 PR 时，评审运行会以原因 `review_head_answered` 跳过；head 变化后会重新运行 |
 
 在 Kubernetes 中设置 shutdown hold 时，`terminationGracePeriodSeconds` 要大于 hold 与实际退出所需时间之和。
 

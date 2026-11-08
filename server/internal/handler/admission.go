@@ -74,6 +74,7 @@ const (
 	ReasonCommentTriggerRateLimited           = dispatch.ReasonCommentTriggerRateLimited
 	ReasonRunBudgetExhausted                  = dispatch.ReasonRunBudgetExhausted
 	ReasonStageQueueFull                      = dispatch.ReasonStageQueueFull
+	ReasonReviewHeadAnswered                  = dispatch.ReasonReviewHeadAnswered
 	ReasonInternalError                       = dispatch.ReasonInternalError
 	ReasonProviderHold                        = dispatch.ReasonProviderHold
 )
@@ -149,6 +150,8 @@ func dispatchBlockedFallbackMessage(code DispatchReasonCode) string {
 		return "the issue used its workflow's run budget; move it on to give it a new one"
 	case ReasonStageQueueFull:
 		return "the PR's stage is at capacity; it is queued and runs when a slot frees"
+	case ReasonReviewHeadAnswered:
+		return "the agent already answered this PR head; a new head runs again"
 	case ReasonProviderHold:
 		return "the target's model provider is on a workspace policy hold"
 	default:
