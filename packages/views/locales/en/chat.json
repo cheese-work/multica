@@ -476,6 +476,8 @@
     "action_unavailable": "Details unavailable",
     "action_approve": "Approve with passkey",
     "action_preview": "What approving changes",
+    "action_diff": "Changes to this step's instructions",
+    "action_diff_open": "Review changes",
     "agent_note": "Agent's note (not verified)",
     "answer_send_passkey": "Send with passkey",
     "answer_open_browser": "Open in browser",

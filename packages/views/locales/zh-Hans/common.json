@@ -140,6 +140,7 @@
     "approve": "使用通行密钥批准",
     "reject": "拒绝",
     "reject_error": "拒绝未完成。请重试。",
+    "preview_required": "所显示的更改与请求不再一致。请重新加载卡片并再次查看。",
     "waiting": "正在等待你的通行密钥…",
     "state": {
       "executed": "已执行",

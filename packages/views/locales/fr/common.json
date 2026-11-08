@@ -140,6 +140,7 @@
     "approve": "Approuver avec une clé d'accès",
     "reject": "Refuser",
     "reject_error": "Le refus n'a pas abouti. Réessayez.",
+    "preview_required": "Les modifications affichées ne correspondent plus à la demande. Rechargez la carte et examinez à nouveau.",
     "waiting": "En attente de votre clé d'accès…",
     "state": {
       "executed": "Exécutée",

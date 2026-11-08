@@ -1,16 +1,18 @@
-import { Suspense, useEffect, useId, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useId, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Check, Loader2, MessageSquareQuote } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@multica/ui/components/ui/dialog";
 import { ApiError } from "@multica/core/api";
 import { useAnswerDecisionRequest } from "@multica/core/issues/decision-answer";
 import { useDecisionAnswerDraftStore } from "@multica/core/issues/stores/decision-answer-draft-store";
 import { usePersistedDraft } from "@multica/core/drafts";
-import { approvablePreview } from "@multica/core/issues/decision-action-preview";
+import { approvableDiff, approvablePreview } from "@multica/core/issues/decision-action-preview";
 import { chatKeys } from "@multica/core/chat/queries";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { formatShortcut, useShortcut } from "@multica/core/shortcuts";
-import type { DecisionRequestCard as RequestCard } from "@multica/core/types";
+import { countDiffLines } from "@multica/core/issues/decision-artifacts";
+import type { DecisionActionDiff, DecisionRequestCard as RequestCard } from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
 import type { ContentEditorRef } from "../../editor/content-editor";
 import { useEditorUpload } from "../../editor/use-editor-upload";
@@ -25,7 +27,7 @@ import { openExternal } from "../../platform";
 import { isDesktopShell } from "../../platform/local-directory";
 import { useOnline } from "../../settings/components/use-online";
 import { AnnotatableAnswer } from "./annotatable-answer";
-import { DecisionArtifacts } from "./decision-artifacts";
+import { DecisionArtifacts, DiffHunks, useBackToClose } from "./decision-artifacts";
 import { DECISION_REQUEST_SOURCE_PREFIX } from "./chat-annotation-context";
 
 interface AnswerDraft {
@@ -201,7 +203,8 @@ function ActionPreview({ action }: { action: NonNullable<RequestCard["action"]> 
   // Once the action left pending there is nothing to preview: only its live outcome shows.
   const pending = !action.state || action.state === "pending";
   const fields = pending ? approvablePreview(action)?.fields : undefined;
-  if (pending && !fields) {
+  const diff = pending ? approvableDiff(action) : undefined;
+  if (pending && !fields && !diff) {
     return (
       <div className="space-y-1">
         <p role="status" className="text-label text-warning">{t(($) => $.decision.action_unavailable)}</p>
@@ -222,7 +225,37 @@ function ActionPreview({ action }: { action: NonNullable<RequestCard["action"]> 
           ))}
         </dl>
       )}
-      <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} state={action.state} />
+      {diff && <ActionDiff diff={diff} />}
+      <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} previewSha256={diff?.sha256} state={action.state} />
+    </div>
+  );
+}
+
+// The step's before/after text with the same fullscreen viewer as a decision's files (CHE-2810).
+function ActionDiff({ diff }: { diff: DecisionActionDiff }) {
+  const { t } = useT("chat");
+  const [open, setOpen] = useState(false);
+  const close = useCallback(() => setOpen(false), []);
+  useBackToClose(open, close);
+  const { added, removed } = countDiffLines(diff.hunks);
+  return (
+    <div data-testid="decision-request-action-diff" className="space-y-1 rounded-lg border border-surface-border px-2 py-1.5 text-label">
+      <p className="font-medium">{t(($) => $.decision.action_diff)}</p>
+      <p className="text-muted-foreground">{t(($) => $.decision.artifacts.changes_summary, { added, removed })}</p>
+      <div className="flex max-h-48 flex-col">
+        <DiffHunks hunks={diff.hunks} label={t(($) => $.decision.action_diff)} />
+      </div>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogTrigger render={<Button size="sm" variant="outline" />}>{t(($) => $.decision.action_diff_open)}</DialogTrigger>
+        <DialogContent data-testid="decision-action-diff-dialog" className="h-dvh max-h-none w-full max-w-none grid-rows-[auto_minmax(0,1fr)] gap-0 rounded-none p-0 sm:h-[85dvh] sm:max-w-4xl sm:rounded-xl">
+          <DialogHeader className="p-4 pr-12">
+            <DialogTitle>{t(($) => $.decision.action_diff)}</DialogTitle>
+          </DialogHeader>
+          <div className="flex min-h-0 flex-col border-t border-surface-border p-4">
+            <DiffHunks hunks={diff.hunks} label={t(($) => $.decision.action_diff)} />
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

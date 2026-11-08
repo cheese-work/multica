@@ -84,6 +84,15 @@ export interface DecisionRequestAction {
   state?: string;
   /** Absent for an unknown action type, a stale window or an older server: the card then offers no approval. */
   preview?: DecisionActionPreview;
+  /** The text diff of a config-change action with its digest, which approval sends back as `preview_sha256`. */
+  diff?: DecisionActionDiff;
+}
+
+/** Changed hunks of one text field; lines start with " ", "-" or "+". */
+export interface DecisionActionDiff {
+  kind: "text";
+  hunks: { old_start: number; new_start: number; lines: string[] }[];
+  sha256: string;
 }
 
 /** The run that resumed the issue after the answer was recorded. */

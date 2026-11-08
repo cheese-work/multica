@@ -140,6 +140,7 @@
     "approve": "使用通行金鑰核准",
     "reject": "拒絕",
     "reject_error": "拒絕未完成。請重試。",
+    "preview_required": "所顯示的變更與請求不再一致。請重新載入卡片並再次檢視。",
     "waiting": "正在等待你的通行金鑰…",
     "state": {
       "executed": "已執行",

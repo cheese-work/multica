@@ -476,6 +476,8 @@
     "action_unavailable": "Détails indisponibles",
     "action_approve": "Approuver avec une clé d’accès",
     "action_preview": "Ce que l’approbation modifie",
+    "action_diff": "Modifications des instructions de cette étape",
+    "action_diff_open": "Examiner les modifications",
     "agent_note": "Note de l’agent (non vérifiée)",
     "answer_send_passkey": "Envoyer avec une clé d'accès",
     "answer_open_browser": "Ouvrir dans le navigateur",

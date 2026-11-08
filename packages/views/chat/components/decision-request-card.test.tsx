@@ -40,9 +40,11 @@ const answerDecisionRequest = vi.hoisted(() => vi.fn());
 const listDecisionArtifacts = vi.hoisted(() => vi.fn());
 const uploadFile = vi.hoisted(() => vi.fn());
 const getDecisionActionOutcome = vi.hoisted(() => vi.fn());
+const challengeDecisionAction = vi.hoisted(() => vi.fn());
+const approveDecisionAction = vi.hoisted(() => vi.fn());
 vi.mock("@multica/core/api", async (importActual) => ({
   ...(await importActual<typeof import("@multica/core/api")>()),
-  api: { answerDecisionRequest, challengeDecisionAnswer, listDecisionArtifacts, uploadFile, getDecisionActionOutcome },
+  api: { answerDecisionRequest, challengeDecisionAnswer, listDecisionArtifacts, uploadFile, getDecisionActionOutcome, challengeDecisionAction, approveDecisionAction },
 }));
 
 // The real editor is Tiptap; its own suites cover typing and paste. Here it is
@@ -667,6 +669,58 @@ describe("DecisionRequestCard answering", () => {
     expect(screen.queryByRole("alert")).toBeNull();
     await user.click(screen.getByRole("button", { name: "Discard draft" }));
     expect(screen.queryByTestId("decision-request-kept-draft")).toBeNull();
+  });
+
+  describe("workflow step instructions diff", () => {
+    const diff = {
+      kind: "text",
+      hunks: [{ old_start: 1, new_start: 1, lines: ["-do A", "+do A better"] }],
+      sha256: "e".repeat(64),
+    };
+    const action = { id: "action", action_type: "workflow.step.instructions.set", payload_sha256: "payload", state: "pending", diff };
+    const show = (value: unknown) => renderCard({ ...card, action: value as RequestCard["action"] });
+    beforeEach(() => getDecisionActionOutcome.mockReset().mockResolvedValue({ id: "action", state: "pending" }));
+    afterEach(() => sessionStorage.clear()); // an approve that left this tab is remembered per action id
+
+    it("shows the exact before and after text of the step and enables Approve", async () => {
+      show(action);
+      const region = await screen.findByTestId("decision-request-action-diff");
+      expect(region).toHaveTextContent("do A");
+      expect(region).toHaveTextContent("do A better");
+      expect(region).toHaveTextContent("1 lines added, 1 removed.");
+      expect(await screen.findByRole("button", { name: "Approve with passkey" })).toBeEnabled();
+    });
+
+    it("opens the changes in the fullscreen viewer", async () => {
+      show(action);
+      await userEvent.setup().click(await screen.findByRole("button", { name: "Review changes" }));
+      const dialog = await screen.findByTestId("decision-action-diff-dialog");
+      expect(dialog).toHaveClass("h-dvh", "w-full", "max-w-none");
+      expect(dialog).toHaveTextContent("do A better");
+    });
+
+    it("approves with the digest of the diff it rendered", async () => {
+      approveDecisionAction.mockResolvedValue({ id: "action", state: "executed" });
+      challengeDecisionAction.mockResolvedValue({});
+      signPasskeyChallenge.mockResolvedValue({ challenge_id: "ch" });
+      show(action);
+      await userEvent.setup().click(await screen.findByRole("button", { name: "Approve with passkey" }));
+      await waitFor(() => expect(approveDecisionAction).toHaveBeenCalledWith("action", expect.objectContaining({ preview_sha256: "e".repeat(64) })));
+    });
+
+    it.each([
+      ["absent", undefined],
+      ["digestless", { ...diff, sha256: "" }],
+      ["not a sha-256 digest", { ...diff, sha256: "digest" }],
+      ["not a text diff", { ...diff, kind: "json" }],
+      ["malformed hunks", { ...diff, hunks: [{ old_start: 1, new_start: 1, lines: ["no prefix"] }] }],
+    ])("says details are unavailable and keeps Approve disabled when the diff is %s", (_name, bad) => {
+      show({ ...action, diff: bad });
+      expect(screen.getByText("Details unavailable")).toBeInTheDocument();
+      expect(screen.queryByTestId("decision-request-action-diff")).toBeNull();
+      expect(screen.getByRole("button", { name: "Approve with passkey" })).toBeDisabled();
+      expect(getDecisionActionOutcome).not.toHaveBeenCalled();
+    });
   });
 
   describe("action preview", () => {

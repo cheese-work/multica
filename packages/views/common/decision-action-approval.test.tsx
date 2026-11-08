@@ -17,8 +17,8 @@ vi.mock("@multica/core/auth/webauthn", () => ({ signPasskeyChallenge: sign }));
 const outcome = (state: string, error_code?: string) => ({ id: "a1", state, ...(error_code && { error_code }) });
 const envelope = { challenge_id: "ch", credential: { id: "k" } };
 
-function renderApproval(onEnroll = vi.fn()) {
-  renderWithI18n(<DecisionActionApproval actionId="a1" payloadSha256="abc" onEnroll={onEnroll} />);
+function renderApproval(onEnroll = vi.fn(), previewSha256?: string) {
+  renderWithI18n(<DecisionActionApproval actionId="a1" payloadSha256="abc" previewSha256={previewSha256} onEnroll={onEnroll} />);
   return {
     onEnroll,
     approve: async () => fireEvent.click(await screen.findByRole("button", { name: "Approve with passkey" })),
@@ -42,6 +42,21 @@ describe("DecisionActionApproval", () => {
     expect(await screen.findByText("Executed")).toBeTruthy();
     expect(api.challengeDecisionAction).toHaveBeenCalledWith("a1");
     expect(api.approveDecisionAction).toHaveBeenCalledWith("a1", { payload_sha256: "abc", assertion: envelope });
+  });
+
+  it("sends the digest of the preview it was shown, only when it was shown one", async () => {
+    api.approveDecisionAction.mockResolvedValue(outcome("executed"));
+    await renderApproval(vi.fn(), "d".repeat(64)).approve();
+    await screen.findByText("Executed");
+    expect(api.approveDecisionAction).toHaveBeenCalledWith("a1", { payload_sha256: "abc", preview_sha256: "d".repeat(64), assertion: envelope });
+  });
+
+  it("shows a preview_required refusal and does not offer or send a second approve", async () => {
+    api.approveDecisionAction.mockRejectedValue(new ApiError("preview_required: approve with the digest of the preview you were shown", 409, "Conflict"));
+    await renderApproval(vi.fn(), "d".repeat(64)).approve();
+    expect(await screen.findByRole("alert")).toHaveTextContent("The changes shown no longer match the request. Reload the card and review again.");
+    expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+    expect(api.approveDecisionAction).toHaveBeenCalledTimes(1);
   });
 
   it.each([

@@ -4,7 +4,7 @@ import { Check, Download, FileText, Loader2 } from "@multica/ui/icons";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@multica/ui/components/ui/dialog";
 import { api, PreviewTooLargeError } from "@multica/core/api";
 import { countDiffLines, useDecisionArtifacts } from "@multica/core/issues/decision-artifacts";
-import type { DecisionArtifact, DecisionArtifactDiff } from "@multica/core/types";
+import type { DecisionArtifact, DecisionArtifactDiff, DecisionArtifactHunk } from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
 import { formatBytes } from "../../common/format-bytes";
 import { useDownloadAttachment } from "../../editor/use-download-attachment";
@@ -20,7 +20,7 @@ const isText = ({ attachment }: DecisionArtifact) =>
 
 // Browser Back closes the open viewer instead of leaving the page: one history entry while open, kept
 // on top of the current state so the router still recognises it. A normal close pops that entry.
-function useBackToClose(open: boolean, close: () => void) {
+export function useBackToClose(open: boolean, close: () => void) {
   useEffect(() => {
     if (!open) return;
     window.history.pushState({ ...window.history.state, artifactViewer: true }, "");
@@ -58,6 +58,56 @@ function SignatureTag({ signed, testId, children }: { signed: boolean; testId?: 
   );
 }
 
+/** Changed hunks of a text diff, with the new-side line numbers. */
+export function DiffHunks({ hunks, label }: { hunks: DecisionArtifactHunk[]; label: string }) {
+  const { t } = useT("chat");
+  return hunks.length === 0 ? (
+    <p className="text-caption text-muted-foreground">{t(($) => $.decision.artifacts.no_changes)}</p>
+  ) : (
+    <div
+      role="region"
+      tabIndex={0}
+      aria-label={label}
+      className="min-h-0 flex-1 overflow-auto rounded-lg border border-surface-border bg-surface font-mono text-caption leading-6 focus-visible:outline-2 focus-visible:outline-ring"
+    >
+      {hunks.map((hunk, index) => {
+        const previous = hunks[index - 1];
+        const hidden = previous ? hunk.new_start - (previous.new_start + newSideLines(previous.lines)) : 0;
+        let number = hunk.new_start;
+        return (
+          <div key={`${hunk.old_start}:${hunk.new_start}`}>
+            {hidden > 0 && (
+              <div className="border-y border-dashed border-surface-border px-2.5 py-0.5 text-center italic text-muted-foreground">
+                {t(($) => $.decision.artifacts.lines_hidden, { count: hidden })}
+              </div>
+            )}
+            {hunk.lines.map((line, lineIndex) => {
+              const kind = line[0];
+              const shown = kind === "-" ? "" : number++;
+              return (
+                <div
+                  key={lineIndex}
+                  className={cn(
+                    "grid grid-cols-[2rem_1.1rem_1fr] whitespace-pre-wrap break-words",
+                    kind === "+" && "bg-success/10",
+                    kind === "-" && "bg-destructive/10",
+                  )}
+                >
+                  <i className="pr-1.5 text-right not-italic text-muted-foreground">{shown}</i>
+                  <s className={cn("text-center font-bold no-underline", kind === "+" && "text-success", kind === "-" && "text-destructive")}>
+                    {kind === "+" ? "+" : kind === "-" ? "−" : ""}
+                  </s>
+                  <code>{line.slice(1)}</code>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function DiffView({ diff, artifact }: { artifact: DecisionArtifact; diff: DecisionArtifactDiff }) {
   const { t } = useT("chat");
   const { added, removed } = countDiffLines(diff.hunks);
@@ -72,51 +122,7 @@ function DiffView({ diff, artifact }: { artifact: DecisionArtifact; diff: Decisi
         </SignatureTag>
         <span>{t(($) => $.decision.artifacts.changes_summary, { added, removed })}</span>
       </p>
-      {diff.hunks.length === 0 ? (
-        <p className="text-caption text-muted-foreground">{t(($) => $.decision.artifacts.no_changes)}</p>
-      ) : (
-        <div
-          role="region"
-          tabIndex={0}
-          aria-label={t(($) => $.decision.artifacts.diff_region, { previous: diff.previous_filename })}
-          className="min-h-0 flex-1 overflow-auto rounded-lg border border-surface-border bg-surface font-mono text-caption leading-6 focus-visible:outline-2 focus-visible:outline-ring"
-        >
-          {diff.hunks.map((hunk, index) => {
-            const previous = diff.hunks[index - 1];
-            const hidden = previous ? hunk.new_start - (previous.new_start + newSideLines(previous.lines)) : 0;
-            let number = hunk.new_start;
-            return (
-              <div key={`${hunk.old_start}:${hunk.new_start}`}>
-                {hidden > 0 && (
-                  <div className="border-y border-dashed border-surface-border px-2.5 py-0.5 text-center italic text-muted-foreground">
-                    {t(($) => $.decision.artifacts.lines_hidden, { count: hidden })}
-                  </div>
-                )}
-                {hunk.lines.map((line, lineIndex) => {
-                  const kind = line[0];
-                  const shown = kind === "-" ? "" : number++;
-                  return (
-                    <div
-                      key={lineIndex}
-                      className={cn(
-                        "grid grid-cols-[2rem_1.1rem_1fr] whitespace-pre-wrap break-words",
-                        kind === "+" && "bg-success/10",
-                        kind === "-" && "bg-destructive/10",
-                      )}
-                    >
-                      <i className="pr-1.5 text-right not-italic text-muted-foreground">{shown}</i>
-                      <s className={cn("text-center font-bold no-underline", kind === "+" && "text-success", kind === "-" && "text-destructive")}>
-                        {kind === "+" ? "+" : kind === "-" ? "−" : ""}
-                      </s>
-                      <code>{line.slice(1)}</code>
-                    </div>
-                  );
-                })}
-              </div>
-            );
-          })}
-        </div>
-      )}
+      <DiffHunks hunks={diff.hunks} label={t(($) => $.decision.artifacts.diff_region, { previous: diff.previous_filename })} />
     </div>
   );
 }

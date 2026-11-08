@@ -463,6 +463,8 @@
     "action_unavailable": "詳細を表示できません",
     "action_approve": "パスキーで承認",
     "action_preview": "承認で変更される内容",
+    "action_diff": "このステップの指示の変更",
+    "action_diff_open": "変更を確認",
     "agent_note": "エージェントのメモ（未検証）",
     "answer_send_passkey": "パスキーで送信",
     "answer_open_browser": "ブラウザで開く",

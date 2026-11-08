@@ -140,6 +140,7 @@
     "approve": "Approve with passkey",
     "reject": "Reject",
     "reject_error": "Rejecting did not complete. Try again.",
+    "preview_required": "The changes shown no longer match the request. Reload the card and review again.",
     "waiting": "Waiting for your passkey…",
     "state": {
       "executed": "Executed",

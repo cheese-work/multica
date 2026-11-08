@@ -9,7 +9,7 @@ import { Button } from "@multica/ui/components/ui/button";
 import { useT } from "../i18n";
 
 type View =
-  | { step: "loading" | "idle" | "busy" | "rejecting" | "no_passkey" | "retry" | "reject_retry" | "lost" }
+  | { step: "loading" | "idle" | "busy" | "rejecting" | "no_passkey" | "retry" | "reject_retry" | "lost" | "preview_required" }
   | { step: "done"; outcome: PasskeyDecisionOutcome };
 
 const TERMINAL = ["executed", "failed", "rejected", "expired", "cancelled"] as const;
@@ -55,11 +55,14 @@ function executedEffect(result: unknown): { token: string; change?: string } | n
 export function DecisionActionApproval({
   actionId,
   payloadSha256,
+  previewSha256,
   state,
   onEnroll,
 }: {
   actionId: string;
   payloadSha256: string;
+  /** The digest of the preview the card rendered; the server approves only against that preview. */
+  previewSha256?: string;
   /** The action state the surrounding card reports; a change reads the outcome again (a decision made in another tab or by a worker). */
   state?: string;
   onEnroll?: () => void;
@@ -89,7 +92,7 @@ export function DecisionActionApproval({
       const assertion = await signPasskeyChallenge(await api.challengeDecisionAction(actionId));
       sent = true;
       markApproveSent(actionId);
-      const outcome = await api.approveDecisionAction(actionId, { payload_sha256: payloadSha256, assertion });
+      const outcome = await api.approveDecisionAction(actionId, { payload_sha256: payloadSha256, ...(previewSha256 && { preview_sha256: previewSha256 }), assertion });
       setView(isTerminal(outcome.state) ? { step: "done", outcome } : { step: "lost" });
     } catch (error) {
       const refused = error instanceof ApiError && error.status < 500;
@@ -97,6 +100,7 @@ export function DecisionActionApproval({
       const reason = refused ? error.message.split(":")[0] : "";
       if (!sent && reason === "no_passkey") setView({ step: "no_passkey" });
       else if (!sent && reason === "not_pending") await readBack();
+      else if (sent && reason === "preview_required") setView({ step: "preview_required" });
       else if (!sent && reason === "expired") await readBack({ step: "done", outcome: { id: actionId, state: "expired" } });
       else if (!sent || refused) setView({ step: "retry" });
       else await readBack();
@@ -142,6 +146,15 @@ export function DecisionActionApproval({
       <div className="space-y-1 text-label">
         <p role="alert" className="text-caption text-destructive">{t(($) => $.decision_action.lost)}</p>
         <Button size="sm" variant="outline" onClick={() => readBack()}>{t(($) => $.decision_action.check)}</Button>
+      </div>
+    );
+  }
+  if (view.step === "preview_required") {
+    // The shown changes are stale: approving again would send the same digest, so only Reject is left.
+    return (
+      <div className="space-y-1 text-label">
+        <p role="alert" className="text-caption text-destructive">{t(($) => $.decision_action.preview_required)}</p>
+        <Button size="sm" variant="outline" onClick={reject}>{t(($) => $.decision_action.reject)}</Button>
       </div>
     );
   }

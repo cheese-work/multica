@@ -103,7 +103,7 @@ import type {
 } from "../types";
 import type { CloudRuntimeNode } from "../runtimes/cloud-runtime";
 import type { CreateFeedbackResponse } from "../feedback/types";
-import { SHA256_HEX, isPreviewedActionType } from "../issues/decision-action-preview";
+import { SHA256_HEX, isDiffActionType, isPreviewedActionType } from "../issues/decision-action-preview";
 
 export const PluginConfigFieldSchema = z.lazy(() => z.object({
   key: z.string(),
@@ -1060,8 +1060,16 @@ const DecisionActionSchema = z.lazy(() => z.object({
     fields: z.array(z.object({ label: z.string(), current: z.string(), proposed: z.string() }).loose()).min(1),
     sha256: z.string().regex(SHA256_HEX),
   }).loose().optional().catch(undefined),
-}).loose().transform((action) =>
-  action.preview && !isPreviewedActionType(action.action_type) ? { ...action, preview: undefined } : action));
+  diff: z.object({
+    kind: z.literal("text"),
+    hunks: z.array(z.object({ old_start: z.number().int(), new_start: z.number().int(), lines: z.array(z.string().regex(/^[ +-]/)) }).loose()),
+    sha256: z.string().regex(SHA256_HEX),
+  }).loose().optional().catch(undefined),
+}).loose().transform((action) => ({
+  ...action,
+  ...(action.preview && !isPreviewedActionType(action.action_type) && { preview: undefined }),
+  ...(action.diff && !isDiffActionType(action.action_type) && { diff: undefined }),
+})));
 
 const DecisionRequestCardSchema = z.lazy(() => z.object({
   id: z.string(),

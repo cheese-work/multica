@@ -428,6 +428,8 @@
     "action_unavailable": "無法顯示詳細資料",
     "action_approve": "使用通行金鑰核准",
     "action_preview": "核准後將變更的內容",
+    "action_diff": "此步驟說明的變更",
+    "action_diff_open": "檢視變更",
     "agent_note": "代理備註（未驗證）",
     "answer_send_passkey": "使用通行金鑰傳送",
     "answer_open_browser": "在瀏覽器中開啟",
