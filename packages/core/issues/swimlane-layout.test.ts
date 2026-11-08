@@ -44,6 +44,12 @@ describe("layoutSwimlanes cycles", () => {
     expect(rank(nodes, [e("s", "a"), e("a", "b"), e("b", "a"), e("b", "t")])).toEqual({ s: 0, a: 1, b: 2, t: 3 });
   });
 
+  it("starts a cycle entered through a later member at its earliest node", () => {
+    // s -> b -> a -> b with s < a < b: the cycle {a, b} starts at a, so b -> a is the cut edge.
+    const nodes = [n("b", "3"), n("a", "2"), n("s", "1")];
+    expect(rank(nodes, [e("s", "b"), e("b", "a"), e("a", "b")])).toEqual({ s: 0, a: 0, b: 1 });
+  });
+
   it("handles a long chain without recursion limits", () => {
     const nodes = Array.from({ length: 20000 }, (_, i) => n(`n${String(i).padStart(5, "0")}`, String(i).padStart(5, "0")));
     const edges = nodes.slice(1).map((x, i) => e(nodes[i]!.id, x.id));
