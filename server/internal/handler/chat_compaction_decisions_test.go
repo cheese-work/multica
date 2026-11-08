@@ -309,6 +309,37 @@ func TestCompactionRedactsPrivateKeyCrossingTheRetrievalCut(t *testing.T) {
 	}
 }
 
+// A credential cut in two by the retrieval limit is not shown as a prefix:
+// redacting the earlier tokens shrinks the text, which would pull the partial
+// credential at the cut inside the 2 KiB window. The key is built at runtime.
+func TestCompactionDropsAPartialCredentialAtTheRetrievalCut(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID := createHandlerTestAgent(t, "compaction-decisions-split", []byte("[]"))
+	sessionID := dbfx.ChatSession(t, agentID)
+	longToken := "ghp_" + strings.Repeat("a1B2c3D4e5", 25) // 254 chars, redacted to a short marker
+	prefix := strings.Repeat(longToken+" ", 15)            // shrinks a lot once redacted
+	prefix += strings.Repeat(" ", decisionsWordsFetchChars-12-len(prefix))
+	awsKey := "AK" + "IA" + strings.Repeat("ZQ", 8) // 20 chars: 12 of them land before the cut
+	words := prefix + awsKey + " and the rest of the message."
+	recordDecision(t, agentID, sessionID, "split decision", words, false)
+	session, summary, fail := testHandler.compactChatInPlace(ctx, parseUUID(sessionID), pgtype.UUID{}, "Nothing kept.")
+	if fail != nil {
+		t.Fatalf("compact: %s", fail.message)
+	}
+	seed, err := testHandler.compactionSeedBlock(ctx, session, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for where, text := range map[string]string{"row": summary.Content, "prompt": seed} {
+		if strings.Contains(text, awsKey[:12]) {
+			t.Fatalf("%s carries a partial credential:\n%.900s", where, text)
+		}
+	}
+}
+
 // Enough decisions to pass the block budget: the newest stay in full, older ones
 // collapse to one line that still names key, time and record id, and a count
 // line says so. Nothing is dropped silently, and the block stays bounded.

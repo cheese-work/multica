@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/redact"
@@ -60,7 +61,7 @@ func compactionDecisionsBlock(ctx context.Context, queries *db.Queries, session 
 		// Once one record does not fit, every older one collapses: the full
 		// lines stay a contiguous newest-first run.
 		if collapsed == 0 {
-			words := redactDecisionWords(row.Words)
+			words := redactDecisionWords(row.Words, int(row.WordsBytes) > len(row.Words))
 			cut := ""
 			if int(row.WordsBytes) > decisionWordsMaxBytes {
 				cut = fmt.Sprintf(" [words cut: first %d of %d bytes; the record holds the rest]", decisionWordsMaxBytes, row.WordsBytes)
@@ -97,11 +98,17 @@ func compactionDecisionsBlock(ctx context.Context, queries *db.Queries, session 
 // rules.
 var privateKeyBegin = regexp.MustCompile(`-----BEGIN[A-Z\s]*PRIVATE KEY-----`)
 
-// redactDecisionWords redacts provider tokens in text the query cut short. A
+// redactDecisionWords redacts provider tokens in text the query may have cut
+// short. When the query cut it, the last word may be the front half of a
+// credential, so the text ends at the last whitespace: redaction would not match
+// the half, and cutting later to the display size could bring it into view. A
 // private key whose end marker lies past the cut is not matched by the redact
-// rules, so any begin marker left after them starts an unterminated key and the
-// text from there on is dropped.
-func redactDecisionWords(words string) string {
+// rules either, so any begin marker left after them starts an unterminated key
+// and the text from there on is dropped.
+func redactDecisionWords(words string, cutByQuery bool) string {
+	if cutByQuery {
+		words = words[:max(strings.LastIndexFunc(words, unicode.IsSpace), 0)]
+	}
 	words = redact.Prose(words)
 	if loc := privateKeyBegin.FindStringIndex(words); loc != nil {
 		words = words[:loc[0]] + "[REDACTED PRIVATE KEY]"
