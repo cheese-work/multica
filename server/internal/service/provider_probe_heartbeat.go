@@ -66,6 +66,9 @@ func (m *ProbeHeartbeatMonitor) LastHeartbeat() (time.Time, bool) {
 // a failing probe raises its own class of alert.
 func (m *ProbeHeartbeatMonitor) RunOnce(ctx context.Context) {
 	evidence, err := m.probe.Probe(ctx)
+	if ctx.Err() != nil {
+		return // shutdown, not a probe result
+	}
 	class, message := classifyProbeResult(evidence, err)
 
 	m.mu.Lock()
@@ -96,13 +99,26 @@ func (m *ProbeHeartbeatMonitor) CheckSilence() {
 	}
 }
 
-// Run probes and checks silence every interval/2 until ctx ends.
+// Run probes every interval/2 and checks silence on its own goroutine, so a
+// blocked probe cannot suppress the silence alert.
 func (m *ProbeHeartbeatMonitor) Run(ctx context.Context) {
-	ticker := time.NewTicker(m.interval / 2)
+	tick := m.interval / 2
+	go func() {
+		ticker := time.NewTicker(tick)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				m.CheckSilence()
+			}
+		}
+	}()
+	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 	for {
 		m.RunOnce(ctx)
-		m.CheckSilence()
 		select {
 		case <-ctx.Done():
 			return

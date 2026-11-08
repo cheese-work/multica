@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -156,5 +157,53 @@ func TestProbeHeartbeat_HealthyRunClearsFailureAlert(t *testing.T) {
 	m.RunOnce(context.Background())
 	if len(sink.cleared) != 1 || sink.cleared[0] != "probe-gateway_unreachable:1" {
 		t.Fatalf("cleared = %v, want [probe-gateway_unreachable:1]", sink.cleared)
+	}
+}
+
+type blockingProbe struct{ release chan struct{} }
+
+func (p *blockingProbe) Probe(ctx context.Context) (ProviderFailureProbeEvidence, error) {
+	select {
+	case <-p.release:
+	case <-ctx.Done():
+	}
+	return ProviderFailureProbeEvidence{}, ctx.Err()
+}
+
+// lockedAlertSink is a goroutine-safe sink for tests that drive Run.
+type lockedAlertSink struct {
+	mu sync.Mutex
+	fakeAlertSink
+}
+
+func (s *lockedAlertSink) Raise(key, class, message string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fakeAlertSink.Raise(key, class, message)
+}
+func (s *lockedAlertSink) raisedCopy() []recordedAlert {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]recordedAlert(nil), s.raised...)
+}
+
+func TestProbeHeartbeat_RunAlertsWhileProbeIsBlocked(t *testing.T) {
+	sink := &lockedAlertSink{}
+	m := NewProbeHeartbeatMonitor(&blockingProbe{release: make(chan struct{})}, sink, time.Now, 40*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { m.Run(ctx); close(done) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for len(sink.raisedCopy()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond) // more watchdog ticks must not re-raise
+	cancel()
+	<-done
+
+	got := sink.raisedCopy()
+	if len(got) != 1 || got[0].Key != "probe-silence:1" || got[0].Class != "heartbeat_silence" {
+		t.Fatalf("raised = %+v, want exactly one probe-silence:1 alert while the probe is blocked", got)
 	}
 }
