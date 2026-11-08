@@ -4487,3 +4487,19 @@ export const RoutingAgentSettingSchema = z.lazy(() => z.object({
   overrides: z.record(z.string(), z.string()).nullish().transform((v) => v ?? {}),
 }).loose());
 export type RoutingAgentSetting = z.infer<typeof RoutingAgentSettingSchema>;
+
+// Provider breaker state (CHE-4382). An unknown state reads as `open`: the
+// panel must not tell an admin a breaker is closed when it cannot tell.
+export const ProviderBreakerSchema = z.lazy(() => z.object({
+  provider: z.string(),
+  state: z.enum(["closed", "open", "half_open"]).catch("open"),
+  open_reason: z.string().nullish().transform((v) => v ?? ""),
+  failure_count: z.number().int().nonnegative().catch(0),
+  opened_at: z.string().nullish().transform((v) => v ?? null),
+  next_probe_at: z.string().nullish().transform((v) => v ?? null),
+  last_success_at: z.string().nullish().transform((v) => v ?? null),
+  trip_evidence: z.array(z.string()).nullish().transform((v) => v ?? []),
+}));
+export const ProviderBreakerListSchema = z.lazy(() => z.object({
+  breakers: z.array(ProviderBreakerSchema).nullish().transform((v) => v ?? []),
+}));
