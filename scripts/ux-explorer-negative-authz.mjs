@@ -5,9 +5,10 @@
 // Only status codes are recorded, never response bodies. No write is ever sent to a real workspace.
 //
 //   node scripts/ux-explorer-negative-authz.mjs
-// Env: KEYDIR (default ~/.multica-explorer, needs seeder.pat and explorer.pat), MULTICA_SERVER_URL,
+// Env: KEYDIR (default ~/.multica-explorer, needs seeder.pat and explorer.pat; optional reader.pat,
+//      a member of the real workspace used only to confirm the real fixtures exist, default seeder), MULTICA_SERVER_URL,
 //      REAL_WORKSPACE_ID, REAL_ISSUE_ID, REAL_ATTACHMENT_ID (a cheese-work issue and attachment).
-import { readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -29,7 +30,12 @@ async function call(server, token, method, path, { ws, json, form } = {}) {
 
 const listOf = (data, key) => (Array.isArray(data) ? data : data?.[key] ?? []);
 
-// Real WebSocket probe: first-frame auth, then watch for auth_ack vs an error or close.
+// The server's explicit membership rejection frame (server/internal/realtime/hub.go).
+const MEMBERSHIP_REJECTION = 'not a member of this workspace';
+
+// Real WebSocket probe: first-frame auth. Only an auth_ack ('ack') or the server's explicit
+// membership rejection ('denied') is conclusive; transport errors, closes, timeouts and any
+// other frame are 'inconclusive'.
 export function probeWs(url, token, timeoutMs = 10000) {
   return new Promise((resolve) => {
     const sock = new WebSocket(url);
@@ -37,18 +43,20 @@ export function probeWs(url, token, timeoutMs = 10000) {
     const timer = setTimeout(() => done('inconclusive', 'timeout'), timeoutMs);
     sock.onopen = () => sock.send(JSON.stringify({ type: 'auth', payload: { token } }));
     sock.onmessage = (ev) => {
-      const text = String(ev.data);
-      if (text.includes('"auth_ack"')) done('ack', 'auth_ack');
-      else if (text.includes('"error"')) done('denied', 'auth_error');
-      else done('inconclusive', 'other-frame');
+      let frame = null;
+      try { frame = JSON.parse(String(ev.data)); } catch { /* not JSON */ }
+      if (frame?.type === 'auth_ack') done('ack', 'auth_ack');
+      else if (frame?.error === MEMBERSHIP_REJECTION) done('denied', 'membership-rejected');
+      else done('inconclusive', 'server-error-frame');
     };
-    sock.onerror = () => done('denied', 'upgrade-refused');
-    sock.onclose = () => done('denied', 'closed');
+    sock.onerror = () => done('inconclusive', 'transport-error');
+    sock.onclose = () => done('inconclusive', 'closed');
   });
 }
 
 export async function runChecks({ server, sandboxId, sandboxSlug, real, tokens, probeWs: probe = probeWs }) {
-  const { seeder: S, explorer: E } = tokens;
+  // reader: an identity that can read the real workspace, to prove its fixtures exist (default: seeder).
+  const { seeder: S, explorer: E, reader: R = S } = tokens;
   const rows = [];
   let stop = false;
   const add = (name, expect, got, ok) => { rows.push({ name, expect, got: String(got), ok }); return ok; };
@@ -93,6 +101,19 @@ export async function runChecks({ server, sandboxId, sandboxSlug, real, tokens, 
       && add('control: explorer reads sandbox', '200', controlE.status, controlE.status === 200);
     if (!seeded || !controls) return { rows, stop };
 
+    // Controls that make a denial meaningful: E can use the WebSocket where it is a member, and every
+    // real fixture exists (an authorized read-only 2xx), else a 404 would pass as a denial.
+    const wsBase = `${server.replace(/^http/, 'ws')}/ws?workspace_id=`;
+    const wsCtl = await probe(wsBase + sandboxId, E);
+    const wsControlOk = add('control: explorer websocket subscribes to sandbox', 'ack', `${wsCtl.outcome} (${wsCtl.detail})`, wsCtl.outcome === 'ack');
+    const fixture = async (name, path, ws) => {
+      const { status } = await call(server, R, 'GET', path, { ws });
+      return add(`control: cheese-work ${name} exists`, '200', status, status === 200);
+    };
+    const realWs = await fixture('workspace', `/api/workspaces/${real.workspaceId}`);
+    const realIssue = await fixture('issue', `/api/issues/${real.issueId}`, real.workspaceId);
+    const realAtt = await fixture('attachment', `/api/attachments/${real.attachmentId}/download-metadata`);
+
     // 1. Reads against W-neg by known ID.
     await expectDenied('W-neg workspace read', 'GET', `/api/workspaces/${wneg}`);
     await expectDenied('W-neg issue by id', 'GET', `/api/issues/${issueId}`, { ws: wneg });
@@ -101,10 +122,11 @@ export async function runChecks({ server, sandboxId, sandboxSlug, real, tokens, 
     if (attachmentId) await expectDenied('W-neg attachment download', 'GET', `/api/attachments/${attachmentId}/download`);
     else add('W-neg attachment download', '401/403/404', 'NOT-RUN (no attachment seeded)', false);
     if (!stop) {
-      const wsUrl = `${server.replace(/^http/, 'ws')}/ws?workspace_id=${wneg}`;
-      const { outcome, detail } = await probe(wsUrl, E);
-      if (outcome === 'ack') stop = true;
-      add('W-neg websocket subscribe', 'denied, no auth_ack', `${outcome} (${detail})`, outcome === 'denied');
+      if (wsControlOk) {
+        const { outcome, detail } = await probe(wsBase + wneg, E);
+        if (outcome === 'ack') stop = true;
+        add('W-neg websocket subscribe', 'explicit membership rejection', `${outcome} (${detail})`, outcome === 'denied');
+      } else add('W-neg websocket subscribe', 'explicit membership rejection', 'NOT-RUN (websocket control failed)', false);
     }
 
     // 2. Writes against W-neg only.
@@ -135,9 +157,12 @@ export async function runChecks({ server, sandboxId, sandboxSlug, real, tokens, 
       add('E workspace list is the sandbox only', `[${sandboxSlug}]`, `count=${slugs.length} match=${slugs.length === 1 && slugs[0] === sandboxSlug}`,
         slugs.length === 1 && slugs[0] === sandboxSlug);
     }
-    await expectDenied('cheese-work workspace read', 'GET', `/api/workspaces/${real.workspaceId}`);
-    await expectDenied('cheese-work issue by id', 'GET', `/api/issues/${real.issueId}`, { ws: real.workspaceId });
-    await expectDenied('cheese-work attachment download', 'GET', `/api/attachments/${real.attachmentId}/download`);
+    const realDenied = async (exists, name, ...args) => (exists
+      ? expectDenied(name, ...args)
+      : !stop && add(name, '401/403/404', 'NOT-RUN (fixture unverified)', false));
+    await realDenied(realWs, 'cheese-work workspace read', 'GET', `/api/workspaces/${real.workspaceId}`);
+    await realDenied(realIssue, 'cheese-work issue by id', 'GET', `/api/issues/${real.issueId}`, { ws: real.workspaceId });
+    await realDenied(realAtt, 'cheese-work attachment download', 'GET', `/api/attachments/${real.attachmentId}/download`);
     return { rows, stop };
   } finally {
     const del = await call(server, S, 'DELETE', `/api/workspaces/${wneg}`).catch(() => ({ status: 'error' }));
@@ -166,7 +191,11 @@ async function main() {
       issueId: process.env.REAL_ISSUE_ID ?? '01a1981d-9257-7ad3-8833-273f0fc824f6',
       attachmentId: process.env.REAL_ATTACHMENT_ID ?? '01a19a28-1f5d-74e2-996b-f857f5287dc2',
     },
-    tokens: { seeder: readPat(keydir, 'seeder'), explorer: readPat(keydir, 'explorer') },
+    tokens: {
+      seeder: readPat(keydir, 'seeder'),
+      explorer: readPat(keydir, 'explorer'),
+      ...(existsSync(join(keydir, 'reader.pat')) && { reader: readPat(keydir, 'reader') }),
+    },
   });
   console.log('| Check | Expected | Got | Result |\n|---|---|---|---|');
   for (const r of out.rows) console.log(`| ${r.name} | ${r.expect} | ${r.got} | ${r.ok ? 'PASS' : 'FAIL'} |`);

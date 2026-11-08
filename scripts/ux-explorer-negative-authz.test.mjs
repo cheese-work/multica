@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { runChecks } from './ux-explorer-negative-authz.mjs';
+import { createHash } from 'node:crypto';
+import { runChecks, probeWs } from './ux-explorer-negative-authz.mjs';
 
 const SANDBOX = { id: 'sandbox-id', slug: 'ux-explorer-sandbox' };
 const REAL = { workspaceId: 'real-ws', issueId: 'real-issue', attachmentId: 'real-att' };
@@ -9,7 +10,8 @@ const S = 'mul_seeder';
 const E = 'mul_explorer';
 
 // Fake API. `leak` names a route that wrongly lets the explorer through.
-function fakeServer({ leak = '' } = {}) {
+// `missing` names a real fixture (workspace|issue|attachment) the authorized reader cannot find.
+function fakeServer({ leak = '', missing = '' } = {}) {
   const hits = [];
   const wneg = { id: 'wneg-id', issue: null, comments: 0, atts: 0, deleted: false };
   const srv = http.createServer((req, res) => {
@@ -35,7 +37,7 @@ function fakeServer({ leak = '' } = {}) {
         return who === 'S' || leak === 'workspace' ? send(200, { id: wneg.id }) : send(404);
       }
       if (req.method === 'GET' && path === `/api/workspaces/${SANDBOX.id}`) return send(eMember(SANDBOX.id) ? 200 : 403, {});
-      if (req.method === 'GET' && path === `/api/workspaces/${REAL.workspaceId}`) return send(403);
+      if (req.method === 'GET' && path === `/api/workspaces/${REAL.workspaceId}`) return send(who === 'S' ? (missing === 'workspace' ? 404 : 200) : 403);
       if (ws === wneg.id) {
         if (who === 'E' && !(leak === 'write-issue' && req.method === 'POST' && path === '/api/issues')) return send(403);
         if (req.method === 'POST' && path === '/api/issues') { wneg.issue = { id: 'wneg-issue', identifier: 'UXN-1', status: 'todo' }; return send(201, wneg.issue); }
@@ -47,9 +49,11 @@ function fakeServer({ leak = '' } = {}) {
         if (req.method === 'GET' && path === '/api/issues') return send(200, { issues: wneg.issue ? [wneg.issue] : [] });
       }
       if (req.method === 'GET' && path === '/api/attachments/wneg-att/download') return send(who === 'S' ? 200 : 404);
+      if (req.method === 'GET' && path === `/api/attachments/${REAL.attachmentId}/download-metadata`) return send(who === 'S' && missing !== 'attachment' ? 200 : 404);
+      // Nonexistent and forbidden both read 404 to E, which is why S must prove the fixture exists.
       if (req.method === 'GET' && path === `/api/attachments/${REAL.attachmentId}/download`) return send(404);
-      if (req.method === 'GET' && path === '/api/issues/boom') return send(500);
-      if (req.method === 'GET' && path === `/api/issues/${REAL.issueId}`) return send(403);
+      if (req.method === 'GET' && path === '/api/issues/boom') return send(who === 'S' ? 200 : 500);
+      if (req.method === 'GET' && path === `/api/issues/${REAL.issueId}`) return send(who === 'S' ? (missing === 'issue' ? 404 : 200) : 403);
       return send(404);
     });
   });
@@ -61,7 +65,7 @@ function fakeServer({ leak = '' } = {}) {
 const cfg = (server, extra = {}) => ({
   server, sandboxId: SANDBOX.id, sandboxSlug: SANDBOX.slug, real: REAL,
   tokens: { seeder: S, explorer: E },
-  probeWs: async () => ({ outcome: 'denied', detail: 'auth_error' }),
+  probeWs: async (url) => (url.includes(SANDBOX.id) ? { outcome: 'ack', detail: 'auth_ack' } : { outcome: 'denied', detail: 'membership-rejected' }),
   ...extra,
 });
 
@@ -98,7 +102,7 @@ test('an unexpected success stops the run, still deletes W-neg and flags the sto
     const bad = out.rows.find((r) => r.name.includes('create issue'));
     assert.equal(bad.ok, false);
     assert.equal(f.wneg.deleted, true);
-    assert.ok(!out.rows.some((r) => r.name.includes('cheese-work issue')), 'real workspace is not probed after a stop');
+    assert.ok(!out.rows.some((r) => r.name.includes('cheese-work issue by id')), 'real workspace is not probed by E after a stop');
   } finally { await f.close(); }
 });
 
@@ -106,7 +110,7 @@ test('a 500 is inconclusive: the row fails but the run does not stop', async () 
   const f = await fakeServer();
   try {
     const out = await runChecks(cfg(f.server, { real: { ...REAL, issueId: 'boom' } }));
-    const row = out.rows.find((r) => r.name.includes('cheese-work issue'));
+    const row = out.rows.find((r) => r.name === 'cheese-work issue by id');
     assert.equal(row.got, '500');
     assert.equal(row.ok, false);
     assert.equal(out.stop, false);
@@ -118,7 +122,7 @@ test('a websocket auth_ack is an unexpected success', async () => {
   try {
     const out = await runChecks(cfg(f.server, { probeWs: async () => ({ outcome: 'ack', detail: 'auth_ack' }) }));
     assert.equal(out.stop, true);
-    assert.equal(out.rows.find((r) => r.name.includes('websocket')).ok, false);
+    assert.equal(out.rows.find((r) => r.name === 'W-neg websocket subscribe').ok, false);
     assert.equal(f.wneg.deleted, true);
   } finally { await f.close(); }
 });
@@ -129,6 +133,70 @@ test('the real workspace is never written to even when the explorer reads are de
     await runChecks(cfg(f.server));
     const realHits = f.hits.filter((h) => h.ws === REAL.workspaceId || h.path.includes(REAL.workspaceId));
     assert.ok(realHits.length > 0);
-    assert.ok(realHits.every((h) => h.method === 'GET' && h.who === 'E'));
+    assert.ok(realHits.every((h) => h.method === 'GET'), 'reads only');
+    assert.ok(realHits.some((h) => h.who === 'E'));
   } finally { await f.close(); }
 });
+
+test('a websocket that cannot reach the authorized sandbox fails the run: no denial is trusted', async () => {
+  const f = await fakeServer();
+  try {
+    const out = await runChecks(cfg(f.server, { probeWs: async () => ({ outcome: 'inconclusive', detail: 'transport-error' }) }));
+    assert.equal(out.rows.find((r) => r.name.includes('control: explorer websocket')).ok, false);
+    assert.equal(out.rows.find((r) => r.name === 'W-neg websocket subscribe').ok, false);
+    assert.ok(out.rows.some((r) => !r.ok));
+    assert.equal(f.wneg.deleted, true);
+  } finally { await f.close(); }
+});
+
+test('a transport or server error on W-neg is inconclusive and fails the row', async () => {
+  const f = await fakeServer();
+  try {
+    const out = await runChecks(cfg(f.server, {
+      probeWs: async (url) => (url.includes(SANDBOX.id) ? { outcome: 'ack', detail: 'auth_ack' } : { outcome: 'inconclusive', detail: 'closed' }),
+    }));
+    const row = out.rows.find((r) => r.name === 'W-neg websocket subscribe');
+    assert.equal(row.ok, false);
+    assert.equal(out.stop, false);
+  } finally { await f.close(); }
+});
+
+for (const missing of ['workspace', 'issue', 'attachment']) {
+  test(`a nonexistent real ${missing} fixture fails the run instead of passing as a 404 denial`, async () => {
+    const f = await fakeServer({ missing });
+    try {
+      const out = await runChecks(cfg(f.server));
+      const control = out.rows.find((r) => r.name.startsWith('control: cheese-work') && r.name.includes(missing));
+      assert.equal(control.ok, false, JSON.stringify(out.rows));
+      assert.ok(out.rows.some((r) => !r.ok));
+      assert.equal(out.stop, false);
+      assert.equal(f.wneg.deleted, true);
+    } finally { await f.close(); }
+  });
+}
+
+// Minimal WebSocket server: answers the handshake, then sends `frame` (a string) once the client frame arrives, or nothing.
+function wsServer(mode) {
+  const srv = http.createServer((req, res) => res.end());
+  const socks = new Set();
+  srv.on('upgrade', (req, socket) => {
+    socks.add(socket);
+    if (mode === 'refuse') { socket.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n'); return; }
+    const accept = createHash('sha1').update(`${req.headers['sec-websocket-key']}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64');
+    socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+    socket.on('error', () => {});
+    socket.once('data', () => {
+      if (mode === 'drop') { socket.destroy(); return; }
+      const text = { ack: '{"type":"auth_ack"}', member: '{"error":"not a member of this workspace"}', other: '{"error":"membership lookup failed"}' }[mode];
+      socket.write(Buffer.concat([Buffer.from([0x81, text.length]), Buffer.from(text)]));
+    });
+  });
+  return new Promise((resolve) => srv.listen(0, '127.0.0.1', () => resolve({ url: `ws://127.0.0.1:${srv.address().port}/ws`, close: () => { socks.forEach((x) => x.destroy()); return new Promise((r) => srv.close(r)); } })));
+}
+
+for (const [mode, want] of [['ack', 'ack'], ['member', 'denied'], ['other', 'inconclusive'], ['drop', 'inconclusive'], ['refuse', 'inconclusive']]) {
+  test(`probeWs: ${mode} -> ${want}`, async () => {
+    const w = await wsServer(mode);
+    try { assert.equal((await probeWs(w.url, 'tok', 3000)).outcome, want); } finally { await w.close(); }
+  });
+}
