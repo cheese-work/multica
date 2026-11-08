@@ -114,6 +114,14 @@ When you create one, pick its category — **Unstarted**, **Started**, **Done**,
 
 The status library holds the available statuses. A project’s workflow chooses which ones its issues use and in what order.
 
+### Status history
+
+Open **Status history** in the issue sidebar to see every status change, oldest first. Each row shows the change, what triggered it (a person, a workflow edge, a merged PR, and so on), the time, and a link to the handoff comment when there is one. Drag the scrubber to step through the changes.
+
+- A change made before triggers were recorded shows **Trigger not recorded**.
+- A status the workspace has since removed shows **(removed)** after its name.
+- When the issue has more history than the server returns, a notice says older changes are not shown.
+
 ## Custom properties
 
 Fields specific to your team, such as severity, customer, or budget, are custom properties. A workspace `owner` or `admin` manages them in **Settings → Properties**; a workspace can have up to 20 active properties.

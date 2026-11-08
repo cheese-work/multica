@@ -42,6 +42,7 @@ const (
 	// snapshot, so the granularity here is "what does the user want to see
 	// change" — not "every internal status flip".
 	EventTaskQueued                = "task:queued"                  // ∅ → queued (enqueue / retry create)
+	EventTaskCoalesced             = "task:coalesced"               // status unchanged (a comment folded into a run not yet claimed, which now answers it)
 	EventTaskDispatch              = "task:dispatch"                // queued → dispatched (daemon claim)
 	EventTaskRunning               = "task:running"                 // dispatched → running (daemon started)
 	EventTaskWaitingLocalDirectory = "task:waiting_local_directory" // dispatched → waiting_local_directory (daemon parked on a busy local_directory path)
@@ -64,6 +65,9 @@ const (
 	// Workspace events
 	EventWorkspaceUpdated = "workspace:updated"
 	EventWorkspaceDeleted = "workspace:deleted"
+	// EventWorkspaceBackgroundAgentChanged carries one effective change of one
+	// background job's chain (CHE-4098); it fires after the commit.
+	EventWorkspaceBackgroundAgentChanged = "workspace.background_agent_changed"
 
 	// Member events
 	EventMemberAdded   = "member:added"

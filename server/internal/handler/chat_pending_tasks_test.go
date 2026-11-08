@@ -438,6 +438,7 @@ func TestPendingQueueHeadMatchesClaimForEqualCreatedAt(t *testing.T) {
 		t.Fatalf("pending head = %+v, want lower id %s", pending, lowID)
 	}
 
+	refreshRuntimeHeartbeat(t, handlerTestRuntimeID(t))
 	claimed, err := testHandler.TaskService.ClaimTask(ctx, parseUUID(agentID))
 	if err != nil {
 		t.Fatalf("claim task: %v", err)

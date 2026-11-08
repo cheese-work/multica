@@ -86,6 +86,12 @@ vi.mock("./agent-decisions-row", () => ({
   AgentDecisionsRow: () => <div data-testid="agent-decisions-row" />,
 }));
 
+vi.mock("./routing-agent-rows", () => ({
+  RoutingAgentRows: ({ canEdit }: { canEdit: boolean }) => (
+    <div data-testid="routing-agent-rows" data-can-edit={String(canEdit)} />
+  ),
+}));
+
 vi.mock("./delete-workspace-dialog", () => ({
   DeleteWorkspaceDialog: () => null,
 }));
@@ -308,6 +314,17 @@ describe("WorkspaceTab — automatic updates", () => {
     expect(screen.queryByTestId("agent-decisions-row") !== null).toBe(shown);
   });
 
+  it.each([
+    ["owner", "true"],
+    ["admin", "true"],
+    ["member", "false"],
+  ] as const)("lets a %s edit the routing agent: %s", (role, canEdit) => {
+    membersRef.current = [{ user_id: "user-1", role, name: "Ada" }];
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    expect(screen.getByTestId("routing-agent-rows")).toHaveAttribute("data-can-edit", canEdit);
+  });
+
   // CHE-1806: settings.auto_compact saves through its own request field.
   it("shows the auto-compact defaults when nothing is saved", () => {
     render(<WorkspaceTab />, { wrapper: I18nWrapper });
@@ -388,6 +405,47 @@ describe("WorkspaceTab — automatic updates", () => {
     expect(mockUpdateWorkspace).not.toHaveBeenCalled();
     expect(input).toHaveAttribute("aria-invalid", "true");
     expect(screen.getByText("Enter a whole number from 50 to 90.")).toBeInTheDocument();
+  });
+
+  // CHE-4331: per-window token thresholds, saved through the same field.
+  it("shows the per-window token defaults when nothing is saved", () => {
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    expect(screen.getByRole("spinbutton", { name: "Threshold, 200k models (tokens)" })).toHaveValue(190000);
+    expect(screen.getByRole("spinbutton", { name: "Threshold, 1M models (tokens)" })).toHaveValue(200000);
+  });
+
+  it("saves only the 1M token threshold after the field loses focus", async () => {
+    const user = setupUser();
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+    const input = screen.getByRole("spinbutton", { name: "Threshold, 1M models (tokens)" });
+
+    await user.clear(input);
+    await user.type(input, "300000");
+    await user.tab();
+
+    await waitFor(() => {
+      expect(mockUpdateWorkspace).toHaveBeenLastCalledWith("workspace-1", {
+        auto_compact: { threshold_tokens_1m: 300000 },
+      });
+    });
+  });
+
+  it("never sends a 1M token threshold above 400000", async () => {
+    const user = setupUser();
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+    const input = screen.getByRole("spinbutton", { name: "Threshold, 1M models (tokens)" });
+
+    await user.clear(input);
+    await user.type(input, "500000");
+    await user.tab();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(700);
+    });
+
+    expect(mockUpdateWorkspace).not.toHaveBeenCalled();
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByText("Enter a whole number from 100000 to 400000.")).toBeInTheDocument();
   });
 
   it("shows regular members the auto-compact setting read-only", () => {

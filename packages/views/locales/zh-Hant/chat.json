@@ -304,6 +304,8 @@
     "archive_failed": "無法封存此對話",
     "unarchive_failed": "無法取消封存此對話",
     "pin_failed": "無法更新置頂狀態",
+    "unseen": "標記為未讀",
+    "unseen_failed": "無法將此對話標記為未讀",
     "undo": "復原"
   },
   "header": {
@@ -314,11 +316,13 @@
     "unarchive": "取消歸檔",
     "context_meter": "{{window}} 中的 {{pct}}%",
     "context_meter_warning": "下一次回復後將壓縮",
+    "context_meter_threshold": "達到 {{threshold}} 時壓縮(目前 {{now}})",
     "compact_now": "立即壓縮",
     "more_actions": "更多操作",
     "statistics": "統計",
     "pin": "置頂對話",
     "unpin": "取消置頂對話",
+    "unseen": "標記為未讀",
     "preset": { "label": "預設", "inherit": "繼承", "base": "基礎" }
   },
   "scheduled": {
@@ -328,7 +332,8 @@
     "cancel": "取消",
     "cancel_label": "取消 {{time}} 的排程跟進",
     "cancel_failed": "無法取消該跟進",
-    "load_failed": "無法載入已排程的跟進。重試"
+    "load_failed": "無法載入已排程的跟進。重試",
+    "watching_until": "監聽事項 · 截止 {{time}}"
   },
   "annotations": {
     "one_request": "請每次只發送針對一個決策請求的評論。",
@@ -370,6 +375,10 @@
     "answer_text": "輸入回答",
     "answer_note": "新增備註（選填）",
     "answer_chose": "已選擇：{{option}}",
+    "option_recommended": "推薦",
+    "option_pros": "優點",
+    "option_cons": "缺點",
+    "option_cost": "成本或時間",
     "answer_send": "傳送",
     "answer_error": "傳送失敗，請重試。",
     "answer_helper": "傳送會將你的回答發佈到 {{issue}}。給 DM 代理的問題請寫在下方訊息框。",
@@ -379,6 +388,16 @@
     "answer_offline": "你已離線。回答已保留，重新連線後即可傳送。",
     "answer_conflict": "此卡片已無法接收你的回答，例如已被先回答。你的草稿未被發佈。你的草稿：",
     "answer_discard": "捨棄草稿",
+    "action_unavailable": "無法顯示詳細資料",
+    "action_approve": "使用通行金鑰核准",
+    "action_preview": "核准後將變更的內容",
+    "answer_send_passkey": "使用通行金鑰傳送",
+    "answer_open_browser": "在瀏覽器中開啟",
+    "answer_passkey_needed": "此回答需要你的通行金鑰。再次傳送以確認。",
+    "answer_passkey_desktop": "此回答需要通行金鑰，只能在瀏覽器中使用。請在瀏覽器中開啟並回答。",
+    "answer_stale": "開啟後此請求已變更。請查看後再傳送。",
+    "answer_no_passkey": "回答此請求前，請先在設定中新增通行金鑰。",
+    "answer_passkey_failed": "通行金鑰步驟未完成。回答已保留，再次傳送即可重試。",
     "source_comment": "來源評論",
     "recorded_on": "已記錄到 {{issue}}",
     "quoted_in": "已引用到 {{issue}}",
