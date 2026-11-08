@@ -57,3 +57,9 @@ FROM system1_observation
 WHERE workspace_id = sqlc.arg('workspace_id') AND kind = sqlc.arg('kind')
 GROUP BY class
 ORDER BY class;
+
+-- name: GetLatestSystem1RouteObservation :one
+-- The route row a just-committed route call wrote (the issue's newest one).
+SELECT id FROM system1_observation
+WHERE kind = 'route' AND subject_id = sqlc.arg('issue_id')
+ORDER BY created_at DESC, id DESC LIMIT 1;

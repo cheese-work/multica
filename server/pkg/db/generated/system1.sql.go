@@ -61,6 +61,20 @@ func (q *Queries) CreateSystem1Observation(ctx context.Context, arg CreateSystem
 	return err
 }
 
+const getLatestSystem1RouteObservation = `-- name: GetLatestSystem1RouteObservation :one
+SELECT id FROM system1_observation
+WHERE kind = 'route' AND subject_id = $1
+ORDER BY created_at DESC, id DESC LIMIT 1
+`
+
+// The route row a just-committed route call wrote (the issue's newest one).
+func (q *Queries) GetLatestSystem1RouteObservation(ctx context.Context, issueID pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getLatestSystem1RouteObservation, issueID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const listRecentIssueStatusChanges = `-- name: ListRecentIssueStatusChanges :many
 SELECT (details->>'to')::text AS to_status FROM activity_log
 WHERE issue_id = $1 AND action = 'status_changed' AND details->>'to' IS NOT NULL
