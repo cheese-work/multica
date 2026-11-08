@@ -16,6 +16,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 )
 
 // configProposeCmd builds the action file for a workspace config change. It
@@ -254,9 +255,18 @@ func liveSteps(ctx context.Context, client *cli.APIClient, workflowID string) (j
 }
 
 func workflowStepsProposal(ctx context.Context, client *cli.APIClient, workflowID, text string) (*proposal, error) {
-	var steps []json.RawMessage
+	var steps []map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(text), &steps); err != nil {
 		return nil, errors.New("steps file must be one JSON array (edit the steps the workflow GET returns)")
+	}
+	for _, step := range steps {
+		if err := normalizeStep(step); err != nil {
+			return nil, err
+		}
+	}
+	normalized, err := json.Marshal(steps)
+	if err != nil {
+		return nil, err
 	}
 	current, err := liveSteps(ctx, client, workflowID)
 	if err != nil {
@@ -266,10 +276,11 @@ func workflowStepsProposal(ctx context.Context, client *cli.APIClient, workflowI
 	if p.BaseSHA256, err = decisionaction.WorkflowDigest(workflowID, current); err != nil {
 		return nil, err
 	}
-	if p.AfterSHA256, err = decisionaction.WorkflowDigest(workflowID, json.RawMessage(text)); err != nil {
+	// The server hashes the steps it would store, so hash the normalized ones.
+	if p.AfterSHA256, err = decisionaction.WorkflowDigest(workflowID, normalized); err != nil {
 		return nil, err
 	}
-	p.Params = map[string]any{"workflow_id": workflowID, "steps": json.RawMessage(text), "base_sha256": p.BaseSHA256, "after_sha256": p.AfterSHA256}
+	p.Params = map[string]any{"workflow_id": workflowID, "steps": json.RawMessage(normalized), "base_sha256": p.BaseSHA256, "after_sha256": p.AfterSHA256}
 	return p, nil
 }
 
@@ -290,6 +301,17 @@ func workflowStepInstructionsProposal(ctx context.Context, client *cli.APIClient
 		var key string
 		if json.Unmarshal(step["status_key"], &key) == nil && key == statusKey {
 			step["instructions"], _ = json.Marshal(text)
+			if err := normalizeStep(step); err != nil {
+				return nil, err
+			}
+			var stored string
+			if err := json.Unmarshal(step["instructions"], &stored); err != nil {
+				return nil, err
+			}
+			if stored == "" && strings.TrimSpace(text) != "" {
+				return nil, fmt.Errorf("step %q has no handler, so the server drops its instructions", statusKey)
+			}
+			text = stored // the text the server stores
 			found = true
 		}
 	}
@@ -380,4 +402,41 @@ func marshalIndent(v any) ([]byte, error) {
 		return nil, err
 	}
 	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
+}
+
+// normalizeStep applies the server's issueworkflow.NormalizeHandoff to one
+// step in the GET shape, so the digest is of the step the server would store:
+// trimmed fields, no instructions on a handler-less step, no stale handler id.
+func normalizeStep(step map[string]json.RawMessage) error {
+	var s issueworkflow.Step
+	raw, err := json.Marshal(step)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return errors.New("a step is not a workflow step")
+	}
+	s = issueworkflow.NormalizeHandoff(s)
+	set := func(key string, value any, omit bool) {
+		if omit {
+			delete(step, key)
+			return
+		}
+		step[key], _ = json.Marshal(value)
+	}
+	set("status_key", s.StatusKey, false)
+	set("handler", s.Handler, false)
+	set("instructions", s.Instructions, false)
+	set("next_status_key", s.NextStatusKey, s.NextStatusKey == "")
+	set("back_status_key", s.BackStatusKey, s.BackStatusKey == "")
+	if _, ok := step["edges"]; ok {
+		set("edges", s.Edges, len(s.Edges) == 0)
+	}
+	if _, ok := step["entry"]; ok {
+		set("entry", s.Entry, len(s.Entry) == 0)
+	}
+	if _, ok := step["sub_workflow"]; ok {
+		set("sub_workflow", s.SubWorkflow, s.SubWorkflow == nil)
+	}
+	return nil
 }

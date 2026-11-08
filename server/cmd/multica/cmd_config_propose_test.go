@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -193,15 +193,16 @@ func TestProposeWorkflowStepsHashesTheGETShapeWithTheServerRecipe(t *testing.T) 
 	if action.Type != "workflow.steps.set" || action.str(t, "base_sha256") != wantBase || action.str(t, "after_sha256") != wantAfter {
 		t.Fatalf("action = %+v params %s", action, action.Params)
 	}
-	var compact bytes.Buffer
-	_ = json.Compact(&compact, action.Params["steps"])
-	if compact.String() != next {
-		t.Errorf("steps = %s, want the file's steps", compact.String())
+	var got, want any
+	_ = json.Unmarshal(action.Params["steps"], &got)
+	_ = json.Unmarshal([]byte(next), &want)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("steps = %s, want the file's steps", action.Params["steps"])
 	}
 }
 
 func TestProposeWorkflowStepInstructionsChangesOnlyTheNamedStep(t *testing.T) {
-	live := json.RawMessage(`[{"status_key":"todo","instructions":"a"},{"status_key":"review","instructions":"b"}]`)
+	live := json.RawMessage(`[{"status_key":"todo","handler":{"type":"agent","id":"a"},"instructions":"a"},{"status_key":"review","handler":{"type":"agent","id":"a"},"instructions":"b"}]`)
 	proposeServer(t, map[string]any{"/api/issue-workflows/" + proposeWorkflowID: map[string]any{"steps": live}})
 	flags := map[string]string{"file": writeInput(t, "B2"), "status-key": "review", "out": filepath.Join(t.TempDir(), "a.json")}
 	if _, err := propose(t, flags, "workflow.step.instructions", proposeWorkflowID); err != nil {
@@ -209,7 +210,7 @@ func TestProposeWorkflowStepInstructionsChangesOnlyTheNamedStep(t *testing.T) {
 	}
 	action := readAction(t, flags["out"])
 	wantBase, _ := decisionaction.WorkflowDigest(proposeWorkflowID, live)
-	wantAfter, _ := decisionaction.WorkflowDigest(proposeWorkflowID, json.RawMessage(`[{"status_key":"todo","instructions":"a"},{"status_key":"review","instructions":"B2"}]`))
+	wantAfter, _ := decisionaction.WorkflowDigest(proposeWorkflowID, json.RawMessage(`[{"status_key":"todo","handler":{"type":"agent","id":"a"},"instructions":"a"},{"status_key":"review","handler":{"type":"agent","id":"a"},"instructions":"B2"}]`))
 	if action.Type != "workflow.step.instructions.set" || action.str(t, "status_key") != "review" || action.str(t, "instructions") != "B2" || action.str(t, "base_sha256") != wantBase {
 		t.Fatalf("action = %+v params %s", action, action.Params)
 	}
@@ -316,5 +317,45 @@ func TestProposeCarriesTheExpiryWhenAsked(t *testing.T) {
 	}
 	if action := readAction(t, out); action.Expires != 7200 {
 		t.Errorf("expires_in_seconds = %d", action.Expires)
+	}
+}
+
+// The server trims a step's instructions (and clears them on a handler-less
+// step) before it hashes the stored steps, so the digest the CLI shows must be
+// the digest of that result, not of the raw file.
+func TestProposeWorkflowStepsHashesTheServerNormalizedInstructions(t *testing.T) {
+	live := json.RawMessage(`[{"status_key":"todo","handler":{"type":"agent","id":"a"},"instructions":"x"},{"status_key":"done","handler":{"type":"none"},"instructions":""}]`)
+	proposeServer(t, map[string]any{"/api/issue-workflows/" + proposeWorkflowID: map[string]any{"steps": live}})
+	raw := `[{"status_key":"todo","handler":{"type":"agent","id":"a"},"instructions":"  y\n\n"},{"status_key":"done","handler":{"type":"none"},"instructions":"dropped"}]`
+	normalized := `[{"status_key":"todo","handler":{"type":"agent","id":"a"},"instructions":"y"},{"status_key":"done","handler":{"type":"none"},"instructions":""}]`
+	out := filepath.Join(t.TempDir(), "action.json")
+	if _, err := propose(t, map[string]string{"file": writeInput(t, raw), "out": out}, "workflow.steps", proposeWorkflowID); err != nil {
+		t.Fatal(err)
+	}
+	action := readAction(t, out)
+	want, _ := decisionaction.WorkflowDigest(proposeWorkflowID, json.RawMessage(normalized))
+	if action.str(t, "after_sha256") != want {
+		t.Errorf("after_sha256 = %s, want the digest of the normalized steps %s", action.str(t, "after_sha256"), want)
+	}
+}
+
+func TestProposeWorkflowStepInstructionsTrimsLikeTheServer(t *testing.T) {
+	live := json.RawMessage(`[{"status_key":"review","handler":{"type":"agent","id":"a"},"instructions":"b"}]`)
+	proposeServer(t, map[string]any{"/api/issue-workflows/" + proposeWorkflowID: map[string]any{"steps": live}})
+	out := filepath.Join(t.TempDir(), "action.json")
+	if _, err := propose(t, map[string]string{"file": writeInput(t, "B2\n"), "status-key": "review", "out": out}, "workflow.step.instructions", proposeWorkflowID); err != nil {
+		t.Fatal(err)
+	}
+	if got := readAction(t, out).str(t, "instructions"); got != "B2" {
+		t.Errorf("instructions = %q, want the trimmed text", got)
+	}
+}
+
+func TestProposeWorkflowStepInstructionsRefusesAHandlerlessStep(t *testing.T) {
+	live := json.RawMessage(`[{"status_key":"review","handler":{"type":"none"},"instructions":""}]`)
+	proposeServer(t, map[string]any{"/api/issue-workflows/" + proposeWorkflowID: map[string]any{"steps": live}})
+	flags := map[string]string{"file": writeInput(t, "B2"), "status-key": "review", "dry-run": "true"}
+	if _, err := propose(t, flags, "workflow.step.instructions", proposeWorkflowID); err == nil {
+		t.Error("instructions on a handler-less step were accepted; the server would drop them")
 	}
 }
