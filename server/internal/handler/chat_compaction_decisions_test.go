@@ -392,7 +392,8 @@ func TestCompactionDecisionsHardBoundTheReferences(t *testing.T) {
 			}
 			unlisted, _ = strconv.Atoi(match[1])
 			// Lines that begin "- CHE" are decisions; the two count lines are not.
-			decisionLines := strings.Count(block, "\n- "+all[0].key[:strings.Index(all[0].key, "-")]+"-")
+			keyPrefix, _, _ := strings.Cut(all[0].key, "-")
+			decisionLines := strings.Count(block, "\n- "+keyPrefix+"-")
 			if decisionLines+unlisted != total || unlisted == 0 {
 				t.Fatalf("%s round %d accounts for %d listed + %d unlisted, want %d (lines %d)", where, round, decisionLines, unlisted, total, listed)
 			}
