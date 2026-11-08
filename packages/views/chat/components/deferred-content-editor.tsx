@@ -88,7 +88,6 @@ export const DeferredContentEditor = forwardRef<ContentEditorRef, DeferredConten
         getMarkdown: () => inner.current?.getMarkdown() ?? typedText.current,
         getText: () => inner.current?.getText() ?? typedText.current,
         clearContent: () => inner.current?.clearContent(),
-        flagMentions: (ids) => inner.current?.flagMentions(ids),
         blur: () => inner.current?.blur(),
         hasActiveUploads: () => inner.current?.hasActiveUploads() ?? false,
         flushPendingUpdate: () => inner.current?.flushPendingUpdate() ?? null,
