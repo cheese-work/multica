@@ -24,7 +24,7 @@ jobs:
   close-target:
     name: Validate intended issue close target
     if: github.event.pull_request.state != 'closed'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER_PR_CLOSE_TARGET_CHECK || 'ubuntu-24.04' }}
     timeout-minutes: 5
     permissions:
       contents: read
@@ -54,7 +54,7 @@ jobs:
   changelog-line:
     name: Changelog line
     if: github.event.pull_request.state != 'closed'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER_PR_CHANGELOG_CHECK || 'ubuntu-24.04' }}
     timeout-minutes: 5
     permissions:
       contents: read

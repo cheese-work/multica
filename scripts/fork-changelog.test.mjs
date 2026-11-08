@@ -518,7 +518,7 @@ test("PR check job (pr-guards): GitHub-hosted, no secrets, skips closed PRs, tru
   const wf = raw.replace(/^\s*#.*$/gm, "");
   const job = wf.slice(wf.indexOf("\n  changelog-line:"), wf.indexOf("\n  fork-sync-guard:"));
   assert.match(wf, /^permissions: \{\}$/m);
-  assert.match(job, /runs-on: ubuntu-24\.04/);
+  assert.match(job, /runs-on: \$\{\{ vars\.RUNNER_PR_CHANGELOG_CHECK \|\| 'ubuntu-24\.04' \}\}/);
   assert.doesNotMatch(wf, /self-hosted|secrets\./);
   for (const type of ["opened", "synchronize", "reopened"]) assert.match(wf, new RegExp(type));
   assert.doesNotMatch(wf, /types: \[[^\]]*edited/); // CHE-4385: a body edit does not re-run the check
