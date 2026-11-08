@@ -729,7 +729,9 @@ workspace or project rule: the server stores it `enabled:false` with
 below it, disabled until an owner or admin writes it enabled. Agent edit,
 delete, preview and issue-scope writes: 403. Other machine credentials: 403,
 nothing stored. Workspace and project writes need owner or admin; issue scope
-allows any member. CLI: `multica wakeup-definition create [--project]`.
+allows any member. CLI: `multica wakeup-definition create [--project]`;
+read with `multica wakeup-definition get <rule> [--project P | --issue I]`
+(same JSON as `/effective`, CHE-3984).
 
 **Runtime state.** `execution{instance_id,enabled,paused_reason}` is returned
 at issue scope only, from the per-issue `issue_wakeup` instance. Resetting an
@@ -746,4 +748,7 @@ inherited, override, disabled and runtime states through the workspace,
 project and issue handlers, and checks that an agent proposal is stored
 disabled, that a member's issue override does not enable it and that an admin
 write does. `cmd_issue_wakeup_test.go` covers CLI list passthrough of default
-origin and state; CHE-3671 covers `wakeup-definition create`.
+origin and state; CHE-3671 covers `wakeup-definition create` and CHE-3984
+covers `wakeup-definition get`. `e2e/wakeup-definitions.spec.ts` compares the
+CLI `get` output with the API `/effective` response at workspace, project and
+issue scope in every state it walks.

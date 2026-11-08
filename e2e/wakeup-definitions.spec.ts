@@ -19,7 +19,9 @@ const cleanEnv = () => Object.fromEntries(Object.entries(process.env).filter(([k
 
 // CHE-1082 L15: the workspace -> project -> issue chain on a real server. The
 // handler tests cover the rules in isolation; this walks inherited, override,
-// disabled and runtime states through the HTTP API, the issue page and the CLI.
+// disabled and runtime states through the HTTP API, the issue page and the CLI
+// (`multica wakeup-definition get` for definitions, `multica issue wakeup list`
+// for runtime instances).
 test("workspace, project and issue wakeup defaults resolve and show on every surface", async ({ page }) => {
   test.setTimeout(180_000);
   const api = await createTestApi();
@@ -68,6 +70,24 @@ test("workspace, project and issue wakeup defaults resolve and show on every sur
       return res.json();
     };
 
+    // The CLI runs as a person from a cwd outside any agent workdir, so it does not
+    // read a task marker. It is optional: without MULTICA_CLI the CLI steps are skipped.
+    const cli = process.env.MULTICA_CLI;
+    const cliRun = async (args: string[]) => {
+      const { stdout } = await run(cli!, args, {
+        cwd: mkdtempSync(join(tmpdir(), "wakeup-cli-")),
+        env: { ...cleanEnv(), MULTICA_SERVER_URL: API, MULTICA_WORKSPACE_ID: workspace.id, MULTICA_TOKEN: api.getToken()! },
+      });
+      return JSON.parse(stdout);
+    };
+    // `wakeup-definition get` must return exactly what the API returns for the same scope.
+    const cliEffective = async (scope: "workspace" | "project" | "issue") => {
+      const flags = scope === "workspace" ? [] : scope === "project" ? ["--project", project.id] : ["--issue", issue.id];
+      const fromCli = await cliRun(["wakeup-definition", "get", RULE, ...flags, "--output", "json"]);
+      expect(fromCli).toEqual(await effective({ workspace: wsPath, project: projectPath, issue: issuePath }[scope]));
+      return fromCli;
+    };
+
     // The gate must be open for definition writes; otherwise the UI hides the list.
     const caps = await (await call("GET", `/api/issues/${issue.id}/wakeup-definitions`)).json();
     expect(caps.capabilities.definition_writes).toBe(true);
@@ -95,6 +115,8 @@ test("workspace, project and issue wakeup defaults resolve and show on every sur
       });
       const win = await app.firstWindow();
       await win.waitForLoadState("domcontentloaded");
+      // On a loaded host the first window can still be about:blank, which has no storage.
+      await win.waitForFunction(() => location.protocol !== "about:", undefined, { timeout: 60_000 });
       const path = `/${workspace.slug}/issues/${issue.id}`;
       await win.evaluate(({ token, slug, path }) => {
         localStorage.setItem("multica_token", token);
@@ -131,6 +153,12 @@ test("workspace, project and issue wakeup defaults resolve and show on every sur
 
     // Inherited from the built-in default.
     await expectState("Inherited from the default", "On");
+    if (cli) {
+      const fromCli = await cliEffective("issue");
+      expect(fromCli.enabled).toBe(true);
+      expect(Object.values(fromCli.sources)).not.toContain("workspace");
+      expect(Object.values(fromCli.sources)).not.toContain("project");
+    }
 
     // Workspace default (owner write).
     expect((await put(wsPath, "0", { enabled: true, instruction: "workspace text" })).status).toBe(200);
@@ -138,6 +166,10 @@ test("workspace, project and issue wakeup defaults resolve and show on every sur
     let eff = await effective();
     expect(eff.enabled).toBe(true);
     expect(eff.sources.instruction).toBe("workspace");
+    if (cli) {
+      expect((await cliEffective("workspace")).sources.instruction).toBe("workspace");
+      expect((await cliEffective("issue")).sources.instruction).toBe("workspace");
+    }
 
     // A project override beats the workspace for the fields it sets; the row's
     // source label follows the "enabled" field.
@@ -146,6 +178,12 @@ test("workspace, project and issue wakeup defaults resolve and show on every sur
     eff = await effective();
     expect(eff.sources.instruction).toBe("project");
     expect(eff.sources.enabled).toBe("project");
+    if (cli) {
+      const fromCli = await cliEffective("project");
+      expect(fromCli.sources.instruction).toBe("project");
+      expect(fromCli.overrides).toEqual(expect.arrayContaining(["instruction"]));
+      expect((await cliEffective("issue")).sources.instruction).toBe("project");
+    }
 
     // Issue override from the web UI: switch the rule off for this issue only.
     await override(web);
@@ -154,6 +192,13 @@ test("workspace, project and issue wakeup defaults resolve and show on every sur
     expect(eff.enabled).toBe(false);
     expect(eff.sources.enabled).toBe("issue");
     expect((await effective(wsPath)).enabled).toBe(true);
+    if (cli) {
+      const fromCli = await cliEffective("issue");
+      expect(fromCli.enabled).toBe(false);
+      expect(fromCli.sources.enabled).toBe("issue");
+      expect((await cliEffective("workspace")).enabled).toBe(true);
+      expect((await cliEffective("project")).enabled).toBe(true);
+    }
 
     // Runtime state: a paused instance of the rule rides on the issue response
     // and on the CLI list, and shows on the issue page.
@@ -177,16 +222,17 @@ test("workspace, project and issue wakeup defaults resolve and show on every sur
     expect((await effective(projectPath)).execution ?? null).toBeNull();
     await expectState("Overridden on this issue", "Paused");
 
-    const cli = process.env.MULTICA_CLI;
-    // The CLI lists runtime instances only; it has no read command for scoped definitions.
-    const cliList = async () => {
-      const { stdout } = await run(cli!, ["issue", "wakeup", "list", issue.id, "--output", "json"], {
-        // A cwd outside any agent workdir keeps the CLI from reading a task marker.
-        cwd: mkdtempSync(join(tmpdir(), "wakeup-cli-")),
-        env: { ...cleanEnv(), MULTICA_SERVER_URL: API, MULTICA_WORKSPACE_ID: workspace.id, MULTICA_TOKEN: api.getToken()! },
-      });
-      return (JSON.parse(stdout) as Array<{ id?: string; paused_reason?: string }>).filter((r) => r.paused_reason === "loop");
-    };
+    // Runtime instances come from `issue wakeup list`; the definition's execution block comes from `get`.
+    const cliList = async () =>
+      (await cliRun(["issue", "wakeup", "list", issue.id, "--output", "json"]) as Array<{ id?: string; paused_reason?: string }>).filter(
+        (r) => r.paused_reason === "loop",
+      );
+    if (cli) {
+      const fromCli = await cliEffective("issue");
+      expect(fromCli.execution.paused_reason).toBe("loop");
+      expect(fromCli.execution.instance_id).toBe(eff.execution.instance_id);
+      expect((await cliEffective("project")).execution ?? null).toBeNull();
+    }
     if (cli) expect(await cliList()).toHaveLength(1);
 
     // Reset through the last surface's UI (desktop when present): the project
@@ -197,17 +243,25 @@ test("workspace, project and issue wakeup defaults resolve and show on every sur
     eff = await effective();
     expect(eff.enabled).toBe(true);
     expect(eff.execution.instance_id).toBe(instanceId);
-    // The same instance is still the one the CLI lists after the reset.
-    if (cli) expect((await cliList()).map((r) => r.id)).toEqual([instanceId]);
+    // The same instance is still the one the CLI lists after the reset, and `get` reads the project value again.
+    if (cli) {
+      expect((await cliList()).map((r) => r.id)).toEqual([instanceId]);
+      const fromCli = await cliEffective("issue");
+      expect(fromCli.enabled).toBe(true);
+      expect(fromCli.sources.enabled).toBe("project");
+      expect(fromCli.execution.instance_id).toBe(instanceId);
+    }
 
     // Override again through the last surface, then reset through the web.
     // The row shows the paused runtime state over the disabled setting.
     await override(last);
     await expectState("Overridden on this issue", "Paused");
     expect((await effective()).sources.enabled).toBe("issue");
+    if (cli) expect((await cliEffective("issue")).sources.enabled).toBe("issue");
     await reset(web);
     await expectState("Inherited from project");
     expect((await effective()).enabled).toBe(true);
+    if (cli) expect((await cliEffective("issue")).sources.enabled).toBe("project");
   } finally {
     await app?.close();
     if (workspaceId) {
