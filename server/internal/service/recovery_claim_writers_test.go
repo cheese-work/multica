@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -313,14 +314,18 @@ func TestReaperFreesClaimWhenNothingWasDispatched(t *testing.T) {
 	failed := o.failedRun(t, nil)
 	o.seedClaim(t, failed, "claimed", "", 10*time.Minute)
 	reapTogether(t, o, 3)
+	// A reaper that skips a row another reaper has locked leaves it for the next
+	// pass; it must never turn it ambiguous.
+	reapTogether(t, o, 1)
 	if got := o.claimState(t, failed); got != "" {
 		t.Fatalf("claim state after reap = %q, want the claim removed", got)
 	}
 }
 
-// The recurring writer reserves inside the caller's transaction. When that
-// transaction rolls back, the claim must not stay submitted for a task that
-// does not exist: it falls back to claimed, then the reaper frees the run.
+// The recurring writer reserves inside the caller's transaction and claims on
+// that same transaction (CHE-4568 review round 5). When it rolls back, the
+// claim goes with it: no row is left for a task that does not exist, and the
+// run is recoverable at once.
 func TestRecurringRollbackAfterReservationLeavesRunRecoverable(t *testing.T) {
 	o := newClaimWritersFixture(t)
 	ctx := context.Background()
@@ -337,14 +342,15 @@ func TestRecurringRollbackAfterReservationLeavesRunRecoverable(t *testing.T) {
 	if err != nil || !reserved {
 		t.Fatalf("reservation reserved=%t err=%v, want true", reserved, err)
 	}
+	if got := o.claimState(t, failed); got != "" {
+		t.Fatalf("claim state before the caller commits = %q, want invisible to other connections", got)
+	}
 	if err := tx.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if got := o.claimState(t, failed); got != "claimed" {
-		t.Fatalf("claim state after rollback = %q, want claimed (not submitted)", got)
+	if got := o.claimState(t, failed); got != "" {
+		t.Fatalf("claim state after rollback = %q, want none", got)
 	}
-	o.Exec(t, `UPDATE recovery_claim SET claimed_at = now() - interval '10 minutes' WHERE failed_task_id=$1`, failed)
-	reapTogether(t, o, 2)
 	reserved, err = o.svc.TaskSvc.reserveProviderFailureRecovery(ctx, o.q, attempt(), pgtype.UUID{}, dbid.NewV7())
 	if err != nil || !reserved {
 		t.Fatalf("reservation after reap reserved=%t err=%v, want true", reserved, err)
@@ -437,7 +443,10 @@ func TestPausedWriterIsFencedAgainstReaper(t *testing.T) {
 			reapTogether(t, o, 1)
 		}
 	}
-	t.Run("NativeRetryDoesNotDispatchAfterLosingClaim", func(t *testing.T) {
+	// A native retry claims on its own dispatch transaction (CHE-4568 review
+	// round 5): the claim row is invisible to the reaper until the dispatch
+	// commits, so a paused writer cannot lose it and dispatches exactly once.
+	t.Run("NativeRetryClaimIsInvisibleToReaperUntilDispatchCommits", func(t *testing.T) {
 		o := newClaimWritersFixture(t)
 		failed := o.failedRun(t, nil)
 		pause(o, failed)
@@ -445,9 +454,12 @@ func TestPausedWriterIsFencedAgainstReaper(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		child, _ := o.svc.TaskSvc.MaybeRetryFailedTask(ctx, parent)
-		if child != nil || o.derived(t, failed) != 0 {
-			t.Fatalf("writer dispatched after its claim was reaped: child=%v derived=%d", child, o.derived(t, failed))
+		child, err := o.svc.TaskSvc.MaybeRetryFailedTask(ctx, parent)
+		if err != nil || child == nil || o.derived(t, failed) != 1 {
+			t.Fatalf("child=%v err=%v derived=%d, want one retry", child, err, o.derived(t, failed))
+		}
+		if got := o.claimState(t, failed); got != "submitted" {
+			t.Fatalf("claim state after the dispatch = %q, want submitted", got)
 		}
 	})
 	t.Run("WatchdogRerunDoesNotDispatchAfterLosingClaim", func(t *testing.T) {
@@ -524,7 +536,7 @@ func TestIssuelessAutopilotRecoveryClaims(t *testing.T) {
 	}
 	// The claim holds the run: a second recovery of it is refused, not admitted.
 	hold := &recoveryHold{}
-	admitted, err := f.svc.TaskSvc.claimRecovery(context.Background(), hold, pgtype.UUID{}, util.MustParseUUID(failedTaskID), RecoveryModeFreshReplay, 2)
+	admitted, err := f.svc.TaskSvc.claimRecovery(context.Background(), f.q, hold, pgtype.UUID{}, util.MustParseUUID(failedTaskID), RecoveryModeFreshReplay, 2)
 	if err != nil || admitted {
 		t.Fatalf("second claim admitted=%t err=%v, want refused", admitted, err)
 	}
@@ -680,4 +692,128 @@ func TestRecurringReservationDoesNotDeadlockOnItsOwnClaim(t *testing.T) {
 			o.svc.TaskSvc.afterRecoveryFence = func(context.Context) { cancel() }
 		}, false)
 	})
+}
+
+// constrainPool points the task services of the given fixtures at one shared
+// pool of n connections. Every writer below holds one connection for its
+// dispatch transaction, so n concurrent writers occupy the whole pool.
+func constrainPool(t *testing.T, n int32, fixtures ...ownerFixture) {
+	t.Helper()
+	cfg := fixtures[0].Pool.Config()
+	cfg.MaxConns = n
+	small, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(small.Close)
+	store := NewRecoveryClaimStore(small) // one store, so one admission gate, as in production
+	for _, o := range fixtures {
+		o.svc.TaskSvc.Queries = db.New(small)
+		o.svc.TaskSvc.TxStarter = small
+		o.svc.TaskSvc.RecoveryClaims = store
+	}
+}
+
+// barrier releases every caller once n have arrived, or after wait if fewer
+// ever will, and stays open afterwards.
+func barrier(n int, wait time.Duration) func(context.Context) {
+	var mu sync.Mutex
+	var once sync.Once
+	arrived := 0
+	open := make(chan struct{})
+	return func(ctx context.Context) {
+		mu.Lock()
+		arrived++
+		if arrived >= n {
+			once.Do(func() { close(open) })
+		}
+		mu.Unlock()
+		select {
+		case <-open:
+		case <-time.After(wait):
+			once.Do(func() { close(open) })
+		case <-ctx.Done():
+		}
+	}
+}
+
+// CHE-4568 review round 5, P1: a writer that holds a dispatch transaction must
+// not wait for a second pool connection to claim. With a pool of n
+// connections, n concurrent retryable failures used to hold all n in their
+// dispatch transactions and every one of them then queued for a claim
+// connection that never came free.
+func TestNativeRetryWritersDoNotStarveTheirPool(t *testing.T) {
+	const n = 4
+	o := newClaimWritersFixture(t)
+	constrainPool(t, n, o)
+	o.svc.TaskSvc.beforeRecoveryClaim = barrier(n, 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	type run struct{ issue, task string }
+	runs := make([]run, n)
+	for i := range runs {
+		issue := o.Issue(t, "starvation native", testutil.Cols{"status": "todo"})
+		runs[i] = run{issue, o.runningTask(t, testutil.Cols{"failure_reason": nil, "issue_id": issue})}
+	}
+	errs := make(chan error, n)
+	for _, r := range runs {
+		go func() {
+			_, err := o.svc.TaskSvc.FailTask(ctx, parseTestUUID(t, r.task), "boom", "", "", "", "timeout", false, "", "")
+			errs <- err
+		}()
+	}
+	for range runs {
+		if err := <-errs; err != nil {
+			t.Fatalf("FailTask under a %d-connection pool: %v", n, err)
+		}
+	}
+	for _, r := range runs {
+		if got := o.derived(t, r.task); got != 1 {
+			t.Fatalf("retry children of %s = %d, want 1", r.task, got)
+		}
+		if got := o.claimCount(t, r.task, "native_resume"); got != 1 {
+			t.Fatalf("native_resume claims of %s = %d, want 1", r.task, got)
+		}
+	}
+}
+
+// The watchdog rerun keeps a fence transaction open to the end of the rerun,
+// so it holds a connection while it needs more. Fresh replays are paced per
+// workspace, so the pool is filled by reruns in n workspaces: n fence
+// connections used to leave none for the dispatch transaction. A bounded
+// admission gate now lets only a fraction of the pool in.
+func TestWatchdogRerunsDoNotStarveTheirPool(t *testing.T) {
+	const n = 4
+	fixtures := make([]ownerFixture, n)
+	for i := range fixtures {
+		fixtures[i] = newClaimWritersFixture(t)
+	}
+	constrainPool(t, n, fixtures...)
+	gate := barrier(n, time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	failed := make([]string, n)
+	for i, o := range fixtures {
+		o.svc.TaskSvc.afterRecoveryFence = gate
+		failed[i] = o.failedRun(t, nil)
+	}
+	errs := make(chan error, n)
+	for i, o := range fixtures {
+		go func() {
+			_, err := o.svc.TaskSvc.RerunIssue(ctx, parseTestUUID(t, o.issueID), parseTestUUID(t, failed[i]), pgtype.UUID{}, pgtype.UUID{}, false, nil)
+			errs <- err
+		}()
+	}
+	for range fixtures {
+		if err := <-errs; err != nil {
+			t.Fatalf("RerunIssue under a %d-connection pool: %v", n, err)
+		}
+	}
+	for i, o := range fixtures {
+		if got := o.derived(t, failed[i]); got != 1 {
+			t.Fatalf("reruns of %s = %d, want 1", failed[i], got)
+		}
+	}
 }

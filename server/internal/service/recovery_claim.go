@@ -54,10 +54,32 @@ type RecoveryClaimParams struct {
 	Now                                time.Time
 }
 
-type RecoveryClaimStore struct{ pool *pgxpool.Pool }
+type RecoveryClaimStore struct {
+	pool *pgxpool.Pool
+	// gate bounds the writers that hold a pooled connection across a dispatch
+	// (the watchdog rerun's fence transaction) to a quarter of the pool. Each
+	// holder needs up to three connections, so the rest of the pool stays free
+	// for other work and the holders cannot starve one another.
+	gate chan struct{}
+}
 
 func NewRecoveryClaimStore(pool *pgxpool.Pool) *RecoveryClaimStore {
-	return &RecoveryClaimStore{pool: pool}
+	n := 1
+	if pool != nil {
+		n = max(1, int(pool.Config().MaxConns)/4)
+	}
+	return &RecoveryClaimStore{pool: pool, gate: make(chan struct{}, n)}
+}
+
+// Enter admits one connection-holding writer, waiting while the gate is full.
+// Call it before taking any pooled connection; the returned func leaves the gate.
+func (s *RecoveryClaimStore) Enter(ctx context.Context) (func(), error) {
+	select {
+	case s.gate <- struct{}{}:
+		return func() { <-s.gate }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // Claim admits at most one recovery per failed run. Admission is serialized
@@ -70,12 +92,25 @@ func (s *RecoveryClaimStore) Claim(ctx context.Context, p RecoveryClaimParams) (
 		return RecoveryClaim{}, "", fmt.Errorf("begin recovery claim: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	claim, outcome, err := s.ClaimIn(ctx, tx, p)
+	if err != nil || outcome != RecoveryAdmitted {
+		return claim, outcome, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return RecoveryClaim{}, "", fmt.Errorf("commit recovery claim: %w", err)
+	}
+	return claim, outcome, nil
+}
 
+// ClaimIn is Claim on the caller's transaction, so a writer that already holds
+// a connection admits without taking a second one. The workspace lock and the
+// claim row then live until that transaction ends.
+func (s *RecoveryClaimStore) ClaimIn(ctx context.Context, tx pgx.Tx, p RecoveryClaimParams) (RecoveryClaim, RecoveryClaimOutcome, error) {
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('recovery_claim:' || $1::text, 0))`, p.WorkspaceID); err != nil {
 		return RecoveryClaim{}, "", fmt.Errorf("lock recovery claims: %w", err)
 	}
 	var existing RecoveryClaim
-	err = tx.QueryRow(ctx, `SELECT id FROM recovery_claim WHERE failed_task_id = $1`, p.FailedTaskID).Scan(&existing.ID)
+	err := tx.QueryRow(ctx, `SELECT id FROM recovery_claim WHERE failed_task_id = $1`, p.FailedTaskID).Scan(&existing.ID)
 	if err == nil {
 		return existing, RecoveryDuplicate, nil
 	}
@@ -96,9 +131,6 @@ func (s *RecoveryClaimStore) Claim(ctx context.Context, p RecoveryClaimParams) (
 		VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
 		p.WorkspaceID, p.IssueID, p.FailedTaskID, root, string(p.Mode), p.Now).Scan(&claim.ID); err != nil {
 		return RecoveryClaim{}, "", fmt.Errorf("insert recovery claim: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return RecoveryClaim{}, "", fmt.Errorf("commit recovery claim: %w", err)
 	}
 	return claim, RecoveryAdmitted, nil
 }
@@ -273,6 +305,11 @@ const reapable = `c.id IN (SELECT id FROM recovery_claim WHERE workspace_id = $1
 // becomes recoverable again. A reservation with no task yet stays ambiguous,
 // which holds its slot. Without this the paced cap saturates forever.
 func (s *RecoveryClaimStore) ReapSettled(ctx context.Context, workspaceID pgtype.UUID, now time.Time) error {
+	return s.ReapSettledIn(ctx, s.pool, workspaceID, now)
+}
+
+// ReapSettledIn is ReapSettled on the executor the caller already holds.
+func (s *RecoveryClaimStore) ReapSettledIn(ctx context.Context, ex db.DBTX, workspaceID pgtype.UUID, now time.Time) error {
 	stale := now.Add(-recoveryStaleClaim)
 	for _, stmt := range []string{
 		`UPDATE recovery_claim c SET state = 'submitted', successor_task_id = ` + dispatchedTask + `
@@ -285,9 +322,10 @@ func (s *RecoveryClaimStore) ReapSettled(ctx context.Context, workspaceID pgtype
 		 WHERE ` + reapable + ` AND c.state IN ('claimed', 'submitted') AND c.successor_task_id IS NULL AND ` + dispatchedTask + ` IS NULL
 		   AND NOT EXISTS (SELECT 1 FROM provider_failure_recovery r WHERE r.failed_task_id = c.failed_task_id)`,
 		`UPDATE recovery_claim c SET state = 'ambiguous'
-		 WHERE ` + reapable + ` AND c.state IN ('claimed', 'submitted') AND ` + dispatchedTask + ` IS NULL`,
+		 WHERE ` + reapable + ` AND c.state IN ('claimed', 'submitted') AND ` + dispatchedTask + ` IS NULL
+		   AND EXISTS (SELECT 1 FROM provider_failure_recovery r WHERE r.failed_task_id = c.failed_task_id)`,
 	} {
-		if _, err := s.pool.Exec(ctx, stmt, workspaceID, stale); err != nil {
+		if _, err := ex.Exec(ctx, stmt, workspaceID, stale); err != nil {
 			return fmt.Errorf("reap recovery claims: %w", err)
 		}
 	}
@@ -307,6 +345,8 @@ type recoveryHold struct {
 	// writer ends it when it settles the claim. nil when the caller's own
 	// transaction holds the lock.
 	owned pgx.Tx
+	// leave frees the admission slot a connection-holding writer took.
+	leave func()
 }
 
 // claimRecovery asks the shared store to admit one recovery dispatch for the
@@ -314,38 +354,53 @@ type recoveryHold struct {
 // not dispatch. A nil store admits everything (isolated test services). A run
 // with no issue (a run-only autopilot) claims by the failed run and takes its
 // workspace from the failed run's agent.
-func (s *TaskService) claimRecovery(ctx context.Context, hold *recoveryHold, issueID, failedTaskID pgtype.UUID, mode RecoveryMode, ceiling int) (bool, error) {
+//
+// q is the writer's own executor. A writer inside a transaction admits on that
+// transaction, so it never waits for a second pooled connection while it holds
+// the first (pool starvation under concurrent failures).
+func (s *TaskService) claimRecovery(ctx context.Context, q *db.Queries, hold *recoveryHold, issueID, failedTaskID pgtype.UUID, mode RecoveryMode, ceiling int) (bool, error) {
 	if s.RecoveryClaims == nil {
 		return true, nil
 	}
+	if s.beforeRecoveryClaim != nil {
+		s.beforeRecoveryClaim(ctx)
+	}
 	var workspaceID pgtype.UUID
 	if issueID.Valid {
-		issue, err := s.Queries.GetIssue(ctx, issueID)
+		issue, err := q.GetIssue(ctx, issueID)
 		if err != nil {
 			return false, fmt.Errorf("recovery claim: load issue: %w", err)
 		}
 		workspaceID = issue.WorkspaceID
 	} else {
-		failed, err := s.Queries.GetAgentTask(ctx, failedTaskID)
+		failed, err := q.GetAgentTask(ctx, failedTaskID)
 		if err != nil {
 			return false, fmt.Errorf("recovery claim: load failed task: %w", err)
 		}
-		agent, err := s.Queries.GetAgent(ctx, failed.AgentID)
+		agent, err := q.GetAgent(ctx, failed.AgentID)
 		if err != nil {
 			return false, fmt.Errorf("recovery claim: load agent: %w", err)
 		}
 		workspaceID = agent.WorkspaceID
 	}
 	now := time.Now()
-	if mode != RecoveryModeNativeResume {
-		if err := s.RecoveryClaims.ReapSettled(ctx, workspaceID, now); err != nil {
-			slog.Warn("recovery claim: reap failed", "error", err)
-		}
-	}
-	claim, outcome, err := s.RecoveryClaims.Claim(ctx, RecoveryClaimParams{
+	params := RecoveryClaimParams{
 		WorkspaceID: workspaceID, IssueID: issueID, FailedTaskID: failedTaskID, Mode: mode,
 		NativeCeiling: ceiling, PacedCap: recoveryPacedCap, Spacing: recoverySpacing, Now: now,
-	})
+	}
+	var claim RecoveryClaim
+	var outcome RecoveryClaimOutcome
+	var err error
+	if tx, ok := q.Conn().(pgx.Tx); ok {
+		claim, outcome, err = s.claimOnTx(ctx, tx, params)
+	} else {
+		if mode != RecoveryModeNativeResume {
+			if rerr := s.RecoveryClaims.ReapSettled(ctx, workspaceID, now); rerr != nil {
+				slog.Warn("recovery claim: reap failed", "error", rerr)
+			}
+		}
+		claim, outcome, err = s.RecoveryClaims.Claim(ctx, params)
+	}
 	if err != nil {
 		return false, err
 	}
@@ -358,6 +413,29 @@ func (s *TaskService) claimRecovery(ctx context.Context, hold *recoveryHold, iss
 		s.afterRecoveryClaim(ctx)
 	}
 	return true, nil
+}
+
+// claimOnTx admits inside a savepoint: a failed statement must not abort the
+// writer's transaction, which may also carry the failed run's own status.
+func (s *TaskService) claimOnTx(ctx context.Context, tx pgx.Tx, p RecoveryClaimParams) (RecoveryClaim, RecoveryClaimOutcome, error) {
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		return RecoveryClaim{}, "", fmt.Errorf("begin recovery claim savepoint: %w", err)
+	}
+	defer sp.Rollback(ctx) // no-op once released
+	if p.Mode != RecoveryModeNativeResume {
+		if err := s.RecoveryClaims.ReapSettledIn(ctx, sp, p.WorkspaceID, p.Now); err != nil {
+			return RecoveryClaim{}, "", err
+		}
+	}
+	claim, outcome, err := s.RecoveryClaims.ClaimIn(ctx, sp, p)
+	if err != nil {
+		return RecoveryClaim{}, "", err
+	}
+	if err := sp.Commit(ctx); err != nil {
+		return RecoveryClaim{}, "", fmt.Errorf("release recovery claim savepoint: %w", err)
+	}
+	return claim, outcome, nil
 }
 
 // fenceRecoveryClaim renews the writer's claim on the executor that dispatches,

@@ -56,6 +56,9 @@ type TaskService struct {
 	// claims through before it dispatches (CHE-1126 Layer 2, CHE-4568). Nil
 	// leaves the writers unclaimed, as in isolated test services.
 	RecoveryClaims *RecoveryClaimStore
+	// beforeRecoveryClaim runs as a writer starts to claim, holding whatever
+	// connection it already has; nil in production.
+	beforeRecoveryClaim func(context.Context)
 	// afterRecoveryClaim runs once a writer holds an admitted claim and has
 	// not yet dispatched. Tests pause the writer here; nil in production.
 	afterRecoveryClaim func(context.Context)
@@ -6287,7 +6290,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		// CHE-4568: claim through the shared store before minting. A refusal or
 		// an unreadable store skips the retry, never aborts this transaction.
 		if createRetry {
-			admitted, cerr := s.claimRecovery(ctx, hold, t.IssueID, taskID, RecoveryModeNativeResume, int(retryMaxAttempts.Int32))
+			admitted, cerr := s.claimRecovery(ctx, qtx, hold, t.IssueID, taskID, RecoveryModeNativeResume, int(retryMaxAttempts.Int32))
 			if cerr != nil || !admitted {
 				slog.Info("fail task auto-retry skipped: recovery claim not admitted",
 					"task_id", util.UUIDToString(taskID), "error", cerr)
@@ -6988,7 +6991,7 @@ func (s *TaskService) maybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	}
 	// CHE-4568: claim through the shared store, after every gate that can
 	// decline and just before the mint, so a declined retry leaves no claim.
-	if admitted, cerr := s.claimRecovery(ctx, hold, parent.IssueID, parent.ID, RecoveryModeNativeResume, int(retryAttemptCeiling(reason, parent.MaxAttempts))); cerr != nil {
+	if admitted, cerr := s.claimRecovery(ctx, qtx, hold, parent.IssueID, parent.ID, RecoveryModeNativeResume, int(retryAttemptCeiling(reason, parent.MaxAttempts))); cerr != nil {
 		return nil, fmt.Errorf("task auto-retry: recovery claim: %w", cerr)
 	} else if !admitted || !s.fenceRecoveryClaim(ctx, hold, qtx.Conn()) {
 		return nil, nil
@@ -7181,6 +7184,9 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 	defer func() {
 		if hold.owned != nil { // a panic skipped the finish; free the row lock
 			_ = hold.owned.Rollback(context.WithoutCancel(ctx))
+		}
+		if hold.leave != nil {
+			hold.leave()
 		}
 	}()
 	task, err := s.rerunIssue(ctx, hold, issueID, sourceTaskID, triggerCommentID, actorUserID, fresh, canInvoke)
@@ -7443,7 +7449,16 @@ func (s *TaskService) rerunIssue(ctx context.Context, hold *recoveryHold, issueI
 	// system callers) claims through the shared store before it cancels or
 	// enqueues anything. A human rerun is a decision and is never claimed.
 	if sourceTaskID.Valid && !actorUserID.Valid {
-		admitted, cerr := s.claimRecovery(ctx, hold, issueID, sourceTaskID, RecoveryModeFreshReplay, int(sourceMaxAttempts))
+		// The fence transaction below pins one pooled connection for the whole
+		// rerun, so bound how many reruns may do that at once, before taking any.
+		if s.RecoveryClaims != nil {
+			leave, eerr := s.RecoveryClaims.Enter(ctx)
+			if eerr != nil {
+				return nil, fmt.Errorf("rerun: recovery admission: %w", eerr)
+			}
+			hold.leave = leave
+		}
+		admitted, cerr := s.claimRecovery(ctx, s.Queries, hold, issueID, sourceTaskID, RecoveryModeFreshReplay, int(sourceMaxAttempts))
 		if cerr != nil {
 			return nil, fmt.Errorf("rerun: recovery claim: %w", cerr)
 		}

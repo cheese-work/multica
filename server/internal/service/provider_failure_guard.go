@@ -364,7 +364,7 @@ func (s *TaskService) reserveProviderFailureRecovery(ctx context.Context, q *db.
 		if ferr != nil {
 			return false, fmt.Errorf("load failed task for recovery claim: %w", ferr)
 		}
-		admitted, cerr := s.claimRecovery(ctx, hold, failed.IssueID, failed.ID, RecoveryModeFreshReplay, int(failed.MaxAttempts))
+		admitted, cerr := s.claimRecovery(ctx, q, hold, failed.IssueID, failed.ID, RecoveryModeFreshReplay, int(failed.MaxAttempts))
 		if cerr != nil {
 			return false, fmt.Errorf("recovery claim: %w", cerr)
 		}
