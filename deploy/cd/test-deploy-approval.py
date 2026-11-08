@@ -175,8 +175,10 @@ class DeployApprovalTests(unittest.TestCase):
         # A job-level block replaces the workflow-level one: keep what the job
         # already had and add only packages: read.
         self.assertEqual(deploy["permissions"], {"contents": "read", "actions": "read", "packages": "read"})
+        # The rollback job pulls the predecessor's images with the same token.
+        self.assertEqual(self.jobs["rollback"]["permissions"], {"contents": "read", "actions": "read", "packages": "read"})
         for name, job in self.jobs.items():
-            if name != "deploy":
+            if name not in ("deploy", "rollback"):
                 with self.subTest(job=name):
                     self.assertNotIn("packages", job.get("permissions", {}))
         self.assertNotIn("packages", self.workflow["permissions"])
@@ -263,7 +265,7 @@ class StaleStageEvictionTests(unittest.TestCase):
     def test_workflow_uses_the_queue_that_never_evicts(self):
         queues = {n: j["concurrency"]["queue"] for n, j in self.jobs.items()
                   if j.get("concurrency", {}).get("group") == LOCK}
-        self.assertEqual(queues, {"prepare-release-candidate": "max", "deploy": "max"})
+        self.assertEqual(queues, {"prepare-release-candidate": "max", "deploy": "max", "rollback": "max"})
         steps = {step.get("id"): step for step in self.jobs["deploy"]["steps"]}
         self.assertIn("verify-deploy-baseline.mjs", steps["deploy"]["run"])
 

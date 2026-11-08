@@ -716,7 +716,10 @@ dispatch, lifts it; a dispatch is never suspended. A failed cutover rolls back
 by digest inside `cutover.sh`. A failed `readback` also starts the `rollback`
 job, under the C00 lock: `rollback-failed-readback.sh` runs `cutover.sh
 rollback` (retained predecessor, no down migration, no restore) and reads back
-the health and SHA. It skips when C00 no longer runs the deployed commit. The
+the health and SHA. It identifies the live commit with `live-application-sha.sh`,
+from the active colour's container (running or stopped), so a stopped colour
+does not block the rollback. It skips when C00 runs another commit, and fails
+without rolling back when the commit cannot be identified. The
 run stays red, so the suspension holds. A rollback refused by the controller
 (ledger below `minimum_rollback_version`, failed gate) fails the job and needs a
 person. Merge-queue merges report the enqueuer or merger as
