@@ -141,6 +141,12 @@ multica issue comment add MUL-123 --content-file note.md --steer <task-id>
 multica issue comment add MUL-123 --content-file note.md --steer-active
 ```
 
+에이전트 작업에서 멤버를 멘션(`[@이름](mention://member/<id>)`)하는 댓글은 결정 요청, `--decision-intent`·`--decision-record`·`--decision-veto` 댓글, 또는 `--notify-only` 댓글일 때만 허용됩니다. 답이 필요 없는 알림에는 `--notify-only`를 사용합니다. 대기를 시작하지 않으며 결정 요청으로도 계산되지 않습니다. 결정 관련 플래그와 함께 쓸 수 없습니다. 검사는 문구가 아니라 멘션 링크를 읽으며, 코드 안의 링크도 포함됩니다. 워크스페이스 설정 `ask_guard_mode`(`off`, `warn`, `block`)가 거부될 댓글을 기록만 할지 422를 반환할지 정합니다. 채팅 작업과 작업이 없는 호출은 기록만 합니다. 멤버 멘션을 추가하는 수정에도 같은 규칙이 적용됩니다.
+
+```bash
+multica issue comment add MUL-123 --content-file fyi.md --notify-only
+```
+
 같은 프로젝트, 같은 상위 태스크 아래에 제목이 같은(대소문자와 여분의 공백은 구분하지 않음) 닫히지 않은 태스크가 이미 있으면 `issue create`는 생성을 거부하고 그 태스크를 알려 줍니다. 그래도 만들려면 `--allow-duplicate`를 붙이세요. 한 태스크를 다른 태스크의 중복으로 표시하려면 `multica issue status MUL-124 cancelled --duplicate-of MUL-123`을 실행합니다.
 
 ### 타임라인

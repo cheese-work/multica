@@ -43,6 +43,25 @@ jobs:
           path: warning-budget-report.json
           retention-days: 14
 
+  # CHE-2696 / CHE-4385: scans the commits a PR adds. Lives here, not in its own workflow, so a PR push starts no extra run.
+  gitleaks:
+    name: gitleaks
+    if: ${{ github.event_name == 'pull_request' && !startsWith(github.head_ref, 'upstream-sync/') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan the added commits
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: bash scripts/secret-scan.sh "$PR_BASE..$PR_HEAD"
+
   migration-prefix-check:
     if: github.event_name == 'pull_request'
     runs-on: ${{ vars.RUNNER_MIGRATION_PREFIX_CHECK || 'ubuntu-24.04' }}
@@ -163,7 +182,7 @@ jobs:
           node-version: 22
 
       - name: Test CI selection and gates
-        run: node --test scripts/ci-scope.test.mjs scripts/go-test-flakes.test.mjs scripts/check-image-budget.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/pr-changelog-line.test.mjs scripts/pr-issue-link-check.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/fork-sync-guard.test.mjs scripts/upstream-pr-watch.test.mjs scripts/fork-ledger-stale.test.mjs scripts/upstream-watch-stale.test.mjs scripts/upstream-watch-run.test.mjs scripts/ci-runners.test.mjs scripts/ci-required-jobs.test.mjs scripts/ci-locale-parity.test.mjs scripts/ci-vitest-timeout.test.mjs scripts/merge-queue-dequeue-report.test.mjs scripts/merge-queue-fallback.test.mjs scripts/pr-main-sync.test.mjs scripts/page-load-report.test.mjs scripts/phone-network.test.mjs scripts/security-weekly/summarize.test.mjs scripts/security-weekly/seal.test.mjs scripts/security-weekly/workflow.test.mjs scripts/security-weekly/triage.test.mjs scripts/security-weekly/trusted.test.mjs scripts/ux-explorer/findings.test.mjs deploy/cd/release-manifest.test.mjs deploy/cd/drift-receipt.test.mjs
+        run: node --test scripts/ci-scope.test.mjs scripts/go-test-flakes.test.mjs scripts/check-image-budget.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/pr-changelog-line.test.mjs scripts/pr-issue-link-check.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/fork-sync-guard.test.mjs scripts/upstream-pr-watch.test.mjs scripts/fork-ledger-stale.test.mjs scripts/upstream-watch-stale.test.mjs scripts/upstream-watch-run.test.mjs scripts/ci-runners.test.mjs scripts/ci-required-jobs.test.mjs scripts/ci-locale-parity.test.mjs scripts/ci-vitest-timeout.test.mjs scripts/merge-queue-dequeue-report.test.mjs scripts/merge-queue-fallback.test.mjs scripts/pr-main-sync.test.mjs scripts/page-load-report.test.mjs scripts/phone-network.test.mjs scripts/ux-explorer-negative-authz.test.mjs scripts/security-weekly/summarize.test.mjs scripts/security-weekly/seal.test.mjs scripts/security-weekly/workflow.test.mjs scripts/security-weekly/triage.test.mjs scripts/security-weekly/trusted.test.mjs scripts/ux-explorer/findings.test.mjs deploy/cd/release-manifest.test.mjs deploy/cd/drift-receipt.test.mjs
 
       - name: Filter paths
         id: filter
@@ -997,8 +1016,8 @@ jobs:
       - name: Test mechanical-tier classifier paths (CHE-3339)
         run: python3 -m unittest tests.test_che3339_mechanical_tier
 
-      - name: Test workflow_run cascade triggers (CHE-4250)
-        run: python3 -m unittest tests.test_che4250_workflow_run_cascades
+      - name: Test workflow run budget and cascade triggers (CHE-4250, CHE-4385)
+        run: python3 -m unittest tests.test_che4385_run_budget
 
       - name: Test pinned pnpm setup
         run: node --test scripts/setup-pnpm.test.mjs
