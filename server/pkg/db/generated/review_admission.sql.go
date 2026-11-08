@@ -13,7 +13,7 @@ import (
 
 const getIssueAdmissionPR = `-- name: GetIssueAdmissionPR :one
 
-SELECT pr.id, pr.head_sha, COALESCE(pr.api_merge_state_status, '')::text AS merge_state
+SELECT pr.id, pr.workspace_id, pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number, pr.title, pr.state, pr.html_url, pr.branch, pr.author_login, pr.author_avatar_url, pr.merged_at, pr.closed_at, pr.pr_created_at, pr.pr_updated_at, pr.created_at, pr.updated_at, pr.head_sha, pr.mergeable_state, pr.additions, pr.deletions, pr.changed_files, pr.api_mergeable, pr.api_merge_state_status, pr.checks_rollup_state, pr.snapshot_head_sha, pr.snapshot_fetched_at, pr.snapshot_base_ref, pr.snapshot_recheck_at, pr.head_repo_same, pr.review_state, pr.review_head_sha, pr.review_id, pr.review_at
 FROM github_pull_request pr
 JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
 WHERE ipr.issue_id = $1 AND pr.state IN ('open', 'draft') AND pr.head_sha <> ''
@@ -21,20 +21,50 @@ ORDER BY pr.pr_updated_at DESC
 LIMIT 1
 `
 
-type GetIssueAdmissionPRRow struct {
-	ID         pgtype.UUID `json:"id"`
-	HeadSha    string      `json:"head_sha"`
-	MergeState string      `json:"merge_state"`
-}
-
 // CHE-4650: reviewer-run admission. A reviewer run starts only on an
 // admissible PR head; otherwise the deferral is recorded for 24 h.
 // The linked GitHub PR a reviewer run would review: the newest open or draft
 // one. No row when the issue has none, so there is nothing to judge.
-func (q *Queries) GetIssueAdmissionPR(ctx context.Context, issueID pgtype.UUID) (GetIssueAdmissionPRRow, error) {
+func (q *Queries) GetIssueAdmissionPR(ctx context.Context, issueID pgtype.UUID) (GithubPullRequest, error) {
 	row := q.db.QueryRow(ctx, getIssueAdmissionPR, issueID)
-	var i GetIssueAdmissionPRRow
-	err := row.Scan(&i.ID, &i.HeadSha, &i.MergeState)
+	var i GithubPullRequest
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstallationID,
+		&i.RepoOwner,
+		&i.RepoName,
+		&i.PrNumber,
+		&i.Title,
+		&i.State,
+		&i.HtmlUrl,
+		&i.Branch,
+		&i.AuthorLogin,
+		&i.AuthorAvatarUrl,
+		&i.MergedAt,
+		&i.ClosedAt,
+		&i.PrCreatedAt,
+		&i.PrUpdatedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.HeadSha,
+		&i.MergeableState,
+		&i.Additions,
+		&i.Deletions,
+		&i.ChangedFiles,
+		&i.ApiMergeable,
+		&i.ApiMergeStateStatus,
+		&i.ChecksRollupState,
+		&i.SnapshotHeadSha,
+		&i.SnapshotFetchedAt,
+		&i.SnapshotBaseRef,
+		&i.SnapshotRecheckAt,
+		&i.HeadRepoSame,
+		&i.ReviewState,
+		&i.ReviewHeadSha,
+		&i.ReviewID,
+		&i.ReviewAt,
+	)
 	return i, err
 }
 

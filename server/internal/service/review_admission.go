@@ -135,30 +135,16 @@ func startsReview(target RunTarget) bool {
 	return target.ReviewRun
 }
 
-// actsAsAuthor reports whether the run hands the issue's own PR back to its
-// assignee for work: the assignee outside a review status. The same agent in a
-// review status, or any agent that does not hold the issue, acts as reviewer.
-// ponytail: the PR link records no author agent (only a GitHub login), so the
-// role comes from assignee and status; add a PR-author agent column if a
-// reviewer ever authors work while the issue sits in a review status.
-func actsAsAuthor(issue db.Issue, agentID pgtype.UUID) bool {
-	return issue.AssigneeType.String == "agent" && issue.AssigneeID == agentID && !IsReviewStatus(issue.Status)
-}
-
 // guardReviewAdmission defers a reviewer run on a PR head that is not
 // admissible (CHE-4650). Only an agent in the configured reviewer set is
-// judged, only while it acts as reviewer on this issue (actsAsAuthor), and only
-// when the issue has a linked open PR. An author run is never held back: it is
-// what turns red CI green, even when the same agent reviews other PRs.
+// judged, only when the issue has a linked open PR, and never the agent that
+// authored that PR (GitHubPullRequestAuthor), in any status and on any path: its
+// run is what turns red CI green, even when it reviews other PRs. The author
+// comes from the PR binding or task evidence, never from assignee or status.
+// An unknown or ambiguous author skips only the exemption; the deferral then
+// records "author: unresolved".
 func guardReviewAdmission(ctx context.Context, q *db.Queries, issueID pgtype.UUID, target RunTarget) error {
 	if !admissionEnabled || !startsReview(target) || !target.AgentID.Valid || !issueID.Valid || !admissionReviewers[util.UUIDToString(target.AgentID)] {
-		return nil
-	}
-	issue, err := q.GetIssue(ctx, issueID)
-	if err != nil {
-		return fmt.Errorf("review admission: load issue: %w", err)
-	}
-	if actsAsAuthor(issue, target.AgentID) {
 		return nil
 	}
 	pr, err := q.GetIssueAdmissionPR(ctx, issueID)
@@ -168,13 +154,28 @@ func guardReviewAdmission(ctx context.Context, q *db.Queries, issueID pgtype.UUI
 		}
 		return fmt.Errorf("review admission: load PR: %w", err)
 	}
+	authorKnown := true
+	author, err := GitHubPullRequestAuthor(ctx, q, pr)
+	switch {
+	case err == nil:
+		if author.ID == target.AgentID {
+			return nil
+		}
+	case errors.Is(err, pgx.ErrNoRows):
+		authorKnown = false
+	default:
+		return fmt.Errorf("review admission: resolve PR author: %w", err)
+	}
 	runs, err := q.ListAdmissionCheckRuns(ctx, db.ListAdmissionCheckRunsParams{PrID: pr.ID, HeadSha: pr.HeadSha})
 	if err != nil {
 		return fmt.Errorf("review admission: load checks: %w", err)
 	}
-	reasons := admissionReasons(admissionChecks, runs, pr.MergeState)
+	reasons := admissionReasons(admissionChecks, runs, pr.ApiMergeStateStatus.String)
 	if len(reasons) == 0 {
 		return nil
+	}
+	if !authorKnown {
+		reasons = append(reasons, "author: unresolved")
 	}
 	deferral := &admissionDeferredError{
 		issueID: issueID, agentID: target.AgentID, trigger: target.Trigger, head: pr.HeadSha, reasons: reasons,

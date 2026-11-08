@@ -4,7 +4,7 @@
 -- name: GetIssueAdmissionPR :one
 -- The linked GitHub PR a reviewer run would review: the newest open or draft
 -- one. No row when the issue has none, so there is nothing to judge.
-SELECT pr.id, pr.head_sha, COALESCE(pr.api_merge_state_status, '')::text AS merge_state
+SELECT pr.*
 FROM github_pull_request pr
 JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
 WHERE ipr.issue_id = $1 AND pr.state IN ('open', 'draft') AND pr.head_sha <> ''

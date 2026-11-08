@@ -35,7 +35,43 @@ func enableAdmission(t *testing.T, on bool) {
 type admissionFixture struct {
 	*stageFixture
 	issue, pr string
+	author    string // the agent bound as the author of f.pr
 	checks    int
+}
+
+// bindAuthor records agent as the author of pr in the workspace settings, the
+// binding GitHubPullRequestAuthor reads first.
+func (f *admissionFixture) bindAuthor(t *testing.T, pr, agent string) {
+	t.Helper()
+	var prev []byte
+	if err := f.Pool.QueryRow(context.Background(), `SELECT settings FROM workspace WHERE id = $1`, f.WorkspaceID).Scan(&prev); err != nil {
+		t.Fatalf("read workspace settings: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = f.Pool.Exec(context.Background(), `UPDATE workspace SET settings = $2 WHERE id = $1`, f.WorkspaceID, prev)
+	})
+	f.Exec(t, `UPDATE workspace SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{github_review_authors}',
+		COALESCE(settings->'github_review_authors', '{}'::jsonb) ||
+		(SELECT jsonb_build_object(lower(repo_owner) || '/' || lower(repo_name) || '#' || pr_number, $3::text)
+		 FROM github_pull_request WHERE id = $2)) WHERE id = $1`, f.WorkspaceID, pr, agent)
+}
+
+// addPR links a second open PR at admissionHead to issue, with a failing "ci".
+func (f *admissionFixture) addPR(t *testing.T, issue string) string {
+	t.Helper()
+	pr := f.Insert(t, "github_pull_request", testutil.Cols{
+		"workspace_id": f.WorkspaceID, "installation_id": 1, "repo_owner": "o", "repo_name": "r",
+		"pr_number": int(time.Now().UnixNano()%1000000000) + 1, "title": "t", "state": "open", "html_url": "https://example.test/pr",
+		"pr_created_at": time.Now(), "pr_updated_at": time.Now(),
+		"head_sha": admissionHead, "api_merge_state_status": "CLEAN",
+	})
+	f.InsertNoID(t, "issue_pull_request", testutil.Cols{"issue_id": issue, "pull_request_id": pr},
+		"issue_id = $1 AND pull_request_id = $2", issue, pr)
+	f.InsertNoID(t, "github_pull_request_check_run", testutil.Cols{
+		"pr_id": pr, "head_sha": admissionHead, "ordinal": 1, "name": "ci", "status": "completed", "conclusion": "failure",
+	}, "pr_id = $1 AND ordinal = $2", pr, 1)
+	f.Cleanup(t, `DELETE FROM review_admission_deferral WHERE issue_id = $1`, issue)
+	return pr
 }
 
 // newAdmissionFixture is an agent_review issue with a linked open PR at
@@ -59,6 +95,10 @@ func newAdmissionFixture(t *testing.T, mergeState string) *admissionFixture {
 	f.InsertNoID(t, "issue_pull_request", testutil.Cols{"issue_id": f.issue, "pull_request_id": f.pr},
 		"issue_id = $1 AND pull_request_id = $2", f.issue, f.pr)
 	f.Cleanup(t, `DELETE FROM review_admission_deferral WHERE issue_id = $1`, f.issue)
+	// The PR's author is a third agent, so the configured reviewers are
+	// reviewers here unless a test binds one of them as author.
+	f.author = f.Agent(t, "PR author", f.runtime)
+	f.bindAuthor(t, f.pr, f.author)
 	return f
 }
 
@@ -384,41 +424,76 @@ func TestAdmissionRepeatedDeferralKeepsTheDeadline(t *testing.T) {
 	}
 }
 
-// One configured agent holds two roles. Handed its own PR while the issue is
-// in_progress it is the author, and its run repairs the red CI. Handed the same
-// PR for review it is the reviewer, and red CI defers it.
-func TestAdmissionJudgesTheRoleNotTheAgent(t *testing.T) {
+// One configured agent holds two roles, decided per PR by who authored that
+// PR, never by the issue status or assignee. It authors PR A: its runs repair
+// the red CI in every status and on every path. It reviews PR B, authored by
+// someone else: the same red CI defers it, even as that issue's assignee.
+func TestAdmissionJudgesTheRoleOnThePRNotTheAssignee(t *testing.T) {
 	f := newAdmissionFixture(t, "CLEAN")
 	f.check(t, "ci", "completed", "failure")
-	f.Exec(t, `UPDATE issue SET status = 'in_progress' WHERE id = $1`, f.issue)
-	for _, c := range []struct {
-		trigger string
-		review  bool
-	}{{"assignment", true}, {"comment", true}, {"wakeup", false}, {"system wakeup", false}} {
-		if err := f.guardAs(f.agentID, c.trigger, c.review); err != nil {
-			t.Fatalf("author %s on red CI: err = %v, want admitted", c.trigger, err)
+	f.bindAuthor(t, f.pr, f.agentID) // f.agentID authors PR A
+	for _, status := range []string{"in_progress", "in_review", "agent_review"} {
+		f.Exec(t, `UPDATE issue SET status = $2 WHERE id = $1`, f.issue, status)
+		for _, c := range []struct {
+			trigger string
+			review  bool
+		}{{"assignment", true}, {"comment", true}, {"mention", true}, {"wakeup", false}, {"system wakeup", false}} {
+			if err := f.guardAs(f.agentID, c.trigger, c.review); err != nil {
+				t.Fatalf("author %s in %s on red CI: err = %v, want admitted", c.trigger, status, err)
+			}
 		}
 	}
 	if _, _, _, ok := f.deferral(t); ok {
 		t.Fatal("a deferral record was stored for an author run")
 	}
-	for _, status := range []string{"in_review", "agent_review"} {
-		f.Exec(t, `UPDATE issue SET status = $2 WHERE id = $1`, f.issue, status)
-		if err := f.guardAs(f.agentID, "assignment", true); !errors.Is(err, ErrAdmissionDeferred) {
-			t.Fatalf("reviewer in %s on red CI: err = %v, want ErrAdmissionDeferred", status, err)
+
+	issueB := f.Issue(t, "PR B under review", testutil.Cols{"status": "in_progress", "assignee_type": "agent", "assignee_id": f.agentID})
+	prB := f.addPR(t, issueB)
+	f.bindAuthor(t, prB, f.author) // someone else authors PR B
+	for _, c := range []struct {
+		trigger string
+		review  bool
+	}{{"assignment", true}, {"mention", true}} {
+		_, err := guardIssueRunGate(context.Background(), f.q, util.MustParseUUID(issueB), OriginDerived,
+			RunTarget{AgentID: util.MustParseUUID(f.agentID), Trigger: c.trigger, ReviewRun: c.review})
+		if !errors.Is(err, ErrAdmissionDeferred) {
+			t.Fatalf("reviewer %s on PR B: err = %v, want ErrAdmissionDeferred", c.trigger, err)
 		}
+	}
+	_, err := guardIssueRunGate(context.Background(), f.q, util.MustParseUUID(issueB), OriginNamed,
+		RunTarget{AgentID: util.MustParseUUID(f.agentID), Trigger: "wakeup"})
+	if !errors.Is(err, ErrAdmissionDeferred) {
+		t.Fatalf("reviewer named wakeup on PR B: err = %v, want ErrAdmissionDeferred", err)
 	}
 }
 
-// The author wakeup path too: a named wakeup of the assignee in progress.
+// The author wakeup path too: a named wakeup of the PR author, in a review
+// status, still starts on red CI.
 func TestAdmissionAdmitsAnAuthorWakeupOnRedCI(t *testing.T) {
 	f := newAdmissionFixture(t, "CLEAN")
 	f.check(t, "ci", "completed", "failure")
-	f.Exec(t, `UPDATE issue SET status = 'in_progress' WHERE id = $1`, f.issue)
+	f.bindAuthor(t, f.pr, f.agentID)
 	_, err := guardIssueRunGate(context.Background(), f.q, util.MustParseUUID(f.issue), OriginNamed,
 		RunTarget{AgentID: util.MustParseUUID(f.agentID), Trigger: "wakeup"})
 	if err != nil {
 		t.Fatalf("named author wakeup on red CI: err = %v, want admitted", err)
+	}
+}
+
+// No author on record: the exemption is skipped (not guessed from the
+// assignee), the run is judged as a reviewer, and the record says why.
+func TestAdmissionUnknownAuthorIsJudgedAndRecorded(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	f.check(t, "ci", "completed", "failure")
+	f.Exec(t, `UPDATE workspace SET settings = settings - 'github_review_authors' WHERE id = $1`, f.WorkspaceID)
+	f.Exec(t, `UPDATE issue SET status = 'in_progress' WHERE id = $1`, f.issue)
+	if err := f.guardAs(f.agentID, "assignment", true); !errors.Is(err, ErrAdmissionDeferred) {
+		t.Fatalf("assignee with no author on record: err = %v, want ErrAdmissionDeferred", err)
+	}
+	_, reasons, _, ok := f.deferral(t)
+	want := []string{"ci: failing", "author: unresolved"}
+	if !ok || len(reasons) != 2 || reasons[0] != want[0] || reasons[1] != want[1] {
+		t.Fatalf("stored reasons = %v ok=%v, want %v", reasons, ok, want)
 	}
 }
 
