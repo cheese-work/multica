@@ -185,3 +185,42 @@ describe("preprocessLinks — trailing markdown delimiter is not part of the URL
     );
   });
 });
+
+// GFM extended autolink: trailing `? ! . , : ; * _ ~` are not part of the URL,
+// and a trailing `)` is dropped only when unbalanced (CHE-4660).
+describe("preprocessLinks — trailing punctuation is not part of the URL (GFM)", () => {
+  const link = (u: string) => `[${u}](${u})`;
+  const U = "https://github.com/cheese-work/multica-dotfiles/pull/591";
+
+  it("excludes the ':' in the original bug shape", () => {
+    expect(preprocessLinks(`${U}: sửa ready sweep`)).toBe(`${link(U)}: sửa ready sweep`);
+  });
+
+  it.each([".", ",", ";", "!", "?", ":", "_"])("excludes a trailing %s", (p) => {
+    expect(preprocessLinks(`see ${U}${p} next`)).toBe(`see ${link(U)}${p} next`);
+  });
+
+  it("excludes a trailing run of punctuation", () => {
+    expect(preprocessLinks(`see ${U}?!. next`)).toBe(`see ${link(U)}?!. next`);
+  });
+
+  it("excludes an unbalanced trailing )", () => {
+    expect(preprocessLinks(`(see ${U})`)).toBe(`(see ${link(U)})`);
+    expect(preprocessLinks(`(see ${U}).`)).toBe(`(see ${link(U)}).`);
+  });
+
+  it("keeps balanced parentheses and interior punctuation", () => {
+    const w = "https://en.wikipedia.org/wiki/A_(b)";
+    expect(preprocessLinks(`see ${w}`)).toBe(`see ${link(w)}`);
+    expect(preprocessLinks(`see ${w}.`)).toBe(`see ${link(w)}.`);
+    expect(preprocessLinks(`(${w})`)).toBe(`(${link(w)})`);
+    const q = "https://x.com/a_b.c,d?e=1&f=2";
+    expect(preprocessLinks(q)).toBe(link(q));
+  });
+
+  it("applies to www. URLs", () => {
+    expect(preprocessLinks("go www.example.com/x.")).toBe(
+      "go [www.example.com/x](https://www.example.com/x).",
+    );
+  });
+});
