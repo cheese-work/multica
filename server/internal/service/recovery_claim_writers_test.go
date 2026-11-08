@@ -423,3 +423,167 @@ func TestReaperKeepsPacedSlotOfRunningAutopilotRecovery(t *testing.T) {
 		t.Fatalf("claim state after the task completed = %q, want completed", got)
 	}
 }
+
+// A writer paused between its claim and its dispatch is not a dead writer. The
+// reaper must not free its claim, and a writer that did lose its claim must not
+// dispatch (CHE-4568 review round 3, P1-1).
+func TestPausedWriterIsFencedAgainstReaper(t *testing.T) {
+	ctx := context.Background()
+	// pause stands in for a writer stalled past the stale window: the claim is
+	// older than the window and a concurrent reaper runs before it resumes.
+	pause := func(o ownerFixture, failed string) {
+		o.svc.TaskSvc.afterRecoveryClaim = func(context.Context) {
+			o.Exec(t, `UPDATE recovery_claim SET claimed_at = now() - interval '10 minutes' WHERE failed_task_id=$1 AND state='claimed'`, failed)
+			reapTogether(t, o, 1)
+		}
+	}
+	t.Run("NativeRetryDoesNotDispatchAfterLosingClaim", func(t *testing.T) {
+		o := newClaimWritersFixture(t)
+		failed := o.failedRun(t, nil)
+		pause(o, failed)
+		parent, err := o.q.GetAgentTask(ctx, parseTestUUID(t, failed))
+		if err != nil {
+			t.Fatal(err)
+		}
+		child, _ := o.svc.TaskSvc.MaybeRetryFailedTask(ctx, parent)
+		if child != nil || o.derived(t, failed) != 0 {
+			t.Fatalf("writer dispatched after its claim was reaped: child=%v derived=%d", child, o.derived(t, failed))
+		}
+	})
+	t.Run("WatchdogRerunDoesNotDispatchAfterLosingClaim", func(t *testing.T) {
+		o := newClaimWritersFixture(t)
+		failed := o.failedRun(t, nil)
+		pause(o, failed)
+		task, _ := o.svc.TaskSvc.RerunIssue(ctx, parseTestUUID(t, o.issueID), parseTestUUID(t, failed), pgtype.UUID{}, pgtype.UUID{}, false, nil)
+		if task != nil || o.derived(t, failed) != 0 {
+			t.Fatalf("rerun dispatched after its claim was reaped: task=%v derived=%d", task, o.derived(t, failed))
+		}
+	})
+	t.Run("RecurringReservationDoesNotRecordAfterLosingClaim", func(t *testing.T) {
+		o := newClaimWritersFixture(t)
+		wakeupID := o.wakeup(t, "every", "continuous", nil)
+		failed := o.failedTask(t, wakeupContext(t, wakeupID))
+		pause(o, failed)
+		reserved, err := o.svc.TaskSvc.reserveProviderFailureRecovery(ctx, o.q, &providerFailureRecoveryAttempt{
+			FailedTaskID: parseTestUUID(t, failed), FailedAt: time.Now().UTC().Add(-2 * time.Hour), ProbeAt: time.Now().UTC(), ProbeStatus: 401,
+			Scope: providerFailureRecoveryScope{Kind: "issue_wakeup", TriggerID: parseTestUUID(t, wakeupID)},
+		}, pgtype.UUID{}, dbid.NewV7())
+		if err != nil || reserved {
+			t.Fatalf("reserved=%t err=%v after the claim was reaped, want false", reserved, err)
+		}
+	})
+	// A writer that holds its claim keeps it: the reaper that runs while the
+	// writer is paused skips it, and the writer still dispatches exactly once.
+	t.Run("ActiveWriterKeepsItsClaim", func(t *testing.T) {
+		o := newClaimWritersFixture(t)
+		failed := o.failedRun(t, nil)
+		o.svc.TaskSvc.afterRecoveryClaim = func(context.Context) { reapTogether(t, o, 3) }
+		parent, err := o.q.GetAgentTask(ctx, parseTestUUID(t, failed))
+		if err != nil {
+			t.Fatal(err)
+		}
+		child, err := o.svc.TaskSvc.MaybeRetryFailedTask(ctx, parent)
+		if err != nil || child == nil || o.derived(t, failed) != 1 {
+			t.Fatalf("child=%v err=%v derived=%d, want one retry", child, err, o.derived(t, failed))
+		}
+	})
+}
+
+// A run-only autopilot failure has no issue. Its recovery still claims through
+// the shared store, keyed by the failed run (CHE-4568 review round 3, P1-2).
+func TestIssuelessAutopilotRecoveryClaims(t *testing.T) {
+	f, ownerID := newPrincipalFixture(t)
+	f.svc.TaskSvc.RecoveryClaims = NewRecoveryClaimStore(f.Pool)
+	agentID := f.privateAgentOwnedBy(t, ownerID, "recovery-schedule")
+	autopilotID, triggerID := f.autopilotWithTrigger(t, agentID, ownerID, ownerID)
+	failedRun, err := f.q.CreateAutopilotRun(context.Background(), db.CreateAutopilotRunParams{
+		ID: dbid.NewV7(), AutopilotID: parseTestUUID(t, autopilotID), TriggerID: parseTestUUID(t, triggerID),
+		Source: "schedule", Status: "running", TriggerPayload: []byte(`{}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Cleanup(t, "DELETE FROM autopilot_run WHERE id=$1", util.UUIDToString(failedRun.ID))
+	failedTaskID := f.Task(t, agentID, testutil.Cols{
+		"runtime_id":       testutil.Raw("(SELECT runtime_id FROM agent WHERE id='" + agentID + "')"),
+		"autopilot_run_id": util.UUIDToString(failedRun.ID),
+		"status":           "failed", "failure_reason": "agent_error.provider_server_error",
+		"completed_at": testutil.Raw("now()-interval '61 minutes'"),
+	})
+	f.Cleanup(t, "DELETE FROM provider_failure_recovery WHERE failed_task_id=$1", failedTaskID)
+	f.Cleanup(t, "DELETE FROM recovery_claim WHERE failed_task_id=$1", failedTaskID)
+	f.Exec(t, "UPDATE autopilot_run SET status='failed',completed_at=now() WHERE id=$1", util.UUIDToString(failedRun.ID))
+	f.svc.TaskSvc.ProviderFailureProbe = &providerFailureProbeStub{evidence: ProviderFailureProbeEvidence{CheckedAt: time.Now().UTC(), StatusCode: 401}}
+
+	recoveryRun := f.dispatch(t, autopilotID, triggerID)
+	if recoveryRun.Status != "running" {
+		t.Fatalf("recovery run status = %s, want running", recoveryRun.Status)
+	}
+	if got := f.Count(t, `SELECT count(*) FROM recovery_claim WHERE failed_task_id=$1 AND issue_id IS NULL AND mode='fresh_replay'`, failedTaskID); got != 1 {
+		t.Fatalf("issue-less claims for the failed run = %d, want 1", got)
+	}
+	// The claim holds the run: a second recovery of it is refused, not admitted.
+	hold := &recoveryHold{}
+	admitted, err := f.svc.TaskSvc.claimRecovery(context.Background(), hold, pgtype.UUID{}, util.MustParseUUID(failedTaskID), RecoveryModeFreshReplay, 2)
+	if err != nil || admitted {
+		t.Fatalf("second claim admitted=%t err=%v, want refused", admitted, err)
+	}
+}
+
+// A claim whose writer holds its row lock is skipped by the reaper even when
+// the stale window has passed, and the reaper frees it once the lock ends.
+func TestReaperSkipsClaimLockedByDispatchingWriter(t *testing.T) {
+	o := newClaimWritersFixture(t)
+	ctx := context.Background()
+	failed := o.failedRun(t, nil)
+	o.seedClaim(t, failed, "claimed", "", 10*time.Minute)
+	tx, err := o.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM recovery_claim WHERE failed_task_id=$1 FOR UPDATE`, failed); err != nil {
+		t.Fatal(err)
+	}
+	reapTogether(t, o, 2)
+	if got := o.claimState(t, failed); got != "claimed" {
+		t.Fatalf("claim state while its writer holds the row = %q, want claimed", got)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	reapTogether(t, o, 1)
+	if got := o.claimState(t, failed); got != "" {
+		t.Fatalf("claim state after the writer let go = %q, want reaped", got)
+	}
+}
+
+// Issue-less claims share the lineage budget and allow one replay per lineage.
+func TestIssuelessClaimsAreBudgetedByLineage(t *testing.T) {
+	o := newClaimWritersFixture(t)
+	ctx := context.Background()
+	first, second := o.failedRun(t, nil), o.failedRun(t, nil)
+	for _, id := range []string{first, second} {
+		o.Cleanup(t, "DELETE FROM recovery_claim WHERE failed_task_id=$1", id)
+	}
+	claim := func(failed string) RecoveryClaimOutcome {
+		_, outcome, err := o.svc.TaskSvc.RecoveryClaims.Claim(ctx, RecoveryClaimParams{
+			WorkspaceID: parseTestUUID(t, o.WorkspaceID), FailedTaskID: parseTestUUID(t, failed), Mode: RecoveryModeFreshReplay,
+			NativeCeiling: 3, PacedCap: 9, Spacing: 0, Now: time.Now(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return outcome
+	}
+	if got := claim(first); got != RecoveryAdmitted {
+		t.Fatalf("first issue-less claim = %s, want admitted", got)
+	}
+	if got := claim(first); got != RecoveryDuplicate {
+		t.Fatalf("repeat claim for one failed run = %s, want duplicate", got)
+	}
+	// Unrelated failed runs without an issue are separate lineages.
+	if got := claim(second); got != RecoveryAdmitted {
+		t.Fatalf("issue-less claim of another lineage = %s, want admitted", got)
+	}
+}

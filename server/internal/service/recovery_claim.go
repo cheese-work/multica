@@ -133,7 +133,7 @@ func (s *RecoveryClaimStore) refusal(ctx context.Context, tx pgx.Tx, p RecoveryC
 	// the original attempt is attempt one, so retries stop at ceiling-1, and an
 	// exhausted lineage never earns another retry from any writer.
 	var retries int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM recovery_claim WHERE workspace_id = $1 AND issue_id = $2 AND lineage_root_task_id = $3 AND state <> 'released'`,
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM recovery_claim WHERE workspace_id = $1 AND issue_id IS NOT DISTINCT FROM $2 AND lineage_root_task_id = $3 AND state <> 'released'`,
 		p.WorkspaceID, p.IssueID, root).Scan(&retries); err != nil {
 		return "", fmt.Errorf("count recovery attempts: %w", err)
 	}
@@ -144,9 +144,12 @@ func (s *RecoveryClaimStore) refusal(ctx context.Context, tx pgx.Tx, p RecoveryC
 		return "", nil
 	}
 	if p.Mode == RecoveryModeFreshReplay {
+		// One automatic replay per issue; a run with no issue gets one per
+		// lineage, since the failed run is the only thing to key it by.
 		var spent bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM recovery_claim WHERE workspace_id = $1 AND issue_id = $2 AND mode = 'fresh_replay' AND state <> 'released')`,
-			p.WorkspaceID, p.IssueID).Scan(&spent); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM recovery_claim WHERE workspace_id = $1 AND mode = 'fresh_replay' AND state <> 'released'
+				AND CASE WHEN $2::uuid IS NULL THEN lineage_root_task_id = $3 ELSE issue_id = $2 END)`,
+			p.WorkspaceID, p.IssueID, root).Scan(&spent); err != nil {
 			return "", fmt.Errorf("read fresh replay allowance: %w", err)
 		}
 		if spent {
@@ -181,6 +184,15 @@ func (s *RecoveryClaimStore) MarkSubmitted(ctx context.Context, id, successorTas
 // a claim is never submitted for a task that was not minted (CHE-4568).
 func (s *RecoveryClaimStore) MarkSubmittedIn(ctx context.Context, ex db.DBTX, id, successorTaskID pgtype.UUID) error {
 	return transition(ctx, ex, id, `state = 'submitted', successor_task_id = $2`, `state = 'claimed'`, successorTaskID)
+}
+
+// RenewIn fences a writer's claim on the executor that will dispatch. It
+// restarts the stale window and, inside a transaction, keeps the row locked
+// until the transaction ends, so the reaper skips it. It fails when the claim
+// is gone: the reaper freed it while the writer was paused, and the writer must
+// not dispatch.
+func (s *RecoveryClaimStore) RenewIn(ctx context.Context, ex db.DBTX, id pgtype.UUID) error {
+	return transition(ctx, ex, id, `claimed_at = now()`, `state = 'claimed'`)
 }
 
 // MarkAmbiguous keeps the claim's slot until Settle reconciles it.
@@ -237,6 +249,12 @@ const dispatchedTask = `(SELECT q.id FROM agent_task_queue q
 	   OR q.autopilot_run_id IN (SELECT r.recovery_run_id FROM provider_failure_recovery r WHERE r.failed_task_id = c.failed_task_id)
 	ORDER BY (q.id = c.successor_task_id) DESC, q.created_at LIMIT 1)`
 
+// reapable selects the stale claims no live writer holds. SKIP LOCKED passes
+// over a claim a dispatching writer has fenced (RenewIn), and the stale test is
+// re-evaluated against a row a writer just renewed.
+const reapable = `c.id IN (SELECT id FROM recovery_claim WHERE workspace_id = $1 AND claimed_at < $2
+	AND state IN ('claimed', 'submitted', 'ambiguous') FOR UPDATE SKIP LOCKED)`
+
 // ReapSettled settles claims nobody else will, from what the database shows.
 // A stale claim whose dispatch committed (crash before MarkSubmitted, or an
 // autopilot task minted after the reservation) is bound to that task and keeps
@@ -248,16 +266,16 @@ func (s *RecoveryClaimStore) ReapSettled(ctx context.Context, workspaceID pgtype
 	stale := now.Add(-recoveryStaleClaim)
 	for _, stmt := range []string{
 		`UPDATE recovery_claim c SET state = 'submitted', successor_task_id = ` + dispatchedTask + `
-		 WHERE c.workspace_id = $1 AND c.claimed_at < $2 AND c.successor_task_id IS NULL AND c.state IN ('claimed', 'submitted', 'ambiguous')
+		 WHERE c.successor_task_id IS NULL AND ` + reapable + `
 		   AND ` + dispatchedTask + ` IS NOT NULL`,
 		`UPDATE recovery_claim c SET state = CASE q.status WHEN 'completed' THEN 'completed' ELSE 'failed' END, settled_at = now()
 		 FROM agent_task_queue q
 		 WHERE c.workspace_id = $1 AND c.state = 'submitted' AND c.claimed_at < $2 AND q.id = c.successor_task_id AND q.status IN ('completed', 'failed', 'cancelled')`,
 		`DELETE FROM recovery_claim c
-		 WHERE c.workspace_id = $1 AND c.claimed_at < $2 AND c.state IN ('claimed', 'submitted') AND ` + dispatchedTask + ` IS NULL
+		 WHERE ` + reapable + ` AND c.state IN ('claimed', 'submitted') AND c.successor_task_id IS NULL AND ` + dispatchedTask + ` IS NULL
 		   AND NOT EXISTS (SELECT 1 FROM provider_failure_recovery r WHERE r.failed_task_id = c.failed_task_id)`,
 		`UPDATE recovery_claim c SET state = 'ambiguous'
-		 WHERE c.workspace_id = $1 AND c.claimed_at < $2 AND c.state IN ('claimed', 'submitted') AND ` + dispatchedTask + ` IS NULL`,
+		 WHERE ` + reapable + ` AND c.state IN ('claimed', 'submitted') AND ` + dispatchedTask + ` IS NULL`,
 	} {
 		if _, err := s.pool.Exec(ctx, stmt, workspaceID, stale); err != nil {
 			return fmt.Errorf("reap recovery claims: %w", err)
@@ -275,24 +293,39 @@ type recoveryHold struct {
 
 // claimRecovery asks the shared store to admit one recovery dispatch for the
 // failed run. admitted=false with a nil error is a refusal; the caller must
-// not dispatch. A nil store admits everything (isolated test services), and so
-// does a run with no issue to anchor the claim to.
+// not dispatch. A nil store admits everything (isolated test services). A run
+// with no issue (a run-only autopilot) claims by the failed run and takes its
+// workspace from the failed run's agent.
 func (s *TaskService) claimRecovery(ctx context.Context, hold *recoveryHold, issueID, failedTaskID pgtype.UUID, mode RecoveryMode, ceiling int) (bool, error) {
-	if s.RecoveryClaims == nil || !issueID.Valid {
+	if s.RecoveryClaims == nil {
 		return true, nil
 	}
-	issue, err := s.Queries.GetIssue(ctx, issueID)
-	if err != nil {
-		return false, fmt.Errorf("recovery claim: load issue: %w", err)
+	var workspaceID pgtype.UUID
+	if issueID.Valid {
+		issue, err := s.Queries.GetIssue(ctx, issueID)
+		if err != nil {
+			return false, fmt.Errorf("recovery claim: load issue: %w", err)
+		}
+		workspaceID = issue.WorkspaceID
+	} else {
+		failed, err := s.Queries.GetAgentTask(ctx, failedTaskID)
+		if err != nil {
+			return false, fmt.Errorf("recovery claim: load failed task: %w", err)
+		}
+		agent, err := s.Queries.GetAgent(ctx, failed.AgentID)
+		if err != nil {
+			return false, fmt.Errorf("recovery claim: load agent: %w", err)
+		}
+		workspaceID = agent.WorkspaceID
 	}
 	now := time.Now()
 	if mode != RecoveryModeNativeResume {
-		if err := s.RecoveryClaims.ReapSettled(ctx, issue.WorkspaceID, now); err != nil {
+		if err := s.RecoveryClaims.ReapSettled(ctx, workspaceID, now); err != nil {
 			slog.Warn("recovery claim: reap failed", "error", err)
 		}
 	}
 	claim, outcome, err := s.RecoveryClaims.Claim(ctx, RecoveryClaimParams{
-		WorkspaceID: issue.WorkspaceID, IssueID: issueID, FailedTaskID: failedTaskID, Mode: mode,
+		WorkspaceID: workspaceID, IssueID: issueID, FailedTaskID: failedTaskID, Mode: mode,
 		NativeCeiling: ceiling, PacedCap: recoveryPacedCap, Spacing: recoverySpacing, Now: now,
 	})
 	if err != nil {
@@ -303,7 +336,30 @@ func (s *TaskService) claimRecovery(ctx context.Context, hold *recoveryHold, iss
 		return false, nil
 	}
 	hold.claim, hold.held = claim, true
+	if s.afterRecoveryClaim != nil {
+		s.afterRecoveryClaim(ctx)
+	}
 	return true, nil
+}
+
+// fenceRecoveryClaim renews the writer's claim on the executor that dispatches,
+// just before the dispatch. False means the claim was reaped while the writer
+// was paused: the writer must not dispatch, and its hold is dropped. Inside a
+// transaction the renewed row stays locked until commit, so no reaper can take
+// it between the fence and the dispatch.
+// ponytail: a writer outside a transaction (watchdog rerun) is fenced for one
+// stale window; a pause longer than that between fence and enqueue is not
+// covered. Wrap the rerun in a transaction if that ever happens.
+func (s *TaskService) fenceRecoveryClaim(ctx context.Context, hold *recoveryHold, ex db.DBTX) bool {
+	if hold == nil || !hold.held {
+		return true
+	}
+	if err := s.RecoveryClaims.RenewIn(ctx, ex, hold.claim.ID); err != nil {
+		slog.Warn("recovery claim: lost before dispatch", "claim_id", util.UUIDToString(hold.claim.ID), "error", err)
+		hold.held = false
+		return false
+	}
+	return true
 }
 
 // submitRecoveryClaim marks the claim submitted on the dispatch transaction's

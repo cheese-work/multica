@@ -56,6 +56,9 @@ type TaskService struct {
 	// claims through before it dispatches (CHE-1126 Layer 2, CHE-4568). Nil
 	// leaves the writers unclaimed, as in isolated test services.
 	RecoveryClaims *RecoveryClaimStore
+	// afterRecoveryClaim runs once a writer holds an admitted claim and has
+	// not yet dispatched. Tests pause the writer here; nil in production.
+	afterRecoveryClaim func(context.Context)
 	// PRSnapshotsEnabled reports whether the server can refresh GitHub check snapshots.
 	PRSnapshotsEnabled bool
 	// WorkflowEdges evaluates a workflow_edges watch when it falls due: it
@@ -6280,6 +6283,8 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 				slog.Info("fail task auto-retry skipped: recovery claim not admitted",
 					"task_id", util.UUIDToString(taskID), "error", cerr)
 				createRetry = false
+			} else if !s.fenceRecoveryClaim(ctx, hold, qtx.Conn()) {
+				createRetry = false
 			}
 		}
 		if createRetry {
@@ -6976,7 +6981,7 @@ func (s *TaskService) maybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	// decline and just before the mint, so a declined retry leaves no claim.
 	if admitted, cerr := s.claimRecovery(ctx, hold, parent.IssueID, parent.ID, RecoveryModeNativeResume, int(retryAttemptCeiling(reason, parent.MaxAttempts))); cerr != nil {
 		return nil, fmt.Errorf("task auto-retry: recovery claim: %w", cerr)
-	} else if !admitted {
+	} else if !admitted || !s.fenceRecoveryClaim(ctx, hold, qtx.Conn()) {
 		return nil, nil
 	}
 	child, err := qtx.CreateRetryTask(ctx, db.CreateRetryTaskParams{
@@ -7428,7 +7433,7 @@ func (s *TaskService) rerunIssue(ctx context.Context, hold *recoveryHold, issueI
 		if cerr != nil {
 			return nil, fmt.Errorf("rerun: recovery claim: %w", cerr)
 		}
-		if !admitted {
+		if !admitted || !s.fenceRecoveryClaim(ctx, hold, s.RecoveryClaims.pool) {
 			return nil, ErrRecoveryNotAdmitted
 		}
 	}

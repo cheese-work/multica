@@ -368,7 +368,7 @@ func (s *TaskService) reserveProviderFailureRecovery(ctx context.Context, q *db.
 		if cerr != nil {
 			return false, fmt.Errorf("recovery claim: %w", cerr)
 		}
-		if !admitted {
+		if !admitted || !s.fenceRecoveryClaim(ctx, hold, q.Conn()) {
 			return false, nil
 		}
 	}
