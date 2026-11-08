@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -14,20 +13,18 @@ import (
 // stageQueueBriefing is the leader's "## Stage Queue" section (CHE-3613). When a
 // stage is full it names the queued PRs and the idle squad members, and tells
 // the leader to route an idle member to a queued PR before starting new PR
-// work. Only PRs this squad owns are listed (squadOwnsPR); empty when it owns
+// work. Only PRs this squad owns are listed (squadOwnsPR, by assignment); empty when it owns
 // none, so one squad's queue never redirects another squad's leader.
 func stageQueueBriefing(ctx context.Context, q *db.Queries, squad db.Squad) string {
 	loaded, err := service.LoadFullStages(ctx, q, squad.WorkspaceID)
 	if err != nil {
 		return ""
 	}
-	roster := squadAgentIDs(ctx, q, squad)
 	var stages []service.FullStage
 	for _, s := range loaded {
-		owner := util.MustParseUUID(s.AgentID)
 		var mine []service.QueuedPR
 		for _, p := range s.Queued {
-			if squadOwnsPR(ctx, q, squad, roster, owner, p.IssueID) {
+			if squadOwnsPR(ctx, q, squad, p.IssueID) {
 				mine = append(mine, p)
 			}
 		}
@@ -88,34 +85,20 @@ func idleSquadMembers(ctx context.Context, q *db.Queries, squad db.Squad) []db.A
 	return idle
 }
 
-// squadAgentIDs is the leader plus the roster's agents.
-func squadAgentIDs(ctx context.Context, q *db.Queries, squad db.Squad) map[pgtype.UUID]bool {
-	ids := map[pgtype.UUID]bool{squad.LeaderID: true}
-	members, _ := q.ListSquadMembers(ctx, squad.ID)
-	for _, m := range members {
-		if m.MemberType == "agent" {
-			ids[m.MemberID] = true
-		}
-	}
-	return ids
-}
-
-// squadOwnsPR is true when the PR's work item is assigned to the squad, or a
-// squad agent other than the stage's slot owner has run on it (the author).
-// The slot owner is excluded: it runs on every PR in its stage.
-func squadOwnsPR(ctx context.Context, q *db.Queries, squad db.Squad, roster map[pgtype.UUID]bool, slotOwner pgtype.UUID, prIssue string) bool {
+// squadOwnsPR is true when the PR's work item, or an ancestor of it, is
+// assigned to the squad. Past tasks by squad members do not count: a member
+// may have helped another team's PR as a guest.
+func squadOwnsPR(ctx context.Context, q *db.Queries, squad db.Squad, prIssue string) bool {
 	id := util.MustParseUUID(prIssue)
-	if issue, err := q.GetIssue(ctx, id); err == nil && issue.AssigneeType.String == "squad" && issue.AssigneeID == squad.ID {
-		return true
-	}
-	tasks, err := q.ListTasksByIssue(ctx, id)
-	if err != nil {
-		return false
-	}
-	for _, t := range tasks {
-		if t.AgentID != slotOwner && (roster[t.AgentID] || t.SquadID == squad.ID) {
+	for depth := 0; id.Valid && depth < 8; depth++ { // 8: epic -> PR nesting is shallow
+		issue, err := q.GetIssue(ctx, id)
+		if err != nil {
+			return false
+		}
+		if issue.AssigneeType.String == "squad" && issue.AssigneeID == squad.ID {
 			return true
 		}
+		id = issue.ParentIssueID
 	}
 	return false
 }

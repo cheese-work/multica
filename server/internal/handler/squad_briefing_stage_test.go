@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -24,6 +25,17 @@ func reviewPR(t *testing.T, owner, title string) string {
 	dbfx.InsertNoID(t, "issue_pull_request", testutil.Cols{"issue_id": id, "pull_request_id": pr},
 		"issue_id = $1 AND pull_request_id = $2", id, pr)
 	return id
+}
+
+// squadOwnedPR is a review PR under an epic assigned to the squad.
+func squadOwnedPR(t *testing.T, owner, title string, squadID pgtype.UUID) string {
+	t.Helper()
+	epic := dbfx.Issue(t, title+" epic", testutil.Cols{"assignee_type": "squad", "assignee_id": util.UUIDToString(squadID)})
+	pr := reviewPR(t, owner, title)
+	if _, err := testPool.Exec(context.Background(), `UPDATE issue SET parent_issue_id = $2 WHERE id = $1`, pr, epic); err != nil {
+		t.Fatal(err)
+	}
+	return pr
 }
 
 // A leader run on a full stage is told to dispatch an idle member to the queued
@@ -48,10 +60,11 @@ func TestSquadLeaderBriefingRoutesIdleMemberToQueuedPR(t *testing.T) {
 	for _, title := range []string{"PR A", "PR B"} {
 		dbfx.Task(t, owner, testutil.Cols{"issue_id": reviewPR(t, owner, title), "status": "running", "runtime_id": rt})
 	}
-	// PR C is this squad's: a member authored it. PR D is another team's.
-	queued := reviewPR(t, owner, "PR C")
-	dbfx.Task(t, idle, testutil.Cols{"issue_id": queued, "status": "completed", "runtime_id": rt})
+	// PR C sits under an epic assigned to this squad. PR D is another team's:
+	// a member of this squad only helped on it as a guest.
+	queued := squadOwnedPR(t, owner, "PR C", squad.ID)
 	foreign := reviewPR(t, owner, "PR D")
+	dbfx.Task(t, idle, testutil.Cols{"issue_id": foreign, "status": "completed", "runtime_id": rt})
 	for _, id := range []string{queued, foreign} {
 		if err := testHandler.Queries.MarkStageWaiting(ctx, db.MarkStageWaitingParams{
 			IssueID: util.MustParseUUID(id), AgentID: util.MustParseUUID(owner), TaintIds: []string{},
@@ -110,8 +123,7 @@ func TestClaim_LeaderTaskOnFullStage_GetsQueuedPRDispatch(t *testing.T) {
 	for _, title := range []string{"PR A", "PR B"} {
 		dbfx.Task(t, owner, testutil.Cols{"issue_id": reviewPR(t, owner, title), "status": "running", "runtime_id": rt})
 	}
-	queued := reviewPR(t, owner, "PR C")
-	dbfx.Task(t, member, testutil.Cols{"issue_id": queued, "status": "completed", "runtime_id": rt})
+	queued := squadOwnedPR(t, owner, "PR C", util.MustParseUUID(fx.SquadID))
 	if err := testHandler.Queries.MarkStageWaiting(ctx, db.MarkStageWaitingParams{
 		IssueID: util.MustParseUUID(queued), AgentID: util.MustParseUUID(owner), TaintIds: []string{},
 	}); err != nil {
