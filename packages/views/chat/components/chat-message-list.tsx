@@ -430,6 +430,57 @@ export function ChatMessageList({
   useEffect(() => {
     if (active && hasReachedLiveEnd) onRevealed?.();
   }, [active, hasReachedLiveEnd, onRevealed]);
+  // WebKit has no native scroll anchoring and Virtuoso's rows opt out of it, so
+  // a row that starts above the viewport and grows late (image, embed, expanded
+  // block) pushes the reader's message down. Shift `scrollTop` by that delta so
+  // the message under the reader's eye holds. The first observation of a row is
+  // only a baseline; the live-end follow owns its own pin (CHE-4638).
+  const isFollowingRef = useRef(isFollowing);
+  isFollowingRef.current = isFollowing;
+  // Until the reader moves the list, Virtuoso and the live-end pin own the
+  // position (initial landing, restore); shifting then would fight them.
+  const userMoved = useRef(false);
+  useEffect(() => {
+    if (!scrollContainerEl) return;
+    const mark = () => {
+      userMoved.current = true;
+    };
+    const events = ["wheel", "touchstart", "keydown"] as const;
+    for (const e of events) scrollContainerEl.addEventListener(e, mark, { passive: true });
+    return () => {
+      for (const e of events) scrollContainerEl.removeEventListener(e, mark);
+    };
+  }, [scrollContainerEl]);
+  const rowHeights = useRef(new WeakMap<Element, number>());
+  const rowObserver = useRef<ResizeObserver | null>(null);
+  const observeRow = useCallback((node: HTMLDivElement | null) => {
+    if (!node || typeof ResizeObserver === "undefined") return;
+    rowObserver.current ??= new ResizeObserver((entries) => {
+      const scroller = scrollRef.current;
+      let viewportTop: number | null = null;
+      let shift = 0;
+      for (const { target, borderBoxSize } of entries) {
+        // A row Virtuoso unmounted reports 0 on its way out; not a resize.
+        if (!target.isConnected) continue;
+        const height = borderBoxSize?.[0]?.blockSize ?? target.getBoundingClientRect().height;
+        const prev = rowHeights.current.get(target);
+        rowHeights.current.set(target, height);
+        if (prev === undefined || prev === height) continue;
+        if (!scroller || !userMoved.current || isFollowingRef.current()) continue;
+        viewportTop ??= scroller.getBoundingClientRect().top;
+        if (target.getBoundingClientRect().top < viewportTop) shift += height - prev;
+      }
+      if (shift !== 0 && scroller) scroller.scrollTop += shift;
+    });
+    rowObserver.current.observe(node);
+  }, []);
+  useEffect(
+    () => () => {
+      rowObserver.current?.disconnect();
+      rowObserver.current = null;
+    },
+    [],
+  );
   // Soft edge fade hinting more content above/below. Kept small so it barely
   // grazes full-bleed previews (image / HTML) at the edges.
   const fadeStyle = useScrollFade(scrollRef, 16);
@@ -847,6 +898,7 @@ export function ChatMessageList({
         components={LIST_COMPONENTS}
         itemContent={(_, item) => (
           <div
+            ref={observeRow}
             className={cn(
               CHAT_COLUMN,
               "py-2 transition-colors duration-700",
