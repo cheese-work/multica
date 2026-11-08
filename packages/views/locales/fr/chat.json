@@ -11,7 +11,37 @@
     "loading": "Chargement des demandes…",
     "error": "Impossible de charger les demandes.",
     "retry": "Réessayer",
-    "empty": "Aucune demande ouverte."
+    "empty": "Aucune demande ouverte.",
+    "decisions": "Décisions ouvertes",
+    "show_all": "Tout afficher ({{count}})",
+    "show_less": "Afficher moins",
+    "count": "{{shown}} / {{total}}",
+    "kind": {
+      "ask": "Question",
+      "later": "Rappel",
+      "unseen": "Non lu",
+      "decision": "Décision"
+    },
+    "level": {
+      "fresh": "Nouveau",
+      "yellow": "Jaune",
+      "red": "Rouge"
+    },
+    "age": {
+      "minutes_one": "{{count}} minute",
+      "minutes_other": "{{count}} minutes",
+      "hours_one": "{{count}} heure",
+      "hours_other": "{{count}} heures",
+      "days_one": "{{count}} jour",
+      "days_other": "{{count}} jours"
+    },
+    "level_age": "{{level}} · {{age}}",
+    "row_aria": "{{kind}} : {{title}}. {{level}}, en attente depuis {{age}}",
+    "unclassified": {
+      "title": "Non classé",
+      "replies_one": "{{count}} réponse",
+      "replies_other": "{{count}} réponses"
+    }
   },
   "page": {
     "interactive_login_required": "Reconnectez-vous pour utiliser la discussion",

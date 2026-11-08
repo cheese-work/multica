@@ -11,7 +11,33 @@
     "loading": "미응답 요청을 불러오는 중…",
     "error": "요청을 불러오지 못했습니다.",
     "retry": "다시 시도",
-    "empty": "미응답 요청이 없습니다."
+    "empty": "미응답 요청이 없습니다.",
+    "decisions": "미결정 항목",
+    "show_all": "모두 보기({{count}})",
+    "show_less": "적게 보기",
+    "count": "{{shown}} / {{total}}",
+    "kind": {
+      "ask": "질문",
+      "later": "알림",
+      "unseen": "읽지 않음",
+      "decision": "결정"
+    },
+    "level": {
+      "fresh": "새 항목",
+      "yellow": "노랑",
+      "red": "빨강"
+    },
+    "age": {
+      "minutes_other": "{{count}}분",
+      "hours_other": "{{count}}시간",
+      "days_other": "{{count}}일"
+    },
+    "level_age": "{{level}} · {{age}}",
+    "row_aria": "{{kind}}: {{title}}. {{level}}, {{age}} 대기 중",
+    "unclassified": {
+      "title": "미분류",
+      "replies_other": "답장 {{count}}개"
+    }
   },
   "page": {
     "interactive_login_required": "채팅을 사용하려면 다시 로그인하세요",

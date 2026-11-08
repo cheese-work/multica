@@ -11,7 +11,37 @@
     "loading": "Loading open asks…",
     "error": "Could not load open asks.",
     "retry": "Retry",
-    "empty": "No open asks."
+    "empty": "No open asks.",
+    "decisions": "Open decisions",
+    "show_all": "Show all {{count}}",
+    "show_less": "Show fewer",
+    "count": "{{shown}} / {{total}}",
+    "kind": {
+      "ask": "Question",
+      "later": "Reminder",
+      "unseen": "Unread",
+      "decision": "Decision"
+    },
+    "level": {
+      "fresh": "New",
+      "yellow": "Yellow",
+      "red": "Red"
+    },
+    "age": {
+      "minutes_one": "{{count}} minute",
+      "minutes_other": "{{count}} minutes",
+      "hours_one": "{{count}} hour",
+      "hours_other": "{{count}} hours",
+      "days_one": "{{count}} day",
+      "days_other": "{{count}} days"
+    },
+    "level_age": "{{level}} · {{age}}",
+    "row_aria": "{{kind}}: {{title}}. {{level}}, waiting {{age}}",
+    "unclassified": {
+      "title": "Unclassified",
+      "replies_one": "{{count}} reply",
+      "replies_other": "{{count}} replies"
+    }
   },
   "page": {
     "interactive_login_required": "Sign in again to use Chat",
