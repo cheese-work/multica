@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -59,7 +60,7 @@ func compactionDecisionsBlock(ctx context.Context, queries *db.Queries, session 
 		// Once one record does not fit, every older one collapses: the full
 		// lines stay a contiguous newest-first run.
 		if collapsed == 0 {
-			words := redact.Prose(row.Words)
+			words := redactDecisionWords(row.Words)
 			cut := ""
 			if int(row.WordsBytes) > decisionWordsMaxBytes {
 				cut = fmt.Sprintf(" [words cut: first %d of %d bytes; the record holds the rest]", decisionWordsMaxBytes, row.WordsBytes)
@@ -90,6 +91,22 @@ func compactionDecisionsBlock(ctx context.Context, queries *db.Queries, session 
 	}
 	block.WriteString(decisionsBlockEnd)
 	return block.String(), nil
+}
+
+// privateKeyBegin is the begin marker of a PEM private key, as in the redact
+// rules.
+var privateKeyBegin = regexp.MustCompile(`-----BEGIN[A-Z\s]*PRIVATE KEY-----`)
+
+// redactDecisionWords redacts provider tokens in text the query cut short. A
+// private key whose end marker lies past the cut is not matched by the redact
+// rules, so any begin marker left after them starts an unterminated key and the
+// text from there on is dropped.
+func redactDecisionWords(words string) string {
+	words = redact.Prose(words)
+	if loc := privateKeyBegin.FindStringIndex(words); loc != nil {
+		words = words[:loc[0]] + "[REDACTED PRIVATE KEY]"
+	}
+	return words
 }
 
 // splitCompactionDecisions separates the decisions block that leads a stored

@@ -280,6 +280,35 @@ func TestCompactionSeedRedactsDecisionWords(t *testing.T) {
 	}
 }
 
+// A private key whose end marker lies past the retrieval cut is still redacted:
+// the cut text holds an unterminated block, and everything from its begin
+// marker on goes. The key is built at runtime so no key literal sits in the repo.
+func TestCompactionRedactsPrivateKeyCrossingTheRetrievalCut(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID := createHandlerTestAgent(t, "compaction-decisions-pem", []byte("[]"))
+	sessionID := dbfx.ChatSession(t, agentID)
+	label := "RSA " + "PRIVATE " + "KEY"
+	body := strings.Repeat("KEYBODYSENTINEL0123456789abcdef", 200) // 6200 chars > decisionsWordsFetchChars
+	key := "-----BEGIN " + label + "-----\n" + body + "\n-----END " + label + "-----"
+	recordDecision(t, agentID, sessionID, "key decision", "Deploy with this key:\n"+key+"\nthen rotate it.", false)
+	session, summary, fail := testHandler.compactChatInPlace(ctx, parseUUID(sessionID), pgtype.UUID{}, "Nothing kept.")
+	if fail != nil {
+		t.Fatalf("compact: %s", fail.message)
+	}
+	seed, err := testHandler.compactionSeedBlock(ctx, session, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for where, text := range map[string]string{"row": summary.Content, "prompt": seed} {
+		if strings.Contains(text, "KEYBODYSENTINEL") {
+			t.Fatalf("%s carries private key material:\n%.600s", where, text)
+		}
+	}
+}
+
 // Enough decisions to pass the block budget: the newest stay in full, older ones
 // collapse to one line that still names key, time and record id, and a count
 // line says so. Nothing is dropped silently, and the block stays bounded.
