@@ -2512,6 +2512,14 @@ type MemberDelegationDay struct {
 	ActivityDate pgtype.Date `json:"activity_date"`
 }
 
+type MemberSetting struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	UserID      pgtype.UUID        `json:"user_id"`
+	Key         string             `json:"key"`
+	Value       []byte             `json:"value"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
 type NotificationChannelPreference struct {
 	ID          pgtype.UUID        `json:"id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
@@ -3150,6 +3158,18 @@ type SysCronExecution struct {
 	ErrorMsg     pgtype.Text        `json:"error_msg"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+}
+
+type System1Label struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	ObservationID pgtype.UUID        `json:"observation_id"`
+	Scope         string             `json:"scope"`
+	Kind          string             `json:"kind"`
+	Source        string             `json:"source"`
+	Label         string             `json:"label"`
+	SupersededAt  pgtype.Timestamptz `json:"superseded_at"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 }
 
 type System1Observation struct {

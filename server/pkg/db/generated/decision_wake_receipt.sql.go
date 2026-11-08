@@ -202,6 +202,69 @@ func (q *Queries) InsertDecisionWakeReceipt(ctx context.Context, arg InsertDecis
 	return i, err
 }
 
+const listDecisionWakeReceiptCandidates = `-- name: ListDecisionWakeReceiptCandidates :many
+SELECT id FROM decision_wake_receipt
+WHERE status = 'pending' AND next_attempt_at <= clock_timestamp()
+ORDER BY next_attempt_at, id
+LIMIT $1
+`
+
+// Due pending receipts, oldest due first: a failed receipt moves its own
+// next_attempt_at, so it never holds back the others.
+func (q *Queries) ListDecisionWakeReceiptCandidates(ctx context.Context, batchSize int32) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listDecisionWakeReceiptCandidates, batchSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockDecisionAnswerForWake = `-- name: LockDecisionAnswerForWake :one
+SELECT id FROM decision_answer WHERE id = $1 FOR UPDATE
+`
+
+// Serializes the receipts of one answer so the last one to settle sees the others.
+func (q *Queries) LockDecisionAnswerForWake(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockDecisionAnswerForWake, id)
+	var id_2 pgtype.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
+const lockDecisionReceiptRecipient = `-- name: LockDecisionReceiptRecipient :one
+SELECT id FROM agent
+WHERE workspace_id = $1 AND id = $2
+FOR SHARE
+`
+
+type LockDecisionReceiptRecipientParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+// FOR SHARE, not KEY SHARE: an archive is a non-key UPDATE, and only FOR SHARE
+// conflicts with it. An archive that commits after the eligibility reload is
+// therefore impossible: it either committed before this lock (the reload sees
+// it) or waits for this transaction.
+func (q *Queries) LockDecisionReceiptRecipient(ctx context.Context, arg LockDecisionReceiptRecipientParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockDecisionReceiptRecipient, arg.WorkspaceID, arg.ID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const lockDecisionWakeReceipt = `-- name: LockDecisionWakeReceipt :one
 SELECT id, event_id, event_seq, recipient_agent_id, role, squad_id, status, outcome, attempt_count, next_attempt_at, last_error, delivered_at, created_at FROM decision_wake_receipt WHERE id = $1 FOR UPDATE
 `
@@ -227,6 +290,27 @@ func (q *Queries) LockDecisionWakeReceipt(ctx context.Context, id pgtype.UUID) (
 	return i, err
 }
 
+const recordDecisionWakeReceiptFailure = `-- name: RecordDecisionWakeReceiptFailure :execrows
+UPDATE decision_wake_receipt
+SET attempt_count = attempt_count + 1, last_error = $1,
+    next_attempt_at = clock_timestamp() + make_interval(secs => least(3600, 30 * power(2, least(attempt_count, 10))))
+WHERE id = $2 AND status = 'pending'
+`
+
+type RecordDecisionWakeReceiptFailureParams struct {
+	LastError pgtype.Text `json:"last_error"`
+	ID        pgtype.UUID `json:"id"`
+}
+
+// Exponential backoff per receipt: 30 s doubling, capped at one hour.
+func (q *Queries) RecordDecisionWakeReceiptFailure(ctx context.Context, arg RecordDecisionWakeReceiptFailureParams) (int64, error) {
+	result, err := q.db.Exec(ctx, recordDecisionWakeReceiptFailure, arg.LastError, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const settleDecisionWakeReceipt = `-- name: SettleDecisionWakeReceipt :execrows
 UPDATE decision_wake_receipt
 SET status = $1, outcome = $2,
@@ -247,4 +331,25 @@ func (q *Queries) SettleDecisionWakeReceipt(ctx context.Context, arg SettleDecis
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const summarizeDecisionWakeEvent = `-- name: SummarizeDecisionWakeEvent :one
+SELECT count(*) FILTER (WHERE status = 'pending')::int AS pending,
+       coalesce((array_agg(outcome ORDER BY CASE role WHEN 'requester' THEN 0 ELSE 1 END)
+                 FILTER (WHERE status = 'delivered' AND outcome IS NOT NULL))[1], 'skipped_ineligible')::text AS outcome
+FROM decision_wake_receipt WHERE event_id = $1
+`
+
+type SummarizeDecisionWakeEventRow struct {
+	Pending int32  `json:"pending"`
+	Outcome string `json:"outcome"`
+}
+
+// The answer's wake outcome once no receipt of the event is pending: the first
+// delivered receipt's outcome (requester before assignee), else skipped.
+func (q *Queries) SummarizeDecisionWakeEvent(ctx context.Context, eventID pgtype.UUID) (SummarizeDecisionWakeEventRow, error) {
+	row := q.db.QueryRow(ctx, summarizeDecisionWakeEvent, eventID)
+	var i SummarizeDecisionWakeEventRow
+	err := row.Scan(&i.Pending, &i.Outcome)
+	return i, err
 }
