@@ -298,6 +298,22 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 - `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]` 指定接手纯路由工作流步骤的智能体（默认为 `todo`、`blocked`、`merged`、`need_decision`；用 `--routing-statuses` 修改，用 `--routing-overrides todo=<agent-id>` 把某个状态交给另一个智能体）。该智能体被归档，或其运行因提供商错误失败时，由备用智能体接手。覆盖键写成 `<workflow-id>:<status>` 时，只对该工作流生效。`none` 表示关闭该项。只有人类所有者或管理员可以修改，每次修改都会记入活动日志。
 - `--issue-title-template` 只替换 `{{date}}`（UTC，`YYYY-MM-DD`），其他 `{{...}}` 会被拒绝。定时触发器的 `--timezone` 默认 UTC。
 
+### 配置变更提案
+
+`multica config propose` 为工作区配置变更生成动作文件。它读取当前值，用与服务端重新计算相同的方法算出 `before_sha256` 和 `after_sha256`，并写出 `multica decision request --action-file` 接收的文件。它不发送任何内容，也不写入密钥。仍由人用 passkey 批准。
+
+字段：`agent.instructions <agent-id>`、`squad.instructions <squad-id>`、`workspace.context`、`workflow.steps <workflow-id>`、`workflow.step.instructions <workflow-id> --status-key <key>` 和 `workspace.settings --set key=value|key:=<json>`。文本字段使用 `--file`（UTF-8，不含 NUL 字节）。`workflow.steps` 接收工作流 GET 返回的 steps 数组；请编辑该输出，因为服务端若对 steps 做了不同的规范化，会拒绝请求（`after_digest_mismatch`）。`workflow.step.instructions` 的 after 摘要由服务端计算，所以文件不含 `after_sha256`，打印出的摘要仅供对照。`--out <path>` 写出文件；`--dry-run` 只打印两个摘要和动作，不写文件。`--expires-in <秒>` 设置请求有效期。
+
+其他任何字段都会在读取任何内容之前以 `denylisted` 拒绝：`project.description`、passkey 与决策闸门、成员与角色、所有者转移、认证与集成密钥、工作区删除、动作注册表和 `delegated_governed_writes`。不在服务端允许表中的设置键同样被拒绝，混有允许键和拒绝键的补丁整体被拒绝。服务端会在请求时和批准时再次检查。
+
+```bash
+multica config propose workspace.context --file ./context.md --out ./action.json
+multica config propose agent.instructions <agent-id> --file ./instructions.md --dry-run
+multica config propose workflow.step.instructions <workflow-id> --status-key review --file ./step.md --out ./action.json
+multica config propose workspace.settings --set compact_prompt="..." --set wakeups_paused:=false --out ./action.json
+multica decision request --issue MUL-123 --for <user-id> --class reversible --ask-file ./ask.md --action-file ./action.json
+```
+
 ## 命令概览
 
 | 命令 | 用途 |
