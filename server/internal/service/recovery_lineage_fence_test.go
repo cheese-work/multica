@@ -233,10 +233,15 @@ func TestRecoveryLineageDepthCapAndCycle(t *testing.T) {
 		b := o.runningTask(t, testutil.Cols{"retry_of_task_id": a})
 		o.Exec(t, "UPDATE agent_task_queue SET retry_of_task_id=$2 WHERE id=$1", a, b)
 		t.Cleanup(func() { o.Exec(t, "UPDATE agent_task_queue SET retry_of_task_id=NULL WHERE id IN ($1,$2)", a, b) })
+		// The walk ends on the cycle and is no cap. b is already a's one retry
+		// child (CHE-4581), so failing a mints no second one.
+		fence, err := o.svc.TaskSvc.fenceRecoveryLineage(ctx, o.q, parseTestUUID(t, a))
+		if err != nil || fence.Capped() {
+			t.Fatalf("fence capped=%t err=%v, want no cap", fence.Capped(), err)
+		}
 		failTimeout(t, a)
-		// b points at a already, so one new retry child makes two.
-		if n := o.retryChildren(t, a); n != 2 {
-			t.Fatalf("retry children=%d, want 2", n)
+		if n := o.retryChildren(t, a); n != 1 {
+			t.Fatalf("retry children=%d, want 1 (b only)", n)
 		}
 	})
 }
