@@ -503,12 +503,17 @@ func (h *Handler) voteApply(w http.ResponseWriter, r *http.Request, writerID str
 
 	result, rejected, err := ownerCASWriteTx(r.Context(), tx, c, workspaceID, id, content, before)
 	if rejected == hermesExceptionRejectNone {
-		if err = tx.Commit(r.Context()); err != nil {
+		if err = h.auditGovernedWrite(r.Context(), tx, r, c, workspaceID, id, result); err != nil {
+			rejected = hermesExceptionRejectInternal
+		} else if err = tx.Commit(r.Context()); err != nil {
 			rejected = hermesExceptionRejectInternal
 		}
 	}
 	logVoteOutcome(r, c, writerID, id, issueID, voters, "", err)
 	if rejected != hermesExceptionRejectNone {
+		if failedAudit(w, r, err, c.kind) {
+			return hermesExceptionSwapResult{}, false
+		}
 		hermesExceptionWriteRejection(w, r, rejected, err)
 		return hermesExceptionSwapResult{}, false
 	}

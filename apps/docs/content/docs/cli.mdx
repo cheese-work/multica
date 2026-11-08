@@ -397,6 +397,17 @@ A running workspace agent task can rename a DM in that workspace, including a DM
 
 The agent receives only the session ID, new title, previous title, and announcement message ID. Rename does not grant permission to list DM lanes, read messages, access resume pointers, or change project context. Automatic title generation does not overwrite a manual rename, including a rename back to the original title.
 
+### DM attention
+
+```bash
+multica chat attention [--stale] --output json
+multica chat later <session> [duration | RFC3339 time]
+```
+
+`attention` lists the DM chains that need you, one row per chain, oldest `attention_since` first. Chains with nothing open, archived chains and chains whose `later` is still in the future are not listed. `--stale` keeps only `yellow` (4 h or more) and `red` (24 h or more) rows.
+
+`later` snoozes the obligations the server shows for the chain right now. Durations take `2h`, `90m`, `7d`, `1d12h` or plain seconds; with no duration the server uses 2 hours. The server accepts 1 second to 168 hours from now. The CLI sends the value as given and prints the server's range error; it never caps silently. Repeat a call with the same `--request-id` and the due time does not move. Agent tasks cannot use `later`.
+
 ### Decision lane metadata
 
 A running assigned issue task can open a three-minute decision window by posting a comment with `--decision-intent` and member mentions. Only that task can list active web DM lanes for the people named in the window:
@@ -423,6 +434,8 @@ multica decision request --issue MUL-123 --for <user-id> --class reversible \
 One call writes one issue comment (the ask plus the optional footer, top-level or under `--parent`), one DM message (the ask only) and one inbox ping. The footer reaches the issue comment only, so use it for handoff lines. Footer lines dispatch no agent, because an ask comment does not trigger tasks.
 
 The server picks the DM: the lane of your latest request to that person on this issue, else the newest lane that mentions this issue, else a new `Decisions: <agent name>` DM. `--session <lane-id>` and `--new-dm` override the choice. The same checks as a decision-intent comment apply to the task, issue and person. One call asks one person.
+
+A batch card closes the per-issue cards it covers. Pass `--covers <request-id>` (repeatable, at most 25) with the ids of open `reversible` or `product_direction` cards for the same person in the same workspace. The batch card must also be `reversible` or `product_direction`. When the person answers the batch card, each covered card closes as answered by the batch, its issue gets the quoted answer, and its asking agent wakes once. The DM folds each covered card into one row under the batch card. Only a plain choice card can be covered: a card with an attached action, a governed write ("Approve write"), an artifact, a human action, a gated class is never covered, and the person must answer that card itself. A covered card that gains one of these after the batch card was created stays open when the batch is answered. Each batch option must also be an option of every covered card with the same label and the same `what_happens` meaning, and the batch card lists every covered decision with its options and their meanings so the person sees what the answer closes. If the covered decisions cannot be loaded, the card offers no answer form. A covered card closes only when the person picks a batch option that is one of its own options, label and meaning alike: a free-text batch answer closes none, and a covered card that does not offer the chosen option stays open for its own answer. The server refuses a batch option answer (400, `covers_ack_required`) unless it carries `covers_ack`, a SHA-256 digest of the batch id, the sorted covered ids and the chosen option: an older client that cannot show the covered decisions cannot answer for them, and nothing is closed. While a person is in passkey recovery and the workspace gate blocks, a batch answer is refused if it would close a covered `product_direction` card, exactly as that card's own answer would be. Any withdrawal of the batch answer also withdraws every covered answer and reopens those cards: the person disclaiming it, an agent vetoing it, its source being removed or its answering turn failing, a lifecycle cancel of the batch card, a raise past a delegate, and the batch card being removed with its issue. The call is refused if any id is not an open, eligible card of that person, or if a covered card lacks a batch option or gives it another meaning.
 
 If a decision-intent comment is still open for the task, the older two-step flow applies: pass `--session` or `--new-dm --for`, and the ask replies under the intent comment. `--parent` is refused there.
 

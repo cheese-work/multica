@@ -573,3 +573,23 @@ func (h *Handler) openUnseenAttention(ctx context.Context, session db.ChatSessio
 	}
 	return tx.Commit(ctx)
 }
+
+// GetChatSessionAttention returns the chain's current projection, including the exact keys the
+// client shows, so `multica chat later` can snooze what the user sees (CHE-4151).
+func (h *Handler) GetChatSessionAttention(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	workspaceID := ctxWorkspaceID(r.Context())
+	session, ok := h.gatePublicChatSessionForUser(w, r, userID, workspaceID, chi.URLParam(r, "sessionId"))
+	if !ok {
+		return
+	}
+	view, err := h.readChain(r.Context(), parseUUID(workspaceID), parseUUID(userID), session.ChainRootSessionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read attention")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"attention": view})
+}

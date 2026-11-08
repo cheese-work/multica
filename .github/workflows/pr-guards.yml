@@ -49,7 +49,8 @@ jobs:
         run: node scripts/pr-close-target-check.mjs --event "$GITHUB_EVENT_PATH"
 
   # Prints the /changelog entry this PR will publish (CHE-1631). Fails a feat/fix/perf PR without a valid `Changelog:`
-  # line. The PR body comes from the event payload; the script is the trusted base copy. upstream-sync/* heads are
+  # line, or `Changelog: none` on user-facing files (CHE-4016). The PR body comes from the event payload, the changed files
+  # from the read-only workflow token; the script is the trusted base copy. upstream-sync/* heads are
   # reported as `Hidden: upstream-sync` and pass. Making this check required is Cheese's call.
   changelog-line:
     name: Changelog line
@@ -58,6 +59,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      pull-requests: read # the changed-file list; a failed read warns and passes (CHE-4016)
     steps:
       - name: Checkout trusted workflow checker
         uses: actions/checkout@v6
@@ -68,8 +70,16 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: 22
+      - name: List the changed files
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh api --paginate "repos/$REPO/pulls/${PR_NUMBER}/files" --jq '.[].filename' > "$RUNNER_TEMP/files.txt" \
+            || rm -f "$RUNNER_TEMP/files.txt"
       - name: Compute the changelog entry
-        run: node scripts/fork-changelog.mjs --event "$GITHUB_EVENT_PATH"
+        run: node scripts/fork-changelog.mjs --event "$GITHUB_EVENT_PATH" --files "$RUNNER_TEMP/files.txt"
 
   fork-sync-guard:
     name: Fork sync preservation

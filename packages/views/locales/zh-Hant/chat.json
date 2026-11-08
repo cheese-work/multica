@@ -11,7 +11,33 @@
     "loading": "正在載入待處理請求…",
     "error": "無法載入待處理請求。",
     "retry": "重試",
-    "empty": "沒有待處理請求。"
+    "empty": "沒有待處理請求。",
+    "decisions": "待決定事項",
+    "show_all": "顯示全部（{{count}}）",
+    "show_less": "收合",
+    "count": "{{shown}} / {{total}}",
+    "kind": {
+      "ask": "提問",
+      "later": "提醒",
+      "unseen": "未讀",
+      "decision": "決定"
+    },
+    "level": {
+      "fresh": "新",
+      "yellow": "黃色",
+      "red": "紅色"
+    },
+    "age": {
+      "minutes_other": "{{count}} 分鐘",
+      "hours_other": "{{count}} 小時",
+      "days_other": "{{count}} 天"
+    },
+    "level_age": "{{level}} · {{age}}",
+    "row_aria": "{{kind}}：{{title}}。{{level}}，已等待 {{age}}",
+    "unclassified": {
+      "title": "未分類",
+      "replies_other": "{{count}} 則回覆"
+    }
   },
   "page": {
     "title": "聊天",
@@ -316,7 +342,6 @@
     "undo": "復原"
   },
   "header": {
-    "view_profile": "檢視智慧體資料",
     "rename": "重新命名會話",
     "delete": "刪除會話",
     "archive": "歸檔會話",
@@ -326,6 +351,7 @@
     "context_meter_threshold": "達到 {{threshold}} 時壓縮(目前 {{now}})",
     "compact_now": "立即壓縮",
     "more_actions": "更多操作",
+    "view_profile": "查看智慧體資料",
     "statistics": "統計",
     "pin": "置頂對話",
     "unpin": "取消置頂對話",
@@ -366,6 +392,9 @@
   "decision": {
     "request_title": "決策請求",
     "asked_by": "來自 {{agent}}",
+    "answered_by_batch": "{{issue}}:已由批次卡片回答",
+    "covers_batch": "此回答關閉的卡片:{{count}}",
+    "covers_unavailable": "無法載入此回答將關閉的決定。請重新整理後再回答。",
     "request_label": "決策請求：{{state}}",
     "request_state": {
       "open": "待答復",

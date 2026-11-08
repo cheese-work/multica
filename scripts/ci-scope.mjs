@@ -42,8 +42,10 @@ export function hasGreenMergeGroup(env, query = (endpoint) => JSON.parse(execFil
   }
 }
 
-export function decideScopes(event, filtered, headRef = "", mergeGroupGreen = false) {
-  const full = event === "schedule" || event === "workflow_dispatch";
+// forcePushFull (CI_PUSH_FULL=true, the merge-queue fallback, CHE-4498): a push to main runs every scope,
+// not only the paths changed since the previous push.
+export function decideScopes(event, filtered, headRef = "", mergeGroupGreen = false, forcePushFull = false) {
+  const full = event === "schedule" || event === "workflow_dispatch" || (event === "push" && headRef === "main" && forcePushFull);
   if (!full && event !== "push" && event !== "pull_request" && event !== "merge_group") {
     throw new Error(`Unsupported CI event: ${event}`);
   }
@@ -100,7 +102,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   try {
     switch (process.argv[2]) {
       case "decide": {
-        const outputs = decideScopes(process.env.EVENT_NAME, JSON.parse(process.env.FILTER_RESULTS), process.env.HEAD_REF, hasGreenMergeGroup(process.env));
+        const outputs = decideScopes(process.env.EVENT_NAME, JSON.parse(process.env.FILTER_RESULTS), process.env.HEAD_REF, hasGreenMergeGroup(process.env), process.env.CI_PUSH_FULL === "true");
         appendFileSync(process.env.GITHUB_OUTPUT,
           Object.entries(outputs).map(([key, value]) => `${key}=${value}\n`).join(""));
         break;
