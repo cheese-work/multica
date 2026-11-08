@@ -25,6 +25,20 @@ var ErrAdmissionDeferred = errors.New("the PR head is not admissible, so the rev
 // on them. They are dropped from the admission list even when it names them.
 var reviewerDependentChecks = map[string]bool{"security-gate": true}
 
+// admissionEnabled is the one switch for deferral (MULTICA_REVIEW_ADMISSION,
+// "true" or "1", read once at start). Default off: a reviewer run starts as
+// before. Turn it on only once CHE-4651 (start the deferred run) is deployed;
+// alone, a deferred review would wait for the 24 h expiry.
+var admissionEnabled = admissionEnabledFromEnv(os.Getenv)
+
+func admissionEnabledFromEnv(getenv func(string) string) bool {
+	switch strings.ToLower(strings.TrimSpace(getenv("MULTICA_REVIEW_ADMISSION"))) {
+	case "true", "1":
+		return true
+	}
+	return false
+}
+
 // admissionChecks is the explicit list of checks that must be green on a PR
 // head before a reviewer run starts (MULTICA_REVIEW_ADMISSION_CHECKS, comma
 // separated, read once at start). Empty: only a merge conflict defers.
@@ -137,7 +151,7 @@ func actsAsAuthor(issue db.Issue, agentID pgtype.UUID) bool {
 // when the issue has a linked open PR. An author run is never held back: it is
 // what turns red CI green, even when the same agent reviews other PRs.
 func guardReviewAdmission(ctx context.Context, q *db.Queries, issueID pgtype.UUID, target RunTarget) error {
-	if !startsReview(target) || !target.AgentID.Valid || !issueID.Valid || !admissionReviewers[util.UUIDToString(target.AgentID)] {
+	if !admissionEnabled || !startsReview(target) || !target.AgentID.Valid || !issueID.Valid || !admissionReviewers[util.UUIDToString(target.AgentID)] {
 		return nil
 	}
 	issue, err := q.GetIssue(ctx, issueID)

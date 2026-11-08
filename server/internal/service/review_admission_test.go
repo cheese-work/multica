@@ -24,6 +24,14 @@ func setAdmissionReviewers(t *testing.T, ids ...string) {
 	t.Cleanup(func() { admissionReviewers = prev })
 }
 
+// enableAdmission sets the deferral switch for one test.
+func enableAdmission(t *testing.T, on bool) {
+	t.Helper()
+	prev := admissionEnabled
+	admissionEnabled = on
+	t.Cleanup(func() { admissionEnabled = prev })
+}
+
 type admissionFixture struct {
 	*stageFixture
 	issue, pr string
@@ -38,6 +46,7 @@ func newAdmissionFixture(t *testing.T, mergeState string) *admissionFixture {
 	prev := admissionChecks
 	admissionChecks = []string{"ci"}
 	t.Cleanup(func() { admissionChecks = prev })
+	enableAdmission(t, true)
 	f := &admissionFixture{stageFixture: newStageFixture(t, stagequeue.Limits{stagequeue.StageReview: 10})}
 	setAdmissionReviewers(t, f.agentID)
 	f.issue = f.Issue(t, "PR under review", testutil.Cols{"status": "agent_review", "assignee_type": "agent", "assignee_id": f.agentID})
@@ -317,6 +326,7 @@ func TestAdmissionWakeupTickKeepsTheDeferralRecord(t *testing.T) {
 	prev := admissionChecks
 	admissionChecks = []string{"ci"}
 	t.Cleanup(func() { admissionChecks = prev })
+	enableAdmission(t, true)
 	setAdmissionReviewers(t, agent)
 	f.Exec(t, `UPDATE issue SET status = 'in_review', assignee_type = 'agent', assignee_id = $2 WHERE id = $1`, util.UUIDToString(issue), agent)
 	pr := f.Insert(t, "github_pull_request", testutil.Cols{
@@ -409,5 +419,32 @@ func TestAdmissionAdmitsAnAuthorWakeupOnRedCI(t *testing.T) {
 		RunTarget{AgentID: util.MustParseUUID(f.agentID), Trigger: "wakeup"})
 	if err != nil {
 		t.Fatalf("named author wakeup on red CI: err = %v, want admitted", err)
+	}
+}
+
+// With the switch off (the default) a reviewer run starts as before, whatever
+// the head looks like, and nothing is stored.
+func TestAdmissionSwitchOffStartsTheReviewerRun(t *testing.T) {
+	f := newAdmissionFixture(t, "DIRTY")
+	f.check(t, "ci", "completed", "failure")
+	enableAdmission(t, false)
+	for _, c := range []struct {
+		trigger string
+		review  bool
+	}{{"assignment", true}, {"mention", true}, {"wakeup", false}, {"system wakeup", false}} {
+		if err := f.guardAs(f.agentID, c.trigger, c.review); err != nil {
+			t.Fatalf("%s with the switch off: err = %v, want the run started", c.trigger, err)
+		}
+	}
+	if _, _, _, ok := f.deferral(t); ok {
+		t.Fatal("a deferral record was stored with the switch off")
+	}
+}
+
+func TestAdmissionEnabledFromEnv(t *testing.T) {
+	for v, want := range map[string]bool{"": false, "false": false, "0": false, "true": true, " TRUE ": true, "1": true} {
+		if got := admissionEnabledFromEnv(func(string) string { return v }); got != want {
+			t.Fatalf("MULTICA_REVIEW_ADMISSION=%q: enabled = %v, want %v", v, got, want)
+		}
 	}
 }
